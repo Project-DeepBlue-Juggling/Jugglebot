@@ -1,0 +1,14 @@
+To initialize: (This should be done on startup. Script is in /home/jetson/Startup_scripts)
+sudo modprobe can_raw
+sudo modprobe can
+sudo modprobe mttcan
+sudo ip link set can0 up type can bitrate 1000000
+sudo ip link set up can0
+
+To Test:
+candump can0 -xct z -n 10
+
+
+CHECK CONNECTION TO JETSON IF HAVING ISSUES!
+
+
