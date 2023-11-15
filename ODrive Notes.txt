@@ -1,0 +1,90 @@
+SETUP
+	odrv0.axis0.motor.config.current_lim = 20.0
+	odrv0.axis1.motor.config.current_lim = 20.0
+	odrv0.axis0.controller.config.vel_limit = 60
+	odrv0.axis1.controller.config.vel_limit = 60
+	odrv0.config.enable_brake_resistor = True
+	odrv0.config.brake_resistance = 2
+	odrv0.config.dc_max_negative_current = -9.999999974752427e-07
+	odrv0.axis0.motor.config.pole_pairs = 7
+	odrv0.axis1.motor.config.pole_pairs = 7
+	odrv0.axis0.motor.config.torque_constant = 0.0551333
+	odrv0.axis1.motor.config.torque_constant = 0.0551333
+	odrv0.axis0.motor.config.motor_type = MOTOR_TYPE_HIGH_CURRENT (0)
+	odrv0.axis1.motor.config.motor_type = MOTOR_TYPE_HIGH_CURRENT (0)
+	odrv0.axis0.encoder.config.cpr = 8192
+	odrv0.axis1.encoder.config.cpr = 8192
+	odrv0.save_configuration()
+
+	To save a config file as backup:
+	odrivetool backup-config <myconfig.json>
+
+	To restore config file backup:
+	odrivetool restore-config <myconfig.json>
+
+
+CAN
+	odrv0.axis0.config.can.node_id = <number>
+	odrv0.axis1.config.can.node_id = <number>
+	
+	odrv0.can.config.baud_rate = 250000
+
+UPDATE FIRMWARE
+	odrivetool dfu     (May need to "sudo" this command, particularly on the Jetson)
+
+
+odrv0.axis0.requested_state = AXIS_STATE_FULL_CALIBRATION_SEQUENCE (3)
+
+odrv0.axis0.requested_state = AXIS_STATE_CLOSED_LOOP_CONTROL (8)
+odrv0.axis0.controller.input_pos = 1
+
+odrv0.axis0.encoder.shadow_count
+
+
+PID STUFF
+	DEFAULTS
+	odrv0.axis0.controller.config.pos_gain = 20.0
+	odrv0.axis0.controller.config.vel_gain = 0.16
+	odrv0.axis0.controller.config.vel_integrator_gain = 0.32
+
+	MINE
+	odrv0.axis0.controller.config.pos_gain = 40.0
+	odrv0.axis0.controller.config.vel_gain = 0.2
+	odrv0.axis0.controller.config.vel_integrator_gain = 0.32
+
+FILTERED POSITION CONTROL
+	odrv0.axis0.controller.config.input_filter_bandwidth = 2.0
+	odrv0.axis0.controller.config.input_mode = INPUT_MODE_POS_FILTER
+
+
+TRAJECTORY CONTROL
+	odrv0.axis0.trap_traj.config.vel_limit = 40.0
+	odrv0.axis0.trap_traj.config.accel_limit = 300.0   <<< Up to 600 works
+	odrv0.axis0.trap_traj.config.decel_limit = odrv0.axis0.trap_traj.config.accel_limit
+	
+	odrv0.axis1.trap_traj.config.vel_limit = 40.0
+	odrv0.axis1.trap_traj.config.accel_limit = 300.0   <<< Up to 600 works
+	odrv0.axis1.trap_traj.config.decel_limit = odrv0.axis0.trap_traj.config.accel_limit
+	
+	odrv0.axis0.controller.config.input_mode = InputMode.TRAP_TRAJ   (5)
+	odrv0.axis1.controller.config.input_mode = InputMode.TRAP_TRAJ   (5)
+
+
+
+TO REDUCE MOTOR NOISE (not really sure what this does yet)
+	odrv0.axis0.motor.config.current_control_bandwidth = 100
+
+
+Setting up encoder with index signal. Do this after FULL_CALIBRATION_SEQUENCE
+	Only needs to be run once per axis
+
+	odrv0.axis0.encoder.config.use_index = True
+	odrv0.axis0.requested_state = AXIS_STATE_ENCODER_INDEX_SEARCH
+	odrv0.axis0.requested_state = AXIS_STATE_ENCODER_OFFSET_CALIBRATION
+		Check:
+			odrv0.axis0.error should be 0.
+			odrv0.axis0.encoder.config.phase_offset - This should print a number, like -326 or 1364.
+			odrv0.axis0.encoder.config.direction - This should print 1 or -1.
+	odrv0.axis0.encoder.config.pre_calibrated = True
+	odrv0.axis0.config.startup_encoder_index_search = True  <<< Will search for index on startup
+	odrv0.axis0.motor.config.pre_calibrated = True
