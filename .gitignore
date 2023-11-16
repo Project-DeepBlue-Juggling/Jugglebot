@@ -1,0 +1,31 @@
+# Compiled python files
+*.pyc
+__pycache__/
+
+# IDE and editor folders
+.vscode/
+.idea/
+*.swp
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Virtual environment
+venv/
+env/
+
+# Build output
+build/
+dist/
+
+# Dependency directories
+node_modules/
+jspm_packages/
+
+# Log files
+*.log
+
+# Others
+*.bak
+*.tmp
