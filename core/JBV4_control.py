@@ -28,7 +28,7 @@ plot_list2 = []
 MAX_POSITION = 4.2  # The most extended the actuators should ever be (revolutions)
 
 # Initialize bespoke classes
-# spacemouse = SpaceMouseHandler()
+spacemouse = SpaceMouseHandler()
 stewart_platform = StewartPlatform(sp_ax)
 filter = MovingAverageFilter(window_size=100)  # 100 seems to work well with time.sleep(0.001) in the main loop
 pattern = PatternCreator
@@ -196,7 +196,9 @@ with CANHandler(bus_name='can0', bitrate=1000000, bus_type='socketcan') as handl
         run_setup()
 
     def move_slowly_to_position(pos_setpoint):
-        # Move all the motors to a set position slowly. Exit the function once the motors are in position
+        ''' Move all the motors to a set position slowly. Exit the function once the motors are in position.
+        Is a little buggy right now. Maybe change to be "move until encoder position = 0"?
+        '''
         
         # Set a low speed
         run_setup(velocity_limit=2.0)
@@ -217,72 +219,6 @@ with CANHandler(bus_name='can0', bitrate=1000000, bus_type='socketcan') as handl
 
         # Return the motor velocity to what it was before
         run_setup()
-
-    def send_sinusoidal_position(cycles=10.0):
-        '''NEED TO UPDATE!!! OLD!!!'''
-        # Define the sine wave parameters
-        f = 0.5  # Frequency of the sine wave (0.5 Hz for one full wave in 2 seconds)
-        amplitude = 2.0  # Amplitude of the sine wave (ie. half of total span)
-
-        msg_rate = 1000  # Hz
-        
-        # Calculate the total number of steps based on the cycles and rate
-        total_steps = int(cycles / f * msg_rate)
-        
-        # Interval between each step
-        interval = 1.0 / msg_rate
-
-        messages, tasks = start_periodic_setpoint_msg(initial_setpoint=0, period=interval)
-
-        next_time = time.perf_counter() + interval * 0.5  # Have a small -ve offset so that messages are updated slightly before they
-                                                          # get sent out.
-        
-        for step in range(total_steps):
-            # Calculate the elapsed time
-            t = step * interval
-            
-            # Calculate the desired position using the sine wave formula
-            position = amplitude * (1 - np.cos(2 * np.pi * f * t))
-
-            # Ensure the setpoint is within allowable bounds
-            setpoint = position
-
-            if setpoint > MAX_POSITION or setpoint < 0:
-                print(f"Setpoint of {setpoint:.2f} is outside of allowable bounds and has been truncated.")
-
-            setpoint = max(0, min(setpoint, MAX_POSITION))  # Truncate the setpoint if it exceeds the allowable values
-
-            setpoint = -1 * setpoint  # Since -ve is extension
-
-            # Update the task for each axis
-            for axis_id, task in enumerate(tasks):
-                # Create the new data for the message
-                new_data = db.encode_message(f'Axis{axis_id}_Set_Input_Pos', 
-                                {'Input_Pos': setpoint, 'Vel_FF': 0.0, 'Torque_FF': 0.0})
-                
-                msg = messages[axis_id]
-                msg.data = new_data
-                task.modify_data(msg)
-
-            # Debugging
-            # print(position)
-            plot_list.append(position)
-            
-            # Wait for the next iteration
-            now = time.perf_counter()
-            sleep_time = next_time - now
-
-            # Sleep only if there is positive time until the next iteration should occur
-            if sleep_time > 0:
-                time.sleep(sleep_time)
-            else:
-                print(f"Warning: Loop took {abs(sleep_time):.6f} seconds longer than expected!")
-
-            next_time += interval
-
-        # Once the pattern has ended, stop all tasks
-        for task in tasks:
-            task.stop()
 
     def get_spacemouse_pose():
         # Take in the spacemouse data (-1 < data < 1) and map it to the relevant range(s)
@@ -341,11 +277,20 @@ with CANHandler(bus_name='can0', bitrate=1000000, bus_type='socketcan') as handl
 
         return [position] * 6 # Cast the position value to all 6 motors
 
+    def straight_throw(throw_pos):
+        ''' A temporary method to test throwing perfectly vertically.
+        throw_pos is the position that the motors will move to when throwing'''
+        run_setup(velocity_limit=40.0, accel_limit=300.0)
+        for axisID in range(6):
+            send_position_target(axisID=axisID, setpoint=throw_pos)
+
     handler.clear_errors()
     # handler.reboot_odrives()
 
-    # move_slowly_to_position(pos_setpoint=0.0)
-    # raise ValueError
+    '''Uncomment the following two lines if the platform doesn't return to pos=0 after the "end" command is sent.
+    Not sure why this happens sometimes...'''
+    move_slowly_to_position(pos_setpoint=0.0)
+    raise ValueError
 
     axis_of_interest = 0  # For plotting etc.
 
@@ -353,7 +298,7 @@ with CANHandler(bus_name='can0', bitrate=1000000, bus_type='socketcan') as handl
 
     frequency_for_pattern = 0.2
 
-    spacemouse_or_pattern = 0  # 1 for spacemouse, 0 for pattern
+    spacemouse_or_pattern = 1  # 1 for spacemouse, 0 for pattern
     
     duration = 20  # Seconds
     spacemouse_data = [[] for _ in range(6)]
@@ -372,6 +317,9 @@ with CANHandler(bus_name='can0', bitrate=1000000, bus_type='socketcan') as handl
             if user_input.strip().lower() == "end":
                 keep_running = False
                 break
+            elif user_input.strip().lower() == "throw":
+                straight_throw(throw_pos=4.0)
+                # break
             else:
                 try:
                     # Attempt to parse the input as a list of numbers
@@ -390,49 +338,54 @@ with CANHandler(bus_name='can0', bitrate=1000000, bus_type='socketcan') as handl
     end_thread.start()
 
     # Move the platform to the mid-position
-    move_slowly_to_position(pos_setpoint=MAX_POSITION / 2)
+    # move_slowly_to_position(pos_setpoint=MAX_POSITION / 2)
 
+    while keep_running:
+        handler.fetch_messages()
+        time.sleep(0.01)
+    
     print("Receiving spacemouse inputs and moving motors!")
     start_time = time.time()
     # while time.time() - start_time < duration:
-    while keep_running:
-        if handler.fatal_issue:
-            print("FATAL ISSUE! Stopping process")
-            break
+    # while keep_running:
+    #     if handler.fatal_issue:
+    #         print("FATAL ISSUE! Stopping process")
+    #         break
         
-        if spacemouse_or_pattern:  # If using spacemouse control
-            # Get the pose and update the stewart platform
-            raw_pose = get_spacemouse_pose()
-            pose = filter.update_and_filter(raw_pose)
+    #     if spacemouse_or_pattern:  # If using spacemouse control
+    #         # Get the pose and update the stewart platform
+    #         raw_pose = get_spacemouse_pose()
+    #         pose = filter.update_and_filter(raw_pose)
 
-        else:  # If using pattern control
-            # leg_lengths_revs = send_sinusoidal_position_with_canHandler(t_start=start_time, t_current=time.time(), freq=frequency_for_pattern)
-            # pose = pattern.flat_circle_path(height=MAX_POSITION / 2, radius=80, time_start=start_time, freq=frequency_for_pattern)
-            pose = pattern.conical_path(height_of_platform=MAX_POSITION / 2, cone_height= 80, radius=80, time_start=start_time, freq=frequency_for_pattern)
-            # pose = commanded_pose
+    #     else:  # If using pattern control
+    #         # leg_lengths_revs = send_sinusoidal_position_with_canHandler(t_start=start_time, t_current=time.time(), freq=frequency_for_pattern)
+    #         # pose = pattern.flat_circle_path(height=MAX_POSITION / 2, radius=80, time_start=start_time, freq=frequency_for_pattern)
+    #         pose = pattern.conical_path(height_of_platform=MAX_POSITION / 2, cone_height= 80, radius=80, time_start=start_time, freq=frequency_for_pattern)
+    #         # pose = commanded_pose
         
-        stewart_platform.update_pose(pose)
+    #     stewart_platform.update_pose(pose)
 
-        # # Calculate the leg lengths for this pose, then convert to revs
-        leg_lengths_mm = stewart_platform.leg_lengths()
-        leg_lengths_revs = convert_mm_to_rev(leg_lengths_mm[:6])  # The last "leg" is the hand string, which we don't care about here
+    #     # # Calculate the leg lengths for this pose, then convert to revs
+    #     leg_lengths_mm = stewart_platform.leg_lengths()
+    #     leg_lengths_revs = convert_mm_to_rev(leg_lengths_mm[:6])  # The last "leg" is the hand string, which we don't care about here
 
-        # Sort the leg lengths to match the layout of the CAN node IDs
-        leg_lengths_final = reorder_axes_for_CAN(leg_lengths_revs)
+    #     # Sort the leg lengths to match the layout of the CAN node IDs
+    #     leg_lengths_final = reorder_axes_for_CAN(leg_lengths_revs)
 
-        spacemouse_timestamps.append(time.time())
+    #     spacemouse_timestamps.append(time.time())
 
-        # print(["{:.2f}".format(length) for length in leg_positions])
-        for axis, data in enumerate(leg_lengths_final):
-            send_position_target(axisID=axis, setpoint=data)
-            spacemouse_data[axis].append(-1 * data)
+    #     # print(["{:.2f}".format(length) for length in leg_positions])
+    #     for axis, data in enumerate(leg_lengths_final):
+    #         send_position_target(axisID=axis, setpoint=data)
+    #         spacemouse_data[axis].append(-1 * data)
 
-        # stewart_platform.update_pose(pose)
-        # stewart_platform.plot_platform()
-        handler.fetch_messages()
-        time.sleep(0.001)
+    #     # stewart_platform.update_pose(pose)
+    #     # stewart_platform.plot_platform()
+    #     handler.fetch_messages()
+    #     time.sleep(0.001)
 
     pos_estimates, enc_timestamps = handler.get_position_estimates()
+    vel_estimates, vel_timestamps = handler.get_velocity_estimates()
     _, iq_estimates = handler.get_iq_values()
 
     # Subtract the starting time from each timestamp value, to "normalize" the timestamps
@@ -450,7 +403,8 @@ with CANHandler(bus_name='can0', bitrate=1000000, bus_type='socketcan') as handl
     end_thread.join()
 
     ax1.plot(enc_timestamps, pos_estimates[axis_of_interest], label="Encoder Estimates")
-    ax1.plot(spacemouse_timestamps, spacemouse_data[axis_of_interest], label="Commanded Positions")
+    ax1.plot(enc_timestamps, vel_estimates[axis_of_interest], label="Velocity Estimates")
+    # ax1.plot(spacemouse_timestamps, spacemouse_data[axis_of_interest], label="Commanded Positions")
     ax2.plot(iq_estimates[axis_of_interest])
     ax1.legend(loc='upper right')
     ax1.set_title(f'Actual vs. Commanded Motor Positions for Axis {axis_of_interest}')
