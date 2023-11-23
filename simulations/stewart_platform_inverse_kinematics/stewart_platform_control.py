@@ -41,7 +41,7 @@ class StewartPlatform:
         self._axes_multiplier = 1.2
         self.ax.set_axis_off()
         self.ax.set_xlim(-self._base_radius * self._axes_multiplier, self._base_radius * self._axes_multiplier)
-        self.ax.set_aspect('equal')
+        # self.ax.set_aspect('equal') # Not sure why this is causing all lines to be colinear. Didn't used to happen...
 
     def update_pose(self, pose):
         # Pose is a 6 x 1 vector of ((pos), (rot))
@@ -72,7 +72,7 @@ class StewartPlatform:
         self.ax.clear()
         self.ax.set_axis_off()
         self.ax.set_xlim(-self._base_radius * self._axes_multiplier, self._base_radius * self._axes_multiplier)
-        self.ax.set_aspect('equal')
+        # self.ax.set_aspect('equal') # Same as in __init__. Not sure why this happens.
         self.ax.set_zlim(-self._base_radius + 200, self._base_radius + 200)
 
         # Plot the points
