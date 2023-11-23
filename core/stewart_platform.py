@@ -24,7 +24,7 @@ class StewartPlatform:
         self.rot_matrix = np.eye(3)
 
         # Measured Geometry
-        self._initial_height = 605.5  # Dist. from the base plane (bottom joint of legs) to plat. in its lowest pos {mm}
+        self._initial_height = 613  # Dist. from the base plane (bottom joint of legs) to plat. in its lowest pos {mm}
         self._base_radius = 410     # Radius of base {mm}
         self._plat_radius = 172     # Radius of platform {mm}
         self._base_small_angle = 40 # Gamma2 on main sketch {deg}
