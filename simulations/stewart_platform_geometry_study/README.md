@@ -1,0 +1,1 @@
+This script is used to experiment with changing the various geometries of a Stewart Platform. It can be used in "single-shot" testing, to see eg. the workspace or other outputs, or in "optimizer" mode, to see the effect of changing a given geometry over a range.
