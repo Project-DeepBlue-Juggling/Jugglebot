@@ -366,7 +366,7 @@ with CANHandler(bus_name='can0', bitrate=1000000, bus_type='socketcan') as handl
     #     stewart_platform.update_pose(pose)
 
     #     # # Calculate the leg lengths for this pose, then convert to revs
-    #     leg_lengths_mm = stewart_platform.leg_lengths()
+    #     leg_lengths_mm = stewart_platform.leg_lengths
     #     leg_lengths_revs = convert_mm_to_rev(leg_lengths_mm[:6])  # The last "leg" is the hand string, which we don't care about here
 
     #     # Sort the leg lengths to match the layout of the CAN node IDs
