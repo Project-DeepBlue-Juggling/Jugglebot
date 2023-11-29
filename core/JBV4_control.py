@@ -289,8 +289,8 @@ with CANHandler(bus_name='can0', bitrate=1000000, bus_type='socketcan') as handl
 
     '''Uncomment the following two lines if the platform doesn't return to pos=0 after the "end" command is sent.
     Not sure why this happens sometimes...'''
-    move_slowly_to_position(pos_setpoint=0.0)
-    raise ValueError
+    # move_slowly_to_position(pos_setpoint=0.0)
+    # raise ValueError
 
     axis_of_interest = 0  # For plotting etc.
 
