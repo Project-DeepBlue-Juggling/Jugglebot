@@ -67,7 +67,7 @@ class PlatformPlotter(Node):
 
             ## Create axis limits based on the retrieved data
             # Define a multiplier to get the scale to look nice
-            multiplier = 1.2
+            multiplier = 1.5
 
             # Extract x (column 0) and y (column 1) values
             x_values = self.base_nodes[:, 0]
@@ -139,9 +139,9 @@ class PlatformPlotter(Node):
         # Update hand nodes
         change_in_string_length = string_length - self.init_leg_lengths[-1]
         self.unit_ori_vector = np.dot(rot, np.array([[0], [0], [1]]))
-        self.new_hand_nodes = ((new_position + np.dot(rot, self.init_hand_nodes.T)) -
+        self.new_hand_nodes = ((new_position + np.dot(rot, self.init_hand_nodes.T)) +
                                change_in_string_length * self.unit_ori_vector ).T
-        # self.hand_centroid = np.mean(self.new_hand_nodes, axis=0)
+        self.hand_centroid = np.mean(self.new_hand_nodes, axis=0)
 
         # Send the data off to be plotted
         self.plot_platform()
@@ -160,9 +160,11 @@ class PlatformPlotter(Node):
         arm_hex_poly = Poly3DCollection([self.new_arm_nodes[3:]], alpha=0.3, facecolor='r')
         hand_hex_poly = Poly3DCollection([self.new_hand_nodes], alpha=0.8, facecolors='m')
         base_hex_poly = Poly3DCollection([self.base_nodes[:6]], alpha=0.3, facecolor='b')
+        # plat_hex_poly = Poly3DCollection([self.new_plat_nodes[:6]], alpha=0.3, facecolor='r')
 
         self.ax.add_collection(arm_hex_poly)
-        # self.ax.add_collection(hand_hex_poly)
+        # self.ax.add_collection(plat_hex_poly)
+        self.ax.add_collection(hand_hex_poly)
         self.ax.add_collection(base_hex_poly)
 
         # Plot the legs
@@ -174,21 +176,21 @@ class PlatformPlotter(Node):
                                             'g')[0])
 
         # Plot the struts that connect the platform nodes to arm nodes
-        # struts = []
-        # for strut in range(6):
-        #     temp = round(np.ceil(strut/2))
-        #     struts.append(self.ax.plot3D([self.new_plat_nodes[strut][0], self.new_arm_nodes[temp % 3][0]],
-        #                                       [self.new_plat_nodes[strut][1], self.new_arm_nodes[temp % 3][1]],
-        #                                       [self.new_plat_nodes[strut][2], self.new_arm_nodes[temp % 3][2]],
-        #                                       'k', linewidth=0.75)[0])
+        struts = []
+        for strut in range(6):
+            temp = int(round(np.ceil(strut/2)) % 3)
+            struts.append(self.ax.plot3D([self.new_plat_nodes[strut][0], self.new_arm_nodes[temp][0]],
+                                              [self.new_plat_nodes[strut][1], self.new_arm_nodes[temp][1]],
+                                              [self.new_plat_nodes[strut][2], self.new_arm_nodes[temp][2]],
+                                              'k', linewidth=0.75)[0])
 
         # Plot the rods that connect the lower arm to the upper arm
-        # rods = []
-        # for rod in range(3):
-        #     rods.append(self.ax.plot3D([self.new_arm_nodes[rod][0], self.new_arm_nodes[rod + 3][0]],
-        #                                     [self.new_arm_nodes[rod][1], self.new_arm_nodes[rod + 3][1]],
-        #                                     [self.new_arm_nodes[rod][2], self.new_arm_nodes[rod + 3][2]],
-        #                                     'k', linewidth=0.75)[0])
+        rods = []
+        for rod in range(3):
+            rods.append(self.ax.plot3D([self.new_arm_nodes[rod][0], self.new_arm_nodes[rod + 3][0]],
+                                            [self.new_arm_nodes[rod][1], self.new_arm_nodes[rod + 3][1]],
+                                            [self.new_arm_nodes[rod][2], self.new_arm_nodes[rod + 3][2]],
+                                            'k', linewidth=0.75)[0])
 
         # Redraw the plot
         self.ax.set_xlim(self.axis_lims[0])

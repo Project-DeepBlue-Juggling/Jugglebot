@@ -103,11 +103,12 @@ class RobotGeometry(Node):
             self.init_hand_nodes[node][1] = self.hand_radius * math.sin(np.pi / 3 * (1 + 2 * node))
             self.init_hand_nodes[node][2] = self.init_plat_nodes[6][2]
 
-        # Set the new position to be the current one, for plotting purposes
-        self.new_plat_nodes = self.init_plat_nodes + self.start_pos.T
-        self.new_arm_nodes = self.init_arm_nodes + self.start_pos.T
-        self.new_hand_nodes = self.init_hand_nodes + self.start_pos.T
-        self.hand_centroid = np.mean(self.new_hand_nodes, axis=0)
+        # Add start pos to put everything in base frame
+        # self.init_plat_nodes += self.start_pos.T
+        
+
+        # Calculate the lengths of the legs in the initial state
+        self.init_leg_lengths = np.linalg.norm(self.init_plat_nodes + self.start_pos.T - self.base_nodes, axis=1)
 
     def handle_get_robot_geometry(self, request, response):
         # Send all the node data
