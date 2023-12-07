@@ -1,0 +1,4 @@
+srv/GetRobotGeometry.idl
+srv/GetRobotGeometry.srv
+srv/GetRobotGeometry_Request.msg
+srv/GetRobotGeometry_Response.msg

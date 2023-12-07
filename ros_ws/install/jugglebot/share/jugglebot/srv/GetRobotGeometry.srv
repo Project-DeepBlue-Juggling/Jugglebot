@@ -1,0 +1,14 @@
+# Request part is empty
+---
+
+# Response part contains geometry parameters
+float32 initial_height  # z distance between base nodes and plat nodes, in lowest pos (mm)
+float32 base_radius # Radius of the base (mm)
+float32 platform_radius # Radius of the platform (mm)
+float32 base_small_angle # Gamma2 on main sketch (deg)
+float32 plat_small_angle # Lambda1 on main sketch (deg)
+float32 leg_stroke # Stroke of leg (mm)
+float32 arm_radius # Radius of uppermost part of the platform (mm)
+float32 arm_height_from_platform # Height of the top of the arm above the platform nodes (mm)
+float32 hand_stroke # Stroke of hand (mm)
+float32 hand_radius # Radius of hand (mm) 
