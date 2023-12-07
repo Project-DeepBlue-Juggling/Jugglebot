@@ -25,12 +25,14 @@ class StewartPlatform:
         self.rot_matrix = np.eye(3)
 
         # Measured Geometry
-        self._initial_height = 613  # Dist. from the base plane (bottom joint of legs) to plat. in its lowest pos {mm}
+        self._initial_height = 900#605.5  # Dist. from the base plane (bottom joint of legs) to plat. in its lowest pos {mm}
         self._base_radius = 410     # Radius of base {mm}
         self._plat_radius = 172     # Radius of platform {mm}
         self._base_small_angle = 40 # Gamma2 on main sketch {deg}
         self._plat_small_angle = 18 # Lambda1 on main sketch {deg}
-        self._leg_stroke = 300  # Stroke of leg {mm}
+        self._min_leg_length = 665  # Shortest length that the actuators can (reasonably safely) be {mm}
+        self._max_leg_length = 965  # Longest length that the actuators can (reasonably safely) be {mm}
+        self._leg_stroke = self._max_leg_length - self._min_leg_length  # Stroke of leg {mm}
 
         self.start_pos = np.array([[0], [0], [self._initial_height]])
 
@@ -171,11 +173,12 @@ class StewartPlatform:
     @initial_height.setter
     def initial_height(self, height):
         self._initial_height = height
-        self._update_start_pos()
-
-    def _update_start_pos(self):
-        self.start_pos[2] = self.initial_height
         self._build_stewart_platform()
+    #     self._update_start_pos()
+
+    # def _update_start_pos(self):
+    #     self.start_pos[2] = self._initial_height
+    #     self._build_stewart_platform()
 
 
 if __name__ == "__main__":
@@ -202,6 +205,10 @@ if __name__ == "__main__":
     ax_legs.set_autoscalex_on(False)
 
     leg_limits = [0, sp._leg_stroke]  # Lower and upper limits
+
+    print(f'Prev height = {sp._initial_height}')
+    sp.initial_height = 1000
+    print(f'Post height = {sp._initial_height}')
 
     # Define the update function for the animation
     def update(frame):
