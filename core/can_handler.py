@@ -152,7 +152,7 @@ class CANHandler:
 
         # Now update the acceleration limit
         data = self.db.encode_message(f'Axis{axis_id}_Set_Traj_Accel_Limits', 
-                                    {'Traj_Accel_Limit': acc_limit, 'Traj_Decel_Limit': acc_limit})
+                                    {'Traj_Accel_Limit': acc_limit, 'Traj_Decel_Limit': acc_limit * 0.7})
         
         command_name = "set_traj_acc_limits"
 
@@ -392,7 +392,7 @@ class CANHandler:
             return vel_estimates, timestamps
 
         # Iterate over all axes
-        for axis_id, estimates in self.position_estimates.items():
+        for axis_id, estimates in self.velocity_estimates.items():
             # Extract the pos and vel estimates into separate dictionaries
             vel_estimates[axis_id], timestamps[axis_id] = zip(*estimates)
 

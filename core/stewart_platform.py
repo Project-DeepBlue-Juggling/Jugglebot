@@ -19,17 +19,20 @@ class StewartPlatform:
         self.new_plat_nodes = np.zeros((7, 3))    # Base frame
 
         self.init_leg_lengths = np.zeros((6, 1))
+        self.leg_lengths = np.zeros((6, 1))
 
         # Stuff to make the class more usable in other scripts
         self.rot_matrix = np.eye(3)
 
         # Measured Geometry
-        self._initial_height = 605.5  # Dist. from the base plane (bottom joint of legs) to plat. in its lowest pos {mm}
+        self._initial_height = 900#605.5  # Dist. from the base plane (bottom joint of legs) to plat. in its lowest pos {mm}
         self._base_radius = 410     # Radius of base {mm}
         self._plat_radius = 172     # Radius of platform {mm}
         self._base_small_angle = 40 # Gamma2 on main sketch {deg}
         self._plat_small_angle = 18 # Lambda1 on main sketch {deg}
-        self._leg_stroke = 300  # Stroke of leg {mm}
+        self._min_leg_length = 665  # Shortest length that the actuators can (reasonably safely) be {mm}
+        self._max_leg_length = 965  # Longest length that the actuators can (reasonably safely) be {mm}
+        self._leg_stroke = self._max_leg_length - self._min_leg_length  # Stroke of leg {mm}
 
         self.start_pos = np.array([[0], [0], [self._initial_height]])
 
@@ -51,16 +54,12 @@ class StewartPlatform:
         # Create the rotation matrix for this pose
         self._populate_rotation_matrix()
 
+        # Calculate the lengths of the legs for this pose
+        leg_vecs = self.position + np.dot(self.rot_matrix, self._init_plat_nodes.T) - self.base_nodes.T
+        self.leg_lengths = np.linalg.norm(leg_vecs, axis=0) - self.init_leg_lengths
+
         # Update plat_nodes to reflect change in pose
         self.new_plat_nodes = (self.position + np.dot(self.rot_matrix, self._init_plat_nodes.T)).T
-
-    def leg_lengths(self):
-        # Calculate and return the lengths of the legs using the position and rotation
-        T = self.position  # Get the new translational position
-        self._populate_rotation_matrix()
-        legs = T + np.dot(self.rot_matrix, self._init_plat_nodes.T) - self.base_nodes.T
-
-        return np.linalg.norm(legs, axis=0) - self.init_leg_lengths
 
     def node_positions(self):
         # Return the positions of important nodes using the position and rotation attributes.
@@ -123,12 +122,15 @@ class StewartPlatform:
             base_node_angles[node] = gamma0 + gamma1 * first_angle_index + gamma2 * second_angle_index
             plat_node_angles[node] = lambda0 + lambda1 * first_angle_index + lambda2 * second_angle_index
 
-            self.base_nodes[node][0] = self._base_radius * math.cos(base_node_angles[node] * deg_to_rad)
-            self.base_nodes[node][1] = self._base_radius * math.sin(base_node_angles[node] * deg_to_rad)
+            base_node_angle = base_node_angles[node][0]  # Extract the scalar value from the single-element array
+            plat_node_angle = plat_node_angles[node][0]
+
+            self.base_nodes[node][0] = self._base_radius * math.cos(base_node_angle * deg_to_rad)
+            self.base_nodes[node][1] = self._base_radius * math.sin(base_node_angle * deg_to_rad)
             self.base_nodes[node][2] = 0
 
-            self._init_plat_nodes[node][0] = self._plat_radius * math.cos(plat_node_angles[node] * deg_to_rad)
-            self._init_plat_nodes[node][1] = self._plat_radius * math.sin(plat_node_angles[node] * deg_to_rad)
+            self._init_plat_nodes[node][0] = self._plat_radius * math.cos(plat_node_angle * deg_to_rad)
+            self._init_plat_nodes[node][1] = self._plat_radius * math.sin(plat_node_angle * deg_to_rad)
             self._init_plat_nodes[node][2] = 0
 
         # Set the new position to be the current one, for plotting purposes
@@ -171,11 +173,12 @@ class StewartPlatform:
     @initial_height.setter
     def initial_height(self, height):
         self._initial_height = height
-        self._update_start_pos()
-
-    def _update_start_pos(self):
-        self.start_pos[2] = self.initial_height
         self._build_stewart_platform()
+    #     self._update_start_pos()
+
+    # def _update_start_pos(self):
+    #     self.start_pos[2] = self._initial_height
+    #     self._build_stewart_platform()
 
 
 if __name__ == "__main__":
@@ -203,6 +206,10 @@ if __name__ == "__main__":
 
     leg_limits = [0, sp._leg_stroke]  # Lower and upper limits
 
+    print(f'Prev height = {sp._initial_height}')
+    sp.initial_height = 1000
+    print(f'Post height = {sp._initial_height}')
+
     # Define the update function for the animation
     def update(frame):
         # Start by updating the SP
@@ -212,7 +219,7 @@ if __name__ == "__main__":
 
         # Now update the leg length plot
         frames.append(frame)
-        for i, length in enumerate(sp.leg_lengths()):
+        for i, length in enumerate(sp.leg_lengths):
             if i == 6:
                 # 7th "leg length" is for the string connecting the base to the platform. Not relevant for this plot.
                 continue
