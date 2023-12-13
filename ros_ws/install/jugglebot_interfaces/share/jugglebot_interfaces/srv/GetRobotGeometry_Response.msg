@@ -8,3 +8,4 @@ float64[] init_arm_nodes   # Array of 6x3 elements (18 total)
 float64[] init_hand_nodes  # Array of 3x3 elements (9 total)
 float64[] init_leg_lengths # Array of 7x1 elements (7 total)
 float32 leg_stroke         # How long can the legs go?
+float32 hand_stroke        # How long can the hand string go?

@@ -21,4 +21,16 @@ def generate_launch_description():
             executable='platform_plotter',
             name='platform_plotter'
         ),
+        Node(
+            package='jugglebot',
+            namespace='jugglebot',
+            executable='sp_ik',
+            name='sp_ik'
+        ),
+        Node(
+            package='jugglebot',
+            namespace='jugglebot',
+            executable='can_bus_handler_node',
+            name='can_bus_handler_node'
+        ),
     ])

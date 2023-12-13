@@ -34,7 +34,7 @@ class RobotGeometry(Node):
         self.plat_radius = 229.5   # Radius of platform {mm}
         self.base_small_angle = 24.0 # Gamma2 on main sketch {deg}
         self.plat_small_angle = 7.49496  # Lambda1 on main sketch {deg}
-        self.leg_stroke = 300.0  # Stroke of leg {mm}
+        self.leg_stroke = 280.0  # Stroke of leg {mm}
 
         # Relating to the hand/arm:
         self.arm_radius = 40.0  # ARBITRARY. UPDATE!
@@ -103,10 +103,6 @@ class RobotGeometry(Node):
             self.init_hand_nodes[node][1] = self.hand_radius * math.sin(np.pi / 3 * (1 + 2 * node))
             self.init_hand_nodes[node][2] = self.init_plat_nodes[6][2]
 
-        # Add start pos to put everything in base frame
-        # self.init_plat_nodes += self.start_pos.T
-        
-
         # Calculate the lengths of the legs in the initial state
         self.init_leg_lengths = np.linalg.norm(self.init_plat_nodes + self.start_pos.T - self.base_nodes, axis=1)
 
@@ -118,6 +114,8 @@ class RobotGeometry(Node):
         response.init_arm_nodes = self.init_arm_nodes.flatten().tolist()
         response.init_hand_nodes = self.init_hand_nodes.flatten().tolist()
         response.init_leg_lengths = self.init_leg_lengths.flatten().tolist()
+        response.leg_stroke = self.leg_stroke
+        response.hand_stroke = self.hand_stroke
 
         return response
 

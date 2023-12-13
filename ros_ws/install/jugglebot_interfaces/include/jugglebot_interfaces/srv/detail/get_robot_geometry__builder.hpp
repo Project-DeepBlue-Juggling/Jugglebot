@@ -42,16 +42,32 @@ namespace srv
 namespace builder
 {
 
+class Init_GetRobotGeometry_Response_hand_stroke
+{
+public:
+  explicit Init_GetRobotGeometry_Response_hand_stroke(::jugglebot_interfaces::srv::GetRobotGeometry_Response & msg)
+  : msg_(msg)
+  {}
+  ::jugglebot_interfaces::srv::GetRobotGeometry_Response hand_stroke(::jugglebot_interfaces::srv::GetRobotGeometry_Response::_hand_stroke_type arg)
+  {
+    msg_.hand_stroke = std::move(arg);
+    return std::move(msg_);
+  }
+
+private:
+  ::jugglebot_interfaces::srv::GetRobotGeometry_Response msg_;
+};
+
 class Init_GetRobotGeometry_Response_leg_stroke
 {
 public:
   explicit Init_GetRobotGeometry_Response_leg_stroke(::jugglebot_interfaces::srv::GetRobotGeometry_Response & msg)
   : msg_(msg)
   {}
-  ::jugglebot_interfaces::srv::GetRobotGeometry_Response leg_stroke(::jugglebot_interfaces::srv::GetRobotGeometry_Response::_leg_stroke_type arg)
+  Init_GetRobotGeometry_Response_hand_stroke leg_stroke(::jugglebot_interfaces::srv::GetRobotGeometry_Response::_leg_stroke_type arg)
   {
     msg_.leg_stroke = std::move(arg);
-    return std::move(msg_);
+    return Init_GetRobotGeometry_Response_hand_stroke(msg_);
   }
 
 private:

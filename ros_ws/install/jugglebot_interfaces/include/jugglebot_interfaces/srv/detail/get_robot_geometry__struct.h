@@ -55,6 +55,7 @@ typedef struct jugglebot_interfaces__srv__GetRobotGeometry_Response
   rosidl_runtime_c__double__Sequence init_hand_nodes;
   rosidl_runtime_c__double__Sequence init_leg_lengths;
   float leg_stroke;
+  float hand_stroke;
 } jugglebot_interfaces__srv__GetRobotGeometry_Response;
 
 // Struct for a sequence of jugglebot_interfaces__srv__GetRobotGeometry_Response.

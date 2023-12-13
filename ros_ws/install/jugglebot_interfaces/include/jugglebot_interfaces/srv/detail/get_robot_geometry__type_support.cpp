@@ -316,7 +316,7 @@ void resize_function__GetRobotGeometry_Response__init_leg_lengths(void * untyped
   member->resize(size);
 }
 
-static const ::rosidl_typesupport_introspection_cpp::MessageMember GetRobotGeometry_Response_message_member_array[7] = {
+static const ::rosidl_typesupport_introspection_cpp::MessageMember GetRobotGeometry_Response_message_member_array[8] = {
   {
     "start_pos",  // name
     ::rosidl_typesupport_introspection_cpp::ROS_TYPE_DOUBLE,  // type
@@ -421,13 +421,28 @@ static const ::rosidl_typesupport_introspection_cpp::MessageMember GetRobotGeome
     nullptr,  // get_const(index) function pointer
     nullptr,  // get(index) function pointer
     nullptr  // resize(index) function pointer
+  },
+  {
+    "hand_stroke",  // name
+    ::rosidl_typesupport_introspection_cpp::ROS_TYPE_FLOAT,  // type
+    0,  // upper bound of string
+    nullptr,  // members of sub message
+    false,  // is array
+    0,  // array size
+    false,  // is upper bound
+    offsetof(jugglebot_interfaces::srv::GetRobotGeometry_Response, hand_stroke),  // bytes offset in struct
+    nullptr,  // default value
+    nullptr,  // size() function pointer
+    nullptr,  // get_const(index) function pointer
+    nullptr,  // get(index) function pointer
+    nullptr  // resize(index) function pointer
   }
 };
 
 static const ::rosidl_typesupport_introspection_cpp::MessageMembers GetRobotGeometry_Response_message_members = {
   "jugglebot_interfaces::srv",  // message namespace
   "GetRobotGeometry_Response",  // message name
-  7,  // number of fields
+  8,  // number of fields
   sizeof(jugglebot_interfaces::srv::GetRobotGeometry_Response),
   GetRobotGeometry_Response_message_member_array,  // message members
   GetRobotGeometry_Response_init_function,  // function to initialize message memory (memory has to be allocated)

@@ -126,7 +126,7 @@ void GetRobotGeometry_Response__rosidl_typesupport_introspection_c__GetRobotGeom
   jugglebot_interfaces__srv__GetRobotGeometry_Response__fini(message_memory);
 }
 
-static rosidl_typesupport_introspection_c__MessageMember GetRobotGeometry_Response__rosidl_typesupport_introspection_c__GetRobotGeometry_Response_message_member_array[7] = {
+static rosidl_typesupport_introspection_c__MessageMember GetRobotGeometry_Response__rosidl_typesupport_introspection_c__GetRobotGeometry_Response_message_member_array[8] = {
   {
     "start_pos",  // name
     rosidl_typesupport_introspection_c__ROS_TYPE_DOUBLE,  // type
@@ -231,13 +231,28 @@ static rosidl_typesupport_introspection_c__MessageMember GetRobotGeometry_Respon
     NULL,  // get_const(index) function pointer
     NULL,  // get(index) function pointer
     NULL  // resize(index) function pointer
+  },
+  {
+    "hand_stroke",  // name
+    rosidl_typesupport_introspection_c__ROS_TYPE_FLOAT,  // type
+    0,  // upper bound of string
+    NULL,  // members of sub message
+    false,  // is array
+    0,  // array size
+    false,  // is upper bound
+    offsetof(jugglebot_interfaces__srv__GetRobotGeometry_Response, hand_stroke),  // bytes offset in struct
+    NULL,  // default value
+    NULL,  // size() function pointer
+    NULL,  // get_const(index) function pointer
+    NULL,  // get(index) function pointer
+    NULL  // resize(index) function pointer
   }
 };
 
 static const rosidl_typesupport_introspection_c__MessageMembers GetRobotGeometry_Response__rosidl_typesupport_introspection_c__GetRobotGeometry_Response_message_members = {
   "jugglebot_interfaces__srv",  // message namespace
   "GetRobotGeometry_Response",  // message name
-  7,  // number of fields
+  8,  // number of fields
   sizeof(jugglebot_interfaces__srv__GetRobotGeometry_Response),
   GetRobotGeometry_Response__rosidl_typesupport_introspection_c__GetRobotGeometry_Response_message_member_array,  // message members
   GetRobotGeometry_Response__rosidl_typesupport_introspection_c__GetRobotGeometry_Response_init_function,  // function to initialize message memory (memory has to be allocated)

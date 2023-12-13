@@ -145,6 +145,7 @@ struct GetRobotGeometry_Response_
       rosidl_runtime_cpp::MessageInitialization::ZERO == _init)
     {
       this->leg_stroke = 0.0f;
+      this->hand_stroke = 0.0f;
     }
   }
 
@@ -155,6 +156,7 @@ struct GetRobotGeometry_Response_
       rosidl_runtime_cpp::MessageInitialization::ZERO == _init)
     {
       this->leg_stroke = 0.0f;
+      this->hand_stroke = 0.0f;
     }
   }
 
@@ -180,6 +182,9 @@ struct GetRobotGeometry_Response_
   using _leg_stroke_type =
     float;
   _leg_stroke_type leg_stroke;
+  using _hand_stroke_type =
+    float;
+  _hand_stroke_type hand_stroke;
 
   // setters for named parameter idiom
   Type & set__start_pos(
@@ -222,6 +227,12 @@ struct GetRobotGeometry_Response_
     const float & _arg)
   {
     this->leg_stroke = _arg;
+    return *this;
+  }
+  Type & set__hand_stroke(
+    const float & _arg)
+  {
+    this->hand_stroke = _arg;
     return *this;
   }
 
@@ -286,6 +297,9 @@ struct GetRobotGeometry_Response_
       return false;
     }
     if (this->leg_stroke != other.leg_stroke) {
+      return false;
+    }
+    if (this->hand_stroke != other.hand_stroke) {
       return false;
     }
     return true;

@@ -28,6 +28,9 @@ class SpaceMouseHandler(Node):
         pitch_roll_mult = 30.0  # deg
         yaw_mult = 25.0  # deg
 
+        # Set the offset in z to put baseline position at ~midspan of robot
+        z_offset = 150   # mm
+
         # Initialise pose object
         pose = Pose() 
 
@@ -35,19 +38,18 @@ class SpaceMouseHandler(Node):
         state = pyspacemouse.read()
 
         # Apply multipliers and convert to radians
-        # NOTE Not sure why I need to swap pitch and roll. This wasn't the case pre-ROS...
-        # (though I previously *did* need negatives out the front of pitch and yaw)
-        roll = math.radians(-state.pitch * pitch_roll_mult)
-        pitch = math.radians(state.roll * pitch_roll_mult)
+        # Not sure why I need negatives out the front of pitch and yaw, but this works!
+        roll = math.radians(state.roll * pitch_roll_mult)
+        pitch = math.radians(-state.pitch * pitch_roll_mult)
         yaw = math.radians(-state.yaw * yaw_mult)
 
         # Convert orientation from Euler angles to quaternions
-        quaternion_ori = tf_transformations.quaternion_from_euler(roll, pitch, yaw, axes='sxyz')
+        quaternion_ori = tf_transformations.quaternion_from_euler(roll, pitch, yaw, axes='syxz')
         
         # Construct the pose message
         pose.position.x = state.x * xy_mult
         pose.position.y = state.y * xy_mult
-        pose.position.z = state.z * z_mult
+        pose.position.z = state.z * z_mult + z_offset
         pose.orientation.x = quaternion_ori[0]
         pose.orientation.y = quaternion_ori[1]
         pose.orientation.z = quaternion_ori[2]

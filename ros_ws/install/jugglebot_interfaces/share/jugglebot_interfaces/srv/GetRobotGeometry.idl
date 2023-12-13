@@ -39,6 +39,10 @@ module jugglebot_interfaces {
       @verbatim (language="comment", text=
         " How long can the legs go?")
       float leg_stroke;
+
+      @verbatim (language="comment", text=
+        " How long can the hand string go?")
+      float hand_stroke;
     };
   };
 };

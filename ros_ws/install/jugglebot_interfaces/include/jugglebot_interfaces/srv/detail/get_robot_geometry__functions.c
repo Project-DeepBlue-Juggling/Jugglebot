@@ -276,6 +276,7 @@ jugglebot_interfaces__srv__GetRobotGeometry_Response__init(jugglebot_interfaces_
     return false;
   }
   // leg_stroke
+  // hand_stroke
   return true;
 }
 
@@ -298,6 +299,7 @@ jugglebot_interfaces__srv__GetRobotGeometry_Response__fini(jugglebot_interfaces_
   // init_leg_lengths
   rosidl_runtime_c__double__Sequence__fini(&msg->init_leg_lengths);
   // leg_stroke
+  // hand_stroke
 }
 
 bool
@@ -344,6 +346,10 @@ jugglebot_interfaces__srv__GetRobotGeometry_Response__are_equal(const jugglebot_
   }
   // leg_stroke
   if (lhs->leg_stroke != rhs->leg_stroke) {
+    return false;
+  }
+  // hand_stroke
+  if (lhs->hand_stroke != rhs->hand_stroke) {
     return false;
   }
   return true;
@@ -395,6 +401,8 @@ jugglebot_interfaces__srv__GetRobotGeometry_Response__copy(
   }
   // leg_stroke
   output->leg_stroke = input->leg_stroke;
+  // hand_stroke
+  output->hand_stroke = input->hand_stroke;
   return true;
 }
 

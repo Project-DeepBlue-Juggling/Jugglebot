@@ -33,7 +33,9 @@ class PlatformPlotter(Node):
         self.init_plat_nodes = None   # Platform frame
         self.init_arm_nodes = None    # Platform frame
         self.init_hand_nodes = None   # Platform frame
+
         self.init_leg_lengths = None  # Frameless
+        self.leg_stroke = None
 
         self.new_plat_nodes = None    # Base frame
         self.new_arm_nodes = None     # Base frame
@@ -80,13 +82,13 @@ class PlatformPlotter(Node):
             y_max = np.max(y_values) * multiplier
 
             z_min = -0.2
-            z_max = (self.start_pos[-1,0] + self.leg_stroke) * multiplier
+            z_max = (self.start_pos[-1, 0] + self.leg_stroke) * multiplier
 
             # Store the results in an array called "axis_lims"
             self.axis_lims = np.array([[x_min, x_max], [y_min, y_max], [z_min, z_max]])
 
             # Report the receipt of data
-            self.get_logger().info('Plotter has received geometry data')
+            self.get_logger().info('Received geometry data!')
 
             # Record the receipt of data so that we know we've got it
             self.has_geometry_data = True
@@ -115,12 +117,11 @@ class PlatformPlotter(Node):
             self.update_pose(pos, rot)
 
             # Convert quaternion to Euler angles to make error-checking easier
-            roll, pitch, yaw = tf_transformations.euler_from_quaternion(quaternion, axes='sxyz')
+            # roll, pitch, yaw = tf_transformations.euler_from_quaternion(quaternion, axes='sxyz')
 
             # Log the angles for debugging purposes
             # self.get_logger().info(f'Roll: {roll:.2f}, Pitch: {pitch:.2f}, Yaw: {yaw:.2f}')
             # self.get_logger().info(f'qx: {quaternion[0]:.2f}, qy: {quaternion[1]:.2f}, qz: {quaternion[2]:.2f}, qw: {quaternion[3]:.2f}')
-
 
     def update_pose(self, pos, rot):
         # Calculate the positions of all nodes
@@ -145,7 +146,6 @@ class PlatformPlotter(Node):
 
         # Send the data off to be plotted
         self.plot_platform()
-
 
     def plot_platform(self):
         # Plots the platform

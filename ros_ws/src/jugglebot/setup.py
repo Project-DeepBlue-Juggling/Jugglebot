@@ -12,7 +12,8 @@ setup(
         ('share/ament_index/resource_index/packages',['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/srv', glob('srv/*.srv')),
-        (os.path.join('share', package_name), glob('jugglebot/*.py')),
+        (os.path.join('launch', package_name), glob('jugglebot/*.py')),
+        (os.path.join('share', package_name, 'resources'), glob('resources/*')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -27,6 +28,8 @@ setup(
             'spacemouse_handler = jugglebot.spacemouse_handler:main',
             'robot_geometry = jugglebot.robot_geometry:main',
             'platform_plotter = jugglebot.platform_plotter:main',
+            'can_bus_handler_node = jugglebot.can_bus_handler_node:main',
         ],
     },
 )
+
