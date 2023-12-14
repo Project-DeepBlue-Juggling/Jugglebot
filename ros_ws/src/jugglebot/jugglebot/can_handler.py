@@ -38,7 +38,6 @@ import can
 import cantools
 import struct
 import time
-from collections import deque
 
 class CANHandler:
     # Create a dictionary of commands that might be called over the CAN bus by external scripts
@@ -112,14 +111,20 @@ class CANHandler:
         # We need to know current motor iqs for some methods (eg. homing) so initialize a list for these values
         self.iq_values = [None] * 6
 
-        # Initialize a flag that triggers whenever any errors are detected
+        # Initialize a flag that triggers whenever any fatal errors are detected
         self.fatal_issue = False
+
+        # Initialize a variable to track when the last heartbeat message came in. Determines whether the robot is responding
+        self.last_heartbeat_time = None
+        self.is_responding = False
+        self.fatal_can_issue = False  # Has the bus completely failed and can't be restored?
 
         # Initialize the current state for each axis
         self.axis_states = [None] * 6
         self.is_done_moving = [None] * 6
 
         self.setup_can_bus()
+        self.wait_for_heartbeat()
 
     #########################################################################################################
     #                                            CAN Bus Management                                         #
@@ -129,15 +134,81 @@ class CANHandler:
         self.bus = can.Bus(channel=self._can_bus_name, bustype=self._can_bus_type, bitrate=self._can_bitrate)
         self.flush_bus() # Flush the bus now that it's been set up
 
+    def wait_for_heartbeat(self):
+        # Wait for the heartbeat message to verify that the bus is operational
+        self.ROS_logger.info('Waiting for heartbeat from Jugglebot...')
+        time_to_wait = 3  # Seconds
+
+        start_time = time.time()
+
+        while time.time() - start_time < time_to_wait:
+            self.fetch_messages()
+
+            if self.last_heartbeat_time and time.time() - self.last_heartbeat_time < 1.0:
+                # If a heartbeat message has been received in the last second
+                return
+
+            time.sleep(0.1)
+
+        # If no heartbeat was detected, attempt to restore the connection
+        self.ROS_logger.info('No heartbeat detected.')
+        self.attempt_to_restore_can_connection()
+
     def close(self):
         if self.bus is not None:
             self.bus.shutdown()
+            self.ROS_logger.info('CAN bus closed cleanly')
 
     def flush_bus(self):
         # Flushes the CAN bus to remove any stale messages
         # Read messages with a non-blocking call until there are no more
         while not (self.bus.recv(timeout=0) is None):
             pass # We're just discarding messages, so we don't need to do anything with them
+
+    def attempt_to_restore_can_connection(self):
+        # If the bus isn't responding, try to re-establish the connection
+        max_retries = 3  # Maximum number of reconnection attempts
+        retry_delay = 5  # Delay in seconds between retries
+        heartbeat_timeout = 1  # How long to wait for the heartbeat to come in before considering the connection dead
+
+        self.ROS_logger.info('Attempting to restore CAN connection...')
+
+        for attempt in range(max_retries):
+            try:
+                # Attempt to close the existing connection if it's still open
+                if self.bus is not None:
+                    self.bus.shutdown()
+
+                # Reinitialize the CAN bus connection
+                self.setup_can_bus()
+
+                time.sleep(0.1)
+                self.fetch_messages()  # See if there are any new messages
+
+                # Wait for heartbeat message
+                start_time = time.time()
+                while time.time() - start_time < heartbeat_timeout:
+                    self.fetch_messages() # Get any recent messages
+
+                    if not self.last_heartbeat_time:
+                        # If no heartbeat message has ever been received
+                        self.ROS_logger.warning('No heartbeat message has been received yet. Is Jugglebot on?', 
+                                                throttle_duration_sec=2.0)
+
+                    elif time.time() - self.last_heartbeat_time < heartbeat_timeout:
+                        self.ROS_logger.info(f"CAN bus reconnection successful on attempt {attempt + 1}")
+                        self.is_responding = True # Return True on successful reconnection
+                        return
+                
+            except Exception as e:
+                self.ROS_logger.warn(f"Failed to reconnect CAN bus on attempt {attempt + 1}: {e}")
+            
+            time.sleep(retry_delay)  # Wait before retrying
+
+        self.ROS_logger.error(f"Failed to restore CAN bus connection after {max_retries} attempts. Closing CAN bus...")
+        self.close()
+        self.fatal_can_issue = True  # Report the fatal CAN issue so that the handler node can stop attempting to send messages
+        return
 
     #########################################################################################################
     #                                         ROS2 Callback Management                                      #
@@ -150,7 +221,6 @@ class CANHandler:
     def _trigger_callback(self, data_type, data):
         if self.callbacks[data_type]:
             self.callbacks[data_type](data)
-
 
     #########################################################################################################
     #                                             Sending messages                                          #
@@ -172,7 +242,14 @@ class CANHandler:
         try:
             self.bus.send(msg)
         except Exception as e:
+            # Log that the message couldn't be sent
             self.ROS_logger.warn(f"CAN message for {error_descriptor} NOT sent to axisID {axis_id}! Error: {e}")
+
+            # If the buffer is full, the CAN bus is probably having issue. Try to re-establish it
+            if "105" in str(e):
+                # "No buffer space available" is error code 105
+                self.is_responding = False
+                self.attempt_to_restore_can_connection()
 
     def send_position_target(self, axis_id, setpoint, max_position=_MOTOR_MAX_POSITION, min_position=0.0):
         # Commands the given motor to move to the designated setpoint (after checking its magnitude)
@@ -226,6 +303,7 @@ class CANHandler:
     def clear_errors(self):
         self.ROS_logger.info('Clearing ODrive errors...')
         command_name = "clear_errors"
+
         # Clear errors for all axes
         for axisID in range(6):
             self._send_message(axis_id=axisID, command_name=command_name, error_descriptor="Clearing errors")
@@ -308,7 +386,7 @@ class CANHandler:
     #########################################################################################################
 
     def setup_odrives(self):
-        # Call each of the "_set" methods with their default values
+        # Call each of the "set" methods with their default values
         self.ROS_logger.info('Setting up ODrives with default values...')
 
         self.set_absolute_vel_curr_limits()
@@ -323,9 +401,10 @@ class CANHandler:
                                         {'Velocity_Limit':velocity_limit, 'Current_Limit': current_limit})
                 
             self._send_message(axis_id=axis_id, command_name="set_vel_curr_limits", data=data, error_descriptor='Current/Vel Limits')
-            self.ROS_logger.info(f'Absolute limits set. Velocity limit: {velocity_limit} rev/s, Current limit: {current_limit}')
             time.sleep(0.005)
 
+        self.ROS_logger.info(f'Absolute limits set. Velocity limit: {velocity_limit} rev/s, Current limit: {current_limit}')
+        
     def set_control_and_input_mode(self, control_mode='POSITION_CONTROL', input_mode='TRAP_TRAJ'):
         ''' Set the control and input modes for the ODrives. 
 
@@ -342,22 +421,25 @@ class CANHandler:
         '''
         for axis_id in range(6):
             self._set_control_mode(axis_id=axis_id, control_mode=control_mode, input_mode=input_mode)
-            self.ROS_logger.info(f'Control mode set to: {control_mode}, input mode set to: {input_mode}')
             time.sleep(0.005)
+
+        self.ROS_logger.info(f'Control mode set to: {control_mode}, input mode set to: {input_mode}')
 
     def set_trap_traj_vel_acc_limits(self, velocity_limit=10.0, acceleration_limit=10.0):
         # Set the velocity and acceleration limits while in trap_traj control mode
         for axis_id in range(6):
             self._set_trap_traj_vel_acc(axis_id=axis_id, vel_limit=velocity_limit, acc_limit=acceleration_limit)
-            self.ROS_logger.info(f'Trap traj limits set. Vel: {velocity_limit}, Acc: {acceleration_limit}')
             time.sleep(0.005)
+
+        self.ROS_logger.info(f'Trap traj limits set. Vel: {velocity_limit}, Acc: {acceleration_limit}')
 
     def set_odrive_state(self, requested_state='CLOSED_LOOP_CONTROL'):
         # Set the state of the ODrives. Options are "IDLE" or "CLOSED_LOOP CONTROL" (there are others, but Jugglebot doesn't use them)
         for axis_id in range(6):
-            self._set_requested_state(axis_id=axis_id, requested_state=requested_state)
-            self.ROS_logger.info(f'ODrive state changed to {requested_state}')
+            self._set_requested_state(axis_id=axis_id, requested_state=requested_state)    
             time.sleep(0.005)
+
+        self.ROS_logger.info(f'ODrive state changed to {requested_state}')
     
     #########################################################################################################
     #                                       Fetching and handling messages                                  #
@@ -423,6 +505,10 @@ class CANHandler:
             # This seems to be working stably in testing, though it doesn't seem 100% robust
             time.sleep(0.05)
             self.fetch_messages()
+
+        # Record the time when this message came through
+        self.last_heartbeat_time = time.time()
+        self.is_responding = True
 
     def _request_error_info(self, axis_id, command_id):
         # Construct a message to request more details about the specific error
