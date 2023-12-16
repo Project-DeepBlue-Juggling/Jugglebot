@@ -24,12 +24,12 @@ class SpaceMouseHandler(Node):
 
         # Set the multipliers for each axis (mm, deg)
         xy_mult = 150.0  # mm
-        z_mult = 150.0   # mm
+        z_mult = 140.0   # mm
         pitch_roll_mult = 30.0  # deg
         yaw_mult = 25.0  # deg
 
         # Set the offset in z to put baseline position at ~midspan of robot
-        z_offset = 150   # mm
+        z_offset = 140   # mm
 
         # Initialise pose object
         pose = Pose() 

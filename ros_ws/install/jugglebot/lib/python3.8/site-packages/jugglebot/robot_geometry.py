@@ -27,20 +27,20 @@ class RobotGeometry(Node):
 
         self.init_leg_lengths = np.zeros((7, 1))
 
-        # MAKE SURE ALL VALUES ARE FLOATS
+        ''' MAKE SURE ALL VALUES ARE FLOATS '''
 
         self.initial_height = 626.25 # Dist. from the base plane (bottom joint of legs) to plat. in its lowest pos {mm}
-        self.base_radius = 247.8   # Radius of base {mm}
+        self.base_radius = 410.0   # Radius of base {mm}
         self.plat_radius = 229.5   # Radius of platform {mm}
         self.base_small_angle = 24.0 # Gamma2 on main sketch {deg}
         self.plat_small_angle = 7.49496  # Lambda1 on main sketch {deg}
         self.leg_stroke = 280.0  # Stroke of leg {mm}
 
         # Relating to the hand/arm:
-        self.arm_radius = 40.0  # ARBITRARY. UPDATE!
-        self.arm_height_from_platform = 100.0  # GUESS
-        self.hand_stroke = 200.0  # GUESS
-        self.hand_radius = 30.0  # GUESS
+        self.arm_radius = 70.0  # Radius of opening where the ball comes in. Doesn't need to be exact.
+        self.arm_height_from_platform = 210.25  # Height of opening where ball comes in from the ball joints of the platform
+        self.hand_stroke = 316.5  # Stroke of hand. DOES need to be ~exact. Used to inform overextensions etc.
+        self.hand_radius = 35.0  # Radius of hand. Doesn't need to be exact
 
         self.start_pos = np.array([[0], [0], [self.initial_height]])
 

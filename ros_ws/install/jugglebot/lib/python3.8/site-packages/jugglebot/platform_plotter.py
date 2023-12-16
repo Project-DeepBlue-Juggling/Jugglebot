@@ -150,8 +150,8 @@ class PlatformPlotter(Node):
     def plot_platform(self):
         # Plots the platform
 
-        plat_points =  self.ax.scatter(self.new_plat_nodes.T[0], self.new_plat_nodes.T[1], 
-                                       self.new_plat_nodes.T[2], color='r')
+        plat_points =  self.ax.scatter(self.new_plat_nodes[:6].T[0], self.new_plat_nodes[:6].T[1], 
+                                       self.new_plat_nodes[:6].T[2], color='r')
 
         base_points = self.ax.scatter(self.base_nodes.T[0], self.base_nodes.T[1], self.base_nodes.T[2],
                                       color='b')
@@ -199,12 +199,18 @@ class PlatformPlotter(Node):
         plt.draw()
         plt.pause(0.001)
 
+    def on_shutdown(self):
+        # Close the plot etc. cleanly
+        plt.ioff()
+        plt.close()
+
 def main(args=None):
     rclpy.init(args=args)
     node = PlatformPlotter()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
+        node.on_shutdown()
         pass
     finally:
         node.destroy_node()
