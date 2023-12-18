@@ -67,3 +67,4 @@ log/
 # Ignore files created by package managers
 /rosdep/
 /rosinstall/
+ros_ws/log/latest_build
