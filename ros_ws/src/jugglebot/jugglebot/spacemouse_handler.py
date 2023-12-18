@@ -1,7 +1,7 @@
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Pose
-import tf_transformations
+import quaternion  # numpy quaternion
 import pyspacemouse
 import math
 
@@ -44,16 +44,20 @@ class SpaceMouseHandler(Node):
         yaw = math.radians(-state.yaw * yaw_mult)
 
         # Convert orientation from Euler angles to quaternions
-        quaternion_ori = tf_transformations.quaternion_from_euler(roll, pitch, yaw, axes='syxz')
+        q_roll = quaternion.from_rotation_vector([0, roll, 0])
+        q_pitch = quaternion.from_rotation_vector([pitch, 0, 0])
+        q_yaw = quaternion.from_rotation_vector([0, 0, yaw])
+
+        quaternion_ori = q_yaw * q_roll * q_pitch
         
         # Construct the pose message
         pose.position.x = state.x * xy_mult
         pose.position.y = state.y * xy_mult
         pose.position.z = state.z * z_mult + z_offset
-        pose.orientation.x = quaternion_ori[0]
-        pose.orientation.y = quaternion_ori[1]
-        pose.orientation.z = quaternion_ori[2]
-        pose.orientation.w = quaternion_ori[3]
+        pose.orientation.x = quaternion_ori.x
+        pose.orientation.y = quaternion_ori.y
+        pose.orientation.z = quaternion_ori.z
+        pose.orientation.w = quaternion_ori.w
 
         # If wanting to print readings
         # self.get_logger().info(f'x: {state.x:.2f}, y: {state.y:.2f}, z: {state.z:.2f}, roll: {roll:.2f}, pitch: {pitch:.2f}, yaw: {yaw:.2f}')
