@@ -12,7 +12,7 @@ setup(
         ('share/ament_index/resource_index/packages',['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/srv', glob('srv/*.srv')),
-        (os.path.join('launch', package_name), glob('jugglebot/*.py')),
+        (os.path.join('share', package_name, 'launch'), glob('launch/*.py')),
         (os.path.join('share', package_name, 'resources'), glob('resources/*')),
     ],
     install_requires=['setuptools'],
