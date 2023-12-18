@@ -1,0 +1,6 @@
+numpy==1.17.4
+matplotlib==3.1.2
+python-can==4.2.2
+cantools==39.0.0
+tf_transformations==1.0.0
+pyspacemouse==1.0.9
