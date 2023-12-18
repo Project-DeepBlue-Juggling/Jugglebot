@@ -4,7 +4,7 @@ import numpy as np
 from geometry_msgs.msg import Pose
 from std_msgs.msg import Float64MultiArray
 from jugglebot_interfaces.srv import GetRobotGeometry
-import tf_transformations
+import quaternion  # numpy quaternion
 
 class SPInverseKinematics(Node):
     def __init__(self):
@@ -73,11 +73,11 @@ class SPInverseKinematics(Node):
             pos = np.array([[msg.position.x], [msg.position.y], [msg.position.z]])
 
             # Extract the orientation quaternion
-            orientation_q = msg.orientation
-            quaternion = [orientation_q.x, orientation_q.y, orientation_q.z, orientation_q.w]
+            ori_q = msg.orientation
+            quaternion_ori = quaternion.quaternion(ori_q.w, ori_q.x, ori_q.y, ori_q.z)
             
             # Convert quaternion to 4x4 rotation matrix
-            rot = tf_transformations.quaternion_matrix(quaternion)
+            rot = quaternion.as_rotation_matrix(quaternion_ori)
 
             # Extract the 3x3 rotation matrix
             rot = rot[:3, :3]

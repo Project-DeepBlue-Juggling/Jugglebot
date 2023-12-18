@@ -104,11 +104,9 @@ class PlatformPlotter(Node):
 
             # Extract the orientation quaternion
             ori_q = msg.orientation
-            # quaternion_ori = [orientation_q.x, orientation_q.y, orientation_q.z, orientation_q.w]
             quaternion_ori = quaternion.quaternion(ori_q.w, ori_q.x, ori_q.y, ori_q.z)
             
             # Convert quaternion to 4x4 rotation matrix
-            # rot = tf_transformations.quaternion_matrix(quaternion)
             rot = quaternion.as_rotation_matrix(quaternion_ori)
 
             # Extract the 3x3 rotation matrix
@@ -116,13 +114,6 @@ class PlatformPlotter(Node):
 
             # Use this data to update the locations of all the platform nodes
             self.update_pose(pos, rot)
-
-            # Convert quaternion to Euler angles to make error-checking easier
-            # roll, pitch, yaw = tf_transformations.euler_from_quaternion(quaternion, axes='sxyz')
-
-            # Log the angles for debugging purposes
-            # self.get_logger().info(f'Roll: {roll:.2f}, Pitch: {pitch:.2f}, Yaw: {yaw:.2f}')
-            # self.get_logger().info(f'qx: {quaternion[0]:.2f}, qy: {quaternion[1]:.2f}, qz: {quaternion[2]:.2f}, qw: {quaternion[3]:.2f}')
 
     def update_pose(self, pos, rot):
         # Calculate the positions of all nodes
