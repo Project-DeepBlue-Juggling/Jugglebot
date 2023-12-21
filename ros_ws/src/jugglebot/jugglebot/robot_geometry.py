@@ -1,6 +1,7 @@
 # Holds the geometry for the robot and publishes the initial node positions to the 'get_robot_geometry' service
 
 from jugglebot_interfaces.srv import GetRobotGeometry
+from std_srvs.srv import Trigger
 
 import rclpy
 from rclpy.node import Node
@@ -11,8 +12,13 @@ import math
 class RobotGeometry(Node):
     def __init__(self):
         super().__init__('robot_geometry')
+
+        # Set up a service to get the robot geometry
         self.service = self.create_service(
             GetRobotGeometry, 'get_robot_geometry', self.handle_get_robot_geometry)
+        
+        # Set up a service to trigger closing the node
+        self.service = self.create_service(Trigger, 'end_session', self.end_session)
         
         # Initialise the geometry parameters. Start with the platform
         # Nodes for the various elements
@@ -119,6 +125,9 @@ class RobotGeometry(Node):
 
         return response
 
+    def end_session(self, request, response):
+        # The method that's called when a user clicks "End Session" in the GUI
+        raise SystemExit
 
 def main(args=None):
     rclpy.init(args=args)
@@ -127,7 +136,10 @@ def main(args=None):
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
+    except SystemExit:
+        pass
     finally:
+        node.get_logger().info("Shutting down...")
         node.destroy_node()
         rclpy.shutdown()
 

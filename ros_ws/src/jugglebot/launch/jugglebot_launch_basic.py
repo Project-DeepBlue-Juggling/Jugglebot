@@ -21,4 +21,10 @@ def generate_launch_description():
             executable='sp_ik',
             name='sp_ik'
         ),
+        Node(
+            package='jugglebot',
+            namespace='jugglebot',
+            executable='state_manager_node',
+            name='state_manager_node'
+        ),
     ])

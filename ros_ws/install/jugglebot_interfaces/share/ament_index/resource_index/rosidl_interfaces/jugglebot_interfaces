@@ -1,3 +1,5 @@
+msg/RobotStateMessage.idl
+msg/RobotStateMessage.msg
 srv/GetRobotGeometry.idl
 srv/GetRobotGeometry.srv
 srv/GetRobotGeometry_Request.msg

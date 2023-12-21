@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <!-- Include the font awesome library for icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.1.1/css/all.min.css">
+    <title>ROS Test Connection</title>
+    <script type="text/javascript" src="roslib.min.js"></script>
+    <script type="text/javascript">
+        window.onload = function () {
+            // ################################################################## //
+            //                          Connect to ROS                            //
+            // ################################################################## //
+
+            var ros = new ROSLIB.Ros({
+                url : 'ws://localhost:9090'
+            });
+
+            ros.on('connection', function() {
+                console.log('Connected to websocket server.');
+            });
+
+            ros.on('error', function(error) {
+                console.log('Error connecting to websocket server: ', error);
+            });
+
+            ros.on('close', function() {
+                console.log('Connection to websocket server closed.');
+            });
+            
+            // ################################################################## //
+            //                      Subscribe to Robot State                      //
+            // ################################################################## //
+
+            var robotStateTopic = new ROSLIB.Topic({
+                ros : ros,
+                name : '/jugglebot/robot_state_topic',
+                messageType : '/jugglebot_interfaces/RobotStateMessage'
+            });
+
+            robotStateTopic.subscribe(function(message) {
+                // Update the GUI
+                if (message.is_homed) {
+                    document.getElementById('spacemouse-control-button').disabled = false;
+                }
+            });
+
+            // ################################################################## //
+            //                    Interfacing with Pose Topic                     //
+            // ################################################################## //
+
+            var poseTopic = new ROSLIB.Topic({
+                ros : ros,
+                name : '/jugglebot/platform_pose_topic',
+                messageType : '/geometry_msgs/Pose'
+            });
+
+            // Initialize current pose to null
+            var currentPose = null;
+
+            poseTopic.subscribe(function(message) {
+                // Store the current pose
+                currentPose = message;
+            });
+
+            function adjustPose(deltaX, deltaY, deltaZ) {
+                if (currentPose) {
+                    currentPose.position.x += deltaX;
+                    currentPose.position.y += deltaY;
+                    currentPose.position.z += deltaZ;
+                }
+
+                // Publish the new pose
+                poseTopic.publish(currentPose);
+            }
+
+            // ################################################################## //
+            //                     Calling a Trigger Service                      //
+            // ################################################################## //
+
+            function callTriggerService(serviceName) {
+                var service = new ROSLIB.Service({
+                    ros : ros,
+                    name : serviceName,
+                    serviceType : 'std_srvs/srv/Trigger'
+                });
+
+                var request = new ROSLIB.ServiceRequest(); // Empty request for Trigger call
+
+                service.callService(request, function(response) {
+                    console.log('Received response: Has robot been homed? ', response);
+                }, function(error) {
+                    console.log('Service call failed: ', error);
+                });
+            }
+
+            // ################################################################## //
+            //                        Sending Control Mode                        //
+            // ################################################################## //
+            function sendControlMode(mode) {
+                var cmdTopic = new ROSLIB.Topic({
+                    ros : ros,
+                    name : '/jugglebot/control_state_topic',
+                    messageType : 'std_msgs/String'
+                });
+
+                var message = new ROSLIB.Message({
+                    data : mode
+                });
+
+                cmdTopic.publish(message);
+            }
+
+            // ################################################################## //
+            //                           Button Listeners                         //
+            // ################################################################## //
+
+            document.getElementById('home').addEventListener('click', function() {
+                callTriggerService('/jugglebot/home_robot');
+            });
+
+            document.getElementById('end-session').addEventListener('click', function() {
+                callTriggerService('/jugglebot/end_session');
+            });
+
+            let isSpacemouseControl = false; // Initial state is 'gui' control
+
+            document.getElementById('spacemouse-control-button').addEventListener('click', function() {
+                if (this.disabled) {
+                    return; // Do nothing if button is disabled (robot not homed)
+                }
+
+                isSpacemouseControl = !isSpacemouseControl;  // Toggle state
+                
+                if (isSpacemouseControl) {
+                    this.innerHTML = 'Switch to GUI Control';
+                    this.style.backgroundColor = '#4CAF50'  // Green for Spacemouse control
+                    // Send command to ROS
+                    sendControlMode('spacemouse');
+                } else {
+                    this.innerHTML = 'Switch to Spacemouse Control';
+                    this.style.backgroundColor = '#f44336'  // Red for GUI control
+                    // Send command to ROS
+                    sendControlMode('gui');
+                }
+            });           
+  
+            // For jogging buttons
+            document.getElementById('jog-x-pos').addEventListener('click', function() {adjustPose(0.1, 0, 0);});
+            document.getElementById('jog-x-neg').addEventListener('click', function() {adjustPose(-0.1, 0, 0);});
+            document.getElementById('jog-y-pos').addEventListener('click', function() {adjustPose(0, 0.1, 0);});
+            document.getElementById('jog-y-neg').addEventListener('click', function() {adjustPose(0, -0.1, 0);});
+            document.getElementById('jog-z-pos').addEventListener('click', function() {adjustPose(0, 0, 0.1);});
+            document.getElementById('jog-z-neg').addEventListener('click', function() {adjustPose(0, 0, -0.1);});
+        };
+    </script>
+
+    <style>
+        /* Style for the control buttons */
+        #control-buttons {
+            display: flex; /* Make the div element a flex container */
+            flex-direction: row; /*Stack items horizontally */
+            justify-content: space-between; /* Center items horizontally */
+            align-items: center; /* Center items vertically */
+            border: 2px solid #000000; /* Border color and thickness */
+            padding: 10px; /* Space inside the box */
+            margin: 20px; /* Space outside the box */
+            background-color: #f5f5f5; /* Background color of the box */
+        }
+
+        /* Style for the jogging buttons */
+        #jogging-buttons {
+            display: flex; /* Make the div element a flex container */
+            flex-direction: row; /*Stack items horizontally */
+            justify-content: space-between; /* Center items horizontally */
+            align-items: center; /* Center items vertically */
+            border: 2px solid #000000; /* Border color and thickness */
+            padding: 10px; /* Space inside the box */
+            margin: 20px; /* Space outside the box */
+            background-color: #f5f5f5; /* Background color of the box */
+        }
+
+        /* Style for disabled buttons */
+        #control-buttons button:disabled{
+            background-color: #cccccc; /* Grey color */
+            color: #666666; /* Darker text color */
+            cursor: not-allowed;
+        }
+
+        /* Hover effects for buttons */
+        button:hover {
+            background-color: #919191;
+        }
+
+        button {
+            display: flex; /* Make the button elements flex containers */
+            flex-direction: column; /* Stack items vertically */
+            align-items: center; /* Center items horizontally */
+            justify-content: center; /* Center items vertically */
+            margin: 5px;
+            padding: 10px;
+            font-size: 16px;
+            border: none;
+            color: #f7f7f7;
+            background-color: #666666; /* Grey color */
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+
+        .button-icon {
+            /* Style for the icon */
+            font-size: 24px; /* Icon size */
+            margin-bottom: 5px; /* Space between icon and text */
+        }
+
+        .button-text {
+            /* Style for the text */
+            font-size: 16px; /* Text size */
+        }
+    </style>
+</head>
+<body>
+    <!-- Control buttons -->
+    <div id="control-buttons">
+        <button id="home">
+            <span class="button-icon"><i class="fa-solid fa-house-chimney"></i></span>
+            <span class="button-text">Home</span>
+        </button>
+        <button id="end-session">
+            <span class="button-icon"><i class="fa-solid fa-power-off"></i></span>
+            <span class="button-text">End Session</span>
+        </button>
+        <button id="spacemouse-control-button" disabled>Switch to SpaceMouse Control</button>
+    </div>
+
+    <!-- Jogging buttons -->
+    <div id="jogging-buttons">
+        <button id="jog-x-pos">Jog X+</button>
+        <button id="jog-x-neg">Jog X-</button>
+        <button id="jog-y-pos">Jog Y+</button>
+        <button id="jog-y-neg">Jog Y-</button>
+        <button id="jog-z-pos">Jog Z+</button>
+        <button id="jog-z-neg">Jog Z-</button>
+</body>
+</html>

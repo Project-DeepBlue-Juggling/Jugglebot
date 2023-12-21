@@ -1,6 +1,8 @@
 import rclpy
 from rclpy.node import Node
+from std_msgs.msg import String
 from geometry_msgs.msg import Pose
+from std_srvs.srv import Trigger
 import quaternion  # numpy quaternion
 import pyspacemouse
 import math
@@ -8,7 +10,17 @@ import math
 class SpaceMouseHandler(Node):
     def __init__(self):
         super().__init__('spacemouse_handler')
-        self.publisher_ = self.create_publisher(Pose, 'platform_pose', 10)
+
+        # Set up a service to trigger closing the node
+        self.service = self.create_service(Trigger, 'end_session', self.end_session)
+
+        # Subscribe to control_state_topic to see if spacemouse is enabled
+        self.subscription = self.create_subscription(String, 'control_state_topic', self.control_state_callback, 10)
+        self.subscription  # prevent unused variable warning
+        self.spacemouse_enabled = False
+
+        # Create a publisher for the platform pose and a timer to publish it
+        self.publisher_ = self.create_publisher(Pose, 'platform_pose_topic', 10)
         self.timer = self.create_timer(0.01, self.publish_pose)
 
         """Initialize and open the SpaceMouse."""
@@ -20,7 +32,11 @@ class SpaceMouseHandler(Node):
     def publish_pose(self):
         """
         Read the state of the SpaceMouse and publish this state to the 'platform_pose' topic
+        Start by checking if the spacemouse is the chosen control method
         """
+        if not self.spacemouse_enabled:
+            pyspacemouse.read()  # Read the state of the spacemouse to clear the buffer
+            return
 
         # Set the multipliers for each axis (mm, deg)
         xy_mult = 150.0  # mm
@@ -59,11 +75,15 @@ class SpaceMouseHandler(Node):
         pose.orientation.z = quaternion_ori.z
         pose.orientation.w = quaternion_ori.w
 
-        # If wanting to print readings
-        # self.get_logger().info(f'x: {state.x:.2f}, y: {state.y:.2f}, z: {state.z:.2f}, roll: {roll:.2f}, pitch: {pitch:.2f}, yaw: {yaw:.2f}')
-        # self.get_logger().info(f'qx: {pose.orientation.x:.2f}, qy: {pose.orientation.y:.2f}, qz: {pose.orientation.z:.2f}, qw: {pose.orientation.w:.2f}')
-
         self.publisher_.publish(pose)
+
+    def control_state_callback(self, msg):
+        # Check if the spacemouse is enabled
+        self.spacemouse_enabled = msg.data == 'spacemouse'
+
+    def end_session(self, request, response):
+        # The method that's called when a user clicks "End Session" in the GUI
+        raise SystemExit
 
 def main(args=None):
     rclpy.init(args=args)
@@ -72,7 +92,10 @@ def main(args=None):
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
+    except SystemExit:
+        pass
     finally:
+        node.get_logger().info("Shutting down...")
         node.destroy_node()
         rclpy.shutdown()
 

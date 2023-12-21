@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from geometry_msgs.msg import Pose
+from std_srvs.srv import Trigger
 from jugglebot_interfaces.srv import GetRobotGeometry
 import quaternion  # numpy quaternion
 
@@ -20,8 +21,11 @@ class PlatformPlotter(Node):
         self.send_geometry_request()
 
         # Set up subscriber for platform pose
-        self.subscription = self.create_subscription(Pose, 'platform_pose', self.pose_callback, 10)
+        self.subscription = self.create_subscription(Pose, 'platform_pose_topic', self.pose_callback, 10)
         self.subscription  # prevent unused variable warning
+
+        # Set up a service to trigger closing the node
+        self.service = self.create_service(Trigger, 'end_session', self.end_session)
 
         # Initialize flag to track whether geometry data has been received or not
         self.has_geometry_data = False
@@ -196,17 +200,25 @@ class PlatformPlotter(Node):
         plt.ioff()
         plt.close()
 
+    def end_session(self, request, response):
+        # The method that's called when a user clicks "End Session" in the GUI
+        raise SystemExit
+
 def main(args=None):
     rclpy.init(args=args)
     node = PlatformPlotter()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
-        node.on_shutdown()
+        pass
+    except SystemExit:
         pass
     finally:
+        node.get_logger().info("Shutting down...")
+        node.on_shutdown()
         node.destroy_node()
         rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()

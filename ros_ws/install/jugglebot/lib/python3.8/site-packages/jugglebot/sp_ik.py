@@ -2,6 +2,7 @@ import rclpy
 from rclpy.node import Node
 import numpy as np
 from geometry_msgs.msg import Pose
+from std_srvs.srv import Trigger
 from std_msgs.msg import Float64MultiArray
 from jugglebot_interfaces.srv import GetRobotGeometry
 import quaternion  # numpy quaternion
@@ -12,16 +13,19 @@ class SPInverseKinematics(Node):
 
         # Set up service client to get robot geometry
         self.geometry_client = self.create_client(GetRobotGeometry, 'get_robot_geometry')
+
+        # Set up a service to trigger closing the node
+        self.service = self.create_service(Trigger, 'end_session', self.end_session)
         
         while not self.geometry_client.wait_for_service(timeout_sec=1.0):
                 self.get_logger().info('Waiting for "get_robot_geometry" service...')
 
         self.send_geometry_request()
 
-        self.subscription = self.create_subscription(Pose, 'platform_pose', self.pose_callback, 10)
+        self.subscription = self.create_subscription(Pose, 'platform_pose_topic', self.pose_callback, 10)
         self.subscription  # Prevent "unused variable" warning
 
-        self.publisher = self.create_publisher(Float64MultiArray, 'leg_lengths', 10)
+        self.publisher = self.create_publisher(Float64MultiArray, 'leg_lengths_topic', 10)
 
         # Initialize flag to track whether geometry data has been received or not
         self.has_geometry_data = False
@@ -150,6 +154,10 @@ class SPInverseKinematics(Node):
 
         self.publisher.publish(leg_lengths)
 
+    def end_session(self, request, response):
+        # The method that's called when a user clicks "End Session" in the GUI
+        raise SystemExit
+
 def main(args=None):
     rclpy.init(args=args)
     node = SPInverseKinematics()
@@ -157,9 +165,13 @@ def main(args=None):
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
+    except SystemExit:
+        pass
     finally:
+        node.get_logger().info("Shutting down...")
         node.destroy_node()
         rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()

@@ -24,7 +24,8 @@ find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/GetRobotGeometry.srv"
-  # DEPENDENCIES <add dependencies of above>
+  "msg/RobotStateMessage.msg"
+  DEPENDENCIES geometry_msgs
 )
 
 

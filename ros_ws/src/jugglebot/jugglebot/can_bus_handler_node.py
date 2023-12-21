@@ -1,7 +1,11 @@
 import time
 import rclpy
 from rclpy.node import Node
+from jugglebot_interfaces.msg import RobotStateMessage
+from geometry_msgs.msg import Point, Vector3
+from builtin_interfaces.msg import Time
 from std_msgs.msg import Float64MultiArray
+from std_srvs.srv import Trigger
 from .can_handler import CANHandler
 
 class CANBusHandlerNode(Node):
@@ -10,13 +14,23 @@ class CANBusHandlerNode(Node):
         
         self.can_handler = CANHandler(logger=self.get_logger())
 
-        # Initialize parameters for the different states of the robot
-        self.declare_parameter('is_homed', False)
+        # Set up a subscriber and publisher for the robot state
+        self.robot_state_publisher = self.create_publisher(RobotStateMessage, 'robot_state_topic', 10)
+        self.robot_state_subscription = self.create_subscription(RobotStateMessage, 'robot_state_topic', self.robot_state_callback, 10)
+
+        # Set up a service to trigger the homing of the robot
+        self.home_service = self.create_service(Trigger, 'home_robot', self.home_robot)
+
+        # Initialize a parameter to track whether the robot has been homed or not
+        self.is_homed = False
+
+        # Set up a service to trigger closing the node
+        self.end_session_service = self.create_service(Trigger, 'end_session', self.end_session)
 
         # Subscribe to relevant topics
-        self.motor_pos_subscription = self.create_subscription(Float64MultiArray, 'leg_lengths', self.handle_movement, 10)
+        self.motor_pos_subscription = self.create_subscription(Float64MultiArray, 'leg_lengths_topic', self.handle_movement, 10)
 
-        # Initialize publishers
+        # Initialize publishers for hardware data
         self.position_publisher = self.create_publisher(Float64MultiArray, 'motor_positions', 10)
         self.velocity_publisher = self.create_publisher(Float64MultiArray, 'motor_velocities', 10)
         self.iq_publisher = self.create_publisher(Float64MultiArray, 'motor_iqs', 10)
@@ -29,7 +43,7 @@ class CANBusHandlerNode(Node):
         # Initialize a timer to poll the CAN bus
         self.timer_canbus = self.create_timer(timer_period_sec=0.01, callback=self._poll_can_bus)
 
-        self.on_startup()
+        self.can_handler.clear_errors()  # JANKY FIX FOR NOW
 
     #########################################################################################################
     #                                     Interfacing with the CAN bus                                      #
@@ -49,33 +63,25 @@ class CANBusHandlerNode(Node):
     #                                        Commanding Jugglebot                                           #
     #########################################################################################################
 
-    def on_startup(self):
-        # When the robot boots up, wait for confirmation that it's on and connected to the CAN bus
+    def home_robot(self, request, response):
+        try:
+            self.can_handler.home_robot()
+            response.success = True
 
-        if self.can_handler.is_responding:
-            # Clear errors (if necessary)
-            self.can_handler.clear_errors()
+            # Publish that the robot is now homed to the robot_state_topic
+            homed_msg = RobotStateMessage()
+            homed_msg.is_homed = True
+            self.robot_state_publisher.publish(homed_msg)
 
-            # Home the robot so that it's ready for use
-            self.home_robot()
-            return
-        
-        elif self.can_handler.fatal_can_issue:
-            self._shutdown_on_fatal_issue()
+        except Exception as e:
+            self.get_logger().error(f'Error in home_robot: {str(e)}')
+            response.success = False
 
-        else:
-            time.sleep(0.1)
-
-    def home_robot(self):
-        self.can_handler.home_robot()
-
-        # Set the 'is_homed' parameter to True
-        self.set_parameters([rclpy.Parameter('is_homed', rclpy.Parameter.Type.BOOL, True)])
+        return response
 
     def handle_movement(self, msg):
         # Check if the robot is homed
-        is_homed = self.get_parameter('is_homed').get_parameter_value().bool_value
-        if not is_homed:
+        if not self.is_homed:
             self.get_logger().warning('Robot not homed. Home robot before commanding it to move.', once=True)
             return
         
@@ -117,8 +123,12 @@ class CANBusHandlerNode(Node):
         self.get_logger().info('Motors put in IDLE')
 
     #########################################################################################################
-    #                                        Publishing robot data                                          #
+    #                                   Interfacing with the ROS Network                                    #
     #########################################################################################################
+
+    def robot_state_callback(self, msg):
+        if msg.is_homed:
+            self.is_homed = True
 
     def publish_motor_positions(self, position_data):
         motor_positions = Float64MultiArray()
@@ -143,11 +153,14 @@ class CANBusHandlerNode(Node):
     #                                          Managing the Node                                            #
     #########################################################################################################
 
-    def shutdown(self):
+    def on_shutdown(self):
         # Cleanup code goes here
-        self.get_logger().info('Shutting down...')
         self.shutdown_robot()
         self.can_handler.close()
+
+    def end_session(self, request, response):
+        # The method that's called when a user clicks "End Session" in the GUI
+        raise SystemExit
 
 def main(args=None):
     rclpy.init(args=args)
@@ -158,8 +171,11 @@ def main(args=None):
         pass
     except KeyboardInterrupt:
         pass
+    except SystemExit:
+        pass
     finally:
-        node.shutdown()
+        node.get_logger().info("Shutting down...")
+        node.on_shutdown()
         node.destroy_node()
         rclpy.shutdown()
 

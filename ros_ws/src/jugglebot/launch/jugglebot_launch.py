@@ -33,4 +33,10 @@ def generate_launch_description():
             executable='can_bus_handler_node',
             name='can_bus_handler_node'
         ),
+        Node(
+            package='jugglebot',
+            namespace='jugglebot',
+            executable='state_manager_node',
+            name='state_manager_node'
+        ),
     ])

@@ -29,6 +29,7 @@ setup(
             'robot_geometry = jugglebot.robot_geometry:main',
             'platform_plotter = jugglebot.platform_plotter:main',
             'can_bus_handler_node = jugglebot.can_bus_handler_node:main',
+            'state_manager_node = jugglebot.state_manager_node:main',
         ],
     },
 )
