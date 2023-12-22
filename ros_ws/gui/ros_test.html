@@ -4,7 +4,19 @@
     <!-- Include the font awesome library for icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.1.1/css/all.min.css">
     <title>ROS Test Connection</title>
-    <script type="text/javascript" src="roslib.min.js"></script>
+
+    <!-- Three.js Library as ES Module -->
+    <script type="importmap">
+        {
+          "imports": {
+            "three": "https://unpkg.com/three@v0.159.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@v0.159.0/examples/jsm/"
+          }
+        }
+    </script>
+    <script type="module" src="3dplotter.js"></script>
+
+    <script type="text/javascript" src="lib/roslib.min.js"></script>
     <script type="text/javascript">
         window.onload = function () {
             // ################################################################## //
@@ -143,6 +155,12 @@
                     sendControlMode('gui');
                 }
             });           
+
+            // ################################################################## //
+            //                      Initialize the 3D Plotter                     //
+            // ################################################################## //
+
+            initPlotter(); // Initialize the 3D plotter
   
             // For jogging buttons
             document.getElementById('jog-x-pos').addEventListener('click', function() {adjustPose(0.1, 0, 0);});
@@ -240,5 +258,10 @@
         <button id="jog-y-neg">Jog Y-</button>
         <button id="jog-z-pos">Jog Z+</button>
         <button id="jog-z-neg">Jog Z-</button>
+    </div>
+
+    <!-- 3D Plotter -->
+    <div id="3dplotter"></div>
+
 </body>
 </html>
