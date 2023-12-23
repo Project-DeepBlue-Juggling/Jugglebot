@@ -38,6 +38,12 @@
             ros.on('close', function() {
                 console.log('Connection to websocket server closed.');
             });
+
+            // ################################################################## //
+            //                      Initialize the 3D Plotter                     //
+            // ################################################################## //
+
+            initPlotter();
             
             // ################################################################## //
             //                      Subscribe to Robot State                      //
@@ -155,12 +161,6 @@
                     sendControlMode('gui');
                 }
             });           
-
-            // ################################################################## //
-            //                      Initialize the 3D Plotter                     //
-            // ################################################################## //
-
-            initPlotter(); // Initialize the 3D plotter
   
             // For jogging buttons
             document.getElementById('jog-x-pos').addEventListener('click', function() {adjustPose(0.1, 0, 0);});
@@ -173,32 +173,100 @@
     </script>
 
     <style>
+        /* Style for the main container */
+        #main-container {
+            display: flex;
+            /* justify-content: space-between; */
+        }
+
+        #button-container {
+            order: 2;
+        }
+
+        #plot-3d {
+            order: 1;
+        }
+
+        /* Style for the 3D plotter */
+        #plot-3d {
+            width: 800px;
+            height: 600px;
+            border: 2px solid #000000; /* Border color and thickness */
+            background-color: #f5f5f5; /* Background color of the box */
+            margin: 20px; /* Space outside the box */
+        }
+
+        /* Style for the outer button group */
+        #button-container {
+            display: flex; /* Make the div element a flex container */
+            flex-direction: column; /* Stack items vertically */
+            align-items: center; /* Center items horizontally */
+            border: 2px solid #000000; /* Border color and thickness */
+            width: fit-content;
+            padding: 5px; /* Space inside the box */
+            margin: 20px; /* Space outside the box */
+            background-color: #f5f5f5; /* Background color of the box */
+        }
+
         /* Style for the control buttons */
         #control-buttons {
             display: flex; /* Make the div element a flex container */
-            flex-direction: row; /*Stack items horizontally */
-            justify-content: space-between; /* Center items horizontally */
+            flex-direction: column; /*Stack items vertically */
+            width: fit-content;
             align-items: center; /* Center items vertically */
             border: 2px solid #000000; /* Border color and thickness */
             padding: 10px; /* Space inside the box */
-            margin: 20px; /* Space outside the box */
+            margin: 10px; /* Space outside the box */
             background-color: #f5f5f5; /* Background color of the box */
         }
 
-        /* Style for the jogging buttons */
+        /* Style for the end-session button */
+        #end-session {
+            background-color: #f44336; /* Red color */
+        }
+        #end-session:hover {
+            background-color: #d32f2f; /* Darker red color */
+        }
+
+        /* Style for the jog buttons */
+        #jog-x-pos, #jog-x-neg {
+            background-color: rgb(252, 66, 66);
+        }
+
+        #jog-y-pos, #jog-y-neg {
+            background-color: rgb(60, 148, 60);
+        }
+
+        #jog-z-pos, #jog-z-neg {
+            background-color: rgb(92, 92, 255);
+        }
+
+        /* Style for the jogging buttons container */
         #jogging-buttons {
             display: flex; /* Make the div element a flex container */
-            flex-direction: row; /*Stack items horizontally */
-            justify-content: space-between; /* Center items horizontally */
-            align-items: center; /* Center items vertically */
-            border: 2px solid #000000; /* Border color and thickness */
+            width: fit-content;
+            flex-direction: column; /* Stack rows vertically */
+            align-items: center; /* Center rows horizontally */
+            border: 2px solid #3f3f3f; /* Border color and thickness */
             padding: 10px; /* Space inside the box */
-            margin: 20px; /* Space outside the box */
+            margin: 10px; /* Space outside the box */
             background-color: #f5f5f5; /* Background color of the box */
+        }
+
+        /* Style for each row of buttons */
+        .button-row {
+            display: flex; /* Make each row a flex container */
+            flex-direction: row; /* Align buttons horizontally in the row */
+            justify-content: space-between; /* Space out buttons in the row */
+            margin-bottom: 10px; /* Space between rows */
+        }
+
+        .button-row button {
+            margin-right: 10px; /* Space between buttons within a row */
         }
 
         /* Style for disabled buttons */
-        #control-buttons button:disabled{
+        button:disabled{
             background-color: #cccccc; /* Grey color */
             color: #666666; /* Darker text color */
             cursor: not-allowed;
@@ -210,6 +278,7 @@
         }
 
         button {
+            border-radius: 10px;
             display: flex; /* Make the button elements flex containers */
             flex-direction: column; /* Stack items vertically */
             align-items: center; /* Center items horizontally */
@@ -237,31 +306,51 @@
     </style>
 </head>
 <body>
-    <!-- Control buttons -->
-    <div id="control-buttons">
-        <button id="home">
-            <span class="button-icon"><i class="fa-solid fa-house-chimney"></i></span>
-            <span class="button-text">Home</span>
-        </button>
-        <button id="end-session">
-            <span class="button-icon"><i class="fa-solid fa-power-off"></i></span>
-            <span class="button-text">End Session</span>
-        </button>
-        <button id="spacemouse-control-button" disabled>Switch to SpaceMouse Control</button>
-    </div>
+    <div id="main-container">
+        <div id="button-container">
+            <!-- Control buttons -->
+            <div id="control-buttons">
+                <!-- Container for the first two buttons -->
+                <div class="button-row">
+                    <button id="home">
+                        <span class="button-icon"><i class="fa-solid fa-house-chimney"></i></span>
+                        <span class="button-text">Home</span>
+                    </button>
+                    <button id="end-session">
+                        <span class="button-icon"><i class="fa-solid fa-power-off"></i></span>
+                        <span class="button-text">End Session</span>
+                    </button>
+                </div>
+            
+                <!-- Container for the spacemouse control button -->
+                <div class="button-row">
+                    <button id="spacemouse-control-button" disabled>Switch to SpaceMouse Control</button>
+                </div>
+            </div>
+            
 
-    <!-- Jogging buttons -->
-    <div id="jogging-buttons">
-        <button id="jog-x-pos">Jog X+</button>
-        <button id="jog-x-neg">Jog X-</button>
-        <button id="jog-y-pos">Jog Y+</button>
-        <button id="jog-y-neg">Jog Y-</button>
-        <button id="jog-z-pos">Jog Z+</button>
-        <button id="jog-z-neg">Jog Z-</button>
-    </div>
+            <!-- Jogging buttons -->
+            <div id="jogging-buttons">
+                <!-- Add a title to the jog button group -->
+                <h3>Jogging</h3>
+                <div class="button-row">
+                    <button id="jog-x-pos">Jog X+</button>
+                    <button id="jog-x-neg">Jog X-</button>
+                </div>
+                <div class="button-row">
+                    <button id="jog-y-pos">Jog Y+</button>
+                    <button id="jog-y-neg">Jog Y-</button>
+                </div>
+                <div class="button-row">
+                    <button id="jog-z-pos">Jog Z+</button>
+                    <button id="jog-z-neg">Jog Z-</button>
+                </div>
+            </div>
+        </div>
 
-    <!-- 3D Plotter -->
-    <div id="3dplotter"></div>
+        <!-- 3D Plotter -->
+        <div id="plot-3d"></div>
+    </div>
 
 </body>
 </html>
