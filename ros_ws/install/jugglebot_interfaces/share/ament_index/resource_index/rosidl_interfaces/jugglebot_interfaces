@@ -1,3 +1,5 @@
+msg/RobotPlotterMessage.idl
+msg/RobotPlotterMessage.msg
 msg/RobotStateMessage.idl
 msg/RobotStateMessage.msg
 srv/GetRobotGeometry.idl

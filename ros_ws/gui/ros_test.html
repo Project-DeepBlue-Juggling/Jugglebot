@@ -44,6 +44,73 @@
             // ################################################################## //
 
             initPlotter();
+
+            // ################################################################## //
+            //                  Subscribe to /rosout (for logging)                //
+            // ################################################################## //
+
+            // Get the console div element
+            var consoleDiv = document.getElementById('ros-console');
+
+            // Set a limit for how many messages are stored in the console
+            var maxMessages = 100;
+
+            // Subscribe to the /rosout topic
+            var listener = new ROSLIB.Topic({
+                ros: ros,
+                name: '/rosout',
+                messageType: 'rcl_interfaces/msg/Log'
+            });
+
+            // Define a function to map the log level to a color
+            function getLogLevelColor(level) {
+                switch(level) {
+                    case 10: return '#808080'; // DEBUG: Grey
+                    case 20: return '#000000'; // INFO: Black
+                    case 30: return '#FFA500'; // WARN: Orange
+                    case 40: return '#FF4500'; // ERROR: Red-Orange
+                    case 50: return '#FF0000'; // FATAL: Red
+                    default: return '#000000'; // Default color for unknown levels
+                }
+            }
+
+            // Add a listener function to /rosout
+            listener.subscribe(function(message) {
+                // Check if the message level is enabled
+                if (!document.getElementById(`log-level-${message.level}`).checked) {
+                    return; // Do nothing if the message level is not enabled
+                }
+
+                // Set the color of the console div based on the log level
+                var logColor = getLogLevelColor(message.level);
+
+                // Get the current time
+                var currentDate = new Date();
+                var timestamp = currentDate.getHours() + ':' + currentDate.getMinutes() + ':' + currentDate.getSeconds(); 
+
+                // Create a new log entry
+                var logEntry = document.createElement('div');
+                logEntry.textContent = `[${timestamp}] [${message.name}]: ${message.msg}`;
+                logEntry.style.color = logColor;
+
+                // Add bold font and background color for FATAL messages
+                if (message.level === 50) {
+                    logEntry.style.fontWeight = 'bold';
+                    logEntry.style.backgroundColor = '#ffcccc'; // Light red background
+                    logEntry.style.padding = '2px';
+                }
+                
+                // Add the log entry to the console
+                consoleDiv.appendChild(logEntry);
+
+                // Remove the oldest log entry if the console is full
+                if (consoleDiv.childElementCount > maxMessages) {
+                    consoleDiv.removeChild(consoleDiv.firstChild);
+                }
+
+                // Scroll to the bottom of the console
+                consoleDiv.scrollTop = consoleDiv.scrollHeight;
+            });
             
             // ################################################################## //
             //                      Subscribe to Robot State                      //
@@ -114,6 +181,7 @@
             // ################################################################## //
             //                        Sending Control Mode                        //
             // ################################################################## //
+
             function sendControlMode(mode) {
                 var cmdTopic = new ROSLIB.Topic({
                     ros : ros,
@@ -162,6 +230,12 @@
                 }
             });           
   
+            // To clear the console
+            document.getElementById('clear-console-btn').addEventListener('click', function() {
+                var consoleDiv = document.getElementById('ros-console');
+                consoleDiv.innerHTML = '';
+            });
+            
             // For jogging buttons
             document.getElementById('jog-x-pos').addEventListener('click', function() {adjustPose(0.1, 0, 0);});
             document.getElementById('jog-x-neg').addEventListener('click', function() {adjustPose(-0.1, 0, 0);});
@@ -175,16 +249,13 @@
     <style>
         /* Style for the main container */
         #main-container {
+            margin: 10px;
+        }
+
+        #top-row, #bottom-row {
             display: flex;
-            /* justify-content: space-between; */
-        }
-
-        #button-container {
-            order: 2;
-        }
-
-        #plot-3d {
-            order: 1;
+            justify-content: flex-start;
+            margin-bottom: 10px;
         }
 
         /* Style for the 3D plotter */
@@ -193,7 +264,7 @@
             height: 600px;
             border: 2px solid #000000; /* Border color and thickness */
             background-color: #f5f5f5; /* Background color of the box */
-            margin: 20px; /* Space outside the box */
+            margin: 10px; /* Space outside the box */
         }
 
         /* Style for the outer button group */
@@ -202,10 +273,67 @@
             flex-direction: column; /* Stack items vertically */
             align-items: center; /* Center items horizontally */
             border: 2px solid #000000; /* Border color and thickness */
-            width: fit-content;
+            width: 360px;
             padding: 5px; /* Space inside the box */
-            margin: 20px; /* Space outside the box */
+            margin: 10px; /* Space outside the box */
             background-color: #f5f5f5; /* Background color of the box */
+        }
+
+        /* Style for the ROS logging console */
+        #ros-console {
+            width: 1000px;
+            height: 200px;
+            overflow-y: scroll;
+            border: 2px solid #000000; /* Border color and thickness */
+            background-color: #f5f5f5; /* Background color of the box */
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            color: #000000;
+            padding: 10px;
+            margin: 10px;
+        }
+
+        /* Style for the log level filters */
+        #log-level-filters {
+            width: fit-content;
+            /* height: fit-content; */
+            padding: 10px;
+            margin: 10px;
+            border: 2px solid #000000; /* Border color and thickness */
+            background-color: #f5f5f5; /* Background color of the box */
+            font-family: 'Courier New', monospace;
+            font-size: 20px;
+        }
+
+        /* Style for each log level filter */
+        #log-level-filters div {
+            margin-bottom: 5px; /* Space between each filter */
+        }
+
+        /* Style for the log level filter checkboxes */
+        .log-level {
+            transform: scale(1.5); /* Make the checkboxes bigger */
+            margin-right: 5px; /* Space between checkbox and label */
+        }
+
+        /* Style for the labels to match log level colors */
+        #log-level-10 + label {
+            color: #808080; /* Grey for DEBUG */
+        }
+        #log-level-20 + label {
+            color: #000000; /* Black for INFO */
+        }
+        #log-level-30 + label {
+            color: #FFA500; /* Orange for WARN */
+        }
+        #log-level-40 + label {
+            color: #FF4500; /* Red-Orange for ERROR */
+        }
+        #log-level-50 + label {
+            color: #FF0000; /* Red for FATAL */
+            background-color: #ffcccc; /* Light red background */
+            padding: 2px;
+            font-weight: bold;
         }
 
         /* Style for the control buttons */
@@ -226,6 +354,11 @@
         }
         #end-session:hover {
             background-color: #d32f2f; /* Darker red color */
+        }
+
+        /* Style for the clear console button */
+        #clear-console-btn {
+            margin-top: 15px; /* Space above the box */
         }
 
         /* Style for the jog buttons */
@@ -307,49 +440,69 @@
 </head>
 <body>
     <div id="main-container">
-        <div id="button-container">
-            <!-- Control buttons -->
-            <div id="control-buttons">
-                <!-- Container for the first two buttons -->
-                <div class="button-row">
-                    <button id="home">
-                        <span class="button-icon"><i class="fa-solid fa-house-chimney"></i></span>
-                        <span class="button-text">Home</span>
-                    </button>
-                    <button id="end-session">
-                        <span class="button-icon"><i class="fa-solid fa-power-off"></i></span>
-                        <span class="button-text">End Session</span>
-                    </button>
-                </div>
-            
-                <!-- Container for the spacemouse control button -->
-                <div class="button-row">
-                    <button id="spacemouse-control-button" disabled>Switch to SpaceMouse Control</button>
-                </div>
-            </div>
-            
 
-            <!-- Jogging buttons -->
-            <div id="jogging-buttons">
-                <!-- Add a title to the jog button group -->
-                <h3>Jogging</h3>
-                <div class="button-row">
-                    <button id="jog-x-pos">Jog X+</button>
-                    <button id="jog-x-neg">Jog X-</button>
+        <div id="top-row">
+            <!-- 3D Plotter -->
+            <div id="plot-3d"></div>
+
+            <!-- Button Container -->
+            <div id="button-container">
+                <!-- Control buttons -->
+                <div id="control-buttons">
+                    <!-- Container for the first two buttons -->
+                    <div class="button-row">
+                        <button id="home">
+                            <span class="button-icon"><i class="fa-solid fa-house-chimney"></i></span>
+                            <span class="button-text">Home</span>
+                        </button>
+                        <button id="end-session">
+                            <span class="button-icon"><i class="fa-solid fa-power-off"></i></span>
+                            <span class="button-text">End Session</span>
+                        </button>
+                    </div>
+                
+                    <!-- Container for the spacemouse control button -->
+                    <div class="button-row">
+                        <button id="spacemouse-control-button" disabled>Switch to SpaceMouse Control</button>
+                    </div>
                 </div>
-                <div class="button-row">
-                    <button id="jog-y-pos">Jog Y+</button>
-                    <button id="jog-y-neg">Jog Y-</button>
-                </div>
-                <div class="button-row">
-                    <button id="jog-z-pos">Jog Z+</button>
-                    <button id="jog-z-neg">Jog Z-</button>
+                
+
+                <!-- Jogging buttons -->
+                <div id="jogging-buttons">
+                    <!-- Add a title to the jog button group -->
+                    <h3>Jogging</h3>
+                    <div class="button-row">
+                        <button id="jog-x-pos">Jog X+</button>
+                        <button id="jog-x-neg">Jog X-</button>
+                    </div>
+                    <div class="button-row">
+                        <button id="jog-y-pos">Jog Y+</button>
+                        <button id="jog-y-neg">Jog Y-</button>
+                    </div>
+                    <div class="button-row">
+                        <button id="jog-z-pos">Jog Z+</button>
+                        <button id="jog-z-neg">Jog Z-</button>
+                    </div>
                 </div>
             </div>
         </div>
 
-        <!-- 3D Plotter -->
-        <div id="plot-3d"></div>
+        <div id="bottom-row">
+            <!-- ROS Logging Console -->
+            <div id="ros-console" ></div>
+        
+            <!-- Log Level Filters -->
+            <div id="log-level-filters">
+                <div><input type="checkbox" id="log-level-10" class="log-level" unchecked> <label for="log-level-10">Debug</label></div>
+                <div><input type="checkbox" id="log-level-20" class="log-level" checked> <label for="log-level-20">Info</label></div>
+                <div><input type="checkbox" id="log-level-30" class="log-level" checked> <label for="log-level-30">Warn</label></div>
+                <div><input type="checkbox" id="log-level-40" class="log-level" checked> <label for="log-level-40">Error</label></div>
+                <div><input type="checkbox" id="log-level-50" class="log-level" checked> <label for="log-level-50">Fatal</label></div>
+                <button id="clear-console-btn">Clear Console</button>
+            </div>
+        </div>
+
     </div>
 
 </body>

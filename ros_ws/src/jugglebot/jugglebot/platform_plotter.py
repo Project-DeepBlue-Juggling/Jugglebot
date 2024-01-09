@@ -4,9 +4,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-from geometry_msgs.msg import Pose
+from geometry_msgs.msg import Pose, Point
 from std_srvs.srv import Trigger
 from jugglebot_interfaces.srv import GetRobotGeometry
+from jugglebot_interfaces.msg import RobotPlotterMessage
 import quaternion  # numpy quaternion
 
 class PlatformPlotter(Node):
@@ -23,6 +24,9 @@ class PlatformPlotter(Node):
         # Set up subscriber for platform pose
         self.subscription = self.create_subscription(Pose, 'platform_pose_topic', self.pose_callback, 10)
         self.subscription  # prevent unused variable warning
+
+        # Set up publisher for the robot nodes
+        self.node_location_publisher = self.create_publisher(RobotPlotterMessage, 'robot_plotter_topic', 10)
 
         # Set up a service to trigger closing the node
         self.service = self.create_service(Trigger, 'end_session', self.end_session)
@@ -140,8 +144,32 @@ class PlatformPlotter(Node):
                                change_in_string_length * self.unit_ori_vector ).T
         self.hand_centroid = np.mean(self.new_hand_nodes, axis=0)
 
-        # Send the data off to be plotted
-        self.plot_platform()
+        # Send the data off to be plotted, or published (or both)
+        self.publish_robot_nodes()
+        # self.plot_platform()
+
+    def publish_robot_nodes(self):
+        # Publishes the locations of the robot nodes to robot_plotter_topic
+        # Create a RobotPlotter message
+        msg = RobotPlotterMessage()
+
+        # Convert numpy arrays to Point messages and assign to the RobotPlotter message
+        msg.base_nodes = [self.numpy_to_point(node) for node in self.base_nodes]
+        msg.new_plat_nodes = [self.numpy_to_point(node) for node in self.new_plat_nodes]
+        msg.new_arm_nodes = [self.numpy_to_point(node) for node in self.new_arm_nodes]
+        msg.new_hand_nodes = [self.numpy_to_point(node) for node in self.new_hand_nodes]
+
+        # Publish the message
+        self.node_location_publisher.publish(msg)
+
+    def numpy_to_point(self, numpy_array):
+        # Converts a numpy array to a Point message
+        point = Point()
+        point.x = numpy_array[0]
+        point.y = numpy_array[1]
+        point.z = numpy_array[2]
+
+        return point
 
     def plot_platform(self):
         # Plots the platform
