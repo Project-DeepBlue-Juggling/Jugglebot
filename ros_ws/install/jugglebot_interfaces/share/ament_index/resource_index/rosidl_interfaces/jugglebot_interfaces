@@ -6,3 +6,7 @@ srv/GetRobotGeometry.idl
 srv/GetRobotGeometry.srv
 srv/GetRobotGeometry_Request.msg
 srv/GetRobotGeometry_Response.msg
+srv/ODriveCommandService.idl
+srv/ODriveCommandService.srv
+srv/ODriveCommandService_Request.msg
+srv/ODriveCommandService_Response.msg

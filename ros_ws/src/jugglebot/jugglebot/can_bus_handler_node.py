@@ -1,6 +1,7 @@
 import time
 import rclpy
 from rclpy.node import Node
+from jugglebot_interfaces.srv import ODriveCommandService
 from jugglebot_interfaces.msg import RobotStateMessage
 from geometry_msgs.msg import Point, Vector3
 from builtin_interfaces.msg import Time
@@ -24,8 +25,14 @@ class CANBusHandlerNode(Node):
         # Initialize a parameter to track whether the robot has been homed or not
         self.is_homed = False
 
+        # Initialize a parameter to track whether the robot is in a fatal state
+        self.is_fatal = False
+
         # Set up a service to trigger closing the node
         self.end_session_service = self.create_service(Trigger, 'end_session', self.end_session)
+
+        # Set up a service to respond to commands to the ODrives
+        self.odrive_command_service = self.create_service(ODriveCommandService, 'odrive_command', self.odrive_command_callback)
 
         # Subscribe to relevant topics
         self.motor_pos_subscription = self.create_subscription(Float64MultiArray, 'leg_lengths_topic', self.handle_movement, 10)
@@ -43,8 +50,6 @@ class CANBusHandlerNode(Node):
         # Initialize a timer to poll the CAN bus
         self.timer_canbus = self.create_timer(timer_period_sec=0.01, callback=self._poll_can_bus)
 
-        self.can_handler.clear_errors()  # JANKY FIX FOR NOW
-
     #########################################################################################################
     #                                     Interfacing with the CAN bus                                      #
     #########################################################################################################
@@ -53,11 +58,11 @@ class CANBusHandlerNode(Node):
         # Polls the CAN bus to check for new updates
         self.can_handler.fetch_messages()
         if self.can_handler.fatal_issue:
-            self._shutdown_on_fatal_issue()
+            self._on_fatal_issue()
 
-    def _shutdown_on_fatal_issue(self):
-        self.get_logger().warning("Fatal issue detected. Shutting down CAN handler node")
-        raise RuntimeError
+    def _on_fatal_issue(self):
+        self.get_logger().fatal("Fatal issue detected. Robot will be unresponsive until errors are cleared")
+        self.is_fatal = True
 
     #########################################################################################################
     #                                        Commanding Jugglebot                                           #
@@ -86,7 +91,7 @@ class CANBusHandlerNode(Node):
             return
         
         if self.can_handler.fatal_can_issue:
-            self._shutdown_on_fatal_issue()
+            self.__on_fatal_issue()
 
         # Extract the desired leg lengths
         motor_positions = msg.data[:6] # Since we don't need the hand string length here
@@ -121,6 +126,28 @@ class CANBusHandlerNode(Node):
         # Put motors into IDLE
         self.can_handler.set_odrive_state(requested_state='IDLE')
         self.get_logger().info('Motors put in IDLE')
+
+    def odrive_command_callback(self, request, response):
+        command = request.command
+
+        if command == 'clear_errors':
+            self.can_handler.clear_errors()
+            response.success = True
+            response.message = 'ODrive errors cleared'
+            self.is_fatal = False  # Reset the fatal flag now that errors have been cleared
+
+        elif command == 'reboot_odrives':
+            self.can_handler.reboot_odrives()
+            response.success = True
+            response.message = 'ODrives rebooted'
+            self.is_homed = False  # Reset the homed flag
+
+        else:
+            response.success = False
+            response.message = 'Invalid command:' + str(request)
+
+        return response
+
 
     #########################################################################################################
     #                                   Interfacing with the ROS Network                                    #

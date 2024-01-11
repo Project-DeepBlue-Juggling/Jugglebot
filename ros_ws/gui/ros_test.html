@@ -113,6 +113,153 @@
             });
             
             // ################################################################## //
+            //                    Querying for Active ROS Topics                  //
+            // ################################################################## //
+
+            var excludedTopics = [
+                "/client_count",
+                "/connected_clients",
+                "/parameter_events",
+                "/rosout",
+            ]
+            
+            var topicsStats = {} // Dictionary to store stats for each Topic
+
+            var topicTypeClient = new ROSLIB.Service({
+                ros : ros,
+                name : '/rosapi/topics',
+                serviceType : 'rosapi/Topics'
+            });
+
+            function updateTopicListAndTypes() {
+                var request = new ROSLIB.ServiceRequest(); // Empty request for Topics call
+                topicTypeClient.callService(request, function(response) {
+                    subscribeToTopics(response.topics, response.types);
+                });
+            }
+
+            function subscribeToTopics(topics, types) {
+                // First, mark all topics as inactive
+                Object.keys(topicsStats).forEach(function(topic) {
+                    if (topicsStats[topic]) {
+                        topicsStats[topic].isActive = false;
+                    }
+                });
+
+                // Iterate through each topic
+                for (var i = 0; i < topics.length; i++) {
+                    var topicName = topics[i];
+                    var topicType = types[i];
+
+                    // Skip topics that are excluded
+                    if (excludedTopics.includes(topicName)) {
+                        continue;
+                    }
+
+                    // If not already subscribed, initialize stats and subscribe
+                    if (!topicsStats[topicName]) {
+                        topicsStats[topicName] = {
+                            topicType: topicType,
+                            lastReceived: null,
+                            messageCount: 0,
+                            messageRate: 0,
+                            startTime: Date.now(),
+                            isActive: true,
+                            subscriber: null // To store the subscriber object
+                        };
+                    } else {
+                        // Mark the topic as active
+                        topicsStats[topicName].isActive = true;
+                    }
+
+                    // Subscribe to the topic if not already subscribed
+                    if (!topicsStats[topicName].subscriber) {
+                        var topicSubscriber = new ROSLIB.Topic({
+                            ros: ros,
+                            name: topicName,
+                            messageType: topicType
+                        });
+
+                        topicSubscriber.subscribe((function(topicName) {
+                            return function(message) {
+                                var now = new Date().getTime();
+                                var stats = topicsStats[topicName];
+                                stats.lastReceived = now;
+                                stats.messageCount++;
+                                var timeElapsed = (now - stats.startTime) / 1000; // Time in seconds
+                                stats.messageRate = stats.messageCount / timeElapsed;
+                            };
+                        })(topicName));
+
+                        // Store the subscriber in the stats
+                        topicsStats[topicName].subscriber = topicSubscriber;
+                    }
+                }
+            }
+
+            function cleanupInactiveTopics() {
+                Object.keys(topicsStats).forEach(function(topic) {
+                    var stats = topicsStats[topic];
+                    if (stats && !stats.isActive) {
+                        // Unsubscribe from the topic
+                        if (stats.subscriber) {
+                            stats.subscriber.unsubscribe();
+                        }
+                        // Remove the topic's stats
+                        delete topicsStats[topic];
+                    }
+                });
+            }
+
+            function updateTopicStatsTable() {
+                var tableBody = document.getElementById('topic-stats-table-body');
+                tableBody.innerHTML = ''; // Clear the table rows
+
+                // Iterate through each topic and create a new row
+                Object.keys(topicsStats).forEach(function(topic) {
+                    var stats = topicsStats[topic];
+                    if (stats.isActive) {
+                        var row = tableBody.insertRow();
+
+                        // Remove '/jugglebot' prefix from topic name, if it exists
+                        var displayTopicName = topic.startsWith('/jugglebot') ? topic.substring('/jugglebot'.length) : topic;
+
+                        // Topic Name
+                        var cellTopic = row.insertCell(0);
+                        cellTopic.textContent = displayTopicName;
+
+                        // Last Message Time
+                        var cellLastMessageTime = row.insertCell(1);
+                        var lastMessageAgo = stats.lastReceived ? (Date.now() - stats.lastReceived) : 'N/A';
+                        cellLastMessageTime.textContent = lastMessageAgo;
+
+                        // Average Message Rate
+                        var cellMessageRate = row.insertCell(2);
+                        var rate = stats.messageRate ? stats.messageRate : 0;
+                        cellMessageRate.textContent = rate.toFixed(2);
+
+                        // Set the color of the message rate
+                        if (rate >= 20) {
+                            cellMessageRate.classList.add('rate-green');
+                        } else if (rate >= 10 && rate < 20) {
+                            cellMessageRate.classList.add('rate-yellow');
+                        } else {
+                            cellMessageRate.classList.add('rate-red');
+                        }
+                    }
+                });
+            }
+
+            // Function to call all functions needed to update the stats table
+            function updateStats() {
+                updateTopicListAndTypes();
+                cleanupInactiveTopics();
+                updateTopicStatsTable();
+            }
+
+            setInterval(updateStats, 1000); // Periodically update the topic list (rate is in ms)
+
+            // ################################################################## //
             //                      Subscribe to Robot State                      //
             // ################################################################## //
 
@@ -172,7 +319,7 @@
                 var request = new ROSLIB.ServiceRequest(); // Empty request for Trigger call
 
                 service.callService(request, function(response) {
-                    console.log('Received response: Has robot been homed? ', response);
+                    console.log('Received response for service ' + serviceName + ": ", response);
                 }, function(error) {
                     console.log('Service call failed: ', error);
                 });
@@ -197,15 +344,53 @@
             }
 
             // ################################################################## //
+            //                        Define Service Clients                      //
+            // ################################################################## //
+
+            var odriveService = new ROSLIB.Service({
+                ros : ros,
+                name : '/jugglebot/odrive_command',
+                serviceType : 'jugglebot_interfaces/srv/ODriveCommandService'
+            });
+
+            // ################################################################## //
+            //                       Define Service Requests                      //
+            // ################################################################## //
+
+            var rebootODrivesRequest = new ROSLIB.ServiceRequest({
+                command : 'reboot_odrives'
+            });
+
+            var clearODriveErrorsRequest = new ROSLIB.ServiceRequest({
+                command : 'clear_errors'
+            });
+
+            // ################################################################## //
             //                           Button Listeners                         //
             // ################################################################## //
 
-            document.getElementById('home').addEventListener('click', function() {
+            document.getElementById('home-btn').addEventListener('click', function() {
                 callTriggerService('/jugglebot/home_robot');
             });
 
-            document.getElementById('end-session').addEventListener('click', function() {
+            document.getElementById('end-session-btn').addEventListener('click', function() {
                 callTriggerService('/jugglebot/end_session');
+            });
+
+            document.getElementById('odrive-reboot-btn').addEventListener('click', function() {
+                odriveService.callService(rebootODrivesRequest, function(response) {
+                    console.log('Received response: ', response);
+                }, function(error) {
+                    console.log('ODrive reboot service call failed: ', error);
+                });
+            });
+
+            document.getElementById('odrive-clear-errors-btn').addEventListener('click', function() {
+                odriveService.callService(clearODriveErrorsRequest, function(response) {
+                    console.log('Received response: ', response);
+                }, function(error) {
+                    console.log('ODrive clear errors service call failed: ', error);
+                });
             });
 
             let isSpacemouseControl = false; // Initial state is 'gui' control
@@ -237,12 +422,12 @@
             });
             
             // For jogging buttons
-            document.getElementById('jog-x-pos').addEventListener('click', function() {adjustPose(0.1, 0, 0);});
-            document.getElementById('jog-x-neg').addEventListener('click', function() {adjustPose(-0.1, 0, 0);});
-            document.getElementById('jog-y-pos').addEventListener('click', function() {adjustPose(0, 0.1, 0);});
-            document.getElementById('jog-y-neg').addEventListener('click', function() {adjustPose(0, -0.1, 0);});
-            document.getElementById('jog-z-pos').addEventListener('click', function() {adjustPose(0, 0, 0.1);});
-            document.getElementById('jog-z-neg').addEventListener('click', function() {adjustPose(0, 0, -0.1);});
+            // document.getElementById('jog-x-pos').addEventListener('click', function() {adjustPose(0.1, 0, 0);});
+            // document.getElementById('jog-x-neg').addEventListener('click', function() {adjustPose(-0.1, 0, 0);});
+            // document.getElementById('jog-y-pos').addEventListener('click', function() {adjustPose(0, 0.1, 0);});
+            // document.getElementById('jog-y-neg').addEventListener('click', function() {adjustPose(0, -0.1, 0);});
+            // document.getElementById('jog-z-pos').addEventListener('click', function() {adjustPose(0, 0, 0.1);});
+            // document.getElementById('jog-z-neg').addEventListener('click', function() {adjustPose(0, 0, -0.1);});
         };
     </script>
 
@@ -250,6 +435,8 @@
         /* Style for the main container */
         #main-container {
             margin: 10px;
+            display: flex; /* Make the div element a flex container */
+            flex-direction: column; /* Stack items vertically */
         }
 
         #top-row, #bottom-row {
@@ -296,7 +483,6 @@
         /* Style for the log level filters */
         #log-level-filters {
             width: fit-content;
-            /* height: fit-content; */
             padding: 10px;
             margin: 10px;
             border: 2px solid #000000; /* Border color and thickness */
@@ -336,8 +522,49 @@
             font-weight: bold;
         }
 
+        /* Style for the topic stats table */
+        #topic-stats-table {
+            margin-top: 10px;
+            border-collapse: collapse;
+            width: 100%;
+        }
+
+        #topic-stats-table, #topic-stats-table th, #topic-stats-table td {
+            border: 1px solid black;
+        }
+
+        #topic-stats-table th, #topic-stats-table td {
+            padding: 8px;
+            text-align: left;
+        }
+
+        #topic-stats-table th {
+            background-color: #f2f2f2;
+        }
+
+        /* Style for the centre-aligned Topic table rows (last two) */
+        #topic-stats-table th:nth-child(2),
+        #topic-stats-table th:nth-child(3),
+        #topic-stats-table td:nth-child(2),
+        #topic-stats-table td:nth-child(3) {
+            text-align: center;
+        }
+
+        /* Style for each colour in the topic stats table */
+        .rate-green {
+            color: #008000; /* Green */
+        }
+
+        .rate-yellow {
+            color: #FFA500; /* Orange */
+        }
+
+        .rate-red {
+            color: #FF0000; /* Red */
+        }
+
         /* Style for the control buttons */
-        #control-buttons {
+        #control-buttons, #odrive-buttons {
             display: flex; /* Make the div element a flex container */
             flex-direction: column; /*Stack items vertically */
             width: fit-content;
@@ -349,10 +576,10 @@
         }
 
         /* Style for the end-session button */
-        #end-session {
+        #end-session-btn {
             background-color: #f44336; /* Red color */
         }
-        #end-session:hover {
+        #end-session-btn:hover {
             background-color: #d32f2f; /* Darker red color */
         }
 
@@ -391,11 +618,8 @@
             display: flex; /* Make each row a flex container */
             flex-direction: row; /* Align buttons horizontally in the row */
             justify-content: space-between; /* Space out buttons in the row */
-            margin-bottom: 10px; /* Space between rows */
-        }
-
-        .button-row button {
-            margin-right: 10px; /* Space between buttons within a row */
+            margin-bottom: 5px; /* Space between rows */
+            margin-right: 10ps; /* Space between buttons within a row */
         }
 
         /* Style for disabled buttons */
@@ -451,11 +675,11 @@
                 <div id="control-buttons">
                     <!-- Container for the first two buttons -->
                     <div class="button-row">
-                        <button id="home">
+                        <button id="home-btn">
                             <span class="button-icon"><i class="fa-solid fa-house-chimney"></i></span>
                             <span class="button-text">Home</span>
                         </button>
-                        <button id="end-session">
+                        <button id="end-session-btn">
                             <span class="button-icon"><i class="fa-solid fa-power-off"></i></span>
                             <span class="button-text">End Session</span>
                         </button>
@@ -467,7 +691,6 @@
                     </div>
                 </div>
                 
-
                 <!-- Jogging buttons -->
                 <div id="jogging-buttons">
                     <!-- Add a title to the jog button group -->
@@ -485,6 +708,37 @@
                         <button id="jog-z-neg">Jog Z-</button>
                     </div>
                 </div>
+
+                <!-- Buttons for interfacing with the ODrives -->
+                <div id="odrive-buttons">
+                    <div class="button-row">
+                        <button id="odrive-reboot-btn">
+                            <span class="button-icon"><i class="fa-solid fa-power-off"></i></span>
+                            <span class="button-text">Reboot ODrives</span>
+                        </button>
+
+                        <button id="odrive-clear-errors-btn">
+                            <span class="button-icon"><i class="fa-solid fa-xmark"></i></span>
+                            <span class="button-text">Clear ODrive Errors</span>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- Topic Stats Container -->
+            <div id="topic-stats-container">
+                <table id="topic-stats-table">
+                    <thead>
+                        <tr>
+                            <th>Topic</th>
+                            <th>Last Msg Time<br>(ms ago)</th>
+                            <th>Msg Rate<br>(Hz)</th>
+                        </tr>
+                    </thead>
+                    <tbody id="topic-stats-table-body">
+                        <!-- Javascript will populate this -->
+                    </tbody>
+                </table>
             </div>
         </div>
 
@@ -502,8 +756,6 @@
                 <button id="clear-console-btn">Clear Console</button>
             </div>
         </div>
-
     </div>
-
 </body>
 </html>

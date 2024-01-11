@@ -308,6 +308,9 @@ class CANHandler:
         for axisID in range(6):
             self._send_message(axis_id=axisID, command_name=command_name, error_descriptor="Clearing errors")
 
+        # Reset fatal issue flag
+        self.fatal_issue = False
+
     def reboot_odrives(self):
         self.ROS_logger.info("Rebooting ODrives...")
         command_name = "reboot_odrives"

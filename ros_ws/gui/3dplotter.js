@@ -1,10 +1,19 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
+// Initialize all constants and variables that have multi-function scope
+// Create scene and camera
+let scene, camera, renderer;
+
+// Initialize the geometry
+let platformPointsGeometry, basePointsGeometry;
+let legLinesGeometry, strutLinesGeometry, rodLinesGeometry; // Struts span arm to plat, rods span lower arm to upper arm
+let baseVolume;
+
 const scale = 0.0025;  // Scale factor to make the scene look nice
 
-var scene
 var gridHelper
+const MAX_POINTS = 10;  // Maximum number of points to plot in any given set (eg. platform nodes, base nodes, etc.)
 
 // Function to initialize ROS and subscribe to /robot_plotter_topic
 function initROS() {
@@ -20,12 +29,11 @@ function initROS() {
         messageType: '/jugglebot_interfaces/RobotPlotterMessage'
     });
 
-    const throttledUpdatePlot = throttle(updatePlot, 100); // Throttle the updatePlot function
+    const throttledUpdatePlot = throttle(updateScene, 10); // Throttle the updatePlot function (delay is in ms)
 
     // When a message is received, parse it and update the plot
     listener.subscribe(function (message) {
         throttledUpdatePlot(
-            scene,
             message.base_nodes, 
             message.new_plat_nodes, 
             message.new_arm_nodes, 
@@ -34,7 +42,7 @@ function initROS() {
     });
 }
 
-// Function to throttle the rate of the 3dPlot updating
+// Function to throttle the rate of the scene updating (to help with performance)
 function throttle(callback, delay) {
     let lastCall = 0;
     let timeoutId = null;
@@ -57,164 +65,9 @@ function throttle(callback, delay) {
     };
 }
 
-// Function to scale an array of geometry_msgs/Point objects by the nominated factor
-function scalePoints(pointsArray, scaleFactor) {
-    return pointsArray.map(point => {
-        return {
-            x: point.x * scaleFactor,
-            y: point.y * scaleFactor,
-            z: point.z * scaleFactor
-        };
-    });
-}
-
-// Function to add points to the scene
-function createPoints(scene, pointsArray, color) {
-    // Start by scaling the pointsArray
-    pointsArray = scalePoints(pointsArray, scale);
-
-    // Create points, swapping the y and z axes (I use z-up, three.js uses y-up)
-    const geometry = new THREE.BufferGeometry().setFromPoints(
-        pointsArray.map(point => new THREE.Vector3(
-            point.x, point.z, point.y)) // Adjusted to use object properties
-    );
-
-    const material = new THREE.PointsMaterial({ color: color, size: 0.05 });
-    const points = new THREE.Points(geometry, material);
-    scene.add(points);
-}
-
-// Function to add lines to the scene
-function createLine(scene, start, end, color, thickness=0.01) {
-    start = new THREE.Vector3(start.x, start.z, start.y).multiplyScalar(scale);
-    end = new THREE.Vector3(end.x, end.z, end.y).multiplyScalar(scale);
-
-    const direction = new THREE.Vector3().subVectors(end, start);
-    const length = direction.length();
-
-    // Create the cylinder geometry
-    const edgeGeometry = new THREE.CylinderGeometry(thickness, thickness, length, 8, 1);
-    
-    // Calculate midpoint
-    const midpoint = new THREE.Vector3().addVectors(start, end).multiplyScalar(0.5);
-
-    // Calculate orientation
-    const orientation = new THREE.Matrix4();
-    const upAxis = new THREE.Vector3(0, 1, 0);
-    const axis = new THREE.Vector3().crossVectors(upAxis, direction).normalize();
-    const radians = Math.acos(upAxis.dot(direction.normalize()));
-    orientation.makeRotationAxis(axis, radians);
-
-    // Apply the orientation
-    edgeGeometry.applyMatrix4(orientation);
-
-    // Translate the geometry to the midpoint
-    edgeGeometry.translate(midpoint.x, midpoint.y, midpoint.z);
-
-    // Create the material and mesh
-    const edgeMaterial = new THREE.MeshBasicMaterial({ color: color });
-    const edge = new THREE.Mesh(edgeGeometry, edgeMaterial);
-
-    scene.add(edge);
-}
-
-// Function to create volume for the base
-function createBaseVolume(scene, baseNodes, color, thickness) {
-    // Scale the base nodes
-    baseNodes = scalePoints(baseNodes, scale);
-
-    // Create a shape based on the base nodes
-    const shape = new THREE.Shape();
-    shape.moveTo(baseNodes[0].x, baseNodes[0].y);
-    for (let i = 1; i < baseNodes.length - 1; i++) { // -1 because the last node is the origin
-        shape.lineTo(baseNodes[i].x, baseNodes[i].y);
-    }
-
-    // Extrude settings
-    const extrudeSettings = {
-        steps: 1,
-        depth: thickness,
-        bevelEnabled: false
-    };
-
-    // Create geometry from the shape
-    const geometry = new THREE.ExtrudeGeometry(shape, extrudeSettings);
-
-    // Rotate the geometry so that it is flat on the ground
-    geometry.rotateX(-Math.PI / 2);
-
-    // Offset the geometry so that its middle is at the origin
-    geometry.translate(0, -thickness / 2, 0);
-
-    // Create material
-    const material = new THREE.MeshBasicMaterial({
-        color: color,
-        transparent: true,
-        opacity: 0.3
-    });
-
-    // Create mesh and add to the scene
-    const mesh = new THREE.Mesh(geometry, material);
-    scene.add(mesh);
-}
-
-// Function to clear all objects from the scene properly
-function clearScene(scene) {
-    const toRemove = [];
-    scene.traverse((child) => {
-        if (child.isMesh && child !== gridHelper && !child.userData.keep) {
-            toRemove.push(child);
-        }
-    });
-
-    toRemove.forEach((child) => {
-        if (child.geometry) {
-            child.geometry.dispose();
-        }
-        if (child.material) {
-            if (Array.isArray(child.material)) {
-                child.material.forEach(material => material.dispose());
-            } else {
-                child.material.dispose();
-            }
-        }
-        scene.remove(child);
-    });
-}
-
-// Function to update the robot plot
-function updatePlot(scene, base_nodes, new_plat_nodes, new_arm_nodes, new_hand_nodes) {
-    // Clear existing objects from the scene
-    scene.clear();  // Seems to be required to remove points. clearScene doesn't work...
-    clearScene(scene);
-
-    // Add a grid and coordinate axes
-    scene.add(gridHelper);
-    createCoordAxes(scene, 1, 0.01);
-
-    // Add points for the platform and base
-    createPoints(scene, new_plat_nodes.slice(0, 6), 0xff0000);  // red points for the platform. Exclude the 7th point
-    createPoints(scene, base_nodes, 0x0000ff);  // blue points for the base
-
-    // Plot the legs (between the platform and base)
-    for (let i = 0; i < 6; i++) {
-        createLine(scene, new_plat_nodes[i], base_nodes[i], 0x00ff00, 0.01); // Green color for legs
-    }
-
-    // Plot the struts (connect platform nodes to arm nodes)
-    for (let i = 0; i < 6; i++) {
-        let temp = Math.ceil(i / 2) % 3;
-        createLine(scene, new_plat_nodes[i], new_arm_nodes[temp], 0x000000, 0.005); // Black color for struts
-    }
-
-    // Plot the rods (connect lower arm to upper arm)
-    for (let i = 0; i < 3; i++) {
-        createLine(scene, new_arm_nodes[i], new_arm_nodes[i + 3], 0x000000, 0.005); // Black color for rods
-    }
-
-    // Create the volume for the base
-    createBaseVolume(scene, base_nodes, 0x0000ff, 0.05); // Blue color for base volume
-}
+// ################################################################## //
+//                      Creating Scene Geometry                       //
+// ################################################################## //
 
 // Function to create coordinate axes
 function createCoordAxes(scene, axisLength, axisThickness) {
@@ -251,17 +104,218 @@ function createCoordAxes(scene, axisLength, axisThickness) {
     scene.add(createAxis(new THREE.Vector3(0, 0, 1), axesMaterial.z)); // Z Axis
 }
 
+// Function to scale an array of geometry_msgs/Point objects by the nominated factor
+function scalePoints(pointsArray, scaleFactor) {
+    return pointsArray.map(point => {
+        return {
+            x: point.x * scaleFactor,
+            y: point.y * scaleFactor,
+            z: point.z * scaleFactor
+        };
+    });
+}
+
+// Function to initialize points
+function initPoints(scene, colour) {
+    // Create an empty BufferGeometry
+    const geometry = new THREE.BufferGeometry();
+
+    // Define attributes for the geometry
+    const positions = new Float32Array(MAX_POINTS * 3); // 3 vertices per point
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+
+    // Define material
+    const material = new THREE.PointsMaterial({ color: colour, size: 0.05 });
+    const points = new THREE.Points(geometry, material);
+
+    // Add points to the scene
+    scene.add(points);
+
+    return points; // Return the points object for future updates
+}
+
+// Function to initialize a line group
+function initLineGroup(scene, colour, thickness=0.01, numberOfLines) {
+    const lineGroup = new THREE.Group();
+
+    for (let i = 0; i < numberOfLines; i++) {
+        // Initialize cylinder geometry with dummy length; will be updated later
+        const edgeGeometry = new THREE.CylinderGeometry(thickness, thickness, 1, 8, 1);
+
+        // Create the material and mesh
+        const edgeMaterial = new THREE.MeshBasicMaterial({ color: colour });
+        const edge = new THREE.Mesh(edgeGeometry, edgeMaterial);
+
+        // Add edge to the scene
+        lineGroup.add(edge);
+    }
+
+    // Add lineGroup to the scene
+    scene.add(lineGroup);
+
+    return lineGroup; // Return the group for future updates
+}
+
+// Function to initialize a volume
+function initVolume(scene, colour, thickness) {
+    // Create a shape with dummy points; will be updated later
+    const shape = new THREE.Shape();
+    shape.moveTo(0, 0);
+    shape.lineTo(1, 0);
+    shape.lineTo(1, 1);
+    shape.lineTo(0, 1);
+    shape.lineTo(0, 0);
+    
+    // Extrude settings
+    const extrudeSettings = {
+        steps: 1,
+        depth: thickness,
+        bevelEnabled: false
+    };
+
+    // Create geometry from the shape
+    const geometry = new THREE.ExtrudeGeometry(shape, extrudeSettings);
+
+    // Create material
+    const material = new THREE.MeshBasicMaterial({
+        color: colour,
+        transparent: true,
+        opacity: 0.3
+    });
+
+    // Create mesh and add to the scene
+    const mesh = new THREE.Mesh(geometry, material);
+    scene.add(mesh);
+
+    return mesh; // Return the mesh for future updates
+}
+
+// ################################################################## //
+//                      Updating Scene Geometry                       //
+// ################################################################## //
+
+function updatePoints(points, pointsArray) {
+    // Scale the pointsArray
+    pointsArray = scalePoints(pointsArray, scale);
+
+    const positions = points.geometry.attributes.position.array;
+    
+    pointsArray.forEach((point, index) => {
+        positions[index * 3] = point.x;
+        positions[index * 3 + 1] = point.z; // Swap y and z
+        positions[index * 3 + 2] = point.y;
+    });
+
+    points.geometry.attributes.position.needsUpdate = true;
+}
+
+function updateLine(edge, start, end) {
+    start = new THREE.Vector3(start.x, start.z, start.y).multiplyScalar(scale);
+    end = new THREE.Vector3(end.x, end.z, end.y).multiplyScalar(scale);
+
+    const direction = new THREE.Vector3().subVectors(end, start);
+    const length = direction.length();
+    
+    // Reset the scale and reapply to adjust the length
+    edge.scale.set(1, 1, 1);
+    edge.scale.y = length;
+
+    // Calculate midpoint
+    const midpoint = new THREE.Vector3().addVectors(start, end).multiplyScalar(0.5);
+
+    // Calculate orientation
+    const upAxis = new THREE.Vector3(0, 1, 0);
+    const axis = new THREE.Vector3().crossVectors(upAxis, direction).normalize();
+    const radians = Math.acos(upAxis.dot(direction.normalize()));
+
+    // Update position and rotation
+    edge.position.copy(midpoint);
+    edge.quaternion.setFromAxisAngle(axis, radians);
+}
+
+function updateLineGroup(lineGroup, startPoints, endPoints, isStruts=false) {
+    if (isStruts) { // If the line group is for struts, the points are chosen a little differently
+        for (let i = 0; i < lineGroup.children.length; i++) {
+            let temp = Math.ceil(i / 2) % 3;
+            updateLine(lineGroup.children[i], startPoints[i], endPoints[temp]);
+        }
+    } else {
+        for (let i = 0; i < lineGroup.children.length; i++) {
+            updateLine(lineGroup.children[i], startPoints[i], endPoints[i]);
+        }
+    }
+}
+
+function updateVolume(volume, pointsArray, thickness) {
+    // Scale the pointsArray
+    pointsArray = scalePoints(pointsArray, scale);
+
+    // Create a shape based on the points
+    const shape = new THREE.Shape();
+    shape.moveTo(pointsArray[0].x, pointsArray[0].y);
+    for (let i = 1; i < pointsArray.length - 1; i++) { // -1 because the last node is the origin
+        shape.lineTo(pointsArray[i].x, pointsArray[i].y);
+    }
+
+    // Extrude settings
+    const extrudeSettings = {
+        steps: 1,
+        depth: thickness,
+        bevelEnabled: false
+    };
+
+    // Create geometry from the shape
+    const geometry = new THREE.ExtrudeGeometry(shape, extrudeSettings);
+
+    // Rotate the geometry so that it is flat on the ground
+    geometry.rotateX(-Math.PI / 2);
+    geometry.translate(0, -thickness / 2, 0);
+
+    // Update the geometry
+    volume.geometry.dispose();
+    volume.geometry = geometry;
+
+    // Update the position
+    // volume.position.y = thickness / 2;
+}
+
+// Function to update the scene
+function updateScene(base_nodes, new_plat_nodes, new_arm_nodes, new_hand_nodes) {
+    // Update points for platform and base
+    updatePoints(platformPointsGeometry, new_plat_nodes.slice(0, 6));
+    updatePoints(basePointsGeometry, base_nodes);
+
+    // Update the leg lines
+    updateLineGroup(legLinesGeometry, base_nodes, new_plat_nodes);
+
+    // Update the strut lines (spanning plat to arm)
+    updateLineGroup(strutLinesGeometry, new_plat_nodes, new_arm_nodes, true);
+
+    // Update the rod lines (spanning upper arm to lower arm)
+    updateLineGroup(rodLinesGeometry, new_arm_nodes, new_arm_nodes.slice(3));
+
+    // Update the base volume
+    updateVolume(baseVolume, base_nodes, 0.01);
+}
+
+// ################################################################## //
+//                           Main Function                            //
+// ################################################################## //
 
 export function initPlotter() {
     // Initialize ROS
     initROS();
 
-    // Create scene, camera and renderer
+    // Initialize scene, camera and renderer
     scene = new THREE.Scene();
-    var camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 10000);
+    camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 10000);
+    renderer = new THREE.WebGLRenderer();
+    var container = document.getElementById("plot-3d");
+    renderer.setSize(container.clientWidth, container.clientHeight);
+    container.appendChild(renderer.domElement);
 
     // Scale the y axis so that its size matches the x/z axes
-    scene.scale.y = 0.5;
+    scene.scale.y = 0.5;  // Found experimentally
 
     // Transform the scene to match the robot's coordinate frame
     scene.scale.z = -1;
@@ -278,6 +332,9 @@ export function initPlotter() {
     scene.add(gridHelper);
     gridHelper.userData.keep = true; // Don't remove the grid when clearing the scene
 
+    // Create coordinate axes
+    createCoordAxes(scene, 1, 0.01);
+
     // Function to create a tick mark
     function createTickMark(position, color) {
         const geometry = new THREE.BoxGeometry(0.1, 0.1, 0.1);
@@ -288,17 +345,23 @@ export function initPlotter() {
     }
 
     // Create tick marks along the x, y, and z axes
-    for (let i = -5; i <= 5; i++) {
-        scene.add(createTickMark(new THREE.Vector3(i, 0, 0), 'red')); // x-axis tick marks
-        scene.add(createTickMark(new THREE.Vector3(0, i, 0), 'green')); // y-axis tick marks
-        scene.add(createTickMark(new THREE.Vector3(0, 0, i), 'blue')); // z-axis tick marks
-    }
+    // for (let i = -5; i <= 5; i++) {
+    //     scene.add(createTickMark(new THREE.Vector3(i, 0, 0), 'red')); // x-axis tick marks
+    //     scene.add(createTickMark(new THREE.Vector3(0, i, 0), 'green')); // y-axis tick marks
+    //     scene.add(createTickMark(new THREE.Vector3(0, 0, i), 'blue')); // z-axis tick marks
+    // }
 
-    // Renderer
-    var renderer = new THREE.WebGLRenderer();
-    var container = document.getElementById("plot-3d");
-    renderer.setSize(container.clientWidth, container.clientHeight);
-    container.appendChild(renderer.domElement);
+    // Initialize the points
+    platformPointsGeometry = initPoints(scene, 0xff0000); // Red points for platform nodes
+    basePointsGeometry = initPoints(scene, 0x0000ff); // Blue points for base nodes
+
+    // Initialize the lines
+    legLinesGeometry = initLineGroup(scene, 0x00ff00, 0.015, 6); // Green color for legs
+    strutLinesGeometry = initLineGroup(scene, 0x000000, 0.005, 6); // Black color for struts
+    rodLinesGeometry = initLineGroup(scene, 0x000000, 0.005, 3); // Black color for rods
+    
+    // Initialize the base volume
+    baseVolume = initVolume(scene, 0x0000ff, 0.01); // Blue color for base volume
 
     // Initialize orbit controls
     var controls = new OrbitControls(camera, renderer.domElement);

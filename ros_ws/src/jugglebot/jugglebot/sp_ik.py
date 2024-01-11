@@ -25,7 +25,7 @@ class SPInverseKinematics(Node):
         self.subscription = self.create_subscription(Pose, 'platform_pose_topic', self.pose_callback, 10)
         self.subscription  # Prevent "unused variable" warning
 
-        self.publisher = self.create_publisher(Float64MultiArray, 'leg_lengths_topic', 10)
+        self.leg_length_publisher = self.create_publisher(Float64MultiArray, 'leg_lengths_topic', 10)
 
         # Initialize flag to track whether geometry data has been received or not
         self.has_geometry_data = False
@@ -152,7 +152,7 @@ class SPInverseKinematics(Node):
         leg_lengths = Float64MultiArray()
         leg_lengths.data = leg_lens_revs
 
-        self.publisher.publish(leg_lengths)
+        self.leg_length_publisher.publish(leg_lengths)
 
     def end_session(self, request, response):
         # The method that's called when a user clicks "End Session" in the GUI

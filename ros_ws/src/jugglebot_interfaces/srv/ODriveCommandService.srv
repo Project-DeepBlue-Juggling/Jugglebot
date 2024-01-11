@@ -1,0 +1,9 @@
+# This service defines commands for controlling the ODrives
+
+# Define the command as a string (eg. 'clear_errors' or 'reboot_odrives)
+string command
+
+---
+# Response indicates whether the command was executed successfully
+bool success    # true if the command was executed successfully
+string message  # Details about the execution or error messages
