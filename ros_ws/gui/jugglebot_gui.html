@@ -100,8 +100,11 @@
                     logEntry.style.padding = '2px';
                 }
 
+                // Add a tolerance in case the browser rounds the scroll height
+                var scrollTolerance = 5;
+
                 // Check if the console is scrolled to the bottom before adding new message
-                var isScrolledToBottom = consoleDiv.scrollTop + consoleDiv.clientHeight === consoleDiv.scrollHeight;
+                var isScrolledToBottom = consoleDiv.scrollHeight - consoleDiv.scrollTop - consoleDiv.clientHeight < scrollTolerance;
 
                 // Add the log entry to the console
                 consoleDiv.appendChild(logEntry);
