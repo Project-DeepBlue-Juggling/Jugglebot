@@ -140,28 +140,6 @@ class PatternCreator(Node):
             # Print the pose and timestamp in an easy to read manner
             # self.get_logger().info(f'x: {x_values[i]:.2f}, y: {y_values[i]:.2f}, z: {z_offset:.2f}, t: {t:.2f}, phi: {phi[i]:.2f}, theta: {theta[i]:.2f}')
 
-        # # Convert euler angles to quaternions 
-        # q_roll = quaternion.from_rotation_vector([0, 0, phi])
-        # q_pitch = quaternion.from_rotation_vector([0, theta, 0])
-        # q_yaw = quaternion.from_rotation_vector([0, 0, 0])
-
-        # self.get_logger().info(f'q_roll: {q_roll[-1]}, q_pitch: {q_pitch[-1]}, q_yaw: {q_yaw[-1]}')
-
-        # quaternion_ori = q_roll * q_pitch * q_yaw
-
-        # path = []
-        # for x_pos, y_pos, time, x_ang, y_ang in zip(x_values, y_values, timestamps, theta, phi):
-        #     pose = Pose()
-        #     pose.position.x = x_pos
-        #     pose.position.y = y_pos
-        #     pose.position.z = z_offset
-        #     pose.orientation.x = quaternion_ori.x
-        #     # pose.orientation.y = y_ang
-        #     path.append((pose, time))
-
-        #     # Print the pose and timestamp in an easy to read manner
-        #     self.get_logger().info(f'x: {pose.position.x:.2f}, y: {pose.position.y:.2f}, z: {pose.position.z:.2f}, t: {time:.2f}, x_ang: {x_ang:.2f}, y_ang: {y_ang:.2f}')
-
         self.next_path = path
         
     def publish_pose(self):
