@@ -25,8 +25,8 @@ function initROS() {
     // Subscribe to /robot_plotter_topic 
     var listener = new ROSLIB.Topic({
         ros: ros,
-        name: '/jugglebot/robot_plotter_topic',
-        messageType: '/jugglebot_interfaces/RobotPlotterMessage'
+        name: 'robot_plotter_topic',
+        messageType: 'jugglebot_interfaces/msg/RobotPlotterMessage'
     });
 
     const throttledUpdatePlot = throttle(updateScene, 10); // Throttle the updatePlot function (delay is in ms)

@@ -127,7 +127,15 @@ class SPInverseKinematics(Node):
 
         # Check if the arrays had to be changed. Log a warning or error if so
         if not np.array_equal(leg_lens_mm[:6], clipped_leg_lengths):
-            self.get_logger().warn(f'Leg lengths had to be truncated!')
+            too_short = np.any(leg_lens_mm[:6] < 0)
+            too_long = np.any(leg_lens_mm[:6] > self.leg_stroke)
+            
+            if too_short and too_long:
+                self.get_logger().error(f'Leg lengths were both too short and too long!')
+            elif too_short:
+                self.get_logger().error(f'Leg lengths were too short!')
+            elif too_long:
+                self.get_logger().error(f'Leg lengths were too long!')
 
         if leg_lens_mm[6] != clipped_hand_length:
             self.get_logger().error(f'Hand string is overextended! Desired length: {leg_lens_mm[6]}')

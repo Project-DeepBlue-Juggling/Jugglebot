@@ -11,7 +11,7 @@ from .can_handler import CANHandler
 
 class CANBusHandlerNode(Node):
     def __init__(self):
-        super().__init__('can_bus_manager')
+        super().__init__('can_bus_handler_node')
         
         self.can_handler = CANHandler(logger=self.get_logger())
 
@@ -48,7 +48,7 @@ class CANBusHandlerNode(Node):
         self.can_handler.register_callback('motor_iqs', self.publish_motor_iqs)
 
         # Initialize a timer to poll the CAN bus
-        self.timer_canbus = self.create_timer(timer_period_sec=0.01, callback=self._poll_can_bus)
+        self.timer_canbus = self.create_timer(timer_period_sec=0.001, callback=self._poll_can_bus)
 
     #########################################################################################################
     #                                     Interfacing with the CAN bus                                      #
@@ -154,7 +154,7 @@ class CANBusHandlerNode(Node):
     #########################################################################################################
 
     def robot_state_callback(self, msg):
-        if msg.is_homed:
+        if msg.is_homed and not self.is_homed: # If the robot has just been homed, update the flag
             self.is_homed = True
 
     def publish_motor_positions(self, position_data):

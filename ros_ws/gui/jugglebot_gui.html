@@ -99,7 +99,10 @@
                     logEntry.style.backgroundColor = '#ffcccc'; // Light red background
                     logEntry.style.padding = '2px';
                 }
-                
+
+                // Check if the console is scrolled to the bottom before adding new message
+                var isScrolledToBottom = consoleDiv.scrollTop + consoleDiv.clientHeight === consoleDiv.scrollHeight;
+
                 // Add the log entry to the console
                 consoleDiv.appendChild(logEntry);
 
@@ -108,8 +111,12 @@
                     consoleDiv.removeChild(consoleDiv.firstChild);
                 }
 
-                // Scroll to the bottom of the console
-                consoleDiv.scrollTop = consoleDiv.scrollHeight;
+                // Use requestAnimationFrame to defer the scrolling
+                requestAnimationFrame(function() {
+                    if (isScrolledToBottom) {
+                        consoleDiv.scrollTop = consoleDiv.scrollHeight;
+                    }
+                });
             });
             
             // ################################################################## //
@@ -222,7 +229,8 @@
                         var row = tableBody.insertRow();
 
                         // Remove '/jugglebot' prefix from topic name, if it exists
-                        var displayTopicName = topic.startsWith('/jugglebot') ? topic.substring('/jugglebot'.length) : topic;
+                        // var displayTopicName = topic.startsWith('/jugglebot') ? topic.substring('/jugglebot'.length) : topic;
+                        var displayTopicName = topic;
 
                         // Topic Name
                         var cellTopic = row.insertCell(0);
@@ -265,14 +273,19 @@
 
             var robotStateTopic = new ROSLIB.Topic({
                 ros : ros,
-                name : '/jugglebot/robot_state_topic',
-                messageType : '/jugglebot_interfaces/RobotStateMessage'
+                name : 'robot_state_topic',
+                messageType : 'jugglebot_interfaces/msg/RobotStateMessage'
             });
 
             robotStateTopic.subscribe(function(message) {
-                // Update the GUI
+                // If the robot is homed, enable the control mode buttons
                 if (message.is_homed) {
                     document.getElementById('spacemouse-control-button').disabled = false;
+                    document.getElementById('pattern-control-button').disabled = false;
+                    document.getElementById('jogging-control-button').disabled = false;
+                }
+                else {
+                    console.log(message);
                 }
             });
 
@@ -282,7 +295,7 @@
 
             var poseTopic = new ROSLIB.Topic({
                 ros : ros,
-                name : '/jugglebot/platform_pose_topic',
+                name : 'platform_pose_topic',
                 messageType : '/geometry_msgs/Pose'
             });
 
@@ -332,8 +345,8 @@
             function sendControlMode(mode) {
                 var cmdTopic = new ROSLIB.Topic({
                     ros : ros,
-                    name : '/jugglebot/control_state_topic',
-                    messageType : 'std_msgs/String'
+                    name : 'control_state_topic',
+                    messageType : 'std_msgs/msg/String'
                 });
 
                 var message = new ROSLIB.Message({
@@ -349,7 +362,7 @@
 
             var odriveService = new ROSLIB.Service({
                 ros : ros,
-                name : '/jugglebot/odrive_command',
+                name : 'odrive_command',
                 serviceType : 'jugglebot_interfaces/srv/ODriveCommandService'
             });
 
@@ -370,11 +383,11 @@
             // ################################################################## //
 
             document.getElementById('home-btn').addEventListener('click', function() {
-                callTriggerService('/jugglebot/home_robot');
+                callTriggerService('/home_robot');
             });
 
             document.getElementById('end-session-btn').addEventListener('click', function() {
-                callTriggerService('/jugglebot/end_session');
+                callTriggerService('/end_session');
             });
 
             document.getElementById('odrive-reboot-btn').addEventListener('click', function() {
@@ -393,27 +406,40 @@
                 });
             });
 
-            let isSpacemouseControl = false; // Initial state is 'gui' control
+            // Define an array of control modes
+            const controlModes = ['spacemouse', 'jogging', 'pattern'];
 
-            document.getElementById('spacemouse-control-button').addEventListener('click', function() {
-                if (this.disabled) {
-                    return; // Do nothing if button is disabled (robot not homed)
-                }
+            // Initialize the control state to null
+            var control_state = null;
 
-                isSpacemouseControl = !isSpacemouseControl;  // Toggle state
-                
-                if (isSpacemouseControl) {
-                    this.innerHTML = 'Switch to GUI Control';
-                    this.style.backgroundColor = '#4CAF50'  // Green for Spacemouse control
+            // Define a function to handle button clicks
+            function handleButtonClick(mode) {
+                return function() {
+                    if (this.disabled || control_state === mode) {
+                        return; // Do nothing if button is disabled or already in this control mode
+                    }
+
+                    // Switch to the selected control mode
+                    control_state = mode;
+                    this.style.backgroundColor = '#4CAF50'; // Green for active control mode
+
                     // Send command to ROS
-                    sendControlMode('spacemouse');
-                } else {
-                    this.innerHTML = 'Switch to Spacemouse Control';
-                    this.style.backgroundColor = '#f44336'  // Red for GUI control
-                    // Send command to ROS
-                    sendControlMode('gui');
-                }
-            });           
+                    sendControlMode(mode);
+
+                    // Grey-out the other buttons
+                    controlModes.forEach(otherMode => {
+                        if (otherMode !== mode) {
+                            document.getElementById(`${otherMode}-control-button`).style.backgroundColor = '#aaaaaa';
+                        }
+                    });
+                };
+            }
+
+            // Attach the event listeners
+            controlModes.forEach(mode => {
+                document.getElementById(`${mode}-control-button`).addEventListener('click', handleButtonClick(mode));
+            });
+            
   
             // To clear the console
             document.getElementById('clear-console-btn').addEventListener('click', function() {
@@ -428,6 +454,36 @@
             // document.getElementById('jog-y-neg').addEventListener('click', function() {adjustPose(0, -0.1, 0);});
             // document.getElementById('jog-z-pos').addEventListener('click', function() {adjustPose(0, 0, 0.1);});
             // document.getElementById('jog-z-neg').addEventListener('click', function() {adjustPose(0, 0, -0.1);});
+        
+            // ################################################################## //
+            //                           Slider Listeners                         //
+            // ################################################################## //
+
+            var slidersTopic = new ROSLIB.Topic({
+                ros : ros,
+                name : 'pattern_control_topic',
+                messageType : 'jugglebot_interfaces/msg/PatternControlMessage'
+            });
+
+            function publishSliderValues() {
+                var message = new ROSLIB.Message({
+                    radius: Number(document.getElementById('slider-radius').value),
+                    freq: Number(document.getElementById('slider-freq').value),
+                    z_offset: Number(document.getElementById('slider-z-offset').value),
+                    cone_height: Number(document.getElementById('slider-cone-height').value)
+                });
+
+                slidersTopic.publish(message);
+            }
+
+            // Add event listeners to the sliders
+            ['slider-radius', 'slider-freq', 'slider-z-offset', 'slider-cone-height'].forEach(sliderId => {
+                document.getElementById(sliderId).addEventListener('input', function() {
+                    var sliderValue = document.getElementById(`${sliderId}-value`);
+                    sliderValue.textContent = this.value;
+                    publishSliderValues();
+                });
+            });
         };
     </script>
 
@@ -439,7 +495,7 @@
             flex-direction: column; /* Stack items vertically */
         }
 
-        #top-row, #bottom-row {
+        #container-row {
             display: flex;
             justify-content: flex-start;
             margin-bottom: 10px;
@@ -447,8 +503,8 @@
 
         /* Style for the 3D plotter */
         #plot-3d {
-            width: 800px;
-            height: 600px;
+            width: 1000px;
+            height: 720px;
             border: 2px solid #000000; /* Border color and thickness */
             background-color: #f5f5f5; /* Background color of the box */
             margin: 10px; /* Space outside the box */
@@ -468,7 +524,7 @@
 
         /* Style for the ROS logging console */
         #ros-console {
-            width: 1000px;
+            width: 980px;
             height: 200px;
             overflow-y: scroll;
             border: 2px solid #000000; /* Border color and thickness */
@@ -564,14 +620,27 @@
         }
 
         /* Style for the control buttons */
-        #control-buttons, #odrive-buttons {
+        #control-buttons {
             display: flex; /* Make the div element a flex container */
             flex-direction: column; /*Stack items vertically */
             width: fit-content;
             align-items: center; /* Center items vertically */
             border: 2px solid #000000; /* Border color and thickness */
-            padding: 10px; /* Space inside the box */
-            margin: 10px; /* Space outside the box */
+            padding: 5px; /* Space inside the box */
+            margin: 5px; /* Space outside the box */
+            background-color: #f5f5f5; /* Background color of the box */
+        }
+
+        /* Style for the odrive command buttons */
+        #odrive-buttons {
+            display: flex; /* Make the div element a flex container */
+            flex-direction: column; /*Stack items vertically */
+            font-size: 0.8em; /* Make the text smaller */
+            width: fit-content;
+            align-items: center; /* Center items vertically */
+            border: 2px solid #000000; /* Border color and thickness */
+            padding: 5px; /* Space inside the box */
+            margin: 5px; /* Space outside the box */
             background-color: #f5f5f5; /* Background color of the box */
         }
 
@@ -602,14 +671,14 @@
         }
 
         /* Style for the jogging buttons container */
-        #jogging-buttons {
+        #jogging-buttons, #control-mode-buttons {
             display: flex; /* Make the div element a flex container */
             width: fit-content;
             flex-direction: column; /* Stack rows vertically */
             align-items: center; /* Center rows horizontally */
             border: 2px solid #3f3f3f; /* Border color and thickness */
-            padding: 10px; /* Space inside the box */
-            margin: 10px; /* Space outside the box */
+            padding: 5px; /* Space inside the box */
+            margin: 5px; /* Space outside the box */
             background-color: #f5f5f5; /* Background color of the box */
         }
 
@@ -660,12 +729,50 @@
             /* Style for the text */
             font-size: 16px; /* Text size */
         }
+
+        /* Style for the pattern control sliders */
+        /* Style for the pattern control sliders container */
+        #pattern-control-sliders {
+            text-align: center; /* Center align everything */
+            border: 2px solid #000000; /* Add border around the container */
+            padding: 10px; /* Padding inside the box */
+            margin: 5px auto; /* Center the box with automatic horizontal margins */
+            width: 80%; /* Adjust width as needed */
+        }
+
+        #pattern-control-sliders h3 {
+            margin-top: 10px; /* Minimal space above heading */
+            margin-bottom: 10px; /* Minimal space below heading */
+        }
+
+        #pattern-control-sliders div {
+            display: flex;
+            justify-content: flex-start;
+            align-items: center;
+            margin-bottom: 10px; /* Space between each slider div */
+        }
+
+        /* Style for labels */
+        #pattern-control-sliders label {
+            flex: 0 0 30%; /* Label takes up 30% of the space, not growing or shrinking */
+            text-align: left; /* Align the text to the left */
+        }
+
+        /* Style for sliders */
+        #pattern-control-sliders input[type="range"] {
+            flex-grow: 1; /* Slider takes the remaining space */
+        }
+
+        /* Style for slider values */
+        #pattern-control-sliders span {
+            margin-left: 10px; /* Space between slider and its value */
+        }
     </style>
 </head>
 <body>
     <div id="main-container">
 
-        <div id="top-row">
+        <div id="container-row">
             <!-- 3D Plotter -->
             <div id="plot-3d"></div>
 
@@ -673,40 +780,79 @@
             <div id="button-container">
                 <!-- Control buttons -->
                 <div id="control-buttons">
-                    <!-- Container for the first two buttons -->
+                    <!-- Container for the first two buttons (Home and End Session)-->
                     <div class="button-row">
                         <button id="home-btn">
                             <span class="button-icon"><i class="fa-solid fa-house-chimney"></i></span>
                             <span class="button-text">Home</span>
                         </button>
                         <button id="end-session-btn">
-                            <span class="button-icon"><i class="fa-solid fa-power-off"></i></span>
+                            <span class="button-icon"><i class="fa-solid fa-skull"></i></span>
                             <span class="button-text">End Session</span>
                         </button>
                     </div>
-                
-                    <!-- Container for the spacemouse control button -->
-                    <div class="button-row">
-                        <button id="spacemouse-control-button" disabled>Switch to SpaceMouse Control</button>
-                    </div>
                 </div>
                 
-                <!-- Jogging buttons -->
-                <div id="jogging-buttons">
-                    <!-- Add a title to the jog button group -->
-                    <h3>Jogging</h3>
-                    <div class="button-row">
-                        <button id="jog-x-pos">Jog X+</button>
-                        <button id="jog-x-neg">Jog X-</button>
+                <!-- Row for Jogging and Control Mode buttons -->
+                <div id="container-row">
+                    <!-- Jogging buttons -->
+                    <div id="jogging-buttons">
+                        <!-- Add a title to the jog button group -->
+                        <h3>Jogging</h3>
+                        <div class="button-row">
+                            <button id="jog-x-pos">X +</button>
+                            <button id="jog-x-neg">X -</button>
+                        </div>
+                        <div class="button-row">
+                            <button id="jog-y-pos">Y +</button>
+                            <button id="jog-y-neg">Y -</button>
+                        </div>
+                        <div class="button-row">
+                            <button id="jog-z-pos">Z +</button>
+                            <button id="jog-z-neg">Z -</button>
+                        </div>
                     </div>
-                    <div class="button-row">
-                        <button id="jog-y-pos">Jog Y+</button>
-                        <button id="jog-y-neg">Jog Y-</button>
+
+                    <!-- Container for the spacemouse control button -->
+                    <div id="control-mode-buttons">
+                        <h3>Control Mode</h3>
+                        <button id="jogging-control-button" disabled>Jogging</button>
+                        <button id="spacemouse-control-button" disabled>SpaceMouse</button>
+                        <button id="pattern-control-button" disabled>Pattern</button>
                     </div>
-                    <div class="button-row">
-                        <button id="jog-z-pos">Jog Z+</button>
-                        <button id="jog-z-neg">Jog Z-</button>
+                </div>
+
+                <!-- Row for sliders used with the pattern control mode -->
+                <div id="pattern-control-sliders">
+                    <h3>Pattern Control</h3>
+                    <!-- Slider for radius of pattern -->
+                    <div>
+                        <label for="slider-radius">Radius (mm):</label>
+                        <input type="range" id="slider-radius" name="slider-radius" min="0" max="140" value="10.0">
+                        <span id="slider-radius-value">10.0</span>
                     </div>
+
+                    <!-- Slider for frequency of pattern -->
+                    <div>
+                        <label for="slider-freq">Freq (Hz):</label>
+                        <input type="range" id="slider-freq" name="slider-freq" min="0.05" max="1.0" value="0.1" step="0.05">
+                        <span id="slider-freq-value">0.1</span>
+                    </div>
+
+                    <!-- Slider for z-offset of pattern -->
+                    <div>
+                        <label for="slider-z-offset">z offset (mm):</label>
+                        <input type="range" id="slider-z-offset" name="slider-z-offset" min="50" max="200" value="120.0" step="10.0">
+                        <span id="slider-z-offset-value">120.0</span>
+                    </div>
+
+                    <!-- Slider for cone height -->
+                    <div>
+                        <label for="slider-cone-height">Cone height (mm):</label>
+                        <input type="range" id="slider-cone-height" name="slider-cone-height" min="50" max="1000" value="150.0" step="10.0">
+                        <span id="slider-cone-height-value">150.0</span>
+                    </div>
+
                 </div>
 
                 <!-- Buttons for interfacing with the ODrives -->
@@ -742,7 +888,7 @@
             </div>
         </div>
 
-        <div id="bottom-row">
+        <div id="container-row">
             <!-- ROS Logging Console -->
             <div id="ros-console" ></div>
         

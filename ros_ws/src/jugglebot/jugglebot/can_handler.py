@@ -146,6 +146,7 @@ class CANHandler:
 
             if self.last_heartbeat_time and time.time() - self.last_heartbeat_time < 1.0:
                 # If a heartbeat message has been received in the last second
+                self.ROS_logger.info('Heartbeat received!')
                 return
 
             time.sleep(0.1)

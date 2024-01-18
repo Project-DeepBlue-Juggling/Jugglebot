@@ -1,6 +1,5 @@
 # Custom message for relaying the state of the robot
 # The robot can be homed, empty or holding.
-# If empty or holding, the 
 
 bool is_homed
 string status  # eg. 'holding', 'empty', 'waiting'

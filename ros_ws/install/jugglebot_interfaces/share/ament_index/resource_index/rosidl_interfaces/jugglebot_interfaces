@@ -1,3 +1,5 @@
+msg/PatternControlMessage.idl
+msg/PatternControlMessage.msg
 msg/RobotPlotterMessage.idl
 msg/RobotPlotterMessage.msg
 msg/RobotStateMessage.idl

@@ -30,6 +30,8 @@ setup(
             'platform_plotter = jugglebot.platform_plotter:main',
             'can_bus_handler_node = jugglebot.can_bus_handler_node:main',
             'state_manager_node = jugglebot.state_manager_node:main',
+            'pattern_creator = jugglebot.pattern_creator:main',
+            # 'statistics_collector_node = jugglebot.statistics_collector_node:main',
         ],
     },
 )

@@ -78,9 +78,16 @@ class SpaceMouseHandler(Node):
         self.publisher_.publish(pose)
 
     def control_state_callback(self, msg):
-        # Check if the spacemouse is enabled
-        self.spacemouse_enabled = msg.data == 'spacemouse'
+        # If the incoming state calls for the spacemouse, enable it
+        if msg.data == 'spacemouse' and not self.spacemouse_enabled:
+            self.get_logger().info('Spacemouse enabled')
+            self.spacemouse_enabled = True
 
+        elif msg.data != 'spacemouse' and self.spacemouse_enabled:
+            self.get_logger().info('Spacemouse disabled')
+            self.spacemouse_enabled = False
+            
+        
     def end_session(self, request, response):
         # The method that's called when a user clicks "End Session" in the GUI
         raise SystemExit

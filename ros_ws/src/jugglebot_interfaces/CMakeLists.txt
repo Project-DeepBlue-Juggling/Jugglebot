@@ -27,6 +27,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/ODriveCommandService.srv"
   "msg/RobotStateMessage.msg"
   "msg/RobotPlotterMessage.msg"
+  "msg/PatternControlMessage.msg"
   DEPENDENCIES geometry_msgs
 )
 
