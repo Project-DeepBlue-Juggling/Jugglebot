@@ -282,10 +282,29 @@
 
             robotStateTopic.subscribe(function(message) {
                 // If the robot is homed, enable the control mode buttons
+                var homeButton = document.getElementById('home-btn');
+                var homeButtonIcon = homeButton.querySelector('.button-icon i');
+
                 if (message.is_homed) {
                     document.getElementById('spacemouse-control-button').disabled = false;
                     document.getElementById('pattern-control-button').disabled = false;
                     document.getElementById('jogging-control-button').disabled = false;
+
+                    // Change the "home" button, since we no longer need to home the robot
+                    homeButton.querySelector('.button-text').textContent = 'Center Robot';
+                    homeButtonIcon.className = 'fa-solid fa-crosshairs';
+                    homeButton.setAttribute('is-homed', 'true');
+                }
+                else if (!message.is_homed) {
+                    // If the robot is not homed, disable the control mode buttons
+                    document.getElementById('spacemouse-control-button').disabled = true;
+                    document.getElementById('pattern-control-button').disabled = true;
+                    document.getElementById('jogging-control-button').disabled = true;
+
+                    // Change the "home" button, since we need to home the robot
+                    homeButton.querySelector('.button-text').textContent = 'Home';
+                    homeButtonIcon.className = 'fa-solid fa-house-chimney';
+                    homeButton.setAttribute('is-homed', 'false');
                 }
                 else {
                     console.log(message);
@@ -299,7 +318,7 @@
             var poseTopic = new ROSLIB.Topic({
                 ros : ros,
                 name : 'platform_pose_topic',
-                messageType : '/geometry_msgs/Pose'
+                messageType : 'geometry_msgs/msg/Pose'
             });
 
             // Initialize current pose to null
@@ -310,11 +329,46 @@
                 currentPose = message;
             });
 
+            // Method to adjust the current pose
             function adjustPose(deltaX, deltaY, deltaZ) {
                 if (currentPose) {
                     currentPose.position.x += deltaX;
                     currentPose.position.y += deltaY;
                     currentPose.position.z += deltaZ;
+                }
+
+                console.log(currentPose)
+
+                // Publish the new pose
+                poseTopic.publish(currentPose);
+            }
+
+            // Method to set the current pose
+            function setPose(x, y, z) {
+                if (currentPose) {
+                    currentPose.position.x = x;
+                    currentPose.position.y = y;
+                    currentPose.position.z = z;
+                    currentPose.orientation.x = 0; // Just have flat orientation for now
+                    currentPose.orientation.y = 0;
+                    currentPose.orientation.z = 0;
+                    currentPose.orientation.w = 1;
+                }
+                else {
+                    // If currentPose is null, construct a new pose message
+                    currentPose = new ROSLIB.Message({
+                        position: {
+                            x: x,
+                            y: y,
+                            z: z
+                        },
+                        orientation: {
+                            x: 0,
+                            y: 0,
+                            z: 0,
+                            w: 1
+                        }
+                    });
                 }
 
                 // Publish the new pose
@@ -325,6 +379,7 @@
             //                     Calling a Trigger Service                      //
             // ################################################################## //
 
+            // A few services are Trigger types, so reuse this function
             function callTriggerService(serviceName) {
                 var service = new ROSLIB.Service({
                     ros : ros,
@@ -386,7 +441,22 @@
             // ################################################################## //
 
             document.getElementById('home-btn').addEventListener('click', function() {
-                callTriggerService('/home_robot');
+                var isHomed = this.getAttribute('is-homed');
+
+                if (isHomed === 'true') {
+                    // If the robot is homed, send a command to center the robot
+                    setPose(0, 0, 140);
+                }
+                else if (isHomed === 'false') {
+                    // If the robot is not homed, send a command to home the robot
+                    callTriggerService('/home_robot');
+
+                    // Also send a pose command so the topic isn't empty
+                    setPose(0, 0, 0);
+                }
+                else {
+                    console.log('Invalid isHomed value: ', isHomed);
+                }
             });
 
             document.getElementById('end-session-btn').addEventListener('click', function() {
@@ -415,8 +485,8 @@
             // Initialize the control state to null
             var control_state = null;
 
-            // Define a function to handle button clicks
-            function handleButtonClick(mode) {
+            // Define a function to handle control button clicks
+            function handleControlButtonClick(mode) {
                 return function() {
                     if (this.disabled || control_state === mode) {
                         return; // Do nothing if button is disabled or already in this control mode
@@ -432,18 +502,25 @@
                     // Grey-out the other buttons
                     controlModes.forEach(otherMode => {
                         if (otherMode !== mode) {
-                            document.getElementById(`${otherMode}-control-button`).style.backgroundColor = '#aaaaaa';
+                            document.getElementById(`${otherMode}-control-button`).style.backgroundColor = '#aaaaaa'; // AHHHH!
                         }
                     });
+
+                    // If selected mode is not jogging, disable the jogging buttons
+                    if (mode !== 'jogging') {
+                        setJoggingButtonsEnabled(false);
+                    }
+                    else {
+                        setJoggingButtonsEnabled(true);
+                    }
                 };
             }
 
-            // Attach the event listeners
+            // Attach the event listeners to the control mode buttons (Jogging, Spacemouse, Pattern etc) 
             controlModes.forEach(mode => {
-                document.getElementById(`${mode}-control-button`).addEventListener('click', handleButtonClick(mode));
+                document.getElementById(`${mode}-control-button`).addEventListener('click', handleControlButtonClick(mode));
             });
             
-  
             // To clear the console
             document.getElementById('clear-console-btn').addEventListener('click', function() {
                 var consoleDiv = document.getElementById('ros-console');
@@ -451,12 +528,21 @@
             });
             
             // For jogging buttons
-            // document.getElementById('jog-x-pos').addEventListener('click', function() {adjustPose(0.1, 0, 0);});
-            // document.getElementById('jog-x-neg').addEventListener('click', function() {adjustPose(-0.1, 0, 0);});
-            // document.getElementById('jog-y-pos').addEventListener('click', function() {adjustPose(0, 0.1, 0);});
-            // document.getElementById('jog-y-neg').addEventListener('click', function() {adjustPose(0, -0.1, 0);});
-            // document.getElementById('jog-z-pos').addEventListener('click', function() {adjustPose(0, 0, 0.1);});
-            // document.getElementById('jog-z-neg').addEventListener('click', function() {adjustPose(0, 0, -0.1);});
+            var amountToJogBy = 10.0 // mm
+
+            function setJoggingButtonsEnabled(enabled) {
+                var joggingButtons = document.querySelectorAll('#jogging-buttons button');
+                joggingButtons.forEach(button => {
+                    button.disabled = !enabled;
+                });
+            }
+
+            document.getElementById('jog-x-pos').addEventListener('click', function() {adjustPose(amountToJogBy, 0, 0);});
+            document.getElementById('jog-x-neg').addEventListener('click', function() {adjustPose(-amountToJogBy, 0, 0);});
+            document.getElementById('jog-y-pos').addEventListener('click', function() {adjustPose(0, amountToJogBy, 0);});
+            document.getElementById('jog-y-neg').addEventListener('click', function() {adjustPose(0, -amountToJogBy, 0);});
+            document.getElementById('jog-z-pos').addEventListener('click', function() {adjustPose(0, 0, amountToJogBy);});
+            document.getElementById('jog-z-neg').addEventListener('click', function() {adjustPose(0, 0, -amountToJogBy);});
         
             // ################################################################## //
             //                           Slider Listeners                         //
@@ -519,7 +605,7 @@
             flex-direction: column; /* Stack items vertically */
             align-items: center; /* Center items horizontally */
             border: 2px solid #000000; /* Border color and thickness */
-            width: 360px;
+            width: 380px;
             padding: 5px; /* Space inside the box */
             margin: 10px; /* Space outside the box */
             background-color: #f5f5f5; /* Background color of the box */
@@ -673,6 +759,12 @@
             background-color: rgb(92, 92, 255);
         }
 
+        /* Style for disabled jog buttons */
+        #jog-x-pos:disabled, #jog-x-neg:disabled, #jog-y-pos:disabled, #jog-y-neg:disabled, #jog-z-pos:disabled, #jog-z-neg:disabled {
+            filter:saturate(50%); /* Grey out the buttons */
+            color: #f7f7f7; /* Darker text color */
+        }
+
         /* Style for the jogging buttons container */
         #jogging-buttons, #control-mode-buttons {
             display: flex; /* Make the div element a flex container */
@@ -744,8 +836,8 @@
         }
 
         #pattern-control-sliders h3 {
-            margin-top: 10px; /* Minimal space above heading */
-            margin-bottom: 10px; /* Minimal space below heading */
+            margin-top: 5px; /* Minimal space above heading */
+            margin-bottom: 5px; /* Minimal space below heading */
         }
 
         #pattern-control-sliders div {
@@ -779,7 +871,7 @@
             <!-- 3D Plotter -->
             <div id="plot-3d"></div>
 
-            <!-- Button Container -->
+            <!-- Button (and slider) Container -->
             <div id="button-container">
                 <!-- Control buttons -->
                 <div id="control-buttons">
@@ -803,16 +895,16 @@
                         <!-- Add a title to the jog button group -->
                         <h3>Jogging</h3>
                         <div class="button-row">
-                            <button id="jog-x-pos">X +</button>
-                            <button id="jog-x-neg">X -</button>
+                            <button id="jog-x-pos" disabled>X +</button>
+                            <button id="jog-x-neg" disabled>X -</button>
                         </div>
                         <div class="button-row">
-                            <button id="jog-y-pos">Y +</button>
-                            <button id="jog-y-neg">Y -</button>
+                            <button id="jog-y-pos" disabled>Y +</button>
+                            <button id="jog-y-neg" disabled>Y -</button>
                         </div>
                         <div class="button-row">
-                            <button id="jog-z-pos">Z +</button>
-                            <button id="jog-z-neg">Z -</button>
+                            <button id="jog-z-pos" disabled>Z +</button>
+                            <button id="jog-z-neg" disabled>Z -</button>
                         </div>
                     </div>
 
@@ -831,22 +923,22 @@
                     <!-- Slider for radius of pattern -->
                     <div>
                         <label for="slider-radius">Radius (mm):</label>
-                        <input type="range" id="slider-radius" name="slider-radius" min="0" max="140" value="10.0">
-                        <span id="slider-radius-value">10.0</span>
+                        <input type="range" id="slider-radius" name="slider-radius" min="0" max="140" value="100.0" step="5.0">
+                        <span id="slider-radius-value">100.0</span>
                     </div>
 
                     <!-- Slider for frequency of pattern -->
                     <div>
                         <label for="slider-freq">Freq (Hz):</label>
-                        <input type="range" id="slider-freq" name="slider-freq" min="0.05" max="1.0" value="0.1" step="0.05">
-                        <span id="slider-freq-value">0.1</span>
+                        <input type="range" id="slider-freq" name="slider-freq" min="0.05" max="1.0" value="0.5" step="0.05">
+                        <span id="slider-freq-value">0.5</span>
                     </div>
 
                     <!-- Slider for z-offset of pattern -->
                     <div>
                         <label for="slider-z-offset">z offset (mm):</label>
-                        <input type="range" id="slider-z-offset" name="slider-z-offset" min="50" max="200" value="120.0" step="10.0">
-                        <span id="slider-z-offset-value">120.0</span>
+                        <input type="range" id="slider-z-offset" name="slider-z-offset" min="50" max="200" value="140.0" step="10.0">
+                        <span id="slider-z-offset-value">140.0</span>
                     </div>
 
                     <!-- Slider for cone height -->

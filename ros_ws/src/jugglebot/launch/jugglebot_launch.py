@@ -11,7 +11,7 @@ def generate_launch_description():
         'spacemouse_handler',
         'platform_plotter',
         'sp_ik',
-        'can_bus_handler_node',
+        # 'can_bus_handler_node',
         'state_manager_node',
         'pattern_creator',
         # 'statistics_collector_node',  # Not using this for now. Unsure of its utility.
