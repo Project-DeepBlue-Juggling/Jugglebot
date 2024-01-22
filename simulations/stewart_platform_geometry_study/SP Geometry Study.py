@@ -1,6 +1,9 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+from scipy.spatial import ConvexHull
+import os
+import json
 # import alphashape
 
 
@@ -194,6 +197,57 @@ def plot_results(ROM_Centroid, plat_nodes, base_nodes, ptlist, valid_pt_list, he
     # ax2.set_ylim([-250, 250])
 
 
+def plot_convex_hull(points):
+    """
+    Plots the convex hull of a given set of 3D points.
+
+    :param points: A numpy array of shape (n, 3), where n is the number of points.
+    """
+    # Compute the convex hull
+    hull = ConvexHull(points)
+
+    # Create a 3D plot
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')
+
+    # Plot the original points
+    ax.scatter(points[:,0], points[:,1], points[:,2], color='blue', alpha=0.5)
+
+    # Plot the vertices of the convex hull
+    for simplex in hull.simplices:
+        ax.plot3D(points[simplex, 0], points[simplex, 1], points[simplex, 2], 'r-')
+
+    # Set labels and show the plot
+    ax.set_xlabel('X axis')
+    ax.set_ylabel('Y axis')
+    ax.set_zlabel('Z axis')
+    plt.title('3D Convex Hull')
+
+
+def export_hull_as_json(points, faces, filename='convex_hull_points.json'):
+    """
+    Exports a set of points as a JSON file.
+
+    :param points: A numpy array of shape (n, 3), where n is the number of points.
+    :param filename: The name of the file to save the points to.
+    """
+    script_dir = os.path.dirname(__file__)  # <-- absolute dir this script is in
+    filename_full = os.path.join(script_dir, filename)
+
+    # Convert the points to a list of lists
+    points_list = points.tolist()
+
+    # Create a dictionary to store the points
+    points_dict = {
+        'vertices': points_list,
+        'faces': faces
+        }
+
+    # Export the points to a JSON file
+    with open(filename_full, 'w') as outfile:
+        json.dump(points_dict, outfile)
+
+
 def compute_reachability_of_hemisphere(ROM_Centroid, ptlist, valid_pt_list, hemisphere_pts):
     z_offset_mov_area = ROM_Centroid[2] * 1.1
 
@@ -314,7 +368,7 @@ hand_xy_span = 600  # mm
 hand_z_span = 200  # mm
 
 # Points in point cloud
-numPoints = int(1e6)  # Number of points to check
+numPoints = int(1e5)  # Number of points to check
 
 # Structure input data
 movLimits = [shortLeg, longLeg, legAngleLimit]
@@ -322,6 +376,14 @@ movLimits = [shortLeg, longLeg, legAngleLimit]
 plat_nodes, base_nodes = platform_builder(baseRad, platRad, baseSmallAngle, platSmallAngle)
 pt_cloud = generate_point_cloud(numPoints, shortLeg, longLeg)
 reach_rate, valid_pt_list = compute_reachability(pt_cloud, plat_nodes, base_nodes, movLimits)
+
+# Get points in the convex hull of the valid points
+hull = ConvexHull(valid_pt_list)
+hull_pts = hull.points[hull.vertices, :]
+hull_faces=hull.simplices.tolist()
+
+plot_convex_hull(hull_pts)
+export_hull_as_json(hull_pts, hull_faces)
 
 # check_necessary_num_pts_in_cloud()
 
