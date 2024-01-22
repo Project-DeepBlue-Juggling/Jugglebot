@@ -361,14 +361,14 @@ shortLeg = 691.49  # Shortest length of leg (mm) # Is correct for Leg_V3_Inline_
 extLeg = 280.0   # Extension of leg (mm)
 longLeg = shortLeg + extLeg  # Longest length of leg (mm)
 # longLeg = 950  # Longest length of leg (mm) [Use either this or above] # Is correct for Leg_V3_Inline_Motor
-legAngleLimit = 45  # Limit of how far the ball joints allow the legs to tilt wrt x-y plane (deg) # GUESS
+legAngleLimit = 20  # Limit of how far the ball joints allow the legs to tilt wrt x-y plane (deg) # GUESS
 
 # Parameters for "desired volume" hemisphere
 hand_xy_span = 600  # mm
 hand_z_span = 200  # mm
 
 # Points in point cloud
-numPoints = int(1e5)  # Number of points to check
+numPoints = int(1e8)  # Number of points to check
 
 # Structure input data
 movLimits = [shortLeg, longLeg, legAngleLimit]
@@ -380,7 +380,12 @@ reach_rate, valid_pt_list = compute_reachability(pt_cloud, plat_nodes, base_node
 # Get points in the convex hull of the valid points
 hull = ConvexHull(valid_pt_list)
 hull_pts = hull.points[hull.vertices, :]
-hull_faces=hull.simplices.tolist()
+
+# Map from old indices (in valid_pt_list) to new indices (in hull_pts)
+index_map = {old_idx: new_idx for new_idx, old_idx in enumerate(hull.vertices)}
+
+# Remap the face indices
+hull_faces = [[index_map[vertex_idx] for vertex_idx in face] for face in hull.simplices]
 
 plot_convex_hull(hull_pts)
 export_hull_as_json(hull_pts, hull_faces)
