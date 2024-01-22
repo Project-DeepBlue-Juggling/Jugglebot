@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-import alphashape
+# import alphashape
 
 
 def platform_builder(base_rad, plat_rad, base_small_angle, plat_small_angle):
@@ -155,9 +155,9 @@ def plot_results(ROM_Centroid, plat_nodes, base_nodes, ptlist, valid_pt_list, he
         ax1.plot([base_nodes[0, j], A[0, j]], [base_nodes[1, j], A[1, j]], [base_nodes[2, j], A[2, j]], c='b')  # legs
 
     # Filter valid_pt_list, if wanting to show only a slice along the x axis. If not, uncomment next three lines.
-    x_axis_slice_max_min = 2  # Set this threshold to whatever you want (mm)
-    mask_x = np.logical_and(valid_pt_list[:, 0] >= -x_axis_slice_max_min, valid_pt_list[:, 0] <= x_axis_slice_max_min)
-    valid_pt_list = valid_pt_list[mask_x]
+    # x_axis_slice_max_min = 2  # Set this threshold to whatever you want (mm)
+    # mask_x = np.logical_and(valid_pt_list[:, 0] >= -x_axis_slice_max_min, valid_pt_list[:, 0] <= x_axis_slice_max_min)
+    # valid_pt_list = valid_pt_list[mask_x]
 
     valid_pts_in_hemisphere = points_in_hemisphere(valid_pt_list, [hemisphere_pts[0], hemisphere_pts[1], z_offset_mov_area])
     total_pts_in_hemisphere = points_in_hemisphere(ptlist, [hemisphere_pts[0], hemisphere_pts[1], z_offset_mov_area])
@@ -297,17 +297,17 @@ def check_necessary_num_pts_in_cloud():
 
 # Set geometric parameters to test:
 # Platform layout
-platRad = 172  # Radius of the platform (mm)
-baseRad = 410  # Radius of the base (mm)
-baseSmallAngle = 40  # Gamma2 on main sketch (deg)  (range from 0 -> 60)
-platSmallAngle = 18  # Lambda1 on main sketch (deg) (range from 0 -> 60)
+platRad = 229.5  # Radius of the platform (mm)
+baseRad = 410.0  # Radius of the base (mm)
+baseSmallAngle = 24.0     # Gamma2 on main sketch (deg)  (range from 0 -> 60)
+platSmallAngle = 7.49496  # Lambda1 on main sketch (deg) (range from 0 -> 60)
 
 # Leg specifications
-shortLeg = 640  # Shortest length of leg (mm) # Is correct for Leg_V3_Inline_Motor
-# extLeg = 500   # Extension of leg (mm)
-# longLeg = shortLeg + extLeg  # Longest length of leg (mm)
-longLeg = 950  # Longest length of leg (mm) [Use either this or above] # Is correct for Leg_V3_Inline_Motor
-legAngleLimit = 30  # Limit of how far the ball joints allow the legs to tilt wrt x-y plane (deg) # GUESS
+shortLeg = 691.49  # Shortest length of leg (mm) # Is correct for Leg_V3_Inline_Motor
+extLeg = 280.0   # Extension of leg (mm)
+longLeg = shortLeg + extLeg  # Longest length of leg (mm)
+# longLeg = 950  # Longest length of leg (mm) [Use either this or above] # Is correct for Leg_V3_Inline_Motor
+legAngleLimit = 45  # Limit of how far the ball joints allow the legs to tilt wrt x-y plane (deg) # GUESS
 
 # Parameters for "desired volume" hemisphere
 hand_xy_span = 600  # mm
