@@ -1,8 +1,10 @@
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import String
-from geometry_msgs.msg import Pose
+from rclpy.time import Time
+from std_msgs.msg import String, Header
+from geometry_msgs.msg import Pose, PoseStamped
 from jugglebot_interfaces.msg import PatternControlMessage
+from jugglebot_interfaces.msg import PathMessage
 from std_srvs.srv import Trigger
 import numpy as np
 import quaternion  # numpy quaternion
@@ -27,9 +29,13 @@ class PatternCreator(Node):
         self.pose_publisher_ = self.create_publisher(Pose, 'platform_pose_topic', 10)
         self.pose_timer = self.create_timer(0.01, self.publish_pose)
 
+        # Create a publisher for the platform paths
+        self.path_publisher_ = self.create_publisher(PathMessage, 'paths_topic', 10)
+
         # Initialize a list of tuples (pose, timestamp) for the path
-        self.current_path = [] # The path that is currently being followed
-        self.next_path = []    # The path that will be followed once the current path is complete
+        self.current_path = []    # The path that is currently being followed
+        self.next_path = []       # The path that will be followed once the current path is complete
+        self.transition_path = [] # The path that will be followed to transition between the current path and the next path
 
         self.current_path_start_time = 0 # The time at which the current path started
 
@@ -42,6 +48,11 @@ class PatternCreator(Node):
 
         # Create a timer to call generate_circular_path
         self.generate_path_timer = self.create_timer(1, self.generate_conical_path) # TEMPORARY!!!!!
+
+
+    #########################################################################################################
+    #                                           Path Generators                                             #
+    #########################################################################################################
 
     def generate_circular_path(self, num_points=100):
         '''Generates a circular path for the robot to follow
@@ -77,7 +88,7 @@ class PatternCreator(Node):
             # Print the pose and timestamp in an easy to read manner
             # self.get_logger().info(f'x: {poses[i].position.x:.2f}, y: {poses[i].position.y:.2f}, z: {poses[i].position.z:.2f}, t: {timestamps[i]:.2f}')
 
-        self.next_path = path
+        self.set_as_next_path(path)
 
     def generate_conical_path(self, num_points=100):
         '''Generates a conical path for the robot to follow
@@ -140,8 +151,38 @@ class PatternCreator(Node):
             # Print the pose and timestamp in an easy to read manner
             # self.get_logger().info(f'x: {x_values[i]:.2f}, y: {y_values[i]:.2f}, z: {z_offset:.2f}, t: {t:.2f}, phi: {phi[i]:.2f}, theta: {theta[i]:.2f}')
 
-        self.next_path = path
+        self.set_as_next_path(path)
         
+    #########################################################################################################
+    #                                           Path Management                                             #
+    #########################################################################################################
+
+    def path_manager(self):
+        '''
+        Manages the paths that the robot is following.
+         - Replaces the current path with the next path once the current path is complete.
+        '''
+
+        # If the current path is empty or complete, start the next path. Note that milliseconds are used for the timestamps
+        if len(self.current_path) == 0 or self.get_clock().now().nanoseconds / 1e6 - self.current_path_start_time > self.current_path[-1][1]:
+            self.current_path = self.next_path
+            self.next_path = []
+            self.current_path_start_time = self.get_clock().now().nanoseconds / 1e6
+
+            # Publish the new current path
+            self.publish_path('current_path')
+
+    def set_as_next_path(self, path):
+        '''
+        Sets the given path as the next path and publishes it
+        '''
+        self.next_path = path
+        self.publish_path('next_path')
+
+    #########################################################################################################
+    #                                              Publishing                                               #
+    #########################################################################################################
+
     def publish_pose(self):
         """
         Publishes the next pose. Begins by figuring out which pose is next along
@@ -151,11 +192,8 @@ class PatternCreator(Node):
             self.get_logger().info("Pattern creator not enabled", once=True)
             return
         
-        # If the current path is empty or complete, start the next path. Note that milliseconds are used for the timestamps
-        if len(self.current_path) == 0 or self.get_clock().now().nanoseconds / 1e6 - self.current_path_start_time > self.current_path[-1][1]:
-            self.current_path = self.next_path
-            self.next_path = []
-            self.current_path_start_time = self.get_clock().now().nanoseconds / 1e6  # Use ROS time to get the current time in milliseconds
+        # Call the path manager to ensure that the current path is up to date
+        self.path_manager()
 
         # Find how far along the current path we are
         current_time = self.get_clock().now().nanoseconds / 1e6 - self.current_path_start_time
@@ -171,13 +209,68 @@ class PatternCreator(Node):
         # Publish the pose
         self.pose_publisher_.publish(pose)
     
+    def publish_path(self, path_name):
+        """
+        Publishes the appropriate path to the path topic
+        """
+
+        path_message = PathMessage()
+
+        if path_name == 'current_path':
+            path_message.current_path = self.create_pose_stamped_path(self.current_path)
+
+        elif path_name == 'next_path':
+            path_message.next_path = self.create_pose_stamped_path(self.next_path)
+
+        elif path_name == 'transition_path':
+            path_message.transition_path = self.create_pose_stamped_path(self.transition_path)
+
+        else:
+            self.get_logger().info(f'Invalid path name: {path_name}')
+            return
+
+        self.path_publisher_.publish(path_message)
+
+    def create_pose_stamped_path(self, path):
+        """
+        Creates a PoseStamped message with the nominated path
+        """
+
+        pose_stamped_list = []
+
+        for pose, timestamp_ms in path:
+            # Convert the timestamp into ROS time
+            timestamp_sec = timestamp_ms / 1000
+            seconds = int(timestamp_sec)
+            nanoseconds = int((timestamp_sec - seconds) * 1e9)
+
+            # Create a PoseStamped message
+            pose_stamped = PoseStamped()
+
+            # Set the header (timestamp)
+            pose_stamped.header = Header()
+            pose_stamped.header.stamp = Time(seconds=seconds, nanoseconds=nanoseconds).to_msg()
+            pose_stamped.header.frame_id = 'world'
+
+            # Set the pose
+            pose_stamped.pose = pose
+
+            # Append the pose to the list
+            pose_stamped_list.append(pose_stamped)
+        
+
+        return pose_stamped_list
+
+    #########################################################################################################
+    #                                 Node Management (callbacks etc.)                                      #
+    #########################################################################################################
+
     def pattern_control_callback(self, msg):
         # Callback to set the pattern variables based on the input from the UI
         self.pattern_variables['radius'] = msg.radius
         self.pattern_variables['frequency'] = msg.freq
         self.pattern_variables['z_offset'] = msg.z_offset
         self.pattern_variables['cone_height'] = msg.cone_height
-
 
     def control_state_callback(self, msg):
         # Callback for control_state_topic

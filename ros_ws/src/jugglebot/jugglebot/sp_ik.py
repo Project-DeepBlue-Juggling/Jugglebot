@@ -3,7 +3,7 @@ from rclpy.node import Node
 import numpy as np
 from geometry_msgs.msg import Pose
 from std_srvs.srv import Trigger
-from std_msgs.msg import Float64MultiArray
+from std_msgs.msg import Float64MultiArray, Int8MultiArray
 from jugglebot_interfaces.srv import GetRobotGeometry
 import quaternion  # numpy quaternion
 
@@ -25,7 +25,9 @@ class SPInverseKinematics(Node):
         self.subscription = self.create_subscription(Pose, 'platform_pose_topic', self.pose_callback, 10)
         self.subscription  # Prevent "unused variable" warning
 
+        # Set up a publisher to publish the leg lengths, and one to publish the state of each leg (overextended [1], underextended [-1], within bounds [0])
         self.leg_length_publisher = self.create_publisher(Float64MultiArray, 'leg_lengths_topic', 10)
+        self.leg_state_publisher = self.create_publisher(Int8MultiArray, 'leg_state_topic', 10)
 
         # Initialize flag to track whether geometry data has been received or not
         self.has_geometry_data = False
@@ -125,22 +127,42 @@ class SPInverseKinematics(Node):
         clipped_leg_lengths = np.clip(leg_lens_mm[:6], 0, self.leg_stroke)
         clipped_hand_length = np.clip(leg_lens_mm[6], -1000, self.hand_stroke)
 
+        # Initialize the leg state array
+        leg_state = np.zeros((6,), dtype=np.int8)
+
         # Check if the arrays had to be changed. Log a warning or error if so
         if not np.array_equal(leg_lens_mm[:6], clipped_leg_lengths):
-            too_short = np.any(leg_lens_mm[:6] < 0)
-            too_long = np.any(leg_lens_mm[:6] > self.leg_stroke)
+            too_short = leg_lens_mm[:6] < 0
+            too_long = leg_lens_mm[:6] > self.leg_stroke
+
+            # Update the leg state array
+            leg_state[too_short] = -1
+            leg_state[too_long] = 1
+
+            # Create basic flag to check if any leg is too short or too long
+            any_leg_too_short = np.any(too_short)
+            any_leg_too_long = np.any(too_long)
+
+            # Get the indices of the legs that are too short or too long
+            too_short_indices = np.where(too_short)[0]
+            too_long_indices = np.where(too_long)[0]
             
-            if too_short and too_long:
-                self.get_logger().error(f'Leg lengths were both too short and too long!')
-            elif too_short:
-                self.get_logger().error(f'Leg lengths were too short!')
-            elif too_long:
-                self.get_logger().error(f'Leg lengths were too long!')
+            if any_leg_too_short and any_leg_too_long:
+                self.get_logger().error(f'Leg lengths were both too short and too long! Legs too short: {too_short_indices}, legs too long: {too_long_indices}')
+            elif any_leg_too_short:
+                self.get_logger().error(f'Leg lengths were too short! Legs too short: {too_short_indices}')
+            elif any_leg_too_long:
+                self.get_logger().error(f'Leg lengths were too long! Legs too long: {too_long_indices}')
 
         if leg_lens_mm[6] != clipped_hand_length:
             self.get_logger().error(f'Hand string is overextended! Desired length: {leg_lens_mm[6]}')
 
         clipped_lengths = np.concatenate((clipped_leg_lengths, np.array([clipped_hand_length])))
+
+        # Publish the leg state
+        leg_state_msg = Int8MultiArray()
+        leg_state_msg.data = leg_state.tolist()
+        self.leg_state_publisher.publish(leg_state_msg)
         
         # Send the data off to be converted into revs
         self.convert_mm_to_revs(leg_lens_mm=clipped_lengths)

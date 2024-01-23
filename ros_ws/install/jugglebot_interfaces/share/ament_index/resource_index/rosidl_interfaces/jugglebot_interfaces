@@ -1,3 +1,5 @@
+msg/PathMessage.idl
+msg/PathMessage.msg
 msg/PatternControlMessage.idl
 msg/PatternControlMessage.msg
 msg/RobotPlotterMessage.idl

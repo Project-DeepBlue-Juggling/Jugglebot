@@ -28,6 +28,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/RobotStateMessage.msg"
   "msg/RobotPlotterMessage.msg"
   "msg/PatternControlMessage.msg"
+  "msg/PathMessage.msg"
   DEPENDENCIES geometry_msgs
 )
 

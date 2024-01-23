@@ -3,10 +3,11 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 // Initialize all constants and variables that have multi-function scope
 // Create scene and camera
-let scene, camera, renderer;
+let camera, renderer;
+export const scene = new THREE.Scene();
 
 // Initialize the geometry
-let platformPointsGeometry, basePointsGeometry;
+let platformPointsGeometry, basePointsGeometry, centroid;
 let legLinesGeometry, strutLinesGeometry, rodLinesGeometry; // Struts span arm to plat, rods span lower arm to upper arm
 let baseVolume;
 
@@ -15,24 +16,28 @@ const scale = 0.0025;  // Scale factor to make the scene look nice
 var gridHelper
 const MAX_POINTS = 10;  // Maximum number of points to plot in any given set (eg. platform nodes, base nodes, etc.)
 
+// ################################################################## //
+//                       Interacting with ROS2                        //
+// ################################################################## //
+
 // Function to initialize ROS and subscribe to /robot_plotter_topic
 function initROS() {
     // Initialize ROS
     var ros = new ROSLIB.Ros({
-        url: 'ws://localhost:9090'
+        url: 'ws://192.168.20.23:9090'
     });
 
     // Subscribe to /robot_plotter_topic 
-    var listener = new ROSLIB.Topic({
+    var plotterListener = new ROSLIB.Topic({
         ros: ros,
         name: 'robot_plotter_topic',
         messageType: 'jugglebot_interfaces/msg/RobotPlotterMessage'
     });
 
-    const throttledUpdatePlot = throttle(updateScene, 10); // Throttle the updatePlot function (delay is in ms)
+    const throttledUpdatePlot = throttle(updateScene, 100); // Throttle the updatePlot function (delay is in ms)
 
     // When a message is received, parse it and update the plot
-    listener.subscribe(function (message) {
+    plotterListener.subscribe(function (message) {
         throttledUpdatePlot(
             message.base_nodes, 
             message.new_plat_nodes, 
@@ -40,6 +45,30 @@ function initROS() {
             message.new_hand_nodes
             );
     });
+
+    // Subscribe to /leg_state_topic (to know which, if any, legs are outside of allowable bounds)
+    var legStateListener = new ROSLIB.Topic({
+        ros: ros,
+        name: 'leg_state_topic',
+        messageType: 'std_msgs/msg/Int8MultiArray'
+    });
+
+    // When a message is received, parse it and update the plot, colouring overextended legs red and overcontracted legs blue
+    // The message is an array of 6 integers, each of which is either -1 (overcontracted), 0 (in bounds), or 1 (overextended)
+    legStateListener.subscribe(function (message) {
+        // Create an array of colours to use for the legs
+        const colours = [
+            0x0000ff, // Blue for overcontracted
+            0x00ff00, // Green for in bounds
+            0xff0000  // Red for overextended
+        ];
+
+        // Loop through each leg and update its colour
+        for (let i = 0; i < message.data.length; i++) {
+            let colour = colours[message.data[i] + 1]; // +1 because the message data is -1, 0, or 1
+            legLinesGeometry.children[i].material.color.setHex(colour);
+        }
+    }); 
 }
 
 // Function to throttle the rate of the scene updating (to help with performance)
@@ -98,10 +127,15 @@ function createCoordAxes(scene, axisLength, axisThickness) {
         return axis;
     }
 
-    // Create and add axes to the scene
-    scene.add(createAxis(new THREE.Vector3(1, 0, 0), axesMaterial.x)); // X Axis
-    scene.add(createAxis(new THREE.Vector3(0, 1, 0), axesMaterial.y)); // Y Axis
-    scene.add(createAxis(new THREE.Vector3(0, 0, 1), axesMaterial.z)); // Z Axis
+    // Create and add axes to the 'axes' group
+    const axesGroup = new THREE.Group();
+    axesGroup.name = 'axes';
+    axesGroup.add(createAxis(new THREE.Vector3(1, 0, 0), axesMaterial.x))
+    axesGroup.add(createAxis(new THREE.Vector3(0, 1, 0), axesMaterial.y))
+    axesGroup.add(createAxis(new THREE.Vector3(0, 0, 1), axesMaterial.z))
+
+    // Add the axes group to the scene
+    scene.add(axesGroup);
 }
 
 // Function to scale an array of geometry_msgs/Point objects by the nominated factor
@@ -116,17 +150,19 @@ function scalePoints(pointsArray, scaleFactor) {
 }
 
 // Function to initialize points
-function initPoints(scene, colour) {
+function initPoints(scene, colour, numPoints=6, objectName='') {
     // Create an empty BufferGeometry
     const geometry = new THREE.BufferGeometry();
 
     // Define attributes for the geometry
-    const positions = new Float32Array(MAX_POINTS * 3); // 3 vertices per point
+    const positions = new Float32Array(numPoints * 3); // 3 vertices per point
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
 
     // Define material
     const material = new THREE.PointsMaterial({ color: colour, size: 0.05 });
     const points = new THREE.Points(geometry, material);
+    
+    points.name = objectName; // Set the name of the points object
 
     // Add points to the scene
     scene.add(points);
@@ -188,6 +224,48 @@ function initVolume(scene, colour, thickness) {
     scene.add(mesh);
 
     return mesh; // Return the mesh for future updates
+}
+
+// Function to add the robot workspace (from a JSON file) to the scene
+function addWorkspaceVolume(scene) {
+    fetch('convex_hull_points_big.json')
+        .then(response => response.json())
+        .then(hullData => {
+            const geometry = new THREE.BufferGeometry();
+
+            // Create an array of vertices from the hull data
+            const verticesArray = [];
+            hullData.vertices.forEach(point => {
+                verticesArray.push(point[0] * scale, point[2] * scale, point[1] * scale);
+            });
+
+            const vertices = new Float32Array(verticesArray);
+
+            // Set the geometry attributes
+            geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+
+            // Create an array of faces (indices) from the hull data
+            const facesArray = [];
+            hullData.faces.forEach(face => {
+                facesArray.push(face[0], face[1], face[2]);
+            });
+
+            const faces = new Uint16Array(facesArray);
+            geometry.setIndex(new THREE.BufferAttribute(faces, 1));
+
+            // Create the material
+            const material = new THREE.MeshBasicMaterial({
+                color: 0xADD8E6, // Light blue color
+                transparent: true,
+                opacity: 0.3,
+                side: THREE.DoubleSide
+            });
+
+            // Create the mesh and add it to the scene
+            const mesh = new THREE.Mesh(geometry, material);
+            mesh.name = 'workspace';
+            scene.add(mesh);
+        });
 }
 
 // ################################################################## //
@@ -285,6 +363,9 @@ function updateScene(base_nodes, new_plat_nodes, new_arm_nodes, new_hand_nodes) 
     updatePoints(platformPointsGeometry, new_plat_nodes.slice(0, 6));
     updatePoints(basePointsGeometry, base_nodes);
 
+    // Update the platform center point
+    updatePoints(centroid, [averagePoints(new_plat_nodes.slice(0, 6))]);
+
     // Update the leg lines
     updateLineGroup(legLinesGeometry, base_nodes, new_plat_nodes);
 
@@ -299,6 +380,27 @@ function updateScene(base_nodes, new_plat_nodes, new_arm_nodes, new_hand_nodes) 
 }
 
 // ################################################################## //
+//                    Background Calcs/Functions                      //
+// ################################################################## //
+
+// Function to calculate the average of a set of points
+function averagePoints(pointsArray) {
+    let average = { x: 0, y: 0, z: 0 };
+
+    pointsArray.forEach(point => {
+        average.x += point.x;
+        average.y += point.y;
+        average.z += point.z;
+    });
+
+    average.x /= pointsArray.length;
+    average.y /= pointsArray.length;
+    average.z /= pointsArray.length;
+
+    return average;
+}
+
+// ################################################################## //
 //                           Main Function                            //
 // ################################################################## //
 
@@ -307,7 +409,6 @@ export function initPlotter() {
     initROS();
 
     // Initialize scene, camera and renderer
-    scene = new THREE.Scene();
     camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 10000);
     renderer = new THREE.WebGLRenderer();
     var container = document.getElementById("plot-3d");
@@ -335,25 +436,10 @@ export function initPlotter() {
     // Create coordinate axes
     createCoordAxes(scene, 1, 0.01);
 
-    // Function to create a tick mark
-    function createTickMark(position, color) {
-        const geometry = new THREE.BoxGeometry(0.1, 0.1, 0.1);
-        const material = new THREE.MeshBasicMaterial({ color: color });
-        const tickMark = new THREE.Mesh(geometry, material);
-        tickMark.position.set(position.x, position.y, position.z);
-        return tickMark;
-    }
-
-    // Create tick marks along the x, y, and z axes
-    // for (let i = -5; i <= 5; i++) {
-    //     scene.add(createTickMark(new THREE.Vector3(i, 0, 0), 'red')); // x-axis tick marks
-    //     scene.add(createTickMark(new THREE.Vector3(0, i, 0), 'green')); // y-axis tick marks
-    //     scene.add(createTickMark(new THREE.Vector3(0, 0, i), 'blue')); // z-axis tick marks
-    // }
-
     // Initialize the points
     platformPointsGeometry = initPoints(scene, 0xff0000); // Red points for platform nodes
     basePointsGeometry = initPoints(scene, 0x0000ff); // Blue points for base nodes
+    centroid = initPoints(scene, 0x800080, 1, 'centroid'); // Purple point for platform center
 
     // Initialize the lines
     legLinesGeometry = initLineGroup(scene, 0x00ff00, 0.015, 6); // Green color for legs
@@ -363,9 +449,25 @@ export function initPlotter() {
     // Initialize the base volume
     baseVolume = initVolume(scene, 0x0000ff, 0.01); // Blue color for base volume
 
+    // Initialize the robot group, for toggling visibility
+    const robotGroup = new THREE.Group();
+    robotGroup.name = 'robot';
+    robotGroup.add(platformPointsGeometry);
+    robotGroup.add(basePointsGeometry);
+    robotGroup.add(legLinesGeometry);
+    robotGroup.add(strutLinesGeometry);
+    robotGroup.add(rodLinesGeometry);
+    robotGroup.add(baseVolume);
+
+    // Add the robot group to the scene
+    scene.add(robotGroup);
+
     // Initialize orbit controls
     var controls = new OrbitControls(camera, renderer.domElement);
     controls.target.set(0, 0, 0); // Set the orbit controls target to the center of the scene
+
+    // Add the robot workspace to the scene
+    addWorkspaceVolume(scene);
 
     // Render loop
     function animate() {
