@@ -9,12 +9,30 @@ export const scene = new THREE.Scene();
 // Initialize the geometry
 let platformPointsGeometry, basePointsGeometry, centroid;
 let legLinesGeometry, strutLinesGeometry, rodLinesGeometry; // Struts span arm to plat, rods span lower arm to upper arm
+let currentPathObjects, nextPathObjects, transitionPathObjects; // Objects for the current, new, and transition paths
 let baseVolume;
+
+let initHeight; // Initial height of the robot (used to put the paths into the correct coordinate frame)
+
+var arrowPools = {  // Pools of arrows for the paths
+    currentPath: [],
+    nextPath: [],
+    transitionPath: [],
+    centroid: []
+}
+
+// Create groups for all the geometries that share a name
+var groups = {
+    'robot': new THREE.Group(),
+    'centroid': new THREE.Group(),
+    'currentPath': new THREE.Group(),
+    'nextPath': new THREE.Group(),
+    'transitionPath': new THREE.Group(),
+}
 
 const scale = 0.0025;  // Scale factor to make the scene look nice
 
 var gridHelper
-const MAX_POINTS = 10;  // Maximum number of points to plot in any given set (eg. platform nodes, base nodes, etc.)
 
 // ################################################################## //
 //                       Interacting with ROS2                        //
@@ -26,6 +44,29 @@ function initROS() {
     var ros = new ROSLIB.Ros({
         url: 'ws://192.168.20.23:9090'
     });
+
+    // Set up service client for /get_robot_geometry (to convert between coordinate frames)
+    var getRobotGeometryClient = new ROSLIB.Service({
+        ros: ros,
+        name: 'get_robot_geometry',
+        serviceType: 'jugglebot_interfaces/srv/GetRobotGeometry'
+    });
+
+    // Function to send a service request to /get_robot_geometry
+    function getRobotGeometry() {
+        var request = new ROSLIB.ServiceRequest();
+
+        getRobotGeometryClient.callService(request, function (response) {
+            if (response) {
+                initHeight = response.start_pos[2];
+            }
+            else {
+                console.log('Error calling get_robot_geometry service');
+            }
+        });
+    }
+
+    getRobotGeometry();
 
     // Subscribe to /robot_plotter_topic 
     var plotterListener = new ROSLIB.Topic({
@@ -42,7 +83,8 @@ function initROS() {
             message.base_nodes, 
             message.new_plat_nodes, 
             message.new_arm_nodes, 
-            message.new_hand_nodes
+            message.new_hand_nodes,
+            message.orientation
             );
     });
 
@@ -69,6 +111,29 @@ function initROS() {
             legLinesGeometry.children[i].material.color.setHex(colour);
         }
     }); 
+
+    // Subscribe to /paths_topic to get the robot paths
+    var pathsListener = new ROSLIB.Topic({
+        ros: ros,
+        name: 'paths_topic',
+        messageType: 'jugglebot_interfaces/msg/PathMessage'
+    });
+
+    // When a message is received, parse it and update the plot with the new paths
+    pathsListener.subscribe(function (message) {
+        if (Array.isArray(message.current_path) && message.current_path.length > 0) {
+            updateSplineCurve(currentPathObjects, message.current_path);
+            updateArrows('currentPath', message.current_path);
+        }
+        if (Array.isArray(message.next_path) && message.next_path.length > 0) {
+            updateSplineCurve(nextPathObjects, message.next_path);
+            updateArrows('nextPath', message.next_path);
+        }
+        if (Array.isArray(message.transition_path) && message.transition_path.length > 0) {
+            updateSplineCurve(transitionPathObjects, message.transition_path);
+            updateArrows('transitionPath', message.transition_path);
+        }
+    });
 }
 
 // Function to throttle the rate of the scene updating (to help with performance)
@@ -162,7 +227,8 @@ function initPoints(scene, colour, numPoints=6, objectName='') {
     const material = new THREE.PointsMaterial({ color: colour, size: 0.05 });
     const points = new THREE.Points(geometry, material);
     
-    points.name = objectName; // Set the name of the points object
+    // Set the name of the points object (to help with toggling the visibility)
+    points.name = objectName; 
 
     // Add points to the scene
     scene.add(points);
@@ -226,6 +292,48 @@ function initVolume(scene, colour, thickness) {
     return mesh; // Return the mesh for future updates
 }
 
+// Function to initialise the paths
+function initSplineCurve(colour, objectName='') {
+    const splineCurve = new THREE.CatmullRomCurve3();
+    const splineMaterial = new THREE.LineBasicMaterial({ color: colour });
+
+    // Create a line mesh with empty geometry for now
+    const splineMesh = new THREE.Line(new THREE.BufferGeometry(), splineMaterial);
+
+    // Add the spline mesh to the appropriate group
+    if (groups[objectName]) {
+        groups[objectName].add(splineMesh);
+    }
+
+    return { splineCurve, splineMesh };
+}
+
+// Initialize the arrows for orientation along the paths
+function initArrows(arrowGroupName='', colour, arrowCount=500, arrowSize=0.4){
+    const arrowColour = new THREE.Color(colour);
+
+    // Create a pool of arrows
+    for (let i = 0; i < arrowCount; i++) {
+        // Create the arrow
+        const arrow = new THREE.ArrowHelper(
+            new THREE.Vector3(1, 0, 0), // Direction
+            new THREE.Vector3(0, 0, 0), // Origin
+            arrowSize, // Length
+            arrowColour, // Color
+        );
+
+        arrow.visible = false; // Hide the arrow for now
+
+        // Add the arrow to the pool
+        arrowPools[arrowGroupName].push(arrow);
+    }
+
+    // Add the arrow pool to the relevant group
+    if (groups[arrowGroupName]) {
+        groups[arrowGroupName].add(...arrowPools[arrowGroupName]);
+    }
+}
+
 // Function to add the robot workspace (from a JSON file) to the scene
 function addWorkspaceVolume(scene) {
     fetch('convex_hull_points_big.json')
@@ -262,9 +370,13 @@ function addWorkspaceVolume(scene) {
             });
 
             // Create the mesh and add it to the scene
-            const mesh = new THREE.Mesh(geometry, material);
-            mesh.name = 'workspace';
-            scene.add(mesh);
+            const workspaceMesh = new THREE.Mesh(geometry, material);
+            workspaceMesh.name = 'workspace';
+            scene.add(workspaceMesh);
+
+            // Now that the scene is fully rendered, send a dispatch event to let the parent know
+            var event = new Event('scene-loaded');
+            document.dispatchEvent(event);
         });
 }
 
@@ -357,14 +469,75 @@ function updateVolume(volume, pointsArray, thickness) {
     // volume.position.y = thickness / 2;
 }
 
+function updateSplineCurve(splineObjects, pathPoints) {
+    // console.log(pathPoints);
+    const newPoints = pathPoints.map(p => new THREE.Vector3(
+        p.pose.position.x * scale, 
+        (p.pose.position.z + initHeight) * scale, 
+        p.pose.position.y * scale
+        ));
+    splineObjects.splineCurve.points = newPoints;
+
+    // console.log(splineObjects.splineCurve.points);
+
+    const splinePoints = splineObjects.splineCurve.getPoints(500); // Adjust based on desired smoothness
+
+    splineObjects.splineMesh.geometry.dispose();
+    splineObjects.splineMesh.geometry = new THREE.BufferGeometry().setFromPoints(splinePoints);
+}
+
+function updateArrows(pathName, pathPoints) {
+    const pool = arrowPools[pathName];
+    if (!pool) {
+        console.log('Invalid path name');
+        return;
+    }
+
+    var interval = 5;
+
+    for (let i = 0, arrowIndex = 0; i < pathPoints.length && arrowIndex < pool.length; i += interval, arrowIndex++) {
+        const point = pathPoints[i].pose;
+        const arrowHelper = pool[arrowIndex];
+        arrowHelper.position.set(
+            point.position.x * scale, 
+            (point.position.z + initHeight )* scale,
+            point.position.y * scale);
+
+        const originalQuaternion = new THREE.Quaternion(-point.orientation.x, point.orientation.z, -point.orientation.y, point.orientation.w);
+
+        arrowHelper.quaternion.copy(originalQuaternion);
+        arrowHelper.visible = true;
+    }
+
+    // Hide remaining arrows in the pool
+    for (let j = Math.ceil(pathPoints.length / interval); j < pool.length; j++) {
+        pool[j].visible = false;
+    }
+}
+
+function updateCentroidArrow(position, orientation){
+    const arrowHelper = arrowPools['centroid'][0];
+    arrowHelper.position.set(
+        position.x * scale, 
+        position.z * scale, // No need to add the initial height here, since the centroid is found from the platform points
+        position.y * scale);
+
+    const orientationQuaternion = new THREE.Quaternion(-orientation.x, orientation.z, -orientation.y, orientation.w);
+
+    arrowHelper.quaternion.copy(orientationQuaternion);
+    arrowHelper.visible = true;
+}
+
 // Function to update the scene
-function updateScene(base_nodes, new_plat_nodes, new_arm_nodes, new_hand_nodes) {
+function updateScene(base_nodes, new_plat_nodes, new_arm_nodes, new_hand_nodes, orientation) {
     // Update points for platform and base
     updatePoints(platformPointsGeometry, new_plat_nodes.slice(0, 6));
     updatePoints(basePointsGeometry, base_nodes);
 
-    // Update the platform center point
-    updatePoints(centroid, [averagePoints(new_plat_nodes.slice(0, 6))]);
+    // Update the platform centroid, and centroid arrow
+    const centroidPos = averagePoints(new_plat_nodes.slice(0, 6));
+    updatePoints(centroid, [centroidPos]);
+    updateCentroidArrow([centroidPos][0], orientation);
 
     // Update the leg lines
     updateLineGroup(legLinesGeometry, base_nodes, new_plat_nodes);
@@ -436,37 +609,64 @@ export function initPlotter() {
     // Create coordinate axes
     createCoordAxes(scene, 1, 0.01);
 
+    // Set the colours of the various elements
+    const colours = {
+        platform: 0xff0000,
+        base: 0x0000ff,
+        centroid: 0x800080,
+        legs: 0x00ff00,
+        struts: 0x000000,
+        rods: 0x000000,
+        currentPath: 0x000000,
+        nextPath: 0xff0000,
+        transitionPath: 0x00ff00
+    };
+
     // Initialize the points
-    platformPointsGeometry = initPoints(scene, 0xff0000); // Red points for platform nodes
-    basePointsGeometry = initPoints(scene, 0x0000ff); // Blue points for base nodes
-    centroid = initPoints(scene, 0x800080, 1, 'centroid'); // Purple point for platform center
+    platformPointsGeometry = initPoints(scene, colours.platform); // Red points for platform nodes
+    basePointsGeometry = initPoints(scene, colours.base); // Blue points for base nodes
+    centroid = initPoints(scene, colours.centroid, 1, 'centroid'); // Purple point for platform center
 
     // Initialize the lines
-    legLinesGeometry = initLineGroup(scene, 0x00ff00, 0.015, 6); // Green color for legs
-    strutLinesGeometry = initLineGroup(scene, 0x000000, 0.005, 6); // Black color for struts
-    rodLinesGeometry = initLineGroup(scene, 0x000000, 0.005, 3); // Black color for rods
+    legLinesGeometry = initLineGroup(scene, colours.legs, 0.015, 6); // Green color for legs
+    strutLinesGeometry = initLineGroup(scene, colours.struts, 0.005, 6); // Black color for struts
+    rodLinesGeometry = initLineGroup(scene, colours.rods, 0.005, 3); // Black color for rods
     
     // Initialize the base volume
-    baseVolume = initVolume(scene, 0x0000ff, 0.01); // Blue color for base volume
+    baseVolume = initVolume(scene, colours.base, 0.01); // Blue color for base volume
 
     // Initialize the robot group, for toggling visibility
-    const robotGroup = new THREE.Group();
-    robotGroup.name = 'robot';
-    robotGroup.add(platformPointsGeometry);
-    robotGroup.add(basePointsGeometry);
-    robotGroup.add(legLinesGeometry);
-    robotGroup.add(strutLinesGeometry);
-    robotGroup.add(rodLinesGeometry);
-    robotGroup.add(baseVolume);
+    groups.robot.add(platformPointsGeometry);
+    groups.robot.add(basePointsGeometry);
+    groups.robot.add(legLinesGeometry);
+    groups.robot.add(strutLinesGeometry);
+    groups.robot.add(rodLinesGeometry);
+    groups.robot.add(baseVolume);
 
-    // Add the robot group to the scene
-    scene.add(robotGroup);
+    // Initialize the paths
+    currentPathObjects = initSplineCurve(colours.currentPath, 'currentPath');
+    nextPathObjects = initSplineCurve(colours.nextPath, 'nextPath');
+    transitionPathObjects = initSplineCurve(colours.transitionPath, 'transitionPath');
+
+    // Initialize the arrow pools
+    initArrows('currentPath', colours.currentPath);
+    initArrows('nextPath', colours.nextPath);
+    initArrows('transitionPath', colours.transitionPath);
+    initArrows('centroid', colours.centroid, 1, 0.5);
+
+    // Set the name of each group correctly, and add all the groups to the scene
+    for (const groupName in groups) {
+        groups[groupName].name = groupName;
+        scene.add(groups[groupName]);
+    }
 
     // Initialize orbit controls
     var controls = new OrbitControls(camera, renderer.domElement);
     controls.target.set(0, 0, 0); // Set the orbit controls target to the center of the scene
 
-    // Add the robot workspace to the scene
+    /* Add the robot workspace to the scene. MAKE SURE THIS IS THE LAST THING ADDED TO THE SCENE
+       This is because the scene-loaded event is dispatched after this is added, and we want to 
+       make sure that the scene is fully rendered before dispatching the event */
     addWorkspaceVolume(scene);
 
     // Render loop

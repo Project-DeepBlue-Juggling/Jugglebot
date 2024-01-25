@@ -11,11 +11,11 @@ class SPInverseKinematics(Node):
     def __init__(self):
         super().__init__('sp_ik')
 
-        # Set up service client to get robot geometry
-        self.geometry_client = self.create_client(GetRobotGeometry, 'get_robot_geometry')
-
         # Set up a service to trigger closing the node
         self.service = self.create_service(Trigger, 'end_session', self.end_session)
+
+        # Set up service client to get robot geometry
+        self.geometry_client = self.create_client(GetRobotGeometry, 'get_robot_geometry')
         
         while not self.geometry_client.wait_for_service(timeout_sec=1.0):
                 self.get_logger().info('Waiting for "get_robot_geometry" service...')
@@ -76,7 +76,7 @@ class SPInverseKinematics(Node):
     def pose_callback(self, msg):
         if self.has_geometry_data:
             # Extract position data
-            pos = np.array([[msg.position.x], [msg.position.y], [msg.position.z]])
+            pos = np.array([[msg.position.x], [msg.position.y], [msg.position.z]])  # Note that this is in base frame + initial position
 
             # Extract the orientation quaternion
             ori_q = msg.orientation

@@ -212,9 +212,6 @@ window.onload = function () {
             var stats = topicsStats[topic];
             if (stats.isActive) {
                 var row = tableBody.insertRow();
-
-                // Remove '/jugglebot' prefix from topic name, if it exists
-                // var displayTopicName = topic.startsWith('/jugglebot') ? topic.substring('/jugglebot'.length) : topic;
                 var displayTopicName = topic;
 
                 // Topic Name
@@ -567,6 +564,37 @@ window.onload = function () {
     //                            3D Scene Menu                           //
     // ################################################################## //
 
+    // Add an event listener to ensure the menu buttons are only initialized after the full scene has been loaded
+    document.addEventListener('scene-loaded', initializeSceneMenuButtons);
+
+    // Initialize the menu buttons based on their 'active/inactive' state
+    function initializeSceneMenuButtons() {
+        document.querySelectorAll('.scene-menu-item').forEach(button => {
+            // var objectName = button.dataset.object;
+            const objectName = button.getAttribute('data-object');
+            const object = scene.getObjectByName(objectName);
+            if (object) {
+                // If the corresponding button has been set to 'inactive', hide the object
+                if (button.classList.contains('inactive')) {
+                    object.visible = false;
+                }
+
+                const icon = button.querySelector('.visibility-icon i');
+                if (icon) {
+                    if (object.visible) {
+                        icon.className = 'fa-regular fa-circle-check';
+                        button.classList.add('active');
+                        button.classList.remove('inactive');
+                    } else {
+                        icon.className = 'fa-regular fa-circle-xmark';
+                        button.classList.add('inactive');
+                        button.classList.remove('active');
+                    }
+                }
+            }
+        });
+    }
+    
     // Toggle the visibility of the menu when the menu button is clicked
     document.getElementById('scene-menu-toggle-btn').addEventListener('click', function() {
         var menuContent = document.getElementById('scene-menu-content');
@@ -580,6 +608,7 @@ window.onload = function () {
     // Function to toggle visibility of an object in the scene
     function toggleObject(objectName) {
         var object = scene.getObjectByName(objectName);
+        
         if (object) {
             object.visible = !object.visible;
 

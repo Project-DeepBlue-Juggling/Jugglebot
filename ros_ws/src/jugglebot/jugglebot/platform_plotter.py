@@ -48,6 +48,9 @@ class PlatformPlotter(Node):
         self.new_arm_nodes = None     # Base frame
         self.new_hand_nodes = None    # Base frame
 
+        # Initialize geometry to be populated with the subscription to platform_pose_topic
+        self.ori_quat = None    # Orientation of the platform in the base frame (as a quaternion)
+
         self.axis_lims = None  # To keep the plot from constantly changing size
 
         # Set up Matplotlib
@@ -111,8 +114,8 @@ class PlatformPlotter(Node):
             pos = np.array([[msg.position.x], [msg.position.y], [msg.position.z]])
 
             # Extract the orientation quaternion
-            ori_q = msg.orientation
-            quaternion_ori = quaternion.quaternion(ori_q.w, ori_q.x, ori_q.y, ori_q.z)
+            self.ori_quat = msg.orientation
+            quaternion_ori = quaternion.quaternion(self.ori_quat.w, self.ori_quat.x, self.ori_quat.y, self.ori_quat.z)
             
             # Convert quaternion to 4x4 rotation matrix
             rot = quaternion.as_rotation_matrix(quaternion_ori)
@@ -158,6 +161,7 @@ class PlatformPlotter(Node):
         msg.new_plat_nodes = [self.numpy_to_point(node) for node in self.new_plat_nodes]
         msg.new_arm_nodes = [self.numpy_to_point(node) for node in self.new_arm_nodes]
         msg.new_hand_nodes = [self.numpy_to_point(node) for node in self.new_hand_nodes]
+        msg.orientation = self.ori_quat
 
         # Publish the message
         self.node_location_publisher.publish(msg)

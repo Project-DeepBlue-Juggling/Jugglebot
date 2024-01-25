@@ -77,14 +77,20 @@
 
         /* Style for the scene menu items */
         .scene-menu-item {
-            display: block;
+            display: flex;
+            align-items: flex-start;
             width: 100%;
+            justify-content: flex-start;
             font-size: 16pt;
+            text-align: left;
+            padding-left: 30px;
+            flex-direction: row;
         }
 
         /* Style for the scene menu visibility icons */
         .visibility-icon {
-            margin-right: 5px; /* Space between icon and text */
+            display: inline-block;
+            margin-right: 10px; /* Space between icon and text */
             font-size: 18pt; /* Icon size */
         }
 
@@ -363,7 +369,6 @@
 </head>
 <body>
     <div id="main-container">
-
         <div id="container-row">
             <!-- 3D Plotter -->
             <div id="plot-3d">
@@ -374,18 +379,35 @@
                         <span class="button-text-beside">Toggle Scene Elements</span>
                     </button>
                     <div id="scene-menu-content">
-                        <button class="scene-menu-item" data-object="robot">
+                        <!-- Robot -->
+                        <button class="scene-menu-item active" data-object="robot">
                             <span class="visibility-icon"><i class="fa-regular fa-circle-check"></i></span>Robot
                         </button>
-                        <button class="scene-menu-item" data-object="workspace">
-                            <span class="visibility-icon"><i class="fa-regular fa-circle-check"></i></span>Workspace
+                        <!-- Workspace -->
+                        <button class="scene-menu-item inactive" data-object="workspace">
+                            <span class="visibility-icon"><i class="fa-regular fa-circle-xmark"></i></span>Workspace
                         </button>
-                        <button class="scene-menu-item" data-object="centroid">
+                        <!-- Centroid -->
+                        <button class="scene-menu-item active" data-object="centroid">
                             <span class="visibility-icon"><i class="fa-regular fa-circle-check"></i></span>Centroid
                         </button>
-                        <button class="scene-menu-item" data-object="axes">
+                        <!-- Coordinate axes -->
+                        <button class="scene-menu-item active" data-object="axes">
                             <span class="visibility-icon"><i class="fa-regular fa-circle-check"></i></span>Coordinate Axes
                         </button>
+                        <!-- Current path -->
+                        <button class="scene-menu-item active" data-object="currentPath">
+                            <span class="visibility-icon"><i class="fa-regular fa-circle-check"></i></span>Current Path
+                        </button>
+                        <!-- Next path -->
+                        <button class="scene-menu-item inactive" data-object="nextPath">
+                            <span class="visibility-icon"><i class="fa-regular fa-circle-check"></i></span>Next Path
+                        </button>
+                        <!-- Transition path -->
+                        <button class="scene-menu-item active" data-object="transitionPath">
+                            <span class="visibility-icon"><i class="fa-regular fa-circle-check"></i></span>Transition Path
+                        </button>
+                        
                     </div>
                 </div>
             </div>

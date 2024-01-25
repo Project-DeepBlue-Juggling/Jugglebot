@@ -3,8 +3,8 @@ from rclpy.node import Node
 from rclpy.time import Time
 from std_msgs.msg import String, Header
 from geometry_msgs.msg import Pose, PoseStamped
-from jugglebot_interfaces.msg import PatternControlMessage
-from jugglebot_interfaces.msg import PathMessage
+from jugglebot_interfaces.msg import PatternControlMessage, PathMessage
+from jugglebot_interfaces.srv import GetRobotGeometry
 from std_srvs.srv import Trigger
 import numpy as np
 import quaternion  # numpy quaternion
@@ -46,9 +46,11 @@ class PatternCreator(Node):
             'cone_height': 150.0,
         }
 
+        # Initialize any relevant robot geometry
+        self.init_height = None  # Initial height of the platform (in its lowest position)
+
         # Create a timer to call generate_circular_path
         self.generate_path_timer = self.create_timer(1, self.generate_conical_path) # TEMPORARY!!!!!
-
 
     #########################################################################################################
     #                                           Path Generators                                             #
