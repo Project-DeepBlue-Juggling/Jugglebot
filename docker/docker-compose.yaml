@@ -1,0 +1,8 @@
+services:
+  ros:
+    build:
+      context: ../
+      dockerfile: ./docker/ros/Dockerfile
+    privileged: true  # this is required for fast DDS discovery to work on the same host
+    network_mode: host
+    ipc: host  # this is required for fast DDS discovery to work on the same host
