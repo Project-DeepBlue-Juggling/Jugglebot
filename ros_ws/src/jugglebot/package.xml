@@ -8,21 +8,18 @@
   <license>MIT Licence</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
-  <buildtool_depend>python_cmake</buildtool_depend>
 
   <depend>rclpy</depend>
   <depend>jugglebot_interfaces</depend>
-  
   <depend>builtin_interfaces</depend>
-
   <depend>geometry_msgs</depend>
 
   <build_depend>rosidl_default_generators</build_depend>
-  <exec_depend>rodidl_default_runtime</exec_depend>
-
+  <exec_depend>rosidl_default_runtime</exec_depend>
   <member_of_group>rosidl_interface_packages</member_of_group>
 
   <exec_depend>ros2launch</exec_depend>
+  <exec_depend>python-numpy-quaternion-pip</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
