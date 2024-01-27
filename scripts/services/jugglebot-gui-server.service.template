@@ -1,0 +1,18 @@
+[Unit]
+Description=Jugglebot GUI Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=<JUGGLEBOT_DIR>/ros_ws/gui
+ExecStart=http-server
+
+Restart=always
+RestartSec=3
+
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target

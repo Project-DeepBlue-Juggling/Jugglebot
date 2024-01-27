@@ -42,7 +42,7 @@ var gridHelper
 function initROS() {
     // Initialize ROS
     var ros = new ROSLIB.Ros({
-        url: 'ws://192.168.20.23:9090'
+        url : `ws://${window.location.hostname}:9090`
     });
 
     // Set up service client for /get_robot_geometry (to convert between coordinate frames)
@@ -583,7 +583,7 @@ export function initPlotter() {
 
     // Initialize scene, camera and renderer
     camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 10000);
-    renderer = new THREE.WebGLRenderer();
+    renderer = new THREE.WebGLRenderer({antialias: true});
     var container = document.getElementById("plot-3d");
     renderer.setSize(container.clientWidth, container.clientHeight);
     container.appendChild(renderer.domElement);

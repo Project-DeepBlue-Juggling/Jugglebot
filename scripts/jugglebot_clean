@@ -4,6 +4,6 @@ SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
 cd $SCRIPT_DIR/../ros_ws
 
-colcon build
+rm -rf build install log
 
 cd -

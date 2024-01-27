@@ -1,0 +1,30 @@
+#!/usr/bin/bash -e
+
+SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+
+echo ""
+echo "Installing apt dependencies..."
+echo "=============================="
+sudo apt-get update
+sudo apt-get install \
+    libhidapi-dev
+
+echo ""
+echo "Installing npm dependencies..."
+echo "=============================="
+cd $SCRIPT_DIR/../ros_ws/gui
+sudo npm install --global http-server
+npm install
+cd -
+
+echo ""
+echo "Installing rosdep dependencies..."
+echo "=============================="
+sudo rosdep init || true
+rosdep update
+rosdep install --from-paths $SCRIPT_DIR/../ros_ws/src -y --ignore-src
+
+echo ""
+echo "Installing python dependencies..."
+echo "=============================="
+pip install -r $SCRIPT_DIR/requirements.txt

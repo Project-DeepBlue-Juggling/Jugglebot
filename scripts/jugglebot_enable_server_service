@@ -1,0 +1,9 @@
+#!/usr/bin/bash
+
+SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+
+JUGGLEBOT_DIR=$(realpath $SCRIPT_DIR/..)
+sed "s|<JUGGLEBOT_DIR>|$JUGGLEBOT_DIR|" $SCRIPT_DIR/services/jugglebot-gui-server.service.template > $SCRIPT_DIR/services/jugglebot-gui-server.service
+
+sudo systemctl enable $SCRIPT_DIR/services/jugglebot-gui-server.service
+sudo systemctl restart jugglebot-gui-server.service
