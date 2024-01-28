@@ -1,0 +1,104 @@
+#VRML_SIM R2023b utf8
+
+PROTO JuggleBot [
+  field SFVec3f    translation 0 0 0.11
+  field SFRotation rotation    0 0 1 0
+  field SFString   controller  "<extern>"
+  field SFString   name        "jugglebot"
+  field SFVec3f    platformPosition 0 0 0.6
+  field SFRotation    platformRotation 0 0 1 0
+  field SFVec3f    handPosition 0 0 0.9
+  field SFRotation handRotation 0 0 1 0
+]
+{
+  Robot {
+    translation IS translation
+    rotation IS rotation
+    controller IS controller
+    name IS name
+
+    supervisor TRUE
+
+    children [
+      DEF HAND Solid {
+        translation IS handPosition
+        rotation IS handRotation
+        children [
+          DEF HAND_POSE Pose {
+            translation 0 0 0
+            rotation 1 0 0 1.5708
+            children [
+              DEF HAND_SHAPE CadShape {
+                url "./Jugglebot_PDJ12-HandCup_V2.obj"
+              }
+            ]
+          }
+        ]
+        boundingObject Pose {
+          translation -0.03 -0.03 0
+          children [
+            ElevationGrid {
+              height         [
+                0.02, 0.02, 0.02, 0.02,
+                0.02, 0,    0,    0.02,
+                0.02, 0,    0,    0.02,
+                0.02, 0.02, 0.02, 0.02,
+              ]
+              xDimension     4
+              yDimension     4
+              xSpacing       0.02
+              ySpacing       0.02
+              thickness      0.005
+            }
+          ]
+        }
+      }
+      DEF UPPER_PLATFORM Solid {
+        translation IS platformPosition
+        rotation IS platformRotation
+        children [
+          DEF UPPER_PLATFORM_SHAPE Shape {
+            appearance PBRAppearance {
+              baseColor 0.12 0.56 1
+              roughness 1
+              metalness 0
+            }
+            geometry Cylinder {
+              height 0.005
+              radius 0.2295
+              subdivision 24
+            }
+          }
+        ]
+        name "upper_platform"
+        boundingObject USE UPPER_PLATFORM_SHAPE
+        physics Physics {
+          density 10
+        }
+      }
+      DEF LOWER_PLATFORM Solid {
+        translation 0 0 0
+        rotation 0 0 1 0
+        children [
+          DEF LOWER_PLATFORM_SHAPE Shape {
+            appearance PBRAppearance {
+              baseColor 0.12 0.56 1
+              roughness 1
+              metalness 0
+            }
+            geometry Cylinder {
+              height 0.005
+              radius 0.410
+              subdivision 24
+            }
+          }
+        ]
+        name "lower_platform"
+        boundingObject USE LOWER_PLATFORM_SHAPE
+        physics Physics {
+          density 10
+        }
+      }
+    ]
+  }
+}

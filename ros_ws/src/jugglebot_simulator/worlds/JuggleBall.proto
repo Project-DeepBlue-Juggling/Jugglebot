@@ -1,0 +1,43 @@
+#VRML_SIM R2023b utf8
+# license: Copyright Cyberbotics Ltd. Licensed for use only with Webots.
+# license url: https://cyberbotics.com/webots_assets_license
+# documentation url: https://webots.cloud/run?url=https://github.com/cyberbotics/webots/blob/released/projects/objects/balls/protos/SoccerBall.proto
+# keywords: exterior/sport
+
+PROTO JuggleBall [
+  field SFVec3f    translation 0 0 0.11
+  field SFRotation rotation    0 0 1 0
+  field SFString   name        "juggle ball"
+  field SFFloat    radius      0.03175
+  field SFFloat    mass        0.13
+]
+{
+  Solid {
+    translation IS translation
+    rotation IS rotation
+    children [
+      DEF FOOTBALL_SHAPE Shape {
+        appearance PBRAppearance {
+          metalness 0
+          roughness 0.8
+          baseColor 0.8 0.1 0.1
+        }
+        geometry Sphere {
+          radius IS radius
+          subdivision 3
+        }
+      }
+    ]
+    name IS name
+    model "juggle ball"
+    boundingObject USE FOOTBALL_SHAPE
+    physics Physics {
+      mass IS mass
+      density -1
+    }
+    contactMaterial "juggleball"
+    recognitionColors [
+      1 1 1, 0 0 0
+    ]
+  }
+}
