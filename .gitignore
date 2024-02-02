@@ -68,3 +68,5 @@ log/
 /rosdep/
 /rosinstall/
 ros_ws/log/latest_build
+
+jugglebot-gui-server.service

@@ -22,13 +22,22 @@ You can also source the install directory if you'd like to have access to the RO
 echo "source $(pwd)/ros_ws/install/setup.bash" >> ~/.bashrc
 ```
 
-Use `jugglebot_build` to build the jugglebot ROS2 workspace natively. Use `jugglebot_build_docker` to build the same inside a docker container.
+Use `jugglebot_build` to build the jugglebot ROS2 workspace natively. Use `jugglebot_build_docker` to build the same inside a docker container. Use `jugglebot_clean` to clean up the install, build and logs directories.
+
+### GUI
+
+The GUI runs on a web server. This can be maually executed by running `http-server` in the `ros_ws/gui` directory, or a background server can be activated using `jugglebot_enable_server_service`. This only has to be run once and will start the server on startup and keep it alive.
 
 ### Dependencies
 
-Dependencies are managed using rosdep. Ensure you have a working rosdep setup using the following commands.
+#### Manual Dependencies
 
-```bash
-sudo rosdep init
-rosdep update
-```
+Install the latest ROS2 distribution compatible with your hardware using the official docs [here](https://docs.ros.org/en/iron/Releases.html).
+
+Install npm using the relevant tutorial for your system [here](https://nodejs.org/en/download/package-manager).
+
+#### Automated Dependencies
+
+Package dependencies are managed using apt, pip, rosdep and npm.
+
+Dependencies can be installed using the `install_jugglebot_dependencies` script.

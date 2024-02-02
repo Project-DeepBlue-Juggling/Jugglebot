@@ -6,7 +6,7 @@ window.onload = function () {
     // ################################################################## //
 
     var ros = new ROSLIB.Ros({
-        url : 'ws://192.168.20.23:9090'
+        url : `ws://${window.location.hostname}:9090`
     });
 
     ros.on('connection', function() {
