@@ -61,7 +61,7 @@ class CANBusHandlerNode(Node):
             self._on_fatal_issue()
 
     def _on_fatal_issue(self):
-        self.get_logger().fatal("Fatal issue detected. Robot will be unresponsive until errors are cleared")
+        self.get_logger().fatal("Fatal issue detected. Robot will be unresponsive until errors are cleared", throttle_duration_sec=3.0)
         self.is_fatal = True
 
     #########################################################################################################
@@ -91,7 +91,8 @@ class CANBusHandlerNode(Node):
             return
         
         if self.can_handler.fatal_can_issue:
-            self.__on_fatal_issue()
+            self._on_fatal_issue()
+            return
 
         # Extract the desired leg lengths
         motor_positions = msg.data[:6] # Since we don't need the hand string length here
