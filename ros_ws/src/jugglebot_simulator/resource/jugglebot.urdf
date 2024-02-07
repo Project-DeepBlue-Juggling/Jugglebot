@@ -1,0 +1,6 @@
+<?xml version="1.0" ?>
+<robot name="Jugglebot">
+    <webots>
+        <plugin type="jugglebot_simulator.jugglebot_driver.JugglebotDriver" />
+    </webots>
+</robot>
