@@ -108,7 +108,7 @@ class CANBusHandlerNode(Node):
     def shutdown_robot(self):
         # Send the robot home and put all motors in IDLE
         # Start by lowering the max speed
-        self.can_handler.set_absolute_vel_curr_limits(velocity_limit=2.0)
+        self.can_handler.set_absolute_vel_curr_limits(velocity_limit=2.5)
 
         # Command all motors to move home
         for axis_id in range(6):
@@ -123,6 +123,8 @@ class CANBusHandlerNode(Node):
         while not all(self.can_handler.is_done_moving):
             self.can_handler.fetch_messages()
             time.sleep(0.01)
+
+        time.sleep(1.0)  # Add a short break to make sure all motors have stopped moving
 
         # Put motors into IDLE
         self.can_handler.set_odrive_state(requested_state='IDLE')

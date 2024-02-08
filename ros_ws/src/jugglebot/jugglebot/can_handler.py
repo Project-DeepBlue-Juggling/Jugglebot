@@ -66,7 +66,7 @@ class CANHandler:
     # Set absolute limit for how far the motors can turn. This is intended as a backup if prior error-checking fails
     _MOTOR_MAX_POSITION = 4.2  # Revs
 
-    def __init__(self, logger, bus_name='can0', bitrate=500000, bus_type='socketcan'):
+    def __init__(self, logger, bus_name='can0', bitrate=1000000, bus_type='socketcan'):
         # Find the package directory
         pkg_dir = get_package_share_directory('jugglebot')
         
@@ -359,12 +359,11 @@ class CANHandler:
             # self._set_requested_state(axisID, requested_state='CLOSED_LOOP_CONTROL')  # 'setup_odrives' already does this
             self._set_control_mode(axis_id=axisID, control_mode='VELOCITY_CONTROL', input_mode='VEL_RAMP')
 
-            # Set absolute current/velocity limit
-            # data = self.db.encode_message(f'Axis{axisID}_Set_Limits',{'Current_Limit':current_limit + current_limit_headroom,
-            #                                                      'Velocity_Limit':homing_speed*2})
+            # Set absolute current/velocity limit. Don't use the 'set_absolute_vel_curr_limits' method as it sets all axes simultaneously
+            data = self.db.encode_message(f'Axis{axisID}_Set_Limits',{'Current_Limit':current_limit + current_limit_headroom,
+                                                                 'Velocity_Limit':homing_speed*2})
             
-            # self._send_message(axis_id=axisID, command_name="set_vel_curr_limits", data=data)
-            self.set_absolute_vel_curr_limits(current_limit=current_limit + current_limit_headroom, velocity_limit=homing_speed*2)
+            self._send_message(axis_id=axisID, command_name="set_vel_curr_limits", data=data)
 
             # Start the motor moving at the prescribed speed
             data = self.db.encode_message(f'Axis{axisID}_Set_Input_Vel',
@@ -396,13 +395,13 @@ class CANHandler:
                 # Check if the limit has been reached
                 if abs(moving_avg) >= current_limit:
                     self._set_requested_state(axisID, requested_state='IDLE')
-                    self.ROS_logger.info(f"Motor {axisID} homed!")
 
                     # Set the encoder position to be a little more than 0 (so that 0 is a bit off the end-stop. +ve is contraction)
                     data = self.db.encode_message(f'Axis{axisID}_Set_Linear_Count',
                                              {'Position': 1200})  # Recall encoder has 8192 CPR
                     
                     self._send_message(axis_id=axisID, command_name="set_linear_count", data=data, error_descriptor="Set encoder pos in homing")
+                    self.ROS_logger.info(f"Motor {axisID} homed!")
                     break
 
         # Now that all motors have been homed, reset them to have desired properties

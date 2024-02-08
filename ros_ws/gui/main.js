@@ -79,7 +79,13 @@ window.onload = function () {
         if (message.level === 50) {
             logEntry.style.fontWeight = 'bold';
             logEntry.style.backgroundColor = '#ffcccc'; // Light red background
-            logEntry.style.padding = '2px';
+        }
+
+        // If the message contains "Heartbeat received" then colour the background green
+        if (message.msg.includes("Heartbeat received")) {
+            logEntry.style.fontWeight = 'bold';
+            logEntry.style.backgroundColor = '#ccffcc'; // Light green background
+            logEntry.style.color = 'darkgreen'; // Dark green text
         }
 
         // Add a tolerance in case the browser rounds the scroll height
