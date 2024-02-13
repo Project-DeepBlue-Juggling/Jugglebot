@@ -2,7 +2,7 @@ import time
 import rclpy
 from rclpy.node import Node
 from jugglebot_interfaces.srv import ODriveCommandService
-from jugglebot_interfaces.msg import RobotStateMessage
+from jugglebot_interfaces.msg import RobotStateMessage, CanTrafficReportMessage
 from geometry_msgs.msg import Point, Vector3
 from builtin_interfaces.msg import Time
 from std_msgs.msg import Float64MultiArray
@@ -38,14 +38,16 @@ class CANBusHandlerNode(Node):
         self.motor_pos_subscription = self.create_subscription(Float64MultiArray, 'leg_lengths_topic', self.handle_movement, 10)
 
         # Initialize publishers for hardware data
-        self.position_publisher = self.create_publisher(Float64MultiArray, 'motor_positions', 10)
-        self.velocity_publisher = self.create_publisher(Float64MultiArray, 'motor_velocities', 10)
-        self.iq_publisher = self.create_publisher(Float64MultiArray, 'motor_iqs', 10)
+        self.position_publisher    = self.create_publisher(Float64MultiArray, 'motor_positions', 10)
+        self.velocity_publisher    = self.create_publisher(Float64MultiArray, 'motor_velocities', 10)
+        self.iq_publisher          = self.create_publisher(Float64MultiArray, 'motor_iqs', 10)
+        self.can_traffic_publisher = self.create_publisher(CanTrafficReportMessage, 'can_traffic', 10)
 
         # Register callbacks
         self.can_handler.register_callback('motor_positions', self.publish_motor_positions)
         self.can_handler.register_callback('motor_velocities', self.publish_motor_velocities)
         self.can_handler.register_callback('motor_iqs', self.publish_motor_iqs)
+        self.can_handler.register_callback('can_traffic', self.publish_can_traffic)
 
         # Initialize a timer to poll the CAN bus
         self.timer_canbus = self.create_timer(timer_period_sec=0.001, callback=self._poll_can_bus)
@@ -109,6 +111,7 @@ class CANBusHandlerNode(Node):
         # Send the robot home and put all motors in IDLE
         # Start by lowering the max speed
         self.can_handler.set_absolute_vel_curr_limits(velocity_limit=2.5)
+        time.sleep(1.0)
 
         # Command all motors to move home
         for axis_id in range(6):
@@ -128,7 +131,6 @@ class CANBusHandlerNode(Node):
 
         # Put motors into IDLE
         self.can_handler.set_odrive_state(requested_state='IDLE')
-        self.get_logger().info('Motors put in IDLE')
 
     def odrive_command_callback(self, request, response):
         command = request.command
@@ -178,6 +180,12 @@ class CANBusHandlerNode(Node):
 
         self.iq_publisher.publish(motor_iqs)
 
+    def publish_can_traffic(self, can_traffic_data):
+        msg = CanTrafficReportMessage()
+        msg.received_count = can_traffic_data['received_count']
+        msg.report_interval = can_traffic_data['report_interval']
+
+        self.can_traffic_publisher.publish(msg)
 
     #########################################################################################################
     #                                          Managing the Node                                            #

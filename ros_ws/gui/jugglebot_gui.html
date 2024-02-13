@@ -18,6 +18,8 @@
     <script type="module" src="3dplotter.js"></script>
     <script type="module" src="main.js"></script>
     <script type="text/javascript" src="lib/roslib.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>  <!-- Chart.js library for plotting -->
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-streaming@2.0.0/dist/chartjs-plugin-streaming.min.js"></script>
 
     <style>
         /* Style for the main container */
@@ -104,6 +106,18 @@
 
         /* Style for the outer button group */
         #button-container {
+            display: flex; /* Make the div element a flex container */
+            flex-direction: column; /* Stack items vertically */
+            align-items: center; /* Center items horizontally */
+            border: 2px solid #000000; /* Border color and thickness */
+            width: 380px;
+            padding: 5px; /* Space inside the box */
+            margin: 10px; /* Space outside the box */
+            background-color: #f5f5f5; /* Background color of the box */
+        }
+
+        /* Style for Network stats container */
+        #network-stats-container {
             display: flex; /* Make the div element a flex container */
             flex-direction: column; /* Stack items vertically */
             align-items: center; /* Center items horizontally */
@@ -507,8 +521,10 @@
 
             </div>
 
-            <!-- Topic Stats Container -->
-            <div id="topic-stats-container">
+            <!-- Network Stats Container -->
+            <div id="network-stats-container">
+                <canvas id="can-traffic-chart"></canvas>  <!-- Chart.js canvas for plotting -->
+
                 <table id="topic-stats-table">
                     <thead>
                         <tr>

@@ -101,6 +101,7 @@ class CANHandler:
             'motor_positions' : None,
             'motor_iqs'       : None,
             'motor_velocities': None,
+            'can_traffic'     : None,
         }
 
         # Initialize buffers for all variables that are being sent out to the ROS network
@@ -264,7 +265,7 @@ class CANHandler:
 
         try:
             self.bus.send(msg)
-            self.ROS_logger.info(f"CAN message for {error_descriptor} sent to axisID {axis_id}")
+            self.ROS_logger.debug(f"CAN message for {error_descriptor} sent to axisID {axis_id}")
         except Exception as e:
             # Log that the message couldn't be sent
             self.ROS_logger.warn(f"CAN message for {error_descriptor} NOT sent to axisID {axis_id}! Error: {e}")
@@ -488,6 +489,11 @@ class CANHandler:
         
         # The arbitration_id contains encoded information about the axis and command.
         arbitration_id = message.arbitration_id
+
+        # Check if the message is for the CAN traffic report
+        if arbitration_id == 0x20:
+            self._handle_CAN_traffic_report(message)
+            return
         
         # Extract the axis ID from the arbitration ID by right-shifting by 5 bits.
         axis_id = arbitration_id >> 5
@@ -500,6 +506,9 @@ class CANHandler:
         if handler:
             # If a handler was found, call it with the axis ID and message data.
             handler(axis_id, message.data)
+        else:
+            # If no handler was found, log a warning.
+            self.ROS_logger.warn(f"No handler for command ID {command_id} on axis {axis_id}. Arbitration ID: {arbitration_id}")
 
     def _handle_heartbeat(self, axis_id, data):
         # Extract information from the heartbeat message
@@ -679,3 +688,19 @@ class CANHandler:
 
             # Reset the buffer
             self.iq_buffer = [None] * 6
+
+    def _handle_CAN_traffic_report(self, message):
+        # Unpack the data into a 32-bit integer
+        received_count = message.data[0] + (message.data[1] << 8)
+        report_interval = message.data[2] + (message.data[3] << 8)
+
+        traffic_report = {
+            'received_count': received_count,
+            'report_interval': report_interval,
+        }
+
+        # Log the traffic report
+        self.ROS_logger.debug(f"CAN traffic report: {received_count} messages received in the last {report_interval} ms.")
+
+        # Trigger the callback
+        self._trigger_callback('can_traffic', traffic_report)

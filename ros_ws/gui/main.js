@@ -35,7 +35,7 @@ window.onload = function () {
     var consoleDiv = document.getElementById('ros-console');
 
     // Set a limit for how many messages are stored in the console
-    var maxMessages = 100;
+    var maxConsoleMessages = 100;
 
     // Subscribe to the /rosout topic
     var listener = new ROSLIB.Topic({
@@ -98,7 +98,7 @@ window.onload = function () {
         consoleDiv.appendChild(logEntry);
 
         // Remove the oldest log entry if the console is full
-        if (consoleDiv.childElementCount > maxMessages) {
+        if (consoleDiv.childElementCount > maxConsoleMessages) {
             consoleDiv.removeChild(consoleDiv.firstChild);
         }
 
@@ -109,6 +109,102 @@ window.onload = function () {
             }
         });
     });
+
+    // ################################################################## //
+    //                        CAN Traffic Handling                        //
+    // ################################################################## //
+
+    // Subscribe to the /can_traffic topic
+    var canTrafficListener = new ROSLIB.Topic({
+        ros: ros,
+        name: '/can_traffic',
+        messageType: 'jugglebot_interfaces/msg/CanTrafficReportMessage'
+    });
+
+    var latestDataPoints = []; // Store the latest data points with custom time
+    var timeWindow = 10 * 1000; // Time window in ms (minutes * seconds * ms)
+
+    // Listen for messages on the /can_traffic topic and update the data array
+    canTrafficListener.subscribe(function(message) {
+        if (message.report_interval > 0) {
+            var rate = (message.received_count / message.report_interval) * 1000; // Calculate msgs/sec
+            // Shift the time of all existing data points by the report_interval
+            latestDataPoints.forEach(point => point.x -= message.report_interval);
+
+            // Add new data point with x value of 0 (representing "now")
+            latestDataPoints.push({x: 0, y: rate});
+
+            // Remove points outside the desired time window
+            latestDataPoints = latestDataPoints.filter(point => point.x >= -timeWindow);
+        }
+    });
+
+    var ctx = document.getElementById('can-traffic-chart').getContext('2d');
+    var canTrafficChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            datasets: [{
+                label: 'CAN Traffic',
+                data: latestDataPoints,
+                fill: true,
+                backgroundColor: 'rgba(255, 128, 0, 0.2)',
+                borderColor: '#ff8000',
+                tension: 0.1
+            }]
+        },
+        options: {
+            scales: {
+                x: {
+                    type: 'linear',
+                    position: 'bottom',
+                    title: {
+                        display: true,
+                        text: 'Seconds ago'
+                    },
+                    ticks: {
+                        // Customize tick labels to show time relative to 'currentTime'
+                        callback: function(value) {
+                            return value/1000;
+                        }
+                    },
+                    max: 0, // Start with the rightmost point at 0
+                },
+                y: {
+                    beginAtZero: true,
+                    title: {
+                        display: true,
+                        text: 'Msgs / sec'
+                    }
+                }
+            },
+            animation: {
+                duration: 0 // Turn off animation for performance
+            },
+            plugins: {
+                legend: {
+                    display: false
+                },
+                title: {
+                    display: true,
+                    text: 'CAN Bus Traffic',
+                    font: {
+                        size: 16
+                    }
+                }
+            }
+        }
+    });
+
+    // Function to update the chart
+    function updateChart() {
+        canTrafficChart.data.datasets.forEach((dataset) => {
+            dataset.data = latestDataPoints; // Update dataset with the latest data points
+        });
+        canTrafficChart.update();
+    }
+
+    // Update the chart at a frequency that matches your data update frequency
+    setInterval(updateChart, 500);
     
     // ################################################################## //
     //                    Querying for Active ROS Topics                  //
@@ -254,6 +350,7 @@ window.onload = function () {
     }
 
     setInterval(updateStats, 1000); // Periodically update the topic list (rate is in ms)
+
 
     // ################################################################## //
     //                      Subscribe to Robot State                      //
