@@ -7,7 +7,7 @@ let camera, renderer;
 export const scene = new THREE.Scene();
 
 // Initialize the geometry
-let platformPointsGeometry, basePointsGeometry, centroid;
+let platformPointsGeometry, basePointsGeometry, centroid, handPointsGeometry;
 let legLinesGeometry, strutLinesGeometry, rodLinesGeometry; // Struts span arm to plat, rods span lower arm to upper arm
 let currentPathObjects, nextPathObjects, transitionPathObjects; // Objects for the current, new, and transition paths
 let baseVolume;
@@ -531,7 +531,8 @@ function updateCentroidArrow(position, orientation){
 // Function to update the scene
 function updateScene(base_nodes, new_plat_nodes, new_arm_nodes, new_hand_nodes, orientation) {
     // Update points for platform and base
-    updatePoints(platformPointsGeometry, new_plat_nodes.slice(0, 6));
+    updatePoints(platformPointsGeometry, new_plat_nodes);
+    updatePoints(handPointsGeometry, new_hand_nodes);
     updatePoints(basePointsGeometry, base_nodes);
 
     // Update the platform centroid, and centroid arrow
@@ -612,6 +613,7 @@ export function initPlotter() {
     // Set the colours of the various elements
     const colours = {
         platform: 0xff0000,
+        hand: 0xff8000,
         base: 0x0000ff,
         centroid: 0x800080,
         legs: 0x00ff00,
@@ -623,9 +625,10 @@ export function initPlotter() {
     };
 
     // Initialize the points
-    platformPointsGeometry = initPoints(scene, colours.platform); // Red points for platform nodes
-    basePointsGeometry = initPoints(scene, colours.base); // Blue points for base nodes
+    platformPointsGeometry = initPoints(scene, colours.platform, 7); // Red points for platform nodes
+    basePointsGeometry = initPoints(scene, colours.base, 7); // Blue points for base nodes
     centroid = initPoints(scene, colours.centroid, 1, 'centroid'); // Purple point for platform center
+    handPointsGeometry = initPoints(scene, colours.hand, 3); // Orange points for hand nodes
 
     // Initialize the lines
     legLinesGeometry = initLineGroup(scene, colours.legs, 0.015, 6); // Green color for legs
@@ -637,6 +640,7 @@ export function initPlotter() {
 
     // Initialize the robot group, for toggling visibility
     groups.robot.add(platformPointsGeometry);
+    groups.robot.add(handPointsGeometry);
     groups.robot.add(basePointsGeometry);
     groups.robot.add(legLinesGeometry);
     groups.robot.add(strutLinesGeometry);

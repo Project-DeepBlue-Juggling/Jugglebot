@@ -203,7 +203,7 @@ window.onload = function () {
         canTrafficChart.update();
     }
 
-    // Update the chart at a frequency that matches your data update frequency
+    // Update the chart at a frequency that matches the data update frequency
     setInterval(updateChart, 500);
     
     // ################################################################## //
@@ -394,19 +394,25 @@ window.onload = function () {
     });
 
     // ################################################################## //
-    //                    Interfacing with Pose Topic                     //
+    //                    Interfacing with Pose Topics                    //
     // ################################################################## //
 
-    var poseTopic = new ROSLIB.Topic({
+    var platPoseTopic = new ROSLIB.Topic({
         ros : ros,
         name : 'platform_pose_topic',
+        messageType : 'geometry_msgs/msg/Pose'
+    });
+
+    var handPoseTopic = new ROSLIB.Topic({
+        ros : ros,
+        name : 'hand_pose_topic',
         messageType : 'geometry_msgs/msg/Pose'
     });
 
     // Initialize current pose to null
     var currentPose = null;
 
-    poseTopic.subscribe(function(message) {
+    handPoseTopic.subscribe(function(message) {
         // Store the current pose
         currentPose = message;
     });
@@ -414,15 +420,58 @@ window.onload = function () {
     // Method to adjust the current pose
     function adjustPose(deltaX, deltaY, deltaZ) {
         if (currentPose) {
+            // For modifying position
             currentPose.position.x += deltaX;
             currentPose.position.y += deltaY;
             currentPose.position.z += deltaZ;
+
+            // For modifying orientation
+            // var ori = eulerToQuaternion(deltaX, deltaY, deltaZ);
+            // currentPose.orientation = multiplyQuaternions(currentPose.orientation, ori);
         }
 
         // console.log(currentPose)
 
         // Publish the new pose
-        poseTopic.publish(currentPose);
+        handPoseTopic.publish(currentPose);
+    }
+
+    function multiplyQuaternions(q1, q2) {
+        var q = new ROSLIB.Quaternion();
+
+        q.w = q1.w*q2.w - q1.x*q2.x - q1.y*q2.y - q1.z*q2.z;
+        q.x = q1.w*q2.x + q1.x*q2.w + q1.y*q2.z - q1.z*q2.y;
+        q.y = q1.w*q2.y - q1.x*q2.z + q1.y*q2.w + q1.z*q2.x;
+        q.z = q1.w*q2.z + q1.x*q2.y - q1.y*q2.x + q1.z*q2.w;
+
+        return q;
+    }
+
+    // Method to convert euler angles (in degrees) to a quaternion
+    function eulerToQuaternion(roll, pitch, yaw) {
+        // Convert the angles to radians
+        roll = roll * Math.PI / 180;
+        pitch = pitch * Math.PI / 180;
+        yaw = yaw * Math.PI / 180;
+
+        var cy = Math.cos(yaw * 0.5);
+        var sy = Math.sin(yaw * 0.5);
+        var cp = Math.cos(pitch * 0.5);
+        var sp = Math.sin(pitch * 0.5);
+        var cr = Math.cos(roll * 0.5);
+        var sr = Math.sin(roll * 0.5);
+
+        var w = cy * cp * cr + sy * sp * sr;
+        var x = cy * cp * sr - sy * sp * cr;
+        var y = sy * cp * sr + cy * sp * cr;
+        var z = sy * cp * cr - cy * sp * sr;
+
+        return new ROSLIB.Quaternion({
+            x: x,
+            y: y,
+            z: z,
+            w: w
+        });
     }
 
     // Method to set the current pose
@@ -454,7 +503,7 @@ window.onload = function () {
         }
 
         // Publish the new pose
-        poseTopic.publish(currentPose);
+        handPoseTopic.publish(currentPose);
     }
 
     // ################################################################## //
