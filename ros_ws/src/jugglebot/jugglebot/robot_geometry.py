@@ -41,6 +41,8 @@ class RobotGeometry(Node):
         self.base_small_angle = 24.0 # Gamma2 on main sketch {deg}
         self.plat_small_angle = 7.49496  # Lambda1 on main sketch {deg}
         self.leg_stroke = 280.0  # Stroke of leg {mm}
+        self.plat_string_attachment_height = 131.09  # Height of platform string attachment BELOW platform joint plane {mm}
+        self.base_string_attachment_height = 6.29    # Height of base string attachment ABOVE base joint plane {mm}
 
         # Relating to the hand/arm:
         self.arm_radius = 70.0  # Radius of opening where the ball comes in. Doesn't need to be exact.
@@ -100,8 +102,8 @@ class RobotGeometry(Node):
             self.init_plat_nodes[node][2] = 0
 
         # Find the 7th node for the platform and base. (x, y = 0)
-        self.init_plat_nodes[6][2] = self.init_arm_nodes[5][2]
-        self.base_nodes[6][2] = 0  # Assume base string attachment is in line with base joint plane. (wrong, but close enough for now)
+        self.init_plat_nodes[6][2] = - self.plat_string_attachment_height
+        self.base_nodes[6][2] = self.base_string_attachment_height
 
         # Find the nodes for the hand.
         for node in range(3):
