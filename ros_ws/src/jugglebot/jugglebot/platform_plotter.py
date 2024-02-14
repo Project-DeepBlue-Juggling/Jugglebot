@@ -49,7 +49,7 @@ class PlatformPlotter(Node):
         self.new_hand_nodes = None    # Base frame
 
         # Initialize geometry to be populated with the subscription to platform_pose_topic
-        self.ori_quat = None    # Orientation of the platform in the base frame (as a quaternion)
+        self.ori_quat = None   # Orientation of the platform in the base frame (as a quaternion)
 
         self.axis_lims = None  # To keep the plot from constantly changing size
 
