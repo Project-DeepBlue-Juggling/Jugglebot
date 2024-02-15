@@ -7,8 +7,8 @@ const uint32_t reportInterval = 500;  // Report every XXX milliseconds
 
 void setup() {
   Serial.begin(115200);
-  while (!Serial)
-    ;
+  // while (!Serial)
+  //   ;
 
   can1.begin();
   can1.setBaudRate(1000000);
