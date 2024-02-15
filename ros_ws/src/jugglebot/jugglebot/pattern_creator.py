@@ -4,7 +4,6 @@ from rclpy.time import Time
 from std_msgs.msg import String, Header
 from geometry_msgs.msg import Pose, PoseStamped
 from jugglebot_interfaces.msg import PatternControlMessage, PathMessage
-from jugglebot_interfaces.srv import GetRobotGeometry
 from std_srvs.srv import Trigger
 import numpy as np
 import quaternion  # numpy quaternion
@@ -25,11 +24,11 @@ class PatternCreator(Node):
         self.pattern_control_sub = self.create_subscription(PatternControlMessage, 'pattern_control_topic', self.pattern_control_callback, 10)
         self.pattern_control_sub  # prevent unused variable warning
 
-        # Create a publisher for the platform pose and a timer to publish it
-        self.pose_publisher_ = self.create_publisher(Pose, 'platform_pose_topic', 10)
+        # Create a publisher for the hand pose and a timer to publish it
+        self.pose_publisher_ = self.create_publisher(Pose, 'hand_pose_topic', 10)
         self.pose_timer = self.create_timer(0.01, self.publish_pose)
 
-        # Create a publisher for the platform paths
+        # Create a publisher for the hand paths
         self.path_publisher_ = self.create_publisher(PathMessage, 'paths_topic', 10)
 
         # Initialize a list of tuples (pose, timestamp) for the path
@@ -49,7 +48,7 @@ class PatternCreator(Node):
         # Initialize any relevant robot geometry
         self.init_height = None  # Initial height of the platform (in its lowest position)
 
-        # Create a timer to call generate_circular_path
+        # Create a timer to call the chosen path
         self.generate_path_timer = self.create_timer(1, self.generate_conical_path) # TEMPORARY!!!!!
 
     #########################################################################################################

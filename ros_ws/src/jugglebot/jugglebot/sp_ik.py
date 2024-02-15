@@ -44,7 +44,7 @@ class SPInverseKinematics(Node):
         self.hand_stroke = None # For checking if the hand string is overextended
 
         self.new_plat_nodes = None    # Base frame
-        self.new_arm_nodes = None     # Base frame
+        self.new_arm_nodes  = None    # Base frame
         self.new_hand_nodes = None    # Base frame
 
     def send_geometry_request(self):
@@ -146,16 +146,23 @@ class SPInverseKinematics(Node):
             # Get the indices of the legs that are too short or too long
             too_short_indices = np.where(too_short)[0]
             too_long_indices = np.where(too_long)[0]
+
+            message_throttle_duration = 0.5  # Should be long enough to ensure brief instances of clipping don't spam the console
             
             if any_leg_too_short and any_leg_too_long:
-                self.get_logger().error(f'Leg lengths were both too short and too long! Legs too short: {too_short_indices}, legs too long: {too_long_indices}')
+                self.get_logger().error(f'''Leg lengths were both too short and too long! 
+                                        Legs too short: {too_short_indices}, legs too long: {too_long_indices}''', 
+                                        throttle_duration_sec=message_throttle_duration)
             elif any_leg_too_short:
-                self.get_logger().error(f'Leg lengths were too short! Legs too short: {too_short_indices}')
+                self.get_logger().error(f'Leg lengths were too short! Legs too short: {too_short_indices}',
+                                        throttle_duration_sec=message_throttle_duration)
             elif any_leg_too_long:
-                self.get_logger().error(f'Leg lengths were too long! Legs too long: {too_long_indices}')
+                self.get_logger().error(f'Leg lengths were too long! Legs too long: {too_long_indices}',
+                                        throttle_duration_sec=message_throttle_duration)
 
         if leg_lens_mm[6] != clipped_hand_length:
-            self.get_logger().error(f'Hand string is overextended! Desired length: {leg_lens_mm[6]}')
+            self.get_logger().error(f'Hand string is overextended! Desired length: {leg_lens_mm[6]}',
+                                    throttle_duration_sec=message_throttle_duration)
 
         clipped_lengths = np.concatenate((clipped_leg_lengths, np.array([clipped_hand_length])))
 

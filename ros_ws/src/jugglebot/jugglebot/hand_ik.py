@@ -106,10 +106,8 @@ class SPInverseKinematics(Node):
         B_s = np.reshape(self.base_nodes[6], (3, 1))        # Location of base string attachment, in base frame
         e_o = np.dot(rot, np.array([[0], [0], [1]]))  # Unit vector in direction of orientation of platform
         L_o = self.init_leg_lengths[6]  # Length of hand string at origin position
-        h = pos  # Desired hand position
-        arm_height_from_platform = self.init_arm_nodes[0][2]  # Height of arm from platform (in platform frame)
+        h = pos + self.start_pos # Desired hand position
 
-        h[2] = h[2] + (self.start_pos[2] - arm_height_from_platform)  # Allows for argument to be in plat. frame
 
         def F(P):
             # Equation describing the position of the platform wrt other variables
@@ -147,7 +145,7 @@ class SPInverseKinematics(Node):
 
         end_time = time.perf_counter_ns()
 
-        self.get_logger().info(f"Numeric solution took {(end_time - start_time) / 1e6} ms")
+        # self.get_logger().info(f"Numeric solution took {(end_time - start_time) / 1e6} ms")
         
         # Publish the platform pose
         plat_pose_msg = Pose()

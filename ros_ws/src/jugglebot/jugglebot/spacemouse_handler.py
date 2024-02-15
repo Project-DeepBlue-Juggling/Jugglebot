@@ -20,7 +20,8 @@ class SpaceMouseHandler(Node):
         self.spacemouse_enabled = False
 
         # Create a publisher for the platform pose and a timer to publish it
-        self.publisher_ = self.create_publisher(Pose, 'platform_pose_topic', 10)
+        # self.publisher_ = self.create_publisher(Pose, 'platform_pose_topic', 10)
+        self.publisher_ = self.create_publisher(Pose, 'hand_pose_topic', 10)
         self.timer = self.create_timer(0.01, self.publish_pose)
 
         """Initialize and open the SpaceMouse."""
@@ -45,7 +46,7 @@ class SpaceMouseHandler(Node):
         yaw_mult = 25.0  # deg
 
         # Set the offset in z to put baseline position at ~midspan of robot
-        z_offset = 140   # mm
+        z_offset = 200   # mm
 
         # Initialise pose object
         pose = Pose() 

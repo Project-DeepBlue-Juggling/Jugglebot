@@ -397,11 +397,11 @@ window.onload = function () {
     //                    Interfacing with Pose Topics                    //
     // ################################################################## //
 
-    var platPoseTopic = new ROSLIB.Topic({
-        ros : ros,
-        name : 'platform_pose_topic',
-        messageType : 'geometry_msgs/msg/Pose'
-    });
+    // var platPoseTopic = new ROSLIB.Topic({
+    //     ros : ros,
+    //     name : 'platform_pose_topic',
+    //     messageType : 'geometry_msgs/msg/Pose'
+    // });
 
     var handPoseTopic = new ROSLIB.Topic({
         ros : ros,
