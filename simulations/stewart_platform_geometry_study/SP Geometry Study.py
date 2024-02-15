@@ -2,6 +2,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from scipy.spatial import ConvexHull
+from scipy.spatial.distance import cdist
+from skimage import measure
 import os
 import json
 # import alphashape
@@ -112,6 +114,10 @@ def compute_reachability(ptlist, a, B, mov_limits):
     """
     checklist = np.zeros(len(ptlist))  # List of 1's and 0's that correspond to whether a point can be reached or not
     for i in range(len(ptlist)):
+        # Print an update every time 10% of the points have been checked
+        if i % (len(ptlist) // 10) == 0:
+            print(f"Checking point {i} of {len(ptlist)}")
+            
         pt = ptlist[i, :]
         Rot = np.eye(3)
         L = pt.reshape((3, 1)) + Rot @ a - B
@@ -222,6 +228,35 @@ def plot_convex_hull(points):
     ax.set_ylabel('Y axis')
     ax.set_zlabel('Z axis')
     plt.title('3D Convex Hull')
+
+def plot_concave_hull(points, grid_size=50, sigma=1.0, threshold=0.1):
+    # Create a dense grid
+    minima = points.min(axis=0) - 1.0
+    maxima = points.max(axis=0) + 1.0
+    grid_x, grid_y, grid_z = np.mgrid[minima[0]:maxima[0]:complex(grid_size), 
+                                      minima[1]:maxima[1]:complex(grid_size), 
+                                      minima[2]:maxima[2]:complex(grid_size)]
+    
+    # Create a scalar field based on distances to points (simple Gaussian kernel)
+    scalar_field = np.zeros(grid_x.shape)
+    for point in points:
+        distance = np.sqrt((grid_x - point[0])**2 + (grid_y - point[1])**2 + (grid_z - point[2])**2)
+        scalar_field += np.exp(-(distance**2 / (2. * sigma**2)))
+    
+    # Apply Marching Cubes
+    vertices, faces, _, _ = measure.marching_cubes(scalar_field, level=threshold, spacing=(grid_x[1,0,0]-grid_x[0,0,0], 
+                                                                                             grid_y[0,1,0]-grid_y[0,0,0], 
+                                                                                             grid_z[0,0,1]-grid_z[0,0,0]))
+    
+    # Plotting
+    fig = plt.figure(figsize=(10, 7))
+    ax = fig.add_subplot(111, projection='3d')
+    
+    # Fancy indexing: `verts[faces]` to generate a collection of triangles
+    mesh = ax.plot_trisurf(vertices[:, 0], vertices[:,1], faces, vertices[:, 2], cmap='Spectral', lw=1)
+    ax.scatter(points[:, 0], points[:, 1], points[:, 2], color='red')
+    
+    plt.show()
 
 
 def export_hull_as_json(points, faces, filename='convex_hull_points.json'):
@@ -368,7 +403,7 @@ hand_xy_span = 600  # mm
 hand_z_span = 200  # mm
 
 # Points in point cloud
-numPoints = int(1e8)  # Number of points to check
+numPoints = int(1e6)  # Number of points to check
 
 # Structure input data
 movLimits = [shortLeg, longLeg, legAngleLimit]
@@ -377,18 +412,21 @@ plat_nodes, base_nodes = platform_builder(baseRad, platRad, baseSmallAngle, plat
 pt_cloud = generate_point_cloud(numPoints, shortLeg, longLeg)
 reach_rate, valid_pt_list = compute_reachability(pt_cloud, plat_nodes, base_nodes, movLimits)
 
-# Get points in the convex hull of the valid points
-hull = ConvexHull(valid_pt_list)
-hull_pts = hull.points[hull.vertices, :]
+# Plot the concave hull of the valid points
+# plot_concave_hull(valid_pt_list)
 
-# Map from old indices (in valid_pt_list) to new indices (in hull_pts)
-index_map = {old_idx: new_idx for new_idx, old_idx in enumerate(hull.vertices)}
+# # Get points in the convex hull of the valid points
+# hull = ConvexHull(valid_pt_list)
+# hull_pts = hull.points[hull.vertices, :]
 
-# Remap the face indices
-hull_faces = [[index_map[vertex_idx] for vertex_idx in face] for face in hull.simplices]
+# # Map from old indices (in valid_pt_list) to new indices (in hull_pts)
+# index_map = {old_idx: new_idx for new_idx, old_idx in enumerate(hull.vertices)}
 
-plot_convex_hull(hull_pts)
-export_hull_as_json(hull_pts, hull_faces)
+# # Remap the face indices
+# hull_faces = [[index_map[vertex_idx] for vertex_idx in face] for face in hull.simplices]
+
+# plot_convex_hull(hull_pts)
+# export_hull_as_json(hull_pts, hull_faces)
 
 # check_necessary_num_pts_in_cloud()
 
