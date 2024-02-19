@@ -227,11 +227,10 @@ function initPoints(scene, colour, numPoints=6, objectName='') {
     const material = new THREE.PointsMaterial({ color: colour, size: 0.05 });
     const points = new THREE.Points(geometry, material);
     
-    // Set the name of the points object (to help with toggling the visibility)
-    points.name = objectName; 
-
-    // Add points to the scene
-    scene.add(points);
+    // Add the points object to the appropriate group
+    if (groups[objectName]) {
+        groups[objectName].add(points);
+    }
 
     return points; // Return the points object for future updates
 }
@@ -626,9 +625,9 @@ export function initPlotter() {
 
     // Initialize the points
     platformPointsGeometry = initPoints(scene, colours.platform, 7); // Red points for platform nodes
-    basePointsGeometry = initPoints(scene, colours.base, 7); // Blue points for base nodes
-    centroid = initPoints(scene, colours.centroid, 1, 'centroid'); // Purple point for platform center
-    handPointsGeometry = initPoints(scene, colours.hand, 3); // Orange points for hand nodes
+    basePointsGeometry     = initPoints(scene, colours.base, 7); // Blue points for base nodes
+    centroid               = initPoints(scene, colours.centroid, 1, 'centroid'); // Purple point for platform center
+    handPointsGeometry     = initPoints(scene, colours.hand, 3); // Orange points for hand nodes
 
     // Initialize the lines
     legLinesGeometry = initLineGroup(scene, colours.legs, 0.015, 6); // Green color for legs
