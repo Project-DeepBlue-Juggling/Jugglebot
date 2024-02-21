@@ -30,6 +30,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/PatternControlMessage.msg"
   "msg/PathMessage.msg"
   "msg/CanTrafficReportMessage.msg"
+  "msg/HandStateSingle.msg"
+  "msg/HandStateList.msg"
   DEPENDENCIES geometry_msgs
 )
 
