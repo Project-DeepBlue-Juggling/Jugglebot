@@ -371,6 +371,7 @@ window.onload = function () {
             document.getElementById('spacemouse-control-button').disabled = false;
             document.getElementById('pattern-control-button').disabled = false;
             document.getElementById('jogging-control-button').disabled = false;
+            document.getElementById('juggle-control-button').disabled = false;
 
             // Change the "home" button, since we no longer need to home the robot
             homeButton.querySelector('.button-text').textContent = 'Center Robot';
@@ -396,12 +397,6 @@ window.onload = function () {
     // ################################################################## //
     //                    Interfacing with Pose Topics                    //
     // ################################################################## //
-
-    // var platPoseTopic = new ROSLIB.Topic({
-    //     ros : ros,
-    //     name : 'platform_pose_topic',
-    //     messageType : 'geometry_msgs/msg/Pose'
-    // });
 
     var handPoseTopic = new ROSLIB.Topic({
         ros : ros,
@@ -611,7 +606,7 @@ window.onload = function () {
     });
 
     // Define an array of control modes
-    const controlModes = ['spacemouse', 'jogging', 'pattern'];
+    const controlModes = ['spacemouse', 'jogging', 'pattern', 'juggle'];
 
     // Initialize the control state to null
     var control_state = null;
