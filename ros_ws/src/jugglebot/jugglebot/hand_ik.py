@@ -33,18 +33,18 @@ class SPInverseKinematics(Node):
         self.has_geometry_data = False
 
         # Initialize geometry terms to be populated with a call to the get_robot_geometry service
-        self.start_pos = None         # Base frame
+        self.start_pos  = None        # Base frame
         self.base_nodes = None        # Base frame
         self.init_plat_nodes = None   # Platform frame
-        self.init_arm_nodes = None    # Platform frame
+        self.init_arm_nodes  = None   # Platform frame
         self.init_hand_nodes = None   # Platform frame
 
         self.init_leg_lengths = None
-        self.leg_stroke = None
+        self.leg_stroke  = None
         self.hand_stroke = None # For checking if the hand string is overextended
 
         self.new_plat_nodes = None    # Base frame
-        self.new_arm_nodes = None     # Base frame
+        self.new_arm_nodes  = None    # Base frame
         self.new_hand_nodes = None    # Base frame
 
         # Initialize a variable to store the quaternion representation of the platform/hand orientation
@@ -79,7 +79,8 @@ class SPInverseKinematics(Node):
     def pose_callback(self, msg):
         if self.has_geometry_data:
             # Extract position data
-            pos = np.array([[msg.position.x], [msg.position.y], [msg.position.z]])  # Note that this is in base frame + initial position
+            pos = np.array([[msg.position.x], [msg.position.y], [msg.position.z]])  # Note that this is in base frame
+            pos += self.start_pos  # Convert to platform (at lowest position) frame
 
             # Extract the orientation quaternion
             self.orientation = msg.orientation
@@ -106,7 +107,7 @@ class SPInverseKinematics(Node):
         B_s = np.reshape(self.base_nodes[6], (3, 1))        # Location of base string attachment, in base frame
         e_o = np.dot(rot, np.array([[0], [0], [1]]))  # Unit vector in direction of orientation of platform
         L_o = self.init_leg_lengths[6]  # Length of hand string at origin position
-        h = pos + self.start_pos # Desired hand position
+        h = pos # Desired hand position
 
 
         def F(P):
