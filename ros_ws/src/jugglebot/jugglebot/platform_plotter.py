@@ -34,6 +34,9 @@ class PlatformPlotter(Node):
         # Initialize flag to track whether geometry data has been received or not
         self.has_geometry_data = False
 
+        # Initialize flag to determine if we want to plot the platform in a standalone window
+        self.plot_platform_flag_standalone = False
+
         # Initialize geometry terms to be populated with a call to the get_robot_geometry service
         self.start_pos = None         # Base frame
         self.base_nodes = None        # Base frame
@@ -51,6 +54,11 @@ class PlatformPlotter(Node):
         # Initialize geometry to be populated with the subscription to platform_pose_topic
         self.ori_quat = None   # Orientation of the platform in the base frame (as a quaternion)
 
+        if self.plot_platform_flag_standalone:
+            self.setup_plot()
+            
+    def setup_plot(self):
+        # If we're using a standalone plot, set up Matplotlib
         self.axis_lims = None  # To keep the plot from constantly changing size
 
         # Set up Matplotlib
@@ -107,9 +115,6 @@ class PlatformPlotter(Node):
 
     def pose_callback(self, msg):
         if self.has_geometry_data:
-            # Clear the plot
-            self.ax.clear()
-
             # Extract position data
             pos = np.array([[msg.position.x], [msg.position.y], [msg.position.z]])
 
@@ -149,7 +154,8 @@ class PlatformPlotter(Node):
 
         # Send the data off to be plotted, or published (or both)
         self.publish_robot_nodes()
-        # self.plot_platform()
+        if self.plot_platform_flag_standalone:
+            self.plot_platform()
 
     def publish_robot_nodes(self):
         # Publishes the locations of the robot nodes to robot_plotter_topic
@@ -176,6 +182,9 @@ class PlatformPlotter(Node):
         return point
 
     def plot_platform(self):
+        # Clear the plot
+        self.ax.clear()
+        
         # Plots the platform
 
         plat_points =  self.ax.scatter(self.new_plat_nodes[:6].T[0], self.new_plat_nodes[:6].T[1], 
@@ -229,8 +238,9 @@ class PlatformPlotter(Node):
 
     def on_shutdown(self):
         # Close the plot etc. cleanly
-        plt.ioff()
-        plt.close()
+        if self.plot_platform_flag_standalone:
+            plt.ioff()
+            plt.close()
 
     def end_session(self, request, response):
         # The method that's called when a user clicks "End Session" in the GUI
