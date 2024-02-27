@@ -80,22 +80,28 @@ class SPInverseKinematics(Node):
         if self.has_geometry_data:
             # Extract position data
             pos = np.array([[msg.position.x], [msg.position.y], [msg.position.z]])  # Note that this is in base frame
-            pos += self.start_pos  # Convert to platform (at lowest position) frame
+            pos_adjusted = pos + self.start_pos  # Convert to platform (at lowest position) frame
 
             # Extract the orientation quaternion
             self.orientation = msg.orientation
             quaternion_ori = quaternion.quaternion(self.orientation.w, self.orientation.x, self.orientation.y, self.orientation.z)
             
-            # Convert quaternion to 4x4 rotation matrix
-            rot = quaternion.as_rotation_matrix(quaternion_ori)
+            # # Convert quaternion to 4x4 rotation matrix
+            # rot = quaternion.as_rotation_matrix(quaternion_ori)
 
-            # Extract the 3x3 rotation matrix
-            rot = rot[:3, :3]
+            # # Extract the 3x3 rotation matrix
+            # rot = rot[:3, :3]
+
+            # Log the position vector as a single line
+            # self.get_logger().info(f"Position vector: {pos.flatten()}")
+
+            # Log the orientation vector
+            # self.get_logger().info(f"Orientation vector: {quaternion_ori}")
 
             # Now solve the hand IK to get the platform pose
-            self.solve_hand_IK(pos, rot)
+            self.solve_hand_IK(pos_adjusted, quaternion_ori)
 
-    def solve_hand_IK(self, pos, rot):
+    def solve_hand_IK(self, pos, rot_quat):
         '''
         Applies the Newton-Raphson method to numerically solve for the position of the platform that will result in
         the hand being in the correct spot
@@ -104,11 +110,19 @@ class SPInverseKinematics(Node):
         
         # Rename variables to something a little more usable
         A_s = np.reshape(self.init_plat_nodes[6], (3, 1))   # Location of plat string attachment, in plat frame
+        Q_A_s = np.quaternion(0, *A_s)  # Quaternion representation of A_s
         B_s = np.reshape(self.base_nodes[6], (3, 1))        # Location of base string attachment, in base frame
-        e_o = np.dot(rot, np.array([[0], [0], [1]]))  # Unit vector in direction of orientation of platform
+        e_o = np.quaternion(0, 0, 0, 1)  # Unit vector in z direction
         L_o = self.init_leg_lengths[6]  # Length of hand string at origin position
         h = pos # Desired hand position
 
+        # Rotate the unit vector e_o to correspond to the hand orientation
+        e_o = rot_quat * e_o * rot_quat.conjugate()
+
+        # self.get_logger().info(f"e_o: {e_o}") # Log the rotated unit vector
+
+        # Extract the rotated unit vector components
+        e_o = np.array([e_o.x, e_o.y, e_o.z]).reshape(3, 1)
 
         def F(P):
             # Equation describing the position of the platform wrt other variables
@@ -139,10 +153,13 @@ class SPInverseKinematics(Node):
             P_guess = P_guess - F_val / dFdP(P_guess)
 
             if i == max_iter - 1:
-                self.get_logger().error(f"No suitable solution found after {max_iter} steps. Final numeric error = {error}")
+                # self.get_logger().error(f"No suitable solution found after {max_iter} steps. Final numeric error = {error}")
                 pass
 
-        plat_pos = P_guess - np.dot(rot, A_s).reshape(3, 1) - self.start_pos
+        new_A_s = rot_quat * Q_A_s * rot_quat.conjugate()
+        new_A_s = np.array([new_A_s.x, new_A_s.y, new_A_s.z]).reshape(3, 1)
+
+        plat_pos = P_guess - new_A_s - self.start_pos  
 
         end_time = time.perf_counter_ns()
 
@@ -154,6 +171,10 @@ class SPInverseKinematics(Node):
         plat_pose_msg.position.y = plat_pos[1][0]
         plat_pose_msg.position.z = plat_pos[2][0]
         plat_pose_msg.orientation = self.orientation
+        # plat_pose_msg.orientation.x = rot_quat.x
+        # plat_pose_msg.orientation.y = rot_quat.y
+        # plat_pose_msg.orientation.z = rot_quat.z
+        # plat_pose_msg.orientation.w = rot_quat.w
 
         self.platform_pose_publisher.publish(plat_pose_msg)
 
