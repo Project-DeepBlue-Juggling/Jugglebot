@@ -9,7 +9,7 @@ from rclpy.time import Time as RclpyTime
 from rclpy.duration import Duration
 from std_msgs.msg import String, Header
 from geometry_msgs.msg import Pose, PoseStamped
-from jugglebot_interfaces.msg import PathMessage, HandStateList
+from jugglebot_interfaces.msg import PathMessage, HandStateList, JugglingPatternGeometryMessage
 from std_srvs.srv import Trigger
 from collections import deque
 import numpy as np
@@ -23,9 +23,11 @@ class JugglingPathCreator(Node):
         # Set up a service to trigger closing the node
         self.end_session_service = self.create_service(Trigger, 'end_session', self.end_session)
 
-        # Subscribe to path_properties_topic to receive the throw properties (eg. from GUI)
-        # self.path_properties_subscription = self.create_subscription(PatternControlMessage, 'path_properties_topic', self.path_properties_callback, 10)
-
+        # Subscribe to juggling_pattern_control_topic to get pattern variables
+        self.pattern_control_subscription = self.create_subscription(JugglingPatternGeometryMessage, 
+                                                                     'juggling_pattern_control_topic', 
+                                                                     self.pattern_control_callback, 10)
+        
         # Subscribe to hand_state_topic to receive the hand states
         self.hand_state_subscription = self.create_subscription(HandStateList, 'hand_state_topic', self.hand_state_callback, 10)
         
@@ -46,7 +48,7 @@ class JugglingPathCreator(Node):
         # Set up a variable to hold the full forecasted trajectory
         self.trajectory = deque()
         
-        self.num_frames_for_bezier = 100  # The number of frames to use for the bezier curve (more = smoother, but slower to compute)
+        self.num_frames_for_bezier = 70  # The number of frames to use for the bezier curve (more = smoother, but slower to compute)
 
         self.bezier_coefficients = np.array(([1, 0, 0, 0],  # Coefficients for the four-point bezier curve
                                              [-3, 3, 0, 0],
@@ -54,9 +56,12 @@ class JugglingPathCreator(Node):
                                              [-1, 3, -3, 1]))
 
         self.travel_limits = { # The limits of travel for the hand (ie. how far the hand can move in the z direction)
-            'hold': 0.3,  # ~z distance {m} that the hand covers while holding the ball
-            'empty': 0.2  # ~z distance {m} that the hand covers while empty
+            'hold': None,  # ~z distance {m} that the hand covers while holding the ball
+            'empty': None  # ~z distance {m} that the hand covers while empty
         }
+
+        # Flag for whether the travel limits have been received
+        self.travel_limits_received = False
 
     #########################################################################################################
     #                                           Path Generation                                             #
@@ -243,36 +248,109 @@ class JugglingPathCreator(Node):
             start_vel = [state_in.vel.x, state_in.vel.y, state_in.vel.z] # Get the incoming velocity
             end_vel = [state_out.vel.x, state_out.vel.y, state_out.vel.z] # Get the outgoing velocity
 
-            start_orientation = [math.atan2(start_vel[2], start_vel[1]),
-                                 math.atan2(start_vel[2], start_vel[0]), 
-                                 0.0]
-            
-            end_orientation = [math.atan2(end_vel[2], end_vel[1]),
-                               math.atan2(end_vel[2], end_vel[0]), 
-                               0.0]
+            def calculate_ori_from_vel(vel):
+                ''' Calculate the orientation from the velocity vector '''
+                x = vel[0]
+                y = vel[1]
+                z = vel[2]
 
+                if z >= 0:
+                    pitch = math.atan2(x, z)
+                elif z < 0:
+                    pitch = math.atan2(-x, -z)
+
+                roll = 0.0
+                yaw = 0.0
+
+                return [roll, pitch, yaw]
+
+            def euler_to_quaternion_xyz(euler_angles):
+                # Unpack the Euler angles
+                roll, pitch, yaw = euler_angles
+
+                # Create quaternions for each rotation
+                q_roll = quaternion.from_rotation_vector([roll, 0, 0])
+                q_pitch = quaternion.from_rotation_vector([0, pitch, 0])
+                q_yaw = quaternion.from_rotation_vector([0, 0, yaw])
+
+                # Combine the rotations, respecting the 'XYZ' order
+                q = q_yaw * q_pitch * q_roll
+
+                return q
+
+            # Log the start and end velocities
+            # self.get_logger().info(f"Start velocity: {start_vel}")
+            # self.get_logger().info(f"End velocity: {end_vel}")
+
+            # Construct a unit vector in the z direction (for debugging)
+            # z_unit = np.quaternion(0, 0, 0, 1)
+
+            start_orientation = calculate_ori_from_vel(start_vel)
+            end_orientation = calculate_ori_from_vel(end_vel)
+
+            # Convert the start and end orientations into quaternions
+            # start_orientation_quat = quaternion.from_euler_angles(start_orientation)
+            # end_orientation_quat = quaternion.from_euler_angles(end_orientation)
+            start_orientation_quat = euler_to_quaternion_xyz(start_orientation)
+            end_orientation_quat = euler_to_quaternion_xyz(end_orientation)
+
+            # Log the start and end orientations
+            # self.get_logger().info("")
+            # self.get_logger().info(f"Start orientation (euler): {start_orientation}")
+            # self.get_logger().info(f"Start orientation (quat): {start_orientation_quat}")
+            # self.get_logger().info(f"End orientation (euler): {end_orientation}")
+            # self.get_logger().info(f"End orientation (quat): {end_orientation_quat}")
+
+            def rotation_matrix_from_euler(euler_angles):
+                # Unpack the Euler angles
+                alpha, beta, gamma = euler_angles
+
+                # Rotation matrix around x-axis
+                R_x = np.array([[1, 0, 0],
+                                [0, np.cos(alpha), -np.sin(alpha)],
+                                [0, np.sin(alpha), np.cos(alpha)]])
+                
+                # Rotation matrix around y-axis
+                R_y = np.array([[np.cos(beta), 0, np.sin(beta)],
+                                [0, 1, 0],
+                                [-np.sin(beta), 0, np.cos(beta)]])
+                
+                # Rotation matrix around z-axis
+                R_z = np.array([[np.cos(gamma), -np.sin(gamma), 0],
+                                [np.sin(gamma), np.cos(gamma), 0],
+                                [0, 0, 1]])
+
+                # Combined rotation matrix, assuming the rotation order is XYZ
+                R = np.dot(R_z, np.dot(R_y, R_x))
+
+                return R
+            
             for i, t in enumerate(t_values):
                 pose = Pose()
 
                 pose.position.x, pose.position.y, pose.position.z = positions[i]
 
-                # Interpolate orientations (one at a time) and convert to quaternion
-                interpolated_orientation = [
-                    start_orientation[j] + (end_orientation[j] - start_orientation[j]) * t for j in range(3)
-                ]
+                # Interpolate orientations using slerp
+                q = quaternion.slerp_evaluate(start_orientation_quat, end_orientation_quat, t)
 
-                q = quaternion.from_rotation_vector(interpolated_orientation)
+                # # To not overwhelm the console, log the pose and orientation every XX frames
+                # if i % 1 == 0:
+                #     # self.get_logger().info(f"Step: {i}")
+                #     # self.get_logger().info(f"Interpolated orientation: {interpolated_orientation}")
+                #     # self.get_logger().info(f"Position: {pose.position}")
+                #     # self.get_logger().info(f"Rotation matrix form: \n{rotation_matrix_from_euler(interpolated_orientation)}")
 
-                # self.get_logger().info(f"Start orientation: {start_orientation}")
-                # self.get_logger().info(f"End orientation: {end_orientation}")
-                # self.get_logger().info(f"Interpolated orientation: {interpolated_orientation}")
-                # self.get_logger().info(f"Quaternion: x: {q.x}, y: {q.y}, z: {q.z}, w: {q.w}")
-                # self.get_logger().info(f"-------")
+                #     # Rotated unit vector in the z direction
+                #     z_unit_rotated = q * z_unit * q.conjugate()
+                #     self.get_logger().info(f"Rotated z vec: {z_unit_rotated}")
 
-                pose.orientation.x = 0.0#q.x
-                pose.orientation.y = 0.0#q.y
-                pose.orientation.z = 0.0#q.z
-                pose.orientation.w = 1.0#q.w
+                #     # self.get_logger().info(f"Quaternion: x: {q.x}, y: {q.y}, z: {q.z}, w: {q.w}")
+                #     # self.get_logger().info(f"-------")
+
+                pose.orientation.x = q.x
+                pose.orientation.y = q.y
+                pose.orientation.z = q.z
+                pose.orientation.w = q.w
 
                 # Interpolate the time
                 duration_ns = t * duration # {ns}
@@ -280,6 +358,7 @@ class JugglingPathCreator(Node):
                 timestamp = start_time + Duration(nanoseconds=duration_ns) # Ensure both times are Time objects
                 traj.append((pose, timestamp))
 
+            # self.get_logger().info(f"-------")
             return traj
 
         ppath, control_points = self.find_ppath(state1, state2)
@@ -288,7 +367,6 @@ class JugglingPathCreator(Node):
 
         return trajectory
         
-
     #########################################################################################################
     #                                             Publishing                                                #
     #########################################################################################################
@@ -302,41 +380,49 @@ class JugglingPathCreator(Node):
         if not self.is_activated or not self.trajectory:
             return
 
-        def binary_search_for_nearest_pose(self, current_time):
-            path = self.trajectory
+        # def binary_search_for_nearest_pose(self, current_time):
+        #     path = self.trajectory
 
-            left, right = 0, len(path) - 1
-            while left <= right:
-                mid = (left + right) // 2
-                mid_time = path[mid].header.stamp
+        #     left, right = 0, len(path) - 1
+        #     while left <= right:
+        #         mid = (left + right) // 2
+        #         mid_time = path[mid].header.stamp
 
-                # Convert ROS time to rclpy.time.Time for comparison
-                mid_time_rclpy = RclpyTime.from_msg(mid_time)
+        #         # Convert ROS time to rclpy.time.Time for comparison
+        #         mid_time_rclpy = RclpyTime.from_msg(mid_time)
 
-                if mid_time_rclpy.nanoseconds < current_time.nanoseconds:
-                    left = mid + 1
-                elif mid_time_rclpy.nanoseconds > current_time.nanoseconds:
-                    right = mid - 1
-                else:
-                    return path[mid], path[min(mid + 1, len(path) - 1)]
+        #         if mid_time_rclpy.nanoseconds < current_time.nanoseconds:
+        #             left = mid + 1
+        #         elif mid_time_rclpy.nanoseconds > current_time.nanoseconds:
+        #             right = mid - 1
+        #         else:
+        #             return path[mid], path[min(mid + 1, len(path) - 1)]
 
-            # Handle cases where current time is outside the path's time range
-            if left >= len(path):
-                return path[-1], path[-1]
-            elif right < 0:
-                return path[0], path[0]
-            else:
-                return path[right], path[left]
+        #     # Handle cases where current time is outside the path's time range
+        #     self.get_logger().info(f"Current time is outside the path's time range! Current time: {current_time}, Path time range: {path[0].header.stamp} to {path[-1].header.stamp}")
+        #     if left >= len(path):
+        #         return path[-1], path[-1]
+        #     elif right < 0:
+        #         return path[0], path[0]
+        #     else:
+        #         return path[right], path[left]
 
-        # Get the current time as rclpy time
-        current_time = self.get_clock().now()
+        # # Get the current time as rclpy time
+        # current_time = self.get_clock().now()
 
-        # Get the nearest poses
-        current_pose, next_pose = binary_search_for_nearest_pose(self, current_time)
+        # # Get the nearest poses
+        # current_pose, next_pose = binary_search_for_nearest_pose(self, current_time)
 
-        # Should interpolate between the two poses to get the current pose
-        # For now, just use the next pose
-        self.hand_pose_publisher.publish(next_pose.pose)
+        # # Should interpolate between the two poses to get the current pose
+        # # For now, just use the next pose
+        # self.hand_pose_publisher.publish(next_pose.pose)
+
+        # Get the first pose in the trajectory, then publish it and remove it from the trajectory
+        pose, timestamp = self.trajectory.popleft()
+        self.hand_pose_publisher.publish(pose)
+
+        # Log the length of the trajectory deque
+        self.get_logger().info(f"Trajectory length: {len(self.trajectory)}")
 
     def publish_path(self, current_path, next_path):
         '''
@@ -386,51 +472,93 @@ class JugglingPathCreator(Node):
     #########################################################################################################
 
     def hand_state_callback(self, msg):
-        # Store the hand states
-        self.states = msg
-
         # Check whether this node is active. If not, don't do anything
         if not self.is_activated:
             return
         
-        current_trajectory = [] 
-        next_trajectory = []
+        # Store the hand states that are received
+        self.states = msg
 
-        # Generate the trajectories
-        current_trajectory.extend(self.generate_trajectory(self.states.states[0], self.states.states[1])) # The current path
 
-        # If there are more than two states in the message, generate the next path as well
-        if len(self.states.states) > 2:
-            next_trajectory.extend(self.generate_trajectory(self.states.states[1], self.states.states[2]))
+        # If the 'action' field of the first state is 'start', then we should empty the trajectory deque
+        if self.states.states[0].action == 'start':
+            self.trajectory.clear()
 
-        # Now convert the total trajectory into a PoseStamped message
+        '''
+        If the class variable trajectory is empty, we need to generate both the current and next trajectories.
+        If it isn't empty, then it must contain the remnants of the previous current trajectory, so we only need to
+        generate the next trajectory.
+        '''
+
+        if not self.trajectory: # If the trajectory class variable is empty
+            # Generate the trajectories
+            current_trajectory = self.generate_trajectory(self.states.states[0], self.states.states[1]) # The current path
+            next_trajectory = self.generate_trajectory(self.states.states[1], self.states.states[2]) # The next path
+
+            # Add these trajectories to the class variable
+            self.trajectory.extend(current_trajectory)
+            self.trajectory.extend(next_trajectory)
+
+        else: # If the trajectory class variable isn't empty
+            # Generate the next trajectory
+            next_trajectory = self.generate_trajectory(self.states.states[1], self.states.states[2])
+
+            # Make the current trajectory the contents of the class variable trajectory
+            current_trajectory = self.trajectory
+
+            # Add the next trajectory to the class variable
+            self.trajectory.extend(next_trajectory)
+
+        # Convert the trajectories into PoseStamped messages (for display in the GUI)
         pose_stamped_current_trajectory = self.create_pose_stamped_path(current_trajectory)
-        pose_stamped_next_trajectory = self.create_pose_stamped_path(next_trajectory) 
+        pose_stamped_next_trajectory = self.create_pose_stamped_path(next_trajectory)
 
-        # Send the trajectories off to be published as paths for the GUI to display
+        # Send these PoseStamped trajectories off to be published as paths for the GUI to display
         self.publish_path(pose_stamped_current_trajectory, pose_stamped_next_trajectory)
 
-        ''' Now store the trajectory(ies) in the class variable. If the class variable is empty, we should store both the current
-        and next trajectories. If the class variable isn't empty, it (should) still has the current trajectory from the last round,
-        so we only need to add the next trajectory to it. '''
 
-        # self.get_logger().info(f"Trajectory: {self.trajectory}")
-        if not self.trajectory:
-            self.trajectory.extend(pose_stamped_current_trajectory)
-            self.trajectory.extend(pose_stamped_next_trajectory)
-        else:
-            self.trajectory.extend(pose_stamped_next_trajectory)
+
+        # current_trajectory = [] 
+        # next_trajectory = []
+
+        # # Generate the trajectories
+        # current_trajectory.extend(self.generate_trajectory(self.states.states[0], self.states.states[1])) # The current path
+
+        # # If there are more than two states in the message, generate the next path as well
+        # if len(self.states.states) > 2:
+        #     next_trajectory.extend(self.generate_trajectory(self.states.states[1], self.states.states[2]))
+
+        # # Now convert the total trajectory into a PoseStamped message
+        # pose_stamped_current_trajectory = self.create_pose_stamped_path(current_trajectory)
+        # pose_stamped_next_trajectory = self.create_pose_stamped_path(next_trajectory) 
+
+        # # Send the trajectories off to be published as paths for the GUI to display
+        # self.publish_path(pose_stamped_current_trajectory, pose_stamped_next_trajectory)
+
+        # ''' Now store the trajectory(ies) in the class variable. If the class variable is empty, we should store both the current
+        # and next trajectories. If the class variable isn't empty, it (should) still has the current trajectory from the last round,
+        # so we only need to add the next trajectory to it. '''
+
+        # # self.get_logger().info(f"Trajectory: {self.trajectory}")
+        # if not self.trajectory:
+        #     self.trajectory.extend(pose_stamped_current_trajectory)
+        #     self.trajectory.extend(pose_stamped_next_trajectory)
+        # else:
+        #     self.trajectory.extend(pose_stamped_next_trajectory)
         
         # self.get_logger().info(f"Trajectory: {self.trajectory}")
 
-    def path_properties_callback(self, msg):
-        # Callback to set the path variables based on the input from the UI
-        self.travel_limits['hold'] = msg.holding_zspan
-        self.travel_limits['empty'] = msg.empty_zspan
+    def pattern_control_callback(self, msg):
+        # Callback to set the travel limits based on the input from the UI
+        self.travel_limits['hold'] = msg.zlim_hold / 1000 # Convert from mm to m
+        self.travel_limits['empty'] = msg.zlim_empty / 1000 # Convert from mm to m
+
+        # Update the flag to indicate that the travel limits have been received
+        self.travel_limits_received = True
 
     def control_state_callback(self, msg):
         # Callback for control_state_topic
-        if msg.data == 'juggle' and not self.is_activated:
+        if msg.data == 'juggle' and not self.is_activated and self.travel_limits_received:
             self.is_activated = True
             self.get_logger().info("Juggling enabled!")
             
