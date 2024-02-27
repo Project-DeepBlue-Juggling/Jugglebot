@@ -32,6 +32,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/CanTrafficReportMessage.msg"
   "msg/HandStateSingle.msg"
   "msg/HandStateList.msg"
+  "msg/JugglingPatternGeometryMessage.msg"
   DEPENDENCIES geometry_msgs
 )
 
