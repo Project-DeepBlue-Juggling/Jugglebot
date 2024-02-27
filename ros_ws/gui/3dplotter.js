@@ -475,13 +475,14 @@ function updateSplineCurve(splineObjects, pathPoints) {
         (p.pose.position.z + initHeight) * scale, 
         p.pose.position.y * scale
         ));
+
     splineObjects.splineCurve.points = newPoints;
 
     // console.log(splineObjects.splineCurve.points);
 
     const splinePoints = splineObjects.splineCurve.getPoints(500); // Adjust based on desired smoothness
 
-    splineObjects.splineMesh.geometry.dispose();
+    // splineObjects.splineMesh.geometry.dispose();
     splineObjects.splineMesh.geometry = new THREE.BufferGeometry().setFromPoints(splinePoints);
 }
 
@@ -502,7 +503,12 @@ function updateArrows(pathName, pathPoints) {
             (point.position.z + initHeight )* scale,
             point.position.y * scale);
 
-        const originalQuaternion = new THREE.Quaternion(-point.orientation.x, point.orientation.z, -point.orientation.y, point.orientation.w);
+        const originalQuaternion = new THREE.Quaternion(
+            -point.orientation.x, 
+            point.orientation.z, 
+            -point.orientation.y, 
+            point.orientation.w
+            );
 
         arrowHelper.quaternion.copy(originalQuaternion);
         arrowHelper.visible = true;
