@@ -1,3 +1,8 @@
+''' 
+This node is no longer used. Its purpose was to create paths for the robot to follow, but the robot has now moved beyond this need
+so it is no longer necessary. It is kept here for reference.
+'''
+
 import rclpy
 from rclpy.node import Node
 from rclpy.time import Time
@@ -221,6 +226,7 @@ class PatternCreator(Node):
             path_message.current_path = self.create_pose_stamped_path(self.current_path)
 
         elif path_name == 'next_path':
+            return
             path_message.next_path = self.create_pose_stamped_path(self.next_path)
 
         elif path_name == 'transition_path':
