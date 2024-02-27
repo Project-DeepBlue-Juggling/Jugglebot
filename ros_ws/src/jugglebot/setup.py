@@ -30,7 +30,6 @@ setup(
             'platform_plotter = jugglebot.platform_plotter:main',
             'can_bus_handler_node = jugglebot.can_bus_handler_node:main',
             'state_manager_node = jugglebot.state_manager_node:main',
-            'pattern_creator = jugglebot.pattern_creator:main',
             'hand_ik = jugglebot.hand_ik:main',
             'juggling_path_creator = jugglebot.juggling_path_creator:main',
             'hand_state_manager = jugglebot.hand_state_manager:main'
