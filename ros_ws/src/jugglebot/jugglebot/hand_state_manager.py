@@ -6,7 +6,7 @@ from std_msgs.msg import String
 from std_srvs.srv import Trigger
 from geometry_msgs.msg import Point, Vector3
 from builtin_interfaces.msg import Time as TimeMsg
-from jugglebot_interfaces.msg import HandStateSingle, HandStateList
+from jugglebot_interfaces.msg import HandStateSingle, HandStateList, JugglingPatternGeometryMessage
 import numpy as np
 from collections import deque
 
@@ -19,6 +19,11 @@ class HandStateManager(Node):
 
         # Subscribe to control_state_topic to see if juggling is enabled
         self.control_state_subscription = self.create_subscription(String, 'control_state_topic', self.control_state_callback, 10)
+
+        # Subscribe to juggling_pattern_control_topic to get pattern variables
+        self.pattern_control_subscription = self.create_subscription(JugglingPatternGeometryMessage, 
+                                                                     'juggling_pattern_control_topic', 
+                                                                     self.pattern_control_callback, 10)
 
         # Set up a publisher to hand_state_topic
         self.hand_state_publisher = self.create_publisher(HandStateList, 'hand_state_topic', 10)
@@ -44,11 +49,14 @@ class HandStateManager(Node):
 
         # Pattern properties
         self.pattern_variables = {
-            'x_pos': 0.1, # {m} distance from the central axis to the position of the catch/throw (assume mirrored for now)
-            'throw_height': 0.5, # {m} height of the throw
-            'z_offset': 0.4, # {m} dist from the lowest hand pos to the middle of the hand's total travel. This is added when the state is dequeued.
-            'holding_zspan': 0.3, # {m} the z span of the hand when holding the ball
+            'x_pos': None, # {m} distance from the central axis to the position of the catch/throw (assume mirrored for now)
+            'throw_height': None, # {m} height of the throw
+            'z_offset': None, # {m} dist from the lowest hand pos to the middle of the hand's total travel. This is added when the state is dequeued.
+            'holding_zspan': None, # {m} the z span of the hand when holding the ball
         }
+
+        # Flag for whether the pattern variables have been receieved. Control_state_callback won't run until this is True
+        self.pattern_variables_received = False
 
         self.move_duration = {
             'hold': None,  # The duration of the move when the hand is holding the ball {rclpy.duration.Duration object}
@@ -66,8 +74,11 @@ class HandStateManager(Node):
         '''
         Initialize the hand state to start the pattern.
         '''
+        # Clear the state buffer in case there are leftover states from a previous pattern
+        self.states.clear()
+
         init_state = HandStateSingle()
-        init_state.action = String(data='init') # Just to make it easier to identify that things are working correctly
+        init_state.action = String(data='start') # Just to make it easier to identify that things are working correctly
         init_state.pos = Point(x=0.0, y=0.0, z=-self.pattern_variables['holding_zspan']) # Start at the bottom of the hold cycle
         init_state.vel = Vector3(x=0.0, y=0.0, z=0.0)
 
@@ -179,29 +190,55 @@ class HandStateManager(Node):
                 # Add the state to the deque
                 self.add_state_to_deque(next_state)
 
-            elif self.states[-1].action.data == 'catch':
-                ''' If the last action was a catch then the next state will be a throw.
-                '''
-                next_state = HandStateSingle()
-                next_state.action = String(data='throw')
-                next_state.pos = self.throw_state.pos
-                next_state.vel = self.throw_state.vel
+            # elif self.states[-1].action.data == 'catch':
+            #     ''' If the last action was a catch then the next state will be a throw.
+            #     '''
+            #     next_state = HandStateSingle()
+            #     next_state.action = String(data='throw')
+            #     next_state.pos = self.throw_state.pos
+            #     next_state.vel = self.throw_state.vel
 
-                # Since we're in the middle of the pattern, add this move_duration to the timestamp of the last state
-                # Convert the last state time to an rclpy.time.Time object so that we can simply add the move duration to it
-                next_time = RclpyTime.from_msg(self.states[-1].time) + self.move_duration['hold'] # A rclpy.duration.Duration object
+            #     # Since we're in the middle of the pattern, add this move_duration to the timestamp of the last state
+            #     # Convert the last state time to an rclpy.time.Time object so that we can simply add the move duration to it
+            #     next_time = RclpyTime.from_msg(self.states[-1].time) + self.move_duration['hold'] # A rclpy.duration.Duration object
                 
-                # Now update the next state time
+            #     # Now update the next state time
+            #     next_state.time = TimeMsg(sec=next_time.seconds_nanoseconds()[0], nanosec=next_time.seconds_nanoseconds()[1])
+
+            #     # Add the state to the deque
+            #     self.add_state_to_deque(next_state)
+
+            elif self.states[-1].action.data == 'catch':
+                # TEMPORARY: If the last action was a catch, then the next state will be an 'end' action
+                next_state = HandStateSingle()
+                next_state.action = String(data='end')
+                next_state.pos = Point(x=0.0, y=0.0, z=-self.pattern_variables['holding_zspan']) # Start at the bottom of the hold cycle
+                next_state.vel = Vector3(x=0.0, y=0.0, z=0.0)
+
+                # Let this move take a full 'hold' duration
+                next_time = RclpyTime.from_msg(self.states[-1].time) + self.move_duration['hold']
+
+                # Update the next state time
                 next_state.time = TimeMsg(sec=next_time.seconds_nanoseconds()[0], nanosec=next_time.seconds_nanoseconds()[1])
 
                 # Add the state to the deque
                 self.add_state_to_deque(next_state)
+
             else:
-                '''This shouldn't have happened!
-                '''
-                self.get_logger().error(f"ERROR in state manager. Likely a typo. Last action: {self.states[-1].action.data}")
+                # '''This shouldn't have happened!
+                # '''
+                # self.get_logger().error(f"ERROR in state manager. Likely a typo. Last action: {self.states[-1].action.data}")
+
+                # TEMPORARY. If the last action was an 'end', wait until the end of its time before clearing the buffer to start again
+
+                # Set a time to wait before clearing the buffer
+                time_to_wait = Duration(seconds=2.0)
+                
+                if self.get_clock().now() > RclpyTime.from_msg(self.states[-1].time) + time_to_wait:
+                    self.states.clear()
+                    self.initialize_hand_state()
         
-    def initialize_throw_and_catch_states(self):
+    def set_throw_and_catch_states(self):
         ''' 
         Only intended to be used while getting a feel for how to set all this up.
         '''
@@ -235,7 +272,7 @@ class HandStateManager(Node):
         self.catch_state.vel = Vector3(x=vfx, y=0.0, z=-vfz) # Ball is moving in the negative z direction when caught
 
         # Store the move durations
-        self.move_duration['hold'] = Duration(nanoseconds=tf)  # The duration of the move when the hand is holding the ball
+        self.move_duration['hold']  = Duration(nanoseconds=tf) # The duration of the move when the hand is holding the ball
         self.move_duration['empty'] = Duration(nanoseconds=tf) # Simplification with t_hold = t_empty. This isn't too far off what jugglers normally do
 
     #########################################################################################################
@@ -284,16 +321,32 @@ class HandStateManager(Node):
     #                                 Node Management (callbacks etc.)                                      #
     #########################################################################################################
 
+    def pattern_control_callback(self, msg):
+        '''Update the pattern variables'''
+        self.pattern_variables['x_pos'] = msg.x_pos / 1000  # Convert from mm to m
+        self.pattern_variables['throw_height'] = msg.throw_height / 1000  # Convert from mm to m
+        self.pattern_variables['z_offset'] = msg.z_offset / 1000  # Convert from mm to m
+        self.pattern_variables['holding_zspan'] = msg.zlim_hold / 1000  # Convert from mm to m
+
+        # Re-set the throw and catch states
+        self.set_throw_and_catch_states()
+
+        # Update the flag to indicate that the pattern variables have been received
+        self.pattern_variables_received = True
+
     def control_state_callback(self, msg):
         # Callback for control_state_topic
-        if msg.data == 'juggle' and not self.is_activated:
+        if msg.data == 'juggle' and not self.is_activated and self.pattern_variables_received:
             self.is_activated = True
+
+            # Clear the state buffer in case there are leftover states from a previous pattern
+            self.states.clear()
 
             # Initialize the hand state
             self.initialize_hand_state()
 
             # Initialize the throw and catch states
-            self.initialize_throw_and_catch_states()
+            self.set_throw_and_catch_states()
 
             # Update the flag to indicate that the node has finished initializing
             self.is_initialized = True
@@ -318,7 +371,6 @@ def main(args=None):
         node.get_logger().info("Shutting down...")
         node.destroy_node()
         rclpy.shutdown()
-
 
 if __name__ == '__main__':
     main()
