@@ -38,7 +38,6 @@ def generate_launch_description():
         'sp_ik',
         'hand_ik',
         'state_manager_node',
-        # 'pattern_creator',
         'juggling_path_creator',
         'hand_state_manager',
         # 'statistics_collector_node',  # Not using this for now. Unsure of its utility.
