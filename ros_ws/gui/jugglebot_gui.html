@@ -323,7 +323,7 @@
             align-items: center; /* Center items horizontally */
             justify-content: center; /* Center items vertically */
             margin: 5px;
-            padding: 10px;
+            padding: 8px;
             font-size: 16px;
             border: none;
             color: #f7f7f7;
@@ -345,7 +345,7 @@
 
         /* Style for the pattern control sliders */
         /* Style for the pattern control sliders container */
-        #pattern-control-sliders {
+        #pattern-control-inputs {
             text-align: center; /* Center align everything */
             border: 2px solid #000000; /* Add border around the container */
             padding: 10px; /* Padding inside the box */
@@ -353,12 +353,12 @@
             width: 80%; /* Adjust width as needed */
         }
 
-        #pattern-control-sliders h3 {
+        #pattern-control-inputs h3 {
             margin-top: 5px; /* Minimal space above heading */
             margin-bottom: 5px; /* Minimal space below heading */
         }
 
-        #pattern-control-sliders div {
+        #pattern-control-inputs div {
             display: flex;
             justify-content: flex-start;
             align-items: center;
@@ -366,20 +366,11 @@
         }
 
         /* Style for labels */
-        #pattern-control-sliders label {
-            flex: 0 0 30%; /* Label takes up 30% of the space, not growing or shrinking */
+        #pattern-control-inputs label {
+            flex: 0 0 60%; /* Label takes up 30% of the space, not growing or shrinking */
             text-align: left; /* Align the text to the left */
         }
 
-        /* Style for sliders */
-        #pattern-control-sliders input[type="range"] {
-            flex-grow: 1; /* Slider takes the remaining space */
-        }
-
-        /* Style for slider values */
-        #pattern-control-sliders span {
-            margin-left: 10px; /* Space between slider and its value */
-        }
     </style>
 </head>
 <body>
@@ -403,11 +394,11 @@
                             <span class="visibility-icon"><i class="fa-regular fa-circle-xmark"></i></span>Workspace
                         </button>
                         <!-- Centroid -->
-                        <button class="scene-menu-item active" data-object="centroid">
+                        <button class="scene-menu-item inactive" data-object="centroid">
                             <span class="visibility-icon"><i class="fa-regular fa-circle-check"></i></span>Centroid
                         </button>
                         <!-- Coordinate axes -->
-                        <button class="scene-menu-item active" data-object="axes">
+                        <button class="scene-menu-item inactive" data-object="axes">
                             <span class="visibility-icon"><i class="fa-regular fa-circle-check"></i></span>Coordinate Axes
                         </button>
                         <!-- Current path -->
@@ -415,7 +406,7 @@
                             <span class="visibility-icon"><i class="fa-regular fa-circle-check"></i></span>Current Path
                         </button>
                         <!-- Next path -->
-                        <button class="scene-menu-item inactive" data-object="nextPath">
+                        <button class="scene-menu-item active" data-object="nextPath">
                             <span class="visibility-icon"><i class="fa-regular fa-circle-check"></i></span>Next Path
                         </button>
                         <!-- Transition path -->
@@ -469,39 +460,52 @@
                         <h3>Control Mode</h3>
                         <button id="jogging-control-button" disabled>Jogging</button>
                         <button id="spacemouse-control-button" disabled>SpaceMouse</button>
-                        <button id="pattern-control-button" disabled>Pattern</button>
+                        <!-- <button id="pattern-control-button" disabled>Pattern</button> -->
+                        <button id="juggle-control-button" disabled>Juggle</button>
                     </div>
                 </div>
 
                 <!-- Row for sliders used with the pattern control mode -->
-                <div id="pattern-control-sliders">
+                <div id="pattern-control-inputs">
                     <h3>Pattern Control</h3>
-                    <!-- Slider for radius of pattern -->
+                    <!-- Input for throw height -->
                     <div>
-                        <label for="slider-radius">Radius (mm):</label>
-                        <input type="range" id="slider-radius" name="slider-radius" min="0" max="140" value="100.0" step="5.0">
-                        <span id="slider-radius-value">100.0</span>
+                        <label for="input-throw-height">Throw Height (mm):</label>
+                        <input type="number" id="input-throw-height" name="throw_height" 
+                        min="100" max="500" value="100" step="50"
+                        class="number-input"> <!-- Ensure the name matches the ROS2 Topic field name-->
                     </div>
 
-                    <!-- Slider for frequency of pattern -->
+                    <!-- Input for zlim_hold -->
                     <div>
-                        <label for="slider-freq">Freq (Hz):</label>
-                        <input type="range" id="slider-freq" name="slider-freq" min="0.05" max="1.0" value="0.5" step="0.05">
-                        <span id="slider-freq-value">0.5</span>
+                        <label for="input-zlim-hold">Hold z Span (mm):</label>
+                        <input type="number" id="input-zlim-hold" name="zlim_hold" 
+                        min="100" max="500" value="350" step="10"
+                        class="number-input">
                     </div>
 
-                    <!-- Slider for z-offset of pattern -->
+                    <!-- Input for zlim_empty -->
                     <div>
-                        <label for="slider-z-offset">z offset (mm):</label>
-                        <input type="range" id="slider-z-offset" name="slider-z-offset" min="50" max="200" value="140.0" step="10.0">
-                        <span id="slider-z-offset-value">140.0</span>
+                        <label for="input-zlim-empty">Empty z Span (mm):</label>
+                        <input type="number" id="input-zlim-empty" name="zlim_empty" 
+                        min="50" max="300" value="100" step="10"
+                        class="number-input">
                     </div>
 
-                    <!-- Slider for cone height -->
+                    <!-- Input for z-offset of pattern -->
                     <div>
-                        <label for="slider-cone-height">Cone height (mm):</label>
-                        <input type="range" id="slider-cone-height" name="slider-cone-height" min="50" max="1000" value="150.0" step="10.0">
-                        <span id="slider-cone-height-value">150.0</span>
+                        <label for="input-z-offset">z Offset (mm):</label>
+                        <input type="number" id="input-z-offset" name="z_offset" 
+                        min="170" max="400" value="300" step="10"
+                        class="number-input">
+                    </div>
+
+                    <!-- Input for throw/catch x position -->
+                    <div>
+                        <label for="input-x-pos">Throw/Catch x pos (mm):</label>
+                        <input type="number" id="input-x-pos" name="x_pos" 
+                        min="0" max="200" value="100" step="10"
+                        class="number-input">
                     </div>
 
                 </div>
