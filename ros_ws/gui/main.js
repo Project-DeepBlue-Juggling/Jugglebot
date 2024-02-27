@@ -369,7 +369,7 @@ window.onload = function () {
 
         if (message.is_homed) {
             document.getElementById('spacemouse-control-button').disabled = false;
-            document.getElementById('pattern-control-button').disabled = false;
+            // document.getElementById('pattern-control-button').disabled = false;
             document.getElementById('jogging-control-button').disabled = false;
             document.getElementById('juggle-control-button').disabled = false;
 
@@ -381,7 +381,7 @@ window.onload = function () {
         else if (!message.is_homed) {
             // If the robot is not homed, disable the control mode buttons
             document.getElementById('spacemouse-control-button').disabled = true;
-            document.getElementById('pattern-control-button').disabled = true;
+            // document.getElementById('pattern-control-button').disabled = true;
             document.getElementById('jogging-control-button').disabled = true;
 
             // Change the "home" button, since we need to home the robot
@@ -606,7 +606,7 @@ window.onload = function () {
     });
 
     // Define an array of control modes
-    const controlModes = ['spacemouse', 'jogging', 'pattern', 'juggle'];
+    const controlModes = ['spacemouse', 'jogging', 'juggle'];
 
     // Initialize the control state to null
     var control_state = null;
@@ -678,34 +678,48 @@ window.onload = function () {
     });
 
     // ################################################################## //
-    //                           Slider Listeners                         //
+    //                           Input Listeners                          //
     // ################################################################## //
 
-    var slidersTopic = new ROSLIB.Topic({
+    var inputTopic = new ROSLIB.Topic({
         ros : ros,
-        name : 'pattern_control_topic',
-        messageType : 'jugglebot_interfaces/msg/PatternControlMessage'
+        name : 'juggling_pattern_control_topic',
+        messageType : 'jugglebot_interfaces/msg/JugglingPatternGeometryMessage'
     });
 
-    function publishSliderValues() {
-        var message = new ROSLIB.Message({
-            radius: Number(document.getElementById('slider-radius').value),
-            freq: Number(document.getElementById('slider-freq').value),
-            z_offset: Number(document.getElementById('slider-z-offset').value),
-            cone_height: Number(document.getElementById('slider-cone-height').value)
+    // Function to collect all current input values
+    function collectInputValues() {
+        var values = {};
+        document.querySelectorAll('.number-input').forEach(input => {
+            var name = input.getAttribute('name');
+            var value = parseFloat(input.value);
+            // Ensure the value is a number; if not, default to 0
+            values[name] = isNaN(value) ? 0 : value;
         });
-
-        slidersTopic.publish(message);
+        return values;
     }
 
-    // Add event listeners to the sliders
-    ['slider-radius', 'slider-freq', 'slider-z-offset', 'slider-cone-height'].forEach(sliderId => {
-        document.getElementById(sliderId).addEventListener('input', function() {
-            var sliderValue = document.getElementById(`${sliderId}-value`);
-            sliderValue.textContent = this.value;
-            publishSliderValues();
+    // Assign the 'change' event listener to each number input
+    document.querySelectorAll('.number-input').forEach(input => {
+        input.addEventListener('change', function() {
+            // Collect current values from all inputs
+            var allInputValues = collectInputValues();
+            // Publish all current values
+            inputTopic.publish(new ROSLIB.Message(allInputValues));
         });
     });
+
+    // Publish the default values when the page loads
+
+    // Function to collect and publish all current input values
+    function publishInitialValues() {
+        var allInputValues = collectInputValues();
+        inputTopic.publish(new ROSLIB.Message(allInputValues));
+    }
+
+    // Collect and publish values once on initialization
+    document.addEventListener('scene-loaded', publishInitialValues);
+
 
     // ################################################################## //
     //                            3D Scene Menu                           //
