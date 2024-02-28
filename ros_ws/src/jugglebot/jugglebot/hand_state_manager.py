@@ -138,7 +138,7 @@ class HandStateManager(Node):
 
             # Get the time when this state should occur (as a rclpy.duration.Duration object)
             # Arbitrarily give a full 'hold' duration to this move. Why not start off nice and slow?
-            next_time = RclpyTime.from_msg(self.states[-1].time) + self.move_duration['hold']  
+            next_time = RclpyTime.from_msg(self.states[-1].time) + Duration(nanoseconds=self.move_duration['hold'].nanoseconds / 2) 
 
             # Convert this time into a TimeMsg object
             next_state.time = TimeMsg(sec=next_time.seconds_nanoseconds()[0], nanosec=next_time.seconds_nanoseconds()[1])
@@ -215,8 +215,8 @@ class HandStateManager(Node):
                 next_state.pos = Point(x=0.0, y=0.0, z=-self.pattern_variables['holding_zspan']) # Start at the bottom of the hold cycle
                 next_state.vel = Vector3(x=0.0, y=0.0, z=0.0)
 
-                # Let this move take a full 'hold' duration
-                next_time = RclpyTime.from_msg(self.states[-1].time) + self.move_duration['hold']
+                # Let this move take half of a full 'hold' duration
+                next_time = RclpyTime.from_msg(self.states[-1].time) + Duration(nanoseconds=self.move_duration['hold'].nanoseconds / 2)
 
                 # Update the next state time
                 next_state.time = TimeMsg(sec=next_time.seconds_nanoseconds()[0], nanosec=next_time.seconds_nanoseconds()[1])

@@ -9,8 +9,9 @@ export const scene = new THREE.Scene();
 // Initialize the geometry
 let platformPointsGeometry, basePointsGeometry, centroid, handPointsGeometry;
 let legLinesGeometry, strutLinesGeometry, rodLinesGeometry; // Struts span arm to plat, rods span lower arm to upper arm
-let currentPathObjects, nextPathObjects, transitionPathObjects; // Objects for the current, new, and transition paths
+let currentPathObjects, nextPathObjects, transitionPathObjects, ballPathObject; // Objects for the hand and ball paths
 let baseVolume;
+let ball;
 
 let initHeight; // Initial height of the robot (used to put the paths into the correct coordinate frame)
 
@@ -23,11 +24,12 @@ var arrowPools = {  // Pools of arrows for the paths
 
 // Create groups for all the geometries that share a name
 var groups = {
-    'robot': new THREE.Group(),
-    'centroid': new THREE.Group(),
-    'currentPath': new THREE.Group(),
-    'nextPath': new THREE.Group(),
-    'transitionPath': new THREE.Group(),
+    'robot': new THREE.Group(),  // All robot geometry (lines, points, struts, rods, etc.)
+    'centroid': new THREE.Group(), // The centroid of the platform and its pose arrow
+    'currentPath': new THREE.Group(), // The current path of the hand
+    'nextPath': new THREE.Group(), // The next path of the hand
+    'transitionPath': new THREE.Group(), // The transition path of the hand
+    'ballPath': new THREE.Group() // The path of the ball
 }
 
 const scale = 0.0025;  // Scale factor to make the scene look nice
@@ -132,6 +134,23 @@ function initROS() {
         if (Array.isArray(message.transition_path) && message.transition_path.length > 0) {
             updateSplineCurve(transitionPathObjects, message.transition_path);
             updateArrows('transitionPath', message.transition_path);
+        }
+    });
+
+    // Subscribe to /ball_state_topic to get the ball state (path and current pos)
+    var ballStateListener = new ROSLIB.Topic({
+        ros: ros,
+        name: 'ball_state_topic',
+        messageType: 'jugglebot_interfaces/msg/BallStateMessage'
+    });
+
+    // When a message is received, parse it and update the plot with the new ball path and position
+    ballStateListener.subscribe(function (message) {
+        if (Array.isArray(message.path) && message.path.length > 0) {
+            updateSplineCurve(ballPathObject, message.path);
+        }
+        if (message.current_pos) {
+            updateBall(message.current_pos.point);
         }
     });
 }
@@ -379,6 +398,23 @@ function addWorkspaceVolume(scene) {
         });
 }
 
+// Initialize the ball object
+function initBall(colour, objectName='') {
+    const geometry = new THREE.SphereGeometry(0.05, 32, 32);
+    const material = new THREE.MeshBasicMaterial({ color: colour });
+    ball = new THREE.Mesh(geometry, material);
+
+    // Assign the name of the ball object
+    if (objectName) {
+        ball.name = objectName;
+    }
+
+    // Add the ball to the scene
+    scene.add(ball);
+    
+    return ball;
+}
+
 // ################################################################## //
 //                      Updating Scene Geometry                       //
 // ################################################################## //
@@ -533,6 +569,15 @@ function updateCentroidArrow(position, orientation){
     arrowHelper.visible = true;
 }
 
+function updateBall(ballPos) {
+    // Update the position of the ball using the x/y/z fields of the ballPos object
+    ball.position.set(
+        ballPos.x * scale,
+        (ballPos.z + initHeight) * scale,
+        ballPos.y * scale
+    );
+}
+
 // Function to update the scene
 function updateScene(base_nodes, new_plat_nodes, new_arm_nodes, new_hand_nodes, orientation) {
     // Update points for platform and base
@@ -626,7 +671,9 @@ export function initPlotter() {
         rods: 0x000000,
         currentPath: 0x000000,
         nextPath: 0xff0000,
-        transitionPath: 0x00ff00
+        transitionPath: 0x00ff00,
+        ball: 0x03851a,
+        ballPath: 0x03851a,
     };
 
     // Initialize the points
@@ -636,12 +683,15 @@ export function initPlotter() {
     handPointsGeometry     = initPoints(scene, colours.hand, 3); // Orange points for hand nodes
 
     // Initialize the lines
-    legLinesGeometry = initLineGroup(scene, colours.legs, 0.015, 6); // Green color for legs
+    legLinesGeometry   = initLineGroup(scene, colours.legs, 0.015, 6); // Green color for legs
     strutLinesGeometry = initLineGroup(scene, colours.struts, 0.005, 6); // Black color for struts
-    rodLinesGeometry = initLineGroup(scene, colours.rods, 0.005, 3); // Black color for rods
+    rodLinesGeometry   = initLineGroup(scene, colours.rods, 0.005, 3); // Black color for rods
     
     // Initialize the base volume
     baseVolume = initVolume(scene, colours.base, 0.01); // Blue color for base volume
+
+    // Initialize the ball
+    ball = initBall(colours.ball, 'ball');
 
     // Initialize the robot group, for toggling visibility
     groups.robot.add(platformPointsGeometry);
@@ -653,9 +703,10 @@ export function initPlotter() {
     groups.robot.add(baseVolume);
 
     // Initialize the paths
-    currentPathObjects = initSplineCurve(colours.currentPath, 'currentPath');
-    nextPathObjects = initSplineCurve(colours.nextPath, 'nextPath');
+    currentPathObjects    = initSplineCurve(colours.currentPath, 'currentPath');
+    nextPathObjects       = initSplineCurve(colours.nextPath, 'nextPath');
     transitionPathObjects = initSplineCurve(colours.transitionPath, 'transitionPath');
+    ballPathObject        = initSplineCurve(colours.ballPath, 'ballPath');
 
     // Initialize the arrow pools
     initArrows('currentPath', colours.currentPath);

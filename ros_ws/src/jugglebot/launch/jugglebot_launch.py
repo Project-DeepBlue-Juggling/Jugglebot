@@ -40,6 +40,8 @@ def generate_launch_description():
         'state_manager_node',
         'juggling_path_creator',
         'hand_state_manager',
+        'ball_manager_node',
+        'timing_inspector_node',
         # 'statistics_collector_node',  # Not using this for now. Unsure of its utility.
     ]
     jugglebot_nodes = [
@@ -49,6 +51,7 @@ def generate_launch_description():
             executable=node_name,
             # name=node_name,
             # arguments=['--ros-args', '--log-level', 'debug']
+            # parameters=[{'use_sim_time': True}],
         ) for node_name in jugglebot_node_names
     ]
 

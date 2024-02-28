@@ -48,7 +48,7 @@ class JugglingPathCreator(Node):
         # Set up a variable to hold the full forecasted trajectory
         self.trajectory = deque()
         
-        self.num_frames_for_bezier = 70  # The number of frames to use for the bezier curve (more = smoother, but slower to compute)
+        self.num_frames_for_bezier = 40  # The number of frames to use for the bezier curve (more = smoother, but slower to compute)
 
         self.bezier_coefficients = np.array(([1, 0, 0, 0],  # Coefficients for the four-point bezier curve
                                              [-3, 3, 0, 0],
@@ -259,8 +259,8 @@ class JugglingPathCreator(Node):
                 elif z < 0:
                     pitch = math.atan2(-x, -z)
 
-                roll = 0.0
-                yaw = 0.0
+                roll = 0.0  # For now...
+                yaw = 0.0  # Always
 
                 return [roll, pitch, yaw]
 
@@ -366,7 +366,23 @@ class JugglingPathCreator(Node):
         trajectory = generate_path_traj(ppath, control_points, state1, state2)
 
         return trajectory
+
+    def generate_null_pose_stamped_path(self):
+        '''Generate an empty PoseStamped 'path', for eg. clearing the GUI's path display'''
+
+        empty_pose_stamped_list = []
+
+        for i in range(2):
+            pose_stamped = PoseStamped()
+            pose_stamped.header = Header()
+            pose_stamped.header.stamp = self.get_clock().now().to_msg()
+            pose_stamped.header.frame_id = 'world'
+            pose_stamped.pose = Pose()
+
+            empty_pose_stamped_list.append(pose_stamped)
         
+        return empty_pose_stamped_list
+      
     #########################################################################################################
     #                                             Publishing                                                #
     #########################################################################################################
@@ -422,7 +438,7 @@ class JugglingPathCreator(Node):
         self.hand_pose_publisher.publish(pose)
 
         # Log the length of the trajectory deque
-        self.get_logger().info(f"Trajectory length: {len(self.trajectory)}")
+        # self.get_logger().info(f"Trajectory length: {len(self.trajectory)}")
 
     def publish_path(self, current_path, next_path):
         '''
@@ -435,6 +451,8 @@ class JugglingPathCreator(Node):
 
         if next_path: # If a next path exists, add it to the message
             path_msg.next_path = next_path
+        else: # If no next path exists, create an empty path
+            path_msg.next_path = self.generate_null_pose_stamped_path()
 
         # Publish the path
         self.path_publisher.publish(path_msg)
@@ -479,10 +497,14 @@ class JugglingPathCreator(Node):
         # Store the hand states that are received
         self.states = msg
 
-
         # If the 'action' field of the first state is 'start', then we should empty the trajectory deque
-        if self.states.states[0].action == 'start':
+        if self.states.states[0].action.data == 'start':
             self.trajectory.clear()
+
+            # We also need to publish an empty 'current path' to the GUI
+            empty_path = self.generate_null_pose_stamped_path()
+
+            self.publish_path(empty_path, None)
 
         '''
         If the class variable trajectory is empty, we need to generate both the current and next trajectories.

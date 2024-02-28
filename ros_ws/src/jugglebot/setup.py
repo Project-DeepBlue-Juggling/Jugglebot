@@ -32,7 +32,10 @@ setup(
             'state_manager_node = jugglebot.state_manager_node:main',
             'hand_ik = jugglebot.hand_ik:main',
             'juggling_path_creator = jugglebot.juggling_path_creator:main',
-            'hand_state_manager = jugglebot.hand_state_manager:main'
+            'hand_state_manager = jugglebot.hand_state_manager:main',
+            'ball_manager_node = jugglebot.ball_manager_node:main',
+            'sim_clock_publisher_node = jugglebot.sim_clock_publisher_node:main',
+            'timing_inspector_node = jugglebot.timing_inspector_node:main',
             # 'statistics_collector_node = jugglebot.statistics_collector_node:main',
         ],
     },
