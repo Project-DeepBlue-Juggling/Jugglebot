@@ -38,7 +38,7 @@ class JugglingPathCreator(Node):
         self.path_publisher = self.create_publisher(PathMessage, 'paths_topic', 10)
 
         # Set up a publisher and timer to publish each specific hand pose
-        self.hand_pose_publisher = self.create_publisher(Pose, 'hand_pose_topic', 10)
+        self.hand_pose_publisher = self.create_publisher(PoseStamped, 'hand_pose_topic', 10)
         self.hand_pose_timer = self.create_timer(0.01, self.publish_hand_pose)
 
         # Subscribe to control_state_topic to see if juggling is enabled
@@ -396,48 +396,18 @@ class JugglingPathCreator(Node):
         if not self.is_activated or not self.trajectory:
             return
 
-        # def binary_search_for_nearest_pose(self, current_time):
-        #     path = self.trajectory
-
-        #     left, right = 0, len(path) - 1
-        #     while left <= right:
-        #         mid = (left + right) // 2
-        #         mid_time = path[mid].header.stamp
-
-        #         # Convert ROS time to rclpy.time.Time for comparison
-        #         mid_time_rclpy = RclpyTime.from_msg(mid_time)
-
-        #         if mid_time_rclpy.nanoseconds < current_time.nanoseconds:
-        #             left = mid + 1
-        #         elif mid_time_rclpy.nanoseconds > current_time.nanoseconds:
-        #             right = mid - 1
-        #         else:
-        #             return path[mid], path[min(mid + 1, len(path) - 1)]
-
-        #     # Handle cases where current time is outside the path's time range
-        #     self.get_logger().info(f"Current time is outside the path's time range! Current time: {current_time}, Path time range: {path[0].header.stamp} to {path[-1].header.stamp}")
-        #     if left >= len(path):
-        #         return path[-1], path[-1]
-        #     elif right < 0:
-        #         return path[0], path[0]
-        #     else:
-        #         return path[right], path[left]
-
-        # # Get the current time as rclpy time
-        # current_time = self.get_clock().now()
-
-        # # Get the nearest poses
-        # current_pose, next_pose = binary_search_for_nearest_pose(self, current_time)
-
-        # # Should interpolate between the two poses to get the current pose
-        # # For now, just use the next pose
-        # self.hand_pose_publisher.publish(next_pose.pose)
-
         # Get the first pose in the trajectory, then publish it and remove it from the trajectory
         pose, timestamp = self.trajectory.popleft()
-        self.hand_pose_publisher.publish(pose)
 
-        # Log the length of the trajectory deque
+        # Convert the pose, timestamp into a PoseStamped message
+        pose_stamped = PoseStamped()
+        pose_stamped.header = Header()
+        pose_stamped.header.stamp = timestamp.to_msg()
+        pose_stamped.pose = pose
+
+        self.hand_pose_publisher.publish(pose_stamped)
+
+        # Log the length of the trajectory deque (for debugging; this should not grow over time)
         # self.get_logger().info(f"Trajectory length: {len(self.trajectory)}")
 
     def publish_path(self, current_path, next_path):

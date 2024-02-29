@@ -1,7 +1,7 @@
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
-from geometry_msgs.msg import Pose
+from geometry_msgs.msg import PoseStamped
 from std_srvs.srv import Trigger
 import quaternion  # numpy quaternion
 import pyspacemouse
@@ -21,7 +21,7 @@ class SpaceMouseHandler(Node):
 
         # Create a publisher for the platform pose and a timer to publish it
         # self.publisher_ = self.create_publisher(Pose, 'platform_pose_topic', 10)
-        self.publisher_ = self.create_publisher(Pose, 'hand_pose_topic', 10)
+        self.publisher_ = self.create_publisher(PoseStamped, 'hand_pose_topic', 10)
         self.timer = self.create_timer(0.01, self.publish_pose)
 
         """Initialize and open the SpaceMouse."""
@@ -48,8 +48,11 @@ class SpaceMouseHandler(Node):
         # Set the offset in z to put baseline position at ~midspan of robot
         z_offset = 200   # mm
 
-        # Initialise pose object
-        pose = Pose() 
+        # Initialise poseStamped object
+        pose_stamped = PoseStamped() 
+
+        # Get the current time
+        current_time = self.get_clock().now().to_msg()
 
         # Read the state of the spacemouse
         state = pyspacemouse.read()
@@ -68,15 +71,18 @@ class SpaceMouseHandler(Node):
         quaternion_ori = q_yaw * q_roll * q_pitch
         
         # Construct the pose message
-        pose.position.x = state.x * xy_mult
-        pose.position.y = state.y * xy_mult
-        pose.position.z = state.z * z_mult + z_offset
-        pose.orientation.x = quaternion_ori.x
-        pose.orientation.y = quaternion_ori.y
-        pose.orientation.z = quaternion_ori.z
-        pose.orientation.w = quaternion_ori.w
+        pose_stamped.pose.position.x = state.x * xy_mult
+        pose_stamped.pose.position.y = state.y * xy_mult
+        pose_stamped.pose.position.z = state.z * z_mult + z_offset
+        pose_stamped.pose.orientation.x = quaternion_ori.x
+        pose_stamped.pose.orientation.y = quaternion_ori.y
+        pose_stamped.pose.orientation.z = quaternion_ori.z
+        pose_stamped.pose.orientation.w = quaternion_ori.w
 
-        self.publisher_.publish(pose)
+        # Set the time stamp
+        pose_stamped.header.stamp = current_time
+
+        self.publisher_.publish(pose_stamped)
 
     def control_state_callback(self, msg):
         # If the incoming state calls for the spacemouse, enable it

@@ -401,7 +401,7 @@ window.onload = function () {
     var handPoseTopic = new ROSLIB.Topic({
         ros : ros,
         name : 'hand_pose_topic',
-        messageType : 'geometry_msgs/msg/Pose'
+        messageType : 'geometry_msgs/msg/PoseStamped'
     });
 
     // Initialize current pose to null
@@ -416,13 +416,13 @@ window.onload = function () {
     function adjustPose(deltaX, deltaY, deltaZ) {
         if (currentPose) {
             // For modifying position
-            currentPose.position.x += deltaX;
-            currentPose.position.y += deltaY;
-            currentPose.position.z += deltaZ;
+            currentPose.pose.position.x += deltaX;
+            currentPose.pose.position.y += deltaY;
+            currentPose.pose.position.z += deltaZ;
 
             // For modifying orientation
             // var ori = eulerToQuaternion(deltaX, deltaY, deltaZ);
-            // currentPose.orientation = multiplyQuaternions(currentPose.orientation, ori);
+            // currentPose.pose.orientation = multiplyQuaternions(currentPose.pose.orientation, ori);
         }
 
         // console.log(currentPose)
@@ -431,6 +431,7 @@ window.onload = function () {
         handPoseTopic.publish(currentPose);
     }
 
+    // Following two methods are only used when jogging rotations (see commented code in adjustPose)
     function multiplyQuaternions(q1, q2) {
         var q = new ROSLIB.Quaternion();
 
@@ -472,27 +473,32 @@ window.onload = function () {
     // Method to set the current pose
     function setPose(x, y, z) {
         if (currentPose) {
-            currentPose.position.x = x;
-            currentPose.position.y = y;
-            currentPose.position.z = z;
-            currentPose.orientation.x = 0; // Just have flat orientation for now
-            currentPose.orientation.y = 0;
-            currentPose.orientation.z = 0;
-            currentPose.orientation.w = 1;
+            currentPose.pose.position.x = x;
+            currentPose.pose.position.y = y;
+            currentPose.pose.position.z = z;
+            currentPose.pose.orientation.x = 0; // Just have flat orientation for now
+            currentPose.pose.orientation.y = 0;
+            currentPose.pose.orientation.z = 0;
+            currentPose.pose.orientation.w = 1;
         }
         else {
-            // If currentPose is null, construct a new pose message
+            // If currentPose is null, construct a new poseStamped message
             currentPose = new ROSLIB.Message({
-                position: {
-                    x: x,
-                    y: y,
-                    z: z
+                header: {
+                    frame_id: 'world'
                 },
-                orientation: {
-                    x: 0,
-                    y: 0,
-                    z: 0,
-                    w: 1
+                pose: {
+                    position: {
+                        x: x,
+                        y: y,
+                        z: z
+                    },
+                    orientation: {
+                        x: 0,
+                        y: 0,
+                        z: 0,
+                        w: 1
+                    }
                 }
             });
         }

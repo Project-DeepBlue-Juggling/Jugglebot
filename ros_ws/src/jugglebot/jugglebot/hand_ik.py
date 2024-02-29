@@ -1,7 +1,7 @@
 import rclpy
 from rclpy.node import Node
 import numpy as np
-from geometry_msgs.msg import Pose
+from geometry_msgs.msg import PoseStamped, Pose
 from std_srvs.srv import Trigger
 from std_msgs.msg import Float64MultiArray, Int8MultiArray
 from jugglebot_interfaces.srv import GetRobotGeometry
@@ -23,7 +23,7 @@ class SPInverseKinematics(Node):
 
         self.send_geometry_request()
 
-        self.subscription = self.create_subscription(Pose, 'hand_pose_topic', self.pose_callback, 10)
+        self.subscription = self.create_subscription(PoseStamped, 'hand_pose_topic', self.pose_callback, 10)
         self.subscription  # Prevent "unused variable" warning
 
         # Set up a publisher to publish the platform pose
@@ -79,11 +79,11 @@ class SPInverseKinematics(Node):
     def pose_callback(self, msg):
         if self.has_geometry_data:
             # Extract position data
-            pos = np.array([[msg.position.x], [msg.position.y], [msg.position.z]])  # Note that this is in base frame
+            pos = np.array([[msg.pose.position.x], [msg.pose.position.y], [msg.pose.position.z]])  # Note that this is in base frame
             pos_adjusted = pos + self.start_pos  # Convert to platform (at lowest position) frame
 
             # Extract the orientation quaternion
-            self.orientation = msg.orientation
+            self.orientation = msg.pose.orientation
             quaternion_ori = quaternion.quaternion(self.orientation.w, self.orientation.x, self.orientation.y, self.orientation.z)
             
             # # Convert quaternion to 4x4 rotation matrix

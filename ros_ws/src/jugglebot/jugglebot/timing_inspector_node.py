@@ -9,7 +9,7 @@ from rclpy.time import Time as RclpyTime
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 from jugglebot_interfaces.msg import HandStateList, BallStateMessage
-from geometry_msgs.msg import Pose, PoseStamped
+from geometry_msgs.msg import PoseStamped
 from builtin_interfaces.msg import Time
 
 class TimingInspectorNode(Node):
@@ -18,7 +18,7 @@ class TimingInspectorNode(Node):
 
         # Subscribe to relevant Topics
         self.hand_state_sub = self.create_subscription(HandStateList,'hand_state_topic', self.hand_state_callback, 10)
-        self.hand_pose_sub = self.create_subscription(Pose,'hand_pose_topic', self.hand_pose_callback, 10)
+        self.hand_pose_sub = self.create_subscription(PoseStamped,'hand_pose_topic', self.hand_pose_callback, 10)
 
         # Initialize publishers to relevant Topics
             # None for now...
@@ -63,7 +63,7 @@ class TimingInspectorNode(Node):
                 time_difference = hand_time - throw_time
 
                 # Print the result in milliseconds
-                self.get_logger().info(f'Throw time difference: {time_difference.nanoseconds / 1e6} ms')
+                self.get_logger().info(f'Throw time difference: {time_difference.nanoseconds / 1e6:.2f} ms')
 
             # Check if the hand is close to the catch position
             elif self.are_points_close(self.hand_state['pos'], self.catch_state['pos']):
@@ -75,7 +75,7 @@ class TimingInspectorNode(Node):
                 time_difference = hand_time - catch_time
 
                 # Print the result in milliseconds
-                self.get_logger().info(f'Catch time difference: {time_difference.nanoseconds / 1e6} ms')
+                self.get_logger().info(f'Catch time difference: {time_difference.nanoseconds / 1e6:.2f} ms')
             else:
                 # self.get_logger().info('Hand is not close to the throw or catch position')
                 pass
@@ -130,7 +130,7 @@ class TimingInspectorNode(Node):
     def hand_pose_callback(self, msg):
         '''Store the hand position and the time that this message was published'''
 
-        self.hand_state['pos'] = msg.position
+        self.hand_state['pos'] = msg.pose.position
         self.hand_state['time'] = self.get_clock().now()
 
 
