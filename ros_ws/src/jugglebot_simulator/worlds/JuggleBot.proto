@@ -23,7 +23,46 @@ PROTO JuggleBot [
       DEF HAND Solid {
         translation IS handPosition
         rotation IS handRotation
+        boundingObject Pose {
+          translation -0.06 -0.06 0
+          children [
+            ElevationGrid {
+              height         [
+                0.05, 0.05, 0.05, 0.05,
+                0.05, 0,    0,    0.05,
+                0.05, 0,    0,    0.05,
+                0.05, 0.05, 0.05, 0.05,
+              ]
+              xDimension     4
+              yDimension     4
+              xSpacing       0.04
+              ySpacing       0.04
+              thickness      0.01
+            }
+          ]
+        }
         children [
+          Pose {
+            translation -0.06 -0.06 0
+            children [
+              Shape {
+                geometry             ElevationGrid {
+                height         [
+                  0.05, 0.05, 0.05, 0.05,
+                  0.05, 0,    0,    0.05,
+                  0.05, 0,    0,    0.05,
+                  0.05, 0.05, 0.05, 0.05,
+                ]
+                xDimension     4
+                yDimension     4
+                xSpacing       0.04
+                ySpacing       0.04
+                thickness      0.01
+              }
+
+              }
+            ]
+          }
           DEF HAND_POSE Pose {
             translation 0 0 0
             rotation 1 0 0 1.5708
@@ -34,48 +73,30 @@ PROTO JuggleBot [
             ]
           }
         ]
-        boundingObject Pose {
-          translation -0.03 -0.03 0
-          children [
-            ElevationGrid {
-              height         [
-                0.02, 0.02, 0.02, 0.02,
-                0.02, 0,    0,    0.02,
-                0.02, 0,    0,    0.02,
-                0.02, 0.02, 0.02, 0.02,
-              ]
-              xDimension     4
-              yDimension     4
-              xSpacing       0.02
-              ySpacing       0.02
-              thickness      0.005
-            }
-          ]
-        }
       }
-      DEF UPPER_PLATFORM Solid {
-        translation IS platformPosition
-        rotation IS platformRotation
-        children [
-          DEF UPPER_PLATFORM_SHAPE Shape {
-            appearance PBRAppearance {
-              baseColor 0.12 0.56 1
-              roughness 1
-              metalness 0
-            }
-            geometry Cylinder {
-              height 0.005
-              radius 0.2295
-              subdivision 24
-            }
-          }
-        ]
-        name "upper_platform"
-        boundingObject USE UPPER_PLATFORM_SHAPE
-        physics Physics {
-          density 10
-        }
-      }
+      # DEF UPPER_PLATFORM Solid {
+      #   translation IS platformPosition
+      #   rotation IS platformRotation
+      #   children [
+      #     DEF UPPER_PLATFORM_SHAPE Shape {
+      #       appearance PBRAppearance {
+      #         baseColor 0.12 0.56 1
+      #         roughness 1
+      #         metalness 0
+      #       }
+      #       geometry Cylinder {
+      #         height 0.005
+      #         radius 0.2295
+      #         subdivision 24
+      #       }
+      #     }
+      #   ]
+      #   name "upper_platform"
+      #   boundingObject NULL
+      #   physics Physics {
+      #     density 10
+      #   }
+      # }
       DEF LOWER_PLATFORM Solid {
         translation 0 0 0
         rotation 0 0 1 0
