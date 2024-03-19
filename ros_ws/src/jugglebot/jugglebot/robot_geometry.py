@@ -35,18 +35,18 @@ class RobotGeometry(Node):
 
         ''' MAKE SURE ALL VALUES ARE FLOATS '''
 
-        self.initial_height = 626.25 # Dist. from the base plane (bottom joint of legs) to plat. in its lowest pos {mm}
+        self.initial_height = 600.0 # Dist. from the base plane (bottom joint of legs) to plat. in its lowest pos {mm}
         self.base_radius = 410.0   # Radius of base {mm}
-        self.plat_radius = 229.5   # Radius of platform {mm}
+        self.plat_radius = 281.0   # Radius of platform {mm}
         self.base_small_angle = 24.0 # Gamma2 on main sketch {deg}
-        self.plat_small_angle = 7.49496  # Lambda1 on main sketch {deg}
+        self.plat_small_angle = 12.0  # Lambda1 on main sketch {deg}
         self.leg_stroke = 280.0  # Stroke of leg {mm}
         self.plat_string_attachment_height = 131.09  # Height of platform string attachment BELOW platform joint plane {mm}
         self.base_string_attachment_height = 6.29    # Height of base string attachment ABOVE base joint plane {mm}
 
         # Relating to the hand/arm:
         self.arm_radius = 70.0  # Radius of opening where the ball comes in. Doesn't need to be exact.
-        self.arm_height_from_platform = 210.25  # Height of opening where ball comes in from the ball joints of the platform
+        self.arm_height_from_platform = 210.25  # Height of opening where ball comes in from the platform leg nodes
         self.hand_stroke = 316.5  # Stroke of hand. DOES need to be ~exact. Used to inform overextensions etc.
         self.hand_radius = 35.0  # Radius of hand. Doesn't need to be exact
 
