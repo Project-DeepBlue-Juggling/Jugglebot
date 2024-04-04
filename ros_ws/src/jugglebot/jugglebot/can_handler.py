@@ -104,13 +104,16 @@ class CANHandler:
             'can_traffic'     : None,
         }
 
+        # Initialize the number of axes that the robot has
+        self.num_axes = 8  # 6 for the legs, 1 for the hand. 1 Extra because I don't know how to disable the extra axis on the ODrive
+
         # Initialize buffers for all variables that are being sent out to the ROS network
-        self.position_buffer = [None] * 6
-        self.velocity_buffer = [None] * 6
-        self.iq_buffer       = [None] * 6
+        self.position_buffer = [None] * self.num_axes
+        self.velocity_buffer = [None] * self.num_axes
+        self.iq_buffer       = [None] * self.num_axes
 
         # We need to know current motor iqs for some methods (eg. homing) so initialize a list for these values
-        self.iq_values = [None] * 6
+        self.iq_values = [None] * self.num_axes
 
         # Initialize a flag that triggers whenever any fatal errors are detected
         self.fatal_issue = False
@@ -120,8 +123,8 @@ class CANHandler:
         self.fatal_can_issue = False  # Has the bus completely failed and can't be restored?
 
         # Initialize the current state for each axis
-        self.axis_states = [None] * 6
-        self.is_done_moving = [None] * 6
+        self.axis_states = [None] * self.num_axes
+        self.is_done_moving = [None] * self.num_axes
 
         self.setup_can_bus()
         self.wait_for_heartbeat()
@@ -664,12 +667,12 @@ class CANHandler:
             # If the buffer is full, send it off!
             complete_pos_data = self.position_buffer.copy() # Copy so that data doesn't change before being sent away
             self._trigger_callback('motor_positions', complete_pos_data)
-            self.position_buffer = [None] * 6  # Reset the buffer
+            self.position_buffer = [None] * self.num_axes  # Reset the buffer
 
             # If position buffer is full, then velocity buffer will also be full
             complete_vel_data = self.velocity_buffer.copy()
             self._trigger_callback('motor_velocities', complete_vel_data)
-            self.velocity_buffer = [None] * 6
+            self.velocity_buffer = [None] * self.num_axes  # Reset the buffer
 
     def _handle_iq_readings(self, axis_id, data):
         # Start by unpacking the data, which is a 32-bit float
@@ -687,7 +690,7 @@ class CANHandler:
             self.iq_values = complete_iq_data
 
             # Reset the buffer
-            self.iq_buffer = [None] * 6
+            self.iq_buffer = [None] * self.num_axes
 
     def _handle_CAN_traffic_report(self, message):
         # Unpack the data into a 32-bit integer

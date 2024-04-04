@@ -1,7 +1,7 @@
 import math
 import rclpy
 from jugglebot_interfaces.msg import RobotStateMessage
-from geometry_msgs.msg import Pose
+from geometry_msgs.msg import Pose, PoseStamped
 
 HALF_DISTANCE_BETWEEN_WHEELS = 0.045
 WHEEL_RADIUS = 0.025
@@ -23,6 +23,7 @@ class JugglebotDriver:
         self._node.create_timer(timer_period_sec=1, callback=self._publish_robot_state)
 
         self._platform_pose_sub = self._node.create_subscription(Pose, '/platform_pose_topic', self._platform_pose_callback, 10)
+        self._hand_pose_sub = self._node.create_subscription(PoseStamped, '/hand_pose_topic', self._hand_pose_callback, 10)
         self._logger = self._node.get_logger()
 
     def _publish_robot_state(self):
@@ -35,7 +36,10 @@ class JugglebotDriver:
         rotation = list(quaternion_to_axis_angle(msg.orientation))
         self._platform_rotation_field.setSFRotation(rotation)
 
+    def _hand_pose_callback(self, msg):
+        msg = msg.pose
         self._hand_position_field.setSFVec3f([msg.position.x/1000, msg.position.y/1000, msg.position.z/1000 + 0.5])
+        rotation = list(quaternion_to_axis_angle(msg.orientation))
         self._hand_rotation_field.setSFRotation(rotation)
 
     def step(self):
