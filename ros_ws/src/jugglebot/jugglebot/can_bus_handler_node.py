@@ -100,12 +100,12 @@ class CANBusHandlerNode(Node):
         motor_positions = msg.data[:6] # Since we don't need the hand string length here
 
         # Need to re-map the legs to the correct ODrive axes
-        schema = [1, 4, 5, 2, 3, 0]
+        schema = [1, 2, 3, 4, 5, 0]
         motor_positions_remapped = [motor_positions[schema.index(i)] for i in range(6)]
 
         for axis_id, data in enumerate(motor_positions_remapped):
             self.can_handler.send_position_target(axis_id=axis_id, setpoint=data)
-            self.get_logger().debug(f'Motor {axis_id} commanded to setpoint {data}')
+            # self.get_logger().debug(f'Motor {axis_id} commanded to setpoint {data}')
 
     def shutdown_robot(self):
         # Send the robot home and put all motors in IDLE
