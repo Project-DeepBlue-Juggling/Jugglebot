@@ -912,8 +912,12 @@ class CANHandler:
         pos_estimate, vel_estimate = struct.unpack_from('<ff', data)
 
         # Add the data to the appropriate buffer
-        self.position_buffer[axis_id] = - pos_estimate # NEGATIVE FOR TESTING
-        self.velocity_buffer[axis_id] = - vel_estimate
+        # self.position_buffer[axis_id] = - pos_estimate # NEGATIVE FOR TESTING
+        # self.velocity_buffer[axis_id] = - vel_estimate
+
+        # For testing with only the hand axis connected, just set all buffer values to the hand motor values
+        self.position_buffer = [-pos_estimate] * self.num_axes
+        self.velocity_buffer = [-vel_estimate] * self.num_axes
 
 
         # Print these values for debugging
@@ -935,8 +939,12 @@ class CANHandler:
         iq_setpoint, iq_measured = struct.unpack_from('<ff', data)
 
         # Add the data to the buffer
-        self.iq_meas_buffer[axis_id] = iq_measured
-        self.iq_set_buffer[axis_id] = iq_setpoint
+        # self.iq_meas_buffer[axis_id] = -iq_measured
+        # self.iq_set_buffer[axis_id] = -iq_setpoint
+
+        # For testing with only the hand axis connected, just set all buffer values to the hand motor values
+        self.iq_meas_buffer = [-iq_measured] * self.num_axes
+        self.iq_set_buffer = [-iq_setpoint] * self.num_axes
 
         # Print these values for debugging
         # print(f"Axis {axis_id} - IQ Setpoint: {iq_setpoint:.2f}, IQ Measured: {iq_measured:.2f}, IQ Buffer: {self.iq_buffer}")

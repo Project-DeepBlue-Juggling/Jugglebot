@@ -57,7 +57,7 @@ throw_stroke = 6 # revs
 lowest_pos = (stroke - throw_stroke) / 2 # revs
 highest_pos = lowest_pos + throw_stroke  # revs
 
-mot_kv = 1500
+mot_kv = 1500.0
 mot_ka = 8.27 / mot_kv # Nm/A
 
 release_pos = (lowest_pos + highest_pos) / 2 # revs
@@ -128,7 +128,7 @@ result = otg.calculate(inp, trajectory)
 # Check to make sure we have a valid input
 if result == Result.ErrorInvalidInput:
     shutdown()
-    raise Exception("Invalid input")
+    exit(1)
 
 print(f'Trajectory duration: {trajectory.duration:.4f} s')
 
@@ -145,20 +145,18 @@ first_wait_step = True
 first_last_step = True
 
 # Step through the trajectory and send the position commands, as well as logging the data
-frames = int((trajectory.duration + extra_time) / dt)
+num_steps = int((trajectory.duration + extra_time) / dt)
 
-for i in range(frames):
-    # Get the most up-to-date data on what the motor is actually doing
-    can_handler.fetch_messages()
-    x_ex.append(can_handler.pos_values[6])
-    v_ex.append(can_handler.vel_values[6])
-    iq_ex.append(-can_handler.iq_meas_values[6])
-    iq_set.append(-can_handler.iq_set_values[6])
+# Control loop
+start_time = time.perf_counter()
+
+for i in range(num_steps):
+    current_time = i * dt
 
     # If we're still inside the trajectory, get the theoretical values
-    if i * dt <= trajectory.duration:
+    if current_time <= trajectory.duration:
         # Get the new position, velocity, and acceleration
-        new_pos, new_vel, new_acc = trajectory.at_time(i * dt)
+        new_pos, new_vel, new_acc = trajectory.at_time(current_time)
         
         # Find the maximum velocity and calculate the duration that the ball will be in the air
         if new_vel[0] > max(v_th):
@@ -170,7 +168,7 @@ for i in range(frames):
             eff_inertia_in_use = empty_eff_inertia
 
     # Once we reach the end of the trajectory, wait for air_time before carrying out the trajectory in reverse (to catch - dodgily)
-    elif i * dt <= trajectory.duration + air_time + delay_time:
+    elif current_time <= trajectory.duration + air_time + delay_time:
         # Do nothing
         if first_wait_step:
             # Get the very last position, velocity, and acceleration
@@ -183,7 +181,7 @@ for i in range(frames):
         return_step = i # Get the last step index before we start returning
         pass
 
-    elif i * dt <= 2 * trajectory.duration + air_time:
+    elif current_time <= 2 * trajectory.duration + air_time:
         # Get the new position, velocity, and acceleration
         traj_time = trajectory.duration - (i - return_step) * dt
         # print(traj_time)
@@ -218,8 +216,21 @@ for i in range(frames):
 
     # Convert the acceleration into torque and send it
     can_handler.send_arbitrary_message(axis_id=6, msg_name='set_input_torque', setpoint=torque)
-    
-    time.sleep(dt*0.9) # Number is a fudge factor to ensure messages are sent out at the right rate. Checked using Teensy 
+
+    # Get the most up-to-date data on what the motor is actually doing
+    can_handler.fetch_messages()
+    x_ex.append(can_handler.pos_values[6])
+    v_ex.append(can_handler.vel_values[6])
+    iq_ex.append(can_handler.iq_meas_values[6])
+    iq_set.append(can_handler.iq_set_values[6])
+
+
+    # Wait for the next time step    
+    # time.sleep(dt*0.9) # Number is a fudge factor to ensure messages are sent out at the right rate. Checked using Teensy 
+    elapsed_time = time.perf_counter() - start_time
+    sleep_time = (i + 1) * dt - elapsed_time
+    if sleep_time > 0:
+        time.sleep(sleep_time)
 
 
 max_v_th = max(v_th)
