@@ -289,7 +289,7 @@ def plot_combined_3d_surface_plotly(platRad, platSmallAngle, mean_condition_numb
 
 if __name__ == "__main__":
     # Load the data
-    path = r'C:\Users\harri\Google Drive\Projects\Current\Jugglebot\Coding\GitHub\simulations\stewart_platform_geometry_study\\'
+    path = 'path_to_aggregated_results_file'
     data = load_data(path + 'aggregated_results_even_more_points.npy')
     
      # Extract all data
