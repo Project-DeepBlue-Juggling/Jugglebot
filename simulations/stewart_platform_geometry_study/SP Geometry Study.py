@@ -147,7 +147,7 @@ def compute_reachability(ptlist, a, B, mov_limits):
 
 
 def plot_results(ROM_Centroid, plat_nodes, base_nodes, ptlist, valid_pt_list, hemisphere_pts):
-    fig = plt.figure()
+    fig = plt.figure(figsize=(10, 7))
     ax1 = fig.add_subplot(121, projection='3d')
     ax2 = fig.add_subplot(122, projection='3d')
     ax1.set_aspect('equal')
@@ -157,11 +157,12 @@ def plot_results(ROM_Centroid, plat_nodes, base_nodes, ptlist, valid_pt_list, he
     # plot platform nodes and center of mass
     A = ROM_Centroid + plat_nodes  # To plot the platform at the average position of the reachability cloud
     # A = plat_nodes
+    platform_alpha = 1.0
     for j in range(6):
-        ax1.scatter(A[0, j], A[1, j], A[2, j], c='m')  # platform
-        ax1.scatter(ROM_Centroid[0], ROM_Centroid[1], ROM_Centroid[2], c='m', marker='o')  # platform COM
-        ax1.scatter(base_nodes[0, j], base_nodes[1, j], base_nodes[2, j], c='r', marker='o')  # base
-        ax1.plot([base_nodes[0, j], A[0, j]], [base_nodes[1, j], A[1, j]], [base_nodes[2, j], A[2, j]], c='b')  # legs
+        ax1.scatter(A[0, j], A[1, j], A[2, j], c='m', alpha=platform_alpha)  # platform
+        ax1.scatter(ROM_Centroid[0], ROM_Centroid[1], ROM_Centroid[2], c='m', marker='o', alpha=platform_alpha)  # platform COM
+        ax1.scatter(base_nodes[0, j], base_nodes[1, j], base_nodes[2, j], c='r', marker='o', alpha=platform_alpha)  # base
+        ax1.plot([base_nodes[0, j], A[0, j]], [base_nodes[1, j], A[1, j]], [base_nodes[2, j], A[2, j]], c='b', alpha=platform_alpha)  # legs
 
     # Filter valid_pt_list, if wanting to show only a slice along the x axis. If not, uncomment next three lines.
     # x_axis_slice_max_min = 2  # Set this threshold to whatever you want (mm)
@@ -177,28 +178,32 @@ def plot_results(ROM_Centroid, plat_nodes, base_nodes, ptlist, valid_pt_list, he
           f"{(len(valid_pts_in_hemisphere) / len(total_pts_in_hemisphere)) * 100:.2f}%")
 
     # plot point cloud
-    # ax1.plot(ptlist[:, 0], ptlist[:, 1], ptlist[:, 2], 'ro', markersize=0.6, alpha=0.5, label='Unreachable points')
-    ax1.plot(valid_pt_list[:, 0], valid_pt_list[:, 1], valid_pt_list[:, 2], 'g*', label='Reachable points')
+    # ax1.plot(ptlist[:, 0], ptlist[:, 1], ptlist[:, 2], 'ro', markersize=0.6, alpha=0.1, label='Unreachable points')
+    # ax1.plot(valid_pt_list[:, 0], valid_pt_list[:, 1], valid_pt_list[:, 2], 'g*', label='Reachable points')
 
-    show_hemisphere = False
+    show_hemisphere = True
 
     if show_hemisphere:
-        ax1.plot(total_pts_in_hemisphere[:, 0],
-                total_pts_in_hemisphere[:, 1],
-                total_pts_in_hemisphere[:, 2], 'c*', label='Unreachable points inside hemisphere')
+        # ax1.plot(total_pts_in_hemisphere[:, 0],
+        #         total_pts_in_hemisphere[:, 1],
+        #         total_pts_in_hemisphere[:, 2], 'c*', label='Unreachable points inside hemisphere')
 
         ax1.plot(valid_pts_in_hemisphere[:, 0],
                 valid_pts_in_hemisphere[:, 1],
                 valid_pts_in_hemisphere[:, 2], 'b*', label='Reachable points inside hemisphere')
+        
+        ax2.plot(valid_pts_in_hemisphere[:, 0],
+                valid_pts_in_hemisphere[:, 1],
+                valid_pts_in_hemisphere[:, 2], 'b*', label='Reachable points inside hemisphere')
 
     # plot_hemisphere(z_offset=z_offset_mov_area, geometry_pts=hemisphere_pts, ax=ax1)
-    ax1.legend(loc='upper right')
+    # ax1.legend(loc='upper right')
 
     # Mask the data if wanting to plot truncated data
     threshold_xy = 500  # Threshold at which to cut off the x and y data for the plot
     mask = np.logical_and(np.abs(valid_pt_list[:, 0]) < threshold_xy, np.abs(valid_pt_list[:, 1]) < threshold_xy)
     valid_pt_list = valid_pt_list[mask]
-    ax2.plot(valid_pt_list[:, 0], valid_pt_list[:, 1], valid_pt_list[:, 2], 'g*')
+    # ax2.plot(valid_pt_list[:, 0], valid_pt_list[:, 1], valid_pt_list[:, 2], 'g*')
     # ax2.set_xlim([-250, 250])
     # ax2.set_ylim([-250, 250])
 
@@ -228,6 +233,7 @@ def plot_convex_hull(points):
     ax.set_ylabel('Y axis')
     ax.set_zlabel('Z axis')
     plt.title('3D Convex Hull')
+
 
 def plot_concave_hull(points, grid_size=50, sigma=1.0, threshold=0.1):
     # Create a dense grid
@@ -403,7 +409,7 @@ hand_xy_span = 600  # mm
 hand_z_span = 200  # mm
 
 # Points in point cloud
-numPoints = int(1e6)  # Number of points to check
+numPoints = int(1e5)  # Number of points to check
 
 # Structure input data
 movLimits = [shortLeg, longLeg, legAngleLimit]
