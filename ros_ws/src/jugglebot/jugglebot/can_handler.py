@@ -3,7 +3,7 @@ CANHandler Class
 ----------------
 
 This class is designed to interface with a CAN bus using the python-can library. 
-It's specifically tailored for handling communications for a robot powered by six BLDC motors, controlled by ODrive controllers. 
+It's specifically tailored for handling communications for a robot powered by six BLDC motors, controlled by ODrive Pro controllers. 
 The class provides functionalities for sending commands to the motors, handling periodic status messages from the ODrive controllers, 
 and managing error states and encoder estimates.
 
@@ -42,22 +42,20 @@ import time
 class CANHandler:
     # Create a dictionary of commands that might be called over the CAN bus by external scripts
     COMMANDS = {
-        "heartbeat_message"   : 0x001,
-        "get_motor_error"     : 0x003,
-        "get_encoder_error"   : 0x004,
-        "get_encoder_estimate": 0x009,
-        "set_controller_mode" : 0x00B,
-        "set_input_pos"       : 0x00C,
-        "set_input_vel"       : 0x00D,
-        "set_requested_state" : 0x007,
-        "set_vel_curr_limits" : 0x00F,
-        "set_traj_vel_limit"  : 0x011,
-        "set_traj_acc_limits" : 0x012,
-        "get_iq"              : 0x014, 
-        "reboot_odrives"      : 0x016,
-        "clear_errors"        : 0x018,
-        "set_linear_count"    : 0x019,
-        "get_controller_error": 0x01D,
+        "heartbeat_message"     : 0x001,
+        "get_error"             : 0x003,
+        "set_requested_state"   : 0x007,
+        "get_encoder_estimate"  : 0x009,
+        "set_controller_mode"   : 0x00b,
+        "set_input_pos"         : 0x00c,
+        "set_input_vel"         : 0x00d,
+        "set_vel_curr_limits"   : 0x00f,
+        "set_traj_vel_limit"    : 0x011,
+        "set_traj_acc_limits"   : 0x012,
+        "get_iq"                : 0x014, 
+        "reboot_odrives"        : 0x016,
+        "clear_errors"          : 0x018,
+        "set_absolute_position" : 0x019,
     }
 
     # Create the reverse dictionary to go from ID to name; mostly for logging human-readable errors
@@ -71,7 +69,7 @@ class CANHandler:
         pkg_dir = get_package_share_directory('jugglebot')
         
         # Construct the full filepath to the dbc file
-        dbc_file_path = os.path.join(pkg_dir, 'resources', 'ODrive_CAN.dbc')
+        dbc_file_path = os.path.join(pkg_dir, 'resources', 'ODrive_Pro.dbc')
 
         # Now import the ODrive dbc file
         self.db = cantools.database.load_file(dbc_file_path)
@@ -89,9 +87,7 @@ class CANHandler:
         # This allows for easy addition of new commands and corresponding handlers
         self.command_handlers = {
             self.COMMANDS["heartbeat_message"]   : self._handle_heartbeat,
-            self.COMMANDS["get_motor_error"]     : self._handle_motor_error,
-            self.COMMANDS["get_encoder_error"]   : self._handle_encoder_error,
-            self.COMMANDS["get_controller_error"]: self._handle_controller_error,
+            self.COMMANDS["get_error"]           : self._handle_error,
             self.COMMANDS["get_encoder_estimate"]: self._handle_encoder_estimates,
             self.COMMANDS["get_iq"]              : self._handle_iq_readings,
         }
@@ -105,7 +101,7 @@ class CANHandler:
         }
 
         # Initialize the number of axes that the robot has
-        self.num_axes = 8  # 6 for the legs, 1 for the hand. 1 Extra because I don't know how to disable the extra axis on the ODrive
+        self.num_axes = 6  # 6 for the legs, 1 for the hand. Hand is not currently implemented
 
         # Initialize buffers for all variables that are being sent out to the ROS network
         self.position_buffer = [None] * self.num_axes
@@ -125,9 +121,11 @@ class CANHandler:
         # Initialize the current state for each axis
         self.axis_states = [None] * self.num_axes
         self.is_done_moving = [None] * self.num_axes
+        self.procedure_result = [None] * self.num_axes
 
         self.setup_can_bus()
         self.wait_for_heartbeat()
+        self.run_encoder_search()
 
     #########################################################################################################
     #                                            CAN Bus Management                                         #
@@ -254,6 +252,11 @@ class CANHandler:
             # If the bus hasn't been initialized, return
             return
         
+        # If there is a fatal issue with any ODrive, don't send any more messages
+        if self.fatal_issue:
+            self.ROS_logger.fatal("Fatal issue detected. Stopping further messages.", throttle_duration_sec=2.0)
+            return
+
         # Get the hex code for the message being sent
         command_id = self.COMMANDS[command_name]
 
@@ -280,6 +283,9 @@ class CANHandler:
 
     def send_position_target(self, axis_id, setpoint, max_position=_MOTOR_MAX_POSITION, min_position=0.0):
         # Commands the given motor to move to the designated setpoint (after checking its magnitude)
+
+        # Log the setpoint
+        # self.ROS_logger.info(f"Setting position target for motor {axis_id} to {setpoint:.2f}")
 
         if setpoint > max_position or setpoint < min_position:
             setpoint = max(min_position, min(setpoint, max_position))
@@ -358,7 +364,7 @@ class CANHandler:
         current_limit = 5.0  # Found experimentally
         current_limit_headroom = 3.0  # Headroom for limit of how high the current should go above "current_limit"
 
-        for axisID in range(6):
+        for axisID in range(self.num_axes):
             # Put the axis in velocity control mode
             # self._set_requested_state(axisID, requested_state='CLOSED_LOOP_CONTROL')  # 'setup_odrives' already does this
             self._set_control_mode(axis_id=axisID, control_mode='VELOCITY_CONTROL', input_mode='VEL_RAMP')
@@ -384,7 +390,7 @@ class CANHandler:
             while True:
                 if self.fatal_issue:
                     # eg. overcurrent
-                    self.ROS_logger.fatal("FATAL ISSUE! Stopping process")
+                    self.ROS_logger.fatal("FATAL ISSUE! Stopping homing")
                     break
 
                 # Fetch any recent messages on the CAN bus
@@ -401,15 +407,31 @@ class CANHandler:
                     self._set_requested_state(axisID, requested_state='IDLE')
 
                     # Set the encoder position to be a little more than 0 (so that 0 is a bit off the end-stop. +ve is contraction)
-                    data = self.db.encode_message(f'Axis{axisID}_Set_Linear_Count',
-                                             {'Position': 1200})  # Recall encoder has 8192 CPR
+                    data = self.db.encode_message(f'Axis{axisID}_Set_Absolute_Position',
+                                             {'Position': 0.1})  # Unit is revolutions
                     
-                    self._send_message(axis_id=axisID, command_name="set_linear_count", data=data, error_descriptor="Set encoder pos in homing")
+                    self._send_message(axis_id=axisID, command_name="set_absolute_position", data=data, error_descriptor="Set encoder pos in homing")
                     self.ROS_logger.info(f"Motor {axisID} homed!")
                     break
 
         # Now that all motors have been homed, reset them to have desired properties
         self.setup_odrives()
+
+    def run_encoder_search(self):
+        '''
+        Runs the necessary encoder search procedure to find the index of the encoder. This was done automatically
+        on power up for the ODrive v3.6's but now (AFAIK) must be done manually
+        '''
+
+        for axisID in range(self.num_axes):
+            self._set_requested_state(axisID, requested_state='ENCODER_INDEX_SEARCH')
+
+        # Wait for all axes to present "Success" (0) in the procedure result
+        while not all([result == 0 for result in self.procedure_result]):
+            self.fetch_messages()
+            time.sleep(0.1)
+
+        self.ROS_logger.info("Encoder index search complete! Jugglebot is ready to be homed.")
 
     #########################################################################################################
     #                                            Managing ODrives                                           #
@@ -515,145 +537,69 @@ class CANHandler:
 
     def _handle_heartbeat(self, axis_id, data):
         # Extract information from the heartbeat message
-        axis_error = data[0]  # Not going to do anything with this for now as none of these errors are useful for me
+        axis_error = data[0]
         axis_current_state = data[4]
-        motor_error_flag = (data[5] >> 0) & 0x01  # Extract bit 0
-        encoder_error_flag = (data[6] >> 0) & 0x01  # Extract bit 0
-        controller_error_flag = (data[7] >> 0) & 0x01  # Extract bit 0
-        trajectory_done_flag = (data[7] >> 7) & 0x01  # Extract bit 7
+        procedure_result = data[5]
+        trajectory_done_flag = (data[6] >> 0) & 0x01  # Extract bit 0 from byte 6
 
         # Update the current state information for this axis
         self.axis_states[axis_id] = axis_current_state
         self.is_done_moving[axis_id] = trajectory_done_flag
+        self.procedure_result[axis_id] = procedure_result
 
         # Check for any errors and set the error_detected flag if any are found
-        if motor_error_flag or encoder_error_flag or controller_error_flag:
+        if axis_error:
             self.fatal_issue = True  # Will be important for stopping the robot as soon as any errors are detected
-            self.ROS_logger.fatal('Fatal ODrive issue. Searching for more detail...')
-
-            # Now call specific error handlers to get more info about the nature of the error
-            if motor_error_flag:
-                self._request_error_info(axis_id, self.COMMANDS["get_motor_error"] )
-            if encoder_error_flag:
-                self._request_error_info(axis_id, self.COMMANDS["get_encoder_error"] )
-            if controller_error_flag:
-                self._request_error_info(axis_id, self.COMMANDS["get_controller_error"])
-            
-            # Request the next message so that we can see what the actual error is.
-            # This seems to be working stably in testing, though it doesn't feel 100% robust
-            time.sleep(0.01)
-            self.fetch_messages()
+            self.ROS_logger.fatal(f'Fatal ODrive issue: {axis_error}. More info coming soon...', throttle_duration_sec=1.0)
 
         # Record the time when this message came through
         self.last_heartbeat_time = time.time()
 
-    def _request_error_info(self, axis_id, command_id):
-        # Construct a message to request more details about the specific error
-        # The arbitration ID includes the axis ID and the command ID
-        arbitration_id = (axis_id << 5) | command_id
-        message = can.Message(arbitration_id=arbitration_id, is_remote_frame=True, is_extended_id=False)
+    def _handle_error(self, axis_id, message_data):
+        # First split the error data into its constituent parts
+        active_errors = struct.unpack_from('<I', message_data, 0)[0] # 4-byte integer
+        disarm_reason = struct.unpack_from('<I', message_data, 4)[0]
 
-        # Send the message over the CAN bus
-        self.bus.send(message)
-
-        # Get the command name for logging purposes
-        command_name = self.COMMAND_ID_TO_NAME.get(command_id, f"Unknown command {command_id}")
-
-        # Log the issue
-        self.ROS_logger.error(f"Error detected on axis {axis_id}, requesting more information with command {command_name}.")
-
-    def _handle_motor_error(self, axis_id, message_data):
-        # Convert the 8-byte array into a 64-bit integer
-        error_code = int.from_bytes(message_data, byteorder="little", signed=False)
-
-        # Dictionary mapping error codes to error messages
-        MOTOR_ERRORS = {
-            0x1: "PHASE_RESISTANCE_OUT_OF_RANGE: The measured motor phase resistance is outside of the plausible range.",
-            0x2: "PHASE_INDUCTANCE_OUT_OF_RANGE: The measured motor phase inductance is outside of the plausible range.",
-            0x8: "DRV_FAULT: The gate driver chip reported an error.",
-            0x10: "CONTROL_DEADLINE_MISSED",
-            0x80: "MODULATION_MAGNITUDE: The bus voltage was insufficient to push the requested current through the motor.",
-            0x400: "CURRENT_SENSE_SATURATION: The current sense circuit saturated.",
-            0x1000: "CURRENT_LIMIT_VIOLATION: The motor current exceeded the limit.",
-            0x10000: "MODULATION_IS_NAN",
-            0x20000: "MOTOR_THERMISTOR_OVER_TEMP: The motor thermistor measured a high temperature.",
-            0x40000: "FET_THERMISTOR_OVER_TEMP: The inverter thermistor measured a high temperature.",
-            0x80000: "TIMER_UPDATE_MISSED: A timer update event was missed.",
-            0x100000: "CURRENT_MEASUREMENT_UNAVAILABLE: The phase current measurement is not available.",
-            0x200000: "CONTROLLER_FAILED: The motor was disarmed because the underlying controller failed.",
-            0x400000: "I_BUS_OUT_OF_RANGE: The DC current exceeded the configured hard limits.",
-            0x800000: "BRAKE_RESISTOR_DISARMED: An attempt was made to run the motor while the brake resistor was disarmed.",
-            0x1000000: "SYSTEM_LEVEL: The motor was disarmed because of a system level error.",
-            0x2000000: "BAD_TIMING: The main control loop got out of sync.",
-            0x4000000: "UNKNOWN_PHASE_ESTIMATE: The controller did not get a valid angle input.",
-            0x8000000: "UNKNOWN_PHASE_VEL: The motor controller did not get a valid phase velocity input.",
-            0x10000000: "UNKNOWN_TORQUE: The motor controller did not get a valid torque input.",
-            0x20000000: "UNKNOWN_CURRENT_COMMAND: The current controller did not get a valid current setpoint.",
-            0x40000000: "UNKNOWN_CURRENT_MEASUREMENT: The current controller did not get a valid current measurement.",
-            0x80000000: "UNKNOWN_VBUS_VOLTAGE: The current controller did not get a valid Vbus voltage measurement.",
-            0x100000000: "UNKNOWN_VOLTAGE_COMMAND: The current controller did not get a valid voltage setpoint.",
-            0x200000000: "UNKNOWN_GAINS: The current controller gains were not configured.",
-            0x400000000: "CONTROLLER_INITIALIZING: Internal value used while the controller is not ready.",
-            0x800000000: "UNBALANCED_PHASES: The motor phases are not balanced.",
-        }
-
-        # Check if the error code is in the dictionary
-        if error_code in MOTOR_ERRORS:
-            # Log the corresponding error message
-            self.ROS_logger.error(f"Error on axis {axis_id}: {MOTOR_ERRORS[error_code]}")
-        else:
-            # If the error code is not recognized, log a default message
-            self.ROS_logger.error(f"Unknown motor error with code {error_code} on axis {axis_id}")
-
-    def _handle_encoder_error(self, axis_id, message_data):
         # Convert the 4-byte array into a 32-bit integer
         error_code = int.from_bytes(message_data, byteorder="little", signed=False)
 
-        # Dictionary mapping error codes to error messages
-        ENCODER_ERRORS = {
-            0x1: "UNSTABLE_GAIN",
-            0x2: "CPR_POLEPAIRS_MISMATCH: Confirm you have entered the correct count per rotation (CPR) for your encoder. Check motor pole pairs value and consider increasing config.calib_scan_distance.",
-            0x4: "NO_RESPONSE: Confirm that your encoder is plugged into the right pins on the ODrive board.",
-            0x8: "UNSUPPORTED_ENCODER_MODE",
-            0x10: "ILLEGAL_HALL_STATE: An invalid state can be caused by noise or a hardware fault. Consider adding 22nF capacitors between the encoder A,B,Z pins and ground.",
-            0x20: "INDEX_NOT_FOUND_YET: Check that your encoder model has an index pulse and is connected to pin Z on your ODrive.",
-            0x40: "ABS_SPI_TIMEOUT",
-            0x80: "ABS_SPI_COM_FAIL",
-            0x100: "ABS_SPI_NOT_READY",
-            0x200: "HALL_NOT_CALIBRATED_YET",
-        }
-
-        # Check if the error code is in the dictionary
-        if error_code in ENCODER_ERRORS:
-            # Log the corresponding error message
-            self.ROS_logger.error(f"Encoder error on axis {axis_id}: {ENCODER_ERRORS[error_code]}")
-        else:
-            # If the error code is not recognized, log a default message
-            self.ROS_logger.error(f"Unknown encoder error with code {error_code} on axis {axis_id}")
-
-    def _handle_controller_error(self, axis_id, message_data):
-        # Convert the 4-byte array into a 32-bit integer
-        error_code = int.from_bytes(message_data, byteorder="little", signed=False)
+        # If the error_code is 0, ignore it (no error)
+        if error_code == 0:
+            return
 
         # Dictionary mapping error codes to error messages
-        CONTROLLER_ERRORS = {
-            0x1: "OVERSPEED: Motor speed exceeded allowed limits. Consider increasing config.vel_limit or config.vel_limit_tolerance, or set config.enable_overspeed_error to False.",
-            0x2: "INVALID_INPUT_MODE: The config.input_mode setting was set to an invalid value. Ensure it matches one of the available values in InputMode.",
-            0x4: "UNSTABLE_GAIN: The motor.config.bandwidth is too high, leading to an unstable controller. Consider reducing it.",
-            0x8: "INVALID_MIRROR_AXIS: An invalid axis_to_mirror was selected. Ensure your configuration is correct.",
-            0x10: "INVALID_LOAD_ENCODER: An invalid load_encoder_axis was selected. Ensure your configuration is correct.",
-            0x20: "INVALID_ESTIMATE: The encoder estimation module declined to output a linear position or velocity value.",
-            0x40: "INVALID_CIRCULAR_RANGE: The encoder estimation module declined to output a circular position value.",
-            0x80: "SPINOUT_DETECTED: Discrepancy between motor mechanical and electrical power, potentially due to slipping encoder or incorrect encoder offset calibration. Check encoder attachment and wiring.",
-        }
+        ERRORS = {
+        1: "INITIALIZING: The system is initializing or reconfiguring.",
+        2: "SYSTEM_LEVEL: Unexpected system error such as memory corruption, stack overflow, etc. Indicates a firmware bug.",
+        4: "TIMING_ERROR: An internal hard timing requirement was violated, usually due to computational overload.",
+        8: "MISSING_ESTIMATE: Necessary position, velocity, or phase estimate was invalid. Possible uncalibrated encoder or axis not homed.",
+        16: "BAD_CONFIG: Invalid or incomplete ODrive configuration. Check axis configuration settings.",
+        32: "DRV_FAULT: The gate driver chip reported an error, possibly indicating hardware damage.",
+        64: "MISSING_INPUT: No value provided for input parameters, typically due to unregistered RC PWM pulses.",
+        256: "DC_BUS_OVER_VOLTAGE: DC voltage exceeded the configured limit. Verify brake resistor connections and settings.",
+        512: "DC_BUS_UNDER_VOLTAGE: DC voltage fell below the configured limit. Check power connections and settings.",
+        1024: "DC_BUS_OVER_CURRENT: Excessive DC current drawn at motor or board level.",
+        2048: "DC_BUS_OVER_REGEN_CURRENT: Excessive DC regeneration current. Check if brake resistor can handle the current.",
+        4096: "CURRENT_LIMIT_VIOLATION: Motor current exceeded the hard maximum limit. Adjust current limits.",
+        8192: "MOTOR_OVER_TEMP: Motor temperature exceeded its configured upper limit.",
+        16384: "INVERTER_OVER_TEMP: Inverter temperature exceeded its configured upper limit.",
+        32768: "VELOCITY_LIMIT_VIOLATION: Estimated velocity exceeds the configured limit.",
+        65536: "POSITION_LIMIT_VIOLATION: Position exceeds configured limits.",
+        16777216: "WATCHDOG_TIMER_EXPIRED: Watchdog timer expired without being reset.",
+        33554432: "ESTOP_REQUESTED: Emergency stop requested via external input.",
+        67108864: "SPINOUT_DETECTED: Discrepancy detected between electrical and mechanical power, indicating a spinout.",
+        134217728: "BRAKE_RESISTOR_DISARMED: Brake resistor was disarmed due to another error, typically undervoltage.",
+        268435456: "THERMISTOR_DISCONNECTED: Thermistor enabled but disconnected, detected by abnormal voltage readings.",
+        1073741824: "CALIBRATION_ERROR: Calibration procedure failed; see detailed error or procedure result."
+    }
 
-        # Check if the error code is in the dictionary
-        if error_code in CONTROLLER_ERRORS:
+        # Check if the reason for disarming is in the dictionary
+        if disarm_reason in ERRORS:
             # Log the corresponding error message
-            self.ROS_logger.error(f"Controller error on axis {axis_id}: {CONTROLLER_ERRORS[error_code]}")
+            self.ROS_logger.error(f"Error on axis {axis_id}: {ERRORS[disarm_reason]}", throttle_duration_sec=1.0)
         else:
             # If the error code is not recognized, log a default message
-            self.ROS_logger.error(f"Unknown controller error with code {error_code} on axis {axis_id}")
+            self.ROS_logger.error(f"Unknown error on axis {axis_id}. Active errors: {active_errors}, Disarm reason: {disarm_reason}", throttle_duration_sec=1.0)
 
     def _handle_encoder_estimates(self, axis_id, data):
         # Start by unpacking the data, which is a 32-bit float
@@ -663,7 +609,10 @@ class CANHandler:
         self.position_buffer[axis_id] = pos_estimate
         self.velocity_buffer[axis_id] = vel_estimate
 
-        if all(self.position_buffer):
+        # Print these values for debugging
+        # self.ROS_logger.info(f"Axis {axis_id} - Position: {pos_estimate:.2f}, Velocity: {vel_estimate:.2f}")
+
+        if all(val is not None for val in self.position_buffer):
             # If the buffer is full, send it off!
             complete_pos_data = self.position_buffer.copy() # Copy so that data doesn't change before being sent away
             self._trigger_callback('motor_positions', complete_pos_data)
@@ -681,13 +630,19 @@ class CANHandler:
         # Add the data to the buffer
         self.iq_buffer[axis_id] = iq_measured
 
-        if all(self.iq_buffer):
+        # Print these values for debugging
+        # self.ROS_logger.info(f"Axis {axis_id} - IQ Setpoint: {iq_setpoint:.2f}, IQ Measured: {iq_measured:.2f}, IQ Buffer: {self.iq_buffer}")
+
+        if all(val is not None for val in self.iq_buffer):
             # If the buffer is full, send the data to the ROS network
             complete_iq_data = self.iq_buffer.copy()
             self._trigger_callback('motor_iqs', complete_iq_data)
 
             # Store these values
             self.iq_values = complete_iq_data
+
+            # Log a confirmation that these values have been saved, and print them
+            # self.ROS_logger.info(f"Motor currents: {complete_iq_data}")
 
             # Reset the buffer
             self.iq_buffer = [None] * self.num_axes

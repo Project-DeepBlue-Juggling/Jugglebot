@@ -17,8 +17,6 @@ axes_per_odrive = 1
 odrives = [odrive.find_any() for i in range(num_odrives)]
 
 for odrive in odrives:
-    # Note that odrive.axis is not a thing.
-
     # Determine if we are resetting both axes or just a single one
     if axes_per_odrive == 1:
         axes = [odrive.axis0]

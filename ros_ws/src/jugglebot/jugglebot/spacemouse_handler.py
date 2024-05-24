@@ -43,7 +43,7 @@ class SpaceMouseHandler(Node):
         xy_mult = 150.0  # mm
         z_mult = 140.0   # mm
         pitch_roll_mult = 30.0  # deg
-        yaw_mult = 0.0  # deg
+        yaw_mult = 10.0  # deg
 
         # Set the offset in z to put baseline position at ~midspan of robot
         z_offset = 200   # mm
