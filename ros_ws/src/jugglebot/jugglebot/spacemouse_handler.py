@@ -20,8 +20,7 @@ class SpaceMouseHandler(Node):
         self.spacemouse_enabled = False
 
         # Create a publisher for the platform pose and a timer to publish it
-        # self.publisher_ = self.create_publisher(Pose, 'platform_pose_topic', 10)
-        self.publisher_ = self.create_publisher(PoseStamped, 'hand_pose_topic', 10)
+        self.publisher_ = self.create_publisher(PoseStamped, 'platform_pose_topic', 10)
         self.timer = self.create_timer(0.01, self.publish_pose)
 
         """Initialize and open the SpaceMouse."""

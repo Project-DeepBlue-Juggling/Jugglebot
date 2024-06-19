@@ -22,32 +22,30 @@ class RobotGeometry(Node):
         
         # Initialise the geometry parameters. Start with the platform
         # Nodes for the various elements
-        # Note that 7th node on platform and base is the attachment point of the string
-        self.base_nodes = np.zeros((7, 3))        # Base frame
-        self.init_plat_nodes = np.zeros((7, 3))   # Platform frame
+        self.base_nodes = np.zeros((6, 3))        # Base frame
+        self.init_plat_nodes = np.zeros((6, 3))   # Platform frame
         self.init_arm_nodes = np.zeros((6, 3))    # Platform frame
         self.init_hand_nodes = np.zeros((3, 3))   # Platform frame
-        self.new_plat_nodes = np.zeros((7, 3))    # Base frame
+        self.new_plat_nodes = np.zeros((6, 3))    # Base frame
         self.new_arm_nodes = np.zeros((6, 3))     # Base frame
         self.new_hand_nodes = np.zeros((6, 3))    # Base frame
 
-        self.init_leg_lengths = np.zeros((7, 1))
+        self.init_leg_lengths = np.zeros((6, 1))
 
         ''' MAKE SURE ALL VALUES ARE FLOATS '''
+        # All values have been updated to match the new platform (Jon's spaceframe design)
 
-        self.initial_height = 600.0 # Dist. from the base plane (bottom joint of legs) to plat. in its lowest pos {mm}
-        self.base_radius = 410.0   # Radius of base {mm}
-        self.plat_radius = 281.0   # Radius of platform {mm}
-        self.base_small_angle = 24.0 # Gamma2 on main sketch {deg}
-        self.plat_small_angle = 12.0  # Lambda1 on main sketch {deg}
+        self.initial_height = 565.0   # Dist. from the base plane (bottom joint of legs) to plat. in its lowest pos {mm}
+        self.base_radius = 410.0      # Radius of base {mm}
+        self.plat_radius = 219.075    # Radius of platform {mm}
+        self.base_small_angle = 20.0  # Gamma2 on main sketch {deg}
+        self.plat_small_angle = 8.602 # Lambda1 on main sketch {deg}
         self.leg_stroke = 280.0  # Stroke of leg {mm}
-        self.plat_string_attachment_height = 131.09  # Height of platform string attachment BELOW platform joint plane {mm}
-        self.base_string_attachment_height = 6.29    # Height of base string attachment ABOVE base joint plane {mm}
 
         # Relating to the hand/arm:
         self.arm_radius = 70.0  # Radius of opening where the ball comes in. Doesn't need to be exact.
         self.arm_height_from_platform = 210.25  # Height of opening where ball comes in from the platform leg nodes
-        self.hand_stroke = 316.5  # Stroke of hand. DOES need to be ~exact. Used to inform overextensions etc.
+        self.hand_stroke = 355.0  # Stroke of hand. DOES need to be ~exact. Used to inform overextensions etc.
         self.hand_radius = 35.0  # Radius of hand. Doesn't need to be exact
 
         self.start_pos = np.array([[0], [0], [self.initial_height]])
@@ -60,7 +58,7 @@ class RobotGeometry(Node):
         deg_to_rad = math.pi / 180
 
         # Define the angles to the nodes
-        gamma0 = self.base_small_angle / 2  # Offset from horizontal
+        gamma0 = 180 + self.base_small_angle  # Offset from horizontal
         gamma2 = self.base_small_angle  # Angle between close base nodes {deg}
         gamma1 = 120 - gamma2  # Angle between far base nodes {deg}
 
@@ -101,15 +99,14 @@ class RobotGeometry(Node):
             self.init_plat_nodes[node][1] = self.plat_radius * math.sin(plat_node_angles[node] * deg_to_rad)
             self.init_plat_nodes[node][2] = 0
 
-        # Find the 7th node for the platform and base. (x, y = 0)
-        self.init_plat_nodes[6][2] = - self.plat_string_attachment_height
-        self.base_nodes[6][2] = self.base_string_attachment_height
-
-        # Find the nodes for the hand.
+        # Find the nodes for the hand
         for node in range(3):
             self.init_hand_nodes[node][0] = self.hand_radius * math.cos(np.pi / 3 * (1 + 2 * node))
             self.init_hand_nodes[node][1] = self.hand_radius * math.sin(np.pi / 3 * (1 + 2 * node))
-            self.init_hand_nodes[node][2] = self.init_plat_nodes[6][2]
+            self.init_hand_nodes[node][2] = 0
+
+        self.get_logger().info(f'Base nodes:\n{self.base_nodes}')
+        self.get_logger().info(f'Platform nodes:\n{self.init_plat_nodes}')
 
         # Calculate the lengths of the legs in the initial state
         self.init_leg_lengths = np.linalg.norm(self.init_plat_nodes + self.start_pos.T - self.base_nodes, axis=1)

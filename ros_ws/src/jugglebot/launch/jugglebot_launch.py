@@ -36,12 +36,12 @@ def generate_launch_description():
         'spacemouse_handler',
         'platform_plotter',
         'sp_ik',
-        'hand_ik',
+        # 'hand_ik',
         'state_manager_node',
         'juggling_path_creator',
         'hand_state_manager',
-        'ball_manager_node',
-        'timing_inspector_node',
+        # 'ball_manager_node',
+        # 'timing_inspector_node',
         # 'statistics_collector_node',  # Not using this for now. Unsure of its utility.
     ]
     jugglebot_nodes = [
@@ -68,6 +68,6 @@ def generate_launch_description():
         use_simulator_arg,
         rosbridge_include_description,
         simulator_include_description,
-        # can_bus_node,
+        can_bus_node,
         *jugglebot_nodes,
     ])

@@ -19,7 +19,7 @@
   <member_of_group>rosidl_interface_packages</member_of_group>
 
   <exec_depend>ros2launch</exec_depend>
-  <exec_depend>python-numpy-quaternion-pip</exec_depend>
+  <exec_depend>python-numpy-quaternion-pip-ruckig</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

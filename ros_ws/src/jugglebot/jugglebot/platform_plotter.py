@@ -4,7 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-from geometry_msgs.msg import Pose, Point
+from geometry_msgs.msg import PoseStamped, Point
 from std_srvs.srv import Trigger
 from jugglebot_interfaces.srv import GetRobotGeometry
 from jugglebot_interfaces.msg import RobotPlotterMessage
@@ -22,7 +22,7 @@ class PlatformPlotter(Node):
         self.send_geometry_request()
 
         # Set up subscriber for platform pose
-        self.subscription = self.create_subscription(Pose, 'platform_pose_topic', self.pose_callback, 10)
+        self.subscription = self.create_subscription(PoseStamped, 'platform_pose_topic', self.pose_callback, 10)
         self.subscription  # prevent unused variable warning
 
         # Set up publisher for the robot nodes
@@ -78,11 +78,11 @@ class PlatformPlotter(Node):
         if response is not None:
             # Store the geometry data after converting it to numpy arrays
             self.start_pos = np.array(response.start_pos).reshape(3, 1)
-            self.base_nodes = np.array(response.base_nodes).reshape(7, 3)
-            self.init_plat_nodes = np.array(response.init_plat_nodes).reshape(7, 3)
+            self.base_nodes = np.array(response.base_nodes).reshape(6, 3)
+            self.init_plat_nodes = np.array(response.init_plat_nodes).reshape(6, 3)
             self.init_arm_nodes = np.array(response.init_arm_nodes).reshape(6, 3)
             self.init_hand_nodes = np.array(response.init_hand_nodes).reshape(3, 3)
-            self.init_leg_lengths = np.array(response.init_leg_lengths).reshape(7, 1)
+            self.init_leg_lengths = np.array(response.init_leg_lengths).reshape(6, 1)
             self.leg_stroke = response.leg_stroke
 
             ## Create axis limits based on the retrieved data
@@ -116,10 +116,10 @@ class PlatformPlotter(Node):
     def pose_callback(self, msg):
         if self.has_geometry_data:
             # Extract position data
-            pos = np.array([[msg.position.x], [msg.position.y], [msg.position.z]])
+            pos = np.array([[msg.pose.position.x], [msg.pose.position.y], [msg.pose.position.z]])
 
             # Extract the orientation quaternion
-            self.ori_quat = msg.orientation
+            self.ori_quat = msg.pose.orientation
             quaternion_ori = quaternion.quaternion(self.ori_quat.w, self.ori_quat.x, self.ori_quat.y, self.ori_quat.z)
             
             # Convert quaternion to 4x4 rotation matrix
@@ -142,16 +142,6 @@ class PlatformPlotter(Node):
         # Update arm nodes
         self.new_arm_nodes = (new_position + np.dot(rot, self.init_arm_nodes.T)).T
 
-        # Calculate the length of the hand string (leg 7)
-        string_length = np.linalg.norm(self.new_plat_nodes[6] - self.base_nodes[6])
-
-        # Update hand nodes
-        change_in_string_length = string_length - self.init_leg_lengths[-1]
-        self.unit_ori_vector = np.dot(rot, np.array([[0], [0], [1]]))
-        self.new_hand_nodes = ((new_position + np.dot(rot, self.init_hand_nodes.T)) +
-                               change_in_string_length * self.unit_ori_vector ).T
-        self.hand_centroid = np.mean(self.new_hand_nodes, axis=0)
-
         # Send the data off to be plotted, or published (or both)
         self.publish_robot_nodes()
         if self.plot_platform_flag_standalone:
@@ -166,7 +156,7 @@ class PlatformPlotter(Node):
         msg.base_nodes = [self.numpy_to_point(node) for node in self.base_nodes]
         msg.new_plat_nodes = [self.numpy_to_point(node) for node in self.new_plat_nodes]
         msg.new_arm_nodes = [self.numpy_to_point(node) for node in self.new_arm_nodes]
-        msg.new_hand_nodes = [self.numpy_to_point(node) for node in self.new_hand_nodes]
+        # msg.new_hand_nodes = [self.numpy_to_point(node) for node in self.new_hand_nodes]
         msg.orientation = self.ori_quat
 
         # Publish the message
@@ -187,22 +177,19 @@ class PlatformPlotter(Node):
         
         # Plots the platform
 
-        plat_points =  self.ax.scatter(self.new_plat_nodes[:6].T[0], self.new_plat_nodes[:6].T[1], 
-                                       self.new_plat_nodes[:6].T[2], color='r')
-
-        base_points = self.ax.scatter(self.base_nodes.T[0], self.base_nodes.T[1], self.base_nodes.T[2],
-                                      color='b')
+        self.ax.scatter(self.new_plat_nodes.T[0], self.new_plat_nodes.T[1], self.new_plat_nodes.T[2], color='r')
+        self.ax.scatter(self.base_nodes.T[0], self.base_nodes.T[1], self.base_nodes.T[2], color='b')
 
         # Plot the hexagons
-        arm_hex_poly = Poly3DCollection([self.new_arm_nodes[3:]], alpha=0.3, facecolor='r')
-        hand_hex_poly = Poly3DCollection([self.new_hand_nodes], alpha=0.8, facecolors='m')
         base_hex_poly = Poly3DCollection([self.base_nodes[:6]], alpha=0.3, facecolor='b')
+        arm_hex_poly = Poly3DCollection([self.new_arm_nodes[3:]], alpha=0.3, facecolor='r')
+        # hand_hex_poly = Poly3DCollection([self.new_hand_nodes], alpha=0.8, facecolors='m')
         # plat_hex_poly = Poly3DCollection([self.new_plat_nodes[:6]], alpha=0.3, facecolor='r')
 
         self.ax.add_collection(arm_hex_poly)
-        # self.ax.add_collection(plat_hex_poly)
-        self.ax.add_collection(hand_hex_poly)
         self.ax.add_collection(base_hex_poly)
+        # self.ax.add_collection(plat_hex_poly)
+        # self.ax.add_collection(hand_hex_poly)
 
         # Plot the legs
         legs = []

@@ -398,16 +398,16 @@ window.onload = function () {
     //                    Interfacing with Pose Topics                    //
     // ################################################################## //
 
-    var handPoseTopic = new ROSLIB.Topic({
+    var platPoseTopic = new ROSLIB.Topic({
         ros : ros,
-        name : 'hand_pose_topic',
+        name : 'platform_pose_topic',
         messageType : 'geometry_msgs/msg/PoseStamped'
     });
 
     // Initialize current pose to null
     var currentPose = null;
 
-    handPoseTopic.subscribe(function(message) {
+    platPoseTopic.subscribe(function(message) {
         // Store the current pose
         currentPose = message;
     });
@@ -428,7 +428,7 @@ window.onload = function () {
         // console.log(currentPose)
 
         // Publish the new pose
-        handPoseTopic.publish(currentPose);
+        platPoseTopic.publish(currentPose);
     }
 
     // Following two methods are only used when jogging rotations (see commented code in adjustPose)
@@ -504,7 +504,7 @@ window.onload = function () {
         }
 
         // Publish the new pose
-        handPoseTopic.publish(currentPose);
+        platPoseTopic.publish(currentPose);
     }
 
     // ################################################################## //

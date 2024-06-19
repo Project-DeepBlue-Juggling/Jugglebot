@@ -52,6 +52,12 @@ class CANBusHandlerNode(Node):
         # Initialize a timer to poll the CAN bus
         self.timer_canbus = self.create_timer(timer_period_sec=0.001, callback=self._poll_can_bus)
 
+        # Initialize a timer to update the hand trajectory generator with the hand's current pos and vel
+        # self.timer_hand = self.create_timer(timer_period_sec=0.01, callback=self.can_handler.hand_control_loop)
+
+        # Set up a service to call the "prepare for catch" method in the CANHandler
+        self.prepare_for_catch_service = self.create_service(Trigger, 'throw_ball', self.throw_ball)
+
     #########################################################################################################
     #                                     Interfacing with the CAN bus                                      #
     #########################################################################################################
@@ -86,6 +92,16 @@ class CANBusHandlerNode(Node):
 
         return response
 
+    def throw_ball(self, request, response):
+        try:
+            self.can_handler.throw_ball()
+            response.success = True
+        except Exception as e:
+            self.get_logger().error(f'Error in throw_ball: {str(e)}')
+            response.success = False
+
+        return response
+
     def handle_movement(self, msg):
         # Check if the robot is homed
         if not self.is_homed:
@@ -110,7 +126,7 @@ class CANBusHandlerNode(Node):
     def shutdown_robot(self):
         # Send the robot home and put all motors in IDLE
         # Start by lowering the max speed
-        self.can_handler.set_absolute_vel_curr_limits(velocity_limit=2.5)
+        self.can_handler.set_absolute_vel_curr_limits(leg_vel_limit=2.5)
         time.sleep(1.0)
 
         # Command all motors to move home
@@ -130,7 +146,8 @@ class CANBusHandlerNode(Node):
         time.sleep(1.0)  # Add a short break to make sure all motors have stopped moving
 
         # Put motors into IDLE
-        self.can_handler.set_odrive_state(requested_state='IDLE')
+        self.can_handler.set_leg_odrive_state(requested_state='IDLE')
+        self.can_handler._set_requested_state(axis_id=6, requested_state='IDLE') # Also put the hand motor into IDLE
 
     def odrive_command_callback(self, request, response):
         command = request.command
