@@ -15,7 +15,7 @@ def calc_bezier(p_in, p_out, travel_limits_z):
     # duration is the amount of time that the path must be completed in {sec}
 
     # Desired number of points to have in the final bezier. May be off by a little due to rounding
-    desired_num_points = 60
+    desired_num_points = 5
 
     # Determine if the start of the path is a catch or a throw (z component of v_in will be -ve for a catch)
     catch_or_throw = p_in[1][2] / abs(p_in[1][2])  # -1 for catch, 1 for throw
@@ -46,7 +46,7 @@ def calc_bezier(p_in, p_out, travel_limits_z):
     path_z = []
 
     pt_prev = (0, 0, 0)  # Resolves the warning in the if statement later
-    num_points = 50  # Number of points to use to calculate the length of the bezier
+    num_points = 24  # Number of points to use to calculate the length of the bezier
 
     for i in range(num_points + 1):
         t = i / num_points  # Scale t to be 0 < t < 1
@@ -89,9 +89,9 @@ def calc_ball_path(p_throw, framerate=100):
     return path
 
 
-throw_height = 1.0
-hand_xyspan = [0.2, 0]
-hand_full_zspan = 0.5  # z distance that the hand moves while holding the ball {m}
+throw_height = 0.6
+hand_xyspan = [0.64, 0]
+hand_full_zspan = 0.3  # z distance that the hand moves while holding the ball {m}
 hand_empty_zspan = 0.2  # z distance empty hand moves {m}
 
 g = 9.81
@@ -120,7 +120,6 @@ path_hold, hold_CPs = calc_bezier(p_catch, p_throw, travel_lims)
 path_empty, empty_CPs = calc_bezier(p_throw, p_catch, travel_lims)
 ball_path = calc_ball_path(p_throw)
 
-
 hold_col = '#ff7f0e'
 empty_col = '#2ca02c'
 ball_col = 'b'
@@ -128,10 +127,10 @@ ball_col = 'b'
 fig, ax = plt.subplots()
 
 # set the limits
-ax.set_xlim(-hand_xyspan[0], hand_xyspan[0])
-ax.set_ylim(-hand_full_zspan * 1.05, throw_height * 1.1)
+# ax.set_xlim(-hand_xyspan[0], hand_xyspan[0])
+# ax.set_ylim(-hand_full_zspan * 1.05, throw_height * 1.1)
 
-ax.set_axis_off()
+# ax.set_axis_off()
 
 # Plot control points
 # ax.scatter(hold_CPs[:, 0], hold_CPs[:, 2], c=hold_col)
@@ -140,10 +139,77 @@ ax.set_axis_off()
 # ax.plot(empty_CPs[:, 0], empty_CPs[:, 2], c=empty_col, linestyle='--')
 
 # Plot paths
-ax.plot(path_hold[:, 0], path_hold[:, 2], c=hold_col, label='Ball in hand')
+# ax.plot(path_hold[:, 0], path_hold[:, 2], c=hold_col, label='Ball in hand')
 # ax.plot(path_empty[:, 0], path_empty[:, 2], c=empty_col, label='Empty hand')
+# ax.plot(ball_path[:, 0], ball_path[:, 2], c=ball_col, label='Ball in air')
+# ax.legend()
+
+###### For animation:
+
+horizontal_offset = 0.35 # {m}
+vertical_offset_from_plat_COM_to_throw_pos = 240 # {mm}
+
+# Add the horizontal offset to the x values of the paths, and multiply all values by 1000 to convert to mm
+path_hold[:, 0] = (path_hold[:, 0] + horizontal_offset)
+path_empty[:, 0] = (path_empty[:, 0] + horizontal_offset)
+ball_path[:, 0] = (ball_path[:, 0] + horizontal_offset) 
+
+path_hold *= 1000
+path_empty *= 1000
+ball_path *= 1000
+
+# Calculate the angle that the hand is at at the start and end of the hold path (using the x and z components of the velocity)
+angle_catch = math.degrees(math.atan2(p_catch[1][0], p_catch[1][2]))
+angle_throw = math.degrees(math.atan2(p_throw[1][0], p_throw[1][2]))
+
+# Ensure the angles are between -90 and 90 degrees
+if angle_catch > 90:
+    angle_catch -= 180
+elif angle_catch < -90:
+    angle_catch += 180
+
+if angle_throw > 90:
+    angle_throw -= 180
+elif angle_throw < -90:
+    angle_throw += 180
+
+angle_catch -= 90
+angle_throw -= 90
+
+angle_catch = -angle_catch
+angle_throw = -angle_throw
+
+print(f'Angle at catch: {angle_catch:.2f} degrees, angle at throw: {angle_throw:.2f} degrees')
+print(f'p_catch:\n{p_catch},\np_throw:\n{p_throw}')
+
+# Interpolate the angles between the start and end of the hold path, to get one angle for each hold path point
+angles_hold = np.linspace(angle_throw, angle_catch, len(path_hold))
+angles_empty = np.linspace(angle_catch, angle_throw, len(path_empty))
+
+# Calculate the vertical distance between the throw position and the platform COM at each point in the hold path
+hand_pos_from_top = abs(path_hold[:, 2] - path_hold[-1][2])
+
+# Print the hold path to two sig fig
+print('Hold path:')
+for i in range(len(path_hold)):
+    print(f'{len(path_hold) - i}: Pos x = {path_hold[i][0]:.2f}, angle: {angles_hold[i]:.2f}')
+
+# Print the empty path to two sig fig
+print('Empty path:')
+for i in range(len(path_empty)):
+    print(f'{i}: Pos x = {path_empty[i][0]:.2f}, angle: {angles_empty[i]:.2f}')
+
+
+
+ax.plot(path_hold[:, 0], path_hold[:, 2], c=hold_col, label='Ball in hand')
+ax.plot(path_empty[:, 0], path_empty[:, 2], c=empty_col, label='Empty hand')
 ax.plot(ball_path[:, 0], ball_path[:, 2], c=ball_col, label='Ball in air')
+
+# Add a horizontal line to represent the platform. This line should be "vertical_offset_from_plat_COM_to_throw_pos" below the throw position
+# ax.plot([path_hold[0][0], path_hold[-1][0]], [path_hold[0][2] - vertical_offset_from_plat_COM_to_throw_pos, path_hold[-1][2] - vertical_offset_from_plat_COM_to_throw_pos], c='k', linestyle='--')
+
+
 ax.legend()
 
-plt.savefig('plot.png', transparent=True)
+# plt.savefig('plot.png', transparent=True)
 plt.show()

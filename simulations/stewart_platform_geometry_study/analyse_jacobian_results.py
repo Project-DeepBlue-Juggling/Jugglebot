@@ -134,7 +134,7 @@ def plot_slice_at_platAngle_of_interest(platRad, platSmallAngle, platAngle_of_in
 
     plt.tight_layout()
 
-def plot_combined_3d_surface_matplotlib(platRad, platSmallAngle, mean_condition_numbers, mean_submatrix_condition_numbers, mean_norm_scores, unreachable_poses, platAngle_of_interest):
+def plot_combined_3d_surface_matplotlib(platRad, platSmallAngle, mean_condition_numbers, mean_submatrix_condition_numbers, mean_norm_scores, unreachable_poses, platAngle_of_interest, cutoff_angle=None):
     """
     Plot combined 3D surface plots for mean condition number, mean submatrix condition number, mean norm scores, and unreachable poses.
 
@@ -148,6 +148,17 @@ def plot_combined_3d_surface_matplotlib(platRad, platSmallAngle, mean_condition_
         platAngle_of_interest (float): Specific platform small angle of interest.
     """
     fig = plt.figure(figsize=(16, 12))
+
+    if cutoff_angle is not None:
+        # Find the index of the cutoff_angle in platSmallAngle
+        angle_index = (np.abs(platSmallAngle - cutoff_angle)).argmin()
+
+        # Truncate the arrays to only include the data up to the cutoff_angle
+        platSmallAngle = platSmallAngle[:angle_index]
+        mean_condition_numbers = mean_condition_numbers[:, :angle_index]
+        mean_submatrix_condition_numbers = mean_submatrix_condition_numbers[:, :angle_index]
+        mean_norm_scores = mean_norm_scores[:, :angle_index]
+        unreachable_poses = unreachable_poses[:, :angle_index]
 
     # Create meshgrid from platRad and platSmallAngle
     X, Y = np.meshgrid(platSmallAngle, platRad)
@@ -205,10 +216,13 @@ def plot_combined_3d_surface_matplotlib(platRad, platSmallAngle, mean_condition_
     ax4.set_title('Num Unreachable Poses')
     add_red_line(ax4, Z4)
 
+    # Save the figure with a transparent backround
+    plt.savefig('3d_surface_plots.png', transparent=True)
+
     plt.tight_layout()
     plt.show()
 
-def plot_combined_3d_surface_plotly(platRad, platSmallAngle, mean_condition_numbers, mean_submatrix_condition_numbers, mean_norm_scores, unreachable_poses, path):
+def plot_combined_3d_surface_plotly(platRad, platSmallAngle, mean_condition_numbers, mean_submatrix_condition_numbers, mean_norm_scores, unreachable_poses, path, cutoff_angle=None):
     """
     Plot combined 3D surface plots for mean condition number, mean submatrix condition number, mean norm scores, and unreachable poses using Plotly.
 
@@ -221,51 +235,63 @@ def plot_combined_3d_surface_plotly(platRad, platSmallAngle, mean_condition_numb
         unreachable_poses (numpy.ndarray): Array of unreachable poses.
         file_name (str): Name of the file to save the plot.
     """
+
+    if cutoff_angle is not None:
+        # Find the index of the cutoff_angle in platSmallAngle
+        angle_index = (np.abs(platSmallAngle - cutoff_angle)).argmin()
+
+        # Truncate the arrays to only include the data up to the cutoff_angle
+        platSmallAngle = platSmallAngle[:angle_index]
+        mean_condition_numbers = mean_condition_numbers[:, :angle_index]
+        mean_submatrix_condition_numbers = mean_submatrix_condition_numbers[:, :angle_index]
+        mean_norm_scores = mean_norm_scores[:, :angle_index]
+        unreachable_poses = unreachable_poses[:, :angle_index]
+
     # Create a subplot with 2 rows and 2 columns
-    fig = make_subplots(rows=2, cols=2, specs=[[{'type': 'surface'}, {'type': 'surface'}], [{'type': 'surface'}, {'type': 'surface'}]])
+    fig = make_subplots(rows=1, cols=2, specs=[[{'type': 'surface'}, {'type': 'surface'}]])#, [{'type': 'surface'}, {'type': 'surface'}]])
 
     # Plot mean_condition_numbers
     fig.add_trace(
-        go.Surface(z=np.log10(mean_condition_numbers), x=platSmallAngle, y=platRad, colorscale='Viridis', showscale=True, colorbar=dict(x=0.46, len=0.4, y=0.75)),
+        go.Surface(z=mean_condition_numbers, x=platSmallAngle, y=platRad, colorscale='Viridis', showscale=True, colorbar=dict(x=0.46, len=0.4, y=0.75)),
         row=1, col=1
     )
     fig['layout']['scene'].update(
         yaxis_title='Platform Radius (mm)',
         xaxis_title='Platform Small Angle (deg)',
-        zaxis_title='Mean Condition Number <br>(log10)',
+        zaxis_title='Mean Condition Number',
         aspectmode='cube'
     )
 
-    # Plot mean_submatrix_condition_numbers
-    fig.add_trace(
-        go.Surface(z=np.log10(mean_submatrix_condition_numbers), x=platSmallAngle, y=platRad, colorscale='Viridis', showscale=True, colorbar=dict(x=0.96, len=0.4, y=0.75)),
-        row=1, col=2
-    )
-    fig['layout']['scene2'].update(
-        yaxis_title='Platform Radius (mm)',
-        xaxis_title='Platform Small Angle (deg)',
-        zaxis_title='Mean Submatrix Condition Number<br>(log10)',
-        aspectmode='cube'
-    )
+    # # Plot mean_submatrix_condition_numbers
+    # fig.add_trace(
+    #     go.Surface(z=mean_submatrix_condition_numbers, x=platSmallAngle, y=platRad, colorscale='Viridis', showscale=True, colorbar=dict(x=0.96, len=0.4, y=0.75)),
+    #     row=1, col=2
+    # )
+    # fig['layout']['scene2'].update(
+    #     yaxis_title='Platform Radius (mm)',
+    #     xaxis_title='Platform Small Angle (deg)',
+    #     zaxis_title='Mean Submatrix Condition Number',
+    #     aspectmode='cube'
+    # )
 
-    # Plot mean_norm_scores
-    fig.add_trace(
-        go.Surface(z=mean_norm_scores, x=platSmallAngle, y=platRad, colorscale='Viridis', showscale=True, colorbar=dict(x=0.46, len=0.4, y=0.25)),
-        row=2, col=1
-    )
-    fig['layout']['scene3'].update(
-        yaxis_title='Platform Radius (mm)',
-        xaxis_title='Platform Small Angle (deg)',
-        zaxis_title='Mean Norm Score',
-        aspectmode='cube'
-    )
+    # # Plot mean_norm_scores
+    # fig.add_trace(
+    #     go.Surface(z=mean_norm_scores, x=platSmallAngle, y=platRad, colorscale='Viridis', showscale=True, colorbar=dict(x=0.46, len=0.4, y=0.25)),
+    #     row=2, col=1
+    # )
+    # fig['layout']['scene3'].update(
+    #     yaxis_title='Platform Radius (mm)',
+    #     xaxis_title='Platform Small Angle (deg)',
+    #     zaxis_title='Mean Norm Score',
+    #     aspectmode='cube'
+    # )
 
     # Plot unreachable_poses
     fig.add_trace(
         go.Surface(z=unreachable_poses, x=platSmallAngle, y=platRad, colorscale='Viridis', showscale=True, colorbar=dict(x=0.96, len=0.4, y=0.25)),
-        row=2, col=2
+        row=1, col=2
     )
-    fig['layout']['scene4'].update(
+    fig['layout']['scene2'].update(
         yaxis_title='Platform Radius (mm)',
         xaxis_title='Platform Small Angle (deg)',
         zaxis_title='Num Unreachable Poses',
@@ -275,16 +301,16 @@ def plot_combined_3d_surface_plotly(platRad, platSmallAngle, mean_condition_numb
     # Add subplot titles as annotations
     title_size = 20
     annotations = [
-        dict(text='Mean Condition Number<br>log(10)', x=0.2, y=0.95, xref='paper', yref='paper', showarrow=False, font=dict(size=title_size), xanchor='center', yanchor='middle', align='center'),
-        dict(text='Mean Submatrix Condition Number<br>log(10)', x=0.8, y=0.95, xref='paper', yref='paper', showarrow=False, font=dict(size=title_size), xanchor='center', yanchor='middle', align='center'),
-        dict(text='Mean Norm Score', x=0.2, y=0.45, xref='paper', yref='paper', showarrow=False, font=dict(size=title_size), xanchor='center', yanchor='middle', align='center'),
-        dict(text='Num Unreachable Poses', x=0.8, y=0.45, xref='paper', yref='paper', showarrow=False, font=dict(size=title_size), xanchor='center', yanchor='middle', align='center')
+        dict(text='Mean Condition Number', x=0.2, y=0.95, xref='paper', yref='paper', showarrow=False, font=dict(size=title_size), xanchor='center', yanchor='middle', align='center'),
+        # dict(text='Mean Submatrix Condition Number', x=0.8, y=0.95, xref='paper', yref='paper', showarrow=False, font=dict(size=title_size), xanchor='center', yanchor='middle', align='center'),
+        # dict(text='Mean Norm Score', x=0.2, y=0.45, xref='paper', yref='paper', showarrow=False, font=dict(size=title_size), xanchor='center', yanchor='middle', align='center'),
+        dict(text='Num Unreachable Poses', x=0.8, y=0.95, xref='paper', yref='paper', showarrow=False, font=dict(size=title_size), xanchor='center', yanchor='middle', align='center')
     ]
 
     fig.update_layout(annotations=annotations, title_text="3D Surface Plots", height=950, width=1800)
     
     # Save the figure as an HTML file
-    file_name = path + '3d_surface_plots.html'
+    file_name = path + '3d_surface_plots_truncated.html'
     pio.write_html(fig, file_name, auto_open=True)
 
 if __name__ == "__main__":
@@ -298,16 +324,19 @@ if __name__ == "__main__":
      mean_submatrix_condition_numbers, std_submatrix_condition_numbers, 
      mean_norm_scores, std_norm_scores, unreachable_poses) = extract_all_data(data)
 
-    # Find the index where platSmallAngle is equal to our desired value. If no such value exists, find the closest one and update platRad_of_interest
-    platAngle_of_interest = 100.0
+    # Define the angle of interest where we'll take the slice
+    platAngle_of_interest = 10.0
+
+    # Define the cutoff angle for the 3D surface plots, where the data will be truncated
+    cutoff_angle = None
 
     plot_slice_at_platAngle_of_interest(platRad, platSmallAngle, platAngle_of_interest, mean_condition_numbers, mean_submatrix_condition_numbers, mean_norm_scores, unreachable_poses)
 
-    # Plot the combined 3D surface plots
-    plot_combined_3d_surface_matplotlib(platRad, platSmallAngle, mean_condition_numbers, mean_submatrix_condition_numbers, mean_norm_scores, unreachable_poses, platAngle_of_interest)
+    # # Plot the combined 3D surface plots
+    # plot_combined_3d_surface_matplotlib(platRad, platSmallAngle, mean_condition_numbers, mean_submatrix_condition_numbers, mean_norm_scores, unreachable_poses, platAngle_of_interest, cutoff_angle)
 
     # Plot the combined 3D surface plots using Plotly
-    # plot_combined_3d_surface_plotly(platRad, platSmallAngle, mean_condition_numbers, mean_submatrix_condition_numbers, mean_norm_scores, unreachable_poses, path)
+    # plot_combined_3d_surface_plotly(platRad, platSmallAngle, mean_condition_numbers, mean_submatrix_condition_numbers, mean_norm_scores, unreachable_poses, path, cutoff_angle)
 
     ################## FOR PLOTTING INDIVIDUAL PLOTS ##################
 

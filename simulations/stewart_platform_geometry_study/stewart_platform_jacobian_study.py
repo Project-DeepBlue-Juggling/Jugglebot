@@ -346,6 +346,7 @@ def plot_geometry_with_poses(curr_pose, platRad, platAngle, poses, plat_nodes, b
         ax.scatter(base_nodes[0, j], base_nodes[1, j], base_nodes[2, j], c='red', marker='o') # Plot base nodes
         ax.plot([base_nodes[0, j], A[0, j]], [base_nodes[1, j], A[1, j]], [base_nodes[2, j], A[2, j]], c='blue') # Plot legs
 
+    plt.show()
     # Check reachability and compute condition numbers for all poses
     condition_numbers = []
     num_unreachable = 0
@@ -379,11 +380,11 @@ def plot_geometry_with_poses(curr_pose, platRad, platAngle, poses, plat_nodes, b
             # If the pose is unreachable, color it black
             color = 'black'
 
-            if hide_unreachable:
+            # if hide_unreachable:
                 # If the pose is unreachable, make the point invisible
-                x = np.nan
-                y = np.nan
-                z = np.nan 
+            x = np.nan
+            y = np.nan
+            z = np.nan 
         else:
             color = cm.viridis(norm_condition_numbers[i])
             # For figuring out the pose where the condition number is the highest
@@ -597,12 +598,13 @@ max_height = 850
 poses = generate_poses(max_radius, min_radius, num_circles, min_height, max_height, num_height_steps, points_per_circle_increment)
 poses = check_and_delete_duplicate_poses(poses)
 
-path = 'path_to_convex_hull.json'
+path = r'C:\Users\harri\Google Drive\Projects\Current\Jugglebot\Coding\GitHub\simulations\stewart_platform_geometry_study\\'
 
 ### PLOTTING CONVEX HULL OVER POSES ###
 
-# Load convex hull 
-# convex_hull_points = load_convex_hull(path + 'convex_hull_points_big.json')
+# Load convex hull points
+# convex_hull_points = load_convex_hull('convex_hull_points_big.json')
+# convex_hull_points = load_convex_hull(path + 'convex_hull_points_big.json') # DELETE THIS
 # plot_convex_hull_and_poses(convex_hull_points, poses, arrow_length=25)
 
 # plot_poses(poses, arrow_length=25)
@@ -623,6 +625,7 @@ geometric_limits = [shortLeg, longLeg, legAngleLimit] # This just makes it easie
 running_geometry_study = False
 
 if running_geometry_study:
+    
     start_time = time.time()
     # Set parameters to test
     num_points = 120
@@ -691,24 +694,24 @@ if running_geometry_study:
             # print(temp_results)
             # print(f'Sum unreachable: {sum_unreachable}')
 
-    save_path = 'path_to_save_results'
+    save_path = r'C:\Users\harri\Google Drive\Projects\Current\Jugglebot\Coding\GitHub\simulations\stewart_platform_geometry_study\\'
     np.save(save_path + 'aggregated_results_even_more_points.npy', results)
 
-# # Strange result:
+# Strange result:
 # platRad = 100.0
 # platSmallAngle = 100.0
 # plat_nodes, base_nodes = platform_builder(baseRad, platRad, baseSmallAngle, platSmallAngle)
 # pose_deg = np.array([0.0, 0.0, 700.0, 0.0, 0.0, 0.0])
-# # pose_deg = np.array([143.0, 143.0, 750.0, np.rad2deg(0.185), np.rad2deg(-0.185), 0.0])
+# pose_deg = np.array([143.0, 143.0, 750.0, np.rad2deg(0.185), np.rad2deg(-0.185), 0.0])
 # pose_deg = (tuple(pose_deg[:3]), tuple(pose_deg[3:]))  # Convert to tuple for plotting
 # # Set the normalized condition number threshold for plotting (1 is the maximum condition number for the given geometry/pose)
-# condition_number_threshold = 0.0 # Poses with normalized condition numbers below this threshold will be invisible in the plot
+# condition_number_threshold = 0.7 # Poses with normalized condition numbers below this threshold will be invisible in the plot
 # plot_geometry_with_poses(pose_deg, platRad, platSmallAngle, poses, plat_nodes, base_nodes, arrow_length=50, geom_limits=geometric_limits, normalized_cond_threshold=condition_number_threshold)
 # plt.show()
 # exit(1)
 
-platRad = baseRad#240.0 # mm
-platSmallAngle = 96.0 # deg
+platRad = 240.0 # mm
+platSmallAngle = 12.0 # deg
 
 plat_nodes, base_nodes = platform_builder(baseRad, platRad, baseSmallAngle, platSmallAngle)
 
