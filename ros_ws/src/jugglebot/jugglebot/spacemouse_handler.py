@@ -45,7 +45,7 @@ class SpaceMouseHandler(Node):
         yaw_mult = 10.0  # deg
 
         # Set the offset in z to put baseline position at ~midspan of robot
-        z_offset = 200   # mm
+        z_offset = 170   # mm
 
         # Initialise poseStamped object
         pose_stamped = PoseStamped() 

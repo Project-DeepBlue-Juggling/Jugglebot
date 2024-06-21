@@ -105,9 +105,6 @@ class RobotGeometry(Node):
             self.init_hand_nodes[node][1] = self.hand_radius * math.sin(np.pi / 3 * (1 + 2 * node))
             self.init_hand_nodes[node][2] = 0
 
-        self.get_logger().info(f'Base nodes:\n{self.base_nodes}')
-        self.get_logger().info(f'Platform nodes:\n{self.init_plat_nodes}')
-
         # Calculate the lengths of the legs in the initial state
         self.init_leg_lengths = np.linalg.norm(self.init_plat_nodes + self.start_pos.T - self.base_nodes, axis=1)
 
