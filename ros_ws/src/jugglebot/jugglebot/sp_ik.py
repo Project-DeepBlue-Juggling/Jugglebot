@@ -1,7 +1,7 @@
 import rclpy
 from rclpy.node import Node
 import numpy as np
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, Quaternion
 from std_srvs.srv import Trigger
 from std_msgs.msg import Float64MultiArray, Int8MultiArray
 from jugglebot_interfaces.srv import GetRobotGeometry
@@ -22,8 +22,11 @@ class SPInverseKinematics(Node):
 
         self.send_geometry_request()
 
-        self.subscription = self.create_subscription(PoseStamped, 'platform_pose_topic', self.pose_callback, 10)
-        self.subscription  # Prevent "unused variable" warning
+        # Subscribe to the platform pose topic and the pose offset topic
+        self.pose_subscription = self.create_subscription(PoseStamped, 'platform_pose_topic', self.pose_callback, 10)
+        self.pose_offset_subscription = self.create_subscription(Quaternion, 'pose_offset_topic', self.pose_offset_callback, 10)
+        # Initialize the pose offset as a unit numpy quaternion
+        self.pose_offset = quaternion.quaternion(1, 0, 0, 0)
 
         # Set up a publisher to publish the leg lengths, and one to publish the state of each leg (overextended [1], underextended [-1], within bounds [0])
         self.leg_length_publisher = self.create_publisher(Float64MultiArray, 'leg_lengths_topic', 10)
@@ -73,14 +76,23 @@ class SPInverseKinematics(Node):
         else:
             self.get_logger().error('Exception while calling "get_robot_geometry" service')
 
+    def pose_offset_callback(self, msg):
+        '''Get the pose offset, convert it to a numpy quaternion and save it to the class variable'''
+        pose_offset = msg
+        self.pose_offset = quaternion.quaternion(pose_offset.w, -pose_offset.x, -pose_offset.y, -pose_offset.z)
+
     def pose_callback(self, msg):
         if self.has_geometry_data:
             # Extract position data
-            pos = np.array([[msg.pose.position.x], [msg.pose.position.y], [msg.pose.position.z]])  # Note that this is in base frame + initial position
+            # Note that this is in base frame + initial position (ie. 0 z value is the platform in its initial position)
+            pos = np.array([[msg.pose.position.x], [msg.pose.position.y], [msg.pose.position.z]])  
 
             # Extract the orientation quaternion
             ori_q = msg.pose.orientation
             quaternion_ori = quaternion.quaternion(ori_q.w, ori_q.x, ori_q.y, ori_q.z)
+
+            # Apply the pose offset
+            quaternion_ori = quaternion_ori * self.pose_offset
             
             # Convert quaternion to 4x4 rotation matrix
             rot = quaternion.as_rotation_matrix(quaternion_ori)
