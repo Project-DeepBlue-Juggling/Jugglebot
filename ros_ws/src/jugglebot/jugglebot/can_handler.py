@@ -127,8 +127,11 @@ class CANHandler:
 
         # Initialize the current state for each axis
         self.axis_states = [None] * self.num_axes
-        self.is_done_moving = [None] * self.num_axes
+        self.trajectory_done = [None] * self.num_axes
         self.procedure_result = [None] * self.num_axes
+
+        # Initialize the tilt readings that will come in from the SCL3300 sensor (via the Teensy)
+        self.tilt_sensor_reading = None 
 
 
         ''' Properties for the hand: '''
@@ -150,7 +153,7 @@ class CANHandler:
         # Finally, set up the CAN bus and establish communication with the robot
         self.setup_can_bus()
         self.wait_for_heartbeat()
-        # self.run_encoder_search() # Run the legs through encoder search so that encoder pos is correctly mapped to motor pos
+        self.run_encoder_search() # Run the legs through encoder search so that encoder pos is correctly mapped to motor pos
 
     #########################################################################################################
     #                                            CAN Bus Management                                         #
@@ -409,7 +412,7 @@ class CANHandler:
 
         hand_direction = 1 # +1 is upwards +ve, -1 is downwards +ve
         hand_homing_speed = hand_direction * 3.0 # Higher kV motor, so can go faster
-        hand_current_limit = 9.0  # Found experimentally
+        hand_current_limit = 8.0  # Found experimentally
 
         current_limit_headroom = 3.0  # Headroom for limit of how high the current can go above "current_limit"
 
@@ -790,22 +793,29 @@ class CANHandler:
         # Check if the message is for the CAN traffic report
         if arbitration_id == 0x7FE:
             self._handle_CAN_traffic_report(message)
-            return
-        
-        # Extract the axis ID from the arbitration ID by right-shifting by 5 bits.
-        axis_id = arbitration_id >> 5
-        
-        # Extract the command ID from the arbitration ID by masking with 0x1F (binary 00011111).
-        command_id = arbitration_id & 0x1F
 
-        # Retrieve the handler function for this command ID from the dictionary.
-        handler = self.command_handlers.get(command_id)
-        if handler:
-            # If a handler was found, call it with the axis ID and message data.
-            handler(axis_id, message.data)
-        else:
-            # If no handler was found, log a warning.
-            self.ROS_logger.warn(f"No handler for command ID {command_id} on axis {axis_id}. Arbitration ID: {arbitration_id}")
+        # Or if the message is for the tilt sensor reading
+        elif arbitration_id == 0x7FF:
+            # If the message data is a single byte, ignore it (as this is the 'call' to have the sensor send its data)
+            if message.data == b'\x01':
+                return
+            self._handle_tilt_sensor_reading(message)
+
+        else: # If the message is for the ODrives
+            # Extract the axis ID from the arbitration ID by right-shifting by 5 bits.
+            axis_id = arbitration_id >> 5
+            
+            # Extract the command ID from the arbitration ID by masking with 0x1F (binary 00011111).
+            command_id = arbitration_id & 0x1F
+
+            # Retrieve the handler function for this command ID from the dictionary.
+            handler = self.command_handlers.get(command_id)
+            if handler:
+                # If a handler was found, call it with the axis ID and message data.
+                handler(axis_id, message.data)
+            else:
+                # If no handler was found, log a warning.
+                self.ROS_logger.warn(f"No handler for command ID {command_id} on axis {axis_id}. Arbitration ID: {arbitration_id}")
 
     def _handle_heartbeat(self, axis_id, data):
         # Extract information from the heartbeat message
@@ -816,7 +826,7 @@ class CANHandler:
 
         # Update the current state information for this axis
         self.axis_states[axis_id] = axis_current_state
-        self.is_done_moving[axis_id] = trajectory_done_flag
+        self.trajectory_done[axis_id] = trajectory_done_flag
         self.procedure_result[axis_id] = procedure_result
 
         # Check for any errors and set the error_detected flag if any are found
@@ -931,3 +941,70 @@ class CANHandler:
 
         # Trigger the callback
         self._trigger_callback('can_traffic', traffic_report)
+
+    def _handle_tilt_sensor_reading(self, message):
+        # Unpack the data into two 32-bit floats
+        tiltX, tiltY = struct.unpack('<ff', message.data) # Only concerned with tilt about x and y axes
+
+        # Log receipt of the tilt sensor reading
+        self.ROS_logger.info(f"Tilt sensor reading received: X: {tiltX:.2f}, Y: {tiltY:.2f}")
+
+        # Store the data in the tilt_sensor_reading buffer
+        self.tilt_sensor_reading = (tiltX, tiltY)
+
+    def get_tilt_sensor_reading(self):
+        # Send a call message to the Teensy to get the tilt sensor reading
+        arbitration_id = 0x7FF
+        data = b'\x01' # Just send a single byte to request the tilt sensor reading
+
+        tilt_call_msg = can.Message(arbitration_id=arbitration_id, dlc=1, is_extended_id=False, data=data, is_remote_frame=False)
+
+        try:
+            self.bus.send(tilt_call_msg)
+            self.ROS_logger.debug("Tilt sensor reading request sent")
+        except Exception as e:
+            self.ROS_logger.warn(f"CAN message for tilt sensor reading NOT sent! Error: {e}")
+
+        def wait_for_tilt_reading(self):
+            # Wait for the response to come in. If it takes longer than 1 second, resend the request
+            start_time = time.time()
+            timeout = 1 # seconds
+            while self.tilt_sensor_reading is None:
+                self.fetch_messages()
+                time.sleep(0.1)
+
+                if time.time() - start_time > timeout:
+                    self.ROS_logger.warn("Tilt sensor reading request timed out. Resending request...")
+                    self.bus.send(tilt_call_msg)
+                    start_time = time.time()
+
+        # Wait for the tilt sensor reading to come in
+        wait_for_tilt_reading(self)
+
+        # Set tiltX and tiltY to dummy values
+        tiltX, tiltY = None, None
+
+        # Check if the message has been received
+        if self.tilt_sensor_reading is not None:
+            # If the message has been received, unpack it and return the values
+            tiltX, tiltY = self.tilt_sensor_reading
+            self.tilt_sensor_reading = None
+        else:
+            # If the message hasn't been received, log a warning
+            self.ROS_logger.warn("Tilt sensor reading not received. Returning None.")
+
+        # If tilt readings are above 45 degrees, then they are invalid (default send for invalid readings is 3.14)
+        # If this happens, wait for the next reading
+        if tiltX > 0.78 or tiltY > 0.78:
+            self.ROS_logger.warn("Tilt sensor reading invalid. Waiting for next reading...")
+            wait_for_tilt_reading(self)
+
+            tiltX, tiltY = self.tilt_sensor_reading
+            self.tilt_sensor_reading = None
+
+        # If the readings are still invalid, return None
+        if tiltX > 3.0 or tiltY > 3.0:
+            self.ROS_logger.warn("Tilt sensor reading still invalid. Returning None.")
+            return None, None
+
+        return tiltX, tiltY

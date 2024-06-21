@@ -3,11 +3,12 @@ import rclpy
 from rclpy.node import Node
 from jugglebot_interfaces.srv import ODriveCommandService
 from jugglebot_interfaces.msg import RobotStateMessage, CanTrafficReportMessage
-from geometry_msgs.msg import Point, Vector3
+from geometry_msgs.msg import Point, Vector3, PoseStamped, Quaternion
 from builtin_interfaces.msg import Time
 from std_msgs.msg import Float64MultiArray
 from std_srvs.srv import Trigger
 from .can_handler import CANHandler
+import quaternion  # numpy quaternion
 
 class CANBusHandlerNode(Node):
     def __init__(self):
@@ -36,6 +37,14 @@ class CANBusHandlerNode(Node):
 
         # Subscribe to relevant topics
         self.motor_pos_subscription = self.create_subscription(Float64MultiArray, 'leg_lengths_topic', self.handle_movement, 10)
+
+        # Set up stuff for auto-leveling functionality
+        self.platform_pose_publisher = self.create_publisher(PoseStamped, 'platform_pose_topic', 10)
+        self.platform_tilt_offset = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0) # Offset to apply to the platform orientation to level it
+        self.move_to_calibration_pose_service = self.create_service(Trigger, 'move_to_calibration_pose', self.move_to_calibration_pose)
+        self.calibrate_platform_tilt_service = self.create_service(Trigger, 'calibrate_platform_tilt', self.calibrate_platform_tilt)
+        # Set up a publisher for the pose offset
+        self.pose_offset_publisher = self.create_publisher(Quaternion, 'pose_offset_topic', 10)
 
         # Initialize publishers for hardware data
         self.position_publisher    = self.create_publisher(Float64MultiArray, 'motor_positions', 10)
@@ -92,6 +101,81 @@ class CANBusHandlerNode(Node):
 
         return response
 
+    def move_to_calibration_pose(self, request, response):
+        ''' Move the platform to the calibration pose'''
+        # Start by setting conservative movement speeds
+        self.can_handler.set_absolute_vel_curr_limits(leg_vel_limit=2.5)
+
+        # Construct the pose message
+        pose_stamped = PoseStamped()
+        pose_stamped.pose.position.x = 0.0
+        pose_stamped.pose.position.y = 0.0
+        pose_stamped.pose.position.z = 170.0
+        pose_stamped.pose.orientation.x = 0.0
+        pose_stamped.pose.orientation.y = 0.0
+        pose_stamped.pose.orientation.z = 0.0
+        pose_stamped.pose.orientation.w = 1.0
+
+        # Set the time stamp
+        pose_stamped.header.stamp = self.get_clock().now().to_msg()
+
+        # Publish the pose
+        self.platform_pose_publisher.publish(pose_stamped)
+
+        response.success = True
+
+        return response
+
+    def calibrate_platform_tilt(self, request, response):
+        # Take reading from the SCL3300 sensor
+        tiltX, tiltY = self.can_handler.get_tilt_sensor_reading()
+
+        if tiltX is None or tiltY is None:
+            response.success = False
+            self.get_logger().error('Failed to read tilt sensor')
+
+        else:
+            self.get_logger().info(f'Tilt sensor reading: X={tiltX:.2f}, Y={tiltY:.2f}')
+
+            def tilt_to_quat(tiltX, tiltY):
+                ''' Convert tilt readings to a quaternion offset to apply to the platform orientation to level it'''
+                # Calculate the roll and pitch angles
+                roll = tiltY
+                pitch = tiltX
+
+                # Convert orientation from Euler angles to quaternions
+                q_roll = quaternion.from_rotation_vector([0, roll, 0])
+                q_pitch = quaternion.from_rotation_vector([pitch, 0, 0])
+
+                return q_roll * q_pitch
+
+            # Convert the tilts into a quaternion
+            tilt_offset_quat = tilt_to_quat(tiltX, tiltY)
+
+            # Get the current offset as a numpy quaternion
+            current_offset = quaternion.quaternion(self.platform_tilt_offset.w, 
+                                                   self.platform_tilt_offset.x, 
+                                                   self.platform_tilt_offset.y, 
+                                                   self.platform_tilt_offset.z)
+
+            # Calculate the new offset by multiplying the current offset by the tilt offset quaternion
+            platform_tilt_offset = tilt_offset_quat * current_offset
+
+            # Store the new offset as a ROS2 quaternion
+            self.platform_tilt_offset = Quaternion(x=platform_tilt_offset.x,
+                                                   y=platform_tilt_offset.y,
+                                                   z=platform_tilt_offset.z,
+                                                   w=platform_tilt_offset.w)
+            
+            # Publish the new offset
+            self.pose_offset_publisher.publish(self.platform_tilt_offset)
+
+            # self.get_logger().info(f'Platform tilt offset: {self.platform_tilt_offset}')
+
+        response.success = True
+
+        return response
+
     def throw_ball(self, request, response):
         try:
             self.can_handler.throw_ball()
@@ -112,8 +196,8 @@ class CANBusHandlerNode(Node):
             self._on_fatal_issue()
             return
 
-        # Extract the desired leg lengths
-        motor_positions = msg.data[:6] # Since we don't need the hand string length here
+        # Extract the leg lengths
+        motor_positions = msg.data
 
         # Need to re-map the legs to the correct ODrive axes
         schema = [1, 2, 3, 4, 5, 0]
@@ -139,7 +223,7 @@ class CANBusHandlerNode(Node):
         self.can_handler.fetch_messages()
 
         # Check to make sure all motors have finished their movements
-        while not all(self.can_handler.is_done_moving):
+        while not all(self.can_handler.trajectory_done):
             self.can_handler.fetch_messages()
             time.sleep(0.01)
 
@@ -220,6 +304,7 @@ class CANBusHandlerNode(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = CANBusHandlerNode()
+
     try:
         rclpy.spin(node)
     except RuntimeError:
