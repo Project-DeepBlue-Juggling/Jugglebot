@@ -183,18 +183,18 @@ platformTilt getInclination() {
     float angleY = convertTo180Range(inclinometer.getCalculatedAngleY());
     float angleZ = convertTo180Range(inclinometer.getCalculatedAngleZ());
 
-    // Convert degrees to radians
-    float angleY_rad = angleY * PI / 180;
-    float angleZ_rad = angleZ * PI / 180;
-
     // Map angles to the robot's x and y axes. Found experimentally
-    float tiltX = -angleZ_rad;
-    float tiltY = -angleY_rad;
+    float tiltX = -angleZ;
+    float tiltY = -angleY;
     
     // Print angle data in a format suitable for the Serial Plotter
     Serial.print("X:"); Serial.print(tiltX); Serial.print(" ");
     Serial.print("Y:"); Serial.println(tiltY);
     Serial.println();
+
+    // Convert degrees to radians
+    tiltX = tiltX * PI / 180;
+    tiltY = tiltY * PI / 180;
 
     tilt.tiltX = tiltX;
     tilt.tiltY = tiltY;
