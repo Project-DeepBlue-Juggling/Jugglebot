@@ -5,6 +5,17 @@ This code currently fulfils these functions:
 
 It also allows for debugging specific CAN messages (based on arbitration ID) 
 
+NOTE on CAN ids:
+
+Odrives need a 'block' of 32 arbitration IDs, starting at the node ID. 
+For 7 ODrives (with CAN id 0—7), this means we need to stay away from arbitration IDs between 0x00 and 0xE0 (7 * 32 = 224 = E0)
+
+Additionally, there is a 'broadcast id' that will transmit to all ODrives on the bus (id = 0x3f<<5 = 0x7E0), so we need to keep out of its block,
+which spans to the end of the range (7FF)
+
+Therefore, 'safe' IDs are in the range:
+0xE0 --> 0x7E0
+
 */
 #include <FlexCAN_T4.h>
 #include <SPI.h>
@@ -18,7 +29,7 @@ SCL3300 inclinometer;
 uint32_t receivedCount = 0;
 uint32_t lastReportTime = 0;
 const uint32_t reportInterval = 500;  // Report every XXX milliseconds
-const uint32_t REPORT_ID = 0x7FE; // Should be safe from conflict with any ODrive messages.
+const uint32_t REPORT_ID = 0x7DF; // Should be safe from conflict with any ODrive messages.
 
 // For debugging a specific CAN message
 const uint32_t node_id = 6;
@@ -35,7 +46,7 @@ int messageCount = 0;
 
 
 // For inclinometer readings
-uint32_t tiltID = 0x7FF; // 11-bit max ID. Should be safe from conflict with ODrive messages
+uint32_t tiltID = 0x7DE; // Should be safe from conflict with ODrive messages
 
 // Structure for relaying the tilt of the platform
 struct platformTilt {
@@ -176,33 +187,47 @@ float convertTo180Range(float angle) {
 // Function to get the inclination of the platform
 platformTilt getInclination() {
   platformTilt tilt;  // Declare the platformTilt structure
+  const int maxAttempts = 3;  // Maximum number of attempts to read the inclinometer
+  int attempt = 0;
+  bool success = false;
 
-  // Read angle data from the inclinometer, if available. If not, reset the inclinometer
-  if (inclinometer.available()) {
-    // Retrieve the angle data
-    float angleY = convertTo180Range(inclinometer.getCalculatedAngleY());
-    float angleZ = convertTo180Range(inclinometer.getCalculatedAngleZ());
+  while (attempt < maxAttempts && !success) {
+    // Read angle data from the inclinometer, if available
+    if (inclinometer.available()) {
+      // Retrieve the angle data
+      float angleY = convertTo180Range(inclinometer.getCalculatedAngleY());
+      float angleZ = convertTo180Range(inclinometer.getCalculatedAngleZ());
 
-    // Map angles to the robot's x and y axes. Found experimentally
-    float tiltX = -angleZ;
-    float tiltY = -angleY;
-    
-    // Print angle data in a format suitable for the Serial Plotter
-    Serial.print("X:"); Serial.print(tiltX); Serial.print(" ");
-    Serial.print("Y:"); Serial.println(tiltY);
-    Serial.println();
+      // Map angles to the robot's x and y axes. Found experimentally
+      float tiltX = -angleZ;
+      float tiltY = -angleY;
+      
+      // Print angle data in a format suitable for the Serial Plotter
+      Serial.print("X:"); Serial.print(tiltX); Serial.print(" ");
+      Serial.print("Y:"); Serial.println(tiltY);
+      Serial.println();
 
-    // Convert degrees to radians
-    tiltX = tiltX * PI / 180;
-    tiltY = tiltY * PI / 180;
+      // Convert degrees to radians
+      tiltX = tiltX * PI / 180;
+      tiltY = tiltY * PI / 180;
 
-    tilt.tiltX = tiltX;
-    tilt.tiltY = tiltY;
+      tilt.tiltX = tiltX;
+      tilt.tiltY = tiltY;
 
-  } else {
-    inclinometer.reset();
-    tilt.tiltX = 3.14; // Default values in case of reset
-    tilt.tiltY = 3.14; // Default values in case of reset
+      success = true;  // Reading was successful
+
+    } else {
+      inclinometer.reset();  // Reset the inclinometer
+      delay(100);  // Wait for the inclinometer to reset
+    }
+
+    attempt++;
+  }
+
+  if (!success) {
+    // If we fail to get a reading after three attempts, set default values
+    tilt.tiltX = 3.14;
+    tilt.tiltY = 3.14;
   }
 
   return tilt;
