@@ -5,7 +5,7 @@ from jugglebot_interfaces.srv import ODriveCommandService
 from jugglebot_interfaces.msg import RobotStateMessage, CanTrafficReportMessage
 from geometry_msgs.msg import Point, Vector3, PoseStamped, Quaternion
 from builtin_interfaces.msg import Time
-from std_msgs.msg import Float64MultiArray
+from std_msgs.msg import Float64MultiArray, Byte
 from std_srvs.srv import Trigger
 from .can_handler import CANHandler
 import quaternion  # numpy quaternion
@@ -46,11 +46,24 @@ class CANBusHandlerNode(Node):
         # Set up a publisher for the pose offset
         self.pose_offset_publisher = self.create_publisher(Quaternion, 'pose_offset_topic', 10)
 
+        # Initialize a variable to track the target positions of the legs
+        self.legs_target_position = [None] * 6
+
+        # Set up timer and publisher for whether the platform has reached its target
+        self.platform_target_reached_publisher = self.create_publisher(Byte, 'target_reached', 10)
+        self.legs_target_reached = [False] * 8
+        self.platform_target_reached_timer = self.create_timer(0.1, self.check_platform_target_reached_status)
+
         # Initialize publishers for hardware data
         self.position_publisher    = self.create_publisher(Float64MultiArray, 'motor_positions', 10)
         self.velocity_publisher    = self.create_publisher(Float64MultiArray, 'motor_velocities', 10)
         self.iq_publisher          = self.create_publisher(Float64MultiArray, 'motor_iqs', 10)
         self.can_traffic_publisher = self.create_publisher(CanTrafficReportMessage, 'can_traffic', 10)
+
+        # Initialize variables to store the last received data
+        self.last_motor_positions = None
+        self.last_motor_velocities = None
+        self.last_motor_iqs = None
 
         # Register callbacks
         self.can_handler.register_callback('motor_positions', self.publish_motor_positions)
@@ -203,6 +216,9 @@ class CANBusHandlerNode(Node):
         schema = [1, 2, 3, 4, 5, 0]
         motor_positions_remapped = [motor_positions[schema.index(i)] for i in range(6)]
 
+        # Store these positions as the target positions
+        self.legs_target_position = motor_positions_remapped
+
         for axis_id, data in enumerate(motor_positions_remapped):
             self.can_handler.send_position_target(axis_id=axis_id, setpoint=data)
             # self.get_logger().debug(f'Motor {axis_id} commanded to setpoint {data}')
@@ -254,6 +270,51 @@ class CANBusHandlerNode(Node):
 
         return response
 
+    def check_platform_target_reached_status(self):
+        '''Check whether the robot has reached its target and publish the result
+        The target is considered reached if all motors are within a certain tolerance of their setpoints
+        Each bit in the message byte corresponds to a motor, with 1 meaning the motor has reached its target
+        The final bit is set to 1 if the sum of all LEG motor velocities is below a threshold'''
+
+        # Check if there are any target positions set, or if the last motor positions or velocities are missing
+        if None in self.legs_target_position or None in self.last_motor_positions or None in self.last_motor_velocities:
+            return
+
+        # Set thresholds
+        position_threshold = 0.1 # Revs
+        velocity_threshold = 0.1 # Revs/s
+
+        # Check whether each leg has reached its target
+        target_reached = [False] * 8
+        for i, (setpoint, current_position) in enumerate(zip(self.legs_target_position, self.last_motor_positions)):
+            if abs(setpoint - current_position) < position_threshold:
+                target_reached[i] = True
+
+        # No implementation for the hand... yet
+        target_reached[6] = False
+
+        # Check whether the sum of the leg motor velocities is below the threshold
+        leg_velocities = self.last_motor_velocities
+        leg_velocities_sum = sum(leg_velocities)
+
+        # Update the last (eighth) value of target_reached
+        if abs(leg_velocities_sum) < velocity_threshold:
+            target_reached[7] = True
+        else:
+            target_reached[7] = False
+
+        # Publish the result
+        msg = Byte()
+        byte_data = 0
+        for i, reached in enumerate(target_reached):
+            if reached:
+                byte_data |= 1 << i
+
+        # self.get_logger().info(f'Byte data: {byte_data}, after converting to bytes: {bytes([byte_data])}')
+
+        msg.data = bytes([byte_data])
+        self.platform_target_reached_publisher.publish(msg)
+
 
     #########################################################################################################
     #                                   Interfacing with the ROS Network                                    #
@@ -267,17 +328,26 @@ class CANBusHandlerNode(Node):
         motor_positions = Float64MultiArray()
         motor_positions.data = position_data
 
+        # Store the last received positions
+        self.last_motor_positions = position_data[:6] # Only store the leg positions for now
+
         self.position_publisher.publish(motor_positions)
 
     def publish_motor_velocities(self, velocity_data):
         motor_velocities = Float64MultiArray()
         motor_velocities.data = velocity_data
 
+        # Store the last received velocities 
+        self.last_motor_velocities = velocity_data[:6] # Only store the leg velocities for now
+
         self.velocity_publisher.publish(motor_velocities)
 
     def publish_motor_iqs(self, iq_data):
         motor_iqs = Float64MultiArray()
         motor_iqs.data = iq_data
+
+        # Store the last received IQs
+        self.last_motor_iqs = iq_data[:6] # Only store the leg IQs for now
 
         self.iq_publisher.publish(motor_iqs)
 
@@ -318,7 +388,6 @@ def main(args=None):
         node.on_shutdown()
         node.destroy_node()
         rclpy.shutdown()
-
 
 if __name__ == '__main__':
     main()

@@ -36,6 +36,7 @@ def generate_launch_description():
         'spacemouse_handler',
         'platform_plotter',
         'sp_ik',
+        'platform_alignment_node',
         # 'hand_ik',
         'state_manager_node',
         'juggling_path_creator',
