@@ -24,12 +24,12 @@ class StewartPlatform:
         self.rot_matrix = np.eye(3)
 
         # Measured Geometry
-        self._initial_height = 626.25  # Dist. from the base plane (bottom joint of legs) to plat. in its lowest pos {mm}
-        self._base_radius = 800  # Actual = 247.8   # Radius of base {mm}
-        self._plat_radius = 229.5   # Radius of platform {mm}
-        self._base_small_angle = 24 # Gamma2 on main sketch {deg}
-        self._plat_small_angle = 7.494967  # Lambda1 on main sketch {deg}
-        self._leg_stroke = 300  # Stroke of leg {mm}
+        self._initial_height = 565.0  # Dist. from the base plane (bottom joint of legs) to plat. in its lowest pos {mm}
+        self._base_radius = 410.0  # Radius of base {mm}
+        self._plat_radius = 219.075   # Radius of platform {mm}
+        self._base_small_angle = 20 # Gamma2 on main sketch {deg}
+        self._plat_small_angle = 8.602  # Lambda1 on main sketch {deg}
+        self._leg_stroke = 280  # Stroke of leg {mm}
 
         self.start_pos = np.array([[0], [0], [self._initial_height]])
 
@@ -60,7 +60,14 @@ class StewartPlatform:
         self._populate_rotation_matrix()
         legs = T + np.dot(self.rot_matrix, self._init_plat_nodes.T) - self.base_nodes.T
 
-        return np.linalg.norm(legs, axis=0) - self.init_leg_lengths
+        leg_lengths = np.linalg.norm(legs, axis=0) - self.init_leg_lengths
+
+        spool_dia = 22  # Diameter of spool {mm}
+        mm_to_rev = 1 / (spool_dia * math.pi)  # Conversion factor from mm to revs
+
+        leg_lengths_revs = [length * mm_to_rev for length in leg_lengths]
+
+        return leg_lengths_revs
 
     def node_positions(self):
         # Return the positions of important nodes using the position and rotation attributes.
@@ -69,11 +76,16 @@ class StewartPlatform:
 
     def plot_platform(self):
         # Clear the old results
-        self.ax.clear()
+        # self.ax.clear()
         self.ax.set_axis_off()
         self.ax.set_xlim(-self._base_radius * self._axes_multiplier, self._base_radius * self._axes_multiplier)
         # self.ax.set_aspect('equal') # Same as in __init__. Not sure why this happens.
         self.ax.set_zlim(-self._base_radius + 200, self._base_radius + 200)
+
+        # Plot arrows representing the coordinate system triad
+        self.ax.quiver(0, 0, 0, 100, 0, 0, color='r')
+        self.ax.quiver(0, 0, 0, 0, 100, 0, color='g')
+        self.ax.quiver(0, 0, 0, 0, 0, 100, color='b')
 
         # Plot the points
         plat_scatter_points = self.ax.scatter(self.new_plat_nodes.T[0], self.new_plat_nodes.T[1],
@@ -97,6 +109,12 @@ class StewartPlatform:
                                             [self.base_nodes[leg][2], self.new_plat_nodes[leg][2]],
                                             'g')[0])
 
+    def plot_superimposed_poses(self, poses):
+        # Plot the platform for each pose in the poses list
+        for pose in poses:
+            self.update_pose(pose)
+            self.plot_platform()
+
     def _build_stewart_platform(self):
         # Builds the SP using the given dimensions.
         # Origin of platform is at platform pos in lowest position (initial_height)
@@ -104,7 +122,7 @@ class StewartPlatform:
         deg_to_rad = math.pi / 180
 
         # Define the angles to the nodes
-        gamma0 = 12  # Offset from horizontal
+        gamma0 = 180 + self._base_small_angle*2  # Offset from horizontal
         gamma2 = self._base_small_angle  # Angle between close base nodes {deg}
         gamma1 = 120 - gamma2  # Angle between far base nodes {deg}
 
@@ -123,12 +141,12 @@ class StewartPlatform:
             base_node_angles[node] = gamma0 + gamma1 * first_angle_index + gamma2 * second_angle_index
             plat_node_angles[node] = lambda0 + lambda1 * first_angle_index + lambda2 * second_angle_index
 
-            self.base_nodes[node][0] = self._base_radius * math.cos(base_node_angles[node] * deg_to_rad)
-            self.base_nodes[node][1] = self._base_radius * math.sin(base_node_angles[node] * deg_to_rad)
+            self.base_nodes[node][0] = self._base_radius * math.cos(base_node_angles[node][0] * deg_to_rad)
+            self.base_nodes[node][1] = self._base_radius * math.sin(base_node_angles[node][0] * deg_to_rad)
             self.base_nodes[node][2] = 0
 
-            self._init_plat_nodes[node][0] = self._plat_radius * math.cos(plat_node_angles[node] * deg_to_rad)
-            self._init_plat_nodes[node][1] = self._plat_radius * math.sin(plat_node_angles[node] * deg_to_rad)
+            self._init_plat_nodes[node][0] = self._plat_radius * math.cos(plat_node_angles[node][0] * deg_to_rad)
+            self._init_plat_nodes[node][1] = self._plat_radius * math.sin(plat_node_angles[node][0] * deg_to_rad)
             self._init_plat_nodes[node][2] = 0
 
         # Set the new position to be the current one, for plotting purposes
@@ -202,6 +220,23 @@ if __name__ == "__main__":
     ax_legs.set_autoscalex_on(False)
 
     leg_limits = [0, sp._leg_stroke]  # Lower and upper limits
+
+    measured_angles_pose = [0, 0, 170, 4.52, 9.54, 0] # Angles reported by the inclinometer in 'calibration pose' (170 mm height)
+    reverse_engineered_pose = [0, 0, 170, 7.226, 7.057, 0] # Angles calculated from the quaternion that makes the platform 'flat' (within 0.2 degrees)
+    poses = [measured_angles_pose, reverse_engineered_pose]
+
+    # Plot the platform
+    sp.plot_superimposed_poses(poses)
+    # sp.plot_platform()
+
+    # Print the leg lengths
+    lengths = sp.leg_lengths()
+    print(f'Leg lengths:\nLeg 1: {lengths[0]}\nLeg 2: {lengths[1]}\nLeg 3: {lengths[2]}\n'
+          f'Leg 4: {lengths[3]}\nLeg 5: {lengths[4]}\nLeg 6: {lengths[5]}\n')
+
+    plt.ioff()
+    plt.show()
+    exit(1)
 
     # Define the update function for the animation
     def update(frame):
