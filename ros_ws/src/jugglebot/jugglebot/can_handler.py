@@ -133,6 +133,11 @@ class CANHandler:
         # Initialize the tilt readings that will come in from the SCL3300 sensor (via the Teensy)
         self.tilt_sensor_reading = None 
 
+        # Initialize CAN arbitration IDs for messages to/from the Teensy
+        # See the Teensy firmware for a note on "safe" IDs to not conflict with the ODrives
+        self._CAN_traffic_report_ID = 0x7DF
+        self._CAN_tilt_reading_ID = 0x7DE
+
 
         ''' Properties for the hand: '''
 
@@ -494,7 +499,7 @@ class CANHandler:
                 self._set_requested_state(axis_id, requested_state='IDLE')
                 return
 
-    def run_encoder_search(self):
+    def run_encoder_search(self, attempt=0):
         '''
         Runs the necessary encoder search procedure to find the index of the encoder. This was done automatically
         on power up for the ODrive v3.6's but now (AFAIK) must be done manually. Note that this doesn't need to be run
@@ -513,8 +518,13 @@ class CANHandler:
             self.fetch_messages()
             time.sleep(0.1)
             if time.time() - start_time > timeout_duration:
-                self.ROS_logger.warn(f"Timeout: Encoder index search still ongoing. Search status: {self.procedure_result}",
-                                     throttle_duration_sec=2.0)
+                if attempt > 1:
+                    self.ROS_logger.error("Encoder index search failed. System may not be operational.")
+                    return
+                else:
+                    self.ROS_logger.error("Encoder index search failed. Clearing errors and retrying...")
+                    self.clear_errors()
+                    self.run_encoder_search(attempt=attempt+1)
 
         self.ROS_logger.info("Encoder index search complete! Jugglebot is ready to be homed.")
 
@@ -791,11 +801,11 @@ class CANHandler:
         arbitration_id = message.arbitration_id
 
         # Check if the message is for the CAN traffic report
-        if arbitration_id == 0x7FE:
+        if arbitration_id == self._CAN_traffic_report_ID:
             self._handle_CAN_traffic_report(message)
 
         # Or if the message is for the tilt sensor reading
-        elif arbitration_id == 0x7FF:
+        elif arbitration_id == self._CAN_tilt_reading_ID:
             # If the message data is a single byte, ignore it (as this is the 'call' to have the sensor send its data)
             if message.data == b'\x01':
                 return
@@ -888,8 +898,8 @@ class CANHandler:
         pos_estimate, vel_estimate = struct.unpack_from('<ff', data)
 
         # Add the data to the appropriate buffer
-        self.position_buffer[axis_id] = pos_estimate
-        self.velocity_buffer[axis_id] = vel_estimate
+        self.position_buffer[axis_id] = -pos_estimate # Invert the raw reading, since we want +ve to be upwards
+        self.velocity_buffer[axis_id] = -vel_estimate
 
         # Print these values for debugging
         # self.ROS_logger.info(f"Axis {axis_id} - Position: {pos_estimate:.2f}, Velocity: {vel_estimate:.2f}")
@@ -944,7 +954,10 @@ class CANHandler:
 
     def _handle_tilt_sensor_reading(self, message):
         # Unpack the data into two 32-bit floats
-        tiltX, tiltY = struct.unpack('<ff', message.data) # Only concerned with tilt about x and y axes
+        try:
+            tiltX, tiltY = struct.unpack('<ff', message.data) # Only concerned with tilt about x and y axes
+        except struct.error as e:
+            self.ROS_logger.warn(f"Error unpacking tilt sensor data: {e}.\nData: {message.data}")
 
         # Log receipt of the tilt sensor reading
         self.ROS_logger.info(f"Tilt sensor reading received: X: {tiltX:.2f}, Y: {tiltY:.2f}")
@@ -954,14 +967,13 @@ class CANHandler:
 
     def get_tilt_sensor_reading(self):
         # Send a call message to the Teensy to get the tilt sensor reading
-        arbitration_id = 0x7FF
+        arbitration_id = self._CAN_tilt_reading_ID
         data = b'\x01' # Just send a single byte to request the tilt sensor reading
 
         tilt_call_msg = can.Message(arbitration_id=arbitration_id, dlc=1, is_extended_id=False, data=data, is_remote_frame=False)
 
         try:
             self.bus.send(tilt_call_msg)
-            self.ROS_logger.debug("Tilt sensor reading request sent")
         except Exception as e:
             self.ROS_logger.warn(f"CAN message for tilt sensor reading NOT sent! Error: {e}")
 
