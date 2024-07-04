@@ -153,12 +153,12 @@ class CANBusHandlerNode(Node):
             def tilt_to_quat(tiltX, tiltY):
                 ''' Convert tilt readings to a quaternion offset to apply to the platform orientation to level it'''
                 # Calculate the roll and pitch angles
-                roll = -tiltY
-                pitch = -tiltX
+                roll = -tiltX
+                pitch = -tiltY
 
                 # Convert orientation from Euler angles to quaternions
-                q_roll = quaternion.from_rotation_vector([0, roll, 0])
-                q_pitch = quaternion.from_rotation_vector([pitch, 0, 0])
+                q_roll = quaternion.from_rotation_vector([roll, 0, 0])
+                q_pitch = quaternion.from_rotation_vector([0, pitch, 0])
 
                 # q = quaternion.from_euler_angles(-tiltX, -tiltY, 0)
 
