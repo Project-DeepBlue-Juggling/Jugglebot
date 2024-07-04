@@ -148,19 +148,22 @@ class CANBusHandlerNode(Node):
             self.get_logger().error('Failed to read tilt sensor')
 
         else:
-            self.get_logger().info(f'Tilt sensor reading: X={tiltX:.2f}, Y={tiltY:.2f}')
+            self.get_logger().info(f'Tilt sensor reading: X={tiltX:.10f}, Y={tiltY:.10f}')
 
             def tilt_to_quat(tiltX, tiltY):
                 ''' Convert tilt readings to a quaternion offset to apply to the platform orientation to level it'''
                 # Calculate the roll and pitch angles
-                roll = tiltY
-                pitch = tiltX
+                roll = -tiltY
+                pitch = -tiltX
 
                 # Convert orientation from Euler angles to quaternions
                 q_roll = quaternion.from_rotation_vector([0, roll, 0])
                 q_pitch = quaternion.from_rotation_vector([pitch, 0, 0])
 
-                return q_roll * q_pitch
+                # q = quaternion.from_euler_angles(-tiltX, -tiltY, 0)
+
+                q = q_roll * q_pitch
+                return q
 
             # Convert the tilts into a quaternion
             tilt_offset_quat = tilt_to_quat(tiltX, tiltY)
@@ -212,14 +215,10 @@ class CANBusHandlerNode(Node):
         # Extract the leg lengths
         motor_positions = msg.data
 
-        # Need to re-map the legs to the correct ODrive axes
-        schema = [1, 2, 3, 4, 5, 0]
-        motor_positions_remapped = [motor_positions[schema.index(i)] for i in range(6)]
-
         # Store these positions as the target positions
-        self.legs_target_position = motor_positions_remapped
+        self.legs_target_position = motor_positions
 
-        for axis_id, data in enumerate(motor_positions_remapped):
+        for axis_id, data in enumerate(motor_positions):
             self.can_handler.send_position_target(axis_id=axis_id, setpoint=data)
             # self.get_logger().debug(f'Motor {axis_id} commanded to setpoint {data}')
 
