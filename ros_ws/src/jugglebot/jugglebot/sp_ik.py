@@ -79,7 +79,7 @@ class SPInverseKinematics(Node):
     def pose_offset_callback(self, msg):
         '''Get the pose offset, convert it to a numpy quaternion and save it to the class variable'''
         pose_offset = msg
-        self.pose_offset = quaternion.quaternion(pose_offset.w, -pose_offset.x, -pose_offset.y, -pose_offset.z)
+        self.pose_offset = quaternion.quaternion(pose_offset.w, pose_offset.x, pose_offset.y, pose_offset.z)
 
     def pose_callback(self, msg):
         if self.has_geometry_data:
@@ -92,7 +92,7 @@ class SPInverseKinematics(Node):
             quaternion_ori = quaternion.quaternion(ori_q.w, ori_q.x, ori_q.y, ori_q.z)
 
             # Apply the pose offset
-            quaternion_ori = quaternion_ori * self.pose_offset
+            quaternion_ori = self.pose_offset * quaternion_ori
             
             # Convert quaternion to 4x4 rotation matrix
             rot = quaternion.as_rotation_matrix(quaternion_ori)
@@ -170,11 +170,19 @@ class SPInverseKinematics(Node):
         leg_lengths_revs = [length * mm_to_rev for length in leg_lens_mm]
 
         # Send the data to be published
-        self.publish_leg_lengths(leg_lengths_revs)
+        self.remap_leg_lengths(leg_lengths_revs)
 
-    def publish_leg_lengths(self, leg_lens_revs):
+    def remap_leg_lengths(self, leg_lens_revs):
+        # Need to re-map the legs to the correct ODrive axes
+        schema = [5, 0, 1, 2, 3, 4]
+        leg_lengths_remapped = [leg_lens_revs[i] for i in schema]
+
+        # Send the lengths off to be published
+        self.publish_leg_lengths(leg_lengths_remapped)
+
+    def publish_leg_lengths(self, leg_lenths):
         leg_lengths = Float64MultiArray()
-        leg_lengths.data = leg_lens_revs
+        leg_lengths.data = leg_lenths
 
         self.leg_length_publisher.publish(leg_lengths)
 
