@@ -63,9 +63,8 @@ class StewartPlatform:
         leg_lengths = np.linalg.norm(legs, axis=0) - self.init_leg_lengths
 
         # Remap the leg lengths so the numbering matches the robot
-        schema = [1, 2, 3, 4, 5, 0]
-        # leg_lengths = [leg_lengths[i] for i in schema]
-        leg_lengths = [leg_lengths[schema.index(i)] for i in range(6)]
+        schema = [5, 0, 1, 2, 3, 4]
+        leg_lengths = [leg_lengths[i] for i in schema]
 
         spool_dia = 22  # Diameter of spool {mm}
         mm_to_rev = 1 / (spool_dia * math.pi)  # Conversion factor from mm to revs
