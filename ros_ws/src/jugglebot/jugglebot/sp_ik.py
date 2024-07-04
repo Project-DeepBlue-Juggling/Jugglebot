@@ -170,10 +170,13 @@ class SPInverseKinematics(Node):
         leg_lengths_revs = [length * mm_to_rev for length in leg_lens_mm]
 
         # Send the data to be published
-        self.remap_leg_lengths(leg_lengths_revs)
+        self.publish_leg_lengths(leg_lengths_revs)
 
     def remap_leg_lengths(self, leg_lens_revs):
-        # Need to re-map the legs to the correct ODrive axes
+        '''May need to re-map the legs to the correct ODrive axes.
+        This method isn't currently needed because the robot geometry
+        is instantiated correctly in the first place'''
+        
         schema = [5, 0, 1, 2, 3, 4]
         leg_lengths_remapped = [leg_lens_revs[i] for i in schema]
 
