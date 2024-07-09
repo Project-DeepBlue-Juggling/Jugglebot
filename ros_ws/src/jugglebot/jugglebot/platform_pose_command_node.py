@@ -9,9 +9,9 @@ from geometry_msgs.msg import PoseStamped, Quaternion
 from std_srvs.srv import Trigger
 import quaternion
 
-class PlatformCalibrationNode(Node):
+class PlatformPoseCommandNode(Node):
     def __init__(self):
-        super().__init__('platform_calibration_node')
+        super().__init__('platform_pose_command_node')
 
         # Set up a service to trigger closing the node
         self.service = self.create_service(Trigger, 'end_session', self.end_session)
@@ -21,7 +21,7 @@ class PlatformCalibrationNode(Node):
 
         # Subscribe to the calibration_pose_euler topic to receive the desired platform pose
         self.calibration_pose_subscription = self.create_subscription(Float32MultiArray, 
-                                                                      'calibration_pose_euler', 
+                                                                      'pose_command_euler', 
                                                                       self.calibration_pose_callback, 
                                                                       10)
 
@@ -81,7 +81,7 @@ class PlatformCalibrationNode(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = PlatformCalibrationNode()
+    node = PlatformPoseCommandNode()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
