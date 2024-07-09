@@ -960,7 +960,7 @@ class CANHandler:
             self.ROS_logger.warn(f"Error unpacking tilt sensor data: {e}.\nData: {message.data}")
 
         # Log receipt of the tilt sensor reading
-        self.ROS_logger.info(f"Tilt sensor reading received: X: {tiltX:.2f}, Y: {tiltY:.2f}")
+        # self.ROS_logger.info(f"Tilt sensor reading received: X: {tiltX:.2f}, Y: {tiltY:.2f}")
 
         # Store the data in the tilt_sensor_reading buffer
         self.tilt_sensor_reading = (tiltX, tiltY)

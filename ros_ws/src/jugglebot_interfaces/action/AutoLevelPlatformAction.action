@@ -1,0 +1,7 @@
+# For running through the auto-levelling process
+
+# No request part
+---
+float32[] tilt # Measured final tilt of the platform (tiltX, tiltY) {rad}
+---
+float32[] tilt # Measured initial tilt of the platform (tiltX, tiltY) {rad}

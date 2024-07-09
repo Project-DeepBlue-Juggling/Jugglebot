@@ -1,14 +1,11 @@
 import time
 import rclpy
 from rclpy.node import Node
-from jugglebot_interfaces.srv import ODriveCommandService
-from jugglebot_interfaces.msg import RobotStateMessage, CanTrafficReportMessage
-from geometry_msgs.msg import Point, Vector3, PoseStamped, Quaternion
-from builtin_interfaces.msg import Time
-from std_msgs.msg import Float64MultiArray, Byte
+from jugglebot_interfaces.srv import ODriveCommandService, GetTiltReadingService
+from jugglebot_interfaces.msg import RobotStateMessage, CanTrafficReportMessage, LegsTargetReachedMessage, SetMotorVelCurrLimitsMessage
+from std_msgs.msg import Float64MultiArray
 from std_srvs.srv import Trigger
 from .can_handler import CANHandler
-import quaternion  # numpy quaternion
 
 class CANBusHandlerNode(Node):
     def __init__(self):
@@ -38,20 +35,21 @@ class CANBusHandlerNode(Node):
         # Subscribe to relevant topics
         self.motor_pos_subscription = self.create_subscription(Float64MultiArray, 'leg_lengths_topic', self.handle_movement, 10)
 
-        # Set up stuff for auto-leveling functionality
-        self.platform_pose_publisher = self.create_publisher(PoseStamped, 'platform_pose_topic', 10)
-        self.platform_tilt_offset = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0) # Offset to apply to the platform orientation to level it
-        self.move_to_calibration_pose_service = self.create_service(Trigger, 'move_to_calibration_pose', self.move_to_calibration_pose)
-        self.calibrate_platform_tilt_service = self.create_service(Trigger, 'calibrate_platform_tilt', self.calibrate_platform_tilt)
-        # Set up a publisher for the pose offset
-        self.pose_offset_publisher = self.create_publisher(Quaternion, 'pose_offset_topic', 10)
+        # Initialise service server to report the measured tilt readings
+        self.report_tilt_service = self.create_service(GetTiltReadingService, 'get_platform_tilt', self.report_tilt)
 
         # Initialize a variable to track the target positions of the legs
         self.legs_target_position = [None] * 6
 
-        # Set up timer and publisher for whether the platform has reached its target
-        self.platform_target_reached_publisher = self.create_publisher(Byte, 'target_reached', 10)
-        self.legs_target_reached = [False] * 8
+        # Subscribe to absolute motor vel/curr limits topic
+        self.motor_vel_curr_limits_subscription = self.create_subscription(SetMotorVelCurrLimitsMessage,
+                                                                           'set_motor_vel_curr_limits',
+                                                                           self.motor_vel_curr_limits_callback,
+                                                                           10)
+
+        # Set up timer and publisher for whether the legs have reached their targets
+        self.platform_target_reached_publisher = self.create_publisher(LegsTargetReachedMessage, 'target_reached', 10)
+        self.legs_target_reached = [False] * 6
         self.platform_target_reached_timer = self.create_timer(0.1, self.check_platform_target_reached_status)
 
         # Initialize publishers for hardware data
@@ -94,6 +92,25 @@ class CANBusHandlerNode(Node):
         self.get_logger().fatal("Fatal issue detected. Robot will be unresponsive until errors are cleared", throttle_duration_sec=3.0)
         self.is_fatal = True
 
+    def motor_vel_curr_limits_callback(self, msg):
+        '''Set the absolute velocity and current limits for all motors'''
+        # Extract the limits from the message
+        leg_vel_limit = msg.legs_vel_limit
+        leg_curr_limit = msg.legs_curr_limit
+        hand_vel_limit = msg.hand_vel_limit
+        hand_curr_limit = msg.hand_curr_limit
+
+        # If any of these values are 0, don't update that value. This allows for updating only the values that are needed
+        if leg_vel_limit != 0:
+            self.can_handler.set_absolute_vel_curr_limits(leg_vel_limit=leg_vel_limit)
+        if leg_curr_limit != 0:
+            self.can_handler.set_absolute_vel_curr_limits(leg_curr_limit=leg_curr_limit)
+        if hand_vel_limit != 0:
+            self.can_handler.set_absolute_vel_curr_limits(hand_vel_limit=hand_vel_limit)
+        if hand_curr_limit != 0:
+            self.can_handler.set_absolute_vel_curr_limits(hand_curr_limit=hand_curr_limit)
+
+
     #########################################################################################################
     #                                        Commanding Jugglebot                                           #
     #########################################################################################################
@@ -111,84 +128,6 @@ class CANBusHandlerNode(Node):
         except Exception as e:
             self.get_logger().error(f'Error in home_robot: {str(e)}')
             response.success = False
-
-        return response
-
-    def move_to_calibration_pose(self, request, response):
-        ''' Move the platform to the calibration pose'''
-        # Start by setting conservative movement speeds
-        self.can_handler.set_absolute_vel_curr_limits(leg_vel_limit=2.5)
-
-        # Construct the pose message
-        pose_stamped = PoseStamped()
-        pose_stamped.pose.position.x = 0.0
-        pose_stamped.pose.position.y = 0.0
-        pose_stamped.pose.position.z = 170.0
-        pose_stamped.pose.orientation.x = 0.0
-        pose_stamped.pose.orientation.y = 0.0
-        pose_stamped.pose.orientation.z = 0.0
-        pose_stamped.pose.orientation.w = 1.0
-
-        # Set the time stamp
-        pose_stamped.header.stamp = self.get_clock().now().to_msg()
-
-        # Publish the pose
-        self.platform_pose_publisher.publish(pose_stamped)
-
-        response.success = True
-
-        return response
-
-    def calibrate_platform_tilt(self, request, response):
-        # Take reading from the SCL3300 sensor
-        tiltX, tiltY = self.can_handler.get_tilt_sensor_reading()
-
-        if tiltX is None or tiltY is None:
-            response.success = False
-            self.get_logger().error('Failed to read tilt sensor')
-
-        else:
-            self.get_logger().info(f'Tilt sensor reading: X={tiltX:.10f}, Y={tiltY:.10f}')
-
-            def tilt_to_quat(tiltX, tiltY):
-                ''' Convert tilt readings to a quaternion offset to apply to the platform orientation to level it'''
-                # Calculate the roll and pitch angles
-                roll = -tiltX
-                pitch = -tiltY
-
-                # Convert orientation from Euler angles to quaternions
-                q_roll = quaternion.from_rotation_vector([roll, 0, 0])
-                q_pitch = quaternion.from_rotation_vector([0, pitch, 0])
-
-                # q = quaternion.from_euler_angles(-tiltX, -tiltY, 0)
-
-                q = q_roll * q_pitch
-                return q
-
-            # Convert the tilts into a quaternion
-            tilt_offset_quat = tilt_to_quat(tiltX, tiltY)
-
-            # Get the current offset as a numpy quaternion
-            current_offset = quaternion.quaternion(self.platform_tilt_offset.w, 
-                                                   self.platform_tilt_offset.x, 
-                                                   self.platform_tilt_offset.y, 
-                                                   self.platform_tilt_offset.z)
-
-            # Calculate the new offset by multiplying the current offset by the tilt offset quaternion
-            platform_tilt_offset = tilt_offset_quat * current_offset
-
-            # Store the new offset as a ROS2 quaternion
-            self.platform_tilt_offset = Quaternion(x=platform_tilt_offset.x,
-                                                   y=platform_tilt_offset.y,
-                                                   z=platform_tilt_offset.z,
-                                                   w=platform_tilt_offset.w)
-            
-            # Publish the new offset
-            self.pose_offset_publisher.publish(self.platform_tilt_offset)
-
-            # self.get_logger().info(f'Platform tilt offset: {self.platform_tilt_offset}')
-
-        response.success = True
 
         return response
 
@@ -270,54 +209,48 @@ class CANBusHandlerNode(Node):
         return response
 
     def check_platform_target_reached_status(self):
-        '''Check whether the robot has reached its target and publish the result
-        The target is considered reached if all motors are within a certain tolerance of their setpoints
-        Each bit in the message byte corresponds to a motor, with 1 meaning the motor has reached its target
-        The final bit is set to 1 if the sum of all LEG motor velocities is below a threshold'''
+        '''Check whether the robot has reached its target and publish the result.
+        The target is considered reached if all motors are within a certain tolerance of their setpoints'''
 
         # Check if there are any target positions set, or if the last motor positions or velocities are missing
         if None in self.legs_target_position or None in self.last_motor_positions or None in self.last_motor_velocities:
             return
 
         # Set thresholds
-        position_threshold = 0.1 # Revs
+        position_threshold = 0.01 # Revs (approx 0.7 mm with the 22 mm string spool)
         velocity_threshold = 0.1 # Revs/s
 
-        # Check whether each leg has reached its target
-        target_reached = [False] * 8
-        for i, (setpoint, current_position) in enumerate(zip(self.legs_target_position, self.last_motor_positions)):
-            if abs(setpoint - current_position) < position_threshold:
-                target_reached[i] = True
+        # Check whether each leg has reached its target and is stationary
 
-        # No implementation for the hand... yet
-        target_reached[6] = False
+        for i, (setpoint, meas_pos, meas_vel) in enumerate(zip(self.legs_target_position, 
+                                                               self.last_motor_positions, 
+                                                               self.last_motor_velocities)):
+            
+            if abs(meas_pos - setpoint) < position_threshold and abs(meas_vel) < velocity_threshold:
+                self.legs_target_reached[i] = True
 
-        # Check whether the sum of the leg motor velocities is below the threshold
-        leg_velocities = self.last_motor_velocities
-        leg_velocities_sum = sum(leg_velocities)
-
-        # Update the last (eighth) value of target_reached
-        if abs(leg_velocities_sum) < velocity_threshold:
-            target_reached[7] = True
-        else:
-            target_reached[7] = False
 
         # Publish the result
-        msg = Byte()
-        byte_data = 0
-        for i, reached in enumerate(target_reached):
-            if reached:
-                byte_data |= 1 << i
+        msg = LegsTargetReachedMessage()
 
-        # self.get_logger().info(f'Byte data: {byte_data}, after converting to bytes: {bytes([byte_data])}')
+        msg.leg0_has_arrived = self.legs_target_reached[0]
+        msg.leg1_has_arrived = self.legs_target_reached[1]
+        msg.leg2_has_arrived = self.legs_target_reached[2]
+        msg.leg3_has_arrived = self.legs_target_reached[3]
+        msg.leg4_has_arrived = self.legs_target_reached[4]
+        msg.leg5_has_arrived = self.legs_target_reached[5]
 
-        msg.data = bytes([byte_data])
         self.platform_target_reached_publisher.publish(msg)
-
 
     #########################################################################################################
     #                                   Interfacing with the ROS Network                                    #
     #########################################################################################################
+    
+    def report_tilt(self, request, response):
+        # Call the method in the CANHandler to get the tilt readings
+        response.tilt_readings = self.can_handler.get_tilt_sensor_reading()
+
+        return response
 
     def robot_state_callback(self, msg):
         if msg.is_homed and not self.is_homed: # If the robot has just been homed, update the flag
