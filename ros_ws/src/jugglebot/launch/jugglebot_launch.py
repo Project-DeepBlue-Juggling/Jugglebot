@@ -37,7 +37,7 @@ def generate_launch_description():
         'platform_plotter',
         'sp_ik',
         'platform_alignment_node',
-        'platform_calibration_node',
+        'platform_pose_command_node',
         # 'hand_ik',
         'state_manager_node',
         'juggling_path_creator',
