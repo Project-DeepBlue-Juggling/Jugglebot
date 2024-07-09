@@ -25,6 +25,8 @@ find_package(rosidl_default_generators REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/GetRobotGeometry.srv"
   "srv/ODriveCommandService.srv"
+  "srv/GetTiltReadingService.srv"
+  "action/AutoLevelPlatformAction.action"
   "msg/RobotStateMessage.msg"
   "msg/RobotPlotterMessage.msg"
   "msg/PathMessage.msg"
@@ -33,6 +35,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/HandStateList.msg"
   "msg/JugglingPatternGeometryMessage.msg"
   "msg/BallStateMessage.msg"
+  "msg/LegsTargetReachedMessage.msg"
+  "msg/SetMotorVelCurrLimitsMessage.msg"
   DEPENDENCIES geometry_msgs
 )
 
