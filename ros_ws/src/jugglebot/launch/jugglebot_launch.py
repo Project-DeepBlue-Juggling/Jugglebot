@@ -38,6 +38,8 @@ def generate_launch_description():
         'sp_ik',
         'platform_alignment_node',
         'platform_pose_command_node',
+        'hand_trajectory_transmitter_node',
+        'trajectory_timer_node',
         # 'hand_ik',
         'state_manager_node',
         'juggling_path_creator',

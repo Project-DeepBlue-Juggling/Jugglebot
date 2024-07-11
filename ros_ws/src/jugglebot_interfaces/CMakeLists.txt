@@ -37,6 +37,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/BallStateMessage.msg"
   "msg/LegsTargetReachedMessage.msg"
   "msg/SetMotorVelCurrLimitsMessage.msg"
+  "msg/HandTrajectoryPointMessage.msg"
   DEPENDENCIES geometry_msgs
 )
 
