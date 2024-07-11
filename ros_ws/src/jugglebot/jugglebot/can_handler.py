@@ -46,6 +46,7 @@ class CANHandler:
     COMMANDS = {
         "heartbeat_message"     : 0x01,
         "get_error"             : 0x03,
+        "RxSdo"                 : 0x04, # Write to arbitrary parameter
         "set_requested_state"   : 0x07,
         "get_encoder_estimate"  : 0x09,
         "set_controller_mode"   : 0x0b,
@@ -62,11 +63,20 @@ class CANHandler:
         "set_vel_gains"         : 0x1b,
     }
 
+    ARBITRARY_PARAMETER_IDS = {
+        "input_pos"    : 383,
+        "input_vel"    : 384,
+        "input_torque" : 385,
+    }
+
+    OPCODE_READ  = 0x00  # For reading arbitrary parameters from the ODrive
+    OPCODE_WRITE = 0x01  # For writing arbitrary parameters to the ODrive
+
     # Create the reverse dictionary to go from ID to name; mostly for logging human-readable errors
     COMMAND_ID_TO_NAME = {v: k for k, v in COMMANDS.items()}
 
     # Set absolute limit for how far the motors can turn. This is intended as a backup if prior error-checking fails
-    _LEG_MOTOR_MAX_POSITION = 4.2   # Revs
+    _LEG_MOTOR_MAX_POSITION  = 4.2  # Revs
     _HAND_MOTOR_MAX_POSITION = 11.1 # Revs
 
     def __init__(self, logger, bus_name='can0', bitrate=1000000, bus_type='socketcan'):
@@ -314,6 +324,20 @@ class CANHandler:
             if "105" in str(e):
                 # "No buffer space available" is error code 105
                 self.attempt_to_restore_can_connection()
+
+    def send_arbitrary_parameter(self, axis_id, param_name, param_value, param_type='f', op_code=OPCODE_WRITE):
+        '''Send an arbitrary parameter to the ODrive'''
+
+        # Get the endpoint ID for the parameter
+        endpoint_id = self.ARBITRARY_PARAMETER_IDS[param_name]
+
+        # Pack the data into the correct format
+        data = struct.pack('<BHB' + param_type, op_code, endpoint_id, 0, param_value)
+
+        # self.ROS_logger.info(f'Data: {data} for axis {axis_id} with endpoint {endpoint_id} and value {param_value}')
+
+        # Send the message
+        self._send_message(axis_id=axis_id, command_name="RxSdo", data=data, error_descriptor=f"arbitrary parameter: {endpoint_id}")
 
     def send_position_target(self, axis_id, setpoint, min_position=0.0):
         # Commands the given motor to move to the designated setpoint (after checking its magnitude)
