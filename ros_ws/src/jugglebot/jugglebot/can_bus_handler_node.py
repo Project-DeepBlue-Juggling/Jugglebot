@@ -2,7 +2,11 @@ import time
 import rclpy
 from rclpy.node import Node
 from jugglebot_interfaces.srv import ODriveCommandService, GetTiltReadingService
-from jugglebot_interfaces.msg import RobotStateMessage, CanTrafficReportMessage, LegsTargetReachedMessage, SetMotorVelCurrLimitsMessage
+from jugglebot_interfaces.msg import (RobotStateMessage, 
+                                      CanTrafficReportMessage, 
+                                      LegsTargetReachedMessage, 
+                                      SetMotorVelCurrLimitsMessage,
+                                      )
 from std_msgs.msg import Float64MultiArray
 from std_srvs.srv import Trigger
 from .can_handler import CANHandler
@@ -72,11 +76,6 @@ class CANBusHandlerNode(Node):
         # Initialize a timer to poll the CAN bus
         self.timer_canbus = self.create_timer(timer_period_sec=0.001, callback=self._poll_can_bus)
 
-        # Initialize a timer to update the hand trajectory generator with the hand's current pos and vel
-        # self.timer_hand = self.create_timer(timer_period_sec=0.01, callback=self.can_handler.hand_control_loop)
-
-        # Set up a service to call the "prepare for catch" method in the CANHandler
-        self.prepare_for_catch_service = self.create_service(Trigger, 'throw_ball', self.throw_ball)
 
     #########################################################################################################
     #                                     Interfacing with the CAN bus                                      #
@@ -127,16 +126,6 @@ class CANBusHandlerNode(Node):
 
         except Exception as e:
             self.get_logger().error(f'Error in home_robot: {str(e)}')
-            response.success = False
-
-        return response
-
-    def throw_ball(self, request, response):
-        try:
-            self.can_handler.throw_ball()
-            response.success = True
-        except Exception as e:
-            self.get_logger().error(f'Error in throw_ball: {str(e)}')
             response.success = False
 
         return response
