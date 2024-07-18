@@ -1,0 +1,8 @@
+# For sending the hand trajectory. Allows sending of different profiles
+
+int16 sample_rate # Sample rate of the trajectory to be sent
+int16 num_throws  # How many throws to make?
+---
+# Response indicates whether the command was executed successfully
+bool success    # true if the command was executed successfully
+string message  # Details about the execution or error messages
