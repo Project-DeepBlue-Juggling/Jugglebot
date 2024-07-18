@@ -37,13 +37,13 @@ class PlatformPoseCommandNode(Node):
         euler_angles = pose[3:]
 
         # Log the position and euler angles
-        self.get_logger().info(f"Received pose: {position}, {euler_angles}")
+        # self.get_logger().info(f"Received pose: {position}, {euler_angles}")
 
         # Convert the angles to radians
         euler_angles = np.deg2rad(euler_angles)
 
         # Log the converted angles
-        self.get_logger().info(f"Angles in rad: {euler_angles}")
+        # self.get_logger().info(f"Angles in rad: {euler_angles}")
 
         q_roll = quaternion.from_rotation_vector([euler_angles[0], 0, 0])
         q_pitch = quaternion.from_rotation_vector([0, euler_angles[1], 0])
@@ -55,7 +55,7 @@ class PlatformPoseCommandNode(Node):
         # q = quaternion.from_euler_angles(euler_angles[0], euler_angles[1], euler_angles[2])
 
         # Log the converted quaternion
-        self.get_logger().info(f"Converted quaternion: {q}")
+        # self.get_logger().info(f"Converted quaternion: {q}")
 
         # Initialize and populate a PoseStamped message
         pose = PoseStamped()
