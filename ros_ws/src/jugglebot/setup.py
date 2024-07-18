@@ -14,6 +14,14 @@ setup(
         ('share/' + package_name + '/srv', glob('srv/*.srv')),
         (os.path.join('share', package_name, 'launch'), glob('launch/*.py')),
         (os.path.join('share', package_name, 'resources'), glob('resources/*')),
+        (os.path.join('share', package_name, 'resources/throw_trajectories'), glob('resources/throw_trajectories/*'))
+        #  glob('install/jugglebot/share/jugglebot/resources/throw_trajectories/*')) # Also doesn't work.
+
+        # '''This is the error when building:
+        # --- stderr: jugglebot
+        # error: can't copy '/home/jetson/Desktop/Jugglebot/ros_ws/build/jugglebot/resources/0.5s_100Hz_throw.csv': doesn't exist or not a regular file
+        # ---
+        # '''
     ],
     install_requires=['setuptools'],
     zip_safe=True,
