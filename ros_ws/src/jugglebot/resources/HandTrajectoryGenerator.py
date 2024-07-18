@@ -7,12 +7,30 @@ Created on Mon May 13 20:25:20 2024
 import matplotlib.pyplot as plt
 import pandas as pd
 
+# Motor characteristics
+motor_rotor_mass_g    = 19.1
+motor_rotor_radius_m  = 0.015
+
+# Weights
+mgn9h_carriage_mass_g = 26
+printed_hand_mass_g   = 26.5 
+  # Balls
+green_ball_mass_g     = 149.8
+infinity_ball_mass_g  = 105.7 
+gballz_ball_mass_g    = 115.8
+jon_ball_mass_g       = 130
+
+# Inertia
+total_inertia_ref_to_hand = .37; #kg
+eff_spool_r = .00497; #m
+
 #inputs
-throw_duration_s = 0.5      # Airborne time for ball (assumes throw and catch at same height)
+throw_duration_s = 0.7      # Airborne time for ball (assumes throw and catch at same height)
 inertia_ratio = 0.7         # Ratio of hand actuator inertia without ball over total inertia with ball in hand
 throw_vel_hold_pct = 0.05   # % of total stroke used for velocity hold segment of throw
 catch_vel_ratio = 0.8       # Relative Speed of hand compared to ball at catch
 catch_vel_hold_pct = 0.1    # % of total stroke used for velocity hold segment of catch
+sample_rate = 500 # Hz
 
 #constants
 g_mPs2 = 9.806
@@ -101,40 +119,41 @@ print(v)
 print(a)
 
 #generate command time series
-t_now = 0
-sample_rate = 100 # Hz
+t_now = t4
 delta_t = 1/sample_rate
 t_cmd = []
 x_cmd = []
 v_cmd = []
 a_cmd = []
 
+t_dummy = 0
 i = 0
-while t_now < t[-1]:
+while t_now < t7:#t[-1]:
     while t_now > t[i+1]:
         i += 1
     if step_type[i] == 'a':
-        t_cmd.append(t_now)
+        t_cmd.append(t_dummy)
         x_cmd.append(x[i] + v[i]*(t_now - t[i]) + (1/2)*a[i]*pow(t_now-t[i],2))
         v_cmd.append(v[i] + a[i]*(t_now - t[i]))
         a_cmd.append(a[i])
     elif step_type[i] == 'v':
-        t_cmd.append(t_now)
+        t_cmd.append(t_dummy)
         x_cmd.append(x[i] + v[i]*(t_now - t[i]))
         v_cmd.append(v[i])
         a_cmd.append(0)
     elif step_type[i] == 'x':
-        t_cmd.append(t_now)
+        t_cmd.append(t_dummy)
         x_cmd.append(x[i])
         v_cmd.append(0)
         a_cmd.append(0)
     elif step_type[i] == 'e':
-        t_cmd.append(t_now)
+        t_cmd.append(t_dummy)
         x_cmd.append(x[i])
         v_cmd.append(0)
         a_cmd.append(0)
         
     t_now += delta_t
+    t_dummy += delta_t
 
 #Plot x,v,a
 plt.figure(1);
@@ -145,10 +164,9 @@ plt.subplot(312);
 plt.plot(t_cmd,v_cmd)
 plt.subplot(313);
 plt.plot(t_cmd,a_cmd)
+# plt.show()
 
 #Convert acceleration to torque feedforward
-total_inertia_ref_to_hand = .37; #kg
-eff_spool_r = .00497; #m
 
 F = [b*total_inertia_ref_to_hand for b in a_cmd];
 T = [c*eff_spool_r for c in F];
@@ -159,4 +177,4 @@ path = './'
 steps_row = [len(t_cmd)]
 data = [t_cmd,x_cmd,v_cmd,a_cmd,T,steps_row]
 data = pd.DataFrame(data)
-data.to_csv(path+f'{throw_duration_s}s_{sample_rate}Hz_throw.csv', index=False,float_format="%.6f")
+data.to_csv(path+f'{throw_duration_s}s_{sample_rate}Hz_catch_only.csv', index=False,float_format="%.6f")
