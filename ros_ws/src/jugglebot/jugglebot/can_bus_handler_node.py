@@ -6,6 +6,7 @@ from jugglebot_interfaces.msg import (RobotStateMessage,
                                       CanTrafficReportMessage, 
                                       LegsTargetReachedMessage, 
                                       SetMotorVelCurrLimitsMessage,
+                                      HandTelemetryMessage
                                       )
 from std_msgs.msg import Float64MultiArray
 from std_srvs.srv import Trigger
@@ -42,6 +43,9 @@ class CANBusHandlerNode(Node):
         # Initialise service server to report the measured tilt readings
         self.report_tilt_service = self.create_service(GetTiltReadingService, 'get_platform_tilt', self.report_tilt)
 
+        # Initialize a service to prepare the hand for a throw
+        self.prepare_hand_for_throw_service = self.create_service(Trigger, 'prepare_hand_for_throw', self.prepare_hand_for_throw)
+
         # Initialize a variable to track the target positions of the legs
         self.legs_target_position = [None] * 6
 
@@ -57,10 +61,11 @@ class CANBusHandlerNode(Node):
         self.platform_target_reached_timer = self.create_timer(0.1, self.check_platform_target_reached_status)
 
         # Initialize publishers for hardware data
-        self.position_publisher    = self.create_publisher(Float64MultiArray, 'motor_positions', 10)
-        self.velocity_publisher    = self.create_publisher(Float64MultiArray, 'motor_velocities', 10)
-        self.iq_publisher          = self.create_publisher(Float64MultiArray, 'motor_iqs', 10)
-        self.can_traffic_publisher = self.create_publisher(CanTrafficReportMessage, 'can_traffic', 10)
+        self.position_publisher       = self.create_publisher(Float64MultiArray, 'motor_positions', 10)
+        self.velocity_publisher       = self.create_publisher(Float64MultiArray, 'motor_velocities', 10)
+        self.iq_publisher             = self.create_publisher(Float64MultiArray, 'motor_iqs', 10)
+        self.can_traffic_publisher    = self.create_publisher(CanTrafficReportMessage, 'can_traffic', 10)
+        self.hand_telemetry_publisher = self.create_publisher(HandTelemetryMessage, 'hand_telemetry', 10)
 
         # Initialize variables to store the last received data
         self.last_motor_positions = None
@@ -72,6 +77,7 @@ class CANBusHandlerNode(Node):
         self.can_handler.register_callback('motor_velocities', self.publish_motor_velocities)
         self.can_handler.register_callback('motor_iqs', self.publish_motor_iqs)
         self.can_handler.register_callback('can_traffic', self.publish_can_traffic)
+        self.can_handler.register_callback('hand_telemetry', self.publish_hand_telemetry)
 
         # Initialize a timer to poll the CAN bus
         self.timer_canbus = self.create_timer(timer_period_sec=0.001, callback=self._poll_can_bus)
@@ -108,7 +114,6 @@ class CANBusHandlerNode(Node):
             self.can_handler.set_absolute_vel_curr_limits(hand_vel_limit=hand_vel_limit)
         if hand_curr_limit != 0:
             self.can_handler.set_absolute_vel_curr_limits(hand_curr_limit=hand_curr_limit)
-
 
     #########################################################################################################
     #                                        Commanding Jugglebot                                           #
@@ -174,7 +179,7 @@ class CANBusHandlerNode(Node):
 
         # Put motors into IDLE
         self.can_handler.set_leg_odrive_state(requested_state='IDLE')
-        self.can_handler._set_requested_state(axis_id=6, requested_state='IDLE') # Also put the hand motor into IDLE
+        self.can_handler.set_requested_state(axis_id=6, requested_state='IDLE') # Also put the hand motor into IDLE
 
     def odrive_command_callback(self, request, response):
         command = request.command
@@ -218,6 +223,9 @@ class CANBusHandlerNode(Node):
             if abs(meas_pos - setpoint) < position_threshold and abs(meas_vel) < velocity_threshold:
                 self.legs_target_reached[i] = True
 
+            else :
+                self.legs_target_reached[i] = False
+
 
         # Publish the result
         msg = LegsTargetReachedMessage()
@@ -230,6 +238,21 @@ class CANBusHandlerNode(Node):
         msg.leg5_has_arrived = self.legs_target_reached[5]
 
         self.platform_target_reached_publisher.publish(msg)
+
+    def prepare_hand_for_throw(self, request, response):
+        '''Prepare the hand for a throw by putting the hand motor in closed loop control,
+        setting the input mode to PASSTHROUGH, and setting the control mode to POSITION_CONTROL'''
+
+        # Put the hand motor in closed loop control
+        self.can_handler.set_requested_state(axis_id=6, requested_state='CLOSED_LOOP_CONTROL')
+
+        # Set the control mode to POSITION_CONTROL and the input mode to PASSTHROUGH
+        self.can_handler.set_control_mode(axis_id=6, control_mode='POSITION_CONTROL', input_mode='PASSTHROUGH')
+
+        response.success = True
+        response.message = 'Hand prepared for throw'
+
+        return response
 
     #########################################################################################################
     #                                   Interfacing with the ROS Network                                    #
@@ -278,6 +301,14 @@ class CANBusHandlerNode(Node):
         msg.report_interval = can_traffic_data['report_interval']
 
         self.can_traffic_publisher.publish(msg)
+
+    def publish_hand_telemetry(self, hand_telemetry_data):
+        msg = HandTelemetryMessage()
+        msg.timestamp = self.get_clock().now().to_msg()
+        msg.position = hand_telemetry_data['position']
+        msg.velocity = hand_telemetry_data['velocity']
+
+        self.hand_telemetry_publisher.publish(msg)
 
     #########################################################################################################
     #                                          Managing the Node                                            #
