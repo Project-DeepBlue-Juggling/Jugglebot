@@ -1,5 +1,7 @@
 import rclpy
 from rclpy.node import Node
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from geometry_msgs.msg import PoseStamped, Quaternion
 from action_msgs.msg import GoalStatus
@@ -21,14 +23,16 @@ class PlatformAlignmentNode(Node):
 
         # Set up a service client to get the tilt sensor reading
         self.get_tilt_reading_client = self.create_client(GetTiltReadingService, 'get_platform_tilt')
+        self.tilt_readings = [None, None] # tiltX, tiltY {rad}
 
         # Set up an action client to conduct the auto-calibration process
         self.auto_level_client = ActionServer(self,
                                               AutoLevelPlatformAction,
                                               'auto_level_platform',
-                                              self.execute_auto_calibrate_callback,
-                                              goal_callback=self.accept_auto_calibrate_callback,
-                                              cancel_callback=self.cancel_auto_calibrate_callback)
+                                               self.execute_auto_calibrate_callback,
+                                               callback_group=MutuallyExclusiveCallbackGroup(),
+                                               goal_callback=self.accept_auto_calibrate_callback,
+                                               cancel_callback=self.cancel_auto_calibrate_callback)
         
         self.platform_pose_publisher = self.create_publisher(PoseStamped, 'platform_pose_topic', 10)
         self.platform_tilt_offset = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0) # Offset to apply to the platform orientation to level it
@@ -60,12 +64,9 @@ class PlatformAlignmentNode(Node):
         self.legs_target_reached[4] = msg.leg4_has_arrived
         self.legs_target_reached[5] = msg.leg5_has_arrived
 
-
-
     #########################################################################################################
     #                                         Alignment Methods                                             #
     #########################################################################################################
-
 
     def accept_auto_calibrate_callback(self, goal_request):
         '''Accept the auto-calibrate goal'''
@@ -76,7 +77,7 @@ class PlatformAlignmentNode(Node):
         self.get_logger().info('Goal cancelled')
         return CancelResponse.ACCEPT
 
-    def execute_auto_calibrate_callback(self, goal_handle):
+    async def execute_auto_calibrate_callback(self, goal_handle):
         '''Execute the auto-calibrate goal'''
 
         # Start by setting conservative movement speeds
@@ -84,13 +85,57 @@ class PlatformAlignmentNode(Node):
         
         # Now move to the calibration pose
         self.move_to_calibration_pose_and_await_arrival()
-        time.sleep(0.5) # Add a short break just to be sure that the motors have stopped moving
+        time.sleep(1.0) # Add a short break just to be sure that the motors have stopped moving
 
         # Get the platform tilt
-        self.get_tilt_reading(last_reading=False, goal_handle=goal_handle)
+        self.get_tilt_reading()
 
-        # Return the goal handle. NOT SURE ABOUT THIS??
-        return goal_handle
+        # Wait until we've got the tilt reading
+        while None in self.tilt_readings:
+            self.get_logger().info('Waiting for tilt reading...', throttle_duration_sec=1.0)
+            time.sleep(0.1)
+
+        # Store and reset the tilt readings
+        tiltX, tiltY = self.tilt_readings
+        self.tilt_readings = [None, None]
+
+        # Publish this tilt reading as feedback
+        feedback = AutoLevelPlatformAction.Feedback()
+        feedback.tilt = [tiltX, tiltY]
+        goal_handle.publish_feedback(feedback)
+
+        # Add the inclinometer offset to the tilt readings
+        tiltX, tiltY = self.add_inclinometer_offset(tiltX, tiltY)
+
+        # Convert the tilt readings to a quaternion offset and publish the result
+        self.convert_tilt_to_quat_and_publish(tiltX, tiltY)
+        
+        # Now move the platform back to the calibration pose
+        self.move_to_calibration_pose_and_await_arrival()
+        time.sleep(0.5) # Add a short break just to be sure that the motors have stopped moving
+
+        # Get the final tilt reading
+        self.get_tilt_reading()
+
+        # Wait until we've got the tilt reading
+        while None in self.tilt_readings:
+            self.get_logger().info('Waiting for tilt reading...', throttle_duration_sec=1.0)
+            time.sleep(0.1)
+
+        # Store and reset the tilt readings
+        tiltX, tiltY = self.tilt_readings
+        self.tilt_readings = [None, None]
+
+        goal_handle.succeed()
+
+        # Publish this tilt reading as the result
+        result = AutoLevelPlatformAction.Result()
+        result.tilt = [tiltX, tiltY]
+
+        # Finally, return the leg velocity limit to 50 rev/s
+        self.set_legs_vel_limit(leg_vel_limit=50.0)
+
+        return result
 
 
     def feedback_callback(self, feedback_msg):
@@ -167,63 +212,18 @@ class PlatformAlignmentNode(Node):
                                    throttle_duration_sec=1.0)
             time.sleep(0.1)
 
-    def get_tilt_reading(self, last_reading, goal_handle):
-        '''Get the tilt reading from the tilt sensor. Different response handlers are used for different readings'''
+    def get_tilt_reading(self):
+        '''Get the tilt reading from the tilt sensor'''
         # Call the tilt sensor service
         tilt_request = GetTiltReadingService.Request()
         future = self.get_tilt_reading_client.call_async(tilt_request)
+        future.add_done_callback(self.process_tilt_reading)
 
-        if not last_reading:
-            future.add_done_callback(lambda future: self.process_intermediate_tilt_reading(future, goal_handle))
-        else:
-            future.add_done_callback(lambda future: self.process_last_tilt_reading(future, goal_handle))
-
-    def process_intermediate_tilt_reading(self, future, goal_handle):
+    def process_tilt_reading(self, future):
         '''Process the tilt reading from the tilt sensor'''
         response = future.result()
         if response is not None:
-            tiltX, tiltY = response.tilt_readings
-
-            # Publish this tilt reading as feedback
-            feedback = AutoLevelPlatformAction.Feedback()
-            feedback.tilt = [tiltX, tiltY]
-            goal_handle.publish_feedback(feedback)
-
-            # Add the inclinometer offset to the tilt readings
-            tiltX, tiltY = self.add_inclinometer_offset(tiltX, tiltY)
-
-            # Convert the tilt readings to a quaternion offset and publish the result
-            self.convert_tilt_to_quat_and_publish(tiltX, tiltY)
-            
-            # Now move the platform back to the calibration pose
-            self.move_to_calibration_pose_and_await_arrival()
-            time.sleep(0.5) # Add a short break just to be sure that the motors have stopped moving
-
-            # Get the final tilt reading
-            self.get_tilt_reading(last_reading=True, goal_handle=goal_handle)
-
-        else:
-            self.get_logger().error('Service call failed')
-
-    def process_last_tilt_reading(self, future, goal_handle):
-        '''Process the tilt reading from the tilt sensor'''
-        response = future.result()
-        if response is not None:
-            tiltX, tiltY = response.tilt_readings
-
-            # Subtract the inclinometer offset from the tilt readings so the result tilt is for the platform
-            tiltX, tiltY = self.subtract_inclinometer_offset(tiltX, tiltY)
-
-            # Publish this tilt reading as the result
-            result = AutoLevelPlatformAction.Result()
-            result.tilt = [tiltX, tiltY]
-
-            goal_handle.succeed()
-            goal_handle.set_result(result)
-
-            # Finally, return the leg velocity limit to 50 rev/s
-            self.set_legs_vel_limit(leg_vel_limit=50.0)
-
+            self.tilt_readings = future.result().tilt_readings
         else:
             self.get_logger().error('Service call failed')
 
@@ -260,14 +260,6 @@ class PlatformAlignmentNode(Node):
         tiltY += np.deg2rad(self.INCLINOMETER_OFFSET[1])
 
         return tiltX, tiltY
-    
-    def subtract_inclinometer_offset(self, tiltX, tiltY):
-        '''Subtract the inclinometer offset from the tilt readings'''
-        # Make sure to convert the offset values to radians (from degrees)
-        tiltX -= np.deg2rad(self.INCLINOMETER_OFFSET[0])
-        tiltY -= np.deg2rad(self.INCLINOMETER_OFFSET[1])
-
-        return tiltX, tiltY
 
     #########################################################################################################
     #                                           End Session                                                 #
@@ -283,7 +275,8 @@ def main(args=None):
     node = PlatformAlignmentNode()
 
     try:
-        rclpy.spin(node)
+        executor = MultiThreadedExecutor()
+        rclpy.spin(node, executor=executor)
     except RuntimeError:
         pass
     except KeyboardInterrupt:
