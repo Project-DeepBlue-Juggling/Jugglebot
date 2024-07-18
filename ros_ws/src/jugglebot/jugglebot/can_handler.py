@@ -113,6 +113,7 @@ class CANHandler:
             'motor_iqs'       : None,
             'motor_velocities': None,
             'can_traffic'     : None,
+            'hand_telemetry'  : None,
         }
 
         # Initialize the number of axes that the robot has
@@ -147,14 +148,14 @@ class CANHandler:
         # See the Teensy firmware for a note on "safe" IDs to not conflict with the ODrives
         self._CAN_traffic_report_ID = 0x7DF
         self._CAN_tilt_reading_ID = 0x7DE
-
+        self._hand_custom_message_ID = (6 << 5) | 0x04  # Axis 6, command 0x04 (RxSdo)
 
         ''' Properties for the hand: '''
 
         # Initialize the default gains for the hand motor
         self.default_hand_gains = {'pos_gain': 18.0, 'vel_gain': 0.007, 'vel_integrator_gain': 0.01}
         self.catch_gains = {'pos_gain': 0.0, 'vel_gain': 0.0, 'vel_integrator_gain': 0.0}
-        self.throw_gains = {'pos_gain': 35.0, 'vel_gain': 0.007, 'vel_integrator_gain': 0.07} # From Jon
+        self.jon_gains = {'pos_gain': 35.0, 'vel_gain': 0.007, 'vel_integrator_gain': 0.07} # From Jon
         
         self.current_hand_gains = self.default_hand_gains
         self.hand_stroke = self._HAND_MOTOR_MAX_POSITION # Revs. The full stroke of the hand motor
@@ -361,7 +362,7 @@ class CANHandler:
         
         self._send_message(axis_id=axis_id, command_name="set_input_pos", data=data, error_descriptor="position target")
 
-    def _set_control_mode(self, axis_id, control_mode, input_mode):
+    def set_control_mode(self, axis_id, control_mode, input_mode):
         ''' Set the control and input modes for the chosen axis_id. 
 
         control_mode options include:
@@ -400,7 +401,7 @@ class CANHandler:
 
         self._send_message(axis_id=axis_id, command_name=command_name, data=data, error_descriptor="Trap traj acc limit")
 
-    def _set_requested_state(self, axis_id, requested_state):
+    def set_requested_state(self, axis_id, requested_state):
         data = self.db.encode_message(f'Axis{axis_id}_Set_Axis_State', 
                                     {'Axis_Requested_State': requested_state})
         
@@ -480,10 +481,10 @@ class CANHandler:
     def run_motor_until_current_limit(self, axis_id, homing_speed, current_limit, current_limit_headroom):
         ''' Run the motor until the current limit is reached. This is used in all homing sequences '''
         # Ensure the axis is in CLOSED_LOOP_CONTROL mode
-        self._set_requested_state(axis_id, requested_state='CLOSED_LOOP_CONTROL')
+        self.set_requested_state(axis_id, requested_state='CLOSED_LOOP_CONTROL')
         
         # Set the hand to velocity control mode
-        self._set_control_mode(axis_id=axis_id, control_mode='VELOCITY_CONTROL', input_mode='VEL_RAMP')
+        self.set_control_mode(axis_id=axis_id, control_mode='VELOCITY_CONTROL', input_mode='VEL_RAMP')
         
         # Set absolute current/velocity limit. Don't use the 'set_absolute_vel_curr_limits' method as it sets all axes simultaneously
         data = self.db.encode_message(f'Axis{axis_id}_Set_Limits',{'Current_Limit':current_limit + current_limit_headroom,
@@ -520,7 +521,7 @@ class CANHandler:
 
             # Check if the limit has been reached. If it has, put the axis into IDLE
             if abs(moving_avg) >= current_limit:
-                self._set_requested_state(axis_id, requested_state='IDLE')
+                self.set_requested_state(axis_id, requested_state='IDLE')
                 return
 
     def run_encoder_search(self, attempt=0):
@@ -532,7 +533,7 @@ class CANHandler:
 
         for axisID in range(self.num_axes):
             if axisID !=6:
-                self._set_requested_state(axisID, requested_state='ENCODER_INDEX_SEARCH')
+                self.set_requested_state(axisID, requested_state='ENCODER_INDEX_SEARCH')
 
         # Wait for all axes to present "Success" (0) in the procedure result
         start_time = time.time()
@@ -561,7 +562,7 @@ class CANHandler:
         hand motor into the correct control/input mode, with correct gains'''
 
         # Set the hand to position control mode
-        self._set_control_mode(axis_id=6, control_mode='POSITION_CONTROL', input_mode='POS_FILTER')
+        self.set_control_mode(axis_id=6, control_mode='POSITION_CONTROL', input_mode='POS_FILTER')
 
         # Move the hand to the top of its stroke
         setpoint = self.hand_stroke - 0.5
@@ -650,8 +651,8 @@ class CANHandler:
         self.set_hand_gains(**self.default_hand_gains)
 
         # Ensure the hand motor is in CLOSED_LOOP_CONTROL mode with POS_FILTER input mode
-        self._set_requested_state(axis_id=6, requested_state='CLOSED_LOOP_CONTROL')
-        self._set_control_mode(axis_id=6, control_mode='POSITION_CONTROL', input_mode='PASSTHROUGH')
+        self.set_requested_state(axis_id=6, requested_state='CLOSED_LOOP_CONTROL')
+        self.set_control_mode(axis_id=6, control_mode='POSITION_CONTROL', input_mode='PASSTHROUGH')
 
         # Now move to near the bottom of the stroke
         self.send_position_target(axis_id=6, setpoint=1.0)
@@ -667,7 +668,7 @@ class CANHandler:
 
         ''' Now that the hand is at the bottom of its stroke, we're ready to implement the throw trajectory'''
         # Stary by setting the throw gains
-        self.set_hand_gains(**self.throw_gains)
+        self.set_hand_gains(**self.jon_gains)
 
         # Set the throw target position to be near the upper end-stop
         throw_target_pos = self.hand_stroke - 3.0 # Be conservative for now
@@ -781,7 +782,7 @@ class CANHandler:
         
     def set_legs_control_and_input_mode(self, control_mode='POSITION_CONTROL', input_mode='TRAP_TRAJ'):
         for axis_id in range(6):
-            self._set_control_mode(axis_id=axis_id, control_mode=control_mode, input_mode=input_mode)
+            self.set_control_mode(axis_id=axis_id, control_mode=control_mode, input_mode=input_mode)
             time.sleep(0.005)
 
         self.ROS_logger.info(f'Legs control mode set to: {control_mode}, input mode set to: {input_mode}')
@@ -797,7 +798,7 @@ class CANHandler:
     def set_leg_odrive_state(self, requested_state='CLOSED_LOOP_CONTROL'):
         # Set the state of the ODrives. Options are "IDLE" or "CLOSED_LOOP_CONTROL" (there are others, but Jugglebot doesn't use them)
         for axis_id in range(6):
-            self._set_requested_state(axis_id=axis_id, requested_state=requested_state)    
+            self.set_requested_state(axis_id=axis_id, requested_state=requested_state)    
             time.sleep(0.005)
 
         self.ROS_logger.info(f'Leg ODrives state changed to {requested_state}')
@@ -834,6 +835,10 @@ class CANHandler:
             if message.data == b'\x01':
                 return
             self._handle_tilt_sensor_reading(message)
+
+        # Or if the message is the custom message going to the hand (sent by hand_trajectory_transmitter_node)
+        elif arbitration_id == self._hand_custom_message_ID:
+            return
 
         else: # If the message is for the ODrives
             # Extract the axis ID from the arbitration ID by right-shifting by 5 bits.
@@ -927,6 +932,10 @@ class CANHandler:
 
         # Print these values for debugging
         # self.ROS_logger.info(f"Axis {axis_id} - Position: {pos_estimate:.2f}, Velocity: {vel_estimate:.2f}")
+
+        # If this data is for the hand, we can publish it separately
+        if axis_id == 6:
+            self._trigger_callback('hand_telemetry', {'position': -pos_estimate, 'velocity': -vel_estimate})
 
         if all(val is not None for val in self.position_buffer):
             # If the buffer is full, send it off!
