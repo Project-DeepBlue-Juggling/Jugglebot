@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # Define the path to the CSV file
-csv_file_path = '/home/jetson/Desktop/HandTelemetry/long-1b-run-some-fast-erroneous-commands.csv'
+csv_file_path = '/home/jetson/Desktop/HandTelemetry/hand_telemetry-from-stream.csv'
 
 # Initialize lists to store the data
 timestamps = []
