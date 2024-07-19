@@ -3,14 +3,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # Define the path to the CSV file
-csv_file_path = '/home/jetson/Desktop/HandTelemetry/hand_telemetry-some-fast-erroneous-commands.csv'
+csv_file_path = '/home/jetson/Desktop/HandTelemetry/long-1b-run-some-fast-erroneous-commands.csv'
 
 # Initialize lists to store the data
 timestamps = []
 positions = []
 velocities = []
 
-linear_gain = 1000 / (np.pi * 9.45) # {rev/m}
+linear_gain = 1000 / (np.pi * 10.268) # {rev/m} 10.268 is experimentally-found effective spool diameter
 
 # Read the CSV file
 with open(csv_file_path, mode='r') as file:
