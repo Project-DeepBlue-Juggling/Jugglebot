@@ -41,6 +41,7 @@ def generate_launch_description():
         'hand_trajectory_transmitter_node',
         'trajectory_timer_node',
         'hand_telemetry_recorder_node',
+        'validating_orientation_node',
         # 'hand_ik',
         'state_manager_node',
         'juggling_path_creator',

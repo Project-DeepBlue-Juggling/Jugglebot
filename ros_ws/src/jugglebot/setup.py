@@ -14,14 +14,6 @@ setup(
         ('share/' + package_name + '/srv', glob('srv/*.srv')),
         (os.path.join('share', package_name, 'launch'), glob('launch/*.py')),
         (os.path.join('share', package_name, 'resources'), glob('resources/*')),
-        (os.path.join('share', package_name, 'resources/throw_trajectories'), glob('resources/throw_trajectories/*'))
-        #  glob('install/jugglebot/share/jugglebot/resources/throw_trajectories/*')) # Also doesn't work.
-
-        # '''This is the error when building:
-        # --- stderr: jugglebot
-        # error: can't copy '/home/jetson/Desktop/Jugglebot/ros_ws/build/jugglebot/resources/0.5s_100Hz_throw.csv': doesn't exist or not a regular file
-        # ---
-        # '''
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -42,6 +34,8 @@ setup(
             'hand_trajectory_transmitter_node = jugglebot.hand_trajectory_transmitter_node:main',
             'trajectory_timer_node = jugglebot.trajectory_timer_node:main',
             'hand_telemetry_recorder_node = jugglebot.hand_telemetry_recorder_node:main',
+            'validating_orientation_node = jugglebot.validating_orientation_node:main',
+            
             'state_manager_node = jugglebot.state_manager_node:main',
             'hand_ik = jugglebot.hand_ik:main',
             'juggling_path_creator = jugglebot.juggling_path_creator:main',
