@@ -549,6 +549,7 @@ class CANHandler:
                 else:
                     self.ROS_logger.error("Encoder index search failed. Clearing errors and retrying...")
                     self.clear_errors()
+                    self.fatal_issue = False # Helps when power has been cut during the previous run
                     self.run_encoder_search(attempt=attempt+1)
 
         self.ROS_logger.info("Encoder index search complete! Jugglebot is ready to be homed.")
@@ -1040,7 +1041,7 @@ class CANHandler:
 
         # If tilt readings are above 45 degrees, then they are invalid (default send for invalid readings is 3.14)
         # If this happens, wait for the next reading
-        if tiltX > 0.78 or tiltY > 0.78:
+        if tiltX > 3.0 or tiltY > 3.0:
             self.ROS_logger.warn("Tilt sensor reading invalid. Waiting for next reading...")
             wait_for_tilt_reading(self)
 
