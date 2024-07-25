@@ -2,6 +2,8 @@
 
 int16 sample_rate # Sample rate of the trajectory to be sent
 int16 num_throws  # How many throws to make?
+float64[] target_pos # What's the target position to throw to? (posX, posY) {m}
+float64 linear_gain_factor # Factor to multiply the linear gain by
 ---
 # Response indicates whether the command was executed successfully
 bool success    # true if the command was executed successfully
