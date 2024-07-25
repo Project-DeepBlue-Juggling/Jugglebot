@@ -3,7 +3,7 @@
 from ament_index_python.packages import get_package_share_directory
 import rclpy
 from rclpy.node import Node
-from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from std_srvs.srv import Trigger
 from geometry_msgs.msg import PoseStamped
@@ -17,6 +17,7 @@ import os
 import can
 import struct
 import quaternion
+from .hand_trajectory_generator import HandTrajGenerator
 
 class HandTrajectoryTransmitter(Node):
     OPCODE_WRITE = 0x01  # For writing arbitrary parameters to the ODrive
@@ -38,6 +39,9 @@ class HandTrajectoryTransmitter(Node):
 
         # Find the package directory
         self.pkg_dir = get_package_share_directory('jugglebot')
+
+        # Initialize the hand trajectory generator
+        self.hand_traj_gen = HandTrajGenerator()
 
         # Initialize the parameters for the CAN bus that will be used by setup_can_bus to initialise the bus itself
         self._can_bus_name = bus_name
@@ -63,6 +67,10 @@ class HandTrajectoryTransmitter(Node):
         # Set up publisher to publish the platform pose
         self.platform_pose_publisher = self.create_publisher(PoseStamped, 'platform_pose_topic', 10)
 
+        # Set up a subscriber to receive the platform pose
+        self.platform_pose_subscription = self.create_subscription(PoseStamped, 'platform_pose_topic', self.platform_pose_callback, 10)
+        self.plat_current_pos = [0.0, 0.0] # x, y pos of the plat COM in mm (don't need z as we assume throw and catch occur at same height)
+
         # Set up a service to read the trajectory from the file and publish it to the topic
         self.send_trajectory_service = self.create_service(SendHandTrajectory,
                                                            'send_trajectory',
@@ -80,6 +88,12 @@ class HandTrajectoryTransmitter(Node):
                                                             'throw_columns',
                                                             self.throw_two_columns,
                                                             callback_group=MutuallyExclusiveCallbackGroup())
+
+        # Set up a service to throw one ball to a nominated location
+        self.throw_to_service = self.create_service(SendHandTrajectory,
+                                                    'throw_to',
+                                                    self.throw_to,
+                                                    callback_group=MutuallyExclusiveCallbackGroup())
         
         # Subscribe to the legs_target_reached topic to check if the platform has reached the calibration pose
         self.legs_target_reached = [False] * 6
@@ -155,15 +169,11 @@ class HandTrajectoryTransmitter(Node):
             self.get_logger().warn(f"CAN message for {param_name} NOT sent to axisID {self.AXIS_ID}! Error: {e}")
 
     #########################################################################################################
-    #                                          CAN Bus (via ROS)                                            #
+    #                                            Platform Pose                                              #
     #########################################################################################################
 
     def send_platform_pose(self, pose):
         '''Publish the platform pose to the platform_pose_topic'''
-
-        # First convert the orientation part of the pose to a quaternion
-        q = quaternion.from_euler_angles(pose[3], pose[4], pose[5])
-
         # Initialize and populate a PoseStamped message
         msg = PoseStamped()
         msg.header.frame_id = 'base_link'
@@ -173,12 +183,19 @@ class HandTrajectoryTransmitter(Node):
         msg.pose.position.y = pose[1]
         msg.pose.position.z = pose[2]
         
-        msg.pose.orientation.x = q.x
-        msg.pose.orientation.y = q.y
-        msg.pose.orientation.z = q.z
-        msg.pose.orientation.w = q.w
+        msg.pose.orientation.x = pose[3]
+        msg.pose.orientation.y = pose[4]
+        msg.pose.orientation.z = pose[5]
+        msg.pose.orientation.w = pose[6]
 
         self.platform_pose_publisher.publish(msg)
+
+    def platform_pose_callback(self, msg):
+        '''Callback to receive the current platform pose.
+        Assumes the platform has stopped moving. ie. won't be correct until the platform has arrived.'''
+
+        self.plat_current_pos = [msg.pose.position.x,
+                             msg.pose.position.y]
 
     #########################################################################################################
     #                                             Trajectory                                                #
@@ -217,11 +234,17 @@ class HandTrajectoryTransmitter(Node):
         # Calculate the throw angle {rad}
         throw_angle = np.arcsin(self.arm_x_span / (throw_velocity * self.throw_duration))
 
+        # Convert the orientation part of the pose to a quaternion
+        throw_q = quaternion.from_euler_angles(0, -throw_angle, 0)
+        catch_q = quaternion.from_euler_angles(0, throw_angle, 0)
+
         # Construct the throw pose
-        self.throw_pose = np.array([self.arm_x_span / 2, 0, self.plat_height, 0, -throw_angle, 0])
+        self.throw_pose = np.array([self.arm_x_span / 2, 0, self.plat_height,
+                                    throw_q.x, throw_q.y, throw_q.z, throw_q.w])
 
         # Construct the catch pose
-        self.catch_pose = np.array([-self.arm_x_span / 2, 0, self.plat_height, 0, throw_angle, 0])
+        self.catch_pose = np.array([-self.arm_x_span / 2, 0, self.plat_height,
+                                    catch_q.x, catch_q.y, catch_q.z, catch_q.w])
 
     def get_traj_file_path(self, sample_rate):
         '''Get the path to the trajectory file based on the sample rate'''
@@ -277,8 +300,8 @@ class HandTrajectoryTransmitter(Node):
         # Calculate the throw and catch poses
         self.calculate_throw_catch_pose()
 
-        # Move the platform to the throw pose and await arrival
-        self.move_platform_to_pose_and_await_arrival(self.throw_pose)
+        # # Move the platform to the throw pose and await arrival
+        # self.move_platform_to_pose_and_await_arrival(self.throw_pose)
 
         # Reset the 'moving_to_catch' flag
         self.moving_to_catch = False
@@ -310,14 +333,14 @@ class HandTrajectoryTransmitter(Node):
             msg.pos = pos[i]
             msg.vel = vel[i]
             msg.tor = tor[i]
-            # self.hand_trajectory_publisher.publish(msg)
+            self.hand_trajectory_publisher.publish(msg)
 
             '''If the hand has started decelerating (with positive velocity), the ball has been thrown 
             and we're ready to move to the catch pose'''
-            if self.moving_to_catch == False:
-                if vel[i] > 0 and vel[i] < vel[i - self.samples_to_wait_before_moving_to_catch_pose]:
-                    self.send_platform_pose(self.catch_pose)
-                    self.moving_to_catch = True
+            # if self.moving_to_catch == False:
+            #     if vel[i] > 0 and vel[i] < vel[i - self.samples_to_wait_before_moving_to_catch_pose]:
+            #         self.send_platform_pose(self.catch_pose)
+            #         self.moving_to_catch = True
 
             time_since_start = time.perf_counter() - start_time
             time_to_wait = time_cmd[i] - time_since_start
@@ -507,6 +530,194 @@ class HandTrajectoryTransmitter(Node):
             self.send_message("input_vel", vel[i])
             self.send_message("input_torque", tor[i])
 
+
+    def get_traj(self, throw_range_mm=0.0, throw_height_m=0.6, linear_gain_factor=1.0):
+        start_time = time.perf_counter()
+
+        # Note that throw_range here is range that the platform covers, not the hand! (Hand/ball range is dealt with by the generator)
+        self.hand_traj_gen.set_throw_parameters(throw_height=throw_height_m, throw_range=throw_range_mm)
+
+        # Get the trajectory
+        time_cmd, pos, vel, tor = self.hand_traj_gen.get_trajectory()
+
+        # Multiply the position and velocity by the linear gain to convert from m to rev
+        pos *= self.LINEAR_GAIN * linear_gain_factor
+        vel *= self.LINEAR_GAIN * linear_gain_factor
+
+        end_time = time.perf_counter()
+        
+        # Log the time taken to generate the trajectory in milliseconds
+        self.get_logger().info(f"Trajectory generation took {(end_time - start_time) * 1000} ms.")
+
+        return time_cmd, pos, vel, tor
+
+    async def throw_to(self, request, response):
+        '''First generates the trajectory, then sends each command over the CAN bus'''
+
+        # Check if the hand is ready to throw
+        if not self.is_hand_ready_to_throw:
+            self.prepare_hand_for_throw()
+            response.success = False
+            response.message = "Hand not ready to throw. Preparing hand for throw..."
+            return response
+        
+        # Ensure the target_position is an array with two elements
+        if len(request.target_pos) != 2:
+            response.success = False
+            response.message = "Target position must have two elements."
+            return response
+
+        linear_gain_factor = request.linear_gain_factor
+
+        # Truncate the linear gain so that it can't be more than 1
+        if linear_gain_factor > 1:
+            linear_gain_factor = 1
+
+        # Extract the target position we're throwing to
+        catch_position = [request.target_pos[0],
+                           request.target_pos[1]] # Tuple of (posX, posY) to move the COM of the platform to {mm}
+
+        # Get the position we're throwing from
+        throw_position = [self.plat_current_pos[0], self.plat_current_pos[1]]
+
+        # Log the target position
+        self.get_logger().info(f"Throwing to position: {catch_position} from: {self.plat_current_pos}")
+
+        # Calculate the range of the platform during the throw
+        throw_range = np.sqrt((catch_position[0] - self.plat_current_pos[0]) ** 2 + (catch_position[1] - self.plat_current_pos[1]) ** 2)
+
+        # Log the throw range
+        self.get_logger().info(f"Throw range: {throw_range}mm")
+
+        # Get the trajectory
+        time_cmd, pos, vel, tor = self.get_traj(throw_range_mm=throw_range, linear_gain_factor=linear_gain_factor)
+
+        # Get the angle of the throw
+        throw_angle = self.hand_traj_gen.get_throw_angle() # Angle of the throw from vertical {rad}
+
+        self.get_logger().info(f"Throw angle (deg): {np.rad2deg(throw_angle)}")
+
+        # Calculate the pose of the platform for the throw
+        throw_ori, catch_ori = self.calc_throw_catch_angle_quaternion(throw_angle, throw_position, catch_position)
+
+        throw_pose = np.array([throw_position[0], throw_position[1], self.plat_height, 
+                               throw_ori.x, throw_ori.y, throw_ori.z, throw_ori.w])
+        
+        # Calculate the pose of the platform for the catch
+        catch_pose = np.array([catch_position[0], catch_position[1], self.plat_height,
+                                catch_ori.x, catch_ori.y, catch_ori.z, catch_ori.w])
+
+        # Log the poses
+        self.get_logger().info(f"Throw pose: {throw_pose}")
+        self.get_logger().info(f"Catch pose: {catch_pose}")
+
+        # Move the platform to the throw pose and await arrival (important to let the platform orient correctly)
+        self.move_platform_to_pose_and_await_arrival(throw_pose)
+
+        # Reset the 'moving_to_catch' flag
+        self.moving_to_catch = False
+        start_time = time.perf_counter()
+        # Publish each point in the trajectory
+        for i in range(len(time_cmd)):
+            msg = HandTrajectoryPointMessage()
+            msg.first_command = False
+            msg.last_command = False
+            
+            if i == 0:
+                msg.first_command = True
+            elif i == len(time_cmd) - 1:
+                msg.last_command = True
+
+            msg.stamp = self.get_clock().now().to_msg() # Timestamp of when this message was sent
+            msg.time = time_cmd[i]
+            msg.pos = pos[i]
+            msg.vel = vel[i]
+            msg.tor = tor[i]
+            self.hand_trajectory_publisher.publish(msg)
+
+            '''If the hand has started decelerating (with positive velocity), the ball has been thrown 
+            and we're ready to move to the catch pose'''
+            if self.moving_to_catch == False:
+                if vel[i] > 0 and vel[i] < vel[i - self.samples_to_wait_before_moving_to_catch_pose]:
+                    self.send_platform_pose(catch_pose)
+                    self.moving_to_catch = True
+
+            time_since_start = time.perf_counter() - start_time
+            time_to_wait = time_cmd[i] - time_since_start
+            if time_to_wait > 0:
+                self.sleep(time_to_wait)
+
+            # Send the data to the ODrive
+            self.send_message("input_pos", pos[i])
+            self.send_message("input_vel", vel[i])
+            self.send_message("input_torque", tor[i])
+
+        end_time = time.perf_counter()
+        self.get_logger().info(f"Trajectory took {end_time - start_time} seconds to send.")
+
+        response.success = True
+        response.message = "Trajectory sent successfully."
+        return response
+
+    def calc_throw_catch_angle_quaternion(self, throw_angle, throw_pos, catch_pos):
+        '''Given the throw angle (from vertical), throw position and catch position,
+        calculate the quaternion that represents the throw angle'''
+
+        # Log the throw and catch positions
+        self.get_logger().info(f"Throw position: {throw_pos}, Catch position: {catch_pos}")
+
+        # If the throw is straight up (throw angle = 0), the quaternion is the identity quaternion
+        if throw_angle == 0:
+            throw_quat = quaternion.one
+            catch_quat = quaternion.one
+        
+        else:
+            # Extract positions
+            x0, y0 = throw_pos
+            x1, y1 = catch_pos
+            z0, z1 = 0, 0 # Catch and throw positions are assumed to be at the same height
+
+            # Calculate the displacement vector
+            dx = x1 - x0
+            dy = y1 - y0
+            dz = z1 - z0
+            displacement = np.array([dx, dy, dz])
+
+            # Calculate the magnitude of the displacement vector
+            disp_mag = np.linalg.norm(displacement)
+
+            # Calculate the throw velocity components
+            v_x = disp_mag * np.sin(throw_angle) * (dx / disp_mag)
+            v_y = disp_mag * np.sin(throw_angle) * (dy / disp_mag)
+            v_z = disp_mag * np.cos(throw_angle)
+            v = np.array([v_x, v_y, v_z])
+
+            # Normalize the throw velocity vector to get the normal vector
+            n = v / np.linalg.norm(v)
+
+            # Extract the components of the normal vector
+            n_x, n_y, n_z = n
+            
+            # Calculate the axis of rotation
+            a_x = -n_y / np.sqrt(n_x**2 + n_y**2)
+            a_y = n_x / np.sqrt(n_x**2 + n_y**2)
+            a_z = 0
+
+            # Calculate the angle of rotation
+            angle = np.arccos(n_z)
+
+            # Calculate the quaternion
+            q_w = np.cos(angle / 2)
+            q_x = a_x * np.sin(angle / 2)
+            q_y = a_y * np.sin(angle / 2)
+            q_z = a_z * np.sin(angle / 2)
+
+            throw_quat = quaternion.quaternion(q_w, q_x, q_y, q_z)
+            catch_quat = throw_quat.inverse()
+
+        return throw_quat, catch_quat
+
+
     #########################################################################################################
     #                                            Node Management                                            #
     #########################################################################################################
@@ -538,6 +749,15 @@ def main(args=None):
     finally:
         node.get_logger().info("Shutting down...")
         node.destroy_node()
+
+        # Shut down the CAN bus
+        if node.bus is not None:
+            try:
+                node.bus.shutdown()
+                node.get_logger().info('CAN bus closed')
+            except Exception as e:
+                node.get_logger().error(f'Error when closing CAN bus: {e}')
+
         rclpy.shutdown()
 
 
