@@ -1,6 +1,5 @@
 '''This node is used to time how quickly the trajectory messages are coming through.
-
-Don't forget to add new nodes to the launch file and setup.py!'''
+'''
 
 import rclpy
 from rclpy.node import Node
@@ -44,7 +43,7 @@ class TrajectoryTimerNode(Node):
             ahead_or_behind_ms = msg.time - time_diff_s
             self.ahead_or_behind.append(ahead_or_behind_ms) # Positive means ahead, negative means behind
 
-            self.get_logger().info(f"Time since start: {time_diff_s}. Command time: {msg.time}. Ahead by: {ahead_or_behind_ms:.2f} ms.")
+            # self.get_logger().info(f"Time since start: {time_diff_s}. Command time: {msg.time}. Ahead by: {ahead_or_behind_ms:.2f} ms.")
         
 
         if msg.last_command == True:
