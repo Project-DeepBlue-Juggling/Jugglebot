@@ -310,9 +310,9 @@ class ValidatingOrientationNode(Node):
         # Write the data to the file so that all the data is saved into separate columns
         with open(file_path, mode='w', newline='') as file:
             writer = csv.writer(file)
-            writer.writerow(['Commanded Tilt X (deg)', 'Commanded Tilt Y (deg)', 
-                             'Measured Tilt X (deg)', 'Measured Tilt Y (deg)',
-                             'Position X (mm)', 'Position Y (mm)'])
+            writer.writerow(['Position X (mm)', 'Position Y (mm)',
+                             'Commanded Tilt X (deg)', 'Commanded Tilt Y (deg)', 
+                             'Measured Tilt X (deg)', 'Measured Tilt Y (deg)'])
             
             for i in range(len(tilt_data['commanded_tilt'])):
                 writer.writerow([tilt_data['position'][i][0], tilt_data['position'][i][1],
