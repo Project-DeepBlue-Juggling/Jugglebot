@@ -199,6 +199,10 @@ class HandTrajGenerator:
     def get_throw_angle(self):
         '''Returns the angle of the throw from the vertical in radians'''
         return self.throw_angle_rad
+    
+    def get_throw_velocity(self):
+        '''Returns the release velocity of the throw in m/s'''
+        return self.throw_vel_mPs
 
 if __name__ == '__main__':
     sim = HandTrajGenerator()

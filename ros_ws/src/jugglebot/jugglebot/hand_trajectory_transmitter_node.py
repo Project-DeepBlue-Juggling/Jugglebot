@@ -567,15 +567,31 @@ class HandTrajectoryTransmitter(Node):
             response.message = "Target position must have two elements."
             return response
 
+        # Handle the linear gain input
         linear_gain_factor = request.linear_gain_factor
-
-        # Truncate the linear gain so that it can't be more than 1
-        if linear_gain_factor > 1:
+        # Truncate the linear gain so that it can't be more than 1. Also if it is less than or equal to 0, set it to 1.
+        if linear_gain_factor > 1 or linear_gain_factor <= 0:
             linear_gain_factor = 1
+
+        # Handle the throw height input
+        throw_height = request.throw_height
+        if throw_height <= 0:
+            throw_height = 0.6
 
         # Extract the target position we're throwing to
         catch_position = [request.target_pos[0],
                            request.target_pos[1]] # Tuple of (posX, posY) to move the COM of the platform to {mm}
+
+        '''Check if the target position is within the range of the platform
+        For now keep it simple and assume any catch position greater than 350 mm is uncatchable
+        If the throw is not catchable, the platform will still throw it, but it won't attempt to catch'''
+
+        if np.linalg.norm(catch_position) > 350:
+            throw_is_catchable = False
+            self.get_logger().warn("Throw is not catchable. Platform will not attempt to catch.")
+        else:
+            throw_is_catchable = True
+
 
         # Get the position we're throwing from
         throw_position = [self.plat_current_pos[0], self.plat_current_pos[1]]
@@ -587,15 +603,21 @@ class HandTrajectoryTransmitter(Node):
         throw_range = np.sqrt((catch_position[0] - self.plat_current_pos[0]) ** 2 + (catch_position[1] - self.plat_current_pos[1]) ** 2)
 
         # Log the throw range
-        self.get_logger().info(f"Throw range: {throw_range}mm")
+        self.get_logger().info(f"Throw range: {throw_range} mm")
 
         # Get the trajectory
-        time_cmd, pos, vel, tor = self.get_traj(throw_range_mm=throw_range, linear_gain_factor=linear_gain_factor)
+        time_cmd, pos, vel, tor = self.get_traj(throw_range_mm=throw_range, 
+                                                linear_gain_factor=linear_gain_factor, 
+                                                throw_height_m=throw_height)
 
         # Get the angle of the throw
         throw_angle = self.hand_traj_gen.get_throw_angle() # Angle of the throw from vertical {rad}
 
         self.get_logger().info(f"Throw angle (deg): {np.rad2deg(throw_angle)}")
+
+        # Get the throw velocity and log it
+        throw_velocity = self.hand_traj_gen.get_throw_velocity()
+        self.get_logger().info(f"Throw velocity (m/s): {throw_velocity}")
 
         # Calculate the pose of the platform for the throw
         throw_ori, catch_ori = self.calc_throw_catch_angle_quaternion(throw_angle, throw_position, catch_position)
@@ -608,8 +630,8 @@ class HandTrajectoryTransmitter(Node):
                                 catch_ori.x, catch_ori.y, catch_ori.z, catch_ori.w])
 
         # Log the poses
-        self.get_logger().info(f"Throw pose: {throw_pose}")
-        self.get_logger().info(f"Catch pose: {catch_pose}")
+        # self.get_logger().info(f"Throw pose: {throw_pose}")
+        # self.get_logger().info(f"Catch pose: {catch_pose}")
 
         # Move the platform to the throw pose and await arrival (important to let the platform orient correctly)
         self.move_platform_to_pose_and_await_arrival(throw_pose)
@@ -637,7 +659,7 @@ class HandTrajectoryTransmitter(Node):
 
             '''If the hand has started decelerating (with positive velocity), the ball has been thrown 
             and we're ready to move to the catch pose'''
-            if self.moving_to_catch == False:
+            if throw_is_catchable and self.moving_to_catch == False:
                 if vel[i] > 0 and vel[i] < vel[i - self.samples_to_wait_before_moving_to_catch_pose]:
                     self.send_platform_pose(catch_pose)
                     self.moving_to_catch = True
@@ -654,6 +676,11 @@ class HandTrajectoryTransmitter(Node):
 
         end_time = time.perf_counter()
         self.get_logger().info(f"Trajectory took {end_time - start_time} seconds to send.")
+        self.get_logger().info("") # Empty print to tidy the logs
+
+        # If the throw wasn't catchable, end by returning the platform to the default position
+        if not throw_is_catchable:
+            self.move_platform_to_pose_and_await_arrival([0.0, 0.0, self.plat_height, 0.0, 0.0, 0.0, 1.0])
 
         response.success = True
         response.message = "Trajectory sent successfully."
