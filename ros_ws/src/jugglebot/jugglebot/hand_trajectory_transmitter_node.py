@@ -8,7 +8,7 @@ from rclpy.executors import MultiThreadedExecutor
 from std_srvs.srv import Trigger
 from geometry_msgs.msg import PoseStamped
 from jugglebot_interfaces.srv import SendHandTrajectory
-from jugglebot_interfaces.msg import HandTrajectoryPointMessage, LegsTargetReachedMessage
+from jugglebot_interfaces.msg import HandTrajectoryPointMessage, LegsTargetReachedMessage, SetTrapTrajLimitsMessage
 import numpy as np
 np.bool = np.bool_ # Fixes issue on importing pandas
 import pandas as pd
@@ -52,7 +52,7 @@ class HandTrajectoryTransmitter(Node):
         # Initialize parameters related to the throw
         self.samples_to_wait_before_moving_to_catch_pose = 10 # Num samples to wait after hand has started decelerating before moving to catch pose
         self.arm_x_span = 240.0 # {mm} Total span between catch and throw. ASSUMES SYMMETRIC THROW ABOUT Y-Z PLANE
-        self.columns_x_span = 150.0 # {mm} Total span between the two columns. ASSUMES SYMMETRIC THROWS ABOUT Y-Z PLANE
+        self.columns_x_span = 100.0 # {mm} Total span between the two columns. ASSUMES SYMMETRIC THROWS ABOUT Y-Z PLANE
         self.throw_duration = None # {s} Duration of the throw
         self.plat_height = 170.0 # {mm} Height of the platform when throwing/catching (above its lowest position)
         self.throw_pose = None
@@ -95,6 +95,9 @@ class HandTrajectoryTransmitter(Node):
                                                     self.throw_to,
                                                     callback_group=MutuallyExclusiveCallbackGroup())
         
+        # Set up a publisher to the set_trap_traj_limits topic
+        self.set_trap_traj_limits_publisher = self.create_publisher(SetTrapTrajLimitsMessage, 'leg_trap_traj_limits', 10)
+        
         # Subscribe to the legs_target_reached topic to check if the platform has reached the calibration pose
         self.legs_target_reached = [False] * 6
         self.legs_target_reached_subscription = self.create_subscription(LegsTargetReachedMessage,
@@ -112,11 +115,11 @@ class HandTrajectoryTransmitter(Node):
         # Set up the CAN bus
         self.setup_can_bus()
 
-    def sleep(self, duration, get_now=time.perf_counter):
+    def sleep(self, duration_sec, get_now=time.perf_counter):
         '''Sleep using Jean-Marc's method'''
 
         now = get_now()
-        end = now + duration
+        end = now + duration_sec
         while now < end:
             now = get_now()
 
@@ -168,6 +171,17 @@ class HandTrajectoryTransmitter(Node):
             # Log that the message couldn't be sent
             self.get_logger().warn(f"CAN message for {param_name} NOT sent to axisID {self.AXIS_ID}! Error: {e}")
 
+    def send_trap_traj_limits(self, vel_limit, acc_limit, dec_limit):
+        '''Send the trapezoidal trajectory limits to the ODrive'''
+        # Create the message
+        msg = SetTrapTrajLimitsMessage()
+        msg.trap_vel_limit = vel_limit
+        msg.trap_acc_limit = acc_limit
+        msg.trap_dec_limit = dec_limit
+
+        # Publish the message
+        self.set_trap_traj_limits_publisher.publish(msg)
+
     #########################################################################################################
     #                                            Platform Pose                                              #
     #########################################################################################################
@@ -194,11 +208,10 @@ class HandTrajectoryTransmitter(Node):
         '''Callback to receive the current platform pose.
         Assumes the platform has stopped moving. ie. won't be correct until the platform has arrived.'''
 
-        self.plat_current_pos = [msg.pose.position.x,
-                             msg.pose.position.y]
+        self.plat_current_pos = [msg.pose.position.x, msg.pose.position.y]
 
     #########################################################################################################
-    #                                             Trajectory                                                #
+    #                                           Helper Functions                                            #
     #########################################################################################################
 
     def move_platform_to_pose_and_await_arrival(self, pose):
@@ -245,6 +258,12 @@ class HandTrajectoryTransmitter(Node):
         # Construct the catch pose
         self.catch_pose = np.array([-self.arm_x_span / 2, 0, self.plat_height,
                                     catch_q.x, catch_q.y, catch_q.z, catch_q.w])
+
+
+    #########################################################################################################
+    #                                       Trajectory (File-Based)                                         #
+    #########################################################################################################
+
 
     def get_traj_file_path(self, sample_rate):
         '''Get the path to the trajectory file based on the sample rate'''
@@ -393,67 +412,6 @@ class HandTrajectoryTransmitter(Node):
         response.message = "Continuous throw successful."
         return response
 
-    async def throw_two_columns(self, request, response):
-        '''Juggle two balls in a columns pattern'''
-        # Get the path to the trajectory file
-        throw_traj_file_path = os.path.join(self.pkg_dir, 'resources', '0.7s_500Hz_throw_only.csv')
-        catch_traj_file_path = os.path.join(self.pkg_dir, 'resources', '0.7s_500Hz_catch_only.csv')
-
-        if throw_traj_file_path is None or catch_traj_file_path is None:
-            response.success = False
-            response.message = "Trajectory file not found."
-            return response
-
-        air_time = 0.7 # {s} Time the ball is in the air
-        throw_duration = 0.18067655371346988 # {s} Duration of the throw movement
-        catch_duration = 0.9366099815410561 - 0.93660998154105618 # {s} Duration of the catch movement
-
-        time_between_throw_end_and_next_throw_start = air_time / 2 - throw_duration
-        
-        # Calculate the throw and catch poses
-        left_pose = np.array([-self.columns_x_span / 2, 0, self.plat_height, 0, 0, 0])
-        right_pose = np.array([self.columns_x_span / 2, 0, self.plat_height, 0, 0, 0])
-
-        # Move the platform to the left pose and await arrival
-        self.move_platform_to_pose_and_await_arrival(left_pose)
-
-        # Check if the hand is ready to throw
-        if not self.is_hand_ready_to_throw:
-            self.prepare_hand_for_throw()
-            response.success = False
-            response.message = "Hand not ready to throw. Preparing hand for throw..."
-            return response
-
-        start_time = time.perf_counter()
-
-        # Throw the first ball
-        self.follow_trajectory(throw_traj_file_path)
-        first_throw_time = time.perf_counter()
-
-        # Move to the right pose
-        self.send_platform_pose(right_pose)
-
-        # Lower the hand to prepare to throw the second ball
-        self.follow_trajectory(catch_traj_file_path)
-
-        # Wait until it's time to throw the second ball
-        time_to_wait = time_between_throw_end_and_next_throw_start - (time.perf_counter() - start_time)
-        if time_to_wait > 0:
-            self.sleep(time_to_wait)
-
-        # Throw the second ball
-        self.follow_trajectory(throw_traj_file_path)
-
-        # Move to the left pose
-        self.send_platform_pose(left_pose)
-
-        # Wait until it's time to catch the first ball
-        time_to_wait = air_time - (time.perf_counter() - first_throw_time)
-
-        response.success = True
-        response.message = "Two columns throw successful."
-        return response
-
     def throw_and_move_to_catch_one_ball(self, trajectory_file_path, catch_pose):
         # Read the trajectory from the file
         trajectory = pd.read_csv(trajectory_file_path)
@@ -504,7 +462,7 @@ class HandTrajectoryTransmitter(Node):
             self.send_message("input_vel", vel[i])
             self.send_message("input_torque", tor[i])
 
-    def follow_trajectory(self, trajectory_file_path):
+    def follow_trajectory_from_file(self, trajectory_file_path):
         '''Move the hand along the trajectory specified in the file'''
         # Read the trajectory from the file
         trajectory = pd.read_csv(trajectory_file_path)
@@ -530,6 +488,205 @@ class HandTrajectoryTransmitter(Node):
             self.send_message("input_vel", vel[i])
             self.send_message("input_torque", tor[i])
 
+    #########################################################################################################
+    #                                  Trajectory (Generated As Required)                                   #
+    #########################################################################################################
+
+    async def throw_two_columns(self, request, response):
+        '''Juggle two balls in a columns pattern'''
+        # Check if the hand is ready to throw
+        if not self.is_hand_ready_to_throw:
+            self.prepare_hand_for_throw()
+            response.success = False
+            response.message = "Hand not ready to throw. Preparing hand for throw..."
+            return response
+        
+        # Handle the throw height input
+        throw_height = request.throw_height
+        if throw_height <= 0:
+            throw_height = 0.7
+
+        # Handle the "samples to wait" input (if provided).
+        if request.time_to_wait_after_throwing > 0:
+            # Store the number of samples to wait, ensuring it's an integer
+            time_to_sleep_after_throwing = request.time_to_wait_after_throwing
+        else:
+            # Default to 0
+            time_to_sleep_after_throwing = 0
+
+        # Handle the trap traj limits input 
+        self.send_trap_traj_limits(vel_limit=request.leg_properties[0], 
+                                   acc_limit=request.leg_properties[1], 
+                                   dec_limit=request.leg_properties[2])
+        
+        # Handle num_throws input
+        num_throws = 1
+        if request.num_throws > 0:
+            num_throws = request.num_throws
+
+        # Set the parameters of the throw/catch
+        self.hand_traj_gen.set_throw_parameters(throw_height=throw_height, throw_range=0.0)
+            
+        # Get the throw trajectory
+        t_throw, pos_throw, vel_throw, tor_throw, air_time = self.hand_traj_gen.get_throw_trajectory()
+
+        # Get the catch trajectory
+        t_catch, pos_catch, vel_catch, tor_catch = self.hand_traj_gen.get_catch_trajectory()
+
+        # Apply the linear gain to the position and velocity
+        pos_throw *= self.LINEAR_GAIN
+        vel_throw *= self.LINEAR_GAIN
+        pos_catch *= self.LINEAR_GAIN
+        vel_catch *= self.LINEAR_GAIN
+
+        throw_duration = t_throw[-1] # {s} Duration of the throw movement
+        catch_duration = t_catch[-1] # {s} Duration of the catch movement
+
+        # Log these durations
+        self.get_logger().info(f"Throw duration: {throw_duration} s")
+        self.get_logger().info(f"Catch duration: {catch_duration} s")
+
+        time_between_throw_end_and_next_throw_start = 0.5 - throw_duration
+
+        # Log this time
+        self.get_logger().info(f"Time between throw end and next throw start: {time_between_throw_end_and_next_throw_start} s")
+        
+        # Calculate the throw and catch poses
+        left_pose = np.array([-self.columns_x_span / 2, 0, self.plat_height, 0.0, 0.0, 0.0, 1.0])
+        right_pose = np.array([self.columns_x_span / 2, 0, self.plat_height, 0.0, 0.0, 0.0, 1.0])
+
+        # Move the platform to the left pose and await arrival
+        self.move_platform_to_pose_and_await_arrival(left_pose)
+
+        start_time = time.perf_counter()
+        time_of_last_throw = None
+
+        for throw_num in range(num_throws):
+            # Throw the first ball
+            first_throw_time = self.follow_generated_trajectory(t_throw, pos_throw, vel_throw, tor_throw)
+            # first_throw_time = time.perf_counter()
+
+            # Log this throw time
+            self.get_logger().info(f"First throw time: {first_throw_time - start_time}")
+
+            # Log the difference between this throw and the last
+            if time_of_last_throw is not None:
+                self.get_logger().info(f"Time between throws: {first_throw_time - time_of_last_throw}. Throw number: {throw_num}")
+            
+            time_of_last_throw = first_throw_time
+
+            # Wait briefly before moving to the right pose
+            self.sleep(time_to_sleep_after_throwing)
+            self.send_platform_pose(right_pose)
+
+            if throw_num == 0:
+                # Lower the hand to prepare to throw the second ball
+                self.follow_generated_trajectory(t_catch, pos_catch, vel_catch, tor_catch)
+            else:
+                # Wait until it's time to catch the second ball
+                time_to_wait = air_time - (time.perf_counter() - second_throw_time)
+                if time_to_wait > 0:
+                    self.sleep(time_to_wait)
+                
+                # Catch the second ball
+                self.follow_generated_trajectory(t_catch, pos_catch, vel_catch, tor_catch)
+
+            # Wait until it's time to throw the second ball
+            time_to_wait = time_between_throw_end_and_next_throw_start - (time.perf_counter() - first_throw_time)
+            if time_to_wait > 0:
+                self.sleep(time_to_wait)
+
+            # Throw the second ball
+            second_throw_time = self.follow_generated_trajectory(t_throw, pos_throw, vel_throw, tor_throw)
+            # second_throw_time = time.perf_counter()
+
+            # Log this throw time
+            self.get_logger().info(f"Second throw time: {second_throw_time - start_time}")
+
+            # Log the difference between this throw and the last
+            self.get_logger().info(f"Time between throws: {second_throw_time - time_of_last_throw}. Throw number: {throw_num}")
+            time_of_last_throw = second_throw_time
+
+            # Wait briefly before moving to the left pose
+            self.sleep(time_to_sleep_after_throwing)
+            self.send_platform_pose(left_pose)
+
+            # Wait until it's time to catch the first ball
+            time_to_wait = air_time - (time.perf_counter() - first_throw_time)
+            if time_to_wait > 0:
+                self.sleep(time_to_wait)
+
+            # Catch the first ball
+            self.follow_generated_trajectory(t_catch, pos_catch, vel_catch, tor_catch)
+
+            # Wait until it's time to throw the first ball again
+            time_to_wait = time_between_throw_end_and_next_throw_start - (time.perf_counter() - second_throw_time)
+            if time_to_wait > 0:
+                self.sleep(time_to_wait)
+
+        response.success = True
+        response.message = "Two columns throw successful."
+        return response
+
+
+    def follow_generated_trajectory(self, time_cmd, pos, vel, tor, pose_to_move_to_after_throwing=None):
+        '''Follow the trajectory generated by the hand trajectory generator
+        If pos_to_move_to_after_throwing is provided, move to that position after the throw'''
+
+        if pose_to_move_to_after_throwing is not None:
+            moving_after_throw = True
+        else:
+            moving_after_throw = False
+
+        # Set throw_time to None for now. If the trajectory being followed is a throw, this will update with the actual throw time
+        throw_time = None 
+
+        # Reset the 'moving_to_catch' flag
+        self.moving_to_catch = False
+        start_time = time.perf_counter()
+        # Publish each point in the trajectory
+        for i in range(len(time_cmd)):
+            msg = HandTrajectoryPointMessage()
+            msg.first_command = False
+            msg.last_command = False
+            
+            if i == 0:
+                msg.first_command = True
+            elif i == len(time_cmd) - 1:
+                msg.last_command = True
+
+            msg.stamp = self.get_clock().now().to_msg() # Timestamp of when this message was sent
+            msg.time = time_cmd[i]
+            msg.pos = pos[i]
+            msg.vel = vel[i]
+            msg.tor = tor[i]
+            self.hand_trajectory_publisher.publish(msg)
+
+            '''If the hand has started decelerating (with positive velocity), the ball has been thrown 
+            and we're ready to move to the catch pose'''
+            if self.moving_to_catch == False:
+                if vel[i] > 0 and vel[i] < vel[i - self.samples_to_wait_before_moving_to_catch_pose]:
+                    if moving_after_throw:
+                        self.send_platform_pose(pose_to_move_to_after_throwing)
+                        pass
+
+                    self.moving_to_catch = True
+                    throw_time = time.perf_counter()
+
+            time_since_start = time.perf_counter() - start_time
+            time_to_wait = time_cmd[i] - time_since_start
+            if time_to_wait > 0:
+                self.sleep(time_to_wait)
+
+            # Send the data to the ODrive
+            self.send_message("input_pos", pos[i])
+            self.send_message("input_vel", vel[i])
+            self.send_message("input_torque", tor[i])
+
+        end_time = time.perf_counter()
+        # self.get_logger().info(f"Trajectory took {end_time - start_time} seconds to send.")
+
+        return throw_time
 
     def get_traj(self, throw_range_mm=0.0, throw_height_m=0.6, linear_gain_factor=1.0):
         start_time = time.perf_counter()
@@ -538,7 +695,7 @@ class HandTrajectoryTransmitter(Node):
         self.hand_traj_gen.set_throw_parameters(throw_height=throw_height_m, throw_range=throw_range_mm)
 
         # Get the trajectory
-        time_cmd, pos, vel, tor = self.hand_traj_gen.get_trajectory()
+        time_cmd, pos, vel, tor = self.hand_traj_gen.get_full_trajectory()
 
         # Multiply the position and velocity by the linear gain to convert from m to rev
         pos *= self.LINEAR_GAIN * linear_gain_factor
@@ -583,10 +740,10 @@ class HandTrajectoryTransmitter(Node):
                            request.target_pos[1]] # Tuple of (posX, posY) to move the COM of the platform to {mm}
 
         '''Check if the target position is within the range of the platform
-        For now keep it simple and assume any catch position greater than 350 mm is uncatchable
+        For now keep it simple and assume any catch position greater than 300 mm is uncatchable
         If the throw is not catchable, the platform will still throw it, but it won't attempt to catch'''
 
-        if np.linalg.norm(catch_position) > 350:
+        if np.linalg.norm(catch_position) > 300:
             throw_is_catchable = False
             self.get_logger().warn("Throw is not catchable. Platform will not attempt to catch.")
         else:
@@ -617,7 +774,7 @@ class HandTrajectoryTransmitter(Node):
 
         # Get the throw velocity and log it
         throw_velocity = self.hand_traj_gen.get_throw_velocity()
-        self.get_logger().info(f"Throw velocity (m/s): {throw_velocity}")
+        self.get_logger().info(f"Throw velocity (m/s): {throw_velocity:.3f}")
 
         # Calculate the pose of the platform for the throw
         throw_ori, catch_ori = self.calc_throw_catch_angle_quaternion(throw_angle, throw_position, catch_position)
@@ -636,47 +793,7 @@ class HandTrajectoryTransmitter(Node):
         # Move the platform to the throw pose and await arrival (important to let the platform orient correctly)
         self.move_platform_to_pose_and_await_arrival(throw_pose)
 
-        # Reset the 'moving_to_catch' flag
-        self.moving_to_catch = False
-        start_time = time.perf_counter()
-        # Publish each point in the trajectory
-        for i in range(len(time_cmd)):
-            msg = HandTrajectoryPointMessage()
-            msg.first_command = False
-            msg.last_command = False
-            
-            if i == 0:
-                msg.first_command = True
-            elif i == len(time_cmd) - 1:
-                msg.last_command = True
-
-            msg.stamp = self.get_clock().now().to_msg() # Timestamp of when this message was sent
-            msg.time = time_cmd[i]
-            msg.pos = pos[i]
-            msg.vel = vel[i]
-            msg.tor = tor[i]
-            self.hand_trajectory_publisher.publish(msg)
-
-            '''If the hand has started decelerating (with positive velocity), the ball has been thrown 
-            and we're ready to move to the catch pose'''
-            if throw_is_catchable and self.moving_to_catch == False:
-                if vel[i] > 0 and vel[i] < vel[i - self.samples_to_wait_before_moving_to_catch_pose]:
-                    self.send_platform_pose(catch_pose)
-                    self.moving_to_catch = True
-
-            time_since_start = time.perf_counter() - start_time
-            time_to_wait = time_cmd[i] - time_since_start
-            if time_to_wait > 0:
-                self.sleep(time_to_wait)
-
-            # Send the data to the ODrive
-            self.send_message("input_pos", pos[i])
-            self.send_message("input_vel", vel[i])
-            self.send_message("input_torque", tor[i])
-
-        end_time = time.perf_counter()
-        self.get_logger().info(f"Trajectory took {end_time - start_time} seconds to send.")
-        self.get_logger().info("") # Empty print to tidy the logs
+        _ = self.follow_generated_trajectory(time_cmd, pos, vel, tor, catch_pose if throw_is_catchable else None)
 
         # If the throw wasn't catchable, end by returning the platform to the default position
         if not throw_is_catchable:
