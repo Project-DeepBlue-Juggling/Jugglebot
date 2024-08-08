@@ -6,6 +6,7 @@ from jugglebot_interfaces.msg import (RobotStateMessage,
                                       CanTrafficReportMessage, 
                                       LegsTargetReachedMessage, 
                                       SetMotorVelCurrLimitsMessage,
+                                      SetTrapTrajLimitsMessage,
                                       HandTelemetryMessage
                                       )
 from std_msgs.msg import Float64MultiArray
@@ -53,6 +54,12 @@ class CANBusHandlerNode(Node):
         self.motor_vel_curr_limits_subscription = self.create_subscription(SetMotorVelCurrLimitsMessage,
                                                                            'set_motor_vel_curr_limits',
                                                                            self.motor_vel_curr_limits_callback,
+                                                                           10)
+        
+        # Subscribe to trapezoidal trajectory limits topic
+        self.motor_trap_traj_limits_subscription = self.create_subscription(SetTrapTrajLimitsMessage,
+                                                                           'leg_trap_traj_limits',
+                                                                           self.motor_trap_traj_limits_callback,
                                                                            10)
 
         # Set up timer and publisher for whether the legs have reached their targets
@@ -105,15 +112,23 @@ class CANBusHandlerNode(Node):
         hand_vel_limit = msg.hand_vel_limit
         hand_curr_limit = msg.hand_curr_limit
 
-        # If any of these values are 0, don't update that value. This allows for updating only the values that are needed
-        if leg_vel_limit != 0:
-            self.can_handler.set_absolute_vel_curr_limits(leg_vel_limit=leg_vel_limit)
-        if leg_curr_limit != 0:
-            self.can_handler.set_absolute_vel_curr_limits(leg_curr_limit=leg_curr_limit)
-        if hand_vel_limit != 0:
-            self.can_handler.set_absolute_vel_curr_limits(hand_vel_limit=hand_vel_limit)
-        if hand_curr_limit != 0:
-            self.can_handler.set_absolute_vel_curr_limits(hand_curr_limit=hand_curr_limit)
+        self.can_handler.set_absolute_vel_curr_limits(leg_vel_limit=leg_vel_limit, leg_current_limit=leg_curr_limit,
+                                                      hand_vel_limit=hand_vel_limit, hand_current_limit=hand_curr_limit)
+
+    def motor_trap_traj_limits_callback(self, msg):
+        '''Set the trapezoidal trajectory limits (velocity, acceleration, deceleration) for all leg motors'''
+        # Extract the limits from the message
+        leg_vel_limit = msg.trap_vel_limit
+        leg_acc_limit = msg.trap_acc_limit
+        leg_dec_limit = msg.trap_dec_limit
+
+        self.can_handler.set_trap_traj_vel_acc_limits(velocity_limit=leg_vel_limit, 
+                                                      acceleration_limit=leg_acc_limit, 
+                                                      deceleration_limit=leg_dec_limit)
+
+        # Log this change
+        self.get_logger().info(f"Updated trapezoidal trajectory limits: vel={leg_vel_limit}, acc={leg_acc_limit}, dec={leg_dec_limit}")
+
 
     #########################################################################################################
     #                                        Commanding Jugglebot                                           #
