@@ -150,6 +150,11 @@ class CANHandler:
         self._CAN_tilt_reading_ID = 0x7DE
         self._hand_custom_message_ID = (6 << 5) | 0x04  # Axis 6, command 0x04 (RxSdo)
 
+        ''' Properties for the motor limits'''
+        self.hand_motor_abs_limits = {'current_limit': 50.0, 'velocity_limit': 1000.0}
+        self.leg_motor_abs_limits = {'current_limit': 20.0, 'velocity_limit': 50.0}
+        self.leg_trap_traj_limits = {'vel_limit': 15.0, 'acc_limit': 30.0, 'dec_limit': 30.0}
+
         ''' Properties for the hand: '''
 
         # Initialize the default gains for the hand motor
@@ -160,11 +165,6 @@ class CANHandler:
         self.current_hand_gains = self.default_hand_gains
         self.hand_stroke = self._HAND_MOTOR_MAX_POSITION # Revs. The full stroke of the hand motor
 
-        # self.hand_trajectory_generator = RuckigTrajectoryGenerator(dof=1, cycle_time=0.01)
-
-
-        # Set default constraints for the hand trajectory generator
-        # self.hand_trajectory_generator.set_constraints(max_velocity=5.0, max_acceleration=10.0, max_jerk=50.0)
 
         # Finally, set up the CAN bus and establish communication with the robot
         self.setup_can_bus()
@@ -383,7 +383,8 @@ class CANHandler:
 
         self._send_message(axis_id=axis_id, command_name=command_name, data=data, error_descriptor="Setting control mode")
 
-    def _set_trap_traj_vel_acc(self, axis_id, vel_limit, acc_limit):
+    def _set_trap_traj_vel_acc(self, axis_id, vel_limit, acc_limit, dec_limit):
+        '''Set the trap traj limits for a single nominated axis.'''
         # Start with the velocity limit
         data = self.db.encode_message(f'Axis{axis_id}_Set_Traj_Vel_Limit', 
                                     {'Traj_Vel_Limit':vel_limit})
@@ -395,7 +396,7 @@ class CANHandler:
         # Now update the acceleration limit
         data = self.db.encode_message(f'Axis{axis_id}_Set_Traj_Accel_Limits', 
                                     {'Traj_Accel_Limit': acc_limit, 
-                                     'Traj_Decel_Limit': acc_limit * 0.7}) # Am definitely going to forget about that 0.7 ...
+                                     'Traj_Decel_Limit': dec_limit})
         
         command_name = "set_traj_acc_limits"
 
@@ -760,26 +761,46 @@ class CANHandler:
         self.set_trap_traj_vel_acc_limits()
         self.set_leg_odrive_state()
 
-    def set_absolute_vel_curr_limits(self, leg_current_limit=20.0, leg_vel_limit=50.0, hand_current_limit=50.0, hand_vel_limit=1000.0):
+    def set_absolute_vel_curr_limits(self, leg_current_limit=0, leg_vel_limit=0, hand_current_limit=0, hand_vel_limit=0):
+        ''' Set the absolute velocity and current limits for the ODrives. These are the maximum values that the motors can reach'''
+        # If any of the values aren't provided, use the default values. For values that are provided, update the defaults
+        if leg_current_limit > 0:
+            self.leg_motor_abs_limits['current_limit'] = leg_current_limit
+
+        if leg_vel_limit > 0:
+            self.leg_motor_abs_limits['velocity_limit'] = leg_vel_limit
+
+        if hand_current_limit > 0:
+            self.hand_motor_abs_limits['current_limit'] = hand_current_limit
+
+        if hand_vel_limit > 0:
+            self.hand_motor_abs_limits['velocity_limit'] = hand_vel_limit
+
         # Set the absolute velocity and current limits. If these values are exceeded, the ODrive will throw an error
         for axis_id in range(self.num_axes):
             if axis_id < 6:
+                # If a leg motor
                 data = self.db.encode_message(f'Axis{axis_id}_Set_Limits', 
-                                            {'Velocity_Limit':leg_vel_limit, 'Current_Limit': leg_current_limit})
+                                            {'Velocity_Limit': self.leg_motor_abs_limits['velocity_limit'], 
+                                             'Current_Limit': self.leg_motor_abs_limits['current_limit']})
                     
                 self._send_message(axis_id=axis_id, command_name="set_vel_curr_limits", data=data, error_descriptor='Current/Vel Limits')
                 time.sleep(0.005)
 
             if axis_id == 6:
+                # If the hand motor
                 data = self.db.encode_message(f'Axis{axis_id}_Set_Limits', 
-                                            {'Velocity_Limit':hand_vel_limit, 'Current_Limit': hand_current_limit})
+                                            {'Velocity_Limit': self.hand_motor_abs_limits['velocity_limit'], 
+                                             'Current_Limit': self.hand_motor_abs_limits['current_limit']})
                     
                 self._send_message(axis_id=axis_id, command_name="set_vel_curr_limits", data=data, error_descriptor='Current/Vel Limits')
                 time.sleep(0.005)
         
 
-        self.ROS_logger.info(f'Absolute limits set. Leg vel lim: {leg_vel_limit} rev/s, Leg current lim: {leg_current_limit} A.'
-                             f' Hand vel lim: {hand_vel_limit} rev/s, Hand current lim: {hand_current_limit} A')
+        self.ROS_logger.info(f"Absolute limits set. Leg vel lim: {self.leg_motor_abs_limits['velocity_limit']} rev/s, "
+                             f"Leg current lim: {self.leg_motor_abs_limits['current_limit']} A."
+                             f" Hand vel lim: {self.hand_motor_abs_limits['velocity_limit']} rev/s, "
+                             f"Hand current lim: {self.hand_motor_abs_limits['current_limit']} A")
         
     def set_legs_control_and_input_mode(self, control_mode='POSITION_CONTROL', input_mode='TRAP_TRAJ'):
         for axis_id in range(6):
@@ -788,13 +809,33 @@ class CANHandler:
 
         self.ROS_logger.info(f'Legs control mode set to: {control_mode}, input mode set to: {input_mode}')
 
-    def set_trap_traj_vel_acc_limits(self, velocity_limit=10.0, acceleration_limit=10.0):
+    def set_trap_traj_vel_acc_limits(self, velocity_limit=0, acceleration_limit=0, deceleration_limit=0):
+        ''' Set the velocity and acceleration limits for the trap_traj control mode'''
+        # If any of the values aren't provided, use the default values. For values that are provided, update the defaults
+        if velocity_limit > 0:
+            self.leg_trap_traj_limits['vel_limit'] = velocity_limit
+
+        if acceleration_limit > 0:
+            self.leg_trap_traj_limits['acc_limit'] = acceleration_limit
+
+        if deceleration_limit > 0:
+            self.leg_trap_traj_limits['dec_limit'] = deceleration_limit
+
+        # If the deceleration limit hasn't been set, default to 80% of the acceleration limit
+        if deceleration_limit is None:
+            deceleration_limit = acceleration_limit * 0.8
+
         # Set the velocity and acceleration limits while in trap_traj control mode
         for axis_id in range(6):
-            self._set_trap_traj_vel_acc(axis_id=axis_id, vel_limit=velocity_limit, acc_limit=acceleration_limit)
+            self._set_trap_traj_vel_acc(axis_id=axis_id, 
+                                        vel_limit=self.leg_trap_traj_limits['vel_limit'], 
+                                        acc_limit=self.leg_trap_traj_limits['acc_limit'], 
+                                        dec_limit=self.leg_trap_traj_limits['dec_limit'])
             time.sleep(0.005)
 
-        self.ROS_logger.info(f'Legs trap traj limits set. Vel: {velocity_limit}, Acc: {acceleration_limit}')
+        self.ROS_logger.info(f"Legs trap traj limits set. Vel: {self.leg_trap_traj_limits['vel_limit']}, "
+                             f"Acc: {self.leg_trap_traj_limits['acc_limit']}, "
+                             f"Dec: {self.leg_trap_traj_limits['dec_limit']}")
 
     def set_leg_odrive_state(self, requested_state='CLOSED_LOOP_CONTROL'):
         # Set the state of the ODrives. Options are "IDLE" or "CLOSED_LOOP_CONTROL" (there are others, but Jugglebot doesn't use them)
