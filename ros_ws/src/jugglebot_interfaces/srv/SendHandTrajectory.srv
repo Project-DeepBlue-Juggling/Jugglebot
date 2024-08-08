@@ -5,6 +5,9 @@ int16 num_throws            # How many throws to make?
 float64[] target_pos        # What's the target position to throw to? (posX, posY) {m}
 float64 linear_gain_factor  # Factor to multiply the linear gain by
 float64 throw_height        # How high to throw the ball? {m}
+float64 samples_to_wait     # How many samples to wait before thrown ball can be assumed to have left the hand?
+float64 time_to_wait_after_throwing
+float64[] leg_properties   # [trap_vel_limit, trap_acc_limit, trap_dec_limit]
 ---
 # Response indicates whether the command was executed successfully
 bool success    # true if the command was executed successfully
