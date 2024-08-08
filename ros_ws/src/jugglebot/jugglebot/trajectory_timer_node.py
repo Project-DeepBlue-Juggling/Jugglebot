@@ -47,7 +47,7 @@ class TrajectoryTimerNode(Node):
         
 
         if msg.last_command == True:
-            self.get_logger().info(f"Messages received: {self.messages_received}")
+            # self.get_logger().info(f"Messages received: {self.messages_received}")
             # self.get_logger().info(f"Time: {self.time}")
             self.messages_received = 0
 
