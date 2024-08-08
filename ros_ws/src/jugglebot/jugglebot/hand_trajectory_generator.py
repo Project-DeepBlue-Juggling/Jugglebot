@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 class HandTrajGenerator:
-    def __init__(self, throw_height=0.6, throw_range=0.0, inertia_ratio=0.7,
+    def __init__(self, throw_height=0.7, throw_range=0.0, inertia_ratio=0.7,
                  throw_vel_hold_pct=0.05, catch_vel_ratio=0.8, catch_vel_hold_pct=0.1,
                  sample_rate=500):
         
@@ -111,6 +111,76 @@ class HandTrajGenerator:
         self.a4 = self.catch_accel_mPs2
         self.a6 = self.catch_decel_mPs2
 
+    def generate_throw_time_series(self):
+        # Generate the time series for the throw
+        t = [0, self.t1, self.t2, self.t3]
+
+        x = [0, self.x1, self.x2, self.x3]
+        v = [0, self.v1, self.v1, 0]
+        a = [self.a0, 0, self.a2, 0]
+
+        t_now = 0
+        delta_t = 1 / self.sample_rate
+        t_throw = []
+        x_throw = []
+        v_throw = []
+        a_throw = []
+
+        i = 0
+        while t_now < t[-1]:
+            while t_now > t[i + 1]:
+                i += 1
+            t_throw.append(t_now)
+            x_throw.append(x[i] + v[i] * (t_now - t[i]) + (1 / 2) * a[i] * pow(t_now - t[i], 2))
+            v_throw.append(v[i] + a[i] * (t_now - t[i]))
+            a_throw.append(a[i])
+            t_now += delta_t
+
+        # Ensure the velocity and acceleration are 0 at the end of the throw
+        v_throw[-1] = 0
+        a_throw[-1] = 0
+
+        tor_throw = self.convert_acceleration_to_torque(a_throw)
+
+        return t_throw, x_throw, v_throw, a_throw, tor_throw
+
+    def generate_catch_time_series(self):
+        # Generate the time series for the catch, with time starting from the start of the catch (t4)
+        t = [self.t4, self.t5, self.t6, self.t7]
+
+        # Subtract t4 from all time values, so that the time series starts from 0
+        t = [t_i - self.t4 for t_i in t]
+
+        x = [self.x3, self.x5, self.x6, 0]
+        v = [0, self.v5, self.v5, 0]
+        a = [self.a4, 0, self.a6, 0]
+
+        t_now = 0
+        delta_t = 1 / self.sample_rate
+        t_catch = []
+        x_catch = []
+        v_catch = []
+        a_catch = []
+
+        i = 0
+        while t_now < t[-1]:
+            while t_now > t[i + 1]:
+                i += 1
+            t_catch.append(t_now)
+            x_catch.append(x[i] + v[i] * (t_now - t[i]) + (1 / 2) * a[i] * pow(t_now - t[i], 2))
+            v_catch.append(v[i] + a[i] * (t_now - t[i]))
+            a_catch.append(a[i])
+            t_now += delta_t
+
+        # Ensure the velocity and acceleration are 0 at the end of the catch
+        v_catch[-1] = 0
+        a_catch[-1] = 0
+
+        tor_catch = self.convert_acceleration_to_torque(a_catch)
+
+        return t_catch, x_catch, v_catch, a_catch, tor_catch
+
+
     def generate_command_time_series(self):
         step_type = ['a', 'v', 'a', 'x', 'a', 'v', 'a', 'x', 'e']
         t = [0, self.t1, self.t2, self.t3, self.t4, self.t5, self.t6, self.t7, self.t8]
@@ -152,28 +222,27 @@ class HandTrajGenerator:
 
             t_now += delta_t
 
-        self.t_cmd = t_cmd
-        self.x_cmd = x_cmd
-        self.v_cmd = v_cmd
-        self.a_cmd = a_cmd
+        tor_cmd = self.convert_acceleration_to_torque(a_cmd)
 
-        self.tor_cmd = self.convert_acceleration_to_torque()
+        return t_cmd, x_cmd, v_cmd, a_cmd, tor_cmd
 
-    def convert_acceleration_to_torque(self):
-        F = [b * self.total_inertia_ref_to_hand for b in self.a_cmd]
+    def convert_acceleration_to_torque(self, accel_cmd=None):
+        F = [b * self.total_inertia_ref_to_hand for b in accel_cmd]
         T = [c * self.eff_spool_r for c in F]
         return T
 
-    def plot_results(self):
-        plt.figure(1)
-        plt.clf()
+    def plot_results(self, t, x, v, a, title=None):
+        plt.figure()
+        # plt.clf()
         plt.subplot(311)
-        plt.plot(self.t_cmd, self.x_cmd)
+        plt.plot(t, x)
         plt.subplot(312)
-        plt.plot(self.t_cmd, self.v_cmd)
+        plt.plot(t, v)
         plt.subplot(313)
-        plt.plot(self.t_cmd, self.a_cmd)
-        plt.show()
+        plt.plot(t, a)
+        if title:
+            plt.suptitle(title)
+        # plt.show()
 
     def set_throw_parameters(self, throw_height, throw_range, inertia_ratio=0.7,
                             throw_vel_hold_pct=0.05, catch_vel_ratio=0.8, catch_vel_hold_pct=0.1):
@@ -188,13 +257,29 @@ class HandTrajGenerator:
         self.calculate_throw_parameters()
         self.calculate_catch_parameters()
 
-    def get_trajectory(self):
+    def get_full_trajectory(self):
         '''Generates and returns the trajectory'''
         # Generate the command time series
-        self.generate_command_time_series()
+        t, x, v, a, tor = self.generate_command_time_series()
 
         # Convert the lists to numpy arrays before returning
-        return np.array(self.t_cmd), np.array(self.x_cmd), np.array(self.v_cmd), np.array(self.tor_cmd)
+        return np.array(t), np.array(x), np.array(v), np.array(tor)
+    
+    def get_throw_trajectory(self):
+        '''Generates and returns the throw trajectory'''
+        # Generate the throw time series
+        t, x, v, a, tor = self.generate_throw_time_series()
+
+        # Convert the lists to numpy arrays before returning
+        return np.array(t), np.array(x), np.array(v), np.array(tor), self.throw_duration_s
+    
+    def get_catch_trajectory(self):
+        '''Generates and returns the catch trajectory'''
+        # Generate the catch time series
+        t, x, v, a, tor = self.generate_catch_time_series()
+
+        # Convert the lists to numpy arrays before returning
+        return np.array(t), np.array(x), np.array(v), np.array(tor)
 
     def get_throw_angle(self):
         '''Returns the angle of the throw from the vertical in radians'''
@@ -205,5 +290,17 @@ class HandTrajGenerator:
         return self.throw_vel_mPs
 
 if __name__ == '__main__':
-    sim = HandTrajGenerator()
-    sim.plot_results()
+    sim = HandTrajGenerator(throw_height=0.7)
+    # t, x, v, a, tor = sim.generate_command_time_series()
+    t, x, v, a, tor = sim.generate_throw_time_series()
+    sim.plot_results(t, x, v, a, title='Throw')
+    print(f'Number of points in throw trajectory: {len(t)}')
+
+    t, x, v, a, tor = sim.generate_catch_time_series()
+    sim.plot_results(t, x, v, a, title='Catch')
+
+
+    print(f'Number of points in catch trajectory: {len(t)}')
+    print(f'Throw time = {sim.throw_duration_s:.3f} s')
+
+    plt.show()
