@@ -378,40 +378,6 @@ class HandTrajectoryTransmitter(Node):
         response.message = "Trajectory sent successfully."
         return response
 
-    async def throw_continuous(self, request, response):
-        '''Throw back and forth continuously'''
-        # Get the path to the trajectory file
-        traj_file_path = self.get_traj_file_path(request.sample_rate)
-
-        if traj_file_path is None:
-            response.success = False
-            response.message = "Trajectory file not found."
-            return response
-
-        # Calculate the throw and catch poses
-        self.calculate_throw_catch_pose()
-
-        # Move the platform to the throw pose and await arrival
-        self.move_platform_to_pose_and_await_arrival(self.throw_pose)
-
-        # Check if the hand is ready to throw
-        if not self.is_hand_ready_to_throw:
-            self.prepare_hand_for_throw()
-            response.success = False
-            response.message = "Hand not ready to throw. Preparing hand for throw..."
-            return response
-
-        # Reset the 'moving_to_catch' flag
-        self.moving_to_catch = False
-
-        for _ in range(request.num_throws):
-            self.throw_and_move_to_catch_one_ball(traj_file_path, self.catch_pose)
-            self.throw_and_move_to_catch_one_ball(traj_file_path, self.throw_pose)
-
-        response.success = True
-        response.message = "Continuous throw successful."
-        return response
-
     def throw_and_move_to_catch_one_ball(self, trajectory_file_path, catch_pose):
         # Read the trajectory from the file
         trajectory = pd.read_csv(trajectory_file_path)
@@ -489,145 +455,8 @@ class HandTrajectoryTransmitter(Node):
             self.send_message("input_torque", tor[i])
 
     #########################################################################################################
-    #                                  Trajectory (Generated As Required)                                   #
+    #                                   Trajectory (Generated on Demand)                                    #
     #########################################################################################################
-
-    async def throw_two_columns(self, request, response):
-        '''Juggle two balls in a columns pattern'''
-        # Check if the hand is ready to throw
-        if not self.is_hand_ready_to_throw:
-            self.prepare_hand_for_throw()
-            response.success = False
-            response.message = "Hand not ready to throw. Preparing hand for throw..."
-            return response
-        
-        # Handle the throw height input
-        throw_height = request.throw_height
-        if throw_height <= 0:
-            throw_height = 0.7
-
-        # Handle the "samples to wait" input (if provided).
-        if request.time_to_wait_after_throwing > 0:
-            # Store the number of samples to wait, ensuring it's an integer
-            time_to_sleep_after_throwing = request.time_to_wait_after_throwing
-        else:
-            # Default to 0
-            time_to_sleep_after_throwing = 0
-
-        # Handle the trap traj limits input 
-        self.send_trap_traj_limits(vel_limit=request.leg_properties[0], 
-                                   acc_limit=request.leg_properties[1], 
-                                   dec_limit=request.leg_properties[2])
-        
-        # Handle num_throws input
-        num_throws = 1
-        if request.num_throws > 0:
-            num_throws = request.num_throws
-
-        # Set the parameters of the throw/catch
-        self.hand_traj_gen.set_throw_parameters(throw_height=throw_height, throw_range=0.0)
-            
-        # Get the throw trajectory
-        t_throw, pos_throw, vel_throw, tor_throw, air_time = self.hand_traj_gen.get_throw_trajectory()
-
-        # Get the catch trajectory
-        t_catch, pos_catch, vel_catch, tor_catch = self.hand_traj_gen.get_catch_trajectory()
-
-        # Apply the linear gain to the position and velocity
-        pos_throw *= self.LINEAR_GAIN
-        vel_throw *= self.LINEAR_GAIN
-        pos_catch *= self.LINEAR_GAIN
-        vel_catch *= self.LINEAR_GAIN
-
-        throw_duration = t_throw[-1] # {s} Duration of the throw movement
-        catch_duration = t_catch[-1] # {s} Duration of the catch movement
-
-        # Log these durations
-        self.get_logger().info(f"Throw duration: {throw_duration} s")
-        self.get_logger().info(f"Catch duration: {catch_duration} s")
-
-        time_between_throw_end_and_next_throw_start = 0.5 - throw_duration
-
-        # Log this time
-        self.get_logger().info(f"Time between throw end and next throw start: {time_between_throw_end_and_next_throw_start} s")
-        
-        # Calculate the throw and catch poses
-        left_pose = np.array([-self.columns_x_span / 2, 0, self.plat_height, 0.0, 0.0, 0.0, 1.0])
-        right_pose = np.array([self.columns_x_span / 2, 0, self.plat_height, 0.0, 0.0, 0.0, 1.0])
-
-        # Move the platform to the left pose and await arrival
-        self.move_platform_to_pose_and_await_arrival(left_pose)
-
-        start_time = time.perf_counter()
-        time_of_last_throw = None
-
-        for throw_num in range(num_throws):
-            # Throw the first ball
-            first_throw_time = self.follow_generated_trajectory(t_throw, pos_throw, vel_throw, tor_throw)
-            # first_throw_time = time.perf_counter()
-
-            # Log this throw time
-            self.get_logger().info(f"First throw time: {first_throw_time - start_time}")
-
-            # Log the difference between this throw and the last
-            if time_of_last_throw is not None:
-                self.get_logger().info(f"Time between throws: {first_throw_time - time_of_last_throw}. Throw number: {throw_num}")
-            
-            time_of_last_throw = first_throw_time
-
-            # Wait briefly before moving to the right pose
-            self.sleep(time_to_sleep_after_throwing)
-            self.send_platform_pose(right_pose)
-
-            if throw_num == 0:
-                # Lower the hand to prepare to throw the second ball
-                self.follow_generated_trajectory(t_catch, pos_catch, vel_catch, tor_catch)
-            else:
-                # Wait until it's time to catch the second ball
-                time_to_wait = air_time - (time.perf_counter() - second_throw_time)
-                if time_to_wait > 0:
-                    self.sleep(time_to_wait)
-                
-                # Catch the second ball
-                self.follow_generated_trajectory(t_catch, pos_catch, vel_catch, tor_catch)
-
-            # Wait until it's time to throw the second ball
-            time_to_wait = time_between_throw_end_and_next_throw_start - (time.perf_counter() - first_throw_time)
-            if time_to_wait > 0:
-                self.sleep(time_to_wait)
-
-            # Throw the second ball
-            second_throw_time = self.follow_generated_trajectory(t_throw, pos_throw, vel_throw, tor_throw)
-            # second_throw_time = time.perf_counter()
-
-            # Log this throw time
-            self.get_logger().info(f"Second throw time: {second_throw_time - start_time}")
-
-            # Log the difference between this throw and the last
-            self.get_logger().info(f"Time between throws: {second_throw_time - time_of_last_throw}. Throw number: {throw_num}")
-            time_of_last_throw = second_throw_time
-
-            # Wait briefly before moving to the left pose
-            self.sleep(time_to_sleep_after_throwing)
-            self.send_platform_pose(left_pose)
-
-            # Wait until it's time to catch the first ball
-            time_to_wait = air_time - (time.perf_counter() - first_throw_time)
-            if time_to_wait > 0:
-                self.sleep(time_to_wait)
-
-            # Catch the first ball
-            self.follow_generated_trajectory(t_catch, pos_catch, vel_catch, tor_catch)
-
-            # Wait until it's time to throw the first ball again
-            time_to_wait = time_between_throw_end_and_next_throw_start - (time.perf_counter() - second_throw_time)
-            if time_to_wait > 0:
-                self.sleep(time_to_wait)
-
-        response.success = True
-        response.message = "Two columns throw successful."
-        return response
-
 
     def follow_generated_trajectory(self, time_cmd, pos, vel, tor, pose_to_move_to_after_throwing=None):
         '''Follow the trajectory generated by the hand trajectory generator
@@ -707,6 +536,273 @@ class HandTrajectoryTransmitter(Node):
         self.get_logger().info(f"Trajectory generation took {(end_time - start_time) * 1000} ms.")
 
         return time_cmd, pos, vel, tor
+
+    def calc_throw_catch_angle_quaternion(self, throw_angle, throw_pos, catch_pos):
+        '''Given the throw angle (from vertical), throw position and catch position,
+        calculate the quaternion that represents the throw angle'''
+
+        # Log the throw and catch positions
+        self.get_logger().info(f"Throw position: {throw_pos}, Catch position: {catch_pos}")
+
+        # If the throw is straight up (throw angle = 0), the quaternion is the identity quaternion
+        if throw_angle == 0:
+            throw_quat = quaternion.one
+            catch_quat = quaternion.one
+        
+        else:
+            # Extract positions
+            x0, y0 = throw_pos
+            x1, y1 = catch_pos
+            z0, z1 = 0, 0 # Catch and throw positions are assumed to be at the same height
+
+            # Calculate the displacement vector
+            dx = x1 - x0
+            dy = y1 - y0
+            dz = z1 - z0
+            displacement = np.array([dx, dy, dz])
+
+            # Calculate the magnitude of the displacement vector
+            disp_mag = np.linalg.norm(displacement)
+
+            # Calculate the throw velocity components
+            v_x = disp_mag * np.sin(throw_angle) * (dx / disp_mag)
+            v_y = disp_mag * np.sin(throw_angle) * (dy / disp_mag)
+            v_z = disp_mag * np.cos(throw_angle)
+            v = np.array([v_x, v_y, v_z])
+
+            # Normalize the throw velocity vector to get the normal vector
+            n = v / np.linalg.norm(v)
+
+            # Extract the components of the normal vector
+            n_x, n_y, n_z = n
+            
+            # Calculate the axis of rotation
+            a_x = -n_y / np.sqrt(n_x**2 + n_y**2)
+            a_y = n_x / np.sqrt(n_x**2 + n_y**2)
+            a_z = 0
+
+            # Calculate the angle of rotation
+            angle = np.arccos(n_z)
+
+            # Calculate the quaternion
+            q_w = np.cos(angle / 2)
+            q_x = a_x * np.sin(angle / 2)
+            q_y = a_y * np.sin(angle / 2)
+            q_z = a_z * np.sin(angle / 2)
+
+            throw_quat = quaternion.quaternion(q_w, q_x, q_y, q_z)
+            catch_quat = throw_quat.inverse()
+
+        return throw_quat, catch_quat
+
+    async def throw_two_columns(self, request, response):
+        '''Juggle two balls in a columns pattern'''
+        # Check if the hand is ready to throw
+        if not self.is_hand_ready_to_throw:
+            self.prepare_hand_for_throw()
+            response.success = False
+            response.message = "Hand not ready to throw. Preparing hand for throw..."
+            return response
+        
+        # Handle the throw height input
+        throw_height = request.throw_height
+        if throw_height <= 0:
+            throw_height = 0.7
+
+        # Handle the first throw height input
+        first_throw_height = request.first_throw_height
+        if first_throw_height <= 0:
+            first_throw_height = throw_height
+
+        # Handle the "time_to_wait_after_throwing" input (if provided).
+        if request.time_to_wait_after_throwing > 0:
+            time_to_sleep_after_throwing = request.time_to_wait_after_throwing
+        else:
+            # Default to 0.003
+            time_to_sleep_after_throwing = 0.003
+
+        # Handle the trap traj limits input 
+        self.send_trap_traj_limits(vel_limit=request.leg_properties[0], 
+                                   acc_limit=request.leg_properties[1], 
+                                   dec_limit=request.leg_properties[2])
+        
+        # Handle num_throws input
+        num_throws = 1
+        if request.num_throws > 0:
+            num_throws = request.num_throws
+
+        # Handle the linear gain input
+        linear_gain_factor = request.linear_gain_factor
+        # Truncate the linear gain so that it can't be more than 1. Also if it is less than or equal to 0, set it to 1.
+        if linear_gain_factor > 1 or linear_gain_factor <= 0:
+            linear_gain_factor = 1
+
+        # Handle the delay percentage input
+        delay_percentage = request.delay_percentage
+        if delay_percentage <= 0 or delay_percentage > 1:
+            delay_percentage = 1.0
+
+        # Handle the beat gain factor input
+        beat_gain_factor = request.beat_gain_factor
+        if beat_gain_factor <= 0:
+            beat_gain_factor = 1.0
+
+        # Handle the pattern width input
+        pattern_width = request.pattern_width
+        if pattern_width <= 0:
+            pattern_width = self.columns_x_span
+
+        # Set the parameters and get the trajectory for the first throw
+        self.hand_traj_gen.set_throw_parameters(throw_height=first_throw_height)
+        t_throw1, pos_throw1, vel_throw1, tor_throw1, air_time1 = self.hand_traj_gen.get_throw_trajectory()
+
+        # Set the parameters of the throw/catch and get both trajectories
+        self.hand_traj_gen.set_throw_parameters(throw_height=throw_height)
+        t_throw, pos_throw, vel_throw, tor_throw, air_time = self.hand_traj_gen.get_throw_trajectory()
+        t_catch, pos_catch, vel_catch, tor_catch = self.hand_traj_gen.get_catch_trajectory()   
+
+        # Calculate the minimum duration the hand will be holding the ball for (if throw happens immediately after catch)
+        minimum_hold_duration = self.hand_traj_gen.catch_duration_s + self.hand_traj_gen.throw_duration_s
+        beat_duration = ((self.hand_traj_gen.air_time_s + minimum_hold_duration) / 2) #* beat_gain_factor
+
+        self.get_logger().info(f"Beat duration: {beat_duration} s")
+
+        # Create list of times when throws will happen
+        throw_times = [beat_duration * i for i in range(num_throws * 2)] # num_throws is for each column
+
+        '''Since the first throw is higher than other throws, the beat duration for all subsequent throws can be
+        shifted by the difference between the two air times'''
+        # Shift the beat times for all but the first throw
+        for i in range(1, len(throw_times)):
+            throw_times[i] += (air_time1 - air_time) * delay_percentage
+
+        # Initialize list of times when catches will happen
+        catch_times_theoretical = []
+        catch_times_actual = [] # Will be populated as throws are made
+
+        # Log the air time
+        self.get_logger().info(f"Air time: {air_time} s. For first throw: {air_time1} s")
+
+        # Apply the linear gain to the position and velocity
+        pos_throw1 *= self.LINEAR_GAIN * 0.97 # Manually found 0.97 to be best gain factor for first throw
+        vel_throw1 *= self.LINEAR_GAIN * 0.97
+        pos_throw *= self.LINEAR_GAIN * linear_gain_factor
+        vel_throw *= self.LINEAR_GAIN * linear_gain_factor
+        pos_catch *= self.LINEAR_GAIN * linear_gain_factor
+        vel_catch *= self.LINEAR_GAIN * linear_gain_factor
+
+        throw_duration = t_throw[-1] # {s} Duration of the throw movement
+        catch_duration = t_catch[-1] # {s} Duration of the catch movement
+
+        # Log these durations
+        self.get_logger().info(f"Throw duration: {throw_duration} s")
+        self.get_logger().info(f"Catch duration: {catch_duration} s")
+        
+        # Initialize the throw and catch poses
+        left_pose = np.array([-pattern_width / 2, 0, self.plat_height, 0.0, 0.0, 0.0, 1.0])
+        right_pose = np.array([pattern_width / 2, 0, self.plat_height, 0.0, 0.0, 0.0, 1.0])
+
+        # Move the platform to the left pose and await arrival
+        self.move_platform_to_pose_and_await_arrival(left_pose)
+
+        # Initialize counter for how many throws have been made (in total)
+        throw_counter = 0
+
+        start_time = time.perf_counter()
+        time_of_last_throw = None
+
+        for throw_num in range(num_throws):
+            # Wait until it's time to throw the first ball
+            time_to_wait = (throw_times[throw_counter] - (time.perf_counter() - start_time)) * beat_gain_factor
+            # time_to_wait = 0
+            if time_to_wait > 0:
+                self.sleep(time_to_wait)
+            
+            # Throw the first ball
+            if throw_num == 0:
+                first_throw_time = self.follow_generated_trajectory(t_throw1, pos_throw1, vel_throw1, tor_throw1)
+                catch_times_theoretical.append([1, air_time1 + first_throw_time - start_time])
+                ball1_air_time = air_time1
+            else:
+                first_throw_time = self.follow_generated_trajectory(t_throw, pos_throw, vel_throw, tor_throw)
+                catch_times_theoretical.append([1, air_time + first_throw_time - start_time])
+                ball1_air_time = air_time
+
+            throw_counter += 1
+
+            # Log this throw time
+            self.get_logger().info(f"First throw time: {first_throw_time - start_time}")
+
+            # Log the difference between this throw and the last
+            if time_of_last_throw is not None:
+                self.get_logger().info(f"Time between throws: {first_throw_time - time_of_last_throw}. Throw number: {throw_num}")
+            
+            time_of_last_throw = first_throw_time
+
+            # Wait briefly before moving to the right pose
+            self.sleep(time_to_sleep_after_throwing)
+            self.send_platform_pose(right_pose)
+
+            if throw_num == 0:
+                # Lower the hand to prepare to throw the second ball
+                self.follow_generated_trajectory(t_catch, pos_catch, vel_catch, tor_catch)
+            else:
+                # Wait until it's time to catch the second ball
+                time_to_wait = air_time - (time.perf_counter() - second_throw_time)
+                # Log the time to wait
+                self.get_logger().info(f"Time to wait before catching second ball: {time_to_wait}")
+                if time_to_wait > 0:
+                    self.sleep(time_to_wait)
+                
+                catch_times_actual.append([2, time.perf_counter() - start_time])
+                # Catch the second ball
+                self.follow_generated_trajectory(t_catch, pos_catch, vel_catch, tor_catch)
+
+            # Wait until it's time to throw the second ball
+            # if throw_num == 0:
+            time_to_wait = (throw_times[throw_counter] - (time.perf_counter() - start_time)) * beat_gain_factor
+            # else: 
+            #     time_to_wait = 0
+            # Log the time to wait
+            self.get_logger().info(f"Time to wait before throwing second ball: {time_to_wait}")
+            if time_to_wait > 0:
+                self.sleep(time_to_wait)
+
+            # Throw the second ball
+            second_throw_time = self.follow_generated_trajectory(t_throw, pos_throw, vel_throw, tor_throw)
+            catch_times_theoretical.append([2, air_time + second_throw_time - start_time])
+            throw_counter += 1
+
+            # Log this throw time
+            self.get_logger().info(f"Second throw time: {second_throw_time - start_time}")
+
+            # Log the difference between this throw and the last
+            self.get_logger().info(f"Time between throws: {second_throw_time - time_of_last_throw}. Throw number: {throw_num}")
+            time_of_last_throw = second_throw_time
+
+            # Wait briefly before moving to the left pose
+            self.sleep(time_to_sleep_after_throwing)
+            self.send_platform_pose(left_pose)
+
+            # Wait until it's time to catch the first ball
+            time_to_wait = ball1_air_time - (time.perf_counter() - first_throw_time)
+            self.get_logger().info(f"Time to wait before catching first ball: {time_to_wait}")
+            if time_to_wait > 0:
+                self.sleep(time_to_wait)
+
+            catch_times_actual.append([1, time.perf_counter() - start_time])
+            # Catch the first ball
+            self.follow_generated_trajectory(t_catch, pos_catch, vel_catch, tor_catch)
+
+        # log the throw and catch times
+        for i in range(len(catch_times_actual)):
+            self.get_logger().info(f"Throw time {i + 1}: {throw_times[i]:.3f}")
+            self.get_logger().info(f"Theoretical catch time {i + 1}: {catch_times_theoretical[i][1]:.3f}")
+            self.get_logger().info(f"Actual catch time {i + 1}: {catch_times_actual[i][1]:.3f}\n")
+
+        response.success = True
+        response.message = "Two columns throw successful."
+        return response
 
     async def throw_to(self, request, response):
         '''First generates the trajectory, then sends each command over the CAN bus'''
@@ -803,64 +899,75 @@ class HandTrajectoryTransmitter(Node):
         response.message = "Trajectory sent successfully."
         return response
 
-    def calc_throw_catch_angle_quaternion(self, throw_angle, throw_pos, catch_pos):
-        '''Given the throw angle (from vertical), throw position and catch position,
-        calculate the quaternion that represents the throw angle'''
-
-        # Log the throw and catch positions
-        self.get_logger().info(f"Throw position: {throw_pos}, Catch position: {catch_pos}")
-
-        # If the throw is straight up (throw angle = 0), the quaternion is the identity quaternion
-        if throw_angle == 0:
-            throw_quat = quaternion.one
-            catch_quat = quaternion.one
+    async def throw_continuous(self, request, response):
+        '''Throw back and forth continuously, with a user-specified number of throws and break duration'''
+        # Check if the hand is ready to throw
+        if not self.is_hand_ready_to_throw:
+            self.prepare_hand_for_throw()
+            response.success = False
+            response.message = "Hand not ready to throw. Preparing hand for throw..."
+            return response
         
+        # Handle the throw height input
+        throw_height = request.throw_height
+        if throw_height <= 0:
+            throw_height = 0.6
+
+        # Handle the "time_to_wait_after_throwing" input (if provided).
+        # For this method this is actually used to set the time to wait after *catching*
+        if request.time_to_wait_after_throwing > 0:
+            time_to_sleep_after_catching = request.time_to_wait_after_throwing
         else:
-            # Extract positions
-            x0, y0 = throw_pos
-            x1, y1 = catch_pos
-            z0, z1 = 0, 0 # Catch and throw positions are assumed to be at the same height
+            # Default to 0.0
+            time_to_sleep_after_catching = 0.0
 
-            # Calculate the displacement vector
-            dx = x1 - x0
-            dy = y1 - y0
-            dz = z1 - z0
-            displacement = np.array([dx, dy, dz])
+        # Handle num_throws input
+        num_throws = 1
+        if request.num_throws > 0:
+            num_throws = request.num_throws
 
-            # Calculate the magnitude of the displacement vector
-            disp_mag = np.linalg.norm(displacement)
+        # Handle the linear gain input
+        linear_gain_factor = request.linear_gain_factor
+        # Truncate the linear gain so that it can't be more than 1. Also if it is less than or equal to 0, set it to 1.
+        if linear_gain_factor > 1 or linear_gain_factor <= 0:
+            linear_gain_factor = 1
 
-            # Calculate the throw velocity components
-            v_x = disp_mag * np.sin(throw_angle) * (dx / disp_mag)
-            v_y = disp_mag * np.sin(throw_angle) * (dy / disp_mag)
-            v_z = disp_mag * np.cos(throw_angle)
-            v = np.array([v_x, v_y, v_z])
+        # Set the parameters of the throw/catch
+        self.hand_traj_gen.set_throw_parameters(throw_height=throw_height, throw_range=0.0)
 
-            # Normalize the throw velocity vector to get the normal vector
-            n = v / np.linalg.norm(v)
+        # Get the throw trajectory
+        t_throw, pos_throw, vel_throw, tor_throw, air_time = self.hand_traj_gen.get_throw_trajectory()
 
-            # Extract the components of the normal vector
-            n_x, n_y, n_z = n
+        # Log the air time
+        self.get_logger().info(f"Air time: {air_time} s")
+
+        # Get the catch trajectory
+        t_catch, pos_catch, vel_catch, tor_catch = self.hand_traj_gen.get_catch_trajectory()
+
+        # Apply the linear gain to the position and velocity
+        pos_throw *= self.LINEAR_GAIN * linear_gain_factor
+        vel_throw *= self.LINEAR_GAIN * linear_gain_factor
+        pos_catch *= self.LINEAR_GAIN * linear_gain_factor
+        vel_catch *= self.LINEAR_GAIN * linear_gain_factor
+
+        for _ in range(num_throws):
+            # Throw the ball
+            last_throw_time = self.follow_generated_trajectory(t_throw, pos_throw, vel_throw, tor_throw)
+
+            # Wait until it's time to catch the ball
+            time_to_wait = air_time - (time.perf_counter() - last_throw_time)
+            if time_to_wait > 0:
+                self.sleep(time_to_wait)
             
-            # Calculate the axis of rotation
-            a_x = -n_y / np.sqrt(n_x**2 + n_y**2)
-            a_y = n_x / np.sqrt(n_x**2 + n_y**2)
-            a_z = 0
+            # Catch the ball
+            self.follow_generated_trajectory(t_catch, pos_catch, vel_catch, tor_catch)
 
-            # Calculate the angle of rotation
-            angle = np.arccos(n_z)
+            # Wait briefly before throwing the ball again
+            self.sleep(time_to_sleep_after_catching)
 
-            # Calculate the quaternion
-            q_w = np.cos(angle / 2)
-            q_x = a_x * np.sin(angle / 2)
-            q_y = a_y * np.sin(angle / 2)
-            q_z = a_z * np.sin(angle / 2)
-
-            throw_quat = quaternion.quaternion(q_w, q_x, q_y, q_z)
-            catch_quat = throw_quat.inverse()
-
-        return throw_quat, catch_quat
-
+        response.success = True
+        response.message = "Continuous throw successful."
+        return response
 
     #########################################################################################################
     #                                            Node Management                                            #
