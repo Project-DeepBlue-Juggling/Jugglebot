@@ -62,7 +62,7 @@ class HandTrajGenerator:
         
         print(f'ball throw range: {self.ball_throw_range:.3f} m, throw angle: {np.rad2deg(self.throw_angle_rad):.3f} deg')
 
-        self.throw_duration_s = np.sqrt(8 * self.throw_height / self.g_mPs2)
+        self.air_time_s = np.sqrt(8 * self.throw_height / self.g_mPs2)
 
         self.throw_vel_mPs = np.sqrt(self.g_mPs2 * pow(self.ball_throw_range, 2) / (8 * self.throw_height) + 2 * self.g_mPs2 * self.throw_height)
         print(f'release velocity: {self.throw_vel_mPs:.3f} m/s')
@@ -87,6 +87,9 @@ class HandTrajGenerator:
         self.a0 = self.throw_accel_mPs2
         self.a2 = self.throw_decel_mPs2
 
+        # Save the duration that the throw trajectory takes
+        self.throw_duration_s = self.t3
+
     def calculate_catch_parameters(self):
         self.v_hand_catch_mPs = -1 * self.catch_vel_ratio * self.throw_vel_mPs
         self.catch_inertia_ratio = 1 / self.inertia_ratio
@@ -100,7 +103,7 @@ class HandTrajGenerator:
         self.catch_accel_mPs2 = self.v_hand_catch_mPs / self.t_catch_accel_s
         self.catch_decel_mPs2 = -1 * self.catch_accel_mPs2 / self.catch_inertia_ratio
 
-        self.t5 = self.t2 + self.throw_duration_s - (1 / 2) * self.t_catch_vel_hold_s
+        self.t5 = self.t2 + self.air_time_s - (1 / 2) * self.t_catch_vel_hold_s
         self.t4 = self.t5 - self.t_catch_accel_s
         self.t6 = self.t5 + self.t_catch_vel_hold_s
         self.t7 = self.t6 + self.t_catch_decel_s
@@ -110,6 +113,9 @@ class HandTrajGenerator:
         self.v5 = self.v_hand_catch_mPs
         self.a4 = self.catch_accel_mPs2
         self.a6 = self.catch_decel_mPs2
+
+        # Save the duration that the catch trajectory takes
+        self.catch_duration_s = self.t7 - self.t4
 
     def generate_throw_time_series(self):
         # Generate the time series for the throw
@@ -180,7 +186,6 @@ class HandTrajGenerator:
 
         return t_catch, x_catch, v_catch, a_catch, tor_catch
 
-
     def generate_command_time_series(self):
         step_type = ['a', 'v', 'a', 'x', 'a', 'v', 'a', 'x', 'e']
         t = [0, self.t1, self.t2, self.t3, self.t4, self.t5, self.t6, self.t7, self.t8]
@@ -236,15 +241,21 @@ class HandTrajGenerator:
         # plt.clf()
         plt.subplot(311)
         plt.plot(t, x)
+        # Label the axes
+        plt.ylabel('Position (m)')
         plt.subplot(312)
         plt.plot(t, v)
+        plt.ylabel('Velocity (m/s)')
         plt.subplot(313)
         plt.plot(t, a)
+        plt.ylabel('Acceleration (m/s^2)')
+        plt.xlabel('Time (s)')
+
         if title:
             plt.suptitle(title)
         # plt.show()
 
-    def set_throw_parameters(self, throw_height, throw_range, inertia_ratio=0.7,
+    def set_throw_parameters(self, throw_height, throw_range=0.0, inertia_ratio=0.7,
                             throw_vel_hold_pct=0.05, catch_vel_ratio=0.8, catch_vel_hold_pct=0.1):
         '''Set the parameters for the throw and catch'''
         self.throw_height = throw_height
@@ -271,7 +282,7 @@ class HandTrajGenerator:
         t, x, v, a, tor = self.generate_throw_time_series()
 
         # Convert the lists to numpy arrays before returning
-        return np.array(t), np.array(x), np.array(v), np.array(tor), self.throw_duration_s
+        return np.array(t), np.array(x), np.array(v), np.array(tor), self.air_time_s
     
     def get_catch_trajectory(self):
         '''Generates and returns the catch trajectory'''
@@ -290,7 +301,7 @@ class HandTrajGenerator:
         return self.throw_vel_mPs
 
 if __name__ == '__main__':
-    sim = HandTrajGenerator(throw_height=0.7)
+    sim = HandTrajGenerator(throw_height=1.0)
     # t, x, v, a, tor = sim.generate_command_time_series()
     t, x, v, a, tor = sim.generate_throw_time_series()
     sim.plot_results(t, x, v, a, title='Throw')
@@ -301,6 +312,20 @@ if __name__ == '__main__':
 
 
     print(f'Number of points in catch trajectory: {len(t)}')
-    print(f'Throw time = {sim.throw_duration_s:.3f} s')
+    print(f'Ball air time = {sim.air_time_s:.3f} s')
+    print(f'Throw duration = {sim.throw_duration_s:.3f} s')
+    print(f'Catch duration = {sim.catch_duration_s:.3f} s')
+
+    # Calculate the minimum duration the hand will be holding for (assuming throw immediately after catch)
+    holding_time = sim.throw_duration_s + sim.catch_duration_s
+    print(f'Holding time = {holding_time:.3f} s')
+
+    # Calculate the minimum 'beat' time
+    min_beat_time = (sim.air_time_s + holding_time) / 2
+    print(f'Minimum beat time = {min_beat_time:.3f} s')
+
+    # Calculate the duration the hand will be empty for
+    empty_time = min_beat_time - holding_time
+    print(f'Empty time = {empty_time:.3f} s')
 
     plt.show()
