@@ -461,8 +461,11 @@ function updateLine(edge, start, end) {
 function updateLineGroup(lineGroup, startPoints, endPoints, isStruts=false) {
     if (isStruts) { // If the line group is for struts, the points are chosen a little differently
         for (let i = 0; i < lineGroup.children.length; i++) {
-            let temp = Math.ceil(i / 2) % 3;
-            updateLine(lineGroup.children[i], startPoints[i], endPoints[temp]);
+            // let temp = Math.ceil(i / 2) % 3;
+            // updateLine(lineGroup.children[i], startPoints[i], endPoints[temp]);
+
+            // Make all struts end at the average of the points in endPoints
+            updateLine(lineGroup.children[i], startPoints[i], averagePoints(endPoints));
         }
     } else {
         for (let i = 0; i < lineGroup.children.length; i++) {
@@ -478,7 +481,7 @@ function updateVolume(volume, pointsArray, thickness) {
     // Create a shape based on the points
     const shape = new THREE.Shape();
     shape.moveTo(pointsArray[0].x, pointsArray[0].y);
-    for (let i = 1; i < pointsArray.length - 1; i++) { // -1 because the last node is the origin
+    for (let i = 1; i < pointsArray.length; i++) { 
         shape.lineTo(pointsArray[i].x, pointsArray[i].y);
     }
 
@@ -494,6 +497,7 @@ function updateVolume(volume, pointsArray, thickness) {
 
     // Rotate the geometry so that it is flat on the ground
     geometry.rotateX(-Math.PI / 2);
+    geometry.rotateY(Math.PI / 3);
     geometry.translate(0, -thickness / 2, 0);
 
     // Update the geometry
@@ -594,13 +598,14 @@ function updateScene(base_nodes, new_plat_nodes, new_arm_nodes, new_hand_nodes, 
     updateLineGroup(legLinesGeometry, base_nodes, new_plat_nodes);
 
     // Update the strut lines (spanning plat to arm)
-    updateLineGroup(strutLinesGeometry, new_plat_nodes, new_arm_nodes, true);
+    updateLineGroup(strutLinesGeometry, new_plat_nodes, new_arm_nodes.slice(0, 3), true);
 
     // Update the rod lines (spanning upper arm to lower arm)
-    updateLineGroup(rodLinesGeometry, new_arm_nodes, new_arm_nodes.slice(3));
+    // updateLineGroup(rodLinesGeometry, new_arm_nodes, new_arm_nodes.slice(3));
 
     // Update the base volume
     updateVolume(baseVolume, base_nodes, 0.01);
+    console.log(base_nodes);
 }
 
 // ################################################################## //

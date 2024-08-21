@@ -27,6 +27,7 @@
             margin: 10px;
             display: flex; /* Make the div element a flex container */
             flex-direction: column; /* Stack items vertically */
+            flex-wrap: wrap; /* Wrap items to the next row */
         }
 
         #container-row {
@@ -111,7 +112,8 @@
             align-items: center; /* Center items horizontally */
             border: 2px solid #000000; /* Border color and thickness */
             width: 380px;
-            padding: 5px; /* Space inside the box */
+            height: 720px;
+            padding: 0px; /* Space inside the box */
             margin: 10px; /* Space outside the box */
             background-color: #f5f5f5; /* Background color of the box */
         }
@@ -119,6 +121,9 @@
         /* Style for Network stats container */
         #network-stats-container {
             display: flex; /* Make the div element a flex container */
+            position: absolute;
+            top: 10px;
+            left: 1445px;
             flex-direction: column; /* Stack items vertically */
             align-items: center; /* Center items horizontally */
             border: 2px solid #000000; /* Border color and thickness */
@@ -470,17 +475,17 @@
                 </div>
 
                 <!-- Row for sliders used with the pattern control mode -->
-                <div id="pattern-control-inputs">
+                <!-- <div id="pattern-control-inputs">
                     <h3>Pattern Control</h3>
-                    <!-- Input for throw height -->
+                    <!-- Input for throw height --
                     <div>
                         <label for="input-throw-height">Throw Height (mm):</label>
                         <input type="number" id="input-throw-height" name="throw_height" 
                         min="100" max="500" value="500" step="50"
-                        class="number-input"> <!-- Ensure the name matches the ROS2 Topic field name-->
+                        class="number-input"> <!-- Ensure the name matches the ROS2 Topic field name--
                     </div>
 
-                    <!-- Input for zlim_hold -->
+                    <!-- Input for zlim_hold --
                     <div>
                         <label for="input-zlim-hold">Hold z Span (mm):</label>
                         <input type="number" id="input-zlim-hold" name="zlim_hold" 
@@ -488,7 +493,7 @@
                         class="number-input">
                     </div>
 
-                    <!-- Input for zlim_empty -->
+                    <!-- Input for zlim_empty --
                     <div>
                         <label for="input-zlim-empty">Empty z Span (mm):</label>
                         <input type="number" id="input-zlim-empty" name="zlim_empty" 
@@ -496,7 +501,7 @@
                         class="number-input">
                     </div>
 
-                    <!-- Input for z-offset of pattern -->
+                    <!-- Input for z-offset of pattern --
                     <div>
                         <label for="input-z-offset">z Offset (mm):</label>
                         <input type="number" id="input-z-offset" name="z_offset" 
@@ -504,7 +509,7 @@
                         class="number-input">
                     </div>
 
-                    <!-- Input for throw/catch x position -->
+                    <!-- Input for throw/catch x position --
                     <div>
                         <label for="input-x-pos">Throw/Catch x pos (mm):</label>
                         <input type="number" id="input-x-pos" name="x_pos" 
@@ -512,7 +517,7 @@
                         class="number-input">
                     </div>
 
-                </div>
+                </div> -->
 
                 <!-- Buttons for interfacing with the ODrives -->
                 <div id="odrive-buttons">
@@ -529,25 +534,26 @@
                 </div>
 
             </div>
-
-            <!-- Network Stats Container -->
-            <div id="network-stats-container">
-                <canvas id="can-traffic-chart"></canvas>  <!-- Chart.js canvas for plotting -->
-
-                <table id="topic-stats-table">
-                    <thead>
-                        <tr>
-                            <th>Topic</th>
-                            <th>Last Msg Time<br>(ms ago)</th>
-                            <th>Msg Rate<br>(Hz)</th>
-                        </tr>
-                    </thead>
-                    <tbody id="topic-stats-table-body">
-                        <!-- Javascript will populate this -->
-                    </tbody>
-                </table>
-            </div>
         </div>
+
+        <!-- Network Stats Container -->
+        <div id="network-stats-container">
+            <canvas id="can-traffic-chart"></canvas>  <!-- Chart.js canvas for plotting -->
+
+            <table id="topic-stats-table">
+                <thead>
+                    <tr>
+                        <th>Topic</th>
+                        <th>Last Msg Time<br>(ms ago)</th>
+                        <th>Msg Rate<br>(Hz)</th>
+                    </tr>
+                </thead>
+                <tbody id="topic-stats-table-body">
+                    <!-- Javascript will populate this -->
+                </tbody>
+            </table>
+        </div>
+
 
         <div id="container-row">
             <!-- ROS Logging Console -->
