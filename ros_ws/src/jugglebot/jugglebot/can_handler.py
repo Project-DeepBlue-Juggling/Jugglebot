@@ -55,7 +55,8 @@ class CANHandler:
         "set_vel_curr_limits"   : 0x0f,
         "set_traj_vel_limit"    : 0x11,
         "set_traj_acc_limits"   : 0x12,
-        "get_iq"                : 0x14, 
+        "get_iq"                : 0x14,
+        "get_temps"             : 0x15, 
         "reboot_odrives"        : 0x16,
         "clear_errors"          : 0x18,
         "set_absolute_position" : 0x19,
@@ -64,9 +65,9 @@ class CANHandler:
     }
 
     ARBITRARY_PARAMETER_IDS = {
-        "input_pos"    : 383,
-        "input_vel"    : 384,
-        "input_torque" : 385,
+        "input_pos"    : 390,
+        "input_vel"    : 391,
+        "input_torque" : 392,
     }
 
     OPCODE_READ  = 0x00  # For reading arbitrary parameters from the ODrive
@@ -105,13 +106,14 @@ class CANHandler:
             self.COMMANDS["get_error"]           : self._handle_error,
             self.COMMANDS["get_encoder_estimate"]: self._handle_encoder_estimates,
             self.COMMANDS["get_iq"]              : self._handle_iq_readings,
+            self.COMMANDS["get_temps"]           : self._handle_temp_readings,
         }
 
         # Create a dictionary of callbacks that are used in the ROS2 node
         self.callbacks = {
-            'motor_positions' : None,
-            'motor_iqs'       : None,
-            'motor_velocities': None,
+            'leg_positions' : None,
+            'leg_iqs'       : None,
+            'leg_velocities': None,
             'can_traffic'     : None,
             'hand_telemetry'  : None,
         }
@@ -123,11 +125,13 @@ class CANHandler:
         self.position_buffer = [None] * self.num_axes
         self.velocity_buffer = [None] * self.num_axes
         self.iq_buffer       = [None] * self.num_axes
+        self.temp_buffer     = [None] * self.num_axes
 
         # Initialize a local list for these variables
         self.pos_values = [None] * self.num_axes
         self.vel_values = [None] * self.num_axes
         self.iq_values  = [None] * self.num_axes
+        self.temp_values = [None] * self.num_axes
 
         # Initialize a flag that triggers whenever any fatal errors are detected
         self.fatal_issue = False
@@ -809,7 +813,7 @@ class CANHandler:
 
         self.ROS_logger.info(f'Legs control mode set to: {control_mode}, input mode set to: {input_mode}')
 
-    def set_trap_traj_vel_acc_limits(self, velocity_limit=0, acceleration_limit=0, deceleration_limit=0):
+    def set_trap_traj_vel_acc_limits(self, velocity_limit=20, acceleration_limit=100, deceleration_limit=80):
         ''' Set the velocity and acceleration limits for the trap_traj control mode'''
         # If any of the values aren't provided, use the default values. For values that are provided, update the defaults
         if velocity_limit > 0:
@@ -982,12 +986,12 @@ class CANHandler:
         if all(val is not None for val in self.position_buffer):
             # If the buffer is full, send it off!
             self.pos_values = self.position_buffer.copy() # Copy so that data doesn't change before being sent away
-            self._trigger_callback('motor_positions', self.pos_values)
+            self._trigger_callback('leg_positions', self.pos_values)
             self.position_buffer = [None] * self.num_axes  # Reset the buffer
 
             # If position buffer is full, then velocity buffer will also be full
             self.vel_values = self.velocity_buffer.copy()
-            self._trigger_callback('motor_velocities', self.vel_values)
+            self._trigger_callback('leg_velocities', self.vel_values)
             self.velocity_buffer = [None] * self.num_axes  # Reset the buffer
 
     def _handle_iq_readings(self, axis_id, data):
@@ -1003,13 +1007,34 @@ class CANHandler:
         if all(val is not None for val in self.iq_buffer):
             # If the buffer is full, send the data to the ROS network
             self.iq_values = self.iq_buffer.copy()
-            self._trigger_callback('motor_iqs', self.iq_values)
+            self._trigger_callback('leg_iqs', self.iq_values)
 
             # Log a confirmation that these values have been saved, and print them
             # self.ROS_logger.info(f"Motor currents: {self.iq_values}")
 
             # Reset the buffer
             self.iq_buffer = [None] * self.num_axes
+
+    def _handle_temp_readings(self, axis_id, data):
+        # Start by unpacking the data, which is a 32-bit float
+        fet_temp, motor_temp = struct.unpack_from('<ff', data)
+
+        # Add the data to the buffer
+        self.temp_buffer[axis_id] = motor_temp
+
+        # Print these values for debugging
+        # self.ROS_logger.info(f"Axis {axis_id} - FET Temp: {fet_temp:.2f}, Motor Temp: {motor_temp:.2f}")
+
+        if all(val is not None for val in self.temp_buffer):
+            # If the buffer is full, send the data to the ROS network
+            self.temp_values = self.temp_buffer.copy()
+            self._trigger_callback('leg_temps', self.temp_values)
+
+            # Log a confirmation that these values have been saved, and print them
+            # self.ROS_logger.info(f"Motor temperatures: {self.temp_values}")
+
+            # Reset the buffer
+            self.temp_buffer = [None] * self.num_axes
 
     def _handle_CAN_traffic_report(self, message):
         # Unpack the data into a 32-bit integer

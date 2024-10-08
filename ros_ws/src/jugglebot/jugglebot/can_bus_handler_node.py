@@ -68,9 +68,9 @@ class CANBusHandlerNode(Node):
         self.platform_target_reached_timer = self.create_timer(0.1, self.check_platform_target_reached_status)
 
         # Initialize publishers for hardware data
-        self.position_publisher       = self.create_publisher(Float64MultiArray, 'motor_positions', 10)
-        self.velocity_publisher       = self.create_publisher(Float64MultiArray, 'motor_velocities', 10)
-        self.iq_publisher             = self.create_publisher(Float64MultiArray, 'motor_iqs', 10)
+        self.position_publisher       = self.create_publisher(Float64MultiArray, 'leg_positions', 10)
+        self.velocity_publisher       = self.create_publisher(Float64MultiArray, 'leg_velocities', 10)
+        self.iq_publisher             = self.create_publisher(Float64MultiArray, 'leg_iqs', 10)
         self.can_traffic_publisher    = self.create_publisher(CanTrafficReportMessage, 'can_traffic', 10)
         self.hand_telemetry_publisher = self.create_publisher(HandTelemetryMessage, 'hand_telemetry', 10)
 
@@ -80,9 +80,9 @@ class CANBusHandlerNode(Node):
         self.last_motor_iqs = None
 
         # Register callbacks
-        self.can_handler.register_callback('motor_positions', self.publish_motor_positions)
-        self.can_handler.register_callback('motor_velocities', self.publish_motor_velocities)
-        self.can_handler.register_callback('motor_iqs', self.publish_motor_iqs)
+        self.can_handler.register_callback('leg_positions', self.publish_motor_positions)
+        self.can_handler.register_callback('leg_velocities', self.publish_motor_velocities)
+        self.can_handler.register_callback('leg_iqs', self.publish_motor_iqs)
         self.can_handler.register_callback('can_traffic', self.publish_can_traffic)
         self.can_handler.register_callback('hand_telemetry', self.publish_hand_telemetry)
 
