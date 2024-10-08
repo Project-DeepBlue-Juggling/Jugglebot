@@ -26,9 +26,9 @@ class HandTrajectoryTransmitter(Node):
     LINEAR_GAIN = 1000 / (np.pi * HAND_SPOOL_EFFECTIVE_RADIUS * 2) # {rev/m}
 
     ARBITRARY_PARAMETER_IDS = {
-        "input_pos"    : 383,
-        "input_vel"    : 384,
-        "input_torque" : 385,
+        "input_pos"    : 390,
+        "input_vel"    : 391,
+        "input_torque" : 392,
     }
 
     def __init__(self, bus_name='can0', bitrate=1000000, bus_type='socketcan'):
