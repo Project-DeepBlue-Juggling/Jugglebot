@@ -1,0 +1,54 @@
+#VRML_SIM R2023b utf8
+
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2023b/projects/objects/backgrounds/protos/TexturedBackground.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2023b/projects/objects/backgrounds/protos/TexturedBackgroundLight.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2023b/projects/objects/floors/protos/CircleArena.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2023b/projects/appearances/protos/BrushedAluminium.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2023b/projects/objects/factory/containers/protos/CardboardBox.proto"
+EXTERNPROTO "./JuggleBall.proto"
+EXTERNPROTO "./JuggleBot.proto"
+
+WorldInfo {
+  info [
+    "World with a single Jugglebot and single ball"
+  ]
+  title "Jugglebot World"
+  basicTimeStep 4
+  lineScale 1
+  contactProperties [
+    ContactProperties {
+      material1 "juggleball"
+      material2 "default"
+      rollingFriction 0.01 0 0
+      bounce 0.15
+    }
+  ]
+}
+Viewpoint {
+  orientation 0.06484503824864706 0.05246311348254273 -0.9965152998013875 1.9779378037604236
+  position 1.1845660200318204 2.8871525650410037 0.9278952599259257
+  near 0.1
+}
+TexturedBackground {
+}
+TexturedBackgroundLight {
+}
+
+CircleArena {
+  radius 7
+  floorTileSize 1 1
+  wallThickness 0.5
+  wallHeight 1
+}
+
+DEF JUGGLEBOT JuggleBot {
+  translation 0 0 0
+  controller "<extern>"
+  name "jugglebot"
+}
+
+DEF BALL JuggleBall {
+  translation 0 0 1
+  rotation 0 0 1 0
+  name "juggleball"
+}

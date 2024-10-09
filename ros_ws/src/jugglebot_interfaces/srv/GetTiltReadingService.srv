@@ -1,0 +1,5 @@
+# Reports the tilt readings from the inclinometer
+
+# Request part is empty
+---
+float64[] tilt_readings   # tiltX, tiltY
