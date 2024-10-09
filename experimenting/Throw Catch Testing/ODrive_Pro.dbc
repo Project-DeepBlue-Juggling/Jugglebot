@@ -1,0 +1,1931 @@
+VERSION "0.6.9"
+
+
+NS_ : 
+	NS_DESC_
+	CM_
+	BA_DEF_
+	BA_
+	VAL_
+	CAT_DEF_
+	CAT_
+	FILTER
+	BA_DEF_DEF_
+	EV_DATA_
+	ENVVAR_DATA_
+	SGTYPE_
+	SGTYPE_VAL_
+	BA_DEF_SGTYPE_
+	BA_SGTYPE_
+	SIG_TYPE_REF_
+	VAL_TABLE_
+	SIG_GROUP_
+	SIG_VALTYPE_
+	SIGTYPE_VALTYPE_
+	BO_TX_BU_
+	BA_DEF_REL_
+	BA_REL_
+	BA_DEF_DEF_REL_
+	BU_SG_REL_
+	BU_EV_REL_
+	BU_BO_REL_
+	SG_MUL_VAL_
+
+BS_:
+
+BU_: Master ODrive_Axis0 ODrive_Axis1 ODrive_Axis2 ODrive_Axis3 ODrive_Axis4 ODrive_Axis5 ODrive_Axis6 ODrive_Axis7
+
+
+BO_ 0 Axis0_Get_Version: 8 ODrive_Axis0
+ SG_ Fw_Version_Unreleased : 56|8@1+ (1,0) [0|0] ""  Master
+ SG_ Fw_Version_Revision : 48|8@1+ (1,0) [0|0] ""  Master
+ SG_ Fw_Version_Minor : 40|8@1+ (1,0) [0|0] ""  Master
+ SG_ Fw_Version_Major : 32|8@1+ (1,0) [0|0] ""  Master
+ SG_ Hw_Version_Variant : 24|8@1+ (1,0) [0|0] ""  Master
+ SG_ Hw_Version_Minor : 16|8@1+ (1,0) [0|0] ""  Master
+ SG_ Hw_Version_Major : 8|8@1+ (1,0) [0|0] ""  Master
+ SG_ Protocol_Version : 0|8@1+ (1,0) [0|0] ""  Master
+
+BO_ 1 Axis0_Heartbeat: 8 ODrive_Axis0
+ SG_ Trajectory_Done_Flag : 48|1@1+ (1,0) [0|0] ""  Master
+ SG_ Procedure_Result : 40|8@1+ (1,0) [0|0] ""  Master
+ SG_ Axis_State : 32|8@1+ (1,0) [0|0] ""  Master
+ SG_ Axis_Error : 0|32@1+ (1,0) [0|0] ""  Master
+
+BO_ 2 Axis0_Estop: 0 Master
+
+BO_ 3 Axis0_Get_Error: 8 ODrive_Axis0
+ SG_ Disarm_Reason : 32|32@1+ (1,0) [0|0] ""  Master
+ SG_ Active_Errors : 0|32@1+ (1,0) [0|0] ""  Master
+
+BO_ 4 Axis0_RxSdo: 8 Master
+ SG_ Value : 32|32@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Reserved : 24|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Endpoint_ID M : 8|16@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Opcode : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 5 Axis0_TxSdo: 8 ODrive_Axis0
+ SG_ Value : 32|32@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Reserved1 : 24|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Endpoint_ID M : 8|16@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Reserved0 : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 6 Axis0_Address: 8 Master
+ SG_ Serial_Number : 8|48@1+ (1,0) [0|0] ""  ODrive_Axis0
+ SG_ Node_ID : 0|8@1+ (1,0) [0|0] ""  ODrive_Axis0
+
+BO_ 7 Axis0_Set_Axis_State: 8 Master
+ SG_ Axis_Requested_State : 0|32@1+ (1,0) [0|0] ""  ODrive_Axis0
+
+BO_ 9 Axis0_Get_Encoder_Estimates: 8 ODrive_Axis0
+ SG_ Vel_Estimate : 32|32@1+ (1,0) [0|0] "rev/s"  Master
+ SG_ Pos_Estimate : 0|32@1+ (1,0) [0|0] "rev"  Master
+
+BO_ 11 Axis0_Set_Controller_Mode: 8 Master
+ SG_ Input_Mode : 32|32@1+ (1,0) [0|0] ""  ODrive_Axis0
+ SG_ Control_Mode : 0|32@1+ (1,0) [0|0] ""  ODrive_Axis0
+
+BO_ 12 Axis0_Set_Input_Pos: 8 Master
+ SG_ Torque_FF : 48|16@1- (0.001,0) [0|0] "Nm"  ODrive_Axis0
+ SG_ Vel_FF : 32|16@1- (0.001,0) [0|0] "rev/s"  ODrive_Axis0
+ SG_ Input_Pos : 0|32@1+ (1,0) [0|0] "rev"  ODrive_Axis0
+
+BO_ 13 Axis0_Set_Input_Vel: 8 Master
+ SG_ Input_Torque_FF : 32|32@1+ (1,0) [0|0] "Nm"  ODrive_Axis0
+ SG_ Input_Vel : 0|32@1+ (1,0) [0|0] "rev/s"  ODrive_Axis0
+
+BO_ 14 Axis0_Set_Input_Torque: 8 Master
+ SG_ Input_Torque : 0|32@1+ (1,0) [0|0] "Nm"  ODrive_Axis0
+
+BO_ 15 Axis0_Set_Limits: 8 Master
+ SG_ Current_Limit : 32|32@1+ (1,0) [0|0] "A"  ODrive_Axis0
+ SG_ Velocity_Limit : 0|32@1+ (1,0) [0|0] "rev/s"  ODrive_Axis0
+
+BO_ 17 Axis0_Set_Traj_Vel_Limit: 8 Master
+ SG_ Traj_Vel_Limit : 0|32@1+ (1,0) [0|0] "rev/s"  ODrive_Axis0
+
+BO_ 18 Axis0_Set_Traj_Accel_Limits: 8 Master
+ SG_ Traj_Decel_Limit : 32|32@1+ (1,0) [0|0] "rev/s^2"  ODrive_Axis0
+ SG_ Traj_Accel_Limit : 0|32@1+ (1,0) [0|0] "rev/s^2"  ODrive_Axis0
+
+BO_ 19 Axis0_Set_Traj_Inertia: 8 Master
+ SG_ Traj_Inertia : 0|32@1+ (1,0) [0|0] "Nm/(rev/s^2)"  ODrive_Axis0
+
+BO_ 20 Axis0_Get_Iq: 8 ODrive_Axis0
+ SG_ Iq_Measured : 32|32@1+ (1,0) [0|0] "A"  Master
+ SG_ Iq_Setpoint : 0|32@1+ (1,0) [0|0] "A"  Master
+
+BO_ 21 Axis0_Get_Temperature: 8 ODrive_Axis0
+ SG_ Motor_Temperature : 32|32@1+ (1,0) [0|0] "deg C"  Master
+ SG_ FET_Temperature : 0|32@1+ (1,0) [0|0] "deg C"  Master
+
+BO_ 22 Axis0_Reboot: 1 Master
+ SG_ Action : 0|8@1+ (1,0) [0|0] ""  ODrive_Axis0
+
+BO_ 23 Axis0_Get_Bus_Voltage_Current: 8 ODrive_Axis0
+ SG_ Bus_Current : 32|32@1+ (1,0) [0|0] "A"  Master
+ SG_ Bus_Voltage : 0|32@1+ (1,0) [0|0] "V"  Master
+
+BO_ 24 Axis0_Clear_Errors: 1 Master
+ SG_ Identify : 0|8@1+ (1,0) [0|0] ""  ODrive_Axis0
+
+BO_ 25 Axis0_Set_Absolute_Position: 8 Master
+ SG_ Position : 0|32@1+ (1,0) [0|0] "rev"  ODrive_Axis0
+
+BO_ 26 Axis0_Set_Pos_Gain: 8 Master
+ SG_ Pos_Gain : 0|32@1+ (1,0) [0|0] "(rev/s) / rev"  ODrive_Axis0
+
+BO_ 27 Axis0_Set_Vel_Gains: 8 Master
+ SG_ Vel_Integrator_Gain : 32|32@1+ (1,0) [0|0] "Nm / rev"  ODrive_Axis0
+ SG_ Vel_Gain : 0|32@1+ (1,0) [0|0] "Nm / (rev/s)"  ODrive_Axis0
+
+BO_ 28 Axis0_Get_Torques: 8 ODrive_Axis0
+ SG_ Torque_Estimate : 32|32@1+ (1,0) [0|0] "Nm"  Master
+ SG_ Torque_Target : 0|32@1+ (1,0) [0|0] "Nm"  Master
+
+BO_ 29 Axis0_Get_Powers: 8 ODrive_Axis0
+ SG_ Mechanical_Power : 32|32@1+ (1,0) [0|0] "W"  Master
+ SG_ Electrical_Power : 0|32@1+ (1,0) [0|0] "W"  Master
+
+BO_ 31 Axis0_Enter_DFU_Mode: 0 Master
+
+BO_ 32 Axis1_Get_Version: 8 ODrive_Axis1
+ SG_ Fw_Version_Unreleased : 56|8@1+ (1,0) [0|0] ""  Master
+ SG_ Fw_Version_Revision : 48|8@1+ (1,0) [0|0] ""  Master
+ SG_ Fw_Version_Minor : 40|8@1+ (1,0) [0|0] ""  Master
+ SG_ Fw_Version_Major : 32|8@1+ (1,0) [0|0] ""  Master
+ SG_ Hw_Version_Variant : 24|8@1+ (1,0) [0|0] ""  Master
+ SG_ Hw_Version_Minor : 16|8@1+ (1,0) [0|0] ""  Master
+ SG_ Hw_Version_Major : 8|8@1+ (1,0) [0|0] ""  Master
+ SG_ Protocol_Version : 0|8@1+ (1,0) [0|0] ""  Master
+
+BO_ 33 Axis1_Heartbeat: 8 ODrive_Axis1
+ SG_ Trajectory_Done_Flag : 48|1@1+ (1,0) [0|0] ""  Master
+ SG_ Procedure_Result : 40|8@1+ (1,0) [0|0] ""  Master
+ SG_ Axis_State : 32|8@1+ (1,0) [0|0] ""  Master
+ SG_ Axis_Error : 0|32@1+ (1,0) [0|0] ""  Master
+
+BO_ 34 Axis1_Estop: 0 Master
+
+BO_ 35 Axis1_Get_Error: 8 ODrive_Axis1
+ SG_ Disarm_Reason : 32|32@1+ (1,0) [0|0] ""  Master
+ SG_ Active_Errors : 0|32@1+ (1,0) [0|0] ""  Master
+
+BO_ 36 Axis1_RxSdo: 8 Master
+ SG_ Value : 32|32@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Reserved : 24|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Endpoint_ID M : 8|16@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Opcode : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 37 Axis1_TxSdo: 8 ODrive_Axis1
+ SG_ Value : 32|32@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Reserved1 : 24|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Endpoint_ID M : 8|16@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Reserved0 : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 38 Axis1_Address: 8 Master
+ SG_ Serial_Number : 8|48@1+ (1,0) [0|0] ""  ODrive_Axis1
+ SG_ Node_ID : 0|8@1+ (1,0) [0|0] ""  ODrive_Axis1
+
+BO_ 39 Axis1_Set_Axis_State: 8 Master
+ SG_ Axis_Requested_State : 0|32@1+ (1,0) [0|0] ""  ODrive_Axis1
+
+BO_ 41 Axis1_Get_Encoder_Estimates: 8 ODrive_Axis1
+ SG_ Vel_Estimate : 32|32@1+ (1,0) [0|0] "rev/s"  Master
+ SG_ Pos_Estimate : 0|32@1+ (1,0) [0|0] "rev"  Master
+
+BO_ 43 Axis1_Set_Controller_Mode: 8 Master
+ SG_ Input_Mode : 32|32@1+ (1,0) [0|0] ""  ODrive_Axis1
+ SG_ Control_Mode : 0|32@1+ (1,0) [0|0] ""  ODrive_Axis1
+
+BO_ 44 Axis1_Set_Input_Pos: 8 Master
+ SG_ Torque_FF : 48|16@1- (0.001,0) [0|0] "Nm"  ODrive_Axis1
+ SG_ Vel_FF : 32|16@1- (0.001,0) [0|0] "rev/s"  ODrive_Axis1
+ SG_ Input_Pos : 0|32@1+ (1,0) [0|0] "rev"  ODrive_Axis1
+
+BO_ 45 Axis1_Set_Input_Vel: 8 Master
+ SG_ Input_Torque_FF : 32|32@1+ (1,0) [0|0] "Nm"  ODrive_Axis1
+ SG_ Input_Vel : 0|32@1+ (1,0) [0|0] "rev/s"  ODrive_Axis1
+
+BO_ 46 Axis1_Set_Input_Torque: 8 Master
+ SG_ Input_Torque : 0|32@1+ (1,0) [0|0] "Nm"  ODrive_Axis1
+
+BO_ 47 Axis1_Set_Limits: 8 Master
+ SG_ Current_Limit : 32|32@1+ (1,0) [0|0] "A"  ODrive_Axis1
+ SG_ Velocity_Limit : 0|32@1+ (1,0) [0|0] "rev/s"  ODrive_Axis1
+
+BO_ 49 Axis1_Set_Traj_Vel_Limit: 8 Master
+ SG_ Traj_Vel_Limit : 0|32@1+ (1,0) [0|0] "rev/s"  ODrive_Axis1
+
+BO_ 50 Axis1_Set_Traj_Accel_Limits: 8 Master
+ SG_ Traj_Decel_Limit : 32|32@1+ (1,0) [0|0] "rev/s^2"  ODrive_Axis1
+ SG_ Traj_Accel_Limit : 0|32@1+ (1,0) [0|0] "rev/s^2"  ODrive_Axis1
+
+BO_ 51 Axis1_Set_Traj_Inertia: 8 Master
+ SG_ Traj_Inertia : 0|32@1+ (1,0) [0|0] "Nm/(rev/s^2)"  ODrive_Axis1
+
+BO_ 52 Axis1_Get_Iq: 8 ODrive_Axis1
+ SG_ Iq_Measured : 32|32@1+ (1,0) [0|0] "A"  Master
+ SG_ Iq_Setpoint : 0|32@1+ (1,0) [0|0] "A"  Master
+
+BO_ 53 Axis1_Get_Temperature: 8 ODrive_Axis1
+ SG_ Motor_Temperature : 32|32@1+ (1,0) [0|0] "deg C"  Master
+ SG_ FET_Temperature : 0|32@1+ (1,0) [0|0] "deg C"  Master
+
+BO_ 54 Axis1_Reboot: 1 Master
+ SG_ Action : 0|8@1+ (1,0) [0|0] ""  ODrive_Axis1
+
+BO_ 55 Axis1_Get_Bus_Voltage_Current: 8 ODrive_Axis1
+ SG_ Bus_Current : 32|32@1+ (1,0) [0|0] "A"  Master
+ SG_ Bus_Voltage : 0|32@1+ (1,0) [0|0] "V"  Master
+
+BO_ 56 Axis1_Clear_Errors: 1 Master
+ SG_ Identify : 0|8@1+ (1,0) [0|0] ""  ODrive_Axis1
+
+BO_ 57 Axis1_Set_Absolute_Position: 8 Master
+ SG_ Position : 0|32@1+ (1,0) [0|0] "rev"  ODrive_Axis1
+
+BO_ 58 Axis1_Set_Pos_Gain: 8 Master
+ SG_ Pos_Gain : 0|32@1+ (1,0) [0|0] "(rev/s) / rev"  ODrive_Axis1
+
+BO_ 59 Axis1_Set_Vel_Gains: 8 Master
+ SG_ Vel_Integrator_Gain : 32|32@1+ (1,0) [0|0] "Nm / rev"  ODrive_Axis1
+ SG_ Vel_Gain : 0|32@1+ (1,0) [0|0] "Nm / (rev/s)"  ODrive_Axis1
+
+BO_ 60 Axis1_Get_Torques: 8 ODrive_Axis1
+ SG_ Torque_Estimate : 32|32@1+ (1,0) [0|0] "Nm"  Master
+ SG_ Torque_Target : 0|32@1+ (1,0) [0|0] "Nm"  Master
+
+BO_ 61 Axis1_Get_Powers: 8 ODrive_Axis1
+ SG_ Mechanical_Power : 32|32@1+ (1,0) [0|0] "W"  Master
+ SG_ Electrical_Power : 0|32@1+ (1,0) [0|0] "W"  Master
+
+BO_ 63 Axis1_Enter_DFU_Mode: 0 Master
+
+BO_ 64 Axis2_Get_Version: 8 ODrive_Axis2
+ SG_ Fw_Version_Unreleased : 56|8@1+ (1,0) [0|0] ""  Master
+ SG_ Fw_Version_Revision : 48|8@1+ (1,0) [0|0] ""  Master
+ SG_ Fw_Version_Minor : 40|8@1+ (1,0) [0|0] ""  Master
+ SG_ Fw_Version_Major : 32|8@1+ (1,0) [0|0] ""  Master
+ SG_ Hw_Version_Variant : 24|8@1+ (1,0) [0|0] ""  Master
+ SG_ Hw_Version_Minor : 16|8@1+ (1,0) [0|0] ""  Master
+ SG_ Hw_Version_Major : 8|8@1+ (1,0) [0|0] ""  Master
+ SG_ Protocol_Version : 0|8@1+ (1,0) [0|0] ""  Master
+
+BO_ 65 Axis2_Heartbeat: 8 ODrive_Axis2
+ SG_ Trajectory_Done_Flag : 48|1@1+ (1,0) [0|0] ""  Master
+ SG_ Procedure_Result : 40|8@1+ (1,0) [0|0] ""  Master
+ SG_ Axis_State : 32|8@1+ (1,0) [0|0] ""  Master
+ SG_ Axis_Error : 0|32@1+ (1,0) [0|0] ""  Master
+
+BO_ 66 Axis2_Estop: 0 Master
+
+BO_ 67 Axis2_Get_Error: 8 ODrive_Axis2
+ SG_ Disarm_Reason : 32|32@1+ (1,0) [0|0] ""  Master
+ SG_ Active_Errors : 0|32@1+ (1,0) [0|0] ""  Master
+
+BO_ 68 Axis2_RxSdo: 8 Master
+ SG_ Value : 32|32@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Reserved : 24|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Endpoint_ID M : 8|16@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Opcode : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 69 Axis2_TxSdo: 8 ODrive_Axis2
+ SG_ Value : 32|32@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Reserved1 : 24|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Endpoint_ID M : 8|16@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Reserved0 : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 70 Axis2_Address: 8 Master
+ SG_ Serial_Number : 8|48@1+ (1,0) [0|0] ""  ODrive_Axis2
+ SG_ Node_ID : 0|8@1+ (1,0) [0|0] ""  ODrive_Axis2
+
+BO_ 71 Axis2_Set_Axis_State: 8 Master
+ SG_ Axis_Requested_State : 0|32@1+ (1,0) [0|0] ""  ODrive_Axis2
+
+BO_ 73 Axis2_Get_Encoder_Estimates: 8 ODrive_Axis2
+ SG_ Vel_Estimate : 32|32@1+ (1,0) [0|0] "rev/s"  Master
+ SG_ Pos_Estimate : 0|32@1+ (1,0) [0|0] "rev"  Master
+
+BO_ 75 Axis2_Set_Controller_Mode: 8 Master
+ SG_ Input_Mode : 32|32@1+ (1,0) [0|0] ""  ODrive_Axis2
+ SG_ Control_Mode : 0|32@1+ (1,0) [0|0] ""  ODrive_Axis2
+
+BO_ 76 Axis2_Set_Input_Pos: 8 Master
+ SG_ Torque_FF : 48|16@1- (0.001,0) [0|0] "Nm"  ODrive_Axis2
+ SG_ Vel_FF : 32|16@1- (0.001,0) [0|0] "rev/s"  ODrive_Axis2
+ SG_ Input_Pos : 0|32@1+ (1,0) [0|0] "rev"  ODrive_Axis2
+
+BO_ 77 Axis2_Set_Input_Vel: 8 Master
+ SG_ Input_Torque_FF : 32|32@1+ (1,0) [0|0] "Nm"  ODrive_Axis2
+ SG_ Input_Vel : 0|32@1+ (1,0) [0|0] "rev/s"  ODrive_Axis2
+
+BO_ 78 Axis2_Set_Input_Torque: 8 Master
+ SG_ Input_Torque : 0|32@1+ (1,0) [0|0] "Nm"  ODrive_Axis2
+
+BO_ 79 Axis2_Set_Limits: 8 Master
+ SG_ Current_Limit : 32|32@1+ (1,0) [0|0] "A"  ODrive_Axis2
+ SG_ Velocity_Limit : 0|32@1+ (1,0) [0|0] "rev/s"  ODrive_Axis2
+
+BO_ 81 Axis2_Set_Traj_Vel_Limit: 8 Master
+ SG_ Traj_Vel_Limit : 0|32@1+ (1,0) [0|0] "rev/s"  ODrive_Axis2
+
+BO_ 82 Axis2_Set_Traj_Accel_Limits: 8 Master
+ SG_ Traj_Decel_Limit : 32|32@1+ (1,0) [0|0] "rev/s^2"  ODrive_Axis2
+ SG_ Traj_Accel_Limit : 0|32@1+ (1,0) [0|0] "rev/s^2"  ODrive_Axis2
+
+BO_ 83 Axis2_Set_Traj_Inertia: 8 Master
+ SG_ Traj_Inertia : 0|32@1+ (1,0) [0|0] "Nm/(rev/s^2)"  ODrive_Axis2
+
+BO_ 84 Axis2_Get_Iq: 8 ODrive_Axis2
+ SG_ Iq_Measured : 32|32@1+ (1,0) [0|0] "A"  Master
+ SG_ Iq_Setpoint : 0|32@1+ (1,0) [0|0] "A"  Master
+
+BO_ 85 Axis2_Get_Temperature: 8 ODrive_Axis2
+ SG_ Motor_Temperature : 32|32@1+ (1,0) [0|0] "deg C"  Master
+ SG_ FET_Temperature : 0|32@1+ (1,0) [0|0] "deg C"  Master
+
+BO_ 86 Axis2_Reboot: 1 Master
+ SG_ Action : 0|8@1+ (1,0) [0|0] ""  ODrive_Axis2
+
+BO_ 87 Axis2_Get_Bus_Voltage_Current: 8 ODrive_Axis2
+ SG_ Bus_Current : 32|32@1+ (1,0) [0|0] "A"  Master
+ SG_ Bus_Voltage : 0|32@1+ (1,0) [0|0] "V"  Master
+
+BO_ 88 Axis2_Clear_Errors: 1 Master
+ SG_ Identify : 0|8@1+ (1,0) [0|0] ""  ODrive_Axis2
+
+BO_ 89 Axis2_Set_Absolute_Position: 8 Master
+ SG_ Position : 0|32@1+ (1,0) [0|0] "rev"  ODrive_Axis2
+
+BO_ 90 Axis2_Set_Pos_Gain: 8 Master
+ SG_ Pos_Gain : 0|32@1+ (1,0) [0|0] "(rev/s) / rev"  ODrive_Axis2
+
+BO_ 91 Axis2_Set_Vel_Gains: 8 Master
+ SG_ Vel_Integrator_Gain : 32|32@1+ (1,0) [0|0] "Nm / rev"  ODrive_Axis2
+ SG_ Vel_Gain : 0|32@1+ (1,0) [0|0] "Nm / (rev/s)"  ODrive_Axis2
+
+BO_ 92 Axis2_Get_Torques: 8 ODrive_Axis2
+ SG_ Torque_Estimate : 32|32@1+ (1,0) [0|0] "Nm"  Master
+ SG_ Torque_Target : 0|32@1+ (1,0) [0|0] "Nm"  Master
+
+BO_ 93 Axis2_Get_Powers: 8 ODrive_Axis2
+ SG_ Mechanical_Power : 32|32@1+ (1,0) [0|0] "W"  Master
+ SG_ Electrical_Power : 0|32@1+ (1,0) [0|0] "W"  Master
+
+BO_ 95 Axis2_Enter_DFU_Mode: 0 Master
+
+BO_ 96 Axis3_Get_Version: 8 ODrive_Axis3
+ SG_ Fw_Version_Unreleased : 56|8@1+ (1,0) [0|0] ""  Master
+ SG_ Fw_Version_Revision : 48|8@1+ (1,0) [0|0] ""  Master
+ SG_ Fw_Version_Minor : 40|8@1+ (1,0) [0|0] ""  Master
+ SG_ Fw_Version_Major : 32|8@1+ (1,0) [0|0] ""  Master
+ SG_ Hw_Version_Variant : 24|8@1+ (1,0) [0|0] ""  Master
+ SG_ Hw_Version_Minor : 16|8@1+ (1,0) [0|0] ""  Master
+ SG_ Hw_Version_Major : 8|8@1+ (1,0) [0|0] ""  Master
+ SG_ Protocol_Version : 0|8@1+ (1,0) [0|0] ""  Master
+
+BO_ 97 Axis3_Heartbeat: 8 ODrive_Axis3
+ SG_ Trajectory_Done_Flag : 48|1@1+ (1,0) [0|0] ""  Master
+ SG_ Procedure_Result : 40|8@1+ (1,0) [0|0] ""  Master
+ SG_ Axis_State : 32|8@1+ (1,0) [0|0] ""  Master
+ SG_ Axis_Error : 0|32@1+ (1,0) [0|0] ""  Master
+
+BO_ 98 Axis3_Estop: 0 Master
+
+BO_ 99 Axis3_Get_Error: 8 ODrive_Axis3
+ SG_ Disarm_Reason : 32|32@1+ (1,0) [0|0] ""  Master
+ SG_ Active_Errors : 0|32@1+ (1,0) [0|0] ""  Master
+
+BO_ 100 Axis3_RxSdo: 8 Master
+ SG_ Value : 32|32@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Reserved : 24|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Endpoint_ID M : 8|16@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Opcode : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 101 Axis3_TxSdo: 8 ODrive_Axis3
+ SG_ Value : 32|32@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Reserved1 : 24|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Endpoint_ID M : 8|16@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Reserved0 : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 102 Axis3_Address: 8 Master
+ SG_ Serial_Number : 8|48@1+ (1,0) [0|0] ""  ODrive_Axis3
+ SG_ Node_ID : 0|8@1+ (1,0) [0|0] ""  ODrive_Axis3
+
+BO_ 103 Axis3_Set_Axis_State: 8 Master
+ SG_ Axis_Requested_State : 0|32@1+ (1,0) [0|0] ""  ODrive_Axis3
+
+BO_ 105 Axis3_Get_Encoder_Estimates: 8 ODrive_Axis3
+ SG_ Vel_Estimate : 32|32@1+ (1,0) [0|0] "rev/s"  Master
+ SG_ Pos_Estimate : 0|32@1+ (1,0) [0|0] "rev"  Master
+
+BO_ 107 Axis3_Set_Controller_Mode: 8 Master
+ SG_ Input_Mode : 32|32@1+ (1,0) [0|0] ""  ODrive_Axis3
+ SG_ Control_Mode : 0|32@1+ (1,0) [0|0] ""  ODrive_Axis3
+
+BO_ 108 Axis3_Set_Input_Pos: 8 Master
+ SG_ Torque_FF : 48|16@1- (0.001,0) [0|0] "Nm"  ODrive_Axis3
+ SG_ Vel_FF : 32|16@1- (0.001,0) [0|0] "rev/s"  ODrive_Axis3
+ SG_ Input_Pos : 0|32@1+ (1,0) [0|0] "rev"  ODrive_Axis3
+
+BO_ 109 Axis3_Set_Input_Vel: 8 Master
+ SG_ Input_Torque_FF : 32|32@1+ (1,0) [0|0] "Nm"  ODrive_Axis3
+ SG_ Input_Vel : 0|32@1+ (1,0) [0|0] "rev/s"  ODrive_Axis3
+
+BO_ 110 Axis3_Set_Input_Torque: 8 Master
+ SG_ Input_Torque : 0|32@1+ (1,0) [0|0] "Nm"  ODrive_Axis3
+
+BO_ 111 Axis3_Set_Limits: 8 Master
+ SG_ Current_Limit : 32|32@1+ (1,0) [0|0] "A"  ODrive_Axis3
+ SG_ Velocity_Limit : 0|32@1+ (1,0) [0|0] "rev/s"  ODrive_Axis3
+
+BO_ 113 Axis3_Set_Traj_Vel_Limit: 8 Master
+ SG_ Traj_Vel_Limit : 0|32@1+ (1,0) [0|0] "rev/s"  ODrive_Axis3
+
+BO_ 114 Axis3_Set_Traj_Accel_Limits: 8 Master
+ SG_ Traj_Decel_Limit : 32|32@1+ (1,0) [0|0] "rev/s^2"  ODrive_Axis3
+ SG_ Traj_Accel_Limit : 0|32@1+ (1,0) [0|0] "rev/s^2"  ODrive_Axis3
+
+BO_ 115 Axis3_Set_Traj_Inertia: 8 Master
+ SG_ Traj_Inertia : 0|32@1+ (1,0) [0|0] "Nm/(rev/s^2)"  ODrive_Axis3
+
+BO_ 116 Axis3_Get_Iq: 8 ODrive_Axis3
+ SG_ Iq_Measured : 32|32@1+ (1,0) [0|0] "A"  Master
+ SG_ Iq_Setpoint : 0|32@1+ (1,0) [0|0] "A"  Master
+
+BO_ 117 Axis3_Get_Temperature: 8 ODrive_Axis3
+ SG_ Motor_Temperature : 32|32@1+ (1,0) [0|0] "deg C"  Master
+ SG_ FET_Temperature : 0|32@1+ (1,0) [0|0] "deg C"  Master
+
+BO_ 118 Axis3_Reboot: 1 Master
+ SG_ Action : 0|8@1+ (1,0) [0|0] ""  ODrive_Axis3
+
+BO_ 119 Axis3_Get_Bus_Voltage_Current: 8 ODrive_Axis3
+ SG_ Bus_Current : 32|32@1+ (1,0) [0|0] "A"  Master
+ SG_ Bus_Voltage : 0|32@1+ (1,0) [0|0] "V"  Master
+
+BO_ 120 Axis3_Clear_Errors: 1 Master
+ SG_ Identify : 0|8@1+ (1,0) [0|0] ""  ODrive_Axis3
+
+BO_ 121 Axis3_Set_Absolute_Position: 8 Master
+ SG_ Position : 0|32@1+ (1,0) [0|0] "rev"  ODrive_Axis3
+
+BO_ 122 Axis3_Set_Pos_Gain: 8 Master
+ SG_ Pos_Gain : 0|32@1+ (1,0) [0|0] "(rev/s) / rev"  ODrive_Axis3
+
+BO_ 123 Axis3_Set_Vel_Gains: 8 Master
+ SG_ Vel_Integrator_Gain : 32|32@1+ (1,0) [0|0] "Nm / rev"  ODrive_Axis3
+ SG_ Vel_Gain : 0|32@1+ (1,0) [0|0] "Nm / (rev/s)"  ODrive_Axis3
+
+BO_ 124 Axis3_Get_Torques: 8 ODrive_Axis3
+ SG_ Torque_Estimate : 32|32@1+ (1,0) [0|0] "Nm"  Master
+ SG_ Torque_Target : 0|32@1+ (1,0) [0|0] "Nm"  Master
+
+BO_ 125 Axis3_Get_Powers: 8 ODrive_Axis3
+ SG_ Mechanical_Power : 32|32@1+ (1,0) [0|0] "W"  Master
+ SG_ Electrical_Power : 0|32@1+ (1,0) [0|0] "W"  Master
+
+BO_ 127 Axis3_Enter_DFU_Mode: 0 Master
+
+BO_ 128 Axis4_Get_Version: 8 ODrive_Axis4
+ SG_ Fw_Version_Unreleased : 56|8@1+ (1,0) [0|0] ""  Master
+ SG_ Fw_Version_Revision : 48|8@1+ (1,0) [0|0] ""  Master
+ SG_ Fw_Version_Minor : 40|8@1+ (1,0) [0|0] ""  Master
+ SG_ Fw_Version_Major : 32|8@1+ (1,0) [0|0] ""  Master
+ SG_ Hw_Version_Variant : 24|8@1+ (1,0) [0|0] ""  Master
+ SG_ Hw_Version_Minor : 16|8@1+ (1,0) [0|0] ""  Master
+ SG_ Hw_Version_Major : 8|8@1+ (1,0) [0|0] ""  Master
+ SG_ Protocol_Version : 0|8@1+ (1,0) [0|0] ""  Master
+
+BO_ 129 Axis4_Heartbeat: 8 ODrive_Axis4
+ SG_ Trajectory_Done_Flag : 48|1@1+ (1,0) [0|0] ""  Master
+ SG_ Procedure_Result : 40|8@1+ (1,0) [0|0] ""  Master
+ SG_ Axis_State : 32|8@1+ (1,0) [0|0] ""  Master
+ SG_ Axis_Error : 0|32@1+ (1,0) [0|0] ""  Master
+
+BO_ 130 Axis4_Estop: 0 Master
+
+BO_ 131 Axis4_Get_Error: 8 ODrive_Axis4
+ SG_ Disarm_Reason : 32|32@1+ (1,0) [0|0] ""  Master
+ SG_ Active_Errors : 0|32@1+ (1,0) [0|0] ""  Master
+
+BO_ 132 Axis4_RxSdo: 8 Master
+ SG_ Value : 32|32@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Reserved : 24|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Endpoint_ID M : 8|16@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Opcode : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 133 Axis4_TxSdo: 8 ODrive_Axis4
+ SG_ Value : 32|32@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Reserved1 : 24|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Endpoint_ID M : 8|16@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Reserved0 : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 134 Axis4_Address: 8 Master
+ SG_ Serial_Number : 8|48@1+ (1,0) [0|0] ""  ODrive_Axis4
+ SG_ Node_ID : 0|8@1+ (1,0) [0|0] ""  ODrive_Axis4
+
+BO_ 135 Axis4_Set_Axis_State: 8 Master
+ SG_ Axis_Requested_State : 0|32@1+ (1,0) [0|0] ""  ODrive_Axis4
+
+BO_ 137 Axis4_Get_Encoder_Estimates: 8 ODrive_Axis4
+ SG_ Vel_Estimate : 32|32@1+ (1,0) [0|0] "rev/s"  Master
+ SG_ Pos_Estimate : 0|32@1+ (1,0) [0|0] "rev"  Master
+
+BO_ 139 Axis4_Set_Controller_Mode: 8 Master
+ SG_ Input_Mode : 32|32@1+ (1,0) [0|0] ""  ODrive_Axis4
+ SG_ Control_Mode : 0|32@1+ (1,0) [0|0] ""  ODrive_Axis4
+
+BO_ 140 Axis4_Set_Input_Pos: 8 Master
+ SG_ Torque_FF : 48|16@1- (0.001,0) [0|0] "Nm"  ODrive_Axis4
+ SG_ Vel_FF : 32|16@1- (0.001,0) [0|0] "rev/s"  ODrive_Axis4
+ SG_ Input_Pos : 0|32@1+ (1,0) [0|0] "rev"  ODrive_Axis4
+
+BO_ 141 Axis4_Set_Input_Vel: 8 Master
+ SG_ Input_Torque_FF : 32|32@1+ (1,0) [0|0] "Nm"  ODrive_Axis4
+ SG_ Input_Vel : 0|32@1+ (1,0) [0|0] "rev/s"  ODrive_Axis4
+
+BO_ 142 Axis4_Set_Input_Torque: 8 Master
+ SG_ Input_Torque : 0|32@1+ (1,0) [0|0] "Nm"  ODrive_Axis4
+
+BO_ 143 Axis4_Set_Limits: 8 Master
+ SG_ Current_Limit : 32|32@1+ (1,0) [0|0] "A"  ODrive_Axis4
+ SG_ Velocity_Limit : 0|32@1+ (1,0) [0|0] "rev/s"  ODrive_Axis4
+
+BO_ 145 Axis4_Set_Traj_Vel_Limit: 8 Master
+ SG_ Traj_Vel_Limit : 0|32@1+ (1,0) [0|0] "rev/s"  ODrive_Axis4
+
+BO_ 146 Axis4_Set_Traj_Accel_Limits: 8 Master
+ SG_ Traj_Decel_Limit : 32|32@1+ (1,0) [0|0] "rev/s^2"  ODrive_Axis4
+ SG_ Traj_Accel_Limit : 0|32@1+ (1,0) [0|0] "rev/s^2"  ODrive_Axis4
+
+BO_ 147 Axis4_Set_Traj_Inertia: 8 Master
+ SG_ Traj_Inertia : 0|32@1+ (1,0) [0|0] "Nm/(rev/s^2)"  ODrive_Axis4
+
+BO_ 148 Axis4_Get_Iq: 8 ODrive_Axis4
+ SG_ Iq_Measured : 32|32@1+ (1,0) [0|0] "A"  Master
+ SG_ Iq_Setpoint : 0|32@1+ (1,0) [0|0] "A"  Master
+
+BO_ 149 Axis4_Get_Temperature: 8 ODrive_Axis4
+ SG_ Motor_Temperature : 32|32@1+ (1,0) [0|0] "deg C"  Master
+ SG_ FET_Temperature : 0|32@1+ (1,0) [0|0] "deg C"  Master
+
+BO_ 150 Axis4_Reboot: 1 Master
+ SG_ Action : 0|8@1+ (1,0) [0|0] ""  ODrive_Axis4
+
+BO_ 151 Axis4_Get_Bus_Voltage_Current: 8 ODrive_Axis4
+ SG_ Bus_Current : 32|32@1+ (1,0) [0|0] "A"  Master
+ SG_ Bus_Voltage : 0|32@1+ (1,0) [0|0] "V"  Master
+
+BO_ 152 Axis4_Clear_Errors: 1 Master
+ SG_ Identify : 0|8@1+ (1,0) [0|0] ""  ODrive_Axis4
+
+BO_ 153 Axis4_Set_Absolute_Position: 8 Master
+ SG_ Position : 0|32@1+ (1,0) [0|0] "rev"  ODrive_Axis4
+
+BO_ 154 Axis4_Set_Pos_Gain: 8 Master
+ SG_ Pos_Gain : 0|32@1+ (1,0) [0|0] "(rev/s) / rev"  ODrive_Axis4
+
+BO_ 155 Axis4_Set_Vel_Gains: 8 Master
+ SG_ Vel_Integrator_Gain : 32|32@1+ (1,0) [0|0] "Nm / rev"  ODrive_Axis4
+ SG_ Vel_Gain : 0|32@1+ (1,0) [0|0] "Nm / (rev/s)"  ODrive_Axis4
+
+BO_ 156 Axis4_Get_Torques: 8 ODrive_Axis4
+ SG_ Torque_Estimate : 32|32@1+ (1,0) [0|0] "Nm"  Master
+ SG_ Torque_Target : 0|32@1+ (1,0) [0|0] "Nm"  Master
+
+BO_ 157 Axis4_Get_Powers: 8 ODrive_Axis4
+ SG_ Mechanical_Power : 32|32@1+ (1,0) [0|0] "W"  Master
+ SG_ Electrical_Power : 0|32@1+ (1,0) [0|0] "W"  Master
+
+BO_ 159 Axis4_Enter_DFU_Mode: 0 Master
+
+BO_ 160 Axis5_Get_Version: 8 ODrive_Axis5
+ SG_ Fw_Version_Unreleased : 56|8@1+ (1,0) [0|0] ""  Master
+ SG_ Fw_Version_Revision : 48|8@1+ (1,0) [0|0] ""  Master
+ SG_ Fw_Version_Minor : 40|8@1+ (1,0) [0|0] ""  Master
+ SG_ Fw_Version_Major : 32|8@1+ (1,0) [0|0] ""  Master
+ SG_ Hw_Version_Variant : 24|8@1+ (1,0) [0|0] ""  Master
+ SG_ Hw_Version_Minor : 16|8@1+ (1,0) [0|0] ""  Master
+ SG_ Hw_Version_Major : 8|8@1+ (1,0) [0|0] ""  Master
+ SG_ Protocol_Version : 0|8@1+ (1,0) [0|0] ""  Master
+
+BO_ 161 Axis5_Heartbeat: 8 ODrive_Axis5
+ SG_ Trajectory_Done_Flag : 48|1@1+ (1,0) [0|0] ""  Master
+ SG_ Procedure_Result : 40|8@1+ (1,0) [0|0] ""  Master
+ SG_ Axis_State : 32|8@1+ (1,0) [0|0] ""  Master
+ SG_ Axis_Error : 0|32@1+ (1,0) [0|0] ""  Master
+
+BO_ 162 Axis5_Estop: 0 Master
+
+BO_ 163 Axis5_Get_Error: 8 ODrive_Axis5
+ SG_ Disarm_Reason : 32|32@1+ (1,0) [0|0] ""  Master
+ SG_ Active_Errors : 0|32@1+ (1,0) [0|0] ""  Master
+
+BO_ 164 Axis5_RxSdo: 8 Master
+ SG_ Value : 32|32@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Reserved : 24|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Endpoint_ID M : 8|16@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Opcode : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 165 Axis5_TxSdo: 8 ODrive_Axis5
+ SG_ Value : 32|32@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Reserved1 : 24|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Endpoint_ID M : 8|16@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Reserved0 : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 166 Axis5_Address: 8 Master
+ SG_ Serial_Number : 8|48@1+ (1,0) [0|0] ""  ODrive_Axis5
+ SG_ Node_ID : 0|8@1+ (1,0) [0|0] ""  ODrive_Axis5
+
+BO_ 167 Axis5_Set_Axis_State: 8 Master
+ SG_ Axis_Requested_State : 0|32@1+ (1,0) [0|0] ""  ODrive_Axis5
+
+BO_ 169 Axis5_Get_Encoder_Estimates: 8 ODrive_Axis5
+ SG_ Vel_Estimate : 32|32@1+ (1,0) [0|0] "rev/s"  Master
+ SG_ Pos_Estimate : 0|32@1+ (1,0) [0|0] "rev"  Master
+
+BO_ 171 Axis5_Set_Controller_Mode: 8 Master
+ SG_ Input_Mode : 32|32@1+ (1,0) [0|0] ""  ODrive_Axis5
+ SG_ Control_Mode : 0|32@1+ (1,0) [0|0] ""  ODrive_Axis5
+
+BO_ 172 Axis5_Set_Input_Pos: 8 Master
+ SG_ Torque_FF : 48|16@1- (0.001,0) [0|0] "Nm"  ODrive_Axis5
+ SG_ Vel_FF : 32|16@1- (0.001,0) [0|0] "rev/s"  ODrive_Axis5
+ SG_ Input_Pos : 0|32@1+ (1,0) [0|0] "rev"  ODrive_Axis5
+
+BO_ 173 Axis5_Set_Input_Vel: 8 Master
+ SG_ Input_Torque_FF : 32|32@1+ (1,0) [0|0] "Nm"  ODrive_Axis5
+ SG_ Input_Vel : 0|32@1+ (1,0) [0|0] "rev/s"  ODrive_Axis5
+
+BO_ 174 Axis5_Set_Input_Torque: 8 Master
+ SG_ Input_Torque : 0|32@1+ (1,0) [0|0] "Nm"  ODrive_Axis5
+
+BO_ 175 Axis5_Set_Limits: 8 Master
+ SG_ Current_Limit : 32|32@1+ (1,0) [0|0] "A"  ODrive_Axis5
+ SG_ Velocity_Limit : 0|32@1+ (1,0) [0|0] "rev/s"  ODrive_Axis5
+
+BO_ 177 Axis5_Set_Traj_Vel_Limit: 8 Master
+ SG_ Traj_Vel_Limit : 0|32@1+ (1,0) [0|0] "rev/s"  ODrive_Axis5
+
+BO_ 178 Axis5_Set_Traj_Accel_Limits: 8 Master
+ SG_ Traj_Decel_Limit : 32|32@1+ (1,0) [0|0] "rev/s^2"  ODrive_Axis5
+ SG_ Traj_Accel_Limit : 0|32@1+ (1,0) [0|0] "rev/s^2"  ODrive_Axis5
+
+BO_ 179 Axis5_Set_Traj_Inertia: 8 Master
+ SG_ Traj_Inertia : 0|32@1+ (1,0) [0|0] "Nm/(rev/s^2)"  ODrive_Axis5
+
+BO_ 180 Axis5_Get_Iq: 8 ODrive_Axis5
+ SG_ Iq_Measured : 32|32@1+ (1,0) [0|0] "A"  Master
+ SG_ Iq_Setpoint : 0|32@1+ (1,0) [0|0] "A"  Master
+
+BO_ 181 Axis5_Get_Temperature: 8 ODrive_Axis5
+ SG_ Motor_Temperature : 32|32@1+ (1,0) [0|0] "deg C"  Master
+ SG_ FET_Temperature : 0|32@1+ (1,0) [0|0] "deg C"  Master
+
+BO_ 182 Axis5_Reboot: 1 Master
+ SG_ Action : 0|8@1+ (1,0) [0|0] ""  ODrive_Axis5
+
+BO_ 183 Axis5_Get_Bus_Voltage_Current: 8 ODrive_Axis5
+ SG_ Bus_Current : 32|32@1+ (1,0) [0|0] "A"  Master
+ SG_ Bus_Voltage : 0|32@1+ (1,0) [0|0] "V"  Master
+
+BO_ 184 Axis5_Clear_Errors: 1 Master
+ SG_ Identify : 0|8@1+ (1,0) [0|0] ""  ODrive_Axis5
+
+BO_ 185 Axis5_Set_Absolute_Position: 8 Master
+ SG_ Position : 0|32@1+ (1,0) [0|0] "rev"  ODrive_Axis5
+
+BO_ 186 Axis5_Set_Pos_Gain: 8 Master
+ SG_ Pos_Gain : 0|32@1+ (1,0) [0|0] "(rev/s) / rev"  ODrive_Axis5
+
+BO_ 187 Axis5_Set_Vel_Gains: 8 Master
+ SG_ Vel_Integrator_Gain : 32|32@1+ (1,0) [0|0] "Nm / rev"  ODrive_Axis5
+ SG_ Vel_Gain : 0|32@1+ (1,0) [0|0] "Nm / (rev/s)"  ODrive_Axis5
+
+BO_ 188 Axis5_Get_Torques: 8 ODrive_Axis5
+ SG_ Torque_Estimate : 32|32@1+ (1,0) [0|0] "Nm"  Master
+ SG_ Torque_Target : 0|32@1+ (1,0) [0|0] "Nm"  Master
+
+BO_ 189 Axis5_Get_Powers: 8 ODrive_Axis5
+ SG_ Mechanical_Power : 32|32@1+ (1,0) [0|0] "W"  Master
+ SG_ Electrical_Power : 0|32@1+ (1,0) [0|0] "W"  Master
+
+BO_ 191 Axis5_Enter_DFU_Mode: 0 Master
+
+BO_ 192 Axis6_Get_Version: 8 ODrive_Axis6
+ SG_ Fw_Version_Unreleased : 56|8@1+ (1,0) [0|0] ""  Master
+ SG_ Fw_Version_Revision : 48|8@1+ (1,0) [0|0] ""  Master
+ SG_ Fw_Version_Minor : 40|8@1+ (1,0) [0|0] ""  Master
+ SG_ Fw_Version_Major : 32|8@1+ (1,0) [0|0] ""  Master
+ SG_ Hw_Version_Variant : 24|8@1+ (1,0) [0|0] ""  Master
+ SG_ Hw_Version_Minor : 16|8@1+ (1,0) [0|0] ""  Master
+ SG_ Hw_Version_Major : 8|8@1+ (1,0) [0|0] ""  Master
+ SG_ Protocol_Version : 0|8@1+ (1,0) [0|0] ""  Master
+
+BO_ 193 Axis6_Heartbeat: 8 ODrive_Axis6
+ SG_ Trajectory_Done_Flag : 48|1@1+ (1,0) [0|0] ""  Master
+ SG_ Procedure_Result : 40|8@1+ (1,0) [0|0] ""  Master
+ SG_ Axis_State : 32|8@1+ (1,0) [0|0] ""  Master
+ SG_ Axis_Error : 0|32@1+ (1,0) [0|0] ""  Master
+
+BO_ 194 Axis6_Estop: 0 Master
+
+BO_ 195 Axis6_Get_Error: 8 ODrive_Axis6
+ SG_ Disarm_Reason : 32|32@1+ (1,0) [0|0] ""  Master
+ SG_ Active_Errors : 0|32@1+ (1,0) [0|0] ""  Master
+
+BO_ 196 Axis6_RxSdo: 8 Master
+ SG_ Value : 32|32@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Reserved : 24|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Endpoint_ID M : 8|16@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Opcode : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 197 Axis6_TxSdo: 8 ODrive_Axis6
+ SG_ Value : 32|32@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Reserved1 : 24|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Endpoint_ID M : 8|16@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Reserved0 : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 198 Axis6_Address: 8 Master
+ SG_ Serial_Number : 8|48@1+ (1,0) [0|0] ""  ODrive_Axis6
+ SG_ Node_ID : 0|8@1+ (1,0) [0|0] ""  ODrive_Axis6
+
+BO_ 199 Axis6_Set_Axis_State: 8 Master
+ SG_ Axis_Requested_State : 0|32@1+ (1,0) [0|0] ""  ODrive_Axis6
+
+BO_ 201 Axis6_Get_Encoder_Estimates: 8 ODrive_Axis6
+ SG_ Vel_Estimate : 32|32@1+ (1,0) [0|0] "rev/s"  Master
+ SG_ Pos_Estimate : 0|32@1+ (1,0) [0|0] "rev"  Master
+
+BO_ 203 Axis6_Set_Controller_Mode: 8 Master
+ SG_ Input_Mode : 32|32@1+ (1,0) [0|0] ""  ODrive_Axis6
+ SG_ Control_Mode : 0|32@1+ (1,0) [0|0] ""  ODrive_Axis6
+
+BO_ 204 Axis6_Set_Input_Pos: 8 Master
+ SG_ Torque_FF : 48|16@1- (0.001,0) [0|0] "Nm"  ODrive_Axis6
+ SG_ Vel_FF : 32|16@1- (0.001,0) [0|0] "rev/s"  ODrive_Axis6
+ SG_ Input_Pos : 0|32@1+ (1,0) [0|0] "rev"  ODrive_Axis6
+
+BO_ 205 Axis6_Set_Input_Vel: 8 Master
+ SG_ Input_Torque_FF : 32|32@1+ (1,0) [0|0] "Nm"  ODrive_Axis6
+ SG_ Input_Vel : 0|32@1+ (1,0) [0|0] "rev/s"  ODrive_Axis6
+
+BO_ 206 Axis6_Set_Input_Torque: 8 Master
+ SG_ Input_Torque : 0|32@1+ (1,0) [0|0] "Nm"  ODrive_Axis6
+
+BO_ 207 Axis6_Set_Limits: 8 Master
+ SG_ Current_Limit : 32|32@1+ (1,0) [0|0] "A"  ODrive_Axis6
+ SG_ Velocity_Limit : 0|32@1+ (1,0) [0|0] "rev/s"  ODrive_Axis6
+
+BO_ 209 Axis6_Set_Traj_Vel_Limit: 8 Master
+ SG_ Traj_Vel_Limit : 0|32@1+ (1,0) [0|0] "rev/s"  ODrive_Axis6
+
+BO_ 210 Axis6_Set_Traj_Accel_Limits: 8 Master
+ SG_ Traj_Decel_Limit : 32|32@1+ (1,0) [0|0] "rev/s^2"  ODrive_Axis6
+ SG_ Traj_Accel_Limit : 0|32@1+ (1,0) [0|0] "rev/s^2"  ODrive_Axis6
+
+BO_ 211 Axis6_Set_Traj_Inertia: 8 Master
+ SG_ Traj_Inertia : 0|32@1+ (1,0) [0|0] "Nm/(rev/s^2)"  ODrive_Axis6
+
+BO_ 212 Axis6_Get_Iq: 8 ODrive_Axis6
+ SG_ Iq_Measured : 32|32@1+ (1,0) [0|0] "A"  Master
+ SG_ Iq_Setpoint : 0|32@1+ (1,0) [0|0] "A"  Master
+
+BO_ 213 Axis6_Get_Temperature: 8 ODrive_Axis6
+ SG_ Motor_Temperature : 32|32@1+ (1,0) [0|0] "deg C"  Master
+ SG_ FET_Temperature : 0|32@1+ (1,0) [0|0] "deg C"  Master
+
+BO_ 214 Axis6_Reboot: 1 Master
+ SG_ Action : 0|8@1+ (1,0) [0|0] ""  ODrive_Axis6
+
+BO_ 215 Axis6_Get_Bus_Voltage_Current: 8 ODrive_Axis6
+ SG_ Bus_Current : 32|32@1+ (1,0) [0|0] "A"  Master
+ SG_ Bus_Voltage : 0|32@1+ (1,0) [0|0] "V"  Master
+
+BO_ 216 Axis6_Clear_Errors: 1 Master
+ SG_ Identify : 0|8@1+ (1,0) [0|0] ""  ODrive_Axis6
+
+BO_ 217 Axis6_Set_Absolute_Position: 8 Master
+ SG_ Position : 0|32@1+ (1,0) [0|0] "rev"  ODrive_Axis6
+
+BO_ 218 Axis6_Set_Pos_Gain: 8 Master
+ SG_ Pos_Gain : 0|32@1+ (1,0) [0|0] "(rev/s) / rev"  ODrive_Axis6
+
+BO_ 219 Axis6_Set_Vel_Gains: 8 Master
+ SG_ Vel_Integrator_Gain : 32|32@1+ (1,0) [0|0] "Nm / rev"  ODrive_Axis6
+ SG_ Vel_Gain : 0|32@1+ (1,0) [0|0] "Nm / (rev/s)"  ODrive_Axis6
+
+BO_ 220 Axis6_Get_Torques: 8 ODrive_Axis6
+ SG_ Torque_Estimate : 32|32@1+ (1,0) [0|0] "Nm"  Master
+ SG_ Torque_Target : 0|32@1+ (1,0) [0|0] "Nm"  Master
+
+BO_ 221 Axis6_Get_Powers: 8 ODrive_Axis6
+ SG_ Mechanical_Power : 32|32@1+ (1,0) [0|0] "W"  Master
+ SG_ Electrical_Power : 0|32@1+ (1,0) [0|0] "W"  Master
+
+BO_ 223 Axis6_Enter_DFU_Mode: 0 Master
+
+BO_ 224 Axis7_Get_Version: 8 ODrive_Axis7
+ SG_ Fw_Version_Unreleased : 56|8@1+ (1,0) [0|0] ""  Master
+ SG_ Fw_Version_Revision : 48|8@1+ (1,0) [0|0] ""  Master
+ SG_ Fw_Version_Minor : 40|8@1+ (1,0) [0|0] ""  Master
+ SG_ Fw_Version_Major : 32|8@1+ (1,0) [0|0] ""  Master
+ SG_ Hw_Version_Variant : 24|8@1+ (1,0) [0|0] ""  Master
+ SG_ Hw_Version_Minor : 16|8@1+ (1,0) [0|0] ""  Master
+ SG_ Hw_Version_Major : 8|8@1+ (1,0) [0|0] ""  Master
+ SG_ Protocol_Version : 0|8@1+ (1,0) [0|0] ""  Master
+
+BO_ 225 Axis7_Heartbeat: 8 ODrive_Axis7
+ SG_ Trajectory_Done_Flag : 48|1@1+ (1,0) [0|0] ""  Master
+ SG_ Procedure_Result : 40|8@1+ (1,0) [0|0] ""  Master
+ SG_ Axis_State : 32|8@1+ (1,0) [0|0] ""  Master
+ SG_ Axis_Error : 0|32@1+ (1,0) [0|0] ""  Master
+
+BO_ 226 Axis7_Estop: 0 Master
+
+BO_ 227 Axis7_Get_Error: 8 ODrive_Axis7
+ SG_ Disarm_Reason : 32|32@1+ (1,0) [0|0] ""  Master
+ SG_ Active_Errors : 0|32@1+ (1,0) [0|0] ""  Master
+
+BO_ 228 Axis7_RxSdo: 8 Master
+ SG_ Value : 32|32@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Reserved : 24|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Endpoint_ID M : 8|16@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Opcode : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 229 Axis7_TxSdo: 8 ODrive_Axis7
+ SG_ Value : 32|32@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Reserved1 : 24|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Endpoint_ID M : 8|16@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Reserved0 : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 230 Axis7_Address: 8 Master
+ SG_ Serial_Number : 8|48@1+ (1,0) [0|0] ""  ODrive_Axis7
+ SG_ Node_ID : 0|8@1+ (1,0) [0|0] ""  ODrive_Axis7
+
+BO_ 231 Axis7_Set_Axis_State: 8 Master
+ SG_ Axis_Requested_State : 0|32@1+ (1,0) [0|0] ""  ODrive_Axis7
+
+BO_ 233 Axis7_Get_Encoder_Estimates: 8 ODrive_Axis7
+ SG_ Vel_Estimate : 32|32@1+ (1,0) [0|0] "rev/s"  Master
+ SG_ Pos_Estimate : 0|32@1+ (1,0) [0|0] "rev"  Master
+
+BO_ 235 Axis7_Set_Controller_Mode: 8 Master
+ SG_ Input_Mode : 32|32@1+ (1,0) [0|0] ""  ODrive_Axis7
+ SG_ Control_Mode : 0|32@1+ (1,0) [0|0] ""  ODrive_Axis7
+
+BO_ 236 Axis7_Set_Input_Pos: 8 Master
+ SG_ Torque_FF : 48|16@1- (0.001,0) [0|0] "Nm"  ODrive_Axis7
+ SG_ Vel_FF : 32|16@1- (0.001,0) [0|0] "rev/s"  ODrive_Axis7
+ SG_ Input_Pos : 0|32@1+ (1,0) [0|0] "rev"  ODrive_Axis7
+
+BO_ 237 Axis7_Set_Input_Vel: 8 Master
+ SG_ Input_Torque_FF : 32|32@1+ (1,0) [0|0] "Nm"  ODrive_Axis7
+ SG_ Input_Vel : 0|32@1+ (1,0) [0|0] "rev/s"  ODrive_Axis7
+
+BO_ 238 Axis7_Set_Input_Torque: 8 Master
+ SG_ Input_Torque : 0|32@1+ (1,0) [0|0] "Nm"  ODrive_Axis7
+
+BO_ 239 Axis7_Set_Limits: 8 Master
+ SG_ Current_Limit : 32|32@1+ (1,0) [0|0] "A"  ODrive_Axis7
+ SG_ Velocity_Limit : 0|32@1+ (1,0) [0|0] "rev/s"  ODrive_Axis7
+
+BO_ 241 Axis7_Set_Traj_Vel_Limit: 8 Master
+ SG_ Traj_Vel_Limit : 0|32@1+ (1,0) [0|0] "rev/s"  ODrive_Axis7
+
+BO_ 242 Axis7_Set_Traj_Accel_Limits: 8 Master
+ SG_ Traj_Decel_Limit : 32|32@1+ (1,0) [0|0] "rev/s^2"  ODrive_Axis7
+ SG_ Traj_Accel_Limit : 0|32@1+ (1,0) [0|0] "rev/s^2"  ODrive_Axis7
+
+BO_ 243 Axis7_Set_Traj_Inertia: 8 Master
+ SG_ Traj_Inertia : 0|32@1+ (1,0) [0|0] "Nm/(rev/s^2)"  ODrive_Axis7
+
+BO_ 244 Axis7_Get_Iq: 8 ODrive_Axis7
+ SG_ Iq_Measured : 32|32@1+ (1,0) [0|0] "A"  Master
+ SG_ Iq_Setpoint : 0|32@1+ (1,0) [0|0] "A"  Master
+
+BO_ 245 Axis7_Get_Temperature: 8 ODrive_Axis7
+ SG_ Motor_Temperature : 32|32@1+ (1,0) [0|0] "deg C"  Master
+ SG_ FET_Temperature : 0|32@1+ (1,0) [0|0] "deg C"  Master
+
+BO_ 246 Axis7_Reboot: 1 Master
+ SG_ Action : 0|8@1+ (1,0) [0|0] ""  ODrive_Axis7
+
+BO_ 247 Axis7_Get_Bus_Voltage_Current: 8 ODrive_Axis7
+ SG_ Bus_Current : 32|32@1+ (1,0) [0|0] "A"  Master
+ SG_ Bus_Voltage : 0|32@1+ (1,0) [0|0] "V"  Master
+
+BO_ 248 Axis7_Clear_Errors: 1 Master
+ SG_ Identify : 0|8@1+ (1,0) [0|0] ""  ODrive_Axis7
+
+BO_ 249 Axis7_Set_Absolute_Position: 8 Master
+ SG_ Position : 0|32@1+ (1,0) [0|0] "rev"  ODrive_Axis7
+
+BO_ 250 Axis7_Set_Pos_Gain: 8 Master
+ SG_ Pos_Gain : 0|32@1+ (1,0) [0|0] "(rev/s) / rev"  ODrive_Axis7
+
+BO_ 251 Axis7_Set_Vel_Gains: 8 Master
+ SG_ Vel_Integrator_Gain : 32|32@1+ (1,0) [0|0] "Nm / rev"  ODrive_Axis7
+ SG_ Vel_Gain : 0|32@1+ (1,0) [0|0] "Nm / (rev/s)"  ODrive_Axis7
+
+BO_ 252 Axis7_Get_Torques: 8 ODrive_Axis7
+ SG_ Torque_Estimate : 32|32@1+ (1,0) [0|0] "Nm"  Master
+ SG_ Torque_Target : 0|32@1+ (1,0) [0|0] "Nm"  Master
+
+BO_ 253 Axis7_Get_Powers: 8 ODrive_Axis7
+ SG_ Mechanical_Power : 32|32@1+ (1,0) [0|0] "W"  Master
+ SG_ Electrical_Power : 0|32@1+ (1,0) [0|0] "W"  Master
+
+BO_ 255 Axis7_Enter_DFU_Mode: 0 Master
+
+BO_TX_BU_ 6 : Master,ODrive_Axis0;
+BO_TX_BU_ 38 : Master,ODrive_Axis1;
+BO_TX_BU_ 70 : Master,ODrive_Axis2;
+BO_TX_BU_ 102 : Master,ODrive_Axis3;
+BO_TX_BU_ 134 : Master,ODrive_Axis4;
+BO_TX_BU_ 166 : Master,ODrive_Axis5;
+BO_TX_BU_ 198 : Master,ODrive_Axis6;
+BO_TX_BU_ 230 : Master,ODrive_Axis7;
+
+
+CM_ SG_ 0 Fw_Version_Unreleased ":attr:`~ODrive.fw_version_unreleased`";
+CM_ SG_ 0 Fw_Version_Revision ":attr:`~ODrive.fw_version_revision`";
+CM_ SG_ 0 Fw_Version_Minor ":attr:`~ODrive.fw_version_minor`";
+CM_ SG_ 0 Fw_Version_Major ":attr:`~ODrive.fw_version_major`";
+CM_ SG_ 0 Hw_Version_Variant ":attr:`~ODrive.hw_version_variant`";
+CM_ SG_ 0 Hw_Version_Minor ":attr:`~ODrive.hw_version_minor`";
+CM_ SG_ 0 Hw_Version_Major ":attr:`~ODrive.hw_version_major`";
+CM_ SG_ 0 Protocol_Version "Always reported as 2";
+CM_ SG_ 1 Trajectory_Done_Flag ":attr:`<axis>.controller.trajectory_done <ODrive.Controller.trajectory_done>` (0: false, 1: true)";
+CM_ SG_ 1 Procedure_Result ":attr:`<axis>.procedure_result <ODrive.Axis.procedure_result>`";
+CM_ SG_ 1 Axis_State ":attr:`<axis>.current_state <ODrive.Axis.current_state>`";
+CM_ SG_ 1 Axis_Error ":attr:`<axis>.active_errors <ODrive.Axis.active_errors>` | :attr:`<axis>.disarm_reason <ODrive.Axis.disarm_reason>`";
+CM_ BO_ 2 "Causes the axis to disarm with :attr:`~ODrive.Error.ESTOP_REQUESTED`.";
+CM_ SG_ 3 Disarm_Reason ":attr:`~ODrive.Axis.disarm_reason`";
+CM_ SG_ 3 Active_Errors ":attr:`~ODrive.Axis.active_errors`";
+CM_ BO_ 4 "Sent by the host to read or write from/to arbitrary parameters. See :ref:`can-endpoint-access` for details.";
+CM_ SG_ 4 Value "Data type and length depend on endpoint ID";
+CM_ SG_ 4 Endpoint_ID "Endpoint ID as found in :code:`flat_endpoints.json`";
+CM_ SG_ 4 Opcode "0: read, 1: write";
+CM_ BO_ 5 "Sent by the ODrive in response to an RxSdo with Opcode=READ. See :ref:`can-endpoint-access` for details.";
+CM_ SG_ 5 Value "Data type and length depend on endpoint ID";
+CM_ SG_ 5 Endpoint_ID "Endpoint ID as found in :code:`flat_endpoints.json`";
+CM_ BO_ 6 "
+Main section: :ref:`can-discovery`.
+
+When an ODrive receives this message (subject to receive filters, that means node_id contained in the message ID must matches its own or be 0x3f), it takes the following action:
+
+* RTR=1 (or empty payload): Respond with own serial number and :code:`node_id`.
+* Matching Serial_Number: Take on the new Node_ID.
+* Mismatching Serial_Number but matching Node_ID: Go to unaddressed state (:code:`node_id` = 0x3f).
+* Mismatching Serial_Number and mismatching Node_ID: Ignore message.
+
+Serial_Number == 0 is considered a wildcard that always matches.
+
+Responses on this message are sent even if the ODrive is unaddressed (node_id = 0x3f). In this case, the response is sent after a random delay to avoid collisions.
+";
+CM_ SG_ 6 Serial_Number "ODrive ? Host: Serial number of the sending ODrive
+Host ? ODrive: The serial number that shall be associated with the specified Node_ID";
+CM_ SG_ 6 Node_ID ":attr:`~ODrive.Axis.CanConfig.node_id`";
+CM_ SG_ 7 Axis_Requested_State ":attr:`~ODrive.Axis.requested_state`";
+CM_ BO_ 9 "This message is sent by the ODrive periodically by default. See also :ref:`cyclic-messages`.";
+CM_ SG_ 9 Vel_Estimate ":attr:`<axis>.pos_vel_mapper.vel <ODrive.Mapper.vel>`";
+CM_ SG_ 9 Pos_Estimate ":attr:`<axis>.pos_vel_mapper.pos_rel <ODrive.Mapper.pos_rel>` or :attr:`<axis>.pos_vel_mapper.pos_abs <ODrive.Mapper.pos_abs>`,
+depending on :attr:`ODrive.Controller.Config.absolute_setpoints`";
+CM_ SG_ 11 Input_Mode ":attr:`~ODrive.Controller.Config.input_mode`";
+CM_ SG_ 11 Control_Mode ":attr:`~ODrive.Controller.Config.control_mode`";
+CM_ SG_ 12 Torque_FF ":attr:`~ODrive.Controller.input_torque`";
+CM_ SG_ 12 Vel_FF ":attr:`~ODrive.Controller.input_vel`";
+CM_ SG_ 12 Input_Pos ":attr:`~ODrive.Controller.input_pos`";
+CM_ SG_ 13 Input_Torque_FF ":attr:`~ODrive.Controller.input_torque`";
+CM_ SG_ 13 Input_Vel ":attr:`~ODrive.Controller.input_vel`";
+CM_ SG_ 14 Input_Torque ":attr:`~ODrive.Controller.input_torque`";
+CM_ SG_ 15 Current_Limit ":attr:`~ODrive.Axis.Config.Motor.current_soft_max`";
+CM_ SG_ 15 Velocity_Limit ":attr:`~ODrive.Controller.Config.vel_limit`";
+CM_ SG_ 17 Traj_Vel_Limit ":attr:`~ODrive.TrapezoidalTrajectory.Config.vel_limit`";
+CM_ SG_ 18 Traj_Decel_Limit ":attr:`~ODrive.TrapezoidalTrajectory.Config.decel_limit`";
+CM_ SG_ 18 Traj_Accel_Limit ":attr:`~ODrive.TrapezoidalTrajectory.Config.accel_limit`";
+CM_ SG_ 19 Traj_Inertia ":attr:`~ODrive.Controller.Config.inertia`";
+CM_ SG_ 20 Iq_Measured ":attr:`~ODrive.FieldOrientedController.Iq_measured`";
+CM_ SG_ 20 Iq_Setpoint ":attr:`~ODrive.FieldOrientedController.Iq_setpoint`";
+CM_ SG_ 21 Motor_Temperature ":attr:`<axis>.motor.motor_thermistor.temperature <ODrive.OffboardThermistorCurrentLimiter>`";
+CM_ SG_ 21 FET_Temperature ":attr:`<axis>.motor.fet_thermistor.temperature <ODrive.OnboardThermistorCurrentLimiter>`";
+CM_ BO_ 22 "Reboots the ODrive according to Action. This requires the axis to be in :attr:`~ODrive.Axis.AxisState.IDLE`.";
+CM_ SG_ 22 Action "
+0: :func:`~ODrive.reboot()`
+1: :func:`~ODrive.save_configuration()`
+2: :func:`~ODrive.erase_configuration()`
+3: :func:`~ODrive.enter_dfu_mode2()`
+";
+CM_ SG_ 23 Bus_Current ":attr:`~ODrive.ibus`";
+CM_ SG_ 23 Bus_Voltage ":attr:`~ODrive.vbus_voltage`";
+CM_ BO_ 24 "Equivalent to calling :func:`~ODrive.clear_errors()`.";
+CM_ SG_ 24 Identify ":attr:`~ODrive.identify`";
+CM_ BO_ 25 "Equivalent to calling :func:`~ODrive.Axis.set_abs_pos()`.";
+CM_ SG_ 25 Position "new position";
+CM_ SG_ 26 Pos_Gain ":attr:`~ODrive.Controller.Config.pos_gain`";
+CM_ SG_ 27 Vel_Integrator_Gain ":attr:`~ODrive.Controller.Config.vel_integrator_gain`";
+CM_ SG_ 27 Vel_Gain ":attr:`~ODrive.Controller.Config.vel_gain`";
+CM_ SG_ 28 Torque_Estimate ":attr:`~ODrive.Motor.torque_estimate`";
+CM_ SG_ 28 Torque_Target ":attr:`~ODrive.Controller.effective_torque_setpoint`";
+CM_ SG_ 29 Mechanical_Power ":attr:`~ODrive.Motor.mechanical_power`";
+CM_ SG_ 29 Electrical_Power ":attr:`~ODrive.Motor.electrical_power`";
+CM_ BO_ 31 "Puts the ODrive into DFU mode (see :ref:`new-dfu`). Equivalent to calling :func:`~ODrive.enter_dfu_mode2()`.";
+CM_ SG_ 32 Fw_Version_Unreleased ":attr:`~ODrive.fw_version_unreleased`";
+CM_ SG_ 32 Fw_Version_Revision ":attr:`~ODrive.fw_version_revision`";
+CM_ SG_ 32 Fw_Version_Minor ":attr:`~ODrive.fw_version_minor`";
+CM_ SG_ 32 Fw_Version_Major ":attr:`~ODrive.fw_version_major`";
+CM_ SG_ 32 Hw_Version_Variant ":attr:`~ODrive.hw_version_variant`";
+CM_ SG_ 32 Hw_Version_Minor ":attr:`~ODrive.hw_version_minor`";
+CM_ SG_ 32 Hw_Version_Major ":attr:`~ODrive.hw_version_major`";
+CM_ SG_ 32 Protocol_Version "Always reported as 2";
+CM_ SG_ 33 Trajectory_Done_Flag ":attr:`<axis>.controller.trajectory_done <ODrive.Controller.trajectory_done>` (0: false, 1: true)";
+CM_ SG_ 33 Procedure_Result ":attr:`<axis>.procedure_result <ODrive.Axis.procedure_result>`";
+CM_ SG_ 33 Axis_State ":attr:`<axis>.current_state <ODrive.Axis.current_state>`";
+CM_ SG_ 33 Axis_Error ":attr:`<axis>.active_errors <ODrive.Axis.active_errors>` | :attr:`<axis>.disarm_reason <ODrive.Axis.disarm_reason>`";
+CM_ BO_ 34 "Causes the axis to disarm with :attr:`~ODrive.Error.ESTOP_REQUESTED`.";
+CM_ SG_ 35 Disarm_Reason ":attr:`~ODrive.Axis.disarm_reason`";
+CM_ SG_ 35 Active_Errors ":attr:`~ODrive.Axis.active_errors`";
+CM_ BO_ 36 "Sent by the host to read or write from/to arbitrary parameters. See :ref:`can-endpoint-access` for details.";
+CM_ SG_ 36 Value "Data type and length depend on endpoint ID";
+CM_ SG_ 36 Endpoint_ID "Endpoint ID as found in :code:`flat_endpoints.json`";
+CM_ SG_ 36 Opcode "0: read, 1: write";
+CM_ BO_ 37 "Sent by the ODrive in response to an RxSdo with Opcode=READ. See :ref:`can-endpoint-access` for details.";
+CM_ SG_ 37 Value "Data type and length depend on endpoint ID";
+CM_ SG_ 37 Endpoint_ID "Endpoint ID as found in :code:`flat_endpoints.json`";
+CM_ BO_ 38 "
+Main section: :ref:`can-discovery`.
+
+When an ODrive receives this message (subject to receive filters, that means node_id contained in the message ID must matches its own or be 0x3f), it takes the following action:
+
+* RTR=1 (or empty payload): Respond with own serial number and :code:`node_id`.
+* Matching Serial_Number: Take on the new Node_ID.
+* Mismatching Serial_Number but matching Node_ID: Go to unaddressed state (:code:`node_id` = 0x3f).
+* Mismatching Serial_Number and mismatching Node_ID: Ignore message.
+
+Serial_Number == 0 is considered a wildcard that always matches.
+
+Responses on this message are sent even if the ODrive is unaddressed (node_id = 0x3f). In this case, the response is sent after a random delay to avoid collisions.
+";
+CM_ SG_ 38 Serial_Number "ODrive ? Host: Serial number of the sending ODrive
+Host ? ODrive: The serial number that shall be associated with the specified Node_ID";
+CM_ SG_ 38 Node_ID ":attr:`~ODrive.Axis.CanConfig.node_id`";
+CM_ SG_ 39 Axis_Requested_State ":attr:`~ODrive.Axis.requested_state`";
+CM_ BO_ 41 "This message is sent by the ODrive periodically by default. See also :ref:`cyclic-messages`.";
+CM_ SG_ 41 Vel_Estimate ":attr:`<axis>.pos_vel_mapper.vel <ODrive.Mapper.vel>`";
+CM_ SG_ 41 Pos_Estimate ":attr:`<axis>.pos_vel_mapper.pos_rel <ODrive.Mapper.pos_rel>` or :attr:`<axis>.pos_vel_mapper.pos_abs <ODrive.Mapper.pos_abs>`,
+depending on :attr:`ODrive.Controller.Config.absolute_setpoints`";
+CM_ SG_ 43 Input_Mode ":attr:`~ODrive.Controller.Config.input_mode`";
+CM_ SG_ 43 Control_Mode ":attr:`~ODrive.Controller.Config.control_mode`";
+CM_ SG_ 44 Torque_FF ":attr:`~ODrive.Controller.input_torque`";
+CM_ SG_ 44 Vel_FF ":attr:`~ODrive.Controller.input_vel`";
+CM_ SG_ 44 Input_Pos ":attr:`~ODrive.Controller.input_pos`";
+CM_ SG_ 45 Input_Torque_FF ":attr:`~ODrive.Controller.input_torque`";
+CM_ SG_ 45 Input_Vel ":attr:`~ODrive.Controller.input_vel`";
+CM_ SG_ 46 Input_Torque ":attr:`~ODrive.Controller.input_torque`";
+CM_ SG_ 47 Current_Limit ":attr:`~ODrive.Axis.Config.Motor.current_soft_max`";
+CM_ SG_ 47 Velocity_Limit ":attr:`~ODrive.Controller.Config.vel_limit`";
+CM_ SG_ 49 Traj_Vel_Limit ":attr:`~ODrive.TrapezoidalTrajectory.Config.vel_limit`";
+CM_ SG_ 50 Traj_Decel_Limit ":attr:`~ODrive.TrapezoidalTrajectory.Config.decel_limit`";
+CM_ SG_ 50 Traj_Accel_Limit ":attr:`~ODrive.TrapezoidalTrajectory.Config.accel_limit`";
+CM_ SG_ 51 Traj_Inertia ":attr:`~ODrive.Controller.Config.inertia`";
+CM_ SG_ 52 Iq_Measured ":attr:`~ODrive.FieldOrientedController.Iq_measured`";
+CM_ SG_ 52 Iq_Setpoint ":attr:`~ODrive.FieldOrientedController.Iq_setpoint`";
+CM_ SG_ 53 Motor_Temperature ":attr:`<axis>.motor.motor_thermistor.temperature <ODrive.OffboardThermistorCurrentLimiter>`";
+CM_ SG_ 53 FET_Temperature ":attr:`<axis>.motor.fet_thermistor.temperature <ODrive.OnboardThermistorCurrentLimiter>`";
+CM_ BO_ 54 "Reboots the ODrive according to Action. This requires the axis to be in :attr:`~ODrive.Axis.AxisState.IDLE`.";
+CM_ SG_ 54 Action "
+0: :func:`~ODrive.reboot()`
+1: :func:`~ODrive.save_configuration()`
+2: :func:`~ODrive.erase_configuration()`
+3: :func:`~ODrive.enter_dfu_mode2()`
+";
+CM_ SG_ 55 Bus_Current ":attr:`~ODrive.ibus`";
+CM_ SG_ 55 Bus_Voltage ":attr:`~ODrive.vbus_voltage`";
+CM_ BO_ 56 "Equivalent to calling :func:`~ODrive.clear_errors()`.";
+CM_ SG_ 56 Identify ":attr:`~ODrive.identify`";
+CM_ BO_ 57 "Equivalent to calling :func:`~ODrive.Axis.set_abs_pos()`.";
+CM_ SG_ 57 Position "new position";
+CM_ SG_ 58 Pos_Gain ":attr:`~ODrive.Controller.Config.pos_gain`";
+CM_ SG_ 59 Vel_Integrator_Gain ":attr:`~ODrive.Controller.Config.vel_integrator_gain`";
+CM_ SG_ 59 Vel_Gain ":attr:`~ODrive.Controller.Config.vel_gain`";
+CM_ SG_ 60 Torque_Estimate ":attr:`~ODrive.Motor.torque_estimate`";
+CM_ SG_ 60 Torque_Target ":attr:`~ODrive.Controller.effective_torque_setpoint`";
+CM_ SG_ 61 Mechanical_Power ":attr:`~ODrive.Motor.mechanical_power`";
+CM_ SG_ 61 Electrical_Power ":attr:`~ODrive.Motor.electrical_power`";
+CM_ BO_ 63 "Puts the ODrive into DFU mode (see :ref:`new-dfu`). Equivalent to calling :func:`~ODrive.enter_dfu_mode2()`.";
+CM_ SG_ 64 Fw_Version_Unreleased ":attr:`~ODrive.fw_version_unreleased`";
+CM_ SG_ 64 Fw_Version_Revision ":attr:`~ODrive.fw_version_revision`";
+CM_ SG_ 64 Fw_Version_Minor ":attr:`~ODrive.fw_version_minor`";
+CM_ SG_ 64 Fw_Version_Major ":attr:`~ODrive.fw_version_major`";
+CM_ SG_ 64 Hw_Version_Variant ":attr:`~ODrive.hw_version_variant`";
+CM_ SG_ 64 Hw_Version_Minor ":attr:`~ODrive.hw_version_minor`";
+CM_ SG_ 64 Hw_Version_Major ":attr:`~ODrive.hw_version_major`";
+CM_ SG_ 64 Protocol_Version "Always reported as 2";
+CM_ SG_ 65 Trajectory_Done_Flag ":attr:`<axis>.controller.trajectory_done <ODrive.Controller.trajectory_done>` (0: false, 1: true)";
+CM_ SG_ 65 Procedure_Result ":attr:`<axis>.procedure_result <ODrive.Axis.procedure_result>`";
+CM_ SG_ 65 Axis_State ":attr:`<axis>.current_state <ODrive.Axis.current_state>`";
+CM_ SG_ 65 Axis_Error ":attr:`<axis>.active_errors <ODrive.Axis.active_errors>` | :attr:`<axis>.disarm_reason <ODrive.Axis.disarm_reason>`";
+CM_ BO_ 66 "Causes the axis to disarm with :attr:`~ODrive.Error.ESTOP_REQUESTED`.";
+CM_ SG_ 67 Disarm_Reason ":attr:`~ODrive.Axis.disarm_reason`";
+CM_ SG_ 67 Active_Errors ":attr:`~ODrive.Axis.active_errors`";
+CM_ BO_ 68 "Sent by the host to read or write from/to arbitrary parameters. See :ref:`can-endpoint-access` for details.";
+CM_ SG_ 68 Value "Data type and length depend on endpoint ID";
+CM_ SG_ 68 Endpoint_ID "Endpoint ID as found in :code:`flat_endpoints.json`";
+CM_ SG_ 68 Opcode "0: read, 1: write";
+CM_ BO_ 69 "Sent by the ODrive in response to an RxSdo with Opcode=READ. See :ref:`can-endpoint-access` for details.";
+CM_ SG_ 69 Value "Data type and length depend on endpoint ID";
+CM_ SG_ 69 Endpoint_ID "Endpoint ID as found in :code:`flat_endpoints.json`";
+CM_ BO_ 70 "
+Main section: :ref:`can-discovery`.
+
+When an ODrive receives this message (subject to receive filters, that means node_id contained in the message ID must matches its own or be 0x3f), it takes the following action:
+
+* RTR=1 (or empty payload): Respond with own serial number and :code:`node_id`.
+* Matching Serial_Number: Take on the new Node_ID.
+* Mismatching Serial_Number but matching Node_ID: Go to unaddressed state (:code:`node_id` = 0x3f).
+* Mismatching Serial_Number and mismatching Node_ID: Ignore message.
+
+Serial_Number == 0 is considered a wildcard that always matches.
+
+Responses on this message are sent even if the ODrive is unaddressed (node_id = 0x3f). In this case, the response is sent after a random delay to avoid collisions.
+";
+CM_ SG_ 70 Serial_Number "ODrive ? Host: Serial number of the sending ODrive
+Host ? ODrive: The serial number that shall be associated with the specified Node_ID";
+CM_ SG_ 70 Node_ID ":attr:`~ODrive.Axis.CanConfig.node_id`";
+CM_ SG_ 71 Axis_Requested_State ":attr:`~ODrive.Axis.requested_state`";
+CM_ BO_ 73 "This message is sent by the ODrive periodically by default. See also :ref:`cyclic-messages`.";
+CM_ SG_ 73 Vel_Estimate ":attr:`<axis>.pos_vel_mapper.vel <ODrive.Mapper.vel>`";
+CM_ SG_ 73 Pos_Estimate ":attr:`<axis>.pos_vel_mapper.pos_rel <ODrive.Mapper.pos_rel>` or :attr:`<axis>.pos_vel_mapper.pos_abs <ODrive.Mapper.pos_abs>`,
+depending on :attr:`ODrive.Controller.Config.absolute_setpoints`";
+CM_ SG_ 75 Input_Mode ":attr:`~ODrive.Controller.Config.input_mode`";
+CM_ SG_ 75 Control_Mode ":attr:`~ODrive.Controller.Config.control_mode`";
+CM_ SG_ 76 Torque_FF ":attr:`~ODrive.Controller.input_torque`";
+CM_ SG_ 76 Vel_FF ":attr:`~ODrive.Controller.input_vel`";
+CM_ SG_ 76 Input_Pos ":attr:`~ODrive.Controller.input_pos`";
+CM_ SG_ 77 Input_Torque_FF ":attr:`~ODrive.Controller.input_torque`";
+CM_ SG_ 77 Input_Vel ":attr:`~ODrive.Controller.input_vel`";
+CM_ SG_ 78 Input_Torque ":attr:`~ODrive.Controller.input_torque`";
+CM_ SG_ 79 Current_Limit ":attr:`~ODrive.Axis.Config.Motor.current_soft_max`";
+CM_ SG_ 79 Velocity_Limit ":attr:`~ODrive.Controller.Config.vel_limit`";
+CM_ SG_ 81 Traj_Vel_Limit ":attr:`~ODrive.TrapezoidalTrajectory.Config.vel_limit`";
+CM_ SG_ 82 Traj_Decel_Limit ":attr:`~ODrive.TrapezoidalTrajectory.Config.decel_limit`";
+CM_ SG_ 82 Traj_Accel_Limit ":attr:`~ODrive.TrapezoidalTrajectory.Config.accel_limit`";
+CM_ SG_ 83 Traj_Inertia ":attr:`~ODrive.Controller.Config.inertia`";
+CM_ SG_ 84 Iq_Measured ":attr:`~ODrive.FieldOrientedController.Iq_measured`";
+CM_ SG_ 84 Iq_Setpoint ":attr:`~ODrive.FieldOrientedController.Iq_setpoint`";
+CM_ SG_ 85 Motor_Temperature ":attr:`<axis>.motor.motor_thermistor.temperature <ODrive.OffboardThermistorCurrentLimiter>`";
+CM_ SG_ 85 FET_Temperature ":attr:`<axis>.motor.fet_thermistor.temperature <ODrive.OnboardThermistorCurrentLimiter>`";
+CM_ BO_ 86 "Reboots the ODrive according to Action. This requires the axis to be in :attr:`~ODrive.Axis.AxisState.IDLE`.";
+CM_ SG_ 86 Action "
+0: :func:`~ODrive.reboot()`
+1: :func:`~ODrive.save_configuration()`
+2: :func:`~ODrive.erase_configuration()`
+3: :func:`~ODrive.enter_dfu_mode2()`
+";
+CM_ SG_ 87 Bus_Current ":attr:`~ODrive.ibus`";
+CM_ SG_ 87 Bus_Voltage ":attr:`~ODrive.vbus_voltage`";
+CM_ BO_ 88 "Equivalent to calling :func:`~ODrive.clear_errors()`.";
+CM_ SG_ 88 Identify ":attr:`~ODrive.identify`";
+CM_ BO_ 89 "Equivalent to calling :func:`~ODrive.Axis.set_abs_pos()`.";
+CM_ SG_ 89 Position "new position";
+CM_ SG_ 90 Pos_Gain ":attr:`~ODrive.Controller.Config.pos_gain`";
+CM_ SG_ 91 Vel_Integrator_Gain ":attr:`~ODrive.Controller.Config.vel_integrator_gain`";
+CM_ SG_ 91 Vel_Gain ":attr:`~ODrive.Controller.Config.vel_gain`";
+CM_ SG_ 92 Torque_Estimate ":attr:`~ODrive.Motor.torque_estimate`";
+CM_ SG_ 92 Torque_Target ":attr:`~ODrive.Controller.effective_torque_setpoint`";
+CM_ SG_ 93 Mechanical_Power ":attr:`~ODrive.Motor.mechanical_power`";
+CM_ SG_ 93 Electrical_Power ":attr:`~ODrive.Motor.electrical_power`";
+CM_ BO_ 95 "Puts the ODrive into DFU mode (see :ref:`new-dfu`). Equivalent to calling :func:`~ODrive.enter_dfu_mode2()`.";
+CM_ SG_ 96 Fw_Version_Unreleased ":attr:`~ODrive.fw_version_unreleased`";
+CM_ SG_ 96 Fw_Version_Revision ":attr:`~ODrive.fw_version_revision`";
+CM_ SG_ 96 Fw_Version_Minor ":attr:`~ODrive.fw_version_minor`";
+CM_ SG_ 96 Fw_Version_Major ":attr:`~ODrive.fw_version_major`";
+CM_ SG_ 96 Hw_Version_Variant ":attr:`~ODrive.hw_version_variant`";
+CM_ SG_ 96 Hw_Version_Minor ":attr:`~ODrive.hw_version_minor`";
+CM_ SG_ 96 Hw_Version_Major ":attr:`~ODrive.hw_version_major`";
+CM_ SG_ 96 Protocol_Version "Always reported as 2";
+CM_ SG_ 97 Trajectory_Done_Flag ":attr:`<axis>.controller.trajectory_done <ODrive.Controller.trajectory_done>` (0: false, 1: true)";
+CM_ SG_ 97 Procedure_Result ":attr:`<axis>.procedure_result <ODrive.Axis.procedure_result>`";
+CM_ SG_ 97 Axis_State ":attr:`<axis>.current_state <ODrive.Axis.current_state>`";
+CM_ SG_ 97 Axis_Error ":attr:`<axis>.active_errors <ODrive.Axis.active_errors>` | :attr:`<axis>.disarm_reason <ODrive.Axis.disarm_reason>`";
+CM_ BO_ 98 "Causes the axis to disarm with :attr:`~ODrive.Error.ESTOP_REQUESTED`.";
+CM_ SG_ 99 Disarm_Reason ":attr:`~ODrive.Axis.disarm_reason`";
+CM_ SG_ 99 Active_Errors ":attr:`~ODrive.Axis.active_errors`";
+CM_ BO_ 100 "Sent by the host to read or write from/to arbitrary parameters. See :ref:`can-endpoint-access` for details.";
+CM_ SG_ 100 Value "Data type and length depend on endpoint ID";
+CM_ SG_ 100 Endpoint_ID "Endpoint ID as found in :code:`flat_endpoints.json`";
+CM_ SG_ 100 Opcode "0: read, 1: write";
+CM_ BO_ 101 "Sent by the ODrive in response to an RxSdo with Opcode=READ. See :ref:`can-endpoint-access` for details.";
+CM_ SG_ 101 Value "Data type and length depend on endpoint ID";
+CM_ SG_ 101 Endpoint_ID "Endpoint ID as found in :code:`flat_endpoints.json`";
+CM_ BO_ 102 "
+Main section: :ref:`can-discovery`.
+
+When an ODrive receives this message (subject to receive filters, that means node_id contained in the message ID must matches its own or be 0x3f), it takes the following action:
+
+* RTR=1 (or empty payload): Respond with own serial number and :code:`node_id`.
+* Matching Serial_Number: Take on the new Node_ID.
+* Mismatching Serial_Number but matching Node_ID: Go to unaddressed state (:code:`node_id` = 0x3f).
+* Mismatching Serial_Number and mismatching Node_ID: Ignore message.
+
+Serial_Number == 0 is considered a wildcard that always matches.
+
+Responses on this message are sent even if the ODrive is unaddressed (node_id = 0x3f). In this case, the response is sent after a random delay to avoid collisions.
+";
+CM_ SG_ 102 Serial_Number "ODrive ? Host: Serial number of the sending ODrive
+Host ? ODrive: The serial number that shall be associated with the specified Node_ID";
+CM_ SG_ 102 Node_ID ":attr:`~ODrive.Axis.CanConfig.node_id`";
+CM_ SG_ 103 Axis_Requested_State ":attr:`~ODrive.Axis.requested_state`";
+CM_ BO_ 105 "This message is sent by the ODrive periodically by default. See also :ref:`cyclic-messages`.";
+CM_ SG_ 105 Vel_Estimate ":attr:`<axis>.pos_vel_mapper.vel <ODrive.Mapper.vel>`";
+CM_ SG_ 105 Pos_Estimate ":attr:`<axis>.pos_vel_mapper.pos_rel <ODrive.Mapper.pos_rel>` or :attr:`<axis>.pos_vel_mapper.pos_abs <ODrive.Mapper.pos_abs>`,
+depending on :attr:`ODrive.Controller.Config.absolute_setpoints`";
+CM_ SG_ 107 Input_Mode ":attr:`~ODrive.Controller.Config.input_mode`";
+CM_ SG_ 107 Control_Mode ":attr:`~ODrive.Controller.Config.control_mode`";
+CM_ SG_ 108 Torque_FF ":attr:`~ODrive.Controller.input_torque`";
+CM_ SG_ 108 Vel_FF ":attr:`~ODrive.Controller.input_vel`";
+CM_ SG_ 108 Input_Pos ":attr:`~ODrive.Controller.input_pos`";
+CM_ SG_ 109 Input_Torque_FF ":attr:`~ODrive.Controller.input_torque`";
+CM_ SG_ 109 Input_Vel ":attr:`~ODrive.Controller.input_vel`";
+CM_ SG_ 110 Input_Torque ":attr:`~ODrive.Controller.input_torque`";
+CM_ SG_ 111 Current_Limit ":attr:`~ODrive.Axis.Config.Motor.current_soft_max`";
+CM_ SG_ 111 Velocity_Limit ":attr:`~ODrive.Controller.Config.vel_limit`";
+CM_ SG_ 113 Traj_Vel_Limit ":attr:`~ODrive.TrapezoidalTrajectory.Config.vel_limit`";
+CM_ SG_ 114 Traj_Decel_Limit ":attr:`~ODrive.TrapezoidalTrajectory.Config.decel_limit`";
+CM_ SG_ 114 Traj_Accel_Limit ":attr:`~ODrive.TrapezoidalTrajectory.Config.accel_limit`";
+CM_ SG_ 115 Traj_Inertia ":attr:`~ODrive.Controller.Config.inertia`";
+CM_ SG_ 116 Iq_Measured ":attr:`~ODrive.FieldOrientedController.Iq_measured`";
+CM_ SG_ 116 Iq_Setpoint ":attr:`~ODrive.FieldOrientedController.Iq_setpoint`";
+CM_ SG_ 117 Motor_Temperature ":attr:`<axis>.motor.motor_thermistor.temperature <ODrive.OffboardThermistorCurrentLimiter>`";
+CM_ SG_ 117 FET_Temperature ":attr:`<axis>.motor.fet_thermistor.temperature <ODrive.OnboardThermistorCurrentLimiter>`";
+CM_ BO_ 118 "Reboots the ODrive according to Action. This requires the axis to be in :attr:`~ODrive.Axis.AxisState.IDLE`.";
+CM_ SG_ 118 Action "
+0: :func:`~ODrive.reboot()`
+1: :func:`~ODrive.save_configuration()`
+2: :func:`~ODrive.erase_configuration()`
+3: :func:`~ODrive.enter_dfu_mode2()`
+";
+CM_ SG_ 119 Bus_Current ":attr:`~ODrive.ibus`";
+CM_ SG_ 119 Bus_Voltage ":attr:`~ODrive.vbus_voltage`";
+CM_ BO_ 120 "Equivalent to calling :func:`~ODrive.clear_errors()`.";
+CM_ SG_ 120 Identify ":attr:`~ODrive.identify`";
+CM_ BO_ 121 "Equivalent to calling :func:`~ODrive.Axis.set_abs_pos()`.";
+CM_ SG_ 121 Position "new position";
+CM_ SG_ 122 Pos_Gain ":attr:`~ODrive.Controller.Config.pos_gain`";
+CM_ SG_ 123 Vel_Integrator_Gain ":attr:`~ODrive.Controller.Config.vel_integrator_gain`";
+CM_ SG_ 123 Vel_Gain ":attr:`~ODrive.Controller.Config.vel_gain`";
+CM_ SG_ 124 Torque_Estimate ":attr:`~ODrive.Motor.torque_estimate`";
+CM_ SG_ 124 Torque_Target ":attr:`~ODrive.Controller.effective_torque_setpoint`";
+CM_ SG_ 125 Mechanical_Power ":attr:`~ODrive.Motor.mechanical_power`";
+CM_ SG_ 125 Electrical_Power ":attr:`~ODrive.Motor.electrical_power`";
+CM_ BO_ 127 "Puts the ODrive into DFU mode (see :ref:`new-dfu`). Equivalent to calling :func:`~ODrive.enter_dfu_mode2()`.";
+CM_ SG_ 128 Fw_Version_Unreleased ":attr:`~ODrive.fw_version_unreleased`";
+CM_ SG_ 128 Fw_Version_Revision ":attr:`~ODrive.fw_version_revision`";
+CM_ SG_ 128 Fw_Version_Minor ":attr:`~ODrive.fw_version_minor`";
+CM_ SG_ 128 Fw_Version_Major ":attr:`~ODrive.fw_version_major`";
+CM_ SG_ 128 Hw_Version_Variant ":attr:`~ODrive.hw_version_variant`";
+CM_ SG_ 128 Hw_Version_Minor ":attr:`~ODrive.hw_version_minor`";
+CM_ SG_ 128 Hw_Version_Major ":attr:`~ODrive.hw_version_major`";
+CM_ SG_ 128 Protocol_Version "Always reported as 2";
+CM_ SG_ 129 Trajectory_Done_Flag ":attr:`<axis>.controller.trajectory_done <ODrive.Controller.trajectory_done>` (0: false, 1: true)";
+CM_ SG_ 129 Procedure_Result ":attr:`<axis>.procedure_result <ODrive.Axis.procedure_result>`";
+CM_ SG_ 129 Axis_State ":attr:`<axis>.current_state <ODrive.Axis.current_state>`";
+CM_ SG_ 129 Axis_Error ":attr:`<axis>.active_errors <ODrive.Axis.active_errors>` | :attr:`<axis>.disarm_reason <ODrive.Axis.disarm_reason>`";
+CM_ BO_ 130 "Causes the axis to disarm with :attr:`~ODrive.Error.ESTOP_REQUESTED`.";
+CM_ SG_ 131 Disarm_Reason ":attr:`~ODrive.Axis.disarm_reason`";
+CM_ SG_ 131 Active_Errors ":attr:`~ODrive.Axis.active_errors`";
+CM_ BO_ 132 "Sent by the host to read or write from/to arbitrary parameters. See :ref:`can-endpoint-access` for details.";
+CM_ SG_ 132 Value "Data type and length depend on endpoint ID";
+CM_ SG_ 132 Endpoint_ID "Endpoint ID as found in :code:`flat_endpoints.json`";
+CM_ SG_ 132 Opcode "0: read, 1: write";
+CM_ BO_ 133 "Sent by the ODrive in response to an RxSdo with Opcode=READ. See :ref:`can-endpoint-access` for details.";
+CM_ SG_ 133 Value "Data type and length depend on endpoint ID";
+CM_ SG_ 133 Endpoint_ID "Endpoint ID as found in :code:`flat_endpoints.json`";
+CM_ BO_ 134 "
+Main section: :ref:`can-discovery`.
+
+When an ODrive receives this message (subject to receive filters, that means node_id contained in the message ID must matches its own or be 0x3f), it takes the following action:
+
+* RTR=1 (or empty payload): Respond with own serial number and :code:`node_id`.
+* Matching Serial_Number: Take on the new Node_ID.
+* Mismatching Serial_Number but matching Node_ID: Go to unaddressed state (:code:`node_id` = 0x3f).
+* Mismatching Serial_Number and mismatching Node_ID: Ignore message.
+
+Serial_Number == 0 is considered a wildcard that always matches.
+
+Responses on this message are sent even if the ODrive is unaddressed (node_id = 0x3f). In this case, the response is sent after a random delay to avoid collisions.
+";
+CM_ SG_ 134 Serial_Number "ODrive ? Host: Serial number of the sending ODrive
+Host ? ODrive: The serial number that shall be associated with the specified Node_ID";
+CM_ SG_ 134 Node_ID ":attr:`~ODrive.Axis.CanConfig.node_id`";
+CM_ SG_ 135 Axis_Requested_State ":attr:`~ODrive.Axis.requested_state`";
+CM_ BO_ 137 "This message is sent by the ODrive periodically by default. See also :ref:`cyclic-messages`.";
+CM_ SG_ 137 Vel_Estimate ":attr:`<axis>.pos_vel_mapper.vel <ODrive.Mapper.vel>`";
+CM_ SG_ 137 Pos_Estimate ":attr:`<axis>.pos_vel_mapper.pos_rel <ODrive.Mapper.pos_rel>` or :attr:`<axis>.pos_vel_mapper.pos_abs <ODrive.Mapper.pos_abs>`,
+depending on :attr:`ODrive.Controller.Config.absolute_setpoints`";
+CM_ SG_ 139 Input_Mode ":attr:`~ODrive.Controller.Config.input_mode`";
+CM_ SG_ 139 Control_Mode ":attr:`~ODrive.Controller.Config.control_mode`";
+CM_ SG_ 140 Torque_FF ":attr:`~ODrive.Controller.input_torque`";
+CM_ SG_ 140 Vel_FF ":attr:`~ODrive.Controller.input_vel`";
+CM_ SG_ 140 Input_Pos ":attr:`~ODrive.Controller.input_pos`";
+CM_ SG_ 141 Input_Torque_FF ":attr:`~ODrive.Controller.input_torque`";
+CM_ SG_ 141 Input_Vel ":attr:`~ODrive.Controller.input_vel`";
+CM_ SG_ 142 Input_Torque ":attr:`~ODrive.Controller.input_torque`";
+CM_ SG_ 143 Current_Limit ":attr:`~ODrive.Axis.Config.Motor.current_soft_max`";
+CM_ SG_ 143 Velocity_Limit ":attr:`~ODrive.Controller.Config.vel_limit`";
+CM_ SG_ 145 Traj_Vel_Limit ":attr:`~ODrive.TrapezoidalTrajectory.Config.vel_limit`";
+CM_ SG_ 146 Traj_Decel_Limit ":attr:`~ODrive.TrapezoidalTrajectory.Config.decel_limit`";
+CM_ SG_ 146 Traj_Accel_Limit ":attr:`~ODrive.TrapezoidalTrajectory.Config.accel_limit`";
+CM_ SG_ 147 Traj_Inertia ":attr:`~ODrive.Controller.Config.inertia`";
+CM_ SG_ 148 Iq_Measured ":attr:`~ODrive.FieldOrientedController.Iq_measured`";
+CM_ SG_ 148 Iq_Setpoint ":attr:`~ODrive.FieldOrientedController.Iq_setpoint`";
+CM_ SG_ 149 Motor_Temperature ":attr:`<axis>.motor.motor_thermistor.temperature <ODrive.OffboardThermistorCurrentLimiter>`";
+CM_ SG_ 149 FET_Temperature ":attr:`<axis>.motor.fet_thermistor.temperature <ODrive.OnboardThermistorCurrentLimiter>`";
+CM_ BO_ 150 "Reboots the ODrive according to Action. This requires the axis to be in :attr:`~ODrive.Axis.AxisState.IDLE`.";
+CM_ SG_ 150 Action "
+0: :func:`~ODrive.reboot()`
+1: :func:`~ODrive.save_configuration()`
+2: :func:`~ODrive.erase_configuration()`
+3: :func:`~ODrive.enter_dfu_mode2()`
+";
+CM_ SG_ 151 Bus_Current ":attr:`~ODrive.ibus`";
+CM_ SG_ 151 Bus_Voltage ":attr:`~ODrive.vbus_voltage`";
+CM_ BO_ 152 "Equivalent to calling :func:`~ODrive.clear_errors()`.";
+CM_ SG_ 152 Identify ":attr:`~ODrive.identify`";
+CM_ BO_ 153 "Equivalent to calling :func:`~ODrive.Axis.set_abs_pos()`.";
+CM_ SG_ 153 Position "new position";
+CM_ SG_ 154 Pos_Gain ":attr:`~ODrive.Controller.Config.pos_gain`";
+CM_ SG_ 155 Vel_Integrator_Gain ":attr:`~ODrive.Controller.Config.vel_integrator_gain`";
+CM_ SG_ 155 Vel_Gain ":attr:`~ODrive.Controller.Config.vel_gain`";
+CM_ SG_ 156 Torque_Estimate ":attr:`~ODrive.Motor.torque_estimate`";
+CM_ SG_ 156 Torque_Target ":attr:`~ODrive.Controller.effective_torque_setpoint`";
+CM_ SG_ 157 Mechanical_Power ":attr:`~ODrive.Motor.mechanical_power`";
+CM_ SG_ 157 Electrical_Power ":attr:`~ODrive.Motor.electrical_power`";
+CM_ BO_ 159 "Puts the ODrive into DFU mode (see :ref:`new-dfu`). Equivalent to calling :func:`~ODrive.enter_dfu_mode2()`.";
+CM_ SG_ 160 Fw_Version_Unreleased ":attr:`~ODrive.fw_version_unreleased`";
+CM_ SG_ 160 Fw_Version_Revision ":attr:`~ODrive.fw_version_revision`";
+CM_ SG_ 160 Fw_Version_Minor ":attr:`~ODrive.fw_version_minor`";
+CM_ SG_ 160 Fw_Version_Major ":attr:`~ODrive.fw_version_major`";
+CM_ SG_ 160 Hw_Version_Variant ":attr:`~ODrive.hw_version_variant`";
+CM_ SG_ 160 Hw_Version_Minor ":attr:`~ODrive.hw_version_minor`";
+CM_ SG_ 160 Hw_Version_Major ":attr:`~ODrive.hw_version_major`";
+CM_ SG_ 160 Protocol_Version "Always reported as 2";
+CM_ SG_ 161 Trajectory_Done_Flag ":attr:`<axis>.controller.trajectory_done <ODrive.Controller.trajectory_done>` (0: false, 1: true)";
+CM_ SG_ 161 Procedure_Result ":attr:`<axis>.procedure_result <ODrive.Axis.procedure_result>`";
+CM_ SG_ 161 Axis_State ":attr:`<axis>.current_state <ODrive.Axis.current_state>`";
+CM_ SG_ 161 Axis_Error ":attr:`<axis>.active_errors <ODrive.Axis.active_errors>` | :attr:`<axis>.disarm_reason <ODrive.Axis.disarm_reason>`";
+CM_ BO_ 162 "Causes the axis to disarm with :attr:`~ODrive.Error.ESTOP_REQUESTED`.";
+CM_ SG_ 163 Disarm_Reason ":attr:`~ODrive.Axis.disarm_reason`";
+CM_ SG_ 163 Active_Errors ":attr:`~ODrive.Axis.active_errors`";
+CM_ BO_ 164 "Sent by the host to read or write from/to arbitrary parameters. See :ref:`can-endpoint-access` for details.";
+CM_ SG_ 164 Value "Data type and length depend on endpoint ID";
+CM_ SG_ 164 Endpoint_ID "Endpoint ID as found in :code:`flat_endpoints.json`";
+CM_ SG_ 164 Opcode "0: read, 1: write";
+CM_ BO_ 165 "Sent by the ODrive in response to an RxSdo with Opcode=READ. See :ref:`can-endpoint-access` for details.";
+CM_ SG_ 165 Value "Data type and length depend on endpoint ID";
+CM_ SG_ 165 Endpoint_ID "Endpoint ID as found in :code:`flat_endpoints.json`";
+CM_ BO_ 166 "
+Main section: :ref:`can-discovery`.
+
+When an ODrive receives this message (subject to receive filters, that means node_id contained in the message ID must matches its own or be 0x3f), it takes the following action:
+
+* RTR=1 (or empty payload): Respond with own serial number and :code:`node_id`.
+* Matching Serial_Number: Take on the new Node_ID.
+* Mismatching Serial_Number but matching Node_ID: Go to unaddressed state (:code:`node_id` = 0x3f).
+* Mismatching Serial_Number and mismatching Node_ID: Ignore message.
+
+Serial_Number == 0 is considered a wildcard that always matches.
+
+Responses on this message are sent even if the ODrive is unaddressed (node_id = 0x3f). In this case, the response is sent after a random delay to avoid collisions.
+";
+CM_ SG_ 166 Serial_Number "ODrive ? Host: Serial number of the sending ODrive
+Host ? ODrive: The serial number that shall be associated with the specified Node_ID";
+CM_ SG_ 166 Node_ID ":attr:`~ODrive.Axis.CanConfig.node_id`";
+CM_ SG_ 167 Axis_Requested_State ":attr:`~ODrive.Axis.requested_state`";
+CM_ BO_ 169 "This message is sent by the ODrive periodically by default. See also :ref:`cyclic-messages`.";
+CM_ SG_ 169 Vel_Estimate ":attr:`<axis>.pos_vel_mapper.vel <ODrive.Mapper.vel>`";
+CM_ SG_ 169 Pos_Estimate ":attr:`<axis>.pos_vel_mapper.pos_rel <ODrive.Mapper.pos_rel>` or :attr:`<axis>.pos_vel_mapper.pos_abs <ODrive.Mapper.pos_abs>`,
+depending on :attr:`ODrive.Controller.Config.absolute_setpoints`";
+CM_ SG_ 171 Input_Mode ":attr:`~ODrive.Controller.Config.input_mode`";
+CM_ SG_ 171 Control_Mode ":attr:`~ODrive.Controller.Config.control_mode`";
+CM_ SG_ 172 Torque_FF ":attr:`~ODrive.Controller.input_torque`";
+CM_ SG_ 172 Vel_FF ":attr:`~ODrive.Controller.input_vel`";
+CM_ SG_ 172 Input_Pos ":attr:`~ODrive.Controller.input_pos`";
+CM_ SG_ 173 Input_Torque_FF ":attr:`~ODrive.Controller.input_torque`";
+CM_ SG_ 173 Input_Vel ":attr:`~ODrive.Controller.input_vel`";
+CM_ SG_ 174 Input_Torque ":attr:`~ODrive.Controller.input_torque`";
+CM_ SG_ 175 Current_Limit ":attr:`~ODrive.Axis.Config.Motor.current_soft_max`";
+CM_ SG_ 175 Velocity_Limit ":attr:`~ODrive.Controller.Config.vel_limit`";
+CM_ SG_ 177 Traj_Vel_Limit ":attr:`~ODrive.TrapezoidalTrajectory.Config.vel_limit`";
+CM_ SG_ 178 Traj_Decel_Limit ":attr:`~ODrive.TrapezoidalTrajectory.Config.decel_limit`";
+CM_ SG_ 178 Traj_Accel_Limit ":attr:`~ODrive.TrapezoidalTrajectory.Config.accel_limit`";
+CM_ SG_ 179 Traj_Inertia ":attr:`~ODrive.Controller.Config.inertia`";
+CM_ SG_ 180 Iq_Measured ":attr:`~ODrive.FieldOrientedController.Iq_measured`";
+CM_ SG_ 180 Iq_Setpoint ":attr:`~ODrive.FieldOrientedController.Iq_setpoint`";
+CM_ SG_ 181 Motor_Temperature ":attr:`<axis>.motor.motor_thermistor.temperature <ODrive.OffboardThermistorCurrentLimiter>`";
+CM_ SG_ 181 FET_Temperature ":attr:`<axis>.motor.fet_thermistor.temperature <ODrive.OnboardThermistorCurrentLimiter>`";
+CM_ BO_ 182 "Reboots the ODrive according to Action. This requires the axis to be in :attr:`~ODrive.Axis.AxisState.IDLE`.";
+CM_ SG_ 182 Action "
+0: :func:`~ODrive.reboot()`
+1: :func:`~ODrive.save_configuration()`
+2: :func:`~ODrive.erase_configuration()`
+3: :func:`~ODrive.enter_dfu_mode2()`
+";
+CM_ SG_ 183 Bus_Current ":attr:`~ODrive.ibus`";
+CM_ SG_ 183 Bus_Voltage ":attr:`~ODrive.vbus_voltage`";
+CM_ BO_ 184 "Equivalent to calling :func:`~ODrive.clear_errors()`.";
+CM_ SG_ 184 Identify ":attr:`~ODrive.identify`";
+CM_ BO_ 185 "Equivalent to calling :func:`~ODrive.Axis.set_abs_pos()`.";
+CM_ SG_ 185 Position "new position";
+CM_ SG_ 186 Pos_Gain ":attr:`~ODrive.Controller.Config.pos_gain`";
+CM_ SG_ 187 Vel_Integrator_Gain ":attr:`~ODrive.Controller.Config.vel_integrator_gain`";
+CM_ SG_ 187 Vel_Gain ":attr:`~ODrive.Controller.Config.vel_gain`";
+CM_ SG_ 188 Torque_Estimate ":attr:`~ODrive.Motor.torque_estimate`";
+CM_ SG_ 188 Torque_Target ":attr:`~ODrive.Controller.effective_torque_setpoint`";
+CM_ SG_ 189 Mechanical_Power ":attr:`~ODrive.Motor.mechanical_power`";
+CM_ SG_ 189 Electrical_Power ":attr:`~ODrive.Motor.electrical_power`";
+CM_ BO_ 191 "Puts the ODrive into DFU mode (see :ref:`new-dfu`). Equivalent to calling :func:`~ODrive.enter_dfu_mode2()`.";
+CM_ SG_ 192 Fw_Version_Unreleased ":attr:`~ODrive.fw_version_unreleased`";
+CM_ SG_ 192 Fw_Version_Revision ":attr:`~ODrive.fw_version_revision`";
+CM_ SG_ 192 Fw_Version_Minor ":attr:`~ODrive.fw_version_minor`";
+CM_ SG_ 192 Fw_Version_Major ":attr:`~ODrive.fw_version_major`";
+CM_ SG_ 192 Hw_Version_Variant ":attr:`~ODrive.hw_version_variant`";
+CM_ SG_ 192 Hw_Version_Minor ":attr:`~ODrive.hw_version_minor`";
+CM_ SG_ 192 Hw_Version_Major ":attr:`~ODrive.hw_version_major`";
+CM_ SG_ 192 Protocol_Version "Always reported as 2";
+CM_ SG_ 193 Trajectory_Done_Flag ":attr:`<axis>.controller.trajectory_done <ODrive.Controller.trajectory_done>` (0: false, 1: true)";
+CM_ SG_ 193 Procedure_Result ":attr:`<axis>.procedure_result <ODrive.Axis.procedure_result>`";
+CM_ SG_ 193 Axis_State ":attr:`<axis>.current_state <ODrive.Axis.current_state>`";
+CM_ SG_ 193 Axis_Error ":attr:`<axis>.active_errors <ODrive.Axis.active_errors>` | :attr:`<axis>.disarm_reason <ODrive.Axis.disarm_reason>`";
+CM_ BO_ 194 "Causes the axis to disarm with :attr:`~ODrive.Error.ESTOP_REQUESTED`.";
+CM_ SG_ 195 Disarm_Reason ":attr:`~ODrive.Axis.disarm_reason`";
+CM_ SG_ 195 Active_Errors ":attr:`~ODrive.Axis.active_errors`";
+CM_ BO_ 196 "Sent by the host to read or write from/to arbitrary parameters. See :ref:`can-endpoint-access` for details.";
+CM_ SG_ 196 Value "Data type and length depend on endpoint ID";
+CM_ SG_ 196 Endpoint_ID "Endpoint ID as found in :code:`flat_endpoints.json`";
+CM_ SG_ 196 Opcode "0: read, 1: write";
+CM_ BO_ 197 "Sent by the ODrive in response to an RxSdo with Opcode=READ. See :ref:`can-endpoint-access` for details.";
+CM_ SG_ 197 Value "Data type and length depend on endpoint ID";
+CM_ SG_ 197 Endpoint_ID "Endpoint ID as found in :code:`flat_endpoints.json`";
+CM_ BO_ 198 "
+Main section: :ref:`can-discovery`.
+
+When an ODrive receives this message (subject to receive filters, that means node_id contained in the message ID must matches its own or be 0x3f), it takes the following action:
+
+* RTR=1 (or empty payload): Respond with own serial number and :code:`node_id`.
+* Matching Serial_Number: Take on the new Node_ID.
+* Mismatching Serial_Number but matching Node_ID: Go to unaddressed state (:code:`node_id` = 0x3f).
+* Mismatching Serial_Number and mismatching Node_ID: Ignore message.
+
+Serial_Number == 0 is considered a wildcard that always matches.
+
+Responses on this message are sent even if the ODrive is unaddressed (node_id = 0x3f). In this case, the response is sent after a random delay to avoid collisions.
+";
+CM_ SG_ 198 Serial_Number "ODrive ? Host: Serial number of the sending ODrive
+Host ? ODrive: The serial number that shall be associated with the specified Node_ID";
+CM_ SG_ 198 Node_ID ":attr:`~ODrive.Axis.CanConfig.node_id`";
+CM_ SG_ 199 Axis_Requested_State ":attr:`~ODrive.Axis.requested_state`";
+CM_ BO_ 201 "This message is sent by the ODrive periodically by default. See also :ref:`cyclic-messages`.";
+CM_ SG_ 201 Vel_Estimate ":attr:`<axis>.pos_vel_mapper.vel <ODrive.Mapper.vel>`";
+CM_ SG_ 201 Pos_Estimate ":attr:`<axis>.pos_vel_mapper.pos_rel <ODrive.Mapper.pos_rel>` or :attr:`<axis>.pos_vel_mapper.pos_abs <ODrive.Mapper.pos_abs>`,
+depending on :attr:`ODrive.Controller.Config.absolute_setpoints`";
+CM_ SG_ 203 Input_Mode ":attr:`~ODrive.Controller.Config.input_mode`";
+CM_ SG_ 203 Control_Mode ":attr:`~ODrive.Controller.Config.control_mode`";
+CM_ SG_ 204 Torque_FF ":attr:`~ODrive.Controller.input_torque`";
+CM_ SG_ 204 Vel_FF ":attr:`~ODrive.Controller.input_vel`";
+CM_ SG_ 204 Input_Pos ":attr:`~ODrive.Controller.input_pos`";
+CM_ SG_ 205 Input_Torque_FF ":attr:`~ODrive.Controller.input_torque`";
+CM_ SG_ 205 Input_Vel ":attr:`~ODrive.Controller.input_vel`";
+CM_ SG_ 206 Input_Torque ":attr:`~ODrive.Controller.input_torque`";
+CM_ SG_ 207 Current_Limit ":attr:`~ODrive.Axis.Config.Motor.current_soft_max`";
+CM_ SG_ 207 Velocity_Limit ":attr:`~ODrive.Controller.Config.vel_limit`";
+CM_ SG_ 209 Traj_Vel_Limit ":attr:`~ODrive.TrapezoidalTrajectory.Config.vel_limit`";
+CM_ SG_ 210 Traj_Decel_Limit ":attr:`~ODrive.TrapezoidalTrajectory.Config.decel_limit`";
+CM_ SG_ 210 Traj_Accel_Limit ":attr:`~ODrive.TrapezoidalTrajectory.Config.accel_limit`";
+CM_ SG_ 211 Traj_Inertia ":attr:`~ODrive.Controller.Config.inertia`";
+CM_ SG_ 212 Iq_Measured ":attr:`~ODrive.FieldOrientedController.Iq_measured`";
+CM_ SG_ 212 Iq_Setpoint ":attr:`~ODrive.FieldOrientedController.Iq_setpoint`";
+CM_ SG_ 213 Motor_Temperature ":attr:`<axis>.motor.motor_thermistor.temperature <ODrive.OffboardThermistorCurrentLimiter>`";
+CM_ SG_ 213 FET_Temperature ":attr:`<axis>.motor.fet_thermistor.temperature <ODrive.OnboardThermistorCurrentLimiter>`";
+CM_ BO_ 214 "Reboots the ODrive according to Action. This requires the axis to be in :attr:`~ODrive.Axis.AxisState.IDLE`.";
+CM_ SG_ 214 Action "
+0: :func:`~ODrive.reboot()`
+1: :func:`~ODrive.save_configuration()`
+2: :func:`~ODrive.erase_configuration()`
+3: :func:`~ODrive.enter_dfu_mode2()`
+";
+CM_ SG_ 215 Bus_Current ":attr:`~ODrive.ibus`";
+CM_ SG_ 215 Bus_Voltage ":attr:`~ODrive.vbus_voltage`";
+CM_ BO_ 216 "Equivalent to calling :func:`~ODrive.clear_errors()`.";
+CM_ SG_ 216 Identify ":attr:`~ODrive.identify`";
+CM_ BO_ 217 "Equivalent to calling :func:`~ODrive.Axis.set_abs_pos()`.";
+CM_ SG_ 217 Position "new position";
+CM_ SG_ 218 Pos_Gain ":attr:`~ODrive.Controller.Config.pos_gain`";
+CM_ SG_ 219 Vel_Integrator_Gain ":attr:`~ODrive.Controller.Config.vel_integrator_gain`";
+CM_ SG_ 219 Vel_Gain ":attr:`~ODrive.Controller.Config.vel_gain`";
+CM_ SG_ 220 Torque_Estimate ":attr:`~ODrive.Motor.torque_estimate`";
+CM_ SG_ 220 Torque_Target ":attr:`~ODrive.Controller.effective_torque_setpoint`";
+CM_ SG_ 221 Mechanical_Power ":attr:`~ODrive.Motor.mechanical_power`";
+CM_ SG_ 221 Electrical_Power ":attr:`~ODrive.Motor.electrical_power`";
+CM_ BO_ 223 "Puts the ODrive into DFU mode (see :ref:`new-dfu`). Equivalent to calling :func:`~ODrive.enter_dfu_mode2()`.";
+CM_ SG_ 224 Fw_Version_Unreleased ":attr:`~ODrive.fw_version_unreleased`";
+CM_ SG_ 224 Fw_Version_Revision ":attr:`~ODrive.fw_version_revision`";
+CM_ SG_ 224 Fw_Version_Minor ":attr:`~ODrive.fw_version_minor`";
+CM_ SG_ 224 Fw_Version_Major ":attr:`~ODrive.fw_version_major`";
+CM_ SG_ 224 Hw_Version_Variant ":attr:`~ODrive.hw_version_variant`";
+CM_ SG_ 224 Hw_Version_Minor ":attr:`~ODrive.hw_version_minor`";
+CM_ SG_ 224 Hw_Version_Major ":attr:`~ODrive.hw_version_major`";
+CM_ SG_ 224 Protocol_Version "Always reported as 2";
+CM_ SG_ 225 Trajectory_Done_Flag ":attr:`<axis>.controller.trajectory_done <ODrive.Controller.trajectory_done>` (0: false, 1: true)";
+CM_ SG_ 225 Procedure_Result ":attr:`<axis>.procedure_result <ODrive.Axis.procedure_result>`";
+CM_ SG_ 225 Axis_State ":attr:`<axis>.current_state <ODrive.Axis.current_state>`";
+CM_ SG_ 225 Axis_Error ":attr:`<axis>.active_errors <ODrive.Axis.active_errors>` | :attr:`<axis>.disarm_reason <ODrive.Axis.disarm_reason>`";
+CM_ BO_ 226 "Causes the axis to disarm with :attr:`~ODrive.Error.ESTOP_REQUESTED`.";
+CM_ SG_ 227 Disarm_Reason ":attr:`~ODrive.Axis.disarm_reason`";
+CM_ SG_ 227 Active_Errors ":attr:`~ODrive.Axis.active_errors`";
+CM_ BO_ 228 "Sent by the host to read or write from/to arbitrary parameters. See :ref:`can-endpoint-access` for details.";
+CM_ SG_ 228 Value "Data type and length depend on endpoint ID";
+CM_ SG_ 228 Endpoint_ID "Endpoint ID as found in :code:`flat_endpoints.json`";
+CM_ SG_ 228 Opcode "0: read, 1: write";
+CM_ BO_ 229 "Sent by the ODrive in response to an RxSdo with Opcode=READ. See :ref:`can-endpoint-access` for details.";
+CM_ SG_ 229 Value "Data type and length depend on endpoint ID";
+CM_ SG_ 229 Endpoint_ID "Endpoint ID as found in :code:`flat_endpoints.json`";
+CM_ BO_ 230 "
+Main section: :ref:`can-discovery`.
+
+When an ODrive receives this message (subject to receive filters, that means node_id contained in the message ID must matches its own or be 0x3f), it takes the following action:
+
+* RTR=1 (or empty payload): Respond with own serial number and :code:`node_id`.
+* Matching Serial_Number: Take on the new Node_ID.
+* Mismatching Serial_Number but matching Node_ID: Go to unaddressed state (:code:`node_id` = 0x3f).
+* Mismatching Serial_Number and mismatching Node_ID: Ignore message.
+
+Serial_Number == 0 is considered a wildcard that always matches.
+
+Responses on this message are sent even if the ODrive is unaddressed (node_id = 0x3f). In this case, the response is sent after a random delay to avoid collisions.
+";
+CM_ SG_ 230 Serial_Number "ODrive ? Host: Serial number of the sending ODrive
+Host ? ODrive: The serial number that shall be associated with the specified Node_ID";
+CM_ SG_ 230 Node_ID ":attr:`~ODrive.Axis.CanConfig.node_id`";
+CM_ SG_ 231 Axis_Requested_State ":attr:`~ODrive.Axis.requested_state`";
+CM_ BO_ 233 "This message is sent by the ODrive periodically by default. See also :ref:`cyclic-messages`.";
+CM_ SG_ 233 Vel_Estimate ":attr:`<axis>.pos_vel_mapper.vel <ODrive.Mapper.vel>`";
+CM_ SG_ 233 Pos_Estimate ":attr:`<axis>.pos_vel_mapper.pos_rel <ODrive.Mapper.pos_rel>` or :attr:`<axis>.pos_vel_mapper.pos_abs <ODrive.Mapper.pos_abs>`,
+depending on :attr:`ODrive.Controller.Config.absolute_setpoints`";
+CM_ SG_ 235 Input_Mode ":attr:`~ODrive.Controller.Config.input_mode`";
+CM_ SG_ 235 Control_Mode ":attr:`~ODrive.Controller.Config.control_mode`";
+CM_ SG_ 236 Torque_FF ":attr:`~ODrive.Controller.input_torque`";
+CM_ SG_ 236 Vel_FF ":attr:`~ODrive.Controller.input_vel`";
+CM_ SG_ 236 Input_Pos ":attr:`~ODrive.Controller.input_pos`";
+CM_ SG_ 237 Input_Torque_FF ":attr:`~ODrive.Controller.input_torque`";
+CM_ SG_ 237 Input_Vel ":attr:`~ODrive.Controller.input_vel`";
+CM_ SG_ 238 Input_Torque ":attr:`~ODrive.Controller.input_torque`";
+CM_ SG_ 239 Current_Limit ":attr:`~ODrive.Axis.Config.Motor.current_soft_max`";
+CM_ SG_ 239 Velocity_Limit ":attr:`~ODrive.Controller.Config.vel_limit`";
+CM_ SG_ 241 Traj_Vel_Limit ":attr:`~ODrive.TrapezoidalTrajectory.Config.vel_limit`";
+CM_ SG_ 242 Traj_Decel_Limit ":attr:`~ODrive.TrapezoidalTrajectory.Config.decel_limit`";
+CM_ SG_ 242 Traj_Accel_Limit ":attr:`~ODrive.TrapezoidalTrajectory.Config.accel_limit`";
+CM_ SG_ 243 Traj_Inertia ":attr:`~ODrive.Controller.Config.inertia`";
+CM_ SG_ 244 Iq_Measured ":attr:`~ODrive.FieldOrientedController.Iq_measured`";
+CM_ SG_ 244 Iq_Setpoint ":attr:`~ODrive.FieldOrientedController.Iq_setpoint`";
+CM_ SG_ 245 Motor_Temperature ":attr:`<axis>.motor.motor_thermistor.temperature <ODrive.OffboardThermistorCurrentLimiter>`";
+CM_ SG_ 245 FET_Temperature ":attr:`<axis>.motor.fet_thermistor.temperature <ODrive.OnboardThermistorCurrentLimiter>`";
+CM_ BO_ 246 "Reboots the ODrive according to Action. This requires the axis to be in :attr:`~ODrive.Axis.AxisState.IDLE`.";
+CM_ SG_ 246 Action "
+0: :func:`~ODrive.reboot()`
+1: :func:`~ODrive.save_configuration()`
+2: :func:`~ODrive.erase_configuration()`
+3: :func:`~ODrive.enter_dfu_mode2()`
+";
+CM_ SG_ 247 Bus_Current ":attr:`~ODrive.ibus`";
+CM_ SG_ 247 Bus_Voltage ":attr:`~ODrive.vbus_voltage`";
+CM_ BO_ 248 "Equivalent to calling :func:`~ODrive.clear_errors()`.";
+CM_ SG_ 248 Identify ":attr:`~ODrive.identify`";
+CM_ BO_ 249 "Equivalent to calling :func:`~ODrive.Axis.set_abs_pos()`.";
+CM_ SG_ 249 Position "new position";
+CM_ SG_ 250 Pos_Gain ":attr:`~ODrive.Controller.Config.pos_gain`";
+CM_ SG_ 251 Vel_Integrator_Gain ":attr:`~ODrive.Controller.Config.vel_integrator_gain`";
+CM_ SG_ 251 Vel_Gain ":attr:`~ODrive.Controller.Config.vel_gain`";
+CM_ SG_ 252 Torque_Estimate ":attr:`~ODrive.Motor.torque_estimate`";
+CM_ SG_ 252 Torque_Target ":attr:`~ODrive.Controller.effective_torque_setpoint`";
+CM_ SG_ 253 Mechanical_Power ":attr:`~ODrive.Motor.mechanical_power`";
+CM_ SG_ 253 Electrical_Power ":attr:`~ODrive.Motor.electrical_power`";
+CM_ BO_ 255 "Puts the ODrive into DFU mode (see :ref:`new-dfu`). Equivalent to calling :func:`~ODrive.enter_dfu_mode2()`.";
+BA_DEF_ BO_  "GenMsgCycleTime" INT 0 65535;
+BA_DEF_DEF_  "GenMsgCycleTime" 0;
+BA_ "GenMsgCycleTime" BO_ 0 100;
+BA_ "GenMsgCycleTime" BO_ 1 100;
+BA_ "GenMsgCycleTime" BO_ 9 10;
+BA_ "GenMsgCycleTime" BO_ 32 100;
+BA_ "GenMsgCycleTime" BO_ 33 100;
+BA_ "GenMsgCycleTime" BO_ 41 10;
+BA_ "GenMsgCycleTime" BO_ 64 100;
+BA_ "GenMsgCycleTime" BO_ 65 100;
+BA_ "GenMsgCycleTime" BO_ 73 10;
+BA_ "GenMsgCycleTime" BO_ 96 100;
+BA_ "GenMsgCycleTime" BO_ 97 100;
+BA_ "GenMsgCycleTime" BO_ 105 10;
+BA_ "GenMsgCycleTime" BO_ 128 100;
+BA_ "GenMsgCycleTime" BO_ 129 100;
+BA_ "GenMsgCycleTime" BO_ 137 10;
+BA_ "GenMsgCycleTime" BO_ 160 100;
+BA_ "GenMsgCycleTime" BO_ 161 100;
+BA_ "GenMsgCycleTime" BO_ 169 10;
+BA_ "GenMsgCycleTime" BO_ 192 100;
+BA_ "GenMsgCycleTime" BO_ 193 100;
+BA_ "GenMsgCycleTime" BO_ 201 10;
+BA_ "GenMsgCycleTime" BO_ 224 100;
+BA_ "GenMsgCycleTime" BO_ 225 100;
+BA_ "GenMsgCycleTime" BO_ 233 10;
+VAL_ 1 Procedure_Result 0 "SUCCESS" 1 "BUSY" 2 "CANCELLED" 3 "DISARMED" 4 "NO_RESPONSE" 5 "POLE_PAIR_CPR_MISMATCH" 6 "PHASE_RESISTANCE_OUT_OF_RANGE" 7 "PHASE_INDUCTANCE_OUT_OF_RANGE" 8 "UNBALANCED_PHASES" 9 "INVALID_MOTOR_TYPE" 10 "ILLEGAL_HALL_STATE" 11 "TIMEOUT" 12 "HOMING_WITHOUT_ENDSTOP" 13 "INVALID_STATE" 14 "NOT_CALIBRATED" 15 "NOT_CONVERGING" ;
+VAL_ 1 Axis_State 0 "UNDEFINED" 1 "IDLE" 2 "STARTUP_SEQUENCE" 3 "FULL_CALIBRATION_SEQUENCE" 4 "MOTOR_CALIBRATION" 6 "ENCODER_INDEX_SEARCH" 7 "ENCODER_OFFSET_CALIBRATION" 8 "CLOSED_LOOP_CONTROL" 9 "LOCKIN_SPIN" 10 "ENCODER_DIR_FIND" 11 "HOMING" 12 "ENCODER_HALL_POLARITY_CALIBRATION" 13 "ENCODER_HALL_PHASE_CALIBRATION" 14 "ANTICOGGING_CALIBRATION" 5 "SENSORLESS_CONTROL" ;
+VAL_ 1 Axis_Error 0 "NONE" 1 "INITIALIZING" 2 "SYSTEM_LEVEL" 4 "TIMING_ERROR" 8 "MISSING_ESTIMATE" 16 "BAD_CONFIG" 32 "DRV_FAULT" 64 "MISSING_INPUT" 256 "DC_BUS_OVER_VOLTAGE" 512 "DC_BUS_UNDER_VOLTAGE" 1024 "DC_BUS_OVER_CURRENT" 2048 "DC_BUS_OVER_REGEN_CURRENT" 4096 "CURRENT_LIMIT_VIOLATION" 8192 "MOTOR_OVER_TEMP" 16384 "INVERTER_OVER_TEMP" 32768 "VELOCITY_LIMIT_VIOLATION" 65536 "POSITION_LIMIT_VIOLATION" 16777216 "WATCHDOG_TIMER_EXPIRED" 33554432 "ESTOP_REQUESTED" 67108864 "SPINOUT_DETECTED" 134217728 "BRAKE_RESISTOR_DISARMED" 268435456 "THERMISTOR_DISCONNECTED" 1073741824 "CALIBRATION_ERROR" ;
+VAL_ 3 Disarm_Reason 0 "NONE" 1 "INITIALIZING" 2 "SYSTEM_LEVEL" 4 "TIMING_ERROR" 8 "MISSING_ESTIMATE" 16 "BAD_CONFIG" 32 "DRV_FAULT" 64 "MISSING_INPUT" 256 "DC_BUS_OVER_VOLTAGE" 512 "DC_BUS_UNDER_VOLTAGE" 1024 "DC_BUS_OVER_CURRENT" 2048 "DC_BUS_OVER_REGEN_CURRENT" 4096 "CURRENT_LIMIT_VIOLATION" 8192 "MOTOR_OVER_TEMP" 16384 "INVERTER_OVER_TEMP" 32768 "VELOCITY_LIMIT_VIOLATION" 65536 "POSITION_LIMIT_VIOLATION" 16777216 "WATCHDOG_TIMER_EXPIRED" 33554432 "ESTOP_REQUESTED" 67108864 "SPINOUT_DETECTED" 134217728 "BRAKE_RESISTOR_DISARMED" 268435456 "THERMISTOR_DISCONNECTED" 1073741824 "CALIBRATION_ERROR" ;
+VAL_ 3 Active_Errors 0 "NONE" 1 "INITIALIZING" 2 "SYSTEM_LEVEL" 4 "TIMING_ERROR" 8 "MISSING_ESTIMATE" 16 "BAD_CONFIG" 32 "DRV_FAULT" 64 "MISSING_INPUT" 256 "DC_BUS_OVER_VOLTAGE" 512 "DC_BUS_UNDER_VOLTAGE" 1024 "DC_BUS_OVER_CURRENT" 2048 "DC_BUS_OVER_REGEN_CURRENT" 4096 "CURRENT_LIMIT_VIOLATION" 8192 "MOTOR_OVER_TEMP" 16384 "INVERTER_OVER_TEMP" 32768 "VELOCITY_LIMIT_VIOLATION" 65536 "POSITION_LIMIT_VIOLATION" 16777216 "WATCHDOG_TIMER_EXPIRED" 33554432 "ESTOP_REQUESTED" 67108864 "SPINOUT_DETECTED" 134217728 "BRAKE_RESISTOR_DISARMED" 268435456 "THERMISTOR_DISCONNECTED" 1073741824 "CALIBRATION_ERROR" ;
+VAL_ 4 Opcode 0 "READ" 1 "WRITE" ;
+VAL_ 7 Axis_Requested_State 0 "UNDEFINED" 1 "IDLE" 2 "STARTUP_SEQUENCE" 3 "FULL_CALIBRATION_SEQUENCE" 4 "MOTOR_CALIBRATION" 6 "ENCODER_INDEX_SEARCH" 7 "ENCODER_OFFSET_CALIBRATION" 8 "CLOSED_LOOP_CONTROL" 9 "LOCKIN_SPIN" 10 "ENCODER_DIR_FIND" 11 "HOMING" 12 "ENCODER_HALL_POLARITY_CALIBRATION" 13 "ENCODER_HALL_PHASE_CALIBRATION" 14 "ANTICOGGING_CALIBRATION" 5 "SENSORLESS_CONTROL" ;
+VAL_ 11 Input_Mode 0 "INACTIVE" 1 "PASSTHROUGH" 2 "VEL_RAMP" 3 "POS_FILTER" 4 "MIX_CHANNELS" 5 "TRAP_TRAJ" 6 "TORQUE_RAMP" 7 "MIRROR" 8 "TUNING" ;
+VAL_ 11 Control_Mode 0 "VOLTAGE_CONTROL" 1 "TORQUE_CONTROL" 2 "VELOCITY_CONTROL" 3 "POSITION_CONTROL" ;
+VAL_ 22 Action 0 "reboot" 1 "save_configuration" 2 "erase_configuration" 3 "enter_dfu_mode" ;
+VAL_ 33 Procedure_Result 0 "SUCCESS" 1 "BUSY" 2 "CANCELLED" 3 "DISARMED" 4 "NO_RESPONSE" 5 "POLE_PAIR_CPR_MISMATCH" 6 "PHASE_RESISTANCE_OUT_OF_RANGE" 7 "PHASE_INDUCTANCE_OUT_OF_RANGE" 8 "UNBALANCED_PHASES" 9 "INVALID_MOTOR_TYPE" 10 "ILLEGAL_HALL_STATE" 11 "TIMEOUT" 12 "HOMING_WITHOUT_ENDSTOP" 13 "INVALID_STATE" 14 "NOT_CALIBRATED" 15 "NOT_CONVERGING" ;
+VAL_ 33 Axis_State 0 "UNDEFINED" 1 "IDLE" 2 "STARTUP_SEQUENCE" 3 "FULL_CALIBRATION_SEQUENCE" 4 "MOTOR_CALIBRATION" 6 "ENCODER_INDEX_SEARCH" 7 "ENCODER_OFFSET_CALIBRATION" 8 "CLOSED_LOOP_CONTROL" 9 "LOCKIN_SPIN" 10 "ENCODER_DIR_FIND" 11 "HOMING" 12 "ENCODER_HALL_POLARITY_CALIBRATION" 13 "ENCODER_HALL_PHASE_CALIBRATION" 14 "ANTICOGGING_CALIBRATION" 5 "SENSORLESS_CONTROL" ;
+VAL_ 33 Axis_Error 0 "NONE" 1 "INITIALIZING" 2 "SYSTEM_LEVEL" 4 "TIMING_ERROR" 8 "MISSING_ESTIMATE" 16 "BAD_CONFIG" 32 "DRV_FAULT" 64 "MISSING_INPUT" 256 "DC_BUS_OVER_VOLTAGE" 512 "DC_BUS_UNDER_VOLTAGE" 1024 "DC_BUS_OVER_CURRENT" 2048 "DC_BUS_OVER_REGEN_CURRENT" 4096 "CURRENT_LIMIT_VIOLATION" 8192 "MOTOR_OVER_TEMP" 16384 "INVERTER_OVER_TEMP" 32768 "VELOCITY_LIMIT_VIOLATION" 65536 "POSITION_LIMIT_VIOLATION" 16777216 "WATCHDOG_TIMER_EXPIRED" 33554432 "ESTOP_REQUESTED" 67108864 "SPINOUT_DETECTED" 134217728 "BRAKE_RESISTOR_DISARMED" 268435456 "THERMISTOR_DISCONNECTED" 1073741824 "CALIBRATION_ERROR" ;
+VAL_ 35 Disarm_Reason 0 "NONE" 1 "INITIALIZING" 2 "SYSTEM_LEVEL" 4 "TIMING_ERROR" 8 "MISSING_ESTIMATE" 16 "BAD_CONFIG" 32 "DRV_FAULT" 64 "MISSING_INPUT" 256 "DC_BUS_OVER_VOLTAGE" 512 "DC_BUS_UNDER_VOLTAGE" 1024 "DC_BUS_OVER_CURRENT" 2048 "DC_BUS_OVER_REGEN_CURRENT" 4096 "CURRENT_LIMIT_VIOLATION" 8192 "MOTOR_OVER_TEMP" 16384 "INVERTER_OVER_TEMP" 32768 "VELOCITY_LIMIT_VIOLATION" 65536 "POSITION_LIMIT_VIOLATION" 16777216 "WATCHDOG_TIMER_EXPIRED" 33554432 "ESTOP_REQUESTED" 67108864 "SPINOUT_DETECTED" 134217728 "BRAKE_RESISTOR_DISARMED" 268435456 "THERMISTOR_DISCONNECTED" 1073741824 "CALIBRATION_ERROR" ;
+VAL_ 35 Active_Errors 0 "NONE" 1 "INITIALIZING" 2 "SYSTEM_LEVEL" 4 "TIMING_ERROR" 8 "MISSING_ESTIMATE" 16 "BAD_CONFIG" 32 "DRV_FAULT" 64 "MISSING_INPUT" 256 "DC_BUS_OVER_VOLTAGE" 512 "DC_BUS_UNDER_VOLTAGE" 1024 "DC_BUS_OVER_CURRENT" 2048 "DC_BUS_OVER_REGEN_CURRENT" 4096 "CURRENT_LIMIT_VIOLATION" 8192 "MOTOR_OVER_TEMP" 16384 "INVERTER_OVER_TEMP" 32768 "VELOCITY_LIMIT_VIOLATION" 65536 "POSITION_LIMIT_VIOLATION" 16777216 "WATCHDOG_TIMER_EXPIRED" 33554432 "ESTOP_REQUESTED" 67108864 "SPINOUT_DETECTED" 134217728 "BRAKE_RESISTOR_DISARMED" 268435456 "THERMISTOR_DISCONNECTED" 1073741824 "CALIBRATION_ERROR" ;
+VAL_ 36 Opcode 0 "READ" 1 "WRITE" ;
+VAL_ 39 Axis_Requested_State 0 "UNDEFINED" 1 "IDLE" 2 "STARTUP_SEQUENCE" 3 "FULL_CALIBRATION_SEQUENCE" 4 "MOTOR_CALIBRATION" 6 "ENCODER_INDEX_SEARCH" 7 "ENCODER_OFFSET_CALIBRATION" 8 "CLOSED_LOOP_CONTROL" 9 "LOCKIN_SPIN" 10 "ENCODER_DIR_FIND" 11 "HOMING" 12 "ENCODER_HALL_POLARITY_CALIBRATION" 13 "ENCODER_HALL_PHASE_CALIBRATION" 14 "ANTICOGGING_CALIBRATION" 5 "SENSORLESS_CONTROL" ;
+VAL_ 43 Input_Mode 0 "INACTIVE" 1 "PASSTHROUGH" 2 "VEL_RAMP" 3 "POS_FILTER" 4 "MIX_CHANNELS" 5 "TRAP_TRAJ" 6 "TORQUE_RAMP" 7 "MIRROR" 8 "TUNING" ;
+VAL_ 43 Control_Mode 0 "VOLTAGE_CONTROL" 1 "TORQUE_CONTROL" 2 "VELOCITY_CONTROL" 3 "POSITION_CONTROL" ;
+VAL_ 54 Action 0 "reboot" 1 "save_configuration" 2 "erase_configuration" 3 "enter_dfu_mode" ;
+VAL_ 65 Procedure_Result 0 "SUCCESS" 1 "BUSY" 2 "CANCELLED" 3 "DISARMED" 4 "NO_RESPONSE" 5 "POLE_PAIR_CPR_MISMATCH" 6 "PHASE_RESISTANCE_OUT_OF_RANGE" 7 "PHASE_INDUCTANCE_OUT_OF_RANGE" 8 "UNBALANCED_PHASES" 9 "INVALID_MOTOR_TYPE" 10 "ILLEGAL_HALL_STATE" 11 "TIMEOUT" 12 "HOMING_WITHOUT_ENDSTOP" 13 "INVALID_STATE" 14 "NOT_CALIBRATED" 15 "NOT_CONVERGING" ;
+VAL_ 65 Axis_State 0 "UNDEFINED" 1 "IDLE" 2 "STARTUP_SEQUENCE" 3 "FULL_CALIBRATION_SEQUENCE" 4 "MOTOR_CALIBRATION" 6 "ENCODER_INDEX_SEARCH" 7 "ENCODER_OFFSET_CALIBRATION" 8 "CLOSED_LOOP_CONTROL" 9 "LOCKIN_SPIN" 10 "ENCODER_DIR_FIND" 11 "HOMING" 12 "ENCODER_HALL_POLARITY_CALIBRATION" 13 "ENCODER_HALL_PHASE_CALIBRATION" 14 "ANTICOGGING_CALIBRATION" 5 "SENSORLESS_CONTROL" ;
+VAL_ 65 Axis_Error 0 "NONE" 1 "INITIALIZING" 2 "SYSTEM_LEVEL" 4 "TIMING_ERROR" 8 "MISSING_ESTIMATE" 16 "BAD_CONFIG" 32 "DRV_FAULT" 64 "MISSING_INPUT" 256 "DC_BUS_OVER_VOLTAGE" 512 "DC_BUS_UNDER_VOLTAGE" 1024 "DC_BUS_OVER_CURRENT" 2048 "DC_BUS_OVER_REGEN_CURRENT" 4096 "CURRENT_LIMIT_VIOLATION" 8192 "MOTOR_OVER_TEMP" 16384 "INVERTER_OVER_TEMP" 32768 "VELOCITY_LIMIT_VIOLATION" 65536 "POSITION_LIMIT_VIOLATION" 16777216 "WATCHDOG_TIMER_EXPIRED" 33554432 "ESTOP_REQUESTED" 67108864 "SPINOUT_DETECTED" 134217728 "BRAKE_RESISTOR_DISARMED" 268435456 "THERMISTOR_DISCONNECTED" 1073741824 "CALIBRATION_ERROR" ;
+VAL_ 67 Disarm_Reason 0 "NONE" 1 "INITIALIZING" 2 "SYSTEM_LEVEL" 4 "TIMING_ERROR" 8 "MISSING_ESTIMATE" 16 "BAD_CONFIG" 32 "DRV_FAULT" 64 "MISSING_INPUT" 256 "DC_BUS_OVER_VOLTAGE" 512 "DC_BUS_UNDER_VOLTAGE" 1024 "DC_BUS_OVER_CURRENT" 2048 "DC_BUS_OVER_REGEN_CURRENT" 4096 "CURRENT_LIMIT_VIOLATION" 8192 "MOTOR_OVER_TEMP" 16384 "INVERTER_OVER_TEMP" 32768 "VELOCITY_LIMIT_VIOLATION" 65536 "POSITION_LIMIT_VIOLATION" 16777216 "WATCHDOG_TIMER_EXPIRED" 33554432 "ESTOP_REQUESTED" 67108864 "SPINOUT_DETECTED" 134217728 "BRAKE_RESISTOR_DISARMED" 268435456 "THERMISTOR_DISCONNECTED" 1073741824 "CALIBRATION_ERROR" ;
+VAL_ 67 Active_Errors 0 "NONE" 1 "INITIALIZING" 2 "SYSTEM_LEVEL" 4 "TIMING_ERROR" 8 "MISSING_ESTIMATE" 16 "BAD_CONFIG" 32 "DRV_FAULT" 64 "MISSING_INPUT" 256 "DC_BUS_OVER_VOLTAGE" 512 "DC_BUS_UNDER_VOLTAGE" 1024 "DC_BUS_OVER_CURRENT" 2048 "DC_BUS_OVER_REGEN_CURRENT" 4096 "CURRENT_LIMIT_VIOLATION" 8192 "MOTOR_OVER_TEMP" 16384 "INVERTER_OVER_TEMP" 32768 "VELOCITY_LIMIT_VIOLATION" 65536 "POSITION_LIMIT_VIOLATION" 16777216 "WATCHDOG_TIMER_EXPIRED" 33554432 "ESTOP_REQUESTED" 67108864 "SPINOUT_DETECTED" 134217728 "BRAKE_RESISTOR_DISARMED" 268435456 "THERMISTOR_DISCONNECTED" 1073741824 "CALIBRATION_ERROR" ;
+VAL_ 68 Opcode 0 "READ" 1 "WRITE" ;
+VAL_ 71 Axis_Requested_State 0 "UNDEFINED" 1 "IDLE" 2 "STARTUP_SEQUENCE" 3 "FULL_CALIBRATION_SEQUENCE" 4 "MOTOR_CALIBRATION" 6 "ENCODER_INDEX_SEARCH" 7 "ENCODER_OFFSET_CALIBRATION" 8 "CLOSED_LOOP_CONTROL" 9 "LOCKIN_SPIN" 10 "ENCODER_DIR_FIND" 11 "HOMING" 12 "ENCODER_HALL_POLARITY_CALIBRATION" 13 "ENCODER_HALL_PHASE_CALIBRATION" 14 "ANTICOGGING_CALIBRATION" 5 "SENSORLESS_CONTROL" ;
+VAL_ 75 Input_Mode 0 "INACTIVE" 1 "PASSTHROUGH" 2 "VEL_RAMP" 3 "POS_FILTER" 4 "MIX_CHANNELS" 5 "TRAP_TRAJ" 6 "TORQUE_RAMP" 7 "MIRROR" 8 "TUNING" ;
+VAL_ 75 Control_Mode 0 "VOLTAGE_CONTROL" 1 "TORQUE_CONTROL" 2 "VELOCITY_CONTROL" 3 "POSITION_CONTROL" ;
+VAL_ 86 Action 0 "reboot" 1 "save_configuration" 2 "erase_configuration" 3 "enter_dfu_mode" ;
+VAL_ 97 Procedure_Result 0 "SUCCESS" 1 "BUSY" 2 "CANCELLED" 3 "DISARMED" 4 "NO_RESPONSE" 5 "POLE_PAIR_CPR_MISMATCH" 6 "PHASE_RESISTANCE_OUT_OF_RANGE" 7 "PHASE_INDUCTANCE_OUT_OF_RANGE" 8 "UNBALANCED_PHASES" 9 "INVALID_MOTOR_TYPE" 10 "ILLEGAL_HALL_STATE" 11 "TIMEOUT" 12 "HOMING_WITHOUT_ENDSTOP" 13 "INVALID_STATE" 14 "NOT_CALIBRATED" 15 "NOT_CONVERGING" ;
+VAL_ 97 Axis_State 0 "UNDEFINED" 1 "IDLE" 2 "STARTUP_SEQUENCE" 3 "FULL_CALIBRATION_SEQUENCE" 4 "MOTOR_CALIBRATION" 6 "ENCODER_INDEX_SEARCH" 7 "ENCODER_OFFSET_CALIBRATION" 8 "CLOSED_LOOP_CONTROL" 9 "LOCKIN_SPIN" 10 "ENCODER_DIR_FIND" 11 "HOMING" 12 "ENCODER_HALL_POLARITY_CALIBRATION" 13 "ENCODER_HALL_PHASE_CALIBRATION" 14 "ANTICOGGING_CALIBRATION" 5 "SENSORLESS_CONTROL" ;
+VAL_ 97 Axis_Error 0 "NONE" 1 "INITIALIZING" 2 "SYSTEM_LEVEL" 4 "TIMING_ERROR" 8 "MISSING_ESTIMATE" 16 "BAD_CONFIG" 32 "DRV_FAULT" 64 "MISSING_INPUT" 256 "DC_BUS_OVER_VOLTAGE" 512 "DC_BUS_UNDER_VOLTAGE" 1024 "DC_BUS_OVER_CURRENT" 2048 "DC_BUS_OVER_REGEN_CURRENT" 4096 "CURRENT_LIMIT_VIOLATION" 8192 "MOTOR_OVER_TEMP" 16384 "INVERTER_OVER_TEMP" 32768 "VELOCITY_LIMIT_VIOLATION" 65536 "POSITION_LIMIT_VIOLATION" 16777216 "WATCHDOG_TIMER_EXPIRED" 33554432 "ESTOP_REQUESTED" 67108864 "SPINOUT_DETECTED" 134217728 "BRAKE_RESISTOR_DISARMED" 268435456 "THERMISTOR_DISCONNECTED" 1073741824 "CALIBRATION_ERROR" ;
+VAL_ 99 Disarm_Reason 0 "NONE" 1 "INITIALIZING" 2 "SYSTEM_LEVEL" 4 "TIMING_ERROR" 8 "MISSING_ESTIMATE" 16 "BAD_CONFIG" 32 "DRV_FAULT" 64 "MISSING_INPUT" 256 "DC_BUS_OVER_VOLTAGE" 512 "DC_BUS_UNDER_VOLTAGE" 1024 "DC_BUS_OVER_CURRENT" 2048 "DC_BUS_OVER_REGEN_CURRENT" 4096 "CURRENT_LIMIT_VIOLATION" 8192 "MOTOR_OVER_TEMP" 16384 "INVERTER_OVER_TEMP" 32768 "VELOCITY_LIMIT_VIOLATION" 65536 "POSITION_LIMIT_VIOLATION" 16777216 "WATCHDOG_TIMER_EXPIRED" 33554432 "ESTOP_REQUESTED" 67108864 "SPINOUT_DETECTED" 134217728 "BRAKE_RESISTOR_DISARMED" 268435456 "THERMISTOR_DISCONNECTED" 1073741824 "CALIBRATION_ERROR" ;
+VAL_ 99 Active_Errors 0 "NONE" 1 "INITIALIZING" 2 "SYSTEM_LEVEL" 4 "TIMING_ERROR" 8 "MISSING_ESTIMATE" 16 "BAD_CONFIG" 32 "DRV_FAULT" 64 "MISSING_INPUT" 256 "DC_BUS_OVER_VOLTAGE" 512 "DC_BUS_UNDER_VOLTAGE" 1024 "DC_BUS_OVER_CURRENT" 2048 "DC_BUS_OVER_REGEN_CURRENT" 4096 "CURRENT_LIMIT_VIOLATION" 8192 "MOTOR_OVER_TEMP" 16384 "INVERTER_OVER_TEMP" 32768 "VELOCITY_LIMIT_VIOLATION" 65536 "POSITION_LIMIT_VIOLATION" 16777216 "WATCHDOG_TIMER_EXPIRED" 33554432 "ESTOP_REQUESTED" 67108864 "SPINOUT_DETECTED" 134217728 "BRAKE_RESISTOR_DISARMED" 268435456 "THERMISTOR_DISCONNECTED" 1073741824 "CALIBRATION_ERROR" ;
+VAL_ 100 Opcode 0 "READ" 1 "WRITE" ;
+VAL_ 103 Axis_Requested_State 0 "UNDEFINED" 1 "IDLE" 2 "STARTUP_SEQUENCE" 3 "FULL_CALIBRATION_SEQUENCE" 4 "MOTOR_CALIBRATION" 6 "ENCODER_INDEX_SEARCH" 7 "ENCODER_OFFSET_CALIBRATION" 8 "CLOSED_LOOP_CONTROL" 9 "LOCKIN_SPIN" 10 "ENCODER_DIR_FIND" 11 "HOMING" 12 "ENCODER_HALL_POLARITY_CALIBRATION" 13 "ENCODER_HALL_PHASE_CALIBRATION" 14 "ANTICOGGING_CALIBRATION" 5 "SENSORLESS_CONTROL" ;
+VAL_ 107 Input_Mode 0 "INACTIVE" 1 "PASSTHROUGH" 2 "VEL_RAMP" 3 "POS_FILTER" 4 "MIX_CHANNELS" 5 "TRAP_TRAJ" 6 "TORQUE_RAMP" 7 "MIRROR" 8 "TUNING" ;
+VAL_ 107 Control_Mode 0 "VOLTAGE_CONTROL" 1 "TORQUE_CONTROL" 2 "VELOCITY_CONTROL" 3 "POSITION_CONTROL" ;
+VAL_ 118 Action 0 "reboot" 1 "save_configuration" 2 "erase_configuration" 3 "enter_dfu_mode" ;
+VAL_ 129 Procedure_Result 0 "SUCCESS" 1 "BUSY" 2 "CANCELLED" 3 "DISARMED" 4 "NO_RESPONSE" 5 "POLE_PAIR_CPR_MISMATCH" 6 "PHASE_RESISTANCE_OUT_OF_RANGE" 7 "PHASE_INDUCTANCE_OUT_OF_RANGE" 8 "UNBALANCED_PHASES" 9 "INVALID_MOTOR_TYPE" 10 "ILLEGAL_HALL_STATE" 11 "TIMEOUT" 12 "HOMING_WITHOUT_ENDSTOP" 13 "INVALID_STATE" 14 "NOT_CALIBRATED" 15 "NOT_CONVERGING" ;
+VAL_ 129 Axis_State 0 "UNDEFINED" 1 "IDLE" 2 "STARTUP_SEQUENCE" 3 "FULL_CALIBRATION_SEQUENCE" 4 "MOTOR_CALIBRATION" 6 "ENCODER_INDEX_SEARCH" 7 "ENCODER_OFFSET_CALIBRATION" 8 "CLOSED_LOOP_CONTROL" 9 "LOCKIN_SPIN" 10 "ENCODER_DIR_FIND" 11 "HOMING" 12 "ENCODER_HALL_POLARITY_CALIBRATION" 13 "ENCODER_HALL_PHASE_CALIBRATION" 14 "ANTICOGGING_CALIBRATION" 5 "SENSORLESS_CONTROL" ;
+VAL_ 129 Axis_Error 0 "NONE" 1 "INITIALIZING" 2 "SYSTEM_LEVEL" 4 "TIMING_ERROR" 8 "MISSING_ESTIMATE" 16 "BAD_CONFIG" 32 "DRV_FAULT" 64 "MISSING_INPUT" 256 "DC_BUS_OVER_VOLTAGE" 512 "DC_BUS_UNDER_VOLTAGE" 1024 "DC_BUS_OVER_CURRENT" 2048 "DC_BUS_OVER_REGEN_CURRENT" 4096 "CURRENT_LIMIT_VIOLATION" 8192 "MOTOR_OVER_TEMP" 16384 "INVERTER_OVER_TEMP" 32768 "VELOCITY_LIMIT_VIOLATION" 65536 "POSITION_LIMIT_VIOLATION" 16777216 "WATCHDOG_TIMER_EXPIRED" 33554432 "ESTOP_REQUESTED" 67108864 "SPINOUT_DETECTED" 134217728 "BRAKE_RESISTOR_DISARMED" 268435456 "THERMISTOR_DISCONNECTED" 1073741824 "CALIBRATION_ERROR" ;
+VAL_ 131 Disarm_Reason 0 "NONE" 1 "INITIALIZING" 2 "SYSTEM_LEVEL" 4 "TIMING_ERROR" 8 "MISSING_ESTIMATE" 16 "BAD_CONFIG" 32 "DRV_FAULT" 64 "MISSING_INPUT" 256 "DC_BUS_OVER_VOLTAGE" 512 "DC_BUS_UNDER_VOLTAGE" 1024 "DC_BUS_OVER_CURRENT" 2048 "DC_BUS_OVER_REGEN_CURRENT" 4096 "CURRENT_LIMIT_VIOLATION" 8192 "MOTOR_OVER_TEMP" 16384 "INVERTER_OVER_TEMP" 32768 "VELOCITY_LIMIT_VIOLATION" 65536 "POSITION_LIMIT_VIOLATION" 16777216 "WATCHDOG_TIMER_EXPIRED" 33554432 "ESTOP_REQUESTED" 67108864 "SPINOUT_DETECTED" 134217728 "BRAKE_RESISTOR_DISARMED" 268435456 "THERMISTOR_DISCONNECTED" 1073741824 "CALIBRATION_ERROR" ;
+VAL_ 131 Active_Errors 0 "NONE" 1 "INITIALIZING" 2 "SYSTEM_LEVEL" 4 "TIMING_ERROR" 8 "MISSING_ESTIMATE" 16 "BAD_CONFIG" 32 "DRV_FAULT" 64 "MISSING_INPUT" 256 "DC_BUS_OVER_VOLTAGE" 512 "DC_BUS_UNDER_VOLTAGE" 1024 "DC_BUS_OVER_CURRENT" 2048 "DC_BUS_OVER_REGEN_CURRENT" 4096 "CURRENT_LIMIT_VIOLATION" 8192 "MOTOR_OVER_TEMP" 16384 "INVERTER_OVER_TEMP" 32768 "VELOCITY_LIMIT_VIOLATION" 65536 "POSITION_LIMIT_VIOLATION" 16777216 "WATCHDOG_TIMER_EXPIRED" 33554432 "ESTOP_REQUESTED" 67108864 "SPINOUT_DETECTED" 134217728 "BRAKE_RESISTOR_DISARMED" 268435456 "THERMISTOR_DISCONNECTED" 1073741824 "CALIBRATION_ERROR" ;
+VAL_ 132 Opcode 0 "READ" 1 "WRITE" ;
+VAL_ 135 Axis_Requested_State 0 "UNDEFINED" 1 "IDLE" 2 "STARTUP_SEQUENCE" 3 "FULL_CALIBRATION_SEQUENCE" 4 "MOTOR_CALIBRATION" 6 "ENCODER_INDEX_SEARCH" 7 "ENCODER_OFFSET_CALIBRATION" 8 "CLOSED_LOOP_CONTROL" 9 "LOCKIN_SPIN" 10 "ENCODER_DIR_FIND" 11 "HOMING" 12 "ENCODER_HALL_POLARITY_CALIBRATION" 13 "ENCODER_HALL_PHASE_CALIBRATION" 14 "ANTICOGGING_CALIBRATION" 5 "SENSORLESS_CONTROL" ;
+VAL_ 139 Input_Mode 0 "INACTIVE" 1 "PASSTHROUGH" 2 "VEL_RAMP" 3 "POS_FILTER" 4 "MIX_CHANNELS" 5 "TRAP_TRAJ" 6 "TORQUE_RAMP" 7 "MIRROR" 8 "TUNING" ;
+VAL_ 139 Control_Mode 0 "VOLTAGE_CONTROL" 1 "TORQUE_CONTROL" 2 "VELOCITY_CONTROL" 3 "POSITION_CONTROL" ;
+VAL_ 150 Action 0 "reboot" 1 "save_configuration" 2 "erase_configuration" 3 "enter_dfu_mode" ;
+VAL_ 161 Procedure_Result 0 "SUCCESS" 1 "BUSY" 2 "CANCELLED" 3 "DISARMED" 4 "NO_RESPONSE" 5 "POLE_PAIR_CPR_MISMATCH" 6 "PHASE_RESISTANCE_OUT_OF_RANGE" 7 "PHASE_INDUCTANCE_OUT_OF_RANGE" 8 "UNBALANCED_PHASES" 9 "INVALID_MOTOR_TYPE" 10 "ILLEGAL_HALL_STATE" 11 "TIMEOUT" 12 "HOMING_WITHOUT_ENDSTOP" 13 "INVALID_STATE" 14 "NOT_CALIBRATED" 15 "NOT_CONVERGING" ;
+VAL_ 161 Axis_State 0 "UNDEFINED" 1 "IDLE" 2 "STARTUP_SEQUENCE" 3 "FULL_CALIBRATION_SEQUENCE" 4 "MOTOR_CALIBRATION" 6 "ENCODER_INDEX_SEARCH" 7 "ENCODER_OFFSET_CALIBRATION" 8 "CLOSED_LOOP_CONTROL" 9 "LOCKIN_SPIN" 10 "ENCODER_DIR_FIND" 11 "HOMING" 12 "ENCODER_HALL_POLARITY_CALIBRATION" 13 "ENCODER_HALL_PHASE_CALIBRATION" 14 "ANTICOGGING_CALIBRATION" 5 "SENSORLESS_CONTROL" ;
+VAL_ 161 Axis_Error 0 "NONE" 1 "INITIALIZING" 2 "SYSTEM_LEVEL" 4 "TIMING_ERROR" 8 "MISSING_ESTIMATE" 16 "BAD_CONFIG" 32 "DRV_FAULT" 64 "MISSING_INPUT" 256 "DC_BUS_OVER_VOLTAGE" 512 "DC_BUS_UNDER_VOLTAGE" 1024 "DC_BUS_OVER_CURRENT" 2048 "DC_BUS_OVER_REGEN_CURRENT" 4096 "CURRENT_LIMIT_VIOLATION" 8192 "MOTOR_OVER_TEMP" 16384 "INVERTER_OVER_TEMP" 32768 "VELOCITY_LIMIT_VIOLATION" 65536 "POSITION_LIMIT_VIOLATION" 16777216 "WATCHDOG_TIMER_EXPIRED" 33554432 "ESTOP_REQUESTED" 67108864 "SPINOUT_DETECTED" 134217728 "BRAKE_RESISTOR_DISARMED" 268435456 "THERMISTOR_DISCONNECTED" 1073741824 "CALIBRATION_ERROR" ;
+VAL_ 163 Disarm_Reason 0 "NONE" 1 "INITIALIZING" 2 "SYSTEM_LEVEL" 4 "TIMING_ERROR" 8 "MISSING_ESTIMATE" 16 "BAD_CONFIG" 32 "DRV_FAULT" 64 "MISSING_INPUT" 256 "DC_BUS_OVER_VOLTAGE" 512 "DC_BUS_UNDER_VOLTAGE" 1024 "DC_BUS_OVER_CURRENT" 2048 "DC_BUS_OVER_REGEN_CURRENT" 4096 "CURRENT_LIMIT_VIOLATION" 8192 "MOTOR_OVER_TEMP" 16384 "INVERTER_OVER_TEMP" 32768 "VELOCITY_LIMIT_VIOLATION" 65536 "POSITION_LIMIT_VIOLATION" 16777216 "WATCHDOG_TIMER_EXPIRED" 33554432 "ESTOP_REQUESTED" 67108864 "SPINOUT_DETECTED" 134217728 "BRAKE_RESISTOR_DISARMED" 268435456 "THERMISTOR_DISCONNECTED" 1073741824 "CALIBRATION_ERROR" ;
+VAL_ 163 Active_Errors 0 "NONE" 1 "INITIALIZING" 2 "SYSTEM_LEVEL" 4 "TIMING_ERROR" 8 "MISSING_ESTIMATE" 16 "BAD_CONFIG" 32 "DRV_FAULT" 64 "MISSING_INPUT" 256 "DC_BUS_OVER_VOLTAGE" 512 "DC_BUS_UNDER_VOLTAGE" 1024 "DC_BUS_OVER_CURRENT" 2048 "DC_BUS_OVER_REGEN_CURRENT" 4096 "CURRENT_LIMIT_VIOLATION" 8192 "MOTOR_OVER_TEMP" 16384 "INVERTER_OVER_TEMP" 32768 "VELOCITY_LIMIT_VIOLATION" 65536 "POSITION_LIMIT_VIOLATION" 16777216 "WATCHDOG_TIMER_EXPIRED" 33554432 "ESTOP_REQUESTED" 67108864 "SPINOUT_DETECTED" 134217728 "BRAKE_RESISTOR_DISARMED" 268435456 "THERMISTOR_DISCONNECTED" 1073741824 "CALIBRATION_ERROR" ;
+VAL_ 164 Opcode 0 "READ" 1 "WRITE" ;
+VAL_ 167 Axis_Requested_State 0 "UNDEFINED" 1 "IDLE" 2 "STARTUP_SEQUENCE" 3 "FULL_CALIBRATION_SEQUENCE" 4 "MOTOR_CALIBRATION" 6 "ENCODER_INDEX_SEARCH" 7 "ENCODER_OFFSET_CALIBRATION" 8 "CLOSED_LOOP_CONTROL" 9 "LOCKIN_SPIN" 10 "ENCODER_DIR_FIND" 11 "HOMING" 12 "ENCODER_HALL_POLARITY_CALIBRATION" 13 "ENCODER_HALL_PHASE_CALIBRATION" 14 "ANTICOGGING_CALIBRATION" 5 "SENSORLESS_CONTROL" ;
+VAL_ 171 Input_Mode 0 "INACTIVE" 1 "PASSTHROUGH" 2 "VEL_RAMP" 3 "POS_FILTER" 4 "MIX_CHANNELS" 5 "TRAP_TRAJ" 6 "TORQUE_RAMP" 7 "MIRROR" 8 "TUNING" ;
+VAL_ 171 Control_Mode 0 "VOLTAGE_CONTROL" 1 "TORQUE_CONTROL" 2 "VELOCITY_CONTROL" 3 "POSITION_CONTROL" ;
+VAL_ 182 Action 0 "reboot" 1 "save_configuration" 2 "erase_configuration" 3 "enter_dfu_mode" ;
+VAL_ 193 Procedure_Result 0 "SUCCESS" 1 "BUSY" 2 "CANCELLED" 3 "DISARMED" 4 "NO_RESPONSE" 5 "POLE_PAIR_CPR_MISMATCH" 6 "PHASE_RESISTANCE_OUT_OF_RANGE" 7 "PHASE_INDUCTANCE_OUT_OF_RANGE" 8 "UNBALANCED_PHASES" 9 "INVALID_MOTOR_TYPE" 10 "ILLEGAL_HALL_STATE" 11 "TIMEOUT" 12 "HOMING_WITHOUT_ENDSTOP" 13 "INVALID_STATE" 14 "NOT_CALIBRATED" 15 "NOT_CONVERGING" ;
+VAL_ 193 Axis_State 0 "UNDEFINED" 1 "IDLE" 2 "STARTUP_SEQUENCE" 3 "FULL_CALIBRATION_SEQUENCE" 4 "MOTOR_CALIBRATION" 6 "ENCODER_INDEX_SEARCH" 7 "ENCODER_OFFSET_CALIBRATION" 8 "CLOSED_LOOP_CONTROL" 9 "LOCKIN_SPIN" 10 "ENCODER_DIR_FIND" 11 "HOMING" 12 "ENCODER_HALL_POLARITY_CALIBRATION" 13 "ENCODER_HALL_PHASE_CALIBRATION" 14 "ANTICOGGING_CALIBRATION" 5 "SENSORLESS_CONTROL" ;
+VAL_ 193 Axis_Error 0 "NONE" 1 "INITIALIZING" 2 "SYSTEM_LEVEL" 4 "TIMING_ERROR" 8 "MISSING_ESTIMATE" 16 "BAD_CONFIG" 32 "DRV_FAULT" 64 "MISSING_INPUT" 256 "DC_BUS_OVER_VOLTAGE" 512 "DC_BUS_UNDER_VOLTAGE" 1024 "DC_BUS_OVER_CURRENT" 2048 "DC_BUS_OVER_REGEN_CURRENT" 4096 "CURRENT_LIMIT_VIOLATION" 8192 "MOTOR_OVER_TEMP" 16384 "INVERTER_OVER_TEMP" 32768 "VELOCITY_LIMIT_VIOLATION" 65536 "POSITION_LIMIT_VIOLATION" 16777216 "WATCHDOG_TIMER_EXPIRED" 33554432 "ESTOP_REQUESTED" 67108864 "SPINOUT_DETECTED" 134217728 "BRAKE_RESISTOR_DISARMED" 268435456 "THERMISTOR_DISCONNECTED" 1073741824 "CALIBRATION_ERROR" ;
+VAL_ 195 Disarm_Reason 0 "NONE" 1 "INITIALIZING" 2 "SYSTEM_LEVEL" 4 "TIMING_ERROR" 8 "MISSING_ESTIMATE" 16 "BAD_CONFIG" 32 "DRV_FAULT" 64 "MISSING_INPUT" 256 "DC_BUS_OVER_VOLTAGE" 512 "DC_BUS_UNDER_VOLTAGE" 1024 "DC_BUS_OVER_CURRENT" 2048 "DC_BUS_OVER_REGEN_CURRENT" 4096 "CURRENT_LIMIT_VIOLATION" 8192 "MOTOR_OVER_TEMP" 16384 "INVERTER_OVER_TEMP" 32768 "VELOCITY_LIMIT_VIOLATION" 65536 "POSITION_LIMIT_VIOLATION" 16777216 "WATCHDOG_TIMER_EXPIRED" 33554432 "ESTOP_REQUESTED" 67108864 "SPINOUT_DETECTED" 134217728 "BRAKE_RESISTOR_DISARMED" 268435456 "THERMISTOR_DISCONNECTED" 1073741824 "CALIBRATION_ERROR" ;
+VAL_ 195 Active_Errors 0 "NONE" 1 "INITIALIZING" 2 "SYSTEM_LEVEL" 4 "TIMING_ERROR" 8 "MISSING_ESTIMATE" 16 "BAD_CONFIG" 32 "DRV_FAULT" 64 "MISSING_INPUT" 256 "DC_BUS_OVER_VOLTAGE" 512 "DC_BUS_UNDER_VOLTAGE" 1024 "DC_BUS_OVER_CURRENT" 2048 "DC_BUS_OVER_REGEN_CURRENT" 4096 "CURRENT_LIMIT_VIOLATION" 8192 "MOTOR_OVER_TEMP" 16384 "INVERTER_OVER_TEMP" 32768 "VELOCITY_LIMIT_VIOLATION" 65536 "POSITION_LIMIT_VIOLATION" 16777216 "WATCHDOG_TIMER_EXPIRED" 33554432 "ESTOP_REQUESTED" 67108864 "SPINOUT_DETECTED" 134217728 "BRAKE_RESISTOR_DISARMED" 268435456 "THERMISTOR_DISCONNECTED" 1073741824 "CALIBRATION_ERROR" ;
+VAL_ 196 Opcode 0 "READ" 1 "WRITE" ;
+VAL_ 199 Axis_Requested_State 0 "UNDEFINED" 1 "IDLE" 2 "STARTUP_SEQUENCE" 3 "FULL_CALIBRATION_SEQUENCE" 4 "MOTOR_CALIBRATION" 6 "ENCODER_INDEX_SEARCH" 7 "ENCODER_OFFSET_CALIBRATION" 8 "CLOSED_LOOP_CONTROL" 9 "LOCKIN_SPIN" 10 "ENCODER_DIR_FIND" 11 "HOMING" 12 "ENCODER_HALL_POLARITY_CALIBRATION" 13 "ENCODER_HALL_PHASE_CALIBRATION" 14 "ANTICOGGING_CALIBRATION" 5 "SENSORLESS_CONTROL" ;
+VAL_ 203 Input_Mode 0 "INACTIVE" 1 "PASSTHROUGH" 2 "VEL_RAMP" 3 "POS_FILTER" 4 "MIX_CHANNELS" 5 "TRAP_TRAJ" 6 "TORQUE_RAMP" 7 "MIRROR" 8 "TUNING" ;
+VAL_ 203 Control_Mode 0 "VOLTAGE_CONTROL" 1 "TORQUE_CONTROL" 2 "VELOCITY_CONTROL" 3 "POSITION_CONTROL" ;
+VAL_ 214 Action 0 "reboot" 1 "save_configuration" 2 "erase_configuration" 3 "enter_dfu_mode" ;
+VAL_ 225 Procedure_Result 0 "SUCCESS" 1 "BUSY" 2 "CANCELLED" 3 "DISARMED" 4 "NO_RESPONSE" 5 "POLE_PAIR_CPR_MISMATCH" 6 "PHASE_RESISTANCE_OUT_OF_RANGE" 7 "PHASE_INDUCTANCE_OUT_OF_RANGE" 8 "UNBALANCED_PHASES" 9 "INVALID_MOTOR_TYPE" 10 "ILLEGAL_HALL_STATE" 11 "TIMEOUT" 12 "HOMING_WITHOUT_ENDSTOP" 13 "INVALID_STATE" 14 "NOT_CALIBRATED" 15 "NOT_CONVERGING" ;
+VAL_ 225 Axis_State 0 "UNDEFINED" 1 "IDLE" 2 "STARTUP_SEQUENCE" 3 "FULL_CALIBRATION_SEQUENCE" 4 "MOTOR_CALIBRATION" 6 "ENCODER_INDEX_SEARCH" 7 "ENCODER_OFFSET_CALIBRATION" 8 "CLOSED_LOOP_CONTROL" 9 "LOCKIN_SPIN" 10 "ENCODER_DIR_FIND" 11 "HOMING" 12 "ENCODER_HALL_POLARITY_CALIBRATION" 13 "ENCODER_HALL_PHASE_CALIBRATION" 14 "ANTICOGGING_CALIBRATION" 5 "SENSORLESS_CONTROL" ;
+VAL_ 225 Axis_Error 0 "NONE" 1 "INITIALIZING" 2 "SYSTEM_LEVEL" 4 "TIMING_ERROR" 8 "MISSING_ESTIMATE" 16 "BAD_CONFIG" 32 "DRV_FAULT" 64 "MISSING_INPUT" 256 "DC_BUS_OVER_VOLTAGE" 512 "DC_BUS_UNDER_VOLTAGE" 1024 "DC_BUS_OVER_CURRENT" 2048 "DC_BUS_OVER_REGEN_CURRENT" 4096 "CURRENT_LIMIT_VIOLATION" 8192 "MOTOR_OVER_TEMP" 16384 "INVERTER_OVER_TEMP" 32768 "VELOCITY_LIMIT_VIOLATION" 65536 "POSITION_LIMIT_VIOLATION" 16777216 "WATCHDOG_TIMER_EXPIRED" 33554432 "ESTOP_REQUESTED" 67108864 "SPINOUT_DETECTED" 134217728 "BRAKE_RESISTOR_DISARMED" 268435456 "THERMISTOR_DISCONNECTED" 1073741824 "CALIBRATION_ERROR" ;
+VAL_ 227 Disarm_Reason 0 "NONE" 1 "INITIALIZING" 2 "SYSTEM_LEVEL" 4 "TIMING_ERROR" 8 "MISSING_ESTIMATE" 16 "BAD_CONFIG" 32 "DRV_FAULT" 64 "MISSING_INPUT" 256 "DC_BUS_OVER_VOLTAGE" 512 "DC_BUS_UNDER_VOLTAGE" 1024 "DC_BUS_OVER_CURRENT" 2048 "DC_BUS_OVER_REGEN_CURRENT" 4096 "CURRENT_LIMIT_VIOLATION" 8192 "MOTOR_OVER_TEMP" 16384 "INVERTER_OVER_TEMP" 32768 "VELOCITY_LIMIT_VIOLATION" 65536 "POSITION_LIMIT_VIOLATION" 16777216 "WATCHDOG_TIMER_EXPIRED" 33554432 "ESTOP_REQUESTED" 67108864 "SPINOUT_DETECTED" 134217728 "BRAKE_RESISTOR_DISARMED" 268435456 "THERMISTOR_DISCONNECTED" 1073741824 "CALIBRATION_ERROR" ;
+VAL_ 227 Active_Errors 0 "NONE" 1 "INITIALIZING" 2 "SYSTEM_LEVEL" 4 "TIMING_ERROR" 8 "MISSING_ESTIMATE" 16 "BAD_CONFIG" 32 "DRV_FAULT" 64 "MISSING_INPUT" 256 "DC_BUS_OVER_VOLTAGE" 512 "DC_BUS_UNDER_VOLTAGE" 1024 "DC_BUS_OVER_CURRENT" 2048 "DC_BUS_OVER_REGEN_CURRENT" 4096 "CURRENT_LIMIT_VIOLATION" 8192 "MOTOR_OVER_TEMP" 16384 "INVERTER_OVER_TEMP" 32768 "VELOCITY_LIMIT_VIOLATION" 65536 "POSITION_LIMIT_VIOLATION" 16777216 "WATCHDOG_TIMER_EXPIRED" 33554432 "ESTOP_REQUESTED" 67108864 "SPINOUT_DETECTED" 134217728 "BRAKE_RESISTOR_DISARMED" 268435456 "THERMISTOR_DISCONNECTED" 1073741824 "CALIBRATION_ERROR" ;
+VAL_ 228 Opcode 0 "READ" 1 "WRITE" ;
+VAL_ 231 Axis_Requested_State 0 "UNDEFINED" 1 "IDLE" 2 "STARTUP_SEQUENCE" 3 "FULL_CALIBRATION_SEQUENCE" 4 "MOTOR_CALIBRATION" 6 "ENCODER_INDEX_SEARCH" 7 "ENCODER_OFFSET_CALIBRATION" 8 "CLOSED_LOOP_CONTROL" 9 "LOCKIN_SPIN" 10 "ENCODER_DIR_FIND" 11 "HOMING" 12 "ENCODER_HALL_POLARITY_CALIBRATION" 13 "ENCODER_HALL_PHASE_CALIBRATION" 14 "ANTICOGGING_CALIBRATION" 5 "SENSORLESS_CONTROL" ;
+VAL_ 235 Input_Mode 0 "INACTIVE" 1 "PASSTHROUGH" 2 "VEL_RAMP" 3 "POS_FILTER" 4 "MIX_CHANNELS" 5 "TRAP_TRAJ" 6 "TORQUE_RAMP" 7 "MIRROR" 8 "TUNING" ;
+VAL_ 235 Control_Mode 0 "VOLTAGE_CONTROL" 1 "TORQUE_CONTROL" 2 "VELOCITY_CONTROL" 3 "POSITION_CONTROL" ;
+VAL_ 246 Action 0 "reboot" 1 "save_configuration" 2 "erase_configuration" 3 "enter_dfu_mode" ;
+SIG_VALTYPE_ 9 Pos_Estimate : 1;
+SIG_VALTYPE_ 9 Vel_Estimate : 1;
+SIG_VALTYPE_ 12 Input_Pos : 1;
+SIG_VALTYPE_ 13 Input_Vel : 1;
+SIG_VALTYPE_ 13 Input_Torque_FF : 1;
+SIG_VALTYPE_ 14 Input_Torque : 1;
+SIG_VALTYPE_ 15 Velocity_Limit : 1;
+SIG_VALTYPE_ 15 Current_Limit : 1;
+SIG_VALTYPE_ 17 Traj_Vel_Limit : 1;
+SIG_VALTYPE_ 18 Traj_Accel_Limit : 1;
+SIG_VALTYPE_ 18 Traj_Decel_Limit : 1;
+SIG_VALTYPE_ 19 Traj_Inertia : 1;
+SIG_VALTYPE_ 20 Iq_Setpoint : 1;
+SIG_VALTYPE_ 20 Iq_Measured : 1;
+SIG_VALTYPE_ 21 FET_Temperature : 1;
+SIG_VALTYPE_ 21 Motor_Temperature : 1;
+SIG_VALTYPE_ 23 Bus_Voltage : 1;
+SIG_VALTYPE_ 23 Bus_Current : 1;
+SIG_VALTYPE_ 25 Position : 1;
+SIG_VALTYPE_ 26 Pos_Gain : 1;
+SIG_VALTYPE_ 27 Vel_Gain : 1;
+SIG_VALTYPE_ 27 Vel_Integrator_Gain : 1;
+SIG_VALTYPE_ 28 Torque_Target : 1;
+SIG_VALTYPE_ 28 Torque_Estimate : 1;
+SIG_VALTYPE_ 29 Electrical_Power : 1;
+SIG_VALTYPE_ 29 Mechanical_Power : 1;
+SIG_VALTYPE_ 41 Pos_Estimate : 1;
+SIG_VALTYPE_ 41 Vel_Estimate : 1;
+SIG_VALTYPE_ 44 Input_Pos : 1;
+SIG_VALTYPE_ 45 Input_Vel : 1;
+SIG_VALTYPE_ 45 Input_Torque_FF : 1;
+SIG_VALTYPE_ 46 Input_Torque : 1;
+SIG_VALTYPE_ 47 Velocity_Limit : 1;
+SIG_VALTYPE_ 47 Current_Limit : 1;
+SIG_VALTYPE_ 49 Traj_Vel_Limit : 1;
+SIG_VALTYPE_ 50 Traj_Accel_Limit : 1;
+SIG_VALTYPE_ 50 Traj_Decel_Limit : 1;
+SIG_VALTYPE_ 51 Traj_Inertia : 1;
+SIG_VALTYPE_ 52 Iq_Setpoint : 1;
+SIG_VALTYPE_ 52 Iq_Measured : 1;
+SIG_VALTYPE_ 53 FET_Temperature : 1;
+SIG_VALTYPE_ 53 Motor_Temperature : 1;
+SIG_VALTYPE_ 55 Bus_Voltage : 1;
+SIG_VALTYPE_ 55 Bus_Current : 1;
+SIG_VALTYPE_ 57 Position : 1;
+SIG_VALTYPE_ 58 Pos_Gain : 1;
+SIG_VALTYPE_ 59 Vel_Gain : 1;
+SIG_VALTYPE_ 59 Vel_Integrator_Gain : 1;
+SIG_VALTYPE_ 60 Torque_Target : 1;
+SIG_VALTYPE_ 60 Torque_Estimate : 1;
+SIG_VALTYPE_ 61 Electrical_Power : 1;
+SIG_VALTYPE_ 61 Mechanical_Power : 1;
+SIG_VALTYPE_ 73 Pos_Estimate : 1;
+SIG_VALTYPE_ 73 Vel_Estimate : 1;
+SIG_VALTYPE_ 76 Input_Pos : 1;
+SIG_VALTYPE_ 77 Input_Vel : 1;
+SIG_VALTYPE_ 77 Input_Torque_FF : 1;
+SIG_VALTYPE_ 78 Input_Torque : 1;
+SIG_VALTYPE_ 79 Velocity_Limit : 1;
+SIG_VALTYPE_ 79 Current_Limit : 1;
+SIG_VALTYPE_ 81 Traj_Vel_Limit : 1;
+SIG_VALTYPE_ 82 Traj_Accel_Limit : 1;
+SIG_VALTYPE_ 82 Traj_Decel_Limit : 1;
+SIG_VALTYPE_ 83 Traj_Inertia : 1;
+SIG_VALTYPE_ 84 Iq_Setpoint : 1;
+SIG_VALTYPE_ 84 Iq_Measured : 1;
+SIG_VALTYPE_ 85 FET_Temperature : 1;
+SIG_VALTYPE_ 85 Motor_Temperature : 1;
+SIG_VALTYPE_ 87 Bus_Voltage : 1;
+SIG_VALTYPE_ 87 Bus_Current : 1;
+SIG_VALTYPE_ 89 Position : 1;
+SIG_VALTYPE_ 90 Pos_Gain : 1;
+SIG_VALTYPE_ 91 Vel_Gain : 1;
+SIG_VALTYPE_ 91 Vel_Integrator_Gain : 1;
+SIG_VALTYPE_ 92 Torque_Target : 1;
+SIG_VALTYPE_ 92 Torque_Estimate : 1;
+SIG_VALTYPE_ 93 Electrical_Power : 1;
+SIG_VALTYPE_ 93 Mechanical_Power : 1;
+SIG_VALTYPE_ 105 Pos_Estimate : 1;
+SIG_VALTYPE_ 105 Vel_Estimate : 1;
+SIG_VALTYPE_ 108 Input_Pos : 1;
+SIG_VALTYPE_ 109 Input_Vel : 1;
+SIG_VALTYPE_ 109 Input_Torque_FF : 1;
+SIG_VALTYPE_ 110 Input_Torque : 1;
+SIG_VALTYPE_ 111 Velocity_Limit : 1;
+SIG_VALTYPE_ 111 Current_Limit : 1;
+SIG_VALTYPE_ 113 Traj_Vel_Limit : 1;
+SIG_VALTYPE_ 114 Traj_Accel_Limit : 1;
+SIG_VALTYPE_ 114 Traj_Decel_Limit : 1;
+SIG_VALTYPE_ 115 Traj_Inertia : 1;
+SIG_VALTYPE_ 116 Iq_Setpoint : 1;
+SIG_VALTYPE_ 116 Iq_Measured : 1;
+SIG_VALTYPE_ 117 FET_Temperature : 1;
+SIG_VALTYPE_ 117 Motor_Temperature : 1;
+SIG_VALTYPE_ 119 Bus_Voltage : 1;
+SIG_VALTYPE_ 119 Bus_Current : 1;
+SIG_VALTYPE_ 121 Position : 1;
+SIG_VALTYPE_ 122 Pos_Gain : 1;
+SIG_VALTYPE_ 123 Vel_Gain : 1;
+SIG_VALTYPE_ 123 Vel_Integrator_Gain : 1;
+SIG_VALTYPE_ 124 Torque_Target : 1;
+SIG_VALTYPE_ 124 Torque_Estimate : 1;
+SIG_VALTYPE_ 125 Electrical_Power : 1;
+SIG_VALTYPE_ 125 Mechanical_Power : 1;
+SIG_VALTYPE_ 137 Pos_Estimate : 1;
+SIG_VALTYPE_ 137 Vel_Estimate : 1;
+SIG_VALTYPE_ 140 Input_Pos : 1;
+SIG_VALTYPE_ 141 Input_Vel : 1;
+SIG_VALTYPE_ 141 Input_Torque_FF : 1;
+SIG_VALTYPE_ 142 Input_Torque : 1;
+SIG_VALTYPE_ 143 Velocity_Limit : 1;
+SIG_VALTYPE_ 143 Current_Limit : 1;
+SIG_VALTYPE_ 145 Traj_Vel_Limit : 1;
+SIG_VALTYPE_ 146 Traj_Accel_Limit : 1;
+SIG_VALTYPE_ 146 Traj_Decel_Limit : 1;
+SIG_VALTYPE_ 147 Traj_Inertia : 1;
+SIG_VALTYPE_ 148 Iq_Setpoint : 1;
+SIG_VALTYPE_ 148 Iq_Measured : 1;
+SIG_VALTYPE_ 149 FET_Temperature : 1;
+SIG_VALTYPE_ 149 Motor_Temperature : 1;
+SIG_VALTYPE_ 151 Bus_Voltage : 1;
+SIG_VALTYPE_ 151 Bus_Current : 1;
+SIG_VALTYPE_ 153 Position : 1;
+SIG_VALTYPE_ 154 Pos_Gain : 1;
+SIG_VALTYPE_ 155 Vel_Gain : 1;
+SIG_VALTYPE_ 155 Vel_Integrator_Gain : 1;
+SIG_VALTYPE_ 156 Torque_Target : 1;
+SIG_VALTYPE_ 156 Torque_Estimate : 1;
+SIG_VALTYPE_ 157 Electrical_Power : 1;
+SIG_VALTYPE_ 157 Mechanical_Power : 1;
+SIG_VALTYPE_ 169 Pos_Estimate : 1;
+SIG_VALTYPE_ 169 Vel_Estimate : 1;
+SIG_VALTYPE_ 172 Input_Pos : 1;
+SIG_VALTYPE_ 173 Input_Vel : 1;
+SIG_VALTYPE_ 173 Input_Torque_FF : 1;
+SIG_VALTYPE_ 174 Input_Torque : 1;
+SIG_VALTYPE_ 175 Velocity_Limit : 1;
+SIG_VALTYPE_ 175 Current_Limit : 1;
+SIG_VALTYPE_ 177 Traj_Vel_Limit : 1;
+SIG_VALTYPE_ 178 Traj_Accel_Limit : 1;
+SIG_VALTYPE_ 178 Traj_Decel_Limit : 1;
+SIG_VALTYPE_ 179 Traj_Inertia : 1;
+SIG_VALTYPE_ 180 Iq_Setpoint : 1;
+SIG_VALTYPE_ 180 Iq_Measured : 1;
+SIG_VALTYPE_ 181 FET_Temperature : 1;
+SIG_VALTYPE_ 181 Motor_Temperature : 1;
+SIG_VALTYPE_ 183 Bus_Voltage : 1;
+SIG_VALTYPE_ 183 Bus_Current : 1;
+SIG_VALTYPE_ 185 Position : 1;
+SIG_VALTYPE_ 186 Pos_Gain : 1;
+SIG_VALTYPE_ 187 Vel_Gain : 1;
+SIG_VALTYPE_ 187 Vel_Integrator_Gain : 1;
+SIG_VALTYPE_ 188 Torque_Target : 1;
+SIG_VALTYPE_ 188 Torque_Estimate : 1;
+SIG_VALTYPE_ 189 Electrical_Power : 1;
+SIG_VALTYPE_ 189 Mechanical_Power : 1;
+SIG_VALTYPE_ 201 Pos_Estimate : 1;
+SIG_VALTYPE_ 201 Vel_Estimate : 1;
+SIG_VALTYPE_ 204 Input_Pos : 1;
+SIG_VALTYPE_ 205 Input_Vel : 1;
+SIG_VALTYPE_ 205 Input_Torque_FF : 1;
+SIG_VALTYPE_ 206 Input_Torque : 1;
+SIG_VALTYPE_ 207 Velocity_Limit : 1;
+SIG_VALTYPE_ 207 Current_Limit : 1;
+SIG_VALTYPE_ 209 Traj_Vel_Limit : 1;
+SIG_VALTYPE_ 210 Traj_Accel_Limit : 1;
+SIG_VALTYPE_ 210 Traj_Decel_Limit : 1;
+SIG_VALTYPE_ 211 Traj_Inertia : 1;
+SIG_VALTYPE_ 212 Iq_Setpoint : 1;
+SIG_VALTYPE_ 212 Iq_Measured : 1;
+SIG_VALTYPE_ 213 FET_Temperature : 1;
+SIG_VALTYPE_ 213 Motor_Temperature : 1;
+SIG_VALTYPE_ 215 Bus_Voltage : 1;
+SIG_VALTYPE_ 215 Bus_Current : 1;
+SIG_VALTYPE_ 217 Position : 1;
+SIG_VALTYPE_ 218 Pos_Gain : 1;
+SIG_VALTYPE_ 219 Vel_Gain : 1;
+SIG_VALTYPE_ 219 Vel_Integrator_Gain : 1;
+SIG_VALTYPE_ 220 Torque_Target : 1;
+SIG_VALTYPE_ 220 Torque_Estimate : 1;
+SIG_VALTYPE_ 221 Electrical_Power : 1;
+SIG_VALTYPE_ 221 Mechanical_Power : 1;
+SIG_VALTYPE_ 233 Pos_Estimate : 1;
+SIG_VALTYPE_ 233 Vel_Estimate : 1;
+SIG_VALTYPE_ 236 Input_Pos : 1;
+SIG_VALTYPE_ 237 Input_Vel : 1;
+SIG_VALTYPE_ 237 Input_Torque_FF : 1;
+SIG_VALTYPE_ 238 Input_Torque : 1;
+SIG_VALTYPE_ 239 Velocity_Limit : 1;
+SIG_VALTYPE_ 239 Current_Limit : 1;
+SIG_VALTYPE_ 241 Traj_Vel_Limit : 1;
+SIG_VALTYPE_ 242 Traj_Accel_Limit : 1;
+SIG_VALTYPE_ 242 Traj_Decel_Limit : 1;
+SIG_VALTYPE_ 243 Traj_Inertia : 1;
+SIG_VALTYPE_ 244 Iq_Setpoint : 1;
+SIG_VALTYPE_ 244 Iq_Measured : 1;
+SIG_VALTYPE_ 245 FET_Temperature : 1;
+SIG_VALTYPE_ 245 Motor_Temperature : 1;
+SIG_VALTYPE_ 247 Bus_Voltage : 1;
+SIG_VALTYPE_ 247 Bus_Current : 1;
+SIG_VALTYPE_ 249 Position : 1;
+SIG_VALTYPE_ 250 Pos_Gain : 1;
+SIG_VALTYPE_ 251 Vel_Gain : 1;
+SIG_VALTYPE_ 251 Vel_Integrator_Gain : 1;
+SIG_VALTYPE_ 252 Torque_Target : 1;
+SIG_VALTYPE_ 252 Torque_Estimate : 1;
+SIG_VALTYPE_ 253 Electrical_Power : 1;
+SIG_VALTYPE_ 253 Mechanical_Power : 1;
+

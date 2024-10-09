@@ -1,7 +1,12 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-import alphashape
+from scipy.spatial import ConvexHull
+from scipy.spatial.distance import cdist
+from skimage import measure
+import os
+import json
+# import alphashape
 
 
 def platform_builder(base_rad, plat_rad, base_small_angle, plat_small_angle):
@@ -109,6 +114,10 @@ def compute_reachability(ptlist, a, B, mov_limits):
     """
     checklist = np.zeros(len(ptlist))  # List of 1's and 0's that correspond to whether a point can be reached or not
     for i in range(len(ptlist)):
+        # Print an update every time 10% of the points have been checked
+        if i % (len(ptlist) // 10) == 0:
+            print(f"Checking point {i} of {len(ptlist)}")
+            
         pt = ptlist[i, :]
         Rot = np.eye(3)
         L = pt.reshape((3, 1)) + Rot @ a - B
@@ -138,7 +147,7 @@ def compute_reachability(ptlist, a, B, mov_limits):
 
 
 def plot_results(ROM_Centroid, plat_nodes, base_nodes, ptlist, valid_pt_list, hemisphere_pts):
-    fig = plt.figure()
+    fig = plt.figure(figsize=(10, 7))
     ax1 = fig.add_subplot(121, projection='3d')
     ax2 = fig.add_subplot(122, projection='3d')
     ax1.set_aspect('equal')
@@ -148,16 +157,17 @@ def plot_results(ROM_Centroid, plat_nodes, base_nodes, ptlist, valid_pt_list, he
     # plot platform nodes and center of mass
     A = ROM_Centroid + plat_nodes  # To plot the platform at the average position of the reachability cloud
     # A = plat_nodes
+    platform_alpha = 1.0
     for j in range(6):
-        ax1.scatter(A[0, j], A[1, j], A[2, j], c='m')  # platform
-        ax1.scatter(ROM_Centroid[0], ROM_Centroid[1], ROM_Centroid[2], c='m', marker='o')  # platform COM
-        ax1.scatter(base_nodes[0, j], base_nodes[1, j], base_nodes[2, j], c='r', marker='o')  # base
-        ax1.plot([base_nodes[0, j], A[0, j]], [base_nodes[1, j], A[1, j]], [base_nodes[2, j], A[2, j]], c='b')  # legs
+        ax1.scatter(A[0, j], A[1, j], A[2, j], c='m', alpha=platform_alpha)  # platform
+        ax1.scatter(ROM_Centroid[0], ROM_Centroid[1], ROM_Centroid[2], c='m', marker='o', alpha=platform_alpha)  # platform COM
+        ax1.scatter(base_nodes[0, j], base_nodes[1, j], base_nodes[2, j], c='r', marker='o', alpha=platform_alpha)  # base
+        ax1.plot([base_nodes[0, j], A[0, j]], [base_nodes[1, j], A[1, j]], [base_nodes[2, j], A[2, j]], c='b', alpha=platform_alpha)  # legs
 
     # Filter valid_pt_list, if wanting to show only a slice along the x axis. If not, uncomment next three lines.
-    x_axis_slice_max_min = 2  # Set this threshold to whatever you want (mm)
-    mask_x = np.logical_and(valid_pt_list[:, 0] >= -x_axis_slice_max_min, valid_pt_list[:, 0] <= x_axis_slice_max_min)
-    valid_pt_list = valid_pt_list[mask_x]
+    # x_axis_slice_max_min = 2  # Set this threshold to whatever you want (mm)
+    # mask_x = np.logical_and(valid_pt_list[:, 0] >= -x_axis_slice_max_min, valid_pt_list[:, 0] <= x_axis_slice_max_min)
+    # valid_pt_list = valid_pt_list[mask_x]
 
     valid_pts_in_hemisphere = points_in_hemisphere(valid_pt_list, [hemisphere_pts[0], hemisphere_pts[1], z_offset_mov_area])
     total_pts_in_hemisphere = points_in_hemisphere(ptlist, [hemisphere_pts[0], hemisphere_pts[1], z_offset_mov_area])
@@ -168,30 +178,115 @@ def plot_results(ROM_Centroid, plat_nodes, base_nodes, ptlist, valid_pt_list, he
           f"{(len(valid_pts_in_hemisphere) / len(total_pts_in_hemisphere)) * 100:.2f}%")
 
     # plot point cloud
-    # ax1.plot(ptlist[:, 0], ptlist[:, 1], ptlist[:, 2], 'ro', markersize=0.6, alpha=0.5, label='Unreachable points')
-    ax1.plot(valid_pt_list[:, 0], valid_pt_list[:, 1], valid_pt_list[:, 2], 'g*', label='Reachable points')
+    # ax1.plot(ptlist[:, 0], ptlist[:, 1], ptlist[:, 2], 'ro', markersize=0.6, alpha=0.1, label='Unreachable points')
+    # ax1.plot(valid_pt_list[:, 0], valid_pt_list[:, 1], valid_pt_list[:, 2], 'g*', label='Reachable points')
 
-    show_hemisphere = False
+    show_hemisphere = True
 
     if show_hemisphere:
-        ax1.plot(total_pts_in_hemisphere[:, 0],
-                total_pts_in_hemisphere[:, 1],
-                total_pts_in_hemisphere[:, 2], 'c*', label='Unreachable points inside hemisphere')
+        # ax1.plot(total_pts_in_hemisphere[:, 0],
+        #         total_pts_in_hemisphere[:, 1],
+        #         total_pts_in_hemisphere[:, 2], 'c*', label='Unreachable points inside hemisphere')
 
         ax1.plot(valid_pts_in_hemisphere[:, 0],
                 valid_pts_in_hemisphere[:, 1],
                 valid_pts_in_hemisphere[:, 2], 'b*', label='Reachable points inside hemisphere')
+        
+        ax2.plot(valid_pts_in_hemisphere[:, 0],
+                valid_pts_in_hemisphere[:, 1],
+                valid_pts_in_hemisphere[:, 2], 'b*', label='Reachable points inside hemisphere')
 
     # plot_hemisphere(z_offset=z_offset_mov_area, geometry_pts=hemisphere_pts, ax=ax1)
-    ax1.legend(loc='upper right')
+    # ax1.legend(loc='upper right')
 
     # Mask the data if wanting to plot truncated data
     threshold_xy = 500  # Threshold at which to cut off the x and y data for the plot
     mask = np.logical_and(np.abs(valid_pt_list[:, 0]) < threshold_xy, np.abs(valid_pt_list[:, 1]) < threshold_xy)
     valid_pt_list = valid_pt_list[mask]
-    ax2.plot(valid_pt_list[:, 0], valid_pt_list[:, 1], valid_pt_list[:, 2], 'g*')
+    # ax2.plot(valid_pt_list[:, 0], valid_pt_list[:, 1], valid_pt_list[:, 2], 'g*')
     # ax2.set_xlim([-250, 250])
     # ax2.set_ylim([-250, 250])
+
+
+def plot_convex_hull(points):
+    """
+    Plots the convex hull of a given set of 3D points.
+
+    :param points: A numpy array of shape (n, 3), where n is the number of points.
+    """
+    # Compute the convex hull
+    hull = ConvexHull(points)
+
+    # Create a 3D plot
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')
+
+    # Plot the original points
+    ax.scatter(points[:,0], points[:,1], points[:,2], color='blue', alpha=0.5)
+
+    # Plot the vertices of the convex hull
+    for simplex in hull.simplices:
+        ax.plot3D(points[simplex, 0], points[simplex, 1], points[simplex, 2], 'r-')
+
+    # Set labels and show the plot
+    ax.set_xlabel('X axis')
+    ax.set_ylabel('Y axis')
+    ax.set_zlabel('Z axis')
+    plt.title('3D Convex Hull')
+
+
+def plot_concave_hull(points, grid_size=50, sigma=1.0, threshold=0.1):
+    # Create a dense grid
+    minima = points.min(axis=0) - 1.0
+    maxima = points.max(axis=0) + 1.0
+    grid_x, grid_y, grid_z = np.mgrid[minima[0]:maxima[0]:complex(grid_size), 
+                                      minima[1]:maxima[1]:complex(grid_size), 
+                                      minima[2]:maxima[2]:complex(grid_size)]
+    
+    # Create a scalar field based on distances to points (simple Gaussian kernel)
+    scalar_field = np.zeros(grid_x.shape)
+    for point in points:
+        distance = np.sqrt((grid_x - point[0])**2 + (grid_y - point[1])**2 + (grid_z - point[2])**2)
+        scalar_field += np.exp(-(distance**2 / (2. * sigma**2)))
+    
+    # Apply Marching Cubes
+    vertices, faces, _, _ = measure.marching_cubes(scalar_field, level=threshold, spacing=(grid_x[1,0,0]-grid_x[0,0,0], 
+                                                                                             grid_y[0,1,0]-grid_y[0,0,0], 
+                                                                                             grid_z[0,0,1]-grid_z[0,0,0]))
+    
+    # Plotting
+    fig = plt.figure(figsize=(10, 7))
+    ax = fig.add_subplot(111, projection='3d')
+    
+    # Fancy indexing: `verts[faces]` to generate a collection of triangles
+    mesh = ax.plot_trisurf(vertices[:, 0], vertices[:,1], faces, vertices[:, 2], cmap='Spectral', lw=1)
+    ax.scatter(points[:, 0], points[:, 1], points[:, 2], color='red')
+    
+    plt.show()
+
+
+def export_hull_as_json(points, faces, filename='convex_hull_points.json'):
+    """
+    Exports a set of points as a JSON file.
+
+    :param points: A numpy array of shape (n, 3), where n is the number of points.
+    :param filename: The name of the file to save the points to.
+    """
+    script_dir = os.path.dirname(__file__)  # <-- absolute dir this script is in
+    filename_full = os.path.join(script_dir, filename)
+
+    # Convert the points to a list of lists
+    points_list = points.tolist()
+
+    # Create a dictionary to store the points
+    points_dict = {
+        'vertices': points_list,
+        'faces': faces
+        }
+
+    # Export the points to a JSON file
+    with open(filename_full, 'w') as outfile:
+        json.dump(points_dict, outfile)
 
 
 def compute_reachability_of_hemisphere(ROM_Centroid, ptlist, valid_pt_list, hemisphere_pts):
@@ -297,24 +392,24 @@ def check_necessary_num_pts_in_cloud():
 
 # Set geometric parameters to test:
 # Platform layout
-platRad = 172  # Radius of the platform (mm)
-baseRad = 410  # Radius of the base (mm)
-baseSmallAngle = 40  # Gamma2 on main sketch (deg)  (range from 0 -> 60)
-platSmallAngle = 18  # Lambda1 on main sketch (deg) (range from 0 -> 60)
+platRad = 229.5  # Radius of the platform (mm)
+baseRad = 410.0  # Radius of the base (mm)
+baseSmallAngle = 24.0     # Gamma2 on main sketch (deg)  (range from 0 -> 60)
+platSmallAngle = 7.49496  # Lambda1 on main sketch (deg) (range from 0 -> 60)
 
 # Leg specifications
-shortLeg = 640  # Shortest length of leg (mm) # Is correct for Leg_V3_Inline_Motor
-# extLeg = 500   # Extension of leg (mm)
-# longLeg = shortLeg + extLeg  # Longest length of leg (mm)
-longLeg = 950  # Longest length of leg (mm) [Use either this or above] # Is correct for Leg_V3_Inline_Motor
-legAngleLimit = 30  # Limit of how far the ball joints allow the legs to tilt wrt x-y plane (deg) # GUESS
+shortLeg = 691.49  # Shortest length of leg (mm) # Is correct for Leg_V3_Inline_Motor
+extLeg = 280.0   # Extension of leg (mm)
+longLeg = shortLeg + extLeg  # Longest length of leg (mm)
+# longLeg = 950  # Longest length of leg (mm) [Use either this or above] # Is correct for Leg_V3_Inline_Motor
+legAngleLimit = 20  # Limit of how far the ball joints allow the legs to tilt wrt x-y plane (deg) # GUESS
 
 # Parameters for "desired volume" hemisphere
 hand_xy_span = 600  # mm
 hand_z_span = 200  # mm
 
 # Points in point cloud
-numPoints = int(1e6)  # Number of points to check
+numPoints = int(1e5)  # Number of points to check
 
 # Structure input data
 movLimits = [shortLeg, longLeg, legAngleLimit]
@@ -322,6 +417,22 @@ movLimits = [shortLeg, longLeg, legAngleLimit]
 plat_nodes, base_nodes = platform_builder(baseRad, platRad, baseSmallAngle, platSmallAngle)
 pt_cloud = generate_point_cloud(numPoints, shortLeg, longLeg)
 reach_rate, valid_pt_list = compute_reachability(pt_cloud, plat_nodes, base_nodes, movLimits)
+
+# Plot the concave hull of the valid points
+# plot_concave_hull(valid_pt_list)
+
+# # Get points in the convex hull of the valid points
+# hull = ConvexHull(valid_pt_list)
+# hull_pts = hull.points[hull.vertices, :]
+
+# # Map from old indices (in valid_pt_list) to new indices (in hull_pts)
+# index_map = {old_idx: new_idx for new_idx, old_idx in enumerate(hull.vertices)}
+
+# # Remap the face indices
+# hull_faces = [[index_map[vertex_idx] for vertex_idx in face] for face in hull.simplices]
+
+# plot_convex_hull(hull_pts)
+# export_hull_as_json(hull_pts, hull_faces)
 
 # check_necessary_num_pts_in_cloud()
 
