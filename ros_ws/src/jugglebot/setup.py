@@ -33,8 +33,9 @@ setup(
             'platform_pose_command_node = jugglebot.platform_pose_command_node:main',
             'hand_trajectory_transmitter_node = jugglebot.hand_trajectory_transmitter_node:main',
             'trajectory_timer_node = jugglebot.trajectory_timer_node:main',
-            'hand_telemetry_recorder_node = jugglebot.hand_telemetry_recorder_node:main',
+            'telemetry_recorder_node = jugglebot.telemetry_recorder_node:main',
             'validating_orientation_node = jugglebot.validating_orientation_node:main',
+            'video_temp_node = jugglebot.video_temp_node:main',
             
             'state_manager_node = jugglebot.state_manager_node:main',
             'hand_ik = jugglebot.hand_ik:main',

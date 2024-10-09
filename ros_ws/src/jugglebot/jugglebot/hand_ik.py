@@ -19,7 +19,7 @@ class SPInverseKinematics(Node):
         self.geometry_client = self.create_client(GetRobotGeometry, 'get_robot_geometry')
         
         while not self.geometry_client.wait_for_service(timeout_sec=1.0):
-                self.get_logger().info('Waiting for "get_robot_geometry" service...')
+            self.get_logger().info('Waiting for "get_robot_geometry" service...')
 
         self.send_geometry_request()
 

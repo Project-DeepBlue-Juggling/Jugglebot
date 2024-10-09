@@ -605,7 +605,6 @@ function updateScene(base_nodes, new_plat_nodes, new_arm_nodes, new_hand_nodes, 
 
     // Update the base volume
     updateVolume(baseVolume, base_nodes, 0.01);
-    console.log(base_nodes);
 }
 
 // ################################################################## //
@@ -690,7 +689,7 @@ export function initPlotter() {
     // Initialize the lines
     legLinesGeometry   = initLineGroup(scene, colours.legs, 0.015, 6); // Green color for legs
     strutLinesGeometry = initLineGroup(scene, colours.struts, 0.005, 6); // Black color for struts
-    rodLinesGeometry   = initLineGroup(scene, colours.rods, 0.005, 3); // Black color for rods
+    // rodLinesGeometry   = initLineGroup(scene, colours.rods, 0.005, 3); // Black color for rods
     
     // Initialize the base volume
     baseVolume = initVolume(scene, colours.base, 0.01); // Blue color for base volume

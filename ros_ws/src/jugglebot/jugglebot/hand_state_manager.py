@@ -232,7 +232,7 @@ class HandStateManager(Node):
                 # TEMPORARY. If the last action was an 'end', wait until the end of its time before clearing the buffer to start again
 
                 # Set a time to wait before clearing the buffer
-                time_to_wait = Duration(seconds=2.0)
+                time_to_wait = Duration(seconds=20000.0)
                 
                 if self.get_clock().now() > RclpyTime.from_msg(self.states[-1].time) + time_to_wait:
                     self.states.clear()

@@ -5,3 +5,4 @@ float64 radius
 float64 freq
 float64 z_offset
 float64 cone_height
+int16 num_repeats

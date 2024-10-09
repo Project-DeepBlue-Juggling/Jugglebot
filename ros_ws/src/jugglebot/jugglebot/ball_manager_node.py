@@ -143,11 +143,11 @@ class BallManagerNode(Node):
         point_msg.header.stamp = current_time_msg
 
         # Logging things
-        self.get_logger().info(f"Current ball position: {point_msg.point.x:.2f}, {point_msg.point.y:.2f}, {point_msg.point.z:.2f}")
-        self.get_logger().info(f"Throw position: {self.throw_pos.x:.2f}, {self.throw_pos.y:.2f}, {self.throw_pos.z:.2f}")
-        self.get_logger().info(f"Current ball velocity: {self.velocity:.2f} m/s")
-        self.get_logger().info(f"Time of flight: {self.time_of_flight:.2f} s")
-        self.get_logger().info("--------------------")
+        # self.get_logger().info(f"Current ball position: {point_msg.point.x:.2f}, {point_msg.point.y:.2f}, {point_msg.point.z:.2f}")
+        # self.get_logger().info(f"Throw position: {self.throw_pos.x:.2f}, {self.throw_pos.y:.2f}, {self.throw_pos.z:.2f}")
+        # self.get_logger().info(f"Current ball velocity: {self.velocity:.2f} m/s")
+        # self.get_logger().info(f"Time of flight: {self.time_of_flight:.2f} s")
+        # self.get_logger().info("--------------------")
 
         return point_msg
 
@@ -272,7 +272,7 @@ class BallManagerNode(Node):
         hand_vel = self.calculate_hand_velocity(new_hand_pos_stamped, self.last_hand_pos)
 
         # Log the velocities
-        self.get_logger().info(f"Hand velocity: {hand_vel:.2f} m/s, Ball velocity: {self.velocity:.2f} m/s. Is held? {self.is_held}")
+        # self.get_logger().info(f"Hand velocity: {hand_vel:.2f} m/s, Ball velocity: {self.velocity:.2f} m/s. Is held? {self.is_held}")
 
         # Compare the hand velocity against ball velocity
         if hand_vel > self.velocity and self.is_held:

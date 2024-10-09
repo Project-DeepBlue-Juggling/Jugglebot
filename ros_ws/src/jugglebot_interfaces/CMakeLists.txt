@@ -35,6 +35,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/HandStateSingle.msg"
   "msg/HandStateList.msg"
   "msg/JugglingPatternGeometryMessage.msg"
+  "msg/PatternControlMessage.msg"
   "msg/BallStateMessage.msg"
   "msg/LegsTargetReachedMessage.msg"
   "msg/SetMotorVelCurrLimitsMessage.msg"
