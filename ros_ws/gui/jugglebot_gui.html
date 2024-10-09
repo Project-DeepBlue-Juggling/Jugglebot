@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <!-- Include the font awesome library for icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.1.1/css/all.min.css">
+    <link rel="icon" type="image/png" href="favicon.svg">
+    <title>Jugglebot GUI</title>
+
+    <!-- Three.js Library as ES Module -->
+    <script type="importmap">
+        {
+          "imports": {
+            "three": "https://unpkg.com/three@v0.159.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@v0.159.0/examples/jsm/"
+          }
+        }
+    </script>
+    <script type="module" src="3dplotter.js"></script>
+    <script type="module" src="main.js"></script>
+    <script type="text/javascript" src="lib/roslib.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>  <!-- Chart.js library for plotting -->
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-streaming@2.0.0/dist/chartjs-plugin-streaming.min.js"></script>
+
+    <style>
+        /* Style for the main container */
+        #main-container {
+            margin: 10px;
+            display: flex; /* Make the div element a flex container */
+            flex-direction: column; /* Stack items vertically */
+            flex-wrap: wrap; /* Wrap items to the next row */
+        }
+
+        #container-row {
+            display: flex;
+            justify-content: flex-start;
+            margin-bottom: 10px;
+        }
+
+        /* Style for the 3D plotter */
+        #plot-3d {
+            width: 1000px;
+            height: 720px;
+            border: 2px solid #000000; /* Border color and thickness */
+            background-color: #f5f5f5; /* Background color of the box */
+            margin: 10px; /* Space outside the box */
+            position: relative; /* Position the scene menu container relative to the plotter */
+        }
+
+        /* Style for the scene menu container */
+        #scene-menu-container {
+            position: absolute; /* Position the scene menu container relative to the plotter */
+            top: 10px; /* Space from the top of the plotter */
+            right: 10px; /* Space from the left of the plotter */
+            background-color: rgba(255, 255, 255, 0); /* Background color of the box */
+            border-radius: 5px;
+            text-align: right;
+        }
+
+        /* Style for the scene menu toggle button */
+        #scene-menu-toggle-btn {
+            border: none;
+            background-color: #414141;
+            /* make the top/bottom padding 5px, and the left/right padding 10px */
+            padding: 5px 10px;
+            cursor: pointer;
+            display: flex;
+            flex-direction: row;
+            align-items: center;
+            justify-content: center;
+            font-size: 16pt;
+        }
+
+        /* Style for the scene menu content */
+        #scene-menu-content {
+            display: none; /* Hide the scene menu content by default */
+            padding: 5px;
+            text-align: right;
+            z-index: 1; /* Make sure the menu is on top of the plotter */
+        }
+
+        /* Style for the scene menu items */
+        .scene-menu-item {
+            display: flex;
+            align-items: flex-start;
+            width: 100%;
+            justify-content: flex-start;
+            font-size: 16pt;
+            text-align: left;
+            padding-left: 30px;
+            flex-direction: row;
+        }
+
+        /* Style for the scene menu visibility icons */
+        .visibility-icon {
+            display: inline-block;
+            margin-right: 10px; /* Space between icon and text */
+            font-size: 18pt; /* Icon size */
+        }
+
+        .scene-menu-item.active{
+            background-color: #666666;
+        }
+
+        .scene-menu-item.inactive{
+            background-color: #bdbdbd;
+        }
+
+        /* Style for the outer button group */
+        #button-container {
+            display: flex; /* Make the div element a flex container */
+            flex-direction: column; /* Stack items vertically */
+            align-items: center; /* Center items horizontally */
+            border: 2px solid #000000; /* Border color and thickness */
+            width: 380px;
+            height: 720px;
+            padding: 0px; /* Space inside the box */
+            margin: 10px; /* Space outside the box */
+            background-color: #f5f5f5; /* Background color of the box */
+        }
+
+        /* Style for Network stats container */
+        #network-stats-container {
+            display: flex; /* Make the div element a flex container */
+            position: absolute;
+            top: 10px;
+            left: 1445px;
+            flex-direction: column; /* Stack items vertically */
+            align-items: center; /* Center items horizontally */
+            border: 2px solid #000000; /* Border color and thickness */
+            width: 380px;
+            padding: 5px; /* Space inside the box */
+            margin: 10px; /* Space outside the box */
+            background-color: #f5f5f5; /* Background color of the box */
+        }
+
+        /* Style for the ROS logging console */
+        #ros-console {
+            width: 980px;
+            height: 400px;
+            overflow-y: scroll;
+            border: 2px solid #000000; /* Border color and thickness */
+            background-color: #f5f5f5; /* Background color of the box */
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            color: #000000;
+            padding: 10px;
+            margin: 10px;
+        }
+
+        /* Style for the log level filters */
+        #log-level-filters {
+            width: fit-content;
+            height: 200px;
+            padding: 10px;
+            margin: 10px;
+            border: 2px solid #000000; /* Border color and thickness */
+            background-color: #f5f5f5; /* Background color of the box */
+            font-family: 'Courier New', monospace;
+            font-size: 20px;
+        }
+
+        /* Style for each log level filter */
+        #log-level-filters div {
+            margin-bottom: 5px; /* Space between each filter */
+        }
+
+        /* Style for the log level filter checkboxes */
+        .log-level {
+            transform: scale(1.5); /* Make the checkboxes bigger */
+            margin-right: 5px; /* Space between checkbox and label */
+        }
+
+        /* Style for the labels to match log level colors */
+        #log-level-10 + label {
+            color: #808080; /* Grey for DEBUG */
+        }
+        #log-level-20 + label {
+            color: #000000; /* Black for INFO */
+        }
+        #log-level-30 + label {
+            color: #FFA500; /* Orange for WARN */
+        }
+        #log-level-40 + label {
+            color: #FF4500; /* Red-Orange for ERROR */
+        }
+        #log-level-50 + label {
+            color: #FF0000; /* Red for FATAL */
+            background-color: #ffcccc; /* Light red background */
+            padding: 2px;
+            font-weight: bold;
+        }
+
+        /* Style for the topic stats table */
+        #topic-stats-table {
+            margin-top: 10px;
+            border-collapse: collapse;
+            width: 100%;
+        }
+
+        #topic-stats-table, #topic-stats-table th, #topic-stats-table td {
+            border: 1px solid black;
+        }
+
+        #topic-stats-table th, #topic-stats-table td {
+            padding: 8px;
+            text-align: left;
+        }
+
+        #topic-stats-table th {
+            background-color: #f2f2f2;
+        }
+
+        /* Style for the centre-aligned Topic table rows (last two) */
+        #topic-stats-table th:nth-child(2),
+        #topic-stats-table th:nth-child(3),
+        #topic-stats-table td:nth-child(2),
+        #topic-stats-table td:nth-child(3) {
+            text-align: center;
+        }
+
+        /* Style for each colour in the topic stats table */
+        .rate-green {
+            color: #008000; /* Green */
+        }
+
+        .rate-yellow {
+            color: #FFA500; /* Orange */
+        }
+
+        .rate-red {
+            color: #FF0000; /* Red */
+        }
+
+        /* Style for the control buttons */
+        #control-buttons {
+            display: flex; /* Make the div element a flex container */
+            flex-direction: column; /*Stack items vertically */
+            width: fit-content;
+            align-items: center; /* Center items vertically */
+            border: 2px solid #000000; /* Border color and thickness */
+            padding: 5px; /* Space inside the box */
+            margin: 5px; /* Space outside the box */
+            background-color: #f5f5f5; /* Background color of the box */
+        }
+
+        /* Style for the odrive command buttons */
+        #odrive-buttons {
+            display: flex; /* Make the div element a flex container */
+            flex-direction: column; /*Stack items vertically */
+            font-size: 0.8em; /* Make the text smaller */
+            width: fit-content;
+            align-items: center; /* Center items vertically */
+            border: 2px solid #000000; /* Border color and thickness */
+            padding: 5px; /* Space inside the box */
+            margin: 5px; /* Space outside the box */
+            background-color: #f5f5f5; /* Background color of the box */
+        }
+
+        /* Style for the end-session button */
+        #end-session-btn {
+            background-color: #f44336; /* Red color */
+        }
+        #end-session-btn:hover {
+            background-color: #d32f2f; /* Darker red color */
+        }
+
+        /* Style for the clear console button */
+        #clear-console-btn {
+            margin-top: 15px; /* Space above the box */
+        }
+
+        /* Style for the jog buttons */
+        #jog-x-pos, #jog-x-neg {
+            background-color: rgb(252, 66, 66);
+        }
+
+        #jog-y-pos, #jog-y-neg {
+            background-color: rgb(60, 148, 60);
+        }
+
+        #jog-z-pos, #jog-z-neg {
+            background-color: rgb(92, 92, 255);
+        }
+
+        /* Style for disabled jog buttons */
+        #jog-x-pos:disabled, #jog-x-neg:disabled, #jog-y-pos:disabled, #jog-y-neg:disabled, #jog-z-pos:disabled, #jog-z-neg:disabled {
+            filter:saturate(50%); /* Grey out the buttons */
+            color: #f7f7f7; /* Darker text color */
+        }
+
+        /* Style for the jogging buttons container */
+        #jogging-buttons, #control-mode-buttons {
+            display: flex; /* Make the div element a flex container */
+            width: fit-content;
+            flex-direction: column; /* Stack rows vertically */
+            align-items: center; /* Center rows horizontally */
+            border: 2px solid #3f3f3f; /* Border color and thickness */
+            padding: 5px; /* Space inside the box */
+            margin: 5px; /* Space outside the box */
+            background-color: #f5f5f5; /* Background color of the box */
+        }
+
+        /* Style for each row of buttons */
+        .button-row {
+            display: flex; /* Make each row a flex container */
+            flex-direction: row; /* Align buttons horizontally in the row */
+            justify-content: space-between; /* Space out buttons in the row */
+            margin-bottom: 5px; /* Space between rows */
+            margin-right: 10ps; /* Space between buttons within a row */
+        }
+
+        /* Style for disabled buttons */
+        button:disabled{
+            background-color: #cccccc; /* Grey color */
+            color: #666666; /* Darker text color */
+            cursor: not-allowed;
+        }
+
+        /* Hover effects for buttons */
+        button:hover {
+            background-color: #919191;
+        }
+
+        button {
+            border-radius: 10px;
+            display: flex; /* Make the button elements flex containers */
+            flex-direction: column; /* Stack items vertically */
+            align-items: center; /* Center items horizontally */
+            justify-content: center; /* Center items vertically */
+            margin: 5px;
+            padding: 8px;
+            font-size: 16px;
+            border: none;
+            color: #f7f7f7;
+            background-color: #666666; /* Grey color */
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+
+        .button-icon {
+            /* Style for the icon */
+            font-size: 24px; /* Icon size */
+            margin: 5px; /* Space between icon and text */
+        }
+
+        .button-text {
+            /* Style for the text */
+            font-size: 16px; /* Text size */
+        }
+
+        /* Style for the pattern control sliders */
+        /* Style for the pattern control sliders container */
+        #pattern-control-inputs {
+            text-align: center; /* Center align everything */
+            border: 2px solid #000000; /* Add border around the container */
+            padding: 10px; /* Padding inside the box */
+            margin: 5px auto; /* Center the box with automatic horizontal margins */
+            width: 80%; /* Adjust width as needed */
+        }
+
+        #pattern-control-inputs h3 {
+            margin-top: 5px; /* Minimal space above heading */
+            margin-bottom: 5px; /* Minimal space below heading */
+        }
+
+        #pattern-control-inputs div {
+            display: flex;
+            justify-content: flex-start;
+            align-items: center;
+            margin-bottom: 10px; /* Space between each slider div */
+        }
+
+        /* Style for labels */
+        #pattern-control-inputs label {
+            flex: 0 0 60%; /* Label takes up 30% of the space, not growing or shrinking */
+            text-align: left; /* Align the text to the left */
+        }
+
+    </style>
+</head>
+<body>
+    <div id="main-container">
+        <div id="container-row">
+            <!-- 3D Plotter -->
+            <div id="plot-3d">
+                <!-- THREE.js scene -->
+                <div id="scene-menu-container">
+                    <button id="scene-menu-toggle-btn">
+                        <span class="button-icon"><i class="fa-solid fa-bars"></i></span>
+                        <span class="button-text-beside">Toggle Scene Elements</span>
+                    </button>
+                    <div id="scene-menu-content">
+                        <!-- Robot -->
+                        <button class="scene-menu-item active" data-object="robot">
+                            <span class="visibility-icon"><i class="fa-regular fa-circle-check"></i></span>Robot
+                        </button>
+                        <!-- Workspace -->
+                        <button class="scene-menu-item inactive" data-object="workspace">
+                            <span class="visibility-icon"><i class="fa-regular fa-circle-xmark"></i></span>Workspace
+                        </button>
+                        <!-- Centroid -->
+                        <button class="scene-menu-item inactive" data-object="centroid">
+                            <span class="visibility-icon"><i class="fa-regular fa-circle-check"></i></span>Centroid
+                        </button>
+                        <!-- Coordinate axes -->
+                        <button class="scene-menu-item inactive" data-object="axes">
+                            <span class="visibility-icon"><i class="fa-regular fa-circle-check"></i></span>Coordinate Axes
+                        </button>
+                        <!-- Current path -->
+                        <button class="scene-menu-item active" data-object="currentPath">
+                            <span class="visibility-icon"><i class="fa-regular fa-circle-check"></i></span>Current Path
+                        </button>
+                        <!-- Next path -->
+                        <button class="scene-menu-item active" data-object="nextPath">
+                            <span class="visibility-icon"><i class="fa-regular fa-circle-check"></i></span>Next Path
+                        </button>
+                        <!-- Ball -->
+                        <button class="scene-menu-item active" data-object="ball">
+                            <span class="visibility-icon"><i class="fa-regular fa-circle-check"></i></span>Ball
+                        </button>
+                        <!-- Ball path -->
+                        <button class="scene-menu-item active" data-object="ballPath">
+                            <span class="visibility-icon"><i class="fa-regular fa-circle-check"></i></span>Ball Path
+                        </button>
+                        
+                    </div>
+                </div>
+            </div>
+
+            <!-- Button (and slider) Container -->
+            <div id="button-container">
+                <!-- Control buttons -->
+                <div id="control-buttons">
+                    <!-- Container for the first two buttons (Home and End Session)-->
+                    <div class="button-row">
+                        <button id="home-btn">
+                            <span class="button-icon"><i class="fa-solid fa-house-chimney"></i></span>
+                            <span class="button-text">Home</span>
+                        </button>
+                        <button id="end-session-btn">
+                            <span class="button-icon"><i class="fa-solid fa-skull"></i></span>
+                            <span class="button-text">End Session</span>
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- Row for Jogging and Control Mode buttons -->
+                <div id="container-row">
+                    <!-- Jogging buttons -->
+                    <div id="jogging-buttons">
+                        <!-- Add a title to the jog button group -->
+                        <h3>Jogging</h3>
+                        <div class="button-row">
+                            <button id="jog-x-pos" disabled>X +</button>
+                            <button id="jog-x-neg" disabled>X -</button>
+                        </div>
+                        <div class="button-row">
+                            <button id="jog-y-pos" disabled>Y +</button>
+                            <button id="jog-y-neg" disabled>Y -</button>
+                        </div>
+                        <div class="button-row">
+                            <button id="jog-z-pos" disabled>Z +</button>
+                            <button id="jog-z-neg" disabled>Z -</button>
+                        </div>
+                    </div>
+
+                    <!-- Container for the spacemouse control button -->
+                    <div id="control-mode-buttons">
+                        <h3>Control Mode</h3>
+                        <button id="jogging-control-button" disabled>Jogging</button>
+                        <button id="spacemouse-control-button" disabled>SpaceMouse</button>
+                        <!-- <button id="pattern-control-button" disabled>Pattern</button> -->
+                        <button id="juggle-control-button" disabled>Juggle</button>
+                    </div>
+                </div>
+
+                <!-- Row for sliders used with the pattern control mode -->
+                <!-- <div id="pattern-control-inputs">
+                    <h3>Pattern Control</h3>
+                    <!-- Input for throw height --
+                    <div>
+                        <label for="input-throw-height">Throw Height (mm):</label>
+                        <input type="number" id="input-throw-height" name="throw_height" 
+                        min="100" max="500" value="500" step="50"
+                        class="number-input"> <!-- Ensure the name matches the ROS2 Topic field name--
+                    </div>
+
+                    <!-- Input for zlim_hold --
+                    <div>
+                        <label for="input-zlim-hold">Hold z Span (mm):</label>
+                        <input type="number" id="input-zlim-hold" name="zlim_hold" 
+                        min="100" max="500" value="350" step="10"
+                        class="number-input">
+                    </div>
+
+                    <!-- Input for zlim_empty --
+                    <div>
+                        <label for="input-zlim-empty">Empty z Span (mm):</label>
+                        <input type="number" id="input-zlim-empty" name="zlim_empty" 
+                        min="50" max="300" value="100" step="10"
+                        class="number-input">
+                    </div>
+
+                    <!-- Input for z-offset of pattern --
+                    <div>
+                        <label for="input-z-offset">z Offset (mm):</label>
+                        <input type="number" id="input-z-offset" name="z_offset" 
+                        min="170" max="400" value="300" step="10"
+                        class="number-input">
+                    </div>
+
+                    <!-- Input for throw/catch x position --
+                    <div>
+                        <label for="input-x-pos">Throw/Catch x pos (mm):</label>
+                        <input type="number" id="input-x-pos" name="x_pos" 
+                        min="0" max="200" value="0" step="10"
+                        class="number-input">
+                    </div>
+
+                </div> -->
+
+                <!-- Buttons for interfacing with the ODrives -->
+                <div id="odrive-buttons">
+                    <div class="button-row">
+                        <button id="odrive-reboot-btn">
+                            <span class="button-icon"><i class="fa-solid fa-power-off"></i></span>
+                            <span class="button-text">Reboot ODrives</span>
+                        </button>
+
+                        <button id="odrive-clear-errors-btn">
+                            <span class="button-icon"><i class="fa-solid fa-xmark"></i></span>
+                            <span class="button-text">Clear ODrive Errors</span>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+
+        <!-- Network Stats Container -->
+        <div id="network-stats-container">
+            <canvas id="can-traffic-chart"></canvas>  <!-- Chart.js canvas for plotting -->
+
+            <table id="topic-stats-table">
+                <thead>
+                    <tr>
+                        <th>Topic</th>
+                        <th>Last Msg Time<br>(ms ago)</th>
+                        <th>Msg Rate<br>(Hz)</th>
+                    </tr>
+                </thead>
+                <tbody id="topic-stats-table-body">
+                    <!-- Javascript will populate this -->
+                </tbody>
+            </table>
+        </div>
+
+
+        <div id="container-row">
+            <!-- ROS Logging Console -->
+            <div id="ros-console" ></div>
+        
+            <!-- Log Level Filters -->
+            <div id="log-level-filters">
+                <div><input type="checkbox" id="log-level-10" class="log-level" unchecked> <label for="log-level-10">Debug</label></div>
+                <div><input type="checkbox" id="log-level-20" class="log-level" checked> <label for="log-level-20">Info</label></div>
+                <div><input type="checkbox" id="log-level-30" class="log-level" checked> <label for="log-level-30">Warn</label></div>
+                <div><input type="checkbox" id="log-level-40" class="log-level" checked> <label for="log-level-40">Error</label></div>
+                <div><input type="checkbox" id="log-level-50" class="log-level" checked> <label for="log-level-50">Fatal</label></div>
+                <button id="clear-console-btn">Clear Console</button>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
