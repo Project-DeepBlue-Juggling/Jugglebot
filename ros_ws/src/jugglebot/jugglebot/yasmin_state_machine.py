@@ -176,38 +176,31 @@ def main():
     blackboard["error"] = None
 
     # Create and add states to the state machine
-    state_machine = StateMachine(outcomes=[SUCCEED, ABORT, CANCEL])
+    state_machine = StateMachine(outcomes=[SUCCEED])
 
-    standby_state = StandbyState()
-    encoder_search_state = EncoderSearchState()
-    homing_state = HomingState()
-    idle_state = IdleState()
-    levelling_platform_state = LevellingPlatformState()
-    fault_state = FaultState()
-
-    state_machine.add_state("STANDBY", standby_state, transitions={
+    state_machine.add_state("STANDBY", StandbyState(), transitions={
         "all_heartbeats_confirmed": "ENCODER_SEARCH",
         ABORT: "FAULT",
         "continue_waiting": "STANDBY"
     })
-    state_machine.add_state("ENCODER_SEARCH", encoder_search_state, transitions={
+    state_machine.add_state("ENCODER_SEARCH", EncoderSearchState(), transitions={
         SUCCEED: "HOMING",
         ABORT: "FAULT"
     })
-    state_machine.add_state("HOMING", homing_state, transitions={
+    state_machine.add_state("HOMING", HomingState(), transitions={
         SUCCEED: "IDLE",
         CANCEL: "STANDBY",
         ABORT: "FAULT"
     })
-    state_machine.add_state("IDLE", idle_state, transitions={
+    state_machine.add_state("IDLE", IdleState(), transitions={
         "levelling_command_received": "LEVELLING_PLATFORM"
     })
-    state_machine.add_state("LEVELLING_PLATFORM", levelling_platform_state, transitions={
+    state_machine.add_state("LEVELLING_PLATFORM", LevellingPlatformState(), transitions={
         SUCCEED: "IDLE",
         CANCEL: "IDLE",
         ABORT: "FAULT"
     })
-    state_machine.add_state("FAULT", fault_state, transitions={
+    state_machine.add_state("FAULT", FaultState(), transitions={
         TIMEOUT: "FAULT"
     })
 
