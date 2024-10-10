@@ -1,0 +1,7 @@
+# Action for initiating and tracking the homing sequence
+
+# No request
+---
+bool success # Was homing successful?
+---
+# No feedback

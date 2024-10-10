@@ -2,8 +2,8 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>jugglebot</name>
-  <version>0.0.0</version>
-  <description>For all things Jugglebot! Will probably be expanded into multiple packages in the future, but I don't really know what I'm doing so I'm keeping it simple :)</description>
+  <version>1.0.0</version>
+  <description>v1 of (proper) Jugglebot code. Now with a state machine!</description>
   <maintainer email="harrisonlow.jugglebot@gmail.com">harrison low</maintainer>
   <license>MIT Licence</license>
 
@@ -19,7 +19,8 @@
   <member_of_group>rosidl_interface_packages</member_of_group>
 
   <exec_depend>ros2launch</exec_depend>
-  <exec_depend>python-numpy-quaternion-pip-ruckig</exec_depend>
+  <exec_depend>yasmin_ros</exec_depend>
+
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

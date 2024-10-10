@@ -23,25 +23,18 @@ find_package(geometry_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
-  "srv/GetRobotGeometry.srv"
-  "srv/ODriveCommandService.srv"
-  "srv/GetTiltReadingService.srv"
-  "srv/SendHandTrajectory.srv"
-  "action/AutoLevelPlatformAction.action"
-  "msg/RobotStateMessage.msg"
-  "msg/RobotPlotterMessage.msg"
-  "msg/PathMessage.msg"
+  "msg/HeartbeatMsg.msg"
   "msg/CanTrafficReportMessage.msg"
-  "msg/HandStateSingle.msg"
-  "msg/HandStateList.msg"
-  "msg/JugglingPatternGeometryMessage.msg"
-  "msg/PatternControlMessage.msg"
-  "msg/BallStateMessage.msg"
-  "msg/LegsTargetReachedMessage.msg"
+  "msg/HandTelemetryMessage.msg"
   "msg/SetMotorVelCurrLimitsMessage.msg"
   "msg/SetTrapTrajLimitsMessage.msg"
-  "msg/HandTrajectoryPointMessage.msg"
-  "msg/HandTelemetryMessage.msg"
+  "msg/LegsTargetReachedMessage.msg"
+
+  "srv/GetTiltReadingService.srv"
+  "srv/ODriveCommandService.srv"
+
+  "action/HomeMotors.action"
+  "action/LevelPlatform.action"
   DEPENDENCIES geometry_msgs
 )
 

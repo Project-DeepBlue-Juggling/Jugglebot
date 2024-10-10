@@ -26,30 +26,13 @@ def generate_launch_description():
 
     can_bus_node = Node(
         package="jugglebot",
-        executable="can_bus_handler_node",
+        executable="can_interface_node",
         condition=UnlessCondition(use_simulator)
     )
 
 
     jugglebot_node_names = [
-        'robot_geometry',
-        'spacemouse_handler',
-        'platform_plotter',
-        'sp_ik',
-        'platform_alignment_node',
-        'platform_pose_command_node',
-        'hand_trajectory_transmitter_node',
-        'trajectory_timer_node',
-        'telemetry_recorder_node',
-        'validating_orientation_node',
-        # 'hand_ik',
-        'state_manager_node',
-        'juggling_path_creator',
-        # 'hand_state_manager',
-        'video_temp_node',
-        # 'ball_manager_node',
-        # 'timing_inspector_node',
-        # 'statistics_collector_node',  # Not using this for now. Unsure of its utility.
+        'yasmin_state_machine',
     ]
     jugglebot_nodes = [
         Node(
