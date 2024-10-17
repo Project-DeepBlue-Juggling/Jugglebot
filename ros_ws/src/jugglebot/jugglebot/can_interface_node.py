@@ -1,6 +1,7 @@
 import time
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, DurabilityPolicy
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from jugglebot_interfaces.msg import (
     CanTrafficReportMessage,
@@ -9,36 +10,41 @@ from jugglebot_interfaces.msg import (
     SetTrapTrajLimitsMessage,
     HandTelemetryMessage,
     HeartbeatMsg,
+    RobotStateMsg,
 )
-from jugglebot_interfaces.srv import ODriveCommandService, GetTiltReadingService
+from jugglebot_interfaces.srv import ODriveCommandService, GetTiltReadingService, GetStateFromTeensy
 from jugglebot_interfaces.action import HomeMotors
-from std_msgs.msg import Float64MultiArray
+from std_msgs.msg import Float64MultiArray, String
 from std_srvs.srv import Trigger
+from geometry_msgs.msg import Quaternion
 from .can_interface import CANInterface
+import quaternion
 
 
 class CanInterfaceNode(Node):
     def __init__(self):
         super().__init__('can_interface_node')
 
-        # Publisher for HeartbeatMsg
-        self.heartbeat_publisher = self.create_publisher(HeartbeatMsg, 'heartbeat_topic', 10)
+        # Initialize the heartbeat publisher
+        heartbeat_qos_profile = QoSProfile(depth=7, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self.heartbeat_publisher = self.create_publisher(HeartbeatMsg, 'heartbeat_topic', heartbeat_qos_profile)
 
         # Initialize the CANInterface
         self.can_handler = CANInterface(logger=self.get_logger(), heartbeat_publisher=self.heartbeat_publisher)
 
-        # Initialize services
+        #### Initialize service servers ####
         self.encoder_search_service = self.create_service(Trigger, 'encoder_search', self.run_encoder_search)
         self.end_session_service = self.create_service(Trigger, 'end_session', self.end_session)
         self.odrive_command_service = self.create_service(
             ODriveCommandService, 'odrive_command', self.odrive_command_callback
         )
         self.report_tilt_service = self.create_service(GetTiltReadingService, 'get_platform_tilt', self.report_tilt)
+        self.get_state_from_teensy_service = self.create_service(GetStateFromTeensy, 'get_state_from_teensy', self.get_state_from_teensy)
 
-        # Initialize actions
+        #### Initialize actions ####
         self.home_robot_action = ActionServer(self, HomeMotors, 'home_motors', self.home_robot)
 
-        # Initialize subscribers
+        #### Initialize subscribers ####
         self.motor_pos_subscription = self.create_subscription(
             Float64MultiArray, 'leg_lengths_topic', self.handle_movement, 10
         )
@@ -48,19 +54,25 @@ class CanInterfaceNode(Node):
         self.motor_trap_traj_limits_subscription = self.create_subscription(
             SetTrapTrajLimitsMessage, 'leg_trap_traj_limits', self.motor_trap_traj_limits_callback, 10
         )
+        self.robot_state_subscription = self.create_subscription(
+            RobotStateMsg, 'robot_state', self.update_teensy_and_local_state_from_topic, 10
+        )
 
-        # Initialize publishers for hardware data
+        #### Initialize publishers ####
+            # Hardware data publishers
         self.position_publisher = self.create_publisher(Float64MultiArray, 'leg_positions', 10)
         self.velocity_publisher = self.create_publisher(Float64MultiArray, 'leg_velocities', 10)
         self.iq_publisher = self.create_publisher(Float64MultiArray, 'leg_iqs', 10)
         self.can_traffic_publisher = self.create_publisher(CanTrafficReportMessage, 'can_traffic', 10)
         self.hand_telemetry_publisher = self.create_publisher(HandTelemetryMessage, 'hand_telemetry', 10)
         self.platform_target_reached_publisher = self.create_publisher(LegsTargetReachedMessage, 'platform_target_reached', 10)
+            
+            # Robot state publisher
+        self.robot_state_publisher = self.create_publisher(RobotStateMsg, 'robot_state', 10)
 
         # Initialize target positions and status flags
         self.legs_target_position = [None] * 6
         self.legs_target_reached = [False] * 6
-        self.is_fatal = False
         self.shutdown_flag = False
 
         # Initialize timers
@@ -69,12 +81,14 @@ class CanInterfaceNode(Node):
         )
         self.timer_canbus = self.create_timer(timer_period_sec=0.001, callback=self._poll_can_bus)
 
-        self.num_axes = 7
+        # Initialize the number of axes
+        self.num_axes = 7 # 6 leg motors + 1 hand motor
 
         # Initialize variables to store the last received data
         self.last_motor_positions = [None] * self.num_axes
         self.last_motor_velocities = [None] * self.num_axes
         self.last_motor_iqs = [None] * self.num_axes
+        self.last_platform_tilt_offset = quaternion.quaternion(1, 0, 0, 0)
 
         # Register callbacks with CANInterface
         self.can_handler.register_callback('leg_positions', self.publish_motor_positions)
@@ -88,18 +102,33 @@ class CanInterfaceNode(Node):
     #########################################################################################################
 
     def _poll_can_bus(self):
-        # Polls the CAN bus to check for new updates
+        """Polls the CAN bus to check for new updates"""
         self.can_handler.fetch_messages()
-        if self.can_handler.fatal_issue or self.can_handler.fatal_can_issue:
+        if self.can_handler.fatal_error or self.can_handler.fatal_can_error:
             self._on_fatal_issue()
 
+        # If there's a stored error, but no current error, update the robot state topic
+        if self.can_handler.last_known_state['error'] != "" and not self.can_handler.fatal_error:
+            self.update_robot_state_topic_with_error("")
+
     def _on_fatal_issue(self):
-        if not self.is_fatal:
-            self.get_logger().fatal(
-                "Fatal issue detected. Robot will be unresponsive until errors are cleared",
-                throttle_duration_sec=3.0,
-            )
-            self.is_fatal = True
+        """Handle a fatal issue with the robot."""
+
+        # Update the robot state topic with the error message
+        if self.can_handler.undervoltage_error:
+            self.update_robot_state_topic_with_error("Undervoltage detected. Was the E-stop hit?")
+        elif self.can_handler.fatal_error:
+            self.update_robot_state_topic_with_error("Fatal issue with one or more ODrive(s).")
+        elif self.can_handler.fatal_can_error:
+            self.update_robot_state_topic_with_error("Fatal issue with CAN bus.")
+
+        # NOTE This shouldn't be necessary if the state machine is working correctly
+        # if not self.is_fatal:
+        #     self.get_logger().fatal(
+        #         "Fatal issue detected. Robot will be unresponsive until errors are cleared",
+        #         throttle_duration_sec=3.0,
+        #     )
+        #     self.is_fatal = True
 
     def motor_vel_curr_limits_callback(self, msg):
         """Set the absolute velocity and current limits for all motors."""
@@ -159,6 +188,10 @@ class CanInterfaceNode(Node):
             self.can_handler.run_encoder_search()
             response.success = True
             response.message = 'Encoder search complete!'
+
+            # Update the state on the Teensy
+            self.can_handler.update_state_on_teensy({'encoder_search_complete': True})
+
         except Exception as e:
             self.get_logger().error(f"Error running encoder search: {e}")
             response.success = False
@@ -170,13 +203,17 @@ class CanInterfaceNode(Node):
         """Action server callback to home the robot."""
         try:
             # Check if the robot is in a fatal state
-            if self.is_fatal or self.can_handler.fatal_issue or self.can_handler.fatal_can_issue:
-                self._on_fatal_issue()
-                goal_handle.abort()
-                return
+            # NOTE This shouldn't be necessary if the state machine is working correctly
+            # if self.is_fatal or self.can_handler.fatal_issue or self.can_handler.fatal_can_issue:
+            #     self._on_fatal_issue()
+            #     goal_handle.abort()
+            #     return
 
             # Start the robot homing
-            success = self.can_handler.home_robot()
+            success = self.can_handler.home_robot() # True if homing was successful, False otherwise
+
+            # Update the Teensy on whether homing was successful
+            self.can_handler.update_state_on_teensy({'is_homed': success})
 
             self.get_logger().info("Robot homing complete.")
 
@@ -193,9 +230,10 @@ class CanInterfaceNode(Node):
     def handle_movement(self, msg):
         """Handle movement commands for the robot."""
         try:
-            if self.is_fatal or self.can_handler.fatal_issue or self.can_handler.fatal_can_issue:
-                self._on_fatal_issue()
-                return
+            # NOTE This shouldn't be necessary if the state machine is working correctly
+            # if self.is_fatal or self.can_handler.fatal_issue or self.can_handler.fatal_can_issue:
+            #     self._on_fatal_issue()
+            #     return
 
             # Extract the leg lengths
             motor_positions = msg.data
@@ -252,7 +290,7 @@ class CanInterfaceNode(Node):
                 self.can_handler.clear_errors()
                 response.success = True
                 response.message = 'ODrive errors cleared.'
-                self.is_fatal = False  # Reset the fatal flag now that errors have been cleared
+                # self.is_fatal = False  # Reset the fatal flag now that errors have been cleared
                 self.get_logger().info("ODrive errors cleared.")
 
             elif command == 'reboot_odrives':
@@ -260,6 +298,15 @@ class CanInterfaceNode(Node):
                 response.success = True
                 response.message = 'ODrives rebooted.'
                 self.get_logger().info("ODrives rebooted.")
+
+                # Update the homing status on the Teensy, as homing will need to be re-run
+                self.can_handler.update_state_on_teensy({'encoder_search_complete': False,
+                                                        'is_homed': False,
+                                                        'levelling_complete': False,
+                                                        'pose_offset_rad': [0.0, 0.0]})
+
+                # Print the current robot state
+                self.get_logger().info(f"Robot state after reboot: {self.can_handler.last_known_state}")
 
             else:
                 response.success = False
@@ -395,9 +442,122 @@ class CanInterfaceNode(Node):
         except Exception as e:
             self.get_logger().error(f"Error publishing hand telemetry: {e}")
 
+    def update_teensy_and_local_state_from_topic(self, msg):
+        """Update the Teensy with the robot state.
+        Also update the local copy of the robot state."""
+
+        try:
+            # Update the state on the Teensy. Note no error field is passed here
+            self.can_handler.update_state_on_teensy({
+                'encoder_search_complete': msg.encoder_search_complete,
+                'is_homed': msg.is_homed,
+                'levelling_complete': msg.levelling_complete,
+                'pose_offset_rad': msg.pose_offset_rad,
+            })
+
+            # Update the local copy of the robot state
+            self.can_handler.update_local_state({
+                'encoder_search_complete': msg.encoder_search_complete,
+                'is_homed': msg.is_homed,
+                'levelling_complete': msg.levelling_complete,
+                'pose_offset_rad': msg.pose_offset_rad,
+                'error': msg.error,
+            })
+
+        except Exception as e:
+            self.get_logger().error(f"Error updating state on Teensy: {e}")
+
+    def get_state_from_teensy(self, request, response):
+        """Service callback to get the state from the Teensy."""
+        try:
+            state = self.can_handler.get_state_from_teensy()
+
+            # Convert the pose offset to a quaternion
+            pose_offset_quat = self._convert_tilt_to_quat(state['pose_offset_rad'][0], state['pose_offset_rad'][1])
+
+            # Format the state as a RobotStateMsg
+            response.success = True
+            response.state = RobotStateMsg(
+                encoder_search_complete=state['encoder_search_complete'],
+                is_homed=state['is_homed'],
+                levelling_complete=state['levelling_complete'],
+                pose_offset_rad=state['pose_offset_rad'],
+                pose_offset_quat=pose_offset_quat,
+            )
+
+        except Exception as e:
+            self.get_logger().error(f"Error getting state from Teensy: {e}")
+            response.success = False
+            response.state = None
+
+        return response
+
+    def update_robot_state_topic_with_error(self, error_msg: str):
+        """Update the robot state topic with an error message."""
+        try:
+            # Get the last known state so as to not reset the topic fields to their default values
+            last_state = self.can_handler.last_known_state
+
+            # If the error message hasn't changed, don't update the topic
+            if last_state['error'] == error_msg:
+                return
+            
+            # Update the local copy of the error message
+            self.can_handler.last_known_state['error'] = error_msg
+
+            # If there's a non-zero pose offset, convert it to a quaternion. Else, use the unit quaternion
+            if last_state['pose_offset_rad'] != [0.0, 0.0]:
+                pose_offset_quat = self._convert_tilt_to_quat(last_state['pose_offset_rad'][0], last_state['pose_offset_rad'][1])
+            else:
+                pose_offset_quat = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0)
+
+            # Update the robot state topic with the error message
+            self.robot_state_publisher.publish(RobotStateMsg(
+                encoder_search_complete=last_state['encoder_search_complete'],
+                is_homed=last_state['is_homed'],
+                levelling_complete=last_state['levelling_complete'],
+                pose_offset_rad=last_state['pose_offset_rad'],
+                pose_offset_quat=pose_offset_quat,
+                error=error_msg))
+            
+        except Exception as e:
+            self.get_logger().error(f"Error updating robot state topic with error: {e}")
+
     #########################################################################################################
-    #                                          Managing the Node                                            #
+    #                                          Utility Functions                                            #
     #########################################################################################################
+
+    def _convert_tilt_to_quat(self, tiltX: float, tiltY: float) -> Quaternion:
+        """
+        Converts tilt sensor readings to a quaternion representing the orientation of the robot.
+
+        Args:
+            tiltX: The tilt sensor reading about the x-axis.
+            tiltY: The tilt sensor reading about the y-axis.
+
+        Returns:
+            A quaternion representing the orientation of the robot.
+        """
+        # Convert tilt sensor readings to quaternions (this is the first method I've found that works)
+        q_roll = quaternion.from_rotation_vector([-tiltX, 0, 0])
+        q_pitch = quaternion.from_rotation_vector([0, -tiltY, 0])
+
+        tilt_offset_quat = q_roll * q_pitch
+        
+        # Calculate the new offset by multiplying the last offset by the new offset
+        tilt_offset_quat = tilt_offset_quat * self.last_platform_tilt_offset
+
+        # Store the new offset in case more readings are received
+        self.last_platform_tilt_offset = tilt_offset_quat
+
+        # Convert the quaternion to a ROS Quaternion message
+        quat = Quaternion()
+        quat.x = tilt_offset_quat.x
+        quat.y = tilt_offset_quat.y
+        quat.z = tilt_offset_quat.z
+        quat.w = tilt_offset_quat.w
+
+        return quat
 
     def on_shutdown(self):
         """Handle node shutdown."""

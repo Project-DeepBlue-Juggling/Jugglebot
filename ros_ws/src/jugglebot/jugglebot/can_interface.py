@@ -35,7 +35,7 @@ import os
 import struct
 import threading
 import time
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import can
 import cantools
@@ -46,7 +46,7 @@ class CANInterface:
     """
     Interface for handling CAN bus communication with ODrive controllers.
     """
-    # Create a dictionary of commands that might be called over the CAN bus by external scripts
+    # Create a dictionary of ODrive-related commands and their corresponding IDs
     COMMANDS = {
         "heartbeat_message"     : 0x01,
         "get_error"             : 0x03,
@@ -144,9 +144,10 @@ class CANInterface:
         self.iq_values: List[Optional[float]]   = [None] * self.num_axes
         self.temp_values: List[Optional[float]] = [None] * self.num_axes
 
-        # Flags and variables for tracking
-        self.fatal_issue: bool = False
-        self.fatal_can_issue: bool = False
+        # Flags and variables for tracking errors
+        self.fatal_error: bool = False
+        self.undervoltage_error: bool = False # Almost always caused by me hitting the E-stop
+        self.fatal_can_error: bool = False
 
         # Current state for each axis
         self.axis_errors: List[Optional[int]]      = [None] * self.num_axes
@@ -156,6 +157,8 @@ class CANInterface:
 
         # ROS2 publisher for HeartbeatMsg
         self.heartbeat_publisher = heartbeat_publisher
+        self._last_heartbeat_publish_times = [0.0] * self.num_axes # Keep a record of the last time a heartbeat was published for each axis
+        self._time_between_heartbeat_publishes = 3.0 # seconds
 
         # Thread lock for thread safety
         self._lock = threading.Lock()
@@ -168,6 +171,22 @@ class CANInterface:
         self._CAN_traffic_report_ID = 0x7DF
         self._CAN_tilt_reading_ID = 0x7DE
         self._hand_custom_message_ID = (6 << 5) | 0x04  # Axis 6, command 0x04 (RxSdo)
+
+        # Initialize CAN arbitration ID for state messages to/from the Teensy
+        self._CAN_state_update_ID = 0x6E0 # For sending the current state to/from the Teensy
+        self.last_known_state = {
+            'updated': False, # Flag to indicate if the state has been updated since the last request
+            'encoder_search_complete': False,
+            'is_homed': False,
+            'levelling_complete': False,
+            'pose_offset_rad': [0.0, 0.0],
+            'error': "", # Note that the error won't be communicated to the Teensy/saved between sessions.
+        }
+
+        # Initialize error logging parameters
+        self._last_error_log_times = {} # Axis ID to error code to last log time
+        self.error_log_throttle_duration_sec = 5.0 # Throttle duration for error logging. This is per axis, per error, so it doesn't
+                                                    # need to be called often
 
         # Initialize leg and hand motor absolute limits
         self.leg_motor_abs_limits = {'velocity_limit': 20.0, 'current_limit': 10.0}
@@ -270,7 +289,7 @@ class CANInterface:
 
                 if rx_working and tx_working:
                     self.ROS_logger.info('CAN bus connection restored!')
-                    self.fatal_can_issue = False
+                    self.fatal_can_error = False
                     return
             except Exception as e:
                 self.ROS_logger.warning(f"Failed to reconnect CAN bus on attempt {attempt}: {e}")
@@ -279,7 +298,7 @@ class CANInterface:
 
         self.ROS_logger.error(f"Failed to restore CAN bus connection after {max_retries} attempts. Closing CAN bus...")
         self.close()
-        self.fatal_can_issue = True  # Report the fatal CAN issue so that the handler node can stop attempting to send messages
+        self.fatal_can_error = True  # Report the fatal CAN issue so that the handler node can stop attempting to send messages
 
     #########################################################################################################
     #                                         ROS2 Callback Management                                      #
@@ -331,11 +350,6 @@ class CANInterface:
         """
         if not self.bus:
             # If the bus hasn't been initialized, return
-            return
-        
-        # If there is a fatal issue with any ODrive, don't send any more messages
-        if self.fatal_issue:
-            self.ROS_logger.fatal("Fatal issue detected. Stopping further messages.", throttle_duration_sec=2.0)
             return
 
         # Get the hex code for the message being sent
@@ -619,7 +633,8 @@ class CANInterface:
                     error_descriptor="clearing errors"
                 )
             # Reset fatal issue flag
-            self.fatal_issue = False
+            self.fatal_error = False
+            self.undervoltage_error = False
             self.ROS_logger.info('ODrive errors cleared.')
         except Exception as e:
             self.ROS_logger.error(f"Failed to clear errors: {e}")
@@ -632,6 +647,7 @@ class CANInterface:
         Raises:
             Exception: If sending the message fails.
         """
+         ### NOTE: Would be good to add a check to see if the ODrives have actually responded to the reboot command
         try:
             self.ROS_logger.info("Rebooting ODrives...")
             command_name = "reboot_odrives"
@@ -708,6 +724,7 @@ class CANInterface:
         
         except Exception as e:
             self.ROS_logger.error(f"Homing failed: {e}")
+            return False
             raise
 
     def run_motor_until_current_limit(
@@ -755,7 +772,7 @@ class CANInterface:
             moving_avg = 0
 
             while True:
-                if self.fatal_issue:
+                if self.fatal_error:
                     # eg. overcurrent
                     self.ROS_logger.fatal("FATAL ISSUE! Stopping homing")
                     break
@@ -797,9 +814,15 @@ class CANInterface:
             Exception: If encoder search fails after retries.
         """
         try:
+            # self.ROS_logger.info("Running encoder index search...")
             for axisID in range(self.num_axes):
                 if axisID !=6: # Hand doesn't need to do this because we're using the on-board encoder
                     self.set_requested_state(axisID, requested_state='ENCODER_INDEX_SEARCH')
+
+            '''This could potentially be improved by checking to ensure that all axes are actually in the ENCODER_INDEX_SEARCH
+            state before proceeding. This is tricky to implement because the index search can be very fast and the state may not
+            change on all axes before one (or more) of them have completed the index search.
+            '''
 
             # Wait for all axes to present "Success" (0) in the procedure result
             start_time = time.time()
@@ -816,7 +839,7 @@ class CANInterface:
                     else:
                         self.ROS_logger.error("Encoder index search failed. Clearing errors and retrying...")
                         self.clear_errors()
-                        self.fatal_issue = False # Helps when power has been cut during the previous run
+                        self.fatal_error = False # Helps when power has been cut during the previous run
                         self.run_encoder_search(attempt=attempt+1)
                         return
             self.ROS_logger.info("Encoder index search complete! Jugglebot is ready to be homed.")
@@ -1105,6 +1128,10 @@ class CANInterface:
                 return
             self._handle_tilt_sensor_reading(message)
 
+        # Or if the message is a request for the state from the Teensy
+        elif arbitration_id == self._CAN_state_update_ID:
+            self._decode_state_from_teensy(message)
+
         # Or if the message is the custom message going to the hand (sent by hand_trajectory_transmitter_node)
         elif arbitration_id == self._hand_custom_message_ID:
             return
@@ -1124,7 +1151,7 @@ class CANInterface:
             else:
                 # If no handler was found, log a warning.
                 self.ROS_logger.warning(
-                    f"No handler for command ID {command_id} on axis {axis_id}. Arbitration ID: {arbitration_id}"
+                    f"No handler for command ID {command_id} on axis {axis_id}. Arbitration ID: {arbitration_id}. Message data: {message.data}"
                     )
 
     def _handle_heartbeat(self, axis_id: int, data: bytes):
@@ -1145,15 +1172,22 @@ class CANInterface:
             self.trajectory_done[axis_id] = trajectory_done_flag
             self.procedure_result[axis_id] = procedure_result
 
-            # Publish a HeartbeatMsg for this axis
-            hearbeat_msg = HeartbeatMsg()
-            hearbeat_msg.axis_id = axis_id
-            hearbeat_msg.axis_error = axis_error
-            self.heartbeat_publisher.publish(hearbeat_msg)
+            # Get the current time
+            current_time = time.time()
 
-            # Flag if there's an error on this axis
-            if axis_error != 0:
-                self.fatal_issue = True
+            # Check if it's time to publish the heartbeat message
+            if (current_time - self._last_heartbeat_publish_times[axis_id]) > self._time_between_heartbeat_publishes:
+                # Publish a HeartbeatMsg for this axis
+                heartbeat_msg = HeartbeatMsg()
+                heartbeat_msg.axis_id = axis_id
+                heartbeat_msg.axis_error = axis_error
+                self.heartbeat_publisher.publish(heartbeat_msg)
+
+                # Update the last publish time for this axis
+                self._last_heartbeat_publish_times[axis_id] = current_time
+
+                # Log the heartbeat message
+                # self.ROS_logger.info(f"Heartbeat published for axis {axis_id}: error={axis_error}, state={axis_current_state}")
 
         except Exception as e:
             self.ROS_logger.error(f"Error handling heartbeat message for axis {axis_id}: {e}")
@@ -1172,7 +1206,12 @@ class CANInterface:
     
         # If there are no active errors and the disarm reason is 0, there's nothing to report
         if active_errors == 0 and disarm_reason == 0:
+            # Clear any existing error flags
+            self.undervoltage_error = False
+            self.fatal_error = False
             return
+        else:
+            self.fatal_error = True
     
         # Dictionary mapping error codes to error messages
         ERRORS = {
@@ -1199,14 +1238,31 @@ class CANInterface:
             268435456: "THERMISTOR_DISCONNECTED",
             1073741824: "CALIBRATION_ERROR"
         }
-    
-        # Log all active errors
+
+        # If the error is UNDERVOLTAGE, set the flag
+        if active_errors & 512:
+            self.undervoltage_error = True
+
+        # Log all active errors with throttling
+        
+        # Initialize per-axis log times if they don't exist
+        if axis_id not in self._last_error_log_times:
+            self._last_error_log_times[axis_id] = {}
+
+        current_time = time.time()
+
         for error_code, error_message in ERRORS.items():
             if active_errors & error_code:
-                self.ROS_logger.error(f"Active error on axis {axis_id}: {error_message}")
-    
+                last_log_time = self._last_error_log_times[axis_id].get(error_code, 0)
+                if current_time - last_log_time > self.error_log_throttle_duration_sec:
+                    self.ROS_logger.error(f"Active error on axis {axis_id}: {error_message}")
+                    self._last_error_log_times[axis_id][error_code] = current_time
+
             elif disarm_reason & error_code:
-                self.ROS_logger.error(f"Disarm reason on axis {axis_id}: {error_message}")
+                last_log_time = self._last_error_log_times[axis_id].get(error_code, 0)
+                if current_time - last_log_time > self.error_log_throttle_duration_sec:
+                    self.ROS_logger.error(f"Disarm reason on axis {axis_id}: {error_message}")
+                    self._last_error_log_times[axis_id][error_code] = current_time
 
     def _handle_encoder_estimates(self, axis_id, data):
         """
@@ -1405,6 +1461,146 @@ class CANInterface:
         except Exception as e:
             self.ROS_logger.error(f"Failed to get tilt sensor reading: {e}")
             return None, None
+
+    def update_state_on_teensy(self, state: Dict[str, Union[bool, Tuple[float, float]]]):
+        """
+        Updates the state on the Teensy. The state consists of the encoder search status, homing status, levelling status 
+        and the pose offset (tiltX, tiltY).
+
+        Args:
+            state (Dict[str, Union[bool, Tuple[float, float]]]): The state to send.
+        """
+        try:
+            """ Byte 0: Boolean flags """
+            # Initialize flags with current values
+            flags = 0
+            flags |= int(self.last_known_state.get('encoder_search_complete', False)) << 0
+            flags |= int(self.last_known_state.get('is_homed', False)) << 1
+            flags |= int(self.last_known_state.get('levelling_complete', False)) << 2
+
+            # Update flags only if present in the state dictionary
+            if 'encoder_search_complete' in state:
+                flags = (flags & ~(1 << 0)) | (int(state['encoder_search_complete']) << 0)
+            if 'is_homed' in state:
+                flags = (flags & ~(1 << 1)) | (int(state['is_homed']) << 1)
+            if 'levelling_complete' in state:
+                flags = (flags & ~(1 << 2)) | (int(state['levelling_complete']) << 2)
+
+            """ Bytes 1-4: Pose offsets """
+            # Initialize pose offsets with current values
+            tiltX, tiltY = self.last_known_state.get('pose_offset_rad', (0.0, 0.0))
+
+            # Update pose offsets only if present in the state dictionary
+            if 'pose_offset_rad' in state:
+                tiltX, tiltY = state['pose_offset_rad']
+            tiltX_scaled = int(tiltX * 1000)  # Scale to fixed-point (e.g., 0.001 precision)
+            tiltY_scaled = int(tiltY * 1000)
+
+            # Pack the message into 8 bytes
+            # Byte 0: flags
+            # Bytes 1-2: tiltX_scaled (16-bit signed integer)
+            # Bytes 3-4: tiltY_scaled (16-bit signed integer)
+            # Bytes 5-7: reserved for future use (set to 0)
+            state_message = struct.pack('<Bhh3x', flags, tiltX_scaled, tiltY_scaled)
+
+            # Send the state message to the Teensy
+            arbitration_id = self._CAN_state_update_ID
+            state_update_msg = can.Message(arbitration_id=arbitration_id, dlc=8, is_extended_id=False, data=state_message, is_remote_frame=False)
+
+            try:
+                self.bus.send(state_update_msg)
+            except Exception as e:
+                self.ROS_logger.warning(f"CAN message for state update NOT sent! Error: {e}")
+
+        except Exception as e:
+            self.ROS_logger.error(f"Failed to update state on Teensy: {e}")
+
+    def update_local_state(self, state: Dict[str, Union[bool, Tuple[float, float], str]]):
+        """
+        Updates the internal state with the provided state dictionary.
+        This is intended to only be called when a new message is received on /robot_state
+
+        Args:
+            state (Dict[str, Union[bool, Tuple[float, float], str]]): The state to update.
+        """
+        try:
+            # Update the internal state with the provided state dictionary
+            for key, value in state.items():
+                self.last_known_state[key] = value
+
+        except Exception as e:
+            self.ROS_logger.error(f"Failed to update local state: {e}")
+
+    def get_state_from_teensy(self) -> Dict[str, Union[bool, Tuple[float, float]]]:
+        """
+        Requests the state from the Teensy. _decode_state_from_teensy then decodes the state and updates the internal state.
+
+        Returns:
+            The state as a dictionary
+        """
+        try:
+            # Send a call message to the Teensy to get the state
+            arbitration_id = self._CAN_state_update_ID
+            data = b'\x01'  # Just send a single byte to request the state
+
+            state_call_msg = can.Message(arbitration_id=arbitration_id, dlc=1, is_extended_id=False, data=data, is_remote_frame=False)
+
+            try:
+                self.bus.send(state_call_msg)
+            except Exception as e:
+                self.ROS_logger.warning(f"CAN message for state request NOT sent! Error: {e}")
+
+            # Wait for the response to come in. If it takes longer than 1 second, resend the request
+            start_time = time.time()
+            timeout = 1  # seconds
+            while self.last_known_state['updated'] is False:
+                self.fetch_messages()
+                time.sleep(0.1)
+
+                if time.time() - start_time > timeout:
+                    self.ROS_logger.warning("State request timed out. Resending request...")
+                    self.bus.send(state_call_msg)
+                    start_time = time.time()
+
+            # Reset the 'updated' flag
+            self.last_known_state['updated'] = False
+
+            # Return the just-retrieved state
+            return self.last_known_state
+
+        except Exception as e:
+            self.ROS_logger.error(f"Failed to get state from Teensy: {e}")
+            return {}
+        
+    def _decode_state_from_teensy(self, message):
+        """
+        Decodes the state message from the Teensy and updates the internal state.
+
+        Args:
+            message: The CAN message.
+        """
+        try:
+            # Unpack the data from the message
+            flags, tiltX_scaled, tiltY_scaled = struct.unpack('<Bhh3x', message.data)
+
+            # Decode the flags
+            encoder_search_complete = bool(flags & 0x01)
+            is_homed = bool(flags & 0x02)
+            levelling_complete = bool(flags & 0x04)
+
+            # Decode the pose offsets
+            tiltX = tiltX_scaled / 1000.0
+            tiltY = tiltY_scaled / 1000.0
+
+            # Update the relevant fields of theinternal state
+            self.last_known_state['updated'] = True
+            self.last_known_state['encoder_search_complete'] = encoder_search_complete
+            self.last_known_state['is_homed'] = is_homed
+            self.last_known_state['levelling_complete'] = levelling_complete
+            self.last_known_state['pose_offset_rad'] = (tiltX, tiltY)
+
+        except Exception as e:
+            self.ROS_logger.error(f"Failed to decode state message from Teensy: {e}")
 
     #########################################################################################################
     #                                       Utility functions                                               #
