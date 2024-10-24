@@ -35,6 +35,7 @@ import os
 import struct
 import threading
 import time
+import math
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import can
@@ -51,6 +52,7 @@ class CANInterface:
         "heartbeat_message"     : 0x01,
         "get_error"             : 0x03,
         "RxSdo"                 : 0x04, # Write to arbitrary parameter
+        "TxSdo"                 : 0x05, # Read from arbitrary parameter
         "set_requested_state"   : 0x07,
         "get_encoder_estimate"  : 0x09,
         "set_controller_mode"   : 0x0b,
@@ -72,6 +74,7 @@ class CANInterface:
         "input_pos"    : 390,
         "input_vel"    : 391,
         "input_torque" : 392,
+        "commutation_mapper.pos_abs"  : 488, # NaN until encoder search is complete
     }
 
     OPCODE_READ  = 0x00  # For reading arbitrary parameters from the ODrive
@@ -118,6 +121,7 @@ class CANInterface:
             self.COMMANDS["get_encoder_estimate"]: self._handle_encoder_estimates,
             self.COMMANDS["get_iq"]              : self._handle_iq_readings,
             self.COMMANDS["get_temps"]           : self._handle_temp_readings,
+            self.COMMANDS["TxSdo"]               : self._handle_arbitrary_parameter_read,
         }
 
         # Create a dictionary of callbacks that are used in the ROS2 node
@@ -149,8 +153,12 @@ class CANInterface:
         self.undervoltage_error: bool = False # Almost always caused by me hitting the E-stop
         self.fatal_can_error: bool = False
 
+        # Variable to store the result of checking whether the encoder search is complete
+        self._received_encoder_search_feedback_on_axes = [None] * 6 # Only the legs need to do this, as the hand uses the on-board encoder
+
         # Current state for each axis
-        self.axis_errors: List[Optional[int]]      = [None] * self.num_axes
+        self.active_errors: List[Optional[int]]    = [None] * self.num_axes
+        self.disarm_reasons: List[Optional[int]]   = [None] * self.num_axes
         self.axis_states: List[Optional[int]]      = [None] * self.num_axes
         self.trajectory_done: List[Optional[bool]] = [None] * self.num_axes
         self.procedure_result: List[Optional[int]] = [None] * self.num_axes
@@ -160,8 +168,13 @@ class CANInterface:
         self._last_heartbeat_publish_times = [0.0] * self.num_axes # Keep a record of the last time a heartbeat was published for each axis
         self._time_between_heartbeat_publishes = 3.0 # seconds
 
-        # Thread lock for thread safety
-        self._lock = threading.Lock()
+        '''
+        Thread lock for thread safety
+        A re-entrant lock is used to allow the same thread to acquire the lock multiple times without causing a deadlock.
+        This is necessary for clearing errors after an error has been detected, as the `send_message` method needs access
+        to the lock that `fetch_messages` is using.
+        '''
+        self._lock = threading.RLock()
 
         # Initialize the tilt readings that will come in from the SCL3300 sensor (via the Teensy)
         self.tilt_sensor_reading = None 
@@ -176,7 +189,6 @@ class CANInterface:
         self._CAN_state_update_ID = 0x6E0 # For sending the current state to/from the Teensy
         self.last_known_state = {
             'updated': False, # Flag to indicate if the state has been updated since the last request
-            'encoder_search_complete': False,
             'is_homed': False,
             'levelling_complete': False,
             'pose_offset_rad': [0.0, 0.0],
@@ -185,7 +197,7 @@ class CANInterface:
 
         # Initialize error logging parameters
         self._last_error_log_times = {} # Axis ID to error code to last log time
-        self.error_log_throttle_duration_sec = 5.0 # Throttle duration for error logging. This is per axis, per error, so it doesn't
+        self.error_log_throttle_duration_sec = 100.0 # Throttle duration for error logging. This is per axis, per error, so it doesn't
                                                     # need to be called often
 
         # Initialize leg and hand motor absolute limits
@@ -348,6 +360,7 @@ class CANInterface:
         Raises:
             Exception: If sending the message fails.
         """
+
         if not self.bus:
             # If the bus hasn't been initialized, return
             return
@@ -371,7 +384,7 @@ class CANInterface:
         try:
             with self._lock:
                 self.bus.send(msg)
-            self.ROS_logger.debug(f"CAN message for {error_descriptor} sent to axisID {axis_id}")
+            # self.ROS_logger.info(f"CAN message for {error_descriptor} sent to axisID {axis_id}")
             # self.ROS_logger.info(f"msg: {msg} for axis {axis_id} with command {command_name}")
         except can.CanError as e:
             self.ROS_logger.warn(f"CAN message for {error_descriptor} NOT sent to axisID {axis_id}! Error: {e}")
@@ -391,7 +404,7 @@ class CANInterface:
         param_name: str,
         param_value: float,
         param_type: str = 'f', # Default to float
-        op_code: int = 0x01  # Default to OPCODE_WRITE
+        op_code: int = OPCODE_WRITE  # Default to OPCODE_WRITE
     ) -> None:
         """
         Sends an arbitrary parameter to the ODrive.
@@ -618,6 +631,7 @@ class CANInterface:
     def clear_errors(self) -> None:
         """
         Clears errors on all axes.
+        Includes a short delay to give the ODrives time to process the command.
 
         Raises:
             Exception: If sending the message fails.
@@ -632,9 +646,14 @@ class CANInterface:
                     command_name=command_name,
                     error_descriptor="clearing errors"
                 )
-            # Reset fatal issue flag
+
+            # Reset error flags
             self.fatal_error = False
             self.undervoltage_error = False
+
+            # Clear the disarm reasons
+            self.disarm_reasons = [0] * self.num_axes
+
             self.ROS_logger.info('ODrive errors cleared.')
         except Exception as e:
             self.ROS_logger.error(f"Failed to clear errors: {e}")
@@ -691,9 +710,13 @@ class CANInterface:
             for axisID in range(self.num_axes):
                 if axisID != 6:
                     # Run the leg downwards until the end-stop is hit
-                    self.run_motor_until_current_limit(axis_id=axisID, homing_speed=leg_homing_speed, current_limit=leg_current_limit,
+                    homed = self.run_motor_until_current_limit(axis_id=axisID, homing_speed=leg_homing_speed, current_limit=leg_current_limit,
                                                     current_limit_headroom=current_limit_headroom)
                 
+                    if not homed:
+                        self.ROS_logger.error(f"Motor {axisID} homing failed!")
+                        return False
+
                     # Set the encoder position to be a little more than 0 (so that 0 is a bit off the end-stop. +ve is contraction)
                     data = self.db.encode_message(f'Axis{axisID}_Set_Absolute_Position',
                                                 {'Position': 0.1})  # Unit is revolutions
@@ -706,9 +729,13 @@ class CANInterface:
                     self.set_hand_gains(**self.default_hand_gains)
 
                     # Run the hand downwards until the current limit is reached
-                    self.run_motor_until_current_limit(axis_id=axisID, homing_speed= -1 * hand_homing_speed, current_limit=hand_current_limit,
+                    homed = self.run_motor_until_current_limit(axis_id=axisID, homing_speed= -1 * hand_homing_speed, current_limit=hand_current_limit,
                                                         current_limit_headroom=current_limit_headroom)
                     
+                    if not homed:
+                        self.ROS_logger.error(f"Hand homing failed!")
+                        return False
+
                     # Set the encoder position to be a little more than 0 (so that 0 is a bit off the end-stop)
                     data = self.db.encode_message(f'Axis{axisID}_Set_Absolute_Position',
                                                     {'Position': hand_direction * -0.1})  # Unit is revolutions
@@ -725,7 +752,6 @@ class CANInterface:
         except Exception as e:
             self.ROS_logger.error(f"Homing failed: {e}")
             return False
-            raise
 
     def run_motor_until_current_limit(
             self,
@@ -733,7 +759,7 @@ class CANInterface:
             homing_speed: float,
             current_limit: float,
             current_limit_headroom: float
-        ) -> None:
+        ) -> bool:
         """
         Runs the motor until the current limit is reached. This is used during homing.
 
@@ -775,7 +801,7 @@ class CANInterface:
                 if self.fatal_error:
                     # eg. overcurrent
                     self.ROS_logger.fatal("FATAL ISSUE! Stopping homing")
-                    break
+                    return False
 
                 # Fetch any recent messages on the CAN bus
                 self.fetch_messages()
@@ -793,7 +819,7 @@ class CANInterface:
                 # Check if the limit has been reached. If it has, put the axis into IDLE
                 if abs(moving_avg) >= current_limit:
                     self.set_requested_state(axis_id, requested_state='IDLE')
-                    return
+                    return True
                 
         except Exception as e:
             self.ROS_logger.error(f"Failed to run motor until current limit for axis {axis_id}: {e}")
@@ -803,9 +829,51 @@ class CANInterface:
     #                                            Managing ODrives                                           #
     #########################################################################################################
 
-    def run_encoder_search(self, attempt: int = 0) -> None:
+    def check_whether_encoder_search_complete(self) -> List[bool]:
+        """
+        Checks whether the encoder search has been completed for each axis.
+        This is done by sending a message to each ODrive to check the status of commutation_mapper.pos_abs
+        If the result is NaN, the encoder search is not complete. If it is a number, the search is complete.
+
+        Returns:
+            List[bool]: A list of boolean values indicating whether the encoder search is complete for each (leg) axis.
+        """
+        try:
+            encoder_search_complete_on_axes = []
+
+            for axis_id in range(6): # Only the legs need to do this, as the hand uses the on-board encoder
+                # Send read message to check if the encoder search is complete
+                self.send_arbitrary_parameter(axis_id, 'commutation_mapper.pos_abs', 0.0, param_type='f', op_code=self.OPCODE_READ)
+            
+            # Wait for the responses to come in
+            start_time = time.time()
+            timeout_duration = 3.0 # seconds
+
+            while any(feedback is None for feedback in self._received_encoder_search_feedback_on_axes):
+                self.fetch_messages()
+                time.sleep(0.1)
+                if time.time() - start_time > timeout_duration:
+                    self.ROS_logger.error("Failed to check encoder search status. Timed out.")
+                    return False
+
+            # Check the results
+            for axis_id in range(6):
+                if self._received_encoder_search_feedback_on_axes[axis_id]:
+                    encoder_search_complete_on_axes.append(True)
+                else:
+                    encoder_search_complete_on_axes.append(False)
+
+            return encoder_search_complete_on_axes
+        
+        except Exception as e:
+            self.ROS_logger.error(f"Failed to check encoder search status: {e}")
+            raise
+        
+    def run_encoder_search(self, attempt: int = 0) -> bool:
         """
         Runs the encoder index search procedure for the legs.
+        If there's an error, it clears the errors and retries.
+        If the search fails after one retry, it raises an exception.
 
         Args:
             attempt (int, optional): The current attempt number.
@@ -819,10 +887,25 @@ class CANInterface:
                 if axisID !=6: # Hand doesn't need to do this because we're using the on-board encoder
                     self.set_requested_state(axisID, requested_state='ENCODER_INDEX_SEARCH')
 
-            '''This could potentially be improved by checking to ensure that all axes are actually in the ENCODER_INDEX_SEARCH
-            state before proceeding. This is tricky to implement because the index search can be very fast and the state may not
-            change on all axes before one (or more) of them have completed the index search.
-            '''
+            # Check whether all axes have entered the ENCODER_INDEX_SEARCH state
+            axes_in_index_search = [False] * 6
+            start_time = time.time()
+            timeout_duration = 3.0 # seconds
+
+            while not all(axes_in_index_search):
+                self.fetch_messages()
+                # Update only when the state changes to ENCODER_INDEX_SEARCH (6), rather than updating to the current state
+                # This is to avoid the case where one axis changes to ENCODER_INDEX_SEARCH and then back to IDLE before the
+                # other axes have a chance to change to ENCODER_INDEX_SEARCH
+
+                if time.time() - start_time > timeout_duration:
+                    self.ROS_logger.error("Encoder index search failed. Timed out.")
+                    return False
+                
+                for axisID in range(6):
+                    if self.axis_states[axisID] == 6:
+                        axes_in_index_search[axisID] = True
+
 
             # Wait for all axes to present "Success" (0) in the procedure result
             start_time = time.time()
@@ -830,19 +913,27 @@ class CANInterface:
 
             while not all([result == 0 for result in self.procedure_result[:6]]):
                 self.fetch_messages()
+
+                # Check for any errors
+                if self.fatal_error:
+                    self.ROS_logger.error("Fatal error detected during encoder index search.")
+                    return False
+
                 time.sleep(0.1)
                 if time.time() - start_time > timeout_duration:
                     if attempt > 1:
                         error_msg = "Encoder index search failed."
                         self.ROS_logger.error(error_msg)
-                        raise Exception(error_msg)
+                        return False
+                    
                     else:
                         self.ROS_logger.error("Encoder index search failed. Clearing errors and retrying...")
                         self.clear_errors()
-                        self.fatal_error = False # Helps when power has been cut during the previous run
                         self.run_encoder_search(attempt=attempt+1)
-                        return
+                        return False
+            
             self.ROS_logger.info("Encoder index search complete! Jugglebot is ready to be homed.")
+            return True
 
         except Exception as e:
             self.ROS_logger.error(f"Encoder search failed: {e}")
@@ -860,7 +951,7 @@ class CANInterface:
             self.set_absolute_vel_curr_limits()
             self.set_legs_control_and_input_mode()
             self.set_trap_traj_vel_acc_limits()
-            self.set_leg_odrive_state()
+            self.set_odrive_state_for_all_legs()
             self.ROS_logger.info('ODrives setup complete.')
         except Exception as e:
             self.ROS_logger.error(f"Failed to setup ODrives: {e}")
@@ -1032,7 +1123,7 @@ class CANInterface:
             self.ROS_logger.error(f"Failed to set trap traj velocity and acceleration limits: {e}")
             raise
 
-    def set_leg_odrive_state(self, requested_state: str ='IDLE') -> None:
+    def set_odrive_state_for_all_legs(self, requested_state: str ='IDLE') -> None:
         '''
         Set the state of the leg ODrives
 
@@ -1167,7 +1258,6 @@ class CANInterface:
             trajectory_done_flag = (data[6] >> 0) & 0x01  # Extract bit 0 from byte 6
 
             # Update the current state information for this axis
-            self.axis_errors[axis_id] = axis_error
             self.axis_states[axis_id] = axis_current_state
             self.trajectory_done[axis_id] = trajectory_done_flag
             self.procedure_result[axis_id] = procedure_result
@@ -1186,9 +1276,6 @@ class CANInterface:
                 # Update the last publish time for this axis
                 self._last_heartbeat_publish_times[axis_id] = current_time
 
-                # Log the heartbeat message
-                # self.ROS_logger.info(f"Heartbeat published for axis {axis_id}: error={axis_error}, state={axis_current_state}")
-
         except Exception as e:
             self.ROS_logger.error(f"Error handling heartbeat message for axis {axis_id}: {e}")
 
@@ -1203,16 +1290,31 @@ class CANInterface:
         # First split the error data into its constituent parts
         active_errors = struct.unpack_from('<I', message_data, 0)[0]  # 4-byte integer
         disarm_reason = struct.unpack_from('<I', message_data, 4)[0]
+
+        # Update the variables with these errors
+        self.active_errors[axis_id] = active_errors
+        self.disarm_reasons[axis_id] = disarm_reason
     
-        # If there are no active errors and the disarm reason is 0, there's nothing to report
-        if active_errors == 0 and disarm_reason == 0:
+        # If there are no active errors and the disarm reason is 0 for all axes, there's nothing to report
+        if all(error == 0 for error in self.active_errors) and all(reason == 0 for reason in self.disarm_reasons):
             # Clear any existing error flags
             self.undervoltage_error = False
             self.fatal_error = False
-            return
+
+        elif all(error == 0 for error in self.active_errors) and any(reason != 0 for reason in self.disarm_reasons):
+            '''
+            If there are no active errors but the disarm reason is non-zero, simply clear these errors.
+            To recover from this, simply clear the errors (this is fine since active errors == 0)
+            '''
+            # Log the disarm reason for this axis
+            self.ROS_logger.error(f"Disarm reason on axis {axis_id}: {disarm_reason}")
+            self.ROS_logger.error(f"All disarm reasons: {self.disarm_reasons}")
+            # Clear errors. This requires a re-entrant lock on the CAN bus
+            self.clear_errors() # This also resets the fatal_error and undervoltage_error flags
+
         else:
             self.fatal_error = True
-    
+
         # Dictionary mapping error codes to error messages
         ERRORS = {
             1: "INITIALIZING",
@@ -1253,6 +1355,9 @@ class CANInterface:
 
         for error_code, error_message in ERRORS.items():
             if active_errors & error_code:
+                # Update the last state with the error
+                self.last_known_state['error'] = error_message
+
                 last_log_time = self._last_error_log_times[axis_id].get(error_code, 0)
                 if current_time - last_log_time > self.error_log_throttle_duration_sec:
                     self.ROS_logger.error(f"Active error on axis {axis_id}: {error_message}")
@@ -1366,6 +1471,33 @@ class CANInterface:
         except Exception as e:
             self.ROS_logger.error(f"Failed to handle temperature readings for axis {axis_id}: {e}")
 
+    def _handle_arbitrary_parameter_read(self, axis_id, data, param_type='f'):
+        """
+        Handles arbitrary parameter read messages.
+        Currently assumes that the parameter is a 32-bit float.
+
+        Args:
+            axis_id: The axis ID.
+            data: The message data.
+        """
+        try:
+            # Start by unpacking the data, which is a 32-bit float
+            _, endpoint_id, _, parameter_value = struct.unpack_from('<BHB' + param_type, data)
+
+            # If the endpoint ID matches that for commutation_mapper.pos_abs, update self._received_encoder_search_feedback_on_axes
+            if endpoint_id == self.ARBITRARY_PARAMETER_IDS['commutation_mapper.pos_abs']:
+                # Record True if the parameter_value is a number, False if it's NaN
+                if not math.isnan(parameter_value):
+                    self._received_encoder_search_feedback_on_axes[axis_id] = True
+                else:
+                    self._received_encoder_search_feedback_on_axes[axis_id] = False
+            else:
+                # Log the parameter value
+                self.ROS_logger.info(f"Unknown arbitrary parameter read on axis {axis_id}: {parameter_value} with endpoint ID {endpoint_id}")
+
+        except Exception as e:
+            self.ROS_logger.error(f"Failed to handle arbitrary parameter read for axis {axis_id}: {e}")    
+
     def _handle_CAN_traffic_report(self, message):
         """
         Handles CAN traffic report messages.
@@ -1474,17 +1606,14 @@ class CANInterface:
             """ Byte 0: Boolean flags """
             # Initialize flags with current values
             flags = 0
-            flags |= int(self.last_known_state.get('encoder_search_complete', False)) << 0
-            flags |= int(self.last_known_state.get('is_homed', False)) << 1
-            flags |= int(self.last_known_state.get('levelling_complete', False)) << 2
+            flags |= int(self.last_known_state.get('is_homed', False)) << 0
+            flags |= int(self.last_known_state.get('levelling_complete', False)) << 1
 
-            # Update flags only if present in the state dictionary
-            if 'encoder_search_complete' in state:
-                flags = (flags & ~(1 << 0)) | (int(state['encoder_search_complete']) << 0)
+            # Update flags only if present in the state dictionary argument
             if 'is_homed' in state:
-                flags = (flags & ~(1 << 1)) | (int(state['is_homed']) << 1)
+                flags = (flags & ~(1 << 0)) | (int(state['is_homed']) << 0)
             if 'levelling_complete' in state:
-                flags = (flags & ~(1 << 2)) | (int(state['levelling_complete']) << 2)
+                flags = (flags & ~(1 << 1)) | (int(state['levelling_complete']) << 1)
 
             """ Bytes 1-4: Pose offsets """
             # Initialize pose offsets with current values
@@ -1584,9 +1713,8 @@ class CANInterface:
             flags, tiltX_scaled, tiltY_scaled = struct.unpack('<Bhh3x', message.data)
 
             # Decode the flags
-            encoder_search_complete = bool(flags & 0x01)
-            is_homed = bool(flags & 0x02)
-            levelling_complete = bool(flags & 0x04)
+            is_homed = bool(flags & 0x01)
+            levelling_complete = bool(flags & 0x02)
 
             # Decode the pose offsets
             tiltX = tiltX_scaled / 1000.0
@@ -1594,7 +1722,6 @@ class CANInterface:
 
             # Update the relevant fields of theinternal state
             self.last_known_state['updated'] = True
-            self.last_known_state['encoder_search_complete'] = encoder_search_complete
             self.last_known_state['is_homed'] = is_homed
             self.last_known_state['levelling_complete'] = levelling_complete
             self.last_known_state['pose_offset_rad'] = (tiltX, tiltY)
