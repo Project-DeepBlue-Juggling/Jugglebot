@@ -15,6 +15,7 @@
 
 
 from typing import List, Callable, Type, Any
+import time
 
 from rclpy.node import Node
 from rclpy.client import Client
@@ -82,12 +83,24 @@ class ServiceState(State):
             self._node.get_logger().warn(
                 f"Timeout reached, service '{self._srv_name}' is not available")
             return TIMEOUT
+        
+        # Asynchronous call to allow for cancelation
+        self._node.get_logger().info(
+                f"Sending request to service '{self._srv_name}'")
+        future = self._service_client.call_async(request)
+
+        while not future.done():
+            if self._error_event.is_set():
+                self._node.get_logger().warn(
+                    f"Service '{self._srv_name}' was canceled due to an error")
+                return self.on_error(blackboard)
+            time.sleep(0.05)
 
         try:
-            self._node.get_logger().info(
-                f"Sending request to service '{self._srv_name}'")
-            response = self._service_client.call(request)
-        except:
+            response = future.result()
+        except Exception as e:
+            self._node.get_logger().warn(
+                f"Service '{self._srv_name}' failed. Error: {e}")
             return ABORT
 
         if self._response_handler:

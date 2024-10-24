@@ -66,17 +66,27 @@ class StateMachine(State):
         with self.__current_state_lock:
             self.__current_state = self._start_state
 
-        while True:
+        previous_state = None
 
+        while True:
             with self.__current_state_lock:
                 state = self._states[self.__current_state]
+
+            # Add support for on_enter and on_exit methods in each state
+            if state["state"] != previous_state:
+                if previous_state and hasattr(previous_state, "on_exit"):
+                    previous_state.on_exit(blackboard)
+                if hasattr(state["state"], "on_enter"):
+                    state["state"].on_enter(blackboard)
+                
+                previous_state = state["state"]
 
             outcome = state["state"](blackboard)
 
             # check outcome belongs to state
             if outcome not in state["state"].get_outcomes():
                 raise Exception(
-                    f"Outcome ({outcome}) is not register in state {self.__current_state}")
+                    f"Outcome ({outcome}) is not registered in state {self.__current_state}")
 
             # translate outcome using transitions
             if outcome in state["transitions"]:
@@ -100,6 +110,15 @@ class StateMachine(State):
             # outcome is not in the sm
             else:
                 raise Exception(f"Outcome ({outcome}) without transition")
+
+    def notify_error(self) -> None:
+        """
+        Method to notify an error detected in the state machine.
+        """
+        with self.__current_state_lock:
+            if self.__current_state:
+                state = self._states[self.__current_state]["state"]
+                state.cancel_state() # Cancel the current state, setting the error event
 
     def get_states(self) -> Dict[str, Union[State, Dict[str, str]]]:
         return self._states

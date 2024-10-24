@@ -17,21 +17,24 @@
 from typing import List
 from abc import ABC, abstractmethod
 from yasmin.blackboard import Blackboard
-
+from threading import Event
 
 class State(ABC):
 
     def __init__(self, outcomes: List[str]) -> None:
         self._outcomes = []
         self._canceled = False
+        self._error_event = Event()
 
         if outcomes:
-            self._outcomes = outcomes
+            # Ensure 'error' outcome is always present
+            self._outcomes = list(set(outcomes + ['error']))
         else:
             raise Exception("There must be at least one outcome")
 
     def __call__(self, blackboard: Blackboard = None) -> str:
         self._canceled = False
+        self._error_event.clear() # Reset the error event at the beginning of the state
 
         if blackboard is None:
             blackboard = Blackboard()
@@ -54,9 +57,16 @@ class State(ABC):
 
     def cancel_state(self) -> None:
         self._canceled = True
+        self._error_event.set() # Set the error event when the state is canceled
 
     def is_canceled(self) -> bool:
         return self._canceled
 
     def get_outcomes(self) -> List[str]:
         return self._outcomes
+
+    def on_error(self, blackboard: Blackboard) -> str:
+        """
+        Default error handling method. Subclasses can override this method to implement custom error handling.
+        """
+        return 'error' # Return generic error outcome

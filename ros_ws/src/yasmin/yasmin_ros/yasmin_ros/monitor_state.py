@@ -85,6 +85,10 @@ class MonitorState(State):
         self.monitoring = True
 
         while not self.msg_list:
+            # Check for error
+            if self._error_event.is_set():
+                return self.on_error(blackboard)
+            
             time.sleep(self.time_to_wait)
 
             if not self._timeout is None:
@@ -97,7 +101,7 @@ class MonitorState(State):
 
                 elapsed_time += self.time_to_wait
 
-        self._node.get_logger().info(
+        self._node.get_logger().debug(
             f"Processing msg from topic '{self._topic_name}'")
         outcome = self._monitor_handler(
             blackboard, self.msg_list.pop(0))

@@ -16,6 +16,7 @@
 
 from typing import List, Callable, Type, Any
 from threading import RLock, Event
+import time
 
 from rclpy.node import Node
 from rclpy.action import ActionClient
@@ -125,8 +126,14 @@ class ActionState(State):
             goal, feedback_callback=feedback_handler)
         send_goal_future.add_done_callback(self._goal_response_callback)
 
-        # Wait for action to be done
-        self._action_done_event.wait()
+        # Wait for action to be done or error event
+        while not self._action_done_event.is_set():
+            if self._error_event.is_set():
+                self._node.get_logger().info("Error detected, canceling action...")
+                self._goal_handle.cancel_goal_async()
+                self._action_done_event.wait()  # Wait for cancellation confirmation
+                return self.on_error(blackboard)
+            time.sleep(0.01)  # Sleep briefly to avoid busy waiting
 
         if self._action_status == GoalStatus.STATUS_CANCELED:
             return CANCEL
