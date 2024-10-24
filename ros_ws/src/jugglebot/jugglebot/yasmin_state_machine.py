@@ -3,7 +3,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPo
 from yasmin_ros.yasmin_node import YasminNode
 from yasmin_ros.basic_outcomes import SUCCEED, TIMEOUT, ABORT, CANCEL
 from yasmin_ros import MonitorState, ServiceState, ActionState
-from yasmin import StateMachine, Blackboard
+from yasmin import StateMachine, Blackboard, State, CbState
 from yasmin_viewer import YasminViewerPub
 
 from std_msgs.msg import String, Bool
@@ -13,95 +13,94 @@ from jugglebot_interfaces.msg import HeartbeatMsg, RobotStateMsg
 from jugglebot_interfaces.srv import GetStateFromTeensy
 from jugglebot_interfaces.action import HomeMotors, LevelPlatform
 import threading
+import time
 
+#########################################################################################################
+#                                               Helper Functions                                        #
+#########################################################################################################
 
+def default_error_response(self, blackboard):
+    """Default response for handling errors—returns ABORT unless overridden."""
+    error = blackboard["error"]
+    if error:
+        self._node.get_logger().error(f"Default error handling: {error}")
+        return ABORT
+    return None
 #########################################################################################################
 #                                               Define States                                           #
 #########################################################################################################
 
-# Define the BOOT State
-class BootState(ServiceState):
-    def __init__(self):
-        super().__init__(
-            srv_name="get_state_from_teensy",
-            srv_type=GetStateFromTeensy,
-            create_request_handler=self.create_boot_request_handler,
-            outcomes=["fresh_session", "encoder_search_complete", "homing_complete"],
-            response_handler=self.handle_boot_result
-        )
+class BootState(MonitorState):
+    '''
+    BootState is the first state that the machine enters. It is responsible for initializing the system by first
+    checking to see that all heartbeats have been received. If all heartbeats are received without errors, the state
+    then checks whether the encoder search has been completed for all axes. If the encoder search has been completed,
+    the state then checks whether homing has been completed for all axes. The status of these checks is stored in the
+    blackboard. Assuming heartbeats are received and there are no errors, the state will then transition to IDLE.
 
-    def create_boot_request_handler(self, blackboard) -> GetStateFromTeensy.Request:
-        # Create the request to boot the system
-        request = GetStateFromTeensy.Request()
-        return request
+    Note that the dummy topic "initialization_complete" is used to confirm that the initialization process has been
+    completed. True means there were no errors. The stage we're up to is stored in the blackboard.
 
-    def handle_boot_result(self, blackboard, result):
-        # Unpack the result and update the blackboard
-        if result.success:
-            blackboard["encoder_search_complete"] = result.state.encoder_search_complete
-            blackboard["is_homed"] = result.state.is_homed
-            blackboard["levelling_complete"] = result.state.levelling_complete
-            blackboard["pose_offset_rad"] = result.state.pose_offset_rad
-            blackboard["pose_offset_quat"] = result.state.pose_offset_quat
-
-        else:
-            if result.error: # If there is an error message, record it
-                blackboard["error"] = result.error
-            else: # If there is no error message, record a generic error
-                blackboard["error"] = "Error while booting the system."
-            return ABORT
-
-        # Log the blackboard
-        # self._node.get_logger().info(f"Blackboard updated: {blackboard}")
-
-        # Based on how far the system got last time it ran, decide the next state
-        if not blackboard["encoder_search_complete"]:
-            return "fresh_session"
-        elif not blackboard["is_homed"]:
-            return "encoder_search_complete"
-        elif not blackboard["levelling_complete"]:
-            return "homing_complete"
-        
-        # NOTE This will need to be expanded once levelling is implemented
-
-        return ABORT
-
-# Define the STANDBY State
-class StandbyState(MonitorState):
+    If any errors are received from downstream nodes, the state will CANCEL and transition to FAULT.
+    '''
     def __init__(self):
         super().__init__(
             msg_type=Bool,
-            topic_name="all_heartbeats_received",  # Placeholder, not used directly here. Should be "heartbeat_topic" if using this approach
-            outcomes=["all_heartbeats_confirmed", ABORT, "continue_waiting"],
-            monitor_handler=self.confirm_heartbeats_and_advance,
-            msg_queue=10,
-            # qos=QoSProfile(reliability=ReliabilityPolicy.RELIABLE, 
-            #                depth=7, 
-            #                history=HistoryPolicy.KEEP_ALL,
-            #                durability=DurabilityPolicy.TRANSIENT_LOCAL
-            #                ),
-            # msg_queue=7
+            topic_name="initialization_complete",
+            outcomes=[SUCCEED, ABORT],
+            monitor_handler=self.finish_and_advance,
+            msg_queue=7,
         )
 
         ''' If we subscribe to the topic "correctly" (ie. using the interface in __init__), the system lags and doesn't catch
-        all heartbeats in one go. If we subscribe to the topic using the create_subscription method, the system works as expected
-        except that it doesn't advance the state machine after returning "all_heartbeats_confirmed". Also note that by using the
-        create_subscription method, the topic callback doesn't have access to the blackboard. '''
+        all heartbeats in one go. If we subscribe to the topic using the create_subscription method, the system works as expected. 
+        Note that by using the create_subscription method, the topic callback doesn't have access to the blackboard. '''
 
-        # Subscribe to the correct topic
+        # Initialize the stage we're up to
+        self.stage = "waiting_for_heartbeats"
+    
+        ''' HEARTBEAT MONITORING '''
+            # Subscribe to the heartbeat topic
         self._subscription = self._node.create_subscription(
             HeartbeatMsg,
             "heartbeat_topic",
             self.check_all_heartbeats,
             7
         )
-
-        # Create a publisher for the dummy heartbeat topic, with datatype bool
-        self._pub = self._node.create_publisher(Bool, "all_heartbeats_received", 10)
-
         # Add self.heartbeats_received as local copy
         self.heartbeat_received = set()
-        self._outcome = "continue_waiting"  # Initialize the outcome
+
+        ''' ENCODER SEARCH'''
+        # Create a service client to request the encoder search status
+        self._encoder_search_client = self._node.create_client(Trigger, "check_whether_encoder_search_complete")
+
+        ''' HOMING STATUS '''
+        # Create a service client to request the homing status
+        self._homing_status_client = self._node.create_client(GetStateFromTeensy, "get_state_from_teensy")
+
+        # Create a publisher for the dummy topic that confirms initialization
+        self._pub = self._node.create_publisher(Bool, "initialization_complete", 10)
+
+    #########################################################################################################
+    #                                      Override State Methods                                           #
+    #########################################################################################################
+
+    def on_enter(self, blackboard):
+        # Start a timer to run the mini state machine
+        self._timer = self._node.create_timer(0.1, self.mini_state_machine)
+
+    def on_exit(self, blackboard):
+        try:
+            self._timer.cancel()
+            self._timer.destroy()
+        except Exception as e:
+            self._node.get_logger().error(f"Error while canceling timer: {e}")
+        finally:
+            self._timer = None
+
+    #########################################################################################################
+    #                                            Heartbeat                                                  #
+    #########################################################################################################
 
     def check_all_heartbeats(self, msg):
         if not self.monitoring:
@@ -112,8 +111,8 @@ class StandbyState(MonitorState):
             self.heartbeat_received.add(msg.axis_id)
             # self._node.get_logger().info(f"Received heartbeat from axis {msg.axis_id}")
         elif msg.axis_error != 0:
-            self._node.get_logger().error(f"Error on axis {msg.axis_id}: {msg.axis_error}")
-            self._outcome = ABORT
+            # self._node.get_logger().error(f"Error on axis {msg.axis_id}: {msg.axis_error}")
+            self.publish_to_dummy_topic(False)
             return
 
         # Log which heartbeats have been received
@@ -121,28 +120,149 @@ class StandbyState(MonitorState):
 
         # Check if all heartbeats have been received
         if len(self.heartbeat_received) == 7:
-            # self._node.get_logger().info("All heartbeats received.")
-            self._outcome = "all_heartbeats_confirmed"
+            self.stage = "all_heartbeats_confirmed"
+            # Reset the set of received heartbeats
+            self.heartbeat_received.clear()
 
-            if self._outcome == "all_heartbeats_confirmed":
-                # If the outcome is "all_heartbeats_confirmed", publish "True" to the dummy topic
-                msg = Bool()
-                msg.data = True
-                self._pub.publish(msg)
+    #########################################################################################################
+    #                                          Encoder Search                                               #
+    #########################################################################################################
 
-                # Empty the set of received heartbeats
-                self.heartbeat_received.clear()
+    def send_encoder_search_request(self):
+        # Send a request to check whether the encoder search has been completed
+        request = Trigger.Request()
+        future = self._encoder_search_client.call_async(request)
+        future.add_done_callback(self.encoder_search_response_callback)
 
-            elif self._outcome == ABORT:
-                # If the outcome is "ABORT", publish "False" to the dummy topic
-                msg = Bool()
-                msg.data = False
-                self._pub.publish(msg)
-
-    def confirm_heartbeats_and_advance(self, blackboard, msg):
-        if msg.data == True:
-            return "all_heartbeats_confirmed"
+    def encoder_search_response_callback(self, future):
+        # Handle the response from the encoder search service
+        try:
+            response = future.result()
+        except Exception as e:
+            self._node.get_logger().error(f"Service call failed: {e}")
         else:
+            if response.success:
+                self.stage = "encoder_search_complete"
+
+            elif response.success == False:
+                self.stage = "encoder_search_incomplete"
+
+    #########################################################################################################
+    #                                          Homing Status                                                #
+    #########################################################################################################
+
+    def send_homing_status_request(self):
+        # Send a request to check the homing status
+        request = GetStateFromTeensy.Request()
+        future = self._homing_status_client.call_async(request)
+        future.add_done_callback(self.homing_status_response_callback)
+
+    def homing_status_response_callback(self, future):
+        # Handle the response from the homing status service
+        try:
+            response = future.result()
+
+            if response.state.is_homed:
+                self.stage = "homing_complete"
+
+            else:
+                self.stage = "homing_incomplete"
+
+        except Exception as e:
+            self._node.get_logger().error(f"Service call failed: {e}")
+
+    def mini_state_machine(self):
+        '''
+        A mini state machine that tracks the stage of the boot process. This is necessary because the BootState
+        is a MonitorState and we're handling several processes here.
+        '''
+        if self.stage == "waiting_for_heartbeats":
+            return
+        
+        elif self.stage == "all_heartbeats_confirmed":
+            self._node.get_logger().info("All heartbeats received. Checking encoder search status...")
+            # Send a request to check whether the encoder search has been completed
+            self.send_encoder_search_request()
+            self.stage = "waiting_for_encoder_search"
+            return
+
+        elif self.stage == "encoder_search_complete":
+            self._node.get_logger().info("All axes have completed encoder search already. Checking homing status...")
+            # Send a request to check the homing status
+            self.send_homing_status_request()
+            self.stage = "waiting_for_homing_status"
+            return
+
+        elif self.stage == "encoder_search_incomplete":
+            self._node.get_logger().info("One or more axes haven't completed the encoder search. Running now...")
+
+            # Publish "True" to the dummy topic
+            self.publish_to_dummy_topic(True)
+            return        
+        
+        elif self.stage == "homing_complete":
+            self._node.get_logger().info("All axes have completed homing. Initialization complete.")
+            self.publish_to_dummy_topic(True)
+            return
+        
+        elif self.stage == "homing_incomplete":
+            self._node.get_logger().error("One or more axes haven't completed homing. Running now...")
+            self.publish_to_dummy_topic(True)
+            return
+        
+        # Log this
+        self._node.get_logger().info(f"Mini State Machine. Stage: {self.stage}")
+
+    def publish_to_dummy_topic(self, outcome):
+        # Publish the outcome to the dummy topic
+        msg = Bool()
+        msg.data = outcome
+        self._pub.publish(msg)
+
+    def finish_and_advance(self, blackboard, msg):
+        '''
+        This function is called when the state machine receives a message from the dummy topic "initialization_complete".
+        If the message is True, the state machine advances to IDLE. If the message is False, the state machine transitions to FAULT.
+        '''
+        # Begin by storing the stage we're up to in the blackboard
+        blackboard["init_stage"] = self.stage
+
+        if msg.data == True:
+            return SUCCEED
+        else:
+            return ABORT
+
+# Define the IDLE State
+class IdleState(State):
+    """
+    This state is responsible for ensuring that the robot is ready to start moving. Before leaving this state and
+    advancing to STANDBY, the robot must have completed the encoder search and homing processes.
+    """
+    def __init__(self):
+        super().__init__(
+            outcomes=[ABORT, CANCEL, SUCCEED, "encoder_search_incomplete", "homing_incomplete", "waiting_for_heartbeats"],
+        )
+
+    def execute(self, blackboard):
+        ''' Check whether the encoder search and homing processes have been completed. '''
+        try:       
+            current_stage = blackboard["init_stage"]
+
+            if current_stage == "waiting_for_heartbeats":
+                return "waiting_for_heartbeats"
+            elif current_stage == "encoder_search_incomplete":
+                return "encoder_search_incomplete"
+            elif current_stage == "homing_incomplete" or current_stage == "encoder_search_complete":
+                return "homing_incomplete"
+            elif current_stage == "homing_complete":
+                return SUCCEED
+            else:
+                return current_stage
+                return ABORT
+
+        except Exception as e:
+            # Can't log because 'State' doesn't have access to the node
+            # self._node.get_logger().error(f"Error in IdleState: {e}")
             return ABORT
 
 # Define ENCODER_SEARCH State
@@ -161,9 +281,9 @@ class EncoderSearchState(ServiceState):
         request = Trigger.Request()
         return request
     
-    def handle_encoder_search_result(self, blackboard, result):
+    def handle_encoder_search_result(self, blackboard, result):        
         if result.success == True:
-            blackboard["encoder_search_complete"] = True
+            blackboard["init_stage"] = "encoder_search_complete"
             return SUCCEED
         return ABORT
 
@@ -174,7 +294,7 @@ class HomingState(ActionState):
             action_type=HomeMotors,
             action_name="home_motors",
             create_goal_handler=self.create_homing_goal,
-            outcomes=None, # Includes the default (SUCCEED, ABORT, CANCEL)
+            outcomes=[], # Includes the default (SUCCEED, ABORT, CANCEL)
             result_handler=self.handle_homing_result
         )
 
@@ -190,24 +310,25 @@ class HomingState(ActionState):
 
     def handle_homing_result(self, blackboard, result):
         if result.success:
-            blackboard["is_homed"] = True
+            blackboard["init_stage"] = "homing_complete"
             return SUCCEED
         return ABORT
 
-# Define the IDLE State
-class IdleState(MonitorState):
+# Define the STANDBY State
+class StandbyState(MonitorState):
     def __init__(self):
         super().__init__(
-            msg_type=String,
-            topic_name="command_topic",
-            outcomes=["levelling_command_received"],
-            monitor_handler=self.handle_idle_command
+            msg_type=Bool,
+            topic_name="standby_command",
+            outcomes=[ABORT, CANCEL, SUCCEED],
+            monitor_handler=self.handle_standby_command,
+            msg_queue=1
         )
 
-    def handle_idle_command(self, blackboard, msg):
-        if msg.data == "level_platform":
-            return "levelling_command_received"
-        return None
+    def handle_standby_command(self, blackboard, msg):
+        if msg.data == True:
+            return ABORT
+        return SUCCEED
 
 # Define the LEVELLING_PLATFORM State
 class LevellingPlatformState(ActionState):
@@ -219,6 +340,11 @@ class LevellingPlatformState(ActionState):
             outcomes=None, # Includes the default (SUCCEED, ABORT, CANCEL)
             result_handler=self.handle_level_result
         )
+
+    def handle_idle_command(self, blackboard, msg):
+        if msg.data == "level_platform":
+            return "levelling_command_received"
+        return None
 
     def create_level_goal(self, blackboard):
         # Ensure the action server is available before creating the goal
@@ -239,70 +365,83 @@ class LevellingPlatformState(ActionState):
         return ABORT
 
 # Define the FAULT State
-class FaultState(MonitorState):
+class FaultState(State):
     def __init__(self):
         super().__init__(
-            msg_type=String,
-            topic_name="fault_topic",
-            outcomes=["timeout"],
-            monitor_handler=self.handle_fault
+            outcomes=["timeout", "errors_cleared"],
         )
 
-    def handle_fault(self, blackboard, msg):
-        # Print the error message
-        self._node.get_logger().error(f"Error on blackboard: {blackboard['error']}", throttle_duration_sec=1.0)
-        return TIMEOUT
+    def execute(self, blackboard):
+        """Check for errors and return to normal state machine operation once errors are cleared."""
+
+        if blackboard["error"] == "":
+            return "errors_cleared"
+        
+        time.sleep(1.0)
+        return "timeout"
     
 #########################################################################################################
 #                                         Sync with Robot State Topic                                   #
 #########################################################################################################
 
 class RobotStateSynchronizer:
-    def __init__(self, yasmin_node, blackboard):
+    def __init__(self, yasmin_node, blackboard, state_machine):
         self._node = yasmin_node
         self._blackboard = blackboard
+        self._state_machine = state_machine
         self._state_publisher = self._node.create_publisher(RobotStateMsg, 'robot_state', 10)
-        self._state_subscriber = self._node.create_subscription(
-            RobotStateMsg,
-            'robot_state',
-            self.update_blackboard_from_topic,
+        self._state_error_subscriber = self._node.create_subscription(
+            String,
+            'robot_state_error',
+            self.update_blackboard_with_errors,
             10
         )
 
-    def update_blackboard_from_topic(self, msg):
+        # Set up a timer for error checking, running every 0.1 seconds (10 Hz)
+        self._error_check_timer = self._node.create_timer(0.1, self.check_for_errors)
+
+        # Initialize a variable to keep track of the last published state
+        self._last_published_state = None
+
+        '''
+        NOTE: A great update here would be to allow 'error' to store a list of errors, rather than just one. This would
+        allow for more detailed error handling and logging.
+        '''
+
+    def check_for_errors(self):
+        """Check the blackboard for errors and force a transition to the FAULT state if any are found."""
+        current_state = self._state_machine.get_current_state()
+
+        if current_state == "FAULT":
+            return
+
+        if self._blackboard["error"]:
+            self._node.get_logger().info(f"Error detected, notifying state machine: {self._blackboard['error']}")
+            self._state_machine.notify_error()
+
+    def update_blackboard_with_errors(self, msg):
+        ''' Update the blackboard with any errors received from the robot state topic. '''
+        # Check whether the error is the same as the previous one
+        if msg.data == self._blackboard['error']:
+            return
+
         # Update blackboard from the received state message
-        self._blackboard = {
-            'encoder_search_complete': msg.encoder_search_complete,
-            'is_homed': msg.is_homed,
-            'level_completed': msg.levelling_complete,
-            'pose_offset_rad': msg.pose_offset_rad,
-            'pose_offset_quat': msg.pose_offset_quat,
-            'error': msg.error
-        }
-        self._node.get_logger().info(f"Blackboard updated from robot_state topic: {msg}")
+        self._blackboard['error'] = msg.data
+        
+        self._node.get_logger().info("--------------------")
 
-    def publish_state_if_changed(self, previous_state):
-        ''' Publish the robot state if it has changed (in this node) since the last time it was published. '''
+        # Log the updated blackboard with a new line for each field
+        self._node.get_logger().info(f"Updated blackboard: {self._blackboard}")
 
-        # Create a message from the blackboard state
-        current_state = {
-            'encoder_search_complete': self._blackboard.get('encoder_search_complete', False),
-            'is_homed': self._blackboard.get('is_homed', False),
-            'level_completed': self._blackboard.get('levelling_complete', False),
-            'pose_offset_rad': self._blackboard.get('pose_offset_rad', [0.0, 0.0]),
-            'pose_offset_quat': self._blackboard.get('pose_offset_quat', Quaternion()),
-            'error': self._blackboard.get('error', None)
-        }
+        self._node.get_logger().info("--------------------")
 
-        # Only publish if there is a change
-        if current_state != previous_state:
-            msg = RobotStateMsg()
-            for field, value in current_state.items():
-                setattr(msg, field, value)
-            self._state_publisher.publish(msg)
-            self._node.get_logger().info(f"Published updated robot state: {msg}")
-        return current_state
-
+    def publish_state(self, previous_state):
+        '''
+        Publish the current state of the robot if it has changed since the last published state.
+        This method is useful to relay the pose offsets to the Teensy.
+        '''
+        pass
+        
 #########################################################################################################
 #                                                    Main                                               #
 #########################################################################################################
@@ -318,47 +457,54 @@ def main():
 
     # Initialize the Blackboard and State Machine
     blackboard = Blackboard()
-    blackboard["encoder_search_complete"] = False
-    blackboard["is_homed"] = False
+    blackboard["init_stage"] = "encoder_search_incomplete" # What stage of the initialization process we're up to
     blackboard["levelling_complete"] = False
     blackboard["pose_offset_rad"] = [0.0, 0.0]
     blackboard["pose_offset_quat"] = Quaternion()
-    blackboard["error"] = None
+    blackboard["error"] = ""
 
     # Create and add states to the state machine
     state_machine = StateMachine(outcomes=[SUCCEED])
 
     state_machine.add_state("BOOT", BootState(), transitions={
-        "fresh_session": "STANDBY",
-        "encoder_search_complete": "HOMING",
-        "homing_complete": "IDLE",
-        ABORT: "FAULT"
-    })
-
-    state_machine.add_state("STANDBY", StandbyState(), transitions={
-        "all_heartbeats_confirmed": "ENCODER_SEARCH",
+        SUCCEED: "IDLE",
         ABORT: "FAULT",
-        "continue_waiting": "STANDBY"
+        "error": "FAULT"
+    })
+    state_machine.add_state("IDLE", IdleState(), transitions={
+        SUCCEED: "STANDBY",
+        "waiting_for_heartbeats" : "BOOT",
+        "encoder_search_incomplete": "ENCODER_SEARCH",
+        "homing_incomplete": "HOMING",
+        ABORT: "FAULT",
+        CANCEL: "FAULT",
+        "error": "FAULT"
     })
     state_machine.add_state("ENCODER_SEARCH", EncoderSearchState(), transitions={
         SUCCEED: "HOMING",
-        ABORT: "FAULT"
+        ABORT: "FAULT",
+        "error": "FAULT"
     })
     state_machine.add_state("HOMING", HomingState(), transitions={
         SUCCEED: "IDLE",
-        CANCEL: "STANDBY",
-        ABORT: "FAULT"
+        CANCEL: "FAULT",
+        ABORT: "FAULT",
+        "error": "FAULT"
     })
-    state_machine.add_state("IDLE", IdleState(), transitions={
-        "levelling_command_received": "LEVELLING_PLATFORM"
+    state_machine.add_state("STANDBY", StandbyState(), transitions={
+        SUCCEED: "STANDBY",
+        ABORT: "FAULT",
+        CANCEL: "FAULT",
+        "error": "FAULT"
     })
-    state_machine.add_state("LEVELLING_PLATFORM", LevellingPlatformState(), transitions={
-        SUCCEED: "IDLE",
-        CANCEL: "IDLE",
-        ABORT: "FAULT"
-    })
+    # state_machine.add_state("LEVELLING_PLATFORM", LevellingPlatformState(), transitions={
+    #     SUCCEED: "IDLE",
+    #     CANCEL: "IDLE",
+    #     ABORT: "FAULT"
+    # })
     state_machine.add_state("FAULT", FaultState(), transitions={
-        TIMEOUT: "FAULT"
+        TIMEOUT: "FAULT",
+        "errors_cleared": "IDLE"
     })
 
     # Set the start state
@@ -368,29 +514,13 @@ def main():
     YasminViewerPub("yasmin_state_machine", state_machine)
     
     # Initialize RobotStateSynchronizer
-    robot_state_sync = RobotStateSynchronizer(yasmin_node, blackboard)
-
-    # Thread-safe blackboard updates and state management
-    state_lock = threading.Lock()
-    previous_state = {}
-
-    def update_state():
-        nonlocal previous_state
-        with state_lock:
-            previous_state = robot_state_sync.publish_state_if_changed(previous_state)
+    RobotStateSynchronizer(yasmin_node, blackboard, state_machine)
 
     try:
         # Run the state machine
-
-        # Option 1: Run the state machine in a loop with update_state being called once per loop
         while rclpy.ok():
             final_outcome = state_machine(blackboard)
-            update_state()
             yasmin_node.get_logger().info(f"State Machine finished with outcome: {final_outcome}")
-
-        # Option 2: Run the state machine once with no update syncing.
-        # final_outcome = state_machine(blackboard)
-        # yasmin_node.get_logger().info(f"State Machine finished with outcome: {final_outcome}")
 
     except KeyboardInterrupt:
         yasmin_node.get_logger().info("Shutdown requested, stopping state machine gracefully...")
