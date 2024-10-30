@@ -47,7 +47,7 @@ class BootState(MonitorState):
         super().__init__(
             msg_type=Bool,
             topic_name="initialization_complete",
-            outcomes=[SUCCEED, ABORT],
+            outcomes=["boot_complete", ABORT],
             monitor_handler=self.finish_and_advance,
             msg_queue=7,
         )
@@ -228,7 +228,7 @@ class BootState(MonitorState):
         blackboard["init_stage"] = self.stage
 
         if msg.data == True:
-            return SUCCEED
+            return "boot_complete"
         else:
             return ABORT
 
@@ -240,7 +240,10 @@ class PreOpCheckState(State):
     """
     def __init__(self):
         super().__init__(
-            outcomes=[ABORT, CANCEL, SUCCEED, "encoder_search_incomplete", "homing_incomplete", "waiting_for_heartbeats"],
+            outcomes=[ABORT, "initialization_complete",
+                      "encoder_search_incomplete",
+                      "homing_incomplete",
+                      "waiting_for_heartbeats"],
         )
 
     def execute(self, blackboard):
@@ -255,9 +258,8 @@ class PreOpCheckState(State):
             elif current_stage == "homing_incomplete" or current_stage == "encoder_search_complete":
                 return "homing_incomplete"
             elif current_stage == "homing_complete":
-                return SUCCEED
+                return "initialization_complete"
             else:
-                return current_stage
                 return ABORT
 
         except Exception as e:
@@ -272,7 +274,7 @@ class EncoderSearchState(ServiceState):
             srv_name="encoder_search",
             srv_type=Trigger,
             create_request_handler=self.create_encoder_search_request_handler,
-            outcomes=[SUCCEED, ABORT],
+            outcomes=["encoder_search_complete", ABORT],
             response_handler=self.handle_encoder_search_result
         )
 
@@ -284,7 +286,7 @@ class EncoderSearchState(ServiceState):
     def handle_encoder_search_result(self, blackboard, result):        
         if result.success == True:
             blackboard["init_stage"] = "encoder_search_complete"
-            return SUCCEED
+            return "encoder_search_complete"
         return ABORT
 
 # Define the HOMING State
@@ -294,7 +296,7 @@ class HomingState(ActionState):
             action_type=HomeMotors,
             action_name="home_motors",
             create_goal_handler=self.create_homing_goal,
-            outcomes=[], # Includes the default (SUCCEED, ABORT, CANCEL)
+            outcomes=["homing_complete"], # Includes the default (SUCCEED, ABORT, CANCEL)
             result_handler=self.handle_homing_result
         )
 
@@ -311,7 +313,7 @@ class HomingState(ActionState):
     def handle_homing_result(self, blackboard, result):
         if result.success:
             blackboard["init_stage"] = "homing_complete"
-            return SUCCEED
+            return "homing_complete"
         return ABORT
 
 # Define the STANDBY State
@@ -320,7 +322,7 @@ class StandbyState(MonitorState):
         super().__init__(
             msg_type=Bool,
             topic_name="standby_command",
-            outcomes=[ABORT, CANCEL, SUCCEED],
+            outcomes=[ABORT, CANCEL],
             monitor_handler=self.handle_standby_command,
             msg_queue=1
         )
@@ -328,7 +330,7 @@ class StandbyState(MonitorState):
     def handle_standby_command(self, blackboard, msg):
         if msg.data == True:
             return ABORT
-        return SUCCEED
+        return CANCEL
 
 # Define the LEVELLING_PLATFORM State
 class LevellingPlatformState(ActionState):
@@ -365,6 +367,7 @@ class FaultState(State):
         super().__init__(
             outcomes=["timeout", "errors_cleared"],
         )
+
 
     def execute(self, blackboard):
         """Check for errors and return to normal state machine operation once errors are cleared."""
@@ -462,12 +465,12 @@ def main():
     state_machine = StateMachine(outcomes=[SUCCEED])
 
     state_machine.add_state("BOOT", BootState(), transitions={
-        SUCCEED: "PREOPCHECK",
+        "boot_complete": "PREOPCHECK",
         ABORT: "FAULT",
         "error": "FAULT"
     })
     state_machine.add_state("PREOPCHECK", PreOpCheckState(), transitions={
-        SUCCEED: "STANDBY",
+        "initialization_complete": "STANDBY",
         "waiting_for_heartbeats" : "BOOT",
         "encoder_search_incomplete": "ENCODER_SEARCH",
         "homing_incomplete": "HOMING",
@@ -476,20 +479,19 @@ def main():
         "error": "FAULT"
     })
     state_machine.add_state("ENCODER_SEARCH", EncoderSearchState(), transitions={
-        SUCCEED: "HOMING",
+        "encoder_search_complete": "HOMING",
         ABORT: "FAULT",
         "error": "FAULT"
     })
     state_machine.add_state("HOMING", HomingState(), transitions={
-        SUCCEED: "PREOPCHECK",
+        "homing_complete": "PREOPCHECK",
         CANCEL: "FAULT",
         ABORT: "FAULT",
         "error": "FAULT"
     })
     state_machine.add_state("STANDBY", StandbyState(), transitions={
-        SUCCEED: "STANDBY",
         ABORT: "FAULT",
-        CANCEL: "FAULT",
+        CANCEL: "STANDBY",
         "error": "FAULT"
     })
     # state_machine.add_state("LEVELLING_PLATFORM", LevellingPlatformState(), transitions={
