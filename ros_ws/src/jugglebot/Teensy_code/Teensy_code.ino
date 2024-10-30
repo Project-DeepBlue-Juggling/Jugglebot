@@ -32,8 +32,8 @@ const uint32_t reportInterval = 500;  // Report every XXX milliseconds
 const uint32_t REPORT_ID = 0x7DF; // Should be safe from conflict with any ODrive messages.
 
 // For debugging a specific CAN message
-const uint32_t node_id = 6;
-const uint32_t cmd_id = 0x0d;//0x00d;
+const uint32_t node_id = 0;
+const uint32_t cmd_id = 0x018;
 const uint32_t debugID = (node_id << 5) | cmd_id;
 
 // For Timing Analysis of Specific CAN Messages
@@ -44,7 +44,6 @@ const unsigned long analysisPeriod = 500; // Analysis period in milliseconds
 unsigned long totalIntervals = 0;
 int messageCount = 0;
 
-
 // For inclinometer readings
 uint32_t tiltID = 0x7DE; // Should be safe from conflict with ODrive messages
 
@@ -54,7 +53,69 @@ struct platformTilt {
   float tiltY;  // {radians}
 };
 
-// Debugging Function to Print Message Contents with a Given Arbitration ID
+// For state updating
+uint32_t stateUpdateID = 0x6E0; // For updating the state on the Teensy or reporting the last known state to the Jetson
+// Structure to hold the robot state
+struct RobotState {
+  bool is_homed;
+  bool levelling_complete;
+  float pose_offset_tiltX;
+  float pose_offset_tiltY;
+};
+
+// Initialize the state
+RobotState state = {false, false, 0.0, 0.0};
+
+/*********** canSniff ***********/
+void canSniff(const CAN_message_t &msg) {
+  receivedCount++;
+
+  // Check for the specific message ID to trigger inclinometer reading and response
+  if (msg.id == tiltID) {
+    platformTilt tilt = getInclination();
+    sendTiltData(tilt);
+  }
+
+  // Check for state update messages
+  if (msg.id == stateUpdateID) {
+    if (msg.len == 1 && msg.buf[0] == 0x01) {
+      // If the received message is a request for the Teensy's last known state
+      // Respond with the current state
+      CAN_message_t response_msg;
+      createStateCANMessage(state, response_msg);
+      response_msg.id = stateUpdateID;  // Use the same CAN ID for response
+      can1.write(response_msg);
+
+      Serial.println("State sent to host PC.");
+
+    } else if (msg.len == 8) {
+      // Decode the state update message
+      decodeStateCANMessage(msg, state);
+      Serial.println("State updated from host PC:");
+
+      // Output for debugging
+      Serial.print("Is Homed: "); Serial.println(state.is_homed);
+      Serial.print("Levelling Complete: "); Serial.println(state.levelling_complete);
+      Serial.print("tiltX: "); Serial.println(state.pose_offset_tiltX);
+      Serial.print("tiltY: "); Serial.println(state.pose_offset_tiltY);
+      Serial.println();
+    }
+  }
+
+  // debugPrintMessage(msg);
+
+  analyzeMessageTiming(msg);
+
+  // For debugging purposes, print the message content
+  // Serial.printf("CAN Message Received: ID = 0x%X, DLC = %d, Data = ", msg.id, msg.len);
+  // for (int i = 0; i < msg.len; ++i) {
+  //     Serial.printf("0x%02X ", msg.buf[i]);
+  // }
+  // Serial.println();
+}
+
+/*********** Debugging Function to Print Message Contents with a Given Arbitration ID ***********/
+
 void debugPrintMessage(const CAN_message_t &msg) {
     if (msg.id == debugID) {
         Serial.printf("Debug: CAN Message with ID 0x%X, DLC = %d, Data = ", msg.id, msg.len);
@@ -126,27 +187,6 @@ void analyzeMessageTiming(const CAN_message_t &msg) {
   // }
 }
 
-void canSniff(const CAN_message_t &msg) {
-  receivedCount++;
-
-  // Check for the specific message ID to trigger inclinometer reading and response
-  if (msg.id == tiltID) {
-    platformTilt tilt = getInclination();
-    sendTiltData(tilt);
-  }
-
-  // debugPrintMessage(msg);
-
-  analyzeMessageTiming(msg);
-
-  // For debugging purposes, print the message content
-  // Serial.printf("CAN Message Received: ID = 0x%X, DLC = %d, Data = ", msg.id, msg.len);
-  // for (int i = 0; i < msg.len; ++i) {
-  //     Serial.printf("0x%02X ", msg.buf[i]);
-  // }
-  // Serial.println();
-}
-
 void reportStatus() {
   uint32_t currentTime = millis();
   if (currentTime - lastReportTime > reportInterval) {
@@ -175,7 +215,7 @@ void reportStatus() {
   }
 }
 
-// FUNCTIONS FOR INCLINOMETER
+/*********** FUNCTIONS FOR INCLINOMETER ***********/
 // Function to convert angle from 0-360 to -180 to +180
 float convertTo180Range(float angle) {
   if (angle > 180.0) {
@@ -258,6 +298,51 @@ void sendTiltData(platformTilt tilt) {
   Serial.print(", Y = ");
   Serial.println(tilt.tiltY);
 }
+
+/*********** State Update Functions ***********/
+
+// Function to send homing status over the CAN bus
+void createStateCANMessage(const RobotState &state, CAN_message_t &msg) {
+  // Byte 0: Boolean flags
+  uint8_t flags = 0;
+  flags |= (state.is_homed) << 0;
+  flags |= (state.levelling_complete) << 1;
+
+  // Bytes 1-2: Pose offset (tiltX), scaled by 1000
+  int16_t tiltX_scaled = (int16_t)(state.pose_offset_tiltX * 1000);
+
+  // Bytes 3-4: Pose offset (tiltY), scaled by 1000
+  int16_t tiltY_scaled = (int16_t)(state.pose_offset_tiltY * 1000);
+
+  // Construct CAN message
+  msg.len = 8;
+  msg.buf[0] = flags;
+  msg.buf[1] = tiltX_scaled & 0xFF;
+  msg.buf[2] = (tiltX_scaled >> 8) & 0xFF;
+  msg.buf[3] = tiltY_scaled & 0xFF;
+  msg.buf[4] = (tiltY_scaled >> 8) & 0xFF;
+  msg.buf[5] = 0;  // Reserved for future use
+  msg.buf[6] = 0;  // Reserved for future use
+  msg.buf[7] = 0;  // Reserved for future use
+}
+
+void decodeStateCANMessage(const CAN_message_t &msg, RobotState &state) {
+    if (msg.len == 8) {
+        // Byte 0: Extract flags
+        uint8_t flags = msg.buf[0];
+        state.is_homed = flags & 0x01;
+        state.levelling_complete = (flags >> 1) & 0x01;
+
+        // Bytes 1-2: Extract tiltX (scaled by 1000)
+        int16_t tiltX_scaled = (msg.buf[2] << 8) | msg.buf[1];
+        state.pose_offset_tiltX = tiltX_scaled / 1000.0;
+
+        // Bytes 3-4: Extract tiltY (scaled by 1000)
+        int16_t tiltY_scaled = (msg.buf[4] << 8) | msg.buf[3];
+        state.pose_offset_tiltY = tiltY_scaled / 1000.0;
+    }
+}
+
 
 void setup() {
   Serial.begin(115200);
