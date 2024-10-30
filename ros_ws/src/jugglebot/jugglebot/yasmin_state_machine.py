@@ -36,7 +36,7 @@ class BootState(MonitorState):
     checking to see that all heartbeats have been received. If all heartbeats are received without errors, the state
     then checks whether the encoder search has been completed for all axes. If the encoder search has been completed,
     the state then checks whether homing has been completed for all axes. The status of these checks is stored in the
-    blackboard. Assuming heartbeats are received and there are no errors, the state will then transition to IDLE.
+    blackboard. Assuming heartbeats are received and there are no errors, the state will then transition to PREOPCHECK.
 
     Note that the dummy topic "initialization_complete" is used to confirm that the initialization process has been
     completed. True means there were no errors. The stage we're up to is stored in the blackboard.
@@ -222,7 +222,7 @@ class BootState(MonitorState):
     def finish_and_advance(self, blackboard, msg):
         '''
         This function is called when the state machine receives a message from the dummy topic "initialization_complete".
-        If the message is True, the state machine advances to IDLE. If the message is False, the state machine transitions to FAULT.
+        If the message is True, the state machine advances to PreOpCheck. If the message is False, the state machine transitions to FAULT.
         '''
         # Begin by storing the stage we're up to in the blackboard
         blackboard["init_stage"] = self.stage
@@ -232,8 +232,8 @@ class BootState(MonitorState):
         else:
             return ABORT
 
-# Define the IDLE State
-class IdleState(State):
+# Define the PreOpCheck State
+class PreOpCheckState(State):
     """
     This state is responsible for ensuring that the robot is ready to start moving. Before leaving this state and
     advancing to STANDBY, the robot must have completed the encoder search and homing processes.
@@ -262,7 +262,7 @@ class IdleState(State):
 
         except Exception as e:
             # Can't log because 'State' doesn't have access to the node
-            # self._node.get_logger().error(f"Error in IdleState: {e}")
+            # self._node.get_logger().error(f"Error in PreOpCheckState: {e}")
             return ABORT
 
 # Define ENCODER_SEARCH State
@@ -340,11 +340,6 @@ class LevellingPlatformState(ActionState):
             outcomes=None, # Includes the default (SUCCEED, ABORT, CANCEL)
             result_handler=self.handle_level_result
         )
-
-    def handle_idle_command(self, blackboard, msg):
-        if msg.data == "level_platform":
-            return "levelling_command_received"
-        return None
 
     def create_level_goal(self, blackboard):
         # Ensure the action server is available before creating the goal
@@ -467,11 +462,11 @@ def main():
     state_machine = StateMachine(outcomes=[SUCCEED])
 
     state_machine.add_state("BOOT", BootState(), transitions={
-        SUCCEED: "IDLE",
+        SUCCEED: "PREOPCHECK",
         ABORT: "FAULT",
         "error": "FAULT"
     })
-    state_machine.add_state("IDLE", IdleState(), transitions={
+    state_machine.add_state("PREOPCHECK", PreOpCheckState(), transitions={
         SUCCEED: "STANDBY",
         "waiting_for_heartbeats" : "BOOT",
         "encoder_search_incomplete": "ENCODER_SEARCH",
@@ -486,7 +481,7 @@ def main():
         "error": "FAULT"
     })
     state_machine.add_state("HOMING", HomingState(), transitions={
-        SUCCEED: "IDLE",
+        SUCCEED: "PREOPCHECK",
         CANCEL: "FAULT",
         ABORT: "FAULT",
         "error": "FAULT"
@@ -498,13 +493,11 @@ def main():
         "error": "FAULT"
     })
     # state_machine.add_state("LEVELLING_PLATFORM", LevellingPlatformState(), transitions={
-    #     SUCCEED: "IDLE",
-    #     CANCEL: "IDLE",
     #     ABORT: "FAULT"
     # })
     state_machine.add_state("FAULT", FaultState(), transitions={
         TIMEOUT: "FAULT",
-        "errors_cleared": "IDLE"
+        "errors_cleared": "PREOPCHECK"
     })
 
     # Set the start state
