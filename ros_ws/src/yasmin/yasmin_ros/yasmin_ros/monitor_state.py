@@ -13,6 +13,10 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+'''
+This module has been updated from the base YASMIN library to:
+- Inherit ROS2 access from the State class
+'''
 
 import time
 from typing import List, Callable, Union, Type
@@ -23,13 +27,11 @@ from rclpy.qos import QoSProfile
 
 from yasmin import State
 from yasmin import Blackboard
-from yasmin_ros.yasmin_node import YasminNode
 from yasmin_ros.basic_outcomes import TIMEOUT
 
 
 class MonitorState(State):
 
-    _node: Node
     _sub: Subscription
     _monitor_handler: Callable
     _topic_name: str
@@ -57,15 +59,11 @@ class MonitorState(State):
         self._timeout = timeout
         if not timeout is None:
             outcomes = [TIMEOUT] + outcomes
-        super().__init__(outcomes)
+        
+        super().__init__(outcomes, node=node)
 
         self._monitor_handler = monitor_handler
         self.msg_queue = msg_queue
-
-        if node is None:
-            self._node = YasminNode.get_instance()
-        else:
-            self._node = node
 
         self._sub = self._node.create_subscription(
             msg_type, topic_name, self.__callback, qos)

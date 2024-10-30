@@ -13,18 +13,35 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+'''
+This module has been updated from the base YASMIN library to:
+- Include access to the ROS2 node
+- Include a default error handling method
+'''
 
 from typing import List
 from abc import ABC, abstractmethod
 from yasmin.blackboard import Blackboard
 from threading import Event
 
+# Imports to allow the State to access the ROS node
+from rclpy.node import Node
+from yasmin_ros.yasmin_node import YasminNode 
+
 class State(ABC):
 
-    def __init__(self, outcomes: List[str]) -> None:
+    _node: Node
+
+    def __init__(self, outcomes: List[str], node: Node = None) -> None:
         self._outcomes = []
         self._canceled = False
         self._error_event = Event()
+
+        # Initialize self._node
+        if node is None:
+            self._node = YasminNode.get_instance()
+        else:
+            self._node = node
 
         if outcomes:
             # Ensure 'error' outcome is always present

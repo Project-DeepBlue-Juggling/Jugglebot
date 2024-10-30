@@ -260,11 +260,11 @@ class PreOpCheckState(State):
             elif current_stage == "homing_complete":
                 return "initialization_complete"
             else:
+                self._node.get_logger().error(f"Unknown stage: {current_stage}")
                 return ABORT
 
         except Exception as e:
-            # Can't log because 'State' doesn't have access to the node
-            # self._node.get_logger().error(f"Error in PreOpCheckState: {e}")
+            self._node.get_logger().error(f"Error in PreOpCheckState: {e}")
             return ABORT
 
 # Define ENCODER_SEARCH State
@@ -368,6 +368,8 @@ class FaultState(State):
             outcomes=["timeout", "errors_cleared"],
         )
 
+    def on_enter(self, blackboard):
+        self._node.get_logger().error(f"Error detected! Current state: {blackboard}")
 
     def execute(self, blackboard):
         """Check for errors and return to normal state machine operation once errors are cleared."""

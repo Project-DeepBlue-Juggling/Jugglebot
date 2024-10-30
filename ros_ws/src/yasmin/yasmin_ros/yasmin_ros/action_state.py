@@ -13,6 +13,10 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+'''
+This module has been updated from the base YASMIN library to:
+- Inherit ROS2 access from the State class
+'''
 
 from typing import List, Callable, Type, Any
 from threading import RLock, Event
@@ -26,13 +30,10 @@ from action_msgs.msg import GoalStatus
 
 from yasmin import State
 from yasmin import Blackboard
-from yasmin_ros.yasmin_node import YasminNode
 from yasmin_ros.basic_outcomes import SUCCEED, ABORT, CANCEL, TIMEOUT
 
 
 class ActionState(State):
-
-    _node: Node
 
     _action_name: str
     _action_client: ActionClient
@@ -71,10 +72,7 @@ class ActionState(State):
         if outcomes:
             _outcomes = _outcomes + outcomes
 
-        if node is None:
-            self._node = YasminNode.get_instance()
-        else:
-            self._node = node
+        super().__init__(_outcomes, node=node)
 
         self._action_client = ActionClient(
             self._node,
@@ -89,8 +87,6 @@ class ActionState(State):
 
         if not self._create_goal_handler:
             raise Exception("create_goal_handler is needed")
-
-        super().__init__(_outcomes)
 
     def cancel_state(self) -> None:
 

@@ -13,6 +13,10 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+'''
+This module has been updated from the base YASMIN library to:
+- Inherit ROS2 access from the State class
+'''
 
 from typing import List, Callable, Type, Any
 import time
@@ -22,13 +26,11 @@ from rclpy.client import Client
 
 from yasmin import State
 from yasmin import Blackboard
-from yasmin_ros.yasmin_node import YasminNode
 from yasmin_ros.basic_outcomes import SUCCEED, ABORT, TIMEOUT
 
 
 class ServiceState(State):
 
-    _node: Node
     _srv_name: str
     _service_client: Client
     _create_request_handler: Callable
@@ -56,20 +58,15 @@ class ServiceState(State):
         if outcomes:
             _outcomes = _outcomes + outcomes
 
-        if node is None:
-            self._node = YasminNode.get_instance()
-        else:
-            self._node = node
+        if not create_request_handler:
+            raise Exception("create_request_handler is needed")
+
+        super().__init__(_outcomes, node=node)
 
         self._service_client = self._node.create_client(srv_type, srv_name)
 
         self._create_request_handler = create_request_handler
         self._response_handler = response_handler
-
-        if not self._create_request_handler:
-            raise Exception("create_request_handler is needed")
-
-        super().__init__(_outcomes)
 
     def execute(self, blackboard: Blackboard) -> str:
 
