@@ -157,11 +157,11 @@ class CANInterface:
         self._received_encoder_search_feedback_on_axes = [None] * 6 # Only the legs need to do this, as the hand uses the on-board encoder
 
         # Current state for each axis
-        self.active_errors: List[Optional[int]]    = [None] * self.num_axes
-        self.disarm_reasons: List[Optional[int]]   = [None] * self.num_axes
-        self.axis_states: List[Optional[int]]      = [None] * self.num_axes
-        self.trajectory_done: List[Optional[bool]] = [None] * self.num_axes
-        self.procedure_result: List[Optional[int]] = [None] * self.num_axes
+        self.active_errors: List[Optional[int]]    = [0] * self.num_axes
+        self.disarm_reasons: List[Optional[int]]   = [0] * self.num_axes
+        self.axis_states: List[Optional[int]]      = [0] * self.num_axes
+        self.trajectory_done: List[Optional[bool]] = [0] * self.num_axes
+        self.procedure_result: List[Optional[int]] = [0] * self.num_axes
 
         # ROS2 publisher for HeartbeatMsg
         self.heartbeat_publisher = heartbeat_publisher
@@ -205,7 +205,7 @@ class CANInterface:
         self.hand_motor_abs_limits = {'velocity_limit': 20.0, 'current_limit': 10.0}
 
         # Initialize leg trapezoidal trajectory limits
-        self.leg_trap_traj_limits = {'vel_limit': 20.0, 'acc_limit': 100.0, 'dec_limit': 80.0}
+        self.leg_trap_traj_limits = {'vel_limit': 20.0, 'acc_limit': 10.0, 'dec_limit': 8.0}
 
         # Initialize default hand gains
         self.default_hand_gains = {'pos_gain': 0.2, 'vel_gain': 0.16, 'vel_integrator_gain': 0.32}
@@ -227,6 +227,9 @@ class CANInterface:
             bitrate=self._can_bitrate
         )
         self.flush_bus() # Flush the bus now that it's been set up
+
+        # Now setup the ODrives to their default state
+        self.setup_odrives()
 
     def close(self):
         """
@@ -1295,25 +1298,29 @@ class CANInterface:
         self.active_errors[axis_id] = active_errors
         self.disarm_reasons[axis_id] = disarm_reason
     
+        # Initialize conditions
+        no_active_errors = all(error == 0 for error in self.active_errors)
+        no_disarm_reasons = all(reason == 0 for reason in self.disarm_reasons)
+        any_disarmed = any(reason != 0 for reason in self.disarm_reasons)
+        any_in_closed_loop_control = any(state == 8 for state in self.axis_states)
+        
         # If there are no active errors and the disarm reason is 0 for all axes, there's nothing to report
-        if all(error == 0 for error in self.active_errors) and all(reason == 0 for reason in self.disarm_reasons):
+        if no_active_errors and no_disarm_reasons:
             # Clear any existing error flags
             self.undervoltage_error = False
             self.fatal_error = False
-
-        elif all(error == 0 for error in self.active_errors) and any(reason != 0 for reason in self.disarm_reasons):
-            '''
-            If there are no active errors but the disarm reason is non-zero, simply clear these errors.
-            To recover from this, simply clear the errors (this is fine since active errors == 0)
-            '''
-            # Log the disarm reason for this axis
-            self.ROS_logger.error(f"Disarm reason on axis {axis_id}: {disarm_reason}")
-            self.ROS_logger.error(f"All disarm reasons: {self.disarm_reasons}")
-            # Clear errors. This requires a re-entrant lock on the CAN bus
-            self.clear_errors() # This also resets the fatal_error and undervoltage_error flags
-
-        else:
+            return
+        
+        # If there are any axes disarmed AND any axes are in CLOSED_LOOP_CONTROL mode (state 8), then report an error
+        if any_disarmed and any_in_closed_loop_control:
             self.fatal_error = True
+            self.ROS_logger.error(f"One or more axes are disarmed while in CLOSED_LOOP_CONTROL mode!", throttle_duration_sec=1.0)
+        
+        # If there are any active errors, set the flag
+        if not no_active_errors:
+            self.fatal_error = True
+            # Log the active errors
+            self.ROS_logger.error(f"Fatal error detected! {self.active_errors}")
 
         # Dictionary mapping error codes to error messages
         ERRORS = {
@@ -1345,7 +1352,7 @@ class CANInterface:
         if active_errors & 512:
             self.undervoltage_error = True
 
-        # Log all active errors with throttling
+        # Log all errors with per-axis per-error throttling
         
         # Initialize per-axis log times if they don't exist
         if axis_id not in self._last_error_log_times:
