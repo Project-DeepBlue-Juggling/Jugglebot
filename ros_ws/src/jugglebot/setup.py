@@ -26,6 +26,9 @@ setup(
         'console_scripts': [
             'yasmin_state_machine = jugglebot.yasmin_state_machine:main',
             'can_interface_node = jugglebot.can_interface_node:main',
+            'spacemouse_handler = jugglebot.spacemouse_handler:main',
+            'sp_ik = jugglebot.sp_ik:main',
+            'robot_geometry = jugglebot.robot_geometry:main'
         ],
     },
 )

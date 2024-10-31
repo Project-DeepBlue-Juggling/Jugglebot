@@ -33,6 +33,9 @@ def generate_launch_description():
 
     jugglebot_node_names = [
         'yasmin_state_machine',
+        'spacemouse_handler',
+        'sp_ik',
+        'robot_geometry',
     ]
     jugglebot_nodes = [
         Node(

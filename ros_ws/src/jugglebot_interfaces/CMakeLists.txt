@@ -25,8 +25,10 @@ find_package(rosidl_default_generators REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/HeartbeatMsg.msg"
   "msg/RobotStateMsg.msg"
+  "msg/PlatformPoseMessage.msg"
 
   "srv/GetStateFromTeensy.srv"
+  "srv/GetRobotGeometry.srv"
 
   "msg/CanTrafficReportMessage.msg"
   "msg/HandTelemetryMessage.msg"
