@@ -86,4 +86,6 @@ class State(ABC):
         """
         Default error handling method. Subclasses can override this method to implement custom error handling.
         """
+
+        blackboard['error'] = "Generic Error (in `state.py`)"
         return 'error' # Return generic error outcome
