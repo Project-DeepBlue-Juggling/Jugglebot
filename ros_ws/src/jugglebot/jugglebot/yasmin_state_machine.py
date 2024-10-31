@@ -1,9 +1,8 @@
 import rclpy
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from yasmin_ros.yasmin_node import YasminNode
 from yasmin_ros.basic_outcomes import SUCCEED, TIMEOUT, ABORT, CANCEL
 from yasmin_ros import MonitorState, ServiceState, ActionState
-from yasmin import StateMachine, Blackboard, State, CbState
+from yasmin import StateMachine, Blackboard, State
 from yasmin_viewer import YasminViewerPub
 
 from std_msgs.msg import String, Bool
@@ -12,7 +11,6 @@ from geometry_msgs.msg import Quaternion
 from jugglebot_interfaces.msg import HeartbeatMsg, RobotStateMsg
 from jugglebot_interfaces.srv import GetStateFromTeensy
 from jugglebot_interfaces.action import HomeMotors, LevelPlatform
-import threading
 import time
 
 #########################################################################################################
