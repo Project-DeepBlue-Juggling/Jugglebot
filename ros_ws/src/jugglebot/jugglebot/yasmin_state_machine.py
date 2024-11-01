@@ -17,13 +17,7 @@ import time
 #                                               Helper Functions                                        #
 #########################################################################################################
 
-def default_error_response(self, blackboard):
-    """Default response for handling errors—returns ABORT unless overridden."""
-    error = blackboard["error"]
-    if error:
-        self._node.get_logger().error(f"Default error handling: {error}")
-        return ABORT
-    return None
+
 #########################################################################################################
 #                                               Define States                                           #
 #########################################################################################################
@@ -89,12 +83,20 @@ class BootState(MonitorState):
 
     def on_exit(self, blackboard):
         try:
-            self._timer.cancel()
-            self._timer.destroy()
+            if self._timer is not None:
+                self._timer.cancel()
+            self.monitoring = False
         except Exception as e:
             self._node.get_logger().error(f"Error while canceling timer: {e}")
         finally:
             self._timer = None
+
+    def on_error(self, blackboard):
+        ''' If an error is detected, transition to FAULT after correctly exiting the state. '''
+        self.on_exit(blackboard)
+        if blackboard["error"] == "":
+            blackboard["error"] = "Error detected during BootState"
+        return 'error'
 
     #########################################################################################################
     #                                            Heartbeat                                                  #
@@ -105,13 +107,11 @@ class BootState(MonitorState):
             return
         
         # Check if all heartbeats have been received without errors
-        if msg.axis_id not in self.heartbeat_received and msg.axis_error == 0:
+        if msg.axis_id not in self.heartbeat_received:
             self.heartbeat_received.add(msg.axis_id)
             # self._node.get_logger().info(f"Received heartbeat from axis {msg.axis_id}")
-        elif msg.axis_error != 0:
-            # self._node.get_logger().error(f"Error on axis {msg.axis_id}: {msg.axis_error}")
-            self.publish_to_dummy_topic(False)
-            return
+
+            # Don't worry about processing the error messages here; this is handled by the can_interface_node
 
         # Log which heartbeats have been received
         self._node.get_logger().info(f"Received heartbeats: {self.heartbeat_received}")
@@ -183,12 +183,18 @@ class BootState(MonitorState):
             self.send_encoder_search_request()
             self.stage = "waiting_for_encoder_search"
             return
+        
+        elif self.stage == "waiting_for_encoder_search":
+            return
 
         elif self.stage == "encoder_search_complete":
             self._node.get_logger().info("All axes have completed encoder search already. Checking homing status...")
             # Send a request to check the homing status
             self.send_homing_status_request()
             self.stage = "waiting_for_homing_status"
+            return
+        
+        elif self.stage == "waiting_for_homing_status":
             return
 
         elif self.stage == "encoder_search_incomplete":
@@ -209,7 +215,7 @@ class BootState(MonitorState):
             return
         
         # Log this
-        self._node.get_logger().info(f"Mini State Machine. Stage: {self.stage}")
+        self._node.get_logger().info(f"Unrecognised stage in mini state machine! Stage: {self.stage}")
 
     def publish_to_dummy_topic(self, outcome):
         # Publish the outcome to the dummy topic
@@ -228,6 +234,7 @@ class BootState(MonitorState):
         if msg.data == True:
             return "boot_complete"
         else:
+            self._node.get_logger().error("Error detected during initialization. Transitioning to FAULT.")
             return ABORT
 
 # Define the PreOpCheck State
@@ -238,7 +245,8 @@ class PreOpCheckState(State):
     """
     def __init__(self):
         super().__init__(
-            outcomes=[ABORT, "initialization_complete",
+            outcomes=[ABORT,
+                      "initialization_complete",
                       "encoder_search_incomplete",
                       "homing_incomplete",
                       "waiting_for_heartbeats"],
@@ -267,6 +275,10 @@ class PreOpCheckState(State):
 
 # Define ENCODER_SEARCH State
 class EncoderSearchState(ServiceState):
+    """
+    This state is responsible for starting the encoder search process. The state machine will wait for the encoder search
+    to complete before transitioning to the HOMING state.
+    """
     def __init__(self):
         super().__init__(
             srv_name="encoder_search",
@@ -289,12 +301,17 @@ class EncoderSearchState(ServiceState):
 
 # Define the HOMING State
 class HomingState(ActionState):
+    """
+    This state is responsible for homing the motors. The state machine will wait for the homing process to complete
+    before transitioning to the STANDBY state.
+    """
     def __init__(self):
         super().__init__(
             action_type=HomeMotors,
             action_name="home_motors",
             create_goal_handler=self.create_homing_goal,
-            outcomes=["homing_complete"], # Includes the default (SUCCEED, ABORT, CANCEL)
+            outcomes=["homing_complete",
+                      "action_server_not_available"], # Includes the default (SUCCEED, ABORT, CANCEL)
             result_handler=self.handle_homing_result
         )
 
@@ -302,7 +319,7 @@ class HomingState(ActionState):
         # Ensure the action server is available before creating the goal
         if not self._action_client.wait_for_server(timeout_sec=10.0):
             self._node.get_logger().error("Action server for homing is not available.")
-            return CANCEL
+            return "action_server_not_available"
 
         # Create and return the goal for homing the motors
         goal = HomeMotors.Goal()
@@ -318,17 +335,57 @@ class HomingState(ActionState):
 class StandbyState(MonitorState):
     def __init__(self):
         super().__init__(
-            msg_type=Bool,
+            msg_type=String,
             topic_name="standby_command",
-            outcomes=[ABORT, CANCEL],
+            outcomes=[CANCEL, "activate_robot"],
             monitor_handler=self.handle_standby_command,
-            msg_queue=1
+            msg_queue=10
         )
 
     def handle_standby_command(self, blackboard, msg):
+        if msg.data == "spacemouse":
+            blackboard["control_mode"] = "spacemouse"
+            return "activate_robot"
+        else:
+            self._node.get_logger().error(f"Unknown command received: {msg.data}")
+            return CANCEL
+    
+class ActiveState(MonitorState):
+    def __init__(self):
+        super().__init__(
+            msg_type=Bool,
+            topic_name="return_to_standby_topic",
+            outcomes=[ABORT, "return_to_standby"],
+            monitor_handler=self.handle_active_command,
+            msg_queue=10
+        )
+
+    def on_enter(self, blackboard):
+        """
+        Upon entering the ACTIVE state, publish the control mode to the ROS2 network.
+        This tells the can_interface_node to put the motors into CLOSED_LOOP_CONTROL
+        and activates the relevant ROS2 node(s).
+        """
+        msg = String()
+        msg.data = blackboard["control_mode"]
+        self._node.create_publisher(String, "control_mode_topic", 10).publish(msg)
+
+    def on_exit(self, blackboard):
+        """
+        Upon exiting the ACTIVE state, publish a null control mode to the ROS2 network.
+        This tells the can_interface_node to put the motors into IDLE
+        and deactivates any control ROS2 nodes.
+        """
+        msg = String()
+        msg.data = ""
+        self._node.create_publisher(String, "control_mode_topic", 10).publish(msg)
+
+    def handle_active_command(self, blackboard, msg):
         if msg.data == True:
+            return "return_to_standby"
+        else:
+            self._node.get_logger().error(f"Unknown command received: {msg.data}")
             return ABORT
-        return CANCEL
 
 # Define the LEVELLING_PLATFORM State
 class LevellingPlatformState(ActionState):
@@ -437,6 +494,8 @@ class RobotStateSynchronizer:
         '''
         Publish the current state of the robot if it has changed since the last published state.
         This method is useful to relay the pose offsets to the Teensy.
+
+        This process will likely be changed to use bespoke topic(s) for the Teensy communication. TBC.
         '''
         pass
         
@@ -459,6 +518,7 @@ def main():
     blackboard["levelling_complete"] = False
     blackboard["pose_offset_rad"] = [0.0, 0.0]
     blackboard["pose_offset_quat"] = Quaternion()
+    blackboard["control_mode"] = "" # The current control mode of the robot
     blackboard["error"] = ""
 
     # Create and add states to the state machine
@@ -475,7 +535,6 @@ def main():
         "encoder_search_incomplete": "ENCODER_SEARCH",
         "homing_incomplete": "HOMING",
         ABORT: "FAULT",
-        CANCEL: "FAULT",
         "error": "FAULT"
     })
     state_machine.add_state("ENCODER_SEARCH", EncoderSearchState(), transitions={
@@ -485,21 +544,28 @@ def main():
     })
     state_machine.add_state("HOMING", HomingState(), transitions={
         "homing_complete": "PREOPCHECK",
-        CANCEL: "FAULT",
+        "action_server_not_available": "FAULT",
+        CANCEL: "FAULT", # Necessary because ActionStates have a default CANCEL outcome
         ABORT: "FAULT",
         "error": "FAULT"
     })
     state_machine.add_state("STANDBY", StandbyState(), transitions={
-        ABORT: "FAULT",
+        "activate_robot": "ACTIVE",
         CANCEL: "STANDBY",
         "error": "FAULT"
     })
     # state_machine.add_state("LEVELLING_PLATFORM", LevellingPlatformState(), transitions={
     #     ABORT: "FAULT"
     # })
+    state_machine.add_state("ACTIVE", ActiveState(), transitions={
+        "return_to_standby": "STANDBY",
+        ABORT: "FAULT",
+        "error": "FAULT"
+    })
     state_machine.add_state("FAULT", FaultState(), transitions={
         TIMEOUT: "FAULT",
-        "errors_cleared": "PREOPCHECK"
+        "errors_cleared": "PREOPCHECK",
+        "error": "FAULT"
     })
 
     # Set the start state
