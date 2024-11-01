@@ -1,7 +1,6 @@
 import time
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, DurabilityPolicy
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from jugglebot_interfaces.msg import (
     CanTrafficReportMessage,
@@ -25,9 +24,11 @@ class CanInterfaceNode(Node):
     def __init__(self):
         super().__init__('can_interface_node')
 
+        # Initialize the shutdown flag
+        self.shutdown_flag = False
+
         # Initialize the heartbeat publisher
-        heartbeat_qos_profile = QoSProfile(depth=7, durability=DurabilityPolicy.TRANSIENT_LOCAL)
-        self.heartbeat_publisher = self.create_publisher(HeartbeatMsg, 'heartbeat_topic', heartbeat_qos_profile)
+        self.heartbeat_publisher = self.create_publisher(HeartbeatMsg, 'heartbeat_topic', 7)
 
         # Initialize the CANInterface
         self.can_handler = CANInterface(logger=self.get_logger(), heartbeat_publisher=self.heartbeat_publisher)
@@ -60,6 +61,9 @@ class CanInterfaceNode(Node):
         self.robot_state_subscription = self.create_subscription(
             RobotStateMsg, 'robot_state', self.update_teensy_and_local_state_from_topic, 10
         )
+        self.control_mode_subscription = self.create_subscription(
+            String, 'control_mode_topic', self.control_mode_callback, 10
+        )
 
         #### Initialize publishers ####
             # Hardware data publishers
@@ -76,7 +80,6 @@ class CanInterfaceNode(Node):
         # Initialize target positions and status flags
         self.legs_target_position = [None] * 6
         self.legs_target_reached = [False] * 6
-        self.shutdown_flag = False
 
         # Initialize timers
         self.platform_target_reached_timer = self.create_timer(
@@ -124,7 +127,11 @@ class CanInterfaceNode(Node):
         if self.can_handler.undervoltage_error:
             self.publish_robot_state_error("Undervoltage detected. Was the E-stop hit?")
         elif self.can_handler.fatal_error:
-            self.publish_robot_state_error("Fatal issue with one or more ODrive(s).")
+            self.publish_robot_state_error(
+            f"Fatal issue with one or more ODrive(s). "
+            f"Active errors: {self.can_handler.active_errors}, "
+            f"Disarm reason: {self.can_handler.disarm_reasons}"
+            )
         elif self.can_handler.fatal_can_error:
             self.publish_robot_state_error("Fatal issue with CAN bus.")
 
@@ -176,6 +183,31 @@ class CanInterfaceNode(Node):
     #########################################################################################################
     #                                        Commanding Jugglebot                                           #
     #########################################################################################################
+
+    def control_mode_callback(self, msg):
+        """Handle changes in the control mode."""
+        try:
+            if msg.data == 'spacemouse':
+                self.get_logger().info('Spacemouse enabled')
+
+                # Put the legs into CLOSED_LOOP_CONTROL mode
+                self.can_handler.set_odrive_state_for_all_legs(requested_state='CLOSED_LOOP_CONTROL')
+
+                # Put the hand into IDLE mode since it isn't controlled by the spacemouse
+                self.can_handler.set_requested_state(axis_id=6, requested_state='IDLE')
+            
+            elif msg.data == '':
+                self.get_logger().info('All control modes disabled. Putting all axes into IDLE.')
+                self.can_handler.set_odrive_state_for_all_legs(requested_state='IDLE')
+                self.can_handler.set_requested_state(axis_id=6, requested_state='IDLE')
+
+            else:
+                self.get_logger().warning(f"Unknown control mode: {msg.data}. Putting all axes into IDLE.")
+                self.can_handler.set_odrive_state_for_all_legs(requested_state='IDLE')
+                self.can_handler.set_requested_state(axis_id=6, requested_state='IDLE')
+
+        except Exception as e:
+            self.get_logger().error(f"Error in control_mode_callback: {e}")
 
     def run_encoder_search(self, request, response):
         """Service callback to run the encoder search."""
@@ -482,7 +514,12 @@ class CanInterfaceNode(Node):
             self.get_logger().error(f"Error updating state on Teensy: {e}")
 
     def get_state_from_teensy(self, request, response):
-        """Service callback to get the state from the Teensy."""
+        """
+        Service callback to get the state from the Teensy.
+        This service should only be called ONCE per session, right at the start.
+        The intention of this process is that the Teensy will save the state from the previous session
+        to avoid the need to re-run the encoder search and homing procedures.
+        """
         try:
             state = self.can_handler.get_state_from_teensy()
 
@@ -560,7 +597,7 @@ class CanInterfaceNode(Node):
             self.get_logger().error(f"Error during node shutdown: {e}")
 
     def end_session(self, request, response):
-        """Service callback to end the session."""
+        """Service callback to end the session from the GUI"""
         self.get_logger().info("End session requested. Shutting down...")
         response.success = True
         response.message = "Session ended. Shutting down node."
