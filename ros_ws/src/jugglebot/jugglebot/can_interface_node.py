@@ -11,7 +11,7 @@ from jugglebot_interfaces.msg import (
     HeartbeatMsg,
     RobotStateMsg,
 )
-from jugglebot_interfaces.srv import ODriveCommandService, GetTiltReadingService, GetStateFromTeensy
+from jugglebot_interfaces.srv import ODriveCommandService, GetTiltReadingService, GetStateFromTeensy, ActivateOrDeactivate
 from jugglebot_interfaces.action import HomeMotors
 from std_msgs.msg import Float64MultiArray, String
 from std_srvs.srv import Trigger
@@ -44,6 +44,9 @@ class CanInterfaceNode(Node):
         self.check_whether_encoder_search_complete_service = self.create_service(Trigger, 
                                                                                  'check_whether_encoder_search_complete', 
                                                                                  self.check_whether_encoder_search_complete)
+        self.gently_activate_or_deactivate_service = self.create_service(ActivateOrDeactivate,
+                                                                        'activate_or_deactivate',
+                                                                        self.activate_or_deactivate_callback)
 
         #### Initialize actions ####
         self.home_robot_action = ActionServer(self, HomeMotors, 'home_motors', self.home_robot)
@@ -56,7 +59,7 @@ class CanInterfaceNode(Node):
             SetMotorVelCurrLimitsMessage, 'set_motor_vel_curr_limits', self.motor_vel_curr_limits_callback, 10
         )
         self.motor_trap_traj_limits_subscription = self.create_subscription(
-            SetTrapTrajLimitsMessage, 'leg_trap_traj_limits', self.motor_trap_traj_limits_callback, 10
+            SetTrapTrajLimitsMessage, 'set_leg_trap_traj_limits', self.motor_trap_traj_limits_callback, 10
         )
         self.robot_state_subscription = self.create_subscription(
             RobotStateMsg, 'robot_state', self.update_teensy_and_local_state_from_topic, 10
@@ -172,11 +175,7 @@ class CanInterfaceNode(Node):
                 acceleration_limit=leg_acc_limit,
                 deceleration_limit=leg_dec_limit,
             )
-
-            self.get_logger().info(
-                f"Updated trapezoidal trajectory limits: "
-                f"Vel={leg_vel_limit}, Acc={leg_acc_limit}, Dec={leg_dec_limit}"
-            )
+            
         except Exception as e:
             self.get_logger().error(f"Error setting trapezoidal trajectory limits: {e}")
 
@@ -191,20 +190,25 @@ class CanInterfaceNode(Node):
                 self.get_logger().info('Spacemouse enabled')
 
                 # Put the legs into CLOSED_LOOP_CONTROL mode
-                self.can_handler.set_odrive_state_for_all_legs(requested_state='CLOSED_LOOP_CONTROL')
+                self.can_handler.set_requested_state_for_all_legs(requested_state='CLOSED_LOOP_CONTROL')
 
                 # Put the hand into IDLE mode since it isn't controlled by the spacemouse
                 self.can_handler.set_requested_state(axis_id=6, requested_state='IDLE')
             
-            elif msg.data == '':
-                self.get_logger().info('All control modes disabled. Putting all axes into IDLE.')
-                self.can_handler.set_odrive_state_for_all_legs(requested_state='IDLE')
+            elif msg.data == 'shell':
+                # Put the legs into CLOSED_LOOP_CONTROL mode
+                self.can_handler.set_requested_state_for_all_legs(requested_state='CLOSED_LOOP_CONTROL')
+
+                # Put the hand into IDLE
                 self.can_handler.set_requested_state(axis_id=6, requested_state='IDLE')
+
+            elif msg.data == '':
+                self.get_logger().info('No control mode selected. Putting all axes into IDLE.')
+                self.can_handler.set_requested_state_for_all_axes(requested_state='IDLE')
 
             else:
                 self.get_logger().warning(f"Unknown control mode: {msg.data}. Putting all axes into IDLE.")
-                self.can_handler.set_odrive_state_for_all_legs(requested_state='IDLE')
-                self.can_handler.set_requested_state(axis_id=6, requested_state='IDLE')
+                self.can_handler.set_requested_state_for_all_axes(requested_state='IDLE')
 
         except Exception as e:
             self.get_logger().error(f"Error in control_mode_callback: {e}")
@@ -273,38 +277,97 @@ class CanInterfaceNode(Node):
         except Exception as e:
             self.get_logger().error(f"Error in handle_movement: {e}")
 
-    def shutdown_robot(self):
-        """Shutdown procedure for the robot."""
+    def activate_or_deactivate_callback(self, request, response):
+        """
+        Bring the robot to an active or inactive state in a controlled manner.
+        If the request is to activate, the platform will slowly move to the ACTIVE state (~mid-position, with all motors
+        in CLOSED_LOOP_CONTROL. If the chosen control mode doesn't need the hand, it will be put into IDLE in the control_mode_callback.)
+        If the request is to deactivate, the platform will slowly move to the INACTIVE state (platform stowed with all motors in IDLE).
+        """
         try:
-            # Send the robot home and put all motors in IDLE
-            self.get_logger().info("Initiating robot shutdown sequence...")
+            if request.command == 'activate':
+                setpoint = 2.229 # Mid-position (revs)
+                deactivating = False
+            elif request.command == 'deactivate':
+                setpoint = 0.0
+                deactivating = True
+            else:
+                response.success = False
+                response.message = f"Invalid request: {request.data}"
+                return response
+            
+            # Gently bring the robot to the setpoint
+            result = self.gently_move_platform_to_setpoint(setpoint, deactivating=deactivating)
+
+            if result == True:
+                response.success = True
+                response.message = f"Platform {request.command}d successfully."
+            
+            else:
+                response.success = False
+                response.message = f"Error {request.command}ing platform."
+            
+            return response
+        
+        except Exception as e:
+            self.get_logger().error(f"Error in activate_or_deactivate_callback: {e}")
+            response.success = False
+            response.message = f"Error in activate_or_deactivate_callback: {e}"
+            return response
+            
+    def gently_move_platform_to_setpoint(self, setpoint, deactivating=True) -> str:
+        """
+        Gently bring the robot to the nominated setpoint.
+
+        Args:
+            setpoint: The setpoint to which the robot should move.
+            deactivating: Whether the robot is being deactivated (True) or activated (False)
+        """
+        try:
+            # If deactivating and all axes are already in IDLE mode, leave them as-is
+            if deactivating and all(state == 1 for state in self.can_handler.axis_states):
+                self.get_logger().info("All axes already in IDLE mode. Leaving as-is.")
+                return True
+
+            # Otherwise, ensure that the legs are in CLOSED_LOOP_CONTROL mode (8)
+            if not all(state == 8 for state in self.can_handler.axis_states):
+                self.get_logger().info("Putting all axes into CLOSED_LOOP_CONTROL mode.")
+                self.can_handler.set_requested_state_for_all_legs(requested_state='CLOSED_LOOP_CONTROL')
+
+            time.sleep(0.1)
 
             # Start by lowering the max speed
             self.can_handler.set_absolute_vel_curr_limits(leg_vel_limit=2.5)
-            time.sleep(1.0)
+            time.sleep(0.1)
 
-            # Command all motors to move home
+            # Command all legs to move to the setpoint
             for axis_id in range(6):
-                self.can_handler.send_position_target(axis_id=axis_id, setpoint=0.0)
+                self.can_handler.send_position_target(axis_id=axis_id, setpoint=setpoint)
                 time.sleep(0.001)
 
-            # Wait until all motors have reached home
+            # Wait until all motors have reached their setpoints
             time.sleep(0.5)
             self.can_handler.fetch_messages()
 
-            while not all(self.can_handler.trajectory_done[:6]):
+            while not all(trajectory == True for trajectory in self.can_handler.trajectory_done[:6]):
                 self.can_handler.fetch_messages()
                 time.sleep(0.01)
 
+            # Let things settle for a second
             time.sleep(1.0)
 
-            # Put motors into IDLE
-            self.can_handler.set_odrive_state_for_all_legs(requested_state='IDLE')
-            self.can_handler.set_requested_state(axis_id=6, requested_state='IDLE')
+            if deactivating:
+                # Put all motors into IDLE mode
+                self.can_handler.set_requested_state_for_all_axes(requested_state='IDLE')
+            else:
+                # Return the motors to their normal operating vel/accel values
+                self.can_handler.setup_odrives(requested_state='CLOSED_LOOP_CONTROL')
 
-            self.get_logger().info("Robot shutdown sequence completed.")
+            return True
+
         except Exception as e:
-            self.get_logger().error(f"Error during robot shutdown: {e}")
+            self.get_logger().error(f"Error during 'move to setpoint' process: {e}")
+            return False
 
     def odrive_command_callback(self, request, response):
         """Service callback for ODrive commands."""
@@ -591,7 +654,7 @@ class CanInterfaceNode(Node):
         """Handle node shutdown."""
         self.get_logger().info("Shutting down CanInterfaceNode...")
         try:
-            self.shutdown_robot()
+            self.gently_move_platform_to_setpoint(0.0, deactivating=True) # Deactivate the robot
             self.can_handler.shutdown()
         except Exception as e:
             self.get_logger().error(f"Error during node shutdown: {e}")

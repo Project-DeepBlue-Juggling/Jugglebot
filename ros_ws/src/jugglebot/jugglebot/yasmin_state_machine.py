@@ -9,7 +9,7 @@ from std_msgs.msg import String, Bool
 from std_srvs.srv import Trigger
 from geometry_msgs.msg import Quaternion
 from jugglebot_interfaces.msg import HeartbeatMsg, RobotStateMsg
-from jugglebot_interfaces.srv import GetStateFromTeensy
+from jugglebot_interfaces.srv import GetStateFromTeensy, ActivateOrDeactivate
 from jugglebot_interfaces.action import HomeMotors, LevelPlatform
 import time
 
@@ -337,55 +337,91 @@ class StandbyState(MonitorState):
         super().__init__(
             msg_type=String,
             topic_name="standby_command",
-            outcomes=[CANCEL, "activate_robot"],
+            outcomes=["do_nothing", "activate_robot"],
             monitor_handler=self.handle_standby_command,
             msg_queue=10
         )
 
     def handle_standby_command(self, blackboard, msg):
-        if msg.data == "spacemouse":
-            blackboard["control_mode"] = "spacemouse"
+        if msg.data == "activate":
             return "activate_robot"
         else:
             self._node.get_logger().error(f"Unknown command received: {msg.data}")
-            return CANCEL
+            return "do_nothing"
     
 class ActiveState(MonitorState):
     def __init__(self):
         super().__init__(
-            msg_type=Bool,
-            topic_name="return_to_standby_topic",
-            outcomes=[ABORT, "return_to_standby"],
+            msg_type=String,
+            topic_name="active_command",
+            outcomes=[ABORT, "return_to_standby", "stay_active"],
             monitor_handler=self.handle_active_command,
             msg_queue=10
         )
 
+        # Create a service client to request to (de)activate the robot
+        self._activate_deactivate_client = self._node.create_client(ActivateOrDeactivate, "activate_or_deactivate")
+
+        # Create a publisher for the control mode
+        self._control_mode_publisher = self._node.create_publisher(String, "control_mode_topic", 10)
+
     def on_enter(self, blackboard):
         """
-        Upon entering the ACTIVE state, publish the control mode to the ROS2 network.
-        This tells the can_interface_node to put the motors into CLOSED_LOOP_CONTROL
-        and activates the relevant ROS2 node(s).
+        Upon entering the ACTIVE state, submit a request to the can_interface_node to activate the robot.
         """
-        msg = String()
-        msg.data = blackboard["control_mode"]
-        self._node.create_publisher(String, "control_mode_topic", 10).publish(msg)
+        request = ActivateOrDeactivate.Request()
+        request.command = "activate"
+        future = self._activate_deactivate_client.call_async(request)
+        future.add_done_callback(self.activate_deactivate_response_callback)
 
     def on_exit(self, blackboard):
         """
-        Upon exiting the ACTIVE state, publish a null control mode to the ROS2 network.
-        This tells the can_interface_node to put the motors into IDLE
-        and deactivates any control ROS2 nodes.
+        Upon exiting the ACTIVE state, submit a request to the can_interface_node to deactivate the robot.
+        Also publish a null control mode to the control_mode_topic to indicate that the robot is no longer active.
         """
-        msg = String()
-        msg.data = ""
-        self._node.create_publisher(String, "control_mode_topic", 10).publish(msg)
+        request = ActivateOrDeactivate.Request()
+        request.command = "deactivate"
+        future = self._activate_deactivate_client.call_async(request)
+        future.add_done_callback(self.activate_deactivate_response_callback)
+
+        # Publish a null control mode to the control_mode_topic
+        control_mode_msg = String()
+        control_mode_msg.data = ""
+        self._control_mode_publisher.publish(control_mode_msg)
+
+    def activate_deactivate_response_callback(self, future):
+        """
+        Handle the response from the activate/deactivate service.
+        """
+        try:
+            response = future.result()
+            self._node.get_logger().info(f"{response.message}")
+
+            if not response.success:
+                return "return_to_standby"
+            
+        except Exception as e:
+            self._node.get_logger().error(f"Service call failed: {e}")
 
     def handle_active_command(self, blackboard, msg):
-        if msg.data == True:
+        if msg.data == "spacemouse":
+            blackboard["control_mode"] = "spacemouse"
+
+        elif msg.data == "return_to_standby":
             return "return_to_standby"
+        
+        elif msg.data == "shell": # If sending commands from the shell
+            blackboard["control_mode"] = "shell"
+            
         else:
             self._node.get_logger().error(f"Unknown command received: {msg.data}")
-            return ABORT
+            return "stay_active"
+        
+        # Publish to /control_mode_topic
+        control_mode_msg = String()
+        control_mode_msg.data = blackboard["control_mode"]
+        self._control_mode_publisher.publish(control_mode_msg)
+        return "stay_active"
 
 # Define the LEVELLING_PLATFORM State
 class LevellingPlatformState(ActionState):
@@ -551,7 +587,7 @@ def main():
     })
     state_machine.add_state("STANDBY", StandbyState(), transitions={
         "activate_robot": "ACTIVE",
-        CANCEL: "STANDBY",
+        "do_nothing": "STANDBY",
         "error": "FAULT"
     })
     # state_machine.add_state("LEVELLING_PLATFORM", LevellingPlatformState(), transitions={
@@ -559,6 +595,7 @@ def main():
     # })
     state_machine.add_state("ACTIVE", ActiveState(), transitions={
         "return_to_standby": "STANDBY",
+        "stay_active": "ACTIVE",
         ABORT: "FAULT",
         "error": "FAULT"
     })

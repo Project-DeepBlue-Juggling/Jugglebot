@@ -160,7 +160,7 @@ class CANInterface:
         self.active_errors: List[Optional[int]]    = [0] * self.num_axes
         self.disarm_reasons: List[Optional[int]]   = [0] * self.num_axes
         self.axis_states: List[Optional[int]]      = [0] * self.num_axes
-        self.trajectory_done: List[Optional[bool]] = [0] * self.num_axes
+        self.trajectory_done: List[Optional[bool]] = [False] * self.num_axes
         self.procedure_result: List[Optional[int]] = [0] * self.num_axes
 
         # ROS2 publisher for HeartbeatMsg
@@ -197,7 +197,7 @@ class CANInterface:
 
         # Initialize error logging parameters
         self._last_error_log_times = {} # Axis ID to error code to last log time
-        self.error_log_throttle_duration_sec = 100.0 # Throttle duration for error logging. This is per axis, per error, so it doesn't
+        self.error_log_throttle_duration_sec = 10.0 # Throttle duration for error logging. This is per axis, per error, so it doesn't
                                                     # need to be called often
 
         # Initialize leg and hand motor absolute limits
@@ -208,10 +208,13 @@ class CANInterface:
         self.leg_trap_traj_limits = {'vel_limit': 20.0, 'acc_limit': 10.0, 'dec_limit': 8.0}
 
         # Initialize default hand gains
-        self.default_hand_gains = {'pos_gain': 0.2, 'vel_gain': 0.16, 'vel_integrator_gain': 0.32}
+        self.default_hand_gains = {'pos_gain': 18.0, 'vel_gain': 0.007, 'vel_integrator_gain': 0.01}
 
-        # Finally, set up the CAN bus to establish communication with the robot
+        # Set up the CAN bus to establish communication with the robot
         self.setup_can_bus()
+
+        # Set up the ODrives to their default state
+        self.setup_odrives()
 
     #########################################################################################################
     #                                            CAN Bus Management                                         #
@@ -656,8 +659,6 @@ class CANInterface:
 
             # Clear the disarm reasons
             self.disarm_reasons = [0] * self.num_axes
-
-            self.ROS_logger.info('ODrive errors cleared.')
         except Exception as e:
             self.ROS_logger.error(f"Failed to clear errors: {e}")
             raise
@@ -942,9 +943,14 @@ class CANInterface:
             self.ROS_logger.error(f"Encoder search failed: {e}")
             raise
 
-    def setup_odrives(self) -> None:
+    def setup_odrives(self, requested_state='IDLE') -> None:
         """
-        Sets up ODrives with default values.
+        Sets up ODrives with default values:
+        - Absolute velocity and current limits
+        - Control and input modes (position control, trapezoidal trajectory)
+        - Trapezoidal trajectory velocity and acceleration limits
+        - Requested state for all axes (IDLE)
+        - Hand gains
 
         Raises:
             Exception: If setup fails.
@@ -954,7 +960,8 @@ class CANInterface:
             self.set_absolute_vel_curr_limits()
             self.set_legs_control_and_input_mode()
             self.set_trap_traj_vel_acc_limits()
-            self.set_odrive_state_for_all_legs()
+            self.set_requested_state_for_all_axes(requested_state=requested_state)
+            self.set_hand_gains(**self.default_hand_gains)
             self.ROS_logger.info('ODrives setup complete.')
         except Exception as e:
             self.ROS_logger.error(f"Failed to setup ODrives: {e}")
@@ -1114,9 +1121,9 @@ class CANInterface:
                 time.sleep(0.005)
 
             self.ROS_logger.info(
-                f"Legs trap traj limits set. Vel: {self.leg_trap_traj_limits['vel_limit']}, "
-                f"Acc: {self.leg_trap_traj_limits['acc_limit']}, "
-                f"Dec: {self.leg_trap_traj_limits['dec_limit']}"
+                f"Updated leg trapezoidal trajectory limits: Vel={self.leg_trap_traj_limits['vel_limit']}, "
+                f"Acc={self.leg_trap_traj_limits['acc_limit']}, "
+                f"Dec={self.leg_trap_traj_limits['dec_limit']}"
             )
 
         except ValueError as ve:
@@ -1126,7 +1133,7 @@ class CANInterface:
             self.ROS_logger.error(f"Failed to set trap traj velocity and acceleration limits: {e}")
             raise
 
-    def set_odrive_state_for_all_legs(self, requested_state: str ='IDLE') -> None:
+    def set_requested_state_for_all_legs(self, requested_state: str ='IDLE') -> None:
         '''
         Set the state of the leg ODrives
 
@@ -1146,6 +1153,20 @@ class CANInterface:
     
         except Exception as e:
             self.ROS_logger.error(f"Failed to set leg ODrive state: {e}")
+            raise
+
+    def set_requested_state_for_all_axes(self, requested_state: str ='IDLE') -> None:
+        """
+        Sets the requested state for all axes.
+        """
+        try:
+            for axis_id in range(self.num_axes):
+                self.set_requested_state(axis_id=axis_id, requested_state=requested_state)
+                time.sleep(0.005)
+
+            self.ROS_logger.info(f'All ODrives state changed to {requested_state}')
+        except Exception as e:
+            self.ROS_logger.error(f"Failed to set state for all axes: {e}")
             raise
 
     def set_hand_gains(self, 
@@ -1260,6 +1281,15 @@ class CANInterface:
             procedure_result = data[5]
             trajectory_done_flag = (data[6] >> 0) & 0x01  # Extract bit 0 from byte 6
 
+            # If trajectory_done_flag is 1 or 0, convert to boolean. Otherwise, set to False and log a warning.
+            if trajectory_done_flag == 1:
+                trajectory_done_flag = True
+            elif trajectory_done_flag == 0:
+                trajectory_done_flag = False
+            else:
+                trajectory_done_flag = False
+                self.ROS_logger.warning(f"Invalid trajectory_done_flag value: {trajectory_done_flag}")
+
             # Update the current state information for this axis
             self.axis_states[axis_id] = axis_current_state
             self.trajectory_done[axis_id] = trajectory_done_flag
@@ -1297,30 +1327,6 @@ class CANInterface:
         # Update the variables with these errors
         self.active_errors[axis_id] = active_errors
         self.disarm_reasons[axis_id] = disarm_reason
-    
-        # Initialize conditions
-        no_active_errors = all(error == 0 for error in self.active_errors)
-        no_disarm_reasons = all(reason == 0 for reason in self.disarm_reasons)
-        any_disarmed = any(reason != 0 for reason in self.disarm_reasons)
-        any_in_closed_loop_control = any(state == 8 for state in self.axis_states)
-        
-        # If there are no active errors and the disarm reason is 0 for all axes, there's nothing to report
-        if no_active_errors and no_disarm_reasons:
-            # Clear any existing error flags
-            self.undervoltage_error = False
-            self.fatal_error = False
-            return
-        
-        # If there are any axes disarmed AND any axes are in CLOSED_LOOP_CONTROL mode (state 8), then report an error
-        if any_disarmed and any_in_closed_loop_control:
-            self.fatal_error = True
-            self.ROS_logger.error(f"One or more axes are disarmed while in CLOSED_LOOP_CONTROL mode!", throttle_duration_sec=1.0)
-        
-        # If there are any active errors, set the flag
-        if not no_active_errors:
-            self.fatal_error = True
-            # Log the active errors
-            self.ROS_logger.error(f"Fatal error detected! {self.active_errors}")
 
         # Dictionary mapping error codes to error messages
         ERRORS = {
@@ -1348,11 +1354,45 @@ class CANInterface:
             1073741824: "CALIBRATION_ERROR"
         }
 
+        # Initialize conditions to check for various error states
+        no_active_errors = all(error == 0 for error in self.active_errors)
+        no_disarm_reasons = all(reason == 0 for reason in self.disarm_reasons)
+        any_disarmed = any(reason != 0 for reason in self.disarm_reasons)
+        any_in_closed_loop_control = any(state == 8 for state in self.axis_states)
+        
+        # If there are no active errors and the disarm reason is 0 for all axes, there's nothing to report
+        if no_active_errors and no_disarm_reasons:
+            # Clear any existing error flags
+            self.undervoltage_error = False
+            self.fatal_error = False
+            return
+
+        # If there are any axes disarmed AND any axes are in CLOSED_LOOP_CONTROL mode (state 8), then report an error
+        if any_disarmed and any_in_closed_loop_control:
+            self.fatal_error = True
+            self.ROS_logger.error(f"One or more axes are disarmed while in CLOSED_LOOP_CONTROL mode!", throttle_duration_sec=1.0)
+        
+        # If there are any active errors, set the flag
+        if not no_active_errors:
+            self.fatal_error = True
+
         # If the error is UNDERVOLTAGE, set the flag
         if active_errors & 512:
             self.undervoltage_error = True
 
-        # Log all errors with per-axis per-error throttling
+        # If the disarm reason is DC_BUS_UNDER_VOLTAGE and there are no active errors, clear the flags and errors
+        if disarm_reason & 512 and no_active_errors:
+            self.undervoltage_error = False
+            self.fatal_error = False
+            try:
+                self.clear_errors()
+            except Exception as e:
+                self.ROS_logger.error(f"Failed to clear undervoltage error: {e}")
+            self.ROS_logger.info("Undervoltage disarm reason cleared as there are no active errors.")
+
+        ###########################################################################
+        #           Log all errors with per-axis per-error throttling             #
+        ###########################################################################
         
         # Initialize per-axis log times if they don't exist
         if axis_id not in self._last_error_log_times:
