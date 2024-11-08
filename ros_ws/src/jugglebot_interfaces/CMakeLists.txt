@@ -29,6 +29,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 
   "srv/GetStateFromTeensy.srv"
   "srv/GetRobotGeometry.srv"
+  "srv/ActivateOrDeactivate.srv"
 
   "msg/CanTrafficReportMessage.msg"
   "msg/HandTelemetryMessage.msg"

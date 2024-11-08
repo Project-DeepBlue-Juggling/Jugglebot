@@ -1,0 +1,6 @@
+# To trigger the activation or deactivation of the robot
+
+string command # 'activate' or 'deactivate'
+---
+bool success
+string message
