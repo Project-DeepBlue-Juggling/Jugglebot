@@ -186,25 +186,35 @@ class CanInterfaceNode(Node):
     def control_mode_callback(self, msg):
         """Handle changes in the control mode."""
         try:
+            # Construct flags for whether the legs and hand are in CLOSED_LOOP_CONTROL mode
+            legs_closed_loop = all(state == 8 for state in self.can_handler.axis_states[:6])
+            hand_closed_loop = self.can_handler.axis_states[6] == 8
+
             if msg.data == 'spacemouse':
                 self.get_logger().info('Spacemouse enabled')
 
-                # Put the legs into CLOSED_LOOP_CONTROL mode
-                self.can_handler.set_requested_state_for_all_legs(requested_state='CLOSED_LOOP_CONTROL')
+                # Put the legs into CLOSED_LOOP_CONTROL mode if they aren't already
+                if not legs_closed_loop:
+                    self.can_handler.set_requested_state_for_all_legs(requested_state='CLOSED_LOOP_CONTROL')
 
-                # Put the hand into IDLE mode since it isn't controlled by the spacemouse
-                self.can_handler.set_requested_state(axis_id=6, requested_state='IDLE')
+                # Put the hand into IDLE mode since it isn't controlled by the spacemouse (if it isn't already)
+                if hand_closed_loop:
+                    self.can_handler.set_requested_state(axis_id=6, requested_state='IDLE')
             
             elif msg.data == 'shell':
-                # Put the legs into CLOSED_LOOP_CONTROL mode
-                self.can_handler.set_requested_state_for_all_legs(requested_state='CLOSED_LOOP_CONTROL')
+                # Put the legs into CLOSED_LOOP_CONTROL mode if they aren't already
+                if not legs_closed_loop:
+                    self.can_handler.set_requested_state_for_all_legs(requested_state='CLOSED_LOOP_CONTROL')
 
-                # Put the hand into IDLE
-                self.can_handler.set_requested_state(axis_id=6, requested_state='IDLE')
+                # Put the hand into IDLE mode since it isn't controlled by the shell (if it isn't already)
+                if hand_closed_loop:
+                    self.can_handler.set_requested_state(axis_id=6, requested_state='IDLE')
 
             elif msg.data == '':
-                self.get_logger().info('No control mode selected. Putting all axes into IDLE.')
-                self.can_handler.set_requested_state_for_all_axes(requested_state='IDLE')
+                # If no control mode is selected, put all axes into IDLE if they aren't already
+                if not all(state == 1 for state in self.can_handler.axis_states):
+                    self.get_logger().info('No control mode selected. Putting all axes into IDLE.')
+                    self.can_handler.set_requested_state_for_all_axes(requested_state='IDLE')
 
             else:
                 self.get_logger().warning(f"Unknown control mode: {msg.data}. Putting all axes into IDLE.")
@@ -330,7 +340,7 @@ class CanInterfaceNode(Node):
                 return True
 
             # Otherwise, ensure that the legs are in CLOSED_LOOP_CONTROL mode (8)
-            if not all(state == 8 for state in self.can_handler.axis_states):
+            if not all(state == 8 for state in self.can_handler.axis_states[:6]):
                 self.get_logger().info("Putting all axes into CLOSED_LOOP_CONTROL mode.")
                 self.can_handler.set_requested_state_for_all_legs(requested_state='CLOSED_LOOP_CONTROL')
 
