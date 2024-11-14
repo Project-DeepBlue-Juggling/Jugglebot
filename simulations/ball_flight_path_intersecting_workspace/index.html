@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Interactive Ball and Workspace</title>
+    <style>
+        body { margin: 0; overflow: hidden; }
+        #gui-container {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            z-index: 1;
+            padding: 10px;
+            border-radius: 5px;
+            font-size: 22px;
+        }
+        #camera-info {
+            position: absolute;
+            bottom: 10px;
+            right: 10px;
+            z-index: 1;
+            background-color: rgba(255, 255, 255, 0.8);
+            padding: 5px;
+            border-radius: 5px;
+            font-size: 22px;
+            color: #000;
+        }
+        #duration-display {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            z-index: 1;
+            background-color: rgba(255, 255, 255, 0.6);
+            padding: 5px;
+            border-radius: 5px;
+            font-size: 44px;
+            color: #000;
+        }
+
+    </style>
+</head>
+<body>
+    <div id="gui-container"></div>
+    <div id="camera-info"></div>
+    <div id="duration-display"></div>
+
+    <!-- Include Three.js (r124) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r124/three.min.js"></script>
+
+    <!-- Include three-mesh-bvh (compatible version) -->
+    <script src="https://unpkg.com/three-mesh-bvh@0.3.0/build/three-mesh-bvh.js"></script>
+
+    <!-- Include OrbitControls -->
+    <script src="https://cdn.jsdelivr.net/gh/mrdoob/three.js@r124/examples/js/controls/OrbitControls.js"></script>
+
+    <!-- Include TransformControls -->
+    <script src="https://cdn.jsdelivr.net/gh/mrdoob/three.js@r124/examples/js/controls/TransformControls.js"></script>
+
+    <!-- Include Line2 classes for fat lines (in correct order) -->
+    <script src="https://cdn.jsdelivr.net/gh/mrdoob/three.js@r124/examples/js/lines/LineSegmentsGeometry.js"></script>
+    <script src="https://cdn.jsdelivr.net/gh/mrdoob/three.js@r124/examples/js/lines/LineGeometry.js"></script>
+    <script src="https://cdn.jsdelivr.net/gh/mrdoob/three.js@r124/examples/js/lines/LineMaterial.js"></script>
+    <script src="https://cdn.jsdelivr.net/gh/mrdoob/three.js@r124/examples/js/lines/LineSegments2.js"></script>
+    <script src="https://cdn.jsdelivr.net/gh/mrdoob/three.js@r124/examples/js/lines/Line2.js"></script>
+
+    <!-- Include dat.GUI for sliders -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/dat-gui/0.7.7/dat.gui.min.js"></script>
+
+    <!-- Include your script -->
+    <script src="script.js"></script>
+</body>
+</html>
