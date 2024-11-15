@@ -211,10 +211,8 @@ class CanInterfaceNode(Node):
                     self.can_handler.set_requested_state(axis_id=6, requested_state='IDLE')
 
             elif msg.data == '':
-                # If no control mode is selected, put all axes into IDLE if they aren't already
-                if not all(state == 1 for state in self.can_handler.axis_states):
-                    self.get_logger().info('No control mode selected. Putting all axes into IDLE.')
-                    self.can_handler.set_requested_state_for_all_axes(requested_state='IDLE')
+                # If no control mode is selected, do nothing
+                pass
 
             else:
                 self.get_logger().warning(f"Unknown control mode: {msg.data}. Putting all axes into IDLE.")
@@ -334,9 +332,9 @@ class CanInterfaceNode(Node):
             deactivating: Whether the robot is being deactivated (True) or activated (False)
         """
         try:
-            # If deactivating and all axes are already in IDLE mode, leave them as-is
-            if deactivating and all(state == 1 for state in self.can_handler.axis_states):
-                self.get_logger().info("All axes already in IDLE mode. Leaving as-is.")
+            # If deactivating and all axes are already in IDLE mode, with all legs at a position less than 0.1 revs, leave them as-is
+            if deactivating and all(state == 1 for state in self.can_handler.axis_states) and all(pos < 0.1 for pos in self.last_motor_positions[:6]):
+                self.get_logger().info("Robot is already deactivated. No need to move.")
                 return True
 
             # Otherwise, ensure that the legs are in CLOSED_LOOP_CONTROL mode (8)
