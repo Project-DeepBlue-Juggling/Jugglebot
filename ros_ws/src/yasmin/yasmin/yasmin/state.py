@@ -17,9 +17,10 @@
 This module has been updated from the base YASMIN library to:
 - Include access to the ROS2 node
 - Include a default error handling method
+- Include default `on_enter` and `on_exit` methods
 '''
 
-from typing import List
+from typing import List, Optional
 from abc import ABC, abstractmethod
 from yasmin.blackboard import Blackboard
 from threading import Event
@@ -89,3 +90,18 @@ class State(ABC):
 
         blackboard['error'] = "Generic Error (in `state.py`)"
         return 'error' # Return generic error outcome
+    
+    def on_enter(self, blackboard: Blackboard, previous_state: Optional[str] = None) -> None:
+        """
+        Method called when the state is entered. Subclasses can override this method to implement custom behavior.
+        :param blackboard: The blackboard object.
+        :param previous_state: The name of the previous state, or None if there is no previous state.
+        """
+        pass # Do nothing by default
+
+    def on_exit(self, blackboard: Blackboard) -> None:
+        """
+        Method called when the state is exited. Subclasses can override this method to implement custom behavior.
+        :param blackboard: The blackboard object.
+        """
+        pass # Do nothing by default

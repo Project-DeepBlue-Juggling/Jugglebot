@@ -14,11 +14,6 @@ from jugglebot_interfaces.action import HomeMotors, LevelPlatform
 import time
 
 #########################################################################################################
-#                                               Helper Functions                                        #
-#########################################################################################################
-
-
-#########################################################################################################
 #                                               Define States                                           #
 #########################################################################################################
 
@@ -77,7 +72,7 @@ class BootState(MonitorState):
     #                                      Override State Methods                                           #
     #########################################################################################################
 
-    def on_enter(self, blackboard):
+    def on_enter(self, blackboard, previous_state):
         # Start a timer to run the mini state machine
         self._timer = self._node.create_timer(0.1, self.mini_state_machine)
 
@@ -303,7 +298,7 @@ class EncoderSearchState(ServiceState):
 class HomingState(ActionState):
     """
     This state is responsible for homing the motors. The state machine will wait for the homing process to complete
-    before transitioning to the STANDBY state.
+    before transitioning to the STANDBY-IDLE state.
     """
     def __init__(self):
         super().__init__(
@@ -331,8 +326,8 @@ class HomingState(ActionState):
             return "homing_complete"
         return ABORT
 
-# Define the STANDBY State
-class StandbyState(MonitorState):
+# Define the STANDBY-IDLE State
+class StandbyIdleState(MonitorState):
     def __init__(self):
         super().__init__(
             msg_type=String,
@@ -346,48 +341,88 @@ class StandbyState(MonitorState):
         if msg.data == "activate":
             return "activate_robot"
         else:
-            self._node.get_logger().error(f"Unknown command received: {msg.data}")
+            self._node.get_logger().error(f"Unknown command received: {msg.data}. Available commands: 'activate_robot'")
             return "do_nothing"
-    
-class ActiveState(MonitorState):
+
+# Define the STANDBY-ACTIVE State
+class StandbyActiveState(MonitorState):
     def __init__(self):
         super().__init__(
             msg_type=String,
             topic_name="active_command",
-            outcomes=[ABORT, "return_to_standby", "stay_active"],
-            monitor_handler=self.handle_active_command,
+            outcomes=["do_nothing", "return_to_standby_idle", "spacemouse", "shell"],
+            monitor_handler=self.handle_standby_command,
             msg_queue=10
         )
+
+        # Create a flag to indicate whether we've already nominated a new control state to move into
+        self.new_control_state = False
 
         # Create a service client to request to (de)activate the robot
         self._activate_deactivate_client = self._node.create_client(ActivateOrDeactivate, "activate_or_deactivate")
 
         # Create a publisher for the control mode
         self._control_mode_publisher = self._node.create_publisher(String, "control_mode_topic", 10)
+    
+    def on_enter(self, blackboard, previous_state):
+        '''
+        When entering STANDBY-ACTIVE, set the control mode to an empty string if we've just come from STANDBY-IDLE.
+        Otherwise, if we have a control mode stored in the blackboard, set the control mode to that and transition to that state.
 
-    def on_enter(self, blackboard):
-        """
-        Upon entering the ACTIVE state, submit a request to the can_interface_node to activate the robot.
-        """
+        Also submit a request to the can_interface_node to activate the robot.
+        Note that 'activating' the robot will put the platform in the mid position with all axes in CLOSED_LOOP_CONTROL mode.
+        This means that even if the robot was already active, being 'reactivated' will just move the platform to the mid position.
+        '''
+        if previous_state == "STANDBY-IDLE":
+            # Set the control mode to an empty string. No movement should be achievable in this state.
+            blackboard["control_mode"] = ""
+            control_mode_msg = String()
+            control_mode_msg.data = blackboard["control_mode"]
+            self._control_mode_publisher.publish(control_mode_msg)
+
+        # Submit a request to the can_interface_node to activate the robot
         request = ActivateOrDeactivate.Request()
         request.command = "activate"
         future = self._activate_deactivate_client.call_async(request)
         future.add_done_callback(self.activate_deactivate_response_callback)
 
-    def on_exit(self, blackboard):
-        """
-        Upon exiting the ACTIVE state, submit a request to the can_interface_node to deactivate the robot.
-        Also publish a null control mode to the control_mode_topic to indicate that the robot is no longer active.
-        """
-        request = ActivateOrDeactivate.Request()
-        request.command = "deactivate"
-        future = self._activate_deactivate_client.call_async(request)
-        future.add_done_callback(self.activate_deactivate_response_callback)
+        # If we have a control mode stored in the blackboard, transition to that state (if it's one of this state's outcomes)
+        if blackboard["control_mode"] in self.get_outcomes():
+            self.new_control_state = True
 
-        # Publish a null control mode to the control_mode_topic
+        elif blackboard["control_mode"] == "":
+            pass
+
+        else:
+            self._node.get_logger().error(f"Unknown control mode: {blackboard['control_mode']}")
+
+    def on_exit(self, blackboard):
+        '''
+        When exiting STANDBY-ACTIVE, publish the chosen control mode.
+        Also submit a request to the can_interface_node to deactivate the robot if we're transitioning to STANDBY-IDLE.
+        '''
+        # Publish the control mode to the control_mode_topic
         control_mode_msg = String()
-        control_mode_msg.data = ""
+        control_mode_msg.data = blackboard["control_mode"]
         self._control_mode_publisher.publish(control_mode_msg)
+
+        # Submit a request to can_interface_node to deactivate if control mode is "" (ie. we're transitioning to STANDBY-IDLE)
+        if blackboard["control_mode"] == "":
+            request = ActivateOrDeactivate.Request()
+            request.command = "deactivate"
+            future = self._activate_deactivate_client.call_async(request)
+            future.add_done_callback(self.activate_deactivate_response_callback)
+
+    def execute(self, blackboard):
+        '''
+        If we've just come from a control mode state and we're now moving to a different one, we don't need to spend
+        any time in this state.
+        '''
+        if self.new_control_state:
+            self.new_control_state = False
+            return blackboard["control_mode"]
+        else:
+            return super().execute(blackboard)
 
     def activate_deactivate_response_callback(self, future):
         """
@@ -398,30 +433,53 @@ class ActiveState(MonitorState):
             self._node.get_logger().info(f"{response.message}")
 
             if not response.success:
-                return "return_to_standby"
+                return "return_to_standby_idle"
             
         except Exception as e:
             self._node.get_logger().error(f"Service call failed: {e}")
 
-    def handle_active_command(self, blackboard, msg):
-        if msg.data == "spacemouse":
-            blackboard["control_mode"] = "spacemouse"
-
-        elif msg.data == "return_to_standby":
-            return "return_to_standby"
+    def handle_standby_command(self, blackboard, msg):
+        if msg.data == "return_to_standby_idle":
+            blackboard["control_mode"] = ""
+            return "return_to_standby_idle"
         
-        elif msg.data == "shell": # If sending commands from the shell
+        elif msg.data == "spacemouse":
+            blackboard["control_mode"] = "spacemouse"
+            return "spacemouse"
+        
+        elif msg.data == "shell":
             blackboard["control_mode"] = "shell"
-            
+            return "shell"
+        
         else:
             self._node.get_logger().error(f"Unknown command received: {msg.data}")
-            return "stay_active"
-        
-        # Publish to /control_mode_topic
-        control_mode_msg = String()
-        control_mode_msg.data = blackboard["control_mode"]
-        self._control_mode_publisher.publish(control_mode_msg)
-        return "stay_active"
+            return "do_nothing"
+
+class ControlModeState(MonitorState):
+    '''
+    Generic State used for all control modes. This state listens to /control_mode_topic and promptly transitions to the
+    newly nominated control mode AFTER passing through the STANDBY-ACTIVE state so as to ensure the platform gently moves
+    to the mid position before control is handed over.
+    '''
+    def __init__(self, control_mode_name: str):
+        super().__init__(
+            msg_type=String,
+            topic_name="active_command",
+            outcomes=["same_mode", "mode_changed", "return_to_standby_idle"],
+            monitor_handler=self.handle_control_mode_command,
+            msg_queue=10
+        )
+
+        self.control_mode_name = control_mode_name
+
+    def handle_control_mode_command(self, blackboard, msg):
+        if msg.data == self.control_mode_name:
+            return "same_mode"
+        elif msg.data == "return_to_standby_idle":
+            return "return_to_standby_idle"
+        else:
+            self._node.get_logger().error(f"Unknown control mode received: {msg.data}. Returning to STANDBY-IDLE")
+            return "return_to_standby_idle"
 
 # Define the LEVELLING_PLATFORM State
 class LevellingPlatformState(ActionState):
@@ -459,8 +517,8 @@ class FaultState(State):
             outcomes=["timeout", "errors_cleared"],
         )
 
-    def on_enter(self, blackboard):
-        self._node.get_logger().error(f"Error detected! Current state: {blackboard}")
+    def on_enter(self, blackboard, previous_state):
+        self._node.get_logger().error(f"Error detected! Current state: {blackboard}. Previous state: {previous_state}")
 
     def execute(self, blackboard):
         """Check for errors and return to normal state machine operation once errors are cleared."""
@@ -566,7 +624,7 @@ def main():
         "error": "FAULT"
     })
     state_machine.add_state("PREOPCHECK", PreOpCheckState(), transitions={
-        "initialization_complete": "STANDBY",
+        "initialization_complete": "STANDBY-IDLE",
         "waiting_for_heartbeats" : "BOOT",
         "encoder_search_incomplete": "ENCODER_SEARCH",
         "homing_incomplete": "HOMING",
@@ -585,18 +643,31 @@ def main():
         ABORT: "FAULT",
         "error": "FAULT"
     })
-    state_machine.add_state("STANDBY", StandbyState(), transitions={
-        "activate_robot": "ACTIVE",
-        "do_nothing": "STANDBY",
+    state_machine.add_state("STANDBY-IDLE", StandbyIdleState(), transitions={
+        "activate_robot": "STANDBY-ACTIVE",
+        "do_nothing": "STANDBY-IDLE",
         "error": "FAULT"
     })
     # state_machine.add_state("LEVELLING_PLATFORM", LevellingPlatformState(), transitions={
     #     ABORT: "FAULT"
     # })
-    state_machine.add_state("ACTIVE", ActiveState(), transitions={
-        "return_to_standby": "STANDBY",
-        "stay_active": "ACTIVE",
-        ABORT: "FAULT",
+    state_machine.add_state("STANDBY-ACTIVE", StandbyActiveState(), transitions={
+        "return_to_standby_idle": "STANDBY-IDLE",
+        "do_nothing": "STANDBY-ACTIVE",
+        "spacemouse": "SPACEMOUSE_CONTROL",
+        "shell": "SHELL_CONTROL",
+        "error": "FAULT"
+    })
+    state_machine.add_state("SPACEMOUSE_CONTROL", ControlModeState("spacemouse"), transitions={
+        "same_mode": "SPACEMOUSE_CONTROL",
+        "mode_changed": "STANDBY-ACTIVE",
+        "return_to_standby_idle": "STANDBY-IDLE",
+        "error": "FAULT"
+    })
+    state_machine.add_state("SHELL_CONTROL", ControlModeState("shell"), transitions={
+        "same_mode": "SHELL_CONTROL",
+        "mode_changed": "STANDBY-ACTIVE",
+        "return_to_standby_idle": "STANDBY-IDLE",
         "error": "FAULT"
     })
     state_machine.add_state("FAULT", FaultState(), transitions={

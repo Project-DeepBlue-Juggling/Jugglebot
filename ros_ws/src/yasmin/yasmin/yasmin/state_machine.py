@@ -13,6 +13,11 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+'''
+This module has been updated from the base YASMIN library to:
+- Support `on_enter` and `on_exit` methods in each state
+- Include a method to notify an error detected in the state machine
+'''
 
 from typing import Dict, List, Union
 from threading import Lock
@@ -67,6 +72,7 @@ class StateMachine(State):
             self.__current_state = self._start_state
 
         previous_state = None
+        previous_state_name = None
 
         while True:
             with self.__current_state_lock:
@@ -77,9 +83,10 @@ class StateMachine(State):
                 if previous_state and hasattr(previous_state, "on_exit"):
                     previous_state.on_exit(blackboard)
                 if hasattr(state["state"], "on_enter"):
-                    state["state"].on_enter(blackboard)
+                    state["state"].on_enter(blackboard, previous_state_name)
                 
                 previous_state = state["state"]
+                previous_state_name = self.__current_state
 
             outcome = state["state"](blackboard)
 
