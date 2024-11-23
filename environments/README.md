@@ -16,20 +16,20 @@ production environment aka Prod).
 
 ### Step 1. Ensure that WSL2 is installed
 
-```PowerShell
+```
 wsl --install --no-distribution
 ```
 
 ### Step 2. Verify that an Ubuntu-24.04 distribution is not registered.
 
-```PowerShell
+```
 wsl --list
 ```
 
 If the output includes `Ubuntu` or `Ubuntu (Default)`, then run the following
 command to determine its version:
 
-```PowerShell
+```
 wsl -d Ubuntu -e lsb_release --description
 ```
 
