@@ -1,0 +1,32 @@
+---
+- name: Provision the WSL2 host
+  hosts: localhost
+  connection: local
+
+  tasks:
+
+  - name: Ensure that wsl uses systemd
+    # Note: Systemd is enabled by default, but this will change whitespace
+    community.general.ini_file:
+      path: '/etc/wsl.conf'
+      section: 'boot'
+      option: 'systemd'
+      value: 'true'
+    become: yes
+
+  - name: Prevent wsl from changing resolv.conf
+    community.general.ini_file:
+      path: '/etc/wsl.conf'
+      section: 'network'
+      option: 'generateResolvConf'
+      value: 'false'
+    become: yes
+
+  - name: Provision the Ubuntu environment
+    import_tasks:
+      file: "{{ playbook_dir }}/../ubuntu-common/dev_env_tasks.yml" 
+
+  - name: Provision the Docker Engine & Qemu
+    import_tasks:
+      file: "{{ playbook_dir }}/docker_engine_tasks.yml"
+

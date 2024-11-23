@@ -1,0 +1,209 @@
+---
+
+- name: Load variables
+  include_vars: dev_env_vars.yml
+  
+- name: Ensure that the ssh_keypair_name was specified
+  assert:
+    that: ssh_keypair_name
+    quiet: yes
+    fail_msg: 'This playbook requires that the keypair name be specified using `-e "ssh_keypair_name=''[keypair name]''"`'
+ 
+- name: Ensure that the specified ssh keypair exists
+  assert:
+    that: "ssh_private_key_filepath is file and (ssh_private_key_filepath + '.pub') is file"
+    quiet: yes
+    fail_msg: "The specified ssh keypair ('{{ ssh_private_key_filepath }}', '{{ ssh_private_key_filepath }}.pub') was not found."
+
+- name: Ensure that the ~/.jugglebot/host_setup/diffs directory exists
+  file:
+    path: "{{ host_setup_diffs_dir }}"
+    state: directory
+    recurse: yes
+
+- name: Ensure that the ~/.jugglebot/host_setup/backups directory exists
+  file:
+    path: "{{ host_setup_backups_dir }}"
+    state: directory
+    recurse: yes
+
+- name: Ensure that the ~/.jugglebot/host_setup/defaults directory exists
+  file:
+    path: "{{ host_setup_defaults_dir }}"
+    state: directory
+    recurse: yes
+
+- name: Ensure that the ~/bin directory exists
+  file:
+    path: "{{ home_dir }}/bin"
+    state: directory
+
+- name: Specify the Google nameserver in resolv.conf
+  lineinfile:
+    path: '/etc/resolv.conf'
+    regexp: '^nameserver .*$'
+    line: 'nameserver 8.8.8.8'
+  become: yes
+
+- name: Read the packages upgraded timestamp
+  slurp:
+    src: "{{ packages_upgraded_filepath }}"
+  register: packages_upgraded_read_result
+  when: packages_upgraded_filepath is file
+
+- name: Set the packages upgraded timestamp
+  set_fact:
+    packages_upgraded_timestamp: "{{ (packages_upgraded_read_result.content|int) if (packages_upgraded_filepath is file) else 0 }}"
+
+- name: Interpret the packages upgraded timestamp
+  set_fact:
+    packages_stale: "{{ ( now(utc=True, fmt='%s')|int - packages_upgraded_timestamp|int ) > ( 60 * 60 * 24 * 7 ) }}"
+
+- name: If the apt cache is more than a week stale and upgrade_software isn't requested, offer to abort
+  pause:
+    prompt: "\nTo perform safe package upgrades, run this playbook with `-e 'upgrade_software=yes'`.\n\nDo you want to continue without upgrading packages? (yes/no)"
+  register: continue_without_upgrades_result
+  delegate_to: localhost
+  when: packages_stale and not upgrade_software|bool
+
+- name: Interpret the response for the offer to abort
+  fail:
+    msg: "[WARNING]: Aborting as requested"
+  when: packages_stale and not upgrade_software|bool and not continue_without_upgrades_result.user_input|bool
+
+- name: Run `apt update`, `apt upgrade` and `apt autoremove` if requested
+  apt:
+    update-cache: yes
+    upgrade: safe
+    autoremove: yes
+  become: yes
+  register: upgrade_packages_result
+  when: upgrade_software|bool
+
+- name: Write the packages upgraded timestamp
+  copy:
+    content: "{{ now(utc=True, fmt='%s') }}"
+    dest: "{{ packages_upgraded_filepath }}"
+  when: upgrade_software|bool and upgrade_packages_result is succeeded
+
+- name: Ensure that snap, zsh, keychain and git are installed
+  package:
+    name:
+    - keychain
+    - zsh
+    - git
+    - snap
+    state: present
+  become: yes
+
+- name: Add an ssh config for GitHub
+  community.general.ssh_config:
+    user: "{{ username }}"
+    host: 'github.com'
+    hostname: 'github.com'
+    remote_user: 'git'
+    identity_file: "{{ ssh_private_key_filepath }}"
+    identities_only: yes
+    add_keys_to_agent: yes
+    strict_host_key_checking: accept-new
+
+- name: Ensure that the Jugglebot repo has been cloned
+  git:
+    repo: "{{ jugglebot_repo_ssh_url }}"
+    dest: "{{ jugglebot_repo_dir }}"
+
+- name: Read the zsh path
+  command:
+    cmd: which zsh
+  register: zsh_filepath_result
+  changed_when: False
+
+- name: Set the user's shell to zsh
+  user:
+    name: "{{ username }}"
+    shell: "{{ zsh_filepath_result.stdout }}"
+  become: yes
+
+- name: Clone the Oh My Zsh repo
+  git:
+    repo: "{{ ohmyzsh_git_repo }}"
+    dest: "{{ ohmyzsh_dir }}"
+    version: master
+    update: "{{ upgrade_software|bool }}"
+    depth: 1
+    accept_hostkey: yes
+  register: ohmyzsh_update_result
+
+- name: Write the Oh My Zsh upgraded timestamp
+  copy:
+    content: "{{ now(utc=True, fmt='%s') }}"
+    dest: "{{ ohmyzsh_upgraded_filepath }}"
+  when: ohmyzsh_update_result is changed or upgrade_software|bool
+
+- name: Warn if Oh My Zsh wasn't upgraded
+  assert:
+    that: True
+    success_msg: "[WARNING]: Oh My Zsh was not upgraded. To upgrade, run this playbook with `-e 'upgrade_software=yes'`."
+  when: not upgrade_software|bool
+  
+- name: Create or diff ~/.zshrc
+  import_tasks: ../ansible-common/copy_or_diff.yml
+  vars:
+    src: ../ubuntu-common/zshrc
+    dest: "{{ zshrc_filepath }}"
+    readable_dest: ~/.zshrc
+    mode: '0644'
+
+- name: Create or diff ~/.vimrc
+  import_tasks: ../ansible-common/copy_or_diff.yml
+  vars:
+    src: ../ubuntu-common/vimrc
+    dest: "{{ vimrc_filepath }}"
+    readable_dest: ~/.vimrc
+    mode: '0644'
+
+- name: Ensure that the ~/.vim/backup directory exists
+  file:
+    path: "{{ home_dir }}/.vim/backup"
+    state: directory
+    recurse: yes
+
+- name: Ensure that the ~/.vim/swap directory exists
+  file:
+    path: "{{ home_dir }}/.vim/swap"
+    state: directory
+    recurse: yes
+
+- name: Ensure that the ~/.vim/undo directory exists
+  file:
+    path: "{{ home_dir }}/.vim/undo"
+    state: directory
+    recurse: yes
+
+- name: Create or diff ~/.oh-my-zsh/custom/aliases.zsh
+  import_tasks: ../ansible-common/copy_or_diff.yml
+  vars:
+    src: ../ubuntu-common/aliases.zsh
+    dest: "{{ zsh_aliases_filepath }}"
+    readable_dest: ~/.oh-my-zsh/custom/aliases.zsh
+    mode: '0644'
+
+- name: Create or diff ~/.jugglebot/conda_env.sh
+  import_tasks: ../ansible-common/copy_or_diff.yml
+  vars:
+    src: ../ubuntu-common/conda_env.sh
+    dest: "{{ jugglebot_config_dir }}/conda_env.sh"
+    readable_dest: ~/.jugglebot/conda_env.sh
+    mode: '0755'
+
+- name: Install the conda env activate script
+  copy:
+    src: 'conda_env_activate.sh'
+    dest: '{{ home_dir }}/miniforge3/envs/jugglebot/etc/conda/activate.d/'
+
+- name: Install the conda env deactivate script
+  copy:
+    src: 'conda_env_deactivate.sh'
+    dest: '{{ home_dir }}/miniforge3/envs/jugglebot/etc/conda/deactivate.d/'
+
+

@@ -1,0 +1,49 @@
+---
+# src
+# dest
+# readable_dest
+# mode
+# host_setup_defaults_dir
+# host_setup_diffs_dir
+
+- name: "Create {{ readable_dest }} only if it doesn't exist"
+  copy:
+    src: "{{ src }}"
+    dest: "{{ dest }}"
+    mode: "{{ mode }}"
+    force: no
+  register: copy_result
+
+- name: "Check whether {{ readable_dest }} existed"
+  set_fact:
+    dest_existed: not copy_result is changed
+
+- name: "Create {{ src }} in ~/.jugglebot/host_setup/defaults"
+  copy:
+    src: "{{ src }}"
+    dest: "{{ host_setup_defaults_dir }}/{{ src|basename }}~"
+
+- name: "Create a file for the {{ src|basename }} diff if necessary"
+  tempfile:
+    path: "{{ host_setup_diffs_dir }}"
+    prefix: "{{ src|basename }}.{{ now( fmt='%Y-%m-%dT%H-%M-%S%z' ) }}_"
+    suffix: ".diff"
+  register: diff_tempfile_result
+  when: dest_existed
+  changed_when: False
+
+- name: "Generate a diff for {{ readable_dest }} if necessary"
+  shell:
+    cmd: "diff --unified=3 '{{ dest }}' '{{ host_setup_defaults_dir }}/{{ src|basename }}~' > '{{ diff_tempfile_result.path }}'"
+  register: diff_command_result
+  when: dest_existed
+  failed_when: diff_command_result.rc != 0 and diff_command_result.rc != 1
+  changed_when: diff_command_result.rc == 1
+
+- name: "If the {{ readable_dest }} diff is empty, remove it"
+  file:
+    path: "{{ diff_tempfile_result.path }}"
+    state: absent
+  when: dest_existed and diff_command_result.rc == 0
+  changed_when: False
+

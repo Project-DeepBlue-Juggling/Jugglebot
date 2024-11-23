@@ -1,0 +1,112 @@
+---
+
+- name: Load variables
+  include_vars: docker_engine_vars.yml
+
+- name: Require that the jugglebot conda environment is activated
+  assert:
+    that: ansible_facts['env']['CONDA_DEFAULT_ENV'] == 'jugglebot'
+    fail_msg: '[ERROR]: This playbook expects for the jugglebot conda environment to be activated. Activate that environment using the following command: `conda activate jugglebot`'
+    quiet: yes
+
+- name: Download the key for the Docker package repository
+  get_url:
+    url: "{{ docker_package_repo_key_url }}"
+    dest: "{{ docker_package_repo_key_filepath }}"
+  become: yes
+
+- name: Read the dpkg architecture
+  command:
+    cmd: 'dpkg --print-architecture'
+  register: dpkg_architecture_result
+  changed_when: false
+
+- name: Add the Docker package respository to the apt sources
+  apt_repository:
+    repo: "deb [arch={{ dpkg_architecture_result.stdout|trim }} signed-by={{ docker_package_repo_key_filepath }}] {{ docker_package_repo_url }} {{ ansible_facts['lsb']['codename'] }} stable"
+    state: present
+  become: yes
+
+- name: Update the apt cache
+  apt:
+    update-cache: yes
+  become: yes
+
+- name: Install the Docker Engine packages
+  package:
+    name:
+    - docker-ce
+    - docker-ce-cli
+    - containerd.io
+    - docker-buildx-plugin
+    - docker-compose-plugin
+    state: present
+  become: yes
+
+- name: Ensure that the docker daemon is enabled and started
+  systemd_service:
+    name: docker
+    enabled: yes
+    state: started
+  become: yes
+
+- name: Create the docker group to manage access to the docker engine
+  group:
+    name: docker
+    state: present
+  become: yes
+
+- name: Add the user to the docker group
+  # Note: This enables the user to issue CLI commands (eg. `docker run [..]`)
+  #   to the Docker Engine without sudo.
+  user:
+    name: "{{ ansible_facts['env']['USER'] }}"
+    append: true
+    groups: docker
+  become: yes
+
+- name: Ensure that the docker python SDK is installed
+  # Note 1: This should have been installed during the creation of the
+  #   jugglebot environment, but we include it here for good measure because
+  #   the Ansible community.docker modules rely on it.
+  # Note 2: We don't install the conda docker package because we prefer to use
+  #   the official docker apt package repo to manage the docker service & CLI 
+  #   binaries.
+  pip:
+    name: docker
+    state: present
+
+- name: Run the Qemu installer image
+  # Note: As of this writing, the following page recommends using the
+  #   tonistiigi/binfmt executable image to install Qemu and to register Qemu
+  #   emulators.
+  #   https://docs.docker.com/build/building/multi-platform/
+  community.docker.docker_container:
+    name: qemu_installer
+    image: tonistiigi/binfmt
+    command: '--install arm64'
+    privileged: yes
+    auto_remove: yes
+    pull: missing
+  become: yes
+  changed_when: false
+
+- name: Verify that the Docker Engine and Qemu are working
+  community.docker.docker_container:
+    name: qemu_verifier
+    image: arm64v8/alpine
+    command: 'uname -a'
+    platform: linux/arm64
+    detach: no
+  become: yes
+  register: verify_docker_and_qemu_result
+  failed_when: not verify_docker_and_qemu_result.container.Output is search('aarch64 Linux')
+  changed_when: false
+
+- name: Remove the qemu_verifier
+  community.docker.docker_container:
+    name: qemu_verifier
+    state: absent
+  become: yes
+  changed_when: false
+

@@ -1,0 +1,79 @@
+syntax on
+set background=dark
+set laststatus=2     " Always display status bar
+set incsearch        " Used for incremental searching
+                     " (useful when searching large text files)
+"set hlsearch        " Turns on highlighting for search matches
+                     " (use :noh inside vim to turn off highlights
+                     " after a search)
+set tabstop=2        " Sets the tab size to 2
+set expandtab        " Tab key inserts spaces instead of tabs
+set shiftwidth=2     " Sets spaces used for (auto)indent
+set shiftround       " Indent to nearest tabstop
+set autoindent       " Carries over previous indent to the next line
+set encoding=utf-8   " Change default encoding from Latin-1 to UTF-8
+set backup           " Enable backup
+set backupdir=~/.vim/backup,.,/tmp
+                     " Don't clutter the filesystem with backup files
+set directory=~/.vim/swap,.,/tmp
+                     " Don't clutter the filesystem with swap files
+set undodir=~/.vim/undo
+set title            " Try to set the terminal window title
+set scrolloff=3      " Keep 3 lines visible above and below the cursor
+set cursorline       " Highlight the current line
+set hidden           " Don't prompt to save upon changing the active buffer
+
+hi CursorLine term=bold cterm=none ctermbg=233 guibg=Grey40
+
+" ===== save and restore buffers and cursor locations ===
+" Ref: https://vim.fandom.com/wiki/Restore_cursor_to_file_position_in_previous_editing_session
+
+set viminfo='10,\"100,:20,%,n~/.vim/viminfo
+" Tell vim to remember certain things when we exit
+"   '10  :  marks will be remembered for up to 10 previously edited files
+"   "100 :  will save up to 100 lines for each register
+"   :20  :  up to 20 lines of command-line history will be remembered
+"   %    :  saves and restores the buffer list
+"   n... :  where to save the viminfo files
+
+function! ResCur()
+  if line("'\"") <= line("$")
+    normal! g`"
+    return 1
+  endif
+endfunction
+
+augroup resCur
+  autocmd!
+  autocmd BufWinEnter * call ResCur()
+augroup END
+" ========
+
+" ===== enable ctrl-s to save ===
+" requires reclaiming ctrl-s from terminal via `stty -ixon` in ~/.zshrc
+noremap <silent> <C-S>   :update<CR>
+vnoremap <silent> <C-S>  <C-C>:update<CR>
+inoremap <silent> <C-S>  <C-O>:update<CR>
+" ========
+
+autocmd FileType markdown setlocal wrap linebreak nolist textwidth=80 formatoptions+=t
+                     " Enable wrap for markdown files
+
+autocmd FileType python setlocal tabstop=4 shiftwidth=4
+                     " Set tab width for python files
+
+" cursor shape
+if &term =~? 'rxvt' || &term =~? 'xterm' || &term =~? 'st-'
+    " 1 or 0 -> blinking block
+    " 2 -> solid block
+    " 3 -> blinking underscore
+    " 4 -> solid underscore
+    " Recent versions of xterm (282 or above) also support
+    " 5 -> blinking vertical bar
+    " 6 -> solid vertical bar
+    " Insert Mode
+    let &t_SI .= "\<Esc>[6 q"
+    " Normal Mode
+    let &t_EI .= "\<Esc>[2 q"
+endif
+

@@ -1,0 +1,27 @@
+---
+upgrade_software: "{{ upgrade_software if upgrade_software else no }}"
+ssh_keypair_name: ''
+home_dir: "{{ ansible_facts['env']['HOME'] }}"
+username: "{{ ansible_facts['env']['USER'] }}"
+ssh_private_key_filepath: "{{ home_dir }}/.ssh/{{ ssh_keypair_name }}"
+jugglebot_config_dir: "{{ home_dir }}/.jugglebot"
+host_setup_dir: "{{ home_dir }}/.jugglebot/host_setup"
+host_setup_backups_dir: "{{ home_dir }}/.jugglebot/host_setup/backups"
+host_setup_defaults_dir: "{{ home_dir }}/.jugglebot/host_setup/defaults"
+host_setup_diffs_dir: "{{ home_dir }}/.jugglebot/host_setup/diffs"
+jugglebot_repo_ssh_url: 'git@github.com:Project-DeepBlue-Juggling/Jugglebot.git'
+jugglebot_repo_dir: "{{ home_dir }}/Jugglebot"
+conda_filepath: "{{ home_dir }}/miniforge3/bin/conda"
+zshrc_filepath: "{{ home_dir }}/.zshrc"
+vimrc_filepath: "{{ home_dir }}/.vimrc"
+jugglebot_conda_env_filepath: "{{ host_setup_dir }}/jugglebot_conda_env.yml }}"
+ohmyzsh_git_repo: 'https://github.com/ohmyzsh/ohmyzsh.git'
+ohmyzsh_dir: "{{ home_dir }}/.oh-my-zsh"
+ohmyzsh_plugins:
+- git
+- per-directory-history
+ohmyzsh_theme: 'clean'
+zsh_aliases_filepath: "{{ ohmyzsh_dir }}/custom/aliases.zsh"
+packages_upgraded_filepath: "{{ host_setup_dir }}/packages_upgraded_timestamp"
+ohmyzsh_upgraded_filepath: "{{ host_setup_dir }}/ohmyzsh_upgraded_timestamp"
+
