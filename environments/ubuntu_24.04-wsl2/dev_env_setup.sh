@@ -28,7 +28,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     *)
       POSITIONAL_ARGS+=("$1")
-      shift # past argument
+      shift
       ;;
   esac
 done
