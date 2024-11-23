@@ -11,7 +11,7 @@
 #
 # You should prefer to define project-related configuration variables within 
 # `~/.jugglebot/conda_env.sh`. For example, that script defines 
-# `JUGGLEBOT_CONFIG_DIR="${HOME}/.jugglebot`. The default conda_env.sh was
+# `JUGGLEBOT_CONFIG_DIR="${HOME}/.jugglebot"`. The default conda_env.sh was
 # provisioned by an Ansible task that was run by the host setup script. If you
 # re-run that host setup script, it will not overwrite that file. If you had 
 # made changes, it will produce a diff in `~/.jugglebot/host_setup/diffs`.
