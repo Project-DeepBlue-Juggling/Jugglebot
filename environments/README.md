@@ -202,7 +202,7 @@ the newly created distribution.
 
 #### Option 2. Use the wsl tool
 
-```PowerShell
+```
 wsl -d Ubuntu-24.04
 ```
 
