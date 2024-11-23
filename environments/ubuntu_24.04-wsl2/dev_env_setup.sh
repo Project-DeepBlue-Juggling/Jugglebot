@@ -116,10 +116,10 @@ if [[ "${JUGGLEBOT_CONDA_ENV_STATE}" == 'absent' ]]; then
   conda env create -f "${JUGGLEBOT_CONDA_ENV_FILEPATH}"
 
 else
-  
+
   JUGGLEBOT_CONDA_ENV_BACKUP_FILEPATH="$( mktemp -p "${HOST_SETUP_BACKUPS_DIR}" "jugglebot_conda_env.$( date +'%Y-%m-%dT%H-%M-%S%z' )_XXXXXXXX.yml" )"
-  
-  task "Backup the jugglebot conda environment to ${JUGGLEBOT_CONDA_ENV_BACKUP_FILEPATH}"
+ 
+  task 'Backup the jugglebot conda environment config to ~/.jugglebot/host_setup/backups'
 
   conda env export --from-history > "${JUGGLEBOT_CONDA_ENV_BACKUP_FILEPATH}"
 
