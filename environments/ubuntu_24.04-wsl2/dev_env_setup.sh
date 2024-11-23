@@ -150,6 +150,7 @@ ssh-add "${SSH_PRIVATE_KEY_FILEPATH}"
 task 'Run the WSL2 main playbook'
 
 echo -e "\nEnter your password to enable ${WSL2_MAIN_PLAYBOOK_FILEPATH} to perform privileged operations"
+
 ANSIBLE_LOCALHOST_WARNING=False ANSIBLE_INVENTORY_UNPARSED_WARNING=False ansible-playbook "${WSL2_MAIN_PLAYBOOK_FILEPATH}" --ask-become-pass -e 'upgrade_software=yes' -e "ssh_keypair_name='${SSH_KEYPAIR_NAME}'" || rc="$?"
 
 # failed_when: the return code is nonzero
