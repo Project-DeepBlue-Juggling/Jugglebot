@@ -21,7 +21,6 @@ set undodir=~/.vim/undo
 set title            " Try to set the terminal window title
 set scrolloff=3      " Keep 3 lines visible above and below the cursor
 set cursorline       " Highlight the current line
-set hidden           " Don't prompt to save upon changing the active buffer
 
 hi CursorLine term=bold cterm=none ctermbg=233 guibg=Grey40
 
@@ -60,16 +59,18 @@ inoremap <silent> <C-S>  <C-O>:update<CR>
 " according to the detected filetype.
 filetype plugin indent on
 
-" The following are commented out as they cause vim to behave a lot
-" differently from regular Vi. They are highly recommended though.
-set showcmd		" Show (partial) command in status line.
-set showmatch		" Show matching brackets.
-set ignorecase		" Do case insensitive matching
-set smartcase		" Do smart case matching
-set incsearch		" Incremental search
-"set autowrite		" Automatically save before commands like :next and :make
-"set hidden		" Hide buffers when they are abandoned
-"set mouse=a		" Enable mouse usage (all modes)
+" The following are recommended by the Ubuntu default vimrc
+
+set showcmd      " Show (partial) command in status line.
+set showmatch    " Show matching brackets.
+set ignorecase   " Do case insensitive matching
+set smartcase    " Do smart case matching
+set incsearch    " Incremental search
+" set autowrite  " Automatically save before commands like :next and :make
+set hidden       " Don't prompt to save upon changing the active buffer
+" set mouse=a    " Enable mouse usage (all modes)
+
+" The following two settings are being tested
 
 autocmd FileType markdown setlocal wrap linebreak nolist textwidth=80 formatoptions+=t
                      " Enable wrap for markdown files
