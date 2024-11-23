@@ -92,7 +92,6 @@
     - keychain
     - zsh
     - git
-    - snap
     state: present
   become: yes
 
