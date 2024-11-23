@@ -56,11 +56,27 @@ vnoremap <silent> <C-S>  <C-C>:update<CR>
 inoremap <silent> <C-S>  <C-O>:update<CR>
 " ========
 
+" Uncomment the following to have Vim load indentation rules and plugins
+" according to the detected filetype.
+filetype plugin indent on
+
+" The following are commented out as they cause vim to behave a lot
+" differently from regular Vi. They are highly recommended though.
+set showcmd		" Show (partial) command in status line.
+set showmatch		" Show matching brackets.
+set ignorecase		" Do case insensitive matching
+set smartcase		" Do smart case matching
+set incsearch		" Incremental search
+"set autowrite		" Automatically save before commands like :next and :make
+"set hidden		" Hide buffers when they are abandoned
+"set mouse=a		" Enable mouse usage (all modes)
+
 autocmd FileType markdown setlocal wrap linebreak nolist textwidth=80 formatoptions+=t
                      " Enable wrap for markdown files
 
-autocmd FileType python setlocal tabstop=4 shiftwidth=4
-                     " Set tab width for python files
+autocmd FileType gitcommit call setpos('.', [0, 1, 1, 0])
+                     " Prevent viminfo from remembering the cursor position for
+                     " the git commit message editing buffer
 
 " cursor shape
 if &term =~? 'rxvt' || &term =~? 'xterm' || &term =~? 'st-'
