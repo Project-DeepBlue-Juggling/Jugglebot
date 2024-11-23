@@ -9,7 +9,7 @@ host_setup_dir: "{{ home_dir }}/.jugglebot/host_setup"
 host_setup_backups_dir: "{{ home_dir }}/.jugglebot/host_setup/backups"
 host_setup_defaults_dir: "{{ home_dir }}/.jugglebot/host_setup/defaults"
 host_setup_diffs_dir: "{{ home_dir }}/.jugglebot/host_setup/diffs"
-jugglebot_repo_ssh_url: 'git@github.com:Project-DeepBlue-Juggling/Jugglebot.git'
+jugglebot_repo_ssh_url: 'git@github.com:joewalp/Jugglebot.git'
 jugglebot_repo_dir: "{{ home_dir }}/Jugglebot"
 conda_filepath: "{{ home_dir }}/miniforge3/bin/conda"
 zshrc_filepath: "{{ home_dir }}/.zshrc"
