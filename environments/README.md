@@ -176,8 +176,7 @@ gh ssh-key add ~/.ssh/id_ed25519.pub --type authentication --title 'Jugglebot de
 ```bash
 sudo apt install git
 
-cd ~ && GIT_SSH_COMMAND="ssh -i ${HOME}/.ssh/id_ed25519 -o IdentitiesOnly=yes"
-git clone git@github.com:joewalp/Jugglebot.git
+cd ~ && GIT_SSH_COMMAND="ssh -i ${HOME}/.ssh/id_ed25519 -o IdentitiesOnly=yes" git clone git@github.com:joewalp/Jugglebot.git
 ```
 
 ### Step 7. Run the setup script
