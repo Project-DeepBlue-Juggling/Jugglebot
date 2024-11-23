@@ -57,7 +57,7 @@ This option only relies on the wsl tool. The process looks like this:
 Below are some example commands. These assume that the preexisting distribution
 is using WSL version 2 and that its virtual disk uses the default ext4 filesystem.
 
-```PowerShell
+```
 wsl --terminate <Distribution Name>
 wsl --export <Distribution Name> <Vhdx FileName> --vhd
 wsl --import-in-place <Alternative Distribution Name> <Vhdx FileName>
@@ -86,7 +86,7 @@ Assuming that you didn't have a preexisting Ubuntu 24.04 instance or that you
 used Fixup Option 1, you can now create a fresh Ubuntu 24.04 instance. Run the
 following command:
 
-```PowerShell
+```
 wsl --install Ubuntu-24.04
 ```
 
@@ -106,11 +106,12 @@ key-based authentication as described here:
 
 https://docs.github.com/en/authentication/connecting-to-github-with-ssh/generating-a-new-ssh-key-and-adding-it-to-the-ssh-agent?platform=linux
 
-#### Option 1. Create a new keypair
+#### Option 1. Create a new keypair on the WSL2 host
 
-Substitute your email address into the following command, omitting the brackets.
+Run the following command on the new Ubuntu-24.04 host. Substitute your email
+address, omitting the brackets.
 
-```Bash
+```bash
 ssh-keygen -t ed25519 -C '[your email address]'
 ```
 
@@ -128,7 +129,7 @@ You may already have a keypair registered with GitHub that you've been using for
 local development. Here are some commands that you could use to copy it into
 place if those files are stored in the mounted filesystem:
 
-```Bash
+```bash
 install -m 700 -d ~/.ssh
 install -m 600 /mnt/c/[path to private key] -t ~/.ssh
 install -m 644 /mnt/c/[path to public key] -t ~/.ssh
@@ -151,7 +152,7 @@ described here:
 
 https://github.com/cli/cli/blob/trunk/docs/install_linux.md
 
-```Bash
+```bash
 (type -p wget >/dev/null || (sudo apt update && sudo apt-get install wget -y)) \
 	&& sudo mkdir -p -m 755 /etc/apt/keyrings \
 	&& wget -qO- https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null \
@@ -165,13 +166,13 @@ Then use `gh` to add your public key to your GitHub account as described here:
 
 https://docs.github.com/en/authentication/connecting-to-github-with-ssh/adding-a-new-ssh-key-to-your-github-account?platform=linux&tool=cli
 
-```Bash
+```bash
 gh ssh-key add ~/.ssh/id_ed25519.pub --type authentication --title 'Jugglebot dev env'
 ```
 
 ### Step 6. Clone the Jugglebot repo
 
-```Bash
+```bash
 sudo apt install git
 
 cd ~ && GIT_SSH_COMMAND="ssh -i ${HOME}/.ssh/id_ed25519 -o IdentitiesOnly=yes" git clone git@github.com:Project-DeepBlue-Juggling/Jugglebot.git
@@ -181,13 +182,13 @@ cd ~ && GIT_SSH_COMMAND="ssh -i ${HOME}/.ssh/id_ed25519 -o IdentitiesOnly=yes" g
 
 informational: This does not access the mounted Windows filesystem.
 
-```Bash
+```bash
 cd ~ && ./Jugglebot/environments/ubuntu_24.04-wsl2/dev-env-setup.sh --ssh-keypair-name id_ed25519
 ```
 
 ### Step 8. Exit and then start a new terminal session to enable all changes
 
-```Bash
+```bash
 exit
 ```
 
