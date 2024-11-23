@@ -34,7 +34,7 @@
 
 - name: "Generate a diff for {{ readable_dest }} if necessary"
   shell:
-    cmd: "diff --unified=3 '{{ dest }}' '{{ host_setup_defaults_dir }}/{{ src|basename }}~' > '{{ diff_tempfile_result.path }}'"
+    cmd: "diff --unified=3 '{{ host_setup_defaults_dir }}/{{ src|basename }}~' '{{ dest }}' > '{{ diff_tempfile_result.path }}'"
   register: diff_command_result
   when: dest_existed
   failed_when: diff_command_result.rc != 0 and diff_command_result.rc != 1
