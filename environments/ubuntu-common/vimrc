@@ -1,8 +1,6 @@
 syntax on
 set background=dark
 set laststatus=2     " Always display status bar
-set incsearch        " Used for incremental searching
-                     " (useful when searching large text files)
 "set hlsearch        " Turns on highlighting for search matches
                      " (use :noh inside vim to turn off highlights
                      " after a search)
@@ -65,7 +63,8 @@ set showcmd      " Show (partial) command in status line.
 set showmatch    " Show matching brackets.
 set ignorecase   " Do case insensitive matching
 set smartcase    " Do smart case matching
-set incsearch    " Incremental search
+set incsearch    " Used for incremental searching
+                 " (useful when searching large text files)
 " set autowrite  " Automatically save before commands like :next and :make
 set hidden       " Don't prompt to save upon changing the active buffer
 " set mouse=a    " Enable mouse usage (all modes)
