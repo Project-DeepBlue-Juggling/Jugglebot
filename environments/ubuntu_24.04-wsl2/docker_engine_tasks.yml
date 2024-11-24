@@ -3,7 +3,7 @@
 - name: Load variables
   include_vars: docker_engine_vars.yml
 
-- name: Require that the jugglebot conda environment is activated
+- name: Require that the jugglebot Conda environment is activated
   assert:
     that: ansible_facts['env']['CONDA_DEFAULT_ENV'] == 'jugglebot'
     fail_msg: '[ERROR]: This playbook expects for the jugglebot conda environment to be activated. Activate that environment using the following command: `conda activate jugglebot`'
@@ -65,7 +65,7 @@
     groups: docker
   become: yes
 
-- name: Ensure that the docker python SDK is installed
+- name: Ensure that the docker Python SDK is installed
   # Note 1: This should have been installed during the creation of the
   #   jugglebot environment, but we include it here for good measure because
   #   the Ansible community.docker modules rely on it.
