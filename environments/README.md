@@ -34,7 +34,7 @@ command to determine its version:
 wsl -d Ubuntu -e lsb_release --description
 ```
 
-If neither of the commands above indicates that some version Ubuntu 24.04 (such
+If neither of the commands above indicates that some version of Ubuntu 24.04 (such
 as `Ubuntu-24.04` or `Ubuntu 24.04.1 LTS`) is registered, then you can proceed
 to step 2. 
 
