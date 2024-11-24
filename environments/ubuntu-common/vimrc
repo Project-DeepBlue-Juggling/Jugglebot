@@ -1,3 +1,5 @@
+" TASK [Set basic appearance and behavior] ********
+
 syntax on
 set background=dark
 set laststatus=2     " Always display status bar
@@ -22,10 +24,12 @@ set cursorline       " Highlight the current line
 
 hi CursorLine term=bold cterm=none ctermbg=233 guibg=Grey40
 
-" ===== save and restore buffers and cursor locations ===
-" Ref: https://vim.fandom.com/wiki/Restore_cursor_to_file_position_in_previous_editing_session
+" TASK [Save and restore buffer state and cursor location] ********
+"
+" ref: https://vim.fandom.com/wiki/Restore_cursor_to_file_position_in_previous_editing_session
 
 set viminfo='10,\"100,:20,%,n~/.vim/viminfo
+
 " Tell vim to remember certain things when we exit
 "   '10  :  marks will be remembered for up to 10 previously edited files
 "   "100 :  will save up to 100 lines for each register
@@ -44,20 +48,20 @@ augroup resCur
   autocmd!
   autocmd BufWinEnter * call ResCur()
 augroup END
-" ========
 
-" ===== enable ctrl-s to save ===
-" requires reclaiming ctrl-s from terminal via `stty -ixon` in ~/.zshrc
+" TASK [Enable Ctrl+s to write the buffer] ********
+"
+" note: This requires reclaiming Ctrl+s from the terminal via `stty -ixon` in ~/.zshrc
+
 noremap <silent> <C-S>   :update<CR>
 vnoremap <silent> <C-S>  <C-C>:update<CR>
 inoremap <silent> <C-S>  <C-O>:update<CR>
-" ========
 
-" Uncomment the following to have Vim load indentation rules and plugins
-" according to the detected filetype.
+" TASK [Apply indentation rules and plugins according by filetype] ********
+
 filetype plugin indent on
 
-" The following are recommended by the Ubuntu default vimrc
+" TASK [Apply settings that are recommended in the Ubuntu default vimrc] ********
 
 set showcmd      " Show (partial) command in status line.
 set showmatch    " Show matching brackets.
@@ -69,16 +73,16 @@ set incsearch    " Used for incremental searching
 set hidden       " Don't prompt to save upon changing the active buffer
 " set mouse=a    " Enable mouse usage (all modes)
 
-" The following two settings are being tested
+" TASK [Enable wrap for markdown files] ********
 
 autocmd FileType markdown setlocal wrap linebreak nolist textwidth=80 formatoptions+=t
-                     " Enable wrap for markdown files
 
-autocmd FileType gitcommit call setpos('.', [0, 1, 1, 0])
-                     " Prevent viminfo from remembering the cursor position for
-                     " the git commit message editing buffer
+" TASK [Disable saving cursor position for the git commit message buffer] ********
 
-" cursor shape
+autocmd FileType gitcommit setlocal nobuflisted
+
+" TASK [Signify the editor mode using the cursor shape] ********
+
 if &term =~? 'rxvt' || &term =~? 'xterm' || &term =~? 'st-'
     " 1 or 0 -> blinking block
     " 2 -> solid block
