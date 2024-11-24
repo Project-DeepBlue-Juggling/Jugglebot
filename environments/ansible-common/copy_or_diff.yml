@@ -18,7 +18,7 @@
   set_fact:
     dest_existed: not copy_result is changed
 
-- name: "Create {{ src }} in ~/.jugglebot/host_setup/defaults"
+- name: "Create {{ src|basename }}~ in ~/.jugglebot/host_setup/defaults"
   copy:
     src: "{{ src }}"
     dest: "{{ host_setup_defaults_dir }}/{{ src|basename }}~"
