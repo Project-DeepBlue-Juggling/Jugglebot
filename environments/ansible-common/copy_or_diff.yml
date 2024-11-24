@@ -23,7 +23,7 @@
     src: "{{ src }}"
     dest: "{{ host_setup_defaults_dir }}/{{ src|basename }}~"
 
-- name: "Create a file for the {{ src|basename }} diff if necessary"
+- name: "Create a file for the {{ readable_dest }} diff if necessary"
   tempfile:
     path: "{{ host_setup_diffs_dir }}"
     prefix: "{{ src|basename }}.{{ now( fmt='%Y-%m-%dT%H-%M-%S%z' ) }}_"
