@@ -19,7 +19,7 @@
   command:
     cmd: 'dpkg --print-architecture'
   register: dpkg_architecture_result
-  changed_when: false
+  changed_when: False
 
 - name: Add the Docker package respository to the apt sources
   apt_repository:
@@ -61,7 +61,7 @@
   #   to the Docker Engine without sudo.
   user:
     name: "{{ ansible_facts['env']['USER'] }}"
-    append: true
+    append: yes
     groups: docker
   become: yes
 
@@ -76,20 +76,30 @@
     name: docker
     state: present
 
+- name: Install the Qemu packages
+  package:
+    name:
+    - binfmt-support
+    - qemu-user-static
+  become: yes
+
 - name: Run the Qemu installer image
   # Note: As of this writing, the following page recommends using the
   #   tonistiigi/binfmt executable image to install Qemu and to register Qemu
-  #   emulators.
-  #   https://docs.docker.com/build/building/multi-platform/
+  #   emulators. However, we found that to be unreliable. Instead, we install
+  #   the OS packages and then use the multiarch/qemu-user-static image to
+  #   register the emulators.
+  #   ref: https://docs.docker.com/build/building/multi-platform/
+  #   ref: https://github.com/multiarch/qemu-user-static
   community.docker.docker_container:
     name: qemu_installer
-    image: tonistiigi/binfmt
-    command: '--install arm64'
+    image: multiarch/qemu-user-static
+    command: '--reset -p yes'
     privileged: yes
     auto_remove: yes
     pull: missing
   become: yes
-  changed_when: false
+  changed_when: False
 
 - name: Verify that the Docker Engine and Qemu are working
   community.docker.docker_container:
@@ -101,12 +111,12 @@
   become: yes
   register: verify_docker_and_qemu_result
   failed_when: not verify_docker_and_qemu_result.container.Output is search('aarch64 Linux')
-  changed_when: false
+  changed_when: False
 
 - name: Remove the qemu_verifier
   community.docker.docker_container:
     name: qemu_verifier
     state: absent
   become: yes
-  changed_when: false
+  changed_when: False
 
