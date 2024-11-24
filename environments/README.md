@@ -216,18 +216,21 @@ easier.
 ## Noteworthy future milestones
 
 - Demonstrate ROS2 Foxy startup on Ubuntu for WSL2
-- Demonstrate ROS2 Foxy startup on arm64 Jetson Linux Docker image emulated by
-  Qemu
+- Demonstrate dev environment provisioning on an Ubuntu for arm64 Docker image 
+  emulated by Qemu. This environment won't be used within a development workflow; 
+  it's only intended to verify that all of the environment dependences are 
+  available for arm64.
 - Provide instructions for how to configure Visual Studio Code for Windows to
   drive a Linux shell environment and Linux build tools on another host
-- Demonstrate how to run a unit test using Visual Studio Code
+- Demonstrate how to run a Python unit test in the Linux environment using 
+  Visual Studio Code
 - Test the usability of Wayland/X11 rendering by WSLg of an app running on
   Ubuntu for WSL2
-- Test the usability of Wayland/X11 rendering by WSLg of an app running on arm64
-  Jetson Docker image emulated by Qemu
-- On a Windows 11 machine with an Nvidia GPU, demonstrate Cuda passthru from an
-  arm64 Jetson Linux Docker image
+  Test the usability of Wayland/X11 rendering by WSLg of an app running on
+  Ubuntu within Docker Engine for Linux.
 - Provide instructions for how to configure Docker Desktop for Windows to manage
   Docker Engine for Linux for WSL2
-
+- On a Windows 11 machine with an Nvidia GPU, demonstrate passthrough of Cuda
+  tasks from a guest Linux development environment host where those tasks are
+  driven by a Jetson SDK.
 
