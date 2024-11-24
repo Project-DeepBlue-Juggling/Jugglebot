@@ -226,7 +226,7 @@ easier.
   Visual Studio Code
 - Test the usability of Wayland/X11 rendering by WSLg of an app running on
   Ubuntu for WSL2
-  Test the usability of Wayland/X11 rendering by WSLg of an app running on
+- Test the usability of Wayland/X11 rendering by WSLg of an app running on
   Ubuntu within Docker Engine for Linux.
 - Provide instructions for how to configure Docker Desktop for Windows to manage
   Docker Engine for Linux for WSL2
