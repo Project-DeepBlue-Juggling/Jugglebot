@@ -89,6 +89,7 @@
   #   emulators. However, we found that to be unreliable. Instead, we install
   #   the OS packages and then use the multiarch/qemu-user-static image to
   #   register the emulators.
+  #
   #   ref: https://docs.docker.com/build/building/multi-platform/
   #   ref: https://github.com/multiarch/qemu-user-static
   community.docker.docker_container:
@@ -98,6 +99,13 @@
     privileged: yes
     auto_remove: yes
     pull: missing
+  become: yes
+  changed_when: False
+
+- name: Remove the Qemu installer Docker image
+  community.docker.docker_container:
+    name: qemu_installer
+    state: absent
   become: yes
   changed_when: False
 
@@ -113,7 +121,7 @@
   failed_when: not verify_docker_and_qemu_result.container.Output is search('aarch64 Linux')
   changed_when: False
 
-- name: Remove the qemu_verifier
+- name: Remove the arm64 Docker image that was used to verify
   community.docker.docker_container:
     name: qemu_verifier
     state: absent
