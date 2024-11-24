@@ -52,7 +52,7 @@ task 'Initialize variables'
 
 HOST_SETUP_DIR="${HOME}/.jugglebot/host_setup"
 HOST_SETUP_BACKUPS_DIR="${HOME}/.jugglebot/host_setup/backups"
-CONDA_SETUP_SCRIPT_URL="https://github.com/conda-forge/miniforge/releases/download/24.9.0-0/Miniforge3-24.9.0-0-$( uname )-$( uname -m ).sh"
+CONDA_SETUP_SCRIPT_URL="https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-$( uname )-$( uname -m ).sh"
 CONDA_SETUP_SCRIPT_FILEPATH="${HOST_SETUP_DIR}/miniforge_setup.sh"
 CONDA_FILEPATH="${HOME}/miniforge3/bin/conda"
 JUGGLEBOT_CONDA_ENV_FILEPATH="${JUGGLEBOT_ENVIRONMENTS_DIR}/ubuntu-common/jugglebot_conda_env.yml"
