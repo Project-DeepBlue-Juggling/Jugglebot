@@ -41,7 +41,7 @@ from typing import Callable, Dict, List, Optional, Tuple, Union
 import can
 import cantools
 from ament_index_python.packages import get_package_share_directory
-from jugglebot_interfaces.msg import HeartbeatMsg
+from jugglebot_interfaces.msg import MotorStateSingle
 
 class CANInterface:
     """
@@ -49,25 +49,26 @@ class CANInterface:
     """
     # Create a dictionary of ODrive-related commands and their corresponding IDs
     COMMANDS = {
-        "heartbeat_message"     : 0x01,
-        "get_error"             : 0x03,
-        "RxSdo"                 : 0x04, # Write to arbitrary parameter
-        "TxSdo"                 : 0x05, # Read from arbitrary parameter
-        "set_requested_state"   : 0x07,
-        "get_encoder_estimate"  : 0x09,
-        "set_controller_mode"   : 0x0b,
-        "set_input_pos"         : 0x0c,
-        "set_input_vel"         : 0x0d,
-        "set_vel_curr_limits"   : 0x0f,
-        "set_traj_vel_limit"    : 0x11,
-        "set_traj_acc_limits"   : 0x12,
-        "get_iq"                : 0x14,
-        "get_temps"             : 0x15, 
-        "reboot_odrives"        : 0x16,
-        "clear_errors"          : 0x18,
-        "set_absolute_position" : 0x19,
-        "set_pos_gain"          : 0x1a,
-        "set_vel_gains"         : 0x1b,
+        "heartbeat_message"       : 0x01,
+        "get_error"               : 0x03,
+        "RxSdo"                   : 0x04, # Write to arbitrary parameter
+        "TxSdo"                   : 0x05, # Read from arbitrary parameter
+        "set_requested_state"     : 0x07,
+        "get_encoder_estimate"    : 0x09,
+        "set_controller_mode"     : 0x0b,
+        "set_input_pos"           : 0x0c,
+        "set_input_vel"           : 0x0d,
+        "set_vel_curr_limits"     : 0x0f,
+        "set_traj_vel_limit"      : 0x11,
+        "set_traj_acc_limits"     : 0x12,
+        "get_iq"                  : 0x14,
+        "get_temps"               : 0x15, 
+        "reboot_odrives"          : 0x16,
+        "get_bus_voltage_current" : 0x17,
+        "clear_errors"            : 0x18,
+        "set_absolute_position"   : 0x19,
+        "set_pos_gain"            : 0x1a,
+        "set_vel_gains"           : 0x1b,
     }
 
     ARBITRARY_PARAMETER_IDS = {
@@ -90,7 +91,6 @@ class CANInterface:
     def __init__(
         self,
         logger,
-        heartbeat_publisher,
         bus_name: str = 'can0',
         bitrate: int = 1000000,
         interface: str = 'socketcan',
@@ -116,57 +116,41 @@ class CANInterface:
         # Create a dictionary to map command IDs to their corresponding handler
         # This allows for easy addition of new commands and corresponding handlers
         self.command_handlers: Dict[int, Callable[[int, bytes], None]] = {
-            self.COMMANDS["heartbeat_message"]   : self._handle_heartbeat,
-            self.COMMANDS["get_error"]           : self._handle_error,
-            self.COMMANDS["get_encoder_estimate"]: self._handle_encoder_estimates,
-            self.COMMANDS["get_iq"]              : self._handle_iq_readings,
-            self.COMMANDS["get_temps"]           : self._handle_temp_readings,
-            self.COMMANDS["TxSdo"]               : self._handle_arbitrary_parameter_read,
+            self.COMMANDS["heartbeat_message"]      : self._handle_heartbeat,
+            self.COMMANDS["get_error"]              : self._handle_error,
+            self.COMMANDS["get_encoder_estimate"]   : self._handle_encoder_estimates,
+            self.COMMANDS["get_iq"]                 : self._handle_iq_readings,
+            self.COMMANDS["get_temps"]              : self._handle_temp_readings,
+            self.COMMANDS["get_bus_voltage_current"]: self._handle_bus_voltage_current_readings,
+            self.COMMANDS["TxSdo"]                  : self._handle_arbitrary_parameter_read,
         }
 
         # Create a dictionary of callbacks that are used in the ROS2 node
         self.callbacks: Dict[str, Optional[Callable]] = {
-            'leg_positions' : None,
-            'leg_iqs'       : None,
-            'leg_velocities': None,
+            # 'leg_positions' : None,
+            # 'leg_iqs'       : None,
+            # 'leg_velocities': None,
             'can_traffic'   : None,
-            'hand_telemetry': None,
+            # 'hand_telemetry': None,
         }
 
         # Initialize the number of axes that the robot has
         self.num_axes = 7  # 6 for the legs, 1 for the hand.
 
-        # Buffers for variables being sent out to the ROS network
-        self.position_buffer: List[Optional[float]] = [None] * self.num_axes
-        self.velocity_buffer: List[Optional[float]] = [None] * self.num_axes
-        self.iq_buffer: List[Optional[float]]       = [None] * self.num_axes
-        self.temp_buffer: List[Optional[float]]     = [None] * self.num_axes
+        # Initialize the motor states and the data lock for these states
+        self.motor_states = [MotorStateSingle() for _ in range(self.num_axes)]
+        self._motor_states_lock = threading.Lock()
 
-        # Local lists for these variables
-        self.pos_values: List[Optional[float]]  = [None] * self.num_axes
-        self.vel_values: List[Optional[float]]  = [None] * self.num_axes
-        self.iq_values: List[Optional[float]]   = [None] * self.num_axes
-        self.temp_values: List[Optional[float]] = [None] * self.num_axes
+        # Initialize a local copy of the motor states so that we don't need to lock the data every time we access it
+        self.last_motor_states = [MotorStateSingle() for _ in range(self.num_axes)]
 
         # Flags and variables for tracking errors
         self.fatal_error: bool = False
-        self.undervoltage_error: bool = False # Almost always caused by me hitting the E-stop
+        self.undervoltage_error: bool = False # eg. me hitting the E-stop
         self.fatal_can_error: bool = False
 
         # Variable to store the result of checking whether the encoder search is complete
         self._received_encoder_search_feedback_on_axes = [None] * 6 # Only the legs need to do this, as the hand uses the on-board encoder
-
-        # Current state for each axis
-        self.active_errors: List[Optional[int]]    = [0] * self.num_axes
-        self.disarm_reasons: List[Optional[int]]   = [0] * self.num_axes
-        self.axis_states: List[Optional[int]]      = [0] * self.num_axes
-        self.trajectory_done: List[Optional[bool]] = [False] * self.num_axes
-        self.procedure_result: List[Optional[int]] = [0] * self.num_axes
-
-        # ROS2 publisher for HeartbeatMsg
-        self.heartbeat_publisher = heartbeat_publisher
-        self._last_heartbeat_publish_times = [0.0] * self.num_axes # Keep a record of the last time a heartbeat was published for each axis
-        self._time_between_heartbeat_publishes = 3.0 # seconds
 
         '''
         Thread lock for thread safety
@@ -174,7 +158,7 @@ class CANInterface:
         This is necessary for clearing errors after an error has been detected, as the `send_message` method needs access
         to the lock that `fetch_messages` is using.
         '''
-        self._lock = threading.RLock()
+        self._can_lock = threading.RLock()
 
         # Initialize the tilt readings that will come in from the SCL3300 sensor (via the Teensy)
         self.tilt_sensor_reading = None 
@@ -230,9 +214,6 @@ class CANInterface:
             bitrate=self._can_bitrate
         )
         self.flush_bus() # Flush the bus now that it's been set up
-
-        # Now setup the ODrives to their default state
-        self.setup_odrives()
 
     def close(self):
         """
@@ -298,7 +279,7 @@ class CANInterface:
                     data=[0] * 8,
                 )
                 try:
-                    with self._lock:
+                    with self._can_lock:
                         self.bus.send(msg)
                     self.ROS_logger.info(f"CAN bus write successful on attempt {attempt}")
                     tx_working = True
@@ -388,7 +369,7 @@ class CANInterface:
             msg = can.Message(arbitration_id=arbitration_id, dlc=8, is_extended_id=False, is_remote_frame=rtr_bit)
 
         try:
-            with self._lock:
+            with self._can_lock:
                 self.bus.send(msg)
             # self.ROS_logger.info(f"CAN message for {error_descriptor} sent to axisID {axis_id}")
             # self.ROS_logger.info(f"msg: {msg} for axis {axis_id} with command {command_name}")
@@ -658,7 +639,9 @@ class CANInterface:
             self.undervoltage_error = False
 
             # Clear the disarm reasons
-            self.disarm_reasons = [0] * self.num_axes
+            for motor in self.motor_states:
+                motor.disarm_reason = 0
+
         except Exception as e:
             self.ROS_logger.error(f"Failed to clear errors: {e}")
             raise
@@ -811,7 +794,8 @@ class CANInterface:
                 self.fetch_messages()
                 
                 # Get the current for this motor
-                current = self.iq_values[axis_id]
+                with self._motor_states_lock:
+                    current = self.motor_states[axis_id].iq_measured
 
                 if current is None:
                     self.ROS_logger.warn(f"Current reading for axis {axis_id} is None. Skipping...")
@@ -876,6 +860,7 @@ class CANInterface:
     def run_encoder_search(self, attempt: int = 0) -> bool:
         """
         Runs the encoder index search procedure for the legs.
+        This isn't necessary for the hand because we're using the on-board absolute encoder.
         If there's an error, it clears the errors and retries.
         If the search fails after one retry, it raises an exception.
 
@@ -907,15 +892,14 @@ class CANInterface:
                     return False
                 
                 for axisID in range(6):
-                    if self.axis_states[axisID] == 6:
+                    if self.last_motor_states[axisID].current_state == 6:
                         axes_in_index_search[axisID] = True
 
-
-            # Wait for all axes to present "Success" (0) in the procedure result
+            # Wait for all legs to present "Success" (0) in the procedure result
             start_time = time.time()
             timeout_duration = 3.0 # seconds
 
-            while not all([result == 0 for result in self.procedure_result[:6]]):
+            while not all([motor.procedure_result == 0 for motor in self.last_motor_states[:6]]):
                 self.fetch_messages()
 
                 # Check for any errors
@@ -1210,7 +1194,7 @@ class CANInterface:
         """
         # This method is designed to be called in a loop from the main script.
         # It checks for new messages on the CAN bus and processes them if there are any.
-        with self._lock:
+        with self._can_lock:
             try:
                 while True:
                     # Perform a non-blocking read of the CAN bus
@@ -1251,7 +1235,7 @@ class CANInterface:
         elif arbitration_id == self._hand_custom_message_ID:
             return
 
-        else: # If the message is for the ODrives
+        else: # If the message is from the ODrives
             # Extract the axis ID from the arbitration ID by right-shifting by 5 bits.
             axis_id = arbitration_id >> 5
             
@@ -1276,7 +1260,7 @@ class CANInterface:
         """
         try:
             # Extract information from the heartbeat message
-            axis_error = int.from_bytes(data[0:4], byteorder='little')
+            # axis_error = int.from_bytes(data[0:4], byteorder='little') # Not using this because we listen to the error messages separately
             axis_current_state = data[4]
             procedure_result = data[5]
             trajectory_done_flag = (data[6] >> 0) & 0x01  # Extract bit 0 from byte 6
@@ -1291,23 +1275,10 @@ class CANInterface:
                 self.ROS_logger.warning(f"Invalid trajectory_done_flag value: {trajectory_done_flag}")
 
             # Update the current state information for this axis
-            self.axis_states[axis_id] = axis_current_state
-            self.trajectory_done[axis_id] = trajectory_done_flag
-            self.procedure_result[axis_id] = procedure_result
-
-            # Get the current time
-            current_time = time.time()
-
-            # Check if it's time to publish the heartbeat message
-            if (current_time - self._last_heartbeat_publish_times[axis_id]) > self._time_between_heartbeat_publishes:
-                # Publish a HeartbeatMsg for this axis
-                heartbeat_msg = HeartbeatMsg()
-                heartbeat_msg.axis_id = axis_id
-                heartbeat_msg.axis_error = axis_error
-                self.heartbeat_publisher.publish(heartbeat_msg)
-
-                # Update the last publish time for this axis
-                self._last_heartbeat_publish_times[axis_id] = current_time
+            with self._motor_states_lock:
+                self.motor_states[axis_id].current_state = axis_current_state
+                self.motor_states[axis_id].procedure_result = procedure_result
+                self.motor_states[axis_id].trajectory_done = trajectory_done_flag
 
         except Exception as e:
             self.ROS_logger.error(f"Error handling heartbeat message for axis {axis_id}: {e}")
@@ -1320,101 +1291,106 @@ class CANInterface:
             axis_id: The axis ID.
             message_data: The message data.
         """
-        # First split the error data into its constituent parts
-        active_errors = struct.unpack_from('<I', message_data, 0)[0]  # 4-byte integer
-        disarm_reason = struct.unpack_from('<I', message_data, 4)[0]
+        try:
+            # First split the error data into its constituent parts
+            active_errors = struct.unpack_from('<I', message_data, 0)[0]  # 4-byte integer
+            disarm_reason = struct.unpack_from('<I', message_data, 4)[0]
 
-        # Update the variables with these errors
-        self.active_errors[axis_id] = active_errors
-        self.disarm_reasons[axis_id] = disarm_reason
+            # Update the motor state with the error
+            with self._motor_states_lock:
+                self.motor_states[axis_id].active_errors = active_errors
+                self.motor_states[axis_id].disarm_reason = disarm_reason
 
-        # Dictionary mapping error codes to error messages
-        ERRORS = {
-            1: "INITIALIZING",
-            2: "SYSTEM_LEVEL",
-            4: "TIMING_ERROR",
-            8: "MISSING_ESTIMATE",
-            16: "BAD_CONFIG",
-            32: "DRV_FAULT",
-            64: "MISSING_INPUT",
-            256: "DC_BUS_OVER_VOLTAGE",
-            512: "DC_BUS_UNDER_VOLTAGE",
-            1024: "DC_BUS_OVER_CURRENT",
-            2048: "DC_BUS_OVER_REGEN_CURRENT",
-            4096: "CURRENT_LIMIT_VIOLATION",
-            8192: "MOTOR_OVER_TEMP",
-            16384: "INVERTER_OVER_TEMP",
-            32768: "VELOCITY_LIMIT_VIOLATION",
-            65536: "POSITION_LIMIT_VIOLATION",
-            16777216: "WATCHDOG_TIMER_EXPIRED",
-            33554432: "ESTOP_REQUESTED",
-            67108864: "SPINOUT_DETECTED",
-            134217728: "BRAKE_RESISTOR_DISARMED",
-            268435456: "THERMISTOR_DISCONNECTED",
-            1073741824: "CALIBRATION_ERROR"
-        }
+            # Dictionary mapping error codes to error messages
+            ERRORS = {
+                1: "INITIALIZING",
+                2: "SYSTEM_LEVEL",
+                4: "TIMING_ERROR",
+                8: "MISSING_ESTIMATE",
+                16: "BAD_CONFIG",
+                32: "DRV_FAULT",
+                64: "MISSING_INPUT",
+                256: "DC_BUS_OVER_VOLTAGE",
+                512: "DC_BUS_UNDER_VOLTAGE",
+                1024: "DC_BUS_OVER_CURRENT",
+                2048: "DC_BUS_OVER_REGEN_CURRENT",
+                4096: "CURRENT_LIMIT_VIOLATION",
+                8192: "MOTOR_OVER_TEMP",
+                16384: "INVERTER_OVER_TEMP",
+                32768: "VELOCITY_LIMIT_VIOLATION",
+                65536: "POSITION_LIMIT_VIOLATION",
+                16777216: "WATCHDOG_TIMER_EXPIRED",
+                33554432: "ESTOP_REQUESTED",
+                67108864: "SPINOUT_DETECTED",
+                134217728: "BRAKE_RESISTOR_DISARMED",
+                268435456: "THERMISTOR_DISCONNECTED",
+                1073741824: "CALIBRATION_ERROR"
+            }
 
-        # Initialize conditions to check for various error states
-        no_active_errors = all(error == 0 for error in self.active_errors)
-        no_disarm_reasons = all(reason == 0 for reason in self.disarm_reasons)
-        any_disarmed = any(reason != 0 for reason in self.disarm_reasons)
-        any_in_closed_loop_control = any(state == 8 for state in self.axis_states)
-        
-        # If there are no active errors and the disarm reason is 0 for all axes, there's nothing to report
-        if no_active_errors and no_disarm_reasons:
-            # Clear any existing error flags
-            self.undervoltage_error = False
-            self.fatal_error = False
-            return
+            # Initialize conditions to check for various error states
+            no_active_errors = all(motor.active_errors == 0 for motor in self.motor_states)
+            no_disarm_reasons = all(motor.disarm_reason == 0 for motor in self.motor_states)
+            any_disarmed = any(motor.disarm_reason != 0 for motor in self.motor_states)
+            any_in_closed_loop_control = any(motor.current_state == 8 for motor in self.motor_states)
+            
+            # If there are no active errors and the disarm reason is 0 for all axes, there's nothing to report
+            if no_active_errors and no_disarm_reasons:
+                # Clear any existing error flags
+                self.undervoltage_error = False
+                self.fatal_error = False
+                return
 
-        # If there are any axes disarmed AND any axes are in CLOSED_LOOP_CONTROL mode (state 8), then report an error
-        if any_disarmed and any_in_closed_loop_control:
-            self.fatal_error = True
-            self.ROS_logger.error(f"One or more axes are disarmed while in CLOSED_LOOP_CONTROL mode!", throttle_duration_sec=1.0)
-        
-        # If there are any active errors, set the flag
-        if not no_active_errors:
-            self.fatal_error = True
+            # If there are any axes disarmed AND any axes are in CLOSED_LOOP_CONTROL mode (state 8), then report an error
+            if any_disarmed and any_in_closed_loop_control:
+                self.fatal_error = True
+                self.ROS_logger.error(f"One or more axes are disarmed while in CLOSED_LOOP_CONTROL mode!", throttle_duration_sec=1.0)
+            
+            # If there are any active errors, set the flag
+            if not no_active_errors:
+                self.fatal_error = True
 
-        # If the error is UNDERVOLTAGE, set the flag
-        if active_errors & 512:
-            self.undervoltage_error = True
+            # If the error is UNDERVOLTAGE, set the flag
+            if active_errors & 512:
+                self.undervoltage_error = True
 
-        # If the disarm reason is DC_BUS_UNDER_VOLTAGE and there are no active errors, clear the flags and errors
-        if disarm_reason & 512 and no_active_errors:
-            self.undervoltage_error = False
-            self.fatal_error = False
-            try:
-                self.clear_errors()
-            except Exception as e:
-                self.ROS_logger.error(f"Failed to clear undervoltage error: {e}")
-            self.ROS_logger.info("Undervoltage disarm reason cleared as there are no active errors.")
+            # If the disarm reason is DC_BUS_UNDER_VOLTAGE and there are no active errors, clear the flags and errors
+            if disarm_reason & 512 and no_active_errors:
+                self.undervoltage_error = False
+                self.fatal_error = False
+                try:
+                    self.clear_errors()
+                except Exception as e:
+                    self.ROS_logger.error(f"Failed to clear undervoltage error: {e}")
+                self.ROS_logger.info("Undervoltage disarm reason cleared as there are no active errors.")
 
-        ###########################################################################
-        #           Log all errors with per-axis per-error throttling             #
-        ###########################################################################
-        
-        # Initialize per-axis log times if they don't exist
-        if axis_id not in self._last_error_log_times:
-            self._last_error_log_times[axis_id] = {}
+            ###########################################################################
+            #           Log all errors with per-axis per-error throttling             #
+            ###########################################################################
+            
+            # Initialize per-axis log times if they don't exist
+            if axis_id not in self._last_error_log_times:
+                self._last_error_log_times[axis_id] = {}
 
-        current_time = time.time()
+            current_time = time.time()
 
-        for error_code, error_message in ERRORS.items():
-            if active_errors & error_code:
-                # Update the last state with the error
-                self.last_known_state['error'] = error_message
+            for error_code, error_message in ERRORS.items():
+                if active_errors & error_code:
+                    # Update the last state with the error
+                    self.last_known_state['error'] = error_message
 
-                last_log_time = self._last_error_log_times[axis_id].get(error_code, 0)
-                if current_time - last_log_time > self.error_log_throttle_duration_sec:
-                    self.ROS_logger.error(f"Active error on axis {axis_id}: {error_message}")
-                    self._last_error_log_times[axis_id][error_code] = current_time
+                    last_log_time = self._last_error_log_times[axis_id].get(error_code, 0)
+                    if current_time - last_log_time > self.error_log_throttle_duration_sec:
+                        self.ROS_logger.error(f"Active error on axis {axis_id}: {error_message}")
+                        self._last_error_log_times[axis_id][error_code] = current_time
 
-            elif disarm_reason & error_code:
-                last_log_time = self._last_error_log_times[axis_id].get(error_code, 0)
-                if current_time - last_log_time > self.error_log_throttle_duration_sec:
-                    self.ROS_logger.error(f"Disarm reason on axis {axis_id}: {error_message}")
-                    self._last_error_log_times[axis_id][error_code] = current_time
+                elif disarm_reason & error_code:
+                    last_log_time = self._last_error_log_times[axis_id].get(error_code, 0)
+                    if current_time - last_log_time > self.error_log_throttle_duration_sec:
+                        self.ROS_logger.error(f"Disarm reason on axis {axis_id}: {error_message}")
+                        self._last_error_log_times[axis_id][error_code] = current_time
+
+        except Exception as e:
+            self.ROS_logger.error(f"Error handling error message for axis {axis_id}: {e}")
 
     def _handle_encoder_estimates(self, axis_id, data):
         """
@@ -1425,31 +1401,14 @@ class CANInterface:
             data: The message data.
         """
         try:
-            # Start by unpacking the data, which is a 32-bit float
+            # Start by unpacking the data, which is two 32-bit floats
             pos_estimate, vel_estimate = struct.unpack_from('<ff', data)
 
-            # Add the data to the appropriate buffer
-            self.position_buffer[axis_id] = -pos_estimate # Invert the raw reading, since we want +ve to be upwards
-            self.velocity_buffer[axis_id] = -vel_estimate
-
-            # Print these values for debugging
-            # self.ROS_logger.info(f"Axis {axis_id} - Position: {pos_estimate:.2f}, Velocity: {vel_estimate:.2f}")
-
-            # If this data is for the hand, we can publish it separately
-            if axis_id == 6:
-                self._trigger_callback('hand_telemetry', {'position': -pos_estimate, 
-                                                        'velocity': -vel_estimate})
-
-            if all(val is not None for val in self.position_buffer):
-                # If the buffer is full, send it off!
-                self.pos_values = self.position_buffer.copy() # Copy so that data doesn't change before being sent away
-                self._trigger_callback('leg_positions', self.pos_values)
-                self.position_buffer = [None] * self.num_axes  # Reset the buffer
-
-                # If position buffer is full, then velocity buffer will also be full
-                self.vel_values = self.velocity_buffer.copy()
-                self._trigger_callback('leg_velocities', self.vel_values)
-                self.velocity_buffer = [None] * self.num_axes  # Reset the buffer
+            # Update the motor state with the encoder estimates. 
+            with self._motor_states_lock:
+                # Invert the position and velocity estimates since we want +ve to be upwards
+                self.motor_states[axis_id].pos_estimate = -pos_estimate
+                self.motor_states[axis_id].vel_estimate = -vel_estimate
             
         except Exception as e:
             self.ROS_logger.error(f"Failed to handle encoder estimates for axis {axis_id}: {e}")
@@ -1463,25 +1422,13 @@ class CANInterface:
             data: The message data.
         """
         try:
-            # Start by unpacking the data, which is a 32-bit float
+            # Start by unpacking the data, which is two 32-bit floats
             iq_setpoint, iq_measured = struct.unpack_from('<ff', data)
 
-            # Add the data to the buffer
-            self.iq_buffer[axis_id] = iq_measured
-
-            # Print these values for debugging
-            # self.ROS_logger.info(f"Axis {axis_id} - IQ Setpoint: {iq_setpoint:.2f}, IQ Measured: {iq_measured:.2f}, IQ Buffer: {self.iq_buffer}")
-
-            if all(val is not None for val in self.iq_buffer):
-                # If the buffer is full, send the data to the ROS network
-                self.iq_values = self.iq_buffer.copy()
-                self._trigger_callback('leg_iqs', self.iq_values)
-
-                # Log a confirmation that these values have been saved, and print them
-                # self.ROS_logger.info(f"Motor currents: {self.iq_values}")
-
-                # Reset the buffer
-                self.iq_buffer = [None] * self.num_axes
+            # Update the motor state with the IQ readings
+            with self._motor_states_lock:
+                self.motor_states[axis_id].iq_setpoint = iq_setpoint
+                self.motor_states[axis_id].iq_measured = iq_measured
 
         except Exception as e:
             self.ROS_logger.error(f"Failed to handle IQ readings for axis {axis_id}: {e}")
@@ -1495,28 +1442,36 @@ class CANInterface:
             data: The message data.
         """
         try:
-            # Start by unpacking the data, which is a 32-bit float
+            # Start by unpacking the data, which is two 32-bit floats
             fet_temp, motor_temp = struct.unpack_from('<ff', data)
 
-            # Add the data to the buffer
-            self.temp_buffer[axis_id] = motor_temp
-
-            # Print these values for debugging
-            # self.ROS_logger.info(f"Axis {axis_id} - FET Temp: {fet_temp:.2f}, Motor Temp: {motor_temp:.2f}")
-
-            if all(val is not None for val in self.temp_buffer):
-                # If the buffer is full, send the data to the ROS network
-                self.temp_values = self.temp_buffer.copy()
-                self._trigger_callback('leg_temps', self.temp_values)
-
-                # Log a confirmation that these values have been saved, and print them
-                # self.ROS_logger.info(f"Motor temperatures: {self.temp_values}")
-
-                # Reset the buffer
-                self.temp_buffer = [None] * self.num_axes
+            # Update the motor state with the temperature readings
+            with self._motor_states_lock:
+                self.motor_states[axis_id].fet_temp = fet_temp
+                self.motor_states[axis_id].motor_temp = motor_temp
 
         except Exception as e:
             self.ROS_logger.error(f"Failed to handle temperature readings for axis {axis_id}: {e}")
+
+    def _handle_bus_voltage_current_readings(self, axis_id, data):
+        """
+        Handles bus voltage and current readings messages.
+
+        Args:
+            axis_id: The axis ID.
+            data: The message data.
+        """
+        try:
+            # Start by unpacking the data, which is two 32-bit floats
+            bus_voltage, bus_current = struct.unpack_from('<ff', data)
+
+            # Update the motor state with the bus voltage and current readings
+            with self._motor_states_lock:
+                self.motor_states[axis_id].bus_voltage = bus_voltage
+                self.motor_states[axis_id].bus_current = bus_current
+
+        except Exception as e:
+            self.ROS_logger.error(f"Failed to handle bus voltage and current readings for axis {axis_id}: {e}")
 
     def _handle_arbitrary_parameter_read(self, axis_id, data, param_type='f'):
         """
@@ -1779,6 +1734,19 @@ class CANInterface:
     #########################################################################################################
     #                                       Utility functions                                               #
     #########################################################################################################
+
+    def get_motor_states(self) -> List[MotorStateSingle]:
+        """
+        Returns the motor states for all axes and copies the current states to the last_motor_states attribute
+        to avoid race conditions.
+
+        Returns:
+            A list of MotorStateSingle objects.
+        """
+        with self._motor_states_lock:
+            self.last_motor_states = self.motor_states.copy()
+        
+        return self.last_motor_states
 
     def shutdown(self):
         """

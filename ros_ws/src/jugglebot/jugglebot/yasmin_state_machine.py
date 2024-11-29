@@ -8,7 +8,7 @@ from yasmin_viewer import YasminViewerPub
 from std_msgs.msg import String, Bool
 from std_srvs.srv import Trigger
 from geometry_msgs.msg import Quaternion
-from jugglebot_interfaces.msg import HeartbeatMsg, RobotStateMsg
+from jugglebot_interfaces.msg import RobotStateMsg, MotorStateMulti
 from jugglebot_interfaces.srv import GetStateFromTeensy, ActivateOrDeactivate
 from jugglebot_interfaces.action import HomeMotors, LevelPlatform
 import time
@@ -49,8 +49,8 @@ class BootState(MonitorState):
         ''' HEARTBEAT MONITORING '''
             # Subscribe to the heartbeat topic
         self._subscription = self._node.create_subscription(
-            HeartbeatMsg,
-            "heartbeat_topic",
+            MotorStateMulti,
+            "motor_states",
             self.check_all_heartbeats,
             7
         )
@@ -98,15 +98,15 @@ class BootState(MonitorState):
     #########################################################################################################
 
     def check_all_heartbeats(self, msg):
-        if not self.monitoring:
+        if not self.monitoring or self.stage != "waiting_for_heartbeats":
             return
-        
-        # Check if all heartbeats have been received without errors
-        if msg.axis_id not in self.heartbeat_received:
-            self.heartbeat_received.add(msg.axis_id)
-            # self._node.get_logger().info(f"Received heartbeat from axis {msg.axis_id}")
 
-            # Don't worry about processing the error messages here; this is handled by the can_interface_node
+        # Check if all heartbeats have been received without errors
+        for axis_num, motor in enumerate(msg.motor_states):
+            if axis_num not in self.heartbeat_received and motor.current_state != 0 :
+                # current_state will be 0 if the axis is unplugged/unresponsive
+                self.heartbeat_received.add(axis_num)
+                # self._node.get_logger().info(f"Received heartbeat from axis {axis_num}")
 
         # Log which heartbeats have been received
         self._node.get_logger().info(f"Received heartbeats: {self.heartbeat_received}")
@@ -164,11 +164,20 @@ class BootState(MonitorState):
         except Exception as e:
             self._node.get_logger().error(f"Service call failed: {e}")
 
+
+    #########################################################################################################
+    #                                 Mini State Machine and Advancing                                      #
+    #########################################################################################################
+
     def mini_state_machine(self):
         '''
         A mini state machine that tracks the stage of the boot process. This is necessary because the BootState
         is a MonitorState and we're handling several processes here.
         '''
+
+        # Log the state we're at
+        # self._node.get_logger().info(f"Stage: {self.stage}")
+
         if self.stage == "waiting_for_heartbeats":
             return
         
@@ -231,6 +240,7 @@ class BootState(MonitorState):
         else:
             self._node.get_logger().error("Error detected during initialization. Transitioning to FAULT.")
             return ABORT
+
 
 # Define the PreOpCheck State
 class PreOpCheckState(State):
@@ -476,7 +486,7 @@ class LevellingPlatformState(ActionState):
     def handle_level_result(self, blackboard, result):
         if result.success:
             blackboard["levelling_complete"] = True
-            blackboard["pose_offset"] = result.offset
+            blackboard["pose_offset_quat"] = result.offset
             return SUCCEED
         
         self._node.get_logger().error(f"Error while levelling the platform. Error: {result.error}")
@@ -582,7 +592,6 @@ def main():
     blackboard = Blackboard()
     blackboard["init_stage"] = "encoder_search_incomplete" # What stage of the initialization process we're up to
     blackboard["levelling_complete"] = False
-    blackboard["pose_offset_rad"] = [0.0, 0.0]
     blackboard["pose_offset_quat"] = Quaternion()
     blackboard["control_mode"] = "" # The current control mode of the robot
     blackboard["error"] = ""
