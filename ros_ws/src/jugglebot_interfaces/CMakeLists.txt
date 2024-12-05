@@ -27,6 +27,10 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/PlatformPoseMessage.msg"
   "msg/MotorStateSingle.msg"
   "msg/MotorStateMulti.msg"
+  "msg/MocapDataSingle.msg"
+  "msg/MocapDataMulti.msg"
+  "msg/BallStateSingle.msg"
+  "msg/BallStateMulti.msg"
 
   "srv/GetStateFromTeensy.srv"
   "srv/GetRobotGeometry.srv"
