@@ -4,8 +4,8 @@ IFS=$'\t\n' # Stricter IFS settings
 rc=0
 
 task() {
-  local name="$1"
-  echo -e "\nTASK [${name}] ********"
+  local task_desc="$1"
+  echo -e "\nTASK [${task_desc}] ********"
 }
 
 task 'Parse the command line arguments'
