@@ -14,6 +14,7 @@ jugglebot_repo_dir: "{{ home_dir }}/Jugglebot"
 conda_filepath: "{{ home_dir }}/miniforge3/bin/conda"
 zshrc_filepath: "{{ home_dir }}/.zshrc"
 vimrc_filepath: "{{ home_dir }}/.vimrc"
+gitconfig_filepath: "{{ home_dir }}/.gitconfig"
 jugglebot_conda_env_filepath: "{{ host_setup_dir }}/jugglebot_conda_env.yml }}"
 ohmyzsh_git_repo: 'https://github.com/ohmyzsh/ohmyzsh.git'
 ohmyzsh_dir: "{{ home_dir }}/.oh-my-zsh"

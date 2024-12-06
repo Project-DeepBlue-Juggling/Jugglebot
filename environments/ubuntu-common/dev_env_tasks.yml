@@ -9,6 +9,18 @@
     quiet: yes
     fail_msg: 'This playbook requires that the keypair name be specified using `-e "ssh_keypair_name=''[keypair name]''"`'
  
+- name: Ensure that the git_name was specified
+  assert:
+    that: git_name
+    quiet: yes
+    fail_msg: 'This playbook requires that the git name be specified using `-e "git_name=''[your full name]''"`'
+ 
+- name: Ensure that the git_email was specified
+  assert:
+    that: git_email
+    quiet: yes
+    fail_msg: 'This playbook requires that the git name be specified using `-e "git_email=''[your email address]''"`'
+ 
 - name: Ensure that the specified ssh keypair exists
   assert:
     that: "ssh_private_key_filepath is file and (ssh_private_key_filepath + '.pub') is file"
@@ -160,6 +172,28 @@
     dest: "{{ vimrc_filepath }}"
     readable_dest: ~/.vimrc
     mode: '0644'
+
+- name: Create or diff ~/.gitconfig
+  import_tasks: ../ansible-common/copy_or_diff.yml
+  vars:
+    src: ../ubuntu-common/gitconfig
+    dest: "{{ gitconfig_filepath }}"
+    readable_dest: ~/.gitconfig
+    mode: '0644'
+
+- name: Set git name in ~/.gitconfig
+  community.general.ini_file:
+    path: "{{ gitconfig_filepath }}"
+    section: 'user'
+    option: 'name'
+    value: "{{ git_name }}"
+
+- name: Set git name in ~/.gitconfig
+  community.general.ini_file:
+    path: "{{ gitconfig_filepath }}"
+    section: 'user'
+    option: 'email'
+    value: "{{ git_email }}"
 
 - name: Ensure that the ~/.vim/backup directory exists
   file:

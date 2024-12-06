@@ -1,0 +1,14 @@
+[core]
+editor = vim
+
+[remote "origin"]
+prune = true
+
+[alias]
+co = checkout
+br = branch
+ci = commit
+st = status
+unstage = reset HEAD --
+last = !git --no-pager log -1 HEAD
+

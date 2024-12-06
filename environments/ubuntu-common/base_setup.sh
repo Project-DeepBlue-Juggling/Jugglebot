@@ -17,8 +17,23 @@ while [[ $# -gt 0 ]]; do
       shift
       shift
       ;;
-    -e|--jugglebot-environments-dir)
-      JUGGLEBOT_ENVIRONMENTS_DIR="$2"
+    -N|--git-name)
+      GIT_NAME="$2"
+      shift
+      shift
+      ;;
+    -E|--git-email)
+      GIT_EMAIL="$2"
+      shift
+      shift
+      ;;
+    -c|--jugglebot-conda-env-filepath)
+      JUGGLEBOT_CONDA_ENV_FILEPATH="$2"
+      shift
+      shift
+      ;;
+    -p|--ansible-playbook-filepath)
+      ANSIBLE_PLAYBOOK_FILEPATH="$2"
       shift
       shift
       ;;
@@ -40,12 +55,32 @@ if [[ -z "${SSH_KEYPAIR_NAME:-}" ]]; then
   exit 2
 fi
 
-task 'Warn that setting an alternative environments directory is not supported.'
+task 'Assert that a git name was specified'
 
-if [[ -z "${JUGGLEBOT_ENVIRONMENTS_DIR:-}" ]]; then
-  JUGGLEBOT_ENVIRONMENTS_DIR="${HOME}/Jugglebot/environments"
-else
-  echo -e "\n[WARNING]: Specifying an alternate repo location is not supported. The '--jugglebot-environments-dir' flag should only be used when testing this script.\n"
+if [[ -z "${GIT_NAME:-}" ]]; then
+  echo '[ERROR]: A git name is required. Invoke this command with the `--git-name "[Your full name]"` switch (eg. `--git-name "Jane Doe"`)'
+  exit 2
+fi
+
+task 'Assert that a git email was specified'
+
+if [[ -z "${GIT_EMAIL:-}" ]]; then
+  echo '[ERROR]: A git email is required. Invoke this command with the `--git-email "[your email address]"` switch (eg. `--git-email "jane.doe@gmail.com"`)'
+  exit 2
+fi
+
+task 'Assert that a jugglebot Conda env config file was specified'
+
+if [[ -z "${JUGGLEBOT_CONDA_ENV_FILEPATH:-}" ]]; then
+  echo '[ERROR]: A jugglebot Conda env config file is required. Invoke this command with the `--jugglebot-conda-env-filepath "[config filepath]"` switch'
+  exit 2
+fi
+
+task 'Assert that an ansible playbook was specified'
+
+if [[ -z "${ANSIBLE_PLAYBOOK_FILEPATH:-}" ]]; then
+  echo '[ERROR]: An ansible playbook is required. Invoke this command with the `--ansible-playbook "[playbook filepath]"` switch'
+  exit 2
 fi
 
 task 'Initialize variables'
@@ -55,8 +90,6 @@ HOST_SETUP_BACKUPS_DIR="${HOME}/.jugglebot/host_setup/backups"
 CONDA_SETUP_SCRIPT_URL="https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-$( uname )-$( uname -m ).sh"
 CONDA_SETUP_SCRIPT_FILEPATH="${HOST_SETUP_DIR}/miniforge_setup.sh"
 CONDA_FILEPATH="${HOME}/miniforge3/bin/conda"
-JUGGLEBOT_CONDA_ENV_FILEPATH="${JUGGLEBOT_ENVIRONMENTS_DIR}/ubuntu-common/jugglebot_conda_env.yml"
-WSL2_MAIN_PLAYBOOK_FILEPATH="${JUGGLEBOT_ENVIRONMENTS_DIR}/ubuntu_24.04-wsl2/main_playbook.yml"
 SSH_PRIVATE_KEY_FILEPATH="${HOME}/.ssh/${SSH_KEYPAIR_NAME}"
 
 task 'Ensure that the ~/.jugglebot/host_setup/backups directory exists'
@@ -148,14 +181,14 @@ ssh-add "${SSH_PRIVATE_KEY_FILEPATH}"
 
 task 'Run the WSL2 main playbook'
 
-echo -e "\nEnter your password to enable ${WSL2_MAIN_PLAYBOOK_FILEPATH} to perform privileged operations"
+echo -e "\nEnter your password to enable the ansible playbook to perform privileged operations"
 
-ANSIBLE_LOCALHOST_WARNING=False ANSIBLE_INVENTORY_UNPARSED_WARNING=False ansible-playbook "${WSL2_MAIN_PLAYBOOK_FILEPATH}" --ask-become-pass -e 'upgrade_software=yes' -e "ssh_keypair_name='${SSH_KEYPAIR_NAME}'" || rc="$?"
+ANSIBLE_LOCALHOST_WARNING=False ANSIBLE_INVENTORY_UNPARSED_WARNING=False ansible-playbook "${ANSIBLE_PLAYBOOK_FILEPATH}" --ask-become-pass -e 'upgrade_software=yes' -e "ssh_keypair_name='${SSH_KEYPAIR_NAME}'" -e "git_name='${GIT_NAME}'" -e "git_email='${GIT_EMAIL}'" || rc="$?"
 
 # failed_when: the return code is nonzero
 
 if [[ $rc -ne 0 ]]; then
-  echo -e "[ERROR]: The ${WSL2_MAIN_PLAYBOOK_FILEPATH} failed with return code ${rc}. After diagnosing the cause of the failure, you can re-run it using the following command:\n\nANSIBLE_LOCALHOST_WARNING=False ANSIBLE_INVENTORY_UNPARSED_WARNING=False ansible-playbook '${WSL2_MAIN_PLAYBOOK_FILEPATH}' --ask-become-pass -e 'upgrade_software=yes' -e 'ssh_keypair_name=${SSH_KEYPAIR_NAME}'"
+  echo -e "[ERROR]: The ansible playbook failed with return code ${rc}. After diagnosing the cause of the failure, you can re-run it using the following command:\n\nANSIBLE_LOCALHOST_WARNING=False ANSIBLE_INVENTORY_UNPARSED_WARNING=False ansible-playbook '${ANSIBLE_PLAYBOOK_FILEPATH}' --ask-become-pass -e 'upgrade_software=yes' -e 'ssh_keypair_name=${SSH_KEYPAIR_NAME}' -e 'git_name=\"${GIT_NAME}\"' -e 'git_email=\"${GIT_EMAIL}\"'"
   exit $rc
 fi
 
