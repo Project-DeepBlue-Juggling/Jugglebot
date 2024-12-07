@@ -48,7 +48,7 @@ task 'Append arguments for ubuntu-common/base_setup.sh'
 
 BASE_SETUP_ARGS+=('--jugglebot-conda-env-filepath')
 BASE_SETUP_ARGS+=("${JUGGLEBOT_CONDA_ENV_FILEPATH}")
-BASE_SETUP_ARGS+=('--andible-playbook-filepath')
+BASE_SETUP_ARGS+=('--ansible-playbook-filepath')
 BASE_SETUP_ARGS+=("${ANSIBLE_PLAYBOOK_FILEPATH}")
 
 task 'Invoke ubuntu-common/base_setup.sh'
