@@ -119,5 +119,5 @@ USER "$USERNAME"
 ENTRYPOINT [ "tini", "--", "/home/devops/Jugglebot/environments/ubuntu_20.04-docker-native/entrypoint.sh" ]
 
 # CMD [ "sleep", "infinity" ]
-CMD [ "/bin/bash" ]
+CMD [ "/usr/bin/zsh" ]
 

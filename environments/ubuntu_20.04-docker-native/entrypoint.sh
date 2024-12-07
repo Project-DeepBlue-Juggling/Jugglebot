@@ -11,7 +11,9 @@ cp --no-clobber /etc/skel/.bash_logout "${HOME}/.bash_logout"
 
 # TASK [Replace ~/.oh-my-zsh/custom with a symlink to the ~/.oh-my-zsh-custom VOLUME]
 
+
 if [[ -d "${HOME}/.oh-my-zsh" ]]; then
+  OH_MY_ZSH_INSTALLED=0 # boolean true in Bash
   if [[ -d "${HOME}/.oh-my-zsh/custom" ]]; then
     if [[ ! -L "${HOME}/.oh-my-zsh/custom" ]]; then
       if [[ "$(ls -A "${HOME}/.oh-my-zsh/custom")" ]]; then
@@ -22,6 +24,8 @@ if [[ -d "${HOME}/.oh-my-zsh" ]]; then
       fi
     fi
   fi
+else
+  OH_MY_ZSH_INSTALLED=1 # boolean false in Bash
 fi
 
 # TASK [Enable git to work within the Jugglebot VOLUME]
@@ -30,5 +34,9 @@ export GIT_DISCOVERY_ACROSS_FILESYSTEM=1
 
 # TASK [Proceed with the CMD]
 
-exec "$@"
+if [[ ${OH_MY_ZSH_INSTALLED} && -f /usr/bin/zsh ]]; then
+  exec "$@"
+else
+  exec /bin/bash
+fi
 
