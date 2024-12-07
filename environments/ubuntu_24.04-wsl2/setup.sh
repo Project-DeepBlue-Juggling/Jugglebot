@@ -8,7 +8,7 @@ task() {
   echo -e "\nTASK [${task_desc}] ********"
 }
 
-task 'Parse args while coddling unrecognized args'
+task 'Parse the arguments while coddling the unrecognized arguments'
 
 BASE_SETUP_ARGS=()
 
@@ -44,14 +44,14 @@ fi
 JUGGLEBOT_CONDA_ENV_FILEPATH="${ENVIRONMENTS_DIR}/ubuntu-common/jugglebot_conda_env.yml"
 ANSIBLE_PLAYBOOK_FILEPATH="${ENVIRONMENTS_DIR}/ubuntu_24.04-wsl2/main_playbook.yml"
 
-task 'Append arguments for ubuntu-common/base_setup.sh'
+task 'Prepare the arguments for ubuntu-common/base_setup.sh'
 
 BASE_SETUP_ARGS+=('--jugglebot-conda-env-filepath')
 BASE_SETUP_ARGS+=("${JUGGLEBOT_CONDA_ENV_FILEPATH}")
 BASE_SETUP_ARGS+=('--ansible-playbook-filepath')
 BASE_SETUP_ARGS+=("${ANSIBLE_PLAYBOOK_FILEPATH}")
 
-task 'Invoke ubuntu-common/base_setup.sh'
+task 'Invoke ubuntu-common/base_setup.sh while including the coddled arguments'
 
 ${ENVIRONMENTS_DIR}/ubuntu-common/base_setup.sh "${BASE_SETUP_ARGS[@]}"
 
