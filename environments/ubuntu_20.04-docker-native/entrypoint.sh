@@ -11,7 +11,6 @@ cp --no-clobber /etc/skel/.bash_logout "${HOME}/.bash_logout"
 
 # TASK [Replace ~/.oh-my-zsh/custom with a symlink to the ~/.oh-my-zsh-custom VOLUME]
 
-
 if [[ -d "${HOME}/.oh-my-zsh" ]]; then
   OH_MY_ZSH_INSTALLED=0 # boolean true in Bash
   if [[ -d "${HOME}/.oh-my-zsh/custom" ]]; then
