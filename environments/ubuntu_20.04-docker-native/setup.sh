@@ -69,6 +69,7 @@ docker run \
   -v ~/Jugglebot:/home/devops/Jugglebot \
   -v ~/.oh-my-zsh/custom:/home/devops/.oh-my-zsh-custom \
   -e SSH_AUTH_SOCK=/tmp/.ssh/ssh_auth_sock \
+  --dns 8.8.8.8 \
   -it jugglebot-dev:focal-native \
   /bin/bash -c "${BASE_SETUP_COMMAND}"
 

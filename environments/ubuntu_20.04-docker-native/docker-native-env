@@ -3,5 +3,13 @@ set -o nounset -o pipefail -o errexit
 IFS=$'\t\n' # Stricter IFS settings
 rc=0
 
-docker run -v ~/docker_native_home:/home/devops -v ~/.ssh:/home/devops/.ssh -v /tmp/.ssh:/tmp/.ssh -v ~/Jugglebot:/home/devops/Jugglebot -v ~/.oh-my-zsh/custom:/home/devops/.oh-my-zsh-custom -e SSH_AUTH_SOCK=/tmp/.ssh/ssh_auth_sock -it jugglebot-dev:focal-native
+docker run \
+  -v ~/docker_native_home:/home/devops \
+  -v ~/.ssh:/home/devops/.ssh \
+  -v /tmp/.ssh:/tmp/.ssh \
+  -v ~/Jugglebot:/home/devops/Jugglebot \
+  -v ~/.oh-my-zsh/custom:/home/devops/.oh-my-zsh-custom \
+  -e SSH_AUTH_SOCK=/tmp/.ssh/ssh_auth_sock \
+  --dns 8.8.8.8 \
+  -it jugglebot-dev:focal-native
 
