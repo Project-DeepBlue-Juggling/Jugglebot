@@ -117,7 +117,7 @@
     host: 'github.com'
     hostname: 'github.com'
     remote_user: 'git'
-    identity_file: "{{ ssh_private_key_filepath }}"
+    identity_file: "~/.ssh/{{ ssh_keypair_name }}"
     identities_only: yes
     add_keys_to_agent: yes
     strict_host_key_checking: accept-new
