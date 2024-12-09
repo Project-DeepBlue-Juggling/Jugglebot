@@ -221,6 +221,11 @@
     readable_dest: ~/.oh-my-zsh/custom/aliases.zsh
     mode: '0644'
 
+- name: Disable the sudo welcome message
+  copy:
+    content: ''
+    dest: "{{ home_dir }}/.sudo_as_admin_successful"
+  
 - name: Create or diff ~/.jugglebot/conda_env.sh
   import_tasks: ../ansible-common/copy_or_diff.yml
   vars:

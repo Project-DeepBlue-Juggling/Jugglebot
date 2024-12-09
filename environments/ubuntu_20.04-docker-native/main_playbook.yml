@@ -5,11 +5,6 @@
 
   tasks:
 
-  - name: Disable the sudo welcome message
-    copy:
-      content: ''
-      dest: "{{ home_dir }}/.sudo_as_admin_successful"
-  
   - name: Provision the Ubuntu environment
     import_tasks:
       file: "{{ playbook_dir }}/../ubuntu-common/dev_env_tasks.yml" 

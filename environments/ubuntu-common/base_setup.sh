@@ -188,7 +188,7 @@ ANSIBLE_LOCALHOST_WARNING=False ANSIBLE_INVENTORY_UNPARSED_WARNING=False ansible
 # failed_when: the return code is nonzero
 
 if [[ $rc -ne 0 ]]; then
-  echo -e "[ERROR]: The ansible playbook failed with return code ${rc}. After diagnosing the cause of the failure, you can re-run it using the following command:\n\nANSIBLE_LOCALHOST_WARNING=False ANSIBLE_INVENTORY_UNPARSED_WARNING=False ansible-playbook '${ANSIBLE_PLAYBOOK_FILEPATH}' --ask-become-pass -e 'upgrade_software=yes' -e 'ssh_keypair_name=${SSH_KEYPAIR_NAME}' -e 'git_name=\"${GIT_NAME}\"' -e 'git_email=\"${GIT_EMAIL}\"'"
+  echo -e "[ERROR]: The ansible playbook failed with return code ${rc}. This is how the playbook was invoked:\n\nANSIBLE_LOCALHOST_WARNING=False ANSIBLE_INVENTORY_UNPARSED_WARNING=False ansible-playbook '${ANSIBLE_PLAYBOOK_FILEPATH}' --ask-become-pass -e 'upgrade_software=yes' -e \"ssh_keypair_name='${SSH_KEYPAIR_NAME}'\" -e \"git_name='${GIT_NAME}'\" -e \"git_email='${GIT_EMAIL}'\""
   exit $rc
 fi
 
