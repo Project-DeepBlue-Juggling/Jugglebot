@@ -52,14 +52,13 @@
 
 - name: Determine whether the playbook is running inside a docker container
   community.docker.current_container_facts:
-  register: container_facts_result
 
 - name: Specify the Google nameserver in resolv.conf
   lineinfile:
     path: '/etc/resolv.conf'
     regexp: '^nameserver .*$'
     line: 'nameserver 8.8.8.8'
-  when: not container_facts_result.ansible_module_running_in_container
+  when: not ansible_module_running_in_container
   become: yes
 
 - name: Read the packages upgraded timestamp
