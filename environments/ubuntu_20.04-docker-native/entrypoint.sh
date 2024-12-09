@@ -51,6 +51,8 @@ else
 
   echo -e "\n[WARNING]: Running Bash because Z Shell isn't yet configured\n"
 
+  export SHELL=/bin/bash
+
   exec /bin/bash
 
 fi
