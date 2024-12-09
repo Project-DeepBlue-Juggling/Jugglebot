@@ -31,11 +31,27 @@ fi
 
 export GIT_DISCOVERY_ACROSS_FILESYSTEM=1
 
-# TASK [Proceed with the CMD]
+# TASK [Determine which command to exec]
 
 if [[ ${OH_MY_ZSH_INSTALLED} && -f /usr/bin/zsh ]]; then
+  
+  # TASK [Exec the specified command or the default Dockerfile CMD]
+  
   exec "$@"
+
+elif [[ "$@" != '/usr/bin/zsh' ]]; then
+  
+  # TASK [Exec the specified command as long as it isn't merely running zsh before Z Shell is configured]
+
+  exec "$@"
+
 else
+
+  # TASK [Exec the Bash shell by default if Z Shell isn't yet configured]
+
+  echo -e "\n[WARNING]: Running Bash because Z Shell isn't yet configured\n"
+
   exec /bin/bash
+
 fi
 

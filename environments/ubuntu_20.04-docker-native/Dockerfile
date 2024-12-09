@@ -100,7 +100,7 @@ RUN if ! grep -o -E '^\s*en_US.UTF-8\s+UTF-8' /etc/locale.gen > /dev/null; then 
       echo 'en_US.UTF-8 UTF-8' >> /etc/locale.gen; \
     fi
 
-VOLUME [ "/home/$USERNAME", "/home/$USERNAME/.ssh", "/home/$USERNAME/Jugglebot", "/home/$USERNAME/.oh-my-zsh-custom" ]
+VOLUME [ "/home/$USERNAME", "/tmp/.ssh", "/home/$USERNAME/.ssh", "/home/$USERNAME/Jugglebot", "/home/$USERNAME/.oh-my-zsh-custom" ]
 
     # TASK [Create the default user]
 RUN groupadd "$USERNAME" \
@@ -113,8 +113,6 @@ ENV SHELL='/bin/bash'
 WORKDIR "/home/$USERNAME"
 
 USER "$USERNAME"
-
-# ENTRYPOINT [ "/usr/bin/tini", "--" ]
 
 ENTRYPOINT [ "tini", "--", "/home/devops/Jugglebot/environments/ubuntu_20.04-docker-native/entrypoint.sh" ]
 
