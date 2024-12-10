@@ -57,7 +57,7 @@ fi
 
 JUGGLEBOT_CONDA_ENV_FILEPATH="${ENVIRONMENTS_DIR}/ubuntu-common/jugglebot_conda_env.yml"
 ANSIBLE_PLAYBOOK_FILEPATH="${ENVIRONMENTS_DIR}/ubuntu_24.04-wsl2/main_playbook.yml"
-SSH_PRIVATE_KEY_FILEPATH="~/.ssh/${SSH_KEYPAIR_NAME}"
+SSH_PRIVATE_KEY_FILEPATH="${HOME}/.ssh/${SSH_KEYPAIR_NAME}"
 
 task 'Enable ssh-agent'
 

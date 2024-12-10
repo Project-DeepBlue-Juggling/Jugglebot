@@ -61,7 +61,7 @@ else
   echo -e "\n[WARNING]: Specifying an alternate repo location is not supported. The '--debug-environments-dir' flag should only be used when testing this script.\n"
 fi
 
-SSH_PRIVATE_KEY_FILEPATH="~/.ssh/${SSH_KEYPAIR_NAME}"
+SSH_PRIVATE_KEY_FILEPATH="${HOME}/.ssh/${SSH_KEYPAIR_NAME}"
 
 task 'Enable ssh-agent'
 
