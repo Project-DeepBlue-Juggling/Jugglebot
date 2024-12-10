@@ -114,7 +114,7 @@ WORKDIR "/home/$USERNAME"
 
 USER "$USERNAME"
 
-ENV USER "$USERNAME"
+ENV USER="$USERNAME"
 
 ENTRYPOINT [ "tini", "--", "/home/devops/Jugglebot/environments/ubuntu_20.04-docker-native/entrypoint.sh" ]
 

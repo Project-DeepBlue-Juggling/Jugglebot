@@ -1,4 +1,6 @@
 ---
+# parameters:
+# - environments_dir
 
 - name: Load variables
   include_vars: "{{ environments_dir }}/ubuntu-common/docker_respository_vars.yml"

@@ -29,10 +29,12 @@
   - name: Provision the Ubuntu environment
     import_tasks: "{{ environments_dir }}/ubuntu-common/dev_env_tasks.yml"
     vars:
-      environments_dir: "{{ environments_dir }}"
+      environments_dir: "{{ playbook_dir }}/.."
 
   - name: Add the Docker package repository
     import_tasks: "{{ environments_dir }}/ubuntu-common/docker_repository_tasks.hml"
+    vars:
+      environments_dir: "{{ playbook_dir }}/.."
 
   - name: Provision the Docker Engine & Qemu
     import_tasks: "{{ environments_dir }}/ubuntu-common/docker_engine_tasks.yml"
