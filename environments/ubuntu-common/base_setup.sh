@@ -90,7 +90,6 @@ HOST_SETUP_BACKUPS_DIR="${HOME}/.jugglebot/host_setup/backups"
 CONDA_SETUP_SCRIPT_URL="https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-$( uname )-$( uname -m ).sh"
 CONDA_SETUP_SCRIPT_FILEPATH="${HOST_SETUP_DIR}/miniforge_setup.sh"
 CONDA_FILEPATH="${HOME}/miniforge3/bin/conda"
-SSH_PRIVATE_KEY_FILEPATH="${HOME}/.ssh/${SSH_KEYPAIR_NAME}"
 
 task 'Ensure that the ~/.jugglebot/host_setup/backups directory exists'
 
@@ -173,13 +172,7 @@ task 'Enable ssh-agent'
 
 eval "$(ssh-agent -s)"
 
-task 'Add the ssh private key'
-
-# Note: This will prompt for the passphrase if the key requires one 
-
-ssh-add "${SSH_PRIVATE_KEY_FILEPATH}"
-
-task 'Run the WSL2 main playbook'
+task 'Run the specified main playbook'
 
 echo -e "\nEnter your password to enable the ansible playbook to perform privileged operations"
 

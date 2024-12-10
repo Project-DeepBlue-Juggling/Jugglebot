@@ -1,0 +1,28 @@
+---
+
+- name: Load variables
+  include_vars: "{{ environments_dir }}/ubuntu-common/docker_respository_vars.yml"
+
+- name: Download the key for the Docker package repository
+  get_url:
+    url: "{{ docker_package_repo_key_url }}"
+    dest: "{{ docker_package_repo_key_filepath }}"
+  become: yes
+
+- name: Read the dpkg architecture
+  command:
+    cmd: 'dpkg --print-architecture'
+  register: dpkg_architecture_result
+  changed_when: False
+
+- name: Add the Docker package respository to the apt sources
+  apt_repository:
+    repo: "deb [arch={{ dpkg_architecture_result.stdout|trim }} signed-by={{ docker_package_repo_key_filepath }}] {{ docker_package_repo_url }} {{ ansible_facts['lsb']['codename'] }} stable"
+    state: present
+  become: yes
+
+- name: Update the apt cache
+  apt:
+    update-cache: yes
+  become: yes
+

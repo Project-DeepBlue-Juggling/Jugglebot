@@ -5,6 +5,10 @@
 
   tasks:
 
+  - name: Specify the environments directory
+    set_fact:
+      environments_dir: "{{ playbook_dir }}/.."
+
   - name: Ensure that wsl uses systemd
     # Note: Systemd is enabled by default, but this will change whitespace
     community.general.ini_file:
@@ -24,9 +28,13 @@
 
   - name: Provision the Ubuntu environment
     import_tasks:
-      file: "{{ playbook_dir }}/../ubuntu-common/dev_env_tasks.yml" 
+      file: "{{ environments_dir }}/ubuntu-common/dev_env_tasks.yml" 
+
+  - name: Add the Docker package repository
+    import_tasks:
+      file: "{{ environments_dir }}/ubuntu-common/docker_repository_tasks.hml"
 
   - name: Provision the Docker Engine & Qemu
     import_tasks:
-      file: "{{ playbook_dir }}/docker_engine_tasks.yml"
+      file: "{{ environments_dir }}/ubuntu-common/docker_engine_tasks.yml"
 
