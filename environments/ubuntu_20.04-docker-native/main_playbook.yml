@@ -10,8 +10,9 @@
       environments_dir: "{{ playbook_dir }}/.."
 
   - name: Provision the Ubuntu environment
-    import_tasks:
-      file: "{{ environments_dir }}/ubuntu-common/dev_env_tasks.yml" 
+    import_tasks: "{{ environments_dir }}/ubuntu-common/dev_env_tasks.yml"
+    vars:
+      environments_dir: "{{ environments_dir }}" 
 
   - name: Require that the jugglebot Conda environment is activated
     assert:
@@ -20,8 +21,7 @@
       quiet: yes
 
   - name: Add the docker package repository
-    import_tasks:
-      file: "{{ environments_dir }}/ubuntu-common/docker_repository_tasks.yml"
+    import_tasks: "{{ environments_dir }}/ubuntu-common/docker_repository_tasks.yml"
 
   - name: Install the Docker CLI package
     package:

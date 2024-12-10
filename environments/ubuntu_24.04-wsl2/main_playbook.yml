@@ -27,14 +27,13 @@
     become: yes
 
   - name: Provision the Ubuntu environment
-    import_tasks:
-      file: "{{ environments_dir }}/ubuntu-common/dev_env_tasks.yml" 
+    import_tasks: "{{ environments_dir }}/ubuntu-common/dev_env_tasks.yml"
+    vars:
+      environments_dir: "{{ environments_dir }}"
 
   - name: Add the Docker package repository
-    import_tasks:
-      file: "{{ environments_dir }}/ubuntu-common/docker_repository_tasks.hml"
+    import_tasks: "{{ environments_dir }}/ubuntu-common/docker_repository_tasks.hml"
 
   - name: Provision the Docker Engine & Qemu
-    import_tasks:
-      file: "{{ environments_dir }}/ubuntu-common/docker_engine_tasks.yml"
+    import_tasks: "{{ environments_dir }}/ubuntu-common/docker_engine_tasks.yml"
 

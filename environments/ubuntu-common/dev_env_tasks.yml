@@ -1,4 +1,6 @@
 ---
+# parameters:
+# - environments_dir
 
 - name: Load variables
   include_vars: dev_env_vars.yml
@@ -162,25 +164,25 @@
   when: not upgrade_software|bool
   
 - name: Create or diff ~/.zshrc
-  import_tasks: ../ansible-common/copy_or_diff.yml
+  import_tasks: "{{ environments_dir }}/ansible-common/copy_or_diff.yml"
   vars:
-    src: ../ubuntu-common/zshrc
+    src: "{{ environments_dir }}/ubuntu-common/zshrc"
     dest: "{{ zshrc_filepath }}"
     readable_dest: ~/.zshrc
     mode: '0644'
 
 - name: Create or diff ~/.vimrc
-  import_tasks: ../ansible-common/copy_or_diff.yml
+  import_tasks: "{{ environments_dir }}/ansible-common/copy_or_diff.yml"
   vars:
-    src: ../ubuntu-common/vimrc
+    src: "{{ environments_dir }}/ubuntu-common/vimrc"
     dest: "{{ vimrc_filepath }}"
     readable_dest: ~/.vimrc
     mode: '0644'
 
 - name: Create or diff ~/.gitconfig
-  import_tasks: ../ansible-common/copy_or_diff.yml
+  import_tasks: "{{ environments_dir }}/ansible-common/copy_or_diff.yml"
   vars:
-    src: ../ubuntu-common/gitconfig
+    src: "{{ environments_dir }}/ubuntu-common/gitconfig"
     dest: "{{ gitconfig_filepath }}"
     readable_dest: ~/.gitconfig
     mode: '0644'
@@ -218,9 +220,9 @@
     recurse: yes
 
 - name: Create or diff ~/.oh-my-zsh/custom/aliases.zsh
-  import_tasks: ../ansible-common/copy_or_diff.yml
+  import_tasks: "{{ environments_dir }}/ansible-common/copy_or_diff.yml"
   vars:
-    src: ../ubuntu-common/aliases.zsh
+    src: "{{ environments_dir }}/ubuntu-common/aliases.zsh"
     dest: "{{ zsh_aliases_filepath }}"
     readable_dest: ~/.oh-my-zsh/custom/aliases.zsh
     mode: '0644'
@@ -231,9 +233,9 @@
     dest: "{{ home_dir }}/.sudo_as_admin_successful"
   
 - name: Create or diff ~/.jugglebot/conda_env.sh
-  import_tasks: ../ansible-common/copy_or_diff.yml
+  import_tasks: "{{ environments_dir }}/ansible-common/copy_or_diff.yml"
   vars:
-    src: ../ubuntu-common/conda_env.sh
+    src: "{{ environments_dir }}/ubuntu-common/conda_env.sh"
     dest: "{{ jugglebot_config_dir }}/conda_env.sh"
     readable_dest: ~/.jugglebot/conda_env.sh
     mode: '0755'

@@ -1,10 +1,11 @@
 ---
-# src
-# dest
-# readable_dest
-# mode
-# host_setup_defaults_dir
-# host_setup_diffs_dir
+# parameters:
+# - src
+# - dest
+# - readable_dest
+# - mode
+# - host_setup_defaults_dir
+# - host_setup_diffs_dir
 
 - name: "Create {{ readable_dest }} only if it doesn't exist"
   copy:
