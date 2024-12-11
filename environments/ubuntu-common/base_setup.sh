@@ -138,7 +138,7 @@ eval "$(ssh-agent -s)"
 
 task 'Run the specified main playbook'
 
-"${ANSIBLE_PLAYBOOK_COMMAND}" || rc="$?"
+eval "${ANSIBLE_PLAYBOOK_COMMAND}" || rc="$?"
 
 # failed_when: the return code is nonzero
 
