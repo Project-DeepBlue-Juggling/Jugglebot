@@ -47,6 +47,13 @@
       value: 'false'
     become: yes
 
+  - name: Specify the Google nameserver in resolv.conf
+    lineinfile:
+      path: '/etc/resolv.conf'
+      regexp: '^nameserver .*$'
+      line: 'nameserver 8.8.8.8'
+    become: yes
+
   - name: Provision the Ubuntu environment
     import_tasks: "{{ environments_dir }}/ubuntu-common/dev_env_tasks.yml"
     vars:

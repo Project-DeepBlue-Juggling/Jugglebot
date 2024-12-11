@@ -5,10 +5,6 @@
 - name: Load variables
   include_vars: "{{ environments_dir }}/ubuntu-common/dev_env_vars.yml"
   
-- name: Determine whether the playbook is running inside a docker container
-  # Note: This creates the ansible_module_running_in_container variable.
-  community.docker.current_container_facts:
-
 - name: Ensure that the ~/.jugglebot/host_setup/diffs directory exists
   file:
     path: "{{ host_setup_diffs_dir }}"
@@ -31,14 +27,6 @@
   file:
     path: "{{ home_dir }}/bin"
     state: directory
-
-- name: Specify the Google nameserver in resolv.conf
-  lineinfile:
-    path: '/etc/resolv.conf'
-    regexp: '^nameserver .*$'
-    line: 'nameserver 8.8.8.8'
-  when: not ansible_module_running_in_container
-  become: yes
 
 - name: Read the packages upgraded timestamp
   slurp:
