@@ -6,7 +6,6 @@ rc=0
 docker run \
   -v ~/.ssh:/home/devops/.ssh \
   -v /tmp/.ssh:/tmp/.ssh \
-  -v ~/Jugglebot:/home/devops/Jugglebot \
   -v ~/.oh-my-zsh/custom:/home/devops/.oh-my-zsh-custom \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -e SSH_AUTH_SOCK=/tmp/.ssh/ssh_auth_sock \

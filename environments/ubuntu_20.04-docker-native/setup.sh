@@ -64,7 +64,10 @@ ssh-add "${SSH_PRIVATE_KEY_FILEPATH}"
 
 task 'Build the docker image named jugglebot-dev:focal-native'
 
-docker build -t jugglebot-dev:focal-native "${ENVIRONMENTS_DIR}/ubuntu_20.04-docker-native"
+DOCKER_BUILDKIT=1 docker build \
+  --ssh default=${SSH_AUTH_SOCK} \
+  -t jugglebot-dev:focal-native \
+  "${ENVIRONMENTS_DIR}/ubuntu_20.04-docker-native"
 
 ln -s -f -T "${ENVIRONMENTS_DIR}/ubuntu_20.04-docker-native/docker-native-env" "${HOME}/bin/docker-native-env"
 
