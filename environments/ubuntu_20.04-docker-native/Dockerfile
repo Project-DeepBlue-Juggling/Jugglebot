@@ -101,7 +101,7 @@ RUN if ! grep -o -E '^\s*en_US.UTF-8\s+UTF-8' /etc/locale.gen > /dev/null; then 
       echo 'en_US.UTF-8 UTF-8' >> /etc/locale.gen; \
     fi
 
-VOLUME [ "/home/$USERNAME", "/tmp/.ssh", "/home/$USERNAME/Jugglebot", "/home/$USERNAME/.oh-my-zsh-custom" ]
+VOLUME [ "/home/$USERNAME", "/tmp/.ssh", "/home/$USERNAME/.oh-my-zsh-custom" ]
 
     # TASK [Create the default user]
 RUN groupadd "$USERNAME" \
@@ -116,7 +116,7 @@ USER "$USERNAME"
 
 ENV USER="$USERNAME" 
 
-ADD --keep-git-dir [ "$JUGGLEBOT_REPO_SSH_URL", "/home/$USERNAME/Jugglebot" ]
+ADD --keep-git-dir [ "$JUGGLEBOT_REPO_SSH_URL", "/home/$USERNAME" ]
 
 RUN "/home/$USERNAME/Jugglebot/environments/ubuntu-common/base_setup.sh" \
       --jugglebot-conda-env-filepath "/home/$USERNAME/Jugglebot/environments/ubuntu-common/jugglebot_conda_env.yml" \
