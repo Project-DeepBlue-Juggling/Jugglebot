@@ -19,7 +19,7 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     -e|--debug-environments-dir)
-      HOST_ENVIRONMENTS_DIR="$2"
+      ENVIRONMENTS_DIR="$2"
       shift
       shift
       ;;
@@ -43,8 +43,8 @@ fi
 
 task 'Initialize variables'
 
-if [[ -z "${HOST_ENVIRONMENTS_DIR:-}" ]]; then
-  HOST_ENVIRONMENTS_DIR="${HOME}/Jugglebot/environments"
+if [[ -z "${ENVIRONMENTS_DIR:-}" ]]; then
+  ENVIRONMENTS_DIR="${HOME}/Jugglebot/environments"
 else
   echo -e "\n[WARNING]: Specifying an alternate repo location is not supported. The '--debug-environments-dir' flag should only be used when testing this script.\n"
 fi
@@ -64,9 +64,9 @@ ssh-add "${SSH_PRIVATE_KEY_FILEPATH}"
 
 task 'Build the docker image named jugglebot-dev:focal-native'
 
-docker build -t jugglebot-dev:focal-native "${HOST_ENVIRONMENTS_DIR}/ubuntu_20.04-docker-native"
+docker build -t jugglebot-dev:focal-native "${ENVIRONMENTS_DIR}/ubuntu_20.04-docker-native"
 
-ln -s -f -T "${HOST_ENVIRONMENTS_DIR}/ubuntu_20.04-docker-native/docker-native-env" "${HOME}/bin/docker-native-env"
+ln -s -f -T "${ENVIRONMENTS_DIR}/ubuntu_20.04-docker-native/docker-native-env" "${HOME}/bin/docker-native-env"
 
 docker-native-env
 
