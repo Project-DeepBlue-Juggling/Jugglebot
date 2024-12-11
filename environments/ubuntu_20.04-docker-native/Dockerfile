@@ -1,7 +1,6 @@
 FROM ubuntu:focal
 
 ARG USERNAME="devops"
-ARG PASSWORD="devops"
 ARG JUGGLEBOT_REPO_SSH_URL="git@github.com:joewalp/Jugglebot.git#docker-native-platform"
 
     # TASK [Upgrade the packages and restore the man command]
@@ -117,7 +116,7 @@ USER "$USERNAME"
 
 ENV USER="$USERNAME" HOME="/home/$USERNAME"
 
-COPY [ "tmp/gitconfig", "/home/$USERNAME/.gitconfig" ]
+COPY [ "build/gitconfig", "/home/$USERNAME/.gitconfig" ]
 
 ADD --keep-git-dir [ "$JUGGLEBOT_REPO_SSH_URL", "/home/$USERNAME/Jugglebot" ]
 
