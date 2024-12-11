@@ -66,6 +66,7 @@ task 'Build the docker image named jugglebot-dev:focal-native'
 
 DOCKER_BUILDKIT=1 docker build \
   --ssh default=${SSH_AUTH_SOCK} \
+  --progress=plain \
   -t jugglebot-dev:focal-native \
   "${ENVIRONMENTS_DIR}/ubuntu_20.04-docker-native"
 

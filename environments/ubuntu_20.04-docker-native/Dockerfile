@@ -118,6 +118,8 @@ ENV USER="$USERNAME"
 
 ADD --keep-git-dir [ "$JUGGLEBOT_REPO_SSH_URL", "/home/$USERNAME" ]
 
+RUN ls /home/$USERNAME
+
 RUN "/home/$USERNAME/Jugglebot/environments/ubuntu-common/base_setup.sh" \
       --jugglebot-conda-env-filepath "/home/$USERNAME/Jugglebot/environments/ubuntu-common/jugglebot_conda_env.yml" \
       --ansible-playbook-command "ANSIBLE_LOCALHOST_WARNING=False ANSIBLE_INVENTORY_UNPARSED_WARNING=False ANSIBLE_BECOME_PASS=$USERNAME ansible-playbook /home/$USERNAME/Jugglebot/environments/ubuntu_20.04-docker-native/main_playbook.yml -e upgrade_software=yes"
