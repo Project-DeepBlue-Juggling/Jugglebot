@@ -5,33 +5,9 @@
 - name: Load variables
   include_vars: "{{ environments_dir }}/ubuntu-common/dev_env_vars.yml"
   
-- name: Ensure that the ssh_keypair_name was specified
-  assert:
-    that: ssh_keypair_name
-    quiet: yes
-    fail_msg: 'This playbook requires that the keypair name be specified using `-e "ssh_keypair_name=''[keypair name]''"`'
- 
-- name: Ensure that the git_name was specified
-  assert:
-    that: git_name
-    quiet: yes
-    fail_msg: 'This playbook requires that the git name be specified using `-e "git_name=''[your full name]''"`'
- 
-- name: Ensure that the git_email was specified
-  assert:
-    that: git_email
-    quiet: yes
-    fail_msg: 'This playbook requires that the git name be specified using `-e "git_email=''[your email address]''"`'
- 
 - name: Determine whether the playbook is running inside a docker container
   # Note: This creates the ansible_module_running_in_container variable.
   community.docker.current_container_facts:
-
-- name: Ensure that the specified ssh keypair exists
-  assert:
-    that: "ssh_private_key_filepath is file and (ssh_private_key_filepath + '.pub') is file"
-    quiet: yes
-    fail_msg: "The specified ssh keypair ('{{ ssh_private_key_filepath }}', '{{ ssh_private_key_filepath }}.pub') was not found."
 
 - name: Ensure that the ~/.jugglebot/host_setup/diffs directory exists
   file:
@@ -171,20 +147,6 @@
     dest: "{{ gitconfig_filepath }}"
     readable_dest: ~/.gitconfig
     mode: '0644'
-
-- name: Set git name in ~/.gitconfig
-  community.general.ini_file:
-    path: "{{ gitconfig_filepath }}"
-    section: 'user'
-    option: 'name'
-    value: "{{ git_name }}"
-
-- name: Set git name in ~/.gitconfig
-  community.general.ini_file:
-    path: "{{ gitconfig_filepath }}"
-    section: 'user'
-    option: 'email'
-    value: "{{ git_email }}"
 
 - name: Ensure that the ~/.vim/backup directory exists
   file:

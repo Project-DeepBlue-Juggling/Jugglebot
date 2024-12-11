@@ -49,8 +49,8 @@ else
   echo -e "\n[WARNING]: Specifying an alternate repo location is not supported. The '--debug-environments-dir' flag should only be used when testing this script.\n"
 fi
 
-GUEST_ENVIRONMENTS_DIR='/home/devops/Jugglebot/environments'
 SSH_PRIVATE_KEY_FILEPATH="${HOME}/.ssh/${SSH_KEYPAIR_NAME}"
+BUILD_CONTEXT_DIR="${ENVIRONMENTS_DIR}/ubuntu_20.04-docker-native"
 
 task 'Enable ssh-agent'
 
@@ -62,15 +62,21 @@ task 'Add the ssh private key'
 
 ssh-add "${SSH_PRIVATE_KEY_FILEPATH}"
 
+task 'Copy ~/.gitconfig into the build context'
+
+install -T "${HOME}/.gitconfig" "${BUILD_CONTEXT_DIR}/tmp/gitconfig"
+
 task 'Build the docker image named jugglebot-dev:focal-native'
 
 DOCKER_BUILDKIT=1 docker build \
   --ssh default=${SSH_AUTH_SOCK} \
   --progress=plain \
   -t jugglebot-dev:focal-native \
-  "${ENVIRONMENTS_DIR}/ubuntu_20.04-docker-native"
+  "${BUILD_CONTEXT_DIR}"
 
-ln -s -f -T "${ENVIRONMENTS_DIR}/ubuntu_20.04-docker-native/docker-native-env" "${HOME}/bin/docker-native-env"
+rm "${BUILD_CONTEXT_DIR}/tmp/gitconfig"
+
+ln -s -f -T "${BUILD_CONTEXT_DIR}/docker-native-env" "${HOME}/bin/docker-native-env"
 
 docker-native-env
 

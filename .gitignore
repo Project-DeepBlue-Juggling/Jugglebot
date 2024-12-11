@@ -67,3 +67,7 @@ log/
 # Ignore files created by package managers
 /rosdep/
 /rosinstall/
+
+# Ignore the temporary Docker build context directory
+/environments/ubuntu_20.04-docker-native/build/
+
