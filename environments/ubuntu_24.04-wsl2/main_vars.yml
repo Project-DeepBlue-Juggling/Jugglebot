@@ -1,0 +1,6 @@
+---
+
+home_dir: "{{ ansible_facts['env']['HOME'] }}"
+jugglebot_repo_ssh_url: 'git@github.com:joewalp/Jugglebot.git'
+jugglebot_repo_dir: "{{ home_dir }}/Jugglebot"
+

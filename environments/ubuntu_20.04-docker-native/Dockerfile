@@ -100,23 +100,28 @@ RUN if ! grep -o -E '^\s*en_US.UTF-8\s+UTF-8' /etc/locale.gen > /dev/null; then 
       echo 'en_US.UTF-8 UTF-8' >> /etc/locale.gen; \
     fi
 
-VOLUME [ "/home/$USERNAME", "/tmp/.ssh", "/home/$USERNAME/.ssh", "/home/$USERNAME/Jugglebot", "/home/$USERNAME/.oh-my-zsh-custom" ]
+VOLUME [ "/home/$USERNAME", "/tmp/.ssh", "/home/$USERNAME/Jugglebot", "/home/$USERNAME/.oh-my-zsh-custom" ]
 
     # TASK [Create the default user]
 RUN groupadd "$USERNAME" \
     && useradd --create-home --shell '/bin/bash' --gid "$USERNAME" --groups 'sudo' "$USERNAME" \
     && echo -n "$USERNAME:$USERNAME" | chpasswd
 
-# Default to bash shell
 ENV SHELL='/bin/bash'
 
 WORKDIR "/home/$USERNAME"
 
 USER "$USERNAME"
 
-ENV USER="$USERNAME"
+ENV USER="$USERNAME" 
 
-ENTRYPOINT [ "tini", "--", "/home/devops/Jugglebot/environments/ubuntu_20.04-docker-native/entrypoint.sh" ]
+RUN "/home/$USERNAME/Jugglebot/environments/ubuntu-common/base_setup.sh" \
+      --jugglebot-conda-env-filepath "/home/$USERNAME/Jugglebot/environments/ubuntu-common/jugglebot_conda_env.yml" \
+      --ansible-playbook-command "ANSIBLE_LOCALHOST_WARNING=False ANSIBLE_INVENTORY_UNPARSED_WARNING=False ANSIBLE_BECOME_PASS=$USERNAME ansible-playbook /home/$USERNAME/Jugglebot/environments/ubuntu_20.04-docker-native/main_playbook.yml -e upgrade_software=yes"
+
+ENV SHELL=/usr/bin/zsh GIT_DISCOVERY_ACROSS_FILESYSTEM=1
+
+ENTRYPOINT [ "tini", "--" ]
 
 # CMD [ "sleep", "infinity" ]
 CMD [ "/usr/bin/zsh" ]

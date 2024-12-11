@@ -8,16 +8,22 @@ task() {
   echo -e "\nTASK [${task_desc}] ********"
 }
 
-task 'Parse the arguments while coddling the unrecognized arguments'
-
-BASE_SETUP_ARGS=()
+task 'Parse the arguments'
 
 while [[ $# -gt 0 ]]; do
   case $1 in
     -k|--ssh-keypair-name)
       SSH_KEYPAIR_NAME="$2"
-      BASE_SETUP_ARGS+=("$1")
-      BASE_SETUP_ARGS+=("$2")
+      shift
+      shift
+      ;;
+    -N|--git-name)
+      GIT_NAME="$2"
+      shift
+      shift
+      ;;
+    -E|--git-email)
+      GIT_EMAIL="$2"
       shift
       shift
       ;;
@@ -27,11 +33,8 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     -*|--*)
-      # Note: Each of the base_setup.sh flags has a parameter.
-      BASE_SETUP_ARGS+=("$1")
-      BASE_SETUP_ARGS+=("$2")
-      shift
-      shift
+      echo "[ERROR]: Unknown option $1"
+      exit 1
       ;;
     *)
       POSITIONAL_ARGS+=("$1")
@@ -47,6 +50,20 @@ if [[ -z "${SSH_KEYPAIR_NAME:-}" ]]; then
   exit 2
 fi
 
+task 'Assert that a git name was specified'
+
+if [[ -z "${GIT_NAME:-}" ]]; then
+  echo '[ERROR]: A git name is required. Invoke this command with the `--git-name "[Your full name]"` switch (eg. `--git-name "Jane Doe"`)'
+  exit 2
+fi
+
+task 'Assert that a git email was specified'
+
+if [[ -z "${GIT_EMAIL:-}" ]]; then
+  echo '[ERROR]: A git email is required. Invoke this command with the `--git-email "[your email address]"` switch (eg. `--git-email "jane.doe@gmail.com"`)'
+  exit 2
+fi
+
 task 'Initialize variables'
 
 if [[ -z "${ENVIRONMENTS_DIR:-}" ]]; then
@@ -56,7 +73,6 @@ else
 fi
 
 JUGGLEBOT_CONDA_ENV_FILEPATH="${ENVIRONMENTS_DIR}/ubuntu-common/jugglebot_conda_env.yml"
-ANSIBLE_PLAYBOOK_FILEPATH="${ENVIRONMENTS_DIR}/ubuntu_24.04-wsl2/main_playbook.yml"
 SSH_PRIVATE_KEY_FILEPATH="${HOME}/.ssh/${SSH_KEYPAIR_NAME}"
 
 task 'Enable ssh-agent'
@@ -69,14 +85,22 @@ task 'Add the ssh private key'
 
 ssh-add "${SSH_PRIVATE_KEY_FILEPATH}"
 
-task 'Prepare the arguments for ubuntu-common/base_setup.sh'
+task 'Build the ansible-playbook command'
 
-BASE_SETUP_ARGS+=('--jugglebot-conda-env-filepath')
-BASE_SETUP_ARGS+=("${JUGGLEBOT_CONDA_ENV_FILEPATH}")
-BASE_SETUP_ARGS+=('--ansible-playbook-filepath')
-BASE_SETUP_ARGS+=("${ANSIBLE_PLAYBOOK_FILEPATH}")
+read -d ' ' ANSIBLE_PLAYBOOK_COMMAND << EndOfText
+echo -e "\\nEnter your password to enable the ansible playbook to perform privileged operations" &&
+ANSIBLE_LOCALHOST_WARNING=False ANSIBLE_INVENTORY_UNPARSED_WARNING=False ansible-playbook
+"${ENVIRONMENTS_DIR}/ubuntu_24.04-wsl2/main_playbook.yml"
+--ask-become-pass
+-e upgrade_software=yes
+-e "ssh_keypair_name='${SSH_KEYPAIR_NAME}'"
+-e "git_name='${GIT_NAME}'"
+-e "git_email='${GIT_EMAIL}'"
+EndOfText
 
-task 'Invoke ubuntu-common/base_setup.sh while including the coddled arguments'
+task 'Invoke ubuntu-common/base_setup.sh'
 
-${ENVIRONMENTS_DIR}/ubuntu-common/base_setup.sh "${BASE_SETUP_ARGS[@]}"
+"${ENVIRONMENTS_DIR}/ubuntu-common/base_setup.sh" \
+  --jugglebot-conda-env-filepath "${JUGGLEBOT_CONDA_ENV_FILEPATH}" \
+  --ansible-playbook-command "${ANSIBLE_PLAYBOOK_COMMAND}"
 

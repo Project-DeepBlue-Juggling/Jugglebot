@@ -9,6 +9,9 @@
     set_fact:
       environments_dir: "{{ playbook_dir }}/.."
 
+  - name: Load variables
+    include_vars: "{{ environments_dir }}/ubuntu_24.04-wsl2/main_vars.yml"
+
   - name: Ensure that wsl uses systemd
     # Note: Systemd is enabled by default, but this will change whitespace
     community.general.ini_file:
@@ -30,6 +33,22 @@
     import_tasks: "{{ environments_dir }}/ubuntu-common/dev_env_tasks.yml"
     vars:
       environments_dir: "{{ playbook_dir }}/.."
+
+  - name: Add an ssh config for GitHub
+    community.general.ssh_config:
+      user: "{{ username }}"
+      host: 'github.com'
+      hostname: 'github.com'
+      remote_user: 'git'
+      identity_file: "~/.ssh/{{ ssh_keypair_name }}"
+      identities_only: yes
+      add_keys_to_agent: yes
+      strict_host_key_checking: accept-new
+
+  - name: Ensure that the Jugglebot repo has been cloned
+    git:
+      repo: "{{ jugglebot_repo_ssh_url }}"
+      dest: "{{ jugglebot_repo_dir }}"
 
   - name: Add the Docker package repository
     import_tasks: "{{ environments_dir }}/ubuntu-common/docker_repository_tasks.hml"

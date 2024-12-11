@@ -4,7 +4,6 @@ IFS=$'\t\n' # Stricter IFS settings
 rc=0
 
 docker run \
-  -v ~/docker_native_home:/home/devops \
   -v ~/.ssh:/home/devops/.ssh \
   -v /tmp/.ssh:/tmp/.ssh \
   -v ~/Jugglebot:/home/devops/Jugglebot \

@@ -3,7 +3,7 @@
 # - environments_dir
 
 - name: Load variables
-  include_vars: dev_env_vars.yml
+  include_vars: "{{ environments_dir }}/ubuntu-common/dev_env_vars.yml"
   
 - name: Ensure that the ssh_keypair_name was specified
   assert:
@@ -23,6 +23,10 @@
     quiet: yes
     fail_msg: 'This playbook requires that the git name be specified using `-e "git_email=''[your email address]''"`'
  
+- name: Determine whether the playbook is running inside a docker container
+  # Note: This creates the ansible_module_running_in_container variable.
+  community.docker.current_container_facts:
+
 - name: Ensure that the specified ssh keypair exists
   assert:
     that: "ssh_private_key_filepath is file and (ssh_private_key_filepath + '.pub') is file"
@@ -51,9 +55,6 @@
   file:
     path: "{{ home_dir }}/bin"
     state: directory
-
-- name: Determine whether the playbook is running inside a docker container
-  community.docker.current_container_facts:
 
 - name: Specify the Google nameserver in resolv.conf
   lineinfile:
@@ -112,22 +113,6 @@
     - git
     state: present
   become: yes
-
-- name: Add an ssh config for GitHub
-  community.general.ssh_config:
-    user: "{{ username }}"
-    host: 'github.com'
-    hostname: 'github.com'
-    remote_user: 'git'
-    identity_file: "~/.ssh/{{ ssh_keypair_name }}"
-    identities_only: yes
-    add_keys_to_agent: yes
-    strict_host_key_checking: accept-new
-
-- name: Ensure that the Jugglebot repo has been cloned
-  git:
-    repo: "{{ jugglebot_repo_ssh_url }}"
-    dest: "{{ jugglebot_repo_dir }}"
 
 - name: Read the zsh path
   command:
@@ -249,5 +234,4 @@
   copy:
     src: 'conda_env_deactivate.sh'
     dest: '{{ home_dir }}/miniforge3/envs/jugglebot/etc/conda/deactivate.d/'
-
 

@@ -12,28 +12,13 @@ task 'Parse the command line arguments'
 
 while [[ $# -gt 0 ]]; do
   case $1 in
-    -k|--ssh-keypair-name)
-      SSH_KEYPAIR_NAME="$2"
-      shift
-      shift
-      ;;
-    -N|--git-name)
-      GIT_NAME="$2"
-      shift
-      shift
-      ;;
-    -E|--git-email)
-      GIT_EMAIL="$2"
-      shift
-      shift
-      ;;
     -c|--jugglebot-conda-env-filepath)
       JUGGLEBOT_CONDA_ENV_FILEPATH="$2"
       shift
       shift
       ;;
-    -p|--ansible-playbook-filepath)
-      ANSIBLE_PLAYBOOK_FILEPATH="$2"
+    -p|--ansible-playbook-command)
+      ANSIBLE_PLAYBOOK_COMMAND="$2"
       shift
       shift
       ;;
@@ -48,27 +33,6 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-task 'Assert that an ssh keypair name was specified'
-
-if [[ -z "${SSH_KEYPAIR_NAME:-}" ]]; then
-  echo '[ERROR]: An ssh keypair name is required. Invoke this command with the `--ssh-keypair-name [keypair name]` switch (eg. `--ssh-keypair-name ed25519`)'
-  exit 2
-fi
-
-task 'Assert that a git name was specified'
-
-if [[ -z "${GIT_NAME:-}" ]]; then
-  echo '[ERROR]: A git name is required. Invoke this command with the `--git-name "[Your full name]"` switch (eg. `--git-name "Jane Doe"`)'
-  exit 2
-fi
-
-task 'Assert that a git email was specified'
-
-if [[ -z "${GIT_EMAIL:-}" ]]; then
-  echo '[ERROR]: A git email is required. Invoke this command with the `--git-email "[your email address]"` switch (eg. `--git-email "jane.doe@gmail.com"`)'
-  exit 2
-fi
-
 task 'Assert that a jugglebot Conda env config file was specified'
 
 if [[ -z "${JUGGLEBOT_CONDA_ENV_FILEPATH:-}" ]]; then
@@ -76,10 +40,10 @@ if [[ -z "${JUGGLEBOT_CONDA_ENV_FILEPATH:-}" ]]; then
   exit 2
 fi
 
-task 'Assert that an ansible playbook was specified'
+task 'Assert that an ansible playbook command was specified'
 
-if [[ -z "${ANSIBLE_PLAYBOOK_FILEPATH:-}" ]]; then
-  echo '[ERROR]: An ansible playbook is required. Invoke this command with the `--ansible-playbook "[playbook filepath]"` switch'
+if [[ -z "${ANSIBLE_PLAYBOOK_COMMAND:-}" ]]; then
+  echo '[ERROR]: An ansible playbook command is required. Invoke this command with the `--ansible-playbook-command "[playbook command]"` switch'
   exit 2
 fi
 
@@ -174,14 +138,12 @@ eval "$(ssh-agent -s)"
 
 task 'Run the specified main playbook'
 
-echo -e "\nEnter your password to enable the ansible playbook to perform privileged operations"
-
-ANSIBLE_LOCALHOST_WARNING=False ANSIBLE_INVENTORY_UNPARSED_WARNING=False ansible-playbook "${ANSIBLE_PLAYBOOK_FILEPATH}" --ask-become-pass -e 'upgrade_software=yes' -e "ssh_keypair_name='${SSH_KEYPAIR_NAME}'" -e "git_name='${GIT_NAME}'" -e "git_email='${GIT_EMAIL}'" || rc="$?"
+"${ANSIBLE_PLAYBOOK_COMMAND}" || rc="$?"
 
 # failed_when: the return code is nonzero
 
 if [[ $rc -ne 0 ]]; then
-  echo -e "[ERROR]: The ansible playbook failed with return code ${rc}. This is how the playbook was invoked:\n\nANSIBLE_LOCALHOST_WARNING=False ANSIBLE_INVENTORY_UNPARSED_WARNING=False ansible-playbook '${ANSIBLE_PLAYBOOK_FILEPATH}' --ask-become-pass -e 'upgrade_software=yes' -e \"ssh_keypair_name='${SSH_KEYPAIR_NAME}'\" -e \"git_name='${GIT_NAME}'\" -e \"git_email='${GIT_EMAIL}'\""
+  echo -e "[ERROR]: The ansible playbook failed with return code ${rc}. This is how the playbook was invoked:\n\n${ANSIBLE_PLAYBOOK_COMMAND}"
   exit $rc
 fi
 

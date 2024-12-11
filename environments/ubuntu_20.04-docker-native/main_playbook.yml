@@ -9,10 +9,34 @@
     set_fact:
       environments_dir: "{{ playbook_dir }}/.."
 
+  - name: Provision the Bash default files
+    copy:
+      remote_src: yes
+      src: /etc/skel/
+      dest: "{{ home_dir }}"
+      force: no
+
   - name: Provision the Ubuntu environment
-    import_tasks: "{{ playbook_dir }}/../ubuntu-common/dev_env_tasks.yml"
+    import_tasks: "{{ environments_dir }}/ubuntu-common/dev_env_tasks.yml"
     vars:
       environments_dir: "{{ playbook_dir }}/.."
+
+  - name: Stat the ~/.oh-my-zsh/custom path
+    stat:
+      path: "{{ home_dir }}/.oh-my-zsh/custom"
+    register: ohmyzsh_custom_dir_stat_result
+
+  - name: Remove the ~/.oh-my-zsh/custom directory
+    file:
+      path: "{{ home_dir }}/.oh-my-zsh/custom"
+      state: absent
+    when: not ohmyzsh_custom_dir_stat_result.state.islnk and ohmyzsh_custom_dir_stat_result.stat.isdir
+
+  - name: Symlink ~/.oh-my-zsh/custom to the ~/.oh-my-zsh-custom VOLUME
+    file:
+      path: "{{ home_dir }}/.oh-my-zsh/custom"
+      state: link
+      src: "{{ home_dir }}/.oh-my-zsh-custom"
 
   - name: Require that the jugglebot Conda environment is activated
     assert:
