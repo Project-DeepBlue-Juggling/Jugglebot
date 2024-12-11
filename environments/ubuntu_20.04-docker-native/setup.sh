@@ -13,6 +13,11 @@ task 'Parse the arguments'
 
 while [[ $# -gt 0 ]]; do
   case $1 in
+    -k|--ssh-keypair-name)
+      SSH_KEYPAIR_NAME="$2"
+      shift
+      shift
+      ;;
     -e|--debug-environments-dir)
       HOST_ENVIRONMENTS_DIR="$2"
       shift
