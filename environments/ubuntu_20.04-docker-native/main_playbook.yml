@@ -5,9 +5,10 @@
 
   tasks:
 
-  - name: Specify the environments directory
+  - name: Initialize variables
     set_fact:
       environments_dir: "{{ playbook_dir }}/.."
+      home_dir: "{{ ansible_facts['env']['HOME'] }}"
 
   - name: Provision the Bash default files
     copy:

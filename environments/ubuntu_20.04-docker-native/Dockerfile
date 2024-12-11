@@ -114,7 +114,7 @@ WORKDIR "/home/$USERNAME"
 
 USER "$USERNAME"
 
-ENV USER="$USERNAME" 
+ENV USER="$USERNAME" HOME="/home/$USERNAME"
 
 ADD --keep-git-dir [ "$JUGGLEBOT_REPO_SSH_URL", "/home/$USERNAME/Jugglebot" ]
 
