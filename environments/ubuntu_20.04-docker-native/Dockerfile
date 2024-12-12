@@ -108,19 +108,19 @@ RUN groupadd "$USERNAME" \
     && useradd --create-home --shell '/bin/bash' --gid "$USERNAME" --groups 'sudo' "$USERNAME" \
     && echo -n "$USERNAME:$USERNAME" | chpasswd
 
-ENV SHELL='/bin/bash'
-
-WORKDIR "/home/$USERNAME"
-
-USER "$USERNAME"
-
-ENV USER="$USERNAME" HOME="/home/$USERNAME"
-
 COPY --chown=$USERNAME:$USERNAME --chmod=644 [ "build/gitconfig", "/home/$USERNAME/.gitconfig" ]
 
 ADD --keep-git-dir --chown=$USERNAME:$USERNAME [ "$JUGGLEBOT_REPO_SSH_URL", "/home/$USERNAME/Jugglebot" ]
 
-RUN (cd Jugglebot && git checkout docker-native-platform)
+USER "$USERNAME"
+
+ENV USER="$USERNAME" SHELL="/bin/bash" HOME="/home/$USERNAME"
+
+WORKDIR "/home/$USERNAME/Jugglebot"
+
+RUN git checkout docker-native-platform
+
+WORKDIR "/home/$USERNAME"
 
 RUN "/home/$USERNAME/Jugglebot/environments/ubuntu-common/base_setup.sh" \
       --jugglebot-conda-env-filepath "/home/$USERNAME/Jugglebot/environments/ubuntu-common/jugglebot_conda_env.yml" \
