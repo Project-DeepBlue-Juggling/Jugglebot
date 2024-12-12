@@ -158,11 +158,14 @@ alias paliases='"${EDITOR:-vim}" "${ZSH_CUSTOM}/aliases.zsh" && source "${ZSH_CU
 
 # TASK [Enable keychain] ********
 #
-# Note: Keychain remembers ssh-agent keys across logins during a host
+# Note 1: Keychain remembers ssh-agent keys across logins during a host
 #   uptime session
+# Note 2: Keychain does not work inside a docker container because it cannot
+#   inherit the identities within an auth socket.
 
-eval "$(keychain --eval --quiet --agents ssh)"
-
+if [[ ! -f /.dockerenv ]]; then
+  eval "$(keychain --eval --quiet --agents ssh)"
+fi
 
 # TASK [Reclaim Ctrl+s and Ctrl+q from the terminal] ********
 #
