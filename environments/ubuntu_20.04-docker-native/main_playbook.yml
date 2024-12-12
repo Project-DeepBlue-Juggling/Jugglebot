@@ -38,6 +38,7 @@
       path: "{{ home_dir }}/.oh-my-zsh/custom"
       state: link
       src: "{{ home_dir }}/.oh-my-zsh-custom"
+      force: yes
 
   - name: Require that the jugglebot Conda environment is activated
     assert:
