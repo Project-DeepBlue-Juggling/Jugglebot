@@ -1,7 +1,7 @@
 FROM ubuntu:focal
 
 ARG USERNAME="devops"
-ARG JUGGLEBOT_REPO_SSH_URL="git@github.com:joewalp/Jugglebot.git#docker-native-platform"
+ARG JUGGLEBOT_REPO_SSH_URL="git@github.com:joewalp/Jugglebot.git"
 
     # TASK [Upgrade the packages and restore the man command]
 RUN export DEBIAN_FRONTEND=noninteractive \
@@ -119,6 +119,8 @@ ENV USER="$USERNAME" HOME="/home/$USERNAME"
 COPY --chown=$USERNAME:$USERNAME --chmod=644 [ "build/gitconfig", "/home/$USERNAME/.gitconfig" ]
 
 ADD --keep-git-dir --chown=$USERNAME:$USERNAME [ "$JUGGLEBOT_REPO_SSH_URL", "/home/$USERNAME/Jugglebot" ]
+
+RUN git checkout docker-native-platform
 
 RUN "/home/$USERNAME/Jugglebot/environments/ubuntu-common/base_setup.sh" \
       --jugglebot-conda-env-filepath "/home/$USERNAME/Jugglebot/environments/ubuntu-common/jugglebot_conda_env.yml" \
