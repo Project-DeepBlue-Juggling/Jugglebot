@@ -112,8 +112,6 @@ COPY --chown=$USERNAME:$USERNAME --chmod=644 [ "build/gitconfig", "/home/$USERNA
 
 # ADD --keep-git-dir=true --chown=$USERNAME:$USERNAME [ "$JUGGLEBOT_REPO_SSH_URL", "/home/$USERNAME/Jugglebot" ]
 
-RUN --mount=type=ssh chmod 644 $SSH_AUTH_SOCK
-
 USER "$USERNAME"
 
 ENV USER="$USERNAME" SHELL="/bin/bash" HOME="/home/$USERNAME"
@@ -124,7 +122,7 @@ COPY --chown=$USERNAME:$USERNAME --chmod=644 [ "build/ssh_config", "/home/$USERN
 
 WORKDIR "/home/$USERNAME"
 
-RUN --mount=type=ssh ls -l $SSH_AUTH_SOCK \
+RUN --mount=type=ssh,mode=0644 ls -l $SSH_AUTH_SOCK \
     && ssh-add -L \
     && git clone $JUGGLEBOT_REPO_SSH_URL "/home/$USERNAME/Jugglebot"
 
