@@ -3,7 +3,7 @@
 # - environments_dir
 
 - name: Load variables
-  include_vars: "{{ environments_dir }}/ubuntu-common/docker_respository_vars.yml"
+  include_vars: "{{ environments_dir }}/ubuntu-common/docker_repository_vars.yml"
 
 - name: Download the key for the Docker package repository
   get_url:
