@@ -66,10 +66,6 @@ task 'Copy ~/.gitconfig into the build context'
 
 install -D -T "${HOME}/.gitconfig" "${BUILD_CONTEXT_DIR}/build/gitconfig"
 
-task 'Copy ~/.ssh/config into the build context'
-
-install -D -T "${HOME}/.ssh/config" "${BUILD_CONTEXT_DIR}/build/ssh_config"
-
 task 'Build the docker image named jugglebot-native-dev:focal'
 
 echo "111 ${SSH_AUTH_SOCK}"
@@ -83,7 +79,6 @@ docker buildx build \
 task 'Cleanup the build context'
 
 rm "${BUILD_CONTEXT_DIR}/build/gitconfig"
-rm "${BUILD_CONTEXT_DIR}/build/ssh_config"
 
 task 'Add a symlink for docker-native-env'
 

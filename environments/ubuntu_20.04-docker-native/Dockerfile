@@ -2,6 +2,7 @@ FROM ubuntu:focal
 
 ARG USERNAME="devops"
 ARG JUGGLEBOT_REPO_SSH_URL="git@github.com:joewalp/Jugglebot.git"
+ARG ENVIRONMENTS_DIR="/home/$USERNAME/Jugglebot/environments"
 
     # TASK [Upgrade the packages and restore the man command]
 RUN export DEBIAN_FRONTEND=noninteractive \
@@ -101,7 +102,7 @@ RUN if ! grep -o -E '^\s*en_US.UTF-8\s+UTF-8' /etc/locale.gen > /dev/null; then 
       echo 'en_US.UTF-8 UTF-8' >> /etc/locale.gen; \
     fi
 
-VOLUME [ "/home/$USERNAME", "/tmp/.ssh", "/home/$USERNAME/.oh-my-zsh-custom" ]
+VOLUME [ "/home/$USERNAME" ]
 
     # TASK [Create the default user]
 RUN groupadd "$USERNAME" \
@@ -110,32 +111,25 @@ RUN groupadd "$USERNAME" \
 
 COPY --chown=$USERNAME:$USERNAME --chmod=644 [ "build/gitconfig", "/home/$USERNAME/.gitconfig" ]
 
-# ADD --keep-git-dir=true --chown=$USERNAME:$USERNAME [ "$JUGGLEBOT_REPO_SSH_URL", "/home/$USERNAME/Jugglebot" ]
-
 USER "$USERNAME"
 
 ENV USER="$USERNAME" SHELL="/bin/bash" HOME="/home/$USERNAME"
 
-RUN mkdir --mode 600 "/home/$USERNAME/.ssh"
-
-COPY --chown=$USERNAME:$USERNAME --chmod=644 [ "build/ssh_config", "/home/$USERNAME/.ssh/config" ]
-
 WORKDIR "/home/$USERNAME"
 
-RUN --mount=type=ssh,mode=0666 ls -l $SSH_AUTH_SOCK \
-    && ssh-add -L \
+RUN --mount=type=ssh,mode=0666 mkdir --mode 700 "/home/$USERNAME/.ssh" \
+    && ssh-keyscan -t rsa github.com > /home/$USERNAME/.ssh/known_hosts \
     && git clone $JUGGLEBOT_REPO_SSH_URL "/home/$USERNAME/Jugglebot"
 
 WORKDIR "/home/$USERNAME/Jugglebot"
 
-RUN --mount=type=ssh git pull \
-    && git checkout docker-native-platform
+RUN --mount=type=ssh,mode=0666 git checkout docker-native-platform
 
 WORKDIR "/home/$USERNAME"
 
 RUN "/home/$USERNAME/Jugglebot/environments/ubuntu-common/base_setup.sh" \
-      --jugglebot-conda-env-filepath "/home/$USERNAME/Jugglebot/environments/ubuntu-common/jugglebot_conda_env.yml" \
-      --ansible-playbook-command "ANSIBLE_LOCALHOST_WARNING=False ANSIBLE_INVENTORY_UNPARSED_WARNING=False ANSIBLE_BECOME_PASS=$USERNAME ansible-playbook /home/$USERNAME/Jugglebot/environments/ubuntu_20.04-docker-native/main_playbook.yml -e upgrade_software=yes"
+      --jugglebot-conda-env-filepath "$ENVIRONMENTS_DIR/ubuntu-common/jugglebot_conda_env.yml" \
+      --ansible-playbook-command "ANSIBLE_LOCALHOST_WARNING=False ANSIBLE_INVENTORY_UNPARSED_WARNING=False ANSIBLE_BECOME_PASS=$USERNAME ansible-playbook $ENVIRONMENTS_DIR/ubuntu_20.04-docker-native/main_playbook.yml -e upgrade_software=yes"
 
 ENV SHELL=/usr/bin/zsh GIT_DISCOVERY_ACROSS_FILESYSTEM=1
 

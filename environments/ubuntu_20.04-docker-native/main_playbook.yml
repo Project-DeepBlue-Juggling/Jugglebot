@@ -22,24 +22,6 @@
     vars:
       environments_dir: "{{ playbook_dir }}/.."
 
-  - name: Stat the ~/.oh-my-zsh/custom path
-    stat:
-      path: "{{ home_dir }}/.oh-my-zsh/custom"
-    register: ohmyzsh_custom_dir_stat_result
-
-  - name: Remove the ~/.oh-my-zsh/custom directory
-    file:
-      path: "{{ home_dir }}/.oh-my-zsh/custom"
-      state: absent
-    when: not ohmyzsh_custom_dir_stat_result.stat.islnk and ohmyzsh_custom_dir_stat_result.stat.isdir
-
-  - name: Symlink ~/.oh-my-zsh/custom to the ~/.oh-my-zsh-custom VOLUME
-    file:
-      path: "{{ home_dir }}/.oh-my-zsh/custom"
-      state: link
-      src: "{{ home_dir }}/.oh-my-zsh-custom"
-      force: yes
-
   - name: Require that the jugglebot Conda environment is activated
     assert:
       that: ansible_facts['env']['CONDA_DEFAULT_ENV'] == 'jugglebot'
