@@ -101,7 +101,7 @@
       dest: "{{ jugglebot_repo_dir }}"
 
   - name: Add the Docker package repository
-    import_tasks: "{{ environments_dir }}/ubuntu-common/docker_repository_tasks.hml"
+    import_tasks: "{{ environments_dir }}/ubuntu-common/docker_repository_tasks.yml"
     vars:
       environments_dir: "{{ playbook_dir }}/.."
 
