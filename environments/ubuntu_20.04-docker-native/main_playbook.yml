@@ -31,7 +31,7 @@
     file:
       path: "{{ home_dir }}/.oh-my-zsh/custom"
       state: absent
-    when: not ohmyzsh_custom_dir_stat_result.state.islnk and ohmyzsh_custom_dir_stat_result.stat.isdir
+    when: not ohmyzsh_custom_dir_stat_result.stat.islnk and ohmyzsh_custom_dir_stat_result.stat.isdir
 
   - name: Symlink ~/.oh-my-zsh/custom to the ~/.oh-my-zsh-custom VOLUME
     file:
