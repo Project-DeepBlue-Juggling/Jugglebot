@@ -5,6 +5,13 @@
 - name: Load variables
   include_vars: "{{ environments_dir }}/ubuntu-common/docker_repository_vars.yml"
 
+- name: Ensure that the apt keyrings directory exists
+  # Note: This directory doesn't exist in the docker environment
+  file:
+    path: '/etc/apt/keyrings'
+    state: directory
+  become: yes
+
 - name: Download the key for the Docker package repository
   get_url:
     url: "{{ docker_package_repo_key_url }}"
