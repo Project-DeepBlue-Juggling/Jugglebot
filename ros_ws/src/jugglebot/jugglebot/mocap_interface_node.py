@@ -8,8 +8,6 @@ class MocapInterfaceNode(Node):
     def __init__(self):
         super().__init__('mocap_interface_node')
 
-        self.get_logger().info("Initializing MocapInterfaceNode...")
-
         self.mocap_interface = MocapInterface()
 
         # Initialize state variables
@@ -22,7 +20,10 @@ class MocapInterfaceNode(Node):
         self.mocap_publisher = self.create_publisher(MocapDataMulti, 'mocap_data', 10)
 
         # Initialize a timer to publish the mocap data
-        self.timer = self.create_timer(0.005, self.publish_mocap_data)
+        mocap_frames_per_second = 200
+        self.timer = self.create_timer(1.0 / mocap_frames_per_second, self.publish_mocap_data)
+
+        self.get_logger().info("MocapInterfaceNode initialized")
 
     def publish_mocap_data(self):
         """Publish the tracking data of any unlabelled markers in the base frame"""

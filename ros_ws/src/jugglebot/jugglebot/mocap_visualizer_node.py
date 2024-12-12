@@ -3,7 +3,7 @@
 
 import rclpy
 from rclpy.node import Node
-from jugglebot_interfaces.msg import MocapDataMulti, MocapDataSingle
+from jugglebot_interfaces.msg import MocapDataMulti, MocapDataSingle, BallStateSingle, BallStateMulti
 from geometry_msgs.msg import Point
 from visualization_msgs.msg import Marker, MarkerArray
 from std_msgs.msg import Header, ColorRGBA
@@ -27,7 +27,7 @@ class MocapVisualizerNode(Node):
         )
 
         self.landing_subscriber = self.create_subscription(
-            Point,
+            BallStateMulti,
             '/predicted_landings',
             self.landing_callback,
             10
@@ -110,92 +110,93 @@ class MocapVisualizerNode(Node):
             # Append the current position to the path
             self.marker_paths[marker_id].append(position_meters)
 
-            # Keep only the last N positions to limit the length of the path
-            N = 100
-            if len(self.marker_paths[marker_id]) > N:
-                self.marker_paths[marker_id].pop(0)
+            # # Keep only the last N positions to limit the length of the path
+            # N = 100
+            # if len(self.marker_paths[marker_id]) > N:
+            #     self.marker_paths[marker_id].pop(0)
 
-            # Create a line strip marker for the path
-            path_marker = Marker()
-            path_marker.header = vis_marker.header
-            path_marker.ns = f"{self.namespace}_paths"
-            path_marker.id = vis_id + 10000  # Offset ID to avoid conflicts
-            path_marker.type = Marker.LINE_STRIP
-            path_marker.action = Marker.ADD
+            # # Create a line strip marker for the path
+            # path_marker = Marker()
+            # path_marker.header = vis_marker.header
+            # path_marker.ns = f"{self.namespace}_paths"
+            # path_marker.id = vis_id + 10000  # Offset ID to avoid conflicts
+            # path_marker.type = Marker.LINE_STRIP
+            # path_marker.action = Marker.ADD
 
-            path_marker.scale.x = 0.1  # Line width in meters
+            # path_marker.scale.x = 0.1  # Line width in meters
 
-            # Color (e.g., blue)
-            path_marker.color = ColorRGBA()
-            path_marker.color.r = 0.0
-            path_marker.color.g = 0.0
-            path_marker.color.b = 1.0
-            path_marker.color.a = 0.8
+            # # Color (e.g., blue)
+            # path_marker.color = ColorRGBA()
+            # path_marker.color.r = 0.0
+            # path_marker.color.g = 0.0
+            # path_marker.color.b = 1.0
+            # path_marker.color.a = 0.8
 
-            path_marker.points = self.marker_paths[marker_id]
+            # path_marker.points = self.marker_paths[marker_id]
 
             # Lifetime of the markers
-            path_marker.lifetime = rclpy.duration.Duration(seconds=0.1).to_msg()
-            vis_marker.lifetime = rclpy.duration.Duration(seconds=0.1).to_msg()
+            # path_marker.lifetime = rclpy.duration.Duration(seconds=0.1).to_msg()
+            vis_marker.lifetime = rclpy.duration.Duration(seconds=0.05).to_msg()
 
-            marker_array.markers.append(path_marker)
+            # marker_array.markers.append(path_marker)
             marker_array.markers.append(vis_marker)
 
         # Publish all markers at once
         self.marker_publisher.publish(marker_array)
         self.get_logger().debug(f"Published {len(marker_array.markers)} mocap markers to RViz.")
 
-    def landing_callback(self, msg: Point):
+    def landing_callback(self, msg: BallStateMulti):
         """
         Callback to handle predicted landing points and create visualization markers.
 
         Args:
             msg (Point): The predicted landing position.
         """
-        # Convert position from mm to meters
-        position_meters = Point()
-        position_meters.x = msg.x / 1000.0
-        position_meters.y = msg.y / 1000.0
-        position_meters.z = msg.z / 1000.0
+        for landing in msg.landing_predictions:
+            # Convert position from mm to meters
+            position_meters = Point()
+            position_meters.x = landing.landing_position.x / 1000.0
+            position_meters.y = landing.landing_position.y / 1000.0
+            position_meters.z = landing.landing_position.z / 1000.0
 
-        landing_marker = Marker()
-        landing_marker.header = Header()
-        landing_marker.header.stamp = self.get_clock().now().to_msg()
-        landing_marker.header.frame_id = 'map'
+            landing_marker = Marker()
+            landing_marker.header = Header()
+            landing_marker.header.stamp = self.get_clock().now().to_msg()
+            landing_marker.header.frame_id = 'map'
 
-        landing_marker.ns = 'predicted_landings'
-        landing_marker.id = self.get_unique_marker_id()
-        landing_marker.type = Marker.CYLINDER
-        landing_marker.action = Marker.ADD
+            landing_marker.ns = 'predicted_landings'
+            landing_marker.id = self.get_unique_marker_id()
+            landing_marker.type = Marker.CYLINDER
+            landing_marker.action = Marker.ADD
 
-        landing_marker.pose.position = position_meters
-        landing_marker.pose.orientation.x = 0.0
-        landing_marker.pose.orientation.y = 0.0
-        landing_marker.pose.orientation.z = 0.0
-        landing_marker.pose.orientation.w = 1.0
+            landing_marker.pose.position = position_meters
+            landing_marker.pose.orientation.x = 0.0
+            landing_marker.pose.orientation.y = 0.0
+            landing_marker.pose.orientation.z = 0.0
+            landing_marker.pose.orientation.w = 1.0
 
-        # Scale of the cylinder in meters
-        landing_marker.scale.x = 0.1  # 100 mm diameter -> 0.1 m
-        landing_marker.scale.y = 0.1
-        landing_marker.scale.z = 0.05  # 50 mm height -> 0.05 m
+            # Scale of the cylinder in meters
+            landing_marker.scale.x = 0.1  # 100 mm diameter -> 0.1 m
+            landing_marker.scale.y = 0.1
+            landing_marker.scale.z = 0.05  # 50 mm height -> 0.05 m
 
-        # Color (e.g., green with some transparency)
-        landing_marker.color = ColorRGBA()
-        landing_marker.color.r = 0.0
-        landing_marker.color.g = 1.0
-        landing_marker.color.b = 0.0
-        landing_marker.color.a = 0.8
+            # Color (e.g., green with some transparency)
+            landing_marker.color = ColorRGBA()
+            landing_marker.color.r = 0.0
+            landing_marker.color.g = 1.0
+            landing_marker.color.b = 0.0
+            landing_marker.color.a = 0.4
 
-        # Lifetime of the marker
-        landing_marker.lifetime = rclpy.duration.Duration(seconds=1.0).to_msg()
+            # Lifetime of the marker
+            landing_marker.lifetime = rclpy.duration.Duration(seconds=0.25).to_msg()
 
-        # Create MarkerArray with a single marker
-        marker_array = MarkerArray()
-        marker_array.markers.append(landing_marker)
+            # Create MarkerArray with a single marker
+            marker_array = MarkerArray()
+            marker_array.markers.append(landing_marker)
 
-        # Publish the landing marker
-        self.marker_publisher.publish(marker_array)
-        self.get_logger().debug(f"Published predicted landing marker at ({position_meters.x}, {position_meters.y}, {position_meters.z}) m.")
+            # Publish the landing marker
+            self.marker_publisher.publish(marker_array)
+            self.get_logger().debug(f"Published predicted landing marker at ({position_meters.x}, {position_meters.y}, {position_meters.z}) m.")
 
 
     def get_unique_marker_id(self) -> int:
