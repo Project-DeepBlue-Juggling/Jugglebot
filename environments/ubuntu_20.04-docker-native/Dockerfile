@@ -116,6 +116,10 @@ USER "$USERNAME"
 
 ENV USER="$USERNAME" SHELL="/bin/bash" HOME="/home/$USERNAME"
 
+RUN mkdir --mode 600 "/home/$USERNAME/.ssh"
+
+COPY --chown=$USERNAME:$USERNAME --chmod=644 [ "build/ssh_config", "/home/$USERNAME/.ssh/config" ]
+
 WORKDIR "/home/$USERNAME/Jugglebot"
 
 RUN --mount=type=ssh git pull \
