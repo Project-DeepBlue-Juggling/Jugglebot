@@ -118,7 +118,8 @@ ENV USER="$USERNAME" SHELL="/bin/bash" HOME="/home/$USERNAME"
 
 WORKDIR "/home/$USERNAME/Jugglebot"
 
-RUN git checkout docker-native-platform
+RUN git pull \
+    && git checkout docker-native-platform
 
 WORKDIR "/home/$USERNAME"
 
