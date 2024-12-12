@@ -107,4 +107,6 @@
 
   - name: Provision the Docker Engine & Qemu
     import_tasks: "{{ environments_dir }}/ubuntu-common/docker_engine_tasks.yml"
+    vars:
+      environments_dir: "{{ playbook_dir }}/.."
 
