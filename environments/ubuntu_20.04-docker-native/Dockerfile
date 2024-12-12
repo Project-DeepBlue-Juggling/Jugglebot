@@ -110,7 +110,7 @@ RUN groupadd "$USERNAME" \
 
 COPY --chown=$USERNAME:$USERNAME --chmod=644 [ "build/gitconfig", "/home/$USERNAME/.gitconfig" ]
 
-ADD --keep-git-dir=true --chown=$USERNAME:$USERNAME [ "$JUGGLEBOT_REPO_SSH_URL", "/home/$USERNAME/Jugglebot" ]
+# ADD --keep-git-dir=true --chown=$USERNAME:$USERNAME [ "$JUGGLEBOT_REPO_SSH_URL", "/home/$USERNAME/Jugglebot" ]
 
 USER "$USERNAME"
 
@@ -119,6 +119,10 @@ ENV USER="$USERNAME" SHELL="/bin/bash" HOME="/home/$USERNAME"
 RUN mkdir --mode 600 "/home/$USERNAME/.ssh"
 
 COPY --chown=$USERNAME:$USERNAME --chmod=644 [ "build/ssh_config", "/home/$USERNAME/.ssh/config" ]
+
+WORKDIR "/home/$USERNAME"
+
+RUN --mount=type=ssh git clone $JUGGLEBOT_REPO_SSH_URL "/home/$USERNAME/Jugglebot"
 
 WORKDIR "/home/$USERNAME/Jugglebot"
 
