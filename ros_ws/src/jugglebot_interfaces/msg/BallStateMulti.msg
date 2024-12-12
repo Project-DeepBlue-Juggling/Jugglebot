@@ -1,3 +1,3 @@
 # Message containing multiple BallStateSingle messages
 
-BallStateSingle[] ball_states
+BallStateSingle[] landing_predictions

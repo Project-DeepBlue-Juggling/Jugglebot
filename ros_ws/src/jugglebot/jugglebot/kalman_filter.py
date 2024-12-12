@@ -18,7 +18,7 @@ class KalmanFilter:
         initialized (bool): Flag indicating if the filter has been initialized.
     """
 
-    def __init__(self, dt: float = 0.0033, process_noise: float = 1.0, measurement_noise: float = 3.0, logger=None):
+    def __init__(self, dt: float, process_noise: float = 1.0, measurement_noise: float = 3.0, logger=None):
         """
         Initializes the Kalman Filter with default parameters.
 
@@ -37,7 +37,14 @@ class KalmanFilter:
         self.covariance = np.eye(6) * 500.0  # Large initial uncertainty
 
         # Initialize the state transition matrices
-        self.update_state_transition_matrices()
+        self.F = np.array([
+            [1, 0, 0, self.dt, 0,    0],
+            [0, 1, 0, 0,    self.dt, 0],
+            [0, 0, 1, 0,    0,    self.dt],
+            [0, 0, 0, 1,    0,    0],
+            [0, 0, 0, 0,    1,    0],
+            [0, 0, 0, 0,    0,    1]
+        ])
 
         # Process noise covariance
         self.Q = np.eye(6) * process_noise
@@ -50,19 +57,6 @@ class KalmanFilter:
 
         # Logging setup
         self.logger = logger
-
-    def update_state_transition_matrices(self):
-        """
-        Updates the state transition matrices F and B based on the current dt.
-        """
-        self.F = np.array([
-            [1, 0, 0, self.dt, 0,    0],
-            [0, 1, 0, 0,    self.dt, 0],
-            [0, 0, 1, 0,    0,    self.dt],
-            [0, 0, 0, 1,    0,    0],
-            [0, 0, 0, 0,    1,    0],
-            [0, 0, 0, 0,    0,    1]
-        ])
 
     def initialize_with_state(self, initial_state: np.ndarray):
         """
@@ -77,22 +71,15 @@ class KalmanFilter:
 
         self.state = initial_state
         self.initialized = True
-        self.logger.info(f"Filter initialized with state: {self.state.ravel()}")
+        # self.logger.info(f"Filter initialized with state: {self.state.ravel()}")
 
-    def predict(self, dt: Optional[float] = None):
+    def predict(self):
         """
         Performs the prediction step of the Kalman Filter.
-
-        Args:
-            dt (float): Optional time step. If provided, updates the state transition matrices.
         """
         if not self.initialized:
             self.logger.warning("Filter not initialized. Prediction skipped.")
             return
-
-        if dt is not None:
-            self.dt = dt
-            self.update_state_transition_matrices()
 
         # Gravity acceleration in mm/s^2
         gravity = -9810.0
@@ -149,7 +136,7 @@ class KalmanFilter:
         # self.logger.debug(f"Updated state: {self.state.ravel()}")
         # self.logger.debug(f"Updated covariance: {self.covariance}")
 
-    def predict_landing(self, ground_z: float = 0.0) -> Optional[Tuple[Tuple[float, float], float]]:
+    def predict_landing_state(self, ground_z: float = 0.0) -> Optional[Tuple[Tuple[float, float], float]]:
         """
         Predicts the landing position (x, y) and time when the marker will reach the specified ground z-height.
 
@@ -182,19 +169,35 @@ class KalmanFilter:
         t2 = (-b - sqrt_discriminant) / (2 * a)
 
         # Choose the positive and smallest time
-        landing_time = min(t for t in [t1, t2] if t > 0) if any(t > 0 for t in [t1, t2]) else None
+        time_to_land = min(t for t in [t1, t2] if t > 0) if any(t > 0 for t in [t1, t2]) else None
 
-        if landing_time is None:
+        if time_to_land is None:
             self.logger.warning("No positive landing time found.")
             return None
 
         # Predict landing positions
-        landing_x = x + vx * landing_time
-        landing_y = y + vy * landing_time
+        landing_x = x + vx * time_to_land
+        landing_y = y + vy * time_to_land
+        landing_pos = (landing_x, landing_y)
+
+        # Estimate the landing velocity
+        landing_vx = vx
+        landing_vy = vy
+        landing_vz = vz - 9810.0 * time_to_land
+        landing_vel = (landing_vx, landing_vy, landing_vz)
 
         # self.logger.info(f"Predicted landing at ({landing_x}, {landing_y}) mm in {landing_time:.2f} seconds.")
 
-        return (landing_x, landing_y), landing_time
+        return landing_pos, landing_vel, time_to_land
+
+    def get_current_position(self) -> np.ndarray:
+        """
+        Returns the current position of the Kalman Filter.
+
+        Returns:
+            np.ndarray: The current position [x, y, z].
+        """
+        return self.state[:3]
 
     def reset(self):
         """
@@ -204,7 +207,7 @@ class KalmanFilter:
         self.covariance = np.eye(6) * 500.0
         self.initialized = False
         self.previous_velocity = np.zeros((3, 1))
-        self.logger.info("Kalman Filter has been reset.")
+        # self.logger.info("Kalman Filter has been reset.")
 
     # Initialize previous velocity
     previous_velocity = np.zeros((3, 1))
