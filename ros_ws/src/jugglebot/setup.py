@@ -33,6 +33,7 @@ setup(
             'ball_prediction_node = jugglebot.ball_prediction_node:main',
             'tracking_test_publisher = jugglebot.tracking_test_publisher:main',
             'mocap_visualizer_node = jugglebot.mocap_visualizer_node:main',
+            'landing_analysis_node = jugglebot.landing_analysis_node:main',
         ],
     },
 )
