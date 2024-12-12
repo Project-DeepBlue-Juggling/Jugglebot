@@ -122,7 +122,7 @@ COPY --chown=$USERNAME:$USERNAME --chmod=644 [ "build/ssh_config", "/home/$USERN
 
 WORKDIR "/home/$USERNAME"
 
-RUN --mount=type=ssh,mode=0644 ls -l $SSH_AUTH_SOCK \
+RUN --mount=type=ssh,mode=0666 ls -l $SSH_AUTH_SOCK \
     && ssh-add -L \
     && git clone $JUGGLEBOT_REPO_SSH_URL "/home/$USERNAME/Jugglebot"
 
