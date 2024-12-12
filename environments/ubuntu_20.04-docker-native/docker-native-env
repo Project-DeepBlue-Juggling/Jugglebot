@@ -10,5 +10,6 @@ docker run \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -e SSH_AUTH_SOCK=/tmp/.ssh/ssh_auth_sock \
   --dns 8.8.8.8 \
-  -it jugglebot-dev:focal-native
+  -it jugglebot-native-dev:focal
+
 

@@ -66,12 +66,12 @@ task 'Copy ~/.gitconfig into the build context'
 
 install -D -T "${HOME}/.gitconfig" "${BUILD_CONTEXT_DIR}/build/gitconfig"
 
-task 'Build the docker image named jugglebot-dev:focal-native'
+task 'Build the docker image named jugglebot-native-dev:focal'
 
 DOCKER_BUILDKIT=1 docker build \
   --ssh default=${SSH_AUTH_SOCK} \
   --progress=plain \
-  -t jugglebot-dev:focal-native \
+  -t jugglebot-native-dev:focal \
   "${BUILD_CONTEXT_DIR}"
 
 rm "${BUILD_CONTEXT_DIR}/build/gitconfig"

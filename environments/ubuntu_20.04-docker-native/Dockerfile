@@ -118,7 +118,7 @@ ENV USER="$USERNAME" SHELL="/bin/bash" HOME="/home/$USERNAME"
 
 WORKDIR "/home/$USERNAME/Jugglebot"
 
-RUN git pull \
+RUN --mount=type=ssh git pull \
     && git checkout docker-native-platform
 
 WORKDIR "/home/$USERNAME"
