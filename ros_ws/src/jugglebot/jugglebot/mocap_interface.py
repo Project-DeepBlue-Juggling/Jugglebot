@@ -22,10 +22,10 @@ class MocapInterface:
         self.host = host
         self.port = port
 
-        # Known positions of the markers in the body frame
+        # Known positions of the markers in the body frame (from the origin to the markers)
         self.base_marker_positions = np.array([
-            [-432.73, -50.92, -77.00],
-            [-275.00, 0.00, -73.60],
+            [-383.49, -42.23, -77.20],
+            [-125.29, 417.32, -74.50],
             [-172.27, 400.22, -73.30],
             [172.27, 400.22, -75.10],
             [151.55, 87.50, -73.80],
@@ -46,7 +46,7 @@ class MocapInterface:
         self.drop_rate = 0
         self.out_of_sync_rate = 0
 
-        # Parameters for periodic update
+        # Parameters for periodic update of the base transformation
         self.update_frequency = 10  # Hz
         self.position_threshold = 1.0  # mm (threshold for marker movement)
         self.last_update_time = 0.0
