@@ -72,6 +72,8 @@ install -D -T "${HOME}/.ssh/config" "${BUILD_CONTEXT_DIR}/build/ssh_config"
 
 task 'Build the docker image named jugglebot-native-dev:focal'
 
+echo "111 ${SSH_AUTH_SOCK}"
+
 docker buildx build \
   --ssh default=${SSH_AUTH_SOCK} \
   --progress=plain \
@@ -83,7 +85,11 @@ task 'Cleanup the build context'
 rm "${BUILD_CONTEXT_DIR}/build/gitconfig"
 rm "${BUILD_CONTEXT_DIR}/build/ssh_config"
 
+task 'Add a symlink for docker-native-env'
+
 ln -s -f -T "${BUILD_CONTEXT_DIR}/docker-native-env" "${HOME}/bin/docker-native-env"
+
+task 'Invoke docker-native-env'
 
 docker-native-env
 
