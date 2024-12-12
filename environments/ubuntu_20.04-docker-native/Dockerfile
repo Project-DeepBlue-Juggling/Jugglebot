@@ -112,6 +112,8 @@ COPY --chown=$USERNAME:$USERNAME --chmod=644 [ "build/gitconfig", "/home/$USERNA
 
 # ADD --keep-git-dir=true --chown=$USERNAME:$USERNAME [ "$JUGGLEBOT_REPO_SSH_URL", "/home/$USERNAME/Jugglebot" ]
 
+RUN --mount=type=ssh chmod 644 $SSH_AUTH_SOCK
+
 USER "$USERNAME"
 
 ENV USER="$USERNAME" SHELL="/bin/bash" HOME="/home/$USERNAME"
