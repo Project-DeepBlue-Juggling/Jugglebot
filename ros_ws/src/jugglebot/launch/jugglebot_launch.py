@@ -36,6 +36,8 @@ def generate_launch_description():
         'spacemouse_handler',
         'sp_ik',
         'robot_geometry',
+        'mocap_interface_node',
+        'ball_prediction_node',
     ]
     jugglebot_nodes = [
         Node(

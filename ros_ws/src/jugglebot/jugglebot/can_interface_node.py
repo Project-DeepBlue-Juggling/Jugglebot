@@ -8,8 +8,8 @@ from jugglebot_interfaces.msg import (
     SetMotorVelCurrLimitsMessage,
     SetTrapTrajLimitsMessage,
     HandTelemetryMessage,
-    HeartbeatMsg,
     RobotStateMsg,
+    MotorStateMulti,
 )
 from jugglebot_interfaces.srv import ODriveCommandService, GetTiltReadingService, GetStateFromTeensy, ActivateOrDeactivate
 from jugglebot_interfaces.action import HomeMotors
@@ -27,11 +27,8 @@ class CanInterfaceNode(Node):
         # Initialize the shutdown flag
         self.shutdown_flag = False
 
-        # Initialize the heartbeat publisher
-        self.heartbeat_publisher = self.create_publisher(HeartbeatMsg, 'heartbeat_topic', 7)
-
         # Initialize the CANInterface
-        self.can_handler = CANInterface(logger=self.get_logger(), heartbeat_publisher=self.heartbeat_publisher)
+        self.can_handler = CANInterface(logger=self.get_logger())
 
         #### Initialize service servers ####
         self.encoder_search_service = self.create_service(Trigger, 'encoder_search', self.run_encoder_search)
@@ -70,17 +67,15 @@ class CanInterfaceNode(Node):
 
         #### Initialize publishers ####
             # Hardware data publishers
-        self.position_publisher = self.create_publisher(Float64MultiArray, 'leg_positions', 10)
-        self.velocity_publisher = self.create_publisher(Float64MultiArray, 'leg_velocities', 10)
-        self.iq_publisher = self.create_publisher(Float64MultiArray, 'leg_iqs', 10)
+        self.motor_states_publisher = self.create_publisher(MotorStateMulti, 'motor_states', 10)
         self.can_traffic_publisher = self.create_publisher(CanTrafficReportMessage, 'can_traffic', 10)
-        self.hand_telemetry_publisher = self.create_publisher(HandTelemetryMessage, 'hand_telemetry', 10)
+        # self.hand_telemetry_publisher = self.create_publisher(HandTelemetryMessage, 'hand_telemetry', 10) # Keeping this commented out in case we need it later
         self.platform_target_reached_publisher = self.create_publisher(LegsTargetReachedMessage, 'platform_target_reached', 10)
             
-            # Robot state publisher
+            # Robot state error publisher
         self.robot_state_error_publisher = self.create_publisher(String, 'robot_state_error', 10)
 
-        # Initialize target positions and status flags
+        # Initialize target positions and `target reached` flags - for knowing whether the entire platform has reached its target pose
         self.legs_target_position = [None] * 6
         self.legs_target_reached = [False] * 6
 
@@ -89,22 +84,17 @@ class CanInterfaceNode(Node):
             0.1, self.check_platform_target_reached_status
         )
         self.timer_canbus = self.create_timer(timer_period_sec=0.001, callback=self._poll_can_bus)
+        self.motor_states_timer = self.create_timer(timer_period_sec=0.01, callback=self.get_and_publish_motor_states)
 
         # Initialize the number of axes
         self.num_axes = 7 # 6 leg motors + 1 hand motor
 
-        # Initialize variables to store the last received data
-        self.last_motor_positions = [None] * self.num_axes
-        self.last_motor_velocities = [None] * self.num_axes
-        self.last_motor_iqs = [None] * self.num_axes
+        # Initialize variables to store the latest data
         self.last_platform_tilt_offset = quaternion.quaternion(1, 0, 0, 0)
 
-        # Register callbacks with CANInterface
-        self.can_handler.register_callback('leg_positions', self.publish_motor_positions)
-        self.can_handler.register_callback('leg_velocities', self.publish_motor_velocities)
-        self.can_handler.register_callback('leg_iqs', self.publish_motor_iqs)
+        # # Register callbacks with CANInterface
         self.can_handler.register_callback('can_traffic', self.publish_can_traffic)
-        self.can_handler.register_callback('hand_telemetry', self.publish_hand_telemetry)
+        # self.can_handler.register_callback('hand_telemetry', self.publish_hand_telemetry)
 
     #########################################################################################################
     #                                     Interfacing with the CAN bus                                      #
@@ -187,8 +177,9 @@ class CanInterfaceNode(Node):
         """Handle changes in the control mode."""
         try:
             # Construct flags for whether the legs and hand are in CLOSED_LOOP_CONTROL mode
-            legs_closed_loop = all(state == 8 for state in self.can_handler.axis_states[:6])
-            hand_closed_loop = self.can_handler.axis_states[6] == 8
+            latest_states = self.latest_axis_states()
+            legs_closed_loop = all(state == 8 for state in latest_states[:6])
+            hand_closed_loop = latest_states[6] == 8
 
             if msg.data == 'spacemouse':
                 self.get_logger().info('Spacemouse enabled')
@@ -211,10 +202,8 @@ class CanInterfaceNode(Node):
                     self.can_handler.set_requested_state(axis_id=6, requested_state='IDLE')
 
             elif msg.data == '':
-                # If no control mode is selected, put all axes into IDLE if they aren't already
-                if not all(state == 1 for state in self.can_handler.axis_states):
-                    self.get_logger().info('No control mode selected. Putting all axes into IDLE.')
-                    self.can_handler.set_requested_state_for_all_axes(requested_state='IDLE')
+                # If no control mode is selected, do nothing
+                pass
 
             else:
                 self.get_logger().warning(f"Unknown control mode: {msg.data}. Putting all axes into IDLE.")
@@ -269,11 +258,6 @@ class CanInterfaceNode(Node):
     def handle_movement(self, msg):
         """Handle movement commands for the robot."""
         try:
-            # NOTE This shouldn't be necessary if the state machine is working correctly
-            # if self.is_fatal or self.can_handler.fatal_issue or self.can_handler.fatal_can_issue:
-            #     self._on_fatal_issue()
-            #     return
-
             # Extract the leg lengths
             motor_positions = msg.data
 
@@ -334,13 +318,16 @@ class CanInterfaceNode(Node):
             deactivating: Whether the robot is being deactivated (True) or activated (False)
         """
         try:
-            # If deactivating and all axes are already in IDLE mode, leave them as-is
-            if deactivating and all(state == 1 for state in self.can_handler.axis_states):
-                self.get_logger().info("All axes already in IDLE mode. Leaving as-is.")
-                return True
+            # If deactivating and all axes are already in IDLE mode, with all legs at a position less than 0.1 revs, leave them as-is
+            if (deactivating and 
+                self.all_axes_in_state(target_state=1) 
+                and all(pos < 0.1 for pos in self.latest_motor_positions[:6])):
+                    
+                    self.get_logger().info("Robot is already deactivated. No need to move.")
+                    return True
 
             # Otherwise, ensure that the legs are in CLOSED_LOOP_CONTROL mode (8)
-            if not all(state == 8 for state in self.can_handler.axis_states[:6]):
+            if not self.all_axes_in_state(target_state=8):
                 self.get_logger().info("Putting all axes into CLOSED_LOOP_CONTROL mode.")
                 self.can_handler.set_requested_state_for_all_legs(requested_state='CLOSED_LOOP_CONTROL')
 
@@ -355,11 +342,14 @@ class CanInterfaceNode(Node):
                 self.can_handler.send_position_target(axis_id=axis_id, setpoint=setpoint)
                 time.sleep(0.001)
 
-            # Wait until all motors have reached their setpoints
+            # Wait briefly for the motors to start moving
             time.sleep(0.5)
             self.can_handler.fetch_messages()
 
-            while not all(trajectory == True for trajectory in self.can_handler.trajectory_done[:6]):
+            # Wait until all motors have reached their setpoints
+            ''' Note that this may have issues if the hand is doing something while the legs are being 'gently moved', but
+                this is an edge case that shouldn't happen so it's okay for now.'''
+            while not self.all_axes_trajectory_done():
                 self.can_handler.fetch_messages()
                 time.sleep(0.01)
 
@@ -420,11 +410,11 @@ class CanInterfaceNode(Node):
     def check_platform_target_reached_status(self):
         """Check whether the robot has reached its target and publish the result."""
         try:
-            # Check if there are any target positions set
+            # Check if there are set target positions
             if (
                 None in self.legs_target_position
-                or None in self.last_motor_positions
-                or None in self.last_motor_velocities
+                or None in self.latest_motor_positions()[:6]
+                or None in self.latest_motor_velocities()[:6]
             ):
                 return
 
@@ -436,8 +426,8 @@ class CanInterfaceNode(Node):
             for i, (setpoint, meas_pos, meas_vel) in enumerate(
                 zip(
                     self.legs_target_position,
-                    self.last_motor_positions,
-                    self.last_motor_velocities,
+                    self.latest_motor_positions()[:6],
+                    self.latest_motor_velocities()[:6],
                 )
             ):
                 if (
@@ -477,45 +467,6 @@ class CanInterfaceNode(Node):
 
         return response
 
-    def publish_motor_positions(self, position_data):
-        """Publish motor positions."""
-        try:
-            motor_positions = Float64MultiArray()
-            motor_positions.data = position_data
-
-            # Store the last received positions
-            self.last_motor_positions = position_data
-
-            self.position_publisher.publish(motor_positions)
-        except Exception as e:
-            self.get_logger().error(f"Error publishing motor positions: {e}")
-
-    def publish_motor_velocities(self, velocity_data):
-        """Publish motor velocities."""
-        try:
-            motor_velocities = Float64MultiArray()
-            motor_velocities.data = velocity_data
-
-            # Store the last received velocities
-            self.last_motor_velocities = velocity_data
-
-            self.velocity_publisher.publish(motor_velocities)
-        except Exception as e:
-            self.get_logger().error(f"Error publishing motor velocities: {e}")
-
-    def publish_motor_iqs(self, iq_data):
-        """Publish motor IQs."""
-        try:
-            motor_iqs = Float64MultiArray()
-            motor_iqs.data = iq_data
-
-            # Store the last received IQs
-            self.last_motor_iqs = iq_data
-
-            self.iq_publisher.publish(motor_iqs)
-        except Exception as e:
-            self.get_logger().error(f"Error publishing motor IQs: {e}")
-
     def publish_can_traffic(self, can_traffic_data):
         """Publish CAN traffic reports."""
         try:
@@ -527,17 +478,17 @@ class CanInterfaceNode(Node):
         except Exception as e:
             self.get_logger().error(f"Error publishing CAN traffic: {e}")
 
-    def publish_hand_telemetry(self, hand_telemetry_data):
-        """Publish hand telemetry data."""
-        try:
-            msg = HandTelemetryMessage()
-            msg.timestamp = self.get_clock().now().to_msg()
-            msg.position = hand_telemetry_data['position']
-            msg.velocity = hand_telemetry_data['velocity']
+    # def publish_hand_telemetry(self, hand_telemetry_data):
+    #     """Publish hand telemetry data."""
+    #     try:
+    #         msg = HandTelemetryMessage()
+    #         msg.timestamp = self.get_clock().now().to_msg()
+    #         msg.position = hand_telemetry_data['position']
+    #         msg.velocity = hand_telemetry_data['velocity']
 
-            self.hand_telemetry_publisher.publish(msg)
-        except Exception as e:
-            self.get_logger().error(f"Error publishing hand telemetry: {e}")
+    #         self.hand_telemetry_publisher.publish(msg)
+    #     except Exception as e:
+    #         self.get_logger().error(f"Error publishing hand telemetry: {e}")
 
     def check_whether_encoder_search_complete(self, request, response):
         """Service callback to check whether the encoder search has been completed."""
@@ -623,6 +574,48 @@ class CanInterfaceNode(Node):
             
         except Exception as e:
             self.get_logger().error(f"Error publishing to /robot_state_error: {e}")
+
+    #########################################################################################################
+    #                                       Related to Motor States                                         #
+    #########################################################################################################
+
+    def get_and_publish_motor_states(self):
+        """Publish the motor states."""
+        try:
+            msg = MotorStateMulti()
+            msg.timestamp = self.get_clock().now().to_msg()
+            msg.motor_states = self.can_handler.get_motor_states()
+
+            self.motor_states_publisher.publish(msg)
+
+        except Exception as e:
+            self.get_logger().error(f"Error publishing motor states: {e}")
+
+    # Get the latest motor states (eg. IDLE, CLOSED_LOOP_CONTROL, etc.)
+    def latest_axis_states(self):
+        """Get the latest axis states."""
+        return [motor.current_state for motor in self.can_handler.last_motor_states]
+    
+    # Check is all motors are in a chosen specific state
+    def all_axes_in_state(self, target_state: int):
+        """Check if all axes are in the specific state."""
+        return all(motor.current_state == target_state for motor in self.can_handler.last_motor_states)
+    
+    def all_axes_trajectory_done(self):
+        """Check if all axes have completed their trajectories."""
+        return all(motor.trajectory_done for motor in self.can_handler.last_motor_states)
+    
+    def latest_motor_positions(self):
+        """Get the latest motor positions."""
+        return [motor.pos_estimate for motor in self.can_handler.last_motor_states]
+    
+    def latest_motor_velocities(self):
+        """Get the latest motor velocities."""
+        return [motor.vel_estimate for motor in self.can_handler.last_motor_states]
+    
+    def latest_motor_iqs(self):
+        """Get the latest motor IQs."""
+        return [motor.iq_measured for motor in self.can_handler.last_motor_states]
 
     #########################################################################################################
     #                                          Utility Functions                                            #

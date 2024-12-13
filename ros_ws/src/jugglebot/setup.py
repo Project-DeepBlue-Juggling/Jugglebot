@@ -28,7 +28,12 @@ setup(
             'can_interface_node = jugglebot.can_interface_node:main',
             'spacemouse_handler = jugglebot.spacemouse_handler:main',
             'sp_ik = jugglebot.sp_ik:main',
-            'robot_geometry = jugglebot.robot_geometry:main'
+            'robot_geometry = jugglebot.robot_geometry:main',
+            'mocap_interface_node = jugglebot.mocap_interface_node:main',
+            'ball_prediction_node = jugglebot.ball_prediction_node:main',
+            'tracking_test_publisher = jugglebot.tracking_test_publisher:main',
+            'mocap_visualizer_node = jugglebot.mocap_visualizer_node:main',
+            'landing_analysis_node = jugglebot.landing_analysis_node:main',
         ],
     },
 )
