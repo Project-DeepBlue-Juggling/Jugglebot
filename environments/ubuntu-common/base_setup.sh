@@ -132,10 +132,6 @@ task 'Disable shell prompt modification by conda'
 
 conda config --set changeps1 False
 
-task 'Enable ssh-agent'
-
-eval "$(ssh-agent -s)"
-
 task 'Run the specified main playbook'
 
 eval "${ANSIBLE_PLAYBOOK_COMMAND}" || rc="$?"
