@@ -2,19 +2,16 @@
 - name: Provision the Ubuntu 20.04 docker native platform host
   hosts: localhost
   connection: local
+  vars:
+    environments_dir: "{{ playbook_dir }}/.."
 
   tasks:
-
-  - name: Initialize variables
-    set_fact:
-      environments_dir: "{{ playbook_dir }}/.."
-      home_dir: "{{ ansible_facts['env']['HOME'] }}"
 
   - name: Provision the Bash default files
     copy:
       remote_src: yes
       src: /etc/skel/
-      dest: "{{ home_dir }}"
+      dest: "{{ ansible_facts['env']['HOME'] }}"
       force: no
 
   - name: Provision the Ubuntu environment
