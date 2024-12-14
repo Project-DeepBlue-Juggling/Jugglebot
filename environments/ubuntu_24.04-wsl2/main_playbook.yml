@@ -130,7 +130,7 @@
 
   - name: Provision the jugglebot-native-dev sudoers config
     copy:
-      src: "{{ enviroments_dir }}/ubuntu_24.04-wsl2/sudoers-jugglebot-native-dev"
+      src: "{{ environments_dir }}/ubuntu_24.04-wsl2/sudoers-jugglebot-native-dev"
       dest: '/etc/sudoers.d/jugglebot-native-dev'
       mode: '0440'
     become: yes
