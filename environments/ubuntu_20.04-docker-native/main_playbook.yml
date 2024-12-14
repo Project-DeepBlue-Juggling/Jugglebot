@@ -47,12 +47,3 @@
       name: docker
       state: present
  
-  - name: Add the user to the docker group
-    # Note: This enables the user to issue CLI commands (eg. `docker run [..]`)
-    #   to the Docker Engine without sudo.
-    user:
-      name: "{{ ansible_facts['env']['USER'] }}"
-      append: yes
-      groups: docker
-    become: yes
-

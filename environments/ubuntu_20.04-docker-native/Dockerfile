@@ -2,6 +2,7 @@ FROM ubuntu:focal
 
 # TASK [Initialize variables]
 
+ARG DOCKER_GID="989"
 ARG USERNAME="devops"
 ARG JUGGLEBOT_REPO_SSH_URL="git@github.com:joewalp/Jugglebot.git"
 ARG ENVIRONMENTS_DIR="/home/$USERNAME/Jugglebot/environments"
@@ -118,8 +119,9 @@ RUN mkdir --mode 777 '/entrypoint' && chmod 777 '/home'
 
 # TASK [Create the default user]
 
-RUN groupadd "$USERNAME" \
-    && useradd --create-home --shell '/bin/bash' --gid "$USERNAME" --groups 'sudo' "$USERNAME" \
+RUN groupadd --system --gid "$DOCKER_GID" docker \
+    && groupadd "$USERNAME" \
+    && useradd --create-home --shell '/bin/bash' --gid "$USERNAME" --groups 'sudo,docker' "$USERNAME" \
     && echo -n "$USERNAME:$USERNAME" | chpasswd
 
 COPY --chown=$USERNAME:$USERNAME --chmod=644 [ "build/gitconfig", "/home/$USERNAME/.gitconfig" ]

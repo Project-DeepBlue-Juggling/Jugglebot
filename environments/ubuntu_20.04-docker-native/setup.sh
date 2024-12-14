@@ -84,8 +84,9 @@ install -D -T "${HOME}/.gitconfig" "${BUILD_CONTEXT_DIR}/build/gitconfig"
 task "Build the docker image named ${IMAGE_NAME}"
 
 docker buildx build \
-  --build-arg USERNAME=${DEV_ENV_USERNAME} \
-  --ssh default=${SSH_AUTH_SOCK} \
+  --build-arg "DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)" \
+  --build-arg "USERNAME=${DEV_ENV_USERNAME}" \
+  --ssh "default=${SSH_AUTH_SOCK}" \
   --progress=tty \
   -t "${IMAGE_NAME}" \
   "${BUILD_CONTEXT_DIR}"
