@@ -110,3 +110,36 @@
     vars:
       environments_dir: "{{ playbook_dir }}/.."
 
+  - name: Add the user to the docker group
+    # Note: This enables the user to issue CLI commands (eg. `docker run [..]`)
+    #   to the Docker Engine without sudo.
+    user:
+      name: "{{ ansible_facts['env']['USER'] }}"
+      append: yes
+      groups: docker
+    become: yes
+
+  - name: Create or diff the jugglebot-native-dev systemd unit
+    import_tasks: "{{ environments_dir }}/ansible-common/copy_or_diff.yml"
+    vars:
+      src: "{{ environments_dir }}/ubuntu_24.04-wsl2/jugglebot-native-dev.service"
+      dest: '/etc/systemd/user/jugglebot-native-dev.service'
+      readable_dest: /etc/systemd/user/jugglebbot-native-dev.service
+      mode: '0755'
+    become: yes
+
+  - name: Provision the jugglebot-native-dev sudoers config
+    copy:
+      src: "{{ enviroments_dir }}/ubuntu_24.04-wsl2/sudoers-jugglebot-native-dev"
+      dest: '/etc/sudoers.d/jugglebot-native-dev'
+      mode: '0440'
+    become: yes
+
+  - name: Create or diff the docker-native-env script
+    import_tasks: "{{ environments_dir }}/ansible-common/copy_or_diff.yml"
+    vars:
+      src: "{{ environments_dir }}/ubuntu_24.04-wsl2/docker-native-env"
+      dest: "{{ home_dir }}/bin/docker-native-env"
+      readable_dest: ~/bin/docker-native-env
+      mode: '0755'
+

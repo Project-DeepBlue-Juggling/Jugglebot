@@ -30,15 +30,6 @@
     state: present
   become: yes
 
-- name: Add the user to the docker group
-  # Note: This enables the user to issue CLI commands (eg. `docker run [..]`)
-  #   to the Docker Engine without sudo.
-  user:
-    name: "{{ ansible_facts['env']['USER'] }}"
-    append: yes
-    groups: docker
-  become: yes
-
 - name: Ensure that the docker Python SDK is installed
   # Note 1: This should have been installed during the creation of the
   #   jugglebot environment, but we include it here for good measure because

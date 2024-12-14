@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+set -o nounset -o pipefail -o errexit
+IFS=$'\t\n' # Stricter IFS settings
+rc=0
+
+# TASK [Initialize variables]
+
+SERVICE_NAME='jugglebot-native-dev.service'
+CONTAINER_NAME='jugglebot-native-dev'
+EX_UNAVAILABLE=69
+
+# TASK [Define functions]
+
+is_service_inactive() {
+  local service_name="$1"
+  [[ "$(systemctl is-active "${service_name}" || true)" == "inactive" ]]
+}
+
+is_service_active() {
+  local service_name="$1"
+  [[ "$(systemctl is-active "${service_name}" || true)" == "active" ]]
+}
+
+does_docker_container_exist() {
+  local container_name="$1"
+  [[ "$(docker container ls --no-trunc --quiet --filter "name=${container_name}")" == "${container_name}" ]]
+}
+
+# TASK [Ensure that the docker container exists]
+
+if ! does_docker_container_exist "${CONTAINER_NAME}"; then
+  echo -e "\n[ERROR]: The ${CONTAINER_NAME} docker container does not exist. See the environments/README.md in the Jugglebot git repository for guidance.\n"
+  exit ${EX_UNAVAILABLE}
+fi
+
+# TASK [Start the container if necessary]
+#
+# Note: Users that are in the docker group can control this systemd service
+# without a password.
+
+if is_service_inactive "${SERVICE_NAME}"; then
+  sudo systemctl start "${SERVICE_NAME}"
+fi
+
+# TASK [Wait for the container to start]
+
+while ! is_service_active "${SERVICE_NAME}"; do
+  echo "Waiting for service ${SERVICE_NAME} to become active..."
+  sleep 2
+done
+
+# TASK [Run an interactive shell in the container]
+#
+# Note: The SSH_AUTH_SOCK is typically located beneath /tmp, and the container
+# already has /tmp mounted.
+
+docker exec -it \
+  -e "SSH_AUTH_SOCK='${SSH_AUTH_SOCK:-}'" \
+  "${CONTAINER_NAME}" \
+  '/usr/bin/zsh'
+

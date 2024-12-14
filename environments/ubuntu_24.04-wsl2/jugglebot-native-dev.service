@@ -1,0 +1,15 @@
+[Unit]
+Description=Jugglebot native platform dockerized development environment
+Requires=docker.service
+After=docker.service
+StartLimitIntervalSec=300
+StartLimitBurst=2
+
+[Service]
+Restart=always
+ExecStart=/usr/bin/docker container start --attach jugglebot-native-dev
+ExecStop=/usr/bin/docker container stop jugglebot-native-dev
+
+[Install]
+WantedBy=multi-user.target
+
