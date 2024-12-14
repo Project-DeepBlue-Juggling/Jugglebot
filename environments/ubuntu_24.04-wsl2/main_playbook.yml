@@ -126,6 +126,7 @@
       dest: '/etc/systemd/user/jugglebot-native-dev.service'
       readable_dest: /etc/systemd/user/jugglebbot-native-dev.service
       mode: '0755'
+      environments_dir: "{{ playbook_dir }}/.."
     become: yes
 
   - name: Provision the jugglebot-native-dev sudoers config
