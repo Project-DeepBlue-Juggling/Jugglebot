@@ -2,12 +2,10 @@
 - name: Provision the WSL2 host
   hosts: localhost
   connection: local
+  vars:
+    environments_dir: "{{ playbook_dir }}/.."
 
   tasks:
-
-  - name: Specify the environments directory
-    set_fact:
-      environments_dir: "{{ playbook_dir }}/.."
 
   - name: Ensure that the ssh_keypair_name was specified
     assert:
