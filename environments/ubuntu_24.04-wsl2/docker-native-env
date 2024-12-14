@@ -29,7 +29,9 @@ does_docker_container_exist() {
 # TASK [Ensure that the docker container exists]
 
 if ! does_docker_container_exist "${CONTAINER_NAME}"; then
-  echo -e "\n[ERROR]: The ${CONTAINER_NAME} docker container does not exist. See the environments/README.md in the Jugglebot git repository for guidance.\n"
+  echo -e "
+[ERROR]: The ${CONTAINER_NAME} docker container does not exist. See the
+environments/README.md in the Jugglebot git repository for guidance.\n"
   exit ${EX_UNAVAILABLE}
 fi
 
