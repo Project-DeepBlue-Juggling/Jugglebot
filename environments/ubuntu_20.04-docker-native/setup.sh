@@ -15,9 +15,21 @@ does_docker_volume_exist() {
   [[ -n "$(docker volume ls --quiet --filter "name=${volume_name}")" ]]
 }
 
+is_docker_container_running() {
+  local container_name="$1"
+  [[ "$(docker container ls --quiet --filter "name=${container_name}")" != '' ]]
+}
+
 does_docker_container_exist() {
   local container_name="$1"
-  [[ "$(docker container ls --no-trunc --quiet --all --filter "name=${container_name}")" != '' ]]
+  [[ "$(docker container ls --quiet --all --filter "name=${container_name}")" != '' ]]
+}
+
+is_home_dir_initialized() {
+  local container_name="$1"
+  docker exec -it \
+    "${container_name}" \
+    /usr/bin/bash -c '[[ -f "${HOME}/.user-dir-initialized" ]]'
 }
 
 task 'Parse the arguments'
@@ -103,9 +115,11 @@ if ! does_docker_volume_exist "${HOME_VOLUME_NAME}"; then
   docker volume create "${HOME_VOLUME_NAME}"  
 fi
 
-task 'Ensure that the service is stopped'
+task 'Ensure that the docker container is not running'
 
-systemctl --quiet --user stop jugglebot-native-dev.service || true
+if is_docker_container_running "${CONTAINER_NAME}"; then
+  docker container stop "${CONTAINER_NAME}"
+fi
 
 task "Ensure that the ${CONTAINER_NAME} docker container does not exist"
 
@@ -128,31 +142,55 @@ docker container create --name "${CONTAINER_NAME}" \
   --dns '8.8.8.8' \
   "${IMAGE_NAME}"
 
-task 'Start the jugglebot-native-dev systemd service to start the container'
+task 'Start the container to begin initializing the home directory'
 
-systemctl --user start jugglebot-native-dev.service || rc=$?
+docker container start "${CONTAINER_NAME}"
 
-if [[ $rc -ne 0 ]]; then
-  echo -e "\n[ERROR]: The container did not start\n"
-  exit $rc
-fi
+task 'Wait for the home directory to be initialized by entrypoint.sh'
+
+while ! is_home_dir_initialized "${CONTAINER_NAME}"; do
+  echo "Waiting for the container ${CONTAINER_NAME} to be initialized..."
+  sleep 2
+done
+
+task 'Stop the container'
+
+docker container stop "${CONTAINER_NAME}"
 
 task 'Prompt next steps'
 
-echo -e '
+echo -e "
 Run the following command to open a shell in the jugglebot-native-dev
 container:
 
-  docker-native-env
+docker-native-env
 
-Note that the jugglebot-native-dev systemd unit is not enabled by default.  If
-you enable it using the following command, it will start when this WSL2
-environment boots (if the docker systemd unit is also enabled):
+---
 
-  sudo systemctl enable jugglebot-native-dev.service
+Notes:
 
-Note that a user account that is in the docker group has passwordless sudo for
-certain systemctl commands for the jugglebot-native-dev service. See
-/etc/sudoers.d/jugglebot-native-dev for details.
-'
+1. By default, the user in the container is named ${DEV_ENV_USERNAME}, and the password for
+   that user is the same as the username.
+
+2. Only the /home directory and the /tmp directory will persist across 
+   container restarts. The /home directory is a mounted docker volume named 
+   ${HOME_VOLUME_NAME}.
+
+3. If you add your GitHub ssh key to the keychain prior to running
+   docker-native-env, that key will be available within the container. This
+   works because (a) the container shares the same /tmp directory with the
+   WSL2 environment and (b) the docker-native-env script propagates the 
+   SSH_AUTH_SOCK environment variable into the container. You can add the key
+   to the keychain using the following command:
+
+   ssh-add "${SSH_PRIVATE_KEY_FILEPATH}"
+
+4. You can control the Docker Engine that is hosted by the WSL2 environment 
+   from within the container. This has some security implications. Do not host
+   internet-facing services within the container.
+
+5. The ~/.oh-my-zsh/custom directory in the WSL2 environment is mounted to the 
+   /home/${DEV_ENV_USERNAME}/.oh-my-zsh/custom directory in the container. This simplifies
+   keeping the environments and aliases in sync.
+"
 

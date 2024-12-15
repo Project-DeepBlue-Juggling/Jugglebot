@@ -2,15 +2,11 @@
 ## Introduction
 
 This is a preview of the environment provisioning project. Currently, the
-instructions and scripts encompass provisioning an Ubuntu-24.04 for WSL2 host
-that runs the Docker Engine for Linux that has Qemu integration installed and
-that has the Qemu arm64 emulator registered. Ansible tasks perform the bulk of
-the provisioning. Those tasks could be run on any vanilla Ubuntu host.
-Eventually, we will use those tasks to provision a simpler development
-environment within a Docker image that can cater to casual contributors.
-However, the current phase of the project is focused on building tooling that is
-usable within H. Low's workflow on the hardware prototyping environment (aka the
-production environment aka Prod).
+instructions and scripts encompass provisioning two shell environments: (1) an
+Ubuntu-24.04 for WSL2 host that runs the Docker Engine for Linux that has Qemu
+integration installed and that has the Qemu arm64 emulator registered and (2) an
+Ubuntu-20.04 docker container that uses a native platform base image. Ansible
+tasks and a Dockerfile perform the bulk of the provisioning.
 
 ## Instructions
 
@@ -176,15 +172,16 @@ gh ssh-key add ~/.ssh/id_ed25519.pub --type authentication --title 'Jugglebot de
 ```bash
 sudo apt install git
 
-cd ~ && GIT_SSH_COMMAND="ssh -i ${HOME}/.ssh/id_ed25519 -o IdentitiesOnly=yes" git clone git@github.com:joewalp/Jugglebot.git
+cd ~ && GIT_SSH_COMMAND="ssh -i ${HOME}/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new" git clone git@github.com:joewalp/Jugglebot.git
 ```
 
-### Step 7. Run the setup script
+### Step 7. Run the WSL2 environment setup script
 
-informational: This does not access the mounted Windows filesystem.
+Within the WSL2 environment, run the setup script for the WSL2 development
+environment. This will take some time.
 
 ```bash
-cd ~ && ./Jugglebot/environments/ubuntu_24.04-wsl2/dev-env-setup.sh --ssh-keypair-name id_ed25519
+~/Jugglebot/environments/ubuntu_24.04-wsl2/setup.sh --ssh-keypair-name id_ed25519
 ```
 
 ### Step 8. Exit and then start a new terminal session to enable all changes
@@ -206,12 +203,41 @@ the newly created distribution.
 wsl -d Ubuntu-24.04
 ```
 
+### Step 9. Run the docker native platform environment setup script
+
+Within the WSL2 environment, run the setup script for the docker native platform
+environment. This will take some time.
+
+```bash
+~/Jugglebot/environments/ubuntu_20.04-docker-native/setup.sh --ssh-keypair-name id_ed25519
+```
+
+### Step 10. Run the ~/bin/docker-native-env script
+
+The script in Step 9 will print some information about the container that it
+builds. After reading that info, run the following command to enter the docker
+native platform environment.
+
+```bash
+docker-native-env
+```
+
 ## Notes
 
-This command line environment uses Z Shell (zsh) with Oh My Zsh with the 'clean'
+Each of these environments uses Z Shell (zsh) with Oh My Zsh and the 'clean'
 built-in theme. The Python environment is managed by conda and pip rather than
 virtualenv and pip because the conda-forge dependency management makes life
 easier.
+
+The Jugglebot repo is checked out separately in each environment. If anyone ends
+up using the docker environment in tandem with the WSL2 environment for
+interactive coding and testing, we may end up mounting the WSL2 Jugglebot repo
+into the container. However, I currently consider the docker native platform
+environment to be a stepping stone toward building the Ubuntu for arm64 Docker
+container. The native platform environment is considerably faster than the arm64
+platform environment, so I want to use it for iterating on features before
+confirming that the same provisioning and features work within the arm64
+platform environment.
 
 ## Noteworthy future milestones
 
