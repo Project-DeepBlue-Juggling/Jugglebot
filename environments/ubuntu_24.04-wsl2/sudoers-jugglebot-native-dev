@@ -1,6 +1,0 @@
-%docker ALL=(ALL) NOPASSWD: /bin/systemctl start jugglebot-native-dev.service, \
-  /bin/systemctl stop jugglebot-native-dev.service, \
-  /bin/systemctl restart jugglebot-native-dev.service, \
-  /bin/systemctl enable jugglebot-native-dev.service, \
-  /bin/systemctl disable jugglebot-native-dev.service
-

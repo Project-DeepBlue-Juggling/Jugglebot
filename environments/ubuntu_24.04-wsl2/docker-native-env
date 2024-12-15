@@ -11,19 +11,14 @@ EX_UNAVAILABLE=69
 
 # TASK [Define functions]
 
-is_service_inactive() {
-  local service_name="$1"
-  [[ "$(systemctl --user is-active "${service_name}" || true)" == "inactive" ]]
-}
-
-is_service_active() {
-  local service_name="$1"
-  [[ "$(systemctl --user is-active "${service_name}" || true)" == "active" ]]
+is_docker_container_running() {
+  local container_name="$1"
+  [[ "$(docker container ls --quiet --filter "name=${container_name}")" != '' ]]
 }
 
 does_docker_container_exist() {
   local container_name="$1"
-  [[ "$(docker container ls --no-trunc --quiet --all --filter "name=${container_name}")" != '' ]]
+  [[ "$(docker container ls --quiet --all --filter "name=${container_name}")" != '' ]]
 }
 
 is_home_dir_initialized() {
@@ -43,20 +38,10 @@ environments/README.md in the Jugglebot git repository for guidance.\n"
 fi
 
 # TASK [Start the container if necessary]
-#
-# Note: Users that are in the docker group can control this systemd service
-# without a password.
 
-# if is_service_inactive "${SERVICE_NAME}"; then
-#   systemctl --user start "${SERVICE_NAME}"
-# fi
-
-# TASK [Wait for the container to start]
-
-# while ! is_service_active "${SERVICE_NAME}"; do
-#   echo "Waiting for service ${SERVICE_NAME} to become active..."
-#   sleep 2
-# done
+if ! is_docker_container_running "${CONTAINER_NAME}"; then
+  docker container start "${CONTAINER_NAME}"
+fi
 
 # TASK [Wait for the home directory to be initialized by entrypoint.sh]
 
