@@ -12,12 +12,12 @@ task() {
 
 does_docker_volume_exist() {
   local volume_name="$1"
-  [[ "$(docker volume ls --quiet --filter "name=${volume_name}")" == "${volume_name}" ]]
+  [[ -n "$(docker volume ls --quiet --filter "name=${volume_name}")" ]]
 }
 
 does_docker_container_exist() {
   local container_name="$1"
-  [[ "$(docker container ls --no-trunc --quiet --filter "name=${container_name}")" == "${container_name}" ]]
+  [[ "$(docker container ls --no-trunc --quiet --all --filter "name=${container_name}")" != '' ]]
 }
 
 task 'Parse the arguments'
@@ -84,6 +84,8 @@ install -D -T "${HOME}/.gitconfig" "${BUILD_CONTEXT_DIR}/build/gitconfig"
 task "Build the docker image named ${IMAGE_NAME}"
 
 docker buildx build \
+  --build-arg "USER_UID=$(id --user)" \
+  --build-arg "USER_GID=$(id --group)" \
   --build-arg "DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)" \
   --build-arg "USERNAME=${DEV_ENV_USERNAME}" \
   --ssh "default=${SSH_AUTH_SOCK}" \
@@ -101,9 +103,11 @@ if ! does_docker_volume_exist "${HOME_VOLUME_NAME}"; then
   docker volume create "${HOME_VOLUME_NAME}"  
 fi
 
-task "If the ${CONTAINER_NAME} container exists, remove it"
+task 'Ensure that the service is stopped'
 
-sudo systemctl stop jugglebot-native-dev.service || true
+systemctl --quiet --user stop jugglebot-native-dev.service || true
+
+task "Ensure that the ${CONTAINER_NAME} docker container does not exist"
 
 if does_docker_container_exist "${CONTAINER_NAME}"; then
   docker container rm --force --volumes "${CONTAINER_NAME}"
@@ -120,13 +124,13 @@ docker container create --name "${CONTAINER_NAME}" \
   -v '/tmp:/tmp' \
   -v '/var/run/docker.sock:/var/run/docker.sock' \
   -v "${HOME_VOLUME_NAME}:/home" \
-  -v "${HOME}/.oh-my-zsh/custom:/home/${DEV_ENV_USERNAME}/.oh-my-zsh/custom" \
+  -v "${HOME}/.oh-my-zsh/custom:/entrypoint/oh-my-zsh-custom" \
   --dns '8.8.8.8' \
   "${IMAGE_NAME}"
 
 task 'Start the jugglebot-native-dev systemd service to start the container'
 
-sudo systemctl start jugglebot-native-dev.service || rc=$?
+systemctl --user start jugglebot-native-dev.service || rc=$?
 
 if [[ $rc -ne 0 ]]; then
   echo -e "\n[ERROR]: The container did not start\n"
@@ -151,5 +155,4 @@ Note that a user account that is in the docker group has passwordless sudo for
 certain systemctl commands for the jugglebot-native-dev service. See
 /etc/sudoers.d/jugglebot-native-dev for details.
 '
-
 

@@ -2,6 +2,8 @@ FROM ubuntu:focal
 
 # TASK [Initialize variables]
 
+ARG USER_UID="1000"
+ARG USER_GID="1000"
 ARG DOCKER_GID="989"
 ARG USERNAME="devops"
 ARG JUGGLEBOT_REPO_SSH_URL="git@github.com:joewalp/Jugglebot.git"
@@ -120,8 +122,8 @@ RUN mkdir --mode 777 '/entrypoint' && chmod 777 '/home'
 # TASK [Create the default user]
 
 RUN groupadd --system --gid "$DOCKER_GID" docker \
-    && groupadd "$USERNAME" \
-    && useradd --create-home --shell '/bin/bash' --gid "$USERNAME" --groups 'sudo,docker' "$USERNAME" \
+    && groupadd --gid "$USER_GID" "$USERNAME" \
+    && useradd --create-home --shell '/bin/bash' --uid "$USER_UID" --gid "$USERNAME" --groups 'sudo,docker' "$USERNAME" \
     && echo -n "$USERNAME:$USERNAME" | chpasswd
 
 COPY --chown=$USERNAME:$USERNAME --chmod=644 [ "build/gitconfig", "/home/$USERNAME/.gitconfig" ]
@@ -175,10 +177,10 @@ ENTRYPOINT [ "tini", "--", "/entrypoint/entrypoint.sh" ]
 
 # TASK [When running the environment as a service, send /var/log/syslog to stdout]
 
-CMD [ "/usr/bin/tail", "-F", "/var/log/syslog" ]
+#CMD [ "/usr/bin/tail", "-F", "/var/log/syslog" ]
 
 # TASK [Retain a couple alternative CMDs for reference]
 
-# CMD [ "sleep", "infinity" ]
-# CMD [ "/usr/bin/zsh" ]
+CMD [ "sleep", "infinity" ]
+#CMD [ "/usr/bin/zsh" ]
 
