@@ -1,5 +1,9 @@
 # Motion Capture Data
 
+To save on space for anyone cloning this repo, these raw data files have been moved to Google Drive. You can find the files here:
+
+https://drive.google.com/drive/folders/1mr2fu5Jrp4y6er7Wa5iQMWZVAHJSYiT6?usp=sharing
+
 This dataset contains recordings of ball throwing captured in FBX, TSV, and MP4 formats. FBX files should be easier to work with 3D animation software, TSV should work for python/programming analysis, and the MP4 videos are to show what the recordings are each showing.
 
 Unfortunately I haven't been able to get JSON exporting to work with unlabelled data. I'll look into this and will update this data if I ever figure it out...
