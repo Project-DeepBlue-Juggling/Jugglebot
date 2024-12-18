@@ -1,6 +1,0 @@
-# For retrieving the last known state from the Teensy
-
-# Request part is empty
----
-bool success    # true if the command was executed successfully
-jugglebot_interfaces/RobotStateMsg state # The last known state
