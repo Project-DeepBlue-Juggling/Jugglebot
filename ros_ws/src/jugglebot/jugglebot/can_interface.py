@@ -37,11 +37,13 @@ import threading
 import time
 import math
 from typing import Callable, Dict, List, Optional, Tuple, Union
+import quaternion
 
 import can
 import cantools
 from ament_index_python.packages import get_package_share_directory
 from jugglebot_interfaces.msg import MotorStateSingle
+from geometry_msgs.msg import Quaternion
 
 class CANInterface:
     """
@@ -88,6 +90,12 @@ class CANInterface:
     _LEG_MOTOR_MAX_POSITION  = 4.2  # Revs
     _HAND_MOTOR_MAX_POSITION = 11.1 # Revs
 
+    # Set the limits for trapezoidal trajectory control (used only for the legs)
+    _DEFAULT_TRAP_TRAJ_LIMITS = {'vel_limit': 20.0, 'acc_limit': 10.0, 'dec_limit': 8.0} # rev/s, rev/s^2
+    # Set the absolute limits for the motors
+    _DEFAULT_VEL_CURR_LIMITS = {'leg_vel_limit': 50.0, 'leg_curr_limit': 20.0, 
+                                'hand_vel_limit': 100.0, 'hand_curr_limit': 50.0} # rev/s, A
+
     def __init__(
         self,
         logger,
@@ -127,9 +135,6 @@ class CANInterface:
 
         # Create a dictionary of callbacks that are used in the ROS2 node
         self.callbacks: Dict[str, Optional[Callable]] = {
-            # 'leg_positions' : None,
-            # 'leg_iqs'       : None,
-            # 'leg_velocities': None,
             'can_traffic'   : None,
             # 'hand_telemetry': None,
         }
@@ -173,11 +178,16 @@ class CANInterface:
         self._CAN_state_update_ID = 0x6E0 # For sending the current state to/from the Teensy
         self.last_known_state = {
             'updated': False, # Flag to indicate if the state has been updated since the last request
+            'encoder_search_complete': False, # Flag to indicate if the encoder search is complete for every leg motor
             'is_homed': False,
             'levelling_complete': False,
             'pose_offset_rad': [0.0, 0.0],
-            'error': "", # Note that the error won't be communicated to the Teensy/saved between sessions.
+            'pose_offset_quat': Quaternion(w=1.0, x=0.0, y=0.0, z=0.0),
+            'error': [] # Note that the error won't be communicated to the Teensy/saved between sessions.
         }
+
+        # Initialize the last known platform tilt offset. This is useful in case we need to run the platform levelling again
+        self.last_platform_tilt_offset = quaternion.quaternion(1, 0, 0, 0)
 
         # Initialize error logging parameters
         self._last_error_log_times = {} # Axis ID to error code to last log time
@@ -185,11 +195,15 @@ class CANInterface:
                                                     # need to be called often
 
         # Initialize leg and hand motor absolute limits
-        self.leg_motor_abs_limits = {'velocity_limit': 20.0, 'current_limit': 10.0}
-        self.hand_motor_abs_limits = {'velocity_limit': 20.0, 'current_limit': 10.0}
+        self.leg_motor_abs_limits = {'velocity_limit': self._DEFAULT_VEL_CURR_LIMITS['leg_vel_limit'], 
+                                     'current_limit': self._DEFAULT_VEL_CURR_LIMITS['leg_curr_limit']}
+        self.hand_motor_abs_limits = {'velocity_limit': self._DEFAULT_VEL_CURR_LIMITS['hand_vel_limit'], 
+                                      'current_limit': self._DEFAULT_VEL_CURR_LIMITS['hand_curr_limit']}
 
         # Initialize leg trapezoidal trajectory limits
-        self.leg_trap_traj_limits = {'vel_limit': 20.0, 'acc_limit': 10.0, 'dec_limit': 8.0}
+        self.leg_trap_traj_limits = {'vel_limit': self._DEFAULT_TRAP_TRAJ_LIMITS['vel_limit'],
+                                     'acc_limit': self._DEFAULT_TRAP_TRAJ_LIMITS['acc_limit'],
+                                     'dec_limit': self._DEFAULT_TRAP_TRAJ_LIMITS['dec_limit']}
 
         # Initialize default hand gains
         self.default_hand_gains = {'pos_gain': 18.0, 'vel_gain': 0.007, 'vel_integrator_gain': 0.01}
@@ -199,6 +213,12 @@ class CANInterface:
 
         # Set up the ODrives to their default state
         self.setup_odrives()
+
+        # Check whether the encoder search is complete
+        self.check_whether_encoder_search_complete()
+
+        # Get the previous session's state from the Teensy
+        self.get_state_from_teensy()
 
     #########################################################################################################
     #                                            CAN Bus Management                                         #
@@ -423,7 +443,7 @@ class CANInterface:
                 data=data,
                 error_descriptor=f"arbitrary parameter: {endpoint_id}"
             )
-            self.ROS_logger.debug(f"Arbitrary parameter '{param_name}' sent to axis {axis_id} with value {param_value}")
+            # self.ROS_logger.info(f"Arbitrary parameter '{param_name}' sent to axis {axis_id} with value {param_value}")
         except Exception as e:
             self.ROS_logger.error(f"Failed to send arbitrary parameter '{param_name}' to axis {axis_id}: {e}")
             raise
@@ -638,6 +658,9 @@ class CANInterface:
             self.fatal_error = False
             self.undervoltage_error = False
 
+            # Reset the local copy of the last known states' error field
+            self.last_known_state['error'] = []
+
             # Clear the disarm reasons
             for motor in self.motor_states:
                 motor.disarm_reason = 0
@@ -817,14 +840,19 @@ class CANInterface:
     #                                            Managing ODrives                                           #
     #########################################################################################################
 
-    def check_whether_encoder_search_complete(self) -> List[bool]:
+    def check_whether_encoder_search_complete(self):
         """
         Checks whether the encoder search has been completed for each axis.
         This is done by sending a message to each ODrive to check the status of commutation_mapper.pos_abs
         If the result is NaN, the encoder search is not complete. If it is a number, the search is complete.
+        """
 
-        Returns:
-            List[bool]: A list of boolean values indicating whether the encoder search is complete for each (leg) axis.
+        """
+        For some reason, the response messages aren't all processed after the first request. This reliably happens and changing
+        time.sleep() values doesn't seem to help. I have confirmed that the CAN messages are all sent out and back correctly
+        (using a separate CANLogger tool). The issue seems to be limited to this code.
+        The only reliable fix is to resend the request. Interestingly, the responses are ALWAYS processed correctly after just 
+        one more request attempt. Very strange. 
         """
         try:
             encoder_search_complete_on_axes = []
@@ -835,14 +863,28 @@ class CANInterface:
             
             # Wait for the responses to come in
             start_time = time.time()
-            timeout_duration = 3.0 # seconds
+            timeout_duration = 1.0 # seconds
+            timeout_max_count = 2
+            timeout_count = 0
 
-            while any(feedback is None for feedback in self._received_encoder_search_feedback_on_axes):
+            while (any(feedback is None for feedback in self._received_encoder_search_feedback_on_axes) and 
+                    timeout_count < timeout_max_count):
                 self.fetch_messages()
-                time.sleep(0.1)
+                # self.ROS_logger.info(f"Feedback: {self._received_encoder_search_feedback_on_axes}", throttle_duration_sec=0.5)
+                time.sleep(0.01)
+
                 if time.time() - start_time > timeout_duration:
-                    self.ROS_logger.error("Failed to check encoder search status. Timed out.")
-                    return False
+                    timeout_count += 1
+                    start_time = time.time()
+
+                    # Resend the read message
+                    for axis_id in range(6): # Only the legs need to do this, as the hand uses the on-board encoder
+                        # Send read message to check if the encoder search is complete
+                        self.send_arbitrary_parameter(axis_id, 'commutation_mapper.pos_abs', 0.0, param_type='f', op_code=self.OPCODE_READ)
+                    
+                    if timeout_count == timeout_max_count:
+                        self.ROS_logger.error("Encoder search status check timed out.")
+                        return False
 
             # Check the results
             for axis_id in range(6):
@@ -851,7 +893,11 @@ class CANInterface:
                 else:
                     encoder_search_complete_on_axes.append(False)
 
-            return encoder_search_complete_on_axes
+            # Compress this information into a boolean
+            encoder_search_complete_on_axes = all(encoder_search_complete_on_axes)
+
+            # Update the last known state
+            self.last_known_state['encoder_search_complete'] = encoder_search_complete_on_axes
         
         except Exception as e:
             self.ROS_logger.error(f"Failed to check encoder search status: {e}")
@@ -942,7 +988,7 @@ class CANInterface:
         try:
             self.ROS_logger.info('Setting up ODrives with default values...')
             self.set_absolute_vel_curr_limits()
-            self.set_legs_control_and_input_mode()
+            self.set_legs_control_and_input_mode(control_mode='POSITION_CONTROL', input_mode='TRAP_TRAJ')
             self.set_trap_traj_vel_acc_limits()
             self.set_requested_state_for_all_axes(requested_state=requested_state)
             self.set_hand_gains(**self.default_hand_gains)
@@ -953,10 +999,10 @@ class CANInterface:
 
     def set_absolute_vel_curr_limits(
     self,
-    leg_current_limit: Optional[float] = None,
-    leg_vel_limit: Optional[float] = None,
-    hand_current_limit: Optional[float] = None,
-    hand_vel_limit: Optional[float] = None
+    leg_current_limit: Optional[float] = 0.0,
+    leg_vel_limit: Optional[float] = 0.0,
+    hand_current_limit: Optional[float] = 0.0,
+    hand_vel_limit: Optional[float] = 0.0
 ) -> None:
         """
         Sets the absolute velocity and current limits for the ODrives.
@@ -973,19 +1019,19 @@ class CANInterface:
         """
         try:
             # Update limits if provided
-            if leg_current_limit is not None:
+            if leg_current_limit != 0.0:
                 if leg_current_limit < 0:
                     raise ValueError("Leg current limit must be non-negative")
                 self.leg_motor_abs_limits['current_limit'] = leg_current_limit
-            if leg_vel_limit is not None:
+            if leg_vel_limit != 0.0:
                 if leg_vel_limit < 0:
                     raise ValueError("Leg velocity limit must be non-negative")
                 self.leg_motor_abs_limits['velocity_limit'] = leg_vel_limit
-            if hand_current_limit is not None:
+            if hand_current_limit != 0.0:
                 if hand_current_limit < 0:
                     raise ValueError("Hand current limit must be non-negative")
                 self.hand_motor_abs_limits['current_limit'] = hand_current_limit
-            if hand_vel_limit is not None:
+            if hand_vel_limit != 0.0:
                 if hand_vel_limit < 0:
                     raise ValueError("Hand velocity limit must be non-negative")
                 self.hand_motor_abs_limits['velocity_limit'] = hand_vel_limit
@@ -1031,8 +1077,8 @@ class CANInterface:
         
     def set_legs_control_and_input_mode(
             self, 
-            control_mode: str ='POSITION_CONTROL', 
-            input_mode: str ='TRAP_TRAJ'
+            control_mode: str, 
+            input_mode: str
         ) -> None:
         ''' 
         Set the control and input modes for all the leg axes
@@ -1057,9 +1103,9 @@ class CANInterface:
 
     def set_trap_traj_vel_acc_limits(
     self,
-    velocity_limit: Optional[float] = None,
-    acceleration_limit: Optional[float] = None,
-    deceleration_limit: Optional[float] = None
+    velocity_limit: Optional[float] = 0.0,
+    acceleration_limit: Optional[float] = 0.0,
+    deceleration_limit: Optional[float] = 0.0
 ) -> None:
         """
         Sets the velocity and acceleration limits for the trapezoidal trajectory control mode.
@@ -1075,18 +1121,18 @@ class CANInterface:
         """
         try:
             # Update limits if provided, otherwise use existing values
-            if velocity_limit is not None:
+            if velocity_limit != 0.0:
                 if velocity_limit < 0:
                     raise ValueError("Velocity limit must be non-negative")
                 self.leg_trap_traj_limits['vel_limit'] = velocity_limit
 
-            if acceleration_limit is not None:
+            if acceleration_limit != 0.0:
                 if acceleration_limit < 0:
                     raise ValueError("Acceleration limit must be non-negative")
                 self.leg_trap_traj_limits['acc_limit'] = acceleration_limit
 
             # Handle deceleration limit
-            if deceleration_limit is not None:
+            if deceleration_limit != 0.0:
                 if deceleration_limit < 0:
                     raise ValueError("Deceleration limit must be non-negative")
                 self.leg_trap_traj_limits['dec_limit'] = deceleration_limit
@@ -1244,6 +1290,7 @@ class CANInterface:
 
             # Retrieve the handler function for this command ID from the dictionary.
             handler = self.command_handlers.get(command_id)
+
             if handler:
                 # If a handler was found, call it with the axis ID and message data.
                 handler(axis_id, message.data)
@@ -1375,8 +1422,10 @@ class CANInterface:
 
             for error_code, error_message in ERRORS.items():
                 if active_errors & error_code:
-                    # Update the last state with the error
-                    self.last_known_state['error'] = error_message
+                    # Check if the error is already in the last known state
+                    if error_message not in self.last_known_state['error']:
+                        # Update the last state with the error
+                        self.last_known_state['error'].append(error_message)
 
                     last_log_time = self._last_error_log_times[axis_id].get(error_code, 0)
                     if current_time - last_log_time > self.error_log_throttle_duration_sec:
@@ -1482,6 +1531,7 @@ class CANInterface:
             axis_id: The axis ID.
             data: The message data.
         """
+        # self.ROS_logger.info(f"Handling arbitrary parameter read for axis {axis_id}")
         try:
             # Start by unpacking the data, which is a 32-bit float
             _, endpoint_id, _, parameter_value = struct.unpack_from('<BHB' + param_type, data)
@@ -1546,7 +1596,7 @@ class CANInterface:
         except struct.error as e:
             self.ROS_logger.warn(f"Error unpacking tilt sensor data: {e}.\nData: {message.data}")
 
-    def get_tilt_sensor_reading(self):
+    def get_tilt_sensor_reading(self, attemp_num: int = 0):
         """
         Requests the tilt sensor reading from the Teensy and returns it.
 
@@ -1580,6 +1630,8 @@ class CANInterface:
             tiltX, tiltY = self.tilt_sensor_reading
             self.tilt_sensor_reading = None
 
+            tilt_quat = self._convert_tilt_to_quat(tiltX, tiltY)
+
             # Check if the readings are valid
             if tiltX is None or tiltY is None:
                 self.ROS_logger.warning("Tilt sensor reading invalid. Returning None.")
@@ -1588,9 +1640,14 @@ class CANInterface:
             # If tilt readings are above 45 degrees (0.785 rad), then they are invalid
             if abs(tiltX) > 0.785 or abs(tiltY) > 0.785:
                 self.ROS_logger.warning("Tilt sensor reading invalid. Waiting for next reading...")
-                return self.get_tilt_sensor_reading()
+                if attemp_num < 3:
+                    return self.get_tilt_sensor_reading(attemp_num=attemp_num+1)
 
-            return tiltX, tiltY
+                else:
+                    self.ROS_logger.warning("Tilt sensor reading invalid. Returning None.")
+                    return None, None, Quaternion()
+
+            return tiltX, tiltY, tilt_quat
 
         except Exception as e:
             self.ROS_logger.error(f"Failed to get tilt sensor reading: {e}")
@@ -1722,11 +1779,15 @@ class CANInterface:
             tiltX = tiltX_scaled / 1000.0
             tiltY = tiltY_scaled / 1000.0
 
-            # Update the relevant fields of theinternal state
+            # Convert the pose offsets to a quaternion
+            quat = self._convert_tilt_to_quat(tiltX, tiltY)
+
+            # Update the relevant fields of the internal state
             self.last_known_state['updated'] = True
             self.last_known_state['is_homed'] = is_homed
             self.last_known_state['levelling_complete'] = levelling_complete
             self.last_known_state['pose_offset_rad'] = (tiltX, tiltY)
+            self.last_known_state['pose_offset_quat'] = quat
 
         except Exception as e:
             self.ROS_logger.error(f"Failed to decode state message from Teensy: {e}")
@@ -1747,6 +1808,38 @@ class CANInterface:
             self.last_motor_states = self.motor_states.copy()
         
         return self.last_motor_states
+
+    def _convert_tilt_to_quat(self, tiltX: float, tiltY: float) -> Quaternion:
+        """
+        Converts tilt sensor readings to a quaternion representing the orientation of the robot.
+
+        Args:
+            tiltX: The tilt sensor reading about the x-axis.
+            tiltY: The tilt sensor reading about the y-axis.
+
+        Returns:
+            A quaternion representing the orientation of the robot.
+        """
+        # Convert tilt sensor readings to quaternions (this is the first method I've found that works)
+        q_roll = quaternion.from_rotation_vector([-tiltX, 0, 0])
+        q_pitch = quaternion.from_rotation_vector([0, -tiltY, 0])
+
+        tilt_offset_quat = q_roll * q_pitch
+        
+        # Calculate the new offset by multiplying the last offset by the new offset
+        tilt_offset_quat = tilt_offset_quat * self.last_platform_tilt_offset
+
+        # Store the new offset in case more readings are received
+        self.last_platform_tilt_offset = tilt_offset_quat
+
+        # Convert the quaternion to a ROS Quaternion message
+        quat = Quaternion()
+        quat.x = tilt_offset_quat.x
+        quat.y = tilt_offset_quat.y
+        quat.z = tilt_offset_quat.z
+        quat.w = tilt_offset_quat.w
+
+        return quat
 
     def shutdown(self):
         """
