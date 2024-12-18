@@ -61,7 +61,7 @@
   "axis0.config.calibration_lockin.vel": 6.36619758605957,
   "axis0.config.can.bus_voltage_msg_rate_ms": 500,
   "axis0.config.can.encoder_msg_rate_ms": 10,
-  "axis0.config.can.error_msg_rate_ms": 10,
+  "axis0.config.can.error_msg_rate_ms": 20,
   "axis0.config.can.heartbeat_msg_rate_ms": 100,
   "axis0.config.can.input_torque_scale": 1000,
   "axis0.config.can.input_vel_scale": 1000,
