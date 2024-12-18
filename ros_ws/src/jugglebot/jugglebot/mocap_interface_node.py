@@ -51,7 +51,6 @@ class MocapInterfaceNode(Node):
 
     def end_session(self, request, response):
         """Service callback to end the session from the GUI"""
-        self.get_logger().info("End session requested. Shutting down...")
         response.success = True
         response.message = "Session ended. Shutting down node."
         self.shutdown_flag = True

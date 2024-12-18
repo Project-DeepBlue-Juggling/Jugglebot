@@ -11,7 +11,7 @@ class BallPredictionNode(Node):
         super().__init__('ball_prediction_node')
 
         # Parameters
-        self.landing_height = 1200.0  # Height of the 'landing plane' in mm
+        self.landing_height = 200.0  # Height of the 'landing plane' in mm
         self.match_threshold = 50.0  # mm. Threshold for considering a new measurement to be the same as an existing object.
 
         # Subscribers and Publishers
@@ -96,7 +96,7 @@ class BallPredictionNode(Node):
             ground_height: The height of the ground in mm.
         """
         tracker_id = uuid.uuid4()
-        self.trackers[tracker_id] = BallTracker(self.timer_period , ground_height, logger=self.get_logger(), initial_data=initial_data, node=self)
+        self.trackers[tracker_id] = BallTracker(self.timer_period, ground_height, logger=self.get_logger(), initial_data=initial_data, node=self)
 
     def update_tracker_with_new_data(self, tracker_id: uuid.UUID, new_measurement: np.ndarray):
         """

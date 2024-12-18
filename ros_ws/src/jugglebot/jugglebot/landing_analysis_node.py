@@ -14,7 +14,7 @@ class LandingAnalysisNode(Node):
         super().__init__('landing_analysis_node')
 
         # Declare and get ROS2 parameters with default values
-        self.declare_parameter('ground_z', 200.0)  # Ground plane in mm
+        self.declare_parameter('ground_z', 1200.0)  # Ground plane in mm
         self.ground_z = self.get_parameter('ground_z').get_parameter_value().double_value
 
         self.declare_parameter('analysis_duration', 10.0)  # Duration in seconds for each analysis window
