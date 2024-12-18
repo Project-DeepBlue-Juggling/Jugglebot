@@ -6,6 +6,3 @@ bool leg2_has_arrived
 bool leg3_has_arrived
 bool leg4_has_arrived
 bool leg5_has_arrived
-
-
-# OLD VERSION
