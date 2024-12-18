@@ -2,6 +2,5 @@
 
 # Request part is empty
 ---
-float64[] tilt_readings   # tiltX, tiltY
-
-# OLD VERSION
+float64[] tilt_xy   # tiltX, tiltY
+geometry_msgs/Quaternion tilt_quat

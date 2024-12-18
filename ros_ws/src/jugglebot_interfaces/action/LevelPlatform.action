@@ -1,7 +1,11 @@
-# WILL POPULATE LATER
+# For commanding (and receiving feedback from) the auto-levelling action
 
 # No request
 ---
-# No update
+# Response
+geometry_msgs/Quaternion tilt_quat # Measured final tilt of the platform (quaternion)
+float32[] tilt_xy # Measured final tilt of the platform (tiltX, tiltY) {rad}
+bool success # Was the operation a success?
 ---
-# No result
+# Feedback
+float32[] tilt # Measured initial tilt of the platform (tiltX, tiltY) {rad}
