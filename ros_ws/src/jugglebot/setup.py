@@ -29,6 +29,7 @@ setup(
             'spacemouse_handler = jugglebot.spacemouse_handler:main',
             'sp_ik = jugglebot.sp_ik:main',
             'robot_geometry = jugglebot.robot_geometry:main',
+            'level_platform_node = jugglebot.level_platform_node:main',
             'mocap_interface_node = jugglebot.mocap_interface_node:main',
             'ball_prediction_node = jugglebot.ball_prediction_node:main',
             'tracking_test_publisher = jugglebot.tracking_test_publisher:main',
