@@ -23,16 +23,14 @@ find_package(geometry_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
-  "msg/RobotStateMsg.msg"
+  "msg/RobotState.msg"
   "msg/PlatformPoseMessage.msg"
   "msg/MotorStateSingle.msg"
-  "msg/MotorStateMulti.msg"
   "msg/MocapDataSingle.msg"
   "msg/MocapDataMulti.msg"
   "msg/BallStateSingle.msg"
   "msg/BallStateMulti.msg"
 
-  "srv/GetStateFromTeensy.srv"
   "srv/GetRobotGeometry.srv"
   "srv/ActivateOrDeactivate.srv"
 
