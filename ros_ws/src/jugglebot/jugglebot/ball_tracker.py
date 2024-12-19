@@ -13,6 +13,7 @@ ball won't stop 'existing' until it 'lands'.
 
 from collections import deque
 from jugglebot_interfaces.msg import BallStateSingle
+from builtin_interfaces.msg import Time
 import numpy as np
 from sklearn.linear_model import LinearRegression
 from typing import Optional
@@ -167,8 +168,11 @@ class BallTracker:
                 landing_state.landing_velocity.x = landing_velx
                 landing_state.landing_velocity.y = landing_vely
                 landing_state.landing_velocity.z = landing_velz
-                # Time to land
-                landing_state.time_to_land = time_to_land
+                # Time at land - when the ball will cross the catch plane - as a ROS2 Time object
+                # This is the current time + the time to land
+                landing_state.time_at_land = Time()
+                landing_state.time_at_land.sec = int(current_time + time_to_land)
+                landing_state.time_at_land.nanosec = int((current_time + time_to_land) % 1 * 1e9)
                 
             # Since projectile motion confirmed, we do not trim the buffer.
 
