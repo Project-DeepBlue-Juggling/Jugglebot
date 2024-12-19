@@ -4,15 +4,10 @@ from jugglebot_interfaces.msg import MocapDataMulti, BallStateMulti
 import numpy as np
 from typing import Optional
 from .ball_tracker import BallTracker
-import uuid
 
 class BallPredictionNode(Node):
     def __init__(self):
         super().__init__('ball_prediction_node')
-
-        # Parameters
-        self.landing_height = 200.0  # Height of the 'landing plane' in mm
-        self.match_threshold = 50.0  # mm. Threshold for considering a new measurement to be the same as an existing object.
 
         # Subscribers and Publishers
         self.subscription = self.create_subscription(
@@ -30,6 +25,11 @@ class BallPredictionNode(Node):
 
         # Initialize an empty dictionary to store BallTracker instances
         self.trackers = {}
+
+        # Parameters
+        self.landing_height = 735.0  # Height of the 'landing plane' in mm. 735 is the height of the mid pos from the base plane (bottom joint of legs)
+        self.match_threshold = 50.0  # mm. Threshold for considering a new measurement to be the same as an existing object.
+        self.next_id = 0             # ID for the next tracker to be created
 
         self.get_logger().info("BallPredictionNode initialized.")
 
@@ -68,11 +68,17 @@ class BallPredictionNode(Node):
         Timer callback to update all trackers.
         If projectile motion is confirmed, predict the landing state and publish it.
         """
+        # Prepare the message to publish
         landing_predictions = BallStateMulti()
-        for _, tracker in self.trackers.items():
+
+        # Update all trackers
+        for id, tracker in self.trackers.items():
             predicted_landing_state = tracker.advance_tracker()
             if tracker.projectile_motion_confirmed and predicted_landing_state is not None:
                 landing_predictions.landing_predictions.append(predicted_landing_state)
+                # Add the ID to the message
+                landing_predictions.landing_predictions[-1].id = id
+
         if len(landing_predictions.landing_predictions) > 0:
             self.landing_pub.publish(landing_predictions)
 
@@ -80,36 +86,51 @@ class BallPredictionNode(Node):
         self.cleanup_dead_trackers()
 
         # Log the number of active trackers
-        self.get_logger().info(f"Active trackers: {len(self.trackers)}", throttle_duration_sec=0.5)
+        # self.get_logger().info(f"Active trackers: {len(self.trackers)}", throttle_duration_sec=0.5)
 
 
     #########################################################################################################
     #                                          Utility Methods                                              #
     #########################################################################################################
 
+    def get_next_id(self) -> int:
+        """
+        Get the next available ID for a new tracker.
+
+        Returns:
+            int: The next available ID.
+        """
+        # If the current ID is the limit of uint32, throw an error
+        if self.next_id == 2**32 - 1:
+            raise OverflowError("ID limit reached. Cannot create more trackers.")
+
+        self.next_id += 1
+
+        return self.next_id
+
     def create_new_tracker(self, ground_height: float, initial_data=None):
         """
         Create a new BallTracker instance.
 
         Args:
-            instance: The instance number of the tracker.
             ground_height: The height of the ground in mm.
+            initial_data: Optional initial data to seed the tracker with.
         """
-        tracker_id = uuid.uuid4()
+        tracker_id = self.get_next_id()
         self.trackers[tracker_id] = BallTracker(self.timer_period, ground_height, logger=self.get_logger(), initial_data=initial_data, node=self)
 
-    def update_tracker_with_new_data(self, tracker_id: uuid.UUID, new_measurement: np.ndarray):
+    def update_tracker_with_new_data(self, tracker_id: int, new_measurement: np.ndarray):
         """
         Update an existing BallTracker instance with a new measurement.
 
         Args:
-            tracker_id: The UUID of the tracker to update.
+            tracker_id: The ID of the tracker to update.
             new_measurement: The new measurement to update the tracker with.
         """
         tracker = self.trackers[tracker_id]
         tracker.update_with_new_data(new_measurement)
 
-    def associate_data_with_tracker(self, new_position) -> Optional[uuid.UUID]:
+    def associate_data_with_tracker(self, new_position) -> Optional[int]:
         """
         Associate incoming data with an existing tracker, if possible.
 
