@@ -59,7 +59,7 @@ class BootState(MonitorState):
         self.on_exit(blackboard)
         if blackboard["error"] == []:
             blackboard["error"].append("Error detected during BootState")
-        return 'error'
+        return "error"
 
     #########################################################################################################
     #                                      Previous Session State                                           #
@@ -259,7 +259,7 @@ class GenericActiveState(MonitorState):
             msg_type=String,
             topic_name="active_command",
             # Note that all control modes must be included in the outcomes list
-            outcomes=["do_nothing", "return_to_standby_idle", "standby-active", "spacemouse", "shell"],
+            outcomes=["do_nothing", "return_to_standby_idle", "standby-active", "spacemouse", "shell", "catch_a_ball_node"],
             monitor_handler=self.handle_standby_command,
             msg_queue=10
         )
@@ -416,7 +416,7 @@ class RobotStateSynchronizer:
             return
 
         if self._blackboard["error"] != []:
-            self._node.get_logger().info(f"Error detected, notifying state machine: {self._blackboard['error']}")
+            self._node.get_logger().info(f'Error detected, notifying state machine: {self._blackboard["error"]}')
             self._state_machine.notify_error()
 
     def update_blackboard_with_errors(self, msg):
@@ -425,15 +425,15 @@ class RobotStateSynchronizer:
 
         # Update blackboard from the received state message
         for error in msg.error:
-            if error not in self._blackboard['error']: # Check that the error isn't already in the list
-                self._blackboard['error'].append(error)
+            if error not in self._blackboard["error"]: # Check that the error isn't already in the list
+                self._blackboard["error"].append(error)
                 blackboard_updated = True
         
         if blackboard_updated:
             self._node.get_logger().info("--------------------")
 
             # Log the updated blackboard with a new line for each field
-            self._node.get_logger().info(f"Updated blackboard with new error: {self._blackboard['error']}")
+            self._node.get_logger().info(f'Updated blackboard with new error: {self._blackboard["error"]}')
 
             self._node.get_logger().info("--------------------")
 
@@ -457,7 +457,7 @@ def main():
     blackboard["pose_offset_quat"] = Quaternion()
     blackboard["control_mode"] = "" # The current control mode of the robot
     blackboard["error"] = []
-    blackboard["available_control_modes"] = ["standby-active", "spacemouse", "shell"]
+    blackboard["available_control_modes"] = ["standby-active", "spacemouse", "shell", "catch_a_ball_node"]
 
     # Create and add states to the state machine
     state_machine = StateMachine(outcomes=[SUCCEED])
@@ -497,6 +497,7 @@ def main():
     state_machine.add_state("STANDBY_ACTIVE", GenericActiveState("standby-active"), transitions={
         "spacemouse": "SPACEMOUSE_CONTROL",
         "shell": "SHELL_CONTROL",
+        "catch_a_ball_node": "CATCH_A_BALL_NODE",
         "return_to_standby_idle": "STANDBY_IDLE",
         "standby-active": "STANDBY_ACTIVE",
         "do_nothing": "STANDBY_ACTIVE",
@@ -505,6 +506,7 @@ def main():
     state_machine.add_state("SPACEMOUSE_CONTROL", GenericActiveState("spacemouse"), transitions={
         "spacemouse": "SPACEMOUSE_CONTROL",
         "shell": "SHELL_CONTROL",
+        "catch_a_ball_node": "CATCH_A_BALL_NODE",
         "return_to_standby_idle": "STANDBY_IDLE",
         "standby-active": "STANDBY_ACTIVE",
         "do_nothing": "SPACEMOUSE_CONTROL",
@@ -513,12 +515,21 @@ def main():
     state_machine.add_state("SHELL_CONTROL", GenericActiveState("shell"), transitions={
         "spacemouse": "SPACEMOUSE_CONTROL",
         "shell": "SHELL_CONTROL",
+        "catch_a_ball_node": "CATCH_A_BALL_NODE",
         "return_to_standby_idle": "STANDBY_IDLE",
         "standby-active": "STANDBY_ACTIVE",
         "do_nothing": "SHELL_CONTROL",
         "error": "FAULT"
     })
-
+    state_machine.add_state("CATCH_A_BALL_NODE", GenericActiveState("catch_a_ball_node"), transitions={
+        "spacemouse": "SPACEMOUSE_CONTROL",
+        "shell": "SHELL_CONTROL",
+        "catch_a_ball_node": "CATCH_A_BALL_NODE",
+        "return_to_standby_idle": "STANDBY_IDLE",
+        "standby-active": "STANDBY_ACTIVE",
+        "do_nothing": "CATCH_A_BALL_NODE",
+        "error": "FAULT"
+    })
     state_machine.add_state("FAULT", FaultState(), transitions={
         TIMEOUT: "FAULT",
         "errors_cleared": "BOOT",
