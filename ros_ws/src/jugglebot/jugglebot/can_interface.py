@@ -1385,11 +1385,28 @@ class CANInterface:
                 # Clear any existing error flags
                 self.undervoltage_error = False
                 self.fatal_error = False
+                self.last_known_state['error'] = []
                 return
 
             # If there are any axes disarmed AND any axes are in CLOSED_LOOP_CONTROL mode (state 8), then report an error
             if any_disarmed and any_in_closed_loop_control:
                 self.fatal_error = True
+
+                # Update the last known state with the error and disarmed axes if it isn't already there
+                disarmed_axes = [axis_id for axis_id, motor in enumerate(self.motor_states) if motor.disarm_reason != 0]
+                disarmed_axes_message = f"Disarmed axes: {disarmed_axes}"
+                
+                # Check if an entry starting with "Disarmed axes:" already exists
+                existing_entry = next((entry for entry in self.last_known_state['error'] if entry.startswith("Disarmed axes:")), None)
+                
+                if existing_entry:
+                    # Remove the existing entry
+                    self.last_known_state['error'].remove(existing_entry)
+                
+                # Append the new disarmed axes message
+                self.last_known_state['error'].append(disarmed_axes_message)
+
+                # Log the error
                 self.ROS_logger.error(f"One or more axes are disarmed while in CLOSED_LOOP_CONTROL mode!", throttle_duration_sec=1.0)
             
             # If there are any active errors, set the flag
