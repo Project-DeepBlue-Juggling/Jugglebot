@@ -152,7 +152,6 @@ class LevelPlatformNode(Node):
             result.success = False
             return result
 
-
     def feedback_callback(self, feedback_msg):
         '''Handles the feedback from the action server'''
         tiltX, tiltY = feedback_msg.feedback.tilt
