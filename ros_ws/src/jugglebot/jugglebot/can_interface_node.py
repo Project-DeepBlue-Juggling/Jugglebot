@@ -139,7 +139,7 @@ class CanInterfaceNode(Node):
             legs_closed_loop = all(state == 8 for state in latest_states[:6])
             hand_closed_loop = latest_states[6] == 8
 
-            if msg.data == 'spacemouse' or msg.data == 'level_platform_node':
+            if msg.data == 'spacemouse' or msg.data == 'level_platform_node' or msg.data == 'catch_a_ball_node':
                 self.get_logger().info(f'Control mode: {msg.data} enabled')
 
                 # Put the legs into CLOSED_LOOP_CONTROL mode if they aren't already

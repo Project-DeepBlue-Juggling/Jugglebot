@@ -37,8 +37,9 @@ def generate_launch_description():
         'sp_ik',
         'robot_geometry',
         'level_platform_node',
-        # 'mocap_interface_node',
-        # 'ball_prediction_node',
+        'mocap_interface_node',
+        'ball_prediction_node',
+        'catch_a_ball_node',
     ]
     jugglebot_nodes = [
         Node(
