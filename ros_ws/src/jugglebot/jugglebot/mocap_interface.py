@@ -11,7 +11,7 @@ class MocapInterface:
     Class to track a rigid body using QTM data.
     """
 
-    def __init__(self, host: str="192.168.20.6", port: int=22223):
+    def __init__(self, host: str="192.168.20.6", port: int=22223, logger=None):
         """
         Initialize the RigidBodyTracker.
 
@@ -21,6 +21,7 @@ class MocapInterface:
         """
         self.host = host
         self.port = port
+        self.logger = logger
 
         # Known positions of the markers in the body frame (from the origin to the markers)
         self.base_marker_positions = np.array([
@@ -67,18 +68,32 @@ class MocapInterface:
         """
         Asynchronously connect to QTM and start streaming data.
         """
-        self.connection = await qtm_rt.connect(self.host, port=self.port)
-        if self.connection is None:
-            print("Failed to connect to QTM.")
-            return
+        try:
+            self.connection = await qtm_rt.connect(self.host, port=self.port, timeout=5.0)
+            if self.connection is None:
+                self.logger.info("Failed to connect to QTM.")
+                return
 
-        print("Connected to QTM.")
+            self.logger.info("Connected to QTM.")
 
-        # Start streaming frames with the required components
-        await self.connection.stream_frames(
-            components=["3dres", "3dnolabelsres"],
-            on_packet=self.on_packet
-        )
+            # Start streaming frames
+            await self.start_streaming()
+        except asyncio.TimeoutError:
+            self.logger.error("Connection to QTM timed out.")
+        except Exception as e:
+            self.logger.error(f"Error connecting to QTM: {e}")
+
+    async def start_streaming(self):
+        """
+        Start streaming frames with the required components.
+        """
+        try:
+            await self.connection.stream_frames(
+                components=["3dres", "3dnolabelsres"],
+                on_packet=self.on_packet
+            )
+        except Exception as e:
+            self.logger.error(f"Error starting frame streaming: {e}")
 
     def on_packet(self, packet):
         """
@@ -149,13 +164,13 @@ class MocapInterface:
                     )
                     # Update if all markers have moved more than the threshold
                     if np.all(displacements > self.position_threshold):
-                        print("Base has moved! Updating transformation.")
+                        self.logger.info("Base has moved! Updating transformation.")
                         return True
                     else:
                         return False
                 else:
                     # Number of markers changed; update transformation
-                    print("Number of base markers changed! Updating transformation.")
+                    self.logger.info("Number of base markers changed! Updating transformation.")
                     return True
             else:
                 # First time or missing markers; update transformation
@@ -177,7 +192,7 @@ class MocapInterface:
                 # Store current markers for future comparison
                 self.previous_labelled_markers = self.labelled_markers.copy()
             else:
-                print("Not enough labelled markers to compute transformation.")
+                self.logger.info("Not enough labelled markers to compute transformation.")
 
     def compute_transformation(
         self, body_markers: np.ndarray, world_markers: np.ndarray
@@ -238,13 +253,22 @@ class MocapInterface:
     def transform_unlabelled_markers(self):
         """
         Transform unlabelled markers from world frame to body frame.
+        Then rotate 90 degrees about the z axis to align with the actual robot base frame.
+        This is necessary because the QTM frame has X pointing forward, while the robot has Y pointing forward.
         """
         with self.data_lock:
             if len(self.unlabelled_markers) > 0:
                 positions_world = self.unlabelled_markers[:, :3]
                 # Apply inverse transformation
                 positions_body = (self.R.T @ (positions_world - self.t).T).T
+                
+                # Rotate 90 degrees about z axis
+                rotation_matrix = np.array([[0, -1, 0], [1, 0, 0], [0, 0, 1]])
+                positions_body = (rotation_matrix @ positions_body.T).T
+
+                # Store transformed positions
                 self.unlabelled_markers[:, :3] = positions_body
+
                 # Store residuals
                 residuals = self.unlabelled_markers[:, 3]
                 self.residuals_unlabelled.extend(residuals.tolist())
