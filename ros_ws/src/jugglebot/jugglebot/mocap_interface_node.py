@@ -8,7 +8,7 @@ class MocapInterfaceNode(Node):
     def __init__(self):
         super().__init__('mocap_interface_node')
 
-        self.mocap_interface = MocapInterface()
+        self.mocap_interface = MocapInterface(logger=self.get_logger())
 
         # Initialize state variables
         self.shutdown_flag = False
