@@ -86,8 +86,8 @@ BO_ 11 Axis0_Set_Controller_Mode: 8 Master
  SG_ Control_Mode : 0|32@1+ (1,0) [0|0] ""  ODrive_Axis0
 
 BO_ 12 Axis0_Set_Input_Pos: 8 Master
- SG_ Torque_FF : 48|16@1- (0.001,0) [0|0] "Nm"  ODrive_Axis0
- SG_ Vel_FF : 32|16@1- (0.001,0) [0|0] "rev/s"  ODrive_Axis0
+ SG_ Torque_FF : 48|16@1- (0.01,0) [0|0] "Nm"  ODrive_Axis0
+ SG_ Vel_FF : 32|16@1- (0.01,0) [0|0] "rev/s"  ODrive_Axis0
  SG_ Input_Pos : 0|32@1+ (1,0) [0|0] "rev"  ODrive_Axis0
 
 BO_ 13 Axis0_Set_Input_Vel: 8 Master
@@ -199,8 +199,8 @@ BO_ 43 Axis1_Set_Controller_Mode: 8 Master
  SG_ Control_Mode : 0|32@1+ (1,0) [0|0] ""  ODrive_Axis1
 
 BO_ 44 Axis1_Set_Input_Pos: 8 Master
- SG_ Torque_FF : 48|16@1- (0.001,0) [0|0] "Nm"  ODrive_Axis1
- SG_ Vel_FF : 32|16@1- (0.001,0) [0|0] "rev/s"  ODrive_Axis1
+ SG_ Torque_FF : 48|16@1- (0.01,0) [0|0] "Nm"  ODrive_Axis1
+ SG_ Vel_FF : 32|16@1- (0.01,0) [0|0] "rev/s"  ODrive_Axis1
  SG_ Input_Pos : 0|32@1+ (1,0) [0|0] "rev"  ODrive_Axis1
 
 BO_ 45 Axis1_Set_Input_Vel: 8 Master
@@ -312,8 +312,8 @@ BO_ 75 Axis2_Set_Controller_Mode: 8 Master
  SG_ Control_Mode : 0|32@1+ (1,0) [0|0] ""  ODrive_Axis2
 
 BO_ 76 Axis2_Set_Input_Pos: 8 Master
- SG_ Torque_FF : 48|16@1- (0.001,0) [0|0] "Nm"  ODrive_Axis2
- SG_ Vel_FF : 32|16@1- (0.001,0) [0|0] "rev/s"  ODrive_Axis2
+ SG_ Torque_FF : 48|16@1- (0.01,0) [0|0] "Nm"  ODrive_Axis2
+ SG_ Vel_FF : 32|16@1- (0.01,0) [0|0] "rev/s"  ODrive_Axis2
  SG_ Input_Pos : 0|32@1+ (1,0) [0|0] "rev"  ODrive_Axis2
 
 BO_ 77 Axis2_Set_Input_Vel: 8 Master
@@ -425,8 +425,8 @@ BO_ 107 Axis3_Set_Controller_Mode: 8 Master
  SG_ Control_Mode : 0|32@1+ (1,0) [0|0] ""  ODrive_Axis3
 
 BO_ 108 Axis3_Set_Input_Pos: 8 Master
- SG_ Torque_FF : 48|16@1- (0.001,0) [0|0] "Nm"  ODrive_Axis3
- SG_ Vel_FF : 32|16@1- (0.001,0) [0|0] "rev/s"  ODrive_Axis3
+ SG_ Torque_FF : 48|16@1- (0.01,0) [0|0] "Nm"  ODrive_Axis3
+ SG_ Vel_FF : 32|16@1- (0.01,0) [0|0] "rev/s"  ODrive_Axis3
  SG_ Input_Pos : 0|32@1+ (1,0) [0|0] "rev"  ODrive_Axis3
 
 BO_ 109 Axis3_Set_Input_Vel: 8 Master
@@ -538,8 +538,8 @@ BO_ 139 Axis4_Set_Controller_Mode: 8 Master
  SG_ Control_Mode : 0|32@1+ (1,0) [0|0] ""  ODrive_Axis4
 
 BO_ 140 Axis4_Set_Input_Pos: 8 Master
- SG_ Torque_FF : 48|16@1- (0.001,0) [0|0] "Nm"  ODrive_Axis4
- SG_ Vel_FF : 32|16@1- (0.001,0) [0|0] "rev/s"  ODrive_Axis4
+ SG_ Torque_FF : 48|16@1- (0.01,0) [0|0] "Nm"  ODrive_Axis4
+ SG_ Vel_FF : 32|16@1- (0.01,0) [0|0] "rev/s"  ODrive_Axis4
  SG_ Input_Pos : 0|32@1+ (1,0) [0|0] "rev"  ODrive_Axis4
 
 BO_ 141 Axis4_Set_Input_Vel: 8 Master
@@ -651,8 +651,8 @@ BO_ 171 Axis5_Set_Controller_Mode: 8 Master
  SG_ Control_Mode : 0|32@1+ (1,0) [0|0] ""  ODrive_Axis5
 
 BO_ 172 Axis5_Set_Input_Pos: 8 Master
- SG_ Torque_FF : 48|16@1- (0.001,0) [0|0] "Nm"  ODrive_Axis5
- SG_ Vel_FF : 32|16@1- (0.001,0) [0|0] "rev/s"  ODrive_Axis5
+ SG_ Torque_FF : 48|16@1- (0.01,0) [0|0] "Nm"  ODrive_Axis5
+ SG_ Vel_FF : 32|16@1- (0.01,0) [0|0] "rev/s"  ODrive_Axis5
  SG_ Input_Pos : 0|32@1+ (1,0) [0|0] "rev"  ODrive_Axis5
 
 BO_ 173 Axis5_Set_Input_Vel: 8 Master
@@ -764,8 +764,8 @@ BO_ 203 Axis6_Set_Controller_Mode: 8 Master
  SG_ Control_Mode : 0|32@1+ (1,0) [0|0] ""  ODrive_Axis6
 
 BO_ 204 Axis6_Set_Input_Pos: 8 Master
- SG_ Torque_FF : 48|16@1- (0.001,0) [0|0] "Nm"  ODrive_Axis6
- SG_ Vel_FF : 32|16@1- (0.001,0) [0|0] "rev/s"  ODrive_Axis6
+ SG_ Torque_FF : 48|16@1- (0.01,0) [0|0] "Nm"  ODrive_Axis6
+ SG_ Vel_FF : 32|16@1- (0.01,0) [0|0] "rev/s"  ODrive_Axis6
  SG_ Input_Pos : 0|32@1+ (1,0) [0|0] "rev"  ODrive_Axis6
 
 BO_ 205 Axis6_Set_Input_Vel: 8 Master
@@ -877,8 +877,8 @@ BO_ 235 Axis7_Set_Controller_Mode: 8 Master
  SG_ Control_Mode : 0|32@1+ (1,0) [0|0] ""  ODrive_Axis7
 
 BO_ 236 Axis7_Set_Input_Pos: 8 Master
- SG_ Torque_FF : 48|16@1- (0.001,0) [0|0] "Nm"  ODrive_Axis7
- SG_ Vel_FF : 32|16@1- (0.001,0) [0|0] "rev/s"  ODrive_Axis7
+ SG_ Torque_FF : 48|16@1- (0.01,0) [0|0] "Nm"  ODrive_Axis7
+ SG_ Vel_FF : 32|16@1- (0.01,0) [0|0] "rev/s"  ODrive_Axis7
  SG_ Input_Pos : 0|32@1+ (1,0) [0|0] "rev"  ODrive_Axis7
 
 BO_ 237 Axis7_Set_Input_Vel: 8 Master
