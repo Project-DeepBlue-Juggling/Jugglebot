@@ -30,7 +30,7 @@ class MocapInterface:
             [-172.27, 400.22, -73.30],
             [172.27, 400.22, -75.10],
             [151.55, 87.50, -73.80],
-            [432.73, -50.92, -75.80]
+            [383.49, -42.23, -70.70]
         ])
 
         # Current transformation from body to world frame
