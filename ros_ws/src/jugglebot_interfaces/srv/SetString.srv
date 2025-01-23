@@ -1,0 +1,6 @@
+# For setting a string. Useful for eg. setting ODrive state
+
+string data    # The data to be sent.
+---
+bool success   # Was this value received and processed without issue?
+string message # Any relevant message to be sent back to the sender?

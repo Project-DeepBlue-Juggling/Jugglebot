@@ -32,9 +32,11 @@ setup(
             'level_platform_node = jugglebot.level_platform_node:main',
             'mocap_interface_node = jugglebot.mocap_interface_node:main',
             'ball_prediction_node = jugglebot.ball_prediction_node:main',
-            'catch_a_ball_node = jugglebot.catch_a_ball_node:main',
+            'catch_thrown_ball_node = jugglebot.catch_thrown_ball_node:main',
+            'catch_dropped_ball_node = jugglebot.catch_dropped_ball_node:main',
             'mocap_visualizer_node = jugglebot.mocap_visualizer_node:main',
             'landing_analysis_node = jugglebot.landing_analysis_node:main',
+            'hand_testing_node = jugglebot.hand_testing_node:main',
         ],
     },
 )

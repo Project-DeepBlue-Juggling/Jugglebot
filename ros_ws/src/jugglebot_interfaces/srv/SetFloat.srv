@@ -1,0 +1,7 @@
+# For setting a single float value
+# Useful for sending a throw height etc.
+
+float32 data   # The data to be sent.
+---
+bool success   # Was this value received and processed without issue?
+string message # Any relevant message to be sent back to the sender?
