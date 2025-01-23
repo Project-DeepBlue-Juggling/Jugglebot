@@ -14,6 +14,43 @@ from jugglebot_interfaces.action import HomeMotors, LevelPlatform
 import time
 
 #########################################################################################################
+#                                        Set up Active State Transitions                                #
+#########################################################################################################
+"""
+To add a new active state, we simply need to add the mode name and accompanying outcome to the ACTIVE_STATE_OUTCOMES dictionary.
+"""
+# Define the active modes (outcome: mode_name). NOTE that the outcome must be a different string from the mode_name. (case insensitive)
+ACTIVE_STATE_OUTCOMES = {
+    "standby_active_cmd": "STANDBY_ACTIVE",
+    "spacemouse_cmd": "SPACEMOUSE",
+    "shell_cmd": "SHELL",
+    "catch_thrown_ball_node_cmd": "CATCH_THROWN_BALL_NODE",
+    "catch_dropped_ball_node_cmd": "CATCH_DROPPED_BALL_NODE"
+}
+
+def build_active_state_transitions(current_mode: str):
+    """
+    Returns a transitions dict for the given mode.
+    eg. if current_mode='SPACEMOUSE', we will allow
+    transitions to 'SHELL', 'STANDBY_ACTIVE' etc.
+    """
+
+    transitions = {}
+    # Include the generic transitions
+    transitions["return_to_standby_idle"] = "STANDBY_IDLE"
+    transitions["error"] = "FAULT"
+
+    # Now include the active state transitions
+    for outcome_str, target_state in ACTIVE_STATE_OUTCOMES.items():
+        # If we are in the same state, remain. Otherwise, transition to the target state
+        if target_state == current_mode:
+            transitions[outcome_str] = current_mode
+        else:
+            transitions[outcome_str] = target_state
+    
+    return transitions
+
+#########################################################################################################
 #                                               Define States                                           #
 #########################################################################################################
 
@@ -169,13 +206,41 @@ class StandbyIdleState(MonitorState):
             msg_queue=10
         )
 
+        # Initialize a service client to request to (de)activate the robot
+        self._activate_deactivate_client = self._node.create_client(ActivateOrDeactivate, "activate_or_deactivate")
+
+    def on_enter(self, blackboard, previous_state = None):
+        # If the previous state was any of the active states, or the levelling state, deactivate the robot
+        if (previous_state in ACTIVE_STATE_OUTCOMES.values() or 
+            previous_state == "LEVEL_PLATFORM"):
+            # Submit a request to the can_interface_node to deactivate the robot
+            request = ActivateOrDeactivate.Request()
+            request.command = "deactivate"
+            future = self._activate_deactivate_client.call_async(request)
+            future.add_done_callback(self.activate_deactivate_response_callback)
+
+    def activate_deactivate_response_callback(self, future):
+        """
+        Handle the response from the activate/deactivate service.
+        """
+        try:
+            response = future.result()
+            self._node.get_logger().info(f"{response.message}")
+
+            if not response.success:
+                self.blackboard["error"].append("Error while deactivating the robot when entering STANDBY_IDLE")
+                return "error"
+            
+        except Exception as e:
+            self._node.get_logger().error(f"Service call failed: {e}")
+
     def handle_standby_command(self, blackboard, msg):
         # If msg.data is one of the outcomes of this state, return that outcome
         if msg.data in self.get_outcomes():
             return msg.data
 
         else:
-            self._node.get_logger().error(f"Unknown command received: {msg.data}. Available commands: 'activate_robot'")
+            self._node.get_logger().error(f"Unknown command received: {msg.data}. Available commands: 'activate_robot', 'level_platform'")
             return "do_nothing"
 
 # Define the LEVELLING_PLATFORM State
@@ -192,46 +257,17 @@ class LevellingPlatformState(ActionState):
         # Create a publisher for the control mode
         self._control_mode_publisher = self._node.create_publisher(String, "control_mode_topic", 10)
 
-        # Create a client for the activate_or_deactivate service
-        self._activate_deactivate_client = self._node.create_client(ActivateOrDeactivate, "activate_or_deactivate")
-
     def on_enter(self, blackboard, previous_state = None):
         # Publish the control mode to the control_mode_topic
         control_mode_msg = String()
-        control_mode_msg.data = "level_platform_node"
+        control_mode_msg.data = "LEVEL_PLATFORM_NODE"
         self._control_mode_publisher.publish(control_mode_msg)
 
-        # Submit a request to can_interface_node to activate the robot
-        request = ActivateOrDeactivate.Request()
-        request.command = "activate"
-        future = self._activate_deactivate_client.call_async(request)
-        future.add_done_callback(self.activate_deactivate_response_callback)
-
     def on_exit(self, blackboard):
-        # Submit a request to the can_interface_node to deactivate the robot
-        request = ActivateOrDeactivate.Request()
-        request.command = "deactivate"
-        future = self._activate_deactivate_client.call_async(request)
-        future.add_done_callback(self.activate_deactivate_response_callback)
-
         # Publish an empty control mode to revoke all control
         empty_control_mode_msg = String()
         empty_control_mode_msg.data = ""
         self._control_mode_publisher.publish(empty_control_mode_msg)
-
-    def activate_deactivate_response_callback(self, future):
-        """
-        Handle the response from the activate/deactivate service.
-        """
-        try:
-            response = future.result()
-            self._node.get_logger().info(f"{response.message}")
-
-            if not response.success:
-                return "CANCEL"
-            
-        except Exception as e:
-            self._node.get_logger().error(f"Service call failed: {e}")
 
     def create_level_goal(self, blackboard):
         # Ensure the action server is available before creating the goal
@@ -259,7 +295,7 @@ class GenericActiveState(MonitorState):
             msg_type=String,
             topic_name="active_command",
             # Note that all control modes must be included in the outcomes list
-            outcomes=["do_nothing", "return_to_standby_idle", "standby-active", "spacemouse", "shell", "catch_a_ball_node"],
+            outcomes=["return_to_standby_idle"] + list(ACTIVE_STATE_OUTCOMES.keys()),
             monitor_handler=self.handle_standby_command,
             msg_queue=10
         )
@@ -349,9 +385,6 @@ class GenericActiveState(MonitorState):
             self.deactivate_on_exit = True
             return "return_to_standby_idle"
         
-        elif msg.data == self.control_mode_name:
-            return "do_nothing"
-        
         elif msg.data in blackboard["available_control_modes"]:
             blackboard["control_mode"] = msg.data
             return msg.data
@@ -368,8 +401,16 @@ class FaultState(State):
             outcomes=["timeout", "errors_cleared"],
         )
 
+        # Create a publisher for the control mode
+        self._control_mode_publisher = self._node.create_publisher(String, "control_mode_topic", 10)
+
     def on_enter(self, blackboard, previous_state):
         self._node.get_logger().error(f"Error detected! Current state: {blackboard}. Previous state: {previous_state}")
+
+        # Publish an ERROR control mode to revoke all control
+        control_mode_msg = String()
+        control_mode_msg.data = "ERROR"
+        self._control_mode_publisher.publish(control_mode_msg)
 
     def execute(self, blackboard):
         """Check for errors and return to normal state machine operation once errors are cleared."""
@@ -437,7 +478,6 @@ class RobotStateSynchronizer:
 
             self._node.get_logger().info("--------------------")
 
-        
 #########################################################################################################
 #                                                    Main                                               #
 #########################################################################################################
@@ -457,7 +497,7 @@ def main():
     blackboard["pose_offset_quat"] = Quaternion()
     blackboard["control_mode"] = "" # The current control mode of the robot
     blackboard["error"] = []
-    blackboard["available_control_modes"] = ["standby-active", "spacemouse", "shell", "catch_a_ball_node"]
+    blackboard["available_control_modes"] = list(ACTIVE_STATE_OUTCOMES.keys())
 
     # Create and add states to the state machine
     state_machine = StateMachine(outcomes=[SUCCEED])
@@ -494,42 +534,22 @@ def main():
         "do_nothing": "STANDBY_IDLE",
         "error": "FAULT"
     })
-    state_machine.add_state("STANDBY_ACTIVE", GenericActiveState("standby-active"), transitions={
-        "spacemouse": "SPACEMOUSE_CONTROL",
-        "shell": "SHELL_CONTROL",
-        "catch_a_ball_node": "CATCH_A_BALL_NODE",
-        "return_to_standby_idle": "STANDBY_IDLE",
-        "standby-active": "STANDBY_ACTIVE",
-        "do_nothing": "STANDBY_ACTIVE",
-        "error": "FAULT"
-    })
-    state_machine.add_state("SPACEMOUSE_CONTROL", GenericActiveState("spacemouse"), transitions={
-        "spacemouse": "SPACEMOUSE_CONTROL",
-        "shell": "SHELL_CONTROL",
-        "catch_a_ball_node": "CATCH_A_BALL_NODE",
-        "return_to_standby_idle": "STANDBY_IDLE",
-        "standby-active": "STANDBY_ACTIVE",
-        "do_nothing": "SPACEMOUSE_CONTROL",
-        "error": "FAULT"
-    })
-    state_machine.add_state("SHELL_CONTROL", GenericActiveState("shell"), transitions={
-        "spacemouse": "SPACEMOUSE_CONTROL",
-        "shell": "SHELL_CONTROL",
-        "catch_a_ball_node": "CATCH_A_BALL_NODE",
-        "return_to_standby_idle": "STANDBY_IDLE",
-        "standby-active": "STANDBY_ACTIVE",
-        "do_nothing": "SHELL_CONTROL",
-        "error": "FAULT"
-    })
-    state_machine.add_state("CATCH_A_BALL_NODE", GenericActiveState("catch_a_ball_node"), transitions={
-        "spacemouse": "SPACEMOUSE_CONTROL",
-        "shell": "SHELL_CONTROL",
-        "catch_a_ball_node": "CATCH_A_BALL_NODE",
-        "return_to_standby_idle": "STANDBY_IDLE",
-        "standby-active": "STANDBY_ACTIVE",
-        "do_nothing": "CATCH_A_BALL_NODE",
-        "error": "FAULT"
-    })
+
+    # Add the active states
+    for mode_name in ACTIVE_STATE_OUTCOMES.values():
+        # Create a new active state with the mode name (in uppercase)
+        state_label = mode_name
+
+        # Create the active state
+        new_state = GenericActiveState(mode_name)
+
+        # Build the transitions for the active state
+        transitions = build_active_state_transitions(mode_name)
+
+        # Add the active state to the state machine
+        state_machine.add_state(state_label, new_state, transitions=transitions)
+
+    # Add the FAULT state
     state_machine.add_state("FAULT", FaultState(), transitions={
         TIMEOUT: "FAULT",
         "errors_cleared": "BOOT",
