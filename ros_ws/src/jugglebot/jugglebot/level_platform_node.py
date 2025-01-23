@@ -206,7 +206,7 @@ class LevelPlatformNode(Node):
 
         # Construct the pose message
         message = PlatformPoseMessage()
-        message.publisher = 'level_platform_node'
+        message.publisher = 'LEVEL_PLATFORM_NODE'
         message.pose_stamped.pose.position.x = 0.0
         message.pose_stamped.pose.position.y = 0.0
         message.pose_stamped.pose.position.z = 170.0
