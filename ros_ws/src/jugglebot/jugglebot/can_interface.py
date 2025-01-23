@@ -74,9 +74,6 @@ class CANInterface:
     }
 
     ARBITRARY_PARAMETER_IDS = {
-        "input_pos"    : 390,
-        "input_vel"    : 391,
-        "input_torque" : 392,
         "commutation_mapper.pos_abs"  : 488, # NaN until encoder search is complete
     }
 
@@ -91,10 +88,10 @@ class CANInterface:
     _HAND_MOTOR_MAX_POSITION = 11.1 # Revs
 
     # Set the limits for trapezoidal trajectory control (used only for the legs)
-    _DEFAULT_TRAP_TRAJ_LIMITS = {'vel_limit': 20.0, 'acc_limit': 10.0, 'dec_limit': 8.0} # rev/s, rev/s^2
+    _DEFAULT_TRAP_TRAJ_LIMITS = {'vel_limit': 15.0, 'acc_limit': 30.0, 'dec_limit': 30.0} # rev/s, rev/s^2
     # Set the absolute limits for the motors
     _DEFAULT_VEL_CURR_LIMITS = {'leg_vel_limit': 50.0, 'leg_curr_limit': 20.0, 
-                                'hand_vel_limit': 100.0, 'hand_curr_limit': 50.0} # rev/s, A
+                                'hand_vel_limit': 1000.0, 'hand_curr_limit': 50.0} # rev/s, A
 
     def __init__(
         self,
@@ -189,7 +186,9 @@ class CANInterface:
         # Initialize the last known platform tilt offset. This is useful in case we need to run the platform levelling again
         self.last_platform_tilt_offset = quaternion.quaternion(1, 0, 0, 0)
 
-        # Initialize error logging parameters
+        # Initialize error-related parameters
+        self.max_reset_attempts_after_soft_error = 1 # Number of times to try resetting after encountering a soft error before throwing a fatal error
+        self.reset_attempts_after_soft_error = 0 # Number of times the robot has tried to reset after encountering a soft error
         self._last_error_log_times = {} # Axis ID to error code to last log time
         self.error_log_throttle_duration_sec = 10.0 # Throttle duration for error logging. This is per axis, per error, so it doesn't
                                                     # need to be called often
@@ -206,7 +205,7 @@ class CANInterface:
                                      'dec_limit': self._DEFAULT_TRAP_TRAJ_LIMITS['dec_limit']}
 
         # Initialize default hand gains
-        self.default_hand_gains = {'pos_gain': 18.0, 'vel_gain': 0.007, 'vel_integrator_gain': 0.01}
+        self.default_hand_gains = {'pos_gain': 35.0, 'vel_gain': 0.007, 'vel_integrator_gain': 0.07}
 
         # Set up the CAN bus to establish communication with the robot
         self.setup_can_bus()
@@ -452,8 +451,8 @@ class CANInterface:
         self,
         axis_id: int,
         setpoint: float,
-        veL_ff: float = 0.0,
-        torque_ff: float = 0.0,
+        vel_ff: int = 0, # These are ints because that's what the ODrive uses
+        torque_ff: int = 0,
         min_position: float = 0.0
     ) -> None:
         """
@@ -462,7 +461,7 @@ class CANInterface:
         Args:
             axis_id (int): The axis ID to command.
             setpoint (float): The desired position setpoint in revolutions.
-            veL_ff (float, optional): The velocity feedforward term.
+            vel_ff (float, optional): The velocity feedforward term.
             torque_ff (float, optional): The torque feedforward term.
             min_position (float, optional): The minimum allowable position.
 
@@ -489,9 +488,12 @@ class CANInterface:
             if axis_id != 6:
                 setpoint = -setpoint
 
+            # Log the setpoing, vell_ff, and torque_ff
+            # self.ROS_logger.info(f"Position target set for axis {axis_id}: {setpoint:.4f} revs, Vel_FF = {vel_ff:.4f}, Torque_FF = {torque_ff:.4f}")
+
             data = self.db.encode_message(
                 f'Axis{axis_id}_Set_Input_Pos',
-                {'Input_Pos': setpoint, 'Vel_FF': veL_ff, 'Torque_FF': torque_ff}
+                {'Input_Pos': setpoint, 'Vel_FF': vel_ff, 'Torque_FF': torque_ff}
             )
 
             self._send_message(
@@ -500,7 +502,7 @@ class CANInterface:
                 data=data,
                 error_descriptor="position target"
             )
-            self.ROS_logger.debug(f"Position target set for axis {axis_id}: {setpoint:.2f} revs")
+            # self.ROS_logger.debug(f"Position target set for axis {axis_id}: {setpoint:.2f} revs")
         except Exception as e:
             self.ROS_logger.error(f"Failed to send position target to axis {axis_id}: {e}")
             raise
@@ -987,11 +989,24 @@ class CANInterface:
         """
         try:
             self.ROS_logger.info('Setting up ODrives with default values...')
+            # Set the default velocity and current absolute limits
             self.set_absolute_vel_curr_limits()
+
+            # Set the control and input mode for the legs
             self.set_legs_control_and_input_mode(control_mode='POSITION_CONTROL', input_mode='TRAP_TRAJ')
-            self.set_trap_traj_vel_acc_limits()
+
+            # Set the trapezoidal trajectory velocity and acceleration limits (for the legs)
+            self.set_all_legs_trap_traj_vel_acc_limits()
+
+            # Return the hand to POSITION_CONTROL mode
+            self.set_control_mode(axis_id=6, control_mode='POSITION_CONTROL', input_mode='PASSTHROUGH')
+
+            # Put all axes into the requested state
             self.set_requested_state_for_all_axes(requested_state=requested_state)
+
+            # Set the hand gains to the default values
             self.set_hand_gains(**self.default_hand_gains)
+
             self.ROS_logger.info('ODrives setup complete.')
         except Exception as e:
             self.ROS_logger.error(f"Failed to setup ODrives: {e}")
@@ -1101,7 +1116,7 @@ class CANInterface:
             self.ROS_logger.error(f"Failed to set control and input modes for the legs: {e}")
             raise
 
-    def set_trap_traj_vel_acc_limits(
+    def set_all_legs_trap_traj_vel_acc_limits(
     self,
     velocity_limit: Optional[float] = 0.0,
     acceleration_limit: Optional[float] = 0.0,
@@ -1379,6 +1394,11 @@ class CANInterface:
             no_disarm_reasons = all(motor.disarm_reason == 0 for motor in self.motor_states)
             any_disarmed = any(motor.disarm_reason != 0 for motor in self.motor_states)
             any_in_closed_loop_control = any(motor.current_state == 8 for motor in self.motor_states)
+
+            # Log these conditions
+            # self.ROS_logger.info(f"Axis: {axis_id}. Active errors: {active_errors}, Disarm reasons: {disarm_reason}, "
+            #                         f"No active errors: {no_active_errors}, No disarm reasons: {no_disarm_reasons}, "
+            #                         f"Any disarmed: {any_disarmed}, Any in closed loop control: {any_in_closed_loop_control}")
             
             # If there are no active errors and the disarm reason is 0 for all axes, there's nothing to report
             if no_active_errors and no_disarm_reasons:
@@ -1388,23 +1408,28 @@ class CANInterface:
                 self.last_known_state['error'] = []
                 return
 
+            # If there are any axes disarmed but no axes in CLOSED_LOOP_CONTROL, try clearing the errors
+            if any_disarmed and not any_in_closed_loop_control:
+                # Check that we haven't already tried clearing the errors
+                if self.reset_attempts_after_soft_error < self.max_reset_attempts_after_soft_error:
+                    try:
+                        self.clear_errors()
+                        # Wait a bit
+                        time.sleep(0.5)
+                        self.ROS_logger.info("Cleared errors due to disarmed axes.")
+                        self.reset_attempts_after_soft_error += 1
+                    except Exception as e:
+                        self.ROS_logger.error(f"Failed to clear errors: {e}")
+
+                else:
+                    self.ROS_logger.error("Exceeded the maximum number of reset attempts after soft error.", throttle_duration_sec=1.0)
+                    self.fatal_error = True
+                    self._update_state_with_disarm_errors()
+
             # If there are any axes disarmed AND any axes are in CLOSED_LOOP_CONTROL mode (state 8), then report an error
             if any_disarmed and any_in_closed_loop_control:
                 self.fatal_error = True
-
-                # Update the last known state with the error and disarmed axes if it isn't already there
-                disarmed_axes = [axis_id for axis_id, motor in enumerate(self.motor_states) if motor.disarm_reason != 0]
-                disarmed_axes_message = f"Disarmed axes: {disarmed_axes}"
-                
-                # Check if an entry starting with "Disarmed axes:" already exists
-                existing_entry = next((entry for entry in self.last_known_state['error'] if entry.startswith("Disarmed axes:")), None)
-                
-                if existing_entry:
-                    # Remove the existing entry
-                    self.last_known_state['error'].remove(existing_entry)
-                
-                # Append the new disarmed axes message
-                self.last_known_state['error'].append(disarmed_axes_message)
+                self._update_state_with_disarm_errors()
 
                 # Log the error
                 self.ROS_logger.error(f"One or more axes are disarmed while in CLOSED_LOOP_CONTROL mode!", throttle_duration_sec=1.0)
@@ -1470,11 +1495,15 @@ class CANInterface:
             # Start by unpacking the data, which is two 32-bit floats
             pos_estimate, vel_estimate = struct.unpack_from('<ff', data)
 
+            if axis_id < 6:
+                # Invert the position and velocity estimates for the legs since we want +ve to be upwards
+                pos_estimate = -pos_estimate
+                vel_estimate = -vel_estimate
+
             # Update the motor state with the encoder estimates. 
             with self._motor_states_lock:
-                # Invert the position and velocity estimates since we want +ve to be upwards
-                self.motor_states[axis_id].pos_estimate = -pos_estimate
-                self.motor_states[axis_id].vel_estimate = -vel_estimate
+                self.motor_states[axis_id].pos_estimate = pos_estimate
+                self.motor_states[axis_id].vel_estimate = vel_estimate
             
         except Exception as e:
             self.ROS_logger.error(f"Failed to handle encoder estimates for axis {axis_id}: {e}")
@@ -1857,6 +1886,23 @@ class CANInterface:
         quat.w = tilt_offset_quat.w
 
         return quat
+
+    def _update_state_with_disarm_errors(self):
+        """
+        Updates the last known state with the error and disarmed axes if it isn't already there.
+        """
+        disarmed_axes = [axis_id for axis_id, motor in enumerate(self.motor_states) if motor.disarm_reason != 0]
+        disarmed_axes_message = f"Disarmed axes: {disarmed_axes}"
+        
+        # Check if an entry starting with "Disarmed axes:" already exists
+        existing_entry = next((entry for entry in self.last_known_state['error'] if entry.startswith("Disarmed axes:")), None)
+        
+        if existing_entry:
+            # Remove the existing entry
+            self.last_known_state['error'].remove(existing_entry)
+        
+        # Append the new disarmed axes message
+        self.last_known_state['error'].append(disarmed_axes_message)
 
     def shutdown(self):
         """
