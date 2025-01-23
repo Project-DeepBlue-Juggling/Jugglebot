@@ -93,17 +93,17 @@ class SpaceMouseHandler(Node):
         pose_stamped.header.stamp = current_time
 
         message.pose_stamped = pose_stamped
-        message.publisher = 'spacemouse'
+        message.publisher = 'SPACEMOUSE'
 
         self.publisher_.publish(message)
 
     def control_mode_callback(self, msg):
         # If the incoming state calls for the spacemouse, enable it
-        if msg.data == 'spacemouse' and not self.spacemouse_enabled:
+        if msg.data == 'SPACEMOUSE' and not self.spacemouse_enabled:
             self.get_logger().info('Spacemouse enabled')
             self.spacemouse_enabled = True
 
-        elif msg.data != 'spacemouse' and self.spacemouse_enabled:
+        elif msg.data != 'SPACEMOUSE' and self.spacemouse_enabled:
             self.get_logger().info('Spacemouse disabled')
             self.spacemouse_enabled = False
     
