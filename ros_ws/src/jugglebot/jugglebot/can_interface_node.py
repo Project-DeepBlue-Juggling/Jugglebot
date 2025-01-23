@@ -8,9 +8,15 @@ from jugglebot_interfaces.msg import (
     SetMotorVelCurrLimitsMessage,
     SetTrapTrajLimitsMessage,
     HandTelemetryMessage,
-    RobotState
+    RobotState,
+    HandInputPosMsg
 )
-from jugglebot_interfaces.srv import ODriveCommandService, GetTiltReadingService, ActivateOrDeactivate
+from jugglebot_interfaces.srv import (
+    ODriveCommandService, 
+    GetTiltReadingService, 
+    ActivateOrDeactivate,
+    SetString
+)
 from jugglebot_interfaces.action import HomeMotors
 from std_msgs.msg import Float64MultiArray, String
 from std_srvs.srv import Trigger
@@ -31,29 +37,26 @@ class CanInterfaceNode(Node):
         self.encoder_search_service = self.create_service(Trigger, 'encoder_search', self.run_encoder_search)
         self.end_session_service = self.create_service(Trigger, 'end_session', self.end_session)
         self.odrive_command_service = self.create_service(
-            ODriveCommandService, 'odrive_command', self.odrive_command_callback
-        )
+            ODriveCommandService, 'odrive_command', self.odrive_command_callback)
         self.report_tilt_service = self.create_service(GetTiltReadingService, 'get_platform_tilt', self.report_tilt)
         self.gently_activate_or_deactivate_service = self.create_service(ActivateOrDeactivate,
                                                                         'activate_or_deactivate',
                                                                         self.activate_or_deactivate_callback)
+        self.set_hand_state_service = self.create_service(SetString, 'set_hand_state', self.set_hand_state_callback)
 
         #### Initialize actions ####
         self.home_robot_action = ActionServer(self, HomeMotors, 'home_motors', self.home_robot)
 
         #### Initialize subscribers ####
-        self.motor_pos_subscription = self.create_subscription(
-            Float64MultiArray, 'leg_lengths_topic', self.handle_movement, 10
-        )
-        self.motor_vel_curr_limits_subscription = self.create_subscription(
+        self.leg_pos_sub = self.create_subscription(Float64MultiArray, 'leg_lengths_topic', self.handle_platform_movement, 10)
+        self.hand_traj_sub = self.create_subscription(HandInputPosMsg, 'hand_trajectory', self.handle_hand_movement, 10)
+        self.motor_vel_curr_limits_sub = self.create_subscription(
             SetMotorVelCurrLimitsMessage, 'set_motor_vel_curr_limits', self.motor_vel_curr_limits_callback, 10
         )
-        self.motor_trap_traj_limits_subscription = self.create_subscription(
+        self.motor_trap_traj_limits_sub = self.create_subscription(
             SetTrapTrajLimitsMessage, 'set_leg_trap_traj_limits', self.motor_trap_traj_limits_callback, 10
         )
-        self.control_mode_subscription = self.create_subscription(
-            String, 'control_mode_topic', self.control_mode_callback, 10
-        )
+        self.control_mode_sub = self.create_subscription(String, 'control_mode_topic', self.control_mode_callback, 10)
 
         #### Initialize publishers ####
             # Hardware data publishers
@@ -66,10 +69,23 @@ class CanInterfaceNode(Node):
         self.legs_target_position = [None] * 6
         self.legs_target_reached = [False] * 6
 
+        # Initialize a dictionary for hand trajectory data
+        self.hand_traj_data = {
+            'cmd_time': [],
+            'pos': [],
+            'vel_ff': [],
+            'torque_ff': []
+        }
+
+        # Initialize a variable to track whether the robot was stowed due to an error
+        # This prevents the usual shutdown routine from attempting to stow the robot again
+        self.stowed_due_to_error = False
+
         # Initialize timers
         self.platform_target_reached_timer = self.create_timer(0.1, self.check_platform_target_reached_status)
         self.timer_canbus = self.create_timer(timer_period_sec=0.001, callback=self._poll_can_bus)
         self.robot_state_timer = self.create_timer(timer_period_sec=0.01, callback=self.get_and_publish_robot_state)
+        self.hand_traj_timer = self.create_timer(timer_period_sec=0.001, callback=self.hand_traj_timer_callback)
 
         # Initialize the number of axes
         self.num_axes = 7 # 6 leg motors + 1 hand motor
@@ -118,7 +134,7 @@ class CanInterfaceNode(Node):
             leg_acc_limit = msg.trap_acc_limit
             leg_dec_limit = msg.trap_dec_limit
 
-            self.can_handler.set_trap_traj_vel_acc_limits(
+            self.can_handler.set_all_legs_trap_traj_vel_acc_limits(
                 velocity_limit=leg_vel_limit,
                 acceleration_limit=leg_acc_limit,
                 deceleration_limit=leg_dec_limit,
@@ -139,7 +155,15 @@ class CanInterfaceNode(Node):
             legs_closed_loop = all(state == 8 for state in latest_states[:6])
             hand_closed_loop = latest_states[6] == 8
 
-            if msg.data == 'spacemouse' or msg.data == 'level_platform_node' or msg.data == 'catch_a_ball_node':
+            if msg.data == 'ERROR':
+                self.get_logger().error("Error state detected. Returning to stow position.")
+                self.gently_move_platform_to_setpoint(0.0, deactivating=True)
+                self.stowed_due_to_error = True
+
+            elif (msg.data == 'SPACEMOUSE' or 
+                msg.data == 'LEVEL_PLATFORM_NODE' or 
+                msg.data == 'CATCH_THROWN_BALL_NODE' or
+                msg.data == 'SHELL'):
                 self.get_logger().info(f'Control mode: {msg.data} enabled')
 
                 # Put the legs into CLOSED_LOOP_CONTROL mode if they aren't already
@@ -150,22 +174,18 @@ class CanInterfaceNode(Node):
                 if hand_closed_loop:
                     self.can_handler.set_requested_state(axis_id=6, requested_state='IDLE')
             
-            elif msg.data == 'shell':
-                # Put the legs into CLOSED_LOOP_CONTROL mode if they aren't already
-                if not legs_closed_loop:
-                    self.can_handler.set_requested_state_for_all_legs(requested_state='CLOSED_LOOP_CONTROL')
-
-                # Put the hand into IDLE mode since it isn't controlled by the shell (if it isn't already)
-                if hand_closed_loop:
-                    self.can_handler.set_requested_state(axis_id=6, requested_state='IDLE')
+            elif msg.data == 'CATCH_DROPPED_BALL_NODE':
+                # Put all axes into CLOSED_LOOP_CONTROL mode if they aren't already
+                if not legs_closed_loop or not hand_closed_loop:
+                    self.can_handler.set_requested_state_for_all_axes(requested_state='CLOSED_LOOP_CONTROL')
 
             elif msg.data == '':
                 # If no control mode is selected, do nothing
                 pass
 
             else:
-                self.get_logger().warning(f"Unknown control mode: {msg.data}. Putting all axes into IDLE.")
-                self.can_handler.set_requested_state_for_all_axes(requested_state='IDLE')
+                self.get_logger().warning(f"Unknown control mode: {msg.data}. Returning to stow position.")
+                self.gently_move_platform_to_setpoint(0.0, deactivating=True)
 
         except Exception as e:
             self.get_logger().error(f"Error in control_mode_callback: {e}")
@@ -213,8 +233,8 @@ class CanInterfaceNode(Node):
             self.get_logger().error(f"Error homing robot: {e}")
             goal_handle.abort()
 
-    def handle_movement(self, msg):
-        """Handle movement commands for the robot."""
+    def handle_platform_movement(self, msg):
+        """Handle movement commands for the platform (ie all 6 legs)"""
         try:
             # Extract the leg lengths
             motor_positions = msg.data
@@ -227,7 +247,63 @@ class CanInterfaceNode(Node):
                 # self.get_logger().debug(f'Motor {axis_id} commanded to setpoint {setpoint}')
 
         except Exception as e:
-            self.get_logger().error(f"Error in handle_movement: {e}")
+            self.get_logger().error(f"Error in handle_platform_movement: {e}")
+
+    def handle_hand_movement(self, msg):
+        """
+        Handle movement commands for the hand.
+        This command should be a trajectory command, which should consist of a list of 
+        command times, positions, velocity feedforward values, and torque feedforward values.
+        
+        These lists will then be saved to the hand_traj_data dictionary (overwriting any existing data).
+        The hand_traj_timer_callback will then send the next command in the trajectory at the appropriate time.
+        """
+        try:
+            # Check that the hand is in CLOSED_LOOP_CONTROL mode
+            if self.latest_axis_states()[6] != 8:
+                self.get_logger().warning("Hand is not in CLOSED_LOOP_CONTROL mode. Ignoring trajectory command.")
+                return
+
+            # Save the trajectory data to the dictionary
+            self.hand_traj_data['cmd_time'] = msg.time_cmd
+            self.hand_traj_data['pos'] = msg.input_pos
+            self.hand_traj_data['vel_ff'] = msg.vel_ff
+            self.hand_traj_data['torque_ff'] = msg.torque_ff
+
+        except Exception as e:
+            self.get_logger().error(f"Error in handle_hand_movement: {e}")
+
+    def hand_traj_timer_callback(self):
+        """Send the next hand trajectory command over the CAN bus if the time is appropriate to do so."""
+        try:
+            # If the trajectory data is empty, do nothing
+            if len(self.hand_traj_data['cmd_time']) == 0:
+                return
+            
+            # Get the current time
+            current_time = self.get_clock().now().nanoseconds / 1e9
+
+            # Put the trajectory in a more readable format
+            traj = self.hand_traj_data
+                    
+            # Next target time is cmd_time[0], but this needs to be converted to seconds
+            cmd_time = traj['cmd_time'][0].sec + traj['cmd_time'][0].nanosec / 1e9
+
+            if current_time >= cmd_time:
+                # Command the hand to the setpoint
+                input_pos = traj['pos'][0]
+                vel_ff = traj['vel_ff'][0]
+                torque_ff = traj['torque_ff'][0]
+
+                self.can_handler.send_position_target(axis_id=6, setpoint=input_pos, vel_ff=vel_ff, torque_ff=torque_ff)
+                # self.get_logger().info(f'Hand commanded: setpoint={input_pos:.4f}, vel_ff={vel_ff:.4f}, torque_ff={torque_ff:.4f} at time {current_time:.4f}')
+
+                # Remove the first element from the trajectory data
+                for key in ('cmd_time', 'pos', 'vel_ff', 'torque_ff'):
+                    traj[key].pop(0)
+
+        except Exception as e:
+            self.get_logger().error(f"Error in hand_traj_timer_callback: {e}")
 
     def activate_or_deactivate_callback(self, request, response):
         """
@@ -275,15 +351,15 @@ class CanInterfaceNode(Node):
             deactivating: Whether the robot is being deactivated (True) or activated (False)
         """
         try:
-            # If deactivating and all axes are already in IDLE mode, with all legs at a position less than 0.1 revs, leave them as-is
-            if (deactivating and self.all_axes_in_state(target_state=1)):
+            # If deactivating and all legs are already in IDLE mode, with all legs at a position less than 0.1 revs, leave them as-is
+            if (deactivating and self.all_legs_in_state(target_state=1)):
                 latest_motor_positions = self.latest_motor_positions() 
                 if all(pos < 0.1 for pos in latest_motor_positions[:6]):
-                    self.get_logger().info("Robot is already deactivated. No need to move.")
+                    self.get_logger().info("Legs are already deactivated. No need to move.")
                     return True
 
-            # Otherwise, ensure that the legs are in CLOSED_LOOP_CONTROL mode (8)
-            if not self.all_axes_in_state(target_state=8):
+            # Otherwise, ensure that the legs are in CLOSED_LOOP_CONTROL mode (8) so that we can move them to the setpoint
+            if not self.all_legs_in_state(target_state=8):
                 self.get_logger().info("Putting all axes into CLOSED_LOOP_CONTROL mode.")
                 self.can_handler.set_requested_state_for_all_legs(requested_state='CLOSED_LOOP_CONTROL')
 
@@ -513,7 +589,7 @@ class CanInterfaceNode(Node):
         """Get the latest axis states."""
         return [motor.current_state for motor in self.can_handler.last_motor_states]
     
-    # Check is all motors are in a chosen specific state
+    # Check whether all motors are in a chosen specific state
     def all_axes_in_state(self, target_state: int):
         """Check if all axes are in the specific state."""
         return all(motor.current_state == target_state for motor in self.can_handler.last_motor_states)
@@ -522,6 +598,10 @@ class CanInterfaceNode(Node):
         """Check if all axes have completed their trajectories."""
         return all(motor.trajectory_done for motor in self.can_handler.last_motor_states)
     
+    def all_legs_in_state(self, target_state: int):
+        """Check if all legs are in the specific state."""
+        return all(motor.current_state == target_state for motor in self.can_handler.last_motor_states[:6])
+
     def latest_motor_positions(self):
         """Get the latest motor positions."""
         return [motor.pos_estimate for motor in self.can_handler.last_motor_states]
@@ -534,6 +614,25 @@ class CanInterfaceNode(Node):
         """Get the latest motor IQs."""
         return [motor.iq_measured for motor in self.can_handler.last_motor_states]
 
+    def set_hand_state_callback(self, request, response):
+        """Service callback to set the hand state."""
+        try:
+            # Extract the hand state from the request
+            hand_state = request.data
+
+            # Put the hand into the requested state
+            self.can_handler.set_requested_state(axis_id=6, requested_state=hand_state)
+
+            response.success = True
+            response.message = f"Hand state set to {hand_state}"
+            return response
+
+        except Exception as e:
+            self.get_logger().error(f"Error setting hand state: {e}")
+            response.success = False
+            response.message = f"Error setting hand state: {e}"
+            return response
+
     #########################################################################################################
     #                                          Utility Functions                                            #
     #########################################################################################################
@@ -542,7 +641,10 @@ class CanInterfaceNode(Node):
         """Handle node shutdown."""
         self.get_logger().info("Shutting down CanInterfaceNode...")
         try:
-            self.gently_move_platform_to_setpoint(0.0, deactivating=True) # Deactivate the robot
+            if not self.stowed_due_to_error:
+                self.gently_move_platform_to_setpoint(0.0, deactivating=True) # Deactivate the robot
+    
+            self.can_handler.set_requested_state(axis_id=6, requested_state='IDLE') # Put the hand into IDLE mode
             self.can_handler.shutdown()
         except Exception as e:
             self.get_logger().error(f"Error during node shutdown: {e}")
@@ -554,7 +656,6 @@ class CanInterfaceNode(Node):
         response.message = "Session ended. Shutting down node."
         self.shutdown_flag = True
         return response
-
 
 def main(args=None):
     rclpy.init(args=args)
