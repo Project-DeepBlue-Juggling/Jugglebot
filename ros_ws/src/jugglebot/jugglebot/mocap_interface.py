@@ -11,12 +11,12 @@ class MocapInterface:
     Class to track a rigid body using QTM data.
     """
 
-    def __init__(self, host: str="192.168.20.6", port: int=22223, logger=None):
+    def __init__(self, host: str="192.168.20.20", port: int=22223, logger=None):
         """
         Initialize the RigidBodyTracker.
 
         Parameters:
-        - host: IP address of the QTM server.
+        - host: IP address of the QTM server. (ie. the IP address of the host PC)
         - port: Port to connect to QTM.
         """
         self.host = host
@@ -164,13 +164,13 @@ class MocapInterface:
                     )
                     # Update if all markers have moved more than the threshold
                     if np.all(displacements > self.position_threshold):
-                        self.logger.info("Base has moved! Updating transformation.")
+                        self.logger.info("Base has moved! Updating transformation.", throttle_duration_sec=0.5)
                         return True
                     else:
                         return False
                 else:
                     # Number of markers changed; update transformation
-                    self.logger.info("Number of base markers changed! Updating transformation.")
+                    self.logger.info(f"Number of base markers changed! Now have {len(self.labelled_markers)} Updating transformation.")
                     return True
             else:
                 # First time or missing markers; update transformation
@@ -192,7 +192,7 @@ class MocapInterface:
                 # Store current markers for future comparison
                 self.previous_labelled_markers = self.labelled_markers.copy()
             else:
-                self.logger.info("Not enough labelled markers to compute transformation.")
+                self.logger.info("Not enough labelled markers to compute transformation.", throttle_duration_sec=0.5)
 
     def compute_transformation(
         self, body_markers: np.ndarray, world_markers: np.ndarray
@@ -253,18 +253,12 @@ class MocapInterface:
     def transform_unlabelled_markers(self):
         """
         Transform unlabelled markers from world frame to body frame.
-        Then rotate 90 degrees about the z axis to align with the actual robot base frame.
-        This is necessary because the QTM frame has X pointing forward, while the robot has Y pointing forward.
         """
         with self.data_lock:
             if len(self.unlabelled_markers) > 0:
                 positions_world = self.unlabelled_markers[:, :3]
                 # Apply inverse transformation
                 positions_body = (self.R.T @ (positions_world - self.t).T).T
-                
-                # Rotate 90 degrees about z axis
-                rotation_matrix = np.array([[0, -1, 0], [1, 0, 0], [0, 0, 1]])
-                positions_body = (rotation_matrix @ positions_body.T).T
 
                 # Store transformed positions
                 self.unlabelled_markers[:, :3] = positions_body
