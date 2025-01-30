@@ -406,7 +406,7 @@ class CatchDroppedBallNode(Node):
         catch_pose = Pose()
 
         # If we know where the ball is, put the platform COM at the same x, y coordinates
-        if self.marker_coordinates[0] is not None:
+        if len(self.marker_coordinates) != 0:
             catch_pose.position.x = self.marker_coordinates[-1][0]
             catch_pose.position.y = self.marker_coordinates[-1][1]
         else:
