@@ -37,6 +37,7 @@ setup(
             'mocap_visualizer_node = jugglebot.mocap_visualizer_node:main',
             'landing_analysis_node = jugglebot.landing_analysis_node:main',
             'hand_testing_node = jugglebot.hand_testing_node:main',
+            'calibrate_platform_node = jugglebot.calibrate_platform_node:main'
         ],
     },
 )

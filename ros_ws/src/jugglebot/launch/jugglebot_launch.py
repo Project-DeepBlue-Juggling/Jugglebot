@@ -46,7 +46,8 @@ def generate_launch_description():
         'ball_prediction_node',
         'catch_thrown_ball_node',
         'catch_dropped_ball_node',
-        # 'hand_testing_node',
+        'hand_testing_node',
+        'calibrate_platform_node',
     ]
     jugglebot_nodes = [
         Node(
@@ -78,6 +79,7 @@ def generate_launch_description():
     # rosbag2 record command
     rosbag_record_cmd = [
         'ros2', 'bag', 'record', '/robot_state', '/leg_lengths_topic', '/hand_trajectory', '/mocap_data', '/platform_pose_topic',
+        '/platform_pose_mocap',
         '-s', 'mcap', '-o', bag_dir
     ]
 
