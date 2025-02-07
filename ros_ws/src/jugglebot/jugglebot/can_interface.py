@@ -1151,9 +1151,6 @@ class CANInterface:
                 if deceleration_limit < 0:
                     raise ValueError("Deceleration limit must be non-negative")
                 self.leg_trap_traj_limits['dec_limit'] = deceleration_limit
-            else:
-                # If deceleration_limit hasn't been provided, default to 80% of acceleration_limit
-                self.leg_trap_traj_limits['dec_limit'] = self.leg_trap_traj_limits['acc_limit'] * 0.8
 
             # Set the velocity and acceleration limits while in trap_traj control mode
             for axis_id in range(6):
