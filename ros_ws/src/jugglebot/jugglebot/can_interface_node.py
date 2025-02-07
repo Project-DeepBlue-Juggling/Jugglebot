@@ -50,11 +50,11 @@ class CanInterfaceNode(Node):
         #### Initialize subscribers ####
         self.leg_pos_sub = self.create_subscription(Float64MultiArray, 'leg_lengths_topic', self.handle_platform_movement, 10)
         self.hand_traj_sub = self.create_subscription(HandInputPosMsg, 'hand_trajectory', self.handle_hand_movement, 10)
-        self.motor_vel_curr_limits_sub = self.create_subscription(
-            SetMotorVelCurrLimitsMessage, 'set_motor_vel_curr_limits', self.motor_vel_curr_limits_callback, 10
+        self.motor_vel_curr_limits_sub = self.create_subscription(SetMotorVelCurrLimitsMessage, 'set_motor_vel_curr_limits',
+                                                                  self.motor_vel_curr_limits_callback, 10
         )
-        self.motor_trap_traj_limits_sub = self.create_subscription(
-            SetTrapTrajLimitsMessage, 'set_leg_trap_traj_limits', self.motor_trap_traj_limits_callback, 10
+        self.motor_trap_traj_limits_sub = self.create_subscription(SetTrapTrajLimitsMessage, 'set_leg_trap_traj_limits',
+                                                                   self.motor_trap_traj_limits_callback, 10
         )
         self.control_mode_sub = self.create_subscription(String, 'control_mode_topic', self.control_mode_callback, 10)
 
@@ -163,7 +163,8 @@ class CanInterfaceNode(Node):
             elif (msg.data == 'SPACEMOUSE' or 
                 msg.data == 'LEVEL_PLATFORM_NODE' or 
                 msg.data == 'CATCH_THROWN_BALL_NODE' or
-                msg.data == 'SHELL'):
+                msg.data == 'SHELL' or
+                msg.data == 'CALIBRATE_PLATFORM'):
                 self.get_logger().info(f'Control mode: {msg.data} enabled')
 
                 # Put the legs into CLOSED_LOOP_CONTROL mode if they aren't already
