@@ -69,8 +69,8 @@ class CalibratePlatformNode(Node):
         start_time = time.perf_counter()
 
         # Generate the poses
-        # poses = self.pose_pattern_generator.generate_poses()
-        poses = self.pose_pattern_generator.generate_sad_face_poses()
+        # poses = self.pose_pattern_generator.generate_poses(pose_type='test_poses')
+        poses = self.pose_pattern_generator.generate_poses(pose_type='sad_face')
 
         for pose in poses:
             self.get_logger().info(f'Moving to pose: {pose.pose.position.x:.3f}, {pose.pose.position.y:.3f}, {pose.pose.position.z:.3f}, '
