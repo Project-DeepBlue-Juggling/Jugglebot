@@ -79,7 +79,7 @@ def generate_launch_description():
     # rosbag2 record command
     rosbag_record_cmd = [
         'ros2', 'bag', 'record', '/robot_state', '/leg_lengths_topic', '/hand_trajectory', '/mocap_data', '/platform_pose_topic',
-        '/platform_pose_mocap',
+        '/platform_pose_mocap', '/settled_leg_lengths', '/settled_platform_pose',
         '-s', 'mcap', '-o', bag_dir
     ]
 
