@@ -42,9 +42,6 @@ class SPInverseKinematics(Node):
         self.start_pos = None         # Base frame
         self.base_nodes = None        # Base frame
         self.init_plat_nodes = None   # Platform frame
-        self.init_arm_nodes = None    # Platform frame
-        self.init_hand_nodes = None   # Platform frame
-
         self.init_leg_lengths = None
         self.leg_stroke = None
 
@@ -93,8 +90,6 @@ class SPInverseKinematics(Node):
             self.start_pos = np.array(response.start_pos).reshape(3, 1)
             self.base_nodes = np.array(response.base_nodes).reshape(6, 3)
             self.init_plat_nodes = np.array(response.init_plat_nodes).reshape(6, 3)
-            self.init_arm_nodes = np.array(response.init_arm_nodes).reshape(6, 3)
-            self.init_hand_nodes = np.array(response.init_hand_nodes).reshape(3, 3)
             self.init_leg_lengths = np.array(response.init_leg_lengths).reshape(6,)
             self.leg_stroke = response.leg_stroke
 
