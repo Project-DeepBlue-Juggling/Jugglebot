@@ -224,11 +224,17 @@ class SPInverseKinematics(Node):
 
     def convert_mm_to_revs(self, leg_lens_mm):
         # Converts the leg lengths from mm to revs
-        spool_dia = 22 # mm
-        mm_to_rev = 1 / (spool_dia * np.pi)
+        # spool_dia = 22 # mm
+        # mm_to_rev = 1 / (spool_dia * np.pi)
+
+        # Initialize the conversion factor for each leg independently. Found experimentally
+        mm_to_rev = np.array([13.21144, 14.0456, 13.8233, 14.124109, 14.16007, 14.03256]) * 10**-3
 
         # self.get_logger().debug(f'Leg lengths (mm): \n{leg_lens_mm}')
-        leg_lengths_revs = [length * mm_to_rev for length in leg_lens_mm]
+        leg_lengths_revs = np.array(leg_lens_mm) * mm_to_rev
+
+        # Convert back to a list for publishing
+        leg_lengths_revs = leg_lengths_revs.tolist()
 
         # If the legs need to be remapped, do so
         # leg_lengths_revs = self.remap_leg_lengths(leg_lengths_revs)
