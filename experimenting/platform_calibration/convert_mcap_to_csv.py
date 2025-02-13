@@ -76,7 +76,7 @@ def convert_mcap_to_csv(input_file, output_file):
 
 if __name__ == "__main__":
     folder_path = "/home/jetson/Desktop/Jugglebot/experimenting/platform_calibration/"
-    input_file = folder_path + "rosbag_60_calibration_poses"
-    output_file = folder_path + "60_calibration_poses.csv"
+    input_file = folder_path + "rosbag_108_calibration_poses_full_workspace"
+    output_file = folder_path + "108_calibration_poses.csv"
     convert_mcap_to_csv(input_file, output_file)
     print(f"Successfully converted '{input_file}' to '{output_file}'")
