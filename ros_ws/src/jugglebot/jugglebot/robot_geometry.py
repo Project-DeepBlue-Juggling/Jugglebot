@@ -57,6 +57,40 @@ class RobotGeometry(Node):
 
         # Build the platform
         self.build_platform()
+        # self.get_optimized_geometry()
+
+    def get_optimized_geometry(self):
+        '''
+        Returns the optimized geometry of the robot, determined using offline methods.
+        '''
+
+        self.initial_height = 618.87 # FOUND EXPERIMENTALLY (by echoing /platform_pose_mocap after homing)
+        self.start_pos = np.array([[0], [0], [self.initial_height]])
+
+        # Base nodes
+        self.base_nodes = np.array([
+            [-380.27397452, -135.22825876, 32.],
+            [-309.07822168, -258.54291997, 32.],
+            [ 309.07822168, -258.54291997, 32.],
+            [ 380.27397452, -135.22825876, 32.],
+            [  66.19575284,  398.77117874, 32.],
+            [ -66.19575284,  398.77117874, 32.]
+        ])
+        # Platform nodes 
+        self.init_plat_nodes = np.array([
+            [-182.40547513,   79.9996527, -16.],
+            [  -1.43062498, -203.45798266, -16.],
+            [   1.43062498, -203.45798266, -16.],
+            [ 182.40547513,   79.9996527, -16.],
+            [ 165.97485015,  108.45832996, -16.],
+            [-165.97485015,  108.45832996, -16.]
+        ])
+        # Initial leg lengths
+        self.init_leg_lengths = np.array([
+            650.19664431, 650.19664431, 650.19664431,
+            650.19664431, 650.19664431, 650.19664431
+        ])
+
 
     def build_platform(self):
         # Builds the stewart platform, calculating the initial positions of all nodes
@@ -129,8 +163,8 @@ class RobotGeometry(Node):
         response.start_pos = self.start_pos.flatten().tolist()
         response.base_nodes = self.base_nodes.flatten().tolist()
         response.init_plat_nodes = self.init_plat_nodes.flatten().tolist()
-        response.init_arm_nodes = self.init_arm_nodes.flatten().tolist()
-        response.init_hand_nodes = self.init_hand_nodes.flatten().tolist()
+        # response.init_arm_nodes = self.init_arm_nodes.flatten().tolist()
+        # response.init_hand_nodes = self.init_hand_nodes.flatten().tolist()
         response.init_leg_lengths = self.init_leg_lengths.flatten().tolist()
         response.leg_stroke = self.leg_stroke
         response.hand_stroke = self.hand_stroke
