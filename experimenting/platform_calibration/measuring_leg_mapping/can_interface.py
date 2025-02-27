@@ -41,13 +41,11 @@ import struct
 import threading
 import time
 import math
-from typing import Callable, Dict, List, Optional, Tuple, Union
-import quaternion
+from typing import Callable, Dict, List, Optional
 
 import can
 import cantools
 from jugglebot_interfaces.msg import MotorStateSingle
-from geometry_msgs.msg import Quaternion
 
 class CANInterface:
     """
@@ -145,11 +143,15 @@ class CANInterface:
         }
 
         # Initialize the number of axes that the robot has
-        self.num_axes = 7  # 6 for the legs, 1 for the hand.
+        self.num_axes = 1
 
         # Initialize the motor states and the data lock for these states
         self.motor_states = [MotorStateSingle() for _ in range(self.num_axes)]
         self._motor_states_lock = threading.Lock()
+
+        # Initialize a variable to track the position of the linear slider
+        self.linear_slider_position = None
+        self._linear_slider_lock = threading.Lock()
 
         # Initialize a local copy of the motor states so that we don't need to lock the data every time we access it
         self.last_motor_states = [MotorStateSingle() for _ in range(self.num_axes)]
@@ -175,24 +177,7 @@ class CANInterface:
 
         # Initialize CAN arbitration IDs for messages to/from the Teensy
         # See the Teensy firmware for a note on "safe" IDs to not conflict with the ODrives
-        self._CAN_traffic_report_ID = 0x7DF
-        self._CAN_tilt_reading_ID = 0x7DE
-        self._hand_custom_message_ID = (6 << 5) | 0x04  # Axis 6, command 0x04 (RxSdo)
-
-        # Initialize CAN arbitration ID for state messages to/from the Teensy
-        self._CAN_state_update_ID = 0x6E0 # For sending the current state to/from the Teensy
-        self.last_known_state = {
-            'updated': False, # Flag to indicate if the state has been updated since the last request
-            'encoder_search_complete': False, # Flag to indicate if the encoder search is complete for every leg motor
-            'is_homed': False,
-            'levelling_complete': False,
-            'pose_offset_rad': [0.0, 0.0],
-            'pose_offset_quat': Quaternion(w=1.0, x=0.0, y=0.0, z=0.0),
-            'error': [] # Note that the error won't be communicated to the Teensy/saved between sessions.
-        }
-
-        # Initialize the last known platform tilt offset. This is useful in case we need to run the platform levelling again
-        self.last_platform_tilt_offset = quaternion.quaternion(1, 0, 0, 0)
+        self.linear_slider_CAN_ID = 0x7E0
 
         # Initialize error-related parameters
         self.max_reset_attempts_after_soft_error = 1 # Number of times to try resetting after encountering a soft error before throwing a fatal error
@@ -275,12 +260,12 @@ class CANInterface:
                 self.setup_can_bus()
 
                 time.sleep(0.1)
-                self.fetch_messages()
+                # self.fetch_messages()
 
                 # Wait for heartbeat messages
                 start_time = time.time()
                 while time.time() - start_time < reconnect_timeout:
-                    self.fetch_messages()
+                    # self.fetch_messages()
                     if all(self.received_heartbeats.values()):
                         self.ROS_logger.info(f"CAN bus read successful on attempt {attempt}")
                         rx_working = True
@@ -657,9 +642,6 @@ class CANInterface:
             self.fatal_error = False
             self.undervoltage_error = False
 
-            # Reset the local copy of the last known states' error field
-            self.last_known_state['error'] = []
-
             # Clear the disarm reasons
             for motor in self.motor_states:
                 motor.disarm_reason = 0
@@ -710,7 +692,7 @@ class CANInterface:
             leg_homing_speed = 1.5 # Go real slow
             leg_current_limit = 5.0  # Found experimentally
 
-            current_limit_headroom = 3.0  # Headroom for limit of how high the current can go above "current_limit"
+            current_limit_headroom = 0.0  # Headroom for limit of how high the current can go above "current_limit"
 
             # Run the leg downwards until the end-stop is hit
             homed = self.run_motor_until_current_limit(axis_id=axis_to_home, homing_speed=leg_homing_speed, current_limit=leg_current_limit,
@@ -787,11 +769,14 @@ class CANInterface:
                     return False
 
                 # Fetch any recent messages on the CAN bus
-                self.fetch_messages()
+                # self.fetch_messages()
                 
                 # Get the current for this motor
                 with self._motor_states_lock:
                     current = self.motor_states[axis_id].iq_measured
+
+                # Magic logging line. Without this, current detection doesn't work immediately.
+                # self.ROS_logger.info(f"Current reading for axis {axis_id}: {current}")
 
                 if current is None:
                     self.ROS_logger.warn(f"Current reading for axis {axis_id} is None. Skipping...")
@@ -805,6 +790,8 @@ class CANInterface:
                     self.set_requested_state(axis_id, requested_state='IDLE')
                     return True
                 
+                time.sleep(0.005)
+                
         except Exception as e:
             self.ROS_logger.error(f"Failed to run motor until current limit for axis {axis_id}: {e}")
             raise
@@ -813,7 +800,7 @@ class CANInterface:
     #                                            Managing ODrives                                           #
     #########################################################################################################
         
-    def run_encoder_search(self, axes_to_run, attempt: int = 0) -> bool:
+    def run_encoder_search(self, axis_to_run, attempt: int = 0) -> bool:
         """
         Runs the encoder index search procedure for the legs.
         This isn't necessary for the hand because we're using the on-board absolute encoder.
@@ -821,57 +808,50 @@ class CANInterface:
         If the search fails after one retry, it raises an exception.
 
         Args:
-            axes_to_run (List): List of axes to run the encoder search on.
+            axis_to_run: The axis ID to run the encoder search on.
             attempt (int, optional): The current attempt number.
 
         Raises:
             Exception: If encoder search fails after retries.
         """
         try:
-            # self.ROS_logger.info("Running encoder index search...")
-            for axisID in axes_to_run:
-                self.set_requested_state(axisID, requested_state='ENCODER_INDEX_SEARCH')
+            axisID = axis_to_run
+            self.ROS_logger.info("Running encoder index search...")
+            self.set_requested_state(axisID, requested_state='ENCODER_INDEX_SEARCH')
 
-            # Check whether all axes that are being run have entered the ENCODER_INDEX_SEARCH state
-            axes_in_index_search = {axisID: False for axisID in axes_to_run}
+            # Check whether the leg being run has entered the ENCODER_INDEX_SEARCH state
             start_time = time.time()
             timeout_duration = 3.0 # seconds
             
-            while not all(axes_in_index_search.values()):
-                self.fetch_messages()
+            while True:
                 elapsed = time.time() - start_time
                 if elapsed > timeout_duration:
                     self.ROS_logger.error("Encoder index search failed. Timed out.")
                     return False
 
-                for axisID in axes_to_run:
-                    with self._motor_states_lock:
-                        current_state = self.motor_states[axisID].current_state
-                        
-                    if current_state == 6:
-                        if not axes_in_index_search[axisID]:
-                            self.ROS_logger.info(f"Axis {axisID} entered ENCODER_INDEX_SEARCH state.")
-                        axes_in_index_search[axisID] = True
-                    else:
-                        self.ROS_logger.info(f"Axis {axisID} current state: {current_state}")
+                with self._motor_states_lock:
+                    current_state = self.motor_states[axisID].current_state
+                    
+                if current_state == 6:
+                    break
+                else:
+                    self.ROS_logger.info(f"Axis {axisID} current state: {current_state}")
 
                 time.sleep(0.05)
 
-            # Wait for all legs to present "Success" (0) in the procedure result
-            axes_in_index_search = {axisID: False for axisID in axes_to_run}
+            self.ROS_logger.info(f"Axis {axisID} entered ENCODER_INDEX_SEARCH state. Waiting for success...")
+
+            # Wait for the leg to present "Success" (0) in the procedure result
             start_time = time.time()
             timeout_duration = 5.0 # seconds
 
-            while not all(axes_in_index_search.values()):
-                self.fetch_messages()
+            while True:
+                with self._motor_states_lock:
+                    procedure_result = self.motor_states[axisID].procedure_result
 
-                for axisID in axes_to_run:
-                    with self._motor_states_lock:
-                        procedure_result = self.motor_states[axisID].procedure_result
-
-                    if procedure_result == 0:
-                        # self.ROS_logger.info(f"Axis {axisID} encoder index search successful.")
-                        axes_in_index_search[axisID] = True
+                if procedure_result == 0:
+                    # self.ROS_logger.info(f"Axis {axisID} encoder index search successful.")
+                    break
 
                 # Check for any fatal errors
                 if self.fatal_error:
@@ -886,7 +866,7 @@ class CANInterface:
                     else:
                         self.ROS_logger.error("Encoder index search timed out. Clearing errors and retrying...")
                         self.clear_errors()
-                        return self.run_encoder_search(axes_to_run, attempt=attempt+1)
+                        return self.run_encoder_search(axis_to_run, attempt=attempt+1)
 
                 time.sleep(0.1)
 
@@ -978,15 +958,17 @@ class CANInterface:
     #                                       Fetching and handling messages                                  #
     #########################################################################################################
 
-    def fetch_messages(self):
+    def fetch_messages(self, max_messages=50):
         """
         Fetches messages from the CAN bus and handles them.
+        Fetches up to max_messages messages at a time.
+        If fewer messages are available, it will return after processing all of them.
         """
         # This method is designed to be called in a loop from the main script.
         # It checks for new messages on the CAN bus and processes them if there are any.
         with self._can_lock:
             try:
-                while True:
+                for _ in range(max_messages):
                     # Perform a non-blocking read of the CAN bus
                     message = self.bus.recv(timeout=0)
                     if message is not None:
@@ -1007,23 +989,8 @@ class CANInterface:
         arbitration_id = message.arbitration_id
 
         # Check if the message is for the CAN traffic report
-        if arbitration_id == self._CAN_traffic_report_ID:
-            self._handle_CAN_traffic_report(message)
-
-        # Or if the message is for the tilt sensor reading
-        elif arbitration_id == self._CAN_tilt_reading_ID:
-            # If the message data is a single byte, ignore it (as this is the 'call' to have the sensor send its data)
-            if message.data == b'\x01':
-                return
-            self._handle_tilt_sensor_reading(message)
-
-        # Or if the message is a request for the state from the Teensy
-        elif arbitration_id == self._CAN_state_update_ID:
-            self._decode_state_from_teensy(message)
-
-        # Or if the message is the custom message going to the hand (sent by hand_trajectory_transmitter_node)
-        elif arbitration_id == self._hand_custom_message_ID:
-            return
+        if arbitration_id == self.linear_slider_CAN_ID:
+            self._handle_linear_slider_msg(message)
 
         else: # If the message is from the ODrives
             # Extract the axis ID from the arbitration ID by right-shifting by 5 bits.
@@ -1138,7 +1105,6 @@ class CANInterface:
                 # Clear any existing error flags
                 self.undervoltage_error = False
                 self.fatal_error = False
-                self.last_known_state['error'] = []
                 return
 
             # If there are any axes disarmed but no axes in CLOSED_LOOP_CONTROL, try clearing the errors
@@ -1197,11 +1163,6 @@ class CANInterface:
 
             for error_code, error_message in ERRORS.items():
                 if active_errors & error_code:
-                    # Check if the error is already in the last known state
-                    if error_message not in self.last_known_state['error']:
-                        # Update the last state with the error
-                        self.last_known_state['error'].append(error_message)
-
                     last_log_time = self._last_error_log_times[axis_id].get(error_code, 0)
                     if current_time - last_log_time > self.error_log_throttle_duration_sec:
                         self.ROS_logger.error(f"Active error on axis {axis_id}: {error_message}")
@@ -1329,28 +1290,27 @@ class CANInterface:
         except Exception as e:
             self.ROS_logger.error(f"Failed to handle arbitrary parameter read for axis {axis_id}: {e}")    
 
-    def _handle_CAN_traffic_report(self, message):
+    def _handle_linear_slider_msg(self, msg):
         """
-        Handles CAN traffic report messages.
+        Handles position feedback from the linear slider.
+
+        Assumes msg.data is a byte array of length 4 containing a little-endian 
+        32-bit float representing the position in mm.
 
         Args:
             message: The CAN message.
         """
         try:
-            # Unpack the data into a 32-bit integer
-            received_count = message.data[0] + (message.data[1] << 8)
-            report_interval = message.data[2] + (message.data[3] << 8)
+            if len(msg.data) != 4:
+                print("Unexpected message length:", len(msg.data))
+                return
 
-            traffic_report = {
-                'received_count': received_count,
-                'report_interval': report_interval,
-            }
-
-            # Log the traffic report
-            self.ROS_logger.debug(f"CAN traffic report: {received_count} messages received in the last {report_interval} ms.")
-
-            # Trigger the callback
-            self._trigger_callback('can_traffic', traffic_report)
+            # Unpack the 4 bytes into a float (little-endian format)
+            new_position, = struct.unpack('<f', msg.data)
+            
+            # Update the instance attribute
+            with self._linear_slider_lock:
+                self.linear_slider_position = new_position
         
         except Exception as e:
             self.ROS_logger.error(f"Failed to handle CAN traffic report: {e}")
@@ -1372,22 +1332,12 @@ class CANInterface:
         
         return self.last_motor_states
 
-    def _update_state_with_disarm_errors(self):
+    def get_linear_slider_position(self) -> float:
         """
-        Updates the last known state with the error and disarmed axes if it isn't already there.
+        Returns the current position of the linear slider in mm.
         """
-        disarmed_axes = [axis_id for axis_id, motor in enumerate(self.motor_states) if motor.disarm_reason != 0]
-        disarmed_axes_message = f"Disarmed axes: {disarmed_axes}"
-        
-        # Check if an entry starting with "Disarmed axes:" already exists
-        existing_entry = next((entry for entry in self.last_known_state['error'] if entry.startswith("Disarmed axes:")), None)
-        
-        if existing_entry:
-            # Remove the existing entry
-            self.last_known_state['error'].remove(existing_entry)
-        
-        # Append the new disarmed axes message
-        self.last_known_state['error'].append(disarmed_axes_message)
+        with self._linear_slider_lock:
+            return self.linear_slider_position
 
     def shutdown(self):
         """
