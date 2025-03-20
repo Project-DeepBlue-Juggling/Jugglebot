@@ -90,7 +90,7 @@ class CANInterface:
     _HAND_MOTOR_MAX_POSITION = 11.1 # Revs
 
     # Set the limits for trapezoidal trajectory control (used only for the legs)
-    _DEFAULT_TRAP_TRAJ_LIMITS = {'vel_limit': 15.0, 'acc_limit': 30.0, 'dec_limit': 30.0} # rev/s, rev/s^2
+    _DEFAULT_TRAP_TRAJ_LIMITS = {'vel_limit': 3.0, 'acc_limit': 10.0, 'dec_limit': 10.0} # rev/s, rev/s^2
     # Set the absolute limits for the motors
     _DEFAULT_VEL_CURR_LIMITS = {'leg_vel_limit': 50.0, 'leg_curr_limit': 20.0, 
                                 'hand_vel_limit': 1000.0, 'hand_curr_limit': 50.0} # rev/s, A
@@ -690,9 +690,9 @@ class CANInterface:
 
             # Parameters for homing the motors
             leg_homing_speed = 1.5 # Go real slow
-            leg_current_limit = 5.0  # Found experimentally
+            leg_current_limit = 8.0  # Found experimentally. Usually 5 but had to increase to compensate for drag from linear slider
 
-            current_limit_headroom = 0.0  # Headroom for limit of how high the current can go above "current_limit"
+            current_limit_headroom = 3.0  # Headroom for limit of how high the current can go above "current_limit"
 
             # Run the leg downwards until the end-stop is hit
             homed = self.run_motor_until_current_limit(axis_id=axis_to_home, homing_speed=leg_homing_speed, current_limit=leg_current_limit,
@@ -711,6 +711,9 @@ class CANInterface:
                 self.ROS_logger.info(f"Motor {axis_to_home} encoder position reset!")
 
             self.ROS_logger.info(f"Motor {axis_to_home} homed!")
+
+            # Reset the current limit
+            self.set_absolute_vel_curr_limits(leg_current_limit=self._DEFAULT_VEL_CURR_LIMITS['leg_curr_limit'])
                 
             return True
         
