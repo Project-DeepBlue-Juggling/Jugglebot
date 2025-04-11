@@ -214,8 +214,8 @@ class CanInterfaceNode(Node):
     def home_robot(self, goal_handle):
         """Action server callback to home the robot."""
         try:
-            # Start the robot homing
-            success = self.can_handler.home_robot() # True if homing was successful, False otherwise
+            # Start the robot homing. Home all axes.
+            success = self.can_handler.home_robot(axes_to_home=list(range(self.num_axes))) # True if homing was successful, False otherwise
 
             self.can_handler.update_state_on_teensy({'is_homed': success})
 

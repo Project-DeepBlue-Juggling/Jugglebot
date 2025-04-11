@@ -695,9 +695,12 @@ class CANInterface:
             self.ROS_logger.error(f"Failed to reboot ODrives: {e}")
             raise
         
-    def home_robot(self) -> bool:
+    def home_robot(self, axes_to_home) -> bool:
         """
         Homes all motors by moving them to their end stops.
+
+        Args:
+            axes_to_home (List): List of axes to home.
 
         Raises:
             Exception: If homing fails.
@@ -719,7 +722,7 @@ class CANInterface:
 
             current_limit_headroom = 3.0  # Headroom for limit of how high the current can go above "current_limit"
 
-            for axisID in range(self.num_axes):
+            for axisID in axes_to_home:
                 if axisID != 6:
                     # Run the leg downwards until the end-stop is hit
                     homed = self.run_motor_until_current_limit(axis_id=axisID, homing_speed=leg_homing_speed, current_limit=leg_current_limit,
