@@ -4,82 +4,86 @@ import quaternion
 import matplotlib.pyplot as plt
 from geometry_msgs.msg import PoseStamped
 import logging
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+import json
+from scipy.spatial import Delaunay
+import os
+from ament_index_python import get_package_share_directory
 
 class PosePatternGenerator:
-    def __init__(self, test_angles, test_radii, pts_at_each_radius, angles_at_each_pt, test_height_min, 
-                 test_height_max, height_increments, logger=None):
+    def __init__(self, test_radii, pts_at_each_radius, test_height_min, 
+                 test_height_max, height_increments, orientations_per_position, tilt_angle_limits, 
+                 logger=None):
         """
         Initializes the generator.
         
         Parameters:
-          test_angles: list of angles in degrees, e.g. [5, 5, 10]
           test_radii: list of radii for pose positions
           pts_at_each_radius: number of points to generate at each nonzero radius
-          angles_at_each_pt: number of orientation variations per point (e.g. 17 = 1 + 8 + 8)
           test_height_min: minimum height to test
           test_height_max: maximum height to test
           height_increments: number of height increments to
+          orientations_per_position: number of orientations to generate for each position
+          tilt_angle_limits: maximum angle in degrees for roll and pitch rotations
         """
-        self.test_angles = test_angles
         self.test_radii = test_radii
         self.pts_at_each_radius = pts_at_each_radius
-        self.angles_at_each_pt = angles_at_each_pt
         self.test_height_min = test_height_min
         self.test_height_max = test_height_max # Max height to test
         self.height_increments = height_increments # Number of height increments to test
+        self.num_orientations_per_position = orientations_per_position
+        self.tilt_angle_limits = tilt_angle_limits
 
         self.logger = logger
 
-    def generate_test_poses(self):
+        self.base_to_platform_transformation = 565.0  # Difference between the platform lowest height and base {mm}
+
+        # Get the workspace file path
+        self.workspace_file_path = os.path.join(get_package_share_directory('jugglebot'), 'resources', 'convex_hull_points_big.json')
+
+    def generate_poses(self, pose_type, iterations=1):
         """
-        Generates the poses that the platform will move to, forming a cylindrical pattern
-        that spans from test_height_min to test_height_max. Each layer is rotated and its
-        radius scaled (down to 80%) to better sample the covered volume.
-        Returns a list of PoseStamped instances.
+        Generates a set of poses based on the provided pose_type ('sad_face' or 'test_poses'),
+        filters them to include only those that are reachable within the robot's workspace,
+        prints basic statistics about the filtered poses, and returns the filtered list.
         """
-        pose_list = []
-        angles = np.deg2rad(self.test_angles)
-        heights = np.linspace(self.test_height_min, self.test_height_max, self.height_increments)
+        # Generate the full pose set based on the specified type.
+        if pose_type == 'test_poses':
+            poses = self.generate_test_poses()
+        elif pose_type == 'sad_face':
+            poses = self.generate_sad_face_poses()
+        elif pose_type == 'dummy_square':
+            poses = self.generate_dummy_square_poses(iterations=iterations)
+        else:
+            raise ValueError("Unsupported pose_type. Use 'test_poses' or 'sad_face'.")
 
-        for radius in self.test_radii:
-            pts = 1 if radius == 0.0 else self.pts_at_each_radius
-            angle_increment = 2 * np.pi / pts
-            for i in range(pts):
-                for layer_idx, height in enumerate(heights):
-                    # Apply a rotation offset for each height layer
-                    rotation_offset = layer_idx * (np.pi / 3)
-                    # Scale the radius down to 80% at the top layer (linearly interpolated)
-                    scale = 1.0 if self.height_increments == 1 else 1.0 - 0.2 * (layer_idx / (self.height_increments - 1))
-                    x = scale * radius * np.cos(i * angle_increment + rotation_offset)
-                    y = scale * radius * np.sin(i * angle_increment + rotation_offset)
-                    for j in range(self.angles_at_each_pt):
-                        pose = PoseStamped()
-                        pose.pose.position.x = x
-                        pose.pose.position.y = y
-                        pose.pose.position.z = height
+        total_poses = len(poses)
+        # Filter poses to include only those within the workspace.
+        filtered_poses = self.filter_reachable_poses(poses)
+        num_filtered = len(filtered_poses)
 
-                        if j == 0:
-                            tiltX = angles[0]
-                            tiltY = angles[0]
-                        elif j < 9:
-                            k = j - 1
-                            tiltX = angles[1] * np.cos(k * np.pi / 4)
-                            tiltY = angles[1] * np.sin(k * np.pi / 4)
-                        else:
-                            k = j - 9
-                            tiltX = angles[2] * np.cos(k * np.pi / 4)
-                            tiltY = angles[2] * np.sin(k * np.pi / 4)
+        # Calculate position extremes if there are any filtered poses.
+        if num_filtered > 0:
+            xs = [p.pose.position.x for p in filtered_poses]
+            ys = [p.pose.position.y for p in filtered_poses]
+            zs = [p.pose.position.z for p in filtered_poses]
+            self.logger.info("-------------------")
+            self.logger.info("Position extremes:")
+            self.logger.info(f"  X: min = {min(xs):.2f}, max = {max(xs):.2f}")
+            self.logger.info(f"  Y: min = {min(ys):.2f}, max = {max(ys):.2f}")
+            self.logger.info(f"  Z: min = {min(zs):.2f}, max = {max(zs):.2f}")
+        else:
+            self.logger.info("No reachable poses found.")
 
-                        q_roll = quaternion.from_rotation_vector([tiltX, 0, 0])
-                        q_pitch = quaternion.from_rotation_vector([0, tiltY, 0])
-                        q = q_roll * q_pitch
-                        pose.pose.orientation.x = q.x
-                        pose.pose.orientation.y = q.y
-                        pose.pose.orientation.z = q.z
-                        pose.pose.orientation.w = q.w
+        proportion = (num_filtered / total_poses) * 100 if total_poses > 0 else 0
+        self.logger.info(f"Reachable poses: {num_filtered} out of {total_poses} ({proportion:.1f}%)")
+        self.logger.info("-------------------")
+        
+        return filtered_poses
 
-                        pose_list.append(pose)
-        return pose_list
+    #########################################################################################################
+    #                                         Pattern Generators                                            #
+    #########################################################################################################
 
     def generate_sad_face_poses(self):
         """
@@ -153,6 +157,16 @@ class PosePatternGenerator:
             pose.pose.position.z = z
             face_points.append(pose)
 
+        # Add a horizontal line at the bottom of the mouth to make a complete "D" shape (like D:)
+        mouth_bottom_y = a * (0.3 ** 2) + b
+        mouth_bottom_xs = np.linspace(-0.3, 0.3, num_mouth_points)
+        for x in mouth_bottom_xs:
+            pose = PoseStamped()
+            pose.pose.position.x = (x - center_x) * uniform_scale
+            pose.pose.position.y = (mouth_bottom_y - center_y) * uniform_scale 
+            pose.pose.position.z = z
+            face_points.append(pose)
+
         # For all points, the orientation should be horizontal
         for pose in face_points:
             pose.pose.orientation.x = 0.0
@@ -161,6 +175,94 @@ class PosePatternGenerator:
             pose.pose.orientation.w = 1.0
         
         return face_points
+    
+    def generate_test_poses(self):
+        """
+        Generates the poses that the platform will move to, forming a cylindrical pattern
+        that spans from test_height_min to test_height_max. Each layer is rotated and its
+        radius scaled (down to 80%) to better sample the covered volume. For each position,
+        a random set of orientations is generated within tilt_angle_limits (in degrees) from vertical.
+        Returns a list of PoseStamped instances.
+        """
+        pose_list = []
+        heights = np.linspace(self.test_height_min, self.test_height_max, self.height_increments)
+        
+        for radius in self.test_radii:
+            pts = 1 if radius == 0.0 else self.pts_at_each_radius
+            angle_increment = 2 * np.pi / pts
+            for i in range(pts):
+                for layer_idx, height in enumerate(heights):
+                    rotation_offset = layer_idx * (np.pi / 8)
+                    scale = 1.0 if self.height_increments == 1 else 1.0 - 0.2 * (layer_idx / (self.height_increments - 1))
+                    x = scale * radius * np.cos(i * angle_increment + rotation_offset)
+                    y = scale * radius * np.sin(i * angle_increment + rotation_offset)
+                    for _ in range(self.num_orientations_per_position):
+                        pose = PoseStamped()
+                        pose.pose.position.x = x
+                        pose.pose.position.y = y
+                        pose.pose.position.z = height
+
+                        # Generate random roll and pitch angles within +/- tilt_angle_limits degrees from vertical.
+                        tilt_limit_rad = np.deg2rad(self.tilt_angle_limits)
+                        roll = np.random.uniform(-tilt_limit_rad, tilt_limit_rad)
+                        pitch = np.random.uniform(-tilt_limit_rad, tilt_limit_rad)
+                        
+                        q_roll = quaternion.from_rotation_vector([roll, 0, 0])
+                        q_pitch = quaternion.from_rotation_vector([0, pitch, 0])
+                        q = q_roll * q_pitch
+                        pose.pose.orientation.x = q.x
+                        pose.pose.orientation.y = q.y
+                        pose.pose.orientation.z = q.z
+                        pose.pose.orientation.w = q.w
+
+                        pose_list.append(pose)
+        return pose_list
+
+    def generate_dummy_square_poses(self, iterations=1):
+        """
+        Generates a square pattern of poses for testing purposes.
+        """
+        pose_list = []
+        for _ in range(iterations):
+            for i in [-1, 1]:
+                for j in [-1, 1]:
+                    pose = PoseStamped()
+                    pose.pose.position.x = i * 100.0
+                    pose.pose.position.y = j * 100.0
+                    pose.pose.position.z = (self.test_height_min + self.test_height_max) / 2
+                    pose.pose.orientation.x = 0.0
+                    pose.pose.orientation.y = 0.0
+                    pose.pose.orientation.z = 0.0
+                    pose.pose.orientation.w = 1.0
+                    pose_list.append(pose)
+        return pose_list
+
+    #########################################################################################################
+    #                                           Helper Methods                                              #
+    #########################################################################################################
+
+    def filter_reachable_poses(self, poses):
+        """
+        Filters the given list of PoseStamped instances, returning only those
+        that are within the robot workspace defined by the convex hull in 
+        '../resources/convex_hull_points_big.json'. Points are tested using a Delaunay
+        triangulation of the workspace vertices.
+        """
+
+        with open(self.workspace_file_path, 'r') as f:
+            data = json.load(f)
+        vertices = np.array(data["vertices"])
+        hull = Delaunay(vertices)
+        
+        reachable = []
+        for pose in poses:
+            point = np.array([pose.pose.position.x, 
+                              pose.pose.position.y, 
+                              pose.pose.position.z + self.base_to_platform_transformation
+                              ])
+            if hull.find_simplex(point) >= 0:
+                reachable.append(pose)
+        return reachable
 
     def draw_points(self, points, title="Generated Points", show_workspace=False, workspace_color='green'):
         """
@@ -168,22 +270,20 @@ class PosePatternGenerator:
         Optionally displays the robot workspace from the JSON file if show_workspace is True.
         The workspace is rendered with the specified workspace_color (default 'green') at ~40% opacity.
         """
-        from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-        import json
 
         fig = plt.figure()
         ax = fig.add_subplot(111, projection='3d')
         
         xs = [p.pose.position.x for p in points]
         ys = [p.pose.position.y for p in points]
-        zs = [p.pose.position.z for p in points]
+        zs = [p.pose.position.z + self.base_to_platform_transformation for p in points]
         ax.scatter(xs, ys, zs, c='red')
         
         arrow_length = 50  
         for p in points:
             x = p.pose.position.x
             y = p.pose.position.y
-            z = p.pose.position.z
+            z = p.pose.position.z + self.base_to_platform_transformation
             q = quaternion.quaternion(p.pose.orientation.w,
                                     p.pose.orientation.x,
                                     p.pose.orientation.y,
@@ -195,7 +295,7 @@ class PosePatternGenerator:
 
         # Optionally plot the robot workspace
         if show_workspace:
-            with open('../resources/convex_hull_points_big.json', 'r') as f:
+            with open(self.workspace_file_path, 'r') as f:
                 data = json.load(f)
             vertices = np.array(data["vertices"])
             faces = data["faces"]
@@ -216,79 +316,20 @@ class PosePatternGenerator:
         ax.set_zlim(0, 800)
         plt.show()
 
-    def filter_reachable_poses(self, poses):
-        """
-        Filters the given list of PoseStamped instances, returning only those
-        that are within the robot workspace defined by the convex hull in 
-        '../resources/convex_hull_points_big.json'. Points are tested using a Delaunay
-        triangulation of the workspace vertices.
-        """
-        from scipy.spatial import Delaunay
-        import json
-
-        with open('../resources/convex_hull_points_big.json', 'r') as f:
-            data = json.load(f)
-        vertices = np.array(data["vertices"])
-        hull = Delaunay(vertices)
-        
-        reachable = []
-        for pose in poses:
-            point = np.array([pose.pose.position.x, pose.pose.position.y, pose.pose.position.z])
-            if hull.find_simplex(point) >= 0:
-                reachable.append(pose)
-        return reachable
-
-    def generate_poses(self, pose_type):
-        """
-        Generates a set of poses based on the provided pose_type ('sad_face' or 'test_poses'),
-        filters them to include only those that are reachable within the robot's workspace,
-        prints basic statistics about the filtered poses, and returns the filtered list.
-        """
-        # Generate the full pose set based on the specified type.
-        if pose_type == 'test_poses':
-            poses = self.generate_test_poses()
-        elif pose_type == 'sad_face':
-            poses = self.generate_sad_face_poses()
-        else:
-            raise ValueError("Unsupported pose_type. Use 'test_poses' or 'sad_face'.")
-
-        total_poses = len(poses)
-        # Filter poses to include only those within the workspace.
-        filtered_poses = self.filter_reachable_poses(poses)
-        num_filtered = len(filtered_poses)
-
-        # Calculate position extremes if there are any filtered poses.
-        if num_filtered > 0:
-            xs = [p.pose.position.x for p in filtered_poses]
-            ys = [p.pose.position.y for p in filtered_poses]
-            zs = [p.pose.position.z for p in filtered_poses]
-            self.logger.info("")
-            self.logger.info("Position extremes:")
-            self.logger.info(f"  X: min = {min(xs):.2f}, max = {max(xs):.2f}")
-            self.logger.info(f"  Y: min = {min(ys):.2f}, max = {max(ys):.2f}")
-            self.logger.info(f"  Z: min = {min(zs):.2f}, max = {max(zs):.2f}")
-        else:
-            self.logger.info("No reachable poses found.")
-
-        proportion = (num_filtered / total_poses) * 100 if total_poses > 0 else 0
-        self.logger.info(f"Reachable poses: {num_filtered} out of {total_poses} ({proportion:.1f}%)")
-        
-        return filtered_poses
 
 if __name__ == "__main__":
     # --- Example usage ---
     # Parameters for the general pose generator (adjust as needed)
-    test_angles = [0, 5, 10]       # angles in degrees
-    test_radii = [0.0, 150.0, 250.0, 400.0]  # radii in mm
+    test_radii = [0.0, 150.0, 330.0]  # radii in mm
     pts_at_each_radius = 4
-    angles_at_each_pt = 17
-    test_height_min = 565 + 150.0
-    test_height_max = test_height_min + 100.0
+    test_height_min = 130.0
+    test_height_max = 200.0
     height_increments = 4
+    orientations_per_position = 3
+    tilt_angle_limits = 15.0
 
-
-    generator = PosePatternGenerator(test_angles, test_radii, pts_at_each_radius, angles_at_each_pt, test_height_min,
-                                     test_height_max, height_increments)
+    generator = PosePatternGenerator(test_radii, pts_at_each_radius, test_height_min,
+                                     test_height_max, height_increments, orientations_per_position, tilt_angle_limits)
     
     if generator.logger is None:
         logger = logging.getLogger("MocapInterface")
@@ -300,14 +341,15 @@ if __name__ == "__main__":
         generator.logger = logger
     
     # Generate and display the number of general poses
-    poses = generator.generate_poses('test_poses')
+    # poses = generator.generate_poses('dummy_square', iterations=10)
+    poses = generator.generate_poses('sad_face')
 
     # Get the filetered poses within the workspace
     filtered_poses = generator.filter_reachable_poses(poses)
     generator.draw_points(filtered_poses, title="Filtered Poses", show_workspace=True)
     
     # Generate the sad face points and print the count (should be ~100)
-    face_points = generator.generate_poses('sad_face')
+    # face_points = generator.generate_poses('sad_face')
     
     # Visualize the sad face pattern
     # generator.draw_points(face_points, title="Sad Face Points")

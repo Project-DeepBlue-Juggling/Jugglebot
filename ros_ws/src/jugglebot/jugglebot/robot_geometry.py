@@ -56,41 +56,41 @@ class RobotGeometry(Node):
         self.start_pos = np.array([[0], [0], [self.initial_height]])
 
         # Build the platform
-        self.build_platform()
-        # self.get_optimized_geometry()
+        # self.build_platform()
+        self.get_optimized_geometry()
 
     def get_optimized_geometry(self):
         '''
         Returns the optimized geometry of the robot, determined using offline methods.
         '''
 
-        self.initial_height = 618.87 # FOUND EXPERIMENTALLY (by echoing /platform_pose_mocap after homing)
+        self.initial_height = 573.6 # FOUND EXPERIMENTALLY (by echoing /platform_pose_mocap after homing)
         self.start_pos = np.array([[0], [0], [self.initial_height]])
 
+        # Get the base and platform nodes. Currently just using the calculated ones from build_platform
         # Base nodes
         self.base_nodes = np.array([
-            [-380.27397452, -135.22825876, 32.],
-            [-309.07822168, -258.54291997, 32.],
-            [ 309.07822168, -258.54291997, 32.],
-            [ 380.27397452, -135.22825876, 32.],
-            [  66.19575284,  398.77117874, 32.],
-            [ -66.19575284,  398.77117874, 32.]
+            [-385.27397452222243, -140.22825876352414, 0.0],
+            [-314.078221678781, -263.54291997148107, 0.0],
+            [314.0782216787809, -263.54291997148124, 0.0],
+            [385.27397452222243, -140.22825876352414, 0.0],
+            [71.19575284344148, 403.77117873500526, 0.0],
+            [-71.19575284344124, 403.7711787350053, 0.0]
         ])
         # Platform nodes 
         self.init_plat_nodes = np.array([
-            [-182.40547513,   79.9996527, -16.],
-            [  -1.43062498, -203.45798266, -16.],
-            [   1.43062498, -203.45798266, -16.],
-            [ 182.40547513,   79.9996527, -16.],
-            [ 165.97485015,  108.45832996, -16.],
-            [-165.97485015,  108.45832996, -16.]
+            [-197.4054751337954, 94.99965269515714, 0.0],
+            [-16.430624982192736, -218.4579826595827, 0.0],
+            [16.43062498219285, -218.45798265958268, 0.0],
+            [197.40547513379536, 94.99965269515724, 0.0],
+            [180.97485015160265, 123.45832996442547, 0.0],
+            [-180.9748501516028, 123.45832996442526, 0.0]
         ])
         # Initial leg lengths
         self.init_leg_lengths = np.array([
-            650.19664431, 650.19664431, 650.19664431,
-            650.19664431, 650.19664431, 650.19664431
-        ])
-
+            621.3890, 618.1596, 622.0740,
+            620.6526, 620.6515, 620.0908
+        ]) # From the linear actuator testing. See Livestream #51 @ ~28min
 
     def build_platform(self):
         # Builds the stewart platform, calculating the initial positions of all nodes

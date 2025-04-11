@@ -6,11 +6,9 @@ from rclpy.node import Node
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from std_srvs.srv import Trigger
-from std_msgs.msg import String
-from jugglebot_interfaces.msg import PlatformPoseMessage, SetTrapTrajLimitsMessage, LegsTargetReachedMessage
+from std_msgs.msg import String, Float32MultiArray
+from jugglebot_interfaces.msg import PlatformPoseMessage, SetTrapTrajLimitsMessage, LegsTargetReachedMessage, RobotState
 from geometry_msgs.msg import PoseStamped
-import numpy as np
-import quaternion
 import time
 from .calibrate_platform_pattern_generator import PosePatternGenerator
 
@@ -35,28 +33,40 @@ class CalibratePlatformNode(Node):
         # Initialize publishers
         self.platform_pose_publisher = self.create_publisher(PlatformPoseMessage, 'platform_pose_topic', 10)
         self.set_trap_traj_limits_publisher = self.create_publisher(SetTrapTrajLimitsMessage, 'set_leg_trap_traj_limits', 10)
+        self.settled_leg_lengths_publisher = self.create_publisher(Float32MultiArray, 'settled_leg_lengths', 10)
+        self.settled_platform_pose_publisher = self.create_publisher(PoseStamped, 'settled_platform_pose', 10)
 
         # Initialize subscribers
         self.control_mode_subscriber = self.create_subscription(String, 'control_mode_topic', self.control_mode_callback, 10)
         self.legs_target_reached_subscriber = self.create_subscription(LegsTargetReachedMessage, 'platform_target_reached',
                                                                        self.legs_target_reached_callback, 10)
-        
+          # The following subscribers are used to publish hardware feedback 'snapshots' so that it's easier to pick out the data we need
+        self.robot_state_subscriber = self.create_subscription(RobotState, 'robot_state', self.robot_state_callback, 10)
+        self.platform_pose_mocap_subscriber = self.create_subscription(PoseStamped, 'platform_pose_mocap', self.platform_pose_mocap_callback, 10)
 
         # Initialize service servers
         self.start_calibration_server = self.create_service(Trigger, 'start_calibration', self.start_calibration,
                                                              callback_group=MutuallyExclusiveCallbackGroup())
 
-        self.test_radii = [0.0, 100.0]#, 200.0] # Radii to move the platform to {mm}
-        self.test_angles = [0.0, 5.0, 10.0] # Tilt angles to move the platform to {degrees}
-        self.test_height = 170.0 # Height to move the platform to {mm}
-        self.pts_at_each_radius = 4 # Number of points to test at each radius
-        self.angles_at_each_pt = 17 # Number of angles to test at each point (flat, then 8 combinations for 5 and 10 degrees)
+        self.test_radii = [0.0, 150.0, 330.0] # Radii to move the platform to {mm}
+        self.test_height_min = 130.0 # Minimum height to test. Measured from platform lowest position {mm}
+        self.test_height_max = 200.0 # Maximum height to test. Measured from platform lowest position {mm}
+        self.pts_at_each_radius = 4  # Number of points to test at each radius
 
         self.time_at_each_pose = 2.0 # seconds to wait AFTER the platform has arrived at the pose
 
+        self.leg_lengths = [None] * 6 # Variable to store the leg lengths right now. This is used to publish the leg lengths once each movement has settled
+        self.platform_pose_mocap = PoseStamped() # Variable to store the mocap pose of the platform
+
         # Initialize the pose pattern generator
-        self.pose_pattern_generator = PosePatternGenerator(self.test_angles, self.test_radii, self.pts_at_each_radius,
-                                                              self.angles_at_each_pt, self.test_height)
+        self.pose_pattern_generator = PosePatternGenerator(self.test_radii, self.pts_at_each_radius,
+                                                              self.test_height_min, self.test_height_max,
+                                                              height_increments=4, orientations_per_position=3, tilt_angle_limits=15.0,
+                                                              logger=self.get_logger())
+
+    #########################################################################################################
+    #                                            Main Method                                                #
+    #########################################################################################################
 
     async def start_calibration(self, request, response):
         '''Runs the calibration routine'''
@@ -70,22 +80,28 @@ class CalibratePlatformNode(Node):
 
         # Generate the poses
         # poses = self.pose_pattern_generator.generate_poses(pose_type='test_poses')
+        # poses = self.pose_pattern_generator.generate_poses(pose_type='dummy_square', iterations=100)
         poses = self.pose_pattern_generator.generate_poses(pose_type='sad_face')
 
-        for pose in poses:
-            self.get_logger().info(f'Moving to pose: {pose.pose.position.x:.3f}, {pose.pose.position.y:.3f}, {pose.pose.position.z:.3f}, '
+        for i, pose in enumerate(poses):
+            self.get_logger().info(f'Moving to pose {i}: {pose.pose.position.x:.3f}, {pose.pose.position.y:.3f}, {pose.pose.position.z:.3f}, '
                                    f' with orientation: {pose.pose.orientation.x:.3f}, {pose.pose.orientation.y:.3f}, {pose.pose.orientation.z:.3f}, {pose.pose.orientation.w:.3f}')
             
             # Move the platform to the pose and await arrival
             self.move_to_calibration_pose_and_await_arrival(pose)
             time.sleep(self.time_at_each_pose) # Wait for the nominated duration
 
+            # Now that the platform has arrived at the pose, publish the leg lengths and measured platform pose
+            self.publish_settled_leg_lengths()
+            self.publish_settled_platform_pose()
     
         # Return to the home pose
         home_pose = PoseStamped()
+        home_pose.header.frame_id = 'platform_start'
+        home_pose.header.stamp = self.get_clock().now().to_msg()
         home_pose.pose.position.x = 0.0
         home_pose.pose.position.y = 0.0
-        home_pose.pose.position.z = self.test_height
+        home_pose.pose.position.z = (self.test_height_min + self.test_height_max) / 2
         home_pose.pose.orientation.x = 0.0
         home_pose.pose.orientation.y = 0.0
         home_pose.pose.orientation.z = 0.0
@@ -114,6 +130,7 @@ class CalibratePlatformNode(Node):
         # Create the message
         pose_msg = PlatformPoseMessage()
         pose_msg.pose_stamped = pose
+        pose_msg.pose_stamped.header.frame_id = 'platform_start'
         pose_msg.pose_stamped.header.stamp = self.get_clock().now().to_msg()
         pose_msg.publisher = 'CALIBRATE_PLATFORM'
 
@@ -125,7 +142,7 @@ class CalibratePlatformNode(Node):
 
         # Wait for the platform to arrive at the calibration pose
         while not all (self.legs_target_reached):
-            self.get_logger().info(f'Waiting for platform to reach calibration pose. Status: {self.legs_target_reached}',
+            self.get_logger().info(f'Waiting for platform to arrive at pose. Status: {self.legs_target_reached}',
                                    throttle_duration_sec=1.0)
             time.sleep(0.1) 
 
@@ -156,8 +173,24 @@ class CalibratePlatformNode(Node):
         # Log the new limits
         self.get_logger().info(f"Trap traj limits set to: vel = {vel_limit}, acc = {acc_limit}, dec = {dec_limit}")
 
+    def publish_settled_leg_lengths(self):
+        '''Publish the leg lengths once they have settled'''
+
+        # Create the message
+        msg = Float32MultiArray()
+        msg.data = self.leg_lengths
+
+        # Publish the message
+        self.settled_leg_lengths_publisher.publish(msg)
+
+    def publish_settled_platform_pose(self):
+        '''Publish the platform pose once it has settled'''
+
+        # Publish the message
+        self.settled_platform_pose_publisher.publish(self.platform_pose_mocap)
+
     #########################################################################################################
-    #                                       Control Mode Callback                                           #
+    #                                       Subscription Callbacks                                          #
     #########################################################################################################
 
     def control_mode_callback(self, msg):
@@ -172,6 +205,18 @@ class CalibratePlatformNode(Node):
         elif msg.data != 'CALIBRATE_PLATFORM' and self.enabled:
             self.get_logger().info('Calibrate Platform node disabled')
             self.enabled = False
+
+    def robot_state_callback(self, msg):
+        '''
+        Handles the robot state message, extracting the measured leg lengths
+        '''
+        # Leg length for motor 0 is at: msg.motor_states[0].pos_estimate
+        for i in range(6):
+            self.leg_lengths[i] = msg.motor_states[i].pos_estimate
+
+    def platform_pose_mocap_callback(self, msg):
+        '''Handles the mocap pose message'''
+        self.platform_pose_mocap = msg
 
     #########################################################################################################
     #                                          Node Management                                              #

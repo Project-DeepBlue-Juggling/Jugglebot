@@ -136,7 +136,7 @@ class SPInverseKinematics(Node):
             return
 
         # Extract position data
-        # Note that this is in base frame + initial position (ie. 0 z value is the platform in its initial position)
+        # Note that this is in platform_start frame (ie. 0 z value is the platform in its initial position)
         pos = np.array([[pose.position.x], [pose.position.y], [pose.position.z]])  
 
         # Extract the orientation quaternion
@@ -223,7 +223,8 @@ class SPInverseKinematics(Node):
         # mm_to_rev = 1 / (spool_dia * np.pi)
 
         # Initialize the conversion factor for each leg independently. Found experimentally
-        mm_to_rev = np.array([13.21144, 14.0456, 13.8233, 14.124109, 14.16007, 14.03256]) * 10**-3
+        # mm_to_rev = np.array([13.21144, 14.0456, 13.8233, 14.124109, 14.16007, 14.03256]) * 10**-3
+        mm_to_rev = np.array([14.18332, 14.19076, 14.08956, 14.18684, 14.26801, 14.24951]) * 10**-3
 
         # self.get_logger().debug(f'Leg lengths (mm): \n{leg_lens_mm}')
         leg_lengths_revs = np.array(leg_lens_mm) * mm_to_rev

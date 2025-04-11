@@ -101,6 +101,7 @@ class SpaceMouseHandler(Node):
 
         # Set the time stamp
         pose_stamped.header.stamp = current_time
+        pose_stamped.header.frame_id = 'platform_start'
 
         message.pose_stamped = pose_stamped
         message.publisher = 'SPACEMOUSE'
