@@ -2,6 +2,7 @@ import rclpy
 from rclpy.node import Node
 from std_srvs.srv import Trigger
 from jugglebot_interfaces.msg import MocapDataMulti, MocapDataSingle
+from jugglebot_interfaces.srv import GetRobotGeometry
 from geometry_msgs.msg import PoseStamped
 from .mocap_interface import MocapInterface
 
@@ -9,13 +10,32 @@ class MocapInterfaceNode(Node):
     def __init__(self):
         super().__init__('mocap_interface_node')
 
-        self.mocap_interface = MocapInterface(logger=self.get_logger())
+        self.mocap_interface = MocapInterface(logger=self.get_logger(), node=self)
 
         # Initialize state variables
         self.shutdown_flag = False
 
         # Initialize a service to trigger closing the node
         self.service = self.create_service(Trigger, 'end_session', self.end_session)
+
+        #########################################################################################################
+        #                                          Geometry Related                                             #
+        #########################################################################################################
+
+        # Initialize a service client to get the robot geometry
+        self.geometry_client = self.create_client(GetRobotGeometry, 'get_robot_geometry')
+        
+        while not self.geometry_client.wait_for_service(timeout_sec=1.0):
+                self.get_logger().info('Waiting for "get_robot_geometry" service...')
+
+        # Send a request to get the robot geometry
+        self.send_geometry_request()
+        # Initialize flag to track whether geometry data has been received or not
+        self.has_geometry_data = False
+
+        #########################################################################################################
+        #                                             Publishing                                                #
+        #########################################################################################################
 
         # Initialize a publishers to publish the mocap data
         self.unlabelled_mocap_publisher = self.create_publisher(MocapDataMulti, 'mocap_data', 10)
@@ -56,6 +76,25 @@ class MocapInterfaceNode(Node):
             # Clear the pose to prevent duplicate data
             self.mocap_interface.clear_platform_pose()
 
+    def send_geometry_request(self):
+        """Send a request to get the robot geometry."""
+        request = GetRobotGeometry.Request()
+        self.future = self.geometry_client.call_async(request)
+        self.future.add_done_callback(self.handle_geometry_response)
+
+    def handle_geometry_response(self, future):
+        """Handle the response from the robot geometry service."""
+        try:
+            response = future.result()
+            if response is not None:
+                self.mocap_interface.set_base_to_platform_offset(response.start_pos[2])
+                self.has_geometry_data = True
+                self.get_logger().info("Received robot geometry data.")
+            else:
+                self.get_logger().error("Failed to get robot geometry data.")
+        except Exception as e:
+            self.get_logger().error(f"Service call failed: {e}")
+   
     #########################################################################################################
     #                                          Node Management                                              #
     #########################################################################################################

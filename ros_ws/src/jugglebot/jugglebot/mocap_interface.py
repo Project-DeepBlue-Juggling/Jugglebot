@@ -15,7 +15,7 @@ class MocapInterface:
     Only unlabelled markers and full rigid bodies are stored and processed.
     """
 
-    def __init__(self, host: str = "192.168.20.20", port: int = 22223, logger=None):
+    def __init__(self, host: str = "192.168.20.20", port: int = 22223, logger=None, node=None):
         """
         Initialize the tracker.
 
@@ -26,6 +26,10 @@ class MocapInterface:
         self.host = host
         self.port = port
         self.logger = logger
+        self.node = node
+
+        # mm to move in the z direction from the base to the platform in its lowest pos
+        self.base_to_platform_transformation = None
 
         # Initialize data to be stored
         self.unlabelled_markers = np.empty((0, 4))  # (x, y, z, residual)
@@ -137,26 +141,29 @@ class MocapInterface:
 
         for i, body in enumerate(bodies):
             # Log the body positions and rotations
-            self.logger.info("Body: {}".format(self.get_name_from_index(i, self.body_dict)))
-            self.logger.info(body)
-            self.logger.info("\tPosition: ({}, {}, {})".format(body[0].x, body[0].y, body[0].z))
-            self.logger.info(f"\tRotation: {self.rotation_list_to_quaternion(body[1].matrix)}")
+            # self.logger.info("Body: {}".format(self.get_name_from_index(i, self.body_dict)))
+            # self.logger.info("\tPosition: ({}, {}, {})".format(body[0].x, body[0].y, body[0].z))
+            # self.logger.info(f"\tRotation: {self.rotation_list_to_quaternion(body[1].matrix)}")
             
             # Get the body name
             body_name = self.get_name_from_index(i, self.body_dict)
 
             # If the body name is "Platform", update the platform pose
-            if body_name == "Platform":
-                with self.data_lock:
-                    # Convert the orientation into a quaternion
-                    x, y, z, w = self.rotation_list_to_quaternion(body[1].matrix)
-                    self.platform_pose.pose.position.x = body[0].x
-                    self.platform_pose.pose.position.y = body[0].y
-                    self.platform_pose.pose.position.z = body[0].z
-                    self.platform_pose.pose.orientation.x = x
-                    self.platform_pose.pose.orientation.y = y
-                    self.platform_pose.pose.orientation.z = z
-                    self.platform_pose.pose.orientation.w = w
+            if self.base_to_platform_transformation is not None:
+                if body_name == "Platform":
+                    with self.data_lock:
+                        self.platform_pose = PoseStamped()
+                        # Convert the orientation into a quaternion
+                        x, y, z, w = self.rotation_list_to_quaternion(body[1].matrix)
+                        self.platform_pose.header.stamp = self.node.get_clock().now().to_msg()
+                        self.platform_pose.header.frame_id = "platform_start"
+                        self.platform_pose.pose.position.x = body[0].x
+                        self.platform_pose.pose.position.y = body[0].y
+                        self.platform_pose.pose.position.z = body[0].z - self.base_to_platform_transformation
+                        self.platform_pose.pose.orientation.x = x
+                        self.platform_pose.pose.orientation.y = y
+                        self.platform_pose.pose.orientation.z = z
+                        self.platform_pose.pose.orientation.w = w
 
         # Process unlabelled markers, skipping NaN positions.
         markers_no_label_residual = packet.get_3d_markers_no_label_residual()
@@ -315,7 +322,20 @@ class MocapInterface:
         Clear the platform pose data.
         """
         with self.data_lock:
-            self.platform_pose = PoseStamped()
+            self.platform_pose = None
+
+    #########################################################################################################
+    #                                        Get Robot Geometry                                             #
+    #########################################################################################################
+
+    def set_base_to_platform_offset(self, offset: float):
+        """
+        Set the offset from the base to the platform.
+
+        Parameters:
+        - offset: The offset in mm.
+        """
+        self.base_to_platform_transformation = offset
 
 
 if __name__ == "__main__":
