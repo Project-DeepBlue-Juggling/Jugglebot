@@ -202,7 +202,7 @@ class StandbyIdleState(MonitorState):
         super().__init__(
             msg_type=String,
             topic_name="standby_command",
-            outcomes=["do_nothing", "activate_robot", "level_platform"],
+            outcomes=["do_nothing", "activate_robot", "level_platform", "home_robot"],
             monitor_handler=self.handle_standby_command,
             msg_queue=10
         )
@@ -241,7 +241,7 @@ class StandbyIdleState(MonitorState):
             return msg.data
 
         else:
-            self._node.get_logger().error(f"Unknown command received: {msg.data}. Available commands: 'activate_robot', 'level_platform'")
+            self._node.get_logger().error(f"Unknown command received: {msg.data}. Available commands: {self.get_outcomes()}")
             return "do_nothing"
 
 # Define the LEVELLING_PLATFORM State
@@ -533,6 +533,7 @@ def main():
     state_machine.add_state("STANDBY_IDLE", StandbyIdleState(), transitions={
         "level_platform": "LEVEL_PLATFORM",
         "activate_robot": "STANDBY_ACTIVE",
+        "home_robot": "HOMING",
         "do_nothing": "STANDBY_IDLE",
         "error": "FAULT"
     })
