@@ -35,7 +35,6 @@ def generate_launch_description():
         condition=UnlessCondition(use_simulator)
     )
 
-
     jugglebot_node_names = [
         'yasmin_state_machine',
         'spacemouse_handler',
@@ -76,6 +75,12 @@ def generate_launch_description():
     timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
     bag_dir = os.path.join(bags_dir, f"session_{timestamp}")
 
+    record = LaunchConfiguration('record')
+    record_arg = DeclareLaunchArgument(
+        'record',
+        default_value='false'
+    )
+
     # rosbag2 record command
     rosbag_record_cmd = [
         'ros2', 'bag', 'record', '/robot_state', '/leg_lengths_topic', '/hand_trajectory', '/mocap_data', '/platform_pose_topic',
@@ -85,12 +90,13 @@ def generate_launch_description():
 
     rosbag_record = ExecuteProcess(
         cmd=rosbag_record_cmd,
-        output='screen'
+        output='screen',
+        condition=IfCondition(record)
     )
-
 
     return LaunchDescription([
         use_simulator_arg,
+        record_arg,
         rosbridge_include_description,
         simulator_include_description,
         can_bus_node,
