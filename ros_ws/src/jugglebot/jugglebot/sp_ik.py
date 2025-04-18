@@ -58,8 +58,9 @@ class SPInverseKinematics(Node):
         # Initialize the control_mode flag
         self.control_mode = None
 
-        # Subscribe to the platform pose topics from each control method
-        self.pose_subscription = self.create_subscription(PlatformPoseMessage, 'platform_pose_topic', self.pose_callback, 10)
+        # Subscribe to the (corrected) platform pose topic
+        self.pose_subscription = self.create_subscription(PlatformPoseMessage, 'platform_pose_corrected', self.pose_callback, 10)
+        # self.pose_subscription = self.create_subscription(PlatformPoseMessage, 'platform_pose_topic', self.pose_callback, 10) # If bypassing the correction node
 
         # Subscribe to the pose offset topic
         self.pose_offset_subscription = self.create_subscription(Quaternion, 'pose_offset_topic', self.pose_offset_callback, 10)
