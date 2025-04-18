@@ -64,7 +64,7 @@ class RobotGeometry(Node):
         Returns the optimized geometry of the robot, determined using offline methods.
         '''
 
-        self.initial_height = 573.6 # FOUND EXPERIMENTALLY (by echoing /platform_pose_mocap after homing)
+        self.initial_height = 574.3 # FOUND EXPERIMENTALLY (by echoing /platform_pose_mocap after homing)
         self.start_pos = np.array([[0], [0], [self.initial_height]])
 
         # Get the base and platform nodes. Currently just using the calculated ones from build_platform
@@ -87,10 +87,11 @@ class RobotGeometry(Node):
             [-180.9748501516028, 123.45832996442526, 0.0]
         ])
         # Initial leg lengths
-        self.init_leg_lengths = np.array([
+        self.init_leg_lengths = np.array([ # From the linear actuator testing. See Livestream #51 @ ~28min
             621.3890, 618.1596, 622.0740,
             620.6526, 620.6515, 620.0908
-        ]) # From the linear actuator testing. See Livestream #51 @ ~28min
+        ]) + 25.50 # Add the 12.50 mm radius of the ball joint ball (since these measurements were taken to its radius)
+                   # And the 13 mm gap between the 'measuring face' and the connection point to the upper leg
 
     def build_platform(self):
         # Builds the stewart platform, calculating the initial positions of all nodes
