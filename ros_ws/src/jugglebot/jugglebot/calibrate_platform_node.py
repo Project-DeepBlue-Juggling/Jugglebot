@@ -48,12 +48,13 @@ class CalibratePlatformNode(Node):
         self.start_calibration_server = self.create_service(Trigger, 'start_calibration', self.start_calibration,
                                                              callback_group=MutuallyExclusiveCallbackGroup())
 
-        self.test_radii = [0.0, 150.0, 330.0] # Radii to move the platform to {mm}
+        self.test_radii = [0.0, 150.0, 180.0] # Radii to move the platform to {mm}
         self.test_height_min = 130.0 # Minimum height to test. Measured from platform lowest position {mm}
         self.test_height_max = 200.0 # Maximum height to test. Measured from platform lowest position {mm}
         self.pts_at_each_radius = 4  # Number of points to test at each radius
 
         self.time_at_each_pose = 2.0 # seconds to wait AFTER the platform has arrived at the pose
+        pattern_iterations = 1 # Number of times to repeat the pattern
 
         self.leg_lengths = [None] * 6 # Variable to store the leg lengths right now. This is used to publish the leg lengths once each movement has settled
         self.platform_pose_mocap = PoseStamped() # Variable to store the mocap pose of the platform
@@ -62,6 +63,7 @@ class CalibratePlatformNode(Node):
         self.pose_pattern_generator = PosePatternGenerator(self.test_radii, self.pts_at_each_radius,
                                                               self.test_height_min, self.test_height_max,
                                                               height_increments=4, orientations_per_position=3, tilt_angle_limits=15.0,
+                                                              iterations=pattern_iterations,
                                                               logger=self.get_logger())
 
     #########################################################################################################
@@ -80,8 +82,10 @@ class CalibratePlatformNode(Node):
 
         # Generate the poses
         # poses = self.pose_pattern_generator.generate_poses(pose_type='test_poses')
-        # poses = self.pose_pattern_generator.generate_poses(pose_type='dummy_square', iterations=100)
-        poses = self.pose_pattern_generator.generate_poses(pose_type='sad_face')
+        # poses = self.pose_pattern_generator.generate_poses(pose_type='dummy_square')
+        # poses = self.pose_pattern_generator.generate_poses(pose_type='sad_face')
+        # poses = self.pose_pattern_generator.generate_poses(pose_type='grid')
+        poses = self.pose_pattern_generator.generate_poses(pose_type='happy_face')
 
         for i, pose in enumerate(poses):
             self.get_logger().info(f'Moving to pose {i}: {pose.pose.position.x:.3f}, {pose.pose.position.y:.3f}, {pose.pose.position.z:.3f}, '

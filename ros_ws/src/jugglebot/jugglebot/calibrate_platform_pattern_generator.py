@@ -12,7 +12,7 @@ from ament_index_python import get_package_share_directory
 
 class PosePatternGenerator:
     def __init__(self, test_radii, pts_at_each_radius, test_height_min, 
-                 test_height_max, height_increments, orientations_per_position, tilt_angle_limits, 
+                 test_height_max, height_increments, orientations_per_position, tilt_angle_limits, iterations=1,
                  logger=None):
         """
         Initializes the generator.
@@ -22,9 +22,10 @@ class PosePatternGenerator:
           pts_at_each_radius: number of points to generate at each nonzero radius
           test_height_min: minimum height to test
           test_height_max: maximum height to test
-          height_increments: number of height increments to
+          height_increments: number of height increments to test
           orientations_per_position: number of orientations to generate for each position
           tilt_angle_limits: maximum angle in degrees for roll and pitch rotations
+          iterations: number of times to repeat the pattern
         """
         self.test_radii = test_radii
         self.pts_at_each_radius = pts_at_each_radius
@@ -33,29 +34,29 @@ class PosePatternGenerator:
         self.height_increments = height_increments # Number of height increments to test
         self.num_orientations_per_position = orientations_per_position
         self.tilt_angle_limits = tilt_angle_limits
+        self.iterations = iterations
 
         self.logger = logger
 
-        self.base_to_platform_transformation = 565.0  # Difference between the platform lowest height and base {mm}
+        self.base_to_platform_transformation = 565.0  # Diff b/w plat lowest height and base {mm}. Only used for plotting purposes
 
         # Get the workspace file path
         self.workspace_file_path = os.path.join(get_package_share_directory('jugglebot'), 'resources', 'convex_hull_points_big.json')
 
-    def generate_poses(self, pose_type, iterations=1):
+    def generate_poses(self, pose_type):
         """
         Generates a set of poses based on the provided pose_type ('sad_face' or 'test_poses'),
         filters them to include only those that are reachable within the robot's workspace,
         prints basic statistics about the filtered poses, and returns the filtered list.
         """
         # Generate the full pose set based on the specified type.
-        if pose_type == 'test_poses':
-            poses = self.generate_test_poses()
-        elif pose_type == 'sad_face':
-            poses = self.generate_sad_face_poses()
-        elif pose_type == 'dummy_square':
-            poses = self.generate_dummy_square_poses(iterations=iterations)
+        # Dynamically call the appropriate generator method based on pose_type
+        method_name = f"generate_{pose_type}_poses"
+        if hasattr(self, method_name):
+            poses = getattr(self, method_name)()
         else:
-            raise ValueError("Unsupported pose_type. Use 'test_poses' or 'sad_face'.")
+            raise ValueError("Unsupported pose_type. Use one of the available pattern types.")
+
 
         total_poses = len(poses)
         # Filter poses to include only those within the workspace.
@@ -98,7 +99,7 @@ class PosePatternGenerator:
         """
         face_points = []
 
-        z=self.test_height_min
+        z = (self.test_height_min + self.test_height_max) / 2
         
         # Scale and translate so points fall within (-150, 150)
         # Desired output range: (-range_val, range_val) for both x and y
@@ -167,7 +168,7 @@ class PosePatternGenerator:
             pose.pose.position.z = z
             face_points.append(pose)
 
-        # For all points, the orientation should be horizontal
+        # For all points, the orientation should be neutral
         for pose in face_points:
             pose.pose.orientation.x = 0.0
             pose.pose.orientation.y = 0.0
@@ -176,6 +177,90 @@ class PosePatternGenerator:
         
         return face_points
     
+    def generate_happy_face_poses(self):
+        """
+        Generates a list of PoseStamped points that, when connected,
+        form a happy face (i.e. a smiling face) made solely of points.
+        
+        The face consists of:
+          • Two eyes drawn as small semi-circles (10 points each)
+          • A smiling mouth drawn as a U-shaped (convex downward) quadratic curve (80 points)
+          
+        Total points ≈ 100.
+        """
+        face_points = []
+
+        z = (self.test_height_min + self.test_height_max) / 2
+        
+        # Scale and translate so points fall within (-150, 150)
+        # Desired output range: (-range_val, range_val) for both x and y
+        range_val = 150
+        # The original pattern was designed with these known extents:
+        # x in [-0.35, 0.35] and y in [0.0, 0.75]
+        orig_x_min, orig_x_max = -0.35, 0.35
+        orig_y_min, orig_y_max = 0.0, 0.75
+        # Compute centers for x and y to center the pattern at (0, 0)
+        center_x = (orig_x_min + orig_x_max) / 2    # 0.0
+        center_y = (orig_y_min + orig_y_max) / 2      # 0.375
+        # Determine the half-extent for each axis in the original design
+        half_range_x = (orig_x_max - orig_x_min) / 2  # 0.35
+        half_range_y = (orig_y_max - orig_y_min) / 2  # 0.375
+        # Use a uniform scale factor (x always = y) based on the maximum half-range
+        uniform_scale = range_val / max(half_range_x, half_range_y)
+        # --- Eyes (10 points each) ---
+        num_eye_points = 20
+        eye_radius = 0.10
+        # Define eye centers in original coordinates
+        left_eye_center = (-0.3, 0.7)
+        right_eye_center = (0.3, 0.7)
+        eye_thetas = np.linspace(0, np.pi, num_eye_points, endpoint=False)
+        for theta in eye_thetas:    
+            x = left_eye_center[0] + eye_radius * np.cos(theta)
+            y = left_eye_center[1] + eye_radius * np.sin(theta)
+            pose = PoseStamped()
+            pose.pose.position.x = (x - center_x) * uniform_scale
+            pose.pose.position.y = (y - center_y) * uniform_scale
+            pose.pose.position.z = z
+            face_points.append(pose)
+        for theta in eye_thetas:
+            x = right_eye_center[0] + eye_radius * np.cos(theta)
+            y = right_eye_center[1] + eye_radius * np.sin(theta)
+            pose = PoseStamped()
+            pose.pose.position.x = (x - center_x) * uniform_scale
+            pose.pose.position.y = (y - center_y) * uniform_scale
+            pose.pose.position.z = z
+            face_points.append(pose)
+        # --- Mouth ---
+        num_mouth_points = 40
+        mouth_xs = np.linspace(-0.3, 0.3, num_mouth_points)
+        # Quadratic expression for a smiling mouth
+        a = 2.222
+        b = -0.2
+        for x in mouth_xs:  
+            y = a * (x ** 2) + b
+            pose = PoseStamped()
+            pose.pose.position.x = (x - center_x) * uniform_scale
+            pose.pose.position.y = (y - center_y) * uniform_scale
+            pose.pose.position.z = z
+            face_points.append(pose)
+        # Add a horizontal line at the top of the mouth to make a complete "D" shape (like :D)
+        mouth_top_y = a * (0.3 ** 2) + b
+        mouth_top_xs = np.linspace(-0.3, 0.3, num_mouth_points)
+        for x in mouth_top_xs:
+            pose = PoseStamped()
+            pose.pose.position.x = (x - center_x) * uniform_scale
+            pose.pose.position.y = (mouth_top_y - center_y) * uniform_scale 
+            pose.pose.position.z = z
+            face_points.append(pose)
+        # For all points, the orientation should be neutral
+        for pose in face_points:
+            pose.pose.orientation.x = 0.0
+            pose.pose.orientation.y = 0.0
+            pose.pose.orientation.z = 0.0
+            pose.pose.orientation.w = 1.0
+        
+        return face_points
+
     def generate_test_poses(self):
         """
         Generates the poses that the platform will move to, forming a cylindrical pattern
@@ -218,12 +303,12 @@ class PosePatternGenerator:
                         pose_list.append(pose)
         return pose_list
 
-    def generate_dummy_square_poses(self, iterations=1):
+    def generate_dummy_square_poses(self):
         """
         Generates a square pattern of poses for testing purposes.
         """
         pose_list = []
-        for _ in range(iterations):
+        for _ in range(self.iterations):
             for i in [-1, 1]:
                 for j in [-1, 1]:
                     pose = PoseStamped()
@@ -236,6 +321,32 @@ class PosePatternGenerator:
                     pose.pose.orientation.w = 1.0
                     pose_list.append(pose)
         return pose_list
+
+    def generate_grid_poses(self):
+        """
+        Generates a grid pattern of poses for testing purposes.
+        The grid will be a 2D plane at the average height between test_height_min and test_height_max.
+        The grid will be centered at (0, 0) and will have an extent of max(test_radii) in both x and y directions.
+        """
+        pose_list = []
+        grid_size = max(self.test_radii) * 2-10
+        num_points_per_side = 9  # Number of points along each side of the grid
+        z = (self.test_height_min + self.test_height_max) / 2
+        x_values = np.linspace(-grid_size / 2, grid_size / 2, num_points_per_side)
+        y_values = np.linspace(-grid_size / 2, grid_size / 2, num_points_per_side)
+        for x in x_values:
+            for y in y_values:
+                pose = PoseStamped()
+                pose.pose.position.x = x
+                pose.pose.position.y = y
+                pose.pose.position.z = z
+                pose.pose.orientation.x = 0.0
+                pose.pose.orientation.y = 0.0
+                pose.pose.orientation.z = 0.0
+                pose.pose.orientation.w = 1.0
+                pose_list.append(pose)
+        return pose_list
+        
 
     #########################################################################################################
     #                                           Helper Methods                                              #
@@ -320,16 +431,18 @@ class PosePatternGenerator:
 if __name__ == "__main__":
     # --- Example usage ---
     # Parameters for the general pose generator (adjust as needed)
-    test_radii = [0.0, 150.0, 330.0]  # radii in mm
+    test_radii = [0.0, 150.0, 200.0]  # radii in mm
     pts_at_each_radius = 4
     test_height_min = 130.0
     test_height_max = 200.0
     height_increments = 4
     orientations_per_position = 3
     tilt_angle_limits = 15.0
+    pattern_iterations = 1 # How many times to repeat the chosen pattern
 
     generator = PosePatternGenerator(test_radii, pts_at_each_radius, test_height_min,
-                                     test_height_max, height_increments, orientations_per_position, tilt_angle_limits)
+                                     test_height_max, height_increments, orientations_per_position, 
+                                     tilt_angle_limits, iterations=pattern_iterations)
     
     if generator.logger is None:
         logger = logging.getLogger("MocapInterface")
@@ -341,8 +454,9 @@ if __name__ == "__main__":
         generator.logger = logger
     
     # Generate and display the number of general poses
-    # poses = generator.generate_poses('dummy_square', iterations=10)
-    poses = generator.generate_poses('sad_face')
+    # poses = generator.generate_poses('dummy_square')
+    # poses = generator.generate_poses('grid')
+    poses = generator.generate_poses('happy_face')
 
     # Get the filetered poses within the workspace
     filtered_poses = generator.filter_reachable_poses(poses)
