@@ -47,6 +47,7 @@ def generate_launch_description():
         'catch_dropped_ball_node',
         'hand_testing_node',
         'calibrate_platform_node',
+        'pose_correction_node',
     ]
     jugglebot_nodes = [
         Node(
