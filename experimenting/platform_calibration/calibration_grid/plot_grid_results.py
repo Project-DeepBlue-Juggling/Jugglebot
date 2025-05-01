@@ -6,16 +6,17 @@ import os
 import matplotlib.pyplot as plt
 
 # Import the CSV file
-file_name = '180x180_grid.csv'
+# file_name = '180x180_grid.csv'
+# file_name = '180x180_grid_with_ff_correction.csv'
 # file_name = '160x160_grid_with_ff_correction.csv'
-# file_name = 'Happy face.csv'
+file_name = 'Happy face.csv'
 
 # Get the current working directory
 current_dir = os.path.dirname(os.path.abspath(__file__))
 # Construct the full path to the CSV file
 csv_file_path = os.path.join(current_dir, file_name)
 
-arrow_length = 1
+arrow_length = 0.2
 
 # Read CSV
 df = pd.read_csv(csv_file_path)
