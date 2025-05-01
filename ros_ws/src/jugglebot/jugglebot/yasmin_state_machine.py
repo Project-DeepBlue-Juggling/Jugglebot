@@ -27,6 +27,7 @@ ACTIVE_STATE_OUTCOMES = {
     "catch_thrown_ball_node_cmd": "CATCH_THROWN_BALL_NODE",
     "catch_dropped_ball_node_cmd": "CATCH_DROPPED_BALL_NODE",
     "calibrate_platform_cmd": "CALIBRATE_PLATFORM",
+    "hoop_sinker_cmd": "HOOP_SINKER",
 }
 
 def build_active_state_transitions(current_mode: str):
@@ -391,8 +392,8 @@ class GenericActiveState(MonitorState):
             return msg.data
         
         else:
-            self._node.get_logger().error(f"Unknown command received: {msg.data}.", 
-                                          "Available commands: {blackboard['available_control_modes']}")
+            self._node.get_logger().error(f"Unknown command received: {msg.data}."  
+                                          f"Available commands: {blackboard['available_control_modes']}")
             self.deactivate_on_exit = True
             return "return_to_standby_idle"
 
