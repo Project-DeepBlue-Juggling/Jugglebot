@@ -85,7 +85,7 @@ class CANInterface:
 
     # Set absolute limit for how far the motors can turn. This is intended as a backup if prior error-checking fails
     _LEG_MOTOR_MAX_POSITION  = 4.2  # Revs
-    _HAND_MOTOR_MAX_POSITION = 11.1 # Revs
+    _HAND_MOTOR_MAX_POSITION = 11.0 # Revs
 
     # Set the limits for trapezoidal trajectory control (used only for the legs)
     _DEFAULT_TRAP_TRAJ_LIMITS = {'vel_limit': 15.0, 'acc_limit': 30.0, 'dec_limit': 30.0} # rev/s, rev/s^2
@@ -133,7 +133,7 @@ class CANInterface:
         # Create a dictionary of callbacks that are used in the ROS2 node
         self.callbacks: Dict[str, Optional[Callable]] = {
             'can_traffic'   : None,
-            # 'hand_telemetry': None,
+            'hand_telemetry': None,
         }
 
         # Initialize the number of axes that the robot has
