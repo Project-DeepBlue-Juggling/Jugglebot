@@ -24,7 +24,7 @@ find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/RobotState.msg"
-  "msg/PlatformPoseMessage.msg"
+  "msg/PlatformPoseCommand.msg"
   "msg/MotorStateSingle.msg"
   "msg/MocapDataSingle.msg"
   "msg/MocapDataMulti.msg"

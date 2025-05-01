@@ -48,6 +48,7 @@ def generate_launch_description():
         'hand_testing_node',
         'calibrate_platform_node',
         'pose_correction_node',
+        'hoop_sinker_node',
     ]
     jugglebot_nodes = [
         Node(
@@ -85,7 +86,7 @@ def generate_launch_description():
     # rosbag2 record command
     rosbag_record_cmd = [
         'ros2', 'bag', 'record', '/robot_state', '/leg_lengths_topic', '/hand_trajectory', '/mocap_data', '/platform_pose_topic',
-        '/platform_pose_mocap', '/settled_leg_lengths', '/settled_platform_pose',
+        '/platform_pose_mocap', '/settled_leg_lengths', '/settled_platform_poses', '/hand_telemetry',
         '-s', 'mcap', '-o', bag_dir
     ]
 

@@ -39,6 +39,7 @@ setup(
             'hand_testing_node = jugglebot.hand_testing_node:main',
             'calibrate_platform_node = jugglebot.calibrate_platform_node:main',
             'pose_correction_node = jugglebot.pose_correction_node:main',
+            'hoop_sinker_node = jugglebot.hoop_sinker_node:main',
         ],
     },
 )
