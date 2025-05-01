@@ -20,9 +20,6 @@ import time
 from .hand_trajectory_generator import HandTrajGenerator
 
 class HandTestingNode(Node):
-    HAND_SPOOL_EFFECTIVE_RADIUS = 5.134 # {mm} Measured experimentally. (stroke / [revs_to_move_stroke * 2 * pi])
-    LINEAR_GAIN = 1000 / (np.pi * HAND_SPOOL_EFFECTIVE_RADIUS * 2) # {rev/m}
-
     # Position of the ball when the hand is at the top of the stroke. Measured experimentally.
     BALL_Z_COORDINATE_AT_TOP_OF_STROKE = 828.2 # {mm}. (at "TOP_POSITION" revs)
     BALL_TOP_STROKE_POSITION_REVS = 9.858 # {revs}
@@ -245,10 +242,6 @@ class HandTestingNode(Node):
         # Get the trajectory
         time_cmd, pos, vel, tor = self.hand_traj_gen.get_full_trajectory()
 
-        # Multiply the position and velocity by the linear gain to convert from m to rev
-        pos = [p * self.LINEAR_GAIN * linear_gain_factor for p in pos]
-        vel = [v * self.LINEAR_GAIN * linear_gain_factor for v in vel]
-
         end_time = time.perf_counter()
         
         # Log the time taken to generate the trajectory in milliseconds
@@ -258,8 +251,6 @@ class HandTestingNode(Node):
 
     def get_drop_catch_traj(self, drop_height_m, drop_time, linear_gain_factor=1.0):
         '''Get the trajectory of the catch motion'''
-        effective_linear_gain = self.LINEAR_GAIN * linear_gain_factor
-
         start_time = time.perf_counter()
 
         self.hand_traj_gen.set_flight_parameters(throw_height=drop_height_m)
@@ -269,11 +260,6 @@ class HandTestingNode(Node):
 
         # Get the time (relative to the start of the catch movement) and position of the catch event
         catch_time_from_start_of_hand_movement, catch_pos = self.hand_traj_gen.get_catch_time_and_position()
-
-        # Multiply the position and velocity by the linear gain to convert from m to rev
-        catch_pos = catch_pos * effective_linear_gain
-        pos = [p * effective_linear_gain for p in pos]
-        vel = [v * effective_linear_gain for v in vel]
 
         # Calculate how long it will take for the ball to reach the catch position from when it was dropped
         time_to_catch_from_drop = np.sqrt(8 * drop_height_m / 9.81) # {s} # NOTE NOTE NOTE Should be "2 * " not "8 * "!!!

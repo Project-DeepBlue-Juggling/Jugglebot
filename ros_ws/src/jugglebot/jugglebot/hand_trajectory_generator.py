@@ -12,7 +12,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 class HandTrajGenerator:
-    def __init__(self, throw_height=0.2, throw_range=0.0, inertia_ratio=0.747,
+    HAND_SPOOL_EFFECTIVE_RADIUS = 5.210 # {mm} Measured experimentally. (stroke / [revs_to_move_stroke * 2 * pi])
+    LINEAR_GAIN_FACTOR = 1.0 # To manually adjust the linear gain
+    LINEAR_GAIN = (1000 / (np.pi * HAND_SPOOL_EFFECTIVE_RADIUS * 2)) * LINEAR_GAIN_FACTOR # {rev/m}
+
+    def __init__(self, throw_height_m=0.2, throw_range_mm=0.0, inertia_ratio=0.747,
                  throw_vel_hold_pct=0.05, catch_vel_ratio=0.8, catch_vel_hold_pct=0.1,
                  sample_rate=500):
         
@@ -34,8 +38,8 @@ class HandTrajGenerator:
         self.eff_spool_r = 0.005134  # m
 
         # Inputs
-        self.throw_height = throw_height  # Height of throw in meters
-        self.plat_throw_range = throw_range  # How far the COM of the platform moves during the throw {mm}
+        self.throw_height = throw_height_m  # Height of throw in meters
+        self.plat_throw_range = throw_range_mm  # How far the ball travels along the x-y plane during the throw {mm}
         self.inertia_ratio = inertia_ratio  # Ratio of hand actuator inertia without ball over total inertia with ball in hand
         self.throw_vel_hold_pct = throw_vel_hold_pct  # % of total stroke used for velocity hold segment of throw
         self.catch_vel_ratio = catch_vel_ratio  # Relative Speed of hand compared to ball at catch
@@ -242,14 +246,10 @@ class HandTrajGenerator:
 
     def plot_results(self, t, x, v, a, title=None, unit='rev'):
         if unit == 'rev':
-            # Define constants to scale the plot correctly
-            HAND_SPOOL_EFFECTIVE_RADIUS = 5.134 # {mm} Measured experimentally. (stroke / [revs_to_move_stroke * 2 * pi])
-            LINEAR_GAIN = 1000 / (np.pi * HAND_SPOOL_EFFECTIVE_RADIUS * 2) # {rev/m}
-
             # Scale the position, velocity and acceleration by multiplying by the linear gain
-            x = [element * LINEAR_GAIN for element in x]
-            v = [element * LINEAR_GAIN for element in v]
-            a = [element * LINEAR_GAIN for element in a]
+            x = [element * self.LINEAR_GAIN for element in x]
+            v = [element * self.LINEAR_GAIN for element in v]
+            a = [element * self.LINEAR_GAIN for element in a]
 
             # Set the y-axis labels
             y_label_pos = 'Position (rev)'
@@ -312,6 +312,10 @@ class HandTrajGenerator:
         # Generate the command time series
         t, x, v, a, tor = self.generate_command_time_series()
 
+        # Multiply the position and velocity by the linear gain to convert from m to rev
+        x = [element * self.LINEAR_GAIN for element in x]
+        v = [element * self.LINEAR_GAIN for element in v]
+
         return t, x, v, tor
     
     def get_throw_trajectory(self):
@@ -319,12 +323,20 @@ class HandTrajGenerator:
         # Generate the throw time series
         t, x, v, a, tor = self.generate_throw_time_series()
 
+        # Multiply the position and velocity by the linear gain to convert from m to rev
+        x = [element * self.LINEAR_GAIN for element in x]
+        v = [element * self.LINEAR_GAIN for element in v]
+
         return t, x, v, tor, self.air_time_s
     
     def get_catch_trajectory(self):
         '''Generates and returns the catch trajectory'''
         # Generate the catch time series
         t, x, v, a, tor = self.generate_catch_time_series()
+
+        # Multiply the position and velocity by the linear gain to convert from m to rev
+        x = [element * self.LINEAR_GAIN for element in x]
+        v = [element * self.LINEAR_GAIN for element in v]
 
         return t, x, v, tor
     
@@ -392,13 +404,13 @@ if __name__ == '__main__':
     # Set the unit to generate the plots in (either 'rev' or 'm')
     plot_unit = 'rev'
 
-    sim = HandTrajGenerator(throw_height=0.5)
-    # t, x, v, a, tor = sim.generate_throw_time_series()
-    # sim.plot_results(t, x, v, a, title='Throw', unit=plot_unit)
-    # print(f'Number of points in throw trajectory: {len(t)}')
+    sim = HandTrajGenerator(throw_height_m=1.43, throw_range_mm=622.8)
+    t, x, v, a, tor = sim.generate_throw_time_series()
+    sim.plot_results(t, x, v, a, title='Throw', unit=plot_unit)
+    print(f'Number of points in throw trajectory: {len(t)}')
 
-    t, x, v, a, tor = sim.generate_catch_time_series()
-    sim.plot_results(t, x, v, a, title='Catch', unit=plot_unit)
+    # t, x, v, a, tor = sim.generate_catch_time_series()
+    # sim.plot_results(t, x, v, a, title='Catch', unit=plot_unit)
 
     # t, x, v, a, tor = sim.generate_command_time_series()
     # sim.plot_results(t, x, v, a, title='Throw and Catch', unit=plot_unit)
