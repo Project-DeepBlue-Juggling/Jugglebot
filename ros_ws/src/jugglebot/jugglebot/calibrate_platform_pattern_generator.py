@@ -57,7 +57,6 @@ class PosePatternGenerator:
         else:
             raise ValueError("Unsupported pose_type. Use one of the available pattern types.")
 
-
         total_poses = len(poses)
         # Filter poses to include only those within the workspace.
         filtered_poses = self.filter_reachable_poses(poses)
@@ -322,15 +321,15 @@ class PosePatternGenerator:
                     pose_list.append(pose)
         return pose_list
 
-    def generate_grid_poses(self):
+    def generate_flat_grid_poses(self):
         """
         Generates a grid pattern of poses for testing purposes.
         The grid will be a 2D plane at the average height between test_height_min and test_height_max.
         The grid will be centered at (0, 0) and will have an extent of max(test_radii) in both x and y directions.
         """
         pose_list = []
-        grid_size = max(self.test_radii) * 2-10
-        num_points_per_side = 9  # Number of points along each side of the grid
+        grid_size = max(self.test_radii) * 2
+        num_points_per_side = 10  # Number of points along each side of the grid
         z = (self.test_height_min + self.test_height_max) / 2
         x_values = np.linspace(-grid_size / 2, grid_size / 2, num_points_per_side)
         y_values = np.linspace(-grid_size / 2, grid_size / 2, num_points_per_side)
@@ -347,6 +346,50 @@ class PosePatternGenerator:
                 pose_list.append(pose)
         return pose_list
         
+    def generate_angled_grid_poses(self):
+        """
+        Generates a grid pattern of poses for testing purposes.
+        The grid will be a 2D plane at the average height between test_height_min and test_height_max.
+        The grid will be centered at (0, 0) and will have an extent of max(test_radii) in both x and y directions.
+        At each point, the platform will be tilted at a total of 9 orientations: 0, ±5, ±10 degrees in roll and pitch.
+        """
+        pose_list = []
+        grid_size = max(self.test_radii) * 2
+        num_points_per_side = 10
+        z = (self.test_height_min + self.test_height_max) / 2
+        x_values = np.linspace(-grid_size / 2, grid_size / 2, num_points_per_side)
+        y_values = np.linspace(-grid_size / 2, grid_size / 2, num_points_per_side)
+        small_angle = np.deg2rad(5)
+        large_angle = np.deg2rad(10)
+        for x in x_values:
+            for y in y_values:
+                for roll in [0, small_angle, -small_angle, large_angle, -large_angle]:
+                    for pitch in [0, small_angle, -small_angle, large_angle, -large_angle]:
+                        pose = PoseStamped()
+                        pose.pose.position.x = x
+                        pose.pose.position.y = y
+                        pose.pose.position.z = z
+                        q_roll = quaternion.from_rotation_vector([roll, 0, 0])
+                        q_pitch = quaternion.from_rotation_vector([0, pitch, 0])
+                        q = q_roll * q_pitch
+                        pose.pose.orientation.x = q.x
+                        pose.pose.orientation.y = q.y
+                        pose.pose.orientation.z = q.z
+                        pose.pose.orientation.w = q.w
+                        pose_list.append(pose)
+        return pose_list
+
+    def generate_random_sample_angled_grid_poses(self):
+        """
+        Generates a the full grid pattern from generate_angled_grid_poses() and then randomly samples
+        a user-specified number of poses from that full set
+        """
+
+        full_pose_list = self.generate_angled_grid_poses()
+        num_samples = 100
+        sampled_indices = np.random.choice(len(full_pose_list), num_samples, replace=False)
+        sampled_poses = [full_pose_list[i] for i in sampled_indices]
+        return sampled_poses
 
     #########################################################################################################
     #                                           Helper Methods                                              #
@@ -455,8 +498,10 @@ if __name__ == "__main__":
     
     # Generate and display the number of general poses
     # poses = generator.generate_poses('dummy_square')
-    # poses = generator.generate_poses('grid')
-    poses = generator.generate_poses('happy_face')
+    # poses = generator.generate_poses('flat_grid')
+    # poses = generator.generate_poses('happy_face')
+    # poses = generator.generate_poses('angled_grid')
+    poses = generator.generate_poses('random_sample_angled_grid')
 
     # Get the filetered poses within the workspace
     filtered_poses = generator.filter_reachable_poses(poses)

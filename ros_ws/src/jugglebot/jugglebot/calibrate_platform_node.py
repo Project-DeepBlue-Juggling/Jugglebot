@@ -6,11 +6,12 @@ from rclpy.node import Node
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from std_srvs.srv import Trigger
-from std_msgs.msg import String, Float32MultiArray
-from jugglebot_interfaces.msg import PlatformPoseMessage, SetTrapTrajLimitsMessage, LegsTargetReachedMessage, RobotState
-from geometry_msgs.msg import PoseStamped
+from std_msgs.msg import String, Float32MultiArray, Int8MultiArray
+from jugglebot_interfaces.msg import PlatformPoseCommand, SetTrapTrajLimitsMessage, LegsTargetReachedMessage, RobotState
+from geometry_msgs.msg import PoseStamped, PoseArray, Pose
 import time
 from .calibrate_platform_pattern_generator import PosePatternGenerator
+import numpy as np
 
 class CalibratePlatformNode(Node):
     def __init__(self):
@@ -31,16 +32,18 @@ class CalibratePlatformNode(Node):
         self.service = self.create_service(Trigger, 'end_session', self.end_session)
 
         # Initialize publishers
-        self.platform_pose_publisher = self.create_publisher(PlatformPoseMessage, 'platform_pose_topic', 10)
+        self.platform_pose_publisher = self.create_publisher(PlatformPoseCommand, 'platform_pose_topic', 10)
         self.set_trap_traj_limits_publisher = self.create_publisher(SetTrapTrajLimitsMessage, 'set_leg_trap_traj_limits', 10)
         self.settled_leg_lengths_publisher = self.create_publisher(Float32MultiArray, 'settled_leg_lengths', 10)
-        self.settled_platform_pose_publisher = self.create_publisher(PoseStamped, 'settled_platform_pose', 10)
+        self.settled_platform_poses_publisher = self.create_publisher(PoseArray, 'settled_platform_poses', 10)
 
         # Initialize subscribers
         self.control_mode_subscriber = self.create_subscription(String, 'control_mode_topic', self.control_mode_callback, 10)
         self.legs_target_reached_subscriber = self.create_subscription(LegsTargetReachedMessage, 'platform_target_reached',
                                                                        self.legs_target_reached_callback, 10)
-          # The following subscribers are used to publish hardware feedback 'snapshots' so that it's easier to pick out the data we need
+        self.legs_state_subscriber = self.create_subscription(Int8MultiArray, 'leg_state_topic', self.legs_state_callback, 10)
+
+        # The following subscribers are used to publish hardware feedback 'snapshots' so that it's easier to pick out the data we need
         self.robot_state_subscriber = self.create_subscription(RobotState, 'robot_state', self.robot_state_callback, 10)
         self.platform_pose_mocap_subscriber = self.create_subscription(PoseStamped, 'platform_pose_mocap', self.platform_pose_mocap_callback, 10)
 
@@ -57,7 +60,9 @@ class CalibratePlatformNode(Node):
         pattern_iterations = 1 # Number of times to repeat the pattern
 
         self.leg_lengths = [None] * 6 # Variable to store the leg lengths right now. This is used to publish the leg lengths once each movement has settled
-        self.platform_pose_mocap = PoseStamped() # Variable to store the mocap pose of the platform
+        self.leg_states = [None] * 6 # Variable to store the leg states. Used to  inform whether to save (publish) this pose or not
+        self.pose_meas = Pose() # Variable to store the mocap pose of the platform
+        self.pose_cmd = Pose() # Variable to store the commanded pose of the platform
 
         # Initialize the pose pattern generator
         self.pose_pattern_generator = PosePatternGenerator(self.test_radii, self.pts_at_each_radius,
@@ -84,8 +89,10 @@ class CalibratePlatformNode(Node):
         # poses = self.pose_pattern_generator.generate_poses(pose_type='test_poses')
         # poses = self.pose_pattern_generator.generate_poses(pose_type='dummy_square')
         # poses = self.pose_pattern_generator.generate_poses(pose_type='sad_face')
-        # poses = self.pose_pattern_generator.generate_poses(pose_type='grid')
-        poses = self.pose_pattern_generator.generate_poses(pose_type='happy_face')
+        # poses = self.pose_pattern_generator.generate_poses(pose_type='flat_grid')
+        # poses = self.pose_pattern_generator.generate_poses(pose_type='happy_face')
+        # poses = self.pose_pattern_generator.generate_poses(pose_type='angled_grid')
+        poses = self.pose_pattern_generator.generate_poses(pose_type='random_sample_angled_grid')
 
         for i, pose in enumerate(poses):
             self.get_logger().info(f'Moving to pose {i}: {pose.pose.position.x:.3f}, {pose.pose.position.y:.3f}, {pose.pose.position.z:.3f}, '
@@ -95,9 +102,16 @@ class CalibratePlatformNode(Node):
             self.move_to_calibration_pose_and_await_arrival(pose)
             time.sleep(self.time_at_each_pose) # Wait for the nominated duration
 
+            # Check if any leg state is non-zero. If so, skip this pose
+            if any(self.leg_states):
+                self.get_logger().info(f'Leg state is non-zero. Skipping pose {i}.')
+                # Empty the leg states
+                self.leg_states = [None] * 6
+                continue
+
             # Now that the platform has arrived at the pose, publish the leg lengths and measured platform pose
             self.publish_settled_leg_lengths()
-            self.publish_settled_platform_pose()
+            self.publish_settled_platform_poses()
     
         # Return to the home pose
         home_pose = PoseStamped()
@@ -132,11 +146,13 @@ class CalibratePlatformNode(Node):
         self.legs_target_reached = [False] * 6
 
         # Create the message
-        pose_msg = PlatformPoseMessage()
+        pose_msg = PlatformPoseCommand()
         pose_msg.pose_stamped = pose
         pose_msg.pose_stamped.header.frame_id = 'platform_start'
         pose_msg.pose_stamped.header.stamp = self.get_clock().now().to_msg()
         pose_msg.publisher = 'CALIBRATE_PLATFORM'
+
+        self.pose_cmd = pose_msg.pose_stamped.pose
 
         # Publish the pose
         self.platform_pose_publisher.publish(pose_msg)
@@ -146,7 +162,8 @@ class CalibratePlatformNode(Node):
 
         # Wait for the platform to arrive at the calibration pose
         while not all (self.legs_target_reached):
-            self.get_logger().info(f'Waiting for platform to arrive at pose. Status: {self.legs_target_reached}',
+            not_arrived_indices = [i for i, reached in enumerate(self.legs_target_reached) if not reached]
+            self.get_logger().info(f'Waiting for platform to arrive at pose. Waiting on legs: {not_arrived_indices}',
                                    throttle_duration_sec=1.0)
             time.sleep(0.1) 
 
@@ -187,11 +204,17 @@ class CalibratePlatformNode(Node):
         # Publish the message
         self.settled_leg_lengths_publisher.publish(msg)
 
-    def publish_settled_platform_pose(self):
+    def publish_settled_platform_poses(self):
         '''Publish the platform pose once it has settled'''
 
+        # Construct the PoseArray message, consisting of the command pose followed by the measured pose
+        pose_array_msg = PoseArray()
+        pose_array_msg.header.frame_id = 'platform_start'
+        pose_array_msg.header.stamp = self.get_clock().now().to_msg()
+        pose_array_msg.poses = [self.pose_cmd, self.pose_meas]
+
         # Publish the message
-        self.settled_platform_pose_publisher.publish(self.platform_pose_mocap)
+        self.settled_platform_poses_publisher.publish(pose_array_msg)
 
     #########################################################################################################
     #                                       Subscription Callbacks                                          #
@@ -220,7 +243,17 @@ class CalibratePlatformNode(Node):
 
     def platform_pose_mocap_callback(self, msg):
         '''Handles the mocap pose message'''
-        self.platform_pose_mocap = msg
+        self.pose_meas = msg.pose
+
+    def legs_state_callback(self, msg):
+        '''
+        Handles the leg state message, extracting the leg states.
+        If any leg state is non-zero, the platform is unable to truly attempt to move to the pose.
+        These poses will be ignored and not published (hence not saved to the CSV file).
+        '''
+        # Leg state for motor 0 is at: msg.data[0]
+        for i in range(6):
+            self.leg_states[i] = np.abs(msg.data[i]) # Make all error states +1.
 
     #########################################################################################################
     #                                          Node Management                                              #
