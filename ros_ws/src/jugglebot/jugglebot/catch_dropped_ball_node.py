@@ -8,7 +8,7 @@ from rclpy.node import Node
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.duration import Duration
 from std_srvs.srv import Trigger
-from jugglebot_interfaces.msg import MocapDataMulti, PlatformPoseMessage, HandInputPosMsg, RobotState
+from jugglebot_interfaces.msg import MocapDataMulti, PlatformPoseCommand, HandInputPosMsg, RobotState
 from std_msgs.msg import String
 from geometry_msgs.msg import Pose, PoseStamped
 import numpy as np
@@ -19,10 +19,6 @@ import time
 from .hand_trajectory_generator import HandTrajGenerator
 
 class CatchDroppedBallNode(Node):
-    # Define some constants
-    HAND_SPOOL_EFFECTIVE_RADIUS = 5.134 # {mm} Measured experimentally. (stroke / [revs_to_move_stroke * 2 * pi])
-    LINEAR_GAIN = 1000 / (np.pi * HAND_SPOOL_EFFECTIVE_RADIUS * 2) # {rev/m}
-
     # Position of the ball when the hand is at the top of the stroke. Measured experimentally.
     BALL_Z_COORDINATE_AT_TOP_OF_STROKE = 828.2 # {mm}. (at "TOP_POSITION" revs)
     BALL_TOP_STROKE_POSITION_REVS = 9.858 # {revs}
@@ -61,7 +57,7 @@ class CatchDroppedBallNode(Node):
         self.last_known_hand_state = None
 
         # Initialize a publisher for the platform pose and hand trajectory
-        self.platform_pose_publisher = self.create_publisher(PlatformPoseMessage, 'platform_pose_topic', 10)
+        self.platform_pose_publisher = self.create_publisher(PlatformPoseCommand, 'platform_pose_topic', 10)
         self.hand_trajectory_publisher = self.create_publisher(HandInputPosMsg, 'hand_trajectory', 10)
 
         # Initialize a service to prime the hand for catching a ball
@@ -74,10 +70,10 @@ class CatchDroppedBallNode(Node):
         # Initialise various variables
         self.xy_range_of_motion = 400.0   # mm (ie. XXX mm in any direction along the catch plane)
         self.initial_plat_height = 565.0  # mm. The initial height of the platform COM from the base plane
-        self.catch_height = self.initial_plat_height + 170  # mm. The height of the catch plane from the base plane. This is where the platform COM will be.
+        self.catch_height = self.initial_plat_height + 165.0  # mm. The height of the catch plane from the base plane. This is where the platform COM will be.
         self.time_after_losing_ball_to_return_to_default = 1.0  # s. The time after losing the ball to return to the default pose
         
-        self.MOCAP_OFFSET = [-4.5, -70.0] # mm. THIS SHOULDN'T BE NECESSARY!! Applied in mocap_data_callback
+        self.MOCAP_OFFSET = [0.0, 0.0]#[-4.5, -70.0] # mm. THIS SHOULDN'T BE NECESSARY!! Applied in mocap_data_callback
 
         # Initialise the default 'active' pose
         self.default_pose = Pose()
@@ -302,11 +298,6 @@ class CatchDroppedBallNode(Node):
         # Get the time (relative to the start of the catch movement) and position of the catch
         catch_time_from_start_of_hand_movement, catch_pos = self.hand_traj_gen.get_catch_time_and_position()
 
-        # Multiply the position and velocity commands by the linear gain to convert from m to rev
-        catch_pos *= self.LINEAR_GAIN
-        pos = [p * self.LINEAR_GAIN for p in pos]
-        vel = [v * self.LINEAR_GAIN for v in vel]
-
         # Calculate how long it will take for the ball to reach the catch position from when it was dropped
         time_to_catch_from_drop = np.sqrt(2 * drop_height_m / 9.81)
 
@@ -439,8 +430,8 @@ class CatchDroppedBallNode(Node):
         # Get the pose that we need the platform to move to in order to stay under the ball
         catch_pose = self.get_catch_pose()
 
-        # Construct the PlatformPoseMessage
-        message = PlatformPoseMessage()
+        # Construct the PlatformPoseCommand
+        message = PlatformPoseCommand()
         pose_stamped = PoseStamped()
         pose_stamped.pose = catch_pose
 
@@ -450,7 +441,7 @@ class CatchDroppedBallNode(Node):
         message.pose_stamped = pose_stamped
         message.publisher = 'CATCH_DROPPED_BALL_NODE'
 
-        self.get_logger().info(f"Publishing platform pose: {message.pose_stamped.pose.position.x}, {message.pose_stamped.pose.position.y}, {message.pose_stamped.pose.position.z}", throttle_duration_sec=0.2)
+        # self.get_logger().info(f"Publishing platform pose: {message.pose_stamped.pose.position.x}, {message.pose_stamped.pose.position.y}, {message.pose_stamped.pose.position.z}", throttle_duration_sec=0.2)
 
         self.platform_pose_publisher.publish(message)
 

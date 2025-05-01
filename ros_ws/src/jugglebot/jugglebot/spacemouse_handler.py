@@ -8,7 +8,7 @@ Otherwise, the node does nothing.
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
-from jugglebot_interfaces.msg import PlatformPoseMessage, SetTrapTrajLimitsMessage
+from jugglebot_interfaces.msg import PlatformPoseCommand, SetTrapTrajLimitsMessage
 from geometry_msgs.msg import PoseStamped
 from std_srvs.srv import Trigger
 import quaternion  # numpy quaternion
@@ -30,7 +30,7 @@ class SpaceMouseHandler(Node):
         self.spacemouse_enabled = False
 
         # Create a publisher for the platform pose and a timer to publish it
-        self.publisher_ = self.create_publisher(PlatformPoseMessage, 'platform_pose_topic', 10)
+        self.publisher_ = self.create_publisher(PlatformPoseCommand, 'platform_pose_topic', 10)
         self.timer = self.create_timer(0.01, self.publish_pose)
 
         # Create a publisher for the trap trajectory limits
@@ -67,8 +67,8 @@ class SpaceMouseHandler(Node):
         # Set the offset in z to put baseline position at ~midspan of robot
         z_offset = 170   # mm
 
-        # Initialise PlatformPoseMessage object
-        message = PlatformPoseMessage()
+        # Initialise PlatformPoseCommand object
+        message = PlatformPoseCommand()
         pose_stamped = PoseStamped() 
 
         # Get the current time

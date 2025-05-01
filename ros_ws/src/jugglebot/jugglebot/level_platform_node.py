@@ -7,7 +7,7 @@ from geometry_msgs.msg import PoseStamped, Quaternion
 from action_msgs.msg import GoalStatus
 from std_srvs.srv import Trigger
 from jugglebot_interfaces.action import LevelPlatform
-from jugglebot_interfaces.msg import LegsTargetReachedMessage, SetMotorVelCurrLimitsMessage, PlatformPoseMessage
+from jugglebot_interfaces.msg import LegsTargetReachedMessage, SetMotorVelCurrLimitsMessage, PlatformPoseCommand
 from jugglebot_interfaces.srv import GetTiltReadingService
 
 import quaternion
@@ -38,7 +38,7 @@ class LevelPlatformNode(Node):
                                                goal_callback=self.accept_auto_calibrate_callback,
                                                cancel_callback=self.cancel_auto_calibrate_callback)
         
-        self.platform_pose_publisher = self.create_publisher(PlatformPoseMessage, 'platform_pose_topic', 10)
+        self.platform_pose_publisher = self.create_publisher(PlatformPoseCommand, 'platform_pose_topic', 10)
         self.platform_tilt_offset = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0) # Offset to apply to the platform orientation to level it
 
         # Set up a publisher for the motor speeds
@@ -205,7 +205,7 @@ class LevelPlatformNode(Node):
         self.legs_target_reached = [False] * 6
 
         # Construct the pose message
-        message = PlatformPoseMessage()
+        message = PlatformPoseCommand()
         message.publisher = 'LEVEL_PLATFORM_NODE'
         message.pose_stamped.pose.position.x = 0.0
         message.pose_stamped.pose.position.y = 0.0

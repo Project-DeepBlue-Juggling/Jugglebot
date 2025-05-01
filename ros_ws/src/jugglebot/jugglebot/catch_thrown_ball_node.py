@@ -7,7 +7,7 @@ to the ball's velocity vector.
 import rclpy
 from rclpy.node import Node
 from std_srvs.srv import Trigger
-from jugglebot_interfaces.msg import BallStateMulti, PlatformPoseMessage
+from jugglebot_interfaces.msg import BallStateMulti, PlatformPoseCommand
 from std_msgs.msg import String
 from geometry_msgs.msg import Pose, PoseStamped, Quaternion
 import numpy as np
@@ -32,7 +32,7 @@ class CatchThrownBallNode(Node):
         self.landing_sub = self.create_subscription(BallStateMulti, '/predicted_landings', self.predicted_landings_callback, 10)
 
         # Initialize a publisher for the platform pose
-        self.platform_pose_publisher = self.create_publisher(PlatformPoseMessage, 'platform_pose_topic', 10)
+        self.platform_pose_publisher = self.create_publisher(PlatformPoseCommand, 'platform_pose_topic', 10)
 
         # Initialize a timer to publish the platform pose
         self.pub_timer = self.create_timer(0.01, self.publish_catch_pose)
@@ -261,8 +261,8 @@ class CatchThrownBallNode(Node):
         if catch_pose is None:
             return
 
-        # Construct the PlatformPoseMessage
-        message = PlatformPoseMessage()
+        # Construct the PlatformPoseCommand
+        message = PlatformPoseCommand()
         pose_stamped = PoseStamped()
         pose_stamped.pose = catch_pose
 
@@ -317,7 +317,7 @@ class CatchThrownBallNode(Node):
 
         if time_since_catch > self.time_after_catching_to_return_to_default:
             # Publish the default pose
-            message = PlatformPoseMessage()
+            message = PlatformPoseCommand()
             pose_stamped = PoseStamped()
             pose_stamped.pose = self.default_pose
             pose_stamped.header.stamp = self.get_clock().now().to_msg()
