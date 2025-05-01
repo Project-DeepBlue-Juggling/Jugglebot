@@ -5,6 +5,7 @@ from jugglebot_interfaces.msg import MocapDataMulti, MocapDataSingle
 from jugglebot_interfaces.srv import GetRobotGeometry
 from geometry_msgs.msg import PoseStamped
 from .mocap_interface import MocapInterface
+from typing import Dict
 
 class MocapInterfaceNode(Node):
     def __init__(self):
@@ -39,7 +40,7 @@ class MocapInterfaceNode(Node):
 
         # Initialize a publishers to publish the mocap data
         self.unlabelled_mocap_publisher = self.create_publisher(MocapDataMulti, 'mocap_data', 10)
-        self.platform_mocap_publisher = self.create_publisher(PoseStamped, 'platform_pose_mocap', 10)
+        self.body_publishers: Dict[str, rclpy.publisher.Publisher] = {}
 
         # Initialize a timer to publish the mocap data
         mocap_frames_per_second = 200
@@ -68,13 +69,22 @@ class MocapInterfaceNode(Node):
             # Clear the array to prevent duplicate data
             self.mocap_interface.clear_unlabelled_markers()
 
-        # Now publish the platform pose data
-        platform_pose = self.mocap_interface.get_platform_pose()
-        if platform_pose is not None:
-            self.platform_mocap_publisher.publish(platform_pose)
+        # Publish *all* rigid-body poses that arrived in this frame
+        body_poses = self.mocap_interface.get_body_poses()
+        for body_name, pose in body_poses.items():
+            topic_name = f"{body_name.lower()}_pose_mocap" # e.g.  “platform_pose_mocap”
 
-            # Clear the pose to prevent duplicate data
-            self.mocap_interface.clear_platform_pose()
+            # Create a publisher the first time we see a new rigid body
+            if body_name not in self.body_publishers:
+                self.body_publishers[body_name] = self.create_publisher(
+                    PoseStamped, topic_name, 10
+                )
+                self.get_logger().info(f'Created publisher "{topic_name}"')
+
+            self.body_publishers[body_name].publish(pose)
+
+        # Done with this frame – avoid re-publishing stale data next timer tick
+        self.mocap_interface.clear_body_poses()
 
     def send_geometry_request(self):
         """Send a request to get the robot geometry."""

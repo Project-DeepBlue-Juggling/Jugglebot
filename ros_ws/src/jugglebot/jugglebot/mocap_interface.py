@@ -33,7 +33,7 @@ class MocapInterface:
 
         # Initialize data to be stored
         self.unlabelled_markers = np.empty((0, 4))  # (x, y, z, residual)
-        self.platform_pose = PoseStamped()
+        self.body_poses: Dict[str, PoseStamped] = {} # Pose for every rigid body discovered in QTM
         self.body_dict = {}
         self.marker_dict = {}
 
@@ -138,32 +138,45 @@ class MocapInterface:
 
         # Process 6dof data to know the body positions.
         info, bodies = packet.get_6d()
-
+            
         for i, body in enumerate(bodies):
             # Log the body positions and rotations
             # self.logger.info("Body: {}".format(self.get_name_from_index(i, self.body_dict)))
             # self.logger.info("\tPosition: ({}, {}, {})".format(body[0].x, body[0].y, body[0].z))
             # self.logger.info(f"\tRotation: {self.rotation_list_to_quaternion(body[1].matrix)}")
-            
-            # Get the body name
+
             body_name = self.get_name_from_index(i, self.body_dict)
 
-            # If the body name is "Platform", update the platform pose
-            if self.base_to_platform_transformation is not None:
-                if body_name == "Platform":
-                    with self.data_lock:
-                        self.platform_pose = PoseStamped()
-                        # Convert the orientation into a quaternion
-                        x, y, z, w = self.rotation_list_to_quaternion(body[1].matrix)
-                        self.platform_pose.header.stamp = self.node.get_clock().now().to_msg()
-                        self.platform_pose.header.frame_id = "platform_start"
-                        self.platform_pose.pose.position.x = body[0].x
-                        self.platform_pose.pose.position.y = body[0].y
-                        self.platform_pose.pose.position.z = body[0].z - self.base_to_platform_transformation
-                        self.platform_pose.pose.orientation.x = x
-                        self.platform_pose.pose.orientation.y = y
-                        self.platform_pose.pose.orientation.z = z
-                        self.platform_pose.pose.orientation.w = w
+            # Detect if 'body_name' has any unwanted characters. If any are present, replace them with an underscore
+            if any(char in body_name for char in [' ', '-']):
+                body_name = body_name.replace(' ', '_')
+                body_name = body_name.replace('-', '_')
+                
+            # Compose a PoseStamped for this rigid body
+            pose = PoseStamped()
+            pose.header.stamp = self.node.get_clock().now().to_msg()
+            if body_name == "Platform":
+                pose.header.frame_id = "platform_start"
+            else:
+                pose.header.frame_id = "world"
+
+            pose.pose.position.x = body[0].x
+            pose.pose.position.y = body[0].y
+            # Special Z-offset for the platform (everything else is untouched)
+            if self.base_to_platform_transformation is not None and body_name == "Platform":
+                pose.pose.position.z = body[0].z - self.base_to_platform_transformation
+            else:
+                pose.pose.position.z = body[0].z
+
+            qx, qy, qz, qw = self.rotation_list_to_quaternion(body[1].matrix)
+            pose.pose.orientation.x = qx
+            pose.pose.orientation.y = qy
+            pose.pose.orientation.z = qz
+            pose.pose.orientation.w = qw
+
+            # Store (or overwrite) the latest pose for this body
+            with self.data_lock:
+                self.body_poses[body_name] = pose
 
         # Process unlabelled markers, skipping NaN positions.
         markers_no_label_residual = packet.get_3d_markers_no_label_residual()
@@ -210,15 +223,15 @@ class MocapInterface:
         with self.data_lock:
             return self.unlabelled_markers.copy() if self.unlabelled_markers.size > 0 else np.empty((0, 4))
 
-    def get_platform_pose(self) -> PoseStamped:
-        """
-        Get the current pose of the platform.
-
-        Returns:
-        - A PoseStamped message with the platform pose.
-        """
+    def get_body_poses(self) -> Dict[str, PoseStamped]:
+        """Return a shallow copy of the latest poses for all rigid bodies."""
         with self.data_lock:
-            return self.platform_pose
+            return self.body_poses.copy()
+
+    def clear_body_poses(self):
+        """Clear stored poses so we don’t publish duplicates."""
+        with self.data_lock:
+            self.body_poses.clear()
 
     def get_performance_statistics(self) -> Dict[str, Optional[float]]:
         """
