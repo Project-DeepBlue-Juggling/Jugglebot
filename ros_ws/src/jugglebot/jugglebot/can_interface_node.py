@@ -20,7 +20,9 @@ from jugglebot_interfaces.srv import (
 from jugglebot_interfaces.action import HomeMotors
 from std_msgs.msg import Float64MultiArray, String
 from std_srvs.srv import Trigger
+from geometry_msgs.msg import PoseStamped
 from .can_interface import CANInterface
+import numpy as np
 
 
 class CanInterfaceNode(Node):
@@ -57,12 +59,13 @@ class CanInterfaceNode(Node):
                                                                    self.motor_trap_traj_limits_callback, 10
         )
         self.control_mode_sub = self.create_subscription(String, 'control_mode_topic', self.control_mode_callback, 10)
+        self.base_pose_sub = self.create_subscription(PoseStamped, 'base_pose_mocap', self.base_pose_callback, 10)
 
         #### Initialize publishers ####
             # Hardware data publishers
         self.robot_state_publisher = self.create_publisher(RobotState, 'robot_state', 10)
         self.can_traffic_publisher = self.create_publisher(CanTrafficReportMessage, 'can_traffic', 10)
-        # self.hand_telemetry_publisher = self.create_publisher(HandTelemetryMessage, 'hand_telemetry', 10) # Keeping this commented out in case we need it later
+        self.hand_telemetry_publisher = self.create_publisher(HandTelemetryMessage, 'hand_telemetry', 10)
         self.platform_target_reached_publisher = self.create_publisher(LegsTargetReachedMessage, 'platform_target_reached', 10)
 
         # Initialize target positions and `target reached` flags - for knowing whether the entire platform has reached its target pose
@@ -84,15 +87,15 @@ class CanInterfaceNode(Node):
         # Initialize timers
         self.platform_target_reached_timer = self.create_timer(0.1, self.check_platform_target_reached_status)
         self.timer_canbus = self.create_timer(timer_period_sec=0.001, callback=self._poll_can_bus)
-        self.robot_state_timer = self.create_timer(timer_period_sec=0.01, callback=self.get_and_publish_robot_state)
+        self.robot_state_timer = self.create_timer(timer_period_sec=0.005, callback=self.get_and_publish_robot_state)
         self.hand_traj_timer = self.create_timer(timer_period_sec=0.001, callback=self.hand_traj_timer_callback)
 
         # Initialize the number of axes
         self.num_axes = 7 # 6 leg motors + 1 hand motor
 
-        # # Register callbacks with CANInterface
+        # Register callbacks with CANInterface
         self.can_handler.register_callback('can_traffic', self.publish_can_traffic)
-        # self.can_handler.register_callback('hand_telemetry', self.publish_hand_telemetry)
+        self.can_handler.register_callback('hand_telemetry', self.publish_hand_telemetry)
 
     #########################################################################################################
     #                                     Interfacing with the CAN bus                                      #
@@ -144,6 +147,55 @@ class CanInterfaceNode(Node):
             self.get_logger().error(f"Error setting trapezoidal trajectory limits: {e}")
 
     #########################################################################################################
+    #                                         Generic Callbacks                                             #
+    #########################################################################################################
+
+    def base_pose_callback(self, msg):
+        """
+        Callback for the base pose. Used to determine whether the global coordinate system is still valid.
+        If the base pose is measured to be more than <pos_thresh> mm or <ori_thresh> degrees from the origin, the global coordinate
+        system is invalid and an error is raised in robot_state.
+        """
+        # Set the thresholds for position and orientation
+        pos_thresh = 5.0  # mm
+        ori_thresh = 2.0  # degrees
+
+        error_msg = "Base is not at the origin! Global coordinate system is invalid."
+
+        try:
+            # Extract the base pose
+            base_pose = msg.pose
+
+            # Check if the base is at the origin
+            dist_from_origin = np.linalg.norm([base_pose.position.x, base_pose.position.y, base_pose.position.z])
+            angle_from_origin = np.arccos(base_pose.orientation.w) * 2 * 180 / np.pi
+
+            if dist_from_origin > pos_thresh or angle_from_origin > ori_thresh:
+                # Determine whether the error is due to position or orientation
+                if dist_from_origin > pos_thresh:
+                    log_msg = f"Base is {dist_from_origin:.2f} mm from the origin! Global coordinate system is invalid."
+                if angle_from_origin > ori_thresh:
+                    log_msg = f"Base is {angle_from_origin:.2f} degrees from the origin! Global coordinate system is invalid."
+
+                self.get_logger().warning(log_msg, throttle_duration_sec=10.0)
+
+                # If this error hasn't already been appended to the error list, append it
+                if error_msg not in self.can_handler.last_known_state['error']:
+                    # self.can_handler.last_known_state['error'].append(error_msg)
+                    # self.can_handler.fatal_error = True
+                    pass
+
+            else:
+                # If the base is at the origin (ie. QTM Transformation has been applied), clear the error
+                if error_msg in self.can_handler.last_known_state['error']:
+                    # self.can_handler.last_known_state['error'].remove(error_msg)
+                    # self.can_handler.fatal_error = False
+                    pass
+
+        except Exception as e:
+            self.get_logger().error(f"Error in base pose callback: {e}")
+
+    #########################################################################################################
     #                                        Commanding Jugglebot                                           #
     #########################################################################################################
 
@@ -160,6 +212,7 @@ class CanInterfaceNode(Node):
                 self.gently_move_platform_to_setpoint(0.0, deactivating=True)
                 self.stowed_due_to_error = True
 
+            # Control modes that should have the hand in IDLE mode (to be quieter)
             elif (msg.data == 'SPACEMOUSE' or 
                 msg.data == 'LEVEL_PLATFORM_NODE' or 
                 msg.data == 'CATCH_THROWN_BALL_NODE' or
@@ -175,7 +228,9 @@ class CanInterfaceNode(Node):
                 if hand_closed_loop:
                     self.can_handler.set_requested_state(axis_id=6, requested_state='IDLE')
             
-            elif msg.data == 'CATCH_DROPPED_BALL_NODE':
+            # Control modes that should have all axes in CLOSED_LOOP_CONTROL mode
+            elif (msg.data == 'CATCH_DROPPED_BALL_NODE' or
+                  msg.data == 'HOOP_SINKER'):
                 # Put all axes into CLOSED_LOOP_CONTROL mode if they aren't already
                 if not legs_closed_loop or not hand_closed_loop:
                     self.can_handler.set_requested_state_for_all_axes(requested_state='CLOSED_LOOP_CONTROL')
@@ -512,17 +567,17 @@ class CanInterfaceNode(Node):
         except Exception as e:
             self.get_logger().error(f"Error publishing CAN traffic: {e}")
 
-    # def publish_hand_telemetry(self, hand_telemetry_data):
-    #     """Publish hand telemetry data."""
-    #     try:
-    #         msg = HandTelemetryMessage()
-    #         msg.timestamp = self.get_clock().now().to_msg()
-    #         msg.position = hand_telemetry_data['position']
-    #         msg.velocity = hand_telemetry_data['velocity']
+    def publish_hand_telemetry(self, hand_telemetry_data):
+        """Publish hand telemetry data."""
+        try:
+            msg = HandTelemetryMessage()
+            msg.timestamp = self.get_clock().now().to_msg()
+            msg.position = hand_telemetry_data['position']
+            msg.velocity = hand_telemetry_data['velocity']
 
-    #         self.hand_telemetry_publisher.publish(msg)
-    #     except Exception as e:
-    #         self.get_logger().error(f"Error publishing hand telemetry: {e}")
+            self.hand_telemetry_publisher.publish(msg)
+        except Exception as e:
+            self.get_logger().error(f"Error publishing hand telemetry: {e}")
 
     def update_teensy_and_local_state_from_topic(self, msg):
         """Update the Teensy with the robot state.
