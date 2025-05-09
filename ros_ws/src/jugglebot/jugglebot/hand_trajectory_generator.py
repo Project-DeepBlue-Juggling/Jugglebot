@@ -4,7 +4,7 @@ Created on Mon May 13 20:25:20 2024
 Original author: jonbe
 Modified by: Harrison Low
 
-Note that all trajectories are generated in meters. The conversion to revolutions is done in the ROS2 node.
+Note that all trajectories are generated in meters and then converted to revolutions in the `get_XXX_trajectory` functions.
 (Plots can be generated in either meters or revolutions by setting the unit parameter in the plot_results function)
 """
 
@@ -35,7 +35,7 @@ class HandTrajGenerator:
 
         # Inertia
         self.total_inertia_ref_to_hand = 0.281  # kg
-        self.eff_spool_r = 0.005134  # m
+        self.eff_spool_r = self.HAND_SPOOL_EFFECTIVE_RADIUS / 1000  # Effective radius of the hand spool {m}
 
         # Inputs
         self.throw_height = throw_height_m  # Height of throw in meters
@@ -52,6 +52,8 @@ class HandTrajGenerator:
         self.dist_from_plat_COM_to_throw_pos = (dist_from_bottom_stroke_to_throw_pos + 
                                                 dist_from_ball_COM_to_bottom_of_linear_guide - 
                                                 dist_from_bottom_stroke_to_plat_COM)  # Dist from platform COM to throw pos {m}
+        
+        # print(self.dist_from_plat_COM_to_throw_pos)
 
         # Constants
         self.g_mPs2 = 9.806
@@ -315,6 +317,7 @@ class HandTrajGenerator:
         # Multiply the position and velocity by the linear gain to convert from m to rev
         x = [element * self.LINEAR_GAIN for element in x]
         v = [element * self.LINEAR_GAIN for element in v]
+        tor = [element * self.LINEAR_GAIN for element in tor]
 
         return t, x, v, tor
     
@@ -326,6 +329,7 @@ class HandTrajGenerator:
         # Multiply the position and velocity by the linear gain to convert from m to rev
         x = [element * self.LINEAR_GAIN for element in x]
         v = [element * self.LINEAR_GAIN for element in v]
+        tor = [element * self.LINEAR_GAIN for element in tor]
 
         return t, x, v, tor, self.air_time_s
     
@@ -337,6 +341,7 @@ class HandTrajGenerator:
         # Multiply the position and velocity by the linear gain to convert from m to rev
         x = [element * self.LINEAR_GAIN for element in x]
         v = [element * self.LINEAR_GAIN for element in v]
+        tor = [element * self.LINEAR_GAIN for element in tor]
 
         return t, x, v, tor
     
@@ -404,10 +409,21 @@ if __name__ == '__main__':
     # Set the unit to generate the plots in (either 'rev' or 'm')
     plot_unit = 'rev'
 
-    sim = HandTrajGenerator(throw_height_m=1.43, throw_range_mm=622.8)
-    t, x, v, a, tor = sim.generate_throw_time_series()
+    sim = HandTrajGenerator(throw_height_m=0.62, throw_range_mm=0.0)
+    t, x, v, a, tor = sim.generate_command_time_series()
     sim.plot_results(t, x, v, a, title='Throw', unit=plot_unit)
     print(f'Number of points in throw trajectory: {len(t)}')
+    print(f'catch vel hold s: {sim.t_catch_vel_hold_s:.3f} s')
+
+    # Print all the time steps
+    print(f't1: {sim.t1:.3f} s')
+    print(f't2: {sim.t2:.3f} s')
+    print(f't3: {sim.t3:.3f} s')
+    print(f't4: {sim.t4:.3f} s')
+    print(f't5: {sim.t5:.3f} s')
+    print(f't6: {sim.t6:.3f} s')
+    print(f't7: {sim.t7:.3f} s')
+    print(f't8: {sim.t8:.3f} s')
 
     # t, x, v, a, tor = sim.generate_catch_time_series()
     # sim.plot_results(t, x, v, a, title='Catch', unit=plot_unit)
