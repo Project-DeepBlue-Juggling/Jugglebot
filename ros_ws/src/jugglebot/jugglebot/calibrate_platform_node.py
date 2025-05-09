@@ -92,7 +92,8 @@ class CalibratePlatformNode(Node):
         # poses = self.pose_pattern_generator.generate_poses(pose_type='flat_grid')
         # poses = self.pose_pattern_generator.generate_poses(pose_type='happy_face')
         # poses = self.pose_pattern_generator.generate_poses(pose_type='angled_grid')
-        poses = self.pose_pattern_generator.generate_poses(pose_type='random_sample_angled_grid')
+        # poses = self.pose_pattern_generator.generate_poses(pose_type='random_sample_angled_grid')
+        poses = self.pose_pattern_generator.generate_poses(pose_type='random_angled')
 
         for i, pose in enumerate(poses):
             self.get_logger().info(f'Moving to pose {i}: {pose.pose.position.x:.3f}, {pose.pose.position.y:.3f}, {pose.pose.position.z:.3f}, '

@@ -391,6 +391,37 @@ class PosePatternGenerator:
         sampled_poses = [full_pose_list[i] for i in sampled_indices]
         return sampled_poses
 
+    def generate_random_angled_poses(self):
+        """
+        Generates a random set of poses within the robot workspace.
+        The poses are randomly distributed in 2D space (all points at the same height [z=165.0 mm])
+        and have random orientations within the specified tilt angle limits.
+        """
+        pose_list = []
+        z = 165.0  # Fixed height for all poses
+        for _ in range(self.iterations):
+            for _ in range(100):
+                pose = PoseStamped()
+                pose.pose.position.x = np.random.uniform(-200, 200)
+                pose.pose.position.y = np.random.uniform(-200, 200)
+                pose.pose.position.z = z
+
+                # Generate random roll and pitch angles within +/- tilt_angle_limits degrees from vertical.
+                tilt_limit_rad = np.deg2rad(self.tilt_angle_limits)
+                roll = np.random.uniform(-tilt_limit_rad, tilt_limit_rad)
+                pitch = np.random.uniform(-tilt_limit_rad, tilt_limit_rad)
+
+                q_roll = quaternion.from_rotation_vector([roll, 0, 0])
+                q_pitch = quaternion.from_rotation_vector([0, pitch, 0])
+                q = q_roll * q_pitch
+                pose.pose.orientation.x = q.x
+                pose.pose.orientation.y = q.y
+                pose.pose.orientation.z = q.z
+                pose.pose.orientation.w = q.w
+
+                pose_list.append(pose)
+        return pose_list
+
     #########################################################################################################
     #                                           Helper Methods                                              #
     #########################################################################################################
@@ -480,7 +511,7 @@ if __name__ == "__main__":
     test_height_max = 200.0
     height_increments = 4
     orientations_per_position = 3
-    tilt_angle_limits = 15.0
+    tilt_angle_limits = 10.0
     pattern_iterations = 1 # How many times to repeat the chosen pattern
 
     generator = PosePatternGenerator(test_radii, pts_at_each_radius, test_height_min,
@@ -501,7 +532,7 @@ if __name__ == "__main__":
     # poses = generator.generate_poses('flat_grid')
     # poses = generator.generate_poses('happy_face')
     # poses = generator.generate_poses('angled_grid')
-    poses = generator.generate_poses('random_sample_angled_grid')
+    poses = generator.generate_poses('random_angled')
 
     # Get the filetered poses within the workspace
     filtered_poses = generator.filter_reachable_poses(poses)
