@@ -36,7 +36,6 @@ setup(
             'catch_dropped_ball_node = jugglebot.catch_dropped_ball_node:main',
             'mocap_visualizer_node = jugglebot.mocap_visualizer_node:main',
             'landing_analysis_node = jugglebot.landing_analysis_node:main',
-            'hand_testing_node = jugglebot.hand_testing_node:main',
             'calibrate_platform_node = jugglebot.calibrate_platform_node:main',
             'pose_correction_node = jugglebot.pose_correction_node:main',
             'hoop_sinker_node = jugglebot.hoop_sinker_node:main',
