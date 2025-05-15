@@ -13,8 +13,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Tuple, List
 
 import numpy as np
-import open3d as o3d
-import quaternion
+from tf_transformations import quaternion_from_euler
 import rclpy
 from rclpy.node import Node
 from rclpy.callback_groups import ReentrantCallbackGroup
@@ -24,10 +23,10 @@ from std_srvs.srv import Trigger
 from geometry_msgs.msg import PoseStamped
 from builtin_interfaces.msg import Time
 from jugglebot_interfaces.msg import (
-    PlatformPoseCommand, HandInputPosMsg, SetTrapTrajLimitsMessage, RobotState
+    PlatformPoseCommand, SetTrapTrajLimitsMessage, RobotState, ThrowDebug
 )
-from jugglebot_interfaces.srv import SetString
-from .hand_trajectory_generator import HandTrajGenerator
+from jugglebot_interfaces.srv import SetString, SetHandTrajCmd
+
 
 # ─────────────────────────────────────────────────────────────
 #  Constants
@@ -40,9 +39,8 @@ MAX_RELEASE_SPEED = 5.8       # m s⁻¹
 MAX_TILT = math.radians(15)   # DEG about the x and y axes
 BALL_PEAK_ABOVE_CATCH_POS = 50e-3  # m (ball peak above catch pos)
 
-# get the throw-pos offset once; no parameters are changed afterwards
-_throw_sim = HandTrajGenerator()
-RELEASE_OFFSET = _throw_sim.dist_from_plat_COM_to_throw_pos   # (m)
+# The distance from the platform COM to the throw position
+RELEASE_OFFSET = 0.12455  # (m) {NOTE HARDCODED for now... Not sure how to best communicate this from the Teensy...}
 
 # ─────────────────────────────────────────────────────────────
 #  Data classes
@@ -61,87 +59,152 @@ class ThrowPlan:
 # ─────────────────────────────────────────────────────────────
 #  Utility functions
 # ─────────────────────────────────────────────────────────────
-def clamp_to_circle(x: float, y: float, r_max: float) -> Tuple[float, float]:
-    r = math.hypot(x, y)
-    if r == 0.0 or r <= r_max:
-        return x, y
-    scale = r_max / r
-    return x * scale, y * scale
-
-
-def solve_orientation_launch(cone_xyz: np.ndarray) -> Optional[Tuple[float, float, np.ndarray, float]]:
+def solve_orientation_launch(
+        cone_xyz: np.ndarray,
+        max_tilt_deg: float = 15.0,
+        coarse_step_deg: float = 1.0,
+        fine_window_deg: float = 1.0,
+        fine_step_deg: float = 0.1,
+        dz_apex_step: float = 0.05,
+) -> Tuple[Optional[Tuple[float, float, np.ndarray, float]], float]:
     """
-    Return (roll, pitch, v0, tof) or None if no solution.
-    Platform is fixed at (0,0,PLATFORM_Z) with yaw = 0.
-    Roll is about +X, pitch about +Y (ROS RPY convention).
-    The projectile is launched along body +Z, starting
-    RELEASE_OFFSET metres above the platform origin.
-    Its apex must be exactly BALL_PEAK_ABOVE_CATCH_POS above the cone.
+    Find roll, pitch, v0_vec, t_flight (min ‖v0‖) or None if impossible,
+    and return elapsed computation time.
+
+    * Two-pass grid search: coarse 1 °, then fine 0.1 ° in a ±1 ° window.
+    * If **no** solution exists within ±max_tilt_deg using the
+      nominal apex (cone_z + BALL_PEAK_ABOVE_CATCH_POS),
+      the solver raises the apex in dz_apex_step increments until a
+      feasible solution is found **or** the peak would exceed MAX_THROW_HEIGHT.
+    * Speed capped at MAX_RELEASE_SPEED.
     """
+    start_time = time.time()
+    timeout_time = 0.5 # seconds
     xc, yc, zc = cone_xyz
-
     best = None
     best_speed = float('inf')
 
-    # Coarse grid of candidate orientations (1° steps)
-    degs = np.deg2rad(np.arange(-15, 16, 1))
-    for roll in degs:
+    # --------------------------------------------------------------
+    # Helper that evaluates one roll/pitch pair for a *given* apex.
+    # Returns (roll, pitch, v0_vec, tof) or None.
+    # --------------------------------------------------------------
+    def try_orientation(roll: float, pitch: float, min_z_peak: float):
         s_r, c_r = math.sin(roll), math.cos(roll)
-        for pitch in degs:
-            s_p, c_p = math.sin(pitch), math.cos(pitch)
+        s_p, c_p = math.sin(pitch), math.cos(pitch)
 
-            # Body +Z in world coordinates (direction cosine of tool frame Z)
-            u = np.array([
-                s_p * c_r,                    # x
-               -s_r,                          # y
-                c_p * c_r                     # z
-            ])
-            # release position in world
-            release = np.array([0., 0., PLATFORM_Z]) + u * RELEASE_OFFSET
+        # body-Z in world
+        u = np.array([s_p * c_r,
+                    -s_r,
+                    c_r * c_p])
 
-            # horizontal and vertical deltas
-            dx, dy = xc - release[0], yc - release[1]
-            dz     = zc - release[2]
-            Rh     = math.hypot(dx, dy)
+        release = np.array([0., 0., PLATFORM_Z]) + u * RELEASE_OFFSET
+        dx, dy = xc - release[0], yc - release[1]
+        dz     = zc - release[2]
+        Rh     = math.hypot(dx, dy)
+        uh     = math.hypot(u[0], u[1])
+        uz     = u[2]
 
-            # desired apex height
-            z_peak_des = zc + BALL_PEAK_ABOVE_CATCH_POS
-            if z_peak_des <= release[2]:          # apex below release → impossible
-                continue
+        # ---------- bearing alignment check --------------------------------
+        if Rh > 1e-6:
+            v_hat = np.array([dx, dy]) / Rh
+            if uh < 1e-6:                      # vertical launch can't reach lateral cone
+                return None
+            u_hat = np.array([u[0], u[1]]) / uh
+            if np.dot(v_hat, u_hat) < math.cos(math.radians(1.0)):
+                return None                    # heading off by >1°
+        else:
+            if uh > 0.01:                      # need (almost) vertical launch
+                return None
 
-            # fix v0_z from apex condition:  z_peak = z_rel + v0z² / (2g)
-            v0z = math.sqrt(2 * G * (z_peak_des - release[2]))
+        # ---------- speed from horizontal component (choose the safer axis) --
+        # horizontal distance and unit vectors already computed
+        if Rh < 1e-6:            # cone directly above/below the release
+            return None          # (we reject vertical launches elsewhere)
 
-            # time of flight from quadratic  zc = z_rel + v0z t - ½ g t²
-            a = 0.5 * G
-            b = -v0z
-            c = dz
-            disc = b*b - 4*a*c
-            if disc <= 0:
-                continue
-            t1 = (-b + math.sqrt(disc)) / (2*a)    # positive root
-            if t1 <= 0:
-                continue
+        # analytic solution using Rh *and* uh
+        denom = (uz / uh) * Rh - dz           # must be > 0
+        if denom <= 0:
+            return None
 
-            # horizontal speed needed
-            vx = dx / t1
-            vy = dy / t1
-            speed = math.sqrt(vx*vx + vy*vy + v0z*v0z)
-            if speed > MAX_RELEASE_SPEED:
-                continue
+        s = math.sqrt( G * Rh * Rh / (2 * uh * uh * denom) )
 
-            # choose minimal-speed solution
-            if speed < best_speed:
-                best_speed = speed
-                best = (roll, pitch, np.array([vx, vy, v0z]), t1)
+        if s > MAX_RELEASE_SPEED:
+            return None
 
-    return best
+        t = Rh / (uh * s)                     # horizontal flight time
 
+        # ---------- apex constraint -----------------------------------------
+        z_peak = release[2] + (s * uz) ** 2 / (2 * G)
+        if z_peak < min_z_peak:
+            return None
+
+        return (roll, pitch, u * s, t), s
+
+    # --------------------------------------------------------------
+    # Two-pass search inside a loop that raises the apex only if
+    # absolutely necessary.
+    # --------------------------------------------------------------
+    tilt_max = math.radians(max_tilt_deg)
+    deg_coarse = np.deg2rad(np.arange(-max_tilt_deg,
+                                      max_tilt_deg + 1e-6,
+                                      coarse_step_deg))
+
+    dz_extra = 0.0
+    while True:
+        if time.time() - start_time > timeout_time:
+            break
+
+        z_peak_nominal = zc + BALL_PEAK_ABOVE_CATCH_POS + dz_extra
+        found_any = False
+
+        # ------------ coarse pass 1° --------------------------------
+        coarse_best = None
+        coarse_speed = float('inf')
+        for roll in deg_coarse:
+            for pitch in deg_coarse:
+                res = try_orientation(roll, pitch, z_peak_nominal)
+                if res is not None:
+                    found_any = True
+                    sol, spd = res
+                    if spd < coarse_speed:
+                        coarse_best, coarse_speed = sol, spd
+
+        if found_any:
+            # ------------ fine pass 0.1° around the best coarse -----
+            roll_c, pitch_c, _, _ = coarse_best
+            def clamp_deg(val):
+                return max(-tilt_max, min( tilt_max, val))
+
+            fine_rolls = np.deg2rad(
+                np.arange(math.degrees(clamp_deg(roll_c - math.radians(fine_window_deg))),
+                          math.degrees(clamp_deg(roll_c + math.radians(fine_window_deg))) + 1e-6,
+                          fine_step_deg))
+            fine_pitchs = np.deg2rad(
+                np.arange(math.degrees(clamp_deg(pitch_c - math.radians(fine_window_deg))),
+                          math.degrees(clamp_deg(pitch_c + math.radians(fine_window_deg))) + 1e-6,
+                          fine_step_deg))
+
+            for roll in fine_rolls:
+                for pitch in fine_pitchs:
+                    res = try_orientation(roll, pitch, z_peak_nominal)
+                    if res is not None:
+                        sol, spd = res
+                        if spd < best_speed:
+                            best, best_speed = sol, spd
+            # Success: break the dz_extra loop
+            break
+
+        # Nothing feasible at this apex → raise it and retry
+        dz_extra += dz_apex_step
+        if PLATFORM_Z + dz_extra > MAX_THROW_HEIGHT:
+            break   # give up – no solution even with max height
+
+    elapsed_time = time.time() - start_time
+    return best, elapsed_time
 # ─────────────────────────────────────────────────────────────
 #  Node class
 # ─────────────────────────────────────────────────────────────
 class HoopSinkerNode(Node):
-
     # --------------------- init ------------------------------------------------
     def __init__(self):
         super().__init__('hoop_sinker_node')
@@ -151,8 +214,8 @@ class HoopSinkerNode(Node):
 
         # ── comms
         self.platform_pub = self.create_publisher(PlatformPoseCommand, 'platform_pose_topic', 10)
-        self.hand_traj_pub = self.create_publisher(HandInputPosMsg, 'hand_trajectory', 10)
         self.trap_limit_pub = self.create_publisher(SetTrapTrajLimitsMessage, 'set_leg_trap_traj_limits', 10)
+        self.throw_debug_pub = self.create_publisher(ThrowDebug, 'throw_debug', 10)
 
         self.cone_sub = self.create_subscription(PoseStamped, 'catching_cone_pose_mocap', self.cone_callback, 20,
                                                  callback_group=self.callback_group)
@@ -164,14 +227,22 @@ class HoopSinkerNode(Node):
         self.robot_state_subscription = self.create_subscription(RobotState, 'robot_state', self.robot_state_callback, 10,
                                                                  callback_group=self.callback_group)
 
+
+        # Initialize the services
         self.move_srv = self.create_service(Trigger, 'move_platform_for_throw', self.handle_move_request,
                                              callback_group=self.callback_group)
         self.throw_srv = self.create_service(Trigger, 'execute_throw', self.handle_throw_request,
                                              callback_group=self.callback_group)
+        self.move_and_throw_srv = self.create_service(Trigger, 'move_and_execute_throw', self.handle_move_throw_request,
+                                                     callback_group=self.callback_group)
 
         # Set up a service client to put the hand into the correct control mode
         self.hand_control_mode_client = self.create_client(SetString, 'set_hand_state',
                                                            callback_group=self.callback_group)
+        
+        # Set up a service client to send the hand trajectory
+        self.hand_traj_client = self.create_client(SetHandTrajCmd, 'set_hand_traj_cmd',
+                                                    callback_group=self.callback_group)
 
         # ── state
         self.enabled = False
@@ -180,6 +251,10 @@ class HoopSinkerNode(Node):
         self.state_lock = threading.Lock()
         self.hand_state_lock = threading.Lock()
         self.last_known_hand_state = None
+
+        self._last_plan_print = None # tuple of rounded fields
+
+        self.throw_count = 0 # To keep track of how many throws have been made this session
 
         # defaults
         self.default_trap = dict(vel_limit=10., acc_limit=10., dec_limit=10.)
@@ -211,12 +286,22 @@ class HoopSinkerNode(Node):
                             msg.pose.position.y,
                             msg.pose.position.z]) / 1000.0
 
-        sol = solve_orientation_launch(cone_xyz)
+        # Check that we have a valid cone position (anything other than nan)
+        if np.isnan(cone_xyz).any():
+            with self.state_lock:
+                self.plan.feasible = False
+            self.get_logger().warn('Invalid cone position', throttle_duration_sec=1.0)
+            return
+
+        sol, calc_time = solve_orientation_launch(cone_xyz)
         if sol is None:
             with self.state_lock:
                 self.plan.feasible = False
             self.get_logger().warn('No orientation-only throw plan', throttle_duration_sec=1.0)
             return
+        
+        # Log the time taken to solve the orientation
+        self.get_logger().info(f'Solved orientation in {calc_time:.2f}s', throttle_duration_sec=1.0)
 
         roll, pitch, v0, tof = sol
         throw_h   = v0[2]**2 / (2*G)
@@ -233,11 +318,25 @@ class HoopSinkerNode(Node):
                 horiz_range_mm=horiz_mm,
                 cone_xyz=tuple(cone_xyz))
 
-        self.get_logger().info(
-            f'Plan: roll={math.degrees(roll):.1f}°, pitch={math.degrees(pitch):.1f}°, '
-            f'|v0|={np.linalg.norm(v0):.2f} m/s, TOF={tof:.2f}s '
-            f'h={throw_h:.2f}m, range=({cone_xyz[0]*1000:.2f}, {cone_xyz[1]*1000:.2f}) mm',
-            throttle_duration_sec=1.0)
+        # Conditional logging to avoid flooding
+        sig_figs_to_round = 0
+        plan_tuple = (
+            round(math.degrees(roll), sig_figs_to_round),
+            round(math.degrees(pitch), sig_figs_to_round),
+            round(np.linalg.norm(v0), sig_figs_to_round),
+            round(tof, sig_figs_to_round),
+            round(throw_h, sig_figs_to_round),
+            round(cone_xyz[0]*1000, sig_figs_to_round),
+            round(cone_xyz[1]*1000, sig_figs_to_round)
+        )
+
+        if plan_tuple != self._last_plan_print:
+            self.get_logger().info(
+                f'Plan: roll={math.degrees(roll):.2f}°, pitch={math.degrees(pitch):.2f}°, '
+                f'|v0|={np.linalg.norm(v0):.2f} m/s, TOF={tof:.2f}s, '
+                f'h={throw_h:.2f}m, range=({cone_xyz[0]:.2f}, {cone_xyz[1]:.2f}, {cone_xyz[2]:.2f}) m',
+                throttle_duration_sec=1.0)
+            self._last_plan_print = plan_tuple
 
     def platform_pose_callback(self, msg: PoseStamped):
         if not self.enabled:
@@ -255,14 +354,14 @@ class HoopSinkerNode(Node):
             return res
 
         roll, pitch = self.plan.roll_pitch
-        q = quaternion.as_float_array(
-            quaternion.from_euler_angles(roll, pitch, 0.0))
+        qx, qy, qz, qw = quaternion_from_euler(roll, pitch, 0.0)
         
         # Log the position and orientation (as roll and pitch)
         self.get_logger().info(
             f'Platform move: x={self.plan.platform_xy[0]:.2f} m, '
             f'y={self.plan.platform_xy[1]:.2f} m, '
-            f'roll={roll:.2f} rad, pitch={pitch:.2f} rad')
+            f'roll={math.degrees(roll):.2f}°, pitch={math.degrees(pitch):.2f}°, '
+            f'quat: ({qx:.2f}, {qy:.2f}, {qz:.2f}, {qw:.2f})')
 
         cmd = PlatformPoseCommand()
         cmd.pose_stamped.header.frame_id = 'platform_start'
@@ -270,10 +369,10 @@ class HoopSinkerNode(Node):
         cmd.pose_stamped.pose.position.x = self.plan.platform_xy[0] * 1000.0
         cmd.pose_stamped.pose.position.y = self.plan.platform_xy[1] * 1000.0
         cmd.pose_stamped.pose.position.z = PLATFORM_Z * 1000.0
-        cmd.pose_stamped.pose.orientation.w = q[0]
-        cmd.pose_stamped.pose.orientation.x = q[1]
-        cmd.pose_stamped.pose.orientation.y = q[2]
-        cmd.pose_stamped.pose.orientation.z = q[3]
+        cmd.pose_stamped.pose.orientation.w = qw
+        cmd.pose_stamped.pose.orientation.x = qx
+        cmd.pose_stamped.pose.orientation.y = qy
+        cmd.pose_stamped.pose.orientation.z = qz
         cmd.publisher = 'HOOP_SINKER'
 
         self.platform_pub.publish(cmd)
@@ -285,32 +384,77 @@ class HoopSinkerNode(Node):
             res.success, res.message = False, 'Not ready.'
             return res
 
-        # Smoothly move the hand to the starting position (0 revs) (0.1 is chosen instead because hand doesn't sit still at 0 revs)
-        result_outcome, result_message = self.smooth_move_to_target(0.1, duration=2.0)
-        if not result_outcome:
-            res.success = False
-            res.message = result_message
-            return res
-        self.get_logger().info(result_message)
-        time.sleep(0.5)
+        # Set the delay for when the throw should occur
+        throw_delay = 2.0 # seconds
 
-        ht = HandTrajGenerator(
-            throw_height_m=self.plan.throw_height,
-            throw_range_mm=self.plan.horiz_range_mm)
-        t_cmd, x, v, tor = ht.get_full_trajectory()
+        # Get the throw velocity from the plan
+        v0 = self.plan.v0
+        # Calculate the magnitude of the throw velocity
+        v0_mag = math.sqrt(v0[0]**2 + v0[1]**2 + v0[2]**2)
 
-        # Convert time_cmd to builtin_interfaces/Time 
-        time_cmd_ros = [
-            (self.get_clock().now() + Duration(seconds=int(t), nanoseconds=int((t % 1) * 1e9))).to_msg() 
-            for t in t_cmd
-            ]
+        # Publish the throw debug message
+        debug_msg = ThrowDebug()
+        now = self.get_clock().now()
+        throw_time = now + Duration(seconds=throw_delay)
+        debug_msg.stamp = throw_time.to_msg()
+        debug_msg.roll_cmd = self.plan.roll_pitch[0]
+        debug_msg.pitch_cmd = self.plan.roll_pitch[1]
+        debug_msg.v0_mag_cmd = v0_mag
+        self.throw_debug_pub.publish(debug_msg)
 
-        # Publish the full trajectory
-        self.publish_hand_trajectory(time_cmd_ros, x, v, tor)
+        # Create the service request
+        req = SetHandTrajCmd.Request()
+        req.event_delay = throw_delay
+        req.event_vel = v0_mag
+        req.traj_type = 0 # 0 = throw, 1 = catch, 2 = full
+
+        self.future = self.hand_traj_client.call_async(req)
+        
+        # Once the service is called, we need to wait for the result
+        self.future.add_done_callback(self.throw_request_callback)
+
+        # Log that the throw was sent
+        self.get_logger().info(f"Throw {self.throw_count} sent at {throw_time} s")
+        self.throw_count += 1
 
         res.success = True
         res.message = f'Throw executed (TOF={self.plan.tof:.2f}s)'
         return res
+    
+    def handle_move_throw_request(self, _, res):
+        if not self.enabled:
+            res.success, res.message = False, 'Node not enabled.'
+            return res
+        if not self.plan.feasible:
+            res.success, res.message = False, 'No feasible plan.'
+            return res
+
+        # Move the platform first
+        move_res = self.handle_move_request(_, res)
+        if not move_res.success:
+            return move_res
+
+        # Then execute the throw
+        throw_res = self.handle_throw_request(_, res)
+        if not throw_res.success:
+            return throw_res
+
+        res.success = True
+        res.message = 'Move and throw executed.'
+        return res
+    
+    def throw_request_callback(self, future):
+        try:
+            response = future.result()
+            if response.success:
+                self.get_logger().info('Throw executed successfully.')
+            else:
+                self.get_logger().error(f'Throw execution failed: {response.message}')
+        except Exception as e:
+            self.get_logger().error(f'Exception while calling throw service: {e}')
+        finally:
+            # Reset the future to None to avoid memory leaks
+            self.future = None
 
     # --------------------- helpers --------------------------------------------
     def set_trap_traj_limits(self, vel_limit, acc_limit, dec_limit):
@@ -319,140 +463,6 @@ class HoopSinkerNode(Node):
         m.trap_acc_limit = float(acc_limit)
         m.trap_dec_limit = float(dec_limit)
         self.trap_limit_pub.publish(m)
-
-    def publish_hand_trajectory(self, time_cmd, pos, vel, tor, timeout=5.0):
-        '''
-        Publish the generated trajectory after ensuring the hand is in CLOSED_LOOP_CONTROL mode.
-
-        Parameters:
-        - time_cmd: Commanded time sequence for the trajectory, as ROS2 time (builtin_interfaces/Time)
-        - pos: Position commands
-        - vel: Velocity commands
-        - tor: Torque commands
-        - timeout: Maximum time to wait for the hand to enter CLOSED_LOOP_CONTROL mode (in seconds)
-        '''
-        try:
-            # Check if the hand is already in CLOSED_LOOP_CONTROL mode
-            if not self.last_known_hand_state or self.last_known_hand_state.current_state != 8:
-                self.get_logger().info("Hand not in CLOSED_LOOP_CONTROL. Requesting state change...")
-                
-                # Create and send the service request to change the hand state
-                request = SetString.Request()
-                request.data = "CLOSED_LOOP_CONTROL"
-                # Wait for the service to be available
-                self.hand_control_mode_client.wait_for_service(timeout_sec=1.0)
-                self.hand_control_mode_client.call_async(request)
-                
-                # Wait until the hand is in CLOSED_LOOP_CONTROL mode or until timeout
-                start_time = self.get_clock().now()
-                while True:
-                    with self.hand_state_lock:
-                        current_state = self.last_known_hand_state.current_state if self.last_known_hand_state else None
-                    
-                    if current_state == 8:
-                        self.get_logger().info("Hand is now in CLOSED_LOOP_CONTROL mode.")
-                        break
-                    
-                    if (self.get_clock().now() - start_time).nanoseconds / 1e9 > timeout:
-                        self.get_logger().error("Timeout waiting for hand to enter CLOSED_LOOP_CONTROL mode.")
-                        return
-                    
-                    time.sleep(0.1)
-
-            # Publish the full trajectory
-            msg = HandInputPosMsg()
-            msg.time_cmd = time_cmd
-            msg.input_pos = pos
-            msg.vel_ff = vel
-            msg.torque_ff = tor
-            self.hand_traj_pub.publish(msg)
-            self.get_logger().info(f"Published generated trajectory. Number of points: {len(pos)}")
-
-        except Exception as e:
-            self.get_logger().error(f"Error occurred while publishing trajectory: {e}")
-
-    def smooth_move_to_target(self, target_pos, duration=2.0):
-        '''Move the hand smoothly to a target position'''
-        result_outcome = None
-        result_message = None
-
-        try:
-            # Log this
-            self.get_logger().info(f"Moving hand to target position {target_pos} revs.")
-
-            with self.hand_state_lock:
-                # Check that we know where the hand currently is and that it's stationary (within a tolerance)
-                vel_tol = 0.2 # {rev/s}
-                if self.last_known_hand_state is None:
-                    result_outcome = False
-                    result_message = "Hand state is unknown. Please wait for the robot to report its position."
-                    return result_outcome, result_message
-                
-                elif np.abs(self.last_known_hand_state.vel_estimate) > vel_tol:
-                    result_outcome = False
-                    result_message = f"Hand is not stationary. Please wait for the hand to stop moving. Current velocity: {self.last_known_hand_state.vel_estimate:.2f} rev/s"
-                    return result_outcome, result_message
-                    
-            # Check that we've gotten a valid target position
-            if target_pos < 0:
-                result_outcome = False
-                result_message = f"Target position must be non-negative. Target position received: {target_pos}"
-                return result_outcome, result_message
-            
-            elif target_pos > 11.0:
-                result_outcome = False
-                result_message = f"Target position must be less than 11.0 revs. Target position received: {target_pos}"
-                return result_outcome, result_message
-                
-            # Get the trajectory
-            time_cmd, pos, vel, tor = self.get_smooth_move_traj(target_pos, duration=duration)
-
-            # Publish the trajectory for can_interface_node to follow
-            self.publish_hand_trajectory(time_cmd, pos, vel, tor)
-
-            # Wait for the hand to reach the target position
-            timeout = duration * 2.0
-            start_time = self.get_clock().now()
-            while True:
-                with self.hand_state_lock:
-                    current_pos = self.last_known_hand_state.pos_estimate if self.last_known_hand_state else None
-                
-                if current_pos is not None and np.abs(current_pos - target_pos) < 0.05:
-                    break
-                
-                if (self.get_clock().now() - start_time).nanoseconds / 1e9 > timeout:
-                    return False, "Timeout waiting for hand to reach target position."
-                
-
-            result_outcome = True
-            result_message = f"Smoothly moving hand to target position {target_pos:.2f} revs. Trajectory published."
-            return result_outcome, result_message
-
-        except Exception as e:
-            result_outcome = False
-            result_message = f"Exception occurred: {e}"
-            return result_outcome, result_message
-
-    def get_smooth_move_traj(self, target_pos, duration=2.0):
-        '''Get the trajectory for smoothly moving the hand to a target position'''
-        with self.hand_state_lock:
-            # Get the current position
-            current_pos = self.last_known_hand_state.pos_estimate
-
-        hand_traj_gen = HandTrajGenerator()
-
-        # Get the trajectory
-        time_cmd, pos, vel, acc, tor = hand_traj_gen.get_smooth_move_trajectory(start_pos=current_pos, 
-                                                                                    target_pos=target_pos, 
-                                                                                    duration=duration)
-        
-        # Convert time_cmd to builtin_interfaces/Time 
-        time_cmd_ros = [
-            (self.get_clock().now() + Duration(seconds=int(t), nanoseconds=int((t % 1) * 1e9))).to_msg() 
-            for t in time_cmd
-            ]
-
-        return time_cmd_ros, pos, vel, tor
 
     # --------------------- Shutdown -------------------------------------------
     def on_shutdown(self):
