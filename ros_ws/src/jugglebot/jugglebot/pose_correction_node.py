@@ -64,8 +64,9 @@ class PoseCorrectionNode(Node):
     def load_feedforward_model(self):
         """Load pre-computed KD-tree and associated calibration data."""
         try:
+            calibration_file_name = 'angled_origin_calibration_144.joblib'#'calibration_kdtree.joblib'
             package_path = get_package_share_directory('jugglebot')
-            calib_path = os.path.join(package_path, 'resources', 'calibration_kdtree.joblib')
+            calib_path = os.path.join(package_path, 'resources', calibration_file_name)
             data = joblib.load(calib_path)
             self.kdtree = data['tree']
             self.features = data['features']
