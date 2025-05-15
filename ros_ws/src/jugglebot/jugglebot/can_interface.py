@@ -42,8 +42,21 @@ import quaternion
 import can
 import cantools
 from ament_index_python.packages import get_package_share_directory
-from jugglebot_interfaces.msg import MotorStateSingle
+from jugglebot_interfaces.msg import MotorStateSingle, HandTelemetryMessage
 from geometry_msgs.msg import Quaternion
+
+import matplotlib.pyplot as plt
+
+from dataclasses import dataclass
+
+@dataclass
+class HandInputPosCmd:
+    """
+    Data class for hand input position command.
+    """
+    pos: float = 0.0 # rev
+    vel: float = 0.0 # 0.01 rev/s. See self._input_vel_scale. Is 'int' on arrival, but converted to float on receipt
+    tor: float = 0.0 # 0.01 Nm. See self._input_tor_scale
 
 class CANInterface:
     """
@@ -146,6 +159,11 @@ class CANInterface:
         # Initialize a local copy of the motor states so that we don't need to lock the data every time we access it
         self.last_motor_states = [MotorStateSingle() for _ in range(self.num_axes)]
 
+        # Initialize a container for the received hand input pos commands
+        self._input_vel_scale = 100.0 # As set on the ODrive (`input_vel_scale`)
+        self._input_tor_scale = 100.0 # As set on the ODrive (`input_torque_scale`)
+        self._last_hand_input_pos_cmd = HandInputPosCmd()
+
         # Flags and variables for tracking errors
         self.fatal_error: bool = False
         self.undervoltage_error: bool = False # eg. me hitting the E-stop
@@ -166,10 +184,26 @@ class CANInterface:
         self.tilt_sensor_reading = None 
 
         # Initialize CAN arbitration IDs for messages to/from the Teensy
-        # See the Teensy firmware for a note on "safe" IDs to not conflict with the ODrives
+        '''
+        NOTE on CAN ids:
+            Odrives need a 'block' of 32 arbitration IDs, starting at the node ID. 
+            For 7 ODrives (with CAN id 0—7), this means we need to stay away from 
+            arbitration IDs between 0x00 and 0xE0 (7 * 32 = 224 = E0)
+
+            Additionally, there is a 'broadcast id' that will transmit to all ODrives on the bus (id = 0x3f<<5 = 0x7E0),
+            so we need to keep out of its block, which spans to the end of the range (7FF)
+
+            Therefore, 'safe' IDs are in the (non-inclusive) range:
+            0xE0 --> 0x7E0
+        '''
         self._CAN_traffic_report_ID = 0x7DF
         self._CAN_tilt_reading_ID = 0x7DE
-        self._hand_custom_message_ID = (6 << 5) | 0x04  # Axis 6, command 0x04 (RxSdo)
+        self._CAN_hand_traj_cmd_ID = 0x6D0
+        self._CAN_time_sync_ID = 0x7DD 
+        self._CAN_hand_input_pos_ID = (6 << 5) | 0x0c # Hand motor, command 0x0c (set_input_pos).
+        self._irrelevant_CAN_IDs = {
+            (6 << 5) | 0x04,  # Hand motor, command 0x04 (RxSdo). Was "hand_custom_message_ID"
+        }
 
         # Initialize CAN arbitration ID for state messages to/from the Teensy
         self._CAN_state_update_ID = 0x6E0 # For sending the current state to/from the Teensy
@@ -185,6 +219,18 @@ class CANInterface:
 
         # Initialize the last known platform tilt offset. This is useful in case we need to run the platform levelling again
         self.last_platform_tilt_offset = quaternion.quaternion(1, 0, 0, 0)
+
+        # Configure whether to plot the hand trajectory data.
+        # Note that this will cause the node to freeze while the plot is open; this should only be used in true debugging mode. 
+        self._plot_hand_traj = False
+        if self._plot_hand_traj:
+            self._hand_traj_data_last_time = None
+            self.hand_traj_data = {
+                'time': [],
+                'input_pos': [],
+                'vel_ff': [],
+                'torque_ff': [],
+            }
 
         # Initialize error-related parameters
         self.max_reset_attempts_after_soft_error = 1 # Number of times to try resetting after encountering a soft error before throwing a fatal error
@@ -317,6 +363,26 @@ class CANInterface:
         self.ROS_logger.error(f"Failed to restore CAN bus connection after {max_retries} attempts. Closing CAN bus...")
         self.close()
         self.fatal_can_error = True  # Report the fatal CAN issue so that the handler node can stop attempting to send messages
+
+    #########################################################################################################
+    #                                             Clock Management                                          #
+    #########################################################################################################
+
+    def broadcast_time(self):
+        """Pack the current CLOCK_REALTIME in µs and put it on CAN."""
+        t = time.time()              # seconds (float)
+        sec  = int(t)
+        usec = int((t - sec) * 1_000_000)
+
+        payload = struct.pack('<II', sec, usec)
+        msg = can.Message(arbitration_id=self._CAN_time_sync_ID,
+                          data=payload,
+                          is_extended_id=False)
+
+        try:
+            self.bus.send(msg, timeout=0.002)
+        except can.CanError as e:
+            self.ROS_logger.warn(f'CAN time-sync Tx failed: {e}')
 
     #########################################################################################################
     #                                         ROS2 Callback Management                                      #
@@ -841,6 +907,69 @@ class CANInterface:
             self.ROS_logger.error(f"Failed to run motor until current limit for axis {axis_id}: {e}")
             raise
 
+    def set_hand_trajectory(self, event_delay: float=None, event_velocity: float=None, traj_type: int=None):
+        """
+        Sets the trajectory for the hand motor using the Teensy.
+        This is done by sending a message to the Teensy with the desired trajectory parameters.
+        The Teensy will then generate the trajectory and send it over the CAN bus as needed to
+        ensure that the main event (catch or throw) happens exactly at 'event_time'
+
+        NOTE that 'event_time' has been *temporarily* replaced with 'event_delay' to make it easier to test.
+            The calculation for wall_time_ms will need to be updated when we switch back to using event_time.
+
+        NOTE that only the *low* 32 bits of the target wall-time (in ms) are sent (so as to fit the full
+        message in a single CAN 2.0 frame)
+
+        Args:
+            event_delay (float): How long (after NOW) should the event occur?
+            event_velocity (float): The velocity of the ball at the time of the event (catch/throw)
+            traj_type (int): The type of trajectory to generate. 0 = throw, 1 = catch, 2 = throw and catch (same ball)
+
+        Raises:
+            Exception: If sending the message fails.
+        """
+
+        try:
+            # Ensure that we have a valid event delay (>0) and velocity (0.3 < vel < 7.0)
+            if event_delay is None or event_delay <= 0:
+                raise ValueError(f"Invalid event delay: {event_delay}. Must be > 0.")
+            if event_velocity is None or event_velocity < 0.3 or event_velocity > 7.0:
+                raise ValueError(f"Invalid event velocity: {event_velocity}. Must be 0.3 < vel < 7.0")
+            if traj_type is None or traj_type not in [0, 1, 2]:
+                raise ValueError(f"Invalid trajectory type: {traj_type}. Must be 0, 1, or 2.")
+        
+            if self._plot_hand_traj:
+                self.set_requested_state(axis_id=6, requested_state='IDLE') # Set to IDLE while testing the trajectory generation
+            else:
+                # Ensure the hand is in CLOSED_LOOP, position control mode
+                self.set_requested_state(axis_id=6, requested_state='CLOSED_LOOP_CONTROL')
+                self.set_control_mode(axis_id=6, control_mode='POSITION_CONTROL', input_mode='PASSTHROUGH')
+
+            # Compute the wall-time-ms for the desired event
+            wall_time_ms_full = int(time.time()*1000) + int(event_delay*1000)
+            wall_time_ms = wall_time_ms_full & 0xFFFFFFFF  # Only the low 32 bits are sent
+
+            # Log this event wall time
+            self.ROS_logger.info(f"Setting hand trajectory: event_time = {wall_time_ms_full} ms, sent: {wall_time_ms} ms")
+
+            vel_u16 = int(round(event_velocity * 100))   # 0.01 m/s units. NOT the same as `input_vel_scale` on the ODrive; 
+                                                         # this is just for sending to the Teensy.
+            payload = bytes([
+                traj_type & 0xFF,
+                vel_u16 & 0xFF,
+                (vel_u16 >> 8) & 0xFF
+            ]) + struct.pack('<I', wall_time_ms) + bytes([0])   # pad
+
+            msg = can.Message(arbitration_id=self._CAN_hand_traj_cmd_ID,
+                            is_extended_id=False, data=payload, dlc=8)
+
+            with self._can_lock:
+                self.bus.send(msg, timeout=0.002)
+
+        except Exception as e:
+            self.ROS_logger.error(f"Failed to set hand trajectory: {e}")
+            raise
+
     #########################################################################################################
     #                                            Managing ODrives                                           #
     #########################################################################################################
@@ -1277,6 +1406,11 @@ class CANInterface:
         # The arbitration_id contains encoded information about the axis and command.
         arbitration_id = message.arbitration_id
 
+        # If we've opted to plot hand trajectory data, send all CAN messages to this method
+        # (this keeps the method updating and allows us to more easily know when the hand traj data is done) 
+        if self._plot_hand_traj:
+            self._handle_plot_hand_traj_data(message)
+
         # Check if the message is for the CAN traffic report
         if arbitration_id == self._CAN_traffic_report_ID:
             self._handle_CAN_traffic_report(message)
@@ -1292,8 +1426,12 @@ class CANInterface:
         elif arbitration_id == self._CAN_state_update_ID:
             self._decode_state_from_teensy(message)
 
-        # Or if the message is the custom message going to the hand (sent by hand_trajectory_transmitter_node)
-        elif arbitration_id == self._hand_custom_message_ID:
+        # Or if the message was a 'set_input_pos' command from the Teensy to the hand
+        elif arbitration_id == self._CAN_hand_input_pos_ID:
+            self._handle_hand_input_pos_message(message)
+
+        # Or if the message is something sent by the Teensy that we can ignore here
+        elif arbitration_id in self._irrelevant_CAN_IDs:
             return
 
         else: # If the message is from the ODrives
@@ -1642,6 +1780,84 @@ class CANInterface:
         except struct.error as e:
             self.ROS_logger.warn(f"Error unpacking tilt sensor data: {e}.\nData: {message.data}")
 
+    def _handle_hand_input_pos_message(self, message):
+        """
+        Handles hand input position messages.
+
+        Args:
+            message: The CAN message.
+        """
+        try:
+            input_pos, vel_ff, tor_ff = struct.unpack('<fhh', message.data)
+            
+            # Store the data in the hand input position buffer
+            self._last_hand_input_pos_cmd = HandInputPosCmd(
+                pos=input_pos,
+                vel=vel_ff / self._input_vel_scale,
+                tor=tor_ff / self._input_tor_scale)
+
+        except struct.error as e:
+            self.ROS_logger.warn(f"Error unpacking hand input position data: {e}.\nData: {message.data}")
+
+    def _handle_plot_hand_traj_data(self, message):
+        """
+        Handles hand trajectory data messages by storing them in the relevant lists.
+
+        Then once 1 second passes after receiving the first message, plot the data.
+
+        Note that the data is stored in the CAN message like so:
+            Input pos: [0] (4 bytes) (float32) (unit is rev)
+            Vel FF   : [4] (2 bytes) (int16) (unit is 1 / `self._input_vel_scale` rev/s)
+            Torque FF: [6] (2 bytes) (int16) (unit is 1 / `self._input_tor_scale` Nm)
+
+        Args:
+            message: The CAN message.
+        """
+        # Check that the message is for setting the hand input pos.
+        # If it isn't, check whether we should be plotting the hand trajectory.
+        try:
+            if message.arbitration_id != self._CAN_hand_input_pos_ID:
+                if self._hand_traj_data_last_time is not None:
+                    # If it's been more than 1 second since the last input pos message for the hand, plot the data
+                    if time.time() - self._hand_traj_data_last_time > 1.0:
+                        # Plot the data
+                        self._plot_hand_traj_data()
+                        
+                        # Reset the last time and clear the data
+                        self._hand_traj_data_last_time = None
+                        self.hand_traj_data = {'time': [], 'input_pos': [], 'vel_ff': [], 'torque_ff': []}
+                    return
+        except Exception as e:
+            self.ROS_logger.error(f"Error handling hand trajectory data message: {e}")
+            return
+
+        try:
+            if message.arbitration_id == self._CAN_hand_input_pos_ID:
+                # Get the current time
+                current_time = time.time()
+
+                # Unpack the data into three floats
+                input_pos, vel_ff, torque_ff = struct.unpack('<fhh', message.data)
+
+                # Store the data in the relevant lists
+                self.hand_traj_data['time'].append(current_time)
+                self.hand_traj_data['input_pos'].append(input_pos)
+                self.hand_traj_data['vel_ff'].append(vel_ff / self._input_vel_scale)
+                self.hand_traj_data['torque_ff'].append(torque_ff / self._input_tor_scale)
+
+                # Log the time
+                # self.ROS_logger.info(f"Hand trajectory data received: Time: {current_time*1000:.6f}")
+
+                # Update the last time we received hand trajectory data
+                self._hand_traj_data_last_time = current_time
+
+        except struct.error as e:
+            self.ROS_logger.warn(f"Error unpacking hand trajectory data: {e}.\nData: {message.data}")
+
+    #########################################################################################################
+    #                                        Command Methods                                                #
+    #########################################################################################################
+
     def get_tilt_sensor_reading(self, attemp_num: int = 0):
         """
         Requests the tilt sensor reading from the Teensy and returns it.
@@ -1842,6 +2058,37 @@ class CANInterface:
     #                                       Utility functions                                               #
     #########################################################################################################
 
+    def _plot_hand_traj_data(self):
+        """
+        Plots the hand trajectory data.
+        """
+        # Check if the hand trajectory data is empty
+        if not self.hand_traj_data['time']:
+            self.ROS_logger.warning("No hand trajectory data to plot.")
+            return
+
+        # Plot the data
+        plt.figure(figsize=(10, 6))
+        plt.subplot(3, 1, 1)
+        plt.plot(self.hand_traj_data['time'], self.hand_traj_data['input_pos'], label='Input Position')
+        plt.ylabel('Input Position (rev)')
+        plt.legend()
+
+        plt.subplot(3, 1, 2)
+        plt.plot(self.hand_traj_data['time'], self.hand_traj_data['vel_ff'], label='Velocity FF')
+        plt.ylabel('Velocity FF (0.01 rev/s)')
+        plt.legend()
+
+        plt.subplot(3, 1, 3)
+        plt.plot(self.hand_traj_data['time'], self.hand_traj_data['torque_ff'], label='Torque FF')
+        plt.ylabel('Torque FF (0.01 Nm)')
+        plt.xlabel('Time (s)')
+        plt.legend()
+
+        # Show the plot
+        plt.tight_layout()
+        plt.show()
+
     def get_motor_states(self) -> List[MotorStateSingle]:
         """
         Returns the motor states for all axes and copies the current states to the last_motor_states attribute
@@ -1854,6 +2101,33 @@ class CANInterface:
             self.last_motor_states = self.motor_states.copy()
         
         return self.last_motor_states
+
+    def get_hand_telemetry(self) -> HandTelemetryMessage:
+        """
+        Returns the hand telemetry data.
+
+        Returns:
+            A HandTelemetryMessage object containing the hand telemetry data.
+        """
+        try:
+            with self._motor_states_lock:
+                cmd = self._last_hand_input_pos_cmd
+
+                # Log the hand telemetry data
+                # self.ROS_logger.info(f"Hand telemetry data: pos_cmd: {cmd.pos}, vel_ff_cmd: {cmd.vel}, tor_ff_cmd: {cmd.tor}")
+
+                return HandTelemetryMessage(
+                    pos_cmd=cmd.pos,
+                    vel_ff_cmd=cmd.vel,
+                    tor_ff_cmd=cmd.tor,
+                    pos_meas = self.motor_states[6].pos_estimate,
+                    vel_meas = self.motor_states[6].vel_estimate,
+                    iq_meas = self.motor_states[6].iq_measured
+                )
+            
+        except Exception as e:
+            self.ROS_logger.error(f"Failed to get hand telemetry: {e}")
+            return HandTelemetryMessage()
 
     def _convert_tilt_to_quat(self, tiltX: float, tiltY: float) -> Quaternion:
         """

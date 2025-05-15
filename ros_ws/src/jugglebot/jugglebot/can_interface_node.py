@@ -8,14 +8,14 @@ from jugglebot_interfaces.msg import (
     SetMotorVelCurrLimitsMessage,
     SetTrapTrajLimitsMessage,
     HandTelemetryMessage,
-    RobotState,
-    HandInputPosMsg
+    RobotState
 )
 from jugglebot_interfaces.srv import (
     ODriveCommandService, 
     GetTiltReadingService, 
     ActivateOrDeactivate,
-    SetString
+    SetString,
+    SetHandTrajCmd
 )
 from jugglebot_interfaces.action import HomeMotors
 from std_msgs.msg import Float64MultiArray, String
@@ -23,7 +23,6 @@ from std_srvs.srv import Trigger
 from geometry_msgs.msg import PoseStamped
 from .can_interface import CANInterface
 import numpy as np
-
 
 class CanInterfaceNode(Node):
     def __init__(self):
@@ -45,13 +44,13 @@ class CanInterfaceNode(Node):
                                                                         'activate_or_deactivate',
                                                                         self.activate_or_deactivate_callback)
         self.set_hand_state_service = self.create_service(SetString, 'set_hand_state', self.set_hand_state_callback)
+        self.set_hand_traj_service = self.create_service(SetHandTrajCmd, 'set_hand_traj_cmd', self.set_hand_traj_callback)
 
         #### Initialize actions ####
         self.home_robot_action = ActionServer(self, HomeMotors, 'home_motors', self.home_robot)
 
         #### Initialize subscribers ####
         self.leg_pos_sub = self.create_subscription(Float64MultiArray, 'leg_lengths_topic', self.handle_platform_movement, 10)
-        self.hand_traj_sub = self.create_subscription(HandInputPosMsg, 'hand_trajectory', self.handle_hand_movement, 10)
         self.motor_vel_curr_limits_sub = self.create_subscription(SetMotorVelCurrLimitsMessage, 'set_motor_vel_curr_limits',
                                                                   self.motor_vel_curr_limits_callback, 10
         )
@@ -72,23 +71,20 @@ class CanInterfaceNode(Node):
         self.legs_target_position = [None] * 6
         self.legs_target_reached = [False] * 6
 
-        # Initialize a dictionary for hand trajectory data
-        self.hand_traj_data = {
-            'cmd_time': [],
-            'pos': [],
-            'vel_ff': [],
-            'torque_ff': []
-        }
-
         # Initialize a variable to track whether the robot was stowed due to an error
         # This prevents the usual shutdown routine from attempting to stow the robot again
         self.stowed_due_to_error = False
 
+        # Initialize parameters to modify the period for the time-sync CAN frames
+        self.declare_parameter('time_sync_period_ms', 10) # Default to 10 ms
+        self.time_sync_period = self.get_parameter('time_sync_period_ms').get_parameter_value().integer_value / 1000.0
+
         # Initialize timers
         self.platform_target_reached_timer = self.create_timer(0.1, self.check_platform_target_reached_status)
         self.timer_canbus = self.create_timer(timer_period_sec=0.001, callback=self._poll_can_bus)
-        self.robot_state_timer = self.create_timer(timer_period_sec=0.005, callback=self.get_and_publish_robot_state)
-        self.hand_traj_timer = self.create_timer(timer_period_sec=0.001, callback=self.hand_traj_timer_callback)
+        self.robot_state_timer = self.create_timer(timer_period_sec=0.01, callback=self.get_and_publish_robot_state)
+        self.time_sync_timer = self.create_timer(self.time_sync_period, self.can_handler.broadcast_time)
+        self.hand_telemetry_timer = self.create_timer(0.002, self.publish_hand_telemetry)  # Publish hand telemetry at 500 Hz
 
         # Initialize the number of axes
         self.num_axes = 7 # 6 leg motors + 1 hand motor
@@ -305,62 +301,6 @@ class CanInterfaceNode(Node):
         except Exception as e:
             self.get_logger().error(f"Error in handle_platform_movement: {e}")
 
-    def handle_hand_movement(self, msg):
-        """
-        Handle movement commands for the hand.
-        This command should be a trajectory command, which should consist of a list of 
-        command times, positions, velocity feedforward values, and torque feedforward values.
-        
-        These lists will then be saved to the hand_traj_data dictionary (overwriting any existing data).
-        The hand_traj_timer_callback will then send the next command in the trajectory at the appropriate time.
-        """
-        try:
-            # Check that the hand is in CLOSED_LOOP_CONTROL mode
-            if self.latest_axis_states()[6] != 8:
-                self.get_logger().warning("Hand is not in CLOSED_LOOP_CONTROL mode. Ignoring trajectory command.")
-                return
-
-            # Save the trajectory data to the dictionary
-            self.hand_traj_data['cmd_time'] = msg.time_cmd
-            self.hand_traj_data['pos'] = msg.input_pos
-            self.hand_traj_data['vel_ff'] = msg.vel_ff
-            self.hand_traj_data['torque_ff'] = msg.torque_ff
-
-        except Exception as e:
-            self.get_logger().error(f"Error in handle_hand_movement: {e}")
-
-    def hand_traj_timer_callback(self):
-        """Send the next hand trajectory command over the CAN bus if the time is appropriate to do so."""
-        try:
-            # If the trajectory data is empty, do nothing
-            if len(self.hand_traj_data['cmd_time']) == 0:
-                return
-            
-            # Get the current time
-            current_time = self.get_clock().now().nanoseconds / 1e9
-
-            # Put the trajectory in a more readable format
-            traj = self.hand_traj_data
-                    
-            # Next target time is cmd_time[0], but this needs to be converted to seconds
-            cmd_time = traj['cmd_time'][0].sec + traj['cmd_time'][0].nanosec / 1e9
-
-            if current_time >= cmd_time:
-                # Command the hand to the setpoint
-                input_pos = traj['pos'][0]
-                vel_ff = traj['vel_ff'][0]
-                torque_ff = traj['torque_ff'][0]
-
-                self.can_handler.send_position_target(axis_id=6, setpoint=input_pos, vel_ff=vel_ff, torque_ff=torque_ff)
-                # self.get_logger().info(f'Hand commanded: setpoint={input_pos:.4f}, vel_ff={vel_ff:.4f}, torque_ff={torque_ff:.4f} at time {current_time:.4f}')
-
-                # Remove the first element from the trajectory data
-                for key in ('cmd_time', 'pos', 'vel_ff', 'torque_ff'):
-                    traj[key].pop(0)
-
-        except Exception as e:
-            self.get_logger().error(f"Error in hand_traj_timer_callback: {e}")
-
     def activate_or_deactivate_callback(self, request, response):
         """
         Bring the robot to an active or inactive state in a controlled manner.
@@ -539,6 +479,27 @@ class CanInterfaceNode(Node):
         except Exception as e:
             self.get_logger().error(f"Error checking platform target reached status: {e}")
 
+    def set_hand_traj_callback(self, request, response):
+        """Service callback to set the hand trajectory."""
+        try:
+            # Extract the trajectory data from the request
+            event_delay = request.event_delay
+            event_vel = request.event_vel
+            traj_type = request.traj_type
+
+            # Set the hand trajectory using the CAN handler
+            self.can_handler.set_hand_trajectory(event_delay, event_vel, traj_type)
+            self.get_logger().info(f"Hand trajectory set: event_delay={event_delay}, event_vel={event_vel:.2f}, traj_type={traj_type}")
+
+            response.success = True
+            response.message = "Hand trajectory set successfully."
+        except Exception as e:
+            self.get_logger().error(f"Error setting hand trajectory: {e}")
+            response.success = False
+            response.message = f"Error setting hand trajectory: {e}"
+
+        return response
+
     #########################################################################################################
     #                                   Interfacing with the ROS Network                                    #
     #########################################################################################################
@@ -567,15 +528,14 @@ class CanInterfaceNode(Node):
         except Exception as e:
             self.get_logger().error(f"Error publishing CAN traffic: {e}")
 
-    def publish_hand_telemetry(self, hand_telemetry_data):
+    def publish_hand_telemetry(self):
         """Publish hand telemetry data."""
         try:
-            msg = HandTelemetryMessage()
-            msg.timestamp = self.get_clock().now().to_msg()
-            msg.position = hand_telemetry_data['position']
-            msg.velocity = hand_telemetry_data['velocity']
-
-            self.hand_telemetry_publisher.publish(msg)
+            # Get the hand telemetry data from the CAN handler
+            hand_telemetry_msg = self.can_handler.get_hand_telemetry()
+            hand_telemetry_msg.timestamp = self.get_clock().now().to_msg()
+            
+            self.hand_telemetry_publisher.publish(hand_telemetry_msg)
         except Exception as e:
             self.get_logger().error(f"Error publishing hand telemetry: {e}")
 
