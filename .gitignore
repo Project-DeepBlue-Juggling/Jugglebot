@@ -67,3 +67,9 @@ log/
 # Ignore files created by package managers
 /rosdep/
 /rosinstall/
+*.mcap
+*.csv
+*.csv
+*.csv
+*.yaml
+*.csv

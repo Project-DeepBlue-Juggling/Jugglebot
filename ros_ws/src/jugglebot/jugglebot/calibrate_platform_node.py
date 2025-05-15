@@ -67,7 +67,7 @@ class CalibratePlatformNode(Node):
         # Initialize the pose pattern generator
         self.pose_pattern_generator = PosePatternGenerator(self.test_radii, self.pts_at_each_radius,
                                                               self.test_height_min, self.test_height_max,
-                                                              height_increments=4, orientations_per_position=3, tilt_angle_limits=15.0,
+                                                              height_increments=4, orientations_per_position=3, tilt_angle_limit=15.0,
                                                               iterations=pattern_iterations,
                                                               logger=self.get_logger())
 
@@ -93,7 +93,8 @@ class CalibratePlatformNode(Node):
         # poses = self.pose_pattern_generator.generate_poses(pose_type='happy_face')
         # poses = self.pose_pattern_generator.generate_poses(pose_type='angled_grid')
         # poses = self.pose_pattern_generator.generate_poses(pose_type='random_sample_angled_grid')
-        poses = self.pose_pattern_generator.generate_poses(pose_type='random_angled')
+        # poses = self.pose_pattern_generator.generate_poses(pose_type='random_angled')
+        poses = self.pose_pattern_generator.generate_poses(pose_type='angled_origin')
 
         for i, pose in enumerate(poses):
             self.get_logger().info(f'Moving to pose {i}: {pose.pose.position.x:.3f}, {pose.pose.position.y:.3f}, {pose.pose.position.z:.3f}, '

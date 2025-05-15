@@ -12,7 +12,7 @@ from ament_index_python import get_package_share_directory
 
 class PosePatternGenerator:
     def __init__(self, test_radii, pts_at_each_radius, test_height_min, 
-                 test_height_max, height_increments, orientations_per_position, tilt_angle_limits, iterations=1,
+                 test_height_max, height_increments, orientations_per_position, tilt_angle_limit, iterations=1,
                  logger=None):
         """
         Initializes the generator.
@@ -33,7 +33,7 @@ class PosePatternGenerator:
         self.test_height_max = test_height_max # Max height to test
         self.height_increments = height_increments # Number of height increments to test
         self.num_orientations_per_position = orientations_per_position
-        self.tilt_angle_limits = tilt_angle_limits
+        self.tilt_angle_limit = tilt_angle_limit
         self.iterations = iterations
 
         self.logger = logger
@@ -287,7 +287,7 @@ class PosePatternGenerator:
                         pose.pose.position.z = height
 
                         # Generate random roll and pitch angles within +/- tilt_angle_limits degrees from vertical.
-                        tilt_limit_rad = np.deg2rad(self.tilt_angle_limits)
+                        tilt_limit_rad = np.deg2rad(self.tilt_angle_limit)
                         roll = np.random.uniform(-tilt_limit_rad, tilt_limit_rad)
                         pitch = np.random.uniform(-tilt_limit_rad, tilt_limit_rad)
                         
@@ -407,7 +407,7 @@ class PosePatternGenerator:
                 pose.pose.position.z = z
 
                 # Generate random roll and pitch angles within +/- tilt_angle_limits degrees from vertical.
-                tilt_limit_rad = np.deg2rad(self.tilt_angle_limits)
+                tilt_limit_rad = np.deg2rad(self.tilt_angle_limit)
                 roll = np.random.uniform(-tilt_limit_rad, tilt_limit_rad)
                 pitch = np.random.uniform(-tilt_limit_rad, tilt_limit_rad)
 
@@ -420,6 +420,34 @@ class PosePatternGenerator:
                 pose.pose.orientation.w = q.w
 
                 pose_list.append(pose)
+        return pose_list
+
+    def generate_angled_origin_poses(self):
+        """
+        Generates a set of poses that are angled around the origin (0, 0, 165.0) in 3D space.
+        The poses should cover angles from -'tilt_angle_limit' to '+tilt_angle_limit' in both roll and pitch.
+        The yaw angle is fixed at 0.0.
+        """
+        pose_list = []
+        z = 165.0
+        angle_limit = np.deg2rad(17.0)
+        for _ in range(self.iterations):
+            for roll in np.linspace(-angle_limit, angle_limit, 12):
+                for pitch in np.linspace(-angle_limit, angle_limit, 12):
+                    pose = PoseStamped()
+                    pose.pose.position.x = 0.0
+                    pose.pose.position.y = 0.0
+                    pose.pose.position.z = z
+
+                    q_roll = quaternion.from_rotation_vector([roll, 0, 0])
+                    q_pitch = quaternion.from_rotation_vector([0, pitch, 0])
+                    q = q_roll * q_pitch
+                    pose.pose.orientation.x = q.x
+                    pose.pose.orientation.y = q.y
+                    pose.pose.orientation.z = q.z
+                    pose.pose.orientation.w = q.w
+
+                    pose_list.append(pose)
         return pose_list
 
     #########################################################################################################
@@ -511,12 +539,12 @@ if __name__ == "__main__":
     test_height_max = 200.0
     height_increments = 4
     orientations_per_position = 3
-    tilt_angle_limits = 10.0
+    tilt_angle_limit = 10.0
     pattern_iterations = 1 # How many times to repeat the chosen pattern
 
     generator = PosePatternGenerator(test_radii, pts_at_each_radius, test_height_min,
                                      test_height_max, height_increments, orientations_per_position, 
-                                     tilt_angle_limits, iterations=pattern_iterations)
+                                     tilt_angle_limit, iterations=pattern_iterations)
     
     if generator.logger is None:
         logger = logging.getLogger("MocapInterface")
@@ -532,7 +560,8 @@ if __name__ == "__main__":
     # poses = generator.generate_poses('flat_grid')
     # poses = generator.generate_poses('happy_face')
     # poses = generator.generate_poses('angled_grid')
-    poses = generator.generate_poses('random_angled')
+    # poses = generator.generate_poses('random_angled')
+    poses = generator.generate_poses('angled_origin')
 
     # Get the filetered poses within the workspace
     filtered_poses = generator.filter_reachable_poses(poses)
