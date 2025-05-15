@@ -1,0 +1,12 @@
+# For setting the hand trajectory.
+# The Teensy receives this information and uses it to generate the 
+# relevant hand trajectory, publishing each specific command at the
+# correc time.
+
+float32 event_delay # How long after NOW should the event occur
+float32 event_vel   # What is the velocity of the ball during this event?
+int8 traj_type      # 0 = throw, 1 = catch, 2 = throw and catch (same ball)
+
+---
+bool success   # Was this value received and processed without issue?
+string message # Any relevant message to be sent back to the sender

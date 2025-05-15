@@ -30,15 +30,17 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/MocapDataMulti.msg"
   "msg/BallStateSingle.msg"
   "msg/BallStateMulti.msg"
-  "msg/HandInputPosMsg.msg"
+  "msg/HandTelemetryMessage.msg"
+  "msg/ThrowDebug.msg"
 
   "srv/GetRobotGeometry.srv"
   "srv/ActivateOrDeactivate.srv"
   "srv/SetFloat.srv"
   "srv/SetString.srv"
+  "srv/SetHandTrajCmd.srv"
 
   "msg/CanTrafficReportMessage.msg"
-  "msg/HandTelemetryMessage.msg"
+
   "msg/SetMotorVelCurrLimitsMessage.msg"
   "msg/SetTrapTrajLimitsMessage.msg"
   "msg/LegsTargetReachedMessage.msg"
