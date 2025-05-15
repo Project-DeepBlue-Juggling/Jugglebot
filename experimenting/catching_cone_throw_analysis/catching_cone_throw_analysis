@@ -1,0 +1,201 @@
+#!/usr/bin/env python3
+"""
+catching_cone_throw_analysis.py  - timing visualiser for Jugglebot throws
+• Fig 1: hand position / velocity overlay (your customised colours & ms axis)
+• Fig 2: platform roll & pitch overlay  (deg)
+
+Usage
+-----
+    python catching_cone_throw_analysis.py  <folder containing mcap file>  ...
+"""
+
+import argparse, math, sys
+from pathlib import Path
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.spatial.transform import Rotation as R
+from rosbags.rosbag2 import Reader
+from rosbags.typesys import Stores, get_typestore, get_types_from_msg
+from ament_index_python import get_package_share_directory
+
+# ───────────────────────── constants & conversion ────────────────────────────
+TOPIC_DBG       = '/throw_debug'
+TOPIC_HANDTEL   = '/hand_telemetry'
+TOPIC_PLATFORM  = '/platform_pose_mocap'
+
+HAND_SPOOL_R        = 0.00521        # [m]
+LINEAR_GAIN_FACTOR  = 1.035
+LINEAR_GAIN         = LINEAR_GAIN_FACTOR / (math.pi * HAND_SPOOL_R * 2.0)
+REV_TO_M            = 1.0 / LINEAR_GAIN
+REVPS_TO_MPS        = REV_TO_M        # same scale
+
+WIN_BEFORE  = 1.5                     # [s]
+WIN_AFTER   = 1.5                     # [s]
+
+# ───────────────────────── bag loader ─────────────────────────────────────────
+def load_traces(bag_path: Path):
+    """
+    Returns
+    -------
+    hand_traces : list of (dt, p_cmd, p_meas, v_cmd, v_meas)
+    orient_traces : list of (dt, roll_cmd_deg, roll_meas_deg,
+                                  pitch_cmd_deg, pitch_meas_deg)
+    All dt arrays are centred so that t=0 is (/throw_debug stamp + 2 s).
+    """
+    typestore = get_typestore(Stores.ROS2_FOXY)
+
+    # Register custom jugglebot messages once
+    pkg_share = get_package_share_directory('jugglebot_interfaces')
+    msg_dir = Path(pkg_share) / 'msg'
+    for msg_file in msg_dir.glob('*.msg'):
+        if msg_file.stem == 'PlatformPoseMessage':
+            continue
+        typestore.register(
+            get_types_from_msg(
+                msg_file.read_text(encoding='utf-8'),
+                f"jugglebot_interfaces/msg/{msg_file.stem}"
+            )
+        )
+
+    dbg_times      = []   # seconds (each shifted by +2 s below)
+    hand_samples   = []   # (t, pos_cmd_m, pos_meas_m, vel_cmd_mps, vel_meas_mps)
+    plat_samples   = []   # (t, roll_deg, pitch_deg)
+
+    with Reader(bag_path) as reader:
+        for con, ts_raw, raw in reader.messages():
+            ts = ts_raw * 1e-9                            # ns → s
+
+            if con.topic == TOPIC_DBG:
+                m = typestore.deserialize_cdr(raw, con.msgtype)
+                dbg_times.append(ts + 2.0)
+                # save commanded roll/pitch for later
+                dbg_times[-1] = (dbg_times[-1],
+                                 m.roll_cmd, m.pitch_cmd)  # radians
+
+            elif con.topic == TOPIC_HANDTEL:
+                m = typestore.deserialize_cdr(raw, con.msgtype)
+                hand_samples.append((
+                    ts,
+                    m.pos_cmd   * REV_TO_M,
+                    m.pos_meas  * REV_TO_M,
+                    m.vel_ff_cmd * REVPS_TO_MPS,
+                    m.vel_meas   * REVPS_TO_MPS ))
+
+            elif con.topic == TOPIC_PLATFORM:
+                m = typestore.deserialize_cdr(raw, con.msgtype)
+                qx, qy, qz, qw = (m.pose.orientation.x, m.pose.orientation.y,
+                                  m.pose.orientation.z, m.pose.orientation.w)
+                roll, pitch, _ = R.from_quat([qx, qy, qz, qw]).as_euler('xyz')
+                plat_samples.append((ts,
+                                     math.degrees(roll),
+                                     math.degrees(pitch)))
+
+    if not dbg_times or not hand_samples or not plat_samples:
+        return [], []
+
+    hand_arr  = np.array(hand_samples)          # (N, 5)
+    plat_arr  = np.array(plat_samples)          # (M, 3)
+    dbg_t_cmd = np.array([t for t, *_ in dbg_times])
+
+    # helper for fast index search
+    def win_indices(arr_t, centre):
+        idx0 = np.searchsorted(arr_t, centre - WIN_BEFORE, side='left')
+        idx1 = np.searchsorted(arr_t, centre + WIN_AFTER,  side='right')
+        return idx0, idx1
+
+    hand_tr, orient_tr = [], []
+    for (t0, roll_cmd_rad, pitch_cmd_rad) in dbg_times:
+        hi0, hi1 = win_indices(hand_arr[:,0], t0)
+        pi0, pi1 = win_indices(plat_arr[:,0], t0)
+        if hi1 - hi0 < 3 or pi1 - pi0 < 3:
+            continue
+
+        seg_hand = hand_arr[hi0:hi1]
+        seg_plat = plat_arr[pi0:pi1]
+        dt_hand  = seg_hand[:,0] - t0
+        dt_plat  = seg_plat[:,0] - t0
+
+        # Prepare arrays for commanded roll/pitch (constant)
+        roll_cmd_deg   = np.full_like(dt_plat, math.degrees(roll_cmd_rad))
+        pitch_cmd_deg  = np.full_like(dt_plat, math.degrees(pitch_cmd_rad))
+
+        hand_tr.append((dt_hand,
+                        seg_hand[:,1],  # p_cmd
+                        seg_hand[:,2],  # p_meas
+                        seg_hand[:,3],  # v_cmd
+                        seg_hand[:,4])) # v_meas
+        orient_tr.append((dt_plat,
+                          roll_cmd_deg,  seg_plat[:,1],   # roll cmd / meas
+                          pitch_cmd_deg, seg_plat[:,2]))  # pitch cmd / meas
+
+    return hand_tr, orient_tr
+
+# ───────────────────────── plotting helpers ───────────────────────────────────
+def plot_hand(traces):
+    fig, (ax_pos, ax_vel) = plt.subplots(2,1, figsize=(8,7), sharex=True)
+    for dt, p_cmd, p_meas, v_cmd, v_meas in traces:
+        ax_pos.plot(dt, p_cmd,  color='r', alpha=1.0, lw=1.0)
+        ax_pos.plot(dt, p_meas, color='b', alpha=0.2, lw=1.0)
+        ax_vel.plot(dt, v_cmd,  color='r', alpha=1.0, lw=1.0)
+        ax_vel.plot(dt, v_meas, color='b', alpha=0.2, lw=1.0)
+    for ax in (ax_pos, ax_vel):
+        ax.axvline(0.0, color='k', ls='--', lw=0.8)
+        ax.grid(True, ls=':')
+        # convert x-axis to ms
+        ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x*1e3)}'))
+        ax.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
+    ax_pos.set_ylabel('hand position [m]')
+    ax_vel.set_ylabel('hand velocity [m/s]')
+    ax_vel.set_xlabel('time from throw-command [ms]')
+    handles = [plt.Line2D([], [], color='r', lw=2, label='cmd'),
+               plt.Line2D([], [], color='b', lw=2, label='meas')]
+    ax_pos.legend(handles=handles, loc='upper right')
+    fig.suptitle(f'Timing analysis ({len(traces)} throws)')
+    plt.tight_layout()
+    return fig
+
+def plot_orientation(traces):
+    fig, (ax_roll, ax_pitch) = plt.subplots(2,1, figsize=(8,7), sharex=True)
+    for dt, roll_cmd, roll_meas, pitch_cmd, pitch_meas in traces:
+        ax_roll .plot(dt, roll_cmd,   color='r', alpha=1.0, lw=1.0)
+        ax_roll .plot(dt, roll_meas,  color='b', alpha=0.2, lw=1.0)
+        ax_pitch.plot(dt, pitch_cmd,  color='r', alpha=1.0, lw=1.0)
+        ax_pitch.plot(dt, pitch_meas, color='b', alpha=0.2, lw=1.0)
+    for ax in (ax_roll, ax_pitch):
+        ax.axvline(0.0, color='k', ls='--', lw=0.8)
+        ax.grid(True, ls=':')
+        ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x*1e3)}'))
+        ax.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
+    ax_roll .set_ylabel('roll [deg]')
+    ax_pitch.set_ylabel('pitch [deg]')
+    ax_pitch.set_xlabel('time from throw command [ms]')
+    handles = [plt.Line2D([], [], color='r', lw=2, label='cmd'),
+               plt.Line2D([], [], color='b', lw=2, label='meas')]
+    ax_roll.legend(handles=handles, loc='upper right')
+    fig.suptitle(f'Platform orientation ({len(traces)} throws)')
+    plt.tight_layout()
+    return fig
+
+# ───────────────────────── main ───────────────────────────────────────────────
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('bags', nargs='+', type=Path, help='mcap / rosbag2 files')
+    args = ap.parse_args()
+
+    hand_tr, orient_tr = [], []
+    for bag in args.bags:
+        tr_hand, tr_or = load_traces(bag)
+        hand_tr.extend(tr_hand)
+        orient_tr.extend(tr_or)
+
+    if not hand_tr:
+        sys.exit("❌  No throw / hand-telemetry pairs found!")
+    if not orient_tr:
+        sys.exit("❌  No platform orientation data found!")
+
+    plot_hand(hand_tr)
+    plot_orientation(orient_tr)
+    plt.show()
+
+if __name__ == '__main__':
+    main()
