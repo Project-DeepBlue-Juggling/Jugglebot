@@ -22,10 +22,11 @@ from scipy.spatial.transform import Rotation as R
 from sklearn.neighbors import KDTree
 
 # ───── Tuning constants ────────────────────────────────────────────────────────
-ROT_SCALE      = 100.0     # 1 rad rotation counts as 180 mm in the metric
+ROT_SCALE      = 100.0     # 1 rad rotation counts as XXX mm in the metric
 KD_LEAF_SIZE   = 40
-POS_RES_MM     = 0.5       # positional key resolution for de-duplication
-ANG_RES_RAD    = np.deg2rad(1.0)  # rotational key resolution (1 deg)
+# For de-duplication:
+POS_RES_MM     = 0.1       # positional key resolution for de-duplication
+ANG_RES_RAD    = np.deg2rad(0.1)  # rotational key resolution (0.1 deg)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Quaternion helpers (unchanged)
@@ -78,16 +79,17 @@ def load_bags(bag_paths: List[Path],
             cmd_p, cmd_q = None, None   # cache until we see matching measurement
             for con, _, raw in reader.messages():
                 topic = con.topic
-                if topic == '/platform_pose_topic':
-                    msg = typestore.deserialize_cdr(raw, con.msgtype).pose_stamped.pose
-                    cmd_p = np.array([msg.position.x, msg.position.y, msg.position.z], dtype=np.float64)
-                    cmd_q = np.array([msg.orientation.x, msg.orientation.y,
-                                      msg.orientation.z, msg.orientation.w], dtype=np.float64)
-                elif topic == '/settled_platform_pose' and cmd_p is not None:
-                    msg = typestore.deserialize_cdr(raw, con.msgtype).pose
-                    meas_p = np.array([msg.position.x, msg.position.y, msg.position.z], dtype=np.float64)
-                    meas_q = np.array([msg.orientation.x, msg.orientation.y,
-                                       msg.orientation.z, msg.orientation.w], dtype=np.float64)
+                if topic == '/settled_platform_poses':
+                    # /settled_platform_poses is a PoseArray message with 2 arrays: 'poses[0]' (cmd) and 'poses[1]' (meas)
+                    msg = typestore.deserialize_cdr(raw, con.msgtype)
+                    cmd_p = np.array([msg.poses[0].position.x, msg.poses[0].position.y,
+                                      msg.poses[0].position.z], dtype=np.float64)
+                    cmd_q = np.array([msg.poses[0].orientation.x, msg.poses[0].orientation.y,
+                                      msg.poses[0].orientation.z, msg.poses[0].orientation.w], dtype=np.float64)
+                    meas_p = np.array([msg.poses[1].position.x, msg.poses[1].position.y,
+                                      msg.poses[1].position.z], dtype=np.float64)
+                    meas_q = np.array([msg.poses[1].orientation.x, msg.poses[1].orientation.y,
+                                      msg.poses[1].orientation.z, msg.poses[1].orientation.w], dtype=np.float64)
                     k = make_key(cmd_p, cmd_q)
                     merged[k] = (cmd_p, cmd_q, meas_p, meas_q)  # later bags overwrite
                     cmd_p, cmd_q = None, None                  # reset until next cmd
