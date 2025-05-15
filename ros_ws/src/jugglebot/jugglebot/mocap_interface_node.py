@@ -31,8 +31,6 @@ class MocapInterfaceNode(Node):
 
         # Send a request to get the robot geometry
         self.send_geometry_request()
-        # Initialize flag to track whether geometry data has been received or not
-        self.has_geometry_data = False
 
         #########################################################################################################
         #                                             Publishing                                                #
@@ -98,7 +96,7 @@ class MocapInterfaceNode(Node):
             response = future.result()
             if response is not None:
                 self.mocap_interface.set_base_to_platform_offset(response.start_pos[2])
-                self.has_geometry_data = True
+                self.mocap_interface.ready_to_publish = True
                 self.get_logger().info("Received robot geometry data.")
             else:
                 self.get_logger().error("Failed to get robot geometry data.")

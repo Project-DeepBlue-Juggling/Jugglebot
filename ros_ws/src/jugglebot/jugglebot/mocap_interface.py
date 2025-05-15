@@ -31,6 +31,8 @@ class MocapInterface:
         # mm to move in the z direction from the base to the platform in its lowest pos
         self.base_to_platform_transformation = None
 
+        self.ready_to_publish = False # eg. if we haven't received geometry data yet
+
         # Initialize data to be stored
         self.unlabelled_markers = np.empty((0, 4))  # (x, y, z, residual)
         self.body_poses: Dict[str, PoseStamped] = {} # Pose for every rigid body discovered in QTM
@@ -122,6 +124,10 @@ class MocapInterface:
         Parameters:
         - packet: The data packet received from QTM.
         """
+        # Check if we are ready to publish data
+        if not self.ready_to_publish:
+            return
+
         # Process packet header from labelled markers to update performance stats,
         # but ignore the labelled marker positions.
         markers_residual = packet.get_3d_markers_residual()
@@ -155,18 +161,19 @@ class MocapInterface:
             # Compose a PoseStamped for this rigid body
             pose = PoseStamped()
             pose.header.stamp = self.node.get_clock().now().to_msg()
-            if body_name == "Platform":
-                pose.header.frame_id = "platform_start"
-            else:
+            if body_name == "Base":
                 pose.header.frame_id = "world"
+            else:
+                pose.header.frame_id = "platform_start"
 
             pose.pose.position.x = body[0].x
             pose.pose.position.y = body[0].y
-            # Special Z-offset for the platform (everything else is untouched)
-            if self.base_to_platform_transformation is not None and body_name == "Platform":
-                pose.pose.position.z = body[0].z - self.base_to_platform_transformation
-            else:
+
+            # Leave the Base Z position unchanged, but apply the base to platform transformation to other bodies
+            if self.base_to_platform_transformation is not None and body_name == "Base":
                 pose.pose.position.z = body[0].z
+            else:
+                pose.pose.position.z = body[0].z - self.base_to_platform_transformation
 
             qx, qy, qz, qw = self.rotation_list_to_quaternion(body[1].matrix)
             pose.pose.orientation.x = qx
