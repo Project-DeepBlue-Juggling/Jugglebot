@@ -73,3 +73,5 @@ log/
 *.csv
 *.yaml
 *.csv
+*.qtm
+experimenting/Juggling Analysis Tool/data/5_ball_juggling_cut_balls_only.tsv
