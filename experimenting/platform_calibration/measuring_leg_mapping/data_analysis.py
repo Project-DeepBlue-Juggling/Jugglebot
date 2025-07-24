@@ -218,14 +218,14 @@ def main():
     averaged_scaled_df, averaged_scaling_factor = scale_data_based_on_all_extended_lengths(aligned_df, peak_times, peak_duration)
 
     # Static plot with the scaled data.
-    print(f"Simple scaling factor: {simple_scaling_factor:.3f} mm/rev, or {1/simple_scaling_factor:.6f} rev/mm")
-    print(f"Averaged scaling factor: {averaged_scaling_factor:.3f} mm/rev, or {1/averaged_scaling_factor:.6f} rev/mm")
+    print(f"Simple scaling factor: {simple_scaling_factor:.3f} mm/rev, or {(1/simple_scaling_factor)*10**3:.5f} 10^-3 rev/mm")
+    # print(f"Averaged scaling factor: {averaged_scaling_factor:.3f} mm/rev, or {1/averaged_scaling_factor:.6f} rev/mm")
     # static_plot(scaled_df, title="Scaled Data")
 
 
     """ Step 5: Assess and plot the error between the motor and Linear slider data """
     assess_and_plot_error(simple_scaled_df, title=f"Error Analysis for {file_name}, with Simple Scaling Factor", label="Simple Scale")
-    assess_and_plot_error(averaged_scaled_df, peak_times, peak_duration, title=f"Error Analysis for {file_name}, with Averaged Scaling Factor", label="Averaged Scale")
+    # assess_and_plot_error(averaged_scaled_df, peak_times, peak_duration, title=f"Error Analysis for {file_name}, with Averaged Scaling Factor", label="Averaged Scale")
 
     print("##############################################\n")
 
