@@ -28,9 +28,9 @@
         <mxCell id="9Ifiy6c0lKa0k_pnXlT4-6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;" parent="1" source="w_Xj45Z8jAB2MF-sBWLv-3" target="9Ifiy6c0lKa0k_pnXlT4-3" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="9Ifiy6c0lKa0k_pnXlT4-8" value="INA1,&lt;div&gt;INA2,&lt;div&gt;PWMA&lt;/div&gt;&lt;/div&gt;&lt;div&gt;(3 pin)&lt;/div&gt;" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" parent="9Ifiy6c0lKa0k_pnXlT4-6" vertex="1" connectable="0">
+        <mxCell id="9Ifiy6c0lKa0k_pnXlT4-8" value="&lt;div&gt;Teensy Pins:&lt;/div&gt;&lt;div&gt;INA1: 16&lt;/div&gt;&lt;div&gt;INA2: 15&lt;br&gt;PWMA: 14&lt;/div&gt;" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" parent="9Ifiy6c0lKa0k_pnXlT4-6" vertex="1" connectable="0">
           <mxGeometry x="0.0579" y="1" relative="1" as="geometry">
-            <mxPoint as="offset" />
+            <mxPoint x="2" y="28" as="offset" />
           </mxGeometry>
         </mxCell>
         <mxCell id="w_Xj45Z8jAB2MF-sBWLv-3" value="Teensy 4.0" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
@@ -170,7 +170,7 @@
             </Array>
           </mxGeometry>
         </mxCell>
-        <mxCell id="9Ifiy6c0lKa0k_pnXlT4-11" value="SPI&lt;div&gt;(4 pin)&lt;/div&gt;" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" parent="9Ifiy6c0lKa0k_pnXlT4-9" vertex="1" connectable="0">
+        <mxCell id="9Ifiy6c0lKa0k_pnXlT4-11" value="SPI&lt;div&gt;(4 pin)&lt;br&gt;SPI0 on Teensy&lt;/div&gt;" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" parent="9Ifiy6c0lKa0k_pnXlT4-9" vertex="1" connectable="0">
           <mxGeometry x="-0.0932" y="-3" relative="1" as="geometry">
             <mxPoint x="48" y="-3" as="offset" />
           </mxGeometry>
@@ -200,8 +200,8 @@
         <mxCell id="9Ifiy6c0lKa0k_pnXlT4-13" value="12V to 5V Buck" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
           <mxGeometry x="595" y="260" width="100" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="_-VSjDH_-AeT8WvHtuQI-1" value="Note that CAN1 and CAN2 are CT/RX1 and CT/RX2, respectively." style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" parent="1" vertex="1">
-          <mxGeometry x="272" y="53" width="369" height="26" as="geometry" />
+        <mxCell id="_-VSjDH_-AeT8WvHtuQI-1" value="Note that CAN1 and CAN2 are CT/RX1 and CT/RX2 (on the Teensy), respectively." style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" parent="1" vertex="1">
+          <mxGeometry x="229" y="53" width="455" height="26" as="geometry" />
         </mxCell>
         <mxCell id="JdsRL_bLyIDTesqaEOVv-2" value="SLIP RING" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;strokeWidth=4;dashed=1;" vertex="1" parent="1">
           <mxGeometry x="595" y="400" width="166" height="28" as="geometry" />
