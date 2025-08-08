@@ -1,6 +1,6 @@
 <mxfile host="Electron" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/28.0.6 Chrome/138.0.7204.100 Electron/37.2.3 Safari/537.36" version="28.0.6">
   <diagram name="Page-1" id="8YC887mAw0KpVXFB5g-d">
-    <mxGraphModel dx="2592" dy="828" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" background="#808080" math="0" shadow="0">
+    <mxGraphModel dx="1423" dy="828" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" background="#808080" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -70,7 +70,7 @@
           </mxGeometry>
         </mxCell>
         <mxCell id="w_Xj45Z8jAB2MF-sBWLv-24" value="Sensor&lt;div&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;Cable&lt;/span&gt;&lt;/div&gt;" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fillColor=#66FFFF;strokeColor=#10739e;glass=0;shadow=0;" parent="1" vertex="1">
-          <mxGeometry x="-212" y="269" width="88.73" height="39" as="geometry" />
+          <mxGeometry x="66" y="132" width="88.73" height="39" as="geometry" />
         </mxCell>
         <mxCell id="w_Xj45Z8jAB2MF-sBWLv-27" value="" style="endArrow=classic;dashed=1;html=1;strokeWidth=2;rounded=0;exitX=0.5;exitY=0;exitDx=0;exitDy=0;jumpSize=2;fillColor=#008a00;strokeColor=#66FFFF;entryX=0.162;entryY=0.996;entryDx=0;entryDy=0;entryPerimeter=0;endFill=1;" parent="1" source="w_Xj45Z8jAB2MF-sBWLv-23" target="w_Xj45Z8jAB2MF-sBWLv-2" edge="1">
           <mxGeometry width="50" height="50" relative="1" as="geometry">
@@ -111,7 +111,7 @@
           </mxGeometry>
         </mxCell>
         <mxCell id="w_Xj45Z8jAB2MF-sBWLv-37" value="Motor Phase&lt;div&gt;Cables&lt;/div&gt;" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fillColor=#FF66FF;strokeColor=#10739e;glass=0;shadow=0;" parent="1" vertex="1">
-          <mxGeometry x="-212" y="211" width="88.73" height="39" as="geometry" />
+          <mxGeometry x="66" y="74" width="88.73" height="39" as="geometry" />
         </mxCell>
         <mxCell id="w_Xj45Z8jAB2MF-sBWLv-47" value="" style="shape=link;html=1;rounded=0;width=3.333333333333334;strokeColor=#6F0000;fillColor=#a20025;strokeWidth=3;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" parent="1" source="w_Xj45Z8jAB2MF-sBWLv-48" edge="1">
           <mxGeometry width="100" relative="1" as="geometry">
@@ -141,12 +141,15 @@
           <mxGeometry x="521" y="295" width="60" height="140" as="geometry" />
         </mxCell>
         <mxCell id="w_Xj45Z8jAB2MF-sBWLv-16" value="CAN2" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fillColor=#b1ddf0;strokeColor=#10739e;glass=0;shadow=0;" parent="1" vertex="1">
-          <mxGeometry x="532" y="362" width="60" height="30" as="geometry" />
+          <mxGeometry x="547" y="340" width="60" height="30" as="geometry" />
         </mxCell>
         <mxCell id="w_Xj45Z8jAB2MF-sBWLv-8" value="" style="endArrow=classic;html=1;rounded=0;fillColor=#b1ddf0;strokeColor=#10739e;strokeWidth=3;exitX=0.944;exitY=0.944;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="w_Xj45Z8jAB2MF-sBWLv-3" target="w_Xj45Z8jAB2MF-sBWLv-2" edge="1">
           <mxGeometry width="50" height="50" relative="1" as="geometry">
             <mxPoint x="513" y="319" as="sourcePoint" />
             <mxPoint x="557" y="435" as="targetPoint" />
+            <Array as="points">
+              <mxPoint x="632" y="383" />
+            </Array>
           </mxGeometry>
         </mxCell>
         <mxCell id="9Ifiy6c0lKa0k_pnXlT4-5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="9Ifiy6c0lKa0k_pnXlT4-3" target="w_Xj45Z8jAB2MF-sBWLv-19" edge="1">
@@ -199,6 +202,9 @@
         </mxCell>
         <mxCell id="_-VSjDH_-AeT8WvHtuQI-1" value="Note that CAN1 and CAN2 are CT/RX1 and CT/RX2, respectively." style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" parent="1" vertex="1">
           <mxGeometry x="272" y="53" width="369" height="26" as="geometry" />
+        </mxCell>
+        <mxCell id="JdsRL_bLyIDTesqaEOVv-2" value="SLIP RING" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;strokeWidth=4;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="595" y="400" width="166" height="28" as="geometry" />
         </mxCell>
       </root>
     </mxGraphModel>
