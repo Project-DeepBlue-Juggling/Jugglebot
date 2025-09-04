@@ -27,6 +27,9 @@ def calc_energy_power_accel(throw_vel):
     
     # Power is energy divided by time
     power = kinetic_energy / acceleration_time
+
+    # Optional print
+    # print(f'Throw vel: {throw_vel:.2f} m/s, Kinetic Energy: {kinetic_energy:.2f} J, Power: {power:.2f} W, Accel Time: {acceleration_time:.2f} s, Peak Acceleration: {peak_acceleration:.2f} m/s²')
     return kinetic_energy, power, peak_acceleration
 
 def calculate_trajectories(throw_pos, catch_pos, throw_angles):
@@ -127,47 +130,45 @@ def plot_trajectories(trajectories, trajectory_data, min_velocity_trajectory, mi
     plt.ylabel('Vertical Distance (m)')
     plt.title(title)
     plt.grid()
-    
+    plt.axis('equal')
+
     return fig
 
 # Original parameters
 throw_pos = (0, 0)  # (x, y) in meters
 catch_pos = (1.1, -1.5)  # (x, y) in meters
-throw_angle = np.radians(np.linspace(0, 80, 500))  # angles to test
+throw_angle = np.radians(np.linspace(1, 80, 500))  # angles to test
 
 trajectory, trajectory_data, min_velocity_trajectory, min_velocity_data = calculate_trajectories(throw_pos, catch_pos, throw_angle)
 
 # Create the first plot, showing the trajectories
 fig1 = plot_trajectories(trajectory, trajectory_data, min_velocity_trajectory, min_velocity_data, title=f'Original Projectile Trajectories \n Throw Position: {throw_pos}, Catch Position: {catch_pos}')
 
-show_velocity_plots = True  # Master toggle for showing velocity plots
+show_velocity_plots = False  # Master toggle for showing velocity plots
 
 if show_velocity_plots:
-    # Create a single figure with two subplots
-    fig2, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 12))
+    # Create a single figure with one plot
+    fig2, ax = plt.subplots(figsize=(15, 8))
 
-    # First subplot - Initial velocities
-    ax1.plot(np.degrees(throw_angle), [data['v_i'] * np.cos(data['throw_angle']) for data in trajectory_data], color='red', label='$v_{i_x}$ (m/s)')
-    ax1.plot(np.degrees(throw_angle), [data['v_i'] * np.sin(data['throw_angle']) for data in trajectory_data], color='green', label='$v_{i_y}$ (m/s)')
-    ax1.plot(np.degrees(throw_angle), [data['v_i'] for data in trajectory_data], color='blue', label='$v_{i}$ (m/s)')
-    ax1.axvline(np.degrees(min_velocity_data['throw_angle']), color='black', linestyle='--', label='Min $v_{i}$')
-    ax1.set_xlabel('Throw Angle (degrees)')
-    ax1.set_ylabel('Velocity (m/s)')
-    ax1.set_title('Variation of Initial Velocity Components with Throw Angle')
-    ax1.legend()
-    ax1.grid()
-
-    # Second subplot - Final velocities
-    ax2.plot(np.degrees(throw_angle), [data['v_f'] * np.cos(data['landing_angle']) for data in trajectory_data], color='red', label='$v_{f_x}$ (m/s)')
-    ax2.plot(np.degrees(throw_angle), [data['v_f'] * np.sin(data['landing_angle']) for data in trajectory_data], color='green', label='$v_{f_y}$ (m/s)')
-    ax2.plot(np.degrees(throw_angle), [data['v_f'] for data in trajectory_data], color='blue', label='$v_{f}$ (m/s)')
-    ax2.axvline(np.degrees(min_velocity_data['throw_angle']), color='black', linestyle='--', label='Min $v_{i}$')
-    ax2.set_xlabel('Throw Angle (degrees)')
-    ax2.set_ylabel('Velocity (m/s)')
-    ax2.set_title('Variation of Final Velocity Components with Throw Angle')
-    ax2.legend()
-    ax2.grid()
-
+    # Initial velocities - solid lines
+    ax.plot(np.degrees(throw_angle), [data['v_i'] * np.cos(data['throw_angle']) for data in trajectory_data], color='red', label='$v_{i_x}$ (m/s)')
+    ax.plot(np.degrees(throw_angle), [data['v_i'] * np.sin(data['throw_angle']) for data in trajectory_data], color='green', label='$v_{i_y}$ (m/s)')
+    ax.plot(np.degrees(throw_angle), [data['v_i'] for data in trajectory_data], color='blue', label='$v_{i}$ (m/s)')
+    
+    # Final velocities - dashed lines
+    ax.plot(np.degrees(throw_angle), [data['v_f'] * np.cos(data['landing_angle']) for data in trajectory_data], color='red', linestyle='--', label='$v_{f_x}$ (m/s)')
+    ax.plot(np.degrees(throw_angle), [data['v_f'] * np.sin(data['landing_angle']) for data in trajectory_data], color='green', linestyle='--', label='$v_{f_y}$ (m/s)')
+    ax.plot(np.degrees(throw_angle), [data['v_f'] for data in trajectory_data], color='blue', linestyle='--', label='$v_{f}$ (m/s)')
+    
+    # Mark the minimum initial velocity angle
+    ax.axvline(np.degrees(min_velocity_data['throw_angle']), color='black', linestyle='--', label='Min $v_{i}$')
+    
+    ax.set_xlabel('Throw Angle (degrees)')
+    ax.set_ylabel('Velocity (m/s)')
+    ax.set_title('Variation of Initial and Final Velocity Components with Throw Angle')
+    ax.legend()
+    ax.grid()
+    
     plt.tight_layout()
 
 
