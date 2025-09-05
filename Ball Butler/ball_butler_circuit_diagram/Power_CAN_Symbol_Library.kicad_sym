@@ -183,7 +183,7 @@
     (property "Footprint" "" (id 2) (at -2.54 0 0)
       (effects (font (size 1.27 1.27)) hide)
     )
-    (property "Datasheet" "" (id 3) (at -2.54 0 0)
+    (property "Datasheet" "https://www.amazon.com.au/dp/B0BRWDYKBJ?ref=ppx_yo2ov_dt_b_fed_asin_title&th=1" (id 3) (at -1.27 10.16 0)
       (effects (font (size 1.27 1.27)) hide)
     )
     (symbol "45V to 24V, 20A Converter_0_1"

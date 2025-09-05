@@ -3128,6 +3128,9 @@
     (path "/ea0dcaeb-ce82-419d-b064-e9b1bf5cc743"
       (reference "U?") (unit 1) (value "50W, 2Ω Brake Resistor") (footprint "")
     )
+    (path "/f47f7cdf-3580-439c-86a6-80f9e434af39/f2ca9f06-88e8-42cc-a39c-22b7c0813816"
+      (reference "U?") (unit 1) (value "throw_scheduler") (footprint "")
+    )
     (path "/8ed858a8-e638-495c-b31c-77c4342d4bce/f2eeebc6-0e67-44f9-963a-7f2e6a51294e"
       (reference "U?") (unit 1) (value "45V to 24V, 20A Converter") (footprint "")
     )
