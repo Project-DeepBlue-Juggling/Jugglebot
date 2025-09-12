@@ -1,6 +1,6 @@
 '''
 Simulate Ball Butler throwing to Jugglebot, in 2D.
-Show trajectory of the throw, and colour each trajectory based on throw velocity
+Show trajectory of the throw, and colour each trajectory based on throw angle
 '''
 
 import numpy as np
