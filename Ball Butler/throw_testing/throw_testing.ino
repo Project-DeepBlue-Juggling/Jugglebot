@@ -27,6 +27,7 @@
 
 #define DEBUG_TRAJ 0       // 0 = silent, 1 = Serial print each hand traj frame as it gets sent out
 #define DEBUG_TIME_SYNC 0  // 0 = silent, 1 = Serial print periodic messages showing how tight the clocks are synced
+#define DEBUG_CAN 0        // 0 = silent, 1 = Serial print CAN messages (current pos, vel)
 
 /*----------------------------------------------------------------------------*/
 /*                                CAN BUS SET-UP                              */
@@ -42,7 +43,7 @@ constexpr uint32_t timeSyncID = 0x7DD;     // wall-time sync
 /*----------------------------------------------------------------------------*/
 /*                      DEBUG / TIMING-ANALYSIS                               */
 /*----------------------------------------------------------------------------*/
-const uint32_t node_id = 3;
+const uint32_t node_id = 8;
 const uint32_t cmd_id = 0x018;
 const uint32_t debugID = (node_id << 5) | cmd_id;
 
@@ -56,7 +57,7 @@ int messageCount = 0;
 /*----------------------------------------------------------------------------*/
 /*                        HAND ENCODER ESTIMATES                              */
 /*----------------------------------------------------------------------------*/
-constexpr uint32_t HAND_AXIS_NODE = 3;
+constexpr uint32_t HAND_AXIS_NODE = 8;
 constexpr uint32_t HAND_ENC_EST_ID = (HAND_AXIS_NODE << 5) | 0x09;  // 0xC9
 constexpr uint32_t TRAJ_OUT_ID = (HAND_AXIS_NODE << 5) | 0x0c;      // "set input pos" for hand
 
@@ -77,7 +78,7 @@ inline void getHandPosVel(float &pos, float &vel, uint64_t &t_us) {
 }
 
 /*----------------------------------------------------------------------------*/
-/*                        ──  TIME–SYNC  LAYER ──                             */
+/*                        ──  TIME–SYNC LAYER ──                              */
 /*----------------------------------------------------------------------------*/
 namespace TimeSync {
 uint64_t micros64() {
@@ -160,6 +161,10 @@ std::vector<uint64_t> sendUs;
 constexpr uint32_t SAFETY_GAP_US = 20'000;  // 20 ms pause after smooth-move before main traj
 
 void packTrajectory(const Trajectory &tr, uint64_t abs_t0_us) {
+  // Reserve to avoid reallocation during the loop
+  packedMsgs.reserve(packedMsgs.size() + tr.t.size());
+  sendUs.reserve(sendUs.size() + tr.t.size());
+
   for (size_t k = 0; k < tr.t.size(); ++k) {
     CAN_message_t fm;
     fm.id = TRAJ_OUT_ID;
@@ -204,6 +209,12 @@ void canSniff(const CAN_message_t &msg) {
     current_hand_position = pos;
     current_hand_velocity = vel;
     last_hand_update_us = TimeSync::get_wall_time_us();
+
+    #if DEBUG_CAN
+      Serial.printf("pos=%.3f rev | vel=%.3f rev/s \n",
+                    current_hand_position, current_hand_velocity);
+    #endif
+
     return;
   }
 }
@@ -223,6 +234,14 @@ bool armAndSchedule(const Trajectory& mainTraj,
   packedMsgs.clear();
   sendUs.clear();
 
+  float start_p, start_v; uint64_t t_us;
+  getHandPosVel(start_p, start_v, t_us);
+
+  if (t_us == 0) {                      // no encoder yet
+    Serial.println("! No encoder reading yet; cannot generate smooth move.");
+    return false;
+  }
+
   const uint64_t now_us = TimeSync::get_wall_time_us();
   const uint64_t event_wall_us = now_us + uint64_t(delay_ms) * 1000ULL;
 
@@ -230,7 +249,7 @@ bool armAndSchedule(const Trajectory& mainTraj,
   uint32_t smoothDur_us = 0;
   Trajectory smooth;
   if (withSmoothPrelude) {
-    smooth = makeSmoothMove(smoothEndPos);
+    smooth = makeSmoothMove(start_p, smoothEndPos);
     if (!smooth.t.empty())
       smoothDur_us = uint32_t(lrintf(smooth.t.back() * 1'000'000.f));
 
@@ -268,7 +287,15 @@ bool scheduleSmoothOnly(float endPosRev, uint32_t delay_ms) {
   packedMsgs.clear();
   sendUs.clear();
 
-  Trajectory smooth = makeSmoothMove(endPosRev);
+  float start_p, start_v; uint64_t t_us;
+  getHandPosVel(start_p, start_v, t_us);
+
+  if (t_us == 0) { // no encoder yet
+    Serial.println("! No encoder reading yet; cannot generate smooth move.");
+    return false;
+  }
+
+  Trajectory smooth = makeSmoothMove(start_p, endPosRev);
   if (smooth.t.empty()) {
     Serial.println("! Smooth move is empty; nothing to do.");
     return false;
@@ -290,7 +317,7 @@ void handleSerialLine(const String& line) {
   const int maxTok = 6;
   String tok[maxTok];
   int nt = 0;
-  int start = 0;
+  size_t start = 0;
   while (nt < maxTok) {
     int sp = line.indexOf(' ', start);
     if (sp < 0) { tok[nt++] = line.substring(start); break; }

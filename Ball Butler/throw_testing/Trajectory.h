@@ -26,24 +26,24 @@ struct Trajectory {
 
 /* ───────── constants ───────── */
 constexpr float G                   = 9.806f;   // m/s^2
-constexpr float HAND_SPOOL_R        = 0.00521f; // m
-constexpr float LINEAR_GAIN_FACTOR  = 1.035f;    // Just 'cuz
+constexpr float HAND_SPOOL_R        = 0.00432f; // m (Max pos = 5.954  rev, min pos = -5.425 rev, travel = 309.1 mm)
+constexpr float LINEAR_GAIN_FACTOR  = 1.0f;     // Just 'cuz
 constexpr float LINEAR_GAIN         = LINEAR_GAIN_FACTOR / (M_PI * HAND_SPOOL_R * 2.f);  // rev per metre
 constexpr float INERTIA_HAND_ONLY   = 0.281f;   // kg
 constexpr float INERTIA_RATIO       = 0.747f;
 constexpr float THROW_VEL_HOLD_PCT  = 0.05f;
 constexpr float CATCH_VEL_RATIO     = 0.8f;
 constexpr float CATCH_VEL_HOLD_PCT  = 0.10f;
-constexpr float HAND_STROKE         = 0.157f;   // m
-constexpr float STROKE_MARGIN       = 0.020f;   // m
+constexpr float HAND_STROKE         = 0.30f;   // m
+constexpr float STROKE_MARGIN       = 0.02f;   // m
 constexpr float END_PROFILE_HOLD    = 0.10f;    // s. Can probably get rid of?
 constexpr int   SAMPLE_RATE         = 500;      // Hz
 
 /* ----- smooth-move tuning ------------------------------------- */
 constexpr float MAX_SMOOTH_MOVE_HAND_ACCEL = 100.0;//1000.0f;   // [rev s⁻²].
 constexpr float QUINTIC_S2_MAX             = 5.7735027f; // max |s''| for 10t³−15t⁴+6t⁵
-extern volatile float current_hand_position;
-extern volatile float current_hand_velocity;
+
+constexpr float HAND_MAX_SMOOTH_MOVE_POS = 5.4; // rev
 
 inline float accelToTorque(float a) { return a * INERTIA_HAND_ONLY * HAND_SPOOL_R; }
 
@@ -233,16 +233,18 @@ private:
 /* =====================================================================
    Smooth point-to-point move
    ---------------------------------------------------------------------
-   * start position  = live encoder reading  (current_hand_position)
+   * start position  = start_rev (argument)
    * end   position  = target_rev   (argument)
    * boundary cond.  = v=a=0 at both ends   (quintic “S-curve”)
    * duration chosen such that  |a_max| ≤ MAX_SMOOTH_MOVE_HAND_ACCEL
    ===================================================================== */
-inline Trajectory makeSmoothMove(float target_rev)
+inline Trajectory makeSmoothMove(float start_rev, float target_rev)
 {
     Trajectory tr;
 
-    const float start_rev = current_hand_position;          // live encoder
+    if (target_rev > HAND_MAX_SMOOTH_MOVE_POS){
+      target_rev = HAND_MAX_SMOOTH_MOVE_POS;
+    }
     const float delta_rev = target_rev - start_rev;
 
     if (fabsf(delta_rev) < 1e-6f)          // already there → empty traj.
