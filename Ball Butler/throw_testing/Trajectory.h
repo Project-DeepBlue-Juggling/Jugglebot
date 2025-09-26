@@ -26,7 +26,7 @@ struct Trajectory {
 
 /* ───────── constants ───────── */
 constexpr float G                   = 9.806f;   // m/s^2
-constexpr float HAND_SPOOL_R        = 0.00432f; // m (Max pos = 5.954  rev, min pos = -5.425 rev, travel = 309.1 mm)
+constexpr float HAND_SPOOL_R        = 0.0052493f; // m (Max pos = 9.399  rev, min pos = 0 rev, travel = 310 mm)
 constexpr float LINEAR_GAIN_FACTOR  = 1.0f;     // Just 'cuz
 constexpr float LINEAR_GAIN         = LINEAR_GAIN_FACTOR / (M_PI * HAND_SPOOL_R * 2.f);  // rev per metre
 constexpr float INERTIA_HAND_ONLY   = 0.281f;   // kg
