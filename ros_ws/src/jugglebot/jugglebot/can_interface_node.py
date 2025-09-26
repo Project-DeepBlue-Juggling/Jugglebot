@@ -15,7 +15,8 @@ from jugglebot_interfaces.srv import (
     GetTiltReadingService, 
     ActivateOrDeactivate,
     SetString,
-    SetHandTrajCmd
+    SetHandTrajCmd,
+    SendBallButlerCommand
 )
 from jugglebot_interfaces.action import HomeMotors
 from std_msgs.msg import Float64MultiArray, String
@@ -45,6 +46,7 @@ class CanInterfaceNode(Node):
                                                                         self.activate_or_deactivate_callback)
         self.set_hand_state_service = self.create_service(SetString, 'set_hand_state', self.set_hand_state_callback)
         self.set_hand_traj_service = self.create_service(SetHandTrajCmd, 'set_hand_traj_cmd', self.set_hand_traj_callback)
+        self.send_ball_butler_command_service = self.create_service(SendBallButlerCommand, 'send_ball_butler_command', self.send_ball_butler_command_callback)
 
         #### Initialize actions ####
         self.home_robot_action = ActionServer(self, HomeMotors, 'home_motors', self.home_robot)
@@ -80,14 +82,11 @@ class CanInterfaceNode(Node):
         self.time_sync_period = self.get_parameter('time_sync_period_ms').get_parameter_value().integer_value / 1000.0
 
         # Initialize timers
-        self.platform_target_reached_timer = self.create_timer(0.1, self.check_platform_target_reached_status)
-        self.timer_canbus = self.create_timer(timer_period_sec=0.001, callback=self._poll_can_bus)
-        self.robot_state_timer = self.create_timer(timer_period_sec=0.01, callback=self.get_and_publish_robot_state)
-        self.time_sync_timer = self.create_timer(self.time_sync_period, self.can_handler.broadcast_time)
-        self.hand_telemetry_timer = self.create_timer(0.002, self.publish_hand_telemetry)  # Publish hand telemetry at 500 Hz
-
-        # Initialize the number of axes
-        self.num_axes = 7 # 6 leg motors + 1 hand motor
+        # self.platform_target_reached_timer = self.create_timer(0.1, self.check_platform_target_reached_status)
+        # self.timer_canbus = self.create_timer(timer_period_sec=0.001, callback=self._poll_can_bus)
+        # self.robot_state_timer = self.create_timer(timer_period_sec=0.01, callback=self.get_and_publish_robot_state)
+        # self.time_sync_timer = self.create_timer(self.time_sync_period, self.can_handler.broadcast_time)
+        # self.hand_telemetry_timer = self.create_timer(0.002, self.publish_hand_telemetry)  # Publish hand telemetry at 500 Hz
 
         # Register callbacks with CANInterface
         self.can_handler.register_callback('can_traffic', self.publish_can_traffic)
@@ -192,6 +191,29 @@ class CanInterfaceNode(Node):
             self.get_logger().error(f"Error in base pose callback: {e}")
 
     #########################################################################################################
+    #                                       Commanding Ball Butler                                          #
+    #########################################################################################################
+
+    def send_ball_butler_command_callback(self, request, response):
+        """Service callback to send a command to the Ball Butler."""
+        try:
+            yaw_angle_rad = request.yaw_angle_rad
+            pitch_angle_rad = request.pitch_angle_rad
+            throw_speed = request.throw_speed
+            throw_time = request.throw_time
+
+            self.can_handler.send_ball_butler_command(yaw_angle_rad, pitch_angle_rad, throw_speed, throw_time)
+
+            response.success = True
+            response.message = "Ball Butler command sent successfully."
+        except Exception as e:
+            self.get_logger().error(f"Error sending Ball Butler command: {e}")
+            response.success = False
+            response.message = f"Error sending Ball Butler command: {e}"
+
+        return response
+
+    #########################################################################################################
     #                                        Commanding Jugglebot                                           #
     #########################################################################################################
 
@@ -266,7 +288,7 @@ class CanInterfaceNode(Node):
         """Action server callback to home the robot."""
         try:
             # Start the robot homing. Home all axes.
-            success = self.can_handler.home_robot(axes_to_home=list(range(self.num_axes))) # True if homing was successful, False otherwise
+            success = self.can_handler.home_robot(axes_to_home=list(range(self.can_handler.num_axes))) # True if homing was successful, False otherwise
 
             self.can_handler.update_state_on_teensy({'is_homed': success})
 
