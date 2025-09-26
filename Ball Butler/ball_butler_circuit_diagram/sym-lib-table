@@ -1,0 +1,5 @@
+(sym_lib_table
+  (lib (name "Ball_Butler_Symbol_Library")(type "KiCad")(uri "${KIPRJMOD}/Ball_Butler_Symbol_Library.kicad_sym")(options "")(descr ""))
+  (lib (name "Ball_Butler_Programming_Logic_Symbol_Library")(type "KiCad")(uri "${KIPRJMOD}/Ball_Butler_Programming_Logic_Symbol_Library.kicad_sym")(options "")(descr ""))
+  (lib (name "Power_CAN_Symbol_Library")(type "KiCad")(uri "${KIPRJMOD}/Power_CAN_Symbol_Library.kicad_sym")(options "")(descr ""))
+)
