@@ -24,18 +24,19 @@ void YawAxis::begin(float loopHz){
 
   prev_raw_    = readAS();
   turn_count_  = 0;
-  {
-    float abs_rev   = float(prev_raw_) / CPR;
-    float multi_rev = float(turn_count_) + abs_rev;
-    pos_offset_rev_ = multi_rev;   // anchor zero at current physical angle
-  }
-  pos_rev_     = 0.0f;             // now logical position is exactly 0
-  cmd_pos_rev_ = 0.0f;             // hold zero -> err=0 => no auto-enable
-  i_term_      = 0.0f;
-  sd_accum_    = 0.0f;
-  last_u_slew_ = 0.0f;
-  estop_       = false;
-  enabled_     = false;
+
+  // Absolute position from encoder; zero is whatever the encoder defines as zero.
+  float abs_rev = float(prev_raw_) / CPR;
+  pos_rev_      = ENC_DIR_ * abs_rev;
+
+  // IMPORTANT: Command = current position so there is no error => no motion on boot.
+  cmd_pos_rev_  = pos_rev_;
+
+  i_term_       = 0.0f;
+  sd_accum_     = 0.0f;
+  last_u_slew_  = 0.0f;
+  estop_        = false;
+  enabled_      = false;
 
   instance_ = this;
   timer_.begin(isrTrampoline, (int)(1e6 / LOOP_HZ_));
@@ -46,26 +47,78 @@ void YawAxis::end(){
   driveBM(0);
 }
 
-void YawAxis::setTargetDeg(float deg){ cmd_pos_rev_ = deg * DEG2REV; }
-void YawAxis::setTargetRev(float rev){ cmd_pos_rev_ = rev; }
-void YawAxis::moveRelDeg(float ddeg){ cmd_pos_rev_ += ddeg * DEG2REV; }
-void YawAxis::moveRelRev(float drev){ cmd_pos_rev_ += drev; }
-
-void YawAxis::zeroHere(){
+/* -------------------- Limits config -------------------- */
+void YawAxis::setSoftLimitsDeg(float min_deg, float max_deg){
+  setSoftLimitsRev(min_deg * DEG2REV, max_deg * DEG2REV);
+}
+void YawAxis::setSoftLimitsRev(float min_rev, float max_rev){
   noInterrupts();
-  uint16_t raw = readAS();
-  prev_raw_    = raw;
-  float abs_rev   = float(raw) / CPR;
-  float multi_rev = float(turn_count_) + abs_rev;
-  pos_offset_rev_ = multi_rev;   // new zero at current physical angle
-  pos_rev_        = 0.0f;        // logically at 0 now
-  cmd_pos_rev_    = 0.0f;        // keep target at 0 => no error
-  i_term_         = 0.0f;
-  sd_accum_       = 0.0f;
-  last_u_slew_    = 0.0f;
+  if (max_rev < min_rev) { float t = min_rev; min_rev = max_rev; max_rev = t; }
+  LIM_MIN_REV_ = min_rev;
+  LIM_MAX_REV_ = max_rev;
   interrupts();
 }
 
+/* --------------- Command setters (with clamp) --------- */
+float YawAxis::clampToLimitsRev_(float rev, bool& hitLow, bool& hitHigh){
+  hitLow = hitHigh = false;
+  if (rev < LIM_MIN_REV_) { hitLow = true;  return LIM_MIN_REV_; }
+  if (rev > LIM_MAX_REV_) { hitHigh = true; return LIM_MAX_REV_; }
+  return rev;
+}
+
+void YawAxis::setTargetDeg(float deg){
+  bool lo=false, hi=false;
+  float rev = deg * DEG2REV;
+  float clamped = clampToLimitsRev_(rev, lo, hi);
+  noInterrupts();
+  cmd_pos_rev_ = clamped;
+  if (lo || hi) { last_cmd_clipped_ = true; last_clip_low_ = lo; last_clip_high_ = hi; clip_count_++; }
+  interrupts();
+}
+void YawAxis::setTargetRev(float rev){
+  bool lo=false, hi=false;
+  float clamped = clampToLimitsRev_(rev, lo, hi);
+  noInterrupts();
+  cmd_pos_rev_ = clamped;
+  if (lo || hi) { last_cmd_clipped_ = true; last_clip_low_ = lo; last_clip_high_ = hi; clip_count_++; }
+  interrupts();
+}
+void YawAxis::moveRelDeg(float ddeg){
+  bool lo=false, hi=false;
+  noInterrupts();
+  float wanted = cmd_pos_rev_ + ddeg * DEG2REV;
+  float clamped = clampToLimitsRev_(wanted, lo, hi);
+  cmd_pos_rev_ = clamped;
+  if (lo || hi) { last_cmd_clipped_ = true; last_clip_low_ = lo; last_clip_high_ = hi; clip_count_++; }
+  interrupts();
+}
+void YawAxis::moveRelRev(float drev){
+  bool lo=false, hi=false;
+  noInterrupts();
+  float wanted = cmd_pos_rev_ + drev;
+  float clamped = clampToLimitsRev_(wanted, lo, hi);
+  cmd_pos_rev_ = clamped;
+  if (lo || hi) { last_cmd_clipped_ = true; last_clip_low_ = lo; last_clip_high_ = hi; clip_count_++; }
+  interrupts();
+}
+
+bool YawAxis::getAndClearCmdClipped(bool* clippedLow, bool* clippedHigh){
+  bool r=false, lo=false, hi=false;
+  noInterrupts();
+  r  = last_cmd_clipped_;
+  lo = last_clip_low_;
+  hi = last_clip_high_;
+  last_cmd_clipped_ = false;
+  last_clip_low_    = false;
+  last_clip_high_   = false;
+  interrupts();
+  if (clippedLow)  *clippedLow  = lo;
+  if (clippedHigh) *clippedHigh = hi;
+  return r;
+}
+
+/* -------------------- Convenience ---------------------- */
 void YawAxis::estop(){ estop_ = true; driveBM(0); }
 void YawAxis::clearEstop(){ estop_ = false; }
 
@@ -79,6 +132,7 @@ void YawAxis::setToleranceRev(float pos_tol_rev){ POS_TOL_REV_ = fabsf(pos_tol_r
 void YawAxis::setDir(int8_t encDir, int8_t motorDir){ ENC_DIR_ = (encDir>=0)?+1:-1; MOTOR_DIR_ = (motorDir>=0)?+1:-1; }
 void YawAxis::setDeadzoneMin(uint8_t pwmMin){ PWM_MIN_ = pwmMin; }
 
+/* -------------------- Telemetry ------------------------ */
 YawAxis::Telemetry YawAxis::readTelemetry() const {
   Telemetry t;
   noInterrupts();
@@ -95,6 +149,12 @@ YawAxis::Telemetry YawAxis::readTelemetry() const {
   t.raw       = prev_raw_;
   t.accelPPS  = ACCEL_PPS_;
   t.decelPPS  = DECEL_PPS_;
+  t.lim_min_deg = LIM_MIN_REV_ * REV2DEG;
+  t.lim_max_deg = LIM_MAX_REV_ * REV2DEG;
+  t.at_min    = (pos_rev_ <= LIM_MIN_REV_);
+  t.at_max    = (pos_rev_ >= LIM_MAX_REV_);
+  t.clip_count = clip_count_;
+  t.last_cmd_clipped = last_cmd_clipped_;
   interrupts();
   return t;
 }
@@ -156,7 +216,7 @@ void YawAxis::controlISR(){
   float abs_rev   = (float)raw / CPR;
   float multi_rev = (float)turn_count_ + abs_rev;
   float last_pos  = pos_rev_;
-  pos_rev_ = ENC_DIR_ * (multi_rev - pos_offset_rev_);
+  pos_rev_ = ENC_DIR_ * multi_rev;
   vel_rps_ = (pos_rev_ - last_pos) / DT_;
 
   // 2) Auto gating
@@ -190,8 +250,13 @@ void YawAxis::controlISR(){
     i_term_  = fmaxf(fminf(i_term_, (float)PWM_MAX), -(float)PWM_MAX);
   }
 
-  // 5) Acceleration limiter on control effort
+  // 5) Acceleration limiter on control effort + limit sign gating
   float u_target = fmaxf(fminf(u, (float)PWM_MAX), -(float)PWM_MAX);
+
+  // Do not actively push further OUTWARD when at/over a limit
+  if (pos_rev_ >= LIM_MAX_REV_ && u_target > 0) u_target = 0;
+  if (pos_rev_ <= LIM_MIN_REV_ && u_target < 0) u_target = 0;
+
   float up_step   = ACCEL_PPS_ * DT_;
   float down_step = DECEL_PPS_ * DT_;
   float du = u_target - last_u_slew_;
@@ -199,8 +264,12 @@ void YawAxis::controlISR(){
   else if (du < 0) last_u_slew_ -= fminf(-du, down_step);
   if (fabsf(last_u_slew_) < 1e-3f) last_u_slew_ = 0.0f;
 
-  // 6) Dead-zone aware output
+  // 6) Dead-zone aware output, with final outward-drive gate
   int16_t pwm_cmd = deadzone_compensate(last_u_slew_);
+
+  if (pos_rev_ >= LIM_MAX_REV_ && pwm_cmd > 0)  pwm_cmd = 0;
+  if (pos_rev_ <= LIM_MIN_REV_ && pwm_cmd < 0)  pwm_cmd = 0;
+
   last_pwm_cmd_ = pwm_cmd;
   driveBM(pwm_cmd);
 }

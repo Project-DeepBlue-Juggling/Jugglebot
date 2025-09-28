@@ -7,6 +7,7 @@
 #include "HandTrajectoryStreamer.h"
 #include "TrajFrame.h"    // shared frame type for planner/streamer/CSV
 #include "Trajectory.h"   // for HAND_MAX_SMOOTH_MOVE_POS bound
+#include <stdarg.h>
 
 // ============================== Policy / Guard Rails =========================
 static constexpr float   THROW_VEL_MIN_MPS     = 0.05f;   // must be > 0
@@ -37,6 +38,25 @@ YawAxis yawAxis(/*CS*/10, /*INA1*/16, /*INA2*/15, /*PWM*/14, /*PWM_MIN*/60, /*PW
 static bool     yaw_stream_on         = false;
 static const    uint16_t YAW_TELEM_MS = 500;
 static uint32_t yaw_last_stream_ms    = 0;
+
+// Print either a YAW clip warning (if last cmd was clipped) or your OK message.
+// Usage: yawReportClipOrOk("target set: %.3f deg", deg);
+static void yawReportClipOrOk(const char* okFmt, ...) {
+  bool lo=false, hi=false;
+  if (yawAxis.getAndClearCmdClipped(&lo, &hi)) {
+    auto t = yawAxis.readTelemetry();
+    Serial.printf("YAW: WARNING — command clipped to %s limit (range %.1f..%.1f deg)\n",
+                  lo ? "MIN" : "MAX", t.lim_min_deg, t.lim_max_deg);
+    return;
+  }
+  // OK path: print the provided message
+  char buf[128];
+  va_list ap; va_start(ap, okFmt);
+  vsnprintf(buf, sizeof(buf), okFmt, ap);
+  va_end(ap);
+  Serial.print("YAW: ");
+  Serial.println(buf);
+}
 
 // -------------------------- Forward decls -----------------------------------------------
 void onHostThrow(const CanInterface::HostThrowCmd& c, void* user);
@@ -79,12 +99,14 @@ void setup(){
 
   canif.requireHomeOnlyFor(HAND_NODE_ID);
 
+  delay(1000);
   // Robust homing: wait for the auto-clear to clean the bit, then home (with retries)
   const bool hand_homed = homeHandWithAutoClearRetry(HAND_NODE_ID, /*max_attempts=*/3,
                                                 /*pre_wait_ms=*/1500, /*post_fail_wait_ms=*/1500);
   Serial.printf("Home result: %s\n", hand_homed ? "OK" : "FAIL");
 
   yawAxis.begin();
+  yawAxis.setSoftLimitsDeg(0.0f, 120.0f); // Set limits for the yaw axis (deg)
   pitch.begin();
   printTopHelp();
 }
@@ -132,7 +154,18 @@ void onHostThrow(const CanInterface::HostThrowCmd& c, void* /*user*/) {
   Serial.println(c.speed_mps);
   Serial.println(c.in_s);
   yawAxis.setTargetDeg(yaw_deg);
+  {
+    bool lo=false, hi=false;
+    if (yawAxis.getAndClearCmdClipped(&lo,&hi)) {
+      auto t = yawAxis.readTelemetry();
+      Serial.printf("[HostCmd] YAW WARNING — target clipped to %s limit (range %.3f..%.3f deg)\n",
+                    lo?"MIN":"MAX", t.lim_min_deg, t.lim_max_deg);
+    }
+  }
   pitch.setTargetDeg(pitch_deg);
+
+  // If the commanded velocity is 0 m/s, don't attempt a throw
+  if (c.speed_mps == 0.0){ return; };
 
   // 2) Hand must be homed
   if (!canif.isAxisHomed(HAND_NODE_ID)) {
@@ -326,7 +359,6 @@ void yawPrintHelp(){
     "  P <rev>          : YAW set absolute target (revolutions)\n"
     "  m <deg>          : YAW move relative (degrees)\n"
     "  M <rev>          : YAW move relative (revolutions)\n"
-    "  z                : YAW zero here (make current = 0 rev)\n"
     "  d                : YAW E-STOP (latched, coast)\n"
     "  c                : YAW clear E-STOP (auto-enable resumes)\n"
     "  g <kp> <ki> <kd> : YAW set PID gains\n"
@@ -344,34 +376,44 @@ void yawHandleLine(const String& yawLine){
 
   if (yawLine == "h" || yawLine == "help") { yawPrintHelp(); return; }
 
-  if (cmd == 'p') { float deg = yawLine.substring(1).toFloat();
-    yawAxis.setTargetDeg(deg); Serial.printf("YAW: target set: %.3f deg\n", deg); return; }
-  if (cmd == 'P') { float rev = yawLine.substring(1).toFloat();
-    yawAxis.setTargetRev(rev); Serial.printf("YAW: target set: %.4f rev\n", rev); return; }
-  if (cmd == 'm') { float ddeg = yawLine.substring(1).toFloat();
-    yawAxis.moveRelDeg(ddeg);  Serial.printf("YAW: move rel: %+-.3f deg\n", ddeg); return; }
-  if (cmd == 'M') { float drev = yawLine.substring(1).toFloat();
-    yawAxis.moveRelRev(drev);  Serial.printf("YAW: move rel: %+-.4f rev\n", drev); return; }
+  if (cmd == 'p') {                       // absolute deg
+    float deg = yawLine.substring(1).toFloat();
+    yawAxis.setTargetDeg(deg);
+    yawReportClipOrOk("target set: %.3f deg", deg);
+    return;
+  }
+  if (cmd == 'P') {                       // absolute rev
+    float rev = yawLine.substring(1).toFloat();
+    yawAxis.setTargetRev(rev);
+    yawReportClipOrOk("target set: %.4f rev", rev);
+    return;
+  }
+  if (cmd == 'm') {                       // relative deg
+    float ddeg = yawLine.substring(1).toFloat();
+    yawAxis.moveRelDeg(ddeg);
+    yawReportClipOrOk("move rel: %+-.3f deg", ddeg);
+    return;
+  }
+  if (cmd == 'M') {                       // relative rev
+    float drev = yawLine.substring(1).toFloat();
+    yawAxis.moveRelRev(drev);
+    yawReportClipOrOk("move rel: %+-.4f rev", drev);
+    return;
+  }
 
-  if (yawLine == "z") { yawAxis.zeroHere(); Serial.println("YAW: zeroed here."); return; }
   if (yawLine == "d") { yawAxis.estop();    Serial.println("YAW: E-STOP LATCHED (type 'c' to clear)"); return; }
   if (yawLine == "c") { yawAxis.clearEstop(); Serial.println("YAW: E-STOP CLEARED (auto-enable active)"); return; }
 
-  if (cmd == 'g') {
-    float kp, ki, kd; int n = sscanf(yawLine.c_str()+1, "%f %f %f", &kp, &ki, &kd);
+  if (cmd == 'g') { float kp, ki, kd; int n = sscanf(yawLine.c_str()+1, "%f %f %f", &kp, &ki, &kd);
     if (n == 3) { yawAxis.setGains(kp, ki, kd); Serial.printf("YAW: gains -> Kp=%.3f Ki=%.3f Kd=%.3f\n", kp, ki, kd); }
     else        { Serial.println("YAW: usage: g <kp> <ki> <kd>"); }
     return;
   }
 
-  if (cmd == 'a') {
-    float acc, dec; int n = sscanf(yawLine.c_str()+1, "%f %f", &acc, &dec);
-    if (n >= 1) {
-      yawAxis.setAccel(acc, (n == 2 ? dec : acc));
+  if (cmd == 'a') { float acc, dec; int n = sscanf(yawLine.c_str()+1, "%f %f", &acc, &dec);
+    if (n >= 1) { yawAxis.setAccel(acc, (n==2?dec:acc));
       Serial.printf("YAW: accel limiter -> ACCEL=%.1f PPS  DECEL=%.1f PPS\n", acc, (n==2?dec:acc));
-    } else {
-      Serial.println("YAW: usage: a <accel> [decel]");
-    }
+    } else { Serial.println("YAW: usage: a <accel> [decel]"); }
     return;
   }
 
@@ -390,19 +432,17 @@ void yawHandleLine(const String& yawLine){
   if (yawLine == "s") {
     auto t = yawAxis.readTelemetry();
     Serial.printf(
-      "YAW | EN=%d ESTOP=%d pos=%.3fdeg vel=%.3frps cmd=%.3fdeg err=%.3fdeg u=%.1f u_slew=%.1f pwm=%d A=%.0f D=%.0f\n",
+      "YAW | EN=%d ESTOP=%d pos=%.3fdeg vel=%.3frps cmd=%.3fdeg err=%.3fdeg u=%.1f u_slew=%.1f pwm=%d A=%.0f D=%.0f lim=[%.1f..%.1f] clips=%lu\n",
       (int)t.enabled, (int)t.estop,
       t.pos_deg, t.vel_rps, t.cmd_deg, t.err_deg,
-      t.u, t.u_slew, (int)t.pwm, t.accelPPS, t.decelPPS
+      t.u, t.u_slew, (int)t.pwm, t.accelPPS, t.decelPPS,
+      t.lim_min_deg, t.lim_max_deg, (unsigned long)t.clip_count
     );
     return;
   }
 
-  if (yawLine == "t") {
-    yaw_stream_on = !yaw_stream_on;
-    Serial.printf("YAW: telemetry %s\n", yaw_stream_on ? "ON" : "OFF");
-    return;
-  }
+  if (yawLine == "t") { yaw_stream_on = !yaw_stream_on;
+    Serial.printf("YAW: telemetry %s\n", yaw_stream_on ? "ON" : "OFF"); return; }
 
   Serial.println("YAW: unknown command. Type 'y help' or 'yaw help'.");
 }

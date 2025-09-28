@@ -4,7 +4,8 @@
 
 /* Reusable yaw-axis controller for a brushed DC motor + AS5047P (Teensy 4.x).
  * Auto-enable: drives only if |error| > POS_TOL_REV and not estopped.
- * No Serial printing here—use readTelemetry() from your sketch.
+ * Software angle limits are enforced on commands and in the ISR to avoid
+ * actively driving past the bounds. No Serial printing here.
  */
 
 class YawAxis {
@@ -23,24 +24,31 @@ public:
     uint16_t raw;
     float  accelPPS;
     float  decelPPS;
+
+    // Limits (for UI/diagnostics)
+    float  lim_min_deg;
+    float  lim_max_deg;
+    bool   at_min;          // pos <= min (within tol ~0)
+    bool   at_max;          // pos >= max
+    uint32_t clip_count;    // number of times a command was clipped (since boot)
+    bool   last_cmd_clipped; // sticky snapshot of last-clip flag at read time
   };
 
   YawAxis(uint8_t csPin, uint8_t ina1, uint8_t ina2, uint8_t pwmPin,
           uint8_t pwmMin = 60, uint32_t pwmHz = 20000);
 
-  void begin(float loopHz = 150.0f);   // starts control ISR
-  void end();                          // stops control ISR, coasts
+  void begin(float loopHz = 150.0f);
+  void end();
 
-  // Targets
+  // Targets (these are limit-clamped internally)
   void setTargetDeg(float deg);
   void setTargetRev(float rev);
   void moveRelDeg(float ddeg);
   void moveRelRev(float drev);
 
   // Convenience
-  void zeroHere();                     // make current angle = 0 rev & hold
-  void estop();                        // latched coast (won't auto-enable)
-  void clearEstop();                   // clear E-stop, return to auto mode
+  void estop();                        // latched coast
+  void clearEstop();
 
   // Tuning
   void setGains(float kp, float ki, float kd);
@@ -50,12 +58,20 @@ public:
   void setDir(int8_t encDir, int8_t motorDir);
   void setDeadzoneMin(uint8_t pwmMin);
 
+  // Limits (config at boot/flash; can be called at runtime if needed)
+  void setSoftLimitsDeg(float min_deg, float max_deg);
+  void setSoftLimitsRev(float min_rev, float max_rev);
+
+  // Report if the *most recent* command was clipped; clears the flag on read.
+  // Optional outputs tell which edge was hit.
+  bool getAndClearCmdClipped(bool* clippedLow = nullptr, bool* clippedHigh = nullptr);
+
   // Telemetry (interrupt-safe snapshot)
   Telemetry readTelemetry() const;
 
   // State queries
   bool isEnabled()  const { return enabled_; }
-  bool isEstopped() const { return estop_; }
+  bool isEstopped() const { return estop_;  }
 
 private:
   // Static trampoline into the instance ISR
@@ -67,6 +83,9 @@ private:
   void     driveBM_raw(int16_t pwm_abs, int8_t sign);
   void     driveBM(int16_t signed_pwm);
   int16_t  deadzone_compensate(float u);
+
+  // limit helpers
+  float clampToLimitsRev_(float rev, bool& hitLow, bool& hitHigh);
 
 private:
   // hardware config
@@ -111,7 +130,14 @@ private:
 
   volatile int32_t  turn_count_ = 0;
   volatile uint16_t prev_raw_   = 0;
-  volatile float pos_offset_rev_ = 0.0f;   // reference offset in revolutions
+
+  // limits
+  volatile float LIM_MIN_REV_ = 0.0f;                 // default 0 deg
+  volatile float LIM_MAX_REV_ = (120.0f/360.0f);      // default 120 deg
+  volatile uint32_t clip_count_ = 0;
+  volatile bool last_cmd_clipped_ = false;
+  volatile bool last_clip_low_ = false;
+  volatile bool last_clip_high_ = false;
 
   // timer
   IntervalTimer timer_;
