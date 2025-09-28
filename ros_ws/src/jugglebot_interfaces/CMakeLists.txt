@@ -38,6 +38,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/SetFloat.srv"
   "srv/SetString.srv"
   "srv/SetHandTrajCmd.srv"
+  "srv/SendBallButlerCommand.srv"
 
   "msg/CanTrafficReportMessage.msg"
 

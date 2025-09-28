@@ -15,7 +15,7 @@ class MocapInterface:
     Only unlabelled markers and full rigid bodies are stored and processed.
     """
 
-    def __init__(self, host: str = "192.168.20.20", port: int = 22223, logger=None, node=None):
+    def __init__(self, host: str = "192.168.20.9", port: int = 22223, logger=None, node=None):
         """
         Initialize the tracker.
 

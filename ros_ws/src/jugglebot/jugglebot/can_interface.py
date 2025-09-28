@@ -149,8 +149,8 @@ class CANInterface:
             'hand_telemetry': None,
         }
 
-        # Initialize the number of axes that the robot has
-        self.num_axes = 7  # 6 for the legs, 1 for the hand.
+        # Initialize the number of axes
+        self.num_axes = 9 # 6 legs, 1 hand, 1 pitch, 1 thrower (latter two for Ball Butler)
 
         # Initialize the motor states and the data lock for these states
         self.motor_states = [MotorStateSingle() for _ in range(self.num_axes)]
@@ -217,6 +217,9 @@ class CANInterface:
             'error': [] # Note that the error won't be communicated to the Teensy/saved between sessions.
         }
 
+        ################################# Ball Butler ###############################
+        self._ball_butler_cmd_ID = 0X7D0 # Ball Butler command ID (to send yaw/throw speed/throw time to the Teensy)
+
         # Initialize the last known platform tilt offset. This is useful in case we need to run the platform levelling again
         self.last_platform_tilt_offset = quaternion.quaternion(1, 0, 0, 0)
 
@@ -256,14 +259,14 @@ class CANInterface:
         # Set up the CAN bus to establish communication with the robot
         self.setup_can_bus()
 
-        # Set up the ODrives to their default state
-        self.setup_odrives()
+        # # Set up the ODrives to their default state
+        # self.setup_odrives()
 
-        # Check whether the encoder search is complete
-        self.check_whether_encoder_search_complete()
+        # # Check whether the encoder search is complete
+        # self.check_whether_encoder_search_complete()
 
-        # Get the previous session's state from the Teensy
-        self.get_state_from_teensy()
+        # # Get the previous session's state from the Teensy
+        # self.get_state_from_teensy()
 
     #########################################################################################################
     #                                            CAN Bus Management                                         #
@@ -1858,7 +1861,7 @@ class CANInterface:
     #                                        Command Methods                                                #
     #########################################################################################################
 
-    def get_tilt_sensor_reading(self, attemp_num: int = 0):
+    def get_tilt_sensor_reading(self, attempt_num: int = 0):
         """
         Requests the tilt sensor reading from the Teensy and returns it.
 
@@ -1902,8 +1905,8 @@ class CANInterface:
             # If tilt readings are above 45 degrees (0.785 rad), then they are invalid
             if abs(tiltX) > 0.785 or abs(tiltY) > 0.785:
                 self.ROS_logger.warning("Tilt sensor reading invalid. Waiting for next reading...")
-                if attemp_num < 3:
-                    return self.get_tilt_sensor_reading(attemp_num=attemp_num+1)
+                if attempt_num < 3:
+                    return self.get_tilt_sensor_reading(attempt_num=attempt_num+1)
 
                 else:
                     self.ROS_logger.warning("Tilt sensor reading invalid. Returning None.")
@@ -2053,6 +2056,81 @@ class CANInterface:
 
         except Exception as e:
             self.ROS_logger.error(f"Failed to decode state message from Teensy: {e}")
+
+    #########################################################################################################
+    #                                      Ball Butler Methods                                              #
+    #########################################################################################################
+
+    def send_ball_butler_command(self, yaw_angle_rad: float, pitch_angle_rad: float, throw_speed: float, throw_time: float):
+        """
+        Sends a throw command to the ball butler.
+    
+        Args:
+            yaw_angle_rad: The yaw angle in radians (-π to π)
+            pitch_angle_rad: The pitch angle in radians (0 to π/2)
+            throw_speed: The throw speed in m/s (0 to 6.5 m/s)
+            throw_time: The time to throw in seconds (0 to 65.5 seconds)
+    
+        CAN frame layout (8 bytes):
+            Byte 0-1: Yaw angle in radians (π/32768 rad per LSB, ±π range)
+            Byte 2-3: Pitch angle in radians (π/65536 rad per LSB, 0 to π/2 range)
+            Byte 4-5: Throw speed in m/s (0.1 mm/s per LSB, 0-6.5535 m/s range)
+            Byte 6-7: Throw time in seconds (1 ms per LSB, 0-65.535 s range)
+        """
+        try:
+            # Validate inputs
+            if not (-math.pi <= yaw_angle_rad <= math.pi):
+                raise ValueError(f"Yaw angle {yaw_angle_rad} rad outside valid range [-π, π]")
+            if not (0 <= pitch_angle_rad <= (math.pi / 2)):
+                raise ValueError(f"Pitch angle {pitch_angle_rad} rad outside valid range [0, π/2]")
+            if not (0 <= throw_speed <= 6.5535):
+                raise ValueError(f"Throw speed {throw_speed} m/s outside valid range [0, 6.5535]")
+            if not (0 <= throw_time <= 65.535):
+                raise ValueError(f"Throw time {throw_time} s outside valid range [0, 65.535]")
+    
+            # Scale values to 16-bit integers
+            yaw_angle_scaled   = int(yaw_angle_rad * 32768.0 / math.pi)  # ±32767 for ±π
+            pitch_angle_scaled = int(pitch_angle_rad * 65536.0 / math.pi)  # 0 to 32768 for 0 to π/2
+            throw_speed_scaled = int(throw_speed * 10000.0)  # 0.1 mm/s per LSB
+            throw_time_scaled  = int(throw_time * 1000.0)     # 1 ms per LSB
+            
+            # Pack the data using all 8 bytes efficiently
+            data = struct.pack('<hHHH',
+                               yaw_angle_scaled,
+                               pitch_angle_scaled,
+                               throw_speed_scaled,
+                               throw_time_scaled)
+    
+            # Create and send the CAN message
+            arbitration_id = self._ball_butler_cmd_ID
+            throw_command_msg = can.Message(
+                arbitration_id=arbitration_id, 
+                dlc=8, 
+                is_extended_id=False, 
+                data=data, 
+                is_remote_frame=False
+            )
+
+            try:
+                with self._can_lock:
+                    self.bus.send(throw_command_msg)
+                    self.ROS_logger.info(
+                        f"Sent throw command: Yaw={yaw_angle_rad:.3f}rad, "
+                        f"Pitch={pitch_angle_rad:.3f}rad, "
+                        f"Speed={throw_speed:.2f}m/s, Time={throw_time:.2f}s",
+                        throttle_duration_sec=1.0
+                    )
+            except can.CanError as e:
+                self.ROS_logger.warn(f"CAN message for Ball Butler Command NOT sent! Error: {e}")
+
+                # If the buffer is full, the CAN bus is probably having issue. Try to re-establish it
+                if "105" in str(e):
+                    # "No buffer space available" is error code 105
+                    self.attempt_to_restore_can_connection()
+            
+        except Exception as e:
+            self.ROS_logger.error(f"Failed to send throw command: {e}")
+            raise
 
     #########################################################################################################
     #                                       Utility functions                                               #
