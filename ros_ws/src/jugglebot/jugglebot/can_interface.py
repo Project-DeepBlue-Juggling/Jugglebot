@@ -2117,7 +2117,8 @@ class CANInterface:
                     self.ROS_logger.info(
                         f"Sent throw command: Yaw={yaw_angle_rad:.3f}rad, "
                         f"Pitch={pitch_angle_rad:.3f}rad, "
-                        f"Speed={throw_speed:.2f}m/s, Time={throw_time:.2f}s"
+                        f"Speed={throw_speed:.2f}m/s, Time={throw_time:.2f}s",
+                        throttle_duration_sec=1.0
                     )
             except can.CanError as e:
                 self.ROS_logger.warn(f"CAN message for Ball Butler Command NOT sent! Error: {e}")

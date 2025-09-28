@@ -49,40 +49,45 @@ class MocapInterfaceNode(Node):
     def publish_mocap_data(self):
         """Publish the unlabelled marker tracking data (already in the base frame)."""
         unlabelled_marker_data = self.mocap_interface.get_unlabelled_markers_base_frame()
+        try:
+            if unlabelled_marker_data is not None and unlabelled_marker_data.shape[0] > 0:
+                msg_full = MocapDataMulti()
 
-        if unlabelled_marker_data is not None and unlabelled_marker_data.shape[0] > 0:
-            msg_full = MocapDataMulti()
+                # Convert the numpy array to a list of MocapDataSingle messages
+                for i in range(unlabelled_marker_data.shape[0]):
+                    msg_single = MocapDataSingle()
+                    msg_single.position.x = float(unlabelled_marker_data[i, 0])
+                    msg_single.position.y = float(unlabelled_marker_data[i, 1])
+                    msg_single.position.z = float(unlabelled_marker_data[i, 2])
+                    msg_single.residual = float(unlabelled_marker_data[i, 3])
+                    msg_full.unlabelled_markers.append(msg_single)
 
-            # Convert the numpy array to a list of MocapDataSingle messages
-            for i in range(unlabelled_marker_data.shape[0]):
-                msg_single = MocapDataSingle()
-                msg_single.position.x = float(unlabelled_marker_data[i, 0])
-                msg_single.position.y = float(unlabelled_marker_data[i, 1])
-                msg_single.position.z = float(unlabelled_marker_data[i, 2])
-                msg_single.residual = float(unlabelled_marker_data[i, 3])
-                msg_full.unlabelled_markers.append(msg_single)
+                self.unlabelled_mocap_publisher.publish(msg_full)
 
-            self.unlabelled_mocap_publisher.publish(msg_full)
+                # Clear the array to prevent duplicate data
+                self.mocap_interface.clear_unlabelled_markers()
+        except Exception as e:
+            self.get_logger().error(f"Error publishing unlabelled markers: {e}")
 
-            # Clear the array to prevent duplicate data
-            self.mocap_interface.clear_unlabelled_markers()
+        try:
+            # Publish *all* rigid-body poses that arrived in this frame
+            body_poses = self.mocap_interface.get_body_poses()
+            for body_name, pose in body_poses.items():
+                topic_name = f"{body_name.lower()}_pose_mocap" # e.g.  “platform_pose_mocap”
 
-        # Publish *all* rigid-body poses that arrived in this frame
-        body_poses = self.mocap_interface.get_body_poses()
-        for body_name, pose in body_poses.items():
-            topic_name = f"{body_name.lower()}_pose_mocap" # e.g.  “platform_pose_mocap”
+                # Create a publisher the first time we see a new rigid body
+                if body_name not in self.body_publishers:
+                    self.body_publishers[body_name] = self.create_publisher(
+                        PoseStamped, topic_name, 10
+                    )
+                    self.get_logger().info(f'Created publisher "{topic_name}"')
 
-            # Create a publisher the first time we see a new rigid body
-            if body_name not in self.body_publishers:
-                self.body_publishers[body_name] = self.create_publisher(
-                    PoseStamped, topic_name, 10
-                )
-                self.get_logger().info(f'Created publisher "{topic_name}"')
+                self.body_publishers[body_name].publish(pose)
 
-            self.body_publishers[body_name].publish(pose)
-
-        # Done with this frame – avoid re-publishing stale data next timer tick
-        self.mocap_interface.clear_body_poses()
+            # Done with this frame – avoid re-publishing stale data next timer tick
+            self.mocap_interface.clear_body_poses()
+        except Exception as e:
+            self.get_logger().error(f"Error publishing body poses: {e}")
 
     def send_geometry_request(self):
         """Send a request to get the robot geometry."""
