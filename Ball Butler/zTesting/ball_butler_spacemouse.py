@@ -32,7 +32,7 @@ except ImportError as e:
     sys.exit(f"Missing required package: {e}. Install with: pip install pyspacemouse pyserial")
 
 # ------------------------------------------------ CONFIG -------------------------------------------------
-SERIAL_PORT       = "/dev/ttyACM0"    # Teensy serial port
+SERIAL_PORT       = "/dev/ttyACM1"    # Teensy serial port
 SERIAL_BAUD       = 115200            # Baud rate
 DEG_MAX           = 45.0              # 1.0 pitch  ->  45°
 PWM_MAX           = 255               # 1.0 yaw    ->  ±255
