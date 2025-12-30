@@ -1,0 +1,23 @@
+%TF.GenerationSoftware,KiCad,Pcbnew,(6.0.9)*%
+%TF.CreationDate,2025-12-19T11:27:33+11:00*%
+%TF.ProjectId,hand_sensor_pcb_rail,68616e64-5f73-4656-9e73-6f725f706362,rev?*%
+%TF.SameCoordinates,Original*%
+%TF.FileFunction,Soldermask,Bot*%
+%TF.FilePolarity,Negative*%
+%FSLAX46Y46*%
+G04 Gerber Fmt 4.6, Leading zero omitted, Abs format (unit mm)*
+G04 Created by KiCad (PCBNEW (6.0.9)) date 2025-12-19 11:27:33*
+%MOMM*%
+%LPD*%
+G01*
+G04 APERTURE LIST*
+%ADD10R,0.850000X0.850000*%
+G04 APERTURE END LIST*
+D10*
+%TO.C,J2*%
+X142240000Y-139700000D03*
+%TD*%
+%TO.C,J1*%
+X152400000Y-139700000D03*
+%TD*%
+M02*
