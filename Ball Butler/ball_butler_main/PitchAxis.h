@@ -29,14 +29,14 @@ public:
   static constexpr float DEG_MAX = 90.0f;
 
   // Corresponding REV range (derived, for reference)
-  static constexpr float REV_MIN = (DEG_MIN - 90.0f) / 360.0f;  // Actual min is ~ -0.22 rev
+  static constexpr float REV_MIN = (DEG_MIN - DEG_MAX) / 360.0f;
   static constexpr float REV_MAX = 0.0f;
 
   // Default trajectory limits (turns/s, turns/s^2)
   struct Traj {
-    float vel_limit_rps  = 1.0f;   // max trap vel (rev/s)
-    float accel_rps2     = 0.5f;   // accel
-    float decel_rps2     = 0.5f;   // decel
+    float vel_limit_rps  = 1.0f;    // max trap vel (rev/s)
+    float accel_rps2     = 0.5f;    // accel
+    float decel_rps2     = 0.25f;   // decel
   };
 
   PitchAxis(CanInterface& can, uint8_t node_id, Stream* log = &Serial);

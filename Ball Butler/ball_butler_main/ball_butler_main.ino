@@ -1,538 +1,513 @@
-// ball_butler_main.ino
+/*
+ * ball_butler_main.ino - Main sketch for Ball Butler robot
+ * 
+ * ARCHITECTURE:
+ *   - StateMachine: Orchestrates robot behavior (BOOT -> IDLE -> THROWING -> RELOADING)
+ *   - Proprioception: Central repository for axis state data
+ *   - CanInterface: CAN communication with ODrives
+ *   - YawAxis: Brushed DC motor control
+ *   - PitchAxis: ODrive position control
+ *   - HandPathPlanner + HandTrajectoryStreamer: Throw trajectory execution
+ */
+
 #include <vector>
 #include "YawAxis.h"
 #include "PitchAxis.h"
 #include "HandPathPlanner.h"
 #include "CanInterface.h"
 #include "HandTrajectoryStreamer.h"
-#include "TrajFrame.h"    // shared frame type for planner/streamer/CSV
-#include "Trajectory.h"   // for HAND_MAX_SMOOTH_MOVE_POS bound
+#include "TrajFrame.h"
+#include "Trajectory.h"
+#include "Proprioception.h"
+#include "StateMachine.h"
 #include <stdarg.h>
 
-// ============================== Policy / Guard Rails =========================
-static constexpr float   THROW_VEL_MIN_MPS     = 0.05f;   // must be > 0
-static constexpr float   THROW_VEL_MAX_MPS     = 6.0f;    // hard limit
-static constexpr float   SCHEDULE_MARGIN_S     = 0.1f;    // Extra margin to wait at the bottom [sec]
-static constexpr uint64_t PV_MAX_AGE_US        = 20'000;  // 20 ms freshness for pos/vel encoder data
+// ============================================================================
+// CONFIGURATION
+// ============================================================================
+static constexpr float    THROW_VEL_MIN_MPS  = 0.05f;
+static constexpr float    THROW_VEL_MAX_MPS  = 6.0f;
+static constexpr float    SCHEDULE_MARGIN_S  = 0.1f;
+static constexpr uint64_t PV_MAX_AGE_US      = 20000;
+
+static constexpr uint32_t HOST_THROW_CAN_ID  = 0x7D0;
+static constexpr uint8_t  PITCH_NODE_ID      = 7;
+static constexpr uint8_t  HAND_NODE_ID       = 8;
+
 using Err = CanInterface::ODriveErrors;
 
-// ============================== Globals ======================================
+// ============================================================================
+// GLOBAL OBJECTS
+// ============================================================================
 CanInterface           canif;
-HandPathPlanner        planner;                 // 500 Hz, 0.5 s pause default
+HandPathPlanner        planner;
 HandTrajectoryStreamer streamer(canif);
+PitchAxis              pitch(canif, PITCH_NODE_ID);
 
-// CAN and Node IDs
-static constexpr uint32_t HOST_THROW_CAN_ID = 0x7D0;
-static constexpr uint8_t PITCH_NODE_ID = 7;
-static constexpr uint8_t HAND_NODE_ID = 8;
+YawAxis yawAxis(10, 16, 15, 14, 60, 20000);
 
-PitchAxis pitch(canif, PITCH_NODE_ID);
+StateMachine stateMachine(canif, yawAxis, pitch, streamer, planner);
 
-// Persistent buffer to keep frames alive while streaming
-static std::vector<TrajFrame> g_traj_buffer;
+std::vector<TrajFrame> g_traj_buffer;
 
-// -------------------------- YAW axis hardware pins ---------------------------------------
-YawAxis yawAxis(/*CS*/10, /*INA1*/16, /*INA2*/15, /*PWM*/14, /*PWM_MIN*/60, /*PWM_HZ*/20000);
+static bool     yaw_stream_on      = false;
+static uint32_t yaw_last_stream_ms = 0;
+static const uint16_t YAW_TELEM_MS = 500;
 
-// -------------------------- YAW telemetry controls ---------------------------------------
-static bool     yaw_stream_on         = false;
-static const    uint16_t YAW_TELEM_MS = 500;
-static uint32_t yaw_last_stream_ms    = 0;
-
-// Print either a YAW clip warning (if last cmd was clipped) or your OK message.
-// Usage: yawReportClipOrOk("target set: %.3f deg", deg);
-static void yawReportClipOrOk(const char* okFmt, ...) {
-  bool lo=false, hi=false;
-  if (yawAxis.getAndClearCmdClipped(&lo, &hi)) {
-    auto t = yawAxis.readTelemetry();
-    Serial.printf("YAW: WARNING — command clipped to %s limit (range %.1f..%.1f deg)\n",
-                  lo ? "MIN" : "MAX", t.lim_min_deg, t.lim_max_deg);
-    return;
-  }
-  // OK path: print the provided message
-  char buf[128];
-  va_list ap; va_start(ap, okFmt);
-  vsnprintf(buf, sizeof(buf), okFmt, ap);
-  va_end(ap);
-  Serial.print("YAW: ");
-  Serial.println(buf);
+// ============================================================================
+// YAW PROPRIOCEPTION CALLBACK (called from ISR)
+// ============================================================================
+void yawProprioceptionCallback(float pos_deg, float vel_rps, uint64_t ts_us) {
+  PRO.setYawDeg(pos_deg, ts_us);
 }
 
-// -------------------------- Forward decls -----------------------------------------------
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+static bool getFreshPV(float& pos_rev, float& vel_rps, uint64_t& t_wall_us) {
+  if (!canif.getAxisPV(HAND_NODE_ID, pos_rev, vel_rps, t_wall_us)) return false;
+  return (canif.wallTimeUs() - t_wall_us) <= PV_MAX_AGE_US;
+}
+
+// ============================================================================
+// FORWARD DECLARATIONS
+// ============================================================================
 void onHostThrow(const CanInterface::HostThrowCmd& c, void* user);
 void yawPrintHelp();
 void yawHandleLine(const String& yawLine);
-void routeCommand(const String& rawLine);
-
-static bool waitForClear(uint32_t node_id, uint32_t mask,
-                         uint32_t timeout_ms, uint16_t poll_ms = 5);
-static bool homeHandWithAutoClearRetry(uint32_t node_id,
-                         uint8_t max_attempts = 3,
-                         uint32_t pre_wait_ms = 1500,
-                         uint32_t post_fail_wait_ms = 1500);
-
-void  printTopHelp();
-bool  handleThrowCmd(const String& line);    // "throw <vel_mps> <time_from_now_s>"
-bool  handleSmoothCmd(const String& line);   // "smooth <target_pos_rev>"
-static bool getFreshPV(float& pos_rev, float& vel_rps, uint64_t& t_wall_us);
-
 void pitchHandleLine(const String& line);
+void routeCommand(const String& rawLine);
+void printTopHelp();
+void printStatus();
+bool handleThrowCmd(const String& line);
+bool handleSmoothCmd(const String& line);
 
-// CSV emitter: called for every frame when printing a plan for debugging
-static void emitCSV(const TrajFrame& f) {
-  Serial.printf("%.6f,%.6f,%.6f,%.6f\n", f.t_s, f.pos_cmd, f.vel_ff, f.tor_ff);
-}
-
-// ====================================== SETUP ============================================
-void setup(){
+// ============================================================================
+// SETUP
+// ============================================================================
+void setup() {
   Serial.begin(115200);
-  while (!Serial && millis() < 3000) {}
+  
+  // Wait for Serial, but with a shorter timeout and non-blocking approach
+  // This prevents hanging if USB is connected but no terminal is open
+  uint32_t serialWaitStart = millis();
+  while (!Serial && (millis() - serialWaitStart < 2000)) {
+    // Yield to USB stack
+    delay(10);
+  }
+  
+  // Additional check: if Serial says it's ready but buffer is full, 
+  // we might still block. Give it a moment to stabilize.
+  delay(100);
+  
+  // Only print startup banner if Serial is actually ready
+  if (Serial && Serial.availableForWrite() > 64) {
+    Serial.println(F("\n========================================"));
+    Serial.println(F("       Ball Butler - Starting Up"));
+    Serial.println(F("========================================\n"));
+  }
 
-  canif.begin(1'000'000); // CAN @ 1 Mbps
+  Proprioception::setDebugStream(&Serial, false);
+
+  canif.begin(1000000);
   canif.setDebugStream(&Serial);
-  canif.setDebugFlags(/*timeSync*/false, /*canTraffic*/ false);
-
+  canif.setDebugFlags(false, false);
+  canif.setHandAxisNode(HAND_NODE_ID);
+  canif.setPitchAxisNode(PITCH_NODE_ID);
   canif.setHostThrowCmdId(HOST_THROW_CAN_ID);
   canif.setHostThrowCallback(&onHostThrow, nullptr);
-
-  canif.setAutoClearBrakeResistor(true, /*min_interval_ms=*/500);
-
+  canif.setAutoClearBrakeResistor(true, 500);
   canif.requireHomeOnlyFor(HAND_NODE_ID);
 
-  delay(1000);
-  // Robust homing: wait for the auto-clear to clean the bit, then home (with retries)
-  const bool hand_homed = homeHandWithAutoClearRetry(HAND_NODE_ID, /*max_attempts=*/3,
-                                                /*pre_wait_ms=*/1500, /*post_fail_wait_ms=*/1500);
-  Serial.printf("Home result: %s\n", hand_homed ? "OK" : "FAIL");
-
   yawAxis.begin();
-  yawAxis.setSoftLimitsDeg(0.0f, 120.0f); // Set limits for the yaw axis (deg)
+  // Configure yaw axis with safe initial settings before StateMachine takes over
+  // This prevents any erroneous movement during the boot phase
+  // The offset places user 0° at encoder 5°, giving headroom for overshoot
+  // Limits are set wide initially; StateMachine will tighten them after homing
+  yawAxis.setZeroOffset(5.0f);  // encoder 5° = user 0°
+  yawAxis.setSoftLimitsDeg(-5.0f, 190.0f);  // Wide limits during boot
+  yawAxis.setHardLimitOvershoot(10.0f);  // Allow 10° overshoot before fault
+  yawAxis.setProprioceptionCallback(yawProprioceptionCallback);
+
   pitch.begin();
-  printTopHelp();
+
+  StateMachine::Config smConfig;
+  smConfig.hand_node_id  = HAND_NODE_ID;
+  smConfig.pitch_node_id = PITCH_NODE_ID;
+  smConfig.homing_timeout_ms   = 10000;
+  smConfig.reload_timeout_ms   = 10000;
+  smConfig.post_throw_delay_ms = 1000;
+  stateMachine.setConfig(smConfig);
+  stateMachine.setDebugStream(&Serial);
+  stateMachine.setDebugEnabled(true);
+  stateMachine.begin();
+
+  Serial.println(F("\nType 'help' for commands.\n"));
 }
 
-// ======================================= LOOP ============================================
-void loop(){
-  canif.loop();   // Service CAN and time-sync layer
+// ============================================================================
+// LOOP
+// ============================================================================
+void loop() {
+  canif.loop();
   streamer.tick();
+  Proprioception::flushDebug();
+  stateMachine.update();
 
-  // Serial line reader
-  static String buf;
+  static String serialBuf;
   while (Serial.available()) {
     char c = (char)Serial.read();
     if (c == '\n' || c == '\r') {
-      buf.trim();
-      if (buf.length()) routeCommand(buf);
-      buf = "";
+      serialBuf.trim();
+      if (serialBuf.length()) routeCommand(serialBuf);
+      serialBuf = "";
     } else {
-      buf += c;
+      serialBuf += c;
     }
   }
 
-  // ---- YAW telemetry stream (printing only; YawAxis library does not print) ----
   if (yaw_stream_on && (millis() - yaw_last_stream_ms >= YAW_TELEM_MS)) {
     yaw_last_stream_ms = millis();
     auto t = yawAxis.readTelemetry();
-    Serial.printf(
-      "YAW | EN=%d ESTOP=%d pos=%.3fdeg vel=%.3frps cmd=%.3fdeg err=%.3fdeg u=%.1f u_slew=%.1f pwm=%d A=%.0f D=%.0f\n",
-      (int)t.enabled, (int)t.estop,
-      t.pos_deg, t.vel_rps, t.cmd_deg, t.err_deg,
-      t.u, t.u_slew, (int)t.pwm, t.accelPPS, t.decelPPS
-    );
+    Serial.printf("YAW | pos=%.2f cmd=%.2f err=%.2f pwm=%d en=%d\n",
+                  t.pos_deg, t.cmd_deg, t.err_deg, (int)t.pwm, t.enabled);
   }
 }
 
-// ============================== Processing Jetson Commands ===============================
-void onHostThrow(const CanInterface::HostThrowCmd& c, void* /*user*/) {
-  // 1) Point yaw & pitch
+// ============================================================================
+// CAN THROW HANDLER
+// ============================================================================
+void onHostThrow(const CanInterface::HostThrowCmd& c, void*) {
   const float yaw_deg   = c.yaw_rad   * (180.0f / (float)M_PI);
   const float pitch_deg = c.pitch_rad * (180.0f / (float)M_PI);
 
-  Serial.println("CAN frame received!");
-  Serial.println(yaw_deg);
-  Serial.println(pitch_deg);
-  Serial.println(c.speed_mps);
-  Serial.println(c.in_s);
-  yawAxis.setTargetDeg(yaw_deg);
-  {
-    bool lo=false, hi=false;
-    if (yawAxis.getAndClearCmdClipped(&lo,&hi)) {
-      auto t = yawAxis.readTelemetry();
-      Serial.printf("[HostCmd] YAW WARNING — target clipped to %s limit (range %.3f..%.3f deg)\n",
-                    lo?"MIN":"MAX", t.lim_min_deg, t.lim_max_deg);
-    }
-  }
-  pitch.setTargetDeg(pitch_deg);
+  Serial.println(F("--- CAN Throw Command ---"));
+  Serial.printf("  Yaw: %.2f  Pitch: %.2f  Speed: %.3f  In: %.3f\n",
+                yaw_deg, pitch_deg, c.speed_mps, c.in_s);
 
-  // If the commanded velocity is 0 m/s, don't attempt a throw
-  if (c.speed_mps == 0.0){ return; };
-
-  // 2) Hand must be homed
-  if (!canif.isAxisHomed(HAND_NODE_ID)) {
-    Serial.println("[HostCmd] Ignored throw: hand not homed.");
+  if (c.speed_mps == 0.0f) {
+    yawAxis.setTargetDeg(yaw_deg);
+    pitch.setTargetDeg(pitch_deg);
     return;
   }
 
-  // 3) Fresh PV snapshot
-  float pos_rev=0.f, vel_rps=0.f; uint64_t t_wall_us=0;
-  if (!canif.getAxisPV(HAND_NODE_ID, pos_rev, vel_rps, t_wall_us)) {
-    Serial.println("[HostCmd] PV unavailable; ignoring throw.");
-    return;
+  if (stateMachine.requestThrow(yaw_deg, pitch_deg, c.speed_mps, c.in_s)) {
+    Serial.println(F("  -> Accepted"));
+  } else {
+    Serial.printf("  -> REJECTED (state: %s)\n", robotStateToString(stateMachine.getState()));
   }
-  if (canif.wallTimeUs() - t_wall_us > PV_MAX_AGE_US) {
-    Serial.println("[HostCmd] PV stale; ignoring throw.");
-    return;
-  }
-
-  // 4) Plan & check lead time
-  auto plan = planner.planThrowDecelZero(c.speed_mps, pos_rev, vel_rps, (uint32_t)(t_wall_us & 0xFFFFFFFFu));
-  if (plan.trajectory.empty()) {
-    Serial.println("[HostCmd] Planner returned empty trajectory.");
-    return;
-  }
-  float t_min = 0.f;
-  for (auto& f : plan.trajectory) if (f.t_s < t_min) t_min = f.t_s;
-  const float need_lead = -t_min + SCHEDULE_MARGIN_S;
-  if (c.in_s < need_lead) {
-    Serial.printf("[HostCmd] Not enough lead time (in=%.3f s need≥%.3f s). Ignoring.\n",
-                  (double)c.in_s, (double)need_lead);
-    return;
-  }
-
-  // 5) Arm streamer
-  g_traj_buffer = std::move(plan.trajectory);
-  const float start_wall_s = canif.wallTimeUs() * 1e-6f + c.in_s;
-  const bool ok = streamer.arm(HAND_NODE_ID, g_traj_buffer.data(), g_traj_buffer.size(), start_wall_s);
-
-  Serial.printf("[HostCmd] yaw=%.2f° pitch=%.2f° speed=%.3f m/s in=%.3f s -> %s (frames=%u, ready=%.3fs)\n",
-                (double)yaw_deg, (double)pitch_deg, (double)c.speed_mps, (double)c.in_s,
-                ok ? "ARMed" : "ARM FAIL", (unsigned)g_traj_buffer.size(), planner.lastTimeToReadyS());
 }
 
-// ============================== COMMAND ROUTING (TOP-LEVEL) ===============================
-void routeCommand(const String& rawLine){
+// ============================================================================
+// COMMAND ROUTING
+// ============================================================================
+void routeCommand(const String& rawLine) {
   String line = rawLine;
   line.trim();
-
-  // Lowercase copy for prefix check (do not mutate original params past the prefix)
   String lc = line;
   lc.toLowerCase();
 
-  // Top-level commands
-  if (lc.startsWith("throw "))  { if (!handleThrowCmd(line))  Serial.println(F("Usage: throw <vel_mps> <in_s>")); return; }
-  if (lc.startsWith("smooth ")) { if (!handleSmoothCmd(line)) Serial.println(F("Usage: smooth <target_pos_rev>")); return; }
-
+  if (lc == "status") { printStatus(); return; }
+  if (lc == "reset")  { stateMachine.reset(); return; }
+  if (lc == "ball")  { Serial.printf("Ball in hand: %s\n", stateMachine.isBallInHand() ? "YES" : "NO"); return; }
+  if (lc == "reload") { stateMachine.requestReload(); return;}
+  if (lc.startsWith("throw ")) { handleThrowCmd(line); return; }
+  if (lc.startsWith("smooth ")) { handleSmoothCmd(line); return; }
   if (lc == "help" || lc == "h") { printTopHelp(); return; }
+  if (lc.startsWith("p "))     { pitchHandleLine(line.substring(2)); return; }
+  if (lc.startsWith("pitch ")) { pitchHandleLine(line.substring(6)); return; }
+  if (lc.startsWith("y "))     { yawHandleLine(line.substring(2)); return; }
+  if (lc.startsWith("yaw "))   { yawHandleLine(line.substring(4)); return; }
 
-  // Pitch command family
-  if (lc.startsWith("p "))      { pitchHandleLine(line.substring(2)); return; }     // short prefix
-  if (lc.startsWith("pitch "))  { pitchHandleLine(line.substring(6)); return; }     // long prefix
-
-
-  // Route lines to the YAW command handler when prefixed with "y " or "yaw "
-  if (lc.startsWith("y "))   { yawHandleLine(line.substring(2));  return; }
-  if (lc.startsWith("yaw ")) { yawHandleLine(line.substring(4));  return; }
-
-  Serial.println(F("Unknown command. Type 'help' for top-level, or use 'y ' / 'yaw ' for YAW axis."));
+  Serial.println(F("Unknown command. Type 'help'."));
 }
 
-// ================================== TOP-LEVEL HELP =======================================
 void printTopHelp() {
   Serial.println(F(
-    "Top-level commands:\n"
-    "  throw <vel_mps> <in_s>   : Plan hand throw at <vel_mps>; schedule so decel starts in <in_s>\n"
-    "  smooth <target_pos_rev>  : Smooth-move hand to absolute position (rev), start now\n"
-    "\n"
-    "Pitch commands (prefix 'p ' or 'pitch '): type 'p help'\n"
-    "YAW   commands (prefix 'y ' or 'yaw '):  type 'y help'\n"
+    "\n=== Ball Butler Commands ===\n"
+    "  status              : Show state and proprioception\n"
+    "  reset               : Reset from ERROR state\n"
+    "  throw <vel> <in_s>  : Throw at velocity\n"
+    "  reload              : Trigger a reload\n"
+    "  smooth <pos_rev>    : Smooth-move hand\n"
+    "  p <deg>             : Pitch to angle\n"
+    "  y help              : Show yaw commands\n"
   ));
 }
 
-// ============================== PV SNAPSHOT (freshness) ================================
-static bool getFreshPV(float& pos_rev, float& vel_rps, uint64_t& t_wall_us) {
-  if (!canif.getAxisPV(HAND_NODE_ID, pos_rev, vel_rps, t_wall_us)) return false;
-  const uint64_t now_us = canif.wallTimeUs();
-  return (now_us - t_wall_us) <= PV_MAX_AGE_US;
+void printStatus() {
+  Serial.println(F("\n=== Status ==="));
+  Serial.printf("State: %s", robotStateToString(stateMachine.getState()));
+  if (stateMachine.isError()) Serial.printf(" - %s", stateMachine.getErrorMessage());
+  Serial.println();
+  Serial.printf("Ball: %s\n", stateMachine.isBallInHand() ? "YES" : "NO");
+  
+  ProprioceptionData d;
+  PRO.snapshot(d);
+  Serial.printf("Yaw: %.1f  Pitch: %.1f  Hand: %.3f rev\n",
+                d.yaw_deg, d.pitch_deg, d.hand_pos_rev);
+  Serial.printf("Hand homed: %s  Streamer: %s\n",
+                canif.isAxisHomed(HAND_NODE_ID) ? "YES" : "NO",
+                streamer.isActive() ? "ACTIVE" : "idle");
 }
 
-// ================================== THROW HANDLER =======================================
 bool handleThrowCmd(const String& line) {
-  float vel=0.0f, in_s=0.0f;
-  const char* p = line.c_str();
-  if (strncmp(p, "throw", 5) == 0) p += 5;
-  int n = sscanf(p, "%f %f", &vel, &in_s);
-  if (n != 2) return false;
-
-  // ---- Guard rail: velocity range ----
-  if (!(vel > THROW_VEL_MIN_MPS && vel <= THROW_VEL_MAX_MPS)) {
-    Serial.printf("THROW: REJECTED — velocity %.3f m/s out of range (%.2f..%.2f).\n",
-                  vel, THROW_VEL_MIN_MPS, THROW_VEL_MAX_MPS);
+  float vel = 0, in_s = 0;
+  if (sscanf(line.c_str() + 6, "%f %f", &vel, &in_s) != 2) {
+    Serial.println(F("Usage: throw <vel> <in_s>"));
+    return false;
+  }
+  if (vel <= THROW_VEL_MIN_MPS || vel > THROW_VEL_MAX_MPS) {
+    Serial.printf("THROW: velocity out of range\n");
     return true;
   }
-
-  // ---- Guard rail: non-negative schedule ----
-  if (in_s < 0.0f) {
-    Serial.printf("THROW: REJECTED — negative schedule (in=%.3f s).\n", in_s);
-    return true;
+  float yaw_deg = PRO.getYawDeg();
+  float pitch_deg = PRO.getPitchDeg();
+  if (stateMachine.requestThrow(yaw_deg, pitch_deg, vel, in_s)) {
+    Serial.printf("THROW: Queued %.3f m/s in %.3f s\n", vel, in_s);
+  } else {
+    Serial.printf("THROW: REJECTED (state: %s)\n", robotStateToString(stateMachine.getState()));
   }
-
-  // ---- PV freshness ----
-  float pos_rev=0, vel_rps=0; uint64_t t_wall_us=0;
-  if (!getFreshPV(pos_rev, vel_rps, t_wall_us)) {
-    Serial.println("THROW: REJECTED — PV unavailable or stale.");
-    return true;
-  }
-
-  // ---- Plan (t_s = 0 at decel) using PV snapshot ----
-  auto plan = planner.planThrowDecelZero(vel, pos_rev, vel_rps, (uint32_t)(t_wall_us & 0xFFFFFFFFu));
-  if (plan.trajectory.empty()) {
-    Serial.println("THROW: REJECTED — planner returned empty trajectory.");
-    return true;
-  }
-
-  // ---- Guard rail: sufficient lead time to cover negative t_s frames ----
-  float min_ts = 0.0f;
-  for (const auto& f : plan.trajectory) if (f.t_s < min_ts) min_ts = f.t_s;
-  const float required_lead_s = -min_ts;  // may be 0 if all frames ≥ 0
-  if (in_s + SCHEDULE_MARGIN_S < required_lead_s) {
-    const float suggested = required_lead_s + SCHEDULE_MARGIN_S;
-    Serial.printf("THROW: REJECTED — in=%.3f s is too soon; need ≥ %.3f s (lead %.3f + margin %.3f).\n",
-                  in_s, suggested, required_lead_s, SCHEDULE_MARGIN_S);
-    return true;
-  }
-
-  // ---- Arm streamer (safe - all checks passed) ----
-  g_traj_buffer = std::move(plan.trajectory);
-  const float now_s        = canif.wallTimeUs() * 1e-6f;
-  const float throw_wall_s = now_s + in_s;
-
-  bool ok = streamer.arm(HAND_NODE_ID, g_traj_buffer.data(), g_traj_buffer.size(), throw_wall_s);
-  Serial.printf("THROW: vel=%.3f, in=%.3f, frames=%u, ready=%.3fs, %s\n",
-                vel, in_s, (unsigned)g_traj_buffer.size(), planner.lastTimeToReadyS(), ok?"ARMed":"ARM FAIL");
   return true;
 }
 
-// ================================ SMOOTH MOVER =========================================
-// Parse and execute: smooth <target_pos_rev>
+bool handleReloadCmd(const String& line) {
+  if (stateMachine.requestReload()) { Serial.println("Reload requested!");
+  } else {
+    Serial.printf("Reload REJECTED (state: %s)\n", robotStateToString(stateMachine.getState()));
+  }
+  return true;
+}
+
 bool handleSmoothCmd(const String& line) {
-  float target_rev=0.0f;
-  const char* p = line.c_str();
-  if (strncmp(p, "smooth", 6) == 0) p += 6;
-  int n = sscanf(p, "%f", &target_rev);
-  if (n != 1) return false;
-
-  // ---- Guard rail: target in allowed range ----
-  if (!(target_rev >= 0.0f && target_rev <= HAND_MAX_SMOOTH_MOVE_POS)) {
-    Serial.printf("SMOOTH: REJECTED — target %.4f rev out of range [0, %.4f].\n",
-                  target_rev, HAND_MAX_SMOOTH_MOVE_POS);
+  float target = 0;
+  if (sscanf(line.c_str() + 7, "%f", &target) != 1) {
+    Serial.println(F("Usage: smooth <pos_rev>"));
+    return false;
+  }
+  if (target < 0 || target > HAND_MAX_SMOOTH_MOVE_POS) {
+    Serial.printf("SMOOTH: out of range [0, %.2f]\n", HAND_MAX_SMOOTH_MOVE_POS);
     return true;
   }
-
-  // ---- PV freshness ----
-  float pos_rev=0, vel_rps=0; uint64_t t_wall_us=0;
-  if (!getFreshPV(pos_rev, vel_rps, t_wall_us)) {
-    Serial.println("SMOOTH: REJECTED — PV unavailable or stale.");
+  float pos = 0, vel = 0; uint64_t t = 0;
+  if (!getFreshPV(pos, vel, t)) {
+    Serial.println(F("SMOOTH: PV unavailable"));
     return true;
   }
-
-  // ---- Plan smooth using PV snapshot ----
-  auto plan = planner.planSmoothTo(target_rev, pos_rev, vel_rps, (uint32_t)(t_wall_us & 0xFFFFFFFFu));
+  auto plan = planner.planSmoothTo(target, pos, vel, (uint32_t)(t & 0xFFFFFFFF));
   if (plan.trajectory.empty()) {
-    Serial.println("SMOOTH: no movement needed (already at target).");
+    Serial.println(F("SMOOTH: Already at target"));
     return true;
   }
-
-  // ---- Arm streamer to start now (frames have t_s starting at 0) ----
   g_traj_buffer = std::move(plan.trajectory);
-  const float time_offset_s = canif.wallTimeUs() * 1e-6f; // start now (relative times)
-  bool ok = streamer.arm(HAND_NODE_ID, g_traj_buffer.data(), g_traj_buffer.size(), time_offset_s);
-  Serial.printf("SMOOTH: target=%.4f rev, frames=%u, dur=%.3fs, %s\n",
-                target_rev, (unsigned)g_traj_buffer.size(), planner.lastTimeToReadyS(), ok?"ARMed":"ARM FAIL");
+  bool ok = streamer.arm(HAND_NODE_ID, g_traj_buffer.data(), g_traj_buffer.size(), 
+                         canif.wallTimeUs() * 1e-6f);
+  Serial.printf("SMOOTH to %.2f: %s\n", target, ok ? "Armed" : "FAIL");
   return true;
 }
 
-// ================================== YAW HELP & PARSER ====================================
-void yawPrintHelp(){
+// ============================================================================
+// YAW COMMAND HANDLER
+// ============================================================================
+void yawPrintHelp() {
   Serial.println(F(
-    "YAW axis commands (prefix with 'y ' or 'yaw '):\n"
-    "  p <deg>          : YAW set absolute target (degrees)\n"
-    "  P <rev>          : YAW set absolute target (revolutions)\n"
-    "  m <deg>          : YAW move relative (degrees)\n"
-    "  M <rev>          : YAW move relative (revolutions)\n"
-    "  d                : YAW E-STOP (latched, coast)\n"
-    "  c                : YAW clear E-STOP (auto-enable resumes)\n"
-    "  g <kp> <ki> <kd> : YAW set PID gains\n"
-    "  a <acc> [dec]    : YAW set accel/decels (PWM counts/sec)\n"
-    "  f <ff_pwm>       : YAW set friction feedforward (PWM)\n"
-    "  o <deg>          : YAW set tolerance band (degrees)\n"
-    "  s                : YAW print one telemetry snapshot\n"
-    "  t                : YAW toggle telemetry stream\n"
+    "\n=== YAW Commands ===\n"
+    "Motion:\n"
+    "  p <deg>           : Go to position (degrees)\n"
+    "  m <deg>           : Move relative (degrees)\n"
+    "  d                 : E-stop (disable)\n"
+    "  c                 : Clear e-stop\n"
+    "\n"
+    "Zero Position:\n"
+    "  zero              : Set current position as 0 deg\n"
+    "  offset <deg>      : Set zero offset directly\n"
+    "\n"
+    "Limits:\n"
+    "  lim <min> <max>   : Set soft limits (degrees)\n"
+    "\n"
+    "Tuning:\n"
+    "  gains <kp> <ki> <kd> : Set PID gains\n"
+    "  accel <a> <d>     : Set accel/decel (PWM/s)\n"
+    "  ff <pwm>          : Set friction feedforward\n"
+    "\n"
+    "Status:\n"
+    "  s                 : Show status\n"
+    "  t                 : Toggle telemetry stream\n"
+    "  full              : Show full config\n"
   ));
 }
 
-void yawHandleLine(const String& yawLine){
+void yawHandleLine(const String& yawLine) {
   if (!yawLine.length()) return;
-  char cmd = yawLine.charAt(0);
-
-  if (yawLine == "h" || yawLine == "help") { yawPrintHelp(); return; }
-
-  if (cmd == 'p') {                       // absolute deg
-    float deg = yawLine.substring(1).toFloat();
-    yawAxis.setTargetDeg(deg);
-    yawReportClipOrOk("target set: %.3f deg", deg);
+  
+  String line = yawLine;
+  line.trim();
+  String lc = line;
+  lc.toLowerCase();
+  
+  // Help
+  if (lc == "help" || lc == "h") { 
+    yawPrintHelp(); 
+    return; 
+  }
+  
+  // Position command: p <deg>
+  if (lc.startsWith("p ") || lc.startsWith("p")) {
+    if (lc.length() > 1 && lc.charAt(1) != ' ') {
+      // Single letter followed by number: p45
+      float deg = line.substring(1).toFloat();
+      if (yawAxis.setTargetDeg(deg)) {
+        Serial.printf("YAW: Target -> %.2f deg\n", deg);
+      } else {
+        Serial.printf("YAW: Target %.2f deg out of limits\n", deg);
+      }
+    } else if (lc.startsWith("p ")) {
+      float deg = line.substring(2).toFloat();
+      if (yawAxis.setTargetDeg(deg)) {
+        Serial.printf("YAW: Target -> %.2f deg\n", deg);
+      } else {
+        Serial.printf("YAW: Target %.2f deg out of limits\n", deg);
+      }
+    }
     return;
   }
-  if (cmd == 'P') {                       // absolute rev
-    float rev = yawLine.substring(1).toFloat();
-    yawAxis.setTargetRev(rev);
-    yawReportClipOrOk("target set: %.4f rev", rev);
+  
+  // Relative move: m <deg>
+  if (lc.startsWith("m ") || (lc.length() > 1 && lc.charAt(0) == 'm' && (isdigit(lc.charAt(1)) || lc.charAt(1) == '-'))) {
+    float deg = line.substring(1).toFloat();
+    if (yawAxis.moveRelDeg(deg)) {
+      Serial.printf("YAW: Move relative -> %.2f deg\n", deg);
+    } else {
+      Serial.printf("YAW: Relative move %.2f deg out of limits\n", deg);
+    }
     return;
   }
-  if (cmd == 'm') {                       // relative deg
-    float ddeg = yawLine.substring(1).toFloat();
-    yawAxis.moveRelDeg(ddeg);
-    yawReportClipOrOk("move rel: %+-.3f deg", ddeg);
+  
+  // E-stop
+  if (lc == "d") { 
+    yawAxis.estop(); 
+    Serial.println(F("YAW: E-STOP engaged")); 
+    return; 
+  }
+  
+  // Clear e-stop
+  if (lc == "c") { 
+    yawAxis.clearEstop(); 
+    Serial.println(F("YAW: E-stop cleared")); 
+    return; 
+  }
+  
+  // Set zero here
+  if (lc == "zero") {
+    yawAxis.setZeroHere();
+    Serial.printf("YAW: Zero set at current position (offset=%.2f)\n", yawAxis.getZeroOffset());
     return;
   }
-  if (cmd == 'M') {                       // relative rev
-    float drev = yawLine.substring(1).toFloat();
-    yawAxis.moveRelRev(drev);
-    yawReportClipOrOk("move rel: %+-.4f rev", drev);
+  
+  // Set zero offset directly: offset <deg>
+  if (lc.startsWith("offset ")) {
+    float offset = line.substring(7).toFloat();
+    yawAxis.setZeroOffset(offset);
+    Serial.printf("YAW: Zero offset -> %.2f deg\n", offset);
     return;
   }
-
-  if (yawLine == "d") { yawAxis.estop();    Serial.println("YAW: E-STOP LATCHED (type 'c' to clear)"); return; }
-  if (yawLine == "c") { yawAxis.clearEstop(); Serial.println("YAW: E-STOP CLEARED (auto-enable active)"); return; }
-
-  if (cmd == 'g') { float kp, ki, kd; int n = sscanf(yawLine.c_str()+1, "%f %f %f", &kp, &ki, &kd);
-    if (n == 3) { yawAxis.setGains(kp, ki, kd); Serial.printf("YAW: gains -> Kp=%.3f Ki=%.3f Kd=%.3f\n", kp, ki, kd); }
-    else        { Serial.println("YAW: usage: g <kp> <ki> <kd>"); }
+  
+  // Set soft limits: lim <min> <max>
+  if (lc.startsWith("lim ")) {
+    float minDeg = 0, maxDeg = 0;
+    if (sscanf(line.c_str() + 4, "%f %f", &minDeg, &maxDeg) == 2) {
+      yawAxis.setSoftLimitsDeg(minDeg, maxDeg);
+      float actualMin, actualMax;
+      yawAxis.getSoftLimitsDeg(actualMin, actualMax);
+      Serial.printf("YAW: Limits -> [%.1f, %.1f] deg\n", actualMin, actualMax);
+    } else {
+      Serial.println(F("YAW: Usage: lim <min> <max>"));
+    }
     return;
   }
-
-  if (cmd == 'a') { float acc, dec; int n = sscanf(yawLine.c_str()+1, "%f %f", &acc, &dec);
-    if (n >= 1) { yawAxis.setAccel(acc, (n==2?dec:acc));
-      Serial.printf("YAW: accel limiter -> ACCEL=%.1f PPS  DECEL=%.1f PPS\n", acc, (n==2?dec:acc));
-    } else { Serial.println("YAW: usage: a <accel> [decel]"); }
+  
+  // Set PID gains: gains <kp> <ki> <kd>
+  if (lc.startsWith("gains ")) {
+    float kp = 0, ki = 0, kd = 0;
+    if (sscanf(line.c_str() + 6, "%f %f %f", &kp, &ki, &kd) == 3) {
+      yawAxis.setGains(kp, ki, kd);
+      Serial.printf("YAW: Gains -> Kp=%.2f Ki=%.2f Kd=%.2f\n", kp, ki, kd);
+    } else {
+      Serial.println(F("YAW: Usage: gains <kp> <ki> <kd>"));
+    }
     return;
   }
-
-  if (cmd == 'f') { float ff; int n = sscanf(yawLine.c_str()+1, "%f", &ff);
-    if (n == 1) { yawAxis.setFF(ff); Serial.printf("YAW: FF set: %.1f PWM\n", ff); }
-    else        { Serial.println("YAW: usage: f <ff_pwm>"); }
+  
+  // Set acceleration: accel <accel> <decel>
+  if (lc.startsWith("accel ")) {
+    float accel = 0, decel = 0;
+    int n = sscanf(line.c_str() + 6, "%f %f", &accel, &decel);
+    if (n >= 1) {
+      if (n == 1) decel = accel;  // If only one value, use for both
+      yawAxis.setAccel(accel, decel);
+      Serial.printf("YAW: Accel -> %.1f / Decel -> %.1f PWM/s\n", accel, decel);
+    } else {
+      Serial.println(F("YAW: Usage: accel <accel> [<decel>]"));
+    }
     return;
   }
-
-  if (cmd == 'o') { float deg; int n = sscanf(yawLine.c_str()+1, "%f", &deg);
-    if (n == 1) { yawAxis.setToleranceRev(deg * (1.0f/360.0f)); Serial.printf("YAW: tolerance: %.3f deg\n", deg); }
-    else        { Serial.println("YAW: usage: o <deg>"); }
+  
+  // Set friction feedforward: ff <pwm>
+  if (lc.startsWith("ff ")) {
+    float ff = line.substring(3).toFloat();
+    yawAxis.setFF(ff);
+    Serial.printf("YAW: Friction FF -> %.1f PWM\n", ff);
     return;
   }
-
-  if (yawLine == "s") {
+  
+  // Status (brief)
+  if (lc == "s") {
     auto t = yawAxis.readTelemetry();
-    Serial.printf(
-      "YAW | EN=%d ESTOP=%d pos=%.3fdeg vel=%.3frps cmd=%.3fdeg err=%.3fdeg u=%.1f u_slew=%.1f pwm=%d A=%.0f D=%.0f lim=[%.1f..%.1f] clips=%lu\n",
-      (int)t.enabled, (int)t.estop,
-      t.pos_deg, t.vel_rps, t.cmd_deg, t.err_deg,
-      t.u, t.u_slew, (int)t.pwm, t.accelPPS, t.decelPPS,
-      t.lim_min_deg, t.lim_max_deg, (unsigned long)t.clip_count
-    );
+    Serial.printf("YAW | pos=%.2f cmd=%.2f err=%.2f pwm=%d en=%d estop=%d\n",
+                  t.pos_deg, t.cmd_deg, t.err_deg, (int)t.pwm, t.enabled, t.estop);
     return;
   }
-
-  if (yawLine == "t") { yaw_stream_on = !yaw_stream_on;
-    Serial.printf("YAW: telemetry %s\n", yaw_stream_on ? "ON" : "OFF"); return; }
-
-  Serial.println("YAW: unknown command. Type 'y help' or 'yaw help'.");
+  
+  // Toggle telemetry stream
+  if (lc == "t") { 
+    yaw_stream_on = !yaw_stream_on; 
+    Serial.printf("YAW: Telemetry stream %s\n", yaw_stream_on ? "ON" : "OFF");
+    return; 
+  }
+  
+  // Full configuration dump
+  if (lc == "full") {
+    auto t = yawAxis.readTelemetry();
+    Serial.println(F("\n=== YAW Full Configuration ==="));
+    Serial.printf("Position:     %.2f deg (cmd: %.2f, err: %.2f)\n", t.pos_deg, t.cmd_deg, t.err_deg);
+    Serial.printf("Velocity:     %.3f rev/s\n", t.vel_rps);
+    Serial.printf("PWM:          %d (u=%.1f, u_slew=%.1f)\n", t.pwm, t.u, t.u_slew);
+    Serial.printf("Enabled:      %s\n", t.enabled ? "YES" : "NO");
+    Serial.printf("E-Stop:       %s\n", t.estop ? "YES" : "NO");
+    Serial.printf("Zero Offset:  %.2f deg\n", t.zero_offset_deg);
+    Serial.printf("Limits:       [%.1f, %.1f] deg\n", t.lim_min_deg, t.lim_max_deg);
+    Serial.printf("PID Gains:    Kp=%.2f Ki=%.2f Kd=%.2f\n", t.kp, t.ki, t.kd);
+    Serial.printf("Accel/Decel:  %.1f / %.1f PWM/s\n", t.accelPPS, t.decelPPS);
+    Serial.printf("Encoder:      raw=%u\n", t.raw);
+    Serial.println();
+    return;
+  }
+  
+  Serial.println(F("YAW: Unknown command. Type 'y help'"));
 }
 
-// ======================= PITCH PARSER =============================
-void pitchHandleLine(const String& line){
+void pitchHandleLine(const String& line) {
   String s = line; s.trim();
-  if (s.length() == 0) { Serial.println("PITCH: type 'p help'"); return; }
-
-  // Simple tokens
+  if (s.length() == 0) { Serial.println(F("PITCH: type 'p help'")); return; }
   if (s == "help") {
-    Serial.println(F(
-      "PITCH commands (prefix with 'p ' or 'pitch '):\n"
-      "  <deg>               : Move to absolute angle (degrees from horizontal)\n"
-      "  status              : Print one status snapshot\n"
-      "  traj <vel> <acc> <dec>  : Set trap limits (rev/s, rev/s^2, rev/s^2)\n"
-      "  gains <kp> <kv> <ki>    : Set ODrive pos/vel gains\n"
-      "  range               : Print allowed user range\n"
-    ));
+    Serial.println(F("PITCH: <deg> | status | range"));
     return;
   }
-
   if (s == "status") { pitch.printStatusOnce(); return; }
   if (s == "range") {
-    Serial.printf("PITCH range: %.2f .. %.2f deg  (%.4f .. %.4f rev)\n",
-                  PitchAxis::DEG_MIN, PitchAxis::DEG_MAX,
-                  PitchAxis::REV_MIN, PitchAxis::REV_MAX);
+    Serial.printf("PITCH: %.1f .. %.1f deg\n", PitchAxis::DEG_MIN, PitchAxis::DEG_MAX);
     return;
   }
-
-  if (s.startsWith("traj ")) {
-    float v,a,d; int n = sscanf(s.c_str()+5, "%f %f %f", &v, &a, &d);
-    if (n != 3) { Serial.println("PITCH: usage: traj <vel_rps> <acc_rps2> <dec_rps2>"); return; }
-    pitch.setTrajLimits(v,a,d);
-    return;
-  }
-
-  if (s.startsWith("gains ")) {
-    float kp,kv,ki; int n = sscanf(s.c_str()+6, "%f %f %f", &kp, &kv, &ki);
-    if (n != 3) { Serial.println("PITCH: usage: gains <kp_pos> <kv_vel> <ki_vel>"); return; }
-    pitch.setGains(kp,kv,ki);
-    return;
-  }
-
-  // If it wasn't a keyword, treat the token as a DEGREE command
-  // Accept either "<deg>" or "deg <value>"
-  float deg = NAN;
-  if (s.startsWith("deg ")) {
-    int n = sscanf(s.c_str()+4, "%f", &deg);
-    if (n != 1) { Serial.println("PITCH: usage: deg <angle_deg>"); return; }
-  } else {
-    deg = s.toFloat(); // tolerant: "45", "45.0"
-  }
-
-  if (!isfinite(deg)) {
-    Serial.println("PITCH: could not parse angle. Try:  p 45   or   p deg 45");
-    return;
-  }
-
-  pitch.setTargetDeg(deg);
-}
-
-// ================================== Wait for no errors before homing  ====================================
-// Wait for 'mask' error bits to be clear (uses cached heartbeat). Returns true if cleared before timeout.
-static bool waitForClear(uint32_t node_id, uint32_t mask, uint32_t timeout_ms, uint16_t poll_ms) {
-  const uint32_t start = millis();
-  while ((millis() - start) < timeout_ms) {
-    canif.loop(); // keep heartbeats flowing
-    if (canif.waitForAxisErrorClear(node_id, mask, 0 /*immediate*/)) return true; // uses cached snapshot
-    delay(poll_ms);
-  }
-  return false;
-}
-
-// Homing wrapper that gives the auto-clearer time before/after attempts.
-static bool homeHandWithAutoClearRetry(uint32_t node_id,
-                                       uint8_t max_attempts,
-                                       uint32_t pre_wait_ms,
-                                       uint32_t post_fail_wait_ms) {
-  // Pre-wait so the auto-clearer can clean the spurious bit before first attempt.
-  (void)waitForClear(node_id, Err::BRAKE_RESISTOR_DISARMED, pre_wait_ms);
-
-  for (uint8_t attempt = 1; attempt <= max_attempts; ++attempt) {
-    Serial.printf("[Home] Attempt %u...\n", attempt);
-    if (canif.homeHandStandard(node_id)) {
-      Serial.println("[Home] Success.");
-      return true;
-    }
-    Serial.println("[Home] Failed. Waiting for BRAKE_RESISTOR_DISARMED to clear before retry...");
-    (void)waitForClear(node_id, Err::BRAKE_RESISTOR_DISARMED, post_fail_wait_ms);
-  }
-  return false;
+  float deg = s.toFloat();
+  if (isfinite(deg)) pitch.setTargetDeg(deg);
 }

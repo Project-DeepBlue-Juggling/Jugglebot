@@ -40,7 +40,7 @@ constexpr float END_PROFILE_HOLD    = 0.10f;    // s. Can probably get rid of?
 constexpr int   SAMPLE_RATE         = 500;      // Hz
 
 /* ----- smooth-move tuning ------------------------------------- */
-constexpr float MAX_SMOOTH_MOVE_HAND_ACCEL = 100.0;//1000.0f;   // [rev s⁻²].
+constexpr float MAX_SMOOTH_MOVE_HAND_ACCEL = 200.0;//1000.0f;   // [rev s⁻²].
 constexpr float QUINTIC_S2_MAX             = 5.7735027f; // max |s''| for 10t³−15t⁴+6t⁵
 
 constexpr float HAND_MAX_SMOOTH_MOVE_POS = 8.9; // rev

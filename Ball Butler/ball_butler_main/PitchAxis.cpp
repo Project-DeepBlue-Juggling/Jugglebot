@@ -1,5 +1,6 @@
 // PitchAxis.cpp
 #include "PitchAxis.h"
+#include "CanInterface.h"
 
 PitchAxis::PitchAxis(CanInterface& can, uint8_t node_id, Stream* log)
   : can_(can), node_(node_id), log_(log ? log : &Serial) {}
@@ -58,6 +59,18 @@ bool PitchAxis::setGains(float kp_pos, float kv_vel, float ki_vel) {
 }
 
 bool PitchAxis::sendTargetRev_(float target_rev) {
+  // Check whether the axis is ready to move (in CLOSED_LOOP_CONTROL)
+  CanInterface::AxisHeartbeat hb_pitch;
+  bool ok = can_.getAxisHeartbeat(node_, hb_pitch);
+  if (!ok) {
+    if (log_) log_->println("PITCH: sendTargetRev_ FAILED to get heartbeat.");
+    return false;
+  }
+  if (hb_pitch.axis_state != AXIS_STATE_CLOSED_LOOP) {
+    enterClosedLoop_();
+    delay(10);  // brief pause to let it switch states
+  }
+
   return can_.sendInputPos(node_, target_rev, /*vel_ff*/0.0f, /*tor_ff*/0.0f);
 }
 

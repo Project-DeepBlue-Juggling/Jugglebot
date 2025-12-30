@@ -1,275 +1,893 @@
+/*
+ * =============================================================================
+ * YawAxis.cpp - Implementation (Revised for proper zero offset handling)
+ * =============================================================================
+ * 
+ * COORDINATE SYSTEM DESIGN:
+ * 
+ * The encoder returns raw angles in [0, 360). The user wants to work in a
+ * coordinate system where their limits [0, 185] are safely away from the
+ * 0/360 discontinuity.
+ * 
+ * We use ZERO_OFFSET_DEG_ to define where "user 0°" is in encoder space:
+ *   encoder_deg = user_deg + ZERO_OFFSET_DEG_  (mod 360)
+ *   user_deg = encoder_deg - ZERO_OFFSET_DEG_  (mod 360, centered on working range)
+ * 
+ * Example with ZERO_OFFSET_DEG_ = 10:
+ *   User 0°   -> Encoder 10°
+ *   User 185° -> Encoder 195°
+ *   User -5°  -> Encoder 5° (overshoot past user 0°)
+ *   
+ * The key insight: we DON'T normalize user coordinates to [0, 360).
+ * Instead, we keep them in a range centered around the middle of the
+ * valid range, allowing negative values for overshoot past 0°.
+ * 
+ * LIMIT ENFORCEMENT:
+ * 
+ * Soft limits [LIM_MIN_DEG_, LIM_MAX_DEG_] define the commanded range.
+ * Hard limits extend beyond by HARD_LIMIT_OVERSHOOT_DEG_ to allow for
+ * overshoot without triggering a fault.
+ * 
+ * The axis will NEVER move through the forbidden zone (outside hard limits).
+ * If commanded to a position that would require crossing the forbidden zone,
+ * the command is rejected.
+ * 
+ * =============================================================================
+ */
+
 #include "YawAxis.h"
 
+// Singleton instance pointer
 YawAxis* YawAxis::instance_ = nullptr;
 
+/* =============================================================================
+ * Constructor
+ * =============================================================================
+ */
 YawAxis::YawAxis(uint8_t csPin, uint8_t ina1, uint8_t ina2, uint8_t pwmPin,
                  uint8_t pwmMin, uint32_t pwmHz)
-: CS_PIN_(csPin), INA1_PIN_(ina1), INA2_PIN_(ina2), PWM_PIN_(pwmPin),
-  PWM_MIN_(pwmMin), PWM_HZ_(pwmHz) {}
+  : CS_PIN_(csPin), INA1_PIN_(ina1), INA2_PIN_(ina2), PWM_PIN_(pwmPin),
+    PWM_MIN_(pwmMin), PWM_HZ_(pwmHz) {}
 
-void YawAxis::begin(float loopHz){
+
+/* =============================================================================
+ * begin() - Initialize hardware and start control loop
+ * =============================================================================
+ */
+void YawAxis::begin(float loopHz) {
   LOOP_HZ_ = loopHz;
   DT_      = 1.0f / LOOP_HZ_;
 
+  // Configure GPIO pins
   pinMode(CS_PIN_,   OUTPUT);
   pinMode(INA1_PIN_, OUTPUT);
   pinMode(INA2_PIN_, OUTPUT);
   pinMode(PWM_PIN_,  OUTPUT);
   digitalWriteFast(CS_PIN_, HIGH);
 
+  // Initialize SPI and PWM
   SPI.begin();
   analogWriteFrequency(PWM_PIN_, PWM_HZ_);
   analogWriteResolution(8);
-  driveBM(0);
+  driveBM(0);  // Start with motor off
 
-  prev_raw_    = readAS();
-  turn_count_  = 0;
+  // Read initial encoder position and convert to user coordinates
+  prev_raw_ = readAS();
+  float enc_deg = rawToEncoderDeg_(prev_raw_);
+  pos_deg_ = encoderToUserDeg_(enc_deg);
+  
+  // Set command = current position (no initial movement)
+  cmd_pos_deg_ = pos_deg_;
 
-  // Absolute position from encoder; zero is whatever the encoder defines as zero.
-  float abs_rev = float(prev_raw_) / CPR;
-  pos_rev_      = ENC_DIR_ * abs_rev;
+  // Reset controller state
+  i_term_           = 0.0f;
+  sd_accum_         = 0.0f;
+  last_u_slew_      = 0.0f;
+  last_err_deg_     = 0.0f;
+  estop_            = false;
+  hard_limit_fault_ = false;
+  enabled_          = false;
 
-  // IMPORTANT: Command = current position so there is no error => no motion on boot.
-  cmd_pos_rev_  = pos_rev_;
-
-  i_term_       = 0.0f;
-  sd_accum_     = 0.0f;
-  last_u_slew_  = 0.0f;
-  estop_        = false;
-  enabled_      = false;
-
+  // Register singleton and start timer
   instance_ = this;
   timer_.begin(isrTrampoline, (int)(1e6 / LOOP_HZ_));
 }
 
-void YawAxis::end(){
+
+/* =============================================================================
+ * end() - Stop control loop and disable motor
+ * =============================================================================
+ */
+void YawAxis::end() {
   timer_.end();
   driveBM(0);
 }
 
-/* -------------------- Limits config -------------------- */
-void YawAxis::setSoftLimitsDeg(float min_deg, float max_deg){
-  setSoftLimitsRev(min_deg * DEG2REV, max_deg * DEG2REV);
+
+/* =============================================================================
+ * Coordinate Transformation Functions
+ * =============================================================================
+ * 
+ * These functions handle the conversion between:
+ *   - Raw encoder counts (0 to CPR-1)
+ *   - Encoder degrees (0 to 360, with ENC_DIR_ applied)
+ *   - User degrees (centered on working range, can be negative for overshoot)
+ */
+
+/* ---------------------------------------------------------------------------
+ * normalizeAngle_() - Normalize angle to [0, 360) range
+ * ---------------------------------------------------------------------------
+ */
+float YawAxis::normalizeAngle_(float angle_deg) const {
+  while (angle_deg < 0.0f) angle_deg += 360.0f;
+  while (angle_deg >= 360.0f) angle_deg -= 360.0f;
+  return angle_deg;
 }
-void YawAxis::setSoftLimitsRev(float min_rev, float max_rev){
+
+/* ---------------------------------------------------------------------------
+ * rawToEncoderDeg_() - Convert raw encoder counts to encoder degrees [0, 360)
+ * ---------------------------------------------------------------------------
+ */
+float YawAxis::rawToEncoderDeg_(uint16_t raw) const {
+  float deg = (float(raw) / CPR) * REV2DEG * ENC_DIR_;
+  return normalizeAngle_(deg);
+}
+
+/* ---------------------------------------------------------------------------
+ * encoderToUserDeg_() - Convert encoder degrees to user degrees
+ * ---------------------------------------------------------------------------
+ * User degrees are NOT normalized to [0, 360). Instead, they are centered
+ * around the middle of the valid range to allow for overshoot representation.
+ * 
+ * For example, with ZERO_OFFSET_DEG_ = 10 and limits [0, 185]:
+ *   - Center of range is ~92.5°
+ *   - Encoder 10° -> User 0°
+ *   - Encoder 5° -> User -5° (overshoot past 0°)
+ *   - Encoder 195° -> User 185°
+ *   - Encoder 200° -> User 190° (overshoot past 185°)
+ */
+float YawAxis::encoderToUserDeg_(float enc_deg) const {
+  // First, get the raw difference
+  float user_deg = enc_deg - ZERO_OFFSET_DEG_;
+  
+  // Now we need to handle the wrap-around. The key is to center the result
+  // around the middle of our working range, not around 180°.
+  // 
+  // Our working range is [LIM_MIN_DEG_ - overshoot, LIM_MAX_DEG_ + overshoot]
+  // The center of soft limits is (LIM_MIN_DEG_ + LIM_MAX_DEG_) / 2
+  float range_center = (LIM_MIN_DEG_ + LIM_MAX_DEG_) * 0.5f;
+  
+  // Adjust user_deg to be within ±180° of the range center
+  while (user_deg < range_center - 180.0f) user_deg += 360.0f;
+  while (user_deg > range_center + 180.0f) user_deg -= 360.0f;
+  
+  return user_deg;
+}
+
+/* ---------------------------------------------------------------------------
+ * userToEncoderDeg_() - Convert user degrees to encoder degrees [0, 360)
+ * ---------------------------------------------------------------------------
+ */
+float YawAxis::userToEncoderDeg_(float user_deg) const {
+  return normalizeAngle_(user_deg + ZERO_OFFSET_DEG_);
+}
+
+/* ---------------------------------------------------------------------------
+ * isInValidRange_() - Check if position is within soft limits
+ * ---------------------------------------------------------------------------
+ */
+bool YawAxis::isInValidRange_(float pos_deg) const {
+  return (pos_deg >= LIM_MIN_DEG_) && (pos_deg <= LIM_MAX_DEG_);
+}
+
+/* ---------------------------------------------------------------------------
+ * isInHardLimitRange_() - Check if position is within hard limits
+ * ---------------------------------------------------------------------------
+ * Hard limits extend beyond soft limits by HARD_LIMIT_OVERSHOOT_DEG_.
+ * This allows for overshoot during motion without triggering a fault.
+ */
+bool YawAxis::isInHardLimitRange_(float pos_deg) const {
+  float hard_min = LIM_MIN_DEG_ - HARD_LIMIT_OVERSHOOT_DEG_;
+  float hard_max = LIM_MAX_DEG_ + HARD_LIMIT_OVERSHOOT_DEG_;
+  return (pos_deg >= hard_min) && (pos_deg <= hard_max);
+}
+
+/* ---------------------------------------------------------------------------
+ * micros64_() - Get 64-bit microsecond timestamp (handles rollover)
+ * ---------------------------------------------------------------------------
+ */
+uint64_t YawAxis::micros64_() {
+  static uint32_t last_lo = 0;
+  static uint64_t hi = 0;
+  uint32_t now = ::micros();
+  if (now < last_lo) hi += (uint64_t)1 << 32;
+  last_lo = now;
+  return hi | now;
+}
+
+
+/* =============================================================================
+ * Soft Limit Configuration
+ * =============================================================================
+ */
+
+/* ---------------------------------------------------------------------------
+ * setSoftLimitsDeg() - Set position limits in degrees
+ * ---------------------------------------------------------------------------
+ */
+void YawAxis::setSoftLimitsDeg(float min_deg, float max_deg) {
+  // Ensure min < max
+  if (min_deg > max_deg) {
+    float temp = min_deg;
+    min_deg = max_deg;
+    max_deg = temp;
+  }
+  
+  // Ensure range is valid (not more than ~355° to leave room for forbidden zone)
+  if ((max_deg - min_deg) > 355.0f) {
+    max_deg = min_deg + 355.0f;
+  }
+  
   noInterrupts();
-  if (max_rev < min_rev) { float t = min_rev; min_rev = max_rev; max_rev = t; }
-  LIM_MIN_REV_ = min_rev;
-  LIM_MAX_REV_ = max_rev;
+  LIM_MIN_DEG_ = min_deg;
+  LIM_MAX_DEG_ = max_deg;
   interrupts();
 }
 
-/* --------------- Command setters (with clamp) --------- */
-float YawAxis::clampToLimitsRev_(float rev, bool& hitLow, bool& hitHigh){
-  hitLow = hitHigh = false;
-  if (rev < LIM_MIN_REV_) { hitLow = true;  return LIM_MIN_REV_; }
-  if (rev > LIM_MAX_REV_) { hitHigh = true; return LIM_MAX_REV_; }
-  return rev;
+/* ---------------------------------------------------------------------------
+ * setSoftLimitsRev() - Set position limits in revolutions
+ * ---------------------------------------------------------------------------
+ */
+void YawAxis::setSoftLimitsRev(float min_rev, float max_rev) {
+  setSoftLimitsDeg(min_rev * REV2DEG, max_rev * REV2DEG);
 }
 
-void YawAxis::setTargetDeg(float deg){
-  bool lo=false, hi=false;
-  float rev = deg * DEG2REV;
-  float clamped = clampToLimitsRev_(rev, lo, hi);
+/* ---------------------------------------------------------------------------
+ * getSoftLimitsDeg() - Get current limits
+ * ---------------------------------------------------------------------------
+ */
+void YawAxis::getSoftLimitsDeg(float& min_deg, float& max_deg) const {
   noInterrupts();
-  cmd_pos_rev_ = clamped;
-  if (lo || hi) { last_cmd_clipped_ = true; last_clip_low_ = lo; last_clip_high_ = hi; clip_count_++; }
-  interrupts();
-}
-void YawAxis::setTargetRev(float rev){
-  bool lo=false, hi=false;
-  float clamped = clampToLimitsRev_(rev, lo, hi);
-  noInterrupts();
-  cmd_pos_rev_ = clamped;
-  if (lo || hi) { last_cmd_clipped_ = true; last_clip_low_ = lo; last_clip_high_ = hi; clip_count_++; }
-  interrupts();
-}
-void YawAxis::moveRelDeg(float ddeg){
-  bool lo=false, hi=false;
-  noInterrupts();
-  float wanted = cmd_pos_rev_ + ddeg * DEG2REV;
-  float clamped = clampToLimitsRev_(wanted, lo, hi);
-  cmd_pos_rev_ = clamped;
-  if (lo || hi) { last_cmd_clipped_ = true; last_clip_low_ = lo; last_clip_high_ = hi; clip_count_++; }
-  interrupts();
-}
-void YawAxis::moveRelRev(float drev){
-  bool lo=false, hi=false;
-  noInterrupts();
-  float wanted = cmd_pos_rev_ + drev;
-  float clamped = clampToLimitsRev_(wanted, lo, hi);
-  cmd_pos_rev_ = clamped;
-  if (lo || hi) { last_cmd_clipped_ = true; last_clip_low_ = lo; last_clip_high_ = hi; clip_count_++; }
+  min_deg = LIM_MIN_DEG_;
+  max_deg = LIM_MAX_DEG_;
   interrupts();
 }
 
-bool YawAxis::getAndClearCmdClipped(bool* clippedLow, bool* clippedHigh){
-  bool r=false, lo=false, hi=false;
+/* ---------------------------------------------------------------------------
+ * getLimitInfo() - Get complete limit information
+ * ---------------------------------------------------------------------------
+ */
+YawAxis::LimitInfo YawAxis::getLimitInfo() const {
+  LimitInfo info;
   noInterrupts();
-  r  = last_cmd_clipped_;
-  lo = last_clip_low_;
-  hi = last_clip_high_;
-  last_cmd_clipped_ = false;
-  last_clip_low_    = false;
-  last_clip_high_   = false;
+  info.min_deg = LIM_MIN_DEG_;
+  info.max_deg = LIM_MAX_DEG_;
+  info.range_deg = LIM_MAX_DEG_ - LIM_MIN_DEG_;
+  info.hard_overshoot_deg = HARD_LIMIT_OVERSHOOT_DEG_;
   interrupts();
-  if (clippedLow)  *clippedLow  = lo;
-  if (clippedHigh) *clippedHigh = hi;
+  return info;
+}
+
+/* ---------------------------------------------------------------------------
+ * setHardLimitOvershoot() - Set hard limit overshoot tolerance
+ * ---------------------------------------------------------------------------
+ */
+void YawAxis::setHardLimitOvershoot(float deg) {
+  noInterrupts();
+  HARD_LIMIT_OVERSHOOT_DEG_ = fabsf(deg);
+  interrupts();
+}
+
+
+/* =============================================================================
+ * Command Validation and Execution
+ * =============================================================================
+ */
+
+/* ---------------------------------------------------------------------------
+ * isCommandValidDeg() - Check if command is within limits
+ * ---------------------------------------------------------------------------
+ */
+bool YawAxis::isCommandValidDeg(float deg) const {
+  noInterrupts();
+  bool valid = (deg >= LIM_MIN_DEG_) && (deg <= LIM_MAX_DEG_);
+  interrupts();
+  return valid;
+}
+
+/* ---------------------------------------------------------------------------
+ * isCommandValidRev() - Check if command is within limits (revolutions)
+ * ---------------------------------------------------------------------------
+ */
+bool YawAxis::isCommandValidRev(float rev) const {
+  return isCommandValidDeg(rev * REV2DEG);
+}
+
+/* ---------------------------------------------------------------------------
+ * setTargetDeg() - Set absolute target position
+ * ---------------------------------------------------------------------------
+ * Returns true if command accepted, false if rejected (outside limits).
+ */
+bool YawAxis::setTargetDeg(float deg) {
+  noInterrupts();
+  
+  // Validate: must be within soft limits
+  if (deg < LIM_MIN_DEG_ || deg > LIM_MAX_DEG_) {
+    // Command is outside limits - REJECT
+    last_cmd_rejected_ = true;
+    rejected_count_++;
+    interrupts();
+    return false;
+  }
+  
+  // Command is valid - accept it
+  cmd_pos_deg_ = deg;
+  last_cmd_rejected_ = false;
+  interrupts();
+  return true;
+}
+
+/* ---------------------------------------------------------------------------
+ * setTargetRev() - Set absolute target position (revolutions)
+ * ---------------------------------------------------------------------------
+ */
+bool YawAxis::setTargetRev(float rev) {
+  return setTargetDeg(rev * REV2DEG);
+}
+
+/* ---------------------------------------------------------------------------
+ * moveRelDeg() - Move relative to current command
+ * ---------------------------------------------------------------------------
+ */
+bool YawAxis::moveRelDeg(float ddeg) {
+  noInterrupts();
+  
+  float new_target = cmd_pos_deg_ + ddeg;
+  
+  // Validate: must be within soft limits
+  if (new_target < LIM_MIN_DEG_ || new_target > LIM_MAX_DEG_) {
+    // Result would be outside limits - REJECT
+    last_cmd_rejected_ = true;
+    rejected_count_++;
+    interrupts();
+    return false;
+  }
+  
+  // Command is valid - accept it
+  cmd_pos_deg_ = new_target;
+  last_cmd_rejected_ = false;
+  interrupts();
+  return true;
+}
+
+/* ---------------------------------------------------------------------------
+ * moveRelRev() - Move relative to current command (revolutions)
+ * ---------------------------------------------------------------------------
+ */
+bool YawAxis::moveRelRev(float drev) {
+  return moveRelDeg(drev * REV2DEG);
+}
+
+/* ---------------------------------------------------------------------------
+ * getAndClearCmdRejected() - Check if last command was rejected
+ * ---------------------------------------------------------------------------
+ */
+bool YawAxis::getAndClearCmdRejected() {
+  noInterrupts();
+  bool r = last_cmd_rejected_;
+  last_cmd_rejected_ = false;
+  interrupts();
   return r;
 }
 
-/* -------------------- Convenience ---------------------- */
-void YawAxis::estop(){ estop_ = true; driveBM(0); }
-void YawAxis::clearEstop(){ estop_ = false; }
+/* ---------------------------------------------------------------------------
+ * getRejectedCount() - Get total rejected commands
+ * ---------------------------------------------------------------------------
+ */
+uint32_t YawAxis::getRejectedCount() const {
+  noInterrupts();
+  uint32_t count = rejected_count_;
+  interrupts();
+  return count;
+}
 
-void YawAxis::setGains(float kp, float ki, float kd){ Kp_ = kp; Ki_ = ki; Kd_ = kd; }
-void YawAxis::setAccel(float accelPPS, float decelPPS){
+
+/* =============================================================================
+ * Emergency Stop and Fault Handling
+ * =============================================================================
+ */
+
+/* ---------------------------------------------------------------------------
+ * estop() - Emergency stop
+ * ---------------------------------------------------------------------------
+ */
+void YawAxis::estop() {
+  estop_ = true;
+}
+
+/* ---------------------------------------------------------------------------
+ * clearEstop() - Clear e-stop and resume normal operation
+ * ---------------------------------------------------------------------------
+ */
+void YawAxis::clearEstop() {
+  noInterrupts();
+  estop_ = false;
+  // Also update command to current position to prevent sudden movement
+  cmd_pos_deg_ = pos_deg_;
+  interrupts();
+}
+
+/* ---------------------------------------------------------------------------
+ * clearHardLimitFault() - Clear hard limit fault
+ * ---------------------------------------------------------------------------
+ * NOTE: Only call this after physically moving the axis back within limits!
+ */
+void YawAxis::clearHardLimitFault() {
+  noInterrupts();
+  hard_limit_fault_ = false;
+  // Update command to current position
+  cmd_pos_deg_ = pos_deg_;
+  interrupts();
+}
+
+
+/* =============================================================================
+ * Tuning Parameters
+ * =============================================================================
+ */
+
+void YawAxis::setGains(float kp, float ki, float kd) {
+  noInterrupts();
+  Kp_ = kp;
+  Ki_ = ki;
+  Kd_ = kd;
+  interrupts();
+}
+
+void YawAxis::setAccel(float accelPPS, float decelPPS) {
+  noInterrupts();
   ACCEL_PPS_ = fabsf(accelPPS);
   DECEL_PPS_ = fabsf(decelPPS);
+  interrupts();
 }
-void YawAxis::setFF(float ff_pwm){ FF_PWM_ = ff_pwm; }
-void YawAxis::setToleranceRev(float pos_tol_rev){ POS_TOL_REV_ = fabsf(pos_tol_rev); }
-void YawAxis::setDir(int8_t encDir, int8_t motorDir){ ENC_DIR_ = (encDir>=0)?+1:-1; MOTOR_DIR_ = (motorDir>=0)?+1:-1; }
-void YawAxis::setDeadzoneMin(uint8_t pwmMin){ PWM_MIN_ = pwmMin; }
 
-/* -------------------- Telemetry ------------------------ */
+void YawAxis::setFF(float ff_pwm) {
+  noInterrupts();
+  FF_PWM_ = ff_pwm;
+  interrupts();
+}
+
+void YawAxis::setToleranceRev(float pos_tol_rev) {
+  noInterrupts();
+  POS_TOL_REV_ = fabsf(pos_tol_rev);
+  interrupts();
+}
+
+void YawAxis::setDir(int8_t encDir, int8_t motorDir) {
+  noInterrupts();
+  ENC_DIR_   = (encDir >= 0)   ? +1 : -1;
+  MOTOR_DIR_ = (motorDir >= 0) ? +1 : -1;
+  interrupts();
+}
+
+void YawAxis::setDeadzoneMin(uint8_t pwmMin) {
+  noInterrupts();
+  PWM_MIN_ = pwmMin;
+  interrupts();
+}
+
+
+/* =============================================================================
+ * Zero Offset Configuration
+ * =============================================================================
+ */
+
+/* ---------------------------------------------------------------------------
+ * setZeroHere() - Set current position as zero
+ * ---------------------------------------------------------------------------
+ * Makes the current physical position become user 0°.
+ */
+void YawAxis::setZeroHere() {
+  noInterrupts();
+  
+  // Get current encoder position
+  float enc_deg = rawToEncoderDeg_(prev_raw_);
+  
+  // This encoder position should map to user 0°
+  // user_deg = enc_deg - offset  =>  0 = enc_deg - offset  =>  offset = enc_deg
+  ZERO_OFFSET_DEG_ = enc_deg;
+  
+  // Update positions to reflect new coordinate system
+  pos_deg_ = 0.0f;
+  cmd_pos_deg_ = 0.0f;
+  
+  interrupts();
+}
+
+/* ---------------------------------------------------------------------------
+ * setZeroOffset() - Set explicit zero offset
+ * ---------------------------------------------------------------------------
+ * Sets ZERO_OFFSET_DEG_ directly. This is the encoder angle that corresponds
+ * to user 0°.
+ * 
+ * IMPORTANT: When changing the offset, both position and command must be
+ * transformed to maintain the same physical targets.
+ */
+void YawAxis::setZeroOffset(float offset_deg) {
+  noInterrupts();
+  
+  // Get current encoder position (this doesn't change)
+  float enc_deg = rawToEncoderDeg_(prev_raw_);
+  
+  // Calculate what the current command is in encoder space (using OLD offset)
+  float cmd_enc_deg = userToEncoderDeg_(cmd_pos_deg_);
+  
+  // Update offset
+  ZERO_OFFSET_DEG_ = normalizeAngle_(offset_deg);
+  
+  // Recalculate user coordinates with new offset
+  pos_deg_ = encoderToUserDeg_(enc_deg);
+  cmd_pos_deg_ = encoderToUserDeg_(cmd_enc_deg);
+  
+  interrupts();
+}
+
+/* ---------------------------------------------------------------------------
+ * getZeroOffset() - Get current zero offset
+ * ---------------------------------------------------------------------------
+ */
+float YawAxis::getZeroOffset() const {
+  noInterrupts();
+  float offset = ZERO_OFFSET_DEG_;
+  interrupts();
+  return offset;
+}
+
+
+/* =============================================================================
+ * Telemetry
+ * =============================================================================
+ */
+
 YawAxis::Telemetry YawAxis::readTelemetry() const {
   Telemetry t;
+  
   noInterrupts();
-  t.enabled   = enabled_;
-  t.estop     = estop_;
-  t.pos_deg   = pos_rev_ * REV2DEG;
-  t.vel_rps   = vel_rps_;
-  t.cmd_deg   = cmd_pos_rev_ * REV2DEG;
-  t.err_deg   = (cmd_pos_rev_ - pos_rev_) * REV2DEG;
-  t.u         = last_u_preDZ_;
-  t.u_slew    = last_u_slew_;
-  t.pwm       = last_pwm_cmd_;
-  t.turn      = turn_count_;
-  t.raw       = prev_raw_;
-  t.accelPPS  = ACCEL_PPS_;
-  t.decelPPS  = DECEL_PPS_;
-  t.lim_min_deg = LIM_MIN_REV_ * REV2DEG;
-  t.lim_max_deg = LIM_MAX_REV_ * REV2DEG;
-  t.at_min    = (pos_rev_ <= LIM_MIN_REV_);
-  t.at_max    = (pos_rev_ >= LIM_MAX_REV_);
-  t.clip_count = clip_count_;
-  t.last_cmd_clipped = last_cmd_clipped_;
+  t.enabled          = enabled_;
+  t.estop            = estop_;
+  t.hard_limit_fault = hard_limit_fault_;
+  t.pos_deg          = pos_deg_;
+  t.vel_rps          = vel_rps_;
+  t.cmd_deg          = cmd_pos_deg_;
+  t.err_deg          = last_err_deg_;
+  t.u                = last_u_preDZ_;
+  t.u_slew           = last_u_slew_;
+  t.pwm              = last_pwm_cmd_;
+  t.raw              = prev_raw_;
+  t.lim_min_deg      = LIM_MIN_DEG_;
+  t.lim_max_deg      = LIM_MAX_DEG_;
+  t.hard_overshoot   = HARD_LIMIT_OVERSHOOT_DEG_;
+  t.zero_offset_deg  = ZERO_OFFSET_DEG_;
+  t.kp               = Kp_;
+  t.ki               = Ki_;
+  t.kd               = Kd_;
+  t.accelPPS         = ACCEL_PPS_;
+  t.decelPPS         = DECEL_PPS_;
+  t.rejected_count   = rejected_count_;
+  t.last_cmd_rejected = last_cmd_rejected_;
   interrupts();
+  
   return t;
 }
 
-/* ======== private ======== */
-void YawAxis::isrTrampoline(){
+float YawAxis::getPositionDeg() const {
+  noInterrupts();
+  float p = pos_deg_;
+  interrupts();
+  return p;
+}
+
+float YawAxis::getVelocityRps() const {
+  noInterrupts();
+  float v = vel_rps_;
+  interrupts();
+  return v;
+}
+
+
+/* =============================================================================
+ * Proprioception Callback
+ * =============================================================================
+ */
+
+void YawAxis::setProprioceptionCallback(ProprioCallback cb) {
+  noInterrupts();
+  proprio_cb_ = cb;
+  interrupts();
+}
+
+
+/* =============================================================================
+ * ISR Trampoline
+ * =============================================================================
+ */
+
+void YawAxis::isrTrampoline() {
   if (instance_) instance_->controlISR();
 }
 
+
+/* =============================================================================
+ * Hardware Interface
+ * =============================================================================
+ */
+
+/* ---------------------------------------------------------------------------
+ * readAS() - Read raw value from AS5047P encoder
+ * ---------------------------------------------------------------------------
+ */
 uint16_t YawAxis::readAS() {
-  uint16_t a;
   SPI.beginTransaction(SPISettings(1'000'000, MSBFIRST, SPI_MODE1));
-  digitalWriteFast(CS_PIN_, LOW);  SPI.transfer16(AS5047_NOP);     digitalWriteFast(CS_PIN_, HIGH);
-  digitalWriteFast(CS_PIN_, LOW);  a = SPI.transfer16(AS5047_NOP); digitalWriteFast(CS_PIN_, HIGH);
+  digitalWriteFast(CS_PIN_, LOW);
+  uint16_t rx = SPI.transfer16(AS5047_NOP);
+  digitalWriteFast(CS_PIN_, HIGH);
   SPI.endTransaction();
-  return a & 0x3FFF;
+  return rx & 0x3FFF;  // 14-bit value
 }
 
-void YawAxis::driveBM_raw(int16_t pwm_abs, int8_t sign){
-  if (sign > 0)      { digitalWriteFast(INA1_PIN_, HIGH); digitalWriteFast(INA2_PIN_, LOW ); }
-  else if (sign < 0) { digitalWriteFast(INA1_PIN_, LOW ); digitalWriteFast(INA2_PIN_, HIGH); }
-  else               { digitalWriteFast(INA1_PIN_, LOW ); digitalWriteFast(INA2_PIN_, LOW ); }
-  analogWrite(PWM_PIN_, constrain(pwm_abs, 0, PWM_MAX));
+/* ---------------------------------------------------------------------------
+ * driveBM_raw() - Raw motor drive (PWM + direction)
+ * ---------------------------------------------------------------------------
+ */
+void YawAxis::driveBM_raw(int16_t pwm_abs, int8_t sign) {
+  if (sign > 0) {
+    digitalWriteFast(INA1_PIN_, HIGH);
+    digitalWriteFast(INA2_PIN_, LOW);
+  } else if (sign < 0) {
+    digitalWriteFast(INA1_PIN_, LOW);
+    digitalWriteFast(INA2_PIN_, HIGH);
+  } else {
+    digitalWriteFast(INA1_PIN_, LOW);
+    digitalWriteFast(INA2_PIN_, LOW);
+  }
+  analogWrite(PWM_PIN_, pwm_abs);
 }
 
-void YawAxis::driveBM(int16_t signed_pwm){
-  int8_t sign = 0; int16_t mag = signed_pwm;
-  if (mag > 0)      { sign = +1; }
-  else if (mag < 0) { sign = -1; mag = -mag; }
+/* ---------------------------------------------------------------------------
+ * driveBM() - Drive motor with signed PWM value
+ * ---------------------------------------------------------------------------
+ */
+void YawAxis::driveBM(int16_t signed_pwm) {
+  int8_t sign = 0;
+  int16_t mag = signed_pwm;
+  if (mag > 0) {
+    sign = +1;
+  } else if (mag < 0) {
+    sign = -1;
+    mag = -mag;
+  }
   sign *= MOTOR_DIR_;
   driveBM_raw(mag, sign);
 }
 
-int16_t YawAxis::deadzone_compensate(float u){
-  if (u == 0.0f) { sd_accum_ = 0.0f; return 0; }
+/* ---------------------------------------------------------------------------
+ * deadzone_compensate() - Sigma-delta modulation for low PWM
+ * ---------------------------------------------------------------------------
+ */
+int16_t YawAxis::deadzone_compensate(float u) {
+  if (u == 0.0f) {
+    sd_accum_ = 0.0f;
+    return 0;
+  }
+  
   float mag = fabsf(u);
   int8_t sgn = (u > 0) ? 1 : -1;
+  
   if (mag >= PWM_MIN_) {
+    // Above deadzone - output directly
     sd_accum_ = 0.0f;
     mag = fminf(mag, (float)PWM_MAX);
     return sgn * (int16_t)roundf(mag);
   }
+  
+  // Below deadzone - use sigma-delta modulation
   sd_accum_ += mag;
   if (sd_accum_ >= PWM_MIN_) {
     sd_accum_ -= PWM_MIN_;
     return sgn * PWM_MIN_;
   }
+  
   return 0;
 }
 
-void YawAxis::controlISR(){
-  // 1) Read/unwrap encoder
+
+/* =============================================================================
+ * Control ISR - Main Control Loop
+ * =============================================================================
+ * 
+ * This runs at LOOP_HZ_ (default 150 Hz) and implements:
+ *   1. Encoder reading and position tracking
+ *   2. Position error calculation
+ *   3. Hard limit checking
+ *   4. PID control with anti-windup
+ *   5. Boundary enforcement (prevent motion toward forbidden zone)
+ *   6. Slew rate limiting
+ *   7. Deadzone compensation
+ *   8. Proprioception callback
+ */
+void YawAxis::controlISR() {
+  
+  // =========================================================================
+  // STEP 1: Read encoder and calculate position
+  // =========================================================================
   uint16_t raw = readAS();
-  int16_t diff = (int16_t)(raw - prev_raw_);
-  if      (diff >  8192) turn_count_--;          // wrap 0->max (reverse)
-  else if (diff < -8192) turn_count_++;          // wrap max->0 (forward)
   prev_raw_ = raw;
-
-  float abs_rev   = (float)raw / CPR;
-  float multi_rev = (float)turn_count_ + abs_rev;
-  float last_pos  = pos_rev_;
-  pos_rev_ = ENC_DIR_ * multi_rev;
-  vel_rps_ = (pos_rev_ - last_pos) / DT_;
-
-  // 2) Auto gating
-  float err = cmd_pos_rev_ - pos_rev_;
-  last_err_ = err;
-
-  bool auto_enable = (!estop_) && (fabsf(err) > POS_TOL_REV_);
-  if (!auto_enable) {
+  
+  // Convert to encoder degrees, then to user degrees
+  float enc_deg = rawToEncoderDeg_(raw);
+  float new_pos_deg = encoderToUserDeg_(enc_deg);
+  
+  // Calculate velocity
+  float last_pos = pos_deg_;
+  pos_deg_ = new_pos_deg;
+  
+  // Velocity calculation - simple difference (user coords are not wrapped)
+  float delta_pos = new_pos_deg - last_pos;
+  // Sanity check: if delta is huge, it's probably a glitch or wrap issue
+  if (fabsf(delta_pos) > 180.0f) {
+    // Likely a coordinate wrap - don't count this as real velocity
+    delta_pos = 0.0f;
+  }
+  vel_rps_ = (delta_pos * DEG2REV) / DT_;
+  
+  // =========================================================================
+  // STEP 2: Check hard limits (safety first!)
+  // =========================================================================
+  if (!isInHardLimitRange_(pos_deg_)) {
+    // Position exceeded hard limits - FAULT!
+    hard_limit_fault_ = true;
     driveBM(0);
-    enabled_      = false;
-    i_term_       = 0.0f;
-    sd_accum_     = 0.0f;
+    enabled_ = false;
+    i_term_ = 0.0f;
+    sd_accum_ = 0.0f;
     last_pwm_cmd_ = 0;
     last_u_preDZ_ = 0.0f;
-    last_u_slew_  = 0.0f;
+    last_u_slew_ = 0.0f;
+    last_err_deg_ = 0.0f;
+    
+    // Fire callback and return
+    if (proprio_cb_) {
+      proprio_cb_(pos_deg_, vel_rps_, micros64_());
+    }
     return;
   }
+  
+  // =========================================================================
+  // STEP 3: Calculate position error
+  // =========================================================================
+  // Error is simply (command - position). Since we're using user coordinates
+  // that aren't wrapped to [0, 360), this gives the correct direct path.
+  float err_deg = cmd_pos_deg_ - pos_deg_;
+  last_err_deg_ = err_deg;
+  
+  float err_rev = err_deg * DEG2REV;
+  
+  // =========================================================================
+  // STEP 4: Check if motor should be enabled
+  // =========================================================================
+  bool should_enable = (!estop_) && 
+                       (!hard_limit_fault_) && 
+                       (fabsf(err_rev) > POS_TOL_REV_);
+  
+  if (!should_enable) {
+    // Disable motor and reset integrator
+    driveBM(0);
+    enabled_ = false;
+    i_term_ = 0.0f;
+    sd_accum_ = 0.0f;
+    last_pwm_cmd_ = 0;
+    last_u_preDZ_ = 0.0f;
+    last_u_slew_ = 0.0f;
+    
+    // Fire callback and return
+    if (proprio_cb_) {
+      proprio_cb_(pos_deg_, vel_rps_, micros64_());
+    }
+    return;
+  }
+  
   enabled_ = true;
-
-  // 3) PID (D on measurement)
-  float p = Kp_ * err;
+  
+  // =========================================================================
+  // STEP 5: PID Control
+  // =========================================================================
+  
+  // Proportional term
+  float p = Kp_ * err_rev;
+  
+  // Derivative term (on velocity, not error, to avoid setpoint kick)
   float d = -Kd_ * vel_rps_;
-  float u_ff = (err > 0 ? FF_PWM_ : (err < 0 ? -FF_PWM_ : 0.0f));
+  
+  // Feedforward for friction
+  float u_ff = (err_rev > 0) ? FF_PWM_ : ((err_rev < 0) ? -FF_PWM_ : 0.0f);
+  
+  // Total control effort (before limiting)
   float u = p + d + u_ff + i_term_;
   last_u_preDZ_ = u;
-
-  // 4) Anti-windup
-  float u_limited_for_i = fmaxf(fminf(u, (float)PWM_MAX), -(float)PWM_MAX);
-  if (fabsf(u_limited_for_i) < 0.95f * PWM_MAX) {
-    i_term_ += Ki_ * err * DT_;
-    i_term_  = fmaxf(fminf(i_term_, (float)PWM_MAX), -(float)PWM_MAX);
+  
+  // -------------------------------------------------------------------------
+  // Anti-windup: only accumulate integral if not saturated
+  // -------------------------------------------------------------------------
+  float u_limited = fmaxf(fminf(u, (float)PWM_MAX), -(float)PWM_MAX);
+  if (fabsf(u_limited) < 0.95f * PWM_MAX) {
+    i_term_ += Ki_ * err_rev * DT_;
+    i_term_ = fmaxf(fminf(i_term_, (float)PWM_MAX), -(float)PWM_MAX);
   }
-
-  // 5) Acceleration limiter on control effort + limit sign gating
-  float u_target = fmaxf(fminf(u, (float)PWM_MAX), -(float)PWM_MAX);
-
-  // Do not actively push further OUTWARD when at/over a limit
-  if (pos_rev_ >= LIM_MAX_REV_ && u_target > 0) u_target = 0;
-  if (pos_rev_ <= LIM_MIN_REV_ && u_target < 0) u_target = 0;
-
+  
+  // =========================================================================
+  // STEP 6: Boundary enforcement
+  // =========================================================================
+  // At the soft limit boundaries, prevent motion that would exit the valid range.
+  // 
+  // In user coordinates:
+  //   - Positive control effort (u > 0) moves toward higher user degrees
+  //   - Negative control effort (u < 0) moves toward lower user degrees
+  //
+  // We allow motion INTO the valid range even if slightly outside,
+  // but prevent motion OUT OF the valid range.
+  
+  float u_target = u_limited;
+  const float BOUNDARY_TOL = 0.5f;  // degrees
+  
+  // Near or beyond max limit: don't allow positive motion (would increase pos_deg_)
+  if (pos_deg_ >= LIM_MAX_DEG_ - BOUNDARY_TOL && u_target > 0) {
+    u_target = 0;
+    i_term_ = 0.0f;  // Reset integrator to prevent windup at boundary
+  }
+  
+  // Near or beyond min limit: don't allow negative motion (would decrease pos_deg_)
+  if (pos_deg_ <= LIM_MIN_DEG_ + BOUNDARY_TOL && u_target < 0) {
+    u_target = 0;
+    i_term_ = 0.0f;  // Reset integrator to prevent windup at boundary
+  }
+  
+  // =========================================================================
+  // STEP 7: Slew rate limiting (acceleration/deceleration)
+  // =========================================================================
   float up_step   = ACCEL_PPS_ * DT_;
   float down_step = DECEL_PPS_ * DT_;
   float du = u_target - last_u_slew_;
-  if (du > 0)      last_u_slew_ += fminf(du, up_step);
-  else if (du < 0) last_u_slew_ -= fminf(-du, down_step);
-  if (fabsf(last_u_slew_) < 1e-3f) last_u_slew_ = 0.0f;
-
-  // 6) Dead-zone aware output, with final outward-drive gate
+  
+  if (du > 0) {
+    last_u_slew_ += fminf(du, up_step);
+  } else if (du < 0) {
+    last_u_slew_ -= fminf(-du, down_step);
+  }
+  
+  if (fabsf(last_u_slew_) < 1e-3f) {
+    last_u_slew_ = 0.0f;
+  }
+  
+  // =========================================================================
+  // STEP 8: Deadzone compensation and output
+  // =========================================================================
   int16_t pwm_cmd = deadzone_compensate(last_u_slew_);
-
-  if (pos_rev_ >= LIM_MAX_REV_ && pwm_cmd > 0)  pwm_cmd = 0;
-  if (pos_rev_ <= LIM_MIN_REV_ && pwm_cmd < 0)  pwm_cmd = 0;
-
+  
+  // Final boundary check on PWM output
+  if (pos_deg_ >= LIM_MAX_DEG_ - BOUNDARY_TOL && pwm_cmd > 0) {
+    pwm_cmd = 0;
+  }
+  if (pos_deg_ <= LIM_MIN_DEG_ + BOUNDARY_TOL && pwm_cmd < 0) {
+    pwm_cmd = 0;
+  }
+  
   last_pwm_cmd_ = pwm_cmd;
   driveBM(pwm_cmd);
+
+  // =========================================================================
+  // STEP 9: Fire proprioception callback
+  // =========================================================================
+  if (proprio_cb_) {
+    proprio_cb_(pos_deg_, vel_rps_, micros64_());
+  }
 }
