@@ -34,8 +34,8 @@ constexpr float INERTIA_RATIO       = 0.747f;
 constexpr float THROW_VEL_HOLD_PCT  = 0.05f;
 constexpr float CATCH_VEL_RATIO     = 0.8f;
 constexpr float CATCH_VEL_HOLD_PCT  = 0.10f;
-constexpr float HAND_STROKE         = 0.28f;   // m
-constexpr float STROKE_MARGIN       = 0.02f;   // m
+constexpr float HAND_STROKE         = 0.28f;    // m
+constexpr float STROKE_MARGIN       = 0.02f;    // m
 constexpr float END_PROFILE_HOLD    = 0.10f;    // s. Can probably get rid of?
 constexpr int   SAMPLE_RATE         = 500;      // Hz
 
