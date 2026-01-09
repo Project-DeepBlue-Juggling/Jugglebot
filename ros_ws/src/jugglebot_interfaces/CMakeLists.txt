@@ -32,6 +32,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/BallStateMulti.msg"
   "msg/HandTelemetryMessage.msg"
   "msg/ThrowDebug.msg"
+  "msg/BallButlerHeartbeat.msg"
 
   "srv/GetRobotGeometry.srv"
   "srv/ActivateOrDeactivate.srv"
