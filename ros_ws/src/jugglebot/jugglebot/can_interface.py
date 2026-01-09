@@ -36,7 +36,7 @@ import struct
 import threading
 import time
 import math
-from typing import Callable, Dict, List, Optional, Tuple, Union
+from typing import Callable, ClassVar, Dict, List, Optional, Tuple, Union
 import quaternion
 
 import can
@@ -44,10 +44,12 @@ import cantools
 from ament_index_python.packages import get_package_share_directory
 from jugglebot_interfaces.msg import MotorStateSingle, HandTelemetryMessage
 from geometry_msgs.msg import Quaternion
+from jugglebot.ball_butler_states import BallButlerStates
 
 import matplotlib.pyplot as plt
 
 from dataclasses import dataclass
+from enum import IntEnum
 
 @dataclass
 class HandInputPosCmd:
@@ -58,6 +60,45 @@ class HandInputPosCmd:
     vel: float = 0.0 # 0.01 rev/s. See self._input_vel_scale. Is 'int' on arrival, but converted to float on receipt
     tor: float = 0.0 # 0.01 Nm. See self._input_tor_scale
 
+class BallButlerError(IntEnum):
+    NONE = 0
+    RELOAD_FAILED = 1
+
+@dataclass
+class BallButlerHeartbeat:
+    # Class constants for resolution values
+    yaw_resolution: ClassVar[float] = 0.01  # degrees
+    pitch_resolution: ClassVar[float] = 0.002  # degrees
+    hand_resolution: ClassVar[float] = 0.01  # mm
+    
+    # Instance fields
+    ball_in_hand: bool = False
+    state: BallButlerStates = BallButlerStates.BOOT
+    state_data: int = 0  # 0 for most states, error code(s) when ERROR
+    yaw_deg: float = 0.0
+    pitch_deg: float = 0.0
+    hand_mm: float = 0.0
+    @classmethod
+    def from_can_frame(cls, data: bytes) -> 'BallButlerHeartbeat':
+        """Unpack from 8-byte CAN frame."""
+        state_byte, state_data, yaw_enc, pitch_enc, hand_enc = struct.unpack('<BBHHH', data)
+        
+        return cls(
+            ball_in_hand = bool(state_byte & 0x01),
+            state = BallButlerStates(state_byte >> 1),
+            state_data = state_data,
+            yaw_deg = yaw_enc * cls.yaw_resolution,
+            pitch_deg = pitch_enc * cls.pitch_resolution,
+            hand_mm = hand_enc * cls.hand_resolution,
+        )
+    
+    @property
+    def error_code(self) -> BallButlerError:
+        """Get error code (only valid when state == ERROR)."""
+        if self.state == BallButlerStates.ERROR:
+            return BallButlerError(self.state_data)
+        return BallButlerError.NONE
+    
 class CANInterface:
     """
     Interface for handling CAN bus communication with ODrive controllers.
@@ -88,6 +129,7 @@ class CANInterface:
 
     ARBITRARY_PARAMETER_IDS = {
         "commutation_mapper.pos_abs"  : 488, # NaN until encoder search is complete
+        "get_gpio_states"             : 700, # GPIO states
     }
 
     OPCODE_READ  = 0x00  # For reading arbitrary parameters from the ODrive
@@ -105,6 +147,16 @@ class CANInterface:
     # Set the absolute limits for the motors
     _DEFAULT_VEL_CURR_LIMITS = {'leg_vel_limit': 50.0, 'leg_curr_limit': 20.0, 
                                 'hand_vel_limit': 1000.0, 'hand_curr_limit': 50.0} # rev/s, A
+
+    # Ball Butler motors (pitch and thrower) - only process these command IDs, ignore all others
+    _BALL_BUTLER_MOTOR_IDS = {7, 8}  # Axis IDs for Ball Butler pitch (7) and thrower (8) motors
+    _BALL_BUTLER_RELEVANT_CMD_IDS = {
+        0x01,  # heartbeat_message
+        0x09,  # get_encoder_estimate
+        0x14,  # get_iq
+        0x15,  # get_temps
+        0x17,  # get_bus_voltage_current
+    }
 
     def __init__(
         self,
@@ -219,6 +271,11 @@ class CANInterface:
 
         ################################# Ball Butler ###############################
         self._ball_butler_cmd_ID = 0X7D0 # Ball Butler command ID (to send yaw/throw speed/throw time to the Teensy)
+        self._ball_butler_heartbeat_ID = 0x7D1 # Ball Butler heartbeat ID
+        self.last_ball_butler_heartbeat = BallButlerHeartbeat()
+        self._ball_butler_reload_ID = 0x7D2 # Ball Butler reload command ID (to command the Teensy to reload the thrower)
+        self._ball_butler_reset_ID = 0x7D3 # Ball Butler reset command ID (put the BB state machine in IDLE)
+        self._ball_butler_calibrate_ID = 0x7D4 # Ball Butler calibrate command ID (put the BB state machine in CALIBRATING)
 
         # Initialize the last known platform tilt offset. This is useful in case we need to run the platform levelling again
         self.last_platform_tilt_offset = quaternion.quaternion(1, 0, 0, 0)
@@ -1186,8 +1243,8 @@ class CANInterface:
                     raise ValueError("Hand velocity limit must be non-negative")
                 self.hand_motor_abs_limits['velocity_limit'] = hand_vel_limit
 
-            # Set limits for all axes
-            for axis_id in range(self.num_axes):
+            # Set limits for all Jugglebot axes
+            for axis_id in range(7):
                 if axis_id < 6:
                     data = self.db.encode_message(
                         f'Axis{axis_id}_Set_Limits',
@@ -1433,7 +1490,11 @@ class CANInterface:
         elif arbitration_id == self._CAN_hand_input_pos_ID:
             self._handle_hand_input_pos_message(message)
 
-        # Or if the message is something sent by the Teensy that we can ignore here
+        # Or if the message is a Ball Butler heartbeat message
+        elif arbitration_id == self._ball_butler_heartbeat_ID:
+            self.last_ball_butler_heartbeat = BallButlerHeartbeat.from_can_frame(message.data)
+
+        # Or if the message is something that we can ignore here
         elif arbitration_id in self._irrelevant_CAN_IDs:
             return
 
@@ -1443,6 +1504,10 @@ class CANInterface:
             
             # Extract the command ID from the arbitration ID by masking with 0x1F (binary 00011111).
             command_id = arbitration_id & 0x1F
+
+            # For Ball Butler motors, only process relevant command IDs (ignore all others)
+            if axis_id in self._BALL_BUTLER_MOTOR_IDS and command_id not in self._BALL_BUTLER_RELEVANT_CMD_IDS:
+                return
 
             # Retrieve the handler function for this command ID from the dictionary.
             handler = self.command_handlers.get(command_id)
@@ -2122,15 +2187,35 @@ class CANInterface:
                     )
             except can.CanError as e:
                 self.ROS_logger.warn(f"CAN message for Ball Butler Command NOT sent! Error: {e}")
-
-                # If the buffer is full, the CAN bus is probably having issue. Try to re-establish it
-                if "105" in str(e):
-                    # "No buffer space available" is error code 105
-                    self.attempt_to_restore_can_connection()
             
         except Exception as e:
             self.ROS_logger.error(f"Failed to send throw command: {e}")
             raise
+
+    def send_ball_butler_state_command(self, arb_id):
+        """
+        Sends a <state> command to ball butler.
+        """
+        try:
+            # Create and send the CAN message
+            arbitration_id = arb_id
+            reload_command_msg = can.Message(
+                arbitration_id=arbitration_id, 
+                dlc=0, 
+                is_extended_id=False, 
+                data=[], 
+                is_remote_frame=False
+            )
+
+            try:
+                with self._can_lock:
+                    self.bus.send(reload_command_msg)
+            except can.CanError as e:
+                self.ROS_logger.warn(f"CAN message for Ball Butler Reload Command NOT sent! Error: {e}")
+            
+        except Exception as e:
+            self.ROS_logger.error(f"Failed to send reload command: {e}")
+            raise    
 
     #########################################################################################################
     #                                       Utility functions                                               #

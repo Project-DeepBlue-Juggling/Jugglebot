@@ -8,7 +8,8 @@ from jugglebot_interfaces.msg import (
     SetMotorVelCurrLimitsMessage,
     SetTrapTrajLimitsMessage,
     HandTelemetryMessage,
-    RobotState
+    RobotState,
+    BallButlerHeartbeat
 )
 from jugglebot_interfaces.srv import (
     ODriveCommandService, 
@@ -46,7 +47,12 @@ class CanInterfaceNode(Node):
                                                                         self.activate_or_deactivate_callback)
         self.set_hand_state_service = self.create_service(SetString, 'set_hand_state', self.set_hand_state_callback)
         self.set_hand_traj_service = self.create_service(SetHandTrajCmd, 'set_hand_traj_cmd', self.set_hand_traj_callback)
-        self.send_ball_butler_command_service = self.create_service(SendBallButlerCommand, 'send_ball_butler_command', self.send_ball_butler_command_callback)
+        
+        #### Ball Butler-related services ####
+        self.send_ball_butler_command_service = self.create_service(SendBallButlerCommand, 'bb/send_throw_command', self.send_ball_butler_command_callback)
+        self.ball_butler_reload_service = self.create_service(Trigger, 'bb/reload', self.ball_butler_reload_callback)
+        self.ball_butler_reset_service = self.create_service(Trigger, 'bb/reset', self.ball_butler_reset_callback)
+        self.ball_butler_calibrate_service = self.create_service(Trigger, 'bb/calibrate', self.ball_butler_calibrate_callback)
 
         #### Initialize actions ####
         self.home_robot_action = ActionServer(self, HomeMotors, 'home_motors', self.home_robot)
@@ -68,6 +74,7 @@ class CanInterfaceNode(Node):
         self.can_traffic_publisher = self.create_publisher(CanTrafficReportMessage, 'can_traffic', 10)
         self.hand_telemetry_publisher = self.create_publisher(HandTelemetryMessage, 'hand_telemetry', 10)
         self.platform_target_reached_publisher = self.create_publisher(LegsTargetReachedMessage, 'platform_target_reached', 10)
+        self.ball_butler_heartbeat_publisher = self.create_publisher(BallButlerHeartbeat, 'bb/heartbeat', 10)
 
         # Initialize target positions and `target reached` flags - for knowing whether the entire platform has reached its target pose
         self.legs_target_position = [None] * 6
@@ -83,10 +90,11 @@ class CanInterfaceNode(Node):
 
         # Initialize timers
         # self.platform_target_reached_timer = self.create_timer(0.1, self.check_platform_target_reached_status)
-        # self.timer_canbus = self.create_timer(timer_period_sec=0.001, callback=self._poll_can_bus)
+        self.timer_canbus = self.create_timer(timer_period_sec=0.001, callback=self._poll_can_bus)
         # self.robot_state_timer = self.create_timer(timer_period_sec=0.01, callback=self.get_and_publish_robot_state)
         # self.time_sync_timer = self.create_timer(self.time_sync_period, self.can_handler.broadcast_time)
         # self.hand_telemetry_timer = self.create_timer(0.002, self.publish_hand_telemetry)  # Publish hand telemetry at 500 Hz
+        self.ball_butler_heartbeat_timer = self.create_timer(0.1, self.publish_ball_butler_heartbeat)  # Send Ball Butler heartbeat at 10 Hz
 
         # Register callbacks with CANInterface
         self.can_handler.register_callback('can_traffic', self.publish_can_traffic)
@@ -210,6 +218,49 @@ class CanInterfaceNode(Node):
             self.get_logger().error(f"Error sending Ball Butler command: {e}")
             response.success = False
             response.message = f"Error sending Ball Butler command: {e}"
+
+        return response
+
+    def ball_butler_reload_callback(self, request, response):
+        """Service callback to send a reload command to the Ball Butler."""
+        try:
+            self.can_handler.send_ball_butler_state_command(arb_id=self.can_handler._ball_butler_reload_ID)
+
+            response.success = True
+            response.message = "Ball Butler reload command sent successfully."
+        except Exception as e:
+            self.get_logger().error(f"Error sending Ball Butler reload command: {e}")
+            response.success = False
+            response.message = f"Error sending Ball Butler reload command: {e}"
+
+        return response
+    
+    def ball_butler_reset_callback(self, request, response):
+        """Service callback to send a reset command to the Ball Butler."""
+        try:
+            self.can_handler.send_ball_butler_state_command(arb_id=self.can_handler._ball_butler_reset_ID)
+
+            response.success = True
+            response.message = "Ball Butler reset command sent successfully."
+        except Exception as e:
+            self.get_logger().error(f"Error sending Ball Butler reset command: {e}")
+            response.success = False
+            response.message = f"Error sending Ball Butler reset command: {e}"
+
+        return response
+
+    def ball_butler_calibrate_callback(self, request, response):
+        """Service callback to send a 'calibrate' command to the Ball Butler."""
+        try:
+            # Send the calibrate command to Ball Butler (move the yaw axis back and forth)
+            self.can_handler.send_ball_butler_state_command(arb_id=self.can_handler._ball_butler_calibrate_ID)
+
+            response.success = True
+            response.message = "Ball Butler calibrate command sent successfully."
+        except Exception as e:
+            self.get_logger().error(f"Error sending Ball Butler calibrate command: {e}")
+            response.success = False
+            response.message = f"Error sending Ball Butler calibrate command: {e}"
 
         return response
 
@@ -583,6 +634,22 @@ class CanInterfaceNode(Node):
 
         except Exception as e:
             self.get_logger().error(f"Error updating state on Teensy: {e}")
+
+    def publish_ball_butler_heartbeat(self):
+        """Publish the last known heartbeat that was received from Ball Butler."""
+        try:
+            heartbeat_msg = BallButlerHeartbeat()
+            heartbeat_msg.ball_in_hand = self.can_handler.last_ball_butler_heartbeat.ball_in_hand
+            heartbeat_msg.state        = self.can_handler.last_ball_butler_heartbeat.state
+            heartbeat_msg.state_data   = self.can_handler.last_ball_butler_heartbeat.state_data
+            heartbeat_msg.yaw_deg      = self.can_handler.last_ball_butler_heartbeat.yaw_deg
+            heartbeat_msg.pitch_deg    = self.can_handler.last_ball_butler_heartbeat.pitch_deg
+            heartbeat_msg.hand_pos_mm  = self.can_handler.last_ball_butler_heartbeat.hand_mm
+
+            self.ball_butler_heartbeat_publisher.publish(heartbeat_msg)
+
+        except Exception as e:
+            self.get_logger().error(f"Error publishing Ball Butler heartbeat: {e}")
 
     #########################################################################################################
     #                                       Related to Motor States                                         #

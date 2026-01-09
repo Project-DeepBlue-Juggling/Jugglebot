@@ -1,11 +1,12 @@
 import rclpy
 from rclpy.node import Node
-from std_srvs.srv import Trigger
-from jugglebot_interfaces.msg import MocapDataMulti, MocapDataSingle
+from std_srvs.srv import Trigger, SetBool
+from jugglebot_interfaces.msg import MocapDataMulti, MocapDataSingle, BallButlerHeartbeat
 from jugglebot_interfaces.srv import GetRobotGeometry
 from geometry_msgs.msg import PoseStamped
 from .mocap_interface import MocapInterface
 from typing import Dict
+from jugglebot.ball_butler_states import BallButlerStates
 
 class MocapInterfaceNode(Node):
     def __init__(self):
@@ -38,11 +39,20 @@ class MocapInterfaceNode(Node):
 
         # Initialize a publishers to publish the mocap data
         self.unlabelled_mocap_publisher = self.create_publisher(MocapDataMulti, 'mocap_data', 10)
+        self.ball_butler_marker_publisher = self.create_publisher(MocapDataMulti, 'bb/markers', 10)
         self.body_publishers: Dict[str, rclpy.publisher.Publisher] = {}
 
         # Initialize a timer to publish the mocap data
         mocap_frames_per_second = 200
         self.timer = self.create_timer(1.0 / mocap_frames_per_second, self.publish_mocap_data)
+
+        #########################################################################################################
+        #                                         Ball Butler-Related                                           #
+        #########################################################################################################
+
+        # Subscribe to Ball Butler's heartbeat
+        self.bb_heartbeat_subscriber = self.create_subscription( BallButlerHeartbeat, 'bb/heartbeat', self.ball_butler_heartbeat_callback, 10)
+        self.ball_butler_last_state = None
 
         self.get_logger().info("MocapInterfaceNode initialized")
 
@@ -60,7 +70,7 @@ class MocapInterfaceNode(Node):
                     msg_single.position.y = float(unlabelled_marker_data[i, 1])
                     msg_single.position.z = float(unlabelled_marker_data[i, 2])
                     msg_single.residual = float(unlabelled_marker_data[i, 3])
-                    msg_full.unlabelled_markers.append(msg_single)
+                    msg_full.markers.append(msg_single)
 
                 self.unlabelled_mocap_publisher.publish(msg_full)
 
@@ -73,6 +83,11 @@ class MocapInterfaceNode(Node):
             # Publish *all* rigid-body poses that arrived in this frame
             body_poses = self.mocap_interface.get_body_poses()
             for body_name, pose in body_poses.items():
+                # Don't publish the ball butler pose here 
+                # (we don't want it publishing all the time, and we don't need it most of the time)
+                if body_name == "Ball_Butler":
+                    continue
+
                 topic_name = f"{body_name.lower()}_pose_mocap" # e.g.  “platform_pose_mocap”
 
                 # Create a publisher the first time we see a new rigid body
@@ -88,6 +103,25 @@ class MocapInterfaceNode(Node):
             self.mocap_interface.clear_body_poses()
         except Exception as e:
             self.get_logger().error(f"Error publishing body poses: {e}")
+
+        if self.mocap_interface.publish_ball_butler_markers:
+            try:
+                ball_butler_marker_data = self.mocap_interface.get_ball_butler_markers_base_frame()
+                if ball_butler_marker_data is not None and ball_butler_marker_data.shape[0] > 0:
+                    msg_full = MocapDataMulti()
+
+                    # Convert the numpy array to a list of MocapDataSingle messages
+                    for i in range(ball_butler_marker_data.shape[0]):
+                        msg_single = MocapDataSingle()
+                        msg_single.position.x = float(ball_butler_marker_data[i, 0])
+                        msg_single.position.y = float(ball_butler_marker_data[i, 1])
+                        msg_single.position.z = float(ball_butler_marker_data[i, 2])
+                        msg_single.residual = float(ball_butler_marker_data[i, 3])
+                        msg_full.markers.append(msg_single)
+
+                    self.ball_butler_marker_publisher.publish(msg_full)
+            except Exception as e:
+                self.get_logger().error(f"Error publishing Ball Butler markers: {e}")
 
     def send_geometry_request(self):
         """Send a request to get the robot geometry."""
@@ -107,7 +141,25 @@ class MocapInterfaceNode(Node):
                 self.get_logger().error("Failed to get robot geometry data.")
         except Exception as e:
             self.get_logger().error(f"Service call failed: {e}")
-   
+
+    #########################################################################################################
+    #                                           Ball Butler                                                 #
+    #########################################################################################################
+
+    def ball_butler_heartbeat_callback(self, msg: BallButlerHeartbeat):
+        """Callback to handle Ball Butler heartbeat messages."""
+        # If the state hasn't changed, do nothing
+        if msg.state == self.ball_butler_last_state:
+            return
+        
+        # Update the last known state
+        self.ball_butler_last_state = msg.state
+        # If the state is CALIBRATING, set the mocap interface to publish ball butler markers
+        if msg.state == BallButlerStates.CALIBRATING:
+            self.mocap_interface.publish_ball_butler_markers = True
+        else:
+            self.mocap_interface.publish_ball_butler_markers = False
+
     #########################################################################################################
     #                                          Node Management                                              #
     #########################################################################################################

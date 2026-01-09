@@ -15,7 +15,7 @@ class MocapInterface:
     Only unlabelled markers and full rigid bodies are stored and processed.
     """
 
-    def __init__(self, host: str = "192.168.20.9", port: int = 22223, logger=None, node=None):
+    def __init__(self, host: str = "192.168.20.12", port: int = 22223, logger=None, node=None):
         """
         Initialize the tracker.
 
@@ -34,10 +34,14 @@ class MocapInterface:
         self.ready_to_publish = False # eg. if we haven't received geometry data yet
 
         # Initialize data to be stored
+        self.ball_butler_markers = np.full((5, 4), np.nan)    # (x, y, z, residual)
         self.unlabelled_markers = np.empty((0, 4))  # (x, y, z, residual)
         self.body_poses: Dict[str, PoseStamped] = {} # Pose for every rigid body discovered in QTM
         self.body_dict = {}
         self.marker_dict = {}
+
+        # Control whether to publish ball butler markers
+        self.publish_ball_butler_markers = False # Only publish when requested
 
         # Performance statistics from the incoming packet header.
         self.residuals_unlabelled = []
@@ -129,18 +133,41 @@ class MocapInterface:
             return
 
         # Process packet header from labelled markers to update performance stats,
-        # but ignore the labelled marker positions.
+        # Ignore most of the labelled marker data. We only care about the ball butler markers
+        # and only when requested.
         markers_residual = packet.get_3d_markers_residual()
-        if markers_residual is not None:
-            header, markers = markers_residual
-            with self.data_lock:
-                self.drop_rate = header.drop_rate
-                self.out_of_sync_rate = header.out_of_sync_rate
+        try:
+            if markers_residual is not None:
+                header, markers = markers_residual
 
-                # # Log the marker positions and names
-                # for i, marker in enumerate(markers):
-                #     self.logger.info("\t\tMarker: {}".format(self.get_name_from_index(i, self.marker_dict)))
-                #     self.logger.info("\t\t\tPosition: ({}, {}, {})".format(marker.x, marker.y, marker.z))
+                if self.publish_ball_butler_markers:    
+                    # Process each Ball Butler marker (1-5)
+                    for i in range(1, 6):
+                        marker_name = f"Ball Butler - {i}"
+                        if marker_name in self.marker_dict:
+                            marker_idx = self.marker_dict[marker_name]
+                            if marker_idx < len(markers):
+                                marker = markers[marker_idx]
+                                with self.data_lock:
+                                    self.ball_butler_markers[i-1] = [marker.x, marker.y, marker.z, marker.residual]
+                            else:
+                                with self.data_lock:
+                                    self.ball_butler_markers[i-1] = [np.nan, np.nan, np.nan, np.nan]
+                        else:
+                            with self.data_lock:
+                                self.ball_butler_markers[i-1] = [np.nan, np.nan, np.nan, np.nan]
+
+                with self.data_lock:
+                    self.drop_rate = header.drop_rate
+                    self.out_of_sync_rate = header.out_of_sync_rate
+
+                    # # Log the marker positions and names
+                    # for i, marker in enumerate(markers):
+                    #     self.logger.info("\t\tMarker: {}".format(self.get_name_from_index(i, self.marker_dict)))
+                    #     self.logger.info("\t\t\tPosition: ({}, {}, {})".format(marker.x, marker.y, marker.z))
+
+        except Exception as e:
+            self.logger.error(f"Error processing labelled markers: {e}")
 
         # Process 6dof data to know the body positions.
         info, bodies = packet.get_6d()
@@ -229,6 +256,16 @@ class MocapInterface:
         """
         with self.data_lock:
             return self.unlabelled_markers.copy() if self.unlabelled_markers.size > 0 else np.empty((0, 4))
+
+    def get_ball_butler_markers_base_frame(self) -> np.ndarray:
+        """
+        Get the current ball butler markers (and residuals) in the base frame.
+
+        Returns:
+        - A numpy array of ball butler marker data (Nx4).
+        """
+        with self.data_lock:
+            return self.ball_butler_markers.copy() if self.ball_butler_markers.size > 0 else np.empty((0, 4))
 
     def get_body_poses(self) -> Dict[str, PoseStamped]:
         """Return a shallow copy of the latest poses for all rigid bodies."""
