@@ -34,6 +34,7 @@ const char* robotStateToString(RobotState s) {
     case RobotState::IDLE: return "IDLE";
     case RobotState::THROWING: return "THROWING";
     case RobotState::RELOADING: return "RELOADING";
+    case RobotState::CALIBRATING: return "CALIBRATING";
     case RobotState::ERROR: return "ERROR";
     default: return "UNKNOWN";
   }
@@ -55,8 +56,8 @@ void StateMachine::begin() {
   homing_attempt_ = 0;
   reload_attempt_ = 0;
   reload_pending_ = false;
-  ball_in_hand_   = false;
-  last_ball_in_hand_ = false;
+  ball_in_hand_   = true; // Assume we start with a ball in hand
+  last_ball_in_hand_ = true;
   throw_pending_ = false;
   error_msg_[0]  = '\0';
 
@@ -72,6 +73,7 @@ void StateMachine::update() {
     case RobotState::IDLE: handleIdle_(); break;
     case RobotState::THROWING: handleThrowing_(); break;
     case RobotState::RELOADING: handleReloading_(); break;
+    case RobotState::CALIBRATING: handleCalibrating_(); break;
     case RobotState::ERROR: handleError_(); break;
   }
 }
@@ -115,6 +117,12 @@ void StateMachine::enterState_(RobotState newState) {
       // Put the pitch and hand axes in CLOSED_LOOP_CONTROL mode
       can_.setRequestedState(config_.pitch_node_id, 8u);
       can_.setRequestedState(config_.hand_node_id, 8u);
+      break;
+
+    case RobotState::CALIBRATING:
+      // Move yaw to calibration angle
+      yaw_.setTargetDeg(config_.calibrate_location_yaw_deg_);
+      config_.calibrate_location_target_yaw_deg_ = config_.calibrate_location_yaw_deg_;
       break;
 
     case RobotState::ERROR:
@@ -199,7 +207,7 @@ void StateMachine::handleIdle_() {
     ball_in_hand_ = checkBallInHand_();
     last_ball_check_ms_ = millis();
     if (ball_in_hand_ != last_ball_in_hand_) {
-      debugf_("[SM] Ball in hand state changed: %s\n", ball_in_hand_ ? "YES" : "NO");
+      debugf_("[SM] Ball in hand state changed to: %s\n", ball_in_hand_ ? "YES BALL" : "NO BALL");
       last_ball_in_hand_ = ball_in_hand_;
     }
   }
@@ -215,7 +223,7 @@ void StateMachine::handleIdle_() {
   if (throw_pending_) {
     throw_pending_ = false;
 
-    // Validate we have a ball (or skip this check if you prefer)
+    // Validate we have a ball in hand before throwing
     if (!ball_in_hand_) {
       debugf_("[SM] WARNING: Throw requested but no ball detected. Exiting.\n");
       return;
@@ -274,6 +282,10 @@ void StateMachine::handleThrowing_() {
   }
 }
 
+// --------------------------------------------------------------------
+// State change requesters
+// --------------------------------------------------------------------
+// requestReload() - Queue a reload request
 bool StateMachine::requestReload() {
   // Only accept reload commands when in IDLE state
   if (state_ != RobotState::IDLE) {
@@ -287,6 +299,46 @@ bool StateMachine::requestReload() {
 
   debugf_("[SM] Reload queued");
 
+  return true;
+}
+
+// requestThrow() - Queue a throw request
+bool StateMachine::requestThrow(float yaw_deg, float pitch_deg, float speed_mps, float in_s) {
+  // Only accept throws when in IDLE state and if there is a ball in hand
+  if (state_ != RobotState::IDLE) {
+    debugf_("[SM] Throw rejected: not in IDLE state (current: %s)\n",
+            robotStateToString(state_));
+    return false;
+  }
+  if (!ball_in_hand_) {
+    debugf_("[SM] Throw rejected: no ball in hand\n");
+    return false;
+  }
+
+  // Store pending throw parameters
+  throw_pending_ = true;
+  pending_yaw_deg_ = yaw_deg;
+  pending_pitch_deg_ = pitch_deg;
+  pending_speed_mps_ = speed_mps;
+  pending_in_s_ = in_s;
+
+  debugf_("[SM] Throw queued: yaw=%.1f° pitch=%.1f° speed=%.2f m/s in=%.2f s\n",
+          yaw_deg, pitch_deg, speed_mps, in_s);
+
+  return true;
+}
+
+bool StateMachine::requestCalibrateLocation() {
+  // Only accept calibration requests when in IDLE state
+  if (state_ != RobotState::IDLE) {
+    debugf_("[SM] Calibration rejected: not in IDLE state (current: %s)\n",
+            robotStateToString(state_));
+    return false;
+  }
+
+  debugf_("[SM] Calibration requested\n");
+
+  enterState_(RobotState::CALIBRATING);
   return true;
 }
 
@@ -413,9 +465,9 @@ void StateMachine::handleReloading_() {
           break;
         } else {
           // Reset positions and trigger error
-          moveHandToPosition_(config_.reload_fail_hand_rev);
-          pitch_.setTargetDeg(config_.reload_fail_pitch_deg);
-          yaw_.setTargetDeg(config_.reload_fail_yaw_deg);
+          moveHandToPosition_(config_.hand_rev_home);
+          pitch_.setTargetDeg(config_.pitch_deg_home);
+          yaw_.setTargetDeg(config_.yaw_deg_home);
 
           triggerError("No ball after max reload attempts");
         }
@@ -450,6 +502,29 @@ void StateMachine::handleReloading_() {
   }
 }
 
+void StateMachine::handleCalibrating_() {
+    // Yaw axis is commanded to move to calibrate_location_yaw_deg_ on state entry
+
+    // Wait for yaw to settle
+    if (abs(PRO.getYawDeg() - config_.calibrate_location_target_yaw_deg_) > config_.yaw_angle_threshold_deg) {
+      delay(5);  // Small delay to avoid busy loop
+      return;
+    }
+
+    if (config_.calibrate_location_target_yaw_deg_ == config_.yaw_deg_home) {
+      // Calibration complete, return to IDLE
+      debugf_("[SM] Calibration complete, returning to IDLE\n");
+      enterState_(RobotState::IDLE);
+      return;
+    }
+    else {
+      // Move back to home position
+      config_.calibrate_location_target_yaw_deg_ = config_.yaw_deg_home;
+      yaw_.setTargetDeg(config_.calibrate_location_target_yaw_deg_);
+      return;
+    }
+}
+
 // --------------------------------------------------------------------
 // handleError_() - Error state (waiting for manual reset)
 // --------------------------------------------------------------------
@@ -458,33 +533,6 @@ void StateMachine::handleError_() {
   // Could add periodic error message printing if desired
 }
 
-// --------------------------------------------------------------------
-// requestThrow() - Queue a throw request
-// --------------------------------------------------------------------
-bool StateMachine::requestThrow(float yaw_deg, float pitch_deg, float speed_mps, float in_s) {
-  // Only accept throws when in IDLE state and if there is a ball in hand
-  if (state_ != RobotState::IDLE) {
-    debugf_("[SM] Throw rejected: not in IDLE state (current: %s)\n",
-            robotStateToString(state_));
-    return false;
-  }
-  if (!ball_in_hand_) {
-    debugf_("[SM] Throw rejected: no ball in hand\n");
-    return false;
-  }
-
-  // Store pending throw parameters
-  throw_pending_ = true;
-  pending_yaw_deg_ = yaw_deg;
-  pending_pitch_deg_ = pitch_deg;
-  pending_speed_mps_ = speed_mps;
-  pending_in_s_ = in_s;
-
-  debugf_("[SM] Throw queued: yaw=%.1f° pitch=%.1f° speed=%.2f m/s in=%.2f s\n",
-          yaw_deg, pitch_deg, speed_mps, in_s);
-
-  return true;
-}
 
 // --------------------------------------------------------------------
 // executeThrow_() - Actually execute the throw (called from handleIdle_)
@@ -552,6 +600,7 @@ bool StateMachine::executeThrow_(float yaw_deg, float pitch_deg,
   return ok;
 }
 
+
 // --------------------------------------------------------------------
 // reset() - Manual reset from ERROR state
 // --------------------------------------------------------------------
@@ -605,10 +654,9 @@ bool StateMachine::checkBallInHand_() {
   uint32_t gpio_states = 0;
   if (!can_.readGpioStates(config_.hand_node_id, gpio_states)) {
     debugf_("[SM] Ball check failed: unable to read GPIO states\n");
-    return false;
+    return ball_in_hand_;  // Return last known state on failure
   }
   bool ball_present = (gpio_states >> config_.ball_detect_gpio_pin) & 0x01;
-
   return ball_present;
 }
 

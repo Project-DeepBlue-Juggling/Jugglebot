@@ -30,7 +30,6 @@ static constexpr float    THROW_VEL_MAX_MPS  = 6.0f;
 static constexpr float    SCHEDULE_MARGIN_S  = 0.1f;
 static constexpr uint64_t PV_MAX_AGE_US      = 20000;
 
-static constexpr uint32_t HOST_THROW_CAN_ID  = 0x7D0;
 static constexpr uint8_t  PITCH_NODE_ID      = 7;
 static constexpr uint8_t  HAND_NODE_ID       = 8;
 
@@ -114,10 +113,17 @@ void setup() {
   canif.setDebugFlags(false, false);
   canif.setHandAxisNode(HAND_NODE_ID);
   canif.setPitchAxisNode(PITCH_NODE_ID);
-  canif.setHostThrowCmdId(HOST_THROW_CAN_ID);
   canif.setHostThrowCallback(&onHostThrow, nullptr);
   canif.setAutoClearBrakeResistor(true, 500);
   canif.requireHomeOnlyFor(HAND_NODE_ID);
+
+  // Add a short delay to give ODrives time to boot and respond to pings
+  float initial_delay = 1000.0f; // milliseconds
+  float now = millis();
+  while (millis() - now < initial_delay) {
+    canif.loop();
+    delay(20);
+  }
 
   yawAxis.begin();
   // Configure yaw axis with safe initial settings before StateMachine takes over
@@ -141,6 +147,9 @@ void setup() {
   stateMachine.setDebugStream(&Serial);
   stateMachine.setDebugEnabled(true);
   stateMachine.begin();
+
+  // Connect state machine to CAN interface for heartbeat publishing
+  canif.setStateMachine(&stateMachine);
 
   Serial.println(F("\nType 'help' for commands.\n"));
 }
@@ -209,7 +218,7 @@ void routeCommand(const String& rawLine) {
 
   if (lc == "status") { printStatus(); return; }
   if (lc == "reset")  { stateMachine.reset(); return; }
-  if (lc == "ball")  { Serial.printf("Ball in hand: %s\n", stateMachine.isBallInHand() ? "YES" : "NO"); return; }
+  if (lc == "ball")  { Serial.printf("Ball in hand: %s\n",  stateMachine.isBallInHand() ? "YES" : "NO"); return; }
   if (lc == "reload") { stateMachine.requestReload(); return;}
   if (lc.startsWith("throw ")) { handleThrowCmd(line); return; }
   if (lc.startsWith("smooth ")) { handleSmoothCmd(line); return; }
