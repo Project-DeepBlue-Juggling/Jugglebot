@@ -504,14 +504,14 @@ class CANInterface:
 
             # Pack the data into the correct format
             data = struct.pack('<BHB' + param_type, op_code, endpoint_id, 0, param_value)
-
+            self.ROS_logger.info(data)
             # Send the message
-            self._send_message(
-                axis_id=axis_id,
-                command_name="RxSdo",
-                data=data,
-                error_descriptor=f"arbitrary parameter: {endpoint_id}"
-            )
+            # self._send_message(
+            #     axis_id=axis_id,
+            #     command_name="RxSdo",
+            #     data=data,
+            #     error_descriptor=f"arbitrary parameter: {endpoint_id}"
+            # )
             # self.ROS_logger.info(f"Arbitrary parameter '{param_name}' sent to axis {axis_id} with value {param_value}")
         except Exception as e:
             self.ROS_logger.error(f"Failed to send arbitrary parameter '{param_name}' to axis {axis_id}: {e}")
