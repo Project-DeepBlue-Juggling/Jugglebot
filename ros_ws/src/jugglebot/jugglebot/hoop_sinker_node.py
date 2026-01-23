@@ -23,7 +23,7 @@ from std_srvs.srv import Trigger
 from geometry_msgs.msg import PoseStamped
 from builtin_interfaces.msg import Time
 from jugglebot_interfaces.msg import (
-    PlatformPoseCommand, SetTrapTrajLimitsMessage, RobotState, ThrowDebug
+    PlatformPoseCommand, SetTrapTrajLimitsMessage, RobotState, ThrowDebug, RigidBodyPoses
 )
 from jugglebot_interfaces.srv import SetString, SetHandTrajCmd
 
@@ -217,12 +217,10 @@ class HoopSinkerNode(Node):
         self.trap_limit_pub = self.create_publisher(SetTrapTrajLimitsMessage, 'set_leg_trap_traj_limits', 10)
         self.throw_debug_pub = self.create_publisher(ThrowDebug, 'throw_debug', 10)
 
-        self.cone_sub = self.create_subscription(PoseStamped, 'catching_cone_pose_mocap', self.cone_callback, 20,
+        self.rigid_body_poses_sub = self.create_subscription(RigidBodyPoses, 'rigid_body_poses', self.rigid_body_poses_callback, 20,
                                                  callback_group=self.callback_group)
         self.control_sub = self.create_subscription(String, 'control_mode_topic', self.control_mode_callback, 10,
                                                      callback_group=self.callback_group)
-        self.plat_pose_sub = self.create_subscription(PoseStamped, 'platform_pose_mocap', self.platform_pose_callback, 50,
-                                                      callback_group=self.callback_group)
         # Subscribe to /robot_state to know where the hand currently is
         self.robot_state_subscription = self.create_subscription(RobotState, 'robot_state', self.robot_state_callback, 10,
                                                                  callback_group=self.callback_group)
@@ -277,14 +275,25 @@ class HoopSinkerNode(Node):
             # Extract the hand position from the message
             self.last_known_hand_state = msg.motor_states[6]
 
-    def cone_callback(self, msg: PoseStamped):
+    def rigid_body_poses_callback(self, msg: RigidBodyPoses):
+        """Callback for unified rigid body poses. Extracts Catching_Cone and Platform poses."""
         if not self.enabled:
             return
 
+        # Extract relevant bodies from the message
+        for body in msg.bodies:
+            if body.name == "Catching_Cone":
+                self._handle_cone_pose(body.pose)
+            elif body.name == "Platform":
+                with self.state_lock:
+                    self.platform_pose_mocap = body.pose
+
+    def _handle_cone_pose(self, pose: PoseStamped):
+        """Process catching cone pose to update throw plan."""
         # mm → m
-        cone_xyz = np.array([msg.pose.position.x,
-                            msg.pose.position.y,
-                            msg.pose.position.z]) / 1000.0
+        cone_xyz = np.array([pose.pose.position.x,
+                            pose.pose.position.y,
+                            pose.pose.position.z]) / 1000.0
 
         # Check that we have a valid cone position (anything other than nan)
         if np.isnan(cone_xyz).any():
@@ -337,12 +346,6 @@ class HoopSinkerNode(Node):
                 f'h={throw_h:.2f}m, range=({cone_xyz[0]:.2f}, {cone_xyz[1]:.2f}, {cone_xyz[2]:.2f}) m',
                 throttle_duration_sec=1.0)
             self._last_plan_print = plan_tuple
-
-    def platform_pose_callback(self, msg: PoseStamped):
-        if not self.enabled:
-            return
-        with self.state_lock:
-            self.platform_pose_mocap = msg
 
     # --------------------- Services -------------------------------------------
     def handle_move_request(self, _, res):

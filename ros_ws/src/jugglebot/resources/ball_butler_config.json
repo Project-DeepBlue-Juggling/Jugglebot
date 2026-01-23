@@ -1,0 +1,61 @@
+{
+  "_metadata": {
+    "description": "Persistent configuration for Ball Butler node",
+    "units": "All distances in mm unless otherwise specified"
+  },
+  "rls_error_model": {
+    "theta": [
+      [
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0
+      ]
+    ],
+    "P": [
+      [
+        1000.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        1000.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        1000.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1000.0
+      ]
+    ],
+    "n_updates": 0,
+    "lambda": 0.98,
+    "initial_covariance": 1000.0,
+    "_summary": {
+      "n_updates": 0,
+      "bias_correction_x_mm": -0.0,
+      "bias_correction_y_mm": -0.0,
+      "description": "RLS linear regression model for throw error correction. Predicts error as function of target position (x, y, z)."
+    }
+  }
+}

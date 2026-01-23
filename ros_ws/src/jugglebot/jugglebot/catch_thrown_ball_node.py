@@ -7,7 +7,7 @@ to the ball's velocity vector.
 import rclpy
 from rclpy.node import Node
 from std_srvs.srv import Trigger
-from jugglebot_interfaces.msg import BallStateMulti, PlatformPoseCommand
+from jugglebot_interfaces.msg import BallStateArray, PlatformPoseCommand
 from std_msgs.msg import String
 from geometry_msgs.msg import Pose, PoseStamped, Quaternion
 import numpy as np
@@ -28,8 +28,8 @@ class CatchThrownBallNode(Node):
         self.control_mode_sub = self.create_subscription(String, 'control_mode_topic', self.control_mode_callback, 10)
         self.catch_thrown_ball_enabled = False
 
-        # Subscribe to /predicted_landings to know where the ball will land
-        self.landing_sub = self.create_subscription(BallStateMulti, '/predicted_landings', self.predicted_landings_callback, 10)
+        # Subscribe to /balls to know where balls will land
+        self.balls_sub = self.create_subscription(BallStateArray, '/balls', self.balls_callback, 10)
 
         # Initialize a publisher for the platform pose
         self.platform_pose_publisher = self.create_publisher(PlatformPoseCommand, 'platform_pose_topic', 10)
@@ -78,15 +78,15 @@ class CatchThrownBallNode(Node):
             self.get_logger().info('catch_thrown_ball_node disabled')
             self.catch_thrown_ball_enabled = False
 
-    def predicted_landings_callback(self, msg: BallStateMulti):
+    def balls_callback(self, msg: BallStateArray):
         """
-        Callback to handle incoming predicted landing data.
-        Process the predicted landing data to determine if the robot can catch the ball.
+        Callback to handle incoming ball state data.
+        Process the ball data to determine if the robot can catch a ball.
         If ball is deemed catchable, compile the landing state (pos, vel, time_at_land) 
         and save it for use in another method
 
         Args:
-            msg: BallStateMulti message containing predicted landing data.
+            msg: BallStateArray message containing ball state data.
         """
         # Check if the catch_thrown_ball control mode is enabled
         if not self.catch_thrown_ball_enabled:
@@ -96,16 +96,17 @@ class CatchThrownBallNode(Node):
         if self.landing_state["catching"] is False:
             return
         
-        # Check that there's only one ball being predicted
-        if len(msg.landing_predictions) != 1:
-            self.get_logger().warn("More than one ball predicted. This node can only handle one ball at a time.", throttle_duration_sec=1.0)
+        # Check that there's only one ball being tracked
+        if len(msg.balls) != 1:
+            self.get_logger().warn("More than one ball detected. This node can only handle one ball at a time.", throttle_duration_sec=1.0)
             return
         
         # Extract the relevant data from the message
-        id = msg.landing_predictions[0].id
-        landing_position = msg.landing_predictions[0].landing_position
-        landing_velocity = msg.landing_predictions[0].landing_velocity
-        time_at_land = msg.landing_predictions[0].time_at_land
+        ball = msg.balls[0]
+        id = ball.id
+        landing_position = ball.landing_position
+        landing_velocity = ball.landing_velocity
+        time_at_land = ball.time_at_land
 
         # Calculate how much time remains before the ball lands
         time_to_land_s = time_at_land.sec - self.get_clock().now().to_msg().sec

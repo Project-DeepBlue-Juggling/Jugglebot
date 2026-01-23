@@ -2,7 +2,7 @@
 
 import rclpy
 from rclpy.node import Node
-from jugglebot_interfaces.msg import MocapDataMulti, BallStateMulti, BallStateSingle
+from jugglebot_interfaces.msg import MocapDataMulti, BallStateArray
 import numpy as np
 import matplotlib.pyplot as plt
 from threading import Lock
@@ -47,10 +47,10 @@ class LandingAnalysisNode(Node):
             10
         )
 
-        self.prediction_sub = self.create_subscription(
-            BallStateMulti,
-            '/predicted_landings',
-            self.prediction_callback,
+        self.balls_sub = self.create_subscription(
+            BallStateArray,
+            '/balls',
+            self.balls_callback,
             10
         )
 
@@ -114,17 +114,17 @@ class LandingAnalysisNode(Node):
                     # Remove these predictions from current_predictions to prevent reuse
                     self.current_predictions = [pred for pred in self.current_predictions if pred[0] > current_time]
 
-    def prediction_callback(self, msg: BallStateMulti):
+    def balls_callback(self, msg: BallStateArray):
         """
-        Callback to handle incoming predicted landing data.
+        Callback to handle incoming ball state data.
         Stores all predictions with their reception time.
         """
         with self.lock:
             current_time = self.get_clock().now().nanoseconds * 1e-9
-            for pred in msg.landing_predictions:
+            for ball in msg.balls:
                 # Extract predicted landing position
-                px = pred.landing_position.x
-                py = pred.landing_position.y
+                px = ball.landing_position.x
+                py = ball.landing_position.y
                 # Store (prediction_time, x, y)
                 self.current_predictions.append((current_time, px, py))
                 # Note: Velocities and time_to_land can be stored if needed

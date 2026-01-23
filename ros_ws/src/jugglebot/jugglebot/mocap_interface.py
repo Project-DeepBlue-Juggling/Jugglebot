@@ -35,10 +35,13 @@ class MocapInterface:
 
         # Initialize data to be stored
         self.ball_butler_markers = np.full((5, 4), np.nan)    # (x, y, z, residual)
-        self.unlabelled_markers = np.empty((0, 4))  # (x, y, z, residual)
+        self.all_markers = np.empty((0, 4))  # (x, y, z, residual)
         self.body_poses: Dict[str, PoseStamped] = {} # Pose for every rigid body discovered in QTM
         self.body_dict = {}
         self.marker_dict = {}
+
+        # Set which bodies should be in the base frame
+        self.base_frame_bodies = ["Base", "Ball_Butler", "Catching_Cone"]
 
         # Control whether to publish ball butler markers
         self.publish_ball_butler_markers = False # Only publish when requested
@@ -133,13 +136,17 @@ class MocapInterface:
             return
 
         # Process packet header from labelled markers to update performance stats,
-        # Ignore most of the labelled marker data. We only care about the ball butler markers
-        # and only when requested.
+        """ Sometimes QTM erroneously labels single markers as being part of a rigid body.
+        Since the balls are single markers, this means they will sometimes appear in the labelled markers section.
+        To ensure best ball tracking, we broadcast ALL marker data to the rest of the ROS2 network.
+        """
+        labelled_markers = []
         markers_residual = packet.get_3d_markers_residual()
         try:
             if markers_residual is not None:
                 header, markers = markers_residual
 
+                # Publish Ball Butler markers if requested
                 if self.publish_ball_butler_markers:    
                     # Process each Ball Butler marker (1-5)
                     for i in range(1, 6):
@@ -156,6 +163,14 @@ class MocapInterface:
                         else:
                             with self.data_lock:
                                 self.ball_butler_markers[i-1] = [np.nan, np.nan, np.nan, np.nan]
+
+                # Get all the labelled markers, except for the ball butler ones
+                for i, marker in enumerate(markers):
+                    marker_name = self.get_name_from_index(i, self.marker_dict)
+                    if marker_name.startswith("Ball Butler -"):
+                        continue
+                    if not np.isnan([marker.x, marker.y, marker.z]).any():
+                        labelled_markers.append([marker.x, marker.y, marker.z, marker.residual])
 
                 with self.data_lock:
                     self.drop_rate = header.drop_rate
@@ -188,7 +203,7 @@ class MocapInterface:
             # Compose a PoseStamped for this rigid body
             pose = PoseStamped()
             pose.header.stamp = self.node.get_clock().now().to_msg()
-            if body_name == "Base":
+            if body_name in self.base_frame_bodies:
                 pose.header.frame_id = "world"
             else:
                 pose.header.frame_id = "platform_start"
@@ -197,7 +212,7 @@ class MocapInterface:
             pose.pose.position.y = body[0].y
 
             # Leave the Base Z position unchanged, but apply the base to platform transformation to other bodies
-            if self.base_to_platform_transformation is not None and body_name == "Base":
+            if self.base_to_platform_transformation is not None and body_name in self.base_frame_bodies:
                 pose.pose.position.z = body[0].z
             else:
                 pose.pose.position.z = body[0].z - self.base_to_platform_transformation
@@ -220,16 +235,15 @@ class MocapInterface:
             for marker in markers:
                 if not np.isnan([marker.x, marker.y, marker.z]).any():
                     current_unlabelled.append([marker.x, marker.y, marker.z, marker.residual])
-            with self.data_lock:
-                self.unlabelled_markers = np.array(current_unlabelled)
-        else:
-            with self.data_lock:
-                self.unlabelled_markers = np.empty((0, 4))
+
+        all_markers = current_unlabelled# + labelled_markers  # Add the label markers if desired. Better to deactivate in QTM.
+        with self.data_lock:
+            self.all_markers = np.array(all_markers) if all_markers else np.empty((0, 4))
 
         # Update unlabelled residual statistics.
         with self.data_lock:
-            if self.unlabelled_markers.size > 0:
-                residuals = self.unlabelled_markers[:, 3]
+            if self.all_markers.size > 0:
+                residuals = self.all_markers[:, 3]
                 self.residuals_unlabelled.extend(residuals.tolist())
 
     def stop(self):
@@ -247,7 +261,7 @@ class MocapInterface:
     #                                  Package Data For Parent Modules                                      #
     #########################################################################################################
 
-    def get_unlabelled_markers_base_frame(self) -> np.ndarray:
+    def get_all_markers_base_frame(self) -> np.ndarray:
         """
         Get the current unlabelled markers (and residuals) in the base frame.
 
@@ -255,7 +269,7 @@ class MocapInterface:
         - A numpy array of unlabelled marker data (Mx4).
         """
         with self.data_lock:
-            return self.unlabelled_markers.copy() if self.unlabelled_markers.size > 0 else np.empty((0, 4))
+            return self.all_markers.copy() if self.all_markers.size > 0 else np.empty((0, 4))
 
     def get_ball_butler_markers_base_frame(self) -> np.ndarray:
         """
@@ -372,7 +386,7 @@ class MocapInterface:
         Clear the unlabelled marker data.
         """
         with self.data_lock:
-            self.unlabelled_markers = np.empty((0, 4))
+            self.all_markers = np.empty((0, 4))
 
     def clear_platform_pose(self):
         """
@@ -408,7 +422,7 @@ if __name__ == "__main__":
 
     try:
         while True:
-            unlabelled_data = tracker.get_unlabelled_markers_base_frame()
+            unlabelled_data = tracker.get_all_markers_base_frame()
             print("Unlabelled markers in base frame:")
             print(unlabelled_data)
             time.sleep(0.1)

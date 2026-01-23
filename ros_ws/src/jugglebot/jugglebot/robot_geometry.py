@@ -64,7 +64,7 @@ class RobotGeometry(Node):
         Returns the optimized geometry of the robot, determined using offline methods.
         '''
 
-        self.initial_height = 574.3 # FOUND EXPERIMENTALLY (by echoing /platform_pose_mocap after homing)
+        self.initial_height = 574.3 # FOUND EXPERIMENTALLY (by echoing /rigid_body_poses after homing)
         self.start_pos = np.array([[0], [0], [self.initial_height]])
 
         # Get the base and platform nodes. Currently just using the calculated ones from build_platform
