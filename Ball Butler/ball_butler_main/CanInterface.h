@@ -2,27 +2,75 @@
 #include <Arduino.h>
 #include <FlexCAN_T4.h>
 
+// Forward declaration for StateMachine
+class StateMachine;
+
 /**
  * CanInterface Teensy 4.0 (CAN1) helper for:
  *  ODrive CAN: set_input_pos / set_input_vel / limits / modes / gains / etc.
- *  Time Sync (ID 0x7DD default)  shared wall clock
+ *  Time Sync (ID 0x7DD)  shared wall clock
  *  Estimator ingest (cmd=0x09) and Iq feedback (cmd=0x14)
  *  Homing routine for the hand axis (end-stop current spike)
  *  Arbitrary parameter read/write via SDO (RxSdo/TxSdo)
+ *  Ball Butler heartbeat publishing (ID 0x7D1)
  *
  * Notes
  *  - Uses CAN1.
  *  - vel_ff / torque_ff are scaled internally by 100.0 int16.
  */
 
+// ============================================================================
+// Centralized CAN ID Registry
+// ============================================================================
+/**
+ * All CAN IDs used in the system are defined here in a single location.
+ * This makes it easy to:
+ *   - See all IDs at a glance and avoid collisions
+ *   - Change IDs without hunting through the codebase
+ *   - Add new IDs in an organized manner
+ *
+ * Storage: constexpr ensures these are compile-time constants with no runtime
+ * overhead. The compiler will inline these values directly.
+ */
+namespace CanIds {
+  // -------------------- Ball Butler Protocol IDs --------------------
+  // These IDs are used for communication between the Ball Butler and host
+  constexpr uint32_t HOST_THROW_CMD    = 0x7D0;  // Host -> BB throw command
+  constexpr uint32_t HEARTBEAT_CMD     = 0x7D1;  // Ball Butler heartbeat (BB -> Host)
+  constexpr uint32_t RELOAD_CMD        = 0x7D2;  // Host -> BB reload command
+  constexpr uint32_t RESET_CMD         = 0x7D3;  // Host -> BB reset command
+  constexpr uint32_t CALIBRATE_LOC_CMD = 0x7D4;  // Host -> BB calibrate location command
+
+  // -------------------- Time Synchronization --------------------
+  constexpr uint32_t TIME_SYNC_CMD     = 0x7DD;  // Wall clock sync from master
+}
+
 class CanInterface {
 public:
-  // ---------------------- ODrive command IDs -----------------------
+  // ============================================================================
+  // Constants
+  // ============================================================================
+  // Default heartbeat rate (ms). Set to 0 to disable.
+  static constexpr uint32_t DEFAULT_HEARTBEAT_RATE_MS = 50;  // 20 Hz
+
+  // SDO Opcodes for arbitrary parameters
+  static constexpr uint8_t OPCODE_READ  = 0x00;
+  static constexpr uint8_t OPCODE_WRITE = 0x01;
+
+  // ============================================================================
+  // Types and Enums
+  // ============================================================================
+
+  enum class BallButlerError : uint8_t {
+    NONE          = 0,
+    RELOAD_FAILED = 1,
+  };
+
   enum class Cmd : uint8_t {
     heartbeat_message        = 0x01,
     get_error                = 0x03,
-    RxSdo                    = 0x04,  // Write to arbitrary parameter
-    TxSdo                    = 0x05,  // Read from arbitrary parameter (response)
+    RxSdo                    = 0x04,
+    TxSdo                    = 0x05,
     set_requested_state      = 0x07,
     get_encoder_estimate     = 0x09,
     set_controller_mode      = 0x0B,
@@ -41,24 +89,26 @@ public:
     set_vel_gains            = 0x1B,
   };
 
-  struct CmdName { Cmd cmd; const char* name; };
-  static const CmdName* commandNameTable(size_t& count);
+  enum class AxisHomeState : uint8_t { 
+    Unhomed = 0, 
+    Homing  = 1, 
+    Homed   = 2 
+  };
+
+  struct CmdName { 
+    Cmd cmd; 
+    const char* name; 
+  };
 
   struct ODriveErrors {
     static constexpr uint32_t BRAKE_RESISTOR_DISARMED = 0x08000000u;
   };
 
-  // ---------------------- SDO Opcodes for arbitrary parameters ----------------------
-  static constexpr uint8_t OPCODE_READ  = 0x00;  // For reading arbitrary parameters
-  static constexpr uint8_t OPCODE_WRITE = 0x01;  // For writing arbitrary parameters
-
-  // ---------------------- Known endpoint IDs for arbitrary parameters ----------------------
   struct EndpointIds {
-    static constexpr uint16_t COMMUTATION_MAPPER_POS_ABS = 488;  // commutation_mapper.pos_abs (NaN until encoder search complete)
-    static constexpr uint16_t GPIO_STATES                = 700;  // get_gpio_states
+    static constexpr uint16_t COMMUTATION_MAPPER_POS_ABS = 488;  // NaN until encoder search is complete
+    static constexpr uint16_t GPIO_STATES                = 700;
   };
 
-  // ---------------------- Arbitrary parameter response struct ----------------------
   struct ArbitraryParamResponse {
     uint16_t endpoint_id = 0;
     uint8_t  opcode = 0;
@@ -71,7 +121,6 @@ public:
     bool     valid = false;
   };
 
-  // ---------- Host (Jetson) -> Teensy throw command ----------
   struct HostThrowCmd {
     float yaw_rad = 0.f;
     float pitch_rad = 0.f;
@@ -81,48 +130,14 @@ public:
     bool valid = false;
   };
 
-  void setHostThrowCmdId(uint32_t id);
-  bool getHostThrowCmd(HostThrowCmd& out) const;
-  typedef void (*HostThrowCallback)(const HostThrowCmd& cmd, void* user);
-  void setHostThrowCallback(HostThrowCallback cb, void* user = nullptr);
-
-  // ---------------------- App-facing homing policy -----------------------
-  enum class AxisHomeState : uint8_t { Unhomed = 0, Homing = 1, Homed = 2 };
-
-  void setHomeState(uint32_t node_id, AxisHomeState s);
-  AxisHomeState getHomeState(uint32_t node_id) const;
-  bool isAxisHomed(uint32_t node_id) const { return getHomeState(node_id) == AxisHomeState::Homed; }
-
-  void requireHomeForAxis(uint32_t node_id, bool required);
-  bool isHomeRequired(uint32_t node_id) const;
-  void requireHomeOnlyFor(uint32_t node_id);
-  void clearHomeRequirements();
-  bool isAxisMotionAllowed(uint32_t node_id) const;
-
-  // ---------------------- Auto-clear BRAKE_RESISTOR ----------------------
-  void setAutoClearBrakeResistor(bool enable, uint32_t min_interval_ms = 500);
-
-public:
-  CanInterface();
-
-  // -------------------- Setup / service --------------------
-  void begin(uint32_t bitrate = 1'000'000);
-  void loop();
-
-  // -------------------- Debug control ----------------------
-  void setDebugStream(Stream* dbg);
-  void setDebugFlags(bool timeSyncDebug, bool canDebug);
-
-  // -------------------- Time Sync --------------------------
-  void setTimeSyncId(uint32_t id);
-  uint64_t wallTimeUs() const;
-  uint64_t localTimeUs() const;
   struct SyncStats {
-    float mean_us = 0.f; float rms_us = 0.f; int32_t min_us = 0; int32_t max_us = 0; uint32_t frames = 0;
+    float mean_us = 0.f;
+    float rms_us = 0.f;
+    int32_t min_us = 0;
+    int32_t max_us = 0;
+    uint32_t frames = 0;
   };
-  SyncStats getAndClearSyncStats();
 
-  // ---- Heartbeat snapshot ----
   struct AxisHeartbeat {
     uint32_t axis_error = 0;
     uint8_t  axis_state = 0;
@@ -131,21 +146,50 @@ public:
     uint64_t wall_us = 0;
     bool     valid = false;
   };
-  bool getAxisHeartbeat(uint32_t node_id, AxisHeartbeat& out) const;
 
-  bool hasAxisError(uint32_t node_id, uint32_t mask) const;
-  bool waitForAxisErrorClear(uint32_t node_id, uint32_t mask,
-                             uint32_t timeout_ms, uint16_t poll_ms = 5);
+  // Callback types
+  typedef void (*HostThrowCallback)(const HostThrowCmd& cmd, void* user);
+  typedef void (*ArbitraryParamCallback)(uint32_t node_id, const ArbitraryParamResponse& resp, void* user);
 
-  // -------------------- Generic send helpers ----------------
+  // ============================================================================
+  // Construction and Setup
+  // ============================================================================
+
+  CanInterface();
+
+  void begin(uint32_t bitrate = 1'000'000);
+  void loop();
+
+  // ============================================================================
+  // Debug Control
+  // ============================================================================
+
+  void setDebugStream(Stream* dbg);
+  void setDebugFlags(bool timeSyncDebug, bool canDebug);
+
+  // ============================================================================
+  // Time Sync
+  // ============================================================================
+
+  uint64_t wallTimeUs() const;
+  uint64_t localTimeUs() const;
+  SyncStats getAndClearSyncStats();
+
+  // ============================================================================
+  // Generic CAN Send
+  // ============================================================================
+
   bool sendRaw(uint32_t id, const uint8_t* data, uint8_t len);
-  bool sendRTR(uint32_t id, uint8_t len);  // (kept for generality, but not used for Iq anymore)
+  bool sendRTR(uint32_t id, uint8_t len);
 
   static inline uint32_t makeId(uint32_t node_id, Cmd cmd) {
     return (node_id << 5) | (uint8_t(cmd) & 0x1F);
   }
 
-  // -------------------- ODrive helpers ---------------------
+  // ============================================================================
+  // ODrive Commands
+  // ============================================================================
+
   bool setRequestedState(uint32_t node_id, uint32_t requested_state);
   bool setControllerMode(uint32_t node_id, uint32_t control_mode, uint32_t input_mode);
   bool setVelCurrLimits(uint32_t node_id, float current_limit, float vel_limit_rps);
@@ -160,98 +204,49 @@ public:
   bool sendInputPos(uint32_t node_id, float pos_rev, float vel_ff_rev_per_s, float torque_ff);
   bool sendInputVel(uint32_t node_id, float vel_rps, float torque_ff);
 
-  // -------------------- Arbitrary Parameter (SDO) Functions --------------------
-  /**
-   * Send an arbitrary parameter write command to an ODrive.
-   * 
-   * @param node_id     The axis/node ID (0-63)
-   * @param endpoint_id The endpoint ID for the parameter (see EndpointIds struct)
-   * @param value       The float value to write
-   * @return true if the CAN message was sent successfully
-   */
+  // ============================================================================
+  // Arbitrary Parameter (SDO) Functions
+  // ============================================================================
+
   bool sendArbitraryParameterFloat(uint32_t node_id, uint16_t endpoint_id, float value);
-
-  /**
-   * Send an arbitrary parameter write command with uint32 value.
-   * 
-   * @param node_id     The axis/node ID (0-63)
-   * @param endpoint_id The endpoint ID for the parameter
-   * @param value       The uint32 value to write
-   * @return true if the CAN message was sent successfully
-   */
   bool sendArbitraryParameterU32(uint32_t node_id, uint16_t endpoint_id, uint32_t value);
-
-  /**
-   * Request to read an arbitrary parameter from an ODrive.
-   * The response will be received asynchronously via handleRx_ and stored internally.
-   * Use getLastArbitraryParamResponse() to retrieve the response.
-   * 
-   * @param node_id     The axis/node ID (0-63)
-   * @param endpoint_id The endpoint ID for the parameter to read
-   * @return true if the CAN message was sent successfully
-   */
   bool requestArbitraryParameter(uint32_t node_id, uint16_t endpoint_id);
-
-  /**
-   * Get the last received arbitrary parameter response for a given node.
-   * 
-   * @param node_id The axis/node ID
-   * @param out     Output struct to store the response
-   * @return true if a valid response exists for this node
-   */
   bool getLastArbitraryParamResponse(uint32_t node_id, ArbitraryParamResponse& out) const;
-
-  /**
-   * Callback type for arbitrary parameter responses
-   */
-  typedef void (*ArbitraryParamCallback)(uint32_t node_id, const ArbitraryParamResponse& resp, void* user);
-  
-  /**
-   * Set a callback to be invoked when an arbitrary parameter response is received.
-   * 
-   * @param cb   The callback function
-   * @param user User data pointer passed to the callback
-   */
   void setArbitraryParamCallback(ArbitraryParamCallback cb, void* user = nullptr);
-
-  /**
-   * Check if encoder search is complete on a given axis by reading commutation_mapper.pos_abs.
-   * Returns true if the value is not NaN (i.e., encoder search is complete).
-   * This is a blocking function that waits for the response.
-   * 
-   * @param node_id    The axis/node ID
-   * @param timeout_ms Maximum time to wait for response
-   * @return true if encoder search is complete, false if NaN or timeout
-   */
   bool isEncoderSearchComplete(uint32_t node_id, uint32_t timeout_ms = 100);
+  bool readGpioStates(uint32_t node_id, uint32_t& states_out, uint32_t timeout_ms = 500);
 
-  /**
-   * Read GPIO states from an ODrive.
-   * 
-   * @param node_id    The axis/node ID
-   * @param states_out Output: the GPIO states as a bitmask
-   * @param timeout_ms Maximum time to wait for response
-   * @return true if successfully read
-   */
-  bool readGpioStates(uint32_t node_id, uint32_t& states_out, uint32_t timeout_ms = 100);
+  // ============================================================================
+  // Axis State and Feedback
+  // ============================================================================
 
-  // Estimator and current feedback access
   bool getAxisPV(uint32_t node_id, float& pos_rev_out, float& vel_rps_out, uint64_t& wall_us_out) const;
   bool getAxisIq(uint32_t node_id, float& iq_meas_out, float& iq_setpoint_out, uint64_t& wall_us_out) const;
+  bool getAxisHeartbeat(uint32_t node_id, AxisHeartbeat& out) const;
+  bool hasAxisError(uint32_t node_id, uint32_t mask) const;
+  bool waitForAxisErrorClear(uint32_t node_id, uint32_t mask, uint32_t timeout_ms, uint16_t poll_ms = 5);
 
-  // Typical config
-  bool restoreHandToOperatingConfig(uint32_t node_id,
-                       float vel_limit_rps = 1000.0f,
-                       float current_limit_A = 50.0f);
+  // ============================================================================
+  // Homing
+  // ============================================================================
 
-  // -------------------- Homing (Hand) ----------------------
+  void setHomeState(uint32_t node_id, AxisHomeState s);
+  AxisHomeState getHomeState(uint32_t node_id) const;
+  bool isAxisHomed(uint32_t node_id) const { return getHomeState(node_id) == AxisHomeState::Homed; }
+
+  void requireHomeForAxis(uint32_t node_id, bool required);
+  bool isHomeRequired(uint32_t node_id) const;
+  void requireHomeOnlyFor(uint32_t node_id);
+  void clearHomeRequirements();
+  bool isAxisMotionAllowed(uint32_t node_id) const;
+
   bool homeHand(uint32_t node_id,
                 float homing_speed_rps,
                 float current_limit_A,
                 float current_headroom_A,
                 float settle_pos_rev,
                 float avg_weight = 0.7f,
-                uint16_t /*iq_poll_period_ms UNUSED now*/ = 10);
+                uint16_t iq_poll_period_ms = 10);
 
   bool homeHandStandard(uint32_t node_id,
                         int hand_direction = -1,
@@ -260,82 +255,193 @@ public:
                         float current_headroom_A = 3.0f,
                         float set_abs_pos_rev = -0.1f);
 
-  // -------------------- Configs ----------------------------
+  // ============================================================================
+  // Operating Configuration
+  // ============================================================================
+
+  bool restoreHandToOperatingConfig(uint32_t node_id,
+                                    float vel_limit_rps = 1000.0f,
+                                    float current_limit_A = 50.0f);
+
+  void setAutoClearBrakeResistor(bool enable, uint32_t min_interval_ms = 500);
   void setEstimatorCmd(uint8_t cmd);
 
-  // -------------------- Proprioception mapping -------------
-  // Tell CanInterface which nodes correspond to our proprioception channels.
-  void setHandAxisNode(uint8_t node_id)  { hand_node_id_  = (node_id); }
-  void setPitchAxisNode(uint8_t node_id) { pitch_node_id_ = (node_id);}
+  // ============================================================================
+  // Proprioception Mapping
+  // ============================================================================
+
+  void setHandAxisNode(uint8_t node_id)  { hand_node_id_  = node_id; }
+  void setPitchAxisNode(uint8_t node_id) { pitch_node_id_ = node_id; }
+
+  // ============================================================================
+  // Host Command Interface
+  // ============================================================================
+
+  bool getHostThrowCmd(HostThrowCmd& out) const;
+  void setHostThrowCallback(HostThrowCallback cb, void* user = nullptr);
+
+  // ============================================================================
+  // Ball Butler Heartbeat
+  // ============================================================================
+
+  void setStateMachine(StateMachine* sm) { state_machine_ = sm; }
+  void setHeartbeatRate(uint32_t rate_ms) { heartbeat_rate_ms_ = rate_ms; }
+  uint32_t getHeartbeatRate() const { return heartbeat_rate_ms_; }
+  
+  void setErrorCode(BallButlerError err) { current_error_code_ = err; }
+  BallButlerError getErrorCode() const { return current_error_code_; }
+  void clearErrorCode() { current_error_code_ = BallButlerError::NONE; }
+
+  // ============================================================================
+  // Static Utilities
+  // ============================================================================
+
+  static const char* errorCodeToString(BallButlerError err);
+  static const CmdName* commandNameTable(size_t& count);
 
 private:
-  // ---------- processing Jetson commands ---------
-  uint32_t host_throw_id_ = 0;           
-  HostThrowCmd last_host_cmd_;           
-  HostThrowCallback host_cb_ = nullptr;
-  void* host_cb_user_ = nullptr;
+  // ============================================================================
+  // Internal Types
+  // ============================================================================
 
-  // ---------- internal types ----------
-  struct AxisStatePV { volatile float pos_rev=0.f, vel_rps=0.f; volatile uint64_t wall_us=0; volatile bool valid=false; };
-  struct AxisStateIq { volatile float iq_meas=0.f, iq_setp=0.f; volatile uint64_t wall_us=0; volatile bool valid=false; };
+  struct AxisStatePV { 
+    volatile float pos_rev = 0.f;
+    volatile float vel_rps = 0.f;
+    volatile uint64_t wall_us = 0;
+    volatile bool valid = false;
+  };
 
-  AxisHomeState home_state_[64];
-  AxisHeartbeat hb_[64];
-  uint64_t home_required_mask_ = 0;
+  struct AxisStateIq { 
+    volatile float iq_meas = 0.f;
+    volatile float iq_setp = 0.f;
+    volatile uint64_t wall_us = 0;
+    volatile bool valid = false;
+  };
 
-  // Auto-clear BRAKE_RESISTOR_DISARMED
-  bool     auto_clear_brake_res_ = true;
-  uint32_t auto_clear_interval_ms_ = 500;
-  uint64_t last_brake_clear_us_[64] = {};
+  struct StatsAcc_ {
+    int64_t sum = 0;
+    uint64_t sum_sq = 0;
+    int32_t minv = INT32_MAX;
+    int32_t maxv = INT32_MIN;
+    uint32_t n = 0;
 
-  // ---------- Arbitrary parameter response storage ----------
-  ArbitraryParamResponse arb_param_resp_[64];
-  ArbitraryParamCallback arb_param_cb_ = nullptr;
-  void* arb_param_cb_user_ = nullptr;
+    void add(int32_t x) {
+      sum += x;
+      sum_sq += uint64_t(int64_t(x) * int64_t(x));
+      if (x < minv) minv = x;
+      if (x > maxv) maxv = x;
+      ++n;
+    }
+    void clear() { *this = {}; }
+  };
 
-  // ---------- time sync internals ----------
-  static uint64_t micros64_();
-  void handleTimeSync_(const CAN_message_t& msg);
-  void maybePrintSyncStats_();
+  // ============================================================================
+  // Constants
+  // ============================================================================
 
-  // ---------- receive path ----------
-  static void rxTrampoline_(const CAN_message_t &msg);
-  void handleRx_(const CAN_message_t &msg);
-  void handleTxSdo_(uint32_t node_id, const uint8_t* buf, uint8_t len);
-
-  // ---------- helpers ----------
-  static int16_t clampToI16_(float x);
-
-private:
-  FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_16> can1_;
-  static CanInterface* s_instance_;
-  Stream* dbg_ = nullptr;
-  bool dbg_time_ = false, dbg_can_ = false;
-
-  uint32_t timeSyncId_ = 0x7DD;
-  volatile int64_t wall_offset_us_ = 0;
-  volatile bool have_offset_ = false;
   static constexpr uint8_t ALPHA_SHIFT_ = 3;
-
-  struct StatsAcc_ { int64_t sum=0; uint64_t sum_sq=0; int32_t minv=INT32_MAX; int32_t maxv=INT32_MIN; uint32_t n=0;
-    void add(int32_t x){ sum+=x; sum_sq+=uint64_t(int64_t(x)*int64_t(x)); if(x<minv)minv=x; if(x>maxv)maxv=x; ++n; }
-    void clear(){ *this={}; }
-  } stats_;
-  uint64_t nextPrint_us_ = 0;
   static constexpr uint32_t PRINT_PERIOD_US_ = 1'000'000;
+  static constexpr float kVelScale_ = 100.0f;
+  static constexpr float kTorScale_ = 100.0f;
 
-  uint8_t estimatorCmd_ = uint8_t(Cmd::get_encoder_estimate);
-  AxisStatePV axes_pv_[64];
-  AxisStateIq axes_iq_[64];
+  // ============================================================================
+  // Static Members
+  // ============================================================================
+
+  static CanInterface* s_instance_;
+
+  // ============================================================================
+  // CAN Hardware
+  // ============================================================================
+
+  FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_16> can1_;
+
+  // ============================================================================
+  // Configuration
+  // ============================================================================
+
+  // Debug
+  Stream* dbg_ = nullptr;
+  bool dbg_time_ = false;
+  bool dbg_can_ = false;
 
   // Proprioception mapping
   uint8_t hand_node_id_  = 0xFF;
   uint8_t pitch_node_id_ = 0xFF;
 
-  // Ball detection thresholds
-  float ball_detect_iq_threshold  = -0.5f; // Iq > this means ball present
+  // Ball detection
+  float ball_detect_iq_threshold = -0.5f;
 
-  // Scales
-  static constexpr float kVelScale_ = 100.0f;
-  static constexpr float kTorScale_ = 100.0f;
+  // Auto-clear BRAKE_RESISTOR_DISARMED
+  bool auto_clear_brake_res_ = true;
+  uint32_t auto_clear_interval_ms_ = 500;
+
+  // Estimator command
+  uint8_t estimatorCmd_ = uint8_t(Cmd::get_encoder_estimate);
+
+  // ============================================================================
+  // Time Sync State
+  // ============================================================================
+
+  volatile int64_t wall_offset_us_ = 0;
+  volatile bool have_offset_ = false;
+  StatsAcc_ stats_;
+  uint64_t nextPrint_us_ = 0;
+
+  // ============================================================================
+  // Axis State Arrays
+  // ============================================================================
+
+  AxisStatePV axes_pv_[64];
+  AxisStateIq axes_iq_[64];
+  AxisHeartbeat hb_[64];
+  AxisHomeState home_state_[64];
+  uint64_t home_required_mask_ = 0;
+  uint64_t last_brake_clear_us_[64] = {};
+
+  // ============================================================================
+  // Arbitrary Parameter State
+  // ============================================================================
+
+  ArbitraryParamResponse arb_param_resp_[64];
+  ArbitraryParamCallback arb_param_cb_ = nullptr;
+  void* arb_param_cb_user_ = nullptr;
+
+  // ============================================================================
+  // Host Command State
+  // ============================================================================
+
+  HostThrowCmd last_host_cmd_;
+  HostThrowCallback host_cb_ = nullptr;
+  void* host_cb_user_ = nullptr;
+
+  // ============================================================================
+  // Ball Butler Heartbeat State
+  // ============================================================================
+
+  StateMachine* state_machine_ = nullptr;
+  uint32_t heartbeat_rate_ms_ = DEFAULT_HEARTBEAT_RATE_MS;
+  uint32_t last_heartbeat_ms_ = 0;
+  BallButlerError current_error_code_ = BallButlerError::NONE;
+
+  // ============================================================================
+  // Private Methods
+  // ============================================================================
+
+  // Time sync
+  static uint64_t micros64_();
+  void handleTimeSync_(const CAN_message_t& msg);
+  void maybePrintSyncStats_();
+
+  // Receive handlers
+  static void rxTrampoline_(const CAN_message_t& msg);
+  void handleRx_(const CAN_message_t& msg);
+  void handleTxSdo_(uint32_t node_id, const uint8_t* buf, uint8_t len);
+
+  // Heartbeat
+  void maybePublishHeartbeat_();
+  void publishHeartbeat_();
+
+  // Utilities
+  static int16_t clampToI16_(float x);
 };

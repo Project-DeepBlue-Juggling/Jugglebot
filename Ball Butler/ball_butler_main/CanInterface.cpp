@@ -2,6 +2,9 @@
 #include <string.h>
 #include <math.h>
 #include "Proprioception.h"
+#include "StateMachine.h"
+#include "Trajectory.h"  // For LINEAR_GAIN
+#include "RobotState.h"
 
 // ---------------- Command-name table (optional; PROGMEM friendly) -------------
 static const CanInterface::CmdName kCmdNames[] PROGMEM = {
@@ -30,6 +33,15 @@ static const CanInterface::CmdName kCmdNames[] PROGMEM = {
 const CanInterface::CmdName* CanInterface::commandNameTable(size_t& count) {
   count = sizeof(kCmdNames) / sizeof(kCmdNames[0]);
   return kCmdNames;
+}
+
+// ---------------- Error code name table ----------------
+const char* CanInterface::errorCodeToString(BallButlerError err) {
+  switch (err) {
+    case BallButlerError::NONE:          return "NONE";
+    case BallButlerError::RELOAD_FAILED: return "RELOAD_FAILED";
+    default:                             return "UNKNOWN";
+  }
 }
 
 // ---------------- static singleton ----------------
@@ -72,7 +84,7 @@ void CanInterface::begin(uint32_t bitrate) {
   for (int i = 0; i < 64; ++i) {
     axes_pv_[i].valid = false;
     axes_iq_[i].valid = false;
-    home_state_[i] = AxisHomeState::Unhomed;  // default: not homed
+    home_state_[i] = AxisHomeState::Unhomed;
   }
 
   // Initialise last heartbeats arrays
@@ -91,30 +103,28 @@ void CanInterface::begin(uint32_t bitrate) {
   for (int i = 0; i < 64; ++i) {
     arb_param_resp_[i].valid = false;
   }
+
+  // Initialise Ball Butler heartbeat state
+  last_heartbeat_ms_ = 0;
+  current_error_code_ = BallButlerError::NONE;
 }
 
 // ---------------- loop ----------------
 void CanInterface::loop() {
-  can1_.events();          // dispatch FIFO -> rxTrampoline_
-  maybePrintSyncStats_();  // optional stats print
+  can1_.events();           // dispatch FIFO -> rxTrampoline_
+  maybePrintSyncStats_();   // optional stats print
+  maybePublishHeartbeat_(); // Ball Butler heartbeat publishing
 }
 
 // ---------------- debug ----------------
-void CanInterface::setDebugStream(Stream* dbg) {
-  dbg_ = dbg;
-}
+void CanInterface::setDebugStream(Stream* dbg) { dbg_ = dbg; }
 void CanInterface::setDebugFlags(bool timeSyncDebug, bool canDebug) {
   dbg_time_ = timeSyncDebug;
   dbg_can_ = canDebug;
 }
 
-// ---------------- time sync public ----------------
-void CanInterface::setTimeSyncId(uint32_t id) {
-  timeSyncId_ = id;
-}
-uint64_t CanInterface::localTimeUs() const {
-  return micros64_();
-}
+// ---------------- time functions ----------------
+uint64_t CanInterface::localTimeUs() const { return micros64_(); }
 uint64_t CanInterface::wallTimeUs() const {
   return uint64_t(int64_t(localTimeUs()) + wall_offset_us_);
 }
@@ -150,16 +160,13 @@ bool CanInterface::sendRTR(uint32_t id, uint8_t len) {
   m.id = id;
   m.len = len;
   m.flags.extended = 0;
-  m.flags.remote = 1;  // RTR
+  m.flags.remote = 1;
   const bool ok = can1_.write(m);
   if (dbg_can_ && dbg_) dbg_->printf("[CAN->RTR] id=0x%03lX len=%u %s\n", (unsigned long)id, (unsigned)len, ok ? "OK" : "FAIL");
   return ok;
 }
 
 // ---------------- Handling Jetson Commands ----------------
-void CanInterface::setHostThrowCmdId(uint32_t id) {
-  host_throw_id_ = (id & 0x7FFu);
-}
 bool CanInterface::getHostThrowCmd(HostThrowCmd& out) const {
   if (!last_host_cmd_.valid) return false;
   out = last_host_cmd_;
@@ -171,19 +178,11 @@ void CanInterface::setHostThrowCallback(HostThrowCallback cb, void* user) {
 }
 
 // ---------------- ODrive helpers ----------------
-static inline void wrFloatLE(uint8_t* b, float f) {
-  memcpy(b, &f, 4);
-}
+static inline void wrFloatLE(uint8_t* b, float f) { memcpy(b, &f, 4); }
 static inline void wrU32LE(uint8_t* b, uint32_t v) {
-  b[0] = v & 0xFF;
-  b[1] = (v >> 8) & 0xFF;
-  b[2] = (v >> 16) & 0xFF;
-  b[3] = (v >> 24) & 0xFF;
+  b[0] = v & 0xFF; b[1] = (v >> 8) & 0xFF; b[2] = (v >> 16) & 0xFF; b[3] = (v >> 24) & 0xFF;
 }
-static inline void wrU16LE(uint8_t* b, uint16_t v) {
-  b[0] = v & 0xFF;
-  b[1] = (v >> 8) & 0xFF;
-}
+static inline void wrU16LE(uint8_t* b, uint16_t v) { b[0] = v & 0xFF; b[1] = (v >> 8) & 0xFF; }
 
 int16_t CanInterface::clampToI16_(float x) {
   if (x > 32767.f) return 32767;
@@ -253,17 +252,14 @@ bool CanInterface::reboot(uint32_t node_id) {
   return sendRaw(makeId(node_id, Cmd::reboot_odrives), d, 8);
 }
 
-bool CanInterface::sendInputPos(uint32_t node_id,
-                                float pos_rev,
-                                float vel_ff_rev_per_s,
-                                float torque_ff) {
+bool CanInterface::sendInputPos(uint32_t node_id, float pos_rev, float vel_ff_rev_per_s, float torque_ff) {
   if (!isAxisMotionAllowed(node_id)) {
     Serial.printf("[Gate] Blocked set_input_pos to node %lu (not homed)\n", (unsigned long)node_id);
     return false;
   }
   uint8_t d[8];
   wrFloatLE(&d[0], pos_rev);
-  const int16_t vel_i = clampToI16_(vel_ff_rev_per_s * kVelScale_);  // NOTE: Need to adapt this so each axis scales differently.
+  const int16_t vel_i = clampToI16_(vel_ff_rev_per_s * kVelScale_);
   const int16_t tor_i = clampToI16_(torque_ff * kTorScale_);
   d[4] = uint8_t(vel_i & 0xFF);
   d[5] = uint8_t((vel_i >> 8) & 0xFF);
@@ -272,8 +268,7 @@ bool CanInterface::sendInputPos(uint32_t node_id,
   const bool ok = sendRaw(makeId(node_id, Cmd::set_input_pos), d, 8);
   if (dbg_can_ && dbg_) {
     dbg_->printf("[CAN->ODrive pos] node=%lu pos=%.4f vel_ff=%.3f tor_ff=%.3f ok=%d\n",
-                 (unsigned long)node_id, (double)pos_rev,
-                 (double)vel_ff_rev_per_s, (double)torque_ff, (int)ok);
+                 (unsigned long)node_id, (double)pos_rev, (double)vel_ff_rev_per_s, (double)torque_ff, (int)ok);
   }
   return ok;
 }
@@ -303,14 +298,11 @@ bool CanInterface::sendInputVel(uint32_t node_id, float vel_rps, float torque_ff
 // ================================================================================
 
 bool CanInterface::sendArbitraryParameterFloat(uint32_t node_id, uint16_t endpoint_id, float value) {
-  // SDO frame format: [opcode(1)] [endpoint_id(2)] [reserved(1)] [value(4)]
-  // opcode = 0x01 for write
   uint8_t d[8];
   d[0] = OPCODE_WRITE;
   wrU16LE(&d[1], endpoint_id);
-  d[3] = 0;  // reserved
+  d[3] = 0;
   wrFloatLE(&d[4], value);
-  
   const bool ok = sendRaw(makeId(node_id, Cmd::RxSdo), d, 8);
   if (dbg_can_ && dbg_) {
     dbg_->printf("[CAN->SDO Write] node=%lu endpoint=%u value=%.4f ok=%d\n",
@@ -320,13 +312,11 @@ bool CanInterface::sendArbitraryParameterFloat(uint32_t node_id, uint16_t endpoi
 }
 
 bool CanInterface::sendArbitraryParameterU32(uint32_t node_id, uint16_t endpoint_id, uint32_t value) {
-  // SDO frame format: [opcode(1)] [endpoint_id(2)] [reserved(1)] [value(4)]
   uint8_t d[8];
   d[0] = OPCODE_WRITE;
   wrU16LE(&d[1], endpoint_id);
-  d[3] = 0;  // reserved
+  d[3] = 0;
   wrU32LE(&d[4], value);
-  
   const bool ok = sendRaw(makeId(node_id, Cmd::RxSdo), d, 8);
   if (dbg_can_ && dbg_) {
     dbg_->printf("[CAN->SDO Write U32] node=%lu endpoint=%u value=%lu ok=%d\n",
@@ -337,25 +327,16 @@ bool CanInterface::sendArbitraryParameterU32(uint32_t node_id, uint16_t endpoint
 
 bool CanInterface::requestArbitraryParameter(uint32_t node_id, uint16_t endpoint_id) {
   uint8_t d[8] = { 0 };
-  d[0] = OPCODE_WRITE;  // 0x01
-  d[1] = endpoint_id & 0xFF;         // endpoint low byte
-  d[2] = (endpoint_id >> 8) & 0xFF;  // endpoint high byte
-  d[3] = 0;  // reserved
-  // bytes 4-7 = 0 (ignored for read)
-  
-  // DEBUG: Print what we're sending
-  // dbg_->printf("[SDO TX] node=%lu id=0x%03lX data=[%02X %02X %02X %02X %02X %02X %02X %02X]\n",
-  //               (unsigned long)node_id,
-  //               (unsigned long)makeId(node_id, Cmd::RxSdo),
-  //               d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]);
-  
+  d[0] = OPCODE_WRITE;
+  d[1] = endpoint_id & 0xFF;
+  d[2] = (endpoint_id >> 8) & 0xFF;
+  d[3] = 0;
+
   return sendRaw(makeId(node_id, Cmd::RxSdo), d, 8);
 }
 
 bool CanInterface::getLastArbitraryParamResponse(uint32_t node_id, ArbitraryParamResponse& out) const {
   if (node_id >= 64) return false;
-  
-  // Atomic-ish copy using timestamp as guard
   ArbitraryParamResponse snap;
   uint64_t t1, t2;
   do {
@@ -363,7 +344,6 @@ bool CanInterface::getLastArbitraryParamResponse(uint32_t node_id, ArbitraryPara
     snap = arb_param_resp_[node_id];
     t2 = arb_param_resp_[node_id].wall_us;
   } while (t1 != t2);
-  
   if (!snap.valid) return false;
   out = snap;
   return true;
@@ -375,46 +355,30 @@ void CanInterface::setArbitraryParamCallback(ArbitraryParamCallback cb, void* us
 }
 
 bool CanInterface::isEncoderSearchComplete(uint32_t node_id, uint32_t timeout_ms) {
-  // Request the commutation_mapper.pos_abs parameter
-  if (!requestArbitraryParameter(node_id, EndpointIds::COMMUTATION_MAPPER_POS_ABS)) {
-    return false;
-  }
-  
-  // Wait for response
+  if (!requestArbitraryParameter(node_id, EndpointIds::COMMUTATION_MAPPER_POS_ABS)) return false;
   const uint32_t start = millis();
   while ((millis() - start) < timeout_ms) {
-    can1_.events();  // pump CAN
-    
+    can1_.events();
     ArbitraryParamResponse resp;
     if (getLastArbitraryParamResponse(node_id, resp)) {
       if (resp.endpoint_id == EndpointIds::COMMUTATION_MAPPER_POS_ABS) {
-        // Check if value is NaN (encoder search not complete)
         return !isnan(resp.value.f32);
       }
     }
     delay(1);
   }
-  
-  if (dbg_) {
-    dbg_->printf("[SDO] Timeout waiting for encoder search status on node %lu\n", (unsigned long)node_id);
-  }
+  if (dbg_) dbg_->printf("[SDO] Timeout waiting for encoder search status on node %lu\n", (unsigned long)node_id);
   return false;
 }
 
 bool CanInterface::readGpioStates(uint32_t node_id, uint32_t& states_out, uint32_t timeout_ms) {
-  // Request GPIO states
   if (!requestArbitraryParameter(node_id, EndpointIds::GPIO_STATES)) {
-    if (dbg_) {
-      dbg_->printf("[SDO] Failed to send GPIO states request to node %lu\n", (unsigned long)node_id);
-    }
+    if (dbg_) dbg_->printf("[SDO] Failed to send GPIO states request to node %lu\n", (unsigned long)node_id);
     return false;
   }
-  
-  // Wait for response
   const uint32_t start = millis();
   while ((millis() - start) < timeout_ms) {
-    can1_.events();  // pump CAN
-    
+    can1_.events();
     ArbitraryParamResponse resp;
     if (getLastArbitraryParamResponse(node_id, resp)) {
       if (resp.endpoint_id == EndpointIds::GPIO_STATES) {
@@ -424,24 +388,18 @@ bool CanInterface::readGpioStates(uint32_t node_id, uint32_t& states_out, uint32
     }
     delay(1);
   }
-  
-  if (dbg_) {
-    dbg_->printf("[SDO] Timeout waiting for GPIO states on node %lu\n", (unsigned long)node_id);
-  }
+  if (dbg_) dbg_->printf("[SDO] Timeout waiting for GPIO states on node %lu\n", (unsigned long)node_id);
   return false;
 }
 
 // ================================================================================
-// End Arbitrary Parameter Functions
+// Operating Config and Axis Access
 // ================================================================================
 
-bool CanInterface::restoreHandToOperatingConfig(uint32_t node_id,
-                                                float vel_limit_rps,
-                                                float current_limit_A) {
+bool CanInterface::restoreHandToOperatingConfig(uint32_t node_id, float vel_limit_rps, float current_limit_A) {
   constexpr uint32_t AXIS_STATE_IDLE = 1u;
   constexpr uint32_t CONTROL_MODE_POSITION = 3u;
   constexpr uint32_t INPUT_MODE_PASSTHROUGH = 1u;
-
   bool ok = true;
   ok &= setRequestedState(node_id, AXIS_STATE_IDLE);
   ok &= setControllerMode(node_id, CONTROL_MODE_POSITION, INPUT_MODE_PASSTHROUGH);
@@ -449,7 +407,6 @@ bool CanInterface::restoreHandToOperatingConfig(uint32_t node_id,
   return ok;
 }
 
-// ---------------- estimator & iq getters ----------------
 bool CanInterface::getAxisPV(uint32_t node_id, float& pos_out, float& vel_out, uint64_t& wall_us_out) const {
   if (node_id >= 64) return false;
   uint64_t t1, t2;
@@ -461,9 +418,7 @@ bool CanInterface::getAxisPV(uint32_t node_id, float& pos_out, float& vel_out, u
     t2 = axes_pv_[node_id].wall_us;
   } while (t1 != t2);
   if (!axes_pv_[node_id].valid) return false;
-  pos_out = p;
-  vel_out = v;
-  wall_us_out = t1;
+  pos_out = p; vel_out = v; wall_us_out = t1;
   return true;
 }
 
@@ -478,69 +433,59 @@ bool CanInterface::getAxisIq(uint32_t node_id, float& iq_meas_out, float& iq_set
     t2 = axes_iq_[node_id].wall_us;
   } while (t1 != t2);
   if (!axes_iq_[node_id].valid) return false;
-  iq_meas_out = iqm;
-  iq_setp_out = iqs;
-  wall_us_out = t1;
+  iq_meas_out = iqm; iq_setp_out = iqs; wall_us_out = t1;
   return true;
 }
 
-// ---------------- homing ----------------
-bool CanInterface::homeHand(uint32_t node_id,
-                            float homing_speed_rps,
-                            float current_limit_A,
-                            float current_headroom_A,
-                            float settle_pos_rev,
-                            float avg_weight,
-                            uint16_t /*iq_poll_period_ms*/) {
-  setHomeState(node_id, AxisHomeState::Homing);
+// ================================================================================
+// Homing
+// ================================================================================
 
-  if (!setRequestedState(node_id, 8u)) return false;      // CLOSED_LOOP_CONTROL
-  if (!setControllerMode(node_id, 2u, 2u)) return false;  // VELOCITY_CONTROL + VEL_RAMP
+bool CanInterface::homeHand(uint32_t node_id, float homing_speed_rps, float current_limit_A,
+                            float current_headroom_A, float settle_pos_rev, float avg_weight, uint16_t) {
+  setHomeState(node_id, AxisHomeState::Homing);
+  if (!setRequestedState(node_id, 8u)) return false;
+  if (!setControllerMode(node_id, 2u, 2u)) return false;
   const float vel_limit = fabsf(homing_speed_rps * 2.0f);
   if (!setVelCurrLimits(node_id, current_limit_A + current_headroom_A, vel_limit)) return false;
   delay(100);
 
   if (!sendInputVel(node_id, homing_speed_rps, 0.0f)) {
-    setRequestedState(node_id, 1u);  // IDLE
+    setRequestedState(node_id, 1u);
     setHomeState(node_id, AxisHomeState::Unhomed);
     return false;
   }
 
   Serial.printf("[Home] node=%lu moving at %.3f rps; Iq limit=%.2f A\n",
-                         (unsigned long)node_id, (double)homing_speed_rps, (double)current_limit_A);
+                (unsigned long)node_id, (double)homing_speed_rps, (double)current_limit_A);
 
   float ema = 0.0f;
   uint64_t last_seen_us = 0;
   uint64_t start_time = millis();
-  uint64_t timeout = 5000; // ie. 5 seconds
+  uint64_t timeout = 5000;
 
   for (;;) {
-    // Pump CAN so periodic 0x14 frames are handled promptly
     can1_.events();
-
     float iq_meas, iq_setp;
     uint64_t t_us;
     if (getAxisIq(node_id, iq_meas, iq_setp, t_us)) {
-      if (t_us != last_seen_us) {  // only update EMA on fresh samples
+      if (t_us != last_seen_us) {
         last_seen_us = t_us;
         const float alpha = constrain(avg_weight, 0.f, 0.9999f);
         ema = alpha * ema + (1.f - alpha) * iq_meas;
 
-        // If it has been `timeout` ms AND we still haven't changed state for some reason, exit
         if (hb_[hand_node_id_].axis_state == 1 || hb_[hand_node_id_].axis_error == 1) {
-          uint64_t time_now = millis();
-          if (time_now - start_time > timeout) {
+          if (millis() - start_time > timeout) {
             Serial.println("Timeout while homing hand... Exiting to try again.");
             return false;
           }
         }
         
         if (fabsf(ema) >= current_limit_A) {
-          setRequestedState(node_id, 1u);  // IDLE
+          setRequestedState(node_id, 1u);
           delay(5);
           setAbsolutePosition(node_id, settle_pos_rev);
-          Serial.printf("[Home] node=%lu homed. Set pos to %.3f rev.\n",
-                                 (unsigned long)node_id, (double)settle_pos_rev);
+          Serial.printf("[Home] node=%lu homed. Set pos to %.3f rev.\n", (unsigned long)node_id, (double)settle_pos_rev);
           restoreHandToOperatingConfig(node_id);
           setHomeState(node_id, AxisHomeState::Homed);
           return true;
@@ -551,26 +496,16 @@ bool CanInterface::homeHand(uint32_t node_id,
   }
 }
 
-bool CanInterface::homeHandStandard(uint32_t node_id,
-                                    int hand_direction,
-                                    float base_speed_rps,
-                                    float current_limit_A,
-                                    float current_headroom_A,
-                                    float set_abs_pos_rev) {
-  // As in Python: homing_speed = hand_direction * 3.0; but when "running downwards" you inverted.
-  // Here we pass the speed directly — you choose sign when calling.
-  // Your Python used set_abs_pos to hand_direction * -0.1; pass that via set_abs_pos_rev.
+bool CanInterface::homeHandStandard(uint32_t node_id, int hand_direction, float base_speed_rps,
+                                    float current_limit_A, float current_headroom_A, float set_abs_pos_rev) {
   const float homing_speed = float(hand_direction) * base_speed_rps;
-  return homeHand(node_id,
-                  /*homing_speed_rps=*/homing_speed,
-                  /*current_limit_A=*/current_limit_A,
-                  /*current_headroom_A=*/current_headroom_A,
-                  /*settle_pos_rev=*/set_abs_pos_rev,
-                  /*avg_weight=*/0.7f,
-                  /*iq_poll_period_ms=*/10);
+  return homeHand(node_id, homing_speed, current_limit_A, current_headroom_A, set_abs_pos_rev, 0.7f, 10);
 }
 
-// ---------------- Home State ----------------
+// ================================================================================
+// Home State Management
+// ================================================================================
+
 void CanInterface::setHomeState(uint32_t node_id, AxisHomeState s) {
   if (node_id < 64) home_state_[node_id] = s;
 }
@@ -592,31 +527,24 @@ bool CanInterface::isHomeRequired(uint32_t node_id) const {
 }
 
 void CanInterface::requireHomeOnlyFor(uint32_t node_id) {
-  if (node_id >= 64) {
-    home_required_mask_ = 0;
-    return;
-  }
-  home_required_mask_ = (1ULL << node_id);
+  home_required_mask_ = (node_id < 64) ? (1ULL << node_id) : 0;
 }
 
-void CanInterface::clearHomeRequirements() {
-  home_required_mask_ = 0;
-}
+void CanInterface::clearHomeRequirements() { home_required_mask_ = 0; }
 
 bool CanInterface::isAxisMotionAllowed(uint32_t node_id) const {
   if (node_id >= 64) return false;
-  // If this axis doesn't require homing, always allow motion.
   if (!isHomeRequired(node_id)) return true;
-
-  // If it does require homing, allow only during Homing/Homed.
   AxisHomeState s = home_state_[node_id];
   return s == AxisHomeState::Homing || s == AxisHomeState::Homed;
 }
 
-// ---------------- Get Axis Heartbeat ----------------
+// ================================================================================
+// Axis Heartbeat
+// ================================================================================
+
 bool CanInterface::getAxisHeartbeat(uint32_t node_id, AxisHeartbeat& out) const {
   if (node_id >= 64) return false;
-  // atomic-ish copy
   AxisHeartbeat snap;
   uint64_t t1, t2;
   do {
@@ -624,7 +552,6 @@ bool CanInterface::getAxisHeartbeat(uint32_t node_id, AxisHeartbeat& out) const 
     snap = hb_[node_id];
     t2 = hb_[node_id].wall_us;
   } while (t1 != t2);
-
   if (!snap.valid) return false;
   out = snap;
   return true;
@@ -635,11 +562,10 @@ bool CanInterface::hasAxisError(uint32_t node_id, uint32_t mask) const {
   return getAxisHeartbeat(node_id, hb) && (hb.axis_error & mask);
 }
 
-bool CanInterface::waitForAxisErrorClear(uint32_t node_id, uint32_t mask,
-                                         uint32_t timeout_ms, uint16_t poll_ms) {
+bool CanInterface::waitForAxisErrorClear(uint32_t node_id, uint32_t mask, uint32_t timeout_ms, uint16_t poll_ms) {
   const uint32_t start = millis();
   while ((millis() - start) < timeout_ms) {
-    const_cast<CanInterface*>(this)->loop();  // pump CAN
+    const_cast<CanInterface*>(this)->loop();
     AxisHeartbeat hb;
     if (getAxisHeartbeat(node_id, hb) && (hb.axis_error & mask) == 0u) return true;
     delay(poll_ms);
@@ -647,57 +573,118 @@ bool CanInterface::waitForAxisErrorClear(uint32_t node_id, uint32_t mask,
   return false;
 }
 
-// ---------------- Auto clear brake resistor disarmed error ----------------
 void CanInterface::setAutoClearBrakeResistor(bool enable, uint32_t min_interval_ms) {
   auto_clear_brake_res_ = enable;
-  auto_clear_interval_ms_ = min_interval_ms ? min_interval_ms : 1;  // avoid 0
+  auto_clear_interval_ms_ = min_interval_ms ? min_interval_ms : 1;
 }
 
-// ---------------- config ----------------
-void CanInterface::setEstimatorCmd(uint8_t cmd) {
-  estimatorCmd_ = (cmd & 0x1F);
+void CanInterface::setEstimatorCmd(uint8_t cmd) { estimatorCmd_ = (cmd & 0x1F); }
+
+// ================================================================================
+// Ball Butler Heartbeat
+// ================================================================================
+void CanInterface::maybePublishHeartbeat_() {
+  if (heartbeat_rate_ms_ == 0) return;
+  if (!state_machine_) return;
+  const uint32_t now_ms = millis();
+  if (now_ms - last_heartbeat_ms_ < heartbeat_rate_ms_) return;
+  last_heartbeat_ms_ = now_ms;
+  publishHeartbeat_();
 }
 
-// ---------------- RX trampoline/handler ----------------
+void CanInterface::publishHeartbeat_() {
+  RobotState state = state_machine_->getState();
+  bool ball_present = state_machine_->isBallInHand();
+  
+  // Map RobotState to heartbeat state values
+  uint8_t state_val = robotStateToUint8(state);
+  
+  // Byte 0: State byte (bit 0 = ball_in_hand, bits 1-7 = state)
+  uint8_t state_byte = (ball_present ? 0x01 : 0x00) | (state_val << 1);
+  
+  // Byte 1: State data (error_code for ERROR, 0 otherwise)
+  uint8_t state_data = 0;
+  if (state == RobotState::ERROR) {
+    state_data = static_cast<uint8_t>(current_error_code_);
+  }
+  
+  // Position feedback from Proprioception
+  ProprioceptionData prop;
+  PRO.snapshot(prop);
+  
+  float yaw_res = 0.01f;       // degrees
+  float pitch_res = 0.002f;    // degrees
+  float hand_res = 0.01f;      // mm
+
+  // Yaw: resolution ~0.01° : 0-360° -> 0-65535 (uint16),
+  uint16_t yaw_enc = 0;
+  if (prop.isYawValid()) {
+    float yaw_deg = fmodf(prop.yaw_deg, 360.0f);
+    if (yaw_deg < 0) yaw_deg += 360.0f;
+    yaw_enc = (uint16_t)(yaw_deg / yaw_res);
+  }
+  
+  // Pitch:  resolution ~0.002° : 0-131.072° -> 0-65535 (uint16),
+  uint16_t pitch_enc = 0;
+  if (prop.isPitchValid()) {
+    float pitch_deg = constrain(prop.pitch_deg, 0.0f, 90.0f);
+    pitch_enc = (uint16_t)(pitch_deg / pitch_res);
+  }
+  
+  // Hand: resolution 0.01mm : 0-655.36 mm -> 0-65535 (uint16), 
+  uint16_t hand_enc = 0;
+  if (prop.isHandPVValid()) {
+    float hand_mm = prop.hand_pos_rev / LINEAR_GAIN * 1000.0f;
+    hand_mm = constrain(hand_mm, 0.0f, 655.36f);
+    hand_enc = (uint16_t)(hand_mm / hand_res);
+  }
+  
+  // Assemble frame (little-endian for uint16 fields)
+  uint8_t frame[8];
+  frame[0] = state_byte;
+  frame[1] = state_data;
+  frame[2] = yaw_enc & 0xFF;
+  frame[3] = (yaw_enc >> 8) & 0xFF;
+  frame[4] = pitch_enc & 0xFF;
+  frame[5] = (pitch_enc >> 8) & 0xFF;
+  frame[6] = hand_enc & 0xFF;
+  frame[7] = (hand_enc >> 8) & 0xFF;
+
+  // Use centralized CAN ID from CanIds namespace
+  sendRaw(CanIds::HEARTBEAT_CMD, frame, 8);
+}
+
+// ================================================================================
+// RX Handlers
+// ================================================================================
+
 void CanInterface::rxTrampoline_(const CAN_message_t& msg) {
   if (s_instance_) s_instance_->handleRx_(msg);
 }
 
 void CanInterface::handleRx_(const CAN_message_t& msg) {
-  // Time sync
-  if (msg.id == timeSyncId_ && msg.len == 8 && !msg.flags.remote) {
+  // Time sync - uses instance variable (can be overridden from default)
+  if (msg.id == CanIds::TIME_SYNC_CMD && msg.len == 8 && !msg.flags.remote) {
     handleTimeSync_(msg);
     return;
   }
-  // DEBUGGING print all CAN RX
-  // dbg_->printf("[CAN RX] id=0x%03lX len=%d data=[%02X %02X %02X %02X %02X %02X %02X %02X]\n",
-  //               (unsigned long)msg.id, msg.len,
-  //               msg.buf[0], msg.buf[1], msg.buf[2], msg.buf[3],
-  //               msg.buf[4], msg.buf[5], msg.buf[6], msg.buf[7]);
 
-  // Decode node/cmd
   const uint32_t node = (msg.id >> 5);
   const uint8_t cmd = msg.id & 0x1F;
 
-  // Host -> Teensy throw command (8 bytes on a dedicated ID)
-  if (host_throw_id_ && msg.id == host_throw_id_ && msg.len == 8 && !msg.flags.remote) {
-    // Fields (LE):
-    // 0-1: yaw_i16 scaled: yaw = yaw_i16 * pi / 32768   (±pi)
-    // 2-3: pitch_u16 scaled: pitch = pitch_u16 * (pi / 65536)  (0..pi/2 used)
-    // 4-5: speed_u16 scaled: speed = speed_u16 * 0.0001 m/s
-    // 6-7: time_u16 scaled: in_s = time_u16 * 0.001 s
+  // Host -> Teensy throw command
+  if (msg.id == CanIds::HOST_THROW_CMD && msg.len == 8 && !msg.flags.remote) {
     const int16_t yaw_i = (int16_t)((uint16_t)msg.buf[0] | ((uint16_t)msg.buf[1] << 8));
     const uint16_t pit_u = (uint16_t)msg.buf[2] | ((uint16_t)msg.buf[3] << 8);
     const uint16_t sp_u = (uint16_t)msg.buf[4] | ((uint16_t)msg.buf[5] << 8);
     const uint16_t t_u = (uint16_t)msg.buf[6] | ((uint16_t)msg.buf[7] << 8);
 
     HostThrowCmd c;
-    c.yaw_rad = float(yaw_i) * (float)M_PI / 32768.0f;      // clamp to [-pi, +pi]
-    c.pitch_rad = float(pit_u) * ((float)M_PI / 65536.0f);  // 0..(~pi/2 - 1 LSB)
-    c.speed_mps = float(sp_u) * 0.0001f;                    // 0.1 mm/s per LSB
-    c.in_s = float(t_u) * 0.001f;                           // 1 ms per LSB
+    c.yaw_rad = float(yaw_i) * (float)M_PI / 32768.0f;
+    c.pitch_rad = float(pit_u) * ((float)M_PI / 65536.0f);
+    c.speed_mps = float(sp_u) * 0.0001f;
+    c.in_s = float(t_u) * 0.001f;
 
-    // Range guard (host should validate, but be defensive)
     if (c.yaw_rad < -M_PI) c.yaw_rad = -M_PI;
     if (c.yaw_rad > M_PI) c.yaw_rad = M_PI;
     if (c.pitch_rad < 0.f) c.pitch_rad = 0.f;
@@ -722,12 +709,43 @@ void CanInterface::handleRx_(const CAN_message_t& msg) {
     return;
   }
 
-  // Heartbeat: axis_error (u32) | state (u8) | proc_result (u8) | traj_done (u8)
+  // Host -> BB RELOAD command
+  if (msg.id == CanIds::RELOAD_CMD && msg.len == 0 && !msg.flags.remote) {
+    if (dbg_can_ && dbg_) {
+      dbg_->printf("[CAN<-RELOAD] id=0x%03lX cmd=%u\n", (unsigned long)msg.id, (unsigned)msg.buf[0]);
+    }
+    if (state_machine_) {
+      state_machine_->requestReload();
+    }
+    return;
+  }
+
+  // Host -> BB RESET command
+  if (msg.id == CanIds::RESET_CMD && msg.len == 0 && !msg.flags.remote) {
+    if (dbg_can_ && dbg_) {
+      dbg_->printf("[CAN<-RESET] id=0x%03lX cmd=%u\n", (unsigned long)msg.id, (unsigned)msg.buf[0]);
+    }
+    if (state_machine_) {
+      state_machine_->reset();
+    }
+    return;
+  }
+
+  // Host -> BB CALIBRATE LOCATION command
+  if (msg.id == CanIds::CALIBRATE_LOC_CMD && msg.len == 0 && !msg.flags.remote) {
+    if (dbg_can_ && dbg_) {
+      dbg_->printf("[CAN<-CALIBRATE_LOC] id=0x%03lX cmd=%u\n", (unsigned long)msg.id, (unsigned)msg.buf[0]);
+    }
+    if (state_machine_) {
+      state_machine_->requestCalibrateLocation();
+    }
+    return;
+  }
+
+  // ODrive heartbeat
   if (cmd == uint8_t(Cmd::heartbeat_message) && node < 64 && msg.len >= 7 && !msg.flags.remote) {
-    uint32_t axis_error = (uint32_t)msg.buf[0]
-                          | ((uint32_t)msg.buf[1] << 8)
-                          | ((uint32_t)msg.buf[2] << 16)
-                          | ((uint32_t)msg.buf[3] << 24);
+    uint32_t axis_error = (uint32_t)msg.buf[0] | ((uint32_t)msg.buf[1] << 8)
+                        | ((uint32_t)msg.buf[2] << 16) | ((uint32_t)msg.buf[3] << 24);
 
     hb_[node].axis_error = axis_error;
     hb_[node].axis_state = msg.buf[4];
@@ -736,11 +754,9 @@ void CanInterface::handleRx_(const CAN_message_t& msg) {
     hb_[node].wall_us = wallTimeUs();
     hb_[node].valid = true;
 
-    // If spurious BRAKE_RESISTOR_DISARMED bit is present, auto-clear with throttle.
     if (auto_clear_brake_res_ && (axis_error & ODriveErrors::BRAKE_RESISTOR_DISARMED)) {
-      const uint64_t now_us = micros64_();  // local clock is fine for throttling
+      const uint64_t now_us = micros64_();
       const uint64_t min_gap_us = (uint64_t)auto_clear_interval_ms_ * 1000ULL;
-
       if (now_us - last_brake_clear_us_[node] >= min_gap_us) {
         last_brake_clear_us_[node] = now_us;
         const bool ok = clearErrors(node);
@@ -753,13 +769,13 @@ void CanInterface::handleRx_(const CAN_message_t& msg) {
     return;
   }
 
-  // -------- TxSdo (response to arbitrary parameter read) --------
-  if (cmd == uint8_t(Cmd::TxSdo) && node < 64) {// && msg.len == 8 && !msg.flags.remote) {
+  // TxSdo (arbitrary parameter response)
+  if (cmd == uint8_t(Cmd::TxSdo) && node < 64) {
     handleTxSdo_(node, msg.buf, msg.len);
     return;
   }
 
-  // -------- Estimator (pos, vel) -> PV + Proprioception --------
+  // Estimator (pos, vel)
   if (cmd == estimatorCmd_ && msg.len == 8 && node < 64 && !msg.flags.remote) {
     float pos, vel;
     memcpy(&pos, &msg.buf[0], 4);
@@ -769,16 +785,13 @@ void CanInterface::handleRx_(const CAN_message_t& msg) {
     axes_pv_[node].wall_us = wallTimeUs();
     axes_pv_[node].valid = true;
 
-    // Push to Proprioception
     Proprioception& prop = PRO;
     const uint64_t t_us = axes_pv_[node].wall_us;
 
     if (node == hand_node_id_) {
-      // Hand: store raw pos/vel in rev/rps
       prop.setHandPV(pos, vel, t_us);
     }
     if (node == pitch_node_id_) {
-      // Pitch: convert rev -> deg
       const float pitch_deg = 90.0 + pos * 360.0f;
       prop.setPitchDeg(pitch_deg, t_us);
     }
@@ -790,7 +803,7 @@ void CanInterface::handleRx_(const CAN_message_t& msg) {
     return;
   }
 
-  // -------- Iq publish -> Proprioception --------
+  // Iq feedback
   if (cmd == uint8_t(Cmd::get_iq) && msg.len == 8 && node < 64 && !msg.flags.remote) {
     float iq_meas, iq_setp;
     memcpy(&iq_meas, &msg.buf[0], 4);
@@ -800,7 +813,6 @@ void CanInterface::handleRx_(const CAN_message_t& msg) {
     axes_iq_[node].wall_us = wallTimeUs();
     axes_iq_[node].valid = true;
 
-    // Push to Proprioception for the hand (we only track hand_iq for now)
     if (node == hand_node_id_) {
       PRO.setHandIq(iq_meas, axes_iq_[node].wall_us);
     }
@@ -812,44 +824,34 @@ void CanInterface::handleRx_(const CAN_message_t& msg) {
     return;
   }
 
-  // Optional general CAN debug
   if (dbg_can_ && dbg_) {
-    dbg_->printf("[CAN] id=0x%03lX len=%d rtr=%d\n",
-                 (unsigned long)msg.id, msg.len, (int)msg.flags.remote);
+    dbg_->printf("[CAN] id=0x%03lX len=%d rtr=%d\n", (unsigned long)msg.id, msg.len, (int)msg.flags.remote);
   }
 }
 
-// ---------------- TxSdo handler (arbitrary parameter response) ----------------
 void CanInterface::handleTxSdo_(uint32_t node_id, const uint8_t* buf, uint8_t len) {
   if (len < 8) return;
-  
-  // SDO response format: [opcode(1)] [endpoint_id(2)] [reserved(1)] [value(4)]
   const uint8_t opcode = buf[0];
   const uint16_t endpoint_id = (uint16_t)buf[1] | ((uint16_t)buf[2] << 8);
-  // buf[3] is reserved
-  
+
   ArbitraryParamResponse resp;
   resp.opcode = opcode;
   resp.endpoint_id = endpoint_id;
   resp.wall_us = wallTimeUs();
-  
-  // Store value as both float and uint32 (union)
   memcpy(&resp.value.f32, &buf[4], 4);
-  
   resp.valid = true;
   arb_param_resp_[node_id] = resp;
   
-  // Invoke callback if registered
   if (arb_param_cb_) {
     arb_param_cb_(node_id, resp, arb_param_cb_user_);
   }
 }
 
-// ---------------- Time sync handler ----------------
 void CanInterface::handleTimeSync_(const CAN_message_t& msg) {
-  // Payload: [uint32 sec][uint32 usec], little-endian
-  uint32_t sec = (uint32_t)msg.buf[0] | ((uint32_t)msg.buf[1] << 8) | ((uint32_t)msg.buf[2] << 16) | ((uint32_t)msg.buf[3] << 24);
-  uint32_t usec = (uint32_t)msg.buf[4] | ((uint32_t)msg.buf[5] << 8) | ((uint32_t)msg.buf[6] << 16) | ((uint32_t)msg.buf[7] << 24);
+  uint32_t sec = (uint32_t)msg.buf[0] | ((uint32_t)msg.buf[1] << 8) 
+               | ((uint32_t)msg.buf[2] << 16) | ((uint32_t)msg.buf[3] << 24);
+  uint32_t usec = (uint32_t)msg.buf[4] | ((uint32_t)msg.buf[5] << 8) 
+                | ((uint32_t)msg.buf[6] << 16) | ((uint32_t)msg.buf[7] << 24);
 
   const uint64_t master_us = (uint64_t)sec * 1'000'000ULL + (uint64_t)usec;
   const uint64_t local_us = micros64_();
@@ -860,14 +862,13 @@ void CanInterface::handleTimeSync_(const CAN_message_t& msg) {
     have_offset_ = true;
   } else {
     const int64_t diff = offset - wall_offset_us_;
-    wall_offset_us_ += (diff >> ALPHA_SHIFT_);  // IIR
+    wall_offset_us_ += (diff >> ALPHA_SHIFT_);
   }
 
   const int32_t residual = int32_t(offset - wall_offset_us_);
   stats_.add(residual);
 }
 
-// ---------------- maybe print sync stats ----------------
 void CanInterface::maybePrintSyncStats_() {
   if (!dbg_time_ || !dbg_) return;
   const uint64_t now = micros64_();
