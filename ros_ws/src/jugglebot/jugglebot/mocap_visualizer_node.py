@@ -1,9 +1,9 @@
-""" This node is responsible for visualizing the mocap markers and predicted landings in RViz.
+""" This node is responsible for visualizing the mocap markers and ball states in RViz.
 """
 
 import rclpy
 from rclpy.node import Node
-from jugglebot_interfaces.msg import MocapDataMulti, MocapDataSingle, BallStateSingle, BallStateMulti
+from jugglebot_interfaces.msg import MocapDataMulti, MocapDataSingle, BallStateArray
 from geometry_msgs.msg import Point
 from visualization_msgs.msg import Marker, MarkerArray
 from std_msgs.msg import Header, ColorRGBA
@@ -26,10 +26,10 @@ class MocapVisualizerNode(Node):
             10
         )
 
-        self.landing_subscriber = self.create_subscription(
-            BallStateMulti,
-            '/predicted_landings',
-            self.landing_callback,
+        self.balls_subscriber = self.create_subscription(
+            BallStateArray,
+            '/balls',
+            self.balls_callback,
             10
         )
 
@@ -145,26 +145,26 @@ class MocapVisualizerNode(Node):
         self.marker_publisher.publish(marker_array)
         self.get_logger().debug(f"Published {len(marker_array.markers)} mocap markers to RViz.")
 
-    def landing_callback(self, msg: BallStateMulti):
+    def balls_callback(self, msg: BallStateArray):
         """
-        Callback to handle predicted landing points and create visualization markers.
+        Callback to handle ball states and create visualization markers.
 
         Args:
-            msg (Point): The predicted landing position.
+            msg (BallStateArray): The incoming ball state data.
         """
-        for landing in msg.landing_predictions:
+        for ball in msg.balls:
             # Convert position from mm to meters
             position_meters = Point()
-            position_meters.x = landing.landing_position.x / 1000.0
-            position_meters.y = landing.landing_position.y / 1000.0
-            position_meters.z = landing.landing_position.z / 1000.0
+            position_meters.x = ball.landing_position.x / 1000.0
+            position_meters.y = ball.landing_position.y / 1000.0
+            position_meters.z = ball.landing_position.z / 1000.0
 
             landing_marker = Marker()
             landing_marker.header = Header()
             landing_marker.header.stamp = self.get_clock().now().to_msg()
             landing_marker.header.frame_id = 'map'
 
-            landing_marker.ns = 'predicted_landings'
+            landing_marker.ns = 'ball_landings'
             landing_marker.id = self.get_unique_marker_id()
             landing_marker.type = Marker.CYLINDER
             landing_marker.action = Marker.ADD
@@ -196,7 +196,7 @@ class MocapVisualizerNode(Node):
 
             # Publish the landing marker
             self.marker_publisher.publish(marker_array)
-            self.get_logger().debug(f"Published predicted landing marker at ({position_meters.x}, {position_meters.y}, {position_meters.z}) m.")
+            self.get_logger().debug(f"Published ball landing marker at ({position_meters.x}, {position_meters.y}, {position_meters.z}) m.")
 
 
     def get_unique_marker_id(self) -> int:

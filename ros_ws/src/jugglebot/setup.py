@@ -39,7 +39,8 @@ setup(
             'calibrate_platform_node = jugglebot.calibrate_platform_node:main',
             'pose_correction_node = jugglebot.pose_correction_node:main',
             'hoop_sinker_node = jugglebot.hoop_sinker_node:main',
-            'ball_butler_node = jugglebot.ball_butler_node:main'
+            'ball_butler_node = jugglebot.ball_butler_node:main',
+            'target_tracker_node = jugglebot.target_tracker_node:main'
         ],
     },
 )

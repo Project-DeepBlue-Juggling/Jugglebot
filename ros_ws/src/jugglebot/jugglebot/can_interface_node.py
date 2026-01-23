@@ -9,7 +9,8 @@ from jugglebot_interfaces.msg import (
     SetTrapTrajLimitsMessage,
     HandTelemetryMessage,
     RobotState,
-    BallButlerHeartbeat
+    BallButlerHeartbeat,
+    RigidBodyPoses
 )
 from jugglebot_interfaces.srv import (
     ODriveCommandService, 
@@ -22,7 +23,6 @@ from jugglebot_interfaces.srv import (
 from jugglebot_interfaces.action import HomeMotors
 from std_msgs.msg import Float64MultiArray, String
 from std_srvs.srv import Trigger
-from geometry_msgs.msg import PoseStamped
 from .can_interface import CANInterface
 import numpy as np
 
@@ -66,7 +66,7 @@ class CanInterfaceNode(Node):
                                                                    self.motor_trap_traj_limits_callback, 10
         )
         self.control_mode_sub = self.create_subscription(String, 'control_mode_topic', self.control_mode_callback, 10)
-        self.base_pose_sub = self.create_subscription(PoseStamped, 'base_pose_mocap', self.base_pose_callback, 10)
+        self.rigid_body_poses_sub = self.create_subscription(RigidBodyPoses, 'rigid_body_poses', self.rigid_body_poses_callback, 10)
 
         #### Initialize publishers ####
             # Hardware data publishers
@@ -153,12 +153,22 @@ class CanInterfaceNode(Node):
     #                                         Generic Callbacks                                             #
     #########################################################################################################
 
-    def base_pose_callback(self, msg):
+    def rigid_body_poses_callback(self, msg: RigidBodyPoses):
         """
-        Callback for the base pose. Used to determine whether the global coordinate system is still valid.
+        Callback for rigid body poses. Extracts the Base pose and checks if the global coordinate system is valid.
         If the base pose is measured to be more than <pos_thresh> mm or <ori_thresh> degrees from the origin, the global coordinate
         system is invalid and an error is raised in robot_state.
         """
+        # Find the Base body in the message
+        base_pose = None
+        for body in msg.bodies:
+            if body.name == "Base":
+                base_pose = body.pose.pose
+                break
+        
+        if base_pose is None:
+            return  # Base not found in this message
+
         # Set the thresholds for position and orientation
         pos_thresh = 5.0  # mm
         ori_thresh = 2.0  # degrees
@@ -166,9 +176,6 @@ class CanInterfaceNode(Node):
         error_msg = "Base is not at the origin! Global coordinate system is invalid."
 
         try:
-            # Extract the base pose
-            base_pose = msg.pose
-
             # Check if the base is at the origin
             dist_from_origin = np.linalg.norm([base_pose.position.x, base_pose.position.y, base_pose.position.z])
             angle_from_origin = np.arccos(base_pose.orientation.w) * 2 * 180 / np.pi
@@ -196,7 +203,7 @@ class CanInterfaceNode(Node):
                     pass
 
         except Exception as e:
-            self.get_logger().error(f"Error in base pose callback: {e}")
+            self.get_logger().error(f"Error in rigid body poses callback: {e}")
 
     #########################################################################################################
     #                                       Commanding Ball Butler                                          #

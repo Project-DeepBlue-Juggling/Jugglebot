@@ -199,6 +199,15 @@ class KalmanFilter:
         """
         return self.state[:3]
 
+    def get_current_velocity(self) -> np.ndarray:
+        """
+        Returns the current velocity of the Kalman Filter.
+
+        Returns:
+            np.ndarray: The current velocity [vx, vy, vz].
+        """
+        return self.state[3:6]
+
     def reset(self):
         """
         Resets the filter to its initial state.

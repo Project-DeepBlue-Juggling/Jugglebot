@@ -7,7 +7,7 @@ from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from std_srvs.srv import Trigger
 from std_msgs.msg import String, Float32MultiArray, Int8MultiArray
-from jugglebot_interfaces.msg import PlatformPoseCommand, SetTrapTrajLimitsMessage, LegsTargetReachedMessage, RobotState
+from jugglebot_interfaces.msg import PlatformPoseCommand, SetTrapTrajLimitsMessage, LegsTargetReachedMessage, RobotState, RigidBodyPoses
 from geometry_msgs.msg import PoseStamped, PoseArray, Pose
 import time
 from .calibrate_platform_pattern_generator import PosePatternGenerator
@@ -45,7 +45,7 @@ class CalibratePlatformNode(Node):
 
         # The following subscribers are used to publish hardware feedback 'snapshots' so that it's easier to pick out the data we need
         self.robot_state_subscriber = self.create_subscription(RobotState, 'robot_state', self.robot_state_callback, 10)
-        self.platform_pose_mocap_subscriber = self.create_subscription(PoseStamped, 'platform_pose_mocap', self.platform_pose_mocap_callback, 10)
+        self.rigid_body_poses_subscriber = self.create_subscription(RigidBodyPoses, 'rigid_body_poses', self.rigid_body_poses_callback, 10)
 
         # Initialize service servers
         self.start_calibration_server = self.create_service(Trigger, 'start_calibration', self.start_calibration,
@@ -243,9 +243,12 @@ class CalibratePlatformNode(Node):
         for i in range(6):
             self.leg_lengths[i] = msg.motor_states[i].pos_estimate
 
-    def platform_pose_mocap_callback(self, msg):
-        '''Handles the mocap pose message'''
-        self.pose_meas = msg.pose
+    def rigid_body_poses_callback(self, msg: RigidBodyPoses):
+        '''Handles the rigid body poses message. Extracts the Platform pose.'''
+        for body in msg.bodies:
+            if body.name == "Platform":
+                self.pose_meas = body.pose.pose
+                break
 
     def legs_state_callback(self, msg):
         '''

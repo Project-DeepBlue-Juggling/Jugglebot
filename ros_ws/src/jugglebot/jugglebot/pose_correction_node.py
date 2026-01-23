@@ -11,8 +11,8 @@ Methods:
 import rclpy
 from rclpy.node import Node, SetParametersResult
 from std_srvs.srv import Trigger
-from jugglebot_interfaces.msg import PlatformPoseCommand
-from geometry_msgs.msg import PoseStamped, Pose
+from jugglebot_interfaces.msg import PlatformPoseCommand, RigidBodyPoses
+from geometry_msgs.msg import Pose
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 import joblib
@@ -36,7 +36,7 @@ class PoseCorrectionNode(Node):
         self.pose_subscription = self.create_subscription(
             PlatformPoseCommand, 'platform_pose_topic', self.pose_cmd_callback, 10)
         self.mocap_subscription = self.create_subscription(
-            PoseStamped, 'platform_pose_mocap', self.mocap_callback, 10)
+            RigidBodyPoses, 'rigid_body_poses', self.mocap_callback, 10)
         self.corrected_pose_publisher = self.create_publisher(
             PlatformPoseCommand, 'platform_pose_corrected', 10)
 
@@ -95,9 +95,12 @@ class PoseCorrectionNode(Node):
             corrected_pose_msg.publisher = self.latest_pose_publisher
             self.corrected_pose_publisher.publish(corrected_pose_msg)
 
-    def mocap_callback(self, msg: PoseStamped):
-        """Callback for mocap measurements (currently unused)."""
-        self.latest_measured_pose = msg.pose
+    def mocap_callback(self, msg: RigidBodyPoses):
+        """Callback for mocap measurements. Extracts Platform pose."""
+        for body in msg.bodies:
+            if body.name == "Platform":
+                self.latest_measured_pose = body.pose.pose
+                break
 
     def parameter_callback(self, params):
         for param in params:
