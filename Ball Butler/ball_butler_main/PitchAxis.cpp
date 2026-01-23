@@ -68,7 +68,6 @@ bool PitchAxis::sendTargetRev_(float target_rev) {
   }
   if (hb_pitch.axis_state != AXIS_STATE_CLOSED_LOOP) {
     enterClosedLoop_();
-    delay(10);  // brief pause to let it switch states
   }
 
   return can_.sendInputPos(node_, target_rev, /*vel_ff*/0.0f, /*tor_ff*/0.0f);
@@ -82,7 +81,13 @@ void PitchAxis::reject_(const char* why, float value, float lo, float hi) const 
 
 bool PitchAxis::setTargetDeg(float deg) {
   if (!configured_) {
-    if (log_) log_->println("PITCH: REJECTED — not configured (call begin() first).");
+    if (log_) {
+      // Throttle the message to avoid spamming
+      if (millis() - last_print_rejected_ms_ >= PRINT_PITCH_REJECTED_INTERVAL_MS) {
+        last_print_rejected_ms_ = millis();
+      }
+      log_->println("PITCH: REJECTED — not configured (call begin() first).");
+    }
     return false;
   }
   if (!(deg >= DEG_MIN && deg <= DEG_MAX)) {
@@ -96,7 +101,7 @@ bool PitchAxis::setTargetDeg(float deg) {
   }
   const bool ok = sendTargetRev_(target_rev);
   if (log_) {
-    if (ok) log_->printf("PITCH: target -> %.2f deg  (%.4f rev)\n", deg, target_rev);
+    if (ok) {} //log_->printf("PITCH: target -> %.2f deg  (%.4f rev)\n", deg, target_rev);
     else    log_->printf("PITCH: send target FAILED (deg=%.2f)\n", deg);
   }
   return ok;

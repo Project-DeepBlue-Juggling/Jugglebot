@@ -57,6 +57,7 @@ public:
     uint32_t homing_retry_delay_ms = 500;    // Delay between homing attempts
     uint32_t reload_timeout_ms     = 15000;  // 15 seconds for reload sequence
     uint32_t post_throw_delay_ms   = 1000;   // 1 second delay after throw before reload
+    uint32_t idle_no_cmd_timeout_ms = 2000;  // Stow pitch if no throw cmd received for this long
     
     // Reload sequence positions
     float reload_hand_top_rev     = 8.7f;   // Hand position for reload
@@ -67,21 +68,22 @@ public:
 
     float reload_hand_bottom_rev  = 0.0f;   // Hand position at bottom of stroke
     float reload_hand_bottom_tolerance_rev = 0.1f; // Tolerance for considering hand at bottom position
-    float reload_yaw_home_deg     = 15.0f;  // Yaw home position
+    float reload_yaw_home_deg     = 120.0f; // Yaw home position
     uint32_t reload_hold_delay_ms = 500;    // Time to wait to check that the ball is in-hand
 
     // Positions to go to if reload fails (home position)
     float hand_rev_home    = 0.0f;   // Hand position on failure
     float pitch_deg_home   = 90.0f;  // Pitch angle on failure
-    float yaw_deg_home     = 0.0f;   // Yaw angle on failure
+    float yaw_deg_home     = 20.0f;  // Yaw angle on failure
 
     // Calibration
-    float calibrate_location_yaw_deg_ = 150.0f; // Angle to move to (and back) during location calibration
-    float calibrate_location_target_yaw_deg_ = 0.0f;   // The current target position during calibration
-    
-    // Ball detection 
-    uint8_t ball_detect_gpio_pin    = 3;    // GPIO pin on hand ODrive for ball detection
-    uint32_t ball_check_interval_ms = 200;  // How often to check for ball in hand
+    float calibrate_location_max_yaw_deg_ = 120.0f; // Angle to move to (and back) during location calibration
+    float calibrate_location_min_yaw_deg_ = 0.0f;  // Minimum yaw angle for calibration
+    float yaw_pre_calib_accel_ = 0.0f; // Yaw acceleration before calibration (to be restored after)
+    float yaw_pre_calib_decel_ = 0.0f; // Yaw deceleration before calibration
+    float yaw_calib_accel_     = 50.0f;
+    float yaw_calib_decel_     = 50.0f;
+    uint32_t calibration_pause_ms = 2500; // Pause at calibration end position (to calibrate orientation) (ms)
     
     // Retry limits
     uint8_t max_reload_attempts      = 3;   // Max attempts before ERROR
@@ -132,7 +134,6 @@ public:
   bool requestThrow(float yaw_deg, float pitch_deg, float speed_mps, float in_s);
   bool requestReload();
   bool requestCalibrateLocation();
-  bool checkBallInHand_();
   
   // Manual reset from ERROR state -> restarts BOOT sequence
   void reset();
@@ -155,9 +156,6 @@ public:
   
   // Get last error message (valid when in ERROR state)
   const char* getErrorMessage() const { return error_msg_; }
-  
-  // Check if ball is currently detected in hand
-  bool isBallInHand() const { return ball_in_hand_; }
 
   // ----------------------------------------------------------------
   // Debug control
@@ -214,9 +212,8 @@ private:
   uint32_t homing_retry_ms_    = 0;   // Timestamp for retry delay
   uint8_t  reload_attempt_     = 0;
   uint8_t  reload_sub_state_   = 0;   // Sub-state within reload sequence
-  uint32_t last_ball_check_ms_ = 0;   // Last time we checked for ball in hand
-  bool     ball_in_hand_       = false;
-  bool     last_ball_in_hand_  = false;
+  uint8_t  calibration_sub_state_ = 0;  // Sub-state within calibration
+  uint32_t calibration_done_ms_ = 0;  // Timestamp when calibration pause started
   bool     throw_complete_     = false;
   
   bool reload_pending_ = false;

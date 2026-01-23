@@ -451,6 +451,38 @@ void YawAxis::setAccel(float accelPPS, float decelPPS) {
   interrupts();
 }
 
+void YawAxis::setVelFilterAlpha(float alpha) {
+  noInterrupts();
+  // Clamp to valid range [0.0, 1.0]
+  if (alpha < 0.0f) alpha = 0.0f;
+  if (alpha > 1.0f) alpha = 1.0f;
+  VEL_LPF_ALPHA_ = alpha;
+  interrupts();
+}
+
+void YawAxis::setMaxValidVelRps(float max_vel_rps) {
+  noInterrupts();
+  // Ensure positive and reasonable
+  if (max_vel_rps < 0.1f) max_vel_rps = 0.1f;
+  MAX_VALID_VEL_RPS_ = max_vel_rps;
+  interrupts();
+}
+
+void YawAxis::getGains(float& kp, float& ki, float& kd) const {
+  noInterrupts();
+  kp = Kp_;
+  ki = Ki_;
+  kd = Kd_;
+  interrupts();
+}
+
+void YawAxis::getAccel(float& accelPPS, float& decelPPS) const {
+  noInterrupts();
+  accelPPS = ACCEL_PPS_;
+  decelPPS = DECEL_PPS_;
+  interrupts();
+}
+
 void YawAxis::setFF(float ff_pwm) {
   noInterrupts();
   FF_PWM_ = ff_pwm;
@@ -558,6 +590,7 @@ YawAxis::Telemetry YawAxis::readTelemetry() const {
   t.hard_limit_fault = hard_limit_fault_;
   t.pos_deg          = pos_deg_;
   t.vel_rps          = vel_rps_;
+  t.vel_rps_raw      = vel_rps_raw_;
   t.cmd_deg          = cmd_pos_deg_;
   t.err_deg          = last_err_deg_;
   t.u                = last_u_preDZ_;
@@ -573,6 +606,9 @@ YawAxis::Telemetry YawAxis::readTelemetry() const {
   t.kd               = Kd_;
   t.accelPPS         = ACCEL_PPS_;
   t.decelPPS         = DECEL_PPS_;
+  t.vel_lpf_alpha    = VEL_LPF_ALPHA_;
+  t.max_valid_vel_rps = MAX_VALID_VEL_RPS_;
+  t.glitch_count     = glitch_count_;
   t.rejected_count   = rejected_count_;
   t.last_cmd_rejected = last_cmd_rejected_;
   interrupts();
@@ -729,16 +765,32 @@ void YawAxis::controlISR() {
   
   // Calculate velocity
   float last_pos = pos_deg_;
-  pos_deg_ = new_pos_deg;
   
   // Velocity calculation - simple difference (user coords are not wrapped)
   float delta_pos = new_pos_deg - last_pos;
+  
   // Sanity check: if delta is huge, it's probably a glitch or wrap issue
   if (fabsf(delta_pos) > 180.0f) {
     // Likely a coordinate wrap - don't count this as real velocity
     delta_pos = 0.0f;
   }
-  vel_rps_ = (delta_pos * DEG2REV) / DT_;
+  
+  // GLITCH REJECTION: If the implied velocity is impossibly high,
+  // reject this reading as electrical noise and keep the previous position
+  float implied_vel_rps = fabsf(delta_pos * DEG2REV) / DT_;
+  if (implied_vel_rps > MAX_VALID_VEL_RPS_) {
+    // This is likely a noise glitch - reject the reading
+    glitch_count_++;
+    new_pos_deg = last_pos;  // Keep previous position
+    delta_pos = 0.0f;        // Zero velocity
+  }
+  
+  pos_deg_ = new_pos_deg;
+  vel_rps_raw_ = (delta_pos * DEG2REV) / DT_;
+  
+  // Low-pass filter on velocity to reduce noise-induced jitter
+  // EMA: vel_filtered = alpha * vel_raw + (1 - alpha) * vel_filtered_prev
+  vel_rps_ = VEL_LPF_ALPHA_ * vel_rps_raw_ + (1.0f - VEL_LPF_ALPHA_) * vel_rps_;
   
   // =========================================================================
   // STEP 2: Check hard limits (safety first!)
@@ -854,14 +906,21 @@ void YawAxis::controlISR() {
   // =========================================================================
   // STEP 7: Slew rate limiting (acceleration/deceleration)
   // =========================================================================
-  float up_step   = ACCEL_PPS_ * DT_;
-  float down_step = DECEL_PPS_ * DT_;
+  // Determine if we're accelerating or decelerating based on MAGNITUDE change,
+  // not signed value. This ensures symmetric behavior for CW vs CCW motion.
+  // - Accelerating: |u_target| > |last_u_slew_| (magnitude increasing)
+  // - Decelerating: |u_target| < |last_u_slew_| (magnitude decreasing)
+  float mag_target = fabsf(u_target);
+  float mag_last   = fabsf(last_u_slew_);
+  bool is_accelerating = (mag_target > mag_last);
+  
+  float step = (is_accelerating ? ACCEL_PPS_ : DECEL_PPS_) * DT_;
   float du = u_target - last_u_slew_;
   
   if (du > 0) {
-    last_u_slew_ += fminf(du, up_step);
+    last_u_slew_ += fminf(du, step);
   } else if (du < 0) {
-    last_u_slew_ -= fminf(-du, down_step);
+    last_u_slew_ -= fminf(-du, step);
   }
   
   if (fabsf(last_u_slew_) < 1e-3f) {

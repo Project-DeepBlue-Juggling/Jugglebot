@@ -56,7 +56,8 @@ public:
     
     // Position and velocity
     float   pos_deg;          // Current position in degrees [0, 360)
-    float   vel_rps;          // Current velocity in revolutions per second
+    float   vel_rps;          // Filtered velocity in revolutions per second
+    float   vel_rps_raw;      // Raw (unfiltered) velocity for debugging
     float   cmd_deg;          // Commanded target position in degrees
     float   err_deg;          // Position error in degrees (cmd - pos, via valid path)
     
@@ -76,6 +77,9 @@ public:
     float   kp, ki, kd;       // PID gains
     float   accelPPS;         // Acceleration limit (PWM counts per second)
     float   decelPPS;         // Deceleration limit (PWM counts per second)
+    float   vel_lpf_alpha;    // Velocity low-pass filter coefficient
+    float   max_valid_vel_rps; // Glitch rejection threshold
+    uint32_t glitch_count;     // Number of encoder glitches rejected
     
     // Command feedback
     uint32_t rejected_count;  // Total commands rejected (out of limits)
@@ -275,6 +279,37 @@ public:
    *   decelPPS - Maximum PWM decrease per second (deceleration)
    */
   void setAccel(float accelPPS, float decelPPS);
+
+  /* ---------------------------------------------------------------------------
+   * setVelFilterAlpha() - Set velocity low-pass filter coefficient
+   * ---------------------------------------------------------------------------
+   * Controls how much the velocity signal is filtered. Lower values = more
+   * filtering (smoother but more phase lag). Higher values = less filtering
+   * (more responsive but noisier).
+   * 
+   * The cutoff frequency is approximately: f_c = alpha * loop_rate / (2*pi)
+   * At 150 Hz loop rate:
+   *   alpha = 0.1 -> ~2.4 Hz cutoff (heavy filtering)
+   *   alpha = 0.3 -> ~7.2 Hz cutoff (moderate filtering)
+   *   alpha = 0.5 -> ~12 Hz cutoff (light filtering)
+   *   alpha = 1.0 -> no filtering (raw velocity)
+   * 
+   * Parameters:
+   *   alpha - Filter coefficient (0.0 to 1.0, default: 0.3)
+   */
+  void setVelFilterAlpha(float alpha);
+
+  /* ---------------------------------------------------------------------------
+   * setMaxValidVelRps() - Set glitch rejection threshold
+   * ---------------------------------------------------------------------------
+   * Position changes that would imply velocity greater than this value are
+   * rejected as electrical noise/glitches. Set based on the maximum physical
+   * velocity your motor can achieve.
+   * 
+   * Parameters:
+   *   max_vel_rps - Maximum valid velocity in rev/s (default: 2.0)
+   */
+  void setMaxValidVelRps(float max_vel_rps);
 
   /* ---------------------------------------------------------------------------
    * setFF() - Set friction feedforward
@@ -529,13 +564,24 @@ private:
   static constexpr uint8_t  PWM_MAX   = 255;
 
   // PID tuning (volatile for ISR access)
-  volatile float Kp_          = 120.0f;
-  volatile float Ki_          = 10.0f;
-  volatile float Kd_          = 1.5f;
-  volatile float FF_PWM_      = 20.0f;
+  volatile float Kp_          = 300.0f;
+  volatile float Ki_          = 0.0f;
+  volatile float Kd_          = 0.0f;
+  volatile float FF_PWM_      = 10.0f;
   volatile float POS_TOL_REV_ = 0.0014f;  // ~0.5°
   volatile float ACCEL_PPS_   = 500.0f;
-  volatile float DECEL_PPS_   = 500.0f;
+  volatile float DECEL_PPS_   = 450.0f;
+  
+  // Velocity low-pass filter coefficient (0.0 to 1.0)
+  // Lower = more filtering (smoother but more lag)
+  // 0.3 at 150 Hz gives ~12 Hz cutoff frequency
+  volatile float VEL_LPF_ALPHA_ = 0.3f;
+  
+  // Encoder glitch rejection: max allowed velocity in rev/s
+  // Position changes implying velocity > this are rejected as noise
+  // 2.0 rev/s = 720 deg/s, which is very fast for a small yaw motor
+  volatile float MAX_VALID_VEL_RPS_ = 2.0f;
+  volatile uint32_t glitch_count_ = 0;  // Count of rejected readings
   volatile int8_t ENC_DIR_    = -1;
   volatile int8_t MOTOR_DIR_  = +1;
 
@@ -545,7 +591,8 @@ private:
   volatile bool    enabled_          = false;
   volatile float   cmd_pos_deg_      = 0.0f;   // Command in user degrees
   volatile float   pos_deg_          = 0.0f;   // Position in user degrees
-  volatile float   vel_rps_          = 0.0f;
+  volatile float   vel_rps_          = 0.0f;   // Filtered velocity
+  volatile float   vel_rps_raw_      = 0.0f;   // Unfiltered velocity (for debugging)
   volatile float   i_term_           = 0.0f;
   volatile int16_t last_pwm_cmd_     = 0;
   volatile float   last_u_preDZ_     = 0.0f;

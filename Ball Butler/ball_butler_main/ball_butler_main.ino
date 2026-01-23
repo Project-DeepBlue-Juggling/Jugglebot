@@ -33,6 +33,12 @@ static constexpr uint64_t PV_MAX_AGE_US      = 20000;
 static constexpr uint8_t  PITCH_NODE_ID      = 7;
 static constexpr uint8_t  HAND_NODE_ID       = 8;
 
+// Rate-limit the commands to the pitch and yaw axes to not flood the CAN bus
+static uint32_t last_yaw_cmd_ms   = 0;
+static uint32_t last_pitch_cmd_ms = 0;
+const uint32_t PITCH_CMD_INTERVAL_MS = 50;
+const uint32_t YAW_CMD_INTERVAL_MS = 10;
+
 using Err = CanInterface::ODriveErrors;
 
 // ============================================================================
@@ -190,13 +196,36 @@ void onHostThrow(const CanInterface::HostThrowCmd& c, void*) {
   const float yaw_deg   = c.yaw_rad   * (180.0f / (float)M_PI);
   const float pitch_deg = c.pitch_rad * (180.0f / (float)M_PI);
 
-  Serial.println(F("--- CAN Throw Command ---"));
-  Serial.printf("  Yaw: %.2f  Pitch: %.2f  Speed: %.3f  In: %.3f\n",
-                yaw_deg, pitch_deg, c.speed_mps, c.in_s);
+  // Only accept commands if the robot is in IDLE
+  if (stateMachine.getState() != RobotState::IDLE) {
+    // Serial.printf("CAN THROW REJECTED (state: %s)\n", robotStateToString(stateMachine.getState()));
+    return;
+  }
 
+  // A command with all zeros is treated as a 'move to rest position' (set pitch to 90)
+  if (c.yaw_rad == 0.f && c.pitch_rad == 0.f && c.speed_mps == 0.f && c.in_s == 0.f) {
+    pitch.setTargetDeg(90.0f);
+    last_pitch_cmd_ms = millis();
+    return;
+  }
+
+  // Print debug info if the throw is 'real' (speed > 0)
+  if (c.speed_mps > 0.0f) {
+    Serial.println(F("--- CAN Throw Command ---"));
+    Serial.printf("  Yaw: %.2f  Pitch: %.2f  Speed: %.3f  In: %.3f\n",
+                  yaw_deg, pitch_deg, c.speed_mps, c.in_s);
+  }
+
+  // If the command speed is zero, just set the angles
   if (c.speed_mps == 0.0f) {
-    yawAxis.setTargetDeg(yaw_deg);
-    pitch.setTargetDeg(pitch_deg);
+    if (millis() - last_yaw_cmd_ms >= YAW_CMD_INTERVAL_MS) {
+      yawAxis.setTargetDeg(yaw_deg);
+      last_yaw_cmd_ms = millis();
+    }
+    if (millis() - last_pitch_cmd_ms >= PITCH_CMD_INTERVAL_MS) {
+      pitch.setTargetDeg(pitch_deg);
+      last_pitch_cmd_ms = millis();
+    }
     return;
   }
 
@@ -218,7 +247,7 @@ void routeCommand(const String& rawLine) {
 
   if (lc == "status") { printStatus(); return; }
   if (lc == "reset")  { stateMachine.reset(); return; }
-  if (lc == "ball")  { Serial.printf("Ball in hand: %s\n",  stateMachine.isBallInHand() ? "YES" : "NO"); return; }
+  if (lc == "ball")  { Serial.printf("Ball in hand: %s\n",  canif.isBallInHand() ? "YES" : "NO"); return; }
   if (lc == "reload") { stateMachine.requestReload(); return;}
   if (lc.startsWith("throw ")) { handleThrowCmd(line); return; }
   if (lc.startsWith("smooth ")) { handleSmoothCmd(line); return; }
@@ -249,7 +278,7 @@ void printStatus() {
   Serial.printf("State: %s", robotStateToString(stateMachine.getState()));
   if (stateMachine.isError()) Serial.printf(" - %s", stateMachine.getErrorMessage());
   Serial.println();
-  Serial.printf("Ball: %s\n", stateMachine.isBallInHand() ? "YES" : "NO");
+  Serial.printf("Ball: %s\n", canif.isBallInHand() ? "YES" : "NO");
   
   ProprioceptionData d;
   PRO.snapshot(d);
@@ -468,7 +497,7 @@ void yawHandleLine(const String& yawLine) {
     Serial.printf("YAW: Friction FF -> %.1f PWM\n", ff);
     return;
   }
-  
+
   // Status (brief)
   if (lc == "s") {
     auto t = yawAxis.readTelemetry();

@@ -114,6 +114,7 @@ void CanInterface::loop() {
   can1_.events();           // dispatch FIFO -> rxTrampoline_
   maybePrintSyncStats_();   // optional stats print
   maybePublishHeartbeat_(); // Ball Butler heartbeat publishing
+  maybeCheckBallInHand_();  // check for ball in hand
 }
 
 // ---------------- debug ----------------
@@ -594,13 +595,12 @@ void CanInterface::maybePublishHeartbeat_() {
 
 void CanInterface::publishHeartbeat_() {
   RobotState state = state_machine_->getState();
-  bool ball_present = state_machine_->isBallInHand();
   
   // Map RobotState to heartbeat state values
   uint8_t state_val = robotStateToUint8(state);
   
   // Byte 0: State byte (bit 0 = ball_in_hand, bits 1-7 = state)
-  uint8_t state_byte = (ball_present ? 0x01 : 0x00) | (state_val << 1);
+  uint8_t state_byte = (ball_in_hand_ ? 0x01 : 0x00) | (state_val << 1);
   
   // Byte 1: State data (error_code for ERROR, 0 otherwise)
   uint8_t state_data = 0;
@@ -655,6 +655,25 @@ void CanInterface::publishHeartbeat_() {
 }
 
 // ================================================================================
+// Ball in Hand Check
+// ================================================================================
+void CanInterface::maybeCheckBallInHand_() {
+  // Only check if enough time has passed since last check, and if we're in IDLE
+  if (!state_machine_) return;
+  if (millis() - last_ball_check_ms_ > ball_check_interval_ms_ && state_machine_->isIdle()) {
+    uint32_t gpio_states = 0;
+    if (!readGpioStates(hand_node_id_, gpio_states)) {
+      dbg_->printf("[CAN] Ball check failed: unable to read GPIO states\n");
+      return;
+    }
+    ball_in_hand_ = (gpio_states >> ball_detect_gpio_pin) & 0x01;
+
+    // Serial.printf("[BallCheck] GPIO states=0x%08lX ball_in_hand=%d\n", (unsigned long)gpio_states, (int)ball_in_hand_);
+    last_ball_check_ms_ = millis();
+  }
+}
+
+// ================================================================================
 // RX Handlers
 // ================================================================================
 
@@ -698,8 +717,9 @@ void CanInterface::handleRx_(const CAN_message_t& msg) {
     c.wall_us = wallTimeUs();
     c.valid = true;
     last_host_cmd_ = c;
+    last_host_cmd_ms_ = millis();  // Track local time for idle timeout
 
-    if (dbg_can_ && dbg_) {
+    if (dbg_ && dbg_can_) {
       dbg_->printf("[HostCmd] yaw=%.3f rad pitch=%.3f rad speed=%.3f m/s in=%.3f s (id=0x%03lX)\n",
                    (double)c.yaw_rad, (double)c.pitch_rad, (double)c.speed_mps,
                    (double)c.in_s, (unsigned long)msg.id);

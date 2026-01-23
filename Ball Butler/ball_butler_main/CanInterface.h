@@ -51,7 +51,7 @@ public:
   // Constants
   // ============================================================================
   // Default heartbeat rate (ms). Set to 0 to disable.
-  static constexpr uint32_t DEFAULT_HEARTBEAT_RATE_MS = 50;  // 20 Hz
+  static constexpr uint32_t DEFAULT_HEARTBEAT_RATE_MS = 100;  // 20 Hz
 
   // SDO Opcodes for arbitrary parameters
   static constexpr uint8_t OPCODE_READ  = 0x00;
@@ -214,7 +214,7 @@ public:
   bool getLastArbitraryParamResponse(uint32_t node_id, ArbitraryParamResponse& out) const;
   void setArbitraryParamCallback(ArbitraryParamCallback cb, void* user = nullptr);
   bool isEncoderSearchComplete(uint32_t node_id, uint32_t timeout_ms = 100);
-  bool readGpioStates(uint32_t node_id, uint32_t& states_out, uint32_t timeout_ms = 500);
+  bool readGpioStates(uint32_t node_id, uint32_t& states_out, uint32_t timeout_ms = 100);
 
   // ============================================================================
   // Axis State and Feedback
@@ -225,6 +225,7 @@ public:
   bool getAxisHeartbeat(uint32_t node_id, AxisHeartbeat& out) const;
   bool hasAxisError(uint32_t node_id, uint32_t mask) const;
   bool waitForAxisErrorClear(uint32_t node_id, uint32_t mask, uint32_t timeout_ms, uint16_t poll_ms = 5);
+  bool isBallInHand() const { return ball_in_hand_; }
 
   // ============================================================================
   // Homing
@@ -279,6 +280,7 @@ public:
 
   bool getHostThrowCmd(HostThrowCmd& out) const;
   void setHostThrowCallback(HostThrowCallback cb, void* user = nullptr);
+  uint32_t getLastHostCmdMs() const { return last_host_cmd_ms_; }
 
   // ============================================================================
   // Ball Butler Heartbeat
@@ -369,8 +371,11 @@ private:
   uint8_t hand_node_id_  = 0xFF;
   uint8_t pitch_node_id_ = 0xFF;
 
-  // Ball detection
-  float ball_detect_iq_threshold = -0.5f;
+  // Ball detection 
+  uint8_t  ball_detect_gpio_pin    = 3;    // GPIO pin on hand ODrive for ball detection
+  uint32_t ball_check_interval_ms_ = 200;  // How often to check for ball in hand
+  uint32_t last_ball_check_ms_     = 0;    // Last time we checked for ball in hand
+  bool     ball_in_hand_           = false;
 
   // Auto-clear BRAKE_RESISTOR_DISARMED
   bool auto_clear_brake_res_ = true;
@@ -412,6 +417,7 @@ private:
   // ============================================================================
 
   HostThrowCmd last_host_cmd_;
+  uint32_t last_host_cmd_ms_ = 0;  // Local millis() timestamp of last HOST_THROW_CMD
   HostThrowCallback host_cb_ = nullptr;
   void* host_cb_user_ = nullptr;
 
@@ -441,6 +447,9 @@ private:
   // Heartbeat
   void maybePublishHeartbeat_();
   void publishHeartbeat_();
+
+  // Ball in hand check
+  void maybeCheckBallInHand_();
 
   // Utilities
   static int16_t clampToI16_(float x);

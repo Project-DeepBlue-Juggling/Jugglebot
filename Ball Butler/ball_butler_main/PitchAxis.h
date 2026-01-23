@@ -70,6 +70,10 @@ private:
   Traj traj_;
   bool configured_ = false;
 
+  // Initialization constants for throttling messages
+  static constexpr uint32_t PRINT_PITCH_REJECTED_INTERVAL_MS = 1000;
+  uint32_t last_print_rejected_ms_ = 0;
+
   // ODrive enums
   static constexpr uint32_t AXIS_STATE_CLOSED_LOOP = 8u;
   static constexpr uint32_t CONTROL_MODE_POSITION  = 3u;
