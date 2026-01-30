@@ -48,7 +48,8 @@ def generate_launch_description():
         # 'calibrate_platform_node',
         # 'pose_correction_node',
         # 'hoop_sinker_node',
-        'ball_butler_node',
+        # 'ball_butler_node',
+        'ball_butler_volley_testing_node',
         'target_tracker_node',
     ]
     jugglebot_nodes = [
@@ -88,7 +89,7 @@ def generate_launch_description():
     rosbag_record_cmd = [
         'ros2', 'bag', 'record', '/robot_state', '/leg_lengths_topic', '/hand_trajectory', '/mocap_data', '/platform_pose_topic',
         '/rigid_body_poses', '/settled_leg_lengths', '/settled_platform_poses', '/hand_telemetry', '/throw_debug',
-        '/balls', '/targets', '/throw_announcements',
+        '/balls', '/targets', '/throw_announcements', 'bb/heartbeat',
         '-s', 'mcap', '-o', bag_dir
     ]
 
