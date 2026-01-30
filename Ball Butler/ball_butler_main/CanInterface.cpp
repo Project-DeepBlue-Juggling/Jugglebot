@@ -725,6 +725,21 @@ void CanInterface::handleRx_(const CAN_message_t& msg) {
                    (double)c.in_s, (unsigned long)msg.id);
     }
 
+    // Route to StateMachine based on speed
+    if (state_machine_) {
+      // Convert radians to degrees for StateMachine
+      const float yaw_deg = c.yaw_rad * (180.0f / (float)M_PI);
+      const float pitch_deg = c.pitch_rad * (180.0f / (float)M_PI);
+
+      if (c.speed_mps == 0.0f) {
+        // Tracking mode: just update yaw/pitch targets (no throw)
+        state_machine_->requestTracking(yaw_deg, pitch_deg);
+      } else {
+        // Throw mode: queue a throw with the given parameters
+        state_machine_->requestThrow(yaw_deg, pitch_deg, c.speed_mps, c.in_s);
+      }
+    }
+
     if (host_cb_) host_cb_(c, host_cb_user_);
     return;
   }

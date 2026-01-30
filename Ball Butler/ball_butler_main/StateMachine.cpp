@@ -32,6 +32,7 @@ const char* robotStateToString(RobotState s) {
   switch (s) {
     case RobotState::BOOT: return "BOOT";
     case RobotState::IDLE: return "IDLE";
+    case RobotState::TRACKING: return "TRACKING";
     case RobotState::THROWING: return "THROWING";
     case RobotState::RELOADING: return "RELOADING";
     case RobotState::CALIBRATING: return "CALIBRATING";
@@ -58,6 +59,10 @@ void StateMachine::begin() {
   reload_pending_ = false;
   throw_pending_ = false;
   error_msg_[0]  = '\0';
+  
+  // Initialize tracking state
+  last_tracking_cmd_ = TrackingCmd{};
+  last_tracking_cmd_ms_ = 0;
 
   debugf_("[SM] State machine initialized, entering BOOT\n");
 }
@@ -69,6 +74,7 @@ void StateMachine::update() {
   switch (state_) {
     case RobotState::BOOT: handleBoot_(); break;
     case RobotState::IDLE: handleIdle_(); break;
+    case RobotState::TRACKING: handleTracking_(); break;
     case RobotState::THROWING: handleThrowing_(); break;
     case RobotState::RELOADING: handleReloading_(); break;
     case RobotState::CALIBRATING: handleCalibrating_(); break;
@@ -101,6 +107,14 @@ void StateMachine::enterState_(RobotState newState) {
       pitch_.setTargetDeg(90.0f);
       // Wait a brief moment to allow command to take effect
       delay(50);
+      break;
+
+    case RobotState::TRACKING:
+      // Put the pitch axis in CLOSED_LOOP_CONTROL mode for tracking
+      can_.setRequestedState(config_.pitch_node_id, 8u);
+      // Initialize tracking timestamp
+      last_tracking_cmd_ms_ = millis();
+      debugf_("[SM] Entering TRACKING mode\n");
       break;
 
     case RobotState::THROWING:
@@ -244,16 +258,6 @@ void StateMachine::handleIdle_() {
     debugf_("[SM] Reloading...");
   }
 
-  // If no throw command received for a while, stow the pitch axis
-  // This handles the case where the host stops sending tracking commands
-  const uint32_t last_cmd_ms = can_.getLastHostCmdMs();
-  if (last_cmd_ms > 0 && (millis() - last_cmd_ms) > config_.idle_no_cmd_timeout_ms) {
-    // Only send stow command if pitch is not already near stow position
-    if (PRO.getPitchDeg() < config_.pitch_min_stow_angle_deg) {
-      pitch_.setTargetDeg(90.0f);
-    }
-  }
-
   // If the pitch axis is at or above `config_.pitch_min_stow_angle_deg` (and at its target) and not currently IDLE, 
   // we can put it in IDLE mode to save power.
   // Any pitch angle lower than around 70 degrees will cause the axis to fight gravity, so we can only go IDLE when stowed
@@ -267,6 +271,57 @@ void StateMachine::handleIdle_() {
     else if (PRO.getPitchDeg() < config_.pitch_min_stow_angle_deg && hb_pitch.axis_state != 8u) {
       can_.setRequestedState(config_.pitch_node_id, 8u);  // CLOSED_LOOP_CONTROL
     }
+  }
+}
+
+// --------------------------------------------------------------------
+// handleTracking_() - Following target (speed=0 commands)
+//
+// In this state, the robot follows yaw/pitch targets sent by the host
+// with throw_speed=0. This allows the host to aim the robot before
+// actually throwing.
+//
+// Transitions:
+//   - TRACKING -> IDLE: No tracking command received for idle_no_cmd_timeout_ms
+//   - TRACKING -> THROWING: A throw command with speed > 0 is received
+// --------------------------------------------------------------------
+void StateMachine::handleTracking_() {
+  // Check for timeout - return to IDLE if no tracking commands received
+  const uint32_t elapsed_since_cmd = millis() - last_tracking_cmd_ms_;
+  if (elapsed_since_cmd > config_.idle_no_cmd_timeout_ms) {
+    debugf_("[SM] Tracking timeout (no cmd for %lu ms), returning to IDLE\n",
+            (unsigned long)elapsed_since_cmd);
+    enterState_(RobotState::IDLE);
+    return;
+  }
+
+  // Process pending throw request (if a throw with speed > 0 came in)
+  if (throw_pending_) {
+    throw_pending_ = false;
+
+    // Validate we have a ball in hand before throwing
+    if (!can_.isBallInHand()) {
+      debugf_("[SM] WARNING: Throw requested but no ball detected. Returning to IDLE.\n");
+      enterState_(RobotState::IDLE);
+      return;
+    }
+
+    // Execute the throw
+    if (executeThrow_(pending_yaw_deg_, pending_pitch_deg_,
+                      pending_speed_mps_, pending_in_s_)) {
+      enterState_(RobotState::THROWING);
+    } else {
+      debugf_("[SM] Throw execution failed, returning to IDLE\n");
+      enterState_(RobotState::IDLE);
+    }
+    return;
+  }
+
+  // Apply the latest tracking command (yaw/pitch updates)
+  if (last_tracking_cmd_.valid) {
+    yaw_.setTargetDeg(last_tracking_cmd_.yaw_deg);
+    pitch_.setTargetDeg(last_tracking_cmd_.pitch_deg);
+    last_tracking_cmd_.valid = false;  // Mark as consumed
   }
 }
 
@@ -510,9 +565,9 @@ bool StateMachine::requestReload() {
 
 // requestThrow() - Queue a throw request
 bool StateMachine::requestThrow(float yaw_deg, float pitch_deg, float speed_mps, float in_s) {
-  // Only accept throws when in IDLE state and if there is a ball in hand
-  if (state_ != RobotState::IDLE) {
-    debugf_("[SM] Throw rejected: not in IDLE state (current: %s)\n",
+  // Accept throws when in IDLE or TRACKING state
+  if (state_ != RobotState::IDLE && state_ != RobotState::TRACKING) {
+    debugf_("[SM] Throw rejected: not in IDLE or TRACKING state (current: %s)\n",
             robotStateToString(state_));
     return false;
   }
@@ -530,6 +585,31 @@ bool StateMachine::requestThrow(float yaw_deg, float pitch_deg, float speed_mps,
 
   debugf_("[SM] Throw queued: yaw=%.1f° pitch=%.1f° speed=%.2f m/s in=%.2f s\n",
           yaw_deg, pitch_deg, speed_mps, in_s);
+
+  return true;
+}
+
+// requestTracking() - Request tracking mode or update tracking targets
+bool StateMachine::requestTracking(float yaw_deg, float pitch_deg) {
+  // Accept tracking commands when in IDLE or already TRACKING
+  if (state_ != RobotState::IDLE && state_ != RobotState::TRACKING) {
+    debugf_("[SM] Tracking rejected: not in IDLE or TRACKING state (current: %s)\n",
+            robotStateToString(state_));
+    return false;
+  }
+
+  // Store tracking command
+  last_tracking_cmd_.yaw_deg = yaw_deg;
+  last_tracking_cmd_.pitch_deg = pitch_deg;
+  last_tracking_cmd_.received_ms = millis();
+  last_tracking_cmd_.valid = true;
+  last_tracking_cmd_ms_ = millis();
+
+  // If currently IDLE, transition to TRACKING
+  if (state_ == RobotState::IDLE) {
+    debugf_("[SM] Entering TRACKING: yaw=%.1f° pitch=%.1f°\n", yaw_deg, pitch_deg);
+    enterState_(RobotState::TRACKING);
+  }
 
   return true;
 }

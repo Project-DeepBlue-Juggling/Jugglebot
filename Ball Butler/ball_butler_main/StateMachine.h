@@ -38,6 +38,14 @@ class PitchAxis;
 class HandTrajectoryStreamer;
 class HandPathPlanner;
 
+// Tracking command structure (for queueing tracking updates)
+struct TrackingCmd {
+  float yaw_deg = 0.f;
+  float pitch_deg = 0.f;
+  uint32_t received_ms = 0;
+  bool valid = false;
+};
+
 
 
 // Convert state to string for debug output
@@ -57,7 +65,7 @@ public:
     uint32_t homing_retry_delay_ms = 500;    // Delay between homing attempts
     uint32_t reload_timeout_ms     = 15000;  // 15 seconds for reload sequence
     uint32_t post_throw_delay_ms   = 1000;   // 1 second delay after throw before reload
-    uint32_t idle_no_cmd_timeout_ms = 2000;  // Stow pitch if no throw cmd received for this long
+    uint32_t idle_no_cmd_timeout_ms = 5000;  // Stow pitch if no throw cmd received for this long
     
     // Reload sequence positions
     float reload_hand_top_rev     = 8.7f;   // Hand position for reload
@@ -135,6 +143,10 @@ public:
   bool requestReload();
   bool requestCalibrateLocation();
   
+  // Request tracking mode (called when HOST_THROW_CMD has speed=0)
+  // Updates yaw/pitch targets while in TRACKING state
+  bool requestTracking(float yaw_deg, float pitch_deg);
+  
   // Manual reset from ERROR state -> restarts BOOT sequence
   void reset();
   
@@ -151,7 +163,8 @@ public:
     state_ == RobotState::THROWING || 
     state_ == RobotState::RELOADING || 
     state_ == RobotState::BOOT || 
-    state_ == RobotState::CALIBRATING;
+    state_ == RobotState::CALIBRATING ||
+    state_ == RobotState::TRACKING;
   }
   
   // Get last error message (valid when in ERROR state)
@@ -170,6 +183,7 @@ private:
   void enterState_(RobotState newState);
   void handleBoot_();
   void handleIdle_();
+  void handleTracking_();
   void handleThrowing_();
   void handleReloading_();
   void handleCalibrating_();
@@ -224,6 +238,10 @@ private:
   float pending_pitch_deg_ = 0;
   float pending_speed_mps_ = 0;
   float pending_in_s_     = 0;
+  
+  // Tracking state
+  TrackingCmd last_tracking_cmd_;
+  uint32_t last_tracking_cmd_ms_ = 0;  // Time of last tracking command received
   
   // Error state
   char error_msg_[64] = {0};
