@@ -40,6 +40,7 @@ setup(
             'pose_correction_node = jugglebot.pose_correction_node:main',
             'hoop_sinker_node = jugglebot.hoop_sinker_node:main',
             'ball_butler_node = jugglebot.ball_butler_node:main',
+            'ball_butler_volley_testing_node = jugglebot.ball_butler_volley_testing_node:main',
             'target_tracker_node = jugglebot.target_tracker_node:main'
         ],
     },
