@@ -510,6 +510,7 @@ class BallButlerNode(Node):
         # ---------------- Parameters ----------------
         self.declare_parameter('yaw_s_offset', -90.31)  # mm
         self.declare_parameter('pitch_max_min_deg', [85.0, 12.0]) # [max, min] degrees
+        self.declare_parameter('yaw_max_min_deg', [0.0, 185.0])   # [max, min] degrees
         self.declare_parameter('max_throw_speed', 5.0)  # m/s - maximum allowed throw speed
         self.declare_parameter('max_throw_height', 0.5)  # m - maximum height above BB the ball can reach
         self.declare_parameter('g_mps2', 9.81)  # m/s^2
@@ -939,6 +940,16 @@ class BallButlerNode(Node):
         if not math.isfinite(yaw):
             raise ValueError(f"No yaw solution for target (x={x:.0f}, y={y:.0f}mm) with s={s:.1f}mm")
 
+        # Check that the yaw is within limits
+        yaw_limits_deg = self.get_parameter('yaw_max_min_deg').get_parameter_value().double_array_value
+        yaw_min_rad = math.radians(yaw_limits_deg[0])
+        yaw_max_rad = math.radians(yaw_limits_deg[1])
+        if yaw < yaw_min_rad or yaw > yaw_max_rad:
+            raise ValueError(
+                f"Yaw angle {math.degrees(yaw):.1f}° out of limits "
+                f"[{yaw_limits_deg[1]:.1f}°, {yaw_limits_deg[0]:.1f}°]"
+            )
+
         # ---- Find optimal pitch/speed to minimize horizontal landing velocity ----
         R = math.hypot(x, y)  # Horizontal range to target
 
@@ -1034,7 +1045,7 @@ class BallButlerNode(Node):
         
         return yaw, best_pitch, best_speed, t, best_h_peak, h_max
 
-    def track_target(self, x: float, y: float, z: float, target_id: str = ""):
+    def track_target(self, x: float, y: float, z: float, target_id: str = "", apply_rls_correction: bool = True):
         """Compute yaw/pitch for (x,y,z) and send a track command (aim without throwing).
         
         Note: x, y, z are in BB's local frame (mm).
@@ -1044,11 +1055,16 @@ class BallButlerNode(Node):
         Args:
             x, y, z: Target position in BB's local frame (mm)
             target_id: Optional target ID to store for subsequent throw
+            apply_rls_correction: Whether to apply RLS error correction (default True)
         """
-        # Apply RLS-predicted correction to match actual throw behavior
-        corr_x, corr_y = self.error_model.predict(x, y, z)
-        x_corrected = x + corr_x
-        y_corrected = y + corr_y
+        # Apply RLS-predicted correction to match actual throw behavior (if enabled)
+        if apply_rls_correction:
+            corr_x, corr_y = self.error_model.predict(x, y, z)
+            x_corrected = x + corr_x
+            y_corrected = y + corr_y
+        else:
+            x_corrected = x
+            y_corrected = y
         
         try:
             yaw_rad, pitch_rad, v_mm_s, tof_s, h_peak_mm, h_max_mm = self.compute_command_for_target(x_corrected, y_corrected, z)
@@ -1075,7 +1091,7 @@ class BallButlerNode(Node):
         else:
             self.get_logger().warn("Ball butler command service not available")
 
-    def aim_and_throw(self, x: float, y: float, z: float, target_id: str = ""):
+    def aim_and_throw(self, x: float, y: float, z: float, target_id: str = "", apply_rls_correction: bool = True):
         """Compute yaw/pitch/speed/time for (x,y,z) and send the command.
         
         Note: x, y, z are in BB's local frame (mm).
@@ -1084,11 +1100,16 @@ class BallButlerNode(Node):
         Args:
             x, y, z: Target position in BB's local frame (mm)
             target_id: Optional target ID for throw announcement
+            apply_rls_correction: Whether to apply RLS error correction (default True)
         """
-        # Apply RLS-predicted correction to compensate for systematic errors
-        corr_x, corr_y = self.error_model.predict(x, y, z)
-        x_corrected = x + corr_x
-        y_corrected = y + corr_y
+        # Apply RLS-predicted correction to compensate for systematic errors (if enabled)
+        if apply_rls_correction:
+            corr_x, corr_y = self.error_model.predict(x, y, z)
+            x_corrected = x + corr_x
+            y_corrected = y + corr_y
+        else:
+            x_corrected = x
+            y_corrected = y
         
         try:
             yaw_rad, pitch_rad, v_mm_s, tof_s, h_peak_mm, h_max_mm = self.compute_command_for_target(x_corrected, y_corrected, z)
@@ -1106,7 +1127,7 @@ class BallButlerNode(Node):
         # Log trajectory details including peak height for debugging
         h_vel_m_s = actual_throw_speed_m_s * math.cos(pitch_rad)
         self.get_logger().info(
-            f"Throw: pitch={math.degrees(pitch_rad):.1f}deg, speed={actual_throw_speed_m_s:.2f}m/s, "
+            f"Throw: pitch={math.degrees(pitch_rad):.1f}deg, yaw={math.degrees(yaw_rad):.1f}deg, speed={actual_throw_speed_m_s:.2f}m/s, "
             f"h_vel={h_vel_m_s:.2f}m/s, h_peak={actual_h_peak_mm/1000:.2f}m (max={h_max_mm/1000:.2f}m), ToF={tof_s:.2f}s"
         )
         
@@ -1189,7 +1210,8 @@ class BallButlerNode(Node):
         self.throw_announcement_pub.publish(announcement)
         self.get_logger().info(f"Published throw announcement targeting '{target_id}'")
 
-    def aim_at_global_point(self, x_global: float, y_global: float, z_global: float, throw: bool = True, target_id: str = ""):
+    def aim_at_global_point(self, x_global: float, y_global: float, z_global: float, 
+                            throw: bool = True, target_id: str = "", apply_rls_correction: bool = True):
         """
         Aim (and optionally throw) at a point specified in global (mocap) coordinates.
         
@@ -1199,6 +1221,7 @@ class BallButlerNode(Node):
             x_global, y_global, z_global: target position in global frame (mm)
             throw: if True, also execute throw; if False, just aim
             target_id: Optional target ID for throw announcement
+            apply_rls_correction: Whether to apply RLS error correction (default True)
         """
         # Always store the global target (for throw learning when throw_now is called)
         self.last_target_global = (x_global, y_global, z_global)
@@ -1208,9 +1231,9 @@ class BallButlerNode(Node):
         x_bb, y_bb, z_bb = self.global_to_bb_frame(x_global, y_global, z_global)
 
         if throw:
-            self.aim_and_throw(x_bb, y_bb, z_bb, target_id=target_id)
+            self.aim_and_throw(x_bb, y_bb, z_bb, target_id=target_id, apply_rls_correction=apply_rls_correction)
         else:
-            self.track_target(x_bb, y_bb, z_bb, target_id=target_id)
+            self.track_target(x_bb, y_bb, z_bb, target_id=target_id, apply_rls_correction=apply_rls_correction)
 
     # =========================================================================================
     #                           Calibrating Ball Butler Location
