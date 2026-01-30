@@ -437,12 +437,12 @@ class BallPredictionNode(Node):
         self.pending_balls.append(pending)
         
         delay = throw_time - current_time
-        self.get_logger().info(
-            f"Ball {ball_id} announced by '{msg.thrower_name}' "
-            f"pos=({msg.initial_position.x:.0f}, {msg.initial_position.y:.0f}, {msg.initial_position.z:.0f}) "
-            f"target='{msg.target_id or 'default'}' "
-            f"throw in {delay:.2f}s"
-        )
+        # self.get_logger().info(
+        #     f"Ball {ball_id} announced by '{msg.thrower_name}' "
+        #     f"pos=({msg.initial_position.x:.0f}, {msg.initial_position.y:.0f}, {msg.initial_position.z:.0f}) "
+        #     f"target='{msg.target_id or 'default'}' "
+        #     f"throw in {delay:.2f}s"
+        # )
 
     def mocap_callback(self, msg: MocapDataMulti):
         """Match mocap markers to pending/tracked balls."""
