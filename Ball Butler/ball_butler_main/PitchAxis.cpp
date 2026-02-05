@@ -101,7 +101,7 @@ bool PitchAxis::setTargetDeg(float deg) {
   }
   const bool ok = sendTargetRev_(target_rev);
   if (log_) {
-    if (ok) {} //log_->printf("PITCH: target -> %.2f deg  (%.4f rev)\n", deg, target_rev);
+    if (ok) log_->printf("PITCH: target -> %.2f deg  (%.4f rev)\n", deg, target_rev);
     else    log_->printf("PITCH: send target FAILED (deg=%.2f)\n", deg);
   }
   return ok;

@@ -392,7 +392,7 @@ void yawHandleLine(const String& yawLine) {
   // Position command: p <deg>
   if (lc.startsWith("p ") || lc.startsWith("p")) {
     if (lc.length() > 1 && lc.charAt(1) != ' ') {
-      // Single letter followed by number: p45
+      // Single letter followed by number: p 45
       float deg = line.substring(1).toFloat();
       if (yawAxis.setTargetDeg(deg)) {
         Serial.printf("YAW: Target -> %.2f deg\n", deg);
@@ -547,5 +547,6 @@ void pitchHandleLine(const String& line) {
     return;
   }
   float deg = s.toFloat();
+  Serial.printf("PITCH: Target -> %.2f deg\n", deg);
   if (isfinite(deg)) pitch.setTargetDeg(deg);
 }
