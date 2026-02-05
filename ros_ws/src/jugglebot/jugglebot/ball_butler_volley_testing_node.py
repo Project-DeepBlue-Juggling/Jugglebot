@@ -25,18 +25,25 @@ def yaw_solve_thetas(x: float, y: float, s: float):
     """
     Return (theta1, theta2, chosen_theta). If no solution, returns (nan, nan, nan).
 
-    Using: -x*sin(theta) + y*cos(theta) = s
-    Solutions: theta = atan2(-x, y) ± arccos(s / r), r = hypot(x, y).
+    Using:
+        y = r*sin(theta) + s*cos(theta)
+        x = r*cos(theta) - s*sin(theta)
+    
+    Solutions:
+        r = sqrt(x^2 + y^2 - s^2)
+        theta = atan2(y, x) - arcsin(s / sqrt(x^2 + y^2))
     """
-    r = math.hypot(x, y)
-    if r < abs(s) or r == 0.0:
+    hyp = math.hypot(x, y)
+    r_sq = x * x + y * y - s * s
+    if r_sq < 0.0 or hyp == 0.0:
         return float("nan"), float("nan"), float("nan")
-    base = math.atan2(-x, y)
+    r = math.sqrt(r_sq)
+    base = math.atan2(y, x)
     # clip to avoid domain errors on boundary
-    s_over_r = max(-1.0, min(1.0, s / r))
-    delta = math.acos(s_over_r)
-    t1 = wrap_pi(base + delta)
-    t2 = wrap_pi(base - delta)
+    s_over_hyp = max(-1.0, min(1.0, s / hyp))
+    delta = math.asin(s_over_hyp)
+    t1 = wrap_pi(base - delta)
+    t2 = wrap_pi(base - math.pi + delta)  # second solution from arcsin
     chosen = t1 if abs(t1) <= abs(t2) else t2
     return t1, t2, chosen
 
@@ -337,7 +344,7 @@ class BallButlerNode(Node):
         super().__init__('ball_butler_node')
 
         # ---------------- Parameters ----------------
-        self.declare_parameter('yaw_s_offset', -90.31)  # mm
+        self.declare_parameter('yaw_s_offset', -105.65)  # mm, as measured in Onshape (ball centroid to Stage 2 origin)
         self.declare_parameter('pitch_max_min_deg', [85.0, 12.0]) # [max, min] degrees
         self.declare_parameter('yaw_max_min_deg', [0.0, 185.0])   # [max, min] degrees
         self.declare_parameter('max_throw_speed', 5.0)  # m/s - maximum allowed throw speed
@@ -394,7 +401,8 @@ class BallButlerNode(Node):
         self.volley_throws_per_target = 10  # Number of throws per grid point
         self.volley_grid_center = (0.0, 0.0, 750.0)  # (x, y, z) in mm
         self.volley_grid_size = (800.0, 800.0)  # (x, y) in mm
-        self.volley_grid_divisions = (10, 10)  # (x, y) divisions
+        self.volley_grid_divisions = (8, 8)  # (x, y) divisions
+        self.volley_throws_to_skip = 0  # Number of throws to skip at start (to finish paused/stopped volley sessions)
         
         # Volley position tolerance thresholds
         self.volley_yaw_tolerance_deg = 0.5  # degrees
@@ -835,17 +843,34 @@ class BallButlerNode(Node):
         total_targets = len(self.volley_targets)
         total_throws = total_targets * self.volley_throws_per_target
         
+        # Calculate starting position based on throws to skip
+        starting_target_idx = self.volley_throws_to_skip // self.volley_throws_per_target
+        starting_throw_count = self.volley_throws_to_skip % self.volley_throws_per_target
+        
+        # Validate skip amount doesn't exceed total throws
+        if self.volley_throws_to_skip >= total_throws:
+            response.success = False
+            response.message = (
+                f"Cannot skip {self.volley_throws_to_skip} throws - only {total_throws} total throws in volley. "
+                f"Set volley_throws_to_skip to a smaller value."
+            )
+            return response
+        
+        skip_msg = ""
+        if self.volley_throws_to_skip > 0:
+            skip_msg = f" Skipping first {self.volley_throws_to_skip} throws (starting at target {starting_target_idx + 1}, throw {starting_throw_count + 1})."
+        
         self.get_logger().info(
             f"Starting volley calibration: {total_targets} targets, "
             f"{self.volley_throws_per_target} throws each = {total_throws} total throws. "
-            f"Position tolerance: yaw={self.volley_yaw_tolerance_deg}°, pitch={self.volley_pitch_tolerance_deg}°"
+            f"Position tolerance: yaw={self.volley_yaw_tolerance_deg}°, pitch={self.volley_pitch_tolerance_deg}°.{skip_msg}"
         )
         
         # Initialize state
         self.volley_in_progress = True
         self.volley_cancelled = False
-        self.volley_current_target_idx = 0
-        self.volley_current_throw_count = 0
+        self.volley_current_target_idx = starting_target_idx
+        self.volley_current_throw_count = starting_throw_count
         self.volley_awaiting_position = False
         self.volley_position_reached_time = None
         self.volley_waiting_for_reload = False
