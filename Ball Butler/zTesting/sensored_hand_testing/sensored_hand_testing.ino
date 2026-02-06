@@ -2,6 +2,10 @@
 // Command the hand along a smooth trajectory to a target position a set number of times
 // (back and forth), while sampling pogo-pin contact continuity at 10 kHz and logging
 // drop counts per cycle to SD card.
+//
+// OPTIMIZATION: Trajectories between TARGET_POS_REV_1 and TARGET_POS_REV_2 are
+// pre-computed and cached. Only the initial move from the starting position
+// requires on-the-fly calculation.
 
 #include <Arduino.h>
 #include <SD.h>
@@ -10,6 +14,7 @@
 #include "CanInterface.h"
 #include "HandPathPlanner.h"
 #include "HandTrajectoryStreamer.h"
+#include "CachedHandTrajectory.h"
 
 // ============================================================================
 // Configuration
@@ -20,13 +25,13 @@ constexpr uint32_t CAN_BITRATE            = 1000000;    // 1 Mbps
 constexpr uint32_t HAND_NODE_ID           = 0;          // ODrive node ID
 constexpr float    TARGET_POS_REV_1       = 8.5f;       // First target position (rev)
 constexpr float    TARGET_POS_REV_2       = 1.0f;       // Second target position (rev)
-constexpr float    START_TARGET_POS_REV   = 1.0f;       // Initial target position (rev)
+constexpr float    START_TARGET_POS_REV   = TARGET_POS_REV_1;  // Initial target = target1
 constexpr int      NUM_CYCLES             = 3;          // Number of back-and-forth cycles
-constexpr uint16_t ERROR_LOG_INTERVAL_MS  = 500;       // Log errors at most this often
-constexpr float    POSITION_TOLERANCE_REV = 0.01f;    // Tolerance to consider target reached
+constexpr uint16_t ERROR_LOG_INTERVAL_MS  = 500;        // Log errors at most this often
+constexpr float    POSITION_TOLERANCE_REV = 0.01f;      // Tolerance to consider target reached
 
 // Pogo-pin sampling
-constexpr uint8_t  POGO_PIN             = 21;         // Digital input for pogo circuit
+constexpr uint8_t  SENSOR_PIN             = 21;         // Digital input for hand sensor circuit
 constexpr uint32_t SAMPLE_RATE_HZ       = 10000;      // 10 kHz sampling rate
 constexpr uint32_t SAMPLE_PERIOD_US     = 1000000 / SAMPLE_RATE_HZ; // 100 µs
 
@@ -41,7 +46,8 @@ constexpr int      SD_CHIP_SELECT       = BUILTIN_SDCARD;
 CanInterface can;
 HandPathPlanner hand_planner;
 HandTrajectoryStreamer streamer(can);
-std::vector<TrajFrame> g_traj_buffer;
+CachedHandTrajectory traj_cache(TARGET_POS_REV_1, TARGET_POS_REV_2);
+std::vector<TrajFrame> g_traj_buffer;  // Only needed for initial move now
 CanInterface::AxisHeartbeat heartbeat;
 
 // Motion state
@@ -79,7 +85,7 @@ void samplePogoISR() {
   if (!sampling_active) return;
   
   // Read the pogo pin - HIGH means circuit is broken (contact lost)
-  if (digitalReadFast(POGO_PIN) == HIGH) {
+  if (digitalReadFast(SENSOR_PIN) == HIGH) {
     drop_count++;
   }
   total_samples++;
@@ -152,7 +158,8 @@ bool startNewSession() {
   } else {
     logFile.printf("# Planned Cycles: %d\n", requested_cycles);
   }
-  logFile.printf("# Pogo Pin: %d (INPUT_PULLUP, HIGH = break)\n", POGO_PIN);
+  logFile.printf("# Pogo Pin: %d (INPUT_PULLUP, HIGH = break)\n", SENSOR_PIN);
+  logFile.printf("# Max Accel: %.2f rev/s²\n", (double)getMaxSmoothMoveHandAccel());
   logFile.println("#");
   logFile.println("cycle,drop_count,total_samples,drop_rate_pct");
   logFile.flush();
@@ -218,6 +225,33 @@ void resetHalfCycleTracking() {
 }
 
 // ============================================================================
+// Trajectory Cache Helper
+// ============================================================================
+
+/**
+ * Rebuild trajectory cache if acceleration has changed.
+ * Should be called before starting a new session.
+ */
+void ensureTrajectoryCacheValid() {
+  if (!traj_cache.isBuilt()) {
+    Serial.println("Building trajectory cache...");
+    traj_cache.build();
+    Serial.printf("  Cache built: %zu + %zu frames (%.1f KB)\n",
+                  traj_cache.getTrajectory1to2Count(),
+                  traj_cache.getTrajectory2to1Count(),
+                  traj_cache.getMemoryUsage() / 1024.0);
+    Serial.printf("  Durations: %.3fs (1→2), %.3fs (2→1)\n",
+                  (double)traj_cache.getDuration1to2(),
+                  (double)traj_cache.getDuration2to1());
+  } else if (traj_cache.rebuildIfAccelChanged()) {
+    Serial.println("Acceleration changed - trajectory cache rebuilt.");
+    Serial.printf("  New durations: %.3fs (1→2), %.3fs (2→1)\n",
+                  (double)traj_cache.getDuration1to2(),
+                  (double)traj_cache.getDuration2to1());
+  }
+}
+
+// ============================================================================
 // Setup
 // ============================================================================
 
@@ -227,11 +261,12 @@ void setup() {
   
   Serial.println("\n========================================");
   Serial.println("Pogo-Pin Contact Reliability Test Rig");
+  Serial.println("(with cached trajectories)");
   Serial.println("========================================\n");
 
   // Initialize pogo pin
-  pinMode(POGO_PIN, INPUT_PULLUP);
-  Serial.printf("Pogo pin %d configured as INPUT_PULLUP\n", POGO_PIN);
+  pinMode(SENSOR_PIN, INPUT_PULLUP);
+  Serial.printf("Pogo pin %d configured as INPUT_PULLUP\n", SENSOR_PIN);
   
   // Initialize SD card
   if (initSD()) {
@@ -266,6 +301,17 @@ void setup() {
     delay(10);
   }
   Serial.printf("Homing complete. Current position: %.3f rev\n", (double)pos);
+
+  // Pre-build the trajectory cache
+  Serial.println("\nPre-computing trajectory cache...");
+  traj_cache.build();
+  Serial.printf("  Trajectories cached: %zu + %zu frames\n",
+                traj_cache.getTrajectory1to2Count(),
+                traj_cache.getTrajectory2to1Count());
+  Serial.printf("  Memory usage: %.1f KB\n", traj_cache.getMemoryUsage() / 1024.0);
+  Serial.printf("  Move durations: %.3fs (1→2), %.3fs (2→1)\n",
+                (double)traj_cache.getDuration1to2(),
+                (double)traj_cache.getDuration2to1());
 
   // Start the sampling timer (runs continuously, but sampling_active controls actual sampling)
   if (!sampleTimer.begin(samplePogoISR, SAMPLE_PERIOD_US)) {
@@ -324,16 +370,27 @@ void loop() {
       return;
     }
 
-    // Plan smooth move
-    auto plan = hand_planner.planSmoothTo(target_position, pos, vel, (uint32_t)(t & 0xFFFFFFFF));
-    if (plan.trajectory.empty()) {
-      Serial.println(F("SMOOTH: Empty trajectory"));
+    // Determine which cached trajectory to use
+    const TrajFrame* frames = nullptr;
+    size_t frame_count = 0;
+
+    if (moving_to_first) {
+      // Moving to TARGET_POS_REV_1 (from TARGET_POS_REV_2)
+      frames = traj_cache.getTrajectory2to1();
+      frame_count = traj_cache.getTrajectory2to1Count();
+    } else {
+      // Moving to TARGET_POS_REV_2 (from TARGET_POS_REV_1)
+      frames = traj_cache.getTrajectory1to2();
+      frame_count = traj_cache.getTrajectory1to2Count();
+    }
+
+    if (frames == nullptr || frame_count == 0) {
+      Serial.println(F("SMOOTH: Cached trajectory unavailable"));
       return;
     }
 
-    // Arm trajectory streamer
-    g_traj_buffer = std::move(plan.trajectory);
-    bool ok = streamer.arm(HAND_NODE_ID, g_traj_buffer.data(), g_traj_buffer.size(),
+    // Arm trajectory streamer with cached trajectory
+    bool ok = streamer.arm(HAND_NODE_ID, frames, frame_count,
                            can.wallTimeUs() / 1e6f);
 
     // Start sampling for this movement
@@ -417,6 +474,9 @@ void handleSerial() {
             return;
           }
 
+          // Ensure trajectory cache is valid (rebuild if accel changed)
+          ensureTrajectoryCacheValid();
+
           // Start a new test session
           if (!startNewSession()) {
             Serial.println("ERROR: Could not start new session (SD card issue?)");
@@ -436,17 +496,21 @@ void handleSerial() {
             Serial.printf("  Cycles planned: %d (back-and-forth)\n", requested_cycles);
           }
           Serial.printf("  Sampling at: %lu Hz\n", SAMPLE_RATE_HZ);
+          Serial.printf("  Using cached trajectories (%zu + %zu frames)\n",
+                        traj_cache.getTrajectory1to2Count(),
+                        traj_cache.getTrajectory2to1Count());
           Serial.println("");
           
-          // Move to starting position before cycling
-          Serial.println("Moving to starting position...");
+          // Move to starting position before cycling (this is the only on-the-fly calculation)
+          Serial.println("Moving to starting position (on-the-fly trajectory)...");
           float pos = 0, vel = 0; uint64_t t = 0;
           can.getAxisPV(HAND_NODE_ID, pos, vel, t);
           
           // Set smooth_running before the initial move so 'stop' command works
           smooth_running = true;
           
-          auto plan = hand_planner.planSmoothTo(START_TARGET_POS_REV, pos, vel, (uint32_t)(t & 0xFFFFFFFF));
+          // Use the cache's planInitialMove for on-the-fly computation to target1
+          auto plan = traj_cache.planInitialMove(pos, vel, (uint32_t)(t & 0xFFFFFFFF), hand_planner);
           if (!plan.trajectory.empty()) {
             g_traj_buffer = std::move(plan.trajectory);
             streamer.arm(HAND_NODE_ID, g_traj_buffer.data(), g_traj_buffer.size(),
@@ -463,7 +527,7 @@ void handleSerial() {
           }
           
           if (smooth_running) {
-            Serial.printf("Starting position reached (%.3f rev). Beginning cycles...\n", (double)pos);
+            Serial.printf("Starting position reached (%.3f rev). Beginning cached cycles...\n", (double)pos);
             // Set up for first cycle: move to TARGET_POS_REV_2
             moving_to_first = false;
             target_position = TARGET_POS_REV_2;
@@ -509,6 +573,8 @@ void handleSerial() {
           if (new_accel > 0.0f) {
             if (setMaxSmoothMoveHandAccel(new_accel)) {
               Serial.printf("ACCEL: Max smooth move acceleration set to %.2f rev/s²\n", (double)new_accel);
+              // Note: Cache will be rebuilt automatically on next 'start'
+              Serial.println("  (Trajectory cache will rebuild on next start)");
             } else {
               Serial.println("ERROR: Failed to set acceleration (invalid value)");
             }
@@ -521,6 +587,11 @@ void handleSerial() {
           // Print current max acceleration
           Serial.printf("ACCEL: Current max smooth move acceleration = %.2f rev/s²\n", 
                         (double)getMaxSmoothMoveHandAccel());
+          Serial.printf("  Cached acceleration = %.2f rev/s²\n",
+                        (double)traj_cache.getCachedAccel());
+          if (fabsf(getMaxSmoothMoveHandAccel() - traj_cache.getCachedAccel()) > 1e-6f) {
+            Serial.println("  (Cache will rebuild on next start)");
+          }
           
         } else if (cmd == "status") {
           // Print current status
@@ -535,11 +606,19 @@ void handleSerial() {
           Serial.printf("Full cycles logged: %d\n", logged_cycle);
           Serial.printf("SD card: %s\n", sd_initialized ? "OK" : "NOT AVAILABLE");
           
+          // Cache status
+          Serial.printf("Trajectory cache: %s\n", traj_cache.isBuilt() ? "BUILT" : "NOT BUILT");
+          Serial.printf("  Frames: %zu (1→2) + %zu (2→1)\n",
+                        traj_cache.getTrajectory1to2Count(),
+                        traj_cache.getTrajectory2to1Count());
+          Serial.printf("  Memory: %.1f KB\n", traj_cache.getMemoryUsage() / 1024.0);
+          Serial.printf("  Cached accel: %.2f rev/s²\n", (double)traj_cache.getCachedAccel());
+          
           // Read current pogo state
-          int pogo_state = digitalRead(POGO_PIN);
+          int pogo_state = digitalRead(SENSOR_PIN);
           Serial.printf("Pogo pin state: %s (pin %d = %d)\n", 
                         pogo_state == LOW ? "CONTACT OK" : "BREAK DETECTED",
-                        POGO_PIN, pogo_state);
+                        SENSOR_PIN, pogo_state);
           
           // Current position
           float pos = 0, vel = 0; uint64_t t = 0;
@@ -548,9 +627,21 @@ void handleSerial() {
           }
           Serial.println("--------------\n");
           
+        } else if (cmd == "cache") {
+          // Force rebuild of trajectory cache
+          Serial.println("Rebuilding trajectory cache...");
+          traj_cache.forceRebuild();
+          Serial.printf("  Frames: %zu (1→2) + %zu (2→1)\n",
+                        traj_cache.getTrajectory1to2Count(),
+                        traj_cache.getTrajectory2to1Count());
+          Serial.printf("  Durations: %.3fs (1→2), %.3fs (2→1)\n",
+                        (double)traj_cache.getDuration1to2(),
+                        (double)traj_cache.getDuration2to1());
+          Serial.printf("  Memory: %.1f KB\n", traj_cache.getMemoryUsage() / 1024.0);
+          
         } else if (cmd.length() > 0) {
           Serial.printf("Unknown command: '%s'\n", cmd.c_str());
-          Serial.println("Commands: start [cycles] | stop | reset | home | status | accel [value]");
+          Serial.println("Commands: start [cycles] | stop | reset | home | status | accel [value] | cache");
         }
       }
     } else {
