@@ -502,7 +502,7 @@ class BallButlerNode(Node):
         dz = z_global - bb_pos_mm[2]
         
         # Step 2: Rotate from global frame to BB's local frame
-        # We need to rotate by -yaw_offset to go from global to local
+        # We need to rotate by yaw_offset to go from global to local
         cos_offset = math.cos(yaw_offset)
         sin_offset = math.sin(yaw_offset)
         
@@ -511,6 +511,26 @@ class BallButlerNode(Node):
         z_bb = dz
         
         return x_bb, y_bb, z_bb
+
+    def apply_learned_correction(self, x_global, y_global, z_global):
+        """
+        Apply learned affine correction to target coordinates.
+        
+        This corrects for systematic kinematic errors without fixing root cause.
+        Call this BEFORE global_to_bb_frame().
+        """
+        # Affine transformation parameters (from calibration)
+        a11, a12 = 0.823919, -0.143308
+        a21, a22 = 0.209697, 1.000865
+        tx, ty = -88.56, 82.49
+        
+        # Apply correction
+        x_corrected = a11 * x_global + a12 * y_global + tx
+        y_corrected = a21 * x_global + a22 * y_global + ty
+        z_corrected = z_global  # Z is unaffected
+        
+        return x_corrected, y_corrected, z_corrected
+        
 
     # =========================================================================================
     #                                 IK + Ballistics
@@ -803,9 +823,12 @@ class BallButlerNode(Node):
         # Always store the global target
         self.last_target_global = (x_global, y_global, z_global)
         self.last_target_id = target_id
+
+        # Apply learned correction to global coordinates before transforming to BB frame
+        x_corr, y_corr, z_corr = self.apply_learned_correction(x_global, y_global, z_global)
         
         # Transform from global to BB local frame
-        x_bb, y_bb, z_bb = self.global_to_bb_frame(x_global, y_global, z_global)
+        x_bb, y_bb, z_bb = self.global_to_bb_frame(x_corr, y_corr, z_corr)
 
         if throw:
             self.aim_and_throw(x_bb, y_bb, z_bb, target_id=target_id, throw_delay_sec=throw_delay_sec)
