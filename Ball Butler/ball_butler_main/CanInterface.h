@@ -375,7 +375,7 @@ private:
   uint8_t  ball_detect_gpio_pin    = 3;    // GPIO pin on hand ODrive for ball detection
   uint32_t ball_check_interval_ms_ = 200;  // How often to check for ball in hand
   uint32_t last_ball_check_ms_     = 0;    // Last time we checked for ball in hand
-  bool     ball_in_hand_           = false;
+  bool     ball_in_hand_           = true; // Assume we start with a ball in hand until we check
 
   // Auto-clear BRAKE_RESISTOR_DISARMED
   bool auto_clear_brake_res_ = true;

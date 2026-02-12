@@ -36,6 +36,7 @@ const char* robotStateToString(RobotState s) {
     case RobotState::THROWING: return "THROWING";
     case RobotState::RELOADING: return "RELOADING";
     case RobotState::CALIBRATING: return "CALIBRATING";
+    case RobotState::CHECKING_BALL: return "CHECKING_BALL";
     case RobotState::ERROR: return "ERROR";
     default: return "UNKNOWN";
   }
@@ -78,6 +79,7 @@ void StateMachine::update() {
     case RobotState::THROWING: handleThrowing_(); break;
     case RobotState::RELOADING: handleReloading_(); break;
     case RobotState::CALIBRATING: handleCalibrating_(); break;
+    case RobotState::CHECKING_BALL: handleCheckingBall_(); break;
     case RobotState::ERROR: handleError_(); break;
   }
 }
@@ -105,6 +107,8 @@ void StateMachine::enterState_(RobotState newState) {
     case RobotState::IDLE:
       // Stow the pitch axis (90 degrees in IDLE mode)
       pitch_.setTargetDeg(90.0f);
+      // Reset ball monitoring counter
+      idle_ball_false_count_ = 0;
       // Wait a brief moment to allow command to take effect
       delay(50);
       break;
@@ -126,6 +130,8 @@ void StateMachine::enterState_(RobotState newState) {
     case RobotState::RELOADING:
       reload_attempt_ = 0;
       reload_sub_state_ = 0;
+      ball_check_samples_collected_ = 0;
+      ball_check_positive_ = false;
       // Put the pitch and hand axes in CLOSED_LOOP_CONTROL mode
       can_.setRequestedState(config_.pitch_node_id, 8u);
       can_.setRequestedState(config_.hand_node_id, 8u);
@@ -145,6 +151,15 @@ void StateMachine::enterState_(RobotState newState) {
       // Move yaw to calibration angle
       yaw_.setTargetDeg(config_.calibrate_location_max_yaw_deg_);
       calibration_sub_state_ = 0;
+      break;
+
+    case RobotState::CHECKING_BALL:
+      // Enter CHECKING_BALL state to verify ball presence
+      check_ball_sub_state_ = 0;
+      check_ball_samples_collected_ = 0;
+      // Put pitch in CLOSED_LOOP_CONTROL mode for movement
+      can_.setRequestedState(config_.pitch_node_id, 8u);
+      debugf_("[SM] Entering CHECKING_BALL - disrupting to verify ball presence\n");
       break;
 
     case RobotState::ERROR:
@@ -224,12 +239,21 @@ void StateMachine::handleBoot_() {
 // handleIdle_() - Waiting for command
 // --------------------------------------------------------------------
 void StateMachine::handleIdle_() {
-  // If there's no ball in hand, we should attempt to reload
-  // if (!can_.isBallInHand()) {
-  //   debugf_("[SM] No ball detected in hand while IDLE, initiating reload\n");
-  //   enterState_(RobotState::RELOADING);
-  //   return;
-  // }
+  // Monitor ball-in-hand status
+  // Track consecutive false readings to detect ball removal
+  if (can_.isBallInHand()) {
+    // Ball detected - reset counter
+    idle_ball_false_count_ = 0;
+  } else {
+    // No ball detected - increment counter
+    idle_ball_false_count_++;
+    if (idle_ball_false_count_ >= config_.idle_ball_missing_samples) {
+      debugf_("[SM] %d consecutive ball-missing readings, entering CHECKING_BALL\n",
+              idle_ball_false_count_);
+      enterState_(RobotState::CHECKING_BALL);
+      return;
+    }
+  }
   
   // Check if we have a pending throw request
   if (throw_pending_) {
@@ -261,9 +285,13 @@ void StateMachine::handleIdle_() {
   // If the pitch axis is at or above `config_.pitch_min_stow_angle_deg` (and at its target) and not currently IDLE, 
   // we can put it in IDLE mode to save power.
   // Any pitch angle lower than around 70 degrees will cause the axis to fight gravity, so we can only go IDLE when stowed
+  // Don't idle if a command was sent recently (prevents race condition with Serial/external commands)
+  const uint32_t pitch_idle_delay_ms = 500;  // Wait at least 500ms after command before allowing IDLE
+  const bool recent_command = (millis() - pitch_.lastCommandMs()) < pitch_idle_delay_ms;
+  
   CanInterface::AxisHeartbeat hb_pitch;
   if (can_.getAxisHeartbeat(config_.pitch_node_id, hb_pitch)) {
-    if (hb_pitch.axis_state == 8u && hb_pitch.trajectory_done && PRO.getPitchDeg() >= config_.pitch_min_stow_angle_deg) {
+    if (!recent_command && hb_pitch.axis_state == 8u && hb_pitch.trajectory_done && PRO.getPitchDeg() >= config_.pitch_min_stow_angle_deg) {
       can_.setRequestedState(config_.pitch_node_id, 1u);  // IDLE
     } 
 
@@ -355,11 +383,11 @@ void StateMachine::handleThrowing_() {
 //   3: Move yaw to pickup position
 //   4: Wait for yaw settle
 //   5: Move pitch to ready angle (grab ball)
-//   6: Wait for pitch settle and check for ball in hand
-//   7: Check for ball in hand and handle retries
-//   8: Move yaw back to home
-//   9: Wait for yaw settle
-//  10: Wait for hand to reach bottom position
+//   6: Wait for pitch settle
+//   7: Move pitch back to ready angle (improves ball detection)
+//   8: Wait for pitch settle
+//   9: Check for ball in hand (collect multiple samples)
+//   10: Move yaw back to home
 // --------------------------------------------------------------------
 void StateMachine::handleReloading_() {
   const uint32_t elapsed = millis() - state_enter_ms_;
@@ -426,7 +454,7 @@ void StateMachine::handleReloading_() {
       }
       break;
 
-    case 5:  // Move pitch to ready angle (should grab ball from hopper)
+    case 5:  // Move pitch to grab angle (should grab ball from hopper)
       debugf_("[SM] Reload: Pitching to grab position (%.1f°)\n", config_.reload_pitch_grab_deg);
       pitch_.setTargetDeg(config_.reload_pitch_grab_deg);
       reload_sub_state_ = 6;
@@ -444,53 +472,96 @@ void StateMachine::handleReloading_() {
       }
       break;
 
-    case 7: // Check for ball in hand
-      if (can_.isBallInHand()) {
-        // Success! Continue with reload sequence
-        reload_sub_state_ = 8;
-      } else {
-        // No ball - retry if attempts remaining
-        reload_attempt_++;
-        if (reload_attempt_ < config_.max_reload_attempts) {
-          debugf_("[SM] Reload attempt %d/%d failed, retrying\n",
-                  reload_attempt_, config_.max_reload_attempts);
-          reload_sub_state_ = 0;  // Restart sequence
-          sub_state_ms_ = millis();
-          break;
-        } else {
-          // Reset positions and trigger error
-          moveHandToPosition_(config_.hand_rev_home);
-          pitch_.setTargetDeg(config_.pitch_deg_home);
-          yaw_.setTargetDeg(config_.yaw_deg_home);
-
-          triggerError("No ball after max reload attempts");
-        }
-      }
-
-    case 8:  // Move hand back to home
-      debugf_("[SM] Reload: Yawing to home (%.1f°)\n", config_.reload_yaw_home_deg);
-      yaw_.setTargetDeg(config_.reload_yaw_home_deg);
-      reload_sub_state_ = 9;
+    case 7: // Move pitch back to ready angle before checking for ball in hand
+      // This leads to more reliable detection of the ball in hand
+      debugf_("[SM] Reload: Pitching back to ready angle (%.1f°)\n", config_.reload_pitch_ready_deg);
+      pitch_.setTargetDeg(config_.reload_pitch_ready_deg);
+      reload_sub_state_ = 8;
       sub_state_ms_ = millis();
       break;
 
-    case 9:  // Wait for yaw settle and send hand to bottom
-      if (abs(current_yaw - config_.reload_yaw_home_deg) < config_.yaw_angle_threshold_deg) {
-        moveHandToPosition_(config_.reload_hand_bottom_rev);  // Move hand to safe position
+    case 8: // Await pitch arrival
+      // Await pitch arrival
+      if (sub_elapsed < min_duration_ms) {
+        break;  // Ensure minimum duration
+      }
 
-        // Wait for hand to reach bottom before finishing
-        reload_sub_state_ = 10;
+      if (can_.getAxisHeartbeat(config_.pitch_node_id, hb_pitch) && hb_pitch.trajectory_done) {
+        // Pitch has settled, now we can check for ball in hand
+        reload_sub_state_ = 9;
         sub_state_ms_ = millis();
       }
       break;
 
-    case 10:  // Wait for hand to reach bottom
+    case 9: // Check for ball in hand (wait for multiple samples)
+      // Initialize sample collection on first entry to this sub-state
+      if (ball_check_samples_collected_ == 0 && !ball_check_positive_) {
+        // Fresh entry - reset tracking
+        ball_check_positive_ = false;
+        Serial.printf("[SM] Reload case 9: Checking for ball in hand, collecting %d samples...\n", config_.reload_ball_check_samples);
+      }
+
+      // Check current sample
+      if (can_.isBallInHand()) {
+        ball_check_positive_ = true;
+      }
+      ball_check_samples_collected_++;
+
+      // If any sample was positive, success!
+      if (ball_check_positive_) {
+        debugf_("[SM] Ball detected after %d samples\n", ball_check_samples_collected_);
+        ball_check_samples_collected_ = 0;
+        ball_check_positive_ = false;
+        reload_sub_state_ = 10;  // Move to next sub-state to return home
+        sub_state_ms_ = millis();
+        break;
+      }
+
+      // If we haven't collected enough samples yet, wait for more
+      if (ball_check_samples_collected_ < config_.reload_ball_check_samples) {
+        break;  // Stay in this sub-state, collect more samples
+      }
+
+      // All samples collected, none positive - retry if attempts remaining
+      ball_check_samples_collected_ = 0;
+      ball_check_positive_ = false;
+      reload_attempt_++;
+      if (reload_attempt_ < config_.max_reload_attempts) {
+        debugf_("[SM] Reload attempt %d/%d failed, retrying\n",
+                reload_attempt_, config_.max_reload_attempts);
+        reload_sub_state_ = 0;  // Restart sequence
+        sub_state_ms_ = millis();
+        break;
+      } else {
+        // Reset positions and trigger error
+        moveHandToPosition_(config_.hand_rev_home);
+        pitch_.setTargetDeg(config_.pitch_deg_home);
+        yaw_.setTargetDeg(config_.yaw_deg_home);
+
+        triggerError("No ball after max reload attempts");
+      }
+      break;
+
+    case 10:  // Move all axes to success positions (hand down, yaw home)
+      debugf_("[SM] Reload: Yawing to home (%.1f°), moving hand to bottom (%.1f rev), pitching to home (%.1f°)\n", 
+        config_.yaw_deg_home, config_.hand_rev_home, config_.pitch_deg_home);
+      yaw_.setTargetDeg(config_.yaw_deg_home);
+      moveHandToPosition_(config_.hand_rev_home);
+      pitch_.setTargetDeg(config_.pitch_deg_home);
+      reload_sub_state_ = 11;
+      sub_state_ms_ = millis();
+      break;
+
+    case 11:  // Wait for hand and yaw to reach final positions
       // Determine whether the hand is at the bottom by whether its in IDLE
-      if (can_.getAxisHeartbeat(config_.hand_node_id, hb_hand)) {
-        if (hb_hand.axis_state == 1u) {  // IDLE
-          debugf_("[SM] Reload complete, ball in hand: %s\n", can_.isBallInHand() ? "YES" : "NO");
-          enterState_(RobotState::IDLE);
-        }
+      if (can_.getAxisHeartbeat(config_.hand_node_id, hb_hand) && 
+          abs(current_yaw - config_.yaw_deg_home) < config_.yaw_angle_threshold_deg &&
+          can_.getAxisHeartbeat(config_.pitch_node_id, hb_pitch) && hb_pitch.trajectory_done) {
+            
+            if (hb_hand.axis_state == 1u) {  // IDLE
+              debugf_("[SM] Reload complete, ball in hand: %s\n", can_.isBallInHand() ? "YES" : "NO");
+              enterState_(RobotState::IDLE);
+            }
       }
       break;
   }
@@ -530,6 +601,75 @@ void StateMachine::handleCalibrating_() {
         yaw_.setAccel(config_.yaw_pre_calib_accel_, config_.yaw_pre_calib_decel_);
         debugf_("[SM] Calibration complete, returning to IDLE\n");
         enterState_(RobotState::IDLE);
+      }
+      break;
+  }
+}
+
+// --------------------------------------------------------------------
+// handleCheckingBall_() - Verify ball presence after suspected removal
+//
+// Sub-states:
+//   0: Move pitch to disrupt position
+//   1: Wait for pitch to settle at disrupt position
+//   2: Move pitch back to stow position
+//   3: Wait for pitch to settle, then collect confirmation samples
+//   4: Collecting confirmation samples
+// --------------------------------------------------------------------
+void StateMachine::handleCheckingBall_() {
+  const uint32_t sub_elapsed = millis() - sub_state_ms_;
+  const uint32_t min_duration_ms = 300;  // Min time before checking trajectory_done
+  
+  CanInterface::AxisHeartbeat hb_pitch;
+
+  switch (check_ball_sub_state_) {
+    case 0:  // Move pitch to disrupt position
+      debugf_("[SM] CheckBall: Moving pitch to %.1f°\n", config_.check_ball_disrupt_pitch_deg);
+      pitch_.setTargetDeg(config_.check_ball_disrupt_pitch_deg);
+      check_ball_sub_state_ = 1;
+      sub_state_ms_ = millis();
+      break;
+
+    case 1:  // Wait for pitch to settle at disrupt position
+      if (sub_elapsed < min_duration_ms) {
+        break;
+      }
+      if (can_.getAxisHeartbeat(config_.pitch_node_id, hb_pitch) && hb_pitch.trajectory_done) {
+        debugf_("[SM] CheckBall: Reached disrupt position, returning to 90°\n");
+        pitch_.setTargetDeg(90.0f);
+        check_ball_sub_state_ = 2;
+        sub_state_ms_ = millis();
+      }
+      break;
+
+    case 2:  // Wait for pitch to settle back at stow position
+      if (sub_elapsed < min_duration_ms) {
+        break;
+      }
+      if (can_.getAxisHeartbeat(config_.pitch_node_id, hb_pitch) && hb_pitch.trajectory_done) {
+        debugf_("[SM] CheckBall: Back at stow, collecting %d confirmation samples\n",
+                config_.check_ball_confirm_samples);
+        check_ball_samples_collected_ = 0;
+        check_ball_sub_state_ = 3;
+        sub_state_ms_ = millis();
+      }
+      break;
+
+    case 3:  // Collect confirmation samples
+      // If ANY sample shows ball present, return to IDLE
+      if (can_.isBallInHand()) {
+        debugf_("[SM] CheckBall: Ball detected after %d samples, returning to IDLE\n",
+                check_ball_samples_collected_ + 1);
+        enterState_(RobotState::IDLE);
+        return;
+      }
+      check_ball_samples_collected_++;
+
+      // If all samples collected and all were false, ball is confirmed gone
+      if (check_ball_samples_collected_ >= config_.check_ball_confirm_samples) {
+        debugf_("[SM] CheckBall: Ball confirmed missing after %d samples, initiating RELOADING\n",
+                check_ball_samples_collected_);
+        enterState_(RobotState::RELOADING);
       }
       break;
   }
