@@ -552,12 +552,10 @@ void StateMachine::handleReloading_() {
       sub_state_ms_ = millis();
       break;
 
-    case 11:  // Wait for hand and yaw to reach final positions
+    case 11:  // Wait for hand and pitch to reach final positions. Don't require yaw to be home before accepting tracking/throwing targets
       // Determine whether the hand is at the bottom by whether its in IDLE
-      if (can_.getAxisHeartbeat(config_.hand_node_id, hb_hand) && 
-          abs(current_yaw - config_.yaw_deg_home) < config_.yaw_angle_threshold_deg &&
+      if (can_.getAxisHeartbeat(config_.hand_node_id, hb_hand) &&
           can_.getAxisHeartbeat(config_.pitch_node_id, hb_pitch) && hb_pitch.trajectory_done) {
-            
             if (hb_hand.axis_state == 1u) {  // IDLE
               debugf_("[SM] Reload complete, ball in hand: %s\n", can_.isBallInHand() ? "YES" : "NO");
               enterState_(RobotState::IDLE);
