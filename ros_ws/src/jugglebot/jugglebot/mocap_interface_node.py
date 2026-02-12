@@ -1,6 +1,7 @@
 import rclpy
 from rclpy.node import Node
 from std_srvs.srv import Trigger, SetBool
+from std_msgs.msg import Float64
 from jugglebot_interfaces.msg import MocapDataMulti, MocapDataSingle, BallButlerHeartbeat, RigidBodyPose, RigidBodyPoses
 from jugglebot_interfaces.srv import GetRobotGeometry
 from geometry_msgs.msg import PoseStamped
@@ -37,11 +38,14 @@ class MocapInterfaceNode(Node):
         #########################################################################################################
 
         # Initialize publishers to publish the mocap data
+        self.clock_offset_publisher = self.create_publisher(Float64, 'qtm_clock_offset_sec', 10)
         self.unlabelled_mocap_publisher = self.create_publisher(MocapDataMulti, 'mocap_data', 10)
         self.ball_butler_marker_publisher = self.create_publisher(MocapDataMulti, 'bb/markers', 10)
         self.rigid_body_poses_publisher = self.create_publisher(RigidBodyPoses, 'rigid_body_poses', 10)
 
-        # Initialize a timer to publish the mocap data
+        # Initialize timers to publish the mocap data
+        clock_offset_publish_rate = 1.0  # Hz
+        self.clock_offset_timer = self.create_timer(1.0 / clock_offset_publish_rate, self.publish_clock_offset)
         mocap_frames_per_second = 200
         self.timer = self.create_timer(1.0 / mocap_frames_per_second, self.publish_mocap_data)
 
@@ -54,6 +58,18 @@ class MocapInterfaceNode(Node):
         self.ball_butler_last_state = None
 
         self.get_logger().info("MocapInterfaceNode initialized")
+
+    def publish_clock_offset(self):
+        """
+        Publish the clock timing offset between the mocap system and ROS.
+        The offset is in seconds and can be used by other nodes to synchronize their clocks with the mocap system.
+        """
+        offset_dict = self.mocap_interface.get_qtm_sync_status()
+        offset = offset_dict.get('offset_s', None)
+        if offset is not None:
+            msg = Float64()
+            msg.data = offset
+            self.clock_offset_publisher.publish(msg)
 
     def publish_mocap_data(self):
         """Publish the unlabelled marker tracking data (already in the base frame)."""

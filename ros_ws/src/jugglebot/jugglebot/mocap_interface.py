@@ -51,6 +51,15 @@ class MocapInterface:
         self.drop_rate = 0
         self.out_of_sync_rate = 0
 
+        # ── QTM ↔ ROS Clock Sync ───────────────────────────────────────
+        # QTM packet.timestamp is in microseconds (monotonic from QTM start).
+        # We maintain a running offset: ros_time_ns = qtm_timestamp_us * 1000 + _qtm_to_ros_offset_ns
+        # Updated every frame with exponential smoothing to filter network jitter.
+        self._qtm_to_ros_offset_ns: Optional[int] = None
+        self._qtm_sync_alpha = 0.01  # Smoothing factor (lower = more stable, slower to adapt)
+        self._qtm_sync_count = 0
+        self._qtm_sync_lock = threading.Lock()
+
         # Threading lock for data synchronization
         self.data_lock = threading.Lock()
 
@@ -131,6 +140,10 @@ class MocapInterface:
         Parameters:
         - packet: The data packet received from QTM.
         """
+        # ── Update QTM ↔ ROS clock offset every frame ──────────────────
+        # Do this before the ready_to_publish check so sync warms up during startup
+        self._update_qtm_clock_sync(packet)
+
         # Check if we are ready to publish data
         if not self.ready_to_publish:
             return
@@ -258,6 +271,83 @@ class MocapInterface:
             self.thread.join()
 
     #########################################################################################################
+    #                                      QTM ↔ ROS Clock Sync                                            #
+    #########################################################################################################
+
+    def _update_qtm_clock_sync(self, packet):
+        """Update the QTM-to-ROS clock offset using the packet timestamp.
+
+        QTM's packet.timestamp is in microseconds (monotonic from measurement start).
+        We pair it with the current ROS clock reading and maintain an exponentially
+        smoothed offset so that:
+            ros_time_ns ≈ qtm_timestamp_us * 1000 + offset_ns
+
+        The first few samples use direct assignment to converge quickly, then
+        switch to exponential smoothing to filter network jitter.
+        """
+        if self.node is None:
+            return
+
+        try:
+            qtm_us = packet.timestamp  # QTM camera time in microseconds
+            ros_ns = self.node.get_clock().now().nanoseconds  # ROS time in nanoseconds
+
+            qtm_ns = int(qtm_us) * 1000  # Convert QTM μs → ns
+            measured_offset = ros_ns - qtm_ns
+
+            with self._qtm_sync_lock:
+                if self._qtm_to_ros_offset_ns is None:
+                    # First sample — initialise directly
+                    self._qtm_to_ros_offset_ns = measured_offset
+                    self._qtm_sync_count = 1
+                    self.logger.info(
+                        f"QTM clock sync initialised: offset = {measured_offset / 1e9:.6f} s"
+                    )
+                else:
+                    self._qtm_sync_count += 1
+
+                    # Use direct averaging for the first 100 samples to converge fast,
+                    # then switch to exponential smoothing
+                    if self._qtm_sync_count <= 100:
+                        alpha = 1.0 / self._qtm_sync_count
+                    else:
+                        alpha = self._qtm_sync_alpha
+
+                    self._qtm_to_ros_offset_ns = int(
+                        self._qtm_to_ros_offset_ns + alpha * (measured_offset - self._qtm_to_ros_offset_ns)
+                    )
+
+        except Exception as e:
+            self.logger.error(f"QTM clock sync error: {e}", throttle_duration_sec=5.0)
+
+    def qtm_timestamp_to_ros_ns(self, qtm_timestamp_us: int) -> Optional[int]:
+        """Convert a QTM timestamp (microseconds) to ROS time (nanoseconds).
+
+        Returns None if the clock sync has not yet been initialised.
+        """
+        with self._qtm_sync_lock:
+            if self._qtm_to_ros_offset_ns is None:
+                return None
+            return int(qtm_timestamp_us) * 1000 + self._qtm_to_ros_offset_ns
+
+    def qtm_timestamp_to_ros_sec(self, qtm_timestamp_us: int) -> Optional[float]:
+        """Convert a QTM timestamp (microseconds) to ROS time (seconds as float).
+
+        Returns None if the clock sync has not yet been initialised.
+        """
+        ns = self.qtm_timestamp_to_ros_ns(qtm_timestamp_us)
+        return ns / 1e9 if ns is not None else None
+
+    def get_qtm_sync_status(self) -> dict:
+        """Return the current QTM clock sync status for diagnostics."""
+        with self._qtm_sync_lock:
+            return {
+                "synced": self._qtm_to_ros_offset_ns is not None,
+                "offset_s": self._qtm_to_ros_offset_ns / 1e9 if self._qtm_to_ros_offset_ns is not None else None,
+                "sample_count": self._qtm_sync_count,
+            }
+
+    #########################################################################################################
     #                                  Package Data For Parent Modules                                      #
     #########################################################################################################
 
@@ -287,7 +377,7 @@ class MocapInterface:
             return self.body_poses.copy()
 
     def clear_body_poses(self):
-        """Clear stored poses so we don’t publish duplicates."""
+        """Clear stored poses so we don't publish duplicates."""
         with self.data_lock:
             self.body_poses.clear()
 
