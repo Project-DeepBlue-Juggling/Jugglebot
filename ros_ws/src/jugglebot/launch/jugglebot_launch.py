@@ -77,7 +77,7 @@ def generate_launch_description():
 
     # Generate a timestamped directory name
     timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-    bag_dir = os.path.join(bags_dir, f"session_{timestamp}")
+    bag_dir = os.path.join(bags_dir, f"{timestamp}")
 
     record = LaunchConfiguration('record')
     record_arg = DeclareLaunchArgument(
@@ -89,7 +89,7 @@ def generate_launch_description():
     rosbag_record_cmd = [
         'ros2', 'bag', 'record', '/robot_state', '/leg_lengths_topic', '/hand_trajectory', '/mocap_data', '/platform_pose_topic',
         '/rigid_body_poses', '/settled_leg_lengths', '/settled_platform_poses', '/hand_telemetry', '/throw_debug',
-        '/balls', '/targets', '/throw_announcements', 'bb/heartbeat',
+        '/balls', '/targets', '/throw_announcements', 'bb/heartbeat', 'qtm_clock_offset_sec',
         '-s', 'mcap', '-o', bag_dir
     ]
 
