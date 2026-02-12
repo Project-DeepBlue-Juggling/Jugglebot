@@ -547,6 +547,6 @@ void pitchHandleLine(const String& line) {
     return;
   }
   float deg = s.toFloat();
-  Serial.printf("PITCH: Target -> %.2f deg\n", deg);
+  // Serial.printf("PITCH: Target -> %.2f deg\n", deg);
   if (isfinite(deg)) pitch.setTargetDeg(deg);
 }

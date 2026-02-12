@@ -71,6 +71,12 @@ bool sd_initialized = false;
 int session_number = 0;
 int logged_cycle = 0;                   // Full cycles logged (1 cycle = up + down)
 
+// Sensor debug printing mode
+enum SensorPrintMode { SENSOR_PRINT_OFF, SENSOR_PRINT_IDLE, SENSOR_PRINT_SESSION, SENSOR_PRINT_ALWAYS };
+SensorPrintMode sensor_print_mode = SENSOR_PRINT_OFF;
+uint32_t last_sensor_print_ms = 0;
+constexpr uint32_t SENSOR_PRINT_INTERVAL_MS = 100;  // Print sensor value every 100ms
+
 // Buffers for transferring data from ISR to main loop
 // We store drop counts for each half-cycle, then combine into full cycles
 volatile uint32_t half_cycle_drops[2] = {0, 0};   // [0] = first half, [1] = second half
@@ -322,10 +328,11 @@ void setup() {
   }
 
   Serial.println("\nSetup complete.");
-  Serial.println("Commands: start [cycles] | stop | reset | home | status | accel [value]");
+  Serial.println("Commands: start [cycles] | stop | reset | home | status | accel [value] | sensor [mode]");
   Serial.println("  start       - Run for default cycles (NUM_CYCLES)");
   Serial.println("  start 0     - Run indefinitely until 'stop'");
   Serial.println("  start N     - Run for N cycles");
+  Serial.println("  sensor      - Print sensor output (off|idle|session|always)");
 }
 
 // ============================================================================
@@ -348,6 +355,24 @@ void loop() {
 
   handleSerial();
   can.loop();
+
+  // Optional sensor value printing
+  if (sensor_print_mode != SENSOR_PRINT_OFF) {
+    bool should_print = false;
+    if (sensor_print_mode == SENSOR_PRINT_ALWAYS) {
+      should_print = true;
+    } else if (sensor_print_mode == SENSOR_PRINT_IDLE && !smooth_running) {
+      should_print = true;
+    } else if (sensor_print_mode == SENSOR_PRINT_SESSION && smooth_running) {
+      should_print = true;
+    }
+    
+    if (should_print && (millis() - last_sensor_print_ms >= SENSOR_PRINT_INTERVAL_MS)) {
+      last_sensor_print_ms = millis();
+      int sensor_val = digitalRead(SENSOR_PIN);
+      Serial.printf("SENSOR: %d (%s)\n", sensor_val, sensor_val == LOW ? "CONTACT" : "BREAK");
+    }
+  }
 
   // Check if a full cycle was completed and needs logging
   if (half_cycle_complete) {
@@ -639,9 +664,40 @@ void handleSerial() {
                         (double)traj_cache.getDuration2to1());
           Serial.printf("  Memory: %.1f KB\n", traj_cache.getMemoryUsage() / 1024.0);
           
+        } else if (cmd == "sensor" || cmd.startsWith("sensor ")) {
+          // Control sensor debug printing
+          if (cmd == "sensor") {
+            // Print current mode
+            const char* mode_str = "off";
+            if (sensor_print_mode == SENSOR_PRINT_IDLE) mode_str = "idle";
+            else if (sensor_print_mode == SENSOR_PRINT_SESSION) mode_str = "session";
+            else if (sensor_print_mode == SENSOR_PRINT_ALWAYS) mode_str = "always";
+            Serial.printf("SENSOR: Print mode = %s\n", mode_str);
+            Serial.println("Usage: sensor off|idle|session|always");
+          } else {
+            String mode = cmd.substring(7);
+            mode.trim();
+            if (mode == "off") {
+              sensor_print_mode = SENSOR_PRINT_OFF;
+              Serial.println("SENSOR: Printing disabled");
+            } else if (mode == "idle") {
+              sensor_print_mode = SENSOR_PRINT_IDLE;
+              Serial.println("SENSOR: Printing enabled (idle only)");
+            } else if (mode == "session") {
+              sensor_print_mode = SENSOR_PRINT_SESSION;
+              Serial.println("SENSOR: Printing enabled (during session only)");
+            } else if (mode == "always") {
+              sensor_print_mode = SENSOR_PRINT_ALWAYS;
+              Serial.println("SENSOR: Printing enabled (always)");
+            } else {
+              Serial.println("ERROR: Invalid sensor mode");
+              Serial.println("Usage: sensor off|idle|session|always");
+            }
+          }
+          
         } else if (cmd.length() > 0) {
           Serial.printf("Unknown command: '%s'\n", cmd.c_str());
-          Serial.println("Commands: start [cycles] | stop | reset | home | status | accel [value] | cache");
+          Serial.println("Commands: start [cycles] | stop | reset | home | status | accel [value] | cache | sensor [mode]");
         }
       }
     } else {

@@ -63,12 +63,18 @@ public:
   // Print a short status line (uses latest estimator snapshot if available)
   void printStatusOnce() const;
 
+  // Time of last command sent (for race condition prevention)
+  uint32_t lastCommandMs() const { return last_command_ms_; }
+
 private:
   CanInterface& can_;
   uint8_t node_;
   Stream* log_;
   Traj traj_;
   bool configured_ = false;
+
+  // Timestamp of last command sent
+  uint32_t last_command_ms_ = 0;
 
   // Initialization constants for throttling messages
   static constexpr uint32_t PRINT_PITCH_REJECTED_INTERVAL_MS = 1000;

@@ -658,15 +658,16 @@ void CanInterface::publishHeartbeat_() {
 // Ball in Hand Check
 // ================================================================================
 void CanInterface::maybeCheckBallInHand_() {
-  // Only check if enough time has passed since last check, and if we're in IDLE
+  // Only check if enough time has passed since last check
   if (!state_machine_) return;
-  if (millis() - last_ball_check_ms_ > ball_check_interval_ms_ && state_machine_->isIdle()) {
+  if (millis() - last_ball_check_ms_ > ball_check_interval_ms_) {
     uint32_t gpio_states = 0;
     if (!readGpioStates(hand_node_id_, gpio_states)) {
       dbg_->printf("[CAN] Ball check failed: unable to read GPIO states\n");
       return;
     }
-    ball_in_hand_ = (gpio_states >> ball_detect_gpio_pin) & 0x01;
+
+    ball_in_hand_ = !((gpio_states >> ball_detect_gpio_pin) & 0x01);
 
     // Serial.printf("[BallCheck] GPIO states=0x%08lX ball_in_hand=%d\n", (unsigned long)gpio_states, (int)ball_in_hand_);
     last_ball_check_ms_ = millis();

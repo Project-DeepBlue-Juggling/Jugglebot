@@ -67,7 +67,7 @@ public:
     uint32_t post_throw_delay_ms   = 1000;   // 1 second delay after throw before reload
     uint32_t idle_no_cmd_timeout_ms = 5000;  // Stow pitch if no throw cmd received for this long
     
-    // Reload sequence positions
+    // Reload sequence positions and other parameters
     float reload_hand_top_rev     = 8.7f;   // Hand position for reload
     float reload_pitch_ready_deg  = 70.0f;  // Pitch angle before grabbing ball
 
@@ -76,10 +76,15 @@ public:
 
     float reload_hand_bottom_rev  = 0.0f;   // Hand position at bottom of stroke
     float reload_hand_bottom_tolerance_rev = 0.1f; // Tolerance for considering hand at bottom position
-    float reload_yaw_home_deg     = 120.0f; // Yaw home position
     uint32_t reload_hold_delay_ms = 500;    // Time to wait to check that the ball is in-hand
+    uint8_t reload_ball_check_samples = 5;  // Number of BallCheck samples to wait for. If any are positive, consider the ball successfully grabbed (to handle noisy detection)
 
-    // Positions to go to if reload fails (home position)
+    // Ball-in-hand monitoring (IDLE state)
+    uint8_t idle_ball_missing_samples = 5;   // Consecutive false readings in IDLE before entering CHECKING_BALL
+    uint8_t check_ball_confirm_samples = 5;  // Consecutive false readings in CHECKING_BALL to confirm ball is gone
+    float check_ball_disrupt_pitch_deg = 70.0f;  // Pitch angle to "disrupt" and recheck ball presence
+
+    // Positions to go to if reload fails or succeeds (home position)
     float hand_rev_home    = 0.0f;   // Hand position on failure
     float pitch_deg_home   = 90.0f;  // Pitch angle on failure
     float yaw_deg_home     = 20.0f;  // Yaw angle on failure
@@ -187,6 +192,7 @@ private:
   void handleThrowing_();
   void handleReloading_();
   void handleCalibrating_();
+  void handleCheckingBall_();
   void handleError_();
 
   // ----------------------------------------------------------------
@@ -226,9 +232,16 @@ private:
   uint32_t homing_retry_ms_    = 0;   // Timestamp for retry delay
   uint8_t  reload_attempt_     = 0;
   uint8_t  reload_sub_state_   = 0;   // Sub-state within reload sequence
+  uint8_t  ball_check_samples_collected_ = 0;  // Counter for ball check samples
+  bool     ball_check_positive_ = false;       // True if any ball check was positive
   uint8_t  calibration_sub_state_ = 0;  // Sub-state within calibration
   uint32_t calibration_done_ms_ = 0;  // Timestamp when calibration pause started
   bool     throw_complete_     = false;
+  
+  // Ball-in-hand monitoring (IDLE and CHECKING_BALL states)
+  uint8_t  idle_ball_false_count_ = 0;       // Consecutive false readings in IDLE
+  uint8_t  check_ball_sub_state_ = 0;        // Sub-state within CHECKING_BALL
+  uint8_t  check_ball_samples_collected_ = 0; // Samples collected in CHECKING_BALL confirm phase
   
   bool reload_pending_ = false;
 

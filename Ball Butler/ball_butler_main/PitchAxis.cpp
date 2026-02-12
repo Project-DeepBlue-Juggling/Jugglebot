@@ -66,17 +66,30 @@ bool PitchAxis::sendTargetRev_(float target_rev) {
     if (log_) log_->println("PITCH: sendTargetRev_ FAILED to get heartbeat.");
     return false;
   }
+  
   if (hb_pitch.axis_state != AXIS_STATE_CLOSED_LOOP) {
+    // Request closed loop and wait for it to take effect
     enterClosedLoop_();
+    
+    // Wait for state transition (typically < 10ms)
+    const uint32_t timeout_ms = 100;
+    const uint32_t start_ms = millis();
+    while (millis() - start_ms < timeout_ms) {
+      can_.loop();  // Process CAN messages to receive heartbeat updates
+      if (can_.getAxisHeartbeat(node_, hb_pitch) && hb_pitch.axis_state == AXIS_STATE_CLOSED_LOOP) {
+        break;
+      }
+      delay(1);  // Brief yield
+    }
+    
+    // Verify we're now in closed loop
+    if (hb_pitch.axis_state != AXIS_STATE_CLOSED_LOOP) {
+      if (log_) log_->println("PITCH: Timeout waiting for CLOSED_LOOP_CONTROL");
+      return false;
+    }
   }
 
   return can_.sendInputPos(node_, target_rev, /*vel_ff*/0.0f, /*tor_ff*/0.0f);
-}
-
-void PitchAxis::reject_(const char* why, float value, float lo, float hi) const {
-  if (!log_) return;
-  log_->printf("PITCH: REJECTED — %s: %.3f (allowed %.3f .. %.3f)\n",
-               why, value, lo, hi);
 }
 
 bool PitchAxis::setTargetDeg(float deg) {
@@ -100,11 +113,20 @@ bool PitchAxis::setTargetDeg(float deg) {
     return false;
   }
   const bool ok = sendTargetRev_(target_rev);
+  if (ok) {
+    last_command_ms_ = millis();  // Track when command was sent
+  }
   if (log_) {
     if (ok) log_->printf("PITCH: target -> %.2f deg  (%.4f rev)\n", deg, target_rev);
     else    log_->printf("PITCH: send target FAILED (deg=%.2f)\n", deg);
   }
   return ok;
+}
+
+void PitchAxis::reject_(const char* why, float value, float lo, float hi) const {
+  if (!log_) return;
+  log_->printf("PITCH: REJECTED — %s: %.3f (allowed %.3f .. %.3f)\n",
+               why, value, lo, hi);
 }
 
 void PitchAxis::printStatusOnce() const {
