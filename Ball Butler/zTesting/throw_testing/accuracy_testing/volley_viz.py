@@ -17,6 +17,9 @@ Usage:
     # Target plane analysis only (matplotlib, skip 3D)
     python volley_viz.py session1.json session2.json -t targets1.csv targets2.csv --no-3d
 
+    # Exclude specific throws from visualisation and analysis
+    python volley_viz.py session1.json -t targets1.csv --exclude b3 b7 b12
+
 Dependencies:
     pip install pyvista numpy matplotlib
 """
@@ -154,8 +157,11 @@ def stitch_sessions(session_files: list[str | Path]) -> list[BallTrajectory]:
     for filepath in session_files:
         session = load_session(filepath)
         for traj in session:
-            # Renumber: extract the numeric part and add offset
-            num = int(traj.name.removeprefix("b"))
+            # Renumber: extract the numeric part from "New XXXX" or "bN"
+            if traj.name.startswith("New "):
+                num = int(traj.name.removeprefix("New "))
+            else:
+                num = int(traj.name.removeprefix("b"))
             traj.name = f"b{num + offset}"
             all_trajectories.append(traj)
         offset += len(session)
@@ -515,6 +521,198 @@ def load_mapping(
     return label_to_target
 
 
+# ── Affine Correction Transform ──────────────────────────────────────────────
+
+
+def compute_affine_correction(
+    intersections: dict[str, np.ndarray],
+    label_to_target: dict[str, str],
+    targets: list[TargetInfo],
+) -> tuple[np.ndarray, dict] | None:
+    """Compute the best-fit 2D affine transform mapping cluster centroids to targets.
+
+    Solves for the 3x3 matrix A such that:
+        [target_x]     [a  b  tx] [mean_landing_x]
+        [target_y]  =  [c  d  ty] [mean_landing_y]
+        [   1    ]     [0  0   1] [      1        ]
+
+    Returns:
+        (affine_matrix, stats) or None if fewer than 3 paired points.
+    """
+    # Group intersections by target_id
+    by_target: dict[str, list[np.ndarray]] = {}
+    for label, xy in intersections.items():
+        tid = label_to_target.get(label)
+        if tid:
+            by_target.setdefault(tid, []).append(xy)
+
+    # Unique targets lookup (preserving first-seen order)
+    unique_targets: dict[str, TargetInfo] = {}
+    for t in targets:
+        if t.target_id not in unique_targets:
+            unique_targets[t.target_id] = t
+
+    # Collect paired points: source (cluster centroid) → destination (target)
+    src_points = []
+    dst_points = []
+    paired_tids = []
+    for tid, points in by_target.items():
+        if tid in unique_targets:
+            mean_xy = np.array(points).mean(axis=0)
+            t = unique_targets[tid]
+            src_points.append(mean_xy)
+            dst_points.append([t.x, t.y])
+            paired_tids.append(tid)
+
+    N = len(src_points)
+    if N < 3:
+        print(f"  Only {N} cluster↔target pairs — need at least 3 for affine transform")
+        return None
+
+    src = np.array(src_points)  # (N, 2)
+    dst = np.array(dst_points)  # (N, 2)
+
+    # Solve two independent least-squares problems:
+    #   dst_x = a * src_x + b * src_y + tx
+    #   dst_y = c * src_x + d * src_y + ty
+    ones = np.ones((N, 1))
+    src_h = np.hstack([src, ones])  # (N, 3)
+
+    params_x, _, _, _ = np.linalg.lstsq(src_h, dst[:, 0], rcond=None)
+    params_y, _, _, _ = np.linalg.lstsq(src_h, dst[:, 1], rcond=None)
+
+    affine = np.eye(3)
+    affine[0, :] = params_x  # [a, b, tx]
+    affine[1, :] = params_y  # [c, d, ty]
+
+    # Apply transform to compute corrected positions
+    corrected = (affine[:2, :2] @ src.T).T + affine[:2, 2]
+    errors_before = np.linalg.norm(dst - src, axis=1)
+    errors_after = np.linalg.norm(dst - corrected, axis=1)
+
+    stats = {
+        "n_points": N,
+        "paired_tids": paired_tids,
+        "src": src,
+        "dst": dst,
+        "corrected": corrected,
+        "errors_before": errors_before,
+        "errors_after": errors_after,
+    }
+
+    return affine, stats
+
+
+def print_transform_report(affine: np.ndarray, stats: dict) -> None:
+    """Print the affine correction matrix, its decomposition, and error statistics."""
+    N = stats["n_points"]
+    print("\n── Affine Correction Transform ────────────────────")
+    print(f"  Computed from {N} cluster↔target pairs")
+    if N == 3:
+        print("  (Exact fit — 6 parameters from 3 points, 0 residual by construction)")
+
+    # Matrix
+    print("\n  Affine matrix (maps measured → target):")
+    print(f"    [{affine[0,0]:+12.6f}  {affine[0,1]:+12.6f}  {affine[0,2]:+10.3f}]")
+    print(f"    [{affine[1,0]:+12.6f}  {affine[1,1]:+12.6f}  {affine[1,2]:+10.3f}]")
+    print(f"    [{affine[2,0]:+12.6f}  {affine[2,1]:+12.6f}  {affine[2,2]:+10.3f}]")
+
+    # Decompose the 2x2 linear part via SVD / polar decomposition
+    linear = affine[:2, :2]
+    U, sigma, Vt = np.linalg.svd(linear)
+
+    # Ensure proper rotation (det > 0)
+    if np.linalg.det(U @ Vt) < 0:
+        U[:, -1] *= -1
+        sigma[-1] *= -1
+    R = U @ Vt
+    angle_deg = np.degrees(np.arctan2(R[1, 0], R[0, 0]))
+
+    translation = affine[:2, 2]
+    det = np.linalg.det(linear)
+
+    print(f"\n  Decomposition:")
+    print(f"    Scale factors:  {sigma[0]:.6f}, {sigma[1]:.6f}")
+    print(f"    Rotation:       {angle_deg:+.3f}\u00b0")
+    print(f"    Translation:    ({translation[0]:+.2f}, {translation[1]:+.2f}) mm")
+    print(f"    Determinant:    {det:.6f}")
+
+    # Error statistics
+    eb = stats["errors_before"]
+    ea = stats["errors_after"]
+    print(f"\n  Error (Euclidean distance, mm):")
+    print(f"    Before correction:  mean {np.mean(eb):.2f}  max {np.max(eb):.2f}  std {np.std(eb):.2f}")
+    print(f"    After correction:   mean {np.mean(ea):.2f}  max {np.max(ea):.2f}  std {np.std(ea):.2f}")
+
+    reduction = (1 - np.mean(ea) / np.mean(eb)) * 100 if np.mean(eb) > 0 else 0
+    print(f"    Error reduction:    {reduction:.1f}%")
+
+    # Per-target breakdown
+    print(f"\n  Per-target errors (mm):")
+    print(f"    {'Target':<12} {'Before':>8} {'After':>8} {'Change':>8}")
+    print(f"    {'─'*12} {'─'*8} {'─'*8} {'─'*8}")
+    for i, tid in enumerate(stats["paired_tids"]):
+        print(f"    {tid:<12} {eb[i]:8.2f} {ea[i]:8.2f} {ea[i]-eb[i]:+8.2f}")
+
+
+def save_error_report(
+    intersections: dict[str, np.ndarray],
+    label_to_target: dict[str, str],
+    targets: list[TargetInfo],
+    output_path: Path,
+) -> None:
+    """Save per-target measured errors (before any correction) to a JSON file."""
+    # Group intersections by target_id
+    by_target: dict[str, list[np.ndarray]] = {}
+    for label, xy in intersections.items():
+        tid = label_to_target.get(label)
+        if tid:
+            by_target.setdefault(tid, []).append(xy)
+
+    unique_targets: dict[str, TargetInfo] = {}
+    for t in targets:
+        if t.target_id not in unique_targets:
+            unique_targets[t.target_id] = t
+
+    entries = []
+    errors = []
+    for tid, points in by_target.items():
+        if tid not in unique_targets:
+            continue
+        t = unique_targets[tid]
+        pts = np.array(points)
+        mean_xy = pts.mean(axis=0)
+        err_x = float(mean_xy[0] - t.x)
+        err_y = float(mean_xy[1] - t.y)
+        err_dist = float(np.hypot(err_x, err_y))
+        errors.append(err_dist)
+        entries.append({
+            "target_id": tid,
+            "n_throws": len(points),
+            "measured_mean": [round(float(mean_xy[0]), 2), round(float(mean_xy[1]), 2)],
+            "target_pos": [round(t.x, 2), round(t.y, 2)],
+            "error_x_mm": round(err_x, 2),
+            "error_y_mm": round(err_y, 2),
+            "error_mm": round(err_dist, 2),
+        })
+
+    errors_arr = np.array(errors)
+    report = {
+        "summary": {
+            "n_targets": len(entries),
+            "mean_error_mm": round(float(np.mean(errors_arr)), 2),
+            "max_error_mm": round(float(np.max(errors_arr)), 2),
+            "std_error_mm": round(float(np.std(errors_arr)), 2),
+        },
+        "targets": entries,
+    }
+
+    with open(output_path, "w") as f:
+        json.dump(report, f, indent=2)
+
+    print(f"\n  Error report saved to: {output_path}")
+
+
 # ── Visualization Helpers ───────────────────────────────────────────────────
 
 
@@ -713,6 +911,7 @@ def render_target_plane_matplotlib(
     target_id_colors: dict[str, np.ndarray],
     label_to_target: dict[str, str],
     label_to_session: dict[str, int] | None = None,
+    affine_result: tuple[np.ndarray, dict] | None = None,
 ) -> None:
     """Render the 2D target plane view in matplotlib (used with --no-3d)."""
     import matplotlib.pyplot as plt
@@ -740,50 +939,109 @@ def render_target_plane_matplotlib(
             ax.scatter(xy[0], xy[1], c=[color], s=INTERSECTION_DOT_SIZE, alpha=0.3,
                        marker=marker, zorder=2)
 
-    # Plot average landing points (larger, opaque) and error arrows
+    # Deduplicate targets
     unique_targets = {}
     for t in targets:
         if t.target_id not in unique_targets:
             unique_targets[t.target_id] = t
 
-    for tid, points in intersections_by_target.items():
-        color = target_id_colors.get(tid, np.array([0.5, 0.5, 0.5]))
-        pts = np.array(points)
-        mean_x, mean_y = pts.mean(axis=0)
+    # ── Mean positions & error arrows (with optional slider) ─────────
+    if affine_result is not None:
+        from matplotlib.widgets import Slider
 
-        # Average landing dot
-        ax.scatter(
-            mean_x, mean_y,
-            c=[color], s=INTERSECTION_DOT_SIZE * 4, alpha=1.0,
+        _, stats = affine_result
+        measured = stats["src"]        # (N, 2)
+        corrected = stats["corrected"]  # (N, 2)
+        target_pts = stats["dst"]      # (N, 2)
+        paired_tids = stats["paired_tids"]
+
+        # Per-target colours
+        face_colors = np.array([
+            target_id_colors.get(tid, np.array([0.5, 0.5, 0.5]))
+            for tid in paired_tids
+        ])
+        arrow_colors = face_colors * 0.7
+
+        # Mean landing scatter (starts at measured positions)
+        mean_scatter = ax.scatter(
+            measured[:, 0], measured[:, 1],
+            c=face_colors, s=INTERSECTION_DOT_SIZE * 4, alpha=1.0,
             edgecolors="black", linewidths=0.5,
             zorder=4,
         )
 
-        # Arrow from average landing to target
-        if tid in unique_targets:
-            t = unique_targets[tid]
-            dx = t.x - mean_x
-            dy = t.y - mean_y
-            ax.annotate(
+        # Error arrows from each mean to its target
+        arrow_annots = []
+        for i in range(len(paired_tids)):
+            ann = ax.annotate(
                 "",
-                xy=(t.x, t.y),               # arrow tip (target)
-                xytext=(mean_x, mean_y),      # arrow tail (average landing)
+                xy=(target_pts[i, 0], target_pts[i, 1]),      # tip (target, fixed)
+                xytext=(measured[i, 0], measured[i, 1]),        # tail (mean, moves)
                 arrowprops=dict(
                     arrowstyle="-|>",
-                    color=color * 0.7,         # slightly darker
+                    color=arrow_colors[i],
                     lw=1.5,
                     shrinkA=5, shrinkB=5,
                 ),
                 zorder=3,
             )
+            arrow_annots.append(ann)
 
-    # Plot target positions (coloured ×, on top), deduplicated by target_id
+        # Slider: interpolate between measured (0) and corrected (1)
+        fig.subplots_adjust(bottom=0.08)
+        ax_slider = fig.add_axes((0.25, 0.02, 0.50, 0.02))
+        slider = Slider(ax_slider, "", 0.0, 1.0, valinit=0.0, valstep=0.01)
+        ax_slider.text(-0.02, 0.5, "Measured", transform=ax_slider.transAxes,
+                       ha="right", va="center", fontsize=9)
+        ax_slider.text(1.02, 0.5, "Corrected", transform=ax_slider.transAxes,
+                       ha="left", va="center", fontsize=9)
+
+        def _update_slider(val):
+            t = slider.val
+            interp = (1 - t) * measured + t * corrected
+            mean_scatter.set_offsets(interp)
+            for i, ann in enumerate(arrow_annots):
+                ann.set_position((interp[i, 0], interp[i, 1]))
+            fig.canvas.draw_idle()
+
+        slider.on_changed(_update_slider)
+
+    else:
+        # No affine: static measured means and arrows
+        for tid, points in intersections_by_target.items():
+            color = target_id_colors.get(tid, np.array([0.5, 0.5, 0.5]))
+            pts = np.array(points)
+            mean_x, mean_y = pts.mean(axis=0)
+
+            ax.scatter(
+                mean_x, mean_y,
+                c=[color], s=INTERSECTION_DOT_SIZE * 4, alpha=1.0,
+                edgecolors="black", linewidths=0.5,
+                zorder=4,
+            )
+
+            if tid in unique_targets:
+                tgt = unique_targets[tid]
+                ax.annotate(
+                    "",
+                    xy=(tgt.x, tgt.y),
+                    xytext=(mean_x, mean_y),
+                    arrowprops=dict(
+                        arrowstyle="-|>",
+                        color=color * 0.7,
+                        lw=1.5,
+                        shrinkA=5, shrinkB=5,
+                    ),
+                    zorder=3,
+                )
+
+    # Plot target positions LAST (coloured ×, always on top)
     for tid, t in unique_targets.items():
         color = target_id_colors.get(tid, np.array([0.5, 0.5, 0.5]))
-        ax.scatter(t.x, t.y, c=[color], s=TARGET_DOT_SIZE, marker="x", linewidths=2, zorder=5)
+        ax.scatter(t.x, t.y, c=[color], s=TARGET_DOT_SIZE, marker="x",
+                   linewidths=2, zorder=10)
 
-    # Legend with proxy artists
-    # Determine how many sessions there are
+    # Legend
     if label_to_session:
         n_sessions = max(label_to_session.values()) + 1
     else:
@@ -807,7 +1065,7 @@ def render_target_plane_matplotlib(
                linestyle="None", markersize=10,
                label=f"Mean landing ({len(intersections_by_target)})"),
         Line2D([0], [0], color="grey", lw=1.5,
-               label="Error (mean → target)"),
+               label="Error (mean \u2192 target)"),
     ])
     ax.legend(handles=legend_elements)
 
@@ -844,6 +1102,9 @@ examples:
 
   # Target plane only (matplotlib, no 3D)
   python volley_viz.py session1.json session2.json -t targets1.csv targets2.csv --mapping mapping.json --no-3d
+
+  # Exclude specific throws
+  python volley_viz.py session1.json -t targets1.csv --mapping mapping.json --exclude b3 b7 b12
 """,
     )
     parser.add_argument(
@@ -875,6 +1136,20 @@ examples:
         action="store_true",
         help="Skip the 3D view; show target plane in matplotlib instead",
     )
+    parser.add_argument(
+        "--save-errors",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="Save per-target measured errors to a JSON file",
+    )
+    parser.add_argument(
+        "--exclude",
+        nargs="+",
+        default=None,
+        metavar="LABEL",
+        help="Throw labels to exclude from visualisation and analysis (e.g. b3 b7 b12)",
+    )
     return parser.parse_args()
 
 
@@ -896,10 +1171,32 @@ def main():
     # Load trajectories
     trajectories = stitch_sessions(args.sessions)
 
+    # Apply throw exclusions
+    excluded = set(args.exclude) if args.exclude else set()
+    if excluded:
+        all_labels = {t.name for t in trajectories}
+        before = len(trajectories)
+        trajectories = [t for t in trajectories if t.name not in excluded]
+        n_removed = before - len(trajectories)
+        if n_removed:
+            print(f"  Excluded {n_removed} throw(s): {', '.join(sorted(excluded & all_labels))}")
+        never_existed = excluded - all_labels
+        if never_existed:
+            print(f"  Warning: these labels were not found in the data: {', '.join(sorted(never_existed))}")
+
     if args.targets:
         # ── With targets ────────────────────────────────────────────────
         print("\n── Target Plane Analysis ──────────────────────────")
         all_targets, label_to_session = stitch_targets(args.targets)
+
+        # Remove excluded throws from target data too
+        if excluded:
+            before_t = len(all_targets)
+            all_targets = [t for t in all_targets if t.label not in excluded]
+            label_to_session = {k: v for k, v in label_to_session.items() if k not in excluded}
+            n_removed_t = before_t - len(all_targets)
+            if n_removed_t:
+                print(f"  Excluded {n_removed_t} target entry/entries for excluded throws")
 
         plane_z = infer_target_plane_z(all_targets)
         valid_targets = filter_targets_to_plane(all_targets, plane_z)
@@ -934,10 +1231,23 @@ def main():
 
         target_id_colors, _ = build_color_map(valid_targets)
 
+        if args.save_errors:
+            save_error_report(
+                intersections, label_to_target, valid_targets, args.save_errors,
+            )
+
+        # Compute affine correction transform (measured avg → target)
+        affine_result = compute_affine_correction(
+            intersections, label_to_target, valid_targets,
+        )
+        if affine_result is not None:
+            print_transform_report(*affine_result)
+
         if args.no_3d:
             render_target_plane_matplotlib(
                 valid_targets, intersections, plane_z,
                 target_id_colors, label_to_target, label_to_session,
+                affine_result,
             )
         else:
             # Show 3D first (blocking), then matplotlib after it's closed
@@ -949,6 +1259,7 @@ def main():
             render_target_plane_matplotlib(
                 valid_targets, intersections, plane_z,
                 target_id_colors, label_to_target, label_to_session,
+                affine_result,
             )
     else:
         # ── No targets: 3D only with default colours ────────────────────

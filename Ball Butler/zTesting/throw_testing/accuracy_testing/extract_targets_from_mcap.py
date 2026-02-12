@@ -2,12 +2,12 @@
 Extract Throw Targets from MCAP
 ================================
 Reads a ROS2 .mcap recording (standalone file or bag directory),
-extracts target positions from /throw_announcements messages,
+extracts target positions and timestamps from /throw_announcements messages,
 and saves them as a CSV with ball labels matching the QTM JSON convention.
 
 Usage:
-    python extract_targets.py <recording.mcap> [output.csv]
-    python extract_targets.py <bag_directory>   [output.csv]
+    python extract_targets_from_mcap.py <recording.mcap> [output.csv]
+    python extract_targets_from_mcap.py <bag_directory>   [output.csv]
 
 If output path is omitted, it defaults to <input_stem>_targets.csv
 
@@ -38,7 +38,21 @@ geometry_msgs/Vector3 initial_velocity
 string target_id
 geometry_msgs/Point target_position
 builtin_interfaces/Time throw_time
+float64 predicted_tof_sec
 """
+
+
+# ── Timestamp Helpers ───────────────────────────────────────────────────────
+
+
+def ros_time_to_float(stamp) -> float:
+    """Convert a ROS2 builtin_interfaces/Time to seconds as a float."""
+    return stamp.sec + stamp.nanosec * 1e-9
+
+
+def ns_to_float(ns: int) -> float:
+    """Convert nanoseconds (mcap log_time / bag timestamp) to seconds."""
+    return ns * 1e-9
 
 
 # ── MCAP Reading ────────────────────────────────────────────────────────────
@@ -59,6 +73,27 @@ def setup_typestore() -> tuple:
     return store, msg_type_name
 
 
+def _extract_record(msg, count: int, log_time_ns: int) -> dict:
+    """Extract a single record from a deserialized ThrowAnnouncement message.
+
+    Timestamps extracted:
+        header_stamp:  header.stamp — when the announcement was published (ROS time)
+        throw_time:    throw_time   — when the throw is scheduled to occur (ROS time)
+        log_time:      mcap log_time / bag timestamp — when the message was recorded
+    """
+    return {
+        "label": f"b{count}",
+        "target_id": msg.target_id,
+        "target_x": msg.target_position.x,
+        "target_y": msg.target_position.y,
+        "target_z": msg.target_position.z,
+        "header_stamp": ros_time_to_float(msg.header.stamp),
+        "throw_time": ros_time_to_float(msg.throw_time),
+        "predicted_tof_sec": msg.predicted_tof_sec,
+        "log_time": ns_to_float(log_time_ns),
+    }
+
+
 def read_mcap_standalone(filepath: Path, store, msg_type_name: str) -> list[dict]:
     """Read throw announcements from a standalone .mcap file."""
     records = []
@@ -69,15 +104,7 @@ def read_mcap_standalone(filepath: Path, store, msg_type_name: str) -> list[dict
 
         for schema, channel, message in reader.iter_messages(topics=[TOPIC]):
             msg = store.deserialize_cdr(message.data, msg_type_name)
-            records.append(
-                {
-                    "label": f"b{count}",
-                    "target_id": msg.target_id,
-                    "target_x": msg.target_position.x,
-                    "target_y": msg.target_position.y,
-                    "target_z": msg.target_position.z,
-                }
-            )
+            records.append(_extract_record(msg, count, message.log_time))
             count += 1
 
     return records
@@ -98,15 +125,7 @@ def read_bag_directory(bag_dir: Path, store, msg_type_name: str) -> list[dict]:
 
         for connection, timestamp, rawdata in reader.messages(connections=connections):
             msg = store.deserialize_cdr(rawdata, msg_type_name)
-            records.append(
-                {
-                    "label": f"b{count}",
-                    "target_id": msg.target_id,
-                    "target_x": msg.target_position.x,
-                    "target_y": msg.target_position.y,
-                    "target_z": msg.target_position.z,
-                }
-            )
+            records.append(_extract_record(msg, count, timestamp))
             count += 1
 
     return records
@@ -132,8 +151,12 @@ def load_targets(input_path: Path) -> list[dict]:
 
 
 def save_csv(records: list[dict], output_path: Path) -> None:
-    """Save extracted target positions to CSV."""
-    fieldnames = ["label", "target_id", "target_x", "target_y", "target_z"]
+    """Save extracted target positions and timestamps to CSV."""
+    fieldnames = [
+        "label", "target_id",
+        "target_x", "target_y", "target_z",
+        "header_stamp", "throw_time", "predicted_tof_sec", "log_time",
+    ]
 
     with open(output_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -166,12 +189,34 @@ def print_summary(records: list[dict]) -> None:
     print(f"  Y range: [{min(ys):.1f}, {max(ys):.1f}] mm")
     print(f"  Z range: [{min(zs):.1f}, {max(zs):.1f}] mm")
 
+    # Timestamp summary
+    header_stamps = [r["header_stamp"] for r in records]
+    throw_times = [r["throw_time"] for r in records]
+    log_times = [r["log_time"] for r in records]
+
+    print(f"\n  ── Timestamps ──")
+    print(f"  Header stamp range: {min(header_stamps):.3f} – {max(header_stamps):.3f} s")
+    print(f"  Throw time range:   {min(throw_times):.3f} – {max(throw_times):.3f} s")
+    print(f"  Log time range:     {min(log_times):.3f} – {max(log_times):.3f} s")
+
+    # Time between consecutive throws
+    if len(throw_times) > 1:
+        intervals = np.diff(throw_times)
+        print(f"\n  Throw intervals: mean={np.mean(intervals):.3f}s, "
+              f"std={np.std(intervals):.3f}s, "
+              f"min={np.min(intervals):.3f}s, max={np.max(intervals):.3f}s")
+
+    # Delay from header stamp to throw time (should be ~1.0s)
+    delays = np.array(throw_times) - np.array(header_stamps)
+    print(f"  Announcement→throw delay: mean={np.mean(delays):.3f}s, "
+          f"std={np.std(delays):.3f}s")
+
     # Throws per target
     from collections import Counter
 
     counts = Counter(r["target_id"] for r in records)
     throws_per = list(counts.values())
-    print(f"  Throws per target: {min(throws_per)}–{max(throws_per)} (mean {np.mean(throws_per):.1f})")
+    print(f"\n  Throws per target: {min(throws_per)}–{max(throws_per)} (mean {np.mean(throws_per):.1f})")
 
 
 # ── Entry Point ─────────────────────────────────────────────────────────────
