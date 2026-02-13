@@ -61,10 +61,10 @@ public:
   // ----------------------------------------------------------------
   struct Config {
     // Timeouts
-    uint32_t homing_timeout_ms     = 10000;  // 10 seconds for homing
-    uint32_t homing_retry_delay_ms = 500;    // Delay between homing attempts
-    uint32_t reload_timeout_ms     = 15000;  // 15 seconds for reload sequence
-    uint32_t post_throw_delay_ms   = 1000;   // 1 second delay after throw before reload
+    uint32_t homing_timeout_ms      = 10000;  // 10 seconds for homing
+    uint32_t homing_retry_delay_ms  = 500;    // Delay between homing attempts
+    uint32_t reload_timeout_ms      = 15000;  // 15 seconds for reload sequence
+    uint32_t post_throw_delay_ms    = 1000;   // 1 second delay after throw before reload
     uint32_t idle_no_cmd_timeout_ms = 5000;  // Stow pitch if no throw cmd received for this long
     
     // Reload sequence positions and other parameters
@@ -79,8 +79,9 @@ public:
     uint32_t reload_hold_delay_ms = 500;    // Time to wait to check that the ball is in-hand
     uint8_t reload_ball_check_samples = 5;  // Number of BallCheck samples to wait for. If any are positive, consider the ball successfully grabbed (to handle noisy detection)
 
-    // Ball-in-hand monitoring (IDLE state)
-    uint8_t idle_ball_missing_samples = 5;   // Consecutive false readings in IDLE before entering CHECKING_BALL
+    uint32_t tracking_hand_pos_check_interval_ms = 200; // Interval to check hand pos during tracking (and correct if it's outside the reload_hand_bottom_rev +/- tolerance)
+
+    // Ball-in-hand monitoring (CHECKING_BALL state)
     uint8_t check_ball_confirm_samples = 5;  // Consecutive false readings in CHECKING_BALL to confirm ball is gone
     float check_ball_disrupt_pitch_deg = 70.0f;  // Pitch angle to "disrupt" and recheck ball presence
 
@@ -146,6 +147,7 @@ public:
   // Returns true if command was accepted, false if rejected (wrong state, etc.)
   bool requestThrow(float yaw_deg, float pitch_deg, float speed_mps, float in_s);
   bool requestReload();
+  bool requestCheckBall();
   bool requestCalibrateLocation();
   
   // Request tracking mode (called when HOST_THROW_CMD has speed=0)
@@ -233,24 +235,24 @@ private:
   uint8_t  reload_attempt_     = 0;
   uint8_t  reload_sub_state_   = 0;   // Sub-state within reload sequence
   uint8_t  ball_check_samples_collected_ = 0;  // Counter for ball check samples
-  bool     ball_check_positive_ = false;       // True if any ball check was positive
+  bool     ball_check_positive_   = false;     // True if any ball check was positive
   uint8_t  calibration_sub_state_ = 0;  // Sub-state within calibration
-  uint32_t calibration_done_ms_ = 0;  // Timestamp when calibration pause started
-  bool     throw_complete_     = false;
+  uint32_t calibration_done_ms_   = 0;  // Timestamp when calibration pause started
+  bool     throw_complete_        = false;
+  uint32_t last_tracking_hand_pos_check_ms_ = 0; // Last time we checked the hand position during tracking
   
-  // Ball-in-hand monitoring (IDLE and CHECKING_BALL states)
-  uint8_t  idle_ball_false_count_ = 0;       // Consecutive false readings in IDLE
+  // Ball-in-hand monitoring (CHECKING_BALL states)
   uint8_t  check_ball_sub_state_ = 0;        // Sub-state within CHECKING_BALL
   uint8_t  check_ball_samples_collected_ = 0; // Samples collected in CHECKING_BALL confirm phase
   
   bool reload_pending_ = false;
 
   // Pending throw request
-  bool  throw_pending_    = false;
-  float pending_yaw_deg_  = 0;
+  bool  throw_pending_     = false;
+  float pending_yaw_deg_   = 0;
   float pending_pitch_deg_ = 0;
   float pending_speed_mps_ = 0;
-  float pending_in_s_     = 0;
+  float pending_in_s_      = 0;
   
   // Tracking state
   TrackingCmd last_tracking_cmd_;

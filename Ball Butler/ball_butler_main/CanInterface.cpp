@@ -669,6 +669,20 @@ void CanInterface::maybeCheckBallInHand_() {
 
     ball_in_hand_ = !((gpio_states >> ball_detect_gpio_pin) & 0x01);
 
+    // Ball detected - reset counter
+    if (ball_in_hand_) {
+      ball_false_count_ = 0;
+    } else {
+      // No ball detected - increment counter
+      ball_false_count_++;
+      if (ball_false_count_ >= max_ball_missing_samples) {
+        dbg_->printf("[CAN] %d consecutive ball-missing readings, entering CHECKING_BALL\n", ball_false_count_);
+        state_machine_->requestCheckBall();
+        ball_false_count_ = 0; // reset counter to avoid repeated triggers
+        return;
+      }
+    }
+
     // Serial.printf("[BallCheck] GPIO states=0x%08lX ball_in_hand=%d\n", (unsigned long)gpio_states, (int)ball_in_hand_);
     last_ball_check_ms_ = millis();
   }

@@ -107,8 +107,6 @@ void StateMachine::enterState_(RobotState newState) {
     case RobotState::IDLE:
       // Stow the pitch axis (90 degrees in IDLE mode)
       pitch_.setTargetDeg(90.0f);
-      // Reset ball monitoring counter
-      idle_ball_false_count_ = 0;
       // Wait a brief moment to allow command to take effect
       delay(50);
       break;
@@ -239,22 +237,6 @@ void StateMachine::handleBoot_() {
 // handleIdle_() - Waiting for command
 // --------------------------------------------------------------------
 void StateMachine::handleIdle_() {
-  // Monitor ball-in-hand status
-  // Track consecutive false readings to detect ball removal
-  if (can_.isBallInHand()) {
-    // Ball detected - reset counter
-    idle_ball_false_count_ = 0;
-  } else {
-    // No ball detected - increment counter
-    idle_ball_false_count_++;
-    if (idle_ball_false_count_ >= config_.idle_ball_missing_samples) {
-      debugf_("[SM] %d consecutive ball-missing readings, entering CHECKING_BALL\n",
-              idle_ball_false_count_);
-      enterState_(RobotState::CHECKING_BALL);
-      return;
-    }
-  }
-  
   // Check if we have a pending throw request
   if (throw_pending_) {
     throw_pending_ = false;
@@ -323,6 +305,18 @@ void StateMachine::handleTracking_() {
     return;
   }
 
+  // Periodically check the hand position. If it's outside of the threshold, command it to move back to the bottom position
+  if (millis() - last_tracking_hand_pos_check_ms_ >= config_.tracking_hand_pos_check_interval_ms) {
+    last_tracking_hand_pos_check_ms_ = millis();
+    float hand_pos = PRO.getHandPosRev();
+    if (hand_pos < config_.reload_hand_bottom_rev - config_.reload_hand_bottom_tolerance_rev ||
+        hand_pos > config_.reload_hand_bottom_rev + config_.reload_hand_bottom_tolerance_rev) {
+      debugf_("[SM] Tracking: Hand position %.2f rev outside of %.2f ± %.2f rev, moving back to bottom\n",
+              hand_pos, config_.reload_hand_bottom_rev, config_.reload_hand_bottom_tolerance_rev);
+      moveHandToPosition_(config_.reload_hand_bottom_rev);
+    }
+  }
+
   // Process pending throw request (if a throw with speed > 0 came in)
   if (throw_pending_) {
     throw_pending_ = false;
@@ -382,12 +376,13 @@ void StateMachine::handleThrowing_() {
 //   2: Wait for pitch and hand to settle
 //   3: Move yaw to pickup position
 //   4: Wait for yaw settle
-//   5: Move pitch to ready angle (grab ball)
+//   5: Move pitch to grab position (should grab ball from hopper)
 //   6: Wait for pitch settle
-//   7: Move pitch back to ready angle (improves ball detection)
-//   8: Wait for pitch settle
-//   9: Check for ball in hand (collect multiple samples)
-//   10: Move yaw back to home
+//   7: Move pitch back to ready angle before checking for ball in hand
+//   8: Await pitch arrival
+//   9: Check for ball in hand (wait for multiple samples)
+//   10: Move all axes to success positions (hand down, yaw home)
+//   11: Wait for hand and pitch to reach final positions, then transition to IDLE
 // --------------------------------------------------------------------
 void StateMachine::handleReloading_() {
   const uint32_t elapsed = millis() - state_enter_ms_;
@@ -553,13 +548,12 @@ void StateMachine::handleReloading_() {
       break;
 
     case 11:  // Wait for hand and pitch to reach final positions. Don't require yaw to be home before accepting tracking/throwing targets
-      // Determine whether the hand is at the bottom by whether its in IDLE
-      if (can_.getAxisHeartbeat(config_.hand_node_id, hb_hand) &&
-          can_.getAxisHeartbeat(config_.pitch_node_id, hb_pitch) && hb_pitch.trajectory_done) {
-            if (hb_hand.axis_state == 1u) {  // IDLE
-              debugf_("[SM] Reload complete, ball in hand: %s\n", can_.isBallInHand() ? "YES" : "NO");
-              enterState_(RobotState::IDLE);
-            }
+      // Determine whether the hand is at the bottom from the proprioception reading
+      const float hand_pos = PRO.getHandPosRev();
+      const bool hand_at_bottom = (hand_pos >= config_.reload_hand_bottom_rev - config_.reload_hand_bottom_tolerance_rev) &&
+                                 (hand_pos <= config_.reload_hand_bottom_rev + config_.reload_hand_bottom_tolerance_rev);
+      if (hand_at_bottom && can_.getAxisHeartbeat(config_.pitch_node_id, hb_pitch) && hb_pitch.trajectory_done) {
+        enterState_(RobotState::IDLE);
       }
       break;
   }
@@ -610,9 +604,7 @@ void StateMachine::handleCalibrating_() {
 // Sub-states:
 //   0: Move pitch to disrupt position
 //   1: Wait for pitch to settle at disrupt position
-//   2: Move pitch back to stow position
-//   3: Wait for pitch to settle, then collect confirmation samples
-//   4: Collecting confirmation samples
+//   2: Collect confirmation samples and either return to IDLE (ball detected) or confirm missing and go to RELOADING
 // --------------------------------------------------------------------
 void StateMachine::handleCheckingBall_() {
   const uint32_t sub_elapsed = millis() - sub_state_ms_;
@@ -633,27 +625,13 @@ void StateMachine::handleCheckingBall_() {
         break;
       }
       if (can_.getAxisHeartbeat(config_.pitch_node_id, hb_pitch) && hb_pitch.trajectory_done) {
-        debugf_("[SM] CheckBall: Reached disrupt position, returning to 90°\n");
-        pitch_.setTargetDeg(90.0f);
+        debugf_("[SM] CheckBall: Reached disrupt position, checking if ball in hand...\n");
         check_ball_sub_state_ = 2;
         sub_state_ms_ = millis();
       }
       break;
 
-    case 2:  // Wait for pitch to settle back at stow position
-      if (sub_elapsed < min_duration_ms) {
-        break;
-      }
-      if (can_.getAxisHeartbeat(config_.pitch_node_id, hb_pitch) && hb_pitch.trajectory_done) {
-        debugf_("[SM] CheckBall: Back at stow, collecting %d confirmation samples\n",
-                config_.check_ball_confirm_samples);
-        check_ball_samples_collected_ = 0;
-        check_ball_sub_state_ = 3;
-        sub_state_ms_ = millis();
-      }
-      break;
-
-    case 3:  // Collect confirmation samples
+    case 2:  // Collect confirmation samples
       // If ANY sample shows ball present, return to IDLE
       if (can_.isBallInHand()) {
         debugf_("[SM] CheckBall: Ball detected after %d samples, returning to IDLE\n",
@@ -686,17 +664,17 @@ void StateMachine::handleError_() {
 // --------------------------------------------------------------------
 // requestReload() - Queue a reload request
 bool StateMachine::requestReload() {
-  // Only accept reload commands when in IDLE state
-  if (state_ != RobotState::IDLE) {
-    debugf_("[SM] Reload rejected: not in IDLE state (current: %s)\n",
+  // Only accept reload commands if in IDLE or TRACKING states
+  if (state_ != RobotState::IDLE && state_ != RobotState::TRACKING) {
+    debugf_("[SM] Reload rejected: currently in %s\n",
             robotStateToString(state_));
     return false;
   }
 
-  // Updaing pending flag
+  // Updating pending flag
   reload_pending_ = true;
 
-  debugf_("[SM] Reload queued");
+  debugf_("[SM] Reload queued\n");
 
   return true;
 }
@@ -727,12 +705,28 @@ bool StateMachine::requestThrow(float yaw_deg, float pitch_deg, float speed_mps,
   return true;
 }
 
+// requestCheckBall() - Queue a check ball presence request
+bool StateMachine::requestCheckBall() {
+  // Only accept check ball commands if in IDLE or TRACKING states
+  if (state_ != RobotState::IDLE && state_ != RobotState::TRACKING) {
+    debugf_("[SM] CheckBall rejected: currently in %s\n",
+            robotStateToString(state_));
+    return false;
+  }
+
+  enterState_(RobotState::CHECKING_BALL);
+  return true;
+}
+
 // requestTracking() - Request tracking mode or update tracking targets
 bool StateMachine::requestTracking(float yaw_deg, float pitch_deg) {
   // Accept tracking commands when in IDLE or already TRACKING
   if (state_ != RobotState::IDLE && state_ != RobotState::TRACKING) {
-    debugf_("[SM] Tracking rejected: not in IDLE or TRACKING state (current: %s)\n",
-            robotStateToString(state_));
+    // If we're in THROWING or RELOADING, don't print anything to the console
+    if (state_ != RobotState::THROWING && state_ != RobotState::RELOADING) {
+      debugf_("[SM] Tracking command rejected: currently in %s\n",
+              robotStateToString(state_));
+    }
     return false;
   }
 
