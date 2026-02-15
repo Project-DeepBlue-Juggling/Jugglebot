@@ -192,18 +192,7 @@ bool YawAxis::isInHardLimitRange_(float pos_deg) const {
   return (pos_deg >= hard_min) && (pos_deg <= hard_max);
 }
 
-/* ---------------------------------------------------------------------------
- * micros64_() - Get 64-bit microsecond timestamp (handles rollover)
- * ---------------------------------------------------------------------------
- */
-uint64_t YawAxis::micros64_() {
-  static uint32_t last_lo = 0;
-  static uint64_t hi = 0;
-  uint32_t now = ::micros();
-  if (now < last_lo) hi += (uint64_t)1 << 32;
-  last_lo = now;
-  return hi | now;
-}
+
 
 
 /* =============================================================================
@@ -809,7 +798,7 @@ void YawAxis::controlISR() {
     
     // Fire callback and return
     if (proprio_cb_) {
-      proprio_cb_(pos_deg_, vel_rps_, micros64_());
+      proprio_cb_(pos_deg_, vel_rps_, micros64());
     }
     return;
   }
@@ -843,7 +832,7 @@ void YawAxis::controlISR() {
     
     // Fire callback and return
     if (proprio_cb_) {
-      proprio_cb_(pos_deg_, vel_rps_, micros64_());
+      proprio_cb_(pos_deg_, vel_rps_, micros64());
     }
     return;
   }
@@ -947,6 +936,6 @@ void YawAxis::controlISR() {
   // STEP 9: Fire proprioception callback
   // =========================================================================
   if (proprio_cb_) {
-    proprio_cb_(pos_deg_, vel_rps_, micros64_());
+    proprio_cb_(pos_deg_, vel_rps_, micros64());
   }
 }

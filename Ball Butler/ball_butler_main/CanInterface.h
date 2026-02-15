@@ -1,6 +1,7 @@
 #pragma once
 #include <Arduino.h>
 #include <FlexCAN_T4.h>
+#include "Micros64.h"
 
 // Forward declaration for StateMachine
 class StateMachine;
@@ -50,6 +51,10 @@ public:
   // ============================================================================
   // Constants
   // ============================================================================
+  // Maximum number of CAN node IDs to track (ODrive axes).
+  // Only 2-3 nodes are used in practice; 16 allows generous headroom.
+  static constexpr uint8_t MAX_NODES = 16;
+
   // Default heartbeat rate (ms). Set to 0 to disable.
   static constexpr uint32_t DEFAULT_HEARTBEAT_RATE_MS = 100;  // 20 Hz
 
@@ -148,7 +153,6 @@ public:
   };
 
   // Callback types
-  typedef void (*HostThrowCallback)(const HostThrowCmd& cmd, void* user);
   typedef void (*ArbitraryParamCallback)(uint32_t node_id, const ArbitraryParamResponse& resp, void* user);
 
   // ============================================================================
@@ -278,8 +282,6 @@ public:
   // Host Command Interface
   // ============================================================================
 
-  bool getHostThrowCmd(HostThrowCmd& out) const;
-  void setHostThrowCallback(HostThrowCallback cb, void* user = nullptr);
   uint32_t getLastHostCmdMs() const { return last_host_cmd_ms_; }
 
   // ============================================================================
@@ -342,7 +344,7 @@ private:
   // ============================================================================
 
   static constexpr uint8_t ALPHA_SHIFT_ = 3;
-  static constexpr uint32_t PRINT_PERIOD_US_ = 1'000'000;
+  static constexpr uint32_t PRINT_PERIOD_US_ = 200'000;  // 200 ms
   static constexpr float kVelScale_ = 100.0f;
   static constexpr float kTorScale_ = 100.0f;
 
@@ -418,10 +420,7 @@ private:
   // Host Command State
   // ============================================================================
 
-  HostThrowCmd last_host_cmd_;
   uint32_t last_host_cmd_ms_ = 0;  // Local millis() timestamp of last HOST_THROW_CMD
-  HostThrowCallback host_cb_ = nullptr;
-  void* host_cb_user_ = nullptr;
 
   // ============================================================================
   // Ball Butler Heartbeat State
@@ -437,7 +436,6 @@ private:
   // ============================================================================
 
   // Time sync
-  static uint64_t micros64_();
   void handleTimeSync_(const CAN_message_t& msg);
   void maybePrintSyncStats_();
 

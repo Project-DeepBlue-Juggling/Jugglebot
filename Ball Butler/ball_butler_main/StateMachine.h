@@ -29,7 +29,10 @@
  */
 
 #include <Arduino.h>
+#include <vector>
+#include "BallButlerConfig.h"
 #include "RobotState.h"
+#include "TrajFrame.h"
 
 // Forward declarations
 class CanInterface;
@@ -81,6 +84,10 @@ public:
 
     uint32_t tracking_hand_pos_check_interval_ms = 200; // Interval to check hand pos during tracking (and correct if it's outside the reload_hand_bottom_rev +/- tolerance)
 
+    // Rate-limiting intervals for tracking commands (prevents CAN bus flooding)
+    uint32_t yaw_cmd_interval_ms   = 10;   // Minimum interval between yaw commands
+    uint32_t pitch_cmd_interval_ms = 50;   // Minimum interval between pitch commands
+
     // Ball-in-hand monitoring (CHECKING_BALL state)
     uint8_t check_ball_confirm_samples = 5;  // Consecutive false readings in CHECKING_BALL to confirm ball is gone
     float check_ball_disrupt_pitch_deg = 70.0f;  // Pitch angle to "disrupt" and recheck ball presence
@@ -91,12 +98,12 @@ public:
     float yaw_deg_home     = 20.0f;  // Yaw angle on failure
 
     // Calibration
-    float calibrate_location_max_yaw_deg_ = 120.0f; // Angle to move to (and back) during location calibration
-    float calibrate_location_min_yaw_deg_ = 0.0f;  // Minimum yaw angle for calibration
-    float yaw_pre_calib_accel_ = 0.0f; // Yaw acceleration before calibration (to be restored after)
-    float yaw_pre_calib_decel_ = 0.0f; // Yaw deceleration before calibration
-    float yaw_calib_accel_     = 50.0f;
-    float yaw_calib_decel_     = 50.0f;
+    float calibrate_location_max_yaw_deg = 120.0f; // Angle to move to (and back) during location calibration
+    float calibrate_location_min_yaw_deg = 0.0f;  // Minimum yaw angle for calibration
+    float yaw_pre_calib_accel = 0.0f; // Yaw acceleration before calibration (to be restored after)
+    float yaw_pre_calib_decel = 0.0f; // Yaw deceleration before calibration
+    float yaw_calib_accel     = 50.0f;
+    float yaw_calib_decel     = 50.0f;
     uint32_t calibration_pause_ms = 2500; // Pause at calibration end position (to calibrate orientation) (ms)
     
     // Retry limits
@@ -113,9 +120,9 @@ public:
     float yaw_min_angle_deg        = 5.0f;   // Min yaw angle
     float yaw_max_angle_deg        = 185.0f + yaw_min_angle_deg; // Max yaw angle
 
-    // Node IDs
-    uint8_t hand_node_id  = 8;
-    uint8_t pitch_node_id = 7;
+    // Node IDs (defaults from BallButlerConfig.h)
+    uint8_t hand_node_id  = NodeId::HAND;
+    uint8_t pitch_node_id = NodeId::PITCH;
   };
 
   // ----------------------------------------------------------------
@@ -153,6 +160,10 @@ public:
   // Request tracking mode (called when HOST_THROW_CMD has speed=0)
   // Updates yaw/pitch targets while in TRACKING state
   bool requestTracking(float yaw_deg, float pitch_deg);
+
+  // Request a smooth move of the hand axis to a target position (in revolutions)
+  // Handles PV lookup, planning, buffer ownership, and streamer arming internally
+  bool requestSmoothMove(float target_rev);
   
   // Manual reset from ERROR state -> restarts BOOT sequence
   void reset();
@@ -257,7 +268,12 @@ private:
   // Tracking state
   TrackingCmd last_tracking_cmd_;
   uint32_t last_tracking_cmd_ms_ = 0;  // Time of last tracking command received
+  uint32_t last_yaw_cmd_ms_   = 0;     // Rate-limiting: last yaw command forwarded
+  uint32_t last_pitch_cmd_ms_ = 0;     // Rate-limiting: last pitch command forwarded
   
+  // Trajectory buffer (owned here; used by executeThrow_, moveHandToPosition_, requestSmoothMove)
+  std::vector<TrajFrame> traj_buffer_;
+
   // Error state
   char error_msg_[64] = {0};
   

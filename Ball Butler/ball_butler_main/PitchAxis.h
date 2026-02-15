@@ -1,6 +1,7 @@
 // PitchAxis.h
 #pragma once
 #include <Arduino.h>
+#include "BallButlerConfig.h"
 #include "CanInterface.h"
 
 /**
@@ -46,6 +47,9 @@ public:
   bool begin();                          // <- overload with defaults
   bool begin(const Traj& tcfg);          // <- explicit config
 
+  // Call from main loop — sends any pending target once CLOSED_LOOP is reached.
+  void loop();
+
   // Set a target in **degrees from horizontal** (validated).
   // Returns true if accepted & sent, false if rejected.
   bool setTargetDeg(float deg);
@@ -76,12 +80,18 @@ private:
   // Timestamp of last command sent
   uint32_t last_command_ms_ = 0;
 
+  // Pending target for non-blocking CLOSED_LOOP transition
+  float pending_target_rev_ = 0.0f;
+  bool  has_pending_target_  = false;
+
   // Initialization constants for throttling messages
   static constexpr uint32_t PRINT_PITCH_REJECTED_INTERVAL_MS = 1000;
   uint32_t last_print_rejected_ms_ = 0;
 
-  // ODrive enums
-  static constexpr uint32_t AXIS_STATE_CLOSED_LOOP = 8u;
+  // Last logged target (for change-detection log suppression)
+  float last_logged_deg_ = NAN;
+
+  // ODrive enums (AXIS_STATE_CLOSED_LOOP lives in BallButlerConfig.h)
   static constexpr uint32_t CONTROL_MODE_POSITION  = 3u;
   static constexpr uint32_t INPUT_MODE_TRAP_TRAJ   = 5u;
 

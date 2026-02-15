@@ -12,6 +12,7 @@
  */
 
 #include "StateMachine.h"
+#include "BallButlerConfig.h"
 #include "CanInterface.h"
 #include "YawAxis.h"
 #include "PitchAxis.h"
@@ -19,11 +20,7 @@
 #include "HandPathPlanner.h"
 #include "Proprioception.h"
 #include "Trajectory.h"  // For HAND_MAX_SMOOTH_MOVE_POS
-#include <vector>
 #include <stdarg.h>
-
-// External trajectory buffer (shared with main sketch)
-extern std::vector<TrajFrame> g_traj_buffer;
 
 // --------------------------------------------------------------------
 // State name strings
@@ -107,13 +104,11 @@ void StateMachine::enterState_(RobotState newState) {
     case RobotState::IDLE:
       // Stow the pitch axis (90 degrees in IDLE mode)
       pitch_.setTargetDeg(90.0f);
-      // Wait a brief moment to allow command to take effect
-      delay(50);
       break;
 
     case RobotState::TRACKING:
       // Put the pitch axis in CLOSED_LOOP_CONTROL mode for tracking
-      can_.setRequestedState(config_.pitch_node_id, 8u);
+      can_.setRequestedState(config_.pitch_node_id, ODriveState::CLOSED_LOOP);
       // Initialize tracking timestamp
       last_tracking_cmd_ms_ = millis();
       debugf_("[SM] Entering TRACKING mode\n");
@@ -122,7 +117,7 @@ void StateMachine::enterState_(RobotState newState) {
     case RobotState::THROWING:
       throw_complete_ = false;
       // Put the pitch axis in CLOSED_LOOP_CONTROL mode
-      can_.setRequestedState(config_.pitch_node_id, 8u);
+      can_.setRequestedState(config_.pitch_node_id, ODriveState::CLOSED_LOOP);
       break;
 
     case RobotState::RELOADING:
@@ -131,23 +126,21 @@ void StateMachine::enterState_(RobotState newState) {
       ball_check_samples_collected_ = 0;
       ball_check_positive_ = false;
       // Put the pitch and hand axes in CLOSED_LOOP_CONTROL mode
-      can_.setRequestedState(config_.pitch_node_id, 8u);
-      can_.setRequestedState(config_.hand_node_id, 8u);
+      can_.setRequestedState(config_.pitch_node_id, ODriveState::CLOSED_LOOP);
+      can_.setRequestedState(config_.hand_node_id, ODriveState::CLOSED_LOOP);
       break;
 
     case RobotState::CALIBRATING:
       // Only calibrate once the pitch axis is stowed
       pitch_.setTargetDeg(90.0f);
-      // Wait a brief moment to allow command to take effect
-      delay(50);
-      
+
       // Get the current yaw axis accelerations
-      yaw_.getAccel(config_.yaw_pre_calib_accel_, config_.yaw_pre_calib_decel_);
+      yaw_.getAccel(config_.yaw_pre_calib_accel, config_.yaw_pre_calib_decel);
       // Set yaw accelerations to be slow for calibration
-      yaw_.setAccel(config_.yaw_calib_accel_, config_.yaw_calib_decel_);
+      yaw_.setAccel(config_.yaw_calib_accel, config_.yaw_calib_decel);
 
       // Move yaw to calibration angle
-      yaw_.setTargetDeg(config_.calibrate_location_max_yaw_deg_);
+      yaw_.setTargetDeg(config_.calibrate_location_max_yaw_deg);
       calibration_sub_state_ = 0;
       break;
 
@@ -156,7 +149,7 @@ void StateMachine::enterState_(RobotState newState) {
       check_ball_sub_state_ = 0;
       check_ball_samples_collected_ = 0;
       // Put pitch in CLOSED_LOOP_CONTROL mode for movement
-      can_.setRequestedState(config_.pitch_node_id, 8u);
+      can_.setRequestedState(config_.pitch_node_id, ODriveState::CLOSED_LOOP);
       debugf_("[SM] Entering CHECKING_BALL - disrupting to verify ball presence\n");
       break;
 
@@ -273,13 +266,13 @@ void StateMachine::handleIdle_() {
   
   CanInterface::AxisHeartbeat hb_pitch;
   if (can_.getAxisHeartbeat(config_.pitch_node_id, hb_pitch)) {
-    if (!recent_command && hb_pitch.axis_state == 8u && hb_pitch.trajectory_done && PRO.getPitchDeg() >= config_.pitch_min_stow_angle_deg) {
-      can_.setRequestedState(config_.pitch_node_id, 1u);  // IDLE
-    } 
+    if (!recent_command && hb_pitch.axis_state == ODriveState::CLOSED_LOOP && hb_pitch.trajectory_done && PRO.getPitchDeg() >= config_.pitch_min_stow_angle_deg) {
+      can_.setRequestedState(config_.pitch_node_id, ODriveState::IDLE);
+    }
 
     // However, if the angle is ever LOWER than the stow threshold, we must ensure it's back in CLOSED_LOOP_CONTROL
-    else if (PRO.getPitchDeg() < config_.pitch_min_stow_angle_deg && hb_pitch.axis_state != 8u) {
-      can_.setRequestedState(config_.pitch_node_id, 8u);  // CLOSED_LOOP_CONTROL
+    else if (PRO.getPitchDeg() < config_.pitch_min_stow_angle_deg && hb_pitch.axis_state != ODriveState::CLOSED_LOOP) {
+      can_.setRequestedState(config_.pitch_node_id, ODriveState::CLOSED_LOOP);
     }
   }
 }
@@ -426,7 +419,7 @@ void StateMachine::handleReloading_() {
         //         hb_pitch.trajectory_done, hb_hand.trajectory_done);
         if (hb_pitch.trajectory_done && hb_hand.trajectory_done) {
           // Put hand in CLOSED_LOOP_CONTROL to hold position
-          can_.setRequestedState(config_.hand_node_id, 8u);
+          can_.setRequestedState(config_.hand_node_id, ODriveState::CLOSED_LOOP);
           reload_sub_state_ = 3;
           sub_state_ms_ = millis();
         }
@@ -571,15 +564,15 @@ void StateMachine::handleCalibrating_() {
   
   switch (calibration_sub_state_) {
     case 0:  // Wait for yaw to reach calibration position
-      if (fabsf(current_yaw - config_.calibrate_location_max_yaw_deg_) < config_.yaw_angle_threshold_deg) {
+      if (fabsf(current_yaw - config_.calibrate_location_max_yaw_deg) < config_.yaw_angle_threshold_deg) {
         debugf_("[SM] Calibration: Reached calibration position (%.1f°), returning home...\n", current_yaw);
-        yaw_.setTargetDeg(config_.calibrate_location_min_yaw_deg_);
+        yaw_.setTargetDeg(config_.calibrate_location_min_yaw_deg);
         calibration_sub_state_ = 1;
       }
       break;
       
     case 1:  // Wait for yaw to reach home
-      if (fabsf(current_yaw - config_.calibrate_location_min_yaw_deg_) < config_.yaw_angle_threshold_deg) {
+      if (fabsf(current_yaw - config_.calibrate_location_min_yaw_deg) < config_.yaw_angle_threshold_deg) {
         debugf_("[SM] Calibration: Reached home (%.1f°), pausing for %lu ms...\n", 
                 current_yaw, (unsigned long)config_.calibration_pause_ms);
         sub_state_ms_ = millis();
@@ -590,7 +583,7 @@ void StateMachine::handleCalibrating_() {
     case 2:  // Pause at home position
       if (sub_elapsed >= config_.calibration_pause_ms) {
         // Restore yaw axis accelerations
-        yaw_.setAccel(config_.yaw_pre_calib_accel_, config_.yaw_pre_calib_decel_);
+        yaw_.setAccel(config_.yaw_pre_calib_accel, config_.yaw_pre_calib_decel);
         debugf_("[SM] Calibration complete, returning to IDLE\n");
         enterState_(RobotState::IDLE);
       }
@@ -730,12 +723,27 @@ bool StateMachine::requestTracking(float yaw_deg, float pitch_deg) {
     return false;
   }
 
-  // Store tracking command
-  last_tracking_cmd_.yaw_deg = yaw_deg;
-  last_tracking_cmd_.pitch_deg = pitch_deg;
-  last_tracking_cmd_.received_ms = millis();
-  last_tracking_cmd_.valid = true;
-  last_tracking_cmd_ms_ = millis();
+  // Rate-limit yaw and pitch updates to avoid flooding the CAN bus.
+  // Only mark the axis as needing an update if enough time has elapsed.
+  const uint32_t now_ms = millis();
+  bool yaw_due   = (now_ms - last_yaw_cmd_ms_)   >= config_.yaw_cmd_interval_ms;
+  bool pitch_due = (now_ms - last_pitch_cmd_ms_) >= config_.pitch_cmd_interval_ms;
+
+  if (yaw_due) {
+    last_tracking_cmd_.yaw_deg = yaw_deg;
+    last_yaw_cmd_ms_ = now_ms;
+  }
+  if (pitch_due) {
+    last_tracking_cmd_.pitch_deg = pitch_deg;
+    last_pitch_cmd_ms_ = now_ms;
+  }
+
+  // Mark command valid if either axis was updated
+  if (yaw_due || pitch_due) {
+    last_tracking_cmd_.received_ms = now_ms;
+    last_tracking_cmd_.valid = true;
+  }
+  last_tracking_cmd_ms_ = now_ms;
 
   // If currently IDLE, transition to TRACKING
   if (state_ == RobotState::IDLE) {
@@ -760,6 +768,54 @@ bool StateMachine::requestCalibrateLocation() {
   return true;
 }
 
+
+// --------------------------------------------------------------------
+// requestSmoothMove() - Public API for smooth hand moves (replaces handleSmoothCmd logic)
+// --------------------------------------------------------------------
+bool StateMachine::requestSmoothMove(float target_rev) {
+  // Only accept smooth move commands when IDLE
+  if (state_ != RobotState::IDLE) {
+    debugf_("[SM] smoothMove rejected: currently in %s (must be IDLE)\n",
+            robotStateToString(state_));
+    return false;
+  }
+
+  // Clamp to valid range
+  if (target_rev < 0) target_rev = 0;
+  if (target_rev > HAND_MAX_SMOOTH_MOVE_POS) target_rev = HAND_MAX_SMOOTH_MOVE_POS;
+
+  // Get current PV
+  float pos_rev = 0, vel_rps = 0;
+  uint64_t t_us = 0;
+  if (!can_.getAxisPV(config_.hand_node_id, pos_rev, vel_rps, t_us)) {
+    debugf_("[SM] smoothMove: PV unavailable\n");
+    return false;
+  }
+
+  // Check PV freshness (20ms max age)
+  if (can_.wallTimeUs() - t_us > 20000) {
+    debugf_("[SM] smoothMove: PV stale\n");
+    return false;
+  }
+
+  // Plan smooth move
+  auto plan = planner_.planSmoothTo(target_rev, pos_rev, vel_rps,
+                                    (uint32_t)(t_us & 0xFFFFFFFFu));
+  if (plan.trajectory.empty()) {
+    debugf_("[SM] smoothMove: already at target\n");
+    return true;  // Not an error — already there
+  }
+
+  // Own the buffer and arm the streamer
+  traj_buffer_ = std::move(plan.trajectory);
+  const float time_offset_s = can_.wallTimeUs() * 1e-6f;
+
+  bool ok = streamer_.arm(config_.hand_node_id, traj_buffer_.data(),
+                          traj_buffer_.size(), time_offset_s);
+
+  debugf_("[SM] smoothMove to %.2f: %s\n", target_rev, ok ? "Armed" : "FAIL");
+  return ok;
+}
 
 // --------------------------------------------------------------------
 // executeThrow_() - Actually execute the throw (called from handleIdle_)
@@ -814,14 +870,14 @@ bool StateMachine::executeThrow_(float yaw_deg, float pitch_deg,
   }
 
   // 6) Arm the streamer
-  g_traj_buffer = std::move(plan.trajectory);
+  traj_buffer_ = std::move(plan.trajectory);
   const float throw_wall_s = can_.wallTimeUs() * 1e-6f + in_s;
 
-  bool ok = streamer_.arm(config_.hand_node_id, g_traj_buffer.data(),
-                          g_traj_buffer.size(), throw_wall_s);
+  bool ok = streamer_.arm(config_.hand_node_id, traj_buffer_.data(),
+                          traj_buffer_.size(), throw_wall_s);
 
   debugf_("[SM] Throw armed: frames=%u, ready_time=%.2f s, %s\n",
-          (unsigned)g_traj_buffer.size(), planner_.lastTimeToReadyS(),
+          (unsigned)traj_buffer_.size(), planner_.lastTimeToReadyS(),
           ok ? "OK" : "FAIL");
 
   return ok;
@@ -897,11 +953,11 @@ bool StateMachine::moveHandToPosition_(float target_rev) {
   }
 
   // Arm streamer
-  g_traj_buffer = std::move(plan.trajectory);
+  traj_buffer_ = std::move(plan.trajectory);
   const float time_offset_s = can_.wallTimeUs() * 1e-6f;
 
-  return streamer_.arm(config_.hand_node_id, g_traj_buffer.data(),
-                       g_traj_buffer.size(), time_offset_s);
+  return streamer_.arm(config_.hand_node_id, traj_buffer_.data(),
+                       traj_buffer_.size(), time_offset_s);
 }
 
 // --------------------------------------------------------------------

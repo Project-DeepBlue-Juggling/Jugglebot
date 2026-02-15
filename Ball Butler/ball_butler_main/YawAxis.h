@@ -1,6 +1,7 @@
 #pragma once
 #include <Arduino.h>
 #include <SPI.h>
+#include "Micros64.h"
 
 /*
  * =============================================================================
@@ -542,9 +543,6 @@ private:
   float userToEncoderDeg_(float user_deg) const;
   bool  isInValidRange_(float pos_deg) const;
   bool  isInHardLimitRange_(float pos_deg) const;
-
-  // 64-bit microsecond timestamp (handles rollover)
-  static uint64_t micros64_();
 
 private:
   // Hardware pins

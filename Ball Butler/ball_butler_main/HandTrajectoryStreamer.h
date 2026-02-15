@@ -1,12 +1,11 @@
 // HandTrajectoryStreamer.h
 #pragma once
+#include "BallButlerConfig.h"
 #include "CanInterface.h"
 #include "TrajFrame.h"
 
 struct HandTrajectoryStreamer {
-  // ODrive enums
-  static constexpr uint32_t AXIS_STATE_IDLE        = 1u;
-  static constexpr uint32_t AXIS_STATE_CLOSED_LOOP = 8u;
+  // ODrive enums (axis state constants live in BallButlerConfig.h)
   static constexpr uint32_t CONTROL_MODE_POSITION  = 3u;
   static constexpr uint32_t INPUT_MODE_PASSTHROUGH = 1u;
 
@@ -33,7 +32,7 @@ struct HandTrajectoryStreamer {
     }
 
     // 1) CLOSED_LOOP + POSITION/PASSTHROUGH
-    if (!can.setRequestedState(node, AXIS_STATE_CLOSED_LOOP)) return false;
+    if (!can.setRequestedState(node, ODriveState::CLOSED_LOOP)) return false;
     if (!can.setControllerMode(node, CONTROL_MODE_POSITION, INPUT_MODE_PASSTHROUGH)) return false;
 
     active = true;
@@ -56,7 +55,7 @@ struct HandTrajectoryStreamer {
 
     // Finished? → IDLE
     if (idx >= n) {
-      (void)can.setRequestedState(node, AXIS_STATE_IDLE);
+      (void)can.setRequestedState(node, ODriveState::IDLE);
       active = false;
     }
   }

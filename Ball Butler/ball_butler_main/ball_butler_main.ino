@@ -10,13 +10,12 @@
  *   - HandPathPlanner + HandTrajectoryStreamer: Throw trajectory execution
  */
 
-#include <vector>
 #include "YawAxis.h"
 #include "PitchAxis.h"
 #include "HandPathPlanner.h"
+#include "BallButlerConfig.h"
 #include "CanInterface.h"
 #include "HandTrajectoryStreamer.h"
-#include "TrajFrame.h"
 #include "Trajectory.h"
 #include "Proprioception.h"
 #include "StateMachine.h"
@@ -28,18 +27,18 @@
 static constexpr float    THROW_VEL_MIN_MPS  = 0.05f;
 static constexpr float    THROW_VEL_MAX_MPS  = 6.0f;
 static constexpr float    SCHEDULE_MARGIN_S  = 0.1f;
-static constexpr uint64_t PV_MAX_AGE_US      = 20000;
-
-static constexpr uint8_t  PITCH_NODE_ID      = 7;
-static constexpr uint8_t  HAND_NODE_ID       = 8;
-
-// Rate-limit the commands to the pitch and yaw axes to not flood the CAN bus
-static uint32_t last_yaw_cmd_ms   = 0;
-static uint32_t last_pitch_cmd_ms = 0;
-const uint32_t PITCH_CMD_INTERVAL_MS = 50;
-const uint32_t YAW_CMD_INTERVAL_MS = 10;
 
 using Err = CanInterface::ODriveErrors;
+
+// ============================================================================
+// YAW AXIS PIN CONFIGURATION
+// ============================================================================
+static constexpr uint8_t  YAW_PIN_PWM_A     = 10;
+static constexpr uint8_t  YAW_PIN_PWM_B     = 16;
+static constexpr uint8_t  YAW_PIN_ENC_A     = 15;
+static constexpr uint8_t  YAW_PIN_ENC_B     = 14;
+static constexpr uint16_t YAW_ENC_CPR       = 60;
+static constexpr uint16_t YAW_PWM_FREQ_HZ   = 20000;
 
 // ============================================================================
 // GLOBAL OBJECTS
@@ -47,13 +46,11 @@ using Err = CanInterface::ODriveErrors;
 CanInterface           canif;
 HandPathPlanner        planner;
 HandTrajectoryStreamer streamer(canif);
-PitchAxis              pitch(canif, PITCH_NODE_ID);
+PitchAxis              pitch(canif, NodeId::PITCH);
 
-YawAxis yawAxis(10, 16, 15, 14, 60, 20000);
+YawAxis yawAxis(YAW_PIN_PWM_A, YAW_PIN_PWM_B, YAW_PIN_ENC_A, YAW_PIN_ENC_B, YAW_ENC_CPR, YAW_PWM_FREQ_HZ);
 
 StateMachine stateMachine(canif, yawAxis, pitch, streamer, planner);
-
-std::vector<TrajFrame> g_traj_buffer;
 
 static bool     yaw_stream_on      = false;
 static uint32_t yaw_last_stream_ms = 0;
@@ -69,15 +66,9 @@ void yawProprioceptionCallback(float pos_deg, float vel_rps, uint64_t ts_us) {
 // ============================================================================
 // HELPER FUNCTIONS
 // ============================================================================
-static bool getFreshPV(float& pos_rev, float& vel_rps, uint64_t& t_wall_us) {
-  if (!canif.getAxisPV(HAND_NODE_ID, pos_rev, vel_rps, t_wall_us)) return false;
-  return (canif.wallTimeUs() - t_wall_us) <= PV_MAX_AGE_US;
-}
-
 // ============================================================================
 // FORWARD DECLARATIONS
 // ============================================================================
-void onHostThrow(const CanInterface::HostThrowCmd& c, void* user);
 void yawPrintHelp();
 void yawHandleLine(const String& yawLine);
 void pitchHandleLine(const String& line);
@@ -116,16 +107,15 @@ void setup() {
 
   canif.begin(1000000);
   canif.setDebugStream(&Serial);
-  canif.setDebugFlags(false, false);
-  canif.setHandAxisNode(HAND_NODE_ID);
-  canif.setPitchAxisNode(PITCH_NODE_ID);
-  canif.setHostThrowCallback(&onHostThrow, nullptr);
+  canif.setDebugFlags(false, false); // Enable CAN message debug, disable axis state debug to reduce spam
+  canif.setHandAxisNode(NodeId::HAND);
+  canif.setPitchAxisNode(NodeId::PITCH);
   canif.setAutoClearBrakeResistor(true, 500);
-  canif.requireHomeOnlyFor(HAND_NODE_ID);
+  canif.requireHomeOnlyFor(NodeId::HAND);
 
   // Add a short delay to give ODrives time to boot and respond to pings
-  float initial_delay = 1000.0f; // milliseconds
-  float now = millis();
+  uint32_t initial_delay = 1000; // milliseconds
+  uint32_t now = millis();
   while (millis() - now < initial_delay) {
     canif.loop();
     delay(20);
@@ -144,8 +134,8 @@ void setup() {
   pitch.begin();
 
   StateMachine::Config smConfig;
-  smConfig.hand_node_id  = HAND_NODE_ID;
-  smConfig.pitch_node_id = PITCH_NODE_ID;
+  smConfig.hand_node_id  = NodeId::HAND;
+  smConfig.pitch_node_id = NodeId::PITCH;
   smConfig.homing_timeout_ms   = 10000;
   smConfig.reload_timeout_ms   = 10000;
   smConfig.post_throw_delay_ms = 1000;
@@ -165,6 +155,7 @@ void setup() {
 // ============================================================================
 void loop() {
   canif.loop();
+  pitch.loop();
   streamer.tick();
   Proprioception::flushDebug();
   stateMachine.update();
@@ -186,53 +177,6 @@ void loop() {
     auto t = yawAxis.readTelemetry();
     Serial.printf("YAW | pos=%.2f cmd=%.2f err=%.2f pwm=%d en=%d\n",
                   t.pos_deg, t.cmd_deg, t.err_deg, (int)t.pwm, t.enabled);
-  }
-}
-
-// ============================================================================
-// CAN THROW HANDLER
-// ============================================================================
-void onHostThrow(const CanInterface::HostThrowCmd& c, void*) {
-  const float yaw_deg   = c.yaw_rad   * (180.0f / (float)M_PI);
-  const float pitch_deg = c.pitch_rad * (180.0f / (float)M_PI);
-
-  // Only accept commands if the robot is in IDLE
-  if (stateMachine.getState() != RobotState::IDLE) {
-    // Serial.printf("CAN THROW REJECTED (state: %s)\n", robotStateToString(stateMachine.getState()));
-    return;
-  }
-
-  // A command with all zeros is treated as a 'move to rest position' (set pitch to 90)
-  if (c.yaw_rad == 0.f && c.pitch_rad == 0.f && c.speed_mps == 0.f && c.in_s == 0.f) {
-    pitch.setTargetDeg(90.0f);
-    last_pitch_cmd_ms = millis();
-    return;
-  }
-
-  // Print debug info if the throw is 'real' (speed > 0)
-  if (c.speed_mps > 0.0f) {
-    Serial.println(F("--- CAN Throw Command ---"));
-    Serial.printf("  Yaw: %.2f  Pitch: %.2f  Speed: %.3f  In: %.3f\n",
-                  yaw_deg, pitch_deg, c.speed_mps, c.in_s);
-  }
-
-  // If the command speed is zero, just set the angles
-  if (c.speed_mps == 0.0f) {
-    if (millis() - last_yaw_cmd_ms >= YAW_CMD_INTERVAL_MS) {
-      yawAxis.setTargetDeg(yaw_deg);
-      last_yaw_cmd_ms = millis();
-    }
-    if (millis() - last_pitch_cmd_ms >= PITCH_CMD_INTERVAL_MS) {
-      pitch.setTargetDeg(pitch_deg);
-      last_pitch_cmd_ms = millis();
-    }
-    return;
-  }
-
-  if (stateMachine.requestThrow(yaw_deg, pitch_deg, c.speed_mps, c.in_s)) {
-    Serial.println(F("  -> Accepted"));
-  } else {
-    Serial.printf("  -> REJECTED (state: %s)\n", robotStateToString(stateMachine.getState()));
   }
 }
 
@@ -285,7 +229,7 @@ void printStatus() {
   Serial.printf("Yaw: %.1f  Pitch: %.1f  Hand: %.3f rev\n",
                 d.yaw_deg, d.pitch_deg, d.hand_pos_rev);
   Serial.printf("Hand homed: %s  Streamer: %s\n",
-                canif.isAxisHomed(HAND_NODE_ID) ? "YES" : "NO",
+                canif.isAxisHomed(NodeId::HAND) ? "YES" : "NO",
                 streamer.isActive() ? "ACTIVE" : "idle");
 }
 
@@ -309,14 +253,6 @@ bool handleThrowCmd(const String& line) {
   return true;
 }
 
-bool handleReloadCmd(const String& line) {
-  if (stateMachine.requestReload()) { Serial.println("Reload requested!");
-  } else {
-    Serial.printf("Reload REJECTED (state: %s)\n", robotStateToString(stateMachine.getState()));
-  }
-  return true;
-}
-
 bool handleSmoothCmd(const String& line) {
   float target = 0;
   if (sscanf(line.c_str() + 7, "%f", &target) != 1) {
@@ -327,20 +263,8 @@ bool handleSmoothCmd(const String& line) {
     Serial.printf("SMOOTH: out of range [0, %.2f]\n", HAND_MAX_SMOOTH_MOVE_POS);
     return true;
   }
-  float pos = 0, vel = 0; uint64_t t = 0;
-  if (!getFreshPV(pos, vel, t)) {
-    Serial.println(F("SMOOTH: PV unavailable"));
-    return true;
-  }
-  auto plan = planner.planSmoothTo(target, pos, vel, (uint32_t)(t & 0xFFFFFFFF));
-  if (plan.trajectory.empty()) {
-    Serial.println(F("SMOOTH: Already at target"));
-    return true;
-  }
-  g_traj_buffer = std::move(plan.trajectory);
-  bool ok = streamer.arm(HAND_NODE_ID, g_traj_buffer.data(), g_traj_buffer.size(), 
-                         canif.wallTimeUs() * 1e-6f);
-  Serial.printf("SMOOTH to %.2f: %s\n", target, ok ? "Armed" : "FAIL");
+  bool ok = stateMachine.requestSmoothMove(target);
+  Serial.printf("SMOOTH to %.2f: %s\n", target, ok ? "OK" : "FAIL");
   return true;
 }
 

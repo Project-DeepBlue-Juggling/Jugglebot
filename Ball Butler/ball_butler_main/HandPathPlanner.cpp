@@ -20,15 +20,31 @@ void HandPathPlanner::setFeedback(float pos_rev, float vel_rev_s, uint32_t times
 }
 
 // Utility to save/restore FB around a planning call
-struct _FBGuard {
+struct FBGuard {
   HandPathPlanner& self;
   float p0, v0; uint32_t t0;
-  _FBGuard(HandPathPlanner& s, float p, float v, uint32_t ts)
+  FBGuard(HandPathPlanner& s, float p, float v, uint32_t ts)
   : self(s), p0(s.fb_pos_rev_), v0(s.fb_vel_rev_s_), t0(s.fb_ts_us_) {
     self.setFeedback(p, v, ts);
   }
-  ~_FBGuard(){ self.fb_pos_rev_ = p0; self.fb_vel_rev_s_ = v0; self.fb_ts_us_ = t0; }
+  ~FBGuard(){ self.fb_pos_rev_ = p0; self.fb_vel_rev_s_ = v0; self.fb_ts_us_ = t0; }
 };
+
+/* --------------------------------------------------------------------------
+   Anchor selection — shared by all throw planners
+   -------------------------------------------------------------------------- */
+HandPathPlanner::AnchorResult HandPathPlanner::computeAnchor_(const Trajectory& throwTr) const {
+  const float x0       = throwTr.x.front();
+  const auto  minmaxX  = std::minmax_element(throwTr.x.begin(), throwTr.x.end());
+  const float throwMin = *minmaxX.first;
+  const float throwMax = *minmaxX.second;
+  const float anchorMin = -throwMin;
+  const float anchorMax = HAND_MAX_SMOOTH_MOVE_POS - throwMax;
+  const float desiredAnchor = fb_pos_rev_ - x0;
+  const float anchor_rev    = clampf(desiredAnchor, anchorMin, anchorMax);
+  const float target_start_rev = anchor_rev + x0;
+  return { anchor_rev, target_start_rev };
+}
 
 /* --------------------------------------------------------------------------
    Core planner: returns vector (pre-reserved for minimal heap churn)
@@ -49,15 +65,7 @@ HandPlanResult HandPathPlanner::planThrow(float throw_vel_mps) {
   }
 
   // 2) Choose anchor within bounds, minimizing pre-position distance
-  const float x0       = throwTr.x.front();
-  const auto  minmaxX  = std::minmax_element(throwTr.x.begin(), throwTr.x.end());
-  const float throwMin = *minmaxX.first;     // [rev], relative
-  const float throwMax = *minmaxX.second;    // [rev], relative
-  const float anchorMin = -throwMin;
-  const float anchorMax = HAND_MAX_SMOOTH_MOVE_POS - throwMax;
-  const float desiredAnchor = fb_pos_rev_ - x0;
-  const float anchor_rev    = clampf(desiredAnchor, anchorMin, anchorMax);
-  const float target_start_rev = anchor_rev + x0;
+  const auto [anchor_rev, target_start_rev] = computeAnchor_(throwTr);
 
   // 3) Smooth move (if necessary) to the starting sample of the throw
   Trajectory smoothTr;
@@ -103,15 +111,7 @@ float HandPathPlanner::planThrow(float throw_vel_mps, void (*emit)(const TrajFra
   if (throwTr.x.empty()) { last_time_to_ready_s_ = 0.0f; last_frame_count_ = 0; return 0.0f; }
 
   // 2) Anchor selection
-  const float x0       = throwTr.x.front();
-  const auto  minmaxX  = std::minmax_element(throwTr.x.begin(), throwTr.x.end());
-  const float throwMin = *minmaxX.first;
-  const float throwMax = *minmaxX.second;
-  const float anchorMin = 0.0f - throwMin;
-  const float anchorMax = HAND_MAX_SMOOTH_MOVE_POS - throwMax;
-  const float desiredAnchor = fb_pos_rev_ - x0;
-  const float anchor_rev    = clampf(desiredAnchor, anchorMin, anchorMax);
-  const float target_start_rev = anchor_rev + x0;
+  const auto [anchor_rev, target_start_rev] = computeAnchor_(throwTr);
 
   // 3) Smooth move (if needed)
   Trajectory smoothTr;
@@ -221,14 +221,14 @@ void HandPathPlanner::emitPause(float pos_rev, float t_start, float duration,
 
 HandPlanResult HandPathPlanner::planThrowDecelZero(float throw_vel_mps,
                                                    float pos_rev, float vel_rev_s, uint32_t timestamp_us) {
-  _FBGuard g(*this, pos_rev, vel_rev_s, timestamp_us);
+  FBGuard g(*this, pos_rev, vel_rev_s, timestamp_us);
   return planThrowDecelZero(throw_vel_mps);
 }
 
 float HandPathPlanner::planThrowDecelZero(float throw_vel_mps,
                                           float pos_rev, float vel_rev_s, uint32_t timestamp_us,
                                           void (*emit)(const TrajFrame&)) {
-  _FBGuard g(*this, pos_rev, vel_rev_s, timestamp_us);
+  FBGuard g(*this, pos_rev, vel_rev_s, timestamp_us);
   return planThrowDecelZero(throw_vel_mps, emit);
 }
 
@@ -262,15 +262,7 @@ float HandPathPlanner::planThrowDecelZero(float throw_vel_mps,
   if (throwTr.x.empty()) { last_time_to_ready_s_ = 0.0f; last_frame_count_ = 0; return 0.0f; }
 
   // Anchor selection (same as planThrow)
-  const float x0       = throwTr.x.front();
-  const auto  minmaxX  = std::minmax_element(throwTr.x.begin(), throwTr.x.end());
-  const float throwMin = *minmaxX.first;
-  const float throwMax = *minmaxX.second;
-  const float anchorMin = -throwMin;
-  const float anchorMax = HAND_MAX_SMOOTH_MOVE_POS - throwMax;
-  const float desiredAnchor = fb_pos_rev_ - x0;
-  const float anchor_rev    = clampf(desiredAnchor, anchorMin, anchorMax);
-  const float target_start_rev = anchor_rev + x0;
+  const auto [anchor_rev, target_start_rev] = computeAnchor_(throwTr);
 
   // Smooth (if needed)
   Trajectory smoothTr;
@@ -343,7 +335,7 @@ float HandPathPlanner::planThrowDecelZero(float throw_vel_mps,
 /* -------------------------- Smooth Move Planner --------------------------- */
 HandPlanResult HandPathPlanner::planSmoothTo(float target_pos_rev,
                                              float pos_rev, float vel_rev_s, uint32_t timestamp_us) {
-  _FBGuard g(*this, pos_rev, vel_rev_s, timestamp_us);
+  FBGuard g(*this, pos_rev, vel_rev_s, timestamp_us);
   // use existing smooth-only variant (if you added it) or inline:
   HandPlanResult out;
   Trajectory smoothTr = makeSmoothMove(fb_pos_rev_, target_pos_rev);
@@ -359,7 +351,7 @@ HandPlanResult HandPathPlanner::planSmoothTo(float target_pos_rev,
 float HandPathPlanner::planSmoothTo(float target_pos_rev,
                                     float pos_rev, float vel_rev_s, uint32_t timestamp_us,
                                     void (*emit)(const TrajFrame&)) {
-  _FBGuard g(*this, pos_rev, vel_rev_s, timestamp_us);
+  FBGuard g(*this, pos_rev, vel_rev_s, timestamp_us);
   if (!emit) return 0.0f;
   Trajectory smoothTr = makeSmoothMove(fb_pos_rev_, target_pos_rev);
   if (smoothTr.x.empty()) { last_time_to_ready_s_ = 0.0f; last_frame_count_ = 0; return 0.0f; }

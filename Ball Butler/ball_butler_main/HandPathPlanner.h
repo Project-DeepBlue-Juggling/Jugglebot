@@ -115,7 +115,13 @@ private:
     return tr.t.empty() ? 0.0f : tr.t.back();
   }
 
-  friend struct _FBGuard;
+  struct AnchorResult {
+    float anchor_rev;
+    float target_start_rev;
+  };
+  AnchorResult computeAnchor_(const Trajectory& throwTr) const;
+
+  friend struct FBGuard;
 
   // Find index/time where deceleration begins in a throw trajectory
   static size_t findDecelStartIndex(const Trajectory& tr);

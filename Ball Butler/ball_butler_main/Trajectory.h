@@ -1,5 +1,4 @@
-#ifndef TRAJECTORY_H
-#define TRAJECTORY_H
+#pragma once
 /*  Hand‑trajectory generator — Teensy 4.0
     Heavily based on code written by Jon Beno, May 13 2024
     Harrison Low · Aug 2025
@@ -40,10 +39,10 @@ constexpr float END_PROFILE_HOLD    = 0.10f;    // s. Can probably get rid of?
 constexpr int   SAMPLE_RATE         = 500;      // Hz
 
 /* ----- smooth-move tuning ------------------------------------- */
-constexpr float MAX_SMOOTH_MOVE_HAND_ACCEL = 200.0;//1000.0f;   // [rev s⁻²].
+constexpr float MAX_SMOOTH_MOVE_HAND_ACCEL = 200.0f;//1000.0f;   // [rev s⁻²].
 constexpr float QUINTIC_S2_MAX             = 5.7735027f; // max |s''| for 10t³−15t⁴+6t⁵
 
-constexpr float HAND_MAX_SMOOTH_MOVE_POS = 8.9; // rev
+constexpr float HAND_MAX_SMOOTH_MOVE_POS = 8.9f; // rev
 
 inline float accelToTorque(float a) { return a * INERTIA_HAND_ONLY * HAND_SPOOL_R; }
 
@@ -244,7 +243,7 @@ inline Trajectory makeSmoothMove(float start_rev, float target_rev)
 
     if (target_rev > HAND_MAX_SMOOTH_MOVE_POS){
       target_rev = HAND_MAX_SMOOTH_MOVE_POS;
-    } else if (target_rev < 0.0){
+    } else if (target_rev < 0.0f){
       target_rev = 0.0;
     }
     const float delta_rev = target_rev - start_rev;
@@ -303,4 +302,3 @@ inline Trajectory makeSmoothMove(float start_rev, float target_rev)
     return tr;
 }
 
-#endif /* TRAJECTORY_H */
