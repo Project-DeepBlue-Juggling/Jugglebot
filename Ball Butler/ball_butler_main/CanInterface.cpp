@@ -296,7 +296,7 @@ bool CanInterface::sendArbitraryParameterU32(uint32_t node_id, uint16_t endpoint
 
 bool CanInterface::requestArbitraryParameter(uint32_t node_id, uint16_t endpoint_id) {
   uint8_t d[8] = { 0 };
-  d[0] = OPCODE_WRITE;
+  d[0] = OPCODE_WRITE; // ODrive expects a write with no data for read requests
   d[1] = endpoint_id & 0xFF;
   d[2] = (endpoint_id >> 8) & 0xFF;
   d[3] = 0;
@@ -625,7 +625,7 @@ void CanInterface::maybeCheckBallInHand_() {
   // Only check in states where ball presence matters
   if (!state_machine_) return;
   const RobotState st = state_machine_->getState();
-  if (st != RobotState::IDLE && st != RobotState::TRACKING) return;
+  if (st != RobotState::IDLE && st != RobotState::TRACKING && st != RobotState::CHECKING_BALL && st != RobotState::RELOADING) return;
 
   switch (ball_check_phase_) {
     case BallCheckPhase::IDLE: {
