@@ -1,10 +1,9 @@
-#ifndef TRAJECTORY_H
-#define TRAJECTORY_H
-/*  Hand‑trajectory generator — Teensy 4.0
+#pragma once
+/*  Hand‑trajectory generator — Teensy 4.0
     Heavily based on code written by Jon Beno, May 13 2024
-    Harrison Low · Aug 2025
+    Harrison Low · Aug 2025
     ------------------------------------------------------------
-    Generates three motion profiles sampled at 500 Hz:
+    Generates three motion profiles sampled at 500 Hz:
       • makeThrow()  – forward throw
       • makeCatch()  – reverse catch
       • makeFull()   – throw + flight + catch
@@ -13,44 +12,103 @@
       x   [rev] — hand winch position (motor revs)
       v   [rev/s]
       tor [N·m] — spool torque
+
+    P2-1 REFACTOR: All trajectory storage is now arena-backed.
+    No heap allocations occur during trajectory planning.
 */
 
 #include <Arduino.h>
-#include <vector>
 #include <cmath>
+#include <algorithm>
+#include "BallButlerConfig.h"
 
-/* ───────── data container ───────── */
-struct Trajectory {
-  std::vector<float> t, x, v, tor;
+/* ───────── bump allocator for trajectory working memory ───────── */
+class TrajArena {
+public:
+  void init(uint8_t* buf, size_t cap) { buf_ = buf; cap_ = cap; offset_ = 0; }
+  void reset() { offset_ = 0; }
+
+  float* allocFloats(size_t n) {
+    // Align to 4-byte boundary
+    size_t aligned = (offset_ + 3u) & ~3u;
+    size_t needed = aligned + n * sizeof(float);
+    if (needed > cap_) return nullptr;
+    float* p = reinterpret_cast<float*>(buf_ + aligned);
+    offset_ = needed;
+    return p;
+  }
+
+  size_t used() const { return offset_; }
+  size_t capacity() const { return cap_; }
+
+private:
+  uint8_t* buf_ = nullptr;
+  size_t cap_ = 0;
+  size_t offset_ = 0;
 };
 
-/* ───────── constants ───────── */
-constexpr float G                   = 9.806f;   // m/s^2
-constexpr float HAND_SPOOL_R        = 0.0052493f; // m (Max pos = 9.399  rev, min pos = 0 rev, travel = 310 mm)
-constexpr float LINEAR_GAIN_FACTOR  = 1.0f;     // Just 'cuz
-constexpr float LINEAR_GAIN         = LINEAR_GAIN_FACTOR / (M_PI * HAND_SPOOL_R * 2.f);  // rev per metre
-constexpr float INERTIA_HAND_ONLY   = 0.281f;   // kg
-constexpr float INERTIA_RATIO       = 0.747f;
-constexpr float THROW_VEL_HOLD_PCT  = 0.05f;
-constexpr float CATCH_VEL_RATIO     = 0.8f;
-constexpr float CATCH_VEL_HOLD_PCT  = 0.10f;
-constexpr float HAND_STROKE         = 0.28f;    // m
-constexpr float STROKE_MARGIN       = 0.02f;    // m
-constexpr float END_PROFILE_HOLD    = 0.10f;    // s. Can probably get rid of?
-constexpr int   SAMPLE_RATE         = 500;      // Hz
+/* ───────── arena-backed data container ───────── */
+struct Trajectory {
+  float* t   = nullptr;
+  float* x   = nullptr;
+  float* v   = nullptr;
+  float* tor = nullptr;
+  size_t count    = 0;
+  size_t capacity = 0;
+
+  // Allocate backing storage from arena. Returns false on arena overflow.
+  bool init(TrajArena& arena, size_t max_samples) {
+    t   = arena.allocFloats(max_samples);
+    x   = arena.allocFloats(max_samples);
+    v   = arena.allocFloats(max_samples);
+    tor = arena.allocFloats(max_samples);
+    if (!t || !x || !v || !tor) return false;
+    capacity = max_samples;
+    count = 0;
+    return true;
+  }
+
+  void push(float tt, float xx, float vv, float torr) {
+    if (count < capacity) {
+      t[count]   = tt;
+      x[count]   = xx;
+      v[count]   = vv;
+      tor[count]  = torr;
+      ++count;
+    }
+  }
+
+  bool   empty() const { return count == 0; }
+  size_t size()  const { return count; }
+};
+
+/* ───────── constants (aliases to BallButlerConfig.h / TrajCfg::) ───────── */
+constexpr float G                   = TrajCfg::G;
+constexpr float HAND_SPOOL_R        = TrajCfg::HAND_SPOOL_R;
+constexpr float LINEAR_GAIN_FACTOR  = TrajCfg::LINEAR_GAIN_FACTOR;
+constexpr float LINEAR_GAIN         = TrajCfg::LINEAR_GAIN;
+constexpr float INERTIA_HAND_ONLY   = TrajCfg::INERTIA_HAND_ONLY;
+constexpr float INERTIA_RATIO       = TrajCfg::INERTIA_RATIO;
+constexpr float THROW_VEL_HOLD_PCT  = TrajCfg::THROW_VEL_HOLD_PCT;
+constexpr float CATCH_VEL_RATIO     = TrajCfg::CATCH_VEL_RATIO;
+constexpr float CATCH_VEL_HOLD_PCT  = TrajCfg::CATCH_VEL_HOLD_PCT;
+constexpr float HAND_STROKE         = TrajCfg::HAND_STROKE;
+constexpr float STROKE_MARGIN       = TrajCfg::STROKE_MARGIN;
+constexpr float END_PROFILE_HOLD    = TrajCfg::END_PROFILE_HOLD;
+constexpr int   SAMPLE_RATE         = TrajCfg::SAMPLE_RATE;
 
 /* ----- smooth-move tuning ------------------------------------- */
-constexpr float MAX_SMOOTH_MOVE_HAND_ACCEL = 200.0;//1000.0f;   // [rev s⁻²].
-constexpr float QUINTIC_S2_MAX             = 5.7735027f; // max |s''| for 10t³−15t⁴+6t⁵
+constexpr float MAX_SMOOTH_MOVE_HAND_ACCEL = TrajCfg::MAX_SMOOTH_ACCEL;
+constexpr float QUINTIC_S2_MAX             = TrajCfg::QUINTIC_S2_MAX;
 
-constexpr float HAND_MAX_SMOOTH_MOVE_POS = 8.9; // rev
+constexpr float HAND_MAX_SMOOTH_MOVE_POS = TrajCfg::HAND_MAX_SMOOTH_POS;
 
 inline float accelToTorque(float a) { return a * INERTIA_HAND_ONLY * HAND_SPOOL_R; }
 
 /* ───────── helper to shift whole trajectory in time ───────── */
 inline void shiftTime(Trajectory& tr, float offset)
 {
-  for (float& tt : tr.t) tt += offset;
+  for (size_t i = 0; i < tr.count; ++i) tr.t[i] += offset;
 }
 
 /* ───────── trajectory generator class ───────── */
@@ -66,21 +124,21 @@ public:
     calcCatch();
   }
 
-  /* ----- public builders ----- */
-  Trajectory makeThrow() {
-    Trajectory tr = buildThrow();
-    shiftTime(tr, -t2);               // set t=0 at start of decel
-    return tr;
+  /* ----- public builders (arena-backed) ----- */
+  bool makeThrow(TrajArena& arena, Trajectory& out) {
+    if (!buildThrow(arena, out)) return false;
+    shiftTime(out, -t2);               // set t=0 at start of decel
+    return true;
   }
-  Trajectory makeCatch() {
-    Trajectory tr = buildCatch();
-    shiftTime(tr, -(t5 - t4));        // t=0 at mid velocity‑hold
-    return tr;
+  bool makeCatch(TrajArena& arena, Trajectory& out) {
+    if (!buildCatch(arena, out)) return false;
+    shiftTime(out, -(t5 - t4));        // t=0 at mid velocity‑hold
+    return true;
   }
-  Trajectory makeFull()  {
-    Trajectory tr = buildCommand();
-    shiftTime(tr, -t2);               // align to throw timeline
-    return tr;
+  bool makeFull(TrajArena& arena, Trajectory& out) {
+    if (!buildCommand(arena, out)) return false;
+    shiftTime(out, -t2);               // align to throw timeline
+    return true;
   }
 
 private:
@@ -138,11 +196,12 @@ private:
   }
 
   /* generic 3‑segment builder (a–v–a or v–a–v etc.) */
-  Trajectory buildSegment(float start,
-                          const float tA[4], const float xA[4],
-                          const float vA[4], const float aA[4])
+  bool buildSegment(TrajArena& arena, Trajectory& tr,
+                    float start,
+                    const float tA[4], const float xA[4],
+                    const float vA[4], const float aA[4])
   {
-    Trajectory tr;
+    if (!tr.init(arena, TrajCfg::MAX_THROW_SAMPLES)) return false;
     unsigned idx = 0;
     float   t    = 0.f;
     float   end  = tA[3] - start;
@@ -153,37 +212,34 @@ private:
       float pos = xA[idx] + vA[idx] * tau + 0.5f * aA[idx] * tau * tau;
       float vel = vA[idx] + aA[idx] * tau;
 
-      tr.t  .push_back(t);
-      tr.x  .push_back(pos * LINEAR_GAIN);
-      tr.v  .push_back(vel * LINEAR_GAIN);
-      tr.tor.push_back(accelToTorque(aA[idx]));
+      tr.push(t, pos * LINEAR_GAIN, vel * LINEAR_GAIN, accelToTorque(aA[idx]));
       t += deltaT;
     }
-    return tr;
+    return true;
   }
 
   /* ----- concrete builders ----- */
-  Trajectory buildThrow()
+  bool buildThrow(TrajArena& arena, Trajectory& tr)
   {
     float tA[4] = {0.f, t1, t2, t3};
     float xA[4] = {0.f, x1, x2, x3};
     float vA[4] = {0.f, v_throw, v_throw, 0.f};
     float aA[4] = {throwA, 0.f, throwD, 0.f};
-    return buildSegment(0.f, tA, xA, vA, aA);
+    return buildSegment(arena, tr, 0.f, tA, xA, vA, aA);
   }
 
-  Trajectory buildCatch()
+  bool buildCatch(TrajArena& arena, Trajectory& tr)
   {
     float vC   = -CATCH_VEL_RATIO * v_throw;
     float tA[4] = {t4, t5, t6, t7};
     float xA[4] = {x3, x5, x6, 0.f};
     float vA[4] = {0.f, vC, vC, 0.f};
     float aA[4] = {catchA, 0.f, catchD, 0.f};
-    return buildSegment(t4, tA, xA, vA, aA);
+    return buildSegment(arena, tr, t4, tA, xA, vA, aA);
   }
 
   /* full 9‑segment throw‑flight‑catch */
-  Trajectory buildCommand()
+  bool buildCommand(TrajArena& arena, Trajectory& tr)
   {
     const char  typ[9] = {'a','v','a','x','a','v','a','x','e'};
     const float tA[9]  = {0.f,t1,t2,t3,t4,t5,t6,t7,t8};
@@ -194,7 +250,10 @@ private:
     const float aA[9]  = {throwA,0.f,throwD,0.f,
                           catchA,0.f,catchD,0.f,0.f};
 
-    Trajectory tr;
+    // Full trajectory can be much longer than a throw-only; use total t8 to estimate
+    const size_t est = (size_t)(t8 * SAMPLE_RATE) + 2;
+    if (!tr.init(arena, est)) return false;
+
     unsigned idx = 0;
     float t = 0.f;
     const float dT = 1.f / SAMPLE_RATE;
@@ -220,13 +279,10 @@ private:
           pos = xA[idx];
           break;
       }
-      tr.t  .push_back(t);
-      tr.x  .push_back(pos * LINEAR_GAIN);
-      tr.v  .push_back(vel * LINEAR_GAIN);
-      tr.tor.push_back(accelToTorque(acc * LINEAR_GAIN));
+      tr.push(t, pos * LINEAR_GAIN, vel * LINEAR_GAIN, accelToTorque(acc * LINEAR_GAIN));
       t += dT;
     }
-    return tr;
+    return true;
   }
 };
 
@@ -235,22 +291,24 @@ private:
    ---------------------------------------------------------------------
    * start position  = start_rev (argument)
    * end   position  = target_rev   (argument)
-   * boundary cond.  = v=a=0 at both ends   (quintic “S-curve”)
+   * boundary cond.  = v=a=0 at both ends   (quintic "S-curve")
    * duration chosen such that  |a_max| ≤ MAX_SMOOTH_MOVE_HAND_ACCEL
    ===================================================================== */
-inline Trajectory makeSmoothMove(float start_rev, float target_rev)
+inline bool makeSmoothMove(TrajArena& arena, Trajectory& tr,
+                           float start_rev, float target_rev)
 {
-    Trajectory tr;
-
     if (target_rev > HAND_MAX_SMOOTH_MOVE_POS){
       target_rev = HAND_MAX_SMOOTH_MOVE_POS;
-    } else if (target_rev < 0.0){
+    } else if (target_rev < 0.0f){
       target_rev = 0.0;
     }
     const float delta_rev = target_rev - start_rev;
 
-    if (fabsf(delta_rev) < 1e-6f)          // already there → empty traj.
-        return tr;
+    if (fabsf(delta_rev) < 1e-6f) {
+      // Already there — leave tr empty (count=0)
+      tr = Trajectory{};
+      return true;
+    }
 
     /* ----- derive duration from accel limit ------------------------- *
      * pos(t) = delta_rev · s(τ) + start_rev ,   τ = t / T
@@ -266,12 +324,8 @@ inline Trajectory makeSmoothMove(float start_rev, float target_rev)
     const float invT = 1.0f / duration;
     const float invT2 = invT * invT;
 
-    /* pre-allocate for speed */
     const size_t N = (size_t)ceilf(duration * SAMPLE_RATE) + 1;
-    tr.t.reserve  (N);
-    tr.x.reserve  (N);
-    tr.v.reserve  (N);
-    tr.tor.reserve(N);
+    if (!tr.init(arena, N)) return false;
 
     for (float t = 0.0f; t <= duration; t += dT) {
 
@@ -292,15 +346,10 @@ inline Trajectory makeSmoothMove(float start_rev, float target_rev)
         const float acc_rev = delta_rev * s_acc * invT2;
 
         const float acc_lin = acc_rev / LINEAR_GAIN;        // [m/s²]
-        const float tor     = accelToTorque(acc_lin);       // [N·m]
+        const float torque  = accelToTorque(acc_lin);       // [N·m]
 
-        tr.t  .push_back(t);
-        tr.x  .push_back(pos_rev);
-        tr.v  .push_back(vel_rev);
-        tr.tor.push_back(tor);
+        tr.push(t, pos_rev, vel_rev, torque);
     }
 
-    return tr;
+    return true;
 }
-
-#endif /* TRAJECTORY_H */

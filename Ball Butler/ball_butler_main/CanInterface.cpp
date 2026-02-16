@@ -1,4 +1,5 @@
 #include "CanInterface.h"
+#include "BallButlerConfig.h"
 #include <string.h>
 #include <math.h>
 #include "Proprioception.h"
@@ -51,15 +52,6 @@ CanInterface* CanInterface::s_instance_ = nullptr;
 CanInterface::CanInterface()
   : can1_() {}
 
-// ---------------- 64-bit micros ----------------
-uint64_t CanInterface::micros64_() {
-  static uint32_t last_lo = ::micros();
-  static uint64_t hi = 0;
-  uint32_t now = ::micros();
-  if (now < last_lo) hi += (uint64_t)1 << 32;
-  last_lo = now;
-  return (hi | now);
-}
 
 // ---------------- begin ----------------
 void CanInterface::begin(uint32_t bitrate) {
@@ -73,34 +65,19 @@ void CanInterface::begin(uint32_t bitrate) {
   can1_.onReceive(rxTrampoline_);
 
   // Clear states
-  last_host_cmd_ = HostThrowCmd{};  // clears .valid
   have_offset_ = false;
   wall_offset_us_ = 0;
   stats_.clear();
-  nextPrint_us_ = micros64_() + PRINT_PERIOD_US_;
+  nextPrint_us_ = micros64() + PRINT_PERIOD_US_;
   home_required_mask_ = 0;
 
-  // Initialise states
-  for (int i = 0; i < 64; ++i) {
-    axes_pv_[i].valid = false;
-    axes_iq_[i].valid = false;
-    home_state_[i] = AxisHomeState::Unhomed;
-  }
-
-  // Initialise last heartbeats arrays
-  for (int i = 0; i < 64; ++i) {
-    axes_pv_[i].valid = false;
-    axes_iq_[i].valid = false;
-    hb_[i].valid = false;
-  }
-
-  // Initialise BRAKE_RESISTOR_DISARMED auto-clearing stuff
-  for (int i = 0; i < 64; ++i) {
+  // Initialise per-node arrays
+  for (int i = 0; i < MAX_NODES; ++i) {
+    axes_pv_[i].valid       = false;
+    axes_iq_[i].valid       = false;
+    hb_[i].valid            = false;
+    home_state_[i]          = AxisHomeState::Unhomed;
     last_brake_clear_us_[i] = 0;
-  }
-
-  // Initialise arbitrary parameter response storage
-  for (int i = 0; i < 64; ++i) {
     arb_param_resp_[i].valid = false;
   }
 
@@ -125,7 +102,7 @@ void CanInterface::setDebugFlags(bool timeSyncDebug, bool canDebug) {
 }
 
 // ---------------- time functions ----------------
-uint64_t CanInterface::localTimeUs() const { return micros64_(); }
+uint64_t CanInterface::localTimeUs() const { return micros64(); }
 uint64_t CanInterface::wallTimeUs() const {
   return uint64_t(int64_t(localTimeUs()) + wall_offset_us_);
 }
@@ -168,15 +145,6 @@ bool CanInterface::sendRTR(uint32_t id, uint8_t len) {
 }
 
 // ---------------- Handling Jetson Commands ----------------
-bool CanInterface::getHostThrowCmd(HostThrowCmd& out) const {
-  if (!last_host_cmd_.valid) return false;
-  out = last_host_cmd_;
-  return true;
-}
-void CanInterface::setHostThrowCallback(HostThrowCallback cb, void* user) {
-  host_cb_ = cb;
-  host_cb_user_ = user;
-}
 
 // ---------------- ODrive helpers ----------------
 static inline void wrFloatLE(uint8_t* b, float f) { memcpy(b, &f, 4); }
@@ -255,7 +223,7 @@ bool CanInterface::reboot(uint32_t node_id) {
 
 bool CanInterface::sendInputPos(uint32_t node_id, float pos_rev, float vel_ff_rev_per_s, float torque_ff) {
   if (!isAxisMotionAllowed(node_id)) {
-    Serial.printf("[Gate] Blocked set_input_pos to node %lu (not homed)\n", (unsigned long)node_id);
+    if (dbg_) dbg_->printf("[Gate] Blocked set_input_pos to node %lu (not homed)\n", (unsigned long)node_id);
     return false;
   }
   uint8_t d[8];
@@ -276,7 +244,7 @@ bool CanInterface::sendInputPos(uint32_t node_id, float pos_rev, float vel_ff_re
 
 bool CanInterface::sendInputVel(uint32_t node_id, float vel_rps, float torque_ff) {
   if (!isAxisMotionAllowed(node_id)) {
-    Serial.printf("[Gate] Blocked set_input_vel to node %lu (not homed)\n", (unsigned long)node_id);
+    if (dbg_) dbg_->printf("[Gate] Blocked set_input_vel to node %lu (not homed)\n", (unsigned long)node_id);
     return false;
   }
   uint8_t d[8];
@@ -328,7 +296,7 @@ bool CanInterface::sendArbitraryParameterU32(uint32_t node_id, uint16_t endpoint
 
 bool CanInterface::requestArbitraryParameter(uint32_t node_id, uint16_t endpoint_id) {
   uint8_t d[8] = { 0 };
-  d[0] = OPCODE_WRITE;
+  d[0] = OPCODE_WRITE; // ODrive expects a write with no data for read requests
   d[1] = endpoint_id & 0xFF;
   d[2] = (endpoint_id >> 8) & 0xFF;
   d[3] = 0;
@@ -337,7 +305,7 @@ bool CanInterface::requestArbitraryParameter(uint32_t node_id, uint16_t endpoint
 }
 
 bool CanInterface::getLastArbitraryParamResponse(uint32_t node_id, ArbitraryParamResponse& out) const {
-  if (node_id >= 64) return false;
+  if (node_id >= MAX_NODES) return false;
   ArbitraryParamResponse snap;
   uint64_t t1, t2;
   do {
@@ -398,18 +366,17 @@ bool CanInterface::readGpioStates(uint32_t node_id, uint32_t& states_out, uint32
 // ================================================================================
 
 bool CanInterface::restoreHandToOperatingConfig(uint32_t node_id, float vel_limit_rps, float current_limit_A) {
-  constexpr uint32_t AXIS_STATE_IDLE = 1u;
   constexpr uint32_t CONTROL_MODE_POSITION = 3u;
   constexpr uint32_t INPUT_MODE_PASSTHROUGH = 1u;
   bool ok = true;
-  ok &= setRequestedState(node_id, AXIS_STATE_IDLE);
+  ok &= setRequestedState(node_id, ODriveState::IDLE);
   ok &= setControllerMode(node_id, CONTROL_MODE_POSITION, INPUT_MODE_PASSTHROUGH);
   ok &= setVelCurrLimits(node_id, current_limit_A, vel_limit_rps);
   return ok;
 }
 
 bool CanInterface::getAxisPV(uint32_t node_id, float& pos_out, float& vel_out, uint64_t& wall_us_out) const {
-  if (node_id >= 64) return false;
+  if (node_id >= MAX_NODES) return false;
   uint64_t t1, t2;
   float p, v;
   do {
@@ -424,7 +391,7 @@ bool CanInterface::getAxisPV(uint32_t node_id, float& pos_out, float& vel_out, u
 }
 
 bool CanInterface::getAxisIq(uint32_t node_id, float& iq_meas_out, float& iq_setp_out, uint64_t& wall_us_out) const {
-  if (node_id >= 64) return false;
+  if (node_id >= MAX_NODES) return false;
   uint64_t t1, t2;
   float iqm, iqs;
   do {
@@ -442,65 +409,174 @@ bool CanInterface::getAxisIq(uint32_t node_id, float& iq_meas_out, float& iq_set
 // Homing
 // ================================================================================
 
-bool CanInterface::homeHand(uint32_t node_id, float homing_speed_rps, float current_limit_A,
-                            float current_headroom_A, float settle_pos_rev, float avg_weight, uint16_t) {
+// --- Non-blocking homing implementation ---
+
+bool CanInterface::startHomeHand(uint32_t node_id, float homing_speed_rps, float current_limit_A,
+                                 float current_headroom_A, float settle_pos_rev, float avg_weight) {
+  // Store parameters for use across phases
+  homing_node_id_    = node_id;
+  homing_speed_rps_  = homing_speed_rps;
+  homing_current_A_  = current_limit_A;
+  homing_headroom_A_ = current_headroom_A;
+  homing_settle_rev_ = settle_pos_rev;
+  homing_ema_weight_ = constrain(avg_weight, 0.f, 0.9999f);
+  homing_ema_        = 0.0f;
+  homing_last_iq_us_ = 0;
+  homing_start_ms_   = millis();
+  homing_phase_ms_   = millis();
+
+  // Begin: set home state and enter CONFIGURE phase
   setHomeState(node_id, AxisHomeState::Homing);
-  if (!setRequestedState(node_id, 8u)) return false;
-  if (!setControllerMode(node_id, 2u, 2u)) return false;
-  const float vel_limit = fabsf(homing_speed_rps * 2.0f);
-  if (!setVelCurrLimits(node_id, current_limit_A + current_headroom_A, vel_limit)) return false;
-  delay(100);
-
-  if (!sendInputVel(node_id, homing_speed_rps, 0.0f)) {
-    setRequestedState(node_id, 1u);
-    setHomeState(node_id, AxisHomeState::Unhomed);
-    return false;
-  }
-
-  Serial.printf("[Home] node=%lu moving at %.3f rps; Iq limit=%.2f A\n",
-                (unsigned long)node_id, (double)homing_speed_rps, (double)current_limit_A);
-
-  float ema = 0.0f;
-  uint64_t last_seen_us = 0;
-  uint64_t start_time = millis();
-  uint64_t timeout = 5000;
-
-  for (;;) {
-    can1_.events();
-    float iq_meas, iq_setp;
-    uint64_t t_us;
-    if (getAxisIq(node_id, iq_meas, iq_setp, t_us)) {
-      if (t_us != last_seen_us) {
-        last_seen_us = t_us;
-        const float alpha = constrain(avg_weight, 0.f, 0.9999f);
-        ema = alpha * ema + (1.f - alpha) * iq_meas;
-
-        if (hb_[hand_node_id_].axis_state == 1 || hb_[hand_node_id_].axis_error == 1) {
-          if (millis() - start_time > timeout) {
-            Serial.println("Timeout while homing hand... Exiting to try again.");
-            return false;
-          }
-        }
-        
-        if (fabsf(ema) >= current_limit_A) {
-          setRequestedState(node_id, 1u);
-          delay(5);
-          setAbsolutePosition(node_id, settle_pos_rev);
-          Serial.printf("[Home] node=%lu homed. Set pos to %.3f rev.\n", (unsigned long)node_id, (double)settle_pos_rev);
-          restoreHandToOperatingConfig(node_id);
-          setHomeState(node_id, AxisHomeState::Homed);
-          return true;
-        }
-      }
-    }
-    delay(1);
-  }
+  homing_phase_ = HomingPhase::CONFIGURE;
+  return true;
 }
 
-bool CanInterface::homeHandStandard(uint32_t node_id, int hand_direction, float base_speed_rps,
-                                    float current_limit_A, float current_headroom_A, float set_abs_pos_rev) {
+bool CanInterface::startHomeHandStandard(uint32_t node_id, int hand_direction, float base_speed_rps,
+                                         float current_limit_A, float current_headroom_A, float set_abs_pos_rev) {
   const float homing_speed = float(hand_direction) * base_speed_rps;
-  return homeHand(node_id, homing_speed, current_limit_A, current_headroom_A, set_abs_pos_rev, 0.7f, 10);
+  return startHomeHand(node_id, homing_speed, current_limit_A, current_headroom_A, set_abs_pos_rev,
+                       HandDefaults::HOMING_EMA_WEIGHT);
+}
+
+CanInterface::HomingStatus CanInterface::updateHomeHand() {
+  if (homing_phase_ == HomingPhase::IDLE) return HomingStatus::DONE;
+
+  const uint32_t node_id = homing_node_id_;
+
+  // Per-attempt timeout — but only when axis is not actively running.
+  // Match original behavior: the original code only checked its per-attempt
+  // timeout when the axis was in IDLE or had an error. When the axis is in
+  // CLOSED_LOOP and moving, rely on the overall handleBoot_() timeout instead.
+  // This is important on power-cycle where the ODrive may take several seconds
+  // to boot — we don't want to timeout the monitoring phase prematurely when
+  // the motor is legitimately running but hasn't hit the endstop yet.
+  if (homing_phase_ != HomingPhase::MONITOR_IQ) {
+    // For non-monitoring phases (CONFIGURE, SETTLE, SEND_VEL, etc.),
+    // always enforce the per-attempt timeout.
+    if (millis() - homing_start_ms_ > HandDefaults::HOMING_ATTEMPT_TIMEOUT_MS) {
+      if (dbg_) dbg_->println("[Home] Timeout while homing hand.");
+      setRequestedState(node_id, ODriveState::IDLE);
+      setHomeState(node_id, AxisHomeState::Unhomed);
+      homing_phase_ = HomingPhase::IDLE;
+      return HomingStatus::FAILED;
+    }
+  }
+
+  switch (homing_phase_) {
+    // ----------------------------------------------------------------
+    case HomingPhase::CONFIGURE: {
+      // Clear any stale errors from previous attempts or power-cycle boot.
+      // Without this, the ODrive may reject CLOSED_LOOP if an error persists.
+      clearErrors(node_id);
+
+      // Send CLOSED_LOOP, velocity control mode, and current/vel limits
+      if (!setRequestedState(node_id, ODriveState::CLOSED_LOOP) ||
+          !setControllerMode(node_id, 2u, 2u)) {
+        setHomeState(node_id, AxisHomeState::Unhomed);
+        homing_phase_ = HomingPhase::IDLE;
+        return HomingStatus::FAILED;
+      }
+      const float vel_limit = fabsf(homing_speed_rps_ * 2.0f);
+      if (!setVelCurrLimits(node_id, homing_current_A_ + homing_headroom_A_, vel_limit)) {
+        setHomeState(node_id, AxisHomeState::Unhomed);
+        homing_phase_ = HomingPhase::IDLE;
+        return HomingStatus::FAILED;
+      }
+      homing_phase_ = HomingPhase::SETTLE;
+      homing_phase_ms_ = millis();
+      return HomingStatus::IN_PROGRESS;
+    }
+
+    // ----------------------------------------------------------------
+    case HomingPhase::SETTLE: {
+      // Wait for control mode to take effect before sending velocity
+      if (millis() - homing_phase_ms_ < HandDefaults::HOMING_MODE_SETTLE_MS) {
+        return HomingStatus::IN_PROGRESS;
+      }
+      homing_phase_ = HomingPhase::SEND_VEL;
+      return HomingStatus::IN_PROGRESS;
+    }
+
+    // ----------------------------------------------------------------
+    case HomingPhase::SEND_VEL: {
+      if (!sendInputVel(node_id, homing_speed_rps_, 0.0f)) {
+        setRequestedState(node_id, ODriveState::IDLE);
+        setHomeState(node_id, AxisHomeState::Unhomed);
+        homing_phase_ = HomingPhase::IDLE;
+        return HomingStatus::FAILED;
+      }
+      if (dbg_) dbg_->printf("[Home] node=%lu moving at %.3f rps; Iq limit=%.2f A\n",
+                              (unsigned long)node_id, (double)homing_speed_rps_, (double)homing_current_A_);
+      homing_phase_ = HomingPhase::MONITOR_IQ;
+      homing_phase_ms_ = millis();
+      return HomingStatus::IN_PROGRESS;
+    }
+
+    // ----------------------------------------------------------------
+    case HomingPhase::MONITOR_IQ: {
+      // Check for fresh Iq reading.
+      // Heartbeat error checks are done INSIDE the Iq conditional, matching
+      // the original blocking code's behavior. This prevents false failures
+      // from stale heartbeat data (e.g., ODrive still transitioning to
+      // CLOSED_LOOP, or heartbeat from before error was cleared).
+      float iq_meas, iq_setp;
+      uint64_t t_us;
+      if (getAxisIq(node_id, iq_meas, iq_setp, t_us)) {
+        if (t_us != homing_last_iq_us_) {
+          homing_last_iq_us_ = t_us;
+          homing_ema_ = homing_ema_weight_ * homing_ema_ + (1.f - homing_ema_weight_) * iq_meas;
+
+          // Now that we have Iq data (confirming axis is active), check
+          // heartbeat for errors. If the axis went to IDLE or has an error
+          // while we were receiving Iq data, the homing attempt has failed.
+          AxisHeartbeat hb;
+          if (getAxisHeartbeat(node_id, hb)) {
+            if (hb.axis_state == ODriveState::IDLE || hb.axis_error != 0) {
+              if (dbg_) dbg_->printf("[Home] Axis error or unexpected IDLE during homing (state=%u, err=0x%08lX)\n",
+                                      (unsigned)hb.axis_state, (unsigned long)hb.axis_error);
+              setHomeState(node_id, AxisHomeState::Unhomed);
+              homing_phase_ = HomingPhase::IDLE;
+              return HomingStatus::FAILED;
+            }
+          }
+
+          if (fabsf(homing_ema_) >= homing_current_A_) {
+            // Current spike detected — stop the motor
+            setRequestedState(node_id, ODriveState::IDLE);
+            homing_phase_ = HomingPhase::STOP_SETTLE;
+            homing_phase_ms_ = millis();
+            return HomingStatus::IN_PROGRESS;
+          }
+        }
+      }
+      return HomingStatus::IN_PROGRESS;
+    }
+
+    // ----------------------------------------------------------------
+    case HomingPhase::STOP_SETTLE: {
+      // Wait for motor to stop before setting absolute position
+      if (millis() - homing_phase_ms_ < HandDefaults::HOMING_STOP_SETTLE_MS) {
+        return HomingStatus::IN_PROGRESS;
+      }
+      homing_phase_ = HomingPhase::FINALIZE;
+      return HomingStatus::IN_PROGRESS;
+    }
+
+    // ----------------------------------------------------------------
+    case HomingPhase::FINALIZE: {
+      setAbsolutePosition(node_id, homing_settle_rev_);
+      if (dbg_) dbg_->printf("[Home] node=%lu homed. Set pos to %.3f rev.\n",
+                              (unsigned long)node_id, (double)homing_settle_rev_);
+      restoreHandToOperatingConfig(node_id);
+      setHomeState(node_id, AxisHomeState::Homed);
+      homing_phase_ = HomingPhase::IDLE;
+      return HomingStatus::DONE;
+    }
+
+    default:
+      homing_phase_ = HomingPhase::IDLE;
+      return HomingStatus::FAILED;
+  }
 }
 
 // ================================================================================
@@ -508,33 +584,33 @@ bool CanInterface::homeHandStandard(uint32_t node_id, int hand_direction, float 
 // ================================================================================
 
 void CanInterface::setHomeState(uint32_t node_id, AxisHomeState s) {
-  if (node_id < 64) home_state_[node_id] = s;
+  if (node_id < MAX_NODES) home_state_[node_id] = s;
 }
 
 CanInterface::AxisHomeState CanInterface::getHomeState(uint32_t node_id) const {
-  return (node_id < 64) ? home_state_[node_id] : AxisHomeState::Unhomed;
+  return (node_id < MAX_NODES) ? home_state_[node_id] : AxisHomeState::Unhomed;
 }
 
 void CanInterface::requireHomeForAxis(uint32_t node_id, bool required) {
-  if (node_id >= 64) return;
+  if (node_id >= MAX_NODES) return;
   const uint64_t bit = (1ULL << node_id);
   if (required) home_required_mask_ |= bit;
   else home_required_mask_ &= ~bit;
 }
 
 bool CanInterface::isHomeRequired(uint32_t node_id) const {
-  if (node_id >= 64) return false;
+  if (node_id >= MAX_NODES) return false;
   return (home_required_mask_ & (1ULL << node_id)) != 0;
 }
 
 void CanInterface::requireHomeOnlyFor(uint32_t node_id) {
-  home_required_mask_ = (node_id < 64) ? (1ULL << node_id) : 0;
+  home_required_mask_ = (node_id < MAX_NODES) ? (1ULL << node_id) : 0;
 }
 
 void CanInterface::clearHomeRequirements() { home_required_mask_ = 0; }
 
 bool CanInterface::isAxisMotionAllowed(uint32_t node_id) const {
-  if (node_id >= 64) return false;
+  if (node_id >= MAX_NODES) return false;
   if (!isHomeRequired(node_id)) return true;
   AxisHomeState s = home_state_[node_id];
   return s == AxisHomeState::Homing || s == AxisHomeState::Homed;
@@ -545,7 +621,7 @@ bool CanInterface::isAxisMotionAllowed(uint32_t node_id) const {
 // ================================================================================
 
 bool CanInterface::getAxisHeartbeat(uint32_t node_id, AxisHeartbeat& out) const {
-  if (node_id >= 64) return false;
+  if (node_id >= MAX_NODES) return false;
   AxisHeartbeat snap;
   uint64_t t1, t2;
   do {
@@ -612,31 +688,27 @@ void CanInterface::publishHeartbeat_() {
   ProprioceptionData prop;
   PRO.snapshot(prop);
   
-  float yaw_res = 0.01f;       // degrees
-  float pitch_res = 0.002f;    // degrees
-  float hand_res = 0.01f;      // mm
-
   // Yaw: resolution ~0.01° : 0-360° -> 0-65535 (uint16),
   uint16_t yaw_enc = 0;
   if (prop.isYawValid()) {
     float yaw_deg = fmodf(prop.yaw_deg, 360.0f);
     if (yaw_deg < 0) yaw_deg += 360.0f;
-    yaw_enc = (uint16_t)(yaw_deg / yaw_res);
+    yaw_enc = (uint16_t)(yaw_deg / HeartbeatCfg::YAW_RES_DEG);
   }
-  
+
   // Pitch:  resolution ~0.002° : 0-131.072° -> 0-65535 (uint16),
   uint16_t pitch_enc = 0;
   if (prop.isPitchValid()) {
-    float pitch_deg = constrain(prop.pitch_deg, 0.0f, 90.0f);
-    pitch_enc = (uint16_t)(pitch_deg / pitch_res);
+    float pitch_deg = constrain(prop.pitch_deg, HeartbeatCfg::PITCH_CLAMP_MIN, HeartbeatCfg::PITCH_CLAMP_MAX);
+    pitch_enc = (uint16_t)(pitch_deg / HeartbeatCfg::PITCH_RES_DEG);
   }
-  
-  // Hand: resolution 0.01mm : 0-655.36 mm -> 0-65535 (uint16), 
+
+  // Hand: resolution 0.01mm : 0-655.36 mm -> 0-65535 (uint16),
   uint16_t hand_enc = 0;
   if (prop.isHandPVValid()) {
     float hand_mm = prop.hand_pos_rev / LINEAR_GAIN * 1000.0f;
-    hand_mm = constrain(hand_mm, 0.0f, 655.36f);
-    hand_enc = (uint16_t)(hand_mm / hand_res);
+    hand_mm = constrain(hand_mm, 0.0f, HeartbeatCfg::HAND_MAX_MM);
+    hand_enc = (uint16_t)(hand_mm / HeartbeatCfg::HAND_RES_MM);
   }
   
   // Assemble frame (little-endian for uint16 fields)
@@ -658,19 +730,57 @@ void CanInterface::publishHeartbeat_() {
 // Ball in Hand Check
 // ================================================================================
 void CanInterface::maybeCheckBallInHand_() {
-  // Only check if enough time has passed since last check
+  // Only check in states where ball presence matters
   if (!state_machine_) return;
-  if (millis() - last_ball_check_ms_ > ball_check_interval_ms_) {
-    uint32_t gpio_states = 0;
-    if (!readGpioStates(hand_node_id_, gpio_states)) {
-      dbg_->printf("[CAN] Ball check failed: unable to read GPIO states\n");
-      return;
+  const RobotState st = state_machine_->getState();
+  if (st != RobotState::IDLE && st != RobotState::TRACKING && st != RobotState::CHECKING_BALL && st != RobotState::RELOADING) return;
+
+  switch (ball_check_phase_) {
+    case BallCheckPhase::IDLE: {
+      if (millis() - last_ball_check_ms_ < ball_check_interval_ms_) return;
+      // Clear cached response so we detect the fresh reply
+      if (hand_node_id_ < MAX_NODES) arb_param_resp_[hand_node_id_].valid = false;
+      // Send async SDO request for GPIO states (non-blocking)
+      if (!requestArbitraryParameter(hand_node_id_, EndpointIds::GPIO_STATES)) {
+        if (dbg_) dbg_->printf("[CAN] Ball check: failed to send GPIO request\n");
+        last_ball_check_ms_ = millis();  // Back off before retrying
+        return;
+      }
+      ball_check_phase_ = BallCheckPhase::WAITING;
+      ball_check_sent_ms_ = millis();
+      break;
     }
+    case BallCheckPhase::WAITING: {
+      // Check for response (non-blocking)
+      ArbitraryParamResponse resp;
+      if (getLastArbitraryParamResponse(hand_node_id_, resp) &&
+          resp.endpoint_id == EndpointIds::GPIO_STATES) {
+        // Got response — process GPIO states
+        const uint32_t gpio_states = resp.value.u32;
+        ball_in_hand_ = !((gpio_states >> ball_detect_gpio_pin) & 0x01);
 
-    ball_in_hand_ = !((gpio_states >> ball_detect_gpio_pin) & 0x01);
+        if (ball_in_hand_) {
+          ball_false_count_ = 0;
+        } else {
+          ball_false_count_++;
+          if (ball_false_count_ >= max_ball_missing_samples) {
+            if (dbg_) dbg_->printf("[CAN] %d consecutive ball-missing readings, entering CHECKING_BALL\n", ball_false_count_);
+            state_machine_->requestCheckBall();
+            ball_false_count_ = 0;
+          }
+        }
 
-    // Serial.printf("[BallCheck] GPIO states=0x%08lX ball_in_hand=%d\n", (unsigned long)gpio_states, (int)ball_in_hand_);
-    last_ball_check_ms_ = millis();
+        last_ball_check_ms_ = millis();
+        ball_check_phase_ = BallCheckPhase::IDLE;
+      } else if (millis() - ball_check_sent_ms_ > BALL_CHECK_TIMEOUT_MS) {
+        // Timeout — no response received
+        if (dbg_) dbg_->printf("[CAN] Ball check: GPIO read timeout\n");
+        last_ball_check_ms_ = millis();
+        ball_check_phase_ = BallCheckPhase::IDLE;
+      }
+      // Otherwise: still waiting, return without blocking
+      break;
+    }
   }
 }
 
@@ -703,7 +813,17 @@ void CanInterface::handleRx_(const CAN_message_t& msg) {
     c.yaw_rad = float(yaw_i) * (float)M_PI / 32768.0f;
     c.pitch_rad = float(pit_u) * ((float)M_PI / 65536.0f);
     c.speed_mps = float(sp_u) * 0.0001f;
-    c.in_s = float(t_u) * 0.001f;
+
+    // Decode absolute throw time from lower 16 bits of epoch milliseconds.
+    // Reconstruct full uint64_t using current wall clock for the upper bits.
+    {
+      const uint64_t now_ms = wallTimeUs() / 1000ULL;
+      const uint64_t base   = now_ms & ~0xFFFFULL;
+      uint64_t thr_ms       = base | (uint64_t)t_u;
+      // Handle wrap-around: throw should be in the near future
+      if (now_ms > thr_ms + 32768ULL) thr_ms += 65536ULL;
+      c.throw_wall_us = thr_ms * 1000ULL;
+    }
 
     if (c.yaw_rad < -M_PI) c.yaw_rad = -M_PI;
     if (c.yaw_rad > M_PI) c.yaw_rad = M_PI;
@@ -712,18 +832,16 @@ void CanInterface::handleRx_(const CAN_message_t& msg) {
     if (c.pitch_rad > PI_2) c.pitch_rad = PI_2;
     if (c.speed_mps < 0.f) c.speed_mps = 0.f;
     if (c.speed_mps > 6.5535f) c.speed_mps = 6.5535f;
-    if (c.in_s < 0.f) c.in_s = 0.f;
-    if (c.in_s > 65.535f) c.in_s = 65.535f;
 
     c.wall_us = wallTimeUs();
     c.valid = true;
-    last_host_cmd_ = c;
     last_host_cmd_ms_ = millis();  // Track local time for idle timeout
 
     if (dbg_ && dbg_can_) {
-      dbg_->printf("[HostCmd] yaw=%.3f rad pitch=%.3f rad speed=%.3f m/s in=%.3f s (id=0x%03lX)\n",
+      const float lead_ms = (float)((int64_t)c.throw_wall_us - (int64_t)c.wall_us) / 1000.0f;
+      dbg_->printf("[HostCmd] yaw=%.3f rad pitch=%.3f rad speed=%.3f m/s throw_in=%.0f ms (id=0x%03lX)\n",
                    (double)c.yaw_rad, (double)c.pitch_rad, (double)c.speed_mps,
-                   (double)c.in_s, (unsigned long)msg.id);
+                   (double)lead_ms, (unsigned long)msg.id);
     }
 
     // Route to StateMachine based on speed
@@ -736,12 +854,11 @@ void CanInterface::handleRx_(const CAN_message_t& msg) {
         // Tracking mode: just update yaw/pitch targets (no throw)
         state_machine_->requestTracking(yaw_deg, pitch_deg);
       } else {
-        // Throw mode: queue a throw with the given parameters
-        state_machine_->requestThrow(yaw_deg, pitch_deg, c.speed_mps, c.in_s);
+        // Throw mode: queue a throw with absolute wall-clock time
+        state_machine_->requestThrow(yaw_deg, pitch_deg, c.speed_mps, c.throw_wall_us);
       }
     }
 
-    if (host_cb_) host_cb_(c, host_cb_user_);
     return;
   }
 
@@ -779,7 +896,7 @@ void CanInterface::handleRx_(const CAN_message_t& msg) {
   }
 
   // ODrive heartbeat
-  if (cmd == uint8_t(Cmd::heartbeat_message) && node < 64 && msg.len >= 7 && !msg.flags.remote) {
+  if (cmd == uint8_t(Cmd::heartbeat_message) && node < MAX_NODES && msg.len >= 7 && !msg.flags.remote) {
     uint32_t axis_error = (uint32_t)msg.buf[0] | ((uint32_t)msg.buf[1] << 8)
                         | ((uint32_t)msg.buf[2] << 16) | ((uint32_t)msg.buf[3] << 24);
 
@@ -791,7 +908,7 @@ void CanInterface::handleRx_(const CAN_message_t& msg) {
     hb_[node].valid = true;
 
     if (auto_clear_brake_res_ && (axis_error & ODriveErrors::BRAKE_RESISTOR_DISARMED)) {
-      const uint64_t now_us = micros64_();
+      const uint64_t now_us = micros64();
       const uint64_t min_gap_us = (uint64_t)auto_clear_interval_ms_ * 1000ULL;
       if (now_us - last_brake_clear_us_[node] >= min_gap_us) {
         last_brake_clear_us_[node] = now_us;
@@ -806,13 +923,13 @@ void CanInterface::handleRx_(const CAN_message_t& msg) {
   }
 
   // TxSdo (arbitrary parameter response)
-  if (cmd == uint8_t(Cmd::TxSdo) && node < 64) {
+  if (cmd == uint8_t(Cmd::TxSdo) && node < MAX_NODES) {
     handleTxSdo_(node, msg.buf, msg.len);
     return;
   }
 
   // Estimator (pos, vel)
-  if (cmd == estimatorCmd_ && msg.len == 8 && node < 64 && !msg.flags.remote) {
+  if (cmd == estimatorCmd_ && msg.len == 8 && node < MAX_NODES && !msg.flags.remote) {
     float pos, vel;
     memcpy(&pos, &msg.buf[0], 4);
     memcpy(&vel, &msg.buf[4], 4);
@@ -840,7 +957,7 @@ void CanInterface::handleRx_(const CAN_message_t& msg) {
   }
 
   // Iq feedback
-  if (cmd == uint8_t(Cmd::get_iq) && msg.len == 8 && node < 64 && !msg.flags.remote) {
+  if (cmd == uint8_t(Cmd::get_iq) && msg.len == 8 && node < MAX_NODES && !msg.flags.remote) {
     float iq_meas, iq_setp;
     memcpy(&iq_meas, &msg.buf[0], 4);
     memcpy(&iq_setp, &msg.buf[4], 4);
@@ -890,7 +1007,7 @@ void CanInterface::handleTimeSync_(const CAN_message_t& msg) {
                 | ((uint32_t)msg.buf[6] << 16) | ((uint32_t)msg.buf[7] << 24);
 
   const uint64_t master_us = (uint64_t)sec * 1'000'000ULL + (uint64_t)usec;
-  const uint64_t local_us = micros64_();
+  const uint64_t local_us = micros64();
   const int64_t offset = (int64_t)master_us - (int64_t)local_us;
 
   if (!have_offset_) {
@@ -907,7 +1024,7 @@ void CanInterface::handleTimeSync_(const CAN_message_t& msg) {
 
 void CanInterface::maybePrintSyncStats_() {
   if (!dbg_time_ || !dbg_) return;
-  const uint64_t now = micros64_();
+  const uint64_t now = micros64();
   if (now < nextPrint_us_) return;
   nextPrint_us_ = now + PRINT_PERIOD_US_;
   if (!stats_.n) return;

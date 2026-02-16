@@ -357,9 +357,10 @@ def analyse(qtm_path: Path, csv_path: Path, exclude: list[str] | None = None):
 # ── Plotting ────────────────────────────────────────────────────────────────
 
 
-def plot_results(results, by_target, clock_offset):
+def plot_results(results, by_target, clock_offset, session_number=""):
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    fig.suptitle("Ball Butler Timing Analysis", fontsize=14, fontweight="bold")
+    # Have the title indicate the session number
+    fig.suptitle(f"Ball Butler Timing Analysis\n Session {session_number}", fontsize=14, fontweight="bold")
 
     target_ids = sorted(by_target.keys())
     colors = plt.cm.Set1(np.linspace(0, 0.8, len(target_ids)))
@@ -492,7 +493,9 @@ def main():
     if not results:
         print("No results to plot. Exiting.")
         return
-    plot_results(results, by_target, clock_offset)
+    # Extract session number from the session path for better plot titles (assume the filename is 'session<number>.json')
+    session_number = args.session.stem.replace("session", "")
+    plot_results(results, by_target, clock_offset, session_number=session_number)
 
 
 if __name__ == "__main__":

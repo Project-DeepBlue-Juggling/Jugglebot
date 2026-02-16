@@ -1,6 +1,7 @@
 // PitchAxis.h
 #pragma once
 #include <Arduino.h>
+#include "BallButlerConfig.h"
 #include "CanInterface.h"
 
 /**
@@ -24,19 +25,19 @@
 
 class PitchAxis {
 public:
-  // Allowed user command range in DEGREES
-  static constexpr float DEG_MIN = 12.0f; // Actual min is ~10.8, but let's have a bit of margin for now...
-  static constexpr float DEG_MAX = 90.0f;
+  // Allowed user command range in DEGREES (from BallButlerConfig.h)
+  static constexpr float DEG_MIN = PitchDefaults::DEG_MIN;
+  static constexpr float DEG_MAX = PitchDefaults::DEG_MAX;
 
   // Corresponding REV range (derived, for reference)
   static constexpr float REV_MIN = (DEG_MIN - DEG_MAX) / 360.0f;
   static constexpr float REV_MAX = 0.0f;
 
-  // Default trajectory limits (turns/s, turns/s^2)
+  // Default trajectory limits (turns/s, turns/s^2; defaults from BallButlerConfig.h)
   struct Traj {
-    float vel_limit_rps  = 1.0f;    // max trap vel (rev/s)
-    float accel_rps2     = 0.5f;    // accel
-    float decel_rps2     = 0.25f;   // decel
+    float vel_limit_rps  = PitchDefaults::TRAJ_VEL_RPS;
+    float accel_rps2     = PitchDefaults::TRAJ_ACCEL_RPS2;
+    float decel_rps2     = PitchDefaults::TRAJ_DECEL_RPS2;
   };
 
   PitchAxis(CanInterface& can, uint8_t node_id, Stream* log = &Serial);
@@ -45,6 +46,9 @@ public:
   // Configures controller + trajectory mode and enters CLOSED_LOOP_CONTROL.
   bool begin();                          // <- overload with defaults
   bool begin(const Traj& tcfg);          // <- explicit config
+
+  // Call from main loop — sends any pending target once CLOSED_LOOP is reached.
+  void loop();
 
   // Set a target in **degrees from horizontal** (validated).
   // Returns true if accepted & sent, false if rejected.
@@ -76,12 +80,18 @@ private:
   // Timestamp of last command sent
   uint32_t last_command_ms_ = 0;
 
+  // Pending target for non-blocking CLOSED_LOOP transition
+  float pending_target_rev_ = 0.0f;
+  bool  has_pending_target_  = false;
+
   // Initialization constants for throttling messages
   static constexpr uint32_t PRINT_PITCH_REJECTED_INTERVAL_MS = 1000;
   uint32_t last_print_rejected_ms_ = 0;
 
-  // ODrive enums
-  static constexpr uint32_t AXIS_STATE_CLOSED_LOOP = 8u;
+  // Last logged target (for change-detection log suppression)
+  float last_logged_deg_ = NAN;
+
+  // ODrive enums (AXIS_STATE_CLOSED_LOOP lives in BallButlerConfig.h)
   static constexpr uint32_t CONTROL_MODE_POSITION  = 3u;
   static constexpr uint32_t INPUT_MODE_TRAP_TRAJ   = 5u;
 
