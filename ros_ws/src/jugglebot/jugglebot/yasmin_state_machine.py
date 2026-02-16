@@ -28,6 +28,7 @@ ACTIVE_STATE_OUTCOMES = {
     "catch_dropped_ball_node_cmd": "CATCH_DROPPED_BALL_NODE",
     "calibrate_platform_cmd": "CALIBRATE_PLATFORM",
     "hoop_sinker_cmd": "HOOP_SINKER",
+    "catch_from_ball_butler_cmd": "CATCH_FROM_BALL_BUTLER",
 }
 
 def build_active_state_transitions(current_mode: str):
@@ -124,7 +125,8 @@ class BootState(MonitorState):
         self._node.get_logger().info(f"Received heartbeats: {self.heartbeat_received}")
 
         # Check if all heartbeats have been received
-        if len(self.heartbeat_received) == 7:
+        # Jugglebot's axes are numbered 0-6, so we need to check that we've received heartbeats from all of these axes
+        if all(axis_num in self.heartbeat_received for axis_num in range(7)):
             # Check if all axes have completed the encoder search
             if msg.encoder_search_complete:
                 # Check if all axes have completed homing
