@@ -5,12 +5,13 @@ from rclpy.node import Node
 from std_srvs.srv import Trigger
 from geometry_msgs.msg import Point, PoseStamped, Vector3
 from jugglebot_interfaces.msg import (
-    MocapDataMulti, BallButlerHeartbeat, BallStateArray, 
+    MocapDataMulti, BallButlerHeartbeat, BallStateArray,
     RigidBodyPoses, ThrowAnnouncement, Target, TargetArray
 )
 from jugglebot_interfaces.srv import SendBallButlerCommand
 import math
 import numpy as np
+import time
 from typing import Optional
 from jugglebot.ball_butler_states import BallButlerStates
 
@@ -195,9 +196,9 @@ def find_rotation_axis(marker_trajectories: dict[int, np.ndarray],
         max_center_deviation = max(max_center_deviation, dist_from_axis)
     
     # Warn if centers don't align well (suggests non-rigid body or bad data)
-    if max_center_deviation > 2.0:  # More than 2mm deviation
+    if max_center_deviation > 3.0:  # More than 3mm deviation
         raise ValueError(
-            f"Calibration warning: circle centers deviate up to {max_center_deviation:.2f}mm from axis. "
+            f"Circle centers deviate up to {max_center_deviation:.2f}mm from axis. "
             "This may indicate non-rigid motion or poor marker visibility."
         )
     
@@ -344,7 +345,12 @@ class BallButlerNode(Node):
         super().__init__('ball_butler_node')
 
         # ---------------- Parameters ----------------
-        self.declare_parameter('yaw_s_offset', -105.65)  # mm, as measured in Onshape (ball centroid to Stage 2 origin)
+        # Kinematic offsets (mm)
+        self.declare_parameter('yaw_s_offset', -105.65)  # Ball centroid to Stage 2 origin (measured in Onshape)
+        self.declare_parameter('pitch_d_offset', 41.0)   # Distance behind origin to pitch axis, along BB's centerline, as measured in Onshape 
+        self.declare_parameter('release_l_position', 150.0) # 105.5 mm offset from pitch axis to ball pos at bottom of stroke + 142.5 mm const. release point from Trajectory.h
+        self.declare_parameter('pitch_z_offset', 17.5)  # mm, vertical offset of pitch axis from BB origin (yaw axis), as measured in Onshape
+
         self.declare_parameter('pitch_max_min_deg', [85.0, 12.0]) # [max, min] degrees
         self.declare_parameter('yaw_max_min_deg', [0.0, 185.0])   # [max, min] degrees
         self.declare_parameter('max_throw_speed', 5.0)  # m/s - maximum allowed throw speed
@@ -392,25 +398,65 @@ class BallButlerNode(Node):
         self.volley_commanded_pitch_deg: float = 0.0  # Last commanded pitch (degrees)
         self.volley_position_reached_time: Optional[float] = None  # When position was first reached
         self.volley_waiting_for_reload = False  # True when waiting for BB to exit RELOADING state
+        self.volley_reload_heartbeat_count = 0  # Count of RELOADING heartbeats seen after a throw
         
-        # *** NEW: Timer for continuous tracking commands during volley ***
+        # Timer for continuous tracking commands during volley
         self.volley_tracking_timer: Optional[rclpy.timer.Timer] = None
         self.volley_tracking_interval_sec = 0.5  # Send tracking command every 500ms (well under 5s timeout)
         
-        # Volley calibration configuration (hardcoded as requested)
-        self.volley_throws_per_target = 10  # Number of throws per grid point
+        # Volley calibration configuration
+        self.volley_throws_per_target = 1  # Number of throws per grid point
         self.volley_grid_center = (0.0, 0.0, 750.0)  # (x, y, z) in mm
-        self.volley_grid_size = (800.0, 800.0)  # (x, y) in mm
-        self.volley_grid_divisions = (8, 8)  # (x, y) divisions
+        self.volley_grid_size = (200.0, 200.0)  # (x, y) in mm
+        self.volley_grid_divisions = (5, 5)  # (x, y) divisions
         self.volley_throws_to_skip = 0  # Number of throws to skip at start (to finish paused/stopped volley sessions)
         
         # Volley position tolerance thresholds
         self.volley_yaw_tolerance_deg = 0.5  # degrees
         self.volley_pitch_tolerance_deg = 0.5  # degrees
         self.volley_settle_time_sec = 0.1  # Time to wait after reaching position before throwing
-        
+
         # Time from command to throw (for volley calibration)
-        self.volley_throw_delay_sec = 1.0
+        self.volley_throw_delay_sec = 2.0
+        self.volley_min_reload_heartbeats = 3  # Require at least N RELOADING heartbeats before proceeding
+
+        # ---------------- Timing Calibration ----------------
+        self.timing_calibration_srv = self.create_service(
+            Trigger, 'bb/timing_calibration', self.handle_timing_calibration
+        )
+        self.cancel_timing_calibration_srv = self.create_service(
+            Trigger, 'bb/cancel_timing_calibration', self.handle_cancel_timing_calibration
+        )
+
+        # Timing calibration state
+        self.timing_in_progress = False
+        self.timing_cancelled = False
+        self.timing_delays: list[float] = []  # List of landing delays to test (seconds)
+        self.timing_current_delay_idx = 0
+        self.timing_current_throw_count = 0
+        self.timing_awaiting_position = False
+        self.timing_position_reached_time: Optional[float] = None
+        self.timing_waiting_for_reload = False
+        self.timing_reload_heartbeat_count = 0
+        self.timing_commanded_yaw_deg: float = 0.0
+        self.timing_commanded_pitch_deg: float = 0.0
+
+        # Timer for continuous tracking commands during timing calibration
+        self.timing_tracking_timer: Optional[rclpy.timer.Timer] = None
+        self.timing_tracking_interval_sec = 0.5  # Send tracking command every 500ms
+
+        # Timing calibration configuration
+        self.timing_throws_per_delay = 5  # Number of throws per delay level
+        self.min_landing_delay = 2.0  # seconds
+        self.max_landing_delay = 5.0  # seconds
+        self.timing_delay_divisions = 4  # Number of delay levels to test
+        self.timing_target_position = (0.0, 0.0, 750.0)  # (x, y, z) in global frame (mm)
+
+        # Timing position tolerance thresholds (same as volley)
+        self.timing_yaw_tolerance_deg = 0.5  # degrees
+        self.timing_pitch_tolerance_deg = 0.5  # degrees
+        self.timing_settle_time_sec = 0.1  # Time to wait after reaching position before throwing
+        self.timing_min_reload_heartbeats = 3  # Require at least N RELOADING heartbeats before proceeding
 
         # ---------------- Location Calibration ----------------
         # Subscribe to `bb/heartbeat` to monitor state
@@ -437,7 +483,7 @@ class BallButlerNode(Node):
         self.last_target_global = None  # type: tuple[float, float, float] | None  # (x, y, z) in global frame (mm)
         self.last_target_id = ""  # Target ID for throw announcements (e.g., "catching_cone")
 
-        self.seconds_to_throw_in = 2.0  # Time from command to throw (for normal throws)
+        self.seconds_to_throw_in = 1.0  # Time from command to throw (reduced for throw_now responsiveness)
 
         # Publisher for throw announcements
         self.throw_announcement_pub = self.create_publisher(
@@ -458,7 +504,13 @@ class BallButlerNode(Node):
             response.success = False
             response.message = "Cannot aim: volley calibration in progress. Call 'bb/cancel_volley_calibration' to stop."
             return response
-        
+
+        # Reject if timing calibration in progress
+        if self.timing_in_progress:
+            response.success = False
+            response.message = "Cannot aim: timing calibration in progress. Call 'bb/cancel_timing_calibration' to stop."
+            return response
+
         tgt = self.get_parameter('test_target_xyz').get_parameter_value().double_array_value
         try:
             self.aim_and_throw(float(tgt[0]), float(tgt[1]), float(tgt[2]))
@@ -475,7 +527,12 @@ class BallButlerNode(Node):
         if self.volley_in_progress:
             self.get_logger().warn("Ignoring /bb/aim_target: volley calibration in progress")
             return
-        
+
+        # Ignore if timing calibration in progress
+        if self.timing_in_progress:
+            self.get_logger().warn("Ignoring /bb/aim_target: timing calibration in progress")
+            return
+
         self.get_logger().info(f"Received /bb/aim_target → x={msg.x:.0f}, y={msg.y:.0f}, z={msg.z:.0f}mm")
         self.aim_and_throw(float(msg.x), float(msg.y), float(msg.z))
 
@@ -506,8 +563,8 @@ class BallButlerNode(Node):
         cos_offset = math.cos(yaw_offset)
         sin_offset = math.sin(yaw_offset)
         
-        x_bb = dx * cos_offset - dy * sin_offset
-        y_bb = dx * sin_offset + dy * cos_offset
+        x_bb = dx * cos_offset + dy * sin_offset
+        y_bb = -dx * sin_offset + dy * cos_offset
         z_bb = dz
         
         return x_bb, y_bb, z_bb
@@ -520,9 +577,9 @@ class BallButlerNode(Node):
         Call this BEFORE global_to_bb_frame().
         """
         # Affine transformation parameters (from calibration)
-        a11, a12 = 0.823919, -0.143308
-        a21, a22 = 0.209697, 1.000865
-        tx, ty = -88.56, 82.49
+        a11, a12 = 0.865538, 0.121274
+        a21, a22 = -0.116464, 1.040522
+        tx, ty = 45.030, -182.559
         
         # Apply correction
         x_corrected = a11 * x_global + a12 * y_global + tx
@@ -537,31 +594,43 @@ class BallButlerNode(Node):
     # =========================================================================================
     def compute_command_for_target(self, x: float, y: float, z: float):
         """
-        Given target (x,y,z) in mm (relative to launch point, in BB's local frame),
-        returns (yaw_angle_rad, pitch_angle_rad, throw_speed_mm_s, time_of_flight_s).
+        Given target (x,y,z) in mm (relative to BB origin / yaw axis, in BB's local frame),
+        returns (yaw_angle_rad, pitch_angle_rad, throw_speed_mm_s, time_of_flight_s,
+                 peak_height_mm, max_height_mm).
 
-        The solver finds the trajectory that minimizes horizontal landing velocity
-        while respecting constraints on:
-        - Maximum throw speed
-        - Maximum trajectory height (above launch point)
-        - Pitch angle limits
+        The solver accounts for the full forward kinematics of the serial chain:
+            yaw axis → pitch axis (offset d) → linear axis → release point (offset s)
 
-        Assumptions:
-        - Launch point is origin (0,0,0).
-        - Yaw aims the throw plane toward the XY projection of the target.
-        - No air drag; uniform gravity along -Z.
+        The ball releases at position (in cylindrical coords about yaw axis):
+            h       = l * sin(phi)
+            r       = sqrt(s^2 + (l*cos(phi) - d)^2)
+            alpha   = theta + atan2(s, l*cos(phi) - d)
+
+        The target (x, y) satisfies:
+            x = A*cos(theta) - s*sin(theta)
+            y = A*sin(theta) + s*cos(theta)
+        where A = l*cos(phi) - d + R, and R is the throw range (release → target).
+
+        Since A = sqrt(x^2 + y^2 - s^2), the yaw solution is independent of phi, l, d.
+        The throw range R = A - l*cos(phi) + d varies with pitch.
+        The throw height z_throw = z - l*sin(phi) also varies with pitch.
+
+        The solver minimises horizontal landing velocity subject to speed, height,
+        and pitch constraints.
         """
-        s = float(self.get_parameter('yaw_s_offset').value)  # mm
-        v_max = float(self.get_parameter('max_throw_speed').value) * 1000.0  # mm/s
+        s = float(self.get_parameter('yaw_s_offset').value)              # mm
+        d = float(self.get_parameter('pitch_d_offset').value)            # mm
+        l = float(self.get_parameter('release_l_position').value)        # mm
+        v_max = float(self.get_parameter('max_throw_speed').value) * 1000.0   # mm/s
         h_max = float(self.get_parameter('max_throw_height').value) * 1000.0  # mm
-        g = float(self.get_parameter('g_mps2').value) * 1000.0  # mm/s^2
+        g = float(self.get_parameter('g_mps2').value) * 1000.0                # mm/s^2
 
-        # ---- Yaw from provided geometry solver ----
+        # ---- Yaw from geometry solver (independent of pitch, l, d) ----
         _, _, yaw = yaw_solve_thetas(x, y, s)
         if not math.isfinite(yaw):
             raise ValueError(f"No yaw solution for target (x={x:.0f}, y={y:.0f}mm) with s={s:.1f}mm")
 
-        # Check that the yaw is within limits
+        # Check yaw limits
         yaw_limits_deg = self.get_parameter('yaw_max_min_deg').get_parameter_value().double_array_value
         yaw_min_rad = math.radians(yaw_limits_deg[0])
         yaw_max_rad = math.radians(yaw_limits_deg[1])
@@ -571,99 +640,102 @@ class BallButlerNode(Node):
                 f"[{yaw_limits_deg[1]:.1f}°, {yaw_limits_deg[0]:.1f}°]"
             )
 
-        # ---- Find optimal pitch/speed to minimize horizontal landing velocity ----
-        R = math.hypot(x, y)  # Horizontal range to target
+        # ---- Horizontal "arm-line" distance from yaw axis to target ----
+        # A = sqrt(x^2 + y^2 - s^2), the distance along the throw direction
+        A_sq = x * x + y * y - s * s
+        if A_sq < 0:
+            raise ValueError(
+                f"Target (x={x:.0f}, y={y:.0f}mm) is inside the s-offset circle (s={s:.1f}mm)"
+            )
+        A = math.sqrt(A_sq)
 
-        # Special case: target directly above/below
-        if R <= 1e-9:
+        # ---- Special case: target directly above/below ----
+        if A <= 1e-9:
             if z >= 0:
                 raise ValueError("Target is directly above launch point. Cannot reach with projectile motion.")
-            # Straight down - minimal horizontal velocity (zero!)
             pitch = -math.pi / 2
-            v = math.sqrt(2 * g * (-z))  # Speed needed for free-fall
+            v = math.sqrt(2 * g * (-z))
             if v > v_max:
-                raise ValueError(f"Target too far below: need {v/1000:.2f} m/s, max is {v_max/1000:.2f} m/s")
+                raise ValueError(f"Target too far below: need {v / 1000:.2f} m/s, max is {v_max / 1000:.2f} m/s")
             t = math.sqrt(-2 * z / g)
-            # No peak height for downward throw
             return yaw, pitch, v, t, 0.0, h_max
 
-        # Get pitch limits
+        # ---- Find optimal pitch/speed ----
         pitch_limits_deg = self.get_parameter('pitch_max_min_deg').get_parameter_value().double_array_value
         pitch_max_rad = math.radians(pitch_limits_deg[0])
         pitch_min_rad = math.radians(pitch_limits_deg[1])
 
-        # Search for optimal pitch angle
-        # For a given pitch θ, the required speed is:
-        #   v² = g*R² / (R*sin(2θ) - z*(1 + cos(2θ)))
-        # Horizontal landing velocity is v*cos(θ)
-        # We want to minimize v*cos(θ) subject to constraints
-        
         best_pitch = None
         best_speed = None
-        best_h_vel = float('inf')  # Horizontal velocity to minimize
-        best_h_peak = None  # Track peak height of best solution
-        
-        # Search over pitch angles (higher pitch = loftier throw = lower horizontal velocity)
-        # Use fine search with 0.5 degree steps
+        best_h_vel = float('inf')
+        best_h_peak = None
+
         n_steps = int((pitch_max_rad - pitch_min_rad) / math.radians(0.5)) + 1
-        
+
         for i in range(n_steps):
             pitch = pitch_min_rad + i * (pitch_max_rad - pitch_min_rad) / max(n_steps - 1, 1)
-            
+
             cos_p = math.cos(pitch)
             sin_p = math.sin(pitch)
-            
-            # Skip near-vertical pitches (numerical issues)
+
             if abs(cos_p) < 1e-6:
                 continue
-            
-            # Denominator for speed calculation
-            # D = R*sin(2θ) - z*(1 + cos(2θ))
+
+            # ---- Launch offset corrections ----
+            # Throw range: horizontal distance from release point to target
+            R = A - l * cos_p + d
+
+            # Must be positive (target must be beyond release point)
+            if R <= 0:
+                continue
+
+            # Throw height: vertical distance from release point to target
+            z_throw = z - l * sin_p
+
+            # ---- Projectile equation ----
+            # v^2 = g * R^2 / (R * sin(2phi) - z_throw * (1 + cos(2phi)))
             sin_2p = 2 * sin_p * cos_p
             cos_2p = cos_p * cos_p - sin_p * sin_p
-            D = R * sin_2p - z * (1 + cos_2p)
-            
-            # Need D > 0 for a valid trajectory
+            D = R * sin_2p - z_throw * (1 + cos_2p)
+
             if D <= 0:
                 continue
-            
-            # Required speed
+
             v_squared = g * R * R / D
             if v_squared <= 0:
                 continue
             v = math.sqrt(v_squared)
-            
-            # Check speed constraint
+
             if v > v_max:
                 continue
-            
-            # Check max height constraint
-            # Max height above launch point: h_peak = (v*sin(θ))² / (2*g)
+
+            # Max height above RELEASE POINT: h_peak = (v*sin(phi))^2 / (2*g)
             v_vertical = v * sin_p
             h_peak = v_vertical * v_vertical / (2 * g) if v_vertical > 0 else 0.0
-            
+
             if h_peak > h_max:
                 continue
-            
-            # This is a valid solution - compute horizontal landing velocity
+
+            # Horizontal landing velocity (minimise this)
             h_vel = v * cos_p
-            
+
             if h_vel < best_h_vel:
                 best_h_vel = h_vel
                 best_pitch = pitch
                 best_speed = v
                 best_h_peak = h_peak
-        
+
         if best_pitch is None:
             raise ValueError(
-                f"No valid trajectory found for target (R={R:.0f}mm, z={z:.0f}mm). "
-                f"Constraints: v_max={v_max/1000:.1f}m/s, h_max={h_max/1000:.1f}m, "
+                f"No valid trajectory found for target (A={A:.0f}mm, z={z:.0f}mm). "
+                f"Constraints: v_max={v_max / 1000:.1f}m/s, h_max={h_max / 1000:.1f}m, "
                 f"pitch=[{pitch_limits_deg[1]:.0f}°, {pitch_limits_deg[0]:.0f}°]"
             )
-        
-        # Compute time of flight
-        t = R / (best_speed * math.cos(best_pitch))
-        
+
+        # Time of flight (using the pitch-corrected range)
+        R_final = A - l * math.cos(best_pitch) + d
+        t = R_final / (best_speed * math.cos(best_pitch))
+
         return yaw, best_pitch, best_speed, t, best_h_peak, h_max
 
     def track_target(self, x: float, y: float, z: float, target_id: str = ""):
@@ -699,15 +771,27 @@ class BallButlerNode(Node):
         else:
             self.get_logger().warn("Ball butler command service not available")
 
-    def aim_and_throw(self, x: float, y: float, z: float, target_id: str = "", throw_delay_sec: Optional[float] = None):
+    def aim_and_throw(
+        self,
+        x: float, y: float, z: float,
+        target_id: str = "",
+        throw_delay_sec: Optional[float] = None,
+        land_time: Optional[float] = None,
+        ):
         """Compute yaw/pitch/speed/time for (x,y,z) and send the command.
-        
-        Note: x, y, z are in BB's local frame (mm).
-        
+
+        Timing can be specified in one of three ways (checked in priority order):
+            1. land_time (absolute ROS time in seconds) — back-calculates the
+            throw delay using the predicted time-of-flight.
+            2. throw_delay_sec — explicit delay before release.
+            3. Neither — uses self.seconds_to_throw_in as default delay.
+
         Args:
             x, y, z: Target position in BB's local frame (mm)
             target_id: Optional target ID for throw announcement
-            throw_delay_sec: Time delay before throwing (defaults to self.seconds_to_throw_in)
+            throw_delay_sec: Time delay before throwing (seconds)
+            land_time: Absolute ROS time when ball should arrive at target (seconds).
+                    Overrides throw_delay_sec if both are provided.
         """
         if throw_delay_sec is None:
             throw_delay_sec = self.seconds_to_throw_in
@@ -739,6 +823,33 @@ class BallButlerNode(Node):
                 f"({actual_h_peak_mm/1000:.2f}m) to exceed limit ({h_max_mm/1000:.2f}m)!"
             )
 
+        # Compute throw delay
+        if land_time is not None:
+            now = self.get_clock().now().nanoseconds / 1e9  # Current ROS time in seconds
+            throw_delay_sec = land_time - now - tof_s
+
+            if throw_delay_sec < 0:
+                self.get_logger().warn(
+                    f"Landing time is in the past! "
+                    f"land_time={land_time:.3f}, now={now:.3f}, tof={tof_s:.3f}, "
+                    f"computed delay={throw_delay_sec:.3f}s — clamping to 0"
+                )
+                throw_delay_sec = 0.0
+
+            self.get_logger().info(
+                f"Land-time mode: land_time={land_time:.3f}, tof={tof_s:.3f}s, "
+                f"delay={throw_delay_sec:.3f}s"
+            )
+        elif throw_delay_sec is None:
+            throw_delay_sec = self.seconds_to_throw_in
+
+        # Validate against CAN limit (delay must fit in 16-bit milliseconds for wraparound logic)
+        if throw_delay_sec > 65.535:
+            self.get_logger().error(
+                f"Throw delay {throw_delay_sec:.3f}s exceeds CAN limit of 65.535s"
+            )
+            return
+
         # Build request (throw_speed is in m/s for the hardware interface)
         req = SendBallButlerCommand.Request()
         req.yaw_angle_rad = float(yaw_rad)
@@ -755,11 +866,12 @@ class BallButlerNode(Node):
             future.add_done_callback(self.command_response_callback)
             
             # Publish throw announcement so ball_prediction_node can match this throw
-            self._publish_throw_announcement(yaw_rad, pitch_rad, actual_throw_speed_m_s, target_id, throw_delay_sec)
+            self._publish_throw_announcement(yaw_rad, pitch_rad, actual_throw_speed_m_s, target_id, throw_delay_sec, tof_s)
         else:
             self.get_logger().warn("Ball butler command service not available")
 
-    def _publish_throw_announcement(self, yaw_rad: float, pitch_rad: float, speed_mps: float, target_id: str = "", throw_delay_sec: float = 2.0):
+    def _publish_throw_announcement(self, yaw_rad: float, pitch_rad: float, speed_mps: float, 
+                                    target_id: str = "", throw_delay_sec: float = 2.0, tof_s: float = 0.0):
         """
         Publish a throw announcement so ball_prediction_node can match this throw.
         
@@ -769,6 +881,7 @@ class BallButlerNode(Node):
             speed_mps: Throw speed in m/s
             target_id: Optional target ID
             throw_delay_sec: Time delay before throwing
+            tof_s: Time of flight in seconds
         """
         # Get BB position in mm
         bb_pos_mm = self.get_parameter('bb_mocap_position').get_parameter_value().double_array_value
@@ -804,6 +917,7 @@ class BallButlerNode(Node):
             z=self.last_target_global[2] if self.last_target_global else 0.0
         )
         announcement.throw_time = (self.get_clock().now() + rclpy.time.Duration(seconds=throw_delay_sec)).to_msg()
+        announcement.predicted_tof_sec = tof_s
         
         self.throw_announcement_pub.publish(announcement)
 
@@ -831,7 +945,10 @@ class BallButlerNode(Node):
         x_bb, y_bb, z_bb = self.global_to_bb_frame(x_corr, y_corr, z_corr)
 
         if throw:
-            self.aim_and_throw(x_bb, y_bb, z_bb, target_id=target_id, throw_delay_sec=throw_delay_sec)
+            # self.aim_and_throw(x_bb, y_bb, z_bb, target_id=target_id, throw_delay_sec=throw_delay_sec)
+            now = self.get_clock().now().nanoseconds / 1e9
+            land_time = now + (throw_delay_sec if throw_delay_sec is not None else 0.0)
+            self.aim_and_throw(x_bb, y_bb, z_bb, target_id=target_id, land_time=land_time)
         else:
             self.track_target(x_bb, y_bb, z_bb, target_id=target_id)
 
@@ -845,7 +962,13 @@ class BallButlerNode(Node):
             response.success = False
             response.message = "Volley calibration already in progress."
             return response
-        
+
+        # Reject if timing calibration in progress
+        if self.timing_in_progress:
+            response.success = False
+            response.message = "Cannot start volley calibration: timing calibration in progress."
+            return response
+
         # Check if calibrated
         if not self.is_calibrated:
             response.success = False
@@ -897,6 +1020,7 @@ class BallButlerNode(Node):
         self.volley_awaiting_position = False
         self.volley_position_reached_time = None
         self.volley_waiting_for_reload = False
+        self.volley_reload_heartbeat_count = 0
         
         # Disable tracking
         self.tracking_enabled = False
@@ -977,8 +1101,9 @@ class BallButlerNode(Node):
             f"throw {self.volley_current_throw_count + 1}/{self.volley_throws_per_target}"
         )
         
-        # Transform from global to BB local frame
-        x_bb, y_bb, z_bb = self.global_to_bb_frame(x_global, y_global, z_global)
+        # Apply learned correction before transforming to BB local frame
+        x_corr, y_corr, z_corr = self.apply_learned_correction(x_global, y_global, z_global)
+        x_bb, y_bb, z_bb = self.global_to_bb_frame(x_corr, y_corr, z_corr)
         
         # Check if target is reachable and compute commanded angles
         try:
@@ -1007,7 +1132,7 @@ class BallButlerNode(Node):
         self.volley_position_reached_time = None
         self.volley_waiting_for_reload = False
         
-        # *** NEW: Start timer to continuously send tracking commands ***
+        # Start timer to continuously send tracking commands
         self._start_volley_tracking_timer()
 
     def _start_volley_tracking_timer(self):
@@ -1048,7 +1173,8 @@ class BallButlerNode(Node):
         if self.volley_current_target_idx < len(self.volley_targets):
             target = self.volley_targets[self.volley_current_target_idx]
             x_global, y_global, z_global = target
-            x_bb, y_bb, z_bb = self.global_to_bb_frame(x_global, y_global, z_global)
+            x_corr, y_corr, z_corr = self.apply_learned_correction(x_global, y_global, z_global)
+            x_bb, y_bb, z_bb = self.global_to_bb_frame(x_corr, y_corr, z_corr)
             
             self.get_logger().debug(
                 f"Volley tracking keepalive: target ({x_global:.0f}, {y_global:.0f}, {z_global:.0f})mm"
@@ -1062,7 +1188,7 @@ class BallButlerNode(Node):
         if self.volley_cancelled or not self.volley_in_progress:
             return
         
-        # *** NEW: Stop the tracking timer before throwing ***
+        # Stop the tracking timer before throwing 
         self._stop_volley_tracking_timer()
         
         # Get current target
@@ -1088,6 +1214,7 @@ class BallButlerNode(Node):
         # Set flag to wait for reload before next target
         self.volley_awaiting_position = False
         self.volley_waiting_for_reload = True
+        self.volley_reload_heartbeat_count = 0
 
     def _advance_volley_counters(self):
         """Advance the volley throw/target counters."""
@@ -1117,7 +1244,7 @@ class BallButlerNode(Node):
 
     def _stop_volley(self):
         """Stop the volley calibration and clean up."""
-        # *** NEW: Stop the tracking timer ***
+        # Stop the tracking timer
         self._stop_volley_tracking_timer()
         
         # Reset state
@@ -1128,10 +1255,314 @@ class BallButlerNode(Node):
         self.volley_awaiting_position = False
         self.volley_position_reached_time = None
         self.volley_waiting_for_reload = False
+        self.volley_reload_heartbeat_count = 0
         
         # Keep tracking disabled as requested
         self.tracking_enabled = False
         
+        # Move to idle position
+        self._move_to_idle_position()
+
+    # =========================================================================================
+    #                           Timing Calibration
+    # =========================================================================================
+    def handle_timing_calibration(self, request, response):
+        """Start timing calibration - throwing to fixed target with varying landing delays."""
+        # Reject if already in progress
+        if self.timing_in_progress:
+            response.success = False
+            response.message = "Timing calibration already in progress."
+            return response
+
+        # Reject if volley in progress
+        if self.volley_in_progress:
+            response.success = False
+            response.message = "Cannot start timing calibration: volley calibration in progress."
+            return response
+
+        # Check if calibrated
+        if not self.is_calibrated:
+            response.success = False
+            response.message = "Ball Butler is not calibrated. Run location calibration first."
+            return response
+
+        # Generate list of landing delays
+        if self.timing_delay_divisions <= 1:
+            # Single delay - use max_landing_delay
+            self.timing_delays = [self.max_landing_delay]
+        else:
+            # Multiple delays - linearly space from min to max
+            step = (self.max_landing_delay - self.min_landing_delay) / (self.timing_delay_divisions - 1)
+            self.timing_delays = [
+                self.min_landing_delay + i * step
+                for i in range(self.timing_delay_divisions)
+            ]
+
+        total_delays = len(self.timing_delays)
+        total_throws = total_delays * self.timing_throws_per_delay
+
+        self.get_logger().info(
+            f"Starting timing calibration: {total_delays} delay levels, "
+            f"{self.timing_throws_per_delay} throws each = {total_throws} total throws. "
+            f"Delays: {[f'{d:.2f}s' for d in self.timing_delays]}. "
+            f"Target: ({self.timing_target_position[0]:.0f}, {self.timing_target_position[1]:.0f}, "
+            f"{self.timing_target_position[2]:.0f})mm"
+        )
+
+        # Initialize state
+        self.timing_in_progress = True
+        self.timing_cancelled = False
+        self.timing_current_delay_idx = 0
+        self.timing_current_throw_count = 0
+        self.timing_awaiting_position = False
+        self.timing_position_reached_time = None
+        self.timing_waiting_for_reload = False
+        self.timing_reload_heartbeat_count = 0
+
+        # Disable tracking
+        self.tracking_enabled = False
+
+        # Start by aiming at the target
+        self._aim_at_timing_target()
+
+        response.success = True
+        response.message = (
+            f"Timing calibration started: {total_delays} delays × "
+            f"{self.timing_throws_per_delay} throws = {total_throws} throws. "
+            f"Call 'bb/cancel_timing_calibration' to abort."
+        )
+        return response
+
+    def handle_cancel_timing_calibration(self, request, response):
+        """Cancel an in-progress timing calibration."""
+        if not self.timing_in_progress:
+            response.success = False
+            response.message = "No timing calibration in progress."
+            return response
+
+        self.timing_cancelled = True
+        self._stop_timing_calibration()
+
+        response.success = True
+        response.message = (
+            f"Timing calibration cancelled. Completed {self._get_total_timing_throws_completed()} throws "
+            f"({self.timing_current_delay_idx} delay levels fully completed)."
+        )
+        self.get_logger().info(response.message)
+        return response
+
+    def _get_total_timing_throws_completed(self) -> int:
+        """Get the total number of timing throws completed so far."""
+        return (self.timing_current_delay_idx * self.timing_throws_per_delay) + self.timing_current_throw_count
+
+    def _check_timing_position_reached(self, current_yaw_deg: float, current_pitch_deg: float) -> bool:
+        """
+        Check if Ball Butler has reached the commanded position within tolerance for timing calibration.
+
+        Args:
+            current_yaw_deg: Current yaw position from heartbeat (degrees)
+            current_pitch_deg: Current pitch position from heartbeat (degrees)
+
+        Returns:
+            True if within tolerance, False otherwise
+        """
+        yaw_error = abs(current_yaw_deg - self.timing_commanded_yaw_deg)
+        pitch_error = abs(current_pitch_deg - self.timing_commanded_pitch_deg)
+
+        return (yaw_error <= self.timing_yaw_tolerance_deg and
+                pitch_error <= self.timing_pitch_tolerance_deg)
+
+    def _aim_at_timing_target(self):
+        """Aim at the fixed timing target (without throwing yet)."""
+        if self.timing_cancelled or not self.timing_in_progress:
+            return
+
+        # Check if we've completed all delay levels
+        if self.timing_current_delay_idx >= len(self.timing_delays):
+            self._complete_timing_calibration()
+            return
+
+        # Get current delay
+        delay = self.timing_delays[self.timing_current_delay_idx]
+
+        # Log progress
+        total_throws = len(self.timing_delays) * self.timing_throws_per_delay
+        throws_completed = self._get_total_timing_throws_completed()
+        progress_pct = (throws_completed / total_throws) * 100
+
+        self.get_logger().info(
+            f"Timing aiming at throw {throws_completed + 1}/{total_throws} ({progress_pct:.1f}%): "
+            f"Delay level {self.timing_current_delay_idx + 1}/{len(self.timing_delays)} "
+            f"(delay={delay:.2f}s), "
+            f"throw {self.timing_current_throw_count + 1}/{self.timing_throws_per_delay}"
+        )
+
+        # Use fixed target position
+        x_global, y_global, z_global = self.timing_target_position
+
+        # Apply learned correction before transforming to BB local frame
+        x_corr, y_corr, z_corr = self.apply_learned_correction(x_global, y_global, z_global)
+        x_bb, y_bb, z_bb = self.global_to_bb_frame(x_corr, y_corr, z_corr)
+
+        # Check if target is reachable and compute commanded angles
+        try:
+            yaw_rad, pitch_rad, v_mm_s, tof_s, h_peak_mm, h_max_mm = self.compute_command_for_target(x_bb, y_bb, z_bb)
+
+            # Store commanded position in degrees for position tracking
+            self.timing_commanded_yaw_deg = math.degrees(yaw_rad)
+            self.timing_commanded_pitch_deg = math.degrees(pitch_rad)
+
+        except ValueError as e:
+            self.get_logger().error(f"Timing target unreachable: {e}")
+            # Cannot continue - stop calibration
+            self._stop_timing_calibration()
+            return
+
+        # Send initial aim command (track without throwing)
+        self.track_target(x_bb, y_bb, z_bb, target_id=f"timing_{self.timing_current_delay_idx}")
+
+        # Store global target for the throw
+        self.last_target_global = (x_global, y_global, z_global)
+
+        # Set flag to wait for position before throwing
+        self.timing_awaiting_position = True
+        self.timing_position_reached_time = None
+        self.timing_waiting_for_reload = False
+
+        # Start timer to continuously send tracking commands
+        self._start_timing_tracking_timer()
+
+    def _start_timing_tracking_timer(self):
+        """Start a timer that continuously sends tracking commands to prevent firmware timeout."""
+        # Cancel any existing timer
+        self._stop_timing_tracking_timer()
+
+        # Create a new timer
+        self.timing_tracking_timer = self.create_timer(
+            self.timing_tracking_interval_sec,
+            self._timing_tracking_timer_callback
+        )
+        self.get_logger().debug(f"Started timing tracking timer (interval={self.timing_tracking_interval_sec}s)")
+
+    def _stop_timing_tracking_timer(self):
+        """Stop the timing tracking timer."""
+        if self.timing_tracking_timer is not None:
+            self.timing_tracking_timer.cancel()
+            self.timing_tracking_timer = None
+            self.get_logger().debug("Stopped timing tracking timer")
+
+    def _timing_tracking_timer_callback(self):
+        """
+        Timer callback that continuously sends tracking commands during timing aiming.
+
+        This prevents the firmware's 5-second tracking timeout from triggering.
+        """
+        # Only send if we're actively waiting for position
+        if not self.timing_in_progress or not self.timing_awaiting_position:
+            self._stop_timing_tracking_timer()
+            return
+
+        if self.timing_cancelled:
+            self._stop_timing_tracking_timer()
+            return
+
+        # Get fixed target and re-send tracking command
+        x_global, y_global, z_global = self.timing_target_position
+        x_corr, y_corr, z_corr = self.apply_learned_correction(x_global, y_global, z_global)
+        x_bb, y_bb, z_bb = self.global_to_bb_frame(x_corr, y_corr, z_corr)
+
+        self.get_logger().debug(
+            f"Timing tracking keepalive: target ({x_global:.0f}, {y_global:.0f}, {z_global:.0f})mm"
+        )
+
+        # Re-send tracking command
+        self.track_target(x_bb, y_bb, z_bb, target_id=f"timing_{self.timing_current_delay_idx}")
+
+    def _execute_timing_throw(self):
+        """Execute the throw for the current timing delay (called after position is reached)."""
+        if self.timing_cancelled or not self.timing_in_progress:
+            return
+
+        # Stop the tracking timer before throwing
+        self._stop_timing_tracking_timer()
+
+        # Get current delay and target
+        delay = self.timing_delays[self.timing_current_delay_idx]
+        x_global, y_global, z_global = self.timing_target_position
+
+        # Calculate land time = now + delay
+        now = self.get_clock().now().nanoseconds / 1e9  # Current ROS time in seconds
+        land_time = now + delay
+
+        self.get_logger().info(
+            f"Timing throwing: delay={delay:.2f}s, "
+            f"target=({x_global:.0f}, {y_global:.0f}, {z_global:.0f})mm, "
+            f"land_time={land_time:.3f}s"
+        )
+
+        # Apply learned correction before transforming to BB local frame
+        x_corr, y_corr, z_corr = self.apply_learned_correction(x_global, y_global, z_global)
+        x_bb, y_bb, z_bb = self.global_to_bb_frame(x_corr, y_corr, z_corr)
+
+        # Execute throw with calculated land time
+        self.aim_and_throw(
+            x_bb, y_bb, z_bb,
+            target_id=f"timing_delay_{delay:.2f}s",
+            land_time=land_time
+        )
+
+        # Update counters
+        self._advance_timing_counters()
+
+        # Set flag to wait for reload before next throw
+        self.timing_awaiting_position = False
+        self.timing_waiting_for_reload = True
+        self.timing_reload_heartbeat_count = 0
+
+    def _advance_timing_counters(self):
+        """Advance the timing throw/delay counters."""
+        self.timing_current_throw_count += 1
+
+        # Check if we've completed all throws for this delay
+        if self.timing_current_throw_count >= self.timing_throws_per_delay:
+            self.timing_current_delay_idx += 1
+            self.timing_current_throw_count = 0
+
+            # Log delay completion
+            if self.timing_current_delay_idx < len(self.timing_delays):
+                next_delay = self.timing_delays[self.timing_current_delay_idx]
+                self.get_logger().info(
+                    f"Delay level {self.timing_current_delay_idx}/{len(self.timing_delays)} complete. "
+                    f"Moving to next delay: {next_delay:.2f}s"
+                )
+
+    def _complete_timing_calibration(self):
+        """Complete the timing calibration successfully."""
+        total_throws = len(self.timing_delays) * self.timing_throws_per_delay
+        self.get_logger().info(
+            f"Timing calibration COMPLETE: {total_throws} throws across "
+            f"{len(self.timing_delays)} delay levels."
+        )
+        self._stop_timing_calibration()
+
+    def _stop_timing_calibration(self):
+        """Stop the timing calibration and clean up."""
+        # Stop the tracking timer
+        self._stop_timing_tracking_timer()
+
+        # Reset state
+        self.timing_in_progress = False
+        self.timing_delays = []
+        self.timing_current_delay_idx = 0
+        self.timing_current_throw_count = 0
+        self.timing_awaiting_position = False
+        self.timing_position_reached_time = None
+        self.timing_waiting_for_reload = False
+        self.timing_reload_heartbeat_count = 0
+
+        # Keep tracking disabled as requested
+        self.tracking_enabled = False
+
         # Move to idle position
         self._move_to_idle_position()
 
@@ -1198,7 +1629,12 @@ class BallButlerNode(Node):
         
         # Calculate average Z height of all markers
         avg_z = np.mean(all_z_values)
-        self.get_logger().info(f"Average marker Z height: {avg_z:.2f} mm")
+
+        # Add the vertical offset to the pitch axis
+        z_offset = float(self.get_parameter('pitch_z_offset').value)
+        avg_z += z_offset
+
+        self.get_logger().info(f"Average marker Z height (including {z_offset} mm pitch vertical offset): {avg_z:.2f} mm")
         
         try:
             # Find the rotation axis
@@ -1337,7 +1773,11 @@ class BallButlerNode(Node):
         # Handle volley state machine
         if self.volley_in_progress:
             self._handle_volley_heartbeat(msg, previous_state)
-        
+
+        # Handle timing calibration state machine
+        if self.timing_in_progress:
+            self._handle_timing_heartbeat(msg, previous_state)
+
         # If the state hasn't changed, do nothing else
         if msg.state == self.current_state:
             return
@@ -1377,7 +1817,7 @@ class BallButlerNode(Node):
         
         # State 1: Waiting for BB to reach aimed position
         if self.volley_awaiting_position:
-            # *** NEW: Check if BB unexpectedly left TRACKING state ***
+            # Check if BB unexpectedly left TRACKING state
             if msg.state == BallButlerStates.IDLE:
                 self.get_logger().warn(
                     "Volley: BB unexpectedly returned to IDLE while awaiting position. "
@@ -1413,7 +1853,16 @@ class BallButlerNode(Node):
         
         # State 2: Waiting for BB to exit RELOADING state after throw
         elif self.volley_waiting_for_reload:
-            # Check if BB has exited RELOADING state
+            # Track RELOADING heartbeats to ensure reload actually occurred
+            if msg.state == BallButlerStates.RELOADING:
+                self.volley_reload_heartbeat_count += 1
+                return
+
+            # If we haven't seen enough RELOADING heartbeats yet, keep waiting
+            if self.volley_reload_heartbeat_count < self.volley_min_reload_heartbeats:
+                return
+
+            # Check if BB has exited RELOADING/THROWING state
             if msg.state != BallButlerStates.RELOADING and msg.state != BallButlerStates.THROWING:
                 self.volley_waiting_for_reload = False
                 
@@ -1423,7 +1872,68 @@ class BallButlerNode(Node):
                 else:
                     # Aim at next target
                     self._aim_at_next_volley_target()
-    
+
+    def _handle_timing_heartbeat(self, msg: BallButlerHeartbeat, previous_state):
+        """
+        Handle timing calibration state machine based on heartbeat.
+
+        States:
+        1. timing_awaiting_position: Waiting for BB to reach aimed position
+        2. timing_waiting_for_reload: Waiting for BB to exit RELOADING state after throw
+        """
+        current_time = self.get_clock().now().nanoseconds * 1e-9
+
+        # State 1: Waiting for BB to reach aimed position
+        if self.timing_awaiting_position:
+            # Check if BB unexpectedly left TRACKING state
+            if msg.state == BallButlerStates.IDLE:
+                self.get_logger().warn(
+                    "Timing: BB unexpectedly returned to IDLE while awaiting position. "
+                    "Possible tracking timeout. Re-sending aim command."
+                )
+                # Re-aim at the target
+                self._aim_at_timing_target()
+                return
+
+            if self._check_timing_position_reached(msg.yaw_deg, msg.pitch_deg):
+                # Position reached - check if we've waited long enough
+                if self.timing_position_reached_time is None:
+                    # First time reaching position
+                    self.timing_position_reached_time = current_time
+                elif (current_time - self.timing_position_reached_time) >= self.timing_settle_time_sec:
+                    # Settled long enough - execute throw
+                    self._execute_timing_throw()
+            else:
+                # Position not reached - reset settle timer
+                if self.timing_position_reached_time is not None:
+                    self.get_logger().debug(
+                        f"Timing: Position lost (yaw={msg.yaw_deg:.2f}° vs {self.timing_commanded_yaw_deg:.2f}°, "
+                        f"pitch={msg.pitch_deg:.2f}° vs {self.timing_commanded_pitch_deg:.2f}°)"
+                    )
+                self.timing_position_reached_time = None
+
+        # State 2: Waiting for BB to exit RELOADING state after throw
+        elif self.timing_waiting_for_reload:
+            # Track RELOADING heartbeats to ensure reload actually occurred
+            if msg.state == BallButlerStates.RELOADING:
+                self.timing_reload_heartbeat_count += 1
+                return
+
+            # If we haven't seen enough RELOADING heartbeats yet, keep waiting
+            if self.timing_reload_heartbeat_count < self.timing_min_reload_heartbeats:
+                return
+
+            # Check if BB has exited RELOADING/THROWING state
+            if msg.state != BallButlerStates.RELOADING and msg.state != BallButlerStates.THROWING:
+                self.timing_waiting_for_reload = False
+
+                # Check if timing calibration is complete
+                if self.timing_current_delay_idx >= len(self.timing_delays):
+                    self._complete_timing_calibration()
+                else:
+                    # Aim at target for next throw
+                    self._aim_at_timing_target()
+
     def handle_toggle_tracking(self, request, response):
         """Toggle tracking on/off. When tracking is disabled, Ball Butler moves to idle position."""
         # Reject if volley in progress
@@ -1431,7 +1941,13 @@ class BallButlerNode(Node):
             response.success = False
             response.message = "Cannot toggle tracking: volley calibration in progress. Call 'bb/cancel_volley_calibration' to stop."
             return response
-        
+
+        # Reject if timing calibration in progress
+        if self.timing_in_progress:
+            response.success = False
+            response.message = "Cannot toggle tracking: timing calibration in progress. Call 'bb/cancel_timing_calibration' to stop."
+            return response
+
         self.tracking_enabled = not self.tracking_enabled
         
         if self.tracking_enabled:
@@ -1465,7 +1981,13 @@ class BallButlerNode(Node):
             response.success = False
             response.message = "Cannot throw: volley calibration in progress. Call 'bb/cancel_volley_calibration' to stop."
             return response
-        
+
+        # Reject if timing calibration in progress
+        if self.timing_in_progress:
+            response.success = False
+            response.message = "Cannot throw: timing calibration in progress. Call 'bb/cancel_timing_calibration' to stop."
+            return response
+
         if self.last_target is None:
             response.success = False
             response.message = "No previous target to throw at. Use 'aim_now' or publish to 'bb/aim_target' first."
@@ -1501,6 +2023,10 @@ class BallButlerNode(Node):
         if self.volley_in_progress:
             return
 
+        # Ignore if timing calibration in progress
+        if self.timing_in_progress:
+            return
+
         # Find the Catching_Cone body in the message
         for body in msg.targets:
             if body.id == "catching_cone":
@@ -1530,7 +2056,11 @@ class BallButlerNode(Node):
         # Stop volley if in progress
         if self.volley_in_progress:
             self._stop_volley()
-        
+
+        # Stop timing calibration if in progress
+        if self.timing_in_progress:
+            self._stop_timing_calibration()
+
         self.get_logger().info("End session requested. Shutting down...")
         response.success = True
         response.message = "Session ended. Shutting down node."
@@ -1541,7 +2071,11 @@ class BallButlerNode(Node):
         # Stop volley if in progress
         if self.volley_in_progress:
             self._stop_volley()
-        
+
+        # Stop timing calibration if in progress
+        if self.timing_in_progress:
+            self._stop_timing_calibration()
+
         self.get_logger().info("Shutting down BallButlerNode...")
 
 
