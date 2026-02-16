@@ -18,6 +18,7 @@ from jugglebot_interfaces.srv import (
     ActivateOrDeactivate,
     SetString,
     SetHandTrajCmd,
+    SetFloat,
     SendBallButlerCommand
 )
 from jugglebot_interfaces.action import HomeMotors
@@ -47,6 +48,7 @@ class CanInterfaceNode(Node):
                                                                         self.activate_or_deactivate_callback)
         self.set_hand_state_service = self.create_service(SetString, 'set_hand_state', self.set_hand_state_callback)
         self.set_hand_traj_service = self.create_service(SetHandTrajCmd, 'set_hand_traj_cmd', self.set_hand_traj_callback)
+        self.smooth_move_hand_service = self.create_service(SetFloat, 'smooth_move_hand', self.smooth_move_hand_callback)
         
         #### Ball Butler-related services ####
         self.send_ball_butler_command_service = self.create_service(SendBallButlerCommand, 'bb/send_throw_command', self.send_ball_butler_command_callback)
@@ -89,11 +91,11 @@ class CanInterfaceNode(Node):
         self.time_sync_period = self.get_parameter('time_sync_period_ms').get_parameter_value().integer_value / 1000.0
 
         # Initialize timers
-        # self.platform_target_reached_timer = self.create_timer(0.1, self.check_platform_target_reached_status)
+        self.platform_target_reached_timer = self.create_timer(0.1, self.check_platform_target_reached_status)
         self.timer_canbus = self.create_timer(timer_period_sec=0.001, callback=self._poll_can_bus)
-        # self.robot_state_timer = self.create_timer(timer_period_sec=0.01, callback=self.get_and_publish_robot_state)
-        # self.time_sync_timer = self.create_timer(self.time_sync_period, self.can_handler.broadcast_time)
-        # self.hand_telemetry_timer = self.create_timer(0.002, self.publish_hand_telemetry)  # Publish hand telemetry at 500 Hz
+        self.robot_state_timer = self.create_timer(timer_period_sec=0.01, callback=self.get_and_publish_robot_state)
+        self.time_sync_timer = self.create_timer(self.time_sync_period, self.can_handler.broadcast_time)
+        self.hand_telemetry_timer = self.create_timer(0.002, self.publish_hand_telemetry)  # Publish hand telemetry at 500 Hz
         self.ball_butler_heartbeat_timer = self.create_timer(0.1, self.publish_ball_butler_heartbeat)  # Send Ball Butler heartbeat at 10 Hz
 
         # Register callbacks with CANInterface
@@ -289,7 +291,8 @@ class CanInterfaceNode(Node):
                 self.stowed_due_to_error = True
 
             # Control modes that should have the hand in IDLE mode (to be quieter)
-            elif (msg.data == 'SPACEMOUSE' or 
+            elif (msg.data == 'STANDBY_ACTIVE' or 
+                msg.data == 'SPACEMOUSE' or 
                 msg.data == 'LEVEL_PLATFORM_NODE' or 
                 msg.data == 'CATCH_THROWN_BALL_NODE' or
                 msg.data == 'SHELL' or
@@ -306,7 +309,8 @@ class CanInterfaceNode(Node):
             
             # Control modes that should have all axes in CLOSED_LOOP_CONTROL mode
             elif (msg.data == 'CATCH_DROPPED_BALL_NODE' or
-                  msg.data == 'HOOP_SINKER'):
+                  msg.data == 'HOOP_SINKER' or
+                  msg.data == 'CATCH_FROM_BALL_BUTLER'):
                 # Put all axes into CLOSED_LOOP_CONTROL mode if they aren't already
                 if not legs_closed_loop or not hand_closed_loop:
                     self.can_handler.set_requested_state_for_all_axes(requested_state='CLOSED_LOOP_CONTROL')
@@ -346,7 +350,7 @@ class CanInterfaceNode(Node):
         """Action server callback to home the robot."""
         try:
             # Start the robot homing. Home all axes.
-            success = self.can_handler.home_robot(axes_to_home=list(range(self.can_handler.num_axes))) # True if homing was successful, False otherwise
+            success = self.can_handler.home_robot(axes_to_home=list(CANInterface.JUGGLEBOT_AXES)) # True if homing was successful, False otherwise
 
             self.can_handler.update_state_on_teensy({'is_homed': success})
 
@@ -580,6 +584,20 @@ class CanInterfaceNode(Node):
 
         return response
 
+    def smooth_move_hand_callback(self, request, response):
+        """Service callback to smooth-move the hand to a target position (revs)."""
+        try:
+            target_pos = request.data
+            self.can_handler.smooth_move_hand(target_pos)
+            self.get_logger().info(f"Smooth-move hand to {target_pos:.3f} rev")
+            response.success = True
+            response.message = f"Smooth-move hand command sent: target={target_pos:.3f} rev"
+        except Exception as e:
+            self.get_logger().error(f"Error smooth-moving hand: {e}")
+            response.success = False
+            response.message = f"Error smooth-moving hand: {e}"
+        return response
+
     #########################################################################################################
     #                                   Interfacing with the ROS Network                                    #
     #########################################################################################################
@@ -703,12 +721,12 @@ class CanInterfaceNode(Node):
     
     # Check whether all motors are in a chosen specific state
     def all_axes_in_state(self, target_state: int):
-        """Check if all axes are in the specific state."""
-        return all(motor.current_state == target_state for motor in self.can_handler.last_motor_states)
+        """Check if all Jugglebot axes are in the specific state."""
+        return all(motor.current_state == target_state for motor in self.can_handler.last_motor_states[:len(CANInterface.JUGGLEBOT_AXES)])
     
     def all_axes_trajectory_done(self):
-        """Check if all axes have completed their trajectories."""
-        return all(motor.trajectory_done for motor in self.can_handler.last_motor_states)
+        """Check if all Jugglebot axes have completed their trajectories."""
+        return all(motor.trajectory_done for motor in self.can_handler.last_motor_states[:len(CANInterface.JUGGLEBOT_AXES)])
     
     def all_legs_in_state(self, target_state: int):
         """Check if all legs are in the specific state."""
