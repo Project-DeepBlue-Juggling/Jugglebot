@@ -36,9 +36,9 @@ def generate_launch_description():
     )
 
     jugglebot_node_names = [
-        # 'yasmin_state_machine',
+        'yasmin_state_machine',
         # 'spacemouse_handler',
-        # 'sp_ik',
+        'sp_ik',
         'robot_geometry',
         # 'level_platform_node',
         'mocap_interface_node',
@@ -46,10 +46,11 @@ def generate_launch_description():
         # 'catch_thrown_ball_node',
         # 'catch_dropped_ball_node',
         # 'calibrate_platform_node',
-        # 'pose_correction_node',
+        'pose_correction_node',
         # 'hoop_sinker_node',
-        # 'ball_butler_node',
-        'ball_butler_volley_testing_node',
+        'ball_butler_node',
+        'catch_from_ball_butler_node',
+        # 'ball_butler_volley_testing_node',
         'target_tracker_node',
     ]
     jugglebot_nodes = [
