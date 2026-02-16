@@ -148,6 +148,13 @@ class CANInterface:
     _DEFAULT_VEL_CURR_LIMITS = {'leg_vel_limit': 50.0, 'leg_curr_limit': 20.0, 
                                 'hand_vel_limit': 1000.0, 'hand_curr_limit': 50.0} # rev/s, A
 
+    # Axis groupings for Jugglebot and Ball Butler
+    JUGGLEBOT_LEG_AXES = list(range(6))       # [0, 1, 2, 3, 4, 5]
+    JUGGLEBOT_HAND_AXIS = 6
+    JUGGLEBOT_AXES = list(range(7))           # [0, 1, 2, 3, 4, 5, 6]
+    BALL_BUTLER_AXES = [7, 8]
+    ALL_AXES = list(range(9))
+
     # Ball Butler motors (pitch and thrower) - only process these command IDs, ignore all others
     _BALL_BUTLER_MOTOR_IDS = {7, 8}  # Axis IDs for Ball Butler pitch (7) and thrower (8) motors
     _BALL_BUTLER_RELEVANT_CMD_IDS = {
@@ -202,7 +209,7 @@ class CANInterface:
         }
 
         # Initialize the number of axes
-        self.num_axes = 9 # 6 legs, 1 hand, 1 pitch, 1 thrower (latter two for Ball Butler)
+        self.num_axes = len(self.ALL_AXES)
 
         # Initialize the motor states and the data lock for these states
         self.motor_states = [MotorStateSingle() for _ in range(self.num_axes)]
@@ -215,6 +222,9 @@ class CANInterface:
         self._input_vel_scale = 100.0 # As set on the ODrive (`input_vel_scale`)
         self._input_tor_scale = 100.0 # As set on the ODrive (`input_torque_scale`)
         self._last_hand_input_pos_cmd = HandInputPosCmd()
+
+        # Track which axes have sent heartbeats (used for CAN connection recovery)
+        self.received_heartbeats: Dict[int, bool] = {axis_id: False for axis_id in self.JUGGLEBOT_AXES}
 
         # Flags and variables for tracking errors
         self.fatal_error: bool = False
@@ -382,6 +392,9 @@ class CANInterface:
 
                 # Reinitialize the CAN bus
                 self.setup_can_bus()
+
+                # Reset heartbeat tracking for reconnection check
+                self.received_heartbeats = {axis_id: False for axis_id in self.JUGGLEBOT_AXES}
 
                 time.sleep(0.1)
                 self.fetch_messages()
@@ -775,7 +788,7 @@ class CANInterface:
             self.ROS_logger.info('Clearing ODrive errors...')
             command_name = "clear_errors"
 
-            for axis_id in range(self.num_axes):
+            for axis_id in self.JUGGLEBOT_AXES:
                 self._send_message(
                     axis_id=axis_id,
                     command_name=command_name,
@@ -809,7 +822,7 @@ class CANInterface:
             self.ROS_logger.info("Rebooting ODrives...")
             command_name = "reboot_odrives"
 
-            for axis_id in range(self.num_axes):
+            for axis_id in self.JUGGLEBOT_AXES:
                 self._send_message(
                     axis_id=axis_id,
                     command_name=command_name,
@@ -1030,6 +1043,43 @@ class CANInterface:
             self.ROS_logger.error(f"Failed to set hand trajectory: {e}")
             raise
 
+    def smooth_move_hand(self, target_pos_rev: float):
+        """
+        Command the Teensy to execute a smooth (quintic) move of the hand motor
+        to the given position. The Teensy generates and schedules the trajectory.
+
+        Args:
+            target_pos_rev (float): Target hand position in revolutions.
+
+        Raises:
+            Exception: If sending the message fails.
+        """
+        try:
+            if target_pos_rev < 0 or target_pos_rev > self._HAND_MOTOR_MAX_POSITION:
+                raise ValueError(
+                    f"Invalid target position: {target_pos_rev:.3f} rev. "
+                    f"Must be 0 <= pos <= {self._HAND_MOTOR_MAX_POSITION}"
+                )
+
+            # Ensure the hand is in CLOSED_LOOP, position control mode
+            self.set_requested_state(axis_id=6, requested_state='CLOSED_LOOP_CONTROL')
+            self.set_control_mode(axis_id=6, control_mode='POSITION_CONTROL', input_mode='PASSTHROUGH')
+
+            # Build CAN payload: kind=3, then float32 target_pos, then 3 padding bytes
+            payload = bytes([3]) + struct.pack('<f', target_pos_rev) + bytes([0, 0, 0])
+
+            msg = can.Message(arbitration_id=self._CAN_hand_traj_cmd_ID,
+                              is_extended_id=False, data=payload, dlc=8)
+
+            with self._can_lock:
+                self.bus.send(msg, timeout=0.002)
+
+            self.ROS_logger.info(f"Smooth-move hand to {target_pos_rev:.3f} rev")
+
+        except Exception as e:
+            self.ROS_logger.error(f"Failed to smooth-move hand: {e}")
+            raise
+
     #########################################################################################################
     #                                            Managing ODrives                                           #
     #########################################################################################################
@@ -1112,9 +1162,8 @@ class CANInterface:
         """
         try:
             # self.ROS_logger.info("Running encoder index search...")
-            for axisID in range(self.num_axes):
-                if axisID !=6: # Hand doesn't need to do this because we're using the on-board encoder
-                    self.set_requested_state(axisID, requested_state='ENCODER_INDEX_SEARCH')
+            for axisID in self.JUGGLEBOT_LEG_AXES:
+                self.set_requested_state(axisID, requested_state='ENCODER_INDEX_SEARCH')
 
             # Check whether all axes have entered the ENCODER_INDEX_SEARCH state
             axes_in_index_search = [False] * 6
@@ -1391,14 +1440,15 @@ class CANInterface:
 
     def set_requested_state_for_all_axes(self, requested_state: str ='IDLE') -> None:
         """
-        Sets the requested state for all axes.
+        Sets the requested state for all Jugglebot axes (legs + hand).
+        Ball Butler axes are not affected.
         """
         try:
-            for axis_id in range(self.num_axes):
+            for axis_id in self.JUGGLEBOT_AXES:
                 self.set_requested_state(axis_id=axis_id, requested_state=requested_state)
                 time.sleep(0.005)
 
-            self.ROS_logger.info(f'All ODrives state changed to {requested_state}')
+            self.ROS_logger.info(f'All Jugglebot ODrives state changed to {requested_state}')
         except Exception as e:
             self.ROS_logger.error(f"Failed to set state for all axes: {e}")
             raise
@@ -1548,6 +1598,10 @@ class CANInterface:
                 self.motor_states[axis_id].procedure_result = procedure_result
                 self.motor_states[axis_id].trajectory_done = trajectory_done_flag
 
+            # Track heartbeat reception (for CAN connection recovery)
+            if axis_id in self.received_heartbeats:
+                self.received_heartbeats[axis_id] = True
+
         except Exception as e:
             self.ROS_logger.error(f"Error handling heartbeat message for axis {axis_id}: {e}")
 
@@ -1595,11 +1649,12 @@ class CANInterface:
                 1073741824: "CALIBRATION_ERROR"
             }
 
-            # Initialize conditions to check for various error states
-            no_active_errors = all(motor.active_errors == 0 for motor in self.motor_states)
-            no_disarm_reasons = all(motor.disarm_reason == 0 for motor in self.motor_states)
-            any_disarmed = any(motor.disarm_reason != 0 for motor in self.motor_states)
-            any_in_closed_loop_control = any(motor.current_state == 8 for motor in self.motor_states)
+            # Initialize conditions to check for various error states (Jugglebot axes only)
+            jugglebot_states = self.motor_states[:len(self.JUGGLEBOT_AXES)]
+            no_active_errors = all(motor.active_errors == 0 for motor in jugglebot_states)
+            no_disarm_reasons = all(motor.disarm_reason == 0 for motor in jugglebot_states)
+            any_disarmed = any(motor.disarm_reason != 0 for motor in jugglebot_states)
+            any_in_closed_loop_control = any(motor.current_state == 8 for motor in jugglebot_states)
 
             # Log these conditions
             # self.ROS_logger.info(f"Axis: {axis_id}. Active errors: {active_errors}, Disarm reasons: {disarm_reason}, "
@@ -2129,18 +2184,19 @@ class CANInterface:
     def send_ball_butler_command(self, yaw_angle_rad: float, pitch_angle_rad: float, throw_speed: float, throw_time: float):
         """
         Sends a throw command to the ball butler.
-    
+
         Args:
             yaw_angle_rad: The yaw angle in radians (-π to π)
             pitch_angle_rad: The pitch angle in radians (0 to π/2)
             throw_speed: The throw speed in m/s (0 to 6.5 m/s)
-            throw_time: The time to throw in seconds (0 to 65.5 seconds)
-    
+            throw_time: Relative delay in seconds before throwing (0 to 65.535 s).
+                       Converted to absolute epoch time internally before CAN encoding.
+
         CAN frame layout (8 bytes):
             Byte 0-1: Yaw angle in radians (π/32768 rad per LSB, ±π range)
             Byte 2-3: Pitch angle in radians (π/65536 rad per LSB, 0 to π/2 range)
             Byte 4-5: Throw speed in m/s (0.1 mm/s per LSB, 0-6.5535 m/s range)
-            Byte 6-7: Throw time in seconds (1 ms per LSB, 0-65.535 s range)
+            Byte 6-7: Throw time (uint16, lower 16 bits of absolute epoch milliseconds)
         """
         try:
             # Validate inputs
@@ -2152,12 +2208,17 @@ class CANInterface:
                 raise ValueError(f"Throw speed {throw_speed} m/s outside valid range [0, 6.5535]")
             if not (0 <= throw_time <= 65.535):
                 raise ValueError(f"Throw time {throw_time} s outside valid range [0, 65.535]")
-    
-            # Scale values to 16-bit integers
+
+            # Convert relative delay to absolute epoch time, then extract lower 16 bits.
+            # This conversion MUST happen here (not in callers) because the ROS service
+            # uses float32, which destroys the lower bits of large epoch timestamps.
+            throw_time_epoch = time.time() + throw_time  # float64 precision preserved
+            throw_time_scaled = int(throw_time_epoch * 1000.0) & 0xFFFF  # lower 16 bits of epoch ms
+
+            # Scale other values to 16-bit integers
             yaw_angle_scaled   = int(yaw_angle_rad * 32768.0 / math.pi)  # ±32767 for ±π
             pitch_angle_scaled = int(pitch_angle_rad * 65536.0 / math.pi)  # 0 to 32768 for 0 to π/2
             throw_speed_scaled = int(throw_speed * 10000.0)  # 0.1 mm/s per LSB
-            throw_time_scaled  = int(throw_time * 1000.0)     # 1 ms per LSB
             
             # Pack the data using all 8 bytes efficiently
             data = struct.pack('<hHHH',
@@ -2328,7 +2389,7 @@ class CANInterface:
         """
         Updates the last known state with the error and disarmed axes if it isn't already there.
         """
-        disarmed_axes = [axis_id for axis_id, motor in enumerate(self.motor_states) if motor.disarm_reason != 0]
+        disarmed_axes = [axis_id for axis_id in self.JUGGLEBOT_AXES if self.motor_states[axis_id].disarm_reason != 0]
         disarmed_axes_message = f"Disarmed axes: {disarmed_axes}"
         
         # Check if an entry starting with "Disarmed axes:" already exists
