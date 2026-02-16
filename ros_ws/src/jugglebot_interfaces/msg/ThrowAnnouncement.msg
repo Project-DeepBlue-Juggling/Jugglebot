@@ -9,3 +9,6 @@ string target_id                       # Target this throw is aimed at (empty if
 geometry_msgs/Point target_position    # Target position at throw time (mm)
 builtin_interfaces/Time throw_time     # When the throw will occur (use header.stamp if immediate)
 float64 predicted_tof_sec              # Predicted time of flight (sec)
+geometry_msgs/Point landing_position   # Predicted position at landing plane (mm, global frame)
+geometry_msgs/Vector3 landing_velocity # Predicted velocity at landing plane (mm/s, global frame)
+builtin_interfaces/Time landing_time   # Predicted ROS2 Time when ball crosses landing plane
