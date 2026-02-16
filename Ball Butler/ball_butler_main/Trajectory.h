@@ -17,32 +17,33 @@
 #include <Arduino.h>
 #include <vector>
 #include <cmath>
+#include "BallButlerConfig.h"
 
 /* ───────── data container ───────── */
 struct Trajectory {
   std::vector<float> t, x, v, tor;
 };
 
-/* ───────── constants ───────── */
-constexpr float G                   = 9.806f;   // m/s^2
-constexpr float HAND_SPOOL_R        = 0.0052493f; // m (Max pos = 9.399  rev, min pos = 0 rev, travel = 310 mm)
-constexpr float LINEAR_GAIN_FACTOR  = 1.0f;     // Just 'cuz
-constexpr float LINEAR_GAIN         = LINEAR_GAIN_FACTOR / (M_PI * HAND_SPOOL_R * 2.f);  // rev per metre
-constexpr float INERTIA_HAND_ONLY   = 0.281f;   // kg
-constexpr float INERTIA_RATIO       = 0.747f;
-constexpr float THROW_VEL_HOLD_PCT  = 0.05f;
-constexpr float CATCH_VEL_RATIO     = 0.8f;
-constexpr float CATCH_VEL_HOLD_PCT  = 0.10f;
-constexpr float HAND_STROKE         = 0.28f;    // m
-constexpr float STROKE_MARGIN       = 0.02f;    // m
-constexpr float END_PROFILE_HOLD    = 0.10f;    // s. Can probably get rid of?
-constexpr int   SAMPLE_RATE         = 500;      // Hz
+/* ───────── constants (aliases to BallButlerConfig.h / TrajCfg::) ───────── */
+constexpr float G                   = TrajCfg::G;
+constexpr float HAND_SPOOL_R        = TrajCfg::HAND_SPOOL_R;
+constexpr float LINEAR_GAIN_FACTOR  = TrajCfg::LINEAR_GAIN_FACTOR;
+constexpr float LINEAR_GAIN         = TrajCfg::LINEAR_GAIN;
+constexpr float INERTIA_HAND_ONLY   = TrajCfg::INERTIA_HAND_ONLY;
+constexpr float INERTIA_RATIO       = TrajCfg::INERTIA_RATIO;
+constexpr float THROW_VEL_HOLD_PCT  = TrajCfg::THROW_VEL_HOLD_PCT;
+constexpr float CATCH_VEL_RATIO     = TrajCfg::CATCH_VEL_RATIO;
+constexpr float CATCH_VEL_HOLD_PCT  = TrajCfg::CATCH_VEL_HOLD_PCT;
+constexpr float HAND_STROKE         = TrajCfg::HAND_STROKE;
+constexpr float STROKE_MARGIN       = TrajCfg::STROKE_MARGIN;
+constexpr float END_PROFILE_HOLD    = TrajCfg::END_PROFILE_HOLD;
+constexpr int   SAMPLE_RATE         = TrajCfg::SAMPLE_RATE;
 
 /* ----- smooth-move tuning ------------------------------------- */
-constexpr float MAX_SMOOTH_MOVE_HAND_ACCEL = 200.0f;//1000.0f;   // [rev s⁻²].
-constexpr float QUINTIC_S2_MAX             = 5.7735027f; // max |s''| for 10t³−15t⁴+6t⁵
+constexpr float MAX_SMOOTH_MOVE_HAND_ACCEL = TrajCfg::MAX_SMOOTH_ACCEL;
+constexpr float QUINTIC_S2_MAX             = TrajCfg::QUINTIC_S2_MAX;
 
-constexpr float HAND_MAX_SMOOTH_MOVE_POS = 8.9f; // rev
+constexpr float HAND_MAX_SMOOTH_MOVE_POS = TrajCfg::HAND_MAX_SMOOTH_POS;
 
 inline float accelToTorque(float a) { return a * INERTIA_HAND_ONLY * HAND_SPOOL_R; }
 

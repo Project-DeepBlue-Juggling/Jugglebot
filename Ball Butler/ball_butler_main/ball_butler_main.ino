@@ -21,24 +21,7 @@
 #include "StateMachine.h"
 #include <stdarg.h>
 
-// ============================================================================
-// CONFIGURATION
-// ============================================================================
-static constexpr float    THROW_VEL_MIN_MPS  = 0.05f;
-static constexpr float    THROW_VEL_MAX_MPS  = 6.0f;
-static constexpr float    SCHEDULE_MARGIN_S  = 0.1f;
-
 using Err = CanInterface::ODriveErrors;
-
-// ============================================================================
-// YAW AXIS PIN CONFIGURATION
-// ============================================================================
-static constexpr uint8_t  YAW_PIN_PWM_A     = 10;
-static constexpr uint8_t  YAW_PIN_PWM_B     = 16;
-static constexpr uint8_t  YAW_PIN_ENC_A     = 15;
-static constexpr uint8_t  YAW_PIN_ENC_B     = 14;
-static constexpr uint16_t YAW_ENC_CPR       = 60;
-static constexpr uint16_t YAW_PWM_FREQ_HZ   = 20000;
 
 // ============================================================================
 // GLOBAL OBJECTS
@@ -48,13 +31,13 @@ HandPathPlanner        planner;
 HandTrajectoryStreamer streamer(canif);
 PitchAxis              pitch(canif, NodeId::PITCH);
 
-YawAxis yawAxis(YAW_PIN_PWM_A, YAW_PIN_PWM_B, YAW_PIN_ENC_A, YAW_PIN_ENC_B, YAW_ENC_CPR, YAW_PWM_FREQ_HZ);
+YawAxis yawAxis(Pins::YAW_PWM_A, Pins::YAW_PWM_B, Pins::YAW_ENC_A, Pins::YAW_ENC_B,
+                YawDefaults::ENC_CPR, YawDefaults::PWM_FREQ_HZ);
 
 StateMachine stateMachine(canif, yawAxis, pitch, streamer, planner);
 
 static bool     yaw_stream_on      = false;
 static uint32_t yaw_last_stream_ms = 0;
-static const uint16_t YAW_TELEM_MS = 500;
 
 // ============================================================================
 // YAW PROPRIOCEPTION CALLBACK (called from ISR)
@@ -82,12 +65,12 @@ bool handleSmoothCmd(const String& line);
 // SETUP
 // ============================================================================
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(OpCfg::SERIAL_BAUD);
   
   // Wait for Serial, but with a shorter timeout and non-blocking approach
   // This prevents hanging if USB is connected but no terminal is open
   uint32_t serialWaitStart = millis();
-  while (!Serial && (millis() - serialWaitStart < 2000)) {
+  while (!Serial && (millis() - serialWaitStart < OpCfg::SERIAL_WAIT_MS)) {
     // Yield to USB stack
     delay(10);
   }
@@ -105,18 +88,17 @@ void setup() {
 
   Proprioception::setDebugStream(&Serial, false);
 
-  canif.begin(1000000);
+  canif.begin(CanCfg::BAUD_RATE);
   canif.setDebugStream(&Serial);
   canif.setDebugFlags(false, false); // Enable CAN message debug, disable axis state debug to reduce spam
   canif.setHandAxisNode(NodeId::HAND);
   canif.setPitchAxisNode(NodeId::PITCH);
-  canif.setAutoClearBrakeResistor(true, 500);
+  canif.setAutoClearBrakeResistor(true, CanCfg::AUTO_CLEAR_BRAKE_MS);
   canif.requireHomeOnlyFor(NodeId::HAND);
 
   // Add a short delay to give ODrives time to boot and respond to pings
-  uint32_t initial_delay = 1000; // milliseconds
   uint32_t now = millis();
-  while (millis() - now < initial_delay) {
+  while (millis() - now < OpCfg::ODRIVE_BOOT_MS) {
     canif.loop();
     delay(20);
   }
@@ -126,20 +108,16 @@ void setup() {
   // This prevents any erroneous movement during the boot phase
   // The offset places user 0° at encoder 5°, giving headroom for overshoot
   // Limits are set wide initially; StateMachine will tighten them after homing
-  yawAxis.setZeroOffset(5.0f);  // encoder 5° = user 0°
-  yawAxis.setSoftLimitsDeg(-5.0f, 190.0f);  // Wide limits during boot
-  yawAxis.setHardLimitOvershoot(10.0f);  // Allow 10° overshoot before fault
+  yawAxis.setZeroOffset(YawDefaults::BOOT_ZERO_OFFSET_DEG);
+  yawAxis.setSoftLimitsDeg(YawDefaults::BOOT_SOFT_LIM_MIN_DEG, YawDefaults::BOOT_SOFT_LIM_MAX_DEG);
+  yawAxis.setHardLimitOvershoot(YawDefaults::BOOT_HARD_LIMIT_OVERSHOOT);
   yawAxis.setProprioceptionCallback(yawProprioceptionCallback);
 
   pitch.begin();
 
-  StateMachine::Config smConfig;
-  smConfig.hand_node_id  = NodeId::HAND;
-  smConfig.pitch_node_id = NodeId::PITCH;
-  smConfig.homing_timeout_ms   = 10000;
-  smConfig.reload_timeout_ms   = 10000;
-  smConfig.post_throw_delay_ms = 1000;
-  stateMachine.setConfig(smConfig);
+  // StateMachine::Config defaults come from BallButlerConfig.h (SMDefaults::)
+  // Only override here if this specific robot needs different values.
+  stateMachine.setConfig(StateMachine::Config{});
   stateMachine.setDebugStream(&Serial);
   stateMachine.setDebugEnabled(true);
   stateMachine.begin();
@@ -172,7 +150,7 @@ void loop() {
     }
   }
 
-  if (yaw_stream_on && (millis() - yaw_last_stream_ms >= YAW_TELEM_MS)) {
+  if (yaw_stream_on && (millis() - yaw_last_stream_ms >= OpCfg::YAW_TELEM_MS)) {
     yaw_last_stream_ms = millis();
     auto t = yawAxis.readTelemetry();
     Serial.printf("YAW | pos=%.2f cmd=%.2f err=%.2f pwm=%d en=%d\n",
@@ -239,13 +217,15 @@ bool handleThrowCmd(const String& line) {
     Serial.println(F("Usage: throw <vel> <in_s>"));
     return false;
   }
-  if (vel <= THROW_VEL_MIN_MPS || vel > THROW_VEL_MAX_MPS) {
+  if (vel <= OpCfg::THROW_VEL_MIN_MPS || vel > OpCfg::THROW_VEL_MAX_MPS) {
     Serial.printf("THROW: velocity out of range\n");
     return true;
   }
+  // Convert relative time to absolute wall-clock time
+  const uint64_t throw_wall_us = canif.wallTimeUs() + (uint64_t)(in_s * 1e6f);
   float yaw_deg = PRO.getYawDeg();
   float pitch_deg = PRO.getPitchDeg();
-  if (stateMachine.requestThrow(yaw_deg, pitch_deg, vel, in_s)) {
+  if (stateMachine.requestThrow(yaw_deg, pitch_deg, vel, throw_wall_us)) {
     Serial.printf("THROW: Queued %.3f m/s in %.3f s\n", vel, in_s);
   } else {
     Serial.printf("THROW: REJECTED (state: %s)\n", robotStateToString(stateMachine.getState()));
@@ -259,8 +239,8 @@ bool handleSmoothCmd(const String& line) {
     Serial.println(F("Usage: smooth <pos_rev>"));
     return false;
   }
-  if (target < 0 || target > HAND_MAX_SMOOTH_MOVE_POS) {
-    Serial.printf("SMOOTH: out of range [0, %.2f]\n", HAND_MAX_SMOOTH_MOVE_POS);
+  if (target < 0 || target > TrajCfg::HAND_MAX_SMOOTH_POS) {
+    Serial.printf("SMOOTH: out of range [0, %.2f]\n", TrajCfg::HAND_MAX_SMOOTH_POS);
     return true;
   }
   bool ok = stateMachine.requestSmoothMove(target);

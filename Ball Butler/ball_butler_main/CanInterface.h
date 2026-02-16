@@ -2,6 +2,7 @@
 #include <Arduino.h>
 #include <FlexCAN_T4.h>
 #include "Micros64.h"
+#include "BallButlerConfig.h"
 
 // Forward declaration for StateMachine
 class StateMachine;
@@ -20,43 +21,15 @@ class StateMachine;
  *  - vel_ff / torque_ff are scaled internally by 100.0 int16.
  */
 
-// ============================================================================
-// Centralized CAN ID Registry
-// ============================================================================
-/**
- * All CAN IDs used in the system are defined here in a single location.
- * This makes it easy to:
- *   - See all IDs at a glance and avoid collisions
- *   - Change IDs without hunting through the codebase
- *   - Add new IDs in an organized manner
- *
- * Storage: constexpr ensures these are compile-time constants with no runtime
- * overhead. The compiler will inline these values directly.
- */
-namespace CanIds {
-  // -------------------- Ball Butler Protocol IDs --------------------
-  // These IDs are used for communication between the Ball Butler and host
-  constexpr uint32_t HOST_THROW_CMD    = 0x7D0;  // Host -> BB throw command
-  constexpr uint32_t HEARTBEAT_CMD     = 0x7D1;  // Ball Butler heartbeat (BB -> Host)
-  constexpr uint32_t RELOAD_CMD        = 0x7D2;  // Host -> BB reload command
-  constexpr uint32_t RESET_CMD         = 0x7D3;  // Host -> BB reset command
-  constexpr uint32_t CALIBRATE_LOC_CMD = 0x7D4;  // Host -> BB calibrate location command
-
-  // -------------------- Time Synchronization --------------------
-  constexpr uint32_t TIME_SYNC_CMD     = 0x7DD;  // Wall clock sync from master
-}
+// CAN IDs live in BallButlerConfig.h (namespace CanIds)
 
 class CanInterface {
 public:
   // ============================================================================
-  // Constants
+  // Constants (values from BallButlerConfig.h)
   // ============================================================================
-  // Maximum number of CAN node IDs to track (ODrive axes).
-  // Only 2-3 nodes are used in practice; 16 allows generous headroom.
-  static constexpr uint8_t MAX_NODES = 16;
-
-  // Default heartbeat rate (ms). Set to 0 to disable.
-  static constexpr uint32_t DEFAULT_HEARTBEAT_RATE_MS = 100;  // 20 Hz
+  static constexpr uint8_t MAX_NODES = CanCfg::MAX_NODES;
+  static constexpr uint32_t DEFAULT_HEARTBEAT_RATE_MS = CanCfg::HEARTBEAT_RATE_MS;
 
   // SDO Opcodes for arbitrary parameters
   static constexpr uint8_t OPCODE_READ  = 0x00;
@@ -130,8 +103,8 @@ public:
     float yaw_rad = 0.f;
     float pitch_rad = 0.f;
     float speed_mps = 0.f;
-    float in_s = 0.f;
-    uint64_t wall_us = 0;
+    uint64_t throw_wall_us = 0;  // absolute wall-clock throw time (µs)
+    uint64_t wall_us = 0;        // wall time when CAN message was received
     bool valid = false;
   };
 
@@ -161,7 +134,7 @@ public:
 
   CanInterface();
 
-  void begin(uint32_t bitrate = 1'000'000);
+  void begin(uint32_t bitrate = CanCfg::BAUD_RATE);
   void loop();
 
   // ============================================================================
@@ -177,6 +150,7 @@ public:
 
   uint64_t wallTimeUs() const;
   uint64_t localTimeUs() const;
+  bool hasTimeSync() const { return have_offset_; }
   SyncStats getAndClearSyncStats();
 
   // ============================================================================
@@ -250,25 +224,25 @@ public:
                 float current_limit_A,
                 float current_headroom_A,
                 float settle_pos_rev,
-                float avg_weight = 0.7f,
-                uint16_t iq_poll_period_ms = 10);
+                float avg_weight = HandDefaults::HOMING_EMA_WEIGHT,
+                uint16_t iq_poll_period_ms = HandDefaults::HOMING_IQ_POLL_MS);
 
   bool homeHandStandard(uint32_t node_id,
-                        int hand_direction = -1,
-                        float base_speed_rps = 3.0f,
-                        float current_limit_A = 5.0f,
-                        float current_headroom_A = 3.0f,
-                        float set_abs_pos_rev = -0.1f);
+                        int hand_direction = HandDefaults::HOMING_DIRECTION,
+                        float base_speed_rps = HandDefaults::HOMING_SPEED_RPS,
+                        float current_limit_A = HandDefaults::HOMING_CURRENT_A,
+                        float current_headroom_A = HandDefaults::HOMING_HEADROOM_A,
+                        float set_abs_pos_rev = HandDefaults::HOMING_ABS_POS_REV);
 
   // ============================================================================
   // Operating Configuration
   // ============================================================================
 
   bool restoreHandToOperatingConfig(uint32_t node_id,
-                                    float vel_limit_rps = 1000.0f,
-                                    float current_limit_A = 50.0f);
+                                    float vel_limit_rps = HandDefaults::OP_VEL_LIMIT_RPS,
+                                    float current_limit_A = HandDefaults::OP_CURRENT_LIMIT_A);
 
-  void setAutoClearBrakeResistor(bool enable, uint32_t min_interval_ms = 500);
+  void setAutoClearBrakeResistor(bool enable, uint32_t min_interval_ms = CanCfg::AUTO_CLEAR_BRAKE_MS);
   void setEstimatorCmd(uint8_t cmd);
 
   // ============================================================================
@@ -373,13 +347,17 @@ private:
   uint8_t hand_node_id_  = 0xFF;
   uint8_t pitch_node_id_ = 0xFF;
 
-  // Ball detection 
+  // Ball detection (non-blocking async state machine)
+  enum class BallCheckPhase : uint8_t { IDLE, WAITING };
   uint8_t  ball_detect_gpio_pin     = 3;    // GPIO pin on hand ODrive for ball detection
   uint32_t ball_check_interval_ms_  = 200;  // How often to check for ball in hand
   uint32_t last_ball_check_ms_      = 0;    // Last time we checked for ball in hand
   bool     ball_in_hand_            = true; // Assume we start with a ball in hand until we check
   uint8_t  ball_false_count_        = 0;    // Consecutive false readings so far
   uint8_t  max_ball_missing_samples = 5;    // Consecutive false readings before attempting to enter CHECKING_BALL
+  BallCheckPhase ball_check_phase_  = BallCheckPhase::IDLE;
+  uint32_t ball_check_sent_ms_      = 0;    // When the SDO request was sent
+  static constexpr uint32_t BALL_CHECK_TIMEOUT_MS = 100;
 
   // Auto-clear BRAKE_RESISTOR_DISARMED
   bool auto_clear_brake_res_ = true;

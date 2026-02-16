@@ -2,6 +2,7 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include "Micros64.h"
+#include "BallButlerConfig.h"
 
 /*
  * =============================================================================
@@ -561,27 +562,25 @@ private:
   static constexpr float    REV2DEG   = 360.0f;
   static constexpr uint8_t  PWM_MAX   = 255;
 
-  // PID tuning (volatile for ISR access)
-  volatile float Kp_          = 300.0f;
-  volatile float Ki_          = 0.0f;
-  volatile float Kd_          = 0.0f;
-  volatile float FF_PWM_      = 10.0f;
-  volatile float POS_TOL_REV_ = 0.0014f;  // ~0.5°
-  volatile float ACCEL_PPS_   = 500.0f;
-  volatile float DECEL_PPS_   = 450.0f;
-  
+  // PID tuning (volatile for ISR access; defaults from BallButlerConfig.h)
+  volatile float Kp_          = YawDefaults::KP;
+  volatile float Ki_          = YawDefaults::KI;
+  volatile float Kd_          = YawDefaults::KD;
+  volatile float FF_PWM_      = YawDefaults::FF_PWM;
+  volatile float POS_TOL_REV_ = YawDefaults::POS_TOL_REV;
+  volatile float ACCEL_PPS_   = YawDefaults::ACCEL_PPS;
+  volatile float DECEL_PPS_   = YawDefaults::DECEL_PPS;
+
   // Velocity low-pass filter coefficient (0.0 to 1.0)
   // Lower = more filtering (smoother but more lag)
-  // 0.3 at 150 Hz gives ~12 Hz cutoff frequency
-  volatile float VEL_LPF_ALPHA_ = 0.3f;
-  
+  volatile float VEL_LPF_ALPHA_ = YawDefaults::VEL_LPF_ALPHA;
+
   // Encoder glitch rejection: max allowed velocity in rev/s
   // Position changes implying velocity > this are rejected as noise
-  // 2.0 rev/s = 720 deg/s, which is very fast for a small yaw motor
-  volatile float MAX_VALID_VEL_RPS_ = 2.0f;
+  volatile float MAX_VALID_VEL_RPS_ = YawDefaults::MAX_VALID_VEL_RPS;
   volatile uint32_t glitch_count_ = 0;  // Count of rejected readings
-  volatile int8_t ENC_DIR_    = -1;
-  volatile int8_t MOTOR_DIR_  = +1;
+  volatile int8_t ENC_DIR_    = YawDefaults::ENC_DIR;
+  volatile int8_t MOTOR_DIR_  = YawDefaults::MOTOR_DIR;
 
   // Controller state (volatile for ISR access)
   volatile bool    estop_            = false;
@@ -602,11 +601,11 @@ private:
   volatile uint16_t prev_raw_ = 0;
 
   // Soft limits (in user degrees, min < max always)
-  volatile float LIM_MIN_DEG_ = 0.0f;
-  volatile float LIM_MAX_DEG_ = 120.0f;
+  volatile float LIM_MIN_DEG_ = YawDefaults::LIM_MIN_DEG;
+  volatile float LIM_MAX_DEG_ = YawDefaults::LIM_MAX_DEG;
 
   // Hard limit overshoot tolerance
-  volatile float HARD_LIMIT_OVERSHOOT_DEG_ = 3.0f;
+  volatile float HARD_LIMIT_OVERSHOOT_DEG_ = YawDefaults::HARD_LIMIT_OVERSHOOT_DEG;
 
   // Zero offset (raw encoder degrees that = user 0°)
   volatile float ZERO_OFFSET_DEG_ = 0.0f;

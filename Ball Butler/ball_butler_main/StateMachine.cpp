@@ -102,8 +102,8 @@ void StateMachine::enterState_(RobotState newState) {
       break;
 
     case RobotState::IDLE:
-      // Stow the pitch axis (90 degrees in IDLE mode)
-      pitch_.setTargetDeg(90.0f);
+      // Stow the pitch axis
+      pitch_.setTargetDeg(config_.pitch_deg_home);
       break;
 
     case RobotState::TRACKING:
@@ -132,7 +132,7 @@ void StateMachine::enterState_(RobotState newState) {
 
     case RobotState::CALIBRATING:
       // Only calibrate once the pitch axis is stowed
-      pitch_.setTargetDeg(90.0f);
+      pitch_.setTargetDeg(config_.pitch_deg_home);
 
       // Get the current yaw axis accelerations
       yaw_.getAccel(config_.yaw_pre_calib_accel, config_.yaw_pre_calib_decel);
@@ -242,7 +242,7 @@ void StateMachine::handleIdle_() {
 
     // Execute the throw
     if (executeThrow_(pending_yaw_deg_, pending_pitch_deg_,
-                      pending_speed_mps_, pending_in_s_)) {
+                      pending_speed_mps_)) {
       enterState_(RobotState::THROWING);
     } else {
       debugf_("[SM] Throw execution failed, staying in IDLE\n");
@@ -257,12 +257,11 @@ void StateMachine::handleIdle_() {
     debugf_("[SM] Reloading...");
   }
 
-  // If the pitch axis is at or above `config_.pitch_min_stow_angle_deg` (and at its target) and not currently IDLE, 
+  // If the pitch axis is at or above `config_.pitch_min_stow_angle_deg` (and at its target) and not currently IDLE,
   // we can put it in IDLE mode to save power.
   // Any pitch angle lower than around 70 degrees will cause the axis to fight gravity, so we can only go IDLE when stowed
   // Don't idle if a command was sent recently (prevents race condition with Serial/external commands)
-  const uint32_t pitch_idle_delay_ms = 500;  // Wait at least 500ms after command before allowing IDLE
-  const bool recent_command = (millis() - pitch_.lastCommandMs()) < pitch_idle_delay_ms;
+  const bool recent_command = (millis() - pitch_.lastCommandMs()) < SMDefaults::PITCH_IDLE_DELAY_MS;
   
   CanInterface::AxisHeartbeat hb_pitch;
   if (can_.getAxisHeartbeat(config_.pitch_node_id, hb_pitch)) {
@@ -323,7 +322,7 @@ void StateMachine::handleTracking_() {
 
     // Execute the throw
     if (executeThrow_(pending_yaw_deg_, pending_pitch_deg_,
-                      pending_speed_mps_, pending_in_s_)) {
+                      pending_speed_mps_)) {
       enterState_(RobotState::THROWING);
     } else {
       debugf_("[SM] Throw execution failed, returning to IDLE\n");
@@ -382,7 +381,7 @@ void StateMachine::handleReloading_() {
   const uint32_t sub_elapsed = millis() - sub_state_ms_;
 
   // Min duration of pitch/hand movements before checking done (can take a moment to start moving and update traj_done)
-  const uint32_t min_duration_ms = 300; 
+  const uint32_t min_duration_ms = SMDefaults::MIN_MOTION_DURATION_MS;
 
   CanInterface::AxisHeartbeat hb_hand;
   CanInterface::AxisHeartbeat hb_pitch;
@@ -601,7 +600,7 @@ void StateMachine::handleCalibrating_() {
 // --------------------------------------------------------------------
 void StateMachine::handleCheckingBall_() {
   const uint32_t sub_elapsed = millis() - sub_state_ms_;
-  const uint32_t min_duration_ms = 300;  // Min time before checking trajectory_done
+  const uint32_t min_duration_ms = SMDefaults::MIN_MOTION_DURATION_MS;
   
   CanInterface::AxisHeartbeat hb_pitch;
 
@@ -673,7 +672,7 @@ bool StateMachine::requestReload() {
 }
 
 // requestThrow() - Queue a throw request
-bool StateMachine::requestThrow(float yaw_deg, float pitch_deg, float speed_mps, float in_s) {
+bool StateMachine::requestThrow(float yaw_deg, float pitch_deg, float speed_mps, uint64_t throw_wall_us) {
   // Accept throws when in IDLE or TRACKING state
   if (state_ != RobotState::IDLE && state_ != RobotState::TRACKING) {
     debugf_("[SM] Throw rejected: not in IDLE or TRACKING state (current: %s)\n",
@@ -685,15 +684,22 @@ bool StateMachine::requestThrow(float yaw_deg, float pitch_deg, float speed_mps,
     return false;
   }
 
+  // Require time sync to be established for absolute throw times
+  if (!can_.hasTimeSync()) {
+    debugf_("[SM] Throw rejected: time sync not established\n");
+    return false;
+  }
+
   // Store pending throw parameters
   throw_pending_ = true;
   pending_yaw_deg_ = yaw_deg;
   pending_pitch_deg_ = pitch_deg;
   pending_speed_mps_ = speed_mps;
-  pending_in_s_ = in_s;
+  pending_throw_wall_us_ = throw_wall_us;
 
-  debugf_("[SM] Throw queued: yaw=%.1f° pitch=%.1f° speed=%.2f m/s in=%.2f s\n",
-          yaw_deg, pitch_deg, speed_mps, in_s);
+  const float lead_ms = (float)((int64_t)throw_wall_us - (int64_t)can_.wallTimeUs()) / 1000.0f;
+  debugf_("[SM] Throw queued: yaw=%.1f° pitch=%.1f° speed=%.2f m/s at wall+%.0f ms\n",
+          yaw_deg, pitch_deg, speed_mps, (double)lead_ms);
 
   return true;
 }
@@ -792,8 +798,8 @@ bool StateMachine::requestSmoothMove(float target_rev) {
     return false;
   }
 
-  // Check PV freshness (20ms max age)
-  if (can_.wallTimeUs() - t_us > 20000) {
+  // Check PV freshness
+  if (can_.wallTimeUs() - t_us > SMDefaults::PV_FRESHNESS_US) {
     debugf_("[SM] smoothMove: PV stale\n");
     return false;
   }
@@ -808,10 +814,10 @@ bool StateMachine::requestSmoothMove(float target_rev) {
 
   // Own the buffer and arm the streamer
   traj_buffer_ = std::move(plan.trajectory);
-  const float time_offset_s = can_.wallTimeUs() * 1e-6f;
+  const uint64_t time_offset_us = can_.wallTimeUs();
 
   bool ok = streamer_.arm(config_.hand_node_id, traj_buffer_.data(),
-                          traj_buffer_.size(), time_offset_s);
+                          traj_buffer_.size(), time_offset_us);
 
   debugf_("[SM] smoothMove to %.2f: %s\n", target_rev, ok ? "Armed" : "FAIL");
   return ok;
@@ -821,7 +827,7 @@ bool StateMachine::requestSmoothMove(float target_rev) {
 // executeThrow_() - Actually execute the throw (called from handleIdle_)
 // --------------------------------------------------------------------
 bool StateMachine::executeThrow_(float yaw_deg, float pitch_deg,
-                                 float speed_mps, float in_s) {
+                                 float speed_mps) {
   // 1) Point yaw & pitch
   yaw_.setTargetDeg(yaw_deg);
   pitch_.setTargetDeg(pitch_deg);
@@ -843,8 +849,8 @@ bool StateMachine::executeThrow_(float yaw_deg, float pitch_deg,
     return false;
   }
 
-  // Check PV freshness (20ms max age)
-  if (can_.wallTimeUs() - t_wall_us > 20000) {
+  // Check PV freshness
+  if (can_.wallTimeUs() - t_wall_us > SMDefaults::PV_FRESHNESS_US) {
     debugf_("[SM] Throw rejected: PV stale\n");
     return false;
   }
@@ -857,28 +863,32 @@ bool StateMachine::executeThrow_(float yaw_deg, float pitch_deg,
     return false;
   }
 
-  // 5) Check lead time
+  // 5) Check lead time — compare absolute throw time against earliest trajectory frame
   float min_ts = 0.0f;
   for (const auto& f : plan.trajectory) {
     if (f.t_s < min_ts) min_ts = f.t_s;
   }
-  const float required_lead_s = -min_ts + 0.1f;  // 100ms margin
-  if (in_s < required_lead_s) {
-    debugf_("[SM] Throw rejected: insufficient lead time (need %.2f s, got %.2f s)\n",
-            required_lead_s, in_s);
+  const float required_lead_us = (-min_ts + OpCfg::SCHEDULE_MARGIN_S) * 1e6f;
+  const int64_t actual_lead_us = (int64_t)pending_throw_wall_us_ - (int64_t)can_.wallTimeUs();
+  if ((float)actual_lead_us < required_lead_us) {
+    debugf_("[SM] Throw rejected: insufficient lead time (need %.0f ms, have %.0f ms)\n",
+            (double)(required_lead_us / 1000.0f), (double)(actual_lead_us / 1000.0f));
     return false;
   }
 
-  // 6) Arm the streamer
+  // 6) Arm the streamer — use uint64_t to avoid float precision loss at epoch scale
   traj_buffer_ = std::move(plan.trajectory);
-  const float throw_wall_s = can_.wallTimeUs() * 1e-6f + in_s;
+  const uint64_t throw_wall_us = pending_throw_wall_us_;
+
+  // Diagnostic: how far in the future is the throw?
+  const float lead_ms = (float)((int64_t)throw_wall_us - (int64_t)can_.wallTimeUs()) / 1000.0f;
 
   bool ok = streamer_.arm(config_.hand_node_id, traj_buffer_.data(),
-                          traj_buffer_.size(), throw_wall_s);
+                          traj_buffer_.size(), throw_wall_us);
 
-  debugf_("[SM] Throw armed: frames=%u, ready_time=%.2f s, %s\n",
+  debugf_("[SM] Throw armed: frames=%u, ready_time=%.2f s, lead=%.1f ms, %s\n",
           (unsigned)traj_buffer_.size(), planner_.lastTimeToReadyS(),
-          ok ? "OK" : "FAIL");
+          (double)lead_ms, ok ? "OK" : "FAIL");
 
   return ok;
 }
@@ -954,10 +964,10 @@ bool StateMachine::moveHandToPosition_(float target_rev) {
 
   // Arm streamer
   traj_buffer_ = std::move(plan.trajectory);
-  const float time_offset_s = can_.wallTimeUs() * 1e-6f;
+  const uint64_t time_offset_us = can_.wallTimeUs();
 
   return streamer_.arm(config_.hand_node_id, traj_buffer_.data(),
-                       traj_buffer_.size(), time_offset_s);
+                       traj_buffer_.size(), time_offset_us);
 }
 
 // --------------------------------------------------------------------

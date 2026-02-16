@@ -62,63 +62,64 @@ public:
   // ----------------------------------------------------------------
   // Configuration structure
   // ----------------------------------------------------------------
+  // All defaults reference BallButlerConfig.h (SMDefaults::)
   struct Config {
     // Timeouts
-    uint32_t homing_timeout_ms      = 10000;  // 10 seconds for homing
-    uint32_t homing_retry_delay_ms  = 500;    // Delay between homing attempts
-    uint32_t reload_timeout_ms      = 15000;  // 15 seconds for reload sequence
-    uint32_t post_throw_delay_ms    = 1000;   // 1 second delay after throw before reload
-    uint32_t idle_no_cmd_timeout_ms = 5000;  // Stow pitch if no throw cmd received for this long
-    
+    uint32_t homing_timeout_ms      = SMDefaults::HOMING_TIMEOUT_MS;
+    uint32_t homing_retry_delay_ms  = SMDefaults::HOMING_RETRY_DELAY_MS;
+    uint32_t reload_timeout_ms      = SMDefaults::RELOAD_TIMEOUT_MS;
+    uint32_t post_throw_delay_ms    = SMDefaults::POST_THROW_DELAY_MS;
+    uint32_t idle_no_cmd_timeout_ms = SMDefaults::IDLE_NO_CMD_TIMEOUT_MS;
+
     // Reload sequence positions and other parameters
-    float reload_hand_top_rev     = 8.7f;   // Hand position for reload
-    float reload_pitch_ready_deg  = 70.0f;  // Pitch angle before grabbing ball
+    float reload_hand_top_rev     = SMDefaults::RELOAD_HAND_TOP_REV;
+    float reload_pitch_ready_deg  = SMDefaults::RELOAD_PITCH_READY_DEG;
 
-    float reload_yaw_angle_deg    = 180.0f; // Yaw angle for ball pickup
-    float reload_pitch_grab_deg   = 90.0f;  // Pitch angle to grab ball
+    float reload_yaw_angle_deg    = SMDefaults::RELOAD_YAW_ANGLE_DEG;
+    float reload_pitch_grab_deg   = SMDefaults::RELOAD_PITCH_GRAB_DEG;
 
-    float reload_hand_bottom_rev  = 0.0f;   // Hand position at bottom of stroke
-    float reload_hand_bottom_tolerance_rev = 0.1f; // Tolerance for considering hand at bottom position
-    uint32_t reload_hold_delay_ms = 500;    // Time to wait to check that the ball is in-hand
-    uint8_t reload_ball_check_samples = 5;  // Number of BallCheck samples to wait for. If any are positive, consider the ball successfully grabbed (to handle noisy detection)
+    float reload_hand_bottom_rev  = SMDefaults::RELOAD_HAND_BOTTOM_REV;
+    float reload_hand_bottom_tolerance_rev = SMDefaults::RELOAD_HAND_BOTTOM_TOL_REV;
+    uint32_t reload_hold_delay_ms = SMDefaults::RELOAD_HOLD_DELAY_MS;
+    uint8_t reload_ball_check_samples = SMDefaults::RELOAD_BALL_CHECK_SAMPLES;
 
-    uint32_t tracking_hand_pos_check_interval_ms = 200; // Interval to check hand pos during tracking (and correct if it's outside the reload_hand_bottom_rev +/- tolerance)
+    uint32_t tracking_hand_pos_check_interval_ms = SMDefaults::TRACKING_HAND_CHECK_MS;
 
     // Rate-limiting intervals for tracking commands (prevents CAN bus flooding)
-    uint32_t yaw_cmd_interval_ms   = 10;   // Minimum interval between yaw commands
-    uint32_t pitch_cmd_interval_ms = 50;   // Minimum interval between pitch commands
+    uint32_t yaw_cmd_interval_ms   = SMDefaults::YAW_CMD_INTERVAL_MS;
+    uint32_t pitch_cmd_interval_ms = SMDefaults::PITCH_CMD_INTERVAL_MS;
 
     // Ball-in-hand monitoring (CHECKING_BALL state)
-    uint8_t check_ball_confirm_samples = 5;  // Consecutive false readings in CHECKING_BALL to confirm ball is gone
-    float check_ball_disrupt_pitch_deg = 70.0f;  // Pitch angle to "disrupt" and recheck ball presence
+    uint8_t check_ball_confirm_samples = SMDefaults::CHECK_BALL_CONFIRM_SAMPLES;
+    float check_ball_disrupt_pitch_deg = SMDefaults::CHECK_BALL_DISRUPT_PITCH_DEG;
 
     // Positions to go to if reload fails or succeeds (home position)
-    float hand_rev_home    = 0.0f;   // Hand position on failure
-    float pitch_deg_home   = 90.0f;  // Pitch angle on failure
-    float yaw_deg_home     = 20.0f;  // Yaw angle on failure
+    float hand_rev_home    = SMDefaults::HAND_REV_HOME;
+    float pitch_deg_home   = SMDefaults::PITCH_DEG_HOME;
+    float yaw_deg_home     = SMDefaults::YAW_DEG_HOME;
 
     // Calibration
-    float calibrate_location_max_yaw_deg = 120.0f; // Angle to move to (and back) during location calibration
-    float calibrate_location_min_yaw_deg = 0.0f;  // Minimum yaw angle for calibration
-    float yaw_pre_calib_accel = 0.0f; // Yaw acceleration before calibration (to be restored after)
-    float yaw_pre_calib_decel = 0.0f; // Yaw deceleration before calibration
-    float yaw_calib_accel     = 50.0f;
-    float yaw_calib_decel     = 50.0f;
-    uint32_t calibration_pause_ms = 2500; // Pause at calibration end position (to calibrate orientation) (ms)
-    
+    float calibrate_location_max_yaw_deg = SMDefaults::CALIB_MAX_YAW_DEG;
+    float calibrate_location_min_yaw_deg = SMDefaults::CALIB_MIN_YAW_DEG;
+    float yaw_pre_calib_accel = 0.0f; // Yaw acceleration before calibration (saved/restored at runtime)
+    float yaw_pre_calib_decel = 0.0f; // Yaw deceleration before calibration (saved/restored at runtime)
+    float yaw_calib_accel     = SMDefaults::CALIB_YAW_ACCEL;
+    float yaw_calib_decel     = SMDefaults::CALIB_YAW_DECEL;
+    uint32_t calibration_pause_ms = SMDefaults::CALIB_PAUSE_MS;
+
     // Retry limits
-    uint8_t max_reload_attempts      = 3;   // Max attempts before ERROR
-    uint8_t max_homing_attempts      = 3;   // Max homing attempts
-    
+    uint8_t max_reload_attempts      = SMDefaults::MAX_RELOAD_ATTEMPTS;
+    uint8_t max_homing_attempts      = SMDefaults::MAX_HOMING_ATTEMPTS;
+
     // Axis settle times (ms to wait after commanding position) and positions
-    uint32_t pitch_settle_ms       = 500;
-    uint32_t pitch_grab_settle_ms  = 1000;  // Settle time when 'grabbing' the next ball
-    float yaw_angle_threshold_deg  = 1.0f;  // Threshold to consider yaw at target angle
+    uint32_t pitch_settle_ms       = SMDefaults::PITCH_SETTLE_MS;
+    uint32_t pitch_grab_settle_ms  = SMDefaults::PITCH_GRAB_SETTLE_MS;
+    float yaw_angle_threshold_deg  = SMDefaults::YAW_ANGLE_THRESHOLD_DEG;
 
     // Axis limits
-    float pitch_min_stow_angle_deg = 80.0f;  // Min pitch angle to consider stowed (for IDLE power saving)
-    float yaw_min_angle_deg        = 5.0f;   // Min yaw angle
-    float yaw_max_angle_deg        = 185.0f + yaw_min_angle_deg; // Max yaw angle
+    float pitch_min_stow_angle_deg = SMDefaults::PITCH_MIN_STOW_DEG;
+    float yaw_min_angle_deg        = SMDefaults::YAW_MIN_ANGLE_DEG;
+    float yaw_max_angle_deg        = SMDefaults::YAW_MAX_ANGLE_DEG;
 
     // Node IDs (defaults from BallButlerConfig.h)
     uint8_t hand_node_id  = NodeId::HAND;
@@ -152,7 +153,7 @@ public:
   // ----------------------------------------------------------------
   // Request a throw or reload with given parameters
   // Returns true if command was accepted, false if rejected (wrong state, etc.)
-  bool requestThrow(float yaw_deg, float pitch_deg, float speed_mps, float in_s);
+  bool requestThrow(float yaw_deg, float pitch_deg, float speed_mps, uint64_t throw_wall_us);
   bool requestReload();
   bool requestCheckBall();
   bool requestCalibrateLocation();
@@ -214,7 +215,7 @@ private:
   bool homeHand_();
 
   bool moveHandToPosition_(float pos_rev);
-  bool executeThrow_(float yaw_deg, float pitch_deg, float speed_mps, float in_s);
+  bool executeThrow_(float yaw_deg, float pitch_deg, float speed_mps);
   
   // Debug print helper
   void debugf_(const char* fmt, ...);
@@ -259,11 +260,11 @@ private:
   bool reload_pending_ = false;
 
   // Pending throw request
-  bool  throw_pending_     = false;
-  float pending_yaw_deg_   = 0;
-  float pending_pitch_deg_ = 0;
-  float pending_speed_mps_ = 0;
-  float pending_in_s_      = 0;
+  bool     throw_pending_          = false;
+  float    pending_yaw_deg_        = 0;
+  float    pending_pitch_deg_      = 0;
+  float    pending_speed_mps_      = 0;
+  uint64_t pending_throw_wall_us_  = 0;  // absolute wall-clock throw time (µs)
   
   // Tracking state
   TrackingCmd last_tracking_cmd_;

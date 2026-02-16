@@ -14,17 +14,17 @@ struct HandTrajectoryStreamer {
   size_t n = 0, idx = 0;
   uint32_t node = 0;
   bool active = false;
-  float t_offset_s = 0.0f;  // set via arm()
+  uint64_t t_offset_us = 0;  // absolute wall-clock offset in microseconds
 
   explicit HandTrajectoryStreamer(CanInterface& c) : can(c) {}
 
-  // time_offset_s:
-  //   • If frames[].t_s are ABSOLUTE wall times → pass 0.
-  //   • If RELATIVE (start at 0 "now") → pass can.wallTimeUs()/1e6f
-  //   • If ABSOLUTE in local micros() time → pass (can.wallTimeUs()-can.localTimeUs())/1e6f
-  bool arm(uint32_t node_id, const TrajFrame* f, size_t count, float time_offset_s = 0.0f) {
+  // time_offset_us: absolute wall-clock reference in microseconds.
+  //   frames[i] is sent when wallTimeUs() >= time_offset_us + frames[i].t_s * 1e6.
+  //   • For "start now": pass can.wallTimeUs()
+  //   • For "decel at absolute time T": pass T (in µs)
+  bool arm(uint32_t node_id, const TrajFrame* f, size_t count, uint64_t time_offset_us = 0) {
     if (!f || count == 0) return false;
-    node = node_id; frames = f; n = count; idx = 0; t_offset_s = time_offset_s;
+    node = node_id; frames = f; n = count; idx = 0; this->t_offset_us = time_offset_us;
 
     if (!can.isAxisHomed(node_id)) {
       if (Serial) Serial.printf("[Gate] Trajectory arm rejected for node %lu (not homed)\n", (unsigned long)node_id);
@@ -47,7 +47,10 @@ struct HandTrajectoryStreamer {
 
     // Send any frames whose time has arrived (burst out catch-up frames too)
     while (idx < n) {
-      const uint64_t t_us = (uint64_t) llroundf((frames[idx].t_s + t_offset_s) * 1e6f);
+      // frames[idx].t_s is small (±few seconds), so float→int64 conversion is precise.
+      // Adding to uint64_t t_offset_us preserves full microsecond accuracy at any epoch.
+      const int64_t frame_off_us = (int64_t)llroundf(frames[idx].t_s * 1e6f);
+      const uint64_t t_us = (uint64_t)((int64_t)t_offset_us + frame_off_us);
       if (now_us < t_us) break;
       (void)can.sendInputPos(node, frames[idx].pos_cmd, frames[idx].vel_ff, frames[idx].tor_ff);
       ++idx;

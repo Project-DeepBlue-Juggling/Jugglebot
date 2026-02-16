@@ -25,19 +25,19 @@
 
 class PitchAxis {
 public:
-  // Allowed user command range in DEGREES
-  static constexpr float DEG_MIN = 12.0f; // Actual min is ~10.8, but let's have a bit of margin for now...
-  static constexpr float DEG_MAX = 90.0f;
+  // Allowed user command range in DEGREES (from BallButlerConfig.h)
+  static constexpr float DEG_MIN = PitchDefaults::DEG_MIN;
+  static constexpr float DEG_MAX = PitchDefaults::DEG_MAX;
 
   // Corresponding REV range (derived, for reference)
   static constexpr float REV_MIN = (DEG_MIN - DEG_MAX) / 360.0f;
   static constexpr float REV_MAX = 0.0f;
 
-  // Default trajectory limits (turns/s, turns/s^2)
+  // Default trajectory limits (turns/s, turns/s^2; defaults from BallButlerConfig.h)
   struct Traj {
-    float vel_limit_rps  = 1.0f;    // max trap vel (rev/s)
-    float accel_rps2     = 0.5f;    // accel
-    float decel_rps2     = 0.25f;   // decel
+    float vel_limit_rps  = PitchDefaults::TRAJ_VEL_RPS;
+    float accel_rps2     = PitchDefaults::TRAJ_ACCEL_RPS2;
+    float decel_rps2     = PitchDefaults::TRAJ_DECEL_RPS2;
   };
 
   PitchAxis(CanInterface& can, uint8_t node_id, Stream* log = &Serial);

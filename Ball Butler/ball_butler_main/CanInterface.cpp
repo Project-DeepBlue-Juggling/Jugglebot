@@ -416,7 +416,7 @@ bool CanInterface::homeHand(uint32_t node_id, float homing_speed_rps, float curr
   if (!setControllerMode(node_id, 2u, 2u)) return false;
   const float vel_limit = fabsf(homing_speed_rps * 2.0f);
   if (!setVelCurrLimits(node_id, current_limit_A + current_headroom_A, vel_limit)) return false;
-  delay(100);
+  delay(HandDefaults::HOMING_MODE_SETTLE_MS);  // Let control mode take effect before sending velocity
 
   if (!sendInputVel(node_id, homing_speed_rps, 0.0f)) {
     setRequestedState(node_id, ODriveState::IDLE);
@@ -430,7 +430,7 @@ bool CanInterface::homeHand(uint32_t node_id, float homing_speed_rps, float curr
   float ema = 0.0f;
   uint64_t last_seen_us = 0;
   uint64_t start_time = millis();
-  uint64_t timeout = 5000;
+  uint64_t timeout = HandDefaults::HOMING_ATTEMPT_TIMEOUT_MS;  // Timeout for a single homing attempt
 
   for (;;) {
     can1_.events();
@@ -451,7 +451,7 @@ bool CanInterface::homeHand(uint32_t node_id, float homing_speed_rps, float curr
         
         if (fabsf(ema) >= current_limit_A) {
           setRequestedState(node_id, ODriveState::IDLE);
-          delay(5);
+          delay(HandDefaults::HOMING_STOP_SETTLE_MS);  // Let motor stop before setting position
           setAbsolutePosition(node_id, settle_pos_rev);
           Serial.printf("[Home] node=%lu homed. Set pos to %.3f rev.\n", (unsigned long)node_id, (double)settle_pos_rev);
           restoreHandToOperatingConfig(node_id);
@@ -467,7 +467,8 @@ bool CanInterface::homeHand(uint32_t node_id, float homing_speed_rps, float curr
 bool CanInterface::homeHandStandard(uint32_t node_id, int hand_direction, float base_speed_rps,
                                     float current_limit_A, float current_headroom_A, float set_abs_pos_rev) {
   const float homing_speed = float(hand_direction) * base_speed_rps;
-  return homeHand(node_id, homing_speed, current_limit_A, current_headroom_A, set_abs_pos_rev, 0.7f, 10);
+  return homeHand(node_id, homing_speed, current_limit_A, current_headroom_A, set_abs_pos_rev,
+                  HandDefaults::HOMING_EMA_WEIGHT, HandDefaults::HOMING_IQ_POLL_MS);
 }
 
 // ================================================================================
@@ -579,31 +580,27 @@ void CanInterface::publishHeartbeat_() {
   ProprioceptionData prop;
   PRO.snapshot(prop);
   
-  float yaw_res = 0.01f;       // degrees
-  float pitch_res = 0.002f;    // degrees
-  float hand_res = 0.01f;      // mm
-
   // Yaw: resolution ~0.01° : 0-360° -> 0-65535 (uint16),
   uint16_t yaw_enc = 0;
   if (prop.isYawValid()) {
     float yaw_deg = fmodf(prop.yaw_deg, 360.0f);
     if (yaw_deg < 0) yaw_deg += 360.0f;
-    yaw_enc = (uint16_t)(yaw_deg / yaw_res);
+    yaw_enc = (uint16_t)(yaw_deg / HeartbeatCfg::YAW_RES_DEG);
   }
-  
+
   // Pitch:  resolution ~0.002° : 0-131.072° -> 0-65535 (uint16),
   uint16_t pitch_enc = 0;
   if (prop.isPitchValid()) {
-    float pitch_deg = constrain(prop.pitch_deg, 0.0f, 90.0f);
-    pitch_enc = (uint16_t)(pitch_deg / pitch_res);
+    float pitch_deg = constrain(prop.pitch_deg, HeartbeatCfg::PITCH_CLAMP_MIN, HeartbeatCfg::PITCH_CLAMP_MAX);
+    pitch_enc = (uint16_t)(pitch_deg / HeartbeatCfg::PITCH_RES_DEG);
   }
-  
-  // Hand: resolution 0.01mm : 0-655.36 mm -> 0-65535 (uint16), 
+
+  // Hand: resolution 0.01mm : 0-655.36 mm -> 0-65535 (uint16),
   uint16_t hand_enc = 0;
   if (prop.isHandPVValid()) {
     float hand_mm = prop.hand_pos_rev / LINEAR_GAIN * 1000.0f;
-    hand_mm = constrain(hand_mm, 0.0f, 655.36f);
-    hand_enc = (uint16_t)(hand_mm / hand_res);
+    hand_mm = constrain(hand_mm, 0.0f, HeartbeatCfg::HAND_MAX_MM);
+    hand_enc = (uint16_t)(hand_mm / HeartbeatCfg::HAND_RES_MM);
   }
   
   // Assemble frame (little-endian for uint16 fields)
@@ -629,31 +626,53 @@ void CanInterface::maybeCheckBallInHand_() {
   if (!state_machine_) return;
   const RobotState st = state_machine_->getState();
   if (st != RobotState::IDLE && st != RobotState::TRACKING) return;
-  if (millis() - last_ball_check_ms_ > ball_check_interval_ms_) {
-    uint32_t gpio_states = 0;
-    if (!readGpioStates(hand_node_id_, gpio_states)) {
-      if (dbg_) dbg_->printf("[CAN] Ball check failed: unable to read GPIO states\n");
-      return;
-    }
 
-    ball_in_hand_ = !((gpio_states >> ball_detect_gpio_pin) & 0x01);
-
-    // Ball detected - reset counter
-    if (ball_in_hand_) {
-      ball_false_count_ = 0;
-    } else {
-      // No ball detected - increment counter
-      ball_false_count_++;
-      if (ball_false_count_ >= max_ball_missing_samples) {
-        if (dbg_) dbg_->printf("[CAN] %d consecutive ball-missing readings, entering CHECKING_BALL\n", ball_false_count_);
-        state_machine_->requestCheckBall();
-        ball_false_count_ = 0; // reset counter to avoid repeated triggers
+  switch (ball_check_phase_) {
+    case BallCheckPhase::IDLE: {
+      if (millis() - last_ball_check_ms_ < ball_check_interval_ms_) return;
+      // Clear cached response so we detect the fresh reply
+      if (hand_node_id_ < MAX_NODES) arb_param_resp_[hand_node_id_].valid = false;
+      // Send async SDO request for GPIO states (non-blocking)
+      if (!requestArbitraryParameter(hand_node_id_, EndpointIds::GPIO_STATES)) {
+        if (dbg_) dbg_->printf("[CAN] Ball check: failed to send GPIO request\n");
+        last_ball_check_ms_ = millis();  // Back off before retrying
         return;
       }
+      ball_check_phase_ = BallCheckPhase::WAITING;
+      ball_check_sent_ms_ = millis();
+      break;
     }
+    case BallCheckPhase::WAITING: {
+      // Check for response (non-blocking)
+      ArbitraryParamResponse resp;
+      if (getLastArbitraryParamResponse(hand_node_id_, resp) &&
+          resp.endpoint_id == EndpointIds::GPIO_STATES) {
+        // Got response — process GPIO states
+        const uint32_t gpio_states = resp.value.u32;
+        ball_in_hand_ = !((gpio_states >> ball_detect_gpio_pin) & 0x01);
 
-    // Serial.printf("[BallCheck] GPIO states=0x%08lX ball_in_hand=%d\n", (unsigned long)gpio_states, (int)ball_in_hand_);
-    last_ball_check_ms_ = millis();
+        if (ball_in_hand_) {
+          ball_false_count_ = 0;
+        } else {
+          ball_false_count_++;
+          if (ball_false_count_ >= max_ball_missing_samples) {
+            if (dbg_) dbg_->printf("[CAN] %d consecutive ball-missing readings, entering CHECKING_BALL\n", ball_false_count_);
+            state_machine_->requestCheckBall();
+            ball_false_count_ = 0;
+          }
+        }
+
+        last_ball_check_ms_ = millis();
+        ball_check_phase_ = BallCheckPhase::IDLE;
+      } else if (millis() - ball_check_sent_ms_ > BALL_CHECK_TIMEOUT_MS) {
+        // Timeout — no response received
+        if (dbg_) dbg_->printf("[CAN] Ball check: GPIO read timeout\n");
+        last_ball_check_ms_ = millis();
+        ball_check_phase_ = BallCheckPhase::IDLE;
+      }
+      // Otherwise: still waiting, return without blocking
+      break;
+    }
   }
 }
 
@@ -686,7 +705,17 @@ void CanInterface::handleRx_(const CAN_message_t& msg) {
     c.yaw_rad = float(yaw_i) * (float)M_PI / 32768.0f;
     c.pitch_rad = float(pit_u) * ((float)M_PI / 65536.0f);
     c.speed_mps = float(sp_u) * 0.0001f;
-    c.in_s = float(t_u) * 0.001f;
+
+    // Decode absolute throw time from lower 16 bits of epoch milliseconds.
+    // Reconstruct full uint64_t using current wall clock for the upper bits.
+    {
+      const uint64_t now_ms = wallTimeUs() / 1000ULL;
+      const uint64_t base   = now_ms & ~0xFFFFULL;
+      uint64_t thr_ms       = base | (uint64_t)t_u;
+      // Handle wrap-around: throw should be in the near future
+      if (now_ms > thr_ms + 32768ULL) thr_ms += 65536ULL;
+      c.throw_wall_us = thr_ms * 1000ULL;
+    }
 
     if (c.yaw_rad < -M_PI) c.yaw_rad = -M_PI;
     if (c.yaw_rad > M_PI) c.yaw_rad = M_PI;
@@ -695,17 +724,16 @@ void CanInterface::handleRx_(const CAN_message_t& msg) {
     if (c.pitch_rad > PI_2) c.pitch_rad = PI_2;
     if (c.speed_mps < 0.f) c.speed_mps = 0.f;
     if (c.speed_mps > 6.5535f) c.speed_mps = 6.5535f;
-    if (c.in_s < 0.f) c.in_s = 0.f;
-    if (c.in_s > 65.535f) c.in_s = 65.535f;
 
     c.wall_us = wallTimeUs();
     c.valid = true;
     last_host_cmd_ms_ = millis();  // Track local time for idle timeout
 
     if (dbg_ && dbg_can_) {
-      dbg_->printf("[HostCmd] yaw=%.3f rad pitch=%.3f rad speed=%.3f m/s in=%.3f s (id=0x%03lX)\n",
+      const float lead_ms = (float)((int64_t)c.throw_wall_us - (int64_t)c.wall_us) / 1000.0f;
+      dbg_->printf("[HostCmd] yaw=%.3f rad pitch=%.3f rad speed=%.3f m/s throw_in=%.0f ms (id=0x%03lX)\n",
                    (double)c.yaw_rad, (double)c.pitch_rad, (double)c.speed_mps,
-                   (double)c.in_s, (unsigned long)msg.id);
+                   (double)lead_ms, (unsigned long)msg.id);
     }
 
     // Route to StateMachine based on speed
@@ -718,8 +746,8 @@ void CanInterface::handleRx_(const CAN_message_t& msg) {
         // Tracking mode: just update yaw/pitch targets (no throw)
         state_machine_->requestTracking(yaw_deg, pitch_deg);
       } else {
-        // Throw mode: queue a throw with the given parameters
-        state_machine_->requestThrow(yaw_deg, pitch_deg, c.speed_mps, c.in_s);
+        // Throw mode: queue a throw with absolute wall-clock time
+        state_machine_->requestThrow(yaw_deg, pitch_deg, c.speed_mps, c.throw_wall_us);
       }
     }
 
