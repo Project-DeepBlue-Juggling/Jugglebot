@@ -41,7 +41,8 @@ setup(
             'hoop_sinker_node = jugglebot.hoop_sinker_node:main',
             'ball_butler_node = jugglebot.ball_butler_node:main',
             'ball_butler_volley_testing_node = jugglebot.ball_butler_volley_testing_node:main',
-            'target_tracker_node = jugglebot.target_tracker_node:main'
+            'target_tracker_node = jugglebot.target_tracker_node:main',
+            'catch_from_ball_butler_node = jugglebot.catch_from_ball_butler_node:main'
         ],
     },
 )
