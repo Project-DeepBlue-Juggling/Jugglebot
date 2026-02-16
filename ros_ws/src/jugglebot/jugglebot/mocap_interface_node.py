@@ -4,7 +4,8 @@ from std_srvs.srv import Trigger, SetBool
 from std_msgs.msg import Float64
 from jugglebot_interfaces.msg import MocapDataMulti, MocapDataSingle, BallButlerHeartbeat, RigidBodyPose, RigidBodyPoses
 from jugglebot_interfaces.srv import GetRobotGeometry
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, TransformStamped
+import tf2_ros
 from .mocap_interface import MocapInterface
 from jugglebot.ball_butler_states import BallButlerStates
 
@@ -36,6 +37,9 @@ class MocapInterfaceNode(Node):
         #########################################################################################################
         #                                             Publishing                                                #
         #########################################################################################################
+
+        # tf2 static broadcaster for the world -> platform_start transform
+        self.static_tf_broadcaster = tf2_ros.StaticTransformBroadcaster(self)
 
         # Initialize publishers to publish the mocap data
         self.clock_offset_publisher = self.create_publisher(Float64, 'qtm_clock_offset_sec', 10)
@@ -151,13 +155,51 @@ class MocapInterfaceNode(Node):
         try:
             response = future.result()
             if response is not None:
-                self.mocap_interface.set_base_to_platform_offset(response.start_pos[2])
+                platform_z_offset = response.start_pos[2]
+                self.mocap_interface.set_base_to_platform_offset(platform_z_offset)
                 self.mocap_interface.ready_to_publish = True
                 self.get_logger().info("Received robot geometry data.")
+
+                # Broadcast world -> platform_start static transform.
+                # platform_start is the world frame shifted down by the platform Z offset,
+                # so a point in platform_start = point_in_world - (0, 0, offset).
+                # The transform FROM world TO platform_start is therefore (0, 0, offset).
+                self._broadcast_platform_start_tf(platform_z_offset)
             else:
                 self.get_logger().error("Failed to get robot geometry data.")
         except Exception as e:
             self.get_logger().error(f"Service call failed: {e}")
+
+    def _broadcast_platform_start_tf(self, platform_z_offset_mm: float):
+        """Broadcast the static transform from 'world' to 'platform_start'.
+
+        The platform_start frame has its origin at the platform's lowest
+        position, which is offset from the world origin by platform_z_offset_mm
+        in the Z direction.  Positions stored in mocap_interface with
+        frame_id='platform_start' have already had this offset subtracted,
+        so the child frame origin is at (0, 0, platform_z_offset_mm) in world.
+        """
+        t = TransformStamped()
+        t.header.stamp = self.get_clock().now().to_msg()
+        t.header.frame_id = 'world'
+        t.child_frame_id = 'platform_start'
+
+        # Translation: only a Z offset (mm, matching the units used everywhere else)
+        t.transform.translation.x = 0.0
+        t.transform.translation.y = 0.0
+        t.transform.translation.z = platform_z_offset_mm
+
+        # No rotation
+        t.transform.rotation.x = 0.0
+        t.transform.rotation.y = 0.0
+        t.transform.rotation.z = 0.0
+        t.transform.rotation.w = 1.0
+
+        self.static_tf_broadcaster.sendTransform(t)
+        self.get_logger().info(
+            f"Broadcast static tf: world -> platform_start "
+            f"(z_offset={platform_z_offset_mm:.1f} mm)"
+        )
 
     #########################################################################################################
     #                                           Ball Butler                                                 #
