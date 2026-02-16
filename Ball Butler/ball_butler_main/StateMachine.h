@@ -29,7 +29,6 @@
  */
 
 #include <Arduino.h>
-#include <vector>
 #include "BallButlerConfig.h"
 #include "RobotState.h"
 #include "TrajFrame.h"
@@ -212,7 +211,7 @@ private:
   // ----------------------------------------------------------------
   // Helper functions
   // ----------------------------------------------------------------
-  bool homeHand_();
+  bool startHomeHand_();
 
   bool moveHandToPosition_(float pos_rev);
   bool executeThrow_(float yaw_deg, float pitch_deg, float speed_mps);
@@ -272,8 +271,9 @@ private:
   uint32_t last_yaw_cmd_ms_   = 0;     // Rate-limiting: last yaw command forwarded
   uint32_t last_pitch_cmd_ms_ = 0;     // Rate-limiting: last pitch command forwarded
   
-  // Trajectory buffer (owned here; used by executeThrow_, moveHandToPosition_, requestSmoothMove)
-  std::vector<TrajFrame> traj_buffer_;
+  // Pre-allocated trajectory output buffer (P2-1: no heap allocation)
+  TrajFrame traj_buffer_[TrajCfg::MAX_TRAJ_FRAMES];
+  size_t    traj_count_ = 0;
 
   // Error state
   char error_msg_[64] = {0};

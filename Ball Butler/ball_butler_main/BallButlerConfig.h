@@ -177,6 +177,14 @@ namespace TrajCfg {
   constexpr float MAX_SMOOTH_ACCEL       = 200.0f;      // Max hand accel for smooth moves (rev/s^2)
   constexpr float QUINTIC_S2_MAX         = 5.7735027f;  // Max |s''| for quintic polynomial
   constexpr float HAND_MAX_SMOOTH_POS    = 8.9f;        // Max hand position for smooth moves (rev)
+
+  // Pre-allocated trajectory buffer sizing
+  constexpr float MAX_THROW_DURATION_S   = 2.0f;        // Max physical throw duration (seconds)
+  constexpr size_t MAX_THROW_SAMPLES     = (size_t)(MAX_THROW_DURATION_S * SAMPLE_RATE) + 1;  // ~1001
+  constexpr size_t MAX_SMOOTH_SAMPLES    = 300;          // Covers max smooth move (~0.51s at 500 Hz) with headroom
+  constexpr size_t MAX_PAUSE_SAMPLES     = 512;          // Up to ~1.0s pause at 500 Hz
+  constexpr size_t MAX_TRAJ_FRAMES       = MAX_THROW_SAMPLES + MAX_SMOOTH_SAMPLES + MAX_PAUSE_SAMPLES;  // ~1813
+  constexpr size_t TRAJ_ARENA_BYTES      = 24576;        // 24 KB arena for intermediate Trajectory float arrays
 }
 
 // ============================================================================
@@ -200,6 +208,7 @@ namespace SMDefaults {
   constexpr float RELOAD_HAND_BOTTOM_TOL_REV      = 0.1f;
   constexpr uint32_t RELOAD_HOLD_DELAY_MS         = 500;
   constexpr uint8_t  RELOAD_BALL_CHECK_SAMPLES    = 5;
+  constexpr uint32_t BALL_CHECK_SAMPLE_INTERVAL_MS = 250;  // Min ms between ball-check samples (must exceed SDO poll period)
 
   // Tracking & rate limiting
   constexpr uint32_t TRACKING_HAND_CHECK_MS       = 200;

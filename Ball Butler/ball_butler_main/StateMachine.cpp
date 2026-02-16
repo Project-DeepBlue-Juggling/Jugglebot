@@ -163,8 +163,9 @@ void StateMachine::enterState_(RobotState newState) {
 // handleBoot_() - Homing and initialization state (non-blocking)
 //
 // Sub-states:
-//   0: Ready to attempt homing
+//   0: Ready to initiate a homing attempt
 //   1: Waiting for retry delay after failed attempt
+//   2: Homing in progress — polling updateHomeHand() each cycle
 // --------------------------------------------------------------------
 void StateMachine::handleBoot_() {
   const uint32_t elapsed = millis() - state_enter_ms_;
@@ -176,42 +177,21 @@ void StateMachine::handleBoot_() {
   }
 
   switch (homing_sub_state_) {
-    case 0:  // Ready to attempt homing
+    case 0:  // Ready to initiate a homing attempt
       if (homing_attempt_ < config_.max_homing_attempts) {
         homing_attempt_++;
         debugf_("[SM] Homing attempt %d/%d\n", homing_attempt_, config_.max_homing_attempts);
 
-        if (homeHand_()) {
-          debugf_("[SM] Homing successful\n");
-
-          // Configure yaw axis coordinate system:
-          // - ZERO_OFFSET_DEG_ = encoder angle that corresponds to user 0°
-          // - We want user range [0, 185] to be safely away from encoder 0/360
-          // - Setting offset to 10° means: encoder 10° = user 0°, encoder 195° = user 185°
-          // - Overshoot past user 0° gives negative user values (safe, no wrap)
-          // - Overshoot past user 185° gives user values > 185° (safe, no wrap)
-          // 
-          // With soft limits [0, 185] and hard limit overshoot of 5°:
-          // - Hard limit range is [-5°, 190°] in user coordinates
-          // - In encoder space: [5°, 200°]
-          // - The forbidden zone [200°, 5°] wraps around encoder 0/360 safely
-          const float yaw_offset = config_.yaw_min_angle_deg;  // e.g., 5° or 10°
-          yaw_.setZeroOffset(yaw_offset);
-          yaw_.setSoftLimitsDeg(0.0f, config_.yaw_max_angle_deg - config_.yaw_min_angle_deg);
-          
-          debugf_("[SM] Yaw configured: offset=%.1f°, limits=[0, %.1f]°\n", 
-                  yaw_offset, config_.yaw_max_angle_deg - config_.yaw_min_angle_deg);
-
-          // Transition to IDLE
-          enterState_(RobotState::IDLE);
-          return;
+        if (startHomeHand_()) {
+          // Async homing started successfully — poll in sub-state 2
+          homing_sub_state_ = 2;
+        } else {
+          // Failed to even start homing — retry after delay
+          debugf_("[SM] Homing attempt %d failed to start, waiting %lu ms before retry\n",
+                  homing_attempt_, (unsigned long)config_.homing_retry_delay_ms);
+          homing_sub_state_ = 1;
+          homing_retry_ms_ = millis();
         }
-
-        // Homing failed - start retry delay
-        debugf_("[SM] Homing attempt %d failed, waiting %lu ms before retry\n", 
-                homing_attempt_, (unsigned long)config_.homing_retry_delay_ms);
-        homing_sub_state_ = 1;
-        homing_retry_ms_ = millis();
       } else {
         triggerError("Homing failed after max attempts");
       }
@@ -223,6 +203,36 @@ void StateMachine::handleBoot_() {
         homing_sub_state_ = 0;
       }
       break;
+
+    case 2: {  // Homing in progress — poll each cycle
+      CanInterface::HomingStatus status = can_.updateHomeHand();
+
+      if (status == CanInterface::HomingStatus::DONE) {
+        debugf_("[SM] Homing successful\n");
+
+        // Configure yaw axis coordinate system
+        const float yaw_offset = config_.yaw_min_angle_deg;
+        yaw_.setZeroOffset(yaw_offset);
+        yaw_.setSoftLimitsDeg(0.0f, config_.yaw_max_angle_deg - config_.yaw_min_angle_deg);
+
+        debugf_("[SM] Yaw configured: offset=%.1f°, limits=[0, %.1f]°\n",
+                yaw_offset, config_.yaw_max_angle_deg - config_.yaw_min_angle_deg);
+
+        // Transition to IDLE
+        enterState_(RobotState::IDLE);
+        return;
+      }
+
+      if (status == CanInterface::HomingStatus::FAILED) {
+        // Homing attempt failed — retry after delay
+        debugf_("[SM] Homing attempt %d failed, waiting %lu ms before retry\n",
+                homing_attempt_, (unsigned long)config_.homing_retry_delay_ms);
+        homing_sub_state_ = 1;
+        homing_retry_ms_ = millis();
+      }
+      // IN_PROGRESS — do nothing, return and let main loop continue
+      break;
+    }
   }
 }
 
@@ -244,6 +254,7 @@ void StateMachine::handleIdle_() {
     if (executeThrow_(pending_yaw_deg_, pending_pitch_deg_,
                       pending_speed_mps_)) {
       enterState_(RobotState::THROWING);
+      return;
     } else {
       debugf_("[SM] Throw execution failed, staying in IDLE\n");
     }
@@ -255,6 +266,7 @@ void StateMachine::handleIdle_() {
     // Begin the reloading process
     enterState_(RobotState::RELOADING);
     debugf_("[SM] Reloading...");
+    return;
   }
 
   // If the pitch axis is at or above `config_.pitch_min_stow_angle_deg` (and at its target) and not currently IDLE,
@@ -386,8 +398,6 @@ void StateMachine::handleReloading_() {
   CanInterface::AxisHeartbeat hb_hand;
   CanInterface::AxisHeartbeat hb_pitch;
 
-  float current_yaw = PRO.getYawDeg();
-
   // Check for overall timeout
   if (elapsed > config_.reload_timeout_ms) {
     triggerError("Reload sequence timeout");
@@ -432,14 +442,14 @@ void StateMachine::handleReloading_() {
       sub_state_ms_ = millis();
       break;
 
-    case 4:  // Wait for yaw settle
-      // Log the current yaw position for debugging
-      // debugf_("[SM] Reload: Current yaw=%.2f°, Target yaw=%.2f°\n", current_yaw, config_.reload_yaw_angle_deg);
+    case 4: {  // Wait for yaw settle
+      float current_yaw = PRO.getYawDeg();
       if (abs(current_yaw - config_.reload_yaw_angle_deg) < config_.yaw_angle_threshold_deg) {
         reload_sub_state_ = 5;
         sub_state_ms_ = millis();
       }
       break;
+    }
 
     case 5:  // Move pitch to grab angle (should grab ball from hopper)
       debugf_("[SM] Reload: Pitching to grab position (%.1f°)\n", config_.reload_pitch_grab_deg);
@@ -485,8 +495,14 @@ void StateMachine::handleReloading_() {
       if (ball_check_samples_collected_ == 0 && !ball_check_positive_) {
         // Fresh entry - reset tracking
         ball_check_positive_ = false;
-        Serial.printf("[SM] Reload case 9: Checking for ball in hand, collecting %d samples...\n", config_.reload_ball_check_samples);
       }
+
+      // Wait at least 250ms between samples so the async ball detection
+      // (200ms SDO poll) has time to produce a fresh reading.
+      if (sub_elapsed < SMDefaults::BALL_CHECK_SAMPLE_INTERVAL_MS) {
+        break;
+      }
+      sub_state_ms_ = millis();  // Reset timer for next sample
 
       // Check current sample
       if (can_.isBallInHand()) {
@@ -624,6 +640,13 @@ void StateMachine::handleCheckingBall_() {
       break;
 
     case 2:  // Collect confirmation samples
+      // Wait at least 250ms between samples so the async ball detection
+      // (200ms SDO poll) has time to produce a fresh reading.
+      if (sub_elapsed < SMDefaults::BALL_CHECK_SAMPLE_INTERVAL_MS) {
+        break;
+      }
+      sub_state_ms_ = millis();  // Reset timer for next sample
+
       // If ANY sample shows ball present, return to IDLE
       if (can_.isBallInHand()) {
         debugf_("[SM] CheckBall: Ball detected after %d samples, returning to IDLE\n",
@@ -804,20 +827,21 @@ bool StateMachine::requestSmoothMove(float target_rev) {
     return false;
   }
 
-  // Plan smooth move
+  // Plan smooth move (writes directly into pre-allocated traj_buffer_)
   auto plan = planner_.planSmoothTo(target_rev, pos_rev, vel_rps,
-                                    (uint32_t)(t_us & 0xFFFFFFFFu));
-  if (plan.trajectory.empty()) {
+                                    (uint32_t)(t_us & 0xFFFFFFFFu),
+                                    traj_buffer_, TrajCfg::MAX_TRAJ_FRAMES);
+  if (plan.frame_count == 0) {
     debugf_("[SM] smoothMove: already at target\n");
     return true;  // Not an error — already there
   }
 
-  // Own the buffer and arm the streamer
-  traj_buffer_ = std::move(plan.trajectory);
+  // Arm the streamer with the pre-allocated buffer
+  traj_count_ = plan.frame_count;
   const uint64_t time_offset_us = can_.wallTimeUs();
 
-  bool ok = streamer_.arm(config_.hand_node_id, traj_buffer_.data(),
-                          traj_buffer_.size(), time_offset_us);
+  bool ok = streamer_.arm(config_.hand_node_id, traj_buffer_,
+                          traj_count_, time_offset_us);
 
   debugf_("[SM] smoothMove to %.2f: %s\n", target_rev, ok ? "Armed" : "FAIL");
   return ok;
@@ -855,18 +879,20 @@ bool StateMachine::executeThrow_(float yaw_deg, float pitch_deg,
     return false;
   }
 
-  // 4) Plan the throw
+  // 4) Plan the throw (writes directly into pre-allocated traj_buffer_)
   auto plan = planner_.planThrowDecelZero(speed_mps, pos_rev, vel_rps,
-                                          (uint32_t)(t_wall_us & 0xFFFFFFFFu));
-  if (plan.trajectory.empty()) {
+                                          (uint32_t)(t_wall_us & 0xFFFFFFFFu),
+                                          traj_buffer_, TrajCfg::MAX_TRAJ_FRAMES);
+  if (plan.frame_count == 0) {
     debugf_("[SM] Throw rejected: planner returned empty trajectory\n");
     return false;
   }
+  traj_count_ = plan.frame_count;
 
   // 5) Check lead time — compare absolute throw time against earliest trajectory frame
   float min_ts = 0.0f;
-  for (const auto& f : plan.trajectory) {
-    if (f.t_s < min_ts) min_ts = f.t_s;
+  for (size_t i = 0; i < traj_count_; ++i) {
+    if (traj_buffer_[i].t_s < min_ts) min_ts = traj_buffer_[i].t_s;
   }
   const float required_lead_us = (-min_ts + OpCfg::SCHEDULE_MARGIN_S) * 1e6f;
   const int64_t actual_lead_us = (int64_t)pending_throw_wall_us_ - (int64_t)can_.wallTimeUs();
@@ -877,17 +903,16 @@ bool StateMachine::executeThrow_(float yaw_deg, float pitch_deg,
   }
 
   // 6) Arm the streamer — use uint64_t to avoid float precision loss at epoch scale
-  traj_buffer_ = std::move(plan.trajectory);
   const uint64_t throw_wall_us = pending_throw_wall_us_;
 
   // Diagnostic: how far in the future is the throw?
   const float lead_ms = (float)((int64_t)throw_wall_us - (int64_t)can_.wallTimeUs()) / 1000.0f;
 
-  bool ok = streamer_.arm(config_.hand_node_id, traj_buffer_.data(),
-                          traj_buffer_.size(), throw_wall_us);
+  bool ok = streamer_.arm(config_.hand_node_id, traj_buffer_,
+                          traj_count_, throw_wall_us);
 
   debugf_("[SM] Throw armed: frames=%u, ready_time=%.2f s, lead=%.1f ms, %s\n",
-          (unsigned)traj_buffer_.size(), planner_.lastTimeToReadyS(),
+          (unsigned)traj_count_, planner_.lastTimeToReadyS(),
           (double)lead_ms, ok ? "OK" : "FAIL");
 
   return ok;
@@ -921,21 +946,11 @@ void StateMachine::triggerError(const char* reason) {
 }
 
 // --------------------------------------------------------------------
-// homeHand_() - Home hand axis (yaw/pitch don't need homing)
+// startHomeHand_() - Initiate async hand homing (non-blocking)
 // --------------------------------------------------------------------
-bool StateMachine::homeHand_() {
-  // Hand axis needs homing (end-stop current spike detection)
+bool StateMachine::startHomeHand_() {
   debugf_("[SM] Homing hand axis (node %d)...\n", config_.hand_node_id);
-
-  bool ok = can_.homeHandStandard(config_.hand_node_id);
-
-  if (!ok) {
-    debugf_("[SM] Hand homing failed\n");
-    return false;
-  }
-
-  debugf_("[SM] Hand homed successfully\n");
-  return true;
+  return can_.startHomeHandStandard(config_.hand_node_id);
 }
 
 // --------------------------------------------------------------------
@@ -954,20 +969,21 @@ bool StateMachine::moveHandToPosition_(float target_rev) {
     return false;
   }
 
-  // Plan smooth move
+  // Plan smooth move (writes directly into pre-allocated traj_buffer_)
   auto plan = planner_.planSmoothTo(target_rev, pos_rev, vel_rps,
-                                    (uint32_t)(t_us & 0xFFFFFFFFu));
-  if (plan.trajectory.empty()) {
+                                    (uint32_t)(t_us & 0xFFFFFFFFu),
+                                    traj_buffer_, TrajCfg::MAX_TRAJ_FRAMES);
+  if (plan.frame_count == 0) {
     // Already at target
     return true;
   }
 
   // Arm streamer
-  traj_buffer_ = std::move(plan.trajectory);
+  traj_count_ = plan.frame_count;
   const uint64_t time_offset_us = can_.wallTimeUs();
 
-  return streamer_.arm(config_.hand_node_id, traj_buffer_.data(),
-                       traj_buffer_.size(), time_offset_us);
+  return streamer_.arm(config_.hand_node_id, traj_buffer_,
+                       traj_count_, time_offset_us);
 }
 
 // --------------------------------------------------------------------

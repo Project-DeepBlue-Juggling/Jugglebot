@@ -119,8 +119,9 @@ void YawAxis::end() {
  * ---------------------------------------------------------------------------
  */
 float YawAxis::normalizeAngle_(float angle_deg) const {
-  while (angle_deg < 0.0f) angle_deg += 360.0f;
-  while (angle_deg >= 360.0f) angle_deg -= 360.0f;
+  if (!isfinite(angle_deg)) return 0.0f;  // NaN/Inf guard
+  angle_deg = fmodf(angle_deg, 360.0f);
+  if (angle_deg < 0.0f) angle_deg += 360.0f;
   return angle_deg;
 }
 
@@ -157,9 +158,10 @@ float YawAxis::encoderToUserDeg_(float enc_deg) const {
   // The center of soft limits is (LIM_MIN_DEG_ + LIM_MAX_DEG_) / 2
   float range_center = (LIM_MIN_DEG_ + LIM_MAX_DEG_) * 0.5f;
   
-  // Adjust user_deg to be within ±180° of the range center
-  while (user_deg < range_center - 180.0f) user_deg += 360.0f;
-  while (user_deg > range_center + 180.0f) user_deg -= 360.0f;
+  // Single adjustment — input enc_deg is already in [0, 360) from
+  // rawToEncoderDeg_(), so at most one ±360° step is needed.
+  if (user_deg < range_center - 180.0f) user_deg += 360.0f;
+  else if (user_deg > range_center + 180.0f) user_deg -= 360.0f;
   
   return user_deg;
 }

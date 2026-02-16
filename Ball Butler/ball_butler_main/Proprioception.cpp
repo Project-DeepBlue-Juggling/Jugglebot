@@ -84,10 +84,14 @@ void Proprioception::debugf(const char* fmt, ...) {
 // --------------------------------------------------------------------
 void Proprioception::flushDebug() {
   if (!s_dbg_ || !s_dbg_enabled_) return;
-  while (rb_tail_ != rb_head_) {
-    char c = rb_[rb_tail_];
+  constexpr size_t MAX_FLUSH_BYTES = 64;
+  size_t flushed = 0;
+  while (rb_tail_ != rb_head_ && flushed < MAX_FLUSH_BYTES) {
+    // Check write space before attempting (prevents blocking on full TX buffer)
+    if (s_dbg_ == &Serial && Serial.availableForWrite() < 1) break;
+    s_dbg_->write(rb_[rb_tail_]);
     rb_tail_ = (uint16_t)((rb_tail_ + 1) % DBG_CAP_);
-    s_dbg_->write(c);
+    ++flushed;
   }
 }
 
@@ -207,13 +211,14 @@ uint32_t Proprioception::copyOnce(ProprioceptionData& out) const {
 // snapshot() - Get consistent snapshot (retries until consistent)
 // --------------------------------------------------------------------
 bool Proprioception::snapshot(ProprioceptionData& out) const {
-  while (true) {
+  for (int retries = 0; retries < 10; ++retries) {
     uint32_t s1 = copyOnce(out);
     if (s1 & 1u) continue;        // Write was in progress
     uint32_t s2 = seq_;
     if (s1 == s2) return true;    // Data is consistent
     // Sequence changed during read - retry
   }
+  return false;  // Failed to get consistent snapshot
 }
 
 // --------------------------------------------------------------------

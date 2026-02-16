@@ -67,10 +67,17 @@ public:
     set_vel_gains            = 0x1B,
   };
 
-  enum class AxisHomeState : uint8_t { 
-    Unhomed = 0, 
-    Homing  = 1, 
-    Homed   = 2 
+  enum class AxisHomeState : uint8_t {
+    Unhomed = 0,
+    Homing  = 1,
+    Homed   = 2
+  };
+
+  // Non-blocking homing result (returned by updateHomeHand())
+  enum class HomingStatus : uint8_t {
+    IN_PROGRESS = 0,  // Still running, call again next loop
+    DONE        = 1,  // Homing completed successfully
+    FAILED      = 2,  // Homing failed (timeout, axis error, send failure)
   };
 
   struct CmdName { 
@@ -191,7 +198,9 @@ public:
   bool requestArbitraryParameter(uint32_t node_id, uint16_t endpoint_id);
   bool getLastArbitraryParamResponse(uint32_t node_id, ArbitraryParamResponse& out) const;
   void setArbitraryParamCallback(ArbitraryParamCallback cb, void* user = nullptr);
+  /// BLOCKING — only call during setup(), never from loop() or update().
   bool isEncoderSearchComplete(uint32_t node_id, uint32_t timeout_ms = 100);
+  /// BLOCKING — only call during setup(), never from loop() or update().
   bool readGpioStates(uint32_t node_id, uint32_t& states_out, uint32_t timeout_ms = 100);
 
   // ============================================================================
@@ -202,6 +211,7 @@ public:
   bool getAxisIq(uint32_t node_id, float& iq_meas_out, float& iq_setpoint_out, uint64_t& wall_us_out) const;
   bool getAxisHeartbeat(uint32_t node_id, AxisHeartbeat& out) const;
   bool hasAxisError(uint32_t node_id, uint32_t mask) const;
+  /// BLOCKING — only call during setup(), never from loop() or update().
   bool waitForAxisErrorClear(uint32_t node_id, uint32_t mask, uint32_t timeout_ms, uint16_t poll_ms = 5);
   bool isBallInHand() const { return ball_in_hand_; }
 
@@ -219,20 +229,23 @@ public:
   void clearHomeRequirements();
   bool isAxisMotionAllowed(uint32_t node_id) const;
 
-  bool homeHand(uint32_t node_id,
-                float homing_speed_rps,
-                float current_limit_A,
-                float current_headroom_A,
-                float settle_pos_rev,
-                float avg_weight = HandDefaults::HOMING_EMA_WEIGHT,
-                uint16_t iq_poll_period_ms = HandDefaults::HOMING_IQ_POLL_MS);
+  // Non-blocking homing API: call startHomeHand() once, then poll
+  // updateHomeHand() every loop() until it returns DONE or FAILED.
+  bool startHomeHand(uint32_t node_id,
+                     float homing_speed_rps,
+                     float current_limit_A,
+                     float current_headroom_A,
+                     float settle_pos_rev,
+                     float avg_weight = HandDefaults::HOMING_EMA_WEIGHT);
 
-  bool homeHandStandard(uint32_t node_id,
-                        int hand_direction = HandDefaults::HOMING_DIRECTION,
-                        float base_speed_rps = HandDefaults::HOMING_SPEED_RPS,
-                        float current_limit_A = HandDefaults::HOMING_CURRENT_A,
-                        float current_headroom_A = HandDefaults::HOMING_HEADROOM_A,
-                        float set_abs_pos_rev = HandDefaults::HOMING_ABS_POS_REV);
+  bool startHomeHandStandard(uint32_t node_id,
+                             int hand_direction = HandDefaults::HOMING_DIRECTION,
+                             float base_speed_rps = HandDefaults::HOMING_SPEED_RPS,
+                             float current_limit_A = HandDefaults::HOMING_CURRENT_A,
+                             float current_headroom_A = HandDefaults::HOMING_HEADROOM_A,
+                             float set_abs_pos_rev = HandDefaults::HOMING_ABS_POS_REV);
+
+  HomingStatus updateHomeHand();
 
   // ============================================================================
   // Operating Configuration
@@ -379,18 +392,18 @@ private:
   // Axis State Arrays
   // ============================================================================
 
-  AxisStatePV axes_pv_[64];
-  AxisStateIq axes_iq_[64];
-  AxisHeartbeat hb_[64];
-  AxisHomeState home_state_[64];
+  AxisStatePV axes_pv_[MAX_NODES];
+  AxisStateIq axes_iq_[MAX_NODES];
+  AxisHeartbeat hb_[MAX_NODES];
+  AxisHomeState home_state_[MAX_NODES];
   uint64_t home_required_mask_ = 0;
-  uint64_t last_brake_clear_us_[64] = {};
+  uint64_t last_brake_clear_us_[MAX_NODES] = {};
 
   // ============================================================================
   // Arbitrary Parameter State
   // ============================================================================
 
-  ArbitraryParamResponse arb_param_resp_[64];
+  ArbitraryParamResponse arb_param_resp_[MAX_NODES];
   ArbitraryParamCallback arb_param_cb_ = nullptr;
   void* arb_param_cb_user_ = nullptr;
 
@@ -408,6 +421,32 @@ private:
   uint32_t heartbeat_rate_ms_ = DEFAULT_HEARTBEAT_RATE_MS;
   uint32_t last_heartbeat_ms_ = 0;
   BallButlerError current_error_code_ = BallButlerError::NONE;
+
+  // ============================================================================
+  // Non-blocking Homing State
+  // ============================================================================
+
+  enum class HomingPhase : uint8_t {
+    IDLE,         // Not homing
+    CONFIGURE,    // Sent CLOSED_LOOP, controller mode, limits — advance immediately
+    SETTLE,       // Waiting for control mode to take effect
+    SEND_VEL,     // Send velocity command — advance immediately
+    MONITOR_IQ,   // Polling Iq readings, applying EMA filter, checking for spike
+    STOP_SETTLE,  // Motor stopped, waiting before setting abs position
+    FINALIZE,     // Set abs position, restore config, mark homed — advance immediately
+  };
+
+  HomingPhase homing_phase_      = HomingPhase::IDLE;
+  uint32_t    homing_node_id_    = 0;
+  float       homing_speed_rps_  = 0.f;
+  float       homing_current_A_  = 0.f;
+  float       homing_headroom_A_ = 0.f;
+  float       homing_settle_rev_ = 0.f;
+  float       homing_ema_weight_ = 0.f;
+  float       homing_ema_        = 0.f;
+  uint64_t    homing_last_iq_us_ = 0;
+  uint32_t    homing_phase_ms_   = 0;     // millis() when current phase started
+  uint32_t    homing_start_ms_   = 0;     // millis() when homing began (for timeout)
 
   // ============================================================================
   // Private Methods

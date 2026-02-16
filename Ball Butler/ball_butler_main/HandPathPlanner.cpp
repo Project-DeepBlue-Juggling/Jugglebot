@@ -9,7 +9,10 @@ HandPathPlanner::HandPathPlanner(float sample_hz)
   fb_vel_rev_s_(0.0f),
   fb_ts_us_(0),
   last_time_to_ready_s_(0.0f),
-  last_frame_count_(0) {}
+  last_frame_count_(0)
+{
+  arena_.init(arena_buf_, sizeof(arena_buf_));
+}
 
 void HandPathPlanner::setPauseSeconds(float s) { pause_s_ = (s < 0.0f) ? 0.0f : s; }
 
@@ -34,8 +37,8 @@ struct FBGuard {
    Anchor selection — shared by all throw planners
    -------------------------------------------------------------------------- */
 HandPathPlanner::AnchorResult HandPathPlanner::computeAnchor_(const Trajectory& throwTr) const {
-  const float x0       = throwTr.x.front();
-  const auto  minmaxX  = std::minmax_element(throwTr.x.begin(), throwTr.x.end());
+  const float x0       = throwTr.x[0];
+  const auto  minmaxX  = std::minmax_element(throwTr.x, throwTr.x + throwTr.count);
   const float throwMin = *minmaxX.first;
   const float throwMax = *minmaxX.second;
   const float anchorMin = -throwMin;
@@ -47,19 +50,18 @@ HandPathPlanner::AnchorResult HandPathPlanner::computeAnchor_(const Trajectory& 
 }
 
 /* --------------------------------------------------------------------------
-   Core planner: returns vector (pre-reserved for minimal heap churn)
+   Core planner: writes frames into caller-provided buffer
    -------------------------------------------------------------------------- */
-HandPlanResult HandPathPlanner::planThrow(float throw_vel_mps) {
-  HandPlanResult out;
+HandPlanResult HandPathPlanner::planThrow(float throw_vel_mps,
+                                          TrajFrame* out_buf, size_t out_cap) {
+  HandPlanResult out{0.0f, 0};
+  arena_.reset();
 
   // 1) Build the intrinsic throw profile at 500 Hz using Trajectory.h
   HandTrajGenerator tg(throw_vel_mps);
-  Trajectory throwTr = tg.makeThrow();
-
-  if (throwTr.x.empty()) {
-    out.time_to_ready_s = 0.0f;
-    out.trajectory.clear();
-    last_time_to_ready_s_ = out.time_to_ready_s;
+  Trajectory throwTr;
+  if (!tg.makeThrow(arena_, throwTr) || throwTr.empty()) {
+    last_time_to_ready_s_ = 0.0f;
     last_frame_count_     = 0;
     return out;
   }
@@ -70,45 +72,47 @@ HandPlanResult HandPathPlanner::planThrow(float throw_vel_mps) {
   // 3) Smooth move (if necessary) to the starting sample of the throw
   Trajectory smoothTr;
   if (std::abs(fb_pos_rev_ - target_start_rev) > 1e-4f) {
-    smoothTr = makeSmoothMove(fb_pos_rev_, target_start_rev);
+    makeSmoothMove(arena_, smoothTr, fb_pos_rev_, target_start_rev);
   }
 
-  // 4) Pre-allocate output
-  const size_t Ns = smoothTr.x.size();
-  const size_t Np = (size_t) (pause_s_ * (float)SAMPLE_RATE + 0.5f);
-  const size_t Nt = throwTr.x.size();
-  out.trajectory.reserve(Ns + Np + Nt);
-
-  // 5) Concatenate: smooth → pause → throw (times start at 0 at plan start)
+  // 4) Concatenate: smooth → pause → throw (times start at 0 at plan start)
+  size_t written = 0;
   float t_cursor = 0.0f;
-  if (!smoothTr.t.empty()) {
-    appendTrajectoryRebased(smoothTr, /*desired_first_pos=*/fb_pos_rev_, /*t_start=*/0.0f, out.trajectory);
-    t_cursor = smoothTr.t.back();
+  if (!smoothTr.empty()) {
+    written += appendTrajectoryRebased(smoothTr, fb_pos_rev_, 0.0f,
+                                       out_buf + written, out_cap - written);
+    t_cursor = smoothTr.t[smoothTr.count - 1];
   }
   if (pause_s_ > 0.0f) {
-    appendPause(/*pos_rev=*/target_start_rev, t_cursor, pause_s_, out.trajectory);
+    written += appendPause(target_start_rev, t_cursor, pause_s_,
+                           out_buf + written, out_cap - written);
     t_cursor += pause_s_;
   }
-  // First throw sample should equal (anchor_rev + throwTr.x.front())
-  appendTrajectoryRebased(throwTr, /*desired_first_pos=*/anchor_rev + throwTr.x.front(),
-                          /*t_start=*/t_cursor, out.trajectory);
+  written += appendTrajectoryRebased(throwTr, anchor_rev + throwTr.x[0],
+                                     t_cursor,
+                                     out_buf + written, out_cap - written);
 
-    // 6) Fill summary telemetry
-    out.time_to_ready_s    = trajDuration(smoothTr) + pause_s_;
-    last_time_to_ready_s_  = out.time_to_ready_s;
-    last_frame_count_      = out.trajectory.size();
-    return out;
-  }
+  // 5) Fill summary telemetry
+  out.time_to_ready_s    = trajDuration(smoothTr) + pause_s_;
+  out.frame_count        = written;
+  last_time_to_ready_s_  = out.time_to_ready_s;
+  last_frame_count_      = written;
+  return out;
+}
 
 /* --------------------------------------------------------------------------
    Streaming variant — emits frames, avoids building a big vector
    Returns: time_to_ready_s
    -------------------------------------------------------------------------- */
 float HandPathPlanner::planThrow(float throw_vel_mps, void (*emit)(const TrajFrame&)) {
+  arena_.reset();
+
   // 1) Build throw
   HandTrajGenerator tg(throw_vel_mps);
-  Trajectory throwTr = tg.makeThrow();
-  if (throwTr.x.empty()) { last_time_to_ready_s_ = 0.0f; last_frame_count_ = 0; return 0.0f; }
+  Trajectory throwTr;
+  if (!tg.makeThrow(arena_, throwTr) || throwTr.empty()) {
+    last_time_to_ready_s_ = 0.0f; last_frame_count_ = 0; return 0.0f;
+  }
 
   // 2) Anchor selection
   const auto [anchor_rev, target_start_rev] = computeAnchor_(throwTr);
@@ -116,74 +120,76 @@ float HandPathPlanner::planThrow(float throw_vel_mps, void (*emit)(const TrajFra
   // 3) Smooth move (if needed)
   Trajectory smoothTr;
   if (std::abs(fb_pos_rev_ - target_start_rev) > 1e-4f) {
-    smoothTr = makeSmoothMove(fb_pos_rev_, target_start_rev);
+    makeSmoothMove(arena_, smoothTr, fb_pos_rev_, target_start_rev);
   }
 
   // Emit smooth
   float t_cursor = 0.0f;
-  if (!smoothTr.t.empty()) {
-    emitTrajectoryRebased(smoothTr, /*desired_first_pos=*/fb_pos_rev_, /*t_start=*/0.0f, emit);
-    t_cursor = smoothTr.t.back();
+  if (!smoothTr.empty()) {
+    emitTrajectoryRebased(smoothTr, fb_pos_rev_, 0.0f, emit);
+    t_cursor = smoothTr.t[smoothTr.count - 1];
   }
   if (pause_s_ > 0.0f) {
-    emitPause(/*pos_rev=*/target_start_rev, t_cursor, pause_s_, emit);
+    emitPause(target_start_rev, t_cursor, pause_s_, emit);
     t_cursor += pause_s_;
   }
-  emitTrajectoryRebased(throwTr, /*desired_first_pos=*/anchor_rev + throwTr.x.front(),
-                        /*t_start=*/t_cursor, emit);
+  emitTrajectoryRebased(throwTr, anchor_rev + throwTr.x[0],
+                        t_cursor, emit);
 
   // Telemetry
   last_time_to_ready_s_ = trajDuration(smoothTr) + pause_s_;
-  last_frame_count_ = smoothTr.x.size() + (size_t)(pause_s_ * (float)SAMPLE_RATE + 0.5f) + throwTr.x.size();
+  last_frame_count_ = smoothTr.count + (size_t)(pause_s_ * (float)SAMPLE_RATE + 0.5f) + throwTr.count;
   return last_time_to_ready_s_;
 }
 
 /* ------------------------ decel detection + helpers ------------------------- */
 size_t HandPathPlanner::findDecelStartIndex(const Trajectory& tr) {
-  if (tr.v.size() < 3) return 0; // degenerate → treat start as pivot
+  if (tr.count < 3) return 0; // degenerate → treat start as pivot
   // Find first index after a rising phase where velocity starts to drop
   const float eps = 1e-6f;
   // 1) Find a span of rising samples
   size_t i = 0;
-  while (i + 1 < tr.v.size() && tr.v[i+1] >= tr.v[i] - eps) ++i; // climb to local max
+  while (i + 1 < tr.count && tr.v[i+1] >= tr.v[i] - eps) ++i; // climb to local max
   // i is at local maximum (or last rising point)
   // 2) Deceleration begins at the next index where v decreases
-  if (i + 1 < tr.v.size()) return i + 1;
+  if (i + 1 < tr.count) return i + 1;
   // Fallback: use global max index
-  size_t imax = std::distance(tr.v.begin(), std::max_element(tr.v.begin(), tr.v.end()));
-  return (imax + 1 < tr.v.size()) ? (imax + 1) : imax;
+  size_t imax = std::distance(tr.v, std::max_element(tr.v, tr.v + tr.count));
+  return (imax + 1 < tr.count) ? (imax + 1) : imax;
 }
 
 /* ------------------------ helpers: append / emit ------------------------- */
-void HandPathPlanner::appendTrajectoryRebased(const Trajectory& tr,
-                                              float desired_first_pos_rev,
-                                              float t_start,
-                                              std::vector<TrajFrame>& out) const {
-  if (tr.x.empty()) return;
-  const float t0       = tr.t.front();
-  const float base_rev = desired_first_pos_rev - tr.x.front(); // <-- rebase
+size_t HandPathPlanner::appendTrajectoryRebased(const Trajectory& tr,
+                                                float desired_first_pos_rev,
+                                                float t_start,
+                                                TrajFrame* out, size_t out_cap) const {
+  if (tr.empty()) return 0;
+  const float t0       = tr.t[0];
+  const float base_rev = desired_first_pos_rev - tr.x[0];
   float t_cursor       = t_start;
+  size_t written = 0;
 
-  for (size_t i = 0; i < tr.x.size(); ++i) {
+  for (size_t i = 0; i < tr.count && written < out_cap; ++i) {
     TrajFrame f;
     f.t_s     = (i == 0) ? (t_cursor + dt_s_) : (t_cursor + (tr.t[i] - t0));
     f.pos_cmd = base_rev + tr.x[i];
     f.vel_ff  = tr.v[i];
     f.tor_ff  = tr.tor[i];
-    out.push_back(f);
+    out[written++] = f;
   }
+  return written;
 }
 
 void HandPathPlanner::emitTrajectoryRebased(const Trajectory& tr,
                                             float desired_first_pos_rev,
                                             float t_start,
                                             void (*emit)(const TrajFrame&)) const {
-  if (!emit || tr.x.empty()) return;
-  const float t0       = tr.t.front();
-  const float base_rev = desired_first_pos_rev - tr.x.front(); // <-- rebase
+  if (!emit || tr.empty()) return;
+  const float t0       = tr.t[0];
+  const float base_rev = desired_first_pos_rev - tr.x[0];
   float t_cursor       = t_start;
 
-  for (size_t i = 0; i < tr.x.size(); ++i) {
+  for (size_t i = 0; i < tr.count; ++i) {
     TrajFrame f;
     f.t_s     = (i == 0) ? (t_cursor + dt_s_) : (t_cursor + (tr.t[i] - t0));
     f.pos_cmd = base_rev + tr.x[i];
@@ -193,16 +199,17 @@ void HandPathPlanner::emitTrajectoryRebased(const Trajectory& tr,
   }
 }
 
-void HandPathPlanner::appendPause(float pos_rev, float t_start, float duration,
-                                  std::vector<TrajFrame>& out) const {
-  if (duration <= 0.0f) return;
+size_t HandPathPlanner::appendPause(float pos_rev, float t_start, float duration,
+                                    TrajFrame* out, size_t out_cap) const {
+  if (duration <= 0.0f) return 0;
   const size_t N = (size_t)(duration * fs_hz_ + 0.5f);
   float t = t_start;
-  for (size_t i = 0; i < N; ++i) {
+  size_t written = 0;
+  for (size_t i = 0; i < N && written < out_cap; ++i) {
     t += dt_s_;
-    TrajFrame f{t, pos_rev, 0.0f, 0.0f};
-    out.push_back(f);
+    out[written++] = TrajFrame{t, pos_rev, 0.0f, 0.0f};
   }
+  return written;
 }
 
 void HandPathPlanner::emitPause(float pos_rev, float t_start, float duration,
@@ -220,9 +227,10 @@ void HandPathPlanner::emitPause(float pos_rev, float t_start, float duration,
 /* ------------------------ decel-zero planners ------------------------ */
 
 HandPlanResult HandPathPlanner::planThrowDecelZero(float throw_vel_mps,
-                                                   float pos_rev, float vel_rev_s, uint32_t timestamp_us) {
+                                                   float pos_rev, float vel_rev_s, uint32_t timestamp_us,
+                                                   TrajFrame* out_buf, size_t out_cap) {
   FBGuard g(*this, pos_rev, vel_rev_s, timestamp_us);
-  return planThrowDecelZero(throw_vel_mps);
+  return planThrowDecelZero(throw_vel_mps, out_buf, out_cap);
 }
 
 float HandPathPlanner::planThrowDecelZero(float throw_vel_mps,
@@ -232,22 +240,29 @@ float HandPathPlanner::planThrowDecelZero(float throw_vel_mps,
   return planThrowDecelZero(throw_vel_mps, emit);
 }
 
-HandPlanResult HandPathPlanner::planThrowDecelZero(float throw_vel_mps) {
+HandPlanResult HandPathPlanner::planThrowDecelZero(float throw_vel_mps,
+                                                   TrajFrame* out_buf, size_t out_cap) {
   // Build the unshifted plan first to compute cursor timings
-  HandPlanResult base = planThrow(throw_vel_mps);
-  if (base.trajectory.empty()) return base;
+  HandPlanResult base = planThrow(throw_vel_mps, out_buf, out_cap);
+  if (base.frame_count == 0) return base;
 
-  // To find where decel begins, regenerate the intrinsic throw
+  // To find where decel begins, regenerate the intrinsic throw.
+  // The arena was already reset inside planThrow(), and the intermediate
+  // Trajectory data is no longer needed — reset and reuse for this lookup.
+  arena_.reset();
   HandTrajGenerator tg(throw_vel_mps);
-  Trajectory throwTr = tg.makeThrow();
+  Trajectory throwTr;
+  if (!tg.makeThrow(arena_, throwTr) || throwTr.empty()) return base;
+
   const size_t i_decel = findDecelStartIndex(throwTr);
-  const float t_decel_in_throw = throwTr.t.empty() ? 0.0f : throwTr.t[i_decel];
+  const float t_decel_in_throw = throwTr.t[i_decel];
 
   // The throw segment in base begins at time t_throw_begin = time_to_ready_s
   const float t_throw_begin = last_time_to_ready_s_;
   const float t_zero_global = t_throw_begin + t_decel_in_throw; // make this -> 0
 
-  for (auto& f : base.trajectory) f.t_s -= t_zero_global;
+  for (size_t i = 0; i < base.frame_count; ++i)
+    out_buf[i].t_s -= t_zero_global;
 
   return base; // last_time_to_ready_s_ remains (smooth + pause)
 }
@@ -255,11 +270,14 @@ HandPlanResult HandPathPlanner::planThrowDecelZero(float throw_vel_mps) {
 float HandPathPlanner::planThrowDecelZero(float throw_vel_mps,
                                           void (*emit)(const TrajFrame&)) {
   if (!emit) return 0.0f;
+  arena_.reset();
 
   // Build throw to discover decel index/time and anchor decisions
   HandTrajGenerator tg(throw_vel_mps);
-  Trajectory throwTr = tg.makeThrow();
-  if (throwTr.x.empty()) { last_time_to_ready_s_ = 0.0f; last_frame_count_ = 0; return 0.0f; }
+  Trajectory throwTr;
+  if (!tg.makeThrow(arena_, throwTr) || throwTr.empty()) {
+    last_time_to_ready_s_ = 0.0f; last_frame_count_ = 0; return 0.0f;
+  }
 
   // Anchor selection (same as planThrow)
   const auto [anchor_rev, target_start_rev] = computeAnchor_(throwTr);
@@ -267,28 +285,28 @@ float HandPathPlanner::planThrowDecelZero(float throw_vel_mps,
   // Smooth (if needed)
   Trajectory smoothTr;
   if (std::abs(fb_pos_rev_ - target_start_rev) > 1e-4f) {
-    smoothTr = makeSmoothMove(fb_pos_rev_, target_start_rev);
+    makeSmoothMove(arena_, smoothTr, fb_pos_rev_, target_start_rev);
   }
 
   // Precompute timings
   const float t_smooth = trajDuration(smoothTr);
   const float t_pause  = pause_s_;
   const size_t i_decel = findDecelStartIndex(throwTr);
-  const float t_decel_in_throw = throwTr.t.empty() ? 0.0f : throwTr.t[i_decel];
+  const float t_decel_in_throw = throwTr.t[i_decel];
   const float t_zero_global = t_smooth + t_pause + t_decel_in_throw;
 
   // Emit with a time shift so decel occurs at t=0
   float t_cursor = 0.0f;
 
   // smooth (with decel-zero time shift)
-  if (!smoothTr.t.empty()) {
+  if (!smoothTr.empty()) {
     const float shift = -t_zero_global;
     const float desired_first_pos = fb_pos_rev_;
-    const float t0 = smoothTr.t.front();
+    const float t0 = smoothTr.t[0];
     float t_start = 0.0f;
-    const float base_rev = desired_first_pos - smoothTr.x.front();
+    const float base_rev = desired_first_pos - smoothTr.x[0];
 
-    for (size_t i = 0; i < smoothTr.x.size(); ++i) {
+    for (size_t i = 0; i < smoothTr.count; ++i) {
       TrajFrame f;
       f.t_s     = ((i == 0) ? (t_start + dt_s_) : (t_start + (smoothTr.t[i] - t0))) + shift;
       f.pos_cmd = base_rev + smoothTr.x[i];
@@ -312,12 +330,12 @@ float HandPathPlanner::planThrowDecelZero(float throw_vel_mps,
   // Emit throw
   {
     const float shift = -t_zero_global;
-    const float desired_first_pos = anchor_rev + throwTr.x.front();
-    const float base_rev = desired_first_pos - throwTr.x.front();
-    const float t0 = throwTr.t.front();
+    const float desired_first_pos = anchor_rev + throwTr.x[0];
+    const float base_rev = desired_first_pos - throwTr.x[0];
+    const float t0 = throwTr.t[0];
     float t_start = t_cursor;
 
-    for (size_t i = 0; i < throwTr.x.size(); ++i) {
+    for (size_t i = 0; i < throwTr.count; ++i) {
       TrajFrame f;
       f.t_s     = ((i == 0) ? (t_start + dt_s_) : (t_start + (throwTr.t[i] - t0))) + shift;
       f.pos_cmd = base_rev + throwTr.x[i];
@@ -328,23 +346,32 @@ float HandPathPlanner::planThrowDecelZero(float throw_vel_mps,
   }
 
   last_time_to_ready_s_ = t_smooth + t_pause;
-  last_frame_count_     = smoothTr.x.size() + (size_t)(t_pause * (float)SAMPLE_RATE + 0.5f) + throwTr.x.size();
+  last_frame_count_     = smoothTr.count + (size_t)(t_pause * (float)SAMPLE_RATE + 0.5f) + throwTr.count;
   return last_time_to_ready_s_;
 }
 
 /* -------------------------- Smooth Move Planner --------------------------- */
 HandPlanResult HandPathPlanner::planSmoothTo(float target_pos_rev,
-                                             float pos_rev, float vel_rev_s, uint32_t timestamp_us) {
+                                             float pos_rev, float vel_rev_s, uint32_t timestamp_us,
+                                             TrajFrame* out_buf, size_t out_cap) {
   FBGuard g(*this, pos_rev, vel_rev_s, timestamp_us);
-  // use existing smooth-only variant (if you added it) or inline:
-  HandPlanResult out;
-  Trajectory smoothTr = makeSmoothMove(fb_pos_rev_, target_pos_rev);
-  if (smoothTr.x.empty()) { out.time_to_ready_s = 0.0f; last_time_to_ready_s_ = 0.0f; last_frame_count_ = 0; return out; }
-  out.trajectory.reserve(smoothTr.x.size());
-  appendTrajectoryRebased(smoothTr, /*desired_first_pos=*/fb_pos_rev_, /*t_start=*/0.0f, out.trajectory);
+  HandPlanResult out{0.0f, 0};
+  arena_.reset();
+
+  Trajectory smoothTr;
+  makeSmoothMove(arena_, smoothTr, fb_pos_rev_, target_pos_rev);
+  if (smoothTr.empty()) {
+    last_time_to_ready_s_ = 0.0f;
+    last_frame_count_ = 0;
+    return out;
+  }
+
+  size_t written = appendTrajectoryRebased(smoothTr, fb_pos_rev_, 0.0f,
+                                           out_buf, out_cap);
   out.time_to_ready_s = trajDuration(smoothTr);
+  out.frame_count     = written;
   last_time_to_ready_s_ = out.time_to_ready_s;
-  last_frame_count_     = out.trajectory.size();
+  last_frame_count_     = written;
   return out;
 }
 
@@ -353,12 +380,16 @@ float HandPathPlanner::planSmoothTo(float target_pos_rev,
                                     void (*emit)(const TrajFrame&)) {
   FBGuard g(*this, pos_rev, vel_rev_s, timestamp_us);
   if (!emit) return 0.0f;
-  Trajectory smoothTr = makeSmoothMove(fb_pos_rev_, target_pos_rev);
-  if (smoothTr.x.empty()) { last_time_to_ready_s_ = 0.0f; last_frame_count_ = 0; return 0.0f; }
-  emitTrajectoryRebased(smoothTr, /*desired_first_pos=*/fb_pos_rev_, /*t_start=*/0.0f, emit);
+  arena_.reset();
+
+  Trajectory smoothTr;
+  makeSmoothMove(arena_, smoothTr, fb_pos_rev_, target_pos_rev);
+  if (smoothTr.empty()) {
+    last_time_to_ready_s_ = 0.0f; last_frame_count_ = 0; return 0.0f;
+  }
+
+  emitTrajectoryRebased(smoothTr, fb_pos_rev_, 0.0f, emit);
   last_time_to_ready_s_ = trajDuration(smoothTr);
-  last_frame_count_     = smoothTr.x.size();
+  last_frame_count_     = smoothTr.count;
   return last_time_to_ready_s_;
 }
-
-

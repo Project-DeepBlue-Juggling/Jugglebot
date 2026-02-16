@@ -13,13 +13,17 @@
  * disabled to prevent a race on the rollover counter.
  */
 inline uint64_t micros64() {
+  uint32_t primask;
+  asm volatile("MRS %0, PRIMASK" : "=r"(primask) :: "memory");
   __disable_irq();
+
   static uint32_t last_lo = 0;
   static uint64_t hi = 0;
   uint32_t now = ::micros();
   if (now < last_lo) hi += (uint64_t)1 << 32;
   last_lo = now;
   uint64_t result = hi | now;
-  __enable_irq();
+
+  if ((primask & 1u) == 0u) __enable_irq();  // only re-enable if they were enabled before
   return result;
 }

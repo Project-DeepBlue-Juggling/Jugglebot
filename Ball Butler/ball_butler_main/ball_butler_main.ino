@@ -44,6 +44,8 @@ static uint32_t yaw_last_stream_ms = 0;
 // ============================================================================
 void yawProprioceptionCallback(float pos_deg, float vel_rps, uint64_t ts_us) {
   PRO.setYawDeg(pos_deg, ts_us);
+  // vel_rps intentionally discarded — no current consumer. Store it if
+  // yaw velocity is ever needed (e.g., tracking feedforward, diagnostics).
 }
 
 // ============================================================================
@@ -53,13 +55,13 @@ void yawProprioceptionCallback(float pos_deg, float vel_rps, uint64_t ts_us) {
 // FORWARD DECLARATIONS
 // ============================================================================
 void yawPrintHelp();
-void yawHandleLine(const String& yawLine);
-void pitchHandleLine(const String& line);
-void routeCommand(const String& rawLine);
+void yawHandleLine(const char* yawLine);
+void pitchHandleLine(const char* line);
+void routeCommand(const char* rawLine);
 void printTopHelp();
 void printStatus();
-bool handleThrowCmd(const String& line);
-bool handleSmoothCmd(const String& line);
+bool handleThrowCmd(const char* line);
+bool handleSmoothCmd(const char* line);
 
 // ============================================================================
 // SETUP
@@ -138,16 +140,20 @@ void loop() {
   Proprioception::flushDebug();
   stateMachine.update();
 
-  static String serialBuf;
+  static char serialBuf[128];
+  static uint8_t serialLen = 0;
   while (Serial.available()) {
     char c = (char)Serial.read();
     if (c == '\n' || c == '\r') {
-      serialBuf.trim();
-      if (serialBuf.length()) routeCommand(serialBuf);
-      serialBuf = "";
-    } else {
-      serialBuf += c;
+      if (serialLen > 0) {
+        serialBuf[serialLen] = '\0';
+        routeCommand(serialBuf);
+      }
+      serialLen = 0;
+    } else if (serialLen < sizeof(serialBuf) - 1) {
+      serialBuf[serialLen++] = c;
     }
+    // else: overflow — silently drop
   }
 
   if (yaw_stream_on && (millis() - yaw_last_stream_ms >= OpCfg::YAW_TELEM_MS)) {
@@ -161,23 +167,35 @@ void loop() {
 // ============================================================================
 // COMMAND ROUTING
 // ============================================================================
-void routeCommand(const String& rawLine) {
-  String line = rawLine;
-  line.trim();
-  String lc = line;
-  lc.toLowerCase();
+void routeCommand(const char* rawLine) {
+  // Make a mutable lowercase copy for case-insensitive matching
+  char lc[128];
+  strncpy(lc, rawLine, sizeof(lc) - 1);
+  lc[sizeof(lc) - 1] = '\0';
+  // Trim leading/trailing whitespace
+  char* s = lc;
+  while (*s == ' ' || *s == '\t') s++;
+  char* end = s + strlen(s) - 1;
+  while (end > s && (*end == ' ' || *end == '\t')) { *end = '\0'; end--; }
+  if (*s == '\0') return;
+  // Lowercase in-place
+  for (char* p = s; *p; p++) *p = tolower(*p);
 
-  if (lc == "status") { printStatus(); return; }
-  if (lc == "reset")  { stateMachine.reset(); return; }
-  if (lc == "ball")  { Serial.printf("Ball in hand: %s\n",  canif.isBallInHand() ? "YES" : "NO"); return; }
-  if (lc == "reload") { stateMachine.requestReload(); return;}
-  if (lc.startsWith("throw ")) { handleThrowCmd(line); return; }
-  if (lc.startsWith("smooth ")) { handleSmoothCmd(line); return; }
-  if (lc == "help" || lc == "h") { printTopHelp(); return; }
-  if (lc.startsWith("p "))     { pitchHandleLine(line.substring(2)); return; }
-  if (lc.startsWith("pitch ")) { pitchHandleLine(line.substring(6)); return; }
-  if (lc.startsWith("y "))     { yawHandleLine(line.substring(2)); return; }
-  if (lc.startsWith("yaw "))   { yawHandleLine(line.substring(4)); return; }
+  // Calculate offset of trimmed start from rawLine for preserving original case
+  const size_t trim_offset = (size_t)(s - lc);
+  const char* line = rawLine + trim_offset;  // original-case trimmed version
+
+  if (strcmp(s, "status") == 0) { printStatus(); return; }
+  if (strcmp(s, "reset") == 0)  { stateMachine.reset(); return; }
+  if (strcmp(s, "ball") == 0)   { Serial.printf("Ball in hand: %s\n", canif.isBallInHand() ? "YES" : "NO"); return; }
+  if (strcmp(s, "reload") == 0) { stateMachine.requestReload(); return; }
+  if (strncmp(s, "throw ", 6) == 0)  { handleThrowCmd(line); return; }
+  if (strncmp(s, "smooth ", 7) == 0) { handleSmoothCmd(line); return; }
+  if (strcmp(s, "help") == 0 || strcmp(s, "h") == 0) { printTopHelp(); return; }
+  if (strncmp(s, "p ", 2) == 0)     { pitchHandleLine(line + 2); return; }
+  if (strncmp(s, "pitch ", 6) == 0) { pitchHandleLine(line + 6); return; }
+  if (strncmp(s, "y ", 2) == 0)     { yawHandleLine(line + 2); return; }
+  if (strncmp(s, "yaw ", 4) == 0)   { yawHandleLine(line + 4); return; }
 
   Serial.println(F("Unknown command. Type 'help'."));
 }
@@ -211,9 +229,9 @@ void printStatus() {
                 streamer.isActive() ? "ACTIVE" : "idle");
 }
 
-bool handleThrowCmd(const String& line) {
+bool handleThrowCmd(const char* line) {
   float vel = 0, in_s = 0;
-  if (sscanf(line.c_str() + 6, "%f %f", &vel, &in_s) != 2) {
+  if (sscanf(line + 6, "%f %f", &vel, &in_s) != 2) {
     Serial.println(F("Usage: throw <vel> <in_s>"));
     return false;
   }
@@ -233,9 +251,9 @@ bool handleThrowCmd(const String& line) {
   return true;
 }
 
-bool handleSmoothCmd(const String& line) {
+bool handleSmoothCmd(const char* line) {
   float target = 0;
-  if (sscanf(line.c_str() + 7, "%f", &target) != 1) {
+  if (sscanf(line + 7, "%f", &target) != 1) {
     Serial.println(F("Usage: smooth <pos_rev>"));
     return false;
   }
@@ -279,44 +297,47 @@ void yawPrintHelp() {
   ));
 }
 
-void yawHandleLine(const String& yawLine) {
-  if (!yawLine.length()) return;
-  
-  String line = yawLine;
-  line.trim();
-  String lc = line;
-  lc.toLowerCase();
-  
+void yawHandleLine(const char* yawLine) {
+  if (!yawLine || !yawLine[0]) return;
+
+  // Make a lowercase copy for case-insensitive matching
+  char lc[128];
+  strncpy(lc, yawLine, sizeof(lc) - 1);
+  lc[sizeof(lc) - 1] = '\0';
+  // Trim leading whitespace
+  char* s = lc;
+  while (*s == ' ' || *s == '\t') s++;
+  if (*s == '\0') return;
+  // Trim trailing whitespace
+  char* end = s + strlen(s) - 1;
+  while (end > s && (*end == ' ' || *end == '\t')) { *end = '\0'; end--; }
+  // Lowercase in-place
+  for (char* p = s; *p; p++) *p = tolower(*p);
+
+  // Pointer into original-case line at same offset
+  const char* line = yawLine + (size_t)(s - lc);
+
   // Help
-  if (lc == "help" || lc == "h") { 
-    yawPrintHelp(); 
-    return; 
+  if (strcmp(s, "help") == 0 || strcmp(s, "h") == 0) {
+    yawPrintHelp();
+    return;
   }
-  
-  // Position command: p <deg>
-  if (lc.startsWith("p ") || lc.startsWith("p")) {
-    if (lc.length() > 1 && lc.charAt(1) != ' ') {
-      // Single letter followed by number: p 45
-      float deg = line.substring(1).toFloat();
-      if (yawAxis.setTargetDeg(deg)) {
-        Serial.printf("YAW: Target -> %.2f deg\n", deg);
-      } else {
-        Serial.printf("YAW: Target %.2f deg out of limits\n", deg);
-      }
-    } else if (lc.startsWith("p ")) {
-      float deg = line.substring(2).toFloat();
-      if (yawAxis.setTargetDeg(deg)) {
-        Serial.printf("YAW: Target -> %.2f deg\n", deg);
-      } else {
-        Serial.printf("YAW: Target %.2f deg out of limits\n", deg);
-      }
+
+  // Position command: p<deg> or p <deg> (P3-7: collapsed to single path)
+  if (s[0] == 'p' && strlen(s) > 1) {
+    int offset = (s[1] == ' ') ? 2 : 1;
+    float deg = atof(line + offset);
+    if (yawAxis.setTargetDeg(deg)) {
+      Serial.printf("YAW: Target -> %.2f deg\n", deg);
+    } else {
+      Serial.printf("YAW: Target %.2f deg out of limits\n", deg);
     }
     return;
   }
-  
-  // Relative move: m <deg>
-  if (lc.startsWith("m ") || (lc.length() > 1 && lc.charAt(0) == 'm' && (isdigit(lc.charAt(1)) || lc.charAt(1) == '-'))) {
-    float deg = line.substring(1).toFloat();
+
+  // Relative move: m <deg> or m<deg>
+  if (s[0] == 'm' && strlen(s) > 1 && (s[1] == ' ' || isdigit(s[1]) || s[1] == '-')) {
+    float deg = atof(line + 1);
     if (yawAxis.moveRelDeg(deg)) {
       Serial.printf("YAW: Move relative -> %.2f deg\n", deg);
     } else {
@@ -324,40 +345,40 @@ void yawHandleLine(const String& yawLine) {
     }
     return;
   }
-  
+
   // E-stop
-  if (lc == "d") { 
-    yawAxis.estop(); 
-    Serial.println(F("YAW: E-STOP engaged")); 
-    return; 
+  if (strcmp(s, "d") == 0) {
+    yawAxis.estop();
+    Serial.println(F("YAW: E-STOP engaged"));
+    return;
   }
-  
+
   // Clear e-stop
-  if (lc == "c") { 
-    yawAxis.clearEstop(); 
-    Serial.println(F("YAW: E-stop cleared")); 
-    return; 
+  if (strcmp(s, "c") == 0) {
+    yawAxis.clearEstop();
+    Serial.println(F("YAW: E-stop cleared"));
+    return;
   }
-  
+
   // Set zero here
-  if (lc == "zero") {
+  if (strcmp(s, "zero") == 0) {
     yawAxis.setZeroHere();
     Serial.printf("YAW: Zero set at current position (offset=%.2f)\n", yawAxis.getZeroOffset());
     return;
   }
-  
+
   // Set zero offset directly: offset <deg>
-  if (lc.startsWith("offset ")) {
-    float offset = line.substring(7).toFloat();
+  if (strncmp(s, "offset ", 7) == 0) {
+    float offset = atof(line + 7);
     yawAxis.setZeroOffset(offset);
     Serial.printf("YAW: Zero offset -> %.2f deg\n", offset);
     return;
   }
-  
+
   // Set soft limits: lim <min> <max>
-  if (lc.startsWith("lim ")) {
+  if (strncmp(s, "lim ", 4) == 0) {
     float minDeg = 0, maxDeg = 0;
-    if (sscanf(line.c_str() + 4, "%f %f", &minDeg, &maxDeg) == 2) {
+    if (sscanf(line + 4, "%f %f", &minDeg, &maxDeg) == 2) {
       yawAxis.setSoftLimitsDeg(minDeg, maxDeg);
       float actualMin, actualMax;
       yawAxis.getSoftLimitsDeg(actualMin, actualMax);
@@ -367,11 +388,11 @@ void yawHandleLine(const String& yawLine) {
     }
     return;
   }
-  
+
   // Set PID gains: gains <kp> <ki> <kd>
-  if (lc.startsWith("gains ")) {
+  if (strncmp(s, "gains ", 6) == 0) {
     float kp = 0, ki = 0, kd = 0;
-    if (sscanf(line.c_str() + 6, "%f %f %f", &kp, &ki, &kd) == 3) {
+    if (sscanf(line + 6, "%f %f %f", &kp, &ki, &kd) == 3) {
       yawAxis.setGains(kp, ki, kd);
       Serial.printf("YAW: Gains -> Kp=%.2f Ki=%.2f Kd=%.2f\n", kp, ki, kd);
     } else {
@@ -379,13 +400,13 @@ void yawHandleLine(const String& yawLine) {
     }
     return;
   }
-  
+
   // Set acceleration: accel <accel> <decel>
-  if (lc.startsWith("accel ")) {
+  if (strncmp(s, "accel ", 6) == 0) {
     float accel = 0, decel = 0;
-    int n = sscanf(line.c_str() + 6, "%f %f", &accel, &decel);
+    int n = sscanf(line + 6, "%f %f", &accel, &decel);
     if (n >= 1) {
-      if (n == 1) decel = accel;  // If only one value, use for both
+      if (n == 1) decel = accel;
       yawAxis.setAccel(accel, decel);
       Serial.printf("YAW: Accel -> %.1f / Decel -> %.1f PWM/s\n", accel, decel);
     } else {
@@ -393,32 +414,32 @@ void yawHandleLine(const String& yawLine) {
     }
     return;
   }
-  
+
   // Set friction feedforward: ff <pwm>
-  if (lc.startsWith("ff ")) {
-    float ff = line.substring(3).toFloat();
+  if (strncmp(s, "ff ", 3) == 0) {
+    float ff = atof(line + 3);
     yawAxis.setFF(ff);
     Serial.printf("YAW: Friction FF -> %.1f PWM\n", ff);
     return;
   }
 
   // Status (brief)
-  if (lc == "s") {
+  if (strcmp(s, "s") == 0) {
     auto t = yawAxis.readTelemetry();
     Serial.printf("YAW | pos=%.2f cmd=%.2f err=%.2f pwm=%d en=%d estop=%d\n",
                   t.pos_deg, t.cmd_deg, t.err_deg, (int)t.pwm, t.enabled, t.estop);
     return;
   }
-  
+
   // Toggle telemetry stream
-  if (lc == "t") { 
-    yaw_stream_on = !yaw_stream_on; 
+  if (strcmp(s, "t") == 0) {
+    yaw_stream_on = !yaw_stream_on;
     Serial.printf("YAW: Telemetry stream %s\n", yaw_stream_on ? "ON" : "OFF");
-    return; 
+    return;
   }
-  
+
   // Full configuration dump
-  if (lc == "full") {
+  if (strcmp(s, "full") == 0) {
     auto t = yawAxis.readTelemetry();
     Serial.println(F("\n=== YAW Full Configuration ==="));
     Serial.printf("Position:     %.2f deg (cmd: %.2f, err: %.2f)\n", t.pos_deg, t.cmd_deg, t.err_deg);
@@ -434,23 +455,26 @@ void yawHandleLine(const String& yawLine) {
     Serial.println();
     return;
   }
-  
+
   Serial.println(F("YAW: Unknown command. Type 'y help'"));
 }
 
-void pitchHandleLine(const String& line) {
-  String s = line; s.trim();
-  if (s.length() == 0) { Serial.println(F("PITCH: type 'p help'")); return; }
-  if (s == "help") {
+void pitchHandleLine(const char* line) {
+  if (!line || !line[0]) { Serial.println(F("PITCH: type 'p help'")); return; }
+
+  // Trim leading whitespace
+  while (*line == ' ' || *line == '\t') line++;
+  if (*line == '\0') { Serial.println(F("PITCH: type 'p help'")); return; }
+
+  if (strncasecmp(line, "help", 4) == 0) {
     Serial.println(F("PITCH: <deg> | status | range"));
     return;
   }
-  if (s == "status") { pitch.printStatusOnce(); return; }
-  if (s == "range") {
+  if (strncasecmp(line, "status", 6) == 0) { pitch.printStatusOnce(); return; }
+  if (strncasecmp(line, "range", 5) == 0) {
     Serial.printf("PITCH: %.1f .. %.1f deg\n", PitchAxis::DEG_MIN, PitchAxis::DEG_MAX);
     return;
   }
-  float deg = s.toFloat();
-  // Serial.printf("PITCH: Target -> %.2f deg\n", deg);
+  float deg = atof(line);
   if (isfinite(deg)) pitch.setTargetDeg(deg);
 }

@@ -223,7 +223,7 @@ bool CanInterface::reboot(uint32_t node_id) {
 
 bool CanInterface::sendInputPos(uint32_t node_id, float pos_rev, float vel_ff_rev_per_s, float torque_ff) {
   if (!isAxisMotionAllowed(node_id)) {
-    Serial.printf("[Gate] Blocked set_input_pos to node %lu (not homed)\n", (unsigned long)node_id);
+    if (dbg_) dbg_->printf("[Gate] Blocked set_input_pos to node %lu (not homed)\n", (unsigned long)node_id);
     return false;
   }
   uint8_t d[8];
@@ -244,7 +244,7 @@ bool CanInterface::sendInputPos(uint32_t node_id, float pos_rev, float vel_ff_re
 
 bool CanInterface::sendInputVel(uint32_t node_id, float vel_rps, float torque_ff) {
   if (!isAxisMotionAllowed(node_id)) {
-    Serial.printf("[Gate] Blocked set_input_vel to node %lu (not homed)\n", (unsigned long)node_id);
+    if (dbg_) dbg_->printf("[Gate] Blocked set_input_vel to node %lu (not homed)\n", (unsigned long)node_id);
     return false;
   }
   uint8_t d[8];
@@ -409,66 +409,174 @@ bool CanInterface::getAxisIq(uint32_t node_id, float& iq_meas_out, float& iq_set
 // Homing
 // ================================================================================
 
-bool CanInterface::homeHand(uint32_t node_id, float homing_speed_rps, float current_limit_A,
-                            float current_headroom_A, float settle_pos_rev, float avg_weight, uint16_t) {
+// --- Non-blocking homing implementation ---
+
+bool CanInterface::startHomeHand(uint32_t node_id, float homing_speed_rps, float current_limit_A,
+                                 float current_headroom_A, float settle_pos_rev, float avg_weight) {
+  // Store parameters for use across phases
+  homing_node_id_    = node_id;
+  homing_speed_rps_  = homing_speed_rps;
+  homing_current_A_  = current_limit_A;
+  homing_headroom_A_ = current_headroom_A;
+  homing_settle_rev_ = settle_pos_rev;
+  homing_ema_weight_ = constrain(avg_weight, 0.f, 0.9999f);
+  homing_ema_        = 0.0f;
+  homing_last_iq_us_ = 0;
+  homing_start_ms_   = millis();
+  homing_phase_ms_   = millis();
+
+  // Begin: set home state and enter CONFIGURE phase
   setHomeState(node_id, AxisHomeState::Homing);
-  if (!setRequestedState(node_id, ODriveState::CLOSED_LOOP)) return false;
-  if (!setControllerMode(node_id, 2u, 2u)) return false;
-  const float vel_limit = fabsf(homing_speed_rps * 2.0f);
-  if (!setVelCurrLimits(node_id, current_limit_A + current_headroom_A, vel_limit)) return false;
-  delay(HandDefaults::HOMING_MODE_SETTLE_MS);  // Let control mode take effect before sending velocity
-
-  if (!sendInputVel(node_id, homing_speed_rps, 0.0f)) {
-    setRequestedState(node_id, ODriveState::IDLE);
-    setHomeState(node_id, AxisHomeState::Unhomed);
-    return false;
-  }
-
-  Serial.printf("[Home] node=%lu moving at %.3f rps; Iq limit=%.2f A\n",
-                (unsigned long)node_id, (double)homing_speed_rps, (double)current_limit_A);
-
-  float ema = 0.0f;
-  uint64_t last_seen_us = 0;
-  uint64_t start_time = millis();
-  uint64_t timeout = HandDefaults::HOMING_ATTEMPT_TIMEOUT_MS;  // Timeout for a single homing attempt
-
-  for (;;) {
-    can1_.events();
-    float iq_meas, iq_setp;
-    uint64_t t_us;
-    if (getAxisIq(node_id, iq_meas, iq_setp, t_us)) {
-      if (t_us != last_seen_us) {
-        last_seen_us = t_us;
-        const float alpha = constrain(avg_weight, 0.f, 0.9999f);
-        ema = alpha * ema + (1.f - alpha) * iq_meas;
-
-        if (hb_[hand_node_id_].axis_state == ODriveState::IDLE || hb_[hand_node_id_].axis_error == 1) {
-          if (millis() - start_time > timeout) {
-            Serial.println("Timeout while homing hand... Exiting to try again.");
-            return false;
-          }
-        }
-        
-        if (fabsf(ema) >= current_limit_A) {
-          setRequestedState(node_id, ODriveState::IDLE);
-          delay(HandDefaults::HOMING_STOP_SETTLE_MS);  // Let motor stop before setting position
-          setAbsolutePosition(node_id, settle_pos_rev);
-          Serial.printf("[Home] node=%lu homed. Set pos to %.3f rev.\n", (unsigned long)node_id, (double)settle_pos_rev);
-          restoreHandToOperatingConfig(node_id);
-          setHomeState(node_id, AxisHomeState::Homed);
-          return true;
-        }
-      }
-    }
-    delay(1);
-  }
+  homing_phase_ = HomingPhase::CONFIGURE;
+  return true;
 }
 
-bool CanInterface::homeHandStandard(uint32_t node_id, int hand_direction, float base_speed_rps,
-                                    float current_limit_A, float current_headroom_A, float set_abs_pos_rev) {
+bool CanInterface::startHomeHandStandard(uint32_t node_id, int hand_direction, float base_speed_rps,
+                                         float current_limit_A, float current_headroom_A, float set_abs_pos_rev) {
   const float homing_speed = float(hand_direction) * base_speed_rps;
-  return homeHand(node_id, homing_speed, current_limit_A, current_headroom_A, set_abs_pos_rev,
-                  HandDefaults::HOMING_EMA_WEIGHT, HandDefaults::HOMING_IQ_POLL_MS);
+  return startHomeHand(node_id, homing_speed, current_limit_A, current_headroom_A, set_abs_pos_rev,
+                       HandDefaults::HOMING_EMA_WEIGHT);
+}
+
+CanInterface::HomingStatus CanInterface::updateHomeHand() {
+  if (homing_phase_ == HomingPhase::IDLE) return HomingStatus::DONE;
+
+  const uint32_t node_id = homing_node_id_;
+
+  // Per-attempt timeout — but only when axis is not actively running.
+  // Match original behavior: the original code only checked its per-attempt
+  // timeout when the axis was in IDLE or had an error. When the axis is in
+  // CLOSED_LOOP and moving, rely on the overall handleBoot_() timeout instead.
+  // This is important on power-cycle where the ODrive may take several seconds
+  // to boot — we don't want to timeout the monitoring phase prematurely when
+  // the motor is legitimately running but hasn't hit the endstop yet.
+  if (homing_phase_ != HomingPhase::MONITOR_IQ) {
+    // For non-monitoring phases (CONFIGURE, SETTLE, SEND_VEL, etc.),
+    // always enforce the per-attempt timeout.
+    if (millis() - homing_start_ms_ > HandDefaults::HOMING_ATTEMPT_TIMEOUT_MS) {
+      if (dbg_) dbg_->println("[Home] Timeout while homing hand.");
+      setRequestedState(node_id, ODriveState::IDLE);
+      setHomeState(node_id, AxisHomeState::Unhomed);
+      homing_phase_ = HomingPhase::IDLE;
+      return HomingStatus::FAILED;
+    }
+  }
+
+  switch (homing_phase_) {
+    // ----------------------------------------------------------------
+    case HomingPhase::CONFIGURE: {
+      // Clear any stale errors from previous attempts or power-cycle boot.
+      // Without this, the ODrive may reject CLOSED_LOOP if an error persists.
+      clearErrors(node_id);
+
+      // Send CLOSED_LOOP, velocity control mode, and current/vel limits
+      if (!setRequestedState(node_id, ODriveState::CLOSED_LOOP) ||
+          !setControllerMode(node_id, 2u, 2u)) {
+        setHomeState(node_id, AxisHomeState::Unhomed);
+        homing_phase_ = HomingPhase::IDLE;
+        return HomingStatus::FAILED;
+      }
+      const float vel_limit = fabsf(homing_speed_rps_ * 2.0f);
+      if (!setVelCurrLimits(node_id, homing_current_A_ + homing_headroom_A_, vel_limit)) {
+        setHomeState(node_id, AxisHomeState::Unhomed);
+        homing_phase_ = HomingPhase::IDLE;
+        return HomingStatus::FAILED;
+      }
+      homing_phase_ = HomingPhase::SETTLE;
+      homing_phase_ms_ = millis();
+      return HomingStatus::IN_PROGRESS;
+    }
+
+    // ----------------------------------------------------------------
+    case HomingPhase::SETTLE: {
+      // Wait for control mode to take effect before sending velocity
+      if (millis() - homing_phase_ms_ < HandDefaults::HOMING_MODE_SETTLE_MS) {
+        return HomingStatus::IN_PROGRESS;
+      }
+      homing_phase_ = HomingPhase::SEND_VEL;
+      return HomingStatus::IN_PROGRESS;
+    }
+
+    // ----------------------------------------------------------------
+    case HomingPhase::SEND_VEL: {
+      if (!sendInputVel(node_id, homing_speed_rps_, 0.0f)) {
+        setRequestedState(node_id, ODriveState::IDLE);
+        setHomeState(node_id, AxisHomeState::Unhomed);
+        homing_phase_ = HomingPhase::IDLE;
+        return HomingStatus::FAILED;
+      }
+      if (dbg_) dbg_->printf("[Home] node=%lu moving at %.3f rps; Iq limit=%.2f A\n",
+                              (unsigned long)node_id, (double)homing_speed_rps_, (double)homing_current_A_);
+      homing_phase_ = HomingPhase::MONITOR_IQ;
+      homing_phase_ms_ = millis();
+      return HomingStatus::IN_PROGRESS;
+    }
+
+    // ----------------------------------------------------------------
+    case HomingPhase::MONITOR_IQ: {
+      // Check for fresh Iq reading.
+      // Heartbeat error checks are done INSIDE the Iq conditional, matching
+      // the original blocking code's behavior. This prevents false failures
+      // from stale heartbeat data (e.g., ODrive still transitioning to
+      // CLOSED_LOOP, or heartbeat from before error was cleared).
+      float iq_meas, iq_setp;
+      uint64_t t_us;
+      if (getAxisIq(node_id, iq_meas, iq_setp, t_us)) {
+        if (t_us != homing_last_iq_us_) {
+          homing_last_iq_us_ = t_us;
+          homing_ema_ = homing_ema_weight_ * homing_ema_ + (1.f - homing_ema_weight_) * iq_meas;
+
+          // Now that we have Iq data (confirming axis is active), check
+          // heartbeat for errors. If the axis went to IDLE or has an error
+          // while we were receiving Iq data, the homing attempt has failed.
+          AxisHeartbeat hb;
+          if (getAxisHeartbeat(node_id, hb)) {
+            if (hb.axis_state == ODriveState::IDLE || hb.axis_error != 0) {
+              if (dbg_) dbg_->printf("[Home] Axis error or unexpected IDLE during homing (state=%u, err=0x%08lX)\n",
+                                      (unsigned)hb.axis_state, (unsigned long)hb.axis_error);
+              setHomeState(node_id, AxisHomeState::Unhomed);
+              homing_phase_ = HomingPhase::IDLE;
+              return HomingStatus::FAILED;
+            }
+          }
+
+          if (fabsf(homing_ema_) >= homing_current_A_) {
+            // Current spike detected — stop the motor
+            setRequestedState(node_id, ODriveState::IDLE);
+            homing_phase_ = HomingPhase::STOP_SETTLE;
+            homing_phase_ms_ = millis();
+            return HomingStatus::IN_PROGRESS;
+          }
+        }
+      }
+      return HomingStatus::IN_PROGRESS;
+    }
+
+    // ----------------------------------------------------------------
+    case HomingPhase::STOP_SETTLE: {
+      // Wait for motor to stop before setting absolute position
+      if (millis() - homing_phase_ms_ < HandDefaults::HOMING_STOP_SETTLE_MS) {
+        return HomingStatus::IN_PROGRESS;
+      }
+      homing_phase_ = HomingPhase::FINALIZE;
+      return HomingStatus::IN_PROGRESS;
+    }
+
+    // ----------------------------------------------------------------
+    case HomingPhase::FINALIZE: {
+      setAbsolutePosition(node_id, homing_settle_rev_);
+      if (dbg_) dbg_->printf("[Home] node=%lu homed. Set pos to %.3f rev.\n",
+                              (unsigned long)node_id, (double)homing_settle_rev_);
+      restoreHandToOperatingConfig(node_id);
+      setHomeState(node_id, AxisHomeState::Homed);
+      homing_phase_ = HomingPhase::IDLE;
+      return HomingStatus::DONE;
+    }
+
+    default:
+      homing_phase_ = HomingPhase::IDLE;
+      return HomingStatus::FAILED;
+  }
 }
 
 // ================================================================================
