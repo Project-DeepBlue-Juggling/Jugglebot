@@ -24,7 +24,7 @@ class TargetTrackerNode(Node):
 
         # Declare parameters for configurable target mappings
         # Maps rigid body names from mocap to target IDs
-        self.declare_parameter('target_mappings', ['Catching_Cone:catching_cone'])
+        self.declare_parameter('target_mappings', ['Catching_Cone:catching_cone', 'Platform:platform'])
         
         # Parse target mappings: "RigidBodyName:target_id"
         self.target_mappings = {}
