@@ -432,12 +432,50 @@ void canSniff(const CAN_message_t &msg) {
   Byte 1‑2 : velocity*100 (uint16, little‑endian, 0.01 m/s units)
   Byte 3‑6 : wall‑time ms (uint32, little‑endian, absolute Unix)
   Byte 7 : reserved (0)
+
+  Kind 3 (smooth-move to position):
+  Byte 0 : kind (3)
+  Byte 1-4 : target_pos (float32, little-endian, revs)
+  Byte 5-7 : reserved (0)
   */
   if (msg.id == CMD_TRAJ_ID && msg.len == 8) {
 
-    /* ---- unpack ---- */
+    /* ---- unpack kind ---- */
     uint8_t kind = msg.buf[0];
 
+    /* ---- kind 3: standalone smooth-move to position --------------- *
+     * Byte 1-4: target_pos (float32, little-endian, revs)
+     * Byte 5-7: reserved (0)
+     */
+    if (kind == 3) {
+      float target_rev;
+      memcpy(&target_rev, &msg.buf[1], 4);
+
+      Trajectory smooth = makeSmoothMove(target_rev);
+      if (smooth.t.empty()) {
+        Serial.println("Smooth-move: already at target (or delta ~0).");
+        return;
+      }
+
+      uint64_t now_us = TimeSync::get_wall_time_us();
+
+      packedMsgs.clear();
+      sendUs.clear();
+      packedMsgs.reserve(smooth.t.size());
+      sendUs.reserve(smooth.t.size());
+
+      packTrajectory(smooth, now_us);  // start immediately
+
+      nextIdx = 0;
+      trajActive = true;
+
+      float dur_s = smooth.t.back();
+      Serial.printf("Smooth-move armed: target=%.3f rev  pts=%u  dur=%.2f s\n",
+                    target_rev, (unsigned)smooth.t.size(), dur_s);
+      return;
+    }
+
+    /* ---- unpack kind 0-2 fields ---- */
     uint16_t vel_u16 = msg.buf[1] | (msg.buf[2] << 8);
     float vel = vel_u16 * 0.01f;  // back to m/s
 
@@ -454,7 +492,7 @@ void canSniff(const CAN_message_t &msg) {
     // Serial.printf("Current wall-time: %llu ms (UTC)\n",
     //               TimeSync::get_wall_time_us()/1000ULL);
 
-    /* ---- build trajectory ---- */
+    /* ---- kind 0-2: build trajectory ---- */
     HandTrajGenerator gen(vel);
     switch (kind) {
       case 0: activeTraj = gen.makeThrow(); break;
