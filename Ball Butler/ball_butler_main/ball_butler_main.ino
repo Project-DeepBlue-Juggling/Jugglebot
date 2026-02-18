@@ -29,7 +29,7 @@ using Err = CanInterface::ODriveErrors;
 CanInterface           canif;
 HandPathPlanner        planner;
 HandTrajectoryStreamer streamer(canif);
-PitchAxis              pitch(canif, NodeId::PITCH);
+PitchAxis              pitch(canif, NodeId::BB_PITCH);
 
 YawAxis yawAxis(Pins::YAW_PWM_A, Pins::YAW_PWM_B, Pins::YAW_ENC_A, Pins::YAW_ENC_B,
                 YawDefaults::ENC_CPR, YawDefaults::PWM_FREQ_HZ);
@@ -93,10 +93,10 @@ void setup() {
   canif.begin(CanCfg::BAUD_RATE);
   canif.setDebugStream(&Serial);
   canif.setDebugFlags(false, false); // Enable CAN message debug, disable axis state debug to reduce spam
-  canif.setHandAxisNode(NodeId::HAND);
-  canif.setPitchAxisNode(NodeId::PITCH);
+  canif.setHandAxisNode(NodeId::BB_HAND);
+  canif.setPitchAxisNode(NodeId::BB_PITCH);
   canif.setAutoClearBrakeResistor(true, CanCfg::AUTO_CLEAR_BRAKE_MS);
-  canif.requireHomeOnlyFor(NodeId::HAND);
+  canif.requireHomeOnlyFor(NodeId::BB_HAND);
 
   // Add a short delay to give ODrives time to boot and respond to pings
   uint32_t now = millis();
@@ -225,7 +225,7 @@ void printStatus() {
   Serial.printf("Yaw: %.1f  Pitch: %.1f  Hand: %.3f rev\n",
                 d.yaw_deg, d.pitch_deg, d.hand_pos_rev);
   Serial.printf("Hand homed: %s  Streamer: %s\n",
-                canif.isAxisHomed(NodeId::HAND) ? "YES" : "NO",
+                canif.isAxisHomed(NodeId::BB_HAND) ? "YES" : "NO",
                 streamer.isActive() ? "ACTIVE" : "idle");
 }
 

@@ -22,6 +22,7 @@
 #include <SCL3300.h>
 #include <vector>
 #include "Trajectory.h"
+#include "jugglebot_protocol.h"  // Auto-generated from config/jugglebot_protocol.yaml
 
 #define DEBUG_TRAFFIC 0    // 0 = silent, 1 = Serial print report CAN traffic frames
 #define DEBUG_TRAJ 0       // 0 = silent, 1 = Serial print each hand traj frame as it gets sent out
@@ -31,7 +32,7 @@
 /*                                CAN BUS SET‑UP                              */
 /*----------------------------------------------------------------------------*/
 FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_16> can1;
-constexpr uint32_t CAN_BITRATE = 1'000'000;  // 1 Mbps
+constexpr uint32_t CAN_BITRATE = CanBus::BAUD_RATE;
 
 /*----------------------------------------------------------------------------*/
 /*                             INCLINOMETER (SCL3300)                         */
@@ -41,12 +42,13 @@ SCL3300 inclinometer;
 /*----------------------------------------------------------------------------*/
 /*                               CAN  ID MAP                                  */
 /*----------------------------------------------------------------------------*/
-constexpr uint32_t REPORT_ID = 0x7DF;      // traffic monitor
-constexpr uint32_t tiltID = 0x7DE;         // inclinometer request / reply
-constexpr uint32_t timeSyncID = 0x7DD;     // NEW — wall‑time sync
-constexpr uint32_t stateUpdateID = 0x6E0;  // robot state exchange
-constexpr uint32_t CMD_TRAJ_ID = 0x6D0;    // for Jetson commands to generate hand traj
-constexpr uint32_t TRAJ_OUT_ID = 0xCC;     // "set input pos" for hand (node id = 6; ie. (6 << 5)|0x0c )
+// CAN IDs from jugglebot_protocol.h
+constexpr uint32_t REPORT_ID      = PlatformCanId::TRAFFIC_REPORT;
+constexpr uint32_t tiltID          = PlatformCanId::TILT_READING;
+constexpr uint32_t timeSyncID      = SharedCanId::TIME_SYNC;
+constexpr uint32_t stateUpdateID   = PlatformCanId::STATE_UPDATE;
+constexpr uint32_t CMD_TRAJ_ID     = PlatformCanId::TRAJ_CMD;
+constexpr uint32_t TRAJ_OUT_ID     = (NodeId::JUGGLEBOT_HAND << 5) | ODriveCmd::set_input_pos;
 
 /*----------------------------------------------------------------------------*/
 /*                            TRAFFIC MONITOR                                 */
@@ -91,8 +93,8 @@ struct platformTilt {
 /*----------------------------------------------------------------------------*/
 /*                        HAND ENCODER ESTIMATES                              */
 /*----------------------------------------------------------------------------*/
-constexpr uint32_t HAND_AXIS_NODE = 6;
-constexpr uint32_t HAND_ENC_EST_ID = (HAND_AXIS_NODE << 5) | 0x09;  // 0xC9
+constexpr uint32_t HAND_AXIS_NODE = NodeId::JUGGLEBOT_HAND;
+constexpr uint32_t HAND_ENC_EST_ID = (HAND_AXIS_NODE << 5) | ODriveCmd::get_encoder_estimate;
 
 /* most-recent hand state (updated at 500 Hz)                           *
  * 32-bit float writes are atomic on Cortex-M7, but mark them           *
@@ -231,8 +233,8 @@ elapsedMicros trajClock;  // runs only when trajectory active
 bool trajActive = false;
 size_t nextIdx = 0;
 uint32_t nextSendUs = 0;
-float vel_scale = 100.0;                    // Scaling factor as set on the ODrive `input_vel_scale`
-float tor_scale = 100.0;                    // Scaling factor as set on the ODrive `input_torque_scale`
+float vel_scale = InputScale::vel;           // Scaling factor as set on the ODrive `input_vel_scale`
+float tor_scale = InputScale::tor;           // Scaling factor as set on the ODrive `input_torque_scale`
 std::vector<CAN_message_t> packedMsgs;      // Pre-packed CAN frames (to tighten broadcasting timing)
 std::vector<uint64_t> sendUs;               // Absolute μs after traj start for each CAN frame
 constexpr uint32_t SAFETY_GAP_US = 20'000;  // 20 ms pause (minimum) after smooth-move before the main trajectory begins

@@ -12,6 +12,7 @@ from jugglebot_interfaces.msg import RobotState
 from jugglebot_interfaces.srv import ActivateOrDeactivate
 from jugglebot_interfaces.action import HomeMotors, LevelPlatform
 import time
+import threading
 
 #########################################################################################################
 #                                        Set up Active State Transitions                                #
@@ -97,8 +98,9 @@ class BootState(MonitorState):
     def on_error(self, blackboard):
         ''' If an error is detected, transition to FAULT after correctly exiting the state. '''
         self.on_exit(blackboard)
-        if blackboard["error"] == []:
-            blackboard["error"].append("Error detected during BootState")
+        with blackboard["error_lock"]:
+            if blackboard["error"] == []:
+                blackboard["error"].append("Error detected during BootState")
         return "error"
 
     #########################################################################################################
@@ -232,7 +234,8 @@ class StandbyIdleState(MonitorState):
             self._node.get_logger().info(f"{response.message}")
 
             if not response.success:
-                self.blackboard["error"].append("Error while deactivating the robot when entering STANDBY_IDLE")
+                with self.blackboard["error_lock"]:
+                    self.blackboard["error"].append("Error while deactivating the robot when entering STANDBY_IDLE")
                 return "error"
             
         except Exception as e:
@@ -420,9 +423,12 @@ class FaultState(State):
     def execute(self, blackboard):
         """Check for errors and return to normal state machine operation once errors are cleared."""
 
-        if blackboard["error"] == []:
+        with blackboard["error_lock"]:
+            has_errors = blackboard["error"] != []
+
+        if not has_errors:
             return "errors_cleared"
-        
+
         time.sleep(1.0)
         return "timeout"
     
@@ -461,26 +467,31 @@ class RobotStateSynchronizer:
         if current_state == "FAULT":
             return
 
-        if self._blackboard["error"] != []:
-            self._node.get_logger().info(f'Error detected, notifying state machine: {self._blackboard["error"]}')
+        with self._blackboard["error_lock"]:
+            has_errors = self._blackboard["error"] != []
+            errors_snapshot = list(self._blackboard["error"]) if has_errors else []
+
+        if has_errors:
+            self._node.get_logger().info(f'Error detected, notifying state machine: {errors_snapshot}')
             self._state_machine.notify_error()
 
     def update_blackboard_with_errors(self, msg):
         ''' Update the blackboard with any errors received from the robot state topic. '''
         blackboard_updated = False
 
-        # Update blackboard from the received state message
-        for error in msg.error:
-            if error not in self._blackboard["error"]: # Check that the error isn't already in the list
-                self._blackboard["error"].append(error)
-                blackboard_updated = True
-        
+        with self._blackboard["error_lock"]:
+            # Update blackboard from the received state message
+            for error in msg.error:
+                if error not in self._blackboard["error"]: # Check that the error isn't already in the list
+                    self._blackboard["error"].append(error)
+                    blackboard_updated = True
+
+            if blackboard_updated:
+                errors_snapshot = list(self._blackboard["error"])
+
         if blackboard_updated:
             self._node.get_logger().info("--------------------")
-
-            # Log the updated blackboard with a new line for each field
-            self._node.get_logger().info(f'Updated blackboard with new error: {self._blackboard["error"]}')
-
+            self._node.get_logger().info(f'Updated blackboard with new error: {errors_snapshot}')
             self._node.get_logger().info("--------------------")
 
 #########################################################################################################
@@ -502,6 +513,7 @@ def main():
     blackboard["pose_offset_quat"] = Quaternion()
     blackboard["control_mode"] = "" # The current control mode of the robot
     blackboard["error"] = []
+    blackboard["error_lock"] = threading.Lock()
     blackboard["available_control_modes"] = list(ACTIVE_STATE_OUTCOMES.keys())
 
     # Create and add states to the state machine

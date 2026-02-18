@@ -45,11 +45,11 @@ from ament_index_python.packages import get_package_share_directory
 from jugglebot_interfaces.msg import MotorStateSingle, HandTelemetryMessage
 from geometry_msgs.msg import Quaternion
 from jugglebot.ball_butler_states import BallButlerStates
+import jugglebot.jugglebot_protocol as proto
 
 import matplotlib.pyplot as plt
 
 from dataclasses import dataclass
-from enum import IntEnum
 
 @dataclass
 class HandInputPosCmd:
@@ -60,16 +60,14 @@ class HandInputPosCmd:
     vel: float = 0.0 # 0.01 rev/s. See self._input_vel_scale. Is 'int' on arrival, but converted to float on receipt
     tor: float = 0.0 # 0.01 Nm. See self._input_tor_scale
 
-class BallButlerError(IntEnum):
-    NONE = 0
-    RELOAD_FAILED = 1
+BallButlerError = proto.BallButlerError
 
 @dataclass
 class BallButlerHeartbeat:
-    # Class constants for resolution values
-    yaw_resolution: ClassVar[float] = 0.01  # degrees
-    pitch_resolution: ClassVar[float] = 0.002  # degrees
-    hand_resolution: ClassVar[float] = 0.01  # mm
+    # Class constants for resolution values (from jugglebot_protocol)
+    yaw_resolution: ClassVar[float] = proto.HEARTBEAT_YAW_RES_DEG
+    pitch_resolution: ClassVar[float] = proto.HEARTBEAT_PITCH_RES_DEG
+    hand_resolution: ClassVar[float] = proto.HEARTBEAT_HAND_RES_MM
     
     # Instance fields
     ball_in_hand: bool = False
@@ -103,37 +101,16 @@ class CANInterface:
     """
     Interface for handling CAN bus communication with ODrive controllers.
     """
-    # Create a dictionary of ODrive-related commands and their corresponding IDs
-    COMMANDS = {
-        "heartbeat_message"       : 0x01,
-        "get_error"               : 0x03,
-        "RxSdo"                   : 0x04, # Write to arbitrary parameter
-        "TxSdo"                   : 0x05, # Read from arbitrary parameter
-        "set_requested_state"     : 0x07,
-        "get_encoder_estimate"    : 0x09,
-        "set_controller_mode"     : 0x0b,
-        "set_input_pos"           : 0x0c,
-        "set_input_vel"           : 0x0d,
-        "set_vel_curr_limits"     : 0x0f,
-        "set_traj_vel_limit"      : 0x11,
-        "set_traj_acc_limits"     : 0x12,
-        "get_iq"                  : 0x14,
-        "get_temps"               : 0x15, 
-        "reboot_odrives"          : 0x16,
-        "get_bus_voltage_current" : 0x17,
-        "clear_errors"            : 0x18,
-        "set_absolute_position"   : 0x19,
-        "set_pos_gain"            : 0x1a,
-        "set_vel_gains"           : 0x1b,
-    }
+    # ODrive command IDs (from generated jugglebot_protocol.py)
+    COMMANDS = proto.ODRIVE_COMMANDS
 
     ARBITRARY_PARAMETER_IDS = {
-        "commutation_mapper.pos_abs"  : 488, # NaN until encoder search is complete
-        "get_gpio_states"             : 700, # GPIO states
+        "commutation_mapper.pos_abs"  : proto.ENDPOINT_COMMUTATION_MAPPER_POS_ABS,
+        "get_gpio_states"             : proto.ENDPOINT_GPIO_STATES,
     }
 
-    OPCODE_READ  = 0x00  # For reading arbitrary parameters from the ODrive
-    OPCODE_WRITE = 0x01  # For writing arbitrary parameters to the ODrive
+    OPCODE_READ  = proto.OPCODE_READ
+    OPCODE_WRITE = proto.OPCODE_WRITE
 
     # Create the reverse dictionary to go from ID to name; mostly for logging human-readable errors
     COMMAND_ID_TO_NAME = {v: k for k, v in COMMANDS.items()}
@@ -148,28 +125,28 @@ class CANInterface:
     _DEFAULT_VEL_CURR_LIMITS = {'leg_vel_limit': 50.0, 'leg_curr_limit': 20.0, 
                                 'hand_vel_limit': 1000.0, 'hand_curr_limit': 50.0} # rev/s, A
 
-    # Axis groupings for Jugglebot and Ball Butler
-    JUGGLEBOT_LEG_AXES = list(range(6))       # [0, 1, 2, 3, 4, 5]
-    JUGGLEBOT_HAND_AXIS = 6
-    JUGGLEBOT_AXES = list(range(7))           # [0, 1, 2, 3, 4, 5, 6]
-    BALL_BUTLER_AXES = [7, 8]
-    ALL_AXES = list(range(9))
+    # Axis groupings for Jugglebot and Ball Butler (node IDs from jugglebot_protocol)
+    JUGGLEBOT_LEG_AXES = proto.NODE_ID_LEGS
+    JUGGLEBOT_HAND_AXIS = proto.NODE_ID_JUGGLEBOT_HAND
+    JUGGLEBOT_AXES = proto.NODE_ID_LEGS + [proto.NODE_ID_JUGGLEBOT_HAND]
+    BALL_BUTLER_AXES = [proto.NODE_ID_BB_PITCH, proto.NODE_ID_BB_HAND]
+    ALL_AXES = JUGGLEBOT_AXES + BALL_BUTLER_AXES
 
     # Ball Butler motors (pitch and thrower) - only process these command IDs, ignore all others
-    _BALL_BUTLER_MOTOR_IDS = {7, 8}  # Axis IDs for Ball Butler pitch (7) and thrower (8) motors
+    _BALL_BUTLER_MOTOR_IDS = {proto.NODE_ID_BB_PITCH, proto.NODE_ID_BB_HAND}
     _BALL_BUTLER_RELEVANT_CMD_IDS = {
-        0x01,  # heartbeat_message
-        0x09,  # get_encoder_estimate
-        0x14,  # get_iq
-        0x15,  # get_temps
-        0x17,  # get_bus_voltage_current
+        proto.ODRIVE_COMMANDS["heartbeat_message"],
+        proto.ODRIVE_COMMANDS["get_encoder_estimate"],
+        proto.ODRIVE_COMMANDS["get_iq"],
+        proto.ODRIVE_COMMANDS["get_temps"],
+        proto.ODRIVE_COMMANDS["get_bus_voltage_current"],
     }
 
     def __init__(
         self,
         logger,
         bus_name: str = 'can0',
-        bitrate: int = 1000000,
+        bitrate: int = proto.CAN_BAUD_RATE,
         interface: str = 'socketcan',
     ):
         # Find the package directory
@@ -219,8 +196,8 @@ class CANInterface:
         self.last_motor_states = [MotorStateSingle() for _ in range(self.num_axes)]
 
         # Initialize a container for the received hand input pos commands
-        self._input_vel_scale = 100.0 # As set on the ODrive (`input_vel_scale`)
-        self._input_tor_scale = 100.0 # As set on the ODrive (`input_torque_scale`)
+        self._input_vel_scale = proto.INPUT_SCALE_VEL  # As set on the ODrive (`input_vel_scale`)
+        self._input_tor_scale = proto.INPUT_SCALE_TOR  # As set on the ODrive (`input_torque_scale`)
         self._last_hand_input_pos_cmd = HandInputPosCmd()
 
         # Track which axes have sent heartbeats (used for CAN connection recovery)
@@ -258,17 +235,17 @@ class CANInterface:
             Therefore, 'safe' IDs are in the (non-inclusive) range:
             0xE0 --> 0x7E0
         '''
-        self._CAN_traffic_report_ID = 0x7DF
-        self._CAN_tilt_reading_ID = 0x7DE
-        self._CAN_hand_traj_cmd_ID = 0x6D0
-        self._CAN_time_sync_ID = 0x7DD 
-        self._CAN_hand_input_pos_ID = (6 << 5) | 0x0c # Hand motor, command 0x0c (set_input_pos).
+        self._CAN_traffic_report_ID = proto.CAN_ID_PLATFORM_TRAFFIC_REPORT
+        self._CAN_tilt_reading_ID = proto.CAN_ID_PLATFORM_TILT_READING
+        self._CAN_hand_traj_cmd_ID = proto.CAN_ID_PLATFORM_TRAJ_CMD
+        self._CAN_time_sync_ID = proto.CAN_ID_SHARED_TIME_SYNC
+        self._CAN_hand_input_pos_ID = (proto.NODE_ID_JUGGLEBOT_HAND << 5) | proto.ODRIVE_COMMANDS["set_input_pos"]
         self._irrelevant_CAN_IDs = {
-            (6 << 5) | 0x04,  # Hand motor, command 0x04 (RxSdo). Was "hand_custom_message_ID"
+            (proto.NODE_ID_JUGGLEBOT_HAND << 5) | proto.ODRIVE_COMMANDS["RxSdo"],  # Was "hand_custom_message_ID"
         }
 
         # Initialize CAN arbitration ID for state messages to/from the Teensy
-        self._CAN_state_update_ID = 0x6E0 # For sending the current state to/from the Teensy
+        self._CAN_state_update_ID = proto.CAN_ID_PLATFORM_STATE_UPDATE
         self.last_known_state = {
             'updated': False, # Flag to indicate if the state has been updated since the last request
             'encoder_search_complete': False, # Flag to indicate if the encoder search is complete for every leg motor
@@ -280,12 +257,12 @@ class CANInterface:
         }
 
         ################################# Ball Butler ###############################
-        self._ball_butler_cmd_ID = 0X7D0 # Ball Butler command ID (to send yaw/throw speed/throw time to the Teensy)
-        self._ball_butler_heartbeat_ID = 0x7D1 # Ball Butler heartbeat ID
+        self._ball_butler_cmd_ID = proto.CAN_ID_BB_THROW_CMD
+        self._ball_butler_heartbeat_ID = proto.CAN_ID_BB_HEARTBEAT
         self.last_ball_butler_heartbeat = BallButlerHeartbeat()
-        self._ball_butler_reload_ID = 0x7D2 # Ball Butler reload command ID (to command the Teensy to reload the thrower)
-        self._ball_butler_reset_ID = 0x7D3 # Ball Butler reset command ID (put the BB state machine in IDLE)
-        self._ball_butler_calibrate_ID = 0x7D4 # Ball Butler calibrate command ID (put the BB state machine in CALIBRATING)
+        self._ball_butler_reload_ID = proto.CAN_ID_BB_RELOAD_CMD
+        self._ball_butler_reset_ID = proto.CAN_ID_BB_RESET_CMD
+        self._ball_butler_calibrate_ID = proto.CAN_ID_BB_CALIBRATE_LOC_CMD
 
         # Initialize the last known platform tilt offset. This is useful in case we need to run the platform levelling again
         self.last_platform_tilt_offset = quaternion.quaternion(1, 0, 0, 0)
@@ -1012,11 +989,11 @@ class CANInterface:
                 raise ValueError(f"Invalid trajectory type: {traj_type}. Must be 0, 1, or 2.")
         
             if self._plot_hand_traj:
-                self.set_requested_state(axis_id=6, requested_state='IDLE') # Set to IDLE while testing the trajectory generation
+                self.set_requested_state(axis_id=self.JUGGLEBOT_HAND_AXIS, requested_state='IDLE') # Set to IDLE while testing the trajectory generation
             else:
                 # Ensure the hand is in CLOSED_LOOP, position control mode
-                self.set_requested_state(axis_id=6, requested_state='CLOSED_LOOP_CONTROL')
-                self.set_control_mode(axis_id=6, control_mode='POSITION_CONTROL', input_mode='PASSTHROUGH')
+                self.set_requested_state(axis_id=self.JUGGLEBOT_HAND_AXIS, requested_state='CLOSED_LOOP_CONTROL')
+                self.set_control_mode(axis_id=self.JUGGLEBOT_HAND_AXIS, control_mode='POSITION_CONTROL', input_mode='PASSTHROUGH')
 
             # Compute the wall-time-ms for the desired event
             wall_time_ms_full = int(time.time()*1000) + int(event_delay*1000)
@@ -1062,8 +1039,8 @@ class CANInterface:
                 )
 
             # Ensure the hand is in CLOSED_LOOP, position control mode
-            self.set_requested_state(axis_id=6, requested_state='CLOSED_LOOP_CONTROL')
-            self.set_control_mode(axis_id=6, control_mode='POSITION_CONTROL', input_mode='PASSTHROUGH')
+            self.set_requested_state(axis_id=self.JUGGLEBOT_HAND_AXIS, requested_state='CLOSED_LOOP_CONTROL')
+            self.set_control_mode(axis_id=self.JUGGLEBOT_HAND_AXIS, control_mode='POSITION_CONTROL', input_mode='PASSTHROUGH')
 
             # Build CAN payload: kind=3, then float32 target_pos, then 3 padding bytes
             payload = bytes([3]) + struct.pack('<f', target_pos_rev) + bytes([0, 0, 0])
@@ -1240,7 +1217,7 @@ class CANInterface:
             self.set_all_legs_trap_traj_vel_acc_limits()
 
             # Return the hand to POSITION_CONTROL mode
-            self.set_control_mode(axis_id=6, control_mode='POSITION_CONTROL', input_mode='PASSTHROUGH')
+            self.set_control_mode(axis_id=self.JUGGLEBOT_HAND_AXIS, control_mode='POSITION_CONTROL', input_mode='PASSTHROUGH')
 
             # Put all axes into the requested state
             self.set_requested_state_for_all_axes(requested_state=requested_state)
@@ -1471,11 +1448,11 @@ class CANInterface:
         try:
             # First set the position gain
             data = self.db.encode_message('Axis6_Set_Pos_Gain', {'Pos_Gain': pos_gain})
-            self._send_message(axis_id=6, command_name='set_pos_gain', data=data, error_descriptor='Setting hand gains')
+            self._send_message(axis_id=self.JUGGLEBOT_HAND_AXIS, command_name='set_pos_gain', data=data, error_descriptor='Setting hand gains')
 
             # Now set the velocity and integrator gains
             data = self.db.encode_message('Axis6_Set_Vel_Gains', {'Vel_Gain': vel_gain, 'Vel_Integrator_Gain': vel_integrator_gain})
-            self._send_message(axis_id=6, command_name='set_vel_gains', data=data, error_descriptor='Setting hand gains')
+            self._send_message(axis_id=self.JUGGLEBOT_HAND_AXIS, command_name='set_vel_gains', data=data, error_descriptor='Setting hand gains')
 
             # Store the current gains so that we always know what they are
             self.current_hand_gains = {'pos_gain': pos_gain, 'vel_gain': vel_gain, 'vel_integrator_gain': vel_integrator_gain}
@@ -1654,7 +1631,7 @@ class CANInterface:
             no_active_errors = all(motor.active_errors == 0 for motor in jugglebot_states)
             no_disarm_reasons = all(motor.disarm_reason == 0 for motor in jugglebot_states)
             any_disarmed = any(motor.disarm_reason != 0 for motor in jugglebot_states)
-            any_in_closed_loop_control = any(motor.current_state == 8 for motor in jugglebot_states)
+            any_in_closed_loop_control = any(motor.current_state == proto.ODRIVE_STATES["CLOSED_LOOP"] for motor in jugglebot_states)
 
             # Log these conditions
             # self.ROS_logger.info(f"Axis: {axis_id}. Active errors: {active_errors}, Disarm reasons: {disarm_reason}, "

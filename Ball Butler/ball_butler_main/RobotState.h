@@ -1,18 +1,20 @@
 #pragma once
 #include <Arduino.h>
+#include "jugglebot_protocol.h"
 
 // --------------------------------------------------------------------
 // State enumeration
 // --------------------------------------------------------------------
+// State enumeration — values derived from YAML-generated BallButlerState constants
 enum class RobotState : uint8_t {
-  BOOT          = 0,  // Homing and initialization
-  IDLE          = 1,  // Ready and waiting for command
-  TRACKING      = 2,  // Following target
-  THROWING      = 3,  // Executing throw
-  RELOADING     = 4,  // Grabbing next ball
-  CALIBRATING   = 5,  // Calibrating location
-  CHECKING_BALL = 6,  // Verifying ball presence after suspected removal
-  ERROR         = 127 // Error state
+  BOOT          = BallButlerState::BOOT,          // Homing and initialization
+  IDLE          = BallButlerState::IDLE,           // Ready and waiting for command
+  TRACKING      = BallButlerState::TRACKING,       // Following target
+  THROWING      = BallButlerState::THROWING,       // Executing throw
+  RELOADING     = BallButlerState::RELOADING,      // Grabbing next ball
+  CALIBRATING   = BallButlerState::CALIBRATING,    // Calibrating location
+  CHECKING_BALL = BallButlerState::CHECKING_BALL,  // Verifying ball presence after suspected removal
+  ERROR         = BallButlerState::ERROR           // Error state
 };
 
 constexpr uint8_t robotStateToUint8(RobotState s) {

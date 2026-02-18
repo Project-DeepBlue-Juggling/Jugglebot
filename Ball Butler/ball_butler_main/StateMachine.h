@@ -121,8 +121,8 @@ public:
     float yaw_max_angle_deg        = SMDefaults::YAW_MAX_ANGLE_DEG;
 
     // Node IDs (defaults from BallButlerConfig.h)
-    uint8_t hand_node_id  = NodeId::HAND;
-    uint8_t pitch_node_id = NodeId::PITCH;
+    uint8_t hand_node_id  = NodeId::BB_HAND;
+    uint8_t pitch_node_id = NodeId::BB_PITCH;
   };
 
   // ----------------------------------------------------------------

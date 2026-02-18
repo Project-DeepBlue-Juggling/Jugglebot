@@ -31,40 +31,42 @@ public:
   static constexpr uint8_t MAX_NODES = CanCfg::MAX_NODES;
   static constexpr uint32_t DEFAULT_HEARTBEAT_RATE_MS = CanCfg::HEARTBEAT_RATE_MS;
 
-  // SDO Opcodes for arbitrary parameters
-  static constexpr uint8_t OPCODE_READ  = 0x00;
-  static constexpr uint8_t OPCODE_WRITE = 0x01;
+  // SDO Opcodes (canonical values in jugglebot_protocol.h)
+  static constexpr uint8_t OPCODE_READ  = SDO::OPCODE_READ;
+  static constexpr uint8_t OPCODE_WRITE = SDO::OPCODE_WRITE;
 
   // ============================================================================
   // Types and Enums
   // ============================================================================
 
+  // Error codes — values derived from YAML-generated BallButlerErrorCode constants
   enum class BallButlerError : uint8_t {
-    NONE          = 0,
-    RELOAD_FAILED = 1,
+    NONE          = BallButlerErrorCode::NONE,
+    RELOAD_FAILED = BallButlerErrorCode::RELOAD_FAILED,
   };
 
+  // ODrive command IDs — values derived from YAML-generated ODriveCmd constants
   enum class Cmd : uint8_t {
-    heartbeat_message        = 0x01,
-    get_error                = 0x03,
-    RxSdo                    = 0x04,
-    TxSdo                    = 0x05,
-    set_requested_state      = 0x07,
-    get_encoder_estimate     = 0x09,
-    set_controller_mode      = 0x0B,
-    set_input_pos            = 0x0C,
-    set_input_vel            = 0x0D,
-    set_vel_curr_limits      = 0x0F,
-    set_traj_vel_limit       = 0x11,
-    set_traj_acc_limits      = 0x12,
-    get_iq                   = 0x14,
-    get_temps                = 0x15,
-    reboot_odrives           = 0x16,
-    get_bus_voltage_current  = 0x17,
-    clear_errors             = 0x18,
-    set_absolute_position    = 0x19,
-    set_pos_gain             = 0x1A,
-    set_vel_gains            = 0x1B,
+    heartbeat_message        = ODriveCmd::heartbeat_message,
+    get_error                = ODriveCmd::get_error,
+    RxSdo                    = ODriveCmd::RxSdo,
+    TxSdo                    = ODriveCmd::TxSdo,
+    set_requested_state      = ODriveCmd::set_requested_state,
+    get_encoder_estimate     = ODriveCmd::get_encoder_estimate,
+    set_controller_mode      = ODriveCmd::set_controller_mode,
+    set_input_pos            = ODriveCmd::set_input_pos,
+    set_input_vel            = ODriveCmd::set_input_vel,
+    set_vel_curr_limits      = ODriveCmd::set_vel_curr_limits,
+    set_traj_vel_limit       = ODriveCmd::set_traj_vel_limit,
+    set_traj_acc_limits      = ODriveCmd::set_traj_acc_limits,
+    get_iq                   = ODriveCmd::get_iq,
+    get_temps                = ODriveCmd::get_temps,
+    reboot_odrives           = ODriveCmd::reboot_odrives,
+    get_bus_voltage_current  = ODriveCmd::get_bus_voltage_current,
+    clear_errors             = ODriveCmd::clear_errors,
+    set_absolute_position    = ODriveCmd::set_absolute_position,
+    set_pos_gain             = ODriveCmd::set_pos_gain,
+    set_vel_gains            = ODriveCmd::set_vel_gains,
   };
 
   enum class AxisHomeState : uint8_t {
@@ -85,13 +87,13 @@ public:
     const char* name; 
   };
 
-  struct ODriveErrors {
-    static constexpr uint32_t BRAKE_RESISTOR_DISARMED = 0x08000000u;
-  };
+  // ODrive error masks (canonical values in jugglebot_protocol.h, namespace ODriveErrors)
+  // Access via ODriveErrors::BRAKE_RESISTOR_DISARMED directly.
 
+  // Endpoint IDs (canonical values in jugglebot_protocol.h, namespace EndpointId)
   struct EndpointIds {
-    static constexpr uint16_t COMMUTATION_MAPPER_POS_ABS = 488;  // NaN until encoder search is complete
-    static constexpr uint16_t GPIO_STATES                = 700;
+    static constexpr uint16_t COMMUTATION_MAPPER_POS_ABS = EndpointId::commutation_mapper_pos_abs;
+    static constexpr uint16_t GPIO_STATES                = EndpointId::GPIO_STATES;
   };
 
   struct ArbitraryParamResponse {
@@ -332,8 +334,8 @@ private:
 
   static constexpr uint8_t ALPHA_SHIFT_ = 3;
   static constexpr uint32_t PRINT_PERIOD_US_ = 200'000;  // 200 ms
-  static constexpr float kVelScale_ = 100.0f;
-  static constexpr float kTorScale_ = 100.0f;
+  static constexpr float kVelScale_ = InputScale::vel;
+  static constexpr float kTorScale_ = InputScale::tor;
 
   // ============================================================================
   // Static Members

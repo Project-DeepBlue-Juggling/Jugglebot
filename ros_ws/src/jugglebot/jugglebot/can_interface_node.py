@@ -305,7 +305,7 @@ class CanInterfaceNode(Node):
 
                 # Put the hand into IDLE mode since it isn't necessary for spacemouse or levelling (if it isn't already)
                 if hand_closed_loop:
-                    self.can_handler.set_requested_state(axis_id=6, requested_state='IDLE')
+                    self.can_handler.set_requested_state(axis_id=CANInterface.JUGGLEBOT_HAND_AXIS, requested_state='IDLE')
             
             # Control modes that should have all axes in CLOSED_LOOP_CONTROL mode
             elif (msg.data == 'CATCH_DROPPED_BALL_NODE' or
@@ -751,7 +751,7 @@ class CanInterfaceNode(Node):
             hand_state = request.data
 
             # Put the hand into the requested state
-            self.can_handler.set_requested_state(axis_id=6, requested_state=hand_state)
+            self.can_handler.set_requested_state(axis_id=CANInterface.JUGGLEBOT_HAND_AXIS, requested_state=hand_state)
 
             response.success = True
             response.message = f"Hand state set to {hand_state}"
@@ -774,7 +774,7 @@ class CanInterfaceNode(Node):
             if not self.stowed_due_to_error:
                 self.gently_move_platform_to_setpoint(0.0, deactivating=True) # Deactivate the robot
     
-            self.can_handler.set_requested_state(axis_id=6, requested_state='IDLE') # Put the hand into IDLE mode
+            self.can_handler.set_requested_state(axis_id=CANInterface.JUGGLEBOT_HAND_AXIS, requested_state='IDLE') # Put the hand into IDLE mode
             self.can_handler.shutdown()
         except Exception as e:
             self.get_logger().error(f"Error during node shutdown: {e}")

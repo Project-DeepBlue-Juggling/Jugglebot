@@ -25,27 +25,23 @@
 #include <cstdint>
 #include <cmath>
 
+// Shared protocol constants (auto-generated from config/jugglebot_protocol.yaml)
+#include "jugglebot_protocol.h"
+
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
 
 // ============================================================================
 // 1. ODrive Axis States
-//    Match the ODrive CAN protocol enum (AxisState).
+//    Provided by jugglebot_protocol.h (namespace ODriveState)
 // ============================================================================
-namespace ODriveState {
-  constexpr uint32_t IDLE        = 1u;
-  constexpr uint32_t CLOSED_LOOP = 8u;
-}
 
 // ============================================================================
 // 2. CAN Node IDs
-//    Each ODrive axis is assigned a unique node ID via the ODrive web GUI.
+//    Provided by jugglebot_protocol.h (namespace NodeId).
+//    Use NodeId::BB_PITCH and NodeId::BB_HAND directly.
 // ============================================================================
-namespace NodeId {
-  constexpr uint8_t PITCH = 7;
-  constexpr uint8_t HAND  = 8;
-}
 
 // ============================================================================
 // 3. Hardware Pins
@@ -61,7 +57,7 @@ namespace Pins {
 // 4. CAN Bus Configuration
 // ============================================================================
 namespace CanCfg {
-  constexpr uint32_t BAUD_RATE              = 1'000'000;  // 1 Mbps
+  constexpr uint32_t BAUD_RATE              = CanBus::BAUD_RATE;
   constexpr uint32_t HEARTBEAT_RATE_MS      = 100;        // BB heartbeat interval (ms)
   constexpr uint32_t AUTO_CLEAR_BRAKE_MS    = 500;        // Min ms between brake-resistor auto-clear
   constexpr uint8_t  MAX_NODES              = 16;         // Max CAN node IDs tracked
@@ -69,15 +65,16 @@ namespace CanCfg {
 
 // ============================================================================
 // 5. Ball Butler CAN Protocol IDs
-//    Custom message IDs for Ball Butler <-> host communication.
+//    Canonical values now in jugglebot_protocol.h (BallButlerCanId, PlatformCanId).
+//    Local aliases preserve existing call-site names.
 // ============================================================================
 namespace CanIds {
-  constexpr uint32_t HOST_THROW_CMD    = 0x7D0;  // Host -> BB throw command
-  constexpr uint32_t HEARTBEAT_CMD     = 0x7D1;  // BB heartbeat (BB -> Host)
-  constexpr uint32_t RELOAD_CMD        = 0x7D2;  // Host -> BB reload command
-  constexpr uint32_t RESET_CMD         = 0x7D3;  // Host -> BB reset command
-  constexpr uint32_t CALIBRATE_LOC_CMD = 0x7D4;  // Host -> BB calibrate location
-  constexpr uint32_t TIME_SYNC_CMD     = 0x7DD;  // Wall clock sync from master
+  constexpr uint32_t HOST_THROW_CMD    = BallButlerCanId::THROW_CMD;
+  constexpr uint32_t HEARTBEAT_CMD     = BallButlerCanId::HEARTBEAT;
+  constexpr uint32_t RELOAD_CMD        = BallButlerCanId::RELOAD_CMD;
+  constexpr uint32_t RESET_CMD         = BallButlerCanId::RESET_CMD;
+  constexpr uint32_t CALIBRATE_LOC_CMD = BallButlerCanId::CALIBRATE_LOC_CMD;
+  constexpr uint32_t TIME_SYNC_CMD     = SharedCanId::TIME_SYNC;
 }
 
 // ============================================================================
@@ -266,12 +263,13 @@ namespace OpCfg {
 
 // ============================================================================
 // 12. Heartbeat Encoding
-//     Resolution and range values for the 8-byte heartbeat CAN frame.
+//     Shared resolutions now in jugglebot_protocol.h (HeartbeatEncoding).
+//     BB-specific range/clamp values kept here.
 // ============================================================================
 namespace HeartbeatCfg {
-  constexpr float YAW_RES_DEG      = 0.01f;     // Yaw encoding resolution (deg/count)
-  constexpr float PITCH_RES_DEG    = 0.002f;     // Pitch encoding resolution (deg/count)
-  constexpr float HAND_RES_MM      = 0.01f;      // Hand encoding resolution (mm/count)
+  constexpr float YAW_RES_DEG      = HeartbeatEncoding::yaw_res_deg;
+  constexpr float PITCH_RES_DEG    = HeartbeatEncoding::pitch_res_deg;
+  constexpr float HAND_RES_MM      = HeartbeatEncoding::hand_res_mm;
   constexpr float HAND_MAX_MM      = 655.36f;    // Max representable hand position (mm)
   constexpr float PITCH_CLAMP_MIN  = 0.0f;       // Pitch encoding min (deg)
   constexpr float PITCH_CLAMP_MAX  = 90.0f;      // Pitch encoding max (deg)
