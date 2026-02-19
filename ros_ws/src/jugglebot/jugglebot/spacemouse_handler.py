@@ -14,6 +14,7 @@ from std_srvs.srv import Trigger
 import quaternion  # numpy quaternion
 import pyspacemouse
 import math
+import jugglebot.hardware_config as hw
 
 class SpaceMouseHandler(Node):
     def __init__(self):
@@ -38,9 +39,9 @@ class SpaceMouseHandler(Node):
 
         # Configure the default trapezoidal trajectory limits
         self.default_trap_traj_limits = {
-            'vel_limit': 15, # rev/s
-            'acc_limit': 20, # rev/s^2
-            'dec_limit': 20  # rev/s^2
+            'vel_limit': hw.SPACEMOUSE_TRAP_VEL_LIMIT_RPS,
+            'acc_limit': hw.SPACEMOUSE_TRAP_ACC_LIMIT_RPS2,
+            'dec_limit': hw.SPACEMOUSE_TRAP_DEC_LIMIT_RPS2,
         }
 
         """Initialize and open the SpaceMouse."""
@@ -59,13 +60,13 @@ class SpaceMouseHandler(Node):
             return
 
         # Set the multipliers for each axis (mm, deg)
-        xy_mult = 150.0  # mm
-        z_mult = 140.0   # mm
-        pitch_roll_mult = 30.0  # deg
-        yaw_mult = 10.0  # deg
+        xy_mult = hw.SPACEMOUSE_XY_MULT_MM
+        z_mult = hw.SPACEMOUSE_Z_MULT_MM
+        pitch_roll_mult = hw.SPACEMOUSE_PITCH_ROLL_MULT_DEG
+        yaw_mult = hw.SPACEMOUSE_YAW_MULT_DEG
 
         # Set the offset in z to put baseline position at ~midspan of robot
-        z_offset = 170   # mm
+        z_offset = hw.JB_OP_DEFAULT_ACTIVE_Z_MM
 
         # Initialise PlatformPoseCommand object
         message = PlatformPoseCommand()

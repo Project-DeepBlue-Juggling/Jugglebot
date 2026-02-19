@@ -49,29 +49,64 @@ GEOM_INIT_PLAT_NODES_MM = [
 ]
 GEOM_INIT_LEG_LENGTHS_MM = [621.389, 618.16, 622.074, 620.653, 620.652, 620.091]
 GEOM_MM_TO_REV = [0.01418332, 0.01419076, 0.01408956, 0.01418684, 0.01426801, 0.01424951]
+GEOM_LEG_MOTOR_MAX_POSITION_REVS = 4.2
+GEOM_HAND_MOTOR_MAX_POSITION_REVS = 11.1
 
 # ============================================================================
-# Jugglebot Catch Plane
+# Jugglebot Homing
 # ============================================================================
 
-CATCH_CATCH_HEIGHT_OFFSET_THROWN_MM = 170.0
-CATCH_CATCH_HEIGHT_OFFSET_DROPPED_MM = 165.0
-CATCH_XY_RANGE_OF_MOTION_MM = 400.0
-CATCH_CATCH_ANGLE_LIMIT_DEG = 30.0
-CATCH_MINIMUM_TIME_TO_ATTEMPT_CATCH_S = 0.5
-CATCH_TIME_AFTER_CATCHING_TO_RETURN_TO_DEFAULT_S = 1.0
-CATCH_DEFAULT_ACTIVE_Z_MM = 170.0
+HOMING_LEG_SPEED_RPS = 1.5
+HOMING_LEG_CURRENT_LIMIT_A = 5.0
+HOMING_LEG_CURRENT_HEADROOM_A = 3.0
+HOMING_LEG_ABS_POS_REV = 0.1
+HOMING_HAND_SPEED_RPS = -3.0
+HOMING_HAND_CURRENT_LIMIT_A = 8.0
+HOMING_HAND_CURRENT_HEADROOM_A = 3.0
+HOMING_HAND_ABS_POS_REV = -0.1
+HOMING_EMA_WEIGHT = 0.7
 
 # ============================================================================
-# Jugglebot Hand
+# Jugglebot ODrive Defaults
 # ============================================================================
 
-HAND_BALL_Z_AT_TOP_OF_STROKE_MM = 828.2
-HAND_TOP_STROKE_POSITION_REVS = 9.858
-HAND_MAX_HAND_POSITION_REVS = 11.1
+ODRIVE_TRAP_VEL_LIMIT_RPS = 15.0
+ODRIVE_TRAP_ACC_LIMIT_RPS2 = 30.0
+ODRIVE_TRAP_DEC_LIMIT_RPS2 = 30.0
+ODRIVE_LEG_VEL_LIMIT_RPS = 50.0
+ODRIVE_LEG_CURR_LIMIT_A = 20.0
+ODRIVE_HAND_VEL_LIMIT_RPS = 1000.0
+ODRIVE_HAND_CURR_LIMIT_A = 50.0
+ODRIVE_HAND_POS_GAIN = 35.0
+ODRIVE_HAND_VEL_GAIN = 0.007
+ODRIVE_HAND_VEL_INT_GAIN = 0.07
 
 # ============================================================================
-# Jugglebot Teensy Trajectory
+# Jugglebot Operational
+# ============================================================================
+
+JB_OP_ACTIVATE_POSITION_REV = 2.229
+JB_OP_DEFAULT_ACTIVE_Z_MM = 170.0
+JB_OP_TARGET_REACHED_POS_TOL_REV = 0.01
+JB_OP_TARGET_REACHED_VEL_TOL_RPS = 0.1
+JB_OP_GENTLE_MOVE_VEL_LIMIT_RPS = 2.5
+JB_OP_ENCODER_SEARCH_TIMEOUT_S = 3.0
+JB_OP_MAX_VALID_TILT_RAD = 0.785
+
+# ============================================================================
+# Jugglebot SpaceMouse
+# ============================================================================
+
+SPACEMOUSE_XY_MULT_MM = 150.0
+SPACEMOUSE_Z_MULT_MM = 140.0
+SPACEMOUSE_PITCH_ROLL_MULT_DEG = 30.0
+SPACEMOUSE_YAW_MULT_DEG = 10.0
+SPACEMOUSE_TRAP_VEL_LIMIT_RPS = 15.0
+SPACEMOUSE_TRAP_ACC_LIMIT_RPS2 = 20.0
+SPACEMOUSE_TRAP_DEC_LIMIT_RPS2 = 20.0
+
+# ============================================================================
+# Teensy Trajectory
 # ============================================================================
 
 TEENSY_TRAJ_HAND_SPOOL_RADIUS_M = 0.00521
@@ -87,6 +122,8 @@ TEENSY_TRAJ_END_PROFILE_HOLD_S = 0.1
 TEENSY_TRAJ_SAMPLE_RATE_HZ = 500
 TEENSY_TRAJ_MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2 = 100.0
 TEENSY_TRAJ_QUINTIC_S2_MAX = 5.7735027
+TEENSY_TRAJ_MIN_EVENT_VEL_MPS = 0.3
+TEENSY_TRAJ_MAX_EVENT_VEL_MPS = 7.0
 
 # ============================================================================
 # Teensy Operational
@@ -95,6 +132,13 @@ TEENSY_TRAJ_QUINTIC_S2_MAX = 5.7735027
 TEENSY_REPORT_INTERVAL_MS = 500
 TEENSY_SAFETY_GAP_US = 20000
 TEENSY_TIME_SYNC_ALPHA_SHIFT = 3
+
+# ============================================================================
+# Motion Capture
+# ============================================================================
+
+MOCAP_QTM_HOST = '192.168.20.12'
+MOCAP_QTM_PORT = 22223
 
 # ============================================================================
 # Ball Tracking & Prediction
@@ -153,10 +197,10 @@ BB_TRAJ_TRAJ_ARENA_BYTES = 24576
 # Ball Butler Hardware Pins
 # ============================================================================
 
-BB_PIN_YAW_PWM_A = 10
-BB_PIN_YAW_PWM_B = 16
-BB_PIN_YAW_ENC_A = 15
-BB_PIN_YAW_ENC_B = 14
+BB_PIN_YAW_SPI_CS = 10
+BB_PIN_YAW_INA1 = 16
+BB_PIN_YAW_INA2 = 15
+BB_PIN_YAW_PWM = 14
 
 # ============================================================================
 # Ball Butler CAN Config
@@ -165,13 +209,17 @@ BB_PIN_YAW_ENC_B = 14
 BB_CAN_HEARTBEAT_RATE_MS = 100
 BB_CAN_AUTO_CLEAR_BRAKE_MS = 500
 BB_CAN_MAX_NODES = 16
+BB_CAN_SYNC_STATS_PRINT_MS = 200
 
 # ============================================================================
 # Ball Butler Yaw Axis
 # ============================================================================
 
 BB_YAW_ENC_CPR = 60
+BB_YAW_ABS_ENC_CPR = 16384.0
 BB_YAW_PWM_FREQ_HZ = 20000
+BB_YAW_PWM_MAX = 255
+BB_YAW_PWM_DEADZONE_MIN = 60
 BB_YAW_LOOP_HZ = 150.0
 BB_YAW_ENC_DIR = -1
 BB_YAW_MOTOR_DIR = 1
@@ -185,6 +233,7 @@ BB_YAW_DECEL_PPS = 450.0
 BB_YAW_LIM_MIN_DEG = 0.0
 BB_YAW_LIM_MAX_DEG = 120.0
 BB_YAW_HARD_LIMIT_OVERSHOOT_DEG = 3.0
+BB_YAW_MAX_SOFT_RANGE_DEG = 355.0
 BB_YAW_VEL_LPF_ALPHA = 0.3
 BB_YAW_MAX_VALID_VEL_RPS = 2.0
 BB_YAW_BOOT_ZERO_OFFSET_DEG = 5.0
@@ -287,12 +336,19 @@ BB_HB_PITCH_CLAMP_MIN_DEG = 0.0
 BB_HB_PITCH_CLAMP_MAX_DEG = 90.0
 
 # ============================================================================
+# Ball Butler Ball Detection
+# ============================================================================
+
+BB_BD_GPIO_PIN = 3
+BB_BD_CHECK_INTERVAL_MS = 50
+BB_BD_MAX_MISSING_SAMPLES = 5
+BB_BD_CHECK_TIMEOUT_MS = 100
+
+# ============================================================================
 # Derived Constants (computed by generator)
 # ============================================================================
 
 GRAVITY_MMPS2 = 9806.0
-CATCH_HEIGHT_THROWN_MM = 744.3
-CATCH_HEIGHT_DROPPED_MM = 739.3
 INIT_LEG_LENGTHS_WITH_OFFSET_MM = [646.889, 643.66, 647.574, 646.153, 646.152, 645.591]
 TEENSY_LINEAR_GAIN = 31.617152802324696
 BB_LINEAR_GAIN = 30.3192698249091

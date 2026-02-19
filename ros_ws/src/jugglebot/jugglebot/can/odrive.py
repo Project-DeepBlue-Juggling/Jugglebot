@@ -13,6 +13,7 @@ from typing import Tuple
 
 import can
 import jugglebot.protocol_config as proto
+import jugglebot.hardware_config as hw
 
 # ═══════════════════════════════════════════════════════════════
 # Constants re-exported from protocol_config
@@ -22,6 +23,7 @@ COMMANDS = proto.ODRIVE_COMMANDS
 COMMAND_ID_TO_NAME = {v: k for k, v in COMMANDS.items()}
 
 LEG_AXES = proto.NODE_ID_LEGS
+NUM_LEGS = len(LEG_AXES)
 HAND_AXIS = proto.NODE_ID_JUGGLEBOT_HAND
 JUGGLEBOT_AXES = LEG_AXES + [HAND_AXIS]
 BB_AXES = [proto.NODE_ID_BB_PITCH, proto.NODE_ID_BB_HAND]
@@ -54,15 +56,25 @@ INPUT_MODES = {
 # Operational defaults
 # ═══════════════════════════════════════════════════════════════
 
-LEG_MOTOR_MAX_POSITION = 4.2     # revs
-HAND_MOTOR_MAX_POSITION = 11.0   # revs
+LEG_MOTOR_MAX_POSITION = hw.GEOM_LEG_MOTOR_MAX_POSITION_REVS
+HAND_MOTOR_MAX_POSITION = hw.GEOM_HAND_MOTOR_MAX_POSITION_REVS
 
-DEFAULT_TRAP_TRAJ = {'vel_limit': 15.0, 'acc_limit': 30.0, 'dec_limit': 30.0}
-DEFAULT_VEL_CURR = {
-    'leg_vel': 50.0, 'leg_curr': 20.0,
-    'hand_vel': 1000.0, 'hand_curr': 50.0,
+DEFAULT_TRAP_TRAJ = {
+    'vel_limit': hw.ODRIVE_TRAP_VEL_LIMIT_RPS,
+    'acc_limit': hw.ODRIVE_TRAP_ACC_LIMIT_RPS2,
+    'dec_limit': hw.ODRIVE_TRAP_DEC_LIMIT_RPS2,
 }
-DEFAULT_HAND_GAINS = {'pos_gain': 35.0, 'vel_gain': 0.007, 'vel_int_gain': 0.07}
+DEFAULT_VEL_CURR = {
+    'leg_vel': hw.ODRIVE_LEG_VEL_LIMIT_RPS,
+    'leg_curr': hw.ODRIVE_LEG_CURR_LIMIT_A,
+    'hand_vel': hw.ODRIVE_HAND_VEL_LIMIT_RPS,
+    'hand_curr': hw.ODRIVE_HAND_CURR_LIMIT_A,
+}
+DEFAULT_HAND_GAINS = {
+    'pos_gain': hw.ODRIVE_HAND_POS_GAIN,
+    'vel_gain': hw.ODRIVE_HAND_VEL_GAIN,
+    'vel_int_gain': hw.ODRIVE_HAND_VEL_INT_GAIN,
+}
 
 # ═══════════════════════════════════════════════════════════════
 # SDO endpoint IDs (for arbitrary parameter read/write)
@@ -101,6 +113,9 @@ ERROR_CODES = {
     268435456: "THERMISTOR_DISCONNECTED",
     1073741824: "CALIBRATION_ERROR",
 }
+
+# Frequently-referenced error bitmasks
+ERR_DC_BUS_UNDER_VOLTAGE = 512
 
 # Ball Butler motors — only process these command IDs from BB axes
 BB_MOTOR_IDS = set(BB_AXES)
@@ -281,8 +296,11 @@ def clip_position(axis_id: int, setpoint: float, logger=None) -> float:
     Caller should negate the return value for leg axes (0-5) before
     passing to encode_set_input_pos, since ODrive uses negative = extension.
     """
-    max_pos = LEG_MOTOR_MAX_POSITION if axis_id < 6 else HAND_MOTOR_MAX_POSITION
-    if axis_id > 6:
+    if axis_id in LEG_AXES:
+        max_pos = LEG_MOTOR_MAX_POSITION
+    elif axis_id == HAND_AXIS:
+        max_pos = HAND_MOTOR_MAX_POSITION
+    else:
         raise ValueError(f"Invalid Jugglebot axis ID for position: {axis_id}")
 
     if setpoint < 0.0 or setpoint > max_pos:

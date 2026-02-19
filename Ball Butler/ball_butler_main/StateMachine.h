@@ -24,7 +24,7 @@
  *   1. Create StateMachine instance with references to hardware modules
  *   2. Call begin() in setup()
  *   3. Call update() in loop()
- *   4. Use requestThrow() to trigger a throw, and requestReload() to trigger a reload
+ *   4. Use requestThrow() to trigger a throw, requestCheckBall() to verify ball presence
  *   5. Use reset() to recover from ERROR state
  */
 
@@ -79,7 +79,6 @@ public:
 
     float reload_hand_bottom_rev  = SMDefaults::RELOAD_HAND_BOTTOM_REV;
     float reload_hand_bottom_tolerance_rev = SMDefaults::RELOAD_HAND_BOTTOM_TOL_REV;
-    uint32_t reload_hold_delay_ms = SMDefaults::RELOAD_HOLD_DELAY_MS;
     uint8_t reload_ball_check_samples = SMDefaults::RELOAD_BALL_CHECK_SAMPLES;
 
     uint32_t tracking_hand_pos_check_interval_ms = SMDefaults::TRACKING_HAND_CHECK_MS;
@@ -110,9 +109,7 @@ public:
     uint8_t max_reload_attempts      = SMDefaults::MAX_RELOAD_ATTEMPTS;
     uint8_t max_homing_attempts      = SMDefaults::MAX_HOMING_ATTEMPTS;
 
-    // Axis settle times (ms to wait after commanding position) and positions
-    uint32_t pitch_settle_ms       = SMDefaults::PITCH_SETTLE_MS;
-    uint32_t pitch_grab_settle_ms  = SMDefaults::PITCH_GRAB_SETTLE_MS;
+    // Axis thresholds
     float yaw_angle_threshold_deg  = SMDefaults::YAW_ANGLE_THRESHOLD_DEG;
 
     // Axis limits
@@ -150,10 +147,10 @@ public:
   // ----------------------------------------------------------------
   // Commands
   // ----------------------------------------------------------------
-  // Request a throw or reload with given parameters
+  // Request a throw with given parameters
   // Returns true if command was accepted, false if rejected (wrong state, etc.)
   bool requestThrow(float yaw_deg, float pitch_deg, float speed_mps, uint64_t throw_wall_us);
-  bool requestReload();
+  // Request ball-presence check (enters CHECKING_BALL, then RELOADING if missing)
   bool requestCheckBall();
   bool requestCalibrateLocation();
   
@@ -248,7 +245,6 @@ private:
   uint8_t  ball_check_samples_collected_ = 0;  // Counter for ball check samples
   bool     ball_check_positive_   = false;     // True if any ball check was positive
   uint8_t  calibration_sub_state_ = 0;  // Sub-state within calibration
-  uint32_t calibration_done_ms_   = 0;  // Timestamp when calibration pause started
   bool     throw_complete_        = false;
   uint32_t last_tracking_hand_pos_check_ms_ = 0; // Last time we checked the hand position during tracking
   
@@ -256,8 +252,6 @@ private:
   uint8_t  check_ball_sub_state_ = 0;        // Sub-state within CHECKING_BALL
   uint8_t  check_ball_samples_collected_ = 0; // Samples collected in CHECKING_BALL confirm phase
   
-  bool reload_pending_ = false;
-
   // Pending throw request
   bool     throw_pending_          = false;
   float    pending_yaw_deg_        = 0;

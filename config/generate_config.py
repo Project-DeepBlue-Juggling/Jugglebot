@@ -323,13 +323,22 @@ def generate_python(cfg: dict) -> str:
 
 # Each tuple: (yaml_key, py_prefix, cpp_namespace, section_title)
 HW_SECTIONS = [
+    # 1. Shared Physics
     ("physics",                  "",           "Physics",    "Shared Physics"),
+    # 2–6. Jugglebot (Stewart platform)
     ("jugglebot_geometry",       "GEOM_",      "Geometry",   "Jugglebot Stewart Platform Geometry"),
-    ("jugglebot_catch",          "CATCH_",     "CatchPlane", "Jugglebot Catch Plane"),
-    ("jugglebot_hand",           "HAND_",      "Hand",       "Jugglebot Hand"),
-    ("teensy_trajectory",        "TEENSY_TRAJ_", "TeensyTraj", "Jugglebot Teensy Trajectory"),
+    ("jugglebot_homing",         "HOMING_",    "Homing",     "Jugglebot Homing"),
+    ("jugglebot_odrive_defaults","ODRIVE_",    "ODriveDefaults", "Jugglebot ODrive Defaults"),
+    ("jugglebot_operational",    "JB_OP_",     "JBOp",       "Jugglebot Operational"),
+    ("jugglebot_spacemouse",     "SPACEMOUSE_","Spacemouse", "Jugglebot SpaceMouse"),
+    # 7–8. Teensy (platform microcontroller)
+    ("teensy_trajectory",        "TEENSY_TRAJ_", "TeensyTraj", "Teensy Trajectory"),
     ("teensy_operational",       "TEENSY_",    "TeensyOp",   "Teensy Operational"),
+    # 9. Motion Capture
+    ("mocap",                    "MOCAP_",     "Mocap",      "Motion Capture"),
+    # 10. Ball Tracking & Prediction
     ("ball_tracking",            "TRACKING_",  "Tracking",   "Ball Tracking & Prediction"),
+    # 11–21. Ball Butler
     ("ball_butler_geometry",     "BB_GEOM_",   "BBGeom",     "Ball Butler Geometry & Kinematics"),
     ("ball_butler_trajectory",   "BB_TRAJ_",   "BBTraj",     "Ball Butler Trajectory"),
     ("ball_butler_pins",         "BB_PIN_",    "BBPins",     "Ball Butler Hardware Pins"),
@@ -340,6 +349,7 @@ HW_SECTIONS = [
     ("ball_butler_state_machine","BB_SM_",     "BBSM",       "Ball Butler State Machine"),
     ("ball_butler_operational",  "BB_OP_",     "BBOp",       "Ball Butler Operational"),
     ("ball_butler_heartbeat",    "BB_HB_",     "BBHb",       "Ball Butler Heartbeat Encoding"),
+    ("ball_butler_ball_detect",  "BB_BD_",     "BBBallDetect","Ball Butler Ball Detection"),
 ]
 
 
@@ -352,6 +362,8 @@ def _cpp_type_and_val(val) -> tuple[str, str]:
     """Return (C++ type, formatted value) for a scalar."""
     if isinstance(val, bool):
         return "bool", "true" if val else "false"
+    if isinstance(val, str):
+        return "const char*", f'"{val}"'
     if isinstance(val, int):
         if val < 0:
             return "int32_t", str(val)
@@ -375,12 +387,8 @@ def compute_derived(cfg: dict) -> dict:
     g = cfg["physics"]["gravity_mps2"]
     derived["GRAVITY_MMPS2"] = g * 1000.0
 
-    geom = cfg["jugglebot_geometry"]
-    catch = cfg["jugglebot_catch"]
-    derived["CATCH_HEIGHT_THROWN_MM"] = geom["initial_height_mm"] + catch["catch_height_offset_thrown_mm"]
-    derived["CATCH_HEIGHT_DROPPED_MM"] = geom["initial_height_mm"] + catch["catch_height_offset_dropped_mm"]
-
     # Init leg lengths with ball joint offset added
+    geom = cfg["jugglebot_geometry"]
     offset = geom["ball_joint_offset_mm"]
     derived["INIT_LEG_LENGTHS_WITH_OFFSET_MM"] = [
         ll + offset for ll in geom["init_leg_lengths_mm"]
@@ -438,8 +446,6 @@ def generate_hw_python(cfg: dict) -> str:
     derived = compute_derived(cfg)
     lines += py_section("Derived Constants (computed by generator)")
     lines.append(f"GRAVITY_MMPS2 = {derived['GRAVITY_MMPS2']}")
-    lines.append(f"CATCH_HEIGHT_THROWN_MM = {derived['CATCH_HEIGHT_THROWN_MM']}")
-    lines.append(f"CATCH_HEIGHT_DROPPED_MM = {derived['CATCH_HEIGHT_DROPPED_MM']}")
     lines.append(f"INIT_LEG_LENGTHS_WITH_OFFSET_MM = {derived['INIT_LEG_LENGTHS_WITH_OFFSET_MM']}")
     lines.append(f"TEENSY_LINEAR_GAIN = {derived['TEENSY_LINEAR_GAIN']}")
     lines.append(f"BB_LINEAR_GAIN = {derived['BB_LINEAR_GAIN']}")
@@ -503,8 +509,6 @@ def generate_hw_cpp(cfg: dict) -> str:
     lines += cpp_section("Derived Constants (computed by generator)")
     lines.append("namespace HwDerived {")
     lines.append(f"  constexpr float GRAVITY_MMPS2 = {derived['GRAVITY_MMPS2']}f;")
-    lines.append(f"  constexpr float CATCH_HEIGHT_THROWN_MM = {derived['CATCH_HEIGHT_THROWN_MM']}f;")
-    lines.append(f"  constexpr float CATCH_HEIGHT_DROPPED_MM = {derived['CATCH_HEIGHT_DROPPED_MM']}f;")
 
     ll = derived["INIT_LEG_LENGTHS_WITH_OFFSET_MM"]
     formatted = ", ".join(f"{v}f" for v in ll)

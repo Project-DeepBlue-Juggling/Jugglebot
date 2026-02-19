@@ -9,7 +9,8 @@ HandPathPlanner::HandPathPlanner(float sample_hz)
   fb_vel_rev_s_(0.0f),
   fb_ts_us_(0),
   last_time_to_ready_s_(0.0f),
-  last_frame_count_(0)
+  last_frame_count_(0),
+  last_decel_time_in_throw_(0.0f)
 {
   arena_.init(arena_buf_, sizeof(arena_buf_));
 }
@@ -42,7 +43,7 @@ HandPathPlanner::AnchorResult HandPathPlanner::computeAnchor_(const Trajectory& 
   const float throwMin = *minmaxX.first;
   const float throwMax = *minmaxX.second;
   const float anchorMin = -throwMin;
-  const float anchorMax = HAND_MAX_SMOOTH_MOVE_POS - throwMax;
+  const float anchorMax = TrajCfg::HAND_MAX_SMOOTH_POS - throwMax;
   const float desiredAnchor = fb_pos_rev_ - x0;
   const float anchor_rev    = clampf(desiredAnchor, anchorMin, anchorMax);
   const float target_start_rev = anchor_rev + x0;
@@ -65,6 +66,10 @@ HandPlanResult HandPathPlanner::planThrow(float throw_vel_mps,
     last_frame_count_     = 0;
     return out;
   }
+
+  // Cache decel start time for planThrowDecelZero() to avoid recomputing
+  const size_t i_decel = findDecelStartIndex(throwTr);
+  last_decel_time_in_throw_ = throwTr.t[i_decel];
 
   // 2) Choose anchor within bounds, minimizing pre-position distance
   const auto [anchor_rev, target_start_rev] = computeAnchor_(throwTr);
@@ -138,7 +143,7 @@ float HandPathPlanner::planThrow(float throw_vel_mps, void (*emit)(const TrajFra
 
   // Telemetry
   last_time_to_ready_s_ = trajDuration(smoothTr) + pause_s_;
-  last_frame_count_ = smoothTr.count + (size_t)(pause_s_ * (float)SAMPLE_RATE + 0.5f) + throwTr.count;
+  last_frame_count_ = smoothTr.count + (size_t)(pause_s_ * (float)TrajCfg::SAMPLE_RATE + 0.5f) + throwTr.count;
   return last_time_to_ready_s_;
 }
 
@@ -242,24 +247,12 @@ float HandPathPlanner::planThrowDecelZero(float throw_vel_mps,
 
 HandPlanResult HandPathPlanner::planThrowDecelZero(float throw_vel_mps,
                                                    TrajFrame* out_buf, size_t out_cap) {
-  // Build the unshifted plan first to compute cursor timings
+  // Build the unshifted plan (planThrow caches last_decel_time_in_throw_)
   HandPlanResult base = planThrow(throw_vel_mps, out_buf, out_cap);
   if (base.frame_count == 0) return base;
 
-  // To find where decel begins, regenerate the intrinsic throw.
-  // The arena was already reset inside planThrow(), and the intermediate
-  // Trajectory data is no longer needed — reset and reuse for this lookup.
-  arena_.reset();
-  HandTrajGenerator tg(throw_vel_mps);
-  Trajectory throwTr;
-  if (!tg.makeThrow(arena_, throwTr) || throwTr.empty()) return base;
-
-  const size_t i_decel = findDecelStartIndex(throwTr);
-  const float t_decel_in_throw = throwTr.t[i_decel];
-
-  // The throw segment in base begins at time t_throw_begin = time_to_ready_s
-  const float t_throw_begin = last_time_to_ready_s_;
-  const float t_zero_global = t_throw_begin + t_decel_in_throw; // make this -> 0
+  // Shift all frame times so that decel start = t=0
+  const float t_zero_global = last_time_to_ready_s_ + last_decel_time_in_throw_;
 
   for (size_t i = 0; i < base.frame_count; ++i)
     out_buf[i].t_s -= t_zero_global;
@@ -346,7 +339,7 @@ float HandPathPlanner::planThrowDecelZero(float throw_vel_mps,
   }
 
   last_time_to_ready_s_ = t_smooth + t_pause;
-  last_frame_count_     = smoothTr.count + (size_t)(t_pause * (float)SAMPLE_RATE + 0.5f) + throwTr.count;
+  last_frame_count_     = smoothTr.count + (size_t)(t_pause * (float)TrajCfg::SAMPLE_RATE + 0.5f) + throwTr.count;
   return last_time_to_ready_s_;
 }
 

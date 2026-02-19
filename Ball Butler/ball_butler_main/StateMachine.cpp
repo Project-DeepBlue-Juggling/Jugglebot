@@ -19,7 +19,7 @@
 #include "HandTrajectoryStreamer.h"
 #include "HandPathPlanner.h"
 #include "Proprioception.h"
-#include "Trajectory.h"  // For HAND_MAX_SMOOTH_MOVE_POS
+#include "Trajectory.h"  // For TrajCfg::HAND_MAX_SMOOTH_POS, makeSmoothMove()
 #include <stdarg.h>
 
 // --------------------------------------------------------------------
@@ -54,7 +54,6 @@ void StateMachine::begin() {
   state_enter_ms_ = millis();
   homing_attempt_ = 0;
   reload_attempt_ = 0;
-  reload_pending_ = false;
   throw_pending_ = false;
   error_msg_[0]  = '\0';
   
@@ -258,15 +257,6 @@ void StateMachine::handleIdle_() {
     } else {
       debugf_("[SM] Throw execution failed, staying in IDLE\n");
     }
-  }
-
-  if (reload_pending_) {
-    reload_pending_ = false;
-
-    // Begin the reloading process
-    enterState_(RobotState::RELOADING);
-    debugf_("[SM] Reloading...");
-    return;
   }
 
   // If the pitch axis is at or above `config_.pitch_min_stow_angle_deg` (and at its target) and not currently IDLE,
@@ -484,14 +474,8 @@ void StateMachine::handleReloading_() {
       break;
 
     case 8: // Check for ball in hand (wait for multiple samples)
-      // Initialize sample collection on first entry to this sub-state
-      if (ball_check_samples_collected_ == 0 && !ball_check_positive_) {
-        // Fresh entry - reset tracking
-        ball_check_positive_ = false;
-      }
-
-      // Wait at least 250ms between samples so the async ball detection
-      // (200ms SDO poll) has time to produce a fresh reading.
+      // Wait at least BALL_CHECK_SAMPLE_INTERVAL_MS between samples so the
+      // async ball detection (SDO poll) has time to produce a fresh reading.
       if (sub_elapsed < SMDefaults::BALL_CHECK_SAMPLE_INTERVAL_MS) {
         break;
       }
@@ -608,9 +592,16 @@ void StateMachine::handleCalibrating_() {
 //   2: Collect confirmation samples and either return to IDLE (ball detected) or confirm missing and go to RELOADING
 // --------------------------------------------------------------------
 void StateMachine::handleCheckingBall_() {
+  const uint32_t elapsed = millis() - state_enter_ms_;
   const uint32_t sub_elapsed = millis() - sub_state_ms_;
   const uint32_t min_duration_ms = SMDefaults::MIN_MOTION_DURATION_MS;
-  
+
+  // Check for overall timeout (reuse reload timeout)
+  if (elapsed > config_.reload_timeout_ms) {
+    triggerError("CHECKING_BALL timeout");
+    return;
+  }
+
   CanInterface::AxisHeartbeat hb_pitch;
 
   switch (check_ball_sub_state_) {
@@ -633,8 +624,8 @@ void StateMachine::handleCheckingBall_() {
       break;
 
     case 2:  // Collect confirmation samples
-      // Wait at least 250ms between samples so the async ball detection
-      // (200ms SDO poll) has time to produce a fresh reading.
+      // Wait at least BALL_CHECK_SAMPLE_INTERVAL_MS between samples so the
+      // async ball detection (SDO poll) has time to produce a fresh reading.
       if (sub_elapsed < SMDefaults::BALL_CHECK_SAMPLE_INTERVAL_MS) {
         break;
       }
@@ -670,22 +661,6 @@ void StateMachine::handleError_() {
 // --------------------------------------------------------------------
 // State change requesters
 // --------------------------------------------------------------------
-// requestReload() - Queue a reload request
-bool StateMachine::requestReload() {
-  // Only accept reload commands if in IDLE or TRACKING states
-  if (state_ != RobotState::IDLE && state_ != RobotState::TRACKING) {
-    debugf_("[SM] Reload rejected: currently in %s\n",
-            robotStateToString(state_));
-    return false;
-  }
-
-  // Updating pending flag
-  reload_pending_ = true;
-
-  debugf_("[SM] Reload queued\n");
-
-  return true;
-}
 
 // requestThrow() - Queue a throw request
 bool StateMachine::requestThrow(float yaw_deg, float pitch_deg, float speed_mps, uint64_t throw_wall_us) {
@@ -804,7 +779,7 @@ bool StateMachine::requestSmoothMove(float target_rev) {
 
   // Clamp to valid range
   if (target_rev < 0) target_rev = 0;
-  if (target_rev > HAND_MAX_SMOOTH_MOVE_POS) target_rev = HAND_MAX_SMOOTH_MOVE_POS;
+  if (target_rev > TrajCfg::HAND_MAX_SMOOTH_POS) target_rev = TrajCfg::HAND_MAX_SMOOTH_POS;
 
   // Get current PV
   float pos_rev = 0, vel_rps = 0;
@@ -952,7 +927,7 @@ bool StateMachine::startHomeHand_() {
 bool StateMachine::moveHandToPosition_(float target_rev) {
   // Clamp to valid range
   if (target_rev < 0) target_rev = 0;
-  if (target_rev > HAND_MAX_SMOOTH_MOVE_POS) target_rev = HAND_MAX_SMOOTH_MOVE_POS;
+  if (target_rev > TrajCfg::HAND_MAX_SMOOTH_POS) target_rev = TrajCfg::HAND_MAX_SMOOTH_POS;
 
   // Get current PV
   float pos_rev = 0, vel_rps = 0;

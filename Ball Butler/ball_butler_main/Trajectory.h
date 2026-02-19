@@ -82,28 +82,8 @@ struct Trajectory {
   size_t size()  const { return count; }
 };
 
-/* ───────── constants (aliases to BallButlerConfig.h / TrajCfg::) ───────── */
-constexpr float G                   = TrajCfg::G;
-constexpr float HAND_SPOOL_R        = TrajCfg::HAND_SPOOL_R;
-constexpr float LINEAR_GAIN_FACTOR  = TrajCfg::LINEAR_GAIN_FACTOR;
-constexpr float LINEAR_GAIN         = TrajCfg::LINEAR_GAIN;
-constexpr float INERTIA_HAND_ONLY   = TrajCfg::INERTIA_HAND_ONLY;
-constexpr float INERTIA_RATIO       = TrajCfg::INERTIA_RATIO;
-constexpr float THROW_VEL_HOLD_PCT  = TrajCfg::THROW_VEL_HOLD_PCT;
-constexpr float CATCH_VEL_RATIO     = TrajCfg::CATCH_VEL_RATIO;
-constexpr float CATCH_VEL_HOLD_PCT  = TrajCfg::CATCH_VEL_HOLD_PCT;
-constexpr float HAND_STROKE         = TrajCfg::HAND_STROKE;
-constexpr float STROKE_MARGIN       = TrajCfg::STROKE_MARGIN;
-constexpr float END_PROFILE_HOLD    = TrajCfg::END_PROFILE_HOLD;
-constexpr int   SAMPLE_RATE         = TrajCfg::SAMPLE_RATE;
-
-/* ----- smooth-move tuning ------------------------------------- */
-constexpr float MAX_SMOOTH_MOVE_HAND_ACCEL = TrajCfg::MAX_SMOOTH_ACCEL;
-constexpr float QUINTIC_S2_MAX             = TrajCfg::QUINTIC_S2_MAX;
-
-constexpr float HAND_MAX_SMOOTH_MOVE_POS = TrajCfg::HAND_MAX_SMOOTH_POS;
-
-inline float accelToTorque(float a) { return a * INERTIA_HAND_ONLY * HAND_SPOOL_R; }
+/* ───────── helper functions ───────── */
+inline float accelToTorque(float a) { return a * TrajCfg::INERTIA_HAND_ONLY * TrajCfg::HAND_SPOOL_R; }
 
 /* ───────── helper to shift whole trajectory in time ───────── */
 inline void shiftTime(Trajectory& tr, float offset)
@@ -116,9 +96,9 @@ class HandTrajGenerator {
 public:
   explicit HandTrajGenerator(float throwVel)
       : v_throw(throwVel),
-        throwHeight(v_throw * v_throw / (2.f * G)),
-        totalStroke(HAND_STROKE - 2.f * STROKE_MARGIN),
-        deltaT(1.f / SAMPLE_RATE)
+        throwHeight(v_throw * v_throw / (2.f * TrajCfg::G)),
+        totalStroke(TrajCfg::HAND_STROKE - 2.f * TrajCfg::STROKE_MARGIN),
+        deltaT(1.f / TrajCfg::SAMPLE_RATE)
   {
     calcThrow();
     calcCatch();
@@ -151,16 +131,16 @@ private:
   /* ----- internal helpers ----- */
   void calcThrow()
   {
-    airT = 2.f * v_throw / G;
-    float velHold = THROW_VEL_HOLD_PCT * totalStroke;
+    airT = 2.f * v_throw / TrajCfg::G;
+    float velHold = TrajCfg::THROW_VEL_HOLD_PCT * totalStroke;
     float accelSt = totalStroke - velHold;
 
-    float t_acc = 2.f / (INERTIA_RATIO + 1.f) * accelSt / v_throw;
+    float t_acc = 2.f / (TrajCfg::INERTIA_RATIO + 1.f) * accelSt / v_throw;
     float t_vel = velHold / v_throw;
-    float t_dec = t_acc * INERTIA_RATIO;
+    float t_dec = t_acc * TrajCfg::INERTIA_RATIO;
 
     throwA =  v_throw / t_acc;
-    throwD = -throwA / INERTIA_RATIO;
+    throwD = -throwA / TrajCfg::INERTIA_RATIO;
 
     t1 = t_acc;
     t2 = t1 + t_vel;
@@ -173,9 +153,9 @@ private:
 
   void calcCatch()
   {
-    float vC   = -CATCH_VEL_RATIO * v_throw;
-    float irC  = 1.f / INERTIA_RATIO;
-    float velH = CATCH_VEL_HOLD_PCT * totalStroke;
+    float vC   = -TrajCfg::CATCH_VEL_RATIO * v_throw;
+    float irC  = 1.f / TrajCfg::INERTIA_RATIO;
+    float velH = TrajCfg::CATCH_VEL_HOLD_PCT * totalStroke;
     float accS = totalStroke - velH;
 
     float t_acc = -(2.f / (irC + 1.f)) * accS / vC;
@@ -189,7 +169,7 @@ private:
     t4 = t5 - t_acc;
     t6 = t5 + t_vel;
     t7 = t6 + t_dec;
-    t8 = t7 + END_PROFILE_HOLD;
+    t8 = t7 + TrajCfg::END_PROFILE_HOLD;
 
     x5 = x3 + 0.5f * catchA * t_acc * t_acc;
     x6 = x5 + vC * t_vel;
@@ -212,7 +192,7 @@ private:
       float pos = xA[idx] + vA[idx] * tau + 0.5f * aA[idx] * tau * tau;
       float vel = vA[idx] + aA[idx] * tau;
 
-      tr.push(t, pos * LINEAR_GAIN, vel * LINEAR_GAIN, accelToTorque(aA[idx]));
+      tr.push(t, pos * TrajCfg::LINEAR_GAIN, vel * TrajCfg::LINEAR_GAIN, accelToTorque(aA[idx]));
       t += deltaT;
     }
     return true;
@@ -230,7 +210,7 @@ private:
 
   bool buildCatch(TrajArena& arena, Trajectory& tr)
   {
-    float vC   = -CATCH_VEL_RATIO * v_throw;
+    float vC   = -TrajCfg::CATCH_VEL_RATIO * v_throw;
     float tA[4] = {t4, t5, t6, t7};
     float xA[4] = {x3, x5, x6, 0.f};
     float vA[4] = {0.f, vC, vC, 0.f};
@@ -245,18 +225,18 @@ private:
     const float tA[9]  = {0.f,t1,t2,t3,t4,t5,t6,t7,t8};
     const float xA[9]  = {0.f,x1,x2,x3,x3,x5,x6,0.f,0.f};
     const float vA[9]  = {0.f, v_throw, v_throw, 0.f,
-                          0.f,-CATCH_VEL_RATIO*v_throw,
-                          -CATCH_VEL_RATIO*v_throw, 0.f, 0.f};
+                          0.f,-TrajCfg::CATCH_VEL_RATIO*v_throw,
+                          -TrajCfg::CATCH_VEL_RATIO*v_throw, 0.f, 0.f};
     const float aA[9]  = {throwA,0.f,throwD,0.f,
                           catchA,0.f,catchD,0.f,0.f};
 
     // Full trajectory can be much longer than a throw-only; use total t8 to estimate
-    const size_t est = (size_t)(t8 * SAMPLE_RATE) + 2;
+    const size_t est = (size_t)(t8 * TrajCfg::SAMPLE_RATE) + 2;
     if (!tr.init(arena, est)) return false;
 
     unsigned idx = 0;
     float t = 0.f;
-    const float dT = 1.f / SAMPLE_RATE;
+    const float dT = 1.f / TrajCfg::SAMPLE_RATE;
 
     while (t < t8) {
       while (t > tA[idx + 1]) ++idx;
@@ -279,7 +259,7 @@ private:
           pos = xA[idx];
           break;
       }
-      tr.push(t, pos * LINEAR_GAIN, vel * LINEAR_GAIN, accelToTorque(acc * LINEAR_GAIN));
+      tr.push(t, pos * TrajCfg::LINEAR_GAIN, vel * TrajCfg::LINEAR_GAIN, accelToTorque(acc * TrajCfg::LINEAR_GAIN));
       t += dT;
     }
     return true;
@@ -292,13 +272,13 @@ private:
    * start position  = start_rev (argument)
    * end   position  = target_rev   (argument)
    * boundary cond.  = v=a=0 at both ends   (quintic "S-curve")
-   * duration chosen such that  |a_max| ≤ MAX_SMOOTH_MOVE_HAND_ACCEL
+   * duration chosen such that  |a_max| ≤ TrajCfg::MAX_SMOOTH_ACCEL
    ===================================================================== */
 inline bool makeSmoothMove(TrajArena& arena, Trajectory& tr,
                            float start_rev, float target_rev)
 {
-    if (target_rev > HAND_MAX_SMOOTH_MOVE_POS){
-      target_rev = HAND_MAX_SMOOTH_MOVE_POS;
+    if (target_rev > TrajCfg::HAND_MAX_SMOOTH_POS){
+      target_rev = TrajCfg::HAND_MAX_SMOOTH_POS;
     } else if (target_rev < 0.0f){
       target_rev = 0.0;
     }
@@ -313,18 +293,18 @@ inline bool makeSmoothMove(TrajArena& arena, Trajectory& tr,
     /* ----- derive duration from accel limit ------------------------- *
      * pos(t) = delta_rev · s(τ) + start_rev ,   τ = t / T
      * a(t)   = delta_rev / T² · s''(τ)
-     * so  |a_max| = |delta_rev| · QUINTIC_S2_MAX / T²  ≤  A_max
+     * so  |a_max| = |delta_rev| · TrajCfg::QUINTIC_S2_MAX / T²  ≤  A_max
      */
-    const float T = sqrtf(fabsf(delta_rev) * QUINTIC_S2_MAX / MAX_SMOOTH_MOVE_HAND_ACCEL);
+    const float T = sqrtf(fabsf(delta_rev) * TrajCfg::QUINTIC_S2_MAX / TrajCfg::MAX_SMOOTH_ACCEL);
 
     /* guard against silly small values (numerics, rounding, …) */
     const float duration  = fmaxf(T, 0.05f);
 
-    const float dT   = 1.0f / SAMPLE_RATE;
+    const float dT   = 1.0f / TrajCfg::SAMPLE_RATE;
     const float invT = 1.0f / duration;
     const float invT2 = invT * invT;
 
-    const size_t N = (size_t)ceilf(duration * SAMPLE_RATE) + 1;
+    const size_t N = (size_t)ceilf(duration * TrajCfg::SAMPLE_RATE) + 1;
     if (!tr.init(arena, N)) return false;
 
     for (float t = 0.0f; t <= duration; t += dT) {
@@ -345,7 +325,7 @@ inline bool makeSmoothMove(TrajArena& arena, Trajectory& tr,
         const float vel_rev = delta_rev * s_vel * invT;
         const float acc_rev = delta_rev * s_acc * invT2;
 
-        const float acc_lin = acc_rev / LINEAR_GAIN;        // [m/s²]
+        const float acc_lin = acc_rev / TrajCfg::LINEAR_GAIN;  // [m/s²]
         const float torque  = accelToTorque(acc_lin);       // [N·m]
 
         tr.push(t, pos_rev, vel_rev, torque);

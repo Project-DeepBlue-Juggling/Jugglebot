@@ -7,7 +7,8 @@ from jugglebot_interfaces.srv import GetRobotGeometry
 from geometry_msgs.msg import PoseStamped, TransformStamped
 import tf2_ros
 from .mocap_interface import MocapInterface
-from jugglebot.ball_butler_states import BallButlerStates
+from jugglebot.protocol_config import BallButlerStates
+import jugglebot.hardware_config as hw
 
 class MocapInterfaceNode(Node):
     def __init__(self):
@@ -50,8 +51,7 @@ class MocapInterfaceNode(Node):
         # Initialize timers to publish the mocap data
         clock_offset_publish_rate = 1.0  # Hz
         self.clock_offset_timer = self.create_timer(1.0 / clock_offset_publish_rate, self.publish_clock_offset)
-        mocap_frames_per_second = 200
-        self.timer = self.create_timer(1.0 / mocap_frames_per_second, self.publish_mocap_data)
+        self.timer = self.create_timer(hw.TRACKING_MOCAP_DT_S, self.publish_mocap_data)  # 200 Hz
 
         #########################################################################################################
         #                                         Ball Butler-Related                                           #

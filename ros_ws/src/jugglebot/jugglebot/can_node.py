@@ -42,6 +42,7 @@ from jugglebot.can import odrive
 from jugglebot.can import ball_butler
 from jugglebot.can.motor_state import MotorStateTracker
 import jugglebot.protocol_config as proto
+import jugglebot.hardware_config as hw
 
 
 class CanInterfaceNode(Node):
@@ -78,10 +79,10 @@ class CanInterfaceNode(Node):
         self._last_hand_cmd = {'pos': 0.0, 'vel': 0.0, 'tor': 0.0}
 
         # Platform target tracking
-        self.legs_target_position = [None] * 6
-        self.legs_target_reached = [False] * 6
+        self.legs_target_position = [None] * odrive.NUM_LEGS
+        self.legs_target_reached = [False] * odrive.NUM_LEGS
         self.stowed_due_to_error = False
-        self._encoder_data_received = [False] * 6  # Track whether real encoder data has arrived
+        self._encoder_data_received = [False] * odrive.NUM_LEGS  # Track whether real encoder data has arrived
 
         # Tilt sensor and quaternion accumulation
         self._tilt_reading = None
@@ -128,15 +129,31 @@ class CanInterfaceNode(Node):
         self.bb_heartbeat_pub = self.create_publisher(BallButlerHeartbeatMsg, 'bb/heartbeat', 10)
 
         # ── Timers ─────────────────────────────────────────────
-        self.declare_parameter('time_sync_period_ms', 10)
-        ts_period = self.get_parameter('time_sync_period_ms').get_parameter_value().integer_value / 1000.0
+        can_poll_period = 0.001  # 1 kHz CAN poll
+        state_pub_period = 0.01  # 100 Hz robot state
+        ts_period = 0.01  # 100 Hz time-sync broadcast
+        hand_telemetry_period = 0.002  # 500 Hz hand telemetry
+        bb_heartbeat_period = 0.1  # 10 Hz Ball Butler heartbeat
+        target_reached_period = 0.1  # 10 Hz target reached check
 
-        self.create_timer(0.001, self._poll_can_bus)           # 1 kHz CAN poll
-        self.create_timer(0.01, self._publish_robot_state)     # 100 Hz state
+        self.create_timer(can_poll_period, self._poll_can_bus)           # 1 kHz CAN poll
+        self.create_timer(state_pub_period, self._publish_robot_state)     # 100 Hz state
         self.create_timer(ts_period, self.bus.broadcast_time)  # Time sync
-        self.create_timer(0.002, self._publish_hand_telemetry) # 500 Hz hand
-        self.create_timer(0.1, self._publish_bb_heartbeat)     # 10 Hz BB
-        self.create_timer(0.1, self._check_target_reached)     # 10 Hz target
+        self.create_timer(hand_telemetry_period, self._publish_hand_telemetry) # 500 Hz hand
+        self.create_timer(bb_heartbeat_period, self._publish_bb_heartbeat)     # 10 Hz BB
+        self.create_timer(target_reached_period, self._check_target_reached)     # 10 Hz target
+
+        # Callbacks that _run_to_completion keeps alive when the executor is
+        # blocked.  Each entry is (callback, period_seconds).  During normal
+        # operation the ROS2 timers above handle scheduling; during blocking
+        # generator operations _pump() takes over at the same frequencies.
+        self._keepalive_schedule = [
+            (self.bus.broadcast_time,       ts_period),
+            (self._publish_robot_state,     state_pub_period),
+            (self._publish_hand_telemetry,  hand_telemetry_period),
+            (self._publish_bb_heartbeat,    bb_heartbeat_period),
+            (self._check_target_reached,    target_reached_period),
+        ]
 
     # ═══════════════════════════════════════════════════════════
     # CAN message polling and dispatch
@@ -203,7 +220,7 @@ class CanInterfaceNode(Node):
         no_active = all(s.active_errors == 0 for s in states)
         no_disarm = all(s.disarm_reason == 0 for s in states)
         any_disarmed = any(s.disarm_reason != 0 for s in states)
-        any_closed_loop = any(s.current_state == 8 for s in states)
+        any_closed_loop = any(s.current_state == odrive.AXIS_STATES['CLOSED_LOOP_CONTROL'] for s in states)
 
         if no_active and no_disarm:
             self.motors.fatal_error = False
@@ -231,9 +248,9 @@ class CanInterfaceNode(Node):
 
         if not no_active:
             self.motors.fatal_error = True
-        if active_errors & 512:
+        if active_errors & odrive.ERR_DC_BUS_UNDER_VOLTAGE:
             self.motors.undervoltage_error = True
-        if disarm_reason & 512 and no_active:
+        if disarm_reason & odrive.ERR_DC_BUS_UNDER_VOLTAGE and no_active:
             self.motors.undervoltage_error = False
             self.motors.fatal_error = False
             self._clear_errors()
@@ -256,7 +273,7 @@ class CanInterfaceNode(Node):
 
     def _handle_encoder(self, axis_id, data):
         pos, vel = odrive.decode_encoder_estimate(data)
-        if axis_id < 6:  # Legs: invert (ODrive -ve = extension, we want +ve = extension)
+        if axis_id in odrive.LEG_AXES:  # Legs: invert (ODrive -ve = extension, we want +ve = extension)
             pos, vel = -pos, -vel
             self._encoder_data_received[axis_id] = True
         self.motors.update(axis_id, pos_estimate=pos, vel_estimate=vel)
@@ -373,7 +390,7 @@ class CanInterfaceNode(Node):
     def _send_position_target(self, axis_id, setpoint, vel_ff=0, torque_ff=0):
         """Send a position command to an axis, with clipping and leg inversion."""
         setpoint = odrive.clip_position(axis_id, setpoint, self.get_logger())
-        if axis_id < 6:
+        if axis_id in odrive.LEG_AXES:
             setpoint = -setpoint  # Legs: ODrive -ve = extension
         self.bus.send(odrive.encode_set_input_pos(axis_id, setpoint, vel_ff, torque_ff))
 
@@ -432,7 +449,7 @@ class CanInterfaceNode(Node):
     def _svc_activate_or_deactivate(self, req, res):
         try:
             if req.command == 'activate':
-                result = self._gently_move_to_setpoint(2.229, deactivating=False)
+                result = self._gently_move_to_setpoint(hw.JB_OP_ACTIVATE_POSITION_REV, deactivating=False)
             elif req.command == 'deactivate':
                 result = self._gently_move_to_setpoint(0.0, deactivating=True)
             else:
@@ -566,8 +583,9 @@ class CanInterfaceNode(Node):
         """Handle control mode changes (critical Phase 1 port from can_interface_node.py:280-325)."""
         try:
             states = self.motors.last_states
-            legs_closed = all(s.current_state == 8 for s in states[:6])
-            hand_closed = states[6].current_state == 8
+            _CL = odrive.AXIS_STATES['CLOSED_LOOP_CONTROL']
+            legs_closed = all(s.current_state == _CL for s in states[:odrive.NUM_LEGS])
+            hand_closed = states[odrive.HAND_AXIS].current_state == _CL
 
             if msg.data == 'ERROR':
                 self.get_logger().error("Error state detected. Stowing platform.")
@@ -665,9 +683,9 @@ class CanInterfaceNode(Node):
             if not all(self._encoder_data_received):
                 return  # No real encoder data yet — don't report false positives
             states = self.motors.last_states
-            for i in range(6):
-                at_target = (abs(states[i].pos_estimate - self.legs_target_position[i]) < 0.01
-                             and abs(states[i].vel_estimate) < 0.1)
+            for i in odrive.LEG_AXES:
+                at_target = (abs(states[i].pos_estimate - self.legs_target_position[i]) < hw.JB_OP_TARGET_REACHED_POS_TOL_REV
+                             and abs(states[i].vel_estimate) < hw.JB_OP_TARGET_REACHED_VEL_TOL_RPS)
                 self.legs_target_reached[i] = at_target
             msg = LegsTargetReachedMessage()
             msg.leg0_has_arrived = self.legs_target_reached[0]
@@ -693,16 +711,30 @@ class CanInterfaceNode(Node):
             return <value>  — operation complete (received via StopIteration)
 
         Generators can compose via ``yield from sub_gen()``.
+
+        While the executor is blocked inside this method, ROS2 timer callbacks
+        can't fire.  We replicate their work here so that CAN polling, time-sync,
+        state publishing, and telemetry all continue at their normal frequencies.
         """
+        next_fire = [0.0] * len(self._keepalive_schedule)
+
+        def _pump():
+            self._poll_can_bus()
+            now = time.time()
+            for i, (cb, period) in enumerate(self._keepalive_schedule):
+                if now >= next_fire[i]:
+                    cb()
+                    next_fire[i] = now + period
+
         try:
             while True:
                 delay = next(gen)
-                self.bus.fetch_all(self._handle_message)
+                _pump()
                 if isinstance(delay, (int, float)) and delay > 0:
                     deadline = time.time() + delay
                     while time.time() < deadline:
                         time.sleep(0.001)
-                        self.bus.fetch_all(self._handle_message)
+                        _pump()
         except StopIteration as e:
             return e.value
 
@@ -720,20 +752,21 @@ class CanInterfaceNode(Node):
             self.bus.send(odrive.encode_set_state(axis_id, 'ENCODER_INDEX_SEARCH'))
 
         # Wait for all legs to enter ENCODER_INDEX_SEARCH state
-        deadline = time.time() + 3.0
-        in_search = [False] * 6
+        deadline = time.time() + hw.JB_OP_ENCODER_SEARCH_TIMEOUT_S
+        _EIS = odrive.AXIS_STATES['ENCODER_INDEX_SEARCH']
+        in_search = [False] * odrive.NUM_LEGS
         while not all(in_search):
             if time.time() > deadline:
                 self.get_logger().error("Encoder search timed out (enter phase)")
                 return False
-            for i in range(6):
-                if self.motors.last_states[i].current_state == 6:
+            for i in odrive.LEG_AXES:
+                if self.motors.last_states[i].current_state == _EIS:
                     in_search[i] = True
             yield  # Process CAN
 
         # Wait for procedure_result == 0 (SUCCESS) on all legs
-        deadline = time.time() + 3.0
-        while not all(s.procedure_result == 0 for s in self.motors.last_states[:6]):
+        deadline = time.time() + hw.JB_OP_ENCODER_SEARCH_TIMEOUT_S
+        while not all(s.procedure_result == 0 for s in self.motors.last_states[:odrive.NUM_LEGS]):
             if self.motors.fatal_error:
                 self.get_logger().error("Fatal error during encoder search")
                 return False
@@ -759,18 +792,22 @@ class CanInterfaceNode(Node):
         self._setup_odrives()
 
         for axis_id in odrive.JUGGLEBOT_AXES:
-            if axis_id < 6:
-                ok = yield from self._home_motor_steps(axis_id, speed=1.5, limit=5.0, headroom=3.0)
+            if axis_id in odrive.LEG_AXES:
+                ok = yield from self._home_motor_steps(
+                    axis_id, speed=hw.HOMING_LEG_SPEED_RPS,
+                    limit=hw.HOMING_LEG_CURRENT_LIMIT_A, headroom=hw.HOMING_LEG_CURRENT_HEADROOM_A)
                 if not ok:
                     return False
-                self.bus.send(odrive.encode_set_absolute_position(axis_id, 0.1))
+                self.bus.send(odrive.encode_set_absolute_position(axis_id, hw.HOMING_LEG_ABS_POS_REV))
                 self.get_logger().info(f"Motor {axis_id} homed!")
             else:  # Hand
                 self._set_hand_gains()
-                ok = yield from self._home_motor_steps(axis_id, speed=-3.0, limit=8.0, headroom=3.0)
+                ok = yield from self._home_motor_steps(
+                    axis_id, speed=hw.HOMING_HAND_SPEED_RPS,
+                    limit=hw.HOMING_HAND_CURRENT_LIMIT_A, headroom=hw.HOMING_HAND_CURRENT_HEADROOM_A)
                 if not ok:
                     return False
-                self.bus.send(odrive.encode_set_absolute_position(axis_id, -0.1))
+                self.bus.send(odrive.encode_set_absolute_position(axis_id, hw.HOMING_HAND_ABS_POS_REV))
                 self.get_logger().info("Hand homed!")
 
         self._setup_odrives()
@@ -791,7 +828,7 @@ class CanInterfaceNode(Node):
                 return False
             current = self.motors.get_field(axis_id, 'iq_measured')
             if current is not None:
-                avg = avg * 0.7 + current * 0.3
+                avg = avg * hw.HOMING_EMA_WEIGHT + current * (1.0 - hw.HOMING_EMA_WEIGHT)
                 if abs(avg) >= limit:
                     self.bus.send(odrive.encode_set_state(axis_id, 'IDLE'))
                     return True
@@ -808,14 +845,16 @@ class CanInterfaceNode(Node):
     def _gentle_move_steps(self, setpoint, deactivating=True):
         """Generator: slowly move all legs to a setpoint."""
         states = self.motors.last_states
-        legs_idle = all(s.current_state == 1 for s in states[:6])
+        _IDLE = odrive.AXIS_STATES['IDLE']
+        _CL = odrive.AXIS_STATES['CLOSED_LOOP_CONTROL']
+        legs_idle = all(s.current_state == _IDLE for s in states[:odrive.NUM_LEGS])
 
         if deactivating and legs_idle:
-            if all(s.pos_estimate < 0.1 for s in states[:6]):
+            if all(s.pos_estimate < 0.1 for s in states[:odrive.NUM_LEGS]):
                 self.get_logger().info("Legs already stowed.")
                 return True
 
-        if not all(s.current_state == 8 for s in states[:6]):
+        if not all(s.current_state == _CL for s in states[:odrive.NUM_LEGS]):
             for axis_id in odrive.LEG_AXES:
                 self.bus.send(odrive.encode_set_state(axis_id, 'CLOSED_LOOP_CONTROL'))
                 time.sleep(0.005)
@@ -823,18 +862,18 @@ class CanInterfaceNode(Node):
 
         # Lower speed for gentle movement
         for axis_id in odrive.LEG_AXES:
-            self.bus.send(odrive.encode_set_vel_curr_limits(axis_id, 2.5, self.leg_curr_limit))
+            self.bus.send(odrive.encode_set_vel_curr_limits(axis_id, hw.JB_OP_GENTLE_MOVE_VEL_LIMIT_RPS, self.leg_curr_limit))
             time.sleep(0.005)
         yield 0.1  # Let limits take effect
 
-        for axis_id in range(6):
+        for axis_id in odrive.LEG_AXES:
             self._send_position_target(axis_id, setpoint)
             time.sleep(0.001)
 
         yield 0.5  # Initial movement time
 
         # Wait for trajectories to complete (legs only)
-        while not all(s.trajectory_done for s in self.motors.last_states[:6]):
+        while not all(s.trajectory_done for s in self.motors.last_states[:odrive.NUM_LEGS]):
             yield 0.01  # Poll every 10ms
 
         yield 1.0  # Settle time
@@ -911,7 +950,7 @@ class CanInterfaceNode(Node):
         tx, ty = self._tilt_reading
         self._tilt_reading = None
 
-        if abs(tx) > 0.785 or abs(ty) > 0.785:
+        if abs(tx) > hw.JB_OP_MAX_VALID_TILT_RAD or abs(ty) > hw.JB_OP_MAX_VALID_TILT_RAD:
             if attempt < 3:
                 self.get_logger().warning("Tilt reading invalid, retrying...")
                 return (yield from self._tilt_reading_steps(attempt + 1))
@@ -923,7 +962,7 @@ class CanInterfaceNode(Node):
         """Send a hand trajectory command to the Teensy."""
         if event_delay is None or event_delay <= 0:
             raise ValueError(f"Invalid event delay: {event_delay}")
-        if event_vel is None or event_vel < 0.3 or event_vel > 7.0:
+        if event_vel is None or event_vel < hw.TEENSY_TRAJ_MIN_EVENT_VEL_MPS or event_vel > hw.TEENSY_TRAJ_MAX_EVENT_VEL_MPS:
             raise ValueError(f"Invalid event velocity: {event_vel}")
         if traj_type not in (0, 1, 2):
             raise ValueError(f"Invalid trajectory type: {traj_type}")
@@ -990,7 +1029,7 @@ class CanInterfaceNode(Node):
     def _encoder_status_steps(self):
         """Generator: query ODrives for encoder search completion status."""
         self.motors.reset_encoder_search_feedback()
-        for axis_id in range(6):
+        for axis_id in odrive.LEG_AXES:
             self.bus.send(odrive.encode_sdo_read(axis_id, 'commutation_mapper.pos_abs'))
 
         retries = 0
@@ -999,7 +1038,7 @@ class CanInterfaceNode(Node):
             if time.time() > deadline:
                 retries += 1
                 deadline = time.time() + 1.0
-                for axis_id in range(6):
+                for axis_id in odrive.LEG_AXES:
                     self.bus.send(odrive.encode_sdo_read(axis_id, 'commutation_mapper.pos_abs'))
             yield 0.01  # Poll every 10ms
 

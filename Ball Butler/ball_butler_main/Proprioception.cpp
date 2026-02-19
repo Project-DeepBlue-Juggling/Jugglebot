@@ -223,75 +223,69 @@ bool Proprioception::snapshot(ProprioceptionData& out) const {
 
 // --------------------------------------------------------------------
 // Individual getters with timestamp
+// Use targeted IRQGuard reads instead of full snapshot() to avoid
+// copying all fields when only one is needed.
 // --------------------------------------------------------------------
 bool Proprioception::getYaw(float& yaw_deg, uint64_t& ts_us) const {
-  ProprioceptionData d;
-  snapshot(d);
-  if (!d.isYawValid()) return false;
-  yaw_deg = d.yaw_deg;
-  ts_us   = d.yaw_ts_us;
+  IRQGuard g;
+  if (!(valid_mask_ & (1u << 0))) return false;
+  yaw_deg = yaw_deg_;
+  ts_us   = yaw_ts_us_;
   return true;
 }
 
 bool Proprioception::getPitch(float& pitch_deg, uint64_t& ts_us) const {
-  ProprioceptionData d;
-  snapshot(d);
-  if (!d.isPitchValid()) return false;
-  pitch_deg = d.pitch_deg;
-  ts_us     = d.pitch_ts_us;
+  IRQGuard g;
+  if (!(valid_mask_ & (1u << 1))) return false;
+  pitch_deg = pitch_deg_;
+  ts_us     = pitch_ts_us_;
   return true;
 }
 
 bool Proprioception::getHandPV(float& pos_rev, float& vel_rps, uint64_t& ts_us) const {
-  ProprioceptionData d;
-  snapshot(d);
-  if (!d.isHandPVValid()) return false;
-  pos_rev = d.hand_pos_rev;
-  vel_rps = d.hand_vel_rps;
-  ts_us   = d.hand_pv_ts_us;
+  IRQGuard g;
+  if (!(valid_mask_ & (1u << 2))) return false;
+  pos_rev = hand_pos_rev_;
+  vel_rps = hand_vel_rps_;
+  ts_us   = hand_pv_ts_us_;
   return true;
 }
 
 bool Proprioception::getHandIq(float& iq_a, uint64_t& ts_us) const {
-  ProprioceptionData d;
-  snapshot(d);
-  if (!d.isHandIqValid()) return false;
-  iq_a  = d.hand_iq_a;
-  ts_us = d.hand_iq_ts_us;
+  IRQGuard g;
+  if (!(valid_mask_ & (1u << 3))) return false;
+  iq_a  = hand_iq_a_;
+  ts_us = hand_iq_ts_us_;
   return true;
 }
 
 // --------------------------------------------------------------------
 // Simple getters (return NaN if not valid)
+// Single-field IRQGuard reads — much cheaper than full snapshot().
 // --------------------------------------------------------------------
 float Proprioception::getYawDeg() const {
-  ProprioceptionData d;
-  snapshot(d);
-  return d.isYawValid() ? d.yaw_deg : NAN;
+  IRQGuard g;
+  return (valid_mask_ & (1u << 0)) ? yaw_deg_ : NAN;
 }
 
 float Proprioception::getPitchDeg() const {
-  ProprioceptionData d;
-  snapshot(d);
-  return d.isPitchValid() ? d.pitch_deg : NAN;
+  IRQGuard g;
+  return (valid_mask_ & (1u << 1)) ? pitch_deg_ : NAN;
 }
 
 float Proprioception::getHandPosRev() const {
-  ProprioceptionData d;
-  snapshot(d);
-  return d.isHandPVValid() ? d.hand_pos_rev : NAN;
+  IRQGuard g;
+  return (valid_mask_ & (1u << 2)) ? hand_pos_rev_ : NAN;
 }
 
 float Proprioception::getHandVelRps() const {
-  ProprioceptionData d;
-  snapshot(d);
-  return d.isHandPVValid() ? d.hand_vel_rps : NAN;
+  IRQGuard g;
+  return (valid_mask_ & (1u << 2)) ? hand_vel_rps_ : NAN;
 }
 
 float Proprioception::getHandIqA() const {
-  ProprioceptionData d;
-  snapshot(d);
-  return d.isHandIqValid() ? d.hand_iq_a : NAN;
+  IRQGuard g;
+  return (valid_mask_ & (1u << 3)) ? hand_iq_a_ : NAN;
 }
 
 // --------------------------------------------------------------------

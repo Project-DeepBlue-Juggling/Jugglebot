@@ -38,8 +38,8 @@
         - class TrajArena
         - bool makeSmoothMove(TrajArena&, Trajectory&, start, target)
         - class HandTrajGenerator(throwVel_mps)
-        - constexpr int SAMPLE_RATE = 500;
-        - constexpr float HAND_MAX_SMOOTH_MOVE_POS;
+        - TrajCfg::SAMPLE_RATE
+        - TrajCfg::HAND_MAX_SMOOTH_POS
 */
 
 #include <stdint.h>
@@ -55,7 +55,7 @@ struct HandPlanResult {
 
 class HandPathPlanner {
 public:
-  explicit HandPathPlanner(float sample_hz = (float)SAMPLE_RATE);
+  explicit HandPathPlanner(float sample_hz = (float)TrajCfg::SAMPLE_RATE);
 
   // Configuration setters (no Serial in this class)
   void setPauseSeconds(float s);
@@ -102,7 +102,7 @@ public:
   size_t lastFrameCount() const { return last_frame_count_; }
 
 private:
-  // Fixed sample settings (should match Trajectory.h SAMPLE_RATE)
+  // Fixed sample settings (should match TrajCfg::SAMPLE_RATE)
   float fs_hz_;
   float dt_s_;
   float pause_s_;
@@ -115,6 +115,7 @@ private:
   // Last-plan telemetry
   float  last_time_to_ready_s_;
   size_t last_frame_count_;
+  float  last_decel_time_in_throw_;  // Decel start time within intrinsic throw (cached for planThrowDecelZero)
 
   // Arena for intermediate Trajectory float arrays (reset per planning call)
   alignas(4) uint8_t arena_buf_[TrajCfg::TRAJ_ARENA_BYTES];

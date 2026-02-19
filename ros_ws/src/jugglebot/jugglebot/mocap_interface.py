@@ -7,6 +7,7 @@ import numpy as np
 from typing import Optional, Dict
 import xml.etree.ElementTree as ET
 from geometry_msgs.msg import PoseStamped # To convert the rigid body pose(s) to a ROS2 message
+import jugglebot.hardware_config as hw
 
 class MocapInterface:
     """
@@ -15,7 +16,7 @@ class MocapInterface:
     Only unlabelled markers and full rigid bodies are stored and processed.
     """
 
-    def __init__(self, host: str = "192.168.20.12", port: int = 22223, logger=None, node=None):
+    def __init__(self, host: str = hw.MOCAP_QTM_HOST, port: int = hw.MOCAP_QTM_PORT, logger=None, node=None):
         """
         Initialize the tracker.
 

@@ -56,34 +56,73 @@ namespace Geometry {
   };
   constexpr float INIT_LEG_LENGTHS_MM[6] = {621.389f, 618.16f, 622.074f, 620.653f, 620.652f, 620.091f};
   constexpr float MM_TO_REV[6] = {0.01418332f, 0.01419076f, 0.01408956f, 0.01418684f, 0.01426801f, 0.01424951f};
+  constexpr float LEG_MOTOR_MAX_POSITION_REVS = 4.2f;
+  constexpr float HAND_MOTOR_MAX_POSITION_REVS = 11.1f;
 }
 
 // ==========================================================================
-// Jugglebot Catch Plane
+// Jugglebot Homing
 // ==========================================================================
 
-namespace CatchPlane {
-  constexpr float CATCH_HEIGHT_OFFSET_THROWN_MM = 170.0f;
-  constexpr float CATCH_HEIGHT_OFFSET_DROPPED_MM = 165.0f;
-  constexpr float XY_RANGE_OF_MOTION_MM = 400.0f;
-  constexpr float CATCH_ANGLE_LIMIT_DEG = 30.0f;
-  constexpr float MINIMUM_TIME_TO_ATTEMPT_CATCH_S = 0.5f;
-  constexpr float TIME_AFTER_CATCHING_TO_RETURN_TO_DEFAULT_S = 1.0f;
+namespace Homing {
+  constexpr float LEG_SPEED_RPS = 1.5f;
+  constexpr float LEG_CURRENT_LIMIT_A = 5.0f;
+  constexpr float LEG_CURRENT_HEADROOM_A = 3.0f;
+  constexpr float LEG_ABS_POS_REV = 0.1f;
+  constexpr float HAND_SPEED_RPS = -3.0f;
+  constexpr float HAND_CURRENT_LIMIT_A = 8.0f;
+  constexpr float HAND_CURRENT_HEADROOM_A = 3.0f;
+  constexpr float HAND_ABS_POS_REV = -0.1f;
+  constexpr float EMA_WEIGHT = 0.7f;
+}
+
+// ==========================================================================
+// Jugglebot ODrive Defaults
+// ==========================================================================
+
+namespace ODriveDefaults {
+  constexpr float TRAP_VEL_LIMIT_RPS = 15.0f;
+  constexpr float TRAP_ACC_LIMIT_RPS2 = 30.0f;
+  constexpr float TRAP_DEC_LIMIT_RPS2 = 30.0f;
+  constexpr float LEG_VEL_LIMIT_RPS = 50.0f;
+  constexpr float LEG_CURR_LIMIT_A = 20.0f;
+  constexpr float HAND_VEL_LIMIT_RPS = 1000.0f;
+  constexpr float HAND_CURR_LIMIT_A = 50.0f;
+  constexpr float HAND_POS_GAIN = 35.0f;
+  constexpr float HAND_VEL_GAIN = 0.007f;
+  constexpr float HAND_VEL_INT_GAIN = 0.07f;
+}
+
+// ==========================================================================
+// Jugglebot Operational
+// ==========================================================================
+
+namespace JBOp {
+  constexpr float ACTIVATE_POSITION_REV = 2.229f;
   constexpr float DEFAULT_ACTIVE_Z_MM = 170.0f;
+  constexpr float TARGET_REACHED_POS_TOL_REV = 0.01f;
+  constexpr float TARGET_REACHED_VEL_TOL_RPS = 0.1f;
+  constexpr float GENTLE_MOVE_VEL_LIMIT_RPS = 2.5f;
+  constexpr float ENCODER_SEARCH_TIMEOUT_S = 3.0f;
+  constexpr float MAX_VALID_TILT_RAD = 0.785f;
 }
 
 // ==========================================================================
-// Jugglebot Hand
+// Jugglebot SpaceMouse
 // ==========================================================================
 
-namespace Hand {
-  constexpr float BALL_Z_AT_TOP_OF_STROKE_MM = 828.2f;
-  constexpr float TOP_STROKE_POSITION_REVS = 9.858f;
-  constexpr float MAX_HAND_POSITION_REVS = 11.1f;
+namespace Spacemouse {
+  constexpr float XY_MULT_MM = 150.0f;
+  constexpr float Z_MULT_MM = 140.0f;
+  constexpr float PITCH_ROLL_MULT_DEG = 30.0f;
+  constexpr float YAW_MULT_DEG = 10.0f;
+  constexpr float TRAP_VEL_LIMIT_RPS = 15.0f;
+  constexpr float TRAP_ACC_LIMIT_RPS2 = 20.0f;
+  constexpr float TRAP_DEC_LIMIT_RPS2 = 20.0f;
 }
 
 // ==========================================================================
-// Jugglebot Teensy Trajectory
+// Teensy Trajectory
 // ==========================================================================
 
 namespace TeensyTraj {
@@ -100,6 +139,8 @@ namespace TeensyTraj {
   constexpr uint32_t SAMPLE_RATE_HZ = 500u;
   constexpr float MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2 = 100.0f;
   constexpr float QUINTIC_S2_MAX = 5.7735027f;
+  constexpr float MIN_EVENT_VEL_MPS = 0.3f;
+  constexpr float MAX_EVENT_VEL_MPS = 7.0f;
 }
 
 // ==========================================================================
@@ -110,6 +151,15 @@ namespace TeensyOp {
   constexpr uint32_t REPORT_INTERVAL_MS = 500u;
   constexpr uint32_t SAFETY_GAP_US = 20000u;
   constexpr uint32_t TIME_SYNC_ALPHA_SHIFT = 3u;
+}
+
+// ==========================================================================
+// Motion Capture
+// ==========================================================================
+
+namespace Mocap {
+  constexpr const char* QTM_HOST = "192.168.20.12";
+  constexpr uint32_t QTM_PORT = 22223u;
 }
 
 // ==========================================================================
@@ -176,10 +226,10 @@ namespace BBTraj {
 // ==========================================================================
 
 namespace BBPins {
-  constexpr uint32_t YAW_PWM_A = 10u;
-  constexpr uint32_t YAW_PWM_B = 16u;
-  constexpr uint32_t YAW_ENC_A = 15u;
-  constexpr uint32_t YAW_ENC_B = 14u;
+  constexpr uint32_t YAW_SPI_CS = 10u;
+  constexpr uint32_t YAW_INA1 = 16u;
+  constexpr uint32_t YAW_INA2 = 15u;
+  constexpr uint32_t YAW_PWM = 14u;
 }
 
 // ==========================================================================
@@ -190,6 +240,7 @@ namespace BBCan {
   constexpr uint32_t HEARTBEAT_RATE_MS = 100u;
   constexpr uint32_t AUTO_CLEAR_BRAKE_MS = 500u;
   constexpr uint32_t MAX_NODES = 16u;
+  constexpr uint32_t SYNC_STATS_PRINT_MS = 200u;
 }
 
 // ==========================================================================
@@ -198,7 +249,10 @@ namespace BBCan {
 
 namespace BBYaw {
   constexpr uint32_t ENC_CPR = 60u;
+  constexpr float ABS_ENC_CPR = 16384.0f;
   constexpr uint32_t PWM_FREQ_HZ = 20000u;
+  constexpr uint32_t PWM_MAX = 255u;
+  constexpr uint32_t PWM_DEADZONE_MIN = 60u;
   constexpr float LOOP_HZ = 150.0f;
   constexpr int32_t ENC_DIR = -1;
   constexpr uint32_t MOTOR_DIR = 1u;
@@ -212,6 +266,7 @@ namespace BBYaw {
   constexpr float LIM_MIN_DEG = 0.0f;
   constexpr float LIM_MAX_DEG = 120.0f;
   constexpr float HARD_LIMIT_OVERSHOOT_DEG = 3.0f;
+  constexpr float MAX_SOFT_RANGE_DEG = 355.0f;
   constexpr float VEL_LPF_ALPHA = 0.3f;
   constexpr float MAX_VALID_VEL_RPS = 2.0f;
   constexpr float BOOT_ZERO_OFFSET_DEG = 5.0f;
@@ -325,13 +380,22 @@ namespace BBHb {
 }
 
 // ==========================================================================
+// Ball Butler Ball Detection
+// ==========================================================================
+
+namespace BBBallDetect {
+  constexpr uint32_t GPIO_PIN = 3u;
+  constexpr uint32_t CHECK_INTERVAL_MS = 50u;
+  constexpr uint32_t MAX_MISSING_SAMPLES = 5u;
+  constexpr uint32_t CHECK_TIMEOUT_MS = 100u;
+}
+
+// ==========================================================================
 // Derived Constants (computed by generator)
 // ==========================================================================
 
 namespace HwDerived {
   constexpr float GRAVITY_MMPS2 = 9806.0f;
-  constexpr float CATCH_HEIGHT_THROWN_MM = 744.3f;
-  constexpr float CATCH_HEIGHT_DROPPED_MM = 739.3f;
   constexpr float INIT_LEG_LENGTHS_WITH_OFFSET_MM[6] = {646.889f, 643.66f, 647.574f, 646.153f, 646.152f, 645.591f};
   constexpr float TEENSY_LINEAR_GAIN = 31.617152802324696f;
   constexpr float BB_LINEAR_GAIN = 30.3192698249091f;

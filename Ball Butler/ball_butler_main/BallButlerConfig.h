@@ -29,9 +29,10 @@
 // Shared protocol constants (auto-generated from config/protocol_config.yaml)
 #include "protocol_config.h"
 
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
+// Hardware & geometry constants (auto-generated from config/hardware_config.yaml)
+// All namespace aliases below source values from the generated BB* namespaces
+// so that YAML changes propagate automatically.
+#include "hardware_config.h"
 
 // ============================================================================
 // 1. ODrive Axis States
@@ -45,24 +46,28 @@
 // ============================================================================
 
 // ============================================================================
-// 3. Hardware Pins
+// 3. Hardware Pins — sourced from hardware_config.h (BBPins)
 // ============================================================================
 namespace Pins {
-  constexpr uint8_t YAW_PWM_A = 10;   // Yaw motor H-bridge PWM pin A
-  constexpr uint8_t YAW_PWM_B = 16;   // Yaw motor H-bridge PWM pin B
-  constexpr uint8_t YAW_ENC_A = 15;   // Yaw incremental encoder channel A
-  constexpr uint8_t YAW_ENC_B = 14;   // Yaw incremental encoder channel B
+  constexpr uint8_t YAW_SPI_CS = BBPins::YAW_SPI_CS;  // AS5047P absolute encoder SPI chip select
+  constexpr uint8_t YAW_INA1   = BBPins::YAW_INA1;    // H-bridge direction pin INA1
+  constexpr uint8_t YAW_INA2   = BBPins::YAW_INA2;    // H-bridge direction pin INA2
+  constexpr uint8_t YAW_PWM    = BBPins::YAW_PWM;     // H-bridge PWM speed pin
+}
+
+namespace YawMotor {
+  constexpr uint8_t PWM_DEADZONE_MIN = BBYaw::PWM_DEADZONE_MIN;
 }
 
 // ============================================================================
-// 4. CAN Bus Configuration
+// 4. CAN Bus Configuration — sourced from hardware_config.h (BBCan)
 // ============================================================================
 namespace CanCfg {
-  constexpr uint32_t BAUD_RATE              = CanBus::BAUD_RATE;
-  constexpr uint32_t HEARTBEAT_RATE_MS      = 100;        // BB heartbeat interval (ms)
-  constexpr uint32_t AUTO_CLEAR_BRAKE_MS    = 500;        // Min ms between brake-resistor auto-clear
-  constexpr uint8_t  MAX_NODES              = 16;         // Max CAN node IDs tracked
-  constexpr uint32_t SYNC_STATS_PRINT_US    = 200'000;    // Time-sync stats print interval (µs)
+  constexpr uint32_t BAUD_RATE              = CanBus::BAUD_RATE;               // from protocol_config.h
+  constexpr uint32_t HEARTBEAT_RATE_MS      = BBCan::HEARTBEAT_RATE_MS;
+  constexpr uint32_t AUTO_CLEAR_BRAKE_MS    = BBCan::AUTO_CLEAR_BRAKE_MS;
+  constexpr uint8_t  MAX_NODES              = BBCan::MAX_NODES;
+  constexpr uint32_t SYNC_STATS_PRINT_US    = BBCan::SYNC_STATS_PRINT_MS * 1000u;  // YAML stores ms, convert to µs
 }
 
 // ============================================================================
@@ -80,213 +85,211 @@ namespace CanIds {
 }
 
 // ============================================================================
-// 6. Yaw Axis Defaults
+// 6. Yaw Axis Defaults — sourced from hardware_config.h (BBYaw)
 // ============================================================================
 namespace YawDefaults {
   // Encoder & motor
-  constexpr uint16_t ENC_CPR          = 60;       // Incremental encoder counts per revolution
-  constexpr float    ABS_ENC_CPR      = 16384.0f; // AS5047P absolute encoder counts per revolution
-  constexpr uint32_t PWM_FREQ_HZ      = 20000;    // Motor PWM frequency (Hz)
-  constexpr uint8_t  PWM_MAX          = 255;      // Maximum PWM duty cycle (8-bit)
-  constexpr float    LOOP_HZ          = 150.0f;   // Control loop frequency (Hz)
-  constexpr int8_t   ENC_DIR          = -1;        // Encoder direction sign
-  constexpr int8_t   MOTOR_DIR        = +1;        // Motor direction sign
+  constexpr uint16_t ENC_CPR          = BBYaw::ENC_CPR;
+  constexpr float    ABS_ENC_CPR      = BBYaw::ABS_ENC_CPR;
+  constexpr uint32_t PWM_FREQ_HZ      = BBYaw::PWM_FREQ_HZ;
+  constexpr uint8_t  PWM_MAX          = BBYaw::PWM_MAX;
+  constexpr float    LOOP_HZ          = BBYaw::LOOP_HZ;
+  constexpr int8_t   ENC_DIR          = BBYaw::ENC_DIR;
+  constexpr int8_t   MOTOR_DIR        = BBYaw::MOTOR_DIR;
 
   // PID gains
-  constexpr float KP                  = 300.0f;   // Proportional gain
-  constexpr float KI                  = 0.0f;     // Integral gain
-  constexpr float KD                  = 0.0f;     // Derivative gain
-  constexpr float FF_PWM              = 10.0f;    // Friction feedforward (PWM counts)
-  constexpr float POS_TOL_REV         = 0.0014f;  // Position tolerance (~0.5 deg)
+  constexpr float KP                  = BBYaw::KP;
+  constexpr float KI                  = BBYaw::KI;
+  constexpr float KD                  = BBYaw::KD;
+  constexpr float FF_PWM              = BBYaw::FF_PWM;
+  constexpr float POS_TOL_REV         = BBYaw::POS_TOL_REV;
 
   // Motion limits
-  constexpr float ACCEL_PPS           = 500.0f;   // Acceleration limit (PWM counts/s)
-  constexpr float DECEL_PPS           = 450.0f;   // Deceleration limit (PWM counts/s)
-  constexpr float LIM_MIN_DEG         = 0.0f;     // Default soft limit minimum (deg)
-  constexpr float LIM_MAX_DEG         = 120.0f;   // Default soft limit maximum (deg)
-  constexpr float HARD_LIMIT_OVERSHOOT_DEG = 3.0f; // Hard-limit overshoot before fault (deg)
-  constexpr float MAX_SOFT_RANGE_DEG = 355.0f;    // Max soft-limit range (leaves forbidden zone)
+  constexpr float ACCEL_PPS           = BBYaw::ACCEL_PPS;
+  constexpr float DECEL_PPS           = BBYaw::DECEL_PPS;
+  constexpr float LIM_MIN_DEG         = BBYaw::LIM_MIN_DEG;
+  constexpr float LIM_MAX_DEG         = BBYaw::LIM_MAX_DEG;
+  constexpr float HARD_LIMIT_OVERSHOOT_DEG = BBYaw::HARD_LIMIT_OVERSHOOT_DEG;
+  constexpr float MAX_SOFT_RANGE_DEG  = BBYaw::MAX_SOFT_RANGE_DEG;
 
   // Velocity filtering
-  constexpr float VEL_LPF_ALPHA       = 0.3f;     // Velocity low-pass filter coefficient (0–1)
-  constexpr float MAX_VALID_VEL_RPS   = 2.0f;     // Glitch rejection threshold (rev/s)
+  constexpr float VEL_LPF_ALPHA       = BBYaw::VEL_LPF_ALPHA;
+  constexpr float MAX_VALID_VEL_RPS   = BBYaw::MAX_VALID_VEL_RPS;
 
   // Boot-time configuration (applied in setup() before StateMachine takes over)
-  constexpr float BOOT_ZERO_OFFSET_DEG      = 5.0f;    // Encoder degrees = user 0 deg
-  constexpr float BOOT_SOFT_LIM_MIN_DEG     = -5.0f;   // Wide limits during boot
-  constexpr float BOOT_SOFT_LIM_MAX_DEG     = 190.0f;
-  constexpr float BOOT_HARD_LIMIT_OVERSHOOT = 10.0f;   // Overshoot tolerance during boot
+  constexpr float BOOT_ZERO_OFFSET_DEG      = BBYaw::BOOT_ZERO_OFFSET_DEG;
+  constexpr float BOOT_SOFT_LIM_MIN_DEG     = BBYaw::BOOT_SOFT_LIM_MIN_DEG;
+  constexpr float BOOT_SOFT_LIM_MAX_DEG     = BBYaw::BOOT_SOFT_LIM_MAX_DEG;
+  constexpr float BOOT_HARD_LIMIT_OVERSHOOT = BBYaw::BOOT_HARD_LIMIT_OVERSHOOT_DEG;
 }
 
 // ============================================================================
-// 7. Pitch Axis Defaults
+// 7. Pitch Axis Defaults — sourced from hardware_config.h (BBPitch)
 // ============================================================================
 namespace PitchDefaults {
-  constexpr float DEG_MIN            = 12.0f;    // Min allowed pitch angle (deg from horizontal)
-  constexpr float DEG_MAX            = 90.0f;    // Max allowed pitch angle (vertical)
+  constexpr float DEG_MIN            = BBPitch::DEG_MIN;
+  constexpr float DEG_MAX            = BBPitch::DEG_MAX;
 
   // Default trapezoidal trajectory limits
-  constexpr float TRAJ_VEL_RPS      = 1.0f;     // Max trap vel (rev/s)
-  constexpr float TRAJ_ACCEL_RPS2   = 0.5f;     // Acceleration (rev/s^2)
-  constexpr float TRAJ_DECEL_RPS2   = 0.25f;    // Deceleration (rev/s^2)
+  constexpr float TRAJ_VEL_RPS      = BBPitch::TRAJ_VEL_RPS;
+  constexpr float TRAJ_ACCEL_RPS2   = BBPitch::TRAJ_ACCEL_RPS2;
+  constexpr float TRAJ_DECEL_RPS2   = BBPitch::TRAJ_DECEL_RPS2;
 }
 
 // ============================================================================
-// 8. Hand Axis / Homing Defaults
+// 8. Hand Axis / Homing Defaults — sourced from hardware_config.h (BBHand)
 // ============================================================================
 namespace HandDefaults {
   // homeHandStandard() defaults
-  constexpr int   HOMING_DIRECTION      = -1;       // Direction during homing (-1 = retract)
-  constexpr float HOMING_SPEED_RPS      = 3.0f;     // Homing speed (rev/s)
-  constexpr float HOMING_CURRENT_A      = 5.0f;     // Motor current limit during homing (A)
-  constexpr float HOMING_HEADROOM_A     = 3.0f;     // Current headroom for spike detection (A)
-  constexpr float HOMING_ABS_POS_REV    = -0.1f;    // Absolute position after homing (rev)
+  constexpr int   HOMING_DIRECTION      = BBHand::HOMING_DIRECTION;
+  constexpr float HOMING_SPEED_RPS      = BBHand::HOMING_SPEED_RPS;
+  constexpr float HOMING_CURRENT_A      = BBHand::HOMING_CURRENT_A;
+  constexpr float HOMING_HEADROOM_A     = BBHand::HOMING_HEADROOM_A;
+  constexpr float HOMING_ABS_POS_REV    = BBHand::HOMING_ABS_POS_REV;
 
   // homeHand() defaults
-  constexpr float HOMING_EMA_WEIGHT     = 0.7f;     // EMA weight for Iq spike detection
-  constexpr uint16_t HOMING_IQ_POLL_MS  = 10;       // Iq polling interval during homing (ms)
-  constexpr uint32_t HOMING_ATTEMPT_TIMEOUT_MS = 5000;  // Timeout for a single homing attempt (ms)
-  constexpr uint32_t HOMING_MODE_SETTLE_MS     = 100;   // Delay after setting control mode before sending homing velocity (ms)
-  constexpr uint32_t HOMING_STOP_SETTLE_MS     = 5;     // Delay after stopping motor before setting absolute position (ms)
+  constexpr float HOMING_EMA_WEIGHT     = BBHand::HOMING_EMA_WEIGHT;
+  constexpr uint16_t HOMING_IQ_POLL_MS  = BBHand::HOMING_IQ_POLL_MS;
+  constexpr uint32_t HOMING_ATTEMPT_TIMEOUT_MS = BBHand::HOMING_ATTEMPT_TIMEOUT_MS;
+  constexpr uint32_t HOMING_MODE_SETTLE_MS     = BBHand::HOMING_MODE_SETTLE_MS;
+  constexpr uint32_t HOMING_STOP_SETTLE_MS     = BBHand::HOMING_STOP_SETTLE_MS;
 
   // restoreHandToOperatingConfig() defaults
-  constexpr float OP_VEL_LIMIT_RPS      = 1000.0f;  // Operating velocity limit (rev/s)
-  constexpr float OP_CURRENT_LIMIT_A    = 50.0f;    // Operating current limit (A)
+  constexpr float OP_VEL_LIMIT_RPS      = BBHand::OP_VEL_LIMIT_RPS;
+  constexpr float OP_CURRENT_LIMIT_A    = BBHand::OP_CURRENT_LIMIT_A;
 }
 
 // ============================================================================
 // 9. Trajectory & Physics
 // ============================================================================
 namespace TrajCfg {
-  // Physical properties
-  constexpr float G                      = 9.806f;      // Gravitational acceleration (m/s^2)
-  constexpr float HAND_SPOOL_R           = 0.0052493f;  // Hand spool radius (m)
-  constexpr float LINEAR_GAIN_FACTOR     = 1.0f;        // Multiplier on linear gain (reserved)
-  constexpr float LINEAR_GAIN            = LINEAR_GAIN_FACTOR / (M_PI * HAND_SPOOL_R * 2.f);  // rev/m
-  constexpr float INERTIA_HAND_ONLY      = 0.281f;      // Hand inertia (kg)
-  constexpr float INERTIA_RATIO          = 0.747f;      // Inertia ratio for throw dynamics
-  constexpr float HAND_STROKE            = 0.28f;       // Total hand linear stroke (m)
-  constexpr float STROKE_MARGIN          = 0.02f;       // Safety margin at ends of stroke (m)
+  // Physical properties — sourced from hardware_config.h (BBTraj / Physics)
+  constexpr float G                      = Physics::GRAVITY_MPS2;
+  constexpr float HAND_SPOOL_R           = BBTraj::HAND_SPOOL_RADIUS_M;
+  constexpr float LINEAR_GAIN_FACTOR     = BBTraj::LINEAR_GAIN_FACTOR;
+  constexpr float LINEAR_GAIN            = LINEAR_GAIN_FACTOR / (M_PI * HAND_SPOOL_R * 2.f);  // rev/m (derived)
+  constexpr float INERTIA_HAND_ONLY      = BBTraj::INERTIA_HAND_ONLY_KG;
+  constexpr float INERTIA_RATIO          = BBTraj::INERTIA_RATIO;
+  constexpr float HAND_STROKE            = BBTraj::HAND_STROKE_M;
+  constexpr float STROKE_MARGIN          = BBTraj::STROKE_MARGIN_M;
 
-  // Trajectory tuning
-  constexpr float THROW_VEL_HOLD_PCT     = 0.05f;       // Fraction of throw at constant velocity
-  constexpr float CATCH_VEL_RATIO        = 0.8f;        // Catch velocity as fraction of throw velocity
-  constexpr float CATCH_VEL_HOLD_PCT     = 0.10f;       // Fraction of catch at constant velocity
-  constexpr float END_PROFILE_HOLD       = 0.10f;       // Hold time at end of motion profile (s)
-  constexpr int   SAMPLE_RATE            = 500;          // Trajectory sample rate (Hz)
+  // Trajectory tuning — sourced from hardware_config.h (BBTraj)
+  constexpr float THROW_VEL_HOLD_PCT     = BBTraj::THROW_VEL_HOLD_PCT;
+  constexpr float CATCH_VEL_RATIO        = BBTraj::CATCH_VEL_RATIO;
+  constexpr float CATCH_VEL_HOLD_PCT     = BBTraj::CATCH_VEL_HOLD_PCT;
+  constexpr float END_PROFILE_HOLD       = BBTraj::END_PROFILE_HOLD_S;
+  constexpr int   SAMPLE_RATE            = (int)BBTraj::SAMPLE_RATE_HZ;
 
-  // Smooth move
-  constexpr float MAX_SMOOTH_ACCEL       = 200.0f;      // Max hand accel for smooth moves (rev/s^2)
-  constexpr float QUINTIC_S2_MAX         = 5.7735027f;  // Max |s''| for quintic polynomial
-  constexpr float HAND_MAX_SMOOTH_POS    = 8.9f;        // Max hand position for smooth moves (rev)
+  // Smooth move — sourced from hardware_config.h (BBTraj)
+  constexpr float MAX_SMOOTH_ACCEL       = BBTraj::MAX_SMOOTH_ACCEL_RPS2;
+  constexpr float QUINTIC_S2_MAX         = BBTraj::QUINTIC_S2_MAX;
+  constexpr float HAND_MAX_SMOOTH_POS    = BBTraj::HAND_MAX_SMOOTH_POS_REV;
 
-  // Pre-allocated trajectory buffer sizing
-  constexpr float MAX_THROW_DURATION_S   = 2.0f;        // Max physical throw duration (seconds)
+  // Pre-allocated trajectory buffer sizing (partially from hardware_config.h, partially derived)
+  constexpr float MAX_THROW_DURATION_S   = BBTraj::MAX_THROW_DURATION_S;
   constexpr size_t MAX_THROW_SAMPLES     = (size_t)(MAX_THROW_DURATION_S * SAMPLE_RATE) + 1;  // ~1001
-  constexpr size_t MAX_SMOOTH_SAMPLES    = 300;          // Covers max smooth move (~0.51s at 500 Hz) with headroom
-  constexpr size_t MAX_PAUSE_SAMPLES     = 512;          // Up to ~1.0s pause at 500 Hz
+  constexpr size_t MAX_SMOOTH_SAMPLES    = (size_t)BBTraj::MAX_SMOOTH_SAMPLES;
+  constexpr size_t MAX_PAUSE_SAMPLES     = (size_t)BBTraj::MAX_PAUSE_SAMPLES;
   constexpr size_t MAX_TRAJ_FRAMES       = MAX_THROW_SAMPLES + MAX_SMOOTH_SAMPLES + MAX_PAUSE_SAMPLES;  // ~1813
-  constexpr size_t TRAJ_ARENA_BYTES      = 24576;        // 24 KB arena for intermediate Trajectory float arrays
+  constexpr size_t TRAJ_ARENA_BYTES      = (size_t)BBTraj::TRAJ_ARENA_BYTES;
 }
 
 // ============================================================================
-// 10. State Machine Defaults
+// 10. State Machine Defaults — sourced from hardware_config.h (BBSM)
 //     These provide default values for StateMachine::Config members.
 // ============================================================================
 namespace SMDefaults {
   // Timeouts
-  constexpr uint32_t HOMING_TIMEOUT_MS            = 10000;  // Max time for homing
-  constexpr uint32_t HOMING_RETRY_DELAY_MS        = 500;    // Delay between homing retries
-  constexpr uint32_t RELOAD_TIMEOUT_MS            = 10000;  // Max time for reload sequence
-  constexpr uint32_t POST_THROW_DELAY_MS          = 1000;   // Delay after throw before reload
-  constexpr uint32_t IDLE_NO_CMD_TIMEOUT_MS       = 5000;   // Stow pitch if idle this long
+  constexpr uint32_t HOMING_TIMEOUT_MS            = BBSM::HOMING_TIMEOUT_MS;
+  constexpr uint32_t HOMING_RETRY_DELAY_MS        = BBSM::HOMING_RETRY_DELAY_MS;
+  constexpr uint32_t RELOAD_TIMEOUT_MS            = BBSM::RELOAD_TIMEOUT_MS;
+  constexpr uint32_t POST_THROW_DELAY_MS          = BBSM::POST_THROW_DELAY_MS;
+  constexpr uint32_t IDLE_NO_CMD_TIMEOUT_MS       = BBSM::IDLE_NO_CMD_TIMEOUT_MS;
 
   // Reload sequence positions
-  constexpr float RELOAD_HAND_TOP_REV             = 8.7f;
-  constexpr float RELOAD_PITCH_READY_DEG          = 70.0f;
-  constexpr float RELOAD_YAW_ANGLE_DEG            = 180.0f;
-  constexpr float RELOAD_PITCH_GRAB_DEG           = 90.0f;
-  constexpr float RELOAD_HAND_BOTTOM_REV          = 0.0f;
-  constexpr float RELOAD_HAND_BOTTOM_TOL_REV      = 0.1f;
-  constexpr uint32_t RELOAD_HOLD_DELAY_MS         = 500;
-  constexpr uint8_t  RELOAD_BALL_CHECK_SAMPLES    = 5;
-  constexpr uint32_t BALL_CHECK_SAMPLE_INTERVAL_MS = 100;  // Min ms between ball-check samples (must exceed SDO poll period)
+  constexpr float RELOAD_HAND_TOP_REV             = BBSM::RELOAD_HAND_TOP_REV;
+  constexpr float RELOAD_PITCH_READY_DEG          = BBSM::RELOAD_PITCH_READY_DEG;
+  constexpr float RELOAD_YAW_ANGLE_DEG            = BBSM::RELOAD_YAW_ANGLE_DEG;
+  constexpr float RELOAD_PITCH_GRAB_DEG           = BBSM::RELOAD_PITCH_GRAB_DEG;
+  constexpr float RELOAD_HAND_BOTTOM_REV          = BBSM::RELOAD_HAND_BOTTOM_REV;
+  constexpr float RELOAD_HAND_BOTTOM_TOL_REV      = BBSM::RELOAD_HAND_BOTTOM_TOL_REV;
+  constexpr uint32_t RELOAD_HOLD_DELAY_MS         = BBSM::RELOAD_HOLD_DELAY_MS;
+  constexpr uint8_t  RELOAD_BALL_CHECK_SAMPLES    = BBSM::RELOAD_BALL_CHECK_SAMPLES;
+  constexpr uint32_t BALL_CHECK_SAMPLE_INTERVAL_MS = BBSM::BALL_CHECK_SAMPLE_INTERVAL_MS;
 
   // Tracking & rate limiting
-  constexpr uint32_t TRACKING_HAND_CHECK_MS       = 200;
-  constexpr uint32_t YAW_CMD_INTERVAL_MS          = 10;
-  constexpr uint32_t PITCH_CMD_INTERVAL_MS        = 50;
+  constexpr uint32_t TRACKING_HAND_CHECK_MS       = BBSM::TRACKING_HAND_CHECK_MS;
+  constexpr uint32_t YAW_CMD_INTERVAL_MS          = BBSM::YAW_CMD_INTERVAL_MS;
+  constexpr uint32_t PITCH_CMD_INTERVAL_MS        = BBSM::PITCH_CMD_INTERVAL_MS;
 
   // Ball detection (CHECKING_BALL state)
-  constexpr uint8_t CHECK_BALL_CONFIRM_SAMPLES    = 5;
-  constexpr float   CHECK_BALL_DISRUPT_PITCH_DEG  = 70.0f;
+  constexpr uint8_t CHECK_BALL_CONFIRM_SAMPLES    = BBSM::CHECK_BALL_CONFIRM_SAMPLES;
+  constexpr float   CHECK_BALL_DISRUPT_PITCH_DEG  = BBSM::CHECK_BALL_DISRUPT_PITCH_DEG;
 
   // Home positions
-  constexpr float HAND_REV_HOME                   = 0.0f;
-  constexpr float PITCH_DEG_HOME                  = 90.0f;
-  constexpr float YAW_DEG_HOME                    = 20.0f;
+  constexpr float HAND_REV_HOME                   = BBSM::HAND_REV_HOME;
+  constexpr float PITCH_DEG_HOME                  = BBSM::PITCH_DEG_HOME;
+  constexpr float YAW_DEG_HOME                    = BBSM::YAW_DEG_HOME;
 
   // Calibration
-  constexpr float CALIB_MAX_YAW_DEG               = 120.0f;
-  constexpr float CALIB_MIN_YAW_DEG               = 0.0f;
-  constexpr float CALIB_YAW_ACCEL                 = 50.0f;
-  constexpr float CALIB_YAW_DECEL                 = 50.0f;
-  constexpr uint32_t CALIB_PAUSE_MS               = 2500;
+  constexpr float CALIB_MAX_YAW_DEG               = BBSM::CALIB_MAX_YAW_DEG;
+  constexpr float CALIB_MIN_YAW_DEG               = BBSM::CALIB_MIN_YAW_DEG;
+  constexpr float CALIB_YAW_ACCEL                 = BBSM::CALIB_YAW_ACCEL;
+  constexpr float CALIB_YAW_DECEL                 = BBSM::CALIB_YAW_DECEL;
+  constexpr uint32_t CALIB_PAUSE_MS               = BBSM::CALIB_PAUSE_MS;
 
   // Retry limits
-  constexpr uint8_t MAX_RELOAD_ATTEMPTS           = 3;
-  constexpr uint8_t MAX_HOMING_ATTEMPTS           = 3;
+  constexpr uint8_t MAX_RELOAD_ATTEMPTS           = BBSM::MAX_RELOAD_ATTEMPTS;
+  constexpr uint8_t MAX_HOMING_ATTEMPTS           = BBSM::MAX_HOMING_ATTEMPTS;
 
   // Settle times & thresholds
-  constexpr uint32_t PITCH_SETTLE_MS              = 500;
-  constexpr uint32_t PITCH_GRAB_SETTLE_MS         = 1000;
-  constexpr float    YAW_ANGLE_THRESHOLD_DEG      = 1.0f;
+  constexpr uint32_t PITCH_SETTLE_MS              = BBSM::PITCH_SETTLE_MS;
+  constexpr uint32_t PITCH_GRAB_SETTLE_MS         = BBSM::PITCH_GRAB_SETTLE_MS;
+  constexpr float    YAW_ANGLE_THRESHOLD_DEG      = BBSM::YAW_ANGLE_THRESHOLD_DEG;
 
   // Motion timing
-  constexpr uint32_t PITCH_IDLE_DELAY_MS          = 500;    // Min ms after last pitch command before allowing IDLE mode
-  constexpr uint32_t MIN_MOTION_DURATION_MS       = 300;    // Min ms to wait before checking trajectory_done (allows ODrive to begin movement)
-  constexpr uint32_t PV_FRESHNESS_US              = 20000;  // Max age of position/velocity data (µs) before considered stale
+  constexpr uint32_t PITCH_IDLE_DELAY_MS          = BBSM::PITCH_IDLE_DELAY_MS;
+  constexpr uint32_t MIN_MOTION_DURATION_MS       = BBSM::MIN_MOTION_DURATION_MS;
+  constexpr uint32_t PV_FRESHNESS_US              = BBSM::PV_FRESHNESS_US;
 
   // Axis limits
-  constexpr float PITCH_MIN_STOW_DEG              = 80.0f;
-  constexpr float YAW_MIN_ANGLE_DEG               = 5.0f;
-  constexpr float YAW_MAX_ANGLE_DEG               = 185.0f + YAW_MIN_ANGLE_DEG;
+  constexpr float PITCH_MIN_STOW_DEG              = BBSM::PITCH_MIN_STOW_DEG;
+  constexpr float YAW_MIN_ANGLE_DEG               = BBSM::YAW_MIN_ANGLE_DEG;
+  constexpr float YAW_MAX_ANGLE_DEG               = BBSM::YAW_MAX_ANGLE_DEG;
 }
 
 // ============================================================================
-// 11. Ball Detection Configuration
+// 11. Ball Detection Configuration — sourced from hardware_config.h (BBBallDetect)
 // ============================================================================
 namespace BallDetectCfg {
-  constexpr uint8_t  GPIO_PIN              = 3;     // GPIO pin on hand ODrive for ball detection
-  constexpr uint32_t CHECK_INTERVAL_MS     = 50;    // How often to poll for ball in hand (ms)
-  constexpr uint8_t  MAX_MISSING_SAMPLES   = 5;     // Consecutive false readings before entering CHECKING_BALL
-  constexpr uint32_t CHECK_TIMEOUT_MS      = 100;   // SDO request timeout (ms)
+  constexpr uint8_t  GPIO_PIN              = BBBallDetect::GPIO_PIN;
+  constexpr uint32_t CHECK_INTERVAL_MS     = BBBallDetect::CHECK_INTERVAL_MS;
+  constexpr uint8_t  MAX_MISSING_SAMPLES   = BBBallDetect::MAX_MISSING_SAMPLES;
+  constexpr uint32_t CHECK_TIMEOUT_MS      = BBBallDetect::CHECK_TIMEOUT_MS;
 }
 
 // ============================================================================
-// 12. Operational Constants
+// 12. Operational Constants — sourced from hardware_config.h (BBOp)
 // ============================================================================
-
 namespace OpCfg {
-  constexpr float    THROW_VEL_MIN_MPS   = 0.05f;    // Min allowed throw velocity (m/s)
-  constexpr float    THROW_VEL_MAX_MPS   = 6.0f;     // Max allowed throw velocity (m/s)
-  constexpr float    SCHEDULE_MARGIN_S   = 0.1f;     // Throw scheduling time margin (s). Ensures enough lead time for trajectory generation and state machine transitions.
-  constexpr uint16_t YAW_TELEM_MS        = 500;      // Yaw telemetry streaming interval (ms)
-  constexpr uint32_t SERIAL_BAUD         = 115200;   // USB serial speed
-  constexpr uint32_t SERIAL_WAIT_MS      = 2000;     // Max ms to wait for Serial at boot
-  constexpr uint32_t ODRIVE_BOOT_MS      = 1000;     // Delay after CAN init for ODrives (ms)
+  constexpr float    THROW_VEL_MIN_MPS   = BBOp::THROW_VEL_MIN_MPS;
+  constexpr float    THROW_VEL_MAX_MPS   = BBOp::THROW_VEL_MAX_MPS;
+  constexpr float    SCHEDULE_MARGIN_S   = BBOp::SCHEDULE_MARGIN_S;
+  constexpr uint16_t YAW_TELEM_MS        = BBOp::YAW_TELEM_MS;
+  constexpr uint32_t SERIAL_BAUD         = BBOp::SERIAL_BAUD;
+  constexpr uint32_t SERIAL_WAIT_MS      = BBOp::SERIAL_WAIT_MS;
+  constexpr uint32_t ODRIVE_BOOT_MS      = BBOp::ODRIVE_BOOT_MS;
 }
 
 // ============================================================================
-// 13. Heartbeat Encoding
-//     Shared resolutions now in protocol_config.h (HeartbeatEncoding).
-//     BB-specific range/clamp values kept here.
+// 13. Heartbeat Encoding — sourced from hardware_config.h (BBHb)
+//     Shared resolutions from protocol_config.h (HeartbeatEncoding).
 // ============================================================================
 namespace HeartbeatCfg {
-  constexpr float YAW_RES_DEG      = HeartbeatEncoding::yaw_res_deg;
-  constexpr float PITCH_RES_DEG    = HeartbeatEncoding::pitch_res_deg;
-  constexpr float HAND_RES_MM      = HeartbeatEncoding::hand_res_mm;
-  constexpr float HAND_MAX_MM      = 655.36f;    // Max representable hand position (mm)
-  constexpr float PITCH_CLAMP_MIN  = 0.0f;       // Pitch encoding min (deg)
-  constexpr float PITCH_CLAMP_MAX  = 90.0f;      // Pitch encoding max (deg)
+  constexpr float YAW_RES_DEG      = HeartbeatEncoding::yaw_res_deg;    // from protocol_config.h
+  constexpr float PITCH_RES_DEG    = HeartbeatEncoding::pitch_res_deg;  // from protocol_config.h
+  constexpr float HAND_RES_MM      = HeartbeatEncoding::hand_res_mm;    // from protocol_config.h
+  constexpr float HAND_MAX_MM      = BBHb::HAND_MAX_MM;
+  constexpr float PITCH_CLAMP_MIN  = BBHb::PITCH_CLAMP_MIN_DEG;
+  constexpr float PITCH_CLAMP_MAX  = BBHb::PITCH_CLAMP_MAX_DEG;
 }

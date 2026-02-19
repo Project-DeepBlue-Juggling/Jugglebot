@@ -51,7 +51,7 @@ class MotorStateTracker:
         self.error_log_throttle_sec: float = 10.0
 
         # Encoder search feedback (legs only; None = not yet checked)
-        self.encoder_search_feedback: List[Optional[bool]] = [None] * 6
+        self.encoder_search_feedback: List[Optional[bool]] = [None] * len(LEG_AXES)
 
     # ── State access ───────────────────────────────────────────
 
@@ -85,7 +85,7 @@ class MotorStateTracker:
     # ── Encoder search ─────────────────────────────────────────
 
     def reset_encoder_search_feedback(self):
-        self.encoder_search_feedback = [None] * 6
+        self.encoder_search_feedback = [None] * len(LEG_AXES)
 
     # ── Error helpers ──────────────────────────────────────────
 

@@ -13,6 +13,7 @@ from std_msgs.msg import Float64MultiArray, Int8MultiArray, String
 from jugglebot_interfaces.msg import PlatformPoseCommand
 from jugglebot_interfaces.srv import GetRobotGeometry
 import quaternion  # numpy quaternion
+import jugglebot.hardware_config as hw
 
 class SPInverseKinematics(Node):
     def __init__(self):
@@ -223,9 +224,8 @@ class SPInverseKinematics(Node):
         # spool_dia = 22 # mm
         # mm_to_rev = 1 / (spool_dia * np.pi)
 
-        # Initialize the conversion factor for each leg independently. Found experimentally
-        # mm_to_rev = np.array([13.21144, 14.0456, 13.8233, 14.124109, 14.16007, 14.03256]) * 10**-3
-        mm_to_rev = np.array([14.18332, 14.19076, 14.08956, 14.18684, 14.26801, 14.24951]) * 10**-3
+        # Per-leg mm-to-rev conversion factors (found experimentally, from hardware_config)
+        mm_to_rev = np.array(hw.GEOM_MM_TO_REV)
 
         # self.get_logger().debug(f'Leg lengths (mm): \n{leg_lens_mm}')
         leg_lengths_revs = np.array(leg_lens_mm) * mm_to_rev

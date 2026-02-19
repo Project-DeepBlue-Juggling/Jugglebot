@@ -106,8 +106,8 @@ bool PitchAxis::setTargetDeg(float deg) {
       // Throttle the message to avoid spamming
       if (millis() - last_print_rejected_ms_ >= PRINT_PITCH_REJECTED_INTERVAL_MS) {
         last_print_rejected_ms_ = millis();
+        log_->println("PITCH: REJECTED — not configured (call begin() first).");
       }
-      log_->println("PITCH: REJECTED — not configured (call begin() first).");
     }
     return false;
   }

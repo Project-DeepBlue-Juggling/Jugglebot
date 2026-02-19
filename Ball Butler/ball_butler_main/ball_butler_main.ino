@@ -29,8 +29,8 @@ HandPathPlanner        planner;
 HandTrajectoryStreamer streamer(canif);
 PitchAxis              pitch(canif, NodeId::BB_PITCH);
 
-YawAxis yawAxis(Pins::YAW_PWM_A, Pins::YAW_PWM_B, Pins::YAW_ENC_A, Pins::YAW_ENC_B,
-                YawDefaults::ENC_CPR, YawDefaults::PWM_FREQ_HZ);
+YawAxis yawAxis(Pins::YAW_SPI_CS, Pins::YAW_INA1, Pins::YAW_INA2, Pins::YAW_PWM,
+                YawMotor::PWM_DEADZONE_MIN, YawDefaults::PWM_FREQ_HZ);
 
 StateMachine stateMachine(canif, yawAxis, pitch, streamer, planner);
 
@@ -186,7 +186,7 @@ void routeCommand(const char* rawLine) {
   if (strcmp(s, "status") == 0) { printStatus(); return; }
   if (strcmp(s, "reset") == 0)  { stateMachine.reset(); return; }
   if (strcmp(s, "ball") == 0)   { Serial.printf("Ball in hand: %s\n", canif.isBallInHand() ? "YES" : "NO"); return; }
-  if (strcmp(s, "reload") == 0) { stateMachine.requestReload(); return; }
+  if (strcmp(s, "reload") == 0) { stateMachine.requestCheckBall(); return; }
   if (strncmp(s, "throw ", 6) == 0)  { handleThrowCmd(line); return; }
   if (strncmp(s, "smooth ", 7) == 0) { handleSmoothCmd(line); return; }
   if (strcmp(s, "help") == 0 || strcmp(s, "h") == 0) { printTopHelp(); return; }

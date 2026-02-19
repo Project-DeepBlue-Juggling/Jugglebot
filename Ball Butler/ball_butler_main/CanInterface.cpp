@@ -4,7 +4,7 @@
 #include <math.h>
 #include "Proprioception.h"
 #include "StateMachine.h"
-#include "Trajectory.h"  // For LINEAR_GAIN
+#include "Trajectory.h"  // For TrajCfg::LINEAR_GAIN, accelToTorque()
 #include "RobotState.h"
 
 // ---------------- Command-name table (optional; PROGMEM friendly) -------------
@@ -249,11 +249,7 @@ bool CanInterface::sendInputVel(uint32_t node_id, float vel_rps, float torque_ff
   }
   uint8_t d[8];
   wrFloatLE(&d[0], vel_rps);
-  const int16_t tor_i = clampToI16_(torque_ff * kTorScale_);
-  d[4] = uint8_t(tor_i & 0xFF);
-  d[5] = uint8_t((tor_i >> 8) & 0xFF);
-  d[6] = 0;
-  d[7] = 0;
+  wrFloatLE(&d[4], torque_ff);
   const bool ok = sendRaw(makeId(node_id, Cmd::set_input_vel), d, 8);
   if (dbg_can_ && dbg_) {
     dbg_->printf("[CAN->ODrive vel] node=%lu vel=%.4f tor_ff=%.3f ok=%d\n",
@@ -366,11 +362,9 @@ bool CanInterface::readGpioStates(uint32_t node_id, uint32_t& states_out, uint32
 // ================================================================================
 
 bool CanInterface::restoreHandToOperatingConfig(uint32_t node_id, float vel_limit_rps, float current_limit_A) {
-  constexpr uint32_t CONTROL_MODE_POSITION = 3u;
-  constexpr uint32_t INPUT_MODE_PASSTHROUGH = 1u;
   bool ok = true;
   ok &= setRequestedState(node_id, ODriveState::IDLE);
-  ok &= setControllerMode(node_id, CONTROL_MODE_POSITION, INPUT_MODE_PASSTHROUGH);
+  ok &= setControllerMode(node_id, ODriveControlMode::POSITION, ODriveInputMode::PASSTHROUGH);
   ok &= setVelCurrLimits(node_id, current_limit_A, vel_limit_rps);
   return ok;
 }
@@ -471,7 +465,7 @@ CanInterface::HomingStatus CanInterface::updateHomeHand() {
 
       // Send CLOSED_LOOP, velocity control mode, and current/vel limits
       if (!setRequestedState(node_id, ODriveState::CLOSED_LOOP) ||
-          !setControllerMode(node_id, 2u, 2u)) {
+          !setControllerMode(node_id, ODriveControlMode::VELOCITY, ODriveInputMode::VEL_RAMP)) {
         setHomeState(node_id, AxisHomeState::Unhomed);
         homing_phase_ = HomingPhase::IDLE;
         return HomingStatus::FAILED;
@@ -642,7 +636,7 @@ bool CanInterface::hasAxisError(uint32_t node_id, uint32_t mask) const {
 bool CanInterface::waitForAxisErrorClear(uint32_t node_id, uint32_t mask, uint32_t timeout_ms, uint16_t poll_ms) {
   const uint32_t start = millis();
   while ((millis() - start) < timeout_ms) {
-    const_cast<CanInterface*>(this)->loop();
+    loop();
     AxisHeartbeat hb;
     if (getAxisHeartbeat(node_id, hb) && (hb.axis_error & mask) == 0u) return true;
     delay(poll_ms);
@@ -706,7 +700,7 @@ void CanInterface::publishHeartbeat_() {
   // Hand: resolution 0.01mm : 0-655.36 mm -> 0-65535 (uint16),
   uint16_t hand_enc = 0;
   if (prop.isHandPVValid()) {
-    float hand_mm = prop.hand_pos_rev / LINEAR_GAIN * 1000.0f;
+    float hand_mm = prop.hand_pos_rev / TrajCfg::LINEAR_GAIN * 1000.0f;
     hand_mm = constrain(hand_mm, 0.0f, HeartbeatCfg::HAND_MAX_MM);
     hand_enc = (uint16_t)(hand_mm / HeartbeatCfg::HAND_RES_MM);
   }
@@ -865,10 +859,10 @@ void CanInterface::handleRx_(const CAN_message_t& msg) {
   // Host -> BB RELOAD command
   if (msg.id == CanIds::RELOAD_CMD && msg.len == 0 && !msg.flags.remote) {
     if (dbg_can_ && dbg_) {
-      dbg_->printf("[CAN<-RELOAD] id=0x%03lX cmd=%u\n", (unsigned long)msg.id, (unsigned)msg.buf[0]);
+      dbg_->printf("[CAN<-RELOAD] id=0x%03lX\n", (unsigned long)msg.id);
     }
     if (state_machine_) {
-      state_machine_->requestReload();
+      state_machine_->requestCheckBall();
     }
     return;
   }
@@ -876,7 +870,7 @@ void CanInterface::handleRx_(const CAN_message_t& msg) {
   // Host -> BB RESET command
   if (msg.id == CanIds::RESET_CMD && msg.len == 0 && !msg.flags.remote) {
     if (dbg_can_ && dbg_) {
-      dbg_->printf("[CAN<-RESET] id=0x%03lX cmd=%u\n", (unsigned long)msg.id, (unsigned)msg.buf[0]);
+      dbg_->printf("[CAN<-RESET] id=0x%03lX\n", (unsigned long)msg.id);
     }
     if (state_machine_) {
       state_machine_->reset();
@@ -887,7 +881,7 @@ void CanInterface::handleRx_(const CAN_message_t& msg) {
   // Host -> BB CALIBRATE LOCATION command
   if (msg.id == CanIds::CALIBRATE_LOC_CMD && msg.len == 0 && !msg.flags.remote) {
     if (dbg_can_ && dbg_) {
-      dbg_->printf("[CAN<-CALIBRATE_LOC] id=0x%03lX cmd=%u\n", (unsigned long)msg.id, (unsigned)msg.buf[0]);
+      dbg_->printf("[CAN<-CALIBRATE_LOC] id=0x%03lX\n", (unsigned long)msg.id);
     }
     if (state_machine_) {
       state_machine_->requestCalibrateLocation();
@@ -945,7 +939,7 @@ void CanInterface::handleRx_(const CAN_message_t& msg) {
       prop.setHandPV(pos, vel, t_us);
     }
     if (node == pitch_node_id_) {
-      const float pitch_deg = 90.0 + pos * 360.0f;
+      const float pitch_deg = 90.0f + pos * 360.0f;
       prop.setPitchDeg(pitch_deg, t_us);
     }
 
