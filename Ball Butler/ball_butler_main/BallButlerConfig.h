@@ -18,15 +18,16 @@
  *   8.  Hand Axis / Homing Defaults
  *   9.  Trajectory & Physics
  *   10. State Machine Defaults
- *   11. Operational Constants
- *   12. Heartbeat Encoding
+ *   11. Ball Detection Configuration
+ *   12. Operational Constants
+ *   13. Heartbeat Encoding
  */
 
 #include <cstdint>
 #include <cmath>
 
-// Shared protocol constants (auto-generated from config/jugglebot_protocol.yaml)
-#include "jugglebot_protocol.h"
+// Shared protocol constants (auto-generated from config/protocol_config.yaml)
+#include "protocol_config.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -34,12 +35,12 @@
 
 // ============================================================================
 // 1. ODrive Axis States
-//    Provided by jugglebot_protocol.h (namespace ODriveState)
+//    Provided by protocol_config.h (namespace ODriveState)
 // ============================================================================
 
 // ============================================================================
 // 2. CAN Node IDs
-//    Provided by jugglebot_protocol.h (namespace NodeId).
+//    Provided by protocol_config.h (namespace NodeId).
 //    Use NodeId::BB_PITCH and NodeId::BB_HAND directly.
 // ============================================================================
 
@@ -61,11 +62,12 @@ namespace CanCfg {
   constexpr uint32_t HEARTBEAT_RATE_MS      = 100;        // BB heartbeat interval (ms)
   constexpr uint32_t AUTO_CLEAR_BRAKE_MS    = 500;        // Min ms between brake-resistor auto-clear
   constexpr uint8_t  MAX_NODES              = 16;         // Max CAN node IDs tracked
+  constexpr uint32_t SYNC_STATS_PRINT_US    = 200'000;    // Time-sync stats print interval (µs)
 }
 
 // ============================================================================
 // 5. Ball Butler CAN Protocol IDs
-//    Canonical values now in jugglebot_protocol.h (BallButlerCanId, PlatformCanId).
+//    Canonical values now in protocol_config.h (BallButlerCanId, PlatformCanId).
 //    Local aliases preserve existing call-site names.
 // ============================================================================
 namespace CanIds {
@@ -83,7 +85,9 @@ namespace CanIds {
 namespace YawDefaults {
   // Encoder & motor
   constexpr uint16_t ENC_CPR          = 60;       // Incremental encoder counts per revolution
+  constexpr float    ABS_ENC_CPR      = 16384.0f; // AS5047P absolute encoder counts per revolution
   constexpr uint32_t PWM_FREQ_HZ      = 20000;    // Motor PWM frequency (Hz)
+  constexpr uint8_t  PWM_MAX          = 255;      // Maximum PWM duty cycle (8-bit)
   constexpr float    LOOP_HZ          = 150.0f;   // Control loop frequency (Hz)
   constexpr int8_t   ENC_DIR          = -1;        // Encoder direction sign
   constexpr int8_t   MOTOR_DIR        = +1;        // Motor direction sign
@@ -101,6 +105,7 @@ namespace YawDefaults {
   constexpr float LIM_MIN_DEG         = 0.0f;     // Default soft limit minimum (deg)
   constexpr float LIM_MAX_DEG         = 120.0f;   // Default soft limit maximum (deg)
   constexpr float HARD_LIMIT_OVERSHOOT_DEG = 3.0f; // Hard-limit overshoot before fault (deg)
+  constexpr float MAX_SOFT_RANGE_DEG = 355.0f;    // Max soft-limit range (leaves forbidden zone)
 
   // Velocity filtering
   constexpr float VEL_LPF_ALPHA       = 0.3f;     // Velocity low-pass filter coefficient (0–1)
@@ -205,7 +210,7 @@ namespace SMDefaults {
   constexpr float RELOAD_HAND_BOTTOM_TOL_REV      = 0.1f;
   constexpr uint32_t RELOAD_HOLD_DELAY_MS         = 500;
   constexpr uint8_t  RELOAD_BALL_CHECK_SAMPLES    = 5;
-  constexpr uint32_t BALL_CHECK_SAMPLE_INTERVAL_MS = 250;  // Min ms between ball-check samples (must exceed SDO poll period)
+  constexpr uint32_t BALL_CHECK_SAMPLE_INTERVAL_MS = 100;  // Min ms between ball-check samples (must exceed SDO poll period)
 
   // Tracking & rate limiting
   constexpr uint32_t TRACKING_HAND_CHECK_MS       = 200;
@@ -249,8 +254,19 @@ namespace SMDefaults {
 }
 
 // ============================================================================
-// 11. Operational Constants
+// 11. Ball Detection Configuration
 // ============================================================================
+namespace BallDetectCfg {
+  constexpr uint8_t  GPIO_PIN              = 3;     // GPIO pin on hand ODrive for ball detection
+  constexpr uint32_t CHECK_INTERVAL_MS     = 50;    // How often to poll for ball in hand (ms)
+  constexpr uint8_t  MAX_MISSING_SAMPLES   = 5;     // Consecutive false readings before entering CHECKING_BALL
+  constexpr uint32_t CHECK_TIMEOUT_MS      = 100;   // SDO request timeout (ms)
+}
+
+// ============================================================================
+// 12. Operational Constants
+// ============================================================================
+
 namespace OpCfg {
   constexpr float    THROW_VEL_MIN_MPS   = 0.05f;    // Min allowed throw velocity (m/s)
   constexpr float    THROW_VEL_MAX_MPS   = 6.0f;     // Max allowed throw velocity (m/s)
@@ -262,8 +278,8 @@ namespace OpCfg {
 }
 
 // ============================================================================
-// 12. Heartbeat Encoding
-//     Shared resolutions now in jugglebot_protocol.h (HeartbeatEncoding).
+// 13. Heartbeat Encoding
+//     Shared resolutions now in protocol_config.h (HeartbeatEncoding).
 //     BB-specific range/clamp values kept here.
 // ============================================================================
 namespace HeartbeatCfg {

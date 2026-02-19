@@ -1,0 +1,709 @@
+{
+  "_instructions": "For each cluster, set 'target_index' to the T# index of the target it corresponds to. For example, if cluster C3 should map to target T7, set target_index to 7 for the C3 entry.",
+  "targets": [
+    {
+      "index": 0,
+      "label": "T0",
+      "target_id": "volley_8",
+      "x": -400.0,
+      "y": -285.7
+    },
+    {
+      "index": 1,
+      "label": "T1",
+      "target_id": "volley_9",
+      "x": -285.7,
+      "y": -285.7
+    },
+    {
+      "index": 2,
+      "label": "T2",
+      "target_id": "volley_10",
+      "x": -171.4,
+      "y": -285.7
+    },
+    {
+      "index": 3,
+      "label": "T3",
+      "target_id": "volley_11",
+      "x": -57.1,
+      "y": -285.7
+    },
+    {
+      "index": 4,
+      "label": "T4",
+      "target_id": "volley_12",
+      "x": 57.1,
+      "y": -285.7
+    },
+    {
+      "index": 5,
+      "label": "T5",
+      "target_id": "volley_13",
+      "x": 171.4,
+      "y": -285.7
+    },
+    {
+      "index": 6,
+      "label": "T6",
+      "target_id": "volley_16",
+      "x": -400.0,
+      "y": -171.4
+    },
+    {
+      "index": 7,
+      "label": "T7",
+      "target_id": "volley_17",
+      "x": -285.7,
+      "y": -171.4
+    },
+    {
+      "index": 8,
+      "label": "T8",
+      "target_id": "volley_18",
+      "x": -171.4,
+      "y": -171.4
+    },
+    {
+      "index": 9,
+      "label": "T9",
+      "target_id": "volley_19",
+      "x": -57.1,
+      "y": -171.4
+    },
+    {
+      "index": 10,
+      "label": "T10",
+      "target_id": "volley_20",
+      "x": 57.1,
+      "y": -171.4
+    },
+    {
+      "index": 11,
+      "label": "T11",
+      "target_id": "volley_21",
+      "x": 171.4,
+      "y": -171.4
+    },
+    {
+      "index": 12,
+      "label": "T12",
+      "target_id": "volley_22",
+      "x": 285.7,
+      "y": -171.4
+    },
+    {
+      "index": 13,
+      "label": "T13",
+      "target_id": "volley_23",
+      "x": 400.0,
+      "y": -171.4
+    },
+    {
+      "index": 14,
+      "label": "T14",
+      "target_id": "volley_24",
+      "x": -400.0,
+      "y": -57.1
+    },
+    {
+      "index": 15,
+      "label": "T15",
+      "target_id": "volley_25",
+      "x": -285.7,
+      "y": -57.1
+    },
+    {
+      "index": 16,
+      "label": "T16",
+      "target_id": "volley_26",
+      "x": -171.4,
+      "y": -57.1
+    },
+    {
+      "index": 17,
+      "label": "T17",
+      "target_id": "volley_27",
+      "x": -57.1,
+      "y": -57.1
+    },
+    {
+      "index": 18,
+      "label": "T18",
+      "target_id": "volley_28",
+      "x": 57.1,
+      "y": -57.1
+    },
+    {
+      "index": 19,
+      "label": "T19",
+      "target_id": "volley_29",
+      "x": 171.4,
+      "y": -57.1
+    },
+    {
+      "index": 20,
+      "label": "T20",
+      "target_id": "volley_30",
+      "x": 285.7,
+      "y": -57.1
+    },
+    {
+      "index": 21,
+      "label": "T21",
+      "target_id": "volley_31",
+      "x": 400.0,
+      "y": -57.1
+    },
+    {
+      "index": 22,
+      "label": "T22",
+      "target_id": "volley_32",
+      "x": -400.0,
+      "y": 57.1
+    },
+    {
+      "index": 23,
+      "label": "T23",
+      "target_id": "volley_33",
+      "x": -285.7,
+      "y": 57.1
+    },
+    {
+      "index": 24,
+      "label": "T24",
+      "target_id": "volley_34",
+      "x": -171.4,
+      "y": 57.1
+    },
+    {
+      "index": 25,
+      "label": "T25",
+      "target_id": "volley_35",
+      "x": -57.1,
+      "y": 57.1
+    },
+    {
+      "index": 26,
+      "label": "T26",
+      "target_id": "volley_36",
+      "x": 57.1,
+      "y": 57.1
+    },
+    {
+      "index": 27,
+      "label": "T27",
+      "target_id": "volley_37",
+      "x": 171.4,
+      "y": 57.1
+    },
+    {
+      "index": 28,
+      "label": "T28",
+      "target_id": "volley_38",
+      "x": 285.7,
+      "y": 57.1
+    },
+    {
+      "index": 29,
+      "label": "T29",
+      "target_id": "volley_39",
+      "x": 400.0,
+      "y": 57.1
+    },
+    {
+      "index": 30,
+      "label": "T30",
+      "target_id": "volley_40",
+      "x": -400.0,
+      "y": 171.4
+    },
+    {
+      "index": 31,
+      "label": "T31",
+      "target_id": "volley_41",
+      "x": -285.7,
+      "y": 171.4
+    },
+    {
+      "index": 32,
+      "label": "T32",
+      "target_id": "volley_42",
+      "x": -171.4,
+      "y": 171.4
+    },
+    {
+      "index": 33,
+      "label": "T33",
+      "target_id": "volley_43",
+      "x": -57.1,
+      "y": 171.4
+    },
+    {
+      "index": 34,
+      "label": "T34",
+      "target_id": "volley_44",
+      "x": 57.1,
+      "y": 171.4
+    },
+    {
+      "index": 35,
+      "label": "T35",
+      "target_id": "volley_45",
+      "x": 171.4,
+      "y": 171.4
+    },
+    {
+      "index": 36,
+      "label": "T36",
+      "target_id": "volley_46",
+      "x": 285.7,
+      "y": 171.4
+    },
+    {
+      "index": 37,
+      "label": "T37",
+      "target_id": "volley_47",
+      "x": 400.0,
+      "y": 171.4
+    },
+    {
+      "index": 38,
+      "label": "T38",
+      "target_id": "volley_48",
+      "x": -400.0,
+      "y": 285.7
+    },
+    {
+      "index": 39,
+      "label": "T39",
+      "target_id": "volley_49",
+      "x": -285.7,
+      "y": 285.7
+    },
+    {
+      "index": 40,
+      "label": "T40",
+      "target_id": "volley_50",
+      "x": -171.4,
+      "y": 285.7
+    },
+    {
+      "index": 41,
+      "label": "T41",
+      "target_id": "volley_51",
+      "x": -57.1,
+      "y": 285.7
+    },
+    {
+      "index": 42,
+      "label": "T42",
+      "target_id": "volley_52",
+      "x": 57.1,
+      "y": 285.7
+    },
+    {
+      "index": 43,
+      "label": "T43",
+      "target_id": "volley_53",
+      "x": 171.4,
+      "y": 285.7
+    },
+    {
+      "index": 44,
+      "label": "T44",
+      "target_id": "volley_54",
+      "x": 285.7,
+      "y": 285.7
+    },
+    {
+      "index": 45,
+      "label": "T45",
+      "target_id": "volley_55",
+      "x": 400.0,
+      "y": 285.7
+    },
+    {
+      "index": 46,
+      "label": "T46",
+      "target_id": "volley_56",
+      "x": -400.0,
+      "y": 400.0
+    },
+    {
+      "index": 47,
+      "label": "T47",
+      "target_id": "volley_57",
+      "x": -285.7,
+      "y": 400.0
+    },
+    {
+      "index": 48,
+      "label": "T48",
+      "target_id": "volley_58",
+      "x": -171.4,
+      "y": 400.0
+    },
+    {
+      "index": 49,
+      "label": "T49",
+      "target_id": "volley_59",
+      "x": -57.1,
+      "y": 400.0
+    },
+    {
+      "index": 50,
+      "label": "T50",
+      "target_id": "volley_60",
+      "x": 57.1,
+      "y": 400.0
+    },
+    {
+      "index": 51,
+      "label": "T51",
+      "target_id": "volley_61",
+      "x": 171.4,
+      "y": 400.0
+    },
+    {
+      "index": 52,
+      "label": "T52",
+      "target_id": "volley_62",
+      "x": 285.7,
+      "y": 400.0
+    },
+    {
+      "index": 53,
+      "label": "T53",
+      "target_id": "volley_63",
+      "x": 400.0,
+      "y": 400.0
+    }
+  ],
+  "clusters": [
+    {
+      "index": 0,
+      "label": "C0",
+      "num_throws": 10,
+      "target_index": 20
+    },
+    {
+      "index": 1,
+      "label": "C1",
+      "num_throws": 10,
+      "target_index": 7
+    },
+    {
+      "index": 2,
+      "label": "C2",
+      "num_throws": 10,
+      "target_index": 50
+    },
+    {
+      "index": 3,
+      "label": "C3",
+      "num_throws": 10,
+      "target_index": 46
+    },
+    {
+      "index": 4,
+      "label": "C4",
+      "num_throws": 10,
+      "target_index": 32
+    },
+    {
+      "index": 5,
+      "label": "C5",
+      "num_throws": 10,
+      "target_index": 45
+    },
+    {
+      "index": 6,
+      "label": "C6",
+      "num_throws": 10,
+      "target_index": 9
+    },
+    {
+      "index": 7,
+      "label": "C7",
+      "num_throws": 10,
+      "target_index": 10
+    },
+    {
+      "index": 8,
+      "label": "C8",
+      "num_throws": 10,
+      "target_index": 26
+    },
+    {
+      "index": 9,
+      "label": "C9",
+      "num_throws": 10,
+      "target_index": 48
+    },
+    {
+      "index": 10,
+      "label": "C10",
+      "num_throws": 10,
+      "target_index": 29
+    },
+    {
+      "index": 11,
+      "label": "C11",
+      "num_throws": 10,
+      "target_index": 30
+    },
+    {
+      "index": 12,
+      "label": "C12",
+      "num_throws": 10,
+      "target_index": 14
+    },
+    {
+      "index": 13,
+      "label": "C13",
+      "num_throws": 10,
+      "target_index": 31
+    },
+    {
+      "index": 14,
+      "label": "C14",
+      "num_throws": 10,
+      "target_index": 42
+    },
+    {
+      "index": 15,
+      "label": "C15",
+      "num_throws": 10,
+      "target_index": 43
+    },
+    {
+      "index": 16,
+      "label": "C16",
+      "num_throws": 10,
+      "target_index": 2
+    },
+    {
+      "index": 17,
+      "label": "C17",
+      "num_throws": 10,
+      "target_index": 13
+    },
+    {
+      "index": 18,
+      "label": "C18",
+      "num_throws": 9,
+      "target_index": 4
+    },
+    {
+      "index": 19,
+      "label": "C19",
+      "num_throws": 8,
+      "target_index": 27
+    },
+    {
+      "index": 20,
+      "label": "C20",
+      "num_throws": 10,
+      "target_index": 0
+    },
+    {
+      "index": 21,
+      "label": "C21",
+      "num_throws": 10,
+      "target_index": 16
+    },
+    {
+      "index": 22,
+      "label": "C22",
+      "num_throws": 10,
+      "target_index": 41
+    },
+    {
+      "index": 23,
+      "label": "C23",
+      "num_throws": 10,
+      "target_index": 52
+    },
+    {
+      "index": 24,
+      "label": "C24",
+      "num_throws": 10,
+      "target_index": 28
+    },
+    {
+      "index": 25,
+      "label": "C25",
+      "num_throws": 10,
+      "target_index": 23
+    },
+    {
+      "index": 26,
+      "label": "C26",
+      "num_throws": 10,
+      "target_index": 25
+    },
+    {
+      "index": 27,
+      "label": "C27",
+      "num_throws": 10,
+      "target_index": 5
+    },
+    {
+      "index": 28,
+      "label": "C28",
+      "num_throws": 9,
+      "target_index": 53
+    },
+    {
+      "index": 29,
+      "label": "C29",
+      "num_throws": 10,
+      "target_index": 1
+    },
+    {
+      "index": 30,
+      "label": "C30",
+      "num_throws": 10,
+      "target_index": 33
+    },
+    {
+      "index": 31,
+      "label": "C31",
+      "num_throws": 10,
+      "target_index": 11
+    },
+    {
+      "index": 32,
+      "label": "C32",
+      "num_throws": 11,
+      "target_index": 38
+    },
+    {
+      "index": 33,
+      "label": "C33",
+      "num_throws": 9,
+      "target_index": 36
+    },
+    {
+      "index": 34,
+      "label": "C34",
+      "num_throws": 8,
+      "target_index": 3
+    },
+    {
+      "index": 35,
+      "label": "C35",
+      "num_throws": 8,
+      "target_index": 37
+    },
+    {
+      "index": 36,
+      "label": "C36",
+      "num_throws": 10,
+      "target_index": 21
+    },
+    {
+      "index": 37,
+      "label": "C37",
+      "num_throws": 10,
+      "target_index": 8
+    },
+    {
+      "index": 38,
+      "label": "C38",
+      "num_throws": 10,
+      "target_index": 35
+    },
+    {
+      "index": 39,
+      "label": "C39",
+      "num_throws": 10,
+      "target_index": 19
+    },
+    {
+      "index": 40,
+      "label": "C40",
+      "num_throws": 10,
+      "target_index": 47
+    },
+    {
+      "index": 41,
+      "label": "C41",
+      "num_throws": 10,
+      "target_index": 15
+    },
+    {
+      "index": 42,
+      "label": "C42",
+      "num_throws": 7,
+      "target_index": 17
+    },
+    {
+      "index": 43,
+      "label": "C43",
+      "num_throws": 8,
+      "target_index": 18
+    },
+    {
+      "index": 44,
+      "label": "C44",
+      "num_throws": 10,
+      "target_index": 24
+    },
+    {
+      "index": 45,
+      "label": "C45",
+      "num_throws": 10,
+      "target_index": 34
+    },
+    {
+      "index": 46,
+      "label": "C46",
+      "num_throws": 10,
+      "target_index": 51
+    },
+    {
+      "index": 47,
+      "label": "C47",
+      "num_throws": 10,
+      "target_index": 44
+    },
+    {
+      "index": 48,
+      "label": "C48",
+      "num_throws": 10,
+      "target_index": 39
+    },
+    {
+      "index": 49,
+      "label": "C49",
+      "num_throws": 10,
+      "target_index": 22
+    },
+    {
+      "index": 50,
+      "label": "C50",
+      "num_throws": 10,
+      "target_index": 49
+    },
+    {
+      "index": 51,
+      "label": "C51",
+      "num_throws": 10,
+      "target_index": 6
+    },
+    {
+      "index": 52,
+      "label": "C52",
+      "num_throws": 10,
+      "target_index": 12
+    },
+    {
+      "index": 53,
+      "label": "C53",
+      "num_throws": 10,
+      "target_index": 40
+    }
+  ]
+}

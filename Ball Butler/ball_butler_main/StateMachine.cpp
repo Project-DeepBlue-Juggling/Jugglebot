@@ -375,18 +375,17 @@ void StateMachine::handleThrowing_() {
 // handleReloading_() - Reload sequence (non-blocking sub-state machine)
 //
 // Sub-states:
-//   0: Move hand to top position
-//   1: Move pitch to grab angle
-//   2: Wait for pitch and hand to settle
-//   3: Move yaw to pickup position
-//   4: Wait for yaw settle
-//   5: Move pitch to grab position (should grab ball from hopper)
-//   6: Wait for pitch settle
-//   7: Move pitch back to ready angle before checking for ball in hand
-//   8: Await pitch arrival
-//   9: Check for ball in hand (wait for multiple samples)
-//   10: Move all axes to success positions (hand down, yaw home)
-//   11: Wait for hand and pitch to reach final positions, then transition to IDLE
+//   0: Move hand to top position and pitch to grab angle
+//   1: Wait for pitch and hand to settle
+//   2: Move yaw to pickup position
+//   3: Wait for yaw settle
+//   4: Move pitch to grab position (should grab ball from hopper)
+//   5: Wait for pitch settle
+//   6: Move pitch back to ready angle before checking for ball in hand
+//   7: Await pitch arrival
+//   8: Check for ball in hand (wait for multiple samples)
+//   9: Move all axes to success positions (hand down, yaw home)
+//   10: Wait for hand and pitch to reach final positions, then transition to IDLE
 // --------------------------------------------------------------------
 void StateMachine::handleReloading_() {
   const uint32_t elapsed = millis() - state_enter_ms_;
@@ -405,21 +404,15 @@ void StateMachine::handleReloading_() {
   }
 
   switch (reload_sub_state_) {
-    case 0:  // Move hand to top position
-      debugf_("[SM] Reload: Moving hand to top (%.2f rev)\n", config_.reload_hand_top_rev);
+    case 0:  // Move hand to top position and pitch to grab angle
+      debugf_("[SM] Reload: Moving hand to top (%.2f rev) and pitch to grab angle (%.1f°)\n", config_.reload_hand_top_rev, config_.reload_pitch_ready_deg);
       moveHandToPosition_(config_.reload_hand_top_rev);
+      pitch_.setTargetDeg(config_.reload_pitch_ready_deg);
       reload_sub_state_ = 1;
       sub_state_ms_ = millis();
       break;
 
-    case 1:  // Move pitch to grab angle
-      debugf_("[SM] Reload: Pitching to grab angle (%.1f°)\n", config_.reload_pitch_ready_deg);
-      pitch_.setTargetDeg(config_.reload_pitch_ready_deg);
-      reload_sub_state_ = 2;
-      sub_state_ms_ = millis();
-      break;
-
-    case 2:  // Wait for pitch and hand to settle
+    case 1:  // Wait for pitch and hand to settle
       if (sub_elapsed < min_duration_ms) {
         break;  // Ensure minimum duration
       }
@@ -429,55 +422,55 @@ void StateMachine::handleReloading_() {
         if (hb_pitch.trajectory_done && hb_hand.trajectory_done) {
           // Put hand in CLOSED_LOOP_CONTROL to hold position
           can_.setRequestedState(config_.hand_node_id, ODriveState::CLOSED_LOOP);
-          reload_sub_state_ = 3;
+          reload_sub_state_ = 2;
           sub_state_ms_ = millis();
         }
       }
       break;
 
-    case 3:  // Move yaw to pickup position
+    case 2:  // Move yaw to pickup position
       debugf_("[SM] Reload: Yawing to pickup (%.1f°)\n", config_.reload_yaw_angle_deg);
       yaw_.setTargetDeg(config_.reload_yaw_angle_deg);
-      reload_sub_state_ = 4;
+      reload_sub_state_ = 3;
       sub_state_ms_ = millis();
       break;
 
-    case 4: {  // Wait for yaw settle
+    case 3: {  // Wait for yaw settle
       float current_yaw = PRO.getYawDeg();
-      if (abs(current_yaw - config_.reload_yaw_angle_deg) < config_.yaw_angle_threshold_deg) {
-        reload_sub_state_ = 5;
+      if (fabsf(current_yaw - config_.reload_yaw_angle_deg) < config_.yaw_angle_threshold_deg) {
+        reload_sub_state_ = 4;
         sub_state_ms_ = millis();
       }
       break;
     }
 
-    case 5:  // Move pitch to grab angle (should grab ball from hopper)
+    case 4:  // Move pitch to grab angle (should grab ball from hopper)
       debugf_("[SM] Reload: Pitching to grab position (%.1f°)\n", config_.reload_pitch_grab_deg);
       pitch_.setTargetDeg(config_.reload_pitch_grab_deg);
-      reload_sub_state_ = 6;
+      reload_sub_state_ = 5;
       sub_state_ms_ = millis();
       break;
 
-    case 6:  // Wait for pitch settle
+    case 5:  // Wait for pitch settle
       if (sub_elapsed < min_duration_ms) {
         break;  // Ensure minimum duration
       }
       if (can_.getAxisHeartbeat(config_.pitch_node_id, hb_pitch) && hb_pitch.trajectory_done) {
         // Pitch has settled! Move to next sub-state
-        reload_sub_state_ = 7;
+        reload_sub_state_ = 6;
         sub_state_ms_ = millis();
       }
       break;
 
-    case 7: // Move pitch back to ready angle before checking for ball in hand
+    case 6: // Move pitch back to ready angle before checking for ball in hand
       // This leads to more reliable detection of the ball in hand
       debugf_("[SM] Reload: Pitching back to ready angle (%.1f°)\n", config_.reload_pitch_ready_deg);
       pitch_.setTargetDeg(config_.reload_pitch_ready_deg);
-      reload_sub_state_ = 8;
+      reload_sub_state_ = 7;
       sub_state_ms_ = millis();
       break;
 
-    case 8: // Await pitch arrival
+    case 7: // Await pitch arrival
       // Await pitch arrival
       if (sub_elapsed < min_duration_ms) {
         break;  // Ensure minimum duration
@@ -485,12 +478,12 @@ void StateMachine::handleReloading_() {
 
       if (can_.getAxisHeartbeat(config_.pitch_node_id, hb_pitch) && hb_pitch.trajectory_done) {
         // Pitch has settled, now we can check for ball in hand
-        reload_sub_state_ = 9;
+        reload_sub_state_ = 8;
         sub_state_ms_ = millis();
       }
       break;
 
-    case 9: // Check for ball in hand (wait for multiple samples)
+    case 8: // Check for ball in hand (wait for multiple samples)
       // Initialize sample collection on first entry to this sub-state
       if (ball_check_samples_collected_ == 0 && !ball_check_positive_) {
         // Fresh entry - reset tracking
@@ -515,7 +508,7 @@ void StateMachine::handleReloading_() {
         debugf_("[SM] Ball detected after %d samples\n", ball_check_samples_collected_);
         ball_check_samples_collected_ = 0;
         ball_check_positive_ = false;
-        reload_sub_state_ = 10;  // Move to next sub-state to return home
+        reload_sub_state_ = 9;  // Move to next sub-state to return home
         sub_state_ms_ = millis();
         break;
       }
@@ -545,17 +538,17 @@ void StateMachine::handleReloading_() {
       }
       break;
 
-    case 10:  // Move all axes to success positions (hand down, yaw home)
+    case 9:  // Move all axes to success positions (hand down, yaw home)
       debugf_("[SM] Reload: Yawing to home (%.1f°), moving hand to bottom (%.1f rev), pitching to home (%.1f°)\n", 
         config_.yaw_deg_home, config_.hand_rev_home, config_.pitch_deg_home);
       yaw_.setTargetDeg(config_.yaw_deg_home);
       moveHandToPosition_(config_.hand_rev_home);
       pitch_.setTargetDeg(config_.pitch_deg_home);
-      reload_sub_state_ = 11;
+      reload_sub_state_ = 10;
       sub_state_ms_ = millis();
       break;
 
-    case 11:  // Wait for hand and pitch to reach final positions. Don't require yaw to be home before accepting tracking/throwing targets
+    case 10:  // Wait for hand and pitch to reach final positions. Don't require yaw to be home before accepting tracking/throwing targets
       // Determine whether the hand is at the bottom from the proprioception reading
       const float hand_pos = PRO.getHandPosRev();
       const bool hand_at_bottom = (hand_pos >= config_.reload_hand_bottom_rev - config_.reload_hand_bottom_tolerance_rev) &&

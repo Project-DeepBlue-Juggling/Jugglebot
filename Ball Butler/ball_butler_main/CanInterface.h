@@ -31,7 +31,7 @@ public:
   static constexpr uint8_t MAX_NODES = CanCfg::MAX_NODES;
   static constexpr uint32_t DEFAULT_HEARTBEAT_RATE_MS = CanCfg::HEARTBEAT_RATE_MS;
 
-  // SDO Opcodes (canonical values in jugglebot_protocol.h)
+  // SDO Opcodes (canonical values in protocol_config.h)
   static constexpr uint8_t OPCODE_READ  = SDO::OPCODE_READ;
   static constexpr uint8_t OPCODE_WRITE = SDO::OPCODE_WRITE;
 
@@ -87,10 +87,10 @@ public:
     const char* name; 
   };
 
-  // ODrive error masks (canonical values in jugglebot_protocol.h, namespace ODriveErrors)
+  // ODrive error masks (canonical values in protocol_config.h, namespace ODriveErrors)
   // Access via ODriveErrors::BRAKE_RESISTOR_DISARMED directly.
 
-  // Endpoint IDs (canonical values in jugglebot_protocol.h, namespace EndpointId)
+  // Endpoint IDs (canonical values in protocol_config.h, namespace EndpointId)
   struct EndpointIds {
     static constexpr uint16_t COMMUTATION_MAPPER_POS_ABS = EndpointId::commutation_mapper_pos_abs;
     static constexpr uint16_t GPIO_STATES                = EndpointId::GPIO_STATES;
@@ -333,7 +333,7 @@ private:
   // ============================================================================
 
   static constexpr uint8_t ALPHA_SHIFT_ = 3;
-  static constexpr uint32_t PRINT_PERIOD_US_ = 200'000;  // 200 ms
+  static constexpr uint32_t PRINT_PERIOD_US_ = CanCfg::SYNC_STATS_PRINT_US;
   static constexpr float kVelScale_ = InputScale::vel;
   static constexpr float kTorScale_ = InputScale::tor;
 
@@ -364,19 +364,19 @@ private:
 
   // Ball detection (non-blocking async state machine)
   enum class BallCheckPhase : uint8_t { IDLE, WAITING };
-  uint8_t  ball_detect_gpio_pin     = 3;    // GPIO pin on hand ODrive for ball detection
-  uint32_t ball_check_interval_ms_  = 200;  // How often to check for ball in hand
+  uint8_t  ball_detect_gpio_pin_     = BallDetectCfg::GPIO_PIN;
+  uint32_t ball_check_interval_ms_  = BallDetectCfg::CHECK_INTERVAL_MS;
   uint32_t last_ball_check_ms_      = 0;    // Last time we checked for ball in hand
   bool     ball_in_hand_            = true; // Assume we start with a ball in hand until we check
   uint8_t  ball_false_count_        = 0;    // Consecutive false readings so far
-  uint8_t  max_ball_missing_samples = 5;    // Consecutive false readings before attempting to enter CHECKING_BALL
+  uint8_t  max_ball_missing_samples_= BallDetectCfg::MAX_MISSING_SAMPLES;
   BallCheckPhase ball_check_phase_  = BallCheckPhase::IDLE;
   uint32_t ball_check_sent_ms_      = 0;    // When the SDO request was sent
-  static constexpr uint32_t BALL_CHECK_TIMEOUT_MS = 100;
+  static constexpr uint32_t BALL_CHECK_TIMEOUT_MS = BallDetectCfg::CHECK_TIMEOUT_MS;
 
   // Auto-clear BRAKE_RESISTOR_DISARMED
   bool auto_clear_brake_res_ = true;
-  uint32_t auto_clear_interval_ms_ = 500;
+  uint32_t auto_clear_interval_ms_ = CanCfg::AUTO_CLEAR_BRAKE_MS;
 
   // Estimator command
   uint8_t estimatorCmd_ = uint8_t(Cmd::get_encoder_estimate);

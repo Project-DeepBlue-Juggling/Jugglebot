@@ -1,0 +1,102 @@
+"""Thread-safe per-axis motor state tracking.
+
+Wraps the MotorStateSingle ROS2 message type in a thread-safe container.
+Tracks heartbeat reception, error flags, and encoder search status.
+"""
+
+import threading
+from typing import Dict, List, Optional
+
+from jugglebot_interfaces.msg import MotorStateSingle
+import jugglebot.protocol_config as proto
+
+# Axis groupings (from protocol_config)
+LEG_AXES = proto.NODE_ID_LEGS
+HAND_AXIS = proto.NODE_ID_JUGGLEBOT_HAND
+JUGGLEBOT_AXES = LEG_AXES + [HAND_AXIS]
+BB_AXES = [proto.NODE_ID_BB_PITCH, proto.NODE_ID_BB_HAND]
+ALL_AXES = JUGGLEBOT_AXES + BB_AXES
+NUM_AXES = len(ALL_AXES)
+
+
+class MotorStateTracker:
+    """Thread-safe container for per-axis motor states."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._states = [MotorStateSingle() for _ in range(NUM_AXES)]
+
+        # Snapshot for lock-free reads (refreshed on each get_states() call).
+        # The old code does a shallow list copy, which means readers and writers
+        # share the same MotorStateSingle objects. This is safe in CPython because
+        # attribute access is GIL-atomic, and the old system relied on this.
+        self.last_states: List[MotorStateSingle] = [MotorStateSingle() for _ in range(NUM_AXES)]
+
+        # Heartbeat tracking (Jugglebot axes only — used for reconnection)
+        self.received_heartbeats: Dict[int, bool] = {
+            axis_id: False for axis_id in JUGGLEBOT_AXES
+        }
+
+        # Error flags
+        self.fatal_error: bool = False
+        self.undervoltage_error: bool = False
+        self.fatal_can_error: bool = False
+
+        # Soft-error recovery tracking
+        self.max_soft_reset_attempts: int = 1
+        self.soft_reset_attempts: int = 0
+
+        # Per-axis, per-error-code throttled logging timestamps
+        self._last_error_log_times: Dict[int, Dict[int, float]] = {}
+        self.error_log_throttle_sec: float = 10.0
+
+        # Encoder search feedback (legs only; None = not yet checked)
+        self.encoder_search_feedback: List[Optional[bool]] = [None] * 6
+
+    # ── State access ───────────────────────────────────────────
+
+    def update(self, axis_id: int, **fields):
+        """Update one or more fields on a single axis's motor state."""
+        with self._lock:
+            state = self._states[axis_id]
+            for field, value in fields.items():
+                setattr(state, field, value)
+
+    def get_states(self) -> List[MotorStateSingle]:
+        """Snapshot current states and return them."""
+        with self._lock:
+            self.last_states = list(self._states)
+        return self.last_states
+
+    def get_field(self, axis_id: int, field: str):
+        """Read a single field (thread-safe)."""
+        with self._lock:
+            return getattr(self._states[axis_id], field)
+
+    # ── Heartbeat tracking ─────────────────────────────────────
+
+    def reset_heartbeats(self):
+        for axis_id in JUGGLEBOT_AXES:
+            self.received_heartbeats[axis_id] = False
+
+    def all_jugglebot_heartbeats_received(self) -> bool:
+        return all(self.received_heartbeats.values())
+
+    # ── Encoder search ─────────────────────────────────────────
+
+    def reset_encoder_search_feedback(self):
+        self.encoder_search_feedback = [None] * 6
+
+    # ── Error helpers ──────────────────────────────────────────
+
+    def clear_error_flags(self):
+        """Clear transient error flags (called after clear_errors command)."""
+        self.fatal_error = False
+        self.undervoltage_error = False
+        self.soft_reset_attempts = 0
+
+    def last_error_log_times(self, axis_id: int) -> Dict[int, float]:
+        """Get or create the per-error-code log-time dict for an axis."""
+        if axis_id not in self._last_error_log_times:
+            self._last_error_log_times[axis_id] = {}
+        return self._last_error_log_times[axis_id]

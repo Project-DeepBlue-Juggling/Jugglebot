@@ -557,10 +557,10 @@ private:
 
   // Constants
   static constexpr uint16_t AS5047_NOP = 0xFFFF;
-  static constexpr float    CPR       = 16384.0f;
+  static constexpr float    CPR       = YawDefaults::ABS_ENC_CPR;
   static constexpr float    DEG2REV   = 1.0f / 360.0f;
   static constexpr float    REV2DEG   = 360.0f;
-  static constexpr uint8_t  PWM_MAX   = 255;
+  static constexpr uint8_t  PWM_MAX   = YawDefaults::PWM_MAX;
 
   // PID tuning (volatile for ISR access; defaults from BallButlerConfig.h)
   volatile float Kp_          = YawDefaults::KP;

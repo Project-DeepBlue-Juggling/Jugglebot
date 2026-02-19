@@ -757,13 +757,13 @@ void CanInterface::maybeCheckBallInHand_() {
           resp.endpoint_id == EndpointIds::GPIO_STATES) {
         // Got response — process GPIO states
         const uint32_t gpio_states = resp.value.u32;
-        ball_in_hand_ = !((gpio_states >> ball_detect_gpio_pin) & 0x01);
+        ball_in_hand_ = !((gpio_states >> ball_detect_gpio_pin_) & 0x01);
 
         if (ball_in_hand_) {
           ball_false_count_ = 0;
         } else {
           ball_false_count_++;
-          if (ball_false_count_ >= max_ball_missing_samples) {
+          if (ball_false_count_ >= max_ball_missing_samples_) {
             if (dbg_) dbg_->printf("[CAN] %d consecutive ball-missing readings, entering CHECKING_BALL\n", ball_false_count_);
             state_machine_->requestCheckBall();
             ball_false_count_ = 0;

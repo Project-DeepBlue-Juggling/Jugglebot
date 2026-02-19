@@ -45,7 +45,7 @@ from ament_index_python.packages import get_package_share_directory
 from jugglebot_interfaces.msg import MotorStateSingle, HandTelemetryMessage
 from geometry_msgs.msg import Quaternion
 from jugglebot.ball_butler_states import BallButlerStates
-import jugglebot.jugglebot_protocol as proto
+import jugglebot.protocol_config as proto
 
 import matplotlib.pyplot as plt
 
@@ -64,7 +64,7 @@ BallButlerError = proto.BallButlerError
 
 @dataclass
 class BallButlerHeartbeat:
-    # Class constants for resolution values (from jugglebot_protocol)
+    # Class constants for resolution values (from protocol_config)
     yaw_resolution: ClassVar[float] = proto.HEARTBEAT_YAW_RES_DEG
     pitch_resolution: ClassVar[float] = proto.HEARTBEAT_PITCH_RES_DEG
     hand_resolution: ClassVar[float] = proto.HEARTBEAT_HAND_RES_MM
@@ -101,7 +101,7 @@ class CANInterface:
     """
     Interface for handling CAN bus communication with ODrive controllers.
     """
-    # ODrive command IDs (from generated jugglebot_protocol.py)
+    # ODrive command IDs (from generated protocol_config.py)
     COMMANDS = proto.ODRIVE_COMMANDS
 
     ARBITRARY_PARAMETER_IDS = {
@@ -125,7 +125,7 @@ class CANInterface:
     _DEFAULT_VEL_CURR_LIMITS = {'leg_vel_limit': 50.0, 'leg_curr_limit': 20.0, 
                                 'hand_vel_limit': 1000.0, 'hand_curr_limit': 50.0} # rev/s, A
 
-    # Axis groupings for Jugglebot and Ball Butler (node IDs from jugglebot_protocol)
+    # Axis groupings for Jugglebot and Ball Butler (node IDs from protocol_config)
     JUGGLEBOT_LEG_AXES = proto.NODE_ID_LEGS
     JUGGLEBOT_HAND_AXIS = proto.NODE_ID_JUGGLEBOT_HAND
     JUGGLEBOT_AXES = proto.NODE_ID_LEGS + [proto.NODE_ID_JUGGLEBOT_HAND]

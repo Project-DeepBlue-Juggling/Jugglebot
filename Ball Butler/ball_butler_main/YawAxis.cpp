@@ -215,8 +215,8 @@ void YawAxis::setSoftLimitsDeg(float min_deg, float max_deg) {
   }
   
   // Ensure range is valid (not more than ~355° to leave room for forbidden zone)
-  if ((max_deg - min_deg) > 355.0f) {
-    max_deg = min_deg + 355.0f;
+  if ((max_deg - min_deg) > YawDefaults::MAX_SOFT_RANGE_DEG) {
+    max_deg = min_deg + YawDefaults::MAX_SOFT_RANGE_DEG;
   }
   
   noInterrupts();

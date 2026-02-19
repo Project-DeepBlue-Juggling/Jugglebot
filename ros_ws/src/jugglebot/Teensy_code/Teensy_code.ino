@@ -22,7 +22,7 @@
 #include <SCL3300.h>
 #include <vector>
 #include "Trajectory.h"
-#include "jugglebot_protocol.h"  // Auto-generated from config/jugglebot_protocol.yaml
+#include "protocol_config.h"  // Auto-generated from config/protocol_config.yaml
 
 #define DEBUG_TRAFFIC 0    // 0 = silent, 1 = Serial print report CAN traffic frames
 #define DEBUG_TRAJ 0       // 0 = silent, 1 = Serial print each hand traj frame as it gets sent out
@@ -42,7 +42,7 @@ SCL3300 inclinometer;
 /*----------------------------------------------------------------------------*/
 /*                               CAN  ID MAP                                  */
 /*----------------------------------------------------------------------------*/
-// CAN IDs from jugglebot_protocol.h
+// CAN IDs from protocol_config.h
 constexpr uint32_t REPORT_ID      = PlatformCanId::TRAFFIC_REPORT;
 constexpr uint32_t tiltID          = PlatformCanId::TILT_READING;
 constexpr uint32_t timeSyncID      = SharedCanId::TIME_SYNC;

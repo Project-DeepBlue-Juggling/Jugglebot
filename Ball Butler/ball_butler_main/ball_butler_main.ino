@@ -21,8 +21,6 @@
 #include "StateMachine.h"
 #include <stdarg.h>
 
-using Err = CanInterface::ODriveErrors;
-
 // ============================================================================
 // GLOBAL OBJECTS
 // ============================================================================
@@ -92,7 +90,7 @@ void setup() {
 
   canif.begin(CanCfg::BAUD_RATE);
   canif.setDebugStream(&Serial);
-  canif.setDebugFlags(false, false); // Enable CAN message debug, disable axis state debug to reduce spam
+  canif.setDebugFlags(true, false); // timesync | CAN interface
   canif.setHandAxisNode(NodeId::BB_HAND);
   canif.setPitchAxisNode(NodeId::BB_PITCH);
   canif.setAutoClearBrakeResistor(true, CanCfg::AUTO_CLEAR_BRAKE_MS);

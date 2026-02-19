@@ -1,6 +1,6 @@
 #pragma once
 #include <Arduino.h>
-#include "jugglebot_protocol.h"
+#include "protocol_config.h"
 
 // --------------------------------------------------------------------
 // State enumeration
