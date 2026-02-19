@@ -3,6 +3,7 @@
 Provides a thin, thread-safe wrapper around python-can's Bus object.
 """
 
+import errno
 import struct
 import threading
 import time
@@ -70,7 +71,9 @@ class CANBus:
                 self._bus.send(msg, timeout=timeout)
         except can.CanError as e:
             self._logger.warning(f'CAN send failed: {e}')
-            if '105' in str(e):
+            # Check for buffer-full (ENOBUFS) via the wrapped OSError
+            cause = getattr(e, '__cause__', None) or getattr(e, '__context__', None)
+            if isinstance(cause, OSError) and cause.errno == errno.ENOBUFS:
                 self.attempt_restore()
 
     def fetch_all(self, handler: Callable[[can.Message], None]):

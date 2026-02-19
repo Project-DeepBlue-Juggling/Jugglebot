@@ -14,6 +14,7 @@ from std_srvs.srv import Trigger
 import quaternion  # numpy quaternion
 import pyspacemouse
 import math
+import time
 import jugglebot.hardware_config as hw
 
 class SpaceMouseHandler(Node):
@@ -44,11 +45,29 @@ class SpaceMouseHandler(Node):
             'dec_limit': hw.SPACEMOUSE_TRAP_DEC_LIMIT_RPS2,
         }
 
-        """Initialize and open the SpaceMouse."""
-        self._is_open = pyspacemouse.open()
+        # Attempt to connect to the SpaceMouse with retries
+        max_attempts = 3
+        retry_delay_s = 2.0
+        self._is_open = False
+
+        for attempt in range(1, max_attempts + 1):
+            self._is_open = pyspacemouse.open()
+            if self._is_open:
+                self.get_logger().info("SpaceMouse connected successfully.")
+                break
+            if attempt < max_attempts:
+                self.get_logger().warn(
+                    f"SpaceMouse not found (attempt {attempt}/{max_attempts}). "
+                    f"Retrying in {retry_delay_s}s..."
+                )
+                time.sleep(retry_delay_s)
 
         if not self._is_open:
-            raise ConnectionError("Failed to connect to the SpaceMouse.")
+            self.get_logger().error(
+                f"Failed to connect to SpaceMouse after {max_attempts} attempts. "
+                "Node will shut down."
+            )
+            self.shutdown_flag = True
 
     def publish_pose(self):
         """
@@ -147,8 +166,8 @@ class SpaceMouseHandler(Node):
         """Handle node shutdown."""
         self.get_logger().info("Shutting down SpacemouseHandler...")
         try:
-            # Close the spacemouse
-            pyspacemouse.close()
+            if self._is_open:
+                pyspacemouse.close()
         except Exception as e:
             self.get_logger().error(f"Error during node shutdown: {e}")
 

@@ -225,11 +225,13 @@ class MocapInterface:
             pose.pose.position.x = body[0].x
             pose.pose.position.y = body[0].y
 
-            # Leave the Base Z position unchanged, but apply the base to platform transformation to other bodies
-            if self.base_to_platform_transformation is not None and body_name in self.base_frame_bodies:
+            # Leave base-frame bodies' Z unchanged; shift others into the platform frame
+            if body_name in self.base_frame_bodies:
                 pose.pose.position.z = body[0].z
-            else:
+            elif self.base_to_platform_transformation is not None:
                 pose.pose.position.z = body[0].z - self.base_to_platform_transformation
+            else:
+                pose.pose.position.z = body[0].z
 
             qx, qy, qz, qw = self.rotation_list_to_quaternion(body[1].matrix)
             pose.pose.orientation.x = qx
@@ -478,13 +480,6 @@ class MocapInterface:
         """
         with self.data_lock:
             self.all_markers = np.empty((0, 4))
-
-    def clear_platform_pose(self):
-        """
-        Clear the platform pose data.
-        """
-        with self.data_lock:
-            self.platform_pose = None
 
     #########################################################################################################
     #                                        Get Robot Geometry                                             #

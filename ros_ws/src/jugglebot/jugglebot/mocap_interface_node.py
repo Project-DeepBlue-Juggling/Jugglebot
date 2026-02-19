@@ -1,6 +1,6 @@
 import rclpy
 from rclpy.node import Node
-from std_srvs.srv import Trigger, SetBool
+from std_srvs.srv import Trigger
 from std_msgs.msg import Float64
 from jugglebot_interfaces.msg import MocapDataMulti, MocapDataSingle, BallButlerHeartbeat, RigidBodyPose, RigidBodyPoses
 from jugglebot_interfaces.srv import GetRobotGeometry

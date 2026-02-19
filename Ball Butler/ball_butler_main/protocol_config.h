@@ -49,6 +49,7 @@ namespace ODriveCmd {
 
 namespace ODriveState {
   constexpr uint32_t IDLE = 1u;
+  constexpr uint32_t ENCODER_INDEX_SEARCH = 6u;
   constexpr uint32_t CLOSED_LOOP = 8u;
 }
 

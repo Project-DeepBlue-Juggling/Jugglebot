@@ -5,6 +5,7 @@ Tracks heartbeat reception, error flags, and encoder search status.
 """
 
 import threading
+import time
 from typing import Dict, List, Optional
 
 from jugglebot_interfaces.msg import MotorStateSingle
@@ -53,10 +54,16 @@ class MotorStateTracker:
         # Encoder search feedback (legs only; None = not yet checked)
         self.encoder_search_feedback: List[Optional[bool]] = [None] * len(LEG_AXES)
 
+        # Heartbeat timing (for CAN disconnection watchdog)
+        self._last_heartbeat_time: Dict[int, float] = {}
+        self._first_heartbeat_received: bool = False
+
     # ── State access ───────────────────────────────────────────
 
     def update(self, axis_id: int, **fields):
         """Update one or more fields on a single axis's motor state."""
+        if axis_id < 0 or axis_id >= NUM_AXES:
+            return  # Ignore out-of-range axis IDs from malformed CAN frames
         with self._lock:
             state = self._states[axis_id]
             for field, value in fields.items():
@@ -70,6 +77,8 @@ class MotorStateTracker:
 
     def get_field(self, axis_id: int, field: str):
         """Read a single field (thread-safe)."""
+        if axis_id < 0 or axis_id >= NUM_AXES:
+            return None
         with self._lock:
             return getattr(self._states[axis_id], field)
 
@@ -86,6 +95,37 @@ class MotorStateTracker:
 
     def reset_encoder_search_feedback(self):
         self.encoder_search_feedback = [None] * len(LEG_AXES)
+
+    # ── Heartbeat watchdog ─────────────────────────────────────
+
+    def record_heartbeat(self, axis_id: int):
+        """Record heartbeat for both the reconnection gate and the watchdog timer."""
+        self._last_heartbeat_time[axis_id] = time.time()
+        if axis_id in self.received_heartbeats:
+            self.received_heartbeats[axis_id] = True
+        if not self._first_heartbeat_received and axis_id in JUGGLEBOT_AXES:
+            self._first_heartbeat_received = True
+
+    @property
+    def first_heartbeat_received(self) -> bool:
+        """True once any Jugglebot axis has sent at least one heartbeat."""
+        return self._first_heartbeat_received
+
+    def any_heartbeat_stale(self, timeout_s: float) -> bool:
+        """True if any previously-seen Jugglebot axis heartbeat is older than timeout_s."""
+        if not self._first_heartbeat_received:
+            return False
+        now = time.time()
+        for axis_id in JUGGLEBOT_AXES:
+            last = self._last_heartbeat_time.get(axis_id)
+            if last is not None and (now - last) > timeout_s:
+                return True
+        return False
+
+    def reset_heartbeat_tracking(self):
+        """Reset watchdog state — call before ODrive reboot to suppress false triggers."""
+        self._last_heartbeat_time.clear()
+        self._first_heartbeat_received = False
 
     # ── Error helpers ──────────────────────────────────────────
 

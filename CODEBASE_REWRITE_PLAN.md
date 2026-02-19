@@ -213,7 +213,7 @@ ros_ws/src/jugglebot/
 - [x] Write `can/bus.py` for bus lifecycle and reconnection
 - [x] Write `can_node.py` as ROS2 wrapper
 - [x] **Critical**: Port the control mode switching logic from `can_interface_node.py` lines 280-325 and the activate/deactivate sequences
-- [ ] **Test**: Verify heartbeat reception, motor state reporting, and basic commands against real hardware
+- [x] **Test**: Verify heartbeat reception, motor state reporting, and basic commands against real hardware
 
 ### Phase 2: State Machine + Orchestrator
 - [ ] Write `state_machine.py` (~150-200 lines, plain Python, extensible registry pattern, no YASMIN)
@@ -383,8 +383,15 @@ The 2,351-line `can_interface.py` and 806-line `can_interface_node.py` have been
 - **Stale state in error handler**: `_handle_error` now calls `get_states()` to refresh the snapshot immediately after updating error fields, ensuring the error classification logic sees current data.
 - **Blocking sleep in error recovery**: `_handle_error` had a `time.sleep(0.5)` after soft-error clearing. Removed — the handler is reactive (each incoming CAN error message re-triggers it), so waiting is unnecessary.
 
+### Safety hardening (post-audit)
+- **Emergency idle on generator exceptions (3a)**: `_run_to_completion()` now catches unhandled exceptions with `try/except`, sends all Jugglebot axes to IDLE via `_emergency_idle()`, and sets `fatal_error = True` before re-raising. Prevents motors being left in CLOSED_LOOP with no position command after unexpected errors.
+- **CAN bus disconnection detection (3c)**: Heartbeat watchdog added via `MotorStateTracker.record_heartbeat()` timestamps. A 1 Hz timer (`_watchdog_check`) triggers after 2s without any axis heartbeat. On detection: attempts `bus.attempt_restore()` (3 internal retries); sets `fatal_can_error` on failure. During generator operations, `_pump()` performs a lightweight staleness check and sets the flag so generators can abort promptly.  Watchdog only activates after the first heartbeat is received (avoids false alarms before ODrives power on).
+- **Heartbeat gate on ODrive configuration (3d)**: `_setup_odrives()` converted to generator `_setup_odrives_steps()` that waits for heartbeats from all Jugglebot axes (5s timeout) before sending configuration commands. Prevents fire-and-forget configuration against rebooting or unresponsive hardware.
+- **Homing cleanup on failure**: `_home_motor_steps()` now sends IDLE to the specific axis on fatal error, preventing motors from being left in velocity mode. Also checks `fatal_can_error` alongside `fatal_error`.
+- **Reboot watchdog suppression**: `_reboot_odrives_steps()` resets heartbeat tracking before the 10s wait, preventing false watchdog triggers during ODrive reboot.
+
 ### Items for investigation during Phase 2+
 - **~~`time.sleep()` blocking the executor~~** — **RESOLVED**: All long-running operations now use generator-based state machines driven by `_run_to_completion()`. The driver processes CAN messages between yield points (1ms polling during timed waits, immediate re-entry for tight polls). Service callbacks still block the single-threaded executor for the duration of the operation, but CAN traffic flows continuously. The remaining `time.sleep()` calls are 1-5ms CAN bus pacing delays between consecutive sends to avoid buffer overflow — these are intentional and harmless. If true non-blocking services are needed later, the generators can be driven by a timer instead of synchronously (the generator protocol supports this without code changes to the generators themselves).
 - **Shallow-copy thread safety**: `get_states()` does a shallow list copy — readers and writers share the same `MotorStateSingle` objects. This works in CPython due to GIL-atomic attribute access but is technically a race condition. Not worth fixing unless moving to a multi-threaded executor.
-- **DBC file cleanup**: The `resources/ODrive_Pro.dbc` file is no longer loaded but is still in the package. Could be removed after confirming no other code references it, or kept as documentation.
+- **~~DBC file cleanup~~** - **RESOLVED**: The `resources/ODrive_Pro.dbc` file has been deleted.
 - **rigid_body_poses subscriber**: The old `can_interface_node.py` had a subscriber for `/rigid_body_poses` to check that the QTM base is at the origin. This was a safety check that has been deferred — it should be re-added in the orchestrator node (Phase 2) or mocap node (Phase 4).

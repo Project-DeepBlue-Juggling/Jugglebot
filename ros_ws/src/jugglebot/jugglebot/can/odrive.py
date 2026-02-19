@@ -7,7 +7,6 @@ Node IDs and command IDs come from protocol_config.py (generated from YAML).
 Encoding uses struct.pack directly — no cantools/DBC dependency.
 """
 
-import math
 import struct
 from typing import Tuple
 
@@ -30,27 +29,12 @@ BB_AXES = [proto.NODE_ID_BB_PITCH, proto.NODE_ID_BB_HAND]
 ALL_AXES = JUGGLEBOT_AXES + BB_AXES
 
 # ═══════════════════════════════════════════════════════════════
-# ODrive enums — axis states, control modes, input modes
+# ODrive enums — imported from protocol_config (source of truth)
 # ═══════════════════════════════════════════════════════════════
 
-AXIS_STATES = {
-    'IDLE': 1,
-    'ENCODER_INDEX_SEARCH': 6,
-    'CLOSED_LOOP_CONTROL': 8,
-}
-
-CONTROL_MODES = {
-    'VOLTAGE_CONTROL': 0,
-    'TORQUE_CONTROL': 1,
-    'VELOCITY_CONTROL': 2,
-    'POSITION_CONTROL': 3,
-}
-
-INPUT_MODES = {
-    'PASSTHROUGH': 1,
-    'VEL_RAMP': 2,
-    'TRAP_TRAJ': 5,
-}
+AXIS_STATES = proto.ODRIVE_STATES
+CONTROL_MODES = proto.ODRIVE_CONTROL_MODES
+INPUT_MODES = proto.ODRIVE_INPUT_MODES
 
 # ═══════════════════════════════════════════════════════════════
 # Operational defaults
@@ -138,7 +122,7 @@ def arb_id(axis_id: int, command_name: str) -> int:
 # ═══════════════════════════════════════════════════════════════
 
 def encode_set_state(axis_id: int, state: str) -> can.Message:
-    """Set requested axis state (e.g. 'IDLE', 'CLOSED_LOOP_CONTROL')."""
+    """Set requested axis state (e.g. 'IDLE', 'CLOSED_LOOP')."""
     data = struct.pack('<I', AXIS_STATES[state]) + bytes(4)
     return can.Message(arbitration_id=arb_id(axis_id, 'set_requested_state'),
                        data=data, dlc=8, is_extended_id=False)
@@ -248,13 +232,21 @@ def encode_sdo_write(axis_id: int, param_name: str, value: float) -> can.Message
 # Decoding — incoming messages from ODrives
 # ═══════════════════════════════════════════════════════════════
 
+def _check_len(data: bytes, expected: int, name: str):
+    """Raise ValueError if CAN frame data is too short for the expected unpack."""
+    if len(data) < expected:
+        raise ValueError(f"{name}: expected {expected} bytes, got {len(data)}")
+
+
 def decode_heartbeat(data: bytes) -> Tuple[int, int, bool]:
     """Returns (current_state, procedure_result, trajectory_done)."""
+    _check_len(data, 7, "heartbeat")
     return data[4], data[5], bool(data[6] & 0x01)
 
 
 def decode_error(data: bytes) -> Tuple[int, int]:
     """Returns (active_errors, disarm_reason) as bitmasks."""
+    _check_len(data, 8, "error")
     active_errors = struct.unpack_from('<I', data, 0)[0]
     disarm_reason = struct.unpack_from('<I', data, 4)[0]
     return active_errors, disarm_reason
@@ -262,26 +254,31 @@ def decode_error(data: bytes) -> Tuple[int, int]:
 
 def decode_encoder_estimate(data: bytes) -> Tuple[float, float]:
     """Returns (pos_estimate, vel_estimate) in rev and rev/s."""
+    _check_len(data, 8, "encoder_estimate")
     return struct.unpack_from('<ff', data)
 
 
 def decode_iq(data: bytes) -> Tuple[float, float]:
     """Returns (iq_setpoint, iq_measured) in amps."""
+    _check_len(data, 8, "iq")
     return struct.unpack_from('<ff', data)
 
 
 def decode_temps(data: bytes) -> Tuple[float, float]:
     """Returns (fet_temp, motor_temp) in deg C."""
+    _check_len(data, 8, "temps")
     return struct.unpack_from('<ff', data)
 
 
 def decode_bus_voltage_current(data: bytes) -> Tuple[float, float]:
     """Returns (bus_voltage, bus_current)."""
+    _check_len(data, 8, "bus_voltage_current")
     return struct.unpack_from('<ff', data)
 
 
 def decode_sdo_response(data: bytes) -> Tuple[int, float]:
     """Returns (endpoint_id, value) from an SDO read response."""
+    _check_len(data, 8, "sdo_response")
     _, endpoint_id, _, value = struct.unpack_from('<BHBf', data)
     return endpoint_id, value
 

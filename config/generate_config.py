@@ -504,21 +504,10 @@ def generate_hw_cpp(cfg: dict) -> str:
                 lines.append(f"  constexpr {ctype} {cpp_name} = {cval};")
         lines.append("}")
 
-    # Derived constants
-    derived = compute_derived(cfg)
-    lines += cpp_section("Derived Constants (computed by generator)")
-    lines.append("namespace HwDerived {")
-    lines.append(f"  constexpr float GRAVITY_MMPS2 = {derived['GRAVITY_MMPS2']}f;")
-
-    ll = derived["INIT_LEG_LENGTHS_WITH_OFFSET_MM"]
-    formatted = ", ".join(f"{v}f" for v in ll)
-    lines.append(f"  constexpr float INIT_LEG_LENGTHS_WITH_OFFSET_MM[{len(ll)}] = {{{formatted}}};")
-
-    lines.append(f"  constexpr float TEENSY_LINEAR_GAIN = {derived['TEENSY_LINEAR_GAIN']}f;")
-    lines.append(f"  constexpr float BB_LINEAR_GAIN = {derived['BB_LINEAR_GAIN']}f;")
-    lines.append(f"  constexpr uint32_t BB_MAX_THROW_SAMPLES = {derived['BB_MAX_THROW_SAMPLES']}u;")
-    lines.append(f"  constexpr uint32_t BB_MAX_TRAJ_FRAMES = {derived['BB_MAX_TRAJ_FRAMES']}u;")
-    lines.append("}")
+    # NOTE: Derived constants (LINEAR_GAIN, MAX_THROW_SAMPLES, etc.) are intentionally
+    # omitted from the C++ output. Both firmwares derive these locally from source
+    # constants — see BallButlerConfig.h TrajCfg namespace and Trajectory.h.
+    # Python derived constants are still generated in generate_hw_python().
     lines.append("")
 
     return "\n".join(lines)

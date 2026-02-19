@@ -50,6 +50,8 @@ class BallButlerHeartbeat:
     @classmethod
     def from_can_frame(cls, data: bytes) -> 'BallButlerHeartbeat':
         """Unpack from 8-byte CAN frame."""
+        if len(data) < 8:
+            raise ValueError(f"BB heartbeat: expected 8 bytes, got {len(data)}")
         state_byte, state_data, yaw_enc, pitch_enc, hand_enc = struct.unpack('<BBHHH', data)
         return cls(
             ball_in_hand=bool(state_byte & 0x01),

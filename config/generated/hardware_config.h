@@ -104,6 +104,7 @@ namespace JBOp {
   constexpr float TARGET_REACHED_VEL_TOL_RPS = 0.1f;
   constexpr float GENTLE_MOVE_VEL_LIMIT_RPS = 2.5f;
   constexpr float ENCODER_SEARCH_TIMEOUT_S = 3.0f;
+  constexpr float GENTLE_MOVE_TIMEOUT_S = 10.0f;
   constexpr float MAX_VALID_TILT_RAD = 0.785f;
 }
 
@@ -388,17 +389,4 @@ namespace BBBallDetect {
   constexpr uint32_t CHECK_INTERVAL_MS = 50u;
   constexpr uint32_t MAX_MISSING_SAMPLES = 5u;
   constexpr uint32_t CHECK_TIMEOUT_MS = 100u;
-}
-
-// ==========================================================================
-// Derived Constants (computed by generator)
-// ==========================================================================
-
-namespace HwDerived {
-  constexpr float GRAVITY_MMPS2 = 9806.0f;
-  constexpr float INIT_LEG_LENGTHS_WITH_OFFSET_MM[6] = {646.889f, 643.66f, 647.574f, 646.153f, 646.152f, 645.591f};
-  constexpr float TEENSY_LINEAR_GAIN = 31.617152802324696f;
-  constexpr float BB_LINEAR_GAIN = 30.3192698249091f;
-  constexpr uint32_t BB_MAX_THROW_SAMPLES = 1001u;
-  constexpr uint32_t BB_MAX_TRAJ_FRAMES = 1813u;
 }

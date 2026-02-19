@@ -48,6 +48,7 @@ ODRIVE_COMMANDS = {
 
 ODRIVE_STATES = {
     "IDLE": 1,
+    "ENCODER_INDEX_SEARCH": 6,
     "CLOSED_LOOP": 8,
 }
 

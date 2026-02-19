@@ -7,7 +7,7 @@ the state of each leg (overextended [1], underextended [-1], within bounds [0]) 
 import rclpy
 from rclpy.node import Node
 import numpy as np
-from geometry_msgs.msg import PoseStamped, Quaternion
+from geometry_msgs.msg import Quaternion
 from std_srvs.srv import Trigger
 from std_msgs.msg import Float64MultiArray, Int8MultiArray, String
 from jugglebot_interfaces.msg import PlatformPoseCommand
@@ -47,8 +47,6 @@ class SPInverseKinematics(Node):
         self.leg_stroke = None
 
         self.new_plat_nodes = None    # Base frame
-        self.new_arm_nodes  = None    # Base frame
-        self.new_hand_nodes = None    # Base frame
 
         #########################################################################################################
         #                                           Control Related                                             #
@@ -233,21 +231,8 @@ class SPInverseKinematics(Node):
         # Convert back to a list for publishing
         leg_lengths_revs = leg_lengths_revs.tolist()
 
-        # If the legs need to be remapped, do so
-        # leg_lengths_revs = self.remap_leg_lengths(leg_lengths_revs)
-
         # Send the data to be published
         self.publish_leg_lengths(leg_lengths_revs)
-
-    def remap_leg_lengths(self, leg_lens_revs):
-        '''May need to re-map the legs to the correct ODrive axes.
-        This method isn't currently needed because the robot geometry
-        is instantiated correctly in the first place.'''
-        
-        schema = [5, 0, 1, 2, 3, 4]
-        leg_lengths_remapped = [leg_lens_revs[i] for i in schema]
-
-        return leg_lengths_remapped
 
     def publish_leg_lengths(self, leg_lenths):
         leg_lengths = Float64MultiArray()

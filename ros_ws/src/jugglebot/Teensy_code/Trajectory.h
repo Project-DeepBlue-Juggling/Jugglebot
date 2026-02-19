@@ -18,30 +18,31 @@
 #include <Arduino.h>
 #include <vector>
 #include <cmath>
+#include "hardware_config.h"
 
 /* ───────── data container ───────── */
 struct Trajectory {
   std::vector<float> t, x, v, tor;
 };
 
-/* ───────── constants ───────── */
-constexpr float G                   = 9.806f;   // m/s^2
-constexpr float HAND_SPOOL_R        = 0.00521f; // m
-constexpr float LINEAR_GAIN_FACTOR  = 1.035f;    // Just 'cuz
-constexpr float LINEAR_GAIN         = LINEAR_GAIN_FACTOR / (M_PI * HAND_SPOOL_R * 2.f);  // rev per metre
-constexpr float INERTIA_HAND_ONLY   = 0.281f;   // kg
-constexpr float INERTIA_RATIO       = 0.747f;
-constexpr float THROW_VEL_HOLD_PCT  = 0.05f;
-constexpr float CATCH_VEL_RATIO     = 0.6f;
-constexpr float CATCH_VEL_HOLD_PCT  = 0.10f;
-constexpr float HAND_STROKE         = 0.355f;   // m  (matches robot_geometry hand_stroke_mm)
-constexpr float STROKE_MARGIN       = 0.020f;   // m
-constexpr float END_PROFILE_HOLD    = 0.10f;    // s. Can probably get rid of?
-constexpr int   SAMPLE_RATE         = 500;      // Hz
+/* ───────── constants — sourced from hardware_config.h ───────── */
+constexpr float G                   = Physics::GRAVITY_MPS2;
+constexpr float HAND_SPOOL_R        = TeensyTraj::HAND_SPOOL_RADIUS_M;
+constexpr float LINEAR_GAIN_FACTOR  = TeensyTraj::LINEAR_GAIN_FACTOR;
+constexpr float LINEAR_GAIN         = LINEAR_GAIN_FACTOR / (M_PI * HAND_SPOOL_R * 2.f);  // rev per metre (derived)
+constexpr float INERTIA_HAND_ONLY   = TeensyTraj::INERTIA_HAND_ONLY_KG;
+constexpr float INERTIA_RATIO       = TeensyTraj::INERTIA_RATIO;
+constexpr float THROW_VEL_HOLD_PCT  = TeensyTraj::THROW_VEL_HOLD_PCT;
+constexpr float CATCH_VEL_RATIO     = TeensyTraj::CATCH_VEL_RATIO;
+constexpr float CATCH_VEL_HOLD_PCT  = TeensyTraj::CATCH_VEL_HOLD_PCT;
+constexpr float HAND_STROKE         = TeensyTraj::HAND_STROKE_M;
+constexpr float STROKE_MARGIN       = TeensyTraj::STROKE_MARGIN_M;
+constexpr float END_PROFILE_HOLD    = TeensyTraj::END_PROFILE_HOLD_S;
+constexpr int   SAMPLE_RATE         = (int)TeensyTraj::SAMPLE_RATE_HZ;
 
-/* ----- smooth-move tuning ------------------------------------- */
-constexpr float MAX_SMOOTH_MOVE_HAND_ACCEL = 100.0;//1000.0f;   // [rev s⁻²].
-constexpr float QUINTIC_S2_MAX             = 5.7735027f; // max |s''| for 10t³−15t⁴+6t⁵
+/* ----- smooth-move tuning — sourced from hardware_config.h ---- */
+constexpr float MAX_SMOOTH_MOVE_HAND_ACCEL = TeensyTraj::MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2;
+constexpr float QUINTIC_S2_MAX             = TeensyTraj::QUINTIC_S2_MAX;
 extern volatile float current_hand_position;
 extern volatile float current_hand_velocity;
 

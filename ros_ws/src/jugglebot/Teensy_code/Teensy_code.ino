@@ -55,7 +55,7 @@ constexpr uint32_t TRAJ_OUT_ID     = (NodeId::JUGGLEBOT_HAND << 5) | ODriveCmd::
 /*----------------------------------------------------------------------------*/
 uint32_t receivedCount = 0;
 uint32_t lastReportTime = 0;
-const uint32_t reportInterval = 500;  // [ms]
+constexpr uint32_t reportInterval = TeensyOp::REPORT_INTERVAL_MS;
 
 /*----------------------------------------------------------------------------*/
 /*                      DEBUG / TIMING‑ANALYSIS                               */
@@ -132,7 +132,7 @@ uint64_t micros64() {
 /* Wall‑time offset: Jetson_wall_us − micros64() */
 volatile int64_t wall_offset_us = 0;
 volatile bool have_offset = false;
-constexpr uint8_t ALPHA_SHIFT = 3;  // I‑filter gain = 1/8
+constexpr uint8_t ALPHA_SHIFT = TeensyOp::TIME_SYNC_ALPHA_SHIFT;  // I‑filter gain = 1/2^n
 
 /* Stats for jitter read‑out */
 struct Stats {
@@ -237,7 +237,7 @@ float vel_scale = InputScale::vel;           // Scaling factor as set on the ODr
 float tor_scale = InputScale::tor;           // Scaling factor as set on the ODrive `input_torque_scale`
 std::vector<CAN_message_t> packedMsgs;      // Pre-packed CAN frames (to tighten broadcasting timing)
 std::vector<uint64_t> sendUs;               // Absolute μs after traj start for each CAN frame
-constexpr uint32_t SAFETY_GAP_US = 20'000;  // 20 ms pause (minimum) after smooth-move before the main trajectory begins
+constexpr uint32_t SAFETY_GAP_US = TeensyOp::SAFETY_GAP_US;  // min pause after smooth-move before main trajectory begins
 
 /* pack one full trajectory into the global buffers -------------- */
 void packTrajectory(const Trajectory &tr, uint64_t abs_t0_us) {
