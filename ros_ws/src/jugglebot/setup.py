@@ -7,7 +7,11 @@ package_name = 'jugglebot'
 setup(
     name=package_name,
     version='1.0.0',
-    packages=[package_name],
+    packages=[
+        package_name,
+        f'{package_name}.can',
+        f'{package_name}.motion',
+    ],
     data_files=[
         ('share/ament_index/resource_index/packages',['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
@@ -24,25 +28,14 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'yasmin_state_machine = jugglebot.yasmin_state_machine:main',
-            'can_interface_node = jugglebot.can_interface_node:main',
+            # ── Active nodes ──────────────────────────────────
+            'can_node = jugglebot.can_node:main',
             'spacemouse_handler = jugglebot.spacemouse_handler:main',
             'sp_ik = jugglebot.sp_ik:main',
-            'robot_geometry = jugglebot.robot_geometry:main',
-            'level_platform_node = jugglebot.level_platform_node:main',
             'mocap_interface_node = jugglebot.mocap_interface_node:main',
-            'ball_prediction_node = jugglebot.ball_prediction_node:main',
-            'catch_thrown_ball_node = jugglebot.catch_thrown_ball_node:main',
-            'catch_dropped_ball_node = jugglebot.catch_dropped_ball_node:main',
-            'mocap_visualizer_node = jugglebot.mocap_visualizer_node:main',
-            'landing_analysis_node = jugglebot.landing_analysis_node:main',
-            'calibrate_platform_node = jugglebot.calibrate_platform_node:main',
-            'pose_correction_node = jugglebot.pose_correction_node:main',
-            'hoop_sinker_node = jugglebot.hoop_sinker_node:main',
-            'ball_butler_node = jugglebot.ball_butler_node:main',
-            'ball_butler_volley_testing_node = jugglebot.ball_butler_volley_testing_node:main',
-            'target_tracker_node = jugglebot.target_tracker_node:main',
-            'catch_from_ball_butler_node = jugglebot.catch_from_ball_butler_node:main'
+            # ── Future nodes (Phase 2+) ───────────────────────
+            # 'orchestrator_node = jugglebot.orchestrator_node:main',
+            # 'motion_planner_node = jugglebot.motion_planner_node:main',
         ],
     },
 )
