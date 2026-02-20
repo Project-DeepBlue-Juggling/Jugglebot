@@ -215,13 +215,13 @@ ros_ws/src/jugglebot/
 - [x] **Critical**: Port the control mode switching logic from `can_interface_node.py` lines 280-325 and the activate/deactivate sequences
 - [x] **Test**: Verify heartbeat reception, motor state reporting, and basic commands against real hardware
 
-### Phase 2: State Machine + Orchestrator
-- [ ] Write `state_machine.py` (~150-200 lines, plain Python, extensible registry pattern, no YASMIN)
-- [ ] Implement initial states: BOOT, HOMING, IDLE, ACTIVE, FAULT
+### Phase 2: State Machine + Orchestrator — DONE (2026-02-20)
+- [x] Write `state_machine.py` (~200 lines of logic, plain Python, extensible registry pattern, no YASMIN)
+- [x] Implement initial states: BOOT, HOMING, IDLE, ACTIVE, FAULT
   - ACTIVE state supports sub-modes (spacemouse, shell) from the start
-- [ ] Write `orchestrator_node.py` with startup sequence: wait for heartbeats → encoder search → homing → IDLE
-- [ ] Implement error severity classification (transient vs fatal) from day one
-- [ ] FAULT state with configurable timeout + safe motor disable
+- [x] Write `orchestrator_node.py` with startup sequence: wait for heartbeats → encoder search → homing → IDLE
+- [x] Implement error severity classification (transient vs fatal) from day one
+- [x] FAULT state with safe motor disable via 'ERROR' control mode
 - [ ] **Test**: Full power-on → homing → IDLE → ACTIVE (spacemouse) sequence on real hardware
 
 ### Phase 3: Motion Planner
@@ -394,4 +394,121 @@ The 2,351-line `can_interface.py` and 806-line `can_interface_node.py` have been
 - **~~`time.sleep()` blocking the executor~~** — **RESOLVED**: All long-running operations now use generator-based state machines driven by `_run_to_completion()`. The driver processes CAN messages between yield points (1ms polling during timed waits, immediate re-entry for tight polls). Service callbacks still block the single-threaded executor for the duration of the operation, but CAN traffic flows continuously. The remaining `time.sleep()` calls are 1-5ms CAN bus pacing delays between consecutive sends to avoid buffer overflow — these are intentional and harmless. If true non-blocking services are needed later, the generators can be driven by a timer instead of synchronously (the generator protocol supports this without code changes to the generators themselves).
 - **Shallow-copy thread safety**: `get_states()` does a shallow list copy — readers and writers share the same `MotorStateSingle` objects. This works in CPython due to GIL-atomic attribute access but is technically a race condition. Not worth fixing unless moving to a multi-threaded executor.
 - **~~DBC file cleanup~~** - **RESOLVED**: The `resources/ODrive_Pro.dbc` file has been deleted.
-- **rigid_body_poses subscriber**: The old `can_interface_node.py` had a subscriber for `/rigid_body_poses` to check that the QTM base is at the origin. This was a safety check that has been deferred — it should be re-added in the orchestrator node (Phase 2) or mocap node (Phase 4).
+- **rigid_body_poses subscriber**: The old `can_interface_node.py` had a subscriber for `/rigid_body_poses` to check that the QTM base is at the origin. This was a safety check that has been deferred — it should be re-added in the orchestrator node or mocap node (Phase 4).
+
+---
+
+## Appendix C: Phase 2 Completion Notes (2026-02-20)
+
+### Architecture: YASMIN framework → lightweight registry-based state machine
+
+The 11+ state YASMIN framework (4 vendored sub-packages, Blackboard, MonitorState, ServiceState, ActionState) has been replaced by:
+
+| File | Lines | Purpose |
+|------|-------|---------|
+| `state_machine.py` | ~320 | Pure Python state machine: enum, context, handler base class, 5 handlers, factory |
+| `orchestrator_node.py` | ~310 | ROS2 node: bridges state machine to services/topics/actions |
+| **Total** | **~630** | Down from ~1,500+ (YASMIN SM + 4 vendored packages + node wrapper) |
+
+### Key design decisions
+
+1. **Pure Python state machine (no ROS2 dependency)**: `state_machine.py` imports only `time` and `enum`. All ROS2 interaction is in the orchestrator node. This means the state machine is testable without a running ROS2 system — just instantiate a `Context`, a `StateMachine`, and call `tick()`.
+
+2. **Registry pattern for extensibility**: Each state is a `StateHandler` subclass with `on_enter`/`execute`/`on_exit` methods. Adding a new state (e.g., CATCHING, CALIBRATING) requires:
+   - Add a value to `RobotState` enum
+   - Write a handler class
+   - Call `sm.register(RobotState.NEW_STATE, handler)`
+   No changes to the state machine framework or orchestrator node.
+
+3. **Async-first orchestrator**: All CAN node interactions are non-blocking. Service calls use `call_async()`, action calls use `send_goal_async()`. The orchestrator polls futures in its 10 Hz tick. This avoids blocking the executor during multi-second operations (homing takes 30+ seconds, activation ~5 seconds).
+
+4. **Request/response pattern between handlers and orchestrator**: State handlers express intent by setting `ctx.request` (e.g., `'encoder_search'`, `'activate'`, `'deactivate'`). The orchestrator translates these to ROS2 service/action calls. Handlers check `ctx.operation_result` for completion. This keeps domain logic in the handlers and ROS2 plumbing in the orchestrator.
+
+5. **Error detection via /robot_state typed fields**: The orchestrator monitors the CAN node's `/robot_state` topic. Error classification uses typed boolean fields (`has_fatal_odrive_error`, `has_fatal_can_error`, `has_undervoltage`) rather than string parsing. The `string[] error` field is retained for human-readable logging. Any non-empty error list triggers FAULT.
+
+6. **Force-transition with cleanup**: When errors are detected, the orchestrator force-transitions to FAULT and cancels any pending async operations. This prevents stale operation results from leaking into future states.
+
+### State flow
+
+```
+BOOT ──────────────> HOMING ──────────────> IDLE <══════════> ACTIVE
+  ▲  all heartbeats    │  encoder_search     ▲   activate      │
+  │  (if !homed→HOMING │  home_motors         │   deactivate    │
+  │   if homed→IDLE)   │  bb_calibrate(opt)   │                 │
+  │                    │                      │                 │
+  ╰────────────────────╰──────────────────────╰─────────────────╯
+  │                           │                                 │
+  │ errors cleared            ▼          errors detected        │
+  ╰──────────────────── FAULT  <────────────────────────────────╯
+                              │     (from any state)
+```
+
+### What changed from the old YASMIN architecture
+
+| Aspect | Old (YASMIN) | New |
+|--------|-------------|-----|
+| Framework | YASMIN + 4 vendored packages | ~90 lines of StateMachine class |
+| States | 7+ YASMIN states (Boot, EncoderSearch, Homing, StandbyIdle, GenericActive x8, LevelPlatform, Fault) | 5 states (BOOT, HOMING, IDLE, ACTIVE, FAULT) |
+| Async ops | YASMIN ServiceState/ActionState (blocking, multi-threaded) | Non-blocking futures polled in tick loop |
+| Error detection | Separate RobotStateSynchronizer thread with mutex | Single-threaded: orchestrator checks /robot_state each tick |
+| Command topics | 2 topics (standby_command, active_command) | 1 topic (orchestrator_command) |
+| ACTIVE sub-modes | 8 separate GenericActiveState instances | Single ActiveHandler with ActiveMode enum |
+| State machine comms | YASMIN Blackboard (shared dict) | Context object (typed attributes) |
+
+### HOMING sequence details
+
+The HomingHandler runs three phases in sequence:
+1. **encoder_search**: Calls `encoder_search` Trigger service on CAN node. Drives all leg motors to find encoder index pulses.
+2. **home**: Calls `home_motors` HomeMotors action on CAN node. Drives each motor to its end-stop using current-limit detection, then sets absolute position.
+3. **bb_calibrate** (optional): Calls `bb/calibrate` Trigger service. If Ball Butler is not connected (service not available), this phase is skipped automatically.
+
+If encoder search was already complete (checked via /robot_state), the handler skips directly to homing.
+
+### ROS2 interface
+
+**Topics published:**
+- `control_mode_topic` (String) — tells CAN node which axis configuration to use
+- `orchestrator_state` (String) — current state name for monitoring
+
+**Topics subscribed:**
+- `robot_state` (RobotState) — heartbeats, homing status, errors from CAN node
+- `orchestrator_command` (String) — user commands: `activate`, `deactivate`, `spacemouse`, `shell`, `home`, `clear_errors`
+
+**Service clients:**
+- `encoder_search` (Trigger) — encoder index search
+- `activate_or_deactivate` (ActivateOrDeactivate) — platform activation/deactivation
+- `odrive_command` (ODriveCommandService) — error clearing
+- `bb/calibrate` (Trigger) — Ball Butler calibration
+
+**Action clients:**
+- `home_motors` (HomeMotors) — full homing sequence
+
+### Items for investigation during Phase 3+
+
+- **~~Error string matching is fragile~~** — **RESOLVED**: Added typed boolean fields to `RobotState.msg` (`has_fatal_odrive_error`, `has_fatal_can_error`, `has_undervoltage`). The CAN node sets these directly from its internal motor state tracker flags. The orchestrator reads the booleans instead of parsing error strings. The `string[] error` field is retained for human-readable logging and rosbag inspection. If new error categories are added in the future, the pattern is: add a `bool` field to the message, set it in `can_node.py:_publish_robot_state()`, and read it in `orchestrator_node.py:_on_robot_state()` — the coupling is now explicit and compile-time visible.
+
+- **rigid_body_poses origin check**: Still deferred from Phase 1. The old code validated that the QTM base rigid body was at the origin (within 5 mm, 2 degrees) before allowing activation. This should be added to the ACTIVE handler's activation sequence or to the mocap node in Phase 4.
+
+- **~~Shutdown race condition~~** — **RESOLVED**: Replaced `spin_until_future_complete()` with fire-and-forget ERROR mode publish. The CAN node handles ERROR mode by stowing the platform and idling all axes, achieving the same safety outcome without the race condition. The CAN node's own `on_shutdown()` also stows as a belt-and-suspenders safety measure.
+
+- **Single pending operation**: The orchestrator tracks only one pending service call and one pending action at a time. This is sufficient for the current sequential flow (HOMING phases run one at a time, ACTIVE has one activate/deactivate). If future states need concurrent operations, the tracking would need to be extended.
+
+- **~~FAULT timeout not implemented~~** — **RESOLVED**: Removed unused `FAULT_TIMEOUT_S` constant and `ctx.fault_entry_time` from state_machine.py. The 'ERROR' control mode immediately triggers CAN node to stow and IDLE all axes, which is sufficient. If an ODrive reboot timeout is needed later, it can be added to FaultHandler.
+
+### Post-Phase 2 fixes (2026-02-20)
+
+Seven issues identified during Phase 2 code review, all resolved:
+
+1. **Pending command single-slot drop** (state_machine.py, orchestrator_node.py): Commands arriving between 10 Hz ticks could silently overwrite each other, and unrecognized commands persisted in the buffer indefinitely. Fix: `_on_command()` now warns when overwriting an unconsumed command. Each state handler consumes commands eagerly — `consume_command()` is called unconditionally, and only recognized commands trigger actions. Unrecognized commands are silently discarded (already logged on receipt by the orchestrator).
+
+2. **No BOOT timeout** (state_machine.py, orchestrator_node.py): BootHandler waited indefinitely for ODrive heartbeats. Fix: Added `BOOT_TIMEOUT_S = 30.0` constant. BootHandler transitions to FAULT after timeout, setting `ctx.boot_timed_out`. FaultHandler respects this flag — stays in FAULT until heartbeats arrive (auto-recovery) or operator sends `clear_errors`. The orchestrator logs a clear error message on first boot timeout occurrence.
+
+3. **Missing `__init__` on HomingHandler** (state_machine.py): `self._phase` was set in `on_enter` but never declared in `__init__`, risking `AttributeError` if `execute` were called directly (e.g., in tests). Fix: Added `__init__` with `self._phase = 'encoder_search'`. (ActiveHandler already had `__init__`.)
+
+4. **Dead control mode names** (can_node.py): `_sub_control_mode` handled 6 legacy YASMIN mode names (`STANDBY_ACTIVE`, `CATCH_THROWN_BALL_NODE`, `LEVEL_PLATFORM_NODE`, `HOOP_SINKER`, `CATCH_FROM_BALL_BUTLER`, `CALIBRATE_PLATFORM`) that the new orchestrator never publishes. Fix: Removed all dead mode names. Only valid modes remain: `''`, `'ERROR'`, `'SPACEMOUSE'`, `'SHELL'`.
+
+5. **Unused `_check_encoder_search_status`** (can_node.py): Method and its generator `_encoder_status_steps` were never called — the orchestrator relies on the CAN node's `encoder_search_complete` flag set during the encoder search service. Fix: Removed both methods. The SDO response handler and `encoder_search_feedback` field on MotorStateTracker remain (protocol-level, may be useful for future diagnostics).
+
+6. **Unused `FAULT_TIMEOUT_S` and `fault_entry_time`** (state_machine.py): Constant and context field were defined but never read. Fix: Removed both. See "FAULT timeout not implemented" item above.
+
+7. **Shutdown race condition** (orchestrator_node.py): `on_shutdown()` called `rclpy.spin_until_future_complete()` which could fail if the node was partially destroyed. Fix: Replaced with fire-and-forget ERROR mode publish. See "Shutdown race condition" item above.

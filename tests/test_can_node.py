@@ -320,29 +320,64 @@ class TestSubControlMode:
             mock_move.assert_called_once_with(0.0, deactivating=True)
             assert node.stowed_due_to_error is True
 
-    def test_standby_active_legs_closed_loop(self, node):
-        """STANDBY_ACTIVE puts legs in CLOSED_LOOP, hand in IDLE."""
+    def test_spacemouse_mode_legs_closed_loop(self, node):
+        """SPACEMOUSE puts legs in CLOSED_LOOP, hand in IDLE."""
         from jugglebot.can import odrive
         # Start with all IDLE
         for axis_id in odrive.JUGGLEBOT_AXES:
             node.motors.update(axis_id, current_state=odrive.AXIS_STATES['IDLE'])
         node.motors.get_states()  # Refresh last_states
 
-        node._sub_control_mode(self._make_mode_msg('STANDBY_ACTIVE'))
-        # Should have sent CLOSED_LOOP for legs and IDLE is already set for hand
+        node._sub_control_mode(self._make_mode_msg('SPACEMOUSE'))
         send_calls = node.bus.send.call_args_list
-        assert len(send_calls) > 0
+        # Should have sent CLOSED_LOOP for legs (6 commands)
+        assert len(send_calls) >= 6
 
-    def test_catch_dropped_all_closed_loop(self, node):
-        """CATCH_DROPPED_BALL_NODE puts ALL axes in CLOSED_LOOP."""
+    def test_shell_mode_legs_closed_loop(self, node):
+        """SHELL puts legs in CLOSED_LOOP, hand in IDLE."""
         from jugglebot.can import odrive
         for axis_id in odrive.JUGGLEBOT_AXES:
             node.motors.update(axis_id, current_state=odrive.AXIS_STATES['IDLE'])
         node.motors.get_states()
 
-        node._sub_control_mode(self._make_mode_msg('CATCH_DROPPED_BALL_NODE'))
+        node._sub_control_mode(self._make_mode_msg('SHELL'))
         send_calls = node.bus.send.call_args_list
-        assert len(send_calls) > 0
+        assert len(send_calls) >= 6
+
+    def test_spacemouse_hand_idle_if_closed_loop(self, node):
+        """SPACEMOUSE: if hand is in CLOSED_LOOP, send it to IDLE."""
+        from jugglebot.can import odrive
+        for axis_id in odrive.LEG_AXES:
+            node.motors.update(axis_id, current_state=odrive.AXIS_STATES['CLOSED_LOOP'])
+        node.motors.update(odrive.HAND_AXIS, current_state=odrive.AXIS_STATES['CLOSED_LOOP'])
+        node.motors.get_states()
+
+        node._sub_control_mode(self._make_mode_msg('SPACEMOUSE'))
+        # Should send IDLE to hand (1 command, legs already closed loop)
+        send_calls = node.bus.send.call_args_list
+        assert len(send_calls) >= 1
+
+    def test_spacemouse_noop_if_already_correct(self, node):
+        """SPACEMOUSE with legs already CLOSED_LOOP and hand IDLE → only hand IDLE skipped."""
+        from jugglebot.can import odrive
+        for axis_id in odrive.LEG_AXES:
+            node.motors.update(axis_id, current_state=odrive.AXIS_STATES['CLOSED_LOOP'])
+        node.motors.update(odrive.HAND_AXIS, current_state=odrive.AXIS_STATES['IDLE'])
+        node.motors.get_states()
+
+        node._sub_control_mode(self._make_mode_msg('SPACEMOUSE'))
+        # Legs already CLOSED_LOOP, hand already IDLE: no commands needed
+        assert node.bus.send.call_count == 0
+
+    def test_legacy_mode_treated_as_unknown(self, node):
+        """Legacy modes (STANDBY_ACTIVE, CATCH_DROPPED_BALL_NODE) now stow."""
+        with patch.object(node, '_gently_move_to_setpoint') as mock_move:
+            node._sub_control_mode(self._make_mode_msg('STANDBY_ACTIVE'))
+            mock_move.assert_called_once_with(0.0, deactivating=True)
+
+        with patch.object(node, '_gently_move_to_setpoint') as mock_move:
+            node._sub_control_mode(self._make_mode_msg('CATCH_DROPPED_BALL_NODE'))
+            mock_move.assert_called_once_with(0.0, deactivating=True)
 
     def test_empty_string_noop(self, node):
         """Empty string should do nothing."""

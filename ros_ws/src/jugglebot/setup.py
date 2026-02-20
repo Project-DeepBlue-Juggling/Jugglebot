@@ -33,8 +33,8 @@ setup(
             'spacemouse_handler = jugglebot.spacemouse_handler:main',
             'sp_ik = jugglebot.sp_ik:main',
             'mocap_interface_node = jugglebot.mocap_interface_node:main',
-            # ── Future nodes (Phase 2+) ───────────────────────
-            # 'orchestrator_node = jugglebot.orchestrator_node:main',
+            'orchestrator_node = jugglebot.orchestrator_node:main',
+            # ── Future nodes (Phase 3+) ───────────────────────
             # 'motion_planner_node = jugglebot.motion_planner_node:main',
         ],
     },

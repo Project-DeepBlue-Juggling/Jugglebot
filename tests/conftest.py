@@ -90,6 +90,9 @@ class RobotState:
     timestamp: object = None
     motor_states: list = field(default_factory=list)
     error: list = field(default_factory=list)
+    has_fatal_odrive_error: bool = False
+    has_fatal_can_error: bool = False
+    has_undervoltage: bool = False
     encoder_search_complete: bool = False
     is_homed: bool = False
     levelling_complete: bool = False
@@ -259,6 +262,7 @@ class MockNode:
         self._logger = MockLogger()
         self._clock = MockClock()
         self._publishers = {}
+        self._clients = {}
 
     def get_logger(self):
         return self._logger
@@ -268,6 +272,12 @@ class MockNode:
 
     def create_service(self, *a, **kw):
         return MagicMock()
+
+    def create_client(self, srv_type, name):
+        client = MockServiceClient()
+        client.srv_name = name
+        self._clients[name] = client
+        return client
 
     def create_subscription(self, *a, **kw):
         return MagicMock()
@@ -288,6 +298,62 @@ class MockActionServer:
     """Stand-in for rclpy.action.ActionServer."""
     def __init__(self, node, action_type, name, callback):
         self._callback = callback
+
+
+class MockActionClient:
+    """Stand-in for rclpy.action.ActionClient."""
+    def __init__(self, node, action_type, name):
+        self._action_type = action_type
+        self._name = name
+        self._server_ready = True
+
+    def server_is_ready(self):
+        return self._server_ready
+
+    def send_goal_async(self, goal):
+        future = MockFuture()
+        return future
+
+
+class MockFuture:
+    """Stand-in for rclpy Future."""
+    def __init__(self):
+        self._done = False
+        self._result = None
+        self._exception = None
+
+    def done(self):
+        return self._done
+
+    def result(self):
+        if self._exception:
+            raise self._exception
+        return self._result
+
+    def set_result(self, result):
+        self._result = result
+        self._done = True
+
+    def set_exception(self, exc):
+        self._exception = exc
+        self._done = True
+
+
+class MockServiceClient:
+    """Stand-in for rclpy service client."""
+    def __init__(self):
+        self._ready = True
+        self.srv_name = 'mock_service'
+
+    def service_is_ready(self):
+        return self._ready
+
+    def call_async(self, request):
+        future = MockFuture()
+        return future
+
+    def wait_for_service(self, timeout_sec=None):
+        return self._ready
 
 
 # ── Register all mock modules ─────────────────────────────────
@@ -336,7 +402,10 @@ mock_rclpy.shutdown = MagicMock()
 mock_rclpy.spin_once = MagicMock()
 
 _create_mock_module('rclpy.node', {'Node': MockNode})
-_create_mock_module('rclpy.action', {'ActionServer': MockActionServer})
+_create_mock_module('rclpy.action', {
+    'ActionServer': MockActionServer,
+    'ActionClient': MockActionClient,
+})
 
 
 # ════════════════════════════════════════════════════════════════

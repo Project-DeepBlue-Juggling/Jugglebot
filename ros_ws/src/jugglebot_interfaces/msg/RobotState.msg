@@ -2,7 +2,13 @@
 
 builtin_interfaces/Time timestamp
 MotorStateSingle[] motor_states # states of each motor individually
-string[] error                    # Any current errors with the robot as a whole? (eg. power/CAN issues)
+string[] error                    # Human-readable error descriptions (for logging/display)
+
+# Typed error flags — orchestrator uses these for error classification instead of parsing strings.
+# Set by the CAN node from its internal motor state tracker flags.
+bool has_fatal_odrive_error       # Fatal ODrive error (axis disarmed in CLOSED_LOOP, exceeded reset attempts, etc.)
+bool has_fatal_can_error          # CAN bus disconnection or restoration failure
+bool has_undervoltage             # DC bus undervoltage detected (e.g., E-stop hit)
 
 bool encoder_search_complete # Has the encoder search been run on every leg?
 bool is_homed                # Have the ODrives been homed since the last bootup?

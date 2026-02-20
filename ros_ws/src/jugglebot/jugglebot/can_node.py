@@ -609,7 +609,10 @@ class CanInterfaceNode(Node):
         self._set_trap_traj_limits()
 
     def _sub_control_mode(self, msg):
-        """Handle control mode changes (critical Phase 1 port from can_interface_node.py:280-325)."""
+        """Handle control mode changes from the orchestrator.
+
+        Valid modes: '', 'ERROR', 'SPACEMOUSE', 'SHELL'.
+        """
         try:
             states = self.motors.last_states
             _CL = odrive.AXIS_STATES['CLOSED_LOOP']
@@ -621,9 +624,8 @@ class CanInterfaceNode(Node):
                 self._gently_move_to_setpoint(0.0, deactivating=True)
                 self.stowed_due_to_error = True
 
-            # Modes where legs need CLOSED_LOOP but hand should be IDLE
-            elif msg.data in ('STANDBY_ACTIVE', 'SPACEMOUSE', 'LEVEL_PLATFORM_NODE',
-                              'CATCH_THROWN_BALL_NODE', 'SHELL', 'CALIBRATE_PLATFORM'):
+            # Legs in CLOSED_LOOP, hand IDLE
+            elif msg.data in ('SPACEMOUSE', 'SHELL'):
                 self.get_logger().info(f'Control mode: {msg.data}')
                 if not legs_closed:
                     for axis_id in odrive.LEG_AXES:
@@ -632,15 +634,8 @@ class CanInterfaceNode(Node):
                 if hand_closed:
                     self.bus.send(odrive.encode_set_state(odrive.HAND_AXIS, 'IDLE'))
 
-            # Modes where ALL axes need CLOSED_LOOP
-            elif msg.data in ('CATCH_DROPPED_BALL_NODE', 'HOOP_SINKER', 'CATCH_FROM_BALL_BUTLER'):
-                if not legs_closed or not hand_closed:
-                    for axis_id in odrive.JUGGLEBOT_AXES:
-                        self.bus.send(odrive.encode_set_state(axis_id, 'CLOSED_LOOP'))
-                        time.sleep(0.005)
-
             elif msg.data == '':
-                pass  # No mode selected
+                pass  # No mode selected (IDLE / BOOT state)
 
             else:
                 self.get_logger().warning(f"Unknown control mode: {msg.data}. Stowing.")
@@ -660,11 +655,18 @@ class CanInterfaceNode(Node):
             msg.timestamp = self.get_clock().now().to_msg()
             msg.motor_states = states
 
+            # Typed boolean flags — the orchestrator uses these for error
+            # classification.  The string[] error field below is kept for
+            # human-readable logging / rosbag inspection.
+            msg.has_fatal_odrive_error = self.motors.fatal_error
+            msg.has_fatal_can_error = self.motors.fatal_can_error
+            msg.has_undervoltage = self.motors.undervoltage_error
+
             if self.motors.undervoltage_error:
                 msg.error.append("Undervoltage detected. Was the E-stop hit?")
-            elif self.motors.fatal_error:
+            if self.motors.fatal_error:
                 msg.error.append(f"Fatal ODrive issue: {self.last_known_state['error']}")
-            elif self.motors.fatal_can_error:
+            if self.motors.fatal_can_error:
                 msg.error.append("Fatal CAN bus issue.")
 
             s = self.last_known_state
@@ -1121,30 +1123,6 @@ class CanInterfaceNode(Node):
             e for e in self.last_known_state['error'] if not e.startswith("Disarmed axes:")
         ]
         self.last_known_state['error'].append(entry)
-
-    def _check_encoder_search_status(self):
-        """Check whether encoder search has been completed (read from ODrives)."""
-        return self._run_to_completion(self._encoder_status_steps())
-
-    def _encoder_status_steps(self):
-        """Generator: query ODrives for encoder search completion status."""
-        self.motors.reset_encoder_search_feedback()
-        for axis_id in odrive.LEG_AXES:
-            self.bus.send(odrive.encode_sdo_read(axis_id, 'commutation_mapper.pos_abs'))
-
-        retries = 0
-        deadline = time.time() + 1.0
-        while any(f is None for f in self.motors.encoder_search_feedback) and retries < 2:
-            if time.time() > deadline:
-                retries += 1
-                deadline = time.time() + 1.0
-                for axis_id in odrive.LEG_AXES:
-                    self.bus.send(odrive.encode_sdo_read(axis_id, 'commutation_mapper.pos_abs'))
-            yield 0.01  # Poll every 10ms
-
-        complete = all(f is True for f in self.motors.encoder_search_feedback)
-        self.last_known_state['encoder_search_complete'] = complete
-        return complete
 
     def on_shutdown(self):
         """Handle node shutdown."""
