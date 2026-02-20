@@ -59,6 +59,7 @@ class CanInterfaceNode(Node):
         self.bus = CANBus(logger=self.get_logger())
         self.motors = MotorStateTracker()
         self.last_bb_heartbeat = ball_butler.BallButlerHeartbeat()
+        self._bb_heartbeat_received = False
 
         # Operational limits (mutable, can be changed via topics)
         self.leg_vel_limit = odrive.DEFAULT_VEL_CURR['leg_vel']
@@ -192,6 +193,7 @@ class CanInterfaceNode(Node):
         elif aid == ball_butler.HEARTBEAT_ID:
             try:
                 self.last_bb_heartbeat = ball_butler.BallButlerHeartbeat.from_can_frame(msg.data)
+                self._bb_heartbeat_received = True
             except ValueError as e:
                 self.get_logger().warning(f"Bad BB heartbeat frame: {e}", throttle_duration_sec=5.0)
         else:
@@ -541,6 +543,11 @@ class CanInterfaceNode(Node):
         return self._bb_state_cmd(ball_butler.RESET_CMD_ID, "reset", res)
 
     def _svc_bb_calibrate(self, req, res):
+        if not self._bb_heartbeat_received:
+            self.get_logger().info("BB calibrate: no Ball Butler heartbeat received, skipping")
+            res.success = True
+            res.message = "Ball Butler not connected, calibration skipped."
+            return res
         return self._bb_state_cmd(ball_butler.CALIBRATE_CMD_ID, "calibrate", res)
 
     def _bb_state_cmd(self, cmd_id, name, res):

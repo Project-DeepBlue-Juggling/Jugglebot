@@ -11,7 +11,6 @@ from geometry_msgs.msg import Quaternion
 from std_srvs.srv import Trigger
 from std_msgs.msg import Float64MultiArray, Int8MultiArray, String
 from jugglebot_interfaces.msg import PlatformPoseCommand
-from jugglebot_interfaces.srv import GetRobotGeometry
 import quaternion  # numpy quaternion
 import jugglebot.hardware_config as hw
 
@@ -28,25 +27,17 @@ class SPInverseKinematics(Node):
         #                                          Geometry Related                                             #
         #########################################################################################################
 
-        # Set up service client to get robot geometry
-        self.geometry_client = self.create_client(GetRobotGeometry, 'get_robot_geometry')
-        
-        while not self.geometry_client.wait_for_service(timeout_sec=1.0):
-                self.get_logger().info('Waiting for "get_robot_geometry" service...')
-
-        # Send a request to get the robot geometry
-        self.send_geometry_request()
-        # Initialize flag to track whether geometry data has been received or not
-        self.has_geometry_data = False
-
-        # Initialize geometry terms to be populated with a call to the get_robot_geometry service
-        self.start_pos = None         # Base frame
-        self.base_nodes = None        # Base frame
-        self.init_plat_nodes = None   # Platform frame
-        self.init_leg_lengths = None
-        self.leg_stroke = None
+        # Load geometry directly from hardware_config (generated from hardware_config.yaml)
+        self.start_pos = np.array([[0.0], [0.0], [hw.GEOM_INITIAL_HEIGHT_MM]])
+        self.base_nodes = np.array(hw.GEOM_BASE_NODES_MM)
+        self.init_plat_nodes = np.array(hw.GEOM_INIT_PLAT_NODES_MM)
+        self.init_leg_lengths = np.array(hw.GEOM_INIT_LEG_LENGTHS_MM)
+        self.leg_stroke = hw.GEOM_LEG_STROKE_MM
+        self.has_geometry_data = True
 
         self.new_plat_nodes = None    # Base frame
+
+        self.get_logger().info('Geometry loaded from hardware_config')
 
         #########################################################################################################
         #                                           Control Related                                             #
@@ -57,9 +48,8 @@ class SPInverseKinematics(Node):
         # Initialize the control_mode flag
         self.control_mode = None
 
-        # Subscribe to the (corrected) platform pose topic
-        self.pose_subscription = self.create_subscription(PlatformPoseCommand, 'platform_pose_corrected', self.pose_callback, 10)
-        # self.pose_subscription = self.create_subscription(PlatformPoseCommand, 'platform_pose_topic', self.pose_callback, 10) # If bypassing the correction node
+        # Subscribe to the platform pose topic (published by spacemouse_handler and future motion sources)
+        self.pose_subscription = self.create_subscription(PlatformPoseCommand, 'platform_pose_topic', self.pose_callback, 10)
 
         # Subscribe to the pose offset topic
         self.pose_offset_subscription = self.create_subscription(Quaternion, 'pose_offset_topic', self.pose_offset_callback, 10)
@@ -73,33 +63,6 @@ class SPInverseKinematics(Node):
         # Set up a publisher to publish the leg lengths, and one to publish the state of each leg (overextended [1], underextended [-1], within bounds [0])
         self.leg_length_publisher = self.create_publisher(Float64MultiArray, 'leg_lengths_topic', 10)
         self.leg_state_publisher = self.create_publisher(Int8MultiArray, 'leg_state_topic', 10)
-
-    #########################################################################################################
-    #                                               Geometry                                                #
-    #########################################################################################################
-
-    def send_geometry_request(self):
-        req = GetRobotGeometry.Request()
-        self.future = self.geometry_client.call_async(req)
-        self.future.add_done_callback(self.handle_geometry_response)
-
-    def handle_geometry_response(self, future):
-        response = future.result()
-        if response is not None:
-            # Store the geometry data after converting it to numpy arrays
-            self.start_pos = np.array(response.start_pos).reshape(3, 1)
-            self.base_nodes = np.array(response.base_nodes).reshape(6, 3)
-            self.init_plat_nodes = np.array(response.init_plat_nodes).reshape(6, 3)
-            self.init_leg_lengths = np.array(response.init_leg_lengths).reshape(6,)
-            self.leg_stroke = response.leg_stroke
-
-            # Report the receipt of data
-            self.get_logger().info('Received geometry data!')
-
-            # Record the receipt of data so that we know we've got it
-            self.has_geometry_data = True
-        else:
-            self.get_logger().error('Exception while calling "get_robot_geometry" service')
 
     #########################################################################################################
     #                                             Pose Offset                                               #
@@ -131,13 +94,13 @@ class SPInverseKinematics(Node):
 
         # Check if the pose was published by the correct publisher
         if pose_publisher != self.control_mode:
-            self.get_logger().warn(f'Pose received from {pose_publisher} but control mode is set to {self.control_mode}. Ignoring pose.', 
+            self.get_logger().warn(f'Pose received from {pose_publisher} but control mode is set to {self.control_mode}. Ignoring pose.',
                                    throttle_duration_sec=1.0)
             return
 
         # Extract position data
         # Note that this is in platform_start frame (ie. 0 z value is the platform in its initial position)
-        pos = np.array([[pose.position.x], [pose.position.y], [pose.position.z]])  
+        pos = np.array([[pose.position.x], [pose.position.y], [pose.position.z]])
 
         # Extract the orientation quaternion
         ori_q = pose.orientation
@@ -145,7 +108,7 @@ class SPInverseKinematics(Node):
 
         # Apply the pose offset
         quaternion_ori = self.pose_offset * quaternion_ori
-        
+
         # Convert quaternion to 4x4 rotation matrix
         rot = quaternion.as_rotation_matrix(quaternion_ori)
 
@@ -197,10 +160,10 @@ class SPInverseKinematics(Node):
             too_long_indices = np.where(too_long)[0]
 
             message_throttle_duration = 0.5  # Should be long enough to ensure brief instances of clipping don't spam the console
-            
+
             if any_leg_too_short and any_leg_too_long:
-                self.get_logger().error(f'''Leg lengths were both too short and too long! 
-                                        Legs too short: {too_short_indices}, legs too long: {too_long_indices}''', 
+                self.get_logger().error(f'''Leg lengths were both too short and too long!
+                                        Legs too short: {too_short_indices}, legs too long: {too_long_indices}''',
                                         throttle_duration_sec=message_throttle_duration)
             elif any_leg_too_short:
                 self.get_logger().error(f'Leg lengths were too short! Legs too short: {too_short_indices}',
@@ -213,19 +176,15 @@ class SPInverseKinematics(Node):
         leg_state_msg = Int8MultiArray()
         leg_state_msg.data = leg_state.tolist()
         self.leg_state_publisher.publish(leg_state_msg)
-        
+
         # Send the data off to be converted into revs
         self.convert_mm_to_revs(leg_lens_mm=clipped_leg_lengths)
 
     def convert_mm_to_revs(self, leg_lens_mm):
         # Converts the leg lengths from mm to revs
-        # spool_dia = 22 # mm
-        # mm_to_rev = 1 / (spool_dia * np.pi)
-
         # Per-leg mm-to-rev conversion factors (found experimentally, from hardware_config)
         mm_to_rev = np.array(hw.GEOM_MM_TO_REV)
 
-        # self.get_logger().debug(f'Leg lengths (mm): \n{leg_lens_mm}')
         leg_lengths_revs = np.array(leg_lens_mm) * mm_to_rev
 
         # Convert back to a list for publishing
@@ -251,7 +210,7 @@ class SPInverseKinematics(Node):
         response.message = "Session ended. Shutting down node."
         self.shutdown_flag = True
         return response
-        
+
 
 def main(args=None):
     rclpy.init(args=args)

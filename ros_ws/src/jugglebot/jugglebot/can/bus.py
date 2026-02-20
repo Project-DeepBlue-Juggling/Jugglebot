@@ -46,6 +46,8 @@ class CANBus:
                 self._logger.info('CAN bus closed')
             except Exception as e:
                 self._logger.error(f'Error closing CAN bus: {e}')
+            finally:
+                self._bus = None
 
     def flush(self):
         """Discard all pending messages on the bus."""
@@ -81,6 +83,8 @@ class CANBus:
 
         Called from the node's CAN poll timer at ~1 kHz.
         """
+        if not self._bus:
+            return
         with self._lock:
             try:
                 while True:
@@ -98,6 +102,8 @@ class CANBus:
 
         Both Teensys (platform and Ball Butler) use this for clock alignment.
         """
+        if not self._bus:
+            return
         t = time.time()
         sec = int(t)
         usec = int((t - sec) * 1_000_000)
