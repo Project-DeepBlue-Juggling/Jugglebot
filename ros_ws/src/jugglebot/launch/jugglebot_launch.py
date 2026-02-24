@@ -1,9 +1,9 @@
 from launch import LaunchDescription
 from launch_ros.actions import Node
 from launch.actions import (
-    IncludeLaunchDescription, 
+    IncludeLaunchDescription,
     DeclareLaunchArgument,
-    ExecuteProcess
+    ExecuteProcess,
 )
 from launch.launch_description_sources import AnyLaunchDescriptionSource
 from launch.conditions import IfCondition, UnlessCondition
@@ -12,100 +12,120 @@ from ament_index_python.packages import get_package_share_directory
 import os
 from datetime import datetime
 
+
 def generate_launch_description():
+    # ── Launch arguments ─────────────────────────────────────────
     use_simulator = LaunchConfiguration('use_simulator')
     use_simulator_arg = DeclareLaunchArgument(
         'use_simulator',
-        default_value='false'
+        default_value='false',
     )
-
-    simulator_launch_file_path = os.path.join(
-        get_package_share_directory('jugglebot_simulator'),
-        'launch',
-        'launch.py'
-    )
-    simulator_include_description = IncludeLaunchDescription(
-        AnyLaunchDescriptionSource(simulator_launch_file_path),
-        condition=IfCondition(use_simulator)
-    )
-
-    can_bus_node = Node(
-        package='jugglebot',
-        executable='can_interface_node',
-        condition=UnlessCondition(use_simulator)
-    )
-
-    jugglebot_node_names = [
-        'yasmin_state_machine',
-        # 'spacemouse_handler',
-        'sp_ik',
-        'robot_geometry',
-        # 'level_platform_node',
-        'mocap_interface_node',
-        'ball_prediction_node',
-        # 'catch_thrown_ball_node',
-        # 'catch_dropped_ball_node',
-        # 'calibrate_platform_node',
-        'pose_correction_node',
-        # 'hoop_sinker_node',
-        'ball_butler_node',
-        'catch_from_ball_butler_node',
-        # 'ball_butler_volley_testing_node',
-        'target_tracker_node',
-    ]
-    jugglebot_nodes = [
-        Node(
-            package='jugglebot',
-            # namespace='jugglebot',
-            executable=node_name,
-            # name=node_name,
-            # arguments=['--ros-args', '--log-level', 'debug']
-            # parameters=[{'use_sim_time': True}],
-        ) for node_name in jugglebot_node_names
-    ]
-
-
-    rosbridge_launch_file_path = os.path.join(
-        get_package_share_directory('rosbridge_server'),
-        'launch',
-        'rosbridge_websocket_launch.xml'
-    )
-    rosbridge_include_description = IncludeLaunchDescription(AnyLaunchDescriptionSource(rosbridge_launch_file_path))
-
-    # ROS2 Bag file creation
-    file_path = os.path.join(os.path.expanduser('~'), 'Desktop')
-    bags_dir = os.path.join(file_path, 'rosbags')
-
-    # Generate a timestamped directory name
-    timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-    bag_dir = os.path.join(bags_dir, f"{timestamp}")
 
     record = LaunchConfiguration('record')
     record_arg = DeclareLaunchArgument(
         'record',
-        default_value='false'
+        default_value='false',
     )
 
-    # rosbag2 record command
-    rosbag_record_cmd = [
-        'ros2', 'bag', 'record', '/robot_state', '/leg_lengths_topic', '/hand_trajectory', '/mocap_data', '/platform_pose_topic',
-        '/rigid_body_poses', '/settled_leg_lengths', '/settled_platform_poses', '/hand_telemetry', '/throw_debug',
-        '/balls', '/targets', '/throw_announcements', 'bb/heartbeat', 'qtm_clock_offset_sec',
-        '-s', 'mcap', '-o', bag_dir
-    ]
+    # ── Simulator (optional) ─────────────────────────────────────
+    simulator_launch_file_path = os.path.join(
+        get_package_share_directory('jugglebot_simulator'),
+        'launch',
+        'launch.py',
+    )
+    simulator_include_description = IncludeLaunchDescription(
+        AnyLaunchDescriptionSource(simulator_launch_file_path),
+        condition=IfCondition(use_simulator),
+    )
+
+    # ── CAN node (real hardware only) ────────────────────────────
+    can_node = Node(
+        package='jugglebot',
+        executable='can_node',
+        condition=UnlessCondition(use_simulator),
+    )
+
+    # ── Core ROS2 nodes ──────────────────────────────────────────
+    orchestrator_node = Node(
+        package='jugglebot',
+        executable='orchestrator_node',
+    )
+
+    motion_bridge_node = Node(
+        package='jugglebot',
+        executable='motion_bridge_node',
+    )
+
+    mocap_interface_node = Node(
+        package='jugglebot',
+        executable='mocap_interface_node',
+    )
+
+    spacemouse_handler = Node(
+        package='jugglebot',
+        executable='spacemouse_handler',
+    )
+
+    # ── Standalone control process (not a ROS2 node) ─────────────
+    control_loop = ExecuteProcess(
+        cmd=['python3', '-m', 'jugglebot.motion.control_loop', '--rate', '500'],
+        output='screen',
+    )
+
+    # ── Rosbridge (WebSocket bridge for the GUI) ─────────────────
+    rosbridge_launch_file_path = os.path.join(
+        get_package_share_directory('rosbridge_server'),
+        'launch',
+        'rosbridge_websocket_launch.xml',
+    )
+    rosbridge_include = IncludeLaunchDescription(
+        AnyLaunchDescriptionSource(rosbridge_launch_file_path),
+    )
+
+    # ── Rosbag recording (optional) ──────────────────────────────
+    bags_dir = os.path.join(os.path.expanduser('~'), 'Desktop', 'rosbags')
+    timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+    bag_dir = os.path.join(bags_dir, timestamp)
 
     rosbag_record = ExecuteProcess(
-        cmd=rosbag_record_cmd,
+        cmd=[
+            'ros2', 'bag', 'record',
+            '/robot_state',
+            '/leg_lengths_topic',
+            '/hand_telemetry',
+            '/mocap_data',
+            '/platform_pose_topic',
+            '/rigid_body_poses',
+            '/orchestrator_state',
+            '/control_mode_topic',
+            '/orchestrator_command',
+            '/platform_target_reached',
+            '/bb/heartbeat',
+            '/qtm_clock_offset_sec',
+            '-s', 'mcap', '-o', bag_dir,
+        ],
         output='screen',
-        condition=IfCondition(record)
+        condition=IfCondition(record),
     )
 
+    # ── Assemble launch description ──────────────────────────────
     return LaunchDescription([
         use_simulator_arg,
         record_arg,
-        rosbridge_include_description,
+        # Infrastructure (gui_server.py runs independently in the background)
+        rosbridge_include,
+        # Simulator (conditional)
         simulator_include_description,
-        can_bus_node,
-        *jugglebot_nodes,
-        rosbag_record
+        # Hardware nodes
+        can_node,
+        # Core nodes
+        orchestrator_node,
+        # motion_bridge_node,
+        # mocap_interface_node,
+        spacemouse_handler,
+        Node(package='jugglebot', executable='sp_ik'),
+        # Standalone processes
+        # control_loop,
+        # Recording (conditional)
+        rosbag_record,
     ])
