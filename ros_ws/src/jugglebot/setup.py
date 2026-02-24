@@ -28,14 +28,13 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            # ── Active nodes ──────────────────────────────────
+            # ── Core nodes ────────────────────────────────────
             'can_node = jugglebot.can_node:main',
+            'orchestrator_node = jugglebot.orchestrator_node:main',
+            'motion_bridge_node = jugglebot.motion_bridge_node:main',
+            'mocap_interface_node = jugglebot.mocap_interface_node:main',
             'spacemouse_handler = jugglebot.spacemouse_handler:main',
             'sp_ik = jugglebot.sp_ik:main',
-            'mocap_interface_node = jugglebot.mocap_interface_node:main',
-            'orchestrator_node = jugglebot.orchestrator_node:main',
-            # ── Future nodes (Phase 3+) ───────────────────────
-            # 'motion_planner_node = jugglebot.motion_planner_node:main',
         ],
     },
 )
