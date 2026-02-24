@@ -2,7 +2,7 @@
 """Standalone HTTP server for the Jugglebot GUI.
 
 Serves static files from this directory on all interfaces.
-Completely independent of ROS2 — start once and leave running.
+Completely independent of ROS2 -- start once and leave running.
 
 Usage:
     python3 gui_server.py [--port 8080]
@@ -31,6 +31,11 @@ class CORSHandler(http.server.SimpleHTTPRequestHandler):
         return super().guess_type(path)
 
 
+class ReusableHTTPServer(http.server.HTTPServer):
+    """HTTPServer with SO_REUSEADDR enabled to avoid 'Address already in use'."""
+    allow_reuse_address = True
+
+
 def main():
     parser = argparse.ArgumentParser(description="Jugglebot GUI server")
     parser.add_argument("--port", type=int, default=8080, help="Port to serve on")
@@ -39,14 +44,15 @@ def main():
     directory = os.path.dirname(os.path.abspath(__file__))
     handler = functools.partial(CORSHandler, directory=directory)
 
-    with http.server.HTTPServer(("0.0.0.0", args.port), handler) as server:
-        print(f"Serving Jugglebot GUI on http://0.0.0.0:{args.port}")
-        print(f"  Directory: {directory}")
-        print(f"  Press Ctrl+C to stop")
-        try:
-            server.serve_forever()
-        except KeyboardInterrupt:
-            print("\nShutting down.")
+    server = ReusableHTTPServer(("0.0.0.0", args.port), handler)
+    print("Serving Jugglebot GUI on http://0.0.0.0:{}".format(args.port))
+    print("  Directory: {}".format(directory))
+    print("  Press Ctrl+C to stop")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nShutting down.")
+        server.server_close()
 
 
 if __name__ == "__main__":
