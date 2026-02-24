@@ -240,7 +240,11 @@ ros_ws/src/jugglebot/
 ### Phase 4: Mocap Integration
 - [ ] Lift `MocapInterface` class with minor cleanup into new `mocap_node.py`
 - [ ] Keep tf2 static broadcast, QTM clock sync
-- [ ] Remove Ball Butler marker logic if not needed yet
+- [ ] **Keep BB marker subscription** (`bb/markers`) — needed for calibration. Do NOT remove.
+- [ ] Implement BB calibration position publisher: after the `bb/calibrate` service completes, the mocap node (or a dedicated calibration module) must collect BB fiducial marker trajectories during the calibration motion, fit rotation axes via 3D circle fitting to determine the BB's global position and yaw offset, and publish the result so the GUI and aiming code can use it. The archived `ball_butler_node.py` (see `archived/ball_butler_node.py`) contains the full algorithm: 5 markers → circle fit → weighted axis intersection → `bb_mocap_position` [x,y,z] + `bb_yaw_offset_rad`. The key outputs are:
+  - BB global position (mm): where the yaw rotation axis intersects the marker Z-plane
+  - BB yaw offset (rad): angular offset between BB's local frame and the mocap global frame
+  - These were previously stored as ROS2 parameters on the `ball_butler_node`; in the new architecture they should be published on a latched topic (e.g. `bb/calibration_result`) so the GUI and any future aiming node can subscribe
 - [ ] **Test**: Verify `/mocap_data` and `/rigid_body_poses` publish correctly
 
 ### Phase 5: Integration + Polish
@@ -252,7 +256,7 @@ ros_ws/src/jugglebot/
 
 ### Phase 6 (Future): Advanced Features
 - [ ] Re-add ball catching as a motion planner process
-- [ ] Re-add Ball Butler aiming/coordination
+- [ ] Re-add Ball Butler aiming/coordination (depends on Phase 4 BB calibration position publisher — `bb/calibration_result` provides the `bb_mocap_position` and `bb_yaw_offset_rad` needed by `global_to_bb_frame()` for aim calculations)
 - [ ] Add force estimation + stability analysis to `motion/workspace.py`
 - [ ] Pose correction (feedforward from mocap)
 

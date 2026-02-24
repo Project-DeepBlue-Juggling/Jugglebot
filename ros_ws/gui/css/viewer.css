@@ -1,0 +1,156 @@
+/* ===================================================================
+   viewer.css — 3D container, command overlay, connection indicator
+   =================================================================== */
+
+/* Three.js canvas fills the viewer pane */
+#viewer-container {
+    width: 100%;
+    height: 100%;
+}
+
+#viewer-container canvas {
+    display: block;
+}
+
+/* Connection indicator — top-left of viewer */
+#connection-status {
+    position: absolute;
+    top: var(--gap);
+    left: var(--gap);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--bg-overlay);
+    padding: 6px 12px;
+    border-radius: var(--border-radius-sm);
+    font-size: var(--font-size-sm);
+    z-index: 10;
+    pointer-events: none;
+    transition: opacity var(--transition-normal);
+}
+
+/* Command overlay — bottom of viewer */
+#command-overlay {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--gap-sm);
+    padding: var(--gap);
+    background: var(--bg-overlay);
+    backdrop-filter: blur(8px);
+    z-index: 10;
+}
+
+/* Command buttons */
+.cmd-btn {
+    padding: 6px 16px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-sm);
+    background: var(--bg-card);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    cursor: pointer;
+    transition: background var(--transition-fast), border-color var(--transition-fast);
+    user-select: none;
+}
+
+.cmd-btn:hover:not(:disabled) {
+    background: var(--bg-card-hover);
+    border-color: var(--accent-blue);
+}
+
+.cmd-btn:active:not(:disabled) {
+    transform: scale(0.97);
+}
+
+.cmd-btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
+/* Specific button accents */
+.cmd-btn.btn-home {
+    border-color: var(--state-homing);
+    color: var(--state-homing);
+}
+
+.cmd-btn.btn-activate {
+    border-color: var(--state-active);
+    color: var(--state-active);
+}
+
+.cmd-btn.btn-deactivate {
+    border-color: var(--state-idle);
+    color: var(--state-idle);
+}
+
+.cmd-btn.btn-fault {
+    border-color: var(--state-fault);
+    color: var(--state-fault);
+}
+
+/* Scene menu overlay — top-right of viewer */
+#scene-menu {
+    position: absolute;
+    top: var(--gap);
+    right: var(--gap);
+    z-index: 10;
+}
+
+#scene-menu-toggle {
+    background: var(--bg-overlay);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-sm);
+    color: var(--text-secondary);
+    padding: 6px 10px;
+    font-size: var(--font-size-sm);
+    cursor: pointer;
+    transition: background var(--transition-fast);
+}
+
+#scene-menu-toggle:hover {
+    background: var(--bg-card-hover);
+}
+
+#scene-menu-dropdown {
+    display: none;
+    position: absolute;
+    top: 100%;
+    right: 0;
+    margin-top: 4px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius);
+    padding: var(--gap-sm);
+    min-width: 180px;
+}
+
+#scene-menu-dropdown.open {
+    display: block;
+}
+
+.scene-toggle {
+    display: flex;
+    align-items: center;
+    gap: var(--gap-sm);
+    padding: 4px 8px;
+    border-radius: var(--border-radius-sm);
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+    cursor: pointer;
+    user-select: none;
+}
+
+.scene-toggle:hover {
+    background: var(--bg-card-hover);
+}
+
+.scene-toggle input[type="checkbox"] {
+    accent-color: var(--accent-blue);
+}

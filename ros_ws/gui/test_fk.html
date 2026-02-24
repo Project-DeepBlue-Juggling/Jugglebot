@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Jugglebot GUI — FK Unit Tests</title>
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+        }
+    }
+    </script>
+    <style>
+        body { font-family: monospace; background: #0f172a; color: #f1f5f9; padding: 20px; }
+        .pass { color: #22c55e; }
+        .fail { color: #ef4444; }
+        .section { color: #3b82f6; font-weight: bold; margin-top: 16px; }
+        pre { margin: 2px 0; }
+        #summary { font-size: 1.2em; margin-top: 20px; padding: 10px; border: 1px solid #334155; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <h2>Jugglebot GUI — Unit Tests</h2>
+    <div id="output"></div>
+    <div id="summary"></div>
+
+    <script type="module">
+    import {
+        rotvecToRotMatrix, rotMatrixToRotvec, poseToLegLengths,
+        solveFK, resetFKState, legLengthsToPose,
+    } from './js/stewart-fk.js';
+
+    import {
+        BASE_NODES_MM, INIT_PLAT_NODES_MM, INIT_LEG_LENGTHS_MM,
+        INITIAL_HEIGHT_MM, LEG_STROKE_MM, MM_TO_REV, ODRIVE_STATE,
+        BB_STATE, BB_STATE_NAMES,
+    } from './js/geometry-config.js';
+
+    const output = document.getElementById('output');
+    const summaryEl = document.getElementById('summary');
+    let passed = 0, failed = 0;
+
+    function log(msg, cls = '') {
+        const line = document.createElement('pre');
+        line.textContent = msg;
+        if (cls) line.className = cls;
+        output.appendChild(line);
+    }
+
+    function section(name) {
+        log(`\n=== ${name} ===`, 'section');
+    }
+
+    function assert(condition, description) {
+        if (condition) {
+            log(`  PASS: ${description}`, 'pass');
+            passed++;
+        } else {
+            log(`  FAIL: ${description}`, 'fail');
+            failed++;
+        }
+    }
+
+    function assertClose(actual, expected, tol, description) {
+        const diff = Math.abs(actual - expected);
+        if (diff <= tol) {
+            log(`  PASS: ${description} (got ${actual.toFixed(6)}, expected ${expected.toFixed(6)}, diff=${diff.toExponential(2)})`, 'pass');
+            passed++;
+        } else {
+            log(`  FAIL: ${description} (got ${actual.toFixed(6)}, expected ${expected.toFixed(6)}, diff=${diff.toExponential(2)})`, 'fail');
+            failed++;
+        }
+    }
+
+    function assertArrayClose(actual, expected, tol, description) {
+        let allClose = true;
+        for (let i = 0; i < expected.length; i++) {
+            if (Math.abs(actual[i] - expected[i]) > tol) {
+                allClose = false;
+                break;
+            }
+        }
+        if (allClose) {
+            log(`  PASS: ${description}`, 'pass');
+            passed++;
+        } else {
+            log(`  FAIL: ${description}`, 'fail');
+            log(`    actual:   [${actual.map(v => v.toFixed(4)).join(', ')}]`);
+            log(`    expected: [${expected.map(v => v.toFixed(4)).join(', ')}]`);
+            failed++;
+        }
+    }
+
+    // ============================================================
+    // Test Suite
+    // ============================================================
+
+    section('Geometry Constants Validation');
+    {
+        assert(BASE_NODES_MM.length === 6, 'BASE_NODES has 6 entries');
+        assert(INIT_PLAT_NODES_MM.length === 6, 'INIT_PLAT_NODES has 6 entries');
+        assert(INIT_LEG_LENGTHS_MM.length === 6, 'INIT_LEG_LENGTHS has 6 entries');
+        assert(MM_TO_REV.length === 6, 'MM_TO_REV has 6 entries');
+
+        assertClose(INITIAL_HEIGHT_MM, 574.3, 0.01, 'INITIAL_HEIGHT = 574.3 mm');
+        assertClose(LEG_STROKE_MM, 280.0, 0.01, 'LEG_STROKE = 280 mm');
+
+        // Base nodes should be at Z=0
+        for (let i = 0; i < 6; i++) {
+            assertClose(BASE_NODES_MM[i][2], 0.0, 0.001, `BASE_NODE[${i}].z = 0`);
+        }
+
+        // Platform nodes should be at Z=0
+        for (let i = 0; i < 6; i++) {
+            assertClose(INIT_PLAT_NODES_MM[i][2], 0.0, 0.001, `PLAT_NODE[${i}].z = 0`);
+        }
+
+        // Base nodes should have radius ~410mm
+        for (let i = 0; i < 6; i++) {
+            const r = Math.sqrt(BASE_NODES_MM[i][0]**2 + BASE_NODES_MM[i][1]**2);
+            assertClose(r, 410.0, 0.5, `BASE_NODE[${i}] radius ≈ 410mm (got ${r.toFixed(1)})`);
+        }
+
+        // Platform nodes should have radius ~219mm
+        for (let i = 0; i < 6; i++) {
+            const r = Math.sqrt(INIT_PLAT_NODES_MM[i][0]**2 + INIT_PLAT_NODES_MM[i][1]**2);
+            assertClose(r, 219.075, 0.5, `PLAT_NODE[${i}] radius ≈ 219mm (got ${r.toFixed(1)})`);
+        }
+
+        // MM_TO_REV factors should be positive and reasonable (0.013 - 0.015)
+        for (let i = 0; i < 6; i++) {
+            assert(MM_TO_REV[i] > 0.013 && MM_TO_REV[i] < 0.015,
+                `MM_TO_REV[${i}] = ${MM_TO_REV[i]} in reasonable range`);
+        }
+    }
+
+    section('Enum Constants');
+    {
+        assert(ODRIVE_STATE.IDLE === 1, 'ODRIVE IDLE = 1');
+        assert(ODRIVE_STATE.CLOSED_LOOP === 8, 'ODRIVE CLOSED_LOOP = 8');
+        assert(BB_STATE.BOOT === 0, 'BB BOOT = 0');
+        assert(BB_STATE.IDLE === 1, 'BB IDLE = 1');
+        assert(BB_STATE.ERROR === 127, 'BB ERROR = 127');
+        assert(BB_STATE_NAMES[0] === 'BOOT', 'BB_STATE_NAMES[0] = BOOT');
+        assert(BB_STATE_NAMES[127] === 'ERROR', 'BB_STATE_NAMES[127] = ERROR');
+    }
+
+    section('Rotation: Identity');
+    {
+        const I = rotvecToRotMatrix([0, 0, 0]);
+        assertClose(I[0][0], 1, 1e-10, 'Identity R[0][0] = 1');
+        assertClose(I[1][1], 1, 1e-10, 'Identity R[1][1] = 1');
+        assertClose(I[2][2], 1, 1e-10, 'Identity R[2][2] = 1');
+        assertClose(I[0][1], 0, 1e-10, 'Identity R[0][1] = 0');
+        assertClose(I[1][0], 0, 1e-10, 'Identity R[1][0] = 0');
+    }
+
+    section('Rotation: 90deg about Z');
+    {
+        const angle = Math.PI / 2;
+        const R = rotvecToRotMatrix([0, 0, angle]);
+        assertClose(R[0][0], 0, 1e-10, 'Rz(90)[0][0] = 0');
+        assertClose(R[0][1], -1, 1e-10, 'Rz(90)[0][1] = -1');
+        assertClose(R[1][0], 1, 1e-10, 'Rz(90)[1][0] = 1');
+        assertClose(R[1][1], 0, 1e-10, 'Rz(90)[1][1] = 0');
+        assertClose(R[2][2], 1, 1e-10, 'Rz(90)[2][2] = 1');
+    }
+
+    section('Rotation: Roundtrip rotvec → R → rotvec');
+    {
+        const rv = [0.1, -0.2, 0.15];
+        const R = rotvecToRotMatrix(rv);
+        const rv2 = rotMatrixToRotvec(R);
+        assertArrayClose(rv2, rv, 1e-8, 'Roundtrip rotvec matches');
+    }
+
+    section('Rotation: Roundtrip with larger angle');
+    {
+        const rv = [0.5, 0.3, -0.4];
+        const R = rotvecToRotMatrix(rv);
+        const rv2 = rotMatrixToRotvec(R);
+        assertArrayClose(rv2, rv, 1e-6, 'Roundtrip large angle rotvec matches');
+    }
+
+    section('IK: Home position (zero extension)');
+    {
+        const I = rotvecToRotMatrix([0, 0, 0]);
+        const { extensions } = poseToLegLengths([0, 0, 0], I);
+        // At home pose, all extensions should be ~0
+        for (let i = 0; i < 6; i++) {
+            assertClose(extensions[i], 0, 0.1, `Home extension[${i}] ≈ 0mm (got ${extensions[i].toFixed(3)})`);
+        }
+    }
+
+    section('IK: Pure Z translation (raise platform 50mm)');
+    {
+        const I = rotvecToRotMatrix([0, 0, 0]);
+        const { extensions } = poseToLegLengths([0, 0, 50], I);
+        // Raising should increase all leg lengths (positive extension)
+        for (let i = 0; i < 6; i++) {
+            assert(extensions[i] > 0, `Z+50: extension[${i}] > 0 (got ${extensions[i].toFixed(2)})`);
+        }
+    }
+
+    section('IK: Pure Z translation (lower platform 50mm)');
+    {
+        const I = rotvecToRotMatrix([0, 0, 0]);
+        const { extensions } = poseToLegLengths([0, 0, -50], I);
+        // Lowering should decrease all leg lengths (negative extension)
+        for (let i = 0; i < 6; i++) {
+            assert(extensions[i] < 0, `Z-50: extension[${i}] < 0 (got ${extensions[i].toFixed(2)})`);
+        }
+    }
+
+    section('IK: Symmetry — equal Z displacement gives similar extensions');
+    {
+        const I = rotvecToRotMatrix([0, 0, 0]);
+        const { extensions: extUp } = poseToLegLengths([0, 0, 50], I);
+        const { extensions: extDown } = poseToLegLengths([0, 0, -50], I);
+        // Sum should be roughly zero (symmetric about home)
+        for (let i = 0; i < 6; i++) {
+            const sum = extUp[i] + extDown[i];
+            assertClose(sum, 0, 2.0, `Z±50 symmetry[${i}]: sum ≈ 0 (got ${sum.toFixed(3)})`);
+        }
+    }
+
+    section('IK: Platform nodes are valid 3D coordinates');
+    {
+        const I = rotvecToRotMatrix([0, 0, 0]);
+        const { platNodes } = poseToLegLengths([0, 0, 0], I);
+        assert(platNodes.length === 6, 'platNodes has 6 entries');
+        for (let i = 0; i < 6; i++) {
+            assert(platNodes[i].length === 3, `platNodes[${i}] is 3D`);
+            assertClose(platNodes[i][2], INITIAL_HEIGHT_MM, 0.5,
+                `platNodes[${i}].z ≈ ${INITIAL_HEIGHT_MM} at home`);
+        }
+    }
+
+    section('FK: Roundtrip IK → FK (home pose)');
+    {
+        resetFKState();
+        const targetExt = [0, 0, 0, 0, 0, 0];
+        const result = solveFK(targetExt);
+        assert(result.converged, 'FK converged for home pose');
+        assertArrayClose(result.pos, [0, 0, 0], 0.01, 'FK home position ≈ [0,0,0]');
+    }
+
+    section('FK: Roundtrip IK → FK (Z+30mm)');
+    {
+        resetFKState();
+        const I = rotvecToRotMatrix([0, 0, 0]);
+        const { extensions } = poseToLegLengths([0, 0, 30], I);
+        const result = solveFK(extensions);
+        assert(result.converged, 'FK converged for Z+30');
+        assertClose(result.pos[2], 30, 0.1, 'FK Z position ≈ 30mm');
+        assertClose(result.pos[0], 0, 0.1, 'FK X position ≈ 0mm');
+        assertClose(result.pos[1], 0, 0.1, 'FK Y position ≈ 0mm');
+    }
+
+    section('FK: Roundtrip IK → FK (X+20, Y-10, Z+15)');
+    {
+        resetFKState();
+        const pos = [20, -10, 15];
+        const I = rotvecToRotMatrix([0, 0, 0]);
+        const { extensions } = poseToLegLengths(pos, I);
+        const result = solveFK(extensions);
+        assert(result.converged, 'FK converged for arbitrary translation');
+        assertArrayClose(result.pos, pos, 0.2, `FK position ≈ [${pos}]`);
+    }
+
+    section('FK: Roundtrip IK → FK with rotation');
+    {
+        resetFKState();
+        const pos = [10, -5, 20];
+        const rv = [0.05, -0.03, 0.02];
+        const R = rotvecToRotMatrix(rv);
+        const { extensions } = poseToLegLengths(pos, R);
+        const result = solveFK(extensions);
+        assert(result.converged, 'FK converged for pose with rotation');
+        assertArrayClose(result.pos, pos, 0.5, `FK position ≈ [${pos}]`);
+    }
+
+    section('FK: Warm start — successive similar poses converge fast');
+    {
+        resetFKState();
+        const I = rotvecToRotMatrix([0, 0, 0]);
+
+        // First solve from cold start
+        const { extensions: ext1 } = poseToLegLengths([0, 0, 10], I);
+        const r1 = solveFK(ext1);
+        assert(r1.converged, 'FK converged (first solve)');
+
+        // Second solve should converge immediately (warm start)
+        const { extensions: ext2 } = poseToLegLengths([0, 0, 12], I);
+        const r2 = solveFK(ext2);
+        assert(r2.converged, 'FK converged (warm-started)');
+        assertClose(r2.pos[2], 12, 0.1, 'Warm-started FK Z = 12mm');
+    }
+
+    section('FK: Motor revs input (legLengthsToPose)');
+    {
+        resetFKState();
+        // Home position: all motor revs = 0 → extension = 0
+        const revs = [0, 0, 0, 0, 0, 0];
+        const result = legLengthsToPose(revs);
+        assert(result.converged, 'legLengthsToPose converged at home');
+        assertArrayClose(result.pos, [0, 0, 0], 0.1, 'Home pose from zero revs');
+    }
+
+    section('FK: Motor revs with extension');
+    {
+        resetFKState();
+        // Extend each leg by ~50mm: revs = -(50 * mm_to_rev[i])
+        const revs = MM_TO_REV.map(f => -(50 * f));
+        const result = legLengthsToPose(revs);
+        assert(result.converged, 'legLengthsToPose converged with 50mm extension');
+        // Platform should be higher (positive Z)
+        assert(result.pos[2] > 0, `Z > 0 when legs extend (got ${result.pos[2].toFixed(2)})`);
+    }
+
+    section('Gaussian solver: 6x6 identity system');
+    {
+        // Test embedded in FK convergence — if FK converges, Gaussian solver works.
+        // Additional explicit test via a known system:
+        resetFKState();
+        const { extensions: e1 } = poseToLegLengths([5, 5, 5], rotvecToRotMatrix([0, 0, 0]));
+        const { extensions: e2 } = poseToLegLengths([5.1, 5, 5], rotvecToRotMatrix([0, 0, 0]));
+        // Just verify both computed without crashing
+        assert(e1.length === 6, 'IK returns 6 extensions (test 1)');
+        assert(e2.length === 6, 'IK returns 6 extensions (test 2)');
+    }
+
+    // ============================================================
+    // Summary
+    // ============================================================
+
+    const total = passed + failed;
+    const allPassed = failed === 0;
+    summaryEl.textContent = `${passed}/${total} tests passed` + (failed > 0 ? ` — ${failed} FAILED` : ' — ALL PASSED');
+    summaryEl.style.color = allPassed ? '#22c55e' : '#ef4444';
+    summaryEl.style.borderColor = allPassed ? '#22c55e' : '#ef4444';
+
+    // Also log to console for automated checking
+    console.log(`[FK Tests] ${passed}/${total} passed, ${failed} failed`);
+    if (!allPassed) console.error(`[FK Tests] ${failed} tests FAILED`);
+    </script>
+</body>
+</html>

@@ -1,0 +1,53 @@
+#!/usr/bin/env python3
+"""Standalone HTTP server for the Jugglebot GUI.
+
+Serves static files from this directory on all interfaces.
+Completely independent of ROS2 — start once and leave running.
+
+Usage:
+    python3 gui_server.py [--port 8080]
+"""
+
+import argparse
+import functools
+import http.server
+import os
+
+
+class CORSHandler(http.server.SimpleHTTPRequestHandler):
+    """SimpleHTTPRequestHandler with CORS and correct MIME types."""
+
+    def end_headers(self):
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Cache-Control", "no-cache")
+        super().end_headers()
+
+    def guess_type(self, path):
+        # Ensure .js files are served as ES modules
+        if path.endswith(".js"):
+            return "application/javascript"
+        if path.endswith(".mjs"):
+            return "application/javascript"
+        return super().guess_type(path)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Jugglebot GUI server")
+    parser.add_argument("--port", type=int, default=8080, help="Port to serve on")
+    args = parser.parse_args()
+
+    directory = os.path.dirname(os.path.abspath(__file__))
+    handler = functools.partial(CORSHandler, directory=directory)
+
+    with http.server.HTTPServer(("0.0.0.0", args.port), handler) as server:
+        print(f"Serving Jugglebot GUI on http://0.0.0.0:{args.port}")
+        print(f"  Directory: {directory}")
+        print(f"  Press Ctrl+C to stop")
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            print("\nShutting down.")
+
+
+if __name__ == "__main__":
+    main()

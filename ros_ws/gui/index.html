@@ -1,6 +1,116 @@
 <!DOCTYPE html>
-<html>
-    <head>
-        <meta http-equiv="refresh" content="0; url=jugglebot_gui.html" />
-    </head>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Jugglebot</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+
+    <!-- Stylesheets -->
+    <link rel="stylesheet" href="css/theme.css">
+    <link rel="stylesheet" href="css/viewer.css">
+    <link rel="stylesheet" href="css/panels.css">
+
+    <!-- ROSLIB (global, not an ES module) -->
+    <script src="lib/roslib.min.js"></script>
+
+    <!-- Import maps for ES modules (no build step) -->
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+        }
+    }
+    </script>
+</head>
+<body>
+    <div id="app">
+        <!-- Left: 3D viewer with overlays -->
+        <div id="viewer-pane">
+            <div id="viewer-container"></div>
+
+            <!-- Connection status indicator -->
+            <div id="connection-status">
+                <span class="status-dot disconnected" id="conn-dot"></span>
+                <span id="conn-text">Disconnected</span>
+            </div>
+
+            <!-- Scene visibility menu -->
+            <div id="scene-menu">
+                <button id="scene-menu-toggle">View</button>
+                <div id="scene-menu-dropdown"></div>
+            </div>
+
+            <!-- Command buttons -->
+            <div id="command-overlay"></div>
+        </div>
+
+        <!-- Right: status sidebar -->
+        <div id="sidebar">
+            <!-- Orchestrator State -->
+            <div class="panel" id="panel-orchestrator">
+                <div class="panel-header">
+                    <span class="panel-title">State</span>
+                </div>
+                <div style="text-align:center;">
+                    <span class="badge state-badge boot" id="state-badge">BOOT</span>
+                    <div class="sub-mode" id="state-sub-mode"></div>
+                </div>
+            </div>
+
+            <!-- Motor Status -->
+            <div class="panel" id="panel-motors">
+                <div class="panel-header">
+                    <span class="panel-title">Motors</span>
+                </div>
+                <div class="motor-grid" id="motor-grid"></div>
+                <div class="bus-voltage">
+                    <span class="value" id="bus-voltage-value">--</span>
+                    <span class="unit">V</span>
+                </div>
+            </div>
+
+            <!-- System Flags -->
+            <div class="panel" id="panel-flags">
+                <div class="panel-header">
+                    <span class="panel-title">System</span>
+                </div>
+                <div class="flags-grid" id="flags-grid"></div>
+            </div>
+
+            <!-- Ball Butler -->
+            <div class="panel" id="panel-bb">
+                <div class="panel-header">
+                    <span class="panel-title">Ball Butler</span>
+                    <span class="badge" id="bb-state-badge">Disconnected</span>
+                </div>
+                <div id="bb-content"></div>
+            </div>
+
+            <!-- CAN Traffic -->
+            <div class="panel" id="panel-can">
+                <div class="panel-header">
+                    <span class="panel-title">CAN Traffic</span>
+                </div>
+                <div class="can-rate">
+                    <span class="value" id="can-rate-value">--</span>
+                    <span class="unit">msg/s</span>
+                </div>
+                <canvas id="can-sparkline"></canvas>
+            </div>
+
+            <!-- Tracking Error -->
+            <div class="panel" id="panel-tracking">
+                <div class="panel-header">
+                    <span class="panel-title">Tracking Error</span>
+                </div>
+                <div class="tracking-grid" id="tracking-grid"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Entry point -->
+    <script type="module" src="js/main.js"></script>
+</body>
 </html>

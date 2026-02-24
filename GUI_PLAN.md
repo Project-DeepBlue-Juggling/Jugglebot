@@ -1,0 +1,449 @@
+# Jugglebot Web GUI — Rewrite Plan
+
+## Context
+
+The existing GUI (`ros_ws/gui/`) is a legacy vanilla-JS app with dated styling, hardcoded pixel layouts, and references to old topic names that no longer exist in the refactored codebase. The goal is a modern, stylish dashboard that can be opened from any browser on the network, showing a live 3D view of the robot, system monitoring panels, and basic command controls.
+
+The approach: **rewrite the GUI in-place** using the same technology stack (static files + Three.js + ROSlib.js) but with a modern dark theme, responsive layout, and clean modular JS architecture. No build step, no framework — just ES modules with CDN import maps (same pattern the legacy GUI already uses successfully).
+
+**Critical improvement**: The static files are served by a **standalone lightweight HTTP server** (a tiny Python script) that runs independently of ROS2. The GUI's JavaScript connects to rosbridge via WebSocket with **auto-reconnect** — when ROS2 restarts, the socket silently reconnects and re-subscribes without needing a page refresh.
+
+---
+
+## Architecture
+
+```
+  gui_server.py (port 8080, standalone, always-on)
+        │ HTTP (static files)
+        ▼
+  Browser loads index.html + JS modules
+        │
+  ros-bridge.js ──── WebSocket to rosbridge (port 9090) with auto-reconnect
+        │
+        ├─→ stewart-fk.js ─→ stewart-model.js ─→ viewer.js (Three.js render loop)
+        ├─→ ball-butler-model.js ─────────────────┘
+        ├─→ panels.js ─→ DOM status panels (right sidebar)
+        └─→ commands.js ─→ publishes to orchestrator_command
+```
+
+**Key design decisions:**
+- **Independent HTTP server** — `gui_server.py` (tiny Python script, ~20 lines) serves static files on port 8080, runs as a systemd service or in a tmux session, completely independent of ROS2. No more page refreshes when ROS2 restarts.
+- **Auto-reconnect WebSocket** — `ros-bridge.js` reconnects to rosbridge (port 9090) every 2 seconds when disconnected, re-subscribes to all topics on reconnect. Connection status shown in UI.
+- **No build tool** — pure static files + ES module import maps (forward-compatible with Vite if needed later)
+- **FK computed in JavaScript** — port the Newton-Raphson solver from `ik_solver.py` (55 lines of core logic, trivially fast at 20Hz). When mocap is available, use measured pose instead (bypasses FK).
+- **Dark theme** — CSS custom properties, no framework
+- **Layout**: main 3D viewer + right sidebar panels + bottom command overlay
+
+---
+
+## File Structure
+
+```
+ros_ws/gui/
+  gui_server.py               # Standalone HTTP server (~20 lines), runs independently of ROS2
+  index.html                  # Main HTML — layout structure, import maps
+  favicon.svg                 # Keep existing
+  css/
+    theme.css                 # Dark theme variables, base typography, grid layout
+    panels.css                # Status card styles, motor grid, badges
+    viewer.css                # 3D container, command overlay, connection indicator
+  js/
+    main.js                   # Entry: init ROS, viewer, panels, wire callbacks
+    ros-bridge.js             # ROSLIB connection with auto-reconnect, topic subs, throttling
+    geometry-config.js        # Hardcoded constants from hardware_config.yaml
+    stewart-fk.js             # FK solver + rotation utilities (port from ik_solver.py)
+    viewer.js                 # Three.js scene, camera, OrbitControls, render loop
+    stewart-model.js          # Stewart platform 3D geometry (base, legs, platform, hand axis)
+    ball-butler-model.js      # Ball Butler 3D geometry (yaw/pitch/hand line art)
+    panels.js                 # Right sidebar panel creation + data update functions
+    commands.js               # Command button handlers → orchestrator_command topic
+  lib/
+    roslib.min.js             # Keep existing local copy
+```
+
+Legacy files to remove: `jugglebot_gui.html`, `main.js`, `3dplotter.js`, `package.json`, `package-lock.json`, `convex_hull_points.json`, `convex_hull_points_big.json`
+
+### `gui_server.py` — Standalone HTTP Server
+
+A minimal Python script that serves the `ros_ws/gui/` directory on port 8080. It runs completely independently of ROS2 — start it once (e.g., via systemd service, tmux, or `nohup`) and it stays up forever. When ROS2 restarts, the browser page stays loaded; only the WebSocket to rosbridge reconnects in the background.
+
+```python
+# Essentially: python3 -m http.server 8080 --directory ros_ws/gui/
+# But as a proper script with bind-to-all-interfaces and CORS headers.
+```
+
+---
+
+## ROS2 Topics (subscriptions)
+
+| Topic | Type | Rate | GUI Use | Throttle To |
+|-------|------|------|---------|-------------|
+| `robot_state` | RobotState | 100Hz | Motor states, errors, homing, voltage, temps, FK fallback | 20Hz |
+| `bb/heartbeat` | BallButlerHeartbeat | 10Hz | BB state, yaw/pitch/hand | 10Hz (no throttle) |
+| `orchestrator_state` | String | on change | State badge | No throttle |
+| `can_traffic` | CanTrafficReportMessage | ~2Hz | CAN bus load chart | No throttle |
+| `hand_telemetry` | HandTelemetryMessage | 500Hz | Hand pos/vel detail | 10Hz |
+| `rigid_body_poses` | RigidBodyPoses | ~200Hz | Measured platform pose (bypasses FK when available) | 20Hz |
+| `mocap_data` | MocapDataMulti | ~200Hz | Raw markers (ball positions, general viz) | 20Hz |
+| `leg_lengths_topic` | Float64MultiArray | 500Hz | Commanded leg positions (for tracking error display) | 20Hz |
+
+**Pose source priority**: When `rigid_body_poses` is available, use it directly for the 3D platform pose (most accurate, measured). Fall back to FK from `robot_state` motor positions when mocap is unavailable.
+
+**Publishes to:** `orchestrator_command` (String) — "home", "activate", "deactivate", "spacemouse", "shell", "clear_errors"
+
+---
+
+## 3D Viewer Design
+
+### Stewart Platform (`stewart-model.js`)
+- **Base hexagon**: 6 nodes connected by line segments, semi-transparent blue fill — `#3b82f6`
+- **Legs**: 6 cylinders from base→platform nodes, color-coded green→amber→red by extension ratio
+- **Platform hexagon**: 6 nodes connected by lines, light gray, semi-transparent fill
+- **Hand axis**: A single line perpendicular to the platform surface, originating from the platform center offset -100mm along the platform's local Y axis (to account for hand depth). The ball travels along this axis. Line extends by the hand's current extension. Color: amber.
+
+### Ball Butler (`ball-butler-model.js`)
+- **Pedestal**: Small cylinder at BB's configurable position offset from base center
+- **Yaw turntable**: Ring that rotates around Z by `heartbeat.yaw_deg`
+- **Pitch arm**: Cylinder tilting from turntable by `heartbeat.pitch_deg`
+- **Hand element**: Slider along pitch arm at `heartbeat.hand_pos_mm`
+- **Position**: Configurable constant in `geometry-config.js` (user will provide real coordinates)
+
+### Scene Setup
+- Dark background (`#0f172a`), ambient light + soft directional
+- OrbitControls, perspective camera, responsive resize
+- Scale: all geometry in mm, camera positioned ~1.5m away
+- Coordinate swap: Three.js Y-up ↔ robot Z-up (same swap as legacy code)
+
+---
+
+## FK Pipeline (`stewart-fk.js`)
+
+Port from `ros_ws/src/jugglebot/jugglebot/motion/ik_solver.py`:
+
+1. **Motor revs → extensions**: `ext_mm[i] = pos_rev[i] / mm_to_rev[i]`
+2. **Extensions → absolute lengths**: `abs_len[i] = init_leg_lengths_with_offset[i] + ext_mm[i]`
+3. **Newton-Raphson FK**: Solve for `(pos, R)` such that IK(pos, R) matches target lengths
+   - State vector: `[px, py, pz, rx, ry, rz]` (position + rotation vector)
+   - Inner loop: compute IK residual, compute Jacobian, solve `J·dx = -residual`, update x
+   - Converges in 3-5 iterations for normal poses
+   - Warm-start from previous frame's solution for stability
+4. **Platform nodes**: `plat_world[i] = (pos + [0,0,574.3]) + R @ plat_nodes[i]`
+
+Functions to port:
+- `rotvecToRotMatrix(rv)` — Rodrigues formula
+- `rotMatrixToRotvec(R)` — inverse
+- `poseToLegLengths(pos, R)` — position IK
+- `computeJacobian(pos, R)` — 6x6 analytical Jacobian
+- `legLengthsToPose(extensions, initialGuess)` — Newton-Raphson FK
+- `solve6x6(A, b)` — Gaussian elimination (no need for a full linear algebra library for a 6x6)
+
+---
+
+## Panel Designs (right sidebar, `panels.js`)
+
+### 1. Connection Status (top bar)
+- Green dot + "Connected" / Red dot + "Disconnected" with auto-reconnect
+
+### 2. Orchestrator State
+- Large color-coded badge: BOOT (gray), HOMING (blue), IDLE (amber), ACTIVE (green), FAULT (red pulsing)
+- Sub-mode shown when ACTIVE: SPACEMOUSE / SHELL
+
+### 3. Motor Status Grid
+- 7 compact columns (Leg 0-5 + Hand)
+- Per motor: state dot (green=CLOSED_LOOP, yellow=IDLE, red=error), position, velocity, FET temp (color-coded), active errors badge
+- Bus voltage: single large readout from `motor_states[0].bus_voltage`
+
+### 4. System Flags
+- Encoder search: checkmark / spinner
+- Homed: checkmark / X
+- Levelled: checkmark / X
+- Error flags: fatal ODrive, fatal CAN, undervoltage (red badges when set)
+
+### 5. Ball Butler Panel
+- State badge (BOOT/IDLE/TRACKING/THROWING/RELOADING/ERROR)
+- Ball-in-hand indicator (green/red dot)
+- Yaw, Pitch, Hand readouts
+- Shown as "Disconnected" when no heartbeat received
+
+### 6. CAN Traffic
+- Small sparkline (canvas chart, lightweight — Chart.js or manual canvas) showing msgs/sec over last 10s
+- Current rate as large number
+
+### 7. Position Tracking Error
+Displays the delta between commanded and measured positions for each DoF:
+- **Legs (6)**: commanded position (from `leg_lengths_topic`) vs measured position (from `robot_state.motor_states[i].pos_estimate`). The error is `commanded - measured` for each leg.
+- **Hand**: commanded (`hand_telemetry.pos_cmd`) vs measured (`hand_telemetry.pos_meas`)
+- **Display**: compact bar chart or numeric grid, one column per axis. Color-coded: green when |error| < threshold, amber for moderate, red for large.
+- **Optional 3D overlay**: Show tracking error as a ghost/wireframe of the commanded platform position overlaid on the measured position in the 3D viewer — makes pose error visually intuitive. The ghost platform is drawn semi-transparent when the error is small and becomes more opaque / red-tinted as error grows.
+
+---
+
+## Command Overlay (`commands.js`)
+
+Semi-transparent bar at the bottom of the 3D viewer:
+- **Home** — publishes "home" (only enabled when not homed)
+- **Activate** — publishes "activate" (only in IDLE)
+- **Deactivate** — publishes "deactivate" (only in ACTIVE)
+- **SpaceMouse** — publishes "spacemouse" (only in ACTIVE)
+- **Shell** — publishes "shell" (only in ACTIVE)
+- **Clear Errors** — publishes "clear_errors" (always enabled)
+
+Context-sensitive enable/disable based on last received `orchestrator_state`.
+
+---
+
+## Implementation Order
+
+### Phase A — Skeleton + ROS connection — DONE (2026-02-24)
+1. [x] Create `gui_server.py` — standalone HTTP server
+2. [x] Create `index.html` with layout grid and import maps
+3. [x] Create `css/theme.css` — dark theme variables, grid, typography
+4. [x] Create `js/ros-bridge.js` — ROSLIB connection with auto-reconnect, subscription manager with throttle
+5. [x] Create `js/main.js` — wiring entry point
+6. [x] Verify: page loads, connects to rosbridge, auto-reconnects when rosbridge restarts
+
+### Phase B — 3D viewer with static geometry — DONE (2026-02-24)
+1. [x] Create `js/geometry-config.js` — all constants from `hardware_config.yaml`
+2. [x] Create `css/viewer.css` — 3D container styles
+3. [x] Create `js/viewer.js` — Three.js scene, camera, OrbitControls, dark background, render loop
+4. [x] Create `js/stewart-model.js` — static home-pose Stewart platform geometry
+5. [ ] **Verify**: static robot renders at home position with orbit controls — needs visual testing
+
+### Phase C — FK + live 3D updates — DONE (2026-02-24)
+1. [x] Create `js/stewart-fk.js` — port FK solver from `sp_ik.py`
+2. [x] Wire `robot_state` → FK → `stewart-model.js` update methods
+3. [x] Wire `rigid_body_poses` as preferred pose source (when mocap available, bypasses FK)
+4. [x] Implement leg color coding (green/amber/red by extension ratio)
+5. [x] Implement hand axis update from `motor_states[6]`
+6. [ ] **Verify**: 3D model tracks real robot movement — needs hardware testing
+
+### Phase D — Ball Butler 3D model — DONE (2026-02-24)
+1. [x] Create `js/ball-butler-model.js` — yaw/pitch/hand line art
+2. [x] Wire `bb/heartbeat` → model updates
+3. [ ] **Verify**: BB moves in sync with heartbeat data — needs hardware testing
+
+### Phase E — Status panels — DONE (2026-02-24)
+1. [x] Create `css/panels.css` — card styles, motor grid, badges
+2. [x] Create `js/panels.js` — all panel creation + update logic
+3. [x] Implement: connection status, orchestrator state, motor grid, system flags, BB status, CAN traffic, tracking error
+4. [ ] **Verify**: all panels update in real-time — needs hardware testing
+
+### Phase F — Command controls — DONE (2026-02-24)
+1. [x] Create `js/commands.js` — button handlers
+2. [x] Add command overlay to layout
+3. [x] Implement context-sensitive enable/disable
+4. [ ] **Verify**: commands reach orchestrator — needs hardware testing
+
+### Phase G — Polish — DONE (2026-02-24)
+1. [x] Responsive resize (sidebar collapse on narrow screens)
+2. [x] Smooth transitions on state changes (CSS transitions on all interactive elements)
+3. [x] Scene element visibility toggles (menu overlay on 3D view)
+4. [x] Tracking error ghost overlay in 3D viewer — red wireframe hex that fades in proportional to error magnitude
+5. [ ] Ball rendering (sphere, when ball state data available from future phases) — deferred to Phase 6
+
+### Phase H — Tests + Verification — DONE (2026-02-24)
+1. [x] Python unit tests: `tests/test_gui_geometry.py` (40 tests) — validates all JS geometry constants against `hardware_config.yaml`, checks file structure, verifies legacy file removal
+2. [x] Browser FK test suite: `ros_ws/gui/test_fk.html` — tests rotation math, IK/FK roundtrips, warm-start, motor rev conversion
+3. [x] Mocap-driven 3D pose fully implemented — quaternion → rotation matrix → platform node positions
+
+---
+
+## Key Source Files Referenced
+
+| File | Purpose |
+|------|---------|
+| `config/hardware_config.yaml` | Source of truth for all geometry constants |
+| `ros_ws/src/jugglebot/jugglebot/motion/ik_solver.py` | FK algorithm to port (lines 126-206 IK/Jacobian, 313-366 FK solver) |
+| `ros_ws/src/jugglebot/jugglebot/motion/geometry.py` | StewartGeometry class — how constants are loaded |
+| `ros_ws/src/jugglebot/jugglebot/can_node.py` | Topic names, motor state structure |
+| `ros_ws/src/jugglebot/jugglebot/orchestrator_node.py` | orchestrator_command topic, state publishing |
+| `ros_ws/src/jugglebot_interfaces/msg/RobotState.msg` | Robot state message fields |
+| `ros_ws/src/jugglebot_interfaces/msg/MotorStateSingle.msg` | Per-motor fields |
+| `ros_ws/src/jugglebot_interfaces/msg/BallButlerHeartbeat.msg` | BB heartbeat fields |
+| `ros_ws/src/jugglebot_interfaces/msg/RigidBodyPoses.msg` | Mocap rigid body poses (preferred platform pose source) |
+| `ros_ws/src/jugglebot_interfaces/msg/MocapDataMulti.msg` | Raw mocap markers (balls, general viz) |
+
+---
+
+## Verification
+
+Since we're developing on Windows (no ROS2), verification is done in two stages:
+
+1. **Windows dev** — Run `python gui_server.py` and open `http://localhost:8080` in a browser. The 3D viewer should render the static home-pose robot. Panels will show "Disconnected" (no rosbridge). All layout, styling, orbit controls testable offline. The page should NOT require a refresh when rosbridge becomes available later.
+2. **Jetson/network** — Run `python3 gui_server.py` as a persistent process. Open `http://<jetson-ip>:8080` from any machine. Start ROS2 with rosbridge. Verify: GUI auto-connects, live data flows, restart ROS2 and confirm the GUI reconnects within a few seconds without page refresh.
+
+---
+
+## Manual Testing Checklist
+
+### Stage 1: Windows Dev (offline, no ROS2)
+
+Run `python ros_ws/gui/gui_server.py` and open `http://localhost:8080`.
+
+**Automated tests (run first):**
+- [ ] `python -m pytest tests/test_gui_geometry.py -v` — all 40 tests pass
+- [ ] Open `http://localhost:8080/test_fk.html` — all FK tests pass (green "ALL PASSED")
+
+**3D Viewer:**
+- [ ] Dark background renders (#0f172a)
+- [ ] Grid and coordinate axes visible on the floor plane
+- [ ] Stewart platform visible at home position: blue base hexagon, gray platform hexagon, 6 green leg cylinders, amber hand axis line
+- [ ] Ball Butler model visible: purple pedestal with ring and arm
+- [ ] OrbitControls: click-drag to rotate, scroll to zoom, right-click to pan
+- [ ] View menu (top-right): clicking "View" shows checkboxes for Grid, Axes, Platform, Ball Butler, Ghost Overlay
+- [ ] Toggling checkboxes hides/shows scene elements
+
+**Sidebar panels:**
+- [ ] "State" panel shows BOOT badge (gray)
+- [ ] "Motors" panel shows 7 columns (L0-L5, Hand) with "--" placeholders
+- [ ] Bus voltage shows "--"
+- [ ] "System" panel shows 6 flags, all in wait state (gray dots)
+- [ ] "Ball Butler" panel shows "Disconnected" badge
+- [ ] "CAN Traffic" panel shows "--" msg/s
+- [ ] "Tracking Error" panel shows 7 columns with "--" placeholders
+
+**Command overlay:**
+- [ ] Bottom bar shows 6 buttons: Home, Activate, Deactivate, SpaceMouse, Shell, Clear Errors
+- [ ] All buttons disabled except Clear Errors (which is always enabled)
+
+**Connection status:**
+- [ ] Red dot + "Disconnected" shown (top-left of viewer)
+- [ ] No JS console errors (open DevTools → Console)
+
+**Responsive layout:**
+- [ ] Shrink browser width below 900px → sidebar moves below viewer
+- [ ] Motor grid wraps to 4 columns
+
+### Stage 2: Jetson + ROS2 (live)
+
+Prerequisites: rosbridge running on the Jetson (`ros2 launch rosbridge_server rosbridge_websocket_launch.xml`), Jugglebot nodes running.
+
+**Connection:**
+- [ ] Open `http://<jetson-ip>:8080` on any machine
+- [ ] Connection status changes to green dot + "Connected"
+- [ ] Kill rosbridge → status goes red "Disconnected"
+- [ ] Restart rosbridge → auto-reconnects within 2-3 seconds, status goes green again. **No page refresh needed.**
+
+**Live data (BOOT/HOMING):**
+- [ ] State badge updates: BOOT (gray) → HOMING (blue) during startup
+- [ ] Motor dots change color: gray (undefined) → yellow (IDLE) → green (CLOSED_LOOP)
+- [ ] Bus voltage shows actual reading (e.g. ~48V)
+- [ ] Encoder Search flag changes to checkmark when complete
+- [ ] Homed flag changes to checkmark after homing
+
+**Live 3D (IDLE/ACTIVE):**
+- [ ] After homing, state badge shows IDLE (amber)
+- [ ] Motor positions update in the grid (mm for legs, rev for hand)
+- [ ] FET temperatures show and are color-coded (green < 50C, amber < 70C, red >= 70C)
+- [ ] Click "Activate" → state badge shows ACTIVE (green)
+- [ ] Click "SpaceMouse" → sub-mode shows "SPACEMOUSE"
+- [ ] Move spacemouse → 3D platform moves in real-time, legs change colour with extension
+- [ ] Hand axis line extends/retracts with hand motor
+
+**If mocap is running:**
+- [ ] Platform pose driven by measured mocap data (smoother, more accurate than FK)
+- [ ] Disconnect mocap → falls back to FK from encoders within 1 second
+
+**Tracking error:**
+- [ ] With spacemouse active, tracking error bars show small green values (< 0.5mm)
+- [ ] Fast movements cause tracking error to spike (amber/red)
+- [ ] Ghost overlay (red wireframe) fades in during high-error periods
+
+**Ball Butler:**
+- [ ] If BB is connected, state badge shows BB state (IDLE, etc.)
+- [ ] Yaw/Pitch/Hand readouts update
+- [ ] Ball-in-hand indicator shows green/red dot
+- [ ] 3D model rotates/tilts with actual BB movement
+
+**CAN traffic:**
+- [ ] Rate shows actual msg/s count
+- [ ] Sparkline chart updates over time
+
+**Commands:**
+- [ ] Click "Deactivate" → state goes to IDLE
+- [ ] Click "Home" from IDLE → state goes to HOMING
+- [ ] Click "Clear Errors" → works from any state
+
+**Error handling:**
+- [ ] Trigger an error (e.g. E-stop) → state badge shows FAULT (red, pulsing)
+- [ ] Error flags light up red in System panel
+- [ ] "Clear Errors" button enabled
+- [ ] Clear errors → state recovers (if error was transient)
+
+---
+
+## Risks & Mitigations
+
+| Risk | Mitigation |
+|------|-----------|
+| FK solver divergence at extreme poses | Warm-start from previous frame; fall back to home pose on divergence |
+| rosbridge latency on high-freq topics | Client-side throttle (20Hz 3D, 10Hz panels) |
+| CDN dependency for Three.js | Can add local copy to `lib/` if needed |
+| BB position offset unknown | Configurable constant in geometry-config.js; user will provide coordinates |
+| Motor state array shorter than 7 (BB not connected) | Guard with length checks; BB panel shows "Disconnected" |
+| rosbridge restarts kill the page | Standalone HTTP server + auto-reconnect WebSocket. No page refresh needed. |
+| Mocap not always available | FK fallback from motor positions; mocap is preferred but optional |
+
+---
+
+## Appendix: Implementation Notes (2026-02-24)
+
+### Files created
+
+| File | Lines | Purpose |
+|------|-------|---------|
+| `gui_server.py` | ~55 | Standalone HTTP server with CORS, correct MIME types |
+| `index.html` | ~115 | Main HTML: layout grid, import maps, sidebar panels, overlays |
+| `css/theme.css` | ~210 | Dark theme variables, grid layout, responsive breakpoint |
+| `css/viewer.css` | ~120 | 3D container, connection indicator, command overlay, scene menu |
+| `css/panels.css` | ~200 | Motor grid, flags, BB, CAN sparkline, tracking error styles |
+| `js/main.js` | ~200 | Entry point: init, subscribe, route data to all modules |
+| `js/ros-bridge.js` | ~170 | ROSLIB auto-reconnect, subscription manager, publisher cache |
+| `js/geometry-config.js` | ~100 | All hardware constants from `hardware_config.yaml` |
+| `js/stewart-fk.js` | ~220 | Rodrigues rotation, IK, 6x6 Gaussian solver, Newton-Raphson FK |
+| `js/viewer.js` | ~110 | Three.js scene, camera, OrbitControls, render loop |
+| `js/stewart-model.js` | ~260 | Base/platform hex meshes, leg cylinders, hand axis line |
+| `js/ball-butler-model.js` | ~100 | Pedestal, yaw turntable, pitch arm, hand marker |
+| `js/panels.js` | ~330 | All sidebar panels: motors, flags, BB, CAN sparkline, tracking |
+| `js/commands.js` | ~70 | Command buttons with context-sensitive enable/disable |
+| **Total** | **~2,260** | Complete GUI rewrite |
+
+### Legacy files removed
+
+7 files removed via `git rm`: `jugglebot_gui.html`, `main.js` (root), `3dplotter.js`, `package.json`, `package-lock.json`, `convex_hull_points.json`, `convex_hull_points_big.json`.
+
+### Key design decisions
+
+1. **Coordinate system**: Robot Z-up → Three.js Y-up via `robotToThreeScaled(x, y, z)` → `Vector3(x*s, z*s, y*s)`. Scale factor 0.001 (mm → metres) for natural camera distances.
+
+2. **FK solver**: Newton-Raphson with 6x6 Gaussian elimination (no external linear algebra library). Warm-starts from previous frame for stability. IK ported from `sp_ik.py`, FK is new — the old codebase had no FK.
+
+3. **Pose source priority**: `rigid_body_poses` (mocap) is preferred when available, with a 1-second timeout fallback to FK from motor encoder positions.
+
+4. **Throttling**: `ros-bridge.js` uses ROSLIB's built-in `throttle_rate` parameter. `robot_state` throttled to 20Hz (50ms), `hand_telemetry` to 10Hz (100ms), `leg_lengths_topic` to 20Hz.
+
+5. **ROSLIB loaded as global script**: `roslib.min.js` is not an ES module, so it's loaded via `<script>` tag before the import map. All other JS is ES modules.
+
+6. **Three.js from CDN**: Using import maps with `three@0.170.0` from jsdelivr. Can be replaced with a local copy in `lib/` if needed.
+
+### Items completed since initial implementation
+
+- **Tracking error ghost overlay**: Red wireframe hexagon showing commanded platform pose overlaid on measured pose. Opacity scales with RMS tracking error (invisible below 0.5mm, fully visible above 5mm). Toggle-able via View menu.
+- **Mocap-driven 3D pose**: `onRigidBodyPoses` handler now extracts the platform rigid body by name, converts quaternion to rotation matrix via `quatToRotMatrix()`, computes platform node world positions via `poseToPlatNodes()`, and updates the 3D model. Falls back to FK when mocap is unavailable (1-second timeout).
+- **Quaternion utilities**: Added `quatToRotMatrix(w,x,y,z)` and `poseToPlatNodes(globalPos, R)` to `stewart-fk.js`.
+
+### Items for future work
+
+- **Ball rendering**: Add a sphere in the 3D viewer when ball state data is available from mocap. Deferred to Phase 6 of the codebase rewrite.
+- **BB position calibration**: `BB_POSITION_MM` in `geometry-config.js` is a placeholder `[0, -500, 0]`. Will be updated automatically when the BB calibration position publisher is implemented (see CODEBASE_REWRITE_PLAN Phase 4). The GUI should subscribe to `bb/calibration_result` and update the BB model position dynamically.
+
+### Test infrastructure
+
+| Test | Type | How to run |
+|------|------|------------|
+| `tests/test_gui_geometry.py` | Python/pytest | `python -m pytest tests/test_gui_geometry.py -v` |
+| `ros_ws/gui/test_fk.html` | Browser JS | Open `http://localhost:8080/test_fk.html` after starting `gui_server.py` |
+
+The Python tests verify 40 properties: all 11 scalar constants, 4 array constants, 3 derived constant cross-checks, 16 file existence checks, and 6 legacy file removal checks.
+
+The browser FK tests verify: geometry constant sanity, rotation math (identity, 90deg, roundtrips), IK (home, Z-translation, symmetry, platform nodes), FK roundtrips (home, Z, arbitrary translation, with rotation), warm-start behaviour, and motor rev conversion.

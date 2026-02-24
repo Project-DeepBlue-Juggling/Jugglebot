@@ -1,0 +1,215 @@
+/* ===================================================================
+   panels.css — Status card styles, motor grid, badges
+   =================================================================== */
+
+/* ---- Orchestrator state badge ---- */
+.state-badge {
+    font-size: var(--font-size-lg);
+    padding: 4px 16px;
+}
+
+.state-badge.boot     { background: var(--state-boot);    color: #fff; }
+.state-badge.homing   { background: var(--state-homing);  color: #fff; }
+.state-badge.idle     { background: var(--state-idle);    color: #000; }
+.state-badge.active   { background: var(--state-active);  color: #000; }
+.state-badge.fault    { background: var(--state-fault);   color: #fff; }
+
+.sub-mode {
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+    margin-top: 2px;
+}
+
+/* ---- Motor status grid ---- */
+.motor-grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: var(--gap-xs);
+}
+
+.motor-col {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    padding: var(--gap-xs);
+    border-radius: var(--border-radius-sm);
+    background: var(--bg-primary);
+}
+
+.motor-label {
+    font-size: var(--font-size-xs);
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+}
+
+.motor-state-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--text-muted);
+}
+
+.motor-state-dot.closed-loop { background: var(--accent-green); box-shadow: 0 0 4px var(--accent-green); }
+.motor-state-dot.idle-state  { background: var(--accent-amber); }
+.motor-state-dot.error-state { background: var(--accent-red); box-shadow: 0 0 4px var(--accent-red); }
+.motor-state-dot.undefined   { background: var(--text-muted); }
+
+.motor-value {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+/* Temp color coding */
+.temp-ok      { color: var(--accent-green); }
+.temp-warm    { color: var(--accent-amber); }
+.temp-hot     { color: var(--accent-red); }
+
+/* ---- Bus voltage readout ---- */
+.bus-voltage {
+    display: flex;
+    align-items: baseline;
+    gap: 4px;
+    margin-top: var(--gap-xs);
+}
+
+.bus-voltage .value {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-lg);
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.bus-voltage .unit {
+    font-size: var(--font-size-sm);
+    color: var(--text-muted);
+}
+
+/* ---- System flags ---- */
+.flags-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--gap-xs) var(--gap);
+}
+
+.flag-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: var(--font-size-sm);
+}
+
+.flag-icon {
+    font-size: var(--font-size-base);
+}
+
+.flag-icon.ok   { color: var(--accent-green); }
+.flag-icon.fail { color: var(--accent-red); }
+.flag-icon.wait { color: var(--text-muted); }
+
+/* ---- Ball Butler panel ---- */
+.bb-readouts {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: var(--gap-xs);
+    margin-top: var(--gap-xs);
+}
+
+.bb-readout {
+    text-align: center;
+}
+
+.bb-readout .label {
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+    text-transform: uppercase;
+}
+
+.bb-readout .value {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-sm);
+    color: var(--text-primary);
+}
+
+.bb-ball-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: var(--font-size-sm);
+}
+
+.bb-ball-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+}
+
+.bb-ball-dot.has-ball  { background: var(--accent-green); box-shadow: 0 0 4px var(--accent-green); }
+.bb-ball-dot.no-ball   { background: var(--accent-red); }
+
+/* ---- CAN traffic panel ---- */
+.can-rate {
+    display: flex;
+    align-items: baseline;
+    gap: 4px;
+}
+
+.can-rate .value {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xl);
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.can-rate .unit {
+    font-size: var(--font-size-sm);
+    color: var(--text-muted);
+}
+
+#can-sparkline {
+    width: 100%;
+    height: 40px;
+    margin-top: var(--gap-xs);
+}
+
+/* ---- Tracking error panel ---- */
+.tracking-grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: var(--gap-xs);
+}
+
+.tracking-col {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    padding: var(--gap-xs);
+    border-radius: var(--border-radius-sm);
+    background: var(--bg-primary);
+}
+
+.tracking-bar {
+    width: 6px;
+    height: 30px;
+    background: var(--border-color);
+    border-radius: 3px;
+    position: relative;
+    overflow: hidden;
+}
+
+.tracking-bar-fill {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    border-radius: 3px;
+    transition: height var(--transition-fast), background var(--transition-fast);
+}
+
+.tracking-error-ok     { color: var(--accent-green); }
+.tracking-error-warn   { color: var(--accent-amber); }
+.tracking-error-bad    { color: var(--accent-red); }

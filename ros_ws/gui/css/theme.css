@@ -1,0 +1,211 @@
+/* ===================================================================
+   theme.css — Dark theme variables, base typography, grid layout
+   =================================================================== */
+
+:root {
+    /* Background palette */
+    --bg-primary: #0f172a;
+    --bg-secondary: #1e293b;
+    --bg-card: #1e293b;
+    --bg-card-hover: #263548;
+    --bg-overlay: rgba(15, 23, 42, 0.85);
+
+    /* Text palette */
+    --text-primary: #f1f5f9;
+    --text-secondary: #94a3b8;
+    --text-muted: #64748b;
+
+    /* Accent colours */
+    --accent-blue: #3b82f6;
+    --accent-green: #22c55e;
+    --accent-amber: #f59e0b;
+    --accent-red: #ef4444;
+    --accent-purple: #a78bfa;
+
+    /* State colours */
+    --state-boot: #64748b;
+    --state-homing: #3b82f6;
+    --state-idle: #f59e0b;
+    --state-active: #22c55e;
+    --state-fault: #ef4444;
+
+    /* Borders */
+    --border-color: #334155;
+    --border-radius: 8px;
+    --border-radius-sm: 4px;
+
+    /* Spacing */
+    --gap: 12px;
+    --gap-sm: 8px;
+    --gap-xs: 4px;
+
+    /* Sidebar */
+    --sidebar-width: 340px;
+
+    /* Typography */
+    --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+    --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --font-size-xs: 0.7rem;
+    --font-size-sm: 0.8rem;
+    --font-size-base: 0.9rem;
+    --font-size-lg: 1.1rem;
+    --font-size-xl: 1.4rem;
+
+    /* Transitions */
+    --transition-fast: 150ms ease;
+    --transition-normal: 250ms ease;
+}
+
+/* Reset & base */
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+html, body {
+    height: 100%;
+    overflow: hidden;
+    font-family: var(--font-sans);
+    font-size: 14px;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    -webkit-font-smoothing: antialiased;
+}
+
+/* App layout: 3D viewer + sidebar */
+#app {
+    display: grid;
+    grid-template-columns: 1fr var(--sidebar-width);
+    grid-template-rows: 1fr;
+    height: 100vh;
+    width: 100vw;
+    overflow: hidden;
+}
+
+/* Left pane: 3D viewer + command overlay */
+#viewer-pane {
+    position: relative;
+    overflow: hidden;
+    min-width: 0;
+}
+
+/* Right pane: scrollable sidebar */
+#sidebar {
+    background: var(--bg-secondary);
+    border-left: 1px solid var(--border-color);
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: var(--gap);
+    display: flex;
+    flex-direction: column;
+    gap: var(--gap);
+}
+
+/* Scrollbar styling */
+#sidebar::-webkit-scrollbar {
+    width: 6px;
+}
+#sidebar::-webkit-scrollbar-track {
+    background: transparent;
+}
+#sidebar::-webkit-scrollbar-thumb {
+    background: var(--border-color);
+    border-radius: 3px;
+}
+
+/* Card (panel) base */
+.panel {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius);
+    padding: var(--gap);
+}
+
+.panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: var(--gap-sm);
+}
+
+.panel-title {
+    font-size: var(--font-size-sm);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-secondary);
+}
+
+/* Badge base */
+.badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 9999px;
+    font-size: var(--font-size-xs);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+/* Status dot */
+.status-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-right: 6px;
+    flex-shrink: 0;
+}
+
+.status-dot.connected {
+    background: var(--accent-green);
+    box-shadow: 0 0 6px var(--accent-green);
+}
+
+.status-dot.disconnected {
+    background: var(--accent-red);
+    box-shadow: 0 0 6px var(--accent-red);
+}
+
+/* Monospace data values */
+.mono {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-sm);
+}
+
+/* Pulsing animation for FAULT */
+@keyframes pulse-fault {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+.fault-pulse {
+    animation: pulse-fault 1s ease-in-out infinite;
+}
+
+/* ---- Responsive: sidebar collapses on narrow screens ---- */
+@media (max-width: 900px) {
+    #app {
+        grid-template-columns: 1fr;
+        grid-template-rows: 1fr auto;
+    }
+
+    #sidebar {
+        border-left: none;
+        border-top: 1px solid var(--border-color);
+        max-height: 40vh;
+        overflow-y: auto;
+    }
+
+    .motor-grid {
+        grid-template-columns: repeat(4, 1fr);
+    }
+
+    .tracking-grid {
+        grid-template-columns: repeat(4, 1fr);
+    }
+}
