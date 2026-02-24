@@ -2,10 +2,10 @@
 """Standalone HTTP server for the Jugglebot GUI.
 
 Serves static files from this directory on all interfaces.
-Completely independent of ROS2 -- start once and leave running.
+Completely independent of ROS2 - start once and leave running.
 
 Usage:
-    python3 gui_server.py [--port 8080]
+    python3 gui_server.py [--port 8081]
 """
 
 import argparse
