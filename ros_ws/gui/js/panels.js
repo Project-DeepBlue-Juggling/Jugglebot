@@ -49,8 +49,8 @@ export function updateMotorGrid(motorStates) {
         const posEl = document.getElementById(`motor-pos-${i}`);
         if (posEl) {
             if (i < 6) {
-                // Convert rev to mm: rev / mm_to_rev (negate because ODrive convention)
-                const mm = (-m.pos_estimate) / MM_TO_REV[i];
+                // Convert rev to mm: rev / mm_to_rev (positive = extension)
+                const mm = m.pos_estimate / MM_TO_REV[i];
                 posEl.textContent = mm.toFixed(1) + ' mm';
             } else {
                 posEl.textContent = m.pos_estimate.toFixed(2) + ' rev';
@@ -220,6 +220,18 @@ export function initBBPanel() {
     `;
 }
 
+// Map BB state codes to CSS badge classes (matches orchestrator state colours)
+const BB_STATE_CLASSES = {
+    0: 'boot',          // BOOT — grey
+    1: 'idle',          // IDLE — amber
+    2: 'active',        // TRACKING — green
+    3: 'active',        // THROWING — green
+    4: 'homing',        // RELOADING — blue
+    5: 'homing',        // CALIBRATING — blue
+    6: 'homing',        // CHECKING_BALL — blue
+    127: 'fault',       // ERROR — red pulsing
+};
+
 /**
  * Update Ball Butler panel from heartbeat.
  * @param {object} hb - BallButlerHeartbeat message
@@ -229,7 +241,9 @@ export function updateBBPanel(hb) {
     if (badge) {
         const name = BB_STATE_NAMES[hb.state] || 'UNKNOWN';
         badge.textContent = name;
-        badge.className = 'badge ' + (hb.state === 127 ? 'state-badge fault' : '');
+        const cls = BB_STATE_CLASSES[hb.state] || 'boot';
+        badge.className = 'badge bb-state-badge state-badge ' + cls;
+        if (hb.state === 127) badge.classList.add('fault-pulse');
     }
 
     const ballDot = document.getElementById('bb-ball-dot');

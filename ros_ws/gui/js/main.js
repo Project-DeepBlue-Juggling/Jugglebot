@@ -166,7 +166,7 @@ function onRobotState(msg) {
         if (latestCommandedLegs.length >= 6) {
             const cmdExtensions = [];
             for (let i = 0; i < 6; i++) {
-                cmdExtensions.push((-latestCommandedLegs[i]) / MM_TO_REV[i]);
+                cmdExtensions.push(latestCommandedLegs[i] / MM_TO_REV[i]);
             }
             const cmdResult = solveFK(cmdExtensions);
             if (cmdResult.converged) {

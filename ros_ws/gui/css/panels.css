@@ -111,11 +111,16 @@
 .flag-icon.wait { color: var(--text-muted); }
 
 /* ---- Ball Butler panel ---- */
+.bb-state-badge {
+    font-size: var(--font-size-base);
+    padding: 3px 12px;
+}
+
 .bb-readouts {
     display: grid;
     grid-template-columns: 1fr 1fr 1fr;
     gap: var(--gap-xs);
-    margin-top: var(--gap-xs);
+    margin-top: var(--gap-sm);
 }
 
 .bb-readout {
@@ -123,22 +128,24 @@
 }
 
 .bb-readout .label {
-    font-size: var(--font-size-xs);
+    font-size: var(--font-size-sm);
     color: var(--text-muted);
     text-transform: uppercase;
+    margin-bottom: 2px;
 }
 
 .bb-readout .value {
     font-family: var(--font-mono);
-    font-size: var(--font-size-sm);
+    font-size: var(--font-size-lg);
+    font-weight: 600;
     color: var(--text-primary);
 }
 
 .bb-ball-indicator {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
-    font-size: var(--font-size-sm);
+    gap: 6px;
+    font-size: var(--font-size-base);
 }
 
 .bb-ball-dot {

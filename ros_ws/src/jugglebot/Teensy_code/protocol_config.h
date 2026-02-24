@@ -30,6 +30,7 @@ namespace ODriveCmd {
   constexpr uint8_t set_controller_mode = 0x0B;
   constexpr uint8_t set_input_pos = 0x0C;
   constexpr uint8_t set_input_vel = 0x0D;
+  constexpr uint8_t set_input_torque = 0x0E;
   constexpr uint8_t set_vel_curr_limits = 0x0F;
   constexpr uint8_t set_traj_vel_limit = 0x11;
   constexpr uint8_t set_traj_acc_limits = 0x12;

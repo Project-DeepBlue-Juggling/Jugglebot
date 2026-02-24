@@ -29,6 +29,7 @@ ODRIVE_COMMANDS = {
     "set_controller_mode": 0x0B,
     "set_input_pos": 0x0C,
     "set_input_vel": 0x0D,
+    "set_input_torque": 0x0E,
     "set_vel_curr_limits": 0x0F,
     "set_traj_vel_limit": 0x11,
     "set_traj_acc_limits": 0x12,

@@ -32,6 +32,22 @@ const BASE_COLOR = 0x3b82f6;
 const PLAT_COLOR = 0xd1d5db;
 const HAND_COLOR = 0xf59e0b;
 
+// Compute the longest platform edge (mm) for hand line sizing
+function computeLongestPlatEdge() {
+    let maxLen = 0;
+    for (let i = 0; i < 6; i++) {
+        const n0 = INIT_PLAT_NODES_MM[i];
+        const n1 = INIT_PLAT_NODES_MM[(i + 1) % 6];
+        const dx = n1[0] - n0[0], dy = n1[1] - n0[1], dz = n1[2] - n0[2];
+        const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        if (len > maxLen) maxLen = len;
+    }
+    return maxLen;
+}
+
+/** Hand line base length: 2/3 of the longest platform strut */
+const HAND_LINE_BASE_LENGTH_MM = computeLongestPlatEdge() * (2 / 3);
+
 function lerp(a, b, t) { return a + (b - a) * t; }
 
 /**
@@ -62,17 +78,15 @@ export function initStewartModel() {
     currentPlatCentre = [0, 0, INITIAL_HEIGHT_MM];
     updateLegPositions();
 
-    // ---- Hand axis (line from platform centre, perpendicular to surface) ----
-    const handGeom = new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(0, 0, 0),
-        new THREE.Vector3(0, 0, 0),
-    ]);
-    handLine = new THREE.Line(
+    // ---- Hand axis (cylinder from platform centre along normal) ----
+    // Use a cylinder for visibility (WebGL Line linewidth is always 1px)
+    const handGeom = new THREE.CylinderGeometry(0.006, 0.006, 1, 8);
+    handLine = new THREE.Mesh(
         handGeom,
-        new THREE.LineBasicMaterial({ color: HAND_COLOR, linewidth: 2 })
+        new THREE.MeshStandardMaterial({ color: HAND_COLOR, emissive: HAND_COLOR, emissiveIntensity: 0.3 })
     );
     platformGroup.add(handLine);
-    updateHandAxis(0); // home position, no extension
+    updateHandAxis(0); // home position
 
     scene.add(platformGroup);
     sceneGroups['Platform'] = platformGroup;
@@ -208,7 +222,11 @@ function extensionColor(ratio) {
 }
 
 /**
- * Update the hand axis line.
+ * Update the hand axis cylinder.
+ * The hand line extends from the platform centre along the platform normal.
+ * Its length is always at least HAND_LINE_BASE_LENGTH_MM (2/3 of the longest
+ * platform strut), plus any additional hand motor extension.
+ *
  * @param {number} extensionMM - hand extension in mm (0 = fully retracted)
  */
 function updateHandAxis(extensionMM) {
@@ -235,26 +253,19 @@ function updateHandAxis(extensionMM) {
         normal[0] *= -1; normal[1] *= -1; normal[2] *= -1;
     }
 
-    // Hand base: platform centre + arm height offset along normal
-    const handBase = [
-        pc[0] + normal[0] * ARM_HEIGHT_FROM_PLATFORM_MM,
-        pc[1] + normal[1] * ARM_HEIGHT_FROM_PLATFORM_MM,
-        pc[2] + normal[2] * ARM_HEIGHT_FROM_PLATFORM_MM,
-    ];
-
-    // Hand tip: extend along normal by current extension
+    // Hand starts at platform centre, extends along normal for base length + motor extension
+    const totalLength = HAND_LINE_BASE_LENGTH_MM + extensionMM;
+    const handBase = [pc[0], pc[1], pc[2]];
     const handTip = [
-        handBase[0] + normal[0] * extensionMM,
-        handBase[1] + normal[1] * extensionMM,
-        handBase[2] + normal[2] * extensionMM,
+        handBase[0] + normal[0] * totalLength,
+        handBase[1] + normal[1] * totalLength,
+        handBase[2] + normal[2] * totalLength,
     ];
 
-    const positions = handLine.geometry.attributes.position;
+    // Position the cylinder between handBase and handTip
     const base3 = robotToThreeScaled(handBase[0], handBase[1], handBase[2]);
     const tip3 = robotToThreeScaled(handTip[0], handTip[1], handTip[2]);
-    positions.setXYZ(0, base3.x, base3.y, base3.z);
-    positions.setXYZ(1, tip3.x, tip3.y, tip3.z);
-    positions.needsUpdate = true;
+    positionCylinder(handLine, base3, tip3);
 }
 
 /**

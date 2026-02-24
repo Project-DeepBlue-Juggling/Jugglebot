@@ -185,16 +185,18 @@ let prevState = [0, 0, 0, 0, 0, 0];
  * FK: given motor positions (revolutions), solve for platform pose.
  * Uses Newton-Raphson iteration with warm-start from previous solution.
  *
- * @param {number[]} motorRevsNeg - 6 motor positions in revolutions (negative = extension, ODrive convention)
+ * Motor convention: positive revs = extension (matches sp_ik.py which publishes
+ * positive revs via leg_lengths_topic, and ODrive reports positive pos_estimate
+ * for extended legs after homing sets leg_abs_pos_rev = 0.1).
+ *
+ * @param {number[]} motorRevs - 6 motor positions in revolutions (positive = extension)
  * @returns {{ pos: number[], R: number[][], platNodes: number[][], converged: boolean }}
  */
-export function legLengthsToPose(motorRevsNeg) {
-    // Convert motor revs (negative = extension) to extensions in mm
+export function legLengthsToPose(motorRevs) {
+    // Convert motor revs to extensions in mm: revs / mm_to_rev
     const targetExtensions = new Array(6);
     for (let i = 0; i < 6; i++) {
-        // Motor position is negated in CAN node (negative rev = extension),
-        // and then converted from revs to mm by dividing by mm_to_rev
-        targetExtensions[i] = (-motorRevsNeg[i]) / MM_TO_REV[i];
+        targetExtensions[i] = motorRevs[i] / MM_TO_REV[i];
     }
 
     return solveFK(targetExtensions);
