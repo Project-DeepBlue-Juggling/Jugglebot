@@ -38,7 +38,7 @@ class ReusableHTTPServer(http.server.HTTPServer):
 
 def main():
     parser = argparse.ArgumentParser(description="Jugglebot GUI server")
-    parser.add_argument("--port", type=int, default=8080, help="Port to serve on")
+    parser.add_argument("--port", type=int, default=8081, help="Port to serve on")
     args = parser.parse_args()
 
     directory = os.path.dirname(os.path.abspath(__file__))
