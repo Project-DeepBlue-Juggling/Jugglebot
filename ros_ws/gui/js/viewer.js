@@ -24,18 +24,24 @@ export let controls;
 /** Named groups for visibility toggles */
 export const sceneGroups = {};
 
-/** Convert robot coordinates (Z-up) to Three.js (Y-up): [x, y, z] → [x, z, -y]
- *  Actually we use [x, z, y] with scene.scale.z = -1 as the legacy code did.
- *  Simpler: just swap Y and Z in the geometry. */
+/**
+ * Convert robot coordinates (Z-up, right-handed) to Three.js (Y-up, right-handed).
+ *
+ * Robot frame:  X = right,  Y = forward (away from viewer),  Z = up
+ * Three.js:     X = right,  Y = up,                          Z = towards viewer
+ *
+ * Mapping: robot(x, y, z) → Three(x, z, -y)
+ * The negation of Y preserves right-handedness.
+ */
 export function robotToThree(x, y, z) {
-    return new THREE.Vector3(x, z, y);
+    return new THREE.Vector3(x, z, -y);
 }
 
-/** Scale factor: mm → Three.js units. Keep 1:1 (mm) for clarity. */
-const SCALE = 0.001; // 1 unit = 1 metre for nice camera distances
+/** Scale factor: mm → Three.js units (metres for nice camera distances). */
+const SCALE = 0.001;
 
 export function robotToThreeScaled(x, y, z) {
-    return new THREE.Vector3(x * SCALE, z * SCALE, y * SCALE);
+    return new THREE.Vector3(x * SCALE, z * SCALE, -y * SCALE);
 }
 
 /**
@@ -76,7 +82,7 @@ export function initViewer(container) {
     dirLight.position.set(2, 3, 1);
     scene.add(dirLight);
 
-    // Grid (on XZ plane in Three.js = XY plane in robot frame)
+    // Grid (on XZ plane in Three.js = XY ground plane in robot frame)
     const grid = new THREE.GridHelper(2, 20, 0x334155, 0x1e293b);
     grid.name = 'grid';
     scene.add(grid);
