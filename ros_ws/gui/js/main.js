@@ -48,8 +48,9 @@ function init() {
     // 4. Init scene menu
     initSceneMenu();
 
-    // 5. Init resize handle
+    // 5. Init resize handle + font size
     initResizeHandle();
+    initFontSize();
 
     // 6. Init ROS connection
     ros.onConnectionStateChange(onConnectionStateChange);
@@ -352,6 +353,47 @@ function initResizeHandle() {
     handle.addEventListener('pointerdown', onPointerDown);
     document.addEventListener('pointermove', onPointerMove);
     document.addEventListener('pointerup', onPointerUp);
+}
+
+// ---- Font size control ----
+
+const FONT_SIZE_STORAGE_KEY = 'jugglebot-font-size';
+const FONT_SIZE_MIN = 10;
+const FONT_SIZE_MAX = 22;
+const FONT_SIZE_STEP = 1;
+const FONT_SIZE_DEFAULT = 14;
+
+function initFontSize() {
+    const saved = localStorage.getItem(FONT_SIZE_STORAGE_KEY);
+    const size = saved ? parseInt(saved, 10) : FONT_SIZE_DEFAULT;
+    applyFontSize(size);
+
+    const decreaseBtn = document.getElementById('font-decrease');
+    const increaseBtn = document.getElementById('font-increase');
+    if (decreaseBtn) {
+        decreaseBtn.addEventListener('click', () => {
+            const current = getCurrentFontSize();
+            if (current > FONT_SIZE_MIN) applyFontSize(current - FONT_SIZE_STEP);
+        });
+    }
+    if (increaseBtn) {
+        increaseBtn.addEventListener('click', () => {
+            const current = getCurrentFontSize();
+            if (current < FONT_SIZE_MAX) applyFontSize(current + FONT_SIZE_STEP);
+        });
+    }
+}
+
+function getCurrentFontSize() {
+    return parseInt(document.documentElement.style.fontSize, 10) || FONT_SIZE_DEFAULT;
+}
+
+function applyFontSize(size) {
+    size = Math.max(FONT_SIZE_MIN, Math.min(FONT_SIZE_MAX, size));
+    document.documentElement.style.fontSize = size + 'px';
+    localStorage.setItem(FONT_SIZE_STORAGE_KEY, size);
+    const label = document.getElementById('font-size-label');
+    if (label) label.textContent = size + 'px';
 }
 
 // ---- Topic discovery ----

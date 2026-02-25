@@ -312,3 +312,44 @@
     font-size: var(--font-size-sm);
     font-family: var(--font-sans);
 }
+
+/* Clickable rows for hide/unhide */
+.topic-table tr[data-topic] {
+    cursor: pointer;
+    transition: background var(--transition-fast);
+}
+
+.topic-table tr[data-topic]:hover td {
+    background: var(--bg-card-hover);
+}
+
+/* Hidden topic rows shown dimmed */
+.topic-row-hidden td {
+    opacity: 0.5;
+}
+
+.topic-row-hidden:hover td {
+    opacity: 0.8;
+}
+
+/* "N hidden" toggle */
+.topic-hidden-toggle {
+    text-align: center;
+    padding: 4px 8px;
+    color: var(--text-muted);
+    font-size: var(--font-size-xs);
+    font-family: var(--font-sans);
+    cursor: pointer;
+    border-top: 1px solid var(--border-color);
+    margin-top: 2px;
+    transition: color var(--transition-fast);
+}
+
+.topic-hidden-toggle:hover {
+    color: var(--text-secondary);
+}
+
+/* Dimmed table for the hidden section */
+.topic-table-hidden {
+    opacity: 0.7;
+}

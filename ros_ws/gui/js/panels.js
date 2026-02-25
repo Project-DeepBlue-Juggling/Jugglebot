@@ -400,6 +400,22 @@ const topicData = new Map();
 const WINDOW_OPTIONS = [1000, 5000, 10000, 30000];
 let currentWindowIndex = 1; // Start at 5s
 
+/** Hidden topics — persisted to localStorage */
+const HIDDEN_TOPICS_KEY = 'jugglebot-hidden-topics';
+let hiddenTopics = new Set();
+let showHidden = false;
+
+function loadHiddenTopics() {
+    try {
+        const saved = localStorage.getItem(HIDDEN_TOPICS_KEY);
+        if (saved) hiddenTopics = new Set(JSON.parse(saved));
+    } catch { /* ignore */ }
+}
+
+function saveHiddenTopics() {
+    localStorage.setItem(HIDDEN_TOPICS_KEY, JSON.stringify([...hiddenTopics]));
+}
+
 /** @returns {number} Current window in ms */
 export function getTopicWindowMs() {
     return WINDOW_OPTIONS[currentWindowIndex];
@@ -409,6 +425,7 @@ export function initTopicMonitor() {
     const container = document.getElementById('topic-table-container');
     if (!container) return;
 
+    loadHiddenTopics();
     container.innerHTML = '<div class="topic-empty">No topics</div>';
 
     // Click to cycle window
@@ -451,6 +468,16 @@ export function registerTopic(topicName, topicType) {
 }
 
 /**
+ * Compute rate for a topic entry.
+ * @param {object} entry
+ * @param {number} windowSec
+ * @returns {number}
+ */
+function topicRate(entry, windowSec) {
+    return windowSec > 0 ? entry.timestamps.length / windowSec : 0;
+}
+
+/**
  * Update the topic monitor table. Called on a 1-second timer.
  */
 export function updateTopicMonitor() {
@@ -470,8 +497,29 @@ export function updateTopicMonitor() {
         return;
     }
 
-    // Sort topics alphabetically
-    const sorted = [...topicData.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+    const windowSec = windowMs / 1000;
+
+    // Separate visible and hidden topics
+    const visible = [];
+    const hidden = [];
+    for (const [name, entry] of topicData) {
+        if (hiddenTopics.has(name)) {
+            hidden.push([name, entry]);
+        } else {
+            visible.push([name, entry]);
+        }
+    }
+
+    // Sort visible by rate descending, then alphabetically for ties
+    visible.sort((a, b) => {
+        const rateA = topicRate(a[1], windowSec);
+        const rateB = topicRate(b[1], windowSec);
+        if (rateB !== rateA) return rateB - rateA;
+        return a[0].localeCompare(b[0]);
+    });
+
+    // Sort hidden alphabetically
+    hidden.sort((a, b) => a[0].localeCompare(b[0]));
 
     // Build table
     let html = `<table class="topic-table">
@@ -481,52 +529,102 @@ export function updateTopicMonitor() {
             <th class="col-rate">Rate</th>
         </tr></thead><tbody>`;
 
-    const windowSec = windowMs / 1000;
-
-    for (const [name, entry] of sorted) {
-        // Last message time
-        let lastStr;
-        if (entry.lastTime === 0) {
-            lastStr = '--';
-        } else {
-            const ago = (now - entry.lastTime) / 1000;
-            if (ago < 10) lastStr = ago.toFixed(1) + 's';
-            else if (ago < 60) lastStr = Math.round(ago) + 's';
-            else if (ago < 3600) lastStr = Math.round(ago / 60) + 'm';
-            else lastStr = Math.round(ago / 3600) + 'h';
-        }
-
-        // Rate (messages per second in window)
-        const count = entry.timestamps.length;
-        const rate = windowSec > 0 ? count / windowSec : 0;
-        let rateStr;
-        let rateClass;
-        if (count === 0) {
-            rateStr = '--';
-            rateClass = 'topic-rate-stale';
-        } else if (rate >= 100) {
-            rateStr = Math.round(rate).toString();
-            rateClass = 'topic-rate-high';
-        } else if (rate >= 10) {
-            rateStr = rate.toFixed(0);
-            rateClass = 'topic-rate-active';
-        } else {
-            rateStr = rate.toFixed(1);
-            rateClass = 'topic-rate-active';
-        }
-
-        // Short display name: strip leading /
-        const displayName = name.startsWith('/') ? name.substring(1) : name;
-
-        html += `<tr>
-            <td class="col-topic" title="${name} [${entry.type}]">${displayName}</td>
-            <td class="col-last">${lastStr}</td>
-            <td class="col-rate ${rateClass}">${rateStr}</td>
-        </tr>`;
+    for (const [name, entry] of visible) {
+        html += buildTopicRow(name, entry, windowSec, now, false);
     }
 
     html += '</tbody></table>';
+
+    // Hidden topics footer
+    if (hidden.length > 0) {
+        html += `<div class="topic-hidden-toggle" id="topic-hidden-toggle">${hidden.length} hidden</div>`;
+
+        if (showHidden) {
+            html += `<table class="topic-table topic-table-hidden">
+                <tbody>`;
+            for (const [name, entry] of hidden) {
+                html += buildTopicRow(name, entry, windowSec, now, true);
+            }
+            html += '</tbody></table>';
+        }
+    }
+
     container.innerHTML = html;
+
+    // Wire up hide/unhide click handlers (event delegation)
+    container.addEventListener('click', onTopicTableClick, { once: true });
+}
+
+/**
+ * Build a single topic table row.
+ */
+function buildTopicRow(name, entry, windowSec, now, isHidden) {
+    // Last message time
+    let lastStr;
+    if (entry.lastTime === 0) {
+        lastStr = '--';
+    } else {
+        const ago = (now - entry.lastTime) / 1000;
+        if (ago < 10) lastStr = ago.toFixed(1) + 's';
+        else if (ago < 60) lastStr = Math.round(ago) + 's';
+        else if (ago < 3600) lastStr = Math.round(ago / 60) + 'm';
+        else lastStr = Math.round(ago / 3600) + 'h';
+    }
+
+    // Rate
+    const count = entry.timestamps.length;
+    const rate = topicRate(entry, windowSec);
+    let rateStr;
+    let rateClass;
+    if (count === 0) {
+        rateStr = '--';
+        rateClass = 'topic-rate-stale';
+    } else if (rate >= 100) {
+        rateStr = Math.round(rate).toString();
+        rateClass = 'topic-rate-high';
+    } else if (rate >= 10) {
+        rateStr = rate.toFixed(0);
+        rateClass = 'topic-rate-active';
+    } else {
+        rateStr = rate.toFixed(1);
+        rateClass = 'topic-rate-active';
+    }
+
+    const displayName = name.startsWith('/') ? name.substring(1) : name;
+    const action = isHidden ? 'unhide' : 'hide';
+    const actionTitle = isHidden ? 'Click to unhide' : 'Click to hide';
+    const rowClass = isHidden ? ' class="topic-row-hidden"' : '';
+
+    return `<tr${rowClass} data-topic="${name}" data-action="${action}" title="${actionTitle}: ${name} [${entry.type}]">
+        <td class="col-topic">${displayName}</td>
+        <td class="col-last">${lastStr}</td>
+        <td class="col-rate ${rateClass}">${rateStr}</td>
+    </tr>`;
+}
+
+/**
+ * Handle clicks on the topic table for hide/unhide.
+ */
+function onTopicTableClick(e) {
+    // Toggle hidden section visibility
+    const toggle = e.target.closest('#topic-hidden-toggle');
+    if (toggle) {
+        showHidden = !showHidden;
+        return;
+    }
+
+    // Hide/unhide a topic row
+    const row = e.target.closest('tr[data-topic]');
+    if (row) {
+        const topic = row.dataset.topic;
+        const action = row.dataset.action;
+        if (action === 'hide') {
+            hiddenTopics.add(topic);
+        } else {
+            hiddenTopics.delete(topic);
+        }
+        saveHiddenTopics();
+    }
 }
 
 /**
