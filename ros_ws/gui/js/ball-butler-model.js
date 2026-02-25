@@ -4,8 +4,11 @@
  * Renders the Ball Butler with:
  *   - Yaw arc:    range indicator in the horizontal (robot XY) plane, +/-30 deg from Y
  *   - Pitch arc:  range indicator in the vertical (robot YZ) plane, ~5 deg to 100 deg
- *   - Throw axis: line through the pitch pivot, angled by current pitch
+ *   - Throw axis: tube through the pitch pivot, angled by current pitch
  *   - Hand marker: sphere sliding along the throw axis
+ *
+ * All three axes use a red-green-red vertex colour gradient
+ * (red at boundaries, green at mid-stroke).
  *
  * Coordinate convention (inside bbGroup):
  *   Robot frame: X = right, Y = forward, Z = up
@@ -36,7 +39,7 @@ function r2t(rx, ry, rz) {
 let bbGroup;
 let yawGroup;
 let pitchGroup;
-let throwLine;
+let throwTube;
 let handSphere;
 
 // ---- Visual parameters (mm) ----
@@ -45,13 +48,12 @@ const PEDESTAL_RADIUS   = 125;
 const YAW_ARC_RADIUS    = PEDESTAL_RADIUS + 5;  // 130 mm
 const PITCH_ARC_RADIUS  = 150;
 const ARC_SEGMENTS      = 48;
-const ARC_TUBE_R        = 2.5;  // tube cross-section radius for thick arcs
+const ARC_TUBE_R        = 2.5;  // tube cross-section radius
+const THROW_TUBE_R      = 2.0;  // slightly thinner for the linear axis
 const HAND_SPHERE_R     = 8;
 
 // ---- Colours ----
 const COL_PEDESTAL = 0xb0b0b0;  // light grey
-const COL_ARC      = 0x64748b;  // muted slate
-const COL_THROW    = 0xa78bfa;  // purple
 const COL_HAND     = 0xf59e0b;  // amber
 
 // ---- Pitch pivot in robot coords (inside yawGroup) ----
@@ -63,17 +65,13 @@ const PIVOT_Z =  0;
 // Throw axis line is offset from hand sphere in local x
 const THROW_LINE_X_OFFSET = 80;  // mm
 
+// ---- Tube helpers ----
+const RADIAL_SEGS = 8;  // cross-section segments for all tubes
+
 /**
  * Build an arc as an array of THREE.Vector3 (in Three.js local metres).
  *
  * angle convention: 0 deg = along robot +Y (forward), increasing toward +X (xy) or +Z (yz).
- *
- * @param {number}  r        - radius in mm
- * @param {number}  aDeg     - start angle (degrees)
- * @param {number}  bDeg     - end angle (degrees)
- * @param {number}  n        - segment count
- * @param {'xy'|'yz'} plane  - robot-frame plane
- * @param {THREE.Vector3} [off] - optional offset (already in Three.js coords)
  */
 function arcPts(r, aDeg, bDeg, n, plane, off) {
     const pts = [];
@@ -81,10 +79,8 @@ function arcPts(r, aDeg, bDeg, n, plane, off) {
         const a = (aDeg + (bDeg - aDeg) * (i / n)) * DEG2RAD;
         let p;
         if (plane === 'xy') {
-            // horizontal arc: robot (r sin a, r cos a, 0)
             p = r2t(r * Math.sin(a), r * Math.cos(a), 0);
         } else {
-            // vertical arc:   robot (0, r cos a, r sin a)
             p = r2t(0, r * Math.cos(a), r * Math.sin(a));
         }
         if (off) p.add(off);
@@ -94,16 +90,57 @@ function arcPts(r, aDeg, bDeg, n, plane, off) {
 }
 
 /**
- * Create a solid tube mesh that follows an arc path.
- * Uses TubeGeometry around a CatmullRomCurve3 for WebGL-friendly thick lines.
+ * Apply red-green-red vertex colours along a TubeGeometry.
+ * Red at the tube endpoints (boundaries), green at centre (mid-stroke).
  */
-function tubeArc(pts, color, tubeR) {
+function applyBoundaryColors(geom, tubularSegs) {
+    const count = geom.attributes.position.count;
+    const colors = new Float32Array(count * 3);
+    const ringSize = RADIAL_SEGS + 1;
+
+    for (let i = 0; i <= tubularSegs; i++) {
+        const t = i / tubularSegs;                // 0..1 along path
+        const edge = Math.abs(t - 0.5) * 2;      // 0 at centre, 1 at ends
+        const r = edge;
+        const g = 1 - edge;
+
+        for (let j = 0; j < ringSize; j++) {
+            const idx = i * ringSize + j;
+            colors[idx * 3]     = r;
+            colors[idx * 3 + 1] = g;
+            colors[idx * 3 + 2] = 0;
+        }
+    }
+    geom.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+}
+
+/**
+ * Create a coloured tube mesh from an arc (CatmullRomCurve3).
+ */
+function coloredArcTube(pts, tubeR) {
     const curve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.0);
-    const geom = new THREE.TubeGeometry(curve, pts.length * 2, tubeR * S, 8, false);
+    const tubSegs = pts.length * 2;
+    const geom = new THREE.TubeGeometry(curve, tubSegs, tubeR * S, RADIAL_SEGS, false);
+    applyBoundaryColors(geom, tubSegs);
     const mat = new THREE.MeshStandardMaterial({
-        color,
+        vertexColors: true,
         transparent: true,
-        opacity: 0.55,
+        opacity: 0.7,
+    });
+    return new THREE.Mesh(geom, mat);
+}
+
+/**
+ * Create a coloured tube mesh along a straight line (LineCurve3).
+ */
+function coloredLineTube(from, to, tubeR, segs) {
+    const curve = new THREE.LineCurve3(from, to);
+    const geom = new THREE.TubeGeometry(curve, segs, tubeR * S, RADIAL_SEGS, false);
+    applyBoundaryColors(geom, segs);
+    const mat = new THREE.MeshStandardMaterial({
+        vertexColors: true,
+        transparent: true,
+        opacity: 0.7,
     });
     return new THREE.Mesh(geom, mat);
 }
@@ -138,9 +175,9 @@ export function initBallButlerModel() {
     const topY = PEDESTAL_HEIGHT * S;
 
     // ---- Yaw arc: +/-30 deg from robot +Y, in robot XY plane ----
-    const yawArc = tubeArc(
+    const yawArc = coloredArcTube(
         arcPts(YAW_ARC_RADIUS, -30, 30, ARC_SEGMENTS, 'xy'),
-        COL_ARC, ARC_TUBE_R,
+        ARC_TUBE_R,
     );
     yawArc.position.y = topY;
     bbGroup.add(yawArc);
@@ -150,11 +187,15 @@ export function initBallButlerModel() {
     yawGroup.position.y = topY;
     bbGroup.add(yawGroup);
 
-    // ---- Pitch arc: 5 deg to 100 deg, in robot YZ plane, at pitch pivot ----
+    // ---- Pitch arc: 5 deg to 100 deg, in robot YZ plane ----
+    // Offset to pivot + throw-line x-offset so arc aligns with the throw axis
     const pivotThree = r2t(PIVOT_X, PIVOT_Y, PIVOT_Z);
-    const pitchArc = tubeArc(
-        arcPts(PITCH_ARC_RADIUS, 5, 100, ARC_SEGMENTS, 'yz', pivotThree),
-        COL_ARC, ARC_TUBE_R,
+    const pitchArcOffset = pivotThree.clone();
+    pitchArcOffset.x += THROW_LINE_X_OFFSET * S;
+
+    const pitchArc = coloredArcTube(
+        arcPts(PITCH_ARC_RADIUS, 5, 100, ARC_SEGMENTS, 'yz', pitchArcOffset),
+        ARC_TUBE_R,
     );
     yawGroup.add(pitchArc);
 
@@ -163,18 +204,17 @@ export function initBallButlerModel() {
     pitchGroup.position.copy(pivotThree);
     yawGroup.add(pitchGroup);
 
-    // ---- Throw axis line ----
+    // ---- Throw axis tube ----
     // In pitchGroup local frame the throw direction is -Z (= robot +Y = forward).
     // Pitch rotation around X tilts it upward.
     const throwLen = BB_HAND_STROKE_MM * S;
     const throwX = THROW_LINE_X_OFFSET * S;
-    const throwGeom = new THREE.BufferGeometry().setFromPoints([
+    throwTube = coloredLineTube(
         new THREE.Vector3(throwX, 0, 0),
         new THREE.Vector3(throwX, 0, -throwLen),
-    ]);
-    const throwMat = new THREE.LineBasicMaterial({ color: COL_THROW });
-    throwLine = new THREE.Line(throwGeom, throwMat);
-    pitchGroup.add(throwLine);
+        THROW_TUBE_R, 32,
+    );
+    pitchGroup.add(throwTube);
 
     // ---- Hand sphere ----
     const handGeom = new THREE.SphereGeometry(HAND_SPHERE_R * S, 12, 12);
