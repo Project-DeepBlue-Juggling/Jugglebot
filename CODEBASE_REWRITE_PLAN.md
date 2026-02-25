@@ -222,17 +222,30 @@ ros_ws/src/jugglebot/
 - [x] Write `orchestrator_node.py` with startup sequence: wait for heartbeats → encoder search → homing → IDLE
 - [x] Implement error severity classification (transient vs fatal) from day one
 - [x] FAULT state with safe motor disable via 'ERROR' control mode
-- [ ] **Test**: Full power-on → homing → IDLE → ACTIVE (spacemouse) sequence on real hardware
+- [x] **Test**: Full power-on → homing → IDLE → ACTIVE (spacemouse) sequence on real hardware
 
-### Phase 3: Motion Planner
-- [ ] Extract IK math from `sp_ik.py` into `motion/ik_solver.py`
-- [ ] Load geometry from generated `hardware_config.yaml`
-- [ ] Implement `motion/workspace.py`: leg extension limits, position bounds (scaffold for force/stability)
+### Phase 3: Motion Planner — IN PROGRESS
+#### Motion Planner Phase 1 (Kinematic Foundation) — DONE (2026-02-20)
+- [x] Extract IK math from `sp_ik.py` into `motion/ik_solver.py` (position IK, velocity IK via Jacobian, acceleration IK with bias term, numerical FK)
+- [x] Load geometry from generated `hardware_config.py` via `motion/geometry.py`
+- [x] Implement `motion/workspace.py`: leg extension limits, condition number, reachability, singularity mapping
+- [x] Implement `motion/conversions.py`: leg force ↔ motor torque, mm ↔ rev conversions
+- [x] Add `set_input_torque` (0x0E) to protocol config + `can/odrive.py`
+
+#### Motion Planner Phase 2 (Control Process & IPC) — SOFTWARE DONE (2026-02-20)
+- [x] Implement `motion/ipc.py`: ZeroMQ PUB/SUB IPC layer with msgpack serialization
+- [x] Implement `motion/control_loop.py`: standalone fixed-rate control process with timing instrumentation and heartbeat watchdog
+- [x] Write `motion_bridge_node.py`: ROS2 ↔ IPC bridge (subscribes to pose commands, publishes leg lengths)
+- [x] Phase 1 verification tests (6 tests, all PASS) — `motion/tests/test_kinematics.py`
+- [x] Phase 2 verification tests (3 tests) — `motion/tests/test_control_loop.py`
+
+#### Motion Planner Phase 3+ (Dynamics, Trajectory, Hardening) — NOT STARTED
 - [ ] Implement `motion/trajectory.py`: smooth trajectory generation with pre-computed durations
-  - Trapezoidal velocity profiles respecting per-leg velocity/acceleration limits
+  - Quintic polynomial solver respecting per-leg velocity/acceleration limits
   - Duration estimation: compute exact time required, reject infeasible commands before starting
-  - Rate-limited pose updates
-- [ ] Write `motion_planner_node.py`: subscribe to `/platform_pose_cmd`, validate, plan trajectory, publish `/leg_lengths`
+- [ ] Gravity compensation & static feedforward (Phase 3 of MOTION_PLANNER_PLAN)
+- [ ] Full inertia feedforward & dynamic compensation (Phase 5 of MOTION_PLANNER_PLAN)
+- [ ] Hardening & operational readiness (Phase 6 of MOTION_PLANNER_PLAN)
 - [ ] Absorb `gently_move_platform_to_setpoint()` as a trajectory-planned move
 - [ ] Absorb platform leveling as a planner method
 - [ ] **Test**: Spacemouse control through new pipeline. A/B compare with old system
@@ -516,3 +529,77 @@ Seven issues identified during Phase 2 code review, all resolved:
 6. **Unused `FAULT_TIMEOUT_S` and `fault_entry_time`** (state_machine.py): Constant and context field were defined but never read. Fix: Removed both. See "FAULT timeout not implemented" item above.
 
 7. **Shutdown race condition** (orchestrator_node.py): `on_shutdown()` called `rclpy.spin_until_future_complete()` which could fail if the node was partially destroyed. Fix: Replaced with fire-and-forget ERROR mode publish. See "Shutdown race condition" item above.
+
+---
+
+## Appendix D: Phase 3 Completion Notes — Motion Planner Phases 1-2 (2026-02-20)
+
+### Architecture: pure Python motion subpackage + standalone control process
+
+The `motion/` subpackage is pure Python + numpy with no ROS2 dependency. The real-time control process runs as a standalone Python process communicating with ROS2 via ZeroMQ IPC. A thin bridge node translates between ROS2 topics and IPC messages.
+
+| File | Lines | Purpose |
+|------|-------|---------|
+| `motion/geometry.py` | ~65 | `StewartGeometry` class — loads all platform constants from `hardware_config.py` |
+| `motion/ik_solver.py` | ~270 | Position/velocity/acceleration IK, analytical Jacobian, numerical FK (Newton-Raphson), rotation utilities |
+| `motion/workspace.py` | ~130 | Leg extension checking, condition number, reachability, singularity mapping |
+| `motion/conversions.py` | ~70 | Leg force ↔ motor torque, extension ↔ rev, velocity conversions |
+| `motion/ipc.py` | ~190 | ZeroMQ PUB/SUB IPC with msgpack; `ControlProcessIPC` + `BridgeIPC` classes |
+| `motion/control_loop.py` | ~230 | Fixed-rate standalone control process with timing instrumentation, heartbeat watchdog |
+| `motion_bridge_node.py` | ~170 | ROS2 bridge: subscriptions → IPC → publishers |
+| `motion/tests/test_kinematics.py` | ~260 | 6 Phase 1 verification tests |
+| `motion/tests/test_control_loop.py` | ~170 | 3 Phase 2 verification tests |
+| `motion/__init__.py` | ~40 | Public API exports |
+
+### Key design decisions
+
+1. **No ROS2 in motion/**: All kinematic, conversion, and IPC code is plain Python. This keeps the control loop independent of ROS2 lifecycle and threading, and makes everything testable without a running ROS2 system.
+
+2. **ZeroMQ PUB/SUB IPC**: The control process subscribes on `tcp://localhost:5555` (targets and mode commands from the bridge) and publishes on `tcp://localhost:5556` (telemetry back to the bridge). Messages use msgpack serialization with topic-prefix framing (e.g., `b'target'`, `b'mode'`, `b'telem'`).
+
+3. **Heartbeat watchdog**: The control loop E-stops if no IPC messages arrive for 500 ms, preventing runaway operation if the bridge node dies.
+
+4. **Jacobian convention**: `J` maps `[vx, vy, vz, wx, wy, wz]` → `[q_dot_1..q_dot_6]`. This is a 6×6 matrix where row `i` corresponds to leg `i` and columns 0-2 are translational, 3-5 are rotational.
+
+5. **Torque passthrough**: Added `set_input_torque` (command 0x0E) to `protocol_config.yaml` and `encode_set_input_torque()` to `can/odrive.py`. This enables direct torque control of ODrives, replacing the TRAP_TRAJ position commands for future dynamics-based control.
+
+6. **Spool radius derivation**: `spool_radius_mm = 1.0 / (2π × mm_to_rev)` — derived from the `GEOM_MM_TO_REV` constant in `hardware_config.py`, yielding ~11 mm. This is the fixed geometric ratio for force ↔ torque conversion.
+
+### Phase 1 verification results (all PASS)
+
+| Test | Result | Error | Notes |
+|------|--------|-------|-------|
+| Regression vs sp_ik.py | PASS | 0.00e+00 mm | Exact match with legacy implementation at 20 poses |
+| Numerical Jacobian | PASS | 1.11e-06 | Analytical vs finite-difference at 30 random poses |
+| Round-trip twist integration | PASS | 2.19e-05 mm/s | Twist → leg velocities → integrate → verify pose |
+| Bias term (Jdot · twist) | PASS | 1.71e-06 mm/s² | Analytical vs numerical Jacobian time-derivative |
+| FK round-trip | PASS | 0.00e+00 | IK → FK (Newton-Raphson) → compare at 20 poses |
+| Singularity map | INFO | — | 929/1944 poses reachable; cond(J) range 449-644 |
+
+### Phase 2 verification results
+
+Software-only tests run on Windows dev machine. **1 of 3 passed; 2 skipped** due to missing Jetson-only dependencies (`pyzmq`, `msgpack`). The skipped tests are Phase 2 exit gates and must pass on the Jetson before proceeding to hardware testing.
+
+| Test | Result | Notes |
+|------|--------|-------|
+| Loop timing | SKIP — **must pass on Jetson before hardware tests** | Requires pyzmq/msgpack. Exit gate: p99 jitter < 2× nominal period |
+| IPC latency | SKIP — **must pass on Jetson before hardware tests** | Requires pyzmq/msgpack. Exit gate: round-trip < 1 control cycle |
+| Force conversion | PASS (<1e-14) | Round-trip force/torque conversion; spool radii ~11 mm |
+
+### Before hardware testing
+
+1. Install dependencies on Jetson: `pip install pyzmq msgpack`
+2. Run `python -m jugglebot.motion.tests.test_control_loop` — loop timing and IPC latency must both pass
+3. Run `python tools/single_leg_test.py` on a single bench-mounted leg — this standalone harness (no ROS2 required) implements all four Phase 2 isolated-leg bench tests: torque passthrough smoke test, e-stop, encoder sign check, force conversion validation. See `tools/README.md` for usage and pass criteria.
+
+### Findings for future phases
+
+1. **Singularity map condition numbers (449-644)**: Raw `cond(J)` reflects mixed mm/rad units in the Jacobian. The platform is not near-singular — the numbers are simply not comparable to "well-conditioned ≈ 1". For Phase 6 runtime monitoring, normalize the Jacobian (e.g., characteristic length scaling) to make condition numbers interpretable.
+
+2. **Rotation perturbation convention**: Jacobian columns 3-5 correspond to world-frame angular velocity, not rotation vector components. Numerical validation must perturb as `exp(skew(δ·eᵢ)) · R`, not `rotvec + δ·eᵢ`. This distinction matters for non-zero rotation states.
+
+### Post-Phase 3 additions (2026-02-25)
+
+1. **`encode_set_input_torque()` added to `can/odrive.py`**: The function was documented as existing in Appendix D but was not actually present. Added: encodes a float32 torque (Nm) for ODrive command 0x0E (`set_input_torque`). Used by the standalone test harness and will be used by the control loop for torque-mode operation.
+
+2. **Standalone single-leg test harness**: `tools/single_leg_test.py` — bypasses ROS2, talks directly to one ODrive via python-can. Implements all four Phase 2 bench tests. See `tools/README.md`.

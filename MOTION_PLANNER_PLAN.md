@@ -357,4 +357,4 @@ Each phase has explicit exit criteria. Do not begin the next phase until the cur
 
 4. **Windows Unicode**: Test output uses ASCII-only characters to avoid cp1252 encoding errors on Windows terminals. The code itself uses standard Python unicode strings internally.
 
-5. **Phase 2 hardware tests still pending**: The software-only portion of Phase 2 is complete. The isolated leg bench tests (single-leg passthrough, e-stop, force conversion validation, encoder sign check) require the physical robot and will be performed when hardware is available.
+5. **Phase 2 hardware test harness built** (2026-02-25): `tools/single_leg_test.py` is a standalone script that bypasses ROS2 and talks directly to a single ODrive via python-can. It implements all four isolated-leg bench tests: torque passthrough smoke test, emergency stop, encoder sign check, and force conversion validation. See `tools/README.md` for full documentation. The harness uses conservative current limits (50% of rated) and sends IDLE on all exit paths. Hardware execution is pending — run on the Jetson when the robot is available.

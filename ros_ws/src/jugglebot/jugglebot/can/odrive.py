@@ -155,6 +155,13 @@ def encode_set_input_vel(axis_id: int, velocity: float,
                        data=data, dlc=8, is_extended_id=False)
 
 
+def encode_set_input_torque(axis_id: int, torque: float) -> can.Message:
+    """Set input torque (Nm) for torque control mode."""
+    data = struct.pack('<f', torque) + bytes(4)
+    return can.Message(arbitration_id=arb_id(axis_id, 'set_input_torque'),
+                       data=data, dlc=8, is_extended_id=False)
+
+
 def encode_set_vel_curr_limits(axis_id: int, vel_limit: float,
                                 curr_limit: float) -> can.Message:
     """Set absolute velocity and current limits."""
