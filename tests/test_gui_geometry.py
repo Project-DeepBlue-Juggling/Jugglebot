@@ -233,6 +233,45 @@ class TestGUIFileStructure:
         full = self.GUI_DIR / filepath
         assert full.exists(), f'Missing GUI file: {filepath}'
 
+
+# ---- Ball Butler geometry constants ----
+
+
+class TestBallButlerGeometry:
+    def test_bb_yaw_s_offset(self, yaml_config, js_source):
+        yaml_val = yaml_config['ball_butler_geometry']['yaw_s_offset_mm']
+        js_val = _extract_js_number(js_source, 'BB_YAW_S_OFFSET_MM')
+        assert js_val == pytest.approx(yaml_val, abs=0.01)
+
+    def test_bb_pitch_d_offset(self, yaml_config, js_source):
+        yaml_val = yaml_config['ball_butler_geometry']['pitch_d_offset_mm']
+        js_val = _extract_js_number(js_source, 'BB_PITCH_D_OFFSET_MM')
+        assert js_val == pytest.approx(yaml_val, abs=0.01)
+
+    def test_bb_release_l_position(self, yaml_config, js_source):
+        yaml_val = yaml_config['ball_butler_geometry']['release_l_position_mm']
+        js_val = _extract_js_number(js_source, 'BB_RELEASE_L_POSITION_MM')
+        assert js_val == pytest.approx(yaml_val, abs=0.01)
+
+    def test_bb_pitch_z_offset(self, yaml_config, js_source):
+        yaml_val = yaml_config['ball_butler_geometry']['pitch_z_offset_mm']
+        js_val = _extract_js_number(js_source, 'BB_PITCH_Z_OFFSET_MM')
+        assert js_val == pytest.approx(yaml_val, abs=0.01)
+
+    def test_bb_hand_stroke(self, yaml_config, js_source):
+        yaml_val = yaml_config['ball_butler_trajectory']['hand_stroke_m'] * 1000
+        js_val = _extract_js_number(js_source, 'BB_HAND_STROKE_MM')
+        assert js_val == pytest.approx(yaml_val, abs=0.1)
+
+
+# ---- Legacy file removal validation ----
+
+
+class TestLegacyFilesRemoved:
+    """Verify legacy GUI files have been removed."""
+
+    GUI_DIR = ROOT / 'ros_ws' / 'gui'
+
     LEGACY_FILES = [
         'jugglebot_gui.html',
         '3dplotter.js',

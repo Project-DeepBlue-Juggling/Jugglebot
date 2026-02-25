@@ -1,79 +1,186 @@
 /**
  * ball-butler-model.js — Ball Butler 3D geometry.
  *
- * Creates a simple line-art model: pedestal, yaw turntable, pitch arm, hand slider.
+ * Renders the Ball Butler with:
+ *   - Yaw arc:    range indicator in the horizontal (robot XY) plane, +/-30 deg from Y
+ *   - Pitch arc:  range indicator in the vertical (robot YZ) plane, ~5 deg to 100 deg
+ *   - Throw axis: line through the pitch pivot, angled by current pitch
+ *   - Hand marker: sphere sliding along the throw axis
+ *
+ * Coordinate convention (inside bbGroup):
+ *   Robot frame: X = right, Y = forward, Z = up
+ *   Three.js:    X = right, Y = up,      Z = towards viewer
+ *   Mapping:     robot(x, y, z) -> Three(x, z, -y)
+ *
  * Updates from bb/heartbeat topic data.
  */
 
 import * as THREE from 'three';
-import { scene, sceneGroups, robotToThreeScaled } from './viewer.js';
-import { BB_POSITION_MM } from './geometry-config.js';
+import { scene, sceneGroups } from './viewer.js';
+import {
+    BB_POSITION_MM,
+    BB_YAW_S_OFFSET_MM,
+    BB_PITCH_D_OFFSET_MM,
+    BB_HAND_STROKE_MM,
+} from './geometry-config.js';
 
+const DEG2RAD = Math.PI / 180;
+const S = 0.001; // mm -> metres (Three.js scene units)
+
+/** Convert robot-frame mm to Three.js local coords (metres). */
+function r2t(rx, ry, rz) {
+    return new THREE.Vector3(rx * S, rz * S, -ry * S);
+}
+
+// ---- Scene objects ----
 let bbGroup;
-let pedestalMesh;
-let yawGroup;    // rotates around Z (robot) = Y (Three.js)
-let pitchGroup;  // tilts from turntable
-let handMarker;
+let yawGroup;
+let pitchGroup;
+let throwLine;
+let handSphere;
 
-// Dimensions (approximate, for visualisation)
-const PEDESTAL_HEIGHT = 120;  // mm
-const PEDESTAL_RADIUS = 30;   // mm
-const ARM_LENGTH = 200;       // mm
-const HAND_MARKER_SIZE = 10;  // mm
+// ---- Visual parameters (mm) ----
+const PEDESTAL_HEIGHT  = 120;
+const PEDESTAL_RADIUS  = 30;
+const ARC_RADIUS       = 80;    // visual radius for arc indicators
+const ARC_SEGMENTS     = 48;
+const HAND_SPHERE_R    = 8;
 
-const BB_COLOR = 0xa78bfa; // purple accent
+// ---- Colours ----
+const COL_PEDESTAL = 0xa78bfa;  // purple accent
+const COL_ARC      = 0x64748b;  // muted slate
+const COL_THROW    = 0xa78bfa;  // purple
+const COL_HAND     = 0xf59e0b;  // amber
+
+// ---- Pitch pivot in robot coords (inside yawGroup) ----
+// User formula: pivot = (-s, d, 0) where s = yaw_s_offset_mm, d = pitch_d_offset_mm
+const PIVOT_X = -BB_YAW_S_OFFSET_MM;   // -(-105.65) = 105.65
+const PIVOT_Y =  BB_PITCH_D_OFFSET_MM; // 41.0
+const PIVOT_Z =  0;
 
 /**
- * Initialise the Ball Butler 3D model.
+ * Build an arc as an array of THREE.Vector3 (in Three.js local metres).
+ *
+ * angle convention: 0 deg = along robot +Y (forward), increasing toward +X (xy) or +Z (yz).
+ *
+ * @param {number}  r        - radius in mm
+ * @param {number}  aDeg     - start angle (degrees)
+ * @param {number}  bDeg     - end angle (degrees)
+ * @param {number}  n        - segment count
+ * @param {'xy'|'yz'} plane  - robot-frame plane
+ * @param {THREE.Vector3} [off] - optional offset (already in Three.js coords)
+ */
+function arcPts(r, aDeg, bDeg, n, plane, off) {
+    const pts = [];
+    for (let i = 0; i <= n; i++) {
+        const a = (aDeg + (bDeg - aDeg) * (i / n)) * DEG2RAD;
+        let p;
+        if (plane === 'xy') {
+            // horizontal arc: robot (r sin a, r cos a, 0)
+            p = r2t(r * Math.sin(a), r * Math.cos(a), 0);
+        } else {
+            // vertical arc:   robot (0, r cos a, r sin a)
+            p = r2t(0, r * Math.cos(a), r * Math.sin(a));
+        }
+        if (off) p.add(off);
+        pts.push(p);
+    }
+    return pts;
+}
+
+/**
+ * Create a dashed THREE.Line from an array of points.
+ */
+function dashedLine(pts, color, dashSize, gapSize) {
+    const geom = new THREE.BufferGeometry().setFromPoints(pts);
+    const mat = new THREE.LineDashedMaterial({
+        color,
+        dashSize:  dashSize  ?? 0.008,
+        gapSize:   gapSize   ?? 0.004,
+        transparent: true,
+        opacity: 0.55,
+    });
+    const line = new THREE.Line(geom, mat);
+    line.computeLineDistances();   // required for dashes
+    return line;
+}
+
+// ====================================================================
+// Public API
+// ====================================================================
+
+/**
+ * Initialise the Ball Butler 3D model and add it to the scene.
  */
 export function initBallButlerModel() {
     bbGroup = new THREE.Group();
     bbGroup.name = 'ball-butler';
 
-    // Position at configured offset from base centre
-    const pos = robotToThreeScaled(BB_POSITION_MM[0], BB_POSITION_MM[1], BB_POSITION_MM[2]);
-    bbGroup.position.copy(pos);
+    // Position at configured world offset from base centre
+    bbGroup.position.copy(r2t(BB_POSITION_MM[0], BB_POSITION_MM[1], BB_POSITION_MM[2]));
 
-    // ---- Pedestal: small cylinder ----
+    // ---- Pedestal cylinder ----
     const pedGeom = new THREE.CylinderGeometry(
-        PEDESTAL_RADIUS * 0.001, PEDESTAL_RADIUS * 0.001,
-        PEDESTAL_HEIGHT * 0.001, 12
+        PEDESTAL_RADIUS * S, PEDESTAL_RADIUS * S,
+        PEDESTAL_HEIGHT * S, 12,
     );
-    const pedMat = new THREE.MeshStandardMaterial({ color: BB_COLOR, transparent: true, opacity: 0.6 });
-    pedestalMesh = new THREE.Mesh(pedGeom, pedMat);
-    // In Three.js Y-up: pedestal stands on Y axis
-    pedestalMesh.position.y = PEDESTAL_HEIGHT * 0.5 * 0.001;
-    bbGroup.add(pedestalMesh);
+    const pedMat = new THREE.MeshStandardMaterial({
+        color: COL_PEDESTAL, transparent: true, opacity: 0.35,
+    });
+    const pedestal = new THREE.Mesh(pedGeom, pedMat);
+    pedestal.position.y = PEDESTAL_HEIGHT * 0.5 * S;
+    bbGroup.add(pedestal);
 
-    // ---- Yaw group: rotates around Y (Three.js) ----
+    // Everything above the pedestal lives at pedestal-top height
+    const topY = PEDESTAL_HEIGHT * S;
+
+    // ---- Yaw arc: +/-30 deg from robot +Y, in robot XY plane ----
+    const yawArc = dashedLine(
+        arcPts(ARC_RADIUS, -30, 30, ARC_SEGMENTS, 'xy'),
+        COL_ARC,
+    );
+    yawArc.position.y = topY;
+    bbGroup.add(yawArc);
+
+    // ---- Yaw group (rotates around Three.js Y = robot Z) ----
     yawGroup = new THREE.Group();
-    yawGroup.position.y = PEDESTAL_HEIGHT * 0.001;
+    yawGroup.position.y = topY;
     bbGroup.add(yawGroup);
 
-    // Turntable ring
-    const ringGeom = new THREE.TorusGeometry(PEDESTAL_RADIUS * 0.8 * 0.001, 0.003, 8, 24);
-    const ringMat = new THREE.MeshStandardMaterial({ color: BB_COLOR });
-    const ring = new THREE.Mesh(ringGeom, ringMat);
-    ring.rotation.x = Math.PI / 2; // lay flat
-    yawGroup.add(ring);
+    // ---- Pitch arc: 5 deg to 100 deg, in robot YZ plane, at pitch pivot ----
+    const pivotThree = r2t(PIVOT_X, PIVOT_Y, PIVOT_Z);
+    const pitchArc = dashedLine(
+        arcPts(ARC_RADIUS, 5, 100, ARC_SEGMENTS, 'yz', pivotThree),
+        COL_ARC,
+    );
+    yawGroup.add(pitchArc);
 
-    // ---- Pitch group: tilts from turntable ----
+    // ---- Pitch group: origin at pivot, rotates around Three.js X ----
     pitchGroup = new THREE.Group();
+    pitchGroup.position.copy(pivotThree);
     yawGroup.add(pitchGroup);
 
-    // Arm (cylinder along local Y in Three.js)
-    const armGeom = new THREE.CylinderGeometry(0.003, 0.003, ARM_LENGTH * 0.001, 8);
-    const armMat = new THREE.MeshStandardMaterial({ color: BB_COLOR, transparent: true, opacity: 0.7 });
-    const armMesh = new THREE.Mesh(armGeom, armMat);
-    armMesh.position.y = ARM_LENGTH * 0.5 * 0.001;
-    pitchGroup.add(armMesh);
+    // ---- Throw axis line ----
+    // In pitchGroup local frame the throw direction is -Z (= robot +Y = forward).
+    // Pitch rotation around X tilts it upward.
+    const throwLen = BB_HAND_STROKE_MM * S;
+    const throwGeom = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(0, 0, 0),
+        new THREE.Vector3(0, 0, -throwLen),
+    ]);
+    const throwMat = new THREE.LineBasicMaterial({ color: COL_THROW });
+    throwLine = new THREE.Line(throwGeom, throwMat);
+    pitchGroup.add(throwLine);
 
-    // ---- Hand marker: small sphere sliding along arm ----
-    const handGeom = new THREE.SphereGeometry(HAND_MARKER_SIZE * 0.001, 8, 8);
-    const handMat = new THREE.MeshStandardMaterial({ color: 0xf59e0b });
-    handMarker = new THREE.Mesh(handGeom, handMat);
-    handMarker.position.y = 0;
-    pitchGroup.add(handMarker);
+    // ---- Hand sphere ----
+    const handGeom = new THREE.SphereGeometry(HAND_SPHERE_R * S, 12, 12);
+    const handMat = new THREE.MeshStandardMaterial({
+        color: COL_HAND,
+        emissive: COL_HAND,
+        emissiveIntensity: 0.35,
+    });
+    handSphere = new THREE.Mesh(handGeom, handMat);
+    pitchGroup.add(handSphere);
 
     scene.add(bbGroup);
     sceneGroups['Ball Butler'] = bbGroup;
@@ -81,21 +188,22 @@ export function initBallButlerModel() {
 
 /**
  * Update the Ball Butler model from heartbeat data.
- * @param {number} yawDeg - Current yaw position in degrees
- * @param {number} pitchDeg - Current pitch position in degrees
- * @param {number} handPosMM - Current hand position in mm along the arm
+ * @param {number} yawDeg    - Current yaw angle (degrees)
+ * @param {number} pitchDeg  - Current pitch angle (degrees, 0 = horizontal, 90 = vertical)
+ * @param {number} handPosMM - Hand position along throw axis (mm)
  */
 export function updateBallButler(yawDeg, pitchDeg, handPosMM) {
     if (!yawGroup) return;
 
     // Yaw: rotate around Three.js Y axis
-    yawGroup.rotation.y = yawDeg * Math.PI / 180;
+    yawGroup.rotation.y = yawDeg * DEG2RAD;
 
-    // Pitch: tilt around Three.js Z axis (robot X axis after yaw rotation)
-    pitchGroup.rotation.z = pitchDeg * Math.PI / 180;
+    // Pitch: rotate around Three.js X axis
+    pitchGroup.rotation.x = pitchDeg * DEG2RAD;
 
-    // Hand: slide along arm (local Y in pitch group)
-    handMarker.position.y = Math.max(0, handPosMM) * 0.001;
+    // Hand: slide along local -Z (throw direction) in pitchGroup
+    const dist = Math.max(0, handPosMM) * S;
+    handSphere.position.set(0, 0, -dist);
 }
 
 /**

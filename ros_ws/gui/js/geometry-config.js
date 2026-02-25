@@ -59,6 +59,16 @@ export const BB_POSITION_MM = [0, -500, 0];
 // Hand axis: offset from platform centre along platform normal (mm)
 export const HAND_DEPTH_OFFSET_MM = 100.0;
 
+// ---- Ball Butler geometry (hardware_config.yaml -> ball_butler_geometry) ----
+
+export const BB_YAW_S_OFFSET_MM = -105.65;
+export const BB_PITCH_D_OFFSET_MM = 41.0;
+export const BB_RELEASE_L_POSITION_MM = 150.0;
+export const BB_PITCH_Z_OFFSET_MM = 17.5;
+
+// Ball Butler trajectory
+export const BB_HAND_STROKE_MM = 280.0;
+
 // ---- ODrive state enum (protocol_config.yaml -> odrive.states) ----
 
 export const ODRIVE_STATE = {

@@ -65,6 +65,7 @@ HOMING_HAND_CURRENT_LIMIT_A = 8.0
 HOMING_HAND_CURRENT_HEADROOM_A = 3.0
 HOMING_HAND_ABS_POS_REV = -0.1
 HOMING_EMA_WEIGHT = 0.7
+HOMING_MOTOR_TIMEOUT_S = 30.0
 
 # ============================================================================
 # Jugglebot ODrive Defaults
@@ -92,6 +93,7 @@ JB_OP_TARGET_REACHED_VEL_TOL_RPS = 0.1
 JB_OP_GENTLE_MOVE_VEL_LIMIT_RPS = 2.5
 JB_OP_ENCODER_SEARCH_TIMEOUT_S = 3.0
 JB_OP_GENTLE_MOVE_TIMEOUT_S = 10.0
+JB_OP_SHUTDOWN_STOW_TIMEOUT_S = 15.0
 JB_OP_MAX_VALID_TILT_RAD = 0.785
 
 # ============================================================================

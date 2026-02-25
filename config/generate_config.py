@@ -586,6 +586,23 @@ def generate_gui_js(hw_cfg: dict, proto_cfg: dict) -> str:
         "export const HAND_DEPTH_OFFSET_MM = 100.0;",
     ]
 
+    # Ball Butler geometry constants (for 3D visualisation)
+    bb_geom = hw_cfg["ball_butler_geometry"]
+    bb_traj = hw_cfg["ball_butler_trajectory"]
+    bb_hand_stroke_mm = round(bb_traj["hand_stroke_m"] * 1000, 1)
+    lines += [
+        "",
+        "// ---- Ball Butler geometry (hardware_config.yaml -> ball_butler_geometry) ----",
+        "",
+        f"export const BB_YAW_S_OFFSET_MM = {bb_geom['yaw_s_offset_mm']};",
+        f"export const BB_PITCH_D_OFFSET_MM = {bb_geom['pitch_d_offset_mm']};",
+        f"export const BB_RELEASE_L_POSITION_MM = {bb_geom['release_l_position_mm']};",
+        f"export const BB_PITCH_Z_OFFSET_MM = {bb_geom['pitch_z_offset_mm']};",
+        "",
+        "// Ball Butler trajectory",
+        f"export const BB_HAND_STROKE_MM = {bb_hand_stroke_mm};",
+    ]
+
     # ODrive states from protocol config
     lines += [
         "",
