@@ -176,6 +176,17 @@ Displays the delta between commanded and measured positions for each DoF:
 - **Display**: compact bar chart or numeric grid, one column per axis. Color-coded: green when |error| < threshold, amber for moderate, red for large.
 - **Optional 3D overlay**: Show tracking error as a ghost/wireframe of the commanded platform position overlaid on the measured position in the 3D viewer — makes pose error visually intuitive. The ghost platform is drawn semi-transparent when the error is small and becomes more opaque / red-tinted as error grows.
 
+### 8. Topic Monitor
+Discovers all active ROS2 topics via rosbridge `getTopics()` (every 3 seconds). Displays a scrollable table with columns:
+- **Topic**: Name (leading `/` stripped for compactness, full name + type in tooltip)
+- **Last**: Time since last message ("0.2s", "12s", "3m", or "--" if never received)
+- **Rate**: Messages per second within a configurable window (default 5s)
+
+Rate is color-coded: green for active topics, muted for stale/zero, amber for very high rates (>100 msg/s). Click the "5s window" label to cycle through 1s/5s/10s/30s.
+
+### 9. Resizable Sidebar
+The sidebar width is adjustable via a draggable handle between the 3D viewer and sidebar. Default width is 420px. Width is persisted to `localStorage` and restored on page load. Minimum 280px, maximum 50% of viewport.
+
 ---
 
 ## Command Overlay (`commands.js`)
@@ -393,20 +404,20 @@ Prerequisites: rosbridge running on the Jetson (`ros2 launch rosbridge_server ro
 | File | Lines | Purpose |
 |------|-------|---------|
 | `gui_server.py` | ~55 | Standalone HTTP server with CORS, correct MIME types |
-| `index.html` | ~115 | Main HTML: layout grid, import maps, sidebar panels, overlays |
-| `css/theme.css` | ~210 | Dark theme variables, grid layout, responsive breakpoint |
+| `index.html` | ~130 | Main HTML: layout grid, import maps, sidebar panels, resize handle, overlays |
+| `css/theme.css` | ~240 | Dark theme variables, grid layout, resize handle, responsive breakpoint |
 | `css/viewer.css` | ~120 | 3D container, connection indicator, command overlay, scene menu |
-| `css/panels.css` | ~200 | Motor grid, flags, BB, CAN sparkline, tracking error styles |
-| `js/main.js` | ~200 | Entry point: init, subscribe, route data to all modules |
-| `js/ros-bridge.js` | ~170 | ROSLIB auto-reconnect, subscription manager, publisher cache |
+| `css/panels.css` | ~290 | Motor grid, flags, BB, CAN sparkline, tracking error, topic table styles |
+| `js/main.js` | ~430 | Entry point: init, subscribe, route data, resize handle, topic discovery |
+| `js/ros-bridge.js` | ~230 | ROSLIB auto-reconnect, subscription manager, publisher cache, topic discovery |
 | `js/geometry-config.js` | ~100 | All hardware constants from `hardware_config.yaml` |
 | `js/stewart-fk.js` | ~220 | Rodrigues rotation, IK, 6x6 Gaussian solver, Newton-Raphson FK |
 | `js/viewer.js` | ~110 | Three.js scene, camera, OrbitControls, render loop |
 | `js/stewart-model.js` | ~260 | Base/platform hex meshes, leg cylinders, hand axis line |
 | `js/ball-butler-model.js` | ~100 | Pedestal, yaw turntable, pitch arm, hand marker |
-| `js/panels.js` | ~330 | All sidebar panels: motors, flags, BB, CAN sparkline, tracking |
+| `js/panels.js` | ~500 | All sidebar panels: motors, flags, BB, CAN sparkline, tracking, topic monitor |
 | `js/commands.js` | ~70 | Command buttons with context-sensitive enable/disable |
-| **Total** | **~2,260** | Complete GUI rewrite |
+| **Total** | **~2,700** | Complete GUI rewrite |
 
 ### Legacy files removed
 
@@ -431,6 +442,12 @@ Prerequisites: rosbridge running on the Jetson (`ros2 launch rosbridge_server ro
 - **Tracking error ghost overlay**: Red wireframe hexagon showing commanded platform pose overlaid on measured pose. Opacity scales with RMS tracking error (invisible below 0.5mm, fully visible above 5mm). Toggle-able via View menu.
 - **Mocap-driven 3D pose**: `onRigidBodyPoses` handler now extracts the platform rigid body by name, converts quaternion to rotation matrix via `quatToRotMatrix()`, computes platform node world positions via `poseToPlatNodes()`, and updates the 3D model. Falls back to FK when mocap is unavailable (1-second timeout).
 - **Quaternion utilities**: Added `quatToRotMatrix(w,x,y,z)` and `poseToPlatNodes(globalPos, R)` to `stewart-fk.js`.
+
+### Enhancements (2026-02-25)
+
+- **Resizable sidebar**: Draggable splitter handle between the 3D viewer and sidebar. Default width increased from 340px to 420px. Uses Pointer Events API for mouse/touch support. Width persisted to `localStorage` and restored on reload. Clamped to min 280px, max 50% viewport. All panel contents scale automatically (CSS Grid `1fr` columns, `width: 100%` canvases).
+
+- **Topic Monitor panel**: New sidebar panel showing all active ROS2 topics. Uses ROSLIB `getTopics()` for discovery (every 3s). For each discovered topic, a lightweight "spy" subscription (throttled to 200ms) counts messages. Display columns: topic name (with tooltip showing full name + type), time since last message, and message rate (messages/second in configurable window). Window cycles through 1s/5s/10s/30s on click. Topics the GUI already subscribes to share the existing subscription — `recordTopicMessage()` is called in each handler. Spy subscriptions are cleaned up on disconnect and re-created on reconnect via the discovery timer.
 
 ### Items for future work
 

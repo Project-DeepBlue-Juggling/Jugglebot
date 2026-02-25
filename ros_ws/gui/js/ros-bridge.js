@@ -180,3 +180,47 @@ function recreatePublishers() {
         });
     }
 }
+
+/**
+ * Discover all active ROS2 topics via rosbridge.
+ * @param {function} callback - Called with { topics: string[], types: string[] }
+ */
+export function discoverTopics(callback) {
+    if (!ros || connectionState !== 'connected') return;
+    ros.getTopics(
+        (result) => { callback(result); },
+        (err) => { console.warn('Failed to discover topics:', err); }
+    );
+}
+
+/**
+ * Create a lightweight subscription for topic monitoring (counting only).
+ * Unlike subscribe(), these are NOT re-created on reconnect — the discovery
+ * timer handles re-creation.
+ * @param {string} topicName
+ * @param {string} messageType
+ * @param {function} callback
+ * @param {number} [throttleRate=200]
+ * @returns {ROSLIB.Topic} The topic object (for later unsubscription)
+ */
+export function subscribeSpy(topicName, messageType, callback, throttleRate = 200) {
+    if (!ros || connectionState !== 'connected') return null;
+    const topic = new ROSLIB.Topic({
+        ros,
+        name: topicName,
+        messageType: messageType,
+        throttle_rate: throttleRate,
+    });
+    topic.subscribe(callback);
+    return topic;
+}
+
+/**
+ * Unsubscribe a spy subscription.
+ * @param {ROSLIB.Topic} topic
+ */
+export function unsubscribeSpy(topic) {
+    if (topic) {
+        try { topic.unsubscribe(); } catch { /* ignore */ }
+    }
+}

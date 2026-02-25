@@ -20,6 +20,7 @@ import {
     initAllPanels, updateMotorGrid, updateOrchestratorState,
     updateFlags, updateBBPanel, setBBDisconnected,
     updateCANTraffic, updateTrackingError,
+    recordTopicMessage, registerTopic, updateTopicMonitor, clearTopicData,
 } from './panels.js';
 import { initCommands, updateCommandStates } from './commands.js';
 import { INITIAL_HEIGHT_MM, MM_TO_REV } from './geometry-config.js';
@@ -47,12 +48,18 @@ function init() {
     // 4. Init scene menu
     initSceneMenu();
 
-    // 5. Init ROS connection
+    // 5. Init resize handle
+    initResizeHandle();
+
+    // 6. Init ROS connection
     ros.onConnectionStateChange(onConnectionStateChange);
     ros.init();
 
-    // 6. Subscribe to topics
+    // 7. Subscribe to topics
     subscribeAll();
+
+    // 8. Start topic monitor timers
+    setInterval(updateTopicMonitor, 1000);
 }
 
 // ---- Connection state UI ----
@@ -66,6 +73,7 @@ function onConnectionStateChange(state) {
         case 'connected':
             dot.className = 'status-dot connected';
             text.textContent = 'Connected';
+            startTopicDiscovery();
             break;
         case 'connecting':
             dot.className = 'status-dot disconnected';
@@ -74,6 +82,7 @@ function onConnectionStateChange(state) {
         case 'disconnected':
             dot.className = 'status-dot disconnected';
             text.textContent = 'Disconnected';
+            stopTopicDiscovery();
             break;
     }
 }
@@ -110,6 +119,7 @@ let mocapTimeout = null;
 const MOCAP_TIMEOUT_MS = 1000;
 
 function onRobotState(msg) {
+    recordTopicMessage('robot_state');
     const motors = msg.motor_states || [];
     latestMotorStates = motors;
 
@@ -177,26 +187,31 @@ function onRobotState(msg) {
 }
 
 function onBBHeartbeat(msg) {
+    recordTopicMessage('bb/heartbeat');
     updateBBPanel(msg);
     updateBallButler(msg.yaw_deg, msg.pitch_deg, msg.hand_pos_mm);
 }
 
 function onOrchestratorState(msg) {
+    recordTopicMessage('orchestrator_state');
     updateOrchestratorState(msg.data);
     updateCommandStates();
 }
 
 function onCANTraffic(msg) {
+    recordTopicMessage('can_traffic');
     updateCANTraffic(msg);
 }
 
 let latestHandTelemetry = null;
 
 function onHandTelemetry(msg) {
+    recordTopicMessage('hand_telemetry');
     latestHandTelemetry = msg;
 }
 
 function onRigidBodyPoses(msg) {
+    recordTopicMessage('rigid_body_poses');
     // Mark mocap as available; reset timeout
     useMocapPose = true;
     if (mocapTimeout) clearTimeout(mocapTimeout);
@@ -241,6 +256,7 @@ function onRigidBodyPoses(msg) {
 }
 
 function onLegLengths(msg) {
+    recordTopicMessage('leg_lengths_topic');
     latestCommandedLegs = msg.data;
 }
 
@@ -281,6 +297,125 @@ function initSceneMenu() {
             dropdown.appendChild(label);
         }
     }, 100);
+}
+
+// ---- Resize handle ----
+
+const SIDEBAR_MIN = 280;
+const SIDEBAR_STORAGE_KEY = 'jugglebot-sidebar-width';
+
+function initResizeHandle() {
+    const handle = document.getElementById('resize-handle');
+    const app = document.getElementById('app');
+    if (!handle || !app) return;
+
+    // Restore saved width
+    const saved = localStorage.getItem(SIDEBAR_STORAGE_KEY);
+    if (saved) {
+        const w = parseInt(saved, 10);
+        if (w >= SIDEBAR_MIN) {
+            app.style.setProperty('--sidebar-width', w + 'px');
+        }
+    }
+
+    let dragging = false;
+
+    function onPointerDown(e) {
+        dragging = true;
+        handle.classList.add('active');
+        handle.setPointerCapture(e.pointerId);
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
+        e.preventDefault();
+    }
+
+    function onPointerMove(e) {
+        if (!dragging) return;
+        const maxWidth = Math.floor(window.innerWidth * 0.5);
+        let newWidth = window.innerWidth - e.clientX;
+        newWidth = Math.max(SIDEBAR_MIN, Math.min(maxWidth, newWidth));
+        app.style.setProperty('--sidebar-width', newWidth + 'px');
+    }
+
+    function onPointerUp() {
+        if (!dragging) return;
+        dragging = false;
+        handle.classList.remove('active');
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+
+        // Persist
+        const current = getComputedStyle(app).getPropertyValue('--sidebar-width').trim();
+        localStorage.setItem(SIDEBAR_STORAGE_KEY, parseInt(current, 10));
+    }
+
+    handle.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('pointermove', onPointerMove);
+    document.addEventListener('pointerup', onPointerUp);
+}
+
+// ---- Topic discovery ----
+
+/** Topics we subscribe to for data processing (not just monitoring) */
+const GUI_SUBSCRIBED_TOPICS = new Set([
+    'robot_state', 'bb/heartbeat', 'orchestrator_state',
+    'can_traffic', 'hand_telemetry', 'rigid_body_poses', 'leg_lengths_topic',
+]);
+
+/** Active spy subscriptions: Map<topicName, ROSLIB.Topic> */
+const spySubscriptions = new Map();
+let discoveryTimer = null;
+
+function startTopicDiscovery() {
+    // Run immediately, then every 3 seconds
+    runTopicDiscovery();
+    if (!discoveryTimer) {
+        discoveryTimer = setInterval(runTopicDiscovery, 3000);
+    }
+}
+
+function stopTopicDiscovery() {
+    if (discoveryTimer) {
+        clearInterval(discoveryTimer);
+        discoveryTimer = null;
+    }
+    // Clean up spy subscriptions
+    for (const topic of spySubscriptions.values()) {
+        ros.unsubscribeSpy(topic);
+    }
+    spySubscriptions.clear();
+}
+
+function runTopicDiscovery() {
+    ros.discoverTopics((result) => {
+        if (!result || !result.topics) return;
+
+        const topics = result.topics;
+        const types = result.types || [];
+
+        for (let i = 0; i < topics.length; i++) {
+            const name = topics[i];
+            const type = types[i] || '';
+
+            // Register for display
+            registerTopic(name, type);
+
+            // Skip topics we already have full subscriptions for
+            if (GUI_SUBSCRIBED_TOPICS.has(name)) continue;
+
+            // Skip if we already have a spy subscription
+            if (spySubscriptions.has(name)) continue;
+
+            // Create a lightweight spy subscription
+            const spyTopic = ros.subscribeSpy(name, type, () => {
+                recordTopicMessage(name);
+            }, 200);
+
+            if (spyTopic) {
+                spySubscriptions.set(name, spyTopic);
+            }
+        }
+    });
 }
 
 // ---- Start ----

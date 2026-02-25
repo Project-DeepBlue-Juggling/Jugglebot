@@ -46,6 +46,9 @@
             <div id="command-overlay"></div>
         </div>
 
+        <!-- Draggable resize handle between viewer and sidebar -->
+        <div id="resize-handle"></div>
+
         <!-- Right: status sidebar -->
         <div id="sidebar">
             <!-- Orchestrator State -->
@@ -106,6 +109,15 @@
                     <span class="panel-title">Tracking Error</span>
                 </div>
                 <div class="tracking-grid" id="tracking-grid"></div>
+            </div>
+
+            <!-- Topic Monitor -->
+            <div class="panel" id="panel-topics">
+                <div class="panel-header">
+                    <span class="panel-title">Topics</span>
+                    <span class="topic-window-label" id="topic-window-label">5s window</span>
+                </div>
+                <div id="topic-table-container"></div>
             </div>
         </div>
     </div>

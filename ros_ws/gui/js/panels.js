@@ -388,6 +388,154 @@ export function updateTrackingError(errors) {
     }
 }
 
+// ---- Topic monitor panel ----
+
+/**
+ * Per-topic tracking data.
+ * Key: topic name, Value: { type, timestamps: number[], lastTime: number }
+ */
+const topicData = new Map();
+
+/** Window durations to cycle through (ms) */
+const WINDOW_OPTIONS = [1000, 5000, 10000, 30000];
+let currentWindowIndex = 1; // Start at 5s
+
+/** @returns {number} Current window in ms */
+export function getTopicWindowMs() {
+    return WINDOW_OPTIONS[currentWindowIndex];
+}
+
+export function initTopicMonitor() {
+    const container = document.getElementById('topic-table-container');
+    if (!container) return;
+
+    container.innerHTML = '<div class="topic-empty">No topics</div>';
+
+    // Click to cycle window
+    const label = document.getElementById('topic-window-label');
+    if (label) {
+        label.addEventListener('click', () => {
+            currentWindowIndex = (currentWindowIndex + 1) % WINDOW_OPTIONS.length;
+            const sec = WINDOW_OPTIONS[currentWindowIndex] / 1000;
+            label.textContent = sec + 's window';
+        });
+    }
+}
+
+/**
+ * Record a message received on a topic (just the timestamp).
+ * @param {string} topicName
+ */
+export function recordTopicMessage(topicName) {
+    let entry = topicData.get(topicName);
+    if (!entry) {
+        entry = { type: '', timestamps: [], lastTime: 0 };
+        topicData.set(topicName, entry);
+    }
+    const now = Date.now();
+    entry.timestamps.push(now);
+    entry.lastTime = now;
+}
+
+/**
+ * Register a topic (from discovery) without requiring a message.
+ * @param {string} topicName
+ * @param {string} topicType
+ */
+export function registerTopic(topicName, topicType) {
+    if (!topicData.has(topicName)) {
+        topicData.set(topicName, { type: topicType, timestamps: [], lastTime: 0 });
+    } else {
+        topicData.get(topicName).type = topicType;
+    }
+}
+
+/**
+ * Update the topic monitor table. Called on a 1-second timer.
+ */
+export function updateTopicMonitor() {
+    const container = document.getElementById('topic-table-container');
+    if (!container) return;
+
+    const windowMs = WINDOW_OPTIONS[currentWindowIndex];
+    const now = Date.now();
+
+    // Prune old timestamps
+    for (const entry of topicData.values()) {
+        entry.timestamps = entry.timestamps.filter(t => now - t < windowMs);
+    }
+
+    if (topicData.size === 0) {
+        container.innerHTML = '<div class="topic-empty">No topics</div>';
+        return;
+    }
+
+    // Sort topics alphabetically
+    const sorted = [...topicData.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+
+    // Build table
+    let html = `<table class="topic-table">
+        <thead><tr>
+            <th class="col-topic">Topic</th>
+            <th class="col-last">Last</th>
+            <th class="col-rate">Rate</th>
+        </tr></thead><tbody>`;
+
+    const windowSec = windowMs / 1000;
+
+    for (const [name, entry] of sorted) {
+        // Last message time
+        let lastStr;
+        if (entry.lastTime === 0) {
+            lastStr = '--';
+        } else {
+            const ago = (now - entry.lastTime) / 1000;
+            if (ago < 10) lastStr = ago.toFixed(1) + 's';
+            else if (ago < 60) lastStr = Math.round(ago) + 's';
+            else if (ago < 3600) lastStr = Math.round(ago / 60) + 'm';
+            else lastStr = Math.round(ago / 3600) + 'h';
+        }
+
+        // Rate (messages per second in window)
+        const count = entry.timestamps.length;
+        const rate = windowSec > 0 ? count / windowSec : 0;
+        let rateStr;
+        let rateClass;
+        if (count === 0) {
+            rateStr = '--';
+            rateClass = 'topic-rate-stale';
+        } else if (rate >= 100) {
+            rateStr = Math.round(rate).toString();
+            rateClass = 'topic-rate-high';
+        } else if (rate >= 10) {
+            rateStr = rate.toFixed(0);
+            rateClass = 'topic-rate-active';
+        } else {
+            rateStr = rate.toFixed(1);
+            rateClass = 'topic-rate-active';
+        }
+
+        // Short display name: strip leading /
+        const displayName = name.startsWith('/') ? name.substring(1) : name;
+
+        html += `<tr>
+            <td class="col-topic" title="${name} [${entry.type}]">${displayName}</td>
+            <td class="col-last">${lastStr}</td>
+            <td class="col-rate ${rateClass}">${rateStr}</td>
+        </tr>`;
+    }
+
+    html += '</tbody></table>';
+    container.innerHTML = html;
+}
+
+/**
+ * Clear all topic data (e.g. on disconnect).
+ */
+export function clearTopicData() {
+    topicData.clear();
+}
+
 // ---- Init all panels ----
 
 export function initAllPanels() {
@@ -396,4 +544,5 @@ export function initAllPanels() {
     initBBPanel();
     initCANPanel();
     initTrackingGrid();
+    initTopicMonitor();
 }

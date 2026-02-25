@@ -220,3 +220,95 @@
 .tracking-error-ok     { color: var(--accent-green); }
 .tracking-error-warn   { color: var(--accent-amber); }
 .tracking-error-bad    { color: var(--accent-red); }
+
+/* ---- Topic monitor panel ---- */
+.topic-window-label {
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+    cursor: pointer;
+    user-select: none;
+    padding: 2px 6px;
+    border-radius: var(--border-radius-sm);
+    transition: background var(--transition-fast);
+}
+
+.topic-window-label:hover {
+    background: var(--bg-primary);
+}
+
+#topic-table-container {
+    max-height: 320px;
+    overflow-y: auto;
+    overflow-x: hidden;
+}
+
+#topic-table-container::-webkit-scrollbar {
+    width: 4px;
+}
+
+#topic-table-container::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+#topic-table-container::-webkit-scrollbar-thumb {
+    background: var(--border-color);
+    border-radius: 2px;
+}
+
+.topic-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+}
+
+.topic-table th {
+    text-align: left;
+    font-size: var(--font-size-xs);
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 4px 6px;
+    border-bottom: 1px solid var(--border-color);
+    position: sticky;
+    top: 0;
+    background: var(--bg-card);
+    z-index: 1;
+}
+
+.topic-table td {
+    padding: 3px 6px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--text-secondary);
+}
+
+.topic-table tr:nth-child(even) td {
+    background: rgba(15, 23, 42, 0.3);
+}
+
+.topic-table .col-topic {
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.topic-table .col-last,
+.topic-table .col-rate {
+    text-align: right;
+    width: 60px;
+}
+
+.topic-rate-active  { color: var(--accent-green); }
+.topic-rate-stale   { color: var(--text-muted); }
+.topic-rate-high    { color: var(--accent-amber); }
+
+.topic-empty {
+    text-align: center;
+    padding: 12px;
+    color: var(--text-muted);
+    font-size: var(--font-size-sm);
+    font-family: var(--font-sans);
+}
