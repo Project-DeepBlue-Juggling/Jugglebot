@@ -526,7 +526,7 @@ export function updateTopicMonitor() {
         <thead><tr>
             <th class="col-topic">Topic</th>
             <th class="col-last">Last</th>
-            <th class="col-rate">Rate</th>
+            <th class="col-rate">Hz</th>
         </tr></thead><tbody>`;
 
     for (const [name, entry] of visible) {

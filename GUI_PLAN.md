@@ -180,12 +180,15 @@ Displays the delta between commanded and measured positions for each DoF:
 Discovers all active ROS2 topics via rosbridge `getTopics()` (every 3 seconds). Displays a scrollable table with columns:
 - **Topic**: Name (leading `/` stripped for compactness, full name + type in tooltip)
 - **Last**: Time since last message ("0.2s", "12s", "3m", or "--" if never received)
-- **Rate**: Messages per second within a configurable window (default 5s)
+- **Hz**: Message rate in Hz within a configurable window (default 5s)
 
-Rate is color-coded: green for active topics, muted for stale/zero, amber for very high rates (>100 msg/s). Click the "5s window" label to cycle through 1s/5s/10s/30s.
+Rate is color-coded: green for active topics, muted for stale/zero, amber for very high rates (>100 Hz). Click the "5s window" label to cycle through 1s/5s/10s/30s. Topics sorted by rate (highest first). Click any topic row to hide it; hidden topics are persisted to `localStorage`. A "N hidden" footer appears — click to expand and unhide topics.
 
 ### 9. Resizable Sidebar
 The sidebar width is adjustable via a draggable handle between the 3D viewer and sidebar. Default width is 420px. Width is persisted to `localStorage` and restored on page load. Minimum 280px, maximum 50% of viewport.
+
+### 10. Font Size Control
+A-/A+ buttons at the top of the sidebar scale all panel text proportionally (10px–22px, default 14px). Uses root `font-size` on `<html>` — all CSS uses `rem` units, so everything scales. Persisted to `localStorage`.
 
 ---
 
@@ -404,20 +407,20 @@ Prerequisites: rosbridge running on the Jetson (`ros2 launch rosbridge_server ro
 | File | Lines | Purpose |
 |------|-------|---------|
 | `gui_server.py` | ~55 | Standalone HTTP server with CORS, correct MIME types |
-| `index.html` | ~130 | Main HTML: layout grid, import maps, sidebar panels, resize handle, overlays |
-| `css/theme.css` | ~240 | Dark theme variables, grid layout, resize handle, responsive breakpoint |
+| `index.html` | ~135 | Main HTML: layout grid, import maps, sidebar panels, resize handle, font toolbar, overlays |
+| `css/theme.css` | ~280 | Dark theme variables, grid layout, resize handle, font toolbar, responsive breakpoint |
 | `css/viewer.css` | ~120 | 3D container, connection indicator, command overlay, scene menu |
-| `css/panels.css` | ~290 | Motor grid, flags, BB, CAN sparkline, tracking error, topic table styles |
-| `js/main.js` | ~430 | Entry point: init, subscribe, route data, resize handle, topic discovery |
+| `css/panels.css` | ~355 | Motor grid, flags, BB, CAN sparkline, tracking error, topic table + hide styles |
+| `js/main.js` | ~470 | Entry point: init, subscribe, route data, resize handle, font size, topic discovery |
 | `js/ros-bridge.js` | ~230 | ROSLIB auto-reconnect, subscription manager, publisher cache, topic discovery |
 | `js/geometry-config.js` | ~100 | All hardware constants from `hardware_config.yaml` |
 | `js/stewart-fk.js` | ~220 | Rodrigues rotation, IK, 6x6 Gaussian solver, Newton-Raphson FK |
 | `js/viewer.js` | ~110 | Three.js scene, camera, OrbitControls, render loop |
 | `js/stewart-model.js` | ~260 | Base/platform hex meshes, leg cylinders, hand axis line |
 | `js/ball-butler-model.js` | ~100 | Pedestal, yaw turntable, pitch arm, hand marker |
-| `js/panels.js` | ~500 | All sidebar panels: motors, flags, BB, CAN sparkline, tracking, topic monitor |
+| `js/panels.js` | ~650 | All sidebar panels: motors, flags, BB, CAN sparkline, tracking, topic monitor + hide |
 | `js/commands.js` | ~70 | Command buttons with context-sensitive enable/disable |
-| **Total** | **~2,700** | Complete GUI rewrite |
+| **Total** | **~2,900** | Complete GUI rewrite |
 
 ### Legacy files removed
 
@@ -447,7 +450,9 @@ Prerequisites: rosbridge running on the Jetson (`ros2 launch rosbridge_server ro
 
 - **Resizable sidebar**: Draggable splitter handle between the 3D viewer and sidebar. Default width increased from 340px to 420px. Uses Pointer Events API for mouse/touch support. Width persisted to `localStorage` and restored on reload. Clamped to min 280px, max 50% viewport. All panel contents scale automatically (CSS Grid `1fr` columns, `width: 100%` canvases).
 
-- **Topic Monitor panel**: New sidebar panel showing all active ROS2 topics. Uses ROSLIB `getTopics()` for discovery (every 3s). For each discovered topic, a lightweight "spy" subscription (throttled to 200ms) counts messages. Display columns: topic name (with tooltip showing full name + type), time since last message, and message rate (messages/second in configurable window). Window cycles through 1s/5s/10s/30s on click. Topics the GUI already subscribes to share the existing subscription — `recordTopicMessage()` is called in each handler. Spy subscriptions are cleaned up on disconnect and re-created on reconnect via the discovery timer.
+- **Topic Monitor panel**: New sidebar panel showing all active ROS2 topics. Uses ROSLIB `getTopics()` for discovery (every 3s). For each discovered topic, a lightweight "spy" subscription (throttled to 200ms) counts messages. Display columns: topic name (with tooltip showing full name + type), time since last message, and rate in Hz (configurable window: 1s/5s/10s/30s, click label to cycle). Sorted by rate descending (highest first). Click any topic row to hide it — hidden topics persisted to `localStorage` and shown via an expandable "N hidden" footer. Topics the GUI already subscribes to share the existing subscription — `recordTopicMessage()` is called in each handler. Spy subscriptions are cleaned up on disconnect and re-created on reconnect via the discovery timer.
+
+- **Font size control**: A-/A+ buttons at the top of the sidebar scale all panel text proportionally. Sets root `font-size` on `<html>` (10px–22px, default 14px) — all CSS uses `rem` units so everything scales together. Persisted to `localStorage`.
 
 ### Items for future work
 
