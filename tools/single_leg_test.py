@@ -631,8 +631,19 @@ def test_encoder_sign(harness: SingleLegTestHarness):
         return False
 
 
+def _collect_iq_samples(harness: SingleLegTestHarness,
+                        duration_s: float = 3.0) -> np.ndarray:
+    """Collect iq_measured samples for a fixed duration while position-holding."""
+    samples = []
+    deadline = time.time() + duration_s
+    while time.time() < deadline:
+        harness._poll(timeout=0.02)
+        samples.append(harness.state.iq_measured)
+    return np.array(samples)
+
+
 def test_force_conversion(harness: SingleLegTestHarness):
-    """Test 4: Force conversion validation.
+    """Test 4: Force conversion validation (multi-weight calibration).
 
     From MOTION_PLANNER_PLAN Phase 2:
     "Apply a known static load to the isolated leg (e.g., hang a calibrated
@@ -640,54 +651,40 @@ def test_force_conversion(harness: SingleLegTestHarness):
     hold position via PD. Compare the measured current to the predicted
     current from the geometric force-to-torque conversion."
 
-    This test requires user interaction:
-      1. Prompts user to attach a known weight
-      2. Uses POSITION/PASSTHROUGH mode to hold the leg at its current position
-      3. Measures the steady-state motor current (iq_measured)
-      4. Computes the predicted current from: F=mg, tau=F*r_spool, I=tau/Kt
-      5. Reports the discrepancy
+    This test uses multiple weights to fit Kt from the slope of
+    iq_measured vs predicted_torque. This is more robust than a single
+    measurement because:
+      - The slope cancels out constant offsets (friction, PD bias)
+      - Kt is determined from the data rather than assumed from a datasheet
+      - Linearity confirms the spool geometry model is correct
 
-    Motor torque constant (Kt) note:
-      The ODrive reports iq (quadrature current) which relates to torque as
-      tau = Kt * iq. For the motors used on Jugglebot, Kt should be determined
-      from the motor datasheet or measured. This test logs the raw iq so the
-      user can validate against known Kt.
+    Procedure:
+      1. Enter position hold at current position
+      2. Prompt user to attach/change weights, measuring iq at each
+      3. Fit a line: iq = (1/Kt) * tau_predicted + offset
+      4. Report Kt, offset (friction), R^2 (linearity), and discrepancy
     """
     print("\n" + "=" * 60)
-    print("TEST 4: Force conversion validation")
+    print("TEST 4: Force conversion validation (multi-weight)")
     print("=" * 60)
 
-    print("\n  This test requires a known weight hung from the leg.")
-    print("  The leg should be oriented so the weight hangs vertically.")
-    weight_str = input("  Enter the mass in kg (or 'skip' to skip): ").strip()
-    if weight_str.lower() == 'skip':
-        print("  Skipping force conversion test.")
-        return None
-
-    try:
-        mass_kg = float(weight_str)
-    except ValueError:
-        print(f"  Invalid input: {weight_str}")
-        return False
-
-    force_N = mass_kg * hw.GRAVITY_MPS2
     spool_radius_m = SPOOL_RADIUS_MM[harness.axis_id] / 1000.0
-    predicted_torque_Nm = force_N * spool_radius_m
-
-    print(f"\n  Weight: {mass_kg:.3f} kg")
-    print(f"  Force:  {force_N:.3f} N")
-    print(f"  Spool radius (axis {harness.axis_id}): "
+    print(f"\n  Spool radius (axis {harness.axis_id}): "
           f"{SPOOL_RADIUS_MM[harness.axis_id]:.2f} mm")
-    print(f"  Predicted motor torque: {predicted_torque_Nm:.4f} Nm")
+    print(f"\n  This test measures motor current at multiple known loads.")
+    print(f"  The leg should be oriented so the weight hangs vertically.")
+    print(f"  You will be prompted to add/change weights between measurements.")
+    print(f"  Enter at least 3 different weights for a good fit.")
+    print(f"  Type 'done' when finished, or 'skip' to skip entirely.\n")
 
     harness.clear_errors()
     harness.set_safe_limits()
     harness.require_no_errors()
 
-    # Read current position, then hold it with position control
+    # Enter position hold once for the entire test
     pos_now, _ = harness.read_encoder()
-    print(f"\n  Current position: {pos_now:.4f} rev")
-    print(f"  Entering POSITION/PASSTHROUGH to hold position...")
+    print(f"  Current position: {pos_now:.4f} rev")
+    print(f"  Entering POSITION/PASSTHROUGH to hold position...\n")
 
     harness.send(encode_set_controller_mode(
         harness.axis_id, 'POSITION', 'PASSTHROUGH'))
@@ -703,44 +700,117 @@ def test_force_conversion(harness: SingleLegTestHarness):
             f"Failed to enter CLOSED_LOOP for position hold. "
             f"State: {harness.state.state_name}")
 
-    # Collect iq samples over 3 seconds
-    print(f"  Collecting current measurements for 3 seconds...")
-    iq_samples = []
-    deadline = time.time() + 3.0
-    while time.time() < deadline:
-        harness._poll(timeout=0.02)
-        iq_samples.append(harness.state.iq_measured)
+    # Collect measurements at multiple weights
+    measurements = []  # list of (mass_kg, predicted_torque_Nm, iq_mean, iq_std)
+    point_num = 0
+
+    while True:
+        point_num += 1
+        weight_str = input(
+            f"  [{point_num}] Enter mass in kg "
+            f"(or 'done'/'skip'): ").strip().lower()
+
+        if weight_str == 'skip' and len(measurements) == 0:
+            print("  Skipping force conversion test.")
+            harness.idle_axis()
+            return None
+
+        if weight_str == 'done':
+            break
+
+        try:
+            mass_kg = float(weight_str)
+        except ValueError:
+            print(f"  Invalid input, try again.")
+            point_num -= 1
+            continue
+
+        force_N = mass_kg * hw.GRAVITY_MPS2
+        predicted_torque = force_N * spool_radius_m
+
+        # Let the system settle with the new weight, then measure
+        print(f"    Settling (2s)...", end='', flush=True)
+        harness.poll_for(2.0)
+        print(f" Measuring (3s)...", end='', flush=True)
+        iq_samples = _collect_iq_samples(harness, duration_s=3.0)
+        iq_mean = float(np.mean(iq_samples))
+        iq_std = float(np.std(iq_samples))
+        measurements.append((mass_kg, predicted_torque, iq_mean, iq_std))
+        print(f" done.")
+        print(f"    {mass_kg:.3f} kg -> tau={predicted_torque:.4f} Nm, "
+              f"iq={iq_mean:.4f} A (std={iq_std:.4f})")
 
     harness.idle_axis()
 
-    iq_samples = np.array(iq_samples)
-    iq_mean = np.mean(iq_samples)
-    iq_std = np.std(iq_samples)
+    if len(measurements) < 2:
+        print(f"\n  Need at least 2 measurements for a fit "
+              f"(got {len(measurements)}). Cannot determine Kt.")
+        if len(measurements) == 1:
+            m = measurements[0]
+            print(f"  Single point: {m[0]:.3f} kg, tau={m[1]:.4f} Nm, "
+                  f"iq={m[2]:.4f} A")
+        return False
 
-    print(f"\n  Results:")
-    print(f"    Mean iq_measured:    {iq_mean:.4f} A (std: {iq_std:.4f} A)")
-    print(f"    Predicted torque:    {predicted_torque_Nm:.4f} Nm")
-    print(f"    Measured iq * Kt = measured torque (need Kt from motor datasheet)")
-    print(f"")
-    print(f"    To compute discrepancy: tau_predicted / iq_mean = effective Kt")
-    if abs(iq_mean) > 0.001:
-        effective_kt = predicted_torque_Nm / iq_mean
-        print(f"    Effective Kt:        {effective_kt:.4f} Nm/A")
-        print(f"    (Compare against motor datasheet Kt to validate conversion)")
+    # Extract arrays for fitting
+    torques = np.array([m[1] for m in measurements])
+    iqs = np.array([m[2] for m in measurements])
+
+    # Linear fit: iq = slope * tau + intercept
+    # slope = 1/Kt, intercept = friction/bias offset
+    coeffs = np.polyfit(torques, iqs, 1)
+    slope = coeffs[0]       # 1/Kt  (A/Nm)
+    intercept = coeffs[1]   # bias current (A)
+
+    # R^2
+    iq_predicted = np.polyval(coeffs, torques)
+    ss_res = np.sum((iqs - iq_predicted) ** 2)
+    ss_tot = np.sum((iqs - np.mean(iqs)) ** 2)
+    r_squared = 1.0 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
+
+    print(f"\n  " + "-" * 56)
+    print(f"  {'Mass (kg)':>10s}  {'Tau pred (Nm)':>14s}  "
+          f"{'iq mean (A)':>12s}  {'iq std (A)':>11s}")
+    print(f"  " + "-" * 56)
+    for m in measurements:
+        print(f"  {m[0]:10.3f}  {m[1]:14.4f}  {m[2]:12.4f}  {m[3]:11.4f}")
+    print(f"  " + "-" * 56)
+
+    print(f"\n  Linear fit: iq = {slope:.2f} * tau + ({intercept:.4f})")
+    print(f"  R^2 = {r_squared:.4f}")
+
+    if abs(slope) > 1e-6:
+        kt_measured = 1.0 / slope
+        print(f"\n  Measured Kt = 1/slope = {kt_measured:.4f} Nm/A")
+        print(f"  Bias current (intercept) = {intercept:.4f} A "
+              f"(friction / PD offset)")
+
+        # Compare against datasheet if user wants
+        print(f"\n  To validate the spool geometry conversion:")
+        print(f"    Compare measured Kt ({kt_measured:.4f} Nm/A) against "
+              f"motor datasheet Kt.")
+        print(f"    For Kv=150 rpm/V: Kt = 60/(2*pi*150) = 0.0637 Nm/A")
+        kt_datasheet = 60.0 / (2.0 * np.pi * 150.0)
+        discrepancy_pct = abs(kt_measured - kt_datasheet) / kt_datasheet * 100
+        print(f"    Discrepancy: {discrepancy_pct:.1f}%"
+              f"{'  (< 10% -- PASS)' if discrepancy_pct < 10 else '  (> 10% -- investigate)'}")
     else:
-        print(f"    WARNING: iq_mean near zero -- weight may not be loading the motor")
+        print(f"\n  WARNING: slope near zero -- current does not vary with load.")
+        print(f"  The motor may not be loaded by the weights (check orientation).")
+        return False
 
-    # The plan says "discrepancy should be under 10%"
-    # We can't fully validate without Kt, so we report all values and let
-    # the user compare against the datasheet
-    print(f"\n  MANUAL VERIFICATION REQUIRED:")
-    print(f"    1. Look up motor Kt (torque constant) from datasheet")
-    print(f"    2. Compute expected_iq = predicted_torque / Kt "
-          f"= {predicted_torque_Nm:.4f} / Kt")
-    print(f"    3. Compare expected_iq to measured iq_mean = {iq_mean:.4f} A")
-    print(f"    4. Discrepancy should be < 10%")
-
-    return True  # Can't auto-pass/fail without Kt
+    if r_squared > 0.95 and len(measurements) >= 3:
+        print(f"\n  PASS: Linear fit is good (R^2={r_squared:.4f}), "
+              f"Kt = {kt_measured:.4f} Nm/A")
+        return True
+    elif r_squared > 0.95:
+        print(f"\n  FIT OK but only {len(measurements)} points -- "
+              f"add more for confidence")
+        return True
+    else:
+        print(f"\n  WARNING: Poor linearity (R^2={r_squared:.4f}). "
+              f"Check setup: vertical orientation, taut string, "
+              f"consistent attachment point.")
+        return False
 
 
 # ===========================================================================
