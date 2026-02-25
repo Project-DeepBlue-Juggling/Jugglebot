@@ -40,20 +40,22 @@ let throwLine;
 let handSphere;
 
 // ---- Visual parameters (mm) ----
-const PEDESTAL_HEIGHT  = 120;
-const PEDESTAL_RADIUS  = 30;
-const ARC_RADIUS       = 80;    // visual radius for arc indicators
-const ARC_SEGMENTS     = 48;
-const HAND_SPHERE_R    = 8;
+const PEDESTAL_HEIGHT   = 66.5;
+const PEDESTAL_RADIUS   = 125;
+const YAW_ARC_RADIUS    = PEDESTAL_RADIUS + 5;  // 130 mm
+const PITCH_ARC_RADIUS  = 150;
+const ARC_SEGMENTS      = 48;
+const ARC_TUBE_R        = 2.5;  // tube cross-section radius for thick arcs
+const HAND_SPHERE_R     = 8;
 
 // ---- Colours ----
-const COL_PEDESTAL = 0xa78bfa;  // purple accent
+const COL_PEDESTAL = 0xb0b0b0;  // light grey
 const COL_ARC      = 0x64748b;  // muted slate
 const COL_THROW    = 0xa78bfa;  // purple
 const COL_HAND     = 0xf59e0b;  // amber
 
 // ---- Pitch pivot in robot coords (inside yawGroup) ----
-// User formula: pivot = (-s, d, 0) where s = yaw_s_offset_mm, d = pitch_d_offset_mm
+// pivot = (-s, d, 0) where s = yaw_s_offset_mm, d = pitch_d_offset_mm
 const PIVOT_X = -BB_YAW_S_OFFSET_MM;   // -(-105.65) = 105.65
 const PIVOT_Y =  BB_PITCH_D_OFFSET_MM; // 41.0
 const PIVOT_Z =  0;
@@ -89,20 +91,18 @@ function arcPts(r, aDeg, bDeg, n, plane, off) {
 }
 
 /**
- * Create a dashed THREE.Line from an array of points.
+ * Create a solid tube mesh that follows an arc path.
+ * Uses TubeGeometry around a CatmullRomCurve3 for WebGL-friendly thick lines.
  */
-function dashedLine(pts, color, dashSize, gapSize) {
-    const geom = new THREE.BufferGeometry().setFromPoints(pts);
-    const mat = new THREE.LineDashedMaterial({
+function tubeArc(pts, color, tubeR) {
+    const curve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.0);
+    const geom = new THREE.TubeGeometry(curve, pts.length * 2, tubeR * S, 8, false);
+    const mat = new THREE.MeshStandardMaterial({
         color,
-        dashSize:  dashSize  ?? 0.008,
-        gapSize:   gapSize   ?? 0.004,
         transparent: true,
         opacity: 0.55,
     });
-    const line = new THREE.Line(geom, mat);
-    line.computeLineDistances();   // required for dashes
-    return line;
+    return new THREE.Mesh(geom, mat);
 }
 
 // ====================================================================
@@ -122,7 +122,7 @@ export function initBallButlerModel() {
     // ---- Pedestal cylinder ----
     const pedGeom = new THREE.CylinderGeometry(
         PEDESTAL_RADIUS * S, PEDESTAL_RADIUS * S,
-        PEDESTAL_HEIGHT * S, 12,
+        PEDESTAL_HEIGHT * S, 24,
     );
     const pedMat = new THREE.MeshStandardMaterial({
         color: COL_PEDESTAL, transparent: true, opacity: 0.35,
@@ -135,9 +135,9 @@ export function initBallButlerModel() {
     const topY = PEDESTAL_HEIGHT * S;
 
     // ---- Yaw arc: +/-30 deg from robot +Y, in robot XY plane ----
-    const yawArc = dashedLine(
-        arcPts(ARC_RADIUS, -30, 30, ARC_SEGMENTS, 'xy'),
-        COL_ARC,
+    const yawArc = tubeArc(
+        arcPts(YAW_ARC_RADIUS, -30, 30, ARC_SEGMENTS, 'xy'),
+        COL_ARC, ARC_TUBE_R,
     );
     yawArc.position.y = topY;
     bbGroup.add(yawArc);
@@ -149,9 +149,9 @@ export function initBallButlerModel() {
 
     // ---- Pitch arc: 5 deg to 100 deg, in robot YZ plane, at pitch pivot ----
     const pivotThree = r2t(PIVOT_X, PIVOT_Y, PIVOT_Z);
-    const pitchArc = dashedLine(
-        arcPts(ARC_RADIUS, 5, 100, ARC_SEGMENTS, 'yz', pivotThree),
-        COL_ARC,
+    const pitchArc = tubeArc(
+        arcPts(PITCH_ARC_RADIUS, 5, 100, ARC_SEGMENTS, 'yz', pivotThree),
+        COL_ARC, ARC_TUBE_R,
     );
     yawGroup.add(pitchArc);
 
