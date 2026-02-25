@@ -55,10 +55,13 @@ const COL_THROW    = 0xa78bfa;  // purple
 const COL_HAND     = 0xf59e0b;  // amber
 
 // ---- Pitch pivot in robot coords (inside yawGroup) ----
-// pivot = (-s, d, 0) where s = yaw_s_offset_mm, d = pitch_d_offset_mm
-const PIVOT_X = -BB_YAW_S_OFFSET_MM;   // -(-105.65) = 105.65
-const PIVOT_Y =  BB_PITCH_D_OFFSET_MM; // 41.0
+// s active negatively in local x, d active negatively in local y
+const PIVOT_X =  BB_YAW_S_OFFSET_MM;   // -105.65
+const PIVOT_Y = -BB_PITCH_D_OFFSET_MM; // -41.0
 const PIVOT_Z =  0;
+
+// Throw axis line is offset from hand sphere in local x
+const THROW_LINE_X_OFFSET = 80;  // mm
 
 /**
  * Build an arc as an array of THREE.Vector3 (in Three.js local metres).
@@ -164,9 +167,10 @@ export function initBallButlerModel() {
     // In pitchGroup local frame the throw direction is -Z (= robot +Y = forward).
     // Pitch rotation around X tilts it upward.
     const throwLen = BB_HAND_STROKE_MM * S;
+    const throwX = THROW_LINE_X_OFFSET * S;
     const throwGeom = new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(0, 0, 0),
-        new THREE.Vector3(0, 0, -throwLen),
+        new THREE.Vector3(throwX, 0, 0),
+        new THREE.Vector3(throwX, 0, -throwLen),
     ]);
     const throwMat = new THREE.LineBasicMaterial({ color: COL_THROW });
     throwLine = new THREE.Line(throwGeom, throwMat);
