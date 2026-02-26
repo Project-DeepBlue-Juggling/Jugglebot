@@ -149,6 +149,13 @@ def encode_set_input_vel(axis_id: int, velocity: float,
                        data=data, dlc=8, is_extended_id=False)
 
 
+def encode_set_absolute_position(axis_id: int, position: float) -> can.Message:
+    """Set the absolute encoder position (used after homing)."""
+    data = struct.pack('<f', position) + bytes(4)
+    return can.Message(arbitration_id=arb_id(axis_id, 'set_absolute_position'),
+                       data=data, dlc=8, is_extended_id=False)
+
+
 # ===========================================================================
 # CAN message decoding
 # ===========================================================================
@@ -411,6 +418,67 @@ class SingleLegTestHarness:
         self.send(encode_set_state(self.axis_id, 'CLOSED_LOOP'))
         self._wait_for_closed_loop()
         print(f"  Axis in TORQUE/PASSTHROUGH, CLOSED_LOOP")
+
+    def home_axis(self):
+        """Home the axis by driving to end-stop, then set absolute position.
+
+        Mirrors the homing sequence in can_node.py:
+          1. Enter VELOCITY/VEL_RAMP mode
+          2. Drive at homing speed toward the retracted end-stop
+          3. Monitor current with EMA until it exceeds the limit
+          4. Set absolute position to HOMING_LEG_ABS_POS_REV (0.1 rev)
+          5. Return to IDLE
+
+        After homing: raw encoder 0.1 = fully retracted, increasing raw = more
+        retracted (past the stop). Inverted encoder -0.1 = fully retracted,
+        more negative = more retracted.
+        """
+        print(f"  Homing axis {self.axis_id}...")
+
+        self.clear_errors()
+        self.set_safe_limits()
+
+        # Enter velocity mode
+        self.send(encode_set_controller_mode(
+            self.axis_id, 'VELOCITY', 'VEL_RAMP'))
+        time.sleep(0.05)
+        self.send(encode_set_vel_curr_limits(
+            self.axis_id,
+            vel_limit=abs(hw.HOMING_LEG_SPEED_RPS * 2),
+            curr_limit=hw.HOMING_LEG_CURRENT_LIMIT_A + hw.HOMING_LEG_CURRENT_HEADROOM_A))
+        time.sleep(0.05)
+        self.send(encode_set_state(self.axis_id, 'CLOSED_LOOP'))
+        self._wait_for_closed_loop()
+
+        # Drive toward end-stop
+        self.send(encode_set_input_vel(self.axis_id, hw.HOMING_LEG_SPEED_RPS))
+
+        avg = 0.0
+        deadline = time.time() + hw.HOMING_MOTOR_TIMEOUT_S
+        while time.time() < deadline:
+            self._poll(timeout=0.01)
+            iq = self.state.iq_measured
+            avg = avg * hw.HOMING_EMA_WEIGHT + iq * (1.0 - hw.HOMING_EMA_WEIGHT)
+            if abs(avg) >= hw.HOMING_LEG_CURRENT_LIMIT_A:
+                print(f"  End-stop detected (avg current: {avg:.2f} A)")
+                break
+        else:
+            self.idle_axis()
+            raise RuntimeError(
+                f"Homing timeout after {hw.HOMING_MOTOR_TIMEOUT_S}s")
+
+        self.idle_axis()
+        time.sleep(0.2)
+        self._poll()
+
+        # Set absolute position to 0 (fully compressed = origin)
+        self.send(encode_set_absolute_position(self.axis_id, 0.0))
+        time.sleep(0.1)
+        self._poll()
+
+        print(f"  Homed! Encoder set to 0 rev (fully compressed)")
+        print(f"  Current position: raw={self.state.pos_rev_raw:.4f}, "
+              f"inverted={self.state.pos_rev:.4f} rev")
 
     def check_heartbeat_fresh(self) -> bool:
         """Check that we've received a heartbeat recently."""
@@ -993,9 +1061,10 @@ def test_gravity_ff(harness: SingleLegTestHarness, hold_pos_raw: float = 3.3):
     mm_to_rev_axis = MM_TO_REV[harness.axis_id]
 
     print(f"\n  This test compares PD-only vs PD+FF holding a known weight.")
-    print(f"  The leg will move to {hold_pos_raw:.1f} rev (ODrive frame) under position control,")
+    print(f"  Attach the weight now, then enter the mass below.")
+    print(f"  The leg will extend to {hold_pos_raw:.1f} rev (ODrive frame) under position control,")
     print(f"  then switch to torque mode for the comparison.")
-    weight_str = input(f"  Enter attached weight in kg (or 'skip'): ").strip().lower()
+    weight_str = input(f"\n  Enter weight in kg (or 'skip'): ").strip().lower()
     harness.flush_and_resync()
 
     if weight_str == 'skip':
@@ -1166,10 +1235,17 @@ Safety:
     parser.add_argument('--test', default='phase3',
                         choices=list(TESTS.keys()) + list(TEST_GROUPS.keys()),
                         help='Which test or group to run (default: phase3)')
-    parser.add_argument('--hold-pos', type=float, default=3.3,
-                        help='Hold position in raw ODrive rev for gravity_ff test (default: 3.3)')
+    parser.add_argument('--hold-pos', type=float, default=None,
+                        help='Hold position in raw ODrive rev for gravity_ff test '
+                             '(default: -2.0 if --home, else 3.3)')
+    parser.add_argument('--home', action='store_true',
+                        help='Home the axis before running tests (drive to end-stop, set zero)')
 
     args = parser.parse_args()
+
+    # Resolve hold-pos default based on whether homing is used
+    if args.hold_pos is None:
+        args.hold_pos = -2.0 if args.home else 3.3
 
     # Install Ctrl-C handler for clean shutdown
     harness_ref = [None]
@@ -1209,6 +1285,8 @@ Safety:
     results = {}
     try:
         with harness:
+            if args.home:
+                harness.home_axis()
             for test_name in tests_to_run:
                 label, func = TESTS[test_name]
                 try:
