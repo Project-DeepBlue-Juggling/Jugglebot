@@ -100,11 +100,7 @@ class OrchestratorNode(Node):
 
     def _on_command(self, msg):
         """Queue a user command for the state machine."""
-        if self.ctx.pending_command is not None:
-            self.get_logger().warning(
-                f'Command "{self.ctx.pending_command}" dropped '
-                f'(replaced by "{msg.data}")')
-        self.ctx.pending_command = msg.data
+        self.ctx.enqueue_command(msg.data)
         self.get_logger().info(f'Command received: {msg.data}')
 
     # ═══════════════════════════════════════════════════════════════
@@ -266,6 +262,7 @@ class OrchestratorNode(Node):
         self.ctx.operation_pending = False
         self.ctx.operation_result = None
         self.ctx.request = None
+        self.ctx.clear_commands()
 
     def _start_service_call(self, client, request):
         """Start a non-blocking service call."""

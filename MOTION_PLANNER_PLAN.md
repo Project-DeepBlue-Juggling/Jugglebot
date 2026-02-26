@@ -39,7 +39,7 @@ There is only one robot. Repairs are time-consuming and costly. The bring-up str
 
 ---
 
-## Phase 2: Standalone Control Process & IPC Layer — SOFTWARE DONE (2026-02-20)
+## Phase 2: Standalone Control Process & IPC Layer — DONE (2026-02-25)
 
 **Goal:** Establish the non-ROS2 control process skeleton with IPC plumbing to ROS2, so all subsequent phases are developed and tested in their final runtime environment.
 
@@ -339,13 +339,24 @@ Each phase has explicit exit criteria. Do not begin the next phase until the cur
 | FK round-trip | PASS (0.00e+00 mm, 0.00e+00 rad) | IK → FK → compare, 20 poses |
 | Singularity map | INFO | 929/1944 poses reachable; cond range 449-644 |
 
-### Phase 2 verification results
+### Phase 2 verification results — software-only
 
 | Test | Result | Notes |
 |------|--------|-------|
-| Loop timing | SKIP | Requires pyzmq/msgpack (Jetson only) |
-| IPC latency | SKIP | Requires pyzmq/msgpack (Jetson only) |
-| Force conversion | PASS (<1e-14) | Round-trip force/torque; spool radii ~11 mm |
+| Loop timing | SKIP | Requires pyzmq/msgpack (Jetson only) — **still pending** |
+| IPC latency | SKIP | Requires pyzmq/msgpack (Jetson only) — **still pending** |
+| Force conversion (round-trip) | PASS (<1e-14) | Round-trip force/torque; spool radii ~11 mm |
+
+### Phase 2 verification results — hardware bench tests (2026-02-25)
+
+All four isolated-leg bench tests passed on axis 0 using `tools/single_leg_test.py` (standalone, no ROS2). ODrive current limit set to 50% of rated (10A).
+
+| Test | Result | Notes |
+|------|--------|-------|
+| Torque passthrough smoke test | PASS | 0.075 Nm needed to overcome friction (0.02 Nm insufficient). 4.15 rev movement over 2s, velocity settled to 0.0 rev/s after IDLE |
+| Emergency stop (single leg) | PASS | IDLE confirmed in 60-88 ms across 4 runs (< 100 ms threshold). No errors, no residual velocity |
+| Encoder sign convention | PASS | Positive torque → positive encoder delta (retraction). Signs opposite for negative torque. Convention is inverted vs Jugglebot model — `can_node.py` leg inversion handles this correctly |
+| Force conversion (multi-weight) | PASS | 4 weights (1.25-2.75 kg): linear fit R^2=0.994, measured \|Kt\|=0.0624 Nm/A vs datasheet 0.0637 Nm/A = **2.0% discrepancy** (< 10% threshold). Bias current 0.27 A (friction/PD offset) |
 
 ### Findings & items for future investigation
 
@@ -357,4 +368,10 @@ Each phase has explicit exit criteria. Do not begin the next phase until the cur
 
 4. **Windows Unicode**: Test output uses ASCII-only characters to avoid cp1252 encoding errors on Windows terminals. The code itself uses standard Python unicode strings internally.
 
-5. **Phase 2 hardware test harness built** (2026-02-25): `tools/single_leg_test.py` is a standalone script that bypasses ROS2 and talks directly to a single ODrive via python-can. It implements all four isolated-leg bench tests: torque passthrough smoke test, emergency stop, encoder sign check, and force conversion validation. See `tools/README.md` for full documentation. The harness uses conservative current limits (50% of rated) and sends IDLE on all exit paths. Hardware execution is pending — run on the Jetson when the robot is available.
+5. **Standalone test harness** (2026-02-25): `tools/single_leg_test.py` bypasses ROS2 and talks directly to a single ODrive via python-can. Implements all four Phase 2 bench tests with conservative current limits (50% of rated) and IDLE on all exit paths. See `tools/README.md`.
+
+6. **Motor friction threshold** (2026-02-25): Axis 0 requires ~0.075 Nm to overcome static friction when bench-mounted (unloaded). The default test torque of 0.02 Nm was insufficient. This is relevant for Phase 3 feedforward — the friction offset is approximately 0.27 A (measured from the multi-weight force test intercept).
+
+7. **Motor Kt validated** (2026-02-25): Multi-weight calibration measured Kt = 0.0624 Nm/A (from slope of iq vs tau at 4 loads, R^2=0.994). This is within 2.0% of the datasheet estimate Kt = 60/(2*pi*150) = 0.0637 Nm/A, confirming the spool radius derivation from `mm_to_rev` is correct. The measured Kt can be used directly in Phase 3 feedforward if needed.
+
+8. **Phase 2 software-only tests still pending on Jetson**: Loop timing and IPC latency tests require pyzmq/msgpack and must pass on the Jetson before the control loop is used in production. These are not blocking Phase 3 Stage A (which uses the standalone harness, not the IPC layer).

@@ -22,6 +22,16 @@ namespace Physics {
 }
 
 // ==========================================================================
+// Platform Dynamics
+// ==========================================================================
+
+namespace Dynamics {
+  constexpr float PLATFORM_MASS_KG = 0.96f;
+  constexpr float PLATFORM_COM_OFFSET_MM[3] = {-14.5f, -67.0f, 54.0f};
+  constexpr float MOTOR_ROTOR_INERTIA_KGM2 = 0.0f;
+}
+
+// ==========================================================================
 // Jugglebot Stewart Platform Geometry
 // ==========================================================================
 

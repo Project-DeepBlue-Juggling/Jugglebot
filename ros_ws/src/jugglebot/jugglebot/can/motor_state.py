@@ -21,9 +21,20 @@ NUM_AXES = len(ALL_AXES)
 
 
 class MotorStateTracker:
-    """Thread-safe container for per-axis motor states."""
+    """Thread-safe container for per-axis motor states.
+
+    IMPORTANT: The internal storage uses axis_id as a direct array index.
+    This requires ALL_AXES to be contiguous and 0-based (i.e., [0, 1, ..., N-1]).
+    If protocol_config ever assigns non-contiguous or non-zero-based node IDs,
+    this class must be updated to use a dict-based lookup instead.
+    """
 
     def __init__(self):
+        assert ALL_AXES == list(range(NUM_AXES)), (
+            f"MotorStateTracker requires contiguous 0-indexed axis IDs. "
+            f"Got ALL_AXES={ALL_AXES}, expected {list(range(NUM_AXES))}. "
+            f"If axis IDs have changed, switch _states to a dict-based lookup."
+        )
         self._lock = threading.Lock()
         self._states = [MotorStateSingle() for _ in range(NUM_AXES)]
 
@@ -134,6 +145,12 @@ class MotorStateTracker:
         self.fatal_error = False
         self.undervoltage_error = False
         self.soft_reset_attempts = 0
+
+    def clear_disarm_reasons(self):
+        """Reset disarm_reason to 0 for all axes (thread-safe)."""
+        with self._lock:
+            for state in self._states:
+                state.disarm_reason = 0
 
     def last_error_log_times(self, axis_id: int) -> Dict[int, float]:
         """Get or create the per-error-code log-time dict for an axis."""

@@ -87,6 +87,8 @@ class CanInterfaceNode(Node):
         self.legs_target_position = [None] * odrive.NUM_LEGS
         self.legs_target_reached = [False] * odrive.NUM_LEGS
         self.stowed_due_to_error = False
+        self._torque_mode_active = False  # True when legs are in TORQUE+PASSTHROUGH
+        self._shutdown_deadline = float('inf')  # Set to finite value during shutdown
         self._encoder_data_received = [False] * odrive.NUM_LEGS  # Track whether real encoder data has arrived
 
         # Tilt sensor and quaternion accumulation
@@ -122,6 +124,7 @@ class CanInterfaceNode(Node):
 
         # ── Subscribers ────────────────────────────────────────
         self.create_subscription(Float64MultiArray, 'leg_lengths_topic', self._sub_leg_lengths, 10)
+        self.create_subscription(Float64MultiArray, 'leg_torques_topic', self._sub_leg_torques, 10)
         self.create_subscription(SetMotorVelCurrLimitsMessage, 'set_motor_vel_curr_limits', self._sub_vel_curr_limits, 10)
         self.create_subscription(SetTrapTrajLimitsMessage, 'set_leg_trap_traj_limits', self._sub_trap_traj_limits, 10)
         self.create_subscription(String, 'control_mode_topic', self._sub_control_mode, 10)
@@ -169,13 +172,11 @@ class CanInterfaceNode(Node):
     def _poll_can_bus(self):
         """Poll the CAN bus for new messages."""
         self.bus.fetch_all(self._handle_message)
-
-        # Clear stored errors if the error condition has been resolved
-        if self.last_known_state['error'] and not (
-            self.motors.fatal_error or self.motors.fatal_can_error
-        ):
-            self.get_logger().info(f"Error cleared: {self.last_known_state['error']}")
-            self.last_known_state['error'] = []
+        # Error strings are cleared in _handle_error when heartbeat confirms
+        # active_errors == 0 and disarm_reason == 0 for ALL axes (line ~250).
+        # Do NOT clear optimistically here based on flag state alone — the
+        # flags may have just been cleared by _clear_errors() before ODrives
+        # have confirmed resolution via heartbeat.
 
     def _handle_message(self, msg):
         """Dispatch a single CAN message to the appropriate handler."""
@@ -230,46 +231,69 @@ class CanInterfaceNode(Node):
         active_errors, disarm_reason = odrive.decode_error(data)
         self.motors.update(axis_id, active_errors=active_errors, disarm_reason=disarm_reason)
 
-        # Refresh the snapshot so we see the update we just applied
+        # Refresh the snapshot so we see the update we just applied.
+        # Accumulate all evidence from ALL Jugglebot axes first, then make
+        # a single determination.  Never clear fatal_error unless *every*
+        # axis is confirmed clean.
         states = self.motors.get_states()[:len(odrive.JUGGLEBOT_AXES)]
         no_active = all(s.active_errors == 0 for s in states)
         no_disarm = all(s.disarm_reason == 0 for s in states)
         any_disarmed = any(s.disarm_reason != 0 for s in states)
         any_closed_loop = any(s.current_state == odrive.AXIS_STATES['CLOSED_LOOP'] for s in states)
+        all_disarm_undervoltage_only = all(
+            s.disarm_reason == 0 or s.disarm_reason == odrive.ERR_DC_BUS_UNDER_VOLTAGE
+            for s in states
+        )
+
+        # ── Phase 1: Determine error severity ─────────────────────
+        is_fatal = False
 
         if no_active and no_disarm:
+            # All axes fully clean — safe to clear everything
             self.motors.fatal_error = False
             self.motors.undervoltage_error = False
             self.last_known_state['error'] = []
             return
 
-        # Disarmed but no axes in closed-loop → try clearing.
-        # No delay needed — if errors persist, the next CAN error message
-        # will re-trigger this handler and increment the attempt counter.
+        # Active errors on any axis → fatal
+        if not no_active:
+            is_fatal = True
+
+        # Disarmed AND closed-loop → fatal (axis lost torque while active)
+        if any_disarmed and any_closed_loop:
+            is_fatal = True
+            self._update_disarm_error_state()
+            self.get_logger().error("Axis disarmed while in CLOSED_LOOP!", throttle_duration_sec=1.0)
+
+        # Disarmed but no axes in closed-loop → try soft clearing
         if any_disarmed and not any_closed_loop:
             if self.motors.soft_reset_attempts < self.motors.max_soft_reset_attempts:
                 self._clear_errors()
                 self.motors.soft_reset_attempts += 1
             else:
                 self.get_logger().error("Exceeded soft-error reset attempts", throttle_duration_sec=1.0)
-                self.motors.fatal_error = True
+                is_fatal = True
                 self._update_disarm_error_state()
 
-        # Disarmed AND closed-loop → fatal
-        if any_disarmed and any_closed_loop:
-            self.motors.fatal_error = True
-            self._update_disarm_error_state()
-            self.get_logger().error("Axis disarmed while in CLOSED_LOOP!", throttle_duration_sec=1.0)
-
-        if not no_active:
-            self.motors.fatal_error = True
+        # Track undervoltage from active errors on this axis
         if active_errors & odrive.ERR_DC_BUS_UNDER_VOLTAGE:
             self.motors.undervoltage_error = True
-        if disarm_reason & odrive.ERR_DC_BUS_UNDER_VOLTAGE and no_active:
+
+        # ── Phase 2: Undervoltage recovery (all-axis check) ───────
+        # Only clear undervoltage if ALL axes have no active errors AND every
+        # disarm reason is either 0 or undervoltage-only (i.e., the bus
+        # dropped but has since recovered).
+        if no_active and all_disarm_undervoltage_only and any_disarmed:
             self.motors.undervoltage_error = False
-            self.motors.fatal_error = False
-            self._clear_errors()
-            self.get_logger().info("Undervoltage disarm cleared (no active errors)")
+            # Only clear fatal if no other reason to be fatal
+            if not is_fatal:
+                self._clear_errors()
+                self.get_logger().info("Undervoltage disarm cleared (no active errors on any axis)")
+                return  # _clear_errors resets fatal_error; skip phase 3
+
+        # ── Phase 3: Apply determination ──────────────────────────
+        if is_fatal:
+            self.motors.fatal_error = True
 
         # Throttled per-axis per-error logging
         log_times = self.motors.last_error_log_times(axis_id)
@@ -371,9 +395,8 @@ class CanInterfaceNode(Node):
         for axis_id in odrive.JUGGLEBOT_AXES:
             self.bus.send(odrive.encode_clear_errors(axis_id))
         self.motors.clear_error_flags()
+        self.motors.clear_disarm_reasons()
         self.last_known_state['error'] = []
-        for state in self.motors._states:
-            state.disarm_reason = 0
 
     def _setup_odrives_steps(self, requested_state='IDLE'):
         """Generator: configure all ODrives after confirming they're responsive.
@@ -424,6 +447,16 @@ class CanInterfaceNode(Node):
         if axis_id in odrive.LEG_AXES:
             setpoint = -setpoint  # Legs: ODrive -ve = extension
         self.bus.send(odrive.encode_set_input_pos(axis_id, setpoint, vel_ff, torque_ff))
+
+    def _send_torque_command(self, axis_id, torque_Nm):
+        """Send a torque command to a leg axis with inversion.
+
+        Jugglebot convention: positive torque = extension (push platform up).
+        ODrive convention for legs: negative = extension.
+        """
+        if axis_id in odrive.LEG_AXES:
+            torque_Nm = -torque_Nm  # Same inversion as position commands
+        self.bus.send(odrive.encode_set_input_torque(axis_id, torque_Nm))
 
     # ═══════════════════════════════════════════════════════════
     # Service callbacks
@@ -590,10 +623,34 @@ class CanInterfaceNode(Node):
 
     def _sub_leg_lengths(self, msg):
         """Handle platform movement commands (6 leg positions)."""
+        if self._torque_mode_active:
+            return  # Position commands ignored in torque mode
         positions = msg.data
+        if len(positions) != odrive.NUM_LEGS:
+            self.get_logger().error(
+                f"Leg length command has {len(positions)} elements, expected {odrive.NUM_LEGS}")
+            return
+        if any(math.isnan(p) or math.isinf(p) for p in positions):
+            self.get_logger().error("Leg length command contains NaN or Inf — ignored")
+            return
         self.legs_target_position = list(positions)
         for axis_id, setpoint in enumerate(positions):
             self._send_position_target(axis_id, setpoint)
+
+    def _sub_leg_torques(self, msg):
+        """Handle torque commands (6 leg torques in Nm, Jugglebot convention)."""
+        if not self._torque_mode_active:
+            return  # Torque commands ignored in position mode
+        torques = msg.data
+        if len(torques) != odrive.NUM_LEGS:
+            self.get_logger().error(
+                f"Leg torque command has {len(torques)} elements, expected {odrive.NUM_LEGS}")
+            return
+        if any(math.isnan(t) or math.isinf(t) for t in torques):
+            self.get_logger().error("Leg torque command contains NaN or Inf — ignored")
+            return
+        for axis_id, torque in enumerate(torques):
+            self._send_torque_command(axis_id, torque)
 
     def _sub_vel_curr_limits(self, msg):
         if msg.legs_vel_limit > 0:
@@ -618,7 +675,8 @@ class CanInterfaceNode(Node):
     def _sub_control_mode(self, msg):
         """Handle control mode changes from the orchestrator.
 
-        Valid modes: '', 'ERROR', 'SPACEMOUSE', 'SHELL'.
+        Valid modes: '', 'ERROR', 'SPACEMOUSE', 'SHELL',
+                     'TORQUE_SPACEMOUSE', 'TORQUE_SHELL'.
         """
         try:
             states = self.motors.last_states
@@ -628,12 +686,37 @@ class CanInterfaceNode(Node):
 
             if msg.data == 'ERROR':
                 self.get_logger().error("Error state detected. Stowing platform.")
+                self._torque_mode_active = False
                 self._gently_move_to_setpoint(0.0, deactivating=True)
                 self.stowed_due_to_error = True
 
-            # Legs in CLOSED_LOOP, hand IDLE
+            # Torque control modes: TORQUE+PASSTHROUGH for legs
+            elif msg.data in ('TORQUE_SPACEMOUSE', 'TORQUE_SHELL'):
+                self.get_logger().info(f'Control mode: {msg.data} (torque)')
+                self._torque_mode_active = True
+                # Switch legs to TORQUE+PASSTHROUGH controller mode
+                for axis_id in odrive.LEG_AXES:
+                    self.bus.send(odrive.encode_set_controller_mode(
+                        axis_id, 'TORQUE', 'PASSTHROUGH'))
+                    time.sleep(0.005)
+                # Ensure legs are in CLOSED_LOOP state
+                if not legs_closed:
+                    for axis_id in odrive.LEG_AXES:
+                        self.bus.send(odrive.encode_set_state(axis_id, 'CLOSED_LOOP'))
+                        time.sleep(0.005)
+                if hand_closed:
+                    self.bus.send(odrive.encode_set_state(odrive.HAND_AXIS, 'IDLE'))
+
+            # Position control modes: POSITION+TRAP_TRAJ for legs
             elif msg.data in ('SPACEMOUSE', 'SHELL'):
                 self.get_logger().info(f'Control mode: {msg.data}')
+                if self._torque_mode_active:
+                    # Switch back to POSITION+TRAP_TRAJ
+                    self._torque_mode_active = False
+                    for axis_id in odrive.LEG_AXES:
+                        self.bus.send(odrive.encode_set_controller_mode(
+                            axis_id, 'POSITION', 'TRAP_TRAJ'))
+                        time.sleep(0.005)
                 if not legs_closed:
                     for axis_id in odrive.LEG_AXES:
                         self.bus.send(odrive.encode_set_state(axis_id, 'CLOSED_LOOP'))
@@ -642,10 +725,17 @@ class CanInterfaceNode(Node):
                     self.bus.send(odrive.encode_set_state(odrive.HAND_AXIS, 'IDLE'))
 
             elif msg.data == '':
-                pass  # No mode selected (IDLE / BOOT state)
+                if self._torque_mode_active:
+                    # Exiting active state: restore POSITION+TRAP_TRAJ
+                    self._torque_mode_active = False
+                    for axis_id in odrive.LEG_AXES:
+                        self.bus.send(odrive.encode_set_controller_mode(
+                            axis_id, 'POSITION', 'TRAP_TRAJ'))
+                        time.sleep(0.005)
 
             else:
                 self.get_logger().warning(f"Unknown control mode: {msg.data}. Stowing.")
+                self._torque_mode_active = False
                 self._gently_move_to_setpoint(0.0, deactivating=True)
 
         except Exception as e:
@@ -777,9 +867,19 @@ class CanInterfaceNode(Node):
             while True:
                 delay = next(gen)
                 _pump()
+                if time.time() > self._shutdown_deadline:
+                    self.get_logger().error(
+                        "Shutdown deadline reached — aborting generator")
+                    self._emergency_idle()
+                    return False
                 if isinstance(delay, (int, float)) and delay > 0:
                     deadline = time.time() + delay
                     while time.time() < deadline:
+                        if time.time() > self._shutdown_deadline:
+                            self.get_logger().error(
+                                "Shutdown deadline reached — aborting generator")
+                            self._emergency_idle()
+                            return False
                         time.sleep(0.001)
                         _pump()
         except StopIteration as e:
@@ -833,9 +933,14 @@ class CanInterfaceNode(Node):
             self._watchdog_restore_failed = False
             self.get_logger().info("CAN bus restored by watchdog")
         else:
+            # Best-effort: try to send IDLE to all axes before giving up.
+            # If the bus is truly dead, send() silently fails (bus._bus is None),
+            # but if even partial connectivity remains, this may stop motors
+            # that are still in CLOSED_LOOP with their last commanded position.
+            self._emergency_idle()
             self._watchdog_restore_failed = True
             self.get_logger().error(
-                "CAN bus restoration failed — fatal CAN error")
+                "CAN bus restoration failed — sent emergency IDLE, fatal CAN error")
 
     # ═══════════════════════════════════════════════════════════
     # Async operations (generator-based state machines)
@@ -913,7 +1018,11 @@ class CanInterfaceNode(Node):
         return True
 
     def _home_motor_steps(self, axis_id, speed, limit, headroom):
-        """Generator: run a motor at velocity until current exceeds the limit (homing)."""
+        """Generator: run a motor at velocity until current exceeds the limit (homing).
+
+        Has a configurable timeout (HOMING_MOTOR_TIMEOUT_S) to prevent
+        indefinite blocking if the motor jams without exceeding the current limit.
+        """
         self.bus.send(odrive.encode_set_state(axis_id, 'CLOSED_LOOP'))
         self.bus.send(odrive.encode_set_controller_mode(axis_id, 'VELOCITY', 'VEL_RAMP'))
         self.bus.send(odrive.encode_set_vel_curr_limits(axis_id, abs(speed * 2), limit + headroom))
@@ -921,9 +1030,15 @@ class CanInterfaceNode(Node):
         self.bus.send(odrive.encode_set_input_vel(axis_id, speed))
 
         avg = 0.0
+        deadline = time.time() + hw.HOMING_MOTOR_TIMEOUT_S
         while True:
             if self.motors.fatal_error or self.motors.fatal_can_error:
                 self.get_logger().fatal("Fatal error during homing!")
+                self.bus.send(odrive.encode_set_state(axis_id, 'IDLE'))
+                return False
+            if time.time() > deadline:
+                self.get_logger().error(
+                    f"Homing timeout on axis {axis_id} after {hw.HOMING_MOTOR_TIMEOUT_S}s")
                 self.bus.send(odrive.encode_set_state(axis_id, 'IDLE'))
                 return False
             current = self.motors.get_field(axis_id, 'iq_measured')
@@ -944,6 +1059,14 @@ class CanInterfaceNode(Node):
 
     def _gentle_move_steps(self, setpoint, deactivating=True):
         """Generator: slowly move all legs to a setpoint."""
+        # Safety: refuse to enter CLOSED_LOOP if errors are present.
+        # A faulted axis would reject the state change or fault cascade.
+        if self.motors.fatal_error or self.motors.fatal_can_error:
+            self.get_logger().error(
+                "Gentle move aborted: errors present. Sending all axes to IDLE.")
+            self._emergency_idle()
+            return False
+
         states = self.motors.last_states
         _IDLE = odrive.AXIS_STATES['IDLE']
         _CL = odrive.AXIS_STATES['CLOSED_LOOP']
@@ -1113,6 +1236,7 @@ class CanInterfaceNode(Node):
         q_roll = quaternion.from_rotation_vector([-tilt_x, 0, 0])
         q_pitch = quaternion.from_rotation_vector([0, -tilt_y, 0])
         result = q_roll * q_pitch * self._last_tilt_offset
+        result = result.normalized()
         self._last_tilt_offset = result
 
         quat = Quaternion()
@@ -1135,7 +1259,12 @@ class CanInterfaceNode(Node):
         """Handle node shutdown."""
         self.get_logger().info("Shutting down CanInterfaceNode...")
         try:
-            if not self.stowed_due_to_error:
+            if self.motors.fatal_can_error:
+                self.get_logger().warning(
+                    "CAN bus error — skipping stow, sending best-effort IDLE")
+                self._emergency_idle()
+            elif not self.stowed_due_to_error:
+                self._shutdown_deadline = time.time() + hw.JB_OP_SHUTDOWN_STOW_TIMEOUT_S
                 self._gently_move_to_setpoint(0.0, deactivating=True)
             self.bus.send(odrive.encode_set_state(odrive.HAND_AXIS, 'IDLE'))
             self.bus.close()

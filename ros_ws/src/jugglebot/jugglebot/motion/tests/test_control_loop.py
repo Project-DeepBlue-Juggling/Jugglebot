@@ -207,7 +207,7 @@ def test_force_conversion():
     print(f"         extension roundtrip error: {ext_roundtrip_err:.2e} mm")
     print(f"         spool radii: {spool_radii.round(2)} mm  "
           f"(range ok: {radii_ok})")
-    print(f"         100N → torque: {t100.round(3)} Nm  "
+    print(f"         100N -> torque: {t100.round(3)} Nm  "
           f"(magnitude ok: {torque_magnitude_ok})")
 
     return passed
