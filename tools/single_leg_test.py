@@ -453,6 +453,11 @@ class SingleLegTestHarness:
         # Drive toward end-stop
         self.send(encode_set_input_vel(self.axis_id, hw.HOMING_LEG_SPEED_RPS))
 
+        # Let the velocity ramp up before monitoring current — VEL_RAMP needs
+        # time to accelerate, and there may be brief inrush transients.
+        print(f"  Ramping up (1s grace period)...")
+        self.poll_for(1.0)
+
         avg = 0.0
         deadline = time.time() + hw.HOMING_MOTOR_TIMEOUT_S
         while time.time() < deadline:
@@ -1243,9 +1248,12 @@ Safety:
 
     args = parser.parse_args()
 
-    # Resolve hold-pos default based on whether homing is used
+    # Resolve defaults based on whether homing is used
     if args.hold_pos is None:
         args.hold_pos = -2.0 if args.home else 3.3
+    if args.home and args.test == 'phase3':
+        # With --home, default to just gravity_ff (not pd_hold which has no user prompt)
+        args.test = 'gravity_ff'
 
     # Install Ctrl-C handler for clean shutdown
     harness_ref = [None]
