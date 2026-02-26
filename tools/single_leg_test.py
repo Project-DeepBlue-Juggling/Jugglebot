@@ -545,7 +545,7 @@ def test_estop(harness: SingleLegTestHarness):
     print("\n" + "=" * 60)
     print("TEST 2: Emergency stop test")
     print("=" * 60)
-    TEST_TORQUE_NM = 0.03
+    TEST_TORQUE_NM = 0.08  # same torque as smoke test to ensure leg is moving before e-stop  
 
     harness.clear_errors()
     harness.set_safe_limits()
@@ -618,7 +618,7 @@ def test_encoder_sign(harness: SingleLegTestHarness):
     print("\n" + "=" * 60)
     print("TEST 3: Encoder sign convention check")
     print("=" * 60)
-    PULSE_TORQUE_NM = 0.03
+    PULSE_TORQUE_NM = 0.08  # same small torque as smoke test to ensure measurable movement without overshooting
     PULSE_DURATION_S = 1.0
 
     harness.clear_errors()
