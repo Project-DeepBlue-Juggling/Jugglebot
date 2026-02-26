@@ -1039,7 +1039,7 @@ def test_pd_hold(harness: SingleLegTestHarness,
         return False
 
 
-def test_gravity_ff(harness: SingleLegTestHarness, hold_pos_raw: float = 3.3):
+def test_gravity_ff(harness: SingleLegTestHarness, hold_pos_raw: float = -2.0):
     """Stage A2: Gravity feedforward test.
 
     Compares PD-only vs PD+FF with a known weight attached.
@@ -1056,7 +1056,7 @@ def test_gravity_ff(harness: SingleLegTestHarness, hold_pos_raw: float = 3.3):
     Parameters
     ----------
     hold_pos_raw : float
-        Target position in raw ODrive revolutions (default 3.3).
+        Target position in raw ODrive revolutions (default -2.0).
     """
     print("\n" + "=" * 60)
     print("STAGE A2: Gravity feedforward test")
@@ -1252,7 +1252,7 @@ Safety:
                         help='Which test or group to run (default: phase3)')
     parser.add_argument('--hold-pos', type=float, default=None,
                         help='Hold position in raw ODrive rev for gravity_ff test '
-                             '(default: -2.0 if --home, else 3.3)')
+                             '(default: -2.0 if --home)')
     parser.add_argument('--home', action='store_true',
                         help='Home the axis before running tests (drive to end-stop, set zero)')
 
@@ -1260,7 +1260,7 @@ Safety:
 
     # Resolve defaults based on whether homing is used
     if args.hold_pos is None:
-        args.hold_pos = -2.0 if args.home else 3.3
+        args.hold_pos = -2.0
     if args.home and args.test == 'phase3':
         # With --home, default to just gravity_ff (not pd_hold which has no user prompt)
         args.test = 'gravity_ff'
