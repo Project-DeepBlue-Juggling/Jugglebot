@@ -1093,19 +1093,21 @@ def test_gravity_ff(harness: SingleLegTestHarness, hold_pos_raw: float = 3.3):
     harness.require_no_errors()
 
     # --- Move to hold position using ODrive position control ---
+    # Use TRAP_TRAJ (not PASSTHROUGH) so the ODrive plans a smooth trajectory.
+    # PASSTHROUGH would apply the full step instantly, hitting current limits.
     print(f"\n  Moving to hold position ({hold_pos_raw:.1f} rev raw)...")
     harness.send(encode_set_controller_mode(
-        harness.axis_id, 'POSITION', 'PASSTHROUGH'))
+        harness.axis_id, 'POSITION', 'TRAP_TRAJ'))
     time.sleep(0.05)
     harness.send(encode_set_input_pos(harness.axis_id, hold_pos_raw))
     time.sleep(0.05)
     harness.send(encode_set_state(harness.axis_id, 'CLOSED_LOOP'))
     harness._wait_for_closed_loop()
-    print(f"  Axis in POSITION/PASSTHROUGH, CLOSED_LOOP")
+    print(f"  Axis in POSITION/TRAP_TRAJ, CLOSED_LOOP")
 
-    # Wait for ODrive to reach and settle at the target
-    print(f"  Settling (3s)...", end='', flush=True)
-    harness.poll_for(3.0)
+    # Wait for trajectory to complete and settle
+    print(f"  Waiting for trajectory (5s)...", end='', flush=True)
+    harness.poll_for(5.0)
     print(f" done.")
     hold_target_mm = harness.state.pos_rev / mm_to_rev_axis
     print(f"  Hold target: {hold_target_mm:.2f} mm "
