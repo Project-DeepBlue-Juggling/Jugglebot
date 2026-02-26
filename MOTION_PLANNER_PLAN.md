@@ -17,6 +17,34 @@ The linear actuators are string-driven with approximately constant efficiency ac
 ### Hardware Safety Philosophy
 There is only one robot. Repairs are time-consuming and costly. The bring-up strategy throughout this plan is designed around the principle of **maximum offline validation before hardware, and graduated hardware exposure**. Every phase that involves commanding the robot follows a progression: simulation/offline first → isolated leg bench test → mechanically supported platform → free platform at low speed → free platform at increasing speed. Current limits on the ODrive controllers should be set conservatively at all times and only relaxed when a phase demonstrates that higher limits are needed.
 
+### Control Architecture — Position Control with Feedforward
+
+The ODrive motor controllers implement a cascaded control architecture in firmware:
+
+1. **Position loop (8 kHz):** `vel_cmd = pos_gain × (target_pos − actual_pos) + vel_ff`
+2. **Velocity loop (8 kHz):** `iq_cmd = vel_gain × (vel_cmd − actual_vel) + vel_integrator + torque_ff / Kt`
+3. **Current loop (40+ kHz):** closed-loop PWM drive
+
+This plan uses **position control mode** (`POSITION` / `PASSTHROUGH`) as the primary interface to the ODrives. The motion planner computes three quantities per leg at each control cycle and sends them via `set_input_pos`:
+
+| Field | Source | Purpose |
+|---|---|---|
+| `input_pos` | Position IK (Phase 1) | Where the leg should be |
+| `vel_ff` | Velocity IK via Jacobian (Phase 1) | How fast it should be moving |
+| `torque_ff` | Dynamics model (Phases 3, 5) | What force is needed (gravity, inertia) |
+
+**Why this architecture:**
+
+- **The dynamics model is expressed through feedforward, not feedback.** The intelligence of the motion planner — gravity compensation, inertia feedforward, Jacobian-based force decomposition — flows through the `vel_ff` and `torque_ff` fields. In a well-tuned system, these feedforward terms do the heavy lifting; the ODrive's PID only corrects for modelling errors and disturbances.
+
+- **The ODrive's feedback loops run 16× faster than Python.** Closing a position/velocity PID at 8 kHz on dedicated hardware will always outperform a Python loop at 500 Hz for disturbance rejection, stiction handling, and tracking bandwidth. Delegating feedback to the ODrive lets the Python process focus on what it is uniquely responsible for: kinematics, dynamics, and trajectory planning.
+
+- **Fail-safe on communication loss.** If the Python control loop stalls, the ODrive holds the last commanded position. In torque or velocity mode, a stale command means the motor continues applying force or moving — potentially into an end-stop. With 280 mm of actuator stroke and fast motors, this fail-safety matters.
+
+- **Natural trajectory interface.** The quintic trajectory generator (Phase 4) produces position, velocity, and acceleration at each timestep. These map directly to `input_pos`, `vel_ff`, and `torque_ff` (via the dynamics model), with no intermediate PD computation needed in the Python loop.
+
+**Feedforward resolution note:** The CAN protocol encodes `vel_ff` and `torque_ff` as `int16` with 0.001 unit resolution (rev/s and Nm respectively). For velocity feedforward, typical trajectory velocities of 5–20 rev/s give 5,000–20,000 counts — adequate. For torque feedforward, per-leg gravity compensation is ~0.017 Nm (~17 counts) — coarse but acceptable because the ODrive's 8 kHz PID absorbs the quantization error. During fast moves (Phase 5), inertia feedforward torques are larger and the resolution is proportionally better. If feedforward precision becomes a limiting factor, velocity control mode (`set_input_vel` with float32 `torque_ff`) is a drop-in alternative that preserves the same architectural split between planning and execution.
+
 ---
 
 ## Phase 1: Kinematic Foundation — DONE (2026-02-20)
@@ -41,15 +69,15 @@ There is only one robot. Repairs are time-consuming and costly. The bring-up str
 
 ## Phase 2: Standalone Control Process & IPC Layer — DONE (2026-02-25)
 
-**Goal:** Establish the non-ROS2 control process skeleton with IPC plumbing to ROS2, so all subsequent phases are developed and tested in their final runtime environment.
+**Goal:** Establish the non-ROS2 control process skeleton with IPC plumbing to ROS2, so all subsequent phases are developed and tested in their final runtime environment. Validate CAN communication and basic motor behaviour on an isolated leg.
 
 > **Hardware exposure: Isolated leg only.** All hardware tests in this phase are performed on a single leg disconnected from the platform, bench-mounted or clamped. No multi-leg or platform tests until Phase 3 Stage B.
 
 ### Deliverables
 - Standalone Python control process with a fixed-rate main loop (target: 500–1000 Hz)
 - Loop timing instrumentation (measure and log jitter on every cycle)
-- ODrive torque passthrough mode interface (replace TRAP_TRAJ — send torque/current commands directly)
-- Leg force → motor torque conversion module: fixed geometric ratio from string drive geometry, verified against known loads
+- ODrive position control interface: `set_input_pos` with velocity and torque feedforward fields, plus CAN commands for gain tuning (`set_pos_gain`, `set_vel_gains`)
+- Leg force → motor torque conversion module: fixed geometric ratio from string drive geometry, verified against known loads (needed for computing `torque_ff`)
 - IPC layer (ZeroMQ or shared memory) with defined message schemas for: target state in, telemetry out, mode commands in
 - ROS2 bridge node that translates ROS2 messages to/from IPC
 
@@ -62,43 +90,56 @@ There is only one robot. Repairs are time-consuming and costly. The bring-up str
 #### Isolated leg bench tests
 Before connecting any hardware, set ODrive current limits to a conservative value (e.g., 50% of the motor's rated current). These limits remain in place for all Phase 2 testing.
 
-- **Single-leg passthrough smoke test:** command a constant small torque on the isolated leg, verify the leg moves and encoder feedback is received correctly. Verify the leg stops cleanly on mode switch to idle.
+These tests validate CAN communication, encoder behaviour, and the force-to-torque conversion model using torque mode. They are intentionally mode-agnostic fundamentals — they confirm that the motors, encoders, and CAN bus work correctly regardless of which control mode is used in production.
+
+- **Single-leg torque smoke test:** command a constant small torque on the isolated leg, verify the leg moves and encoder feedback is received correctly. Verify the leg stops cleanly on mode switch to idle.
 - **Emergency stop test (single leg):** verify that the control process correctly idles the leg on IPC loss, process crash, or explicit stop command. Test each failure mode individually.
-- **Force conversion validation:** apply a known static load to the isolated leg (e.g., hang a calibrated weight) and command zero torque. Measure the motor current required to hold position via PD. Compare the measured current to the predicted current from the geometric force-to-torque conversion. Discrepancy should be under 10%.
+- **Force conversion validation:** apply a known static load to the isolated leg (e.g., hang a calibrated weight) and command zero torque. Measure the motor current required to hold position via PD. Compare the measured current to the predicted current from the geometric force-to-torque conversion. Discrepancy should be under 10%. This validates the `torque_ff` computation that will be used in position control mode.
 - **Encoder direction and sign convention check:** command a small positive torque pulse, verify encoder position increases in the expected direction. Repeat for negative torque. This catches sign errors before they become dangerous on the assembled platform.
 
-> **Note:** The six-leg coordinated torque test is deferred to Phase 3 Stage B, where it is performed on the mechanically supported platform. There is no value in running six disconnected legs simultaneously, and the test is only meaningful when the CAN bus is loaded with the full set of drives as they will be in operation.
+> **Note:** The six-leg coordinated test is deferred to Phase 3 Stage B, where it is performed on the mechanically supported platform. There is no value in running six disconnected legs simultaneously, and the test is only meaningful when the CAN bus is loaded with the full set of drives as they will be in operation.
 
 ---
 
-## Phase 3: Gravity Compensation & Static Feedforward
+## Phase 3: Gravity Feedforward & Position Control Bring-up
 
-**Goal:** Achieve stable, low-effort platform hold at arbitrary poses using dynamics-based feedforward, without any trajectory planning yet. This validates the dynamics model independently.
+**Goal:** Achieve stable, low-effort platform hold at arbitrary poses using position control with gravity feedforward, without any trajectory planning yet. This validates the dynamics model, the position command pipeline (`pos` + `vel_ff` + `torque_ff`), and ODrive gain configuration independently before trajectory tracking.
 
 > **Hardware exposure: Staged bring-up.** This phase uses a three-stage hardware progression from mechanically supported platform to free-standing operation.
 
 ### Deliverables
 - Platform dynamics model: rigid body mass and inertia parameters, including the static mass contribution of the throw axis assembly as a fixed payload at its nominal position
-- Gravity wrench computation: `W_gravity = [0, 0, mg, 0, 0, 0]` in world frame, rotated to platform frame
-- Leg force decomposition: `f_legs = Jᵀ W`
-- Reflected motor inertia model: compute reflected inertia per leg (`J_motor × gear_ratio²`) for use in later phases — document the value but do not include in the Phase 3 feedforward (it only matters during acceleration)
-- PD feedback on leg position/velocity to close the loop
+- Gravity wrench computation: `W_gravity = [0, 0, -mg, tau_x, tau_y, tau_z]` in world frame, with moment due to CoM offset
+- Leg force decomposition: `f_legs = J⁻ᵀ · W_support` (solve `J^T · f = W` for `f`)
+- Gravity `torque_ff` computation: leg forces → motor torques via spool radius, sent as the `torque_ff` field in `set_input_pos`
+- Reflected motor inertia model: compute reflected inertia per leg (`J_motor / r_spool²`) for use in Phase 5 — document the value but do not include in the Phase 3 feedforward (it only matters during acceleration)
+- Position command pipeline: pose → position IK → motor revolutions (`input_pos`); twist → velocity IK → motor velocities (`vel_ff`); gravity wrench → per-leg torques (`torque_ff`)
+- ODrive gain configuration: tuned `pos_gain`, `vel_gain`, `vel_int_gain` per axis via CAN
 
-### PD Tuning Guide
-The PD loop is the inner feedback layer that corrects for modelling errors and disturbances. Tuning targets:
+### ODrive Gain Tuning Guide
+
+The ODrive's cascaded controller has three tunable gains per axis, settable via CAN (`set_pos_gain`, `set_vel_gains`). These replace any custom PD loop — the ODrive handles all feedback at 8 kHz, and the motion planner's job is to provide accurate feedforward.
+
+- **`pos_gain`** (1/s): converts position error to velocity command. Higher values give faster position correction but can cause overshoot or oscillation. Start at the ODrive default (~20) and adjust.
+- **`vel_gain`** (Nm·s/rev): converts velocity error to current. Determines the "stiffness" of velocity tracking. Must be tuned for the loaded system — gains that work on an unloaded leg will likely be too aggressive for the assembled platform.
+- **`vel_int_gain`** (Nm/rev): integrator that eliminates steady-state velocity error. For trajectory tracking where the setpoint updates every cycle, keep this low (or zero) to avoid lag and overshoot. Can be increased if steady-state holding accuracy at rest requires it.
+
+**Tuning targets:**
 - **Steady-state accuracy:** ±1 mm position, ±0.1° orientation at the platform
-- **Procedure:** Detailed per-stage procedure below. The general principle is: tune on the isolated leg first to establish gain order-of-magnitude, then re-tune on the supported platform, then validate on the free platform. Gains from earlier stages are starting points, not final values.
+- **Procedure:** Tune on the isolated leg first (Stage A) to establish baseline gain range, re-tune on the supported platform (Stage B), validate on the free platform (Stage C). Gains from earlier stages are starting points, not final values.
 - **Gain scheduling:** if the platform feels underdamped at some poses and overdamped at others, gains may need to vary with configuration. Note this as a risk but defer gain scheduling until it is demonstrated to be necessary.
 
 ### Stage A — Isolated Leg (Bench Test)
 
 **Setup:** Single leg disconnected from the platform, bench-mounted or clamped. ODrive current limits remain at the conservative value set in Phase 2.
 
-**Purpose:** Validate all low-level infrastructure with zero risk to the robot. Establish baseline PD gain order-of-magnitude for the unloaded actuator.
+**Purpose:** Validate the position control command pipeline and establish baseline ODrive gains for the unloaded actuator. Phase 2 bench tests confirmed CAN, encoder, and force conversion fundamentals; this stage validates the production control mode.
 
 **Tests:**
-- **Preliminary PD tuning (unloaded):** Increase P gain until the leg holds a target position within ±0.5 mm with no oscillation. Add D gain to suppress any residual overshoot. Record these gains as the "unloaded baseline" — they will be too aggressive for the loaded platform.
-- **Gravity feedforward unit test (single leg):** With the leg oriented vertically and a known mass attached, enable gravity feedforward for that single leg. Verify the computed feedforward torque roughly matches the load, and that the PD effort drops when feedforward is enabled.
+- **Position control smoke test:** Command a series of position setpoints via `set_input_pos` (no `vel_ff` or `torque_ff` yet). Verify the leg moves to each target accurately and holds without oscillation. This validates the position IK → motor revolutions pipeline end-to-end.
+- **Velocity feedforward test:** Command a slow position ramp (e.g., 5 mm/s over 30 mm) with and without `vel_ff`. Compare tracking error during the ramp. With `vel_ff`, the ODrive's position loop should anticipate the motion rather than reacting to position error, reducing tracking lag.
+- **Gravity feedforward unit test (single leg):** With the leg oriented vertically and a known mass attached, command a static position hold with and without `torque_ff` set to the computed gravity compensation torque. Measure the ODrive's motor current (`iq`) in both cases. With `torque_ff`, the ODrive's PID should produce less corrective current because the feedforward is carrying the gravity load.
+- **ODrive gain tuning (unloaded):** Tune `pos_gain` and `vel_gain` for clean step response — fast settling, no oscillation, no audible vibration. Record these as the "unloaded baseline." Set `vel_int_gain` to zero initially.
 - **Current limit adequacy check:** With the known mass attached, verify that the conservative current limit is sufficient to hold the load. If not, increase the limit incrementally with documented justification. This informs what the current limits need to be for the assembled platform.
 
 ### Stage B — Platform Supported
@@ -108,29 +149,30 @@ The PD loop is the inner feedback layer that corrects for modelling errors and d
 **Purpose:** Catch wiring errors, sign convention bugs, and CAN coordination issues in a mechanically safe configuration. These are the most likely classes of first-assembly bugs and the most dangerous if they occur on a free-standing platform.
 
 **Tests:**
-- **Six-leg CAN coordination test:** Command time-varying torque profiles to all six legs simultaneously at the full control rate. Verify CAN bus throughput is sufficient (no dropped frames), all legs receive commands within the same control cycle, and encoder feedback from all six legs is received within one cycle. Log any CAN frame timing violations. This is a Phase 3 Stage B exit gate — do not proceed to Stage C if CAN drops frames.
-- **Direction and sign convention check (all legs):** Command a small positive torque pulse on each leg in sequence. Verify each leg moves in the direction that would shorten/extend it as expected by the kinematic model. A sign error on a single leg will cause the platform to fight itself when free-standing.
-- **Multi-leg PD hold (supported):** Command all six legs to hold their current positions with the unloaded baseline gains from Stage A (or lower). Verify all legs respond, no leg oscillates, and the system is stable. This is a low-risk first test of the full control loop because the platform support prevents any consequence of instability.
+- **Six-leg CAN coordination test:** Command time-varying position profiles to all six legs simultaneously at the full update rate. Verify CAN bus throughput is sufficient (no dropped frames), all legs receive commands within the same control cycle, and encoder feedback from all six legs is received within one cycle. Log any CAN frame timing violations. This is a Phase 3 Stage B exit gate — do not proceed to Stage C if CAN drops frames.
+- **Direction and sign convention check (all legs):** Command a small position increment on each leg in sequence. Verify each leg moves in the direction that would shorten/extend it as expected by the kinematic model. A sign error on a single leg will cause the platform to fight itself when free-standing.
+- **Multi-leg position hold (supported):** Command all six legs to hold their current positions using the unloaded baseline ODrive gains from Stage A (or lower). Verify all legs respond, no leg oscillates, and the system is stable. This is a low-risk first test of the full coordinated position control because the platform support prevents any consequence of instability.
 - **Emergency stop test (six legs):** Trigger each failure mode (IPC loss, process crash, explicit stop) and verify all six legs idle simultaneously and cleanly. The platform is supported, so even a failure to idle is non-destructive.
-- **Feedforward dry run (supported):** Enable gravity feedforward while the platform is still supported. Log the feedforward torques for each leg at the home pose. Verify they are in the expected direction and roughly the expected magnitude (compare to `platform_mass × g / 6` as a sanity check, adjusted for geometry). Do not remove the support yet.
+- **Feedforward dry run (supported):** Enable gravity `torque_ff` while the platform is still supported. Log the feedforward torques for each leg at the home pose. Verify they are in the expected direction and roughly the expected magnitude (compare to `platform_mass × g / 6` as a sanity check, adjusted for geometry). Do not remove the support yet.
 
-### Stage C — Platform Free, Gravity Compensation Active
+### Stage C — Platform Free, Gravity Feedforward Active
 
-**Setup:** Remove mechanical support. Enable gravity feedforward. Start with PD gains at 50% of the unloaded baseline from Stage A.
+**Setup:** Remove mechanical support. Gravity `torque_ff` active from the start. ODrive gains at the unloaded baseline from Stage A.
 
-**Purpose:** First unsupported operation under the new control system. Feedforward is active from the start so the PD loop is not solely responsible for holding the platform weight.
+**Purpose:** First unsupported operation under position control with gravity feedforward. The `torque_ff` carries the static gravity load so the ODrive's PID is not solely responsible for supporting the platform weight.
 
 **Procedure:**
-1. With feedforward active and PD at 50% of baseline, release the platform support gradually (don't just remove it — ease it out so you can re-engage if something goes wrong).
-2. If the platform holds stable, log the steady-state error and PD effort.
-3. Incrementally increase PD gains toward the ±1 mm / ±0.1° target. At each step, verify no oscillation before proceeding.
-4. If steady-state error exceeds ±1 mm / ±0.1° with feedforward active and PD gains as high as they can go without oscillation, diagnose the feedforward model (mass, CoM location, force conversion) rather than continuing to raise PD gains.
+1. With `torque_ff` active and ODrive gains at the unloaded baseline, release the platform support gradually (don't just remove it — ease it out so you can re-engage if something goes wrong).
+2. If the platform holds stable, log the steady-state error and ODrive motor current draw.
+3. If the platform oscillates, reduce `pos_gain` or `vel_gain`. If it drifts, verify the feedforward torques are correct (mass, CoM, sign conventions).
+4. Incrementally adjust ODrive gains toward the ±1 mm / ±0.1° target. At each step, verify no oscillation before proceeding.
+5. If steady-state error exceeds ±1 mm / ±0.1° with feedforward active and ODrive gains as high as they can go without oscillation, diagnose the feedforward model (mass, CoM location, force conversion) rather than continuing to raise gains.
 
 ### Verification (Phase 3 exit criteria — all performed at Stage C)
-- **Static hold test:** Command the platform to hold several poses including tilted configurations. Measure steady-state position error and current draw vs. a pure PD baseline. Feedforward should significantly reduce the current/effort required to hold pose. Verify the ±1 mm / ±0.1° target is met.
-- **Gravity vector rotation test:** Tilt the platform to a known angle, log the expected and commanded gravity compensation forces per leg, verify they are geometrically consistent.
+- **Static hold test:** Command the platform to hold several poses including tilted configurations. Measure steady-state position error and current draw vs. a hold without `torque_ff`. Feedforward should significantly reduce the ODrive's corrective current required to hold pose. Verify the ±1 mm / ±0.1° target is met.
+- **Gravity vector rotation test:** Tilt the platform to a known angle, log the expected and commanded gravity compensation torques per leg, verify they are geometrically consistent.
 - **Parameter sensitivity:** Vary mass and inertia parameters ±20% in software and observe effect on hold quality — this bounds how precisely you need to identify the physical parameters. If hold quality degrades unacceptably, consider a system identification experiment (chirp excitation + force measurement).
-- **Log `Jᵀ` condition number** across the workspace to confirm force decomposition is stable at intended operating poses.
+- **Log Jacobian condition number** across the workspace to confirm force decomposition is stable at intended operating poses.
 
 ---
 
@@ -143,7 +185,7 @@ The PD loop is the inner feedback layer that corrects for modelling errors and d
 ### Deliverables
 - Quintic polynomial solver: 6 boundary conditions → 6 coefficients, per Cartesian DoF
 - Trajectory evaluator: given time `t`, return `(x, ẋ, ẍ)` in Cartesian space
-- Leg-space trajectory mapper: evaluate IK at each timestep to get `(q, q̇, q̈)`
+- Leg-space trajectory mapper: evaluate IK at each timestep to get `(q, q̇, q̈)` — these map directly to `(input_pos, vel_ff, torque_ff via dynamics)`
 - Feasibility checker: compute peak leg velocity and acceleration along proposed trajectory, compare against leg limits. Also evaluate the Jacobian condition number along the trajectory and reject paths that enter ill-conditioned regions identified in Phase 1.
 - Speed limit interface: the trajectory manager must accept an externally-imposed speed scale factor (0.0–1.0) that uniformly scales all velocities and accelerations. This will be used by the runtime monitor in Phase 6 for singularity avoidance and protective slowdowns.
 - Trajectory manager: handles active trajectory execution. At this phase, the manager executes a single trajectory to completion — mid-motion re-planning is deferred to Phase 7.
@@ -155,13 +197,13 @@ The PD loop is the inner feedback layer that corrects for modelling errors and d
 - **Limit checking test:** Construct trajectories that are known to violate leg velocity/acceleration limits and verify the feasibility checker correctly rejects them. Separately, construct trajectories that pass through ill-conditioned Jacobian regions and verify rejection.
 - **Visualisation:** Plot Cartesian and leg-space trajectories (position, velocity, acceleration) for a set of representative moves — inspect by eye for smoothness and absence of spikes.
 - **Speed limit test (offline):** Compute a trajectory, then recompute with speed scale factor at 0.5. Verify the trajectory shape is preserved and peak velocities/accelerations are halved.
-- **Torque preview:** For each trajectory that will be executed on hardware, compute the expected feedforward torques offline before executing. Verify no torque exceeds the ODrive current limit. Verify no leg velocity or acceleration exceeds the limit. This is a mandatory pre-flight check — do not execute a trajectory on hardware without first previewing its torque profile.
+- **Feedforward torque preview:** For each trajectory that will be executed on hardware, compute the expected feedforward torques (`torque_ff` = gravity + any available dynamic terms) offline before executing. Verify no feedforward torque exceeds the ODrive current limit (leaving headroom for PID corrections). Verify no leg velocity or acceleration exceeds limits. This is a mandatory pre-flight check — do not execute a trajectory on hardware without first previewing its feedforward profile.
 
 #### Hardware tests (low speed, free platform)
-All hardware tests use trajectories whose peak velocities are ≤25% of actuator velocity limits. Every trajectory is previewed offline (torque preview test above) before execution.
+All hardware tests use trajectories whose peak velocities are ≤25% of actuator velocity limits. Every trajectory is previewed offline (feedforward torque preview above) before execution.
 
 - **Small move from home:** Command a small move (5–10 mm translation, near home pose) to a target with zero velocity and acceleration at `t=T`. Verify the platform reaches and holds the target without oscillation.
-- **Graduated move distance:** Incrementally increase move distance and orientation change. At each step, verify tracking is smooth and torques are well within limits before proceeding to a larger move.
+- **Graduated move distance:** Incrementally increase move distance and orientation change. At each step, verify tracking is smooth and feedforward torques are well within limits before proceeding to a larger move.
 - **Multi-pose sequence:** Execute a series of moves to different poses across the workspace (still at ≤25% speed). Verify the platform reaches each target and holds within the ±1 mm / ±0.1° steady-state target.
 - **Speed limit test (hardware):** Execute a trajectory, then re-execute with speed scale factor at 0.5. Verify the physical motion matches the offline prediction.
 
@@ -169,35 +211,35 @@ All hardware tests use trajectories whose peak velocities are ≤25% of actuator
 
 ## Phase 5: Full Inertia Feedforward & Dynamic Compensation
 
-**Goal:** Extend the feedforward model to include platform inertia and reflected motor inertia during motion, enabling accurate force feedforward during fast moves. After this phase, re-run Phase 4 trajectory tests at progressively increasing speed.
+**Goal:** Extend the feedforward model to include platform inertia and reflected motor inertia during motion, enabling accurate `torque_ff` during fast moves. After this phase, re-run Phase 4 trajectory tests at progressively increasing speed.
 
-> **Hardware exposure: Graduated speed ramp-up.** Do not jump from 25% speed (Phase 4) to full speed. Increase in increments (25% → 50% → 75% → 100%), validating tracking and torques at each level before proceeding.
+> **Hardware exposure: Graduated speed ramp-up.** Do not jump from 25% speed (Phase 4) to full speed. Increase in increments (25% → 50% → 75% → 100%), validating tracking and feedforward accuracy at each level before proceeding.
 
 ### Deliverables
 - Full Newton-Euler dynamics: `F = ma_com`, `τ = Iα + ω × Iω`
 - Full 6D wrench computation from desired platform acceleration
 - Reflected motor inertia compensation: add `J_reflected × q̈` per leg to the feedforward torque, using the reflected inertia values documented in Phase 3
-- Combined feedforward: gravity + platform inertia + reflected motor inertia terms summed before `Jᵀ` decomposition (for platform terms) and added per-leg (for motor inertia terms)
+- Combined `torque_ff`: gravity wrench + platform inertia wrench → `J⁻ᵀ` decomposition → per-leg forces → motor torques, plus per-leg reflected motor inertia term. The total is sent as the `torque_ff` field in `set_input_pos`.
 
 ### Verification
 
 #### Offline tests (no hardware)
-- **Torque profile preview:** For the same trajectories used in Phase 4 hardware tests, compute the full feedforward torques (gravity + inertia + reflected motor inertia) at 50%, 75%, and 100% speed. Verify no torque exceeds current limits at any speed. If a trajectory exceeds limits at a given speed, it must not be executed at that speed — lengthen the move duration until the profile is feasible.
+- **Torque profile preview:** For the same trajectories used in Phase 4 hardware tests, compute the full feedforward torques (gravity + inertia + reflected motor inertia) at 50%, 75%, and 100% speed. Verify no feedforward torque exceeds current limits at any speed (with headroom for PID corrections). If a trajectory exceeds limits at a given speed, it must not be executed at that speed — lengthen the move duration until the profile is feasible.
 
 #### Hardware tests (graduated speed ramp-up)
 
 Execute the following tests at 25% speed first. Only proceed to the next speed increment when the current level passes.
 
-- **Step response comparison:** Execute identical moves with gravity-only vs. full inertia feedforward at the current speed level. Measure tracking error (platform pose vs. desired trajectory). Full feedforward should reduce peak tracking error.
+- **Step response comparison:** Execute identical moves with `torque_ff` = gravity-only vs. `torque_ff` = gravity + inertia at the current speed level. Measure tracking error (platform pose vs. desired trajectory). Full feedforward should reduce peak tracking error.
 - **Trajectory replay at speed:** Re-run Phase 4's trajectory set at the current speed level. Verify tracking error remains within acceptable bounds:
   - At 50% speed: ≤2 mm peak position error, ≤0.3° peak orientation error
   - At 75% speed: ≤2.5 mm peak position error, ≤0.4° peak orientation error
   - At 100% speed: ≤3 mm peak position error, ≤0.5° peak orientation error
-- **Continuity check:** Verify position, velocity, and acceleration profiles are smooth with no spikes or discontinuities in the commanded torques at the current speed level.
-- **Torque prediction validation:** Log commanded feedforward torques and actual motor currents during a known trajectory. If discrepancies exceed 15%, investigate: the most likely sources are inaccurate mass/inertia parameters, CoM offset errors, or unmodelled dynamics. Document findings for Phase 6. Do not increase speed until discrepancies are understood.
+- **Continuity check:** Verify position, velocity, and acceleration profiles are smooth with no spikes or discontinuities in the commanded feedforward at the current speed level.
+- **Feedforward prediction validation:** Log commanded `torque_ff` and actual motor currents (`iq_measured`) during a known trajectory. If the ODrive's PID correction current (total current minus `torque_ff / Kt`) exceeds 15% of the feedforward current, investigate: the most likely sources are inaccurate mass/inertia parameters, CoM offset errors, or unmodelled dynamics. Document findings for Phase 6. Do not increase speed until discrepancies are understood.
 
 #### Full-speed validation (after 100% speed level passes)
-- **High-speed move test:** Execute moves at the upper end of the intended speed envelope, verify torque commands are smooth and tracking remains acceptable.
+- **High-speed move test:** Execute moves at the upper end of the intended speed envelope, verify feedforward commands are smooth and tracking remains acceptable.
 - **Energy consistency check:** Verify that the feedforward torques are physically consistent with the trajectory (compute net work done and compare to kinetic energy change).
 
 ---
@@ -213,7 +255,7 @@ Execute the following tests at 25% speed first. Only proceed to the next speed i
 - Singularity avoidance: runtime condition number monitoring that feeds back through the Phase 4 speed limit interface — degrade speed gracefully as condition number rises, abort trajectory if a hard threshold is exceeded
 - Watchdog and fault recovery: ODrive fault detection, IPC loss handling, leg overextension recovery
 - Telemetry and logging: full state logging via ROS2 rosbag for post-run analysis
-- Performance dashboard: real-time visualisation of loop timing, tracking error, leg states, feedforward vs. feedback torque split
+- Performance dashboard: real-time visualisation of loop timing, tracking error, leg states, feedforward vs. PID correction split
 - Stress test trajectories: a library of aggressive test trajectories that exercise the full speed/acceleration envelope, workspace boundaries, and near-singular configurations, used to validate all protective systems before Phase 7
 
 ### Verification
@@ -254,7 +296,7 @@ Only after all protective systems pass low-speed validation.
 ### Verification
 
 #### Offline / simulation tests (no hardware)
-- **Re-planning continuity test (offline):** Simulate a trajectory in progress, inject a new target, and verify the re-planned trajectory has continuous position, velocity, and acceleration at the join. Inspect commanded torque profiles for discontinuities.
+- **Re-planning continuity test (offline):** Simulate a trajectory in progress, inject a new target, and verify the re-planned trajectory has continuous position, velocity, and acceleration at the join. Inspect commanded feedforward profiles for discontinuities.
 - **Timeout logic test (offline):** Simulate TRACKING mode entry with no ball prediction target. Verify the system times out and returns to IDLE after the configured deadline. Separately, simulate a target that arrives too late for feasible trajectory planning — verify rejection and return to IDLE.
 - **Unreachable target test (offline):** Inject a target that requires exceeding leg limits. Verify it is correctly rejected.
 
@@ -262,7 +304,7 @@ Only after all protective systems pass low-speed validation.
 Use synthetic ball trajectories (known intercept point and time) injected in place of the real ball predictor. Start with targets near the centre of the workspace and gradually move toward the edges.
 
 - **Simulated ball feed test (conservative targets):** Inject synthetic ball trajectories with intercept points near the workspace centre and generous time horizons. Verify the platform reaches the correct pose/velocity/acceleration at the right moment.
-- **Re-planning continuity test (hardware):** During a live trajectory driven by a synthetic ball feed, inject an updated target. Verify smooth re-planning with no discontinuities in platform motion or commanded torques.
+- **Re-planning continuity test (hardware):** During a live trajectory driven by a synthetic ball feed, inject an updated target. Verify smooth re-planning with no discontinuities in platform motion or commanded feedforward.
 - **Late-update test:** Send an initial target, then update it 50–100 ms later with a slightly different intercept point. Verify smooth re-planning.
 - **Unreachable target test (hardware):** Inject a target that requires exceeding leg limits. Verify it is correctly rejected and the platform remains in a safe state with Phase 6 protections active.
 - **No-target / late-target test (hardware):** Enter TRACKING mode but send no ball prediction target. Verify the system times out and returns to IDLE. Separately, send a target that arrives too late — verify rejection and return to IDLE.
@@ -283,13 +325,14 @@ Only after all synthetic feed tests pass.
 |---|---|
 | Platform mass/inertia parameters poorly known | Phase 3 sensitivity test bounds the impact; consider a system ID experiment (chirp excitation + force measurement) if hold quality is insufficient |
 | Throw axis coupling is non-negligible | Monitor platform stability during throw axis motion after Phase 7 integration. If systematic pose errors correlate with throw axis acceleration, revisit the decoupling assumption — the minimum intervention is adding throw axis reaction force as a feedforward disturbance term |
-| Loop jitter exceeds acceptable level in Python | Profile Phase 2 thoroughly; the 99th-percentile jitter gate is a hard exit criterion. Migrate hot loop to C++ extension if needed before Phase 4 |
+| Loop jitter exceeds acceptable level in Python | Profile Phase 2 thoroughly; the 99th-percentile jitter gate is a hard exit criterion. Migrate hot loop to C++ extension if needed before Phase 4. Note: with position control, the loop is less timing-critical than with torque control — the ODrive holds position between updates |
 | CAN bus bandwidth insufficient for 6 legs at full rate | Phase 3 Stage B six-leg coordinated test is the gate. If frame drops occur, reduce control rate or investigate CAN FD. This must be resolved before Phase 3 Stage C |
 | Jacobian singularities in operating workspace | Phase 1 singularity map feeds into Phase 4 feasibility checker and Phase 6 runtime monitor. If singularities fall within the intended workspace, trajectories must actively route around them |
 | Reflected motor inertia dominates actuator dynamics | Phase 3 documents the reflected inertia magnitude. If it exceeds 20% of the platform-induced leg force during typical accelerations, it must be included in Phase 5 feedforward (it is included by default in this plan) |
+| `torque_ff` int16 quantisation limits feedforward precision | Per-leg gravity torques (~0.017 Nm) quantise to ~17 counts at 0.001 Nm resolution. The ODrive's 8 kHz PID absorbs the residual. If this proves insufficient, switch to velocity control mode (`set_input_vel` with float32 `torque_ff`) as a drop-in alternative |
 | Ball predictor latency eats into throw-prep window | Measure end-to-end latency early in Phase 7; may require moving the predictor closer to the control process if ROS2 bridge adds too much delay |
 | Ball predictor fails to produce a target | Phase 7 timeout handling ensures the system returns to IDLE rather than waiting indefinitely or attempting a last-known stale target |
-| Hardware damage during bring-up | Three-stage bring-up (isolated leg → supported platform → free platform) catches wiring, sign, and coordination bugs before they can cause damage. Conservative current limits throughout. Torque profile preview before every new hardware trajectory. |
+| Hardware damage during bring-up | Three-stage bring-up (isolated leg → supported platform → free platform) catches wiring, sign, and coordination bugs before they can cause damage. Conservative current limits throughout. Feedforward torque preview before every new hardware trajectory. |
 
 ---
 
@@ -300,33 +343,40 @@ Each phase has explicit exit criteria. Do not begin the next phase until the cur
 | Phase | Key Exit Gate |
 |---|---|
 | 1 — Kinematics | Numerical Jacobian error < floating-point precision; singularity map complete |
-| 2 — Control Process | 99th-percentile loop jitter < 2× nominal period; isolated leg passthrough verified; e-stop functional on single leg |
-| 3A — Isolated Leg Tuning | Unloaded PD baseline gains established; feedforward unit test passes; current limit adequacy confirmed |
-| 3B — Supported Platform | Six-leg CAN throughput verified; all leg directions correct; multi-leg PD hold stable; e-stop functional on all legs |
-| 3C — Free Platform | Static hold accuracy ≤ ±1 mm / ±0.1° with feedforward active across multiple poses |
-| 4 — Trajectory Generator | Boundary conditions exact; feasibility checker rejects known-bad trajectories; low-speed (≤25%) tracking verified on hardware; torque preview workflow established |
-| 5 — Inertia Feedforward | Tracking error within bounds at each speed level (50% → 75% → 100%); torque prediction within 15% of measured |
+| 2 — Control Process | 99th-percentile loop jitter < 2× nominal period; isolated leg CAN communication verified; e-stop functional on single leg; force conversion model validated |
+| 3A — Isolated Leg | Position control pipeline verified; `vel_ff` improves tracking; gravity `torque_ff` reduces ODrive corrective current; ODrive gains tuned for unloaded leg; current limit adequate |
+| 3B — Supported Platform | Six-leg CAN throughput verified; all leg directions correct; multi-leg position hold stable; e-stop functional on all legs |
+| 3C — Free Platform | Static hold accuracy ≤ ±1 mm / ±0.1° with gravity feedforward active across multiple poses |
+| 4 — Trajectory Generator | Boundary conditions exact; feasibility checker rejects known-bad trajectories; low-speed (≤25%) tracking verified on hardware; feedforward torque preview workflow established |
+| 5 — Inertia Feedforward | Tracking error within bounds at each speed level (50% → 75% → 100%); feedforward prediction within 15% of measured PID correction |
 | 6 — Hardening | All protective systems validated at low speed; fault injection passes at all speeds; 60-min full-speed endurance pass |
 | 7 — Ball Prediction | All tests pass with synthetic ball feed first; timing accuracy within budget; re-planning continuous; timeout handling verified; 30-min stress test pass; live predictor integration stable |
 
 ---
 
-## Appendix: Phase 1 & 2 Implementation Notes (2026-02-20)
+## Appendix: Implementation Notes
 
-### Files created
+### Phase 1 & 2 files created (2026-02-20)
 
 | File | Lines | Purpose |
 |------|-------|---------|
 | `motion/geometry.py` | ~65 | `StewartGeometry` class — loads all platform constants from `hardware_config.py` |
 | `motion/ik_solver.py` | ~270 | Position IK, analytical Jacobian, velocity/acceleration IK, numerical FK (Newton-Raphson), rotation utilities |
 | `motion/workspace.py` | ~130 | Leg extension checking, condition number, reachability, singularity mapping |
-| `motion/conversions.py` | ~70 | Leg force ↔ motor torque, extension ↔ rev, velocity conversions |
+| `motion/conversions.py` | ~70 | Leg force ↔ motor torque, extension ↔ rev, velocity conversions (used for both `input_pos` and `torque_ff` computation) |
 | `motion/ipc.py` | ~190 | ZeroMQ PUB/SUB IPC with msgpack; `ControlProcessIPC` + `BridgeIPC` classes |
 | `motion/control_loop.py` | ~230 | Fixed-rate standalone process with timing instrumentation, heartbeat watchdog |
 | `motion_bridge_node.py` | ~170 | ROS2 bridge: subscriptions → IPC → publishers |
 | `motion/tests/test_kinematics.py` | ~260 | 6 Phase 1 verification tests |
 | `motion/tests/test_control_loop.py` | ~170 | 3 Phase 2 verification tests |
 | `motion/__init__.py` | ~40 | Public API exports |
+
+### Phase 3 dynamics files (2026-02-25)
+
+| File | Lines | Purpose |
+|------|-------|---------|
+| `motion/dynamics.py` | ~180 | Gravity wrench, `J⁻ᵀ` force decomposition, motor torque computation, reflected inertia |
+| `motion/tests/test_dynamics.py` | ~200 | 7 Phase 3 verification tests (all PASS) |
 
 ### Phase 1 verification results (all PASS)
 
@@ -349,7 +399,7 @@ Each phase has explicit exit criteria. Do not begin the next phase until the cur
 
 ### Phase 2 verification results — hardware bench tests (2026-02-25)
 
-All four isolated-leg bench tests passed on axis 0 using `tools/single_leg_test.py` (standalone, no ROS2). ODrive current limit set to 50% of rated (10A).
+All four isolated-leg bench tests passed on axis 0 using `tools/single_leg_test.py` (standalone, no ROS2). ODrive current limit set to 50% of rated (10A). These tests used torque mode to validate CAN communication, encoder behaviour, and force conversion fundamentals — all mode-agnostic.
 
 | Test | Result | Notes |
 |------|--------|-------|
@@ -370,8 +420,10 @@ All four isolated-leg bench tests passed on axis 0 using `tools/single_leg_test.
 
 5. **Standalone test harness** (2026-02-25): `tools/single_leg_test.py` bypasses ROS2 and talks directly to a single ODrive via python-can. Implements all four Phase 2 bench tests with conservative current limits (50% of rated) and IDLE on all exit paths. See `tools/README.md`.
 
-6. **Motor friction threshold** (2026-02-25): Axis 0 requires ~0.075 Nm to overcome static friction when bench-mounted (unloaded). The default test torque of 0.02 Nm was insufficient. This is relevant for Phase 3 feedforward — the friction offset is approximately 0.27 A (measured from the multi-weight force test intercept).
+6. **Motor friction threshold** (2026-02-25): Axis 0 requires ~0.075 Nm to overcome static friction when bench-mounted (unloaded). The default test torque of 0.02 Nm was insufficient. This is relevant for Phase 3 — the friction offset is approximately 0.27 A (measured from the multi-weight force test intercept).
 
-7. **Motor Kt validated** (2026-02-25): Multi-weight calibration measured Kt = 0.0624 Nm/A (from slope of iq vs tau at 4 loads, R^2=0.994). This is within 2.0% of the datasheet estimate Kt = 60/(2*pi*150) = 0.0637 Nm/A, confirming the spool radius derivation from `mm_to_rev` is correct. The measured Kt can be used directly in Phase 3 feedforward if needed.
+7. **Motor Kt validated** (2026-02-25): Multi-weight calibration measured Kt = 0.0624 Nm/A (from slope of iq vs tau at 4 loads, R^2=0.994). This is within 2.0% of the datasheet estimate Kt = 60/(2*pi*150) = 0.0637 Nm/A, confirming the spool radius derivation from `mm_to_rev` is correct. The measured Kt can be used directly for `torque_ff` computation.
 
 8. **Phase 2 software-only tests still pending on Jetson**: Loop timing and IPC latency tests require pyzmq/msgpack and must pass on the Jetson before the control loop is used in production. These are not blocking Phase 3 Stage A (which uses the standalone harness, not the IPC layer).
+
+9. **Control architecture decision** (2026-02-27): Switched from custom torque control (Python-side PD at 500 Hz) to ODrive position control with feedforward (`set_input_pos` with `vel_ff` + `torque_ff`). The dynamics model is expressed through feedforward terms, while the ODrive's 8 kHz cascaded PID handles feedback. This was motivated by: (a) the ODrive's inner loops running 16× faster than Python can close a feedback loop, (b) fail-safe behaviour on communication loss (hold position vs. continue applying force), (c) the limited actuator stroke (280 mm) making torque-mode runaway a real risk, and (d) the trajectory planner's outputs (position, velocity, acceleration) mapping directly to the `set_input_pos` fields. The Phase 2 bench tests (torque-mode) remain valid — they validated CAN, encoder, and force conversion fundamentals that are independent of the production control mode. Phase 3 Stage A picks up position-control-specific validation.
