@@ -427,7 +427,7 @@ def test_smoke(harness: SingleLegTestHarness):
       1. Clear errors, set safe current limits
       2. Enter TORQUE/PASSTHROUGH mode
       3. Record initial encoder position
-      4. Command a small constant torque (0.02 Nm) for 2 seconds
+      4. Command a small constant torque (0.08 Nm) for 2 seconds
       5. Verify encoder position changed (leg moved)
       6. Switch to IDLE
       7. Wait 1 second, verify velocity is near zero (leg stopped)
@@ -435,7 +435,7 @@ def test_smoke(harness: SingleLegTestHarness):
     print("\n" + "=" * 60)
     print("TEST 1: Torque passthrough smoke test")
     print("=" * 60)
-    TEST_TORQUE_NM = 0.02  # very small -- just enough to move an unloaded leg
+    TEST_TORQUE_NM = 0.08  # very small -- just enough to move an unloaded leg
     TEST_DURATION_S = 2.0
 
     harness.clear_errors()
@@ -496,7 +496,7 @@ def test_estop(harness: SingleLegTestHarness):
     print("\n" + "=" * 60)
     print("TEST 2: Emergency stop test")
     print("=" * 60)
-    TEST_TORQUE_NM = 0.03
+    TEST_TORQUE_NM = 0.08  # same torque as smoke test to get leg moving
 
     harness.clear_errors()
     harness.set_safe_limits()
@@ -569,7 +569,7 @@ def test_encoder_sign(harness: SingleLegTestHarness):
     print("\n" + "=" * 60)
     print("TEST 3: Encoder sign convention check")
     print("=" * 60)
-    PULSE_TORQUE_NM = 0.03
+    PULSE_TORQUE_NM = 0.08
     PULSE_DURATION_S = 1.0
 
     harness.clear_errors()
