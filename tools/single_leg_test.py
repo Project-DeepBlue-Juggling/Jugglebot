@@ -1010,16 +1010,21 @@ def test_gravity_ff(harness: SingleLegTestHarness):
     harness.set_safe_limits()
     harness.require_no_errors()
 
-    target_rev, _ = harness.read_encoder()
-    target_mm = target_rev / mm_to_rev_axis
-
     KP = 0.5    # N/mm — moderate gains
     KD = 0.005  # N·s/mm
     TEST_DURATION = 3.0
     LOOP_DT = 0.01
 
     def run_hold(use_ff: bool) -> tuple:
-        """Run PD hold and return (error_rms_mm, current_rms_A)."""
+        """Run PD hold and return (error_rms_mm, current_rms_A).
+
+        Captures the target position fresh each time so both phases
+        start with zero error — giving a fair comparison.
+        """
+        # Capture target from current position (zero initial error)
+        harness.read_encoder(settle_time=0.5)
+        hold_target_mm = harness.state.pos_rev / mm_to_rev_axis
+
         harness.enter_torque_mode()
         errors = []
         currents = []
@@ -1028,7 +1033,7 @@ def test_gravity_ff(harness: SingleLegTestHarness):
             harness._poll(timeout=LOOP_DT)
             actual_mm = harness.state.pos_rev / mm_to_rev_axis
             actual_vel = harness.state.vel_rps / mm_to_rev_axis
-            e_pos = target_mm - actual_mm
+            e_pos = hold_target_mm - actual_mm
             e_vel = 0.0 - actual_vel
             f_pd = KP * e_pos + KD * e_vel
             tau_pd = f_pd * spool_radius_m
