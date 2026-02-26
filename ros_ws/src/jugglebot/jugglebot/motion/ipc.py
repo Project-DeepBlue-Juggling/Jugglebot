@@ -88,9 +88,17 @@ def make_mode_command(command: str, **params) -> dict:
 def make_telemetry(leg_positions: list | tuple,
                    leg_velocities: list | tuple,
                    commanded_torques: list | tuple,
-                   loop_dt_s: float) -> dict:
-    """Create a Telemetry message from the control loop."""
-    return {
+                   loop_dt_s: float,
+                   ff_torques: list | tuple | None = None,
+                   pd_torques: list | tuple | None = None) -> dict:
+    """Create a Telemetry message from the control loop.
+
+    Parameters
+    ----------
+    ff_torques : per-motor gravity feedforward torques (Nm), or None
+    pd_torques : per-motor PD feedback torques (Nm), or None
+    """
+    msg = {
         'type': 'telemetry',
         'leg_pos': list(leg_positions),
         'leg_vel': list(leg_velocities),
@@ -98,6 +106,11 @@ def make_telemetry(leg_positions: list | tuple,
         'dt': loop_dt_s,
         'ts': time.time(),
     }
+    if ff_torques is not None:
+        msg['ff_torques'] = list(ff_torques)
+    if pd_torques is not None:
+        msg['pd_torques'] = list(pd_torques)
+    return msg
 
 
 def make_motor_feedback(positions: list | tuple,
@@ -134,21 +147,33 @@ def _unpack(frames: list[bytes]) -> tuple[bytes, dict]:
 # ---------------------------------------------------------------------------
 
 class ControlProcessIPC:
-    """IPC endpoints for the standalone control process."""
+    """IPC endpoints for the standalone control process.
+
+    Uses two SUB sockets to prevent high-frequency data (targets, motor
+    feedback) from overwriting low-frequency mode commands.  The data
+    socket has CONFLATE=1 (keep only latest message) while the mode
+    socket has no CONFLATE so every command is delivered.
+    """
 
     def __init__(self,
                  command_addr: str = COMMAND_ADDR,
                  telemetry_addr: str = TELEMETRY_ADDR):
         self._ctx = zmq.Context()
 
-        # SUB socket — receives targets and mode commands from bridge
-        self._sub = self._ctx.socket(zmq.SUB)
-        self._sub.connect(command_addr)
-        self._sub.setsockopt(zmq.SUBSCRIBE, TOPIC_TARGET)
-        self._sub.setsockopt(zmq.SUBSCRIBE, TOPIC_MODE)
-        self._sub.setsockopt(zmq.SUBSCRIBE, TOPIC_MOTOR_FB)
-        self._sub.setsockopt(zmq.RCVTIMEO, 0)  # non-blocking
-        self._sub.setsockopt(zmq.CONFLATE, 1)   # keep only latest per topic
+        # SUB socket for high-frequency data — CONFLATE keeps only latest
+        self._sub_data = self._ctx.socket(zmq.SUB)
+        self._sub_data.connect(command_addr)
+        self._sub_data.setsockopt(zmq.SUBSCRIBE, TOPIC_TARGET)
+        self._sub_data.setsockopt(zmq.SUBSCRIBE, TOPIC_MOTOR_FB)
+        self._sub_data.setsockopt(zmq.RCVTIMEO, 0)  # non-blocking
+        self._sub_data.setsockopt(zmq.CONFLATE, 1)   # keep only latest
+
+        # SUB socket for mode commands — no CONFLATE, every command delivered
+        self._sub_mode = self._ctx.socket(zmq.SUB)
+        self._sub_mode.connect(command_addr)
+        self._sub_mode.setsockopt(zmq.SUBSCRIBE, TOPIC_MODE)
+        self._sub_mode.setsockopt(zmq.RCVTIMEO, 0)  # non-blocking
+        self._sub_mode.setsockopt(zmq.RCVHWM, 64)   # bound queue size
 
         # PUB socket — publishes telemetry to bridge
         self._pub = self._ctx.socket(zmq.PUB)
@@ -159,18 +184,21 @@ class ControlProcessIPC:
     def recv_all(self) -> list[tuple[bytes, dict]]:
         """Non-blocking: receive all pending messages.
 
+        Drains mode commands first (critical), then data messages.
         Returns list of (topic, message_dict) tuples.  Empty list if nothing
         available.
         """
         messages = []
-        while True:
-            try:
-                frames = self._sub.recv_multipart(flags=zmq.NOBLOCK)
-                topic, msg = _unpack(frames)
-                messages.append((topic, msg))
-                self._last_recv_time = time.monotonic()
-            except zmq.Again:
-                break
+        # Drain mode commands first — these are rare but critical
+        for sub in (self._sub_mode, self._sub_data):
+            while True:
+                try:
+                    frames = sub.recv_multipart(flags=zmq.NOBLOCK)
+                    topic, msg = _unpack(frames)
+                    messages.append((topic, msg))
+                    self._last_recv_time = time.monotonic()
+                except zmq.Again:
+                    break
         return messages
 
     def send_telemetry(self, msg: dict) -> None:
@@ -183,7 +211,8 @@ class ControlProcessIPC:
         return time.monotonic() - self._last_recv_time
 
     def close(self) -> None:
-        self._sub.close()
+        self._sub_data.close()
+        self._sub_mode.close()
         self._pub.close()
         self._ctx.term()
 

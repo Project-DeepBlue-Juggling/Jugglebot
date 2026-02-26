@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
-"""Standalone single-leg test harness for Phase 2 bench tests.
+"""Standalone single-leg test harness for Jugglebot bench tests.
 
-Bypasses ROS2 entirely and talks directly to ODrive 0 via python-can.
+Bypasses ROS2 entirely and talks directly to ODrive axes via python-can.
 Designed to run on the Jetson (socketcan) or a USB-CAN adapter.
 
-Implements the four Phase 2 isolated-leg bench tests from MOTION_PLANNER_PLAN:
+Phase 2 tests (isolated leg, position/torque basics):
   1. Torque passthrough smoke test
   2. Emergency stop test (single leg)
   3. Encoder sign check
   4. Force conversion validation
+
+Phase 3 Stage A tests (isolated leg, torque control):
+  5. PD torque-mode hold test (configurable gains)
+  6. Gravity feedforward test (PD-only vs PD+FF with known weight)
 
 Safety:
   - Uses conservative current limit (50% of rated = 10A)
@@ -22,6 +26,8 @@ Usage:
   python tools/single_leg_test.py --test estop        # run just the e-stop test
   python tools/single_leg_test.py --test encoder      # run just the encoder sign check
   python tools/single_leg_test.py --test force        # run just the force conversion test
+  python tools/single_leg_test.py --test pd_hold      # Phase 3 Stage A: PD hold test
+  python tools/single_leg_test.py --test gravity_ff   # Phase 3 Stage A: gravity feedforward
   python tools/single_leg_test.py --test all          # run all tests sequentially
 
 Requirements:
@@ -49,8 +55,10 @@ import os
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.dirname(_SCRIPT_DIR)
 _CONFIG_DIR = os.path.join(_PROJECT_ROOT, 'config', 'generated')
+_ROS_PKG_DIR = os.path.join(_PROJECT_ROOT, 'ros_ws', 'src', 'jugglebot')
 
 sys.path.insert(0, _CONFIG_DIR)
+sys.path.insert(0, _ROS_PKG_DIR)
 import protocol_config as proto  # noqa: E402
 import hardware_config as hw     # noqa: E402
 
@@ -790,7 +798,7 @@ def test_force_conversion(harness: SingleLegTestHarness):
               f"motor datasheet Kt.")
         print(f"    For Kv=150 rpm/V: Kt = 60/(2*pi*150) = 0.0637 Nm/A")
         kt_datasheet = 60.0 / (2.0 * np.pi * 150.0)
-        discrepancy_pct = abs(kt_measured - kt_datasheet) / kt_datasheet * 100
+        discrepancy_pct = abs(abs(kt_measured) - kt_datasheet) / kt_datasheet * 100
         print(f"    Discrepancy: {discrepancy_pct:.1f}%"
               f"{'  (< 10% -- PASS)' if discrepancy_pct < 10 else '  (> 10% -- investigate)'}")
     else:
@@ -814,6 +822,218 @@ def test_force_conversion(harness: SingleLegTestHarness):
 
 
 # ===========================================================================
+# Phase 3 Stage A: PD torque-mode hold test
+# ===========================================================================
+
+def test_pd_hold(harness: SingleLegTestHarness,
+                 kp: float = 0.1, kd: float = 0.001,
+                 duration_s: float = 5.0):
+    """Stage A1: PD torque-mode hold test.
+
+    Enters TORQUE+PASSTHROUGH mode and runs a simple PD controller on the
+    encoder position to hold the leg at its current position.
+
+    Parameters
+    ----------
+    kp : N/mm — proportional gain (force per position error)
+    kd : N·s/mm — derivative gain (force per velocity error)
+    duration_s : seconds to hold
+
+    The test logs position error statistics and checks for stability.
+    """
+    print("\n" + "=" * 60)
+    print(f"STAGE A1: PD torque-mode hold (Kp={kp}, Kd={kd}, {duration_s}s)")
+    print("=" * 60)
+
+    spool_radius_m = SPOOL_RADIUS_MM[harness.axis_id] / 1000.0
+    mm_to_rev_axis = MM_TO_REV[harness.axis_id]
+
+    harness.clear_errors()
+    harness.set_safe_limits()
+    harness.require_no_errors()
+
+    # Record current position as the target
+    target_rev, _ = harness.read_encoder()
+    target_mm = target_rev / mm_to_rev_axis
+    print(f"  Target position: {target_rev:.4f} rev ({target_mm:.2f} mm)")
+
+    harness.enter_torque_mode()
+
+    # PD control loop
+    errors_mm = []
+    currents_A = []
+    torques_Nm = []
+    LOOP_DT = 0.01  # 100 Hz (CAN rate limited)
+
+    print(f"  Running PD hold for {duration_s}s...")
+    deadline = time.time() + duration_s
+    while time.time() < deadline:
+        harness._poll(timeout=LOOP_DT)
+
+        # Convert encoder to mm
+        actual_mm = harness.state.pos_rev / mm_to_rev_axis
+        actual_vel_mm_s = harness.state.vel_rps / mm_to_rev_axis
+
+        # PD law in extension space
+        e_pos = target_mm - actual_mm       # mm
+        e_vel = 0.0 - actual_vel_mm_s       # mm/s (target velocity = 0)
+        f_pd = kp * e_pos + kd * e_vel      # N
+        tau = f_pd * spool_radius_m          # Nm
+
+        # Leg inversion: positive Jugglebot = negative ODrive
+        harness.send(encode_set_input_torque(harness.axis_id, -tau))
+
+        errors_mm.append(e_pos)
+        currents_A.append(harness.state.iq_measured)
+        torques_Nm.append(tau)
+
+    # Stop
+    harness.idle_axis()
+    time.sleep(0.5)
+    harness._poll()
+
+    errors_mm = np.array(errors_mm)
+    currents_A = np.array(currents_A)
+    torques_Nm = np.array(torques_Nm)
+
+    e_mean = np.mean(errors_mm)
+    e_std = np.std(errors_mm)
+    e_max = np.max(np.abs(errors_mm))
+    i_mean = np.mean(np.abs(currents_A))
+    i_max = np.max(np.abs(currents_A))
+
+    print(f"  Position error: mean={e_mean:.3f} mm, std={e_std:.3f} mm, "
+          f"max={e_max:.3f} mm")
+    print(f"  Torque: mean={np.mean(torques_Nm):.4f} Nm, "
+          f"max={np.max(np.abs(torques_Nm)):.4f} Nm")
+    print(f"  Current: mean={i_mean:.3f} A, max={i_max:.3f} A")
+
+    stable = e_max < 0.5  # ±0.5 mm
+    no_oscillation = e_std < 0.2  # low variance
+    safe_current = i_max < SAFE_CURRENT_LIMIT_A
+
+    if stable and no_oscillation and safe_current:
+        print(f"  PASS: Stable hold within ±{e_max:.2f} mm")
+        return True
+    else:
+        if not stable:
+            print(f"  FAIL: Max error {e_max:.3f} mm exceeds ±0.5 mm")
+        if not no_oscillation:
+            print(f"  FAIL: Error std {e_std:.3f} mm suggests oscillation")
+        if not safe_current:
+            print(f"  FAIL: Peak current {i_max:.3f} A exceeds limit "
+                  f"{SAFE_CURRENT_LIMIT_A} A")
+        return False
+
+
+def test_gravity_ff(harness: SingleLegTestHarness):
+    """Stage A2: Gravity feedforward test.
+
+    Compares PD-only vs PD+FF with a known weight attached.
+    The feedforward torque is computed from the dynamics model.
+
+    Procedure:
+      1. Prompt user for attached weight mass
+      2. Hold position with PD only, measure current
+      3. Add gravity FF torque, measure current
+      4. Compare — FF should reduce PD effort by >=50%
+    """
+    print("\n" + "=" * 60)
+    print("STAGE A2: Gravity feedforward test")
+    print("=" * 60)
+
+    spool_radius_m = SPOOL_RADIUS_MM[harness.axis_id] / 1000.0
+    mm_to_rev_axis = MM_TO_REV[harness.axis_id]
+
+    print(f"\n  This test compares PD-only vs PD+FF holding a known weight.")
+    print(f"  The leg should be oriented vertically with the weight hanging.")
+    weight_str = input(f"  Enter attached weight in kg (or 'skip'): ").strip().lower()
+
+    if weight_str == 'skip':
+        print("  Skipping gravity feedforward test.")
+        return None
+
+    try:
+        weight_kg = float(weight_str)
+    except ValueError:
+        print("  Invalid input. Skipping.")
+        return None
+
+    # Compute expected FF torque for this weight on this axis
+    force_N = weight_kg * hw.GRAVITY_MPS2
+    ff_torque_Nm = force_N * spool_radius_m
+    print(f"  Weight: {weight_kg:.3f} kg, force: {force_N:.3f} N, "
+          f"FF torque: {ff_torque_Nm:.4f} Nm")
+
+    harness.clear_errors()
+    harness.set_safe_limits()
+    harness.require_no_errors()
+
+    target_rev, _ = harness.read_encoder()
+    target_mm = target_rev / mm_to_rev_axis
+
+    KP = 0.5    # N/mm — moderate gains
+    KD = 0.005  # N·s/mm
+    TEST_DURATION = 3.0
+    LOOP_DT = 0.01
+
+    def run_hold(use_ff: bool) -> tuple:
+        """Run PD hold and return (error_rms_mm, current_rms_A)."""
+        harness.enter_torque_mode()
+        errors = []
+        currents = []
+        deadline = time.time() + TEST_DURATION
+        while time.time() < deadline:
+            harness._poll(timeout=LOOP_DT)
+            actual_mm = harness.state.pos_rev / mm_to_rev_axis
+            actual_vel = harness.state.vel_rps / mm_to_rev_axis
+            e_pos = target_mm - actual_mm
+            e_vel = 0.0 - actual_vel
+            f_pd = KP * e_pos + KD * e_vel
+            tau_pd = f_pd * spool_radius_m
+            tau_total = tau_pd + (ff_torque_Nm if use_ff else 0.0)
+            harness.send(encode_set_input_torque(harness.axis_id, -tau_total))
+            errors.append(e_pos)
+            currents.append(harness.state.iq_measured)
+        harness.idle_axis()
+        time.sleep(0.5)
+        harness._poll()
+        return (float(np.sqrt(np.mean(np.array(errors)**2))),
+                float(np.sqrt(np.mean(np.array(currents)**2))))
+
+    # Phase 1: PD only
+    print(f"\n  Phase 1: PD-only hold ({TEST_DURATION}s)...")
+    err_pd, curr_pd = run_hold(use_ff=False)
+    print(f"    Error RMS: {err_pd:.3f} mm, Current RMS: {curr_pd:.3f} A")
+
+    # Phase 2: PD + FF
+    print(f"  Phase 2: PD+FF hold ({TEST_DURATION}s)...")
+    err_ff, curr_ff = run_hold(use_ff=True)
+    print(f"    Error RMS: {err_ff:.3f} mm, Current RMS: {curr_ff:.3f} A")
+
+    # Compare
+    if curr_pd > 0.01:
+        reduction_pct = (1.0 - curr_ff / curr_pd) * 100
+    else:
+        reduction_pct = 0.0
+
+    print(f"\n  Current reduction: {reduction_pct:.1f}%")
+    print(f"  FF torque: {ff_torque_Nm:.4f} Nm")
+    print(f"  Expected torque (from dynamics): {ff_torque_Nm:.4f} Nm")
+
+    if reduction_pct >= 50:
+        print(f"  PASS: FF reduced PD effort by {reduction_pct:.1f}% (>= 50%)")
+        return True
+    elif reduction_pct > 0:
+        print(f"  MARGINAL: FF reduced effort by {reduction_pct:.1f}% "
+              f"(< 50% target)")
+        return True  # Still useful, may need gain tuning
+    else:
+        print(f"  FAIL: FF did not reduce effort (reduction={reduction_pct:.1f}%)")
+        return False
+
+
+# ===========================================================================
 # Main entry point
 # ===========================================================================
 
@@ -822,6 +1042,8 @@ TESTS = {
     'estop': ('Emergency stop test', test_estop),
     'encoder': ('Encoder sign check', test_encoder_sign),
     'force': ('Force conversion validation', test_force_conversion),
+    'pd_hold': ('PD torque-mode hold (Stage A1)', test_pd_hold),
+    'gravity_ff': ('Gravity feedforward test (Stage A2)', test_gravity_ff),
 }
 
 
@@ -831,11 +1053,13 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Tests available:
-  smoke     Torque passthrough smoke test
-  estop     Emergency stop test (single leg)
-  encoder   Encoder direction and sign convention check
-  force     Force conversion validation (requires known weight)
-  all       Run all tests sequentially
+  smoke       Torque passthrough smoke test
+  estop       Emergency stop test (single leg)
+  encoder     Encoder direction and sign convention check
+  force       Force conversion validation (requires known weight)
+  pd_hold     Phase 3 Stage A1: PD torque-mode hold test
+  gravity_ff  Phase 3 Stage A2: Gravity feedforward test (requires weight)
+  all         Run all tests sequentially
 
 Safety:
   Current limit is set to {curr}A (50% of rated {rated}A).

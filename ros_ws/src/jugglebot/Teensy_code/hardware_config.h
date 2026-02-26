@@ -22,6 +22,16 @@ namespace Physics {
 }
 
 // ==========================================================================
+// Platform Dynamics
+// ==========================================================================
+
+namespace Dynamics {
+  constexpr float PLATFORM_MASS_KG = 0.96f;
+  constexpr float PLATFORM_COM_OFFSET_MM[3] = {-14.5f, -67.0f, 54.0f};
+  constexpr float MOTOR_ROTOR_INERTIA_KGM2 = 0.0f;
+}
+
+// ==========================================================================
 // Jugglebot Stewart Platform Geometry
 // ==========================================================================
 
@@ -74,6 +84,7 @@ namespace Homing {
   constexpr float HAND_CURRENT_HEADROOM_A = 3.0f;
   constexpr float HAND_ABS_POS_REV = -0.1f;
   constexpr float EMA_WEIGHT = 0.7f;
+  constexpr float MOTOR_TIMEOUT_S = 30.0f;
 }
 
 // ==========================================================================
@@ -105,6 +116,7 @@ namespace JBOp {
   constexpr float GENTLE_MOVE_VEL_LIMIT_RPS = 2.5f;
   constexpr float ENCODER_SEARCH_TIMEOUT_S = 3.0f;
   constexpr float GENTLE_MOVE_TIMEOUT_S = 10.0f;
+  constexpr float SHUTDOWN_STOW_TIMEOUT_S = 15.0f;
   constexpr float MAX_VALID_TILT_RAD = 0.785f;
 }
 

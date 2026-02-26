@@ -65,9 +65,13 @@ class MotionBridgeNode(Node):
         # ROS2 publishers (IPC → ROS2)
         # ------------------------------------------------------------------
 
-        # Leg lengths for the CAN node (position mode fallback)
+        # Leg lengths for the CAN node (position mode)
         self._leg_pub = self.create_publisher(
             Float64MultiArray, 'leg_lengths_topic', 10)
+
+        # Leg torques for the CAN node (torque mode)
+        self._torque_pub = self.create_publisher(
+            Float64MultiArray, 'leg_torques_topic', 10)
 
         # ------------------------------------------------------------------
         # Timer to poll IPC telemetry
@@ -129,8 +133,10 @@ class MotionBridgeNode(Node):
         prev = self._current_control_mode
         self._current_control_mode = mode
 
-        if mode in ('SPACEMOUSE', 'SHELL'):
-            self._active_publisher = mode
+        if mode in ('SPACEMOUSE', 'SHELL',
+                   'TORQUE_SPACEMOUSE', 'TORQUE_SHELL'):
+            # Strip TORQUE_ prefix for publisher gating
+            self._active_publisher = mode.replace('TORQUE_', '')
             if prev != mode:
                 cmd = make_mode_command('enable')
                 self.ipc.send_mode_command(cmd)
@@ -157,10 +163,17 @@ class MotionBridgeNode(Node):
         if telem is None:
             return
 
-        # Publish leg positions to the CAN node
+        # Publish leg positions to the CAN node (always, for both modes)
         leg_msg = Float64MultiArray()
         leg_msg.data = telem.get('leg_pos', [0.0] * 6)
         self._leg_pub.publish(leg_msg)
+
+        # Publish commanded torques to the CAN node
+        torques = telem.get('cmd_torques')
+        if torques:
+            torque_msg = Float64MultiArray()
+            torque_msg.data = torques
+            self._torque_pub.publish(torque_msg)
 
     # ------------------------------------------------------------------
     # Shutdown

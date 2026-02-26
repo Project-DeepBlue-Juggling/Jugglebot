@@ -232,12 +232,14 @@ ros_ws/src/jugglebot/
 - [x] Implement `motion/conversions.py`: leg force ↔ motor torque, mm ↔ rev conversions
 - [x] Add `set_input_torque` (0x0E) to protocol config + `can/odrive.py`
 
-#### Motion Planner Phase 2 (Control Process & IPC) — SOFTWARE DONE (2026-02-20)
+#### Motion Planner Phase 2 (Control Process & IPC) — DONE (2026-02-25)
 - [x] Implement `motion/ipc.py`: ZeroMQ PUB/SUB IPC layer with msgpack serialization
 - [x] Implement `motion/control_loop.py`: standalone fixed-rate control process with timing instrumentation and heartbeat watchdog
 - [x] Write `motion_bridge_node.py`: ROS2 ↔ IPC bridge (subscribes to pose commands, publishes leg lengths)
 - [x] Phase 1 verification tests (6 tests, all PASS) — `motion/tests/test_kinematics.py`
 - [x] Phase 2 verification tests (3 tests) — `motion/tests/test_control_loop.py`
+- [x] Standalone single-leg test harness (`tools/single_leg_test.py`) — all 4 bench tests PASS on hardware (2026-02-25)
+- [ ] Loop timing + IPC latency tests — still pending on Jetson (require pyzmq/msgpack)
 
 #### Motion Planner Phase 3+ (Dynamics, Trajectory, Hardening) — NOT STARTED
 - [ ] Implement `motion/trajectory.py`: smooth trajectory generation with pre-computed durations
@@ -576,21 +578,31 @@ The `motion/` subpackage is pure Python + numpy with no ROS2 dependency. The rea
 | FK round-trip | PASS | 0.00e+00 | IK → FK (Newton-Raphson) → compare at 20 poses |
 | Singularity map | INFO | — | 929/1944 poses reachable; cond(J) range 449-644 |
 
-### Phase 2 verification results
+### Phase 2 verification results — software-only
 
-Software-only tests run on Windows dev machine. **1 of 3 passed; 2 skipped** due to missing Jetson-only dependencies (`pyzmq`, `msgpack`). The skipped tests are Phase 2 exit gates and must pass on the Jetson before proceeding to hardware testing.
+Software-only tests run on Windows dev machine. **1 of 3 passed; 2 skipped** due to missing Jetson-only dependencies (`pyzmq`, `msgpack`). The skipped tests are Phase 2 exit gates for the IPC layer and must pass on the Jetson before the control loop is used in production.
 
 | Test | Result | Notes |
 |------|--------|-------|
-| Loop timing | SKIP — **must pass on Jetson before hardware tests** | Requires pyzmq/msgpack. Exit gate: p99 jitter < 2× nominal period |
-| IPC latency | SKIP — **must pass on Jetson before hardware tests** | Requires pyzmq/msgpack. Exit gate: round-trip < 1 control cycle |
-| Force conversion | PASS (<1e-14) | Round-trip force/torque conversion; spool radii ~11 mm |
+| Loop timing | SKIP — **must pass on Jetson** | Requires pyzmq/msgpack. Exit gate: p99 jitter < 2× nominal period |
+| IPC latency | SKIP — **must pass on Jetson** | Requires pyzmq/msgpack. Exit gate: round-trip < 1 control cycle |
+| Force conversion (round-trip) | PASS (<1e-14) | Round-trip force/torque conversion; spool radii ~11 mm |
 
-### Before hardware testing
+### Phase 2 verification results — hardware bench tests (2026-02-25)
+
+All four isolated-leg bench tests passed on ODrive axis 0 using `tools/single_leg_test.py` (standalone, no ROS2). Current limit set to 50% of rated (10A). Leg bench-mounted, not connected to platform.
+
+| Test | Result | Notes |
+|------|--------|-------|
+| Torque passthrough smoke test | PASS | 0.075 Nm to overcome friction. 4.15 rev over 2s, clean stop on IDLE |
+| Emergency stop (single leg) | PASS | IDLE in 60-88 ms (4 runs), no errors, no residual velocity |
+| Encoder sign convention | PASS | +torque → +encoder (retraction). Opposite for -torque. `can_node.py` inversion correct |
+| Force conversion (multi-weight) | PASS | 4 weights (1.25-2.75 kg), R^2=0.994, \|Kt\|=0.0624 vs datasheet 0.0637 Nm/A = 2.0% discrepancy |
+
+### Remaining before Phase 3 hardware
 
 1. Install dependencies on Jetson: `pip install pyzmq msgpack`
-2. Run `python -m jugglebot.motion.tests.test_control_loop` — loop timing and IPC latency must both pass
-3. Run `python tools/single_leg_test.py` on a single bench-mounted leg — this standalone harness (no ROS2 required) implements all four Phase 2 isolated-leg bench tests: torque passthrough smoke test, e-stop, encoder sign check, force conversion validation. See `tools/README.md` for usage and pass criteria.
+2. Run `python -m jugglebot.motion.tests.test_control_loop` — loop timing and IPC latency must pass (not blocking Phase 3 Stage A which uses standalone harness)
 
 ### Findings for future phases
 
@@ -598,8 +610,12 @@ Software-only tests run on Windows dev machine. **1 of 3 passed; 2 skipped** due
 
 2. **Rotation perturbation convention**: Jacobian columns 3-5 correspond to world-frame angular velocity, not rotation vector components. Numerical validation must perturb as `exp(skew(δ·eᵢ)) · R`, not `rotvec + δ·eᵢ`. This distinction matters for non-zero rotation states.
 
+3. **Motor friction threshold** (2026-02-25): Axis 0 requires ~0.075 Nm to overcome static friction (bench-mounted, unloaded). Friction offset is ~0.27 A from multi-weight force test intercept. Relevant for Phase 3 feedforward tuning.
+
+4. **Motor Kt validated** (2026-02-25): Multi-weight calibration measured Kt = 0.0624 Nm/A (slope of iq vs tau at 4 loads, R^2=0.994). Within 2.0% of datasheet Kt = 60/(2π×150) = 0.0637 Nm/A. Confirms spool radius derivation from `mm_to_rev` is correct.
+
 ### Post-Phase 3 additions (2026-02-25)
 
 1. **`encode_set_input_torque()` added to `can/odrive.py`**: The function was documented as existing in Appendix D but was not actually present. Added: encodes a float32 torque (Nm) for ODrive command 0x0E (`set_input_torque`). Used by the standalone test harness and will be used by the control loop for torque-mode operation.
 
-2. **Standalone single-leg test harness**: `tools/single_leg_test.py` — bypasses ROS2, talks directly to one ODrive via python-can. Implements all four Phase 2 bench tests. See `tools/README.md`.
+2. **Standalone single-leg test harness**: `tools/single_leg_test.py` — bypasses ROS2, talks directly to one ODrive via python-can. Implements all four Phase 2 bench tests plus multi-weight Kt calibration. See `tools/README.md`.

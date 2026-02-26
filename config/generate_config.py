@@ -328,6 +328,8 @@ def generate_python(cfg: dict) -> str:
 HW_SECTIONS = [
     # 1. Shared Physics
     ("physics",                  "",           "Physics",    "Shared Physics"),
+    # 1b. Platform Dynamics
+    ("dynamics",                 "DYNAMICS_",  "Dynamics",   "Platform Dynamics"),
     # 2–6. Jugglebot (Stewart platform)
     ("jugglebot_geometry",       "GEOM_",      "Geometry",   "Jugglebot Stewart Platform Geometry"),
     ("jugglebot_homing",         "HOMING_",    "Homing",     "Jugglebot Homing"),

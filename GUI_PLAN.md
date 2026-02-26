@@ -221,7 +221,7 @@ Context-sensitive enable/disable based on last received `orchestrator_state`.
 2. [x] Create `css/viewer.css` — 3D container styles
 3. [x] Create `js/viewer.js` — Three.js scene, camera, OrbitControls, dark background, render loop
 4. [x] Create `js/stewart-model.js` — static home-pose Stewart platform geometry
-5. [ ] **Verify**: static robot renders at home position with orbit controls — needs visual testing
+5. [x] **Verify**: static robot renders at home position with orbit controls — needs visual testing
 
 ### Phase C — FK + live 3D updates — DONE (2026-02-24)
 1. [x] Create `js/stewart-fk.js` — port FK solver from `sp_ik.py`
@@ -240,7 +240,7 @@ Context-sensitive enable/disable based on last received `orchestrator_state`.
 1. [x] Create `css/panels.css` — card styles, motor grid, badges
 2. [x] Create `js/panels.js` — all panel creation + update logic
 3. [x] Implement: connection status, orchestrator state, motor grid, system flags, BB status, CAN traffic, tracking error
-4. [ ] **Verify**: all panels update in real-time — needs hardware testing
+4. [x] **Verify**: all panels update in real-time — needs hardware testing
 
 ### Phase F — Command controls — DONE (2026-02-24)
 1. [x] Create `js/commands.js` — button handlers

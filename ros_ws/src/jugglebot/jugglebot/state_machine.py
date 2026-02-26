@@ -10,6 +10,7 @@ The orchestrator node drives the machine by calling sm.tick(ctx) on a timer.
 """
 
 import time
+from collections import deque
 from enum import Enum, auto
 
 
@@ -32,6 +33,8 @@ class ActiveMode(Enum):
     """Sub-modes within the ACTIVE state."""
     SPACEMOUSE = 'SPACEMOUSE'
     SHELL = 'SHELL'
+    TORQUE_SPACEMOUSE = 'TORQUE_SPACEMOUSE'
+    TORQUE_SHELL = 'TORQUE_SHELL'
 
 
 # ── Timeouts ─────────────────────────────────────────────────────
@@ -62,8 +65,8 @@ class Context:
         self.operation_pending = False
         self.operation_result = None         # None = not complete, True/False = result
 
-        # User command (set by orchestrator from command topic, consumed by handler)
-        self.pending_command = None
+        # User command queue (set by orchestrator from command topic, consumed by handler)
+        self._command_queue = deque(maxlen=4)
 
         # ── Outputs (set by handlers, read by orchestrator) ───────
         self.request = None                  # Operation request: 'encoder_search', 'home', etc.
@@ -71,6 +74,7 @@ class Context:
 
         # ── Shared state ──────────────────────────────────────────
         self.active_mode = ActiveMode.SPACEMOUSE
+        self.use_torque = False  # Torque mode flag (toggled via commands)
         self.error_severity = None
         self.boot_timed_out = False
 
@@ -78,11 +82,19 @@ class Context:
     def has_fatal_error(self):
         return self.fatal_error or self.fatal_can_error
 
+    def enqueue_command(self, cmd):
+        """Add a command to the queue. Oldest commands are dropped if full."""
+        self._command_queue.append(cmd)
+
     def consume_command(self):
-        """Pop and return the pending command."""
-        cmd = self.pending_command
-        self.pending_command = None
-        return cmd
+        """Pop and return the oldest pending command, or None."""
+        if self._command_queue:
+            return self._command_queue.popleft()
+        return None
+
+    def clear_commands(self):
+        """Discard all pending commands."""
+        self._command_queue.clear()
 
 
 # ── Handler base class ────────────────────────────────────────────
@@ -170,7 +182,7 @@ class BootHandler(StateHandler):
         ctx.control_mode = ''
 
     def execute(self, ctx):
-        ctx.consume_command()  # Commands not valid during BOOT
+        ctx.clear_commands()  # Commands not valid during BOOT
 
         if not ctx.all_heartbeats:
             if time.time() - self._entry_time > BOOT_TIMEOUT_S:
@@ -198,7 +210,7 @@ class HomingHandler(StateHandler):
         ctx.request = self._phase
 
     def execute(self, ctx):
-        ctx.consume_command()  # Commands not valid during HOMING
+        ctx.clear_commands()  # Commands not valid during HOMING
 
         # Wait for current operation
         if ctx.operation_result is None:
@@ -255,6 +267,13 @@ class ActiveHandler(StateHandler):
         ctx.request = 'activate'
         ctx.operation_result = None
 
+    def _resolve_control_mode(self, ctx):
+        """Resolve the control mode string from base mode + torque flag."""
+        base = ctx.active_mode.value  # 'SPACEMOUSE' or 'SHELL'
+        if ctx.use_torque:
+            return f'TORQUE_{base}'
+        return base
+
     def execute(self, ctx):
         # Wait for activation to complete
         if not self._activated:
@@ -263,14 +282,20 @@ class ActiveHandler(StateHandler):
             if ctx.operation_result is False:
                 return RobotState.FAULT
             self._activated = True
-            ctx.control_mode = ctx.active_mode.value
+            ctx.control_mode = self._resolve_control_mode(ctx)
 
         cmd = ctx.consume_command()
         if cmd == 'deactivate':
             return RobotState.IDLE
         elif cmd in ('spacemouse', 'shell'):
             ctx.active_mode = ActiveMode(cmd.upper())
-            ctx.control_mode = ctx.active_mode.value
+            ctx.control_mode = self._resolve_control_mode(ctx)
+        elif cmd == 'torque_mode':
+            ctx.use_torque = True
+            ctx.control_mode = self._resolve_control_mode(ctx)
+        elif cmd == 'position_mode':
+            ctx.use_torque = False
+            ctx.control_mode = self._resolve_control_mode(ctx)
         # Other commands silently discarded (already logged on receipt)
 
         return None
@@ -278,6 +303,7 @@ class ActiveHandler(StateHandler):
     def on_exit(self, ctx):
         ctx.request = 'deactivate'
         ctx.control_mode = ''
+        ctx.use_torque = False
 
 
 class FaultHandler(StateHandler):
