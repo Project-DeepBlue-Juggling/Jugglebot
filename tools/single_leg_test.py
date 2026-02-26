@@ -22,13 +22,11 @@ Safety:
 
 Usage:
   python tools/single_leg_test.py [--interface socketcan] [--channel can0] [--axis 0]
-  python tools/single_leg_test.py --test smoke        # run just the smoke test
-  python tools/single_leg_test.py --test estop        # run just the e-stop test
-  python tools/single_leg_test.py --test encoder      # run just the encoder sign check
-  python tools/single_leg_test.py --test force        # run just the force conversion test
-  python tools/single_leg_test.py --test pd_hold      # Phase 3 Stage A: PD hold test
-  python tools/single_leg_test.py --test gravity_ff   # Phase 3 Stage A: gravity feedforward
+  python tools/single_leg_test.py --test phase3       # Phase 3 tests only (default)
+  python tools/single_leg_test.py --test phase2       # Phase 2 tests only
   python tools/single_leg_test.py --test all          # run all tests sequentially
+  python tools/single_leg_test.py --test pd_hold      # run just one test
+  python tools/single_leg_test.py --test gravity_ff   # run just one test
 
 Requirements:
   pip install python-can numpy
@@ -87,6 +85,9 @@ ERROR_CODES = {
 
 # Safety: 50% of rated leg current
 SAFE_CURRENT_LIMIT_A = hw.ODRIVE_LEG_CURR_LIMIT_A * 0.5  # 10A
+
+# Safety: torque clamp for PD/FF bench tests (prevents runaway on sign errors)
+MAX_BENCH_TORQUE_NM = 0.5
 
 # Spool geometry for force conversion
 MM_TO_REV = np.array(hw.GEOM_MM_TO_REV, dtype=np.float64)
@@ -190,8 +191,10 @@ class AxisState:
     trajectory_done: bool = False
     active_errors: int = 0
     disarm_reason: int = 0
-    pos_rev: float = 0.0         # encoder position in revolutions
-    vel_rps: float = 0.0         # encoder velocity in rev/s
+    pos_rev: float = 0.0         # encoder position (Jugglebot convention: positive = extension)
+    pos_rev_raw: float = 0.0     # raw ODrive encoder value (positive = retraction)
+    vel_rps: float = 0.0         # encoder velocity (Jugglebot convention)
+    vel_rps_raw: float = 0.0     # raw ODrive encoder velocity
     iq_setpoint: float = 0.0     # current setpoint in A
     iq_measured: float = 0.0     # current measured in A
     last_heartbeat: float = 0.0  # time.time() of last heartbeat
@@ -341,8 +344,12 @@ class SingleLegTestHarness:
 
     def _handle_encoder(self, data: bytes):
         pos, vel = decode_encoder_estimate(data)
-        self.state.pos_rev = pos
-        self.state.vel_rps = vel
+        # Store raw values for position commands sent to ODrive
+        self.state.pos_rev_raw = pos
+        self.state.vel_rps_raw = vel
+        # Leg inversion (matches can_node.py): positive = extension
+        self.state.pos_rev = -pos
+        self.state.vel_rps = -vel
 
     def _handle_iq(self, data: bytes):
         setpoint, measured = decode_iq(data)
@@ -372,21 +379,37 @@ class SingleLegTestHarness:
         print(f"  Limits set: vel={hw.ODRIVE_LEG_VEL_LIMIT_RPS} rev/s, "
               f"curr={SAFE_CURRENT_LIMIT_A} A")
 
+    def _wait_for_closed_loop(self, timeout_s: float = 2.0):
+        """Poll CAN until axis reports CLOSED_LOOP, or raise on timeout.
+
+        Retries the CLOSED_LOOP request after 500ms if still IDLE — handles
+        CAN bus contention when multiple ODrive axes are connected.
+        """
+        retried = False
+        deadline = time.time() + timeout_s
+        retry_at = time.time() + 0.5
+        while time.time() < deadline:
+            self._poll(timeout=0.02)
+            if self.state.is_closed_loop:
+                return
+            if not retried and time.time() >= retry_at and self.state.is_idle:
+                self.send(encode_set_state(self.axis_id, 'CLOSED_LOOP'))
+                retried = True
+        raise RuntimeError(
+            f"Failed to enter CLOSED_LOOP after {timeout_s}s. "
+            f"State: {self.state.state_name}, "
+            f"errors: {error_names(self.state.active_errors)}")
+
     def enter_torque_mode(self):
         """Put axis into TORQUE control with PASSTHROUGH input."""
         self.send(encode_set_controller_mode(
             self.axis_id, 'TORQUE', 'PASSTHROUGH'))
-        time.sleep(0.01)
+        time.sleep(0.05)  # allow controller mode to take effect
         # Send zero torque before entering closed loop
         self.send(encode_set_input_torque(self.axis_id, 0.0))
-        time.sleep(0.01)
+        time.sleep(0.05)
         self.send(encode_set_state(self.axis_id, 'CLOSED_LOOP'))
-        time.sleep(0.1)
-        self._poll()
-        if not self.state.is_closed_loop:
-            raise RuntimeError(
-                f"Failed to enter CLOSED_LOOP. State: {self.state.state_name}, "
-                f"errors: {error_names(self.state.active_errors)}")
+        self._wait_for_closed_loop()
         print(f"  Axis in TORQUE/PASSTHROUGH, CLOSED_LOOP")
 
     def check_heartbeat_fresh(self) -> bool:
@@ -403,6 +426,24 @@ class SingleLegTestHarness:
             self._poll(timeout=interval_s)
             if not self.check_heartbeat_fresh():
                 raise RuntimeError("Heartbeat timeout -- ODrive may be disconnected!")
+
+    def flush_and_resync(self):
+        """Drain stale CAN buffer and wait for a fresh heartbeat.
+
+        Call this after any blocking operation (e.g. input()) that may have
+        let the socketcan receive buffer overflow, dropping recent heartbeats.
+        """
+        # Drain all stale buffered messages
+        while self._bus.recv(timeout=0):
+            pass
+        # Wait for a fresh heartbeat (up to 1 second)
+        deadline = time.time() + 1.0
+        hb_before = self.state.heartbeat_count
+        while time.time() < deadline:
+            self._poll(timeout=0.05)
+            if self.state.heartbeat_count > hb_before:
+                return
+        raise RuntimeError("No fresh heartbeat after flush -- ODrive may be disconnected!")
 
     def require_no_errors(self):
         """Assert the axis has no active errors."""
@@ -443,7 +484,7 @@ def test_smoke(harness: SingleLegTestHarness):
     print("\n" + "=" * 60)
     print("TEST 1: Torque passthrough smoke test")
     print("=" * 60)
-    TEST_TORQUE_NM = 0.02  # very small -- just enough to move an unloaded leg
+    TEST_TORQUE_NM = 0.08  # very small -- just enough to move an unloaded leg
     TEST_DURATION_S = 2.0
 
     harness.clear_errors()
@@ -504,7 +545,7 @@ def test_estop(harness: SingleLegTestHarness):
     print("\n" + "=" * 60)
     print("TEST 2: Emergency stop test")
     print("=" * 60)
-    TEST_TORQUE_NM = 0.03
+    TEST_TORQUE_NM = 0.08  # same torque as smoke test to ensure leg is moving
 
     harness.clear_errors()
     harness.set_safe_limits()
@@ -577,7 +618,7 @@ def test_encoder_sign(harness: SingleLegTestHarness):
     print("\n" + "=" * 60)
     print("TEST 3: Encoder sign convention check")
     print("=" * 60)
-    PULSE_TORQUE_NM = 0.03
+    PULSE_TORQUE_NM = 0.08  # above 0.075 Nm friction threshold
     PULSE_DURATION_S = 1.0
 
     harness.clear_errors()
@@ -690,23 +731,20 @@ def test_force_conversion(harness: SingleLegTestHarness):
     harness.require_no_errors()
 
     # Enter position hold once for the entire test
-    pos_now, _ = harness.read_encoder()
-    print(f"  Current position: {pos_now:.4f} rev")
+    # Use raw encoder value for ODrive position commands (ODrive convention)
+    pos_now_raw = harness.state.pos_rev_raw
+    harness.read_encoder()  # ensure encoder is fresh
+    pos_now_raw = harness.state.pos_rev_raw
+    print(f"  Current position: {pos_now_raw:.4f} rev (raw ODrive)")
     print(f"  Entering POSITION/PASSTHROUGH to hold position...\n")
 
     harness.send(encode_set_controller_mode(
         harness.axis_id, 'POSITION', 'PASSTHROUGH'))
     time.sleep(0.01)
-    harness.send(encode_set_input_pos(harness.axis_id, pos_now))
+    harness.send(encode_set_input_pos(harness.axis_id, pos_now_raw))
     time.sleep(0.01)
     harness.send(encode_set_state(harness.axis_id, 'CLOSED_LOOP'))
-    time.sleep(0.5)
-    harness._poll()
-
-    if not harness.state.is_closed_loop:
-        raise RuntimeError(
-            f"Failed to enter CLOSED_LOOP for position hold. "
-            f"State: {harness.state.state_name}")
+    harness._wait_for_closed_loop()
 
     # Collect measurements at multiple weights
     measurements = []  # list of (mass_kg, predicted_torque_Nm, iq_mean, iq_std)
@@ -717,6 +755,7 @@ def test_force_conversion(harness: SingleLegTestHarness):
         weight_str = input(
             f"  [{point_num}] Enter mass in kg "
             f"(or 'done'/'skip'): ").strip().lower()
+        harness.flush_and_resync()
 
         if weight_str == 'skip' and len(measurements) == 0:
             print("  Skipping force conversion test.")
@@ -880,12 +919,13 @@ def test_pd_hold(harness: SingleLegTestHarness,
         f_pd = kp * e_pos + kd * e_vel      # N
         tau = f_pd * spool_radius_m          # Nm
 
-        # Leg inversion: positive Jugglebot = negative ODrive
-        harness.send(encode_set_input_torque(harness.axis_id, -tau))
+        # Clamp for safety, then invert for ODrive (positive Jugglebot = negative ODrive)
+        tau_clamped = max(-MAX_BENCH_TORQUE_NM, min(MAX_BENCH_TORQUE_NM, tau))
+        harness.send(encode_set_input_torque(harness.axis_id, -tau_clamped))
 
         errors_mm.append(e_pos)
         currents_A.append(harness.state.iq_measured)
-        torques_Nm.append(tau)
+        torques_Nm.append(tau_clamped)
 
     # Stop
     harness.idle_axis()
@@ -948,6 +988,7 @@ def test_gravity_ff(harness: SingleLegTestHarness):
     print(f"\n  This test compares PD-only vs PD+FF holding a known weight.")
     print(f"  The leg should be oriented vertically with the weight hanging.")
     weight_str = input(f"  Enter attached weight in kg (or 'skip'): ").strip().lower()
+    harness.flush_and_resync()
 
     if weight_str == 'skip':
         print("  Skipping gravity feedforward test.")
@@ -992,7 +1033,9 @@ def test_gravity_ff(harness: SingleLegTestHarness):
             f_pd = KP * e_pos + KD * e_vel
             tau_pd = f_pd * spool_radius_m
             tau_total = tau_pd + (ff_torque_Nm if use_ff else 0.0)
-            harness.send(encode_set_input_torque(harness.axis_id, -tau_total))
+            # Clamp for safety, then invert for ODrive
+            tau_clamped = max(-MAX_BENCH_TORQUE_NM, min(MAX_BENCH_TORQUE_NM, tau_total))
+            harness.send(encode_set_input_torque(harness.axis_id, -tau_clamped))
             errors.append(e_pos)
             currents.append(harness.state.iq_measured)
         harness.idle_axis()
@@ -1046,6 +1089,12 @@ TESTS = {
     'gravity_ff': ('Gravity feedforward test (Stage A2)', test_gravity_ff),
 }
 
+TEST_GROUPS = {
+    'phase2': ['smoke', 'estop', 'encoder', 'force'],
+    'phase3': ['pd_hold', 'gravity_ff'],
+    'all': list(TESTS.keys()),
+}
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -1059,6 +1108,10 @@ Tests available:
   force       Force conversion validation (requires known weight)
   pd_hold     Phase 3 Stage A1: PD torque-mode hold test
   gravity_ff  Phase 3 Stage A2: Gravity feedforward test (requires weight)
+
+Test groups:
+  phase2      Run Phase 2 tests (smoke, estop, encoder, force)
+  phase3      Run Phase 3 tests (pd_hold, gravity_ff) [DEFAULT]
   all         Run all tests sequentially
 
 Safety:
@@ -1074,9 +1127,9 @@ Safety:
     parser.add_argument('--axis', type=int, default=0,
                         choices=[0, 1, 2, 3, 4, 5],
                         help='ODrive axis ID to test (default: 0)')
-    parser.add_argument('--test', default='all',
-                        choices=list(TESTS.keys()) + ['all'],
-                        help='Which test to run (default: all)')
+    parser.add_argument('--test', default='phase3',
+                        choices=list(TESTS.keys()) + list(TEST_GROUPS.keys()),
+                        help='Which test or group to run (default: phase3)')
 
     args = parser.parse_args()
 
@@ -1110,8 +1163,8 @@ Safety:
     print(f"  Current limit: {SAFE_CURRENT_LIMIT_A} A "
           f"(50% of {hw.ODRIVE_LEG_CURR_LIMIT_A} A)")
 
-    if args.test == 'all':
-        tests_to_run = list(TESTS.keys())
+    if args.test in TEST_GROUPS:
+        tests_to_run = TEST_GROUPS[args.test]
     else:
         tests_to_run = [args.test]
 
