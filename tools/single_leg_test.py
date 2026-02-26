@@ -966,7 +966,7 @@ def test_pd_hold(harness: SingleLegTestHarness,
         return False
 
 
-def test_gravity_ff(harness: SingleLegTestHarness):
+def test_gravity_ff(harness: SingleLegTestHarness, hold_pos_raw: float = 3.3):
     """Stage A2: Gravity feedforward test.
 
     Compares PD-only vs PD+FF with a known weight attached.
@@ -974,9 +974,16 @@ def test_gravity_ff(harness: SingleLegTestHarness):
 
     Procedure:
       1. Prompt user for attached weight mass
-      2. Hold position with PD only, measure current
-      3. Add gravity FF torque, measure current
-      4. Compare — FF should reduce PD effort by >=50%
+      2. Move leg to hold position using ODrive position control
+      3. Switch to torque mode (no IDLE gap)
+      4. Run PD-only hold, measure error and current
+      5. Seamlessly switch to PD+FF, measure again
+      6. Compare — FF should reduce PD effort by >=50%
+
+    Parameters
+    ----------
+    hold_pos_raw : float
+        Target position in raw ODrive revolutions (default 3.3).
     """
     print("\n" + "=" * 60)
     print("STAGE A2: Gravity feedforward test")
@@ -986,7 +993,8 @@ def test_gravity_ff(harness: SingleLegTestHarness):
     mm_to_rev_axis = MM_TO_REV[harness.axis_id]
 
     print(f"\n  This test compares PD-only vs PD+FF holding a known weight.")
-    print(f"  The leg should be oriented vertically with the weight hanging.")
+    print(f"  The leg will move to {hold_pos_raw:.1f} rev (ODrive frame) under position control,")
+    print(f"  then switch to torque mode for the comparison.")
     weight_str = input(f"  Enter attached weight in kg (or 'skip'): ").strip().lower()
     harness.flush_and_resync()
 
@@ -1010,25 +1018,46 @@ def test_gravity_ff(harness: SingleLegTestHarness):
     harness.set_safe_limits()
     harness.require_no_errors()
 
+    # --- Move to hold position using ODrive position control ---
+    print(f"\n  Moving to hold position ({hold_pos_raw:.1f} rev raw)...")
+    harness.send(encode_set_controller_mode(
+        harness.axis_id, 'POSITION', 'PASSTHROUGH'))
+    time.sleep(0.05)
+    harness.send(encode_set_input_pos(harness.axis_id, hold_pos_raw))
+    time.sleep(0.05)
+    harness.send(encode_set_state(harness.axis_id, 'CLOSED_LOOP'))
+    harness._wait_for_closed_loop()
+    print(f"  Axis in POSITION/PASSTHROUGH, CLOSED_LOOP")
+
+    # Wait for ODrive to reach and settle at the target
+    print(f"  Settling (3s)...", end='', flush=True)
+    harness.poll_for(3.0)
+    print(f" done.")
+    hold_target_mm = harness.state.pos_rev / mm_to_rev_axis
+    print(f"  Hold target: {hold_target_mm:.2f} mm "
+          f"(raw: {harness.state.pos_rev_raw:.4f} rev)")
+
+    # --- Switch to TORQUE mode (stay in CLOSED_LOOP — no IDLE gap) ---
+    harness.send(encode_set_controller_mode(
+        harness.axis_id, 'TORQUE', 'PASSTHROUGH'))
+    time.sleep(0.05)
+    # Immediately send zero torque to prevent any jump
+    harness.send(encode_set_input_torque(harness.axis_id, 0.0))
+    print(f"  Switched to TORQUE/PASSTHROUGH (no IDLE gap)")
+
     KP = 0.5    # N/mm — moderate gains
     KD = 0.005  # N·s/mm
-    TEST_DURATION = 3.0
+    PHASE_DURATION = 3.0
     LOOP_DT = 0.01
 
-    def run_hold(use_ff: bool) -> tuple:
-        """Run PD hold and return (error_rms_mm, current_rms_A).
+    def run_phase(use_ff: bool) -> tuple:
+        """Run one phase of the PD loop. Returns (error_rms_mm, current_rms_A).
 
-        Captures the target position fresh each time so both phases
-        start with zero error — giving a fair comparison.
+        Does NOT enter or exit torque mode — caller manages that.
         """
-        # Capture target from current position (zero initial error)
-        harness.read_encoder(settle_time=0.5)
-        hold_target_mm = harness.state.pos_rev / mm_to_rev_axis
-
-        harness.enter_torque_mode()
         errors = []
         currents = []
-        deadline = time.time() + TEST_DURATION
+        deadline = time.time() + PHASE_DURATION
         while time.time() < deadline:
             harness._poll(timeout=LOOP_DT)
             actual_mm = harness.state.pos_rev / mm_to_rev_axis
@@ -1043,21 +1072,23 @@ def test_gravity_ff(harness: SingleLegTestHarness):
             harness.send(encode_set_input_torque(harness.axis_id, -tau_clamped))
             errors.append(e_pos)
             currents.append(harness.state.iq_measured)
-        harness.idle_axis()
-        time.sleep(0.5)
-        harness._poll()
         return (float(np.sqrt(np.mean(np.array(errors)**2))),
                 float(np.sqrt(np.mean(np.array(currents)**2))))
 
-    # Phase 1: PD only
-    print(f"\n  Phase 1: PD-only hold ({TEST_DURATION}s)...")
-    err_pd, curr_pd = run_hold(use_ff=False)
+    # Phase 1: PD only (leg is already in torque mode at hold position)
+    print(f"\n  Phase 1: PD-only hold ({PHASE_DURATION}s)...")
+    err_pd, curr_pd = run_phase(use_ff=False)
     print(f"    Error RMS: {err_pd:.3f} mm, Current RMS: {curr_pd:.3f} A")
 
-    # Phase 2: PD + FF
-    print(f"  Phase 2: PD+FF hold ({TEST_DURATION}s)...")
-    err_ff, curr_ff = run_hold(use_ff=True)
+    # Phase 2: PD + FF (seamless transition — just toggle FF in the loop)
+    print(f"  Phase 2: PD+FF hold ({PHASE_DURATION}s)...")
+    err_ff, curr_ff = run_phase(use_ff=True)
     print(f"    Error RMS: {err_ff:.3f} mm, Current RMS: {curr_ff:.3f} A")
+
+    # Done — safe shutdown
+    harness.idle_axis()
+    time.sleep(0.5)
+    harness._poll()
 
     # Compare
     if curr_pd > 0.01:
@@ -1066,8 +1097,8 @@ def test_gravity_ff(harness: SingleLegTestHarness):
         reduction_pct = 0.0
 
     print(f"\n  Current reduction: {reduction_pct:.1f}%")
+    print(f"  Error reduction: {(1.0 - err_ff / err_pd) * 100:.1f}%" if err_pd > 0.01 else "")
     print(f"  FF torque: {ff_torque_Nm:.4f} Nm")
-    print(f"  Expected torque (from dynamics): {ff_torque_Nm:.4f} Nm")
 
     if reduction_pct >= 50:
         print(f"  PASS: FF reduced PD effort by {reduction_pct:.1f}% (>= 50%)")
@@ -1135,6 +1166,8 @@ Safety:
     parser.add_argument('--test', default='phase3',
                         choices=list(TESTS.keys()) + list(TEST_GROUPS.keys()),
                         help='Which test or group to run (default: phase3)')
+    parser.add_argument('--hold-pos', type=float, default=3.3,
+                        help='Hold position in raw ODrive rev for gravity_ff test (default: 3.3)')
 
     args = parser.parse_args()
 
@@ -1179,7 +1212,10 @@ Safety:
             for test_name in tests_to_run:
                 label, func = TESTS[test_name]
                 try:
-                    result = func(harness)
+                    if test_name == 'gravity_ff':
+                        result = func(harness, hold_pos_raw=args.hold_pos)
+                    else:
+                        result = func(harness)
                     results[test_name] = result
                 except Exception as e:
                     print(f"\n  ERROR in {label}: {e}")
