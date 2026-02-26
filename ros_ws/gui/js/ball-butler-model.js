@@ -151,10 +151,10 @@ export function initBallButlerModel() {
     yawGroup.add(yawArc);
 
     // ---- Pitch arc: 5 deg to 100 deg, in robot YZ plane ----
-    // Offset to pivot + throw-line x-offset so arc aligns with the throw axis
+    // Centred on BB's local Y axis (robot x = 0)
     const pivotThree = r2t(PIVOT_X, PIVOT_Y, PIVOT_Z);
     const pitchArcOffset = pivotThree.clone();
-    pitchArcOffset.x += THROW_LINE_X_OFFSET * S;
+    pitchArcOffset.x = 0;
 
     const pitchArc = arcTube(
         arcPts(PITCH_ARC_RADIUS, 5, 100, ARC_SEGMENTS, 'yz', pitchArcOffset),
