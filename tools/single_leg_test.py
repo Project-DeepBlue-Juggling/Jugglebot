@@ -1093,17 +1093,25 @@ def test_gravity_ff(harness: SingleLegTestHarness, hold_pos_raw: float = 3.3):
     harness.require_no_errors()
 
     # --- Move to hold position using ODrive position control ---
-    # Use TRAP_TRAJ (not PASSTHROUGH) so the ODrive plans a smooth trajectory.
-    # PASSTHROUGH would apply the full step instantly, hitting current limits.
+    # Use TRAP_TRAJ so the ODrive plans a smooth trajectory.
+    # Must enter CLOSED_LOOP first (holding at current pos), THEN send target.
+    # If we send input_pos before CLOSED_LOOP, the ODrive resets it on entry.
     print(f"\n  Moving to hold position ({hold_pos_raw:.1f} rev raw)...")
     harness.send(encode_set_controller_mode(
         harness.axis_id, 'POSITION', 'TRAP_TRAJ'))
     time.sleep(0.05)
-    harness.send(encode_set_input_pos(harness.axis_id, hold_pos_raw))
+    # Set input_pos to current position so CLOSED_LOOP starts in place
+    harness.read_encoder(settle_time=0.1)
+    harness.send(encode_set_input_pos(harness.axis_id, harness.state.pos_rev_raw))
     time.sleep(0.05)
     harness.send(encode_set_state(harness.axis_id, 'CLOSED_LOOP'))
     harness._wait_for_closed_loop()
     print(f"  Axis in POSITION/TRAP_TRAJ, CLOSED_LOOP")
+
+    # Now send the actual target — TRAP_TRAJ will plan the move
+    time.sleep(0.1)
+    harness.send(encode_set_input_pos(harness.axis_id, hold_pos_raw))
+    print(f"  Target sent: {hold_pos_raw:.1f} rev raw")
 
     # Wait for trajectory to complete and settle
     print(f"  Waiting for trajectory (5s)...", end='', flush=True)
