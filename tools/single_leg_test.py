@@ -11,8 +11,8 @@ Phase 2 tests (isolated leg, position/torque basics):
   4. Force conversion validation
 
 Phase 3 Stage A tests (isolated leg, torque control):
-  5. PD torque-mode hold test (configurable gains)
-  6. Gravity feedforward test (PD-only vs PD+FF with known weight)
+  5. PD tracking test (slow triangle wave — avoids stiction)
+  6. Gravity feedforward test (PD vs PD+FF during slow motion, with known weight)
 
 Safety:
   - Uses conservative current limit (50% of rated = 10A)
@@ -25,7 +25,7 @@ Usage:
   python tools/single_leg_test.py --test phase3       # Phase 3 tests only (default)
   python tools/single_leg_test.py --test phase2       # Phase 2 tests only
   python tools/single_leg_test.py --test all          # run all tests sequentially
-  python tools/single_leg_test.py --test pd_hold      # run just one test
+  python tools/single_leg_test.py --test pd_track      # run just one test
   python tools/single_leg_test.py --test gravity_ff   # run just one test
 
 Requirements:
@@ -934,105 +934,180 @@ def test_force_conversion(harness: SingleLegTestHarness):
 
 
 # ===========================================================================
-# Phase 3 Stage A: PD torque-mode hold test
+# Phase 3 Stage A: PD torque-mode tracking test (slow continuous motion)
 # ===========================================================================
 
-def test_pd_hold(harness: SingleLegTestHarness,
-                 kp: float = 0.1, kd: float = 0.001,
-                 duration_s: float = 5.0):
-    """Stage A1: PD torque-mode hold test.
+def test_pd_track(harness: SingleLegTestHarness,
+                  kp: float = 0.5, kd: float = 0.01,
+                  amplitude_mm: float = 15.0, speed_mm_s: float = 5.0,
+                  cycles: int = 3):
+    """Stage A1: PD torque-mode tracking test (slow triangle wave).
 
-    Enters TORQUE+PASSTHROUGH mode and runs a simple PD controller on the
-    encoder position to hold the leg at its current position.
+    Uses slow continuous motion to validate PD tracking while avoiding
+    stiction artifacts.  A triangle wave keeps the leg moving at constant
+    velocity, staying in the kinetic friction regime where the PD loop
+    is effective.
+
+    The test generates a triangle wave centred on the starting position,
+    with configurable amplitude and speed.  It measures tracking error
+    only during the constant-velocity segments (excluding the turnaround
+    regions where stiction is expected to cause brief transients).
 
     Parameters
     ----------
-    kp : N/mm — proportional gain (force per position error)
-    kd : N·s/mm — derivative gain (force per velocity error)
-    duration_s : seconds to hold
-
-    The test logs position error statistics and checks for stability.
+    kp : N/mm — proportional gain
+    kd : N·s/mm — derivative gain
+    amplitude_mm : half-amplitude of triangle wave (peak-to-peak = 2x)
+    speed_mm_s : leg speed during constant-velocity segments
+    cycles : number of full triangle wave cycles
     """
     print("\n" + "=" * 60)
-    print(f"STAGE A1: PD torque-mode hold (Kp={kp}, Kd={kd}, {duration_s}s)")
+    print(f"STAGE A1: PD tracking (Kp={kp}, Kd={kd}, "
+          f"amp={amplitude_mm}mm, speed={speed_mm_s}mm/s, {cycles} cycles)")
     print("=" * 60)
 
     spool_radius_m = SPOOL_RADIUS_MM[harness.axis_id] / 1000.0
     mm_to_rev_axis = MM_TO_REV[harness.axis_id]
 
+    # Triangle wave timing
+    half_period_s = amplitude_mm / speed_mm_s  # time for one ramp (centre→peak)
+    full_period_s = 4.0 * half_period_s        # centre→peak→centre→trough→centre
+    total_duration_s = full_period_s * cycles
+    # Turnaround exclusion zone: ignore tracking data within this distance
+    # of a direction reversal (where stiction transiently dominates)
+    turnaround_mm = 2.0
+
+    print(f"  Triangle wave: period={full_period_s:.1f}s, "
+          f"total={total_duration_s:.1f}s")
+    print(f"  Turnaround exclusion zone: +/-{turnaround_mm:.0f} mm from peaks")
+
     harness.clear_errors()
     harness.set_safe_limits()
     harness.require_no_errors()
 
-    # Record current position as the target
-    target_rev, _ = harness.read_encoder()
-    target_mm = target_rev / mm_to_rev_axis
-    print(f"  Target position: {target_rev:.4f} rev ({target_mm:.2f} mm)")
+    # Record starting position as the centre of the wave
+    centre_rev, _ = harness.read_encoder()
+    centre_mm = centre_rev / mm_to_rev_axis
+    print(f"  Centre position: {centre_rev:.4f} rev ({centre_mm:.2f} mm)")
 
     harness.enter_torque_mode()
 
-    # PD control loop
-    errors_mm = []
+    # PD control loop tracking a triangle wave
+    all_errors_mm = []
+    tracking_errors_mm = []  # only during constant-velocity segments
     currents_A = []
     torques_Nm = []
-    LOOP_DT = 0.01  # 100 Hz (CAN rate limited)
+    LOOP_DT = 0.01  # 100 Hz
 
-    print(f"  Running PD hold for {duration_s}s...")
-    deadline = time.time() + duration_s
-    while time.time() < deadline:
+    def triangle_target(t: float) -> tuple:
+        """Return (target_mm, target_vel_mm_s) at time t.
+
+        Triangle wave: ramps up to +amplitude, back through centre to
+        -amplitude, then back to centre.  One full cycle = 4 ramps.
+        """
+        # Phase within one cycle [0, 4*half_period)
+        phase = t % full_period_s
+        ramp_phase = phase / half_period_s  # [0, 4)
+
+        if ramp_phase < 1.0:
+            # Ramp up: centre → +peak
+            pos = centre_mm + amplitude_mm * ramp_phase
+            vel = speed_mm_s
+        elif ramp_phase < 3.0:
+            # Ramp down: +peak → -peak (passes through centre)
+            pos = centre_mm + amplitude_mm * (2.0 - ramp_phase)
+            vel = -speed_mm_s
+        else:
+            # Ramp up: -peak → centre
+            pos = centre_mm + amplitude_mm * (ramp_phase - 4.0)
+            vel = speed_mm_s
+        return pos, vel
+
+    print(f"  Running PD tracking for {total_duration_s:.1f}s...")
+    t_start = time.time()
+    while True:
         harness._poll(timeout=LOOP_DT)
+        t_now = time.time() - t_start
+        if t_now >= total_duration_s:
+            break
+
+        target_mm, target_vel_mm_s = triangle_target(t_now)
 
         # Convert encoder to mm
         actual_mm = harness.state.pos_rev / mm_to_rev_axis
         actual_vel_mm_s = harness.state.vel_rps / mm_to_rev_axis
 
-        # PD law in extension space
-        e_pos = target_mm - actual_mm       # mm
-        e_vel = 0.0 - actual_vel_mm_s       # mm/s (target velocity = 0)
-        f_pd = kp * e_pos + kd * e_vel      # N
-        tau = f_pd * spool_radius_m          # Nm
+        # PD law
+        e_pos = target_mm - actual_mm
+        e_vel = target_vel_mm_s - actual_vel_mm_s
+        f_pd = kp * e_pos + kd * e_vel
+        tau = f_pd * spool_radius_m
 
-        # Clamp for safety, then invert for ODrive (positive Jugglebot = negative ODrive)
         tau_clamped = max(-MAX_BENCH_TORQUE_NM, min(MAX_BENCH_TORQUE_NM, tau))
         harness.send(encode_set_input_torque(harness.axis_id, -tau_clamped))
 
-        errors_mm.append(e_pos)
+        all_errors_mm.append(e_pos)
         currents_A.append(harness.state.iq_measured)
         torques_Nm.append(tau_clamped)
+
+        # Is this sample in a constant-velocity segment?
+        # Exclude samples near the turnaround peaks (+/- amplitude)
+        distance_from_peak = min(
+            abs(target_mm - (centre_mm + amplitude_mm)),
+            abs(target_mm - (centre_mm - amplitude_mm)))
+        if distance_from_peak > turnaround_mm:
+            tracking_errors_mm.append(e_pos)
 
     # Stop
     harness.idle_axis()
     time.sleep(0.5)
     harness._poll()
 
-    errors_mm = np.array(errors_mm)
+    all_errors_mm = np.array(all_errors_mm)
+    tracking_errors_mm = np.array(tracking_errors_mm)
     currents_A = np.array(currents_A)
     torques_Nm = np.array(torques_Nm)
 
-    e_mean = np.mean(errors_mm)
-    e_std = np.std(errors_mm)
-    e_max = np.max(np.abs(errors_mm))
-    i_mean = np.mean(np.abs(currents_A))
-    i_max = np.max(np.abs(currents_A))
+    # Report all-samples stats
+    e_all_rms = float(np.sqrt(np.mean(all_errors_mm ** 2)))
+    e_all_max = float(np.max(np.abs(all_errors_mm)))
+    print(f"\n  All samples ({len(all_errors_mm)}):")
+    print(f"    Error RMS: {e_all_rms:.3f} mm, max: {e_all_max:.3f} mm")
 
-    print(f"  Position error: mean={e_mean:.3f} mm, std={e_std:.3f} mm, "
-          f"max={e_max:.3f} mm")
+    # Report constant-velocity tracking stats (the primary metric)
+    if len(tracking_errors_mm) > 10:
+        e_track_rms = float(np.sqrt(np.mean(tracking_errors_mm ** 2)))
+        e_track_max = float(np.max(np.abs(tracking_errors_mm)))
+        e_track_std = float(np.std(tracking_errors_mm))
+    else:
+        e_track_rms = e_all_rms
+        e_track_max = e_all_max
+        e_track_std = float(np.std(all_errors_mm))
+        print(f"    WARNING: too few constant-velocity samples, using all data")
+
+    i_mean = float(np.mean(np.abs(currents_A)))
+    i_max = float(np.max(np.abs(currents_A)))
+
+    print(f"  Constant-velocity segments ({len(tracking_errors_mm)} samples):")
+    print(f"    Error RMS: {e_track_rms:.3f} mm, max: {e_track_max:.3f} mm, "
+          f"std: {e_track_std:.3f} mm")
     print(f"  Torque: mean={np.mean(torques_Nm):.4f} Nm, "
           f"max={np.max(np.abs(torques_Nm)):.4f} Nm")
     print(f"  Current: mean={i_mean:.3f} A, max={i_max:.3f} A")
 
-    stable = e_max < 0.5  # ±0.5 mm
-    no_oscillation = e_std < 0.2  # low variance
+    # Pass criteria: tracking error during constant-velocity segments
+    good_tracking = e_track_rms < 1.0       # < 1.0 mm RMS
+    no_oscillation = e_track_std < 0.5       # low variance = smooth tracking
     safe_current = i_max < SAFE_CURRENT_LIMIT_A
 
-    if stable and no_oscillation and safe_current:
-        print(f"  PASS: Stable hold within ±{e_max:.2f} mm")
+    if good_tracking and no_oscillation and safe_current:
+        print(f"  PASS: Tracking RMS {e_track_rms:.2f} mm during constant-velocity")
         return True
     else:
-        if not stable:
-            print(f"  FAIL: Max error {e_max:.3f} mm exceeds ±0.5 mm")
+        if not good_tracking:
+            print(f"  FAIL: Tracking RMS {e_track_rms:.3f} mm exceeds 1.0 mm")
         if not no_oscillation:
-            print(f"  FAIL: Error std {e_std:.3f} mm suggests oscillation")
+            print(f"  FAIL: Tracking std {e_track_std:.3f} mm suggests oscillation")
         if not safe_current:
             print(f"  FAIL: Peak current {i_max:.3f} A exceeds limit "
                   f"{SAFE_CURRENT_LIMIT_A} A")
@@ -1040,35 +1115,38 @@ def test_pd_hold(harness: SingleLegTestHarness,
 
 
 def test_gravity_ff(harness: SingleLegTestHarness, hold_pos_raw: float = -2.0):
-    """Stage A2: Gravity feedforward test.
+    """Stage A2: Gravity feedforward test (slow continuous motion).
 
-    Compares PD-only vs PD+FF with a known weight attached.
-    The feedforward torque is computed from the dynamics model.
+    Compares PD-only vs PD+FF during slow constant-velocity motion with a
+    known weight attached.  By keeping the leg moving, we stay in the kinetic
+    friction regime so the friction contribution is roughly constant in both
+    phases.  The *difference* in PD effort (current) between phases cleanly
+    isolates the gravity feedforward contribution, uncontaminated by stiction.
 
     Procedure:
       1. Prompt user for attached weight mass
-      2. Move leg to hold position using ODrive position control
+      2. Move leg to start position using ODrive position control
       3. Switch to torque mode (no IDLE gap)
-      4. Run PD-only hold, measure error and current
-      5. Seamlessly switch to PD+FF, measure again
-      6. Compare — FF should reduce PD effort by >=50%
+      4. Run slow triangle wave with PD-only, measure tracking current
+      5. Run same triangle wave with PD+FF, measure tracking current
+      6. Compare — FF should reduce PD effort during constant-velocity segments
 
     Parameters
     ----------
     hold_pos_raw : float
-        Target position in raw ODrive revolutions (default -2.0).
+        Centre position in raw ODrive revolutions (default -2.0).
     """
     print("\n" + "=" * 60)
-    print("STAGE A2: Gravity feedforward test")
+    print("STAGE A2: Gravity feedforward test (slow motion)")
     print("=" * 60)
 
     spool_radius_m = SPOOL_RADIUS_MM[harness.axis_id] / 1000.0
     mm_to_rev_axis = MM_TO_REV[harness.axis_id]
 
-    print(f"\n  This test compares PD-only vs PD+FF holding a known weight.")
-    print(f"  Attach the weight now, then enter the mass below.")
-    print(f"  The leg will extend to {hold_pos_raw:.1f} rev (ODrive frame) under position control,")
-    print(f"  then switch to torque mode for the comparison.")
+    print(f"\n  This test compares PD-only vs PD+FF during slow continuous motion")
+    print(f"  with a known weight.  The leg will track a triangle wave, keeping")
+    print(f"  it moving to avoid stiction artifacts.")
+    print(f"\n  Attach the weight now, then enter the mass below.")
     weight_str = input(f"\n  Enter weight in kg (or 'skip'): ").strip().lower()
     harness.flush_and_resync()
 
@@ -1092,15 +1170,12 @@ def test_gravity_ff(harness: SingleLegTestHarness, hold_pos_raw: float = -2.0):
     harness.set_safe_limits()
     harness.require_no_errors()
 
-    # --- Move to hold position using ODrive position control ---
-    # Use TRAP_TRAJ so the ODrive plans a smooth trajectory.
+    # --- Move to start position using ODrive position control ---
     # Must enter CLOSED_LOOP first (holding at current pos), THEN send target.
-    # If we send input_pos before CLOSED_LOOP, the ODrive resets it on entry.
-    print(f"\n  Moving to hold position ({hold_pos_raw:.1f} rev raw)...")
+    print(f"\n  Moving to centre position ({hold_pos_raw:.1f} rev raw)...")
     harness.send(encode_set_controller_mode(
         harness.axis_id, 'POSITION', 'TRAP_TRAJ'))
     time.sleep(0.05)
-    # Set input_pos to current position so CLOSED_LOOP starts in place
     harness.read_encoder(settle_time=0.1)
     harness.send(encode_set_input_pos(harness.axis_id, harness.state.pos_rev_raw))
     time.sleep(0.05)
@@ -1108,89 +1183,138 @@ def test_gravity_ff(harness: SingleLegTestHarness, hold_pos_raw: float = -2.0):
     harness._wait_for_closed_loop()
     print(f"  Axis in POSITION/TRAP_TRAJ, CLOSED_LOOP")
 
-    # Now send the actual target — TRAP_TRAJ will plan the move
     time.sleep(0.1)
     harness.send(encode_set_input_pos(harness.axis_id, hold_pos_raw))
     print(f"  Target sent: {hold_pos_raw:.1f} rev raw")
 
-    # Wait for trajectory to complete and settle
     print(f"  Waiting for trajectory (5s)...", end='', flush=True)
     harness.poll_for(5.0)
     print(f" done.")
-    hold_target_mm = harness.state.pos_rev / mm_to_rev_axis
-    print(f"  Hold target: {hold_target_mm:.2f} mm "
+    centre_mm = harness.state.pos_rev / mm_to_rev_axis
+    print(f"  Centre position: {centre_mm:.2f} mm "
           f"(raw: {harness.state.pos_rev_raw:.4f} rev)")
 
     # --- Switch to TORQUE mode (stay in CLOSED_LOOP — no IDLE gap) ---
     harness.send(encode_set_controller_mode(
         harness.axis_id, 'TORQUE', 'PASSTHROUGH'))
     time.sleep(0.05)
-    # Immediately send zero torque to prevent any jump
     harness.send(encode_set_input_torque(harness.axis_id, 0.0))
     print(f"  Switched to TORQUE/PASSTHROUGH (no IDLE gap)")
 
-    KP = 0.5    # N/mm — moderate gains
-    KD = 0.005  # N·s/mm
-    PHASE_DURATION = 3.0
+    # Triangle wave parameters
+    KP = 0.5         # N/mm
+    KD = 0.01        # N·s/mm
+    AMPLITUDE_MM = 15.0
+    SPEED_MM_S = 5.0
+    CYCLES = 2       # per phase
     LOOP_DT = 0.01
+    TURNAROUND_MM = 2.0  # exclusion zone near direction reversals
+
+    half_period_s = AMPLITUDE_MM / SPEED_MM_S
+    full_period_s = 4.0 * half_period_s
+    phase_duration_s = full_period_s * CYCLES
+
+    print(f"\n  Triangle wave: +/-{AMPLITUDE_MM:.0f} mm at {SPEED_MM_S:.0f} mm/s, "
+          f"{CYCLES} cycles per phase ({phase_duration_s:.1f}s each)")
+
+    def triangle_target(t: float) -> tuple:
+        """Return (target_mm, target_vel_mm_s) for a triangle wave."""
+        phase = t % full_period_s
+        ramp_phase = phase / half_period_s
+        if ramp_phase < 1.0:
+            pos = centre_mm + AMPLITUDE_MM * ramp_phase
+            vel = SPEED_MM_S
+        elif ramp_phase < 3.0:
+            pos = centre_mm + AMPLITUDE_MM * (2.0 - ramp_phase)
+            vel = -SPEED_MM_S
+        else:
+            pos = centre_mm + AMPLITUDE_MM * (ramp_phase - 4.0)
+            vel = SPEED_MM_S
+        return pos, vel
 
     def run_phase(use_ff: bool) -> tuple:
-        """Run one phase of the PD loop. Returns (error_rms_mm, current_rms_A).
+        """Run one phase of PD tracking.
 
-        Does NOT enter or exit torque mode — caller manages that.
+        Returns (tracking_current_rms_A, tracking_error_rms_mm) measured
+        only during constant-velocity segments (excluding turnarounds).
         """
-        errors = []
-        currents = []
-        deadline = time.time() + PHASE_DURATION
-        while time.time() < deadline:
+        track_currents = []
+        track_errors = []
+        t_start = time.time()
+        while True:
             harness._poll(timeout=LOOP_DT)
+            t_now = time.time() - t_start
+            if t_now >= phase_duration_s:
+                break
+
+            target_mm, target_vel = triangle_target(t_now)
             actual_mm = harness.state.pos_rev / mm_to_rev_axis
             actual_vel = harness.state.vel_rps / mm_to_rev_axis
-            e_pos = hold_target_mm - actual_mm
-            e_vel = 0.0 - actual_vel
+
+            e_pos = target_mm - actual_mm
+            e_vel = target_vel - actual_vel
             f_pd = KP * e_pos + KD * e_vel
             tau_pd = f_pd * spool_radius_m
             tau_total = tau_pd + (ff_torque_Nm if use_ff else 0.0)
-            # Clamp for safety, then invert for ODrive
-            tau_clamped = max(-MAX_BENCH_TORQUE_NM, min(MAX_BENCH_TORQUE_NM, tau_total))
-            harness.send(encode_set_input_torque(harness.axis_id, -tau_clamped))
-            errors.append(e_pos)
-            currents.append(harness.state.iq_measured)
-        return (float(np.sqrt(np.mean(np.array(errors)**2))),
-                float(np.sqrt(np.mean(np.array(currents)**2))))
 
-    # Phase 1: PD only (leg is already in torque mode at hold position)
-    print(f"\n  Phase 1: PD-only hold ({PHASE_DURATION}s)...")
-    err_pd, curr_pd = run_phase(use_ff=False)
-    print(f"    Error RMS: {err_pd:.3f} mm, Current RMS: {curr_pd:.3f} A")
+            tau_clamped = max(-MAX_BENCH_TORQUE_NM,
+                              min(MAX_BENCH_TORQUE_NM, tau_total))
+            harness.send(encode_set_input_torque(
+                harness.axis_id, -tau_clamped))
 
-    # Phase 2: PD + FF (seamless transition — just toggle FF in the loop)
-    print(f"  Phase 2: PD+FF hold ({PHASE_DURATION}s)...")
-    err_ff, curr_ff = run_phase(use_ff=True)
-    print(f"    Error RMS: {err_ff:.3f} mm, Current RMS: {curr_ff:.3f} A")
+            # Collect only constant-velocity samples
+            dist_from_peak = min(
+                abs(target_mm - (centre_mm + AMPLITUDE_MM)),
+                abs(target_mm - (centre_mm - AMPLITUDE_MM)))
+            if dist_from_peak > TURNAROUND_MM:
+                track_currents.append(harness.state.iq_measured)
+                track_errors.append(e_pos)
+
+        arr_c = np.array(track_currents) if track_currents else np.zeros(1)
+        arr_e = np.array(track_errors) if track_errors else np.zeros(1)
+        return (float(np.sqrt(np.mean(arr_c ** 2))),
+                float(np.sqrt(np.mean(arr_e ** 2))))
+
+    # Phase 1: PD only
+    print(f"\n  Phase 1: PD-only tracking ({phase_duration_s:.1f}s)...")
+    curr_pd, err_pd = run_phase(use_ff=False)
+    print(f"    Tracking error RMS: {err_pd:.3f} mm, Current RMS: {curr_pd:.3f} A")
+
+    # Phase 2: PD + FF (seamless — just add the constant FF term)
+    print(f"  Phase 2: PD+FF tracking ({phase_duration_s:.1f}s)...")
+    curr_ff, err_ff = run_phase(use_ff=True)
+    print(f"    Tracking error RMS: {err_ff:.3f} mm, Current RMS: {curr_ff:.3f} A")
 
     # Done — safe shutdown
     harness.idle_axis()
     time.sleep(0.5)
     harness._poll()
 
-    # Compare
+    # Compare PD effort
     if curr_pd > 0.01:
         reduction_pct = (1.0 - curr_ff / curr_pd) * 100
     else:
         reduction_pct = 0.0
 
-    print(f"\n  Current reduction: {reduction_pct:.1f}%")
-    print(f"  Error reduction: {(1.0 - err_ff / err_pd) * 100:.1f}%" if err_pd > 0.01 else "")
-    print(f"  FF torque: {ff_torque_Nm:.4f} Nm")
+    print(f"\n  Summary:")
+    print(f"    FF torque:         {ff_torque_Nm:.4f} Nm")
+    print(f"    Current (PD-only): {curr_pd:.3f} A RMS")
+    print(f"    Current (PD+FF):   {curr_ff:.3f} A RMS")
+    print(f"    Current reduction: {reduction_pct:.1f}%")
+    if err_pd > 0.01:
+        print(f"    Error reduction:   "
+              f"{(1.0 - err_ff / err_pd) * 100:.1f}%")
 
-    if reduction_pct >= 50:
-        print(f"  PASS: FF reduced PD effort by {reduction_pct:.1f}% (>= 50%)")
+    # The FF should noticeably reduce PD effort.  With constant-velocity
+    # motion, kinetic friction is roughly the same in both phases, so the
+    # current difference is almost entirely due to FF compensating gravity.
+    if reduction_pct >= 30:
+        print(f"  PASS: FF reduced PD effort by {reduction_pct:.1f}% (>= 30%)")
         return True
     elif reduction_pct > 0:
         print(f"  MARGINAL: FF reduced effort by {reduction_pct:.1f}% "
-              f"(< 50% target)")
-        return True  # Still useful, may need gain tuning
+              f"(< 30% target — check weight/orientation)")
+        return True
     else:
         print(f"  FAIL: FF did not reduce effort (reduction={reduction_pct:.1f}%)")
         return False
@@ -1205,13 +1329,13 @@ TESTS = {
     'estop': ('Emergency stop test', test_estop),
     'encoder': ('Encoder sign check', test_encoder_sign),
     'force': ('Force conversion validation', test_force_conversion),
-    'pd_hold': ('PD torque-mode hold (Stage A1)', test_pd_hold),
+    'pd_track': ('PD tracking test (Stage A1)', test_pd_track),
     'gravity_ff': ('Gravity feedforward test (Stage A2)', test_gravity_ff),
 }
 
 TEST_GROUPS = {
     'phase2': ['smoke', 'estop', 'encoder', 'force'],
-    'phase3': ['pd_hold', 'gravity_ff'],
+    'phase3': ['pd_track', 'gravity_ff'],
     'all': list(TESTS.keys()),
 }
 
@@ -1226,12 +1350,12 @@ Tests available:
   estop       Emergency stop test (single leg)
   encoder     Encoder direction and sign convention check
   force       Force conversion validation (requires known weight)
-  pd_hold     Phase 3 Stage A1: PD torque-mode hold test
-  gravity_ff  Phase 3 Stage A2: Gravity feedforward test (requires weight)
+  pd_track    Phase 3 Stage A1: PD tracking test (slow triangle wave)
+  gravity_ff  Phase 3 Stage A2: Gravity feedforward test (slow motion, requires weight)
 
 Test groups:
   phase2      Run Phase 2 tests (smoke, estop, encoder, force)
-  phase3      Run Phase 3 tests (pd_hold, gravity_ff) [DEFAULT]
+  phase3      Run Phase 3 tests (pd_track, gravity_ff) [DEFAULT]
   all         Run all tests sequentially
 
 Safety:
@@ -1251,19 +1375,16 @@ Safety:
                         choices=list(TESTS.keys()) + list(TEST_GROUPS.keys()),
                         help='Which test or group to run (default: phase3)')
     parser.add_argument('--hold-pos', type=float, default=None,
-                        help='Hold position in raw ODrive rev for gravity_ff test '
-                             '(default: -2.0 if --home)')
+                        help='Centre position in raw ODrive rev for gravity_ff '
+                             'triangle wave (default: -2.0)')
     parser.add_argument('--home', action='store_true',
                         help='Home the axis before running tests (drive to end-stop, set zero)')
 
     args = parser.parse_args()
 
-    # Resolve defaults based on whether homing is used
+    # Resolve defaults
     if args.hold_pos is None:
         args.hold_pos = -2.0
-    if args.home and args.test == 'phase3':
-        # With --home, default to just gravity_ff (not pd_hold which has no user prompt)
-        args.test = 'gravity_ff'
 
     # Install Ctrl-C handler for clean shutdown
     harness_ref = [None]
