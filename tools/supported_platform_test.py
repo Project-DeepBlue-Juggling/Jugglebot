@@ -1248,14 +1248,17 @@ def test_feedforward_dry_run(harness: PlatformTestHarness):
 
     Procedure:
       1. Compute gravity feedforward torques at home pose using dynamics model
-      2. Sanity-check direction and magnitude against simple estimate
+      2. Sanity-check direction (all positive) and total magnitude vs m*g estimate
       3. Apply feedforward via set_input_pos torque_ff, hold 3s
       4. Remove feedforward, hold 1s, verify no transient errors
 
     Pass criteria:
-      - All computed torques have the same sign (positive = extension)
-      - Each torque is within 50% of the per-leg sanity estimate
+      - All computed torques positive (extension direction = supporting weight)
+      - Total torque sum within 50% of total expected (m*g * mean_spool_radius)
       - No errors during feedforward hold or removal
+
+    Note: per-leg torques vary significantly due to CoM offset [-14.5, -67, 54] mm.
+    We validate direction and total, not per-leg uniformity.
     """
     print("\n" + "=" * 60)
     print("STAGE B5: Feedforward dry run (supported, analytical only)")
@@ -1267,7 +1270,7 @@ def test_feedforward_dry_run(harness: PlatformTestHarness):
 
     FF_HOLD_S = 3.0
     FF_REMOVE_HOLD_S = 1.0
-    MAGNITUDE_TOLERANCE = 0.50  # 50% tolerance for CoM asymmetry
+    TOTAL_MAGNITUDE_TOLERANCE = 0.50  # 50% tolerance on total torque sum
 
     # -- Analytical computation ---------------------------------------------
     geom = StewartGeometry()
@@ -1278,41 +1281,50 @@ def test_feedforward_dry_run(harness: PlatformTestHarness):
 
     torques_Nm = gravity_to_motor_torques(pos_home, rot_home, geom, params)
 
-    # Sanity estimate: (mass * g / 6) * spool_radius_m
-    force_per_leg_N = params.mass_kg * params.gravity_mps2 / NUM_LEGS
+    # Sanity estimates
+    total_weight_N = params.mass_kg * params.gravity_mps2
+    force_per_leg_N = total_weight_N / NUM_LEGS
     spool_radius_m = geom.spool_radius_mm / 1000.0  # (6,) array
-    expected_torques_Nm = force_per_leg_N * spool_radius_m
+    mean_spool_radius_m = float(np.mean(spool_radius_m))
+    expected_total_torque_Nm = total_weight_N * mean_spool_radius_m
 
     print(f"\n  Gravity feedforward at home pose:")
     print(f"    Platform mass: {params.mass_kg} kg, g: {params.gravity_mps2} m/s²")
-    print(f"    Total weight: {params.mass_kg * params.gravity_mps2:.3f} N")
-    print(f"    Sanity estimate: {force_per_leg_N:.3f} N/leg (uniform split)")
+    print(f"    Total weight: {total_weight_N:.3f} N")
+    print(f"    Mean spool radius: {mean_spool_radius_m*1000:.2f} mm")
+    print(f"    Expected total torque: ~{expected_total_torque_Nm:.4f} Nm "
+          f"(m*g*r_spool)")
 
     all_pass = True
     torque_ff_ints = []
 
-    print(f"\n  Per-leg computed torques:")
+    print(f"\n  Per-leg computed torques (CoM offset: "
+          f"{list(params.com_offset_mm)} mm):")
     for i, axis_id in enumerate(LEG_AXES):
         t = torques_Nm[i]
-        e = expected_torques_Nm[i]
-        ratio = t / e if abs(e) > 1e-12 else float('inf')
         ff_int = int(round(t * LEG_TOR_FF_SCALE))
         torque_ff_ints.append(ff_int)
-
-        within_tol = abs(ratio - 1.0) < MAGNITUDE_TOLERANCE
-        sign_ok = t > 0  # positive = extension direction
-
-        status = "OK" if (within_tol and sign_ok) else "FAIL"
-        print(f"    Leg {axis_id}: torque = {t:.4f} Nm (ff_int16 = {ff_int}), "
-              f"expected ~{e:.4f} Nm, ratio = {ratio:.2f} [{status}]")
-
+        sign_ok = t > 0
+        sign_str = "+" if sign_ok else "NEGATIVE"
+        print(f"    Leg {axis_id}: {t:.4f} Nm (ff_int16 = {ff_int}) [{sign_str}]")
         if not sign_ok:
-            print(f"      SIGN ERROR: expected positive (extension), got {t:.4f}")
+            print(f"      SIGN ERROR: expected positive (extension)")
             all_pass = False
-        if not within_tol:
-            print(f"      MAGNITUDE: ratio {ratio:.2f} outside "
-                  f"[{1-MAGNITUDE_TOLERANCE:.1f}, {1+MAGNITUDE_TOLERANCE:.1f}]")
-            all_pass = False
+
+    # Check total magnitude
+    total_torque_Nm = float(np.sum(torques_Nm))
+    total_ratio = total_torque_Nm / expected_total_torque_Nm
+    total_ok = abs(total_ratio - 1.0) < TOTAL_MAGNITUDE_TOLERANCE
+
+    print(f"\n  Total torque: {total_torque_Nm:.4f} Nm "
+          f"(expected ~{expected_total_torque_Nm:.4f} Nm, "
+          f"ratio = {total_ratio:.2f}) "
+          f"[{'OK' if total_ok else 'FAIL'}]")
+    if not total_ok:
+        print(f"    MAGNITUDE: total ratio {total_ratio:.2f} outside "
+              f"[{1-TOTAL_MAGNITUDE_TOLERANCE:.1f}, "
+              f"{1+TOTAL_MAGNITUDE_TOLERANCE:.1f}]")
+        all_pass = False
 
     # -- Apply feedforward on hardware -------------------------------------
     harness.clear_all_errors()
