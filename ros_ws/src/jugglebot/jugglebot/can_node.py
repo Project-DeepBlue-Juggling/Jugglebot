@@ -233,11 +233,13 @@ class CanInterfaceNode(Node):
         # Trigger firmware version queries once all heartbeats arrive per group
         if not self._jb_version_query_sent and self.motors.all_jugglebot_heartbeats_received():
             self._jb_version_query_sent = True
+            self.get_logger().info("All Jugglebot heartbeats received — sending Get_Version queries")
             for aid in odrive.JUGGLEBOT_AXES:
                 self.bus.send(odrive.encode_get_version(aid))
                 time.sleep(0.005)
         if not self._bb_version_query_sent and self.motors.all_bb_heartbeats_received():
             self._bb_version_query_sent = True
+            self.get_logger().info("All Ball Butler heartbeats received — sending Get_Version queries")
             for aid in odrive.BB_AXES:
                 self.bus.send(odrive.encode_get_version(aid))
                 time.sleep(0.005)

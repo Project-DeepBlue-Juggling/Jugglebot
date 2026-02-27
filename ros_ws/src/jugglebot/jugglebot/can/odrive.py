@@ -125,7 +125,7 @@ def arb_id(axis_id: int, command_name: str) -> int:
 def encode_get_version(axis_id: int) -> can.Message:
     """Request firmware/hardware version from an ODrive axis."""
     return can.Message(arbitration_id=arb_id(axis_id, 'get_version'),
-                       dlc=8, is_extended_id=False, data=bytes(8))
+                       data=b'', is_extended_id=False)
 
 
 def encode_set_state(axis_id: int, state: str) -> can.Message:
