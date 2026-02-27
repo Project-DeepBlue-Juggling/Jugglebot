@@ -142,7 +142,7 @@ The ODrive's cascaded controller has three tunable gains per axis, settable via 
 - **ODrive gain tuning (unloaded):** Tune `pos_gain` and `vel_gain` for clean step response — fast settling, no oscillation, no audible vibration. Record these as the "unloaded baseline." Set `vel_int_gain` to zero initially.
 - **Current limit adequacy check:** With the known mass attached, verify that the conservative current limit is sufficient to hold the load. If not, increase the limit incrementally with documented justification. This informs what the current limits need to be for the assembled platform.
 
-### Stage B — Platform Supported
+### Stage B — Platform Supported — DONE (2026-02-27)
 
 **Setup:** Assemble the full robot. Mechanically support the platform so the legs are not load-bearing — rest it on blocks, clamp the frame, or use a sling — such that if all legs go limp simultaneously, nothing falls or is damaged.
 
@@ -153,26 +153,27 @@ The ODrive's cascaded controller has three tunable gains per axis, settable via 
 - **Direction and sign convention check (all legs):** Command a small position increment on each leg in sequence. Verify each leg moves in the direction that would shorten/extend it as expected by the kinematic model. A sign error on a single leg will cause the platform to fight itself when free-standing.
 - **Multi-leg position hold (supported):** Command all six legs to hold their current positions using the unloaded baseline ODrive gains from Stage A (or lower). Verify all legs respond, no leg oscillates, and the system is stable. This is a low-risk first test of the full coordinated position control because the platform support prevents any consequence of instability.
 - **Emergency stop test (six legs):** Trigger each failure mode (IPC loss, process crash, explicit stop) and verify all six legs idle simultaneously and cleanly. The platform is supported, so even a failure to idle is non-destructive.
-- **Feedforward dry run (supported):** Enable gravity `torque_ff` while the platform is still supported. Log the feedforward torques for each leg at the home pose. Verify they are in the expected direction and roughly the expected magnitude (compare to `platform_mass × g / 6` as a sanity check, adjusted for geometry). Do not remove the support yet.
+- **Feedforward dry run (supported, analytical only):** Enable gravity `torque_ff` while the platform is still supported. Log the commanded feedforward torques for each leg at the home pose. Verify they are in the expected direction and roughly the expected magnitude (compare to `platform_mass × g / 6` as a sanity check, adjusted for CoM offset geometry). This is an analytical/sanity check only — do not attempt to measure current reduction, because motor stiction (~0.075 Nm per leg) is ~4× larger than the per-leg gravity torque (~0.018 Nm) and masks the feedforward effect. The torque_ff pipeline was validated on the bench in Stage A with adequate load; this test confirms the six-leg commanded values are sane. Do not remove the support yet.
 
-### Stage C — Platform Free, Gravity Feedforward Active
+### Stage C — Platform Free, Position Control Validation
 
-**Setup:** Remove mechanical support. Gravity `torque_ff` active from the start. ODrive gains at the unloaded baseline from Stage A.
+**Setup:** Remove mechanical support. ODrive gains at the unloaded baseline from Stage A. Gravity `torque_ff` enabled.
 
-**Purpose:** First unsupported operation under position control with gravity feedforward. The `torque_ff` carries the static gravity load so the ODrive's PID is not solely responsible for supporting the platform weight.
+**Purpose:** First unsupported operation under position control. Validate sign conventions, gain adequacy, and stability on the free-standing platform. Note: motor stiction exceeds the bare-platform gravity load per leg (~4×), so the platform is inherently stable even without motor power — this significantly de-risks the first release. The `torque_ff` provides a small but physically correct gravity compensation; its full benefit becomes measurable in Phase 4/5 when dynamic trajectory forces exceed the stiction band.
 
 **Procedure:**
 1. With `torque_ff` active and ODrive gains at the unloaded baseline, release the platform support gradually (don't just remove it — ease it out so you can re-engage if something goes wrong).
-2. If the platform holds stable, log the steady-state error and ODrive motor current draw.
-3. If the platform oscillates, reduce `pos_gain` or `vel_gain`. If it drifts, verify the feedforward torques are correct (mass, CoM, sign conventions).
-4. Incrementally adjust ODrive gains toward the ±1 mm / ±0.1° target. At each step, verify no oscillation before proceeding.
-5. If steady-state error exceeds ±1 mm / ±0.1° with feedforward active and ODrive gains as high as they can go without oscillation, diagnose the feedforward model (mass, CoM location, force conversion) rather than continuing to raise gains.
+2. Verify the platform holds stable — no oscillation, no leg fighting itself, no drift.
+3. Briefly disable `torque_ff`. Platform should still hold fine (stiction dominates). Re-enable. Verify no transient or instability on the transition. This confirms the feedforward doesn't introduce problems.
+4. If the platform oscillates at any point, reduce `pos_gain` or `vel_gain`. If it drifts, verify feedforward sign conventions.
+5. Adjust ODrive gains for clean step response — fast settling, no oscillation, no audible vibration.
 
 ### Verification (Phase 3 exit criteria — all performed at Stage C)
-- **Static hold test:** Command the platform to hold several poses including tilted configurations. Measure steady-state position error and current draw vs. a hold without `torque_ff`. Feedforward should significantly reduce the ODrive's corrective current required to hold pose. Verify the ±1 mm / ±0.1° target is met.
-- **Gravity vector rotation test:** Tilt the platform to a known angle, log the expected and commanded gravity compensation torques per leg, verify they are geometrically consistent.
-- **Parameter sensitivity:** Vary mass and inertia parameters ±20% in software and observe effect on hold quality — this bounds how precisely you need to identify the physical parameters. If hold quality degrades unacceptably, consider a system identification experiment (chirp excitation + force measurement).
+- **Stable hold:** Platform holds at home pose and several tilted configurations without oscillation or drift. The ±1 mm / ±0.1° target will likely be met trivially at static holds due to stiction.
+- **Feedforward harmlessness:** Toggling `torque_ff` on/off does not cause transients, instability, or legs fighting gravity.
+- **Gravity vector rotation (analytical):** Tilt the platform to known angles, log the commanded gravity compensation torques per leg, verify they are geometrically consistent (correct direction, magnitude scales with tilt angle).
 - **Log Jacobian condition number** across the workspace to confirm force decomposition is stable at intended operating poses.
+- **Note on deferred tests:** Current-reduction measurements and parameter sensitivity tests are deferred to Phase 5, where dynamic trajectory forces exceed motor stiction and make torque_ff effects measurable.
 
 ---
 
@@ -345,8 +346,8 @@ Each phase has explicit exit criteria. Do not begin the next phase until the cur
 | 1 — Kinematics | Numerical Jacobian error < floating-point precision; singularity map complete |
 | 2 — Control Process | 99th-percentile loop jitter < 2× nominal period; isolated leg CAN communication verified; e-stop functional on single leg; force conversion model validated |
 | 3A — Isolated Leg | **DONE (2026-02-27).** Position control pipeline verified (< 0.1 mm errors); `vel_ff` improves tracking (22.2%); gravity `torque_ff` reduces ODrive current (55.8%, 10.1% magnitude match); ODrive baseline gains recorded (pos=40, vel=0.2, vel_int=0.32); current limit adequate at 10A |
-| 3B — Supported Platform | Six-leg CAN throughput verified; all leg directions correct; multi-leg position hold stable; e-stop functional on all legs |
-| 3C — Free Platform | Static hold accuracy ≤ ±1 mm / ±0.1° with gravity feedforward active across multiple poses |
+| 3B — Supported Platform | Six-leg CAN throughput verified; all leg directions correct; multi-leg position hold stable; e-stop functional on all legs; feedforward commands analytically sane |
+| 3C — Free Platform | Stable hold at home and tilted poses; torque_ff toggle causes no transient; ODrive gains tuned for clean response. (Current-reduction validation deferred to Phase 5 — motor stiction masks gravity ff at bare platform weight) |
 | 4 — Trajectory Generator | Boundary conditions exact; feasibility checker rejects known-bad trajectories; low-speed (≤25%) tracking verified on hardware; feedforward torque preview workflow established |
 | 5 — Inertia Feedforward | Tracking error within bounds at each speed level (50% → 75% → 100%); feedforward prediction within 15% of measured PID correction |
 | 6 — Hardening | All protective systems validated at low speed; fault injection passes at all speeds; 60-min full-speed endurance pass |
@@ -445,3 +446,27 @@ All three position-control tests passed on axis 0 using `tools/single_leg_test.p
 12. **torque_ff validated but not critical for Phase 3-4** (2026-02-27): The ODrive's velocity integrator (`vel_int_gain=0.32`) handles gravity compensation in steady state. `torque_ff` provides faster settling and reduces PID effort by ~56%, but the system holds position accurately without it. `torque_ff` becomes more important in Phase 5 for inertia feedforward during fast trajectory tracking.
 
 13. **Cogging torque affects bench measurements** (2026-02-27): When backdriving the actuator (weight pulling against position hold), motor cogging torque adds a systematic offset to iq measurements. This caused a ~48% magnitude discrepancy in the initial torque_ff test before accounting for it via the correct spool radius. On the assembled platform where motors are always actively driving, cogging will be less significant.
+
+### Phase 3 Stage B verification results — supported platform tests (2026-02-27)
+
+All five supported-platform tests passed using `tools/supported_platform_test.py` (standalone, no ROS2). Platform mechanically supported throughout. All 6 leg ODrives on CAN bus. ODrive current limit at 50% of rated (10A).
+
+| Test | Result | Notes |
+|------|--------|-------|
+| Six-leg CAN coordination (B1 — exit gate) | PASS | 200 Hz command rate, 5s duration. All 6 axes encoder rate ~100 Hz. Max encoder gap ~15 ms (< 50 ms threshold). Command cycle p99: 2.04 ms (< 5.0 ms target) |
+| Direction & sign convention (B2) | PASS | 5 mm extension step per leg using TRAP_TRAJ mode (2.5 rev/s, 10 rev/s²). All 6 legs moved in correct direction. Best accuracy: Leg 4 at 0.018 mm error. Worst: Leg 2 at 0.826 mm error (< 2 mm threshold). Return accuracy all < 0.25 mm |
+| Multi-leg position hold (B3) | PASS | 10s hold at baseline ODrive gains (pos_gain=40, vel_gain=0.2, vel_int_gain=0.32). Max deviation across all legs: 0.023 mm (Leg 3). All legs < 1.0 mm threshold. No errors, no oscillation |
+| Emergency stop, six legs (B4) | PASS | All 6 axes reached IDLE within 99.8 ms (< 200 ms threshold). Per-axis latency: 81.9–99.8 ms. No errors post-stop. All velocities 0.0 rev/s after settling |
+| Feedforward dry run (B5) | PASS | Gravity torque_ff computed at home pose. All 6 torques positive (correct direction). Per-leg range: 0.0100–0.0328 Nm (asymmetry due to CoM offset [-14.5, -67, 54] mm). No errors during 3s feedforward hold or 1s removal |
+
+**Stage B findings:**
+
+14. **ODrive 0 firmware issue** (2026-02-27): Initial B2 runs showed Axis 0 overcompressing when commanded to extend, despite identical code for all axes. User confirmed via ODrive GUI that all ODrives behave identically when manually driven. Resolved by reflashing ODrive 0 firmware and config — stale settings were the root cause. Diagnostic output (CAN arb_id, raw values, encoder readings) was added to B2 to isolate such issues.
+
+15. **Leg 2 positioning accuracy** (2026-02-27): Leg 2 showed the largest error in B2 (0.826 mm on a 5 mm step, vs 0.018–0.256 mm for other legs). Still within tolerance but notably worse. May indicate slightly higher friction or spool calibration variance on that leg. Worth monitoring in future tests.
+
+16. **E-stop latency consistent with Stage A** (2026-02-27): Six-leg IDLE latency (81.9–99.8 ms) is consistent with single-leg e-stop latency from Phase 2 bench tests (60–88 ms). The slight increase is expected from sending 6 IDLE commands sequentially on CAN.
+
+17. **Gravity feedforward asymmetry is expected** (2026-02-27): Per-leg torques vary from 0.0100 to 0.0328 Nm at home pose (vs ~0.0176 Nm uniform estimate). This is physically correct — the large CoM offset (especially -67 mm in Y) shifts load toward legs 1 and 2. The total torque (0.1193 Nm) is within 13% of the uniform total estimate (0.1056 Nm), with the excess due to non-vertical leg angles requiring slightly more axial force to produce the same vertical support. The B5 test validates direction (all positive) and total magnitude, not per-leg uniformity.
+
+18. **Supported-platform test harness** (2026-02-27): `tools/supported_platform_test.py` manages all 6 leg axes simultaneously via python-can. Includes per-axis state tracking, heartbeat watchdog, TRAP_TRAJ support, and Ctrl-C safety handler. B1 is an exit gate — if CAN coordination fails, remaining tests are skipped.
