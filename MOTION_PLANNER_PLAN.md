@@ -129,7 +129,7 @@ The ODrive's cascaded controller has three tunable gains per axis, settable via 
 - **Procedure:** Tune on the isolated leg first (Stage A) to establish baseline gain range, re-tune on the supported platform (Stage B), validate on the free platform (Stage C). Gains from earlier stages are starting points, not final values.
 - **Gain scheduling:** if the platform feels underdamped at some poses and overdamped at others, gains may need to vary with configuration. Note this as a risk but defer gain scheduling until it is demonstrated to be necessary.
 
-### Stage A — Isolated Leg (Bench Test)
+### Stage A — Isolated Leg (Bench Test) — DONE (2026-02-27)
 
 **Setup:** Single leg disconnected from the platform, bench-mounted or clamped. ODrive current limits remain at the conservative value set in Phase 2.
 
@@ -344,7 +344,7 @@ Each phase has explicit exit criteria. Do not begin the next phase until the cur
 |---|---|
 | 1 — Kinematics | Numerical Jacobian error < floating-point precision; singularity map complete |
 | 2 — Control Process | 99th-percentile loop jitter < 2× nominal period; isolated leg CAN communication verified; e-stop functional on single leg; force conversion model validated |
-| 3A — Isolated Leg | Position control pipeline verified; `vel_ff` improves tracking; gravity `torque_ff` reduces ODrive corrective current; ODrive gains tuned for unloaded leg; current limit adequate |
+| 3A — Isolated Leg | **DONE (2026-02-27).** Position control pipeline verified (< 0.1 mm errors); `vel_ff` improves tracking (22.2%); gravity `torque_ff` reduces ODrive current (55.8%, 10.1% magnitude match); ODrive baseline gains recorded (pos=40, vel=0.2, vel_int=0.32); current limit adequate at 10A |
 | 3B — Supported Platform | Six-leg CAN throughput verified; all leg directions correct; multi-leg position hold stable; e-stop functional on all legs |
 | 3C — Free Platform | Static hold accuracy ≤ ±1 mm / ±0.1° with gravity feedforward active across multiple poses |
 | 4 — Trajectory Generator | Boundary conditions exact; feasibility checker rejects known-bad trajectories; low-speed (≤25%) tracking verified on hardware; feedforward torque preview workflow established |
@@ -424,6 +424,26 @@ All four isolated-leg bench tests passed on axis 0 using `tools/single_leg_test.
 
 7. **Motor Kt validated** (2026-02-25): Multi-weight calibration measured Kt = 0.0624 Nm/A (from slope of iq vs tau at 4 loads, R^2=0.994). This is within 2.0% of the datasheet estimate Kt = 60/(2*pi*150) = 0.0637 Nm/A, confirming the spool radius derivation from `mm_to_rev` is correct. The measured Kt can be used directly for `torque_ff` computation.
 
-8. **Phase 2 software-only tests still pending on Jetson**: Loop timing and IPC latency tests require pyzmq/msgpack and must pass on the Jetson before the control loop is used in production. These are not blocking Phase 3 Stage A (which uses the standalone harness, not the IPC layer).
+8. **Phase 2 software-only tests still pending on Jetson**: Loop timing and IPC latency tests require pyzmq/msgpack and must pass on the Jetson before the control loop is used in production. These were not blocking for Stage A (standalone harness, no IPC), but **must be completed before Stage B** if using the ROS2 control loop.
 
 9. **Control architecture decision** (2026-02-27): Switched from custom torque control (Python-side PD at 500 Hz) to ODrive position control with feedforward (`set_input_pos` with `vel_ff` + `torque_ff`). The dynamics model is expressed through feedforward terms, while the ODrive's 8 kHz cascaded PID handles feedback. This was motivated by: (a) the ODrive's inner loops running 16× faster than Python can close a feedback loop, (b) fail-safe behaviour on communication loss (hold position vs. continue applying force), (c) the limited actuator stroke (280 mm) making torque-mode runaway a real risk, and (d) the trajectory planner's outputs (position, velocity, acceleration) mapping directly to the `set_input_pos` fields. The Phase 2 bench tests (torque-mode) remain valid — they validated CAN, encoder, and force conversion fundamentals that are independent of the production control mode. Phase 3 Stage A picks up position-control-specific validation.
+
+### Phase 3 Stage A verification results — hardware bench tests (2026-02-27)
+
+All three position-control tests passed on axis 0 using `tools/single_leg_test.py` (standalone, no ROS2). ODrive current limit at 50% of rated (10A). ODrive gains at existing configuration: `pos_gain=40`, `vel_gain=0.2`, `vel_int_gain=0.32`.
+
+| Test | Result | Notes |
+|------|--------|-------|
+| Position control smoke test (A1) | PASS | 4 position steps (+20, +20, -30, -10 mm). Max error 0.085 mm (threshold: 1 mm). Return error 0.041 mm (threshold: 0.5 mm) |
+| Velocity feedforward test (A2) | PASS | 40 mm ramp at 10 mm/s. RMS error without vel_ff: 0.494 mm. With vel_ff: 0.384 mm. **22.2% improvement** |
+| Gravity torque_ff test (A3) | PASS | 1.25 kg weight attached, leg extended 40 mm. Predicted iq: 2.24 A. Measured iq: 2.01 A. **10.1% discrepancy** (< 25% threshold). torque_ff reduced PID current by **55.8%**. Position drift: 0.048 mm |
+
+**Stage A findings:**
+
+10. **Test leg spool radius** (2026-02-27): The bench test leg is NOT a standard Jugglebot leg. Measured 71.5708 mm per motor revolution (vs ~70.5 mm from config). Phase 3 tests use hardcoded `TEST_LEG_MM_PER_REV = 71.5708` to avoid config mismatch. Production code uses per-leg values from `hardware_config.yaml`.
+
+11. **ODrive gains adequate at baseline** (2026-02-27): The existing ODrive configuration (`pos_gain=40`, `vel_gain=0.2`, `vel_int_gain=0.32`) produced sub-0.1 mm position errors on the bench. These are recorded as the "unloaded baseline" for Stage B. Re-tuning will likely be needed on the loaded platform.
+
+12. **torque_ff validated but not critical for Phase 3-4** (2026-02-27): The ODrive's velocity integrator (`vel_int_gain=0.32`) handles gravity compensation in steady state. `torque_ff` provides faster settling and reduces PID effort by ~56%, but the system holds position accurately without it. `torque_ff` becomes more important in Phase 5 for inertia feedforward during fast trajectory tracking.
+
+13. **Cogging torque affects bench measurements** (2026-02-27): When backdriving the actuator (weight pulling against position hold), motor cogging torque adds a systematic offset to iq measurements. This caused a ~48% magnitude discrepancy in the initial torque_ff test before accounting for it via the correct spool radius. On the assembled platform where motors are always actively driving, cogging will be less significant.

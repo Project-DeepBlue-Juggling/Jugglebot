@@ -6,10 +6,13 @@ with the ROS2 world via the IPC layer (ZeroMQ).
 Phase 3 scope:
   - Fixed-rate main loop with nanosecond timing instrumentation
   - IPC message dispatch (targets, mode commands, motor feedback)
-  - Position IK passthrough (pose → leg extensions → motor revolutions)
-  - PD feedback in leg extension space (mm → N → Nm)
-  - Gravity feedforward via Jacobian inverse-transpose
+  - Position IK: pose → leg extensions → motor revolutions (input_pos)
+  - Velocity IK: twist → leg velocities → motor velocities (vel_ff)
+  - Gravity feedforward: dynamics model → motor torques (torque_ff)
   - E-stop on IPC heartbeat loss
+
+The ODrive handles all feedback at 8 kHz via its cascaded PID.
+This process computes IK + dynamics and outputs (pos, vel_ff, torque_ff).
 
 Run:  python -m jugglebot.motion.control_loop [--rate HZ]
 """
@@ -34,14 +37,11 @@ from jugglebot.motion.ik_solver import (
 )
 from jugglebot.motion.conversions import (
     extensions_mm_to_revs,
-    leg_forces_to_motor_torques,
-    revs_to_extensions_mm,
-    motor_velocities_to_leg_velocities,
+    leg_velocities_to_motor_velocities,
 )
 from jugglebot.motion.dynamics import DynamicsParams, gravity_to_motor_torques
 from jugglebot.motion.ipc import (
     TOPIC_MODE,
-    TOPIC_MOTOR_FB,
     TOPIC_TARGET,
     ControlProcessIPC,
     make_telemetry,
@@ -155,31 +155,16 @@ class ControlLoop:
         self._target_accel = np.zeros(6)
         self._has_target = False
 
-        # Motor feedback from bridge (in motor units: rev, rev/s, A)
-        self._motor_positions = np.zeros(6)
-        self._motor_velocities = np.zeros(6)
-        self._motor_currents = np.zeros(6)
-
-        # Control outputs
-        self._commanded_leg_positions = np.zeros(6)
-        self._commanded_leg_velocities = np.zeros(6)
-        self._commanded_torques = np.zeros(6)
+        # Control outputs (sent to bridge → CAN node as set_input_pos fields)
+        self._commanded_pos_rev = np.zeros(6)      # input_pos (rev)
+        self._commanded_vel_ff_rps = np.zeros(6)    # vel_ff (rev/s)
+        self._commanded_torque_ff_Nm = np.zeros(6)  # torque_ff (Nm)
 
         # Dynamics parameters (for gravity feedforward)
         self._dynamics_params = DynamicsParams.from_config()
 
-        # PD gains — per-leg arrays, in leg-extension space
-        # Kp: N/mm  (force per position error)
-        # Kd: N·s/mm  (force per velocity error)
-        self._kp = np.full(6, 1.0)    # conservative default
-        self._kd = np.full(6, 0.01)   # conservative default
-
         # Feedforward enable flag (can be toggled via IPC for A/B testing)
         self._feedforward_enabled = True
-
-        # Diagnostic torque split (for telemetry)
-        self._ff_torques = np.zeros(6)
-        self._pd_torques = np.zeros(6)
 
         # Logging interval
         self._last_log_time = 0.0
@@ -236,8 +221,6 @@ class ControlLoop:
                 self._on_target(msg)
             elif topic == TOPIC_MODE:
                 self._on_mode_command(msg)
-            elif topic == TOPIC_MOTOR_FB:
-                self._on_motor_feedback(msg)
 
     def _on_target(self, msg: dict) -> None:
         """Handle an incoming target state."""
@@ -269,20 +252,12 @@ class ControlLoop:
             self.mode = ControlMode.ESTOP
             self._zero_outputs()
             logger.warning("E-STOP triggered via command")
-        elif cmd == 'set_gains':
-            self._apply_gains(params)
         elif cmd == 'set_feedforward':
             enabled = bool(params.get('enabled', True))
             self._feedforward_enabled = enabled
             logger.info(f"Feedforward {'ENABLED' if enabled else 'DISABLED'}")
         else:
             logger.warning(f"Unknown mode command: {cmd}")
-
-    def _on_motor_feedback(self, msg: dict) -> None:
-        """Handle motor feedback from the bridge."""
-        self._motor_positions = np.array(msg['pos'])
-        self._motor_velocities = np.array(msg['vel'])
-        self._motor_currents = np.array(msg['cur'])
 
     # ------------------------------------------------------------------
     # Heartbeat watchdog
@@ -306,74 +281,40 @@ class ControlLoop:
         """Compute control output for this cycle.
 
         1. Position IK: pose → desired leg extensions (mm) → motor revolutions
-        2. Velocity IK: twist → desired leg velocities (mm/s)
-        3. PD feedback: error in leg extension space → force → motor torque
-        4. Gravity feedforward: dynamics model → motor torque
-        5. Sum: τ_total = τ_PD + τ_FF
+        2. Velocity IK: twist → desired leg velocities (mm/s) → motor rev/s
+        3. Gravity feedforward: dynamics model → motor torques (Nm)
+
+        The ODrive handles all feedback via its 8 kHz cascaded PID.
+        This process outputs (input_pos, vel_ff, torque_ff) per leg.
         """
         if self.mode != ControlMode.ENABLED or not self._has_target:
             return
 
-        # Position IK: pose → desired leg extensions (mm)
+        # Position IK: pose → desired leg extensions (mm) → motor revolutions
         desired_extensions_mm = pose_to_leg_lengths(
             self._target_pos, self._target_rot, self.geom)
-
-        # Convert to motor revolutions (for position command path)
-        self._commanded_leg_positions = extensions_mm_to_revs(
+        self._commanded_pos_rev = extensions_mm_to_revs(
             desired_extensions_mm, self.geom)
 
-        # Velocity IK: twist → desired leg velocities (mm/s)
+        # Velocity IK: twist → desired leg velocities (mm/s) → motor rev/s
         desired_vel_mm_s = twist_to_leg_velocities(
             self._target_twist, self._target_pos, self._target_rot, self.geom)
-        self._commanded_leg_velocities = desired_vel_mm_s
+        self._commanded_vel_ff_rps = leg_velocities_to_motor_velocities(
+            desired_vel_mm_s, self.geom)
 
-        # --- PD feedback in leg extension space ---
-        # Convert motor feedback to leg space
-        actual_extensions_mm = revs_to_extensions_mm(
-            self._motor_positions, self.geom)
-        actual_vel_mm_s = motor_velocities_to_leg_velocities(
-            self._motor_velocities, self.geom)
-
-        # Position and velocity error
-        e_pos = desired_extensions_mm - actual_extensions_mm  # mm
-        e_vel = desired_vel_mm_s - actual_vel_mm_s            # mm/s
-
-        # PD force per leg (N), then convert to motor torque (Nm)
-        f_pd = self._kp * e_pos + self._kd * e_vel
-        self._pd_torques = leg_forces_to_motor_torques(f_pd, self.geom)
-
-        # --- Gravity feedforward ---
+        # Gravity feedforward: dynamics model → motor torques (Nm)
         if self._feedforward_enabled:
-            self._ff_torques = gravity_to_motor_torques(
+            self._commanded_torque_ff_Nm = gravity_to_motor_torques(
                 self._target_pos, self._target_rot,
                 self.geom, self._dynamics_params)
         else:
-            self._ff_torques = np.zeros(6)
-
-        # Total commanded torque
-        self._commanded_torques = self._pd_torques + self._ff_torques
-
-    def _apply_gains(self, params: dict) -> None:
-        """Apply PD gain parameters from an IPC command.
-
-        Accepts scalar values (applied to all legs) or per-leg lists.
-        """
-        if 'kp' in params:
-            kp = params['kp']
-            self._kp = np.full(6, kp) if np.isscalar(kp) else np.asarray(kp)
-            logger.info(f"Kp set to {self._kp}")
-        if 'kd' in params:
-            kd = params['kd']
-            self._kd = np.full(6, kd) if np.isscalar(kd) else np.asarray(kd)
-            logger.info(f"Kd set to {self._kd}")
+            self._commanded_torque_ff_Nm = np.zeros(6)
 
     def _zero_outputs(self) -> None:
         """Zero all control outputs (safe state)."""
-        self._commanded_leg_positions = np.zeros(6)
-        self._commanded_leg_velocities = np.zeros(6)
-        self._commanded_torques = np.zeros(6)
-        self._ff_torques = np.zeros(6)
-        self._pd_torques = np.zeros(6)
+        self._commanded_pos_rev = np.zeros(6)
+        self._commanded_vel_ff_rps = np.zeros(6)
+        self._commanded_torque_ff_Nm = np.zeros(6)
 
     # ------------------------------------------------------------------
     # Telemetry
@@ -382,12 +323,11 @@ class ControlLoop:
     def _publish_telemetry(self, dt_actual: float) -> None:
         """Send telemetry to the bridge."""
         msg = make_telemetry(
-            leg_positions=self._commanded_leg_positions.tolist(),
-            leg_velocities=self._commanded_leg_velocities.tolist(),
-            commanded_torques=self._commanded_torques.tolist(),
+            leg_positions=self._commanded_pos_rev.tolist(),
+            leg_velocities=self._commanded_vel_ff_rps.tolist(),
+            commanded_torques=self._commanded_torque_ff_Nm.tolist(),
             loop_dt_s=dt_actual,
-            ff_torques=self._ff_torques.tolist(),
-            pd_torques=self._pd_torques.tolist(),
+            ff_torques=self._commanded_torque_ff_Nm.tolist(),
         )
         self.ipc.send_telemetry(msg)
 

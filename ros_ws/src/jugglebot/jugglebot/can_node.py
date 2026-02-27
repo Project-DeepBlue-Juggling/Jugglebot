@@ -87,7 +87,6 @@ class CanInterfaceNode(Node):
         self.legs_target_position = [None] * odrive.NUM_LEGS
         self.legs_target_reached = [False] * odrive.NUM_LEGS
         self.stowed_due_to_error = False
-        self._torque_mode_active = False  # True when legs are in TORQUE+PASSTHROUGH
         self._shutdown_deadline = float('inf')  # Set to finite value during shutdown
         self._encoder_data_received = [False] * odrive.NUM_LEGS  # Track whether real encoder data has arrived
 
@@ -124,7 +123,6 @@ class CanInterfaceNode(Node):
 
         # ── Subscribers ────────────────────────────────────────
         self.create_subscription(Float64MultiArray, 'leg_lengths_topic', self._sub_leg_lengths, 10)
-        self.create_subscription(Float64MultiArray, 'leg_torques_topic', self._sub_leg_torques, 10)
         self.create_subscription(SetMotorVelCurrLimitsMessage, 'set_motor_vel_curr_limits', self._sub_vel_curr_limits, 10)
         self.create_subscription(SetTrapTrajLimitsMessage, 'set_leg_trap_traj_limits', self._sub_trap_traj_limits, 10)
         self.create_subscription(String, 'control_mode_topic', self._sub_control_mode, 10)
@@ -413,9 +411,8 @@ class CanInterfaceNode(Node):
 
         self._set_vel_curr_limits()
         for axis_id in odrive.LEG_AXES:
-            self.bus.send(odrive.encode_set_controller_mode(axis_id, 'POSITION', 'TRAP_TRAJ'))
+            self.bus.send(odrive.encode_set_controller_mode(axis_id, 'POSITION', 'PASSTHROUGH'))
             time.sleep(0.005)
-        self._set_trap_traj_limits()
         self.bus.send(odrive.encode_set_controller_mode(odrive.HAND_AXIS, 'POSITION', 'PASSTHROUGH'))
         for axis_id in odrive.JUGGLEBOT_AXES:
             self.bus.send(odrive.encode_set_state(axis_id, requested_state))
@@ -445,18 +442,10 @@ class CanInterfaceNode(Node):
         """Send a position command to an axis, with clipping and leg inversion."""
         setpoint = odrive.clip_position(axis_id, setpoint, self.get_logger())
         if axis_id in odrive.LEG_AXES:
-            setpoint = -setpoint  # Legs: ODrive -ve = extension
+            setpoint = -setpoint    # Legs: ODrive -ve = extension
+            vel_ff = -vel_ff        # Same inversion for velocity feedforward
+            torque_ff = -torque_ff  # Same inversion for torque feedforward
         self.bus.send(odrive.encode_set_input_pos(axis_id, setpoint, vel_ff, torque_ff))
-
-    def _send_torque_command(self, axis_id, torque_Nm):
-        """Send a torque command to a leg axis with inversion.
-
-        Jugglebot convention: positive torque = extension (push platform up).
-        ODrive convention for legs: negative = extension.
-        """
-        if axis_id in odrive.LEG_AXES:
-            torque_Nm = -torque_Nm  # Same inversion as position commands
-        self.bus.send(odrive.encode_set_input_torque(axis_id, torque_Nm))
 
     # ═══════════════════════════════════════════════════════════
     # Service callbacks
@@ -622,35 +611,32 @@ class CanInterfaceNode(Node):
     # ═══════════════════════════════════════════════════════════
 
     def _sub_leg_lengths(self, msg):
-        """Handle platform movement commands (6 leg positions)."""
-        if self._torque_mode_active:
-            return  # Position commands ignored in torque mode
-        positions = msg.data
-        if len(positions) != odrive.NUM_LEGS:
+        """Handle platform movement commands.
+
+        Accepts 6 values (positions only) or 18 values (6 pos + 6 vel_ff + 6 torque_ff).
+        """
+        data = msg.data
+        n = len(data)
+        if n == odrive.NUM_LEGS:
+            positions = data
+            vel_ffs = [0] * odrive.NUM_LEGS
+            torque_ffs = [0] * odrive.NUM_LEGS
+        elif n == 3 * odrive.NUM_LEGS:
+            positions = data[:6]
+            vel_ffs = data[6:12]
+            torque_ffs = data[12:18]
+        else:
             self.get_logger().error(
-                f"Leg length command has {len(positions)} elements, expected {odrive.NUM_LEGS}")
+                f"Leg command has {n} elements, expected {odrive.NUM_LEGS} or {3 * odrive.NUM_LEGS}")
             return
-        if any(math.isnan(p) or math.isinf(p) for p in positions):
-            self.get_logger().error("Leg length command contains NaN or Inf — ignored")
+        if any(math.isnan(v) or math.isinf(v) for v in data):
+            self.get_logger().error("Leg command contains NaN or Inf — ignored")
             return
         self.legs_target_position = list(positions)
-        for axis_id, setpoint in enumerate(positions):
-            self._send_position_target(axis_id, setpoint)
-
-    def _sub_leg_torques(self, msg):
-        """Handle torque commands (6 leg torques in Nm, Jugglebot convention)."""
-        if not self._torque_mode_active:
-            return  # Torque commands ignored in position mode
-        torques = msg.data
-        if len(torques) != odrive.NUM_LEGS:
-            self.get_logger().error(
-                f"Leg torque command has {len(torques)} elements, expected {odrive.NUM_LEGS}")
-            return
-        if any(math.isnan(t) or math.isinf(t) for t in torques):
-            self.get_logger().error("Leg torque command contains NaN or Inf — ignored")
-            return
-        for axis_id, torque in enumerate(torques):
-            self._send_torque_command(axis_id, torque)
+        for axis_id in range(odrive.NUM_LEGS):
+            self._send_position_target(axis_id, positions[axis_id],
+                                       vel_ff=vel_ffs[axis_id],
+                                       torque_ff=torque_ffs[axis_id])
 
     def _sub_vel_curr_limits(self, msg):
         if msg.legs_vel_limit > 0:
@@ -675,8 +661,8 @@ class CanInterfaceNode(Node):
     def _sub_control_mode(self, msg):
         """Handle control mode changes from the orchestrator.
 
-        Valid modes: '', 'ERROR', 'SPACEMOUSE', 'SHELL',
-                     'TORQUE_SPACEMOUSE', 'TORQUE_SHELL'.
+        Valid modes: '', 'ERROR', 'SPACEMOUSE', 'SHELL'.
+        Legs always remain in POSITION+PASSTHROUGH controller mode.
         """
         try:
             states = self.motors.last_states
@@ -686,37 +672,11 @@ class CanInterfaceNode(Node):
 
             if msg.data == 'ERROR':
                 self.get_logger().error("Error state detected. Stowing platform.")
-                self._torque_mode_active = False
                 self._gently_move_to_setpoint(0.0, deactivating=True)
                 self.stowed_due_to_error = True
 
-            # Torque control modes: TORQUE+PASSTHROUGH for legs
-            elif msg.data in ('TORQUE_SPACEMOUSE', 'TORQUE_SHELL'):
-                self.get_logger().info(f'Control mode: {msg.data} (torque)')
-                self._torque_mode_active = True
-                # Switch legs to TORQUE+PASSTHROUGH controller mode
-                for axis_id in odrive.LEG_AXES:
-                    self.bus.send(odrive.encode_set_controller_mode(
-                        axis_id, 'TORQUE', 'PASSTHROUGH'))
-                    time.sleep(0.005)
-                # Ensure legs are in CLOSED_LOOP state
-                if not legs_closed:
-                    for axis_id in odrive.LEG_AXES:
-                        self.bus.send(odrive.encode_set_state(axis_id, 'CLOSED_LOOP'))
-                        time.sleep(0.005)
-                if hand_closed:
-                    self.bus.send(odrive.encode_set_state(odrive.HAND_AXIS, 'IDLE'))
-
-            # Position control modes: POSITION+TRAP_TRAJ for legs
             elif msg.data in ('SPACEMOUSE', 'SHELL'):
                 self.get_logger().info(f'Control mode: {msg.data}')
-                if self._torque_mode_active:
-                    # Switch back to POSITION+TRAP_TRAJ
-                    self._torque_mode_active = False
-                    for axis_id in odrive.LEG_AXES:
-                        self.bus.send(odrive.encode_set_controller_mode(
-                            axis_id, 'POSITION', 'TRAP_TRAJ'))
-                        time.sleep(0.005)
                 if not legs_closed:
                     for axis_id in odrive.LEG_AXES:
                         self.bus.send(odrive.encode_set_state(axis_id, 'CLOSED_LOOP'))
@@ -725,17 +685,10 @@ class CanInterfaceNode(Node):
                     self.bus.send(odrive.encode_set_state(odrive.HAND_AXIS, 'IDLE'))
 
             elif msg.data == '':
-                if self._torque_mode_active:
-                    # Exiting active state: restore POSITION+TRAP_TRAJ
-                    self._torque_mode_active = False
-                    for axis_id in odrive.LEG_AXES:
-                        self.bus.send(odrive.encode_set_controller_mode(
-                            axis_id, 'POSITION', 'TRAP_TRAJ'))
-                        time.sleep(0.005)
+                pass  # No action needed — legs stay in position mode
 
             else:
                 self.get_logger().warning(f"Unknown control mode: {msg.data}. Stowing.")
-                self._torque_mode_active = False
                 self._gently_move_to_setpoint(0.0, deactivating=True)
 
         except Exception as e:
@@ -1076,6 +1029,14 @@ class CanInterfaceNode(Node):
             if all(s.pos_estimate < 0.1 for s in states[:odrive.NUM_LEGS]):
                 self.get_logger().info("Legs already stowed.")
                 return True
+
+        # Temporarily switch legs to TRAP_TRAJ for the slow move (trajectory_done
+        # flag is only set by TRAP_TRAJ mode).  _setup_odrives_steps restores
+        # PASSTHROUGH on activate; on deactivate the legs go to IDLE anyway.
+        for axis_id in odrive.LEG_AXES:
+            self.bus.send(odrive.encode_set_controller_mode(axis_id, 'POSITION', 'TRAP_TRAJ'))
+            time.sleep(0.005)
+        self._set_trap_traj_limits()
 
         if not all(s.current_state == _CL for s in states[:odrive.NUM_LEGS]):
             for axis_id in odrive.LEG_AXES:

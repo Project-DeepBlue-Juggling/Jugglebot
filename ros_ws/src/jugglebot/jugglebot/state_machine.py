@@ -33,8 +33,6 @@ class ActiveMode(Enum):
     """Sub-modes within the ACTIVE state."""
     SPACEMOUSE = 'SPACEMOUSE'
     SHELL = 'SHELL'
-    TORQUE_SPACEMOUSE = 'TORQUE_SPACEMOUSE'
-    TORQUE_SHELL = 'TORQUE_SHELL'
 
 
 # ── Timeouts ─────────────────────────────────────────────────────
@@ -74,7 +72,6 @@ class Context:
 
         # ── Shared state ──────────────────────────────────────────
         self.active_mode = ActiveMode.SPACEMOUSE
-        self.use_torque = False  # Torque mode flag (toggled via commands)
         self.error_severity = None
         self.boot_timed_out = False
 
@@ -267,13 +264,6 @@ class ActiveHandler(StateHandler):
         ctx.request = 'activate'
         ctx.operation_result = None
 
-    def _resolve_control_mode(self, ctx):
-        """Resolve the control mode string from base mode + torque flag."""
-        base = ctx.active_mode.value  # 'SPACEMOUSE' or 'SHELL'
-        if ctx.use_torque:
-            return f'TORQUE_{base}'
-        return base
-
     def execute(self, ctx):
         # Wait for activation to complete
         if not self._activated:
@@ -282,20 +272,14 @@ class ActiveHandler(StateHandler):
             if ctx.operation_result is False:
                 return RobotState.FAULT
             self._activated = True
-            ctx.control_mode = self._resolve_control_mode(ctx)
+            ctx.control_mode = ctx.active_mode.value
 
         cmd = ctx.consume_command()
         if cmd == 'deactivate':
             return RobotState.IDLE
         elif cmd in ('spacemouse', 'shell'):
             ctx.active_mode = ActiveMode(cmd.upper())
-            ctx.control_mode = self._resolve_control_mode(ctx)
-        elif cmd == 'torque_mode':
-            ctx.use_torque = True
-            ctx.control_mode = self._resolve_control_mode(ctx)
-        elif cmd == 'position_mode':
-            ctx.use_torque = False
-            ctx.control_mode = self._resolve_control_mode(ctx)
+            ctx.control_mode = ctx.active_mode.value
         # Other commands silently discarded (already logged on receipt)
 
         return None
@@ -303,7 +287,6 @@ class ActiveHandler(StateHandler):
     def on_exit(self, ctx):
         ctx.request = 'deactivate'
         ctx.control_mode = ''
-        ctx.use_torque = False
 
 
 class FaultHandler(StateHandler):

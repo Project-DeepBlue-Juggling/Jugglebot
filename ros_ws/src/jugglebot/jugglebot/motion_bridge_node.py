@@ -5,11 +5,11 @@ layer used by the control process.
 
 ROS2 → IPC:
   - PlatformPoseCommand (from spacemouse, catch nodes, etc.) → TargetState
-  - RobotState (from CAN node) → MotorFeedback
   - control_mode_topic (from orchestrator) → ModeCommand
 
 IPC → ROS2:
-  - Telemetry (from control loop) → leg_lengths_topic (for CAN node)
+  - Telemetry (from control loop) → leg_lengths_topic (18 values:
+    6 pos_rev + 6 vel_ff_rps + 6 torque_ff_Nm for CAN node's set_input_pos)
 """
 
 from __future__ import annotations
@@ -18,12 +18,11 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float64MultiArray, String
-from jugglebot_interfaces.msg import PlatformPoseCommand, RobotState
+from jugglebot_interfaces.msg import PlatformPoseCommand
 
 from jugglebot.motion.ipc import (
     BridgeIPC,
     make_mode_command,
-    make_motor_feedback,
     make_target_state,
 )
 
@@ -51,11 +50,6 @@ class MotionBridgeNode(Node):
             PlatformPoseCommand, 'platform_pose_topic',
             self._on_pose_command, 10)
 
-        # Robot state from CAN node (motor positions/velocities/currents)
-        self.create_subscription(
-            RobotState, 'robot_state',
-            self._on_robot_state, 10)
-
         # Control mode from orchestrator
         self.create_subscription(
             String, 'control_mode_topic',
@@ -65,13 +59,13 @@ class MotionBridgeNode(Node):
         # ROS2 publishers (IPC → ROS2)
         # ------------------------------------------------------------------
 
-        # Leg lengths for the CAN node (position mode)
+        # Leg commands for the CAN node (18 values: pos + vel_ff + torque_ff)
         self._leg_pub = self.create_publisher(
             Float64MultiArray, 'leg_lengths_topic', 10)
 
-        # Leg torques for the CAN node (torque mode)
+        # Feedforward torques (monitoring/diagnostics only)
         self._torque_pub = self.create_publisher(
-            Float64MultiArray, 'leg_torques_topic', 10)
+            Float64MultiArray, 'leg_torques_diagnostic', 10)
 
         # ------------------------------------------------------------------
         # Timer to poll IPC telemetry
@@ -103,40 +97,14 @@ class MotionBridgeNode(Node):
         target = make_target_state(pos=pos, rot_quat=quat)
         self.ipc.send_target(target)
 
-    def _on_robot_state(self, msg: RobotState) -> None:
-        """Extract motor feedback from RobotState and forward to control process."""
-        if not msg.motor_states:
-            return
-
-        # Extract leg motor data (axes 0-5)
-        n = min(6, len(msg.motor_states))
-        positions = [0.0] * 6
-        velocities = [0.0] * 6
-        currents = [0.0] * 6
-
-        for i in range(n):
-            ms = msg.motor_states[i]
-            positions[i] = float(ms.pos_estimate)
-            velocities[i] = float(ms.vel_estimate)
-            currents[i] = float(ms.iq_measured)
-
-        fb = make_motor_feedback(
-            positions=positions,
-            velocities=velocities,
-            currents=currents,
-        )
-        self.ipc.send_motor_feedback(fb)
-
     def _on_control_mode(self, msg: String) -> None:
         """Translate control mode changes to IPC mode commands."""
         mode = msg.data
         prev = self._current_control_mode
         self._current_control_mode = mode
 
-        if mode in ('SPACEMOUSE', 'SHELL',
-                   'TORQUE_SPACEMOUSE', 'TORQUE_SHELL'):
-            # Strip TORQUE_ prefix for publisher gating
-            self._active_publisher = mode.replace('TORQUE_', '')
+        if mode in ('SPACEMOUSE', 'SHELL'):
+            self._active_publisher = mode
             if prev != mode:
                 cmd = make_mode_command('enable')
                 self.ipc.send_mode_command(cmd)
@@ -163,17 +131,21 @@ class MotionBridgeNode(Node):
         if telem is None:
             return
 
-        # Publish leg positions to the CAN node (always, for both modes)
+        positions = telem.get('leg_pos', [0.0] * 6)
+        velocities = telem.get('leg_vel', [0.0] * 6)
+        torques = telem.get('cmd_torques', [0.0] * 6)
+
+        # Publish unified command to CAN node: 6 pos + 6 vel_ff + 6 torque_ff
         leg_msg = Float64MultiArray()
-        leg_msg.data = telem.get('leg_pos', [0.0] * 6)
+        leg_msg.data = list(positions) + list(velocities) + list(torques)
         self._leg_pub.publish(leg_msg)
 
-        # Publish commanded torques to the CAN node
-        torques = telem.get('cmd_torques')
-        if torques:
-            torque_msg = Float64MultiArray()
-            torque_msg.data = torques
-            self._torque_pub.publish(torque_msg)
+        # Publish feedforward torques on diagnostic topic (monitoring only)
+        ff_torques = telem.get('ff_torques')
+        if ff_torques:
+            diag_msg = Float64MultiArray()
+            diag_msg.data = ff_torques
+            self._torque_pub.publish(diag_msg)
 
     # ------------------------------------------------------------------
     # Shutdown
