@@ -233,8 +233,8 @@ elapsedMicros trajClock;  // runs only when trajectory active
 bool trajActive = false;
 size_t nextIdx = 0;
 uint32_t nextSendUs = 0;
-float vel_scale = InputScale::vel;           // Scaling factor as set on the ODrive `input_vel_scale`
-float tor_scale = InputScale::tor;           // Scaling factor as set on the ODrive `input_torque_scale`
+float vel_scale = InputScale::hand_vel;      // Scaling factor as set on the ODrive `input_vel_scale`
+float tor_scale = InputScale::hand_tor;      // Scaling factor as set on the ODrive `input_torque_scale`
 std::vector<CAN_message_t> packedMsgs;      // Pre-packed CAN frames (to tighten broadcasting timing)
 std::vector<uint64_t> sendUs;               // Absolute μs after traj start for each CAN frame
 constexpr uint32_t SAFETY_GAP_US = TeensyOp::SAFETY_GAP_US;  // min pause after smooth-move before main trajectory begins

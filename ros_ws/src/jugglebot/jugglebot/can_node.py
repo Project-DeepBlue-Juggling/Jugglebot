@@ -378,8 +378,8 @@ class CanInterfaceNode(Node):
             pos, vel_ff, tor_ff = struct.unpack('<fhh', msg.data)
             self._last_hand_cmd = {
                 'pos': pos,
-                'vel': vel_ff / proto.INPUT_SCALE_VEL,
-                'tor': tor_ff / proto.INPUT_SCALE_TOR,
+                'vel': vel_ff / proto.INPUT_SCALE_HAND_VEL,
+                'tor': tor_ff / proto.INPUT_SCALE_HAND_TOR,
             }
         except struct.error:
             pass
@@ -438,14 +438,27 @@ class CanInterfaceNode(Node):
         self.bus.send(odrive.encode_set_pos_gain(odrive.HAND_AXIS, self.hand_gains['pos_gain']))
         self.bus.send(odrive.encode_set_vel_gains(odrive.HAND_AXIS, self.hand_gains['vel_gain'], self.hand_gains['vel_int_gain']))
 
-    def _send_position_target(self, axis_id, setpoint, vel_ff=0, torque_ff=0):
-        """Send a position command to an axis, with clipping and leg inversion."""
+    def _send_position_target(self, axis_id, setpoint, vel_ff=0.0, torque_ff=0.0):
+        """Send a position command to an axis, with clipping, leg inversion, and int16 scaling.
+
+        vel_ff and torque_ff are in physical units (rev/s, Nm).  This method
+        converts them to int16 using the per-axis-group scale factors from
+        protocol_config (must match the ODrive's input_vel_scale / input_torque_scale).
+        """
         setpoint = odrive.clip_position(axis_id, setpoint, self.get_logger())
         if axis_id in odrive.LEG_AXES:
             setpoint = -setpoint    # Legs: ODrive -ve = extension
             vel_ff = -vel_ff        # Same inversion for velocity feedforward
             torque_ff = -torque_ff  # Same inversion for torque feedforward
-        self.bus.send(odrive.encode_set_input_pos(axis_id, setpoint, vel_ff, torque_ff))
+            vel_ff_int = int(round(vel_ff * proto.INPUT_SCALE_LEG_VEL))
+            torque_ff_int = int(round(torque_ff * proto.INPUT_SCALE_LEG_TOR))
+        else:
+            vel_ff_int = int(round(vel_ff * proto.INPUT_SCALE_HAND_VEL))
+            torque_ff_int = int(round(torque_ff * proto.INPUT_SCALE_HAND_TOR))
+        # Clamp to int16 range
+        vel_ff_int = max(-32768, min(32767, vel_ff_int))
+        torque_ff_int = max(-32768, min(32767, torque_ff_int))
+        self.bus.send(odrive.encode_set_input_pos(axis_id, setpoint, vel_ff_int, torque_ff_int))
 
     # ═══════════════════════════════════════════════════════════
     # Service callbacks

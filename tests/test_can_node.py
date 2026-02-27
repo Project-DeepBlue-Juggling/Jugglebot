@@ -530,10 +530,10 @@ class TestHandleHandInputPos:
         msg = can.Message(arbitration_id=node._hand_input_pos_id, data=data)
         node._handle_hand_input_pos(msg)
         assert node._last_hand_cmd['vel'] == pytest.approx(
-            vel_ff_raw / proto.INPUT_SCALE_VEL
+            vel_ff_raw / proto.INPUT_SCALE_HAND_VEL
         )
         assert node._last_hand_cmd['tor'] == pytest.approx(
-            tor_ff_raw / proto.INPUT_SCALE_TOR
+            tor_ff_raw / proto.INPUT_SCALE_HAND_TOR
         )
 
 

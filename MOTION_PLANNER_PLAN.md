@@ -393,8 +393,8 @@ Each phase has explicit exit criteria. Do not begin the next phase until the cur
 
 | Test | Result | Notes |
 |------|--------|-------|
-| Loop timing | SKIP | Requires pyzmq/msgpack (Jetson only) — **still pending** |
-| IPC latency | SKIP | Requires pyzmq/msgpack (Jetson only) — **still pending** |
+| Loop timing | PASS | 500 Hz target: mean dt 2.066 ms, p99 jitter 0.093 ms (gate: < 4.0 ms), max dt 4.849 ms, std 0.055 ms. 4843 cycles in 10s. Tested on Jetson (2026-02-27) |
+| IPC latency | PASS | 100/100 messages received. Median 0.755 ms, mean 0.763 ms, p99 0.820 ms. Well under one control cycle (2 ms). Tested on Jetson (2026-02-27) |
 | Force conversion (round-trip) | PASS (<1e-14) | Round-trip force/torque; spool radii ~11 mm |
 
 ### Phase 2 verification results — hardware bench tests (2026-02-25)
@@ -424,9 +424,7 @@ All four isolated-leg bench tests passed on axis 0 using `tools/single_leg_test.
 
 7. **Motor Kt validated** (2026-02-25): Multi-weight calibration measured Kt = 0.0624 Nm/A (from slope of iq vs tau at 4 loads, R^2=0.994). This is within 2.0% of the datasheet estimate Kt = 60/(2*pi*150) = 0.0637 Nm/A, confirming the spool radius derivation from `mm_to_rev` is correct. The measured Kt can be used directly for `torque_ff` computation.
 
-8. **Phase 2 software-only tests still pending on Jetson**: Loop timing and IPC latency tests require pyzmq/msgpack and must pass on the Jetson before the control loop is used in production. These were not blocking for Stage A (standalone harness, no IPC), but **must be completed before Stage B** if using the ROS2 control loop.
-
-9. **Control architecture decision** (2026-02-27): Switched from custom torque control (Python-side PD at 500 Hz) to ODrive position control with feedforward (`set_input_pos` with `vel_ff` + `torque_ff`). The dynamics model is expressed through feedforward terms, while the ODrive's 8 kHz cascaded PID handles feedback. This was motivated by: (a) the ODrive's inner loops running 16× faster than Python can close a feedback loop, (b) fail-safe behaviour on communication loss (hold position vs. continue applying force), (c) the limited actuator stroke (280 mm) making torque-mode runaway a real risk, and (d) the trajectory planner's outputs (position, velocity, acceleration) mapping directly to the `set_input_pos` fields. The Phase 2 bench tests (torque-mode) remain valid — they validated CAN, encoder, and force conversion fundamentals that are independent of the production control mode. Phase 3 Stage A picks up position-control-specific validation.
+8. **Control architecture decision** (2026-02-27): Switched from custom torque control (Python-side PD at 500 Hz) to ODrive position control with feedforward (`set_input_pos` with `vel_ff` + `torque_ff`). The dynamics model is expressed through feedforward terms, while the ODrive's 8 kHz cascaded PID handles feedback. This was motivated by: (a) the ODrive's inner loops running 16× faster than Python can close a feedback loop, (b) fail-safe behaviour on communication loss (hold position vs. continue applying force), (c) the limited actuator stroke (280 mm) making torque-mode runaway a real risk, and (d) the trajectory planner's outputs (position, velocity, acceleration) mapping directly to the `set_input_pos` fields. The Phase 2 bench tests (torque-mode) remain valid — they validated CAN, encoder, and force conversion fundamentals that are independent of the production control mode. Phase 3 Stage A picks up position-control-specific validation.
 
 ### Phase 3 Stage A verification results — hardware bench tests (2026-02-27)
 

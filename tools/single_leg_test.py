@@ -91,10 +91,11 @@ SAFE_CURRENT_LIMIT_A = hw.ODRIVE_LEG_CURR_LIMIT_A * 0.5  # 10A
 # Motor torque constant from Phase 2 multi-weight bench test (R^2=0.994)
 KT_MEASURED = 0.0624  # Nm/A (measured), vs 0.0637 Nm/A datasheet
 
-# ODrive leg feedforward int16 scaling (from odrive_pro_config.json:
-# input_vel_scale=1000, input_torque_scale=1000).
-# int16_value = real_value * LEG_FF_SCALE
-LEG_FF_SCALE = 1000  # 0.001 per LSB for both vel_ff (rev/s) and torque_ff (Nm)
+# ODrive leg feedforward int16 scaling — from protocol_config (source of truth).
+# Must match the ODrive firmware config: axis0.config.can.input_vel_scale / input_torque_scale.
+# int16_value = real_value * scale
+LEG_VEL_FF_SCALE = proto.INPUT_SCALE_LEG_VEL   # 1000 (0.001 rev/s per LSB)
+LEG_TOR_FF_SCALE = proto.INPUT_SCALE_LEG_TOR   # 1000 (0.001 Nm per LSB)
 
 # Spool geometry for force conversion (standard Jugglebot legs, from config)
 MM_TO_REV = np.array(hw.GEOM_MM_TO_REV, dtype=np.float64)
@@ -1090,7 +1091,7 @@ def test_vel_ff(harness: SingleLegTestHarness):
       5. Compare RMS errors -- vel_ff should reduce tracking lag
 
     Ramp direction: extension (negative raw).
-    vel_ff int16 = int(-speed_rps * LEG_FF_SCALE) for extension direction.
+    vel_ff int16 = int(-speed_rps * LEG_VEL_FF_SCALE) for extension direction.
     """
     print("\n" + "=" * 60)
     print("STAGE A2: Velocity feedforward comparison")
@@ -1103,7 +1104,7 @@ def test_vel_ff(harness: SingleLegTestHarness):
     LOOP_DT = 0.01  # 100 Hz command rate
 
     ramp_speed_rps = RAMP_SPEED_MM_S * mm_to_rev_axis
-    vel_ff_int16 = int(-ramp_speed_rps * LEG_FF_SCALE)  # negative = extension
+    vel_ff_int16 = int(-ramp_speed_rps * LEG_VEL_FF_SCALE)  # negative = extension
     vel_ff_int16 = max(-32767, min(32767, vel_ff_int16))
 
     print(f"  Ramp: {RAMP_DISTANCE_MM:.0f} mm at {RAMP_SPEED_MM_S:.0f} mm/s "
@@ -1300,7 +1301,7 @@ def test_torque_ff(harness: SingleLegTestHarness):
               f"check weight/orientation/Kt")
 
     # Encode torque_ff as int16
-    torque_ff_int16 = int(torque_ff_Nm * LEG_FF_SCALE)
+    torque_ff_int16 = int(torque_ff_Nm * LEG_TOR_FF_SCALE)
     torque_ff_int16 = max(-32767, min(32767, torque_ff_int16))
     print(f"\n  torque_ff: {torque_ff_Nm:.4f} Nm, "
           f"int16: {torque_ff_int16}")

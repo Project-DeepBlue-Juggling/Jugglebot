@@ -151,8 +151,10 @@ namespace HeartbeatEncoding {
 
 // ODrive input scaling (vel_ff and torque_ff are sent as int16 * scale)
 namespace InputScale {
-  constexpr float vel = 100.0f;
-  constexpr float tor = 100.0f;
+  constexpr float hand_vel = 100.0f;
+  constexpr float hand_tor = 100.0f;
+  constexpr float leg_vel = 1000.0f;
+  constexpr float leg_tor = 1000.0f;
 }
 
 // ==========================================================================

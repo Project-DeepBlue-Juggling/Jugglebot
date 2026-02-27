@@ -130,8 +130,11 @@ HEARTBEAT_PITCH_RES_DEG = 0.002
 HEARTBEAT_HAND_RES_MM = 0.01
 
 # ODrive input scaling (vel_ff and torque_ff are sent as int16 * scale)
-INPUT_SCALE_VEL = 100.0
-INPUT_SCALE_TOR = 100.0
+INPUT_SCALE_HAND_VEL = 100.0
+INPUT_SCALE_HAND_TOR = 100.0
+INPUT_SCALE_LEG_VEL = 1000.0
+INPUT_SCALE_LEG_TOR = 1000.0
+
 
 # ============================================================================
 # SDO — Arbitrary Parameter Access

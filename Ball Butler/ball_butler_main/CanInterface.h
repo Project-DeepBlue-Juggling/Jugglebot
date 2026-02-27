@@ -334,8 +334,8 @@ private:
 
   static constexpr uint8_t ALPHA_SHIFT_ = 3;
   static constexpr uint32_t PRINT_PERIOD_US_ = CanCfg::SYNC_STATS_PRINT_US;
-  static constexpr float kVelScale_ = InputScale::vel;
-  static constexpr float kTorScale_ = InputScale::tor;
+  static constexpr float kVelScale_ = InputScale::hand_vel;
+  static constexpr float kTorScale_ = InputScale::hand_tor;
 
   // ============================================================================
   // Static Members

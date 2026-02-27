@@ -173,7 +173,8 @@ def generate_cpp(cfg: dict) -> str:
     lines.append("")
     lines.append("// ODrive input scaling (vel_ff and torque_ff are sent as int16 * scale)")
     lines.append("namespace InputScale {")
-    for name, val in cfg["encoding"]["input_scales"].items():
+    scales = cfg["encoding"]["input_scales"]
+    for name, val in scales.items():
         lines.append(f"  constexpr float {name} = {float(val)}f;")
     lines.append("}")
 
@@ -307,6 +308,7 @@ def generate_python(cfg: dict) -> str:
     lines.append("# ODrive input scaling (vel_ff and torque_ff are sent as int16 * scale)")
     for name, val in cfg["encoding"]["input_scales"].items():
         lines.append(f"INPUT_SCALE_{name.upper()} = {float(val)}")
+    lines.append("")
 
     # SDO
     lines += py_section("SDO — Arbitrary Parameter Access")
