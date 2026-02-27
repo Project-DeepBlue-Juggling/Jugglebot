@@ -96,9 +96,15 @@ KT_MEASURED = 0.0624  # Nm/A (measured), vs 0.0637 Nm/A datasheet
 # int16_value = real_value * LEG_FF_SCALE
 LEG_FF_SCALE = 1000  # 0.001 per LSB for both vel_ff (rev/s) and torque_ff (Nm)
 
-# Spool geometry for force conversion
+# Spool geometry for force conversion (standard Jugglebot legs, from config)
 MM_TO_REV = np.array(hw.GEOM_MM_TO_REV, dtype=np.float64)
 SPOOL_RADIUS_MM = 1.0 / (2.0 * np.pi * MM_TO_REV)  # per-leg, ~11 mm
+
+# Test leg measured geometry — this bench leg is NOT a standard Jugglebot leg.
+# One motor revolution extends the leg by 71.5708 mm (measured).
+TEST_LEG_MM_PER_REV = 71.5708
+TEST_LEG_MM_TO_REV = 1.0 / TEST_LEG_MM_PER_REV          # ~0.01397 rev/mm
+TEST_LEG_SPOOL_RADIUS_MM = TEST_LEG_MM_PER_REV / (2.0 * np.pi)  # ~11.39 mm
 
 
 def arb_id(axis_id: int, command_name: str) -> int:
@@ -1001,7 +1007,7 @@ def test_pos_smoke(harness: SingleLegTestHarness):
     print("STAGE A1: Position control smoke test")
     print("=" * 60)
 
-    mm_to_rev_axis = MM_TO_REV[harness.axis_id]
+    mm_to_rev_axis = TEST_LEG_MM_TO_REV
     SETTLE_TIME_S = 2.0
     ACCURACY_MM = 1.0     # per-step accuracy
     RETURN_MM = 0.5       # net return accuracy
@@ -1090,7 +1096,7 @@ def test_vel_ff(harness: SingleLegTestHarness):
     print("STAGE A2: Velocity feedforward comparison")
     print("=" * 60)
 
-    mm_to_rev_axis = MM_TO_REV[harness.axis_id]
+    mm_to_rev_axis = TEST_LEG_MM_TO_REV
     RAMP_DISTANCE_MM = 40.0
     RAMP_SPEED_MM_S = 10.0
     RAMP_DURATION_S = RAMP_DISTANCE_MM / RAMP_SPEED_MM_S  # 4 seconds
@@ -1210,8 +1216,8 @@ def test_torque_ff(harness: SingleLegTestHarness):
     print("STAGE A3: Gravity torque_ff validation")
     print("=" * 60)
 
-    spool_radius_m = SPOOL_RADIUS_MM[harness.axis_id] / 1000.0
-    mm_to_rev_axis = MM_TO_REV[harness.axis_id]
+    spool_radius_m = TEST_LEG_SPOOL_RADIUS_MM / 1000.0
+    mm_to_rev_axis = TEST_LEG_MM_TO_REV
 
     print(f"\n  This test validates the torque_ff feedforward field by comparing")
     print(f"  ODrive current draw with and without gravity compensation.")
