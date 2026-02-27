@@ -52,6 +52,7 @@ class Context:
     def __init__(self):
         # ── Inputs (set by orchestrator from /robot_state) ────────
         self.all_heartbeats = False          # All 7 Jugglebot axes reporting
+        self.firmware_validated = False       # All ODrives report consistent firmware
         self.encoder_search_complete = False
         self.is_homed = False
         self.errors = []                     # Error strings from /robot_state
@@ -168,7 +169,7 @@ class StateMachine:
 # ══════════════════════════════════════════════════════════════════
 
 class BootHandler(StateHandler):
-    """Wait for heartbeats from all ODrive axes."""
+    """Wait for heartbeats and firmware validation from all ODrive axes."""
 
     def __init__(self):
         self._entry_time = 0.0
@@ -186,6 +187,17 @@ class BootHandler(StateHandler):
                 ctx.boot_timed_out = True
                 return RobotState.FAULT
             return None
+
+        # Wait for firmware version check to complete.
+        # On mismatch, the orchestrator forces FAULT via the error path
+        # before this timeout fires.  This timeout only covers the edge
+        # case where Get_Version responses never arrive.
+        if not ctx.firmware_validated:
+            if time.time() - self._entry_time > BOOT_TIMEOUT_S:
+                ctx.boot_timed_out = True
+                return RobotState.FAULT
+            return None
+
         # Skip ahead if already homed (e.g., recovery from transient FAULT)
         if ctx.is_homed:
             return RobotState.IDLE

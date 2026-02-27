@@ -10,6 +10,8 @@ bool has_fatal_odrive_error       # Fatal ODrive error (axis disarmed in CLOSED_
 bool has_fatal_can_error          # CAN bus disconnection or restoration failure
 bool has_undervoltage             # DC bus undervoltage detected (e.g., E-stop hit)
 
+bool firmware_validated       # All ODrive axes report consistent firmware/hardware versions
+
 bool encoder_search_complete # Has the encoder search been run on every leg?
 bool is_homed                # Have the ODrives been homed since the last bootup?
 bool levelling_complete      # Has the platform been levelled since the last bootup?

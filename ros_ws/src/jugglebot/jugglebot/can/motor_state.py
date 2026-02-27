@@ -6,7 +6,7 @@ Tracks heartbeat reception, error flags, and encoder search status.
 
 import threading
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from jugglebot_interfaces.msg import MotorStateSingle
 import jugglebot.protocol_config as proto
@@ -69,6 +69,21 @@ class MotorStateTracker:
         self._last_heartbeat_time: Dict[int, float] = {}
         self._first_heartbeat_received: bool = False
 
+        # BB heartbeat tracking (separate from Jugglebot — BB is optional)
+        self.received_bb_heartbeats: Dict[int, bool] = {
+            axis_id: False for axis_id in BB_AXES
+        }
+
+        # Firmware version tracking
+        self.firmware_versions: Dict[int, Optional[Tuple[int, int, int]]] = {
+            aid: None for aid in ALL_AXES
+        }
+        self.hardware_versions: Dict[int, Optional[Tuple[int, int, int]]] = {
+            aid: None for aid in ALL_AXES
+        }
+        self.firmware_validated: bool = False
+        self.firmware_mismatch_error: Optional[str] = None
+
     # ── State access ───────────────────────────────────────────
 
     def update(self, axis_id: int, **fields):
@@ -114,6 +129,8 @@ class MotorStateTracker:
         self._last_heartbeat_time[axis_id] = time.time()
         if axis_id in self.received_heartbeats:
             self.received_heartbeats[axis_id] = True
+        if axis_id in self.received_bb_heartbeats:
+            self.received_bb_heartbeats[axis_id] = True
         if not self._first_heartbeat_received and axis_id in JUGGLEBOT_AXES:
             self._first_heartbeat_received = True
 
@@ -137,6 +154,49 @@ class MotorStateTracker:
         """Reset watchdog state — call before ODrive reboot to suppress false triggers."""
         self._last_heartbeat_time.clear()
         self._first_heartbeat_received = False
+
+    # ── Firmware version tracking ──────────────────────────────
+
+    def all_bb_heartbeats_received(self) -> bool:
+        return all(self.received_bb_heartbeats.values())
+
+    def record_version(self, axis_id: int,
+                       fw: Tuple[int, int, int],
+                       hw: Tuple[int, int, int]):
+        """Store firmware and hardware version tuples for an axis."""
+        self.firmware_versions[axis_id] = fw
+        self.hardware_versions[axis_id] = hw
+
+    def all_jugglebot_versions_received(self) -> bool:
+        return all(self.firmware_versions[aid] is not None for aid in JUGGLEBOT_AXES)
+
+    def all_bb_versions_received(self) -> bool:
+        return all(self.firmware_versions[aid] is not None for aid in BB_AXES)
+
+    def validate_group(self, axes: list, group_name: str) -> Optional[str]:
+        """Check firmware+hardware consistency within a group of axes.
+
+        Returns None on success, or a descriptive error string on mismatch.
+        """
+        fw_set: Dict[Tuple[int, int, int], List[int]] = {}
+        hw_set: Dict[Tuple[int, int, int], List[int]] = {}
+        for aid in axes:
+            fw = self.firmware_versions[aid]
+            hw = self.hardware_versions[aid]
+            fw_set.setdefault(fw, []).append(aid)
+            hw_set.setdefault(hw, []).append(aid)
+
+        errors = []
+        if len(fw_set) > 1:
+            parts = [f"axes {ids}: fw {v[0]}.{v[1]}.{v[2]}"
+                     for v, ids in fw_set.items()]
+            errors.append(f"{group_name} firmware mismatch — " + ", ".join(parts))
+        if len(hw_set) > 1:
+            parts = [f"axes {ids}: hw {v[0]}.{v[1]}.{v[2]}"
+                     for v, ids in hw_set.items()]
+            errors.append(f"{group_name} hardware mismatch — " + ", ".join(parts))
+
+        return "; ".join(errors) if errors else None
 
     # ── Error helpers ──────────────────────────────────────────
 

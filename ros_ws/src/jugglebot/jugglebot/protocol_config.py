@@ -20,6 +20,7 @@ CAN_BAUD_RATE = 1000000  # All nodes must agree
 # ============================================================================
 
 ODRIVE_COMMANDS = {
+    "get_version": 0x00,
     "heartbeat_message": 0x01,
     "get_error": 0x03,
     "RxSdo": 0x04,

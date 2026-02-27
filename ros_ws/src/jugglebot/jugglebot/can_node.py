@@ -80,6 +80,11 @@ class CanInterfaceNode(Node):
             'error': [],
         }
 
+        # Firmware version query tracking
+        self._jb_version_query_sent = False
+        self._bb_version_query_sent = False
+        self._bb_firmware_checked = False
+
         # Hand input pos tracking (for telemetry)
         self._last_hand_cmd = {'pos': 0.0, 'vel': 0.0, 'tor': 0.0}
 
@@ -225,6 +230,18 @@ class CanInterfaceNode(Node):
                            procedure_result=proc_result, trajectory_done=traj_done)
         self.motors.record_heartbeat(axis_id)
 
+        # Trigger firmware version queries once all heartbeats arrive per group
+        if not self._jb_version_query_sent and self.motors.all_jugglebot_heartbeats_received():
+            self._jb_version_query_sent = True
+            for aid in odrive.JUGGLEBOT_AXES:
+                self.bus.send(odrive.encode_get_version(aid))
+                time.sleep(0.005)
+        if not self._bb_version_query_sent and self.motors.all_bb_heartbeats_received():
+            self._bb_version_query_sent = True
+            for aid in odrive.BB_AXES:
+                self.bus.send(odrive.encode_get_version(aid))
+                time.sleep(0.005)
+
     def _handle_error(self, axis_id, data):
         active_errors, disarm_reason = odrive.decode_error(data)
         self.motors.update(axis_id, active_errors=active_errors, disarm_reason=disarm_reason)
@@ -332,9 +349,52 @@ class CanInterfaceNode(Node):
         if endpoint_id == odrive.ENDPOINT_IDS['commutation_mapper.pos_abs']:
             self.motors.encoder_search_feedback[axis_id] = not math.isnan(value)
 
+    def _handle_get_version(self, axis_id, data):
+        (_proto_ver, hw_product, hw_ver, hw_variant,
+         fw_major, fw_minor, fw_rev, fw_unreleased) = odrive.decode_get_version(data)
+        fw = (fw_major, fw_minor, fw_rev)
+        hw = (hw_product, hw_ver, hw_variant)
+        self.motors.record_version(axis_id, fw, hw)
+
+        tag = "unreleased" if fw_unreleased else "release"
+        self.get_logger().info(
+            f"Axis {axis_id}: fw {fw_major}.{fw_minor}.{fw_rev} ({tag}), "
+            f"hw {hw_product}.{hw_ver}.{hw_variant}")
+
+        # Validate Jugglebot group when complete
+        if not self.motors.firmware_validated and self.motors.all_jugglebot_versions_received():
+            error = self.motors.validate_group(odrive.JUGGLEBOT_AXES, "Jugglebot")
+            if error:
+                self.motors.firmware_mismatch_error = error
+                self.motors.fatal_error = True
+                self.get_logger().error(error)
+            else:
+                self.motors.firmware_validated = True
+                fw0 = self.motors.firmware_versions[0]
+                hw0 = self.motors.hardware_versions[0]
+                self.get_logger().info(
+                    f"Jugglebot firmware check PASSED — "
+                    f"all axes: fw {fw0[0]}.{fw0[1]}.{fw0[2]}, "
+                    f"hw {hw0[0]}.{hw0[1]}.{hw0[2]}")
+
+        # Validate BB group when complete
+        if not self._bb_firmware_checked and self.motors.all_bb_versions_received():
+            self._bb_firmware_checked = True
+            error = self.motors.validate_group(odrive.BB_AXES, "Ball Butler")
+            if error:
+                self.motors.firmware_mismatch_error = error
+                self.motors.fatal_error = True
+                self.get_logger().error(error)
+            else:
+                fw_bb = self.motors.firmware_versions[odrive.BB_AXES[0]]
+                self.get_logger().info(
+                    f"Ball Butler firmware check PASSED — "
+                    f"both axes: fw {fw_bb[0]}.{fw_bb[1]}.{fw_bb[2]}")
+
     # Handler dispatch table (maps command_id → method).
     # These are unbound functions — called as handler(self, axis_id, data).
     _odrive_handlers = {
+        proto.ODRIVE_COMMANDS['get_version']:             _handle_get_version,
         proto.ODRIVE_COMMANDS['heartbeat_message']:       _handle_heartbeat,
         proto.ODRIVE_COMMANDS['get_error']:               _handle_error,
         proto.ODRIVE_COMMANDS['get_encoder_estimate']:    _handle_encoder,
@@ -724,7 +784,10 @@ class CanInterfaceNode(Node):
             msg.has_fatal_odrive_error = self.motors.fatal_error
             msg.has_fatal_can_error = self.motors.fatal_can_error
             msg.has_undervoltage = self.motors.undervoltage_error
+            msg.firmware_validated = self.motors.firmware_validated
 
+            if self.motors.firmware_mismatch_error:
+                msg.error.append(self.motors.firmware_mismatch_error)
             if self.motors.undervoltage_error:
                 msg.error.append("Undervoltage detected. Was the E-stop hit?")
             if self.motors.fatal_error:

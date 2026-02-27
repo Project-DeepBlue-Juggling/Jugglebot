@@ -21,6 +21,7 @@ namespace CanBus {
 // ==========================================================================
 
 namespace ODriveCmd {
+  constexpr uint8_t get_version = 0x00;
   constexpr uint8_t heartbeat_message = 0x01;
   constexpr uint8_t get_error = 0x03;
   constexpr uint8_t RxSdo = 0x04;

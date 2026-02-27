@@ -104,6 +104,7 @@ ERR_DC_BUS_UNDER_VOLTAGE = 512
 # Ball Butler motors — only process these command IDs from BB axes
 BB_MOTOR_IDS = set(BB_AXES)
 BB_RELEVANT_CMD_IDS = {
+    COMMANDS['get_version'],
     COMMANDS['heartbeat_message'],
     COMMANDS['get_encoder_estimate'],
     COMMANDS['get_iq'],
@@ -120,6 +121,12 @@ def arb_id(axis_id: int, command_name: str) -> int:
 # ═══════════════════════════════════════════════════════════════
 # Encoding — outgoing commands to ODrives
 # ═══════════════════════════════════════════════════════════════
+
+def encode_get_version(axis_id: int) -> can.Message:
+    """Request firmware/hardware version from an ODrive axis."""
+    return can.Message(arbitration_id=arb_id(axis_id, 'get_version'),
+                       dlc=8, is_extended_id=False, data=bytes(8))
+
 
 def encode_set_state(axis_id: int, state: str) -> can.Message:
     """Set requested axis state (e.g. 'IDLE', 'CLOSED_LOOP')."""
@@ -243,6 +250,13 @@ def _check_len(data: bytes, expected: int, name: str):
     """Raise ValueError if CAN frame data is too short for the expected unpack."""
     if len(data) < expected:
         raise ValueError(f"{name}: expected {expected} bytes, got {len(data)}")
+
+
+def decode_get_version(data: bytes) -> Tuple[int, int, int, int, int, int, int, int]:
+    """Returns (proto_ver, hw_product_line, hw_version, hw_variant,
+                fw_major, fw_minor, fw_revision, fw_unreleased)."""
+    _check_len(data, 8, "get_version")
+    return struct.unpack_from('<BBBBBBBB', data)
 
 
 def decode_heartbeat(data: bytes) -> Tuple[int, int, bool]:

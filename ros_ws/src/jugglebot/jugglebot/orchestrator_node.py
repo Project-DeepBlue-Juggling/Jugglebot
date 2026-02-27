@@ -89,6 +89,7 @@ class OrchestratorNode(Node):
                 for i in odrive.JUGGLEBOT_AXES
             )
 
+        self.ctx.firmware_validated = msg.firmware_validated
         self.ctx.encoder_search_complete = msg.encoder_search_complete
         self.ctx.is_homed = msg.is_homed
         self.ctx.errors = list(msg.error)
