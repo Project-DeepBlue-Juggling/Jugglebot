@@ -149,6 +149,19 @@ def encode_set_vel_gains(axis_id: int, vel_gain: float,
                        data=data, dlc=8, is_extended_id=False)
 
 
+def encode_set_traj_vel_limit(axis_id: int, vel_limit: float) -> can.Message:
+    data = struct.pack('<f', vel_limit) + bytes(4)
+    return can.Message(arbitration_id=arb_id(axis_id, 'set_traj_vel_limit'),
+                       data=data, dlc=8, is_extended_id=False)
+
+
+def encode_set_traj_acc_limits(axis_id: int, acc_limit: float,
+                               dec_limit: float) -> can.Message:
+    data = struct.pack('<ff', acc_limit, dec_limit)
+    return can.Message(arbitration_id=arb_id(axis_id, 'set_traj_acc_limits'),
+                       data=data, dlc=8, is_extended_id=False)
+
+
 # ---------------------------------------------------------------------------
 # CAN decoding helpers
 # ---------------------------------------------------------------------------
@@ -521,6 +534,59 @@ class PlatformTestHarness:
             print(f"    Axis {axis_id}: holding at {s.pos_rev_raw:.4f} rev raw "
                   f"({s.pos_rev / MM_TO_REV[axis_id]:.2f} mm)")
 
+    def enter_trap_traj_mode_all(self,
+                                vel_limit: float = None,
+                                acc_limit: float = 10.0,
+                                dec_limit: float = 10.0):
+        """Put all 6 axes into POSITION/TRAP_TRAJ with gentle limits.
+
+        Uses trapezoidal trajectory mode for smooth, ramped movements.
+        The trajectory_done flag on each axis indicates when the move completes.
+        """
+        if vel_limit is None:
+            vel_limit = hw.JB_OP_GENTLE_MOVE_VEL_LIMIT_RPS  # 2.5 rev/s
+        self._poll()  # refresh encoder readings
+
+        for axis_id in LEG_AXES:
+            pos_now_raw = self.states[axis_id].pos_rev_raw
+            self.send(encode_set_controller_mode(
+                axis_id, 'POSITION', 'TRAP_TRAJ'))
+            time.sleep(0.05)
+            # Set trajectory limits
+            self.send(encode_set_traj_vel_limit(axis_id, vel_limit))
+            self.send(encode_set_traj_acc_limits(axis_id, acc_limit, dec_limit))
+            # Hold current position before entering CLOSED_LOOP
+            self.send(encode_set_input_pos(axis_id, pos_now_raw))
+            time.sleep(0.05)
+            self.send(encode_set_state(axis_id, 'CLOSED_LOOP'))
+
+        # Wait for all to enter CLOSED_LOOP
+        for axis_id in LEG_AXES:
+            self._wait_for_closed_loop(axis_id)
+
+        print(f"  All {NUM_LEGS} axes in POSITION/TRAP_TRAJ, CLOSED_LOOP:")
+        print(f"    Trap limits: vel={vel_limit} rev/s, "
+              f"acc={acc_limit} rev/s², dec={dec_limit} rev/s²")
+        for axis_id in LEG_AXES:
+            s = self.states[axis_id]
+            print(f"    Axis {axis_id}: holding at {s.pos_rev_raw:.4f} rev raw "
+                  f"({s.pos_rev / MM_TO_REV[axis_id]:.2f} mm)")
+
+    def wait_for_trajectory_done(self, axis_id: int, timeout_s: float = 10.0):
+        """Poll until trajectory_done flag is set on the specified axis."""
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            self._poll(timeout=0.02)
+            if self.states[axis_id].trajectory_done:
+                return True
+            if self.states[axis_id].has_errors:
+                names = error_names(self.states[axis_id].active_errors)
+                raise RuntimeError(
+                    f"Axis {axis_id} error while waiting for trajectory: {names}")
+            if not self.all_heartbeats_fresh():
+                raise RuntimeError("Heartbeat timeout during trajectory wait")
+        return False  # timeout
+
     def home_axis(self, axis_id: int, homing_current_lim: float = 4.0):
         """Home a single axis by driving to end-stop, then set absolute position.
 
@@ -812,14 +878,17 @@ def test_direction(harness: PlatformTestHarness):
     the kinematic model."
 
     Procedure:
-      1. Enter POSITION/PASSTHROUGH on all 6 legs (hold current position)
-      2. For each leg, command +5 mm extension, verify direction and magnitude
-      3. Command back to start, verify return accuracy
+      1. Enter POSITION/TRAP_TRAJ on all 6 legs (gentle ramped movements)
+      2. For each leg, command +5 mm extension, wait for trajectory_done
+      3. Command back to start, wait for trajectory_done
 
     Pass criteria (per leg):
-      - Direction: encoder moved positive (extension)
+      - Direction: encoder moved positive (extension = negative raw)
       - Magnitude: within 2 mm of commanded 5 mm
       - Return: within 1 mm of start
+
+    Diagnostics: prints exact CAN arbitration IDs, raw values, and encoder
+    readings to help isolate any per-axis direction issues.
 
     Overall pass: all 6 legs pass.
     """
@@ -828,14 +897,15 @@ def test_direction(harness: PlatformTestHarness):
     print("=" * 60)
 
     STEP_MM = 5.0          # Extension step size
-    SETTLE_TIME_S = 2.0    # Time to wait for settling
     DIR_TOLERANCE_MM = 2.0 # Maximum error for direction/magnitude check
     RETURN_TOLERANCE_MM = 1.0  # Maximum error for return check
+    TRAJ_TIMEOUT_S = 10.0  # Max time to wait for trajectory_done
 
     harness.clear_all_errors()
     harness.set_safe_limits_all()
     harness.require_no_errors_all()
-    harness.enter_position_mode_all()
+    harness.enter_trap_traj_mode_all(vel_limit=2.5, acc_limit=10.0,
+                                     dec_limit=10.0)
 
     all_pass = True
     leg_results = {}
@@ -844,50 +914,72 @@ def test_direction(harness: PlatformTestHarness):
         print(f"\n  --- Leg {axis_id} ---")
         mm_to_rev = MM_TO_REV[axis_id]
 
-        # Record starting position
+        # Record starting position (raw ODrive values)
         harness._poll()
-        start_pos_rev = harness.states[axis_id].pos_rev  # inverted
         start_raw = harness.states[axis_id].pos_rev_raw
-        start_mm = start_pos_rev / mm_to_rev
-        print(f"    Start: {start_raw:.4f} rev raw "
-              f"({start_mm:.2f} mm extension)")
+        start_inverted = harness.states[axis_id].pos_rev
+        start_mm = start_inverted / mm_to_rev
+        print(f"    Start raw: {start_raw:.4f} rev")
 
-        # Command +5 mm extension
-        # Extension = positive inverted = negative raw
-        target_mm = start_mm + STEP_MM
-        target_raw = start_raw - STEP_MM * mm_to_rev
-        print(f"    Commanding +{STEP_MM} mm -> target {target_raw:.4f} rev raw")
+        # Compute target: +5 mm extension = negative raw delta
+        step_rev = STEP_MM * mm_to_rev  # always positive
+        target_raw = start_raw - step_rev  # extension = more negative raw
+        cmd_arb_id = arb_id(axis_id, 'set_input_pos')
 
+        print(f"    Target raw: {target_raw:.4f} rev "
+              f"(CAN arb_id=0x{cmd_arb_id:02X}, "
+              f"delta={-step_rev:.4f} rev)")
+
+        # Send position command and wait for trajectory completion
         harness.send(encode_set_input_pos(axis_id, target_raw))
-        harness.poll_for(SETTLE_TIME_S)
+        traj_ok = harness.wait_for_trajectory_done(axis_id, TRAJ_TIMEOUT_S)
+        if not traj_ok:
+            print(f"    WARNING: trajectory_done timeout after {TRAJ_TIMEOUT_S}s")
+
+        # Small extra settle time after trajectory_done
+        harness.poll_for(0.2)
 
         # Read actual position
-        actual_pos_rev = harness.states[axis_id].pos_rev
-        actual_mm = actual_pos_rev / mm_to_rev
-        displacement_mm = actual_mm - start_mm
+        after_raw = harness.states[axis_id].pos_rev_raw
+        after_inverted = harness.states[axis_id].pos_rev
+        after_mm = after_inverted / mm_to_rev
+        displacement_mm = after_mm - start_mm
+        raw_displacement = after_raw - start_raw
         error_mm = abs(displacement_mm - STEP_MM)
 
         direction_ok = displacement_mm > 0
         magnitude_ok = error_mm < DIR_TOLERANCE_MM
 
+        # Diagnostic output
+        print(f"    After move raw: {after_raw:.4f} rev "
+              f"(expected {target_raw:.4f})")
+        print(f"    Raw displacement: {raw_displacement:.4f} rev "
+              f"(expected {-step_rev:.4f})")
+        print(f"    Extension displacement: {displacement_mm:.3f} mm "
+              f"(expected {STEP_MM:.1f} mm, error: {error_mm:.3f} mm)")
+
         status = "OK" if (direction_ok and magnitude_ok) else "FAIL"
-        print(f"    Actual displacement: {displacement_mm:.3f} mm "
-              f"(error: {error_mm:.3f} mm) [{status}]")
+        print(f"    Direction & magnitude: [{status}]")
         if not direction_ok:
-            print(f"    DIRECTION ERROR: leg moved {displacement_mm:.3f} mm "
-                  f"(expected positive)")
+            print(f"    DIRECTION ERROR: raw moved {raw_displacement:+.4f} rev "
+                  f"(expected negative for extension)")
 
         # Command back to start
-        print(f"    Returning to start...")
+        print(f"    Returning to start (raw={start_raw:.4f})...")
         harness.send(encode_set_input_pos(axis_id, start_raw))
-        harness.poll_for(SETTLE_TIME_S)
+        traj_ok = harness.wait_for_trajectory_done(axis_id, TRAJ_TIMEOUT_S)
+        if not traj_ok:
+            print(f"    WARNING: return trajectory_done timeout")
+        harness.poll_for(0.2)
 
         # Check return accuracy
-        return_pos_rev = harness.states[axis_id].pos_rev
-        return_mm = return_pos_rev / mm_to_rev
+        return_raw = harness.states[axis_id].pos_rev_raw
+        return_inverted = harness.states[axis_id].pos_rev
+        return_mm = return_inverted / mm_to_rev
         return_err_mm = abs(return_mm - start_mm)
         return_ok = return_err_mm < RETURN_TOLERANCE_MM
-        print(f"    Return error: {return_err_mm:.3f} mm "
+        print(f"    Return raw: {return_raw:.4f} rev "
+              f"(started at {start_raw:.4f}, err: {return_err_mm:.3f} mm) "
               f"[{'OK' if return_ok else 'FAIL'}]")
 
         leg_pass = direction_ok and magnitude_ok and return_ok
