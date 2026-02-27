@@ -1243,7 +1243,20 @@ def test_torque_ff(harness: SingleLegTestHarness):
     harness.require_no_errors()
 
     harness.enter_position_mode()
-    hold_raw = harness.state.pos_rev_raw
+
+    # Extend the leg so the motor is actually holding the weight, not the
+    # end-stop.  Stay in POSITION/PASSTHROUGH — no IDLE gap that would let
+    # the weight pull the leg back to the compressed position.
+    EXTEND_MM = 40.0
+    extend_rev = EXTEND_MM * mm_to_rev_axis
+    hold_raw = harness.state.pos_rev_raw - extend_rev  # negative = extension
+    print(f"\n  Extending {EXTEND_MM:.0f} mm to clear end-stop "
+          f"(target: {hold_raw:.4f} rev raw)...")
+    harness.send(encode_set_input_pos(harness.axis_id, hold_raw))
+    harness.poll_for(3.0)  # generous settle time with load
+    actual_raw = harness.state.pos_rev_raw
+    print(f"  Reached: {actual_raw:.4f} rev raw "
+          f"(error: {abs(hold_raw - actual_raw) / mm_to_rev_axis:.2f} mm)")
 
     # Phase A: baseline hold (no torque_ff)
     print(f"\n  Phase A: Hold with no torque_ff (5s)...")
