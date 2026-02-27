@@ -1013,18 +1013,392 @@ def test_direction(harness: PlatformTestHarness):
 
 
 # ===========================================================================
+# Test B3: Multi-leg position hold (supported)
+# ===========================================================================
+
+def test_position_hold(harness: PlatformTestHarness):
+    """Stage B3: Multi-leg position hold (supported).
+
+    From MOTION_PLANNER_PLAN Phase 3 Stage B:
+    "Command all six legs to hold their current positions using the unloaded
+    baseline ODrive gains from Stage A (or lower). Verify all legs respond,
+    no leg oscillates, and the system is stable."
+
+    Procedure:
+      1. Set ODrive baseline gains (pos_gain=40, vel_gain=0.2, vel_int_gain=0.32)
+      2. Enter POSITION/PASSTHROUGH on all 6 legs (hold current position)
+      3. Sample encoder positions at ~10 Hz for 10 seconds
+      4. Track per-leg max deviation from start position
+
+    Pass criteria (per leg):
+      - Max deviation < 1.0 mm from start position
+      - No errors on any axis throughout the hold
+      - All heartbeats remain fresh
+    """
+    print("\n" + "=" * 60)
+    print("STAGE B3: Multi-leg position hold (supported)")
+    print("=" * 60)
+
+    HOLD_DURATION_S = 10.0
+    SAMPLE_INTERVAL_S = 0.1  # ~10 Hz
+    MAX_DEVIATION_MM = 1.0
+
+    # Stage A baseline gains
+    POS_GAIN = 40.0
+    VEL_GAIN = 0.2
+    VEL_INT_GAIN = 0.32
+
+    harness.clear_all_errors()
+    harness.set_safe_limits_all()
+    harness.require_no_errors_all()
+
+    # Set baseline ODrive gains on all axes
+    print(f"  Setting ODrive gains: pos_gain={POS_GAIN}, vel_gain={VEL_GAIN}, "
+          f"vel_int_gain={VEL_INT_GAIN}")
+    for axis_id in LEG_AXES:
+        harness.send(encode_set_pos_gain(axis_id, POS_GAIN))
+        harness.send(encode_set_vel_gains(axis_id, VEL_GAIN, VEL_INT_GAIN))
+
+    harness.enter_position_mode_all()
+
+    # Record starting positions
+    harness._poll()
+    start_mm = {}
+    for axis_id in LEG_AXES:
+        s = harness.states[axis_id]
+        start_mm[axis_id] = s.pos_rev / MM_TO_REV[axis_id]
+
+    # Sample loop
+    max_dev_mm = {axis_id: 0.0 for axis_id in LEG_AXES}
+    all_pass = True
+    errors_seen = {axis_id: False for axis_id in LEG_AXES}
+    n_samples = int(HOLD_DURATION_S / SAMPLE_INTERVAL_S)
+
+    print(f"  Holding position for {HOLD_DURATION_S}s "
+          f"({n_samples} samples at {1/SAMPLE_INTERVAL_S:.0f} Hz)...")
+
+    for i in range(n_samples):
+        harness.poll_for(SAMPLE_INTERVAL_S)
+
+        for axis_id in LEG_AXES:
+            s = harness.states[axis_id]
+            current_mm = s.pos_rev / MM_TO_REV[axis_id]
+            dev = abs(current_mm - start_mm[axis_id])
+            if dev > max_dev_mm[axis_id]:
+                max_dev_mm[axis_id] = dev
+
+            if s.has_errors and not errors_seen[axis_id]:
+                errors_seen[axis_id] = True
+                names = error_names(s.active_errors)
+                print(f"    ERROR at sample {i}: Axis {axis_id}: {names}")
+
+    harness.idle_all()
+
+    # -- Results ------------------------------------------------------------
+    print(f"\n  --- Hold results ({HOLD_DURATION_S}s) ---")
+    for axis_id in LEG_AXES:
+        dev = max_dev_mm[axis_id]
+        ok = dev < MAX_DEVIATION_MM and not errors_seen[axis_id]
+        status = "OK" if ok else "FAIL"
+        print(f"    Leg {axis_id}: max dev {dev:.3f} mm [{status}]")
+        if not ok:
+            all_pass = False
+            if errors_seen[axis_id]:
+                print(f"      Errors detected during hold")
+
+    if all_pass:
+        print(f"\n  PASS: All {NUM_LEGS} legs held position within "
+              f"{MAX_DEVIATION_MM} mm for {HOLD_DURATION_S}s")
+        return True
+    else:
+        failed = [a for a in LEG_AXES
+                  if max_dev_mm[a] >= MAX_DEVIATION_MM or errors_seen[a]]
+        print(f"\n  FAIL: Legs {failed} exceeded deviation or had errors")
+        return False
+
+
+# ===========================================================================
+# Test B4: Emergency stop (six legs)
+# ===========================================================================
+
+def test_estop(harness: PlatformTestHarness):
+    """Stage B4: Emergency stop test (six legs).
+
+    From MOTION_PLANNER_PLAN Phase 3 Stage B:
+    "Trigger each failure mode (IPC loss, process crash, explicit stop) and
+    verify all six legs idle simultaneously and cleanly."
+
+    Since this standalone harness has no IPC layer, we test explicit IDLE:
+      1. Enter POSITION/PASSTHROUGH on all 6 legs (holding position)
+      2. Send IDLE to all 6 axes simultaneously
+      3. Verify all axes transition to IDLE within 200ms
+      4. Verify no errors and all velocities settle to zero
+
+    Pass criteria:
+      - All 6 axes reach IDLE within 200ms
+      - No errors on any axis after stop
+      - All velocities < 0.05 rev/s after settling
+    """
+    print("\n" + "=" * 60)
+    print("STAGE B4: Emergency stop test (six legs)")
+    print("=" * 60)
+
+    MAX_STOP_LATENCY_MS = 200.0
+    MAX_RESIDUAL_VEL = 0.05  # rev/s
+
+    harness.clear_all_errors()
+    harness.set_safe_limits_all()
+    harness.require_no_errors_all()
+    harness.enter_position_mode_all()
+
+    # Verify all axes are in CLOSED_LOOP
+    for axis_id in LEG_AXES:
+        if not harness.states[axis_id].is_closed_loop:
+            raise RuntimeError(
+                f"Axis {axis_id} not in CLOSED_LOOP before e-stop test")
+
+    print(f"  All axes in CLOSED_LOOP, holding position.")
+    print(f"  Sending IDLE to all {NUM_LEGS} axes...")
+
+    # Send IDLE to all axes as fast as possible (no inter-message delay)
+    t_stop = time.time()
+    for axis_id in LEG_AXES:
+        harness.send_no_delay(encode_set_state(axis_id, 'IDLE'))
+
+    # Poll until all axes report IDLE
+    idle_times = {}
+    deadline = time.time() + 1.0  # absolute timeout
+
+    while time.time() < deadline:
+        harness._poll(timeout=0.005)
+        for axis_id in LEG_AXES:
+            if axis_id not in idle_times and harness.states[axis_id].is_idle:
+                idle_times[axis_id] = time.time()
+        if len(idle_times) == NUM_LEGS:
+            break
+
+    # Calculate per-axis latency
+    print(f"\n  Per-axis IDLE latency:")
+    all_pass = True
+    max_latency_ms = 0.0
+
+    for axis_id in LEG_AXES:
+        if axis_id in idle_times:
+            latency_ms = (idle_times[axis_id] - t_stop) * 1000
+            max_latency_ms = max(max_latency_ms, latency_ms)
+            ok = latency_ms < MAX_STOP_LATENCY_MS
+            print(f"    Axis {axis_id}: {latency_ms:.1f} ms [{'OK' if ok else 'FAIL'}]")
+            if not ok:
+                all_pass = False
+        else:
+            print(f"    Axis {axis_id}: TIMEOUT (never reached IDLE) [FAIL]")
+            all_pass = False
+
+    # Settle and check for errors / residual velocity
+    time.sleep(0.5)
+    harness._poll()
+
+    print(f"\n  Post-stop checks:")
+    for axis_id in LEG_AXES:
+        s = harness.states[axis_id]
+        vel = abs(s.vel_rps_raw)
+        idle_ok = s.is_idle
+        err_ok = not s.has_errors
+        vel_ok = vel < MAX_RESIDUAL_VEL
+
+        issues = []
+        if not idle_ok:
+            issues.append(f"state={s.state_name}")
+        if not err_ok:
+            issues.append(f"errors={error_names(s.active_errors)}")
+        if not vel_ok:
+            issues.append(f"vel={vel:.4f} rev/s")
+
+        if issues:
+            print(f"    Axis {axis_id}: FAIL ({', '.join(issues)})")
+            all_pass = False
+        else:
+            print(f"    Axis {axis_id}: IDLE, no errors, vel={vel:.4f} rev/s [OK]")
+
+    if all_pass:
+        print(f"\n  PASS: All {NUM_LEGS} axes reached IDLE within "
+              f"{max_latency_ms:.1f} ms, no errors, velocities settled")
+        return True
+    else:
+        print(f"\n  FAIL: E-stop did not meet all criteria")
+        return False
+
+
+# ===========================================================================
+# Test B5: Feedforward dry run (supported, analytical only)
+# ===========================================================================
+
+def test_feedforward_dry_run(harness: PlatformTestHarness):
+    """Stage B5: Feedforward dry run (supported, analytical only).
+
+    From MOTION_PLANNER_PLAN Phase 3 Stage B:
+    "Enable gravity torque_ff while the platform is still supported. Log the
+    commanded feedforward torques for each leg at the home pose. Verify they
+    are in the expected direction and roughly the expected magnitude (compare
+    to platform_mass x g / 6 as a sanity check, adjusted for CoM offset
+    geometry). This is an analytical/sanity check only — do not attempt to
+    measure current reduction, because motor stiction (~0.075 Nm per leg) is
+    ~4x larger than the per-leg gravity torque (~0.018 Nm) and masks the
+    feedforward effect."
+
+    Procedure:
+      1. Compute gravity feedforward torques at home pose using dynamics model
+      2. Sanity-check direction and magnitude against simple estimate
+      3. Apply feedforward via set_input_pos torque_ff, hold 3s
+      4. Remove feedforward, hold 1s, verify no transient errors
+
+    Pass criteria:
+      - All computed torques have the same sign (positive = extension)
+      - Each torque is within 50% of the per-leg sanity estimate
+      - No errors during feedforward hold or removal
+    """
+    print("\n" + "=" * 60)
+    print("STAGE B5: Feedforward dry run (supported, analytical only)")
+    print("=" * 60)
+
+    # Import motion modules (available because _ROS_PKG_DIR is on sys.path)
+    from jugglebot.motion.geometry import StewartGeometry
+    from jugglebot.motion.dynamics import DynamicsParams, gravity_to_motor_torques
+
+    FF_HOLD_S = 3.0
+    FF_REMOVE_HOLD_S = 1.0
+    MAGNITUDE_TOLERANCE = 0.50  # 50% tolerance for CoM asymmetry
+
+    # -- Analytical computation ---------------------------------------------
+    geom = StewartGeometry()
+    params = DynamicsParams.from_config()
+
+    pos_home = np.zeros(3)
+    rot_home = np.eye(3)
+
+    torques_Nm = gravity_to_motor_torques(pos_home, rot_home, geom, params)
+
+    # Sanity estimate: (mass * g / 6) * spool_radius_m
+    force_per_leg_N = params.mass_kg * params.gravity_mps2 / NUM_LEGS
+    spool_radius_m = geom.spool_radius_mm / 1000.0  # (6,) array
+    expected_torques_Nm = force_per_leg_N * spool_radius_m
+
+    print(f"\n  Gravity feedforward at home pose:")
+    print(f"    Platform mass: {params.mass_kg} kg, g: {params.gravity_mps2} m/s²")
+    print(f"    Total weight: {params.mass_kg * params.gravity_mps2:.3f} N")
+    print(f"    Sanity estimate: {force_per_leg_N:.3f} N/leg (uniform split)")
+
+    all_pass = True
+    torque_ff_ints = []
+
+    print(f"\n  Per-leg computed torques:")
+    for i, axis_id in enumerate(LEG_AXES):
+        t = torques_Nm[i]
+        e = expected_torques_Nm[i]
+        ratio = t / e if abs(e) > 1e-12 else float('inf')
+        ff_int = int(round(t * LEG_TOR_FF_SCALE))
+        torque_ff_ints.append(ff_int)
+
+        within_tol = abs(ratio - 1.0) < MAGNITUDE_TOLERANCE
+        sign_ok = t > 0  # positive = extension direction
+
+        status = "OK" if (within_tol and sign_ok) else "FAIL"
+        print(f"    Leg {axis_id}: torque = {t:.4f} Nm (ff_int16 = {ff_int}), "
+              f"expected ~{e:.4f} Nm, ratio = {ratio:.2f} [{status}]")
+
+        if not sign_ok:
+            print(f"      SIGN ERROR: expected positive (extension), got {t:.4f}")
+            all_pass = False
+        if not within_tol:
+            print(f"      MAGNITUDE: ratio {ratio:.2f} outside "
+                  f"[{1-MAGNITUDE_TOLERANCE:.1f}, {1+MAGNITUDE_TOLERANCE:.1f}]")
+            all_pass = False
+
+    # -- Apply feedforward on hardware -------------------------------------
+    harness.clear_all_errors()
+    harness.set_safe_limits_all()
+    harness.require_no_errors_all()
+    harness.enter_position_mode_all()
+
+    print(f"\n  Applying feedforward to all axes ({FF_HOLD_S}s hold)...")
+    for axis_id in LEG_AXES:
+        pos_raw = harness.states[axis_id].pos_rev_raw
+        harness.send(encode_set_input_pos(
+            axis_id, pos_raw, vel_ff=0, torque_ff=torque_ff_ints[axis_id]))
+
+    # Hold with feedforward, monitoring for errors
+    ff_errors = False
+    deadline = time.time() + FF_HOLD_S
+    while time.time() < deadline:
+        harness._poll(timeout=0.05)
+        for axis_id in LEG_AXES:
+            if harness.states[axis_id].has_errors:
+                names = error_names(harness.states[axis_id].active_errors)
+                print(f"    ERROR during ff hold: Axis {axis_id}: {names}")
+                ff_errors = True
+        if ff_errors:
+            break
+
+    if ff_errors:
+        all_pass = False
+        print(f"    FAIL: Errors during feedforward hold")
+    else:
+        print(f"    All axes stable, no errors.")
+
+    # Remove feedforward
+    print(f"  Removing feedforward ({FF_REMOVE_HOLD_S}s hold)...")
+    for axis_id in LEG_AXES:
+        pos_raw = harness.states[axis_id].pos_rev_raw
+        harness.send(encode_set_input_pos(axis_id, pos_raw, vel_ff=0, torque_ff=0))
+
+    remove_errors = False
+    deadline = time.time() + FF_REMOVE_HOLD_S
+    while time.time() < deadline:
+        harness._poll(timeout=0.05)
+        for axis_id in LEG_AXES:
+            if harness.states[axis_id].has_errors:
+                names = error_names(harness.states[axis_id].active_errors)
+                print(f"    ERROR during ff removal: Axis {axis_id}: {names}")
+                remove_errors = True
+        if remove_errors:
+            break
+
+    if remove_errors:
+        all_pass = False
+        print(f"    FAIL: Errors during feedforward removal")
+    else:
+        print(f"    All axes stable, no errors.")
+
+    harness.idle_all()
+
+    if all_pass:
+        print(f"\n  PASS: Feedforward values are sane and apply without errors")
+        return True
+    else:
+        print(f"\n  FAIL: Feedforward dry run did not meet all criteria")
+        return False
+
+
+# ===========================================================================
 # Test registry and CLI
 # ===========================================================================
 
 TESTS = {
-    'can_coord': ('Six-leg CAN coordination (B1 — exit gate)',
-                  test_can_coordination),
-    'direction': ('Direction & sign convention (B2)',
-                  test_direction),
+    'can_coord':  ('Six-leg CAN coordination (B1 — exit gate)',
+                   test_can_coordination),
+    'direction':  ('Direction & sign convention (B2)',
+                   test_direction),
+    'hold':       ('Multi-leg position hold (B3)',
+                   test_position_hold),
+    'estop':      ('Emergency stop, six legs (B4)',
+                   test_estop),
+    'feedforward': ('Feedforward dry run (B5)',
+                    test_feedforward_dry_run),
 }
 
 TEST_GROUPS = {
-    'all': ['can_coord', 'direction'],
+    'all':     ['can_coord', 'direction', 'hold', 'estop', 'feedforward'],
+    'stage_b': ['can_coord', 'direction', 'hold', 'estop', 'feedforward'],
 }
 
 
@@ -1034,11 +1408,14 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Tests available:
-  can_coord   Stage B1: Six-leg CAN coordination (EXIT GATE)
-  direction   Stage B2: Direction & sign convention check (all legs)
+  can_coord    Stage B1: Six-leg CAN coordination (EXIT GATE)
+  direction    Stage B2: Direction & sign convention check (all legs)
+  hold         Stage B3: Multi-leg position hold (supported)
+  estop        Stage B4: Emergency stop, six legs
+  feedforward  Stage B5: Feedforward dry run (analytical)
 
 Test groups:
-  all         Run B1 then B2 (B2 skipped if B1 fails) [DEFAULT]
+  all / stage_b   Run B1-B5 in order (B2+ skipped if B1 fails) [DEFAULT]
 
 Prerequisites:
   - Robot fully assembled, platform mechanically supported
