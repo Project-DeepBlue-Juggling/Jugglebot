@@ -91,8 +91,8 @@ def arb_id(axis_id: int, command_name: str) -> int:
 
 
 def encode_set_state(axis_id: int, state: str) -> can.Message:
-    data = struct.pack('<I', AXIS_STATES[state]) + b'\x00' * 4
-    return can.Message(arbitration_id=arb_id(axis_id, 'set_axis_state'),
+    data = struct.pack('<I', AXIS_STATES[state]) + bytes(4)
+    return can.Message(arbitration_id=arb_id(axis_id, 'set_requested_state'),
                        data=data, dlc=8, is_extended_id=False)
 
 
