@@ -521,7 +521,7 @@ class PlatformTestHarness:
             print(f"    Axis {axis_id}: holding at {s.pos_rev_raw:.4f} rev raw "
                   f"({s.pos_rev / MM_TO_REV[axis_id]:.2f} mm)")
 
-    def home_axis(self, axis_id: int):
+    def home_axis(self, axis_id: int, homing_current_lim: float = 4.0):
         """Home a single axis by driving to end-stop, then set absolute position.
 
         Same sequence as single_leg_test.py, adapted for multi-axis dispatch.
@@ -563,7 +563,7 @@ class PlatformTestHarness:
             self._poll(timeout=0.01)
             iq = self.states[axis_id].iq_measured
             avg = avg * hw.HOMING_EMA_WEIGHT + iq * (1.0 - hw.HOMING_EMA_WEIGHT)
-            if abs(avg) >= hw.HOMING_LEG_CURRENT_LIMIT_A:
+            if abs(avg) >= homing_current_lim:
                 print(f"    End-stop detected (avg current: {avg:.2f} A)")
                 break
         else:
