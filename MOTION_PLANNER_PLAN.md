@@ -492,3 +492,36 @@ Four of five tests passed using `tools/free_platform_test.py` (standalone, no RO
 21. **Leg 2 and Leg 5 consistently show larger errors** (2026-02-27): Across Stage B and C tests, Legs 2 and 5 show the largest positioning errors (Leg 2: 0.826 mm in B2, 0.644 mm return in C3; Leg 5: 0.305 mm residual in C3, 3.072 mm baseline deviation in C2). This may indicate higher friction or spool calibration variance on these legs. Worth monitoring but not blocking — all errors are within acceptable thresholds.
 
 22. **Free-platform test harness** (2026-02-27): `tools/free_platform_test.py` extends the supported-platform harness with IK-based position computation (`pose_to_raw_positions`), gravity feedforward computation (`compute_torque_ff_for_pose`), and interactive operator prompts for safe unsupported operation. Uses TRAP_TRAJ for all multi-leg moves, PASSTHROUGH only for static hold monitoring.
+
+### Phase 4 files created (2026-02-28)
+
+| File | Lines | Purpose |
+|------|-------|---------|
+| `motion/trajectory.py` | ~380 | Quintic solver, 6-DoF trajectory evaluator, leg-space mapper, feasibility checker, TrajectoryManager |
+| `motion/tests/test_trajectory.py` | ~530 | 7 Phase 4 verification tests (all PASS) |
+
+Modified files: `motion/control_loop.py` (+50 lines), `motion/ipc.py` (+25 lines), `motion/__init__.py` (+1 line)
+
+### Phase 4 verification results — offline tests (2026-02-28)
+
+All seven offline trajectory tests passed. No hardware tests yet.
+
+| Test | Result | Notes |
+|------|--------|-------|
+| Boundary conditions | PASS | 5 test cases + 6-DoF; max BC error 1.14e-13 (1D), 1.29e-09 (6-DoF at T-eps) |
+| Rest-to-rest special case | PASS | Coefficients match [0,0,0,10,-15,6]; peak |s''| = 5.7735027 matches QUINTIC_S2_MAX |
+| Limit checking (rejects bad) | PASS | Velocity (97.7 rev/s), stroke (-17.5 mm), acceleration (748.7 rev/s^2) — all rejected |
+| Limit checking (accepts good) | PASS | 4 trajectories: 10-50mm Z, 20mm XY, 3-deg tilt; all feasible with generous margins |
+| Speed scaling | PASS | scale=0.5: vel ratio 0.5000, accel ratio 0.2500. scale=0.25: 0.2500, 0.0625. Path shape error 0.00e+00 |
+| Feedforward torque preview | PASS | 4 hardware trajectories at 25% speed: peak vel 0.06-0.24 rev/s, peak torque 0.03-0.04 Nm, all within limits |
+| TrajectoryManager lifecycle | PASS | IDLE→EXECUTING→COMPLETE transitions, cancel, submit-during-execute rejection |
+
+### Phase 4 findings
+
+23. **Condition number threshold requires relative approach** (2026-02-28): The absolute `ILL_CONDITION_THRESHOLD = 100` from workspace.py rejects every reachable pose because raw cond(J) ranges 449-644 due to mixed mm/rad Jacobian units. The feasibility checker uses a relative threshold: `condition_limit = 2.0 * cond_at_home` (~900). This allows all normal operating poses while still catching genuine ill-conditioning. Phase 6 will add proper Jacobian normalization.
+
+24. **Quintic acceleration is well within limits for typical moves** (2026-02-28): For a 50mm Z move in 2.0s, peak leg acceleration is only 0.925 rev/s^2 (vs 30.0 limit). Even at full speed (scale=1.0), the 100mm moves used in test 3c needed 0.1s duration to exceed the 30 rev/s^2 limit. The acceleration constraint only becomes binding for moves exceeding ~200mm in under ~0.5s.
+
+25. **Feedforward torques dominated by gravity at low speed** (2026-02-28): At 25% speed, peak torque_ff is 0.03-0.04 Nm (gravity only). Inertia feedforward (Phase 5) will dominate during fast moves. The int16 quantization of torque_ff (0.001 Nm resolution) gives ~30-40 counts for gravity — adequate but Phase 5 will need more counts during high-acceleration manoeuvres.
+
+26. **Control loop now has dual mode** (2026-02-28): `control_loop.py` supports both trajectory mode (Phase 4: time-parameterized quintic) and direct-target mode (Phase 3: fixed pose from spacemouse/shell). Trajectory mode takes priority when a trajectory is executing; direct-target mode is the fallback. Both modes share the same IK + dynamics pipeline. E-stop and disable both cancel any active trajectory.

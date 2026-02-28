@@ -40,6 +40,7 @@ TOPIC_TARGET = b'target'
 TOPIC_MODE = b'mode'
 TOPIC_TELEMETRY = b'telem'
 TOPIC_MOTOR_FB = b'motorfb'
+TOPIC_TRAJECTORY = b'traj'
 
 
 # ---------------------------------------------------------------------------
@@ -90,13 +91,17 @@ def make_telemetry(leg_positions: list | tuple,
                    commanded_torques: list | tuple,
                    loop_dt_s: float,
                    ff_torques: list | tuple | None = None,
-                   pd_torques: list | tuple | None = None) -> dict:
+                   pd_torques: list | tuple | None = None,
+                   traj_state: str | None = None,
+                   traj_progress: float | None = None) -> dict:
     """Create a Telemetry message from the control loop.
 
     Parameters
     ----------
     ff_torques : per-motor gravity feedforward torques (Nm), or None
     pd_torques : per-motor PD feedback torques (Nm), or None
+    traj_state : trajectory state string ('idle', 'executing', 'complete'), or None
+    traj_progress : trajectory progress 0.0-1.0, or None
     """
     msg = {
         'type': 'telemetry',
@@ -110,7 +115,45 @@ def make_telemetry(leg_positions: list | tuple,
         msg['ff_torques'] = list(ff_torques)
     if pd_torques is not None:
         msg['pd_torques'] = list(pd_torques)
+    if traj_state is not None:
+        msg['traj_state'] = traj_state
+    if traj_progress is not None:
+        msg['traj_progress'] = traj_progress
     return msg
+
+
+def make_trajectory_command(
+        start_pose: list | tuple,
+        start_twist: list | tuple,
+        start_accel: list | tuple,
+        end_pose: list | tuple,
+        end_twist: list | tuple,
+        end_accel: list | tuple,
+        duration: float,
+        speed_scale: float = 1.0) -> dict:
+    """Create a trajectory command message.
+
+    Parameters
+    ----------
+    start_pose : [x, y, z, rx, ry, rz] in mm, rad
+    start_twist : [vx, vy, vz, wx, wy, wz] in mm/s, rad/s
+    start_accel : [ax, ay, az, alphax, alphay, alphaz] in mm/s^2, rad/s^2
+    end_pose, end_twist, end_accel : same as start
+    duration : trajectory duration in seconds (before speed scaling)
+    speed_scale : 0.0-1.0, uniformly scales velocities/accelerations
+    """
+    return {
+        'type': 'trajectory',
+        'start_pose': list(start_pose),
+        'start_twist': list(start_twist),
+        'start_accel': list(start_accel),
+        'end_pose': list(end_pose),
+        'end_twist': list(end_twist),
+        'end_accel': list(end_accel),
+        'duration': duration,
+        'speed_scale': speed_scale,
+        'ts': time.time(),
+    }
 
 
 def make_motor_feedback(positions: list | tuple,
@@ -168,10 +211,11 @@ class ControlProcessIPC:
         self._sub_data.setsockopt(zmq.RCVTIMEO, 0)  # non-blocking
         self._sub_data.setsockopt(zmq.CONFLATE, 1)   # keep only latest
 
-        # SUB socket for mode commands — no CONFLATE, every command delivered
+        # SUB socket for mode/trajectory commands — no CONFLATE, every command delivered
         self._sub_mode = self._ctx.socket(zmq.SUB)
         self._sub_mode.connect(command_addr)
         self._sub_mode.setsockopt(zmq.SUBSCRIBE, TOPIC_MODE)
+        self._sub_mode.setsockopt(zmq.SUBSCRIBE, TOPIC_TRAJECTORY)
         self._sub_mode.setsockopt(zmq.RCVTIMEO, 0)  # non-blocking
         self._sub_mode.setsockopt(zmq.RCVHWM, 64)   # bound queue size
 
@@ -247,6 +291,10 @@ class BridgeIPC:
     def send_mode_command(self, msg: dict) -> None:
         """Send a ModeCommand message to the control process."""
         self._pub.send_multipart(_pack(TOPIC_MODE, msg), flags=zmq.NOBLOCK)
+
+    def send_trajectory_command(self, msg: dict) -> None:
+        """Send a trajectory command to the control process."""
+        self._pub.send_multipart(_pack(TOPIC_TRAJECTORY, msg), flags=zmq.NOBLOCK)
 
     def send_motor_feedback(self, msg: dict) -> None:
         """Send MotorFeedback to the control process."""

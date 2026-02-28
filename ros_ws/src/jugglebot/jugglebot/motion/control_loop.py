@@ -3,9 +3,15 @@
 Runs independently from ROS2 for timing predictability.  Communicates
 with the ROS2 world via the IPC layer (ZeroMQ).
 
-Phase 3 scope:
+Two modes of operation:
+  1. **Trajectory mode** (Phase 4): execute quintic trajectories that
+     produce time-parameterized (pos, vel_ff, torque_ff) per cycle.
+  2. **Direct-target mode** (Phase 3): use a fixed target pose for
+     IK + dynamics (spacemouse, shell commands).
+
+Common infrastructure:
   - Fixed-rate main loop with nanosecond timing instrumentation
-  - IPC message dispatch (targets, mode commands, motor feedback)
+  - IPC message dispatch (targets, trajectories, mode commands, motor feedback)
   - Position IK: pose → leg extensions → motor revolutions (input_pos)
   - Velocity IK: twist → leg velocities → motor velocities (vel_ff)
   - Gravity feedforward: dynamics model → motor torques (torque_ff)
@@ -43,8 +49,14 @@ from jugglebot.motion.dynamics import DynamicsParams, gravity_to_motor_torques
 from jugglebot.motion.ipc import (
     TOPIC_MODE,
     TOPIC_TARGET,
+    TOPIC_TRAJECTORY,
     ControlProcessIPC,
     make_telemetry,
+)
+from jugglebot.motion.trajectory import (
+    TrajectoryManager,
+    TrajectoryState,
+    create_trajectory,
 )
 
 logger = logging.getLogger(__name__)
@@ -166,6 +178,9 @@ class ControlLoop:
         # Feedforward enable flag (can be toggled via IPC for A/B testing)
         self._feedforward_enabled = True
 
+        # Trajectory manager (Phase 4)
+        self._traj_manager = TrajectoryManager(self.geom, self._dynamics_params)
+
         # Logging interval
         self._last_log_time = 0.0
         self._log_interval_s = 5.0
@@ -221,6 +236,8 @@ class ControlLoop:
                 self._on_target(msg)
             elif topic == TOPIC_MODE:
                 self._on_mode_command(msg)
+            elif topic == TOPIC_TRAJECTORY:
+                self._on_trajectory(msg)
 
     def _on_target(self, msg: dict) -> None:
         """Handle an incoming target state."""
@@ -247,17 +264,38 @@ class ControlLoop:
         elif cmd == 'disable':
             self.mode = ControlMode.DISABLED
             self._zero_outputs()
+            self._traj_manager.cancel()
             logger.info("Control loop DISABLED")
         elif cmd == 'estop':
             self.mode = ControlMode.ESTOP
             self._zero_outputs()
+            self._traj_manager.cancel()
             logger.warning("E-STOP triggered via command")
         elif cmd == 'set_feedforward':
             enabled = bool(params.get('enabled', True))
             self._feedforward_enabled = enabled
+            self._traj_manager.set_feedforward_enabled(enabled)
             logger.info(f"Feedforward {'ENABLED' if enabled else 'DISABLED'}")
         else:
             logger.warning(f"Unknown mode command: {cmd}")
+
+    def _on_trajectory(self, msg: dict) -> None:
+        """Handle an incoming trajectory command."""
+        try:
+            traj = create_trajectory(
+                start_pose=np.array(msg['start_pose']),
+                start_twist=np.array(msg['start_twist']),
+                start_accel=np.array(msg['start_accel']),
+                end_pose=np.array(msg['end_pose']),
+                end_twist=np.array(msg['end_twist']),
+                end_accel=np.array(msg['end_accel']),
+                duration=msg['duration'],
+                t_start=time.perf_counter(),
+                speed_scale=msg.get('speed_scale', 1.0),
+            )
+            self._traj_manager.submit(traj)
+        except (ValueError, RuntimeError) as e:
+            logger.error(f"Trajectory command rejected: {e}")
 
     # ------------------------------------------------------------------
     # Heartbeat watchdog
@@ -269,6 +307,7 @@ class ControlLoop:
             if self.ipc.seconds_since_last_recv > IPC_HEARTBEAT_TIMEOUT_S:
                 self.mode = ControlMode.ESTOP
                 self._zero_outputs()
+                self._traj_manager.cancel()
                 logger.warning(
                     f"IPC heartbeat lost ({self.ipc.seconds_since_last_recv:.1f}s "
                     f"since last message) — E-STOP")
@@ -280,14 +319,29 @@ class ControlLoop:
     def _compute(self) -> None:
         """Compute control output for this cycle.
 
-        1. Position IK: pose → desired leg extensions (mm) → motor revolutions
-        2. Velocity IK: twist → desired leg velocities (mm/s) → motor rev/s
-        3. Gravity feedforward: dynamics model → motor torques (Nm)
+        Two modes of operation:
+        1. **Trajectory mode** (Phase 4): when a trajectory is executing,
+           evaluate the trajectory at the current time to get motor commands.
+        2. **Direct-target mode** (Phase 3): use the latest IPC target pose
+           for IK + dynamics.  Used by spacemouse, shell commands, etc.
 
         The ODrive handles all feedback via its 8 kHz cascaded PID.
         This process outputs (input_pos, vel_ff, torque_ff) per leg.
         """
-        if self.mode != ControlMode.ENABLED or not self._has_target:
+        if self.mode != ControlMode.ENABLED:
+            return
+
+        # Trajectory mode: evaluate trajectory at current time
+        if self._traj_manager.state == TrajectoryState.EXECUTING:
+            t_now = time.perf_counter()
+            pos, vel, torque = self._traj_manager.evaluate(t_now)
+            self._commanded_pos_rev = pos
+            self._commanded_vel_ff_rps = vel
+            self._commanded_torque_ff_Nm = torque
+            return
+
+        # Direct-target mode: use latest IPC target pose
+        if not self._has_target:
             return
 
         # Position IK: pose → desired leg extensions (mm) → motor revolutions
@@ -328,6 +382,7 @@ class ControlLoop:
             commanded_torques=self._commanded_torque_ff_Nm.tolist(),
             loop_dt_s=dt_actual,
             ff_torques=self._commanded_torque_ff_Nm.tolist(),
+            traj_state=self._traj_manager.state.value,
         )
         self.ipc.send_telemetry(msg)
 
