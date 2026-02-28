@@ -138,15 +138,25 @@ def analyze_log(log: TrajectoryLog) -> dict:
       loop_p99_ms      : 99th percentile loop dt in ms
       loop_max_ms      : max loop dt in ms
       n_samples        : number of logged samples
+      worst_sample_idx : index of the sample with worst tracking error
+      worst_sample_t   : timestamp (s) of the worst tracking sample
+      worst_sample_leg : leg axis with worst tracking error at that sample
+      worst_dt_idx     : index of the sample with worst loop dt
+      worst_dt_t       : timestamp (s) of the worst loop-dt sample
+      worst_dt_ms      : the worst loop dt value (ms)
     """
     if not log.timestamps:
         return {'max_error_mm': float('inf'), 'rms_error_mm': float('inf'),
                 'per_leg_max_mm': np.full(6, float('inf')),
                 'loop_mean_ms': 0, 'loop_p99_ms': 0, 'loop_max_ms': 0,
-                'n_samples': 0}
+                'n_samples': 0,
+                'worst_sample_idx': -1, 'worst_sample_t': 0,
+                'worst_sample_leg': -1,
+                'worst_dt_idx': -1, 'worst_dt_t': 0, 'worst_dt_ms': 0}
 
     cmd = np.array(log.commanded_pos_rev)   # (N, 6)
     act = np.array(log.actual_pos_rev)      # (N, 6)
+    timestamps = np.array(log.timestamps)
 
     # Tracking error in mm: convert rev error to mm per leg
     err_rev = np.abs(cmd - act)
@@ -156,7 +166,17 @@ def analyze_log(log: TrajectoryLog) -> dict:
     max_error = float(np.max(per_leg_max))
     rms_error = float(np.sqrt(np.mean(err_mm ** 2)))
 
+    # Identify worst tracking sample
+    worst_flat = int(np.argmax(err_mm))
+    worst_sample_idx = worst_flat // 6
+    worst_sample_leg = worst_flat % 6
+    worst_sample_t = float(timestamps[worst_sample_idx])
+
     dts = np.array(log.loop_dt_s) * 1000  # ms
+    worst_dt_idx = int(np.argmax(dts)) if len(dts) > 0 else -1
+    worst_dt_t = float(timestamps[worst_dt_idx]) if worst_dt_idx >= 0 else 0
+    worst_dt_ms = float(dts[worst_dt_idx]) if worst_dt_idx >= 0 else 0
+
     return {
         'max_error_mm': max_error,
         'rms_error_mm': rms_error,
@@ -165,6 +185,12 @@ def analyze_log(log: TrajectoryLog) -> dict:
         'loop_p99_ms': float(np.percentile(dts, 99)) if len(dts) > 0 else 0,
         'loop_max_ms': float(np.max(dts)) if len(dts) > 0 else 0,
         'n_samples': len(log.timestamps),
+        'worst_sample_idx': worst_sample_idx,
+        'worst_sample_t': worst_sample_t,
+        'worst_sample_leg': worst_sample_leg,
+        'worst_dt_idx': worst_dt_idx,
+        'worst_dt_t': worst_dt_t,
+        'worst_dt_ms': worst_dt_ms,
     }
 
 
@@ -178,6 +204,15 @@ def print_analysis(label: str, analysis: dict):
     print(f"    Loop timing:    mean={analysis['loop_mean_ms']:.2f} ms  "
           f"p99={analysis['loop_p99_ms']:.2f} ms  "
           f"max={analysis['loop_max_ms']:.2f} ms")
+    # Diagnostic: where the worst tracking error and worst loop spike occurred
+    w_idx = analysis.get('worst_sample_idx', -1)
+    if w_idx >= 0:
+        print(f"    Worst error:    sample {w_idx} at t={analysis['worst_sample_t']:.3f}s, "
+              f"leg {analysis['worst_sample_leg']}")
+    dt_idx = analysis.get('worst_dt_idx', -1)
+    if dt_idx >= 0:
+        print(f"    Worst dt:       sample {dt_idx} at t={analysis['worst_dt_t']:.3f}s, "
+              f"dt={analysis['worst_dt_ms']:.2f} ms")
 
 
 # ---------------------------------------------------------------------------
@@ -700,7 +735,7 @@ def test_speed_scaling(harness: PlatformTestHarness,
 
     Verify:
       - Duration ratio ~2x (within 15%)
-      - Peak encoder velocity ratio ~2x (within 15%)
+      - 95th-percentile encoder velocity ratio ~2x (within 15%)
       - Both reach the same target
 
     Pass criteria: ratio errors < MAX_SPEED_RATIO_ERROR.
@@ -767,11 +802,16 @@ def test_speed_scaling(harness: PlatformTestHarness,
 
     harness.idle_all()
 
-    # Compute peak encoder velocities
-    vel_a = np.array(log_a.actual_vel_rps)
-    vel_b = np.array(log_b.actual_vel_rps)
-    peak_vel_a = float(np.max(np.abs(vel_a)))
-    peak_vel_b = float(np.max(np.abs(vel_b)))
+    # Compute encoder velocities — use 95th percentile of absolute velocity
+    # across all legs instead of raw max, which is dominated by encoder noise.
+    vel_a = np.array(log_a.actual_vel_rps)       # (N, 6)
+    vel_b = np.array(log_b.actual_vel_rps)       # (N, 6)
+    abs_vel_a = np.abs(vel_a)
+    abs_vel_b = np.abs(vel_b)
+    peak_vel_a_raw = float(np.max(abs_vel_a))
+    peak_vel_b_raw = float(np.max(abs_vel_b))
+    p95_vel_a = float(np.percentile(abs_vel_a, 95))
+    p95_vel_b = float(np.percentile(abs_vel_b, 95))
 
     # Compute duration ratio (trajectory portion only, exclude hold)
     dur_a = traj_a.duration
@@ -780,8 +820,8 @@ def test_speed_scaling(harness: PlatformTestHarness,
     expected_dur_ratio = 2.0
     dur_error = abs(dur_ratio - expected_dur_ratio) / expected_dur_ratio
 
-    # Compute velocity ratio
-    vel_ratio = peak_vel_a / peak_vel_b if peak_vel_b > 1e-6 else float('inf')
+    # Compute velocity ratio from robust (p95) estimate
+    vel_ratio = p95_vel_a / p95_vel_b if p95_vel_b > 1e-6 else float('inf')
     expected_vel_ratio = 2.0
     vel_error = abs(vel_ratio - expected_vel_ratio) / expected_vel_ratio
 
@@ -789,8 +829,11 @@ def test_speed_scaling(harness: PlatformTestHarness,
     print(f"    Duration A: {dur_a:.2f}s,  Duration B: {dur_b:.2f}s")
     print(f"    Duration ratio: {dur_ratio:.3f}x  "
           f"(expected {expected_dur_ratio:.1f}x, error {dur_error*100:.1f}%)")
-    print(f"    Peak vel A: {peak_vel_a:.4f} rev/s,  Peak vel B: {peak_vel_b:.4f} rev/s")
-    print(f"    Velocity ratio: {vel_ratio:.3f}x  "
+    print(f"    Peak vel A: {peak_vel_a_raw:.4f} rev/s (raw max),  "
+          f"{p95_vel_a:.4f} rev/s (p95)")
+    print(f"    Peak vel B: {peak_vel_b_raw:.4f} rev/s (raw max),  "
+          f"{p95_vel_b:.4f} rev/s (p95)")
+    print(f"    Velocity ratio (p95): {vel_ratio:.3f}x  "
           f"(expected {expected_vel_ratio:.1f}x, error {vel_error*100:.1f}%)")
 
     pass_dur = dur_error < MAX_SPEED_RATIO_ERROR
