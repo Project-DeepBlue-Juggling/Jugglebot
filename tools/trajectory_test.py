@@ -9,7 +9,7 @@ Phase 4 hardware tests (free platform, <=25% speed):
   T1. Small move from home (10mm Z, 1.0s, 25% speed)
   T2. Graduated distance/tilt (20mm, 5 deg, combined, 40mm)
   T3. Multi-pose sequence across workspace
-  T4. Speed scale verification (25% vs 12.5%)
+  T4. Speed scale verification (50% vs 25%)
 
 Prerequisites:
   - All Phase 3 Stage C tests must PASS
@@ -691,8 +691,12 @@ def test_speed_scaling(harness: PlatformTestHarness,
     """T4: Speed scale verification.
 
     Execute the same 30mm Z move at two speed scales:
-      - Primary: speed_scale (default 25%)
-      - Comparison: speed_scale / 2 (default 12.5%)
+      - Primary: 2 * speed_scale (default 50%)
+      - Comparison: speed_scale (default 25%)
+
+    Both speeds are doubled vs the original 25%/12.5% to avoid
+    cogging-torque effects that distort velocity tracking at very
+    low speeds.
 
     Verify:
       - Duration ratio ~2x (within 15%)
@@ -709,8 +713,8 @@ def test_speed_scaling(harness: PlatformTestHarness,
     params = DynamicsParams.from_config()
 
     end_pose = np.array([0, 0, 30, 0, 0, 0], dtype=float)
-    scale_a = speed_scale
-    scale_b = speed_scale / 2.0
+    scale_a = speed_scale * 2.0
+    scale_b = speed_scale
 
     # Create both trajectories
     traj_a = make_rest_to_rest(end_pose, duration=1.0, speed_scale=scale_a)
@@ -877,7 +881,7 @@ Tests available:
   small_move    T1: Small move from home (10mm Z, 25%% speed)
   graduated     T2: Graduated distance/tilt (4 moves)
   multi_pose    T3: Multi-pose sequence (5 chained poses)
-  speed_scale   T4: Speed scale verification (25%% vs 12.5%%)
+  speed_scale   T4: Speed scale verification (50%% vs 25%%)
 
 Test groups:
   all           Run T1-T4 in order [DEFAULT]
