@@ -299,60 +299,60 @@ Run `python ros_ws/gui/gui_server.py` and open `http://localhost:8080`.
 - [ ] Open `http://localhost:8080/test_fk.html` — all FK tests pass (green "ALL PASSED")
 
 **3D Viewer:**
-- [ ] Dark background renders (#0f172a)
-- [ ] Grid and coordinate axes visible on the floor plane
-- [ ] Stewart platform visible at home position: blue base hexagon, gray platform hexagon, 6 green leg cylinders, amber hand axis line
-- [ ] Ball Butler model visible: purple pedestal with ring and arm
-- [ ] OrbitControls: click-drag to rotate, scroll to zoom, right-click to pan
-- [ ] View menu (top-right): clicking "View" shows checkboxes for Grid, Axes, Platform, Ball Butler, Ghost Overlay
-- [ ] Toggling checkboxes hides/shows scene elements
+- [x] Dark background renders (#0f172a)
+- [x] Grid and coordinate axes visible on the floor plane
+- [x] Stewart platform visible at home position: blue base hexagon, gray platform hexagon, 6 green leg cylinders, amber hand axis line
+- [x] Ball Butler model visible: purple pedestal with ring and arm
+- [x] OrbitControls: click-drag to rotate, scroll to zoom, right-click to pan
+- [x] View menu (top-right): clicking "View" shows checkboxes for Grid, Axes, Platform, Ball Butler, Ghost Overlay
+- [x] Toggling checkboxes hides/shows scene elements
 
 **Sidebar panels:**
-- [ ] "State" panel shows BOOT badge (gray)
-- [ ] "Motors" panel shows 7 columns (L0-L5, Hand) with "--" placeholders
-- [ ] Bus voltage shows "--"
-- [ ] "System" panel shows 6 flags, all in wait state (gray dots)
-- [ ] "Ball Butler" panel shows "Disconnected" badge
-- [ ] "CAN Traffic" panel shows "--" msg/s
-- [ ] "Tracking Error" panel shows 7 columns with "--" placeholders
+- [x] "State" panel shows BOOT badge (gray)
+- [x] "Motors" panel shows 7 columns (L0-L5, Hand) with "--" placeholders
+- [x] Bus voltage shows "--"
+- [x] "System" panel shows 6 flags, all in wait state (gray dots)
+- [x] "Ball Butler" panel shows "Disconnected" badge
+- [x] "CAN Traffic" panel shows "--" msg/s
+- [x] "Tracking Error" panel shows 7 columns with "--" placeholders
 
 **Command overlay:**
-- [ ] Bottom bar shows 6 buttons: Home, Activate, Deactivate, SpaceMouse, Shell, Clear Errors
-- [ ] All buttons disabled except Clear Errors (which is always enabled)
+- [x] Bottom bar shows 6 buttons: Home, Activate, Deactivate, SpaceMouse, Shell, Clear Errors
+- [x] All buttons disabled except Clear Errors (which is always enabled)
 
 **Connection status:**
-- [ ] Red dot + "Disconnected" shown (top-left of viewer)
-- [ ] No JS console errors (open DevTools → Console)
+- [x] Red dot + "Disconnected" shown (top-left of viewer)
+- [x] No JS console errors (open DevTools → Console)
 
 **Responsive layout:**
-- [ ] Shrink browser width below 900px → sidebar moves below viewer
-- [ ] Motor grid wraps to 4 columns
+- [x] Shrink browser width below 900px → sidebar moves below viewer
+- [x] Motor grid wraps to 4 columns
 
 ### Stage 2: Jetson + ROS2 (live)
 
 Prerequisites: rosbridge running on the Jetson (`ros2 launch rosbridge_server rosbridge_websocket_launch.xml`), Jugglebot nodes running.
 
 **Connection:**
-- [ ] Open `http://<jetson-ip>:8080` on any machine
-- [ ] Connection status changes to green dot + "Connected"
-- [ ] Kill rosbridge → status goes red "Disconnected"
-- [ ] Restart rosbridge → auto-reconnects within 2-3 seconds, status goes green again. **No page refresh needed.**
+- [x] Open `http://<jetson-ip>:8080` on any machine
+- [x] Connection status changes to green dot + "Connected"
+- [x] Kill rosbridge → status goes red "Disconnected"
+- [x] Restart rosbridge → auto-reconnects within 2-3 seconds, status goes green again. **No page refresh needed.**
 
 **Live data (BOOT/HOMING):**
-- [ ] State badge updates: BOOT (gray) → HOMING (blue) during startup
-- [ ] Motor dots change color: gray (undefined) → yellow (IDLE) → green (CLOSED_LOOP)
-- [ ] Bus voltage shows actual reading (e.g. ~48V)
-- [ ] Encoder Search flag changes to checkmark when complete
-- [ ] Homed flag changes to checkmark after homing
+- [x] State badge updates: BOOT (gray) → HOMING (blue) during startup
+- [x] Motor dots change color: gray (undefined) → yellow (IDLE) → green (CLOSED_LOOP)
+- [x] Bus voltage shows actual reading (e.g. ~48V)
+- [x] Encoder Search flag changes to checkmark when complete
+- [x] Homed flag changes to checkmark after homing
 
 **Live 3D (IDLE/ACTIVE):**
-- [ ] After homing, state badge shows IDLE (amber)
-- [ ] Motor positions update in the grid (mm for legs, rev for hand)
-- [ ] FET temperatures show and are color-coded (green < 50C, amber < 70C, red >= 70C)
+- [x] After homing, state badge shows IDLE (amber)
+- [x] Motor positions update in the grid (mm for legs, rev for hand)
+- [x] FET temperatures show and are color-coded (green < 50C, amber < 70C, red >= 70C)
 - [ ] Click "Activate" → state badge shows ACTIVE (green)
 - [ ] Click "SpaceMouse" → sub-mode shows "SPACEMOUSE"
 - [ ] Move spacemouse → 3D platform moves in real-time, legs change colour with extension
-- [ ] Hand axis line extends/retracts with hand motor
+- [x] Hand axis line extends/retracts with hand motor
 
 **If mocap is running:**
 - [ ] Platform pose driven by measured mocap data (smoother, more accurate than FK)
@@ -364,14 +364,14 @@ Prerequisites: rosbridge running on the Jetson (`ros2 launch rosbridge_server ro
 - [ ] Ghost overlay (red wireframe) fades in during high-error periods
 
 **Ball Butler:**
-- [ ] If BB is connected, state badge shows BB state (IDLE, etc.)
-- [ ] Yaw/Pitch/Hand readouts update
-- [ ] Ball-in-hand indicator shows green/red dot
-- [ ] 3D model rotates/tilts with actual BB movement
+- [x] If BB is connected, state badge shows BB state (IDLE, etc.)
+- [x] Yaw/Pitch/Hand readouts update
+- [x] Ball-in-hand indicator shows green/red dot
+- [x] 3D model rotates/tilts with actual BB movement
 
 **CAN traffic:**
-- [ ] Rate shows actual msg/s count
-- [ ] Sparkline chart updates over time
+- [x] Rate shows actual msg/s count
+- [x] Sparkline chart updates over time
 
 **Commands:**
 - [ ] Click "Deactivate" → state goes to IDLE
@@ -379,8 +379,8 @@ Prerequisites: rosbridge running on the Jetson (`ros2 launch rosbridge_server ro
 - [ ] Click "Clear Errors" → works from any state
 
 **Error handling:**
-- [ ] Trigger an error (e.g. E-stop) → state badge shows FAULT (red, pulsing)
-- [ ] Error flags light up red in System panel
+- [x] Trigger an error (e.g. E-stop) → state badge shows FAULT (red, pulsing)
+- [x] Error flags light up red in System panel
 - [ ] "Clear Errors" button enabled
 - [ ] Clear errors → state recovers (if error was transient)
 
