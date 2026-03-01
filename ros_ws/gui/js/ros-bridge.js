@@ -26,6 +26,12 @@ const subscriptions = [];
 /** Registered publishers. Re-created on reconnect. */
 const publishers = {};
 
+/** Set to true while intentionally closing to suppress reconnect */
+let intentionalClose = false;
+
+/** Saved URL for reconnect */
+let savedUrl = null;
+
 /**
  * Initialise the ROS connection. Call once at startup.
  * @param {string} [url] - WebSocket URL. Defaults to ws://<page-host>:9090
@@ -35,6 +41,33 @@ export function init(url) {
         const host = window.location.hostname || 'localhost';
         url = `ws://${host}:9090`;
     }
+    savedUrl = url;
+
+    // Gracefully close the WebSocket on page unload so rosbridge
+    // doesn't keep an orphaned connection that blocks future connects.
+    window.addEventListener('beforeunload', () => {
+        intentionalClose = true;
+        if (ros) {
+            try { ros.close(); } catch { /* ignore */ }
+        }
+    });
+
+    connect(url);
+}
+
+function connect(url) {
+    if (connectionState === 'connecting') return;
+
+    // Close and discard any previous ROSLIB.Ros instance.
+    // Reusing a closed instance can leave stale internal WebSocket state
+    // that prevents rosbridge from accepting the new connection.
+    if (ros) {
+        intentionalClose = true;
+        try { ros.close(); } catch { /* ignore */ }
+        ros = null;
+    }
+
+    setConnectionState('connecting');
 
     ros = new ROSLIB.Ros();
 
@@ -45,6 +78,10 @@ export function init(url) {
     });
 
     ros.on('close', () => {
+        if (intentionalClose) {
+            intentionalClose = false;
+            return;
+        }
         setConnectionState('disconnected');
         scheduleReconnect(url);
     });
@@ -53,12 +90,6 @@ export function init(url) {
         // Error fires before close; we handle reconnect on close.
     });
 
-    connect(url);
-}
-
-function connect(url) {
-    if (connectionState === 'connecting') return;
-    setConnectionState('connecting');
     try {
         ros.connect(url);
     } catch {
