@@ -538,8 +538,9 @@ class TrajectoryManager:
         4. When the trajectory completes, state transitions to COMPLETE.
         5. Submit a new trajectory, or call ``cancel()`` to return to IDLE.
 
-    Phase 4 executes one trajectory to completion.  Mid-motion re-planning
-    is deferred to Phase 7.
+    Phase 6 additions:
+        - ``progress`` and ``time_remaining`` are now live (updated on evaluate).
+        - ``current_pose_6dof`` exposes the latest evaluated Cartesian pose.
     """
 
     def __init__(self, geom: StewartGeometry, dynamics_params: DynamicsParams):
@@ -555,6 +556,11 @@ class TrajectoryManager:
         self._hold_pos_rev = np.zeros(6)
         self._hold_torque_ff = np.zeros(6)
 
+        # Progress tracking (Phase 6)
+        self._last_progress = 0.0
+        self._last_time_remaining = 0.0
+        self._current_pose = np.zeros(6)  # latest evaluated [x,y,z,rx,ry,rz]
+
     @property
     def state(self) -> TrajectoryState:
         return self._state
@@ -562,17 +568,17 @@ class TrajectoryManager:
     @property
     def progress(self) -> float:
         """Fraction of trajectory completed (0.0 to 1.0)."""
-        if self._active_traj is None or self._state != TrajectoryState.EXECUTING:
-            return 0.0
-        # Progress can only be computed relative to the current time,
-        # but we don't store the last evaluated time here.
-        # This is a best-effort property; the control loop tracks t.
-        return 0.0
+        return self._last_progress
 
     @property
     def time_remaining(self) -> float:
         """Seconds remaining in active trajectory, or 0.0."""
-        return 0.0  # Updated during evaluate()
+        return self._last_time_remaining
+
+    @property
+    def current_pose_6dof(self) -> np.ndarray:
+        """Latest evaluated Cartesian pose [x,y,z,rx,ry,rz]."""
+        return self._current_pose.copy()
 
     def set_feedforward_enabled(self, enabled: bool) -> None:
         """Toggle gravity feedforward for trajectory evaluation."""
@@ -635,11 +641,13 @@ class TrajectoryManager:
         torque_ff_Nm : (6,) ndarray — torque feedforward in Nm
         """
         if self._state == TrajectoryState.IDLE:
+            self._current_pose = self._hold_pose.copy()
             return (self._hold_pos_rev.copy(),
                     np.zeros(6),
                     self._hold_torque_ff.copy())
 
         if self._state == TrajectoryState.COMPLETE:
+            self._current_pose = self._hold_pose.copy()
             return (self._hold_pos_rev.copy(),
                     np.zeros(6),
                     self._hold_torque_ff.copy())
@@ -651,16 +659,25 @@ class TrajectoryManager:
         if t >= t_end:
             # Trajectory complete — transition to COMPLETE
             self._state = TrajectoryState.COMPLETE
+            self._last_progress = 1.0
+            self._last_time_remaining = 0.0
             # Set hold pose to end pose
             end_pose = traj.end_state[:6]
             self.set_hold_pose(end_pose)
+            self._current_pose = end_pose.copy()
             logger.info("Trajectory complete")
             return (self._hold_pos_rev.copy(),
                     np.zeros(6),
                     self._hold_torque_ff.copy())
 
+        # Update progress tracking
+        elapsed = t - traj.t_start
+        self._last_progress = min(1.0, elapsed / traj.duration)
+        self._last_time_remaining = max(0.0, t_end - t)
+
         # Evaluate trajectory at current time
         pose, twist, accel_cart = evaluate(traj, t)
+        self._current_pose = pose.copy()
         return cartesian_to_motor_commands(
             pose, twist, accel_cart,
             self.geom, self.dynamics_params,
@@ -676,3 +693,5 @@ class TrajectoryManager:
             logger.info("Trajectory cancelled")
         self._active_traj = None
         self._state = TrajectoryState.IDLE
+        self._last_progress = 0.0
+        self._last_time_remaining = 0.0

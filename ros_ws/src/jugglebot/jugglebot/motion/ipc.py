@@ -93,7 +93,12 @@ def make_telemetry(leg_positions: list | tuple,
                    ff_torques: list | tuple | None = None,
                    pd_torques: list | tuple | None = None,
                    traj_state: str | None = None,
-                   traj_progress: float | None = None) -> dict:
+                   traj_progress: float | None = None,
+                   cond_number: float | None = None,
+                   workspace_status: str | None = None,
+                   workspace_speed_scale: float | None = None,
+                   tracking_error_mm: list | tuple | None = None,
+                   fault_state: str | None = None) -> dict:
     """Create a Telemetry message from the control loop.
 
     Parameters
@@ -102,6 +107,11 @@ def make_telemetry(leg_positions: list | tuple,
     pd_torques : per-motor PD feedback torques (Nm), or None
     traj_state : trajectory state string ('idle', 'executing', 'complete'), or None
     traj_progress : trajectory progress 0.0-1.0, or None
+    cond_number : Jacobian condition number at current pose, or None
+    workspace_status : 'ok', 'soft', or 'hard', or None
+    workspace_speed_scale : workspace-imposed speed scale 0.0-1.0, or None
+    tracking_error_mm : per-leg position tracking error (mm), or None
+    fault_state : fault description string, or None
     """
     msg = {
         'type': 'telemetry',
@@ -119,6 +129,16 @@ def make_telemetry(leg_positions: list | tuple,
         msg['traj_state'] = traj_state
     if traj_progress is not None:
         msg['traj_progress'] = traj_progress
+    if cond_number is not None:
+        msg['cond_number'] = cond_number
+    if workspace_status is not None:
+        msg['workspace_status'] = workspace_status
+    if workspace_speed_scale is not None:
+        msg['workspace_speed_scale'] = workspace_speed_scale
+    if tracking_error_mm is not None:
+        msg['tracking_error_mm'] = list(tracking_error_mm)
+    if fault_state is not None:
+        msg['fault_state'] = fault_state
     return msg
 
 

@@ -9,13 +9,22 @@ Two modes of operation:
   2. **Direct-target mode** (Phase 3): use a fixed target pose for
      IK + dynamics (spacemouse, shell commands).
 
+Phase 6 additions:
+  - Workspace limit enforcement (soft/hard limits on leg extensions
+    and Jacobian condition number)
+  - Runtime condition number monitoring with speed degradation
+  - Motor feedback handling for tracking error computation
+  - Fault detection (ODrive fault forwarding via IPC)
+  - Extended telemetry: condition number, workspace status, tracking
+    error, trajectory progress, fault state
+
 Common infrastructure:
   - Fixed-rate main loop with nanosecond timing instrumentation
   - IPC message dispatch (targets, trajectories, mode commands, motor feedback)
-  - Position IK: pose → leg extensions → motor revolutions (input_pos)
-  - Velocity IK: twist → leg velocities → motor velocities (vel_ff)
-  - Gravity feedforward: dynamics model → motor torques (torque_ff)
-  - E-stop on IPC heartbeat loss
+  - Position IK: pose -> leg extensions -> motor revolutions (input_pos)
+  - Velocity IK: twist -> leg velocities -> motor velocities (vel_ff)
+  - Full feedforward: dynamics model -> motor torques (torque_ff)
+  - E-stop on IPC heartbeat loss or hard workspace limit violation
 
 The ODrive handles all feedback at 8 kHz via its cascaded PID.
 This process computes IK + dynamics and outputs (pos, vel_ff, torque_ff).
@@ -39,10 +48,12 @@ from jugglebot.motion.ik_solver import (
     compute_jacobian,
     pose_to_leg_lengths,
     quat_to_rot_matrix,
+    rotvec_to_rot_matrix,
     twist_to_leg_velocities,
 )
 from jugglebot.motion.conversions import (
     extensions_mm_to_revs,
+    revs_to_extensions_mm,
     leg_velocities_to_motor_velocities,
 )
 from jugglebot.motion.dynamics import (
@@ -52,6 +63,7 @@ from jugglebot.motion.dynamics import (
 )
 from jugglebot.motion.ipc import (
     TOPIC_MODE,
+    TOPIC_MOTOR_FB,
     TOPIC_TARGET,
     TOPIC_TRAJECTORY,
     ControlProcessIPC,
@@ -61,6 +73,12 @@ from jugglebot.motion.trajectory import (
     TrajectoryManager,
     TrajectoryState,
     create_trajectory,
+)
+from jugglebot.motion.workspace import (
+    WorkspaceLimits,
+    WorkspaceStatus,
+    check_workspace_limits,
+    compute_condition_number,
 )
 
 logger = logging.getLogger(__name__)
@@ -146,9 +164,9 @@ class ControlLoop:
 
     Parameters
     ----------
-    target_rate_hz : float — desired loop rate
+    target_rate_hz : float -- desired loop rate
     geom : StewartGeometry
-    ipc : ControlProcessIPC — IPC transport (injected for testability)
+    ipc : ControlProcessIPC -- IPC transport (injected for testability)
     """
 
     def __init__(self,
@@ -171,7 +189,7 @@ class ControlLoop:
         self._target_accel = np.zeros(6)
         self._has_target = False
 
-        # Control outputs (sent to bridge → CAN node as set_input_pos fields)
+        # Control outputs (sent to bridge -> CAN node as set_input_pos fields)
         self._commanded_pos_rev = np.zeros(6)      # input_pos (rev)
         self._commanded_vel_ff_rps = np.zeros(6)    # vel_ff (rev/s)
         self._commanded_torque_ff_Nm = np.zeros(6)  # torque_ff (Nm)
@@ -185,6 +203,22 @@ class ControlLoop:
         # Trajectory manager (Phase 4)
         self._traj_manager = TrajectoryManager(self.geom, self._dynamics_params)
 
+        # Workspace limits (Phase 6) — precomputed from geometry
+        self._workspace_limits = WorkspaceLimits.from_geometry(self.geom)
+        self._workspace_status = WorkspaceStatus.OK
+        self._workspace_speed_scale = 1.0
+        self._cond_number = self._workspace_limits.cond_home
+
+        # Motor feedback from CAN node (Phase 6)
+        self._motor_fb_pos_rev = np.zeros(6)   # actual positions (rev)
+        self._motor_fb_vel_rps = np.zeros(6)   # actual velocities (rev/s)
+        self._motor_fb_cur_A = np.zeros(6)     # actual currents (A)
+        self._has_motor_fb = False
+        self._tracking_error_mm = np.zeros(6)
+
+        # Fault state (Phase 6)
+        self._fault_state: str | None = None
+
         # Logging interval
         self._last_log_time = 0.0
         self._log_interval_s = 5.0
@@ -194,6 +228,12 @@ class ControlLoop:
         self._running = True
         logger.info(f"Control loop starting at {self.rate_hz} Hz "
                     f"(dt={self.dt_target*1000:.2f} ms)")
+        logger.info(f"Workspace limits: leg soft=[{self._workspace_limits.leg_soft_min_mm:.1f}, "
+                    f"{self._workspace_limits.leg_soft_max_mm:.1f}] mm, "
+                    f"leg hard=[{self._workspace_limits.leg_hard_min_mm:.1f}, "
+                    f"{self._workspace_limits.leg_hard_max_mm:.1f}] mm, "
+                    f"cond soft={self._workspace_limits.cond_soft:.1f}, "
+                    f"cond hard={self._workspace_limits.cond_hard:.1f}")
 
         t_prev = time.perf_counter()
 
@@ -210,7 +250,7 @@ class ControlLoop:
             # 2. Check IPC heartbeat
             self._check_heartbeat()
 
-            # 3. Compute control output
+            # 3. Compute control output + workspace checks
             self._compute()
 
             # 4. Publish telemetry
@@ -242,6 +282,8 @@ class ControlLoop:
                 self._on_mode_command(msg)
             elif topic == TOPIC_TRAJECTORY:
                 self._on_trajectory(msg)
+            elif topic == TOPIC_MOTOR_FB:
+                self._on_motor_feedback(msg)
 
     def _on_target(self, msg: dict) -> None:
         """Handle an incoming target state."""
@@ -264,22 +306,33 @@ class ControlLoop:
         if cmd == 'enable':
             if self.mode == ControlMode.DISABLED:
                 self.mode = ControlMode.ENABLED
+                self._fault_state = None
                 logger.info("Control loop ENABLED")
         elif cmd == 'disable':
             self.mode = ControlMode.DISABLED
             self._zero_outputs()
             self._traj_manager.cancel()
+            self._fault_state = None
             logger.info("Control loop DISABLED")
         elif cmd == 'estop':
             self.mode = ControlMode.ESTOP
             self._zero_outputs()
             self._traj_manager.cancel()
-            logger.warning("E-STOP triggered via command")
+            self._fault_state = msg.get('params', {}).get('reason', 'external')
+            logger.warning(f"E-STOP triggered via command: {self._fault_state}")
         elif cmd == 'set_feedforward':
             enabled = bool(params.get('enabled', True))
             self._feedforward_enabled = enabled
             self._traj_manager.set_feedforward_enabled(enabled)
             logger.info(f"Feedforward {'ENABLED' if enabled else 'DISABLED'}")
+        elif cmd == 'fault':
+            # ODrive fault forwarded from CAN node via bridge
+            fault_desc = params.get('description', 'unknown fault')
+            self.mode = ControlMode.ESTOP
+            self._zero_outputs()
+            self._traj_manager.cancel()
+            self._fault_state = fault_desc
+            logger.error(f"ODrive FAULT received: {fault_desc} -- E-STOP")
         else:
             logger.warning(f"Unknown mode command: {cmd}")
 
@@ -301,6 +354,13 @@ class ControlLoop:
         except (ValueError, RuntimeError) as e:
             logger.error(f"Trajectory command rejected: {e}")
 
+    def _on_motor_feedback(self, msg: dict) -> None:
+        """Handle motor feedback from the CAN node (via bridge)."""
+        self._motor_fb_pos_rev = np.array(msg['pos'])
+        self._motor_fb_vel_rps = np.array(msg['vel'])
+        self._motor_fb_cur_A = np.array(msg['cur'])
+        self._has_motor_fb = True
+
     # ------------------------------------------------------------------
     # Heartbeat watchdog
     # ------------------------------------------------------------------
@@ -312,9 +372,10 @@ class ControlLoop:
                 self.mode = ControlMode.ESTOP
                 self._zero_outputs()
                 self._traj_manager.cancel()
+                self._fault_state = 'ipc_heartbeat_lost'
                 logger.warning(
                     f"IPC heartbeat lost ({self.ipc.seconds_since_last_recv:.1f}s "
-                    f"since last message) — E-STOP")
+                    f"since last message) -- E-STOP")
 
     # ------------------------------------------------------------------
     # Control computation
@@ -329,8 +390,11 @@ class ControlLoop:
         2. **Direct-target mode** (Phase 3): use the latest IPC target pose
            for IK + dynamics.  Used by spacemouse, shell commands, etc.
 
-        The ODrive handles all feedback via its 8 kHz cascaded PID.
-        This process outputs (input_pos, vel_ff, torque_ff) per leg.
+        Phase 6 additions:
+        - After computing motor commands, check workspace limits.
+        - If hard limit violated, abort trajectory and E-stop.
+        - Compute tracking error from motor feedback.
+        - Compute condition number for telemetry.
         """
         if self.mode != ControlMode.ENABLED:
             return
@@ -342,32 +406,90 @@ class ControlLoop:
             self._commanded_pos_rev = pos
             self._commanded_vel_ff_rps = vel
             self._commanded_torque_ff_Nm = torque
-            return
+        elif self._has_target:
+            # Direct-target mode: use latest IPC target pose
+            # Position IK: pose -> desired leg extensions (mm) -> motor revolutions
+            desired_extensions_mm = pose_to_leg_lengths(
+                self._target_pos, self._target_rot, self.geom)
+            self._commanded_pos_rev = extensions_mm_to_revs(
+                desired_extensions_mm, self.geom)
 
-        # Direct-target mode: use latest IPC target pose
-        if not self._has_target:
-            return
+            # Velocity IK: twist -> desired leg velocities (mm/s) -> motor rev/s
+            desired_vel_mm_s = twist_to_leg_velocities(
+                self._target_twist, self._target_pos, self._target_rot, self.geom)
+            self._commanded_vel_ff_rps = leg_velocities_to_motor_velocities(
+                desired_vel_mm_s, self.geom)
 
-        # Position IK: pose → desired leg extensions (mm) → motor revolutions
-        desired_extensions_mm = pose_to_leg_lengths(
-            self._target_pos, self._target_rot, self.geom)
-        self._commanded_pos_rev = extensions_mm_to_revs(
-            desired_extensions_mm, self.geom)
-
-        # Velocity IK: twist → desired leg velocities (mm/s) → motor rev/s
-        desired_vel_mm_s = twist_to_leg_velocities(
-            self._target_twist, self._target_pos, self._target_rot, self.geom)
-        self._commanded_vel_ff_rps = leg_velocities_to_motor_velocities(
-            desired_vel_mm_s, self.geom)
-
-        # Feedforward: gravity + inertia → motor torques (Nm)
-        if self._feedforward_enabled:
-            self._commanded_torque_ff_Nm = compute_full_feedforward_torques(
-                self._target_pos, self._target_rot,
-                self._target_twist, self._target_accel,
-                self.geom, self._dynamics_params)
+            # Feedforward: gravity + inertia -> motor torques (Nm)
+            if self._feedforward_enabled:
+                self._commanded_torque_ff_Nm = compute_full_feedforward_torques(
+                    self._target_pos, self._target_rot,
+                    self._target_twist, self._target_accel,
+                    self.geom, self._dynamics_params)
+            else:
+                self._commanded_torque_ff_Nm = np.zeros(6)
         else:
-            self._commanded_torque_ff_Nm = np.zeros(6)
+            return
+
+        # --- Phase 6: workspace limit check ---
+        # Get current pose for condition number computation.
+        # Use the trajectory manager's current_pose_6dof which is set
+        # during evaluate() above, or construct from target for direct mode.
+        if self._traj_manager.state == TrajectoryState.EXECUTING:
+            pose_6dof = self._traj_manager.current_pose_6dof
+        elif self._has_target:
+            # For direct-target mode, we don't have a rotvec handy,
+            # but we have pos and rot matrix. Use commanded extensions.
+            pose_6dof = None  # skip cond check for direct mode (no rotvec)
+        else:
+            pose_6dof = None
+
+        # Compute leg extensions from commanded positions
+        commanded_extensions_mm = revs_to_extensions_mm(
+            self._commanded_pos_rev, self.geom)
+
+        # Condition number (only computed during trajectory mode for performance)
+        if pose_6dof is not None:
+            pos_cart = pose_6dof[:3]
+            rot_mat = rotvec_to_rot_matrix(pose_6dof[3:6])
+            self._cond_number = compute_condition_number(pos_cart, rot_mat, self.geom)
+        else:
+            # For direct-target mode, use target pos/rot
+            if self._has_target:
+                self._cond_number = compute_condition_number(
+                    self._target_pos, self._target_rot, self.geom)
+
+        # Check workspace limits
+        ws_check = check_workspace_limits(
+            commanded_extensions_mm,
+            self._cond_number,
+            self._workspace_limits,
+        )
+        self._workspace_status = ws_check.status
+        self._workspace_speed_scale = ws_check.speed_scale
+
+        if ws_check.status == WorkspaceStatus.HARD_LIMIT:
+            # Hard limit violated: abort trajectory, E-stop
+            violation_str = '; '.join(ws_check.violations)
+            self._traj_manager.cancel()
+            self.mode = ControlMode.ESTOP
+            self._zero_outputs()
+            self._fault_state = f'workspace_hard_limit: {violation_str}'
+            logger.error(f"WORKSPACE HARD LIMIT -- E-STOP: {violation_str}")
+        elif ws_check.status == WorkspaceStatus.SOFT_LIMIT:
+            # Soft limit: log warning (speed degradation is informational
+            # for now -- Phase 7 will use it for mid-trajectory replanning)
+            logger.debug(
+                f"Workspace soft limit: speed_scale={ws_check.speed_scale:.2f}, "
+                f"{'; '.join(ws_check.violations)}")
+
+        # --- Phase 6: tracking error from motor feedback ---
+        if self._has_motor_fb:
+            # Convert commanded and actual positions to mm for tracking error
+            actual_extensions_mm = revs_to_extensions_mm(
+                self._motor_fb_pos_rev, self.geom)
+            self._tracking_error_mm = np.abs(
+                commanded_extensions_mm - actual_extensions_mm)
 
     def _zero_outputs(self) -> None:
         """Zero all control outputs (safe state)."""
@@ -388,6 +510,13 @@ class ControlLoop:
             loop_dt_s=dt_actual,
             ff_torques=self._commanded_torque_ff_Nm.tolist(),
             traj_state=self._traj_manager.state.value,
+            traj_progress=self._traj_manager.progress,
+            cond_number=self._cond_number,
+            workspace_status=self._workspace_status.value,
+            workspace_speed_scale=self._workspace_speed_scale,
+            tracking_error_mm=(self._tracking_error_mm.tolist()
+                               if self._has_motor_fb else None),
+            fault_state=self._fault_state,
         )
         self.ipc.send_telemetry(msg)
 
@@ -397,6 +526,12 @@ class ControlLoop:
             self._last_log_time = t_now
             if self.stats.count > 0:
                 logger.info(f"Loop timing: {self.stats.summary()}")
+                if self.mode == ControlMode.ENABLED:
+                    logger.info(
+                        f"  cond#={self._cond_number:.1f}  "
+                        f"ws={self._workspace_status.value}  "
+                        f"ws_scale={self._workspace_speed_scale:.2f}  "
+                        f"traj={self._traj_manager.state.value}")
 
 
 # ---------------------------------------------------------------------------

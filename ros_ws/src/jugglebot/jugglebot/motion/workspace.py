@@ -1,10 +1,15 @@
 """Workspace analysis and constraint checking for the Stewart platform.
 
-Provides leg extension validation, reachability checks, and singularity
-mapping.  All functions are pure Python + numpy (no ROS2 dependency).
+Provides leg extension validation, reachability checks, singularity
+mapping, and runtime workspace limit enforcement (Phase 6).
+
+All functions are pure Python + numpy (no ROS2 dependency).
 """
 
 from __future__ import annotations
+
+import enum
+from dataclasses import dataclass
 
 import numpy as np
 from numpy.linalg import norm
@@ -20,6 +25,137 @@ from jugglebot.motion.ik_solver import (
 # Condition number threshold above which a pose is considered ill-conditioned.
 # This matches the threshold specified in the MOTION_PLANNER_PLAN Phase 1.
 ILL_CONDITION_THRESHOLD = 100.0
+
+# ---------------------------------------------------------------------------
+# Workspace limit parameters (Phase 6)
+# ---------------------------------------------------------------------------
+
+# Leg extension soft/hard margins (mm from physical endpoints).
+# Soft limit triggers speed degradation; hard limit triggers trajectory abort.
+LEG_SOFT_MARGIN_MM = 15.0   # soft limit = [margin, stroke - margin]
+LEG_HARD_MARGIN_MM = 5.0    # hard limit = [margin, stroke - margin]
+
+# Condition number thresholds (relative to home).
+# Computed once at startup: home cond ~450, so soft ~675, hard ~900.
+COND_SOFT_FACTOR = 1.5      # soft = 1.5 * cond_home
+COND_HARD_FACTOR = 2.0      # hard = 2.0 * cond_home (matches feasibility checker)
+
+
+class WorkspaceStatus(enum.Enum):
+    """Runtime workspace limit status."""
+    OK = 'ok'              # all clear
+    SOFT_LIMIT = 'soft'    # in soft-limit zone — speed should degrade
+    HARD_LIMIT = 'hard'    # hard limit violated — trajectory must abort
+
+
+@dataclass
+class WorkspaceLimits:
+    """Precomputed workspace limits (immutable after construction).
+
+    Constructed once from geometry; used every control cycle.
+    """
+    leg_stroke_mm: float
+    leg_soft_min_mm: float
+    leg_soft_max_mm: float
+    leg_hard_min_mm: float
+    leg_hard_max_mm: float
+    cond_home: float
+    cond_soft: float
+    cond_hard: float
+
+    @staticmethod
+    def from_geometry(geom: StewartGeometry) -> 'WorkspaceLimits':
+        stroke = geom.leg_stroke_mm
+        cond_home = float(np.linalg.cond(
+            compute_jacobian(np.zeros(3), np.eye(3), geom)))
+        return WorkspaceLimits(
+            leg_stroke_mm=stroke,
+            leg_soft_min_mm=LEG_SOFT_MARGIN_MM,
+            leg_soft_max_mm=stroke - LEG_SOFT_MARGIN_MM,
+            leg_hard_min_mm=LEG_HARD_MARGIN_MM,
+            leg_hard_max_mm=stroke - LEG_HARD_MARGIN_MM,
+            cond_home=cond_home,
+            cond_soft=COND_SOFT_FACTOR * cond_home,
+            cond_hard=COND_HARD_FACTOR * cond_home,
+        )
+
+
+@dataclass
+class WorkspaceCheck:
+    """Result of a single-cycle workspace limit check."""
+    status: WorkspaceStatus
+    leg_extensions_mm: np.ndarray   # (6,) current extensions
+    cond_number: float
+    speed_scale: float              # 1.0 if OK, <1.0 if soft, 0.0 if hard
+    violations: list                # human-readable violation messages
+
+
+def check_workspace_limits(extensions_mm: np.ndarray,
+                           cond_number: float,
+                           limits: WorkspaceLimits) -> WorkspaceCheck:
+    """Runtime workspace limit check (called every control cycle).
+
+    Parameters
+    ----------
+    extensions_mm : (6,) ndarray — current leg extensions
+    cond_number : float — current Jacobian condition number
+    limits : WorkspaceLimits — precomputed limits
+
+    Returns
+    -------
+    WorkspaceCheck with status, speed_scale, and violation details.
+    """
+    violations = []
+    status = WorkspaceStatus.OK
+    speed_scale = 1.0
+
+    # --- Leg extension limits ---
+    for i in range(6):
+        ext = extensions_mm[i]
+        if ext < limits.leg_hard_min_mm or ext > limits.leg_hard_max_mm:
+            status = WorkspaceStatus.HARD_LIMIT
+            speed_scale = 0.0
+            end = 'underextended' if ext < limits.leg_hard_min_mm else 'overextended'
+            violations.append(f"Leg {i} HARD {end}: {ext:.1f} mm")
+        elif ext < limits.leg_soft_min_mm or ext > limits.leg_soft_max_mm:
+            if status != WorkspaceStatus.HARD_LIMIT:
+                status = WorkspaceStatus.SOFT_LIMIT
+            # Linear ramp-down: at soft boundary speed=1.0, at hard boundary speed=0.0
+            margin = LEG_SOFT_MARGIN_MM - LEG_HARD_MARGIN_MM
+            if ext < limits.leg_soft_min_mm:
+                dist = limits.leg_soft_min_mm - ext
+            else:
+                dist = ext - limits.leg_soft_max_mm
+            leg_scale = max(0.0, 1.0 - dist / margin)
+            speed_scale = min(speed_scale, leg_scale)
+            end = 'underextended' if ext < limits.leg_soft_min_mm else 'overextended'
+            violations.append(f"Leg {i} soft {end}: {ext:.1f} mm (scale={leg_scale:.2f})")
+
+    # --- Condition number limits ---
+    if cond_number > limits.cond_hard:
+        status = WorkspaceStatus.HARD_LIMIT
+        speed_scale = 0.0
+        violations.append(
+            f"Condition number HARD: {cond_number:.1f} > {limits.cond_hard:.1f}")
+    elif cond_number > limits.cond_soft:
+        if status != WorkspaceStatus.HARD_LIMIT:
+            status = WorkspaceStatus.SOFT_LIMIT
+        # Linear ramp-down in condition number band
+        margin = limits.cond_hard - limits.cond_soft
+        dist = cond_number - limits.cond_soft
+        cond_scale = max(0.0, 1.0 - dist / margin)
+        speed_scale = min(speed_scale, cond_scale)
+        violations.append(
+            f"Condition number soft: {cond_number:.1f} > {limits.cond_soft:.1f} "
+            f"(scale={cond_scale:.2f})")
+
+    return WorkspaceCheck(
+        status=status,
+        leg_extensions_mm=extensions_mm,
+        cond_number=cond_number,
+        speed_scale=speed_scale,
+        violations=violations,
+    )
 
 
 def check_leg_extensions(extensions_mm: np.ndarray,
