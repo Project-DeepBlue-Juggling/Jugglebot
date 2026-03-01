@@ -87,7 +87,14 @@ function connect(url) {
     });
 
     ros.on('error', () => {
-        // Error fires before close; we handle reconnect on close.
+        // In some browsers / ROSLIB versions, a refused WebSocket fires
+        // 'error' without a subsequent 'close', leaving us stuck in
+        // 'connecting' forever. Schedule a reconnect as a safety net;
+        // scheduleReconnect() is idempotent so a duplicate is harmless.
+        if (connectionState === 'connecting') {
+            setConnectionState('disconnected');
+            scheduleReconnect(url);
+        }
     });
 
     try {
