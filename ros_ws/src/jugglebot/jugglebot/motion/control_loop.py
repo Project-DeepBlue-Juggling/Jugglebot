@@ -313,6 +313,10 @@ class ControlLoop:
             if self.mode == ControlMode.DISABLED:
                 self.mode = ControlMode.ENABLED
                 self._fault_state = None
+                # Initialise outputs to the home/activate pose so the first
+                # telemetry cycle sends the current platform position rather
+                # than stale zeros.
+                self._seed_home_pose()
                 logger.info("Control loop ENABLED")
         elif cmd == 'disable':
             self.mode = ControlMode.DISABLED
@@ -546,6 +550,34 @@ class ControlLoop:
         self._commanded_pos_rev = np.zeros(6)
         self._commanded_vel_ff_rps = np.zeros(6)
         self._commanded_torque_ff_Nm = np.zeros(6)
+
+    def _seed_home_pose(self) -> None:
+        """Initialise control outputs to the home/activate pose.
+
+        Called on enable so the first telemetry cycle holds the platform
+        at its current position instead of sending zeros.
+        """
+        home = self._traj_manager.home_pose  # [x,y,z,rx,ry,rz]
+        rot = rotvec_to_rot_matrix(home[3:6])
+        if self._gravity_correction is not None:
+            rot = self._gravity_correction @ rot
+
+        extensions_mm = pose_to_leg_lengths(home[:3], rot, self.geom)
+        self._commanded_pos_rev = extensions_mm_to_revs(extensions_mm, self.geom)
+        self._commanded_vel_ff_rps = np.zeros(6)
+
+        if self._feedforward_enabled:
+            self._commanded_torque_ff_Nm = gravity_to_motor_torques(
+                home[:3], rot, self.geom, self._dynamics_params)
+        else:
+            self._commanded_torque_ff_Nm = np.zeros(6)
+
+        self._traj_manager.set_hold_pose(home)
+        self._target_pos = home[:3].copy()
+        self._target_rot = rot
+        self._target_twist = np.zeros(6)
+        self._target_accel = np.zeros(6)
+        self._has_target = True
 
     # ------------------------------------------------------------------
     # Telemetry

@@ -277,7 +277,7 @@ class IdleHandler(StateHandler):
 class LevellingHandler(StateHandler):
     """Platform levelling — measure tilt and compute gravity correction.
 
-    Uses TRAP_TRAJ mode throughout (no control loop involvement).
+    Uses profiled position commands throughout (no control loop involvement).
     Single inclinometer read with experimentally-determined mounting offset.
 
     Phases: activate → settle → read_tilt → send_correction →

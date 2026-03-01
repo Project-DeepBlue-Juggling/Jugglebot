@@ -21,7 +21,6 @@ from jugglebot_interfaces.msg import (
     LegsTargetReachedMessage,
     RobotState,
     SetMotorVelCurrLimitsMessage,
-    SetTrapTrajLimitsMessage,
 )
 from jugglebot_interfaces.srv import (
     ActivateOrDeactivate,
@@ -49,6 +48,59 @@ _HEARTBEAT_TIMEOUT_S = 2.0       # Trigger watchdog after 2s without any axis he
 _HEARTBEAT_GATE_TIMEOUT_S = 5.0  # Max wait for heartbeats before ODrive configuration
 
 
+# ── Trapezoidal profile for gentle moves ──────────────────────
+
+def _trapezoidal_profile(start, end, vel_limit, acc_limit, dt=0.01):
+    """Pre-compute a trapezoidal velocity profile in motor-rev space.
+
+    Returns a list of position samples at interval *dt*.  Handles the
+    triangular case (short moves where peak velocity < vel_limit).
+    Returns an empty list if the move distance is negligible.
+    """
+    distance = abs(end - start)
+    if distance < 0.001:
+        return []
+
+    sign = 1.0 if end > start else -1.0
+
+    # Time and distance for the acceleration phase
+    t_acc = vel_limit / acc_limit
+    d_acc = 0.5 * acc_limit * t_acc * t_acc
+
+    if 2.0 * d_acc >= distance:
+        # Triangular profile: can't reach full velocity
+        t_acc = math.sqrt(distance / acc_limit)
+        v_peak = acc_limit * t_acc
+        t_cruise = 0.0
+    else:
+        v_peak = vel_limit
+        t_cruise = (distance - 2.0 * d_acc) / v_peak
+
+    t_dec = t_acc
+    t_total = t_acc + t_cruise + t_dec
+
+    samples = []
+    t = 0.0
+    while t < t_total:
+        if t < t_acc:
+            # Acceleration phase
+            pos = start + sign * 0.5 * acc_limit * t * t
+        elif t < t_acc + t_cruise:
+            # Cruise phase
+            d_accel = 0.5 * acc_limit * t_acc * t_acc
+            pos = start + sign * (d_accel + v_peak * (t - t_acc))
+        else:
+            # Deceleration phase
+            t_rem = t_total - t
+            pos = end - sign * 0.5 * acc_limit * t_rem * t_rem
+        samples.append(pos)
+        t += dt
+
+    # Ensure final sample is exactly at the target
+    samples.append(end)
+    return samples
+
+
 class CanInterfaceNode(Node):
     def __init__(self):
         super().__init__('can_interface_node')
@@ -66,7 +118,6 @@ class CanInterfaceNode(Node):
         self.leg_curr_limit = odrive.DEFAULT_VEL_CURR['leg_curr']
         self.hand_vel_limit = odrive.DEFAULT_VEL_CURR['hand_vel']
         self.hand_curr_limit = odrive.DEFAULT_VEL_CURR['hand_curr']
-        self.trap_traj = dict(odrive.DEFAULT_TRAP_TRAJ)
         self.hand_gains = dict(odrive.DEFAULT_HAND_GAINS)
 
         # Teensy state (persisted on Teensy across reboots)
@@ -136,7 +187,6 @@ class CanInterfaceNode(Node):
         # ── Subscribers ────────────────────────────────────────
         self.create_subscription(Float64MultiArray, 'leg_lengths_topic', self._sub_leg_lengths, 10)
         self.create_subscription(SetMotorVelCurrLimitsMessage, 'set_motor_vel_curr_limits', self._sub_vel_curr_limits, 10)
-        self.create_subscription(SetTrapTrajLimitsMessage, 'set_leg_trap_traj_limits', self._sub_trap_traj_limits, 10)
         self.create_subscription(String, 'control_mode_topic', self._sub_control_mode, 10)
         self.create_subscription(Float64MultiArray, 'set_level_state', self._sub_set_level_state, 10)
 
@@ -488,7 +538,7 @@ class CanInterfaceNode(Node):
             yield 0.1
 
         # Wait until all legs are stationary before switching to PASSTHROUGH.
-        # TRAP_TRAJ should have finished, but guard against residual motion.
+        # After homing (VEL_RAMP), legs may have residual motion.
         stationary_deadline = time.time() + 5.0
         while True:
             states = self.motors.last_states
@@ -527,13 +577,6 @@ class CanInterfaceNode(Node):
             self.bus.send(odrive.encode_set_vel_curr_limits(axis_id, self.leg_vel_limit, self.leg_curr_limit))
             time.sleep(0.005)
         self.bus.send(odrive.encode_set_vel_curr_limits(odrive.HAND_AXIS, self.hand_vel_limit, self.hand_curr_limit))
-
-    def _set_trap_traj_limits(self):
-        """Apply trapezoidal trajectory limits to all legs."""
-        for axis_id in odrive.LEG_AXES:
-            self.bus.send(odrive.encode_set_traj_vel_limit(axis_id, self.trap_traj['vel_limit']))
-            self.bus.send(odrive.encode_set_traj_acc_limits(axis_id, self.trap_traj['acc_limit'], self.trap_traj['dec_limit']))
-            time.sleep(0.005)
 
     def _set_hand_gains(self):
         """Apply hand motor PID gains."""
@@ -763,15 +806,6 @@ class CanInterfaceNode(Node):
         if msg.hand_curr_limit > 0:
             self.hand_curr_limit = msg.hand_curr_limit
         self._set_vel_curr_limits()
-
-    def _sub_trap_traj_limits(self, msg):
-        if msg.trap_vel_limit > 0:
-            self.trap_traj['vel_limit'] = msg.trap_vel_limit
-        if msg.trap_acc_limit > 0:
-            self.trap_traj['acc_limit'] = msg.trap_acc_limit
-        if msg.trap_dec_limit > 0:
-            self.trap_traj['dec_limit'] = msg.trap_dec_limit
-        self._set_trap_traj_limits()
 
     def _sub_control_mode(self, msg):
         """Handle control mode changes from the orchestrator.
@@ -1143,9 +1177,13 @@ class CanInterfaceNode(Node):
             return False
 
     def _gentle_move_steps(self, setpoint, deactivating=True):
-        """Generator: slowly move all legs to a setpoint."""
+        """Generator: slowly move all legs to a setpoint using a software
+        trapezoidal profile streamed via PASSTHROUGH mode.
+
+        Stays in POSITION+PASSTHROUGH throughout — no mode switches.
+        Completion is detected via position + velocity thresholds.
+        """
         # Safety: refuse to enter CLOSED_LOOP if errors are present.
-        # A faulted axis would reject the state change or fault cascade.
         if self.motors.fatal_error or self.motors.fatal_can_error:
             self.get_logger().error(
                 "Gentle move aborted: errors present. Sending all axes to IDLE.")
@@ -1162,51 +1200,86 @@ class CanInterfaceNode(Node):
                 self.get_logger().info("Legs already stowed.")
                 return True
 
-        # Temporarily switch legs to TRAP_TRAJ for the slow move (trajectory_done
-        # flag is only set by TRAP_TRAJ mode).  _setup_odrives_steps restores
-        # PASSTHROUGH on activate; on deactivate the legs go to IDLE anyway.
+        # Ensure PASSTHROUGH mode (should already be set, but be explicit
+        # for robustness — e.g. after a reboot or interrupted homing).
         for axis_id in odrive.LEG_AXES:
-            self.bus.send(odrive.encode_set_controller_mode(axis_id, 'POSITION', 'TRAP_TRAJ'))
+            self.bus.send(odrive.encode_set_controller_mode(
+                axis_id, 'POSITION', 'PASSTHROUGH'))
             time.sleep(0.005)
-        self._set_trap_traj_limits()
 
+        # Enter CLOSED_LOOP if not already.  Seed current position first
+        # so the ODrive holds in place on the transition.
         if not all(s.current_state == _CL for s in states[:odrive.NUM_LEGS]):
+            for axis_id in odrive.LEG_AXES:
+                self._send_position_target(axis_id, states[axis_id].pos_estimate)
+                time.sleep(0.005)
             for axis_id in odrive.LEG_AXES:
                 self.bus.send(odrive.encode_set_state(axis_id, 'CLOSED_LOOP'))
                 time.sleep(0.005)
         yield 0.1  # Let state transitions settle
 
-        # Lower speed for gentle movement
+        # Conservative vel/current limits as a hardware safety net
         for axis_id in odrive.LEG_AXES:
-            self.bus.send(odrive.encode_set_vel_curr_limits(axis_id, hw.JB_OP_GENTLE_MOVE_VEL_LIMIT_RPS, self.leg_curr_limit))
+            self.bus.send(odrive.encode_set_vel_curr_limits(
+                axis_id, hw.JB_OP_GENTLE_MOVE_VEL_LIMIT_RPS, self.leg_curr_limit))
             time.sleep(0.005)
         yield 0.1  # Let limits take effect
 
+        # Compute per-leg trapezoidal profiles (each leg may start at a
+        # slightly different position).
+        states = self.motors.last_states  # Re-read after settling
+        profiles = []
         for axis_id in odrive.LEG_AXES:
-            self._send_position_target(axis_id, setpoint)
-            time.sleep(0.001)
+            profile = _trapezoidal_profile(
+                states[axis_id].pos_estimate, setpoint,
+                vel_limit=hw.JB_OP_GENTLE_MOVE_VEL_LIMIT_RPS,
+                acc_limit=hw.ODRIVE_TRAP_ACC_LIMIT_RPS2)
+            profiles.append(profile)
 
-        yield 0.5  # Initial movement time
-
-        # Wait for trajectories to complete (legs only)
-        deadline = time.time() + hw.JB_OP_GENTLE_MOVE_TIMEOUT_S
-        while not all(s.trajectory_done for s in self.motors.last_states[:odrive.NUM_LEGS]):
+        # Stream positions at ~100 Hz
+        max_samples = max((len(p) for p in profiles), default=0)
+        for i in range(max_samples):
             if self.motors.fatal_error or self.motors.fatal_can_error:
                 self.get_logger().error("Fatal error during gentle move")
                 return False
-            if time.time() > deadline:
-                self.get_logger().error("Gentle move timed out waiting for trajectory_done")
-                return False
-            yield 0.01  # Poll every 10ms
+            for axis_id in odrive.LEG_AXES:
+                pos = profiles[axis_id][i] if i < len(profiles[axis_id]) else setpoint
+                self._send_position_target(axis_id, pos)
+            yield 0.01  # 100 Hz
 
-        yield 1.0  # Settle time
+        # Send final target explicitly to land exactly on setpoint
+        for axis_id in odrive.LEG_AXES:
+            self._send_position_target(axis_id, setpoint)
+
+        # Wait for convergence: position + velocity thresholds
+        deadline = time.time() + hw.JB_OP_GENTLE_MOVE_TIMEOUT_S
+        while True:
+            states = self.motors.last_states
+            settled = all(
+                abs(states[i].pos_estimate - setpoint) < hw.JB_OP_TARGET_REACHED_POS_TOL_REV
+                and abs(states[i].vel_estimate) < hw.JB_OP_TARGET_REACHED_VEL_TOL_RPS
+                for i in odrive.LEG_AXES)
+            if settled:
+                break
+            if self.motors.fatal_error or self.motors.fatal_can_error:
+                self.get_logger().error("Fatal error during gentle move settle")
+                return False
+            if time.time() > deadline:
+                self.get_logger().error(
+                    "Gentle move timed out waiting for position convergence")
+                return False
+            yield 0.01
+
+        yield 0.5  # Brief settle
 
         if deactivating:
             for axis_id in odrive.JUGGLEBOT_AXES:
                 self.bus.send(odrive.encode_set_state(axis_id, 'IDLE'))
                 time.sleep(0.005)
         else:
-            yield from self._setup_odrives_steps(requested_state='CLOSED_LOOP')
+            # Restore normal vel/current limits
+            self._set_vel_curr_limits()
+            self.legs_target_position = [setpoint] * odrive.NUM_LEGS
 
         return True
 

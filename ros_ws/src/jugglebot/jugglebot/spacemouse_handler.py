@@ -8,7 +8,7 @@ Otherwise, the node does nothing.
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
-from jugglebot_interfaces.msg import PlatformPoseCommand, SetTrapTrajLimitsMessage
+from jugglebot_interfaces.msg import PlatformPoseCommand
 from geometry_msgs.msg import PoseStamped
 from std_srvs.srv import Trigger
 import quaternion  # numpy quaternion
@@ -34,16 +34,6 @@ class SpaceMouseHandler(Node):
         # Create a publisher for the platform pose and a timer to publish it
         self.publisher_ = self.create_publisher(PlatformPoseCommand, 'platform_pose_topic', 10)
         self.timer = self.create_timer(0.01, self.publish_pose)
-
-        # Create a publisher for the trap trajectory limits
-        self.trap_traj_limits_publisher = self.create_publisher(SetTrapTrajLimitsMessage, 'set_leg_trap_traj_limits', 10)
-
-        # Configure the default trapezoidal trajectory limits
-        self.default_trap_traj_limits = {
-            'vel_limit': hw.SPACEMOUSE_TRAP_VEL_LIMIT_RPS,
-            'acc_limit': hw.SPACEMOUSE_TRAP_ACC_LIMIT_RPS2,
-            'dec_limit': hw.SPACEMOUSE_TRAP_DEC_LIMIT_RPS2,
-        }
 
         # Attempt to connect to the SpaceMouse with retries
         max_attempts = 3
@@ -128,31 +118,11 @@ class SpaceMouseHandler(Node):
 
         self.publisher_.publish(message)
 
-    def set_trap_traj_limits(self, vel_limit, acc_limit, dec_limit):
-        """
-        Set the trapezoidal trajectory limits for the legs (vel, acc, dec).
-
-        Ensure all are floats before publising
-        """
-        # Create a message object
-        message = SetTrapTrajLimitsMessage()
-        message.trap_vel_limit = float(vel_limit)
-        message.trap_acc_limit = float(acc_limit)
-        message.trap_dec_limit = float(dec_limit)
-
-        self.trap_traj_limits_publisher.publish(message)
-
-        # Log the new limits
-        self.get_logger().info(f"Trap traj limits set to: vel = {vel_limit}, acc = {acc_limit}, dec = {dec_limit}")
-
     def control_mode_callback(self, msg):
         # If the incoming state calls for the spacemouse, enable it
         if msg.data == 'SPACEMOUSE' and not self.spacemouse_enabled:
             self.get_logger().info('Spacemouse enabled')
             self.spacemouse_enabled = True
-
-            # Set the trapezoidal trajectory limits for the legs
-            self.set_trap_traj_limits(**self.default_trap_traj_limits)
 
         elif msg.data != 'SPACEMOUSE' and self.spacemouse_enabled:
             self.get_logger().info('Spacemouse disabled')
