@@ -105,7 +105,9 @@ from jugglebot.motion.trajectory import (  # noqa: E402
     TrajectoryManager,
     TrajectoryState,
     check_feasibility,
+    create_trajectory,
     evaluate,
+    find_min_feasible_duration,
     cartesian_to_motor_commands,
 )
 from jugglebot.motion.workspace import (  # noqa: E402
@@ -182,12 +184,14 @@ def check_sequence_continuity(
         label_a, traj_a = trajs[i]
         label_b, traj_b = trajs[i + 1]
 
-        # End state of trajectory A
-        t_end_a = traj_a.t_start + traj_a.duration
-        pose_a, twist_a, accel_a = evaluate(traj_a, t_end_a)
-
-        # Start state of trajectory B
-        pose_b, twist_b, accel_b = evaluate(traj_b, traj_b.t_start)
+        # Use stored boundary conditions rather than evaluate(), because
+        # evaluate() clamps twist/accel to zero past the trajectory end
+        # (hold behaviour), which would mask the actual end-state velocity
+        # that the next trajectory expects to start from.
+        sa = traj_a.end_state    # (18,) [pose, twist, accel]
+        sb = traj_b.start_state  # (18,)
+        pose_a,  twist_a,  accel_a  = sa[:6], sa[6:12], sa[12:18]
+        pose_b,  twist_b,  accel_b  = sb[:6], sb[6:12], sb[12:18]
 
         # Check position continuity (translation + rotation separately)
         dp_trans = np.abs(pose_b[:3] - pose_a[:3])
@@ -272,8 +276,6 @@ def build_phase7_test_trajectories(
 
     Returns a list of (label, QuinticTrajectory) tuples.
     """
-    from jugglebot.motion.trajectory import create_trajectory
-
     geom = geom or StewartGeometry()
     params = DynamicsParams.from_config()
     home_pose = np.array([0.0, 0.0, _HOME_Z, 0.0, 0.0, 0.0])
@@ -312,11 +314,12 @@ def build_phase7_test_trajectories(
     # --- DT2: Nonzero velocity + auto-return ---
     dt2_dur = 1.0 / speed_scale
     dt2_vel = 30 * speed_scale
-    trajs.append(('DT2: Home -> Z=190 (vel=+Z)',
-                  _make_traj(home_pose, [0, 0, 190],
-                             [0, 0, dt2_vel], dt2_dur)))
-    # Return trajectory: starts from Z=190 with upward velocity
-    # Use TrajectoryManager to compute the actual return
+    dt2_outbound = _make_traj(home_pose, [0, 0, 190],
+                              [0, 0, dt2_vel], dt2_dur)
+    trajs.append(('DT2: Home -> Z=190 (vel=+Z)', dt2_outbound))
+    # Return trajectory: starts from the outbound's exact end state
+    # so the junction is seamless.  Use TrajectoryManager to find
+    # the return duration, but build from the outbound's boundary.
     mgr_dt2 = TrajectoryManager(geom, params)
     mgr_dt2.set_hold_pose(home_pose)
     t_sim = 100.0  # arbitrary reference time
@@ -332,14 +335,13 @@ def build_phase7_test_trajectories(
     mgr_dt2.evaluate(t_end_dt2 + 0.001)
     if mgr_dt2._active_traj is not None:
         ret_traj = mgr_dt2._active_traj
-        # Rebuild with t_start=0 for the viewer
-        from jugglebot.motion.trajectory import evaluate as traj_evaluate
-        ret_pose, ret_twist, ret_accel = traj_evaluate(ret_traj, ret_traj.t_start)
+        # Use the outbound's end_state directly so the junction is exact
+        out_end = dt2_outbound.end_state
         trajs.append(('DT2: Z=190 -> Home (auto-return)',
                       create_trajectory(
-                          start_pose=ret_pose,
-                          start_twist=ret_twist,
-                          start_accel=ret_accel,
+                          start_pose=out_end[:6],
+                          start_twist=out_end[6:12],
+                          start_accel=out_end[12:18],
                           end_pose=home_pose,
                           end_twist=zeros6,
                           end_accel=zeros6,
@@ -375,8 +377,8 @@ def build_phase7_test_trajectories(
     )
     if mgr_dt3._active_traj is not None:
         splice_traj = mgr_dt3._active_traj
-        sp, st, sa = traj_evaluate(splice_traj, splice_traj.t_start)
-        ep, _, _ = traj_evaluate(splice_traj,
+        sp, st, sa = evaluate(splice_traj, splice_traj.t_start)
+        ep, _, _ = evaluate(splice_traj,
                                  splice_traj.t_start + splice_traj.duration)
         trajs.append(('DT3: Splice -> [15,0,195] (2nd target)',
                       create_trajectory(
@@ -408,8 +410,8 @@ def build_phase7_test_trajectories(
         )
         if mgr_dt4._active_traj is not None:
             traj_i = mgr_dt4._active_traj
-            sp_i, st_i, sa_i = traj_evaluate(traj_i, traj_i.t_start)
-            ep_i, _, _ = traj_evaluate(
+            sp_i, st_i, sa_i = evaluate(traj_i, traj_i.t_start)
+            ep_i, _, _ = evaluate(
                 traj_i, traj_i.t_start + traj_i.duration)
             trajs.append((f'DT4: -> Z={z} (target {i+1}/10)',
                           create_trajectory(
@@ -429,7 +431,128 @@ def build_phase7_test_trajectories(
                   _make_traj([0, 0, 190, 0, 0, 0], [0, 0, _HOME_Z],
                              [0, 0, 0], dt5_dur)))
 
+    # --- Post-process: insert transition trajectories at discontinuities ---
+    trajs = _insert_transitions(trajs, geom, params)
+
     return trajs
+
+
+# Transition speed: 1.5x the TRAP_TRAJ limits used for stow/activate
+# (hardware uses vel=1.5 rev/s, acc=5.0 rev/s²)
+_TRANSITION_SPEED_FACTOR = 1.5
+
+
+def _insert_transitions(
+    trajs: list[tuple[str, QuinticTrajectory]],
+    geom: StewartGeometry,
+    params: DynamicsParams,
+) -> list[tuple[str, QuinticTrajectory]]:
+    """Insert rest-to-rest transition trajectories at discontinuous junctions.
+
+    Scans consecutive trajectory pairs.  Where the end pose of trajectory A
+    doesn't match the start pose of trajectory B (beyond tolerance), a
+    smooth quintic transition is spliced in between.
+
+    The transition duration is found via find_min_feasible_duration() with
+    a 1.5x safety margin, so it moves briskly but within feasibility limits.
+    """
+    if len(trajs) < 2:
+        return trajs
+
+    result = [trajs[0]]
+
+    for i in range(1, len(trajs)):
+        label_prev, traj_prev = result[-1]
+        label_next, traj_next = trajs[i]
+
+        # Use stored boundary conditions (not evaluate(), which clamps
+        # twist/accel to zero past the trajectory end).
+        se = traj_prev.end_state    # (18,) [pose, twist, accel]
+        ss = traj_next.start_state  # (18,)
+        pose_end,  twist_end  = se[:6], se[6:12]
+        pose_start, twist_start = ss[:6], ss[6:12]
+
+        dp = np.linalg.norm(pose_end[:3] - pose_start[:3])
+        dr = np.linalg.norm(pose_end[3:] - pose_start[3:])
+        dv = np.linalg.norm(twist_end[:3] - twist_start[:3])
+
+        needs_transition = (dp > _CONT_POS_TOL_MM
+                            or dr > _CONT_POS_TOL_RAD
+                            or dv > _CONT_VEL_TOL_MM)
+
+        if needs_transition:
+            # Build a transition from end of prev to start of next.
+            # Start boundary: traj_prev's end state (evaluate returns zero
+            # twist/accel after duration).
+            # End boundary: traj_next's actual start state, which may have
+            # nonzero twist if it was spliced mid-motion.
+            zeros6 = np.zeros(6)
+            duration = find_min_feasible_duration(
+                start_pose=pose_end,
+                start_twist=twist_end,
+                start_accel=zeros6,
+                end_pose=pose_start,
+                end_twist=twist_start,
+                end_accel=zeros6,
+                geom=geom,
+                dynamics_params=params,
+            )
+            if duration is None:
+                # Shouldn't happen for modest transitions — warn and skip
+                print(f"  WARNING: transition {label_prev} -> {label_next} "
+                      f"infeasible, skipping")
+                result.append(trajs[i])
+                continue
+
+            # Apply 1.5x safety margin (same philosophy as return-to-home)
+            duration *= _TRANSITION_SPEED_FACTOR
+
+            transition = create_trajectory(
+                start_pose=pose_end,
+                start_twist=twist_end,
+                start_accel=zeros6,
+                end_pose=pose_start,
+                end_twist=twist_start,
+                end_accel=zeros6,
+                duration=duration,
+                t_start=0.0,
+            )
+            result.append((f'~transition~ ({label_prev} -> {label_next})',
+                           transition))
+
+        result.append(trajs[i])
+
+    return result
+
+
+def _filter_trajs(
+    trajs: list[tuple[str, QuinticTrajectory]],
+    test_prefixes: set[str],
+) -> list[tuple[str, QuinticTrajectory]]:
+    """Filter trajectory list to requested tests, keeping transitions.
+
+    Keeps any trajectory whose label starts with a requested prefix (e.g.
+    "DT1", "DT4") AND any transition trajectory whose neighbours are both
+    in the kept set.  A transition between two kept tests must be kept,
+    otherwise the continuity check would see a gap.
+    """
+    # First pass: mark which indices are test trajectories we want
+    keep = set()
+    for i, (label, _) in enumerate(trajs):
+        if any(label.startswith(p) for p in test_prefixes):
+            keep.add(i)
+
+    # Second pass: keep transitions that bridge two kept trajectories
+    for i, (label, _) in enumerate(trajs):
+        if label.startswith('~transition~'):
+            # Keep if the trajectory before and after are both kept
+            prev_kept = (i - 1) in keep
+            next_kept = (i + 1) in keep
+            if prev_kept and next_kept:
+                keep.add(i)
+
+    # Preserve order
+    return [trajs[i] for i in sorted(keep)]
 
 
 def run_dry_run(speed_scale: float, show_preview: bool,
@@ -458,8 +581,7 @@ def run_dry_run(speed_scale: float, show_preview: bool,
         dt_num = ALL_TESTS.index(name) + 1
         test_prefixes.add(f'DT{dt_num}')
 
-    filtered = [(label, traj) for label, traj in trajs
-                if any(label.startswith(p) for p in test_prefixes)]
+    filtered = _filter_trajs(trajs, test_prefixes)
 
     all_ok = True
     for label, traj in filtered:
@@ -1153,8 +1275,7 @@ Modes:
     for name in tests_to_run:
         dt_num = ALL_TESTS.index(name) + 1
         test_prefixes.add(f'DT{dt_num}')
-    filtered = [(label, traj) for label, traj in trajs
-                if any(label.startswith(p) for p in test_prefixes)]
+    filtered = _filter_trajs(trajs, test_prefixes)
 
     print("\n  Pre-flight continuity check:")
     cont_ok, cont_violations = check_sequence_continuity(filtered)
