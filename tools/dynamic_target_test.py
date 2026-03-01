@@ -156,6 +156,11 @@ def _move_to_pose(harness: PlatformTestHarness,
 
     harness.enter_trap_traj_mode_all(vel_limit=1.5, acc_limit=5.0,
                                      dec_limit=5.0)
+
+    # Clear stale trajectory_done flags before sending the real target
+    for axis_id in LEG_AXES:
+        harness.states[axis_id].trajectory_done = False
+
     for i, axis_id in enumerate(LEG_AXES):
         tor_int = int(round(-torques[i] * LEG_TOR_FF_SCALE))
         tor_int = max(-32767, min(32767, tor_int))
@@ -191,6 +196,15 @@ def stow_platform(harness: PlatformTestHarness):
     """
     harness.enter_trap_traj_mode_all(vel_limit=1.5, acc_limit=5.0,
                                      dec_limit=5.0)
+
+    # Clear stale trajectory_done flags — enter_trap_traj_mode_all
+    # commands each axis to hold at its current position, which
+    # completes instantly and sets trajectory_done=True.  We must
+    # clear these before sending the real move-to-0 commands,
+    # otherwise wait_for_all_trajectories_done returns immediately.
+    for axis_id in LEG_AXES:
+        harness.states[axis_id].trajectory_done = False
+
     for axis_id in LEG_AXES:
         harness.send(encode_set_input_pos(
             axis_id, 0.0, vel_ff=0, torque_ff=0))
