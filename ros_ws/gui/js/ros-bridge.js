@@ -7,6 +7,7 @@
  */
 
 const RECONNECT_INTERVAL_MS = 2000;
+const STALE_TIMEOUT_MS = 5000;  // Mark disconnected if no messages for 5 seconds
 
 /** @type {ROSLIB.Ros | null} */
 let ros = null;
@@ -28,6 +29,12 @@ const publishers = {};
 
 /** Set to true while intentionally closing to suppress reconnect */
 let intentionalClose = false;
+
+/** Timestamp of last message received on any subscription */
+let lastMessageTime = 0;
+
+/** Timer for staleness check */
+let staleCheckTimer = null;
 
 /** Saved URL for reconnect */
 let savedUrl = null;
@@ -61,6 +68,7 @@ function connect(url) {
     // Close and discard any previous ROSLIB.Ros instance.
     // Reusing a closed instance can leave stale internal WebSocket state
     // that prevents rosbridge from accepting the new connection.
+    stopStaleCheck();
     if (ros) {
         intentionalClose = true;
         try { ros.close(); } catch { /* ignore */ }
@@ -116,9 +124,42 @@ function scheduleReconnect(url) {
 }
 
 function setConnectionState(state) {
+    if (state === connectionState) return;
     connectionState = state;
+
+    if (state === 'connected') {
+        lastMessageTime = Date.now();
+        startStaleCheck();
+    }
+
     for (const cb of stateListeners) {
         try { cb(state); } catch (e) { console.error('State listener error:', e); }
+    }
+}
+
+/** Bump the last-message timestamp. Called from wrapped subscription callbacks. */
+function touchActivity() {
+    lastMessageTime = Date.now();
+    // If we were marked stale-disconnected, restore connected state
+    if (connectionState === 'disconnected' && ros && ros.isConnected) {
+        setConnectionState('connected');
+    }
+}
+
+function startStaleCheck() {
+    if (staleCheckTimer) return;
+    staleCheckTimer = setInterval(() => {
+        if (connectionState !== 'connected') return;
+        if (Date.now() - lastMessageTime >= STALE_TIMEOUT_MS) {
+            setConnectionState('disconnected');
+        }
+    }, 1000);
+}
+
+function stopStaleCheck() {
+    if (staleCheckTimer) {
+        clearInterval(staleCheckTimer);
+        staleCheckTimer = null;
     }
 }
 
@@ -163,7 +204,10 @@ function createSubscription(entry) {
         throttle_rate: entry.throttleRate,
     });
 
-    topic.subscribe(entry.callback);
+    topic.subscribe((msg) => {
+        touchActivity();
+        entry.callback(msg);
+    });
     entry.rosTopic = topic;
 }
 

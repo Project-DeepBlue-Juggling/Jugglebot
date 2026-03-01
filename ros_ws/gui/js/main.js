@@ -199,10 +199,16 @@ function onRobotState(msg) {
     }
 }
 
+let bbTimeout = null;
+const BB_TIMEOUT_MS = 5000;
+
 function onBBHeartbeat(msg) {
     recordTopicMessage('bb/heartbeat');
     updateBBPanel(msg);
     updateBallButler(msg.yaw_deg, msg.pitch_deg, msg.hand_pos_mm);
+
+    if (bbTimeout) clearTimeout(bbTimeout);
+    bbTimeout = setTimeout(() => { setBBDisconnected(); }, BB_TIMEOUT_MS);
 }
 
 function onOrchestratorState(msg) {
