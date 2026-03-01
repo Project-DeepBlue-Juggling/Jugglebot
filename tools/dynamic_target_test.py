@@ -302,7 +302,7 @@ def test_static_target(
 
     geom = StewartGeometry()
     params = DynamicsParams.from_config()
-    limits = WorkspaceLimits.from_config(geom)
+    limits = WorkspaceLimits.from_geometry(geom)
     mgr = TrajectoryManager(geom, params)
     mgr.set_hold_pose(mgr.home_pose)
 
@@ -361,7 +361,7 @@ def test_auto_return(
 
     geom = StewartGeometry()
     params = DynamicsParams.from_config()
-    limits = WorkspaceLimits.from_config(geom)
+    limits = WorkspaceLimits.from_geometry(geom)
     mgr = TrajectoryManager(geom, params)
     mgr.set_hold_pose(mgr.home_pose)
 
@@ -432,7 +432,7 @@ def test_replan(
 
     geom = StewartGeometry()
     params = DynamicsParams.from_config()
-    limits = WorkspaceLimits.from_config(geom)
+    limits = WorkspaceLimits.from_geometry(geom)
     mgr = TrajectoryManager(geom, params)
     mgr.set_hold_pose(mgr.home_pose)
 
@@ -507,7 +507,7 @@ def test_rapid_targets(
 
     geom = StewartGeometry()
     params = DynamicsParams.from_config()
-    limits = WorkspaceLimits.from_config(geom)
+    limits = WorkspaceLimits.from_geometry(geom)
     mgr = TrajectoryManager(geom, params)
     mgr.set_hold_pose(mgr.home_pose)
 
@@ -573,7 +573,7 @@ def test_infeasible_ignored(
 
     geom = StewartGeometry()
     params = DynamicsParams.from_config()
-    limits = WorkspaceLimits.from_config(geom)
+    limits = WorkspaceLimits.from_geometry(geom)
     mgr = TrajectoryManager(geom, params)
     mgr.set_hold_pose(mgr.home_pose)
 
