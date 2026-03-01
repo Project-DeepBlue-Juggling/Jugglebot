@@ -424,9 +424,7 @@ def test_static_target(
         harness, mgr, geom, params, limits, targets,
         max_duration_s=duration + 5.0, label="DT1")
 
-    safe_idle_all(harness)
-
-    # Analyze
+    # Analyze (stowing handled by main() finally block)
     analysis = analyze_log(log) if log.timestamps else {}
     if analysis:
         print_analysis('DT1 Static target', analysis)
@@ -486,9 +484,7 @@ def test_auto_return(
         harness, mgr, geom, params, limits, targets,
         max_duration_s=duration * 3 + 5.0, label="DT2")
 
-    safe_idle_all(harness)
-
-    # Analyze
+    # Analyze (stowing handled by main() finally block)
     analysis = analyze_log(log) if log.timestamps else {}
     if analysis:
         print_analysis('DT2 Auto-return', analysis)
@@ -566,9 +562,7 @@ def test_replan(
         harness, mgr, geom, params, limits, targets,
         max_duration_s=base_dur * 2 + 5.0, label="DT3")
 
-    safe_idle_all(harness)
-
-    # Analyze
+    # Analyze (stowing handled by main() finally block)
     analysis = analyze_log(log) if log.timestamps else {}
     if analysis:
         print_analysis('DT3 Replan', analysis)
@@ -633,9 +627,7 @@ def test_rapid_targets(
         harness, mgr, geom, params, limits, targets,
         max_duration_s=duration + 10.0, label="DT4")
 
-    safe_idle_all(harness)
-
-    # Analyze
+    # Analyze (stowing handled by main() finally block)
     n_accepted = sum(1 for e in events if e['accepted'])
     n_rejected = sum(1 for e in events if not e['accepted'])
     n_faults = 0
@@ -706,9 +698,7 @@ def test_infeasible_ignored(
         harness, mgr, geom, params, limits, targets,
         max_duration_s=base_dur + 5.0, label="DT5")
 
-    safe_idle_all(harness)
-
-    # Analyze
+    # Analyze (stowing handled by main() finally block)
     analysis = analyze_log(log) if log.timestamps else {}
     first_accepted = events[0]['accepted'] if events else False
     second_rejected = not events[1]['accepted'] if len(events) > 1 else False
