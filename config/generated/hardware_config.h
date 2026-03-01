@@ -26,14 +26,14 @@ namespace Physics {
 // ==========================================================================
 
 namespace Dynamics {
-  constexpr float PLATFORM_MASS_KG = 0.96f;
-  constexpr float PLATFORM_COM_OFFSET_MM[3] = {-14.5f, -67.0f, 54.0f};
-  constexpr float PLATFORM_INERTIA_TENSOR_KGMM2_IXX = 12676.068f;
-  constexpr float PLATFORM_INERTIA_TENSOR_KGMM2_IXY = 119.211f;
-  constexpr float PLATFORM_INERTIA_TENSOR_KGMM2_IXZ = -23.518f;
-  constexpr float PLATFORM_INERTIA_TENSOR_KGMM2_IYY = 11631.61f;
-  constexpr float PLATFORM_INERTIA_TENSOR_KGMM2_IYZ = 930.311f;
-  constexpr float PLATFORM_INERTIA_TENSOR_KGMM2_IZZ = 7226.703f;
+  constexpr float PLATFORM_MASS_KG = 1.2f;
+  constexpr float PLATFORM_COM_OFFSET_MM[3] = {-9.68f, -68.64f, 52.73f};
+  constexpr float PLATFORM_INERTIA_TENSOR_KGMM2_IXX = 16349.8f;
+  constexpr float PLATFORM_INERTIA_TENSOR_KGMM2_IXY = -402.572f;
+  constexpr float PLATFORM_INERTIA_TENSOR_KGMM2_IXZ = 191.094f;
+  constexpr float PLATFORM_INERTIA_TENSOR_KGMM2_IYY = 14987.903f;
+  constexpr float PLATFORM_INERTIA_TENSOR_KGMM2_IYZ = 979.411f;
+  constexpr float PLATFORM_INERTIA_TENSOR_KGMM2_IZZ = 9298.383f;
   constexpr float MOTOR_ROTOR_INERTIA_KGM2 = 0.000275f;
 }
 

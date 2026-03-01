@@ -34,18 +34,18 @@ physics:
 #     Source: Onshape CAD model (2026-02-25).
 # ============================================================
 dynamics:
-  platform_mass_kg: 0.96                      # Total platform mass {kg}, including throw axis assembly
-  platform_com_offset_mm: [-14.5, -67.0, 54.0] # Centre of mass offset from platform geometric centre {mm},
-                                                # in platform frame [x, y, z]. z is perpendicular to platform
-                                                # plane, positive toward throw axis.
-  platform_inertia_tensor_kgmm2:              # Inertia tensor about CoM in platform body frame {kg·mm²}.
-                                                # Source: Onshape CAD model (2026-03-01).
-    Ixx: 12676.068
-    Ixy: 119.211
-    Ixz: -23.518
-    Iyy: 11631.61
-    Iyz: 930.311
-    Izz: 7226.703
+  platform_mass_kg: 1.2                          # Total platform mass {kg}, including throw axis assembly
+  platform_com_offset_mm: [-9.68, -68.64, 52.73] # Centre of mass offset from platform geometric centre {mm},
+                                                 # in platform frame [x, y, z]. z is perpendicular to platform
+                                                 # plane, positive toward throw axis.
+  platform_inertia_tensor_kgmm2:                 # Inertia tensor about CoM in platform body frame {kg·mm²}.
+                                                 # Source: Onshape CAD model (2026-03-01).
+    Ixx: 16349.8
+    Ixy: -402.572
+    Ixz: 191.094
+    Iyy: 14987.903
+    Iyz: 979.411
+    Izz: 9298.383
   motor_rotor_inertia_kgm2: 0.000275          # Motor rotor inertia {kg·m²} for ODrive D6374-150Kv.
                                                 # Estimated from motor specs (890g outrunner, 63mm stator OD):
                                                 #   Method 1: hollow cylinder model (50% mass at ~35mm radius) → 2.76e-4
