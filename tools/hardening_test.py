@@ -90,7 +90,6 @@ from trajectory_test import (  # noqa: E402
     move_to_home,
     switch_to_passthrough,
     make_rest_to_rest,
-    execute_trajectory,
     TARGET_DT_S,
     TARGET_LOOP_HZ,
     HOLD_AFTER_S,
@@ -350,6 +349,10 @@ def test_workspace_boundary(harness, geom, params, limits, speed_scale, dry_run=
 
         interactive_pause(f"Execute {label}?")
 
+        # Return to home via TRAP_TRAJ before each trajectory (safe ramped move)
+        move_to_home(harness, geom, params)
+        switch_to_passthrough(harness)
+
         # Execute on hardware
         analysis, violations = execute_trajectory_with_workspace_check(
             harness, traj, geom, params, limits, speed_scale, label)
@@ -514,6 +517,10 @@ def test_endurance_moderate(harness, geom, params, limits, speed_scale=0.5,
                 if time.perf_counter() >= t_endurance_end:
                     break
 
+                # Return to home via TRAP_TRAJ before each trajectory
+                move_to_home(harness, geom, params)
+                switch_to_passthrough(harness)
+
                 # Execute forward
                 analysis, violations = execute_trajectory_with_workspace_check(
                     harness, traj, geom, params, limits, speed_scale, label)
@@ -525,11 +532,6 @@ def test_endurance_moderate(harness, geom, params, limits, speed_scale=0.5,
 
                 if violations:
                     faults.extend(violations[:3])
-
-                # Return to home
-                home_traj = make_rest_to_rest(np.zeros(6), 1.0, speed_scale)
-                execute_trajectory(harness, home_traj, geom, params, speed_scale)
-                total_moves += 1
 
             # Periodic status
             if cycle_count % 5 == 0:
