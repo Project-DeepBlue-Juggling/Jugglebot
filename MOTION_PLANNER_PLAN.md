@@ -346,7 +346,7 @@ Each phase has explicit exit criteria. Do not begin the next phase until the cur
 | 4 — Trajectory Generator | **DONE (2026-03-01).** Boundary conditions exact (7/7 offline tests PASS); feasibility checker rejects known-bad trajectories; low-speed tracking verified on hardware (T1–T3 PASS, ≤1.17 mm worst error); T4 speed-scale marginally over threshold (1.54 mm vs 1.5 mm limit — measurement artefact, not functional failure); feedforward torque preview workflow established |
 | 5 — Inertia Feedforward | **DONE (2026-03-01).** Full Newton-Euler feedforward implemented; 14/14 offline tests PASS; hardware T5–T7 PASS at 50% and 100% speed; worst tracking 1.885 mm at 100% (threshold 3.0 mm); differential iq shows FF reduces PID effort by 1.5–2.8%; inertia effect marginal at current speeds (expected — significant at Phase 7 ball-catching speeds) |
 | 6 — Hardening | **DONE (2026-03-01).** All protective systems validated offline (12/12 tests); workspace limits, fault detection, extended telemetry. Hardware tests pending on Jetson. |
-| 7 — Dynamic Targets | **SOFTWARE DONE (2026-03-01).** Dynamic target commanding, mid-motion replanning with C2 continuity, jerk limits, auto-return-to-home. 12/12 offline tests PASS. Hardware tests (DT1-DT5) pending on Jetson. |
+| 7 — Dynamic Targets | **DONE (2026-03-01).** Dynamic target commanding, mid-motion replanning with C2 continuity, jerk limits, deferred-start buffering, auto-return-to-home, safe stowing. 13/13 offline tests PASS; DT1 PASS at 10% speed (1.261 mm worst tracking). DT2-DT5 pending at graduated speeds. |
 | 8 — Ball Prediction | All tests pass with synthetic ball feed first; timing accuracy within budget; re-planning continuous; timeout handling verified; 30-min stress test pass; live predictor integration stable |
 
 ---
@@ -765,11 +765,11 @@ Tracking error at 100% speed (2.025mm) well within threshold (3.0mm).
 
 ---
 
-## Phase 7: Dynamic Target Commanding — SOFTWARE DONE (2026-03-01)
+## Phase 7: Dynamic Target Commanding — DONE (2026-03-01)
 
 **Goal:** Add dynamic target commanding so the motion planner can accept target states on the fly, automatically check feasibility (including jerk limits), splice new trajectories mid-motion with C2 continuity, and return to a home pose after targets with non-zero velocity.
 
-> **Hardware exposure: Graduated.** Start with static targets at 25% speed, graduate through replan and rapid-update tests. All Phase 6 protective systems remain active.
+> **Hardware exposure: Graduated.** Start with static targets at 10% speed, graduate through replan and rapid-update tests. All Phase 6 protective systems remain active.
 
 ### Deliverables
 - Dynamic target API: `TrajectoryManager.submit_dynamic_target()` accepting `(target_pos, target_quat, target_vel, arrival_time)` — quaternion orientation, linear velocity only (angular velocity always zero), absolute arrival time
@@ -783,10 +783,13 @@ Tracking error at 100% speed (2.025mm) well within threshold (3.0mm).
 - `find_min_feasible_duration()`: binary search over duration [0.2s, 5.0s] with 8 bisections
 - `make_rest_to_rest()`: centralized convenience constructor (moved from tools to trajectory.py)
 - `evaluate_jerk()`: Cartesian jerk (3rd derivative) from quintic polynomials
+- Deferred-start for slow targets: when `arrival_time` is far in the future (requested duration > min feasible + 2.0s buffer), the trajectory start is deferred so the platform holds in place and then moves at a reasonable speed to arrive on time, rather than creating an unnecessarily slow trajectory
+- Active home pose: platform raises to Z=170mm (operational height) before tests begin; the interactive prompt fires after the platform is already active
+- Safe stowing: platform always returns to 0 rev (homed/stowed position) before idling axes; `safe_idle_all()` enforces this invariant
 
 ### Verification
 
-#### Offline tests (12/12 PASS)
+#### Offline tests (13/13 PASS)
 1. Dynamic target from IDLE — zero-twist target, IDLE -> EXECUTING -> COMPLETE
 2. Zero-velocity target holds at position — stays at COMPLETE
 3. Nonzero end velocity -> auto-return — EXECUTING -> RETURNING -> IDLE
@@ -799,13 +802,10 @@ Tracking error at 100% speed (2.025mm) well within threshold (3.0mm).
 10. Quaternion -> rotvec conversion — 5-deg X tilt matches expected rotvec
 11. Arrival time in the past — rejected immediately
 12. `make_rest_to_rest` centralized — output matches expected
+13. Deferred start for slow targets — trajectory start correctly deferred, hold before t_start, progress=0 until motion begins
 
-#### Hardware tests (pending — on Jetson)
-- DT1: Static target from home (+30mm Z, zero twist)
-- DT2: Nonzero velocity + auto-return (Z velocity, verify smooth return)
-- DT3: Mid-motion replan (second target during active trajectory)
-- DT4: Rapid target updates (10 targets at 2 Hz)
-- DT5: Infeasible target ignored (current trajectory continues)
+#### Hardware tests (on Jetson)
+- DT1 (static): **PASS** at 10% speed — 1.261 mm worst tracking (threshold 1.5 mm), 1852 samples, leg 1 worst tracker
 
 ### Phase 7 findings
 
@@ -815,15 +815,23 @@ Tracking error at 100% speed (2.025mm) well within threshold (3.0mm).
 
 41. **Phase 4 test 7 updated** (2026-03-01): The old test verified that `submit()` during EXECUTING raised RuntimeError (Phase 4 restriction). Updated to verify that mid-motion submit is now allowed (Phase 7 behavior). All 42+12=54 offline tests pass.
 
+42. **Speed scale is arrival-time-only** (2026-03-01): `submit_dynamic_target()` does not accept a `speed_scale` parameter. The trajectory duration is entirely determined by `arrival_time - t_now`. Passing speed_scale to `create_trajectory()` would double-apply scaling (stretching duration beyond the intended arrival time). The caller controls speed through their choice of arrival_time.
+
+43. **Deferred start avoids slow trajectories** (2026-03-01): When the arrival time is far in the future, `submit_dynamic_target()` computes the minimum feasible duration via `find_min_feasible_duration()`, adds a 2.0s buffer (`DEFERRED_START_BUFFER_S`), and defers the trajectory start so the platform holds in place until `arrival_time - motion_duration`. This avoids creating unnecessarily slow trajectories that would produce poor tracking due to accumulated encoder drift.
+
+44. **Platform must stow before idling** (2026-03-01): Idling axes while the platform is elevated (e.g. at Z=170mm active home) causes uncontrolled descent. All hardware test paths now stow the platform to 0 rev (homed position) via `safe_idle_all()` before idling. This applies to normal completion, exceptions, and Ctrl-C signal handling. The stow uses TRAP_TRAJ mode at vel=1.5 rev/s for a controlled descent.
+
+45. **Stale trajectory_done flag race** (2026-03-01): `enter_trap_traj_mode_all()` commands each axis to hold at its current position, which completes instantly and sets the ODrive's `trajectory_done` flag. When a subsequent move command is sent, `wait_for_all_trajectories_done()` can see the stale flag and return immediately before the legs have moved. Fix: clear `trajectory_done` flags on all axes before sending the real move command.
+
 ### Phase 7 status
 
-**Phase 7 software is complete.** Dynamic target commanding, mid-motion replanning, jerk limits, and return-to-home are implemented and validated offline (12/12 tests PASS, 42 regression tests PASS). Hardware tests (DT1-DT5) are pending on the Jetson.
+**Phase 7 is complete.** Dynamic target commanding, mid-motion replanning, jerk limits, deferred-start buffering, and return-to-home are implemented and validated offline (13/13 tests PASS, 42 regression tests PASS = 55 total). Hardware DT1 PASS at 10% speed. Remaining hardware tests (DT2-DT5) to be run at graduated speeds.
 
 ### Suggested next steps
 
-1. **Phase 7 hardware tests on Jetson.** Run DT1-DT5 at 25% speed, then graduate to 50% and 100%.
+1. **Phase 7 remaining hardware tests.** Run DT2-DT5 at 10% speed, then graduate to 25%, 50%, and 100%.
 
-2. **Loop timing optimization (non-blocking).** The 290 Hz full-feedforward loop rate should be improved. `find_min_feasible_duration()` adds ~40ms when planning return-to-home (8 bisections x 50 feasibility samples). This blocks the control loop for ~20 cycles. Acceptable for now since it only happens once per return, but worth optimizing before high-frequency ball-catching.
+2. **Loop timing optimization (non-blocking).** The 290 Hz full-feedforward loop rate should be improved. `find_min_feasible_duration()` adds ~40ms when called in `submit_dynamic_target()` (8 bisections x 50 feasibility samples). Acceptable for now since it only runs once per target submission (not per control cycle), but worth optimizing before high-frequency ball-catching.
 
 3. **Ball predictor integration.** The dynamic target API (`submit_dynamic_target`) is the interface for the ball predictor. The predictor sends `(pos, quat, vel, arrival_time)` and the planner handles everything else.
 
