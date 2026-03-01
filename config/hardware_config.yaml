@@ -1,0 +1,480 @@
+# ===========================================================================
+# hardware_config.yaml — Centralised hardware & geometry constants
+#
+# Single source of truth for all hardware dimensions, physical properties,
+# tuning parameters, and operational constants across the Jugglebot system.
+# CAN protocol constants live separately in jugglebot_protocol.yaml.
+#
+# Consumed by: generate_config.py → hardware_config.py (Python)
+#                                  → hardware_config.h  (C++)
+#
+# To regenerate: python config/generate_config.py
+#
+# Section grouping:
+#   1       Shared Physics
+#   2–6     Jugglebot (Stewart platform)
+#   7–8     Teensy (platform microcontroller)
+#   9       Motion Capture
+#   10      Ball Tracking & Prediction
+#   11–21   Ball Butler
+# ===========================================================================
+
+# ============================================================
+# 1. Shared Physics
+# ============================================================
+physics:
+  gravity_mps2: 9.806       # Gravitational acceleration (m/s^2). Used by both Teensys (trajectory planning)
+                             # and Python (ball tracking/prediction). NOTE: Some legacy Python files use 9.81 — this
+                             # value (9.806) matches the firmware and is the canonical value going forward.
+
+# ============================================================
+# 1b. Platform Dynamics
+#     Mass and inertia properties of the Stewart platform assembly
+#     (including throw axis as a static payload at its nominal position).
+#     Source: Onshape CAD model (2026-02-25).
+# ============================================================
+dynamics:
+  platform_mass_kg: 0.96                      # Total platform mass {kg}, including throw axis assembly
+  platform_com_offset_mm: [-14.5, -67.0, 54.0] # Centre of mass offset from platform geometric centre {mm},
+                                                # in platform frame [x, y, z]. z is perpendicular to platform
+                                                # plane, positive toward throw axis.
+  platform_inertia_tensor_kgmm2:              # Inertia tensor about CoM in platform body frame {kg·mm²}.
+                                                # Source: Onshape CAD model (2026-03-01).
+    Ixx: 12676.068
+    Ixy: 119.211
+    Ixz: -23.518
+    Iyy: 11631.61
+    Iyz: 930.311
+    Izz: 7226.703
+  motor_rotor_inertia_kgm2: 0.000275          # Motor rotor inertia {kg·m²} for ODrive D6374-150Kv.
+                                                # Estimated from motor specs (890g outrunner, 63mm stator OD):
+                                                #   Method 1: hollow cylinder model (50% mass at ~35mm radius) → 2.76e-4
+                                                #   Method 2: τ/α from datasheet (3.86 Nm, 42.7 ms to 603 rad/s) → 2.73e-4
+                                                # Rounded to 2.75e-4. May be refined via system ID in Phase 6.
+
+# ============================================================
+# 2. Jugglebot Stewart Platform Geometry
+#    Source: ros_ws/src/jugglebot/jugglebot/robot_geometry.py
+#    All node positions are pre-computed (from build_platform()) and stored
+#    here as optimised values determined experimentally.
+# ============================================================
+jugglebot_geometry:
+  # Platform height: distance from base plane (bottom joint of legs) to platform
+  # in its lowest position. Found experimentally by echoing /rigid_body_poses after homing.
+  # NOTE: The old value of 565.0 mm is stale and appears in several catch nodes.
+  initial_height_mm: 574.3
+
+  base_radius_mm: 410.0              # Radius of base {mm}
+  plat_radius_mm: 219.075            # Radius of platform {mm}
+  base_small_angle_deg: 20.0         # Gamma2 on main sketch — angle between close base nodes {deg}
+  plat_small_angle_deg: 8.6024446    # Lambda1 on main sketch — angle between close platform nodes {deg}
+  plat_x_axis_offset_deg: 154.3012223  # Lambda0 on main sketch — offset from x-axis for platform nodes {deg} (measured in Onshape)
+  leg_stroke_mm: 280.0               # Total stroke of each linear actuator leg {mm}
+
+  # Arm / catching structure (mounted on top of platform)
+  arm_radius_mm: 70.0                # Radius of opening where the ball comes in {mm}. Approximate.
+  arm_height_from_platform_mm: 210.25  # Height of ball entry opening above the platform leg nodes {mm}
+  hand_stroke_mm: 355.0              # Stroke of the jugglebot hand {mm}. Must be accurate — used to detect overextension.
+  hand_radius_mm: 35.0               # Radius of hand {mm}. Approximate.
+
+  # Ball joint offset: 12.50 mm radius of ball joint + 13 mm gap between the
+  # 'measuring face' and the connection point to the upper leg. Added to init_leg_lengths
+  # because length measurements were taken to the ball joint radius.
+  # Source: robot_geometry.py line 93
+  ball_joint_offset_mm: 25.50
+
+  # Pre-computed base node positions in the base frame {mm}.
+  # Calculated from base_radius and base_small_angle via build_platform().
+  base_nodes_mm:
+    - [-385.274, -140.228, 0.0]
+    - [-314.078, -263.543, 0.0]
+    - [314.078, -263.543, 0.0]
+    - [385.274, -140.228, 0.0]
+    - [71.196, 403.771, 0.0]
+    - [-71.196, 403.771, 0.0]
+
+  # Pre-computed platform node positions in the platform frame {mm}.
+  # Calculated from plat_radius, plat_small_angle, and plat_x_axis_offset via build_platform().
+  init_plat_nodes_mm:
+    - [-197.405, 95.000, 0.0]
+    - [-16.431, -218.458, 0.0]
+    - [16.431, -218.458, 0.0]
+    - [197.405, 95.000, 0.0]
+    - [180.975, 123.458, 0.0]
+    - [-180.975, 123.458, 0.0]
+
+  # Initial leg lengths {mm}, measured experimentally (see Livestream #51 @ ~28min).
+  # These are the raw actuator measurements BEFORE adding ball_joint_offset_mm.
+  init_leg_lengths_mm: [621.389, 618.160, 622.074, 620.653, 620.652, 620.091]
+
+  # Per-leg mm-to-revolutions conversion factors, found experimentally.
+  # Each leg has a slightly different mechanical ratio.
+  # Source: sp_ik.py line 228
+  mm_to_rev: [0.01418332, 0.01419076, 0.01408956, 0.01418684, 0.01426801, 0.01424951]
+
+  # Motor position limits (in revolutions, pre-inversion).
+  # leg value includes headroom above the stroke-derived limit (~4.0 rev).
+  leg_motor_max_position_revs: 4.2
+  # hand true max ~11.4 rev. This value includes a safety margin.
+  hand_motor_max_position_revs: 11.1
+
+# ============================================================
+# 3. Jugglebot Homing
+#    Homing parameters for leg and hand motors.
+# ============================================================
+jugglebot_homing:
+  leg_speed_rps: 1.5                     # Leg homing velocity {rev/s}
+  leg_current_limit_a: 5.0               # Leg motor current limit during homing {A}
+  leg_current_headroom_a: 3.0            # Leg current headroom for spike detection {A}
+  leg_abs_pos_rev: 0.1                   # Absolute position set after leg homing {rev}
+  hand_speed_rps: -3.0                   # Hand homing velocity {rev/s} (negative = retract)
+  hand_current_limit_a: 8.0              # Hand motor current limit during homing {A}
+  hand_current_headroom_a: 3.0           # Hand current headroom for spike detection {A}
+  hand_abs_pos_rev: -0.1                 # Absolute position set after hand homing {rev}
+  ema_weight: 0.7                        # EMA weight for Iq spike detection
+  motor_timeout_s: 30.0                  # Max time per motor for homing current detection {s}
+
+# ============================================================
+# 4. Jugglebot ODrive Defaults
+#    Default ODrive operating parameters for Jugglebot axes.
+# ============================================================
+jugglebot_odrive_defaults:
+  trap_vel_limit_rps: 15.0               # Default trapezoidal trajectory velocity limit {rev/s}
+  trap_acc_limit_rps2: 30.0              # Default trapezoidal trajectory acceleration {rev/s^2}
+  trap_dec_limit_rps2: 30.0              # Default trapezoidal trajectory deceleration {rev/s^2}
+  leg_vel_limit_rps: 50.0                # Leg velocity limit {rev/s}
+  leg_curr_limit_a: 20.0                 # Leg current limit {A}
+  hand_vel_limit_rps: 1000.0             # Hand velocity limit {rev/s}
+  hand_curr_limit_a: 50.0                # Hand current limit {A}
+  hand_pos_gain: 35.0                    # Hand position gain
+  hand_vel_gain: 0.007                   # Hand velocity gain
+  hand_vel_int_gain: 0.07                # Hand velocity integrator gain
+
+# ============================================================
+# 5. Jugglebot Operational
+#    Runtime operational parameters for platform operation.
+# ============================================================
+jugglebot_operational:
+  activate_position_rev: 2.229           # Leg setpoint when activating platform {rev}
+  default_active_z_mm: 170.0             # Default platform Z during active catching {mm}
+  target_reached_pos_tol_rev: 0.01       # Position tolerance for target-reached check {rev}
+  target_reached_vel_tol_rps: 0.1        # Velocity tolerance for target-reached check {rev/s}
+  gentle_move_vel_limit_rps: 2.5         # Velocity limit during gentle moves {rev/s}
+  encoder_search_timeout_s: 3.0          # Timeout for encoder search phases {s}
+  gentle_move_timeout_s: 10.0            # Timeout for gentle-move trajectory completion {s}
+  shutdown_stow_timeout_s: 15.0          # Maximum time for shutdown stow attempt {s}
+  max_valid_tilt_rad: 0.785              # Maximum valid tilt reading before retry {rad} (~45 deg)
+
+# ============================================================
+# 6. Jugglebot SpaceMouse
+#    SpaceMouse input scaling and trajectory parameters.
+# ============================================================
+jugglebot_spacemouse:
+  xy_mult_mm: 150.0                      # XY axis sensitivity {mm}
+  z_mult_mm: 140.0                       # Z axis sensitivity {mm}
+  pitch_roll_mult_deg: 30.0              # Pitch/roll sensitivity {deg}
+  yaw_mult_deg: 10.0                     # Yaw sensitivity {deg}
+  trap_vel_limit_rps: 15.0               # Trapezoidal trajectory velocity limit {rev/s}
+  trap_acc_limit_rps2: 20.0              # Trapezoidal trajectory acceleration {rev/s^2}
+  trap_dec_limit_rps2: 20.0              # Trapezoidal trajectory deceleration {rev/s^2}
+
+# ============================================================
+# 7. Teensy Trajectory
+#    Source: ros_ws/src/jugglebot/Teensy_code/Trajectory.h
+#    Trajectory generation constants for the platform Teensy's hand axis.
+#    These differ from Ball Butler trajectory constants (different hardware).
+# ============================================================
+teensy_trajectory:
+  hand_spool_radius_m: 0.00521          # Hand spool radius {m}
+  linear_gain_factor: 1.035             # Multiplier on linear gain ("just 'cuz" factor)
+  inertia_hand_only_kg: 0.281           # Hand-only inertia {kg}
+  inertia_ratio: 0.747                  # Inertia ratio for throw dynamics
+  throw_vel_hold_pct: 0.05              # Fraction of throw profile at constant velocity
+  catch_vel_ratio: 0.6                  # Catch velocity as fraction of throw velocity
+  catch_vel_hold_pct: 0.10              # Fraction of catch profile at constant velocity
+  hand_stroke_m: 0.355                  # Total hand linear stroke {m}. Matches geometry hand_stroke_mm.
+  stroke_margin_m: 0.02                 # Safety margin at ends of stroke {m}
+  end_profile_hold_s: 0.10              # Hold time at end of motion profile {s}
+  sample_rate_hz: 500                   # Trajectory sample rate {Hz}
+  max_smooth_move_hand_accel_rps2: 100.0  # Max hand acceleration for smooth moves {rev/s^2}
+  quintic_s2_max: 5.7735027             # Max |s''| for quintic polynomial 10t^3 - 15t^4 + 6t^5
+  min_event_vel_mps: 0.3                 # Minimum hand event velocity {m/s}
+  max_event_vel_mps: 7.0                 # Maximum hand event velocity {m/s}
+
+# ============================================================
+# 8. Teensy Operational
+#    Source: ros_ws/src/jugglebot/Teensy_code/Teensy_code.ino
+#    Platform Teensy operational parameters.
+# ============================================================
+teensy_operational:
+  report_interval_ms: 500               # CAN traffic report interval {ms}
+  safety_gap_us: 20000                  # Max age of position/velocity data before considered stale {us}
+  time_sync_alpha_shift: 3              # IIR filter gain for time sync = 1/2^alpha_shift (= 1/8)
+
+# ============================================================
+# 9. Motion Capture
+#    QTM motion capture connection settings.
+# ============================================================
+mocap:
+  qtm_host: "192.168.20.12"              # QTM server IP address
+  qtm_port: 22223                        # QTM server port
+
+# ============================================================
+# 10. Ball Tracking & Prediction
+#     Source: ball_tracker.py, ball_prediction_node.py, kalman_filter.py
+#     Parameters for Kalman-filter-based ball tracking and landing prediction.
+# ============================================================
+ball_tracking:
+  mocap_dt_s: 0.005                     # Mocap sample period {s} (= 1/200 Hz)
+  process_noise: 5.0                    # Kalman filter process noise variance
+  measurement_noise: 1.0                # Kalman filter measurement noise variance
+  landing_threshold_mm: 20.0            # Distance to landing plane to consider ball "landed" {mm}
+  is_projectile_residual_threshold: 10.0  # Residual std threshold for projectile motion classification {mm}
+  is_projectile_a_threshold_mmps2: 400.0  # Acceleration threshold for projectile detection {mm/s^2}
+  buffer_duration_s: 0.1                # Time window for projectile motion classification {s}
+  match_threshold_base_mm: 100.0        # Base distance threshold for marker-to-ball matching {mm}
+  pending_timeout_s: 5.0                # Time before a pending ball expires after throw announcement {s}
+  min_matches_to_confirm: 3             # Minimum consecutive marker matches to confirm a ball track
+  min_height_above_landing_mm: 50.0     # Ball must be this far above landing_z to be considered for matching {mm}
+  max_frames_without_measurement: 200   # ~1.0s at 200Hz — maximum blind period before dropping track
+
+# ============================================================
+# 11. Ball Butler Geometry & Kinematics
+#     Source: ros_ws/src/jugglebot/jugglebot/ball_butler_node.py
+#     Physical dimensions used for Ball Butler aiming calculations.
+# ============================================================
+ball_butler_geometry:
+  yaw_s_offset_mm: -105.65             # Ball centroid to Stage 2 origin, along yaw axis {mm} (measured in Onshape)
+  pitch_d_offset_mm: 41.0              # Distance behind origin to pitch axis, along BB's centerline {mm} (Onshape)
+  release_l_position_mm: 150.0         # Release point: 105.5 mm pitch-axis-to-ball offset + ~44.5 mm constant from Trajectory.h
+  pitch_z_offset_mm: 17.5              # Vertical offset of pitch axis from BB origin (yaw axis) {mm}
+  pitch_max_deg: 85.0                  # Maximum pitch angle for aiming {deg from horizontal}
+  pitch_min_deg: 12.0                  # Minimum pitch angle for aiming {deg from horizontal}
+  yaw_max_deg: 185.0                   # Maximum yaw angle for aiming {deg}
+  yaw_min_deg: 0.0                     # Minimum yaw angle for aiming {deg}
+
+# ============================================================
+# 12. Ball Butler Trajectory
+#     Source: Ball Butler/ball_butler_main/BallButlerConfig.h (TrajCfg namespace)
+#     Trajectory generation constants for the Ball Butler's hand axis.
+#     Some values differ from teensy_trajectory (different physical hardware).
+# ============================================================
+ball_butler_trajectory:
+  hand_spool_radius_m: 0.0052493       # BB hand spool radius {m}. Differs from platform (0.00521).
+  linear_gain_factor: 1.0              # BB linear gain multiplier (reserved, currently 1.0)
+  inertia_hand_only_kg: 0.281          # Hand-only inertia {kg}
+  inertia_ratio: 0.747                 # Inertia ratio for throw dynamics
+  hand_stroke_m: 0.28                  # BB total hand linear stroke {m}
+  stroke_margin_m: 0.02                # Safety margin at ends of stroke {m}
+  throw_vel_hold_pct: 0.05             # Fraction of throw at constant velocity
+  catch_vel_ratio: 0.8                 # Catch velocity as fraction of throw velocity. NOTE: higher than platform (0.6).
+  catch_vel_hold_pct: 0.10             # Fraction of catch at constant velocity
+  end_profile_hold_s: 0.10             # Hold time at end of motion profile {s}
+  sample_rate_hz: 500                  # Trajectory sample rate {Hz}
+  max_smooth_accel_rps2: 200.0         # Max hand acceleration for smooth moves {rev/s^2}
+  quintic_s2_max: 5.7735027            # Max |s''| for quintic polynomial
+  hand_max_smooth_pos_rev: 8.9         # Max hand position for smooth moves {rev}
+  max_throw_duration_s: 2.0            # Max physical throw duration {s}
+  max_smooth_samples: 300              # Covers max smooth move (~0.51s at 500 Hz) with headroom
+  max_pause_samples: 512               # Up to ~1.0s pause at 500 Hz
+  traj_arena_bytes: 24576              # 24 KB arena for intermediate Trajectory float arrays
+
+# ============================================================
+# 13. Ball Butler Hardware Pins
+#     Source: BallButlerConfig.h (Pins namespace)
+# ============================================================
+ball_butler_pins:
+  yaw_spi_cs: 10                       # AS5047P absolute encoder SPI chip select
+  yaw_ina1: 16                         # H-bridge direction pin INA1
+  yaw_ina2: 15                         # H-bridge direction pin INA2
+  yaw_pwm: 14                          # H-bridge PWM speed pin
+
+# ============================================================
+# 14. Ball Butler CAN Config
+#     Source: BallButlerConfig.h (CanCfg namespace)
+# ============================================================
+ball_butler_can:
+  heartbeat_rate_ms: 100               # BB heartbeat broadcast interval {ms}
+  auto_clear_brake_ms: 500             # Min ms between brake-resistor auto-clear attempts
+  max_nodes: 16                        # Max CAN node IDs tracked by BB
+  sync_stats_print_ms: 200             # Time-sync stats print interval {ms}. Consumer converts to µs.
+
+# ============================================================
+# 15. Ball Butler Yaw Axis
+#     Source: BallButlerConfig.h (YawDefaults namespace)
+#     DC motor with incremental encoder, PID position control.
+# ============================================================
+ball_butler_yaw:
+  # Encoder & motor
+  enc_cpr: 60                          # Incremental encoder counts per revolution
+  abs_enc_cpr: 16384.0                 # AS5047P absolute encoder counts per revolution
+  pwm_freq_hz: 20000                   # Motor PWM frequency {Hz}
+  pwm_max: 255                         # Maximum PWM duty cycle (8-bit)
+  pwm_deadzone_min: 60                 # Min PWM to overcome motor stiction
+  loop_hz: 150.0                       # Control loop frequency {Hz}
+  enc_dir: -1                          # Encoder direction sign
+  motor_dir: 1                         # Motor direction sign
+
+  # PID gains
+  kp: 300.0                            # Proportional gain
+  ki: 0.0                              # Integral gain
+  kd: 0.0                              # Derivative gain
+  ff_pwm: 10.0                         # Friction feedforward {PWM counts}
+  pos_tol_rev: 0.0014                  # Position tolerance {rev} (~0.5 deg)
+
+  # Motion limits
+  accel_pps: 500.0                     # Acceleration limit {PWM counts/s}
+  decel_pps: 450.0                     # Deceleration limit {PWM counts/s}
+  lim_min_deg: 0.0                     # Default soft limit minimum {deg}
+  lim_max_deg: 120.0                   # Default soft limit maximum {deg}
+  hard_limit_overshoot_deg: 3.0        # Hard-limit overshoot before fault {deg}
+  max_soft_range_deg: 355.0            # Max soft-limit range (leaves forbidden zone) {deg}
+
+  # Velocity filtering
+  vel_lpf_alpha: 0.3                   # Velocity low-pass filter coefficient (0-1)
+  max_valid_vel_rps: 2.0               # Glitch rejection threshold {rev/s}
+
+  # Boot-time configuration (applied in setup() before StateMachine takes over)
+  boot_zero_offset_deg: 5.0            # Encoder degrees = user 0 deg
+  boot_soft_lim_min_deg: -5.0          # Wide limits during boot
+  boot_soft_lim_max_deg: 190.0         # Wide limits during boot
+  boot_hard_limit_overshoot_deg: 10.0  # Overshoot tolerance during boot {deg}
+
+# ============================================================
+# 16. Ball Butler Pitch Axis
+#     Source: BallButlerConfig.h (PitchDefaults namespace)
+#     ODrive-controlled axis with trapezoidal trajectory limits.
+# ============================================================
+ball_butler_pitch:
+  deg_min: 12.0                        # Min allowed pitch angle {deg from horizontal}
+  deg_max: 90.0                        # Max allowed pitch angle {deg} (vertical)
+  traj_vel_rps: 1.0                    # Default trapezoidal trajectory max velocity {rev/s}
+  traj_accel_rps2: 0.5                 # Trapezoidal trajectory acceleration {rev/s^2}
+  traj_decel_rps2: 0.25                # Trapezoidal trajectory deceleration {rev/s^2}
+
+# ============================================================
+# 17. Ball Butler Hand Axis
+#     Source: BallButlerConfig.h (HandDefaults namespace)
+#     ODrive-controlled hand with current-spike-based homing.
+# ============================================================
+ball_butler_hand:
+  homing_direction: -1                 # Direction during homing (-1 = retract)
+  homing_speed_rps: 3.0               # Homing speed {rev/s}
+  homing_current_a: 5.0               # Motor current limit during homing {A}
+  homing_headroom_a: 3.0              # Current headroom for Iq spike detection {A}
+  homing_abs_pos_rev: -0.1            # Absolute position set after homing {rev}
+  homing_ema_weight: 0.7              # EMA weight for Iq spike detection during homing
+  homing_iq_poll_ms: 10               # Iq polling interval during homing {ms}
+  homing_attempt_timeout_ms: 5000     # Timeout for a single homing attempt {ms}
+  homing_mode_settle_ms: 100          # Delay after setting control mode before sending homing velocity {ms}
+  homing_stop_settle_ms: 5            # Delay after stopping motor before setting absolute position {ms}
+  op_vel_limit_rps: 1000.0            # Operating velocity limit after homing {rev/s}
+  op_current_limit_a: 50.0            # Operating current limit after homing {A}
+
+# ============================================================
+# 18. Ball Butler State Machine
+#     Source: BallButlerConfig.h (SMDefaults namespace)
+#     Default values for StateMachine::Config members.
+# ============================================================
+ball_butler_state_machine:
+  # Timeouts
+  homing_timeout_ms: 10000             # Max time for homing sequence {ms}
+  homing_retry_delay_ms: 500           # Delay between homing retries {ms}
+  reload_timeout_ms: 10000             # Max time for reload sequence {ms}
+  post_throw_delay_ms: 1000            # Delay after throw before reload begins {ms}
+  idle_no_cmd_timeout_ms: 5000         # Stow pitch if idle this long {ms}
+
+  # Reload sequence positions
+  reload_hand_top_rev: 8.7             # Hand position at top of reload stroke {rev}
+  reload_pitch_ready_deg: 70.0         # Pitch angle for reload ready position {deg}
+  reload_yaw_angle_deg: 180.0          # Yaw angle for reload position {deg}
+  reload_pitch_grab_deg: 90.0          # Pitch angle for ball grab position {deg}
+  reload_hand_bottom_rev: 0.0          # Hand position at bottom of reload stroke {rev}
+  reload_hand_bottom_tol_rev: 0.1      # Tolerance for hand-at-bottom check {rev}
+  reload_hold_delay_ms: 500            # Hold delay during reload {ms}
+  reload_ball_check_samples: 5         # Number of ball-detection samples during reload
+
+  # NOTE: Firmware (BallButlerConfig.h) uses 100 ms. This should match.
+  ball_check_sample_interval_ms: 100   # Min ms between ball-check samples (must exceed SDO poll period)
+
+  # Tracking & rate limiting
+  tracking_hand_check_ms: 200          # Interval for hand position checks during tracking {ms}
+  yaw_cmd_interval_ms: 10             # Minimum interval between yaw commands {ms}
+  pitch_cmd_interval_ms: 50           # Minimum interval between pitch commands {ms}
+
+  # Ball detection (CHECKING_BALL state)
+  check_ball_confirm_samples: 5        # Consecutive samples needed to confirm ball presence
+  check_ball_disrupt_pitch_deg: 70.0   # Pitch angle during ball disruption check {deg}
+
+  # Home positions
+  hand_rev_home: 0.0                   # Hand home position {rev}
+  pitch_deg_home: 90.0                 # Pitch home position {deg} (vertical)
+  yaw_deg_home: 20.0                   # Yaw home position {deg}
+
+  # Calibration sweep parameters
+  calib_max_yaw_deg: 120.0             # Max yaw angle during calibration sweep {deg}
+  calib_min_yaw_deg: 0.0               # Min yaw angle during calibration sweep {deg}
+  calib_yaw_accel: 50.0                # Yaw acceleration during calibration {PWM counts/s}
+  calib_yaw_decel: 50.0                # Yaw deceleration during calibration {PWM counts/s}
+  calib_pause_ms: 2500                 # Pause time at sweep endpoints {ms}
+
+  # Retry limits
+  max_reload_attempts: 3               # Max reload attempts before error
+  max_homing_attempts: 3               # Max homing attempts before error
+
+  # Settle times & thresholds
+  pitch_settle_ms: 500                 # Settle time after pitch move {ms}
+  pitch_grab_settle_ms: 1000           # Settle time after pitch move to grab position {ms}
+  yaw_angle_threshold_deg: 1.0         # Yaw angle tolerance for "at position" check {deg}
+
+  # Motion timing
+  pitch_idle_delay_ms: 500             # Min ms after last pitch command before allowing IDLE mode
+  min_motion_duration_ms: 300          # Min ms to wait before checking trajectory_done (allows ODrive to begin movement)
+  pv_freshness_us: 20000              # Max age of position/velocity data {us} before considered stale
+
+  # Axis operational limits
+  pitch_min_stow_deg: 80.0             # Minimum pitch angle for stow position {deg}
+  yaw_min_angle_deg: 5.0               # Minimum operational yaw angle {deg}
+  yaw_max_angle_deg: 190.0             # Maximum operational yaw angle {deg}. Firmware computes as 185 + yaw_min_angle_deg.
+
+# ============================================================
+# 19. Ball Butler Operational
+#     Source: BallButlerConfig.h (OpCfg namespace), ball_butler_node.py
+#     Runtime operational parameters.
+# ============================================================
+ball_butler_operational:
+  throw_vel_min_mps: 0.05              # Min allowed throw velocity {m/s}
+  throw_vel_max_mps: 6.0               # Max allowed throw velocity {m/s}
+  schedule_margin_s: 0.1               # Throw scheduling time margin {s}. Ensures lead time for trajectory gen and state transitions.
+  yaw_telem_ms: 500                    # Yaw telemetry streaming interval {ms}
+  serial_baud: 115200                  # USB serial speed
+  serial_wait_ms: 2000                 # Max ms to wait for Serial at boot
+  odrive_boot_ms: 1000                 # Delay after CAN init for ODrives to boot {ms}
+  max_throw_speed_mps: 5.0             # Max throw speed for aiming calculations {m/s} (from ball_butler_node.py)
+  max_throw_height_m: 0.5              # Max height above BB the ball can reach {m} (from ball_butler_node.py)
+  throw_speed_multiplier: 1.0          # Tunable multiplier on throw speed (from ball_butler_node.py)
+  landing_time_offset_ms: -120.0       # Offset subtracted from predicted landing time for throw timing {ms}.
+                                       # Accounts for release timing and ball flight time. (from ball_butler_node.py)
+
+# ============================================================
+# 20. Ball Butler Heartbeat Encoding
+#     Source: BallButlerConfig.h (HeartbeatCfg namespace)
+#     Range/clamp values for BB heartbeat CAN frame encoding.
+#     Resolution values (yaw_res_deg, pitch_res_deg, hand_res_mm) are in
+#     jugglebot_protocol.yaml under encoding.heartbeat.
+# ============================================================
+ball_butler_heartbeat:
+  hand_max_mm: 655.36                  # Max representable hand position {mm}
+  pitch_clamp_min_deg: 0.0             # Pitch encoding minimum clamp {deg}
+  pitch_clamp_max_deg: 90.0            # Pitch encoding maximum clamp {deg}
+
+# ============================================================
+# 21. Ball Butler Ball Detection
+#     Source: BallButlerConfig.h (BallDetectCfg namespace)
+#     Configuration for detecting ball presence in hand via ODrive GPIO.
+# ============================================================
+ball_butler_ball_detect:
+  gpio_pin: 3                          # GPIO pin on hand ODrive for ball detection
+  check_interval_ms: 50                # How often to poll for ball in hand {ms}
+  max_missing_samples: 5               # Consecutive false readings before entering CHECKING_BALL
+  check_timeout_ms: 100                # SDO request timeout {ms}

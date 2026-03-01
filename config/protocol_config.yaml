@@ -1,0 +1,158 @@
+# jugglebot_protocol.yaml
+# Single source of truth for all CAN protocol constants shared across
+# the Jugglebot codebase (ROS2 Python, Ball Butler Teensy, Platform Teensy).
+#
+# Run `python generate_config.py` to regenerate:
+#   config/generated/jugglebot_protocol.h   (C++ constexpr header)
+#   config/generated/jugglebot_protocol.py  (Python constants module)
+#
+# Constants that are NOT shared (e.g. PID gains, trajectory physics,
+# mechanical limits) remain in their respective files.
+
+# =============================================================================
+# ODrive CAN Protocol
+# =============================================================================
+odrive:
+  # Command IDs (lower 5 bits of CAN arbitration ID)
+  commands:
+    get_version:              0x00
+    heartbeat_message:        0x01
+    get_error:                0x03
+    RxSdo:                    0x04
+    TxSdo:                    0x05
+    set_requested_state:      0x07
+    get_encoder_estimate:     0x09
+    set_controller_mode:      0x0B
+    set_input_pos:            0x0C
+    set_input_vel:            0x0D
+    set_input_torque:         0x0E
+    set_vel_curr_limits:      0x0F
+    set_traj_vel_limit:       0x11
+    set_traj_acc_limits:      0x12
+    get_iq:                   0x14
+    get_temps:                0x15
+    reboot_odrives:           0x16
+    get_bus_voltage_current:  0x17
+    clear_errors:             0x18
+    set_absolute_position:    0x19
+    set_pos_gain:             0x1A
+    set_vel_gains:            0x1B
+
+  # Axis states (AxisState enum)
+  states:
+    IDLE:                   1
+    ENCODER_INDEX_SEARCH:   6
+    CLOSED_LOOP:            8
+
+  # Control modes (ControlMode enum)
+  control_modes:
+    VOLTAGE:   0
+    TORQUE:    1
+    VELOCITY:  2
+    POSITION:  3
+
+  # Input modes (InputMode enum)
+  input_modes:
+    PASSTHROUGH:  1
+    VEL_RAMP:     2
+    TRAP_TRAJ:    5
+
+  # Known error bit masks
+  errors:
+    BRAKE_RESISTOR_DISARMED: 0x08000000
+
+# =============================================================================
+# CAN Bus
+# =============================================================================
+can_bus:
+  baud_rate: 1000000  # 1 Mbps — all nodes must agree
+
+# =============================================================================
+# CAN Node IDs
+# =============================================================================
+node_ids:
+  legs: [0, 1, 2, 3, 4, 5]
+  jugglebot_hand: 6
+  bb_pitch: 7
+  bb_hand: 8
+
+# =============================================================================
+# Custom CAN Message IDs
+# =============================================================================
+can_ids:
+  # Shared IDs — used by both Platform and Ball Butler Teensys
+  shared:
+    TIME_SYNC:      0x7DD   # Wall-clock sync broadcast (sent by Host, received by both Teensys)
+
+  # Platform Teensy <-> Host
+  platform:
+    TRAJ_CMD:       0x6D0
+    STATE_UPDATE:   0x6E0
+    TILT_READING:   0x7DE
+    TRAFFIC_REPORT: 0x7DF
+
+  # Ball Butler Teensy <-> Host
+  ball_butler:
+    THROW_CMD:        0x7D0
+    HEARTBEAT:        0x7D1
+    RELOAD_CMD:       0x7D2
+    RESET_CMD:        0x7D3
+    CALIBRATE_LOC_CMD: 0x7D4
+
+# =============================================================================
+# Ball Butler State Machine
+# =============================================================================
+ball_butler:
+  # States — encoded in heartbeat byte 0 (bits 1-7)
+  states:
+    BOOT:          0
+    IDLE:          1
+    TRACKING:      2
+    THROWING:      3
+    RELOADING:     4
+    CALIBRATING:   5
+    CHECKING_BALL: 6
+    ERROR:         127
+
+  # Error codes — encoded in heartbeat byte 1 when state == ERROR
+  errors:
+    NONE:           0
+    RELOAD_FAILED:  1
+
+# =============================================================================
+# Encoding / Scaling
+# =============================================================================
+encoding:
+  # Ball Butler heartbeat CAN frame encoding resolutions
+  heartbeat:
+    yaw_res_deg:   0.01
+    pitch_res_deg: 0.002
+    hand_res_mm:   0.01
+
+  # ODrive input scaling factors (vel_ff and torque_ff are sent as int16 * scale).
+  # The hand axis uses lower scale values (100) to allow larger feedforward
+  # ranges for its high-speed throw trajectories.  Leg axes keep the default
+  # ODrive scale (1000) for better resolution on small gravity feedforward torques.
+  # These must match the ODrive firmware config: axis0.config.can.input_vel_scale
+  # and axis0.config.can.input_torque_scale on each drive.
+  input_scales:
+    # Hand axis (CAN ID 6) — matches odrive_pro_hand_config.json
+    hand_vel: 100.0
+    hand_tor: 100.0
+    # Leg axes (CAN IDs 0-5) — matches odrive_pro_config.json
+    leg_vel: 1000.0
+    leg_tor: 1000.0
+
+# =============================================================================
+# SDO (Arbitrary Parameter Access)
+# =============================================================================
+sdo:
+  OPCODE_READ:  0x00
+  OPCODE_WRITE: 0x01
+
+# =============================================================================
+# Endpoint IDs (ODrive internal parameter addresses)
+# =============================================================================
+endpoints:
+  commutation_mapper_pos_abs: 488
+  GPIO_STATES:                700
