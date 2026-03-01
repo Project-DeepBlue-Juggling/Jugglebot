@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """Standalone hardware test harness for Jugglebot Phase 7 (Dynamic Targets).
 
 Validates dynamic target commanding, mid-motion replanning, and automatic
@@ -24,10 +25,10 @@ Safety:
   - Interactive confirmation before each test
 
 Usage:
-  python tools/dynamic_target_test.py --home --test all
-  python tools/dynamic_target_test.py --test static --speed-scale 0.25
-  python tools/dynamic_target_test.py --test replan --speed-scale 0.50
-  python tools/dynamic_target_test.py --dry-run
+    python3 tools/dynamic_target_test.py --home --test all
+    python3 tools/dynamic_target_test.py --test static --speed-scale 0.25
+    python3 tools/dynamic_target_test.py --test replan --speed-scale 0.50
+    python3 tools/dynamic_target_test.py --dry-run
 
 Requirements:
   pip install python-can numpy
