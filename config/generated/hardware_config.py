@@ -109,6 +109,8 @@ JB_OP_ENCODER_SEARCH_TIMEOUT_S = 3.0
 JB_OP_GENTLE_MOVE_TIMEOUT_S = 10.0
 JB_OP_SHUTDOWN_STOW_TIMEOUT_S = 15.0
 JB_OP_MAX_VALID_TILT_RAD = 0.785
+JB_OP_INCLINOMETER_OFFSET_DEG = [-0.6, -0.2]
+JB_OP_LEVELLING_SETTLE_S = 0.5
 
 # ============================================================================
 # Jugglebot SpaceMouse

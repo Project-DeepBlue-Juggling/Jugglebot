@@ -164,6 +164,8 @@ jugglebot_operational:
   gentle_move_timeout_s: 10.0            # Timeout for gentle-move trajectory completion {s}
   shutdown_stow_timeout_s: 15.0          # Maximum time for shutdown stow attempt {s}
   max_valid_tilt_rad: 0.785              # Maximum valid tilt reading before retry {rad} (~45 deg)
+  inclinometer_offset_deg: [-0.6, -0.2]  # Sensor mounting offset [tiltX, tiltY] {deg}. Found experimentally.
+  levelling_settle_s: 0.5                # Settle time after activation before reading inclinometer {s}
 
 # ============================================================
 # 6. Jugglebot SpaceMouse

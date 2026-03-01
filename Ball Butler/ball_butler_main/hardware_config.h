@@ -124,6 +124,8 @@ namespace JBOp {
   constexpr float GENTLE_MOVE_TIMEOUT_S = 10.0f;
   constexpr float SHUTDOWN_STOW_TIMEOUT_S = 15.0f;
   constexpr float MAX_VALID_TILT_RAD = 0.785f;
+  constexpr float INCLINOMETER_OFFSET_DEG[2] = {-0.6f, -0.2f};
+  constexpr float LEVELLING_SETTLE_S = 0.5f;
 }
 
 // ==========================================================================
