@@ -115,7 +115,6 @@ namespace ODriveDefaults {
 // ==========================================================================
 
 namespace JBOp {
-  constexpr float ACTIVATE_POSITION_REV = 2.229f;
   constexpr float DEFAULT_ACTIVE_Z_MM = 170.0f;
   constexpr float TARGET_REACHED_POS_TOL_REV = 0.01f;
   constexpr float TARGET_REACHED_VEL_TOL_RPS = 0.1f;

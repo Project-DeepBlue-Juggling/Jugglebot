@@ -660,7 +660,7 @@ class CanInterfaceNode(Node):
     def _svc_activate_or_deactivate(self, req, res):
         try:
             if req.command == 'activate':
-                result = self._gently_move_to_setpoint(hw.JB_OP_ACTIVATE_POSITION_REV, deactivating=False)
+                result = self._gently_move_to_setpoint(hw.JB_OP_ACTIVATE_POSITION_REVS, deactivating=False)
             elif req.command == 'deactivate':
                 result = self._gently_move_to_setpoint(0.0, deactivating=True)
             else:
@@ -1180,9 +1180,18 @@ class CanInterfaceNode(Node):
         """Generator: slowly move all legs to a setpoint using a software
         trapezoidal profile streamed via PASSTHROUGH mode.
 
+        ``setpoint`` may be a scalar (applied uniformly to all legs) or a
+        list/tuple of per-leg targets (length ``NUM_LEGS``).
+
         Stays in POSITION+PASSTHROUGH throughout — no mode switches.
         Completion is detected via position + velocity thresholds.
         """
+        # Normalise setpoint to a per-leg list.
+        if isinstance(setpoint, (list, tuple)):
+            setpoints = list(setpoint)
+        else:
+            setpoints = [setpoint] * odrive.NUM_LEGS
+
         # Safety: refuse to enter CLOSED_LOOP if errors are present.
         if self.motors.fatal_error or self.motors.fatal_can_error:
             self.get_logger().error(
@@ -1231,7 +1240,7 @@ class CanInterfaceNode(Node):
         profiles = []
         for axis_id in odrive.LEG_AXES:
             profile = _trapezoidal_profile(
-                states[axis_id].pos_estimate, setpoint,
+                states[axis_id].pos_estimate, setpoints[axis_id],
                 vel_limit=hw.JB_OP_GENTLE_MOVE_VEL_LIMIT_RPS,
                 acc_limit=hw.ODRIVE_TRAP_ACC_LIMIT_RPS2)
             profiles.append(profile)
@@ -1243,20 +1252,21 @@ class CanInterfaceNode(Node):
                 self.get_logger().error("Fatal error during gentle move")
                 return False
             for axis_id in odrive.LEG_AXES:
-                pos = profiles[axis_id][i] if i < len(profiles[axis_id]) else setpoint
+                sp = setpoints[axis_id]
+                pos = profiles[axis_id][i] if i < len(profiles[axis_id]) else sp
                 self._send_position_target(axis_id, pos)
             yield 0.01  # 100 Hz
 
         # Send final target explicitly to land exactly on setpoint
         for axis_id in odrive.LEG_AXES:
-            self._send_position_target(axis_id, setpoint)
+            self._send_position_target(axis_id, setpoints[axis_id])
 
         # Wait for convergence: position + velocity thresholds
         deadline = time.time() + hw.JB_OP_GENTLE_MOVE_TIMEOUT_S
         while True:
             states = self.motors.last_states
             settled = all(
-                abs(states[i].pos_estimate - setpoint) < hw.JB_OP_TARGET_REACHED_POS_TOL_REV
+                abs(states[i].pos_estimate - setpoints[i]) < hw.JB_OP_TARGET_REACHED_POS_TOL_REV
                 and abs(states[i].vel_estimate) < hw.JB_OP_TARGET_REACHED_VEL_TOL_RPS
                 for i in odrive.LEG_AXES)
             if settled:
@@ -1279,7 +1289,7 @@ class CanInterfaceNode(Node):
         else:
             # Restore normal vel/current limits
             self._set_vel_curr_limits()
-            self.legs_target_position = [setpoint] * odrive.NUM_LEGS
+            self.legs_target_position = list(setpoints)
 
         return True
 

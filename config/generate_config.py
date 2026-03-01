@@ -401,6 +401,29 @@ def compute_derived(cfg: dict) -> dict:
         ll + offset for ll in geom["init_leg_lengths_mm"]
     ]
 
+    # Activate position per leg (rev): IK of the home pose [0, 0, default_z, 0, 0, 0].
+    # This ensures the gentle-move activation target matches the control loop's
+    # home pose exactly, avoiding a position discontinuity at handoff.
+    op = cfg["jugglebot_operational"]
+    default_z = op["default_active_z_mm"]
+    init_height = geom["initial_height_mm"]
+    base_nodes = geom["base_nodes_mm"]
+    plat_nodes = geom["init_plat_nodes_mm"]
+    init_leg_lengths = geom["init_leg_lengths_mm"]
+    mm_to_rev = geom["mm_to_rev"]
+
+    platform_centre = [0.0, 0.0, init_height + default_z]
+    activate_revs = []
+    for i in range(6):
+        # Leg vector: platform node (in base frame, identity rotation) - base node
+        dx = platform_centre[0] + plat_nodes[i][0] - base_nodes[i][0]
+        dy = platform_centre[1] + plat_nodes[i][1] - base_nodes[i][1]
+        dz = platform_centre[2] + plat_nodes[i][2] - base_nodes[i][2]
+        abs_len = math.sqrt(dx * dx + dy * dy + dz * dz)
+        ext_mm = abs_len - init_leg_lengths[i]
+        activate_revs.append(ext_mm * mm_to_rev[i])
+    derived["ACTIVATE_POSITION_REVS"] = activate_revs
+
     # Teensy linear gain: rev/m
     tt = cfg["teensy_trajectory"]
     derived["TEENSY_LINEAR_GAIN"] = tt["linear_gain_factor"] / (math.pi * tt["hand_spool_radius_m"] * 2.0)
@@ -459,6 +482,7 @@ def generate_hw_python(cfg: dict) -> str:
     lines += py_section("Derived Constants (computed by generator)")
     lines.append(f"GRAVITY_MMPS2 = {derived['GRAVITY_MMPS2']}")
     lines.append(f"INIT_LEG_LENGTHS_WITH_OFFSET_MM = {derived['INIT_LEG_LENGTHS_WITH_OFFSET_MM']}")
+    lines.append(f"JB_OP_ACTIVATE_POSITION_REVS = {derived['ACTIVATE_POSITION_REVS']}")
     lines.append(f"TEENSY_LINEAR_GAIN = {derived['TEENSY_LINEAR_GAIN']}")
     lines.append(f"BB_LINEAR_GAIN = {derived['BB_LINEAR_GAIN']}")
     lines.append(f"BB_MAX_THROW_SAMPLES = {derived['BB_MAX_THROW_SAMPLES']}")
