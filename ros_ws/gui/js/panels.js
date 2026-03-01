@@ -101,6 +101,7 @@ function tempClass(temp) {
 const STATE_CLASSES = {
     'BOOT': 'boot',
     'HOMING': 'homing',
+    'LEVELLING': 'homing',  // Blue, like HOMING
     'IDLE': 'idle',
     'ACTIVE': 'active',
     'FAULT': 'fault',
@@ -188,6 +189,56 @@ function setFlagError(id, value) {
     if (!icon) return;
     icon.className = 'flag-icon ' + (value ? 'fail' : 'ok');
     icon.innerHTML = value ? '&#x2717;' : '&#x2713;';
+}
+
+// ---- Levelling panel ----
+
+export function initLevellingPanel() {
+    const content = document.getElementById('level-content');
+    if (!content) return;
+
+    content.innerHTML = `
+        <div class="level-offsets">
+            <div class="level-offset">
+                <div class="label">Roll (X)</div>
+                <div class="value" id="level-roll">--</div>
+            </div>
+            <div class="level-offset">
+                <div class="label">Pitch (Y)</div>
+                <div class="value" id="level-pitch">--</div>
+            </div>
+        </div>
+    `;
+}
+
+/**
+ * Update levelling panel from robot_state.
+ * @param {object} robotState - RobotState message
+ */
+export function updateLevellingPanel(robotState) {
+    const badge = document.getElementById('level-status-badge');
+    const rollEl = document.getElementById('level-roll');
+    const pitchEl = document.getElementById('level-pitch');
+
+    const complete = robotState.levelling_complete;
+    const offset = robotState.pose_offset_rad || [];
+
+    if (badge) {
+        if (complete) {
+            badge.textContent = 'Levelled';
+            badge.className = 'badge level-badge level-ok';
+        } else {
+            badge.textContent = 'Not Levelled';
+            badge.className = 'badge level-badge level-pending';
+        }
+    }
+
+    if (offset.length >= 2) {
+        const rollDeg = (offset[0] * 180 / Math.PI).toFixed(2);
+        const pitchDeg = (offset[1] * 180 / Math.PI).toFixed(2);
+        if (rollEl) rollEl.textContent = rollDeg + '\u00b0';
+        if (pitchEl) pitchEl.textContent = pitchDeg + '\u00b0';
+    }
 }
 
 // ---- Ball Butler panel ----
@@ -639,6 +690,7 @@ export function clearTopicData() {
 export function initAllPanels() {
     initMotorGrid();
     initFlagsGrid();
+    initLevellingPanel();
     initBBPanel();
     initCANPanel();
     initTrackingGrid();

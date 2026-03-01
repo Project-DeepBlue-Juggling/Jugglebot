@@ -349,8 +349,8 @@ Prerequisites: rosbridge running on the Jetson (`ros2 launch rosbridge_server ro
 - [x] After homing, state badge shows IDLE (amber)
 - [x] Motor positions update in the grid (mm for legs, rev for hand)
 - [x] FET temperatures show and are color-coded (green < 50C, amber < 70C, red >= 70C)
-- [ ] Click "Activate" → state badge shows ACTIVE (green)
-- [ ] Click "SpaceMouse" → sub-mode shows "SPACEMOUSE"
+- [x] Click "Activate" → state badge shows ACTIVE (green)
+- [x] Click "SpaceMouse" → sub-mode shows "SPACEMOUSE"
 - [ ] Move spacemouse → 3D platform moves in real-time, legs change colour with extension
 - [x] Hand axis line extends/retracts with hand motor
 
@@ -374,9 +374,9 @@ Prerequisites: rosbridge running on the Jetson (`ros2 launch rosbridge_server ro
 - [x] Sparkline chart updates over time
 
 **Commands:**
-- [ ] Click "Deactivate" → state goes to IDLE
-- [ ] Click "Home" from IDLE → state goes to HOMING
-- [ ] Click "Clear Errors" → works from any state
+- [x] Click "Deactivate" → state goes to IDLE
+- [x] Click "Home" from IDLE → state goes to HOMING
+- [x] Click "Clear Errors" → works from any state
 
 **Error handling:**
 - [x] Trigger an error (e.g. E-stop) → state badge shows FAULT (red, pulsing)
@@ -458,7 +458,7 @@ Prerequisites: rosbridge running on the Jetson (`ros2 launch rosbridge_server ro
 
 - **Ball rendering**: Add a sphere in the 3D viewer when ball state data is available from mocap. Deferred to Phase 6 of the codebase rewrite.
 - **BB position calibration**: `BB_POSITION_MM` in `geometry-config.js` is a placeholder `[0, -500, 0]`. Will be updated automatically when the BB calibration position publisher is implemented (see CODEBASE_REWRITE_PLAN Phase 4). The GUI should subscribe to `bb/calibration_result` and update the BB model position dynamically.
-- **Levelling status display**: Show `levelling_complete` flag in System Flags panel. Display gravity correction offset (`pose_offset_rad`) as roll/pitch degrees. Add "Level Platform" button to command overlay (publishes "level" to orchestrator_command, enabled only in IDLE). Show LEVELLING state badge (blue, like HOMING).
+- **Levelling status display**: DONE (2026-03-01) — Levelling panel added to sidebar showing levelling status badge (Levelled/Not Levelled) and gravity correction offset as roll/pitch degrees. "Level" button added to command overlay (publishes "level" to orchestrator_command, enabled only in IDLE). LEVELLING state badge renders blue (same as HOMING). `levelling_complete` flag also shown in System Flags panel.
 
 ### Test infrastructure
 

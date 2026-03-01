@@ -12,12 +12,13 @@ import { currentOrchestratorState } from './panels.js';
 let cmdPublisher = null;
 
 const COMMANDS = [
-    { id: 'cmd-home',       label: 'Home',        command: 'home',         cssClass: 'btn-home' },
-    { id: 'cmd-activate',   label: 'Activate',    command: 'activate',     cssClass: 'btn-activate' },
-    { id: 'cmd-deactivate', label: 'Deactivate',  command: 'deactivate',   cssClass: 'btn-deactivate' },
-    { id: 'cmd-spacemouse', label: 'SpaceMouse',  command: 'spacemouse',   cssClass: '' },
-    { id: 'cmd-shell',      label: 'Shell',       command: 'shell',        cssClass: '' },
-    { id: 'cmd-clear',      label: 'Clear Errors', command: 'clear_errors', cssClass: 'btn-fault' },
+    { id: 'cmd-home',       label: 'Home',           command: 'home',         cssClass: 'btn-home' },
+    { id: 'cmd-level',      label: 'Level',          command: 'level',        cssClass: 'btn-home' },
+    { id: 'cmd-activate',   label: 'Activate',       command: 'activate',     cssClass: 'btn-activate' },
+    { id: 'cmd-deactivate', label: 'Deactivate',     command: 'deactivate',   cssClass: 'btn-deactivate' },
+    { id: 'cmd-spacemouse', label: 'SpaceMouse',     command: 'spacemouse',   cssClass: '' },
+    { id: 'cmd-shell',      label: 'Shell',          command: 'shell',        cssClass: '' },
+    { id: 'cmd-clear',      label: 'Clear Errors',   command: 'clear_errors', cssClass: 'btn-fault' },
 ];
 
 /**
@@ -54,6 +55,7 @@ export function updateCommandStates() {
     const state = currentOrchestratorState;
 
     setEnabled('cmd-home', state === 'IDLE' || state === 'BOOT');
+    setEnabled('cmd-level', state === 'IDLE');
     setEnabled('cmd-activate', state === 'IDLE');
     setEnabled('cmd-deactivate', state === 'ACTIVE');
     setEnabled('cmd-spacemouse', state === 'ACTIVE');

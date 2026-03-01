@@ -146,7 +146,7 @@ function resubscribeAll() {
  * @returns {{ publish: function }}
  */
 export function advertise(topicName, messageType) {
-    if (publishers[topicName]) return publishers[topicName];
+    if (publishers[topicName]) return publishers[topicName].api;
 
     const entry = { topicName, messageType, rosTopic: null };
 
@@ -166,7 +166,8 @@ export function advertise(topicName, messageType) {
         },
     };
 
-    publishers[topicName] = { ...entry, api: pub };
+    entry.api = pub;
+    publishers[topicName] = entry;
     return pub;
 }
 

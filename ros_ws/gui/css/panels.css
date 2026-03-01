@@ -110,6 +110,41 @@
 .flag-icon.fail { color: var(--accent-red); }
 .flag-icon.wait { color: var(--text-muted); }
 
+/* ---- Levelling panel ---- */
+.level-badge.level-ok {
+    background: var(--accent-green);
+    color: #000;
+}
+
+.level-badge.level-pending {
+    background: var(--text-muted);
+    color: #fff;
+}
+
+.level-offsets {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--gap-xs);
+}
+
+.level-offset {
+    text-align: center;
+}
+
+.level-offset .label {
+    font-size: var(--font-size-sm);
+    color: var(--text-muted);
+    text-transform: uppercase;
+    margin-bottom: 2px;
+}
+
+.level-offset .value {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-lg);
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
 /* ---- Ball Butler panel ---- */
 .bb-state-badge {
     font-size: var(--font-size-base);

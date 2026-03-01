@@ -18,7 +18,7 @@ import {
 import { initBallButlerModel, updateBallButler } from './ball-butler-model.js';
 import {
     initAllPanels, updateMotorGrid, updateOrchestratorState,
-    updateFlags, updateBBPanel, setBBDisconnected,
+    updateFlags, updateLevellingPanel, updateBBPanel, setBBDisconnected,
     updateCANTraffic, updateTrackingError,
     recordTopicMessage, registerTopic, updateTopicMonitor, clearTopicData,
 } from './panels.js';
@@ -127,6 +127,7 @@ function onRobotState(msg) {
     // Update panels
     updateMotorGrid(motors);
     updateFlags(msg);
+    updateLevellingPanel(msg);
 
     // Update 3D model via FK (if mocap not available)
     if (!useMocapPose && motors.length >= 6) {
