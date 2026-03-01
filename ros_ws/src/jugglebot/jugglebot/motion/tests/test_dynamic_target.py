@@ -13,6 +13,7 @@ Tests:
   10. Quaternion -> rotvec conversion — target state format works
   11. Arrival time in the past — rejected immediately
   12. make_rest_to_rest centralized — matches expected output
+  13. Deferred start for slow targets — waits then moves at reasonable speed
 
 Run:  python -m jugglebot.motion.tests.test_dynamic_target
 """
@@ -635,6 +636,69 @@ def test_make_rest_to_rest():
 
 
 # ---------------------------------------------------------------------------
+# Test 13: Deferred start for slow targets
+# ---------------------------------------------------------------------------
+
+def test_deferred_start():
+    """Verify deferred start when arrival time is far in the future."""
+    _header("Test 13: Deferred start for slow targets")
+
+    geom = StewartGeometry()
+    params = DynamicsParams.from_config()
+    mgr = TrajectoryManager(geom, params)
+    mgr.set_hold_pose(mgr.home_pose)
+
+    t_now = time.perf_counter()
+
+    # Target 30mm above home, with a very long arrival time (20s).
+    # The minimum feasible duration for this move is well under 1s,
+    # so the planner should defer the start.
+    target_pos = np.array([0.0, 0.0, 200.0])
+    target_quat = np.array([1.0, 0.0, 0.0, 0.0])
+    target_vel = np.zeros(3)
+    far_arrival = t_now + 20.0
+
+    accepted = mgr.submit_dynamic_target(
+        target_pos=target_pos,
+        target_quat=target_quat,
+        target_vel=target_vel,
+        arrival_time=far_arrival,
+        t_now=t_now,
+    )
+    assert accepted, "Far-future target should be accepted"
+    assert mgr.state == TrajectoryState.EXECUTING
+
+    # The trajectory's t_start should be in the future (deferred)
+    traj = mgr._active_traj
+    assert traj.t_start > t_now + 1.0, (
+        f"Expected deferred start, got t_start only "
+        f"{traj.t_start - t_now:.2f}s in the future")
+
+    # The trajectory should end at the requested arrival time
+    t_end = traj.t_start + traj.duration
+    assert abs(t_end - far_arrival) < 0.01, (
+        f"Trajectory end {t_end} should match arrival {far_arrival}")
+
+    # Before t_start, evaluate should return hold pose (start state)
+    pos_rev, vel_ff, torque_ff = mgr.evaluate(t_now + 0.1)
+    assert norm(vel_ff) < 1e-6, "Should hold still before deferred start"
+    assert mgr._last_progress == 0.0, "Progress should be 0 before start"
+
+    # At mid-trajectory, should be moving
+    t_mid = traj.t_start + traj.duration / 2
+    pos_rev_mid, vel_ff_mid, _ = mgr.evaluate(t_mid)
+    assert norm(vel_ff_mid) > 0.01, "Should be moving mid-trajectory"
+    assert mgr._last_progress > 0.3, "Progress should be nonzero mid-traj"
+
+    # After trajectory end, should complete
+    pos_rev_end, vel_ff_end, _ = mgr.evaluate(far_arrival + 0.1)
+    assert mgr.state == TrajectoryState.COMPLETE
+    assert norm(vel_ff_end) < 1e-6, "Should be stationary after completion"
+
+    print("  PASS: Deferred start correctly delays trajectory")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -652,6 +716,7 @@ def main():
         test_quaternion_conversion,
         test_arrival_time_in_past,
         test_make_rest_to_rest,
+        test_deferred_start,
     ]
 
     passed = 0
