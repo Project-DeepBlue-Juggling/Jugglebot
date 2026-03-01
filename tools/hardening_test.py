@@ -618,6 +618,7 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
 
     try:
+        harness.connect()
         prepare_harness(harness)
         if args.home:
             move_to_home(harness, geom, params)
@@ -661,8 +662,7 @@ def main():
         return 0 if all_pass else 1
 
     finally:
-        print("  Idling all legs...")
-        harness.idle_all()
+        harness.disconnect()
 
 
 if __name__ == '__main__':
