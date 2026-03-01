@@ -439,7 +439,12 @@ def generate_hw_python(cfg: dict) -> str:
         lines += py_section(section_title)
         for key, val in section.items():
             name = f"{py_prefix}{key.upper()}"
-            if _is_2d_list(val):
+            if isinstance(val, dict):
+                # Flatten nested dict: PARENT_CHILD = val
+                for sub_key, sub_val in val.items():
+                    sub_name = f"{name}_{sub_key.upper()}"
+                    lines.append(f"{sub_name} = {_py_val(sub_val)}")
+            elif _is_2d_list(val):
                 lines.append(f"{name} = [")
                 for row in val:
                     lines.append(f"    {row},")
@@ -490,7 +495,13 @@ def generate_hw_cpp(cfg: dict) -> str:
         lines.append(f"namespace {cpp_ns} {{")
         for key, val in section.items():
             cpp_name = key.upper()
-            if _is_2d_list(val):
+            if isinstance(val, dict):
+                # Flatten nested dict: PARENT_CHILD = val
+                for sub_key, sub_val in val.items():
+                    sub_cpp_name = f"{cpp_name}_{sub_key.upper()}"
+                    ctype, cval = _cpp_type_and_val(sub_val)
+                    lines.append(f"  constexpr {ctype} {sub_cpp_name} = {cval};")
+            elif _is_2d_list(val):
                 rows = len(val)
                 cols = len(val[0])
                 lines.append(f"  constexpr float {cpp_name}[{rows}][{cols}] = {{")

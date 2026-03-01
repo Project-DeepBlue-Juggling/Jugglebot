@@ -45,7 +45,11 @@ from jugglebot.motion.conversions import (
     extensions_mm_to_revs,
     leg_velocities_to_motor_velocities,
 )
-from jugglebot.motion.dynamics import DynamicsParams, gravity_to_motor_torques
+from jugglebot.motion.dynamics import (
+    DynamicsParams,
+    compute_full_feedforward_torques,
+    gravity_to_motor_torques,
+)
 from jugglebot.motion.ipc import (
     TOPIC_MODE,
     TOPIC_TARGET,
@@ -356,10 +360,11 @@ class ControlLoop:
         self._commanded_vel_ff_rps = leg_velocities_to_motor_velocities(
             desired_vel_mm_s, self.geom)
 
-        # Gravity feedforward: dynamics model → motor torques (Nm)
+        # Feedforward: gravity + inertia → motor torques (Nm)
         if self._feedforward_enabled:
-            self._commanded_torque_ff_Nm = gravity_to_motor_torques(
+            self._commanded_torque_ff_Nm = compute_full_feedforward_torques(
                 self._target_pos, self._target_rot,
+                self._target_twist, self._target_accel,
                 self.geom, self._dynamics_params)
         else:
             self._commanded_torque_ff_Nm = np.zeros(6)

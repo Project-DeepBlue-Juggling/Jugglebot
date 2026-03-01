@@ -34,7 +34,11 @@ from jugglebot.motion.conversions import (
     extensions_mm_to_revs,
     leg_velocities_to_motor_velocities,
 )
-from jugglebot.motion.dynamics import DynamicsParams, gravity_to_motor_torques
+from jugglebot.motion.dynamics import (
+    DynamicsParams,
+    compute_full_feedforward_torques,
+    gravity_to_motor_torques,
+)
 from jugglebot.motion.ik_solver import (
     pose_to_leg_lengths,
     rotvec_to_rot_matrix,
@@ -321,17 +325,17 @@ def cartesian_to_motor_commands(
     """Convert a Cartesian state to motor commands.
 
     Maps the trajectory evaluator output to the ODrive command triple
-    ``(input_pos, vel_ff, torque_ff)`` using existing IK and dynamics.
+    ``(input_pos, vel_ff, torque_ff)`` using IK and dynamics.
 
     Parameters
     ----------
     pose : (6,) ndarray — [x, y, z, rx, ry, rz] in mm, rad
     twist : (6,) ndarray — [vx, vy, vz, wx, wy, wz] in mm/s, rad/s
-    accel : (6,) ndarray — unused in Phase 4 (Phase 5 adds inertia FF)
+    accel : (6,) ndarray — [ax, ay, az, alphax, alphay, alphaz] in mm/s², rad/s²
     geom : StewartGeometry
     dynamics_params : DynamicsParams
     feedforward_enabled : bool
-        Whether to include gravity torque_ff.
+        Whether to include torque_ff (gravity + inertia).
 
     Returns
     -------
@@ -350,10 +354,10 @@ def cartesian_to_motor_commands(
     vel_mm_s = twist_to_leg_velocities(twist, pos, rot, geom)
     vel_ff_rps = leg_velocities_to_motor_velocities(vel_mm_s, geom)
 
-    # Torque feedforward: gravity compensation (Phase 4)
-    # Phase 5 will add inertia feedforward using accel
+    # Torque feedforward: gravity + platform inertia + reflected motor inertia
     if feedforward_enabled:
-        torque_ff_Nm = gravity_to_motor_torques(pos, rot, geom, dynamics_params)
+        torque_ff_Nm = compute_full_feedforward_torques(
+            pos, rot, twist, accel, geom, dynamics_params)
     else:
         torque_ff_Nm = np.zeros(6)
 
@@ -460,8 +464,9 @@ def check_feasibility(
         cond = compute_condition_number(pos, rot, geom)
         peak_cond = max(peak_cond, cond)
 
-        # Gravity feedforward torques
-        torque_Nm = gravity_to_motor_torques(pos, rot, geom, dynamics_params)
+        # Full feedforward torques (gravity + inertia + reflected motor)
+        torque_Nm = compute_full_feedforward_torques(
+            pos, rot, twist, accel_cart, geom, dynamics_params)
         peak_torque = np.maximum(peak_torque, np.abs(torque_Nm))
 
     # Check violations

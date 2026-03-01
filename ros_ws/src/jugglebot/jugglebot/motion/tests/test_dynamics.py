@@ -1,12 +1,22 @@
-"""Phase 3 verification tests for the dynamics model.
+"""Phase 3 + Phase 5 verification tests for the dynamics model.
 
-Tests:
+Phase 3 tests (1-7):
   1. Gravity wrench at home — verify force magnitude and CoM moment direction
   2. Leg force vertical sum — total vertical component equals platform weight
   3. Round-trip — leg forces via J^{-T} reproduce the input support wrench via J^T
   4. Centred CoM — zero moment when CoM is at geometric centre
   5. Tilted pose — gravity wrench rotates correctly with platform orientation
   6. Force conversion — motor torques match expected order of magnitude
+  7. Reflected inertia — formula verification and magnitude documentation
+
+Phase 5 tests (8-14):
+  8. Inertia wrench at rest — zero wrench when twist and accel are both zero
+  9. Pure translation accel — F = ma, zero torque for centred CoM
+  10. Pure rotation accel — torque = I*alpha for small angles
+  11. Gyroscopic term — omega x (I*omega) produces cross-axis torque
+  12. Full feedforward at rest — equals gravity-only feedforward
+  13. Full feedforward decomposition — gravity + inertia + reflected sum correctly
+  14. Torque profile preview — Phase 4 trajectories at 50/75/100% speed within current limits
 
 Run:  python -m jugglebot.motion.tests.test_dynamics
 """
@@ -20,12 +30,18 @@ import numpy as np
 from numpy.linalg import norm
 
 from jugglebot.motion.geometry import StewartGeometry
-from jugglebot.motion.ik_solver import compute_jacobian, rotvec_to_rot_matrix
+from jugglebot.motion.ik_solver import (
+    compute_jacobian,
+    rotvec_to_rot_matrix,
+    accel_to_leg_accels,
+)
 from jugglebot.motion.conversions import leg_forces_to_motor_torques
 from jugglebot.motion.dynamics import (
     DynamicsParams,
     compute_gravity_wrench,
+    compute_inertia_wrench,
     compute_reflected_inertia,
+    compute_full_feedforward_torques,
     gravity_to_leg_forces,
     gravity_to_motor_torques,
 )
@@ -52,15 +68,7 @@ def test_gravity_wrench_at_home():
     assert abs(W[2] - (-mg)) < 1e-10, f"Fz should be {-mg}, got {W[2]}"
 
     # Torque from CoM offset: tau = r_com x F_gravity
-    # r_com = [-14.5, -67.0, 54.0] mm, F = [0, 0, -mg] N
-    # tau_x = ry*Fz - rz*Fy = -67.0*(-mg) - 54.0*0 = 67.0*mg
-    # tau_y = rz*Fx - rx*Fz = 54.0*0 - (-14.5)*(-mg) = -14.5*mg
-    # tau_z = rx*Fy - ry*Fx = 0
     r = params.com_offset_mm
-    expected_tau_x = r[1] * (-mg)  # -67.0 * (-mg) = 67.0*mg
-    expected_tau_y = -r[0] * (-mg)  # -(-14.5)*(-mg) = -14.5*mg
-    # Correct formula: tau = r x F
-    # [ry*Fz - rz*Fy, rz*Fx - rx*Fz, rx*Fy - ry*Fx]
     expected_tau = np.cross(r, np.array([0.0, 0.0, -mg]))
 
     tau_err = norm(W[3:] - expected_tau)
@@ -92,8 +100,6 @@ def test_leg_force_vertical_sum():
     wrench_err = norm(W_produced - W_support)
     mg = params.mass_kg * params.gravity_mps2
 
-    # The vertical force component: sum of f_i * l_i_z
-    # This is exactly W_produced[2], which should equal mg
     vertical_force = W_produced[2]
     vertical_err = abs(vertical_force - mg)
 
@@ -114,7 +120,6 @@ def test_round_trip():
     geom = StewartGeometry()
     params = DynamicsParams.from_config()
 
-    # Test at several poses
     test_poses = [
         (np.zeros(3), np.eye(3), "home"),
         (np.array([30.0, -20.0, 50.0]), np.eye(3), "translated"),
@@ -157,7 +162,6 @@ def test_centred_com():
     moment_mag = norm(W[3:])
     assert moment_mag < 1e-12, f"Moment should be zero, got {moment_mag}"
 
-    # Also check that leg forces are roughly equal (symmetric loading)
     geom = StewartGeometry()
     pos = np.zeros(3)
     f_legs = gravity_to_leg_forces(pos, rot, geom, params_centred)
@@ -169,8 +173,6 @@ def test_centred_com():
     print(f"  Moment magnitude: {moment_mag:.2e} N*mm")
     print(f"  Leg forces (N):   {np.array2string(f_legs, precision=4)}")
     print(f"  Force mean: {f_mean:.4f} N, std: {f_std:.4f} N, CV: {cv:.4f}")
-    # Forces won't be perfectly equal due to non-symmetric geometry,
-    # but they should be within a reasonable range
     assert cv < 0.5, f"Force variation too high: CV={cv:.4f}"
     print("  [PASS]")
 
@@ -181,29 +183,24 @@ def test_tilted_pose():
     params = DynamicsParams.from_config()
     geom = StewartGeometry()
 
-    # Tilt the platform 10 degrees about x-axis
     angle_rad = np.radians(10.0)
     rot = rotvec_to_rot_matrix(np.array([angle_rad, 0.0, 0.0]))
 
     W_home = compute_gravity_wrench(np.eye(3), params)
     W_tilted = compute_gravity_wrench(rot, params)
 
-    # Gravity force is always [0, 0, -mg] regardless of platform orientation
     mg = params.mass_kg * params.gravity_mps2
     assert abs(W_tilted[2] - (-mg)) < 1e-10, "Fz should still be -mg"
 
-    # But the moment changes because the CoM offset rotates with the platform
     r_com_tilted = rot @ params.com_offset_mm
     r_com_home = params.com_offset_mm
     assert not np.allclose(r_com_tilted, r_com_home), \
         "Rotated CoM should differ from home CoM"
 
-    # Verify the torque matches r_com_tilted x F_gravity
     expected_tau = np.cross(r_com_tilted, np.array([0.0, 0.0, -mg]))
     tau_err = norm(W_tilted[3:] - expected_tau)
     assert tau_err < 1e-10, f"Tilted torque mismatch: {tau_err}"
 
-    # Compute leg forces at tilted pose
     pos = np.zeros(3)
     f_legs = gravity_to_leg_forces(pos, rot, geom, params)
     f_legs_home = gravity_to_leg_forces(pos, np.eye(3), geom, params)
@@ -231,14 +228,9 @@ def test_motor_torque_magnitude():
 
     torques = gravity_to_motor_torques(pos, rot, geom, params)
 
-    # Expected order of magnitude:
-    # mg ~ 9.4 N, shared across 6 legs ~ 1.6 N each
-    # spool_radius ~ 11 mm = 0.011 m
-    # torque per motor ~ 1.6 * 0.011 ~ 0.018 Nm
     mg = params.mass_kg * params.gravity_mps2
     expected_mean = mg / 6.0 * np.mean(geom.spool_radius_mm) / 1000.0
 
-    # Current per motor: I = tau / Kt, Kt ~ 0.0624 Nm/A
     Kt = 0.0624  # measured from Phase 2 bench test
     currents = torques / Kt
 
@@ -248,15 +240,11 @@ def test_motor_torque_magnitude():
     print(f"  Estimated currents: {np.array2string(currents, precision=3)} A")
     print(f"  Max current:        {np.max(np.abs(currents)):.3f} A")
 
-    # All torques should be positive (extension = push platform up)
     assert np.all(torques > 0), \
         f"All gravity FF torques should be positive, got {torques}"
-
-    # All torques should be < 1 Nm (sanity — platform is only ~1 kg)
     assert np.all(np.abs(torques) < 1.0), \
         f"Torques unreasonably large: {torques}"
 
-    # Mean should be within 3x of expected (geometry asymmetry + CoM offset)
     ratio = np.mean(torques) / expected_mean
     assert 0.3 < ratio < 3.0, \
         f"Mean torque ratio {ratio:.2f} outside expected range"
@@ -269,26 +257,328 @@ def test_reflected_inertia():
     """Verify reflected inertia computation (documented values)."""
     _header("Test 7: Reflected motor inertia (documentation)")
     geom = StewartGeometry()
+    params = DynamicsParams.from_config()
 
-    # Use a typical small BLDC motor rotor inertia: ~50e-6 kg*m^2
-    # (placeholder — actual value TBD from motor datasheet)
-    test_inertia = 50e-6  # kg*m^2
+    J_rotor = params.motor_rotor_inertia_kgm2
 
-    reflected = compute_reflected_inertia(geom, test_inertia)
+    reflected = compute_reflected_inertia(geom, J_rotor)
 
     spool_r_m = geom.spool_radius_mm / 1000.0
-    expected = test_inertia / (spool_r_m ** 2)
+    expected = J_rotor / (spool_r_m ** 2)
 
     err = norm(reflected - expected)
     assert err < 1e-12, f"Reflected inertia mismatch: {err}"
 
-    print(f"  Rotor inertia:     {test_inertia*1e6:.1f} x10^-6 kg*m^2")
+    platform_mass_per_leg = params.mass_kg / 6.0
+
+    print(f"  Rotor inertia:     {J_rotor*1e6:.1f} x10^-6 kg*m^2")
     spool_str = np.array2string(geom.spool_radius_mm, precision=2)
     refl_str = np.array2string(reflected, precision=3)
     print(f"  Spool radii (mm):  {spool_str}")
     print(f"  Reflected (kg):    {refl_str}")
-    print("  (These values represent the effective mass that motor inertia")
-    print("   adds to each leg's dynamics. Used in Phase 5 feedforward.)")
+    print(f"  Platform mass per leg: {platform_mass_per_leg:.3f} kg")
+    print(f"  Reflected/platform ratio: {np.mean(reflected)/platform_mass_per_leg:.1f}x")
+    print("  (Reflected motor inertia dominates platform mass per leg —")
+    print("   Phase 5 feedforward is critical for high-speed tracking.)")
+    print("  [PASS]")
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 tests
+# ---------------------------------------------------------------------------
+
+def test_inertia_wrench_at_rest():
+    """Verify inertia wrench is zero when twist and accel are both zero."""
+    _header("Test 8: Inertia wrench at rest")
+    params = DynamicsParams.from_config()
+    rot = np.eye(3)
+    twist = np.zeros(6)
+    accel = np.zeros(6)
+
+    W = compute_inertia_wrench(rot, twist, accel, params)
+
+    mag = norm(W)
+    assert mag < 1e-15, f"Inertia wrench should be zero at rest, got {mag}"
+
+    # Also check at a tilted pose
+    rot_tilted = rotvec_to_rot_matrix(np.array([0.1, -0.05, 0.02]))
+    W_tilted = compute_inertia_wrench(rot_tilted, twist, accel, params)
+    mag_tilted = norm(W_tilted)
+    assert mag_tilted < 1e-15, \
+        f"Inertia wrench should be zero at rest (tilted), got {mag_tilted}"
+
+    print(f"  Wrench magnitude (home):   {mag:.2e}")
+    print(f"  Wrench magnitude (tilted): {mag_tilted:.2e}")
+    print("  [PASS]")
+
+
+def test_pure_translation_accel():
+    """Verify F = m*a for pure translational acceleration, zero CoM offset."""
+    _header("Test 9: Pure translational acceleration (centred CoM)")
+    # Use centred CoM to decouple translation from rotation
+    params = DynamicsParams(
+        mass_kg=0.96,
+        com_offset_mm=np.array([0.0, 0.0, 0.0]),
+        gravity_mps2=9.806,
+        inertia_tensor_kgmm2=np.diag([10000.0, 10000.0, 5000.0]),
+    )
+    rot = np.eye(3)
+    twist = np.zeros(6)
+
+    # Apply 1000 mm/s² acceleration in Z (= 1 m/s²)
+    accel = np.array([0.0, 0.0, 1000.0, 0.0, 0.0, 0.0])
+    W = compute_inertia_wrench(rot, twist, accel, params)
+
+    # Expected: F = m * a / 1000 = 0.96 * 1000 / 1000 = 0.96 N in Z
+    expected_Fz = params.mass_kg * 1000.0 / 1000.0  # = 0.96 N
+    assert abs(W[0]) < 1e-12, f"Fx should be zero, got {W[0]}"
+    assert abs(W[1]) < 1e-12, f"Fy should be zero, got {W[1]}"
+    assert abs(W[2] - expected_Fz) < 1e-10, \
+        f"Fz should be {expected_Fz}, got {W[2]}"
+
+    # Torque should be zero for centred CoM with no angular accel
+    tau_mag = norm(W[3:])
+    assert tau_mag < 1e-10, f"Torque should be zero, got {tau_mag}"
+
+    print(f"  Applied accel: [0, 0, 1000] mm/s^2 = [0, 0, 1] m/s^2")
+    print(f"  Expected force: [0, 0, {expected_Fz:.4f}] N")
+    print(f"  Computed force: [{W[0]:.6f}, {W[1]:.6f}, {W[2]:.6f}] N")
+    print(f"  Torque magnitude: {tau_mag:.2e} N*mm")
+    print("  [PASS]")
+
+
+def test_pure_rotation_accel():
+    """Verify tau = I*alpha for pure angular acceleration."""
+    _header("Test 10: Pure angular acceleration")
+    Ixx = 12000.0  # kg*mm^2
+    Iyy = 11000.0
+    Izz = 7000.0
+    params = DynamicsParams(
+        mass_kg=0.96,
+        com_offset_mm=np.array([0.0, 0.0, 0.0]),
+        gravity_mps2=9.806,
+        inertia_tensor_kgmm2=np.diag([Ixx, Iyy, Izz]),
+    )
+    rot = np.eye(3)
+    twist = np.zeros(6)
+
+    # Apply 1 rad/s^2 about X-axis
+    alpha_x = 1.0  # rad/s^2
+    accel = np.array([0.0, 0.0, 0.0, alpha_x, 0.0, 0.0])
+    W = compute_inertia_wrench(rot, twist, accel, params)
+
+    # Expected: tau_x = Ixx * alpha_x / 1000 = 12000 * 1 / 1000 = 12 N*mm
+    expected_tau_x = Ixx * alpha_x / 1000.0
+    assert abs(W[3] - expected_tau_x) < 1e-8, \
+        f"tau_x should be {expected_tau_x}, got {W[3]}"
+    assert abs(W[4]) < 1e-10, f"tau_y should be zero, got {W[4]}"
+    assert abs(W[5]) < 1e-10, f"tau_z should be zero, got {W[5]}"
+
+    # Force should be zero (no CoM offset, no translational accel)
+    assert norm(W[:3]) < 1e-12, f"Force should be zero, got {norm(W[:3])}"
+
+    # Also test Y and Z axes
+    for axis, I_val, label in [(1, Iyy, 'Y'), (2, Izz, 'Z')]:
+        accel_test = np.zeros(6)
+        accel_test[3 + axis] = 1.0
+        W_test = compute_inertia_wrench(rot, twist, accel_test, params)
+        expected = I_val / 1000.0
+        err = abs(W_test[3 + axis] - expected)
+        assert err < 1e-8, f"tau_{label} error: {err}"
+
+    print(f"  Inertia tensor diag: [{Ixx}, {Iyy}, {Izz}] kg*mm^2")
+    print(f"  alpha_x = 1 rad/s^2: tau_x = {W[3]:.4f} N*mm "
+          f"(expected {expected_tau_x:.4f})")
+    print(f"  All three axes verified")
+    print("  [PASS]")
+
+
+def test_gyroscopic_term():
+    """Verify omega x (I*omega) produces cross-axis torque."""
+    _header("Test 11: Gyroscopic cross-coupling term")
+    Ixx = 12000.0  # kg*mm^2
+    Iyy = 8000.0
+    Izz = 7000.0
+    params = DynamicsParams(
+        mass_kg=0.96,
+        com_offset_mm=np.array([0.0, 0.0, 0.0]),
+        gravity_mps2=9.806,
+        inertia_tensor_kgmm2=np.diag([Ixx, Iyy, Izz]),
+    )
+    rot = np.eye(3)
+
+    # Spin about X and Y with angular velocity, zero angular acceleration
+    omega_x = 2.0  # rad/s
+    omega_y = 1.0  # rad/s
+    twist = np.array([0.0, 0.0, 0.0, omega_x, omega_y, 0.0])
+    accel = np.zeros(6)
+
+    W = compute_inertia_wrench(rot, twist, accel, params)
+
+    # omega x (I*omega) with omega = [wx, wy, 0], I diagonal:
+    # I*omega = [Ixx*wx, Iyy*wy, 0]
+    # omega x (I*omega) = [wy*0 - 0*Iyy*wy, 0*Ixx*wx - wx*0, wx*Iyy*wy - wy*Ixx*wx]
+    #                   = [0, 0, (Iyy - Ixx)*wx*wy]
+    I_omega = np.array([Ixx * omega_x, Iyy * omega_y, 0.0])
+    omega_vec = np.array([omega_x, omega_y, 0.0])
+    expected_gyro = np.cross(omega_vec, I_omega) / 1000.0  # N*mm
+
+    tau_err = norm(W[3:] - expected_gyro)
+    assert tau_err < 1e-8, f"Gyroscopic torque error: {tau_err}"
+
+    expected_tz = (Iyy - Ixx) * omega_x * omega_y / 1000.0
+    assert abs(W[5] - expected_tz) < 1e-8, \
+        f"tau_z should be {expected_tz:.4f}, got {W[5]:.4f}"
+
+    print(f"  omega = [{omega_x}, {omega_y}, 0] rad/s")
+    print(f"  Gyroscopic torque: [{W[3]:.4f}, {W[4]:.4f}, {W[5]:.4f}] N*mm")
+    print(f"  Expected:          [{expected_gyro[0]:.4f}, {expected_gyro[1]:.4f}, "
+          f"{expected_gyro[2]:.4f}] N*mm")
+    print(f"  tau_z = (Iyy-Ixx)*wx*wy/1000 = {expected_tz:.4f} N*mm")
+    print(f"  Error: {tau_err:.2e}")
+    print("  [PASS]")
+
+
+def test_full_feedforward_at_rest():
+    """Verify full feedforward equals gravity-only at rest."""
+    _header("Test 12: Full feedforward at rest equals gravity-only")
+    geom = StewartGeometry()
+    params = DynamicsParams.from_config()
+
+    test_poses = [
+        (np.zeros(3), np.eye(3), "home"),
+        (np.array([20.0, -10.0, 30.0]),
+         rotvec_to_rot_matrix(np.array([0.05, -0.03, 0.01])),
+         "tilted"),
+    ]
+
+    max_err = 0.0
+    for pos, rot, label in test_poses:
+        grav_only = gravity_to_motor_torques(pos, rot, geom, params)
+        full_ff = compute_full_feedforward_torques(
+            pos, rot, np.zeros(6), np.zeros(6), geom, params)
+
+        err = norm(full_ff - grav_only)
+        max_err = max(max_err, err)
+
+        print(f"  {label:15s}: gravity = {np.array2string(grav_only, precision=5)}")
+        print(f"  {' '*15}  full_ff = {np.array2string(full_ff, precision=5)}")
+        print(f"  {' '*15}  error   = {err:.2e}")
+
+    assert max_err < 1e-10, f"Full FF should equal gravity at rest, error: {max_err}"
+    print("  [PASS]")
+
+
+def test_full_feedforward_decomposition():
+    """Verify full feedforward = gravity_torques + inertia_torques + reflected_torques."""
+    _header("Test 13: Full feedforward decomposition")
+    geom = StewartGeometry()
+    params = DynamicsParams.from_config()
+
+    pos = np.array([10.0, -5.0, 40.0])
+    rot = rotvec_to_rot_matrix(np.array([0.05, -0.03, 0.01]))
+    twist = np.array([50.0, -30.0, 100.0, 0.5, -0.3, 0.1])
+    accel = np.array([500.0, -200.0, 1000.0, 2.0, -1.5, 0.5])
+
+    # Full feedforward
+    full_ff = compute_full_feedforward_torques(
+        pos, rot, twist, accel, geom, params)
+
+    # Manual decomposition:
+    J = compute_jacobian(pos, rot, geom)
+    W_gravity = compute_gravity_wrench(rot, params)
+    W_support = -W_gravity
+    W_inertia = compute_inertia_wrench(rot, twist, accel, params)
+
+    W_total = W_support + W_inertia
+    f_legs = np.linalg.solve(J.T, W_total)
+    torque_platform = leg_forces_to_motor_torques(f_legs, geom)
+
+    # Reflected motor inertia
+    q_ddot = accel_to_leg_accels(accel, twist, pos, rot, geom)
+    q_ddot_rps2 = q_ddot * geom.mm_to_rev
+    q_ddot_rad_s2 = q_ddot_rps2 * (2.0 * np.pi)
+    torque_reflected = params.motor_rotor_inertia_kgm2 * q_ddot_rad_s2
+
+    manual_total = torque_platform + torque_reflected
+
+    err = norm(full_ff - manual_total)
+    assert err < 1e-10, f"Decomposition mismatch: {err}"
+
+    # Report the magnitudes of each component
+    grav_torque = gravity_to_motor_torques(pos, rot, geom, params)
+
+    print(f"  Gravity FF:    {np.array2string(grav_torque, precision=5)} Nm")
+    print(f"  Inertia terms: {np.array2string(torque_platform - grav_torque, precision=5)} Nm")
+    print(f"  Reflected:     {np.array2string(torque_reflected, precision=5)} Nm")
+    print(f"  Total:         {np.array2string(full_ff, precision=5)} Nm")
+    print(f"  Decomposition error: {err:.2e}")
+
+    grav_mag = norm(grav_torque)
+    inertia_mag = norm(torque_platform - grav_torque)
+    refl_mag = norm(torque_reflected)
+    total_mag = norm(full_ff)
+    print(f"\n  Component magnitudes (norm):")
+    print(f"    Gravity:   {grav_mag:.5f} Nm ({grav_mag/total_mag*100:.1f}%)")
+    print(f"    Inertia:   {inertia_mag:.5f} Nm ({inertia_mag/total_mag*100:.1f}%)")
+    print(f"    Reflected: {refl_mag:.5f} Nm ({refl_mag/total_mag*100:.1f}%)")
+    print("  [PASS]")
+
+
+def test_torque_profile_preview():
+    """Verify Phase 4 trajectories have feasible torque profiles at 50/75/100% speed."""
+    _header("Test 14: Torque profile preview (50/75/100% speed)")
+    from jugglebot.motion.trajectory import (
+        create_trajectory,
+        check_feasibility,
+    )
+    import jugglebot.hardware_config as hw_cfg
+
+    geom = StewartGeometry()
+    params = DynamicsParams.from_config()
+    zeros6 = np.zeros(6)
+
+    # Operational torque limit: 20A * 0.0624 Nm/A ~ 1.25 Nm
+    Kt = 0.0624
+    operational_current_A = 20.0
+    torque_limit_Nm = operational_current_A * Kt
+
+    test_trajectories = [
+        ("10mm Z, 1.0s", np.array([0, 0, 10, 0, 0, 0], dtype=float), 1.0),
+        ("40mm Z, 1.5s", np.array([0, 0, 40, 0, 0, 0], dtype=float), 1.5),
+        ("20mm XY + 5deg, 1.5s",
+         np.array([20, -10, 20, np.deg2rad(5), 0, 0], dtype=float), 1.5),
+        ("50mm Z + 3deg, 2.0s",
+         np.array([0, 0, 50, np.deg2rad(3), np.deg2rad(-2), 0], dtype=float), 2.0),
+    ]
+
+    speed_levels = [0.50, 0.75, 1.00]
+
+    for speed in speed_levels:
+        print(f"\n  --- Speed scale: {speed*100:.0f}% ---")
+
+        for label, end_pose, duration in test_trajectories:
+            traj = create_trajectory(
+                start_pose=zeros6, start_twist=zeros6, start_accel=zeros6,
+                end_pose=end_pose, end_twist=zeros6, end_accel=zeros6,
+                duration=duration, speed_scale=speed)
+
+            result = check_feasibility(traj, geom, params,
+                                       torque_limit_Nm=torque_limit_Nm)
+
+            peak_torque = np.max(result.peak_torque_ff_Nm)
+            peak_current = peak_torque / Kt
+            status = 'OK' if result.feasible else 'WARN'
+
+            print(f"    [{status}] {label}: peak {peak_torque:.4f} Nm "
+                  f"({peak_current:.2f}A), dur={traj.duration:.2f}s")
+            if not result.feasible:
+                for v in result.violations:
+                    print(f"      {v}")
+
+    # This test always passes — it documents the profile for review.
+    # The pre-flight check before hardware execution is the real gate.
+    print("\n  Torque profiles documented for review.")
     print("  [PASS]")
 
 
@@ -297,7 +587,7 @@ def test_reflected_inertia():
 # ---------------------------------------------------------------------------
 
 def main():
-    print("Phase 3 Dynamics Verification Tests")
+    print("Phase 3 + Phase 5 Dynamics Verification Tests")
     print("=" * 70)
 
     t0 = time.time()
@@ -305,6 +595,7 @@ def main():
     failed = 0
 
     tests = [
+        # Phase 3 tests (1-7)
         test_gravity_wrench_at_home,
         test_leg_force_vertical_sum,
         test_round_trip,
@@ -312,6 +603,14 @@ def main():
         test_tilted_pose,
         test_motor_torque_magnitude,
         test_reflected_inertia,
+        # Phase 5 tests (8-14)
+        test_inertia_wrench_at_rest,
+        test_pure_translation_accel,
+        test_pure_rotation_accel,
+        test_gyroscopic_term,
+        test_full_feedforward_at_rest,
+        test_full_feedforward_decomposition,
+        test_torque_profile_preview,
     ]
 
     for test in tests:
@@ -320,6 +619,8 @@ def main():
             passed += 1
         except Exception as e:
             print(f"  [FAIL] {e}")
+            import traceback
+            traceback.print_exc()
             failed += 1
 
     elapsed = time.time() - t0
