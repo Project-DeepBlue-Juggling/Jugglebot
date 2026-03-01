@@ -688,6 +688,8 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
 
     try:
+        harness.connect()
+
         if args.home:
             from trajectory_test import home_robot  # noqa
             home_robot(harness)
