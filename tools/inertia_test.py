@@ -8,7 +8,7 @@ adds Phase 5-specific comparisons and diagnostics.
 Phase 5 hardware tests:
   T5. Feedforward comparison: gravity-only vs full feedforward (same trajectory)
   T6. Trajectory replay at speed (Phase 4 moves at 50%/75%/100%)
-  T7. Feedforward prediction validation (torque_ff vs iq_measured)
+  T7. Feedforward prediction (differential iq: gravity-only vs full FF)
 
 Graduated speed ramp approach:
   Execute at 25% first (baseline), then 50% → 75% → 100%.
@@ -219,6 +219,109 @@ def execute_trajectory_with_iq(harness: PlatformTestHarness,
             raise RuntimeError("Heartbeat timeout during trajectory execution")
 
         # 7. Sleep for remainder of cycle
+        elapsed = time.perf_counter() - t_now
+        sleep_time = TARGET_DT_S - elapsed
+        if sleep_time > 0:
+            time.sleep(sleep_time)
+
+    return log
+
+
+def execute_trajectory_with_iq_gravity_only(
+        harness: PlatformTestHarness,
+        traj,
+        geom: StewartGeometry,
+        params: DynamicsParams,
+        hold_s: float = HOLD_AFTER_S) -> TrajectoryLog:
+    """Execute a trajectory with gravity-only feedforward, logging iq data.
+
+    Same as execute_trajectory_gravity_only() but also records iq_setpoint
+    and iq_measured per cycle for differential comparison in T7.
+    """
+    from jugglebot.motion.ik_solver import (
+        pose_to_leg_lengths,
+        twist_to_leg_velocities,
+    )
+    from jugglebot.motion.conversions import (
+        extensions_mm_to_revs,
+        leg_velocities_to_motor_velocities,
+    )
+
+    log = TrajectoryLog()
+    log.iq_setpoint = []
+    log.iq_measured = []
+
+    total_duration = traj.duration + hold_s
+
+    if sys.platform == 'win32':
+        print("  WARNING: Windows timer limits loop to ~60 Hz. "
+              "Run on Jetson for 500 Hz.")
+
+    t_loop_start = time.perf_counter()
+    t_prev = t_loop_start
+
+    while True:
+        t_now = time.perf_counter()
+        t_elapsed = t_now - t_loop_start
+        dt = t_now - t_prev
+        t_prev = t_now
+
+        if t_elapsed > total_duration:
+            break
+
+        # 1. Evaluate trajectory
+        pose, twist, accel = evaluate(traj, t_elapsed)
+
+        # 2. Convert to motor commands — gravity only
+        pos = pose[:3]
+        rot = rotvec_to_rot_matrix(pose[3:6])
+        extensions_mm = pose_to_leg_lengths(pos, rot, geom)
+        pos_rev = extensions_mm_to_revs(extensions_mm, geom)
+        vel_mm_s = twist_to_leg_velocities(twist, pos, rot, geom)
+        vel_ff_rps = leg_velocities_to_motor_velocities(vel_mm_s, geom)
+        torque_ff_Nm = gravity_to_motor_torques(pos, rot, geom, params)
+
+        # 3. Send to all 6 axes
+        for i, axis_id in enumerate(LEG_AXES):
+            raw_pos = -pos_rev[i]
+            vel_int = int(round(-vel_ff_rps[i] * LEG_VEL_FF_SCALE))
+            tor_int = int(round(-torque_ff_Nm[i] * LEG_TOR_FF_SCALE))
+            vel_int = max(-32767, min(32767, vel_int))
+            tor_int = max(-32767, min(32767, tor_int))
+            harness.send_no_delay(encode_set_input_pos(
+                axis_id, raw_pos, vel_int, tor_int))
+
+        # 4. Poll for encoder + iq feedback
+        harness._poll(timeout=0)
+
+        # 5. Log data (including iq)
+        actual_pos = np.array([harness.states[a].pos_rev for a in LEG_AXES])
+        actual_vel = np.array([harness.states[a].vel_rps for a in LEG_AXES])
+        iq_sp = np.array([harness.states[a].iq_setpoint for a in LEG_AXES])
+        iq_meas = np.array([harness.states[a].iq_measured for a in LEG_AXES])
+
+        log.timestamps.append(t_elapsed)
+        log.commanded_pos_rev.append(pos_rev.copy())
+        log.commanded_vel_rps.append(vel_ff_rps.copy())
+        log.commanded_torque_Nm.append(torque_ff_Nm.copy())
+        log.actual_pos_rev.append(actual_pos)
+        log.actual_vel_rps.append(actual_vel)
+        log.poses.append(pose.copy())
+        log.loop_dt_s.append(dt)
+        log.iq_setpoint.append(iq_sp)
+        log.iq_measured.append(iq_meas)
+
+        # 6. Safety checks
+        for axis_id in LEG_AXES:
+            if harness.states[axis_id].active_errors != 0:
+                names = error_names(harness.states[axis_id].active_errors)
+                raise RuntimeError(
+                    f"Axis {axis_id} error during trajectory: {names}")
+
+        if not harness.all_heartbeats_fresh():
+            raise RuntimeError("Heartbeat timeout during trajectory execution")
+
+        # 7. Sleep
         elapsed = time.perf_counter() - t_now
         sleep_time = TARGET_DT_S - elapsed
         if sleep_time > 0:
@@ -549,13 +652,22 @@ def test_replay(harness: PlatformTestHarness,
 
 def test_ff_prediction(harness: PlatformTestHarness,
                        speed_scale: float = DEFAULT_SPEED_SCALE) -> bool:
-    """T7: Validate feedforward prediction against measured motor currents.
+    """T7: Validate feedforward prediction via differential iq comparison.
 
-    Log commanded torque_ff and actual iq_measured during a trajectory.
-    Compute the PID correction current (iq_measured - torque_ff/Kt).
+    Runs the same trajectory twice — once with gravity-only feedforward,
+    once with full feedforward — both logging iq_measured.  Compares the
+    RMS iq between runs.
+
+    Rationale: Directly comparing iq_measured vs torque_ff/Kt is dominated
+    by stiction/cogging torque that is not (and should not be) modelled in
+    the dynamics.  The differential approach cancels stiction out, isolating
+    the effect of the inertia feedforward on PID effort.
 
     Pass criteria:
-      - PID correction must NOT exceed 15% of feedforward current (RMS).
+      - Full FF must not *increase* RMS iq vs gravity-only (per leg).
+        A small tolerance (10%) accounts for run-to-run variation.
+      - Both runs must track within the speed-dependent threshold.
+      - Diagnostic: report the iq reduction from the inertia terms.
     """
     print("\n" + "=" * 60)
     print(f"T7: Feedforward prediction validation (scale={speed_scale})")
@@ -578,103 +690,118 @@ def test_ff_prediction(harness: PlatformTestHarness,
 
     interactive_pause("Press Enter to execute T7...")
 
+    # --- Run A: Gravity-only with iq logging ---
+    print("\n  --- Run A: Gravity-only feedforward (with iq logging) ---")
     prepare_harness(harness)
     move_to_home(harness, geom, params)
     switch_to_passthrough(harness)
 
-    print(f"\n  Executing trajectory with iq logging ({traj_fwd.duration:.2f}s)...")
-    log = execute_trajectory_with_iq(harness, traj_fwd, geom, params)
-    analysis = analyze_log(log)
-    print_analysis('T7 trajectory', analysis)
+    print(f"  Executing (gravity-only, {traj_fwd.duration:.2f}s)...")
+    log_a = execute_trajectory_with_iq_gravity_only(
+        harness, traj_fwd, geom, params)
+    analysis_a = analyze_log(log_a)
+    print_analysis('A: Gravity-only', analysis_a)
+
+    # --- Run B: Full feedforward with iq logging ---
+    print("\n  --- Run B: Full feedforward (with iq logging) ---")
+    move_to_home(harness, geom, params)
+    switch_to_passthrough(harness)
+
+    print(f"  Executing (full FF, {traj_fwd.duration:.2f}s)...")
+    log_b = execute_trajectory_with_iq(harness, traj_fwd, geom, params)
+    analysis_b = analyze_log(log_b)
+    print_analysis('B: Full FF', analysis_b)
 
     harness.idle_all()
 
-    # Analyze iq data
-    # Only analyze the moving portion (skip first 50ms and hold phase)
-    timestamps = np.array(log.timestamps)
-    iq_meas = np.array(log.iq_measured)      # (N, 6) in amps
-    torque_ff = np.array(log.commanded_torque_Nm)  # (N, 6) in Nm
-
-    # Convert torque_ff to expected current: I_ff = torque_ff / Kt
-    iq_ff = torque_ff / MOTOR_KT  # (N, 6) in amps
-
-    # Mask to trajectory motion period only (skip startup and hold)
-    t_start = 0.05  # skip first 50ms
+    # --- Differential iq analysis ---
+    # Align to the motion portion only (skip first 50ms and hold phase)
+    t_start = 0.05
     t_end = traj_fwd.duration
-    motion_mask = (timestamps >= t_start) & (timestamps <= t_end)
 
-    if np.sum(motion_mask) < 10:
+    ts_a = np.array(log_a.timestamps)
+    ts_b = np.array(log_b.timestamps)
+    mask_a = (ts_a >= t_start) & (ts_a <= t_end)
+    mask_b = (ts_b >= t_start) & (ts_b <= t_end)
+
+    if np.sum(mask_a) < 10 or np.sum(mask_b) < 10:
         print("  WARNING: Too few samples in motion period")
         print("  FAIL: T7 insufficient data")
         return False
 
-    iq_meas_motion = iq_meas[motion_mask]
-    iq_ff_motion = iq_ff[motion_mask]
+    iq_a = np.array(log_a.iq_measured)[mask_a]   # (N_a, 6)
+    iq_b = np.array(log_b.iq_measured)[mask_b]   # (N_b, 6)
+    ff_a = np.array(log_a.commanded_torque_Nm)[mask_a]  # gravity-only torques
+    ff_b = np.array(log_b.commanded_torque_Nm)[mask_b]  # full FF torques
 
-    # PID correction = measured - feedforward predicted
-    # Sign convention: ODrive inverts for legs, but both iq_measured and
-    # torque_ff are in the same frame (we negated torque_ff when sending)
-    # The iq_measured from ODrive is in ODrive's frame.
-    # For this comparison we use absolute values.
-    iq_correction = np.abs(iq_meas_motion) - np.abs(iq_ff_motion)
+    # RMS iq per leg for each run
+    rms_iq_a = np.sqrt(np.mean(iq_a ** 2, axis=0))  # (6,)
+    rms_iq_b = np.sqrt(np.mean(iq_b ** 2, axis=0))  # (6,)
 
-    # RMS of correction per leg
-    rms_correction = np.sqrt(np.mean(iq_correction ** 2, axis=0))
-    rms_ff = np.sqrt(np.mean(iq_ff_motion ** 2, axis=0))
+    # RMS feedforward current for context
+    rms_ff_a = np.sqrt(np.mean((ff_a / MOTOR_KT) ** 2, axis=0))
+    rms_ff_b = np.sqrt(np.mean((ff_b / MOTOR_KT) ** 2, axis=0))
 
-    # Ratio: correction / feedforward
-    # Protect against near-zero feedforward
-    ratio = np.zeros(6)
+    # Delta: negative = full FF reduced PID effort (good)
+    iq_delta = rms_iq_b - rms_iq_a  # (6,)
+    iq_delta_pct = np.zeros(6)
     for i in range(6):
-        if rms_ff[i] > 0.05:  # minimum 50mA RMS to be meaningful
-            ratio[i] = rms_correction[i] / rms_ff[i]
-        else:
-            ratio[i] = 0.0  # feedforward too small to evaluate
+        if rms_iq_a[i] > 0.05:
+            iq_delta_pct[i] = iq_delta[i] / rms_iq_a[i] * 100
 
-    peak_ratio = float(np.max(ratio))
-    mean_ratio = float(np.mean(ratio[ratio > 0]))  # average over meaningful legs
-
-    print(f"\n  --- Feedforward Prediction Analysis ---")
+    print(f"\n  --- Differential iq Analysis ---")
     print(f"    Motor Kt:        {MOTOR_KT:.4f} Nm/A")
-    print(f"    Analysis window: {t_start:.3f}s to {t_end:.3f}s "
-          f"({np.sum(motion_mask)} samples)")
+    print(f"    Analysis window: {t_start:.3f}s to {t_end:.3f}s")
+    print(f"    Samples:         A={np.sum(mask_a)}, B={np.sum(mask_b)}")
     print()
-    print(f"    {'Leg':>4s}  {'RMS FF (A)':>10s}  {'RMS Corr (A)':>12s}  "
-          f"{'Ratio':>8s}  {'Status':>6s}")
-    print(f"    {'----':>4s}  {'----------':>10s}  {'------------':>12s}  "
-          f"{'-----':>8s}  {'------':>6s}")
+    print(f"    {'Leg':>4s}  {'RMS iq A':>9s}  {'RMS iq B':>9s}  "
+          f"{'Delta':>8s}  {'Delta%':>8s}  "
+          f"{'FF A (A)':>9s}  {'FF B (A)':>9s}")
+    print(f"    {'----':>4s}  {'---------':>9s}  {'---------':>9s}  "
+          f"{'--------':>8s}  {'------':>8s}  "
+          f"{'---------':>9s}  {'---------':>9s}")
     for i in range(6):
-        status = 'PASS' if ratio[i] < FF_PREDICTION_THRESHOLD else 'FAIL'
-        if rms_ff[i] < 0.05:
-            status = 'SKIP'
-        print(f"    {i:4d}  {rms_ff[i]:10.4f}  {rms_correction[i]:12.4f}  "
-              f"{ratio[i]:8.3f}  {status:>6s}")
+        print(f"    {i:4d}  {rms_iq_a[i]:9.4f}  {rms_iq_b[i]:9.4f}  "
+              f"{iq_delta[i]:+8.4f}  {iq_delta_pct[i]:+7.1f}%  "
+              f"{rms_ff_a[i]:9.4f}  {rms_ff_b[i]:9.4f}")
+
+    # Aggregate metrics
+    mean_delta_pct = float(np.mean(iq_delta_pct))
+    worst_increase_pct = float(np.max(iq_delta_pct))
 
     print()
-    print(f"    Peak ratio:      {peak_ratio:.3f}  "
-          f"(threshold: {FF_PREDICTION_THRESHOLD})")
-    print(f"    Mean ratio:      {mean_ratio:.3f}")
+    print(f"    Mean iq change:     {mean_delta_pct:+.1f}%  "
+          f"(negative = FF reduced PID effort)")
+    print(f"    Worst leg increase: {worst_increase_pct:+.1f}%")
 
+    # Pass criteria
     threshold = TRACKING_THRESHOLDS_MM.get(speed_scale, 3.0)
-    pass_tracking = analysis['max_error_mm'] < threshold
-    pass_prediction = peak_ratio < FF_PREDICTION_THRESHOLD
+    pass_tracking_a = analysis_a['max_error_mm'] < threshold
+    pass_tracking_b = analysis_b['max_error_mm'] < threshold
+
+    # Full FF must not increase RMS iq by more than 10% on any leg
+    # (accounts for run-to-run stiction variation)
+    iq_increase_tolerance = 10.0  # percent
+    pass_iq = worst_increase_pct < iq_increase_tolerance
 
     print(f"\n  Results:")
-    print(f"    Tracking:        {analysis['max_error_mm']:.3f} mm  "
+    print(f"    Tracking A:      {analysis_a['max_error_mm']:.3f} mm  "
           f"(threshold: {threshold} mm)  "
-          f"[{'PASS' if pass_tracking else 'FAIL'}]")
-    print(f"    FF prediction:   {peak_ratio:.3f}  "
-          f"(threshold: {FF_PREDICTION_THRESHOLD})  "
-          f"[{'PASS' if pass_prediction else 'FAIL'}]")
+          f"[{'PASS' if pass_tracking_a else 'FAIL'}]")
+    print(f"    Tracking B:      {analysis_b['max_error_mm']:.3f} mm  "
+          f"(threshold: {threshold} mm)  "
+          f"[{'PASS' if pass_tracking_b else 'FAIL'}]")
+    print(f"    iq not worse:    {worst_increase_pct:+.1f}%  "
+          f"(tolerance: +{iq_increase_tolerance:.0f}%)  "
+          f"[{'PASS' if pass_iq else 'FAIL'}]")
 
-    if not pass_prediction:
-        print(f"\n  NOTE: If ratio > {FF_PREDICTION_THRESHOLD}, check:")
-        print(f"    - Platform mass / CoM offset in hardware_config.yaml")
-        print(f"    - Inertia tensor values")
-        print(f"    - Motor Kt measurement (currently {MOTOR_KT} Nm/A)")
-        print(f"    - Unmodelled friction / cable forces")
+    if not pass_iq:
+        print(f"\n  NOTE: Full FF increased PID effort. Check:")
+        print(f"    - Sign of torque_ff (should oppose gravity)")
+        print(f"    - Inertia wrench sign convention")
+        print(f"    - Motor Kt ({MOTOR_KT} Nm/A) vs ODrive torque_constant")
 
-    all_pass = pass_tracking and pass_prediction
+    all_pass = pass_tracking_a and pass_tracking_b and pass_iq
     print(f"\n  {'PASS' if all_pass else 'FAIL'}: T7 Feedforward prediction "
           f"(scale={speed_scale})")
     return all_pass
@@ -689,7 +816,7 @@ TESTS = {
                        test_ff_comparison),
     'replay':         ('T6: Trajectory replay at speed',
                        test_replay),
-    'ff_prediction':  ('T7: Feedforward prediction validation',
+    'ff_prediction':  ('T7: Feedforward prediction (differential iq)',
                        test_ff_prediction),
 }
 
@@ -808,7 +935,7 @@ def main():
 Tests available:
   ff_comparison   T5: Gravity-only vs full feedforward comparison
   replay          T6: Trajectory replay at speed (Phase 4 moves)
-  ff_prediction   T7: Feedforward prediction vs measured iq
+  ff_prediction   T7: Differential iq comparison (gravity vs full FF)
 
 Test groups:
   all             Run T5-T7 in order [DEFAULT]
