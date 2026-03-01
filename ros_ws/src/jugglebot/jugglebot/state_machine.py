@@ -9,6 +9,7 @@ on_enter/execute/on_exit. New states are added by:
 The orchestrator node drives the machine by calling sm.tick(ctx) on a timer.
 """
 
+import math
 import time
 from collections import deque
 from enum import Enum, auto
@@ -20,6 +21,7 @@ class RobotState(Enum):
     BOOT = auto()
     HOMING = auto()
     IDLE = auto()
+    LEVELLING = auto()
     ACTIVE = auto()
     FAULT = auto()
 
@@ -75,6 +77,11 @@ class Context:
         self.active_mode = ActiveMode.SPACEMOUSE
         self.error_severity = None
         self.boot_timed_out = False
+
+        # ── Levelling state ──────────────────────────────────────
+        self.levelling_complete = False          # Persisted on Teensy
+        self.pose_offset_rad = [0.0, 0.0]        # Accumulated [tiltX, tiltY] correction
+        self.tilt_reading = [0.0, 0.0]           # Raw tilt from inclinometer (set by orchestrator)
 
     @property
     def has_fatal_error(self):
@@ -260,9 +267,91 @@ class IdleHandler(StateHandler):
             return RobotState.ACTIVE
         elif cmd == 'home':
             return RobotState.HOMING
+        elif cmd == 'level':
+            return RobotState.LEVELLING
         # Other commands silently discarded (already logged on receipt)
 
         return None
+
+
+class LevellingHandler(StateHandler):
+    """Platform levelling — measure tilt and compute gravity correction.
+
+    Uses TRAP_TRAJ mode throughout (no control loop involvement).
+    Single inclinometer read with experimentally-determined mounting offset.
+
+    Phases: activate → settle → read_tilt → send_correction →
+            persist → mocap_check → deactivate → IDLE
+    """
+
+    # Phase order — each phase sets ctx.request and waits for operation_result,
+    # except 'settle' which is time-based.
+    _PHASES = [
+        'level_activate', 'settle', 'level_get_tilt',
+        'level_send_correction', 'level_persist_state',
+        'level_mocap_check', 'level_deactivate',
+    ]
+
+    def __init__(self, inclinometer_offset_deg, settle_s):
+        self._offset_rad = [math.radians(d) for d in inclinometer_offset_deg]
+        self._settle_s = settle_s
+        self._phase_idx = 0
+        self._settle_start = 0.0
+
+    def on_enter(self, ctx):
+        self._phase_idx = 0
+        ctx.control_mode = 'LEVELLING'
+        ctx.operation_result = None
+        ctx.request = self._PHASES[0]  # 'level_activate'
+
+    def execute(self, ctx):
+        ctx.clear_commands()  # Commands not valid during LEVELLING
+        phase = self._PHASES[self._phase_idx]
+
+        # Settle phase is time-based, not operation-based
+        if phase == 'settle':
+            if time.time() - self._settle_start >= self._settle_s:
+                return self._advance(ctx)
+            return None
+
+        # All other phases wait for operation_result
+        if ctx.operation_result is None:
+            return None
+
+        if ctx.operation_result is False:
+            return RobotState.FAULT
+
+        # Phase-specific logic on success
+        if phase == 'level_activate':
+            # Activation succeeded — start settle timer
+            self._settle_start = time.time()
+
+        elif phase == 'level_get_tilt':
+            # Apply mounting offset and store corrected tilt
+            ctx.pose_offset_rad = [
+                ctx.tilt_reading[0] + self._offset_rad[0],
+                ctx.tilt_reading[1] + self._offset_rad[1],
+            ]
+
+        return self._advance(ctx)
+
+    def _advance(self, ctx):
+        """Move to the next phase, or finish."""
+        self._phase_idx += 1
+        if self._phase_idx >= len(self._PHASES):
+            return RobotState.IDLE
+
+        phase = self._PHASES[self._phase_idx]
+        if phase == 'settle':
+            # Settle is time-based — no request needed
+            self._settle_start = time.time()
+        else:
+            ctx.operation_result = None
+            ctx.request = phase
+        return None
+
+    def on_exit(self, ctx):
+        ctx.request = None
 
 
 class ActiveHandler(StateHandler):
@@ -360,10 +449,18 @@ class FaultHandler(StateHandler):
 
 def build_default_machine(log_fn=None):
     """Create a state machine with all default handlers registered."""
+    from jugglebot.hardware_config import (
+        JB_OP_INCLINOMETER_OFFSET_DEG, JB_OP_LEVELLING_SETTLE_S,
+    )
+
     sm = StateMachine(RobotState.BOOT, log_fn=log_fn)
     sm.register(RobotState.BOOT, BootHandler())
     sm.register(RobotState.HOMING, HomingHandler())
     sm.register(RobotState.IDLE, IdleHandler())
+    sm.register(RobotState.LEVELLING, LevellingHandler(
+        inclinometer_offset_deg=JB_OP_INCLINOMETER_OFFSET_DEG,
+        settle_s=JB_OP_LEVELLING_SETTLE_S,
+    ))
     sm.register(RobotState.ACTIVE, ActiveHandler())
     sm.register(RobotState.FAULT, FaultHandler())
     return sm

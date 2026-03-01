@@ -16,9 +16,11 @@ from rclpy.node import Node
 from rclpy.action import ActionClient
 
 from jugglebot_interfaces.msg import RobotState as RobotStateMsg
-from jugglebot_interfaces.srv import ActivateOrDeactivate, ODriveCommandService
+from jugglebot_interfaces.srv import (
+    ActivateOrDeactivate, GetTiltReadingService, ODriveCommandService,
+)
 from jugglebot_interfaces.action import HomeMotors
-from std_msgs.msg import String
+from std_msgs.msg import Float64MultiArray, String
 from std_srvs.srv import Trigger
 
 from jugglebot.state_machine import (
@@ -50,6 +52,8 @@ class OrchestratorNode(Node):
             ODriveCommandService, 'odrive_command')
         self._bb_calibrate_client = self.create_client(
             Trigger, 'bb/calibrate')
+        self._tilt_client = self.create_client(
+            GetTiltReadingService, 'get_platform_tilt')
 
         # ── Action client ─────────────────────────────────────────
         self._home_client = ActionClient(self, HomeMotors, 'home_motors')
@@ -65,11 +69,20 @@ class OrchestratorNode(Node):
             String, 'control_mode_topic', 10)
         self._state_pub = self.create_publisher(
             String, 'orchestrator_state', 10)
+        self._gravity_offset_pub = self.create_publisher(
+            Float64MultiArray, 'gravity_offset', 10)
+        self._level_state_pub = self.create_publisher(
+            Float64MultiArray, 'set_level_state', 10)
 
         # Track last published values to avoid spamming
         self._last_control_mode = None
         self._last_published_state = None
         self._boot_timeout_logged = False
+
+        # ── Levelling / startup offset tracking ───────────────────
+        self._last_sm_state = None
+        self._startup_offset_sent = False
+        self._pending_tilt_future = None  # tilt service has no success field
 
         # ── Tick timer ────────────────────────────────────────────
         self.create_timer(0.1, self._tick)  # 10 Hz
@@ -98,6 +111,11 @@ class OrchestratorNode(Node):
         self.ctx.fatal_error = msg.has_fatal_odrive_error
         self.ctx.fatal_can_error = msg.has_fatal_can_error
         self.ctx.undervoltage = msg.has_undervoltage
+
+        # Levelling state from Teensy (persisted across reboots)
+        self.ctx.levelling_complete = msg.levelling_complete
+        if len(msg.pose_offset_rad) >= 2:
+            self.ctx.pose_offset_rad = list(msg.pose_offset_rad[:2])
 
     def _on_command(self, msg):
         """Queue a user command for the state machine."""
@@ -147,12 +165,44 @@ class OrchestratorNode(Node):
             self._state_pub.publish(String(data=state_name))
             self._last_published_state = state_name
 
+        # 7. Push persisted gravity offset on first IDLE entry after boot
+        current = self.sm.state
+        if (current == RobotState.IDLE
+                and self._last_sm_state != RobotState.IDLE
+                and self.ctx.levelling_complete
+                and not self._startup_offset_sent):
+            msg = Float64MultiArray(data=list(self.ctx.pose_offset_rad))
+            self._gravity_offset_pub.publish(msg)
+            self._startup_offset_sent = True
+            self.get_logger().info(
+                f'Pushed persisted gravity offset: {self.ctx.pose_offset_rad}')
+        self._last_sm_state = current
+
     # ═══════════════════════════════════════════════════════════════
     # Async operation management
     # ═══════════════════════════════════════════════════════════════
 
     def _check_pending_operations(self):
         """Poll pending async service/action calls for completion."""
+        # ── Tilt service call (no success field) ──────────────────
+        if self._pending_tilt_future is not None and self._pending_tilt_future.done():
+            try:
+                result = self._pending_tilt_future.result()
+                tilt = list(result.tilt_xy)
+                if len(tilt) >= 2 and (tilt[0] != 0.0 or tilt[1] != 0.0):
+                    self.ctx.tilt_reading = tilt[:2]
+                    self.ctx.operation_result = True
+                    self.get_logger().info(
+                        f'Tilt reading: [{tilt[0]:.4f}, {tilt[1]:.4f}] rad')
+                else:
+                    self.get_logger().warning('Tilt reading returned zeros (failed)')
+                    self.ctx.operation_result = False
+            except Exception as e:
+                self.get_logger().error(f'Tilt service exception: {e}')
+                self.ctx.operation_result = False
+            self.ctx.operation_pending = False
+            self._pending_tilt_future = None
+
         # ── Service call ──────────────────────────────────────────
         if self._pending_future is not None and self._pending_future.done():
             try:
@@ -241,6 +291,43 @@ class OrchestratorNode(Node):
             cmd_req.command = 'clear_errors'
             self._start_service_call(self._odrive_cmd_client, cmd_req)
 
+        # ── Levelling requests ────────────────────────────────────
+
+        elif req == 'level_activate':
+            activate_req = ActivateOrDeactivate.Request()
+            activate_req.command = 'activate'
+            self._start_service_call(self._activate_client, activate_req)
+
+        elif req == 'level_get_tilt':
+            self._start_tilt_service_call()
+
+        elif req == 'level_send_correction':
+            msg = Float64MultiArray(
+                data=list(self.ctx.pose_offset_rad))
+            self._gravity_offset_pub.publish(msg)
+            self.get_logger().info(
+                f'Gravity offset published: {self.ctx.pose_offset_rad}')
+            self.ctx.operation_result = True
+
+        elif req == 'level_persist_state':
+            msg = Float64MultiArray(
+                data=[1.0] + list(self.ctx.pose_offset_rad))
+            self._level_state_pub.publish(msg)
+            self.ctx.levelling_complete = True
+            self.get_logger().info(
+                f'Level state persisted: offset={self.ctx.pose_offset_rad}')
+            self.ctx.operation_result = True
+
+        elif req == 'level_mocap_check':
+            self.get_logger().warning(
+                'Mocap gravity alignment check not yet implemented')
+            self.ctx.operation_result = True
+
+        elif req == 'level_deactivate':
+            deactivate_req = ActivateOrDeactivate.Request()
+            deactivate_req.command = 'deactivate'
+            self._start_service_call(self._activate_client, deactivate_req)
+
         else:
             self.get_logger().warning(f'Unknown request: {req}')
 
@@ -260,6 +347,7 @@ class OrchestratorNode(Node):
         self._pending_future = None
         self._pending_goal_future = None
         self._pending_result_future = None
+        self._pending_tilt_future = None
         self.ctx.operation_pending = False
         self.ctx.operation_result = None
         self.ctx.request = None
@@ -289,6 +377,21 @@ class OrchestratorNode(Node):
         self.ctx.operation_result = None
         self._pending_goal_future = self._home_client.send_goal_async(
             HomeMotors.Goal())
+
+    def _start_tilt_service_call(self):
+        """Start a non-blocking tilt reading service call.
+
+        Uses a separate future because GetTiltReadingService has no
+        'success' field — completion is detected by non-zero tilt_xy.
+        """
+        if not self._tilt_client.service_is_ready():
+            self.get_logger().warning('Tilt service not ready, failing request')
+            self.ctx.operation_result = False
+            return
+        self.ctx.operation_pending = True
+        self.ctx.operation_result = None
+        self._pending_tilt_future = self._tilt_client.call_async(
+            GetTiltReadingService.Request())
 
     # ═══════════════════════════════════════════════════════════════
     # Shutdown

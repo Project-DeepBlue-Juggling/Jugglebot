@@ -359,6 +359,7 @@ def cartesian_to_motor_commands(
     geom: StewartGeometry,
     dynamics_params: DynamicsParams,
     feedforward_enabled: bool = True,
+    gravity_correction: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Convert a Cartesian state to motor commands.
 
@@ -374,6 +375,8 @@ def cartesian_to_motor_commands(
     dynamics_params : DynamicsParams
     feedforward_enabled : bool
         Whether to include torque_ff (gravity + inertia).
+    gravity_correction : (3,3) ndarray or None
+        Pre-multiply rotation to align platform with gravity.
 
     Returns
     -------
@@ -383,6 +386,8 @@ def cartesian_to_motor_commands(
     """
     pos = pose[:3]
     rot = rotvec_to_rot_matrix(pose[3:6])
+    if gravity_correction is not None:
+        rot = gravity_correction @ rot
 
     # Position IK: pose -> leg extensions (mm) -> motor revolutions
     extensions_mm = pose_to_leg_lengths(pos, rot, geom)
@@ -748,6 +753,9 @@ class TrajectoryManager:
             [0.0, 0.0, float(hw.JB_OP_DEFAULT_ACTIVE_Z_MM), 0.0, 0.0, 0.0])
         self._pending_return = False  # True when trajectory end twist != 0
 
+        # Gravity correction (applied before IK)
+        self._gravity_correction: np.ndarray | None = None
+
         # Progress tracking (Phase 6)
         self._last_progress = 0.0
         self._last_time_remaining = 0.0
@@ -781,6 +789,11 @@ class TrajectoryManager:
         """Toggle gravity feedforward for trajectory evaluation."""
         self._feedforward_enabled = enabled
 
+    def set_gravity_correction(self, correction: np.ndarray) -> None:
+        """Set gravity correction rotation matrix. Recomputes hold pose IK."""
+        self._gravity_correction = correction
+        self.set_hold_pose(self._hold_pose)
+
     def set_hold_pose(self, pose_6dof: np.ndarray) -> None:
         """Set the hold pose for IDLE/COMPLETE states.
 
@@ -790,6 +803,8 @@ class TrajectoryManager:
         """
         self._hold_pose = np.asarray(pose_6dof, dtype=np.float64)
         rot = rotvec_to_rot_matrix(self._hold_pose[3:6])
+        if self._gravity_correction is not None:
+            rot = self._gravity_correction @ rot
         self._hold_rot = rot
         pos = self._hold_pose[:3]
         extensions_mm = pose_to_leg_lengths(pos, rot, self.geom)
@@ -832,7 +847,6 @@ class TrajectoryManager:
         target_vel: np.ndarray,
         arrival_time: float,
         t_now: float,
-        speed_scale: float = 1.0,
     ) -> bool:
         """Submit a dynamic target command.
 
@@ -842,6 +856,10 @@ class TrajectoryManager:
         - Feasibility checking (stroke, vel, accel, cond, jerk)
         - Queuing return-to-home if target velocity is non-zero
 
+        The trajectory duration is entirely determined by
+        ``arrival_time - t_now``.  Speed scaling is the caller's
+        responsibility via the choice of arrival_time.
+
         Parameters
         ----------
         target_pos : (3,) ndarray — [x, y, z] in mm
@@ -850,7 +868,6 @@ class TrajectoryManager:
             angular velocity is always zero)
         arrival_time : float — absolute arrival time (perf_counter)
         t_now : float — current time (perf_counter)
-        speed_scale : float — speed scaling factor in (0, 1]
 
         Returns
         -------
@@ -888,7 +905,12 @@ class TrajectoryManager:
         # Sample current state for C2 continuous splice
         cur_pose, cur_twist, cur_accel = self._get_current_state(t_now)
 
-        # Create quintic trajectory
+        # Create quintic trajectory.
+        # NOTE: speed_scale is NOT passed to create_trajectory here.
+        # For dynamic targets, the arrival_time already defines the
+        # desired duration.  Applying speed_scale would stretch the
+        # duration beyond the intended arrival time.  Speed scaling is
+        # the caller's responsibility via arrival_time.
         try:
             traj = create_trajectory(
                 start_pose=cur_pose,
@@ -899,7 +921,6 @@ class TrajectoryManager:
                 end_accel=np.zeros(6),
                 duration=duration,
                 t_start=t_now,
-                speed_scale=speed_scale,
             )
         except ValueError as e:
             logger.debug(f"Dynamic target rejected: {e}")
@@ -1041,7 +1062,8 @@ class TrajectoryManager:
                     return cartesian_to_motor_commands(
                         pose, twist, accel_cart,
                         self.geom, self.dynamics_params,
-                        self._feedforward_enabled)
+                        self._feedforward_enabled,
+                        self._gravity_correction)
                 else:
                     # Return planning failed — fall through to COMPLETE
                     logger.warning(
@@ -1066,7 +1088,8 @@ class TrajectoryManager:
         return cartesian_to_motor_commands(
             pose, twist, accel_cart,
             self.geom, self.dynamics_params,
-            self._feedforward_enabled)
+            self._feedforward_enabled,
+            self._gravity_correction)
 
     def cancel(self) -> None:
         """Cancel the active trajectory and transition to IDLE.

@@ -217,6 +217,9 @@ class ControlLoop:
         self._has_motor_fb = False
         self._tracking_error_mm = np.zeros(6)
 
+        # Gravity correction (from levelling)
+        self._gravity_correction: np.ndarray | None = None
+
         # Fault state (Phase 6)
         self._fault_state: str | None = None
 
@@ -328,6 +331,13 @@ class ControlLoop:
             self._feedforward_enabled = enabled
             self._traj_manager.set_feedforward_enabled(enabled)
             logger.info(f"Feedforward {'ENABLED' if enabled else 'DISABLED'}")
+        elif cmd == 'set_gravity_offset':
+            tx = params.get('tilt_x', 0.0)
+            ty = params.get('tilt_y', 0.0)
+            rotvec = np.array([-tx, -ty, 0.0])
+            self._gravity_correction = rotvec_to_rot_matrix(rotvec)
+            self._traj_manager.set_gravity_correction(self._gravity_correction)
+            logger.info(f"Gravity correction set: tilt=[{tx:.4f}, {ty:.4f}] rad")
         elif cmd == 'fault':
             # ODrive fault forwarded from CAN node via bridge
             fault_desc = params.get('description', 'unknown fault')
@@ -368,7 +378,6 @@ class ControlLoop:
         target_quat = np.array(msg['target_quat'])
         target_vel = np.array(msg['target_vel'])
         arrival_time = msg['arrival_time']
-        speed_scale = msg.get('speed_scale', 1.0)
 
         t_now = time.perf_counter()
         accepted = self._traj_manager.submit_dynamic_target(
@@ -377,7 +386,6 @@ class ControlLoop:
             target_vel=target_vel,
             arrival_time=arrival_time,
             t_now=t_now,
-            speed_scale=speed_scale,
         )
         if accepted:
             logger.info(
@@ -441,22 +449,27 @@ class ControlLoop:
             self._commanded_torque_ff_Nm = torque
         elif self._has_target:
             # Direct-target mode: use latest IPC target pose
+            # Apply gravity correction if set
+            effective_rot = self._target_rot
+            if self._gravity_correction is not None:
+                effective_rot = self._gravity_correction @ self._target_rot
+
             # Position IK: pose -> desired leg extensions (mm) -> motor revolutions
             desired_extensions_mm = pose_to_leg_lengths(
-                self._target_pos, self._target_rot, self.geom)
+                self._target_pos, effective_rot, self.geom)
             self._commanded_pos_rev = extensions_mm_to_revs(
                 desired_extensions_mm, self.geom)
 
             # Velocity IK: twist -> desired leg velocities (mm/s) -> motor rev/s
             desired_vel_mm_s = twist_to_leg_velocities(
-                self._target_twist, self._target_pos, self._target_rot, self.geom)
+                self._target_twist, self._target_pos, effective_rot, self.geom)
             self._commanded_vel_ff_rps = leg_velocities_to_motor_velocities(
                 desired_vel_mm_s, self.geom)
 
             # Feedforward: gravity + inertia -> motor torques (Nm)
             if self._feedforward_enabled:
                 self._commanded_torque_ff_Nm = compute_full_feedforward_torques(
-                    self._target_pos, self._target_rot,
+                    self._target_pos, effective_rot,
                     self._target_twist, self._target_accel,
                     self.geom, self._dynamics_params)
             else:
@@ -488,10 +501,13 @@ class ControlLoop:
             rot_mat = rotvec_to_rot_matrix(pose_6dof[3:6])
             self._cond_number = compute_condition_number(pos_cart, rot_mat, self.geom)
         else:
-            # For direct-target mode, use target pos/rot
+            # For direct-target mode, use target pos/rot (with gravity correction)
             if self._has_target:
+                cond_rot = self._target_rot
+                if self._gravity_correction is not None:
+                    cond_rot = self._gravity_correction @ self._target_rot
                 self._cond_number = compute_condition_number(
-                    self._target_pos, self._target_rot, self.geom)
+                    self._target_pos, cond_rot, self.geom)
 
         # Check workspace limits
         ws_check = check_workspace_limits(

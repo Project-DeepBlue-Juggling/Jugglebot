@@ -55,6 +55,11 @@ class MotionBridgeNode(Node):
             String, 'control_mode_topic',
             self._on_control_mode, 10)
 
+        # Gravity offset from orchestrator (levelling result)
+        self.create_subscription(
+            Float64MultiArray, 'gravity_offset',
+            self._on_gravity_offset, 10)
+
         # ------------------------------------------------------------------
         # ROS2 publishers (IPC → ROS2)
         # ------------------------------------------------------------------
@@ -103,7 +108,7 @@ class MotionBridgeNode(Node):
         prev = self._current_control_mode
         self._current_control_mode = mode
 
-        if mode in ('SPACEMOUSE', 'SHELL'):
+        if mode in ('SPACEMOUSE', 'SHELL', 'LEVELLING'):
             self._active_publisher = mode
             if prev != mode:
                 cmd = make_mode_command('enable')
@@ -120,6 +125,15 @@ class MotionBridgeNode(Node):
                 cmd = make_mode_command('disable')
                 self.ipc.send_mode_command(cmd)
                 self.get_logger().info("Sent 'disable' to control process")
+
+    def _on_gravity_offset(self, msg: Float64MultiArray) -> None:
+        """Forward gravity offset to the control process via IPC."""
+        cmd = make_mode_command(
+            'set_gravity_offset', tilt_x=msg.data[0], tilt_y=msg.data[1])
+        self.ipc.send_mode_command(cmd)
+        self.get_logger().info(
+            f"Sent gravity offset to control process: "
+            f"[{msg.data[0]:.4f}, {msg.data[1]:.4f}] rad")
 
     # ------------------------------------------------------------------
     # IPC → ROS2 polling

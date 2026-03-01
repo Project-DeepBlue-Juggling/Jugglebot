@@ -131,6 +131,7 @@ class CanInterfaceNode(Node):
         self.create_subscription(SetMotorVelCurrLimitsMessage, 'set_motor_vel_curr_limits', self._sub_vel_curr_limits, 10)
         self.create_subscription(SetTrapTrajLimitsMessage, 'set_leg_trap_traj_limits', self._sub_trap_traj_limits, 10)
         self.create_subscription(String, 'control_mode_topic', self._sub_control_mode, 10)
+        self.create_subscription(Float64MultiArray, 'set_level_state', self._sub_set_level_state, 10)
 
         # ── Publishers ─────────────────────────────────────────
         self.robot_state_pub = self.create_publisher(RobotState, 'robot_state', 10)
@@ -736,7 +737,7 @@ class CanInterfaceNode(Node):
     def _sub_control_mode(self, msg):
         """Handle control mode changes from the orchestrator.
 
-        Valid modes: '', 'ERROR', 'SPACEMOUSE', 'SHELL'.
+        Valid modes: '', 'ERROR', 'SPACEMOUSE', 'SHELL', 'LEVELLING'.
         Legs always remain in POSITION+PASSTHROUGH controller mode.
         """
         try:
@@ -750,7 +751,7 @@ class CanInterfaceNode(Node):
                 self._gently_move_to_setpoint(0.0, deactivating=True)
                 self.stowed_due_to_error = True
 
-            elif msg.data in ('SPACEMOUSE', 'SHELL'):
+            elif msg.data in ('SPACEMOUSE', 'SHELL', 'LEVELLING'):
                 self.get_logger().info(f'Control mode: {msg.data}')
                 if not legs_closed:
                     for axis_id in odrive.LEG_AXES:
@@ -768,6 +769,20 @@ class CanInterfaceNode(Node):
 
         except Exception as e:
             self.get_logger().error(f"Control mode error: {e}")
+
+    def _sub_set_level_state(self, msg):
+        """Persist levelling result to Teensy via CAN."""
+        levelling_complete = bool(msg.data[0])
+        tilt_x, tilt_y = msg.data[1], msg.data[2]
+        self.last_known_state['levelling_complete'] = levelling_complete
+        self.last_known_state['pose_offset_rad'] = (tilt_x, tilt_y)
+        self._update_teensy_state({
+            'levelling_complete': levelling_complete,
+            'pose_offset_rad': [tilt_x, tilt_y],
+        })
+        self.get_logger().info(
+            f"Level state persisted: complete={levelling_complete}, "
+            f"offset=[{tilt_x:.4f}, {tilt_y:.4f}] rad")
 
     # ═══════════════════════════════════════════════════════════
     # Publishers (timer callbacks)

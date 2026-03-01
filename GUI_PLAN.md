@@ -458,6 +458,7 @@ Prerequisites: rosbridge running on the Jetson (`ros2 launch rosbridge_server ro
 
 - **Ball rendering**: Add a sphere in the 3D viewer when ball state data is available from mocap. Deferred to Phase 6 of the codebase rewrite.
 - **BB position calibration**: `BB_POSITION_MM` in `geometry-config.js` is a placeholder `[0, -500, 0]`. Will be updated automatically when the BB calibration position publisher is implemented (see CODEBASE_REWRITE_PLAN Phase 4). The GUI should subscribe to `bb/calibration_result` and update the BB model position dynamically.
+- **Levelling status display**: Show `levelling_complete` flag in System Flags panel. Display gravity correction offset (`pose_offset_rad`) as roll/pitch degrees. Add "Level Platform" button to command overlay (publishes "level" to orchestrator_command, enabled only in IDLE). Show LEVELLING state badge (blue, like HOMING).
 
 ### Test infrastructure
 

@@ -252,6 +252,14 @@ ros_ws/src/jugglebot/
 - [ ] Absorb platform leveling as a planner method
 - [ ] **Test**: Spacemouse control through new pipeline. A/B compare with old system
 
+#### Mocap Gravity Alignment Check (Placeholder)
+Platform levelling includes a placeholder for verifying mocap alignment with gravity.
+When mocap integration is complete, update the LEVELLING state to:
+- Read platform rigid body pose from `rigid_body_poses` topic (body name: "platform")
+- Extract platform z-axis from rotation matrix
+- Compute angle between platform z and world z ([0,0,1])
+- Log WARNING if angle > 1.0 deg (indicates mocap global frame misaligned with gravity)
+
 ### Phase 4: Mocap Integration
 - [ ] Lift `MocapInterface` class with minor cleanup into new `mocap_node.py`
 - [ ] Keep tf2 static broadcast, QTM clock sync

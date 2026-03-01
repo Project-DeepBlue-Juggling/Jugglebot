@@ -83,7 +83,6 @@ from trajectory_test import (  # noqa: E402
     print_analysis,
     print_feasibility,
     prepare_harness,
-    move_to_home,
     switch_to_passthrough,
     TARGET_DT_S,
     TARGET_LOOP_HZ,
@@ -134,6 +133,40 @@ def get_tracking_threshold(speed_scale: float) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Home pose helpers
+# ---------------------------------------------------------------------------
+
+def move_to_active_home(harness: PlatformTestHarness,
+                        geom: StewartGeometry,
+                        params: DynamicsParams):
+    """Move the physical platform to the active home pose (Z=170mm).
+
+    The Phase 4 ``move_to_home`` moves to [0,0,0] (geometric zero).
+    Dynamic target tests need the platform at the TrajectoryManager's
+    home pose [0, 0, 170, 0, 0, 0] so that the manager's internal state
+    matches the physical platform position.
+    """
+    from jugglebot.motion.dynamics import gravity_to_motor_torques
+
+    home_pos = np.array([0.0, 0.0, float(hw.JB_OP_DEFAULT_ACTIVE_Z_MM)])
+    home_rot = np.eye(3)
+    home_raw = pose_to_raw_positions(home_pos, home_rot, geom)
+    home_torques = gravity_to_motor_torques(home_pos, home_rot, geom, params)
+
+    harness.enter_trap_traj_mode_all(vel_limit=1.5, acc_limit=5.0,
+                                     dec_limit=5.0)
+    for i, axis_id in enumerate(LEG_AXES):
+        tor_int = int(round(-home_torques[i] * LEG_TOR_FF_SCALE))
+        tor_int = max(-32767, min(32767, tor_int))
+        harness.send(encode_set_input_pos(
+            axis_id, home_raw[i], vel_ff=0, torque_ff=tor_int))
+
+    harness.wait_for_all_trajectories_done(timeout_s=15.0)
+    harness.poll_for(1.0)
+    print(f"  At active home pose (Z={hw.JB_OP_DEFAULT_ACTIVE_Z_MM}mm).")
+
+
+# ---------------------------------------------------------------------------
 # Dynamic target execution engine
 # ---------------------------------------------------------------------------
 
@@ -161,7 +194,7 @@ def execute_with_dynamic_targets(
         - 'quat': [w, x, y, z] quaternion
         - 'vel': [vx, vy, vz] in mm/s
         - 'delay_s': seconds after test start to send this target
-        - 'speed_scale': optional, defaults to 1.0
+        - 'duration_s': trajectory duration in seconds
     max_duration_s : float — max test duration
     label : str — test label for logging
 
@@ -196,7 +229,6 @@ def execute_with_dynamic_targets(
                     target_vel=np.array(tgt['vel']),
                     arrival_time=arrival_time,
                     t_now=t_now,
-                    speed_scale=tgt.get('speed_scale', 1.0),
                 )
                 events.append({
                     'idx': target_idx,
@@ -308,24 +340,27 @@ def test_static_target(
 
     threshold = get_tracking_threshold(speed_scale)
 
+    # Duration scales inversely with speed_scale (slower = longer)
+    duration = 1.0 / speed_scale
+
     targets = [{
         'pos': [0, 0, 200],  # home Z + 30mm
         'quat': [1, 0, 0, 0],
         'vel': [0, 0, 0],
         'delay_s': 0.5,
-        'duration_s': 1.0 / speed_scale,
-        'speed_scale': speed_scale,
+        'duration_s': duration,
     }]
 
     interactive_pause("Press Enter to execute DT1...")
     prepare_harness(harness)
-    move_to_home(harness, geom, params)
+    move_to_active_home(harness, geom, params)
     switch_to_passthrough(harness)
 
-    print(f"\n  Executing DT1 (speed_scale={speed_scale})...")
+    print(f"\n  Executing DT1 (speed_scale={speed_scale}, "
+          f"duration={duration:.1f}s)...")
     events, log = execute_with_dynamic_targets(
         harness, mgr, geom, params, limits, targets,
-        max_duration_s=10.0, label="DT1")
+        max_duration_s=duration + 5.0, label="DT1")
 
     harness.idle_all()
 
@@ -367,25 +402,27 @@ def test_auto_return(
 
     threshold = get_tracking_threshold(speed_scale)
 
-    # Target at Z=190 with upward velocity of 30 mm/s
+    # Target at Z=190 with upward velocity of 30 mm/s (scaled)
+    duration = 1.0 / speed_scale
+
     targets = [{
         'pos': [0, 0, 190],
         'quat': [1, 0, 0, 0],
         'vel': [0, 0, 30 * speed_scale],  # scale velocity too
         'delay_s': 0.5,
-        'duration_s': 1.0 / speed_scale,
-        'speed_scale': speed_scale,
+        'duration_s': duration,
     }]
 
     interactive_pause("Press Enter to execute DT2...")
     prepare_harness(harness)
-    move_to_home(harness, geom, params)
+    move_to_active_home(harness, geom, params)
     switch_to_passthrough(harness)
 
-    print(f"\n  Executing DT2 (speed_scale={speed_scale})...")
+    print(f"\n  Executing DT2 (speed_scale={speed_scale}, "
+          f"duration={duration:.1f}s)...")
     events, log = execute_with_dynamic_targets(
         harness, mgr, geom, params, limits, targets,
-        max_duration_s=20.0, label="DT2")
+        max_duration_s=duration * 3 + 5.0, label="DT2")
 
     harness.idle_all()
 
@@ -446,7 +483,6 @@ def test_replan(
             'vel': [0, 0, 0],
             'delay_s': 0.5,
             'duration_s': base_dur,
-            'speed_scale': speed_scale,
         },
         {  # Second target: +15mm X, +25mm Z (sent 0.7s after first)
             'pos': [15, 0, 195],
@@ -454,19 +490,19 @@ def test_replan(
             'vel': [0, 0, 0],
             'delay_s': 1.2,  # 0.7s after first target
             'duration_s': base_dur,
-            'speed_scale': speed_scale,
         },
     ]
 
     interactive_pause("Press Enter to execute DT3...")
     prepare_harness(harness)
-    move_to_home(harness, geom, params)
+    move_to_active_home(harness, geom, params)
     switch_to_passthrough(harness)
 
-    print(f"\n  Executing DT3 (speed_scale={speed_scale})...")
+    print(f"\n  Executing DT3 (speed_scale={speed_scale}, "
+          f"duration={base_dur:.1f}s)...")
     events, log = execute_with_dynamic_targets(
         harness, mgr, geom, params, limits, targets,
-        max_duration_s=15.0, label="DT3")
+        max_duration_s=base_dur * 2 + 5.0, label="DT3")
 
     harness.idle_all()
 
@@ -512,6 +548,7 @@ def test_rapid_targets(
     mgr.set_hold_pose(mgr.home_pose)
 
     # Generate a series of small targets at 2 Hz
+    duration = 0.8 / speed_scale
     targets = []
     z_values = [180, 195, 175, 190, 185, 200, 170, 195, 180, 190]
     for i, z in enumerate(z_values):
@@ -520,20 +557,19 @@ def test_rapid_targets(
             'quat': [1, 0, 0, 0],
             'vel': [0, 0, 0],
             'delay_s': 0.5 + i * 0.5,  # 2 Hz
-            'duration_s': 0.8 / speed_scale,  # give enough time
-            'speed_scale': speed_scale,
+            'duration_s': duration,
         })
 
     interactive_pause("Press Enter to execute DT4...")
     prepare_harness(harness)
-    move_to_home(harness, geom, params)
+    move_to_active_home(harness, geom, params)
     switch_to_passthrough(harness)
 
     print(f"\n  Executing DT4 (speed_scale={speed_scale}, "
-          f"{len(targets)} targets)...")
+          f"{len(targets)} targets, duration={duration:.1f}s)...")
     events, log = execute_with_dynamic_targets(
         harness, mgr, geom, params, limits, targets,
-        max_duration_s=20.0, label="DT4")
+        max_duration_s=duration + 10.0, label="DT4")
 
     harness.idle_all()
 
@@ -587,7 +623,6 @@ def test_infeasible_ignored(
             'vel': [0, 0, 0],
             'delay_s': 0.5,
             'duration_s': base_dur,
-            'speed_scale': speed_scale,
         },
         {  # Infeasible target: way too far, way too fast
             'pos': [0, 0, 500],
@@ -595,19 +630,19 @@ def test_infeasible_ignored(
             'vel': [0, 0, 0],
             'delay_s': 1.0,  # 0.5s after first starts
             'duration_s': 0.01,  # impossibly fast
-            'speed_scale': speed_scale,
         },
     ]
 
     interactive_pause("Press Enter to execute DT5...")
     prepare_harness(harness)
-    move_to_home(harness, geom, params)
+    move_to_active_home(harness, geom, params)
     switch_to_passthrough(harness)
 
-    print(f"\n  Executing DT5 (speed_scale={speed_scale})...")
+    print(f"\n  Executing DT5 (speed_scale={speed_scale}, "
+          f"duration={base_dur:.1f}s)...")
     events, log = execute_with_dynamic_targets(
         harness, mgr, geom, params, limits, targets,
-        max_duration_s=15.0, label="DT5")
+        max_duration_s=base_dur + 5.0, label="DT5")
 
     harness.idle_all()
 
@@ -723,7 +758,7 @@ def main():
 
     finally:
         harness.idle_all()
-        harness.close()
+        harness.disconnect()
 
 
 if __name__ == '__main__':
