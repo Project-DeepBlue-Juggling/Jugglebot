@@ -13,7 +13,7 @@ Tests:
   10. Quaternion -> rotvec conversion — target state format works
   11. Arrival time in the past — rejected immediately
   12. make_rest_to_rest centralized — matches expected output
-  13. Deferred start for slow targets — waits then moves at reasonable speed
+  13. Long-duration target starts immediately — uses full requested duration
 
 Run:  python -m jugglebot.motion.tests.test_dynamic_target
 """
@@ -636,12 +636,13 @@ def test_make_rest_to_rest():
 
 
 # ---------------------------------------------------------------------------
-# Test 13: Deferred start for slow targets
+# Test 13: Long-duration target uses full requested duration
 # ---------------------------------------------------------------------------
 
-def test_deferred_start():
-    """Verify deferred start when arrival time is far in the future."""
-    _header("Test 13: Deferred start for slow targets")
+def test_long_duration_target():
+    """Verify that a far-future arrival time produces a slow trajectory
+    that starts immediately (no deferred start)."""
+    _header("Test 13: Long-duration target starts immediately")
 
     geom = StewartGeometry()
     params = DynamicsParams.from_config()
@@ -650,9 +651,8 @@ def test_deferred_start():
 
     t_now = time.perf_counter()
 
-    # Target 30mm above home, with a very long arrival time (20s).
-    # The minimum feasible duration for this move is well under 1s,
-    # so the planner should defer the start.
+    # Target 30mm above home, with a long arrival time (20s).
+    # The trajectory should start immediately and move slowly over 20s.
     target_pos = np.array([0.0, 0.0, 200.0])
     target_quat = np.array([1.0, 0.0, 0.0, 0.0])
     target_vel = np.zeros(3)
@@ -668,34 +668,38 @@ def test_deferred_start():
     assert accepted, "Far-future target should be accepted"
     assert mgr.state == TrajectoryState.EXECUTING
 
-    # The trajectory's t_start should be in the future (deferred)
+    # The trajectory should start at t_now (no deferral)
     traj = mgr._active_traj
-    assert traj.t_start > t_now + 1.0, (
-        f"Expected deferred start, got t_start only "
+    assert abs(traj.t_start - t_now) < 0.01, (
+        f"Expected immediate start, got t_start "
         f"{traj.t_start - t_now:.2f}s in the future")
+
+    # The trajectory duration should be the full 20s
+    assert abs(traj.duration - 20.0) < 0.1, (
+        f"Expected 20s duration, got {traj.duration:.2f}s")
 
     # The trajectory should end at the requested arrival time
     t_end = traj.t_start + traj.duration
-    assert abs(t_end - far_arrival) < 0.01, (
+    assert abs(t_end - far_arrival) < 0.1, (
         f"Trajectory end {t_end} should match arrival {far_arrival}")
 
-    # Before t_start, evaluate should return hold pose (start state)
-    pos_rev, vel_ff, torque_ff = mgr.evaluate(t_now + 0.1)
-    assert norm(vel_ff) < 1e-6, "Should hold still before deferred start"
-    assert mgr._last_progress == 0.0, "Progress should be 0 before start"
+    # Shortly after start, should already be moving (slowly)
+    pos_rev_early, vel_ff_early, _ = mgr.evaluate(t_now + 1.0)
+    assert norm(vel_ff_early) > 1e-6, "Should be moving slowly after 1s"
+    assert mgr._last_progress > 0.01, "Progress should be nonzero after 1s"
 
     # At mid-trajectory, should be moving
     t_mid = traj.t_start + traj.duration / 2
     pos_rev_mid, vel_ff_mid, _ = mgr.evaluate(t_mid)
-    assert norm(vel_ff_mid) > 0.01, "Should be moving mid-trajectory"
-    assert mgr._last_progress > 0.3, "Progress should be nonzero mid-traj"
+    assert norm(vel_ff_mid) > 0.001, "Should be moving mid-trajectory"
+    assert 0.3 < mgr._last_progress < 0.7, "Progress ~0.5 mid-traj"
 
     # After trajectory end, should complete
     pos_rev_end, vel_ff_end, _ = mgr.evaluate(far_arrival + 0.1)
     assert mgr.state == TrajectoryState.COMPLETE
     assert norm(vel_ff_end) < 1e-6, "Should be stationary after completion"
 
-    print("  PASS: Deferred start correctly delays trajectory")
+    print("  PASS: Long-duration target starts immediately, moves slowly")
 
 
 # ---------------------------------------------------------------------------
@@ -716,7 +720,7 @@ def main():
         test_quaternion_conversion,
         test_arrival_time_in_past,
         test_make_rest_to_rest,
-        test_deferred_start,
+        test_long_duration_target,
     ]
 
     passed = 0

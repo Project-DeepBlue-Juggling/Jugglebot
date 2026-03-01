@@ -840,10 +840,6 @@ class TrajectoryManager:
             f"duration={traj.duration:.3f}s, "
             f"speed_scale={traj.speed_scale:.2f}")
 
-    # Default buffer added to the minimum feasible duration when the
-    # requested arrival time would require a slower-than-minimum trajectory.
-    DEFERRED_START_BUFFER_S = 2.0
-
     def submit_dynamic_target(
         self,
         target_pos: np.ndarray,
@@ -859,13 +855,11 @@ class TrajectoryManager:
         - Quaternion -> rotation vector conversion
         - Feasibility checking (stroke, vel, accel, cond, jerk)
         - Queuing return-to-home if target velocity is non-zero
-        - Deferred start when arrival_time is far in the future
 
-        If the requested duration exceeds the minimum feasible duration
-        plus ``DEFERRED_START_BUFFER_S`` (default 2.0 s), the trajectory
-        start is deferred so the platform waits in place, then moves at
-        a reasonable speed to arrive on time.  This avoids unnecessarily
-        slow motion when the arrival time is far away.
+        The trajectory uses the full requested duration (arrival_time -
+        t_now).  The caller controls the speed: a longer duration gives a
+        slower, smoother trajectory; a shorter one gives a faster one.
+        Feasibility checking rejects durations that are too short.
 
         Parameters
         ----------
@@ -912,46 +906,6 @@ class TrajectoryManager:
         # Sample current state for splice continuity
         cur_pose, cur_twist, cur_accel = self._get_current_state(t_now)
 
-        # Check whether a deferred start is needed.  Find the minimum
-        # feasible duration for this move; if the requested duration is
-        # much longer, defer the start so the platform holds in place
-        # and then moves at a reasonable speed.
-        min_dur = find_min_feasible_duration(
-            start_pose=cur_pose,
-            start_twist=cur_twist,
-            start_accel=cur_accel,
-            end_pose=target_pose,
-            end_twist=target_twist,
-            end_accel=np.zeros(6),
-            geom=self.geom,
-            dynamics_params=self.dynamics_params,
-        )
-        if min_dur is None:
-            logger.debug(
-                "Dynamic target rejected: no feasible duration found")
-            return False
-
-        motion_duration = min_dur + self.DEFERRED_START_BUFFER_S
-
-        if duration > motion_duration:
-            # Deferred start: wait, then move at min_speed + buffer.
-            # The trajectory starts in the future so evaluate() will
-            # continue holding the current pose until t_start.
-            t_start = arrival_time - motion_duration
-            actual_duration = motion_duration
-            # Re-sample state at the deferred start time.  If a
-            # trajectory is active, this evaluates it at t_start;
-            # if IDLE/COMPLETE, returns the hold pose (zero vel/accel).
-            cur_pose, cur_twist, cur_accel = (
-                self._get_current_state(t_start))
-            logger.debug(
-                f"Dynamic target deferred: waiting "
-                f"{t_start - t_now:.2f}s, then moving for "
-                f"{actual_duration:.2f}s (min feasible {min_dur:.2f}s)")
-        else:
-            t_start = t_now
-            actual_duration = duration
-
         try:
             traj = create_trajectory(
                 start_pose=cur_pose,
@@ -960,8 +914,8 @@ class TrajectoryManager:
                 end_pose=target_pose,
                 end_twist=target_twist,
                 end_accel=np.zeros(6),
-                duration=actual_duration,
-                t_start=t_start,
+                duration=duration,
+                t_start=t_now,
             )
         except ValueError as e:
             logger.debug(f"Dynamic target rejected: {e}")

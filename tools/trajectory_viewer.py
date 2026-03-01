@@ -428,6 +428,7 @@ Examples:
   python tools/trajectory_viewer.py --demo            Animate a 10mm Z demo
   python tools/trajectory_viewer.py --test-sequence   Animate full Phase 4 tests
   python tools/trajectory_viewer.py --phase5-sequence --speed-scale 0.5  Phase 5 tests
+  python tools/trajectory_viewer.py --phase7-sequence --speed-scale 0.3  Phase 7 tests
         """)
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument('--home', action='store_true',
@@ -440,6 +441,8 @@ Examples:
                        help='Animate the full Phase 4 test sequence')
     group.add_argument('--phase5-sequence', action='store_true',
                        help='Animate the Phase 5 inertia feedforward tests')
+    group.add_argument('--phase7-sequence', action='store_true',
+                       help='Animate the Phase 7 dynamic target tests')
 
     parser.add_argument('--speed-scale', type=float, default=0.25,
                         help='Speed scale for trajectories (default: 0.25)')
@@ -474,6 +477,13 @@ Examples:
         trajs = build_phase5_test_trajectories(geom,
                                                 speed_scale=args.speed_scale)
         preview_test_sequence(trajs, geom, fps=args.fps)
+
+    elif args.phase7_sequence:
+        from dynamic_target_test import build_phase7_test_trajectories
+        params = DynamicsParams.from_config()
+        trajs = build_phase7_test_trajectories(geom,
+                                                speed_scale=args.speed_scale)
+        preview_test_sequence(trajs, geom, params, fps=args.fps)
 
 
 if __name__ == '__main__':

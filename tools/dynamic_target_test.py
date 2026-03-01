@@ -124,6 +124,9 @@ from jugglebot.motion.conversions import (  # noqa: E402
 # Speed-dependent tracking thresholds (same as Phase 5/6)
 TRACKING_THRESHOLDS_MM = {0.25: 1.5, 0.50: 2.0, 0.75: 2.5, 1.00: 3.0}
 
+# Home Z for trajectory building (same as TrajectoryManager)
+_HOME_Z = float(hw.JB_OP_DEFAULT_ACTIVE_Z_MM)  # 170.0
+
 
 def get_tracking_threshold(speed_scale: float) -> float:
     """Get the tracking error threshold for a given speed scale."""
@@ -131,6 +134,237 @@ def get_tracking_threshold(speed_scale: float) -> float:
         if speed_scale <= ss:
             return TRACKING_THRESHOLDS_MM[ss]
     return TRACKING_THRESHOLDS_MM[1.0]
+
+
+# ---------------------------------------------------------------------------
+# Preview / dry-run trajectory builder
+# ---------------------------------------------------------------------------
+
+def build_phase7_test_trajectories(
+    geom: StewartGeometry = None,
+    speed_scale: float = DEFAULT_SPEED_SCALE,
+):
+    """Build Phase 7 test trajectories for preview/dry-run.
+
+    Simulates the TrajectoryManager's submit_dynamic_target() logic
+    offline to produce the actual trajectories that each test would
+    execute on hardware.
+
+    Returns a list of (label, QuinticTrajectory) tuples.
+    """
+    from jugglebot.motion.trajectory import create_trajectory
+
+    geom = geom or StewartGeometry()
+    params = DynamicsParams.from_config()
+    home_pose = np.array([0.0, 0.0, _HOME_Z, 0.0, 0.0, 0.0])
+    zeros6 = np.zeros(6)
+
+    trajs = []
+
+    # Helper: simulate submit_dynamic_target from a known start state
+    def _make_traj(start_pose, target_pos, target_vel, duration,
+                   start_twist=None, start_accel=None):
+        end_pose = np.array([
+            target_pos[0], target_pos[1], target_pos[2],
+            0.0, 0.0, 0.0])
+        end_twist = np.array([
+            target_vel[0], target_vel[1], target_vel[2],
+            0.0, 0.0, 0.0])
+        return create_trajectory(
+            start_pose=np.asarray(start_pose, dtype=float),
+            start_twist=start_twist if start_twist is not None else zeros6,
+            start_accel=start_accel if start_accel is not None else zeros6,
+            end_pose=end_pose,
+            end_twist=end_twist,
+            end_accel=zeros6,
+            duration=duration,
+            t_start=0.0,
+        )
+
+    # --- DT1: Static target from home ---
+    dt1_dur = 1.0 / speed_scale
+    trajs.append(('DT1: Home -> Z=200 (static)',
+                  _make_traj(home_pose, [0, 0, 200], [0, 0, 0], dt1_dur)))
+    trajs.append(('DT1: Z=200 -> Home (return)',
+                  _make_traj([0, 0, 200, 0, 0, 0], [0, 0, _HOME_Z],
+                             [0, 0, 0], dt1_dur)))
+
+    # --- DT2: Nonzero velocity + auto-return ---
+    dt2_dur = 1.0 / speed_scale
+    dt2_vel = 30 * speed_scale
+    trajs.append(('DT2: Home -> Z=190 (vel=+Z)',
+                  _make_traj(home_pose, [0, 0, 190],
+                             [0, 0, dt2_vel], dt2_dur)))
+    # Return trajectory: starts from Z=190 with upward velocity
+    # Use TrajectoryManager to compute the actual return
+    mgr_dt2 = TrajectoryManager(geom, params)
+    mgr_dt2.set_hold_pose(home_pose)
+    t_sim = 100.0  # arbitrary reference time
+    mgr_dt2.submit_dynamic_target(
+        target_pos=np.array([0.0, 0.0, 190.0]),
+        target_quat=np.array([1.0, 0.0, 0.0, 0.0]),
+        target_vel=np.array([0.0, 0.0, dt2_vel]),
+        arrival_time=t_sim + dt2_dur,
+        t_now=t_sim,
+    )
+    # Evaluate at trajectory end to trigger return planning
+    t_end_dt2 = t_sim + dt2_dur
+    mgr_dt2.evaluate(t_end_dt2 + 0.001)
+    if mgr_dt2._active_traj is not None:
+        ret_traj = mgr_dt2._active_traj
+        # Rebuild with t_start=0 for the viewer
+        from jugglebot.motion.trajectory import evaluate as traj_evaluate
+        ret_pose, ret_twist, ret_accel = traj_evaluate(ret_traj, ret_traj.t_start)
+        trajs.append(('DT2: Z=190 -> Home (auto-return)',
+                      create_trajectory(
+                          start_pose=ret_pose,
+                          start_twist=ret_twist,
+                          start_accel=ret_accel,
+                          end_pose=home_pose,
+                          end_twist=zeros6,
+                          end_accel=zeros6,
+                          duration=ret_traj.duration,
+                          t_start=0.0,
+                      )))
+
+    # --- DT3: Mid-motion replan ---
+    # First target: home -> Z=200
+    dt3_dur = 1.5 / speed_scale
+    trajs.append(('DT3: Home -> Z=200 (1st target)',
+                  _make_traj(home_pose, [0, 0, 200], [0, 0, 0], dt3_dur)))
+    # Second target: splice at t=0.7s into first, redirect to [15,0,195]
+    # Simulate with TrajectoryManager
+    mgr_dt3 = TrajectoryManager(geom, params)
+    mgr_dt3.set_hold_pose(home_pose)
+    t_sim3 = 100.0
+    mgr_dt3.submit_dynamic_target(
+        target_pos=np.array([0.0, 0.0, 200.0]),
+        target_quat=np.array([1.0, 0.0, 0.0, 0.0]),
+        target_vel=np.zeros(3),
+        arrival_time=t_sim3 + dt3_dur,
+        t_now=t_sim3,
+    )
+    # Submit second target 0.7s later
+    t_splice = t_sim3 + 0.7
+    mgr_dt3.submit_dynamic_target(
+        target_pos=np.array([15.0, 0.0, 195.0]),
+        target_quat=np.array([1.0, 0.0, 0.0, 0.0]),
+        target_vel=np.zeros(3),
+        arrival_time=t_splice + dt3_dur,
+        t_now=t_splice,
+    )
+    if mgr_dt3._active_traj is not None:
+        splice_traj = mgr_dt3._active_traj
+        sp, st, sa = traj_evaluate(splice_traj, splice_traj.t_start)
+        ep, _, _ = traj_evaluate(splice_traj,
+                                 splice_traj.t_start + splice_traj.duration)
+        trajs.append(('DT3: Splice -> [15,0,195] (2nd target)',
+                      create_trajectory(
+                          start_pose=sp, start_twist=st, start_accel=sa,
+                          end_pose=ep, end_twist=zeros6, end_accel=zeros6,
+                          duration=splice_traj.duration,
+                          t_start=0.0,
+                      )))
+
+    # --- DT4: Rapid target updates (show a representative subset) ---
+    dt4_dur = 0.8 / speed_scale
+    z_values = [180, 195, 175, 190, 185, 200, 170, 195, 180, 190]
+    # Simulate the full sequence
+    mgr_dt4 = TrajectoryManager(geom, params)
+    mgr_dt4.set_hold_pose(home_pose)
+    t_sim4 = 100.0
+    for i, z in enumerate(z_values):
+        t_submit = t_sim4 + i * 0.5
+        # Evaluate manager up to this point so state is current
+        if mgr_dt4.state in (TrajectoryState.EXECUTING,
+                              TrajectoryState.RETURNING):
+            mgr_dt4.evaluate(t_submit)
+        mgr_dt4.submit_dynamic_target(
+            target_pos=np.array([0.0, 0.0, float(z)]),
+            target_quat=np.array([1.0, 0.0, 0.0, 0.0]),
+            target_vel=np.zeros(3),
+            arrival_time=t_submit + dt4_dur,
+            t_now=t_submit,
+        )
+        if mgr_dt4._active_traj is not None:
+            traj_i = mgr_dt4._active_traj
+            sp_i, st_i, sa_i = traj_evaluate(traj_i, traj_i.t_start)
+            ep_i, _, _ = traj_evaluate(
+                traj_i, traj_i.t_start + traj_i.duration)
+            trajs.append((f'DT4: -> Z={z} (target {i+1}/10)',
+                          create_trajectory(
+                              start_pose=sp_i, start_twist=st_i,
+                              start_accel=sa_i,
+                              end_pose=ep_i, end_twist=zeros6,
+                              end_accel=zeros6,
+                              duration=traj_i.duration,
+                              t_start=0.0,
+                          )))
+
+    # --- DT5: Infeasible target ignored (only the feasible move) ---
+    dt5_dur = 2.0 / speed_scale
+    trajs.append(('DT5: Home -> Z=190 (feasible)',
+                  _make_traj(home_pose, [0, 0, 190], [0, 0, 0], dt5_dur)))
+    trajs.append(('DT5: Z=190 -> Home (return)',
+                  _make_traj([0, 0, 190, 0, 0, 0], [0, 0, _HOME_Z],
+                             [0, 0, 0], dt5_dur)))
+
+    return trajs
+
+
+def run_dry_run(speed_scale: float, show_preview: bool,
+                tests_to_run: list[str]):
+    """Run feasibility checks on Phase 7 test trajectories without CAN."""
+    from jugglebot.motion.trajectory import check_feasibility
+
+    print("\n" + "=" * 60)
+    print("DRY RUN: Phase 7 Feasibility checks (no hardware)")
+    print("=" * 60)
+
+    geom = StewartGeometry()
+    params = DynamicsParams.from_config()
+
+    threshold = get_tracking_threshold(speed_scale)
+    print(f"\n  Speed scale: {speed_scale}")
+    print(f"  Tracking threshold: {threshold} mm")
+    print(f"  Tests: {', '.join(tests_to_run)}")
+    print()
+
+    trajs = build_phase7_test_trajectories(geom, speed_scale=speed_scale)
+
+    # Filter to requested tests
+    test_prefixes = set()
+    for name in tests_to_run:
+        dt_num = ALL_TESTS.index(name) + 1
+        test_prefixes.add(f'DT{dt_num}')
+
+    filtered = [(label, traj) for label, traj in trajs
+                if any(label.startswith(p) for p in test_prefixes)]
+
+    all_ok = True
+    for label, traj in filtered:
+        result = check_feasibility(traj, geom, params)
+        status = 'OK' if result.feasible else 'FAIL'
+        peak_vel = np.max(result.peak_leg_vel_rps)
+        peak_cond = result.peak_condition_number
+        print(f"  [{status}] {label}: "
+              f"dur={traj.duration:.2f}s  "
+              f"peak_vel={peak_vel:.3f} rev/s  "
+              f"peak_cond={peak_cond:.0f}")
+        if not result.feasible:
+            all_ok = False
+            for v in result.violations:
+                print(f"        {v}")
+
+    print(f"\n  {'ALL FEASIBLE' if all_ok else 'SOME INFEASIBLE'}")
+
+    if show_preview:
+        try:
+            from trajectory_viewer import preview_test_sequence
+            print("\n  Launching 3D preview (close window to continue)...")
+            preview_test_sequence(filtered, geom, params)
+        except ImportError:
+            print("  WARNING: matplotlib not available, skipping preview")
 
 
 # ---------------------------------------------------------------------------
@@ -735,7 +969,21 @@ ALL_TESTS = ['static', 'autoreturn', 'replan', 'rapid', 'infeasible']
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Phase 7 Dynamic Target Hardware Tests')
+        description='Phase 7 Dynamic Target Hardware Tests',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Tests available:
+  static      DT1: Static target from home (+30mm Z)
+  autoreturn  DT2: Nonzero velocity + auto-return
+  replan      DT3: Mid-motion replan (second target during active)
+  rapid       DT4: Rapid target updates (2 Hz stream)
+  infeasible  DT5: Infeasible target ignored
+
+Modes:
+  --dry-run             Feasibility checks only, no CAN connection
+  --preview             Show 3D viewer before hardware execution
+  --dry-run --preview   Feasibility + 3D viewer, no hardware
+        """)
     parser.add_argument('--home', action='store_true',
                         help='Home the robot before testing')
     parser.add_argument('--test', nargs='+', default=['all'],
@@ -744,7 +992,9 @@ def main():
     parser.add_argument('--speed-scale', type=float, default=DEFAULT_SPEED_SCALE,
                         help=f'Speed scaling factor (default: {DEFAULT_SPEED_SCALE})')
     parser.add_argument('--dry-run', action='store_true',
-                        help='Print test plan without executing')
+                        help='Feasibility checks only, no CAN connection')
+    parser.add_argument('--preview', action='store_true',
+                        help='Show 3D viewer preview before hardware execution')
     parser.add_argument('--can-channel', default='can0',
                         help='CAN interface name (default: can0)')
     args = parser.parse_args()
@@ -758,11 +1008,30 @@ def main():
     print(f"  Tests:        {', '.join(tests_to_run)}")
     print(f"  CAN channel:  {args.can_channel}")
 
+    # Dry-run mode: feasibility checks + optional preview, no CAN
     if args.dry_run:
-        print("\n  [DRY RUN] Would execute:")
-        for name in tests_to_run:
-            print(f"    - DT{ALL_TESTS.index(name)+1}: {name}")
+        run_dry_run(args.speed_scale, args.preview, tests_to_run)
         return
+
+    # Optional 3D preview before hardware execution
+    if args.preview:
+        try:
+            from trajectory_viewer import preview_test_sequence
+            geom = StewartGeometry()
+            params = DynamicsParams.from_config()
+            trajs = build_phase7_test_trajectories(
+                geom, speed_scale=args.speed_scale)
+            # Filter to requested tests
+            test_prefixes = set()
+            for name in tests_to_run:
+                dt_num = ALL_TESTS.index(name) + 1
+                test_prefixes.add(f'DT{dt_num}')
+            filtered = [(label, traj) for label, traj in trajs
+                        if any(label.startswith(p) for p in test_prefixes)]
+            print("\n  Launching 3D preview (close window to continue)...")
+            preview_test_sequence(filtered, geom, params)
+        except ImportError:
+            print("  WARNING: matplotlib not available, skipping preview")
 
     # Create harness
     harness = PlatformTestHarness(channel=args.can_channel)
