@@ -62,6 +62,7 @@ from jugglebot.motion.dynamics import (
     gravity_to_motor_torques,
 )
 from jugglebot.motion.ipc import (
+    TOPIC_DYN_TARGET,
     TOPIC_MODE,
     TOPIC_MOTOR_FB,
     TOPIC_TARGET,
@@ -282,6 +283,8 @@ class ControlLoop:
                 self._on_mode_command(msg)
             elif topic == TOPIC_TRAJECTORY:
                 self._on_trajectory(msg)
+            elif topic == TOPIC_DYN_TARGET:
+                self._on_dynamic_target(msg)
             elif topic == TOPIC_MOTOR_FB:
                 self._on_motor_feedback(msg)
 
@@ -354,6 +357,35 @@ class ControlLoop:
         except (ValueError, RuntimeError) as e:
             logger.error(f"Trajectory command rejected: {e}")
 
+    def _on_dynamic_target(self, msg: dict) -> None:
+        """Handle a dynamic target command.
+
+        Delegates to TrajectoryManager.submit_dynamic_target() which
+        automatically samples current state, checks feasibility, and
+        accepts or rejects the target.
+        """
+        target_pos = np.array(msg['target_pos'])
+        target_quat = np.array(msg['target_quat'])
+        target_vel = np.array(msg['target_vel'])
+        arrival_time = msg['arrival_time']
+        speed_scale = msg.get('speed_scale', 1.0)
+
+        t_now = time.perf_counter()
+        accepted = self._traj_manager.submit_dynamic_target(
+            target_pos=target_pos,
+            target_quat=target_quat,
+            target_vel=target_vel,
+            arrival_time=arrival_time,
+            t_now=t_now,
+            speed_scale=speed_scale,
+        )
+        if accepted:
+            logger.info(
+                f"Dynamic target accepted: pos={target_pos.tolist()}, "
+                f"vel_norm={np.linalg.norm(target_vel):.1f} mm/s")
+        else:
+            logger.debug("Dynamic target rejected (infeasible)")
+
     def _on_motor_feedback(self, msg: dict) -> None:
         """Handle motor feedback from the CAN node (via bridge)."""
         self._motor_fb_pos_rev = np.array(msg['pos'])
@@ -400,7 +432,8 @@ class ControlLoop:
             return
 
         # Trajectory mode: evaluate trajectory at current time
-        if self._traj_manager.state == TrajectoryState.EXECUTING:
+        if self._traj_manager.state in (
+                TrajectoryState.EXECUTING, TrajectoryState.RETURNING):
             t_now = time.perf_counter()
             pos, vel, torque = self._traj_manager.evaluate(t_now)
             self._commanded_pos_rev = pos
@@ -435,7 +468,8 @@ class ControlLoop:
         # Get current pose for condition number computation.
         # Use the trajectory manager's current_pose_6dof which is set
         # during evaluate() above, or construct from target for direct mode.
-        if self._traj_manager.state == TrajectoryState.EXECUTING:
+        if self._traj_manager.state in (
+                TrajectoryState.EXECUTING, TrajectoryState.RETURNING):
             pose_6dof = self._traj_manager.current_pose_6dof
         elif self._has_target:
             # For direct-target mode, we don't have a rotvec handy,

@@ -241,7 +241,7 @@ ros_ws/src/jugglebot/
 - [x] Standalone single-leg test harness (`tools/single_leg_test.py`) — all 4 bench tests PASS on hardware (2026-02-25)
 - [ ] Loop timing + IPC latency tests — still pending on Jetson (require pyzmq/msgpack)
 
-#### Motion Planner Phase 3+ (Dynamics, Trajectory, Hardening) — NOT STARTED
+#### Motion Planner Phase 3+ (Dynamics, Trajectory, Hardening) — IN PROGRESS
 - [ ] Implement `motion/trajectory.py`: smooth trajectory generation with pre-computed durations
   - Quintic polynomial solver respecting per-leg velocity/acceleration limits
   - Duration estimation: compute exact time required, reject infeasible commands before starting

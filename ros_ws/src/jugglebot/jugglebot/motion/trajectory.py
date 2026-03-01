@@ -310,6 +310,44 @@ def evaluate(traj: QuinticTrajectory,
     return pose, twist, accel
 
 
+def evaluate_jerk(traj: QuinticTrajectory, t: float) -> np.ndarray:
+    """Evaluate the Cartesian jerk (3rd derivative) at absolute time ``t``.
+
+    Parameters
+    ----------
+    traj : QuinticTrajectory
+    t : float
+        Absolute time in seconds.
+
+    Returns
+    -------
+    jerk : (6,) ndarray
+        ``[jx, jy, jz, jrx, jry, jrz]`` in mm/s^3 and rad/s^3.
+
+    Notes
+    -----
+    Jerk is computed in Cartesian space only.  Per-leg jerk is NOT checked
+    because the Jacobian condition number constraint already guards against
+    poses where smooth Cartesian motion maps to jerky leg motion.  If
+    per-leg jerk becomes a concern, it would require differentiating through
+    the Jacobian (J_dot contribution), which is deferred.
+
+    Before ``t_start`` or after ``t_start + duration``: returns zeros
+    (constant position or constant velocity has zero jerk).
+    """
+    T = traj.duration
+    if t <= traj.t_start or t >= traj.t_start + T:
+        return np.zeros(6)
+
+    tau = (t - traj.t_start) / T
+    c = traj.coeffs  # (6, 6)
+    T3 = T * T * T
+
+    # p'''(tau) / T^3 = 6*c3 + 24*c4*tau + 60*c5*tau^2
+    jerk = (6.0 * c[:, 3] + 24.0 * c[:, 4] * tau + 60.0 * c[:, 5] * tau * tau) / T3
+    return jerk
+
+
 # ---------------------------------------------------------------------------
 # Leg-space mapper
 # ---------------------------------------------------------------------------
@@ -378,6 +416,8 @@ class FeasibilityResult:
     min_extension_mm: np.ndarray
     peak_condition_number: float
     peak_torque_ff_Nm: np.ndarray
+    peak_jerk_trans: float        # peak translational jerk (mm/s^3)
+    peak_jerk_rot: float          # peak rotational jerk (rad/s^3)
     violations: list
     n_samples: int
 
@@ -390,6 +430,8 @@ def check_feasibility(
     accel_limit_rps2: float | None = None,
     condition_limit: float | None = None,
     torque_limit_Nm: float | None = None,
+    jerk_trans_limit: float | None = 30_000.0,
+    jerk_rot_limit: float | None = 400.0,
     n_samples: int = 200,
 ) -> FeasibilityResult:
     """Check whether a trajectory respects kinematic and dynamic limits.
@@ -411,6 +453,14 @@ def check_feasibility(
         which accounts for the mixed mm/rad units giving raw cond ~450.
     torque_limit_Nm : float or None
         Maximum feedforward torque per motor.  If None, skip torque check.
+    jerk_trans_limit : float or None
+        Maximum translational Cartesian jerk in mm/s^3.  Defaults to 30000.
+        If None, skip jerk check.  NOTE: per-leg jerk is NOT checked —
+        the condition number constraint guards against poses where smooth
+        Cartesian motion maps to jerky leg motion.
+    jerk_rot_limit : float or None
+        Maximum rotational Cartesian jerk in rad/s^3.  Defaults to 400.
+        If None, skip jerk check.
     n_samples : int
         Number of evenly-spaced points to evaluate.
 
@@ -439,6 +489,10 @@ def check_feasibility(
     min_ext = np.full(6, np.inf)
     peak_cond = 0.0
     peak_torque = np.zeros(6)
+    peak_jerk_t = 0.0  # peak translational jerk magnitude (mm/s^3)
+    peak_jerk_r = 0.0  # peak rotational jerk magnitude (rad/s^3)
+
+    check_jerk = (jerk_trans_limit is not None or jerk_rot_limit is not None)
 
     for t in times:
         pose, twist, accel_cart = evaluate(traj, t)
@@ -468,6 +522,14 @@ def check_feasibility(
         torque_Nm = compute_full_feedforward_torques(
             pos, rot, twist, accel_cart, geom, dynamics_params)
         peak_torque = np.maximum(peak_torque, np.abs(torque_Nm))
+
+        # Cartesian jerk (3rd derivative)
+        if check_jerk:
+            jerk = evaluate_jerk(traj, t)
+            jerk_t_mag = float(np.max(np.abs(jerk[:3])))
+            jerk_r_mag = float(np.max(np.abs(jerk[3:])))
+            peak_jerk_t = max(peak_jerk_t, jerk_t_mag)
+            peak_jerk_r = max(peak_jerk_r, jerk_r_mag)
 
     # Check violations
     stroke = geom.leg_stroke_mm
@@ -505,6 +567,15 @@ def check_feasibility(
             f"Torque limit ({torque_limit_Nm} Nm) exceeded on legs "
             f"{bad_legs.tolist()}: peak {peak_torque[bad_legs].tolist()} Nm")
 
+    if jerk_trans_limit is not None and peak_jerk_t > jerk_trans_limit:
+        violations.append(
+            f"Translational jerk limit ({jerk_trans_limit:.0f} mm/s^3) "
+            f"exceeded: peak {peak_jerk_t:.0f} mm/s^3")
+    if jerk_rot_limit is not None and peak_jerk_r > jerk_rot_limit:
+        violations.append(
+            f"Rotational jerk limit ({jerk_rot_limit:.0f} rad/s^3) "
+            f"exceeded: peak {peak_jerk_r:.0f} rad/s^3")
+
     return FeasibilityResult(
         feasible=len(violations) == 0,
         peak_leg_vel_rps=peak_vel,
@@ -513,9 +584,113 @@ def check_feasibility(
         min_extension_mm=min_ext,
         peak_condition_number=peak_cond,
         peak_torque_ff_Nm=peak_torque,
+        peak_jerk_trans=peak_jerk_t,
+        peak_jerk_rot=peak_jerk_r,
         violations=violations,
         n_samples=n_samples,
     )
+
+
+# ---------------------------------------------------------------------------
+# Convenience constructors
+# ---------------------------------------------------------------------------
+
+def make_rest_to_rest(
+    end_pose: np.ndarray,
+    duration: float,
+    speed_scale: float = 1.0,
+    start_pose: np.ndarray | None = None,
+    t_start: float = 0.0,
+) -> QuinticTrajectory:
+    """Create a rest-to-rest quintic trajectory (zero twist/accel at both ends).
+
+    Parameters
+    ----------
+    end_pose : (6,) ndarray — [x, y, z, rx, ry, rz] in mm, rad
+    duration : float — base duration in seconds (before speed scaling)
+    speed_scale : float — speed scaling factor in (0, 1]
+    start_pose : (6,) ndarray or None — defaults to home (zeros)
+    t_start : float — absolute start time reference (seconds)
+    """
+    zeros6 = np.zeros(6)
+    sp = np.asarray(start_pose, dtype=np.float64) if start_pose is not None \
+        else zeros6.copy()
+    ep = np.asarray(end_pose, dtype=np.float64)
+    return create_trajectory(
+        start_pose=sp, start_twist=zeros6, start_accel=zeros6,
+        end_pose=ep, end_twist=zeros6, end_accel=zeros6,
+        duration=duration, t_start=t_start, speed_scale=speed_scale)
+
+
+def find_min_feasible_duration(
+    start_pose: np.ndarray,
+    start_twist: np.ndarray,
+    start_accel: np.ndarray,
+    end_pose: np.ndarray,
+    end_twist: np.ndarray,
+    end_accel: np.ndarray,
+    geom: StewartGeometry,
+    dynamics_params: DynamicsParams,
+    speed_scale: float = 1.0,
+    min_T: float = 0.2,
+    max_T: float = 5.0,
+    n_bisections: int = 8,
+    n_feas_samples: int = 50,
+) -> float | None:
+    """Binary search for the minimum feasible trajectory duration.
+
+    Creates trajectories with progressively shorter durations and checks
+    each against the full feasibility suite (stroke, velocity, acceleration,
+    condition number, jerk).
+
+    Parameters
+    ----------
+    start_pose, start_twist, start_accel : (6,) ndarray
+        Start boundary conditions.
+    end_pose, end_twist, end_accel : (6,) ndarray
+        End boundary conditions.
+    geom : StewartGeometry
+    dynamics_params : DynamicsParams
+    speed_scale : float
+    min_T : float
+        Minimum search bound (seconds).
+    max_T : float
+        Maximum search bound (seconds).  If even this is infeasible,
+        returns None.
+    n_bisections : int
+        Number of binary search iterations.
+    n_feas_samples : int
+        Number of samples per feasibility check.
+
+    Returns
+    -------
+    duration : float or None
+        Shortest feasible duration found, or None if ``max_T`` is infeasible.
+    """
+    # First check: is max_T feasible?
+    traj = create_trajectory(
+        start_pose=start_pose, start_twist=start_twist, start_accel=start_accel,
+        end_pose=end_pose, end_twist=end_twist, end_accel=end_accel,
+        duration=max_T, speed_scale=speed_scale)
+    result = check_feasibility(traj, geom, dynamics_params, n_samples=n_feas_samples)
+    if not result.feasible:
+        return None
+
+    lo, hi = min_T, max_T
+    for _ in range(n_bisections):
+        mid = (lo + hi) / 2.0
+        traj = create_trajectory(
+            start_pose=start_pose, start_twist=start_twist, start_accel=start_accel,
+            end_pose=end_pose, end_twist=end_twist, end_accel=end_accel,
+            duration=mid, speed_scale=speed_scale)
+        result = check_feasibility(
+            traj, geom, dynamics_params, n_samples=n_feas_samples)
+        if result.feasible:
+            hi = mid
+        else:
+            lo = mid
+
+    return hi
 
 
 # ---------------------------------------------------------------------------
@@ -525,6 +700,7 @@ def check_feasibility(
 class TrajectoryState(enum.Enum):
     IDLE = 'idle'
     EXECUTING = 'executing'
+    RETURNING = 'returning'  # auto-return to home in progress
     COMPLETE = 'complete'
 
 
@@ -533,17 +709,28 @@ class TrajectoryManager:
 
     Lifecycle:
         1. Set a hold pose via ``set_hold_pose()`` (typically home).
-        2. Submit a trajectory via ``submit()``.
+        2. Submit a trajectory via ``submit()`` or ``submit_dynamic_target()``.
         3. Each control cycle, call ``evaluate(t)`` to get motor commands.
-        4. When the trajectory completes, state transitions to COMPLETE.
-        5. Submit a new trajectory, or call ``cancel()`` to return to IDLE.
+        4. When the trajectory completes:
+           - Zero-velocity targets → COMPLETE (hold at target).
+           - Non-zero-velocity targets → RETURNING (auto-return to home).
+        5. Submit a new trajectory at any time (mid-motion replanning).
 
     Phase 6 additions:
         - ``progress`` and ``time_remaining`` are now live (updated on evaluate).
         - ``current_pose_6dof`` exposes the latest evaluated Cartesian pose.
+
+    Phase 7 additions:
+        - ``submit_dynamic_target()`` for fire-and-forget target commanding.
+        - ``RETURNING`` state for automatic return-to-home after non-zero-velocity
+          targets.
+        - Mid-motion replanning: ``submit()`` and ``submit_dynamic_target()`` can
+          be called during EXECUTING or RETURNING.
     """
 
     def __init__(self, geom: StewartGeometry, dynamics_params: DynamicsParams):
+        import jugglebot.hardware_config as hw
+
         self.geom = geom
         self.dynamics_params = dynamics_params
         self._state = TrajectoryState.IDLE
@@ -555,6 +742,11 @@ class TrajectoryManager:
         self._hold_rot = np.eye(3)
         self._hold_pos_rev = np.zeros(6)
         self._hold_torque_ff = np.zeros(6)
+
+        # Home pose for return-to-home trajectories (Phase 7)
+        self._home_pose = np.array(
+            [0.0, 0.0, float(hw.JB_OP_DEFAULT_ACTIVE_Z_MM), 0.0, 0.0, 0.0])
+        self._pending_return = False  # True when trajectory end twist != 0
 
         # Progress tracking (Phase 6)
         self._last_progress = 0.0
@@ -580,12 +772,17 @@ class TrajectoryManager:
         """Latest evaluated Cartesian pose [x,y,z,rx,ry,rz]."""
         return self._current_pose.copy()
 
+    @property
+    def home_pose(self) -> np.ndarray:
+        """Home pose for return-to-home trajectories."""
+        return self._home_pose.copy()
+
     def set_feedforward_enabled(self, enabled: bool) -> None:
         """Toggle gravity feedforward for trajectory evaluation."""
         self._feedforward_enabled = enabled
 
     def set_hold_pose(self, pose_6dof: np.ndarray) -> None:
-        """Set the hold pose for IDLE state.
+        """Set the hold pose for IDLE/COMPLETE states.
 
         Parameters
         ----------
@@ -603,28 +800,193 @@ class TrajectoryManager:
         else:
             self._hold_torque_ff = np.zeros(6)
 
-    def submit(self, traj: QuinticTrajectory) -> None:
+    def submit(self, traj: QuinticTrajectory,
+               is_return: bool = False) -> None:
         """Submit a trajectory for execution.
+
+        Can be called from any state, including during EXECUTING or
+        RETURNING (mid-motion replanning).  The caller must ensure the
+        trajectory starts from the correct current state at the splice
+        time for C2 continuity.
 
         Parameters
         ----------
         traj : QuinticTrajectory
             Must have passed feasibility checking before submission.
-
-        Raises
-        ------
-        RuntimeError
-            If state is EXECUTING (Phase 4 restriction).
+        is_return : bool
+            If True, enter RETURNING state (auto-return to home).
         """
-        if self._state == TrajectoryState.EXECUTING:
-            raise RuntimeError(
-                "Cannot submit trajectory while executing "
-                "(mid-motion re-planning deferred to Phase 7)")
         self._active_traj = traj
-        self._state = TrajectoryState.EXECUTING
+        self._state = TrajectoryState.RETURNING if is_return \
+            else TrajectoryState.EXECUTING
+        self._pending_return = False
         logger.info(
-            f"Trajectory submitted: duration={traj.duration:.3f}s, "
+            f"Trajectory submitted ({'return' if is_return else 'target'}): "
+            f"duration={traj.duration:.3f}s, "
             f"speed_scale={traj.speed_scale:.2f}")
+
+    def submit_dynamic_target(
+        self,
+        target_pos: np.ndarray,
+        target_quat: np.ndarray,
+        target_vel: np.ndarray,
+        arrival_time: float,
+        t_now: float,
+        speed_scale: float = 1.0,
+    ) -> bool:
+        """Submit a dynamic target command.
+
+        Automatically handles:
+        - Sampling current state for splice continuity
+        - Quaternion → rotation vector conversion
+        - Feasibility checking (stroke, vel, accel, cond, jerk)
+        - Queuing return-to-home if target velocity is non-zero
+
+        Parameters
+        ----------
+        target_pos : (3,) ndarray — [x, y, z] in mm
+        target_quat : (4,) ndarray — [w, x, y, z] quaternion
+        target_vel : (3,) ndarray — [vx, vy, vz] in mm/s (linear only;
+            angular velocity is always zero)
+        arrival_time : float — absolute arrival time (perf_counter)
+        t_now : float — current time (perf_counter)
+        speed_scale : float — speed scaling factor in (0, 1]
+
+        Returns
+        -------
+        accepted : bool
+            True if the target was accepted and a trajectory planned.
+        """
+        from jugglebot.motion.ik_solver import (
+            quat_to_rot_matrix,
+            rot_matrix_to_rotvec,
+        )
+
+        # Compute duration from absolute arrival time
+        duration = arrival_time - t_now
+        if duration <= 0:
+            logger.debug(
+                f"Dynamic target rejected: arrival_time in the past "
+                f"(duration={duration:.4f}s)")
+            return False
+
+        # Convert quaternion orientation to rotation vector
+        w, x, y, z = target_quat
+        rot_mat = quat_to_rot_matrix(w, x, y, z)
+        rotvec = rot_matrix_to_rotvec(rot_mat)
+
+        # Compose 6-DoF target pose and twist (angular velocity = 0)
+        target_pose = np.array([
+            target_pos[0], target_pos[1], target_pos[2],
+            rotvec[0], rotvec[1], rotvec[2],
+        ])
+        target_twist = np.array([
+            target_vel[0], target_vel[1], target_vel[2],
+            0.0, 0.0, 0.0,
+        ])
+
+        # Sample current state for C2 continuous splice
+        cur_pose, cur_twist, cur_accel = self._get_current_state(t_now)
+
+        # Create quintic trajectory
+        try:
+            traj = create_trajectory(
+                start_pose=cur_pose,
+                start_twist=cur_twist,
+                start_accel=cur_accel,
+                end_pose=target_pose,
+                end_twist=target_twist,
+                end_accel=np.zeros(6),
+                duration=duration,
+                t_start=t_now,
+                speed_scale=speed_scale,
+            )
+        except ValueError as e:
+            logger.debug(f"Dynamic target rejected: {e}")
+            return False
+
+        # Feasibility check (reduced samples for inline speed)
+        result = check_feasibility(
+            traj, self.geom, self.dynamics_params, n_samples=50)
+        if not result.feasible:
+            logger.debug(
+                f"Dynamic target rejected (infeasible): "
+                f"{'; '.join(result.violations)}")
+            return False
+
+        # Accept: submit trajectory and flag return-to-home if needed
+        self.submit(traj)
+        self._pending_return = bool(np.linalg.norm(target_vel) > 1e-6)
+        return True
+
+    def _get_current_state(
+        self, t: float,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Get the current Cartesian state for trajectory planning.
+
+        Returns
+        -------
+        pose : (6,) ndarray — [x, y, z, rx, ry, rz]
+        twist : (6,) ndarray — [vx, vy, vz, wx, wy, wz]
+        accel : (6,) ndarray — [ax, ay, az, alphax, alphay, alphaz]
+        """
+        if self._state in (TrajectoryState.EXECUTING, TrajectoryState.RETURNING):
+            return evaluate(self._active_traj, t)
+        else:
+            # IDLE or COMPLETE: at hold pose, zero velocity/acceleration
+            return self._hold_pose.copy(), np.zeros(6), np.zeros(6)
+
+    def _plan_return_to_home(self, t_end: float) -> bool:
+        """Plan a return-to-home trajectory from the current trajectory's
+        end state.
+
+        Parameters
+        ----------
+        t_end : float
+            Exact end time of the completing trajectory.
+
+        Returns
+        -------
+        success : bool
+            True if a feasible return trajectory was planned.
+        """
+        # Evaluate the ending trajectory at its exact end time to get
+        # the precise state at the splice point
+        pose, twist, accel = evaluate(self._active_traj, t_end)
+
+        # Find the minimum feasible duration for the return
+        duration = find_min_feasible_duration(
+            start_pose=pose,
+            start_twist=twist,
+            start_accel=accel,
+            end_pose=self._home_pose,
+            end_twist=np.zeros(6),
+            end_accel=np.zeros(6),
+            geom=self.geom,
+            dynamics_params=self.dynamics_params,
+        )
+        if duration is None:
+            logger.warning(
+                "Return-to-home infeasible: no feasible duration found "
+                f"in [0.2, 5.0]s from pose={pose.tolist()}")
+            return False
+
+        # Add 20% safety margin
+        duration *= 1.2
+
+        traj = create_trajectory(
+            start_pose=pose,
+            start_twist=twist,
+            start_accel=accel,
+            end_pose=self._home_pose,
+            end_twist=np.zeros(6),
+            end_accel=np.zeros(6),
+            duration=duration,
+            t_start=t_end,  # seamless continuation
+        )
+        self.submit(traj, is_return=True)
+        logger.info(f"Return-to-home planned: duration={duration:.3f}s")
+        return True
 
     def evaluate(self, t: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Evaluate the current target for the control loop.
@@ -640,42 +1002,65 @@ class TrajectoryManager:
         vel_ff_rps : (6,) ndarray — velocity feedforward in rev/s
         torque_ff_Nm : (6,) ndarray — torque feedforward in Nm
         """
-        if self._state == TrajectoryState.IDLE:
+        if self._state in (TrajectoryState.IDLE, TrajectoryState.COMPLETE):
             self._current_pose = self._hold_pose.copy()
             return (self._hold_pos_rev.copy(),
                     np.zeros(6),
                     self._hold_torque_ff.copy())
 
-        if self._state == TrajectoryState.COMPLETE:
-            self._current_pose = self._hold_pose.copy()
-            return (self._hold_pos_rev.copy(),
-                    np.zeros(6),
-                    self._hold_torque_ff.copy())
-
-        # EXECUTING
+        # EXECUTING or RETURNING
         traj = self._active_traj
         t_end = traj.t_start + traj.duration
 
         if t >= t_end:
-            # Trajectory complete — transition to COMPLETE
-            self._state = TrajectoryState.COMPLETE
+            # Trajectory complete
             self._last_progress = 1.0
             self._last_time_remaining = 0.0
-            # Set hold pose to end pose
             end_pose = traj.end_state[:6]
-            self.set_hold_pose(end_pose)
             self._current_pose = end_pose.copy()
+
+            if self._state == TrajectoryState.RETURNING:
+                # Return-to-home complete → IDLE at home
+                self.set_hold_pose(self._home_pose)
+                self._state = TrajectoryState.IDLE
+                self._active_traj = None
+                logger.info("Return-to-home complete")
+                return (self._hold_pos_rev.copy(),
+                        np.zeros(6),
+                        self._hold_torque_ff.copy())
+
+            # EXECUTING complete
+            if self._pending_return:
+                # Non-zero end velocity: plan return to home
+                if self._plan_return_to_home(t_end):
+                    # Successfully planned return — evaluate the return
+                    # trajectory at the current time (which is >= t_end,
+                    # so the return trajectory will start from its t_start)
+                    pose, twist, accel_cart = evaluate(self._active_traj, t)
+                    self._current_pose = pose.copy()
+                    return cartesian_to_motor_commands(
+                        pose, twist, accel_cart,
+                        self.geom, self.dynamics_params,
+                        self._feedforward_enabled)
+                else:
+                    # Return planning failed — fall through to COMPLETE
+                    logger.warning(
+                        "Return-to-home planning failed; holding at end pose")
+
+            # Zero-velocity target or failed return → COMPLETE
+            self._state = TrajectoryState.COMPLETE
+            self._active_traj = None
+            self.set_hold_pose(end_pose)
             logger.info("Trajectory complete")
             return (self._hold_pos_rev.copy(),
                     np.zeros(6),
                     self._hold_torque_ff.copy())
 
-        # Update progress tracking
+        # Mid-trajectory: evaluate at current time
         elapsed = t - traj.t_start
         self._last_progress = min(1.0, elapsed / traj.duration)
         self._last_time_remaining = max(0.0, t_end - t)
 
-        # Evaluate trajectory at current time
         pose, twist, accel_cart = evaluate(traj, t)
         self._current_pose = pose.copy()
         return cartesian_to_motor_commands(
@@ -689,9 +1074,10 @@ class TrajectoryManager:
         The hold pose remains at whatever was last set (typically
         the end pose from a previous trajectory or home).
         """
-        if self._state == TrajectoryState.EXECUTING:
-            logger.info("Trajectory cancelled")
+        if self._state in (TrajectoryState.EXECUTING, TrajectoryState.RETURNING):
+            logger.info(f"Trajectory cancelled (was {self._state.value})")
         self._active_traj = None
         self._state = TrajectoryState.IDLE
+        self._pending_return = False
         self._last_progress = 0.0
         self._last_time_remaining = 0.0

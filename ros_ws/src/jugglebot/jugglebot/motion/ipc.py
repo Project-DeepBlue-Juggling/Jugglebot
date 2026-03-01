@@ -41,6 +41,7 @@ TOPIC_MODE = b'mode'
 TOPIC_TELEMETRY = b'telem'
 TOPIC_MOTOR_FB = b'motorfb'
 TOPIC_TRAJECTORY = b'traj'
+TOPIC_DYN_TARGET = b'dyntgt'
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +177,38 @@ def make_trajectory_command(
     }
 
 
+def make_dynamic_target_command(
+        target_pos: list | tuple,
+        target_quat: list | tuple,
+        target_vel: list | tuple,
+        arrival_time: float,
+        speed_scale: float = 1.0) -> dict:
+    """Create a dynamic target command message.
+
+    The caller specifies only the desired end state.  The control process
+    automatically samples the current platform state as the start and plans
+    a quintic trajectory with feasibility checking.
+
+    Parameters
+    ----------
+    target_pos : [x, y, z] platform offset from home (mm)
+    target_quat : [w, x, y, z] quaternion orientation
+    target_vel : [vx, vy, vz] linear velocity at target (mm/s).
+        Angular velocity is always zero.
+    arrival_time : absolute arrival time (perf_counter timestamp)
+    speed_scale : 0.0-1.0, uniformly scales velocities/accelerations
+    """
+    return {
+        'type': 'dynamic_target',
+        'target_pos': list(target_pos),
+        'target_quat': list(target_quat),
+        'target_vel': list(target_vel),
+        'arrival_time': arrival_time,
+        'speed_scale': speed_scale,
+        'ts': time.time(),
+    }
+
+
 def make_motor_feedback(positions: list | tuple,
                         velocities: list | tuple,
                         currents: list | tuple) -> dict:
@@ -231,11 +264,13 @@ class ControlProcessIPC:
         self._sub_data.setsockopt(zmq.RCVTIMEO, 0)  # non-blocking
         self._sub_data.setsockopt(zmq.CONFLATE, 1)   # keep only latest
 
-        # SUB socket for mode/trajectory commands — no CONFLATE, every command delivered
+        # SUB socket for mode/trajectory/dynamic-target commands — no CONFLATE,
+        # every command delivered
         self._sub_mode = self._ctx.socket(zmq.SUB)
         self._sub_mode.connect(command_addr)
         self._sub_mode.setsockopt(zmq.SUBSCRIBE, TOPIC_MODE)
         self._sub_mode.setsockopt(zmq.SUBSCRIBE, TOPIC_TRAJECTORY)
+        self._sub_mode.setsockopt(zmq.SUBSCRIBE, TOPIC_DYN_TARGET)
         self._sub_mode.setsockopt(zmq.RCVTIMEO, 0)  # non-blocking
         self._sub_mode.setsockopt(zmq.RCVHWM, 64)   # bound queue size
 
@@ -315,6 +350,10 @@ class BridgeIPC:
     def send_trajectory_command(self, msg: dict) -> None:
         """Send a trajectory command to the control process."""
         self._pub.send_multipart(_pack(TOPIC_TRAJECTORY, msg), flags=zmq.NOBLOCK)
+
+    def send_dynamic_target(self, msg: dict) -> None:
+        """Send a dynamic target command to the control process."""
+        self._pub.send_multipart(_pack(TOPIC_DYN_TARGET, msg), flags=zmq.NOBLOCK)
 
     def send_motor_feedback(self, msg: dict) -> None:
         """Send MotorFeedback to the control process."""

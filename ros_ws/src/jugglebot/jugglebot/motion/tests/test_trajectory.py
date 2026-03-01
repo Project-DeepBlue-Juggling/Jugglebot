@@ -500,17 +500,16 @@ def test_trajectory_manager():
     assert mgr.state == TrajectoryState.IDLE, f"After cancel: {mgr.state}"
     print("  After cancel: IDLE")
 
-    # Verify submit during EXECUTING raises
+    # Verify submit during EXECUTING is allowed (Phase 7: mid-motion replanning)
     traj3 = create_trajectory(
         start_pose=zeros6, start_twist=zeros6, start_accel=zeros6,
         end_pose=end_pose, end_twist=zeros6, end_accel=zeros6,
         duration=0.5, t_start=t_now + 2.0)
     mgr.submit(traj3)  # IDLE -> EXECUTING
-    try:
-        mgr.submit(traj3)  # Should raise
-        assert False, "Should have raised RuntimeError"
-    except RuntimeError:
-        print("  Submit during EXECUTING correctly raises RuntimeError")
+    assert mgr.state == TrajectoryState.EXECUTING
+    mgr.submit(traj3)  # Should now succeed (mid-motion replan)
+    assert mgr.state == TrajectoryState.EXECUTING
+    print("  Submit during EXECUTING allowed (Phase 7 mid-motion replan)")
 
     mgr.cancel()
     print("  [PASS]")
