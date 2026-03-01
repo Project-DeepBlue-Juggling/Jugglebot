@@ -234,10 +234,10 @@ export function updateLevellingPanel(robotState) {
     }
 
     if (offset.length >= 2) {
-        const rollDeg = (offset[0] * 180 / Math.PI).toFixed(2);
-        const pitchDeg = (offset[1] * 180 / Math.PI).toFixed(2);
-        if (rollEl) rollEl.textContent = rollDeg + '\u00b0';
-        if (pitchEl) pitchEl.textContent = pitchDeg + '\u00b0';
+        const rollArcmin = (offset[0] * 180 / Math.PI * 60).toFixed(1);
+        const pitchArcmin = (offset[1] * 180 / Math.PI * 60).toFixed(1);
+        if (rollEl) rollEl.textContent = rollArcmin + '\u2032';
+        if (pitchEl) pitchEl.textContent = pitchArcmin + '\u2032';
     }
 }
 
