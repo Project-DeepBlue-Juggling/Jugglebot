@@ -438,7 +438,11 @@ class CanInterfaceNode(Node):
         except struct.error:
             return
         self.last_known_state['updated'] = True
-        self.last_known_state['is_homed'] = bool(flags & 0x01)
+        is_homed = bool(flags & 0x01)
+        self.last_known_state['is_homed'] = is_homed
+        # Homing requires encoder search to have completed first
+        if is_homed:
+            self.last_known_state['encoder_search_complete'] = True
         self.last_known_state['levelling_complete'] = bool(flags & 0x02)
         self.last_known_state['pose_offset_rad'] = (tx / 1000.0, ty / 1000.0)
         self.last_known_state['pose_offset_quat'] = self._tilt_to_quat(tx / 1000.0, ty / 1000.0)
@@ -471,6 +475,10 @@ class CanInterfaceNode(Node):
 
         Waits for heartbeats from all Jugglebot axes before sending config
         commands, ensuring ODrives are alive and listening.
+
+        Before switching legs to PASSTHROUGH, waits until all legs are
+        stationary and seeds each leg's current encoder position as the
+        first PASSTHROUGH target to prevent jolts.
         """
         deadline = time.time() + _HEARTBEAT_GATE_TIMEOUT_S
         while not self.motors.all_jugglebot_heartbeats_received():
@@ -479,7 +487,31 @@ class CanInterfaceNode(Node):
                     "ODrives not responding — cannot configure unresponsive hardware")
             yield 0.1
 
+        # Wait until all legs are stationary before switching to PASSTHROUGH.
+        # TRAP_TRAJ should have finished, but guard against residual motion.
+        stationary_deadline = time.time() + 5.0
+        while True:
+            states = self.motors.last_states
+            if all(abs(states[i].vel_estimate) < hw.JB_OP_TARGET_REACHED_VEL_TOL_RPS
+                   for i in odrive.LEG_AXES):
+                break
+            if time.time() > stationary_deadline:
+                raise RuntimeError(
+                    "Legs not stationary — refusing to switch to PASSTHROUGH")
+            yield 0.05
+
         self._set_vel_curr_limits()
+
+        # Seed each leg's current encoder position BEFORE switching to
+        # PASSTHROUGH, so the ODrive's input_pos register holds the actual
+        # position and does not jolt to a stale value.
+        # pos_estimate is already in Jugglebot convention (positive = extended)
+        # thanks to the inversion in _handle_encoder.
+        states = self.motors.last_states
+        for axis_id in odrive.LEG_AXES:
+            self._send_position_target(axis_id, states[axis_id].pos_estimate)
+            time.sleep(0.005)
+
         for axis_id in odrive.LEG_AXES:
             self.bus.send(odrive.encode_set_controller_mode(axis_id, 'POSITION', 'PASSTHROUGH'))
             time.sleep(0.005)
