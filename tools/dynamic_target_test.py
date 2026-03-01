@@ -182,27 +182,31 @@ def move_to_active_home(harness: PlatformTestHarness,
                   f"At active home pose (Z={hw.JB_OP_DEFAULT_ACTIVE_Z_MM}mm).")
 
 
-def stow_platform(harness: PlatformTestHarness,
-                  geom: StewartGeometry,
-                  params: DynamicsParams):
-    """Move the platform to the stowed position [0,0,0] using TRAP_TRAJ.
+def stow_platform(harness: PlatformTestHarness):
+    """Move all legs to 0 rev (homed position) using TRAP_TRAJ.
 
-    MUST be called before idling axes. The platform is only safe to
-    idle when all legs are at their zero-extension positions.
+    MUST be called before idling axes.  Commands each axis to raw
+    position 0.0 rev, which is the homed/stowed position.  This is
+    different from IK pose [0,0,0] which produces ~25 mm leg extension.
     """
-    _move_to_pose(harness, np.zeros(3), geom, params,
-                  "Platform stowed at [0, 0, 0].")
+    harness.enter_trap_traj_mode_all(vel_limit=1.5, acc_limit=5.0,
+                                     dec_limit=5.0)
+    for axis_id in LEG_AXES:
+        harness.send(encode_set_input_pos(
+            axis_id, 0.0, vel_ff=0, torque_ff=0))
+
+    harness.wait_for_all_trajectories_done(timeout_s=15.0)
+    harness.poll_for(1.0)
+    print("  Platform stowed (all legs at 0 rev).")
 
 
-def safe_idle_all(harness: PlatformTestHarness,
-                  geom: StewartGeometry,
-                  params: DynamicsParams):
-    """Stow the platform at [0,0,0] and then idle all axes.
+def safe_idle_all(harness: PlatformTestHarness):
+    """Stow the platform (legs to 0 rev) and then idle all axes.
 
     Never idles axes unless the platform is in the stowed position.
     """
     try:
-        stow_platform(harness, geom, params)
+        stow_platform(harness)
     except Exception as e:
         print(f"  WARNING: Failed to stow platform: {e}")
         print("  Idling axes anyway (emergency).")
@@ -391,14 +395,14 @@ def test_static_target(
         'pos': [0, 0, 200],  # home Z + 30mm
         'quat': [1, 0, 0, 0],
         'vel': [0, 0, 0],
-        'delay_s': 0.5,
+        'delay_s': 0.0,
         'duration_s': duration,
     }]
 
-    interactive_pause("Press Enter to execute DT1...")
     prepare_harness(harness)
     move_to_active_home(harness, geom, params)
     switch_to_passthrough(harness)
+    interactive_pause("Press Enter to execute DT1...")
 
     print(f"\n  Executing DT1 (speed_scale={speed_scale}, "
           f"duration={duration:.1f}s)...")
@@ -406,7 +410,7 @@ def test_static_target(
         harness, mgr, geom, params, limits, targets,
         max_duration_s=duration + 5.0, label="DT1")
 
-    safe_idle_all(harness, geom, params)
+    safe_idle_all(harness)
 
     # Analyze
     analysis = analyze_log(log) if log.timestamps else {}
@@ -453,14 +457,14 @@ def test_auto_return(
         'pos': [0, 0, 190],
         'quat': [1, 0, 0, 0],
         'vel': [0, 0, 30 * speed_scale],  # scale velocity too
-        'delay_s': 0.5,
+        'delay_s': 0.0,
         'duration_s': duration,
     }]
 
-    interactive_pause("Press Enter to execute DT2...")
     prepare_harness(harness)
     move_to_active_home(harness, geom, params)
     switch_to_passthrough(harness)
+    interactive_pause("Press Enter to execute DT2...")
 
     print(f"\n  Executing DT2 (speed_scale={speed_scale}, "
           f"duration={duration:.1f}s)...")
@@ -468,7 +472,7 @@ def test_auto_return(
         harness, mgr, geom, params, limits, targets,
         max_duration_s=duration * 3 + 5.0, label="DT2")
 
-    safe_idle_all(harness, geom, params)
+    safe_idle_all(harness)
 
     # Analyze
     analysis = analyze_log(log) if log.timestamps else {}
@@ -525,22 +529,22 @@ def test_replan(
             'pos': [0, 0, 200],
             'quat': [1, 0, 0, 0],
             'vel': [0, 0, 0],
-            'delay_s': 0.5,
+            'delay_s': 0.0,
             'duration_s': base_dur,
         },
         {  # Second target: +15mm X, +25mm Z (sent 0.7s after first)
             'pos': [15, 0, 195],
             'quat': [1, 0, 0, 0],
             'vel': [0, 0, 0],
-            'delay_s': 1.2,  # 0.7s after first target
+            'delay_s': 0.7,  # 0.7s after first target
             'duration_s': base_dur,
         },
     ]
 
-    interactive_pause("Press Enter to execute DT3...")
     prepare_harness(harness)
     move_to_active_home(harness, geom, params)
     switch_to_passthrough(harness)
+    interactive_pause("Press Enter to execute DT3...")
 
     print(f"\n  Executing DT3 (speed_scale={speed_scale}, "
           f"duration={base_dur:.1f}s)...")
@@ -548,7 +552,7 @@ def test_replan(
         harness, mgr, geom, params, limits, targets,
         max_duration_s=base_dur * 2 + 5.0, label="DT3")
 
-    safe_idle_all(harness, geom, params)
+    safe_idle_all(harness)
 
     # Analyze
     analysis = analyze_log(log) if log.timestamps else {}
@@ -600,14 +604,14 @@ def test_rapid_targets(
             'pos': [0, 0, z],
             'quat': [1, 0, 0, 0],
             'vel': [0, 0, 0],
-            'delay_s': 0.5 + i * 0.5,  # 2 Hz
+            'delay_s': i * 0.5,  # 2 Hz, first target immediately
             'duration_s': duration,
         })
 
-    interactive_pause("Press Enter to execute DT4...")
     prepare_harness(harness)
     move_to_active_home(harness, geom, params)
     switch_to_passthrough(harness)
+    interactive_pause("Press Enter to execute DT4...")
 
     print(f"\n  Executing DT4 (speed_scale={speed_scale}, "
           f"{len(targets)} targets, duration={duration:.1f}s)...")
@@ -615,7 +619,7 @@ def test_rapid_targets(
         harness, mgr, geom, params, limits, targets,
         max_duration_s=duration + 10.0, label="DT4")
 
-    safe_idle_all(harness, geom, params)
+    safe_idle_all(harness)
 
     # Analyze
     n_accepted = sum(1 for e in events if e['accepted'])
@@ -665,22 +669,22 @@ def test_infeasible_ignored(
             'pos': [0, 0, 190],
             'quat': [1, 0, 0, 0],
             'vel': [0, 0, 0],
-            'delay_s': 0.5,
+            'delay_s': 0.0,
             'duration_s': base_dur,
         },
         {  # Infeasible target: way too far, way too fast
             'pos': [0, 0, 500],
             'quat': [1, 0, 0, 0],
             'vel': [0, 0, 0],
-            'delay_s': 1.0,  # 0.5s after first starts
+            'delay_s': 0.5,  # 0.5s after first starts
             'duration_s': 0.01,  # impossibly fast
         },
     ]
 
-    interactive_pause("Press Enter to execute DT5...")
     prepare_harness(harness)
     move_to_active_home(harness, geom, params)
     switch_to_passthrough(harness)
+    interactive_pause("Press Enter to execute DT5...")
 
     print(f"\n  Executing DT5 (speed_scale={speed_scale}, "
           f"duration={base_dur:.1f}s)...")
@@ -688,7 +692,7 @@ def test_infeasible_ignored(
         harness, mgr, geom, params, limits, targets,
         max_duration_s=base_dur + 5.0, label="DT5")
 
-    safe_idle_all(harness, geom, params)
+    safe_idle_all(harness)
 
     # Analyze
     analysis = analyze_log(log) if log.timestamps else {}
@@ -756,17 +760,13 @@ def main():
             print(f"    - DT{ALL_TESTS.index(name)+1}: {name}")
         return
 
-    # Create shared geometry/dynamics for safe shutdown
-    geom = StewartGeometry()
-    params = DynamicsParams.from_config()
-
     # Create harness
     harness = PlatformTestHarness(channel=args.can_channel)
 
     # Signal handler for clean shutdown
     def signal_handler(sig, frame):
         print("\n\n  Caught Ctrl-C -- stowing platform and idling...")
-        safe_idle_all(harness, geom, params)
+        safe_idle_all(harness)
         sys.exit(1)
     signal.signal(signal.SIGINT, signal_handler)
 
@@ -787,7 +787,7 @@ def main():
                 print(f"\n  EXCEPTION in {name}: {e}")
                 traceback.print_exc()
                 results[name] = False
-                safe_idle_all(harness, geom, params)
+                safe_idle_all(harness)
 
         # Summary
         print("\n" + "=" * 60)
@@ -806,7 +806,7 @@ def main():
             sys.exit(1)
 
     finally:
-        safe_idle_all(harness, geom, params)
+        safe_idle_all(harness)
         harness.disconnect()
 
 
