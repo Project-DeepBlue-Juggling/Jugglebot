@@ -109,6 +109,13 @@ class CanInterfaceNode(Node):
         # Initialize the bus
         self.bus.setup()
 
+        # Request persisted state (homed, levelling, tilt offset) from the Teensy.
+        # The Teensy responds with an 8-byte state message on the same CAN ID.
+        self.bus.send(python_can.Message(
+            arbitration_id=self._state_update_id, dlc=1,
+            is_extended_id=False, data=[0x01],
+        ))
+
         # ── Services ───────────────────────────────────────────
         self.create_service(Trigger, 'encoder_search', self._svc_encoder_search)
         self.create_service(Trigger, 'end_session', self._svc_end_session)
