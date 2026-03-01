@@ -187,18 +187,24 @@ def execute_trajectory_with_workspace_check(
         if ws.status == WorkspaceStatus.SOFT_LIMIT:
             workspace_violations.extend(ws.violations)
 
-        # Send commands to ODrives
+        # Send commands to ODrives (matching trajectory_test.py conventions)
         for i, axis_id in enumerate(LEG_AXES):
-            msg = encode_set_input_pos(axis_id, pos_rev[i],
-                                        vel_ff[i], torque_ff[i])
-            harness.bus.send(msg)
+            # Sign conventions for direct CAN (matching can_node.py):
+            # All three fields are negated for legs — ODrive negative = extension
+            raw_pos = -pos_rev[i]
+            vel_int = int(round(-vel_ff[i] * LEG_VEL_FF_SCALE))
+            tor_int = int(round(-torque_ff[i] * LEG_TOR_FF_SCALE))
+            vel_int = max(-32767, min(32767, vel_int))
+            tor_int = max(-32767, min(32767, tor_int))
+            harness.send_no_delay(encode_set_input_pos(
+                axis_id, raw_pos, vel_int, tor_int))
 
-        # Poll encoder feedback
-        harness.poll(timeout_ms=0)
+        # Poll encoder feedback (non-blocking)
+        harness._poll(timeout=0)
 
         # Log data (using TrajectoryLog fields)
-        actual_pos = np.array([harness.axes[ax].pos_rev for ax in LEG_AXES])
-        actual_vel = np.array([harness.axes[ax].vel_rps for ax in LEG_AXES])
+        actual_pos = np.array([harness.states[a].pos_rev for a in LEG_AXES])
+        actual_vel = np.array([harness.states[a].vel_rps for a in LEG_AXES])
 
         log.timestamps.append(t_elapsed)
         log.commanded_pos_rev.append(pos_rev.copy())
@@ -211,7 +217,7 @@ def execute_trajectory_with_workspace_check(
 
         # Check for ODrive errors
         for ax in LEG_AXES:
-            s = harness.axes[ax]
+            s = harness.states[ax]
             if s.active_errors:
                 err_str = ', '.join(error_names(s.active_errors))
                 print(f"\n  ** ODrive ERROR on axis {ax}: {err_str} **")
@@ -401,10 +407,9 @@ def test_fault_injection_static(harness, geom, params, limits, dry_run=False):
     interactive_pause("Ready to start static fault injection test?")
 
     # Hold at home
-    home_pos = pose_to_raw_positions(np.zeros(6), geom)
+    home_pos = pose_to_raw_positions(np.zeros(3), np.eye(3), geom)
     for i, axis_id in enumerate(LEG_AXES):
-        msg = encode_set_input_pos(axis_id, home_pos[i], 0.0, 0.0)
-        harness.bus.send(msg)
+        harness.send(encode_set_input_pos(axis_id, home_pos[i], 0, 0))
 
     time.sleep(1.0)
     print("  Platform holding at home. All legs active.")
@@ -419,10 +424,10 @@ def test_fault_injection_static(harness, geom, params, limits, dry_run=False):
     interactive_pause("Press Enter AFTER you have triggered the fault...")
 
     # Check for faults
-    harness.poll(timeout_ms=100)
+    harness.poll_for(0.1)
     faults_detected = []
     for ax in LEG_AXES:
-        s = harness.axes[ax]
+        s = harness.states[ax]
         if s.active_errors:
             err_str = ', '.join(error_names(s.active_errors))
             faults_detected.append(f"Axis {ax}: {err_str}")
@@ -441,14 +446,14 @@ def test_fault_injection_static(harness, geom, params, limits, dry_run=False):
     time.sleep(0.5)
 
     # Verify all axes are idle
-    harness.poll(timeout_ms=100)
-    all_idle = all(harness.axes[ax].axis_state == 1 for ax in LEG_AXES)  # 1 = IDLE
+    harness.poll_for(0.1)
+    all_idle = all(harness.states[ax].axis_state == 1 for ax in LEG_AXES)  # 1 = IDLE
     if all_idle:
         print("  All legs confirmed IDLE.")
         print("  [PASS]")
         return True
     else:
-        states = {ax: harness.axes[ax].axis_state for ax in LEG_AXES}
+        states = {ax: harness.states[ax].axis_state for ax in LEG_AXES}
         print(f"  WARNING: Not all legs idle. States: {states}")
         print("  [FAIL]")
         return False
