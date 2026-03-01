@@ -100,6 +100,7 @@ from jugglebot.motion.ik_solver import (  # noqa: E402
     rotvec_to_rot_matrix,
 )
 from jugglebot.motion.trajectory import (  # noqa: E402
+    QuinticTrajectory,
     TrajectoryManager,
     TrajectoryState,
     check_feasibility,
@@ -134,6 +135,124 @@ def get_tracking_threshold(speed_scale: float) -> float:
         if speed_scale <= ss:
             return TRACKING_THRESHOLDS_MM[ss]
     return TRACKING_THRESHOLDS_MM[1.0]
+
+
+# ---------------------------------------------------------------------------
+# Sequence continuity check
+# ---------------------------------------------------------------------------
+
+# Tolerances for inter-trajectory continuity.  These are generous enough to
+# tolerate floating-point round-trip through quintic solve → evaluate, but
+# tight enough to catch a real position/velocity jump.
+_CONT_POS_TOL_MM   = 0.5     # mm  — positional jump
+_CONT_POS_TOL_RAD  = 0.005   # rad — rotational jump (~0.3 deg)
+_CONT_VEL_TOL_MM   = 5.0     # mm/s  — velocity discontinuity
+_CONT_VEL_TOL_RAD  = 0.05    # rad/s — rotational velocity
+_CONT_ACCEL_TOL_MM  = 200.0  # mm/s² — acceleration discontinuity
+_CONT_ACCEL_TOL_RAD = 2.0    # rad/s²
+
+
+def check_sequence_continuity(
+    trajs: list[tuple[str, 'QuinticTrajectory']],
+) -> tuple[bool, list[str]]:
+    """Verify C2 continuity between every consecutive trajectory pair.
+
+    Checks position, velocity, and acceleration continuity at each
+    junction in the full sequence — both within a single test (e.g.
+    DT1 outbound → DT1 return) and between tests (e.g. DT1 return →
+    DT2 outbound), since the preview chains them all back-to-back.
+
+    A jump at a junction means the platform would be commanded to
+    instantaneously change position (infinite acceleration) — exactly
+    the behaviour we want to prevent.
+
+    Parameters
+    ----------
+    trajs : list of (label, QuinticTrajectory) tuples
+
+    Returns
+    -------
+    ok : bool — True if all junctions are smooth
+    violations : list of human-readable violation strings
+    """
+    violations = []
+
+    for i in range(len(trajs) - 1):
+        label_a, traj_a = trajs[i]
+        label_b, traj_b = trajs[i + 1]
+
+        # End state of trajectory A
+        t_end_a = traj_a.t_start + traj_a.duration
+        pose_a, twist_a, accel_a = evaluate(traj_a, t_end_a)
+
+        # Start state of trajectory B
+        pose_b, twist_b, accel_b = evaluate(traj_b, traj_b.t_start)
+
+        # Check position continuity (translation + rotation separately)
+        dp_trans = np.abs(pose_b[:3] - pose_a[:3])
+        dp_rot   = np.abs(pose_b[3:] - pose_a[3:])
+
+        for j in range(3):
+            if dp_trans[j] > _CONT_POS_TOL_MM:
+                axis = 'xyz'[j]
+                violations.append(
+                    f"junction {i+1}->{i+2}: "
+                    f"position jump {axis}={dp_trans[j]:.3f} mm "
+                    f"(tol {_CONT_POS_TOL_MM} mm)  "
+                    f"[{label_a}] -> [{label_b}]")
+
+        for j in range(3):
+            if dp_rot[j] > _CONT_POS_TOL_RAD:
+                axis = 'rxryrz'[j*2:j*2+2]
+                violations.append(
+                    f"junction {i+1}->{i+2}: "
+                    f"position jump {axis}={dp_rot[j]:.4f} rad "
+                    f"(tol {_CONT_POS_TOL_RAD} rad)  "
+                    f"[{label_a}] -> [{label_b}]")
+
+        # Check velocity continuity
+        dv_trans = np.abs(twist_b[:3] - twist_a[:3])
+        dv_rot   = np.abs(twist_b[3:] - twist_a[3:])
+
+        for j in range(3):
+            if dv_trans[j] > _CONT_VEL_TOL_MM:
+                axis = 'xyz'[j]
+                violations.append(
+                    f"junction {i+1}->{i+2}: "
+                    f"velocity jump {axis}={dv_trans[j]:.2f} mm/s "
+                    f"(tol {_CONT_VEL_TOL_MM} mm/s)  "
+                    f"[{label_a}] -> [{label_b}]")
+        for j in range(3):
+            if dv_rot[j] > _CONT_VEL_TOL_RAD:
+                axis = 'rxryrz'[j*2:j*2+2]
+                violations.append(
+                    f"junction {i+1}->{i+2}: "
+                    f"velocity jump {axis}={dv_rot[j]:.4f} rad/s "
+                    f"(tol {_CONT_VEL_TOL_RAD} rad/s)  "
+                    f"[{label_a}] -> [{label_b}]")
+
+        # Check acceleration continuity
+        da_trans = np.abs(accel_b[:3] - accel_a[:3])
+        da_rot   = np.abs(accel_b[3:] - accel_a[3:])
+
+        for j in range(3):
+            if da_trans[j] > _CONT_ACCEL_TOL_MM:
+                axis = 'xyz'[j]
+                violations.append(
+                    f"junction {i+1}->{i+2}: "
+                    f"accel jump {axis}={da_trans[j]:.1f} mm/s² "
+                    f"(tol {_CONT_ACCEL_TOL_MM} mm/s²)  "
+                    f"[{label_a}] -> [{label_b}]")
+        for j in range(3):
+            if da_rot[j] > _CONT_ACCEL_TOL_RAD:
+                axis = 'rxryrz'[j*2:j*2+2]
+                violations.append(
+                    f"junction {i+1}->{i+2}: "
+                    f"accel jump {axis}={da_rot[j]:.3f} rad/s² "
+                    f"(tol {_CONT_ACCEL_TOL_RAD} rad/s²)  "
+                    f"[{label_a}] -> [{label_b}]")
+
+    return len(violations) == 0, violations
 
 
 # ---------------------------------------------------------------------------
@@ -357,6 +476,17 @@ def run_dry_run(speed_scale: float, show_preview: bool,
                 print(f"        {v}")
 
     print(f"\n  {'ALL FEASIBLE' if all_ok else 'SOME INFEASIBLE'}")
+
+    # Sequence continuity check
+    print("\n  Sequence continuity check:")
+    cont_ok, cont_violations = check_sequence_continuity(filtered)
+    if cont_ok:
+        print("  [OK] All trajectory junctions are C2-continuous")
+    else:
+        all_ok = False
+        print("  [FAIL] Trajectory discontinuities detected:")
+        for v in cont_violations:
+            print(f"        {v}")
 
     if show_preview:
         try:
@@ -1013,21 +1143,32 @@ Modes:
         run_dry_run(args.speed_scale, args.preview, tests_to_run)
         return
 
+    # Pre-flight continuity check (mandatory before hardware)
+    geom = StewartGeometry()
+    params = DynamicsParams.from_config()
+    trajs = build_phase7_test_trajectories(
+        geom, speed_scale=args.speed_scale)
+    test_prefixes = set()
+    for name in tests_to_run:
+        dt_num = ALL_TESTS.index(name) + 1
+        test_prefixes.add(f'DT{dt_num}')
+    filtered = [(label, traj) for label, traj in trajs
+                if any(label.startswith(p) for p in test_prefixes)]
+
+    print("\n  Pre-flight continuity check:")
+    cont_ok, cont_violations = check_sequence_continuity(filtered)
+    if cont_ok:
+        print("  [OK] All trajectory junctions are C2-continuous")
+    else:
+        print("  [FAIL] Trajectory discontinuities detected — ABORTING:")
+        for v in cont_violations:
+            print(f"        {v}")
+        sys.exit(1)
+
     # Optional 3D preview before hardware execution
     if args.preview:
         try:
             from trajectory_viewer import preview_test_sequence
-            geom = StewartGeometry()
-            params = DynamicsParams.from_config()
-            trajs = build_phase7_test_trajectories(
-                geom, speed_scale=args.speed_scale)
-            # Filter to requested tests
-            test_prefixes = set()
-            for name in tests_to_run:
-                dt_num = ALL_TESTS.index(name) + 1
-                test_prefixes.add(f'DT{dt_num}')
-            filtered = [(label, traj) for label, traj in trajs
-                        if any(label.startswith(p) for p in test_prefixes)]
             print("\n  Launching 3D preview (close window to continue)...")
             preview_test_sequence(filtered, geom, params)
         except ImportError:
