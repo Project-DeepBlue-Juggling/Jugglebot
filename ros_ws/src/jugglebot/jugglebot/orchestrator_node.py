@@ -112,10 +112,13 @@ class OrchestratorNode(Node):
         self.ctx.fatal_can_error = msg.has_fatal_can_error
         self.ctx.undervoltage = msg.has_undervoltage
 
-        # Levelling state from Teensy (persisted across reboots)
-        self.ctx.levelling_complete = msg.levelling_complete
-        if len(msg.pose_offset_rad) >= 2:
-            self.ctx.pose_offset_rad = list(msg.pose_offset_rad[:2])
+        # Levelling state from Teensy (persisted across reboots).
+        # Skip updates while LEVELLING — the state machine is computing
+        # new values and we must not overwrite them with stale CAN data.
+        if self.sm.state != RobotState.LEVELLING:
+            self.ctx.levelling_complete = msg.levelling_complete
+            if len(msg.pose_offset_rad) >= 2:
+                self.ctx.pose_offset_rad = list(msg.pose_offset_rad[:2])
 
     def _on_command(self, msg):
         """Queue a user command for the state machine."""
