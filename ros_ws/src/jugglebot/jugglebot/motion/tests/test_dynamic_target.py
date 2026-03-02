@@ -167,15 +167,23 @@ def test_nonzero_velocity_auto_return():
     assert accepted
     assert mgr.state == TrajectoryState.EXECUTING
 
-    # Evaluate at end of trajectory — should trigger return
-    mgr.evaluate(t_now + 1.01)
+    # Wait for background return precompute to finish (async pipeline),
+    # then evaluate past trajectory end to trigger RETURNING.
+    import time as _time
+    deadline = _time.perf_counter() + 10.0
+    t = t_now + 1.01
+    while _time.perf_counter() < deadline:
+        mgr.evaluate(t)
+        if mgr.state == TrajectoryState.RETURNING:
+            break
+        _time.sleep(0.05)
+        t += 0.001  # advance time slightly each poll
+
     assert mgr.state == TrajectoryState.RETURNING, \
         f"Expected RETURNING after non-zero-velocity trajectory end, got {mgr.state}"
     print("  State after trajectory end: RETURNING")
 
     # The return trajectory should eventually complete and go to IDLE
-    # Find the return trajectory's duration by evaluating until IDLE
-    t = t_now + 1.01
     max_steps = 10000
     for _ in range(max_steps):
         t += 0.01
@@ -368,13 +376,22 @@ def test_interrupt_return():
     )
     assert accepted
 
-    # Evaluate past trajectory end -> triggers RETURNING
-    mgr.evaluate(t_now + 1.01)
+    # Wait for background return precompute, then evaluate past end
+    import time as _time
+    deadline = _time.perf_counter() + 10.0
+    t = t_now + 1.01
+    while _time.perf_counter() < deadline:
+        mgr.evaluate(t)
+        if mgr.state == TrajectoryState.RETURNING:
+            break
+        _time.sleep(0.05)
+        t += 0.001
+
     assert mgr.state == TrajectoryState.RETURNING, \
         f"Expected RETURNING, got {mgr.state}"
 
     # Now submit a new target while returning
-    t_interrupt = t_now + 1.2
+    t_interrupt = t + 0.2
     mgr.evaluate(t_interrupt)  # update internal state
     accepted2 = mgr.submit_dynamic_target(
         target_pos=np.array([10.0, 0.0, 195.0]),
@@ -710,9 +727,9 @@ def test_return_junction_continuity():
     """Verify C2 continuity at the EXECUTING -> RETURNING junction.
 
     When the outbound trajectory has non-zero end velocity, the return-
-    to-home trajectory must start from that exact velocity.  A bug where
-    _plan_return_to_home() uses evaluate() instead of direct end_state
-    access would produce a velocity discontinuity here.
+    to-home trajectory must start from that exact velocity.  The async
+    pipeline pre-computes the return trajectory from the outbound's
+    end_state, preserving continuity.
     """
     _header("Test 14: Return junction C2 continuity")
 
@@ -737,8 +754,17 @@ def test_return_junction_continuity():
     outbound_traj = mgr._active_traj
     outbound_end = outbound_traj.end_state.copy()  # (18,)
 
-    # Evaluate past the outbound end to trigger return planning
-    mgr.evaluate(t_now + 1.01)
+    # Wait for background return precompute, then evaluate past end
+    import time as _time
+    deadline = _time.perf_counter() + 10.0
+    t = t_now + 1.01
+    while _time.perf_counter() < deadline:
+        mgr.evaluate(t)
+        if mgr.state == TrajectoryState.RETURNING:
+            break
+        _time.sleep(0.05)
+        t += 0.001
+
     assert mgr.state == TrajectoryState.RETURNING, \
         f"Expected RETURNING, got {mgr.state}"
 

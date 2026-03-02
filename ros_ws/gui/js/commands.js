@@ -18,6 +18,7 @@ const COMMANDS = [
     { id: 'cmd-deactivate', label: 'Deactivate',     command: 'deactivate',   cssClass: 'btn-deactivate' },
     { id: 'cmd-spacemouse', label: 'SpaceMouse',     command: 'spacemouse',   cssClass: '' },
     { id: 'cmd-shell',      label: 'Shell',          command: 'shell',        cssClass: '' },
+    { id: 'cmd-gui',        label: 'GUI',            command: 'gui',          cssClass: '' },
     { id: 'cmd-clear',      label: 'Clear Errors',   command: 'clear_errors', cssClass: 'btn-fault' },
 ];
 
@@ -60,6 +61,7 @@ export function updateCommandStates() {
     setEnabled('cmd-deactivate', state === 'ACTIVE');
     setEnabled('cmd-spacemouse', state === 'ACTIVE');
     setEnabled('cmd-shell', state === 'ACTIVE');
+    setEnabled('cmd-gui', state === 'ACTIVE');
     setEnabled('cmd-clear', true); // always available
 }
 

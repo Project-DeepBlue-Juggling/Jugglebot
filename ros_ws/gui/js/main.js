@@ -25,6 +25,7 @@ import {
 import { initCommands, updateCommandStates } from './commands.js';
 import { INITIAL_HEIGHT_MM, MM_TO_REV } from './geometry-config.js';
 import { initTelemetryCharts, onTelemetryData, rebuildCharts } from './telemetry-charts.js';
+import { initJogPanel, setJogPanelVisible } from './jog-panel.js';
 
 // ---- Latest data stores ----
 let latestMotorStates = null;
@@ -59,6 +60,9 @@ function init() {
     // 6. Init telemetry charts
     initTelemetryCharts();
 
+    // 6a. Init jog panel
+    initJogPanel();
+
     // 7. Init ROS connection
     ros.onConnectionStateChange(onConnectionStateChange);
     ros.init();
@@ -91,6 +95,7 @@ function onConnectionStateChange(state) {
             dot.className = 'status-dot disconnected';
             text.textContent = 'Disconnected';
             receivedOrchestratorState = false;
+            setJogPanelVisible(false);
             stopTopicDiscovery();
             break;
     }
@@ -119,6 +124,9 @@ function subscribeAll() {
 
     // Commanded leg lengths (500Hz -> throttle to 20Hz = 50ms)
     ros.subscribe('leg_lengths_topic', 'std_msgs/msg/Float64MultiArray', onLegLengths, 50);
+
+    // Control mode (on change) — used to show/hide jog panel
+    ros.subscribe('control_mode_topic', 'std_msgs/msg/String', onControlMode, 0);
 }
 
 // ---- Topic handlers ----
@@ -287,6 +295,11 @@ function onRigidBodyPoses(msg) {
 function onLegLengths(msg) {
     recordTopicMessage('leg_lengths_topic');
     latestCommandedLegs = msg.data;
+}
+
+function onControlMode(msg) {
+    recordTopicMessage('control_mode_topic');
+    setJogPanelVisible(msg.data === 'GUI');
 }
 
 // ---- Scene menu ----
@@ -566,6 +579,7 @@ function applyFontSize(size) {
 const GUI_SUBSCRIBED_TOPICS = new Set([
     'robot_state', 'bb/heartbeat', 'orchestrator_state',
     'can_traffic', 'hand_telemetry', 'rigid_body_poses', 'leg_lengths_topic',
+    'control_mode_topic',
 ]);
 
 /** Active spy subscriptions: Map<topicName, ROSLIB.Topic> */

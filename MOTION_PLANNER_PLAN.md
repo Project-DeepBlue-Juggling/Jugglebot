@@ -3,6 +3,22 @@
 
 ---
 
+#!/bin/bash
+
+REPO_DIR="/path/to/your/repo"  # ← Change this
+BRANCH="$1"
+
+cd "$REPO_DIR" || exit 1
+
+# Fetch all remote changes
+git fetch origin
+
+# Check out the pushed branch (if not already on it)
+git checkout "$BRANCH" 2>/dev/null || git checkout -b "$BRANCH" "origin/$BRANCH"
+
+# Pull latest
+git pull origin "$BRANCH"
+
 ## Scope & Assumptions
 
 ### System Overview

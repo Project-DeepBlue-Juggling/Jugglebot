@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import enum
 import logging
+import threading
+import time as _time
 from dataclasses import dataclass, replace as _dc_replace
 from typing import TYPE_CHECKING
 
@@ -438,6 +440,7 @@ def check_feasibility(
     jerk_trans_limit: float | None = 30_000.0,
     jerk_rot_limit: float | None = 400.0,
     n_samples: int = 200,
+    early_exit: bool = False,
 ) -> FeasibilityResult:
     """Check whether a trajectory respects kinematic and dynamic limits.
 
@@ -468,6 +471,11 @@ def check_feasibility(
         If None, skip jerk check.
     n_samples : int
         Number of evenly-spaced points to evaluate.
+    early_exit : bool
+        If True, return immediately on the first violation found.
+        Peak values in the result will reflect only the samples evaluated
+        before the violation.  Useful for binary-search where only the
+        feasible/infeasible verdict matters.
 
     Returns
     -------
@@ -486,6 +494,7 @@ def check_feasibility(
 
     violations = []
     times = np.linspace(traj.t_start, traj.t_start + traj.duration, n_samples)
+    stroke = geom.leg_stroke_mm
 
     # Accumulators
     peak_vel = np.zeros(6)
@@ -498,11 +507,13 @@ def check_feasibility(
     peak_jerk_r = 0.0  # peak rotational jerk magnitude (rad/s^3)
 
     check_jerk = (jerk_trans_limit is not None or jerk_rot_limit is not None)
+    n_evaluated = 0
 
     for t in times:
         pose, twist, accel_cart = evaluate(traj, t)
         pos = pose[:3]
         rot = rotvec_to_rot_matrix(pose[3:6])
+        n_evaluated += 1
 
         # Leg extensions (mm) — check stroke limits
         extensions_mm = pose_to_leg_lengths(pos, rot, geom)
@@ -524,9 +535,11 @@ def check_feasibility(
         peak_cond = max(peak_cond, cond)
 
         # Full feedforward torques (gravity + inertia + reflected motor)
-        torque_Nm = compute_full_feedforward_torques(
-            pos, rot, twist, accel_cart, geom, dynamics_params)
-        peak_torque = np.maximum(peak_torque, np.abs(torque_Nm))
+        # Skip when no torque limit — the result would never be checked.
+        if torque_limit_Nm is not None:
+            torque_Nm = compute_full_feedforward_torques(
+                pos, rot, twist, accel_cart, geom, dynamics_params)
+            peak_torque = np.maximum(peak_torque, np.abs(torque_Nm))
 
         # Cartesian jerk (3rd derivative)
         if check_jerk:
@@ -536,50 +549,75 @@ def check_feasibility(
             peak_jerk_t = max(peak_jerk_t, jerk_t_mag)
             peak_jerk_r = max(peak_jerk_r, jerk_r_mag)
 
-    # Check violations
-    stroke = geom.leg_stroke_mm
-    if np.any(min_ext < 0.0):
-        bad_legs = np.where(min_ext < 0.0)[0]
-        violations.append(
-            f"Underextended legs {bad_legs.tolist()}: "
-            f"min extensions {min_ext[bad_legs].tolist()} mm")
-    if np.any(max_ext > stroke):
-        bad_legs = np.where(max_ext > stroke)[0]
-        violations.append(
-            f"Overextended legs {bad_legs.tolist()}: "
-            f"max extensions {max_ext[bad_legs].tolist()} mm")
+        # Early exit: check per-sample limits and break on first violation
+        if early_exit:
+            if np.any(extensions_mm < 0.0) or np.any(extensions_mm > stroke):
+                violations.append("stroke_early_exit")
+                break
+            if np.any(np.abs(vel_rps) > vel_limit_rps):
+                violations.append("velocity_early_exit")
+                break
+            if np.any(np.abs(accel_rps2) > accel_limit_rps2):
+                violations.append("acceleration_early_exit")
+                break
+            if cond > condition_limit:
+                violations.append("condition_early_exit")
+                break
+            if torque_limit_Nm is not None and np.any(
+                    np.abs(peak_torque) > torque_limit_Nm):
+                violations.append("torque_early_exit")
+                break
+            if jerk_trans_limit is not None and peak_jerk_t > jerk_trans_limit:
+                violations.append("jerk_trans_early_exit")
+                break
+            if jerk_rot_limit is not None and peak_jerk_r > jerk_rot_limit:
+                violations.append("jerk_rot_early_exit")
+                break
 
-    if np.any(peak_vel > vel_limit_rps):
-        bad_legs = np.where(peak_vel > vel_limit_rps)[0]
-        violations.append(
-            f"Velocity limit ({vel_limit_rps} rev/s) exceeded on legs "
-            f"{bad_legs.tolist()}: peak {peak_vel[bad_legs].tolist()} rev/s")
+    # Post-loop violation analysis (skipped when early_exit already found one)
+    if not violations:
+        if np.any(min_ext < 0.0):
+            bad_legs = np.where(min_ext < 0.0)[0]
+            violations.append(
+                f"Underextended legs {bad_legs.tolist()}: "
+                f"min extensions {min_ext[bad_legs].tolist()} mm")
+        if np.any(max_ext > stroke):
+            bad_legs = np.where(max_ext > stroke)[0]
+            violations.append(
+                f"Overextended legs {bad_legs.tolist()}: "
+                f"max extensions {max_ext[bad_legs].tolist()} mm")
 
-    if np.any(peak_accel > accel_limit_rps2):
-        bad_legs = np.where(peak_accel > accel_limit_rps2)[0]
-        violations.append(
-            f"Acceleration limit ({accel_limit_rps2} rev/s^2) exceeded on legs "
-            f"{bad_legs.tolist()}: peak {peak_accel[bad_legs].tolist()} rev/s^2")
+        if np.any(peak_vel > vel_limit_rps):
+            bad_legs = np.where(peak_vel > vel_limit_rps)[0]
+            violations.append(
+                f"Velocity limit ({vel_limit_rps} rev/s) exceeded on legs "
+                f"{bad_legs.tolist()}: peak {peak_vel[bad_legs].tolist()} rev/s")
 
-    if peak_cond > condition_limit:
-        violations.append(
-            f"Jacobian condition number ({peak_cond:.1f}) exceeds limit "
-            f"({condition_limit:.1f})")
+        if np.any(peak_accel > accel_limit_rps2):
+            bad_legs = np.where(peak_accel > accel_limit_rps2)[0]
+            violations.append(
+                f"Acceleration limit ({accel_limit_rps2} rev/s^2) exceeded on legs "
+                f"{bad_legs.tolist()}: peak {peak_accel[bad_legs].tolist()} rev/s^2")
 
-    if torque_limit_Nm is not None and np.any(peak_torque > torque_limit_Nm):
-        bad_legs = np.where(peak_torque > torque_limit_Nm)[0]
-        violations.append(
-            f"Torque limit ({torque_limit_Nm} Nm) exceeded on legs "
-            f"{bad_legs.tolist()}: peak {peak_torque[bad_legs].tolist()} Nm")
+        if peak_cond > condition_limit:
+            violations.append(
+                f"Jacobian condition number ({peak_cond:.1f}) exceeds limit "
+                f"({condition_limit:.1f})")
 
-    if jerk_trans_limit is not None and peak_jerk_t > jerk_trans_limit:
-        violations.append(
-            f"Translational jerk limit ({jerk_trans_limit:.0f} mm/s^3) "
-            f"exceeded: peak {peak_jerk_t:.0f} mm/s^3")
-    if jerk_rot_limit is not None and peak_jerk_r > jerk_rot_limit:
-        violations.append(
-            f"Rotational jerk limit ({jerk_rot_limit:.0f} rad/s^3) "
-            f"exceeded: peak {peak_jerk_r:.0f} rad/s^3")
+        if torque_limit_Nm is not None and np.any(peak_torque > torque_limit_Nm):
+            bad_legs = np.where(peak_torque > torque_limit_Nm)[0]
+            violations.append(
+                f"Torque limit ({torque_limit_Nm} Nm) exceeded on legs "
+                f"{bad_legs.tolist()}: peak {peak_torque[bad_legs].tolist()} Nm")
+
+        if jerk_trans_limit is not None and peak_jerk_t > jerk_trans_limit:
+            violations.append(
+                f"Translational jerk limit ({jerk_trans_limit:.0f} mm/s^3) "
+                f"exceeded: peak {peak_jerk_t:.0f} mm/s^3")
+        if jerk_rot_limit is not None and peak_jerk_r > jerk_rot_limit:
+            violations.append(
+                f"Rotational jerk limit ({jerk_rot_limit:.0f} rad/s^3) "
+                f"exceeded: peak {peak_jerk_r:.0f} rad/s^3")
 
     return FeasibilityResult(
         feasible=len(violations) == 0,
@@ -677,7 +715,8 @@ def find_min_feasible_duration(
         start_pose=start_pose, start_twist=start_twist, start_accel=start_accel,
         end_pose=end_pose, end_twist=end_twist, end_accel=end_accel,
         duration=max_T, speed_scale=speed_scale)
-    result = check_feasibility(traj, geom, dynamics_params, n_samples=n_feas_samples)
+    result = check_feasibility(
+        traj, geom, dynamics_params, n_samples=n_feas_samples, early_exit=True)
     if not result.feasible:
         return None
 
@@ -689,7 +728,7 @@ def find_min_feasible_duration(
             end_pose=end_pose, end_twist=end_twist, end_accel=end_accel,
             duration=mid, speed_scale=speed_scale)
         result = check_feasibility(
-            traj, geom, dynamics_params, n_samples=n_feas_samples)
+            traj, geom, dynamics_params, n_samples=n_feas_samples, early_exit=True)
         if result.feasible:
             hi = mid
         else:
@@ -766,6 +805,21 @@ class TrajectoryManager:
         # duration so the trajectory starts "now" rather than in the past.
         # Set False for offline / unit tests that use synthetic time.
         self.realtime_restamp = False
+
+        # --- Async feasibility pipeline ---
+        # Background thread runs feasibility checks without blocking the
+        # control loop.  Communication via lock-guarded slots.
+        self._async_lock = threading.Lock()
+        self._async_event = threading.Event()        # wakes bg thread
+        self._async_shutdown = threading.Event()      # signals thread exit
+        self._async_generation = 0                    # monotonic counter
+        self._pending_request: dict | None = None     # target params for bg
+        self._pending_result: dict | None = None      # completed check result
+        self._precomputed_return: QuinticTrajectory | None = None  # pre-planned return
+        self._return_generation = 0                   # generation of precomputed return
+        self._bg_thread = threading.Thread(
+            target=self._bg_feasibility_worker, daemon=True, name='feas-bg')
+        self._bg_thread.start()
 
     @property
     def state(self) -> TrajectoryState:
@@ -964,6 +1018,11 @@ class TrajectoryManager:
         # Accept: submit trajectory and flag return-to-home if needed
         self.submit(traj)
         self._pending_return = bool(np.linalg.norm(target_vel) > 1e-6)
+
+        # Pre-compute return-to-home in background if needed
+        if self._pending_return:
+            self._start_return_precompute(traj)
+
         return True
 
     def _get_current_state(
@@ -1092,11 +1151,12 @@ class TrajectoryManager:
 
             # EXECUTING complete
             if self._pending_return:
-                # Non-zero end velocity: plan return to home
-                if self._plan_return_to_home(t_end):
-                    # Successfully planned return — evaluate the return
-                    # trajectory at the current time (which is >= t_end,
-                    # so the return trajectory will start from its t_start)
+                # Check for pre-computed return trajectory (non-blocking)
+                precomputed = self.poll_precomputed_return()
+                if precomputed is not None:
+                    # Restamp t_start to now
+                    ret_traj = _dc_replace(precomputed, t_start=t)
+                    self.submit(ret_traj, is_return=True)
                     pose, twist, accel_cart = evaluate(self._active_traj, t)
                     self._current_pose = pose.copy()
                     return cartesian_to_motor_commands(
@@ -1105,9 +1165,13 @@ class TrajectoryManager:
                         self._feedforward_enabled,
                         self._gravity_correction)
                 else:
-                    # Return planning failed — fall through to COMPLETE
-                    logger.warning(
-                        "Return-to-home planning failed; holding at end pose")
+                    # Pre-computed return not ready yet — hold at end pose
+                    # and wait for next cycle.  Keep _pending_return True
+                    # and stay in EXECUTING so we re-enter this branch.
+                    self.set_hold_pose(end_pose)
+                    return (self._hold_pos_rev.copy(),
+                            np.zeros(6),
+                            self._hold_torque_ff.copy())
 
             # Zero-velocity target or failed return → COMPLETE
             self._state = TrajectoryState.COMPLETE
@@ -1156,3 +1220,316 @@ class TrajectoryManager:
         self._pending_return = False
         self._last_progress = 0.0
         self._last_time_remaining = 0.0
+        # Discard any pending async results
+        with self._async_lock:
+            self._async_generation += 1
+            self._pending_result = None
+            self._precomputed_return = None
+
+    def shutdown(self) -> None:
+        """Shut down the background feasibility thread."""
+        self._async_shutdown.set()
+        self._async_event.set()  # wake thread so it sees shutdown
+        self._bg_thread.join(timeout=2.0)
+
+    # ------------------------------------------------------------------
+    # Async feasibility pipeline
+    # ------------------------------------------------------------------
+
+    def request_dynamic_target(
+        self,
+        target_pos: np.ndarray,
+        target_quat: np.ndarray,
+        target_vel: np.ndarray,
+        arrival_time: float,
+        t_now: float,
+    ) -> None:
+        """Queue a dynamic target for background feasibility checking.
+
+        Non-blocking.  The control loop should call ``poll_pending_result()``
+        each cycle to check for a completed result.
+
+        Parameters
+        ----------
+        target_pos : (3,) ndarray — [x, y, z] in mm
+        target_quat : (4,) ndarray — [w, x, y, z] quaternion
+        target_vel : (3,) ndarray — [vx, vy, vz] in mm/s
+        arrival_time : float — absolute arrival time (perf_counter)
+        t_now : float — current time (perf_counter)
+        """
+        from jugglebot.motion.ik_solver import (
+            quat_to_rot_matrix,
+            rot_matrix_to_rotvec,
+        )
+
+        duration = arrival_time - t_now
+        if duration <= 0:
+            logger.debug("Dynamic target rejected: arrival_time in the past")
+            return
+
+        # Convert quaternion to rotation vector
+        w, x, y, z = target_quat
+        rot_mat = quat_to_rot_matrix(w, x, y, z)
+        rotvec = rot_matrix_to_rotvec(rot_mat)
+
+        target_pose = np.array([
+            target_pos[0], target_pos[1], target_pos[2],
+            rotvec[0], rotvec[1], rotvec[2],
+        ])
+        target_twist = np.array([
+            target_vel[0], target_vel[1], target_vel[2],
+            0.0, 0.0, 0.0,
+        ])
+
+        # Sample current state on the main thread (thread-safe snapshot)
+        cur_pose, cur_twist, cur_accel = self._get_current_state(t_now)
+
+        try:
+            traj = create_trajectory(
+                start_pose=cur_pose,
+                start_twist=cur_twist,
+                start_accel=cur_accel,
+                end_pose=target_pose,
+                end_twist=target_twist,
+                end_accel=np.zeros(6),
+                duration=duration,
+                t_start=t_now,
+            )
+        except ValueError as e:
+            logger.debug(f"Dynamic target rejected: {e}")
+            return
+
+        needs_return = bool(np.linalg.norm(target_vel) > 1e-6)
+
+        with self._async_lock:
+            self._async_generation += 1
+            gen = self._async_generation
+            self._pending_request = {
+                'traj': traj,
+                'needs_return': needs_return,
+                'arrival_time': arrival_time,
+                'generation': gen,
+                't_request': t_now,
+            }
+            self._pending_result = None
+
+        # Wake the background thread
+        self._async_event.set()
+
+    def poll_pending_result(self) -> dict | None:
+        """Check for a completed async feasibility result.
+
+        Non-blocking.  Returns None if no result is ready.
+
+        Returns
+        -------
+        result : dict or None
+            If ready: ``{'accepted': bool, 'traj': QuinticTrajectory,
+            'needs_return': bool, 'generation': int}``
+        """
+        with self._async_lock:
+            result = self._pending_result
+            if result is not None:
+                self._pending_result = None
+            return result
+
+    def commit_async_trajectory(self, result: dict) -> bool:
+        """Commit a trajectory from a completed async feasibility check.
+
+        Re-creates the trajectory from the current state at commit time to
+        eliminate the timing gap between request and commit.
+
+        Parameters
+        ----------
+        result : dict
+            From ``poll_pending_result()``.
+
+        Returns
+        -------
+        accepted : bool
+            True if the trajectory was committed.
+        """
+        with self._async_lock:
+            # Stale result: a newer request has been submitted
+            if result['generation'] != self._async_generation:
+                logger.debug("Async result discarded (stale generation)")
+                return False
+
+        if not result['accepted']:
+            return False
+
+        original_traj = result['traj']
+        arrival_time = result['arrival_time']
+        t_now = _time.perf_counter()
+
+        # Remaining duration to arrival
+        remaining = arrival_time - t_now
+        if remaining <= 0.01:
+            logger.debug("Async commit: arrival_time passed during check")
+            return False
+
+        # Re-sample current state at commit time for accurate splice
+        cur_pose, cur_twist, cur_accel = self._get_current_state(t_now)
+
+        try:
+            traj = create_trajectory(
+                start_pose=cur_pose,
+                start_twist=cur_twist,
+                start_accel=cur_accel,
+                end_pose=original_traj.end_state[:6],
+                end_twist=original_traj.end_state[6:12],
+                end_accel=original_traj.end_state[12:18],
+                duration=remaining,
+                t_start=t_now,
+            )
+        except ValueError as e:
+            logger.debug(f"Async commit trajectory creation failed: {e}")
+            return False
+
+        # Submit the trajectory
+        self.submit(traj)
+        self._pending_return = result['needs_return']
+
+        # Pre-compute return-to-home in background if needed
+        if result['needs_return']:
+            self._start_return_precompute(traj)
+
+        logger.info(
+            f"Async trajectory committed: remaining={remaining:.3f}s, "
+            f"latency={t_now - result['t_request']:.3f}s")
+        return True
+
+    def poll_precomputed_return(self) -> QuinticTrajectory | None:
+        """Check if a pre-computed return-to-home trajectory is available.
+
+        Non-blocking.  Returns None if not ready or not applicable.
+        """
+        with self._async_lock:
+            ret = self._precomputed_return
+            if ret is not None:
+                self._precomputed_return = None
+            return ret
+
+    def _start_return_precompute(self, outbound_traj: QuinticTrajectory) -> None:
+        """Queue background pre-computation of the return-to-home trajectory.
+
+        Called on the main thread after committing an outbound trajectory
+        that has nonzero end velocity.
+        """
+        end_state = outbound_traj.end_state
+        with self._async_lock:
+            self._async_generation += 1
+            gen = self._async_generation
+            self._pending_request = {
+                'return_precompute': True,
+                'start_pose': end_state[:6].copy(),
+                'start_twist': end_state[6:12].copy(),
+                'start_accel': end_state[12:18].copy(),
+                'generation': gen,
+            }
+            self._pending_result = None
+            self._precomputed_return = None
+            self._return_generation = gen
+        self._async_event.set()
+
+    def _bg_feasibility_worker(self) -> None:
+        """Background thread: runs feasibility checks without blocking the
+        control loop.
+        """
+        logger.debug("Background feasibility thread started")
+
+        while not self._async_shutdown.is_set():
+            # Wait for work
+            self._async_event.wait()
+            self._async_event.clear()
+
+            if self._async_shutdown.is_set():
+                break
+
+            # Read the pending request
+            with self._async_lock:
+                request = self._pending_request
+                self._pending_request = None
+
+            if request is None:
+                continue
+
+            if request.get('return_precompute'):
+                self._bg_compute_return(request)
+            else:
+                self._bg_check_feasibility(request)
+
+        logger.debug("Background feasibility thread exiting")
+
+    def _bg_check_feasibility(self, request: dict) -> None:
+        """Background: run feasibility check for a dynamic target."""
+        traj = request['traj']
+        gen = request['generation']
+
+        t_before = _time.perf_counter()
+        result = check_feasibility(
+            traj, self.geom, self.dynamics_params,
+            n_samples=50, early_exit=True)
+        check_elapsed = _time.perf_counter() - t_before
+
+        with self._async_lock:
+            # Discard if a newer request has superseded this one
+            if gen != self._async_generation:
+                return
+            self._pending_result = {
+                'accepted': result.feasible,
+                'traj': traj,
+                'needs_return': request['needs_return'],
+                'arrival_time': request['arrival_time'],
+                'generation': gen,
+                't_request': request['t_request'],
+                'check_elapsed': check_elapsed,
+                'violations': result.violations if not result.feasible else [],
+            }
+
+        if not result.feasible:
+            logger.debug(
+                f"Async feasibility rejected: {'; '.join(result.violations)}")
+
+    def _bg_compute_return(self, request: dict) -> None:
+        """Background: pre-compute return-to-home trajectory."""
+        gen = request['generation']
+        start_pose = request['start_pose']
+        start_twist = request['start_twist']
+        start_accel = request['start_accel']
+
+        duration = find_min_feasible_duration(
+            start_pose=start_pose,
+            start_twist=start_twist,
+            start_accel=start_accel,
+            end_pose=self._home_pose,
+            end_twist=np.zeros(6),
+            end_accel=np.zeros(6),
+            geom=self.geom,
+            dynamics_params=self.dynamics_params,
+        )
+
+        if duration is None:
+            logger.warning("Async return-to-home: no feasible duration found")
+            return
+
+        # Add 20% safety margin
+        duration *= 1.2
+
+        # Use t_start=0 as placeholder; will be restamped on commit
+        traj = create_trajectory(
+            start_pose=start_pose,
+            start_twist=start_twist,
+            start_accel=start_accel,
+            end_pose=self._home_pose,
+            end_twist=np.zeros(6),
+            end_accel=np.zeros(6),
+            duration=duration,
+            t_start=0.0,
+        )
+
+        with self._async_lock:
+            if gen == self._return_generation:
+                self._precomputed_return = traj
+                logger.info(
+                    f"Return-to-home pre-computed: duration={duration:.3f}s")

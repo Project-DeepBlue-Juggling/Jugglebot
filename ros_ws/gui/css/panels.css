@@ -50,6 +50,105 @@
     text-align: center;
 }
 
+/* ---- Jog panel ---- */
+.jog-sliders {
+    display: flex;
+    flex-direction: column;
+    gap: var(--gap-xs);
+    margin-bottom: var(--gap-sm);
+}
+
+.jog-slider-row {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: center;
+    gap: var(--gap-sm);
+}
+
+.jog-slider-label {
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+    text-transform: uppercase;
+    white-space: nowrap;
+    min-width: 72px;
+}
+
+.jog-range {
+    width: 100%;
+    accent-color: var(--accent-blue);
+    cursor: pointer;
+}
+
+.jog-step-value {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary);
+    min-width: 48px;
+    text-align: right;
+}
+
+.jog-buttons {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: var(--gap-xs);
+    margin-bottom: var(--gap-sm);
+}
+
+.jog-btn {
+    padding: 6px 4px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-sm);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    font-weight: 600;
+    cursor: pointer;
+    transition: background var(--transition-fast), border-color var(--transition-fast);
+    user-select: none;
+    text-align: center;
+}
+
+.jog-btn:hover {
+    background: var(--bg-card-hover);
+    border-color: var(--accent-blue);
+}
+
+.jog-btn:active {
+    background: var(--accent-blue);
+    color: #fff;
+    transform: scale(0.95);
+}
+
+.jog-home-btn {
+    padding: 2px 8px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-sm);
+    background: var(--bg-primary);
+    color: var(--text-secondary);
+    font-family: var(--font-sans);
+    font-size: var(--font-size-xs);
+    cursor: pointer;
+    transition: background var(--transition-fast);
+}
+
+.jog-home-btn:hover {
+    background: var(--bg-card-hover);
+    color: var(--text-primary);
+}
+
+.jog-readout {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: var(--gap-xs);
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+    text-align: center;
+    padding-top: var(--gap-xs);
+    border-top: 1px solid var(--border-color);
+}
+
 /* ---- Motor status grid ---- */
 .motor-grid {
     display: grid;

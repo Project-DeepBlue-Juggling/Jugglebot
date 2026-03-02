@@ -252,19 +252,22 @@ class ControlLoop:
             # 1. Read all pending IPC messages
             self._process_ipc()
 
-            # 2. Check IPC heartbeat
+            # 2. Poll async feasibility results
+            self._poll_async_result()
+
+            # 3. Check IPC heartbeat
             self._check_heartbeat()
 
-            # 3. Compute control output + workspace checks
+            # 4. Compute control output + workspace checks
             self._compute()
 
-            # 4. Publish telemetry
+            # 5. Publish telemetry
             self._publish_telemetry(dt_actual)
 
-            # 5. Periodic logging
+            # 6. Periodic logging
             self._periodic_log(t_start)
 
-            # 6. Sleep for remainder of cycle
+            # 7. Sleep for remainder of cycle
             elapsed = time.perf_counter() - t_start
             sleep_time = self.dt_target - elapsed
             if sleep_time > 0:
@@ -375,9 +378,10 @@ class ControlLoop:
     def _on_dynamic_target(self, msg: dict) -> None:
         """Handle a dynamic target command.
 
-        Delegates to TrajectoryManager.submit_dynamic_target() which
-        automatically samples current state, checks feasibility, and
-        accepts or rejects the target.
+        Queues the target for background feasibility checking via the
+        async pipeline.  The control loop continues sending motor commands
+        for the current trajectory while the check runs.  Results are
+        picked up on the next cycle via ``_poll_async_result()``.
         """
         target_pos = np.array(msg['target_pos'])
         target_quat = np.array(msg['target_quat'])
@@ -385,19 +389,16 @@ class ControlLoop:
         arrival_time = msg['arrival_time']
 
         t_now = time.perf_counter()
-        accepted = self._traj_manager.submit_dynamic_target(
+        self._traj_manager.request_dynamic_target(
             target_pos=target_pos,
             target_quat=target_quat,
             target_vel=target_vel,
             arrival_time=arrival_time,
             t_now=t_now,
         )
-        if accepted:
-            logger.info(
-                f"Dynamic target accepted: pos={target_pos.tolist()}, "
-                f"vel_norm={np.linalg.norm(target_vel):.1f} mm/s")
-        else:
-            logger.debug("Dynamic target rejected (infeasible)")
+        logger.debug(
+            f"Dynamic target queued for async check: pos={target_pos.tolist()}, "
+            f"vel_norm={np.linalg.norm(target_vel):.1f} mm/s")
 
     def _on_motor_feedback(self, msg: dict) -> None:
         """Handle motor feedback from the CAN node (via bridge)."""
@@ -421,6 +422,33 @@ class ControlLoop:
                 logger.warning(
                     f"IPC heartbeat lost ({self.ipc.seconds_since_last_recv:.1f}s "
                     f"since last message) -- E-STOP")
+
+    # ------------------------------------------------------------------
+    # Async feasibility result polling
+    # ------------------------------------------------------------------
+
+    def _poll_async_result(self) -> None:
+        """Check for completed async feasibility results and commit them.
+
+        Non-blocking.  Called once per control cycle.
+        """
+        if self.mode != ControlMode.ENABLED:
+            return
+
+        result = self._traj_manager.poll_pending_result()
+        if result is None:
+            return
+
+        if result['accepted']:
+            accepted = self._traj_manager.commit_async_trajectory(result)
+            if accepted:
+                logger.info("Async dynamic target committed")
+            else:
+                logger.debug("Async dynamic target commit failed (stale/expired)")
+        else:
+            logger.debug(
+                f"Async dynamic target rejected: "
+                f"{'; '.join(result.get('violations', []))}")
 
     # ------------------------------------------------------------------
     # Control computation
@@ -649,6 +677,7 @@ def main():
     try:
         loop.run()
     finally:
+        loop._traj_manager.shutdown()
         loop.ipc.close()
         logger.info(f"Final loop timing: {loop.stats.summary()}")
 

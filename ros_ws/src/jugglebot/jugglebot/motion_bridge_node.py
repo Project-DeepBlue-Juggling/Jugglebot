@@ -108,7 +108,7 @@ class MotionBridgeNode(Node):
         prev = self._current_control_mode
         self._current_control_mode = mode
 
-        if mode in ('SPACEMOUSE', 'SHELL', 'LEVELLING'):
+        if mode in ('SPACEMOUSE', 'SHELL', 'LEVELLING', 'GUI'):
             self._active_publisher = mode
             if prev != mode:
                 cmd = make_mode_command('enable')
