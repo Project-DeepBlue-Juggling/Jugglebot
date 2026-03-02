@@ -162,11 +162,15 @@ class OrchestratorNode(Node):
             self._control_mode_pub.publish(String(data=self.ctx.control_mode))
             self._last_control_mode = self.ctx.control_mode
 
-        # 6. Publish current state for monitoring
+        # 6. Publish current state for monitoring (includes sub-mode for ACTIVE)
         state_name = self.sm.state.name
-        if state_name != self._last_published_state:
-            self._state_pub.publish(String(data=state_name))
-            self._last_published_state = state_name
+        if self.sm.state == RobotState.ACTIVE and self.ctx.active_mode:
+            state_str = f'{state_name}:{self.ctx.active_mode.value}'
+        else:
+            state_str = state_name
+        if state_str != self._last_published_state:
+            self._state_pub.publish(String(data=state_str))
+            self._last_published_state = state_str
 
         # 7. Push persisted gravity offset on first IDLE entry after boot
         current = self.sm.state

@@ -233,6 +233,11 @@ function onOrchestratorState(msg) {
     receivedOrchestratorState = true;
     updateOrchestratorState(msg.data);
     updateCommandStates();
+
+    // Show/hide jog panel based on sub-mode (backup for control_mode_topic)
+    const parts = msg.data.split(':');
+    const sub = (parts[1] || '').toUpperCase();
+    setJogPanelVisible(sub === 'GUI');
 }
 
 function onCANTraffic(msg) {
