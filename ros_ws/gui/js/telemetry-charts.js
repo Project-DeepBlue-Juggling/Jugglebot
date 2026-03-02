@@ -389,6 +389,11 @@ function rebuildAllCharts() {
     repaintAllCharts();
 }
 
+/** Public entry point for triggering a chart rebuild (e.g. after un-collapsing). */
+export function rebuildCharts() {
+    rebuildAllCharts();
+}
+
 function resizeAllCharts() {
     let anyMissing = false;
     for (let i = 0; i < MOTOR_COUNT; i++) {

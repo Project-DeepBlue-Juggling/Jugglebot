@@ -24,7 +24,7 @@ import {
 } from './panels.js';
 import { initCommands, updateCommandStates } from './commands.js';
 import { INITIAL_HEIGHT_MM, MM_TO_REV } from './geometry-config.js';
-import { initTelemetryCharts, onTelemetryData } from './telemetry-charts.js';
+import { initTelemetryCharts, onTelemetryData, rebuildCharts } from './telemetry-charts.js';
 
 // ---- Latest data stores ----
 let latestMotorStates = null;
@@ -419,6 +419,10 @@ function initChartResizeHandle() {
             const isCollapsed = panel.classList.toggle('collapsed');
             if (chevron) chevron.classList.toggle('collapsed', isCollapsed);
             localStorage.setItem(CHART_COLLAPSED_STORAGE_KEY, isCollapsed);
+            // Rebuild charts after un-collapsing (layout needs a frame to settle)
+            if (!isCollapsed) {
+                requestAnimationFrame(() => rebuildCharts());
+            }
         });
     });
 
