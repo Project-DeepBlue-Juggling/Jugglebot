@@ -28,11 +28,6 @@ class CORSHandler(http.server.SimpleHTTPRequestHandler):
             return "application/javascript"
         if path.endswith(".mjs"):
             return "application/javascript"
-        # glTF binary format
-        if path.endswith(".glb"):
-            return "model/gltf-binary"
-        if path.endswith(".gltf"):
-            return "model/gltf+json"
         return super().guess_type(path)
 
 
