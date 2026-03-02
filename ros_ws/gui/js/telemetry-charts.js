@@ -474,6 +474,7 @@ function repaintAllCharts() {
     for (let i = 0; i < MOTOR_COUNT; i++) {
         if (!charts[i] || !stores[i]) continue;
         const data = stores[i].getAlignedData(signalKeys, windowStart);
+        charts[i].setScale('x', { min: windowStart, max: now });
         charts[i].setData(data, false);
     }
 }
