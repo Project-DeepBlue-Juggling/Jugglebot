@@ -81,6 +81,11 @@
     cursor: pointer;
 }
 
+#chart-pause-btn {
+    font-weight: 600;
+    min-width: 52px;
+}
+
 /* ---- 3x3 chart grid ---- */
 #chart-grid {
     display: grid;

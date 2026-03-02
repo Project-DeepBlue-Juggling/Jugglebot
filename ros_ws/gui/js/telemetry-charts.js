@@ -64,6 +64,11 @@ const stores = [];
 const charts = [];
 /** Whether a rAF repaint is already scheduled */
 let pendingRepaint = false;
+/** Whether chart updates are paused (data still accumulates) */
+let paused = false;
+/** Frozen window edges while paused */
+let pausedWindowStart = 0;
+let pausedWindowEnd = 0;
 /** Cursor sync key shared by all charts */
 const SYNC_KEY = 'telemetry';
 
@@ -148,6 +153,7 @@ export function initTelemetryCharts() {
     createStores();
     initSignalToggles();
     initTimeWindowSelector();
+    initPauseButton();
     addChartTitles();
     buildAllCharts();
 
@@ -267,6 +273,42 @@ function initTimeWindowSelector() {
         }
         rebuildAllCharts();
     });
+}
+
+// ---- Pause button ----
+
+function initPauseButton() {
+    const container = document.getElementById('chart-time-window');
+    if (!container) return;
+
+    const btn = document.createElement('button');
+    btn.id = 'chart-pause-btn';
+    btn.className = 'signal-toggle';
+    btn.textContent = 'Pause';
+    btn.title = 'Pause/resume chart updates';
+
+    btn.addEventListener('click', () => {
+        paused = !paused;
+        if (paused) {
+            const now = Date.now() / 1000;
+            pausedWindowStart = now - currentWindowSec;
+            pausedWindowEnd = now;
+            btn.textContent = 'Resume';
+            btn.classList.add('active');
+            btn.style.setProperty('--signal-color', '#f59e0b');
+        } else {
+            btn.textContent = 'Pause';
+            btn.classList.remove('active');
+            btn.style.removeProperty('--signal-color');
+            // Snap to live — trigger immediate repaint
+            if (!pendingRepaint) {
+                pendingRepaint = true;
+                requestAnimationFrame(repaintAllCharts);
+            }
+        }
+    });
+
+    container.insertBefore(btn, container.firstChild);
 }
 
 // ---- uPlot chart management ----
@@ -460,9 +502,10 @@ export function onTelemetryData(motorStates, commandedLegs, handTelemetry) {
 function repaintAllCharts() {
     pendingRepaint = false;
 
-    // Skip repaint if panel is collapsed
+    // Skip repaint if panel is collapsed or paused
     const panel = document.getElementById('chart-panel');
     if (panel && panel.classList.contains('collapsed')) return;
+    if (paused) return;
 
     const signalList = getActiveSignalList();
     if (signalList.length === 0) return;
