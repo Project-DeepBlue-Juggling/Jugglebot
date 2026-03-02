@@ -203,6 +203,7 @@ class ControlLoop:
 
         # Trajectory manager (Phase 4)
         self._traj_manager = TrajectoryManager(self.geom, self._dynamics_params)
+        self._traj_manager.realtime_restamp = True
 
         # Workspace limits (Phase 6) — precomputed from geometry
         self._workspace_limits = WorkspaceLimits.from_geometry(self.geom)

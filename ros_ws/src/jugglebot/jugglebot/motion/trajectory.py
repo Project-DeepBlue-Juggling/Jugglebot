@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import enum
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as _dc_replace
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -761,6 +761,12 @@ class TrajectoryManager:
         self._last_time_remaining = 0.0
         self._current_pose = np.zeros(6)  # latest evaluated [x,y,z,rx,ry,rz]
 
+        # When True, expensive operations (feasibility checks, binary
+        # search) automatically shift t_start forward by their wall-clock
+        # duration so the trajectory starts "now" rather than in the past.
+        # Set False for offline / unit tests that use synthetic time.
+        self.realtime_restamp = False
+
     @property
     def state(self) -> TrajectoryState:
         return self._state
@@ -839,6 +845,21 @@ class TrajectoryManager:
             f"Trajectory submitted ({'return' if is_return else 'target'}): "
             f"duration={traj.duration:.3f}s, "
             f"speed_scale={traj.speed_scale:.2f}")
+
+    def restamp_active_trajectory(self, elapsed: float) -> None:
+        """Shift the active trajectory's t_start forward by *elapsed* seconds.
+
+        Call this after ``submit_dynamic_target()`` (or any operation that
+        blocks the control loop) to compensate for wall-clock time consumed
+        by the feasibility check.  The polynomial uses normalised time, so
+        only the absolute time anchor changes — the trajectory shape is
+        unaffected.
+        """
+        if self._active_traj is not None and elapsed > 0:
+            self._active_traj = _dc_replace(
+                self._active_traj,
+                t_start=self._active_traj.t_start + elapsed,
+            )
 
     def submit_dynamic_target(
         self,
@@ -921,14 +942,24 @@ class TrajectoryManager:
             logger.debug(f"Dynamic target rejected: {e}")
             return False
 
-        # Feasibility check (reduced samples for inline speed)
+        # Feasibility check (reduced samples for inline speed).
+        # This is the expensive step (~250ms on Jetson with 50 samples).
+        import time as _time
+        t_before = _time.perf_counter()
         result = check_feasibility(
             traj, self.geom, self.dynamics_params, n_samples=50)
+        check_elapsed = _time.perf_counter() - t_before
         if not result.feasible:
             logger.debug(
                 f"Dynamic target rejected (infeasible): "
                 f"{'; '.join(result.violations)}")
             return False
+
+        # When running in real-time, shift t_start forward by the time
+        # consumed by the feasibility check so the trajectory starts "now"
+        # rather than ~250ms in the past.
+        if self.realtime_restamp:
+            traj = _dc_replace(traj, t_start=traj.t_start + check_elapsed)
 
         # Accept: submit trajectory and flag return-to-home if needed
         self.submit(traj)
@@ -976,7 +1007,10 @@ class TrajectoryManager:
         twist = e[6:12].copy()
         accel = e[12:18].copy()
 
-        # Find the minimum feasible duration for the return
+        # Find the minimum feasible duration for the return.
+        # This is expensive (~2s on Jetson: 8 bisections × 50 samples).
+        import time as _time
+        t_before = _time.perf_counter()
         duration = find_min_feasible_duration(
             start_pose=pose,
             start_twist=twist,
@@ -987,6 +1021,7 @@ class TrajectoryManager:
             geom=self.geom,
             dynamics_params=self.dynamics_params,
         )
+        search_elapsed = _time.perf_counter() - t_before
         if duration is None:
             logger.warning(
                 "Return-to-home infeasible: no feasible duration found "
@@ -996,6 +1031,10 @@ class TrajectoryManager:
         # Add 20% safety margin
         duration *= 1.2
 
+        # Shift t_start forward when running in real-time (same as
+        # submit_dynamic_target) so the return trajectory starts "now".
+        t_start = t_end + (search_elapsed if self.realtime_restamp else 0.0)
+
         traj = create_trajectory(
             start_pose=pose,
             start_twist=twist,
@@ -1004,7 +1043,7 @@ class TrajectoryManager:
             end_twist=np.zeros(6),
             end_accel=np.zeros(6),
             duration=duration,
-            t_start=t_end,  # seamless continuation
+            t_start=t_start,
         )
         self.submit(traj, is_return=True)
         logger.info(f"Return-to-home planned: duration={duration:.3f}s")

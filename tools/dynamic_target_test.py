@@ -916,6 +916,7 @@ def test_static_target(
     params = DynamicsParams.from_config()
     limits = WorkspaceLimits.from_geometry(geom)
     mgr = TrajectoryManager(geom, params)
+    mgr.realtime_restamp = True
     mgr.set_hold_pose(mgr.home_pose)
 
     threshold = get_tracking_threshold(speed_scale)
@@ -981,6 +982,7 @@ def test_auto_return(
     params = DynamicsParams.from_config()
     limits = WorkspaceLimits.from_geometry(geom)
     mgr = TrajectoryManager(geom, params)
+    mgr.realtime_restamp = True
     mgr.set_hold_pose(mgr.home_pose)
 
     threshold = get_tracking_threshold(speed_scale)
@@ -1057,6 +1059,7 @@ def test_replan(
     params = DynamicsParams.from_config()
     limits = WorkspaceLimits.from_geometry(geom)
     mgr = TrajectoryManager(geom, params)
+    mgr.realtime_restamp = True
     mgr.set_hold_pose(mgr.home_pose)
 
     threshold = get_tracking_threshold(speed_scale)
@@ -1134,6 +1137,7 @@ def test_rapid_targets(
     params = DynamicsParams.from_config()
     limits = WorkspaceLimits.from_geometry(geom)
     mgr = TrajectoryManager(geom, params)
+    mgr.realtime_restamp = True
     mgr.set_hold_pose(mgr.home_pose)
 
     # Generate a series of small targets at 2 Hz
@@ -1198,6 +1202,7 @@ def test_infeasible_ignored(
     params = DynamicsParams.from_config()
     limits = WorkspaceLimits.from_geometry(geom)
     mgr = TrajectoryManager(geom, params)
+    mgr.realtime_restamp = True
     mgr.set_hold_pose(mgr.home_pose)
 
     threshold = get_tracking_threshold(speed_scale)
