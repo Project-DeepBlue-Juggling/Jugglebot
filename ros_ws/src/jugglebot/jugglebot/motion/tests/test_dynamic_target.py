@@ -724,14 +724,15 @@ def test_long_duration_target():
 # ---------------------------------------------------------------------------
 
 def test_return_junction_continuity():
-    """Verify C2 continuity at the EXECUTING -> RETURNING junction.
+    """Verify the return trajectory starts from the hold state.
 
-    When the outbound trajectory has non-zero end velocity, the return-
-    to-home trajectory must start from that exact velocity.  The async
-    pipeline pre-computes the return trajectory from the outbound's
-    end_state, preserving continuity.
+    When the outbound trajectory completes, the platform holds at end
+    pose with zero velocity while the async return precompute finishes.
+    The return trajectory is re-created from the hold state (end_pose,
+    zero twist, zero accel) using the precomputed duration, ensuring
+    no velocity discontinuity with the actual platform state.
     """
-    _header("Test 14: Return junction C2 continuity")
+    _header("Test 14: Return junction continuity (from hold state)")
 
     geom = StewartGeometry()
     params = DynamicsParams.from_config()
@@ -750,9 +751,9 @@ def test_return_junction_continuity():
     )
     assert accepted, "Target should be accepted"
 
-    # Save the outbound trajectory's end state BEFORE triggering return
+    # Save the outbound trajectory's end pose
     outbound_traj = mgr._active_traj
-    outbound_end = outbound_traj.end_state.copy()  # (18,)
+    outbound_end_pose = outbound_traj.end_state[:6].copy()
 
     # Wait for background return precompute, then evaluate past end
     import time as _time
@@ -768,33 +769,34 @@ def test_return_junction_continuity():
     assert mgr.state == TrajectoryState.RETURNING, \
         f"Expected RETURNING, got {mgr.state}"
 
-    # The return trajectory should start from the outbound's exact end state
+    # The return trajectory should start from the hold state:
+    # same position as outbound end, but zero velocity and acceleration
     return_traj = mgr._active_traj
     return_start = return_traj.start_state  # (18,)
 
-    # Check C2 continuity at the junction
-    pos_err = norm(return_start[:6] - outbound_end[:6])
-    vel_err = norm(return_start[6:12] - outbound_end[6:12])
-    accel_err = norm(return_start[12:18] - outbound_end[12:18])
+    pos_err = norm(return_start[:6] - outbound_end_pose)
+    vel_mag = norm(return_start[6:12])
+    accel_mag = norm(return_start[12:18])
 
-    print(f"  Outbound end twist:  {outbound_end[6:12].tolist()}")
+    print(f"  Return start pose:   {return_start[:6].tolist()}")
+    print(f"  Outbound end pose:   {outbound_end_pose.tolist()}")
     print(f"  Return start twist:  {return_start[6:12].tolist()}")
     print(f"  Position error:      {pos_err:.8f} mm")
-    print(f"  Velocity error:      {vel_err:.8f} mm/s")
-    print(f"  Acceleration error:  {accel_err:.8f} mm/s^2")
+    print(f"  Velocity magnitude:  {vel_mag:.8f} mm/s")
+    print(f"  Accel magnitude:     {accel_mag:.8f} mm/s^2")
 
-    assert vel_err < 1e-6, \
-        f"Velocity discontinuity at return junction: {vel_err:.6f} mm/s"
     assert pos_err < 1e-6, \
-        f"Position discontinuity at return junction: {pos_err:.6f} mm"
-    assert accel_err < 1e-2, \
-        f"Acceleration discontinuity at return junction: {accel_err:.4f} mm/s^2"
+        f"Position mismatch at return start: {pos_err:.6f} mm"
+    assert vel_mag < 1e-6, \
+        f"Return should start from rest, got velocity {vel_mag:.6f} mm/s"
+    assert accel_mag < 1e-6, \
+        f"Return should start from rest, got accel {accel_mag:.6f} mm/s^2"
 
     # Also verify the return trajectory's end twist is zero (rest at home)
     assert norm(return_traj.end_state[6:12]) < 1e-10, \
         "Return trajectory should end at rest"
 
-    print("  PASS: C2 continuity at EXECUTING -> RETURNING junction")
+    print("  PASS: Return starts from hold state (zero vel/accel)")
 
 
 # ---------------------------------------------------------------------------

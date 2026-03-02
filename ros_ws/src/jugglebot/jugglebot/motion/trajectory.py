@@ -1154,8 +1154,22 @@ class TrajectoryManager:
                 # Check for pre-computed return trajectory (non-blocking)
                 precomputed = self.poll_precomputed_return()
                 if precomputed is not None:
-                    # Restamp t_start to now
-                    ret_traj = _dc_replace(precomputed, t_start=t)
+                    # Re-create the return trajectory from current state.
+                    # The precomputed duration is valid (found via binary
+                    # search + 20% margin), but the start conditions may
+                    # be stale: if we held at end_pose for several cycles
+                    # waiting for precomputation, the platform is now
+                    # stationary — not at the outbound's end velocity.
+                    ret_traj = create_trajectory(
+                        start_pose=end_pose,
+                        start_twist=np.zeros(6),
+                        start_accel=np.zeros(6),
+                        end_pose=self._home_pose,
+                        end_twist=np.zeros(6),
+                        end_accel=np.zeros(6),
+                        duration=precomputed.duration,
+                        t_start=t,
+                    )
                     self.submit(ret_traj, is_return=True)
                     pose, twist, accel_cart = evaluate(self._active_traj, t)
                     self._current_pose = pose.copy()
