@@ -24,6 +24,7 @@ import {
 } from './panels.js';
 import { initCommands, updateCommandStates } from './commands.js';
 import { INITIAL_HEIGHT_MM, MM_TO_REV } from './geometry-config.js';
+import { initTelemetryCharts, onTelemetryData } from './telemetry-charts.js';
 
 // ---- Latest data stores ----
 let latestMotorStates = null;
@@ -51,16 +52,20 @@ function init() {
 
     // 5. Init resize handle + font size
     initResizeHandle();
+    initChartResizeHandle();
     initFontSize();
 
-    // 6. Init ROS connection
+    // 6. Init telemetry charts
+    initTelemetryCharts();
+
+    // 7. Init ROS connection
     ros.onConnectionStateChange(onConnectionStateChange);
     ros.init();
 
-    // 7. Subscribe to topics
+    // 8. Subscribe to topics
     subscribeAll();
 
-    // 8. Start topic monitor timers
+    // 9. Start topic monitor timers
     setInterval(updateTopicMonitor, 1000);
 }
 
@@ -130,6 +135,9 @@ function onRobotState(msg) {
     updateMotorGrid(motors);
     updateFlags(msg);
     updateLevellingPanel(msg);
+
+    // Feed telemetry charts
+    onTelemetryData(motors, latestCommandedLegs, latestHandTelemetry);
 
     // Infer orchestrator state from robot_state flags when no explicit
     // orchestrator_state message has been received yet. This handles the
@@ -372,6 +380,82 @@ function initResizeHandle() {
     handle.addEventListener('pointerdown', onPointerDown);
     document.addEventListener('pointermove', onPointerMove);
     document.addEventListener('pointerup', onPointerUp);
+}
+
+// ---- Chart panel resize handle ----
+
+const CHART_HEIGHT_MIN = 150;
+const CHART_HEIGHT_MAX_PCT = 0.6;
+const CHART_HEIGHT_STORAGE_KEY = 'jugglebot-chart-height';
+const CHART_COLLAPSED_STORAGE_KEY = 'jugglebot-chart-collapsed';
+
+function initChartResizeHandle() {
+    const handle = document.getElementById('chart-resize-handle');
+    const panel = document.getElementById('chart-panel');
+    const app = document.getElementById('app');
+    const chevron = document.getElementById('chart-toggle-chevron');
+    if (!handle || !panel || !app) return;
+
+    // Restore saved state
+    const savedCollapsed = localStorage.getItem(CHART_COLLAPSED_STORAGE_KEY);
+    if (savedCollapsed === 'true') {
+        panel.classList.add('collapsed');
+        if (chevron) chevron.classList.add('collapsed');
+    } else {
+        const savedHeight = localStorage.getItem(CHART_HEIGHT_STORAGE_KEY);
+        if (savedHeight) {
+            const h = parseInt(savedHeight, 10);
+            if (h >= CHART_HEIGHT_MIN) {
+                app.style.setProperty('--chart-panel-height', h + 'px');
+            }
+        }
+    }
+
+    // Click on label/chevron toggles collapse
+    const labelEl = document.getElementById('chart-toggle-label');
+    [labelEl, chevron].forEach(el => {
+        if (el) el.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const isCollapsed = panel.classList.toggle('collapsed');
+            if (chevron) chevron.classList.toggle('collapsed', isCollapsed);
+            localStorage.setItem(CHART_COLLAPSED_STORAGE_KEY, isCollapsed);
+        });
+    });
+
+    // Drag to resize
+    let dragging = false;
+
+    handle.addEventListener('pointerdown', (e) => {
+        // Don't start drag on label/chevron click
+        if (e.target === labelEl || e.target === chevron) return;
+        dragging = true;
+        handle.classList.add('active');
+        handle.setPointerCapture(e.pointerId);
+        document.body.style.cursor = 'row-resize';
+        document.body.style.userSelect = 'none';
+        e.preventDefault();
+    });
+
+    document.addEventListener('pointermove', (e) => {
+        if (!dragging) return;
+        const maxHeight = Math.floor(window.innerHeight * CHART_HEIGHT_MAX_PCT);
+        let newHeight = window.innerHeight - e.clientY;
+        newHeight = Math.max(CHART_HEIGHT_MIN, Math.min(maxHeight, newHeight));
+        app.style.setProperty('--chart-panel-height', newHeight + 'px');
+        panel.classList.remove('collapsed');
+        if (chevron) chevron.classList.remove('collapsed');
+    });
+
+    document.addEventListener('pointerup', () => {
+        if (!dragging) return;
+        dragging = false;
+        handle.classList.remove('active');
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        const current = getComputedStyle(app).getPropertyValue('--chart-panel-height').trim();
+        localStorage.setItem(CHART_HEIGHT_STORAGE_KEY, parseInt(current, 10));
+        localStorage.setItem(CHART_COLLAPSED_STORAGE_KEY, 'false');
+    });
 }
 
 // ---- Font size control ----
