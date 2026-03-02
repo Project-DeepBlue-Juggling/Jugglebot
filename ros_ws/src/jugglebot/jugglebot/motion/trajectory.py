@@ -966,9 +966,15 @@ class TrajectoryManager:
         success : bool
             True if a feasible return trajectory was planned.
         """
-        # Evaluate the ending trajectory at its exact end time to get
-        # the precise state at the splice point
-        pose, twist, accel = evaluate(self._active_traj, t_end)
+        # Read end state directly rather than calling evaluate(), which
+        # clamps twist/accel to zero past t_end (hold behaviour).
+        # The return trajectory must start from the actual end velocity
+        # for C2 continuity.  (Same pattern as check_sequence_continuity
+        # in dynamic_target_test.py lines 187-191.)
+        e = self._active_traj.end_state
+        pose = e[:6].copy()
+        twist = e[6:12].copy()
+        accel = e[12:18].copy()
 
         # Find the minimum feasible duration for the return
         duration = find_min_feasible_duration(
