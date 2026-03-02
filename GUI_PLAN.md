@@ -23,7 +23,8 @@ The approach: **rewrite the GUI in-place** using the same technology stack (stat
         ├─→ stewart-fk.js ─→ stewart-model.js ─→ viewer.js (Three.js render loop)
         ├─→ ball-butler-model.js ─────────────────┘
         ├─→ panels.js ─→ DOM status panels (right sidebar)
-        └─→ commands.js ─→ publishes to orchestrator_command
+        ├─→ commands.js ─→ publishes to orchestrator_command
+        └─→ telemetry-charts.js ─→ uPlot 3x3 chart grid (bottom panel)
 ```
 
 **Key design decisions:**
@@ -47,8 +48,9 @@ ros_ws/gui/
     theme.css                 # Dark theme variables, base typography, grid layout
     panels.css                # Status card styles, motor grid, badges
     viewer.css                # 3D container, command overlay, connection indicator
+    charts.css                # Telemetry chart panel: toolbar, signal toggles, 3x3 grid, uPlot overrides
   js/
-    main.js                   # Entry: init ROS, viewer, panels, wire callbacks
+    main.js                   # Entry: init ROS, viewer, panels, wire callbacks, chart resize handle
     ros-bridge.js             # ROSLIB connection with auto-reconnect, topic subs, throttling
     geometry-config.js        # Hardcoded constants from hardware_config.yaml
     stewart-fk.js             # FK solver + rotation utilities (port from ik_solver.py)
@@ -57,6 +59,7 @@ ros_ws/gui/
     ball-butler-model.js      # Ball Butler 3D geometry (yaw/pitch/hand line art)
     panels.js                 # Right sidebar panel creation + data update functions
     commands.js               # Command button handlers → orchestrator_command topic
+    telemetry-charts.js       # Live time-series charts: signal defs, data stores, uPlot management
   lib/
     roslib.min.js             # Keep existing local copy
 ```
@@ -190,6 +193,56 @@ The sidebar width is adjustable via a draggable handle between the 3D viewer and
 ### 10. Font Size Control
 A-/A+ buttons at the top of the sidebar scale all panel text proportionally (10px–22px, default 14px). Uses root `font-size` on `<html>` — all CSS uses `rem` units, so everything scales. Persisted to `localStorage`.
 
+### 11. Telemetry Charts (bottom panel, `telemetry-charts.js`)
+
+Live time-series charts for all 9 ODrive-driven motors. Collapsible bottom panel with a 3x3 grid of synchronized uPlot charts.
+
+**Layout**: Full-width panel below the viewer and sidebar (grid row 3), separated by a draggable horizontal resize handle (row 2).
+
+```
+Row 1: [3D Viewer | resize-handle | Sidebar]     ← existing
+Row 2: [====== horizontal resize handle ======]   ← chart toggle/resize
+Row 3: [=========== chart panel ==============]   ← 3x3 chart grid
+```
+
+**3x3 chart grid** (column-major order to match motor numbering):
+
+```
+| L0       | L3       | Hand     |
+| L1       | L4       | BB Pitch |
+| L2       | L5       | BB Hand  |
+```
+
+**Charting library**: uPlot (~35KB, MIT, loaded via CDN as global IIFE script — same pattern as ROSLIB).
+
+**Signals** (9 toggleable, persistent to localStorage):
+
+| Signal | Color | Style | Unit | Y-Axis Group |
+|--------|-------|-------|------|---------------|
+| Position (measured) | `#3b82f6` (blue) | solid | rev | position |
+| Position (commanded) | `#60a5fa` (light blue) | dashed | rev | position |
+| Velocity | `#22c55e` (green) | solid | rev/s | velocity |
+| Current (setpoint) | `#f59e0b` (amber) | solid | A | current |
+| Current (measured) | `#fbbf24` (light amber) | dashed | A | current |
+| FET Temperature | `#ef4444` (red) | solid | °C | temperature |
+| Motor Temperature | `#f87171` (light red) | solid | °C | temperature |
+| Bus Voltage | `#a78bfa` (purple) | solid | V | voltage |
+| Bus Current | `#c084fc` (light purple) | solid | A | bus_current |
+
+Signals sharing a Y-axis group share a single axis. Axes alternate left/right as groups are added.
+
+**Data flow**: `robot_state` (20Hz) → `onRobotState()` → `onTelemetryData(motors, cmdLegs, handTelem)` → per-motor `ChartDataStore.push()` → `requestAnimationFrame(repaintAllCharts)`. Data is always buffered even when the panel is collapsed — charts have history immediately when expanded.
+
+**Data store**: `ChartDataStore` uses `Float64Array` columns with `copyWithin` for ring buffer shift (zero GC pressure). `getAlignedData()` uses binary search + `subarray()` for zero-allocation reads.
+
+**Time window**: Configurable via dropdown (5s/10s/30s/60s), default 10s. Persisted to localStorage.
+
+**Cursor sync**: All 9 charts share `cursor.sync.key: 'telemetry'` — hovering one chart shows crosshair on all 9.
+
+**Resize handle**: Click "Charts ▼" label to collapse/expand. Drag to resize height (clamped to 150px–60% viewport). Height and collapsed state persist to localStorage.
+
+**localStorage keys**: `jugglebot-chart-height`, `jugglebot-chart-collapsed`, `jugglebot-chart-signals`, `jugglebot-chart-window`.
+
 ---
 
 ## Command Overlay (`commands.js`)
@@ -260,6 +313,19 @@ Context-sensitive enable/disable based on last received `orchestrator_state`.
 2. [x] Browser FK test suite: `ros_ws/gui/test_fk.html` — tests rotation math, IK/FK roundtrips, warm-start, motor rev conversion
 3. [x] Mocap-driven 3D pose fully implemented — quaternion → rotation matrix → platform node positions
 
+### Phase I — Telemetry Charts — DONE (2026-03-02)
+1. [x] Create `css/charts.css` — chart panel styles: toolbar, signal toggle buttons, 3x3 grid, chart cell titles, uPlot dark-theme overrides
+2. [x] Create `js/telemetry-charts.js` — signal definitions, `ChartDataStore` ring buffer, uPlot chart management, rAF-batched repainting
+3. [x] Modify `index.html` — add uPlot CDN links (CSS + JS), `charts.css` stylesheet, `#chart-resize-handle` and `#chart-panel` HTML
+4. [x] Modify `css/theme.css` — 3-row grid layout, `--chart-panel-height` variable, chart resize handle + panel styles, responsive hide
+5. [x] Modify `js/main.js` — import `telemetry-charts.js`, call `initTelemetryCharts()`, route `onTelemetryData()` from `onRobotState()`, add `initChartResizeHandle()` function
+6. [x] Signal toggle toolbar — 9 signals with color-coded buttons, localStorage persistence, rebuild charts on toggle
+7. [x] Time window selector — 5s/10s/30s/60s dropdown, buffer resize, localStorage persistence
+8. [x] Cursor sync — hover one chart shows crosshair on all 9
+9. [x] Collapse/expand — click label or drag resize handle, localStorage persistence for height and collapsed state
+10. [x] **Verify**: charts render with Y-axes, toolbar works, resize handle works — confirmed on Windows (no live data without ROS2)
+11. [ ] **Verify**: charts populate with live data at 20Hz — needs hardware testing
+
 ---
 
 ## Key Source Files Referenced
@@ -324,6 +390,16 @@ Run `python ros_ws/gui/gui_server.py` and open `http://localhost:8080`.
 - [x] Red dot + "Disconnected" shown (top-left of viewer)
 - [x] No JS console errors (open DevTools → Console)
 
+**Telemetry charts (bottom panel):**
+- [x] Chart panel visible at bottom of page with 3x3 grid
+- [x] Signal toggle toolbar visible with 9 buttons (colored dots/dashes + labels)
+- [x] Time window dropdown visible (5s/10s/30s/60s)
+- [x] Click "Charts" label on resize handle → panel collapses/expands
+- [x] Drag resize handle → panel height changes smoothly
+- [x] Toggle signals on/off → charts rebuild with correct axes
+- [x] Chart cell titles visible (L0-L5, Hand, BB Pitch, BB Hand)
+- [x] Y-axes render correctly (no data without ROS2)
+
 **Responsive layout:**
 - [x] Shrink browser width below 900px → sidebar moves below viewer
 - [x] Motor grid wraps to 4 columns
@@ -378,6 +454,15 @@ Prerequisites: rosbridge running on the Jetson (`ros2 launch rosbridge_server ro
 - [x] Click "Home" from IDLE → state goes to HOMING
 - [x] Click "Clear Errors" → works from any state
 
+**Telemetry charts (live):**
+- [ ] Charts populate with live data at 20Hz (9 motors updating)
+- [ ] Hover one chart → crosshair appears on all 9 (cursor sync)
+- [ ] Toggle signals on/off → axes appear/disappear, colors match scheme
+- [ ] Change time window → chart history depth changes
+- [ ] Collapse panel → data continues buffering; expand → history immediately visible
+- [ ] BB not connected → charts 7-8 show no data (only 7 motors reporting)
+- [ ] Commanded position (dashed) tracks measured position (solid) during movement
+
 **Error handling:**
 - [x] Trigger an error (e.g. E-stop) → state badge shows FAULT (red, pulsing)
 - [x] Error flags light up red in System panel
@@ -407,11 +492,11 @@ Prerequisites: rosbridge running on the Jetson (`ros2 launch rosbridge_server ro
 | File | Lines | Purpose |
 |------|-------|---------|
 | `gui_server.py` | ~55 | Standalone HTTP server with CORS, correct MIME types |
-| `index.html` | ~135 | Main HTML: layout grid, import maps, sidebar panels, resize handle, font toolbar, overlays |
-| `css/theme.css` | ~280 | Dark theme variables, grid layout, resize handle, font toolbar, responsive breakpoint |
+| `index.html` | ~185 | Main HTML: layout grid, import maps, sidebar panels, resize handle, font toolbar, chart panel, overlays |
+| `css/theme.css` | ~360 | Dark theme variables, 3-row grid layout, resize handles, font toolbar, chart panel, responsive breakpoint |
 | `css/viewer.css` | ~120 | 3D container, connection indicator, command overlay, scene menu |
 | `css/panels.css` | ~355 | Motor grid, flags, BB, CAN sparkline, tracking error, topic table + hide styles |
-| `js/main.js` | ~470 | Entry point: init, subscribe, route data, resize handle, font size, topic discovery |
+| `js/main.js` | ~540 | Entry point: init, subscribe, route data, resize handles, font size, topic discovery, chart data routing |
 | `js/ros-bridge.js` | ~230 | ROSLIB auto-reconnect, subscription manager, publisher cache, topic discovery |
 | `js/geometry-config.js` | ~100 | All hardware constants from `hardware_config.yaml` |
 | `js/stewart-fk.js` | ~220 | Rodrigues rotation, IK, 6x6 Gaussian solver, Newton-Raphson FK |
@@ -420,7 +505,9 @@ Prerequisites: rosbridge running on the Jetson (`ros2 launch rosbridge_server ro
 | `js/ball-butler-model.js` | ~100 | Pedestal, yaw turntable, pitch arm, hand marker |
 | `js/panels.js` | ~650 | All sidebar panels: motors, flags, BB, CAN sparkline, tracking, topic monitor + hide |
 | `js/commands.js` | ~70 | Command buttons with context-sensitive enable/disable |
-| **Total** | **~2,900** | Complete GUI rewrite |
+| `css/charts.css` | ~150 | Chart toolbar, signal toggles, 3x3 grid, uPlot dark-theme overrides |
+| `js/telemetry-charts.js` | ~475 | Signal defs, ChartDataStore ring buffer, uPlot management, rAF batching |
+| **Total** | **~3,525** | Complete GUI rewrite |
 
 ### Legacy files removed
 
@@ -453,6 +540,10 @@ Prerequisites: rosbridge running on the Jetson (`ros2 launch rosbridge_server ro
 - **Topic Monitor panel**: New sidebar panel showing all active ROS2 topics. Uses ROSLIB `getTopics()` for discovery (every 3s). For each discovered topic, a lightweight "spy" subscription (throttled to 200ms) counts messages. Display columns: topic name (with tooltip showing full name + type), time since last message, and rate in Hz (configurable window: 1s/5s/10s/30s, click label to cycle). Sorted by rate descending (highest first). Click any topic row to hide it — hidden topics persisted to `localStorage` and shown via an expandable "N hidden" footer. Topics the GUI already subscribes to share the existing subscription — `recordTopicMessage()` is called in each handler. Spy subscriptions are cleaned up on disconnect and re-created on reconnect via the discovery timer.
 
 - **Font size control**: A-/A+ buttons at the top of the sidebar scale all panel text proportionally. Sets root `font-size` on `<html>` (10px–22px, default 14px) — all CSS uses `rem` units so everything scales together. Persisted to `localStorage`.
+
+### Enhancements (2026-03-02)
+
+- **Telemetry Charts (Phase I)**: Live time-series charts in a collapsible bottom panel. 3x3 grid of uPlot charts (one per ODrive motor: L0-L5, Hand, BB Pitch, BB Hand) with 9 toggleable signals: position (measured + commanded), velocity, current (setpoint + measured), FET/motor temperature, bus voltage/current. Signals sharing the same physical unit share Y-axes (alternating left/right). Data from `robot_state` (already publishes all 9 motor states — no CAN node changes needed). Commanded positions sourced from `leg_lengths_topic` (legs 0-5) and `hand_telemetry` (hand). `ChartDataStore` class uses `Float64Array` ring buffers with `copyWithin` shift and `subarray()` views for zero-GC, zero-allocation data flow. Charts repaint via `requestAnimationFrame` batching (max 60fps regardless of 20Hz data rate). Cursor sync across all 9 charts via uPlot's sync key. Configurable time window (5/10/30/60s). Panel height draggable and collapsible with localStorage persistence. Data buffers continuously even while collapsed. uPlot loaded via CDN (~35KB, MIT). New files: `css/charts.css`, `js/telemetry-charts.js`. Modified: `index.html`, `css/theme.css`, `js/main.js`.
 
 ### Items for future work
 
