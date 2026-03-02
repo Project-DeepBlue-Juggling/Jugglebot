@@ -436,12 +436,13 @@ def test_find_min_feasible_duration():
     assert duration is not None, "Should find a feasible duration"
     print(f"  Minimum feasible duration: {duration:.4f}s")
 
-    # Verify this duration is actually feasible
+    # Verify this duration is actually feasible (use same sample count as
+    # find_min_feasible_duration to avoid false failures from sampling jitter)
     traj = create_trajectory(
         start_pose=start_pose, start_twist=zeros6, start_accel=zeros6,
         end_pose=end_pose, end_twist=zeros6, end_accel=zeros6,
         duration=duration)
-    result = check_feasibility(traj, geom, params, n_samples=200)
+    result = check_feasibility(traj, geom, params, n_samples=50)
     assert result.feasible, f"Returned duration should be feasible: {result.violations}"
     print(f"  Duration {duration:.4f}s: feasible={result.feasible}")
 

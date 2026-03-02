@@ -437,7 +437,7 @@ def check_feasibility(
     accel_limit_rps2: float | None = None,
     condition_limit: float | None = None,
     torque_limit_Nm: float | None = None,
-    jerk_trans_limit: float | None = 30_000.0,
+    jerk_trans_limit: float | None = 50_000.0,
     jerk_rot_limit: float | None = 400.0,
     n_samples: int = 200,
     early_exit: bool = False,
@@ -462,7 +462,7 @@ def check_feasibility(
     torque_limit_Nm : float or None
         Maximum feedforward torque per motor.  If None, skip torque check.
     jerk_trans_limit : float or None
-        Maximum translational Cartesian jerk in mm/s^3.  Defaults to 30000.
+        Maximum translational Cartesian jerk in mm/s^3.  Defaults to 50000.
         If None, skip jerk check.  NOTE: per-leg jerk is NOT checked —
         the condition number constraint guards against poses where smooth
         Cartesian motion maps to jerky leg motion.

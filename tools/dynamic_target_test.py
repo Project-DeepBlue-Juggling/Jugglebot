@@ -126,7 +126,10 @@ from jugglebot.motion.conversions import (  # noqa: E402
 # ---------------------------------------------------------------------------
 
 # Speed-dependent tracking thresholds (same as Phase 5/6)
-TRACKING_THRESHOLDS_MM = {0.25: 1.5, 0.50: 2.0, 0.75: 2.5, 1.00: 3.0}
+TRACKING_THRESHOLDS_MM = {
+    0.25: 1.5, 0.50: 2.0, 0.75: 2.5, 1.00: 3.0,
+    2.00: 5.0, 3.00: 7.0, 4.00: 10.0,
+}
 
 # Home Z for trajectory building (same as TrajectoryManager)
 _HOME_Z = float(hw.JB_OP_DEFAULT_ACTIVE_Z_MM)  # 170.0
@@ -137,7 +140,8 @@ def get_tracking_threshold(speed_scale: float) -> float:
     for ss in sorted(TRACKING_THRESHOLDS_MM.keys()):
         if speed_scale <= ss:
             return TRACKING_THRESHOLDS_MM[ss]
-    return TRACKING_THRESHOLDS_MM[1.0]
+    # Above max table entry: extrapolate linearly from 1.0x baseline
+    return 3.0 * speed_scale
 
 
 # ---------------------------------------------------------------------------
