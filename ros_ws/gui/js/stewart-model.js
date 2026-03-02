@@ -3,6 +3,10 @@
  *
  * Creates base hexagon, 6 legs, platform hexagon, and hand axis.
  * Updates from pose data (either FK result or direct mocap).
+ *
+ * Supports two rendering modes:
+ *  - Procedural: wireframe hexagons + cylinders (always available)
+ *  - CAD: GLB models loaded from models/ directory (optional, graceful fallback)
  */
 
 import * as THREE from 'three';
@@ -12,20 +16,55 @@ import {
     INITIAL_HEIGHT_MM, LEG_STROKE_MM,
     ARM_HEIGHT_FROM_PLATFORM_MM, HAND_DEPTH_OFFSET_MM,
 } from './geometry-config.js';
+import { loadAllModels } from './cad-loader.js';
 
 /** Three.js group containing all Stewart platform objects */
 let platformGroup;
 
-/** Individual mesh references */
+/** Individual mesh references (procedural geometry) */
 let baseMesh;
 let platformMesh;
 const legMeshes = [];
 let handLine;
 
+/** Group containing all procedural geometry */
+let proceduralGroup;
+
+// ---- CAD model state ----
+
+/** Group containing all CAD meshes */
+let cadGroup = null;
+
+/** CAD mesh references */
+let cadBase = null;
+let cadPlatform = null;
+const cadLegLowers = [];
+const cadLegUppers = [];
+let cadHand = null;
+
+/** Whether CAD models were successfully loaded */
+let cadAvailable = false;
+
+/** Whether user wants CAD mode (persisted to localStorage) */
+const CAD_MODE_STORAGE_KEY = 'jugglebot-cad-mode';
+let cadModeEnabled = localStorage.getItem(CAD_MODE_STORAGE_KEY) !== 'false'; // default true
+
+/**
+ * The local axis of the leg CAD model that points along the leg direction.
+ * Adjust this if the exported GLB has a different convention.
+ * Default: Y-up (matches glTF convention where Y is the default "up" axis).
+ */
+const LEG_LOCAL_AXIS = new THREE.Vector3(0, 1, 0);
+
+/** Scale factor: mm → Three.js units (must match viewer.js SCALE) */
+const SCALE = 0.001;
+
 /** Current platform node positions (world frame, mm) */
 let currentPlatNodes = null;
 /** Current platform centre (world frame, mm) */
 let currentPlatCentre = null;
+/** Current platform rotation matrix (3x3 row-major, robot frame) */
+let currentRotMatrix = null;
 
 // Colours
 const BASE_COLOR = 0x3b82f6;
@@ -57,39 +96,105 @@ export function initStewartModel() {
     platformGroup = new THREE.Group();
     platformGroup.name = 'stewart-platform';
 
-    // ---- Base hexagon ----
-    baseMesh = createHexMesh(BASE_NODES_MM, BASE_COLOR, 0.15);
-    platformGroup.add(baseMesh);
+    // ---- Procedural geometry (always created as fallback) ----
+    proceduralGroup = new THREE.Group();
+    proceduralGroup.name = 'procedural';
 
-    // ---- Platform hexagon (at home position) ----
+    // Base hexagon
+    baseMesh = createHexMesh(BASE_NODES_MM, BASE_COLOR, 0.15);
+    proceduralGroup.add(baseMesh);
+
+    // Platform hexagon (at home position)
     const homePlatNodes = INIT_PLAT_NODES_MM.map(n => [n[0], n[1], n[2] + INITIAL_HEIGHT_MM]);
     platformMesh = createHexMesh(homePlatNodes, PLAT_COLOR, 0.2);
-    platformGroup.add(platformMesh);
+    proceduralGroup.add(platformMesh);
 
-    // ---- Legs (cylinders between base and platform nodes) ----
+    // Legs (cylinders between base and platform nodes)
     for (let i = 0; i < 6; i++) {
         const leg = createLegCylinder();
         legMeshes.push(leg);
-        platformGroup.add(leg);
+        proceduralGroup.add(leg);
     }
 
-    // Position legs at home
-    currentPlatNodes = homePlatNodes;
-    currentPlatCentre = [0, 0, INITIAL_HEIGHT_MM];
-    updateLegPositions();
-
-    // ---- Hand axis (cylinder from platform centre along normal) ----
-    // Use a cylinder for visibility (WebGL Line linewidth is always 1px)
+    // Hand axis (cylinder from platform centre along normal)
     const handGeom = new THREE.CylinderGeometry(0.006, 0.006, 1, 8);
     handLine = new THREE.Mesh(
         handGeom,
         new THREE.MeshStandardMaterial({ color: HAND_COLOR, emissive: HAND_COLOR, emissiveIntensity: 0.3 })
     );
-    platformGroup.add(handLine);
-    updateHandAxis(0); // home position
+    proceduralGroup.add(handLine);
+
+    platformGroup.add(proceduralGroup);
+
+    // Position at home
+    currentPlatNodes = homePlatNodes;
+    currentPlatCentre = [0, 0, INITIAL_HEIGHT_MM];
+    currentRotMatrix = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+    updateLegPositions();
+    updateHandAxis(0);
 
     scene.add(platformGroup);
     sceneGroups['Platform'] = platformGroup;
+
+    // ---- Async CAD model loading ----
+    initCADModels();
+}
+
+/**
+ * Attempt to load CAD models. On success, adds them to the scene and
+ * hides procedural geometry. On failure, procedural geometry stays visible.
+ */
+async function initCADModels() {
+    const models = await loadAllModels();
+    if (!models.hasAnyModel) return;
+
+    cadAvailable = true;
+    cadGroup = new THREE.Group();
+    cadGroup.name = 'cad-models';
+
+    // Base (static at origin)
+    if (models.base) {
+        cadBase = models.base;
+        cadGroup.add(cadBase);
+    }
+
+    // Platform
+    if (models.platform) {
+        cadPlatform = models.platform;
+        cadGroup.add(cadPlatform);
+    }
+
+    // Legs
+    for (let i = 0; i < 6; i++) {
+        const lower = models.legLowers[i];
+        const upper = models.legUppers[i];
+        if (lower) {
+            cadLegLowers.push(lower);
+            cadGroup.add(lower);
+        } else {
+            cadLegLowers.push(null);
+        }
+        if (upper) {
+            cadLegUppers.push(upper);
+            cadGroup.add(upper);
+        } else {
+            cadLegUppers.push(null);
+        }
+    }
+
+    // Hand
+    if (models.hand) {
+        cadHand = models.hand;
+        cadGroup.add(cadHand);
+    }
+
+    platformGroup.add(cadGroup);
+
+    // Position CAD parts at home pose
+    updateCADParts();
+
+    // Apply initial view mode
+    applyViewMode();
 }
 
 /**
@@ -268,6 +373,126 @@ function updateHandAxis(extensionMM) {
     positionCylinder(handLine, base3, tip3);
 }
 
+// ---- CAD model per-frame updates ----
+
+/**
+ * Convert a 3x3 rotation matrix (robot frame, row-major) to a Three.js Matrix4.
+ * Includes the robot→Three.js coordinate swap: robot(x,y,z) → Three(x,z,-y).
+ *
+ * The coordinate swap matrix S maps robot-frame points to Three.js:
+ *   Three.x = Robot.x,  Three.y = Robot.z,  Three.z = -Robot.y
+ *   S = [[1,0,0],[0,0,1],[0,-1,0]],  S^T = S^-1 = [[1,0,0],[0,0,-1],[0,1,0]]
+ *
+ * Three.js rotation = S * R * S^T
+ */
+function rotMatrixToThreeMatrix4(R) {
+    // Step 1: R * S^T  (S^T col0=[1,0,0], col1=[0,0,1], col2=[0,-1,0])
+    const RSt = [
+        [R[0][0], R[0][2], -R[0][1]],
+        [R[1][0], R[1][2], -R[1][1]],
+        [R[2][0], R[2][2], -R[2][1]],
+    ];
+    // Step 2: S * (R * S^T)  (S rows: [1,0,0], [0,0,1], [0,-1,0])
+    // row 0 = RSt[0], row 1 = RSt[2], row 2 = -RSt[1]
+    const Rthree = [
+        [RSt[0][0], RSt[0][1], RSt[0][2]],
+        [RSt[2][0], RSt[2][1], RSt[2][2]],
+        [-RSt[1][0], -RSt[1][1], -RSt[1][2]],
+    ];
+
+    const m = new THREE.Matrix4();
+    m.set(
+        Rthree[0][0], Rthree[0][1], Rthree[0][2], 0,
+        Rthree[1][0], Rthree[1][1], Rthree[1][2], 0,
+        Rthree[2][0], Rthree[2][1], Rthree[2][2], 0,
+        0, 0, 0, 1,
+    );
+    return m;
+}
+
+/**
+ * Update all CAD model positions and orientations from current pose.
+ */
+function updateCADParts() {
+    if (!cadAvailable || !cadGroup || !currentPlatNodes || !currentPlatCentre) return;
+
+    // Platform: position + rotation
+    if (cadPlatform && currentRotMatrix) {
+        const pc = currentPlatCentre;
+        cadPlatform.position.copy(robotToThreeScaled(pc[0], pc[1], pc[2]));
+        const rotMat = rotMatrixToThreeMatrix4(currentRotMatrix);
+        cadPlatform.quaternion.setFromRotationMatrix(rotMat);
+    }
+
+    // Legs: each half oriented along the leg axis
+    for (let i = 0; i < 6; i++) {
+        const base = BASE_NODES_MM[i];
+        const plat = currentPlatNodes[i];
+
+        const basePos = robotToThreeScaled(base[0], base[1], base[2]);
+        const platPos = robotToThreeScaled(plat[0], plat[1], plat[2]);
+
+        // Lower leg: anchored at base node, points toward platform node
+        if (cadLegLowers[i]) {
+            cadLegLowers[i].position.copy(basePos);
+            const dir = new THREE.Vector3().subVectors(platPos, basePos).normalize();
+            const quat = new THREE.Quaternion().setFromUnitVectors(LEG_LOCAL_AXIS, dir);
+            cadLegLowers[i].quaternion.copy(quat);
+        }
+
+        // Upper leg: anchored at platform node, points toward base node
+        if (cadLegUppers[i]) {
+            cadLegUppers[i].position.copy(platPos);
+            const dir = new THREE.Vector3().subVectors(basePos, platPos).normalize();
+            const quat = new THREE.Quaternion().setFromUnitVectors(LEG_LOCAL_AXIS, dir);
+            cadLegUppers[i].quaternion.copy(quat);
+        }
+    }
+
+    // Hand: position at platform centre, oriented along platform normal
+    if (cadHand && currentRotMatrix) {
+        const pc = currentPlatCentre;
+        cadHand.position.copy(robotToThreeScaled(pc[0], pc[1], pc[2]));
+        const rotMat = rotMatrixToThreeMatrix4(currentRotMatrix);
+        cadHand.quaternion.setFromRotationMatrix(rotMat);
+    }
+}
+
+// ---- View mode (CAD vs procedural) ----
+
+/**
+ * Apply the current view mode: show CAD or procedural geometry.
+ */
+function applyViewMode() {
+    const showCAD = cadAvailable && cadModeEnabled;
+    if (proceduralGroup) proceduralGroup.visible = !showCAD;
+    if (cadGroup) cadGroup.visible = showCAD;
+}
+
+/**
+ * Toggle CAD rendering mode on/off. Falls back to procedural if CAD not available.
+ * @param {boolean} enabled
+ */
+export function setCADMode(enabled) {
+    cadModeEnabled = enabled;
+    localStorage.setItem(CAD_MODE_STORAGE_KEY, enabled ? 'true' : 'false');
+    applyViewMode();
+}
+
+/**
+ * @returns {boolean} Whether CAD models are available
+ */
+export function isCADAvailable() {
+    return cadAvailable;
+}
+
+/**
+ * @returns {boolean} Whether CAD mode is currently enabled
+ */
+export function isCADModeEnabled() {
+    return cadModeEnabled;
+}
+
 /**
  * Update platform hexagon mesh from new node positions.
  */
@@ -394,14 +619,20 @@ export function setGhostVisible(visible) {
  * @param {number[][]} platNodes - 6 platform node world positions [x,y,z] in mm
  * @param {number[]} platCentre - platform centre [x,y,z] in mm
  * @param {number} handExtensionMM - hand extension in mm
+ * @param {number[][]|null} [rotMatrix] - 3x3 rotation matrix (row-major, robot frame). Required for CAD mode.
  */
-export function updateStewartPose(platNodes, platCentre, handExtensionMM) {
+export function updateStewartPose(platNodes, platCentre, handExtensionMM, rotMatrix) {
     currentPlatNodes = platNodes;
     currentPlatCentre = platCentre;
+    if (rotMatrix) currentRotMatrix = rotMatrix;
 
+    // Always update procedural geometry (even if hidden — keeps state consistent for toggle)
     updatePlatformMesh();
     updateLegPositions();
     updateHandAxis(handExtensionMM);
+
+    // Update CAD models if available
+    updateCADParts();
 }
 
-export { initGhostOverlay };
+export { initGhostOverlay, setCADMode, isCADAvailable, isCADModeEnabled };

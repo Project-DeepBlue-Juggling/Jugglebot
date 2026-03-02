@@ -10,6 +10,11 @@
     <link rel="stylesheet" href="css/theme.css">
     <link rel="stylesheet" href="css/viewer.css">
     <link rel="stylesheet" href="css/panels.css">
+    <link rel="stylesheet" href="css/charts.css">
+
+    <!-- uPlot charting library (global, not ES module) -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
 
     <!-- ROSLIB (global, not an ES module) -->
     <script src="lib/roslib.min.js"></script>
@@ -134,6 +139,41 @@
                     <span class="topic-window-label" id="topic-window-label">5s window</span>
                 </div>
                 <div id="topic-table-container"></div>
+            </div>
+        </div>
+
+        <!-- Horizontal resize handle for chart panel -->
+        <div id="chart-resize-handle">
+            <span id="chart-toggle-label">Charts</span>
+            <span id="chart-toggle-chevron">&#x25BC;</span>
+        </div>
+
+        <!-- Bottom: telemetry chart panel -->
+        <div id="chart-panel">
+            <!-- Signal toggle toolbar -->
+            <div id="chart-toolbar">
+                <div id="signal-toggles"></div>
+                <div id="chart-time-window">
+                    <label>Window:</label>
+                    <select id="chart-window-select">
+                        <option value="5">5s</option>
+                        <option value="10" selected>10s</option>
+                        <option value="30">30s</option>
+                        <option value="60">60s</option>
+                    </select>
+                </div>
+            </div>
+            <!-- 3x3 chart grid -->
+            <div id="chart-grid">
+                <div class="chart-cell" id="chart-0"></div>
+                <div class="chart-cell" id="chart-3"></div>
+                <div class="chart-cell" id="chart-6"></div>
+                <div class="chart-cell" id="chart-1"></div>
+                <div class="chart-cell" id="chart-4"></div>
+                <div class="chart-cell" id="chart-7"></div>
+                <div class="chart-cell" id="chart-2"></div>
+                <div class="chart-cell" id="chart-5"></div>
+                <div class="chart-cell" id="chart-8"></div>
             </div>
         </div>
     </div>

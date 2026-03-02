@@ -42,6 +42,9 @@
     /* Sidebar */
     --sidebar-width: 420px;
 
+    /* Chart panel */
+    --chart-panel-height: 300px;
+
     /* Typography */
     --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
     --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -75,14 +78,77 @@ html, body {
     -webkit-font-smoothing: antialiased;
 }
 
-/* App layout: 3D viewer + resize handle + sidebar */
+/* App layout: 3D viewer + resize handle + sidebar, with optional chart panel below */
 #app {
     display: grid;
     grid-template-columns: 1fr auto var(--sidebar-width);
-    grid-template-rows: 1fr;
+    grid-template-rows: 1fr auto auto;
     height: 100vh;
     width: 100vw;
     overflow: hidden;
+}
+
+#viewer-pane    { grid-column: 1; grid-row: 1; }
+#resize-handle  { grid-column: 2; grid-row: 1; }
+#sidebar        { grid-column: 3; grid-row: 1; }
+
+/* Horizontal resize handle for chart panel */
+#chart-resize-handle {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    height: 6px;
+    cursor: row-resize;
+    background: var(--border-color);
+    position: relative;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    user-select: none;
+    transition: background var(--transition-fast);
+}
+
+#chart-resize-handle:hover,
+#chart-resize-handle.active {
+    background: var(--accent-blue);
+}
+
+#chart-toggle-label,
+#chart-toggle-chevron {
+    font-size: 10px;
+    color: var(--text-muted);
+    pointer-events: auto;
+    cursor: pointer;
+    line-height: 6px;
+    opacity: 0;
+    transition: opacity var(--transition-fast);
+}
+
+#chart-resize-handle:hover #chart-toggle-label,
+#chart-resize-handle:hover #chart-toggle-chevron {
+    opacity: 1;
+}
+
+#chart-toggle-chevron.collapsed {
+    transform: rotate(180deg);
+}
+
+/* Chart panel */
+#chart-panel {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    height: var(--chart-panel-height);
+    overflow: hidden;
+    background: var(--bg-secondary);
+    border-top: 1px solid var(--border-color);
+    display: flex;
+    flex-direction: column;
+}
+
+#chart-panel.collapsed {
+    height: 0 !important;
+    border-top: none;
 }
 
 /* Draggable resize handle */
@@ -282,5 +348,10 @@ html, body {
 
     .tracking-grid {
         grid-template-columns: repeat(4, 1fr);
+    }
+
+    #chart-resize-handle,
+    #chart-panel {
+        display: none;
     }
 }
