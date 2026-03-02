@@ -22,7 +22,7 @@ import {
     updateCANTraffic, updateTrackingError,
     recordTopicMessage, registerTopic, updateTopicMonitor, clearTopicData,
 } from './panels.js';
-import { initCommands, updateCommandStates } from './commands.js';
+import { initCommands, updateCommandStates, onModeButtonClick } from './commands.js';
 import { INITIAL_HEIGHT_MM, MM_TO_REV } from './geometry-config.js';
 import { initTelemetryCharts, onTelemetryData, rebuildCharts } from './telemetry-charts.js';
 import { initJogPanel, setJogPanelVisible } from './jog-panel.js';
@@ -47,6 +47,9 @@ function init() {
 
     // 3. Init commands
     initCommands();
+    onModeButtonClick((mode) => {
+        setJogPanelVisible(mode === 'gui');
+    });
 
     // 4. Init scene menu
     initSceneMenu();

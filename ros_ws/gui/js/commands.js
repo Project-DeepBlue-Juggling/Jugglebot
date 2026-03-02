@@ -11,6 +11,17 @@ import { currentOrchestratorState } from './panels.js';
 /** @type {{ publish: function } | null} */
 let cmdPublisher = null;
 
+/** Callback for mode-button clicks (GUI, SpaceMouse, Shell). Set by main.js. */
+let onModeChangeCallback = null;
+
+/**
+ * Register a callback that fires when a mode button is clicked.
+ * @param {function} cb - Called with the command string (e.g. 'gui', 'spacemouse')
+ */
+export function onModeButtonClick(cb) {
+    onModeChangeCallback = cb;
+}
+
 const COMMANDS = [
     { id: 'cmd-home',       label: 'Home',           command: 'home',         cssClass: 'btn-home' },
     { id: 'cmd-level',      label: 'Level',          command: 'level',        cssClass: 'btn-home' },
@@ -41,6 +52,10 @@ export function initCommands() {
         btn.addEventListener('click', () => {
             if (cmdPublisher) {
                 cmdPublisher.publish({ data: cmd.command });
+            }
+            // Notify mode change listener for immediate UI response
+            if (onModeChangeCallback && ['gui', 'spacemouse', 'shell'].includes(cmd.command)) {
+                onModeChangeCallback(cmd.command);
             }
         });
 
