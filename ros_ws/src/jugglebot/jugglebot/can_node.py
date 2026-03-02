@@ -275,9 +275,9 @@ class CanInterfaceNode(Node):
                     self.get_logger().warning(
                         f"Bad CAN frame for cmd 0x{cmd_id:02X} axis {axis_id}: {e}",
                         throttle_duration_sec=5.0)
-            else:
+            elif cmd_id not in self._KNOWN_ODRIVE_CMD_IDS:
                 self.get_logger().warning(
-                    f"No handler for cmd 0x{cmd_id:02X} on axis {axis_id} (arb_id=0x{aid:03X})"
+                    f"Unknown cmd 0x{cmd_id:02X} on axis {axis_id} (arb_id=0x{aid:03X})"
                 )
 
     # ── ODrive message handlers ────────────────────────────────
@@ -463,6 +463,11 @@ class CanInterfaceNode(Node):
         proto.ODRIVE_COMMANDS['get_bus_voltage_current']: _handle_bus_vc,
         proto.ODRIVE_COMMANDS['TxSdo']:                   _handle_sdo_response,
     }
+
+    # All known ODrive command IDs (from protocol_config). Commands in this set
+    # but not in _odrive_handlers are silently ignored — they are typically echoes
+    # from other controllers on the bus. Truly unknown command IDs still warn.
+    _KNOWN_ODRIVE_CMD_IDS = frozenset(proto.ODRIVE_COMMANDS.values())
 
     # ── Teensy message handlers ────────────────────────────────
 
