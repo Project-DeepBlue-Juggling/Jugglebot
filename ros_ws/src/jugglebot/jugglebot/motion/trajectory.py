@@ -494,7 +494,11 @@ def check_feasibility(
 
     violations = []
     times = np.linspace(traj.t_start, traj.t_start + traj.duration, n_samples)
-    stroke = geom.leg_stroke_mm
+    # Use workspace hard limits (5mm margin from each end) so that
+    # feasibility agrees with the runtime workspace monitor.
+    from jugglebot.motion.workspace import LEG_HARD_MARGIN_MM
+    stroke_min = LEG_HARD_MARGIN_MM
+    stroke_max = geom.leg_stroke_mm - LEG_HARD_MARGIN_MM
 
     # Accumulators
     peak_vel = np.zeros(6)
@@ -551,7 +555,8 @@ def check_feasibility(
 
         # Early exit: check per-sample limits and break on first violation
         if early_exit:
-            if np.any(extensions_mm < 0.0) or np.any(extensions_mm > stroke):
+            if (np.any(extensions_mm < stroke_min)
+                    or np.any(extensions_mm > stroke_max)):
                 violations.append("stroke_early_exit")
                 break
             if np.any(np.abs(vel_rps) > vel_limit_rps):
@@ -576,16 +581,18 @@ def check_feasibility(
 
     # Post-loop violation analysis (skipped when early_exit already found one)
     if not violations:
-        if np.any(min_ext < 0.0):
-            bad_legs = np.where(min_ext < 0.0)[0]
+        if np.any(min_ext < stroke_min):
+            bad_legs = np.where(min_ext < stroke_min)[0]
             violations.append(
                 f"Underextended legs {bad_legs.tolist()}: "
-                f"min extensions {min_ext[bad_legs].tolist()} mm")
-        if np.any(max_ext > stroke):
-            bad_legs = np.where(max_ext > stroke)[0]
+                f"min extensions {min_ext[bad_legs].tolist()} mm "
+                f"(limit {stroke_min:.1f} mm)")
+        if np.any(max_ext > stroke_max):
+            bad_legs = np.where(max_ext > stroke_max)[0]
             violations.append(
                 f"Overextended legs {bad_legs.tolist()}: "
-                f"max extensions {max_ext[bad_legs].tolist()} mm")
+                f"max extensions {max_ext[bad_legs].tolist()} mm "
+                f"(limit {stroke_max:.1f} mm)")
 
         if np.any(peak_vel > vel_limit_rps):
             bad_legs = np.where(peak_vel > vel_limit_rps)[0]

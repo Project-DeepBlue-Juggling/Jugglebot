@@ -161,7 +161,10 @@ def check_workspace_limits(extensions_mm: np.ndarray,
 def check_leg_extensions(extensions_mm: np.ndarray,
                          geom: StewartGeometry
                          ) -> tuple[bool, np.ndarray]:
-    """Check whether leg extensions are within stroke limits.
+    """Check whether leg extensions are within workspace hard limits.
+
+    Uses the same hard margins as check_workspace_limits() and
+    check_feasibility() so that planning and runtime agree.
 
     Parameters
     ----------
@@ -174,9 +177,11 @@ def check_leg_extensions(extensions_mm: np.ndarray,
     states : (6,) int8 ndarray — per-leg state:
         0 = within bounds, -1 = underextended, +1 = overextended
     """
+    hard_min = LEG_HARD_MARGIN_MM
+    hard_max = geom.leg_stroke_mm - LEG_HARD_MARGIN_MM
     states = np.zeros(6, dtype=np.int8)
-    states[extensions_mm < 0.0] = -1
-    states[extensions_mm > geom.leg_stroke_mm] = 1
+    states[extensions_mm < hard_min] = -1
+    states[extensions_mm > hard_max] = 1
     return bool(np.all(states == 0)), states
 
 

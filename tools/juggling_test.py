@@ -6,8 +6,8 @@ Validates semi-aggressive, juggling-like Stewart platform movements at
 large lateral excursions (~200mm XY radius) with coordinated tilts.
 
 Juggling tests:
-  JT1. Lateral shuttle -- +/-200mm X with +/-5 deg Y tilt, 4 full cycles
-  JT2. Star pattern -- 5-point star at 200mm radius with random tilt
+  JT1. Lateral shuttle -- +/-175mm X with +/-5 deg Y tilt, 4 full cycles
+  JT2. Star pattern -- 5-point star at 175mm radius with random tilt
 
 Prerequisites:
   - All Phase 7 tests must PASS
@@ -116,12 +116,12 @@ DEFAULT_MOVE_DURATION_S = 3.0
 ENDPOINT_PAUSE_S = 0.5
 
 # JT1 parameters
-SHUTTLE_RADIUS_MM = 200.0
+SHUTTLE_RADIUS_MM = 175.0
 SHUTTLE_TILT_DEG = 5.0
 SHUTTLE_REPETITIONS = 4    # 4 full left-right cycles = 8 moves
 
 # JT2 parameters
-STAR_RADIUS_MM = 200.0
+STAR_RADIUS_MM = 175.0
 STAR_MAX_TILT_DEG = 7.0
 STAR_RNG_SEED = 42
 
@@ -662,8 +662,8 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Tests available:
-  shuttle   JT1: Lateral shuttle (+/-200mm X, +/-5 deg Y tilt, 4 cycles)
-  star      JT2: Star pattern (200mm radius, random +/-7 deg tilt)
+  shuttle   JT1: Lateral shuttle (+/-175mm X, +/-5 deg Y tilt, 4 cycles)
+  star      JT2: Star pattern (175mm radius, random +/-7 deg tilt)
 
 Modes:
   --dry-run             Feasibility checks only, no CAN
