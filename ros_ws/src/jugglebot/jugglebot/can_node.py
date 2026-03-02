@@ -810,7 +810,7 @@ class CanInterfaceNode(Node):
     def _sub_control_mode(self, msg):
         """Handle control mode changes from the orchestrator.
 
-        Valid modes: '', 'ERROR', 'SPACEMOUSE', 'SHELL', 'LEVELLING'.
+        Valid modes: '', 'ERROR', 'SPACEMOUSE', 'SHELL', 'LEVELLING', 'GUI'.
         Legs always remain in POSITION+PASSTHROUGH controller mode.
         """
         try:
@@ -824,7 +824,7 @@ class CanInterfaceNode(Node):
                 self._gently_move_to_setpoint(0.0, deactivating=True)
                 self.stowed_due_to_error = True
 
-            elif msg.data in ('SPACEMOUSE', 'SHELL', 'LEVELLING'):
+            elif msg.data in ('SPACEMOUSE', 'SHELL', 'LEVELLING', 'GUI'):
                 self.get_logger().info(f'Control mode: {msg.data}')
                 if not legs_closed:
                     for axis_id in odrive.LEG_AXES:
