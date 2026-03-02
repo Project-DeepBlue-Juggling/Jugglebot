@@ -31,7 +31,21 @@
 </head>
 <body>
     <div id="app">
-        <!-- Left: 3D viewer with overlays -->
+        <!-- Left: topic monitor sidebar -->
+        <div id="left-sidebar">
+            <div class="panel" id="panel-topics">
+                <div class="panel-header">
+                    <span class="panel-title">Topics</span>
+                    <span class="topic-window-label" id="topic-window-label">5s window</span>
+                </div>
+                <div id="topic-table-container"></div>
+            </div>
+        </div>
+
+        <!-- Draggable resize handle between left sidebar and viewer -->
+        <div id="left-resize-handle"></div>
+
+        <!-- Centre: 3D viewer with overlays -->
         <div id="viewer-pane">
             <div id="viewer-container"></div>
 
@@ -64,14 +78,12 @@
             </div>
 
             <!-- Orchestrator State -->
-            <div class="panel" id="panel-orchestrator">
+            <div class="panel panel-compact" id="panel-orchestrator">
                 <div class="panel-header">
                     <span class="panel-title">State</span>
-                </div>
-                <div style="text-align:center;">
                     <span class="badge state-badge boot" id="state-badge">BOOT</span>
-                    <div class="sub-mode" id="state-sub-mode"></div>
                 </div>
+                <div class="sub-mode" id="state-sub-mode"></div>
             </div>
 
             <!-- Motor Status -->
@@ -95,12 +107,15 @@
             </div>
 
             <!-- Levelling -->
-            <div class="panel" id="panel-levelling">
+            <div class="panel panel-compact" id="panel-levelling">
                 <div class="panel-header">
                     <span class="panel-title">Levelling</span>
-                    <span class="badge" id="level-status-badge">Not Levelled</span>
+                    <div class="level-inline" id="level-content">
+                        <span class="level-inline-value" id="level-roll" title="Roll (X)">--</span>
+                        <span class="level-inline-value" id="level-pitch" title="Pitch (Y)">--</span>
+                    </div>
+                    <span class="badge level-badge level-pending" id="level-status-badge">Not Levelled</span>
                 </div>
-                <div id="level-content"></div>
             </div>
 
             <!-- Ball Butler -->
@@ -132,14 +147,6 @@
                 <div class="tracking-grid" id="tracking-grid"></div>
             </div>
 
-            <!-- Topic Monitor -->
-            <div class="panel" id="panel-topics">
-                <div class="panel-header">
-                    <span class="panel-title">Topics</span>
-                    <span class="topic-window-label" id="topic-window-label">5s window</span>
-                </div>
-                <div id="topic-table-container"></div>
-            </div>
         </div>
 
         <!-- Horizontal resize handle for chart panel -->

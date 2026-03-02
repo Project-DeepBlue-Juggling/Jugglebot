@@ -50,7 +50,8 @@ function init() {
     // 4. Init scene menu
     initSceneMenu();
 
-    // 5. Init resize handle + font size
+    // 5. Init resize handles + font size
+    initLeftResizeHandle();
     initResizeHandle();
     initChartResizeHandle();
     initFontSize();
@@ -327,7 +328,63 @@ function initSceneMenu() {
     }, 100);
 }
 
-// ---- Resize handle ----
+// ---- Left sidebar resize handle ----
+
+const LEFT_SIDEBAR_MIN = 200;
+const LEFT_SIDEBAR_MAX_PCT = 0.3;
+const LEFT_SIDEBAR_STORAGE_KEY = 'jugglebot-left-sidebar-width';
+
+function initLeftResizeHandle() {
+    const handle = document.getElementById('left-resize-handle');
+    const app = document.getElementById('app');
+    if (!handle || !app) return;
+
+    // Restore saved width
+    const saved = localStorage.getItem(LEFT_SIDEBAR_STORAGE_KEY);
+    if (saved) {
+        const w = parseInt(saved, 10);
+        if (w >= LEFT_SIDEBAR_MIN) {
+            app.style.setProperty('--left-sidebar-width', w + 'px');
+        }
+    }
+
+    let dragging = false;
+
+    function onPointerDown(e) {
+        dragging = true;
+        handle.classList.add('active');
+        handle.setPointerCapture(e.pointerId);
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
+        e.preventDefault();
+    }
+
+    function onPointerMove(e) {
+        if (!dragging) return;
+        const maxWidth = Math.floor(window.innerWidth * LEFT_SIDEBAR_MAX_PCT);
+        let newWidth = e.clientX;
+        newWidth = Math.max(LEFT_SIDEBAR_MIN, Math.min(maxWidth, newWidth));
+        app.style.setProperty('--left-sidebar-width', newWidth + 'px');
+    }
+
+    function onPointerUp() {
+        if (!dragging) return;
+        dragging = false;
+        handle.classList.remove('active');
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+
+        // Persist
+        const current = getComputedStyle(app).getPropertyValue('--left-sidebar-width').trim();
+        localStorage.setItem(LEFT_SIDEBAR_STORAGE_KEY, parseInt(current, 10));
+    }
+
+    handle.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('pointermove', onPointerMove);
+    document.addEventListener('pointerup', onPointerUp);
+}
+
+// ---- Right sidebar resize handle ----
 
 const SIDEBAR_MIN = 280;
 const SIDEBAR_STORAGE_KEY = 'jugglebot-sidebar-width';

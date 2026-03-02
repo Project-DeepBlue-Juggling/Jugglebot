@@ -145,9 +145,9 @@ const FLAGS = [
     { id: 'flag-encoder', label: 'Encoder Search' },
     { id: 'flag-homed', label: 'Homed' },
     { id: 'flag-levelled', label: 'Levelled' },
-    { id: 'flag-fatal-odrive', label: 'Fatal ODrive' },
-    { id: 'flag-fatal-can', label: 'Fatal CAN' },
-    { id: 'flag-undervoltage', label: 'Undervoltage' },
+    { id: 'flag-fatal-odrive', label: 'ODrives Good' },
+    { id: 'flag-fatal-can', label: 'CAN Good' },
+    { id: 'flag-undervoltage', label: 'Voltage Good' },
 ];
 
 export function initFlagsGrid() {
@@ -194,21 +194,7 @@ function setFlagError(id, value) {
 // ---- Levelling panel ----
 
 export function initLevellingPanel() {
-    const content = document.getElementById('level-content');
-    if (!content) return;
-
-    content.innerHTML = `
-        <div class="level-offsets">
-            <div class="level-offset">
-                <div class="label">Roll (X)</div>
-                <div class="value" id="level-roll">--</div>
-            </div>
-            <div class="level-offset">
-                <div class="label">Pitch (Y)</div>
-                <div class="value" id="level-pitch">--</div>
-            </div>
-        </div>
-    `;
+    // DOM is pre-built in index.html (inline layout)
 }
 
 /**

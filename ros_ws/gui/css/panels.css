@@ -121,28 +121,16 @@
     color: #fff;
 }
 
-.level-offsets {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: var(--gap-xs);
+.level-inline {
+    display: flex;
+    gap: 8px;
+    align-items: center;
 }
 
-.level-offset {
-    text-align: center;
-}
-
-.level-offset .label {
-    font-size: var(--font-size-sm);
-    color: var(--text-muted);
-    text-transform: uppercase;
-    margin-bottom: 2px;
-}
-
-.level-offset .value {
+.level-inline-value {
     font-family: var(--font-mono);
-    font-size: var(--font-size-lg);
-    font-weight: 600;
-    color: var(--text-primary);
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
 }
 
 /* ---- Ball Butler panel ---- */
@@ -272,7 +260,6 @@
 }
 
 #topic-table-container {
-    max-height: 320px;
     overflow-y: auto;
     overflow-x: hidden;
 }

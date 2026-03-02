@@ -39,8 +39,9 @@
     --gap-sm: 8px;
     --gap-xs: 4px;
 
-    /* Sidebar */
+    /* Sidebars */
     --sidebar-width: 420px;
+    --left-sidebar-width: 280px;
 
     /* Chart panel */
     --chart-panel-height: 300px;
@@ -78,19 +79,21 @@ html, body {
     -webkit-font-smoothing: antialiased;
 }
 
-/* App layout: 3D viewer + resize handle + sidebar, with optional chart panel below */
+/* App layout: left sidebar + viewer + right sidebar, with optional chart panel below */
 #app {
     display: grid;
-    grid-template-columns: 1fr auto var(--sidebar-width);
+    grid-template-columns: var(--left-sidebar-width) auto 1fr auto var(--sidebar-width);
     grid-template-rows: 1fr auto auto;
     height: 100vh;
     width: 100vw;
     overflow: hidden;
 }
 
-#viewer-pane    { grid-column: 1; grid-row: 1; }
-#resize-handle  { grid-column: 2; grid-row: 1; }
-#sidebar        { grid-column: 3; grid-row: 1; }
+#left-sidebar        { grid-column: 1; grid-row: 1; }
+#left-resize-handle  { grid-column: 2; grid-row: 1; }
+#viewer-pane         { grid-column: 3; grid-row: 1; }
+#resize-handle       { grid-column: 4; grid-row: 1; }
+#sidebar             { grid-column: 5; grid-row: 1; }
 
 /* Horizontal resize handle for chart panel */
 #chart-resize-handle {
@@ -151,7 +154,41 @@ html, body {
     border-top: none;
 }
 
-/* Draggable resize handle */
+/* Draggable resize handle (left sidebar) */
+#left-resize-handle {
+    width: 6px;
+    cursor: col-resize;
+    background: var(--border-color);
+    position: relative;
+    z-index: 10;
+    transition: background var(--transition-fast);
+}
+
+#left-resize-handle::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 1px;
+    width: 4px;
+    height: 32px;
+    transform: translateY(-50%);
+    border-radius: 2px;
+    background: var(--text-muted);
+    opacity: 0;
+    transition: opacity var(--transition-fast);
+}
+
+#left-resize-handle:hover,
+#left-resize-handle.active {
+    background: var(--accent-blue);
+}
+
+#left-resize-handle:hover::after,
+#left-resize-handle.active::after {
+    opacity: 0.6;
+}
+
+/* Draggable resize handle (right sidebar) */
 #resize-handle {
     width: 6px;
     cursor: col-resize;
@@ -192,6 +229,41 @@ html, body {
     min-width: 0;
 }
 
+/* Left pane: topic monitor sidebar */
+#left-sidebar {
+    background: var(--bg-secondary);
+    border-right: 1px solid var(--border-color);
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: var(--gap);
+    display: flex;
+    flex-direction: column;
+}
+
+#left-sidebar #panel-topics {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+}
+
+#left-sidebar #topic-table-container {
+    flex: 1;
+    overflow-y: auto;
+}
+
+/* Scrollbar styling (left sidebar) */
+#left-sidebar::-webkit-scrollbar {
+    width: 6px;
+}
+#left-sidebar::-webkit-scrollbar-track {
+    background: transparent;
+}
+#left-sidebar::-webkit-scrollbar-thumb {
+    background: var(--border-color);
+    border-radius: 3px;
+}
+
 /* Right pane: scrollable sidebar */
 #sidebar {
     background: var(--bg-secondary);
@@ -222,6 +294,14 @@ html, body {
     border: 1px solid var(--border-color);
     border-radius: var(--border-radius);
     padding: var(--gap);
+}
+
+.panel-compact {
+    padding: var(--gap-sm) var(--gap);
+}
+
+.panel-compact .panel-header {
+    margin-bottom: 0;
 }
 
 .panel-header {
@@ -331,6 +411,8 @@ html, body {
         grid-template-rows: 1fr auto;
     }
 
+    #left-sidebar,
+    #left-resize-handle,
     #resize-handle {
         display: none;
     }
