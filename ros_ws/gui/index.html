@@ -77,25 +77,17 @@
                 <button class="font-btn" id="font-increase" title="Increase font size">A+</button>
             </div>
 
-            <!-- Orchestrator State -->
+            <!-- Orchestrator State + Bus Voltage -->
             <div class="panel panel-compact" id="panel-orchestrator">
                 <div class="panel-header">
                     <span class="panel-title">State</span>
                     <span class="badge state-badge boot" id="state-badge">BOOT</span>
+                    <span class="bus-voltage-inline">
+                        <span class="value" id="bus-voltage-value">--</span>
+                        <span class="unit">V</span>
+                    </span>
                 </div>
                 <div class="sub-mode" id="state-sub-mode"></div>
-            </div>
-
-            <!-- Motor Status -->
-            <div class="panel" id="panel-motors">
-                <div class="panel-header">
-                    <span class="panel-title">Motors</span>
-                </div>
-                <div class="motor-grid" id="motor-grid"></div>
-                <div class="bus-voltage">
-                    <span class="value" id="bus-voltage-value">--</span>
-                    <span class="unit">V</span>
-                </div>
             </div>
 
             <!-- System Flags -->
@@ -111,8 +103,8 @@
                 <div class="panel-header">
                     <span class="panel-title">Levelling</span>
                     <div class="level-inline" id="level-content">
-                        <span class="level-inline-value" id="level-roll" title="Roll (X)">--</span>
-                        <span class="level-inline-value" id="level-pitch" title="Pitch (Y)">--</span>
+                        <span class="level-inline-item" title="Roll (X)"><span class="level-inline-label">X:</span><span class="level-inline-value" id="level-roll">--</span></span>
+                        <span class="level-inline-item" title="Pitch (Y)"><span class="level-inline-label">Y:</span><span class="level-inline-value" id="level-pitch">--</span></span>
                     </div>
                     <span class="badge level-badge level-pending" id="level-status-badge">Not Levelled</span>
                 </div>

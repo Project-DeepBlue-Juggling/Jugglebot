@@ -328,10 +328,25 @@ function buildUPlotOpts(width, height) {
         }
     }
 
-    // Build scales
+    // Build scales — custom range function to keep axes tight to data
     const scales = { x: { time: true } };
     for (const scaleKey of usedScales.keys()) {
-        scales[scaleKey] = { auto: true };
+        scales[scaleKey] = {
+            auto: true,
+            range: (u, dataMin, dataMax) => {
+                // When no data or all values identical, show a small range around the value
+                if (dataMin == null || dataMax == null) return [0, 1];
+                if (dataMin === dataMax) {
+                    const v = dataMin;
+                    const pad = Math.max(Math.abs(v) * 0.1, 0.5);
+                    return [v - pad, v + pad];
+                }
+                // Add 5% padding above and below
+                const span = dataMax - dataMin;
+                const pad = span * 0.05;
+                return [dataMin - pad, dataMax + pad];
+            },
+        };
     }
 
     // Build axes — alternate left (3) and right (1)
@@ -341,7 +356,7 @@ function buildUPlotOpts(width, height) {
             stroke: '#94a3b8',
             grid: { stroke: 'rgba(51,65,85,0.5)', width: 1 },
             ticks: { stroke: '#334155', width: 1 },
-            font: '10px JetBrains Mono, monospace',
+            font: '14px JetBrains Mono, monospace',
         },
     ];
 
@@ -351,13 +366,13 @@ function buildUPlotOpts(width, height) {
             scale: scaleKey,
             side: sideToggle,
             label: unit,
-            labelSize: 12,
-            size: 50,
+            labelSize: 16,
+            size: 60,
             stroke: '#94a3b8',
             grid: { stroke: 'rgba(51,65,85,0.3)', width: 1 },
             ticks: { stroke: '#334155', width: 1 },
-            font: '10px JetBrains Mono, monospace',
-            labelFont: '10px JetBrains Mono, monospace',
+            font: '14px JetBrains Mono, monospace',
+            labelFont: '14px JetBrains Mono, monospace',
         });
         sideToggle = sideToggle === 3 ? 1 : 3;
     }

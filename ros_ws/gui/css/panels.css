@@ -3,6 +3,16 @@
    =================================================================== */
 
 /* ---- Orchestrator state badge ---- */
+#panel-orchestrator .panel-header {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: center;
+}
+
+#panel-orchestrator .state-badge {
+    justify-self: center;
+}
+
 .state-badge {
     font-size: var(--font-size-lg);
     padding: 4px 16px;
@@ -14,10 +24,30 @@
 .state-badge.active   { background: var(--state-active);  color: #000; }
 .state-badge.fault    { background: var(--state-fault);   color: #fff; }
 
+.bus-voltage-inline {
+    justify-self: end;
+    display: flex;
+    align-items: baseline;
+    gap: 2px;
+}
+
+.bus-voltage-inline .value {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-base);
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.bus-voltage-inline .unit {
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+}
+
 .sub-mode {
     font-size: var(--font-size-xs);
     color: var(--text-muted);
     margin-top: 2px;
+    text-align: center;
 }
 
 /* ---- Motor status grid ---- */
@@ -125,6 +155,17 @@
     display: flex;
     gap: 8px;
     align-items: center;
+}
+
+.level-inline-item {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+}
+
+.level-inline-label {
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
 }
 
 .level-inline-value {

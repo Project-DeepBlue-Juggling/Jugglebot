@@ -674,7 +674,6 @@ export function clearTopicData() {
 // ---- Init all panels ----
 
 export function initAllPanels() {
-    initMotorGrid();
     initFlagsGrid();
     initLevellingPanel();
     initBBPanel();
