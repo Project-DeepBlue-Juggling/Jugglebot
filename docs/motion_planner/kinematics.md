@@ -33,8 +33,8 @@ geom = StewartGeometry()
 
 Leg extensions are measured from fully retracted:
 
-- `0 mm` = fully retracted (string fully wound on spool)
-- `280 mm` = fully extended (string fully unwound)
+- `0 mm` = fully retracted 
+- `280 mm` = fully extended
 - At home, each leg is at its `init_leg_lengths_mm` value (somewhere in the middle of the stroke)
 
 ## Position Inverse Kinematics
@@ -53,7 +53,7 @@ where $\mathbf{a}_i$ is the platform node in the body frame, $\mathbf{R}$ is the
 
 The leg vector is $\mathbf{l}_i = \mathbf{p}_i - \mathbf{b}_i$, and the leg length is $\|\mathbf{l}_i\|$.
 
-The extension (how much string is unwound) is:
+The extension is:
 
 $$\text{extension}_i = \|\mathbf{l}_i\| - L_{i,\text{init}} + L_{i,\text{init\_ext}}$$
 
@@ -189,7 +189,7 @@ from jugglebot.motion.conversions import leg_forces_to_motor_torques
 motor_torques_Nm = leg_forces_to_motor_torques(leg_forces_N, geom)
 ```
 
-Converts via the spool radius: $\tau = F \cdot r_{\text{spool}}$. The spool radius is derived from the `mm_to_rev` conversion factor: $r = 1 / (2\pi \cdot \text{mm\_to\_rev})$.
+Converts via the spool radius: $\tau = F \cdot r_{\text{spool}}$. The spool radius is derived from the `mm_to_rev` conversion factor: $r = 1 / (2\pi \cdot \text{mm_to_rev})$.
 
 ## Verification
 
