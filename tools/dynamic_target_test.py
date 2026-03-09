@@ -37,10 +37,12 @@ Requirements:
 from __future__ import annotations
 
 import argparse
+import datetime
 import signal
 import sys
 import traceback
 import time
+from pathlib import Path
 
 import numpy as np
 
@@ -86,6 +88,8 @@ from trajectory_test import (  # noqa: E402
     print_feasibility,
     prepare_harness,
     switch_to_passthrough,
+    build_run_metadata,
+    save_log,
     TARGET_DT_S,
     TARGET_LOOP_HZ,
     HOLD_AFTER_S,
@@ -763,6 +767,7 @@ def execute_with_dynamic_targets(
     targets: list[dict],
     max_duration_s: float = 30.0,
     label: str = "",
+    metadata: dict | None = None,
 ) -> tuple[list[dict], TrajectoryLog]:
     """Execute a sequence of dynamic targets with real-time control.
 
@@ -781,13 +786,16 @@ def execute_with_dynamic_targets(
         - 'duration_s': trajectory duration in seconds
     max_duration_s : float — max test duration
     label : str — test label for logging
+    metadata : dict or None — run metadata from build_run_metadata()
 
     Returns
     -------
     events : list of dicts with acceptance/rejection info
-    log : TrajectoryLog with all recorded data
+    log : TrajectoryLog with all recorded data (includes metadata)
     """
     log = TrajectoryLog()
+    if metadata is not None:
+        log.metadata = metadata
     events = []
     target_idx = 0
 
@@ -901,6 +909,20 @@ def execute_with_dynamic_targets(
 
 
 # ---------------------------------------------------------------------------
+# Auto-save helper
+# ---------------------------------------------------------------------------
+
+_LOGS_DIR = Path(__file__).parent / 'logs'
+
+
+def _auto_save_log(log, test_name: str, speed_scale: float) -> None:
+    """Save a run log to tools/logs/ with a timestamped filename."""
+    ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    fname = f"{test_name}_{speed_scale:.1f}x_{ts}.json"
+    save_log(log, _LOGS_DIR / fname)
+
+
+# ---------------------------------------------------------------------------
 # DT1: Static target from home
 # ---------------------------------------------------------------------------
 
@@ -936,6 +958,12 @@ def test_static_target(
         'duration_s': duration,
     }]
 
+    meta = build_run_metadata(
+        'DT1', speed_scale, geom, params,
+        tracking_threshold_mm=threshold,
+        extra={'target_pos': [0, 0, 200], 'duration_s': duration},
+    )
+
     prepare_harness(harness)
     move_to_active_home(harness, geom, params)
     switch_to_passthrough(harness)
@@ -945,7 +973,7 @@ def test_static_target(
           f"duration={duration:.1f}s)...")
     events, log = execute_with_dynamic_targets(
         harness, mgr, geom, params, limits, targets,
-        max_duration_s=duration + 5.0, label="DT1")
+        max_duration_s=duration + 5.0, label="DT1", metadata=meta)
 
     # Analyze (stowing handled by main() finally block)
     filtered = filter_startup_samples(log)
@@ -957,6 +985,9 @@ def test_static_target(
     if analysis:
         print_analysis('DT1 Static target', analysis)
         passed = analysis['max_error_mm'] < threshold
+        log.metadata['analysis'] = analysis
+        log.metadata['result'] = 'PASS' if passed else 'FAIL'
+        _auto_save_log(log, 'DT1', speed_scale)
         print(f"\n  Max tracking error: {analysis['max_error_mm']:.3f} mm "
               f"(threshold: {threshold} mm)")
         print(f"  {'PASS' if passed else 'FAIL'}: DT1 Static target")
@@ -1002,6 +1033,14 @@ def test_auto_return(
         'duration_s': duration,
     }]
 
+    meta = build_run_metadata(
+        'DT2', speed_scale, geom, params,
+        tracking_threshold_mm=threshold,
+        extra={'target_pos': [0, 0, 190],
+               'target_vel_z': 30 * speed_scale,
+               'duration_s': duration},
+    )
+
     prepare_harness(harness)
     move_to_active_home(harness, geom, params)
     switch_to_passthrough(harness)
@@ -1011,7 +1050,7 @@ def test_auto_return(
           f"duration={duration:.1f}s)...")
     events, log = execute_with_dynamic_targets(
         harness, mgr, geom, params, limits, targets,
-        max_duration_s=duration * 3 + 5.0, label="DT2")
+        max_duration_s=duration * 3 + 5.0, label="DT2", metadata=meta)
 
     # Analyze (stowing handled by main() finally block)
     filtered = filter_startup_samples(log)
@@ -1036,6 +1075,11 @@ def test_auto_return(
         passed = (analysis['max_error_mm'] < threshold and
                   home_err < 1.0 and
                   final_state == TrajectoryState.IDLE)
+        log.metadata['analysis'] = analysis
+        log.metadata['result'] = 'PASS' if passed else 'FAIL'
+        log.metadata['final_state'] = final_state.value
+        log.metadata['home_error_mm'] = home_err
+        _auto_save_log(log, 'DT2', speed_scale)
         print(f"  {'PASS' if passed else 'FAIL'}: DT2 Auto-return")
         return passed
     else:
@@ -1086,6 +1130,13 @@ def test_replan(
         },
     ]
 
+    meta = build_run_metadata(
+        'DT3', speed_scale, geom, params,
+        tracking_threshold_mm=threshold,
+        extra={'n_targets': 2, 'replan_delay_s': 0.7,
+               'duration_s': base_dur},
+    )
+
     prepare_harness(harness)
     move_to_active_home(harness, geom, params)
     switch_to_passthrough(harness)
@@ -1095,7 +1146,7 @@ def test_replan(
           f"duration={base_dur:.1f}s)...")
     events, log = execute_with_dynamic_targets(
         harness, mgr, geom, params, limits, targets,
-        max_duration_s=base_dur * 2 + 5.0, label="DT3")
+        max_duration_s=base_dur * 2 + 5.0, label="DT3", metadata=meta)
 
     # Analyze (stowing handled by main() finally block)
     filtered = filter_startup_samples(log)
@@ -1114,6 +1165,10 @@ def test_replan(
 
         passed = (analysis['max_error_mm'] < threshold and
                   n_accepted == len(targets))
+        log.metadata['analysis'] = analysis
+        log.metadata['result'] = 'PASS' if passed else 'FAIL'
+        log.metadata['events'] = events
+        _auto_save_log(log, 'DT3', speed_scale)
         print(f"  {'PASS' if passed else 'FAIL'}: DT3 Replan")
         return passed
     else:
@@ -1157,6 +1212,12 @@ def test_rapid_targets(
             'duration_s': duration,
         })
 
+    meta = build_run_metadata(
+        'DT4', speed_scale, geom, params,
+        extra={'n_targets': len(targets), 'duration_s': duration,
+               'z_values': z_values},
+    )
+
     prepare_harness(harness)
     move_to_active_home(harness, geom, params)
     switch_to_passthrough(harness)
@@ -1166,7 +1227,7 @@ def test_rapid_targets(
           f"{len(targets)} targets, duration={duration:.1f}s)...")
     events, log = execute_with_dynamic_targets(
         harness, mgr, geom, params, limits, targets,
-        max_duration_s=duration + 10.0, label="DT4")
+        max_duration_s=duration + 10.0, label="DT4", metadata=meta)
 
     # Analyze (stowing handled by main() finally block)
     n_accepted = sum(1 for e in events if e['accepted'])
@@ -1181,6 +1242,12 @@ def test_rapid_targets(
     print(f"  ODrive faults: {n_faults}")
 
     passed = n_faults == 0 and n_accepted > 0
+    log.metadata['events'] = events
+    log.metadata['n_accepted'] = n_accepted
+    log.metadata['n_rejected'] = n_rejected
+    log.metadata['n_faults'] = n_faults
+    log.metadata['result'] = 'PASS' if passed else 'FAIL'
+    _auto_save_log(log, 'DT4', speed_scale)
     print(f"  {'PASS' if passed else 'FAIL'}: DT4 Rapid targets")
     return passed
 
@@ -1229,6 +1296,13 @@ def test_infeasible_ignored(
         },
     ]
 
+    meta = build_run_metadata(
+        'DT5', speed_scale, geom, params,
+        tracking_threshold_mm=threshold,
+        extra={'base_dur_s': base_dur,
+               'infeasible_pos': [0, 0, 500], 'infeasible_dur_s': 0.01},
+    )
+
     prepare_harness(harness)
     move_to_active_home(harness, geom, params)
     switch_to_passthrough(harness)
@@ -1238,7 +1312,7 @@ def test_infeasible_ignored(
           f"duration={base_dur:.1f}s)...")
     events, log = execute_with_dynamic_targets(
         harness, mgr, geom, params, limits, targets,
-        max_duration_s=base_dur + 5.0, label="DT5")
+        max_duration_s=base_dur + 5.0, label="DT5", metadata=meta)
 
     # Analyze (stowing handled by main() finally block)
     filtered = filter_startup_samples(log)
@@ -1258,6 +1332,10 @@ def test_infeasible_ignored(
 
         passed = (first_accepted and second_rejected and
                   analysis['max_error_mm'] < threshold)
+        log.metadata['events'] = events
+        log.metadata['analysis'] = analysis
+        log.metadata['result'] = 'PASS' if passed else 'FAIL'
+        _auto_save_log(log, 'DT5', speed_scale)
         print(f"  {'PASS' if passed else 'FAIL'}: DT5 Infeasible ignored")
         return passed
     else:

@@ -54,6 +54,7 @@ __pycache__/
 */*/devel/
 */*/devel_isolated/
 */*/logs/
+tools/logs/
 
 # Ignore generated CMake files
 CMakeLists.txt.user

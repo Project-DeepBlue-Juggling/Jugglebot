@@ -38,10 +38,14 @@ Requirements:
 from __future__ import annotations
 
 import argparse
+import datetime
+import json
 import signal
+import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 
@@ -116,7 +120,7 @@ DEFAULT_SPEED_SCALE = 0.25
 
 @dataclass
 class TrajectoryLog:
-    """Records per-cycle data during trajectory execution."""
+    """Records per-cycle data and run metadata during trajectory execution."""
     timestamps: list = field(default_factory=list)
     commanded_pos_rev: list = field(default_factory=list)
     commanded_vel_rps: list = field(default_factory=list)
@@ -125,6 +129,161 @@ class TrajectoryLog:
     actual_vel_rps: list = field(default_factory=list)
     poses: list = field(default_factory=list)
     loop_dt_s: list = field(default_factory=list)
+    metadata: dict = field(default_factory=dict)
+
+
+def build_run_metadata(
+    test_name: str,
+    speed_scale: float,
+    geom: StewartGeometry,
+    params: DynamicsParams,
+    *,
+    tracking_threshold_mm: float | None = None,
+    move_duration_s: float | None = None,
+    extra: dict | None = None,
+) -> dict:
+    """Build a metadata dict capturing the full test configuration.
+
+    Call this before execution and assign to ``log.metadata``.
+
+    Parameters
+    ----------
+    test_name : str — e.g. 'JT1', 'DT2', 'T1'
+    speed_scale : float
+    geom : StewartGeometry
+    params : DynamicsParams
+    tracking_threshold_mm : float or None
+    move_duration_s : float or None — base move duration before scaling
+    extra : dict or None — test-specific parameters to merge in
+    """
+    from jugglebot.motion.workspace import (
+        LEG_HARD_MARGIN_MM,
+        LEG_SOFT_MARGIN_MM,
+        COND_SOFT_FACTOR,
+        COND_HARD_FACTOR,
+        compute_condition_number,
+    )
+
+    # Feasibility defaults (same as check_feasibility)
+    cond_home = compute_condition_number(np.zeros(3), np.eye(3), geom)
+
+    # Git revision
+    git_rev = _get_git_revision()
+
+    meta = {
+        # Environment
+        'timestamp': datetime.datetime.now().isoformat(),
+        'git_revision': git_rev,
+
+        # Test parameters
+        'test_name': test_name,
+        'speed_scale': speed_scale,
+        'tracking_threshold_mm': tracking_threshold_mm,
+        'move_duration_s': move_duration_s,
+        'target_loop_hz': TARGET_LOOP_HZ,
+
+        # ODrive gains and limits
+        'odrive': {
+            'pos_gain': BASELINE_POS_GAIN,
+            'vel_gain': BASELINE_VEL_GAIN,
+            'vel_int_gain': BASELINE_VEL_INT_GAIN,
+            'current_limit_A': float(SAFE_CURRENT_LIMIT_A),
+            'vel_limit_rps': float(hw.ODRIVE_LEG_VEL_LIMIT_RPS),
+        },
+
+        # Kinematic limits (feasibility checker defaults)
+        'kinematic_limits': {
+            'vel_limit_rps': float(hw.ODRIVE_TRAP_VEL_LIMIT_RPS),
+            'accel_limit_rps2': float(hw.ODRIVE_TRAP_ACC_LIMIT_RPS2),
+            'jerk_trans_limit': 50_000.0,
+            'jerk_rot_limit': 400.0,
+            'stroke_min_mm': float(LEG_HARD_MARGIN_MM),
+            'stroke_max_mm': float(geom.leg_stroke_mm - LEG_HARD_MARGIN_MM),
+            'condition_limit': 2.0 * cond_home,
+            'condition_home': cond_home,
+        },
+
+        # Workspace margins
+        'workspace': {
+            'leg_stroke_mm': float(geom.leg_stroke_mm),
+            'hard_margin_mm': float(LEG_HARD_MARGIN_MM),
+            'soft_margin_mm': float(LEG_SOFT_MARGIN_MM),
+            'cond_soft_factor': COND_SOFT_FACTOR,
+            'cond_hard_factor': COND_HARD_FACTOR,
+        },
+
+        # Geometry snapshot
+        'geometry': {
+            'home_z_mm': float(hw.JB_OP_DEFAULT_ACTIVE_Z_MM),
+            'spool_radii_mm': [float(r) for r in geom.spool_radii_mm],
+            'mm_to_rev': [float(v) for v in hw.GEOM_MM_TO_REV],
+        },
+
+        # Dynamics
+        'dynamics': {
+            'platform_mass_kg': float(params.mass_kg),
+            'com_offset_mm': [float(v) for v in params.com_offset_mm],
+            'gravity_mps2': float(params.gravity),
+        },
+    }
+
+    if extra:
+        meta['test_params'] = extra
+
+    return meta
+
+
+def _get_git_revision() -> str:
+    """Return the current git short hash + dirty flag, or 'unknown'."""
+    try:
+        rev = subprocess.check_output(
+            ['git', 'rev-parse', '--short', 'HEAD'],
+            stderr=subprocess.DEVNULL, timeout=5,
+        ).decode().strip()
+        # Check for uncommitted changes
+        status = subprocess.check_output(
+            ['git', 'status', '--porcelain'],
+            stderr=subprocess.DEVNULL, timeout=5,
+        ).decode().strip()
+        if status:
+            rev += '-dirty'
+        return rev
+    except Exception:
+        return 'unknown'
+
+
+def save_log(log: TrajectoryLog, filepath: str | Path) -> None:
+    """Save a TrajectoryLog (metadata + sample data) to a JSON file.
+
+    Sample arrays are stored as nested lists for portability.
+    """
+    filepath = Path(filepath)
+    filepath.parent.mkdir(parents=True, exist_ok=True)
+
+    data = {
+        'metadata': log.metadata,
+        'samples': {
+            'timestamps': log.timestamps,
+            'commanded_pos_rev': [a.tolist() if hasattr(a, 'tolist') else a
+                                  for a in log.commanded_pos_rev],
+            'commanded_vel_rps': [a.tolist() if hasattr(a, 'tolist') else a
+                                  for a in log.commanded_vel_rps],
+            'commanded_torque_Nm': [a.tolist() if hasattr(a, 'tolist') else a
+                                    for a in log.commanded_torque_Nm],
+            'actual_pos_rev': [a.tolist() if hasattr(a, 'tolist') else a
+                               for a in log.actual_pos_rev],
+            'actual_vel_rps': [a.tolist() if hasattr(a, 'tolist') else a
+                               for a in log.actual_vel_rps],
+            'poses': [a.tolist() if hasattr(a, 'tolist') else a
+                      for a in log.poses],
+            'loop_dt_s': log.loop_dt_s,
+        },
+    }
+
+    with open(filepath, 'w') as f:
+        json.dump(data, f, indent=2)
+
+    print(f"  Log saved: {filepath} ({len(log.timestamps)} samples)")
 
 
 def analyze_log(log: TrajectoryLog) -> dict:

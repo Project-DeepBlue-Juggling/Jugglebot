@@ -35,10 +35,12 @@ Requirements:
 from __future__ import annotations
 
 import argparse
+import datetime
 import signal
 import sys
 import traceback
 import time
+from pathlib import Path
 
 import numpy as np
 
@@ -72,6 +74,8 @@ from trajectory_test import (  # noqa: E402
     print_feasibility,
     prepare_harness,
     switch_to_passthrough,
+    build_run_metadata,
+    save_log,
 )
 
 # Import dynamic target infrastructure (reuse Phase 7 helpers)
@@ -301,6 +305,21 @@ def build_star_targets(
 
 
 # ---------------------------------------------------------------------------
+# Auto-save helper
+# ---------------------------------------------------------------------------
+
+# Log output directory: tools/logs/ (gitignored)
+_LOGS_DIR = Path(__file__).parent / 'logs'
+
+
+def _auto_save_log(log, test_name: str, speed_scale: float) -> None:
+    """Save a run log to tools/logs/ with a timestamped filename."""
+    ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    fname = f"{test_name}_{speed_scale:.1f}x_{ts}.json"
+    save_log(log, _LOGS_DIR / fname)
+
+
+# ---------------------------------------------------------------------------
 # JT1: Lateral shuttle
 # ---------------------------------------------------------------------------
 
@@ -340,6 +359,19 @@ def test_shuttle(
     print(f"  Estimated total: {total_est:.1f}s")
     print(f"  Threshold:       {threshold:.1f} mm")
 
+    meta = build_run_metadata(
+        'JT1', speed_scale, geom, params,
+        tracking_threshold_mm=threshold,
+        move_duration_s=move_duration,
+        extra={
+            'shuttle_radius_mm': SHUTTLE_RADIUS_MM,
+            'shuttle_tilt_deg': SHUTTLE_TILT_DEG,
+            'shuttle_repetitions': SHUTTLE_REPETITIONS,
+            'endpoint_pause_s': ENDPOINT_PAUSE_S,
+            'n_targets': n_moves,
+        },
+    )
+
     prepare_harness(harness)
     move_to_active_home(harness, geom, params)
     switch_to_passthrough(harness)
@@ -349,7 +381,7 @@ def test_shuttle(
     max_dur = total_est + 15.0  # generous timeout
     events, log = execute_with_dynamic_targets(
         harness, mgr, geom, params, limits, targets,
-        max_duration_s=max_dur, label="JT1")
+        max_duration_s=max_dur, label="JT1", metadata=meta)
 
     # Analyze
     filtered = filter_startup_samples(log)
@@ -373,6 +405,13 @@ def test_shuttle(
         passed = (analysis['max_error_mm'] < threshold
                   and n_faults == 0
                   and n_accepted == len(targets))
+
+        # Save log with analysis results
+        log.metadata['analysis'] = analysis
+        log.metadata['result'] = 'PASS' if passed else 'FAIL'
+        log.metadata['events'] = events
+        _auto_save_log(log, 'JT1', speed_scale)
+
         print(f"  {'PASS' if passed else 'FAIL'}: JT1 Lateral shuttle")
         return passed
     else:
@@ -437,6 +476,31 @@ def test_star(
             print(f"    HOME:           "
                   f"({pos[0]:7.1f}, {pos[1]:7.1f}, {pos[2]:5.1f}) mm")
 
+    # Build star point descriptions for metadata
+    star_points = []
+    for i, tgt in enumerate(targets[:-1]):
+        R = quat_to_rot_matrix(*tgt['quat'])
+        rv = rot_matrix_to_rotvec(R)
+        star_points.append({
+            'pos': tgt['pos'],
+            'tilt_deg': [float(np.rad2deg(rv[0])),
+                         float(np.rad2deg(rv[1]))],
+        })
+
+    meta = build_run_metadata(
+        'JT2', speed_scale, geom, params,
+        tracking_threshold_mm=threshold,
+        move_duration_s=move_duration,
+        extra={
+            'star_radius_mm': STAR_RADIUS_MM,
+            'star_max_tilt_deg': STAR_MAX_TILT_DEG,
+            'star_rng_seed': seed,
+            'endpoint_pause_s': ENDPOINT_PAUSE_S,
+            'n_targets': n_moves,
+            'star_points': star_points,
+        },
+    )
+
     prepare_harness(harness)
     move_to_active_home(harness, geom, params)
     switch_to_passthrough(harness)
@@ -446,7 +510,7 @@ def test_star(
     max_dur = total_est + 15.0
     events, log = execute_with_dynamic_targets(
         harness, mgr, geom, params, limits, targets,
-        max_duration_s=max_dur, label="JT2")
+        max_duration_s=max_dur, label="JT2", metadata=meta)
 
     # Analyze
     filtered = filter_startup_samples(log)
@@ -470,6 +534,12 @@ def test_star(
         passed = (analysis['max_error_mm'] < threshold
                   and n_faults == 0
                   and n_accepted == len(targets))
+
+        log.metadata['analysis'] = analysis
+        log.metadata['result'] = 'PASS' if passed else 'FAIL'
+        log.metadata['events'] = events
+        _auto_save_log(log, 'JT2', speed_scale)
+
         print(f"  {'PASS' if passed else 'FAIL'}: JT2 Star pattern")
         return passed
     else:
