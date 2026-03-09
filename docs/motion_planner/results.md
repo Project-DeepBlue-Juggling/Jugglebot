@@ -1,6 +1,6 @@
 # Validation Results
 
-This page summarises the key hardware test results from each development phase. The full test log with detailed notes is in [`MOTION_PLANNER_PLAN.md`](https://github.com/PDJ/Jugglebot/blob/refactor/MOTION_PLANNER_PLAN.md).
+This page summarises the key hardware test results from each development phase. The full test log with detailed notes is in [`MOTION_PLANNER_PLAN.md`](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/MOTION_PLANNER_PLAN.md).
 
 ## Phase 1: Kinematics (Offline)
 

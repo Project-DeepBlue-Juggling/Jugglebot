@@ -4,8 +4,8 @@ This page covers how the motion planner computes motor torques from the physics 
 
 **Source files:**
 
-- [dynamics.py](https://github.com/PDJ/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/dynamics.py) — gravity wrench, inertia wrench, feedforward torques
-- [conversions.py](https://github.com/PDJ/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/conversions.py) — leg force to motor torque conversion
+- [dynamics.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/dynamics.py) — gravity wrench, inertia wrench, feedforward torques
+- [conversions.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/conversions.py) — leg force to motor torque conversion
 
 ## Why Feedforward Torques?
 

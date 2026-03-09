@@ -4,9 +4,9 @@ This page describes how the motion planner connects to the rest of the Jugglebot
 
 **Source files:**
 
-- [motion_bridge_node.py](https://github.com/PDJ/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion_bridge_node.py) — ROS2 bridge
-- [can_node.py](https://github.com/PDJ/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/can_node.py) — CAN interface
-- [orchestrator_node.py](https://github.com/PDJ/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/orchestrator_node.py) — State machine coordinator
+- [motion_bridge_node.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion_bridge_node.py) — ROS2 bridge
+- [can_node.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/can_node.py) — CAN interface
+- [orchestrator_node.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/orchestrator_node.py) — State machine coordinator
 
 ## System Architecture
 
@@ -144,10 +144,51 @@ The orchestrator publishes mode changes on `control_mode_topic`, which the bridg
 
 ## Startup Sequence
 
-A typical startup:
+### Using the Launch File (Recommended)
 
-1. **Launch ROS2 nodes:** orchestrator, CAN node, bridge, spacemouse handler, etc.
-2. **Start control process:** `python -m jugglebot.motion.control_loop` (separate terminal/process). The control loop starts in `DISABLED` mode with zero outputs.
+The primary way to start the system is the ROS2 launch file:
+
+```bash
+# Standard startup (real hardware)
+ros2 launch jugglebot jugglebot_launch.py
+
+# With rosbag recording
+ros2 launch jugglebot jugglebot_launch.py record:=true
+
+# With simulator instead of hardware
+ros2 launch jugglebot jugglebot_launch.py use_simulator:=true
+```
+
+**Launch file:** [`ros_ws/src/jugglebot/launch/jugglebot_launch.py`](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/launch/jugglebot_launch.py)
+
+**Launch arguments:**
+
+| Argument | Default | Purpose |
+|---|---|---|
+| `use_simulator` | `false` | Use Webots simulator instead of real hardware |
+| `record` | `false` | Enable rosbag recording (MCAP format, saved to `~/Desktop/rosbags/`) |
+
+**Nodes started by the launch file:**
+
+| Node / Process | Condition | Purpose |
+|---|---|---|
+| `can_node` | Real hardware only | CAN bus communication with ODrives |
+| `orchestrator_node` | Always | Robot state machine |
+| `spacemouse_handler` | Always | SpaceMouse input |
+| `sp_ik` | Always | Legacy Stewart platform IK node |
+| `rosbridge_websocket` | Always | WebSocket bridge for GUI |
+| `rosbag record` | If `record:=true` | Records selected topics in MCAP format |
+| Webots simulator | If `use_simulator:=true` | Simulated environment |
+
+!!! note "Motion planner not yet in launch file"
+    The `motion_bridge_node` and `control_loop` process are defined in the launch file but are currently **commented out** (lines 123 and 128). Until they are uncommented, the motion planner must be started manually in separate terminals alongside the launch file. This will be integrated once the motion planner is the primary control path.
+
+### Manual Startup (When Not Using Launch File)
+
+For development or when running the motion planner separately:
+
+1. **Launch ROS2 nodes** (via launch file or individually)
+2. **Start control process:** `python -m jugglebot.motion.control_loop --rate 500` (separate terminal). Starts in `DISABLED` mode with zero outputs.
 3. **IPC connection:** The bridge's BridgeIPC binds on port 5555. The control loop's ControlProcessIPC connects. ZeroMQ handles the connection/reconnection automatically.
 4. **Homing:** The orchestrator commands homing via the CAN node. ODrives find their encoder references.
 5. **Activate:** The orchestrator transitions to ACTIVE, publishing a mode on `control_mode_topic`. The bridge sends an `enable` command. The control loop transitions to `ENABLED` and seeds the home pose.

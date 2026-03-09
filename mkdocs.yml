@@ -1,7 +1,7 @@
 site_name: Jugglebot Documentation
 site_description: Technical documentation for Jugglebot — a Stewart platform robot with ball-catching capabilities
-repo_url: https://github.com/PDJ/Jugglebot
-repo_name: PDJ/Jugglebot
+repo_url: https://github.com/Project-DeepBlue-Juggling/Jugglebot
+repo_name: Project-DeepBlue-Juggling/Jugglebot
 
 theme:
   name: material

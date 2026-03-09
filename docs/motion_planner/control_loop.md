@@ -4,8 +4,8 @@ This page describes the 500 Hz control process — what happens every 2 ms, how 
 
 **Source files:**
 
-- [control_loop.py](https://github.com/PDJ/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/control_loop.py) (~690 lines)
-- [ipc.py](https://github.com/PDJ/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/ipc.py) (~375 lines)
+- [control_loop.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/control_loop.py) (~690 lines)
+- [ipc.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/ipc.py) (~375 lines)
 
 ## Architecture
 

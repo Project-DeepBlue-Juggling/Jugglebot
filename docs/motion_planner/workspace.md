@@ -2,7 +2,7 @@
 
 This page covers how the motion planner keeps the platform within safe operating limits — leg extension bounds, singularity avoidance, and fault detection.
 
-**Source file:** [workspace.py](https://github.com/PDJ/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/workspace.py) (~300 lines)
+**Source file:** [workspace.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/workspace.py) (~300 lines)
 
 ## Overview
 

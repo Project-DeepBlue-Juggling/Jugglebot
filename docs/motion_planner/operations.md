@@ -118,6 +118,69 @@ python tools/trajectory_viewer.py
 python tools/trajectory_test.py --preview
 ```
 
+## Trajectory Visualization
+
+### Pre-Execution Preview
+
+Before running a trajectory on hardware, preview it offline. The `tools/trajectory_viewer.py` provides a 3D matplotlib visualization of the Stewart platform moving through a trajectory.
+
+For Cartesian and joint-space analysis, you can plot trajectories programmatically:
+
+```python
+import matplotlib.pyplot as plt
+import numpy as np
+from jugglebot.motion.trajectory import make_rest_to_rest, evaluate, check_feasibility
+from jugglebot.motion.ik_solver import pose_to_leg_lengths, rotvec_to_rot_matrix
+from jugglebot.motion.geometry import StewartGeometry
+from jugglebot.motion.dynamics import DynamicsParams
+
+geom = StewartGeometry()
+params = DynamicsParams.from_config()
+traj = make_rest_to_rest(np.array([20, 0, 30, 0.05, 0, 0]), duration=1.5)
+
+times = np.linspace(0, traj.duration, 200)
+poses = np.array([evaluate(traj, t)[0] for t in times])
+twists = np.array([evaluate(traj, t)[1] for t in times])
+
+# Cartesian space
+fig, axes = plt.subplots(2, 3, figsize=(12, 6), sharex=True)
+labels = ['X (mm)', 'Y (mm)', 'Z (mm)', 'RX (rad)', 'RY (rad)', 'RZ (rad)']
+for i, (ax, label) in enumerate(zip(axes.flat, labels)):
+    ax.plot(times, poses[:, i])
+    ax.set_ylabel(label)
+axes[-1, 1].set_xlabel('Time (s)')
+plt.suptitle('Cartesian Trajectory')
+plt.tight_layout()
+
+# Joint space (leg extensions)
+extensions = np.array([
+    pose_to_leg_lengths(p[:3], rotvec_to_rot_matrix(p[3:6]), geom)
+    for p in poses
+])
+fig2, ax2 = plt.subplots(figsize=(10, 4))
+for i in range(6):
+    ax2.plot(times, extensions[:, i], label=f'Leg {i}')
+ax2.set_xlabel('Time (s)')
+ax2.set_ylabel('Extension (mm)')
+ax2.legend()
+ax2.set_title('Leg Extensions')
+plt.tight_layout()
+plt.show()
+```
+
+### Post-Session Analysis (Rosbag)
+
+When recording is enabled (`ros2 launch jugglebot jugglebot_launch.py record:=true`), rosbag captures topics in MCAP format to `~/Desktop/rosbags/`. Recorded topics include `/leg_lengths_topic` (commanded motor positions, velocities, torques) and `/platform_pose_topic` (commanded Cartesian poses).
+
+To play back and analyze a recording, use the `rosbags` or `mcap` Python packages:
+
+```bash
+pip install rosbags
+```
+
+!!! note "Motor feedback not yet in rosbag"
+    Currently, actual motor encoder positions (feedback) are not published to a ROS2 topic by the bridge — they stay in the IPC layer. This means rosbag captures **commanded** trajectories but not **measured** ones. Adding a `/motor_feedback` topic to the bridge would close this gap. See `MINOR_UPDATES.md` for the proposed implementation.
+
 ## ODrive Gain Tuning
 
 The ODrive controllers have three tunable gains set via CAN:

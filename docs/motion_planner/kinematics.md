@@ -4,9 +4,9 @@ This page covers how platform poses are converted to leg lengths (inverse kinema
 
 **Source files:**
 
-- [geometry.py](https://github.com/PDJ/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/geometry.py) — platform dimensions
-- [ik_solver.py](https://github.com/PDJ/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/ik_solver.py) — all kinematic computations
-- [conversions.py](https://github.com/PDJ/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/conversions.py) — mm/rev and force/torque conversions
+- [geometry.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/geometry.py) — platform dimensions
+- [ik_solver.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/ik_solver.py) — all kinematic computations
+- [conversions.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/conversions.py) — mm/rev and force/torque conversions
 
 ## Platform Geometry
 

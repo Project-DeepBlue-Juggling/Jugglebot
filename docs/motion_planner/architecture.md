@@ -97,7 +97,7 @@ Single PUB socket with CONFLATE on the subscriber side. Carries the computed mot
 | `motorfb` | `make_motor_feedback()` | Encoder positions, velocities, currents from CAN |
 | `telem` | `make_telemetry()` | Motor commands, feedforward torques, timing, workspace status, faults |
 
-See [ipc.py](https://github.com/PDJ/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/ipc.py) for the complete message definitions.
+See [ipc.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/ipc.py) for the complete message definitions.
 
 ## Control Modes
 
@@ -191,12 +191,12 @@ The Jacobian maps `[mm/s, mm/s, mm/s, rad/s, rad/s, rad/s]` to `[mm/s × 6]`, so
 
 | File | Lines | Purpose |
 |---|---|---|
-| [geometry.py](https://github.com/PDJ/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/geometry.py) | ~65 | Platform geometry constants |
-| [ik_solver.py](https://github.com/PDJ/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/ik_solver.py) | ~370 | Kinematics (IK, FK, Jacobian) |
-| [conversions.py](https://github.com/PDJ/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/conversions.py) | ~100 | Unit conversions |
-| [dynamics.py](https://github.com/PDJ/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/dynamics.py) | ~360 | Gravity + inertia feedforward |
-| [workspace.py](https://github.com/PDJ/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/workspace.py) | ~300 | Workspace limits |
-| [trajectory.py](https://github.com/PDJ/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/trajectory.py) | ~1560 | Trajectory generation + manager |
-| [ipc.py](https://github.com/PDJ/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/ipc.py) | ~375 | ZeroMQ IPC layer |
-| [control_loop.py](https://github.com/PDJ/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/control_loop.py) | ~690 | Control process |
-| [motion_bridge_node.py](https://github.com/PDJ/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion_bridge_node.py) | ~195 | ROS2 bridge |
+| [geometry.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/geometry.py) | ~65 | Platform geometry constants |
+| [ik_solver.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/ik_solver.py) | ~370 | Kinematics (IK, FK, Jacobian) |
+| [conversions.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/conversions.py) | ~100 | Unit conversions |
+| [dynamics.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/dynamics.py) | ~360 | Gravity + inertia feedforward |
+| [workspace.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/workspace.py) | ~300 | Workspace limits |
+| [trajectory.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/trajectory.py) | ~1560 | Trajectory generation + manager |
+| [ipc.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/ipc.py) | ~375 | ZeroMQ IPC layer |
+| [control_loop.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/control_loop.py) | ~690 | Control process |
+| [motion_bridge_node.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion_bridge_node.py) | ~195 | ROS2 bridge |

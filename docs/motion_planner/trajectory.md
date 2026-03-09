@@ -2,7 +2,7 @@
 
 This page covers how smooth motions are planned — from the quintic polynomial math to feasibility checking to the trajectory manager that handles dynamic targets and mid-motion replanning.
 
-**Source file:** [trajectory.py](https://github.com/PDJ/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/trajectory.py) (~1560 lines)
+**Source file:** [trajectory.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/trajectory.py) (~1560 lines)
 
 ## Concepts
 
@@ -297,9 +297,14 @@ When a target has nonzero velocity (the platform is moving when it arrives), the
 
 The return trajectory is **precomputed in the background** while the outbound trajectory is still executing. When the outbound completes, the return trajectory is ready to start immediately.
 
-### Deferred Start
+### Arrival Time and Duration
 
-If `arrival_time` is far in the future (more than 2 seconds beyond the minimum feasible duration), the trajectory start is deferred. The platform holds in place and then moves at a reasonable speed to arrive on time, rather than creating an unnecessarily slow trajectory.
+The trajectory duration is simply `arrival_time - t_now`. The trajectory starts immediately and uses the full requested duration — a far-future arrival time produces a slow trajectory, a near-future one produces a fast trajectory. Feasibility checking rejects durations that are too short (the move physically can't be done that fast).
+
+!!! note "Deferred start (removed)"
+    An earlier implementation included deferred-start logic: when `arrival_time` was far in the future (more than `min_feasible_duration + 2.0s`), the trajectory start was deferred so the platform would hold in place, then move at a reasonable speed. This was removed in commit `1695946` because it caused position discontinuities at the deferred start moment. The current approach — starting immediately with the full duration — is simpler and avoids the discontinuity. Re-implementing deferred start with proper splice continuity at the hold-to-move transition is a candidate for future work.
+
+    The `evaluate()` method does support holding at the start pose before `t_start` (used by the realtime restamping mechanism), so the infrastructure for deferred start still exists if needed.
 
 ### Timing Compensation
 

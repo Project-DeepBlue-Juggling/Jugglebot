@@ -1,5 +1,8 @@
 # Motion Planner Overview
 
+!!! info "Scope: Stewart Platform Only"
+    This motion planner controls the **Stewart platform** — the 6-leg parallel mechanism. It does not cover the Ball Butler subsystem or the linear throw axis, which are controlled independently. The throw axis is treated as a static payload for dynamics purposes (its mass is included in the platform inertia model).
+
 The motion planner is the subsystem responsible for commanding the Stewart platform's six leg actuators. Given a desired platform pose (position + orientation), it computes motor positions, velocity feedforward, and torque feedforward for each leg, and sends these commands to the ODrive motor controllers over CAN bus at 500 Hz.
 
 ## Design Principles
@@ -80,4 +83,4 @@ External:
 
 ## Development History
 
-The motion planner was developed in 8 phases, each with explicit exit criteria and graduated hardware exposure. The full development narrative, including all test results and decisions, is preserved in [`MOTION_PLANNER_PLAN.md`](https://github.com/PDJ/Jugglebot/blob/refactor/MOTION_PLANNER_PLAN.md) at the repository root. This documentation describes the system as it exists now; the plan document records how it got here.
+The motion planner was developed in 8 phases, each with explicit exit criteria and graduated hardware exposure. The full development narrative, including all test results and decisions, is preserved in [`MOTION_PLANNER_PLAN.md`](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/MOTION_PLANNER_PLAN.md) at the repository root. This documentation describes the system as it exists now; the plan document records how it got here.

@@ -4,7 +4,9 @@ Jugglebot is a 6-DoF Stewart platform robot with ball-catching capabilities. It 
 
 ## Documentation Sections
 
-### [Motion Planner](motion_planner/index.md)
+### [Motion Planner](motion_planner/index.md) — Stewart Platform
+
+The motion planner controls the **Stewart platform** (the 6-leg parallel mechanism). It does not cover the Ball Butler subsystem or the linear throw axis, which have their own independent control paths.
 
 Complete technical documentation for the motion planning and control subsystem, covering:
 
