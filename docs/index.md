@@ -22,7 +22,7 @@ Complete technical documentation for the motion planning and control subsystem, 
 
 ```
 Jugglebot/
-├── config/                     # Code-generated protocol & hardware constants
+├── config/                     # Code-generated protocol & hardware constants 
 │   ├── jugglebot_protocol.yaml
 │   ├── hardware_config.yaml
 │   └── generate_config.py
