@@ -102,7 +102,7 @@ Three time regions:
 
 Computes the 3rd derivative of the quintic (6 coefficients → 3 non-trivial jerk coefficients). Used by the feasibility checker for jerk limit enforcement.
 
-Jerk is checked in **Cartesian space only** (mm/s³ translational, rad/s³ rotational). Per-leg jerk is not checked — the Jacobian condition number constraint guards against poses where smooth Cartesian motion would map to jerky leg motion.
+Jerk is checked in **Cartesian space only** (mm/s³ translational, rad/s³ rotational). Per-leg jerk is not checked — the Jacobian condition number crudely constraint guards against poses where smooth Cartesian motion would map to jerky leg motion.
 
 ## Cartesian to Motor Commands
 
@@ -184,9 +184,9 @@ This is used by dynamic target handling to automatically select an appropriate t
 ```
     IDLE ──submit()──► EXECUTING ──complete──► COMPLETE
       ▲                    |                      |
-      |                    |  (nonzero end vel)    |
+      |                    |  (nonzero end vel)   |
       |                    ▼                      |
-      +───────────── RETURNING ◄──────────────────+
+      +───────────── RETURNING ◄───────────────────+
                      (auto return to home)
 ```
 
