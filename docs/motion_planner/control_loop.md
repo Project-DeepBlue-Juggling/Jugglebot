@@ -21,18 +21,16 @@ python -m jugglebot.motion.control_loop --rate 500 --log-level INFO
 Every cycle follows this sequence:
 
 ```
-┌─────────────────────────────────────────────────────┐
-│  1. Record cycle timing                             │
-│  2. Process IPC messages (targets, modes, feedback) │
-│  3. Poll async feasibility results                  │
-│  4. Check heartbeat (E-stop if no messages > 0.5s)  │
-│  5. Compute motor commands                          │
-│  6. Check workspace limits                          │
-│  7. Compute tracking error (if motor feedback)      │
-│  8. Publish telemetry                               │
-│  9. Periodic logging (every 5 seconds)              │
-│ 10. Sleep for remainder of cycle                    │
-└─────────────────────────────────────────────────────┘
+  1. Record cycle timing                             
+  2. Process IPC messages (targets, modes, feedback) 
+  3. Poll async feasibility results                  
+  4. Check heartbeat (E-stop if no messages > 0.5s)  
+  5. Compute motor commands                          
+  6. Check workspace limits                          
+  7. Compute tracking error (if motor feedback)      
+  8. Publish telemetry                               
+  9. Periodic logging (every 5 seconds)              
+ 10. Sleep for remainder of cycle                    
 ```
 
 ### Step 1: Timing
@@ -116,7 +114,7 @@ If the result is `SOFT_LIMIT`: log warning (future: adaptive speed reduction).
 
 If motor feedback has been received from the CAN node, the loop computes per-leg tracking error:
 
-$$\text{error}_i = |\text{commanded\_extension}_i - \text{actual\_extension}_i| \quad \text{(mm)}$$
+$$\text{error}_i = |\text{commanded_extension}_i - \text{actual_extension}_i| \quad \text{(mm)}$$
 
 This is included in telemetry for monitoring but is not currently used for control decisions.
 
