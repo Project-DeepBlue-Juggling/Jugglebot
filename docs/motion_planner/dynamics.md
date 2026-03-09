@@ -118,7 +118,7 @@ $$\tau_{\text{motor}} = F_{\text{leg}} \cdot r_{\text{spool}}$$
 
 The spool radius is derived from the `mm_to_rev` conversion factor in the hardware config:
 
-$$r_{\text{spool}} = \frac{1}{2\pi \cdot \text{mm\_to\_rev}}$$
+$$r_{\text{spool}} = \frac{1}{2\pi \cdot \text{mm_to_rev}}$$
 
 Each leg may have a slightly different spool radius due to manufacturing variation.
 
