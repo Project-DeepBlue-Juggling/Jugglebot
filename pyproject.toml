@@ -1,4 +1,0 @@
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["ros_ws/src/jugglebot"]
-addopts = "-v --tb=short"
