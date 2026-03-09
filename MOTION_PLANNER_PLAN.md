@@ -242,7 +242,7 @@ Execute the following tests at 25% speed first. Only proceed to the next speed i
 
 ## Phase 6: Hardening & Operational Readiness
 
-**Goal:** Make the system robust enough for sustained operation and aggressive commanding before connecting the ball predictor. The ball prediction integration (Phase 7) has the highest likelihood of pushing the platform into extreme operating conditions, so all protective systems must be in place first.
+**Goal:** Make the system robust enough for sustained operation and aggressive commanding before dynamic target commanding. Phase 7 has the highest likelihood of pushing the platform into extreme operating conditions, so all protective systems must be in place first.
 
 > **Hardware exposure: Progressive stress.** Build up the stress test library gradually — start with moderate trajectories and add more aggressive ones as protective systems are validated. Fault injection tests are performed at low speed first.
 
@@ -252,7 +252,7 @@ Execute the following tests at 25% speed first. Only proceed to the next speed i
 - Watchdog and fault recovery: ODrive fault detection, IPC loss handling, leg overextension recovery
 - Telemetry and logging: full state logging via ROS2 rosbag for post-run analysis
 - Performance dashboard: real-time visualisation of loop timing, tracking error, leg states, feedforward vs. PID correction split
-- Stress test trajectories: a library of aggressive test trajectories that exercise the full speed/acceleration envelope, workspace boundaries, and near-singular configurations, used to validate all protective systems before Phase 7
+- Stress test trajectories: a library of aggressive test trajectories that exercise the full speed/acceleration envelope, workspace boundaries, and near-singular configurations, used to validate all protective systems before dynamic target commanding
 
 ### Verification
 
@@ -275,43 +275,50 @@ Only after all protective systems pass low-speed validation.
 
 ---
 
-## Phase 7: Integration with Ball Prediction
+## Phase 7: Dynamic Target Commanding — DONE (2026-03-02)
 
-**Goal:** Connect the motion planner to the ball predictor so that throw-preparation moves are commanded automatically to the right pose/velocity/acceleration at the right time. All protective systems from Phase 6 are active.
+**Goal:** Add dynamic target commanding so the motion planner can accept target states on the fly, automatically check feasibility (including jerk limits), splice new trajectories mid-motion with C2 continuity, and return to a home pose after targets with non-zero velocity. All protective systems from Phase 6 are active.
 
-> **Hardware exposure: Simulated ball feed first, then live.** All re-planning logic is validated with synthetic ball trajectories before connecting the live ball predictor. The Phase 6 protective systems are the safety net — verify they remain effective under ball-prediction-driven commanding.
+> **Hardware exposure: Graduated.** Start with static targets at 10% speed, graduate through replan and rapid-update tests. All Phase 6 protective systems remain active.
 
 ### Deliverables
-- Interface between ball predictor output and trajectory manager input (target state + deadline time)
-- Mid-motion re-planning: extend the Phase 4 trajectory manager to accept new targets during execution, re-planning from the current state with guaranteed continuity in position, velocity, and acceleration at the re-plan instant
-- Feasibility-gated acceptance: only commit to a target if the trajectory planner confirms it is reachable within limits
-- Graceful handling of target updates (ball prediction improves as ball approaches) — re-plan from current state when a better estimate arrives
-- Timeout handling: if no target is received within a configurable deadline after entering TRACKING mode, or if a target arrives too late for a feasible trajectory, the system returns to IDLE rather than attempting an infeasible move
-- Mode sequencing: IDLE → TRACKING → THROW_PREP → THROW, with the motion planner active in THROW_PREP
+- Dynamic target API: `TrajectoryManager.submit_dynamic_target()` accepting `(target_pos, target_quat, target_vel, arrival_time)` — quaternion orientation, linear velocity only (angular velocity always zero), absolute arrival time
+- Mid-motion replanning: `submit()` and `submit_dynamic_target()` can be called during EXECUTING or RETURNING, splicing from the current state with C2 continuity (position, velocity, acceleration continuous at splice point)
+- Feasibility-gated acceptance: automatic `check_feasibility()` with jerk limits before every trajectory submission; infeasible targets silently rejected
+- Jerk limits: Cartesian jerk checked at 30,000 mm/s^3 (translational) and 400 rad/s^3 (rotational). Per-leg jerk NOT checked — documented in code
+- Return-to-home: when a target has non-zero linear velocity, the planner automatically plans a return to home `[0, 0, 170, 0, 0, 0]` using `find_min_feasible_duration()` with 20% safety margin
+- Zero-velocity targets: platform holds at target position until the next command
+- `RETURNING` trajectory state: distinct from EXECUTING; RETURNING always completes to IDLE at home
+- IPC command: `TOPIC_DYN_TARGET` with `make_dynamic_target_command()` message constructor
+- `find_min_feasible_duration()`: binary search over duration [0.2s, 5.0s] with 8 bisections
+- `make_rest_to_rest()`: centralized convenience constructor (moved from tools to trajectory.py)
+- `evaluate_jerk()`: Cartesian jerk (3rd derivative) from quintic polynomials
+- Deferred-start for slow targets: when `arrival_time` is far in the future (requested duration > min feasible + 2.0s buffer), the trajectory start is deferred so the platform holds in place and then moves at a reasonable speed to arrive on time, rather than creating an unnecessarily slow trajectory
 
 ### Verification
 
-#### Offline / simulation tests (no hardware)
-- **Re-planning continuity test (offline):** Simulate a trajectory in progress, inject a new target, and verify the re-planned trajectory has continuous position, velocity, and acceleration at the join. Inspect commanded feedforward profiles for discontinuities.
-- **Timeout logic test (offline):** Simulate TRACKING mode entry with no ball prediction target. Verify the system times out and returns to IDLE after the configured deadline. Separately, simulate a target that arrives too late for feasible trajectory planning — verify rejection and return to IDLE.
-- **Unreachable target test (offline):** Inject a target that requires exceeding leg limits. Verify it is correctly rejected.
+#### Offline tests (14/14 PASS)
+- Dynamic target from IDLE — zero-twist target, IDLE → EXECUTING → COMPLETE
+- Zero-velocity target holds at position — stays at COMPLETE
+- Nonzero end velocity → auto-return — EXECUTING → RETURNING → IDLE
+- Mid-motion splice continuity — C2 continuity verified (pos/vel/accel errors < 1e-6)
+- Infeasible target rejected — returns False, state unchanged
+- Infeasible replan preserves current trajectory — continues undisturbed
+- Interrupt return with new target — RETURNING → EXECUTING
+- `find_min_feasible_duration` correctness — 0.4625s min feasible for 50mm Z rest-to-rest
+- Jerk limit enforcement — fast 60mm/0.05s rejected; slow 60mm/2.0s passed
+- Quaternion → rotvec conversion — 5-deg X tilt matches expected rotvec
+- Arrival time in the past — rejected immediately
+- `make_rest_to_rest` centralized — output matches expected
+- Deferred start for slow targets — trajectory start correctly deferred
+- Return junction C2 continuity — regression test for bug #46
 
-#### Hardware tests with synthetic ball feed
-Use synthetic ball trajectories (known intercept point and time) injected in place of the real ball predictor. Start with targets near the centre of the workspace and gradually move toward the edges.
-
-- **Simulated ball feed test (conservative targets):** Inject synthetic ball trajectories with intercept points near the workspace centre and generous time horizons. Verify the platform reaches the correct pose/velocity/acceleration at the right moment.
-- **Re-planning continuity test (hardware):** During a live trajectory driven by a synthetic ball feed, inject an updated target. Verify smooth re-planning with no discontinuities in platform motion or commanded feedforward.
-- **Late-update test:** Send an initial target, then update it 50–100 ms later with a slightly different intercept point. Verify smooth re-planning.
-- **Unreachable target test (hardware):** Inject a target that requires exceeding leg limits. Verify it is correctly rejected and the platform remains in a safe state with Phase 6 protections active.
-- **No-target / late-target test (hardware):** Enter TRACKING mode but send no ball prediction target. Verify the system times out and returns to IDLE. Separately, send a target that arrives too late — verify rejection and return to IDLE.
-- **Timing accuracy test:** Measure the error between the planned arrival time and the actual time the platform reaches the target state. This is the end-to-end timing budget for the throw.
-- **Graduated stress with synthetic feed:** Progressively inject targets closer to workspace edges, with shorter time horizons, and with more frequent re-planning updates. Verify Phase 6 protective systems handle all cases correctly.
-
-#### Live ball predictor integration
-Only after all synthetic feed tests pass.
-
-- **Full-loop stress test:** Run continuous simulated ball feeds for 30+ minutes with varying intercept points, including edge cases (near workspace limits, near-singular configurations, rapid re-planning). Verify all Phase 6 protective systems remain effective under ball-prediction-driven commanding.
-- **Live ball predictor test:** Connect the real ball predictor. Start with slow, predictable ball trajectories. Gradually increase difficulty. Monitor all telemetry for anomalies.
+#### Hardware tests (on Jetson, 100% speed, all PASS)
+- **DT1 (static target +30mm Z):** 1.502 mm worst tracking (threshold 3.0 mm)
+- **DT2 (nonzero velocity + auto-return):** 2.436 mm worst tracking, final pose error 0.000 mm from home
+- **DT3 (mid-motion replan):** 1.187 mm worst tracking, 2/2 targets accepted
+- **DT4 (rapid target updates, 2 Hz):** 10/10 targets accepted, 0 ODrive faults
+- **DT5 (infeasible target ignored):** 2.093 mm worst tracking, infeasible target correctly rejected
 
 ---
 
@@ -320,14 +327,12 @@ Only after all synthetic feed tests pass.
 | Risk | Mitigation |
 |---|---|
 | Platform mass/inertia parameters poorly known | Phase 3 sensitivity test bounds the impact; consider a system ID experiment (chirp excitation + force measurement) if hold quality is insufficient |
-| Throw axis coupling is non-negligible | Monitor platform stability during throw axis motion after Phase 7 integration. If systematic pose errors correlate with throw axis acceleration, revisit the decoupling assumption — the minimum intervention is adding throw axis reaction force as a feedforward disturbance term |
+| Throw axis coupling is non-negligible | Monitor platform stability during throw axis motion after ball predictor integration. If systematic pose errors correlate with throw axis acceleration, revisit the decoupling assumption — the minimum intervention is adding throw axis reaction force as a feedforward disturbance term |
 | Loop jitter exceeds acceptable level in Python | Profile Phase 2 thoroughly; the 99th-percentile jitter gate is a hard exit criterion. Migrate hot loop to C++ extension if needed before Phase 4. Note: with position control, the loop is less timing-critical than with torque control — the ODrive holds position between updates |
 | CAN bus bandwidth insufficient for 6 legs at full rate | Phase 3 Stage B six-leg coordinated test is the gate. If frame drops occur, reduce control rate or investigate CAN FD. This must be resolved before Phase 3 Stage C |
 | Jacobian singularities in operating workspace | Phase 1 singularity map feeds into Phase 4 feasibility checker and Phase 6 runtime monitor. If singularities fall within the intended workspace, trajectories must actively route around them |
 | Reflected motor inertia dominates actuator dynamics | Phase 3 documents the reflected inertia magnitude. If it exceeds 20% of the platform-induced leg force during typical accelerations, it must be included in Phase 5 feedforward (it is included by default in this plan) |
 | `torque_ff` int16 quantisation limits feedforward precision | Per-leg gravity torques (~0.017 Nm) quantise to ~17 counts at 0.001 Nm resolution. The ODrive's 8 kHz PID absorbs the residual. If this proves insufficient, switch to velocity control mode (`set_input_vel` with float32 `torque_ff`) as a drop-in alternative |
-| Ball predictor latency eats into throw-prep window | Measure end-to-end latency early in Phase 7; may require moving the predictor closer to the control process if ROS2 bridge adds too much delay |
-| Ball predictor fails to produce a target | Phase 7 timeout handling ensures the system returns to IDLE rather than waiting indefinitely or attempting a last-known stale target |
 | Hardware damage during bring-up | Three-stage bring-up (isolated leg → supported platform → free platform) catches wiring, sign, and coordination bugs before they can cause damage. Conservative current limits throughout. Feedforward torque preview before every new hardware trajectory. |
 
 ---
@@ -344,10 +349,9 @@ Each phase has explicit exit criteria. Do not begin the next phase until the cur
 | 3B — Supported Platform | **DONE (2026-02-27).** Six-leg CAN throughput verified (p99 2.04 ms); all leg directions correct; multi-leg position hold stable (max dev 0.023 mm); e-stop functional (all axes IDLE < 100 ms); feedforward commands analytically sane (all positive, total 0.1193 Nm) |
 | 3C — Free Platform | **DONE (2026-02-27).** Stable hold 0.030 mm max dev; step response settled < 0.305 mm; gravity torques consistent across 6 tilted poses (total variation 0.2%); Jacobian cond# 414–476. C2 (ff toggle) showed ~3 mm deviation but attributed to stiction-dominated static holds — not a concern for dynamic operation. |
 | 4 — Trajectory Generator | **DONE (2026-03-01).** Boundary conditions exact (7/7 offline tests PASS); feasibility checker rejects known-bad trajectories; low-speed tracking verified on hardware (T1–T3 PASS, ≤1.17 mm worst error); T4 speed-scale marginally over threshold (1.54 mm vs 1.5 mm limit — measurement artefact, not functional failure); feedforward torque preview workflow established |
-| 5 — Inertia Feedforward | **DONE (2026-03-01).** Full Newton-Euler feedforward implemented; 14/14 offline tests PASS; hardware T5–T7 PASS at 50% and 100% speed; worst tracking 1.885 mm at 100% (threshold 3.0 mm); differential iq shows FF reduces PID effort by 1.5–2.8%; inertia effect marginal at current speeds (expected — significant at Phase 7 ball-catching speeds) |
+| 5 — Inertia Feedforward | **DONE (2026-03-01).** Full Newton-Euler feedforward implemented; 14/14 offline tests PASS; hardware T5–T7 PASS at 50% and 100% speed; worst tracking 1.885 mm at 100% (threshold 3.0 mm); differential iq shows FF reduces PID effort by 1.5–2.8%; inertia effect marginal at current speeds (expected — significant at ball-catching speeds) |
 | 6 — Hardening | **DONE (2026-03-01).** All protective systems validated offline (12/12 tests); workspace limits, fault detection, extended telemetry. Hardware tests pending on Jetson. |
 | 7 — Dynamic Targets | **DONE (2026-03-02).** Dynamic target commanding, mid-motion replanning with C2 continuity, jerk limits, deferred-start buffering, auto-return-to-home, safe stowing. 14/14 offline tests PASS; all 5 hardware tests PASS at 100% speed (worst tracking 2.436 mm, threshold 3.0 mm). Two bugs found and fixed during hardware validation: (1) `_plan_return_to_home()` velocity discontinuity, (2) feasibility-check stall shifting trajectory timing. |
-| 8 — Ball Prediction | All tests pass with synthetic ball feed first; timing accuracy within budget; re-planning continuous; timeout handling verified; 30-min stress test pass; live predictor integration stable |
 
 ---
 
@@ -659,13 +663,13 @@ Test harness: `tools/inertia_test.py --home --test all` on Jetson, socketcan, fr
 
 ### Phase 5 status
 
-**Phase 5 is complete.** Full Newton-Euler inertia feedforward is implemented and validated at 50% and 100% speed. All three feedforward components (gravity, platform inertia, reflected motor inertia) are computed and sent as `torque_ff` via `set_input_pos`. The dynamics model is correct and the feedforward does not degrade tracking. The marginal improvement at current speeds is expected — the inertia terms will become significant at Phase 7 ball-catching speeds.
+**Phase 5 is complete.** Full Newton-Euler inertia feedforward is implemented and validated at 50% and 100% speed. All three feedforward components (gravity, platform inertia, reflected motor inertia) are computed and sent as `torque_ff` via `set_input_pos`. The dynamics model is correct and the feedforward does not degrade tracking. The marginal improvement at current speeds is expected — the inertia terms will become significant at ball-catching speeds.
 
 ### Suggested next steps
 
-1. **Phase 6: Hardening & Operational Readiness.** The dynamics model and feedforward pipeline are complete. Phase 6 adds workspace limits, singularity avoidance, fault recovery, and endurance testing — the safety infrastructure needed before Phase 7 connects the ball predictor.
+1. **Phase 6: Hardening & Operational Readiness.** The dynamics model and feedforward pipeline are complete. Phase 6 adds workspace limits, singularity avoidance, fault recovery, and endurance testing — the safety infrastructure needed before dynamic target commanding.
 
-2. **Loop timing optimization (non-blocking, pre-Phase 7).** The 290 Hz full-feedforward loop rate should be improved before Phase 7's faster trajectories. Candidates: precompute J_dot analytically instead of finite differences, cache rotation matrices, or move hot paths to Cython.
+2. **Loop timing optimization (non-blocking).** The 290 Hz full-feedforward loop rate should be improved before faster trajectories. Candidates: precompute J_dot analytically instead of finite differences, cache rotation matrices, or move hot paths to Cython.
 
 3. **Leg 2 mechanical investigation (optional, non-blocking).** Still the worst tracker. Worth checking spool winding and lubrication before Phase 6 stress testing.
 
@@ -761,7 +765,7 @@ Tracking error at 100% speed (2.025mm) well within threshold (3.0mm).
 
 ### Phase 6 status
 
-**Phase 6 is complete.** Workspace limit enforcement (soft speed ramp-down + hard abort), condition number monitoring, fault detection, and extended telemetry are implemented in the control loop. All protective systems validated at low speed (25%), and endurance tested at 50%, 75%, and 100% speed. The system is ready for Phase 7 ball predictor integration.
+**Phase 6 is complete.** Workspace limit enforcement (soft speed ramp-down + hard abort), condition number monitoring, fault detection, and extended telemetry are implemented in the control loop. All protective systems validated at low speed (25%), and endurance tested at 50%, 75%, and 100% speed. The system is ready for Phase 7 dynamic target commanding.
 
 ---
 

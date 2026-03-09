@@ -1,0 +1,60 @@
+site_name: Jugglebot Documentation
+site_description: Technical documentation for Jugglebot — a Stewart platform robot with ball-catching capabilities
+repo_url: https://github.com/PDJ/Jugglebot
+repo_name: PDJ/Jugglebot
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - content.code.copy
+    - toc.follow
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
+  - tables
+  - toc:
+      permalink: true
+  - attr_list
+  - def_list
+  - pymdownx.arithmatex:
+      generic: true
+
+extra_javascript:
+  - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
+
+nav:
+  - Home: index.md
+  - Motion Planner:
+    - Overview: motion_planner/index.md
+    - Architecture: motion_planner/architecture.md
+    - Kinematics: motion_planner/kinematics.md
+    - Dynamics: motion_planner/dynamics.md
+    - Trajectory Planning: motion_planner/trajectory.md
+    - Workspace Safety: motion_planner/workspace.md
+    - Control Loop: motion_planner/control_loop.md
+    - System Integration: motion_planner/integration.md
+    - Operations Guide: motion_planner/operations.md
+    - Validation Results: motion_planner/results.md
