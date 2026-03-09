@@ -278,7 +278,14 @@ When mocap integration is complete, update the LEVELLING state to:
 - [ ] Remove YASMIN vendored package (`ros_ws/src/yasmin/`) and rosbridge dependency if no longer needed
 
 ### Phase 6 (Future): Advanced Features
-- [ ] Re-add ball catching as a motion planner process
+- [ ] **Ball prediction → motion planner integration**: Connect the ball predictor to the motion planner's dynamic target API (`submit_dynamic_target` / `request_dynamic_target`). The predictor outputs `(target_pos, target_quat, target_vel, arrival_time)` and the planner handles feasibility checking, trajectory generation, mid-motion replanning (C2 continuity), and auto-return-to-home. Key sub-tasks:
+  - [ ] Ball predictor node: processes mocap ball tracking data → predicts intercept point/time/velocity
+  - [ ] Bridge between ball predictor output and motion planner IPC (`TOPIC_DYN_TARGET` / `make_dynamic_target_command()`)
+  - [ ] Mode sequencing in orchestrator: IDLE → TRACKING → catching → return-to-home → IDLE
+  - [ ] Timeout handling: if no feasible target arrives within deadline, return to IDLE
+  - [ ] Graceful target updates: re-plan from current state when prediction improves as ball approaches
+  - [ ] Validation with synthetic ball trajectories before live predictor
+  - [ ] End-to-end timing accuracy test (planned arrival vs actual)
 - [ ] Re-add Ball Butler aiming/coordination (depends on Phase 4 BB calibration position publisher — `bb/calibration_result` provides the `bb_mocap_position` and `bb_yaw_offset_rad` needed by `global_to_bb_frame()` for aim calculations)
 - [ ] Add force estimation + stability analysis to `motion/workspace.py`
 - [ ] Pose correction (feedforward from mocap)
