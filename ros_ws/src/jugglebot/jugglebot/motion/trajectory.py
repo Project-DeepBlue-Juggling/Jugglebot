@@ -811,7 +811,7 @@ class TrajectoryManager:
         # search) automatically shift t_start forward by their wall-clock
         # duration so the trajectory starts "now" rather than in the past.
         # Set False for offline / unit tests that use synthetic time.
-        self.realtime_restamp = False
+        self.realtime_restamp = True
 
         # --- Async feasibility pipeline ---
         # Background thread runs feasibility checks without blocking the
