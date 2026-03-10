@@ -115,6 +115,7 @@ from dynamic_target_test import (  # noqa: E402
     execute_with_dynamic_targets,
     filter_startup_samples,
     get_tracking_threshold,
+    check_sequence_continuity,
     _STARTUP_DT_THRESHOLD_S,
 )
 
@@ -468,6 +469,12 @@ def build_deferred_start_test_trajectories(
                   _make_rest_to_rest([0, 0, 210, 0, 0, 0], home_pose,
                                      1.5 / speed_scale)))
 
+    # Post-process: insert smooth transition trajectories at any
+    # junctions where consecutive trajectories don't connect (e.g.
+    # splice tests where the preview chains the pre-splice trajectory
+    # end with the post-splice trajectory start).
+    trajs = _insert_transitions(trajs, geom, params)
+
     return trajs
 
 
@@ -516,6 +523,17 @@ def run_dry_run(speed_scale: float, show_preview: bool,
 
     print(f"\n  {'ALL FEASIBLE' if all_ok else 'SOME INFEASIBLE'}")
 
+    # Sequence continuity check — verify no jumps between trajectories
+    print("\n  Sequence continuity check:")
+    cont_ok, cont_violations = check_sequence_continuity(filtered)
+    if cont_ok:
+        print("  [OK] All trajectory junctions are C2-continuous")
+    else:
+        all_ok = False
+        print("  [FAIL] Trajectory discontinuities detected:")
+        for v in cont_violations:
+            print(f"        {v}")
+
     if show_preview:
         try:
             from trajectory_viewer import preview_test_sequence
@@ -525,18 +543,131 @@ def run_dry_run(speed_scale: float, show_preview: bool,
             print("  WARNING: matplotlib not available, skipping preview")
 
 
+# Tolerances for inter-trajectory continuity (same as dynamic_target_test).
+_CONT_POS_TOL_MM   = 0.5     # mm
+_CONT_POS_TOL_RAD  = 0.005   # rad
+_CONT_VEL_TOL_MM   = 5.0     # mm/s
+
+# Transition safety margin (same as dynamic_target_test).
+_TRANSITION_SPEED_FACTOR = 1.5
+
+
+def _insert_transitions(
+    trajs: list[tuple[str, QuinticTrajectory]],
+    geom: StewartGeometry,
+    params: DynamicsParams,
+) -> list[tuple[str, QuinticTrajectory]]:
+    """Insert rest-to-rest transition trajectories at discontinuous junctions.
+
+    Scans consecutive trajectory pairs.  Where the end pose of trajectory A
+    doesn't match the start pose of trajectory B (beyond tolerance), a
+    smooth quintic transition is spliced in between.
+    """
+    if len(trajs) < 2:
+        return trajs
+
+    result = [trajs[0]]
+
+    for i in range(1, len(trajs)):
+        _, traj_prev = result[-1]
+        label_next, traj_next = trajs[i]
+
+        se = traj_prev.end_state
+        ss = traj_next.start_state
+        pose_end, twist_end = se[:6], se[6:12]
+        pose_start, twist_start = ss[:6], ss[6:12]
+
+        dp = np.linalg.norm(pose_end[:3] - pose_start[:3])
+        dr = np.linalg.norm(pose_end[3:] - pose_start[3:])
+        dv = np.linalg.norm(twist_end[:3] - twist_start[:3])
+
+        needs_transition = (dp > _CONT_POS_TOL_MM
+                            or dr > _CONT_POS_TOL_RAD
+                            or dv > _CONT_VEL_TOL_MM)
+
+        if needs_transition:
+            zeros6 = np.zeros(6)
+            duration = find_min_feasible_duration(
+                start_pose=pose_end,
+                start_twist=twist_end,
+                start_accel=zeros6,
+                end_pose=pose_start,
+                end_twist=twist_start,
+                end_accel=zeros6,
+                geom=geom,
+                dynamics_params=params,
+            )
+            if duration is None:
+                label_prev = result[-1][0]
+                print(f"  WARNING: transition {label_prev} -> {label_next} "
+                      f"infeasible, skipping")
+                result.append(trajs[i])
+                continue
+
+            duration *= _TRANSITION_SPEED_FACTOR
+            transition = create_trajectory(
+                start_pose=pose_end,
+                start_twist=twist_end,
+                start_accel=zeros6,
+                end_pose=pose_start,
+                end_twist=twist_start,
+                end_accel=zeros6,
+                duration=duration,
+                t_start=0.0,
+            )
+            label_prev = result[-1][0]
+            result.append((f'~transition~ ({label_prev} -> {label_next})',
+                           transition))
+
+        result.append(trajs[i])
+
+    return result
+
+
 def _filter_trajs(
     trajs: list[tuple[str, QuinticTrajectory]],
     test_prefixes: set[str],
 ) -> list[tuple[str, QuinticTrajectory]]:
-    """Filter trajectory list to requested tests."""
-    return [(label, traj) for label, traj in trajs
-            if any(label.startswith(p) for p in test_prefixes)]
+    """Filter trajectory list to requested tests, keeping transitions.
+
+    Keeps any trajectory whose label starts with a requested prefix
+    AND any transition trajectory whose neighbours are both in the
+    kept set.
+    """
+    # First pass: mark which indices are test trajectories we want
+    keep = set()
+    for i, (label, _) in enumerate(trajs):
+        if any(label.startswith(p) for p in test_prefixes):
+            keep.add(i)
+
+    # Second pass: keep transitions that bridge two kept trajectories
+    for i, (label, _) in enumerate(trajs):
+        if label.startswith('~transition~'):
+            prev_kept = (i - 1) in keep
+            next_kept = (i + 1) in keep
+            if prev_kept and next_kept:
+                keep.add(i)
+
+    return [trajs[i] for i in sorted(keep)]
 
 
 # ---------------------------------------------------------------------------
 # Test helper: run a dynamic-target test with jump analysis
 # ---------------------------------------------------------------------------
+
+def _return_to_active_home(harness: PlatformTestHarness,
+                           geom: StewartGeometry,
+                           params: DynamicsParams) -> None:
+    """Smoothly return the platform to active home after a test.
+
+    Switches to TRAP_TRAJ mode (which initialises from the current
+    encoder position) and ramps to the active home pose.  This MUST
+    be called after every execution loop before starting the next test
+    or idling — it guarantees the commanded position never jumps.
+    """
+    print("  Returning to active home (TRAP_TRAJ ramp)...")
+    move_to_active_home(harness, geom, params)
+
 
 def _run_test_with_jump_check(
     harness: PlatformTestHarness,
@@ -551,13 +682,16 @@ def _run_test_with_jump_check(
 ) -> bool:
     """Run a dynamic target test and apply both tracking and jump analysis.
 
+    The platform is moved to active home (TRAP_TRAJ ramp) both before
+    and after the test execution, ensuring no position jumps between
+    tests.
+
     Returns True if all checks pass.
     """
     geom = StewartGeometry()
     params = DynamicsParams.from_config()
     limits = WorkspaceLimits.from_geometry(geom)
     mgr = TrajectoryManager(geom, params)
-    mgr.realtime_restamp = True
     mgr.set_hold_pose(mgr.home_pose)
 
     threshold = get_tracking_threshold(speed_scale)
@@ -574,9 +708,15 @@ def _run_test_with_jump_check(
     interactive_pause(f"Press Enter to execute {test_name}...")
 
     print(f"\n  Executing {test_name} (speed_scale={speed_scale})...")
-    events, log = execute_with_dynamic_targets(
-        harness, mgr, geom, params, limits, targets,
-        max_duration_s=max_duration_s, label=test_name, metadata=meta)
+    try:
+        events, log = execute_with_dynamic_targets(
+            harness, mgr, geom, params, limits, targets,
+            max_duration_s=max_duration_s, label=test_name, metadata=meta)
+    finally:
+        # ALWAYS return to active home smoothly, even on exception.
+        # The platform may be at any pose after the execution loop —
+        # this TRAP_TRAJ ramp ensures no position discontinuity.
+        _return_to_active_home(harness, geom, params)
 
     # Filter startup samples
     filtered = filter_startup_samples(log)
@@ -804,7 +944,6 @@ def test_B2(harness: PlatformTestHarness,
         print(f"\n  --- B2-{label}: Home -> Z={target_z} ---")
 
         mgr = TrajectoryManager(geom, params)
-        mgr.realtime_restamp = True
         mgr.set_hold_pose(mgr.home_pose)
 
         threshold = get_tracking_threshold(speed_scale)
@@ -830,10 +969,14 @@ def test_B2(harness: PlatformTestHarness,
         interactive_pause(f"Press Enter to execute B2-{label}...")
 
         print(f"  Executing B2-{label}...")
-        events, log = execute_with_dynamic_targets(
-            harness, mgr, geom, params, limits, targets,
-            max_duration_s=arrival_dur + 5.0,
-            label=f'B2-{label}', metadata=meta)
+        try:
+            events, log = execute_with_dynamic_targets(
+                harness, mgr, geom, params, limits, targets,
+                max_duration_s=arrival_dur + 5.0,
+                label=f'B2-{label}', metadata=meta)
+        finally:
+            # ALWAYS return to home smoothly before next sub-test
+            _return_to_active_home(harness, geom, params)
 
         filtered = filter_startup_samples(log)
         analysis = analyze_log(filtered) if filtered.timestamps else {}
@@ -910,7 +1053,6 @@ def test_B4(harness: PlatformTestHarness,
     params = DynamicsParams.from_config()
     limits = WorkspaceLimits.from_geometry(geom)
     mgr = TrajectoryManager(geom, params)
-    mgr.realtime_restamp = True
     mgr.set_hold_pose(mgr.home_pose)
 
     threshold = get_tracking_threshold(speed_scale)
@@ -944,10 +1086,14 @@ def test_B4(harness: PlatformTestHarness,
 
     print(f"  Executing B4 ({len(targets)} targets, "
           f"speed_scale={speed_scale})...")
-    events, log = execute_with_dynamic_targets(
-        harness, mgr, geom, params, limits, targets,
-        max_duration_s=cumulative_delay + arrival_dur + 5.0,
-        label='B4', metadata=meta)
+    try:
+        events, log = execute_with_dynamic_targets(
+            harness, mgr, geom, params, limits, targets,
+            max_duration_s=cumulative_delay + arrival_dur + 5.0,
+            label='B4', metadata=meta)
+    finally:
+        # ALWAYS return to home smoothly after execution
+        _return_to_active_home(harness, geom, params)
 
     # Analyze
     filtered = filter_startup_samples(log)
@@ -1179,21 +1325,34 @@ Modes:
         run_dry_run(args.speed_scale, args.preview, tests_to_run)
         return
 
+    # Pre-flight continuity check (mandatory before hardware).
+    # Builds all trajectories offline and verifies no position jumps
+    # at any junction in the full sequence.
+    geom = StewartGeometry()
+    params = DynamicsParams.from_config()
+    trajs = build_deferred_start_test_trajectories(
+        geom, speed_scale=args.speed_scale)
+    test_prefixes = set(tests_to_run)
+    filtered = _filter_trajs(trajs, test_prefixes)
+
+    print("\n  Pre-flight continuity check:")
+    cont_ok, cont_violations = check_sequence_continuity(filtered)
+    if cont_ok:
+        print("  [OK] All trajectory junctions are C2-continuous")
+    else:
+        print("  [FAIL] Trajectory discontinuities detected — ABORTING:")
+        for v in cont_violations:
+            print(f"        {v}")
+        sys.exit(1)
+
     # Optional 3D preview before hardware execution
     if args.preview:
-        geom = StewartGeometry()
-        trajs = build_deferred_start_test_trajectories(
-            geom, speed_scale=args.speed_scale)
-        test_prefixes = set(tests_to_run)
-        filtered = _filter_trajs(trajs, test_prefixes)
-
         if filtered:
             try:
                 from trajectory_viewer import preview_test_sequence
                 print("\n  Launching 3D preview "
                       "(close window to continue)...")
-                preview_test_sequence(filtered, geom,
-                                      DynamicsParams.from_config())
+                preview_test_sequence(filtered, geom, params)
             except ImportError:
                 print("  WARNING: matplotlib not available, "
                       "skipping preview")
@@ -1215,6 +1374,8 @@ Modes:
             from trajectory_test import home_robot  # noqa
             home_robot(harness)
 
+        # geom and params already created for pre-flight check above
+
         results = {}
         for name in tests_to_run:
             test_fn = TEST_MAP[name]
@@ -1225,7 +1386,14 @@ Modes:
                 print(f"\n  EXCEPTION in {name}: {e}")
                 traceback.print_exc()
                 results[name] = False
-                safe_idle_all(harness)
+                # On exception, smoothly return to home before
+                # attempting the next test (or stow/idle).
+                try:
+                    _return_to_active_home(harness, geom, params)
+                except Exception:
+                    # If return-to-home also fails, fall back to
+                    # safe_idle_all which stows via TRAP_TRAJ.
+                    safe_idle_all(harness)
 
         # Summary
         print("\n" + "=" * 60)
