@@ -86,15 +86,21 @@ The base harness class in `free_platform_test.py`:
 ```python
 from tools.free_platform_test import PlatformTestHarness
 
+# Pattern A: Context manager (auto-connects on entry, auto-disconnects on exit)
+with PlatformTestHarness() as harness:
+    harness.home_all_axes()
+    # ... run tests ...
+
+# Pattern B: Explicit connect/disconnect
 harness = PlatformTestHarness()
-harness.connect()          # CRITICAL: must call explicitly after construction
+harness.connect()
 harness.home_all_axes()
 # ... run tests ...
-harness.shutdown()
+harness.disconnect()
 ```
 
-!!! danger "Always call `connect()` explicitly"
-    `PlatformTestHarness` does **not** open the CAN bus in `__init__`. You must call `harness.connect()` before any hardware operations. This is a deliberate safety measure.
+!!! danger "CAN bus is NOT opened in `__init__`"
+    `PlatformTestHarness` does **not** open the CAN bus in `__init__`. If using Pattern B, you **must** call `harness.connect()` before any hardware operations. The context manager (Pattern A) handles this automatically via `__enter__`. This is a deliberate safety measure.
 
 #### Available Harnesses
 

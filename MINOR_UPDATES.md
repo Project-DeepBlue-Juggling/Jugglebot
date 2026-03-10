@@ -167,27 +167,10 @@ Create a script that reads MCAP rosbag files and plots:
 
 ---
 
-## 7. Update `connect()` Documentation for Context Manager
+## ~~7. Update `connect()` Documentation for Context Manager~~ ✅ DONE (2026-03-10)
 
-**Problem:** The docs say "always call `connect()` explicitly" but `PlatformTestHarness` supports a context manager pattern (`with harness:`) which calls `connect()` automatically via `__enter__()`.
+**Change:** Updated the `operations.md` PlatformTestHarness section to show both the context manager pattern (Pattern A) and explicit connect/disconnect pattern (Pattern B). Also fixed the danger box wording and corrected `shutdown()` → `disconnect()` (the actual method name).
 
-**Proposed change:** Update the `operations.md` danger box to mention both patterns:
+**Files modified:**
 
-```python
-# Pattern A: Context manager (auto-connects on entry, auto-disconnects on exit)
-with PlatformTestHarness() as harness:
-    harness.home_all_axes()
-    # ...
-
-# Pattern B: Explicit connect/disconnect
-harness = PlatformTestHarness()
-harness.connect()
-# ...
-harness.shutdown()
-```
-
-**Files to modify:**
-
-- `docs/motion_planner/operations.md` — update the danger box and code example
-
-**Note:** This is a docs-only change but is listed here because the user asked for it to be included in this document.
+- `docs/motion_planner/operations.md` — updated code example and danger box
