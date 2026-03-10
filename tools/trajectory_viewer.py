@@ -516,7 +516,15 @@ def preview_test_sequence(trajs: list = None,
                           fps: int = 30,
                           hold_s: float = 0.5,
                           show_plots: bool = True):
-    """Animate a chained sequence of trajectories for pre-hardware preview.
+    """Preview a chained sequence of trajectories.
+
+    When *show_plots* is True (default), displays a static, pannable
+    continuous plot of the entire movement sequence — no animation, no 3D
+    viewer.  Trajectory boundaries are marked with vertical dashed lines
+    so discontinuities between moves are immediately visible.  Hold gaps
+    between trajectories are included to show the transition.
+
+    When *show_plots* is False, falls back to the 3D-only animation.
 
     Parameters
     ----------
@@ -524,12 +532,10 @@ def preview_test_sequence(trajs: list = None,
         If None, builds the standard Phase 4 test set.
     geom : StewartGeometry (auto-created if None)
     dynamics_params : DynamicsParams (auto-created if None)
-    fps : animation frame rate
-    hold_s : pause between trajectories (seconds)
+    fps : animation frame rate (only used when show_plots=False)
+    hold_s : seconds of hold between trajectories
     show_plots : bool
-        If True (default), display trajectory plots alongside the 3D
-        viewer.  Plots update to show the current trajectory's data
-        with a vertical cursor tracking animation progress.
+        If True (default), show the static continuous plot.
     """
     geom = geom or StewartGeometry()
     dynamics_params = dynamics_params or DynamicsParams.from_config()
@@ -556,42 +562,23 @@ def preview_test_sequence(trajs: list = None,
     if not all_feasible:
         print("\nWARNING: Some trajectories are infeasible!")
 
-    # Pre-sample all trajectories for the plot panel
     if show_plots:
-        sampled = []
-        for _label, traj in trajs:
-            sampled.append(sample_trajectory(traj, geom, dynamics_params))
+        _show_continuous_plots(trajs, geom, dynamics_params, hold_s)
+        return
 
-    # Build frame schedule
-    # Each trajectory contributes its duration in frames, plus hold_s
-    schedule = []  # list of (traj_idx, t_within_traj | None for hold)
+    # --- Fallback: 3D animation only (no plots) ---
+    schedule = []
     for traj_idx, (label, traj) in enumerate(trajs):
         n_traj_frames = max(1, int(traj.duration * fps))
         for f in range(n_traj_frames):
             t = traj.t_start + (f / n_traj_frames) * traj.duration
             schedule.append((traj_idx, t, label))
-        # Hold frames at end pose
         n_hold = int(hold_s * fps)
         for _ in range(n_hold):
             schedule.append((traj_idx, traj.t_start + traj.duration, label))
 
     total_frames = len(schedule)
-
-    if show_plots:
-        fig = plt.figure(figsize=(18, 9))
-        gs = fig.add_gridspec(5, 2, width_ratios=[1.2, 1], wspace=0.35,
-                              hspace=0.45, left=0.06, right=0.97,
-                              top=0.93, bottom=0.06)
-        ax3d = fig.add_subplot(gs[:, 0], projection='3d')
-        plot_axes = [fig.add_subplot(gs[r, 1]) for r in range(5)]
-        renderer = StewartPlatformRenderer(geom, ax=ax3d)
-        panel = TrajectoryPlotPanel(plot_axes)
-        # Load the first trajectory's data
-        panel.load_trajectory(sampled[0], label=trajs[0][0])
-    else:
-        renderer = StewartPlatformRenderer(geom)
-        panel = None
-
+    renderer = StewartPlatformRenderer(geom)
     interval_ms = 1000.0 / fps
 
     total_duration = sum(t.duration for _, t in trajs) + hold_s * len(trajs)
@@ -600,11 +587,8 @@ def preview_test_sequence(trajs: list = None,
         f'({len(trajs)} moves, {total_duration:.1f}s total)',
         fontsize=12)
 
-    # Progress bar text
     progress_text = renderer.ax.text2D(0.02, 0.02, '', transform=renderer.ax.transAxes,
                                        fontsize=8, fontfamily='monospace')
-
-    prev_traj_idx = [0]  # mutable for closure
 
     def update(frame_idx):
         traj_idx, t, label = schedule[frame_idx]
@@ -615,18 +599,122 @@ def preview_test_sequence(trajs: list = None,
         progress_text.set_text(
             f'Move {traj_idx + 1}/{len(trajs)}  |  '
             f'Overall: {pct:.0f}%')
-        if panel is not None:
-            # Reload plot data when trajectory changes
-            if traj_idx != prev_traj_idx[0]:
-                panel.load_trajectory(sampled[traj_idx], label=label)
-                prev_traj_idx[0] = traj_idx
-            panel.set_cursor(t)
         return ()
 
     anim = FuncAnimation(renderer.fig, update, frames=total_frames,
                          interval=interval_ms, blit=False, repeat=True)
     plt.show()
     return anim
+
+
+def _show_continuous_plots(trajs, geom, dynamics_params, hold_s):
+    """Render the entire trajectory sequence as one continuous pannable plot.
+
+    Each trajectory is sampled and placed on a global time axis.  Between
+    trajectories a hold gap (constant end-pose) is inserted so transitions
+    are visible.  Vertical dashed lines mark trajectory boundaries.
+    """
+    # Row definitions: (title, data_key, y_label, use_leg_colors)
+    ROW_SPECS = TrajectoryPlotPanel.ROW_SPECS
+
+    # --- Sample all trajectories and build continuous arrays ---
+    all_t = []
+    all_data = {key: [] for _, key, _, _ in ROW_SPECS}
+    boundary_times = []   # global times where trajectories start/end
+    label_positions = []  # (mid_time, label) for annotation
+    global_t = 0.0
+
+    for traj_idx, (label, traj) in enumerate(trajs):
+        data = sample_trajectory(traj, geom, dynamics_params)
+
+        # Map local traj times to global time axis
+        local_t = data['t']
+        global_times = global_t + (local_t - local_t[0])
+        all_t.append(global_times)
+
+        for _, key, _, _ in ROW_SPECS:
+            all_data[key].append(data[key])
+
+        t_start_global = global_t
+        t_end_global = global_t + traj.duration
+        boundary_times.append(t_start_global)
+        label_positions.append(((t_start_global + t_end_global) / 2, label))
+        global_t = t_end_global
+
+        # Insert hold gap: repeat end state for hold_s seconds
+        if hold_s > 0:
+            n_hold = max(2, int(hold_s * 50))  # ~50 samples/sec in hold
+            hold_times = np.linspace(t_end_global, t_end_global + hold_s,
+                                     n_hold)
+            all_t.append(hold_times)
+
+            for _, key, _, _ in ROW_SPECS:
+                arr = data[key]
+                # For pose/extensions: hold at end value
+                # For twist/accel/velocity/torque: hold at zero (motor stop)
+                if key in ('pose', 'extensions_mm'):
+                    hold_arr = np.tile(arr[-1], (n_hold, 1))
+                else:
+                    hold_arr = np.zeros((n_hold, arr.shape[1]))
+                all_data[key].append(hold_arr)
+
+            global_t += hold_s
+
+    # Final boundary
+    boundary_times.append(global_t)
+
+    # Concatenate
+    t_cat = np.concatenate(all_t)
+    data_cat = {}
+    for _, key, _, _ in ROW_SPECS:
+        data_cat[key] = np.concatenate(all_data[key], axis=0)
+
+    # --- Build the figure ---
+    fig, axes = plt.subplots(5, 1, figsize=(16, 10), sharex=True)
+    fig.subplots_adjust(hspace=0.35, left=0.08, right=0.96,
+                        top=0.92, bottom=0.06)
+
+    total_duration = t_cat[-1]
+    fig.suptitle(
+        f'Trajectory Sequence  ({len(trajs)} moves, {total_duration:.1f}s)',
+        fontsize=12)
+
+    for row_idx, (title, key, ylabel, use_leg) in enumerate(ROW_SPECS):
+        ax = axes[row_idx]
+        arr = data_cat[key]
+        colors = LEG_COLORS if use_leg else CARTESIAN_COLORS
+        labels = [f'Leg {i}' for i in range(6)] if use_leg else CARTESIAN_LABELS
+
+        for ch in range(6):
+            ax.plot(t_cat, arr[:, ch], '-', color=colors[ch],
+                    linewidth=0.8, label=labels[ch])
+
+        ax.set_ylabel(ylabel, fontsize=7)
+        ax.set_title(title, fontsize=8, pad=3)
+        ax.tick_params(labelsize=6)
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=5, ncol=3, loc='upper right')
+
+        # Trajectory boundary markers
+        for bt in boundary_times:
+            ax.axvline(bt, color='#888888', linewidth=0.6,
+                       linestyle='--', alpha=0.6)
+
+    axes[-1].set_xlabel('Time (s)', fontsize=7)
+
+    # Trajectory labels along the top axis
+    ax_top = axes[0]
+    y_top = ax_top.get_ylim()[1]
+    for mid_t, label in label_positions:
+        ax_top.annotate(label, xy=(mid_t, y_top), fontsize=5,
+                        ha='center', va='bottom', rotation=45,
+                        color='#555555', annotation_clip=False)
+
+    # Set initial x-axis view to first ~10s (user can pan/zoom for more)
+    initial_view_s = min(10.0, total_duration)
+    axes[-1].set_xlim(0, initial_view_s)
+
+    plt.show()
 
 
 # ---------------------------------------------------------------------------
@@ -663,7 +751,7 @@ Examples:
                        help='Animate the Phase 7 dynamic target tests')
 
     parser.add_argument('--preview', action='store_true',
-                        help='Show trajectory plots alongside 3D viewer')
+                        help='Show continuous trajectory plots (pannable, no animation)')
     parser.add_argument('--speed-scale', type=float, default=0.25,
                         help='Speed scale for trajectories (default: 0.25)')
     parser.add_argument('--fps', type=int, default=30,
