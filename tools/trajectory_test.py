@@ -215,7 +215,6 @@ def build_run_metadata(
         # Geometry snapshot
         'geometry': {
             'home_z_mm': float(hw.JB_OP_DEFAULT_ACTIVE_Z_MM),
-            'spool_radii_mm': [float(r) for r in geom.spool_radii_mm],
             'mm_to_rev': [float(v) for v in hw.GEOM_MM_TO_REV],
         },
 
