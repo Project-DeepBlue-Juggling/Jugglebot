@@ -211,8 +211,10 @@ manager = TrajectoryManager(geom, params)
 # CRITICAL: Set hold pose before submitting trajectories
 manager.set_hold_pose(np.array([0, 0, 0, 0, 0, 0]))
 
-# For hardware/production use:
-manager.realtime_restamp = True
+# For offline tests with synthetic time, inject a clock:
+# t = [0.0]
+# manager = TrajectoryManager(geom, params, clock=lambda: t[0])
+# Default clock is time.perf_counter (correct for hardware).
 ```
 
 ### Per-Cycle Evaluation
@@ -308,11 +310,15 @@ The trajectory duration is simply `arrival_time - t_now`. The trajectory starts 
 
 ### Timing Compensation
 
-On real hardware, the feasibility check takes ~250 ms. If we assign `t_start = t_now` before the check, the trajectory starts 250 ms in the past by the time the check finishes. The `realtime_restamp` flag (set `True` for hardware) automatically shifts `t_start` forward by the wall-clock check duration.
+On real hardware, the feasibility check takes ~250 ms. If we assign `t_start = t_now` before the check, the trajectory starts 250 ms in the past by the time the check finishes. The `TrajectoryManager` measures elapsed time using its injected clock function and automatically shifts `t_start` forward by the elapsed duration. By default the clock is `time.perf_counter` (wall-clock), which is correct for hardware. Offline tests inject a synthetic clock so the restamp delta is always zero (since the clock doesn't advance during computation).
 
 ```python
-manager.realtime_restamp = True   # production / hardware
-manager.realtime_restamp = False  # offline tests with synthetic time (default)
+# Hardware (default) — uses time.perf_counter:
+manager = TrajectoryManager(geom, params)
+
+# Offline tests — synthetic clock, restamp is harmless:
+t = [10.0]
+manager = TrajectoryManager(geom, params, clock=lambda: t[0])
 ```
 
 For the async pipeline, timing compensation happens at commit time — `commit_async_trajectory()` re-samples the current state and creates a new trajectory with the remaining duration.

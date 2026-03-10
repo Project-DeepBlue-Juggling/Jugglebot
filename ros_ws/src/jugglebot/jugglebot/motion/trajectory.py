@@ -799,7 +799,8 @@ class TrajectoryManager:
           be called during EXECUTING or RETURNING.
     """
 
-    def __init__(self, geom: StewartGeometry, dynamics_params: DynamicsParams):
+    def __init__(self, geom: StewartGeometry, dynamics_params: DynamicsParams,
+                 clock=None):
         import jugglebot.hardware_config as hw
 
         self.geom = geom
@@ -827,11 +828,11 @@ class TrajectoryManager:
         self._last_time_remaining = 0.0
         self._current_pose = np.zeros(6)  # latest evaluated [x,y,z,rx,ry,rz]
 
-        # When True, expensive operations (feasibility checks, binary
-        # search) automatically shift t_start forward by their wall-clock
-        # duration so the trajectory starts "now" rather than in the past.
-        # Set False for offline / unit tests that use synthetic time.
-        self.realtime_restamp = True
+        # Clock function for measuring elapsed time during expensive
+        # operations (feasibility checks, binary search).  Defaults to
+        # wall-clock time; offline tests can inject a synthetic clock so
+        # that restamp deltas stay in the correct time domain.
+        self._clock = clock or _time.perf_counter
 
         # --- Async feasibility pipeline ---
         # Background thread runs feasibility checks without blocking the
@@ -969,8 +970,8 @@ class TrajectoryManager:
         target_quat : (4,) ndarray — [w, x, y, z] quaternion
         target_vel : (3,) ndarray — [vx, vy, vz] in mm/s (linear only;
             angular velocity is always zero)
-        arrival_time : float — absolute arrival time (perf_counter)
-        t_now : float — current time (perf_counter)
+        arrival_time : float — absolute arrival time (same clock domain as t_now)
+        t_now : float — current time (from the injected clock)
 
         Returns
         -------
@@ -1057,21 +1058,19 @@ class TrajectoryManager:
             return False
 
         # Feasibility check (reduced samples for inline speed).
-        import time as _time
-        t_before = _time.perf_counter()
+        t_before = self._clock()
         result = check_feasibility(
             traj, self.geom, self.dynamics_params, n_samples=50)
-        check_elapsed = _time.perf_counter() - t_before
+        check_elapsed = self._clock() - t_before
         if not result.feasible:
             logger.debug(
                 f"Dynamic target rejected (infeasible): "
                 f"{'; '.join(result.violations)}")
             return False
 
-        # When running in real-time, shift t_start forward by the time
-        # consumed by the feasibility check so the trajectory starts "now"
-        # rather than in the past.
-        if self.realtime_restamp:
+        # Shift t_start forward by the time consumed by the feasibility
+        # check so the trajectory starts "now" rather than in the past.
+        if check_elapsed > 0:
             traj = _dc_replace(traj, t_start=traj.t_start + check_elapsed)
 
         # Accept: submit trajectory and flag return-to-home if needed
@@ -1134,8 +1133,7 @@ class TrajectoryManager:
 
         # Find the minimum feasible duration for the return.
         # This is expensive (~2s on Jetson: 8 bisections × 50 samples).
-        import time as _time
-        t_before = _time.perf_counter()
+        t_before = self._clock()
         duration = find_min_feasible_duration(
             start_pose=pose,
             start_twist=twist,
@@ -1146,7 +1144,7 @@ class TrajectoryManager:
             geom=self.geom,
             dynamics_params=self.dynamics_params,
         )
-        search_elapsed = _time.perf_counter() - t_before
+        search_elapsed = self._clock() - t_before
         if duration is None:
             logger.warning(
                 "Return-to-home infeasible: no feasible duration found "
@@ -1156,9 +1154,9 @@ class TrajectoryManager:
         # Add 20% safety margin
         duration *= 1.2
 
-        # Shift t_start forward when running in real-time (same as
-        # submit_dynamic_target) so the return trajectory starts "now".
-        t_start = t_end + (search_elapsed if self.realtime_restamp else 0.0)
+        # Shift t_start forward by computation time so the return
+        # trajectory starts "now" rather than in the past.
+        t_start = t_end + search_elapsed
 
         traj = create_trajectory(
             start_pose=pose,
@@ -1334,8 +1332,8 @@ class TrajectoryManager:
         target_pos : (3,) ndarray — [x, y, z] in mm
         target_quat : (4,) ndarray — [w, x, y, z] quaternion
         target_vel : (3,) ndarray — [vx, vy, vz] in mm/s
-        arrival_time : float — absolute arrival time (perf_counter)
-        t_now : float — current time (perf_counter)
+        arrival_time : float — absolute arrival time (same clock domain as t_now)
+        t_now : float — current time (from the injected clock)
         """
         from jugglebot.motion.ik_solver import (
             quat_to_rot_matrix,
@@ -1441,7 +1439,7 @@ class TrajectoryManager:
         original_traj = result['traj']
         arrival_time = result['arrival_time']
         min_feasible = result.get('min_feasible')
-        t_now = _time.perf_counter()
+        t_now = self._clock()
 
         # Remaining duration to arrival
         remaining = arrival_time - t_now

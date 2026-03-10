@@ -668,11 +668,11 @@ def test_deferred_start():
 
     geom = StewartGeometry()
     params = DynamicsParams.from_config()
-    mgr = TrajectoryManager(geom, params)
-    mgr.realtime_restamp = False  # synthetic time
+    t = [10.0]  # synthetic clock
+    mgr = TrajectoryManager(geom, params, clock=lambda: t[0])
     mgr.set_hold_pose(mgr.home_pose)
 
-    t_now = 10.0  # synthetic time (realtime_restamp defaults to False)
+    t_now = t[0]
 
     # Target 30mm above home, with a long arrival time (20s).
     # The minimum feasible duration for this move is ~0.3-0.5s, so
@@ -835,11 +835,11 @@ def test_short_duration_no_deferral():
 
     geom = StewartGeometry()
     params = DynamicsParams.from_config()
-    mgr = TrajectoryManager(geom, params)
-    mgr.realtime_restamp = False  # synthetic time
+    t = [10.0]  # synthetic clock
+    mgr = TrajectoryManager(geom, params, clock=lambda: t[0])
     mgr.set_hold_pose(mgr.home_pose)
 
-    t_now = 10.0
+    t_now = t[0]
 
     # Target 30mm above home, with a 2s arrival — close to min_feasible
     # + buffer, so no deferral should happen.
@@ -892,11 +892,11 @@ def test_deferred_start_continuity():
 
     geom = StewartGeometry()
     params = DynamicsParams.from_config()
-    mgr = TrajectoryManager(geom, params)
-    mgr.realtime_restamp = False  # synthetic time
+    t = [10.0]  # synthetic clock
+    mgr = TrajectoryManager(geom, params, clock=lambda: t[0])
     mgr.set_hold_pose(mgr.home_pose)
 
-    t_now = 10.0
+    t_now = t[0]
     target_pos = np.array([0.0, 0.0, 200.0])
     target_quat = np.array([1.0, 0.0, 0.0, 0.0])
     target_vel = np.zeros(3)

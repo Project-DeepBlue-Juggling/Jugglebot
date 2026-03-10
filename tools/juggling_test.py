@@ -342,7 +342,6 @@ def test_shuttle(
     params = DynamicsParams.from_config()
     limits = WorkspaceLimits.from_geometry(geom)
     mgr = TrajectoryManager(geom, params)
-    mgr.realtime_restamp = True
     mgr.set_hold_pose(mgr.home_pose)
 
     threshold = get_tracking_threshold(speed_scale)
@@ -442,7 +441,6 @@ def test_star(
     params = DynamicsParams.from_config()
     limits = WorkspaceLimits.from_geometry(geom)
     mgr = TrajectoryManager(geom, params)
-    mgr.realtime_restamp = True
     mgr.set_hold_pose(mgr.home_pose)
 
     threshold = get_tracking_threshold(speed_scale)
