@@ -222,7 +222,7 @@ def build_run_metadata(
         'dynamics': {
             'platform_mass_kg': float(params.mass_kg),
             'com_offset_mm': [float(v) for v in params.com_offset_mm],
-            'gravity_mps2': float(params.gravity),
+            'gravity_mps2': float(params.gravity_mps2),
         },
     }
 
