@@ -76,7 +76,7 @@
         "encoder_msg_rate_ms": 10,
         "error_msg_rate_ms": 20,
         "heartbeat_msg_rate_ms": 100,
-        "input_torque_scale": 1000,
+        "input_torque_scale": 10000,
         "input_vel_scale": 1000,
         "iq_msg_rate_ms": 10,
         "node_id": 0,

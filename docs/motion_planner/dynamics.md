@@ -165,7 +165,7 @@ At current speeds, stiction dominates. The inertia feedforward becomes important
 
 ### CAN Encoding Note
 
-The `torque_ff` value is sent over CAN as an `int16` with 0.001 Nm resolution. A typical per-leg gravity torque of 0.018 Nm encodes to ~18 counts — coarse but acceptable because the ODrive's 8 kHz PID absorbs the quantization error. During fast moves, inertia torques are larger and the resolution is proportionally better.
+The `torque_ff` value is sent over CAN as an `int16` with 0.0001 Nm resolution (scale factor 10000). A typical per-leg gravity torque of 0.018 Nm encodes to ~180 counts, providing good resolution. The ODrive's 8 kHz PID absorbs any residual quantization error.
 
 ## API Reference
 

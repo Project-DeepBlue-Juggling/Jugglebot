@@ -332,7 +332,7 @@ Only after all protective systems pass low-speed validation.
 | CAN bus bandwidth insufficient for 6 legs at full rate | Phase 3 Stage B six-leg coordinated test is the gate. If frame drops occur, reduce control rate or investigate CAN FD. This must be resolved before Phase 3 Stage C |
 | Jacobian singularities in operating workspace | Phase 1 singularity map feeds into Phase 4 feasibility checker and Phase 6 runtime monitor. If singularities fall within the intended workspace, trajectories must actively route around them |
 | Reflected motor inertia dominates actuator dynamics | Phase 3 documents the reflected inertia magnitude. If it exceeds 20% of the platform-induced leg force during typical accelerations, it must be included in Phase 5 feedforward (it is included by default in this plan) |
-| `torque_ff` int16 quantisation limits feedforward precision | Per-leg gravity torques (~0.017 Nm) quantise to ~17 counts at 0.001 Nm resolution. The ODrive's 8 kHz PID absorbs the residual. If this proves insufficient, switch to velocity control mode (`set_input_vel` with float32 `torque_ff`) as a drop-in alternative |
+| `torque_ff` int16 quantisation limits feedforward precision | Per-leg gravity torques (~0.017 Nm) quantise to ~170 counts at 0.0001 Nm resolution (scale 10000, max ±3.2 Nm). Resolution is no longer a concern. |
 | Hardware damage during bring-up | Three-stage bring-up (isolated leg → supported platform → free platform) catches wiring, sign, and coordination bugs before they can cause damage. Conservative current limits throughout. Feedforward torque preview before every new hardware trajectory. |
 
 ---
@@ -522,7 +522,7 @@ All seven offline trajectory tests passed. No hardware tests yet.
 
 24. **Quintic acceleration is well within limits for typical moves** (2026-02-28): For a 50mm Z move in 2.0s, peak leg acceleration is only 0.925 rev/s^2 (vs 30.0 limit). Even at full speed (scale=1.0), the 100mm moves used in test 3c needed 0.1s duration to exceed the 30 rev/s^2 limit. The acceleration constraint only becomes binding for moves exceeding ~200mm in under ~0.5s.
 
-25. **Feedforward torques dominated by gravity at low speed** (2026-02-28): At 25% speed, peak torque_ff is 0.03-0.04 Nm (gravity only). Inertia feedforward (Phase 5) will dominate during fast moves. The int16 quantization of torque_ff (0.001 Nm resolution) gives ~30-40 counts for gravity — adequate but Phase 5 will need more counts during high-acceleration manoeuvres.
+25. **Feedforward torques dominated by gravity at low speed** (2026-02-28): At 25% speed, peak torque_ff is 0.03-0.04 Nm (gravity only). Inertia feedforward (Phase 5) will dominate during fast moves. The int16 quantization of torque_ff (0.0001 Nm resolution, scale 10000) gives ~300-400 counts for gravity — well resolved. Updated from original 0.001 Nm/count (scale 1000) to improve resolution 10×.
 
 26. **Control loop now has dual mode** (2026-02-28): `control_loop.py` supports both trajectory mode (Phase 4: time-parameterized quintic) and direct-target mode (Phase 3: fixed pose from spacemouse/shell). Trajectory mode takes priority when a trajectory is executing; direct-target mode is the fallback. Both modes share the same IK + dynamics pipeline. E-stop and disable both cancel any active trajectory.
 

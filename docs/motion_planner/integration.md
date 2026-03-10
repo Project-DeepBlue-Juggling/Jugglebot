@@ -107,13 +107,13 @@ For each of the 6 axes, the CAN node sends a `set_input_pos` message containing:
 |---|---|---|
 | Position | float32 | Motor position in revolutions |
 | Velocity FF | int16 | Motor velocity × 1000 (0.001 rev/s resolution) |
-| Torque FF | int16 | Motor torque × 1000 (0.001 Nm resolution), negated |
+| Torque FF | int16 | Motor torque × 10000 (0.0001 Nm resolution), negated |
 
 The CAN node handles:
 
 - **Leg inversion:** Negates position and velocity for leg sign conventions
 - **int16 clamping:** Velocity and torque feedforward values are clamped to [-32768, 32767]
-- **Scaling:** Multiplies by 1000 and rounds to integer for the int16 fields
+- **Scaling:** Multiplies by the per-axis scale factor (from `protocol_config`) and rounds to integer for the int16 fields
 
 ### Motor Feedback
 

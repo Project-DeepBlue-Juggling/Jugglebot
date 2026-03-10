@@ -95,7 +95,7 @@ KT_MEASURED = 0.0624  # Nm/A (measured), vs 0.0637 Nm/A datasheet
 # Must match the ODrive firmware config: axis0.config.can.input_vel_scale / input_torque_scale.
 # int16_value = real_value * scale
 LEG_VEL_FF_SCALE = proto.INPUT_SCALE_LEG_VEL   # 1000 (0.001 rev/s per LSB)
-LEG_TOR_FF_SCALE = proto.INPUT_SCALE_LEG_TOR   # 1000 (0.001 Nm per LSB)
+LEG_TOR_FF_SCALE = proto.INPUT_SCALE_LEG_TOR   # 10000 (0.0001 Nm per LSB)
 
 # Spool geometry for force conversion (standard Jugglebot legs, from config)
 MM_TO_REV = np.array(hw.GEOM_MM_TO_REV, dtype=np.float64)

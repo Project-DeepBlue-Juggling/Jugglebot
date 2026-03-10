@@ -131,17 +131,17 @@ encoding:
 
   # ODrive input scaling factors (vel_ff and torque_ff are sent as int16 * scale).
   # The hand axis uses lower scale values (100) to allow larger feedforward
-  # ranges for its high-speed throw trajectories.  Leg axes keep the default
-  # ODrive scale (1000) for better resolution on small gravity feedforward torques.
+  # ranges for its high-speed throw trajectories.  Leg torque uses 10000 for
+  # 0.0001 Nm/count resolution on small gravity feedforward torques (max ±3.2 Nm).
   # These must match the ODrive firmware config: axis0.config.can.input_vel_scale
   # and axis0.config.can.input_torque_scale on each drive.
   input_scales:
     # Hand axis (CAN ID 6) — matches odrive_pro_hand_config.json
     hand_vel: 100.0
     hand_tor: 100.0
-    # Leg axes (CAN IDs 0-5) — matches odrive_pro_config.json
+    # Leg axes (CAN IDs 0-5) — matches odrive_pro_leg_config.json
     leg_vel: 1000.0
-    leg_tor: 1000.0
+    leg_tor: 10000.0
 
 # =============================================================================
 # SDO (Arbitrary Parameter Access)

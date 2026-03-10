@@ -155,7 +155,7 @@ namespace InputScale {
   constexpr float hand_vel = 100.0f;
   constexpr float hand_tor = 100.0f;
   constexpr float leg_vel = 1000.0f;
-  constexpr float leg_tor = 1000.0f;
+  constexpr float leg_tor = 10000.0f;
 }
 
 // ==========================================================================

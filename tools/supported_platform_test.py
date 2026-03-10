@@ -78,7 +78,7 @@ MM_TO_REV = np.array(hw.GEOM_MM_TO_REV, dtype=np.float64)  # 6 values
 
 # ODrive leg feedforward int16 scaling
 LEG_VEL_FF_SCALE = proto.INPUT_SCALE_LEG_VEL   # 1000
-LEG_TOR_FF_SCALE = proto.INPUT_SCALE_LEG_TOR   # 1000
+LEG_TOR_FF_SCALE = proto.INPUT_SCALE_LEG_TOR   # 10000 (0.0001 Nm per LSB)
 
 
 # ---------------------------------------------------------------------------

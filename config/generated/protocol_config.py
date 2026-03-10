@@ -134,7 +134,7 @@ HEARTBEAT_HAND_RES_MM = 0.01
 INPUT_SCALE_HAND_VEL = 100.0
 INPUT_SCALE_HAND_TOR = 100.0
 INPUT_SCALE_LEG_VEL = 1000.0
-INPUT_SCALE_LEG_TOR = 1000.0
+INPUT_SCALE_LEG_TOR = 10000.0
 
 
 # ============================================================================
