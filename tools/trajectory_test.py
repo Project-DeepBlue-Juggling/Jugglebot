@@ -305,7 +305,7 @@ def analyze_log(log: TrajectoryLog) -> dict:
     """
     if not log.timestamps:
         return {'max_error_mm': float('inf'), 'rms_error_mm': float('inf'),
-                'per_leg_max_mm': np.full(6, float('inf')),
+                'per_leg_max_mm': [float('inf')] * 6,
                 'loop_mean_ms': 0, 'loop_p99_ms': 0, 'loop_max_ms': 0,
                 'n_samples': 0,
                 'worst_sample_idx': -1, 'worst_sample_t': 0,
@@ -338,7 +338,7 @@ def analyze_log(log: TrajectoryLog) -> dict:
     return {
         'max_error_mm': max_error,
         'rms_error_mm': rms_error,
-        'per_leg_max_mm': per_leg_max,
+        'per_leg_max_mm': per_leg_max.tolist(),
         'loop_mean_ms': float(np.mean(dts)) if len(dts) > 0 else 0,
         'loop_p99_ms': float(np.percentile(dts, 99)) if len(dts) > 0 else 0,
         'loop_max_ms': float(np.max(dts)) if len(dts) > 0 else 0,
@@ -570,7 +570,7 @@ def hold_and_monitor(harness: PlatformTestHarness,
     max_dev_mm = max_dev_rev / MM_TO_REV
     return {
         'max_deviation_mm': float(np.max(max_dev_mm)),
-        'per_leg_max_mm': max_dev_mm,
+        'per_leg_max_mm': max_dev_mm.tolist(),
     }
 
 
