@@ -66,7 +66,7 @@ def test_dynamic_target_from_idle():
 
     geom = StewartGeometry()
     params = DynamicsParams.from_config()
-    mgr = TrajectoryManager(geom, params)
+    mgr = TrajectoryManager(geom, params, clock=lambda: 10.0)
 
     # Set hold pose to home (default [0,0,170,0,0,0] via config)
     mgr.set_hold_pose(mgr.home_pose)
@@ -111,7 +111,7 @@ def test_zero_velocity_holds():
 
     geom = StewartGeometry()
     params = DynamicsParams.from_config()
-    mgr = TrajectoryManager(geom, params)
+    mgr = TrajectoryManager(geom, params, clock=lambda: 10.0)
     mgr.set_hold_pose(mgr.home_pose)
 
     t_now = 10.0
@@ -154,7 +154,7 @@ def test_nonzero_velocity_auto_return():
 
     geom = StewartGeometry()
     params = DynamicsParams.from_config()
-    mgr = TrajectoryManager(geom, params)
+    mgr = TrajectoryManager(geom, params, clock=lambda: 10.0)
     mgr.set_hold_pose(mgr.home_pose)
 
     t_now = 10.0
@@ -218,7 +218,7 @@ def test_splice_continuity():
 
     geom = StewartGeometry()
     params = DynamicsParams.from_config()
-    mgr = TrajectoryManager(geom, params)
+    mgr = TrajectoryManager(geom, params, clock=lambda: 10.0)
     mgr.set_hold_pose(mgr.home_pose)
 
     t_now = 10.0
@@ -280,7 +280,7 @@ def test_infeasible_target_rejected():
 
     geom = StewartGeometry()
     params = DynamicsParams.from_config()
-    mgr = TrajectoryManager(geom, params)
+    mgr = TrajectoryManager(geom, params, clock=lambda: 10.0)
     mgr.set_hold_pose(mgr.home_pose)
 
     t_now = 10.0
@@ -312,7 +312,7 @@ def test_infeasible_replan_preserves_trajectory():
 
     geom = StewartGeometry()
     params = DynamicsParams.from_config()
-    mgr = TrajectoryManager(geom, params)
+    mgr = TrajectoryManager(geom, params, clock=lambda: 10.0)
     mgr.set_hold_pose(mgr.home_pose)
 
     t_now = 10.0
@@ -364,7 +364,7 @@ def test_interrupt_return():
 
     geom = StewartGeometry()
     params = DynamicsParams.from_config()
-    mgr = TrajectoryManager(geom, params)
+    mgr = TrajectoryManager(geom, params, clock=lambda: 10.0)
     mgr.set_hold_pose(mgr.home_pose)
 
     t_now = 10.0
@@ -545,7 +545,7 @@ def test_quaternion_conversion():
 
     geom = StewartGeometry()
     params = DynamicsParams.from_config()
-    mgr = TrajectoryManager(geom, params)
+    mgr = TrajectoryManager(geom, params, clock=lambda: 10.0)
     mgr.set_hold_pose(mgr.home_pose)
 
     # Create a 5-degree tilt about X axis
@@ -591,7 +591,7 @@ def test_arrival_time_in_past():
 
     geom = StewartGeometry()
     params = DynamicsParams.from_config()
-    mgr = TrajectoryManager(geom, params)
+    mgr = TrajectoryManager(geom, params, clock=lambda: 10.0)
     mgr.set_hold_pose(mgr.home_pose)
 
     t_now = 10.0
@@ -761,7 +761,7 @@ def test_return_junction_continuity():
 
     geom = StewartGeometry()
     params = DynamicsParams.from_config()
-    mgr = TrajectoryManager(geom, params)
+    mgr = TrajectoryManager(geom, params, clock=lambda: 10.0)
     mgr.set_hold_pose(mgr.home_pose)
 
     t_now = 10.0

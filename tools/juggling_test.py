@@ -568,7 +568,7 @@ def build_juggling_test_trajectories(
 
     def _simulate_targets(test_prefix, targets):
         """Simulate submit_dynamic_target for a target list."""
-        mgr = TrajectoryManager(geom, params)
+        mgr = TrajectoryManager(geom, params, clock=lambda: 100.0)
         mgr.set_hold_pose(home_pose)
         t_sim = 100.0  # arbitrary reference time
 

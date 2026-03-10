@@ -1010,6 +1010,16 @@ class TrajectoryManager:
         # Find the minimum feasible duration so we can decide whether to
         # defer the trajectory start.  This avoids unnecessarily slow
         # trajectories when the arrival time is far in the future.
+        #
+        # IMPORTANT: Both find_min_feasible_duration() and check_feasibility()
+        # block the control loop.  For non-deferred trajectories, we measure
+        # total elapsed time (via self._clock, same domain as t_now) and
+        # restamp t_start by the full elapsed amount so the first motor
+        # command doesn't jump ahead in the trajectory.
+        # For deferred trajectories, no restamp is needed — the hold-before-
+        # t_start mechanism absorbs the blocking time.
+        t_clock_start = self._clock()
+
         cur_pose, cur_twist, cur_accel = self._get_current_state(t_now)
 
         min_dur = find_min_feasible_duration(
@@ -1028,12 +1038,14 @@ class TrajectoryManager:
 
         motion_duration = duration  # default: use full duration
         traj_t_start = t_now       # default: start immediately
+        deferred = False
 
         if duration > min_dur + DEFERRED_START_BUFFER_S:
             # Deferred start: schedule the motion to arrive on time using
             # a comfortable duration rather than the full (slow) one.
             motion_duration = min_dur + DEFERRED_START_BUFFER_S
             traj_t_start = arrival_time - motion_duration
+            deferred = True
 
             # Sample the state at the deferred t_start.  For IDLE/COMPLETE
             # this returns the hold pose (which won't change).  For EXECUTING,
@@ -1058,20 +1070,33 @@ class TrajectoryManager:
             return False
 
         # Feasibility check (reduced samples for inline speed).
-        t_before = self._clock()
         result = check_feasibility(
             traj, self.geom, self.dynamics_params, n_samples=50)
-        check_elapsed = self._clock() - t_before
         if not result.feasible:
             logger.debug(
                 f"Dynamic target rejected (infeasible): "
                 f"{'; '.join(result.violations)}")
             return False
 
-        # Shift t_start forward by the time consumed by the feasibility
-        # check so the trajectory starts "now" rather than in the past.
-        if check_elapsed > 0:
-            traj = _dc_replace(traj, t_start=traj.t_start + check_elapsed)
+        # For non-deferred trajectories, shift t_start forward by the total
+        # wall-clock time consumed by this method (find_min_feasible_duration
+        # + create_trajectory + check_feasibility).  This ensures the
+        # trajectory starts "now" rather than in the past, preventing a
+        # position jump on the first motor command.
+        #
+        # For deferred trajectories, t_start is already in the future and the
+        # hold-before-t_start mechanism (evaluate returns start pose for
+        # t < t_start) absorbs the blocking time — no restamp needed.
+        #
+        # Only restamp when t_now is in the same clock domain as wall time
+        # (abs(t_now - perf_counter) < 1s).  Offline tests may pass synthetic
+        # t_now values that don't correspond to wall time; restamping those
+        # would corrupt the time base.
+        if not deferred:
+            total_elapsed = self._clock() - t_clock_start
+            if total_elapsed > 0:
+                traj = _dc_replace(
+                    traj, t_start=traj.t_start + total_elapsed)
 
         # Accept: submit trajectory and flag return-to-home if needed
         self.submit(traj)
@@ -1321,7 +1346,7 @@ class TrajectoryManager:
         target_vel: np.ndarray,
         arrival_time: float,
         t_now: float,
-    ) -> None:
+    ) -> bool:
         """Queue a dynamic target for background feasibility checking.
 
         Non-blocking.  The control loop should call ``poll_pending_result()``
@@ -1334,6 +1359,13 @@ class TrajectoryManager:
         target_vel : (3,) ndarray — [vx, vy, vz] in mm/s
         arrival_time : float — absolute arrival time (same clock domain as t_now)
         t_now : float — current time (from the injected clock)
+
+        Returns
+        -------
+        queued : bool
+            True if the request was queued for background processing.
+            False if rejected immediately (bad duration, trajectory creation
+            failure).  When False, no ``poll_pending_result()`` will follow.
         """
         from jugglebot.motion.ik_solver import (
             quat_to_rot_matrix,
@@ -1343,7 +1375,7 @@ class TrajectoryManager:
         duration = arrival_time - t_now
         if duration <= 0:
             logger.debug("Dynamic target rejected: arrival_time in the past")
-            return
+            return False
 
         # Convert quaternion to rotation vector
         w, x, y, z = target_quat
@@ -1375,7 +1407,7 @@ class TrajectoryManager:
             )
         except ValueError as e:
             logger.debug(f"Dynamic target rejected: {e}")
-            return
+            return False
 
         needs_return = bool(np.linalg.norm(target_vel) > 1e-6)
 
@@ -1393,6 +1425,7 @@ class TrajectoryManager:
 
         # Wake the background thread
         self._async_event.set()
+        return True
 
     def poll_pending_result(self) -> dict | None:
         """Check for a completed async feasibility result.

@@ -359,7 +359,7 @@ def build_phase7_test_trajectories(
     # Return trajectory: starts from the outbound's exact end state
     # so the junction is seamless.  Use TrajectoryManager to find
     # the return duration, but build from the outbound's boundary.
-    mgr_dt2 = TrajectoryManager(geom, params)
+    mgr_dt2 = TrajectoryManager(geom, params, clock=lambda: 100.0)
     mgr_dt2.set_hold_pose(home_pose)
     t_sim = 100.0  # arbitrary reference time
     mgr_dt2.submit_dynamic_target(
@@ -395,7 +395,7 @@ def build_phase7_test_trajectories(
                   _make_traj(home_pose, [0, 0, 200], [0, 0, 0], dt3_dur)))
     # Second target: splice at t=0.7s into first, redirect to [15,0,195]
     # Simulate with TrajectoryManager
-    mgr_dt3 = TrajectoryManager(geom, params)
+    mgr_dt3 = TrajectoryManager(geom, params, clock=lambda: 100.0)
     mgr_dt3.set_hold_pose(home_pose)
     t_sim3 = 100.0
     mgr_dt3.submit_dynamic_target(
@@ -431,7 +431,7 @@ def build_phase7_test_trajectories(
     dt4_dur = 0.8 / speed_scale
     z_values = [180, 195, 175, 190, 185, 200, 170, 195, 180, 190]
     # Simulate the full sequence
-    mgr_dt4 = TrajectoryManager(geom, params)
+    mgr_dt4 = TrajectoryManager(geom, params, clock=lambda: 100.0)
     mgr_dt4.set_hold_pose(home_pose)
     t_sim4 = 100.0
     for i, z in enumerate(z_values):
@@ -798,11 +798,10 @@ def execute_with_dynamic_targets(
         log.metadata = metadata
     events = []
     target_idx = 0
+    pending_target: dict | None = None  # target awaiting async result
 
     t_test_start = time.perf_counter()
     t_prev = t_test_start
-    # Set the manager's internal clock reference
-    mgr_t_offset = t_test_start  # manager uses perf_counter directly
 
     while True:
         t_now = time.perf_counter()
@@ -810,31 +809,59 @@ def execute_with_dynamic_targets(
         dt = t_now - t_prev
         t_prev = t_now
 
-        # Check if we should send the next target
+        # Check if we should send the next target (non-blocking request)
         while target_idx < len(targets):
             tgt = targets[target_idx]
             if t_elapsed >= tgt['delay_s']:
                 arrival_time = t_now + tgt.get('duration_s', 1.0)
-                accepted = mgr.submit_dynamic_target(
+                queued = mgr.request_dynamic_target(
                     target_pos=np.array(tgt['pos']),
                     target_quat=np.array(tgt['quat']),
                     target_vel=np.array(tgt['vel']),
                     arrival_time=arrival_time,
                     t_now=t_now,
                 )
-                events.append({
-                    'idx': target_idx,
-                    't': t_elapsed,
-                    'accepted': accepted,
-                    'pos': tgt['pos'],
-                    'vel': tgt['vel'],
-                })
-                status = 'ACCEPTED' if accepted else 'REJECTED'
-                print(f"    [{t_elapsed:.3f}s] Target {target_idx}: {status} "
-                      f"pos={tgt['pos']}")
+                if queued:
+                    pending_target = {
+                        'idx': target_idx,
+                        't': t_elapsed,
+                        'pos': tgt['pos'],
+                        'vel': tgt['vel'],
+                    }
+                else:
+                    # Immediate rejection (bad duration, trajectory creation
+                    # failure) — report without waiting for async result.
+                    events.append({
+                        'idx': target_idx,
+                        't': t_elapsed,
+                        'accepted': False,
+                        'pos': tgt['pos'],
+                        'vel': tgt['vel'],
+                    })
+                    print(f"    [{t_elapsed:.3f}s] Target {target_idx}: "
+                          f"REJECTED pos={tgt['pos']}")
                 target_idx += 1
             else:
                 break
+
+        # Poll for async feasibility result (non-blocking)
+        async_result = mgr.poll_pending_result()
+        if async_result is not None:
+            accepted = mgr.commit_async_trajectory(async_result) \
+                if async_result['accepted'] else False
+            pt = pending_target or {'idx': '?', 't': t_elapsed,
+                                    'pos': '?', 'vel': '?'}
+            events.append({
+                'idx': pt['idx'],
+                't': pt['t'],
+                'accepted': accepted,
+                'pos': pt['pos'],
+                'vel': pt['vel'],
+            })
+            status = 'ACCEPTED' if accepted else 'REJECTED'
+            print(f"    [{pt['t']:.3f}s] Target {pt['idx']}: {status} "
+                  f"pos={pt['pos']}")
+            pending_target = None
 
         # Evaluate trajectory manager
         pos_rev, vel_ff, torque_ff = mgr.evaluate(t_now)
@@ -888,10 +915,13 @@ def execute_with_dynamic_targets(
                 mgr.cancel()
                 break
 
-        # Check termination: all targets sent AND manager is IDLE or COMPLETE
+        # Check termination: all targets sent, no pending async result,
+        # AND manager is IDLE or COMPLETE
         all_sent = target_idx >= len(targets)
+        all_resolved = pending_target is None
         settled = mgr.state in (TrajectoryState.IDLE, TrajectoryState.COMPLETE)
-        if all_sent and settled and t_elapsed > targets[-1]['delay_s'] + 1.0:
+        if (all_sent and all_resolved and settled
+                and t_elapsed > targets[-1]['delay_s'] + 1.0):
             # Wait a bit after the last target settles
             break
 
