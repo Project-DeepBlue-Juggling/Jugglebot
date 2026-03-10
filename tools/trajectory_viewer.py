@@ -53,6 +53,7 @@ from jugglebot.motion.trajectory import (
 )
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
+from matplotlib.widgets import Slider
 from mpl_toolkits.mplot3d.art3d import Line3DCollection  # noqa: F401
 
 # Leg colours (6 distinct colours for visual identification)
@@ -608,11 +609,14 @@ def preview_test_sequence(trajs: list = None,
 
 
 def _show_continuous_plots(trajs, geom, dynamics_params, hold_s):
-    """Render the entire trajectory sequence as one continuous pannable plot.
+    """Render the entire trajectory sequence as one continuous scrollable plot.
 
     Each trajectory is sampled and placed on a global time axis.  Between
     trajectories a hold gap (constant end-pose) is inserted so transitions
     are visible.  Vertical dashed lines mark trajectory boundaries.
+
+    A horizontal scrollbar at the bottom controls the visible time window.
+    Mouse scroll-wheel over the plot area zooms in/out.
     """
     # Row definitions: (title, data_key, y_label, use_leg_colors)
     ROW_SPECS = TrajectoryPlotPanel.ROW_SPECS
@@ -669,12 +673,13 @@ def _show_continuous_plots(trajs, geom, dynamics_params, hold_s):
     for _, key, _, _ in ROW_SPECS:
         data_cat[key] = np.concatenate(all_data[key], axis=0)
 
-    # --- Build the figure ---
+    total_duration = t_cat[-1]
+
+    # --- Build the figure with space for scrollbar ---
     fig, axes = plt.subplots(5, 1, figsize=(16, 10), sharex=True)
     fig.subplots_adjust(hspace=0.35, left=0.08, right=0.96,
-                        top=0.92, bottom=0.06)
+                        top=0.92, bottom=0.10)
 
-    total_duration = t_cat[-1]
     fig.suptitle(
         f'Trajectory Sequence  ({len(trajs)} moves, {total_duration:.1f}s)',
         fontsize=12)
@@ -710,9 +715,59 @@ def _show_continuous_plots(trajs, geom, dynamics_params, hold_s):
                         ha='center', va='bottom', rotation=45,
                         color='#555555', annotation_clip=False)
 
-    # Set initial x-axis view to first ~10s (user can pan/zoom for more)
-    initial_view_s = min(10.0, total_duration)
-    axes[-1].set_xlim(0, initial_view_s)
+    # --- Scrollbar for time navigation ---
+    # State: mutable container so callbacks can modify
+    view_width = [min(10.0, total_duration)]  # visible window width in seconds
+
+    ax_scroll = fig.add_axes([0.08, 0.02, 0.88, 0.02])
+    max_scroll = max(0.0, total_duration - view_width[0])
+    scroll_slider = Slider(ax_scroll, '', 0.0, max(max_scroll, 0.001),
+                           valinit=0.0, valstep=0.05,
+                           color='#4363d8', track_color='#dddddd')
+    scroll_slider.valtext.set_visible(False)
+
+    def _apply_view(t_left):
+        """Set the x-axis limits to [t_left, t_left + view_width]."""
+        t_right = min(t_left + view_width[0], total_duration)
+        t_left = max(0.0, t_right - view_width[0])
+        axes[-1].set_xlim(t_left, t_right)
+        fig.canvas.draw_idle()
+
+    def _on_scroll_change(val):
+        _apply_view(val)
+
+    scroll_slider.on_changed(_on_scroll_change)
+
+    def _on_mouse_scroll(event):
+        """Zoom in/out with mouse scroll wheel, centred on cursor."""
+        if event.inaxes not in axes:
+            return
+        zoom_factor = 0.8 if event.button == 'up' else 1.25
+        new_width = np.clip(view_width[0] * zoom_factor, 1.0, total_duration)
+        view_width[0] = new_width
+
+        # Re-centre on the mouse x position
+        t_mouse = event.xdata if event.xdata is not None else 0.0
+        current_left, current_right = axes[-1].get_xlim()
+        frac = ((t_mouse - current_left) /
+                max(current_right - current_left, 0.001))
+        new_left = t_mouse - frac * new_width
+        new_left = np.clip(new_left, 0.0, total_duration - new_width)
+
+        # Update slider range and value
+        new_max = max(0.0, total_duration - new_width)
+        scroll_slider.valmax = max(new_max, 0.001)
+        scroll_slider.ax.set_xlim(0.0, scroll_slider.valmax)
+        scroll_slider.set_val(np.clip(new_left, 0.0, new_max))
+        _apply_view(new_left)
+
+    fig.canvas.mpl_connect('scroll_event', _on_mouse_scroll)
+
+    # Disable default matplotlib navigation toolbar pan/zoom to avoid conflicts
+    fig.canvas.toolbar.mode = ''
+
+    # Set initial view
+    _apply_view(0.0)
 
     plt.show()
 
