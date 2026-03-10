@@ -59,7 +59,7 @@ logger = logging.getLogger(__name__)
 # trajectory start so the motion uses ``min_feasible + DEFERRED_START_BUFFER_S``
 # seconds.  The platform holds at its current pose until ``t_start``, then
 # moves at a reasonable speed to arrive on time.
-DEFERRED_START_BUFFER_S = 2.0
+DEFERRED_START_BUFFER_S = 2.5
 
 
 # ---------------------------------------------------------------------------
@@ -1603,10 +1603,13 @@ class TrajectoryManager:
             n_samples=50, early_exit=True)
         check_elapsed = _time.perf_counter() - t_before
 
-        # Also compute minimum feasible duration for deferred start.
-        # Only worthwhile when the trajectory is feasible.
+        # Only compute min_feasible when deferred start is plausible.
+        # duration <= DEFERRED_START_BUFFER_S means deferred start can never
+        # trigger (requires remaining > min_feasible + buffer), so skip the
+        # expensive binary search (~2s on Jetson).
+        duration = request['arrival_time'] - request['t_request']
         min_feasible = None
-        if result.feasible:
+        if result.feasible and duration > DEFERRED_START_BUFFER_S:
             s = traj.start_state
             e = traj.end_state
             min_feasible = find_min_feasible_duration(
