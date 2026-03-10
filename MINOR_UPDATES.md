@@ -4,25 +4,25 @@ These are non-urgent improvements identified during documentation review. Each i
 
 ---
 
-## 1. Improve `torque_ff` CAN Encoding Resolution
+## ~~1. Improve `torque_ff` CAN Encoding Resolution~~ ✅ DONE (2026-03-10)
 
-**Problem:** The `torque_ff` field is encoded as int16 with a fixed 0.001 Nm/count scale. Typical per-leg feedforward torques are 0.01–0.1 Nm (~10–100 counts), giving coarse resolution. The maximum representable value is ±32.767 Nm — far beyond what the system ever needs.
+**Change:** Increased `leg_tor` scale from 1000 (0.001 Nm/count) to 10000 (0.0001 Nm/count), giving 10× better resolution with max ±3.2 Nm.
 
-**Proposed change:** Increase resolution by reducing the scale factor (e.g., 0.0001 Nm/count → 10× better resolution, max ±3.2 Nm). Define the scale as a named constant in `config/jugglebot_protocol.yaml` so `generate_config.py` propagates it to all consumers.
+**Files modified:**
 
-**Files to modify:**
+- `config/protocol_config.yaml` — `leg_tor: 10000.0`
+- `config/ODrive config Files/odrive_pro_leg_config.json` — `"input_torque_scale": 10000`
+- `config/generate_config.py` — no changes needed (already propagates `input_scales`)
+- Generated files regenerated: `protocol_config.{h,py}` copied to all consumers
+- `tools/single_leg_test.py`, `tools/free_platform_test.py`, `tools/supported_platform_test.py` — updated inline comments
+- `docs/motion_planner/dynamics.md`, `docs/motion_planner/integration.md` — updated encoding docs
+- `MOTION_PLANNER_PLAN.md` — updated risk table and observation #25
 
-- `config/jugglebot_protocol.yaml` — add `INPUT_TORQUE_SCALE: 0.0001` (or similar)
-- `config/generate_config.py` — ensure the new constant is included in generated outputs
-- `ros_ws/src/jugglebot/jugglebot/can_node.py` — use the generated constant for int16 encoding instead of hardcoded `* 1000`
-- Any Teensy/Ball Butler firmware that decodes `torque_ff` from CAN — use the same generated constant
-- `tools/*.py` — any test harnesses that encode `torque_ff` directly (e.g., `hardening_test.py`, `trajectory_test.py`)
-
-**Verification:** Run existing hardware tests and verify feedforward torques match expected values with the new encoding.
+**Note:** All consumers (`can_node.py`, tool harnesses, firmware) already referenced the generated constant `INPUT_SCALE_LEG_TOR` / `InputScale::leg_tor` — no code logic changes were required. ODrive legs must be reconfigured with the updated `odrive_pro_leg_config.json` before hardware use.
 
 ---
 
-## 2. Add `end_boundary_state()` Convenience Function
+## ~~2. Add `end_boundary_state()` Convenience Function~~ ✅ DONE (2026-03-10)
 
 **Problem:** `evaluate(traj, t)` at `t >= t_end` returns the end **pose** with **zero** twist and acceleration (hold behaviour). This is correct for motor commands but wrong when reading boundary conditions for trajectory planning (e.g., the return-to-home splice). The bug this caused was found and fixed during Phase 7, but the pattern is still error-prone.
 
@@ -51,7 +51,7 @@ def end_boundary_state(traj: QuinticTrajectory) -> tuple[np.ndarray, np.ndarray,
 
 ---
 
-## 3. Re-implement Deferred Start for Dynamic Targets
+## ~~3. Re-implement Deferred Start for Dynamic Targets~~ ✅ DONE (2026-03-10)
 
 **Problem:** Deferred start was implemented in commit `a078b5c` (`DEFERRED_START_BUFFER_S = 2.0`) then removed in commit `1695946` ("Fix small jumps glitch") because it caused position discontinuities at the hold-to-move transition. Currently, far-future targets produce unnecessarily slow trajectories over the full duration.
 
@@ -75,6 +75,17 @@ def end_boundary_state(traj: QuinticTrajectory) -> tuple[np.ndarray, np.ndarray,
 - `ros_ws/src/jugglebot/jugglebot/motion/tests/test_dynamic_target.py` — update test 13
 
 **Verification:** Offline test with far-future target: verify the platform holds, then moves at moderate speed. Hardware test: confirm no position discontinuity at the hold-to-move transition.
+
+**Implementation notes:**
+
+- `DEFERRED_START_BUFFER_S = 2.0` constant added to `trajectory.py`
+- `submit_dynamic_target()`: calls `find_min_feasible_duration()` to decide deferral; samples state at deferred `t_start` for splice continuity
+- `request_dynamic_target()` / `_bg_check_feasibility()`: bg thread also computes `min_feasible` alongside the existing feasibility check
+- `commit_async_trajectory()`: applies deferred start using `min_feasible` from the bg result
+- Test 13 updated: now verifies deferred start (hold phase → moderate-speed motion → on-time arrival)
+- Test 15 added: short-duration target starts immediately (no deferral)
+- Test 16 added: zero discontinuity at hold-to-move transition (the critical safety test)
+- All 16 dynamic target tests PASS (test 10 has pre-existing 7e-6 rad quat precision issue, unrelated)
 
 ---
 

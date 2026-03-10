@@ -41,6 +41,7 @@ from jugglebot.motion.geometry import StewartGeometry
 from jugglebot.motion.ik_solver import (
     rotvec_to_rot_matrix,
     pose_to_leg_lengths,
+    twist_to_leg_velocities,
 )
 from jugglebot.motion.dynamics import DynamicsParams
 from jugglebot.motion.workspace import compute_condition_number
@@ -50,13 +51,169 @@ from jugglebot.motion.trajectory import (
     check_feasibility,
     cartesian_to_motor_commands,
 )
-
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from mpl_toolkits.mplot3d.art3d import Line3DCollection  # noqa: F401
 
 # Leg colours (6 distinct colours for visual identification)
 LEG_COLORS = ['#e6194b', '#3cb44b', '#4363d8', '#f58231', '#911eb4', '#42d4f4']
+
+
+# Cartesian DoF labels and colours
+CARTESIAN_LABELS = ['X', 'Y', 'Z', 'Rx', 'Ry', 'Rz']
+CARTESIAN_COLORS = ['#e6194b', '#3cb44b', '#4363d8', '#f58231', '#911eb4', '#42d4f4']
+
+
+# ---------------------------------------------------------------------------
+# Trajectory sampling helper
+# ---------------------------------------------------------------------------
+
+def sample_trajectory(traj, geom: StewartGeometry,
+                      dynamics_params: DynamicsParams,
+                      n_samples: int = 200):
+    """Sample a trajectory at uniform time steps and compute all plot data.
+
+    Returns a dict with keys: t, pose, twist, accel, extensions_mm,
+    leg_vel_mm_s, torque_ff_Nm.  Each value is an (n_samples, 6) array
+    except t which is (n_samples,).
+    """
+    ts = np.linspace(traj.t_start, traj.t_start + traj.duration, n_samples)
+    poses = np.empty((n_samples, 6))
+    twists = np.empty((n_samples, 6))
+    accels = np.empty((n_samples, 6))
+    extensions = np.empty((n_samples, 6))
+    leg_vels = np.empty((n_samples, 6))
+    torques = np.empty((n_samples, 6))
+
+    for i, t in enumerate(ts):
+        pose, twist, accel = evaluate(traj, t)
+        poses[i] = pose
+        twists[i] = twist
+        accels[i] = accel
+
+        pos = pose[:3]
+        rot = rotvec_to_rot_matrix(pose[3:6])
+        extensions[i] = pose_to_leg_lengths(pos, rot, geom)
+        leg_vels[i] = twist_to_leg_velocities(twist, pos, rot, geom)
+        torques[i] = cartesian_to_motor_commands(
+            pose, twist, accel, geom, dynamics_params)[2]
+
+    return dict(
+        t=ts, pose=poses, twist=twists, accel=accels,
+        extensions_mm=extensions, leg_vel_mm_s=leg_vels,
+        torque_ff_Nm=torques,
+    )
+
+
+# ---------------------------------------------------------------------------
+# TrajectoryPlotPanel — 2D plots alongside the 3D viewer
+# ---------------------------------------------------------------------------
+
+class TrajectoryPlotPanel:
+    """Manages a column of trajectory plots with an animated time cursor.
+
+    Create once, then call ``load_trajectory()`` to populate data and
+    ``set_cursor(t)`` each animation frame to move the vertical line.
+    """
+
+    # (row_title, data_key, y_label, use_leg_colors)
+    ROW_SPECS = [
+        ('Cartesian Pose',     'pose',          'mm / rad',   False),
+        ('Cartesian Twist',    'twist',          'mm·s\u207b\u00b9 / rad·s\u207b\u00b9', False),
+        ('Leg Extensions',     'extensions_mm',  'mm',         True),
+        ('Leg Velocity',       'leg_vel_mm_s',   'mm/s',       True),
+        ('Torque Feedforward', 'torque_ff_Nm',   'Nm',         True),
+    ]
+
+    def __init__(self, axes: list):
+        """Initialise with a list of 5 matplotlib Axes (one per row)."""
+        self.axes = axes
+        self._cursor_lines = []
+        self._data_lines = {}  # keyed by (row_idx, channel)
+        self._setup_axes()
+
+    def _setup_axes(self):
+        for row_idx, (title, _key, ylabel, use_leg) in enumerate(self.ROW_SPECS):
+            ax = self.axes[row_idx]
+            ax.set_ylabel(ylabel, fontsize=7)
+            ax.set_title(title, fontsize=8, pad=3)
+            ax.tick_params(labelsize=6)
+            ax.grid(True, alpha=0.3)
+
+            # Create 6 data lines
+            colors = LEG_COLORS if use_leg else CARTESIAN_COLORS
+            labels = [f'Leg {i}' for i in range(6)] if use_leg else CARTESIAN_LABELS
+            for ch in range(6):
+                line, = ax.plot([], [], '-', color=colors[ch],
+                                linewidth=0.8, label=labels[ch])
+                self._data_lines[(row_idx, ch)] = line
+
+            ax.legend(fontsize=5, ncol=3, loc='upper right')
+
+            # Cursor line (vertical)
+            vline = ax.axvline(0, color='#333333', linewidth=0.8,
+                               linestyle='--', visible=False)
+            self._cursor_lines.append(vline)
+
+        # Only bottom axis gets an x label
+        self.axes[-1].set_xlabel('Time (s)', fontsize=7)
+
+    def load_trajectory(self, data: dict, label: str = ''):
+        """Populate all plots from a sample_trajectory() result dict."""
+        t = data['t']
+        for row_idx, (_title, key, _ylabel, _use_leg) in enumerate(self.ROW_SPECS):
+            arr = data[key]  # (n, 6)
+            ax = self.axes[row_idx]
+            for ch in range(6):
+                line = self._data_lines[(row_idx, ch)]
+                line.set_data(t, arr[:, ch])
+            ax.relim()
+            ax.autoscale_view()
+            self._cursor_lines[row_idx].set_visible(True)
+
+    def set_cursor(self, t: float):
+        """Move the vertical cursor to time ``t``."""
+        for vline in self._cursor_lines:
+            vline.set_xdata([t, t])
+
+
+# ---------------------------------------------------------------------------
+# Standalone trajectory preview (static plots, no animation)
+# ---------------------------------------------------------------------------
+
+def preview_trajectory(traj, geom: StewartGeometry = None,
+                       dynamics_params: DynamicsParams = None,
+                       n_samples: int = 200, show: bool = True):
+    """Plot Cartesian poses, twists, leg extensions, velocities, and torques.
+
+    Generates a static 5-row plot summarising the entire trajectory.
+    Useful for quick inspection without the 3D animation.
+
+    Parameters
+    ----------
+    traj : QuinticTrajectory
+    geom : StewartGeometry (auto-created if None)
+    dynamics_params : DynamicsParams (auto-created if None)
+    n_samples : int — number of uniform time samples
+    show : bool — call plt.show() immediately
+    """
+    geom = geom or StewartGeometry()
+    dynamics_params = dynamics_params or DynamicsParams.from_config()
+    data = sample_trajectory(traj, geom, dynamics_params, n_samples=n_samples)
+
+    fig, axes = plt.subplots(5, 1, figsize=(10, 10), sharex=True)
+    fig.subplots_adjust(hspace=0.4, left=0.10, right=0.95,
+                        top=0.94, bottom=0.06)
+    panel = TrajectoryPlotPanel(list(axes))
+    panel.load_trajectory(data)
+    # Hide cursors for static plot
+    for vline in panel._cursor_lines:
+        vline.set_visible(False)
+    fig.suptitle(f'Trajectory Preview  (dur={traj.duration:.2f}s, '
+                 f'scale={traj.speed_scale:.0%})', fontsize=11)
+    if show:
+        plt.show()
+    return fig
 
 
 # ---------------------------------------------------------------------------
@@ -211,10 +368,33 @@ def show_pose(pose_6dof: np.ndarray,
 
 def animate_trajectory(traj, geom: StewartGeometry = None,
                        dynamics_params: DynamicsParams = None,
-                       fps: int = 30, speed_multiplier: float = 1.0):
-    """Animate a single quintic trajectory on the Stewart platform."""
+                       fps: int = 30, speed_multiplier: float = 1.0,
+                       show_plots: bool = False):
+    """Animate a single quintic trajectory on the Stewart platform.
+
+    Parameters
+    ----------
+    show_plots : bool
+        If True, display trajectory plots alongside the 3D viewer with
+        an animated cursor line tracking the current time.
+    """
     geom = geom or StewartGeometry()
-    renderer = StewartPlatformRenderer(geom)
+    dynamics_params = dynamics_params or DynamicsParams.from_config()
+
+    if show_plots:
+        fig = plt.figure(figsize=(18, 9))
+        gs = fig.add_gridspec(5, 2, width_ratios=[1.2, 1], wspace=0.35,
+                              hspace=0.45, left=0.06, right=0.97,
+                              top=0.93, bottom=0.06)
+        ax3d = fig.add_subplot(gs[:, 0], projection='3d')
+        plot_axes = [fig.add_subplot(gs[r, 1]) for r in range(5)]
+        renderer = StewartPlatformRenderer(geom, ax=ax3d)
+        panel = TrajectoryPlotPanel(plot_axes)
+        data = sample_trajectory(traj, geom, dynamics_params)
+        panel.load_trajectory(data)
+    else:
+        renderer = StewartPlatformRenderer(geom)
+        panel = None
 
     n_frames = max(1, int(traj.duration * fps / speed_multiplier))
     interval_ms = 1000.0 / fps
@@ -224,6 +404,8 @@ def animate_trajectory(traj, geom: StewartGeometry = None,
         pose, twist, accel = evaluate(traj, t)
         progress = frame_idx / n_frames * 100
         renderer.update_pose(pose, label=f'Progress: {progress:.0f}%')
+        if panel is not None:
+            panel.set_cursor(t)
         return ()
 
     anim = FuncAnimation(renderer.fig, update, frames=n_frames,
@@ -332,7 +514,8 @@ def preview_test_sequence(trajs: list = None,
                           geom: StewartGeometry = None,
                           dynamics_params: DynamicsParams = None,
                           fps: int = 30,
-                          hold_s: float = 0.5):
+                          hold_s: float = 0.5,
+                          show_plots: bool = False):
     """Animate a chained sequence of trajectories for pre-hardware preview.
 
     Parameters
@@ -343,6 +526,10 @@ def preview_test_sequence(trajs: list = None,
     dynamics_params : DynamicsParams (auto-created if None)
     fps : animation frame rate
     hold_s : pause between trajectories (seconds)
+    show_plots : bool
+        If True, display trajectory plots alongside the 3D viewer.
+        Plots update to show the current trajectory's data with a
+        vertical cursor tracking animation progress.
     """
     geom = geom or StewartGeometry()
     dynamics_params = dynamics_params or DynamicsParams.from_config()
@@ -369,6 +556,12 @@ def preview_test_sequence(trajs: list = None,
     if not all_feasible:
         print("\nWARNING: Some trajectories are infeasible!")
 
+    # Pre-sample all trajectories for the plot panel
+    if show_plots:
+        sampled = []
+        for _label, traj in trajs:
+            sampled.append(sample_trajectory(traj, geom, dynamics_params))
+
     # Build frame schedule
     # Each trajectory contributes its duration in frames, plus hold_s
     schedule = []  # list of (traj_idx, t_within_traj | None for hold)
@@ -383,7 +576,22 @@ def preview_test_sequence(trajs: list = None,
             schedule.append((traj_idx, traj.t_start + traj.duration, label))
 
     total_frames = len(schedule)
-    renderer = StewartPlatformRenderer(geom)
+
+    if show_plots:
+        fig = plt.figure(figsize=(18, 9))
+        gs = fig.add_gridspec(5, 2, width_ratios=[1.2, 1], wspace=0.35,
+                              hspace=0.45, left=0.06, right=0.97,
+                              top=0.93, bottom=0.06)
+        ax3d = fig.add_subplot(gs[:, 0], projection='3d')
+        plot_axes = [fig.add_subplot(gs[r, 1]) for r in range(5)]
+        renderer = StewartPlatformRenderer(geom, ax=ax3d)
+        panel = TrajectoryPlotPanel(plot_axes)
+        # Load the first trajectory's data
+        panel.load_trajectory(sampled[0], label=trajs[0][0])
+    else:
+        renderer = StewartPlatformRenderer(geom)
+        panel = None
+
     interval_ms = 1000.0 / fps
 
     total_duration = sum(t.duration for _, t in trajs) + hold_s * len(trajs)
@@ -396,6 +604,8 @@ def preview_test_sequence(trajs: list = None,
     progress_text = renderer.ax.text2D(0.02, 0.02, '', transform=renderer.ax.transAxes,
                                        fontsize=8, fontfamily='monospace')
 
+    prev_traj_idx = [0]  # mutable for closure
+
     def update(frame_idx):
         traj_idx, t, label = schedule[frame_idx]
         _, traj = trajs[traj_idx]
@@ -405,6 +615,12 @@ def preview_test_sequence(trajs: list = None,
         progress_text.set_text(
             f'Move {traj_idx + 1}/{len(trajs)}  |  '
             f'Overall: {pct:.0f}%')
+        if panel is not None:
+            # Reload plot data when trajectory changes
+            if traj_idx != prev_traj_idx[0]:
+                panel.load_trajectory(sampled[traj_idx], label=label)
+                prev_traj_idx[0] = traj_idx
+            panel.set_cursor(t)
         return ()
 
     anim = FuncAnimation(renderer.fig, update, frames=total_frames,
@@ -426,7 +642,9 @@ Examples:
   python tools/trajectory_viewer.py --home            Show home pose
   python tools/trajectory_viewer.py --pose 0 0 20 0 0 0   Show offset pose
   python tools/trajectory_viewer.py --demo            Animate a 10mm Z demo
+  python tools/trajectory_viewer.py --demo --preview  Demo with trajectory plots
   python tools/trajectory_viewer.py --test-sequence   Animate full Phase 4 tests
+  python tools/trajectory_viewer.py --test-sequence --preview  With trajectory plots
   python tools/trajectory_viewer.py --phase5-sequence --speed-scale 0.5  Phase 5 tests
   python tools/trajectory_viewer.py --phase7-sequence --speed-scale 0.3  Phase 7 tests
         """)
@@ -444,6 +662,8 @@ Examples:
     group.add_argument('--phase7-sequence', action='store_true',
                        help='Animate the Phase 7 dynamic target tests')
 
+    parser.add_argument('--preview', action='store_true',
+                        help='Show trajectory plots alongside 3D viewer')
     parser.add_argument('--speed-scale', type=float, default=0.25,
                         help='Speed scale for trajectories (default: 0.25)')
     parser.add_argument('--fps', type=int, default=30,
@@ -466,24 +686,28 @@ Examples:
             end_pose=np.array([0, 0, 10, 0, 0, 0], dtype=float),
             end_twist=zeros6, end_accel=zeros6,
             duration=1.0, t_start=0.0, speed_scale=args.speed_scale)
-        animate_trajectory(traj, geom, fps=args.fps)
+        animate_trajectory(traj, geom, fps=args.fps,
+                           show_plots=args.preview)
 
     elif args.test_sequence:
         trajs = build_test_trajectories(geom, speed_scale=args.speed_scale)
-        preview_test_sequence(trajs, geom, fps=args.fps)
+        preview_test_sequence(trajs, geom, fps=args.fps,
+                              show_plots=args.preview)
 
     elif args.phase5_sequence:
         from inertia_test import build_phase5_test_trajectories
         trajs = build_phase5_test_trajectories(geom,
                                                 speed_scale=args.speed_scale)
-        preview_test_sequence(trajs, geom, fps=args.fps)
+        preview_test_sequence(trajs, geom, fps=args.fps,
+                              show_plots=args.preview)
 
     elif args.phase7_sequence:
         from dynamic_target_test import build_phase7_test_trajectories
         params = DynamicsParams.from_config()
         trajs = build_phase7_test_trajectories(geom,
                                                 speed_scale=args.speed_scale)
-        preview_test_sequence(trajs, geom, params, fps=args.fps)
+        preview_test_sequence(trajs, geom, params, fps=args.fps,
+                              show_plots=args.preview)
 
 
 if __name__ == '__main__':

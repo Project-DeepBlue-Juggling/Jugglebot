@@ -54,6 +54,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# When a dynamic target's arrival time is far enough in the future that the
+# platform would move unnecessarily slowly over the full duration, defer the
+# trajectory start so the motion uses ``min_feasible + DEFERRED_START_BUFFER_S``
+# seconds.  The platform holds at its current pose until ``t_start``, then
+# moves at a reasonable speed to arrive on time.
+DEFERRED_START_BUFFER_S = 2.0
+
 
 # ---------------------------------------------------------------------------
 # Quintic polynomial solver
@@ -310,6 +317,19 @@ def evaluate(traj: QuinticTrajectory,
     accel = (2*c[:, 2] + 6*c[:, 3]*tau + 12*c[:, 4]*tau2 + 20*c[:, 5]*tau3) / T2
 
     return pose, twist, accel
+
+
+def end_boundary_state(traj: QuinticTrajectory) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return the trajectory's end boundary conditions (pose, twist, accel).
+
+    Unlike ``evaluate(traj, t_end)``, this returns the ORIGINAL boundary twist
+    and acceleration, not zeros.
+    """
+    return (
+        traj.end_state[:6].copy(),
+        traj.end_state[6:12].copy(),
+        traj.end_state[12:18].copy(),
+    )
 
 
 def evaluate_jerk(traj: QuinticTrajectory, t: float) -> np.ndarray:
@@ -985,8 +1005,41 @@ class TrajectoryManager:
             0.0, 0.0, 0.0,
         ])
 
-        # Sample current state for splice continuity
+        # --- Deferred start ---
+        # Find the minimum feasible duration so we can decide whether to
+        # defer the trajectory start.  This avoids unnecessarily slow
+        # trajectories when the arrival time is far in the future.
         cur_pose, cur_twist, cur_accel = self._get_current_state(t_now)
+
+        min_dur = find_min_feasible_duration(
+            start_pose=cur_pose,
+            start_twist=cur_twist,
+            start_accel=cur_accel,
+            end_pose=target_pose,
+            end_twist=target_twist,
+            end_accel=np.zeros(6),
+            geom=self.geom,
+            dynamics_params=self.dynamics_params,
+        )
+        if min_dur is None:
+            logger.debug("Dynamic target rejected: no feasible duration found")
+            return False
+
+        motion_duration = duration  # default: use full duration
+        traj_t_start = t_now       # default: start immediately
+
+        if duration > min_dur + DEFERRED_START_BUFFER_S:
+            # Deferred start: schedule the motion to arrive on time using
+            # a comfortable duration rather than the full (slow) one.
+            motion_duration = min_dur + DEFERRED_START_BUFFER_S
+            traj_t_start = arrival_time - motion_duration
+
+            # Sample the state at the deferred t_start.  For IDLE/COMPLETE
+            # this returns the hold pose (which won't change).  For EXECUTING,
+            # this evaluates the active trajectory at the future t_start —
+            # valid as long as the active trajectory hasn't completed by then.
+            cur_pose, cur_twist, cur_accel = self._get_current_state(
+                traj_t_start)
 
         try:
             traj = create_trajectory(
@@ -996,15 +1049,14 @@ class TrajectoryManager:
                 end_pose=target_pose,
                 end_twist=target_twist,
                 end_accel=np.zeros(6),
-                duration=duration,
-                t_start=t_now,
+                duration=motion_duration,
+                t_start=traj_t_start,
             )
         except ValueError as e:
             logger.debug(f"Dynamic target rejected: {e}")
             return False
 
         # Feasibility check (reduced samples for inline speed).
-        # This is the expensive step (~250ms on Jetson with 50 samples).
         import time as _time
         t_before = _time.perf_counter()
         result = check_feasibility(
@@ -1018,13 +1070,20 @@ class TrajectoryManager:
 
         # When running in real-time, shift t_start forward by the time
         # consumed by the feasibility check so the trajectory starts "now"
-        # rather than ~250ms in the past.
+        # rather than in the past.
         if self.realtime_restamp:
             traj = _dc_replace(traj, t_start=traj.t_start + check_elapsed)
 
         # Accept: submit trajectory and flag return-to-home if needed
         self.submit(traj)
         self._pending_return = bool(np.linalg.norm(target_vel) > 1e-6)
+
+        if traj_t_start > t_now + 0.01:
+            logger.info(
+                f"Deferred start: motion begins in "
+                f"{traj_t_start - t_now:.2f}s, "
+                f"duration={motion_duration:.2f}s "
+                f"(min_feasible={min_dur:.2f}s)")
 
         # Pre-compute return-to-home in background if needed
         if self._pending_return:
@@ -1381,6 +1440,7 @@ class TrajectoryManager:
 
         original_traj = result['traj']
         arrival_time = result['arrival_time']
+        min_feasible = result.get('min_feasible')
         t_now = _time.perf_counter()
 
         # Remaining duration to arrival
@@ -1389,8 +1449,17 @@ class TrajectoryManager:
             logger.debug("Async commit: arrival_time passed during check")
             return False
 
-        # Re-sample current state at commit time for accurate splice
-        cur_pose, cur_twist, cur_accel = self._get_current_state(t_now)
+        # --- Deferred start ---
+        motion_duration = remaining
+        traj_t_start = t_now
+
+        if (min_feasible is not None
+                and remaining > min_feasible + DEFERRED_START_BUFFER_S):
+            motion_duration = min_feasible + DEFERRED_START_BUFFER_S
+            traj_t_start = arrival_time - motion_duration
+
+        # Re-sample state at the (possibly deferred) start time
+        cur_pose, cur_twist, cur_accel = self._get_current_state(traj_t_start)
 
         try:
             traj = create_trajectory(
@@ -1400,8 +1469,8 @@ class TrajectoryManager:
                 end_pose=original_traj.end_state[:6],
                 end_twist=original_traj.end_state[6:12],
                 end_accel=original_traj.end_state[12:18],
-                duration=remaining,
-                t_start=t_now,
+                duration=motion_duration,
+                t_start=traj_t_start,
             )
         except ValueError as e:
             logger.debug(f"Async commit trajectory creation failed: {e}")
@@ -1415,9 +1484,14 @@ class TrajectoryManager:
         if result['needs_return']:
             self._start_return_precompute(traj)
 
+        deferred_info = ""
+        if traj_t_start > t_now + 0.01:
+            deferred_info = (
+                f", deferred_start={traj_t_start - t_now:.2f}s, "
+                f"motion_dur={motion_duration:.2f}s")
         logger.info(
             f"Async trajectory committed: remaining={remaining:.3f}s, "
-            f"latency={t_now - result['t_request']:.3f}s")
+            f"latency={t_now - result['t_request']:.3f}s{deferred_info}")
         return True
 
     def poll_precomputed_return(self) -> QuinticTrajectory | None:
@@ -1483,7 +1557,12 @@ class TrajectoryManager:
         logger.debug("Background feasibility thread exiting")
 
     def _bg_check_feasibility(self, request: dict) -> None:
-        """Background: run feasibility check for a dynamic target."""
+        """Background: run feasibility check for a dynamic target.
+
+        Also computes the minimum feasible duration via binary search so
+        that ``commit_async_trajectory`` can apply deferred start when the
+        arrival time is far in the future.
+        """
         traj = request['traj']
         gen = request['generation']
 
@@ -1492,6 +1571,19 @@ class TrajectoryManager:
             traj, self.geom, self.dynamics_params,
             n_samples=50, early_exit=True)
         check_elapsed = _time.perf_counter() - t_before
+
+        # Also compute minimum feasible duration for deferred start.
+        # Only worthwhile when the trajectory is feasible.
+        min_feasible = None
+        if result.feasible:
+            s = traj.start_state
+            e = traj.end_state
+            min_feasible = find_min_feasible_duration(
+                start_pose=s[:6], start_twist=s[6:12], start_accel=s[12:18],
+                end_pose=e[:6], end_twist=e[6:12], end_accel=e[12:18],
+                geom=self.geom,
+                dynamics_params=self.dynamics_params,
+            )
 
         with self._async_lock:
             # Discard if a newer request has superseded this one
@@ -1506,6 +1598,7 @@ class TrajectoryManager:
                 't_request': request['t_request'],
                 'check_elapsed': check_elapsed,
                 'violations': result.violations if not result.feasible else [],
+                'min_feasible': min_feasible,
             }
 
         if not result.feasible:

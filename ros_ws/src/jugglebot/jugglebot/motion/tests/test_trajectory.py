@@ -28,6 +28,7 @@ from jugglebot.motion.trajectory import (
     QuinticTrajectory,
     create_trajectory,
     evaluate,
+    end_boundary_state,
     rescale_trajectory,
     cartesian_to_motor_commands,
     check_feasibility,
@@ -516,6 +517,53 @@ def test_trajectory_manager():
 
 
 # ---------------------------------------------------------------------------
+# Test 8: end_boundary_state convenience function
+# ---------------------------------------------------------------------------
+
+def test_end_boundary_state():
+    """Verify end_boundary_state returns original BCs, not hold zeros."""
+    _header("Test 8: end_boundary_state convenience function")
+
+    tol = 1e-12
+
+    start_pose = np.zeros(6)
+    start_twist = np.zeros(6)
+    start_accel = np.zeros(6)
+    end_pose = np.array([20.0, -10.0, 50.0, 0.02, -0.01, 0.005])
+    end_twist = np.array([-5.0, 3.0, 8.0, 0.1, -0.05, 0.02])
+    end_accel = np.array([1.0, -0.5, 2.0, 0.01, -0.01, 0.005])
+    T = 1.0
+
+    traj = create_trajectory(start_pose, start_twist, start_accel,
+                             end_pose, end_twist, end_accel,
+                             duration=T, t_start=0.0)
+
+    # end_boundary_state should return original nonzero twist and accel
+    pose_bc, twist_bc, accel_bc = end_boundary_state(traj)
+    assert norm(pose_bc - end_pose) < tol, f"pose mismatch: {norm(pose_bc - end_pose):.2e}"
+    assert norm(twist_bc - end_twist) < tol, f"twist mismatch: {norm(twist_bc - end_twist):.2e}"
+    assert norm(accel_bc - end_accel) < tol, f"accel mismatch: {norm(accel_bc - end_accel):.2e}"
+    print(f"  end_boundary_state twist norm = {norm(twist_bc):.6f} (nonzero)")
+    print(f"  end_boundary_state accel norm = {norm(accel_bc):.6f} (nonzero)")
+
+    # evaluate past t_end should return zero twist and accel (hold behaviour)
+    pose_eval, twist_eval, accel_eval = evaluate(traj, T + 0.1)
+    assert norm(pose_eval - end_pose) < tol, f"evaluate pose mismatch: {norm(pose_eval - end_pose):.2e}"
+    assert norm(twist_eval) < tol, f"evaluate twist should be zero, got {norm(twist_eval):.2e}"
+    assert norm(accel_eval) < tol, f"evaluate accel should be zero, got {norm(accel_eval):.2e}"
+    print(f"  evaluate(t_end+0.1) twist norm = {norm(twist_eval):.2e} (zero)")
+    print(f"  evaluate(t_end+0.1) accel norm = {norm(accel_eval):.2e} (zero)")
+
+    # Verify returned arrays are copies (mutation safety)
+    pose_bc[0] = 999.0
+    pose_bc2, _, _ = end_boundary_state(traj)
+    assert pose_bc2[0] != 999.0, "end_boundary_state should return copies"
+    print("  Mutation safety: returned arrays are copies")
+
+    print("  [PASS]")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -535,6 +583,7 @@ def main():
         test_speed_scaling,
         test_feedforward_preview,
         test_trajectory_manager,
+        test_end_boundary_state,
     ]
 
     for test in tests:

@@ -13,7 +13,9 @@ Tests:
   10. Quaternion -> rotvec conversion — target state format works
   11. Arrival time in the past — rejected immediately
   12. make_rest_to_rest centralized — matches expected output
-  13. Long-duration target starts immediately — uses full requested duration
+  13. Deferred start for far-future target — holds then moves at moderate speed
+  15. Short-duration target — no deferral, starts immediately
+  16. Deferred start continuity — zero discontinuity at hold-to-move transition
 
 Run:  python -m jugglebot.motion.tests.test_dynamic_target
 """
@@ -654,23 +656,27 @@ def test_make_rest_to_rest():
 
 
 # ---------------------------------------------------------------------------
-# Test 13: Long-duration target uses full requested duration
+# Test 13: Deferred start for far-future target
 # ---------------------------------------------------------------------------
 
-def test_long_duration_target():
-    """Verify that a far-future arrival time produces a slow trajectory
-    that starts immediately (no deferred start)."""
-    _header("Test 13: Long-duration target starts immediately")
+def test_deferred_start():
+    """Verify that a far-future arrival time uses deferred start:
+    the platform holds, then moves at moderate speed to arrive on time."""
+    _header("Test 13: Deferred start for far-future target")
+
+    from jugglebot.motion.trajectory import DEFERRED_START_BUFFER_S
 
     geom = StewartGeometry()
     params = DynamicsParams.from_config()
     mgr = TrajectoryManager(geom, params)
+    mgr.realtime_restamp = False  # synthetic time
     mgr.set_hold_pose(mgr.home_pose)
 
-    t_now = time.perf_counter()
+    t_now = 10.0  # synthetic time (realtime_restamp defaults to False)
 
     # Target 30mm above home, with a long arrival time (20s).
-    # The trajectory should start immediately and move slowly over 20s.
+    # The minimum feasible duration for this move is ~0.3-0.5s, so
+    # deferred start should activate: motion_duration ≈ min_feasible + 2.0s.
     target_pos = np.array([0.0, 0.0, 200.0])
     target_quat = np.array([1.0, 0.0, 0.0, 0.0])
     target_vel = np.zeros(3)
@@ -686,38 +692,56 @@ def test_long_duration_target():
     assert accepted, "Far-future target should be accepted"
     assert mgr.state == TrajectoryState.EXECUTING
 
-    # The trajectory should start at t_now (no deferral)
     traj = mgr._active_traj
-    assert abs(traj.t_start - t_now) < 0.01, (
-        f"Expected immediate start, got t_start "
-        f"{traj.t_start - t_now:.2f}s in the future")
 
-    # The trajectory duration should be the full 20s
-    assert abs(traj.duration - 20.0) < 0.1, (
-        f"Expected 20s duration, got {traj.duration:.2f}s")
+    # The trajectory should use deferred start, NOT start at t_now
+    defer_delay = traj.t_start - t_now
+    print(f"  t_now={t_now:.1f}, t_start={traj.t_start:.2f}, "
+          f"duration={traj.duration:.2f}s, "
+          f"defer_delay={defer_delay:.2f}s")
+
+    assert defer_delay > 1.0, (
+        f"Expected deferred start (delay > 1s), got {defer_delay:.2f}s")
+
+    # The trajectory duration should be much less than 20s
+    assert traj.duration < 10.0, (
+        f"Expected shorter motion duration, got {traj.duration:.2f}s")
 
     # The trajectory should end at the requested arrival time
     t_end = traj.t_start + traj.duration
     assert abs(t_end - far_arrival) < 0.1, (
-        f"Trajectory end {t_end} should match arrival {far_arrival}")
+        f"Trajectory end {t_end:.2f} should match arrival {far_arrival:.1f}")
 
-    # Shortly after start, should already be moving (slowly)
-    pos_rev_early, vel_ff_early, _ = mgr.evaluate(t_now + 1.0)
-    assert norm(vel_ff_early) > 1e-6, "Should be moving slowly after 1s"
-    assert mgr._last_progress > 0.01, "Progress should be nonzero after 1s"
+    # Before t_start, platform should hold at start pose (home)
+    home = mgr.home_pose
+    pos_hold, vel_hold, _ = mgr.evaluate(t_now + 1.0)
+    assert norm(vel_hold) < 1e-6, (
+        "Should be stationary during hold phase")
 
-    # At mid-trajectory, should be moving
+    # Verify hold pose matches home (via current_pose_6dof)
+    hold_pose = mgr.current_pose_6dof
+    assert norm(hold_pose - home) < 0.01, (
+        f"Hold pose should be home, error={norm(hold_pose - home):.4f}")
+
+    # During motion phase: should be moving
     t_mid = traj.t_start + traj.duration / 2
-    pos_rev_mid, vel_ff_mid, _ = mgr.evaluate(t_mid)
-    assert norm(vel_ff_mid) > 0.001, "Should be moving mid-trajectory"
+    pos_mid, vel_mid, _ = mgr.evaluate(t_mid)
+    assert norm(vel_mid) > 0.001, "Should be moving mid-trajectory"
     assert 0.3 < mgr._last_progress < 0.7, "Progress ~0.5 mid-traj"
 
-    # After trajectory end, should complete
-    pos_rev_end, vel_ff_end, _ = mgr.evaluate(far_arrival + 0.1)
+    # After trajectory end, should complete at target
+    pos_end, vel_end, _ = mgr.evaluate(far_arrival + 0.1)
     assert mgr.state == TrajectoryState.COMPLETE
-    assert norm(vel_ff_end) < 1e-6, "Should be stationary after completion"
+    assert norm(vel_end) < 1e-6, "Should be stationary after completion"
 
-    print("  PASS: Long-duration target starts immediately, moves slowly")
+    # Verify final pose is at the target
+    final_pose = mgr.current_pose_6dof
+    assert abs(final_pose[2] - 200.0) < 0.01, (
+        f"Final Z should be ~200mm, got {final_pose[2]:.2f}")
+
+    print(f"  Deferred by {defer_delay:.2f}s, motion duration "
+          f"{traj.duration:.2f}s (buffer={DEFERRED_START_BUFFER_S}s)")
+    print("  PASS: Deferred start holds, then moves at moderate speed")
 
 
 # ---------------------------------------------------------------------------
@@ -801,6 +825,132 @@ def test_return_junction_continuity():
 
 
 # ---------------------------------------------------------------------------
+# Test 15: Short-duration target — no deferral
+# ---------------------------------------------------------------------------
+
+def test_short_duration_no_deferral():
+    """Verify that a target with a short arrival time starts immediately
+    (no deferred start applies)."""
+    _header("Test 15: Short-duration target — no deferral")
+
+    geom = StewartGeometry()
+    params = DynamicsParams.from_config()
+    mgr = TrajectoryManager(geom, params)
+    mgr.realtime_restamp = False  # synthetic time
+    mgr.set_hold_pose(mgr.home_pose)
+
+    t_now = 10.0
+
+    # Target 30mm above home, with a 2s arrival — close to min_feasible
+    # + buffer, so no deferral should happen.
+    target_pos = np.array([0.0, 0.0, 200.0])
+    target_quat = np.array([1.0, 0.0, 0.0, 0.0])
+    target_vel = np.zeros(3)
+    arrival = t_now + 2.0
+
+    accepted = mgr.submit_dynamic_target(
+        target_pos=target_pos,
+        target_quat=target_quat,
+        target_vel=target_vel,
+        arrival_time=arrival,
+        t_now=t_now,
+    )
+    assert accepted, "Short-duration target should be accepted"
+
+    traj = mgr._active_traj
+    defer_delay = traj.t_start - t_now
+    print(f"  t_start={traj.t_start:.2f}, delay={defer_delay:.4f}s, "
+          f"duration={traj.duration:.2f}s")
+
+    # Should start immediately (within tolerance)
+    assert defer_delay < 0.01, (
+        f"Short-duration target should start immediately, "
+        f"got delay={defer_delay:.4f}s")
+
+    # Duration should be the full 2.0s
+    assert abs(traj.duration - 2.0) < 0.1, (
+        f"Expected ~2.0s duration, got {traj.duration:.2f}s")
+
+    print("  PASS: Short-duration target starts immediately (no deferral)")
+
+
+# ---------------------------------------------------------------------------
+# Test 16: Deferred start — continuity at hold-to-move transition
+# ---------------------------------------------------------------------------
+
+def test_deferred_start_continuity():
+    """Verify zero position discontinuity at the hold-to-move transition
+    when deferred start is active.
+
+    This is the critical test: the original deferred start implementation
+    caused 'small jumps' because the trajectory start state didn't match
+    the hold state.  With the fix, the trajectory is created from the
+    state at t_start, which matches what evaluate() returns during the
+    hold phase.
+    """
+    _header("Test 16: Deferred start — continuity at hold-to-move transition")
+
+    geom = StewartGeometry()
+    params = DynamicsParams.from_config()
+    mgr = TrajectoryManager(geom, params)
+    mgr.realtime_restamp = False  # synthetic time
+    mgr.set_hold_pose(mgr.home_pose)
+
+    t_now = 10.0
+    target_pos = np.array([0.0, 0.0, 200.0])
+    target_quat = np.array([1.0, 0.0, 0.0, 0.0])
+    target_vel = np.zeros(3)
+    far_arrival = t_now + 20.0
+
+    accepted = mgr.submit_dynamic_target(
+        target_pos=target_pos,
+        target_quat=target_quat,
+        target_vel=target_vel,
+        arrival_time=far_arrival,
+        t_now=t_now,
+    )
+    assert accepted
+
+    traj = mgr._active_traj
+    t_start = traj.t_start
+    assert t_start > t_now + 1.0, "Should be deferred"
+
+    # Evaluate just before t_start (hold phase)
+    eps = 0.001
+    pos_before, vel_before, _ = mgr.evaluate(t_start - eps)
+    pose_before = mgr.current_pose_6dof.copy()
+
+    # Evaluate just after t_start (motion phase begins)
+    pos_after, vel_after, _ = mgr.evaluate(t_start + eps)
+    pose_after = mgr.current_pose_6dof.copy()
+
+    # Motor command continuity
+    pos_jump = norm(pos_after - pos_before)
+    vel_jump = norm(vel_after - vel_before)
+
+    # Cartesian pose continuity
+    pose_jump = norm(pose_after - pose_before)
+
+    print(f"  t_start = {t_start:.2f}s (deferred by {t_start - t_now:.2f}s)")
+    print(f"  Motor pos jump:    {pos_jump:.8f} rev")
+    print(f"  Motor vel jump:    {vel_jump:.8f} rev/s")
+    print(f"  Cartesian jump:    {pose_jump:.8f} mm")
+
+    # The jumps should be at numerical precision level
+    assert pos_jump < 1e-4, (
+        f"Position discontinuity at hold-to-move: {pos_jump:.6f} rev")
+    assert pose_jump < 1e-3, (
+        f"Cartesian discontinuity at hold-to-move: {pose_jump:.6f} mm")
+
+    # Velocity should be near-zero at the very start of motion
+    # (quintic starts from rest when starting from hold)
+    assert vel_jump < 0.1, (
+        f"Velocity jump at hold-to-move: {vel_jump:.6f} rev/s")
+
+    print("  PASS: Zero discontinuity at hold-to-move transition")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -818,8 +968,10 @@ def main():
         test_quaternion_conversion,
         test_arrival_time_in_past,
         test_make_rest_to_rest,
-        test_long_duration_target,
+        test_deferred_start,
         test_return_junction_continuity,
+        test_short_duration_no_deferral,
+        test_deferred_start_continuity,
     ]
 
     passed = 0
