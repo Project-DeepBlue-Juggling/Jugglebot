@@ -369,14 +369,14 @@ def show_pose(pose_6dof: np.ndarray,
 def animate_trajectory(traj, geom: StewartGeometry = None,
                        dynamics_params: DynamicsParams = None,
                        fps: int = 30, speed_multiplier: float = 1.0,
-                       show_plots: bool = False):
+                       show_plots: bool = True):
     """Animate a single quintic trajectory on the Stewart platform.
 
     Parameters
     ----------
     show_plots : bool
-        If True, display trajectory plots alongside the 3D viewer with
-        an animated cursor line tracking the current time.
+        If True (default), display trajectory plots alongside the 3D
+        viewer with an animated cursor line tracking the current time.
     """
     geom = geom or StewartGeometry()
     dynamics_params = dynamics_params or DynamicsParams.from_config()
@@ -515,7 +515,7 @@ def preview_test_sequence(trajs: list = None,
                           dynamics_params: DynamicsParams = None,
                           fps: int = 30,
                           hold_s: float = 0.5,
-                          show_plots: bool = False):
+                          show_plots: bool = True):
     """Animate a chained sequence of trajectories for pre-hardware preview.
 
     Parameters
@@ -527,9 +527,9 @@ def preview_test_sequence(trajs: list = None,
     fps : animation frame rate
     hold_s : pause between trajectories (seconds)
     show_plots : bool
-        If True, display trajectory plots alongside the 3D viewer.
-        Plots update to show the current trajectory's data with a
-        vertical cursor tracking animation progress.
+        If True (default), display trajectory plots alongside the 3D
+        viewer.  Plots update to show the current trajectory's data
+        with a vertical cursor tracking animation progress.
     """
     geom = geom or StewartGeometry()
     dynamics_params = dynamics_params or DynamicsParams.from_config()
