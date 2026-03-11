@@ -119,26 +119,20 @@ Motor feedback (encoder positions/velocities/currents) was **not** added as a se
 
 ---
 
-## 6. CAN Bus Load Measurement (bits/second)
+## ~~6. CAN Bus Load Measurement (bits/second)~~ ✅ DONE (2026-03-12)
 
-**Problem:** The GUI shows CAN messages/second (counted by the Teensy) but not bits/second, which is the more meaningful metric for bus utilization.
+**Change:** Added `bits_per_frame_approx: 111` to `protocol_config.yaml` and propagated it through the codegen pipeline to C++, Python, and JS. The GUI now shows kbit/s and bus utilization % alongside the existing msg/s readout. Computation is done client-side in the GUI (the Teensy already provides raw frame counts and interval — no firmware changes needed).
 
-**Background:**
+**Files modified:**
 
-- CAN bus runs at 1 Mbps (from `protocol_config.yaml`)
-- A standard CAN frame with 8 data bytes is approximately 111 bits (SOF + arbitration + control + data + CRC + ACK + EOF + stuff bits)
-- Theoretical max throughput: ~9,000 frames/second
-- Stuff bits are data-dependent (worst case adds ~20%), but a fixed approximation is within ~10%
+- `config/protocol_config.yaml` — added `bits_per_frame_approx: 111` under `can_bus`
+- `config/generate_config.py` — emit the new constant in C++, Python, and JS generators
+- Generated files regenerated: `protocol_config.{h,py}` copied to all consumers, `geometry-config.js` delivered to GUI
+- `ros_ws/gui/index.html` — added kbit/s value and utilization % display elements
+- `ros_ws/gui/css/panels.css` — added `.can-util` style
+- `ros_ws/gui/js/panels.js` — compute `bitsPerSec = rate * CAN_BITS_PER_FRAME_APPROX`, display kbit/s and utilization %
 
-**Proposed change:** Add a `BITS_PER_CAN_FRAME_APPROX` constant (e.g., 111 for 8-byte payloads) and multiply by the existing message counter to get bits/second. Report both metrics.
-
-**Files to modify:**
-
-- Teensy firmware (wherever `msgs_per_sec` is computed) — add `bits_per_sec = msgs_per_sec * BITS_PER_CAN_FRAME_APPROX`
-- `config/jugglebot_protocol.yaml` — define the constant
-- GUI code that displays the metric — add bits/sec and utilization %
-
-**Verification:** Check that reported bits/sec makes sense relative to 1 Mbps. At typical operation (~120 frames/sec for 6 axes × 2 directions × ~10 Hz), expect ~13,000 bits/sec (~1.3% utilization).
+**Note:** The Teensy firmware was not modified. It sends raw `receivedCount` and `reportInterval` in the traffic report CAN frame (4 of 8 bytes used). The msg/s → bits/s conversion is a trivial multiplication best done client-side, avoiding CAN frame format changes and keeping the firmware simple. The constant is still available in C++ (`CanBus::BITS_PER_FRAME_APPROX`) if ever needed on-device.
 
 ---
 

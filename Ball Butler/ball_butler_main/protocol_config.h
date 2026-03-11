@@ -14,6 +14,7 @@
 
 namespace CanBus {
   constexpr uint32_t BAUD_RATE = 1000000u;  // All nodes must agree
+  constexpr uint32_t BITS_PER_FRAME_APPROX = 111u;  // Approx bits per 8-byte CAN frame
 }
 
 // ==========================================================================

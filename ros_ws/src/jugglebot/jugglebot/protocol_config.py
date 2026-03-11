@@ -14,6 +14,7 @@ from enum import IntEnum
 # ============================================================================
 
 CAN_BAUD_RATE = 1000000  # All nodes must agree
+CAN_BITS_PER_FRAME_APPROX = 111  # Approx bits per 8-byte CAN frame
 
 # ============================================================================
 # ODrive CAN Protocol — Command IDs (lower 5 bits of arbitration ID)

@@ -404,6 +404,12 @@
     color: var(--text-muted);
 }
 
+.can-util {
+    font-size: var(--font-size-sm);
+    color: var(--text-muted);
+    margin-left: 4px;
+}
+
 #can-sparkline {
     width: 100%;
     height: 40px;

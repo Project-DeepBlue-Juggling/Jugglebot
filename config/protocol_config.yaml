@@ -65,7 +65,8 @@ odrive:
 # CAN Bus
 # =============================================================================
 can_bus:
-  baud_rate: 1000000  # 1 Mbps — all nodes must agree
+  baud_rate: 1000000           # 1 Mbps — all nodes must agree
+  bits_per_frame_approx: 111   # Approx bits per 8-byte CAN frame (before bit-stuffing)
 
 # =============================================================================
 # CAN Node IDs

@@ -5,6 +5,11 @@
  * To regenerate: python config/generate_config.py
  */
 
+// ---- CAN bus (protocol_config.yaml -> can_bus) ----
+
+export const CAN_BAUD_RATE = 1000000;
+export const CAN_BITS_PER_FRAME_APPROX = 111;
+
 // ---- Stewart platform geometry (hardware_config.yaml -> jugglebot_geometry) ----
 
 export const INITIAL_HEIGHT_MM = 574.3;

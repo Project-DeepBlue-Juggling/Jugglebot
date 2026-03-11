@@ -5,7 +5,8 @@
  * that are called from main.js when new ROS data arrives.
  */
 
-import { ODRIVE_STATE, BB_STATE_NAMES, LEG_STROKE_MM, MM_TO_REV } from './geometry-config.js';
+import { ODRIVE_STATE, BB_STATE_NAMES, LEG_STROKE_MM, MM_TO_REV,
+         CAN_BAUD_RATE, CAN_BITS_PER_FRAME_APPROX } from './geometry-config.js';
 
 // ---- Motor grid ----
 
@@ -383,11 +384,11 @@ export function updateMotionPanel(msg) {
 export function setMotionDisconnected() {
     const badge = document.getElementById('motion-status-badge');
     if (badge) {
-        badge.textContent = '--';
+        badge.textContent = 'DISABLED';
         badge.className = 'badge motion-badge motion-off';
     }
     const trajLabel = document.getElementById('motion-traj-label');
-    if (trajLabel) trajLabel.textContent = '--';
+    if (trajLabel) trajLabel.textContent = '';
     const progressTrack = document.getElementById('motion-progress-track');
     if (progressTrack) progressTrack.style.display = 'none';
 }
@@ -416,6 +417,17 @@ export function updateCANTraffic(msg) {
 
     const rateEl = document.getElementById('can-rate-value');
     if (rateEl) rateEl.textContent = Math.round(rate);
+
+    // Bits/s and bus utilization
+    const bitsPerSec = rate * CAN_BITS_PER_FRAME_APPROX;
+    const kbitsPerSec = bitsPerSec / 1000;
+    const utilPct = (bitsPerSec / CAN_BAUD_RATE) * 100;
+
+    const bitsEl = document.getElementById('can-bits-value');
+    if (bitsEl) bitsEl.textContent = kbitsPerSec.toFixed(1);
+
+    const utilEl = document.getElementById('can-util-value');
+    if (utilEl) utilEl.textContent = `(${utilPct.toFixed(1)}%)`;
 
     canHistory.push(rate);
     if (canHistory.length > CAN_HISTORY_LEN) canHistory.shift();

@@ -118,12 +118,12 @@
                 <div class="panel-header">
                     <span class="panel-title">Platform Control</span>
                     <span class="motion-traj-inline" id="motion-traj-inline">
-                        <span class="motion-traj-label" id="motion-traj-label">--</span>
+                        <span class="motion-traj-label" id="motion-traj-label"></span>
                         <div class="motion-progress-track" id="motion-progress-track" style="display:none">
                             <div class="motion-progress-fill" id="motion-progress-fill"></div>
                         </div>
                     </span>
-                    <span class="badge motion-badge motion-off" id="motion-status-badge">--</span>
+                    <span class="badge motion-badge motion-off" id="motion-status-badge">DISABLED</span>
                 </div>
                 <div class="motion-readouts" id="motion-readouts">
                     <span class="motion-readout"><span class="motion-readout-label">Workspace</span><span class="motion-readout-value" id="motion-ws">--</span></span>
@@ -149,6 +149,11 @@
                 <div class="can-rate">
                     <span class="value" id="can-rate-value">--</span>
                     <span class="unit">msg/s</span>
+                </div>
+                <div class="can-rate">
+                    <span class="value" id="can-bits-value">--</span>
+                    <span class="unit">kbit/s</span>
+                    <span class="can-util" id="can-util-value"></span>
                 </div>
                 <canvas id="can-sparkline"></canvas>
             </div>
