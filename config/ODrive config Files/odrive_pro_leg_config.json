@@ -192,7 +192,7 @@
         "vel_gain": 0.20000000298023224,
         "vel_integrator_gain": 0.3199999928474426,
         "vel_integrator_limit": Infinity,
-        "vel_limit": 2.5,
+        "vel_limit": 4.0,
         "vel_limit_tolerance": 2.5,
         "vel_ramp_rate": 10.0
       }
