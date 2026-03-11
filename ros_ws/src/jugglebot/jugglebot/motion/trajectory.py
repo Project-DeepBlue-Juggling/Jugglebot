@@ -54,6 +54,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Minimum time (seconds) between now and a dynamic target's arrival_time.
+# Targets closer than this are rejected — they leave insufficient margin
+# for feasibility checking and safe trajectory execution.
+MIN_LEAD_TIME_S = 0.3
+
 
 # ---------------------------------------------------------------------------
 # Quintic polynomial solver
@@ -978,10 +983,10 @@ class TrajectoryManager:
 
         # Compute duration from absolute arrival time
         duration = arrival_time - t_now
-        if duration <= 0:
-            logger.debug(
-                f"Dynamic target rejected: arrival_time in the past "
-                f"(duration={duration:.4f}s)")
+        if duration < MIN_LEAD_TIME_S:
+            logger.warning(
+                f"Dynamic target rejected: lead time {duration:.3f}s "
+                f"< {MIN_LEAD_TIME_S}s minimum")
             return False
 
         # Convert quaternion orientation to rotation vector
@@ -1305,8 +1310,10 @@ class TrajectoryManager:
         )
 
         duration = arrival_time - t_now
-        if duration <= 0:
-            logger.debug("Dynamic target rejected: arrival_time in the past")
+        if duration < MIN_LEAD_TIME_S:
+            logger.warning(
+                f"Dynamic target rejected: lead time {duration:.3f}s "
+                f"< {MIN_LEAD_TIME_S}s minimum")
             return False
 
         # Convert quaternion to rotation vector

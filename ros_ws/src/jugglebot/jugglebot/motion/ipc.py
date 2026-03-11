@@ -102,7 +102,8 @@ def make_telemetry(leg_positions: list | tuple,
                    fault_state: str | None = None,
                    motor_pos: list | tuple | None = None,
                    motor_vel: list | tuple | None = None,
-                   motor_cur: list | tuple | None = None) -> dict:
+                   motor_cur: list | tuple | None = None,
+                   slew_limited: bool = False) -> dict:
     """Create a Telemetry message from the control loop.
 
     Parameters
@@ -119,6 +120,7 @@ def make_telemetry(leg_positions: list | tuple,
     motor_pos : 6 actual motor positions (rev) from encoder feedback, or None
     motor_vel : 6 actual motor velocities (rev/s) from encoder feedback, or None
     motor_cur : 6 actual motor currents (A) from encoder feedback, or None
+    slew_limited : True if the slew limiter is actively clamping this cycle
     """
     msg = {
         'type': 'telemetry',
@@ -152,6 +154,8 @@ def make_telemetry(leg_positions: list | tuple,
         msg['motor_vel'] = list(motor_vel)
     if motor_cur is not None:
         msg['motor_cur'] = list(motor_cur)
+    if slew_limited:
+        msg['slew_limited'] = True
     return msg
 
 

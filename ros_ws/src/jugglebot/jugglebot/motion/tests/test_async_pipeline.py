@@ -157,7 +157,7 @@ def test_async_rejection():
     # stage (before queuing). Try a feasible-duration but workspace-infeasible:
     t_now2 = time.perf_counter()
     target_pos2 = np.array([200.0, 200.0, 300.0])  # way outside workspace
-    arrival_time2 = t_now2 + 0.3
+    arrival_time2 = t_now2 + 0.5  # must exceed MIN_LEAD_TIME_S (0.3s)
 
     mgr.request_dynamic_target(
         target_pos2, target_quat, target_vel, arrival_time2, t_now2)

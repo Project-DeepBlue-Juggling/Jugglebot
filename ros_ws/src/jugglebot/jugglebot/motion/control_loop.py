@@ -18,6 +18,14 @@ Phase 6 additions:
   - Extended telemetry: condition number, workspace status, tracking
     error, trajectory progress, fault state
 
+Safety hardening:
+  - Slew limiter: per-cycle rate limit on commanded positions vs actual
+    motor feedback.  Prevents step discontinuities regardless of source.
+  - Motor feedback staleness: suppresses all commands if feedback is
+    older than JB_OP_MOTOR_FB_STALENESS_TIMEOUT_S.
+  - Motor overspeed: ESTOP if any motor exceeds velocity limit.
+  - Tracking error: ESTOP if any leg deviates > MAX_TRACKING_ERROR_MM.
+
 Common infrastructure:
   - Fixed-rate main loop with nanosecond timing instrumentation
   - IPC message dispatch (targets, trajectories, mode commands, motor feedback)
@@ -43,6 +51,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+import jugglebot.hardware_config as hw
 from jugglebot.motion.geometry import StewartGeometry
 from jugglebot.motion.ik_solver import (
     compute_jacobian,
@@ -89,6 +98,26 @@ IPC_HEARTBEAT_TIMEOUT_S = 0.5
 
 # Default control loop rate
 DEFAULT_RATE_HZ = 500
+
+# Slew limiter: maximum motor velocity (rev/s) enforced on commanded positions.
+# Conservative limit: ~667 mm/s Cartesian ≈ 200 mm in 0.3 s.
+MAX_SLEW_RATE_REV_PER_S = 9.5
+
+# Trigger FAULT if slew limiter clamps for this many consecutive cycles.
+SLEW_FAULT_CYCLES = 250  # 0.5 s at 500 Hz
+
+# Motor overspeed threshold — ESTOP if any motor exceeds this (rev/s).
+# 10 % margin above hardware limit for measurement noise.
+MAX_MOTOR_VEL_RPS = hw.ODRIVE_TRAP_VEL_LIMIT_RPS * 1.1
+
+# Tracking error threshold (mm) — ESTOP if any leg exceeds this.
+MAX_TRACKING_ERROR_MM = 10.0
+
+# Motor feedback staleness timeout (seconds).  If no fresh motor-feedback
+# message has arrived within this window, the control loop suppresses ALL
+# motor commands because it cannot verify that its outputs are safe.
+# 100 ms ≈ 50 control-loop cycles at 500 Hz.
+MOTOR_FB_STALENESS_S = 0.1
 
 
 # ---------------------------------------------------------------------------
@@ -215,7 +244,12 @@ class ControlLoop:
         self._motor_fb_vel_rps = np.zeros(6)   # actual velocities (rev/s)
         self._motor_fb_cur_A = np.zeros(6)     # actual currents (A)
         self._has_motor_fb = False
+        self._motor_fb_timestamp = 0.0         # perf_counter time of last feedback
         self._tracking_error_mm = np.zeros(6)
+
+        # Slew limiter state
+        self._slew_limit_count = 0
+        self._slew_limited = False
 
         # Gravity correction (from levelling)
         self._gravity_correction: np.ndarray | None = None
@@ -260,16 +294,20 @@ class ControlLoop:
             # 4. Compute control output + workspace checks
             self._compute()
 
-            # 5. Publish telemetry (only when enabled — a DISABLED loop
-            #    must be completely silent to avoid sending stale zeros
-            #    that could command motors to dangerous positions).
-            if self.mode == ControlMode.ENABLED:
+            # 5. Slew limiter — final safety gate on motor commands
+            ok_to_publish = self._slew_limit(dt_actual)
+
+            # 6. Publish telemetry (only when enabled AND safety gate
+            #    approves — a DISABLED loop or one without motor feedback
+            #    must be completely silent to avoid sending stale or
+            #    dangerous commands to the motors).
+            if self.mode == ControlMode.ENABLED and ok_to_publish:
                 self._publish_telemetry(dt_actual)
 
-            # 6. Periodic logging
+            # 7. Periodic logging
             self._periodic_log(t_start)
 
-            # 7. Sleep for remainder of cycle
+            # 8. Sleep for remainder of cycle
             elapsed = time.perf_counter() - t_start
             sleep_time = self.dt_target - elapsed
             if sleep_time > 0:
@@ -408,6 +446,7 @@ class ControlLoop:
         self._motor_fb_vel_rps = np.array(msg['vel'])
         self._motor_fb_cur_A = np.array(msg['cur'])
         self._has_motor_fb = True
+        self._motor_fb_timestamp = time.perf_counter()
 
     # ------------------------------------------------------------------
     # Heartbeat watchdog
@@ -424,6 +463,84 @@ class ControlLoop:
                 logger.warning(
                     f"IPC heartbeat lost ({self.ipc.seconds_since_last_recv:.1f}s "
                     f"since last message) -- E-STOP")
+
+    # ------------------------------------------------------------------
+    # Slew limiter + safety checks
+    # ------------------------------------------------------------------
+
+    def _slew_limit(self, dt: float) -> bool:
+        """Final safety gate: limit rate of position change vs actual motor
+        position.  Returns True if commands should be published, False to
+        suppress.
+
+        Also checks for motor overspeed and excessive tracking error.
+        """
+        if not self._has_motor_fb:
+            return False  # No feedback yet — cannot verify safety
+
+        fb_age = time.perf_counter() - self._motor_fb_timestamp
+        if fb_age > MOTOR_FB_STALENESS_S:
+            logger.warning(
+                f"Motor feedback stale ({fb_age:.3f}s) — suppressing commands")
+            return False
+
+        # --- Motor overspeed check ---
+        if np.any(np.abs(self._motor_fb_vel_rps) > MAX_MOTOR_VEL_RPS):
+            worst = np.max(np.abs(self._motor_fb_vel_rps))
+            self.mode = ControlMode.ESTOP
+            self._zero_outputs()
+            self._traj_manager.cancel()
+            self._fault_state = f'motor_overspeed: {worst:.2f} rev/s'
+            logger.error(
+                f"MOTOR OVERSPEED — E-STOP: worst={worst:.2f} rev/s "
+                f"(limit {MAX_MOTOR_VEL_RPS:.1f})")
+            return False
+
+        # --- Tracking error check ---
+        if np.any(self._tracking_error_mm > MAX_TRACKING_ERROR_MM):
+            worst = np.max(self._tracking_error_mm)
+            worst_leg = int(np.argmax(self._tracking_error_mm))
+            self.mode = ControlMode.ESTOP
+            self._zero_outputs()
+            self._traj_manager.cancel()
+            self._fault_state = (
+                f'tracking_error: leg {worst_leg} = {worst:.2f} mm')
+            logger.error(
+                f"TRACKING ERROR — E-STOP: leg {worst_leg} = {worst:.2f} mm "
+                f"(limit {MAX_TRACKING_ERROR_MM:.1f})")
+            return False
+
+        # --- Slew rate limit ---
+        actual = self._motor_fb_pos_rev
+        delta = self._commanded_pos_rev - actual
+        max_delta = MAX_SLEW_RATE_REV_PER_S * dt
+
+        if np.any(np.abs(delta) > max_delta):
+            clamped_delta = np.clip(delta, -max_delta, max_delta)
+            self._commanded_pos_rev = actual + clamped_delta
+            self._commanded_vel_ff_rps = clamped_delta / dt
+            self._commanded_torque_ff_Nm = np.zeros(6)
+            self._slew_limited = True
+            self._slew_limit_count += 1
+            logger.warning(
+                f"Slew limiter active: worst_delta="
+                f"{np.max(np.abs(delta)):.4f} rev, clamped to "
+                f"{max_delta:.4f} rev ({self._slew_limit_count} cycles)")
+
+            if self._slew_limit_count >= SLEW_FAULT_CYCLES:
+                self.mode = ControlMode.ESTOP
+                self._zero_outputs()
+                self._traj_manager.cancel()
+                self._fault_state = 'slew_limit_sustained'
+                logger.error(
+                    f"SLEW LIMIT SUSTAINED — E-STOP: active for "
+                    f"{self._slew_limit_count} consecutive cycles")
+                return False
+        else:
+            self._slew_limit_count = 0
+            self._slew_limited = False
+
+        return True
 
     # ------------------------------------------------------------------
     # Async feasibility result polling
@@ -636,6 +753,7 @@ class ControlLoop:
                        if self._has_motor_fb else None),
             motor_cur=(self._motor_fb_cur_A.tolist()
                        if self._has_motor_fb else None),
+            slew_limited=self._slew_limited,
         )
         self.ipc.send_telemetry(msg)
 
