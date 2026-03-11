@@ -282,7 +282,7 @@ Context-sensitive enable/disable based on last received `orchestrator_state`.
 3. [x] Wire `rigid_body_poses` as preferred pose source (when mocap available, bypasses FK)
 4. [x] Implement leg color coding (green/amber/red by extension ratio)
 5. [x] Implement hand axis update from `motor_states[6]`
-6. [ ] **Verify**: 3D model tracks real robot movement — needs hardware testing
+6. [x] **Verify**: 3D model tracks real robot movement — needs hardware testing
 
 ### Phase D — Ball Butler 3D model — DONE (2026-02-24)
 1. [x] Create `js/ball-butler-model.js` — yaw/pitch/hand line art
@@ -299,7 +299,7 @@ Context-sensitive enable/disable based on last received `orchestrator_state`.
 1. [x] Create `js/commands.js` — button handlers
 2. [x] Add command overlay to layout
 3. [x] Implement context-sensitive enable/disable
-4. [ ] **Verify**: commands reach orchestrator — needs hardware testing
+4. [x] **Verify**: commands reach orchestrator — needs hardware testing
 
 ### Phase G — Polish — DONE (2026-02-24)
 1. [x] Responsive resize (sidebar collapse on narrow screens)
@@ -324,7 +324,7 @@ Context-sensitive enable/disable based on last received `orchestrator_state`.
 8. [x] Cursor sync — hover one chart shows crosshair on all 9
 9. [x] Collapse/expand — click label or drag resize handle, localStorage persistence for height and collapsed state
 10. [x] **Verify**: charts render with Y-axes, toolbar works, resize handle works — confirmed on Windows (no live data without ROS2)
-11. [ ] **Verify**: charts populate with live data at 20Hz — needs hardware testing
+11. [x] **Verify**: charts populate with live data at 20Hz — needs hardware testing
 
 ---
 
@@ -455,10 +455,10 @@ Prerequisites: rosbridge running on the Jetson (`ros2 launch rosbridge_server ro
 - [x] Click "Clear Errors" → works from any state
 
 **Telemetry charts (live):**
-- [ ] Charts populate with live data at 20Hz (9 motors updating)
-- [ ] Hover one chart → crosshair appears on all 9 (cursor sync)
-- [ ] Toggle signals on/off → axes appear/disappear, colors match scheme
-- [ ] Change time window → chart history depth changes
+- [x] Charts populate with live data at 20Hz (9 motors updating)
+- [x] Hover one chart → crosshair appears on all 9 (cursor sync)
+- [x] Toggle signals on/off → axes appear/disappear, colors match scheme
+- [x] Change time window → chart history depth changes
 - [ ] Collapse panel → data continues buffering; expand → history immediately visible
 - [ ] BB not connected → charts 7-8 show no data (only 7 motors reporting)
 - [ ] Commanded position (dashed) tracks measured position (solid) during movement
@@ -466,8 +466,8 @@ Prerequisites: rosbridge running on the Jetson (`ros2 launch rosbridge_server ro
 **Error handling:**
 - [x] Trigger an error (e.g. E-stop) → state badge shows FAULT (red, pulsing)
 - [x] Error flags light up red in System panel
-- [ ] "Clear Errors" button enabled
-- [ ] Clear errors → state recovers (if error was transient)
+- [x] "Clear Errors" button enabled
+- [x] Clear errors → state recovers (if error was transient)
 
 ---
 
