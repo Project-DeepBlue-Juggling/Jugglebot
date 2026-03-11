@@ -320,9 +320,8 @@ const MOTION_TIMEOUT_MS = 3000;
 export function updateMotionPanel(msg) {
     const panel = document.getElementById('panel-motion');
     if (!panel) return;
-    panel.style.display = '';
 
-    // Reset timeout — hide panel if no data for 3s
+    // Reset timeout — show disconnected state if no data for 3s
     if (motionTimeout) clearTimeout(motionTimeout);
     motionTimeout = setTimeout(() => { setMotionDisconnected(); }, MOTION_TIMEOUT_MS);
 
