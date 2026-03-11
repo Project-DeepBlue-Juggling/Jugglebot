@@ -51,41 +51,15 @@ def end_boundary_state(traj: QuinticTrajectory) -> tuple[np.ndarray, np.ndarray,
 
 ---
 
-## ~~3. Re-implement Deferred Start for Dynamic Targets~~ ✅ DONE (2026-03-10)
+## ~~3. Re-implement Deferred Start for Dynamic Targets~~ REVERTED (2026-03-11)
 
-**Problem:** Deferred start was implemented in commit `a078b5c` (`DEFERRED_START_BUFFER_S = 2.0`) then removed in commit `1695946` ("Fix small jumps glitch") because it caused position discontinuities at the hold-to-move transition. Currently, far-future targets produce unnecessarily slow trajectories over the full duration.
+Deferred start was re-implemented (2026-03-10) but caused three categories of failure during hardware validation:
 
-**Proposed change:** Re-implement deferred start with proper splice continuity. The key issue was that the original implementation re-sampled the current state at the deferred `t_start` time, which could produce a discontinuity if a trajectory was active. The fix: when deferring, create the trajectory from the current state (at `t_now`) but set `t_start` in the future. The `evaluate()` method already handles `t < t_start` by holding at the start pose — so as long as the start state matches the current hold/trajectory state at the deferred start time, the transition will be smooth.
+1. **GIL contention**: The background `find_min_feasible_duration()` binary search (~1-2s on Jetson) starved the main control loop, causing position jumps when the loop resumed.
+2. **Quintic overshoot**: Long-duration quintics starting from mid-motion states (nonzero velocity/acceleration) overshoot massively, causing feasibility rejections for trajectories that would have been fine at shorter durations.
+3. **Unnecessary complexity**: The deferred start logic added significant branching in `submit_dynamic_target()`, `commit_async_trajectory()`, and `_bg_check_feasibility()`.
 
-**Algorithm:**
-
-1. Compute `min_feasible = find_min_feasible_duration(...)` for the target
-2. If `arrival_time - t_now > min_feasible + DEFERRED_START_BUFFER_S`:
-   - `motion_duration = min_feasible + DEFERRED_START_BUFFER_S`
-   - `t_start = arrival_time - motion_duration`
-   - Sample state at `t_start` from active trajectory (if executing) or hold pose (if idle)
-   - Create trajectory with that state as start, `t_start` set in the future
-3. The `evaluate()` hold-before-t_start mechanism keeps the platform in place until motion begins
-
-**Key consideration:** When deferring from an active trajectory, the sampled state at `t_start` must exactly match what `evaluate()` will return at that future time. For IDLE/COMPLETE states this is trivial (hold pose). For EXECUTING, it requires evaluating the active trajectory at the future `t_start` — which is valid as long as the active trajectory hasn't completed by then.
-
-**Files to modify:**
-
-- `ros_ws/src/jugglebot/jugglebot/motion/trajectory.py` — `submit_dynamic_target()` and `request_dynamic_target()`
-- `ros_ws/src/jugglebot/jugglebot/motion/tests/test_dynamic_target.py` — update test 13
-
-**Verification:** Offline test with far-future target: verify the platform holds, then moves at moderate speed. Hardware test: confirm no position discontinuity at the hold-to-move transition.
-
-**Implementation notes:**
-
-- `DEFERRED_START_BUFFER_S = 2.0` constant added to `trajectory.py`
-- `submit_dynamic_target()`: calls `find_min_feasible_duration()` to decide deferral; samples state at deferred `t_start` for splice continuity
-- `request_dynamic_target()` / `_bg_check_feasibility()`: bg thread also computes `min_feasible` alongside the existing feasibility check
-- `commit_async_trajectory()`: applies deferred start using `min_feasible` from the bg result
-- Test 13 updated: now verifies deferred start (hold phase → moderate-speed motion → on-time arrival)
-- Test 15 added: short-duration target starts immediately (no deferral)
-- Test 16 added: zero discontinuity at hold-to-move transition (the critical safety test)
-- All 16 dynamic target tests PASS (test 10 has pre-existing 7e-6 rad quat precision issue, unrelated)
+**Resolution:** Removed deferred start entirely. The platform now always uses the full requested duration (`arrival_time - t_now`) for its trajectory. For far-future targets this produces a very slow, gentle motion — which is well-behaved and trivially feasible. `DEFERRED_START_BUFFER_S`, the related branching, and 3 unit tests (13, 15, 16) were removed. The `deferred_start_test.py` hardware test suite was deleted.
 
 ---
 
@@ -123,22 +97,24 @@ Create a script that reads MCAP rosbag files and plots:
 
 ---
 
-## 5. Publish Tracking Error and Motor Feedback to ROS2
+## ~~5. Publish Tracking Error and Motor Feedback to ROS2~~ ✅ DONE (2026-03-11)
 
-**Problem:** `tracking_error_mm` is computed in the control loop and included in IPC telemetry, but the bridge does not publish it to any ROS2 topic. It is lost at the IPC→ROS2 boundary and cannot be captured by rosbag. Same applies to motor feedback (encoder positions), condition number, and workspace status.
-
-**Proposed change:** Add ROS2 publishers in `motion_bridge_node.py` for diagnostic data:
+**Change:** Added three new ROS2 publishers in `motion_bridge_node.py` that extract diagnostic fields from IPC telemetry and publish them as `Float64MultiArray` topics. Also extended the IPC telemetry to include raw motor feedback (encoder positions, velocities, currents) from the control loop.
 
 | New Topic | Message Type | Content |
 |---|---|---|
 | `/motion/tracking_error` | `Float64MultiArray` | 6 per-leg tracking errors (mm) |
-| `/motion/motor_feedback` | `Float64MultiArray` | 18 values: 6 positions + 6 velocities + 6 currents |
-| `/motion/diagnostics` | `Float64MultiArray` | condition number, workspace status, workspace speed scale |
+| `/motion/motor_feedback` | `Float64MultiArray` | 18 values: 6 positions (rev) + 6 velocities (rev/s) + 6 currents (A) |
+| `/motion/diagnostics` | `Float64MultiArray` | 3 values: condition number, workspace status (0=ok, 1=soft, 2=hard), workspace speed scale |
 
-**Files to modify:**
+**Files modified:**
 
-- `ros_ws/src/jugglebot/jugglebot/motion_bridge_node.py` — add publishers, extract fields from telemetry in `_poll_telemetry()`
-- `ros_ws/src/jugglebot/launch/jugglebot_launch.py` — add new topics to rosbag recording list
+- `ros_ws/src/jugglebot/jugglebot/motion/ipc.py` — added `motor_pos`, `motor_vel`, `motor_cur` optional fields to `make_telemetry()`
+- `ros_ws/src/jugglebot/jugglebot/motion/control_loop.py` — included motor feedback data in `_publish_telemetry()` when available
+- `ros_ws/src/jugglebot/jugglebot/motion_bridge_node.py` — added 3 publishers, extraction logic in `_poll_telemetry()`
+- `ros_ws/src/jugglebot/launch/jugglebot_launch.py` — added new topics to rosbag recording list
+
+**Note:** Workspace status is encoded as a float (0.0=ok, 1.0=soft, 2.0=hard) since `Float64MultiArray` cannot carry strings. Motor feedback topics only publish when the CAN node is providing encoder data (i.e. `_has_motor_fb` is true in the control loop).
 
 **Verification:** Run system, verify topics appear in `ros2 topic list`, verify data flows into rosbag.
 

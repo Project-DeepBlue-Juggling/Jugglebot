@@ -54,13 +54,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# When a dynamic target's arrival time is far enough in the future that the
-# platform would move unnecessarily slowly over the full duration, defer the
-# trajectory start so the motion uses ``min_feasible + DEFERRED_START_BUFFER_S``
-# seconds.  The platform holds at its current pose until ``t_start``, then
-# moves at a reasonable speed to arrive on time.
-DEFERRED_START_BUFFER_S = 2.5
-
 
 # ---------------------------------------------------------------------------
 # Quintic polynomial solver
@@ -1006,53 +999,12 @@ class TrajectoryManager:
             0.0, 0.0, 0.0,
         ])
 
-        # --- Deferred start ---
-        # Find the minimum feasible duration so we can decide whether to
-        # defer the trajectory start.  This avoids unnecessarily slow
-        # trajectories when the arrival time is far in the future.
-        #
-        # IMPORTANT: Both find_min_feasible_duration() and check_feasibility()
-        # block the control loop.  For non-deferred trajectories, we measure
-        # total elapsed time (via self._clock, same domain as t_now) and
-        # restamp t_start by the full elapsed amount so the first motor
-        # command doesn't jump ahead in the trajectory.
-        # For deferred trajectories, no restamp is needed — the hold-before-
-        # t_start mechanism absorbs the blocking time.
+        # Measure wall-clock time consumed by trajectory creation and
+        # feasibility checking so we can restamp t_start forward,
+        # preventing a position jump on the first motor command.
         t_clock_start = self._clock()
 
         cur_pose, cur_twist, cur_accel = self._get_current_state(t_now)
-
-        min_dur = find_min_feasible_duration(
-            start_pose=cur_pose,
-            start_twist=cur_twist,
-            start_accel=cur_accel,
-            end_pose=target_pose,
-            end_twist=target_twist,
-            end_accel=np.zeros(6),
-            geom=self.geom,
-            dynamics_params=self.dynamics_params,
-        )
-        if min_dur is None:
-            logger.debug("Dynamic target rejected: no feasible duration found")
-            return False
-
-        motion_duration = duration  # default: use full duration
-        traj_t_start = t_now       # default: start immediately
-        deferred = False
-
-        if duration > min_dur + DEFERRED_START_BUFFER_S:
-            # Deferred start: schedule the motion to arrive on time using
-            # a comfortable duration rather than the full (slow) one.
-            motion_duration = min_dur + DEFERRED_START_BUFFER_S
-            traj_t_start = arrival_time - motion_duration
-            deferred = True
-
-            # Sample the state at the deferred t_start.  For IDLE/COMPLETE
-            # this returns the hold pose (which won't change).  For EXECUTING,
-            # this evaluates the active trajectory at the future t_start —
-            # valid as long as the active trajectory hasn't completed by then.
-            cur_pose, cur_twist, cur_accel = self._get_current_state(
-                traj_t_start)
 
         try:
             traj = create_trajectory(
@@ -1062,8 +1014,8 @@ class TrajectoryManager:
                 end_pose=target_pose,
                 end_twist=target_twist,
                 end_accel=np.zeros(6),
-                duration=motion_duration,
-                t_start=traj_t_start,
+                duration=duration,
+                t_start=t_now,
             )
         except ValueError as e:
             logger.debug(f"Dynamic target rejected: {e}")
@@ -1078,36 +1030,16 @@ class TrajectoryManager:
                 f"{'; '.join(result.violations)}")
             return False
 
-        # For non-deferred trajectories, shift t_start forward by the total
-        # wall-clock time consumed by this method (find_min_feasible_duration
-        # + create_trajectory + check_feasibility).  This ensures the
-        # trajectory starts "now" rather than in the past, preventing a
-        # position jump on the first motor command.
-        #
-        # For deferred trajectories, t_start is already in the future and the
-        # hold-before-t_start mechanism (evaluate returns start pose for
-        # t < t_start) absorbs the blocking time — no restamp needed.
-        #
-        # Only restamp when t_now is in the same clock domain as wall time
-        # (abs(t_now - perf_counter) < 1s).  Offline tests may pass synthetic
-        # t_now values that don't correspond to wall time; restamping those
-        # would corrupt the time base.
-        if not deferred:
-            total_elapsed = self._clock() - t_clock_start
-            if total_elapsed > 0:
-                traj = _dc_replace(
-                    traj, t_start=traj.t_start + total_elapsed)
+        # Shift t_start forward by wall-clock time consumed by this method
+        # so the trajectory starts "now" rather than in the past.
+        total_elapsed = self._clock() - t_clock_start
+        if total_elapsed > 0:
+            traj = _dc_replace(
+                traj, t_start=traj.t_start + total_elapsed)
 
         # Accept: submit trajectory and flag return-to-home if needed
         self.submit(traj)
         self._pending_return = bool(np.linalg.norm(target_vel) > 1e-6)
-
-        if traj_t_start > t_now + 0.01:
-            logger.info(
-                f"Deferred start: motion begins in "
-                f"{traj_t_start - t_now:.2f}s, "
-                f"duration={motion_duration:.2f}s "
-                f"(min_feasible={min_dur:.2f}s)")
 
         # Pre-compute return-to-home in background if needed
         if self._pending_return:
@@ -1285,7 +1217,7 @@ class TrajectoryManager:
                     np.zeros(6),
                     self._hold_torque_ff.copy())
 
-        # Before trajectory starts (deferred start): hold at start pose
+        # Before trajectory starts: hold at start pose
         if t < traj.t_start:
             self._last_progress = 0.0
             self._last_time_remaining = t_end - t
@@ -1471,7 +1403,6 @@ class TrajectoryManager:
 
         original_traj = result['traj']
         arrival_time = result['arrival_time']
-        min_feasible = result.get('min_feasible')
         t_now = self._clock()
 
         # Remaining duration to arrival
@@ -1480,17 +1411,8 @@ class TrajectoryManager:
             logger.debug("Async commit: arrival_time passed during check")
             return False
 
-        # --- Deferred start ---
-        motion_duration = remaining
-        traj_t_start = t_now
-
-        if (min_feasible is not None
-                and remaining > min_feasible + DEFERRED_START_BUFFER_S):
-            motion_duration = min_feasible + DEFERRED_START_BUFFER_S
-            traj_t_start = arrival_time - motion_duration
-
-        # Re-sample state at the (possibly deferred) start time
-        cur_pose, cur_twist, cur_accel = self._get_current_state(traj_t_start)
+        # Re-sample state at current time (eliminates request→commit gap)
+        cur_pose, cur_twist, cur_accel = self._get_current_state(t_now)
 
         try:
             traj = create_trajectory(
@@ -1500,8 +1422,8 @@ class TrajectoryManager:
                 end_pose=original_traj.end_state[:6],
                 end_twist=original_traj.end_state[6:12],
                 end_accel=original_traj.end_state[12:18],
-                duration=motion_duration,
-                t_start=traj_t_start,
+                duration=remaining,
+                t_start=t_now,
             )
         except ValueError as e:
             logger.debug(f"Async commit trajectory creation failed: {e}")
@@ -1515,14 +1437,9 @@ class TrajectoryManager:
         if result['needs_return']:
             self._start_return_precompute(traj)
 
-        deferred_info = ""
-        if traj_t_start > t_now + 0.01:
-            deferred_info = (
-                f", deferred_start={traj_t_start - t_now:.2f}s, "
-                f"motion_dur={motion_duration:.2f}s")
         logger.info(
             f"Async trajectory committed: remaining={remaining:.3f}s, "
-            f"latency={t_now - result['t_request']:.3f}s{deferred_info}")
+            f"latency={t_now - result['t_request']:.3f}s")
         return True
 
     def poll_precomputed_return(self) -> QuinticTrajectory | None:
@@ -1588,12 +1505,7 @@ class TrajectoryManager:
         logger.debug("Background feasibility thread exiting")
 
     def _bg_check_feasibility(self, request: dict) -> None:
-        """Background: run feasibility check for a dynamic target.
-
-        Also computes the minimum feasible duration via binary search so
-        that ``commit_async_trajectory`` can apply deferred start when the
-        arrival time is far in the future.
-        """
+        """Background: run feasibility check for a dynamic target."""
         traj = request['traj']
         gen = request['generation']
 
@@ -1602,22 +1514,6 @@ class TrajectoryManager:
             traj, self.geom, self.dynamics_params,
             n_samples=50, early_exit=True)
         check_elapsed = _time.perf_counter() - t_before
-
-        # Only compute min_feasible when deferred start is plausible.
-        # duration <= DEFERRED_START_BUFFER_S means deferred start can never
-        # trigger (requires remaining > min_feasible + buffer), so skip the
-        # expensive binary search (~2s on Jetson).
-        duration = request['arrival_time'] - request['t_request']
-        min_feasible = None
-        if result.feasible and duration > DEFERRED_START_BUFFER_S:
-            s = traj.start_state
-            e = traj.end_state
-            min_feasible = find_min_feasible_duration(
-                start_pose=s[:6], start_twist=s[6:12], start_accel=s[12:18],
-                end_pose=e[:6], end_twist=e[6:12], end_accel=e[12:18],
-                geom=self.geom,
-                dynamics_params=self.dynamics_params,
-            )
 
         with self._async_lock:
             # Discard if a newer request has superseded this one
@@ -1632,7 +1528,6 @@ class TrajectoryManager:
                 't_request': request['t_request'],
                 'check_elapsed': check_elapsed,
                 'violations': result.violations if not result.feasible else [],
-                'min_feasible': min_feasible,
             }
 
         if not result.feasible:

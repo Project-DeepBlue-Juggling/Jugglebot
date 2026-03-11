@@ -27,7 +27,6 @@ from jugglebot.motion.trajectory import (
     create_trajectory,
     evaluate,
     check_feasibility,
-    find_min_feasible_duration,
     TrajectoryManager,
     TrajectoryState,
 )

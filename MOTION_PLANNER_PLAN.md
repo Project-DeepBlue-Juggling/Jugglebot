@@ -293,7 +293,7 @@ Only after all protective systems pass low-speed validation.
 - `find_min_feasible_duration()`: binary search over duration [0.2s, 5.0s] with 8 bisections
 - `make_rest_to_rest()`: centralized convenience constructor (moved from tools to trajectory.py)
 - `evaluate_jerk()`: Cartesian jerk (3rd derivative) from quintic polynomials
-- Deferred-start for slow targets: when `arrival_time` is far in the future (requested duration > min feasible + 2.0s buffer), the trajectory start is deferred so the platform holds in place and then moves at a reasonable speed to arrive on time, rather than creating an unnecessarily slow trajectory
+- ~~Deferred-start for slow targets~~ (removed 2026-03-11 — caused GIL contention and quintic overshoot; platform now uses full duration for all targets)
 
 ### Verification
 
@@ -310,7 +310,7 @@ Only after all protective systems pass low-speed validation.
 - Quaternion → rotvec conversion — 5-deg X tilt matches expected rotvec
 - Arrival time in the past — rejected immediately
 - `make_rest_to_rest` centralized — output matches expected
-- Deferred start for slow targets — trajectory start correctly deferred
+- ~~Deferred start for slow targets~~ (removed 2026-03-11)
 - Return junction C2 continuity — regression test for bug #46
 
 #### Hardware tests (on Jetson, 100% speed, all PASS)
@@ -351,7 +351,7 @@ Each phase has explicit exit criteria. Do not begin the next phase until the cur
 | 4 — Trajectory Generator | **DONE (2026-03-01).** Boundary conditions exact (7/7 offline tests PASS); feasibility checker rejects known-bad trajectories; low-speed tracking verified on hardware (T1–T3 PASS, ≤1.17 mm worst error); T4 speed-scale marginally over threshold (1.54 mm vs 1.5 mm limit — measurement artefact, not functional failure); feedforward torque preview workflow established |
 | 5 — Inertia Feedforward | **DONE (2026-03-01).** Full Newton-Euler feedforward implemented; 14/14 offline tests PASS; hardware T5–T7 PASS at 50% and 100% speed; worst tracking 1.885 mm at 100% (threshold 3.0 mm); differential iq shows FF reduces PID effort by 1.5–2.8%; inertia effect marginal at current speeds (expected — significant at ball-catching speeds) |
 | 6 — Hardening | **DONE (2026-03-01).** All protective systems validated offline (12/12 tests); workspace limits, fault detection, extended telemetry. Hardware tests pending on Jetson. |
-| 7 — Dynamic Targets | **DONE (2026-03-02).** Dynamic target commanding, mid-motion replanning with C2 continuity, jerk limits, deferred-start buffering, auto-return-to-home, safe stowing. 14/14 offline tests PASS; all 5 hardware tests PASS at 100% speed (worst tracking 2.436 mm, threshold 3.0 mm). Two bugs found and fixed during hardware validation: (1) `_plan_return_to_home()` velocity discontinuity, (2) feasibility-check stall shifting trajectory timing. |
+| 7 — Dynamic Targets | **DONE (2026-03-02).** Dynamic target commanding, mid-motion replanning with C2 continuity, jerk limits, auto-return-to-home, safe stowing. Deferred-start buffering removed 2026-03-11 (GIL contention + quintic overshoot). 14/14 offline tests PASS; all 5 hardware tests PASS at 100% speed (worst tracking 2.436 mm, threshold 3.0 mm). Two bugs found and fixed during hardware validation: (1) `_plan_return_to_home()` velocity discontinuity, (2) feasibility-check stall shifting trajectory timing. |
 
 ---
 
@@ -787,7 +787,7 @@ Tracking error at 100% speed (2.025mm) well within threshold (3.0mm).
 - `find_min_feasible_duration()`: binary search over duration [0.2s, 5.0s] with 8 bisections
 - `make_rest_to_rest()`: centralized convenience constructor (moved from tools to trajectory.py)
 - `evaluate_jerk()`: Cartesian jerk (3rd derivative) from quintic polynomials
-- Deferred-start for slow targets: when `arrival_time` is far in the future (requested duration > min feasible + 2.0s buffer), the trajectory start is deferred so the platform holds in place and then moves at a reasonable speed to arrive on time, rather than creating an unnecessarily slow trajectory
+- ~~Deferred-start for slow targets~~ (removed 2026-03-11 — caused GIL contention and quintic overshoot; platform now uses full duration for all targets)
 - Active home pose: platform raises to Z=170mm (operational height) before tests begin; the interactive prompt fires after the platform is already active
 - Safe stowing: platform always returns to 0 rev (homed/stowed position) before idling axes; `safe_idle_all()` enforces this invariant
 
@@ -806,7 +806,7 @@ Tracking error at 100% speed (2.025mm) well within threshold (3.0mm).
 10. Quaternion -> rotvec conversion — 5-deg X tilt matches expected rotvec
 11. Arrival time in the past — rejected immediately
 12. `make_rest_to_rest` centralized — output matches expected
-13. Deferred start for slow targets — trajectory start correctly deferred, hold before t_start, progress=0 until motion begins
+13. ~~Deferred start for slow targets~~ (removed 2026-03-11)
 14. Return junction C2 continuity — verifies outbound end_state matches return start_state for pose/twist/accel (regression test for bug #46)
 
 #### Hardware tests (on Jetson, 100% speed)
@@ -826,7 +826,7 @@ Tracking error at 100% speed (2.025mm) well within threshold (3.0mm).
 
 42. **Speed scale is arrival-time-only** (2026-03-01): `submit_dynamic_target()` does not accept a `speed_scale` parameter. The trajectory duration is entirely determined by `arrival_time - t_now`. Passing speed_scale to `create_trajectory()` would double-apply scaling (stretching duration beyond the intended arrival time). The caller controls speed through their choice of arrival_time.
 
-43. **Deferred start avoids slow trajectories** (2026-03-01): When the arrival time is far in the future, `submit_dynamic_target()` computes the minimum feasible duration via `find_min_feasible_duration()`, adds a 2.0s buffer (`DEFERRED_START_BUFFER_S`), and defers the trajectory start so the platform holds in place until `arrival_time - motion_duration`. This avoids creating unnecessarily slow trajectories that would produce poor tracking due to accumulated encoder drift.
+43. ~~**Deferred start avoids slow trajectories**~~ (2026-03-01, removed 2026-03-11): Deferred start was implemented then removed — it caused GIL contention (background `find_min_feasible_duration` starved the control loop) and quintic overshoot (long-duration polynomials from mid-motion states). The platform now uses the full requested duration for all targets.
 
 44. **Platform must stow before idling** (2026-03-01): Idling axes while the platform is elevated (e.g. at Z=170mm active home) causes uncontrolled descent. All hardware test paths now stow the platform to 0 rev (homed position) via `safe_idle_all()` before idling. This applies to normal completion, exceptions, and Ctrl-C signal handling. The stow uses TRAP_TRAJ mode at vel=1.5 rev/s for a controlled descent.
 
@@ -840,7 +840,7 @@ Tracking error at 100% speed (2.025mm) well within threshold (3.0mm).
 
 ### Phase 7 status
 
-**Phase 7 is complete (2026-03-02).** Dynamic target commanding, mid-motion replanning, jerk limits, deferred-start buffering, and return-to-home are implemented and validated. 14/14 offline tests PASS, 42 regression tests PASS = 56 total. All 5 hardware tests PASS at 100% speed (worst tracking 2.436 mm, threshold 3.0 mm). Two bugs found and fixed during hardware validation (findings 46–48).
+**Phase 7 is complete (2026-03-02).** Dynamic target commanding, mid-motion replanning, jerk limits, and return-to-home are implemented and validated. Deferred-start buffering was removed 2026-03-11 (see finding 43). 14/14 offline tests PASS, 42 regression tests PASS = 56 total. All 5 hardware tests PASS at 100% speed (worst tracking 2.436 mm, threshold 3.0 mm). Two bugs found and fixed during hardware validation (findings 46–48).
 
 ### Suggested next steps
 
