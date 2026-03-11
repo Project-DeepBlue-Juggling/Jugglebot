@@ -104,7 +104,7 @@ Create a script that reads MCAP rosbag files and plots:
 | New Topic | Message Type | Content |
 |---|---|---|
 | `/motion/tracking_error` | `Float64MultiArray` | 6 per-leg tracking errors (mm) |
-| `/motion/diagnostics` | `Float64MultiArray` | 3 values: condition number, workspace status (0=ok, 1=soft, 2=hard), workspace speed scale |
+| `/motion/diagnostics` | `DiagnosticStatus` | Named key-value pairs: `cond_number`, `workspace_status`, `workspace_speed_scale`, `traj_state`, `traj_progress`, `fault_state`. Level field reflects OK/WARN/ERROR. |
 
 Motor feedback (encoder positions/velocities/currents) was **not** added as a separate topic because `/robot_state` already publishes per-motor `pos_estimate`, `vel_estimate`, and `iq_measured` via `MotorStateSingle[]` at 100 Hz from the CAN node.
 
@@ -113,7 +113,7 @@ Motor feedback (encoder positions/velocities/currents) was **not** added as a se
 - `ros_ws/src/jugglebot/jugglebot/motion_bridge_node.py` — added 2 publishers, extraction logic in `_poll_telemetry()`
 - `ros_ws/src/jugglebot/launch/jugglebot_launch.py` — added new topics to rosbag recording list
 
-**Note:** Workspace status is encoded as a float (0.0=ok, 1.0=soft, 2.0=hard) since `Float64MultiArray` cannot carry strings.
+**Note:** Diagnostics uses `diagnostic_msgs/DiagnosticStatus` with named `KeyValue` pairs for readability. The `level` field is set automatically: OK (normal), WARN (soft workspace limit), ERROR (hard limit or fault). Added `diagnostic_msgs` dependency to `package.xml`.
 
 **Verification:** Run system, verify topics appear in `ros2 topic list`, verify data flows into rosbag.
 

@@ -17,6 +17,7 @@ from __future__ import annotations
 import numpy as np
 import rclpy
 from rclpy.node import Node
+from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
 from std_msgs.msg import Float64MultiArray, String
 from jugglebot_interfaces.msg import PlatformPoseCommand
 
@@ -78,7 +79,7 @@ class MotionBridgeNode(Node):
 
         # Diagnostics: condition number, workspace status, workspace speed scale
         self._diagnostics_pub = self.create_publisher(
-            Float64MultiArray, 'motion/diagnostics', 10)
+            DiagnosticStatus, 'motion/diagnostics', 10)
 
         # ------------------------------------------------------------------
         # Timer to poll IPC telemetry
@@ -195,21 +196,47 @@ class MotionBridgeNode(Node):
             err_msg.data = list(tracking_error)
             self._tracking_error_pub.publish(err_msg)
 
-        # Publish diagnostics (condition number, workspace status, speed scale)
+        # Publish diagnostics as named key-value pairs
         cond = telem.get('cond_number')
-        ws_status = telem.get('workspace_status')
-        ws_scale = telem.get('workspace_speed_scale')
         if cond is not None:
-            # Encode workspace_status as float: 0=ok, 1=soft, 2=hard
-            ws_status_val = {'ok': 0.0, 'soft': 1.0, 'hard': 2.0}.get(
-                ws_status, -1.0)
-            diag2_msg = Float64MultiArray()
-            diag2_msg.data = [
-                float(cond),
-                ws_status_val,
-                float(ws_scale) if ws_scale is not None else 1.0,
+            ws_status = telem.get('workspace_status', 'unknown')
+            ws_scale = telem.get('workspace_speed_scale', 1.0)
+            traj_state = telem.get('traj_state', 'unknown')
+            traj_progress = telem.get('traj_progress')
+            fault = telem.get('fault_state')
+
+            diag_msg = DiagnosticStatus()
+            diag_msg.name = 'motion/control_loop'
+            diag_msg.hardware_id = 'motion_planner'
+
+            # Set level based on workspace/fault status
+            if fault:
+                diag_msg.level = DiagnosticStatus.ERROR
+                diag_msg.message = f'FAULT: {fault}'
+            elif ws_status == 'hard':
+                diag_msg.level = DiagnosticStatus.ERROR
+                diag_msg.message = 'Workspace hard limit'
+            elif ws_status == 'soft':
+                diag_msg.level = DiagnosticStatus.WARN
+                diag_msg.message = 'Workspace soft limit'
+            else:
+                diag_msg.level = DiagnosticStatus.OK
+                diag_msg.message = 'OK'
+
+            diag_msg.values = [
+                KeyValue(key='cond_number', value=f'{cond:.1f}'),
+                KeyValue(key='workspace_status', value=str(ws_status)),
+                KeyValue(key='workspace_speed_scale', value=f'{ws_scale:.3f}'),
+                KeyValue(key='traj_state', value=str(traj_state)),
             ]
-            self._diagnostics_pub.publish(diag2_msg)
+            if traj_progress is not None:
+                diag_msg.values.append(
+                    KeyValue(key='traj_progress', value=f'{traj_progress:.3f}'))
+            if fault:
+                diag_msg.values.append(
+                    KeyValue(key='fault_state', value=str(fault)))
+
+            self._diagnostics_pub.publish(diag_msg)
 
     # ------------------------------------------------------------------
     # Shutdown
