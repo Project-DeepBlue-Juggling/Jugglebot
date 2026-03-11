@@ -62,6 +62,7 @@ The bridge translates between the ROS2 topic world and the ZeroMQ IPC layer. It 
 | `platform_pose_topic` | `PlatformPoseCommand` | `target` | Forward pose to control process. **Gated:** only forwards if `msg.publisher` matches the current active control mode |
 | `control_mode_topic` | `String` | `mode` | Map mode strings to enable/disable/estop commands |
 | `gravity_offset` | `Float64MultiArray` | `mode` | Forward tilt correction as `set_gravity_offset` |
+| `robot_state` | `RobotState` | `motorfb` | Forward motor positions/velocities/currents (first 6 axes = legs) to control process for [safety checks](safety.md) |
 
 ### Control Process → ROS2
 
@@ -69,6 +70,8 @@ The bridge translates between the ROS2 topic world and the ZeroMQ IPC layer. It 
 |---|---|---|---|
 | `telem` | `leg_lengths_topic` | `Float64MultiArray` | 18 values: [6 positions (rev), 6 velocities (rev/s), 6 torques (Nm)] |
 | `telem` | `leg_torques_diagnostic` | `Float64MultiArray` | 6 feedforward torques (monitoring only) |
+| `telem` | `motion/tracking_error` | `Float64MultiArray` | 6 per-leg tracking errors (mm) |
+| `telem` | `motion/diagnostics` | `DiagnosticStatus` | Condition number, workspace status, slew limiter state, faults |
 
 Telemetry is polled at 500 Hz (matching the control loop rate).
 
@@ -117,7 +120,9 @@ The CAN node handles:
 
 ### Motor Feedback
 
-The CAN node receives encoder feedback from each ODrive and publishes it on ROS2 topics. The bridge forwards this to the control process as `motorfb` IPC messages, used for tracking error computation.
+The CAN node receives encoder feedback from each ODrive at ~100 Hz and publishes it on the `/robot_state` topic as a `RobotState` message containing a `MotorStateSingle` per axis. The bridge subscribes to this topic, extracts `pos_estimate`, `vel_estimate`, and `iq_measured` from the first 6 entries (the leg motors), and forwards them to the control process as `motorfb` IPC messages.
+
+This feedback is critical for the [motor command safety](safety.md) system — the slew rate limiter compares commanded positions against these actual encoder positions. Without current feedback, the control loop suppresses all motor commands.
 
 ### CAN Bus Timing
 

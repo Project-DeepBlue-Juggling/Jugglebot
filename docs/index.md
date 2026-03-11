@@ -15,6 +15,7 @@ Complete technical documentation for the motion planning and control subsystem, 
 - **[Dynamics](motion_planner/dynamics.md)** — Gravity compensation, inertia feedforward, force decomposition
 - **[Trajectory Planning](motion_planner/trajectory.md)** — Quintic polynomial generation, feasibility checking, dynamic targets
 - **[Workspace Safety](motion_planner/workspace.md)** — Limit enforcement, singularity avoidance, fault detection
+- **[Motor Command Safety](motion_planner/safety.md)** — Slew rate limiter, motor feedback gating, defense-in-depth fault checks
 - **[Control Loop](motion_planner/control_loop.md)** — The 500 Hz control process, operating modes, IPC layer
 - **[System Integration](motion_planner/integration.md)** — ROS2 bridge, CAN interface, full system startup
 - **[Operations Guide](motion_planner/operations.md)** — Running tests, tuning gains, extending the system

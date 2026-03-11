@@ -247,7 +247,9 @@ ros_ws/src/jugglebot/
   - Duration estimation: compute exact time required, reject infeasible commands before starting
 - [ ] Gravity compensation & static feedforward (Phase 3 of MOTION_PLANNER_PLAN)
 - [ ] Full inertia feedforward & dynamic compensation (Phase 5 of MOTION_PLANNER_PLAN)
-- [ ] Hardening & operational readiness (Phase 6 of MOTION_PLANNER_PLAN)
+- [x] Hardening & operational readiness (Phase 6 of MOTION_PLANNER_PLAN)
+  - Workspace limits, singularity monitoring, fault detection — completed 2026-03-01
+  - **Post-incident safety hardening (2026-03-11):** After a broken actuator caused by a step discontinuity, added defense-in-depth motor command safety: slew rate limiter (9.5 rev/s against actual motor feedback), motor feedback gating (no feedback → no commands), feedback staleness check (100ms), motor overspeed fault, tracking error fault (10mm), sustained slew fault (0.5s → ESTOP), lead-time gate (300ms minimum for dynamic targets), and bridge motor feedback forwarding. 8 offline tests in `test_safety.py`. See [docs/motion_planner/safety.md](docs/motion_planner/safety.md) for full documentation.
 - [ ] Absorb `gently_move_platform_to_setpoint()` as a trajectory-planned move
 - [ ] Absorb platform leveling as a planner method
 - [ ] **Test**: Spacemouse control through new pipeline. A/B compare with old system

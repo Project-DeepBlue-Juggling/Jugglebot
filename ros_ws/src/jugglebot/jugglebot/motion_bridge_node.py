@@ -19,7 +19,7 @@ import rclpy
 from rclpy.node import Node
 from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
 from std_msgs.msg import Float64MultiArray, String
-from jugglebot_interfaces.msg import PlatformPoseCommand
+from jugglebot_interfaces.msg import PlatformPoseCommand, RobotState
 
 from jugglebot.motion.ipc import (
     BridgeIPC,
@@ -60,6 +60,11 @@ class MotionBridgeNode(Node):
         self.create_subscription(
             Float64MultiArray, 'gravity_offset',
             self._on_gravity_offset, 10)
+
+        # Robot state from CAN node (motor feedback for control loop)
+        self.create_subscription(
+            RobotState, 'robot_state',
+            self._on_robot_state, 10)
 
         # ------------------------------------------------------------------
         # ROS2 publishers (IPC → ROS2)
@@ -159,6 +164,19 @@ class MotionBridgeNode(Node):
         self.get_logger().info(
             f"Sent gravity offset to control process: "
             f"[{msg.data[0]:.4f}, {msg.data[1]:.4f}] rad")
+
+    def _on_robot_state(self, msg: RobotState) -> None:
+        """Forward motor feedback from CAN node to the control process."""
+        states = msg.motor_states
+        if len(states) < 6:
+            return
+        # First 6 entries are the leg motors
+        fb = {
+            'pos': [states[i].pos_estimate for i in range(6)],
+            'vel': [states[i].vel_estimate for i in range(6)],
+            'cur': [states[i].iq_measured for i in range(6)],
+        }
+        self.ipc.send_motor_feedback(fb)
 
     # ------------------------------------------------------------------
     # IPC → ROS2 polling

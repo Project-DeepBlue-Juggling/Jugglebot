@@ -76,6 +76,7 @@ External:
 | [Dynamics](dynamics.md) | Gravity, inertia, feedforward | How are motor torques computed? |
 | [Trajectory](trajectory.md) | Quintic polynomials, feasibility | How are smooth motions planned? |
 | [Workspace](workspace.md) | Limits, singularity avoidance | How does the system stay safe? |
+| [Motor Command Safety](safety.md) | Slew limiter, feedback gating, fault checks | How are dangerous commands prevented? |
 | [Control Loop](control_loop.md) | 500 Hz process, modes, IPC | What happens every 2 ms? |
 | [Integration](integration.md) | ROS2 bridge, CAN, startup | How does it connect to the rest of the robot? |
 | [Operations](operations.md) | Testing, tuning, extending | How do I work with this system? |

@@ -21,16 +21,16 @@ python -m jugglebot.motion.control_loop --rate 500 --log-level INFO
 Every cycle follows this sequence:
 
 ```
-  1. Record cycle timing                             
-  2. Process IPC messages (targets, modes, feedback) 
-  3. Poll async feasibility results                  
-  4. Check heartbeat (E-stop if no messages > 0.5s)  
-  5. Compute motor commands                          
-  6. Check workspace limits                          
-  7. Compute tracking error (if motor feedback)      
-  8. Publish telemetry                               
-  9. Periodic logging (every 5 seconds)              
- 10. Sleep for remainder of cycle                    
+  1. Record cycle timing
+  2. Process IPC messages (targets, modes, feedback)
+  3. Poll async feasibility results
+  4. Check heartbeat (E-stop if no messages > 0.5s)
+  5. Compute motor commands
+  6. Check workspace limits
+  7. Slew limit + safety checks (see Motor Command Safety)
+  8. Publish telemetry (if safety checks pass)
+  9. Periodic logging (every 5 seconds)
+ 10. Sleep for remainder of cycle
 ```
 
 ### Step 1: Timing
@@ -110,17 +110,22 @@ After computing motor commands, the loop verifies workspace limits:
 If the result is `HARD_LIMIT`: cancel trajectory, E-stop, set fault state.
 If the result is `SOFT_LIMIT`: log warning (future: adaptive speed reduction).
 
-### Step 7: Tracking Error
+### Step 7: Slew Limit + Safety Checks
 
-If motor feedback has been received from the CAN node, the loop computes per-leg tracking error:
+After workspace checks, the `_slew_limit()` method runs the [motor command safety](safety.md) checks. This is the final gate before telemetry is published. It verifies:
 
-$$\text{error}_i = |\text{commanded_extension}_i - \text{actual_extension}_i| \quad \text{(mm)}$$
+1. Motor feedback is available and current (not stale)
+2. No motor is overspeeding
+3. No leg has excessive tracking error
+4. The rate of position change vs actual motor position is within bounds
 
-This is included in telemetry for monitoring but is not currently used for control decisions.
+If any check fails, commands are suppressed (or an ESTOP is triggered for critical faults). Telemetry is only published when `_slew_limit()` returns `True`.
+
+See [Motor Command Safety](safety.md) for full details.
 
 ### Step 8: Publish Telemetry
 
-A telemetry message is published every cycle containing:
+A telemetry message is published every cycle (when safety checks pass) containing:
 
 | Field | Content |
 |---|---|
@@ -135,6 +140,7 @@ A telemetry message is published every cycle containing:
 | `workspace_status` | OK / SOFT_LIMIT / HARD_LIMIT |
 | `workspace_speed_scale` | Speed scale from workspace limits |
 | `tracking_error_mm` | 6 per-leg tracking errors (mm) |
+| `slew_limited` | Whether slew limiter clamped commands this cycle |
 | `fault_state` | Fault description if any |
 
 ## Control Modes

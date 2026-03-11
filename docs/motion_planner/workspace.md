@@ -143,6 +143,10 @@ Sweep the workspace on a grid and compute reachability and condition number at e
 
 Used during Phase 1 to characterize the workspace. Results: 929/1944 poses reachable, condition range 449–644.
 
+## Motor Command Safety
+
+In addition to workspace limits, the control loop enforces a set of runtime safety checks on every motor command — slew rate limiting against actual motor feedback, overspeed detection, tracking error faults, and feedback staleness gating. These are documented separately in [Motor Command Safety](safety.md).
+
 ## Agreement Between Planning and Runtime
 
 A critical design invariant: the feasibility checker and the runtime workspace monitor use **the same margins**. Both use `LEG_HARD_MARGIN_MM = 5` mm as the hard boundary. This means:

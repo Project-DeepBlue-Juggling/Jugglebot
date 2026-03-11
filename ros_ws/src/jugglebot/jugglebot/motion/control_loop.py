@@ -473,7 +473,9 @@ class ControlLoop:
         position.  Returns True if commands should be published, False to
         suppress.
 
-        Also checks for motor overspeed and excessive tracking error.
+        When motor feedback is available: enforces slew rate, overspeed,
+        tracking error, and staleness checks.  When feedback is NOT
+        available: all commands are suppressed until feedback arrives.
         """
         if not self._has_motor_fb:
             return False  # No feedback yet — cannot verify safety
