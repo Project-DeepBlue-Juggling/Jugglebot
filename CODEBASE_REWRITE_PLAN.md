@@ -271,7 +271,11 @@ When mocap integration is complete, update the LEVELLING state to:
 - [ ] **Test**: Verify `/mocap_data` and `/rigid_body_poses` publish correctly
 
 ### Phase 5: Integration + Polish
-- [ ] Write new `jugglebot_launch.py` for the new node set
+- [x] Write new `jugglebot_launch.py` for the new node set
+  - Added `motion_bridge_node` and `control_loop` to launch description
+  - `control_loop` registered as console_scripts entry point in `setup.py`, launched via `ExecuteProcess`
+  - Fixed ZeroMQ bind addresses (`localhost` → `127.0.0.1`) for Jetson compatibility
+  - Added `/motion/tracking_error`, `/motion/motor_feedback`, `/motion/diagnostics` topics + rosbag recording
 - [ ] Full system test: power on → homing → ACTIVE (spacemouse control) → shutdown
 - [ ] Verify rosbag recording
 - [ ] Clean up `archived/` directory (remove or keep as reference)
@@ -617,7 +621,7 @@ All four isolated-leg bench tests passed on ODrive axis 0 using `tools/single_le
 ### Remaining before Phase 3 hardware
 
 1. Install dependencies on Jetson: `pip install pyzmq msgpack`
-2. Run `python -m jugglebot.motion.tests.test_control_loop` — loop timing and IPC latency must pass (not blocking Phase 3 Stage A which uses standalone harness)
+2. Run `python -m jugglebot.motion.tests.test_control_loop` — loop timing and IPC latency must pass (not blocking Phase 3 Stage A which uses standalone harness). Note: in production, `control_loop` is launched via the `control_loop` console_scripts entry point (not `python -m`)
 
 ### Findings for future phases
 
