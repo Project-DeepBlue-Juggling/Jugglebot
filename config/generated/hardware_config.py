@@ -110,6 +110,7 @@ JB_OP_SHUTDOWN_STOW_TIMEOUT_S = 15.0
 JB_OP_MAX_VALID_TILT_RAD = 0.785
 JB_OP_INCLINOMETER_OFFSET_DEG = [-0.6, -0.2]
 JB_OP_LEVELLING_SETTLE_S = 0.5
+JB_OP_MAX_POSITION_STEP_REV = 0.2
 
 # ============================================================================
 # Jugglebot SpaceMouse

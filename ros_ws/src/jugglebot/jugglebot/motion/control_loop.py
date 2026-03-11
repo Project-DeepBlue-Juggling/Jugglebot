@@ -260,8 +260,11 @@ class ControlLoop:
             # 4. Compute control output + workspace checks
             self._compute()
 
-            # 5. Publish telemetry
-            self._publish_telemetry(dt_actual)
+            # 5. Publish telemetry (only when enabled — a DISABLED loop
+            #    must be completely silent to avoid sending stale zeros
+            #    that could command motors to dangerous positions).
+            if self.mode == ControlMode.ENABLED:
+                self._publish_telemetry(dt_actual)
 
             # 6. Periodic logging
             self._periodic_log(t_start)

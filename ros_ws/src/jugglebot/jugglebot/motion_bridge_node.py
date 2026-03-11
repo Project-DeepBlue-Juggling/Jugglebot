@@ -90,6 +90,7 @@ class MotionBridgeNode(Node):
         # ------------------------------------------------------------------
         self._current_control_mode = ''
         self._active_publisher = ''  # which source is allowed (matches control_mode)
+        self._control_loop_enabled = False  # gate for leg command publishing
 
     # ------------------------------------------------------------------
     # ROS2 → IPC callbacks
@@ -116,22 +117,37 @@ class MotionBridgeNode(Node):
         prev = self._current_control_mode
         self._current_control_mode = mode
 
-        if mode in ('SPACEMOUSE', 'SHELL', 'LEVELLING', 'GUI'):
+        if mode in ('SPACEMOUSE', 'SHELL', 'GUI'):
             self._active_publisher = mode
             if prev != mode:
                 cmd = make_mode_command('enable')
                 self.ipc.send_mode_command(cmd)
+                self._control_loop_enabled = True
                 self.get_logger().info(f"Sent 'enable' to control process "
                                        f"(mode: {mode})")
+        elif mode == 'LEVELLING':
+            # LEVELLING uses the CAN node's profiled gentle-move commands,
+            # not the motion planner.  Do NOT enable the control loop.
+            self._active_publisher = mode
+            if prev in ('SPACEMOUSE', 'SHELL', 'GUI'):
+                cmd = make_mode_command('disable')
+                self.ipc.send_mode_command(cmd)
+                self._control_loop_enabled = False
+                self.get_logger().info(
+                    "Disabled control loop for LEVELLING mode")
+            self.get_logger().info(
+                "LEVELLING mode — control loop stays disabled")
         elif mode == 'ERROR':
             cmd = make_mode_command('estop')
             self.ipc.send_mode_command(cmd)
+            self._control_loop_enabled = False
             self.get_logger().warning("Sent 'estop' to control process")
         elif mode == '' or mode is None:
             self._active_publisher = ''
             if prev and prev not in ('', 'ERROR'):
                 cmd = make_mode_command('disable')
                 self.ipc.send_mode_command(cmd)
+                self._control_loop_enabled = False
                 self.get_logger().info("Sent 'disable' to control process")
 
     def _on_gravity_offset(self, msg: Float64MultiArray) -> None:
@@ -158,9 +174,12 @@ class MotionBridgeNode(Node):
         torques = telem.get('cmd_torques', [0.0] * 6)
 
         # Publish unified command to CAN node: 6 pos + 6 vel_ff + 6 torque_ff
-        leg_msg = Float64MultiArray()
-        leg_msg.data = list(positions) + list(velocities) + list(torques)
-        self._leg_pub.publish(leg_msg)
+        # Only when control loop is enabled — forwarding commands from a
+        # disabled loop would send stale zeros to the motors.
+        if self._control_loop_enabled:
+            leg_msg = Float64MultiArray()
+            leg_msg.data = list(positions) + list(velocities) + list(torques)
+            self._leg_pub.publish(leg_msg)
 
         # Publish feedforward torques on diagnostic topic (monitoring only)
         ff_torques = telem.get('ff_torques')

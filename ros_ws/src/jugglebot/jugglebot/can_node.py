@@ -795,6 +795,23 @@ class CanInterfaceNode(Node):
         if any(math.isnan(v) or math.isinf(v) for v in data):
             self.get_logger().error("Leg command contains NaN or Inf — ignored")
             return
+
+        # Safety check: reject commands that would step any leg by more
+        # than JB_OP_MAX_POSITION_STEP_REV from its current encoder position.
+        # This catches stale zeros, sign errors, and other catastrophic
+        # command sources before they reach the ODrives.
+        if self.motors.first_heartbeat_received:
+            states = self.motors.last_states
+            for axis_id in range(odrive.NUM_LEGS):
+                step = abs(positions[axis_id] - states[axis_id].pos_estimate)
+                if step > hw.JB_OP_MAX_POSITION_STEP_REV:
+                    self.get_logger().error(
+                        f"Leg command REJECTED: leg {axis_id} would step "
+                        f"{step:.3f} rev (limit {hw.JB_OP_MAX_POSITION_STEP_REV}). "
+                        f"Commanded={positions[axis_id]:.4f}, "
+                        f"actual={states[axis_id].pos_estimate:.4f}")
+                    return
+
         self.legs_target_position = list(positions)
         for axis_id in range(odrive.NUM_LEGS):
             self._send_position_target(axis_id, positions[axis_id],
