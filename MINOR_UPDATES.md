@@ -99,22 +99,21 @@ Create a script that reads MCAP rosbag files and plots:
 
 ## ~~5. Publish Tracking Error and Motor Feedback to ROS2~~ ✅ DONE (2026-03-11)
 
-**Change:** Added three new ROS2 publishers in `motion_bridge_node.py` that extract diagnostic fields from IPC telemetry and publish them as `Float64MultiArray` topics. Also extended the IPC telemetry to include raw motor feedback (encoder positions, velocities, currents) from the control loop.
+**Change:** Added two new ROS2 publishers in `motion_bridge_node.py` that extract diagnostic fields from IPC telemetry and publish them as `Float64MultiArray` topics.
 
 | New Topic | Message Type | Content |
 |---|---|---|
 | `/motion/tracking_error` | `Float64MultiArray` | 6 per-leg tracking errors (mm) |
-| `/motion/motor_feedback` | `Float64MultiArray` | 18 values: 6 positions (rev) + 6 velocities (rev/s) + 6 currents (A) |
 | `/motion/diagnostics` | `Float64MultiArray` | 3 values: condition number, workspace status (0=ok, 1=soft, 2=hard), workspace speed scale |
+
+Motor feedback (encoder positions/velocities/currents) was **not** added as a separate topic because `/robot_state` already publishes per-motor `pos_estimate`, `vel_estimate`, and `iq_measured` via `MotorStateSingle[]` at 100 Hz from the CAN node.
 
 **Files modified:**
 
-- `ros_ws/src/jugglebot/jugglebot/motion/ipc.py` — added `motor_pos`, `motor_vel`, `motor_cur` optional fields to `make_telemetry()`
-- `ros_ws/src/jugglebot/jugglebot/motion/control_loop.py` — included motor feedback data in `_publish_telemetry()` when available
-- `ros_ws/src/jugglebot/jugglebot/motion_bridge_node.py` — added 3 publishers, extraction logic in `_poll_telemetry()`
+- `ros_ws/src/jugglebot/jugglebot/motion_bridge_node.py` — added 2 publishers, extraction logic in `_poll_telemetry()`
 - `ros_ws/src/jugglebot/launch/jugglebot_launch.py` — added new topics to rosbag recording list
 
-**Note:** Workspace status is encoded as a float (0.0=ok, 1.0=soft, 2.0=hard) since `Float64MultiArray` cannot carry strings. Motor feedback topics only publish when the CAN node is providing encoder data (i.e. `_has_motor_fb` is true in the control loop).
+**Note:** Workspace status is encoded as a float (0.0=ok, 1.0=soft, 2.0=hard) since `Float64MultiArray` cannot carry strings.
 
 **Verification:** Run system, verify topics appear in `ros2 topic list`, verify data flows into rosbag.
 

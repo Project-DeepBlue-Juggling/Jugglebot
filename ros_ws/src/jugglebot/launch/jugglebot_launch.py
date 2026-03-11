@@ -106,7 +106,6 @@ def generate_launch_description():
             '/bb/heartbeat',
             '/qtm_clock_offset_sec',
             '/motion/tracking_error',
-            '/motion/motor_feedback',
             '/motion/diagnostics',
             '-s', 'mcap', '-o', bag_dir,
         ],
