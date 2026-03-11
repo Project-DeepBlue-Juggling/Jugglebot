@@ -30,7 +30,6 @@ import { initJogPanel, setJogPanelVisible } from './jog-panel.js';
 // ---- Latest data stores ----
 let latestMotorStates = null;
 let latestCommandedLegs = null;  // Float64MultiArray data (revs)
-let receivedOrchestratorState = false;  // True once an explicit orchestrator_state msg arrives
 
 // ---- Initialisation ----
 
@@ -97,7 +96,6 @@ function onConnectionStateChange(state) {
         case 'disconnected':
             dot.className = 'status-dot disconnected';
             text.textContent = 'Disconnected';
-            receivedOrchestratorState = false;
             setJogPanelVisible(false);
             stopTopicDiscovery();
             break;
@@ -153,15 +151,6 @@ function onRobotState(msg) {
 
     // Feed telemetry charts
     onTelemetryData(motors, latestCommandedLegs, latestHandTelemetry);
-
-    // Infer orchestrator state from robot_state flags when no explicit
-    // orchestrator_state message has been received yet. This handles the
-    // case where the GUI connects after the orchestrator has already
-    // settled into IDLE (it only publishes state on change).
-    if (!receivedOrchestratorState && msg.is_homed) {
-        updateOrchestratorState('IDLE');
-        updateCommandStates();
-    }
 
     // Update 3D model via FK (if mocap not available)
     if (!useMocapPose && motors.length >= 6) {
@@ -236,7 +225,6 @@ function onBBHeartbeat(msg) {
 
 function onOrchestratorState(msg) {
     recordTopicMessage('orchestrator_state');
-    receivedOrchestratorState = true;
     updateOrchestratorState(msg.data);
     updateCommandStates();
 

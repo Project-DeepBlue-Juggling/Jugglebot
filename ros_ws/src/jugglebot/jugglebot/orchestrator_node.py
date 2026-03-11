@@ -74,9 +74,6 @@ class OrchestratorNode(Node):
         self._level_state_pub = self.create_publisher(
             Float64MultiArray, 'set_level_state', 10)
 
-        # Track last published values to avoid spamming
-        self._last_control_mode = None
-        self._last_published_state = None
         self._boot_timeout_logged = False
 
         # ── Levelling / startup offset tracking ───────────────────
@@ -156,21 +153,18 @@ class OrchestratorNode(Node):
         # 4. Process requests set by handlers
         self._process_requests()
 
-        # 5. Publish control mode if changed
-        if (self.ctx.control_mode is not None
-                and self.ctx.control_mode != self._last_control_mode):
+        # 5. Publish control mode every tick so late-joining subscribers
+        #    (e.g. GUI refresh) sync immediately.
+        if self.ctx.control_mode is not None:
             self._control_mode_pub.publish(String(data=self.ctx.control_mode))
-            self._last_control_mode = self.ctx.control_mode
 
-        # 6. Publish current state for monitoring (includes sub-mode for ACTIVE)
+        # 6. Publish current state every tick for the same reason.
         state_name = self.sm.state.name
         if self.sm.state == RobotState.ACTIVE and self.ctx.active_mode:
             state_str = f'{state_name}:{self.ctx.active_mode.value}'
         else:
             state_str = state_name
-        if state_str != self._last_published_state:
-            self._state_pub.publish(String(data=state_str))
-            self._last_published_state = state_str
+        self._state_pub.publish(String(data=state_str))
 
         # 7. Push persisted gravity offset on first IDLE entry after boot
         current = self.sm.state
