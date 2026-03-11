@@ -308,6 +308,91 @@ export function setBBDisconnected() {
     }
 }
 
+// ---- Motion planner panel ----
+
+let motionTimeout = null;
+const MOTION_TIMEOUT_MS = 3000;
+
+/**
+ * Update motion planner panel from DiagnosticStatus message.
+ * @param {object} msg - diagnostic_msgs/DiagnosticStatus
+ */
+export function updateMotionPanel(msg) {
+    const panel = document.getElementById('panel-motion');
+    if (!panel) return;
+    panel.style.display = '';
+
+    // Reset timeout — hide panel if no data for 3s
+    if (motionTimeout) clearTimeout(motionTimeout);
+    motionTimeout = setTimeout(() => { setMotionDisconnected(); }, MOTION_TIMEOUT_MS);
+
+    // Parse key-value pairs into a map
+    const kv = {};
+    for (const v of (msg.values || [])) {
+        kv[v.key] = v.value;
+    }
+
+    // Status badge (level: 0=OK, 1=WARN, 2=ERROR)
+    const badge = document.getElementById('motion-status-badge');
+    if (badge) {
+        const level = msg.level;
+        if (level === 2) {
+            badge.textContent = 'ERR';
+            badge.className = 'badge motion-badge motion-err';
+        } else if (level === 1) {
+            badge.textContent = 'WARN';
+            badge.className = 'badge motion-badge motion-warn';
+        } else {
+            badge.textContent = 'OK';
+            badge.className = 'badge motion-badge motion-ok';
+        }
+    }
+
+    // Trajectory state + progress
+    const trajLabel = document.getElementById('motion-traj-label');
+    const progressTrack = document.getElementById('motion-progress-track');
+    const progressFill = document.getElementById('motion-progress-fill');
+    const trajState = kv['traj_state'] || 'idle';
+    if (trajLabel) trajLabel.textContent = trajState;
+
+    const progress = parseFloat(kv['traj_progress']);
+    const showProgress = (trajState === 'executing' || trajState === 'returning') && !isNaN(progress);
+    if (progressTrack) progressTrack.style.display = showProgress ? '' : 'none';
+    if (progressFill && showProgress) progressFill.style.width = (progress * 100) + '%';
+
+    // Readouts
+    const wsEl = document.getElementById('motion-ws');
+    const condEl = document.getElementById('motion-cond');
+    const scaleEl = document.getElementById('motion-scale');
+    const scaleReadout = document.getElementById('motion-scale-readout');
+
+    if (wsEl) {
+        const ws = kv['workspace_status'] || '--';
+        wsEl.textContent = ws;
+        wsEl.style.color = ws === 'ok' ? 'var(--accent-green)'
+                         : ws === 'soft' ? 'var(--accent-amber)'
+                         : ws === 'hard' ? 'var(--accent-red)'
+                         : 'var(--text-secondary)';
+    }
+    if (condEl) condEl.textContent = kv['cond_number'] || '--';
+
+    const scale = parseFloat(kv['workspace_speed_scale']);
+    if (scaleReadout) scaleReadout.style.display = (!isNaN(scale) && scale < 1.0) ? '' : 'none';
+    if (scaleEl && !isNaN(scale)) scaleEl.textContent = scale.toFixed(2);
+}
+
+export function setMotionDisconnected() {
+    const badge = document.getElementById('motion-status-badge');
+    if (badge) {
+        badge.textContent = '--';
+        badge.className = 'badge motion-badge motion-off';
+    }
+    const trajLabel = document.getElementById('motion-traj-label');
+    if (trajLabel) trajLabel.textContent = '--';
+    const progressTrack = document.getElementById('motion-progress-track');
+    if (progressTrack) progressTrack.style.display = 'none';
+}
+
 // ---- CAN traffic panel ----
 
 const CAN_HISTORY_LEN = 20; // 10 seconds at ~2Hz reporting

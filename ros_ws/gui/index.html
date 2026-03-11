@@ -113,6 +113,25 @@
                 </div>
             </div>
 
+            <!-- Motion Planner -->
+            <div class="panel panel-compact" id="panel-motion" style="display:none">
+                <div class="panel-header">
+                    <span class="panel-title">Motion</span>
+                    <span class="motion-traj-inline" id="motion-traj-inline">
+                        <span class="motion-traj-label" id="motion-traj-label">idle</span>
+                        <div class="motion-progress-track" id="motion-progress-track" style="display:none">
+                            <div class="motion-progress-fill" id="motion-progress-fill"></div>
+                        </div>
+                    </span>
+                    <span class="badge motion-badge" id="motion-status-badge">--</span>
+                </div>
+                <div class="motion-readouts" id="motion-readouts">
+                    <span class="motion-readout"><span class="motion-readout-label">ws</span><span class="motion-readout-value" id="motion-ws">--</span></span>
+                    <span class="motion-readout"><span class="motion-readout-label">&kappa;</span><span class="motion-readout-value" id="motion-cond">--</span></span>
+                    <span class="motion-readout" id="motion-scale-readout" style="display:none"><span class="motion-readout-label">scale</span><span class="motion-readout-value" id="motion-scale">--</span></span>
+                </div>
+            </div>
+
             <!-- Ball Butler -->
             <div class="panel" id="panel-bb">
                 <div class="panel-header">

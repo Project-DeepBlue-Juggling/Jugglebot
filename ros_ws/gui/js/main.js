@@ -19,7 +19,7 @@ import { initBallButlerModel, updateBallButler } from './ball-butler-model.js';
 import {
     initAllPanels, updateMotorGrid, updateOrchestratorState,
     updateFlags, updateLevellingPanel, updateBBPanel, setBBDisconnected,
-    updateCANTraffic, updateTrackingError,
+    updateCANTraffic, updateTrackingError, updateMotionPanel,
     recordTopicMessage, registerTopic, updateTopicMonitor, clearTopicData,
 } from './panels.js';
 import { initCommands, updateCommandStates, onModeButtonClick } from './commands.js';
@@ -130,6 +130,9 @@ function subscribeAll() {
 
     // Control mode (on change) — used to show/hide jog panel
     ros.subscribe('control_mode_topic', 'std_msgs/msg/String', onControlMode, 0);
+
+    // Motion planner diagnostics (500Hz -> throttle to 5Hz = 200ms)
+    ros.subscribe('motion/diagnostics', 'diagnostic_msgs/msg/DiagnosticStatus', onMotionDiagnostics, 200);
 }
 
 // ---- Topic handlers ----
@@ -308,6 +311,11 @@ function onLegLengths(msg) {
 function onControlMode(msg) {
     recordTopicMessage('control_mode_topic');
     setJogPanelVisible(msg.data === 'GUI');
+}
+
+function onMotionDiagnostics(msg) {
+    recordTopicMessage('motion/diagnostics');
+    updateMotionPanel(msg);
 }
 
 // ---- Scene menu ----
@@ -587,7 +595,7 @@ function applyFontSize(size) {
 const GUI_SUBSCRIBED_TOPICS = new Set([
     'robot_state', 'bb/heartbeat', 'orchestrator_state',
     'can_traffic', 'hand_telemetry', 'rigid_body_poses', 'leg_lengths_topic',
-    'control_mode_topic',
+    'control_mode_topic', 'motion/diagnostics',
 ]);
 
 /** Active spy subscriptions: Map<topicName, ROSLIB.Topic> */

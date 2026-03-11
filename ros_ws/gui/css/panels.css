@@ -273,6 +273,71 @@
     color: var(--text-secondary);
 }
 
+/* ---- Motion planner panel ---- */
+.motion-badge {
+    font-size: var(--font-size-xs);
+    padding: 2px 8px;
+}
+
+.motion-badge.motion-ok   { background: var(--accent-green); color: #000; }
+.motion-badge.motion-warn { background: var(--accent-amber); color: #000; }
+.motion-badge.motion-err  { background: var(--accent-red);   color: #fff; }
+.motion-badge.motion-off  { background: var(--text-muted);   color: #fff; }
+
+.motion-traj-inline {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 1;
+    justify-content: center;
+}
+
+.motion-traj-label {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary);
+    text-transform: uppercase;
+}
+
+.motion-progress-track {
+    width: 48px;
+    height: 4px;
+    background: var(--border-color);
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+.motion-progress-fill {
+    height: 100%;
+    background: var(--accent-blue);
+    border-radius: 2px;
+    transition: width 100ms linear;
+}
+
+.motion-readouts {
+    display: flex;
+    gap: 12px;
+    margin-top: 4px;
+    justify-content: center;
+}
+
+.motion-readout {
+    display: flex;
+    align-items: baseline;
+    gap: 3px;
+}
+
+.motion-readout-label {
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+}
+
+.motion-readout-value {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary);
+}
+
 /* ---- Ball Butler panel ---- */
 .bb-state-badge {
     font-size: var(--font-size-base);
@@ -283,7 +348,7 @@
     display: grid;
     grid-template-columns: 1fr 1fr 1fr;
     gap: var(--gap-xs);
-    margin-top: var(--gap-sm);
+    margin-top: var(--gap-xs);
 }
 
 .bb-readout {
@@ -299,7 +364,7 @@
 
 .bb-readout .value {
     font-family: var(--font-mono);
-    font-size: var(--font-size-lg);
+    font-size: var(--font-size-base);
     font-weight: 600;
     color: var(--text-primary);
 }
