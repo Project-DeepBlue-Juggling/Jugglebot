@@ -622,7 +622,7 @@ function runTopicDiscovery() {
         const types = result.types || [];
 
         for (let i = 0; i < topics.length; i++) {
-            const name = topics[i];
+            const name = topics[i].startsWith('/') ? topics[i].substring(1) : topics[i];
             const type = types[i] || '';
 
             // Register for display
