@@ -124,7 +124,7 @@
         "bEMF_FF_enable": false,
         "calibration_current": 10.0,
         "current_control_bandwidth": 1000.0,
-        "current_hard_max": 90.0,
+        "current_hard_max": 20.0,
         "current_slew_rate_limit": 10000.0,
         "current_soft_max": 10.0,
         "dI_dt_FF_enable": false,

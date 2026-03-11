@@ -142,8 +142,8 @@ jugglebot_odrive_defaults:
   trap_vel_limit_rps: 15.0               # Default trapezoidal trajectory velocity limit {rev/s}
   trap_acc_limit_rps2: 30.0              # Default trapezoidal trajectory acceleration {rev/s^2}
   trap_dec_limit_rps2: 30.0              # Default trapezoidal trajectory deceleration {rev/s^2}
-  leg_vel_limit_rps: 50.0                # Leg velocity limit {rev/s}
-  leg_curr_limit_a: 20.0                 # Leg current limit {A}
+  leg_vel_limit_rps: 4.0                 # Leg velocity limit {rev/s}
+  leg_curr_limit_a: 10.0                 # Leg current limit {A}
   hand_vel_limit_rps: 1000.0             # Hand velocity limit {rev/s}
   hand_curr_limit_a: 50.0                # Hand current limit {A}
   hand_pos_gain: 35.0                    # Hand position gain
