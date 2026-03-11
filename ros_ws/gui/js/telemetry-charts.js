@@ -438,8 +438,8 @@ function buildAllCharts() {
         const h = cell.clientHeight;
         if (w < 10 || h < 10) continue; // too small, skip
 
-        // Only bottom-row charts (indices 6,7,8) show x-axis labels
-        const isBottomRow = i >= 6;
+        // Only bottom-row charts (indices 2,5,8) show x-axis labels
+        const isBottomRow = (i % 3 === 2);
         const opts = buildUPlotOpts(w, h, isBottomRow);
 
         // Initial empty data matching the series count
