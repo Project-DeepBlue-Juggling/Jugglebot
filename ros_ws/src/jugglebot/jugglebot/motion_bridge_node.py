@@ -38,8 +38,8 @@ class MotionBridgeNode(Node):
         # ------------------------------------------------------------------
         self.ipc = BridgeIPC()
         self.get_logger().info("IPC bridge initialised "
-                               "(command → tcp://localhost:5555, "
-                               "telemetry ← tcp://localhost:5556)")
+                               "(command → tcp://127.0.0.1:5555, "
+                               "telemetry ← tcp://127.0.0.1:5556)")
 
         # ------------------------------------------------------------------
         # ROS2 subscriptions (ROS2 → IPC)

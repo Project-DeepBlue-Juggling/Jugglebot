@@ -32,8 +32,8 @@ import zmq
 logger = logging.getLogger(__name__)
 
 # Default IPC addresses
-COMMAND_ADDR = 'tcp://localhost:5555'   # bridge PUB → control SUB
-TELEMETRY_ADDR = 'tcp://localhost:5556'  # control PUB → bridge SUB
+COMMAND_ADDR = 'tcp://127.0.0.1:5555'   # bridge PUB → control SUB
+TELEMETRY_ADDR = 'tcp://127.0.0.1:5556'  # control PUB → bridge SUB
 
 # Topic prefixes for ZMQ PUB/SUB filtering
 TOPIC_TARGET = b'target'

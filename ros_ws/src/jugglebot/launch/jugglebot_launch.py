@@ -67,8 +67,11 @@ def generate_launch_description():
     )
 
     # ── Standalone control process (not a ROS2 node) ─────────────
+    # Installed as a console_scripts entry point alongside other executables
+    pkg_lib_dir = os.path.join(
+        get_package_share_directory('jugglebot'), '..', '..', 'lib', 'jugglebot')
     control_loop = ExecuteProcess(
-        cmd=['python3', '-m', 'jugglebot.motion.control_loop', '--rate', '500'],
+        cmd=[os.path.join(pkg_lib_dir, 'control_loop'), '--rate', '500'],
         output='screen',
     )
 
@@ -123,12 +126,12 @@ def generate_launch_description():
         can_node,
         # Core nodes
         orchestrator_node,
-        # motion_bridge_node,
+        motion_bridge_node,
         # mocap_interface_node,
         spacemouse_handler,
         Node(package='jugglebot', executable='sp_ik'),
         # Standalone processes
-        # control_loop,
+        control_loop,
         # Recording (conditional)
         rosbag_record,
     ])
