@@ -352,11 +352,19 @@ function buildUPlotOpts(width, height) {
     // Build axes — alternate left (3) and right (1)
     const axes = [
         {
-            // x-axis (time)
+            // x-axis (time) — ISO 8601 formatted labels
             stroke: '#94a3b8',
             grid: { stroke: 'rgba(51,65,85,0.5)', width: 1 },
             ticks: { stroke: '#334155', width: 1 },
-            font: '14px JetBrains Mono, monospace',
+            font: '11px JetBrains Mono, monospace',
+            size: 28,
+            values: (u, splits) => splits.map(v => {
+                const d = new Date(v * 1000);
+                const hh = String(d.getHours()).padStart(2, '0');
+                const mm = String(d.getMinutes()).padStart(2, '0');
+                const ss = String(d.getSeconds()).padStart(2, '0');
+                return `${hh}:${mm}:${ss}`;
+            }),
         },
     ];
 
