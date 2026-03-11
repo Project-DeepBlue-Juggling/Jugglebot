@@ -72,6 +72,18 @@ class MotionBridgeNode(Node):
         self._torque_pub = self.create_publisher(
             Float64MultiArray, 'leg_torques_diagnostic', 10)
 
+        # Per-leg tracking errors (mm)
+        self._tracking_error_pub = self.create_publisher(
+            Float64MultiArray, 'motion/tracking_error', 10)
+
+        # Motor feedback: 6 positions + 6 velocities + 6 currents
+        self._motor_feedback_pub = self.create_publisher(
+            Float64MultiArray, 'motion/motor_feedback', 10)
+
+        # Diagnostics: condition number, workspace status, workspace speed scale
+        self._diagnostics_pub = self.create_publisher(
+            Float64MultiArray, 'motion/diagnostics', 10)
+
         # ------------------------------------------------------------------
         # Timer to poll IPC telemetry
         # ------------------------------------------------------------------
@@ -160,6 +172,38 @@ class MotionBridgeNode(Node):
             diag_msg = Float64MultiArray()
             diag_msg.data = ff_torques
             self._torque_pub.publish(diag_msg)
+
+        # Publish per-leg tracking errors (mm)
+        tracking_error = telem.get('tracking_error_mm')
+        if tracking_error:
+            err_msg = Float64MultiArray()
+            err_msg.data = list(tracking_error)
+            self._tracking_error_pub.publish(err_msg)
+
+        # Publish motor feedback (positions + velocities + currents)
+        motor_pos = telem.get('motor_pos')
+        motor_vel = telem.get('motor_vel')
+        motor_cur = telem.get('motor_cur')
+        if motor_pos and motor_vel and motor_cur:
+            fb_msg = Float64MultiArray()
+            fb_msg.data = list(motor_pos) + list(motor_vel) + list(motor_cur)
+            self._motor_feedback_pub.publish(fb_msg)
+
+        # Publish diagnostics (condition number, workspace status, speed scale)
+        cond = telem.get('cond_number')
+        ws_status = telem.get('workspace_status')
+        ws_scale = telem.get('workspace_speed_scale')
+        if cond is not None:
+            # Encode workspace_status as float: 0=ok, 1=soft, 2=hard
+            ws_status_val = {'ok': 0.0, 'soft': 1.0, 'hard': 2.0}.get(
+                ws_status, -1.0)
+            diag2_msg = Float64MultiArray()
+            diag2_msg.data = [
+                float(cond),
+                ws_status_val,
+                float(ws_scale) if ws_scale is not None else 1.0,
+            ]
+            self._diagnostics_pub.publish(diag2_msg)
 
     # ------------------------------------------------------------------
     # Shutdown

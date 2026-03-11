@@ -99,7 +99,10 @@ def make_telemetry(leg_positions: list | tuple,
                    workspace_status: str | None = None,
                    workspace_speed_scale: float | None = None,
                    tracking_error_mm: list | tuple | None = None,
-                   fault_state: str | None = None) -> dict:
+                   fault_state: str | None = None,
+                   motor_pos: list | tuple | None = None,
+                   motor_vel: list | tuple | None = None,
+                   motor_cur: list | tuple | None = None) -> dict:
     """Create a Telemetry message from the control loop.
 
     Parameters
@@ -113,6 +116,9 @@ def make_telemetry(leg_positions: list | tuple,
     workspace_speed_scale : workspace-imposed speed scale 0.0-1.0, or None
     tracking_error_mm : per-leg position tracking error (mm), or None
     fault_state : fault description string, or None
+    motor_pos : 6 actual motor positions (rev) from encoder feedback, or None
+    motor_vel : 6 actual motor velocities (rev/s) from encoder feedback, or None
+    motor_cur : 6 actual motor currents (A) from encoder feedback, or None
     """
     msg = {
         'type': 'telemetry',
@@ -140,6 +146,12 @@ def make_telemetry(leg_positions: list | tuple,
         msg['tracking_error_mm'] = list(tracking_error_mm)
     if fault_state is not None:
         msg['fault_state'] = fault_state
+    if motor_pos is not None:
+        msg['motor_pos'] = list(motor_pos)
+    if motor_vel is not None:
+        msg['motor_vel'] = list(motor_vel)
+    if motor_cur is not None:
+        msg['motor_cur'] = list(motor_cur)
     return msg
 
 

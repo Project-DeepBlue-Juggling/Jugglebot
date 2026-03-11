@@ -627,6 +627,12 @@ class ControlLoop:
             tracking_error_mm=(self._tracking_error_mm.tolist()
                                if self._has_motor_fb else None),
             fault_state=self._fault_state,
+            motor_pos=(self._motor_fb_pos_rev.tolist()
+                       if self._has_motor_fb else None),
+            motor_vel=(self._motor_fb_vel_rps.tolist()
+                       if self._has_motor_fb else None),
+            motor_cur=(self._motor_fb_cur_A.tolist()
+                       if self._has_motor_fb else None),
         )
         self.ipc.send_telemetry(msg)
 
