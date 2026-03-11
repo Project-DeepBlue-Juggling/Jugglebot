@@ -317,7 +317,7 @@ function getActiveSignalList() {
     return SIGNAL_GROUPS.filter(s => activeSignals.has(s.key));
 }
 
-function buildUPlotOpts(width, height) {
+function buildUPlotOpts(width, height, showXAxis = true) {
     const signalList = getActiveSignalList();
 
     // Determine which scale groups are in use
@@ -355,16 +355,18 @@ function buildUPlotOpts(width, height) {
             // x-axis (time) — ISO 8601 formatted labels
             stroke: '#94a3b8',
             grid: { stroke: 'rgba(51,65,85,0.5)', width: 1 },
-            ticks: { stroke: '#334155', width: 1 },
+            ticks: { stroke: showXAxis ? '#334155' : 'transparent', width: 1, size: showXAxis ? 6 : 0 },
             font: '11px JetBrains Mono, monospace',
-            size: 28,
-            values: (u, splits) => splits.map(v => {
-                const d = new Date(v * 1000);
-                const hh = String(d.getHours()).padStart(2, '0');
-                const mm = String(d.getMinutes()).padStart(2, '0');
-                const ss = String(d.getSeconds()).padStart(2, '0');
-                return `${hh}:${mm}:${ss}`;
-            }),
+            size: showXAxis ? 28 : 4,
+            values: showXAxis
+                ? (u, splits) => splits.map(v => {
+                    const d = new Date(v * 1000);
+                    const hh = String(d.getHours()).padStart(2, '0');
+                    const mm = String(d.getMinutes()).padStart(2, '0');
+                    const ss = String(d.getSeconds()).padStart(2, '0');
+                    return `${hh}:${mm}:${ss}`;
+                })
+                : (u, splits) => splits.map(() => ''),
         },
     ];
 
@@ -436,7 +438,9 @@ function buildAllCharts() {
         const h = cell.clientHeight;
         if (w < 10 || h < 10) continue; // too small, skip
 
-        const opts = buildUPlotOpts(w, h);
+        // Only bottom-row charts (indices 6,7,8) show x-axis labels
+        const isBottomRow = i >= 6;
+        const opts = buildUPlotOpts(w, h, isBottomRow);
 
         // Initial empty data matching the series count
         const emptyData = [new Float64Array(0)];
