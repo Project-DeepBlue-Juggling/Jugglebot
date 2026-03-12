@@ -459,6 +459,7 @@ def check_feasibility(
     jerk_rot_limit: float | None = 400.0,
     n_samples: int = 200,
     early_exit: bool = False,
+    yield_interval: int = 0,
 ) -> FeasibilityResult:
     """Check whether a trajectory respects kinematic and dynamic limits.
 
@@ -494,6 +495,10 @@ def check_feasibility(
         Peak values in the result will reflect only the samples evaluated
         before the violation.  Useful for binary-search where only the
         feasible/infeasible verdict matters.
+    yield_interval : int
+        If > 0, call ``time.sleep(0)`` every *yield_interval* samples to
+        release the GIL so that other threads (e.g. the 500 Hz control
+        loop) can run between chunks of computation.  Default 0 (no yield).
 
     Returns
     -------
@@ -536,6 +541,10 @@ def check_feasibility(
         pos = pose[:3]
         rot = rotvec_to_rot_matrix(pose[3:6])
         n_evaluated += 1
+
+        # Periodically release the GIL so the control loop can run
+        if yield_interval > 0 and n_evaluated % yield_interval == 0:
+            _time.sleep(0)
 
         # Leg extensions (mm) — check stroke limits
         extensions_mm = pose_to_leg_lengths(pos, rot, geom)
@@ -763,13 +772,99 @@ def find_min_feasible_duration(
 
 
 # ---------------------------------------------------------------------------
+# Deceleration trajectory
+# ---------------------------------------------------------------------------
+
+def make_deceleration_trajectory(
+    start_pose: np.ndarray,
+    start_twist: np.ndarray,
+    start_accel: np.ndarray,
+    geom: 'StewartGeometry',
+    vel_limit_rps: float | None = None,
+    accel_limit_rps2: float | None = None,
+    t_start: float = 0.0,
+    duration_margin: float = 1.5,
+) -> QuinticTrajectory | None:
+    """Create a quintic that decelerates from *start_twist* to rest.
+
+    The end pose is wherever the polynomial lands — the caller must run a
+    feasibility check to verify the stopping point is within the workspace.
+
+    Parameters
+    ----------
+    start_pose, start_twist, start_accel : (6,) ndarray
+        Current Cartesian state.
+    geom : StewartGeometry
+    vel_limit_rps, accel_limit_rps2 : float or None
+        Motor limits.  Defaults loaded from hardware_config.
+    t_start : float
+        Absolute start time for the trajectory.
+    duration_margin : float
+        Safety margin applied to the minimum computed duration.
+
+    Returns
+    -------
+    QuinticTrajectory or None
+        None if start_twist is effectively zero (no deceleration needed).
+    """
+    import jugglebot.hardware_config as hw
+
+    if vel_limit_rps is None:
+        vel_limit_rps = float(hw.ODRIVE_TRAP_VEL_LIMIT_RPS)
+    if accel_limit_rps2 is None:
+        accel_limit_rps2 = float(hw.ODRIVE_TRAP_ACC_LIMIT_RPS2)
+
+    start_pose = np.asarray(start_pose, dtype=np.float64)
+    start_twist = np.asarray(start_twist, dtype=np.float64)
+    start_accel = np.asarray(start_accel, dtype=np.float64)
+
+    # Convert Cartesian twist to motor velocities to find peak motor speed
+    pos = start_pose[:3]
+    rot = rotvec_to_rot_matrix(start_pose[3:6])
+    vel_mm_s = twist_to_leg_velocities(start_twist, pos, rot, geom)
+    vel_rps = leg_velocities_to_motor_velocities(vel_mm_s, geom)
+
+    v_max_motor = np.max(np.abs(vel_rps))
+    if v_max_motor < 1e-6:
+        return None  # already at rest
+
+    # Quintic deceleration from v0 to 0: peak acceleration = 10*v0/(3*T).
+    # Solve for T: T_accel = 10 * v_max / (3 * accel_limit).
+    # The peak velocity is bounded by v0 (starting velocity), which was
+    # already validated by the outbound trajectory's feasibility check.
+    t_accel = 10.0 * v_max_motor / (3.0 * accel_limit_rps2)
+
+    T = max(t_accel, 0.1) * duration_margin
+
+    # Estimate end pose: for a smooth deceleration the displacement is
+    # approximately twist * T * 0.5 (average velocity over the interval).
+    # The quintic solver produces the exact polynomial regardless — this
+    # just sets the boundary condition.
+    end_pose = start_pose + start_twist * T * 0.5
+
+    try:
+        return create_trajectory(
+            start_pose=start_pose,
+            start_twist=start_twist,
+            start_accel=start_accel,
+            end_pose=end_pose,
+            end_twist=np.zeros(6),
+            end_accel=np.zeros(6),
+            duration=T,
+            t_start=t_start,
+        )
+    except ValueError:
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Trajectory manager
 # ---------------------------------------------------------------------------
 
 class TrajectoryState(enum.Enum):
     IDLE = 'idle'
     EXECUTING = 'executing'
-    RETURNING = 'returning'  # auto-return to home in progress
+    RETURNING = 'returning'  # decelerating to stop after non-zero-velocity target
     COMPLETE = 'complete'
 
 
@@ -782,7 +877,7 @@ class TrajectoryManager:
         3. Each control cycle, call ``evaluate(t)`` to get motor commands.
         4. When the trajectory completes:
            - Zero-velocity targets → COMPLETE (hold at target).
-           - Non-zero-velocity targets → RETURNING (auto-return to home).
+           - Non-zero-velocity targets → RETURNING (decelerate to stop).
         5. Submit a new trajectory at any time (mid-motion replanning).
 
     Phase 6 additions:
@@ -791,7 +886,7 @@ class TrajectoryManager:
 
     Phase 7 additions:
         - ``submit_dynamic_target()`` for fire-and-forget target commanding.
-        - ``RETURNING`` state for automatic return-to-home after non-zero-velocity
+        - ``RETURNING`` state for deceleration-to-stop after non-zero-velocity
           targets.
         - Mid-motion replanning: ``submit()`` and ``submit_dynamic_target()`` can
           be called during EXECUTING or RETURNING.
@@ -813,10 +908,11 @@ class TrajectoryManager:
         self._hold_pos_rev = np.zeros(6)
         self._hold_torque_ff = np.zeros(6)
 
-        # Home pose for return-to-home trajectories (Phase 7)
+        # Home pose (used as reference, no longer auto-returned to)
         self._home_pose = np.array(
             [0.0, 0.0, float(hw.JB_OP_DEFAULT_ACTIVE_Z_MM), 0.0, 0.0, 0.0])
-        self._pending_return = False  # True when trajectory end twist != 0
+        self._pending_decel = False  # True when trajectory end twist != 0
+        self._held_at_end_cycles = 0  # cycles spent holding at end pose waiting for decel precompute
 
         # Gravity correction (applied before IK)
         self._gravity_correction: np.ndarray | None = None
@@ -841,8 +937,8 @@ class TrajectoryManager:
         self._async_generation = 0                    # monotonic counter
         self._pending_request: dict | None = None     # target params for bg
         self._pending_result: dict | None = None      # completed check result
-        self._precomputed_return: QuinticTrajectory | None = None  # pre-planned return
-        self._return_generation = 0                   # generation of precomputed return
+        self._precomputed_decel: QuinticTrajectory | None = None  # pre-planned deceleration
+        self._decel_generation = 0                    # generation of precomputed decel
         self._bg_thread = threading.Thread(
             target=self._bg_feasibility_worker, daemon=True, name='feas-bg')
         self._bg_thread.start()
@@ -868,7 +964,7 @@ class TrajectoryManager:
 
     @property
     def home_pose(self) -> np.ndarray:
-        """Home pose for return-to-home trajectories."""
+        """Home pose (reference position)."""
         return self._home_pose.copy()
 
     def set_feedforward_enabled(self, enabled: bool) -> None:
@@ -902,7 +998,7 @@ class TrajectoryManager:
             self._hold_torque_ff = np.zeros(6)
 
     def submit(self, traj: QuinticTrajectory,
-               is_return: bool = False) -> None:
+               is_decel: bool = False) -> None:
         """Submit a trajectory for execution.
 
         Can be called from any state, including during EXECUTING or
@@ -914,15 +1010,16 @@ class TrajectoryManager:
         ----------
         traj : QuinticTrajectory
             Must have passed feasibility checking before submission.
-        is_return : bool
-            If True, enter RETURNING state (auto-return to home).
+        is_decel : bool
+            If True, enter RETURNING state (deceleration to stop).
         """
         self._active_traj = traj
-        self._state = TrajectoryState.RETURNING if is_return \
+        self._state = TrajectoryState.RETURNING if is_decel \
             else TrajectoryState.EXECUTING
-        self._pending_return = False
+        self._pending_decel = False
+        self._held_at_end_cycles = 0
         logger.info(
-            f"Trajectory submitted ({'return' if is_return else 'target'}): "
+            f"Trajectory submitted ({'decel' if is_decel else 'target'}): "
             f"duration={traj.duration:.3f}s, "
             f"speed_scale={traj.speed_scale:.2f}")
 
@@ -955,7 +1052,7 @@ class TrajectoryManager:
         - Sampling current state for splice continuity
         - Quaternion -> rotation vector conversion
         - Feasibility checking (stroke, vel, accel, cond, jerk)
-        - Queuing return-to-home if target velocity is non-zero
+        - Queuing deceleration-to-stop if target velocity is non-zero
 
         The trajectory uses the full requested duration (arrival_time -
         t_now).  The caller controls the speed: a longer duration gives a
@@ -1042,13 +1139,13 @@ class TrajectoryManager:
             traj = _dc_replace(
                 traj, t_start=traj.t_start + total_elapsed)
 
-        # Accept: submit trajectory and flag return-to-home if needed
+        # Accept: submit trajectory and flag deceleration if needed
         self.submit(traj)
-        self._pending_return = bool(np.linalg.norm(target_vel) > 1e-6)
+        self._pending_decel = bool(np.linalg.norm(target_vel) > 1e-6)
 
-        # Pre-compute return-to-home in background if needed
-        if self._pending_return:
-            self._start_return_precompute(traj)
+        # Pre-compute deceleration in background if needed
+        if self._pending_decel:
+            self._start_decel_precompute(traj)
 
         return True
 
@@ -1068,71 +1165,6 @@ class TrajectoryManager:
         else:
             # IDLE or COMPLETE: at hold pose, zero velocity/acceleration
             return self._hold_pose.copy(), np.zeros(6), np.zeros(6)
-
-    def _plan_return_to_home(self, t_end: float) -> bool:
-        """Plan a return-to-home trajectory from the current trajectory's
-        end state.
-
-        Parameters
-        ----------
-        t_end : float
-            Exact end time of the completing trajectory.
-
-        Returns
-        -------
-        success : bool
-            True if a feasible return trajectory was planned.
-        """
-        # Read end state directly rather than calling evaluate(), which
-        # clamps twist/accel to zero past t_end (hold behaviour).
-        # The return trajectory must start from the actual end velocity
-        # for C2 continuity.  (Same pattern as check_sequence_continuity
-        # in dynamic_target_test.py lines 187-191.)
-        e = self._active_traj.end_state
-        pose = e[:6].copy()
-        twist = e[6:12].copy()
-        accel = e[12:18].copy()
-
-        # Find the minimum feasible duration for the return.
-        # This is expensive (~2s on Jetson: 8 bisections × 50 samples).
-        t_before = self._clock()
-        duration = find_min_feasible_duration(
-            start_pose=pose,
-            start_twist=twist,
-            start_accel=accel,
-            end_pose=self._home_pose,
-            end_twist=np.zeros(6),
-            end_accel=np.zeros(6),
-            geom=self.geom,
-            dynamics_params=self.dynamics_params,
-        )
-        search_elapsed = self._clock() - t_before
-        if duration is None:
-            logger.warning(
-                "Return-to-home infeasible: no feasible duration found "
-                f"in [0.2, 5.0]s from pose={pose.tolist()}")
-            return False
-
-        # Add 20% safety margin
-        duration *= 1.2
-
-        # Shift t_start forward by computation time so the return
-        # trajectory starts "now" rather than in the past.
-        t_start = t_end + search_elapsed
-
-        traj = create_trajectory(
-            start_pose=pose,
-            start_twist=twist,
-            start_accel=accel,
-            end_pose=self._home_pose,
-            end_twist=np.zeros(6),
-            end_accel=np.zeros(6),
-            duration=duration,
-            t_start=t_start,
-        )
-        self.submit(traj, is_return=True)
-        logger.info(f"Return-to-home planned: duration={duration:.3f}s")
-        return True
 
     def evaluate(self, t: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Evaluate the current target for the control loop.
@@ -1166,37 +1198,41 @@ class TrajectoryManager:
             self._current_pose = end_pose.copy()
 
             if self._state == TrajectoryState.RETURNING:
-                # Return-to-home complete → IDLE at home
-                self.set_hold_pose(self._home_pose)
+                # Deceleration complete → IDLE at wherever we stopped
+                self.set_hold_pose(end_pose)
                 self._state = TrajectoryState.IDLE
                 self._active_traj = None
-                logger.info("Return-to-home complete")
+                logger.info("Deceleration complete")
                 return (self._hold_pos_rev.copy(),
                         np.zeros(6),
                         self._hold_torque_ff.copy())
 
             # EXECUTING complete
-            if self._pending_return:
-                # Check for pre-computed return trajectory (non-blocking)
-                precomputed = self.poll_precomputed_return()
+            if self._pending_decel:
+                # Check for pre-computed deceleration trajectory (non-blocking)
+                precomputed = self.poll_precomputed_decel()
                 if precomputed is not None:
-                    # Re-create the return trajectory from current state.
-                    # The precomputed duration is valid (found via binary
-                    # search + 20% margin), but the start conditions may
-                    # be stale: if we held at end_pose for several cycles
-                    # waiting for precomputation, the platform is now
-                    # stationary — not at the outbound's end velocity.
-                    ret_traj = create_trajectory(
-                        start_pose=end_pose,
-                        start_twist=np.zeros(6),
-                        start_accel=np.zeros(6),
-                        end_pose=self._home_pose,
-                        end_twist=np.zeros(6),
-                        end_accel=np.zeros(6),
-                        duration=precomputed.duration,
-                        t_start=t,
-                    )
-                    self.submit(ret_traj, is_return=True)
+                    if self._held_at_end_cycles == 0:
+                        # First cycle after outbound ends — use precomputed
+                        # trajectory directly for C2 continuity (its start
+                        # state matches the outbound's end state).
+                        decel_traj = _dc_replace(precomputed, t_start=t)
+                    else:
+                        # Platform has been held at rest for multiple cycles.
+                        # Create a new rest-to-rest deceleration at the
+                        # precomputed duration since the platform is now
+                        # physically stationary.
+                        decel_traj = create_trajectory(
+                            start_pose=end_pose,
+                            start_twist=np.zeros(6),
+                            start_accel=np.zeros(6),
+                            end_pose=end_pose,
+                            end_twist=np.zeros(6),
+                            end_accel=np.zeros(6),
+                            duration=precomputed.duration,
+                            t_start=t,
+                        )
+                    self.submit(decel_traj, is_decel=True)
                     pose, twist, accel_cart = evaluate(self._active_traj, t)
                     self._current_pose = pose.copy()
                     return cartesian_to_motor_commands(
@@ -1205,15 +1241,16 @@ class TrajectoryManager:
                         self._feedforward_enabled,
                         self._gravity_correction)
                 else:
-                    # Pre-computed return not ready yet — hold at end pose
-                    # and wait for next cycle.  Keep _pending_return True
+                    # Pre-computed deceleration not ready yet — hold at end
+                    # pose and wait for next cycle.  Keep _pending_decel True
                     # and stay in EXECUTING so we re-enter this branch.
+                    self._held_at_end_cycles += 1
                     self.set_hold_pose(end_pose)
                     return (self._hold_pos_rev.copy(),
                             np.zeros(6),
                             self._hold_torque_ff.copy())
 
-            # Zero-velocity target or failed return → COMPLETE
+            # Zero-velocity target or failed deceleration → COMPLETE
             self._state = TrajectoryState.COMPLETE
             self._active_traj = None
             self.set_hold_pose(end_pose)
@@ -1257,14 +1294,15 @@ class TrajectoryManager:
             logger.info(f"Trajectory cancelled (was {self._state.value})")
         self._active_traj = None
         self._state = TrajectoryState.IDLE
-        self._pending_return = False
+        self._pending_decel = False
+        self._held_at_end_cycles = 0
         self._last_progress = 0.0
         self._last_time_remaining = 0.0
         # Discard any pending async results
         with self._async_lock:
             self._async_generation += 1
             self._pending_result = None
-            self._precomputed_return = None
+            self._precomputed_decel = None
 
     def shutdown(self) -> None:
         """Shut down the background feasibility thread."""
@@ -1348,14 +1386,14 @@ class TrajectoryManager:
             logger.debug(f"Dynamic target rejected: {e}")
             return False
 
-        needs_return = bool(np.linalg.norm(target_vel) > 1e-6)
+        needs_decel = bool(np.linalg.norm(target_vel) > 1e-6)
 
         with self._async_lock:
             self._async_generation += 1
             gen = self._async_generation
             self._pending_request = {
                 'traj': traj,
-                'needs_return': needs_return,
+                'needs_decel': needs_decel,
                 'arrival_time': arrival_time,
                 'generation': gen,
                 't_request': t_now,
@@ -1375,7 +1413,7 @@ class TrajectoryManager:
         -------
         result : dict or None
             If ready: ``{'accepted': bool, 'traj': QuinticTrajectory,
-            'needs_return': bool, 'generation': int}``
+            'needs_decel': bool, 'generation': int}``
         """
         with self._async_lock:
             result = self._pending_result
@@ -1438,30 +1476,30 @@ class TrajectoryManager:
 
         # Submit the trajectory
         self.submit(traj)
-        self._pending_return = result['needs_return']
+        self._pending_decel = result['needs_decel']
 
-        # Pre-compute return-to-home in background if needed
-        if result['needs_return']:
-            self._start_return_precompute(traj)
+        # Pre-compute deceleration in background if needed
+        if result['needs_decel']:
+            self._start_decel_precompute(traj)
 
         logger.info(
             f"Async trajectory committed: remaining={remaining:.3f}s, "
             f"latency={t_now - result['t_request']:.3f}s")
         return True
 
-    def poll_precomputed_return(self) -> QuinticTrajectory | None:
-        """Check if a pre-computed return-to-home trajectory is available.
+    def poll_precomputed_decel(self) -> QuinticTrajectory | None:
+        """Check if a pre-computed deceleration trajectory is available.
 
         Non-blocking.  Returns None if not ready or not applicable.
         """
         with self._async_lock:
-            ret = self._precomputed_return
+            ret = self._precomputed_decel
             if ret is not None:
-                self._precomputed_return = None
+                self._precomputed_decel = None
             return ret
 
-    def _start_return_precompute(self, outbound_traj: QuinticTrajectory) -> None:
-        """Queue background pre-computation of the return-to-home trajectory.
+    def _start_decel_precompute(self, outbound_traj: QuinticTrajectory) -> None:
+        """Queue background pre-computation of the deceleration trajectory.
 
         Called on the main thread after committing an outbound trajectory
         that has nonzero end velocity.
@@ -1471,15 +1509,15 @@ class TrajectoryManager:
             self._async_generation += 1
             gen = self._async_generation
             self._pending_request = {
-                'return_precompute': True,
+                'decel_precompute': True,
                 'start_pose': end_state[:6].copy(),
                 'start_twist': end_state[6:12].copy(),
                 'start_accel': end_state[12:18].copy(),
                 'generation': gen,
             }
             self._pending_result = None
-            self._precomputed_return = None
-            self._return_generation = gen
+            self._precomputed_decel = None
+            self._decel_generation = gen
         self._async_event.set()
 
     def _bg_feasibility_worker(self) -> None:
@@ -1504,8 +1542,8 @@ class TrajectoryManager:
             if request is None:
                 continue
 
-            if request.get('return_precompute'):
-                self._bg_compute_return(request)
+            if request.get('decel_precompute'):
+                self._bg_compute_deceleration(request)
             else:
                 self._bg_check_feasibility(request)
 
@@ -1519,7 +1557,7 @@ class TrajectoryManager:
         t_before = _time.perf_counter()
         result = check_feasibility(
             traj, self.geom, self.dynamics_params,
-            n_samples=50, early_exit=True)
+            n_samples=50, early_exit=True, yield_interval=5)
         check_elapsed = _time.perf_counter() - t_before
 
         with self._async_lock:
@@ -1529,7 +1567,7 @@ class TrajectoryManager:
             self._pending_result = {
                 'accepted': result.feasible,
                 'traj': traj,
-                'needs_return': request['needs_return'],
+                'needs_decel': request['needs_decel'],
                 'arrival_time': request['arrival_time'],
                 'generation': gen,
                 't_request': request['t_request'],
@@ -1541,45 +1579,60 @@ class TrajectoryManager:
             logger.debug(
                 f"Async feasibility rejected: {'; '.join(result.violations)}")
 
-    def _bg_compute_return(self, request: dict) -> None:
-        """Background: pre-compute return-to-home trajectory."""
+    def _bg_compute_deceleration(self, request: dict) -> None:
+        """Background: pre-compute deceleration-to-stop trajectory.
+
+        Uses make_deceleration_trajectory() + single feasibility check
+        instead of the expensive find_min_feasible_duration() binary
+        search.  This reduces GIL hold from ~1200ms to ~30ms.
+        """
         gen = request['generation']
         start_pose = request['start_pose']
         start_twist = request['start_twist']
         start_accel = request['start_accel']
 
-        duration = find_min_feasible_duration(
+        # Create deceleration trajectory (instant, no feasibility check)
+        traj = make_deceleration_trajectory(
             start_pose=start_pose,
             start_twist=start_twist,
             start_accel=start_accel,
-            end_pose=self._home_pose,
-            end_twist=np.zeros(6),
-            end_accel=np.zeros(6),
             geom=self.geom,
-            dynamics_params=self.dynamics_params,
         )
 
-        if duration is None:
-            logger.warning("Async return-to-home: no feasible duration found")
+        if traj is None:
+            logger.warning("Deceleration precompute: velocity too low, skipping")
             return
 
-        # Add 20% safety margin
-        duration *= 1.2
+        # Single feasibility check with GIL yields
+        result = check_feasibility(
+            traj, self.geom, self.dynamics_params,
+            n_samples=50, early_exit=True, yield_interval=5)
 
-        # Use t_start=0 as placeholder; will be restamped on commit
-        traj = create_trajectory(
-            start_pose=start_pose,
-            start_twist=start_twist,
-            start_accel=start_accel,
-            end_pose=self._home_pose,
-            end_twist=np.zeros(6),
-            end_accel=np.zeros(6),
-            duration=duration,
-            t_start=0.0,
-        )
+        if not result.feasible:
+            # Retry with 2x duration (gentler deceleration)
+            logger.debug(
+                f"Deceleration at {traj.duration:.3f}s infeasible, "
+                f"retrying at {traj.duration * 2:.3f}s")
+            traj = make_deceleration_trajectory(
+                start_pose=start_pose,
+                start_twist=start_twist,
+                start_accel=start_accel,
+                geom=self.geom,
+                duration_margin=3.0,  # 1.5 base × 2
+            )
+            if traj is None:
+                return
+            result = check_feasibility(
+                traj, self.geom, self.dynamics_params,
+                n_samples=50, early_exit=True, yield_interval=5)
+            if not result.feasible:
+                logger.warning(
+                    "Deceleration infeasible even at 2x duration: "
+                    f"{'; '.join(result.violations)}")
+                return
 
         with self._async_lock:
-            if gen == self._return_generation:
-                self._precomputed_return = traj
+            if gen == self._decel_generation:
+                self._precomputed_decel = traj
                 logger.info(
-                    f"Return-to-home pre-computed: duration={duration:.3f}s")
+                    f"Deceleration pre-computed: duration={traj.duration:.3f}s")

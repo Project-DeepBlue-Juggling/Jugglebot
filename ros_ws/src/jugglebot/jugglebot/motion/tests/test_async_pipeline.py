@@ -5,7 +5,7 @@ Tests:
   2. Async acceptance — background check completes and result is accepted
   3. Async rejection — infeasible target rejected without stalling
   4. Supersession — newer target discards stale result
-  5. Return-to-home pre-computation — precomputed return available on completion
+  5. Deceleration pre-computation — precomputed decel available on completion
   6. Cancel discards pending — cancel() clears async state
   7. Early-exit speedup — early_exit flag reduces sample count
   8. Torque skip speedup — no torque limit skips torque computation
@@ -235,12 +235,12 @@ def test_supersession():
 
 
 # ---------------------------------------------------------------------------
-# Test 5: Return-to-home pre-computation
+# Test 5: Deceleration pre-computation
 # ---------------------------------------------------------------------------
 
-def test_return_precompute():
-    """Verify precomputed return is available when outbound completes."""
-    _header("Test 5: Return-to-home pre-computation")
+def test_decel_precompute():
+    """Verify precomputed deceleration is available when outbound completes."""
+    _header("Test 5: Deceleration pre-computation")
 
     geom = StewartGeometry()
     params = DynamicsParams.from_config()
@@ -251,7 +251,7 @@ def test_return_precompute():
     t_now = time.perf_counter()
     target_pos = np.array([0.0, 0.0, 20.0])
     target_quat = np.array([1.0, 0.0, 0.0, 0.0])
-    target_vel = np.array([0.0, 0.0, 50.0])  # nonzero → triggers return
+    target_vel = np.array([0.0, 0.0, 50.0])  # nonzero → triggers decel
     arrival_time = t_now + 3.0
 
     mgr.request_dynamic_target(
@@ -267,26 +267,30 @@ def test_return_precompute():
         time.sleep(0.01)
 
     assert result is not None and result['accepted'], "Target should be accepted"
-    assert result['needs_return'], "Target with nonzero velocity needs return"
+    assert result['needs_decel'], "Target with nonzero velocity needs decel"
 
-    # Commit (this triggers background return precomputation)
+    # Commit (this triggers background deceleration precomputation)
     accepted = mgr.commit_async_trajectory(result)
     assert accepted, "Commit should succeed"
     assert mgr.state == TrajectoryState.EXECUTING
 
-    # Wait for precomputed return to become available
+    # Wait for precomputed deceleration to become available
     deadline = time.perf_counter() + 10.0
     precomputed = None
     while time.perf_counter() < deadline:
-        precomputed = mgr.poll_precomputed_return()
+        precomputed = mgr.poll_precomputed_decel()
         if precomputed is not None:
             break
         time.sleep(0.05)
 
     assert precomputed is not None, (
-        "Pre-computed return trajectory not available within 10s")
-    assert precomputed.duration > 0, "Return trajectory should have positive duration"
-    print(f"  Pre-computed return: duration={precomputed.duration:.3f}s")
+        "Pre-computed deceleration trajectory not available within 10s")
+    assert precomputed.duration > 0, "Decel trajectory should have positive duration"
+    # Verify end state is at rest
+    end_twist = precomputed.end_state[6:12]
+    assert np.allclose(end_twist, 0, atol=1e-6), (
+        f"Decel trajectory should end at rest, got twist={end_twist}")
+    print(f"  Pre-computed decel: duration={precomputed.duration:.3f}s")
     print("  [PASS]")
 
     mgr.shutdown()
@@ -444,7 +448,7 @@ def main():
         test_async_acceptance,
         test_async_rejection,
         test_supersession,
-        test_return_precompute,
+        test_decel_precompute,
         test_cancel_discards,
         test_early_exit_speedup,
         test_torque_skip_speedup,

@@ -3,11 +3,11 @@
 """Standalone hardware test harness for Jugglebot Phase 7 (Dynamic Targets).
 
 Validates dynamic target commanding, mid-motion replanning, and automatic
-return-to-home on the physical platform.
+decelerate-to-stop on the physical platform.
 
 Phase 7 hardware tests:
   DT1. Static target from home — simple zero-twist move
-  DT2. Nonzero velocity + auto-return — platform moves through target and returns
+  DT2. Nonzero velocity + decel to stop — platform moves through target and decelerates
   DT3. Mid-motion replan — second target during active trajectory
   DT4. Rapid target updates — stream of targets at 2 Hz
   DT5. Infeasible target ignored — current trajectory continues undisturbed
@@ -112,6 +112,7 @@ from jugglebot.motion.trajectory import (  # noqa: E402
     create_trajectory,
     evaluate,
     find_min_feasible_duration,
+    make_deceleration_trajectory,
     cartesian_to_motor_commands,
 )
 from jugglebot.motion.workspace import (  # noqa: E402
@@ -350,43 +351,23 @@ def build_phase7_test_trajectories(
                   _make_traj([0, 0, 200, 0, 0, 0], [0, 0, _HOME_Z],
                              [0, 0, 0], dt1_dur)))
 
-    # --- DT2: Nonzero velocity + auto-return ---
+    # --- DT2: Nonzero velocity + decelerate to stop ---
     dt2_dur = 1.0 / speed_scale
     dt2_vel = 30 * speed_scale
     dt2_outbound = _make_traj(home_pose, [0, 0, 190],
                               [0, 0, dt2_vel], dt2_dur)
     trajs.append(('DT2: Home -> Z=190 (vel=+Z)', dt2_outbound))
-    # Return trajectory: starts from the outbound's exact end state
-    # so the junction is seamless.  Use TrajectoryManager to find
-    # the return duration, but build from the outbound's boundary.
-    mgr_dt2 = TrajectoryManager(geom, params, clock=lambda: 100.0)
-    mgr_dt2.set_hold_pose(home_pose)
-    t_sim = 100.0  # arbitrary reference time
-    mgr_dt2.submit_dynamic_target(
-        target_pos=np.array([0.0, 0.0, 190.0]),
-        target_quat=np.array([1.0, 0.0, 0.0, 0.0]),
-        target_vel=np.array([0.0, 0.0, dt2_vel]),
-        arrival_time=t_sim + dt2_dur,
-        t_now=t_sim,
+    # Deceleration trajectory: starts from the outbound's exact end state
+    # and decelerates to rest wherever it lands.
+    out_end = dt2_outbound.end_state
+    decel_traj = make_deceleration_trajectory(
+        start_pose=out_end[:6],
+        start_twist=out_end[6:12],
+        start_accel=out_end[12:18],
+        geom=geom,
     )
-    # Evaluate at trajectory end to trigger return planning
-    t_end_dt2 = t_sim + dt2_dur
-    mgr_dt2.evaluate(t_end_dt2 + 0.001)
-    if mgr_dt2._active_traj is not None:
-        ret_traj = mgr_dt2._active_traj
-        # Use the outbound's end_state directly so the junction is exact
-        out_end = dt2_outbound.end_state
-        trajs.append(('DT2: Z=190 -> Home (auto-return)',
-                      create_trajectory(
-                          start_pose=out_end[:6],
-                          start_twist=out_end[6:12],
-                          start_accel=out_end[12:18],
-                          end_pose=home_pose,
-                          end_twist=zeros6,
-                          end_accel=zeros6,
-                          duration=ret_traj.duration,
-                          t_start=0.0,
-                      )))
+    if decel_traj is not None:
+        trajs.append(('DT2: Z=190 -> decel to stop', decel_traj))
 
     # --- DT3: Mid-motion replan ---
     # First target: home -> Z=200
@@ -543,7 +524,7 @@ def _insert_transitions(
                 result.append(trajs[i])
                 continue
 
-            # Apply 1.5x safety margin (same philosophy as return-to-home)
+            # Apply 1.5x safety margin (same philosophy as deceleration planning)
             duration *= _TRANSITION_SPEED_FACTOR
 
             transition = create_trajectory(
@@ -1027,19 +1008,19 @@ def test_static_target(
 
 
 # ---------------------------------------------------------------------------
-# DT2: Nonzero velocity + auto-return
+# DT2: Nonzero velocity + decelerate to stop
 # ---------------------------------------------------------------------------
 
-def test_auto_return(
+def test_decel_to_stop(
     harness: PlatformTestHarness,
     speed_scale: float = DEFAULT_SPEED_SCALE,
 ) -> bool:
-    """DT2: Target with Z velocity, verify auto-return to home.
+    """DT2: Target with Z velocity, verify deceleration to stop.
 
-    Pass criteria: tracking error < threshold, final pose near home.
+    Pass criteria: tracking error < threshold, platform at rest (IDLE).
     """
     print("\n" + "=" * 60)
-    print("DT2: Nonzero velocity + auto-return")
+    print("DT2: Nonzero velocity + decelerate to stop")
     print("=" * 60)
 
     geom = StewartGeometry()
@@ -1088,27 +1069,23 @@ def test_auto_return(
               f"{_STARTUP_DT_THRESHOLD_S*1e3:.0f}ms)")
     analysis = analyze_log(filtered) if filtered.timestamps else {}
     if analysis:
-        print_analysis('DT2 Auto-return', analysis)
+        print_analysis('DT2 Decel-to-stop', analysis)
 
-        # Check final pose near home
+        # Check platform at rest (deceleration completed)
         final_pose = mgr.current_pose_6dof
-        home_err = np.linalg.norm(final_pose - mgr.home_pose)
         final_state = mgr.state
 
         print(f"\n  Final state: {final_state.value}")
         print(f"  Final pose: {final_pose.tolist()}")
-        print(f"  Error from home: {home_err:.3f} mm")
         print(f"  Max tracking error: {analysis['max_error_mm']:.3f} mm")
 
         passed = (analysis['max_error_mm'] < threshold and
-                  home_err < 1.0 and
                   final_state == TrajectoryState.IDLE)
         log.metadata['analysis'] = analysis
         log.metadata['result'] = 'PASS' if passed else 'FAIL'
         log.metadata['final_state'] = final_state.value
-        log.metadata['home_error_mm'] = home_err
         _auto_save_log(log, 'DT2', speed_scale)
-        print(f"  {'PASS' if passed else 'FAIL'}: DT2 Auto-return")
+        print(f"  {'PASS' if passed else 'FAIL'}: DT2 Decel-to-stop")
         return passed
     else:
         print("  FAIL: No data recorded")
@@ -1374,7 +1351,7 @@ def test_infeasible_ignored(
 
 TEST_MAP = {
     'static': test_static_target,
-    'autoreturn': test_auto_return,
+    'autoreturn': test_decel_to_stop,
     'replan': test_replan,
     'rapid': test_rapid_targets,
     'infeasible': test_infeasible_ignored,
@@ -1390,7 +1367,7 @@ def main():
         epilog="""
 Tests available:
   static      DT1: Static target from home (+30mm Z)
-  autoreturn  DT2: Nonzero velocity + auto-return
+  autoreturn  DT2: Nonzero velocity + decelerate to stop
   replan      DT3: Mid-motion replan (second target during active)
   rapid       DT4: Rapid target updates (2 Hz stream)
   infeasible  DT5: Infeasible target ignored
