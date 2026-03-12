@@ -57,6 +57,7 @@ from jugglebot.motion.ik_solver import (
     compute_jacobian,
     pose_to_leg_lengths,
     quat_to_rot_matrix,
+    rot_matrix_to_rotvec,
     rotvec_to_rot_matrix,
     twist_to_leg_velocities,
 )
@@ -79,9 +80,11 @@ from jugglebot.motion.ipc import (
     ControlProcessIPC,
     make_telemetry,
 )
+from jugglebot.motion.stream_smoother import StreamSmoother
 from jugglebot.motion.trajectory import (
     TrajectoryManager,
     TrajectoryState,
+    cartesian_to_motor_commands,
     create_trajectory,
 )
 from jugglebot.motion.workspace import (
@@ -233,6 +236,15 @@ class ControlLoop:
         # Trajectory manager (Phase 4)
         self._traj_manager = TrajectoryManager(self.geom, self._dynamics_params)
 
+        # Stream smoother — universal C2-continuous gate for all direct targets
+        self._smoother = StreamSmoother(
+            self.geom,
+            vel_limit_rps=hw.ODRIVE_TRAP_VEL_LIMIT_RPS,
+            accel_limit_rps2=hw.ODRIVE_TRAP_ACC_LIMIT_RPS2)
+
+        # Track trajectory state transitions (for smoother reset on completion)
+        self._prev_traj_state = TrajectoryState.IDLE
+
         # Workspace limits (Phase 6) — precomputed from geometry
         self._workspace_limits = WorkspaceLimits.from_geometry(self.geom)
         self._workspace_status = WorkspaceStatus.OK
@@ -336,17 +348,25 @@ class ControlLoop:
                 self._on_motor_feedback(msg)
 
     def _on_target(self, msg: dict) -> None:
-        """Handle an incoming target state."""
+        """Handle an incoming target state.
+
+        Converts the quaternion target to a 6-DoF pose (rotvec) and feeds
+        it into the stream smoother for C2-continuous profiling.
+        """
         pos = np.array(msg['pos'])
         quat = msg['rot']  # [w, x, y, z]
         rot = quat_to_rot_matrix(*quat)
-        twist = np.array(msg['twist'])
-        accel = np.array(msg['accel'])
 
+        # Convert to 6-DoF pose for the smoother: [x, y, z, rx, ry, rz]
+        rotvec = rot_matrix_to_rotvec(rot)
+        pose_6dof = np.concatenate([pos, rotvec])
+
+        # Feed the smoother (computes duration from motor-space displacement)
+        self._smoother.set_target(pose_6dof, time.perf_counter())
+
+        # Keep raw target storage for backward compat / telemetry
         self._target_pos = pos
         self._target_rot = rot
-        self._target_twist = twist
-        self._target_accel = accel
         self._has_target = True
 
     def _on_mode_command(self, msg: dict) -> None:
@@ -366,12 +386,14 @@ class ControlLoop:
             self.mode = ControlMode.DISABLED
             self._zero_outputs()
             self._traj_manager.cancel()
+            self._smoother.reset(self._traj_manager.home_pose)
             self._fault_state = None
             logger.info("Control loop DISABLED")
         elif cmd == 'estop':
             self.mode = ControlMode.ESTOP
             self._zero_outputs()
             self._traj_manager.cancel()
+            self._smoother.reset(self._traj_manager.home_pose)
             self._fault_state = msg.get('params', {}).get('reason', 'external')
             logger.warning(f"E-STOP triggered via command: {self._fault_state}")
         elif cmd == 'set_feedforward':
@@ -392,6 +414,7 @@ class ControlLoop:
             self.mode = ControlMode.ESTOP
             self._zero_outputs()
             self._traj_manager.cancel()
+            self._smoother.reset(self._traj_manager.home_pose)
             self._fault_state = fault_desc
             logger.error(f"ODrive FAULT received: {fault_desc} -- E-STOP")
         else:
@@ -593,75 +616,53 @@ class ControlLoop:
         if self.mode != ControlMode.ENABLED:
             return
 
+        # Track trajectory state transitions for smoother reset
+        traj_state = self._traj_manager.state
+        if (traj_state == TrajectoryState.IDLE
+                and self._prev_traj_state != TrajectoryState.IDLE):
+            # Trajectory just completed — reset smoother to end pose
+            end_pose = self._traj_manager.current_pose_6dof
+            if end_pose is not None:
+                self._smoother.reset(end_pose)
+        self._prev_traj_state = traj_state
+
         # Trajectory mode: evaluate trajectory at current time
-        if self._traj_manager.state in (
+        if traj_state in (
                 TrajectoryState.EXECUTING, TrajectoryState.RETURNING):
             t_now = time.perf_counter()
             pos, vel, torque = self._traj_manager.evaluate(t_now)
             self._commanded_pos_rev = pos
             self._commanded_vel_ff_rps = vel
             self._commanded_torque_ff_Nm = torque
+            pose_6dof = self._traj_manager.current_pose_6dof
         elif self._has_target:
-            # Direct-target mode: use latest IPC target pose
-            # Apply gravity correction if set
-            effective_rot = self._target_rot
-            if self._gravity_correction is not None:
-                effective_rot = self._gravity_correction @ self._target_rot
+            # Direct-target mode: evaluate the C2-continuous smoother
+            t_now = time.perf_counter()
+            pose, twist, accel = self._smoother.evaluate(t_now)
 
-            # Position IK: pose -> desired leg extensions (mm) -> motor revolutions
-            desired_extensions_mm = pose_to_leg_lengths(
-                self._target_pos, effective_rot, self.geom)
-            self._commanded_pos_rev = extensions_mm_to_revs(
-                desired_extensions_mm, self.geom)
+            pos_rev, vel_ff, torque_ff = cartesian_to_motor_commands(
+                pose, twist, accel,
+                self.geom, self._dynamics_params,
+                self._feedforward_enabled, self._gravity_correction)
 
-            # Velocity IK: twist -> desired leg velocities (mm/s) -> motor rev/s
-            desired_vel_mm_s = twist_to_leg_velocities(
-                self._target_twist, self._target_pos, effective_rot, self.geom)
-            self._commanded_vel_ff_rps = leg_velocities_to_motor_velocities(
-                desired_vel_mm_s, self.geom)
-
-            # Feedforward: gravity + inertia -> motor torques (Nm)
-            if self._feedforward_enabled:
-                self._commanded_torque_ff_Nm = compute_full_feedforward_torques(
-                    self._target_pos, effective_rot,
-                    self._target_twist, self._target_accel,
-                    self.geom, self._dynamics_params)
-            else:
-                self._commanded_torque_ff_Nm = np.zeros(6)
+            self._commanded_pos_rev = pos_rev
+            self._commanded_vel_ff_rps = vel_ff
+            self._commanded_torque_ff_Nm = torque_ff
+            pose_6dof = pose
         else:
             return
 
         # --- Phase 6: workspace limit check ---
-        # Get current pose for condition number computation.
-        # Use the trajectory manager's current_pose_6dof which is set
-        # during evaluate() above, or construct from target for direct mode.
-        if self._traj_manager.state in (
-                TrajectoryState.EXECUTING, TrajectoryState.RETURNING):
-            pose_6dof = self._traj_manager.current_pose_6dof
-        elif self._has_target:
-            # For direct-target mode, we don't have a rotvec handy,
-            # but we have pos and rot matrix. Use commanded extensions.
-            pose_6dof = None  # skip cond check for direct mode (no rotvec)
-        else:
-            pose_6dof = None
-
         # Compute leg extensions from commanded positions
         commanded_extensions_mm = revs_to_extensions_mm(
             self._commanded_pos_rev, self.geom)
 
-        # Condition number (only computed during trajectory mode for performance)
+        # Condition number from 6-DoF pose (available in both modes now)
         if pose_6dof is not None:
             pos_cart = pose_6dof[:3]
             rot_mat = rotvec_to_rot_matrix(pose_6dof[3:6])
-            self._cond_number = compute_condition_number(pos_cart, rot_mat, self.geom)
-        else:
-            # For direct-target mode, use target pos/rot (with gravity correction)
-            if self._has_target:
-                cond_rot = self._target_rot
-                if self._gravity_correction is not None:
-                    cond_rot = self._gravity_correction @ self._target_rot
-                self._cond_number = compute_condition_number(
-                    self._target_pos, cond_rot, self.geom)
+            self._cond_number = compute_condition_number(
+                pos_cart, rot_mat, self.geom)
 
         # Check workspace limits
         ws_check = check_workspace_limits(
@@ -723,10 +724,9 @@ class ControlLoop:
             self._commanded_torque_ff_Nm = np.zeros(6)
 
         self._traj_manager.set_hold_pose(home)
+        self._smoother.reset(home)
         self._target_pos = home[:3].copy()
         self._target_rot = rot
-        self._target_twist = np.zeros(6)
-        self._target_accel = np.zeros(6)
         self._has_target = True
 
     # ------------------------------------------------------------------
