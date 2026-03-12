@@ -390,12 +390,13 @@ class ControlLoop:
             self._fault_state = None
             logger.info("Control loop DISABLED")
         elif cmd == 'estop':
-            self.mode = ControlMode.ESTOP
-            self._zero_outputs()
-            self._traj_manager.cancel()
-            self._smoother.reset(self._traj_manager.home_pose)
-            self._fault_state = msg.get('params', {}).get('reason', 'external')
-            logger.warning(f"E-STOP triggered via command: {self._fault_state}")
+            if self.mode != ControlMode.ESTOP:
+                self.mode = ControlMode.ESTOP
+                self._zero_outputs()
+                self._traj_manager.cancel()
+                self._smoother.reset(self._traj_manager.home_pose)
+                self._fault_state = msg.get('params', {}).get('reason', 'external')
+                logger.warning(f"E-STOP triggered via command: {self._fault_state}")
         elif cmd == 'set_feedforward':
             enabled = bool(params.get('enabled', True))
             self._feedforward_enabled = enabled
@@ -547,10 +548,12 @@ class ControlLoop:
             self._commanded_torque_ff_Nm = np.zeros(6)
             self._slew_limited = True
             self._slew_limit_count += 1
-            logger.warning(
-                f"Slew limiter active: worst_delta="
-                f"{np.max(np.abs(delta)):.4f} rev, clamped to "
-                f"{max_delta:.4f} rev ({self._slew_limit_count} cycles)")
+            # Only log on first activation to avoid spamming at 500 Hz
+            if self._slew_limit_count == 1:
+                logger.warning(
+                    f"Slew limiter active: worst_delta="
+                    f"{np.max(np.abs(delta)):.4f} rev, clamped to "
+                    f"{max_delta:.4f} rev")
 
             if self._slew_limit_count >= SLEW_FAULT_CYCLES:
                 self.mode = ControlMode.ESTOP

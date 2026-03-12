@@ -135,19 +135,19 @@ class MotionBridgeNode(Node):
             # LEVELLING uses the CAN node's profiled gentle-move commands,
             # not the motion planner.  Do NOT enable the control loop.
             self._active_publisher = mode
-            if prev in ('SPACEMOUSE', 'SHELL', 'GUI'):
-                cmd = make_mode_command('disable')
+            if prev != mode:
+                if prev in ('SPACEMOUSE', 'SHELL', 'GUI'):
+                    cmd = make_mode_command('disable')
+                    self.ipc.send_mode_command(cmd)
+                    self._control_loop_enabled = False
+                self.get_logger().info(
+                    "LEVELLING mode — control loop stays disabled")
+        elif mode == 'ERROR':
+            if prev != 'ERROR':
+                cmd = make_mode_command('estop')
                 self.ipc.send_mode_command(cmd)
                 self._control_loop_enabled = False
-                self.get_logger().info(
-                    "Disabled control loop for LEVELLING mode")
-            self.get_logger().info(
-                "LEVELLING mode — control loop stays disabled")
-        elif mode == 'ERROR':
-            cmd = make_mode_command('estop')
-            self.ipc.send_mode_command(cmd)
-            self._control_loop_enabled = False
-            self.get_logger().warning("Sent 'estop' to control process")
+                self.get_logger().warning("Sent 'estop' to control process")
         elif mode == '' or mode is None:
             self._active_publisher = ''
             if prev and prev not in ('', 'ERROR'):

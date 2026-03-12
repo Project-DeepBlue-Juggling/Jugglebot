@@ -835,6 +835,12 @@ class CanInterfaceNode(Node):
         Valid modes: '', 'ERROR', 'SPACEMOUSE', 'SHELL', 'LEVELLING', 'GUI'.
         Legs always remain in POSITION+PASSTHROUGH controller mode.
         """
+        # Skip duplicate messages (orchestrator publishes every tick)
+        prev = getattr(self, '_prev_control_mode', None)
+        self._prev_control_mode = msg.data
+        if msg.data == prev:
+            return
+
         try:
             states = self.motors.last_states
             _CL = odrive.AXIS_STATES['CLOSED_LOOP']
