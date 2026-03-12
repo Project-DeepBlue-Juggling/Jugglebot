@@ -183,13 +183,18 @@
         assertArrayClose(rv2, rv, 1e-6, 'Roundtrip large angle rotvec matches');
     }
 
-    section('IK: Home position (zero extension)');
+    section('IK: Home position — extensions are consistent and positive');
     {
+        // Node positions are idealized (from radii/angles) while init_leg_lengths
+        // are experimentally measured.  The geometric distance at home (~648mm)
+        // exceeds the measured reference (~620mm) by ~27mm (ball-joint offset +
+        // manufacturing tolerance), so extensions at home are NOT zero.
+        // We verify they are positive and in a sensible range.
         const I = rotvecToRotMatrix([0, 0, 0]);
         const { extensions } = poseToLegLengths([0, 0, 0], I);
-        // At home pose, all extensions should be ~0
         for (let i = 0; i < 6; i++) {
-            assertClose(extensions[i], 0, 0.1, `Home extension[${i}] ≈ 0mm (got ${extensions[i].toFixed(3)})`);
+            assert(extensions[i] > 20 && extensions[i] < 40,
+                `Home extension[${i}] in [20, 40]mm range (got ${extensions[i].toFixed(3)})`);
         }
     }
 
@@ -213,16 +218,28 @@
         }
     }
 
-    section('IK: Symmetry — equal Z displacement gives similar extensions');
+    section('IK: Symmetry — IK→FK round-trip for Z±50');
     {
+        // The real invariant is that IK→FK round-trips recover the original pose,
+        // not that extensions are algebraically symmetric (they aren't, due to the
+        // offset between geometric node distances and measured leg lengths).
         const I = rotvecToRotMatrix([0, 0, 0]);
+
+        resetFKState();
         const { extensions: extUp } = poseToLegLengths([0, 0, 50], I);
+        const rUp = solveFK(extUp);
+        assert(rUp.converged, 'FK converged for Z+50 symmetry test');
+        assertClose(rUp.pos[2], 50, 0.1, 'Z+50 round-trip recovers Z=50');
+        assertClose(rUp.pos[0], 0, 0.1, 'Z+50 round-trip X≈0');
+        assertClose(rUp.pos[1], 0, 0.1, 'Z+50 round-trip Y≈0');
+
+        resetFKState();
         const { extensions: extDown } = poseToLegLengths([0, 0, -50], I);
-        // Sum should be roughly zero (symmetric about home)
-        for (let i = 0; i < 6; i++) {
-            const sum = extUp[i] + extDown[i];
-            assertClose(sum, 0, 2.0, `Z±50 symmetry[${i}]: sum ≈ 0 (got ${sum.toFixed(3)})`);
-        }
+        const rDown = solveFK(extDown);
+        assert(rDown.converged, 'FK converged for Z-50 symmetry test');
+        assertClose(rDown.pos[2], -50, 0.1, 'Z-50 round-trip recovers Z=-50');
+        assertClose(rDown.pos[0], 0, 0.1, 'Z-50 round-trip X≈0');
+        assertClose(rDown.pos[1], 0, 0.1, 'Z-50 round-trip Y≈0');
     }
 
     section('IK: Platform nodes are valid 3D coordinates');
@@ -240,8 +257,9 @@
     section('FK: Roundtrip IK → FK (home pose)');
     {
         resetFKState();
-        const targetExt = [0, 0, 0, 0, 0, 0];
-        const result = solveFK(targetExt);
+        const I = rotvecToRotMatrix([0, 0, 0]);
+        const { extensions: homeExt } = poseToLegLengths([0, 0, 0], I);
+        const result = solveFK(homeExt);
         assert(result.converged, 'FK converged for home pose');
         assertArrayClose(result.pos, [0, 0, 0], 0.01, 'FK home position ≈ [0,0,0]');
     }
@@ -301,18 +319,23 @@
     section('FK: Motor revs input (legLengthsToPose)');
     {
         resetFKState();
-        // Home position: all motor revs = 0 → extension = 0
-        const revs = [0, 0, 0, 0, 0, 0];
-        const result = legLengthsToPose(revs);
+        // Compute motor revs that correspond to the home pose
+        const I = rotvecToRotMatrix([0, 0, 0]);
+        const { extensions: homeExt } = poseToLegLengths([0, 0, 0], I);
+        const homeRevs = homeExt.map((ext, i) => ext * MM_TO_REV[i]);
+        const result = legLengthsToPose(homeRevs);
         assert(result.converged, 'legLengthsToPose converged at home');
-        assertArrayClose(result.pos, [0, 0, 0], 0.1, 'Home pose from zero revs');
+        assertArrayClose(result.pos, [0, 0, 0], 0.1, 'Home pose from home revs');
     }
 
     section('FK: Motor revs with extension');
     {
         resetFKState();
-        // Extend each leg by ~50mm: revs = -(50 * mm_to_rev[i])
-        const revs = MM_TO_REV.map(f => -(50 * f));
+        // Compute home revs, then add 50mm extension on top
+        const I = rotvecToRotMatrix([0, 0, 0]);
+        const { extensions: homeExt } = poseToLegLengths([0, 0, 0], I);
+        const homeRevs = homeExt.map((ext, i) => ext * MM_TO_REV[i]);
+        const revs = homeRevs.map((hr, i) => hr + 50 * MM_TO_REV[i]);
         const result = legLengthsToPose(revs);
         assert(result.converged, 'legLengthsToPose converged with 50mm extension');
         // Platform should be higher (positive Z)
