@@ -60,6 +60,11 @@ class StreamSmoother:
         self._target = np.zeros(6)
         self._has_segment = False
 
+    def set_limits(self, vel_limit_rps: float, accel_limit_rps2: float) -> None:
+        """Update velocity and acceleration limits (e.g. when switching control modes)."""
+        self._vel_limit = vel_limit_rps
+        self._accel_limit = accel_limit_rps2
+
     def reset(self, pose_6dof: np.ndarray) -> None:
         """Reset to a known pose with zero derivatives.
 

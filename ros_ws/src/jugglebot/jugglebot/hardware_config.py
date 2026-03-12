@@ -125,6 +125,7 @@ JB_OP_MAX_VALID_TILT_RAD = 0.785
 JB_OP_INCLINOMETER_OFFSET_DEG = [-0.6, -0.2]
 JB_OP_LEVELLING_SETTLE_S = 0.5
 JB_OP_MAX_POSITION_STEP_REV = 0.2
+JB_OP_FEASIBILITY_WORKER_MAX_RESTARTS = 3
 
 # ============================================================================
 # Jugglebot SpaceMouse
@@ -134,9 +135,15 @@ SPACEMOUSE_XY_MULT_MM = 150.0
 SPACEMOUSE_Z_MULT_MM = 140.0
 SPACEMOUSE_PITCH_ROLL_MULT_DEG = 30.0
 SPACEMOUSE_YAW_MULT_DEG = 10.0
-SPACEMOUSE_TRAP_VEL_LIMIT_RPS = 15.0
-SPACEMOUSE_TRAP_ACC_LIMIT_RPS2 = 20.0
-SPACEMOUSE_TRAP_DEC_LIMIT_RPS2 = 20.0
+SPACEMOUSE_SMOOTHER_VEL_LIMIT_RPS = 5.0
+SPACEMOUSE_SMOOTHER_ACCEL_LIMIT_RPS2 = 6.0
+
+# ============================================================================
+# Jugglebot GUI
+# ============================================================================
+
+GUI_SMOOTHER_VEL_LIMIT_RPS = 5.0
+GUI_SMOOTHER_ACCEL_LIMIT_RPS2 = 6.0
 
 # ============================================================================
 # Teensy Trajectory

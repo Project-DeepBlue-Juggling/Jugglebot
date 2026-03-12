@@ -126,7 +126,7 @@ class MotionBridgeNode(Node):
         if mode in ('SPACEMOUSE', 'SHELL', 'GUI'):
             self._active_publisher = mode
             if prev != mode:
-                cmd = make_mode_command('enable')
+                cmd = make_mode_command('enable', source=mode)
                 self.ipc.send_mode_command(cmd)
                 self._control_loop_enabled = True
                 self.get_logger().info(f"Sent 'enable' to control process "

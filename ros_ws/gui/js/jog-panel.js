@@ -6,33 +6,14 @@
  *
  * Shown only when the control mode is 'GUI'; hidden otherwise.
  *
- * !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
- * JOGGING IS DISABLED — DO NOT RE-ENABLE WITHOUT RESOLVING THE BUG BELOW
- * !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
- *
- * BUG (2026-03-03): Jog commands cause violent, dangerous platform motion.
- *
- * Root cause: Both sp_ik.py (legacy) and motion_bridge_node.py (new pipeline)
- * subscribe to platform_pose_topic, and both pass the 'GUI' control mode
- * gate. They each independently compute IK and publish conflicting motor
- * commands to leg_lengths_topic. The CAN node receives interleaved step
- * commands from both sources, causing the motors to slam between two
- * positions. The ODrives are in POSITION+PASSTHROUGH mode (no on-drive
- * trajectory profiling), so each command is an instantaneous position step.
- *
- * Before re-enabling jogging, the following MUST be resolved:
- *   1. Decide whether sp_ik.py should be archived or kept (and gated to
- *      exclude 'GUI' mode), so that only ONE node publishes to
- *      leg_lengths_topic for any given control mode.
- *   2. Decide whether jog commands should go through trajectory planning
- *      (profiled moves) rather than raw pose commands, to prevent step
- *      discontinuities even after the dual-publisher issue is fixed.
- *
- * IMPORTANT: Re-enabling jogging requires explicit approval from the
- * project owner. Do not re-enable without their sign-off.
+ * Pose commands are published to platform_pose_topic with publisher='GUI'.
+ * The motion_bridge_node forwards these to the control loop's stream
+ * smoother, which generates C2-continuous quintic profiles.  sp_ik.py is
+ * gated to ignore GUI mode, preventing dual-publisher conflicts.
  */
 
 import * as ros from './ros-bridge.js';
+import { DEFAULT_ACTIVE_Z_MM } from './geometry-config.js';
 
 // ---- Configuration ----
 
@@ -188,10 +169,28 @@ function onJogClick(axis, sign) {
 }
 
 function publishPose() {
-    // DISABLED — see file header for full explanation of the dual-publisher bug.
-    // Do not remove this guard without project owner approval.
-    console.warn('Jog publishPose() blocked — jogging is disabled due to dual-publisher safety bug.');
-    return;
+    if (!posePublisher) return;
+
+    const [x, y, z, rx, ry, rz] = jogTarget;
+    const [qw, qx, qy, qz] = rotvecToQuat(rx, ry, rz);
+
+    const now = Date.now();
+    const secs = Math.floor(now / 1000);
+    const nsecs = (now % 1000) * 1e6;
+
+    posePublisher.publish({
+        pose_stamped: {
+            header: {
+                stamp: { sec: secs, nanosec: nsecs },
+                frame_id: 'platform_start',
+            },
+            pose: {
+                position: { x, y, z: z + DEFAULT_ACTIVE_Z_MM },
+                orientation: { w: qw, x: qx, y: qy, z: qz },
+            },
+        },
+        publisher: 'GUI',
+    });
 }
 
 function updateReadout() {

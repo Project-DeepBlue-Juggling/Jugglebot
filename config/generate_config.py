@@ -345,6 +345,7 @@ HW_SECTIONS = [
     ("jugglebot_odrive_defaults","ODRIVE_",    "ODriveDefaults", "Jugglebot ODrive Defaults"),
     ("jugglebot_operational",    "JB_OP_",     "JBOp",       "Jugglebot Operational"),
     ("jugglebot_spacemouse",     "SPACEMOUSE_","Spacemouse", "Jugglebot SpaceMouse"),
+    ("jugglebot_gui",            "GUI_",       "GUI",        "Jugglebot GUI"),
     # 7–8. Teensy (platform microcontroller)
     ("teensy_trajectory",        "TEENSY_TRAJ_", "TeensyTraj", "Teensy Trajectory"),
     ("teensy_operational",       "TEENSY_",    "TeensyOp",   "Teensy Operational"),
@@ -637,6 +638,15 @@ def generate_gui_js(hw_cfg: dict, proto_cfg: dict) -> str:
         "",
         "// Hand axis: offset from platform centre along platform normal (mm)",
         "export const HAND_DEPTH_OFFSET_MM = 100.0;",
+    ]
+
+    # Operational constants for GUI
+    jb_op = hw_cfg["jugglebot_operational"]
+    lines += [
+        "",
+        "// ---- Jugglebot operational (hardware_config.yaml -> jugglebot_operational) ----",
+        "",
+        f"export const DEFAULT_ACTIVE_Z_MM = {jb_op['default_active_z_mm']};",
     ]
 
     # Ball Butler geometry constants (for 3D visualisation)

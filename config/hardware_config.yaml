@@ -197,6 +197,8 @@ jugglebot_operational:
                                          # position sources from slamming the platform.  Normal control
                                          # loop steps are ~0.03 rev/cycle at max speed; 0.2 rev gives
                                          # ~7x headroom while catching catastrophic jumps.
+  feasibility_worker_max_restarts: 3     # Max restart attempts for the feasibility worker process
+                                         # before triggering a permanent FAULT requiring system restart.
 
 # ============================================================
 # 7. Jugglebot SpaceMouse
@@ -207,9 +209,16 @@ jugglebot_spacemouse:
   z_mult_mm: 140.0                       # Z axis sensitivity {mm}
   pitch_roll_mult_deg: 30.0              # Pitch/roll sensitivity {deg}
   yaw_mult_deg: 10.0                     # Yaw sensitivity {deg}
-  trap_vel_limit_rps: 15.0               # Trapezoidal trajectory velocity limit {rev/s}
-  trap_acc_limit_rps2: 20.0              # Trapezoidal trajectory acceleration {rev/s^2}
-  trap_dec_limit_rps2: 20.0              # Trapezoidal trajectory deceleration {rev/s^2}
+  smoother_vel_limit_rps: 5.0             # Stream smoother velocity limit for spacemouse {rev/s}
+  smoother_accel_limit_rps2: 6.0         # Stream smoother acceleration limit for spacemouse {rev/s^2}
+
+# ============================================================
+# 7b. Jugglebot GUI
+#     Stream smoother limits for GUI jog commands.
+# ============================================================
+jugglebot_gui:
+  smoother_vel_limit_rps: 5.0             # Stream smoother velocity limit for GUI jog {rev/s}
+  smoother_accel_limit_rps2: 6.0          # Stream smoother acceleration limit for GUI jog {rev/s^2}
 
 # ============================================================
 # 8. Teensy Trajectory

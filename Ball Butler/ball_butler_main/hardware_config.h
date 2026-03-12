@@ -142,6 +142,7 @@ namespace JBOp {
   constexpr float INCLINOMETER_OFFSET_DEG[2] = {-0.6f, -0.2f};
   constexpr float LEVELLING_SETTLE_S = 0.5f;
   constexpr float MAX_POSITION_STEP_REV = 0.2f;
+  constexpr uint32_t FEASIBILITY_WORKER_MAX_RESTARTS = 3u;
 }
 
 // ==========================================================================
@@ -153,9 +154,17 @@ namespace Spacemouse {
   constexpr float Z_MULT_MM = 140.0f;
   constexpr float PITCH_ROLL_MULT_DEG = 30.0f;
   constexpr float YAW_MULT_DEG = 10.0f;
-  constexpr float TRAP_VEL_LIMIT_RPS = 15.0f;
-  constexpr float TRAP_ACC_LIMIT_RPS2 = 20.0f;
-  constexpr float TRAP_DEC_LIMIT_RPS2 = 20.0f;
+  constexpr float SMOOTHER_VEL_LIMIT_RPS = 5.0f;
+  constexpr float SMOOTHER_ACCEL_LIMIT_RPS2 = 6.0f;
+}
+
+// ==========================================================================
+// Jugglebot GUI
+// ==========================================================================
+
+namespace GUI {
+  constexpr float SMOOTHER_VEL_LIMIT_RPS = 5.0f;
+  constexpr float SMOOTHER_ACCEL_LIMIT_RPS2 = 6.0f;
 }
 
 // ==========================================================================

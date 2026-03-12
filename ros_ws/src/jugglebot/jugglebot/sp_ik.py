@@ -81,6 +81,10 @@ class SPInverseKinematics(Node):
         '''Callback function for the control mode topic'''
         self.control_mode = msg.data
 
+    # Modes handled by the motion bridge / control loop pipeline.
+    # sp_ik.py must NOT process these to avoid dual-publisher conflicts.
+    _MOTION_BRIDGE_MODES = {'SPACEMOUSE', 'SHELL', 'GUI'}
+
     def pose_callback(self, msg):
         '''Callback function for the platform pose topic'''
         # Check if we have geometry data
@@ -91,6 +95,11 @@ class SPInverseKinematics(Node):
         # Deconstruct the message
         pose_publisher = msg.publisher
         pose = msg.pose_stamped.pose
+
+        # Modes handled by the motion bridge pipeline must not be processed
+        # here — doing so causes dual-publisher conflicts on leg_lengths_topic.
+        if self.control_mode in self._MOTION_BRIDGE_MODES:
+            return
 
         # Check if the pose was published by the correct publisher
         if pose_publisher != self.control_mode:

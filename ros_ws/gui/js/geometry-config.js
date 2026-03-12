@@ -64,6 +64,10 @@ export const BB_POSITION_MM = [0, -500, 0];
 // Hand axis: offset from platform centre along platform normal (mm)
 export const HAND_DEPTH_OFFSET_MM = 100.0;
 
+// ---- Jugglebot operational (hardware_config.yaml -> jugglebot_operational) ----
+
+export const DEFAULT_ACTIVE_Z_MM = 170.0;
+
 // ---- Ball Butler geometry (hardware_config.yaml -> ball_butler_geometry) ----
 
 export const BB_YAW_S_OFFSET_MM = -105.65;
