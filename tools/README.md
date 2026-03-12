@@ -10,7 +10,7 @@ Scripts in this directory bypass ROS2 and talk directly to hardware via python-c
 
 2. **Unified timeline** — All tests in the suite are stitched end-to-end on a shared time axis. The sequence must be C2-continuous throughout: both *during* and *between* individual tests, all commanded values must be smooth (no step discontinuities in position, velocity, or acceleration).
 
-3. **Return-to-home transitions** — Between tests, generate a proper profiled return-to-home move (not a step command). Highlight these transition segments visually (e.g. light blue `axvspan` shading) so they are clearly distinguishable from test segments.
+3. **Return-to-home transitions** — Between tests, generate a proper profiled return-to-home move (not a step command). Highlight these transition segments visually (e.g. light blue `axvspan` shading) so they are clearly distinguishable from test segments. After the final test, return to home and then show the stow segment (highlighted in green).
 
 4. **Test boundary markers** — Mark each test's start/end with vertical dashed lines and annotate with the test name/label.
 
@@ -53,11 +53,36 @@ Also exports: `LEG_AXES`, `encode_set_input_pos`, `encode_set_controller_mode`, 
 ws = WorkspaceLimits.from_geometry(geom)  # NOT .from_config()
 ```
 
+### Shutdown: Always Stow
+
+**Every test harness must end with the platform stowed** (all legs at 0 rev, fully compressed). Never idle axes while the platform is raised — an idled motor provides no holding torque and the platform will drop.
+
+The shutdown sequence is: **return to home → stow (0 rev via TRAP_TRAJ) → idle all axes**.
+
+```python
+def stow_platform(harness):
+    harness.enter_trap_traj_mode_all(vel_limit=1.5, acc_limit=5.0, dec_limit=5.0)
+    for axis_id in LEG_AXES:
+        harness.states[axis_id].trajectory_done = False
+    for axis_id in LEG_AXES:
+        harness.send(encode_set_input_pos(axis_id, 0.0, vel_ff=0, torque_ff=0))
+    harness.wait_for_all_trajectories_done(timeout_s=15.0)
+```
+
+This applies to:
+- Normal completion (after all tests pass/fail)
+- Error/exception paths
+- Ctrl-C handler (best-effort stow, then idle)
+
+Reference: `smoother_test.py:safe_shutdown()`, `dynamic_target_test.py:safe_idle_all()`.
+
+The `--preview` plot must also show the stow segment at the end of the timeline so the operator sees the full motion the robot will execute.
+
 ### Safety
 
 All test harnesses share these safety principles:
 - Conservative current limit (50% of rated) set before any motion
-- Universal IDLE on completion, error, or Ctrl-C
+- Always stow before idling (see above)
 - Mandatory feasibility pre-check before hardware execution
 - Interactive confirmation before each test stage
 - Heartbeat watchdog on all axes

@@ -261,6 +261,51 @@ def switch_to_passthrough(harness: PlatformTestHarness):
     print("  Switched to POSITION/PASSTHROUGH mode.")
 
 
+def stow_platform(harness: PlatformTestHarness):
+    """Move all legs to 0 rev (homed/stowed position) using TRAP_TRAJ.
+
+    Must be called before idling axes.  Commands each axis to raw
+    position 0.0 rev, which is the fully compressed stow position.
+    Uses gentle velocity/acceleration limits since we're in no rush.
+    """
+    print("\n  Stowing platform (all legs to 0 rev)...")
+    harness.enter_trap_traj_mode_all(vel_limit=1.5, acc_limit=5.0,
+                                     dec_limit=5.0)
+
+    # Clear stale trajectory_done flags (entering trap traj mode
+    # commands hold-at-current which completes instantly)
+    for axis_id in LEG_AXES:
+        harness.states[axis_id].trajectory_done = False
+
+    for axis_id in LEG_AXES:
+        harness.send(encode_set_input_pos(
+            axis_id, 0.0, vel_ff=0, torque_ff=0))
+
+    harness.wait_for_all_trajectories_done(timeout_s=15.0)
+    harness.poll_for(1.0)
+    print("  Platform stowed (all legs at 0 rev).")
+
+
+def safe_shutdown(harness: PlatformTestHarness, geom: StewartGeometry,
+                  params: DynamicsParams):
+    """Return to home, stow, then idle all axes.
+
+    Called on normal completion and on error.  Never idles axes
+    unless the platform is in the stowed position.
+    """
+    try:
+        move_to_home(harness, geom, params)
+    except Exception as e:
+        print(f"  WARNING: Failed to return to home: {e}")
+    try:
+        stow_platform(harness)
+    except Exception as e:
+        print(f"  WARNING: Failed to stow: {e}")
+        print("  Idling axes anyway (emergency).")
+    harness.idle_all()
+    print("  All axes -> IDLE.")
+
+
 def interactive_pause(prompt: str) -> str:
     """Pause for operator input."""
     return input(f"\n  >>> {prompt} ").strip()
@@ -571,7 +616,7 @@ def preview_all_tests():
 
     t = 0.0
 
-    for idx, (name, targets, duration, desc, ff_enabled) in enumerate(tests_data):
+    for name, targets, duration, desc, ff_enabled in tests_data:
         test_start = t
         targets_sorted = sorted(targets, key=lambda x: x[0])
         target_idx = 0
@@ -604,32 +649,97 @@ def preview_all_tests():
 
         test_boundaries.append((test_start, t, desc))
 
-        # Return to home (except after last test)
-        if idx < len(tests_data) - 1:
-            return_start = t
-            smoother.set_target(HOME_POSE.copy(), t)
-            return_dur = smoother._duration
-            return_end = t + return_dur + DWELL_AT_HOME
+        # Return to home (between tests and after the last test)
+        return_start = t
+        smoother.set_target(HOME_POSE.copy(), t)
+        return_dur = smoother._duration
+        return_end = t + return_dur + DWELL_AT_HOME
 
-            while t < return_end:
-                pose, twist, accel = smoother.evaluate(t)
-                pos_rev, vel_ff, torque_ff = cartesian_to_motor_commands(
-                    pose, twist, accel, geom, params,
-                    feedforward_enabled=True)
+        while t < return_end:
+            pose, twist, accel = smoother.evaluate(t)
+            pos_rev, vel_ff, torque_ff = cartesian_to_motor_commands(
+                pose, twist, accel, geom, params,
+                feedforward_enabled=True)
 
-                rot = rotvec_to_rot_matrix(pose[3:6])
-                ext = pose_to_leg_lengths(pose[:3], rot, geom)
+            rot = rotvec_to_rot_matrix(pose[3:6])
+            ext = pose_to_leg_lengths(pose[:3], rot, geom)
 
-                all_ts.append(t)
-                all_poses.append(pose)
-                all_twists.append(twist)
-                all_extensions.append(ext)
-                all_vel_ff.append(vel_ff)
-                all_torques.append(torque_ff)
+            all_ts.append(t)
+            all_poses.append(pose)
+            all_twists.append(twist)
+            all_extensions.append(ext)
+            all_vel_ff.append(vel_ff)
+            all_torques.append(torque_ff)
 
-                t += dt
+            t += dt
 
-            return_boundaries.append((return_start, t))
+        return_boundaries.append((return_start, t))
+
+    # -- Stow segment: TRAP_TRAJ from home extensions to 0 rev --
+    # The stow uses ODrive's trapezoidal trajectory (not the smoother),
+    # so we simulate it as a trapezoidal velocity profile in motor space.
+    stow_start = t
+    home_rot = rotvec_to_rot_matrix(HOME_POSE[3:6])
+    home_ext = pose_to_leg_lengths(HOME_POSE[:3], home_rot, geom)
+    home_rev = extensions_mm_to_revs(home_ext, geom)
+    # TRAP_TRAJ params matching stow_platform(): vel=1.5 rps, acc=5.0 rps2
+    stow_vel = 1.5   # rev/s
+    stow_acc = 5.0    # rev/s^2
+    max_disp = np.max(np.abs(home_rev))  # revolutions to travel
+    # Trapezoidal profile: ramp up, cruise, ramp down
+    t_ramp = stow_vel / stow_acc
+    d_ramp = 0.5 * stow_acc * t_ramp**2
+    if 2 * d_ramp >= max_disp:
+        # Triangle profile (no cruise phase)
+        stow_duration = 2.0 * np.sqrt(max_disp / stow_acc)
+    else:
+        d_cruise = max_disp - 2 * d_ramp
+        t_cruise = d_cruise / stow_vel
+        stow_duration = 2 * t_ramp + t_cruise
+
+    stow_end = t + stow_duration + 0.5  # + brief dwell
+    # Simulate: linearly interpolate extensions from home to 0 using
+    # normalized trapezoidal velocity profile
+    while t < stow_end:
+        elapsed = t - stow_start
+        if elapsed >= stow_duration:
+            frac = 1.0
+        elif 2 * d_ramp >= max_disp:
+            # Triangle
+            t_peak = stow_duration / 2
+            if elapsed <= t_peak:
+                frac = 0.5 * stow_acc * elapsed**2 / max_disp
+            else:
+                dt_dec = elapsed - t_peak
+                frac = 0.5 + (stow_vel * dt_dec
+                              - 0.5 * stow_acc * dt_dec**2) / max_disp
+        else:
+            # Trapezoid
+            if elapsed <= t_ramp:
+                frac = 0.5 * stow_acc * elapsed**2 / max_disp
+            elif elapsed <= t_ramp + t_cruise:
+                frac = (d_ramp + stow_vel * (elapsed - t_ramp)) / max_disp
+            else:
+                dt_dec = elapsed - t_ramp - t_cruise
+                frac = ((d_ramp + d_cruise + stow_vel * dt_dec
+                         - 0.5 * stow_acc * dt_dec**2) / max_disp)
+        frac = np.clip(frac, 0.0, 1.0)
+
+        ext_now = home_ext * (1.0 - frac)
+        # Approximate pose: just interpolate Z linearly (stow is pure vertical)
+        pose_now = HOME_POSE.copy()
+        pose_now[2] = HOME_POSE[2] * (1.0 - frac)
+
+        all_ts.append(t)
+        all_poses.append(pose_now)
+        all_twists.append(np.zeros(6))   # not computed (TRAP_TRAJ mode)
+        all_extensions.append(ext_now)
+        all_vel_ff.append(np.zeros(6))   # ODrive handles internally
+        all_torques.append(np.zeros(6))  # ODrive handles internally
+
+        t += dt
+
+    stow_boundaries = [(stow_start, t)]
 
     # Convert to numpy
     t_arr = np.array(all_ts)
@@ -681,9 +791,13 @@ def preview_all_tests():
             ax.axvline(end, color='#444444', linewidth=0.8,
                        linestyle='--', alpha=0.7)
 
-        # Return-to-home boundary markers (lighter)
+        # Return-to-home boundary markers (lighter blue)
         for start, end in return_boundaries:
             ax.axvspan(start, end, alpha=0.06, color='#4363d8')
+
+        # Stow boundary markers (lighter green)
+        for start, end in stow_boundaries:
+            ax.axvspan(start, end, alpha=0.08, color='#3cb44b')
 
     axes[-1].set_xlabel('Time (s)', fontsize=7)
 
@@ -702,6 +816,14 @@ def preview_all_tests():
         ax_top.annotate('Return', xy=(mid, y_top), fontsize=4,
                         ha='center', va='bottom', rotation=0,
                         color='#4363d8', alpha=0.7,
+                        annotation_clip=False)
+
+    # Stow labels
+    for start, end in stow_boundaries:
+        mid = (start + end) / 2
+        ax_top.annotate('Stow', xy=(mid, y_top), fontsize=4,
+                        ha='center', va='bottom', rotation=0,
+                        color='#3cb44b', alpha=0.7,
                         annotation_clip=False)
 
     # -- Scrollbar --
@@ -1043,16 +1165,24 @@ Prerequisites:
 
     # Install Ctrl-C handler for clean shutdown
     harness_ref = [None]
+    geom_ref = [None]
+    params_ref = [None]
     original_handler = signal.getsignal(signal.SIGINT)
 
     def sigint_handler(sig, frame):
-        print("\n\n  *** Ctrl-C: Emergency IDLE (all axes) ***")
+        print("\n\n  *** Ctrl-C: Stowing and idling... ***")
         h = harness_ref[0]
         if h is not None:
             try:
-                h.idle_all()
+                if geom_ref[0] and params_ref[0]:
+                    safe_shutdown(h, geom_ref[0], params_ref[0])
+                else:
+                    h.idle_all()
             except Exception:
-                pass
+                try:
+                    h.idle_all()
+                except Exception:
+                    pass
         signal.signal(signal.SIGINT, original_handler)
         sys.exit(1)
 
@@ -1075,6 +1205,8 @@ Prerequisites:
             prepare_harness(harness)
             geom = StewartGeometry()
             params = DynamicsParams.from_config()
+            geom_ref[0] = geom
+            params_ref[0] = params
             move_to_home(harness, geom, params)
             switch_to_passthrough(harness)
 
@@ -1082,7 +1214,6 @@ Prerequisites:
                 # Return to home between tests
                 if test_name != tests_to_run[0]:
                     print("\n  Returning to home...")
-                    # Use trap traj for safe return
                     move_to_home(harness, geom, params)
                     switch_to_passthrough(harness)
 
@@ -1091,9 +1222,20 @@ Prerequisites:
                 else:
                     failed += 1
 
+            # Stow after all tests complete
+            safe_shutdown(harness, geom, params)
+
     except Exception as e:
         print(f"\n  FATAL: {e}")
         failed += 1
+        try:
+            if geom_ref[0] and params_ref[0]:
+                safe_shutdown(harness, geom_ref[0], params_ref[0])
+        except Exception:
+            try:
+                harness.idle_all()
+            except Exception:
+                pass
     finally:
         print(f"\n{'=' * 60}")
         print(f"Results: {passed} passed, {failed} failed "
