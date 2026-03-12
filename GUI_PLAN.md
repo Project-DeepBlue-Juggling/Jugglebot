@@ -361,8 +361,8 @@ Since we're developing on Windows (no ROS2), verification is done in two stages:
 Run `python ros_ws/gui/gui_server.py` and open `http://localhost:8080`.
 
 **Automated tests (run first):**
-- [ ] `python -m pytest tests/test_gui_geometry.py -v` — all 40 tests pass
-- [ ] Open `http://localhost:8080/test_fk.html` — all FK tests pass (green "ALL PASSED")
+- [x] `python -m pytest tests/test_gui_geometry.py -v` — all 40 tests pass
+- [x] Open `http://localhost:8080/test_fk.html` — all FK tests pass (green "ALL PASSED")
 
 **3D Viewer:**
 - [x] Dark background renders (#0f172a)
@@ -399,10 +399,6 @@ Run `python ros_ws/gui/gui_server.py` and open `http://localhost:8080`.
 - [x] Toggle signals on/off → charts rebuild with correct axes
 - [x] Chart cell titles visible (L0-L5, Hand, BB Pitch, BB Hand)
 - [x] Y-axes render correctly (no data without ROS2)
-
-**Responsive layout:**
-- [x] Shrink browser width below 900px → sidebar moves below viewer
-- [x] Motor grid wraps to 4 columns
 
 ### Stage 2: Jetson + ROS2 (live)
 
