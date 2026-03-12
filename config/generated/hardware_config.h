@@ -94,6 +94,22 @@ namespace Homing {
 }
 
 // ==========================================================================
+// ODrive Expected Versions
+// ==========================================================================
+
+namespace ODriveVer {
+  constexpr uint32_t AXIS_0[3] = {4, 4, 58};
+  constexpr uint32_t AXIS_1[3] = {4, 4, 58};
+  constexpr uint32_t AXIS_2[3] = {4, 4, 58};
+  constexpr uint32_t AXIS_3[3] = {4, 4, 58};
+  constexpr uint32_t AXIS_4[3] = {4, 4, 58};
+  constexpr uint32_t AXIS_5[3] = {4, 4, 58};
+  constexpr uint32_t AXIS_6[3] = {4, 4, 58};
+  constexpr uint32_t AXIS_7[3] = {6, 2, 0};
+  constexpr uint32_t AXIS_8[3] = {5, 2, 0};
+}
+
+// ==========================================================================
 // Jugglebot ODrive Defaults
 // ==========================================================================
 

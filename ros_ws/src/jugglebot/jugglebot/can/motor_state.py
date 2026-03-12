@@ -10,6 +10,7 @@ from typing import Dict, List, Optional, Tuple
 
 from jugglebot_interfaces.msg import MotorStateSingle
 import jugglebot.protocol_config as proto
+import jugglebot.hardware_config as hw_cfg
 
 # Axis groupings (from protocol_config)
 LEG_AXES = proto.NODE_ID_LEGS
@@ -18,6 +19,12 @@ JUGGLEBOT_AXES = LEG_AXES + [HAND_AXIS]
 BB_AXES = [proto.NODE_ID_BB_PITCH, proto.NODE_ID_BB_HAND]
 ALL_AXES = JUGGLEBOT_AXES + BB_AXES
 NUM_AXES = len(ALL_AXES)
+
+# Expected hardware versions per axis (from hardware_config)
+EXPECTED_HW_VERSIONS: Dict[int, Tuple[int, int, int]] = {
+    aid: tuple(getattr(hw_cfg, f"ODRIVE_VER_AXIS_{aid}"))
+    for aid in ALL_AXES
+}
 
 
 class MotorStateTracker:
@@ -174,27 +181,39 @@ class MotorStateTracker:
         return all(self.firmware_versions[aid] is not None for aid in BB_AXES)
 
     def validate_group(self, axes: list, group_name: str) -> Optional[str]:
-        """Check firmware+hardware consistency within a group of axes.
+        """Check each axis's hardware version against its expected value.
+
+        Firmware versions must be consistent within the group (all axes sharing
+        the same expected hw version must also share the same fw version).
 
         Returns None on success, or a descriptive error string on mismatch.
         """
-        fw_set: Dict[Tuple[int, int, int], List[int]] = {}
-        hw_set: Dict[Tuple[int, int, int], List[int]] = {}
-        for aid in axes:
-            fw = self.firmware_versions[aid]
-            hw = self.hardware_versions[aid]
-            fw_set.setdefault(fw, []).append(aid)
-            hw_set.setdefault(hw, []).append(aid)
-
         errors = []
-        if len(fw_set) > 1:
-            parts = [f"axes {ids}: fw {v[0]}.{v[1]}.{v[2]}"
-                     for v, ids in fw_set.items()]
-            errors.append(f"{group_name} firmware mismatch — " + ", ".join(parts))
-        if len(hw_set) > 1:
-            parts = [f"axes {ids}: hw {v[0]}.{v[1]}.{v[2]}"
-                     for v, ids in hw_set.items()]
-            errors.append(f"{group_name} hardware mismatch — " + ", ".join(parts))
+
+        # Check hardware versions against per-axis expectations
+        for aid in axes:
+            hw = self.hardware_versions[aid]
+            expected = EXPECTED_HW_VERSIONS.get(aid)
+            if expected is not None and hw != expected:
+                errors.append(
+                    f"Axis {aid} hw mismatch — "
+                    f"expected {expected[0]}.{expected[1]}.{expected[2]}, "
+                    f"got {hw[0]}.{hw[1]}.{hw[2]}")
+
+        # Check firmware consistency among axes that share the same expected hw
+        hw_groups: Dict[Tuple[int, int, int], Dict[Tuple[int, int, int], List[int]]] = {}
+        for aid in axes:
+            expected = EXPECTED_HW_VERSIONS.get(aid, self.hardware_versions[aid])
+            fw = self.firmware_versions[aid]
+            hw_groups.setdefault(expected, {}).setdefault(fw, []).append(aid)
+        for hw_ver, fw_set in hw_groups.items():
+            if len(fw_set) > 1:
+                parts = [f"axes {ids}: fw {v[0]}.{v[1]}.{v[2]}"
+                         for v, ids in fw_set.items()]
+                errors.append(
+                    f"{group_name} firmware mismatch among "
+                    f"hw {hw_ver[0]}.{hw_ver[1]}.{hw_ver[2]} axes — "
+                    + ", ".join(parts))
 
         return "; ".join(errors) if errors else None
 

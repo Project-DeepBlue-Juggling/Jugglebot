@@ -430,12 +430,7 @@ class CanInterfaceNode(Node):
                 self.get_logger().error(error)
             else:
                 self.motors.firmware_validated = True
-                fw0 = self.motors.firmware_versions[0]
-                hw0 = self.motors.hardware_versions[0]
-                self.get_logger().info(
-                    f"Jugglebot firmware check PASSED — "
-                    f"all axes: fw {fw0[0]}.{fw0[1]}.{fw0[2]}, "
-                    f"hw {hw0[0]}.{hw0[1]}.{hw0[2]}")
+                self.get_logger().info("Jugglebot firmware check PASSED — all axes match expected versions")
 
         # Validate BB group when complete
         if not self._bb_firmware_checked and self.motors.all_bb_versions_received():
@@ -446,10 +441,7 @@ class CanInterfaceNode(Node):
                 self.motors.fatal_error = True
                 self.get_logger().error(error)
             else:
-                fw_bb = self.motors.firmware_versions[odrive.BB_AXES[0]]
-                self.get_logger().info(
-                    f"Ball Butler firmware check PASSED — "
-                    f"both axes: fw {fw_bb[0]}.{fw_bb[1]}.{fw_bb[2]}")
+                self.get_logger().info("Ball Butler firmware check PASSED — all axes match expected versions")
 
     # Handler dispatch table (maps command_id → method).
     # These are unbound functions — called as handler(self, axis_id, data).

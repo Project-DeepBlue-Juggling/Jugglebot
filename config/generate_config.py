@@ -336,9 +336,12 @@ HW_SECTIONS = [
     ("physics",                  "",           "Physics",    "Shared Physics"),
     # 1b. Platform Dynamics
     ("dynamics",                 "DYNAMICS_",  "Dynamics",   "Platform Dynamics"),
-    # 2–6. Jugglebot (Stewart platform)
+    # 2–3. Jugglebot (Stewart platform geometry, homing)
     ("jugglebot_geometry",       "GEOM_",      "Geometry",   "Jugglebot Stewart Platform Geometry"),
     ("jugglebot_homing",         "HOMING_",    "Homing",     "Jugglebot Homing"),
+    # 4. ODrive expected versions
+    ("odrive_expected_versions", "ODRIVE_VER_","ODriveVer",  "ODrive Expected Versions"),
+    # 5–7. Jugglebot (ODrive defaults, operational, SpaceMouse)
     ("jugglebot_odrive_defaults","ODRIVE_",    "ODriveDefaults", "Jugglebot ODrive Defaults"),
     ("jugglebot_operational",    "JB_OP_",     "JBOp",       "Jugglebot Operational"),
     ("jugglebot_spacemouse",     "SPACEMOUSE_","Spacemouse", "Jugglebot SpaceMouse"),

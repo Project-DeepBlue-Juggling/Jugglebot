@@ -12,11 +12,13 @@
 #
 # Section grouping:
 #   1       Shared Physics
-#   2–6     Jugglebot (Stewart platform)
-#   7–8     Teensy (platform microcontroller)
-#   9       Motion Capture
-#   10      Ball Tracking & Prediction
-#   11–21   Ball Butler
+#   2–3     Jugglebot (Stewart platform geometry, homing)
+#   4       ODrive Expected Versions
+#   5–7     Jugglebot (ODrive defaults, operational, SpaceMouse)
+#   8–9     Teensy (platform microcontroller)
+#   10      Motion Capture
+#   11      Ball Tracking & Prediction
+#   12–22   Ball Butler
 # ===========================================================================
 
 # ============================================================
@@ -135,7 +137,27 @@ jugglebot_homing:
   motor_timeout_s: 30.0                  # Max time per motor for homing current detection {s}
 
 # ============================================================
-# 4. Jugglebot ODrive Defaults
+# 4. ODrive Expected Versions
+#    Expected hardware revision (hw_product.hw_version.hw_variant)
+#    for each ODrive axis. Used by can_node firmware validation.
+#    Values come from the ODrive get_version CAN response.
+#    Grouped by axis for per-axis validation.
+# ============================================================
+odrive_expected_versions:
+  # Jugglebot legs (axes 0-5) and hand (axis 6): ODrive Pro
+  axis_0: [4, 4, 58]
+  axis_1: [4, 4, 58]
+  axis_2: [4, 4, 58]
+  axis_3: [4, 4, 58]
+  axis_4: [4, 4, 58]
+  axis_5: [4, 4, 58]
+  axis_6: [4, 4, 58]       # Jugglebot hand — ODrive Pro
+  # Ball Butler axes: mixed ODrive products
+  axis_7: [6, 2, 0]        # BB Pitch — ODrive Micro X4
+  axis_8: [5, 2, 0]        # BB Hand — ODrive S1
+
+# ============================================================
+# 5. Jugglebot ODrive Defaults
 #    Default ODrive operating parameters for Jugglebot axes.
 # ============================================================
 jugglebot_odrive_defaults:
@@ -151,7 +173,7 @@ jugglebot_odrive_defaults:
   hand_vel_int_gain: 0.07                # Hand velocity integrator gain
 
 # ============================================================
-# 5. Jugglebot Operational
+# 6. Jugglebot Operational
 #    Runtime operational parameters for platform operation.
 # ============================================================
 jugglebot_operational:
@@ -177,7 +199,7 @@ jugglebot_operational:
                                          # ~7x headroom while catching catastrophic jumps.
 
 # ============================================================
-# 6. Jugglebot SpaceMouse
+# 7. Jugglebot SpaceMouse
 #    SpaceMouse input scaling and trajectory parameters.
 # ============================================================
 jugglebot_spacemouse:
@@ -190,7 +212,7 @@ jugglebot_spacemouse:
   trap_dec_limit_rps2: 20.0              # Trapezoidal trajectory deceleration {rev/s^2}
 
 # ============================================================
-# 7. Teensy Trajectory
+# 8. Teensy Trajectory
 #    Source: ros_ws/src/jugglebot/Teensy_code/Trajectory.h
 #    Trajectory generation constants for the platform Teensy's hand axis.
 #    These differ from Ball Butler trajectory constants (different hardware).
@@ -213,7 +235,7 @@ teensy_trajectory:
   max_event_vel_mps: 7.0                 # Maximum hand event velocity {m/s}
 
 # ============================================================
-# 8. Teensy Operational
+# 9. Teensy Operational
 #    Source: ros_ws/src/jugglebot/Teensy_code/Teensy_code.ino
 #    Platform Teensy operational parameters.
 # ============================================================
@@ -223,7 +245,7 @@ teensy_operational:
   time_sync_alpha_shift: 3              # IIR filter gain for time sync = 1/2^alpha_shift (= 1/8)
 
 # ============================================================
-# 9. Motion Capture
+# 10. Motion Capture
 #    QTM motion capture connection settings.
 # ============================================================
 mocap:
@@ -231,7 +253,7 @@ mocap:
   qtm_port: 22223                        # QTM server port
 
 # ============================================================
-# 10. Ball Tracking & Prediction
+# 11. Ball Tracking & Prediction
 #     Source: ball_tracker.py, ball_prediction_node.py, kalman_filter.py
 #     Parameters for Kalman-filter-based ball tracking and landing prediction.
 # ============================================================
@@ -250,7 +272,7 @@ ball_tracking:
   max_frames_without_measurement: 200   # ~1.0s at 200Hz — maximum blind period before dropping track
 
 # ============================================================
-# 11. Ball Butler Geometry & Kinematics
+# 12. Ball Butler Geometry & Kinematics
 #     Source: ros_ws/src/jugglebot/jugglebot/ball_butler_node.py
 #     Physical dimensions used for Ball Butler aiming calculations.
 # ============================================================
@@ -265,7 +287,7 @@ ball_butler_geometry:
   yaw_min_deg: 0.0                     # Minimum yaw angle for aiming {deg}
 
 # ============================================================
-# 12. Ball Butler Trajectory
+# 13. Ball Butler Trajectory
 #     Source: Ball Butler/ball_butler_main/BallButlerConfig.h (TrajCfg namespace)
 #     Trajectory generation constants for the Ball Butler's hand axis.
 #     Some values differ from teensy_trajectory (different physical hardware).
@@ -291,7 +313,7 @@ ball_butler_trajectory:
   traj_arena_bytes: 24576              # 24 KB arena for intermediate Trajectory float arrays
 
 # ============================================================
-# 13. Ball Butler Hardware Pins
+# 14. Ball Butler Hardware Pins
 #     Source: BallButlerConfig.h (Pins namespace)
 # ============================================================
 ball_butler_pins:
@@ -301,7 +323,7 @@ ball_butler_pins:
   yaw_pwm: 14                          # H-bridge PWM speed pin
 
 # ============================================================
-# 14. Ball Butler CAN Config
+# 15. Ball Butler CAN Config
 #     Source: BallButlerConfig.h (CanCfg namespace)
 # ============================================================
 ball_butler_can:
@@ -311,7 +333,7 @@ ball_butler_can:
   sync_stats_print_ms: 200             # Time-sync stats print interval {ms}. Consumer converts to µs.
 
 # ============================================================
-# 15. Ball Butler Yaw Axis
+# 16. Ball Butler Yaw Axis
 #     Source: BallButlerConfig.h (YawDefaults namespace)
 #     DC motor with incremental encoder, PID position control.
 # ============================================================
@@ -352,7 +374,7 @@ ball_butler_yaw:
   boot_hard_limit_overshoot_deg: 10.0  # Overshoot tolerance during boot {deg}
 
 # ============================================================
-# 16. Ball Butler Pitch Axis
+# 17. Ball Butler Pitch Axis
 #     Source: BallButlerConfig.h (PitchDefaults namespace)
 #     ODrive-controlled axis with trapezoidal trajectory limits.
 # ============================================================
@@ -364,7 +386,7 @@ ball_butler_pitch:
   traj_decel_rps2: 0.25                # Trapezoidal trajectory deceleration {rev/s^2}
 
 # ============================================================
-# 17. Ball Butler Hand Axis
+# 18. Ball Butler Hand Axis
 #     Source: BallButlerConfig.h (HandDefaults namespace)
 #     ODrive-controlled hand with current-spike-based homing.
 # ============================================================
@@ -383,7 +405,7 @@ ball_butler_hand:
   op_current_limit_a: 50.0            # Operating current limit after homing {A}
 
 # ============================================================
-# 18. Ball Butler State Machine
+# 19. Ball Butler State Machine
 #     Source: BallButlerConfig.h (SMDefaults namespace)
 #     Default values for StateMachine::Config members.
 # ============================================================
@@ -449,7 +471,7 @@ ball_butler_state_machine:
   yaw_max_angle_deg: 190.0             # Maximum operational yaw angle {deg}. Firmware computes as 185 + yaw_min_angle_deg.
 
 # ============================================================
-# 19. Ball Butler Operational
+# 20. Ball Butler Operational
 #     Source: BallButlerConfig.h (OpCfg namespace), ball_butler_node.py
 #     Runtime operational parameters.
 # ============================================================
@@ -468,7 +490,7 @@ ball_butler_operational:
                                        # Accounts for release timing and ball flight time. (from ball_butler_node.py)
 
 # ============================================================
-# 20. Ball Butler Heartbeat Encoding
+# 21. Ball Butler Heartbeat Encoding
 #     Source: BallButlerConfig.h (HeartbeatCfg namespace)
 #     Range/clamp values for BB heartbeat CAN frame encoding.
 #     Resolution values (yaw_res_deg, pitch_res_deg, hand_res_mm) are in
@@ -480,7 +502,7 @@ ball_butler_heartbeat:
   pitch_clamp_max_deg: 90.0            # Pitch encoding maximum clamp {deg}
 
 # ============================================================
-# 21. Ball Butler Ball Detection
+# 22. Ball Butler Ball Detection
 #     Source: BallButlerConfig.h (BallDetectCfg namespace)
 #     Configuration for detecting ball presence in hand via ODrive GPIO.
 # ============================================================
