@@ -261,10 +261,16 @@ def _unpack(frames: list[bytes]) -> tuple[bytes, dict]:
 class ControlProcessIPC:
     """IPC endpoints for the standalone control process.
 
-    Uses two SUB sockets to prevent high-frequency data (targets, motor
-    feedback) from overwriting low-frequency mode commands.  The data
-    socket has CONFLATE=1 (keep only latest message) while the mode
-    socket has no CONFLATE so every command is delivered.
+    Uses three SUB sockets to isolate message types:
+      - ``_sub_mode``: mode/trajectory/dynamic-target commands (no CONFLATE)
+      - ``_sub_target``: platform pose targets (CONFLATE=1)
+      - ``_sub_motor_fb``: motor feedback from CAN node (CONFLATE=1)
+
+    Targets and motor feedback each get their own CONFLATE socket so that
+    high-frequency motor feedback (100 Hz) cannot overwrite target messages
+    and vice-versa.  Without this separation, ZMQ CONFLATE keeps only the
+    single latest message *regardless of topic prefix*, silently dropping
+    whichever message arrived first.
     """
 
     def __init__(self,
@@ -272,13 +278,19 @@ class ControlProcessIPC:
                  telemetry_addr: str = TELEMETRY_ADDR):
         self._ctx = zmq.Context()
 
-        # SUB socket for high-frequency data — CONFLATE keeps only latest
-        self._sub_data = self._ctx.socket(zmq.SUB)
-        self._sub_data.connect(command_addr)
-        self._sub_data.setsockopt(zmq.SUBSCRIBE, TOPIC_TARGET)
-        self._sub_data.setsockopt(zmq.SUBSCRIBE, TOPIC_MOTOR_FB)
-        self._sub_data.setsockopt(zmq.RCVTIMEO, 0)  # non-blocking
-        self._sub_data.setsockopt(zmq.CONFLATE, 1)   # keep only latest
+        # SUB socket for pose targets — CONFLATE keeps only latest
+        self._sub_target = self._ctx.socket(zmq.SUB)
+        self._sub_target.connect(command_addr)
+        self._sub_target.setsockopt(zmq.SUBSCRIBE, TOPIC_TARGET)
+        self._sub_target.setsockopt(zmq.RCVTIMEO, 0)  # non-blocking
+        self._sub_target.setsockopt(zmq.CONFLATE, 1)   # keep only latest
+
+        # SUB socket for motor feedback — CONFLATE keeps only latest
+        self._sub_motor_fb = self._ctx.socket(zmq.SUB)
+        self._sub_motor_fb.connect(command_addr)
+        self._sub_motor_fb.setsockopt(zmq.SUBSCRIBE, TOPIC_MOTOR_FB)
+        self._sub_motor_fb.setsockopt(zmq.RCVTIMEO, 0)  # non-blocking
+        self._sub_motor_fb.setsockopt(zmq.CONFLATE, 1)   # keep only latest
 
         # SUB socket for mode/trajectory/dynamic-target commands — no CONFLATE,
         # every command delivered
@@ -299,13 +311,13 @@ class ControlProcessIPC:
     def recv_all(self) -> list[tuple[bytes, dict]]:
         """Non-blocking: receive all pending messages.
 
-        Drains mode commands first (critical), then data messages.
-        Returns list of (topic, message_dict) tuples.  Empty list if nothing
-        available.
+        Drains mode commands first (critical), then targets, then motor
+        feedback.  Returns list of (topic, message_dict) tuples.  Empty
+        list if nothing available.
         """
         messages = []
         # Drain mode commands first — these are rare but critical
-        for sub in (self._sub_mode, self._sub_data):
+        for sub in (self._sub_mode, self._sub_target, self._sub_motor_fb):
             while True:
                 try:
                     frames = sub.recv_multipart(flags=zmq.NOBLOCK)
@@ -326,7 +338,8 @@ class ControlProcessIPC:
         return time.monotonic() - self._last_recv_time
 
     def close(self) -> None:
-        self._sub_data.close()
+        self._sub_target.close()
+        self._sub_motor_fb.close()
         self._sub_mode.close()
         self._pub.close()
         self._ctx.term()

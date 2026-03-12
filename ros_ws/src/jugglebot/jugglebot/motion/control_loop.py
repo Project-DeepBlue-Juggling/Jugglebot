@@ -505,6 +505,9 @@ class ControlLoop:
         tracking error, and staleness checks.  When feedback is NOT
         available: all commands are suppressed until feedback arrives.
         """
+        if self.mode != ControlMode.ENABLED:
+            return False  # Only check safety when actively commanding motors
+
         if not self._has_motor_fb:
             return False  # No feedback yet — cannot verify safety
 
@@ -546,8 +549,11 @@ class ControlLoop:
         if np.any(np.abs(delta) > max_delta):
             clamped_delta = np.clip(delta, -max_delta, max_delta)
             self._commanded_pos_rev = actual + clamped_delta
-            self._commanded_vel_ff_rps = clamped_delta / dt
-            self._commanded_torque_ff_Nm = np.zeros(6)
+            # Keep vel_ff and torque_ff as computed by the smoother/dynamics.
+            # Overriding vel_ff to clamped_delta/dt (= MAX_SLEW_RATE) caused
+            # the ODrive to accelerate violently; zeroing torque_ff removed
+            # gravity compensation.  Both created sustained oscillation,
+            # especially for Z motion where gravity is the dominant load.
             self._slew_limited = True
             self._slew_limit_count += 1
             # Only log on first activation to avoid spamming at 500 Hz
