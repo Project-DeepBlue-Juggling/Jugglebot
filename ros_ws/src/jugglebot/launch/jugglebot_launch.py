@@ -6,7 +6,7 @@ from launch.actions import (
     ExecuteProcess,
 )
 from launch.launch_description_sources import AnyLaunchDescriptionSource
-from launch.conditions import IfCondition, UnlessCondition
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from ament_index_python.packages import get_package_share_directory
 import os
@@ -15,34 +15,16 @@ from datetime import datetime
 
 def generate_launch_description():
     # ── Launch arguments ─────────────────────────────────────────
-    use_simulator = LaunchConfiguration('use_simulator')
-    use_simulator_arg = DeclareLaunchArgument(
-        'use_simulator',
-        default_value='false',
-    )
-
     record = LaunchConfiguration('record')
     record_arg = DeclareLaunchArgument(
         'record',
         default_value='false',
     )
 
-    # ── Simulator (optional) ─────────────────────────────────────
-    simulator_launch_file_path = os.path.join(
-        get_package_share_directory('jugglebot_simulator'),
-        'launch',
-        'launch.py',
-    )
-    simulator_include_description = IncludeLaunchDescription(
-        AnyLaunchDescriptionSource(simulator_launch_file_path),
-        condition=IfCondition(use_simulator),
-    )
-
-    # ── CAN node (real hardware only) ────────────────────────────
+    # ── CAN node ─────────────────────────────────────────────────
     can_node = Node(
         package='jugglebot',
         executable='can_node',
-        condition=UnlessCondition(use_simulator),
     )
 
     # ── Core ROS2 nodes ──────────────────────────────────────────
@@ -115,12 +97,9 @@ def generate_launch_description():
 
     # ── Assemble launch description ──────────────────────────────
     return LaunchDescription([
-        use_simulator_arg,
         record_arg,
         # Infrastructure (gui_server.py runs independently in the background)
         rosbridge_include,
-        # Simulator (conditional)
-        simulator_include_description,
         # Hardware nodes
         can_node,
         # Core nodes

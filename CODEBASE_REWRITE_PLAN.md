@@ -23,11 +23,6 @@ The Jugglebot ROS2 workspace has grown organically around specific behaviors (ca
 - The Python GIL concern is manageable: hard real-time runs on Teensys (1kHz interrupt-driven), the Jetson only needs soft real-time at 200-500Hz which Python+ROS2 handles adequately
 - Treat ROS2 as communication/recording infrastructure, not an application framework — all core logic lives in plain Python classes with thin ROS2 wrappers
 
-### Why drop YASMIN?
-- Current state machine: 11+ states across YASMIN framework (4 vendored sub-packages)
-- New state machine starts with 5 states (BOOT → HOMING → IDLE → ACTIVE → FAULT), easily extensible
-- The replacement is a lightweight, **extensible** state machine (~150-200 lines) using an `Enum` + registry pattern. Adding a new state means defining a class and registering it — no framework changes needed. YASMIN's Blackboard, MonitorState, ServiceState, and ActionState abstractions add complexity without proportional value
-
 ---
 
 ## Proposed Architecture
@@ -216,7 +211,7 @@ ros_ws/src/jugglebot/
 - [x] **Test**: Verify heartbeat reception, motor state reporting, and basic commands against real hardware
 
 ### Phase 2: State Machine + Orchestrator — DONE (2026-02-20)
-- [x] Write `state_machine.py` (~200 lines of logic, plain Python, extensible registry pattern, no YASMIN)
+- [x] Write `state_machine.py` (~200 lines of logic, plain Python, extensible registry pattern)
 - [x] Implement initial states: BOOT, HOMING, IDLE, ACTIVE, FAULT
   - ACTIVE state supports sub-modes (spacemouse, shell) from the start
 - [x] Write `orchestrator_node.py` with startup sequence: wait for heartbeats → encoder search → homing → IDLE
@@ -239,14 +234,14 @@ ros_ws/src/jugglebot/
 - [x] Phase 1 verification tests (6 tests, all PASS) — `motion/tests/test_kinematics.py`
 - [x] Phase 2 verification tests (3 tests) — `motion/tests/test_control_loop.py`
 - [x] Standalone single-leg test harness (`tools/single_leg_test.py`) — all 4 bench tests PASS on hardware (2026-02-25)
-- [ ] Loop timing + IPC latency tests — still pending on Jetson (require pyzmq/msgpack)
+- [x] Loop timing + IPC latency tests
 
 #### Motion Planner Phase 3+ (Dynamics, Trajectory, Hardening) — IN PROGRESS
-- [ ] Implement `motion/trajectory.py`: smooth trajectory generation with pre-computed durations
+- [x] Implement `motion/trajectory.py`: smooth trajectory generation with pre-computed durations
   - Quintic polynomial solver respecting per-leg velocity/acceleration limits
   - Duration estimation: compute exact time required, reject infeasible commands before starting
-- [ ] Gravity compensation & static feedforward (Phase 3 of MOTION_PLANNER_PLAN)
-- [ ] Full inertia feedforward & dynamic compensation (Phase 5 of MOTION_PLANNER_PLAN)
+- [x] Gravity compensation & static feedforward (Phase 3 of MOTION_PLANNER_PLAN)
+- [x] Full inertia feedforward & dynamic compensation (Phase 5 of MOTION_PLANNER_PLAN)
 - [x] Hardening & operational readiness (Phase 6 of MOTION_PLANNER_PLAN)
   - Workspace limits, singularity monitoring, fault detection — completed 2026-03-01
   - **Post-incident safety hardening (2026-03-11):** After a broken actuator caused by a step discontinuity, added defense-in-depth motor command safety: slew rate limiter (9.5 rev/s against actual motor feedback), motor feedback gating (no feedback → no commands), feedback staleness check (100ms), motor overspeed fault, tracking error fault (10mm), sustained slew fault (0.5s → ESTOP), lead-time gate (300ms minimum for dynamic targets), and bridge motor feedback forwarding. 8 offline tests in `test_safety.py`. See [docs/motion_planner/safety.md](docs/motion_planner/safety.md) for full documentation.
@@ -281,7 +276,8 @@ When mocap integration is complete, update the LEVELLING state to:
 - [ ] Full system test: power on → homing → ACTIVE (spacemouse control) → shutdown
 - [ ] Verify rosbag recording
 - [ ] Clean up `archived/` directory (remove or keep as reference)
-- [ ] Remove YASMIN vendored package (`ros_ws/src/yasmin/`) and rosbridge dependency if no longer needed
+- [x] ~~Remove YASMIN vendored package (`ros_ws/src/yasmin/`)~~ — DONE (2026-03-12)
+- [ ] Remove rosbridge dependency if no longer needed
 
 ### Phase 6 (Future): Advanced Features
 - [ ] **Ball prediction → motion planner integration**: Connect the ball predictor to the motion planner's dynamic target API (`submit_dynamic_target` / `request_dynamic_target`). The predictor outputs `(target_pos, target_quat, target_vel, arrival_time)` and the planner handles feasibility checking, trajectory generation, mid-motion replanning (C2 continuity), and auto-return-to-home. Key sub-tasks:
@@ -304,9 +300,9 @@ When mocap integration is complete, update the LEVELLING state to:
 |---|---------|----------|
 | ROS2 nodes | 18 entry points | 4-6 entry points |
 | Python lines | ~12,900 | ~2,500-3,000 |
-| State machine | 11+ states (YASMIN + 4 vendored packages) | 5 initial states, extensible (~200 lines) |
+| State machine | 11+ states (legacy framework + 4 vendored packages) | 5 initial states, extensible (~200 lines) |
 | CAN interface | 1 monolithic file (2,351 lines) | 4 focused modules (~800 lines) |
-| Dependencies | ROS2 + YASMIN + rosbridge | ROS2 only |
+| Dependencies | ROS2 + rosbridge | ROS2 only |
 | Scattered constants | 8+ files | Single `hardware_config.yaml` |
 
 ---
@@ -440,15 +436,15 @@ The 2,351-line `can_interface.py` and 806-line `can_interface_node.py` have been
 
 ## Appendix C: Phase 2 Completion Notes (2026-02-20)
 
-### Architecture: YASMIN framework → lightweight registry-based state machine
+### Architecture: Legacy framework → lightweight registry-based state machine
 
-The 11+ state YASMIN framework (4 vendored sub-packages, Blackboard, MonitorState, ServiceState, ActionState) has been replaced by:
+The 11+ state legacy framework (4 vendored sub-packages, Blackboard, MonitorState, ServiceState, ActionState) was replaced by:
 
 | File | Lines | Purpose |
 |------|-------|---------|
 | `state_machine.py` | ~320 | Pure Python state machine: enum, context, handler base class, 5 handlers, factory |
 | `orchestrator_node.py` | ~310 | ROS2 node: bridges state machine to services/topics/actions |
-| **Total** | **~630** | Down from ~1,500+ (YASMIN SM + 4 vendored packages + node wrapper) |
+| **Total** | **~630** | Down from ~1,500+ (legacy SM + 4 vendored packages + node wrapper) |
 
 ### Key design decisions
 
@@ -483,17 +479,17 @@ BOOT ──────────────> HOMING ────────
                               │     (from any state)
 ```
 
-### What changed from the old YASMIN architecture
+### What changed from the old architecture
 
-| Aspect | Old (YASMIN) | New |
-|--------|-------------|-----|
-| Framework | YASMIN + 4 vendored packages | ~90 lines of StateMachine class |
-| States | 7+ YASMIN states (Boot, EncoderSearch, Homing, StandbyIdle, GenericActive x8, LevelPlatform, Fault) | 5 states (BOOT, HOMING, IDLE, ACTIVE, FAULT) |
-| Async ops | YASMIN ServiceState/ActionState (blocking, multi-threaded) | Non-blocking futures polled in tick loop |
+| Aspect | Old | New |
+|--------|-----|-----|
+| Framework | Legacy framework + 4 vendored packages | ~90 lines of StateMachine class |
+| States | 7+ states (Boot, EncoderSearch, Homing, StandbyIdle, GenericActive x8, LevelPlatform, Fault) | 5 states (BOOT, HOMING, IDLE, ACTIVE, FAULT) |
+| Async ops | ServiceState/ActionState (blocking, multi-threaded) | Non-blocking futures polled in tick loop |
 | Error detection | Separate RobotStateSynchronizer thread with mutex | Single-threaded: orchestrator checks /robot_state each tick |
 | Command topics | 2 topics (standby_command, active_command) | 1 topic (orchestrator_command) |
 | ACTIVE sub-modes | 8 separate GenericActiveState instances | Single ActiveHandler with ActiveMode enum |
-| State machine comms | YASMIN Blackboard (shared dict) | Context object (typed attributes) |
+| State machine comms | Blackboard (shared dict) | Context object (typed attributes) |
 
 ### HOMING sequence details
 
@@ -545,7 +541,7 @@ Seven issues identified during Phase 2 code review, all resolved:
 
 3. **Missing `__init__` on HomingHandler** (state_machine.py): `self._phase` was set in `on_enter` but never declared in `__init__`, risking `AttributeError` if `execute` were called directly (e.g., in tests). Fix: Added `__init__` with `self._phase = 'encoder_search'`. (ActiveHandler already had `__init__`.)
 
-4. **Dead control mode names** (can_node.py): `_sub_control_mode` handled 6 legacy YASMIN mode names (`STANDBY_ACTIVE`, `CATCH_THROWN_BALL_NODE`, `LEVEL_PLATFORM_NODE`, `HOOP_SINKER`, `CATCH_FROM_BALL_BUTLER`, `CALIBRATE_PLATFORM`) that the new orchestrator never publishes. Fix: Removed all dead mode names. Only valid modes remain: `''`, `'ERROR'`, `'SPACEMOUSE'`, `'SHELL'`.
+4. **Dead control mode names** (can_node.py): `_sub_control_mode` handled 6 legacy mode names (`STANDBY_ACTIVE`, `CATCH_THROWN_BALL_NODE`, `LEVEL_PLATFORM_NODE`, `HOOP_SINKER`, `CATCH_FROM_BALL_BUTLER`, `CALIBRATE_PLATFORM`) that the new orchestrator never publishes. Fix: Removed all dead mode names. Only valid modes remain: `''`, `'ERROR'`, `'SPACEMOUSE'`, `'SHELL'`.
 
 5. **Unused `_check_encoder_search_status`** (can_node.py): Method and its generator `_encoder_status_steps` were never called — the orchestrator relies on the CAN node's `encoder_search_complete` flag set during the encoder search service. Fix: Removed both methods. The SDO response handler and `encoder_search_feedback` field on MotorStateTracker remain (protocol-level, may be useful for future diagnostics).
 
