@@ -12,7 +12,7 @@ Tests (graduated risk):
       Verifies profiled motion with nonzero vel_ff and torque_ff.
   S3. Simulated spacemouse — slow sinusoidal stream at 100Hz, +-20mm XY.
       Verifies continuous smooth motion with vel_ff tracking.
-  S4. Large step — single 150mm Z step.  Verifies duration computation
+  S4. Large step — single 80mm Z step.  Verifies duration computation
       produces a properly profiled multi-hundred-ms move.
   S5. Multi-axis step — combined 80mm X, 50mm Z, 5deg roll.
       Verifies coupled motion.
@@ -277,7 +277,8 @@ def execute_smoother_sequence(
         geom: StewartGeometry,
         params: DynamicsParams,
         total_duration_s: float,
-        hold_s: float = HOLD_AFTER_S) -> SmootherLog:
+        hold_s: float = HOLD_AFTER_S,
+        feedforward_enabled: bool = True) -> SmootherLog:
     """Execute a sequence of timed targets through the StreamSmoother.
 
     Parameters
@@ -289,6 +290,7 @@ def execute_smoother_sequence(
     params : DynamicsParams
     total_duration_s : float — total run time (including motion + hold)
     hold_s : float — extra hold time after total_duration_s
+    feedforward_enabled : bool — use full inertia FF (True) or gravity-only (False)
 
     Returns
     -------
@@ -331,7 +333,7 @@ def execute_smoother_sequence(
 
         # Convert to motor commands
         pos_rev, vel_ff_rps, torque_ff_Nm = cartesian_to_motor_commands(
-            pose, twist, accel, geom, params, feedforward_enabled=True)
+            pose, twist, accel, geom, params, feedforward_enabled=feedforward_enabled)
 
         # Send to all 6 axes (negate for ODrive convention)
         for i, axis_id in enumerate(LEG_AXES):
@@ -385,7 +387,8 @@ def execute_smoother_sequence(
 # ---------------------------------------------------------------------------
 
 def preview_smoother_test(test_name: str, targets: list[tuple[float, np.ndarray]],
-                          total_duration_s: float):
+                          total_duration_s: float,
+                          feedforward_enabled: bool = True):
     """Preview a smoother test by evaluating offline and plotting.
 
     Compatible with --preview flag.  Uses the same StreamSmoother logic
@@ -447,7 +450,7 @@ def preview_smoother_test(test_name: str, targets: list[tuple[float, np.ndarray]
         durations[i] = smoother._duration
 
         pos_rev, vel_ff, torque_ff = cartesian_to_motor_commands(
-            pose, twist, accel, geom, params, feedforward_enabled=True)
+            pose, twist, accel, geom, params, feedforward_enabled=feedforward_enabled)
         rot = rotvec_to_rot_matrix(pose[3:6])
         extensions[i] = pose_to_leg_lengths(pose[:3], rot, geom)
         leg_vels[i] = vel_ff / MM_TO_REV  # approximate mm/s
@@ -507,12 +510,258 @@ def preview_smoother_test(test_name: str, targets: list[tuple[float, np.ndarray]
 
 
 # ---------------------------------------------------------------------------
+# Unified scrollable preview
+# ---------------------------------------------------------------------------
+
+HOLD_AFTER_TEST = 1.0   # seconds to hold at end of each test's targets
+DWELL_AT_HOME = 0.5     # seconds to dwell at home between tests
+
+TEST_ORDER = ['static_hold', 'small_step', 'stream', 'large_step', 'multi_axis']
+
+
+def preview_all_tests():
+    """Preview all smoother tests in a single scrollable plot.
+
+    Stitches S1-S5 end-to-end with C2-continuous return-to-home transitions
+    between tests.  A single StreamSmoother runs across the entire timeline,
+    ensuring that commands are C2-continuous both *during* and *between* tests.
+
+    Uses a horizontal scrollbar + mouse-wheel zoom (same pattern as
+    trajectory_viewer._show_continuous_plots).
+    """
+    try:
+        import matplotlib.pyplot as plt
+        from matplotlib.widgets import Slider
+    except ImportError:
+        print("  WARNING: matplotlib not available, skipping preview")
+        return
+
+    from trajectory_viewer import (
+        LEG_COLORS,
+        CARTESIAN_LABELS,
+        CARTESIAN_COLORS,
+    )
+
+    geom = StewartGeometry()
+    params = DynamicsParams.from_config()
+    smoother = StreamSmoother(
+        geom,
+        vel_limit_rps=hw.ODRIVE_TRAP_VEL_LIMIT_RPS,
+        accel_limit_rps2=hw.ODRIVE_TRAP_ACC_LIMIT_RPS2)
+    smoother.reset(HOME_POSE)
+
+    dt = 1.0 / TARGET_LOOP_HZ
+
+    # Build per-test data
+    tests_data = []
+    for name in TEST_ORDER:
+        targets, duration, _thresh, desc, ff = build_test_targets(name)
+        tests_data.append((name, targets, duration, desc, ff))
+
+    # -- Single-pass simulation --
+    all_ts = []
+    all_poses = []
+    all_twists = []
+    all_extensions = []
+    all_vel_ff = []
+    all_torques = []
+
+    test_boundaries = []   # (start_t, end_t, label)
+    return_boundaries = []  # (start_t, end_t) for return-to-home segments
+
+    t = 0.0
+
+    for idx, (name, targets, duration, desc, ff_enabled) in enumerate(tests_data):
+        test_start = t
+        targets_sorted = sorted(targets, key=lambda x: x[0])
+        target_idx = 0
+        test_end = t + duration + HOLD_AFTER_TEST
+
+        # Simulate test phase
+        while t < test_end:
+            local_t = t - test_start
+            while (target_idx < len(targets_sorted)
+                   and local_t >= targets_sorted[target_idx][0]):
+                smoother.set_target(targets_sorted[target_idx][1], t)
+                target_idx += 1
+
+            pose, twist, accel = smoother.evaluate(t)
+            pos_rev, vel_ff, torque_ff = cartesian_to_motor_commands(
+                pose, twist, accel, geom, params,
+                feedforward_enabled=ff_enabled)
+
+            rot = rotvec_to_rot_matrix(pose[3:6])
+            ext = pose_to_leg_lengths(pose[:3], rot, geom)
+
+            all_ts.append(t)
+            all_poses.append(pose)
+            all_twists.append(twist)
+            all_extensions.append(ext)
+            all_vel_ff.append(vel_ff)
+            all_torques.append(torque_ff)
+
+            t += dt
+
+        test_boundaries.append((test_start, t, desc))
+
+        # Return to home (except after last test)
+        if idx < len(tests_data) - 1:
+            return_start = t
+            smoother.set_target(HOME_POSE.copy(), t)
+            return_dur = smoother._duration
+            return_end = t + return_dur + DWELL_AT_HOME
+
+            while t < return_end:
+                pose, twist, accel = smoother.evaluate(t)
+                pos_rev, vel_ff, torque_ff = cartesian_to_motor_commands(
+                    pose, twist, accel, geom, params,
+                    feedforward_enabled=True)
+
+                rot = rotvec_to_rot_matrix(pose[3:6])
+                ext = pose_to_leg_lengths(pose[:3], rot, geom)
+
+                all_ts.append(t)
+                all_poses.append(pose)
+                all_twists.append(twist)
+                all_extensions.append(ext)
+                all_vel_ff.append(vel_ff)
+                all_torques.append(torque_ff)
+
+                t += dt
+
+            return_boundaries.append((return_start, t))
+
+    # Convert to numpy
+    t_arr = np.array(all_ts)
+    poses_arr = np.array(all_poses)
+    twists_arr = np.array(all_twists)
+    ext_arr = np.array(all_extensions)
+    vel_arr = np.array(all_vel_ff)
+    tor_arr = np.array(all_torques)
+
+    total_duration = t_arr[-1]
+
+    # -- Build 5-row scrollable plot --
+    ROW_SPECS = [
+        ('Cartesian Pose', poses_arr, 'mm / rad', False),
+        ('Cartesian Twist', twists_arr, 'mm/s / rad/s', False),
+        ('Leg Extensions', ext_arr, 'mm', True),
+        ('Motor Velocity FF', vel_arr, 'rev/s', True),
+        ('Torque Feedforward', tor_arr, 'Nm', True),
+    ]
+
+    fig, axes = plt.subplots(5, 1, figsize=(16, 11), sharex=True)
+    fig.subplots_adjust(hspace=0.35, left=0.08, right=0.96,
+                        top=0.93, bottom=0.10)
+
+    fig.suptitle(
+        f'StreamSmoother — All Tests  ({len(tests_data)} tests, '
+        f'{total_duration:.1f}s)', fontsize=12)
+
+    for row_idx, (title, arr, ylabel, use_leg) in enumerate(ROW_SPECS):
+        ax = axes[row_idx]
+        colors = LEG_COLORS if use_leg else CARTESIAN_COLORS
+        labels = ([f'Leg {i}' for i in range(6)]
+                  if use_leg else CARTESIAN_LABELS)
+
+        for ch in range(arr.shape[1]):
+            ax.plot(t_arr, arr[:, ch], '-', color=colors[ch],
+                    linewidth=0.8, label=labels[ch])
+
+        ax.set_ylabel(ylabel, fontsize=7)
+        ax.set_title(title, fontsize=8, pad=3)
+        ax.tick_params(labelsize=6)
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=5, ncol=3 if use_leg else 6, loc='upper right')
+
+        # Test boundary markers (solid dashed)
+        for start, end, _label in test_boundaries:
+            ax.axvline(start, color='#444444', linewidth=0.8,
+                       linestyle='--', alpha=0.7)
+            ax.axvline(end, color='#444444', linewidth=0.8,
+                       linestyle='--', alpha=0.7)
+
+        # Return-to-home boundary markers (lighter)
+        for start, end in return_boundaries:
+            ax.axvspan(start, end, alpha=0.06, color='#4363d8')
+
+    axes[-1].set_xlabel('Time (s)', fontsize=7)
+
+    # Test labels along top axis
+    ax_top = axes[0]
+    y_top = ax_top.get_ylim()[1]
+    for start, end, label in test_boundaries:
+        mid = (start + end) / 2
+        ax_top.annotate(label, xy=(mid, y_top), fontsize=5,
+                        ha='center', va='bottom', rotation=0,
+                        color='#333333', annotation_clip=False)
+
+    # Return labels
+    for start, end in return_boundaries:
+        mid = (start + end) / 2
+        ax_top.annotate('Return', xy=(mid, y_top), fontsize=4,
+                        ha='center', va='bottom', rotation=0,
+                        color='#4363d8', alpha=0.7,
+                        annotation_clip=False)
+
+    # -- Scrollbar --
+    view_width = [min(10.0, total_duration)]
+
+    ax_scroll = fig.add_axes([0.08, 0.02, 0.88, 0.02])
+    max_scroll = max(0.0, total_duration - view_width[0])
+    scroll_slider = Slider(ax_scroll, '', 0.0, max(max_scroll, 0.001),
+                           valinit=0.0, valstep=0.05,
+                           color='#4363d8', track_color='#dddddd')
+    scroll_slider.valtext.set_visible(False)
+
+    def _apply_view(t_left):
+        t_right = min(t_left + view_width[0], total_duration)
+        t_left = max(0.0, t_right - view_width[0])
+        axes[-1].set_xlim(t_left, t_right)
+        fig.canvas.draw_idle()
+
+    def _on_scroll_change(val):
+        _apply_view(val)
+
+    scroll_slider.on_changed(_on_scroll_change)
+
+    def _on_mouse_scroll(event):
+        if event.inaxes not in axes:
+            return
+        zoom_factor = 0.8 if event.button == 'up' else 1.25
+        new_width = np.clip(view_width[0] * zoom_factor, 1.0, total_duration)
+        view_width[0] = new_width
+
+        t_mouse = event.xdata if event.xdata is not None else 0.0
+        current_left, current_right = axes[-1].get_xlim()
+        frac = ((t_mouse - current_left) /
+                max(current_right - current_left, 0.001))
+        new_left = t_mouse - frac * new_width
+        new_left = np.clip(new_left, 0.0, total_duration - new_width)
+
+        new_max = max(0.0, total_duration - new_width)
+        scroll_slider.valmax = max(new_max, 0.001)
+        scroll_slider.ax.set_xlim(0.0, scroll_slider.valmax)
+        scroll_slider.set_val(np.clip(new_left, 0.0, new_max))
+        _apply_view(new_left)
+
+    fig.canvas.mpl_connect('scroll_event', _on_mouse_scroll)
+
+    # Disable default toolbar pan/zoom to avoid conflicts
+    if fig.canvas.toolbar is not None:
+        fig.canvas.toolbar.mode = ''
+
+    _apply_view(0.0)
+    plt.show()
+
+
+# ---------------------------------------------------------------------------
 # Test definitions
 # ---------------------------------------------------------------------------
 
 def build_test_targets(test_name: str) -> tuple[
-        list[tuple[float, np.ndarray]], float, float, str]:
-    """Build (targets, total_duration, threshold, description) for a test.
+        list[tuple[float, np.ndarray]], float, float, str, bool]:
+    """Build (targets, total_duration, threshold, description, ff_enabled) for a test.
 
     Returns
     -------
@@ -520,12 +769,15 @@ def build_test_targets(test_name: str) -> tuple[
     total_duration_s : float — run time including motion
     threshold_mm : float — max acceptable tracking error
     description : str
+    feedforward_enabled : bool
+        Whether to use full inertia feedforward (True) or gravity-only (False).
+        Streaming tests use gravity-only to avoid jerk-induced torque spikes.
     """
     if test_name == 'static_hold':
         # S1: Just hold at home
         targets = []
         return targets, 2.0, STATIC_HOLD_THRESHOLD_MM, \
-            "S1: Static hold at home (2s)"
+            "S1: Static hold at home (2s)", True
 
     elif test_name == 'small_step':
         # S2: Step +20mm Z at t=0.5
@@ -533,10 +785,12 @@ def build_test_targets(test_name: str) -> tuple[
         target[2] += 20.0
         targets = [(0.5, target)]
         return targets, 3.0, STEP_TRACKING_THRESHOLD_MM, \
-            "S2: Small step (+20mm Z)"
+            "S2: Small step (+20mm Z)", True
 
     elif test_name == 'stream':
         # S3: Sinusoidal XY at 100Hz for 5s
+        # Gravity-only feedforward: inertia FF creates jerk-induced torque
+        # spikes at every 10ms splice (C2 but not C3 continuous).
         targets = []
         freq = 0.5  # Hz — slow sine
         amplitude_mm = 20.0
@@ -550,15 +804,15 @@ def build_test_targets(test_name: str) -> tuple[
             target[1] = amplitude_mm * math.cos(angle)
             targets.append((t, target))
         return targets, 6.0, STREAM_TRACKING_THRESHOLD_MM, \
-            "S3: Simulated spacemouse (20mm circular, 0.5Hz)"
+            "S3: Simulated spacemouse (20mm circular, 0.5Hz)", False
 
     elif test_name == 'large_step':
-        # S4: Step +150mm Z at t=0.5
+        # S4: Step +80mm Z at t=0.5
         target = HOME_POSE.copy()
-        target[2] += 150.0
+        target[2] += 80.0
         targets = [(0.5, target)]
         return targets, 3.0, LARGE_STEP_TRACKING_THRESHOLD_MM, \
-            "S4: Large step (+150mm Z)"
+            "S4: Large step (+80mm Z)", True
 
     elif test_name == 'multi_axis':
         # S5: Combined 80mm X + 50mm Z + 5deg roll at t=0.5
@@ -568,7 +822,7 @@ def build_test_targets(test_name: str) -> tuple[
         target[3] = math.radians(5.0)
         targets = [(0.5, target)]
         return targets, 3.0, LARGE_STEP_TRACKING_THRESHOLD_MM, \
-            "S5: Multi-axis step (80mm X + 50mm Z + 5deg roll)"
+            "S5: Multi-axis step (80mm X + 50mm Z + 5deg roll)", True
 
     else:
         raise ValueError(f"Unknown test: {test_name}")
@@ -580,7 +834,7 @@ def build_test_targets(test_name: str) -> tuple[
 
 def run_test(harness: PlatformTestHarness, test_name: str) -> bool:
     """Run a single smoother test on hardware."""
-    targets, duration, threshold, description = build_test_targets(test_name)
+    targets, duration, threshold, description, ff_enabled = build_test_targets(test_name)
 
     print(f"\n{'=' * 60}")
     print(f"  {description}")
@@ -630,7 +884,8 @@ def run_test(harness: PlatformTestHarness, test_name: str) -> bool:
     # Execute
     try:
         log = execute_smoother_sequence(
-            harness, smoother, targets, geom, params, duration)
+            harness, smoother, targets, geom, params, duration,
+            feedforward_enabled=ff_enabled)
     except RuntimeError as e:
         print(f"  ABORTED: {e}")
         return False
@@ -671,7 +926,7 @@ def run_dry_run(show_preview: bool):
     ws_limits = WorkspaceLimits.from_geometry(geom)
 
     for test_name in test_names:
-        targets, duration, threshold, description = build_test_targets(test_name)
+        targets, duration, threshold, description, ff_enabled = build_test_targets(test_name)
         print(f"\n  {description}")
 
         if not targets:
@@ -704,10 +959,8 @@ def run_dry_run(show_preview: bool):
                   f"{smoother._duration * 1000:.1f} ms")
 
     if show_preview:
-        print("\n  Launching preview for each test...")
-        for test_name in test_names:
-            targets, duration, _, description = build_test_targets(test_name)
-            preview_smoother_test(description, targets, duration)
+        print("\n  Launching unified preview...")
+        preview_all_tests()
 
 
 # ---------------------------------------------------------------------------
@@ -741,7 +994,7 @@ Tests:
   static_hold   S1: Hold at home (2s, no targets)
   small_step    S2: Single +20mm Z step
   stream        S3: Simulated 100Hz spacemouse (circular +-20mm)
-  large_step    S4: Single +150mm Z step
+  large_step    S4: Single +80mm Z step
   multi_axis    S5: Combined 80mm X + 50mm Z + 5deg roll
 
 Test groups:
@@ -786,9 +1039,7 @@ Prerequisites:
 
     # Optional preview before hardware execution
     if args.preview:
-        for test_name in tests_to_run:
-            targets, duration, _, description = build_test_targets(test_name)
-            preview_smoother_test(description, targets, duration)
+        preview_all_tests()
 
     # Install Ctrl-C handler for clean shutdown
     harness_ref = [None]
