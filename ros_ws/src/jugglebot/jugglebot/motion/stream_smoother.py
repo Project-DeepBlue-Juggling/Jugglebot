@@ -19,6 +19,7 @@ import numpy as np
 
 from jugglebot.motion.geometry import StewartGeometry
 from jugglebot.motion.ik_solver import (
+    compute_jacobian,
     pose_to_leg_lengths,
     rotvec_to_rot_matrix,
 )
@@ -116,12 +117,19 @@ class StreamSmoother:
     def _compute_duration(self,
                           current_pose: np.ndarray,
                           target_pose: np.ndarray) -> float:
-        """Compute minimum feasible duration from motor-space displacement.
+        """Compute minimum feasible duration from motor-space displacement and velocity.
 
         Runs IK at both endpoints to get per-motor displacements in
         revolutions, then uses the quintic peak formulas:
-          T_vel = 15·d / (8·v_limit)
-          T_acc = sqrt(10·d / (3·a_limit))
+          T_vel  = 15·d / (8·v_limit)       — displacement-limited
+          T_acc  = sqrt(10·d / (3·a_limit))  — displacement-limited
+          T_decel = 15·v / (8·a_limit)       — velocity-limited
+
+        The velocity term ensures the quintic has enough time to arrest the
+        current motor-space velocity without overshooting.  Without it,
+        small-displacement splices at high velocity produce durations near
+        T_MIN, causing the quintic coefficients to overshoot and oscillate.
+
         Takes the max across all 6 motors and clamps to [T_MIN, T_MAX].
         """
         cur_rot = rotvec_to_rot_matrix(current_pose[3:6])
@@ -136,13 +144,24 @@ class StreamSmoother:
         d_rev = np.abs(tgt_rev - cur_rev)
         d_max = np.max(d_rev)
 
+        # Displacement-based terms
         if d_max < 1e-6:
-            return self.T_MIN
+            t_vel = 0.0
+            t_acc = 0.0
+        else:
+            t_vel = 15.0 * d_max / (8.0 * self._vel_limit)
+            t_acc = np.sqrt(10.0 * d_max / (3.0 * self._accel_limit))
 
-        t_vel = 15.0 * d_max / (8.0 * self._vel_limit)
-        t_acc = np.sqrt(10.0 * d_max / (3.0 * self._accel_limit))
+        # Velocity-based term: ensure enough time to decelerate from the
+        # current motor-space velocity to rest without exceeding accel limits.
+        # J maps Cartesian twist (mm/s, rad/s) → leg extension rates (mm/s);
+        # multiply by mm_to_rev to get rev/s.
+        J = compute_jacobian(current_pose[:3], cur_rot, self._geom)
+        motor_vel_rps = (J @ self._twist) * self._geom.mm_to_rev
+        v_max = np.max(np.abs(motor_vel_rps))
+        t_decel = 15.0 * v_max / (8.0 * self._accel_limit)
 
-        return float(np.clip(max(t_vel, t_acc), self.T_MIN, self.T_MAX))
+        return float(np.clip(max(t_vel, t_acc, t_decel), self.T_MIN, self.T_MAX))
 
     def _evaluate_at(self, t_now: float) -> None:
         """Evaluate quintic polynomials, updating internal state."""
