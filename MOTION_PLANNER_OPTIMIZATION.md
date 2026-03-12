@@ -389,3 +389,133 @@ python3 tools/dynamic_target_test.py --home --test all --speed-scale 1.0
 | AP3 | Return-to-home transition delay | < 10 ms (1-2 cycles) |
 | AP4 | p99 loop cycle time at 5 Hz | < 5 ms |
 | AP5 | Post-E-stop stale commits | 0 |
+
+---
+
+## Problem 3: GIL Contention in Async Pipeline (2026-03-12)
+
+**The async pipeline does not provide true parallelism.** Python's GIL means CPU-bound numpy work in the background thread blocks the main control loop.
+
+### Root cause
+
+`threading.Thread` shares the GIL with the main thread. When the main loop calls `time.sleep()` for rate control, it releases the GIL. The background thread immediately acquires it and begins numpy-heavy computation (`check_feasibility`, `find_min_feasible_duration`). When the sleep expires, the main thread attempts to reacquire the GIL but **cannot** — the background thread holds it through numpy operations, only releasing at Python bytecode boundaries between numpy calls.
+
+The result: the "non-blocking" async pipeline blocks the main loop for the duration of each background computation.
+
+### Evidence: DT2 hardware test log (2026-03-11)
+
+The DT2 test runs a 500 Hz control loop sending motor commands every 2ms. With the async pipeline, we expect uninterrupted command output. Instead:
+
+| Phase | Samples | Duration | Loop dt | What happened |
+|---|---|---|---|---|
+| Sample 0→1 | 1 | 209 ms | 209 ms | `_bg_check_feasibility()` held GIL — initial feasibility check |
+| Sample 1→2 | 1 | 1193 ms | 1193 ms | `_bg_compute_return()` → `find_min_feasible_duration()` held GIL — entire outbound trajectory missed |
+| Samples 2–94 | 93 | 376 ms | ~4 ms | Normal operation (no background work) |
+
+**Total: 95 samples in 1.778s** (expected ~889 at 500 Hz). The loop was blocked for 1.4 of 1.8 seconds.
+
+### Why 18.6mm tracking error
+
+Timeline:
+
+1. **t=0.000s** — Target queued. `request_dynamic_target()` creates trajectory, queues background feasibility check. Motor command: hold at home (Z=170mm).
+2. **t=0.000–0.209s** — GIL blocked by `_bg_check_feasibility()`. Zero motor commands sent.
+3. **t=0.209s** — Feasibility result polled. `commit_async_trajectory()` commits outbound trajectory (1.0s duration from t=0.209). `_start_return_precompute()` queues `find_min_feasible_duration()` on background thread.
+4. **t=0.209–1.402s** — GIL blocked by `_bg_compute_return()` → `find_min_feasible_duration()` (8 bisections × 50 samples). **Zero motor commands sent for entire 1.2 seconds. The outbound trajectory executes in software only — motors never move.**
+5. **t=1.402s** — GIL released. `evaluate(t=1.402)` finds outbound complete (1.402 > 0.209 + 1.0). Precomputed return is ready. Code creates return trajectory starting at Z=190mm. But **motors are still at Z=170mm** (home). Result: **18.6mm commanded position step**.
+6. **t=1.402s+** — Loop runs normally at ~4ms. Return trajectory slowly moves from Z=190→170, but motors chase from Z=170 upward first.
+
+### Why the original analysis missed this
+
+The Problem 2 analysis (above) correctly identified that moving computation to a background thread prevents the main thread from *synchronously blocking* on a function call. However, it assumed `threading.Thread` provides concurrent execution. In CPython, the GIL serializes all Python bytecode execution. The background thread's numpy work (which mixes Python-level loops with numpy C extensions) holds the GIL for extended periods, preventing the main thread from running even though the main thread isn't blocked on any explicit synchronization primitive.
+
+The distinction: the async pipeline eliminates **synchronous blocking** (the main thread no longer calls `check_feasibility()` directly), but it does not eliminate **GIL contention** (the background thread's CPU-bound work still prevents the main thread from executing).
+
+---
+
+## Bug: C2 Discontinuity in Return Trajectory Splice
+
+### Location
+
+`trajectory.py` lines 1189–1198 (inside `TrajectoryManager.evaluate()`)
+
+### Description
+
+When the outbound trajectory completes and the precomputed return trajectory is ready, the code **discards** the precomputed trajectory and creates a new one from rest:
+
+```python
+ret_traj = create_trajectory(
+    start_pose=end_pose,
+    start_twist=np.zeros(6),      # ← BUG: should be outbound's end velocity
+    start_accel=np.zeros(6),
+    end_pose=self._home_pose,
+    ...
+    duration=precomputed.duration,  # ← only this value is reused
+    t_start=t,
+)
+```
+
+The comment at lines 1183–1188 explains: *"if we held at end_pose for several cycles waiting for precomputation, the platform is now stationary — not at the outbound's end velocity."*
+
+This comment is **wrong for the normal case**. When the precomputed return is ready on the first cycle after outbound ends (which is the expected outcome — precomputation starts as soon as the outbound is committed, well before it finishes), the platform was just commanded with the outbound's end velocity on the previous cycle. Starting the return from rest creates a velocity discontinuity.
+
+The comment is only correct for the **fallback path** (lines 1207–1214) where the precomputed return wasn't ready and the platform held at end_pose with zero velocity for multiple cycles. In that case, starting from rest is appropriate because the platform has physically come to rest.
+
+### Correct behavior
+
+Two cases need distinct handling:
+
+1. **Precomputed ready immediately** (first cycle after `t >= t_end`): Use the precomputed trajectory directly — it was planned with the outbound's actual end velocity for C2 continuity. Only restamp `t_start`:
+   ```python
+   ret_traj = _dc_replace(precomputed, t_start=t)
+   ```
+
+2. **Precomputed ready after holding** (platform held at end_pose for multiple cycles): The platform is now at rest. A new rest-to-rest trajectory at the precomputed duration is needed (the current behavior).
+
+These cases can be distinguished with a flag (e.g., `_held_at_end`) set in the fallback hold path.
+
+---
+
+## Dead Code: `_plan_return_to_home()`
+
+`_plan_return_to_home()` (lines 1072–1135) is the original synchronous return planner. It is **never called** anywhere in the codebase — fully replaced by the async path (`_start_return_precompute()` → `_bg_compute_return()`). Should be deleted.
+
+---
+
+## Proposed Solutions
+
+### A. Targeted fixes (smallest change)
+
+1. **Replace `find_min_feasible_duration()` in `_bg_compute_return`** with a fixed generous duration (2.0s) + single `check_feasibility()`. Reduces GIL hold from ~1200ms to ~30ms. Rest-to-rest over 80mm max displacement at 2.0s gives peak velocity ~40mm/s and peak accel ~53mm/s² — well within limits. Single feasibility check catches edge cases. Fallback to 3.0s if 2.0s infeasible.
+
+2. **Add `yield_interval` to `check_feasibility()`** — call `time.sleep(0)` every N samples to periodically release the GIL. Breaks the ~200ms initial feasibility check into ~40ms chunks, giving the main thread opportunities to run between chunks. Backward-compatible (default `yield_interval=0` means no yielding).
+
+3. **Fix return trajectory splice** — use the precomputed trajectory directly (restamp `t_start`) when ready on the first cycle. Track `_held_at_end` flag for the fallback case where holding occurred.
+
+4. **Delete `_plan_return_to_home()`** — dead code.
+
+### B. Trajectory queue (architectural improvement)
+
+Refactor `TrajectoryManager` to maintain a queue of trajectories whose boundary conditions chain together:
+
+- Each trajectory's start state must match the previous trajectory's end state (enforced at append time).
+- When an outbound trajectory with nonzero end velocity is committed, immediately append the precomputed return to the queue.
+- `evaluate()` walks the queue: when the current trajectory ends, advance to the next. No special EXECUTING/RETURNING state distinction needed.
+- C2 continuity is guaranteed by construction — no per-case splice logic.
+- Mid-motion replanning replaces the queue from the current point forward.
+- Bigger refactor but eliminates entire classes of splice bugs permanently.
+
+### C. Move to multiprocessing (GIL bypass)
+
+Use `multiprocessing.Process` instead of `threading.Thread` for the background feasibility worker:
+
+- True parallelism — numpy computation runs on a separate CPU core with its own GIL.
+- Zero GIL contention regardless of computation duration.
+- Requires serializing trajectory data between processes (pickle or shared memory).
+- More complex IPC (pipes/queues instead of shared objects + lock).
+- Fundamentally solves the GIL problem for all future background computation.
+- Jetson has 6 ARM cores — ample capacity for a dedicated feasibility process.
+
+### Recommendation
+
+Start with **A** (targeted fixes) to get DT2/DT3 passing. Then evaluate **B** (trajectory queue) as a follow-up architectural improvement — it's the cleanest long-term solution. **C** (multiprocessing) is the nuclear option if GIL contention reappears with heavier future workloads (e.g., ball predictor integration).
