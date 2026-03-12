@@ -9,6 +9,8 @@ Tests:
   6. Cancel discards pending — cancel() clears async state
   7. Early-exit speedup — early_exit flag reduces sample count
   8. Torque skip speedup — no torque limit skips torque computation
+  9. Worker crash recovery — worker process killed and restarted
+ 10. Worker restart limit — max restarts exceeded triggers failure
 
 Run:  python -m jugglebot.motion.tests.test_async_pipeline
 """
@@ -36,6 +38,18 @@ def _header(name: str):
     print(f"\n{'='*70}")
     print(f"  {name}")
     print(f"{'='*70}")
+
+
+def _poll_until(mgr, timeout=5.0, sleep=0.05):
+    """Poll for a pending feasibility result with timeout."""
+    deadline = time.perf_counter() + timeout
+    result = None
+    while time.perf_counter() < deadline:
+        result = mgr.poll_pending_result()
+        if result is not None:
+            return result
+        time.sleep(sleep)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -92,15 +106,7 @@ def test_async_acceptance():
     mgr.request_dynamic_target(
         target_pos, target_quat, target_vel, arrival_time, t_now)
 
-    # Wait for background check to complete (with timeout)
-    deadline = time.perf_counter() + 5.0
-    result = None
-    while time.perf_counter() < deadline:
-        result = mgr.poll_pending_result()
-        if result is not None:
-            break
-        time.sleep(0.01)
-
+    result = _poll_until(mgr)
     assert result is not None, "Async result never arrived (5s timeout)"
     assert result['accepted'], f"Expected accepted, got rejected: {result}"
 
@@ -133,28 +139,12 @@ def test_async_rejection():
     mgr.set_hold_pose(np.zeros(6))
 
     t_now = time.perf_counter()
-    # Extreme target: 500mm Z displacement in 0.01s — clearly infeasible
-    target_pos = np.array([0.0, 0.0, 500.0])
     target_quat = np.array([1.0, 0.0, 0.0, 0.0])
     target_vel = np.zeros(3)
-    arrival_time = t_now + 0.01
 
-    t_before = time.perf_counter()
-    mgr.request_dynamic_target(
-        target_pos, target_quat, target_vel, arrival_time, t_now)
-    submit_ms = (time.perf_counter() - t_before) * 1000
-
-    # Wait for result
-    deadline = time.perf_counter() + 5.0
-    result = None
-    while time.perf_counter() < deadline:
-        result = mgr.poll_pending_result()
-        if result is not None:
-            break
-        time.sleep(0.01)
-
-    # Duration was <= 0, so it should have been rejected at the request
-    # stage (before queuing). Try a feasible-duration but workspace-infeasible:
+    # Extreme target: 500mm Z displacement in 0.01s — rejected at request
+    # stage (duration < MIN_LEAD_TIME_S).  Try a feasible-duration but
+    # workspace-infeasible target instead:
     t_now2 = time.perf_counter()
     target_pos2 = np.array([200.0, 200.0, 300.0])  # way outside workspace
     arrival_time2 = t_now2 + 0.5  # must exceed MIN_LEAD_TIME_S (0.3s)
@@ -162,14 +152,7 @@ def test_async_rejection():
     mgr.request_dynamic_target(
         target_pos2, target_quat, target_vel, arrival_time2, t_now2)
 
-    deadline = time.perf_counter() + 5.0
-    result = None
-    while time.perf_counter() < deadline:
-        result = mgr.poll_pending_result()
-        if result is not None:
-            break
-        time.sleep(0.01)
-
+    result = _poll_until(mgr)
     assert result is not None, "Async result never arrived for infeasible target"
     assert not result['accepted'], f"Expected rejected, got accepted"
 
@@ -211,15 +194,7 @@ def test_supersession():
         np.array([0.0, 0.0, 20.0]), target_quat, target_vel,
         t_now2 + 2.0, t_now2)
 
-    # Wait for result
-    deadline = time.perf_counter() + 5.0
-    result = None
-    while time.perf_counter() < deadline:
-        result = mgr.poll_pending_result()
-        if result is not None:
-            break
-        time.sleep(0.01)
-
+    result = _poll_until(mgr)
     assert result is not None, "No async result arrived"
     # The result should be for the second (latest) target
     assert result['accepted'], "Second target should be accepted"
@@ -258,14 +233,7 @@ def test_decel_precompute():
         target_pos, target_quat, target_vel, arrival_time, t_now)
 
     # Wait for feasibility result
-    deadline = time.perf_counter() + 5.0
-    result = None
-    while time.perf_counter() < deadline:
-        result = mgr.poll_pending_result()
-        if result is not None:
-            break
-        time.sleep(0.01)
-
+    result = _poll_until(mgr)
     assert result is not None and result['accepted'], "Target should be accepted"
     assert result['needs_decel'], "Target with nonzero velocity needs decel"
 
@@ -274,10 +242,14 @@ def test_decel_precompute():
     assert accepted, "Commit should succeed"
     assert mgr.state == TrajectoryState.EXECUTING
 
-    # Wait for precomputed deceleration to become available
+    # Wait for precomputed deceleration to become available.
+    # Decel results arrive on the same Pipe as feasibility results,
+    # so we must call poll_pending_result() to drain the pipe and
+    # route decel results to the precomputed slot.
     deadline = time.perf_counter() + 10.0
     precomputed = None
     while time.perf_counter() < deadline:
+        mgr.poll_pending_result()  # drains pipe, routes decel results
         precomputed = mgr.poll_precomputed_decel()
         if precomputed is not None:
             break
@@ -432,10 +404,138 @@ def test_torque_skip_speedup():
 
 
 # ---------------------------------------------------------------------------
+# Test 9: Worker crash recovery
+# ---------------------------------------------------------------------------
+
+def test_worker_crash_recovery():
+    """Verify worker process can be restarted after a crash."""
+    _header("Test 9: Worker crash recovery")
+
+    from jugglebot.motion.feasibility_worker import WorkerCrashed
+
+    geom = StewartGeometry()
+    params = DynamicsParams.from_config()
+    mgr = TrajectoryManager(geom, params)
+    mgr.set_hold_pose(np.zeros(6))
+
+    # Submit a target so the worker has something to do
+    t_now = time.perf_counter()
+    mgr.request_dynamic_target(
+        np.array([0.0, 0.0, 10.0]),
+        np.array([1.0, 0.0, 0.0, 0.0]),
+        np.zeros(3),
+        t_now + 2.0, t_now)
+
+    # Wait for it to complete (proves worker is alive)
+    result = _poll_until(mgr)
+    assert result is not None, "Worker should produce a result"
+    print(f"  Worker alive, result accepted={result['accepted']}")
+
+    # Kill the worker process
+    mgr._worker._proc.kill()
+    mgr._worker._proc.join(timeout=2.0)
+    print("  Worker process killed")
+
+    # Next poll should detect the crash
+    time.sleep(0.1)
+    crashed = False
+    try:
+        # Submit another target — the send might fail, or the poll will
+        t_now2 = time.perf_counter()
+        submitted = mgr.request_dynamic_target(
+            np.array([0.0, 0.0, 15.0]),
+            np.array([1.0, 0.0, 0.0, 0.0]),
+            np.zeros(3),
+            t_now2 + 2.0, t_now2)
+        if submitted:
+            # If submit succeeded (pipe still open), poll will detect crash
+            time.sleep(0.5)
+            mgr.poll_pending_result()
+    except WorkerCrashed:
+        crashed = True
+
+    if not crashed:
+        # Worker might have been detected as dead by submit returning False
+        assert not mgr._worker.is_alive, "Worker should be detected as dead"
+        print("  Worker death detected via submit failure")
+    else:
+        print("  WorkerCrashed raised on poll")
+
+    # Restart the worker
+    restarted = mgr.try_restart_worker()
+    assert restarted, "Worker restart should succeed"
+    print("  Worker restarted successfully")
+
+    # Submit another target — should work with the new worker
+    t_now3 = time.perf_counter()
+    mgr.request_dynamic_target(
+        np.array([0.0, 0.0, 10.0]),
+        np.array([1.0, 0.0, 0.0, 0.0]),
+        np.zeros(3),
+        t_now3 + 2.0, t_now3)
+
+    result = _poll_until(mgr)
+    assert result is not None, "Restarted worker should produce a result"
+    print(f"  Restarted worker result: accepted={result['accepted']}")
+    print("  [PASS]")
+
+    mgr.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Test 10: Worker restart limit
+# ---------------------------------------------------------------------------
+
+def test_worker_restart_limit():
+    """Verify restart limit is enforced."""
+    _header("Test 10: Worker restart limit")
+
+    geom = StewartGeometry()
+    params = DynamicsParams.from_config()
+    # Override max_restarts to 1 for this test
+    mgr = TrajectoryManager(geom, params)
+    mgr._worker._max_restarts = 1
+    mgr.set_hold_pose(np.zeros(6))
+
+    # Kill and restart once (should succeed)
+    mgr._worker._proc.kill()
+    mgr._worker._proc.join(timeout=2.0)
+    mgr._worker._alive = False
+    ok = mgr.try_restart_worker()
+    assert ok, "First restart should succeed"
+    print("  First restart: OK")
+
+    # Kill and restart again (should fail — limit reached)
+    mgr._worker._proc.kill()
+    mgr._worker._proc.join(timeout=2.0)
+    mgr._worker._alive = False
+    ok = mgr.try_restart_worker()
+    assert not ok, "Second restart should fail (limit reached)"
+    print("  Second restart: correctly refused (limit=1)")
+    print("  [PASS]")
+
+    # Clean up (worker is dead, just close the pipe)
+    try:
+        mgr.shutdown()
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 def main():
+    import multiprocessing
+    import platform
+    try:
+        if platform.system() == 'Windows':
+            multiprocessing.set_start_method('spawn')
+        else:
+            multiprocessing.set_start_method('forkserver')
+    except RuntimeError:
+        pass  # already set
+
     print("Async Feasibility Pipeline Verification Tests")
     print("=" * 70)
 
@@ -452,6 +552,8 @@ def main():
         test_cancel_discards,
         test_early_exit_speedup,
         test_torque_skip_speedup,
+        test_worker_crash_recovery,
+        test_worker_restart_limit,
     ]
 
     for test in tests:

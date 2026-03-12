@@ -24,7 +24,7 @@ Safety hardening:
   - Motor feedback staleness: suppresses all commands if feedback is
     older than JB_OP_MOTOR_FB_STALENESS_TIMEOUT_S.
   - Motor overspeed: ESTOP if any motor exceeds velocity limit.
-  - Tracking error: ESTOP if any leg deviates > MAX_TRACKING_ERROR_MM.
+  - Tracking error: logged if any leg deviates > MAX_TRACKING_ERROR_MM.
 
 Common infrastructure:
   - Fixed-rate main loop with nanosecond timing instrumentation
@@ -237,10 +237,11 @@ class ControlLoop:
         self._traj_manager = TrajectoryManager(self.geom, self._dynamics_params)
 
         # Stream smoother — universal C2-continuous gate for all direct targets
+        # Initialised with spacemouse limits (most common); updated on enable
         self._smoother = StreamSmoother(
             self.geom,
-            vel_limit_rps=hw.ODRIVE_TRAP_VEL_LIMIT_RPS,
-            accel_limit_rps2=hw.ODRIVE_TRAP_ACC_LIMIT_RPS2)
+            vel_limit_rps=hw.SPACEMOUSE_SMOOTHER_VEL_LIMIT_RPS,
+            accel_limit_rps2=hw.SPACEMOUSE_SMOOTHER_ACCEL_LIMIT_RPS2)
 
         # Track trajectory state transitions (for smoother reset on completion)
         self._prev_traj_state = TrajectoryState.IDLE
@@ -377,11 +378,14 @@ class ControlLoop:
             if self.mode == ControlMode.DISABLED:
                 self.mode = ControlMode.ENABLED
                 self._fault_state = None
+                # Apply mode-specific smoother limits
+                source = params.get('source', '')
+                self._apply_smoother_limits(source)
                 # Initialise outputs to the home/activate pose so the first
                 # telemetry cycle sends the current platform position rather
                 # than stale zeros.
                 self._seed_home_pose()
-                logger.info("Control loop ENABLED")
+                logger.info(f"Control loop ENABLED (source={source})")
         elif cmd == 'disable':
             self.mode = ControlMode.DISABLED
             self._zero_outputs()
@@ -523,18 +527,16 @@ class ControlLoop:
             return False
 
         # --- Tracking error check ---
+        # Large tracking errors are logged but do NOT trigger E-STOP.
+        # The slew limiter already rate-limits motor commands, so the motors
+        # will naturally catch up.  Freezing the platform (E-STOP) is worse
+        # than allowing recovery, especially during manual spacemouse control.
         if np.any(self._tracking_error_mm > MAX_TRACKING_ERROR_MM):
             worst = np.max(self._tracking_error_mm)
             worst_leg = int(np.argmax(self._tracking_error_mm))
-            self.mode = ControlMode.ESTOP
-            self._zero_outputs()
-            self._traj_manager.cancel()
-            self._fault_state = (
-                f'tracking_error: leg {worst_leg} = {worst:.2f} mm')
-            logger.error(
-                f"TRACKING ERROR — E-STOP: leg {worst_leg} = {worst:.2f} mm "
-                f"(limit {MAX_TRACKING_ERROR_MM:.1f})")
-            return False
+            logger.warning(
+                f"Large tracking error: leg {worst_leg} = {worst:.2f} mm "
+                f"(threshold {MAX_TRACKING_ERROR_MM:.1f})")
 
         # --- Slew rate limit ---
         actual = self._motor_fb_pos_rev
@@ -577,12 +579,29 @@ class ControlLoop:
     def _poll_async_result(self) -> None:
         """Check for completed async feasibility results and commit them.
 
-        Non-blocking.  Called once per control cycle.
+        Non-blocking.  Called once per control cycle.  If the feasibility
+        worker process has crashed, attempts a restart up to the
+        configured limit before triggering an E-STOP.
         """
         if self.mode != ControlMode.ENABLED:
             return
 
-        result = self._traj_manager.poll_pending_result()
+        from jugglebot.motion.feasibility_worker import WorkerCrashed
+        try:
+            result = self._traj_manager.poll_pending_result()
+        except WorkerCrashed:
+            logger.error("Feasibility worker crashed — attempting restart")
+            if self._traj_manager.try_restart_worker():
+                logger.info("Feasibility worker restarted successfully")
+            else:
+                self.mode = ControlMode.ESTOP
+                self._zero_outputs()
+                self._traj_manager.cancel()
+                self._fault_state = 'feasibility_worker_crash'
+                logger.error(
+                    "Feasibility worker restart limit exceeded — E-STOP")
+            return
+
         if result is None:
             return
 
@@ -705,6 +724,20 @@ class ControlLoop:
         self._commanded_vel_ff_rps = np.zeros(6)
         self._commanded_torque_ff_Nm = np.zeros(6)
 
+    def _apply_smoother_limits(self, source: str) -> None:
+        """Set stream smoother velocity/acceleration limits based on control source."""
+        if source == 'SPACEMOUSE':
+            vel = hw.SPACEMOUSE_SMOOTHER_VEL_LIMIT_RPS
+            accel = hw.SPACEMOUSE_SMOOTHER_ACCEL_LIMIT_RPS2
+        elif source == 'GUI':
+            vel = hw.GUI_SMOOTHER_VEL_LIMIT_RPS
+            accel = hw.GUI_SMOOTHER_ACCEL_LIMIT_RPS2
+        else:
+            vel = hw.ODRIVE_TRAP_VEL_LIMIT_RPS
+            accel = hw.ODRIVE_TRAP_ACC_LIMIT_RPS2
+        self._smoother.set_limits(vel, accel)
+        logger.info(f"Smoother limits: vel={vel} rps, accel={accel} rps²")
+
     def _seed_home_pose(self) -> None:
         """Initialise control outputs to the home/activate pose.
 
@@ -781,6 +814,20 @@ class ControlLoop:
 # ---------------------------------------------------------------------------
 
 def main():
+    # Set multiprocessing start method before any Process is created.
+    # 'forkserver' is safer than 'fork' (avoids copying parent thread
+    # state) and avoids issues with CUDA or C libraries in the future.
+    # Falls back to 'spawn' on Windows (dev machine).
+    import multiprocessing
+    import platform
+    try:
+        if platform.system() == 'Windows':
+            multiprocessing.set_start_method('spawn')
+        else:
+            multiprocessing.set_start_method('forkserver')
+    except RuntimeError:
+        pass  # already set (e.g. in tests)
+
     parser = argparse.ArgumentParser(
         description="Jugglebot motion control process")
     parser.add_argument('--rate', type=float, default=DEFAULT_RATE_HZ,

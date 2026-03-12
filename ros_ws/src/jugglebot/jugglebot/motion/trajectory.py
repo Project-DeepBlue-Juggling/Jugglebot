@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import enum
 import logging
-import threading
 import time as _time
 from dataclasses import dataclass, replace as _dc_replace
 from typing import TYPE_CHECKING
@@ -929,19 +928,16 @@ class TrajectoryManager:
         self._clock = clock or _time.perf_counter
 
         # --- Async feasibility pipeline ---
-        # Background thread runs feasibility checks without blocking the
-        # control loop.  Communication via lock-guarded slots.
-        self._async_lock = threading.Lock()
-        self._async_event = threading.Event()        # wakes bg thread
-        self._async_shutdown = threading.Event()      # signals thread exit
+        # Feasibility checks run in a dedicated child process to bypass
+        # the GIL.  Communication via multiprocessing.Pipe.
+        from jugglebot.motion.feasibility_worker import FeasibilityWorkerProxy
+        self._worker = FeasibilityWorkerProxy(
+            geom, dynamics_params,
+            max_restarts=hw.JB_OP_FEASIBILITY_WORKER_MAX_RESTARTS)
         self._async_generation = 0                    # monotonic counter
-        self._pending_request: dict | None = None     # target params for bg
-        self._pending_result: dict | None = None      # completed check result
-        self._precomputed_decel: QuinticTrajectory | None = None  # pre-planned deceleration
-        self._decel_generation = 0                    # generation of precomputed decel
-        self._bg_thread = threading.Thread(
-            target=self._bg_feasibility_worker, daemon=True, name='feas-bg')
-        self._bg_thread.start()
+        self._pending_result: dict | None = None      # buffered feasibility result
+        self._precomputed_decel: QuinticTrajectory | None = None
+        self._decel_generation = 0
 
     @property
     def state(self) -> TrajectoryState:
@@ -1299,16 +1295,20 @@ class TrajectoryManager:
         self._last_progress = 0.0
         self._last_time_remaining = 0.0
         # Discard any pending async results
-        with self._async_lock:
-            self._async_generation += 1
-            self._pending_result = None
-            self._precomputed_decel = None
+        self._async_generation += 1
+        self._pending_result = None
+        self._precomputed_decel = None
 
     def shutdown(self) -> None:
-        """Shut down the background feasibility thread."""
-        self._async_shutdown.set()
-        self._async_event.set()  # wake thread so it sees shutdown
-        self._bg_thread.join(timeout=2.0)
+        """Shut down the feasibility worker process."""
+        self._worker.shutdown()
+
+    def try_restart_worker(self) -> bool:
+        """Attempt to restart the feasibility worker process.
+
+        Returns True if restart succeeded, False if restart limit reached.
+        """
+        return self._worker.try_restart()
 
     # ------------------------------------------------------------------
     # Async feasibility pipeline
@@ -1388,20 +1388,19 @@ class TrajectoryManager:
 
         needs_decel = bool(np.linalg.norm(target_vel) > 1e-6)
 
-        with self._async_lock:
-            self._async_generation += 1
-            gen = self._async_generation
-            self._pending_request = {
-                'traj': traj,
-                'needs_decel': needs_decel,
-                'arrival_time': arrival_time,
-                'generation': gen,
-                't_request': t_now,
-            }
-            self._pending_result = None
-
-        # Wake the background thread
-        self._async_event.set()
+        self._async_generation += 1
+        self._pending_result = None
+        request = {
+            'type': 'feasibility',
+            'traj': traj,
+            'needs_decel': needs_decel,
+            'arrival_time': arrival_time,
+            'generation': self._async_generation,
+            't_request': t_now,
+        }
+        if not self._worker.submit(request):
+            logger.warning("Feasibility worker dead, rejecting dynamic target")
+            return False
         return True
 
     def poll_pending_result(self) -> dict | None:
@@ -1414,12 +1413,39 @@ class TrajectoryManager:
         result : dict or None
             If ready: ``{'accepted': bool, 'traj': QuinticTrajectory,
             'needs_decel': bool, 'generation': int}``
+
+        Raises
+        ------
+        WorkerCrashed
+            If the feasibility worker process has died.
         """
-        with self._async_lock:
+        # Return buffered result first (from a previous poll that
+        # received a feasibility result while draining decel results)
+        if self._pending_result is not None:
             result = self._pending_result
-            if result is not None:
-                self._pending_result = None
+            self._pending_result = None
             return result
+
+        from jugglebot.motion.feasibility_worker import WorkerCrashed
+        # May raise WorkerCrashed — caller handles
+        result = self._worker.poll()
+        if result is None:
+            return None
+
+        if result['type'] == 'decel':
+            # Decel results go to the precomputed slot
+            if (result['generation'] == self._decel_generation
+                    and result.get('traj') is not None):
+                self._precomputed_decel = result['traj']
+                logger.info(
+                    "Deceleration pre-computed: duration=%.3fs",
+                    result['traj'].duration)
+            return None  # not a feasibility result
+
+        # Feasibility result — check generation
+        if result['generation'] != self._async_generation:
+            return None  # stale
+        return result
 
     def commit_async_trajectory(self, result: dict) -> bool:
         """Commit a trajectory from a completed async feasibility check.
@@ -1437,11 +1463,10 @@ class TrajectoryManager:
         accepted : bool
             True if the trajectory was committed.
         """
-        with self._async_lock:
-            # Stale result: a newer request has been submitted
-            if result['generation'] != self._async_generation:
-                logger.debug("Async result discarded (stale generation)")
-                return False
+        # Stale result: a newer request has been submitted
+        if result['generation'] != self._async_generation:
+            logger.debug("Async result discarded (stale generation)")
+            return False
 
         if not result['accepted']:
             return False
@@ -1491,12 +1516,35 @@ class TrajectoryManager:
         """Check if a pre-computed deceleration trajectory is available.
 
         Non-blocking.  Returns None if not ready or not applicable.
+        Drains the worker pipe first so decel results are routed to the
+        precomputed slot even if ``poll_pending_result()`` hasn't been
+        called recently.
         """
-        with self._async_lock:
-            ret = self._precomputed_decel
-            if ret is not None:
-                self._precomputed_decel = None
-            return ret
+        # Drain any pending results from the pipe — decel results get
+        # routed to self._precomputed_decel by poll_pending_result().
+        try:
+            while True:
+                result = self._worker.poll()
+                if result is None:
+                    break
+                if result['type'] == 'decel':
+                    if (result['generation'] == self._decel_generation
+                            and result.get('traj') is not None):
+                        self._precomputed_decel = result['traj']
+                        logger.info(
+                            "Deceleration pre-computed: duration=%.3fs",
+                            result['traj'].duration)
+                elif result['type'] == 'feasibility':
+                    # Buffer feasibility results for poll_pending_result()
+                    if result['generation'] == self._async_generation:
+                        self._pending_result = result
+        except Exception:
+            pass  # worker may be dead; caller handles via poll_pending_result
+
+        ret = self._precomputed_decel
+        if ret is not None:
+            self._precomputed_decel = None
+        return ret
 
     def _start_decel_precompute(self, outbound_traj: QuinticTrajectory) -> None:
         """Queue background pre-computation of the deceleration trajectory.
@@ -1505,134 +1553,14 @@ class TrajectoryManager:
         that has nonzero end velocity.
         """
         end_state = outbound_traj.end_state
-        with self._async_lock:
-            self._async_generation += 1
-            gen = self._async_generation
-            self._pending_request = {
-                'decel_precompute': True,
-                'start_pose': end_state[:6].copy(),
-                'start_twist': end_state[6:12].copy(),
-                'start_accel': end_state[12:18].copy(),
-                'generation': gen,
-            }
-            self._pending_result = None
-            self._precomputed_decel = None
-            self._decel_generation = gen
-        self._async_event.set()
+        self._decel_generation += 1
+        self._precomputed_decel = None
+        request = {
+            'type': 'decel',
+            'generation': self._decel_generation,
+            'start_pose': end_state[:6].copy(),
+            'start_twist': end_state[6:12].copy(),
+            'start_accel': end_state[12:18].copy(),
+        }
+        self._worker.submit(request)
 
-    def _bg_feasibility_worker(self) -> None:
-        """Background thread: runs feasibility checks without blocking the
-        control loop.
-        """
-        logger.debug("Background feasibility thread started")
-
-        while not self._async_shutdown.is_set():
-            # Wait for work
-            self._async_event.wait()
-            self._async_event.clear()
-
-            if self._async_shutdown.is_set():
-                break
-
-            # Read the pending request
-            with self._async_lock:
-                request = self._pending_request
-                self._pending_request = None
-
-            if request is None:
-                continue
-
-            if request.get('decel_precompute'):
-                self._bg_compute_deceleration(request)
-            else:
-                self._bg_check_feasibility(request)
-
-        logger.debug("Background feasibility thread exiting")
-
-    def _bg_check_feasibility(self, request: dict) -> None:
-        """Background: run feasibility check for a dynamic target."""
-        traj = request['traj']
-        gen = request['generation']
-
-        t_before = _time.perf_counter()
-        result = check_feasibility(
-            traj, self.geom, self.dynamics_params,
-            n_samples=50, early_exit=True, yield_interval=5)
-        check_elapsed = _time.perf_counter() - t_before
-
-        with self._async_lock:
-            # Discard if a newer request has superseded this one
-            if gen != self._async_generation:
-                return
-            self._pending_result = {
-                'accepted': result.feasible,
-                'traj': traj,
-                'needs_decel': request['needs_decel'],
-                'arrival_time': request['arrival_time'],
-                'generation': gen,
-                't_request': request['t_request'],
-                'check_elapsed': check_elapsed,
-                'violations': result.violations if not result.feasible else [],
-            }
-
-        if not result.feasible:
-            logger.debug(
-                f"Async feasibility rejected: {'; '.join(result.violations)}")
-
-    def _bg_compute_deceleration(self, request: dict) -> None:
-        """Background: pre-compute deceleration-to-stop trajectory.
-
-        Uses make_deceleration_trajectory() + single feasibility check
-        instead of the expensive find_min_feasible_duration() binary
-        search.  This reduces GIL hold from ~1200ms to ~30ms.
-        """
-        gen = request['generation']
-        start_pose = request['start_pose']
-        start_twist = request['start_twist']
-        start_accel = request['start_accel']
-
-        # Create deceleration trajectory (instant, no feasibility check)
-        traj = make_deceleration_trajectory(
-            start_pose=start_pose,
-            start_twist=start_twist,
-            start_accel=start_accel,
-            geom=self.geom,
-        )
-
-        if traj is None:
-            logger.warning("Deceleration precompute: velocity too low, skipping")
-            return
-
-        # Single feasibility check with GIL yields
-        result = check_feasibility(
-            traj, self.geom, self.dynamics_params,
-            n_samples=50, early_exit=True, yield_interval=5)
-
-        if not result.feasible:
-            # Retry with 2x duration (gentler deceleration)
-            logger.debug(
-                f"Deceleration at {traj.duration:.3f}s infeasible, "
-                f"retrying at {traj.duration * 2:.3f}s")
-            traj = make_deceleration_trajectory(
-                start_pose=start_pose,
-                start_twist=start_twist,
-                start_accel=start_accel,
-                geom=self.geom,
-                duration_margin=3.0,  # 1.5 base × 2
-            )
-            if traj is None:
-                return
-            result = check_feasibility(
-                traj, self.geom, self.dynamics_params,
-                n_samples=50, early_exit=True, yield_interval=5)
-            if not result.feasible:
-                logger.warning(
-                    "Deceleration infeasible even at 2x duration: "
-                    f"{'; '.join(result.violations)}")
-                return
-
-        with self._async_lock:
-            if gen == self._decel_generation:
-                self._precomputed_decel = traj
-                logger.info(
-                    f"Deceleration pre-computed: duration={traj.duration:.3f}s")

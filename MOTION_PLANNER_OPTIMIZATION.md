@@ -519,3 +519,29 @@ Use `multiprocessing.Process` instead of `threading.Thread` for the background f
 ### Recommendation
 
 Start with **A** (targeted fixes) to get DT2/DT3 passing. Then evaluate **B** (trajectory queue) as a follow-up architectural improvement — it's the cleanest long-term solution. **C** (multiprocessing) is the nuclear option if GIL contention reappears with heavier future workloads (e.g., ball predictor integration).
+
+---
+
+## Implementation Status (2026-03-12)
+
+### A. Targeted fixes — DONE
+- `yield_interval` added to `check_feasibility()` (releases GIL every N samples)
+- Return-to-home replaced with decelerate-to-stop (`make_deceleration_trajectory()`)
+- C2 splice bug fixed with `_held_at_end_cycles` tracking
+- `_plan_return_to_home()` deleted (dead code)
+- `find_min_feasible_duration()` replaced with single feasibility check
+
+**Result:** All 64 offline tests pass. Hardware tests pass at 0.25x speed. At 1.0x speed, `time.sleep(0)` GIL yields are **NOT effective** — ~180ms stalls persist on every target submission (confirmed on Jetson/Linux). DT3 fails at 1.0x (8mm error, 3mm threshold).
+
+### C. Multiprocessing — DONE
+- Background `threading.Thread` replaced with `multiprocessing.Process`
+- Communication via `multiprocessing.Pipe` (pickle-based, ~20μs latency)
+- Start method: `forkserver` (safer than `fork`, set in `control_loop.py` `main()`)
+- Worker process holds `StewartGeometry` and `DynamicsParams` in its own memory
+- `yield_interval=0` in worker (no GIL contention in separate process)
+- Crash recovery: `WorkerCrashed` exception → restart up to `FEASIBILITY_WORKER_MAX_RESTARTS` times → E-STOP if limit exceeded
+- New file: `feasibility_worker.py` (`_worker_main`, `FeasibilityWorkerProxy`, `WorkerCrashed`)
+- 10 async pipeline tests (8 original + 2 new crash recovery tests)
+
+### B. Trajectory queue — DEFERRED
+- Not yet needed; current architecture handles all current use cases correctly
