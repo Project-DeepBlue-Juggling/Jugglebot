@@ -287,7 +287,7 @@ Context-sensitive enable/disable based on last received `orchestrator_state`.
 ### Phase D — Ball Butler 3D model — DONE (2026-02-24)
 1. [x] Create `js/ball-butler-model.js` — yaw/pitch/hand line art
 2. [x] Wire `bb/heartbeat` → model updates
-3. [ ] **Verify**: BB moves in sync with heartbeat data — needs hardware testing
+3. [x] **Verify**: BB moves in sync with heartbeat data — needs hardware testing
 
 ### Phase E — Status panels — DONE (2026-02-24)
 1. [x] Create `css/panels.css` — card styles, motor grid, badges
