@@ -662,12 +662,17 @@ class CanInterfaceNode(Node):
     def _svc_get_tilt(self, req, res):
         try:
             tx, ty, quat = self._get_tilt_reading()
-            res.tilt_xy = [tx, ty] if tx is not None else [0.0, 0.0]
-            res.tilt_quat = quat if quat else Quaternion(w=1.0)
+            if quat is None:
+                # Signal failure with NaN so callers don't mistake it for real data
+                res.tilt_xy = [float('nan'), float('nan')]
+                res.tilt_quat = Quaternion(w=float('nan'))
+            else:
+                res.tilt_xy = [tx, ty]
+                res.tilt_quat = quat
         except Exception as e:
             self.get_logger().error(f"Tilt reading error: {e}")
-            res.tilt_xy = [0.0, 0.0]
-            res.tilt_quat = Quaternion(w=1.0)
+            res.tilt_xy = [float('nan'), float('nan')]
+            res.tilt_quat = Quaternion(w=float('nan'))
         return res
 
     def _svc_activate_or_deactivate(self, req, res):
@@ -1398,7 +1403,8 @@ class CanInterfaceNode(Node):
             if attempt < 3:
                 self.get_logger().warning("Tilt reading invalid, retrying...")
                 return (yield from self._tilt_reading_steps(attempt + 1))
-            return (None, None, Quaternion(w=1.0))
+            self.get_logger().error("Tilt reading invalid after 3 attempts")
+            return (None, None, None)
 
         return (tx, ty, self._tilt_to_quat(tx, ty))
 
