@@ -46,7 +46,7 @@ class SpaceMouseHandler(Node):
                 self.get_logger().info("SpaceMouse connected successfully.")
                 break
             if attempt < max_attempts:
-                self.get_logger().warn(
+                self.get_logger().warning(
                     f"SpaceMouse not found (attempt {attempt}/{max_attempts}). "
                     f"Retrying in {retry_delay_s}s..."
                 )

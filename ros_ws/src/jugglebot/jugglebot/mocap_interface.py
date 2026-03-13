@@ -95,32 +95,43 @@ class MocapInterface:
         finally:
             self.loop.close()
 
+    _RETRY_DELAYS = [2, 5, 10, 30]  # seconds between reconnection attempts
+
     async def connect(self):
         """
         Asynchronously connect to QTM and start streaming data.
+        Retries with exponential backoff on failure.
         """
-        try:
-            self.connection = await qtm_rt.connect(self.host, port=self.port, timeout=5.0)
-            if self.connection is None:
-                self.logger.info("Failed to connect to QTM.")
-                return
+        attempt = 0
+        while True:
+            try:
+                self.connection = await qtm_rt.connect(self.host, port=self.port, timeout=5.0)
+                if self.connection is None:
+                    raise ConnectionError("QTM returned None connection")
 
-            self.logger.info("Connected to QTM.")
+                self.logger.info("Connected to QTM.")
 
-            # Get 6dof settings from qtm
-            xml_6d_string = await self.connection.get_parameters(parameters=["6d"])
-            self.body_dict = self.create_body_dict(xml_6d_string)
+                # Get 6dof settings from qtm
+                xml_6d_string = await self.connection.get_parameters(parameters=["6d"])
+                self.body_dict = self.create_body_dict(xml_6d_string)
 
-            # Get 3d settings from qtm
-            xml_3d_string = await self.connection.get_parameters(parameters=["3d"])
-            self.marker_dict = self.create_marker_dict(xml_3d_string)
+                # Get 3d settings from qtm
+                xml_3d_string = await self.connection.get_parameters(parameters=["3d"])
+                self.marker_dict = self.create_marker_dict(xml_3d_string)
 
-            # Start streaming frames with required components.
-            await self.start_streaming()
-        except asyncio.TimeoutError:
-            self.logger.error("Connection to QTM timed out.")
-        except Exception as e:
-            self.logger.error(f"Error connecting to QTM: {e}")
+                # Start streaming frames with required components.
+                await self.start_streaming()
+                return  # streaming started successfully
+            except (asyncio.TimeoutError, ConnectionError, OSError) as e:
+                delay = self._RETRY_DELAYS[min(attempt, len(self._RETRY_DELAYS) - 1)]
+                self.logger.warning(
+                    f"QTM connection failed ({e}), retrying in {delay}s "
+                    f"(attempt {attempt + 1})")
+                await asyncio.sleep(delay)
+                attempt += 1
+            except Exception as e:
+                self.logger.error(f"Unexpected error connecting to QTM: {e}")
+                return  # Don't retry on unexpected errors
 
     async def start_streaming(self):
         """
@@ -199,21 +210,19 @@ class MocapInterface:
             self.logger.error(f"Error processing labelled markers: {e}")
 
         # Process 6dof data to know the body positions.
+        # Build all poses in a local dict, then atomically replace under the
+        # lock so readers never see a mix of old and new frame data.
         info, bodies = packet.get_6d()
-            
-        for i, body in enumerate(bodies):
-            # Log the body positions and rotations
-            # self.logger.info("Body: {}".format(self.get_name_from_index(i, self.body_dict)))
-            # self.logger.info("\tPosition: ({}, {}, {})".format(body[0].x, body[0].y, body[0].z))
-            # self.logger.info(f"\tRotation: {self.rotation_list_to_quaternion(body[1].matrix)}")
+        new_body_poses = {}
 
+        for i, body in enumerate(bodies):
             body_name = self.get_name_from_index(i, self.body_dict)
 
             # Detect if 'body_name' has any unwanted characters. If any are present, replace them with an underscore
             if any(char in body_name for char in [' ', '-']):
                 body_name = body_name.replace(' ', '_')
                 body_name = body_name.replace('-', '_')
-                
+
             # Compose a PoseStamped for this rigid body
             pose = PoseStamped()
             pose.header.stamp = self.node.get_clock().now().to_msg()
@@ -239,20 +248,21 @@ class MocapInterface:
             pose.pose.orientation.z = qz
             pose.pose.orientation.w = qw
 
-            # Store (or overwrite) the latest pose for this body
-            with self.data_lock:
-                self.body_poses[body_name] = pose
+            new_body_poses[body_name] = pose
+
+        with self.data_lock:
+            self.body_poses = new_body_poses
 
         # Process unlabelled markers, skipping NaN positions.
+        current_unlabelled = []
         markers_no_label_residual = packet.get_3d_markers_no_label_residual()
         if markers_no_label_residual is not None:
             header, markers = markers_no_label_residual
-            current_unlabelled = []
             for marker in markers:
                 if not np.isnan([marker.x, marker.y, marker.z]).any():
                     current_unlabelled.append([marker.x, marker.y, marker.z, marker.residual])
 
-        all_markers = current_unlabelled# + labelled_markers  # Add the label markers if desired. Better to deactivate in QTM.
+        all_markers = current_unlabelled  # + labelled_markers if desired
         with self.data_lock:
             self.all_markers = np.array(all_markers) if all_markers else np.empty((0, 4))
 

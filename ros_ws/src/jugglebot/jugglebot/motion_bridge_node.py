@@ -204,14 +204,18 @@ class MotionBridgeNode(Node):
         if telem is None:
             return
 
-        positions = telem.get('leg_pos', [0.0] * 6)
-        velocities = telem.get('leg_vel', [0.0] * 6)
-        torques = telem.get('cmd_torques', [0.0] * 6)
+        positions = telem.get('leg_pos')
+        velocities = telem.get('leg_vel')
+        torques = telem.get('cmd_torques')
 
         # Publish unified command to CAN node: 6 pos + 6 vel_ff + 6 torque_ff
-        # Only when control loop is enabled — forwarding commands from a
-        # disabled loop would send stale zeros to the motors.
-        if self._control_loop_enabled:
+        # Only when control loop is enabled AND telemetry contains valid motor
+        # commands.  Refusing to publish when keys are missing prevents sending
+        # default zeros which would command full retraction.
+        if (self._control_loop_enabled
+                and positions is not None
+                and velocities is not None
+                and torques is not None):
             leg_msg = Float64MultiArray()
             leg_msg.data = list(positions) + list(velocities) + list(torques)
             self._leg_pub.publish(leg_msg)

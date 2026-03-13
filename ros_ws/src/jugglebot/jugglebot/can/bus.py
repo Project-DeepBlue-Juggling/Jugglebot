@@ -118,10 +118,15 @@ class CANBus:
 
     # ── Reconnection ───────────────────────────────────────────
 
-    def attempt_restore(self, poll_callback: Optional[Callable[[], bool]] = None,
-                        max_retries: int = 3, retry_delay: float = 5.0,
-                        reconnect_timeout: float = 1.0) -> bool:
-        """Try to re-establish the CAN connection.
+    def attempt_restore_steps(self, poll_callback: Optional[Callable[[], bool]] = None,
+                              max_retries: int = 3, retry_delay: float = 5.0,
+                              reconnect_timeout: float = 1.0):
+        """Generator: try to re-establish the CAN connection without blocking.
+
+        Yields sleep durations (seconds) between steps.  The caller drives the
+        generator from a timer callback so the ROS2 executor stays responsive.
+        The generator's return value (via StopIteration.value) is True on
+        success, False on failure.
 
         Args:
             poll_callback: Called repeatedly during the reconnect wait.
@@ -130,8 +135,6 @@ class CANBus:
             max_retries: Number of reconnection attempts.
             retry_delay: Seconds to wait between retries.
             reconnect_timeout: Seconds to wait for heartbeats per attempt.
-
-        Returns True if connection was restored, False otherwise.
         """
         self._logger.info('Attempting to restore CAN connection...')
 
@@ -145,14 +148,14 @@ class CANBus:
 
                 # Wait for heartbeats (rx check)
                 if poll_callback:
-                    time.sleep(0.1)
+                    yield 0.1  # Brief pause after setup before polling
                     start = time.time()
                     while time.time() - start < reconnect_timeout:
                         if poll_callback():
                             self._logger.info(f'CAN bus read OK on attempt {attempt}')
                             rx_ok = True
                             break
-                        time.sleep(0.1)
+                        yield 0.1  # Yield back instead of sleeping
                 else:
                     rx_ok = True  # No check requested
 
@@ -174,8 +177,25 @@ class CANBus:
             except Exception as e:
                 self._logger.warning(f'Reconnect attempt {attempt} failed: {e}')
 
-            time.sleep(retry_delay)
+            yield retry_delay  # Yield back instead of sleeping between retries
 
         self._logger.error(f'Failed to restore CAN after {max_retries} attempts')
         self.close()
         return False
+
+    def attempt_restore(self, poll_callback: Optional[Callable[[], bool]] = None,
+                        max_retries: int = 3, retry_delay: float = 5.0,
+                        reconnect_timeout: float = 1.0) -> bool:
+        """Blocking convenience wrapper around attempt_restore_steps().
+
+        Drives the generator synchronously with time.sleep().  Prefer
+        attempt_restore_steps() in contexts where blocking is unacceptable.
+        """
+        gen = self.attempt_restore_steps(poll_callback, max_retries,
+                                         retry_delay, reconnect_timeout)
+        try:
+            while True:
+                sleep_s = next(gen)
+                time.sleep(sleep_s)
+        except StopIteration as e:
+            return e.value

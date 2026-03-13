@@ -71,7 +71,7 @@ class Context:
         self._command_queue = deque(maxlen=4)
 
         # ── Outputs (set by handlers, read by orchestrator) ───────
-        self.request = None                  # Operation request: 'encoder_search', 'home', etc.
+        self._request_queue = deque(maxlen=4)  # Operation requests: 'encoder_search', 'home', etc.
         self.control_mode = None             # Control mode string to publish (None = no change)
 
         # ── Shared state ──────────────────────────────────────────
@@ -83,10 +83,37 @@ class Context:
         self.levelling_complete = False          # Persisted on Teensy
         self.pose_offset_rad = [0.0, 0.0]        # Accumulated [tiltX, tiltY] correction
         self.tilt_reading = [0.0, 0.0]           # Raw tilt from inclinometer (set by orchestrator)
+        self.bb_calibration_skipped = False       # True if BB calibration was skipped (BB unavailable)
 
     @property
     def has_fatal_error(self):
         return self.fatal_error or self.fatal_can_error
+
+    # ── Request queue (replaces single ctx.request slot) ──────
+    @property
+    def request(self):
+        """Read (peek) the oldest pending request, or None.
+
+        Kept as a property for backward compatibility with handlers that
+        check ``ctx.request``.
+        """
+        return self._request_queue[0] if self._request_queue else None
+
+    @request.setter
+    def request(self, value):
+        """Set a request.  ``None`` is a no-op (clearing is done via drain/clear)."""
+        if value is not None:
+            self._request_queue.append(value)
+
+    def drain_requests(self):
+        """Pop and return all pending requests as a list, clearing the queue."""
+        items = list(self._request_queue)
+        self._request_queue.clear()
+        return items
+
+    def clear_requests(self):
+        """Discard all pending requests."""
+        self._request_queue.clear()
 
     def enqueue_command(self, cmd):
         """Add a command to the queue. Oldest commands are dropped if full."""
@@ -249,7 +276,7 @@ class HomingHandler(StateHandler):
         return None
 
     def on_exit(self, ctx):
-        ctx.request = None
+        ctx.clear_requests()
 
 
 class IdleHandler(StateHandler):
@@ -352,7 +379,7 @@ class LevellingHandler(StateHandler):
         return None
 
     def on_exit(self, ctx):
-        ctx.request = None
+        ctx.clear_requests()
 
 
 class ActiveHandler(StateHandler):

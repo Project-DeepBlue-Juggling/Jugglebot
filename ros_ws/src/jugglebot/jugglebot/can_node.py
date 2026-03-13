@@ -48,6 +48,16 @@ _HEARTBEAT_TIMEOUT_S = 2.0       # Trigger watchdog after 2s without any axis he
 _HEARTBEAT_GATE_TIMEOUT_S = 5.0  # Max wait for heartbeats before ODrive configuration
 
 
+# ── Leg sign convention ────────────────────────────────────────
+# ODrive convention: negative = extension; Jugglebot convention: positive = extension.
+# This helper centralises the sign flip so both the encoder read path and the
+# position command write path stay in sync.
+
+def _leg_sign(axis_id: int, value: float) -> float:
+    """Negate value for leg axes to convert between ODrive and Jugglebot conventions."""
+    return -value if axis_id in odrive.LEG_AXES else value
+
+
 # ── Trapezoidal profile for gentle moves ──────────────────────
 
 def _trapezoidal_profile(start, end, vel_limit, acc_limit, dt=0.01):
@@ -130,11 +140,15 @@ class CanInterfaceNode(Node):
             'pose_offset_quat': Quaternion(w=1.0, x=0.0, y=0.0, z=0.0),
             'error': [],
         }
+        # Per-axis active error names — rebuilt each heartbeat, merged for display
+        self._active_errors_by_axis: dict[int, set[str]] = {}
 
         # Firmware version query tracking
         self._jb_version_query_sent = False
         self._bb_version_query_sent = False
         self._bb_firmware_checked = False
+        self._pending_version_queries: list[int] = []
+        self._version_query_timer = None
 
         # Hand input pos tracking (for telemetry)
         self._last_hand_cmd = {'pos': 0.0, 'vel': 0.0, 'tor': 0.0}
@@ -146,9 +160,8 @@ class CanInterfaceNode(Node):
         self._shutdown_deadline = float('inf')  # Set to finite value during shutdown
         self._encoder_data_received = [False] * odrive.NUM_LEGS  # Track whether real encoder data has arrived
 
-        # Tilt sensor and quaternion accumulation
+        # Tilt sensor
         self._tilt_reading = None
-        self._last_tilt_offset = quaternion.quaternion(1, 0, 0, 0)
 
         # CAN IDs for Teensy messages
         self._tilt_reading_id = proto.CAN_ID_PLATFORM_TILT_READING
@@ -213,6 +226,8 @@ class CanInterfaceNode(Node):
         self.create_timer(target_reached_period, self._check_target_reached)     # 10 Hz target
         self.create_timer(1.0, self._watchdog_check)                              # 1 Hz heartbeat watchdog
         self._watchdog_restore_failed = False
+        self._restore_gen = None           # Active restore generator (non-blocking)
+        self._restore_resume_time = 0.0    # When to next advance the generator
 
         # Callbacks that _run_to_completion keeps alive when the executor is
         # blocked.  Each entry is (callback, period_seconds).  During normal
@@ -260,8 +275,8 @@ class CanInterfaceNode(Node):
                 self.get_logger().warning(f"Bad BB heartbeat frame: {e}", throttle_duration_sec=5.0)
         else:
             # ODrive message: extract axis_id and command_id
-            axis_id = aid >> 5
-            cmd_id = aid & 0x1F
+            axis_id = aid >> odrive.NODE_ID_SHIFT
+            cmd_id = aid & odrive.CMD_ID_MASK
 
             # Filter irrelevant BB motor messages
             if axis_id in odrive.BB_MOTOR_IDS and cmd_id not in odrive.BB_RELEVANT_CMD_IDS:
@@ -288,19 +303,35 @@ class CanInterfaceNode(Node):
                            procedure_result=proc_result, trajectory_done=traj_done)
         self.motors.record_heartbeat(axis_id)
 
-        # Trigger firmware version queries once all heartbeats arrive per group
+        # Trigger firmware version queries once all heartbeats arrive per group.
+        # Queries are queued and dispatched one-per-tick via a 5 ms timer
+        # to avoid blocking the executor with sleep().
         if not self._jb_version_query_sent and self.motors.all_jugglebot_heartbeats_received():
             self._jb_version_query_sent = True
-            self.get_logger().info("All Jugglebot heartbeats received — sending Get_Version queries")
-            for aid in odrive.JUGGLEBOT_AXES:
-                self.bus.send(odrive.encode_get_version(aid))
-                time.sleep(0.005)
+            self.get_logger().info("All Jugglebot heartbeats received — queueing Get_Version queries")
+            self._pending_version_queries.extend(odrive.JUGGLEBOT_AXES)
+            self._start_version_query_timer()
         if not self._bb_version_query_sent and self.motors.all_bb_heartbeats_received():
             self._bb_version_query_sent = True
-            self.get_logger().info("All Ball Butler heartbeats received — sending Get_Version queries")
-            for aid in odrive.BB_AXES:
-                self.bus.send(odrive.encode_get_version(aid))
-                time.sleep(0.005)
+            self.get_logger().info("All Ball Butler heartbeats received — queueing Get_Version queries")
+            self._pending_version_queries.extend(odrive.BB_AXES)
+            self._start_version_query_timer()
+
+    def _start_version_query_timer(self):
+        """Start (or re-use) a 5 ms timer that sends one Get_Version per tick."""
+        if self._version_query_timer is None:
+            self._version_query_timer = self.create_timer(
+                0.005, self._send_next_version_query)
+
+    def _send_next_version_query(self):
+        """Timer callback: send one queued Get_Version query per tick."""
+        if self._pending_version_queries:
+            aid = self._pending_version_queries.pop(0)
+            self.bus.send(odrive.encode_get_version(aid))
+        else:
+            if self._version_query_timer is not None:
+                self._version_query_timer.cancel()
+                self._version_query_timer = None
 
     def _handle_error(self, axis_id, data):
         active_errors, disarm_reason = odrive.decode_error(data)
@@ -402,8 +433,8 @@ class CanInterfaceNode(Node):
 
     def _handle_encoder(self, axis_id, data):
         pos, vel = odrive.decode_encoder_estimate(data)
-        if axis_id in odrive.LEG_AXES:  # Legs: invert (ODrive -ve = extension, we want +ve = extension)
-            pos, vel = -pos, -vel
+        pos, vel = _leg_sign(axis_id, pos), _leg_sign(axis_id, vel)
+        if axis_id in odrive.LEG_AXES:
             self._encoder_data_received[axis_id] = True
         self.motors.update(axis_id, pos_estimate=pos, vel_estimate=vel)
 
@@ -422,7 +453,8 @@ class CanInterfaceNode(Node):
     def _handle_sdo_response(self, axis_id, data):
         endpoint_id, value = odrive.decode_sdo_response(data)
         if endpoint_id == odrive.ENDPOINT_IDS['commutation_mapper.pos_abs']:
-            self.motors.encoder_search_feedback[axis_id] = not math.isnan(value)
+            if axis_id < len(self.motors.encoder_search_feedback):
+                self.motors.encoder_search_feedback[axis_id] = not math.isnan(value)
 
     def _handle_get_version(self, axis_id, data):
         (_proto_ver, hw_product, hw_ver, hw_variant,
@@ -497,7 +529,10 @@ class CanInterfaceNode(Node):
     def _decode_teensy_state(self, msg):
         try:
             flags, tx, ty = struct.unpack('<Bhh3x', msg.data)
-        except struct.error:
+        except struct.error as e:
+            self.get_logger().warning(
+                f"Teensy state unpack error: {e}",
+                throttle_duration_sec=5.0)
             return
         self.last_known_state['updated'] = True
         is_homed = bool(flags & 0x01)
@@ -517,8 +552,10 @@ class CanInterfaceNode(Node):
                 'vel': vel_ff / proto.INPUT_SCALE_HAND_VEL,
                 'tor': tor_ff / proto.INPUT_SCALE_HAND_TOR,
             }
-        except struct.error:
-            pass
+        except struct.error as e:
+            self.get_logger().warning(
+                f"Hand input_pos unpack error: {e}",
+                throttle_duration_sec=5.0)
 
     # ═══════════════════════════════════════════════════════════
     # ODrive compound operations
@@ -604,10 +641,10 @@ class CanInterfaceNode(Node):
         protocol_config (must match the ODrive's input_vel_scale / input_torque_scale).
         """
         setpoint = odrive.clip_position(axis_id, setpoint, self.get_logger())
+        setpoint = _leg_sign(axis_id, setpoint)
+        vel_ff = _leg_sign(axis_id, vel_ff)
+        torque_ff = _leg_sign(axis_id, torque_ff)
         if axis_id in odrive.LEG_AXES:
-            setpoint = -setpoint    # Legs: ODrive -ve = extension
-            vel_ff = -vel_ff        # Same inversion for velocity feedforward
-            torque_ff = -torque_ff  # Same inversion for torque feedforward
             vel_ff_int = int(round(vel_ff * proto.INPUT_SCALE_LEG_VEL))
             torque_ff_int = int(round(torque_ff * proto.INPUT_SCALE_LEG_TOR))
         else:
@@ -813,7 +850,9 @@ class CanInterfaceNode(Node):
         # than JB_OP_MAX_POSITION_STEP_REV from its current encoder position.
         # This catches stale zeros, sign errors, and other catastrophic
         # command sources before they reach the ODrives.
-        if self.motors.first_heartbeat_received:
+        # Gate on all legs having reported real encoder data (not just any
+        # heartbeat) to avoid comparing against default-zero positions.
+        if all(self._encoder_data_received):
             states = self.motors.last_states
             for axis_id in range(odrive.NUM_LEGS):
                 step = abs(positions[axis_id] - states[axis_id].pos_estimate)
@@ -1015,7 +1054,9 @@ class CanInterfaceNode(Node):
                 if now >= next_fire[i]:
                     cb()
                     next_fire[i] = now + period
-            # CAN disconnect detection during generator operations
+            # CAN disconnect detection during generator operations.
+            # Sets the flag so generators abort; the 1Hz _watchdog_check()
+            # handles bus restoration (no recovery logic here).
             if (self.motors.first_heartbeat_received
                     and not self.motors.fatal_can_error
                     and self.motors.any_heartbeat_stale(_HEARTBEAT_TIMEOUT_S)):
@@ -1063,14 +1104,32 @@ class CanInterfaceNode(Node):
         """Periodic heartbeat watchdog — detects CAN bus disconnection.
 
         Activates only after the first heartbeat is received.  On timeout,
-        attempts bus restoration (3 retries internally).  Sets fatal_can_error
-        on failure.
-
-        Note: attempt_restore() blocks the executor for up to ~15 seconds
-        (3 retries x 5s delay).  This is acceptable since we're already in a
-        degraded state (CAN disconnection), and no useful work can proceed
-        until the bus is restored.
+        starts a non-blocking bus restoration via attempt_restore_steps().
+        The generator is advanced on each 1 Hz timer tick, so the ROS2
+        executor stays responsive throughout recovery (~15s across ticks
+        instead of one 15s block).
         """
+        # --- Drive an in-progress restore generator ---
+        if self._restore_gen is not None:
+            if time.time() < self._restore_resume_time:
+                return  # Still waiting between steps
+            try:
+                delay = next(self._restore_gen)
+                self._restore_resume_time = time.time() + delay
+            except StopIteration as e:
+                self._restore_gen = None
+                if e.value:
+                    self.motors.fatal_can_error = False
+                    self._watchdog_restore_failed = False
+                    self.get_logger().info("CAN bus restored by watchdog")
+                else:
+                    self._emergency_idle()
+                    self._watchdog_restore_failed = True
+                    self.get_logger().error(
+                        "CAN bus restoration failed — sent emergency IDLE, fatal CAN error")
+            return
+
+        # --- Normal watchdog logic ---
         if not self.motors.first_heartbeat_received:
             return
         if not self.motors.any_heartbeat_stale(_HEARTBEAT_TIMEOUT_S):
@@ -1088,19 +1147,8 @@ class CanInterfaceNode(Node):
             self.bus.fetch_all(self._handle_message)
             return self.motors.all_jugglebot_heartbeats_received()
 
-        if self.bus.attempt_restore(poll_callback=poll_cb):
-            self.motors.fatal_can_error = False
-            self._watchdog_restore_failed = False
-            self.get_logger().info("CAN bus restored by watchdog")
-        else:
-            # Best-effort: try to send IDLE to all axes before giving up.
-            # If the bus is truly dead, send() silently fails (bus._bus is None),
-            # but if even partial connectivity remains, this may stop motors
-            # that are still in CLOSED_LOOP with their last commanded position.
-            self._emergency_idle()
-            self._watchdog_restore_failed = True
-            self.get_logger().error(
-                "CAN bus restoration failed — sent emergency IDLE, fatal CAN error")
+        self._restore_gen = self.bus.attempt_restore_steps(poll_callback=poll_cb)
+        self._restore_resume_time = 0.0  # Advance immediately on next tick
 
     # ═══════════════════════════════════════════════════════════
     # Async operations (generator-based state machines)
@@ -1193,7 +1241,7 @@ class CanInterfaceNode(Node):
         deadline = time.time() + hw.HOMING_MOTOR_TIMEOUT_S
         while True:
             if self.motors.fatal_error or self.motors.fatal_can_error:
-                self.get_logger().fatal("Fatal error during homing!")
+                self.get_logger().error("Fatal error during homing!")
                 self.bus.send(odrive.encode_set_state(axis_id, 'IDLE'))
                 return False
             if time.time() > deadline:
@@ -1450,12 +1498,14 @@ class CanInterfaceNode(Node):
     # ═══════════════════════════════════════════════════════════
 
     def _tilt_to_quat(self, tilt_x, tilt_y):
-        """Convert inclinometer tilt readings to a ROS Quaternion."""
+        """Convert inclinometer tilt readings to a ROS Quaternion.
+
+        tilt_x and tilt_y are absolute tilt angles (radians), not deltas.
+        The conversion is stateless to avoid accumulation drift.
+        """
         q_roll = quaternion.from_rotation_vector([-tilt_x, 0, 0])
         q_pitch = quaternion.from_rotation_vector([0, -tilt_y, 0])
-        result = q_roll * q_pitch * self._last_tilt_offset
-        result = result.normalized()
-        self._last_tilt_offset = result
+        result = (q_roll * q_pitch).normalized()
 
         quat = Quaternion()
         quat.x = result.x

@@ -46,9 +46,8 @@ class MotorStateTracker:
         self._states = [MotorStateSingle() for _ in range(NUM_AXES)]
 
         # Snapshot for lock-free reads (refreshed on each get_states() call).
-        # The old code does a shallow list copy, which means readers and writers
-        # share the same MotorStateSingle objects. This is safe in CPython because
-        # attribute access is GIL-atomic, and the old system relied on this.
+        # Each call deep-copies every MotorStateSingle so the returned list
+        # is fully independent of internal state.
         self.last_states: List[MotorStateSingle] = [MotorStateSingle() for _ in range(NUM_AXES)]
 
         # Heartbeat tracking (Jugglebot axes only — used for reconnection)
@@ -103,10 +102,22 @@ class MotorStateTracker:
                 setattr(state, field, value)
 
     def get_states(self) -> List[MotorStateSingle]:
-        """Snapshot current states and return them."""
+        """Snapshot current states and return them.
+
+        Deep-copies each MotorStateSingle so the returned list is fully
+        independent of internal state — safe under free-threading (PEP 703).
+        """
         with self._lock:
-            self.last_states = list(self._states)
+            self.last_states = [self._copy_state(s) for s in self._states]
         return self.last_states
+
+    @staticmethod
+    def _copy_state(src: MotorStateSingle) -> MotorStateSingle:
+        """Field-by-field copy of a MotorStateSingle message."""
+        dst = MotorStateSingle()
+        for field_name in src.get_fields_and_field_types():
+            setattr(dst, field_name, getattr(src, field_name))
+        return dst
 
     def get_field(self, axis_id: int, field: str):
         """Read a single field (thread-safe)."""

@@ -11,6 +11,8 @@ The state machine tick runs at 10 Hz.  All CAN-node interactions are
 async (non-blocking) so the executor stays responsive.
 """
 
+import math
+
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionClient
@@ -190,13 +192,13 @@ class OrchestratorNode(Node):
             try:
                 result = self._pending_tilt_future.result()
                 tilt = list(result.tilt_xy)
-                if len(tilt) >= 2 and (tilt[0] != 0.0 or tilt[1] != 0.0):
+                if len(tilt) >= 2 and not (math.isnan(tilt[0]) or math.isnan(tilt[1])):
                     self.ctx.tilt_reading = tilt[:2]
                     self.ctx.operation_result = True
                     self.get_logger().info(
                         f'Tilt reading: [{tilt[0]:.4f}, {tilt[1]:.4f}] rad')
                 else:
-                    self.get_logger().warning('Tilt reading returned zeros (failed)')
+                    self.get_logger().warning('Tilt reading returned NaN (failed)')
                     self.ctx.operation_result = False
             except Exception as e:
                 self.get_logger().error(f'Tilt service exception: {e}')
@@ -254,12 +256,18 @@ class OrchestratorNode(Node):
             self._pending_result_future = None
 
     def _process_requests(self):
-        """Dispatch operation requests from state handlers."""
-        req = self.ctx.request
-        if req is None:
-            return
-        self.ctx.request = None
+        """Dispatch operation requests from state handlers.
 
+        Drains the entire request queue so that requests from both
+        on_exit() and on_enter()/execute() within the same tick are
+        all processed (previously a single-slot field could lose the
+        first request if a second was set in the same tick).
+        """
+        for req in self.ctx.drain_requests():
+            self._dispatch_request(req)
+
+    def _dispatch_request(self, req):
+        """Handle a single operation request."""
         if req == 'encoder_search':
             self._start_service_call(
                 self._encoder_search_client, Trigger.Request())
@@ -272,9 +280,11 @@ class OrchestratorNode(Node):
                 self._start_service_call(
                     self._bb_calibrate_client, Trigger.Request())
             else:
-                # Ball Butler not available — skip calibration
-                self.get_logger().info(
-                    'Ball Butler not available, skipping calibration')
+                # Ball Butler not available — skip calibration (BB is optional)
+                self.get_logger().warning(
+                    'Ball Butler not available — skipping calibration. '
+                    'BB will be uncalibrated this session.')
+                self.ctx.bb_calibration_skipped = True
                 self.ctx.operation_result = True
 
         elif req == 'activate':
@@ -351,7 +361,7 @@ class OrchestratorNode(Node):
         self._pending_tilt_future = None
         self.ctx.operation_pending = False
         self.ctx.operation_result = None
-        self.ctx.request = None
+        self.ctx.clear_requests()
         self.ctx.clear_commands()
 
     def _start_service_call(self, client, request):

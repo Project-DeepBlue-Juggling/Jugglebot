@@ -106,8 +106,8 @@ DEFAULT_RATE_HZ = 500
 # Conservative limit: ~667 mm/s Cartesian ≈ 200 mm in 0.3 s.
 MAX_SLEW_RATE_REV_PER_S = 9.5
 
-# Trigger FAULT if slew limiter clamps for this many consecutive cycles.
-SLEW_FAULT_CYCLES = 250  # 0.5 s at 500 Hz
+# Trigger FAULT if slew limiter clamps for this many consecutive seconds.
+SLEW_FAULT_DURATION_S = 0.5
 
 # Motor overspeed threshold — ESTOP if any motor exceeds this (rev/s).
 # 10 % margin above hardware limit for measurement noise.
@@ -119,8 +119,9 @@ MAX_TRACKING_ERROR_MM = 10.0
 # Motor feedback staleness timeout (seconds).  If no fresh motor-feedback
 # message has arrived within this window, the control loop suppresses ALL
 # motor commands because it cannot verify that its outputs are safe.
-# 100 ms ≈ 50 control-loop cycles at 500 Hz.
-MOTOR_FB_STALENESS_S = 0.1
+# 150 ms gives ~50% headroom over the 100 Hz feedback rate (10ms period),
+# tolerating a single dropped packet plus typical IPC latency (~1ms).
+MOTOR_FB_STALENESS_S = 0.15
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +243,9 @@ class ControlLoop:
             self.geom,
             vel_limit_rps=hw.SPACEMOUSE_SMOOTHER_VEL_LIMIT_RPS,
             accel_limit_rps2=hw.SPACEMOUSE_SMOOTHER_ACCEL_LIMIT_RPS2)
+        # Base smoother limits (before workspace speed scaling)
+        self._base_smoother_vel = hw.SPACEMOUSE_SMOOTHER_VEL_LIMIT_RPS
+        self._base_smoother_accel = hw.SPACEMOUSE_SMOOTHER_ACCEL_LIMIT_RPS2
 
         # Track trajectory state transitions (for smoother reset on completion)
         self._prev_traj_state = TrajectoryState.IDLE
@@ -261,6 +265,7 @@ class ControlLoop:
         self._tracking_error_mm = np.zeros(6)
 
         # Slew limiter state
+        self._slew_fault_cycles = int(SLEW_FAULT_DURATION_S * target_rate_hz)
         self._slew_limit_count = 0
         self._slew_limited = False
 
@@ -315,12 +320,14 @@ class ControlLoop:
             # 5. Slew limiter — final safety gate on motor commands
             ok_to_publish = self._slew_limit(dt_actual)
 
-            # 6. Publish telemetry (only when enabled AND safety gate
-            #    approves — a DISABLED loop or one without motor feedback
-            #    must be completely silent to avoid sending stale or
-            #    dangerous commands to the motors).
+            # 6. Publish telemetry.  Motor commands are only included when
+            #    ENABLED and the safety gate approves.  In ESTOP/DISABLED,
+            #    a reduced telemetry message (with fault_state) is sent so
+            #    the bridge has visibility into the control loop state.
             if self.mode == ControlMode.ENABLED and ok_to_publish:
                 self._publish_telemetry(dt_actual)
+            elif self.mode == ControlMode.ESTOP:
+                self._publish_fault_telemetry(dt_actual)
 
             # 7. Periodic logging
             self._periodic_log(t_start)
@@ -359,9 +366,13 @@ class ControlLoop:
         Converts the quaternion target to a 6-DoF pose (rotvec) and feeds
         it into the stream smoother for C2-continuous profiling.
         """
-        pos = np.array(msg['pos'])
-        quat = msg['rot']  # [w, x, y, z]
-        rot = quat_to_rot_matrix(*quat)
+        try:
+            pos = np.array(msg['pos'])
+            quat = msg['rot']  # [w, x, y, z]
+            rot = quat_to_rot_matrix(*quat)
+        except (KeyError, TypeError, ValueError) as e:
+            logger.warning(f"Malformed target message, ignoring: {e}")
+            return
 
         # Convert to 6-DoF pose for the smoother: [x, y, z, rx, ry, rz]
         rotvec = rot_matrix_to_rotvec(rot)
@@ -451,7 +462,7 @@ class ControlLoop:
                 speed_scale=msg.get('speed_scale', 1.0),
             )
             self._traj_manager.submit(traj)
-        except (ValueError, RuntimeError) as e:
+        except (KeyError, TypeError, ValueError, RuntimeError) as e:
             logger.error(f"Trajectory command rejected: {e}")
 
     def _on_dynamic_target(self, msg: dict) -> None:
@@ -462,10 +473,14 @@ class ControlLoop:
         for the current trajectory while the check runs.  Results are
         picked up on the next cycle via ``_poll_async_result()``.
         """
-        target_pos = np.array(msg['target_pos'])
-        target_quat = np.array(msg['target_quat'])
-        target_vel = np.array(msg['target_vel'])
-        arrival_time = msg['arrival_time']
+        try:
+            target_pos = np.array(msg['target_pos'])
+            target_quat = np.array(msg['target_quat'])
+            target_vel = np.array(msg['target_vel'])
+            arrival_time = msg['arrival_time']
+        except (KeyError, TypeError, ValueError) as e:
+            logger.warning(f"Malformed dynamic target message, ignoring: {e}")
+            return
 
         t_now = time.perf_counter()
         self._traj_manager.request_dynamic_target(
@@ -481,9 +496,13 @@ class ControlLoop:
 
     def _on_motor_feedback(self, msg: dict) -> None:
         """Handle motor feedback from the CAN node (via bridge)."""
-        self._motor_fb_pos_rev = np.array(msg['pos'])
-        self._motor_fb_vel_rps = np.array(msg['vel'])
-        self._motor_fb_cur_A = np.array(msg['cur'])
+        try:
+            self._motor_fb_pos_rev = np.array(msg['pos'])
+            self._motor_fb_vel_rps = np.array(msg['vel'])
+            self._motor_fb_cur_A = np.array(msg['cur'])
+        except (KeyError, TypeError, ValueError) as e:
+            logger.warning(f"Malformed motor feedback message, ignoring: {e}")
+            return
         self._has_motor_fb = True
         self._motor_fb_timestamp = time.perf_counter()
 
@@ -526,6 +545,9 @@ class ControlLoop:
         if fb_age > MOTOR_FB_STALENESS_S:
             logger.warning(
                 f"Motor feedback stale ({fb_age:.3f}s) — suppressing commands")
+            # Reset tracking error so stale values don't trigger false warnings
+            # when feedback resumes.
+            self._tracking_error_mm = np.zeros(6)
             return False
 
         # --- Motor overspeed check ---
@@ -560,11 +582,15 @@ class ControlLoop:
         if np.any(np.abs(delta) > max_delta):
             clamped_delta = np.clip(delta, -max_delta, max_delta)
             self._commanded_pos_rev = actual + clamped_delta
-            # Keep vel_ff and torque_ff as computed by the smoother/dynamics.
-            # Overriding vel_ff to clamped_delta/dt (= MAX_SLEW_RATE) caused
-            # the ODrive to accelerate violently; zeroing torque_ff removed
-            # gravity compensation.  Both created sustained oscillation,
-            # especially for Z motion where gravity is the dominant load.
+            # Scale vel_ff proportionally to how much each leg was clamped.
+            # This keeps the feedforward direction correct while reducing
+            # magnitude.  torque_ff (gravity comp) is left unchanged —
+            # zeroing it removed gravity compensation and caused oscillation.
+            abs_delta = np.abs(delta)
+            scale = np.where(abs_delta > 1e-9,
+                             np.abs(clamped_delta) / abs_delta,
+                             1.0)
+            self._commanded_vel_ff_rps *= scale
             self._slew_limited = True
             self._slew_limit_count += 1
             # Only log on first activation to avoid spamming at 500 Hz
@@ -574,7 +600,7 @@ class ControlLoop:
                     f"{np.max(np.abs(delta)):.4f} rev, clamped to "
                     f"{max_delta:.4f} rev")
 
-            if self._slew_limit_count == SLEW_FAULT_CYCLES:
+            if self._slew_limit_count == self._slew_fault_cycles:
                 logger.warning(
                     f"Slew limiter sustained for {self._slew_limit_count} "
                     f"cycles — motors are chasing target")
@@ -742,12 +768,21 @@ class ControlLoop:
             logger.debug(
                 f"Workspace soft limit: speed_scale={ws_check.speed_scale:.2f}, "
                 f"{'; '.join(ws_check.violations)}")
+            # Apply speed degradation to smoother in direct-target mode
+            if traj_state == TrajectoryState.IDLE:
+                s = ws_check.speed_scale
+                self._smoother.set_limits(
+                    self._base_smoother_vel * s,
+                    self._base_smoother_accel * s)
             # Not clamped — pose is still valid (just in the warning zone)
             if pose_6dof is not None:
                 self._last_safe_pose_6dof = pose_6dof.copy()
             self._workspace_clamped = False
         else:
-            # OK — update last safe pose
+            # OK — restore full smoother limits and update last safe pose
+            if traj_state == TrajectoryState.IDLE:
+                self._smoother.set_limits(
+                    self._base_smoother_vel, self._base_smoother_accel)
             if pose_6dof is not None:
                 self._last_safe_pose_6dof = pose_6dof.copy()
             self._workspace_clamped = False
@@ -777,6 +812,8 @@ class ControlLoop:
         else:
             vel = hw.ODRIVE_TRAP_VEL_LIMIT_RPS
             accel = hw.ODRIVE_TRAP_ACC_LIMIT_RPS2
+        self._base_smoother_vel = vel
+        self._base_smoother_accel = accel
         self._smoother.set_limits(vel, accel)
         logger.info(f"Smoother limits: vel={vel} rps, accel={accel} rps²")
 
@@ -837,6 +874,22 @@ class ControlLoop:
             motor_cur=(self._motor_fb_cur_A.tolist()
                        if self._has_motor_fb else None),
             slew_limited=self._slew_limited,
+        )
+        self.ipc.send_telemetry(msg)
+
+    def _publish_fault_telemetry(self, dt_actual: float) -> None:
+        """Send reduced telemetry during ESTOP so the bridge can see fault state.
+
+        No motor commands are included — only diagnostic fields.
+        """
+        msg = make_telemetry(
+            leg_positions=[0.0] * 6,
+            leg_velocities=[0.0] * 6,
+            commanded_torques=[0.0] * 6,
+            loop_dt_s=dt_actual,
+            fault_state=self._fault_state,
+            workspace_status=self._workspace_status.value,
+            slew_limited=False,
         )
         self.ipc.send_telemetry(msg)
 

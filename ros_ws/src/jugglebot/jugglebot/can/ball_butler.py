@@ -91,6 +91,10 @@ def encode_throw_command(yaw_rad: float, pitch_rad: float,
         Bytes 4-5: speed (uint16, 0.1 mm/s per LSB)
         Bytes 6-7: throw time (uint16, lower 16 bits of epoch ms)
     """
+    for name, val in [('yaw', yaw_rad), ('pitch', pitch_rad),
+                       ('speed', speed_mps), ('delay', delay_s)]:
+        if not math.isfinite(val):
+            raise ValueError(f"{name} is {val} (must be finite)")
     if not (-math.pi <= yaw_rad < math.pi):
         raise ValueError(f"Yaw {yaw_rad:.3f} rad outside [-π, π]")
     if not (0 <= pitch_rad <= math.pi / 2):

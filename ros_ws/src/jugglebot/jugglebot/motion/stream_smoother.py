@@ -161,6 +161,17 @@ class StreamSmoother:
         v_max = np.max(np.abs(motor_vel_rps))
         t_decel = 15.0 * v_max / (8.0 * self._accel_limit)
 
+        # Acceleration arrest term: when current motor-space acceleration is
+        # nonzero, the quintic integrates it into a velocity contribution of
+        # ~a_max * T / 10.  Add this "effective velocity" to v_max so that
+        # t_decel accounts for it, preventing overshoot when T_MIN would
+        # otherwise suppress the needed deceleration time.
+        motor_accel_rps2 = (J @ self._accel) * self._geom.mm_to_rev
+        a_max_motor = np.max(np.abs(motor_accel_rps2))
+        if a_max_motor > 1e-6:
+            effective_v = v_max + a_max_motor * self.T_MIN / 10.0
+            t_decel = max(t_decel, 15.0 * effective_v / (8.0 * self._accel_limit))
+
         return float(np.clip(max(t_vel, t_acc, t_decel), self.T_MIN, self.T_MAX))
 
     def _evaluate_at(self, t_now: float) -> None:

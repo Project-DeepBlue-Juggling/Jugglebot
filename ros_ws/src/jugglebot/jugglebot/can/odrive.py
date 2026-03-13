@@ -7,12 +7,19 @@ Node IDs and command IDs come from protocol_config.py (generated from YAML).
 Encoding uses struct.pack directly — no cantools/DBC dependency.
 """
 
+import math
 import struct
 from typing import Tuple
 
 import can
 import jugglebot.protocol_config as proto
 import jugglebot.hardware_config as hw
+
+# ═══════════════════════════════════════════════════════════════
+# ODrive CAN arbitration ID layout
+# ═══════════════════════════════════════════════════════════════
+NODE_ID_SHIFT = 5                      # arb_id = (node_id << 5) | cmd_id
+CMD_ID_MASK = 0x1F                     # lower 5 bits
 
 # ═══════════════════════════════════════════════════════════════
 # Constants re-exported from protocol_config
@@ -144,6 +151,8 @@ def encode_set_input_pos(axis_id: int, position: float,
     Note: caller is responsible for leg inversion (negate for legs 0-5).
     vel_ff and torque_ff are raw int16 values as the ODrive expects.
     """
+    if not math.isfinite(position):
+        raise ValueError(f"position is {position} (must be finite)")
     data = struct.pack('<fhh', position, vel_ff, torque_ff)
     return can.Message(arbitration_id=arb_id(axis_id, 'set_input_pos'),
                        data=data, dlc=8, is_extended_id=False)
@@ -325,5 +334,18 @@ def clip_position(axis_id: int, setpoint: float, logger=None) -> float:
 
 
 def error_names(bitmask: int) -> list:
-    """Extract human-readable error names from a bitmask."""
-    return [name for code, name in ERROR_CODES.items() if bitmask & code]
+    """Extract human-readable error names from a bitmask.
+
+    Unknown bits are included as hex values so future firmware error codes
+    are not silently dropped.
+    """
+    known_mask = 0
+    names = []
+    for code, name in ERROR_CODES.items():
+        if bitmask & code:
+            names.append(name)
+        known_mask |= code
+    unknown = bitmask & ~known_mask
+    if unknown:
+        names.append(f"UNKNOWN(0x{unknown:X})")
+    return names
