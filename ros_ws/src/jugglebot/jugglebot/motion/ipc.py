@@ -20,7 +20,7 @@ Message types:
 No ROS2 dependency.  Requires: pyzmq, msgpack.
 """
 
-from __future__ import annotations
+from __future__ import annotations 
 
 import logging
 import time
