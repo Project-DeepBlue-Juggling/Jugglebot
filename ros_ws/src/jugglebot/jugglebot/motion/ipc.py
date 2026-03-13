@@ -103,7 +103,8 @@ def make_telemetry(leg_positions: list | tuple,
                    motor_pos: list | tuple | None = None,
                    motor_vel: list | tuple | None = None,
                    motor_cur: list | tuple | None = None,
-                   slew_limited: bool = False) -> dict:
+                   slew_limited: bool = False,
+                   workspace_clamped: bool = False) -> dict:
     """Create a Telemetry message from the control loop.
 
     Parameters
@@ -156,6 +157,8 @@ def make_telemetry(leg_positions: list | tuple,
         msg['motor_cur'] = list(motor_cur)
     if slew_limited:
         msg['slew_limited'] = True
+    if workspace_clamped:
+        msg['workspace_clamped'] = True
     return msg
 
 
