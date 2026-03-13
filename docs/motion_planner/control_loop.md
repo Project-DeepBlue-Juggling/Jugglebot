@@ -108,7 +108,7 @@ After computing motor commands, the loop verifies workspace limits:
 3. Call `check_workspace_limits(extensions, cond, limits)`
 
 If the result is `HARD_LIMIT`: cancel trajectory, E-stop, set fault state.
-If the result is `SOFT_LIMIT`: log warning (future: adaptive speed reduction).
+If the result is `SOFT_LIMIT`: log warning; in direct-target mode, scale the smoother velocity and acceleration limits by `speed_scale` to slow the platform as it approaches hard boundaries.
 
 ### Step 7: Slew Limit + Safety Checks
 
@@ -119,7 +119,7 @@ After workspace checks, the `_slew_limit()` method runs the [motor command safet
 3. No leg has excessive tracking error
 4. The rate of position change vs actual motor position is within bounds
 
-If any check fails, commands are suppressed (or an ESTOP is triggered for critical faults). Telemetry is only published when `_slew_limit()` returns `True`.
+If any check fails, commands are suppressed (or an ESTOP is triggered for critical faults like motor overspeed). On ESTOP, the control loop publishes **fault telemetry** (diagnostic fields only, no motor commands) so the bridge can report the fault to the orchestrator. Normal telemetry (with motor commands) is only published when `_slew_limit()` returns `True`.
 
 See [Motor Command Safety](safety.md) for full details.
 

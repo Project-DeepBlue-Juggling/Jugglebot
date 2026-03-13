@@ -150,7 +150,7 @@ The `ik_solver` module includes several rotation representation converters:
 |---|---|
 | `rotvec_to_rot_matrix(rotvec)` | Rotation vector (axis×angle) → 3×3 matrix, via Rodrigues formula |
 | `rot_matrix_to_rotvec(R)` | 3×3 matrix → rotation vector |
-| `quat_to_rot_matrix(w, x, y, z)` | Quaternion → 3×3 matrix (auto-normalizes) |
+| `quat_to_rot_matrix(w, x, y, z)` | Quaternion → 3×3 matrix (auto-normalizes; raises `ValueError` on zero/near-zero quaternion) |
 | `rot_matrix_to_quat(R)` | 3×3 matrix → quaternion `(w, x, y, z)`, via Shepperd's method |
 | `skew(v)` | 3-vector → 3×3 skew-symmetric matrix |
 

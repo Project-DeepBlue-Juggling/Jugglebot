@@ -49,7 +49,7 @@ Process 1: ROS2 Nodes                    Process 2: Control Loop
 |  can_node.py                     |     |    trajectory.py          |
 |  motion_bridge_node.py -------IPC----->    ik_solver.py            |
 |  spacemouse_handler.py           |     |    dynamics.py            |
-|  mocap_interface_node.py   <--IPC------    workspace.py            |
+|  mocap_interface.py        <--IPC------    workspace.py            |
 |                                  |     |    conversions.py         |
 +----------------------------------+     +---------------------------+
 ```

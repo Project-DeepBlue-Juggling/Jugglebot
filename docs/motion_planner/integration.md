@@ -83,7 +83,7 @@ The bridge tracks which control source is currently active (spacemouse, shell, l
 |---|---|---|
 | `SPACEMOUSE` | spacemouse | `enable` (if mode changed) |
 | `SHELL` | shell | `enable` (if mode changed) |
-| `LEVELLING` | levelling | `enable` (if mode changed) |
+| `LEVELLING` | levelling | `disable` if previously enabled; control loop stays disabled (CAN node handles levelling directly) |
 | `GUI` | gui | `enable` (if mode changed) |
 | `ERROR` | — | `estop` |
 | empty/None | — | `disable` (if was active) |

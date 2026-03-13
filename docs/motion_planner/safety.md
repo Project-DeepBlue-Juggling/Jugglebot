@@ -29,9 +29,9 @@ Safety checks are applied at three independent layers. Each layer catches differ
   3. Motor feedback gate (no feedback → no commands)
   4. Feedback staleness check (old feedback → no commands)
   5. Motor overspeed check (feedback velocity too high → ESTOP)
-  6. Tracking error check (commanded vs actual divergence → ESTOP)
+  6. Tracking error check (commanded vs actual divergence → warning)
   7. Slew rate limiter (clamps rate of position change vs feedback)
-  8. Sustained slew fault (clamping too long → ESTOP)
+  8. Sustained slew fault (clamping too long → warning)
 
                     Runtime — CAN Node
                     ───────────────────
@@ -54,8 +54,9 @@ delta = commanded_pos - actual_pos
 if any(|delta| > max_delta):
     clamped_delta = clip(delta, -max_delta, max_delta)
     commanded_pos = actual_pos + clamped_delta
-    vel_ff = clamped_delta / dt
-    torque_ff = 0  # zeroed during clamping
+    scale = |clamped_delta| / |delta|  # per-leg ratio
+    vel_ff *= scale           # proportional to clamping
+    # torque_ff unchanged — gravity comp must be preserved
 ```
 
 ### Key Behaviours
@@ -64,7 +65,7 @@ if any(|delta| > max_delta):
 |---|---|
 | Normal trajectory (deltas well under limit) | Transparent — commands pass through unchanged |
 | Step discontinuity (e.g., stale home command) | Clamped to safe rate (~667 mm/s) |
-| Sustained clamping (>0.5s / 250 cycles) | ESTOP fault (`slew_limit_sustained`) |
+| Sustained clamping (>0.5s) | Warning logged; cycle count derived from loop rate |
 | No motor feedback available | All commands suppressed |
 | Motor feedback stale (>100ms) | All commands suppressed |
 
@@ -76,8 +77,8 @@ Rejecting a large command would leave the ODrives holding their last position, w
 
 When the slew limiter clamps a position command:
 
-- **vel_ff** is set to match the clamped rate (`clamped_delta / dt`), giving the ODrive's velocity loop an accurate feedforward
-- **torque_ff** is zeroed. The feedforward torques are small (gravity compensation) and the ODrive's PID can handle the load without them. Zeroing avoids applying torques that were computed for a different (unclamped) trajectory.
+- **vel_ff** is scaled proportionally to the clamping ratio per leg (`|clamped_delta| / |original_delta|`). This keeps the feedforward direction correct while reducing magnitude to match the reduced travel.
+- **torque_ff** is left **unchanged**. The gravity compensation torque is still physically correct (the platform's weight hasn't changed) and zeroing it caused oscillation during testing — the ODrive's PID had to rediscover the gravity load from scratch each cycle the limiter was active.
 
 ## Motor Feedback Gate
 
@@ -122,14 +123,14 @@ This catches hardware failures (broken encoder, controller runaway) that could c
 
 ## Tracking Error Check
 
-The control loop computes per-leg tracking error: the difference between commanded and actual motor positions, converted to millimetres. If any leg exceeds `MAX_TRACKING_ERROR_MM` (10 mm), the loop triggers an ESTOP.
+The control loop computes per-leg tracking error: the difference between commanded and actual motor positions, converted to millimetres. If any leg exceeds `MAX_TRACKING_ERROR_MM` (10 mm), a warning is logged identifying the worst leg and error magnitude.
 
 ```python
 if any(tracking_error_mm > MAX_TRACKING_ERROR_MM):
-    → ESTOP (fault: tracking_error_exceeded)
+    → log warning (worst leg index, error in mm)
 ```
 
-Tracking error above 10 mm indicates the platform is not where the control loop thinks it is — the commanded trajectory has diverged from reality. Possible causes: mechanical obstruction, excessive load, or a leg that has lost tension.
+Large tracking errors are logged but do **not** trigger ESTOP. The slew limiter already rate-limits motor commands, so the motors will naturally catch up. Freezing the platform (ESTOP) would be worse than allowing recovery, especially during manual spacemouse control where the operator can move back to reduce error.
 
 ## Lead-Time Gate
 
@@ -173,7 +174,7 @@ When any safety check triggers an ESTOP in the control loop, the following seque
 1. Control loop → mode = ESTOP
    → _zero_outputs()              # all commands go to zero
    → cancel active trajectory
-   → stop publishing telemetry
+   → publish fault telemetry (diagnostic fields only, no motor commands)
 
 2. ODrives hold last commanded position
    (position control fail-safe — no drift, no free-spin)
@@ -210,7 +211,7 @@ All safety constants are defined as module-level values in `control_loop.py` (no
 | Constant | Value | Rationale |
 |---|---|---|
 | `MAX_SLEW_RATE_REV_PER_S` | 9.5 | ~667 mm/s — 200mm of travel takes ≥0.3s |
-| `SLEW_FAULT_CYCLES` | 250 | 0.5s at 500 Hz before sustained-clamping fault |
+| `SLEW_FAULT_DURATION_S` | 0.5 | Converted to cycles at runtime (`int(0.5 * rate_hz)`) |
 | `MAX_MOTOR_VEL_RPS` | `ODRIVE_TRAP_VEL_LIMIT_RPS × 1.1` | 10% above configured ODrive velocity limit |
 | `MAX_TRACKING_ERROR_MM` | 10.0 | ~3.5% of full stroke (280mm) |
 | `MOTOR_FB_STALENESS_S` | 0.1 | 100ms ≈ 50 control cycles at 500 Hz |
@@ -231,7 +232,7 @@ All safety constants are defined as module-level values in `control_loop.py` (no
 | 4 | No feedback suppresses | `_has_motor_fb=False` → no commands |
 | 5 | Stale feedback suppresses | 200ms-old timestamp → no commands |
 | 6 | Motor overspeed | Feedback velocity > limit → ESTOP |
-| 7 | Tracking error | Error > 10mm → ESTOP |
+| 7 | Tracking error | Error > 10mm → warning logged |
 | 8 | Lead-time gate | Dynamic target with <0.3s lead → rejected |
 
 Tests 1-7 require pyzmq/msgpack (Jetson-only); test 8 always runs.

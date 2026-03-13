@@ -99,10 +99,10 @@ class WorkspaceCheck:
 | Status | Control Loop Action |
 |---|---|
 | `OK` | Normal operation |
-| `SOFT_LIMIT` | Log warning with speed_scale. (Future: adaptive speed reduction) |
+| `SOFT_LIMIT` | Log warning; in direct-target mode, scale smoother velocity/acceleration limits by `speed_scale` to slow the platform as it approaches hard boundaries |
 | `HARD_LIMIT` | Cancel active trajectory, E-stop, set fault state |
 
-Currently, the soft limit triggers a log warning but does not actively slow the trajectory. The feasibility checker prevents trajectories from entering soft zones under normal conditions, so the runtime soft limit is a secondary safety net for unexpected situations (disturbances, modelling errors).
+In direct-target mode (spacemouse, shell), the soft limit actively slows the platform by scaling the smoother's velocity and acceleration limits by the workspace `speed_scale` factor (which ramps linearly from 1.0 at the soft boundary to 0.0 at the hard boundary). During trajectory execution, the feasibility checker prevents trajectories from entering soft zones under normal conditions, so the runtime soft limit is a secondary safety net for unexpected situations (disturbances, modelling errors).
 
 ## Additional Workspace Functions
 
