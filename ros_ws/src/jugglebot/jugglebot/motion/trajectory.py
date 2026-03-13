@@ -574,8 +574,8 @@ def check_feasibility(
         # Cartesian jerk (3rd derivative)
         if check_jerk:
             jerk = evaluate_jerk(traj, t)
-            jerk_t_mag = float(np.max(np.abs(jerk[:3])))
-            jerk_r_mag = float(np.max(np.abs(jerk[3:])))
+            jerk_t_mag = float(np.linalg.norm(jerk[:3]))
+            jerk_r_mag = float(np.linalg.norm(jerk[3:]))
             peak_jerk_t = max(peak_jerk_t, jerk_t_mag)
             peak_jerk_r = max(peak_jerk_r, jerk_r_mag)
 

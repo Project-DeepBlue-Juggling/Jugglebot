@@ -122,6 +122,8 @@ def check_workspace_limits(extensions_mm: np.ndarray,
                 status = WorkspaceStatus.SOFT_LIMIT
             # Linear ramp-down: at soft boundary speed=1.0, at hard boundary speed=0.0
             margin = LEG_SOFT_MARGIN_MM - LEG_HARD_MARGIN_MM
+            if margin <= 0.0:
+                margin = 1.0  # Avoid division by zero; treat as hard limit
             if ext < limits.leg_soft_min_mm:
                 dist = limits.leg_soft_min_mm - ext
             else:

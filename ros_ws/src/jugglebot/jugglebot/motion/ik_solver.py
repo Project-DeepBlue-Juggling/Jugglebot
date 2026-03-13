@@ -55,6 +55,8 @@ def quat_to_rot_matrix(w: float, x: float, y: float, z: float) -> np.ndarray:
     """Quaternion (w, x, y, z) → 3×3 rotation matrix."""
     # Normalise to guard against drift
     n = np.sqrt(w*w + x*x + y*y + z*z)
+    if n < 1e-12:
+        raise ValueError(f"Zero or near-zero quaternion: ({w}, {x}, {y}, {z})")
     w, x, y, z = w/n, x/n, y/n, z/n
 
     return np.array([
@@ -113,7 +115,7 @@ def rotvec_to_rot_matrix(rotvec: np.ndarray) -> np.ndarray:
 def rot_matrix_to_rotvec(R: np.ndarray) -> np.ndarray:
     """3×3 rotation matrix → rotation vector (axis × angle in radians)."""
     angle = np.arccos(np.clip((np.trace(R) - 1.0) / 2.0, -1.0, 1.0))
-    if angle < 1e-12:
+    if angle < 1e-8:
         return np.zeros(3)
     # Extract axis from skew-symmetric part of R
     axis = np.array([R[2, 1] - R[1, 2],
@@ -357,7 +359,10 @@ def leg_lengths_to_pose(extensions_mm: np.ndarray,
 
         J = compute_jacobian(pos_cur, rot_cur, geom)
         # Newton step: δx = -J⁻¹ · residual
-        dx = np.linalg.solve(J, -residual)
+        try:
+            dx = np.linalg.solve(J, -residual)
+        except np.linalg.LinAlgError:
+            raise RuntimeError("FK failed: singular Jacobian at current pose")
         x += dx
 
     raise RuntimeError(

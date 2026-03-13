@@ -82,13 +82,20 @@ class DynamicsParams:
              hw.DYNAMICS_PLATFORM_INERTIA_TENSOR_KGMM2_IZZ],
         ], dtype=np.float64)
 
+        mass = float(hw.DYNAMICS_PLATFORM_MASS_KG)
+        gravity = float(hw.GRAVITY_MPS2)
+        motor_inertia = float(hw.DYNAMICS_MOTOR_ROTOR_INERTIA_KGM2)
+        assert mass > 0, f"mass must be positive, got {mass}"
+        assert gravity > 0, f"gravity must be positive, got {gravity}"
+        assert motor_inertia >= 0, f"motor inertia must be non-negative, got {motor_inertia}"
+        assert not np.any(np.isnan(inertia)), "inertia tensor contains NaN"
+
         return cls(
-            mass_kg=float(hw.DYNAMICS_PLATFORM_MASS_KG),
+            mass_kg=mass,
             com_offset_mm=hw.DYNAMICS_PLATFORM_COM_OFFSET_MM,
-            gravity_mps2=float(hw.GRAVITY_MPS2),
+            gravity_mps2=gravity,
             inertia_tensor_kgmm2=inertia,
-            motor_rotor_inertia_kgm2=float(
-                hw.DYNAMICS_MOTOR_ROTOR_INERTIA_KGM2),
+            motor_rotor_inertia_kgm2=motor_inertia,
         )
 
 
@@ -240,7 +247,10 @@ def gravity_to_leg_forces(pos: np.ndarray, rot: np.ndarray,
     W_support = -W_gravity  # wrench that the legs must produce
 
     # Solve J^T · f = W_support for f
-    f_legs = np.linalg.solve(J.T, W_support)
+    try:
+        f_legs = np.linalg.solve(J.T, W_support)
+    except np.linalg.LinAlgError:
+        return np.zeros(6)
     return f_legs
 
 
@@ -319,7 +329,10 @@ def compute_full_feedforward_torques(
 
     # --- Combined wrench → per-leg forces → motor torques ---
     W_total = W_support + W_inertia
-    f_legs = np.linalg.solve(J.T, W_total)
+    try:
+        f_legs = np.linalg.solve(J.T, W_total)
+    except np.linalg.LinAlgError:
+        return np.zeros(6)
     torque_platform = leg_forces_to_motor_torques(f_legs, geom)
 
     # --- Component 3: Reflected motor inertia ---

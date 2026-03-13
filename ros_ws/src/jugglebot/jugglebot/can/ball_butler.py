@@ -91,7 +91,7 @@ def encode_throw_command(yaw_rad: float, pitch_rad: float,
         Bytes 4-5: speed (uint16, 0.1 mm/s per LSB)
         Bytes 6-7: throw time (uint16, lower 16 bits of epoch ms)
     """
-    if not (-math.pi <= yaw_rad <= math.pi):
+    if not (-math.pi <= yaw_rad < math.pi):
         raise ValueError(f"Yaw {yaw_rad:.3f} rad outside [-π, π]")
     if not (0 <= pitch_rad <= math.pi / 2):
         raise ValueError(f"Pitch {pitch_rad:.3f} rad outside [0, π/2]")
