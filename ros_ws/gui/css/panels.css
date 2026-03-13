@@ -51,62 +51,33 @@
 }
 
 /* ---- Jog panel ---- */
-.jog-sliders {
+.jog-grid {
     display: flex;
     flex-direction: column;
     gap: var(--gap-xs);
     margin-bottom: var(--gap-sm);
 }
 
-.jog-slider-row {
+.jog-axis-row {
     display: grid;
-    grid-template-columns: auto 1fr auto;
-    align-items: center;
-    gap: var(--gap-sm);
-}
-
-.jog-slider-label {
-    font-size: var(--font-size-xs);
-    color: var(--text-muted);
-    text-transform: uppercase;
-    white-space: nowrap;
-    min-width: 72px;
-}
-
-.jog-range {
-    width: 100%;
-    accent-color: var(--accent-blue);
-    cursor: pointer;
-}
-
-.jog-step-value {
-    font-family: var(--font-mono);
-    font-size: var(--font-size-xs);
-    color: var(--text-secondary);
-    min-width: 48px;
-    text-align: right;
-}
-
-.jog-buttons {
-    display: grid;
-    grid-template-columns: repeat(5, 1fr);
-    gap: var(--gap-xs);
-    margin-bottom: var(--gap-sm);
+    grid-template-columns: repeat(9, 1fr);
+    gap: 2px;
 }
 
 .jog-btn {
-    padding: 6px 4px;
+    padding: 5px 2px;
     border: 1px solid var(--border-color);
     border-radius: var(--border-radius-sm);
     background: var(--bg-primary);
     color: var(--text-primary);
     font-family: var(--font-mono);
-    font-size: var(--font-size-xs);
+    font-size: 10px;
     font-weight: 600;
     cursor: pointer;
     transition: background var(--transition-fast), border-color var(--transition-fast);
     user-select: none;
     text-align: center;
+    white-space: nowrap;
 }
 
 .jog-btn:hover {
@@ -118,6 +89,18 @@
     background: var(--accent-blue);
     color: #fff;
     transform: scale(0.95);
+}
+
+.jog-btn-zero {
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    font-weight: 700;
+    font-size: var(--font-size-xs);
+}
+
+.jog-btn-zero:hover {
+    background: var(--bg-card-hover);
+    color: var(--text-primary);
 }
 
 .jog-home-btn {
@@ -147,6 +130,77 @@
     text-align: center;
     padding-top: var(--gap-xs);
     border-top: 1px solid var(--border-color);
+}
+
+/* ---- Speed limits panel ---- */
+.speed-limits-grid {
+    display: flex;
+    flex-direction: column;
+    gap: var(--gap-xs);
+}
+
+.speed-limit-row {
+    display: grid;
+    grid-template-columns: 56px 1fr auto auto;
+    align-items: center;
+    gap: 6px;
+}
+
+.speed-limit-label {
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.speed-limit-slider {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 4px;
+    background: var(--border-color);
+    border-radius: 2px;
+    outline: none;
+    cursor: pointer;
+}
+
+.speed-limit-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--accent-blue);
+    cursor: pointer;
+    transition: background var(--transition-fast);
+}
+
+.speed-limit-slider::-webkit-slider-thumb:hover {
+    background: #60a5fa;
+}
+
+.speed-limit-slider::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--accent-blue);
+    border: none;
+    cursor: pointer;
+}
+
+.speed-limit-value {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    color: var(--text-primary);
+    font-weight: 600;
+    min-width: 28px;
+    text-align: right;
+}
+
+.speed-limit-unit {
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+    min-width: 36px;
 }
 
 /* ---- Motor status grid ---- */

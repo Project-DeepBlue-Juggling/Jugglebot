@@ -142,13 +142,23 @@ export let currentSubMode = '';
 
 // ---- System flags ----
 
+// Layout: 2-column grid, ordered left-to-right then top-to-bottom.
+// Left column: error-style flags (good=tick, bad=cross)
+// Right column: progress-style flags (done=tick, waiting=dot)
+// Row 4 right: Mocap (updated separately via setMocapConnected)
 const FLAGS = [
-    { id: 'flag-encoder', label: 'Encoder Search' },
-    { id: 'flag-homed', label: 'Homed' },
-    { id: 'flag-levelled', label: 'Levelled' },
-    { id: 'flag-fatal-odrive', label: 'ODrives Good' },
-    { id: 'flag-fatal-can', label: 'CAN Good' },
-    { id: 'flag-undervoltage', label: 'Voltage Good' },
+    // Row 1
+    { id: 'flag-undervoltage', type: 'error', labelOk: 'Voltage OK',       labelFail: 'Undervoltage' },
+    { id: 'flag-encoder',      type: 'progress', labelDone: 'Encoders Found', labelWait: 'Encoder Search' },
+    // Row 2
+    { id: 'flag-fatal-odrive', type: 'error', labelOk: 'ODrives OK',       labelFail: 'ODrive Error' },
+    { id: 'flag-homed',        type: 'progress', labelDone: 'Homed',          labelWait: 'Not Homed' },
+    // Row 3
+    { id: 'flag-fatal-can',    type: 'error', labelOk: 'CAN OK',           labelFail: 'CAN Error' },
+    { id: 'flag-levelled',     type: 'progress', labelDone: 'Levelled',       labelWait: 'Not Levelled' },
+    // Row 4 (left empty, right = mocap)
+    { id: 'flag-spacer',       type: 'spacer' },
+    { id: 'flag-mocap',        type: 'progress', labelDone: 'Mocap Connected', labelWait: 'Mocap Disconnected' },
 ];
 
 export function initFlagsGrid() {
@@ -157,10 +167,16 @@ export function initFlagsGrid() {
 
     for (const flag of FLAGS) {
         const item = document.createElement('div');
+        if (flag.type === 'spacer') {
+            item.className = 'flag-item flag-spacer';
+            grid.appendChild(item);
+            continue;
+        }
         item.className = 'flag-item';
+        const defaultLabel = flag.type === 'error' ? flag.labelOk : flag.labelWait;
         item.innerHTML = `
             <span class="flag-icon wait" id="${flag.id}-icon">&#x25cf;</span>
-            <span>${flag.label}</span>
+            <span id="${flag.id}-label">${defaultLabel}</span>
         `;
         grid.appendChild(item);
     }
@@ -170,26 +186,38 @@ export function initFlagsGrid() {
  * Update system flags from robot_state.
  */
 export function updateFlags(robotState) {
-    setFlag('flag-encoder', robotState.encoder_search_complete);
-    setFlag('flag-homed', robotState.is_homed);
-    setFlag('flag-levelled', robotState.levelling_complete);
-    setFlagError('flag-fatal-odrive', robotState.has_fatal_odrive_error);
-    setFlagError('flag-fatal-can', robotState.has_fatal_can_error);
-    setFlagError('flag-undervoltage', robotState.has_undervoltage);
+    setFlagProgress('flag-encoder', robotState.encoder_search_complete, 'Encoders Found', 'Encoder Search');
+    setFlagProgress('flag-homed', robotState.is_homed, 'Homed', 'Not Homed');
+    setFlagProgress('flag-levelled', robotState.levelling_complete, 'Levelled', 'Not Levelled');
+    setFlagError('flag-fatal-odrive', robotState.has_fatal_odrive_error, 'ODrive Error', 'ODrives OK');
+    setFlagError('flag-fatal-can', robotState.has_fatal_can_error, 'CAN Error', 'CAN OK');
+    setFlagError('flag-undervoltage', robotState.has_undervoltage, 'Undervoltage', 'Voltage OK');
 }
 
-function setFlag(id, value) {
+/**
+ * Update the mocap connected flag.
+ * @param {boolean} connected
+ */
+export function setMocapConnected(connected) {
+    setFlagProgress('flag-mocap', connected, 'Mocap Connected', 'Mocap Disconnected');
+}
+
+function setFlagProgress(id, value, labelDone, labelWait) {
     const icon = document.getElementById(id + '-icon');
+    const label = document.getElementById(id + '-label');
     if (!icon) return;
     icon.className = 'flag-icon ' + (value ? 'ok' : 'wait');
     icon.innerHTML = value ? '&#x2713;' : '&#x25cf;';
+    if (label) label.textContent = value ? labelDone : labelWait;
 }
 
-function setFlagError(id, value) {
+function setFlagError(id, hasError, labelFail, labelOk) {
     const icon = document.getElementById(id + '-icon');
+    const label = document.getElementById(id + '-label');
     if (!icon) return;
-    icon.className = 'flag-icon ' + (value ? 'fail' : 'ok');
-    icon.innerHTML = value ? '&#x2717;' : '&#x2713;';
+    icon.className = 'flag-icon ' + (hasError ? 'fail' : 'ok');
+    icon.innerHTML = hasError ? '&#x2717;' : '&#x2713;';
+    if (label) label.textContent = hasError ? labelFail : labelOk;
 }
 
 // ---- Levelling panel ----

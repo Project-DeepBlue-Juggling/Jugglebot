@@ -238,6 +238,7 @@ html, body {
     padding: var(--gap);
     display: flex;
     flex-direction: column;
+    gap: var(--gap);
 }
 
 #left-sidebar #panel-topics {

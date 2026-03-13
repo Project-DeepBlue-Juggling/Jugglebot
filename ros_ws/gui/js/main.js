@@ -21,11 +21,14 @@ import {
     updateFlags, updateLevellingPanel, updateBBPanel, setBBDisconnected,
     updateCANTraffic, updateTrackingError, updateMotionPanel,
     recordTopicMessage, registerTopic, updateTopicMonitor, clearTopicData,
+    setMocapConnected,
 } from './panels.js';
 import { initCommands, updateCommandStates, onModeButtonClick } from './commands.js';
 import { INITIAL_HEIGHT_MM, MM_TO_REV } from './geometry-config.js';
 import { initTelemetryCharts, onTelemetryData, rebuildCharts } from './telemetry-charts.js';
-import { initJogPanel, setJogPanelVisible } from './jog-panel.js';
+import { initJogPanel, setJogPanelVisible,
+         initSpeedLimitsPanel, setSpeedLimitsPanelVisible, resetSpeedLimitsForMode,
+} from './jog-panel.js';
 
 // ---- Latest data stores ----
 let latestMotorStates = null;
@@ -48,6 +51,10 @@ function init() {
     initCommands();
     onModeButtonClick((mode) => {
         setJogPanelVisible(mode === 'gui');
+        setSpeedLimitsPanelVisible(mode === 'gui' || mode === 'spacemouse');
+        if (mode === 'gui' || mode === 'spacemouse') {
+            resetSpeedLimitsForMode(mode);
+        }
     });
 
     // 4. Init scene menu
@@ -62,8 +69,9 @@ function init() {
     // 6. Init telemetry charts
     initTelemetryCharts();
 
-    // 6a. Init jog panel
+    // 6a. Init jog panel + speed limits
     initJogPanel();
+    initSpeedLimitsPanel();
 
     // 7. Init ROS connection
     ros.onConnectionStateChange(onConnectionStateChange);
@@ -97,6 +105,7 @@ function onConnectionStateChange(state) {
             dot.className = 'status-dot disconnected';
             text.textContent = 'Disconnected';
             setJogPanelVisible(false);
+            setSpeedLimitsPanelVisible(false);
             stopTopicDiscovery();
             break;
     }
@@ -228,10 +237,11 @@ function onOrchestratorState(msg) {
     updateOrchestratorState(msg.data);
     updateCommandStates();
 
-    // Show/hide jog panel based on sub-mode (backup for control_mode_topic)
+    // Show/hide jog + speed limits panels based on sub-mode (backup for control_mode_topic)
     const parts = msg.data.split(':');
     const sub = (parts[1] || '').toUpperCase();
     setJogPanelVisible(sub === 'GUI');
+    setSpeedLimitsPanelVisible(sub === 'GUI' || sub === 'SPACEMOUSE');
 }
 
 function onCANTraffic(msg) {
@@ -250,8 +260,9 @@ function onRigidBodyPoses(msg) {
     recordTopicMessage('rigid_body_poses');
     // Mark mocap as available; reset timeout
     useMocapPose = true;
+    setMocapConnected(true);
     if (mocapTimeout) clearTimeout(mocapTimeout);
-    mocapTimeout = setTimeout(() => { useMocapPose = false; }, MOCAP_TIMEOUT_MS);
+    mocapTimeout = setTimeout(() => { useMocapPose = false; setMocapConnected(false); }, MOCAP_TIMEOUT_MS);
 
     // Find the platform rigid body
     // RigidBodyPoses contains: bodies[] where each body has { name, pose: PoseStamped }
@@ -298,7 +309,9 @@ function onLegLengths(msg) {
 
 function onControlMode(msg) {
     recordTopicMessage('control_mode_topic');
-    setJogPanelVisible(msg.data === 'GUI');
+    const mode = msg.data;
+    setJogPanelVisible(mode === 'GUI');
+    setSpeedLimitsPanelVisible(mode === 'GUI' || mode === 'SPACEMOUSE');
 }
 
 function onMotionDiagnostics(msg) {

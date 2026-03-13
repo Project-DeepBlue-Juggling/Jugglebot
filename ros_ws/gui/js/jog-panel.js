@@ -1,8 +1,9 @@
 /**
- * jog-panel.js — Jogging control panel for manual platform positioning.
+ * jog-panel.js — CNC-style jogging control panel for manual platform positioning.
  *
- * Provides +/- buttons for 5 DoF (X, Y, Z, Roll, Pitch) with adjustable
- * step sizes. Publishes PlatformPoseCommand messages via ROSLIB.
+ * Provides per-axis rows of fixed-increment buttons (-10, -5, -1, -0.5, 0,
+ * +0.5, +1, +5, +10) for cumulative jogging.  The centre "0" button resets
+ * that axis to zero.
  *
  * Shown only when the control mode is 'GUI'; hidden otherwise.
  *
@@ -15,19 +16,6 @@
 import * as ros from './ros-bridge.js';
 import { DEFAULT_ACTIVE_Z_MM } from './geometry-config.js';
 
-// ---- Configuration ----
-
-const TRANS_STEP_MIN = 1;    // mm
-const TRANS_STEP_MAX = 50;   // mm
-const TRANS_STEP_DEFAULT = 5;
-
-const ROT_STEP_MIN = 0.1;   // degrees
-const ROT_STEP_MAX = 5.0;   // degrees
-const ROT_STEP_DEFAULT = 0.5;
-
-const STORAGE_KEY_TRANS = 'jugglebot-jog-trans-step';
-const STORAGE_KEY_ROT = 'jugglebot-jog-rot-step';
-
 // ---- Axis definitions ----
 
 const AXES = [
@@ -38,13 +26,14 @@ const AXES = [
     { id: 'ry', label: 'Ry', idx: 4, type: 'rot' },
 ];
 
+// Step sizes for CNC-style buttons
+const TRANS_STEPS = [10, 5, 1, 0.5];       // mm (shown as -10 … -0.5, 0, +0.5 … +10)
+const ROT_STEPS   = [5, 2, 1, 0.5];        // degrees
+
 // ---- State ----
 
 /** Current jog target pose: [x, y, z, rx, ry, rz] in mm and radians */
 let jogTarget = [0, 0, 0, 0, 0, 0];
-
-let transStep = TRANS_STEP_DEFAULT;
-let rotStep = ROT_STEP_DEFAULT;
 
 /** @type {{ publish: function } | null} */
 let posePublisher = null;
@@ -71,17 +60,66 @@ function rotvecToQuat(rx, ry, rz) {
 // ---- Panel creation ----
 
 /**
+ * Format a step value for display on a button.
+ * @param {number} value - step size
+ * @param {string} type - 'trans' or 'rot'
+ * @returns {string}
+ */
+function formatStep(value, type) {
+    if (Number.isInteger(value)) return value.toString();
+    return value.toFixed(1);
+}
+
+/**
+ * Build one axis row: [-max … -min, LABEL, +min … +max]
+ * @param {object} axis - axis definition
+ * @returns {HTMLElement}
+ */
+function buildAxisRow(axis) {
+    const row = document.createElement('div');
+    row.className = 'jog-axis-row';
+
+    const steps = axis.type === 'trans' ? TRANS_STEPS : ROT_STEPS;
+
+    // Negative buttons (large to small: -10, -5, -1, -0.5)
+    for (const step of steps) {
+        const btn = document.createElement('button');
+        btn.className = 'jog-btn jog-btn-neg';
+        btn.textContent = '\u2212' + formatStep(step, axis.type);
+        btn.addEventListener('click', () => onJogClick(axis, -step));
+        row.appendChild(btn);
+    }
+
+    // Centre zero/label button — resets this axis to 0
+    const zeroBtn = document.createElement('button');
+    zeroBtn.className = 'jog-btn jog-btn-zero';
+    zeroBtn.textContent = axis.label;
+    zeroBtn.title = `Reset ${axis.label} to 0`;
+    zeroBtn.addEventListener('click', () => {
+        jogTarget[axis.idx] = 0;
+        publishPose();
+        updateReadout();
+    });
+    row.appendChild(zeroBtn);
+
+    // Positive buttons (small to large: +0.5, +1, +5, +10)
+    for (const step of [...steps].reverse()) {
+        const btn = document.createElement('button');
+        btn.className = 'jog-btn jog-btn-pos';
+        btn.textContent = '+' + formatStep(step, axis.type);
+        btn.addEventListener('click', () => onJogClick(axis, +step));
+        row.appendChild(btn);
+    }
+
+    return row;
+}
+
+/**
  * Initialise the jog panel DOM and publisher.
  */
 export function initJogPanel() {
     const panel = document.getElementById('panel-jog');
     if (!panel) return;
-
-    // Restore saved step sizes
-    const savedTrans = localStorage.getItem(STORAGE_KEY_TRANS);
-    if (savedTrans) transStep = parseFloat(savedTrans) || TRANS_STEP_DEFAULT;
-    const savedRot = localStorage.getItem(STORAGE_KEY_ROT);
-    if (savedRot) rotStep = parseFloat(savedRot) || ROT_STEP_DEFAULT;
 
     // Create publisher
     posePublisher = ros.advertise(
@@ -92,59 +130,17 @@ export function initJogPanel() {
     panel.innerHTML = `
         <div class="panel-header">
             <span class="panel-title">Jog</span>
-            <button class="jog-home-btn" id="jog-home" title="Reset jog target to home">Home</button>
+            <button class="jog-home-btn" id="jog-home" title="Reset all axes to home">Home</button>
         </div>
-        <div class="jog-sliders">
-            <div class="jog-slider-row">
-                <label class="jog-slider-label">Translation</label>
-                <input type="range" class="jog-range" id="jog-trans-slider"
-                    min="${TRANS_STEP_MIN}" max="${TRANS_STEP_MAX}" step="1"
-                    value="${transStep}">
-                <span class="jog-step-value" id="jog-trans-value">${transStep.toFixed(0)} mm</span>
-            </div>
-            <div class="jog-slider-row">
-                <label class="jog-slider-label">Rotation</label>
-                <input type="range" class="jog-range" id="jog-rot-slider"
-                    min="${ROT_STEP_MIN}" max="${ROT_STEP_MAX}" step="0.1"
-                    value="${rotStep}">
-                <span class="jog-step-value" id="jog-rot-value">${rotStep.toFixed(1)}&deg;</span>
-            </div>
-        </div>
-        <div class="jog-buttons" id="jog-buttons"></div>
+        <div class="jog-grid" id="jog-grid"></div>
         <div class="jog-readout" id="jog-readout"></div>
     `;
 
-    // Build jog buttons
-    const btnContainer = document.getElementById('jog-buttons');
-    for (const sign of [+1, -1]) {
-        for (const axis of AXES) {
-            const btn = document.createElement('button');
-            btn.className = 'jog-btn';
-            btn.textContent = (sign > 0 ? '+' : '\u2212') + axis.label;
-            btn.dataset.axis = axis.id;
-            btn.dataset.sign = sign;
-            btn.addEventListener('click', () => onJogClick(axis, sign));
-            btnContainer.appendChild(btn);
-        }
+    // Build per-axis rows
+    const grid = document.getElementById('jog-grid');
+    for (const axis of AXES) {
+        grid.appendChild(buildAxisRow(axis));
     }
-
-    // Slider events
-    const transSlider = document.getElementById('jog-trans-slider');
-    const rotSlider = document.getElementById('jog-rot-slider');
-    const transValue = document.getElementById('jog-trans-value');
-    const rotValue = document.getElementById('jog-rot-value');
-
-    transSlider.addEventListener('input', () => {
-        transStep = parseFloat(transSlider.value);
-        transValue.textContent = transStep.toFixed(0) + ' mm';
-        localStorage.setItem(STORAGE_KEY_TRANS, transStep);
-    });
-
-    rotSlider.addEventListener('input', () => {
-        rotStep = parseFloat(rotSlider.value);
-        rotValue.textContent = rotStep.toFixed(1) + '\u00b0';
-        localStorage.setItem(STORAGE_KEY_ROT, rotStep);
-    });
 
     // Home button
     document.getElementById('jog-home').addEventListener('click', () => {
@@ -158,12 +154,13 @@ export function initJogPanel() {
 
 // ---- Jog logic ----
 
-function onJogClick(axis, sign) {
-    const step = axis.type === 'trans'
-        ? transStep * sign
-        : (rotStep * Math.PI / 180) * sign;  // convert deg to rad
+function onJogClick(axis, step) {
+    // step is in mm for translation, degrees for rotation
+    const delta = axis.type === 'trans'
+        ? step
+        : step * Math.PI / 180;  // convert deg to rad
 
-    jogTarget[axis.idx] += step;
+    jogTarget[axis.idx] += delta;
     publishPose();
     updateReadout();
 }
@@ -226,5 +223,84 @@ export function setJogPanelVisible(visible) {
     if (visible) {
         jogTarget = [0, 0, 0, 0, 0, 0];
         updateReadout();
+    }
+}
+
+// ---- Speed limits panel ----
+
+// Default limits matching hardware_config.py (both GUI and SpaceMouse use same defaults)
+const DEFAULT_VEL_LIMIT_RPS = 5.0;
+const DEFAULT_ACCEL_LIMIT_RPS2 = 6.0;
+
+/** @type {{ publish: function } | null} */
+let limitsPublisher = null;
+
+/**
+ * Initialise the speed limits panel: wire slider events and create publisher.
+ */
+export function initSpeedLimitsPanel() {
+    limitsPublisher = ros.advertise(
+        'smoother_limits', 'std_msgs/msg/Float64MultiArray');
+
+    const velSlider = document.getElementById('speed-vel-slider');
+    const accelSlider = document.getElementById('speed-accel-slider');
+    const velValue = document.getElementById('speed-vel-value');
+    const accelValue = document.getElementById('speed-accel-value');
+
+    if (velSlider) {
+        velSlider.value = DEFAULT_VEL_LIMIT_RPS;
+        velValue.textContent = DEFAULT_VEL_LIMIT_RPS.toFixed(1);
+        velSlider.addEventListener('input', () => {
+            velValue.textContent = parseFloat(velSlider.value).toFixed(1);
+            publishLimits();
+        });
+    }
+
+    if (accelSlider) {
+        accelSlider.value = DEFAULT_ACCEL_LIMIT_RPS2;
+        accelValue.textContent = DEFAULT_ACCEL_LIMIT_RPS2.toFixed(1);
+        accelSlider.addEventListener('input', () => {
+            accelValue.textContent = parseFloat(accelSlider.value).toFixed(1);
+            publishLimits();
+        });
+    }
+}
+
+function publishLimits() {
+    if (!limitsPublisher) return;
+    const vel = parseFloat(document.getElementById('speed-vel-slider')?.value || DEFAULT_VEL_LIMIT_RPS);
+    const accel = parseFloat(document.getElementById('speed-accel-slider')?.value || DEFAULT_ACCEL_LIMIT_RPS2);
+    limitsPublisher.publish({ data: [vel, accel] });
+}
+
+/**
+ * Show or hide the speed limits panel.
+ * @param {boolean} visible
+ */
+export function setSpeedLimitsPanelVisible(visible) {
+    const panel = document.getElementById('panel-speed-limits');
+    if (panel) {
+        panel.style.display = visible ? '' : 'none';
+    }
+}
+
+/**
+ * Reset sliders to defaults for a given mode.
+ * @param {string} mode - 'gui' or 'spacemouse'
+ */
+export function resetSpeedLimitsForMode(mode) {
+    // Both modes currently share the same defaults
+    const velSlider = document.getElementById('speed-vel-slider');
+    const accelSlider = document.getElementById('speed-accel-slider');
+    const velValue = document.getElementById('speed-vel-value');
+    const accelValue = document.getElementById('speed-accel-value');
+
+    if (velSlider) {
+        velSlider.value = DEFAULT_VEL_LIMIT_RPS;
+        if (velValue) velValue.textContent = DEFAULT_VEL_LIMIT_RPS.toFixed(1);
+    }
+    if (accelSlider) {
+        accelSlider.value = DEFAULT_ACCEL_LIMIT_RPS2;
+        if (accelValue) accelValue.textContent = DEFAULT_ACCEL_LIMIT_RPS2.toFixed(1);
     }
 }

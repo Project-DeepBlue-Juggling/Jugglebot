@@ -66,6 +66,11 @@ class MotionBridgeNode(Node):
             RobotState, 'robot_state',
             self._on_robot_state, 10)
 
+        # Smoother speed limits from GUI
+        self.create_subscription(
+            Float64MultiArray, 'smoother_limits',
+            self._on_smoother_limits, 10)
+
         # ------------------------------------------------------------------
         # ROS2 publishers (IPC → ROS2)
         # ------------------------------------------------------------------
@@ -155,6 +160,17 @@ class MotionBridgeNode(Node):
                 self.ipc.send_mode_command(cmd)
                 self._control_loop_enabled = False
                 self.get_logger().info("Sent 'disable' to control process")
+
+    def _on_smoother_limits(self, msg: Float64MultiArray) -> None:
+        """Forward smoother speed limits from GUI to the control process."""
+        if len(msg.data) < 2:
+            return
+        vel_rps = msg.data[0]
+        accel_rps2 = msg.data[1]
+        cmd = make_mode_command('set_smoother_limits',
+                                vel_limit_rps=vel_rps,
+                                accel_limit_rps2=accel_rps2)
+        self.ipc.send_mode_command(cmd)
 
     def _on_gravity_offset(self, msg: Float64MultiArray) -> None:
         """Forward gravity offset to the control process via IPC."""

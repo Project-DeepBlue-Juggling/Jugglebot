@@ -35,10 +35,27 @@
         <div id="left-sidebar">
             <div class="panel" id="panel-topics">
                 <div class="panel-header">
-                    <span class="panel-title">Topics</span>
+                    <span class="panel-title">ROS2 Topics</span>
                     <span class="topic-window-label" id="topic-window-label">5s window</span>
                 </div>
                 <div id="topic-table-container"></div>
+            </div>
+
+            <!-- CAN Traffic (snapped to bottom of left sidebar) -->
+            <div class="panel" id="panel-can">
+                <div class="panel-header">
+                    <span class="panel-title">CAN Traffic</span>
+                </div>
+                <div class="can-rate">
+                    <span class="value" id="can-rate-value">--</span>
+                    <span class="unit">msg/s</span>
+                </div>
+                <div class="can-rate">
+                    <span class="value" id="can-bits-value">--</span>
+                    <span class="unit">kbit/s</span>
+                    <span class="can-util" id="can-util-value"></span>
+                </div>
+                <canvas id="can-sparkline"></canvas>
             </div>
         </div>
 
@@ -93,6 +110,29 @@
             <!-- Jog Controls (visible only in GUI control mode) -->
             <div class="panel" id="panel-jog" style="display:none"></div>
 
+            <!-- Speed Limits (visible in GUI/SpaceMouse control modes) -->
+            <div class="panel panel-compact" id="panel-speed-limits" style="display:none">
+                <div class="panel-header">
+                    <span class="panel-title">Speed Limits</span>
+                </div>
+                <div class="speed-limits-grid" id="speed-limits-grid">
+                    <div class="speed-limit-row">
+                        <label class="speed-limit-label">Velocity</label>
+                        <input type="range" class="speed-limit-slider" id="speed-vel-slider"
+                               min="0.5" max="15" step="0.5" value="5">
+                        <span class="speed-limit-value" id="speed-vel-value">5.0</span>
+                        <span class="speed-limit-unit">rev/s</span>
+                    </div>
+                    <div class="speed-limit-row">
+                        <label class="speed-limit-label">Accel</label>
+                        <input type="range" class="speed-limit-slider" id="speed-accel-slider"
+                               min="1" max="30" step="0.5" value="6">
+                        <span class="speed-limit-value" id="speed-accel-value">6.0</span>
+                        <span class="speed-limit-unit">rev/s&sup2;</span>
+                    </div>
+                </div>
+            </div>
+
             <!-- System Flags -->
             <div class="panel" id="panel-flags">
                 <div class="panel-header">
@@ -139,23 +179,6 @@
                     <span class="badge" id="bb-state-badge">Disconnected</span>
                 </div>
                 <div id="bb-content"></div>
-            </div>
-
-            <!-- CAN Traffic -->
-            <div class="panel" id="panel-can">
-                <div class="panel-header">
-                    <span class="panel-title">CAN Traffic</span>
-                </div>
-                <div class="can-rate">
-                    <span class="value" id="can-rate-value">--</span>
-                    <span class="unit">msg/s</span>
-                </div>
-                <div class="can-rate">
-                    <span class="value" id="can-bits-value">--</span>
-                    <span class="unit">kbit/s</span>
-                    <span class="can-util" id="can-util-value"></span>
-                </div>
-                <canvas id="can-sparkline"></canvas>
             </div>
 
             <!-- Tracking Error -->

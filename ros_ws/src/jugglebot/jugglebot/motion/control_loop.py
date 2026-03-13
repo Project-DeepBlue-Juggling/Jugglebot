@@ -413,6 +413,12 @@ class ControlLoop:
             self._gravity_correction = rotvec_to_rot_matrix(rotvec)
             self._traj_manager.set_gravity_correction(self._gravity_correction)
             logger.info(f"Gravity correction set: tilt=[{tx:.4f}, {ty:.4f}] rad")
+        elif cmd == 'set_smoother_limits':
+            vel = params.get('vel_limit_rps')
+            accel = params.get('accel_limit_rps2')
+            if vel is not None and accel is not None:
+                self._smoother.set_limits(float(vel), float(accel))
+                logger.info(f"Smoother limits updated: vel={vel} rps, accel={accel} rps²")
         elif cmd == 'fault':
             # ODrive fault forwarded from CAN node via bridge
             fault_desc = params.get('description', 'unknown fault')
@@ -563,15 +569,10 @@ class ControlLoop:
                     f"{np.max(np.abs(delta)):.4f} rev, clamped to "
                     f"{max_delta:.4f} rev")
 
-            if self._slew_limit_count >= SLEW_FAULT_CYCLES:
-                self.mode = ControlMode.ESTOP
-                self._zero_outputs()
-                self._traj_manager.cancel()
-                self._fault_state = 'slew_limit_sustained'
-                logger.error(
-                    f"SLEW LIMIT SUSTAINED — E-STOP: active for "
-                    f"{self._slew_limit_count} consecutive cycles")
-                return False
+            if self._slew_limit_count == SLEW_FAULT_CYCLES:
+                logger.warning(
+                    f"Slew limiter sustained for {self._slew_limit_count} "
+                    f"cycles — motors are chasing target")
         else:
             self._slew_limit_count = 0
             self._slew_limited = False
