@@ -257,15 +257,27 @@ When mocap integration is complete, update the LEVELLING state to:
 - Compute angle between platform z and world z ([0,0,1])
 - Log WARNING if angle > 1.0 deg (indicates mocap global frame misaligned with gravity)
 
-### Phase 4: Mocap Integration
-- [ ] Lift `MocapInterface` class with minor cleanup into new `mocap_node.py`
-- [ ] Keep tf2 static broadcast, QTM clock sync
-- [ ] **Keep BB marker subscription** (`bb/markers`) — needed for calibration. Do NOT remove.
-- [ ] Implement BB calibration position publisher: after the `bb/calibrate` service completes, the mocap node (or a dedicated calibration module) must collect BB fiducial marker trajectories during the calibration motion, fit rotation axes via 3D circle fitting to determine the BB's global position and yaw offset, and publish the result so the GUI and aiming code can use it. The archived `ball_butler_node.py` (see `archived/ball_butler_node.py`) contains the full algorithm: 5 markers → circle fit → weighted axis intersection → `bb_mocap_position` [x,y,z] + `bb_yaw_offset_rad`. The key outputs are:
-  - BB global position (mm): where the yaw rotation axis intersects the marker Z-plane
-  - BB yaw offset (rad): angular offset between BB's local frame and the mocap global frame
-  - These were previously stored as ROS2 parameters on the `ball_butler_node`; in the new architecture they should be published on a latched topic (e.g. `bb/calibration_result`) so the GUI and any future aiming node can subscribe
-- [ ] **Test**: Verify `/mocap_data` and `/rigid_body_poses` publish correctly
+### Phase 4: Mocap Integration — DONE (2026-03-13)
+- [x] Lift `MocapInterface` class with minor cleanup into new `mocap_node.py`
+  - Removed `get_robot_geometry` service dependency — platform Z offset now read directly from `hw.GEOM_INITIAL_HEIGHT_MM` (574.3 mm), eliminating the startup dependency on the archived `robot_geometry.py` node
+  - Removed `end_session` service (not part of new architecture)
+  - Replaced `spin_once()` loop with `rclpy.spin()` for cleaner lifecycle
+  - `mocap_interface.py` (pure-Python QTM class) kept unchanged — no ROS2 in it
+- [x] Keep tf2 static broadcast, QTM clock sync
+- [x] **Keep BB marker subscription** (`bb/markers`) — needed for calibration. Do NOT remove.
+- [x] Implement BB calibration position publisher
+  - Created `bb_calibration.py`: pure Python module with the full calibration pipeline (circle fit, rotation axis finding, axis-plane intersection, yaw offset calculation) — lifted verbatim from `archived/ball_butler_node.py`
+  - Created `BallButlerCalibrationResult.msg` interface: `position_mm` (Point), `yaw_offset_rad`, `yaw_offset_std_deg`, `axis_tilt_deg`, `success`, `message`
+  - `mocap_node.py` accumulates marker data during CALIBRATING state, runs `run_calibration()` on state exit, publishes result on latched `bb/calibration_result` topic (TRANSIENT_LOCAL QoS)
+  - Calibration failure also published (success=false) so subscribers know the attempt failed
+  - Yaw readings collected from BB heartbeat during calibration for offset calculation
+- [ ] **Test**: Verify `/mocap_data` and `/rigid_body_poses` publish correctly — requires Jetson + QTM hardware
+
+#### Implementation notes
+- The old `mocap_interface_node.py` is kept for backward compatibility (still registered in `setup.py` as `mocap_interface_node`) but the launch file now uses `mocap_node`
+- `bb/calibration_result` added to rosbag recording in launch file
+- Key architectural change: calibration results are now published as ROS2 messages on a latched topic instead of stored as ROS2 parameters on the ball_butler_node. This decouples the calibration producer (mocap node) from consumers (GUI, future aiming node)
+- **Investigate**: The `mocap_interface.py` class creates its own asyncio thread and calls `self.node.get_clock()` from that thread for clock sync — this cross-thread ROS2 clock access may not be fully thread-safe. Works in practice because `get_clock()` returns a cached reference, but worth noting for future robustness
 
 ### Phase 5: Integration + Polish
 - [x] Write new `jugglebot_launch.py` for the new node set
@@ -342,7 +354,7 @@ After each phase:
 - **Phase 1**: CAN node receives heartbeats from all 9 axes, can send commands, BB heartbeat publishes on `/bb/heartbeat`
 - **Phase 2**: Robot completes BOOT → HOMING → IDLE on power-on. Error injection triggers FAULT correctly
 - **Phase 3**: Spacemouse moves the platform smoothly. Infeasible pose commands are rejected with clear feedback. Trajectory durations match expectations
-- **Phase 4**: `/mocap_data` publishes at 200Hz, tf2 transforms correct
+- **Phase 4**: `/mocap_data` publishes at 200Hz, tf2 transforms correct, `bb/calibration_result` publishes after BB calibration sweep
 - **Phase 5**: `ros2 launch jugglebot jugglebot_launch.py record:=true` — full session with rosbag recording
 
 ---
@@ -430,7 +442,7 @@ The 2,351-line `can_interface.py` and 806-line `can_interface_node.py` have been
 - **~~`time.sleep()` blocking the executor~~** — **RESOLVED**: All long-running operations now use generator-based state machines driven by `_run_to_completion()`. The driver processes CAN messages between yield points (1ms polling during timed waits, immediate re-entry for tight polls). Service callbacks still block the single-threaded executor for the duration of the operation, but CAN traffic flows continuously. The remaining `time.sleep()` calls are 1-5ms CAN bus pacing delays between consecutive sends to avoid buffer overflow — these are intentional and harmless. If true non-blocking services are needed later, the generators can be driven by a timer instead of synchronously (the generator protocol supports this without code changes to the generators themselves).
 - **Shallow-copy thread safety**: `get_states()` does a shallow list copy — readers and writers share the same `MotorStateSingle` objects. This works in CPython due to GIL-atomic attribute access but is technically a race condition. Not worth fixing unless moving to a multi-threaded executor.
 - **~~DBC file cleanup~~** - **RESOLVED**: The `resources/ODrive_Pro.dbc` file has been deleted.
-- **rigid_body_poses subscriber**: The old `can_interface_node.py` had a subscriber for `/rigid_body_poses` to check that the QTM base is at the origin. This was a safety check that has been deferred — it should be re-added in the orchestrator node or mocap node (Phase 4).
+- **rigid_body_poses subscriber**: The old `can_interface_node.py` had a subscriber for `/rigid_body_poses` to check that the QTM base is at the origin. This was a safety check that has been deferred — it should be re-added in the orchestrator node (subscribing to `/rigid_body_poses` from `mocap_node`) as part of the ACTIVE handler's activation sequence. Now that Phase 4 is complete and `/rigid_body_poses` is publishing, this can be implemented.
 
 ---
 
@@ -523,7 +535,7 @@ If encoder search was already complete (checked via /robot_state), the handler s
 
 - **~~Error string matching is fragile~~** — **RESOLVED**: Added typed boolean fields to `RobotState.msg` (`has_fatal_odrive_error`, `has_fatal_can_error`, `has_undervoltage`). The CAN node sets these directly from its internal motor state tracker flags. The orchestrator reads the booleans instead of parsing error strings. The `string[] error` field is retained for human-readable logging and rosbag inspection. If new error categories are added in the future, the pattern is: add a `bool` field to the message, set it in `can_node.py:_publish_robot_state()`, and read it in `orchestrator_node.py:_on_robot_state()` — the coupling is now explicit and compile-time visible.
 
-- **rigid_body_poses origin check**: Still deferred from Phase 1. The old code validated that the QTM base rigid body was at the origin (within 5 mm, 2 degrees) before allowing activation. This should be added to the ACTIVE handler's activation sequence or to the mocap node in Phase 4.
+- **rigid_body_poses origin check**: Still deferred. The old code validated that the QTM base rigid body was at the origin (within 5 mm, 2 degrees) before allowing activation. Now that Phase 4 is complete and `mocap_node` publishes `/rigid_body_poses`, this check should be added to the ACTIVE handler's activation sequence in the orchestrator (subscribe to `/rigid_body_poses`, verify "Base" body is near origin before allowing activation).
 
 - **~~Shutdown race condition~~** — **RESOLVED**: Replaced `spin_until_future_complete()` with fire-and-forget ERROR mode publish. The CAN node handles ERROR mode by stowing the platform and idling all axes, achieving the same safety outcome without the race condition. The CAN node's own `on_shutdown()` also stows as a belt-and-suspenders safety measure.
 
@@ -636,3 +648,35 @@ All four isolated-leg bench tests passed on ODrive axis 0 using `tools/single_le
 1. **`encode_set_input_torque()` added to `can/odrive.py`**: The function was documented as existing in Appendix D but was not actually present. Added: encodes a float32 torque (Nm) for ODrive command 0x0E (`set_input_torque`). Used by the standalone test harness and will be used by the control loop for torque-mode operation.
 
 2. **Standalone single-leg test harness**: `tools/single_leg_test.py` — bypasses ROS2, talks directly to one ODrive via python-can. Implements all four Phase 2 bench tests plus multi-weight Kt calibration. See `tools/README.md`.
+
+---
+
+## Appendix E: Phase 4 Completion Notes — Mocap Integration (2026-03-13)
+
+### New files
+| File | Lines | Purpose |
+|------|-------|---------|
+| `bb_calibration.py` | ~240 | Pure Python BB calibration: 3D circle fit, rotation axis, yaw offset |
+| `mocap_node.py` | ~250 | ROS2 node: QTM streaming, tf2, BB calibration orchestration |
+| `BallButlerCalibrationResult.msg` | 7 fields | Calibration output message type |
+
+### Architecture changes from old `mocap_interface_node.py`
+- **Removed `get_robot_geometry` service dependency**: The old node blocked on startup waiting for the `robot_geometry.py` node to provide the platform Z offset. This node is archived. The new `mocap_node.py` reads `hw.GEOM_INITIAL_HEIGHT_MM` directly from the generated config, eliminating the startup dependency entirely.
+- **Removed `end_session` service**: Lifecycle management is now handled by standard ROS2 node shutdown.
+- **Added BB calibration pipeline**: Previously in `ball_butler_node.py` (archived). The calibration algorithm (circle fitting → rotation axis → axis-plane intersection → yaw offset) is now a pure Python module (`bb_calibration.py`) called by `mocap_node.py`. Results published on latched `bb/calibration_result` topic instead of stored as ROS2 parameters.
+- **Calibration failure reporting**: Failed calibration attempts are also published (with `success=false` and error message), so subscribers can react to failures.
+
+### Calibration pipeline summary
+1. BB enters CALIBRATING state (triggered by `bb/calibrate` service on CAN node)
+2. `mocap_node` detects state via `bb/heartbeat`, starts accumulating marker positions + yaw readings
+3. BB exits CALIBRATING → `mocap_node` runs `run_calibration()`:
+   - Fit 3D circles to each of 5 marker trajectories (SVD plane fit + algebraic circle fit)
+   - Weighted average of circle normals/centers → rotation axis
+   - Intersect axis with Z plane (avg marker Z + pitch_z_offset) → `bb_position_mm`
+   - Compare Marker 3's global angle vs BB's reported yaw → `yaw_offset_rad`
+4. Publish `BallButlerCalibrationResult` on latched topic
+
+### Items discovered
+- **Thread-safety of QTM clock sync**: `mocap_interface.py` calls `self.node.get_clock().now()` from its asyncio thread (not the ROS2 executor thread). This works under CPython's GIL but is technically a race condition. Low priority — the clock object is thread-safe in rclpy's current implementation.
+- **`mocap_interface.py` starts connection in `__init__`**: The QTM connection attempt begins immediately on construction. If QTM is not reachable, the node still starts (connection failure is logged, not fatal). This is acceptable behavior.
+- **Old `mocap_interface_node.py` retained**: Kept in the package with its `setup.py` entry point for backward compatibility, but the launch file now uses `mocap_node`. Can be removed once Phase 5 integration testing confirms the new node works on hardware.

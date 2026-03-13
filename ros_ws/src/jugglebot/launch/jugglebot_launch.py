@@ -38,9 +38,9 @@ def generate_launch_description():
         executable='motion_bridge_node',
     )
 
-    mocap_interface_node = Node(
+    mocap_node = Node(
         package='jugglebot',
-        executable='mocap_interface_node',
+        executable='mocap_node',
     )
 
     spacemouse_handler = Node(
@@ -86,6 +86,7 @@ def generate_launch_description():
             '/orchestrator_command',
             '/platform_target_reached',
             '/bb/heartbeat',
+            '/bb/calibration_result',
             '/qtm_clock_offset_sec',
             '/motion/tracking_error',
             '/motion/diagnostics',
@@ -105,7 +106,7 @@ def generate_launch_description():
         # Core nodes
         orchestrator_node,
         motion_bridge_node,
-        # mocap_interface_node,
+        mocap_node,
         spacemouse_handler,
         Node(package='jugglebot', executable='sp_ik'),
         # Standalone processes

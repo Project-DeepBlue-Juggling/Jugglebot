@@ -32,7 +32,8 @@ setup(
             'can_node = jugglebot.can_node:main',
             'orchestrator_node = jugglebot.orchestrator_node:main',
             'motion_bridge_node = jugglebot.motion_bridge_node:main',
-            'mocap_interface_node = jugglebot.mocap_interface_node:main',
+            'mocap_interface_node = jugglebot.mocap_interface_node:main',  # legacy
+            'mocap_node = jugglebot.mocap_node:main',
             'spacemouse_handler = jugglebot.spacemouse_handler:main',
             'sp_ik = jugglebot.sp_ik:main',
             # ── Standalone processes (not ROS2 nodes) ─────────
