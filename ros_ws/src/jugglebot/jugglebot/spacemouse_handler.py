@@ -86,6 +86,8 @@ class SpaceMouseHandler(Node):
 
         # Read the state of the spacemouse
         state = pyspacemouse.read()
+        if state is None:
+            return
 
         # Apply multipliers and convert to radians
         # Not sure why I need negatives out the front of pitch and yaw, but this works!
@@ -156,7 +158,7 @@ def main(args=None):
 
     try:
         while rclpy.ok() and not node.shutdown_flag:
-            rclpy.spin_once(node)
+            rclpy.spin_once(node, timeout_sec=0.01)
     except KeyboardInterrupt:
         pass
     finally:
