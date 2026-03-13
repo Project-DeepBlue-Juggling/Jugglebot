@@ -327,6 +327,7 @@ class CanInterfaceNode(Node):
             # All axes fully clean — safe to clear everything
             self.motors.fatal_error = False
             self.motors.undervoltage_error = False
+            self._active_errors_by_axis.clear()
             self.last_known_state['error'] = []
             return
 
@@ -370,13 +371,14 @@ class CanInterfaceNode(Node):
         if is_fatal:
             self.motors.fatal_error = True
 
-        # Throttled per-axis per-error logging
+        # Throttled per-axis per-error logging.
+        # Rebuild per-axis error set so cleared errors are removed promptly.
         log_times = self.motors.last_error_log_times(axis_id)
         now = time.time()
+        axis_errors: set[str] = set()
         for code, name in odrive.ERROR_CODES.items():
             if active_errors & code:
-                if name not in self.last_known_state['error']:
-                    self.last_known_state['error'].append(name)
+                axis_errors.add(name)
                 if now - log_times.get(code, 0) > self.motors.error_log_throttle_sec:
                     self.get_logger().error(f"Active error on axis {axis_id}: {name}")
                     log_times[code] = now
@@ -384,6 +386,19 @@ class CanInterfaceNode(Node):
                 if now - log_times.get(code, 0) > self.motors.error_log_throttle_sec:
                     self.get_logger().error(f"Disarm reason on axis {axis_id}: {name}")
                     log_times[code] = now
+
+        # Update per-axis tracking and rebuild the merged error list
+        if axis_errors:
+            self._active_errors_by_axis[axis_id] = axis_errors
+        else:
+            self._active_errors_by_axis.pop(axis_id, None)
+        # Merge all axes into a single deduplicated list (preserves disarm entries)
+        merged = set()
+        for errs in self._active_errors_by_axis.values():
+            merged |= errs
+        disarm_entries = [e for e in self.last_known_state['error']
+                          if e.startswith("Disarmed axes:")]
+        self.last_known_state['error'] = sorted(merged) + disarm_entries
 
     def _handle_encoder(self, axis_id, data):
         pos, vel = odrive.decode_encoder_estimate(data)
@@ -515,6 +530,7 @@ class CanInterfaceNode(Node):
             self.bus.send(odrive.encode_clear_errors(axis_id))
         self.motors.clear_error_flags()
         self.motors.clear_disarm_reasons()
+        self._active_errors_by_axis.clear()
         self.last_known_state['error'] = []
 
     def _setup_odrives_steps(self, requested_state='IDLE'):
@@ -1369,7 +1385,7 @@ class CanInterfaceNode(Node):
                 timeout_count += 1
                 if timeout_count >= max_timeouts:
                     self.get_logger().error("Tilt reading failed after max retries")
-                    return (None, None, Quaternion(w=1.0))
+                    return (None, None, None)
                 self.get_logger().warning("Tilt request timeout, resending...")
                 self.bus.send(call_msg)
                 deadline = time.time() + 1.0
