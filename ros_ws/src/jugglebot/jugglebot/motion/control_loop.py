@@ -270,6 +270,11 @@ class ControlLoop:
         # Fault state (Phase 6)
         self._fault_state: str | None = None
 
+        # Workspace clamping for direct-target mode (spacemouse etc.)
+        # When workspace violation occurs, hold this pose instead of E-STOPing.
+        self._last_safe_pose_6dof: np.ndarray | None = None
+        self._workspace_clamped = False
+
         # Logging interval
         self._last_log_time = 0.0
         self._log_interval_s = 5.0
@@ -638,7 +643,9 @@ class ControlLoop:
 
         Phase 6 additions:
         - After computing motor commands, check workspace limits.
-        - If hard limit violated, abort trajectory and E-stop.
+        - If hard limit violated in trajectory mode, abort and E-stop.
+        - If hard limit violated in direct-target mode, hold last safe
+          pose (no E-stop) so the spacemouse can recover.
         - Compute tracking error from motor feedback.
         - Compute condition number for telemetry.
         """
@@ -702,20 +709,48 @@ class ControlLoop:
         self._workspace_status = ws_check.status
         self._workspace_speed_scale = ws_check.speed_scale
 
+        # Determine whether we're in direct-target mode (spacemouse, shell, etc.)
+        in_direct_mode = traj_state == TrajectoryState.IDLE and self._has_target
+
         if ws_check.status == WorkspaceStatus.HARD_LIMIT:
-            # Hard limit violated: abort trajectory, E-stop
-            violation_str = '; '.join(ws_check.violations)
-            self._traj_manager.cancel()
-            self.mode = ControlMode.ESTOP
-            self._zero_outputs()
-            self._fault_state = f'workspace_hard_limit: {violation_str}'
-            logger.error(f"WORKSPACE HARD LIMIT -- E-STOP: {violation_str}")
+            if in_direct_mode and self._last_safe_pose_6dof is not None:
+                # Direct-target mode: hold last safe pose instead of E-STOPing.
+                # The smoother keeps tracking the spacemouse input, so when the
+                # user moves back to a valid region, we resume seamlessly.
+                held = self._last_safe_pose_6dof
+                pos_rev, vel_ff, torque_ff = cartesian_to_motor_commands(
+                    held, np.zeros(6), np.zeros(6),
+                    self.geom, self._dynamics_params,
+                    self._feedforward_enabled, self._gravity_correction)
+                self._commanded_pos_rev = pos_rev
+                self._commanded_vel_ff_rps = vel_ff
+                self._commanded_torque_ff_Nm = torque_ff
+                if not self._workspace_clamped:
+                    logger.warning(
+                        f"Workspace hard limit in direct mode — holding position: "
+                        f"{'; '.join(ws_check.violations)}")
+                self._workspace_clamped = True
+            else:
+                # Trajectory mode or no safe fallback: E-stop
+                violation_str = '; '.join(ws_check.violations)
+                self._traj_manager.cancel()
+                self.mode = ControlMode.ESTOP
+                self._zero_outputs()
+                self._fault_state = f'workspace_hard_limit: {violation_str}'
+                logger.error(f"WORKSPACE HARD LIMIT -- E-STOP: {violation_str}")
         elif ws_check.status == WorkspaceStatus.SOFT_LIMIT:
-            # Soft limit: log warning (speed degradation is informational
-            # for now -- Phase 7 will use it for mid-trajectory replanning)
             logger.debug(
                 f"Workspace soft limit: speed_scale={ws_check.speed_scale:.2f}, "
                 f"{'; '.join(ws_check.violations)}")
+            # Not clamped — pose is still valid (just in the warning zone)
+            if pose_6dof is not None:
+                self._last_safe_pose_6dof = pose_6dof.copy()
+            self._workspace_clamped = False
+        else:
+            # OK — update last safe pose
+            if pose_6dof is not None:
+                self._last_safe_pose_6dof = pose_6dof.copy()
+            self._workspace_clamped = False
 
         # --- Phase 6: tracking error from motor feedback ---
         if self._has_motor_fb:
@@ -768,6 +803,8 @@ class ControlLoop:
 
         self._traj_manager.set_hold_pose(home)
         self._smoother.reset(home)
+        self._last_safe_pose_6dof = home.copy()
+        self._workspace_clamped = False
         self._target_pos = home[:3].copy()
         self._target_rot = rot
         self._has_target = True
@@ -789,6 +826,7 @@ class ControlLoop:
             cond_number=self._cond_number,
             workspace_status=self._workspace_status.value,
             workspace_speed_scale=self._workspace_speed_scale,
+            workspace_clamped=self._workspace_clamped,
             tracking_error_mm=(self._tracking_error_mm.tolist()
                                if self._has_motor_fb else None),
             fault_state=self._fault_state,
