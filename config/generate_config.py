@@ -15,6 +15,8 @@ Outputs:
     ros_ws/gui/js/geometry-config.js           (delivered copy)
 """
 
+from __future__ import annotations
+
 import math
 import sys
 from pathlib import Path

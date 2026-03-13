@@ -21,7 +21,7 @@ Rotation is interpolated as quintic polynomials on rotation vector components.
 This is valid for the platform's limited tilt range (<=15 degrees).
 """
 
-from __future__ import annotations
+from __future__ import annotations 
 
 import enum
 import logging

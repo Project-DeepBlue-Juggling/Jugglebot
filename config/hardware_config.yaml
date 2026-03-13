@@ -258,7 +258,7 @@ teensy_operational:
 #    QTM motion capture connection settings.
 # ============================================================
 mocap:
-  qtm_host: "192.168.20.12"              # QTM server IP address
+  qtm_host: "192.168.20.16"              # QTM server IP address
   qtm_port: 22223                        # QTM server port
 
 # ============================================================
