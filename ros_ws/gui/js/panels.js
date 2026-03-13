@@ -7,6 +7,7 @@
 
 import { ODRIVE_STATE, BB_STATE_NAMES, LEG_STROKE_MM, MM_TO_REV,
          CAN_BAUD_RATE, CAN_BITS_PER_FRAME_APPROX } from './geometry-config.js';
+import { callService } from './ros-bridge.js';
 
 // ---- Motor grid ----
 
@@ -258,11 +259,42 @@ export function updateLevellingPanel(robotState) {
 
 // ---- Ball Butler panel ----
 
+/** Last known BB state code (from heartbeat). */
+let lastBBState = -1;
+
+function onBBCalibrateClick() {
+    const btn = document.getElementById('bb-calibrate-btn');
+    if (!btn || btn.disabled) return;
+
+    btn.disabled = true;
+    btn.textContent = 'Calibrating...';
+
+    callService('bb/calibrate', 'std_srvs/srv/Trigger')
+        .then((result) => {
+            if (result.success) {
+                btn.textContent = 'Done';
+            } else {
+                btn.textContent = 'Failed';
+                console.warn('BB calibrate failed:', result.message);
+            }
+            // Revert label after 2s; state update will re-enable if still IDLE
+            setTimeout(() => { btn.textContent = 'Calibrate'; }, 2000);
+        })
+        .catch((err) => {
+            btn.textContent = 'Error';
+            console.error('BB calibrate service error:', err);
+            setTimeout(() => { btn.textContent = 'Calibrate'; }, 2000);
+        });
+}
+
 export function initBBPanel() {
     const content = document.getElementById('bb-content');
     if (!content) return;
 
     content.innerHTML = `
+        <div class="bb-calibrate-row">
+            <button class="bb-calibrate-btn" id="bb-calibrate-btn" disabled>Calibrate</button>
+        </div>
         <div style="display:flex; align-items:center; gap:8px; margin-bottom:4px;">
             <span class="bb-ball-indicator">
                 <span class="bb-ball-dot no-ball" id="bb-ball-dot"></span>
@@ -284,6 +316,10 @@ export function initBBPanel() {
             </div>
         </div>
     `;
+
+    // Wire up calibrate button
+    const btn = document.getElementById('bb-calibrate-btn');
+    btn.addEventListener('click', onBBCalibrateClick);
 }
 
 // Map BB state codes to CSS badge classes (matches orchestrator state colours)
@@ -327,6 +363,13 @@ export function updateBBPanel(hb) {
     if (yaw) yaw.textContent = hb.yaw_deg.toFixed(1) + '\u00b0';
     if (pitch) pitch.textContent = hb.pitch_deg.toFixed(1) + '\u00b0';
     if (hand) hand.textContent = hb.hand_pos_mm.toFixed(0) + ' mm';
+
+    // Enable calibrate button only when BB is IDLE (state 1)
+    lastBBState = hb.state;
+    const calBtn = document.getElementById('bb-calibrate-btn');
+    if (calBtn && calBtn.textContent === 'Calibrate') {
+        calBtn.disabled = hb.state !== 1;
+    }
 }
 
 export function setBBDisconnected() {
@@ -335,6 +378,9 @@ export function setBBDisconnected() {
         badge.textContent = 'Disconnected';
         badge.className = 'badge';
     }
+    // Disable calibrate button on disconnect
+    const calBtn = document.getElementById('bb-calibrate-btn');
+    if (calBtn) calBtn.disabled = true;
 }
 
 // ---- Motion planner panel ----

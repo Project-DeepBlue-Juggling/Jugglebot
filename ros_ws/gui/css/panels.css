@@ -439,6 +439,41 @@
 .bb-ball-dot.has-ball  { background: var(--accent-green); box-shadow: 0 0 4px var(--accent-green); }
 .bb-ball-dot.no-ball   { background: var(--accent-red); }
 
+/* ---- BB Calibrate button ---- */
+.bb-calibrate-row {
+    display: flex;
+    justify-content: center;
+    margin-bottom: var(--gap-xs);
+}
+
+.bb-calibrate-btn {
+    padding: 4px 16px;
+    border: 1px solid var(--state-homing);
+    border-radius: var(--border-radius-sm);
+    background: transparent;
+    color: var(--state-homing);
+    font-family: var(--font-sans);
+    font-size: var(--font-size-sm);
+    font-weight: 600;
+    cursor: pointer;
+    transition: background var(--transition-fast), color var(--transition-fast),
+                border-color var(--transition-fast);
+}
+
+.bb-calibrate-btn:hover:not(:disabled) {
+    background: var(--state-homing);
+    color: #fff;
+}
+
+.bb-calibrate-btn:active:not(:disabled) {
+    transform: scale(0.96);
+}
+
+.bb-calibrate-btn:disabled {
+    opacity: 0.35;
+    cursor: default;
+}
+
 /* ---- CAN traffic panel ---- */
 .can-rate {
     display: flex;

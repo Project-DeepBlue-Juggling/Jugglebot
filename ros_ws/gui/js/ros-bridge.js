@@ -265,6 +265,34 @@ function recreatePublishers() {
 }
 
 /**
+ * Call a ROS2 service.
+ * @param {string} serviceName - e.g. 'bb/calibrate'
+ * @param {string} serviceType - e.g. 'std_srvs/srv/Trigger'
+ * @param {object} [request={}] - Service request fields
+ * @returns {Promise<object>} - Resolves with the response, rejects on error
+ */
+export function callService(serviceName, serviceType, request = {}) {
+    return new Promise((resolve, reject) => {
+        if (!ros || connectionState !== 'connected') {
+            reject(new Error('Not connected to ROS'));
+            return;
+        }
+
+        const service = new ROSLIB.Service({
+            ros,
+            name: serviceName,
+            serviceType: serviceType,
+        });
+
+        service.callService(
+            new ROSLIB.ServiceRequest(request),
+            (result) => { touchActivity(); resolve(result); },
+            (error) => { reject(new Error(error)); },
+        );
+    });
+}
+
+/**
  * Discover all active ROS2 topics via rosbridge.
  * @param {function} callback - Called with { topics: string[], types: string[] }
  */
