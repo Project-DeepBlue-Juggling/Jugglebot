@@ -144,6 +144,8 @@ def check_workspace_limits(extensions_mm: np.ndarray,
             status = WorkspaceStatus.SOFT_LIMIT
         # Linear ramp-down in condition number band
         margin = limits.cond_hard - limits.cond_soft
+        if margin <= 0.0:
+            margin = 1.0  # Avoid division by zero; treat as hard limit
         dist = cond_number - limits.cond_soft
         cond_scale = max(0.0, 1.0 - dist / margin)
         speed_scale = min(speed_scale, cond_scale)
