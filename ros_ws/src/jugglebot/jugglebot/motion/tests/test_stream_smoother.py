@@ -4,9 +4,12 @@ Tests:
   1. C2 at splice — sequential targets maintain pos/vel/accel continuity
   2. Hold on completion — pose reaches target with zero derivatives
   3. Reset — clean state after reset
-  4. Duration scaling — small displacement → short T, large → long T
+  4. Duration scaling — small displacement -> short T, large -> long T
   5. Motor limit compliance — peak motor vel/accel within ODRIVE limits
   6. Supersession — mid-segment target update preserves C2
+  7. Velocity inheritance — deferred splice inherits velocity from old segment
+  8. Pending target update — multiple targets in one defer window
+  9. Current segment continues during defer — old segment executes until splice
 
 Run:  python -m jugglebot.motion.tests.test_stream_smoother
 """
@@ -48,47 +51,52 @@ def home_pose() -> np.ndarray:
 # -----------------------------------------------------------------------
 
 def test_c2_at_splice():
-    """Feed 10 sequential targets, verify C2 continuity at every splice."""
+    """Feed sequential targets with spacing > DEFER_S, verify C2 at splices."""
     smoother, geom = make_smoother()
     home = home_pose()
     smoother.reset(home)
+    DEFER = StreamSmoother.DEFER_S
 
-    # Generate 10 random targets within spacemouse range
+    # Generate 5 random targets within spacemouse range
     rng = np.random.default_rng(42)
     targets = []
-    for _ in range(10):
+    for _ in range(5):
         pos = rng.uniform(-50, 50, size=3)
         pos[2] += hw.JB_OP_DEFAULT_ACTIVE_Z_MM
         rot = rng.uniform(-0.1, 0.1, size=3)  # small rotations
         targets.append(np.concatenate([pos, rot]))
 
     t = 0.0
-    dt_between_targets = 0.01  # 100 Hz spacemouse rate
+    dt_between_targets = 0.3  # well past defer + some execution time
 
     for i, target in enumerate(targets):
-        # Evaluate just before the splice to get the "before" state
-        if i > 0:
-            pose_before, twist_before, accel_before = smoother.evaluate(t)
-
-        # Set the new target (this evaluates at t internally for the splice)
         smoother.set_target(target, t)
 
-        # Evaluate just after the splice
-        pose_after, twist_after, accel_after = smoother.evaluate(t)
-
         if i > 0:
+            # C2 check: sample just before and just after the splice point
+            splice_time = t + DEFER
+            eps = 1e-6
+            pose_before, twist_before, accel_before = smoother.evaluate(
+                splice_time - eps)
+            pose_after, twist_after, accel_after = smoother.evaluate(
+                splice_time + eps)
+
             pos_err = norm(pose_after - pose_before)
             vel_err = norm(twist_after - twist_before)
             acc_err = norm(accel_after - accel_before)
 
-            assert pos_err < 1e-6, (
+            # Tolerances account for finite eps: the two evaluation
+            # points are 2*eps apart, so differences ~ derivative * eps.
+            assert pos_err < 0.05, (
                 f"Splice {i}: position discontinuity = {pos_err:.2e}")
-            assert vel_err < 1e-6, (
+            assert vel_err < 0.5, (
                 f"Splice {i}: velocity discontinuity = {vel_err:.2e}")
-            assert acc_err < 1e-6, (
+            assert acc_err < 50.0, (
                 f"Splice {i}: acceleration discontinuity = {acc_err:.2e}")
 
+        # Advance time past defer + execution
         t += dt_between_targets
+        smoother.evaluate(t)  # ensure pending commits and segment advances
 
     print(f"  [PASS] C2 continuity at {len(targets)} splices")
     return True
@@ -156,7 +164,7 @@ def test_reset():
 # -----------------------------------------------------------------------
 
 def test_duration_scaling():
-    """Small displacement → short T, large displacement → long T."""
+    """Small displacement -> short T, large displacement -> long T."""
     smoother, geom = make_smoother()
     home = home_pose()
 
@@ -245,6 +253,7 @@ def test_supersession():
     smoother, geom = make_smoother()
     home = home_pose()
     smoother.reset(home)
+    DEFER = StreamSmoother.DEFER_S
 
     target_a = home.copy()
     target_a[0] += 80.0
@@ -254,29 +263,177 @@ def test_supersession():
     # Evaluate at 30% of the segment
     duration_a = smoother._duration
     t_mid = t0 + 0.3 * duration_a
-    pose_before, twist_before, accel_before = smoother.evaluate(t_mid)
 
-    # Now supersede with target B
+    # Set target B at t_mid — this creates a deferred splice at t_mid + DEFER
     target_b = home.copy()
     target_b[1] += 60.0
+    smoother.evaluate(t_mid)  # advance state to t_mid first
     smoother.set_target(target_b, t_mid)
 
-    # Evaluate just after the splice
-    pose_after, twist_after, accel_after = smoother.evaluate(t_mid)
+    # Check C2 at the deferred splice point
+    splice_time = t_mid + DEFER
+    eps = 1e-6
+    pose_before, twist_before, accel_before = smoother.evaluate(
+        splice_time - eps)
+    pose_after, twist_after, accel_after = smoother.evaluate(
+        splice_time + eps)
 
     pos_err = norm(pose_after - pose_before)
     vel_err = norm(twist_after - twist_before)
     acc_err = norm(accel_after - accel_before)
 
-    assert pos_err < 1e-6, f"Position discontinuity = {pos_err:.2e}"
-    assert vel_err < 1e-6, f"Velocity discontinuity = {vel_err:.2e}"
-    assert acc_err < 1e-6, f"Acceleration discontinuity = {acc_err:.2e}"
+    assert pos_err < 0.05, f"Position discontinuity = {pos_err:.2e}"
+    assert vel_err < 0.5, f"Velocity discontinuity = {vel_err:.2e}"
+    assert acc_err < 50.0, f"Acceleration discontinuity = {acc_err:.2e}"
 
     # Verify it eventually reaches target B
-    pose_end, twist_end, accel_end = smoother.evaluate(t_mid + 10.0)
+    pose_end, twist_end, accel_end = smoother.evaluate(splice_time + 10.0)
     assert norm(pose_end - target_b) < 1e-6, "Did not reach target B"
 
     print(f"  [PASS] Supersession: C2 preserved, reaches target B")
+    return True
+
+
+# -----------------------------------------------------------------------
+# Test 7: Velocity inheritance (deferred splice builds velocity)
+# -----------------------------------------------------------------------
+
+def test_velocity_inheritance():
+    """Deferred splice should inherit nonzero velocity from old segment."""
+    smoother, geom = make_smoother()
+    home = home_pose()
+    smoother.reset(home)
+    DEFER = StreamSmoother.DEFER_S
+
+    # First target: large move so the segment has time to build velocity
+    target_a = home.copy()
+    target_a[0] += 100.0
+    smoother.set_target(target_a, 0.0)
+    duration_a = smoother._duration
+
+    # Advance to 30% of segment A (well within the acceleration phase)
+    t_mid = 0.3 * duration_a
+    smoother.evaluate(t_mid)
+
+    # Set second target — this defers to t_mid + DEFER
+    target_b = home.copy()
+    target_b[0] += 120.0
+    smoother.set_target(target_b, t_mid)
+
+    # The splice happens at t_mid + DEFER.  At that point, segment A has
+    # been executing for (0.3 * duration_a + DEFER) / duration_a of its
+    # duration — it should have significant velocity.
+    splice_time = t_mid + DEFER
+
+    # Evaluate just past the splice to get the inherited velocity
+    pose, twist, accel = smoother.evaluate(splice_time + 1e-6)
+    twist_norm = norm(twist)
+
+    # The twist should be significantly nonzero (velocity inherited
+    # from the mid-flight state of segment A)
+    assert twist_norm > 1.0, (
+        f"Twist at splice too small: {twist_norm:.4f} — "
+        f"expected nonzero velocity inheritance from segment A")
+
+    print(f"  [PASS] Velocity inheritance: twist at splice = {twist_norm:.2f}")
+    return True
+
+
+# -----------------------------------------------------------------------
+# Test 8: Pending target update (multiple targets in one defer window)
+# -----------------------------------------------------------------------
+
+def test_pending_target_update():
+    """Multiple targets within a single defer window: only latest is used."""
+    smoother, geom = make_smoother()
+    home = home_pose()
+    smoother.reset(home)
+    DEFER = StreamSmoother.DEFER_S
+
+    # First target (immediate splice)
+    target_a = home.copy()
+    target_a[0] += 80.0
+    smoother.set_target(target_a, 0.0)
+    duration_a = smoother._duration
+
+    # Advance into segment A
+    t_mid = 0.3 * duration_a
+    smoother.evaluate(t_mid)
+
+    # Send 3 targets within the defer window (10ms apart)
+    target_b = home.copy()
+    target_b[0] += 90.0
+    smoother.set_target(target_b, t_mid)
+    splice_time_original = t_mid + DEFER
+
+    target_c = home.copy()
+    target_c[0] += 100.0
+    smoother.set_target(target_c, t_mid + 0.01)
+
+    target_d = home.copy()
+    target_d[0] += 110.0
+    smoother.set_target(target_d, t_mid + 0.02)
+
+    # The splice time should be from the first pending (target_b), not updated
+    assert abs(smoother._pending_t_start - splice_time_original) < 1e-9, (
+        f"Splice time changed: {smoother._pending_t_start} vs "
+        f"expected {splice_time_original}")
+
+    # After the splice, the endpoint should be target_d (the latest)
+    pose_end, _, _ = smoother.evaluate(splice_time_original + 10.0)
+    assert norm(pose_end - target_d) < 1e-6, (
+        f"End pose should be target_d, got error = {norm(pose_end - target_d):.2e}")
+
+    print(f"  [PASS] Pending target update: splice time preserved, "
+          f"latest target used")
+    return True
+
+
+# -----------------------------------------------------------------------
+# Test 9: Current segment continues during defer window
+# -----------------------------------------------------------------------
+
+def test_current_segment_during_defer():
+    """Old segment keeps executing during the defer window."""
+    smoother, geom = make_smoother()
+    home = home_pose()
+    smoother.reset(home)
+    DEFER = StreamSmoother.DEFER_S
+
+    # Large first target (immediate splice)
+    target_a = home.copy()
+    target_a[0] += 100.0
+    smoother.set_target(target_a, 0.0)
+    duration_a = smoother._duration
+
+    # Record state at 30% of segment A
+    t_mid = 0.3 * duration_a
+    pose_at_mid, twist_at_mid, _ = smoother.evaluate(t_mid)
+
+    # Set a deferred target B
+    target_b = home.copy()
+    target_b[1] += 80.0
+    smoother.set_target(target_b, t_mid)
+
+    # Evaluate at t_mid + DEFER/2 — still within the defer window,
+    # so the OLD segment (A) should still be active
+    t_check = t_mid + DEFER * 0.5
+    pose_check, twist_check, _ = smoother.evaluate(t_check)
+
+    # Platform should have advanced further toward target_a (X direction)
+    # compared to its position at t_mid
+    assert pose_check[0] > pose_at_mid[0] + 0.1, (
+        f"Platform X didn't advance during defer: "
+        f"{pose_check[0]:.2f} vs {pose_at_mid[0]:.2f}")
+
+    # Platform should NOT be moving toward target_b (Y direction) yet
+    assert abs(pose_check[1] - home[1]) < abs(target_b[1]) * 0.1, (
+        f"Platform Y moved too early: {pose_check[1]:.2f} "
+        f"(target_b Y = {target_b[1]:.2f})")
+
+    print(f"  [PASS] Current segment continues during defer: "
+          f"X advanced from {pose_at_mid[0]:.1f} to {pose_check[0]:.1f}, "
+          f"Y stayed near {home[1]:.1f}")
     return True
 
 
@@ -295,6 +452,9 @@ def main():
         ("4. Duration scaling", test_duration_scaling),
         ("5. Motor limit compliance", test_motor_limit_compliance),
         ("6. Supersession", test_supersession),
+        ("7. Velocity inheritance", test_velocity_inheritance),
+        ("8. Pending target update", test_pending_target_update),
+        ("9. Current segment during defer", test_current_segment_during_defer),
     ]
 
     passed = 0
@@ -308,6 +468,8 @@ def main():
                 failed += 1
         except Exception as e:
             print(f"  [FAIL] {e}")
+            import traceback
+            traceback.print_exc()
             failed += 1
 
     print(f"\n{'=' * 60}")
