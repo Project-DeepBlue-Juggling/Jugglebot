@@ -277,45 +277,45 @@ Only after all protective systems pass low-speed validation.
 
 ## Phase 7: Dynamic Target Commanding — DONE (2026-03-02)
 
-**Goal:** Add dynamic target commanding so the motion planner can accept target states on the fly, automatically check feasibility (including jerk limits), splice new trajectories mid-motion with C2 continuity, and return to a home pose after targets with non-zero velocity. All protective systems from Phase 6 are active.
+**Goal:** Add dynamic target commanding so the motion planner can accept target states on the fly, automatically check feasibility (including jerk limits), splice new trajectories mid-motion with C2 continuity, and decelerate to a controlled stop after targets with non-zero velocity. All protective systems from Phase 6 are active.
 
 > **Hardware exposure: Graduated.** Start with static targets at 10% speed, graduate through replan and rapid-update tests. All Phase 6 protective systems remain active.
 
 ### Deliverables
-- Dynamic target API: `TrajectoryManager.submit_dynamic_target()` accepting `(target_pos, target_quat, target_vel, arrival_time)` — quaternion orientation, linear velocity only (angular velocity always zero), absolute arrival time
-- Mid-motion replanning: `submit()` and `submit_dynamic_target()` can be called during EXECUTING or RETURNING, splicing from the current state with C2 continuity (position, velocity, acceleration continuous at splice point)
+- Dynamic target API: `TrajectoryManager.request_dynamic_target()` (non-blocking) accepting `(target_pos, target_quat, target_vel, arrival_time)` — quaternion orientation, linear velocity only (angular velocity always zero), absolute arrival time
+- Async feasibility pipeline: `request_dynamic_target()` queues background feasibility check (multiprocessing.Process to bypass GIL); `poll_pending_result()` called each control cycle; `commit_async_trajectory()` plans C2 splice on acceptance
+- Mid-motion replanning: new targets can be submitted during EXECUTING or RETURNING, splicing from the current state with C2 continuity (position, velocity, acceleration continuous at splice point)
 - Feasibility-gated acceptance: automatic `check_feasibility()` with jerk limits before every trajectory submission; infeasible targets silently rejected
 - Jerk limits: Cartesian jerk checked at 30,000 mm/s^3 (translational) and 400 rad/s^3 (rotational). Per-leg jerk NOT checked — documented in code
-- Return-to-home: when a target has non-zero linear velocity, the planner automatically plans a return to home `[0, 0, 170, 0, 0, 0]` using `find_min_feasible_duration()` with 20% safety margin
+- Decelerate-to-stop: when a target has non-zero linear velocity, the planner automatically plans a deceleration trajectory via `make_deceleration_trajectory()` with 1.5× duration safety margin. The platform stops at the physically-computed endpoint (not at home). Deceleration is precomputed in the background while the outbound trajectory executes
 - Zero-velocity targets: platform holds at target position until the next command
-- `RETURNING` trajectory state: distinct from EXECUTING; RETURNING always completes to IDLE at home
+- `RETURNING` trajectory state: distinct from EXECUTING; RETURNING always completes to IDLE at the stopping pose
 - IPC command: `TOPIC_DYN_TARGET` with `make_dynamic_target_command()` message constructor
 - `find_min_feasible_duration()`: binary search over duration [0.2s, 5.0s] with 8 bisections
-- `make_rest_to_rest()`: centralized convenience constructor (moved from tools to trajectory.py)
+- `make_rest_to_rest()`: centralized convenience constructor
 - `evaluate_jerk()`: Cartesian jerk (3rd derivative) from quintic polynomials
-- ~~Deferred-start for slow targets~~ (removed 2026-03-11 — caused GIL contention and quintic overshoot; platform now uses full duration for all targets)
 
 ### Verification
 
 #### Offline tests (14/14 PASS)
 - Dynamic target from IDLE — zero-twist target, IDLE → EXECUTING → COMPLETE
 - Zero-velocity target holds at position — stays at COMPLETE
-- Nonzero end velocity → auto-return — EXECUTING → RETURNING → IDLE
+- Nonzero end velocity → auto-deceleration — EXECUTING → RETURNING → IDLE
 - Mid-motion splice continuity — C2 continuity verified (pos/vel/accel errors < 1e-6)
 - Infeasible target rejected — returns False, state unchanged
 - Infeasible replan preserves current trajectory — continues undisturbed
-- Interrupt return with new target — RETURNING → EXECUTING
+- Interrupt deceleration with new target — RETURNING → EXECUTING
 - `find_min_feasible_duration` correctness — 0.4625s min feasible for 50mm Z rest-to-rest
 - Jerk limit enforcement — fast 60mm/0.05s rejected; slow 60mm/2.0s passed
 - Quaternion → rotvec conversion — 5-deg X tilt matches expected rotvec
 - Arrival time in the past — rejected immediately
 - `make_rest_to_rest` centralized — output matches expected
 - ~~Deferred start for slow targets~~ (removed 2026-03-11)
-- Return junction C2 continuity — regression test for bug #46
+- Deceleration junction C2 continuity — regression test for bug #46
 
 #### Hardware tests (on Jetson, 100% speed, all PASS)
 - **DT1 (static target +30mm Z):** 1.502 mm worst tracking (threshold 3.0 mm)
-- **DT2 (nonzero velocity + auto-return):** 2.436 mm worst tracking, final pose error 0.000 mm from home
+- **DT2 (nonzero velocity + auto-deceleration):** 2.436 mm worst tracking, IDLE state confirmed
 - **DT3 (mid-motion replan):** 1.187 mm worst tracking, 2/2 targets accepted
 - **DT4 (rapid target updates, 2 Hz):** 10/10 targets accepted, 0 ODrive faults
 - **DT5 (infeasible target ignored):** 2.093 mm worst tracking, infeasible target correctly rejected
@@ -350,8 +350,8 @@ Each phase has explicit exit criteria. Do not begin the next phase until the cur
 | 3C — Free Platform | **DONE (2026-02-27).** Stable hold 0.030 mm max dev; step response settled < 0.305 mm; gravity torques consistent across 6 tilted poses (total variation 0.2%); Jacobian cond# 414–476. C2 (ff toggle) showed ~3 mm deviation but attributed to stiction-dominated static holds — not a concern for dynamic operation. |
 | 4 — Trajectory Generator | **DONE (2026-03-01).** Boundary conditions exact (7/7 offline tests PASS); feasibility checker rejects known-bad trajectories; low-speed tracking verified on hardware (T1–T3 PASS, ≤1.17 mm worst error); T4 speed-scale marginally over threshold (1.54 mm vs 1.5 mm limit — measurement artefact, not functional failure); feedforward torque preview workflow established |
 | 5 — Inertia Feedforward | **DONE (2026-03-01).** Full Newton-Euler feedforward implemented; 14/14 offline tests PASS; hardware T5–T7 PASS at 50% and 100% speed; worst tracking 1.885 mm at 100% (threshold 3.0 mm); differential iq shows FF reduces PID effort by 1.5–2.8%; inertia effect marginal at current speeds (expected — significant at ball-catching speeds) |
-| 6 — Hardening | **DONE (2026-03-01).** All protective systems validated offline (12/12 tests); workspace limits, fault detection, extended telemetry. Hardware tests pending on Jetson. |
-| 7 — Dynamic Targets | **DONE (2026-03-02).** Dynamic target commanding, mid-motion replanning with C2 continuity, jerk limits, auto-return-to-home, safe stowing. Deferred-start buffering removed 2026-03-11 (GIL contention + quintic overshoot). 14/14 offline tests PASS; all 5 hardware tests PASS at 100% speed (worst tracking 2.436 mm, threshold 3.0 mm). Two bugs found and fixed during hardware validation: (1) `_plan_return_to_home()` velocity discontinuity, (2) feasibility-check stall shifting trajectory timing. |
+| 6 — Hardening | **DONE (2026-03-01).** All protective systems validated offline (12/12 tests); workspace limits, fault detection, extended telemetry. Hardware: H1 (workspace boundary), H3 (fault injection static), H5 (30 min endurance), H6 (10 min at 75%/100%) — all PASS. **Not yet validated on hardware:** H2 (singularity avoidance), H4 (fault injection during motion), 60-minute full endurance. |
+| 7 — Dynamic Targets | **DONE (2026-03-02).** Dynamic target commanding, mid-motion replanning with C2 continuity, jerk limits, decelerate-to-stop, safe stowing. Async feasibility pipeline (multiprocessing). 14/14 offline tests PASS; all 5 hardware tests PASS at 100% speed (worst tracking 2.436 mm, threshold 3.0 mm). Two bugs found and fixed during hardware validation: (1) deceleration velocity discontinuity (bug #46), (2) feasibility-check stall shifting trajectory timing (bug #47). |
 
 ---
 
@@ -493,14 +493,20 @@ Four of five tests passed using `tools/free_platform_test.py` (standalone, no RO
 
 22. **Free-platform test harness** (2026-02-27): `tools/free_platform_test.py` extends the supported-platform harness with IK-based position computation (`pose_to_raw_positions`), gravity feedforward computation (`compute_torque_ff_for_pose`), and interactive operator prompts for safe unsupported operation. Uses TRAP_TRAJ for all multi-leg moves, PASSTHROUGH only for static hold monitoring.
 
-### Phase 4 files created (2026-02-28)
+### Phase 4 files created (2026-02-28, later refactored)
 
-| File | Lines | Purpose |
-|------|-------|---------|
-| `motion/trajectory.py` | ~380 | Quintic solver, 6-DoF trajectory evaluator, leg-space mapper, feasibility checker, TrajectoryManager |
-| `motion/tests/test_trajectory.py` | ~530 | 7 Phase 4 verification tests (all PASS) |
+The original `motion/trajectory.py` was subsequently split into separate modules:
 
-Modified files: `motion/control_loop.py` (+50 lines), `motion/ipc.py` (+25 lines), `motion/__init__.py` (+1 line)
+| File | Purpose |
+|------|---------|
+| `motion/quintic.py` | Quintic polynomial solver, 6-DoF trajectory evaluator, `evaluate_jerk()` |
+| `motion/trajectory_manager.py` | `TrajectoryManager` state machine (IDLE/EXECUTING/RETURNING/COMPLETE), async pipeline integration, C2 splice planning |
+| `motion/feasibility.py` | `check_feasibility()`, `find_min_feasible_duration()`, `make_rest_to_rest()`, `make_deceleration_trajectory()` |
+| `motion/feasibility_worker.py` | Background `multiprocessing.Process` for non-blocking feasibility checks and deceleration precompute |
+| `motion/motor_commands.py` | `cartesian_to_motor_commands()` — unified IK + dynamics pipeline (pose,twist,accel → pos_rev,vel_ff,torque_ff) with Jacobian caching |
+| `motion/stream_smoother.py` | C2-continuous stream smoother for direct-target mode (spacemouse/shell) |
+| `motion/tests/test_trajectory.py` | Phase 4 verification tests |
+| `motion/tests/test_dynamic_target.py` | Phase 7 dynamic target + async pipeline tests |
 
 ### Phase 4 verification results — offline tests (2026-02-28)
 
@@ -563,25 +569,16 @@ Test harness: `tools/trajectory_test.py --home --test all` on Jetson, socketcan,
 
 **Phase 4 is functionally complete.** The trajectory generator, feasibility checker, and control loop integration all work correctly. T1–T3 demonstrate accurate trajectory tracking across the workspace at 25% speed with feedforward. T4's marginal failure is a measurement/threshold artefact, not a functional deficiency. The platform is ready for Phase 5 (inertia feedforward), which will revisit tracking error at higher speeds with a proper dynamics model.
 
-### Suggested next steps
-
-1. **Phase 5: Inertia feedforward.** The gravity-only `torque_ff` is adequate at 25% speed but will be insufficient as speeds increase. Phase 5 adds platform inertia and reflected motor inertia to the feedforward model. This is the planned next phase and the logical continuation.
-
-2. **Leg 2 investigation (optional, non-blocking).** Leg 2's consistently higher tracking error is worth investigating before Phase 5 speed ramp-up. Check spool winding, string tension at rest, and mechanical friction. If the issue is mechanical, fixing it now will give cleaner Phase 5 results. If the issue is inherent to the geometry (leg 2's Jacobian column gives it less mechanical advantage), per-leg gain tuning may help.
-
-3. **Phase 5 speed ramp-up gate.** Per the plan, Phase 5 tests at 50% → 75% → 100% speed. The T4 results suggest that 50% speed already pushes leg 2 to the tracking threshold with gravity-only feedforward. Phase 5's inertia feedforward should improve this — but if it doesn't, the leg 2 canary tells us to investigate before pushing to 75%.
-
-4. **Consider relaxing T4 threshold or making it speed-aware.** If T4 is re-run in future (e.g., as a Phase 5 regression check), the 1.5 mm threshold will likely continue to be borderline at 50% speed. Either give T4 a speed-proportional threshold, or accept that T4 is a stress test that's expected to be tighter than T1–T3.
-
 ---
 
 ### Phase 5 files created (2026-03-01)
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `jugglebot/motion/dynamics.py` | ~360 | Extended: `compute_inertia_wrench()`, `compute_full_feedforward_torques()`, `DynamicsParams` with inertia tensor + motor rotor inertia |
-| `jugglebot/motion/trajectory.py` | (modified) | `cartesian_to_motor_commands()` and `check_feasibility()` now use full feedforward |
-| `jugglebot/motion/control_loop.py` | (modified) | Direct-target mode uses full feedforward |
+| `motion/dynamics.py` | ~360 | Extended: `compute_inertia_wrench()`, `compute_full_feedforward_torques()`, `DynamicsParams` with inertia tensor + motor rotor inertia |
+| `motion/motor_commands.py` | (refactored from trajectory.py) | `cartesian_to_motor_commands()` now uses full feedforward |
+| `motion/feasibility.py` | (refactored from trajectory.py) | `check_feasibility()` now uses full feedforward |
+| `motion/control_loop.py` | (modified) | Direct-target mode uses full feedforward |
 | `jugglebot/motion/tests/test_dynamics.py` | ~370 | 14 tests: 7 Phase 3 (unchanged) + 7 Phase 5 (inertia wrench, F=ma, τ=Iα, gyroscopic, full FF decomposition, torque profile preview) |
 | `tools/inertia_test.py` | ~950 | Phase 5 hardware test harness: T5–T7, graduated speed ramp, `--preview` + `--dry-run` support |
 | `tools/trajectory_viewer.py` | (modified) | Added `--phase5-sequence` option |
@@ -664,14 +661,6 @@ Test harness: `tools/inertia_test.py --home --test all` on Jetson, socketcan, fr
 ### Phase 5 status
 
 **Phase 5 is complete.** Full Newton-Euler inertia feedforward is implemented and validated at 50% and 100% speed. All three feedforward components (gravity, platform inertia, reflected motor inertia) are computed and sent as `torque_ff` via `set_input_pos`. The dynamics model is correct and the feedforward does not degrade tracking. The marginal improvement at current speeds is expected — the inertia terms will become significant at ball-catching speeds.
-
-### Suggested next steps
-
-1. **Phase 6: Hardening & Operational Readiness.** The dynamics model and feedforward pipeline are complete. Phase 6 adds workspace limits, singularity avoidance, fault recovery, and endurance testing — the safety infrastructure needed before dynamic target commanding.
-
-2. **Loop timing optimization (non-blocking).** The 290 Hz full-feedforward loop rate should be improved before faster trajectories. Candidates: precompute J_dot analytically instead of finite differences, cache rotation matrices, or move hot paths to Cython.
-
-3. **Leg 2 mechanical investigation (optional, non-blocking).** Still the worst tracker. Worth checking spool winding and lubrication before Phase 6 stress testing.
 
 ---
 
@@ -765,66 +754,21 @@ Tracking error at 100% speed (2.025mm) well within threshold (3.0mm).
 
 ### Phase 6 status
 
-**Phase 6 is complete.** Workspace limit enforcement (soft speed ramp-down + hard abort), condition number monitoring, fault detection, and extended telemetry are implemented in the control loop. All protective systems validated at low speed (25%), and endurance tested at 50%, 75%, and 100% speed. The system is ready for Phase 7 dynamic target commanding.
+**Phase 6 software is complete.** Workspace limit enforcement (soft speed ramp-down + hard abort), condition number monitoring, fault detection, and extended telemetry are implemented in the control loop. All 12 offline tests PASS. Hardware validated: H1 (workspace boundary at 25% and 100%), H3 (fault injection static), H5 (30 min at 50%), H6 (10 min at 75% and 100%).
+
+**Not yet hardware-validated:** H2 (singularity avoidance — trajectory into ill-conditioned region), H4 (fault injection during active trajectory), 60-minute full endurance at 100% speed. See "Further Work" section.
 
 ---
-
-## Phase 7: Dynamic Target Commanding — DONE (2026-03-01)
-
-**Goal:** Add dynamic target commanding so the motion planner can accept target states on the fly, automatically check feasibility (including jerk limits), splice new trajectories mid-motion with C2 continuity, and return to a home pose after targets with non-zero velocity.
-
-> **Hardware exposure: Graduated.** Start with static targets at 10% speed, graduate through replan and rapid-update tests. All Phase 6 protective systems remain active.
-
-### Deliverables
-- Dynamic target API: `TrajectoryManager.submit_dynamic_target()` accepting `(target_pos, target_quat, target_vel, arrival_time)` — quaternion orientation, linear velocity only (angular velocity always zero), absolute arrival time
-- Mid-motion replanning: `submit()` and `submit_dynamic_target()` can be called during EXECUTING or RETURNING, splicing from the current state with C2 continuity (position, velocity, acceleration continuous at splice point)
-- Feasibility-gated acceptance: automatic `check_feasibility()` with jerk limits before every trajectory submission; infeasible targets silently rejected
-- Jerk limits: Cartesian jerk checked at 30,000 mm/s^3 (translational) and 400 rad/s^3 (rotational). Per-leg jerk NOT checked — documented in code
-- Return-to-home: when a target has non-zero linear velocity, the planner automatically plans a return to home `[0, 0, 170, 0, 0, 0]` using `find_min_feasible_duration()` with 20% safety margin
-- Zero-velocity targets: platform holds at target position until the next command
-- `RETURNING` trajectory state: distinct from EXECUTING; RETURNING always completes to IDLE at home
-- IPC command: `TOPIC_DYN_TARGET` with `make_dynamic_target_command()` message constructor
-- `find_min_feasible_duration()`: binary search over duration [0.2s, 5.0s] with 8 bisections
-- `make_rest_to_rest()`: centralized convenience constructor (moved from tools to trajectory.py)
-- `evaluate_jerk()`: Cartesian jerk (3rd derivative) from quintic polynomials
-- ~~Deferred-start for slow targets~~ (removed 2026-03-11 — caused GIL contention and quintic overshoot; platform now uses full duration for all targets)
-- Active home pose: platform raises to Z=170mm (operational height) before tests begin; the interactive prompt fires after the platform is already active
-- Safe stowing: platform always returns to 0 rev (homed/stowed position) before idling axes; `safe_idle_all()` enforces this invariant
-
-### Verification
-
-#### Offline tests (14/14 PASS)
-1. Dynamic target from IDLE — zero-twist target, IDLE -> EXECUTING -> COMPLETE
-2. Zero-velocity target holds at position — stays at COMPLETE
-3. Nonzero end velocity -> auto-return — EXECUTING -> RETURNING -> IDLE
-4. Mid-motion splice continuity — C2 continuity verified (pos/vel/accel errors < 1e-6)
-5. Infeasible target rejected — returns False, state unchanged
-6. Infeasible replan preserves current trajectory — continues undisturbed
-7. Interrupt return with new target — RETURNING -> EXECUTING
-8. `find_min_feasible_duration` correctness — 0.4625s min feasible for 50mm Z rest-to-rest
-9. Jerk limit enforcement — fast 60mm/0.05s: 27.9M mm/s^3 (rejected); slow 60mm/2.0s: 437 mm/s^3 (passed)
-10. Quaternion -> rotvec conversion — 5-deg X tilt matches expected rotvec
-11. Arrival time in the past — rejected immediately
-12. `make_rest_to_rest` centralized — output matches expected
-13. ~~Deferred start for slow targets~~ (removed 2026-03-11)
-14. Return junction C2 continuity — verifies outbound end_state matches return start_state for pose/twist/accel (regression test for bug #46)
-
-#### Hardware tests (on Jetson, 100% speed)
-- DT1 (static target +30mm Z): **PASS** — 1.502 mm worst tracking (threshold 3.0 mm), 184 samples, leg 1 worst tracker
-- DT2 (nonzero velocity + auto-return): **PASS** — 2.436 mm worst tracking, final pose error 0.000 mm from home, IDLE state confirmed
-- DT3 (mid-motion replan): **PASS** — 1.187 mm worst tracking, 2/2 targets accepted, splice at t=0.703s
-- DT4 (rapid target updates, 2 Hz): **PASS** — 10/10 targets accepted, 0 ODrive faults
-- DT5 (infeasible target ignored): **PASS** — 2.093 mm worst tracking, infeasible target correctly rejected, original trajectory undisturbed
 
 ### Phase 7 findings
 
 39. **Jerk as a limiting constraint** (2026-03-01): For rest-to-rest quintic trajectories, jerk scales as distance/T^3. A 60mm Z move in 0.05s produces ~28 million mm/s^3 jerk (vs 30,000 limit). A 60mm move in 2.0s produces only 437 mm/s^3. The jerk limit is effectively a minimum-time constraint that dominates for short-duration, moderate-distance moves.
 
-40. **Binary search for return-to-home duration** (2026-03-01): `find_min_feasible_duration()` converges in 8 bisections to ~2% resolution. For a 50mm rest-to-rest Z move, the minimum feasible duration is ~0.46s. The 20% margin gives ~0.55s — fast enough for catching operations but not aggressively tight.
+40. **Binary search for deceleration duration** (2026-03-01): `find_min_feasible_duration()` converges in 8 bisections to ~2% resolution. For a 50mm rest-to-rest Z move, the minimum feasible duration is ~0.46s. The 1.5× margin gives ~0.69s — fast enough for catching operations but not aggressively tight.
 
-41. **Phase 4 test 7 updated** (2026-03-01): The old test verified that `submit()` during EXECUTING raised RuntimeError (Phase 4 restriction). Updated to verify that mid-motion submit is now allowed (Phase 7 behavior). All 42+12=54 offline tests pass.
+41. **Phase 4 test 7 updated** (2026-03-01): The old test verified that `submit()` during EXECUTING raised RuntimeError (Phase 4 restriction). Updated to verify that mid-motion submit is now allowed (Phase 7 behavior).
 
-42. **Speed scale is arrival-time-only** (2026-03-01): `submit_dynamic_target()` does not accept a `speed_scale` parameter. The trajectory duration is entirely determined by `arrival_time - t_now`. Passing speed_scale to `create_trajectory()` would double-apply scaling (stretching duration beyond the intended arrival time). The caller controls speed through their choice of arrival_time.
+42. **Speed scale is arrival-time-only** (2026-03-01): `request_dynamic_target()` does not accept a `speed_scale` parameter. The trajectory duration is entirely determined by `arrival_time - t_now`. The caller controls speed through their choice of arrival_time.
 
 43. ~~**Deferred start avoids slow trajectories**~~ (2026-03-01, removed 2026-03-11): Deferred start was implemented then removed — it caused GIL contention (background `find_min_feasible_duration` starved the control loop) and quintic overshoot (long-duration polynomials from mid-motion states). The platform now uses the full requested duration for all targets.
 
@@ -832,20 +776,40 @@ Tracking error at 100% speed (2.025mm) well within threshold (3.0mm).
 
 45. **Stale trajectory_done flag race** (2026-03-01): `enter_trap_traj_mode_all()` commands each axis to hold at its current position, which completes instantly and sets the ODrive's `trajectory_done` flag. When a subsequent move command is sent, `wait_for_all_trajectories_done()` can see the stale flag and return immediately before the legs have moved. Fix: clear `trajectory_done` flags on all axes before sending the real move command.
 
-46. **`_plan_return_to_home()` velocity discontinuity** (2026-03-02): `_plan_return_to_home()` called `evaluate(traj, t_end)` to get the splice-point state, but `evaluate()` explicitly clamps twist/accel to zero when `t >= t_end` (hold behaviour). This meant the return-to-home trajectory always started from rest even when the outbound trajectory ended with nonzero velocity — a C2 velocity discontinuity. Fix: read `end_state` directly instead of calling `evaluate()`. The pre-flight `check_sequence_continuity()` already used `end_state` (and documented why), but the runtime code did not. DT2 tracking error dropped from 19.4 mm to 2.4 mm.
+46. **Deceleration velocity discontinuity** (2026-03-02): The original deceleration planner called `evaluate(traj, t_end)` to get the splice-point state, but `evaluate()` explicitly clamps twist/accel to zero when `t >= t_end` (hold behaviour). This meant the deceleration trajectory always started from rest even when the outbound trajectory ended with nonzero velocity — a C2 velocity discontinuity. Fix: read `end_state` directly instead of calling `evaluate()`. DT2 tracking error dropped from 19.4 mm to 2.4 mm.
 
-47. **Feasibility-check stall shifts trajectory timing** (2026-03-02): `check_feasibility()` with 50 samples takes ~269ms on Jetson (each sample evaluates ~9 Jacobians + 1 SVD + 1 linear solve). Since `submit_dynamic_target()` sets `t_start = t_now` before the feasibility check, by the time the first motor command is sent the trajectory evaluator is already ~269ms past `t_start` while the ODrive is still at the start position — a step command. Similarly, `_plan_return_to_home()` calls `find_min_feasible_duration()` (8 bisections × 50 samples ≈ 2s). Fix: added `TrajectoryManager.realtime_restamp` flag (default `False`). When enabled, both methods measure the wall-clock duration of their expensive operations and shift `t_start` forward by that amount. The polynomial uses normalised time so the trajectory shape is unchanged — only the absolute time anchor moves. Enabled in production (`control_loop.py`) and the hardware test harness. Offline tests use synthetic time and leave it disabled. DT1 tracking error dropped from 4.9 mm to 1.5 mm.
+47. **Feasibility-check stall shifts trajectory timing** (2026-03-02): `check_feasibility()` with 50 samples takes ~269ms on Jetson. Fix: async feasibility pipeline (multiprocessing.Process) runs checks in the background while the control loop continues. The synchronous `realtime_restamp` flag is preserved as a fallback. DT1 tracking error dropped from 4.9 mm to 1.5 mm.
 
-48. **Offline tests didn't catch either bug** (2026-03-02): The offline test for auto-return (test 3) only checked state transitions and final pose, not velocity continuity at the EXECUTING→RETURNING junction. The splice continuity test (test 4) only tested mid-trajectory splices where `evaluate()` isn't clamped. The pre-flight `check_sequence_continuity()` correctly used `end_state` directly, so it validated a different (correct) trajectory than what the runtime actually produced. No offline test modelled loop timing. Added test 14 (return junction C2 continuity) as a regression test.
+48. **Offline tests didn't catch either bug** (2026-03-02): Added test 14 (deceleration junction C2 continuity) as a regression test.
 
 ### Phase 7 status
 
-**Phase 7 is complete (2026-03-02).** Dynamic target commanding, mid-motion replanning, jerk limits, and return-to-home are implemented and validated. Deferred-start buffering was removed 2026-03-11 (see finding 43). 14/14 offline tests PASS, 42 regression tests PASS = 56 total. All 5 hardware tests PASS at 100% speed (worst tracking 2.436 mm, threshold 3.0 mm). Two bugs found and fixed during hardware validation (findings 46–48).
+**Phase 7 is complete (2026-03-02).** Dynamic target commanding, mid-motion replanning, jerk limits, and decelerate-to-stop are implemented and validated. Async feasibility pipeline uses multiprocessing to avoid blocking the control loop. 14/14 offline tests PASS. All 5 hardware tests PASS at 100% speed (worst tracking 2.436 mm, threshold 3.0 mm). Two bugs found and fixed during hardware validation (findings 46–48).
 
-### Suggested next steps
+---
 
-1. **Loop timing optimization (non-blocking).** The 290 Hz full-feedforward loop rate should be improved. The `realtime_restamp` fix compensates for the ~269ms feasibility-check stall, but the stall still blocks the control loop for that duration (no commands sent during the check). For high-frequency ball-catching, consider moving feasibility checking to a background thread or reducing the 50-sample inline check. `find_min_feasible_duration()` in `_plan_return_to_home()` is even more expensive (~2s on Jetson) — the restamp helps but the platform holds at the outbound end-pose during the search.
+## Further Work
 
-2. **Ball predictor integration.** The dynamic target API (`submit_dynamic_target`) is the interface for the ball predictor. The predictor sends `(pos, quat, vel, arrival_time)` and the planner handles everything else.
+Items that are implemented in infrastructure but not yet fully validated, or identified as valuable future improvements. Prioritised by impact on safety and robustness.
 
-3. **Telemetry dashboard and rosbag logging (deferred from Phase 6).** The telemetry fields are published via IPC but the ROS2 rosbag recording and real-time dashboard were not implemented. These can be added incrementally as needed during ball-predictor debugging.
+### Hardware tests not yet completed
+
+1. **H2 — Singularity avoidance test.** The runtime condition number monitor (soft speed ramp-down + hard abort) is implemented in `control_loop.py` and validated offline (12/12 tests), but has not been hardware-tested with a trajectory that deliberately enters an ill-conditioned region. The test function is listed in `tools/hardening_test.py` but not yet implemented.
+
+2. **H4 — Fault injection during motion.** Only static fault injection (H3 — platform holding pose) has been hardware-tested. Fault injection during an active trajectory — the most safety-critical scenario — has not been validated on hardware.
+
+3. **60-minute full endurance test.** Test infrastructure exists (`FULL_ENDURANCE_MINUTES = 60` in `hardening_test.py`) but documented runs cover only 10 minutes at 100% speed. A 60-minute continuous run at full speed would increase confidence in thermal stability and long-term drift.
+
+### Performance & diagnostics
+
+4. **Loop timing optimisation.** Full Newton-Euler feedforward runs at ~290 Hz (vs ~480 Hz gravity-only). Jacobian caching (commit cf3b9f5) reduced redundant computations from 6 to 2 per cycle. Further candidates: analytical J̇ (currently finite-difference), rotation matrix caching, or Cython hot path. Relevant when ball-catching trajectories demand higher bandwidth.
+
+5. **Performance dashboard completeness.** The GUI displays workspace status, condition number, tracking error, and basic telemetry charts (position, velocity, current, temperature). Missing: loop timing visualisation and feedforward vs. PID correction split. Rosbag recording is implemented via `--record` launch argument.
+
+6. **Jacobian normalisation.** Raw condition numbers (449–644) reflect mixed mm/rad Jacobian units. The relative threshold approach (soft=1.5× home, hard=2.0× home) is functional. Characteristic length scaling would make absolute condition numbers more interpretable but is not safety-critical.
+
+### Integration
+
+7. **Ball predictor integration.** The dynamic target API (`request_dynamic_target`) is the interface for the ball predictor. The predictor sends `(pos, quat, vel, arrival_time)` and the planner handles feasibility, splicing, and deceleration autonomously.
+
+8. **Leg 2 mechanical investigation.** Legs 2 and 5 consistently show the largest tracking errors across all phases (Leg 2: 0.826 mm in B2, 1.535 mm in T4, 1.885 mm in T6). Likely higher friction or spool calibration variance. Worth checking spool winding and lubrication before ball-catching speeds.
