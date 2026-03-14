@@ -806,21 +806,15 @@ class ControlLoop:
             logger.debug(
                 f"Workspace soft limit: speed_scale={ws_check.speed_scale:.2f}, "
                 f"{'; '.join(ws_check.violations)}")
-            # Apply speed degradation to smoother in direct-target mode
-            if traj_state == TrajectoryState.IDLE:
-                s = ws_check.speed_scale
-                self._smoother.set_limits(
-                    self._base_smoother_vel * s,
-                    self._base_smoother_accel * s)
-            # Not clamped — pose is still valid (just in the warning zone)
+            # Soft limit is informational for direct-target mode.
+            # The hard-limit hold-pose and slew limiter already provide
+            # safety.  Scaling smoother limits here causes the platform to
+            # crawl near workspace boundaries, degrading responsiveness.
             if pose_6dof is not None:
                 self._last_safe_pose_6dof = pose_6dof.copy()
             self._workspace_clamped = False
         else:
-            # OK — restore full smoother limits and update last safe pose
-            if traj_state == TrajectoryState.IDLE:
-                self._smoother.set_limits(
-                    self._base_smoother_vel, self._base_smoother_accel)
+            # OK — update last safe pose
             if pose_6dof is not None:
                 self._last_safe_pose_6dof = pose_6dof.copy()
             self._workspace_clamped = False
