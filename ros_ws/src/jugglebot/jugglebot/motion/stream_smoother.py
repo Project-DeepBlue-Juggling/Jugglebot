@@ -43,6 +43,7 @@ class StreamSmoother:
 
     T_MIN = 0.005   # 5 ms floor (prevents degenerate polynomials)
     T_MAX = 5.0     # 5 s ceiling
+    HYSTERESIS_REV = 0.05  # motor-space threshold for target deduplication
 
     def __init__(self,
                  geom: StewartGeometry,
@@ -83,7 +84,29 @@ class StreamSmoother:
         Evaluates the current segment at the splice point to preserve C2
         continuity, computes the minimum feasible duration from motor-space
         displacement and system limits, and builds a new quintic segment.
+
+        Target hysteresis: if the new target is within HYSTERESIS_REV of
+        the current target in motor space, the re-splice is skipped and
+        the existing quintic continues.  This prevents excessive re-splicing
+        at high target rates (e.g. spacemouse at 100 Hz) which otherwise
+        limits velocity buildup.
         """
+        # --- Hysteresis: skip re-splice if target barely changed ---
+        if self._has_segment:
+            tgt_rot = rotvec_to_rot_matrix(pose_6dof[3:6])
+            old_rot = rotvec_to_rot_matrix(self._target[3:6])
+
+            new_rev = extensions_mm_to_revs(
+                pose_to_leg_lengths(pose_6dof[:3], tgt_rot, self._geom),
+                self._geom)
+            old_rev = extensions_mm_to_revs(
+                pose_to_leg_lengths(self._target[:3], old_rot, self._geom),
+                self._geom)
+
+            if np.max(np.abs(new_rev - old_rev)) < self.HYSTERESIS_REV:
+                return  # target hasn't moved enough — let current quintic run
+
+        # --- Normal path: evaluate splice point and build new segment ---
         if self._has_segment:
             self._evaluate_at(t_now)  # update state to splice point
 
