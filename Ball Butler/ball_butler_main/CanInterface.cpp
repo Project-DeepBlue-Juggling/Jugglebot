@@ -437,33 +437,41 @@ CanInterface::HomingStatus CanInterface::updateHomeHand() {
 
   const uint32_t node_id = homing_node_id_;
 
-  // Per-attempt timeout — but only when axis is not actively running.
-  // Match original behavior: the original code only checked its per-attempt
-  // timeout when the axis was in IDLE or had an error. When the axis is in
-  // CLOSED_LOOP and moving, rely on the overall handleBoot_() timeout instead.
-  // This is important on power-cycle where the ODrive may take several seconds
-  // to boot — we don't want to timeout the monitoring phase prematurely when
-  // the motor is legitimately running but hasn't hit the endstop yet.
-  if (homing_phase_ != HomingPhase::MONITOR_IQ) {
-    // For non-monitoring phases (CONFIGURE, SETTLE, SEND_VEL, etc.),
-    // always enforce the per-attempt timeout.
-    if (millis() - homing_start_ms_ > HandDefaults::HOMING_ATTEMPT_TIMEOUT_MS) {
-      if (dbg_) dbg_->println("[Home] Timeout while homing hand.");
-      setRequestedState(node_id, ODriveState::IDLE);
-      setHomeState(node_id, AxisHomeState::Unhomed);
-      homing_phase_ = HomingPhase::IDLE;
-      return HomingStatus::FAILED;
-    }
+  // Per-attempt timeout — applied to ALL phases including MONITOR_IQ.
+  // This ensures a failed attempt (e.g. ODrive never entered CLOSED_LOOP)
+  // is detected and retried rather than silently consuming the entire
+  // overall timeout budget.
+  if (millis() - homing_start_ms_ > HandDefaults::HOMING_ATTEMPT_TIMEOUT_MS) {
+    if (dbg_) dbg_->println("[Home] Per-attempt timeout while homing hand.");
+    setRequestedState(node_id, ODriveState::IDLE);
+    setHomeState(node_id, AxisHomeState::Unhomed);
+    homing_phase_ = HomingPhase::IDLE;
+    return HomingStatus::FAILED;
   }
 
   switch (homing_phase_) {
     // ----------------------------------------------------------------
     case HomingPhase::CONFIGURE: {
       // Clear any stale errors from previous attempts or power-cycle boot.
-      // Without this, the ODrive may reject CLOSED_LOOP if an error persists.
+      // The CLOSED_LOOP request is deferred to CLEAR_SETTLE so the ODrive
+      // has time to process the error clear first.
       clearErrors(node_id);
+      homing_phase_ = HomingPhase::CLEAR_SETTLE;
+      homing_phase_ms_ = millis();
+      return HomingStatus::IN_PROGRESS;
+    }
 
-      // Send CLOSED_LOOP, velocity control mode, and current/vel limits
+    // ----------------------------------------------------------------
+    case HomingPhase::CLEAR_SETTLE: {
+      // Wait for the ODrive to process clearErrors before sending the
+      // state transition.  Without this gap the CLOSED_LOOP request can
+      // arrive before the error clear takes effect, causing it to be
+      // silently rejected.
+      static constexpr uint32_t CLEAR_SETTLE_MS = 20;
+      if (millis() - homing_phase_ms_ < CLEAR_SETTLE_MS) {
+        return HomingStatus::IN_PROGRESS;
+      }
+      // Now send CLOSED_LOOP, velocity control mode, and current/vel limits
       if (!setRequestedState(node_id, ODriveState::CLOSED_LOOP) ||
           !setControllerMode(node_id, ODriveControlMode::VELOCITY, ODriveInputMode::VEL_RAMP)) {
         setHomeState(node_id, AxisHomeState::Unhomed);
@@ -483,11 +491,29 @@ CanInterface::HomingStatus CanInterface::updateHomeHand() {
 
     // ----------------------------------------------------------------
     case HomingPhase::SETTLE: {
-      // Wait for control mode to take effect before sending velocity
+      // Wait for control mode to take effect before checking state
       if (millis() - homing_phase_ms_ < HandDefaults::HOMING_MODE_SETTLE_MS) {
         return HomingStatus::IN_PROGRESS;
       }
-      homing_phase_ = HomingPhase::SEND_VEL;
+      // Verify the ODrive actually entered CLOSED_LOOP before proceeding.
+      // If the heartbeat still shows IDLE (or an error), keep waiting —
+      // the per-attempt timeout will catch persistent failures and allow
+      // a retry rather than silently hanging.
+      AxisHeartbeat hb;
+      if (getAxisHeartbeat(node_id, hb)) {
+        if (hb.axis_error != 0) {
+          if (dbg_) dbg_->printf("[Home] Axis error during settle (err=0x%08lX)\n",
+                                  (unsigned long)hb.axis_error);
+          setHomeState(node_id, AxisHomeState::Unhomed);
+          homing_phase_ = HomingPhase::IDLE;
+          return HomingStatus::FAILED;
+        }
+        if (hb.axis_state == ODriveState::CLOSED_LOOP) {
+          homing_phase_ = HomingPhase::SEND_VEL;
+          return HomingStatus::IN_PROGRESS;
+        }
+      }
+      // Not yet confirmed — keep waiting (per-attempt timeout will catch failure)
       return HomingStatus::IN_PROGRESS;
     }
 
@@ -508,31 +534,28 @@ CanInterface::HomingStatus CanInterface::updateHomeHand() {
 
     // ----------------------------------------------------------------
     case HomingPhase::MONITOR_IQ: {
-      // Check for fresh Iq reading.
-      // Heartbeat error checks are done INSIDE the Iq conditional, matching
-      // the original blocking code's behavior. This prevents false failures
-      // from stale heartbeat data (e.g., ODrive still transitioning to
-      // CLOSED_LOOP, or heartbeat from before error was cleared).
+      // Independent heartbeat check — detect ODrive falling out of
+      // CLOSED_LOOP even when no Iq data is arriving.  The SETTLE phase
+      // already confirmed CLOSED_LOOP before we got here, so any
+      // heartbeat showing IDLE or an error is a genuine failure.
+      AxisHeartbeat hb;
+      if (getAxisHeartbeat(node_id, hb)) {
+        if (hb.axis_state == ODriveState::IDLE || hb.axis_error != 0) {
+          if (dbg_) dbg_->printf("[Home] Axis error or unexpected IDLE during monitoring (state=%u, err=0x%08lX)\n",
+                                  (unsigned)hb.axis_state, (unsigned long)hb.axis_error);
+          setHomeState(node_id, AxisHomeState::Unhomed);
+          homing_phase_ = HomingPhase::IDLE;
+          return HomingStatus::FAILED;
+        }
+      }
+
+      // Check for fresh Iq reading and apply EMA filter
       float iq_meas, iq_setp;
       uint64_t t_us;
       if (getAxisIq(node_id, iq_meas, iq_setp, t_us)) {
         if (t_us != homing_last_iq_us_) {
           homing_last_iq_us_ = t_us;
           homing_ema_ = homing_ema_weight_ * homing_ema_ + (1.f - homing_ema_weight_) * iq_meas;
-
-          // Now that we have Iq data (confirming axis is active), check
-          // heartbeat for errors. If the axis went to IDLE or has an error
-          // while we were receiving Iq data, the homing attempt has failed.
-          AxisHeartbeat hb;
-          if (getAxisHeartbeat(node_id, hb)) {
-            if (hb.axis_state == ODriveState::IDLE || hb.axis_error != 0) {
-              if (dbg_) dbg_->printf("[Home] Axis error or unexpected IDLE during homing (state=%u, err=0x%08lX)\n",
-                                      (unsigned)hb.axis_state, (unsigned long)hb.axis_error);
-              setHomeState(node_id, AxisHomeState::Unhomed);
-              homing_phase_ = HomingPhase::IDLE;
-              return HomingStatus::FAILED;
-            }
-          }
 
           if (fabsf(homing_ema_) >= homing_current_A_) {
             // Current spike detected — stop the motor

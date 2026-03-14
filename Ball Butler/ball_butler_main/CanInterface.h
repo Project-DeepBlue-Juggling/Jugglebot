@@ -429,13 +429,14 @@ private:
   // ============================================================================
 
   enum class HomingPhase : uint8_t {
-    IDLE,         // Not homing
-    CONFIGURE,    // Sent CLOSED_LOOP, controller mode, limits — advance immediately
-    SETTLE,       // Waiting for control mode to take effect
-    SEND_VEL,     // Send velocity command — advance immediately
-    MONITOR_IQ,   // Polling Iq readings, applying EMA filter, checking for spike
-    STOP_SETTLE,  // Motor stopped, waiting before setting abs position
-    FINALIZE,     // Set abs position, restore config, mark homed — advance immediately
+    IDLE,           // Not homing
+    CONFIGURE,      // Send clearErrors — advance immediately
+    CLEAR_SETTLE,   // Wait for error clear to be processed before configuring axis
+    SETTLE,         // Wait for control mode to take effect, verify CLOSED_LOOP
+    SEND_VEL,       // Send velocity command — advance immediately
+    MONITOR_IQ,     // Polling Iq readings, applying EMA filter, checking for spike
+    STOP_SETTLE,    // Motor stopped, waiting before setting abs position
+    FINALIZE,       // Set abs position, restore config, mark homed — advance immediately
   };
 
   HomingPhase homing_phase_      = HomingPhase::IDLE;
