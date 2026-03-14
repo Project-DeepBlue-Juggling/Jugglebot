@@ -288,6 +288,27 @@ function onBBCalibrateClick() {
         });
 }
 
+function onBBResetClick() {
+    const btn = document.getElementById('bb-calibrate-btn');
+    if (!btn || btn.disabled) return;
+
+    btn.disabled = true;
+    btn.textContent = 'Resetting...';
+
+    callService('bb/reset', 'std_srvs/srv/Trigger')
+        .then((result) => {
+            if (!result.success) {
+                console.warn('BB reset failed:', result.message);
+            }
+            // State update will swap button back once out of ERROR
+        })
+        .catch((err) => {
+            btn.textContent = 'RESET';
+            btn.disabled = false;
+            console.error('BB reset service error:', err);
+        });
+}
+
 export function initBBPanel() {
     const content = document.getElementById('bb-content');
     if (!content) return;
@@ -365,11 +386,30 @@ export function updateBBPanel(hb) {
     if (pitch) pitch.textContent = hb.pitch_deg.toFixed(1) + '\u00b0';
     if (hand) hand.textContent = hb.hand_pos_mm.toFixed(0) + ' mm';
 
-    // Enable calibrate button only when BB is IDLE (state 1)
+    // Swap button between Calibrate (IDLE) and RESET (ERROR)
     lastBBState = hb.state;
     const calBtn = document.getElementById('bb-calibrate-btn');
-    if (calBtn && calBtn.textContent === 'Calibrate') {
-        calBtn.disabled = hb.state !== 1;
+    if (calBtn) {
+        const isError = hb.state === 127;
+        const wasReset = calBtn.classList.contains('bb-reset-mode');
+
+        if (isError && !wasReset) {
+            // Switch to RESET button
+            calBtn.textContent = 'RESET';
+            calBtn.classList.add('bb-reset-mode');
+            calBtn.removeEventListener('click', onBBCalibrateClick);
+            calBtn.addEventListener('click', onBBResetClick);
+            calBtn.disabled = false;
+        } else if (!isError && wasReset) {
+            // Switch back to Calibrate button
+            calBtn.textContent = 'Calibrate';
+            calBtn.classList.remove('bb-reset-mode');
+            calBtn.removeEventListener('click', onBBResetClick);
+            calBtn.addEventListener('click', onBBCalibrateClick);
+            calBtn.disabled = hb.state !== 1;
+        } else if (!isError && calBtn.textContent === 'Calibrate') {
+            calBtn.disabled = hb.state !== 1;
+        }
     }
 }
 
@@ -379,9 +419,17 @@ export function setBBDisconnected() {
         badge.textContent = 'Disconnected';
         badge.className = 'badge';
     }
-    // Disable calibrate button on disconnect
+    // Reset button to Calibrate (disabled) on disconnect
     const calBtn = document.getElementById('bb-calibrate-btn');
-    if (calBtn) calBtn.disabled = true;
+    if (calBtn) {
+        if (calBtn.classList.contains('bb-reset-mode')) {
+            calBtn.textContent = 'Calibrate';
+            calBtn.classList.remove('bb-reset-mode');
+            calBtn.removeEventListener('click', onBBResetClick);
+            calBtn.addEventListener('click', onBBCalibrateClick);
+        }
+        calBtn.disabled = true;
+    }
 }
 
 // ---- Motion planner panel ----

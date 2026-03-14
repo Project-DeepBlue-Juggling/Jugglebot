@@ -474,6 +474,16 @@
     cursor: default;
 }
 
+.bb-calibrate-btn.bb-reset-mode {
+    border-color: var(--state-fault);
+    color: var(--state-fault);
+}
+
+.bb-calibrate-btn.bb-reset-mode:hover:not(:disabled) {
+    background: var(--state-fault);
+    color: #fff;
+}
+
 /* ---- CAN traffic panel ---- */
 .can-rate {
     display: flex;
