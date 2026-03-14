@@ -47,6 +47,7 @@ import logging
 import signal
 import sys
 import time
+from collections import deque
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -81,12 +82,9 @@ from jugglebot.motion.ipc import (
     make_telemetry,
 )
 from jugglebot.motion.stream_smoother import StreamSmoother
-from jugglebot.motion.trajectory import (
-    TrajectoryManager,
-    TrajectoryState,
-    cartesian_to_motor_commands,
-    create_trajectory,
-)
+from jugglebot.motion.motor_commands import cartesian_to_motor_commands
+from jugglebot.motion.quintic import create_trajectory
+from jugglebot.motion.trajectory_manager import TrajectoryManager, TrajectoryState
 from jugglebot.motion.workspace import (
     WorkspaceLimits,
     WorkspaceStatus,
@@ -132,13 +130,15 @@ MOTOR_FB_STALENESS_S = 0.15
 class LoopStats:
     """Accumulates per-cycle timing data for jitter analysis."""
     target_dt_s: float
-    cycle_times: list[float] = field(default_factory=list)
+    cycle_times: deque = field(default=None)
     _window_size: int = 10000  # keep last N cycles
+
+    def __post_init__(self):
+        if self.cycle_times is None:
+            self.cycle_times = deque(maxlen=self._window_size)
 
     def record(self, dt_s: float) -> None:
         self.cycle_times.append(dt_s)
-        if len(self.cycle_times) > self._window_size:
-            self.cycle_times.pop(0)
 
     @property
     def count(self) -> int:
@@ -367,8 +367,14 @@ class ControlLoop:
         it into the stream smoother for C2-continuous profiling.
         """
         try:
-            pos = np.array(msg['pos'])
+            pos = np.array(msg['pos'], dtype=float)
             quat = msg['rot']  # [w, x, y, z]
+            if pos.shape != (3,):
+                logger.warning(f"Malformed target: pos shape {pos.shape}, expected (3,)")
+                return
+            if len(quat) != 4:
+                logger.warning(f"Malformed target: rot length {len(quat)}, expected 4")
+                return
             rot = quat_to_rot_matrix(*quat)
         except (KeyError, TypeError, ValueError) as e:
             logger.warning(f"Malformed target message, ignoring: {e}")
@@ -388,7 +394,11 @@ class ControlLoop:
 
     def _on_mode_command(self, msg: dict) -> None:
         """Handle an incoming mode command."""
-        cmd = msg['cmd']
+        try:
+            cmd = msg['cmd']
+        except (KeyError, TypeError) as e:
+            logger.warning(f"Malformed mode command, ignoring: {e}")
+            return
         params = msg.get('params', {})
         if cmd == 'enable':
             if self.mode == ControlMode.DISABLED:
@@ -450,13 +460,21 @@ class ControlLoop:
     def _on_trajectory(self, msg: dict) -> None:
         """Handle an incoming trajectory command."""
         try:
+            arrays = {}
+            for key in ('start_pose', 'start_twist', 'start_accel',
+                        'end_pose', 'end_twist', 'end_accel'):
+                arr = np.array(msg[key], dtype=float)
+                if arr.shape != (6,):
+                    logger.error(f"Trajectory rejected: {key} shape {arr.shape}, expected (6,)")
+                    return
+                arrays[key] = arr
             traj = create_trajectory(
-                start_pose=np.array(msg['start_pose']),
-                start_twist=np.array(msg['start_twist']),
-                start_accel=np.array(msg['start_accel']),
-                end_pose=np.array(msg['end_pose']),
-                end_twist=np.array(msg['end_twist']),
-                end_accel=np.array(msg['end_accel']),
+                start_pose=arrays['start_pose'],
+                start_twist=arrays['start_twist'],
+                start_accel=arrays['start_accel'],
+                end_pose=arrays['end_pose'],
+                end_twist=arrays['end_twist'],
+                end_accel=arrays['end_accel'],
                 duration=msg['duration'],
                 t_start=time.perf_counter(),
                 speed_scale=msg.get('speed_scale', 1.0),
@@ -474,12 +492,21 @@ class ControlLoop:
         picked up on the next cycle via ``_poll_async_result()``.
         """
         try:
-            target_pos = np.array(msg['target_pos'])
-            target_quat = np.array(msg['target_quat'])
-            target_vel = np.array(msg['target_vel'])
+            target_pos = np.array(msg['target_pos'], dtype=float)
+            target_quat = np.array(msg['target_quat'], dtype=float)
+            target_vel = np.array(msg['target_vel'], dtype=float)
             arrival_time = msg['arrival_time']
         except (KeyError, TypeError, ValueError) as e:
             logger.warning(f"Malformed dynamic target message, ignoring: {e}")
+            return
+        if target_pos.shape != (3,):
+            logger.warning(f"Malformed dynamic target: target_pos shape {target_pos.shape}, expected (3,)")
+            return
+        if target_quat.shape != (4,):
+            logger.warning(f"Malformed dynamic target: target_quat shape {target_quat.shape}, expected (4,)")
+            return
+        if target_vel.shape != (3,):
+            logger.warning(f"Malformed dynamic target: target_vel shape {target_vel.shape}, expected (3,)")
             return
 
         t_now = time.perf_counter()
@@ -497,12 +524,20 @@ class ControlLoop:
     def _on_motor_feedback(self, msg: dict) -> None:
         """Handle motor feedback from the CAN node (via bridge)."""
         try:
-            self._motor_fb_pos_rev = np.array(msg['pos'])
-            self._motor_fb_vel_rps = np.array(msg['vel'])
-            self._motor_fb_cur_A = np.array(msg['cur'])
+            pos = np.array(msg['pos'], dtype=float)
+            vel = np.array(msg['vel'], dtype=float)
+            cur = np.array(msg['cur'], dtype=float)
         except (KeyError, TypeError, ValueError) as e:
             logger.warning(f"Malformed motor feedback message, ignoring: {e}")
             return
+        if pos.shape != (6,) or vel.shape != (6,) or cur.shape != (6,):
+            logger.warning(
+                f"Malformed motor feedback: shapes pos={pos.shape} vel={vel.shape} "
+                f"cur={cur.shape}, expected (6,)")
+            return
+        self._motor_fb_pos_rev = pos
+        self._motor_fb_vel_rps = vel
+        self._motor_fb_cur_A = cur
         self._has_motor_fb = True
         self._motor_fb_timestamp = time.perf_counter()
 
@@ -880,17 +915,23 @@ class ControlLoop:
     def _publish_fault_telemetry(self, dt_actual: float) -> None:
         """Send reduced telemetry during ESTOP so the bridge can see fault state.
 
-        No motor commands are included — only diagnostic fields.
+        Motor command fields (leg_pos, leg_vel, cmd_torques) are set to None
+        so the bridge's existing ``positions is not None`` gate suppresses
+        any motor command publishing.  This prevents the bridge from ever
+        forwarding zero-position commands during internally-triggered faults
+        (e.g. workspace hard limit, motor overspeed) where the bridge hasn't
+        yet received an ERROR mode from the orchestrator.
         """
-        msg = make_telemetry(
-            leg_positions=[0.0] * 6,
-            leg_velocities=[0.0] * 6,
-            commanded_torques=[0.0] * 6,
-            loop_dt_s=dt_actual,
-            fault_state=self._fault_state,
-            workspace_status=self._workspace_status.value,
-            slew_limited=False,
-        )
+        msg = {
+            'type': 'telemetry',
+            'leg_pos': None,
+            'leg_vel': None,
+            'cmd_torques': None,
+            'dt': dt_actual,
+            'fault_state': self._fault_state,
+            'workspace_status': self._workspace_status.value,
+            'slew_limited': False,
+        }
         self.ipc.send_telemetry(msg)
 
     def _periodic_log(self, t_now: float) -> None:

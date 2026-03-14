@@ -23,9 +23,7 @@ from jugglebot.motion.geometry import StewartGeometry
 from jugglebot.motion.ik_solver import rotvec_to_rot_matrix, pose_to_leg_lengths
 from jugglebot.motion.conversions import extensions_mm_to_revs
 from jugglebot.motion.dynamics import DynamicsParams
-from jugglebot.motion.trajectory import (
-    cartesian_to_motor_commands,
-)
+from jugglebot.motion.motor_commands import cartesian_to_motor_commands
 from jugglebot.motion.stream_smoother import StreamSmoother
 
 

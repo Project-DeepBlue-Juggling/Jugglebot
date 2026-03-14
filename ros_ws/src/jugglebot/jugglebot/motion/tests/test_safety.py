@@ -340,7 +340,7 @@ def test_lead_time_gate():
 
     from jugglebot.motion.geometry import StewartGeometry
     from jugglebot.motion.dynamics import DynamicsParams
-    from jugglebot.motion.trajectory import (
+    from jugglebot.motion.trajectory_manager import (
         TrajectoryManager,
         MIN_LEAD_TIME_S,
     )
@@ -355,10 +355,11 @@ def test_lead_time_gate():
     target_quat = np.array([1.0, 0.0, 0.0, 0.0])
     target_vel = np.zeros(3)
 
-    # Sync path — too soon
+    # Sync helper — too soon
+    from jugglebot.motion.tests.helpers import submit_dynamic_target_sync
     arrival_too_soon = t_now + MIN_LEAD_TIME_S * 0.5
-    accepted = mgr.submit_dynamic_target(
-        target_pos, target_quat, target_vel, arrival_too_soon, t_now)
+    accepted = submit_dynamic_target_sync(
+        mgr, target_pos, target_quat, target_vel, arrival_too_soon, t_now)
     assert not accepted, "Should reject target with insufficient lead time (sync)"
 
     # Async path — too soon

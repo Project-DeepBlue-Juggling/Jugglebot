@@ -104,12 +104,9 @@ from jugglebot.motion.ik_solver import (  # noqa: E402
     pose_to_leg_lengths,
     rotvec_to_rot_matrix,
 )
-from jugglebot.motion.trajectory import (  # noqa: E402
-    create_trajectory,
-    check_feasibility,
-    evaluate,
-    cartesian_to_motor_commands,
-)
+from jugglebot.motion.feasibility import check_feasibility  # noqa: E402
+from jugglebot.motion.motor_commands import cartesian_to_motor_commands  # noqa: E402
+from jugglebot.motion.quintic import create_trajectory, evaluate  # noqa: E402
 from jugglebot.motion.workspace import (  # noqa: E402
     WorkspaceLimits,
     WorkspaceStatus,

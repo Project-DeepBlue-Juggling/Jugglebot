@@ -104,17 +104,19 @@ from jugglebot.motion.ik_solver import (  # noqa: E402
     pose_to_leg_lengths,
     rotvec_to_rot_matrix,
 )
-from jugglebot.motion.trajectory import (  # noqa: E402
-    QuinticTrajectory,
-    TrajectoryManager,
-    TrajectoryState,
+from jugglebot.motion.feasibility import (  # noqa: E402
     check_feasibility,
-    create_trajectory,
-    evaluate,
     find_min_feasible_duration,
     make_deceleration_trajectory,
-    cartesian_to_motor_commands,
 )
+from jugglebot.motion.motor_commands import cartesian_to_motor_commands  # noqa: E402
+from jugglebot.motion.quintic import (  # noqa: E402
+    QuinticTrajectory,
+    create_trajectory,
+    evaluate,
+)
+from jugglebot.motion.trajectory_manager import TrajectoryManager, TrajectoryState  # noqa: E402
+from jugglebot.motion.tests.helpers import submit_dynamic_target_sync  # noqa: E402
 from jugglebot.motion.workspace import (  # noqa: E402
     WorkspaceLimits,
     WorkspaceStatus,
@@ -153,7 +155,7 @@ def get_tracking_threshold(speed_scale: float) -> float:
 # Startup-stall filter
 # ---------------------------------------------------------------------------
 
-# submit_dynamic_target() runs a 50-sample feasibility check that takes
+# The feasibility check runs 50 samples which takes
 # ~250ms on Jetson.  When this happens inside the first loop iteration,
 # the trajectory evaluator advances ~269ms while no command reaches the
 # ODrive, producing a tracking-error spike that is a test-harness artefact,
@@ -310,9 +312,9 @@ def build_phase7_test_trajectories(
 ):
     """Build Phase 7 test trajectories for preview/dry-run.
 
-    Simulates the TrajectoryManager's submit_dynamic_target() logic
-    offline to produce the actual trajectories that each test would
-    execute on hardware.
+    Simulates the TrajectoryManager's dynamic target logic offline
+    to produce the actual trajectories that each test would execute
+    on hardware.
 
     Returns a list of (label, QuinticTrajectory) tuples.
     """
@@ -323,7 +325,7 @@ def build_phase7_test_trajectories(
 
     trajs = []
 
-    # Helper: simulate submit_dynamic_target from a known start state
+    # Helper: simulate dynamic target submission from a known start state
     def _make_traj(start_pose, target_pos, target_vel, duration,
                    start_twist=None, start_accel=None):
         end_pose = np.array([
@@ -379,7 +381,7 @@ def build_phase7_test_trajectories(
     mgr_dt3 = TrajectoryManager(geom, params, clock=lambda: 100.0)
     mgr_dt3.set_hold_pose(home_pose)
     t_sim3 = 100.0
-    mgr_dt3.submit_dynamic_target(
+    submit_dynamic_target_sync(mgr_dt3,
         target_pos=np.array([0.0, 0.0, 200.0]),
         target_quat=np.array([1.0, 0.0, 0.0, 0.0]),
         target_vel=np.zeros(3),
@@ -388,7 +390,7 @@ def build_phase7_test_trajectories(
     )
     # Submit second target 0.7s later
     t_splice = t_sim3 + 0.7
-    mgr_dt3.submit_dynamic_target(
+    submit_dynamic_target_sync(mgr_dt3,
         target_pos=np.array([15.0, 0.0, 195.0]),
         target_quat=np.array([1.0, 0.0, 0.0, 0.0]),
         target_vel=np.zeros(3),
@@ -421,7 +423,7 @@ def build_phase7_test_trajectories(
         if mgr_dt4.state in (TrajectoryState.EXECUTING,
                               TrajectoryState.RETURNING):
             mgr_dt4.evaluate(t_submit)
-        mgr_dt4.submit_dynamic_target(
+        submit_dynamic_target_sync(mgr_dt4,
             target_pos=np.array([0.0, 0.0, float(z)]),
             target_quat=np.array([1.0, 0.0, 0.0, 0.0]),
             target_vel=np.zeros(3),
@@ -578,7 +580,7 @@ def _filter_trajs(
 def run_dry_run(speed_scale: float, show_preview: bool,
                 tests_to_run: list[str]):
     """Run feasibility checks on Phase 7 test trajectories without CAN."""
-    from jugglebot.motion.trajectory import check_feasibility
+    from jugglebot.motion.feasibility import check_feasibility
 
     print("\n" + "=" * 60)
     print("DRY RUN: Phase 7 Feasibility checks (no hardware)")

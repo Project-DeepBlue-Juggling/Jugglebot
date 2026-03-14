@@ -79,7 +79,7 @@ from jugglebot.motion.ik_solver import (
     rotvec_to_rot_matrix,
 )
 from jugglebot.motion.conversions import extensions_mm_to_revs
-from jugglebot.motion.trajectory import cartesian_to_motor_commands
+from jugglebot.motion.motor_commands import cartesian_to_motor_commands
 from jugglebot.motion.stream_smoother import StreamSmoother
 from jugglebot.motion.workspace import WorkspaceLimits, check_workspace_limits
 

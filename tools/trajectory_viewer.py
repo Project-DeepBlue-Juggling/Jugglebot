@@ -45,12 +45,9 @@ from jugglebot.motion.ik_solver import (
 )
 from jugglebot.motion.dynamics import DynamicsParams
 from jugglebot.motion.workspace import compute_condition_number
-from jugglebot.motion.trajectory import (
-    create_trajectory,
-    evaluate,
-    check_feasibility,
-    cartesian_to_motor_commands,
-)
+from jugglebot.motion.feasibility import check_feasibility
+from jugglebot.motion.motor_commands import cartesian_to_motor_commands
+from jugglebot.motion.quintic import create_trajectory, evaluate
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from matplotlib.widgets import Slider

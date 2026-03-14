@@ -67,7 +67,6 @@ def make_target_state(pos: list | tuple,
         'rot': list(rot_quat),
         'twist': list(twist) if twist is not None else [0.0] * 6,
         'accel': list(accel) if accel is not None else [0.0] * 6,
-        'ts': time.time(),
     }
 
 
@@ -83,7 +82,6 @@ def make_mode_command(command: str, **params) -> dict:
         'type': 'mode',
         'cmd': command,
         'params': params,
-        'ts': time.time(),
     }
 
 
@@ -129,7 +127,6 @@ def make_telemetry(leg_positions: list | tuple,
         'leg_vel': list(leg_velocities),
         'cmd_torques': list(commanded_torques),
         'dt': loop_dt_s,
-        'ts': time.time(),
     }
     if ff_torques is not None:
         msg['ff_torques'] = list(ff_torques)
@@ -192,7 +189,6 @@ def make_trajectory_command(
         'end_accel': list(end_accel),
         'duration': duration,
         'speed_scale': speed_scale,
-        'ts': time.time(),
     }
 
 
@@ -224,7 +220,6 @@ def make_dynamic_target_command(
         'target_vel': list(target_vel),
         'arrival_time': arrival_time,
         'speed_scale': speed_scale,
-        'ts': time.time(),
     }
 
 
@@ -237,7 +232,6 @@ def make_motor_feedback(positions: list | tuple,
         'pos': list(positions),
         'vel': list(velocities),
         'cur': list(currents),
-        'ts': time.time(),
     }
 
 

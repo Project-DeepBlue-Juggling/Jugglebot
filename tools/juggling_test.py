@@ -98,13 +98,10 @@ from jugglebot.motion.ik_solver import (  # noqa: E402
     quat_to_rot_matrix,
     rot_matrix_to_rotvec,
 )
-from jugglebot.motion.trajectory import (  # noqa: E402
-    TrajectoryManager,
-    TrajectoryState,
-    create_trajectory,
-    evaluate,
-    check_feasibility,
-)
+from jugglebot.motion.feasibility import check_feasibility  # noqa: E402
+from jugglebot.motion.quintic import create_trajectory, evaluate  # noqa: E402
+from jugglebot.motion.trajectory_manager import TrajectoryManager, TrajectoryState  # noqa: E402
+from jugglebot.motion.tests.helpers import submit_dynamic_target_sync  # noqa: E402
 from jugglebot.motion.workspace import (  # noqa: E402
     WorkspaceLimits,
 )
@@ -556,7 +553,7 @@ def build_juggling_test_trajectories(
 ) -> list[tuple[str, object]]:
     """Build offline trajectories for dry-run/preview.
 
-    Simulates the TrajectoryManager's submit_dynamic_target() offline
+    Simulates the TrajectoryManager's dynamic target logic offline
     for both JT1 and JT2, returning (label, QuinticTrajectory) tuples.
     """
     geom = geom or StewartGeometry()
@@ -567,7 +564,7 @@ def build_juggling_test_trajectories(
     trajs = []
 
     def _simulate_targets(test_prefix, targets):
-        """Simulate submit_dynamic_target for a target list."""
+        """Simulate dynamic target submission for a target list."""
         mgr = TrajectoryManager(geom, params, clock=lambda: 100.0)
         mgr.set_hold_pose(home_pose)
         t_sim = 100.0  # arbitrary reference time
@@ -580,7 +577,7 @@ def build_juggling_test_trajectories(
                               TrajectoryState.RETURNING):
                 mgr.evaluate(t_submit)
 
-            accepted = mgr.submit_dynamic_target(
+            accepted = submit_dynamic_target_sync(mgr,
                 target_pos=np.array(tgt['pos']),
                 target_quat=np.array(tgt['quat']),
                 target_vel=np.array(tgt['vel']),

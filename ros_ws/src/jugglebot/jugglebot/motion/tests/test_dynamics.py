@@ -528,10 +528,8 @@ def test_full_feedforward_decomposition():
 def test_torque_profile_preview():
     """Verify Phase 4 trajectories have feasible torque profiles at 50/75/100% speed."""
     _header("Test 14: Torque profile preview (50/75/100% speed)")
-    from jugglebot.motion.trajectory import (
-        create_trajectory,
-        check_feasibility,
-    )
+    from jugglebot.motion.feasibility import check_feasibility
+    from jugglebot.motion.quintic import create_trajectory
     import jugglebot.hardware_config as hw_cfg
 
     geom = StewartGeometry()

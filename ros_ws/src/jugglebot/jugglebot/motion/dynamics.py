@@ -11,6 +11,7 @@ Provides the dynamics computations needed for motion control:
 Pure Python + numpy.  No ROS2 dependency.
 
 Sign conventions
+
 ----------------
 - **Gravity wrench**: ``[Fx, Fy, Fz, tau_x, tau_y, tau_z]`` in base frame.
   Force in N, torque in N·mm (consistent with Jacobian units).
@@ -32,9 +33,13 @@ implemented as ``f = np.linalg.solve(J.T, W)``.
 
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 
 import jugglebot.hardware_config as hw
+
+logger = logging.getLogger(__name__)
 from jugglebot.motion.geometry import StewartGeometry
 from jugglebot.motion.ik_solver import compute_jacobian
 from jugglebot.motion.conversions import (
@@ -250,6 +255,7 @@ def gravity_to_leg_forces(pos: np.ndarray, rot: np.ndarray,
     try:
         f_legs = np.linalg.solve(J.T, W_support)
     except np.linalg.LinAlgError:
+        logger.warning("gravity_to_leg_forces: singular Jacobian — returning zero forces")
         return np.zeros(6)
     return f_legs
 

@@ -46,11 +46,12 @@ Process 1: ROS2 Nodes                    Process 2: Control Loop
 +----------------------------------+     +---------------------------+
 |                                  |     |                           |
 |  orchestrator_node.py            |     |  control_loop.py          |
-|  can_node.py                     |     |    trajectory.py          |
-|  motion_bridge_node.py -------IPC----->    ik_solver.py            |
-|  spacemouse_handler.py           |     |    dynamics.py            |
-|  mocap_interface.py        <--IPC------    workspace.py            |
-|                                  |     |    conversions.py         |
+|  can_node.py                     |     |    quintic.py             |
+|  motion_bridge_node.py -------IPC----->    feasibility.py          |
+|  spacemouse_handler.py           |     |    trajectory_manager.py  |
+|  mocap_interface.py        <--IPC------    ik_solver.py            |
+|                                  |     |    dynamics.py            |
+|                                  |     |    workspace.py           |
 +----------------------------------+     +---------------------------+
 ```
 
@@ -196,7 +197,11 @@ The Jacobian maps `[mm/s, mm/s, mm/s, rad/s, rad/s, rad/s]` to `[mm/s × 6]`, so
 | [conversions.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/conversions.py) | ~100 | Unit conversions |
 | [dynamics.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/dynamics.py) | ~360 | Gravity + inertia feedforward |
 | [workspace.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/workspace.py) | ~300 | Workspace limits |
-| [trajectory.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/trajectory.py) | ~1560 | Trajectory generation + manager |
+| [quintic.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/quintic.py) | ~280 | Quintic polynomial solver + evaluation |
+| [motor_commands.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/motor_commands.py) | ~85 | Cartesian → motor command mapping |
+| [feasibility.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/feasibility.py) | ~340 | Feasibility checking + convenience constructors |
+| [trajectory_manager.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/trajectory_manager.py) | ~530 | Execution state machine + async pipeline |
+| [feasibility_worker.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/feasibility_worker.py) | ~380 | Background worker process |
 | [ipc.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/ipc.py) | ~375 | ZeroMQ IPC layer |
 | [control_loop.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/control_loop.py) | ~690 | Control process |
 | [motion_bridge_node.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion_bridge_node.py) | ~195 | ROS2 bridge |

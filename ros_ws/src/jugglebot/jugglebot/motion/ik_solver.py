@@ -35,8 +35,12 @@ rotational sensitivity (mm / rad).
 
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 from numpy.linalg import norm
+
+logger = logging.getLogger(__name__)
 
 from jugglebot.motion.geometry import StewartGeometry
 
@@ -117,10 +121,17 @@ def rot_matrix_to_rotvec(R: np.ndarray) -> np.ndarray:
     angle = np.arccos(np.clip((np.trace(R) - 1.0) / 2.0, -1.0, 1.0))
     if angle < 1e-8:
         return np.zeros(3)
+    sin_angle = np.sin(angle)
+    if abs(sin_angle) < 1e-8:
+        # angle ≈ π — numerically unstable axis extraction.
+        # Should never occur (platform tilt limited to 15°).
+        logger.error("rot_matrix_to_rotvec: angle ≈ π (%.4f rad) — "
+                     "axis extraction unstable, returning zeros", angle)
+        return np.zeros(3)
     # Extract axis from skew-symmetric part of R
     axis = np.array([R[2, 1] - R[1, 2],
                      R[0, 2] - R[2, 0],
-                     R[1, 0] - R[0, 1]]) / (2.0 * np.sin(angle))
+                     R[1, 0] - R[0, 1]]) / (2.0 * sin_angle)
     return axis * angle
 
 
@@ -257,9 +268,11 @@ def compute_jacobian_dot(pos: np.ndarray,
                          twist: np.ndarray,
                          geom: StewartGeometry,
                          dt: float = 1e-7) -> np.ndarray:
-    """Time-derivative of the Jacobian via numerical differentiation.
+    """Time-derivative of the Jacobian via central finite difference.
 
-    J̇ ≈ (J(pose + twist·dt) − J(pose)) / dt
+    J̇ ≈ (J(pose + twist·dt) − J(pose − twist·dt)) / (2·dt)
+
+    Central difference is O(dt²) accurate vs O(dt) for forward difference.
 
     Parameters
     ----------
@@ -267,16 +280,17 @@ def compute_jacobian_dot(pos: np.ndarray,
     rot : (3,3) ndarray
     twist : (6,) ndarray — current platform twist
     geom : StewartGeometry
-    dt : float — finite-difference timestep (default 1e-7 s)
+    dt : float — finite-difference half-step (default 1e-7 s)
 
     Returns
     -------
     J_dot : (6, 6) ndarray
     """
-    J0 = compute_jacobian(pos, rot, geom)
-    pos1, rot1 = _advance_pose(pos, rot, twist, dt)
-    J1 = compute_jacobian(pos1, rot1, geom)
-    return (J1 - J0) / dt
+    pos_fwd, rot_fwd = _advance_pose(pos, rot, twist, dt)
+    pos_bwd, rot_bwd = _advance_pose(pos, rot, twist, -dt)
+    J_fwd = compute_jacobian(pos_fwd, rot_fwd, geom)
+    J_bwd = compute_jacobian(pos_bwd, rot_bwd, geom)
+    return (J_fwd - J_bwd) / (2.0 * dt)
 
 
 # ---------------------------------------------------------------------------

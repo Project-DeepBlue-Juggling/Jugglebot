@@ -108,7 +108,7 @@ Thresholds used in the system:
 | Threshold | Value | Used By |
 |---|---|---|
 | Soft limit | $1.5 \times \kappa_{\text{home}} \approx 675$ | `workspace.py` — speed ramp-down |
-| Hard limit | $2.0 \times \kappa_{\text{home}} \approx 900$ | `workspace.py` — trajectory abort; `trajectory.py` — feasibility rejection |
+| Hard limit | $2.0 \times \kappa_{\text{home}} \approx 900$ | `workspace.py` — trajectory abort; `feasibility.py` — feasibility rejection |
 
 ## Velocity Inverse Kinematics
 

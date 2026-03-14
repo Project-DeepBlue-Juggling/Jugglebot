@@ -61,7 +61,7 @@ Mode commands are processed **before** data messages (the mode socket is drained
 
 ### Step 3: Poll Async Results
 
-If a dynamic target feasibility check completed in the background thread, the result is polled via `poll_pending_result()`. If accepted, the trajectory is committed via `commit_async_trajectory()`.
+If a dynamic target feasibility check completed in the background worker process, the result is polled via `poll_pending_result()`. If accepted, a splice re-check is queued via `commit_async_trajectory()`. When the splice re-check passes, the trajectory is committed internally.
 
 ### Step 4: Heartbeat
 
@@ -207,7 +207,7 @@ Frame 0: topic (bytes, e.g., b'target')
 Frame 1: msgpack-encoded dict
 ```
 
-Every message dict includes a `ts` field (timestamp from `time.time()`) for debugging.
+Messages do not include timestamps — the control loop uses `time.perf_counter()` for all internal timing and `time.monotonic()` for heartbeat tracking.
 
 ## Timing Statistics
 

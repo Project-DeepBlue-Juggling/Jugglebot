@@ -24,7 +24,7 @@ from jugglebot.motion.ik_solver import (
     rotvec_to_rot_matrix,
 )
 from jugglebot.motion.conversions import extensions_mm_to_revs
-from jugglebot.motion.trajectory import solve_quintic_1d
+from jugglebot.motion.quintic import solve_quintic_1d
 
 
 class StreamSmoother:

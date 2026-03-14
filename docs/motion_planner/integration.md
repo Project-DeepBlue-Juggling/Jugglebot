@@ -45,8 +45,8 @@ This page describes how the motion planner connects to the rest of the Jugglebot
 │  ┌─────────────────────────────────────────────────────┐  │
 │  │              control_loop.py (500 Hz)               │  │
 │  │                                                     │  │
-│  │  trajectory.py  ik_solver.py  dynamics.py           │  │
-│  │  workspace.py   conversions.py  geometry.py         │  │
+│  │  trajectory_manager  quintic  feasibility            │  │
+│  │  ik_solver  dynamics  workspace  conversions         │  │
 │  └─────────────────────────────────────────────────────┘  │
 └───────────────────────────────────────────────────────────┘
 ```
@@ -205,7 +205,7 @@ On shutdown:
 
 1. The bridge sends a `disable` mode command to the control process
 2. The control loop zeros all outputs and cancels any active trajectory
-3. The trajectory manager's background thread is shut down (2-second timeout)
+3. The trajectory manager's feasibility worker process is shut down (2-second timeout)
 4. IPC sockets are closed
 5. ROS2 nodes are destroyed
 

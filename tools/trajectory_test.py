@@ -87,13 +87,9 @@ from free_platform_test import (  # noqa: E402
 from jugglebot.motion.geometry import StewartGeometry
 from jugglebot.motion.dynamics import DynamicsParams
 from jugglebot.motion.ik_solver import rotvec_to_rot_matrix
-from jugglebot.motion.trajectory import (
-    create_trajectory,
-    evaluate,
-    check_feasibility,
-    cartesian_to_motor_commands,
-    FeasibilityResult,
-)
+from jugglebot.motion.feasibility import FeasibilityResult, check_feasibility
+from jugglebot.motion.motor_commands import cartesian_to_motor_commands
+from jugglebot.motion.quintic import create_trajectory, evaluate
 from jugglebot.motion.conversions import extensions_mm_to_revs
 
 # ---------------------------------------------------------------------------

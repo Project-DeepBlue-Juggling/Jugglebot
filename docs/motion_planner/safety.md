@@ -5,7 +5,7 @@ This page describes the defense-in-depth safety system that prevents the Stewart
 **Source files:**
 
 - [control_loop.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/control_loop.py) — slew limiter, fault checks
-- [trajectory.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/trajectory.py) — lead-time gate
+- [trajectory_manager.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/trajectory_manager.py) — lead-time gate
 - [can_node.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/can_node.py) — per-command step check
 
 ## Motivation
@@ -144,7 +144,7 @@ if duration < MIN_LEAD_TIME_S:
     → reject (log warning, continue current trajectory)
 ```
 
-This applies to both the synchronous (`submit_dynamic_target`) and asynchronous (`request_dynamic_target`) paths. The 300ms minimum accounts for feasibility checking time (~250ms on Jetson) plus a small margin.
+This applies to both the async production path (`request_dynamic_target`) and the test-only synchronous helper (`submit_dynamic_target_sync` in `tests/helpers.py`). The 300ms minimum accounts for feasibility checking time (~250ms on Jetson) plus a small margin.
 
 ## CAN Node Step Check
 
@@ -215,7 +215,7 @@ All safety constants are defined as module-level values in `control_loop.py` (no
 | `MAX_MOTOR_VEL_RPS` | `ODRIVE_TRAP_VEL_LIMIT_RPS × 1.1` | 10% above configured ODrive velocity limit |
 | `MAX_TRACKING_ERROR_MM` | 10.0 | ~3.5% of full stroke (280mm) |
 | `MOTOR_FB_STALENESS_S` | 0.1 | 100ms ≈ 50 control cycles at 500 Hz |
-| `MIN_LEAD_TIME_S` | 0.3 | In `trajectory.py` — matches feasibility check time + margin |
+| `MIN_LEAD_TIME_S` | 0.3 | In `trajectory_manager.py` — matches feasibility check time + margin |
 | `JB_OP_MAX_POSITION_STEP_REV` | 0.2 | In `hardware_config` — CAN node step check |
 
 ## Verification

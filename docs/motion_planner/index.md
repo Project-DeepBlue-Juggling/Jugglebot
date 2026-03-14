@@ -30,9 +30,14 @@ motion/
 ├── conversions.py    mm <-> rev, force <-> torque unit conversions
 ├── dynamics.py       Gravity wrench, inertia wrench, feedforward torques
 ├── workspace.py      Workspace limit checking, singularity monitoring
-├── trajectory.py     Quintic trajectory generation, feasibility, manager
-├── ipc.py            ZeroMQ PUB/SUB inter-process communication
-└── control_loop.py   500 Hz standalone control process
+├── quintic.py             Quintic polynomial solver + evaluation
+├── motor_commands.py      Cartesian → motor command mapping
+├── feasibility.py         Feasibility checking + convenience constructors
+├── trajectory_manager.py  Execution state machine + async pipeline
+├── feasibility_worker.py  Background worker process for feasibility checks
+├── stream_smoother.py     C2-continuous smoother for direct targets
+├── ipc.py                 ZeroMQ PUB/SUB inter-process communication
+└── control_loop.py        500 Hz standalone control process
 ```
 
 External:
@@ -52,10 +57,10 @@ External:
                   |    control_loop.py    |
                   |      (500 Hz)        |
                   |                       |
-                  |  trajectory.py        |
-                  |  ik_solver.py         |
-                  |  dynamics.py          |
-                  |  workspace.py         |
+                  |  trajectory_manager   |
+                  |  quintic / feasibility|
+                  |  ik_solver / dynamics |
+                  |  workspace            |
                   +-----------+-----------+
                               |
                     (pos, vel_ff, torque_ff)

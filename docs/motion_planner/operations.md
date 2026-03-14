@@ -20,9 +20,8 @@ The motion modules have no ROS2 dependency and can be used directly in Python:
 ```python
 from jugglebot.motion.geometry import StewartGeometry
 from jugglebot.motion.dynamics import DynamicsParams
-from jugglebot.motion.trajectory import (
-    make_rest_to_rest, check_feasibility, evaluate
-)
+from jugglebot.motion.feasibility import make_rest_to_rest, check_feasibility
+from jugglebot.motion.quintic import evaluate
 import numpy as np
 
 geom = StewartGeometry()
@@ -135,7 +134,8 @@ For Cartesian and joint-space analysis, you can plot trajectories programmatical
 ```python
 import matplotlib.pyplot as plt
 import numpy as np
-from jugglebot.motion.trajectory import make_rest_to_rest, evaluate, check_feasibility
+from jugglebot.motion.feasibility import make_rest_to_rest, check_feasibility
+from jugglebot.motion.quintic import evaluate
 from jugglebot.motion.ik_solver import pose_to_leg_lengths, rotvec_to_rot_matrix
 from jugglebot.motion.geometry import StewartGeometry
 from jugglebot.motion.dynamics import DynamicsParams
@@ -223,8 +223,8 @@ Gains are set via the `set_gains` mode command through the IPC layer. The CAN no
 
 To add a new trajectory creation function:
 
-1. Add the function to `trajectory.py` alongside `make_rest_to_rest()`
-2. Ensure it returns a `QuinticTrajectory` (via `create_trajectory()`)
+1. Add the function to `feasibility.py` alongside `make_rest_to_rest()`
+2. Ensure it returns a `QuinticTrajectory` (via `create_trajectory()` from `quintic.py`)
 3. Always run `check_feasibility()` before submitting to hardware
 4. Add an IPC message constructor to `ipc.py` if the bridge needs to pass parameters
 
@@ -248,7 +248,7 @@ To add a new control source (e.g., joystick, ball predictor):
 
 1. Add limit constants to `workspace.py` (follow the existing `LEG_SOFT_MARGIN_MM` pattern)
 2. Add the check to `check_workspace_limits()` for runtime enforcement
-3. Add a corresponding check to `check_feasibility()` in `trajectory.py` for planning-time enforcement
+3. Add a corresponding check to `check_feasibility()` in `feasibility.py` for planning-time enforcement
 4. **Critical:** Ensure both use the same margins so planning and runtime agree
 
 ## Common Patterns
@@ -257,7 +257,8 @@ To add a new control source (e.g., joystick, ball predictor):
 
 ```python
 import matplotlib.pyplot as plt
-from jugglebot.motion.trajectory import make_rest_to_rest, evaluate, check_feasibility
+from jugglebot.motion.feasibility import make_rest_to_rest, check_feasibility
+from jugglebot.motion.quintic import evaluate
 from jugglebot.motion.geometry import StewartGeometry
 from jugglebot.motion.dynamics import DynamicsParams
 import numpy as np

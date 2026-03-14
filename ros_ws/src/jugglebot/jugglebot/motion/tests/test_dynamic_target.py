@@ -35,17 +35,19 @@ from jugglebot.motion.ik_solver import (
     rot_matrix_to_rotvec,
     rotvec_to_rot_matrix,
 )
-from jugglebot.motion.trajectory import (
-    QuinticTrajectory,
-    TrajectoryManager,
-    TrajectoryState,
+from jugglebot.motion.feasibility import (
     check_feasibility,
-    create_trajectory,
-    evaluate,
-    evaluate_jerk,
     find_min_feasible_duration,
     make_rest_to_rest,
 )
+from jugglebot.motion.quintic import (
+    QuinticTrajectory,
+    create_trajectory,
+    evaluate,
+    evaluate_jerk,
+)
+from jugglebot.motion.trajectory_manager import TrajectoryManager, TrajectoryState
+from jugglebot.motion.tests.helpers import submit_dynamic_target_sync
 # IPC message format is tested on the Jetson (requires msgpack/zmq).
 # The dynamic target IPC constructor is: ipc.make_dynamic_target_command()
 
@@ -75,7 +77,7 @@ def test_dynamic_target_from_idle():
 
     # Submit a zero-twist target: move to [0, 0, 200, 0, 0, 0]
     t_now = 10.0  # arbitrary clock time
-    accepted = mgr.submit_dynamic_target(
+    accepted = submit_dynamic_target_sync(mgr,
         target_pos=np.array([0.0, 0.0, 200.0]),
         target_quat=np.array([1.0, 0.0, 0.0, 0.0]),  # identity
         target_vel=np.array([0.0, 0.0, 0.0]),
@@ -116,7 +118,7 @@ def test_zero_velocity_holds():
 
     t_now = 10.0
     target_pose = np.array([10.0, -5.0, 190.0, 0.0, 0.0, 0.0])
-    accepted = mgr.submit_dynamic_target(
+    accepted = submit_dynamic_target_sync(mgr,
         target_pos=target_pose[:3],
         target_quat=np.array([1.0, 0.0, 0.0, 0.0]),
         target_vel=np.zeros(3),
@@ -159,7 +161,7 @@ def test_nonzero_velocity_decel_to_stop():
 
     t_now = 10.0
     # Target with Z velocity of 50 mm/s
-    accepted = mgr.submit_dynamic_target(
+    accepted = submit_dynamic_target_sync(mgr,
         target_pos=np.array([0.0, 0.0, 190.0]),
         target_quat=np.array([1.0, 0.0, 0.0, 0.0]),
         target_vel=np.array([0.0, 0.0, 50.0]),
@@ -220,7 +222,7 @@ def test_splice_continuity():
 
     t_now = 10.0
     # First trajectory: home -> +30mm Z in 1s
-    accepted = mgr.submit_dynamic_target(
+    accepted = submit_dynamic_target_sync(mgr,
         target_pos=np.array([0.0, 0.0, 200.0]),
         target_quat=np.array([1.0, 0.0, 0.0, 0.0]),
         target_vel=np.zeros(3),
@@ -237,7 +239,7 @@ def test_splice_continuity():
     pose_before, twist_before, accel_before = mgr._get_current_state(t_splice)
 
     # Submit new target: go to +20mm X, +200mm Z in 1s from now
-    accepted2 = mgr.submit_dynamic_target(
+    accepted2 = submit_dynamic_target_sync(mgr,
         target_pos=np.array([20.0, 0.0, 200.0]),
         target_quat=np.array([1.0, 0.0, 0.0, 0.0]),
         target_vel=np.zeros(3),
@@ -284,7 +286,7 @@ def test_infeasible_target_rejected():
     state_before = mgr.state
 
     # Extremely fast move: 500mm Z in 0.01s from home (way too fast)
-    accepted = mgr.submit_dynamic_target(
+    accepted = submit_dynamic_target_sync(mgr,
         target_pos=np.array([0.0, 0.0, 500.0]),
         target_quat=np.array([1.0, 0.0, 0.0, 0.0]),
         target_vel=np.zeros(3),
@@ -314,7 +316,7 @@ def test_infeasible_replan_preserves_trajectory():
 
     t_now = 10.0
     # Start a valid trajectory
-    accepted = mgr.submit_dynamic_target(
+    accepted = submit_dynamic_target_sync(mgr,
         target_pos=np.array([0.0, 0.0, 200.0]),
         target_quat=np.array([1.0, 0.0, 0.0, 0.0]),
         target_vel=np.zeros(3),
@@ -329,7 +331,7 @@ def test_infeasible_replan_preserves_trajectory():
 
     # Try an infeasible replan
     t_replan = t_now + 0.5
-    accepted2 = mgr.submit_dynamic_target(
+    accepted2 = submit_dynamic_target_sync(mgr,
         target_pos=np.array([0.0, 0.0, 500.0]),
         target_quat=np.array([1.0, 0.0, 0.0, 0.0]),
         target_vel=np.zeros(3),
@@ -366,7 +368,7 @@ def test_interrupt_decel():
 
     t_now = 10.0
     # Target with velocity -> will trigger deceleration
-    accepted = mgr.submit_dynamic_target(
+    accepted = submit_dynamic_target_sync(mgr,
         target_pos=np.array([0.0, 0.0, 190.0]),
         target_quat=np.array([1.0, 0.0, 0.0, 0.0]),
         target_vel=np.array([0.0, 0.0, 30.0]),
@@ -392,7 +394,7 @@ def test_interrupt_decel():
     # Now submit a new target while decelerating
     t_interrupt = t + 0.2
     mgr.evaluate(t_interrupt)  # update internal state
-    accepted2 = mgr.submit_dynamic_target(
+    accepted2 = submit_dynamic_target_sync(mgr,
         target_pos=np.array([10.0, 0.0, 195.0]),
         target_quat=np.array([1.0, 0.0, 0.0, 0.0]),
         target_vel=np.zeros(3),
@@ -554,7 +556,7 @@ def test_quaternion_conversion():
     expected_rotvec = np.array([angle_rad, 0.0, 0.0])
 
     t_now = 10.0
-    accepted = mgr.submit_dynamic_target(
+    accepted = submit_dynamic_target_sync(mgr,
         target_pos=np.array([0.0, 0.0, 180.0]),
         target_quat=quat,
         target_vel=np.zeros(3),
@@ -594,7 +596,7 @@ def test_arrival_time_in_past():
     t_now = 10.0
 
     # Arrival time in the past
-    accepted = mgr.submit_dynamic_target(
+    accepted = submit_dynamic_target_sync(mgr,
         target_pos=np.array([0.0, 0.0, 200.0]),
         target_quat=np.array([1.0, 0.0, 0.0, 0.0]),
         target_vel=np.zeros(3),
@@ -605,7 +607,7 @@ def test_arrival_time_in_past():
     assert mgr.state == TrajectoryState.IDLE
 
     # Arrival time exactly now
-    accepted2 = mgr.submit_dynamic_target(
+    accepted2 = submit_dynamic_target_sync(mgr,
         target_pos=np.array([0.0, 0.0, 200.0]),
         target_quat=np.array([1.0, 0.0, 0.0, 0.0]),
         target_vel=np.zeros(3),
@@ -678,7 +680,7 @@ def test_decel_junction_continuity():
     t_now = 10.0
     target_vel_z = 50.0  # mm/s -- nonzero to trigger decel planning
 
-    accepted = mgr.submit_dynamic_target(
+    accepted = submit_dynamic_target_sync(mgr,
         target_pos=np.array([0.0, 0.0, 190.0]),
         target_quat=np.array([1.0, 0.0, 0.0, 0.0]),
         target_vel=np.array([0.0, 0.0, target_vel_z]),

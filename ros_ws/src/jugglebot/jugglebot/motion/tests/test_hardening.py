@@ -45,13 +45,9 @@ from jugglebot.motion.workspace import (
     check_workspace_limits,
     compute_condition_number,
 )
-from jugglebot.motion.trajectory import (
-    TrajectoryManager,
-    TrajectoryState,
-    create_trajectory,
-    check_feasibility,
-    evaluate,
-)
+from jugglebot.motion.feasibility import check_feasibility
+from jugglebot.motion.quintic import create_trajectory, evaluate
+from jugglebot.motion.trajectory_manager import TrajectoryManager, TrajectoryState
 try:
     from jugglebot.motion.ipc import make_telemetry
     _HAS_IPC = True

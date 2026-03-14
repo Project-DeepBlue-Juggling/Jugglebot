@@ -2,7 +2,13 @@
 
 This page covers how smooth motions are planned — from the quintic polynomial math to feasibility checking to the trajectory manager that handles dynamic targets and mid-motion replanning.
 
-**Source file:** [trajectory.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/trajectory.py) (~1560 lines)
+**Source files:**
+
+- [quintic.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/quintic.py) — polynomial solver, trajectory dataclass, evaluation
+- [motor_commands.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/motor_commands.py) — Cartesian → motor command mapping
+- [feasibility.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/feasibility.py) — feasibility checking, convenience constructors
+- [trajectory_manager.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/trajectory_manager.py) — execution state machine, async pipeline
+- [feasibility_worker.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/feasibility_worker.py) — background worker process
 
 ## Concepts
 
@@ -200,7 +206,7 @@ This is used by dynamic target handling to automatically select an appropriate t
 ### Initialization
 
 ```python
-from jugglebot.motion.trajectory import TrajectoryManager
+from jugglebot.motion.trajectory_manager import TrajectoryManager
 from jugglebot.motion.geometry import StewartGeometry
 from jugglebot.motion.dynamics import DynamicsParams
 
@@ -263,19 +269,9 @@ A dynamic target has four fields:
 
 Angular velocity is always zero (the platform doesn't spin to catch a ball).
 
-### Synchronous API (Blocking)
+### Async Pipeline (Non-Blocking)
 
-```python
-accepted = manager.submit_dynamic_target(
-    target_pos, target_quat, target_vel, arrival_time, t_now
-)
-```
-
-This blocks for ~250 ms on the Jetson while running feasibility checks. Acceptable for testing but **not recommended for production** — it stalls the control loop.
-
-### Asynchronous API (Non-Blocking)
-
-The production path uses a background thread:
+The async pipeline uses a dedicated **worker process** (not a thread — bypasses the GIL entirely) for feasibility checking. Communication uses two `multiprocessing.Pipe` channels: one for feasibility/splice results, one for deceleration results.
 
 ```python
 # 1. Queue the request (non-blocking, ~0 ms)
@@ -287,11 +283,19 @@ manager.request_dynamic_target(
 result = manager.poll_pending_result()
 if result is not None:
     if result['accepted']:
-        # 3. Commit (re-samples current state for accurate splice)
+        # 3. Commit (queues a splice re-check — does NOT commit immediately)
         manager.commit_async_trajectory(result)
+        # The splice re-check runs in the background; when it passes,
+        # poll_pending_result() handles the commit internally.
 ```
 
-The background thread runs `check_feasibility()` without blocking the 500 Hz loop. A **generation counter** prevents stale results from being committed if a newer target supersedes an in-progress check.
+The worker process runs `check_feasibility()` without blocking the 500 Hz loop. A **generation counter** prevents stale results from being committed if a newer target supersedes an in-progress check.
+
+!!! note "Splice re-check"
+    `commit_async_trajectory()` does not commit immediately. It plans the new trajectory from a splice point 200 ms in the future, then sends it back to the worker process for a feasibility re-check. This closes the defense-in-depth gap where the start state may have drifted between the initial check and the commit. The old trajectory continues executing until the re-check passes.
+
+!!! note "Synchronous path (test-only)"
+    For offline tests with frozen clocks, `submit_dynamic_target_sync()` in `tests/helpers.py` provides a blocking synchronous wrapper. This is not used in production.
 
 ### Return to Home
 
@@ -321,7 +325,7 @@ t = [10.0]
 manager = TrajectoryManager(geom, params, clock=lambda: t[0])
 ```
 
-For the async pipeline, timing compensation happens at commit time — `commit_async_trajectory()` re-samples the current state and creates a new trajectory with the remaining duration.
+For the async pipeline, timing compensation happens at commit time — `commit_async_trajectory()` plans from a splice point 200 ms in the future, so the current trajectory continues uninterrupted while the splice is re-checked.
 
 ## API Reference
 
@@ -346,12 +350,12 @@ For the async pipeline, timing compensation happens at commit time — `commit_a
 | `set_hold_pose(pose_6dof)` | No | Set idle/complete hold position |
 | `set_gravity_correction(rot)` | No | Apply levelling correction |
 | `set_feedforward_enabled(bool)` | No | Toggle feedforward torques |
-| `submit(traj, is_return)` | No | Submit pre-checked trajectory |
+| `submit(traj, is_decel)` | No | Submit pre-checked trajectory |
 | `evaluate(t)` | No | Get motor commands at time t |
 | `cancel()` | No | Cancel active trajectory |
-| `submit_dynamic_target(...)` | **Yes (~250ms)** | Plan + check + submit (testing only) |
-| `request_dynamic_target(...)` | No | Queue for background check |
+| `request_dynamic_target(...)` | No | Queue for background feasibility check |
 | `poll_pending_result()` | No | Check if async check is done |
-| `commit_async_trajectory(result)` | No | Splice checked trajectory |
+| `commit_async_trajectory(result)` | No | Queue splice re-check for checked trajectory |
+| `poll_precomputed_decel()` | No | Check if decel trajectory is ready |
 | `restamp_active_trajectory(elapsed)` | No | Shift t_start forward |
-| `shutdown()` | Yes (2s timeout) | Stop background thread |
+| `shutdown()` | Yes (2s timeout) | Stop worker process |

@@ -25,13 +25,9 @@ from numpy.linalg import norm
 
 from jugglebot.motion.geometry import StewartGeometry
 from jugglebot.motion.dynamics import DynamicsParams
-from jugglebot.motion.trajectory import (
-    create_trajectory,
-    evaluate,
-    check_feasibility,
-    TrajectoryManager,
-    TrajectoryState,
-)
+from jugglebot.motion.feasibility import check_feasibility
+from jugglebot.motion.quintic import create_trajectory, evaluate
+from jugglebot.motion.trajectory_manager import TrajectoryManager, TrajectoryState
 
 
 def _header(name: str):
@@ -50,6 +46,17 @@ def _poll_until(mgr, timeout=5.0, sleep=0.05):
             return result
         time.sleep(sleep)
     return None
+
+
+def _wait_for_state(mgr, target_state, timeout=5.0, sleep=0.01):
+    """Poll until the manager reaches the target state."""
+    deadline = time.perf_counter() + timeout
+    while time.perf_counter() < deadline:
+        mgr.poll_pending_result()
+        if mgr.state == target_state:
+            return True
+        time.sleep(sleep)
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -114,12 +121,16 @@ def test_async_acceptance():
     print(f"  Async result arrived in {latency_ms:.0f}ms")
     print(f"  accepted={result['accepted']}")
 
-    # Commit
-    accepted = mgr.commit_async_trajectory(result)
-    assert accepted, "commit_async_trajectory returned False"
-    assert mgr.state == TrajectoryState.EXECUTING, (
-        f"Expected EXECUTING, got {mgr.state}")
-    print(f"  Committed, state={mgr.state.value}")
+    # Commit (queues splice re-check — does NOT immediately transition)
+    queued = mgr.commit_async_trajectory(result)
+    assert queued, "commit_async_trajectory returned False"
+    print(f"  Splice re-check queued, state={mgr.state.value}")
+
+    # Poll until splice re-check completes and trajectory is committed
+    reached = _wait_for_state(mgr, TrajectoryState.EXECUTING)
+    assert reached, (
+        f"Expected EXECUTING after splice re-check, got {mgr.state}")
+    print(f"  Splice committed, state={mgr.state.value}")
     print("  [PASS]")
 
     mgr.shutdown()
@@ -200,10 +211,15 @@ def test_supersession():
     assert result['accepted'], "Second target should be accepted"
     print(f"  Got result for generation {result['generation']}")
 
-    # Commit should succeed (it's the latest generation)
-    accepted = mgr.commit_async_trajectory(result)
-    assert accepted, "commit should succeed for latest generation"
-    print("  Latest result committed successfully")
+    # Commit should queue splice re-check (it's the latest generation)
+    queued = mgr.commit_async_trajectory(result)
+    assert queued, "commit should queue splice re-check for latest generation"
+
+    # Poll until splice re-check completes
+    reached = _wait_for_state(mgr, TrajectoryState.EXECUTING)
+    assert reached, (
+        f"Expected EXECUTING after splice re-check, got {mgr.state}")
+    print("  Latest result committed via splice re-check")
     print("  [PASS]")
 
     mgr.shutdown()
@@ -237,19 +253,21 @@ def test_decel_precompute():
     assert result is not None and result['accepted'], "Target should be accepted"
     assert result['needs_decel'], "Target with nonzero velocity needs decel"
 
-    # Commit (this triggers background deceleration precomputation)
-    accepted = mgr.commit_async_trajectory(result)
-    assert accepted, "Commit should succeed"
-    assert mgr.state == TrajectoryState.EXECUTING
+    # Commit (queues splice re-check; decel precompute starts after splice)
+    queued = mgr.commit_async_trajectory(result)
+    assert queued, "Commit should queue splice re-check"
+
+    # Wait for splice re-check to complete and trajectory to start executing
+    reached = _wait_for_state(mgr, TrajectoryState.EXECUTING)
+    assert reached, (
+        f"Expected EXECUTING after splice re-check, got {mgr.state}")
 
     # Wait for precomputed deceleration to become available.
-    # Decel results arrive on the same Pipe as feasibility results,
-    # so we must call poll_pending_result() to drain the pipe and
-    # route decel results to the precomputed slot.
+    # Decel results arrive on a dedicated pipe, so poll_precomputed_decel()
+    # reads them independently of the feasibility/splice pipe.
     deadline = time.perf_counter() + 10.0
     precomputed = None
     while time.perf_counter() < deadline:
-        mgr.poll_pending_result()  # drains pipe, routes decel results
         precomputed = mgr.poll_precomputed_decel()
         if precomputed is not None:
             break

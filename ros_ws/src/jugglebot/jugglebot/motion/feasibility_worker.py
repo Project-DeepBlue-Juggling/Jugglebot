@@ -4,10 +4,11 @@ Runs ``check_feasibility()`` and ``make_deceleration_trajectory()`` in a
 dedicated child process, bypassing the GIL so the 500 Hz control loop is
 never blocked by CPU-bound numpy work.
 
-Communication uses ``multiprocessing.Pipe`` (pickle-based, ~20 μs latency).
-The parent side is wrapped by :class:`FeasibilityWorkerProxy`, which
-presents the same non-blocking submit/poll interface that
-:class:`TrajectoryManager` previously used with a background thread.
+Communication uses two ``multiprocessing.Pipe`` channels (pickle-based,
+~20 μs latency): one for feasibility/splice results, one for deceleration
+results.  The parent side is wrapped by :class:`FeasibilityWorkerProxy`,
+which presents non-blocking submit/poll interfaces — ``poll()`` for
+feasibility/splice results and ``poll_decel()`` for deceleration results.
 """
 
 from __future__ import annotations
@@ -32,22 +33,35 @@ class WorkerCrashed(Exception):
 # Worker process entry point
 # ---------------------------------------------------------------------------
 
-def _worker_main(pipe: Connection, geom, dynamics_params) -> None:
+def _worker_main(pipe: Connection, decel_pipe: Connection,
+                 geom, dynamics_params) -> None:
     """Entry point for the feasibility worker process.
 
     Blocks on *pipe* waiting for request dicts.  Each request has a
     ``type`` field that selects the operation:
 
     - ``'feasibility'``: run ``check_feasibility()`` on the provided
-      trajectory and send back the result.
+      trajectory and send back the result on *pipe*.
+    - ``'splice_recheck'``: re-check a splice trajectory and send back
+      the result on *pipe*.
     - ``'decel'``: create a deceleration trajectory via
       ``make_deceleration_trajectory()``, run a feasibility check, and
-      send back the trajectory (or ``None`` on failure).
+      send back the trajectory (or ``None`` on failure) on *decel_pipe*.
     - ``None``: shutdown sentinel — exit cleanly.
+
+    Parameters
+    ----------
+    pipe : Connection
+        Bidirectional pipe for requests (recv) and feasibility/splice
+        results (send).
+    decel_pipe : Connection
+        Send-only pipe for deceleration results.  Separating decel
+        results from feasibility results eliminates cross-routing on
+        the parent side.
     """
     # Lazy imports so the parent process doesn't pay for them at fork time
     # (forkserver re-imports anyway).
-    from jugglebot.motion.trajectory import (
+    from jugglebot.motion.feasibility import (
         check_feasibility,
         make_deceleration_trajectory,
     )
@@ -72,8 +86,12 @@ def _worker_main(pipe: Connection, geom, dynamics_params) -> None:
             _handle_feasibility(pipe, request, geom, dynamics_params,
                                 check_feasibility)
 
+        elif req_type == 'splice_recheck':
+            _handle_splice_recheck(pipe, request, geom, dynamics_params,
+                                   check_feasibility)
+
         elif req_type == 'decel':
-            _handle_deceleration(pipe, request, geom, dynamics_params,
+            _handle_deceleration(decel_pipe, request, geom, dynamics_params,
                                  check_feasibility,
                                  make_deceleration_trajectory)
 
@@ -81,6 +99,7 @@ def _worker_main(pipe: Connection, geom, dynamics_params) -> None:
             _log.warning('Unknown request type: %s', req_type)
 
     pipe.close()
+    decel_pipe.close()
     _log.debug('Feasibility worker process exiting')
 
 
@@ -109,7 +128,35 @@ def _handle_feasibility(pipe, request, geom, dynamics_params,
     })
 
 
-def _handle_deceleration(pipe, request, geom, dynamics_params,
+def _handle_splice_recheck(pipe, request, geom, dynamics_params,
+                           check_feasibility) -> None:
+    """Re-check feasibility for a splice-committed trajectory.
+
+    Identical to _handle_feasibility but returns type='splice_recheck'
+    so the parent can route the result to the splice handler.
+    """
+    traj = request['traj']
+    gen = request['generation']
+
+    t_before = _time.perf_counter()
+    result = check_feasibility(
+        traj, geom, dynamics_params,
+        n_samples=50, early_exit=True, yield_interval=0)
+    check_elapsed = _time.perf_counter() - t_before
+
+    pipe.send({
+        'type': 'splice_recheck',
+        'accepted': result.feasible,
+        'traj': traj,
+        'needs_decel': request['needs_decel'],
+        'splice_time': request['splice_time'],
+        'generation': gen,
+        'check_elapsed': check_elapsed,
+        'violations': result.violations if not result.feasible else [],
+    })
+
+
+def _handle_deceleration(decel_pipe, request, geom, dynamics_params,
                          check_feasibility,
                          make_deceleration_trajectory) -> None:
     """Create a deceleration trajectory and verify feasibility."""
@@ -130,7 +177,7 @@ def _handle_deceleration(pipe, request, geom, dynamics_params,
 
     if traj is None:
         _log.warning('Deceleration precompute: velocity too low, skipping')
-        pipe.send({'type': 'decel', 'generation': gen, 'traj': None})
+        decel_pipe.send({'type': 'decel', 'generation': gen, 'traj': None})
         return
 
     # Single feasibility check (no yield_interval — own process, own GIL)
@@ -151,7 +198,7 @@ def _handle_deceleration(pipe, request, geom, dynamics_params,
             duration_margin=3.0,  # 1.5 base × 2
         )
         if traj is None:
-            pipe.send({'type': 'decel', 'generation': gen, 'traj': None})
+            decel_pipe.send({'type': 'decel', 'generation': gen, 'traj': None})
             return
         result = check_feasibility(
             traj, geom, dynamics_params,
@@ -160,11 +207,11 @@ def _handle_deceleration(pipe, request, geom, dynamics_params,
             _log.warning(
                 'Deceleration infeasible even at 2x duration: %s',
                 '; '.join(result.violations))
-            pipe.send({'type': 'decel', 'generation': gen, 'traj': None})
+            decel_pipe.send({'type': 'decel', 'generation': gen, 'traj': None})
             return
 
     _log.info('Deceleration pre-computed: duration=%.3fs', traj.duration)
-    pipe.send({'type': 'decel', 'generation': gen, 'traj': traj})
+    decel_pipe.send({'type': 'decel', 'generation': gen, 'traj': traj})
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +239,8 @@ class FeasibilityWorkerProxy:
         self._dynamics_params = dynamics_params
         self._max_restarts = max_restarts
         self._restart_count = 0
-        self._conn: Connection | None = None
+        self._conn = None
+        self._decel_conn = None
         self._proc: Process | None = None
         self._alive = False
         self._start_worker()
@@ -200,15 +248,19 @@ class FeasibilityWorkerProxy:
     def _start_worker(self) -> None:
         from multiprocessing import Pipe
         parent_conn, child_conn = Pipe()
+        decel_parent, decel_child = Pipe(duplex=False)  # parent reads, child writes
         self._conn = parent_conn
+        self._decel_conn = decel_parent
         self._proc = Process(
             target=_worker_main,
-            args=(child_conn, self._geom, self._dynamics_params),
+            args=(child_conn, decel_child,
+                  self._geom, self._dynamics_params),
             daemon=True,
             name='feas-worker',
         )
         self._proc.start()
-        child_conn.close()  # parent doesn't use child end
+        child_conn.close()   # parent doesn't use child end
+        decel_child.close()  # parent doesn't use child end
         self._alive = True
         logger.info('Feasibility worker process started (pid=%d)',
                      self._proc.pid)
@@ -228,7 +280,7 @@ class FeasibilityWorkerProxy:
             return False
 
     def poll(self) -> dict | None:
-        """Non-blocking check for a completed result.
+        """Non-blocking check for a completed feasibility/splice result.
 
         Returns
         -------
@@ -245,6 +297,29 @@ class FeasibilityWorkerProxy:
         try:
             if self._conn.poll():
                 return self._conn.recv()
+        except (BrokenPipeError, EOFError, OSError):
+            self._alive = False
+            raise WorkerCrashed('Feasibility worker process died')
+        return None
+
+    def poll_decel(self) -> dict | None:
+        """Non-blocking check for a completed deceleration result.
+
+        Returns
+        -------
+        dict or None
+            The result dict if ready, else ``None``.
+
+        Raises
+        ------
+        WorkerCrashed
+            If the worker process has died.
+        """
+        if not self._alive or self._decel_conn is None:
+            return None
+        try:
+            if self._decel_conn.poll():
+                return self._decel_conn.recv()
         except (BrokenPipeError, EOFError, OSError):
             self._alive = False
             raise WorkerCrashed('Feasibility worker process died')
@@ -288,11 +363,12 @@ class FeasibilityWorkerProxy:
             if self._proc.is_alive():
                 self._proc.kill()
                 self._proc.join(timeout=1.0)
-        if self._conn is not None:
-            try:
-                self._conn.close()
-            except OSError:
-                pass
+        for conn in (self._conn, self._decel_conn):
+            if conn is not None:
+                try:
+                    conn.close()
+                except OSError:
+                    pass
         self._alive = False
 
     @property
