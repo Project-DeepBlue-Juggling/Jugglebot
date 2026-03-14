@@ -149,8 +149,17 @@ def generate_cpp(cfg: dict) -> str:
         lines.append(f"  constexpr uint32_t {name} = {fmt_hex(val)};")
     lines.append("}")
 
-    # Ball Butler states
+    # Ball Butler scalar constants
     lines += cpp_section("Ball Butler State Machine")
+    lines.append("namespace BallButler {")
+    for name, val in cfg["ball_butler"].items():
+        if not isinstance(val, dict):
+            ctype, cval = _cpp_type_and_val(val)
+            lines.append(f"  constexpr {ctype} {name.upper()} = {cval};")
+    lines.append("}")
+    lines.append("")
+
+    # Ball Butler states
     lines.append("// States — encoded in heartbeat byte 0 (bits 1-7)")
     lines.append("namespace BallButlerState {")
     for name, val in cfg["ball_butler"]["states"].items():
@@ -289,8 +298,14 @@ def generate_python(cfg: dict) -> str:
     for name, val in cfg["can_ids"]["ball_butler"].items():
         lines.append(f"CAN_ID_BB_{name} = {fmt_hex(val)}")
 
-    # Ball Butler states (as IntEnum for type safety)
+    # Ball Butler scalar constants (e.g. heartbeat_timeout_ms)
     lines += py_section("Ball Butler State Machine")
+    for name, val in cfg["ball_butler"].items():
+        if not isinstance(val, dict):
+            lines.append(f"BB_{name.upper()} = {val}")
+    lines.append("")
+
+    # Ball Butler states (as IntEnum for type safety)
     lines.append("# States — encoded in heartbeat byte 0 (bits 1-7)")
     lines.append("class BallButlerStates(IntEnum):")
     for name, val in cfg["ball_butler"]["states"].items():

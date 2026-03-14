@@ -18,7 +18,7 @@ import {
 import { initBallButlerModel, updateBallButler } from './ball-butler-model.js';
 import {
     initAllPanels, updateMotorGrid, updateOrchestratorState,
-    updateFlags, updateLevellingPanel, updateBBPanel, setBBDisconnected,
+    updateFlags, updateLevellingPanel, updateBBPanel,
     updateCANTraffic, updateTrackingError, updateMotionPanel,
     recordTopicMessage, registerTopic, updateTopicMonitor, clearTopicData,
     setMocapConnected,
@@ -220,16 +220,12 @@ function onRobotState(msg) {
     }
 }
 
-let bbTimeout = null;
-const BB_TIMEOUT_MS = 5000;
-
 function onBBHeartbeat(msg) {
     recordTopicMessage('bb/heartbeat');
     updateBBPanel(msg);
-    updateBallButler(msg.yaw_deg, msg.pitch_deg, msg.hand_pos_mm);
-
-    if (bbTimeout) clearTimeout(bbTimeout);
-    bbTimeout = setTimeout(() => { setBBDisconnected(); }, BB_TIMEOUT_MS);
+    if (msg.connected) {
+        updateBallButler(msg.yaw_deg, msg.pitch_deg, msg.hand_pos_mm);
+    }
 }
 
 function onOrchestratorState(msg) {

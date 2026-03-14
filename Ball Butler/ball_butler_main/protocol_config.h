@@ -122,6 +122,10 @@ namespace BallButlerCanId {
 // Ball Butler State Machine
 // ==========================================================================
 
+namespace BallButler {
+  constexpr uint32_t HEARTBEAT_TIMEOUT_MS = 500u;
+}
+
 // States — encoded in heartbeat byte 0 (bits 1-7)
 namespace BallButlerState {
   constexpr uint8_t BOOT = 0;

@@ -361,6 +361,12 @@ const BB_STATE_CLASSES = {
  * @param {object} hb - BallButlerHeartbeat message
  */
 export function updateBBPanel(hb) {
+    // Handle disconnected state — show placeholder values and bail early
+    if (!hb.connected) {
+        setBBDisconnected();
+        return;
+    }
+
     const badge = document.getElementById('bb-state-badge');
     if (badge) {
         const name = BB_STATE_NAMES[hb.state] || 'UNKNOWN';
@@ -419,6 +425,21 @@ export function setBBDisconnected() {
         badge.textContent = 'Disconnected';
         badge.className = 'badge';
     }
+
+    // Blank readouts — stale data is unreliable (axes can be backdriven)
+    const yaw = document.getElementById('bb-yaw');
+    const pitch = document.getElementById('bb-pitch');
+    const hand = document.getElementById('bb-hand');
+    if (yaw) yaw.textContent = '--';
+    if (pitch) pitch.textContent = '--';
+    if (hand) hand.textContent = '--';
+
+    // Reset ball indicator
+    const ballDot = document.getElementById('bb-ball-dot');
+    const ballText = document.getElementById('bb-ball-text');
+    if (ballDot) ballDot.className = 'bb-ball-dot no-ball';
+    if (ballText) ballText.textContent = '--';
+
     // Reset button to Calibrate (disabled) on disconnect
     const calBtn = document.getElementById('bb-calibrate-btn');
     if (calBtn) {

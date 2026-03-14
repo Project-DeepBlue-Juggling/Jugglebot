@@ -106,6 +106,8 @@ CAN_ID_BB_CALIBRATE_LOC_CMD = 0x7D4
 # Ball Butler State Machine
 # ============================================================================
 
+BB_HEARTBEAT_TIMEOUT_MS = 500
+
 # States — encoded in heartbeat byte 0 (bits 1-7)
 class BallButlerStates(IntEnum):
     BOOT = 0

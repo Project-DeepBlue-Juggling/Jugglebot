@@ -104,6 +104,9 @@ can_ids:
 # Ball Butler State Machine
 # =============================================================================
 ball_butler:
+  # If no CAN heartbeat frame is received within this window, BB is considered disconnected
+  heartbeat_timeout_ms: 500
+
   # States — encoded in heartbeat byte 0 (bits 1-7)
   states:
     BOOT:          0

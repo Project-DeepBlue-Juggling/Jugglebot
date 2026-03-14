@@ -122,6 +122,8 @@ class CanInterfaceNode(Node):
         self.motors = MotorStateTracker()
         self.last_bb_heartbeat = ball_butler.BallButlerHeartbeat()
         self._bb_heartbeat_received = False
+        self._bb_last_can_rx_time = 0.0  # monotonic time of last CAN heartbeat frame
+        self._bb_heartbeat_timeout_s = proto.BB_HEARTBEAT_TIMEOUT_MS / 1000.0
 
         # Operational limits (mutable, can be changed via topics)
         self.leg_vel_limit = odrive.DEFAULT_VEL_CURR['leg_vel']
@@ -271,6 +273,7 @@ class CanInterfaceNode(Node):
             try:
                 self.last_bb_heartbeat = ball_butler.BallButlerHeartbeat.from_can_frame(msg.data)
                 self._bb_heartbeat_received = True
+                self._bb_last_can_rx_time = time.monotonic()
             except ValueError as e:
                 self.get_logger().warning(f"Bad BB heartbeat frame: {e}", throttle_duration_sec=5.0)
         else:
@@ -992,7 +995,10 @@ class CanInterfaceNode(Node):
     def _publish_bb_heartbeat(self):
         try:
             hb = self.last_bb_heartbeat
+            connected = (self._bb_heartbeat_received
+                         and (time.monotonic() - self._bb_last_can_rx_time) < self._bb_heartbeat_timeout_s)
             msg = BallButlerHeartbeatMsg()
+            msg.connected = connected
             msg.ball_in_hand = hb.ball_in_hand
             msg.state = hb.state
             msg.state_data = hb.state_data
