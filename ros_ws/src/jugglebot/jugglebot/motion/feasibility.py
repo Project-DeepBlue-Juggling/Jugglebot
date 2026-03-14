@@ -28,6 +28,7 @@ from jugglebot.motion.dynamics import (
 )
 from jugglebot.motion.ik_solver import (
     accel_to_leg_accels,
+    compute_jacobian,
     pose_to_leg_lengths,
     rotvec_to_rot_matrix,
     twist_to_leg_velocities,
@@ -163,30 +164,34 @@ def check_feasibility(
         if yield_interval > 0 and n_evaluated % yield_interval == 0:
             _time.sleep(0)
 
+        # Compute Jacobian once per sample — reused by velocity IK,
+        # acceleration IK, condition number, and torque computation.
+        J = compute_jacobian(pos, rot, geom)
+
         # Leg extensions (mm) — check stroke limits
         extensions_mm = pose_to_leg_lengths(pos, rot, geom)
         max_ext = np.maximum(max_ext, extensions_mm)
         min_ext = np.minimum(min_ext, extensions_mm)
 
         # Leg velocities (rev/s)
-        vel_mm_s = twist_to_leg_velocities(twist, pos, rot, geom)
+        vel_mm_s = twist_to_leg_velocities(twist, pos, rot, geom, J=J)
         vel_rps = leg_velocities_to_motor_velocities(vel_mm_s, geom)
         peak_vel = np.maximum(peak_vel, np.abs(vel_rps))
 
         # Leg accelerations (rev/s^2)
-        accel_mm_s2 = accel_to_leg_accels(accel_cart, twist, pos, rot, geom)
+        accel_mm_s2 = accel_to_leg_accels(accel_cart, twist, pos, rot, geom, J=J)
         accel_rps2 = accel_mm_s2 * geom.mm_to_rev
         peak_accel = np.maximum(peak_accel, np.abs(accel_rps2))
 
         # Jacobian condition number
-        cond = compute_condition_number(pos, rot, geom)
+        cond = compute_condition_number(pos, rot, geom, J=J)
         peak_cond = max(peak_cond, cond)
 
         # Full feedforward torques (gravity + inertia + reflected motor)
         # Skip when no torque limit — the result would never be checked.
         if torque_limit_Nm is not None:
             torque_Nm = compute_full_feedforward_torques(
-                pos, rot, twist, accel_cart, geom, dynamics_params)
+                pos, rot, twist, accel_cart, geom, dynamics_params, J=J)
             peak_torque = np.maximum(peak_torque, np.abs(torque_Nm))
 
         # Cartesian jerk (3rd derivative)

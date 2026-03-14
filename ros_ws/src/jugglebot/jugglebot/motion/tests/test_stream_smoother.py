@@ -216,7 +216,7 @@ def test_motor_limit_compliance():
         t = t0 + (i / n_samples) * duration
         pose, twist, accel = smoother.evaluate(t)
 
-        pos_rev, vel_ff, torque_ff = cartesian_to_motor_commands(
+        pos_rev, vel_ff, torque_ff, _ = cartesian_to_motor_commands(
             pose, twist, accel, geom, dyn,
             feedforward_enabled=False)  # skip torque for speed
 

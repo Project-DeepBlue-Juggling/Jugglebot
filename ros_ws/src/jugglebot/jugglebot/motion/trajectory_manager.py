@@ -117,6 +117,7 @@ class TrajectoryManager:
         self._last_progress = 0.0
         self._last_time_remaining = 0.0
         self._current_pose = np.zeros(6)  # latest evaluated [x,y,z,rx,ry,rz]
+        self._last_jacobian: np.ndarray | None = None  # cached from last evaluate()
 
         # Clock function for measuring elapsed time during expensive
         # operations (feasibility checks, binary search).  Defaults to
@@ -154,6 +155,11 @@ class TrajectoryManager:
     def current_pose_6dof(self) -> np.ndarray:
         """Latest evaluated Cartesian pose [x,y,z,rx,ry,rz]."""
         return self._current_pose.copy()
+
+    @property
+    def last_jacobian(self) -> np.ndarray | None:
+        """Jacobian from the most recent evaluate() call, or None if holding."""
+        return self._last_jacobian
 
     @property
     def home_pose(self) -> np.ndarray:
@@ -260,9 +266,17 @@ class TrajectoryManager:
         pos_rev : (6,) ndarray — motor positions in revolutions
         vel_ff_rps : (6,) ndarray — velocity feedforward in rev/s
         torque_ff_Nm : (6,) ndarray — torque feedforward in Nm
+
+        Side effects
+        ------------
+        Updates ``_last_jacobian`` with the Jacobian computed during
+        ``cartesian_to_motor_commands`` (or None for hold paths).
+        The control loop can read this to avoid recomputing J for
+        the condition number check.
         """
         if self._state in (TrajectoryState.IDLE, TrajectoryState.COMPLETE):
             self._current_pose = self._hold_pose.copy()
+            self._last_jacobian = None
             return (self._hold_pos_rev.copy(),
                     np.zeros(6),
                     self._hold_torque_ff.copy())
@@ -284,6 +298,7 @@ class TrajectoryManager:
                 self._state = TrajectoryState.IDLE
                 self._active_traj = None
                 logger.info("Deceleration complete")
+                self._last_jacobian = None
                 return (self._hold_pos_rev.copy(),
                         np.zeros(6),
                         self._hold_torque_ff.copy())
@@ -316,17 +331,20 @@ class TrajectoryManager:
                     self.submit(decel_traj, is_decel=True)
                     pose, twist, accel_cart = evaluate(self._active_traj, t)
                     self._current_pose = pose.copy()
-                    return cartesian_to_motor_commands(
+                    pos_rev, vel_ff, torque_ff, J = cartesian_to_motor_commands(
                         pose, twist, accel_cart,
                         self.geom, self.dynamics_params,
                         self._feedforward_enabled,
                         self._gravity_correction)
+                    self._last_jacobian = J
+                    return pos_rev, vel_ff, torque_ff
                 else:
                     # Pre-computed deceleration not ready yet — hold at end
                     # pose and wait for next cycle.  Keep _pending_decel True
                     # and stay in EXECUTING so we re-enter this branch.
                     self._held_at_end_cycles += 1
                     self.set_hold_pose(end_pose)
+                    self._last_jacobian = None
                     return (self._hold_pos_rev.copy(),
                             np.zeros(6),
                             self._hold_torque_ff.copy())
@@ -336,6 +354,7 @@ class TrajectoryManager:
             self._active_traj = None
             self.set_hold_pose(end_pose)
             logger.info("Trajectory complete")
+            self._last_jacobian = None
             return (self._hold_pos_rev.copy(),
                     np.zeros(6),
                     self._hold_torque_ff.copy())
@@ -346,11 +365,13 @@ class TrajectoryManager:
             self._last_time_remaining = t_end - t
             pose = traj.start_state[:6]
             self._current_pose = pose.copy()
-            return cartesian_to_motor_commands(
+            pos_rev, vel_ff, torque_ff, J = cartesian_to_motor_commands(
                 pose, np.zeros(6), np.zeros(6),
                 self.geom, self.dynamics_params,
                 self._feedforward_enabled,
                 self._gravity_correction)
+            self._last_jacobian = J
+            return pos_rev, vel_ff, torque_ff
 
         # Mid-trajectory: evaluate at current time
         elapsed = t - traj.t_start
@@ -359,11 +380,13 @@ class TrajectoryManager:
 
         pose, twist, accel_cart = evaluate(traj, t)
         self._current_pose = pose.copy()
-        return cartesian_to_motor_commands(
+        pos_rev, vel_ff, torque_ff, J = cartesian_to_motor_commands(
             pose, twist, accel_cart,
             self.geom, self.dynamics_params,
             self._feedforward_enabled,
             self._gravity_correction)
+        self._last_jacobian = J
+        return pos_rev, vel_ff, torque_ff
 
     def cancel(self) -> None:
         """Cancel the active trajectory and transition to IDLE.

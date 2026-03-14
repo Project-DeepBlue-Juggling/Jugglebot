@@ -377,7 +377,7 @@ def execute_smoother_sequence(
         pose, twist, accel = smoother.evaluate(t_now)
 
         # Convert to motor commands
-        pos_rev, vel_ff_rps, torque_ff_Nm = cartesian_to_motor_commands(
+        pos_rev, vel_ff_rps, torque_ff_Nm, _ = cartesian_to_motor_commands(
             pose, twist, accel, geom, params, feedforward_enabled=feedforward_enabled)
 
         # Send to all 6 axes (negate for ODrive convention)
@@ -494,7 +494,7 @@ def preview_smoother_test(test_name: str, targets: list[tuple[float, np.ndarray]
         accels[i] = accel
         durations[i] = smoother._duration
 
-        pos_rev, vel_ff, torque_ff = cartesian_to_motor_commands(
+        pos_rev, vel_ff, torque_ff, _ = cartesian_to_motor_commands(
             pose, twist, accel, geom, params, feedforward_enabled=feedforward_enabled)
         rot = rotvec_to_rot_matrix(pose[3:6])
         extensions[i] = pose_to_leg_lengths(pose[:3], rot, geom)
@@ -631,7 +631,7 @@ def preview_all_tests():
                 target_idx += 1
 
             pose, twist, accel = smoother.evaluate(t)
-            pos_rev, vel_ff, torque_ff = cartesian_to_motor_commands(
+            pos_rev, vel_ff, torque_ff, _ = cartesian_to_motor_commands(
                 pose, twist, accel, geom, params,
                 feedforward_enabled=ff_enabled)
 
@@ -657,7 +657,7 @@ def preview_all_tests():
 
         while t < return_end:
             pose, twist, accel = smoother.evaluate(t)
-            pos_rev, vel_ff, torque_ff = cartesian_to_motor_commands(
+            pos_rev, vel_ff, torque_ff, _ = cartesian_to_motor_commands(
                 pose, twist, accel, geom, params,
                 feedforward_enabled=True)
 

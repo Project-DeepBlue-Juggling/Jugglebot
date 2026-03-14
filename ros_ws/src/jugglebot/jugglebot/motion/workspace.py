@@ -191,14 +191,21 @@ def check_leg_extensions(extensions_mm: np.ndarray,
 
 def compute_condition_number(pos: np.ndarray,
                              rot: np.ndarray,
-                             geom: StewartGeometry) -> float:
+                             geom: StewartGeometry,
+                             J: np.ndarray | None = None) -> float:
     """Condition number of the Jacobian at a given pose.
 
     A large condition number indicates proximity to a singularity.
     Typical good values are < 10; the ill-conditioned threshold
     from the motion planner plan is 100.
+
+    Parameters
+    ----------
+    pos, rot, geom : same as ``compute_jacobian``
+    J : (6,6) ndarray or None — pre-computed Jacobian (skips recomputation)
     """
-    J = compute_jacobian(pos, rot, geom)
+    if J is None:
+        J = compute_jacobian(pos, rot, geom)
     return float(np.linalg.cond(J))
 
 

@@ -164,7 +164,7 @@ def execute_trajectory_with_workspace_check(
         # Evaluate trajectory
         traj_t = traj.t_start + t_elapsed
         pose, twist, accel = evaluate(traj, traj_t)
-        pos_rev, vel_ff, torque_ff = cartesian_to_motor_commands(
+        pos_rev, vel_ff, torque_ff, _ = cartesian_to_motor_commands(
             pose, twist, accel, geom, params, feedforward_enabled=True)
 
         # Workspace check

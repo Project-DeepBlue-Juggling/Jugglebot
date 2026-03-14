@@ -291,6 +291,7 @@ def compute_full_feedforward_torques(
     accel: np.ndarray,
     geom: StewartGeometry,
     params: DynamicsParams,
+    J: np.ndarray | None = None,
 ) -> np.ndarray:
     """Compute the full feedforward motor torques (gravity + inertia + reflected motor).
 
@@ -314,6 +315,7 @@ def compute_full_feedforward_torques(
     accel : (6,) ndarray — [ax, ay, az, alphax, alphay, alphaz] in mm/s², rad/s²
     geom : StewartGeometry
     params : DynamicsParams
+    J : (6,6) ndarray or None — pre-computed Jacobian (skips recomputation)
 
     Returns
     -------
@@ -324,7 +326,8 @@ def compute_full_feedforward_torques(
         twist_to_leg_velocities,
     )
 
-    J = compute_jacobian(pos, rot, geom)
+    if J is None:
+        J = compute_jacobian(pos, rot, geom)
 
     # --- Component 1: Gravity wrench ---
     W_gravity = compute_gravity_wrench(rot, params)
@@ -344,7 +347,7 @@ def compute_full_feedforward_torques(
     # --- Component 3: Reflected motor inertia ---
     # Motor angular acceleration: q_ddot (mm/s²) → rev/s² → rad/s²
     # q_ddot = J @ accel + J_dot @ twist (mm/s²)
-    q_ddot_mm_s2 = accel_to_leg_accels(accel, twist, pos, rot, geom)
+    q_ddot_mm_s2 = accel_to_leg_accels(accel, twist, pos, rot, geom, J=J)
     # Convert mm/s² → rev/s² using mm_to_rev, then → rad/s² (* 2π)
     q_ddot_rps2 = q_ddot_mm_s2 * geom.mm_to_rev          # rev/s²
     q_ddot_rad_s2 = q_ddot_rps2 * (2.0 * np.pi)           # rad/s²

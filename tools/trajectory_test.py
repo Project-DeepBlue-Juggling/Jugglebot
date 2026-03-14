@@ -470,7 +470,7 @@ def execute_trajectory(harness: PlatformTestHarness,
         pose, twist, accel = evaluate(traj, t_elapsed)
 
         # 2. Convert to motor commands
-        pos_rev, vel_ff_rps, torque_ff_Nm = cartesian_to_motor_commands(
+        pos_rev, vel_ff_rps, torque_ff_Nm, _ = cartesian_to_motor_commands(
             pose, twist, accel, geom, params, feedforward_enabled=True)
 
         # 3. Send to all 6 axes

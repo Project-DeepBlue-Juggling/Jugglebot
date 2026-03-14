@@ -732,12 +732,13 @@ class ControlLoop:
             self._commanded_vel_ff_rps = vel
             self._commanded_torque_ff_Nm = torque
             pose_6dof = self._traj_manager.current_pose_6dof
+            cached_J = self._traj_manager.last_jacobian
         elif self._has_target:
             # Direct-target mode: evaluate the C2-continuous smoother
             t_now = time.perf_counter()
             pose, twist, accel = self._smoother.evaluate(t_now)
 
-            pos_rev, vel_ff, torque_ff = cartesian_to_motor_commands(
+            pos_rev, vel_ff, torque_ff, cached_J = cartesian_to_motor_commands(
                 pose, twist, accel,
                 self.geom, self._dynamics_params,
                 self._feedforward_enabled, self._gravity_correction)
@@ -759,7 +760,7 @@ class ControlLoop:
             pos_cart = pose_6dof[:3]
             rot_mat = rotvec_to_rot_matrix(pose_6dof[3:6])
             self._cond_number = compute_condition_number(
-                pos_cart, rot_mat, self.geom)
+                pos_cart, rot_mat, self.geom, J=cached_J)
 
         # Check workspace limits
         ws_check = check_workspace_limits(
@@ -779,7 +780,7 @@ class ControlLoop:
                 # The smoother keeps tracking the spacemouse input, so when the
                 # user moves back to a valid region, we resume seamlessly.
                 held = self._last_safe_pose_6dof
-                pos_rev, vel_ff, torque_ff = cartesian_to_motor_commands(
+                pos_rev, vel_ff, torque_ff, _ = cartesian_to_motor_commands(
                     held, np.zeros(6), np.zeros(6),
                     self.geom, self._dynamics_params,
                     self._feedforward_enabled, self._gravity_correction)

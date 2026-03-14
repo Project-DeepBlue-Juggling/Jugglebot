@@ -225,19 +225,22 @@ def compute_jacobian(pos: np.ndarray,
 def twist_to_leg_velocities(twist: np.ndarray,
                             pos: np.ndarray,
                             rot: np.ndarray,
-                            geom: StewartGeometry) -> np.ndarray:
+                            geom: StewartGeometry,
+                            J: np.ndarray | None = None) -> np.ndarray:
     """Velocity IK: platform twist → leg extension rates (mm/s).
 
     Parameters
     ----------
     twist : (6,) ndarray — [vx, vy, vz, ωx, ωy, ωz] in base frame (mm/s, rad/s)
     pos, rot, geom : same as ``compute_jacobian``
+    J : (6,6) ndarray or None — pre-computed Jacobian (skips recomputation)
 
     Returns
     -------
     q_dot : (6,) ndarray — leg extension velocities in mm/s
     """
-    J = compute_jacobian(pos, rot, geom)
+    if J is None:
+        J = compute_jacobian(pos, rot, geom)
     return J @ twist
 
 
@@ -301,7 +304,8 @@ def accel_to_leg_accels(accel: np.ndarray,
                         twist: np.ndarray,
                         pos: np.ndarray,
                         rot: np.ndarray,
-                        geom: StewartGeometry) -> np.ndarray:
+                        geom: StewartGeometry,
+                        J: np.ndarray | None = None) -> np.ndarray:
     """Acceleration IK: platform acceleration → leg extension accelerations.
 
     ``q̈ = J·ẍ + J̇·ẋ``
@@ -312,12 +316,14 @@ def accel_to_leg_accels(accel: np.ndarray,
                            (mm/s², rad/s²)
     twist : (6,) ndarray — current platform twist (mm/s, rad/s)
     pos, rot, geom : same as ``compute_jacobian``
+    J : (6,6) ndarray or None — pre-computed Jacobian (skips recomputation)
 
     Returns
     -------
     q_ddot : (6,) ndarray — leg extension accelerations in mm/s²
     """
-    J = compute_jacobian(pos, rot, geom)
+    if J is None:
+        J = compute_jacobian(pos, rot, geom)
     J_dot = compute_jacobian_dot(pos, rot, twist, geom)
     return J @ accel + J_dot @ twist
 
