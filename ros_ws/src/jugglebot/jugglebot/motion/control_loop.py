@@ -443,6 +443,8 @@ class ControlLoop:
             vel = params.get('vel_limit_rps')
             accel = params.get('accel_limit_rps2')
             if vel is not None and accel is not None:
+                self._base_smoother_vel = float(vel)
+                self._base_smoother_accel = float(accel)
                 self._smoother.set_limits(float(vel), float(accel))
                 logger.info(f"Smoother limits updated: vel={vel} rps, accel={accel} rps²")
         elif cmd == 'fault':
