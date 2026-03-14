@@ -117,12 +117,12 @@ def test_ipc_latency():
 
     # Start IPC endpoints
     bridge = BridgeIPC(
-        command_addr='tcp://localhost:15555',
-        telemetry_addr='tcp://localhost:15556',
+        command_addr='tcp://127.0.0.1:15555',
+        telemetry_addr='tcp://127.0.0.1:15556',
     )
     control = ControlProcessIPC(
-        command_addr='tcp://localhost:15555',
-        telemetry_addr='tcp://localhost:15556',
+        command_addr='tcp://127.0.0.1:15555',
+        telemetry_addr='tcp://127.0.0.1:15556',
     )
 
     # Allow sockets to connect
