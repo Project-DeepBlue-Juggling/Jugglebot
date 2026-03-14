@@ -35,6 +35,12 @@ const ROT_STEPS   = [5, 2, 1, 0.5];        // degrees
 /** Current jog target pose: [x, y, z, rx, ry, rz] in mm and radians */
 let jogTarget = [0, 0, 0, 0, 0, 0];
 
+/** Whether the jog panel is currently visible (used to detect transitions). */
+let jogPanelVisible = false;
+
+/** Last jogTarget known to be within workspace limits (not hard-clamped). */
+let lastSafeJogTarget = [0, 0, 0, 0, 0, 0];
+
 /** @type {{ publish: function } | null} */
 let posePublisher = null;
 
@@ -219,10 +225,32 @@ export function setJogPanelVisible(visible) {
         panel.style.display = visible ? '' : 'none';
     }
 
-    // Reset jog target when panel becomes visible (entering GUI mode)
-    if (visible) {
+    // Reset jog target only on transition into GUI mode (not on every
+    // redundant control_mode_topic tick from the orchestrator at 10 Hz).
+    if (visible && !jogPanelVisible) {
         jogTarget = [0, 0, 0, 0, 0, 0];
+        lastSafeJogTarget = [0, 0, 0, 0, 0, 0];
         updateReadout();
+    }
+    jogPanelVisible = visible;
+}
+
+// ---- Workspace feedback ----
+
+/**
+ * Called from the motion diagnostics handler with the current workspace status.
+ * When the control loop reports a hard limit, snaps jogTarget back to the last
+ * known-good value so that one reverse step immediately starts recovery.
+ * @param {string} status - 'ok', 'soft', or 'hard'
+ */
+export function onWorkspaceStatus(status) {
+    if (status === 'hard') {
+        // Revert to last safe target — further clicks in the same direction
+        // will keep snapping back, but one reverse click moves immediately.
+        jogTarget = [...lastSafeJogTarget];
+        updateReadout();
+    } else {
+        lastSafeJogTarget = [...jogTarget];
     }
 }
 

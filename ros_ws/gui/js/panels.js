@@ -8,6 +8,7 @@
 import { ODRIVE_STATE, BB_STATE_NAMES, LEG_STROKE_MM, MM_TO_REV,
          CAN_BAUD_RATE, CAN_BITS_PER_FRAME_APPROX } from './geometry-config.js';
 import { callService } from './ros-bridge.js';
+import { onWorkspaceStatus } from './jog-panel.js';
 
 // ---- Motor grid ----
 
@@ -440,13 +441,17 @@ export function updateMotionPanel(msg) {
     const scaleEl = document.getElementById('motion-scale');
     const scaleReadout = document.getElementById('motion-scale-readout');
 
+    const ws = kv['workspace_status'] || '--';
     if (wsEl) {
-        const ws = kv['workspace_status'] || '--';
         wsEl.textContent = ws;
         wsEl.style.color = ws === 'ok' ? 'var(--accent-green)'
                          : ws === 'soft' ? 'var(--accent-amber)'
                          : ws === 'hard' ? 'var(--accent-red)'
                          : 'var(--text-secondary)';
+    }
+    // Notify jog panel so it can clamp jogTarget at workspace boundaries
+    if (ws === 'ok' || ws === 'soft' || ws === 'hard') {
+        onWorkspaceStatus(ws);
     }
     if (condEl) condEl.textContent = kv['cond_number'] || '--';
 
