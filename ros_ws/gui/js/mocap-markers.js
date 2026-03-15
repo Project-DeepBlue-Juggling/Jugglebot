@@ -26,6 +26,19 @@ const spherePool = [];
 const MARKER_RADIUS = 0.008; // 8mm in Three.js units (metres)
 const sharedGeometry = new THREE.SphereGeometry(MARKER_RADIUS, 12, 8);
 
+/** Residual-based marker scaling: min residual (no scale-up) and max (3x scale) */
+const RESIDUAL_MIN_MM = 0.5;
+const RESIDUAL_MAX_MM = 3.0;
+const RESIDUAL_SCALE_MIN = 1.0;
+const RESIDUAL_SCALE_MAX = 3.0;
+
+function residualToScale(residual) {
+    if (residual <= RESIDUAL_MIN_MM) return RESIDUAL_SCALE_MIN;
+    if (residual >= RESIDUAL_MAX_MM) return RESIDUAL_SCALE_MAX;
+    const t = (residual - RESIDUAL_MIN_MM) / (RESIDUAL_MAX_MM - RESIDUAL_MIN_MM);
+    return RESIDUAL_SCALE_MIN + t * (RESIDUAL_SCALE_MAX - RESIDUAL_SCALE_MIN);
+}
+
 /** Colour lookup by label prefix (ordered: longest prefix first for correct matching) */
 const COLOUR_MAP = [
     { prefix: 'Ball Butler', color: 0xeab308, group: 'Ball Butler' }, // yellow
@@ -153,13 +166,19 @@ export function updateMocapMarkers(markers) {
         sphere.material = getMaterial(labelToColour(label));
         sphere.visible = true;
 
+        // Scale marker by residual
+        const residual = m.residual || 0;
+        const s = residualToScale(residual);
+        sphere.scale.setScalar(s);
+
         const group = labelToGroup(label);
         counts[group] = (counts[group] || 0) + 1;
     }
 
-    // Hide unused spheres
+    // Hide unused spheres and reset their scale
     for (let i = count; i < spherePool.length; i++) {
         spherePool[i].visible = false;
+        spherePool[i].scale.setScalar(1);
     }
 
     updateInfoBox(counts);

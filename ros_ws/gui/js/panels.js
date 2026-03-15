@@ -157,9 +157,9 @@ const FLAGS = [
     { id: 'flag-homed',        type: 'progress', labelDone: 'Homed',          labelWait: 'Not Homed' },
     // Row 3
     { id: 'flag-fatal-can',    type: 'error', labelOk: 'CAN OK',           labelFail: 'CAN Error' },
-    { id: 'flag-levelled',     type: 'progress', labelDone: 'Levelled',       labelWait: 'Not Levelled' },
+    { id: 'flag-levelled',     type: 'error', labelOk: 'Levelled',         labelFail: 'Not Levelled' },
     // Row 4
-    { id: 'flag-mocap',        type: 'progress', labelDone: 'Mocap Connected', labelWait: 'Mocap Disconnected' },
+    { id: 'flag-mocap',        type: 'error', labelOk: 'Mocap Connected',  labelFail: 'Mocap Disconnected' },
     { id: 'flag-mocap-aligned', type: 'error', labelOk: 'Mocap Aligned',  labelFail: 'Mocap Misaligned' },
 ];
 
@@ -190,7 +190,7 @@ export function initFlagsGrid() {
 export function updateFlags(robotState) {
     setFlagProgress('flag-encoder', robotState.encoder_search_complete, 'Encoders Found', 'Encoder Search');
     setFlagProgress('flag-homed', robotState.is_homed, 'Homed', 'Not Homed');
-    setFlagProgress('flag-levelled', robotState.levelling_complete, 'Levelled', 'Not Levelled');
+    setFlagError('flag-levelled', !robotState.levelling_complete, 'Not Levelled', 'Levelled');
     setFlagError('flag-fatal-odrive', robotState.has_fatal_odrive_error, 'ODrive Error', 'ODrives OK');
     setFlagError('flag-fatal-can', robotState.has_fatal_can_error, 'CAN Error', 'CAN OK');
     setFlagError('flag-undervoltage', robotState.has_undervoltage, 'Undervoltage', 'Voltage OK');
@@ -201,7 +201,7 @@ export function updateFlags(robotState) {
  * @param {boolean} connected
  */
 export function setMocapConnected(connected) {
-    setFlagProgress('flag-mocap', connected, 'Mocap Connected', 'Mocap Disconnected');
+    setFlagError('flag-mocap', !connected, 'Mocap Disconnected', 'Mocap Connected');
 }
 
 /**
@@ -329,6 +329,10 @@ export function initBBPanel() {
             <span class="bb-ball-indicator">
                 <span class="bb-ball-dot no-ball" id="bb-ball-dot"></span>
                 <span id="bb-ball-text">No ball</span>
+            </span>
+            <span class="bb-calib-indicator" id="bb-calib-indicator">
+                <span class="bb-calib-dot uncalibrated" id="bb-calib-dot"></span>
+                <span id="bb-calib-text">Not Calibrated</span>
             </span>
         </div>
         <div class="bb-readouts">
@@ -458,6 +462,26 @@ export function setBBDisconnected() {
             calBtn.addEventListener('click', onBBCalibrateClick);
         }
         calBtn.disabled = true;
+    }
+}
+
+// ---- BB calibration status ----
+
+/**
+ * Update Ball Butler calibration status from bb/calibration_result.
+ * @param {object} msg - BallButlerCalibrationResult message
+ */
+export function updateBBCalibration(msg) {
+    const dot = document.getElementById('bb-calib-dot');
+    const text = document.getElementById('bb-calib-text');
+    if (!dot) return;
+
+    if (msg.success) {
+        dot.className = 'bb-calib-dot calibrated';
+        if (text) text.textContent = 'Calibrated';
+    } else {
+        dot.className = 'bb-calib-dot uncalibrated';
+        if (text) text.textContent = 'Not Calibrated';
     }
 }
 

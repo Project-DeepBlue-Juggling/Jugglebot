@@ -3,7 +3,7 @@
 Publishes:
   /mocap_data             (MocapDataMulti)   — all markers (labelled + unlabelled) at 200 Hz
   /rigid_body_poses       (RigidBodyPoses)   — all rigid bodies at 200 Hz
-  /bb/markers             (MocapDataMulti)   — BB fiducial markers (only during calibration)
+  /bb/markers             (MocapDataMulti)   — BB fiducial markers (always, when QTM connected)
   /bb/calibration_result  (BallButlerCalibrationResult) — latched, after each calibration
   /qtm_clock_offset_sec   (Float64)          — QTM↔ROS clock offset at 1 Hz
 
@@ -159,26 +159,25 @@ class MocapNode(Node):
         except Exception as e:
             self.get_logger().error(f'Error publishing body poses: {e}')
 
-        # ── BB markers (only during calibration) ──────────────────────
-        if self.mocap.publish_ball_butler_markers:
-            try:
-                bb_markers = self.mocap.get_ball_butler_markers_base_frame()
-                if bb_markers is not None and bb_markers.shape[0] > 0:
-                    msg = MocapDataMulti()
-                    for i in range(bb_markers.shape[0]):
-                        s = MocapDataSingle()
-                        s.position.x = float(bb_markers[i, 0])
-                        s.position.y = float(bb_markers[i, 1])
-                        s.position.z = float(bb_markers[i, 2])
-                        s.residual = float(bb_markers[i, 3])
-                        msg.markers.append(s)
-                    self.pub_bb_markers.publish(msg)
+        # ── BB markers (always published; accumulated during calibration) ──
+        try:
+            bb_markers = self.mocap.get_ball_butler_markers_base_frame()
+            if bb_markers is not None and bb_markers.shape[0] > 0:
+                msg = MocapDataMulti()
+                for i in range(bb_markers.shape[0]):
+                    s = MocapDataSingle()
+                    s.position.x = float(bb_markers[i, 0])
+                    s.position.y = float(bb_markers[i, 1])
+                    s.position.z = float(bb_markers[i, 2])
+                    s.residual = float(bb_markers[i, 3])
+                    msg.markers.append(s)
+                self.pub_bb_markers.publish(msg)
 
-                    # Accumulate for calibration
-                    if self._calibrating:
-                        self._accumulate_calibration_markers(msg)
-            except Exception as e:
-                self.get_logger().error(f'Error publishing BB markers: {e}')
+                # Accumulate for calibration
+                if self._calibrating:
+                    self._accumulate_calibration_markers(msg)
+        except Exception as e:
+            self.get_logger().error(f'Error publishing BB markers: {e}')
 
     # ──────────────────────────────────────────────────────────────────────
     #  Static TF
@@ -209,10 +208,8 @@ class MocapNode(Node):
         if self._calibrating:
             self._calib_yaw_readings.append(msg.yaw_deg)
 
-        # Toggle marker publishing
         if msg.state != self._bb_last_state:
             self._bb_last_state = msg.state
-            self.mocap.publish_ball_butler_markers = (msg.state == BallButlerStates.CALIBRATING)
 
         # Detect calibration start
         if msg.state == BallButlerStates.CALIBRATING and not self._calibrating:

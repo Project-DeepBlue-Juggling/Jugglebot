@@ -13,7 +13,7 @@ import { initMocapMarkers, updateMocapMarkers, updateRigidBodyAxes } from './moc
 import { initBallButlerModel, updateBallButler, updateBallButlerPose } from './ball-butler-model.js';
 import {
     initAllPanels, updateMotorGrid, updateOrchestratorState,
-    updateFlags, updateLevellingPanel, updateBBPanel,
+    updateFlags, updateLevellingPanel, updateBBPanel, updateBBCalibration,
     updateCANTraffic, updateTrackingError, updateMotionPanel,
     recordTopicMessage, registerTopic, updateTopicMonitor, clearTopicData,
     setMocapConnected, setMocapAligned,
@@ -137,6 +137,9 @@ function subscribeAll() {
 
     // Motion planner diagnostics (500Hz -> throttle to 5Hz = 200ms)
     ros.subscribe('motion/diagnostics', 'diagnostic_msgs/msg/DiagnosticStatus', onMotionDiagnostics, 200);
+
+    // BB calibration result (latched — last value available to late subscribers)
+    ros.subscribe('bb/calibration_result', 'jugglebot_interfaces/msg/BallButlerCalibrationResult', onBBCalibrationResult, 0);
 }
 
 // ---- Topic handlers ----
@@ -282,6 +285,11 @@ function onControlMode(msg) {
 function onMotionDiagnostics(msg) {
     recordTopicMessage('motion/diagnostics');
     updateMotionPanel(msg);
+}
+
+function onBBCalibrationResult(msg) {
+    recordTopicMessage('bb/calibration_result');
+    updateBBCalibration(msg);
 }
 
 // ---- Scene menu ----
@@ -562,6 +570,7 @@ const GUI_SUBSCRIBED_TOPICS = new Set([
     'robot_state', 'bb/heartbeat', 'orchestrator_state',
     'can_traffic', 'hand_telemetry', 'mocap_data', 'rigid_body_poses',
     'leg_lengths_topic', 'control_mode_topic', 'motion/diagnostics',
+    'bb/calibration_result',
 ]);
 
 /** Active spy subscriptions: Map<topicName, ROSLIB.Topic> */

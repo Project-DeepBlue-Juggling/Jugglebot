@@ -439,6 +439,24 @@
 .bb-ball-dot.has-ball  { background: var(--accent-green); box-shadow: 0 0 4px var(--accent-green); }
 .bb-ball-dot.no-ball   { background: var(--accent-red); }
 
+/* ---- BB Calibration status indicator ---- */
+.bb-calib-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: var(--font-size-base);
+    margin-left: auto;
+}
+
+.bb-calib-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+}
+
+.bb-calib-dot.calibrated   { background: var(--accent-green); box-shadow: 0 0 4px var(--accent-green); }
+.bb-calib-dot.uncalibrated { background: var(--accent-red); }
+
 /* ---- BB Calibrate button ---- */
 .bb-calibrate-row {
     display: flex;

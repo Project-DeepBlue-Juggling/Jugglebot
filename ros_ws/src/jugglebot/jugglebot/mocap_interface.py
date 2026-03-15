@@ -50,9 +50,6 @@ class MocapInterface:
         self._align_pos_thresh_mm = 2.5   # Overridden by set_alignment_thresholds()
         self._align_rot_thresh_deg = 1.0
 
-        # Control whether to publish ball butler markers
-        self.publish_ball_butler_markers = False # Only publish when requested
-
         # Performance statistics from the incoming packet header.
         self.residuals_unlabelled = []
         self.drop_rate = 0
@@ -177,23 +174,22 @@ class MocapInterface:
             if markers_residual is not None:
                 header, markers = markers_residual
 
-                # Publish Ball Butler markers if requested
-                if self.publish_ball_butler_markers:    
-                    # Process each Ball Butler marker (1-5)
-                    for i in range(1, 6):
-                        marker_name = f"Ball Butler - {i}"
-                        if marker_name in self.marker_dict:
-                            marker_idx = self.marker_dict[marker_name]
-                            if marker_idx < len(markers):
-                                marker = markers[marker_idx]
-                                with self.data_lock:
-                                    self.ball_butler_markers[i-1] = [marker.x, marker.y, marker.z, marker.residual]
-                            else:
-                                with self.data_lock:
-                                    self.ball_butler_markers[i-1] = [np.nan, np.nan, np.nan, np.nan]
+                # Always store Ball Butler marker positions (negligible cost,
+                # needed for calibration and useful for always-on visualisation)
+                for i in range(1, 6):
+                    marker_name = f"Ball Butler - {i}"
+                    if marker_name in self.marker_dict:
+                        marker_idx = self.marker_dict[marker_name]
+                        if marker_idx < len(markers):
+                            marker = markers[marker_idx]
+                            with self.data_lock:
+                                self.ball_butler_markers[i-1] = [marker.x, marker.y, marker.z, marker.residual]
                         else:
                             with self.data_lock:
                                 self.ball_butler_markers[i-1] = [np.nan, np.nan, np.nan, np.nan]
+                    else:
+                        with self.data_lock:
+                            self.ball_butler_markers[i-1] = [np.nan, np.nan, np.nan, np.nan]
 
                 # Get all labelled markers (including Ball Butler)
                 for i, marker in enumerate(markers):
