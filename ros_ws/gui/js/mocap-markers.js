@@ -77,7 +77,10 @@ function labelToColour(label) {
 // ---- Rigid body axes ----
 
 const AXES_SIZE = 0.06; // 60mm axes
-const axesPool = []; // pool of { axes: THREE.AxesHelper, group: THREE.Group }
+const axesPool = []; // pool of THREE.Group (parent with position/orientation, child AxesHelper with frame rotation)
+
+/** Quaternion that rotates Three.js frame (Y-up) to robot frame (Z-up) for AxesHelper display */
+const FRAME_ROTATION = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2);
 
 // ---- Info box ----
 
@@ -164,7 +167,12 @@ export function updateMocapMarkers(markers) {
 
 /**
  * Update rigid body coordinate axes from a rigid_body_poses message.
- * @param {Array<{name: string, pose: {header: {frame_id: string}, pose: {position: {x,y,z}, orientation: {x,y,z,w}}}}>} bodies
+ *
+ * Each pool entry is a Group (positioned in Three.js space with the converted
+ * orientation) containing an AxesHelper with a fixed frame rotation so that
+ * RGB = robot X/Y/Z rather than Three.js X/Y/Z.
+ *
+ * @param {Array<{name: string, pose: object}>} bodies
  */
 export function updateRigidBodyAxes(bodies) {
     if (!markerGroup) return;
@@ -173,36 +181,38 @@ export function updateRigidBodyAxes(bodies) {
 
     // Grow axes pool if needed
     while (axesPool.length < count) {
+        const group = new THREE.Group();
         const axes = new THREE.AxesHelper(AXES_SIZE);
-        axes.visible = false;
-        markerGroup.add(axes);
-        axesPool.push(axes);
+        // Fixed child rotation: Three.js Y-up → robot Z-up so RGB = robot XYZ
+        axes.quaternion.copy(FRAME_ROTATION);
+        group.add(axes);
+        group.visible = false;
+        markerGroup.add(group);
+        axesPool.push(group);
     }
 
     for (let i = 0; i < count; i++) {
         const body = bodies[i];
-        const axes = axesPool[i];
+        const group = axesPool[i];
 
         const poseStamped = body.pose;
         const pose = poseStamped.pose || poseStamped;
         const p = pose.position;
         const q = pose.orientation;
-        if (!p || !q) { axes.visible = false; continue; }
+        if (!p || !q) { group.visible = false; continue; }
 
         // Apply frame offset (platform_start bodies need Z offset)
         const frameId = (poseStamped.header && poseStamped.header.frame_id) || '';
         const zOffset = frameId === 'platform_start' ? INITIAL_HEIGHT_MM : 0;
 
         const pos = robotToThreeScaled(p.x, p.y, p.z + zOffset);
-        axes.position.set(pos.x, pos.y, pos.z);
+        group.position.set(pos.x, pos.y, pos.z);
 
-        // Convert robot-frame quaternion to Three.js frame quaternion
-        // Robot: (qx, qy, qz, qw) rotating in Z-up frame
-        // Three.js: Y-up, mapping robot(x,y,z) -> three(x,z,-y)
-        // The rotation quaternion transforms similarly
-        axes.quaternion.set(q.x, q.z, -q.y, q.w);
+        // Convert robot-frame quaternion to Three.js frame:
+        // Robot (x,y,z) → Three.js (x,z,-y), same for quaternion imaginary parts
+        group.quaternion.set(q.x, q.z, -q.y, q.w);
 
-        axes.visible = true;
+        group.visible = true;
     }
 
     // Hide unused axes
