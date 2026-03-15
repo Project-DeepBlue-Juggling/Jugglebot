@@ -7,14 +7,9 @@
 
 import * as ros from './ros-bridge.js';
 import { initViewer, sceneGroups } from './viewer.js';
-import {
-    initStewartModel, updateStewartPose,
-    initGhostOverlay, updateGhostOverlay,
-} from './stewart-model.js';
-import {
-    legLengthsToPose, solveFK, resetFKState,
-    quatToRotMatrix, poseToPlatNodes, poseToLegLengths, rotvecToRotMatrix,
-} from './stewart-fk.js';
+import { initStewartModel, updateStewartPose } from './stewart-model.js';
+import { legLengthsToPose } from './stewart-fk.js';
+import { initMocapMarkers, updateMocapMarkers } from './mocap-markers.js';
 import { initBallButlerModel, updateBallButler } from './ball-butler-model.js';
 import {
     initAllPanels, updateMotorGrid, updateOrchestratorState,
@@ -31,7 +26,6 @@ import { initJogPanel, setJogPanelVisible,
 } from './jog-panel.js';
 
 // ---- Latest data stores ----
-let latestMotorStates = null;
 let latestCommandedLegs = null;  // Float64MultiArray data (revs)
 
 // ---- Initialisation ----
@@ -41,8 +35,8 @@ function init() {
     const container = document.getElementById('viewer-container');
     initViewer(container);
     initStewartModel();
-    initGhostOverlay();
     initBallButlerModel();
+    initMocapMarkers();
 
     // 2. Init panels
     initAllPanels();
@@ -129,11 +123,8 @@ function subscribeAll() {
     // Hand telemetry (500Hz -> throttle to 10Hz = 100ms)
     ros.subscribe('hand_telemetry', 'jugglebot_interfaces/msg/HandTelemetryMessage', onHandTelemetry, 100);
 
-    // Rigid body poses (200Hz -> throttle to 20Hz = 50ms) -- preferred pose source
-    ros.subscribe('rigid_body_poses', 'jugglebot_interfaces/msg/RigidBodyPoses', onRigidBodyPoses, 50);
-
-    // Mocap data — lightweight subscription for connection + alignment status
-    ros.subscribe('mocap_data', 'jugglebot_interfaces/msg/MocapDataMulti', onMocapData, 500);
+    // Mocap data — markers + connection/alignment status (200Hz -> throttle to 20Hz = 50ms)
+    ros.subscribe('mocap_data', 'jugglebot_interfaces/msg/MocapDataMulti', onMocapData, 50);
 
     // Commanded leg lengths (500Hz -> throttle to 20Hz = 50ms)
     ros.subscribe('leg_lengths_topic', 'std_msgs/msg/Float64MultiArray', onLegLengths, 50);
@@ -147,18 +138,13 @@ function subscribeAll() {
 
 // ---- Topic handlers ----
 
-let useMocapPose = false;
-let mocapTimeout = null;
-const MOCAP_TIMEOUT_MS = 1000;
-
-// Mocap connection status (driven by mocap_data topic, independent of rigid_body_poses)
+// Mocap connection status
 let mocapConnTimeout = null;
 const MOCAP_CONN_TIMEOUT_MS = 2000;
 
 function onRobotState(msg) {
     recordTopicMessage('robot_state');
     const motors = msg.motor_states || [];
-    latestMotorStates = motors;
 
     // Update panels
     updateMotorGrid(motors);
@@ -168,8 +154,8 @@ function onRobotState(msg) {
     // Feed telemetry charts
     onTelemetryData(motors, latestCommandedLegs, latestHandTelemetry);
 
-    // Update 3D model via FK (if mocap not available)
-    if (!useMocapPose && motors.length >= 6) {
+    // Update 3D model via FK from motor feedback (always)
+    if (motors.length >= 6) {
         const motorRevs = motors.slice(0, 6).map(m => m.pos_estimate);
         const result = legLengthsToPose(motorRevs);
 
@@ -190,20 +176,16 @@ function onRobotState(msg) {
         }
     }
 
-    // Update tracking error + ghost overlay if we have both commanded and measured
+    // Update tracking error if we have both commanded and measured
     if (latestCommandedLegs && motors.length >= 6) {
         const errors = [];
-        let rmsError = 0;
         for (let i = 0; i < 6; i++) {
-            // Both are in revs; convert error to mm
             const cmdRev = latestCommandedLegs[i] || 0;
             const measRev = motors[i].pos_estimate;
             const errorRev = cmdRev - measRev;
             const errorMM = errorRev / MM_TO_REV[i];
             errors.push(errorMM);
-            rmsError += errorMM * errorMM;
         }
-        rmsError = Math.sqrt(rmsError / 6);
 
         // Hand error in revs
         if (motors.length >= 7 && latestCommandedLegs.length >= 7) {
@@ -212,18 +194,6 @@ function onRobotState(msg) {
             errors.push(0);
         }
         updateTrackingError(errors);
-
-        // Ghost overlay: compute commanded platform pose from commanded leg lengths
-        if (latestCommandedLegs.length >= 6) {
-            const cmdExtensions = [];
-            for (let i = 0; i < 6; i++) {
-                cmdExtensions.push(latestCommandedLegs[i] / MM_TO_REV[i]);
-            }
-            const cmdResult = solveFK(cmdExtensions);
-            if (cmdResult.converged) {
-                updateGhostOverlay(cmdResult.platNodes, rmsError);
-            }
-        }
     }
 }
 
@@ -259,54 +229,6 @@ function onHandTelemetry(msg) {
     latestHandTelemetry = msg;
 }
 
-function onRigidBodyPoses(msg) {
-    recordTopicMessage('rigid_body_poses');
-    // Mark mocap pose as usable; reset timeout
-    useMocapPose = true;
-    if (mocapTimeout) clearTimeout(mocapTimeout);
-    mocapTimeout = setTimeout(() => { useMocapPose = false; }, MOCAP_TIMEOUT_MS);
-
-    // Find the platform rigid body
-    // RigidBodyPoses contains: bodies[] where each body has { name, pose: PoseStamped }
-    const bodies = msg.bodies || [];
-    if (bodies.length === 0) return;
-
-    // Find the platform body by name, or fall back to the first body
-    let platformBody = bodies.find(b => b.name && b.name.toLowerCase().includes('platform'));
-    if (!platformBody) platformBody = bodies[0];
-    if (!platformBody || !platformBody.pose) return;
-
-    // PoseStamped: { header, pose: { position: {x,y,z}, orientation: {x,y,z,w} } }
-    const poseStamped = platformBody.pose;
-    const pose = poseStamped.pose || poseStamped;
-    const p = pose.position;
-    const q = pose.orientation;
-
-    if (!p || !q) return;
-
-    // Apply tf2 frame offset: if pose is in platform_start frame, add INITIAL_HEIGHT_MM to Z
-    const frameId = (poseStamped.header && poseStamped.header.frame_id) || '';
-    const zOffset = frameId === 'platform_start' ? INITIAL_HEIGHT_MM : 0;
-    const globalPos = [p.x, p.y, p.z + zOffset];
-
-    // Convert quaternion to rotation matrix
-    const R = quatToRotMatrix(q.w, q.x, q.y, q.z);
-
-    // Compute platform node world positions
-    const platNodes = poseToPlatNodes(globalPos, R);
-
-    // Platform centre is the measured position
-    const platCentre = globalPos;
-
-    // Hand extension from motor state (if available)
-    let handExtMM = 0;
-    if (latestMotorStates && latestMotorStates.length >= 7) {
-        handExtMM = latestMotorStates[6].pos_estimate / MM_TO_REV[0]; // approximate
-    }
-
-    updateStewartPose(platNodes, platCentre, handExtMM);
-}
-
 function onMocapData(msg) {
     recordTopicMessage('mocap_data');
     // mocap_data arriving means QTM connection is live
@@ -315,10 +237,15 @@ function onMocapData(msg) {
     mocapConnTimeout = setTimeout(() => {
         setMocapConnected(false);
         setMocapAligned(false);
+        updateMocapMarkers([]); // clear markers when disconnected
     }, MOCAP_CONN_TIMEOUT_MS);
 
     // Alignment flag from the message
     setMocapAligned(!!msg.aligned);
+
+    // Render markers in 3D viewer
+    const markers = msg.markers || [];
+    updateMocapMarkers(markers);
 }
 
 function onLegLengths(msg) {
@@ -614,7 +541,7 @@ function applyFontSize(size) {
 /** Topics we subscribe to for data processing (not just monitoring) */
 const GUI_SUBSCRIBED_TOPICS = new Set([
     'robot_state', 'bb/heartbeat', 'orchestrator_state',
-    'can_traffic', 'hand_telemetry', 'rigid_body_poses', 'mocap_data',
+    'can_traffic', 'hand_telemetry', 'mocap_data',
     'leg_lengths_topic', 'control_mode_topic', 'motion/diagnostics',
 ]);
 

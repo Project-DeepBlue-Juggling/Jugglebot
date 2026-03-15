@@ -1,7 +1,7 @@
 """Mocap Interface Node — QTM streaming, tf2 broadcast, BB calibration.
 
 Publishes:
-  /mocap_data             (MocapDataMulti)   — unlabelled markers at 200 Hz
+  /mocap_data             (MocapDataMulti)   — all markers (labelled + unlabelled) at 200 Hz
   /rigid_body_poses       (RigidBodyPoses)   — all rigid bodies at 200 Hz
   /bb/markers             (MocapDataMulti)   — BB fiducial markers (only during calibration)
   /bb/calibration_result  (BallButlerCalibrationResult) — latched, after each calibration
@@ -105,27 +105,41 @@ class MocapNode(Node):
     def _publish_mocap_data(self):
         is_aligned = self.mocap.is_aligned
 
-        # ── Unlabelled markers (always published once QTM is live — carries alignment flag) ──
+        # ── All markers (labelled + unlabelled, always published once QTM is live) ──
         qtm_status = self.mocap.get_qtm_sync_status()
         if not qtm_status.get('synced', False):
             return  # QTM not connected yet — nothing to publish
 
-        markers = self.mocap.get_all_markers_base_frame()
+        unlabelled = self.mocap.get_all_markers_base_frame()
+        labelled = self.mocap.get_labelled_markers()
         try:
             msg = MocapDataMulti()
             msg.aligned = is_aligned
-            if markers is not None and markers.shape[0] > 0:
-                for i in range(markers.shape[0]):
+
+            # Add labelled markers (with their QTM label)
+            for label, x, y, z, residual in labelled:
+                s = MocapDataSingle()
+                s.position.x = float(x)
+                s.position.y = float(y)
+                s.position.z = float(z)
+                s.residual = float(residual)
+                s.label = label
+                msg.markers.append(s)
+
+            # Add unlabelled markers (label left as empty string)
+            if unlabelled is not None and unlabelled.shape[0] > 0:
+                for i in range(unlabelled.shape[0]):
                     s = MocapDataSingle()
-                    s.position.x = float(markers[i, 0])
-                    s.position.y = float(markers[i, 1])
-                    s.position.z = float(markers[i, 2])
-                    s.residual = float(markers[i, 3])
+                    s.position.x = float(unlabelled[i, 0])
+                    s.position.y = float(unlabelled[i, 1])
+                    s.position.z = float(unlabelled[i, 2])
+                    s.residual = float(unlabelled[i, 3])
                     msg.markers.append(s)
                 self.mocap.clear_unlabelled_markers()
+
             self.pub_mocap.publish(msg)
         except Exception as e:
-            self.get_logger().error(f'Error publishing unlabelled markers: {e}')
+            self.get_logger().error(f'Error publishing markers: {e}')
 
         # ── Rigid bodies (only when aligned) ──────────────────────────
         try:

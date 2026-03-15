@@ -2,7 +2,7 @@
  * stewart-model.js — Stewart platform 3D geometry.
  *
  * Creates base hexagon, 6 legs, platform hexagon, and hand axis.
- * Updates from pose data (either FK result or direct mocap).
+ * Always updated from FK (motor feedback).
  */
 
 import * as THREE from 'three';
@@ -312,81 +312,6 @@ function updatePlatformMesh() {
     fillMesh.geometry.computeVertexNormals();
 }
 
-// ---- Ghost overlay (commanded pose vs measured) ----
-
-let ghostGroup = null;
-let ghostLines = null;
-let ghostVisible = false;
-let ghostNodes = null; // commanded platform nodes
-
-function initGhostOverlay() {
-    ghostGroup = new THREE.Group();
-    ghostGroup.name = 'ghost-overlay';
-
-    // Ghost hexagon: wireframe only, red-tinted, semi-transparent
-    const linePoints = [];
-    for (let i = 0; i <= 6; i++) {
-        linePoints.push(new THREE.Vector3(0, 0, 0));
-    }
-    const lineGeom = new THREE.BufferGeometry().setFromPoints(linePoints);
-    ghostLines = new THREE.Line(
-        lineGeom,
-        new THREE.LineBasicMaterial({
-            color: 0xef4444,
-            transparent: true,
-            opacity: 0.0, // starts invisible, fades in with error magnitude
-            linewidth: 2,
-        })
-    );
-    ghostGroup.add(ghostLines);
-
-    ghostGroup.visible = false;
-    scene.add(ghostGroup);
-    sceneGroups['Ghost Overlay'] = ghostGroup;
-}
-
-/**
- * Update the ghost overlay to show the commanded pose.
- * Opacity scales with tracking error magnitude.
- * @param {number[][]} commandedPlatNodes - 6 commanded platform node positions (mm)
- * @param {number} errorMagnitude - RMS tracking error (mm)
- */
-export function updateGhostOverlay(commandedPlatNodes, errorMagnitude) {
-    if (!ghostLines) return;
-
-    ghostNodes = commandedPlatNodes;
-
-    // Update ghost hexagon vertices
-    const linePos = ghostLines.geometry.attributes.position;
-    for (let i = 0; i < 6; i++) {
-        const n = commandedPlatNodes[i];
-        const p = robotToThreeScaled(n[0], n[1], n[2]);
-        linePos.setXYZ(i, p.x, p.y, p.z);
-    }
-    // Close loop
-    const n0 = commandedPlatNodes[0];
-    const p0 = robotToThreeScaled(n0[0], n0[1], n0[2]);
-    linePos.setXYZ(6, p0.x, p0.y, p0.z);
-    linePos.needsUpdate = true;
-
-    // Opacity: 0 when error < 0.5mm, full at error > 5mm
-    const minErr = 0.5;
-    const maxErr = 5.0;
-    const t = Math.max(0, Math.min(1, (errorMagnitude - minErr) / (maxErr - minErr)));
-    ghostLines.material.opacity = t * 0.8;
-
-    ghostGroup.visible = ghostVisible && t > 0.01;
-}
-
-/**
- * Toggle ghost overlay visibility.
- * @param {boolean} visible
- */
-export function setGhostVisible(visible) {
-    ghostVisible = visible;
-    if (ghostGroup) ghostGroup.visible = visible && ghostLines.material.opacity > 0.01;
-}
-
 // ---- Public update API ----
 
 /**
@@ -404,4 +329,3 @@ export function updateStewartPose(platNodes, platCentre, handExtensionMM) {
     updateHandAxis(handExtensionMM);
 }
 
-export { initGhostOverlay };

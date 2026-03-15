@@ -2,3 +2,4 @@
 
 geometry_msgs/Point position    # Position for this marker (x, y, z) (mm)
 float32 residual  # Residual for this marker position (mm)
+string label      # Marker label from QTM (empty for unlabelled markers)

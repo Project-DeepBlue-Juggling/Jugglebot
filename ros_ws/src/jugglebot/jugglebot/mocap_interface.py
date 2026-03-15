@@ -37,6 +37,7 @@ class MocapInterface:
         # Initialize data to be stored
         self.ball_butler_markers = np.full((5, 4), np.nan)    # (x, y, z, residual)
         self.all_markers = np.empty((0, 4))  # (x, y, z, residual)
+        self.labelled_markers: list = []  # list of (label, x, y, z, residual)
         self.body_poses: Dict[str, PoseStamped] = {} # Pose for every rigid body discovered in QTM
         self.body_dict = {}
         self.marker_dict = {}
@@ -200,7 +201,7 @@ class MocapInterface:
                     if marker_name.startswith("Ball Butler -"):
                         continue
                     if not np.isnan([marker.x, marker.y, marker.z]).any():
-                        labelled_markers.append([marker.x, marker.y, marker.z, marker.residual])
+                        labelled_markers.append((marker_name, marker.x, marker.y, marker.z, marker.residual))
 
                 with self.data_lock:
                     self.drop_rate = header.drop_rate
@@ -285,9 +286,13 @@ class MocapInterface:
                 if not np.isnan([marker.x, marker.y, marker.z]).any():
                     current_unlabelled.append([marker.x, marker.y, marker.z, marker.residual])
 
-        all_markers = current_unlabelled  # + labelled_markers if desired
         with self.data_lock:
-            self.all_markers = np.array(all_markers) if all_markers else np.empty((0, 4))
+            all_positions = current_unlabelled
+            if all_positions:
+                self.all_markers = np.array(all_positions)
+            else:
+                self.all_markers = np.empty((0, 4))
+            self.labelled_markers = labelled_markers  # list of (label, x, y, z, residual)
 
         # Update unlabelled residual statistics.
         with self.data_lock:
@@ -396,6 +401,16 @@ class MocapInterface:
         """
         with self.data_lock:
             return self.all_markers.copy() if self.all_markers.size > 0 else np.empty((0, 4))
+
+    def get_labelled_markers(self) -> list:
+        """
+        Get the current labelled markers with their names.
+
+        Returns:
+        - A list of (label, x, y, z, residual) tuples.
+        """
+        with self.data_lock:
+            return list(self.labelled_markers)
 
     def get_ball_butler_markers_base_frame(self) -> np.ndarray:
         """
