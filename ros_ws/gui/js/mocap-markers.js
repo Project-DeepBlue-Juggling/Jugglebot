@@ -80,7 +80,7 @@ const AXES_SIZE = 0.06; // 60mm axes
 const axesPool = []; // pool of THREE.Group (parent with position/orientation, child AxesHelper with frame rotation)
 
 /** Quaternion that rotates Three.js frame (Y-up) to robot frame (Z-up) for AxesHelper display */
-const FRAME_ROTATION = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2);
+const FRAME_ROTATION = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2);
 
 // ---- Info box ----
 

@@ -91,7 +91,7 @@ export function initViewer(container) {
     // Coordinate axes helper — rotated so RGB = robot X/Y/Z (Z-up frame)
     const axes = new THREE.AxesHelper(0.3);
     axes.name = 'axes';
-    axes.rotation.x = Math.PI / 2; // Rotate so Three.js Y-up → robot Z-up
+    axes.rotation.x = -Math.PI / 2; // Rotate so Three.js Y-up → robot Z-up
     scene.add(axes);
     sceneGroups['Axes'] = axes;
 

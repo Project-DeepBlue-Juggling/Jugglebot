@@ -149,8 +149,6 @@ class MocapNode(Node):
                 msg.header.stamp = self.get_clock().now().to_msg()
                 msg.header.frame_id = 'world'
                 for name, pose in body_poses.items():
-                    if name == 'Ball_Butler':
-                        continue  # Only published during calibration
                     body_msg = RigidBodyPose()
                     body_msg.name = name
                     body_msg.pose = pose
