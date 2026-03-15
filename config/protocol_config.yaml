@@ -160,3 +160,13 @@ sdo:
 endpoints:
   commutation_mapper_pos_abs: 488
   GPIO_STATES:                700
+
+# =============================================================================
+# Motion Capture Alignment
+# =============================================================================
+# The "Base" rigid body in QTM must be near the global origin for mocap data
+# to be trustworthy.  When the base drifts beyond these thresholds the mocap
+# node stops publishing rigid body poses and flags the data as misaligned.
+mocap_alignment:
+  pos_thresh_mm:  2.5    # Euclidean distance from origin
+  rot_thresh_deg: 1.0    # Rotation angle from identity

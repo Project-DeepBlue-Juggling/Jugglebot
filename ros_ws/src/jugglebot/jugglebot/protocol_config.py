@@ -153,3 +153,10 @@ OPCODE_WRITE = 0x01
 
 ENDPOINT_COMMUTATION_MAPPER_POS_ABS = 488
 ENDPOINT_GPIO_STATES = 700
+
+# ============================================================================
+# Motion Capture Alignment
+# ============================================================================
+
+MOCAP_ALIGNMENT_POS_THRESH_MM = 2.5
+MOCAP_ALIGNMENT_ROT_THRESH_DEG = 1.0

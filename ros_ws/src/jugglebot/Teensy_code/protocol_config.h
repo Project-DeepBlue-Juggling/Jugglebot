@@ -180,3 +180,12 @@ namespace EndpointId {
   constexpr uint16_t commutation_mapper_pos_abs = 488;
   constexpr uint16_t GPIO_STATES = 700;
 }
+
+// ==========================================================================
+// Motion Capture Alignment
+// ==========================================================================
+
+namespace MocapAlignment {
+  constexpr float POS_THRESH_MM = 2.5f;
+  constexpr float ROT_THRESH_DEG = 1.0f;
+}

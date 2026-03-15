@@ -204,6 +204,15 @@ def generate_cpp(cfg: dict) -> str:
     for name, val in cfg["endpoints"].items():
         lines.append(f"  constexpr uint16_t {name} = {val};")
     lines.append("}")
+
+    # Mocap alignment
+    if "mocap_alignment" in cfg:
+        lines += cpp_section("Motion Capture Alignment")
+        lines.append("namespace MocapAlignment {")
+        for name, val in cfg["mocap_alignment"].items():
+            ctype, cval = _cpp_type_and_val(val)
+            lines.append(f"  constexpr {ctype} {name.upper()} = {cval};")
+        lines.append("}")
     lines.append("")
 
     return "\n".join(lines)
@@ -340,6 +349,12 @@ def generate_python(cfg: dict) -> str:
     lines += py_section("Endpoint IDs — ODrive internal parameter addresses")
     for name, val in cfg["endpoints"].items():
         lines.append(f"ENDPOINT_{name.upper()} = {val}")
+
+    # Mocap alignment
+    if "mocap_alignment" in cfg:
+        lines += py_section("Motion Capture Alignment")
+        for name, val in cfg["mocap_alignment"].items():
+            lines.append(f"MOCAP_ALIGNMENT_{name.upper()} = {_py_val(val)}")
     lines.append("")
 
     return "\n".join(lines)
@@ -733,6 +748,16 @@ def generate_gui_js(hw_cfg: dict, proto_cfg: dict) -> str:
         display_name = name.replace("_", " ")
         lines.append(f"    {val}: '{display_name}',")
     lines.append("};")
+
+    # Mocap alignment thresholds
+    if "mocap_alignment" in proto_cfg:
+        lines += [
+            "",
+            "// ---- Mocap alignment (protocol_config.yaml -> mocap_alignment) ----",
+            "",
+        ]
+        for name, val in proto_cfg["mocap_alignment"].items():
+            lines.append(f"export const MOCAP_ALIGNMENT_{name.upper()} = {val};")
     lines.append("")
 
     return "\n".join(lines)

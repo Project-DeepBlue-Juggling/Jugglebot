@@ -36,10 +36,16 @@ from jugglebot.motion.ik_solver import (
     pose_to_leg_lengths,
     compute_jacobian,
 )
-from jugglebot.motion.conversions import extensions_mm_to_revs
+from jugglebot.motion.conversions import extensions_mm_to_revs, revs_to_extensions_mm
 from jugglebot.motion.dynamics import DynamicsParams
 from jugglebot.motion.motor_commands import cartesian_to_motor_commands
 from jugglebot.motion.stream_smoother import StreamSmoother
+from jugglebot.motion.workspace import (
+    WorkspaceLimits,
+    WorkspaceStatus,
+    check_workspace_limits,
+    compute_condition_number,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -135,6 +141,11 @@ def simulate_spacemouse(
 ) -> dict:
     """Run a full simulation of the spacemouse pipeline.
 
+    Replicates the control_loop.py behaviour including workspace hard-limit
+    enforcement: when commanded extensions violate the hard limit, the last
+    safe pose is held (with zero velocity/accel) until the smoother moves
+    back into the valid region.
+
     Parameters
     ----------
     raw_trajectory : list of (x, y, z, pitch, roll, yaw) tuples, each in -1..+1
@@ -152,6 +163,8 @@ def simulate_spacemouse(
         accels : (N, 6) ndarray of Cartesian accelerations
         motor_pos : (N, 6) ndarray of motor positions (revs)
         motor_vel : (N, 6) ndarray of motor velocities (rev/s)
+        extensions : (N, 6) ndarray of leg extensions (mm)
+        torques : (N, 6) ndarray of torque feedforward (Nm)
         targets : (M, 6) ndarray of target poses sent to smoother
         target_times : (M,) ndarray of target timestamps
     """
@@ -174,6 +187,9 @@ def simulate_spacemouse(
         target_poses.append(pose_6dof)
         target_times.append(t)
 
+    # Workspace limits (same as control_loop.py)
+    ws_limits = WorkspaceLimits.from_geometry(geom)
+
     # Simulate at eval_rate_hz, injecting targets at target_rate_hz
     n_eval = int(total_time * eval_rate_hz) + 1
     times = np.zeros(n_eval)
@@ -186,6 +202,7 @@ def simulate_spacemouse(
     torques = np.zeros((n_eval, 6))
 
     target_idx = 0
+    last_safe_pose = home_pose()
 
     for i in range(n_eval):
         t = i * dt_eval
@@ -202,8 +219,23 @@ def simulate_spacemouse(
         pos_rev, vel_ff, torque_ff, _ = cartesian_to_motor_commands(
             pose, twist, accel, geom, dyn, feedforward_enabled=True)
 
+        # Workspace limit check (matching control_loop.py)
+        commanded_ext = revs_to_extensions_mm(pos_rev, geom)
         rot = rotvec_to_rot_matrix(pose[3:6])
-        ext = pose_to_leg_lengths(pose[:3], rot, geom)
+        cond = compute_condition_number(pose[:3], rot, geom)
+        ws_check = check_workspace_limits(commanded_ext, cond, ws_limits)
+
+        if ws_check.status == WorkspaceStatus.HARD_LIMIT:
+            # Hold last safe pose — same as control_loop.py direct mode
+            pos_rev, vel_ff, torque_ff, _ = cartesian_to_motor_commands(
+                last_safe_pose, np.zeros(6), np.zeros(6),
+                geom, dyn, feedforward_enabled=True)
+            commanded_ext = revs_to_extensions_mm(pos_rev, geom)
+            pose = last_safe_pose.copy()
+            twist = np.zeros(6)
+            accel = np.zeros(6)
+        else:
+            last_safe_pose = pose.copy()
 
         times[i] = t
         poses[i] = pose
@@ -211,7 +243,7 @@ def simulate_spacemouse(
         accels[i] = accel
         motor_pos[i] = pos_rev
         motor_vel[i] = vel_ff
-        extensions[i] = ext
+        extensions[i] = commanded_ext
         torques[i] = torque_ff
 
     return {
@@ -288,7 +320,11 @@ def check_c2_continuity(times, values, label,
 # ---------------------------------------------------------------------------
 
 def test_ramp_all_axes():
-    """Linear ramp from 0→1 on all spacemouse axes over 1 second.
+    """Linear ramp from 0→0.3 on all spacemouse axes over 1 second.
+
+    Uses 30% deflection to stay within the reachable workspace (full
+    deflection on all axes simultaneously is far outside the workspace
+    and would be hard-limited by the control loop).
 
     Verifies:
     - Motor position trace is smooth (C2 continuous)
@@ -297,10 +333,11 @@ def test_ramp_all_axes():
     """
     smoother, geom, dyn = make_smoother_spacemouse()
 
+    scale = 0.3  # 30% deflection — within workspace for all-axis motion
     n_samples = 100  # 1 second at 100 Hz
     raw_traj = []
     for i in range(n_samples):
-        frac = i / (n_samples - 1)  # 0..1
+        frac = scale * i / (n_samples - 1)
         raw_traj.append((frac, frac, frac, frac, frac, frac))
 
     result = simulate_spacemouse(smoother, geom, dyn, raw_traj,
@@ -320,15 +357,12 @@ def test_ramp_all_axes():
         f"Peak motor velocity {peak_motor_vel:.2f} exceeds limit "
         f"{vel_limit:.1f} * 1.1")
 
-    # Check that the final pose is near the final target.
-    # The ramp ends at full deflection (150mm XY, 140mm Z, 30deg tilt),
-    # so we need generous settle time.  Full deflection at spacemouse
-    # limits crosses the workspace boundary — verify we get close.
+    # Check that the final pose is near the final target
     final_target = result['targets'][-1]
     final_pose = result['poses'][-1]
     pos_err = norm(final_pose[:3] - final_target[:3])
-    assert pos_err < 60.0, (
-        f"Final position error {pos_err:.1f} mm (should be < 60 mm)")
+    assert pos_err < 10.0, (
+        f"Final position error {pos_err:.1f} mm (should be < 10 mm)")
 
     print(f"  [PASS] Ramp all axes: peak_vel={peak_motor_vel:.2f} rps, "
           f"final_pos_err={pos_err:.1f} mm")
@@ -339,7 +373,9 @@ def test_ramp_all_axes():
 # ---------------------------------------------------------------------------
 
 def test_step_response():
-    """Instant step from 0→1 on all axes (held for 1 second).
+    """Instant step from 0→0.3 on all axes (held for 1 second).
+
+    Uses 30% deflection to stay within the reachable workspace.
 
     Verifies:
     - Response is C2 smooth despite the step
@@ -347,8 +383,9 @@ def test_step_response():
     """
     smoother, geom, dyn = make_smoother_spacemouse()
 
+    scale = 0.3
     n_samples = 100
-    raw_traj = [(1.0, 1.0, 1.0, 1.0, 1.0, 1.0)] * n_samples
+    raw_traj = [(scale, scale, scale, scale, scale, scale)] * n_samples
 
     result = simulate_spacemouse(smoother, geom, dyn, raw_traj,
                                  settle_time_s=1.0)
@@ -381,23 +418,26 @@ def test_step_response():
 # ---------------------------------------------------------------------------
 
 def test_direction_reversal():
-    """Ramp 0→1→-1 on all axes over 2 seconds.
+    """Ramp 0→0.3→-0.3 on all axes over 2 seconds.
+
+    Uses 30% deflection to stay within the reachable workspace.
 
     Verifies:
     - C2 continuity through the reversal
-    - Platform eventually reaches the -1 target
+    - Platform eventually reaches the -0.3 target
     """
     smoother, geom, dyn = make_smoother_spacemouse()
 
+    scale = 0.3
     n_half = 100  # 1 second each way
     raw_traj = []
     # Ramp up
     for i in range(n_half):
-        frac = i / (n_half - 1)
+        frac = scale * i / (n_half - 1)
         raw_traj.append((frac, frac, frac, frac, frac, frac))
-    # Ramp down through zero to -1
+    # Ramp down through zero to -scale
     for i in range(n_half):
-        frac = 1.0 - 2.0 * i / (n_half - 1)  # 1.0 → -1.0
+        frac = scale * (1.0 - 2.0 * i / (n_half - 1))
         raw_traj.append((frac, frac, frac, frac, frac, frac))
 
     result = simulate_spacemouse(smoother, geom, dyn, raw_traj,
@@ -410,13 +450,11 @@ def test_direction_reversal():
         f"Reversal C2 violation: pos_jump={max_pj:.4f}, "
         f"vel_jump={max_vj:.4f}, acc_jump={max_aj:.4f}")
 
-    # Should reach the final (-1) target.  Full deflection at (-1, -1, ...)
-    # is at the workspace boundary — allow generous tolerance since the
-    # smoother can't track poses outside the reachable workspace exactly.
+    # Should reach the final target
     final_target = result['targets'][-1]
     final_pose = result['poses'][-1]
     pos_err = norm(final_pose[:3] - final_target[:3])
-    assert pos_err < 80.0, (
+    assert pos_err < 10.0, (
         f"Reversal didn't reach target: pos_err={pos_err:.1f} mm")
 
     print(f"  [PASS] Direction reversal: C2 smooth, "
@@ -472,21 +510,23 @@ def test_c2_all_axes_motor_space():
 
     Ramps all axes with different profiles to exercise cross-coupling,
     then checks each motor's position trace for C2 continuity.
+    Amplitudes are scaled to stay within the reachable workspace.
     """
     smoother, geom, dyn = make_smoother_spacemouse()
 
+    scale = 0.25  # stay well within workspace for coupled motion
     n_samples = 150  # 1.5 seconds
     raw_traj = []
     for i in range(n_samples):
         frac = i / (n_samples - 1)
         # Different profiles per axis to create varied motion
         raw_traj.append((
-            frac,                           # X: linear ramp
-            0.5 * math.sin(2 * math.pi * frac),  # Y: sine
-            frac * 0.8,                     # Z: slower ramp
-            0.3 * frac,                     # pitch: gentle ramp
-            0.3 * math.sin(math.pi * frac), # roll: half sine
-            0.2 * frac,                     # yaw: gentle ramp
+            scale * frac,                                  # X: linear ramp
+            scale * 0.5 * math.sin(2 * math.pi * frac),   # Y: sine
+            scale * frac * 0.8,                            # Z: slower ramp
+            scale * 0.3 * frac,                            # pitch: gentle ramp
+            scale * 0.3 * math.sin(math.pi * frac),       # roll: half sine
+            scale * 0.2 * frac,                            # yaw: gentle ramp
         ))
 
     result = simulate_spacemouse(smoother, geom, dyn, raw_traj)
@@ -567,30 +607,35 @@ def test_settle_after_release():
 
 # Test definitions: (name, description, raw_trajectory_builder, settle_time_s)
 # Each builder returns a list of (x, y, z, pitch, roll, yaw) tuples in -1..+1.
+# Amplitudes scaled to stay within the reachable workspace.
+# Full deflection on all axes simultaneously exceeds workspace hard limits.
+_S = 0.3   # all-axis scale factor
+_M = 0.25  # mixed-profile scale
+
 TEST_DEFS = [
-    ('ramp_all', 'Ramp all axes 0->1', lambda: [
-        (i/99, i/99, i/99, i/99, i/99, i/99) for i in range(100)
+    ('ramp_all', f'Ramp all axes 0->{_S}', lambda: [
+        (_S*i/99,)*6 for i in range(100)
     ], 2.0),
-    ('step', 'Step 0->1 all axes', lambda: [
-        (1.0, 1.0, 1.0, 1.0, 1.0, 1.0) for _ in range(100)
+    ('step', f'Step 0->{_S} all axes', lambda: [
+        (_S,)*6 for _ in range(100)
     ], 1.0),
-    ('reversal', 'Ramp 0->1->-1', lambda: [
-        *(((i/99, i/99, i/99, i/99, i/99, i/99) for i in range(100))),
-        *((((1.0 - 2.0*i/99,)*6) for i in range(100))),
+    ('reversal', f'Ramp 0->{_S}->-{_S}', lambda: [
+        *((_S*i/99,)*6 for i in range(100)),
+        *((_S*(1.0 - 2.0*i/99),)*6 for i in range(100)),
     ], 2.0),
-    ('z_ramp', 'Z-only ramp (vel buildup)', lambda: [
+    ('z_ramp', 'Z-only ramp 0->1 (vel buildup)', lambda: [
         (0.0, 0.0, i/99, 0.0, 0.0, 0.0) for i in range(100)
     ], 0.5),
     ('mixed', 'Mixed profiles (C2 test)', lambda: [
-        (i/149,
-         0.5 * math.sin(2 * math.pi * i/149),
-         i/149 * 0.8,
-         0.3 * i/149,
-         0.3 * math.sin(math.pi * i/149),
-         0.2 * i/149)
+        (_M * i/149,
+         _M * 0.5 * math.sin(2 * math.pi * i/149),
+         _M * i/149 * 0.8,
+         _M * 0.3 * i/149,
+         _M * 0.3 * math.sin(math.pi * i/149),
+         _M * 0.2 * i/149)
         for i in range(150)
     ], 0.5),
-    ('release', 'Ramp + release', lambda: [
+    ('release', 'Z ramp + release', lambda: [
         *((0.0, 0.0, i/49, 0.0, 0.0, 0.0) for i in range(50)),
         *((0.0, 0.0, 0.0, 0.0, 0.0, 0.0) for _ in range(50)),
     ], 1.0),

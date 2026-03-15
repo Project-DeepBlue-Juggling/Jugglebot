@@ -21,7 +21,7 @@ import {
     updateFlags, updateLevellingPanel, updateBBPanel,
     updateCANTraffic, updateTrackingError, updateMotionPanel,
     recordTopicMessage, registerTopic, updateTopicMonitor, clearTopicData,
-    setMocapConnected,
+    setMocapConnected, setMocapAligned,
 } from './panels.js';
 import { initCommands, updateCommandStates, onModeButtonClick } from './commands.js';
 import { INITIAL_HEIGHT_MM, MM_TO_REV } from './geometry-config.js';
@@ -132,6 +132,9 @@ function subscribeAll() {
     // Rigid body poses (200Hz -> throttle to 20Hz = 50ms) -- preferred pose source
     ros.subscribe('rigid_body_poses', 'jugglebot_interfaces/msg/RigidBodyPoses', onRigidBodyPoses, 50);
 
+    // Mocap data — lightweight subscription for connection + alignment status
+    ros.subscribe('mocap_data', 'jugglebot_interfaces/msg/MocapDataMulti', onMocapData, 500);
+
     // Commanded leg lengths (500Hz -> throttle to 20Hz = 50ms)
     ros.subscribe('leg_lengths_topic', 'std_msgs/msg/Float64MultiArray', onLegLengths, 50);
 
@@ -147,6 +150,10 @@ function subscribeAll() {
 let useMocapPose = false;
 let mocapTimeout = null;
 const MOCAP_TIMEOUT_MS = 1000;
+
+// Mocap connection status (driven by mocap_data topic, independent of rigid_body_poses)
+let mocapConnTimeout = null;
+const MOCAP_CONN_TIMEOUT_MS = 2000;
 
 function onRobotState(msg) {
     recordTopicMessage('robot_state');
@@ -254,11 +261,10 @@ function onHandTelemetry(msg) {
 
 function onRigidBodyPoses(msg) {
     recordTopicMessage('rigid_body_poses');
-    // Mark mocap as available; reset timeout
+    // Mark mocap pose as usable; reset timeout
     useMocapPose = true;
-    setMocapConnected(true);
     if (mocapTimeout) clearTimeout(mocapTimeout);
-    mocapTimeout = setTimeout(() => { useMocapPose = false; setMocapConnected(false); }, MOCAP_TIMEOUT_MS);
+    mocapTimeout = setTimeout(() => { useMocapPose = false; }, MOCAP_TIMEOUT_MS);
 
     // Find the platform rigid body
     // RigidBodyPoses contains: bodies[] where each body has { name, pose: PoseStamped }
@@ -271,14 +277,17 @@ function onRigidBodyPoses(msg) {
     if (!platformBody || !platformBody.pose) return;
 
     // PoseStamped: { header, pose: { position: {x,y,z}, orientation: {x,y,z,w} } }
-    const pose = platformBody.pose.pose || platformBody.pose;
+    const poseStamped = platformBody.pose;
+    const pose = poseStamped.pose || poseStamped;
     const p = pose.position;
     const q = pose.orientation;
 
     if (!p || !q) return;
 
-    // Position is in mm, global frame (mocap reports absolute position)
-    const globalPos = [p.x, p.y, p.z];
+    // Apply tf2 frame offset: if pose is in platform_start frame, add INITIAL_HEIGHT_MM to Z
+    const frameId = (poseStamped.header && poseStamped.header.frame_id) || '';
+    const zOffset = frameId === 'platform_start' ? INITIAL_HEIGHT_MM : 0;
+    const globalPos = [p.x, p.y, p.z + zOffset];
 
     // Convert quaternion to rotation matrix
     const R = quatToRotMatrix(q.w, q.x, q.y, q.z);
@@ -296,6 +305,20 @@ function onRigidBodyPoses(msg) {
     }
 
     updateStewartPose(platNodes, platCentre, handExtMM);
+}
+
+function onMocapData(msg) {
+    recordTopicMessage('mocap_data');
+    // mocap_data arriving means QTM connection is live
+    setMocapConnected(true);
+    if (mocapConnTimeout) clearTimeout(mocapConnTimeout);
+    mocapConnTimeout = setTimeout(() => {
+        setMocapConnected(false);
+        setMocapAligned(false);
+    }, MOCAP_CONN_TIMEOUT_MS);
+
+    // Alignment flag from the message
+    setMocapAligned(!!msg.aligned);
 }
 
 function onLegLengths(msg) {
@@ -591,8 +614,8 @@ function applyFontSize(size) {
 /** Topics we subscribe to for data processing (not just monitoring) */
 const GUI_SUBSCRIBED_TOPICS = new Set([
     'robot_state', 'bb/heartbeat', 'orchestrator_state',
-    'can_traffic', 'hand_telemetry', 'rigid_body_poses', 'leg_lengths_topic',
-    'control_mode_topic', 'motion/diagnostics',
+    'can_traffic', 'hand_telemetry', 'rigid_body_poses', 'mocap_data',
+    'leg_lengths_topic', 'control_mode_topic', 'motion/diagnostics',
 ]);
 
 /** Active spy subscriptions: Map<topicName, ROSLIB.Topic> */

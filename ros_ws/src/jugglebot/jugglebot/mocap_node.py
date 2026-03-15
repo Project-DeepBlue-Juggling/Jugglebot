@@ -33,7 +33,11 @@ from jugglebot_interfaces.msg import (
 import tf2_ros
 
 from .mocap_interface import MocapInterface
-from jugglebot.protocol_config import BallButlerStates
+from jugglebot.protocol_config import (
+    BallButlerStates,
+    MOCAP_ALIGNMENT_POS_THRESH_MM,
+    MOCAP_ALIGNMENT_ROT_THRESH_DEG,
+)
 import jugglebot.hardware_config as hw
 from .bb_calibration import run_calibration, CalibrationResult
 
@@ -48,6 +52,9 @@ class MocapNode(Node):
         # Platform Z offset comes directly from hardware_config — no service needed.
         platform_z_mm = hw.GEOM_INITIAL_HEIGHT_MM
         self.mocap.set_base_to_platform_offset(platform_z_mm)
+        self.mocap.set_alignment_thresholds(
+            MOCAP_ALIGNMENT_POS_THRESH_MM, MOCAP_ALIGNMENT_ROT_THRESH_DEG
+        )
         self.mocap.ready_to_publish = True
 
         # ── Static TF: world → platform_start ─────────────────────────────
@@ -96,11 +103,18 @@ class MocapNode(Node):
             self.pub_clock_offset.publish(msg)
 
     def _publish_mocap_data(self):
-        # ── Unlabelled markers ────────────────────────────────────────
+        is_aligned = self.mocap.is_aligned
+
+        # ── Unlabelled markers (always published once QTM is live — carries alignment flag) ──
+        qtm_status = self.mocap.get_qtm_sync_status()
+        if not qtm_status.get('synced', False):
+            return  # QTM not connected yet — nothing to publish
+
         markers = self.mocap.get_all_markers_base_frame()
         try:
+            msg = MocapDataMulti()
+            msg.aligned = is_aligned
             if markers is not None and markers.shape[0] > 0:
-                msg = MocapDataMulti()
                 for i in range(markers.shape[0]):
                     s = MocapDataSingle()
                     s.position.x = float(markers[i, 0])
@@ -108,15 +122,15 @@ class MocapNode(Node):
                     s.position.z = float(markers[i, 2])
                     s.residual = float(markers[i, 3])
                     msg.markers.append(s)
-                self.pub_mocap.publish(msg)
                 self.mocap.clear_unlabelled_markers()
+            self.pub_mocap.publish(msg)
         except Exception as e:
             self.get_logger().error(f'Error publishing unlabelled markers: {e}')
 
-        # ── Rigid bodies ──────────────────────────────────────────────
+        # ── Rigid bodies (only when aligned) ──────────────────────────
         try:
             body_poses = self.mocap.get_body_poses()
-            if body_poses:
+            if body_poses and is_aligned:
                 msg = RigidBodyPoses()
                 msg.header.stamp = self.get_clock().now().to_msg()
                 msg.header.frame_id = 'world'

@@ -147,7 +147,7 @@ export let currentSubMode = '';
 // Layout: 2-column grid, ordered left-to-right then top-to-bottom.
 // Left column: error-style flags (good=tick, bad=cross)
 // Right column: progress-style flags (done=tick, waiting=dot)
-// Row 4 right: Mocap (updated separately via setMocapConnected)
+// Row 4: Mocap connected (left, updated via setMocapConnected) + aligned (right, via setMocapAligned)
 const FLAGS = [
     // Row 1
     { id: 'flag-undervoltage', type: 'error', labelOk: 'Voltage OK',       labelFail: 'Undervoltage' },
@@ -158,9 +158,9 @@ const FLAGS = [
     // Row 3
     { id: 'flag-fatal-can',    type: 'error', labelOk: 'CAN OK',           labelFail: 'CAN Error' },
     { id: 'flag-levelled',     type: 'progress', labelDone: 'Levelled',       labelWait: 'Not Levelled' },
-    // Row 4 (left empty, right = mocap)
-    { id: 'flag-spacer',       type: 'spacer' },
+    // Row 4
     { id: 'flag-mocap',        type: 'progress', labelDone: 'Mocap Connected', labelWait: 'Mocap Disconnected' },
+    { id: 'flag-mocap-aligned', type: 'progress', labelDone: 'Mocap Aligned',  labelWait: 'Mocap Misaligned' },
 ];
 
 export function initFlagsGrid() {
@@ -202,6 +202,14 @@ export function updateFlags(robotState) {
  */
 export function setMocapConnected(connected) {
     setFlagProgress('flag-mocap', connected, 'Mocap Connected', 'Mocap Disconnected');
+}
+
+/**
+ * Update the mocap alignment flag.
+ * @param {boolean} aligned
+ */
+export function setMocapAligned(aligned) {
+    setFlagProgress('flag-mocap-aligned', aligned, 'Mocap Aligned', 'Mocap Misaligned');
 }
 
 function setFlagProgress(id, value, labelDone, labelWait) {

@@ -44,6 +44,11 @@ class MocapInterface:
         # Set which bodies should be in the base frame
         self.base_frame_bodies = ["Base", "Ball_Butler", "Catching_Cone"]
 
+        # ── Alignment check ────────────────────────────────────────────
+        self.is_aligned = False  # Updated every frame from the "Base" rigid body
+        self._align_pos_thresh_mm = 2.5   # Overridden by set_alignment_thresholds()
+        self._align_rot_thresh_deg = 1.0
+
         # Control whether to publish ball butler markers
         self.publish_ball_butler_markers = False # Only publish when requested
 
@@ -249,6 +254,24 @@ class MocapInterface:
             pose.pose.orientation.w = qw
 
             new_body_poses[body_name] = pose
+
+            # ── Alignment check: "Base" body should be near the global origin ──
+            if body_name == "Base":
+                pos_dist = np.sqrt(body[0].x**2 + body[0].y**2 + body[0].z**2)
+                # Rotation angle from identity: 2 * acos(|qw|)
+                rot_angle_deg = np.degrees(2.0 * np.arccos(np.clip(abs(qw), 0.0, 1.0)))
+                aligned = (pos_dist <= self._align_pos_thresh_mm
+                           and rot_angle_deg <= self._align_rot_thresh_deg)
+                if self.is_aligned and not aligned:
+                    self.logger.warning(
+                        f"Mocap base misaligned: pos={pos_dist:.2f} mm, "
+                        f"rot={rot_angle_deg:.2f}° (thresholds: "
+                        f"{self._align_pos_thresh_mm} mm, "
+                        f"{self._align_rot_thresh_deg}°)"
+                    )
+                elif not self.is_aligned and aligned:
+                    self.logger.info("Mocap base aligned")
+                self.is_aligned = aligned
 
         with self.data_lock:
             self.body_poses = new_body_poses
@@ -503,6 +526,11 @@ class MocapInterface:
         - offset: The offset in mm.
         """
         self.base_to_platform_transformation = offset
+
+    def set_alignment_thresholds(self, pos_mm: float, rot_deg: float):
+        """Set thresholds for the base-body alignment check."""
+        self._align_pos_thresh_mm = pos_mm
+        self._align_rot_thresh_deg = rot_deg
 
 
 if __name__ == "__main__":

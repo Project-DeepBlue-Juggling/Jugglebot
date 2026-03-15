@@ -119,3 +119,8 @@ export const BB_STATE_NAMES = {
     6: 'CHECKING BALL',
     127: 'ERROR',
 };
+
+// ---- Mocap alignment (protocol_config.yaml -> mocap_alignment) ----
+
+export const MOCAP_ALIGNMENT_POS_THRESH_MM = 2.5;
+export const MOCAP_ALIGNMENT_ROT_THRESH_DEG = 1.0;
