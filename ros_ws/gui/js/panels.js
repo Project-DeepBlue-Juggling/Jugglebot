@@ -160,7 +160,7 @@ const FLAGS = [
     { id: 'flag-levelled',     type: 'progress', labelDone: 'Levelled',       labelWait: 'Not Levelled' },
     // Row 4
     { id: 'flag-mocap',        type: 'progress', labelDone: 'Mocap Connected', labelWait: 'Mocap Disconnected' },
-    { id: 'flag-mocap-aligned', type: 'progress', labelDone: 'Mocap Aligned',  labelWait: 'Mocap Misaligned' },
+    { id: 'flag-mocap-aligned', type: 'error', labelOk: 'Mocap Aligned',  labelFail: 'Mocap Misaligned' },
 ];
 
 export function initFlagsGrid() {
@@ -209,7 +209,7 @@ export function setMocapConnected(connected) {
  * @param {boolean} aligned
  */
 export function setMocapAligned(aligned) {
-    setFlagProgress('flag-mocap-aligned', aligned, 'Mocap Aligned', 'Mocap Misaligned');
+    setFlagError('flag-mocap-aligned', !aligned, 'Mocap Misaligned', 'Mocap Aligned');
 }
 
 function setFlagProgress(id, value, labelDone, labelWait) {
