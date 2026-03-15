@@ -271,7 +271,7 @@ When mocap integration is complete, update the LEVELLING state to:
   - `mocap_node.py` accumulates marker data during CALIBRATING state, runs `run_calibration()` on state exit, publishes result on latched `bb/calibration_result` topic (TRANSIENT_LOCAL QoS)
   - Calibration failure also published (success=false) so subscribers know the attempt failed
   - Yaw readings collected from BB heartbeat during calibration for offset calculation
-- [ ] **Test**: Verify `/mocap_data` and `/rigid_body_poses` publish correctly — requires Jetson + QTM hardware
+- [x] **Test**: Verify `/mocap_data` and `/rigid_body_poses` publish correctly — requires Jetson + QTM hardware
 
 #### Implementation notes
 - The old `mocap_interface_node.py` is kept for backward compatibility (still registered in `setup.py` as `mocap_interface_node`) but the launch file now uses `mocap_node`
@@ -285,11 +285,11 @@ When mocap integration is complete, update the LEVELLING state to:
   - `control_loop` registered as console_scripts entry point in `setup.py`, launched via `ExecuteProcess`
   - Fixed ZeroMQ bind addresses (`localhost` → `127.0.0.1`) for Jetson compatibility
   - Added `/motion/tracking_error`, `/motion/motor_feedback`, `/motion/diagnostics` topics + rosbag recording
-- [ ] Full system test: power on → homing → ACTIVE (spacemouse control) → shutdown
+- [x] Full system test: power on → homing → ACTIVE (spacemouse control) → shutdown
 - [ ] Verify rosbag recording
 - [ ] Clean up `archived/` directory (remove or keep as reference)
 - [x] ~~Remove YASMIN vendored package (`ros_ws/src/yasmin/`)~~ — DONE (2026-03-12)
-- [ ] Remove rosbridge dependency if no longer needed
+- [x] ~~Remove rosbridge dependency if no longer needed~~ — KEPT: rosbridge is actively required for the GUI WebSocket bridge (`ros-bridge.js` → port 9090). Cannot be removed without rewriting GUI communication.
 
 ### Phase 6 (Future): Advanced Features
 - [ ] **Ball prediction → motion planner integration**: Connect the ball predictor to the motion planner's dynamic target API (`submit_dynamic_target` / `request_dynamic_target`). The predictor outputs `(target_pos, target_quat, target_vel, arrival_time)` and the planner handles feasibility checking, trajectory generation, mid-motion replanning (C2 continuity), and auto-return-to-home. Key sub-tasks:
