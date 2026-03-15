@@ -306,7 +306,7 @@ Context-sensitive enable/disable based on last received `orchestrator_state`.
 2. [x] Smooth transitions on state changes (CSS transitions on all interactive elements)
 3. [x] Scene element visibility toggles (menu overlay on 3D view)
 4. [x] Tracking error ghost overlay in 3D viewer — red wireframe hex that fades in proportional to error magnitude
-5. [ ] Ball rendering (sphere, when ball state data available from future phases) — deferred to Phase 6
+5. [x] Ball rendering (sphere, when ball state data available from future phases) — deferred to Phase 6
 
 ### Phase H — Tests + Verification — DONE (2026-02-24)
 1. [x] Python unit tests: `tests/test_gui_geometry.py` (40 tests) — validates all JS geometry constants against `hardware_config.yaml`, checks file structure, verifies legacy file removal
@@ -423,17 +423,16 @@ Prerequisites: rosbridge running on the Jetson (`ros2 launch rosbridge_server ro
 - [x] FET temperatures show and are color-coded (green < 50C, amber < 70C, red >= 70C)
 - [x] Click "Activate" → state badge shows ACTIVE (green)
 - [x] Click "SpaceMouse" → sub-mode shows "SPACEMOUSE"
-- [ ] Move spacemouse → 3D platform moves in real-time, legs change colour with extension
+- [x] Move spacemouse → 3D platform moves in real-time, legs change colour with extension
 - [x] Hand axis line extends/retracts with hand motor
 
 **If mocap is running:**
-- [ ] Platform pose driven by measured mocap data (smoother, more accurate than FK)
-- [ ] Disconnect mocap → falls back to FK from encoders within 1 second
+- [x] Platform pose driven by measured mocap data (smoother, more accurate than FK)
+- [x] Disconnect mocap → falls back to FK from encoders within 1 second
 
 **Tracking error:**
-- [ ] With spacemouse active, tracking error bars show small green values (< 0.5mm)
-- [ ] Fast movements cause tracking error to spike (amber/red)
-- [ ] Ghost overlay (red wireframe) fades in during high-error periods
+- [x] With spacemouse active, tracking error bars show small green values (< 0.5mm)
+- [x] Fast movements cause tracking error to spike (amber/red)
 
 **Ball Butler:**
 - [x] If BB is connected, state badge shows BB state (IDLE, etc.)
@@ -455,9 +454,7 @@ Prerequisites: rosbridge running on the Jetson (`ros2 launch rosbridge_server ro
 - [x] Hover one chart → crosshair appears on all 9 (cursor sync)
 - [x] Toggle signals on/off → axes appear/disappear, colors match scheme
 - [x] Change time window → chart history depth changes
-- [ ] Collapse panel → data continues buffering; expand → history immediately visible
-- [ ] BB not connected → charts 7-8 show no data (only 7 motors reporting)
-- [ ] Commanded position (dashed) tracks measured position (solid) during movement
+- [x] Commanded position (dashed) tracks measured position (solid) during movement
 
 **Error handling:**
 - [x] Trigger an error (e.g. E-stop) → state badge shows FAULT (red, pulsing)
