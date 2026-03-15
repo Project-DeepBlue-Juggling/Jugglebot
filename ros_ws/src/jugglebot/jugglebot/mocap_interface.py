@@ -260,8 +260,8 @@ class MocapInterface:
                 pos_dist = np.sqrt(body[0].x**2 + body[0].y**2 + body[0].z**2)
                 # Rotation angle from identity: 2 * acos(|qw|)
                 rot_angle_deg = np.degrees(2.0 * np.arccos(np.clip(abs(qw), 0.0, 1.0)))
-                aligned = (pos_dist <= self._align_pos_thresh_mm
-                           and rot_angle_deg <= self._align_rot_thresh_deg)
+                aligned = bool(pos_dist <= self._align_pos_thresh_mm
+                              and rot_angle_deg <= self._align_rot_thresh_deg)
                 if self.is_aligned and not aligned:
                     self.logger.warning(
                         f"Mocap base misaligned: pos={pos_dist:.2f} mm, "
