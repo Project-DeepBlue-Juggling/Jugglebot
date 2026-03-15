@@ -9,7 +9,7 @@ import * as ros from './ros-bridge.js';
 import { initViewer, sceneGroups } from './viewer.js';
 import { initStewartModel, updateStewartPose } from './stewart-model.js';
 import { legLengthsToPose } from './stewart-fk.js';
-import { initMocapMarkers, updateMocapMarkers } from './mocap-markers.js';
+import { initMocapMarkers, updateMocapMarkers, updateRigidBodyAxes } from './mocap-markers.js';
 import { initBallButlerModel, updateBallButler } from './ball-butler-model.js';
 import {
     initAllPanels, updateMotorGrid, updateOrchestratorState,
@@ -125,6 +125,9 @@ function subscribeAll() {
 
     // Mocap data — markers + connection/alignment status (200Hz -> throttle to 20Hz = 50ms)
     ros.subscribe('mocap_data', 'jugglebot_interfaces/msg/MocapDataMulti', onMocapData, 50);
+
+    // Rigid body poses — for rendering coordinate axes (200Hz -> throttle to 20Hz = 50ms)
+    ros.subscribe('rigid_body_poses', 'jugglebot_interfaces/msg/RigidBodyPoses', onRigidBodyPoses, 50);
 
     // Commanded leg lengths (500Hz -> throttle to 20Hz = 50ms)
     ros.subscribe('leg_lengths_topic', 'std_msgs/msg/Float64MultiArray', onLegLengths, 50);
@@ -246,6 +249,12 @@ function onMocapData(msg) {
     // Render markers in 3D viewer
     const markers = msg.markers || [];
     updateMocapMarkers(markers);
+}
+
+function onRigidBodyPoses(msg) {
+    recordTopicMessage('rigid_body_poses');
+    const bodies = msg.bodies || [];
+    updateRigidBodyAxes(bodies);
 }
 
 function onLegLengths(msg) {
@@ -541,7 +550,7 @@ function applyFontSize(size) {
 /** Topics we subscribe to for data processing (not just monitoring) */
 const GUI_SUBSCRIBED_TOPICS = new Set([
     'robot_state', 'bb/heartbeat', 'orchestrator_state',
-    'can_traffic', 'hand_telemetry', 'mocap_data',
+    'can_traffic', 'hand_telemetry', 'mocap_data', 'rigid_body_poses',
     'leg_lengths_topic', 'control_mode_topic', 'motion/diagnostics',
 ]);
 

@@ -95,6 +95,43 @@
     color: var(--state-fault);
 }
 
+/* Mocap marker info box — top-right of viewer, below scene menu */
+#mocap-info {
+    position: absolute;
+    top: calc(var(--gap) + 36px);
+    right: var(--gap);
+    background: var(--bg-overlay);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-sm);
+    padding: 6px 10px;
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+    z-index: 9;
+    pointer-events: none;
+    line-height: 1.5;
+    min-width: 120px;
+}
+
+#mocap-info .mocap-info-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+#mocap-info .mocap-info-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-right: 4px;
+    vertical-align: middle;
+}
+
+#mocap-info .mocap-info-count {
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+}
+
 /* Scene menu overlay — top-right of viewer */
 #scene-menu {
     position: absolute;
