@@ -195,11 +195,9 @@ class MocapInterface:
                             with self.data_lock:
                                 self.ball_butler_markers[i-1] = [np.nan, np.nan, np.nan, np.nan]
 
-                # Get all the labelled markers, except for the ball butler ones
+                # Get all labelled markers (including Ball Butler)
                 for i, marker in enumerate(markers):
                     marker_name = self.get_name_from_index(i, self.marker_dict)
-                    if marker_name.startswith("Ball Butler -"):
-                        continue
                     if not np.isnan([marker.x, marker.y, marker.z]).any():
                         labelled_markers.append((marker_name, marker.x, marker.y, marker.z, marker.residual))
 

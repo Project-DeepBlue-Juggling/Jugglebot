@@ -17,7 +17,7 @@
  */
 
 import * as THREE from 'three';
-import { scene, sceneGroups } from './viewer.js';
+import { scene, sceneGroups, robotToThreeScaled } from './viewer.js';
 import {
     BB_POSITION_MM,
     BB_YAW_S_OFFSET_MM,
@@ -211,6 +211,27 @@ export function updateBallButler(yawDeg, pitchDeg, handPosMM) {
     // Hand: slide along local -Z (throw direction) in pitchGroup
     const dist = Math.max(0, handPosMM) * S;
     handSphere.position.set(0, 0, -dist);
+}
+
+/**
+ * Update the Ball Butler base position and orientation from a mocap rigid body pose.
+ * @param {{x: number, y: number, z: number}} position - world position in mm
+ * @param {{x: number, y: number, z: number, w: number}} orientation - quaternion (robot frame)
+ */
+export function updateBallButlerPose(position, orientation) {
+    if (!bbGroup) return;
+
+    const pos = robotToThreeScaled(position.x, position.y, position.z);
+    bbGroup.position.set(pos.x, pos.y, pos.z);
+
+    // Convert robot-frame quaternion to Three.js frame:
+    // Robot (x,y,z) → Three.js (x,z,-y), same for quaternion imaginary parts
+    bbGroup.quaternion.set(
+        orientation.x,
+        orientation.z,
+        -orientation.y,
+        orientation.w,
+    );
 }
 
 /**

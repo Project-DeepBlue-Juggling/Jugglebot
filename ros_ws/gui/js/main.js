@@ -10,7 +10,7 @@ import { initViewer, sceneGroups } from './viewer.js';
 import { initStewartModel, updateStewartPose } from './stewart-model.js';
 import { legLengthsToPose } from './stewart-fk.js';
 import { initMocapMarkers, updateMocapMarkers, updateRigidBodyAxes } from './mocap-markers.js';
-import { initBallButlerModel, updateBallButler } from './ball-butler-model.js';
+import { initBallButlerModel, updateBallButler, updateBallButlerPose } from './ball-butler-model.js';
 import {
     initAllPanels, updateMotorGrid, updateOrchestratorState,
     updateFlags, updateLevellingPanel, updateBBPanel,
@@ -255,6 +255,16 @@ function onRigidBodyPoses(msg) {
     recordTopicMessage('rigid_body_poses');
     const bodies = msg.bodies || [];
     updateRigidBodyAxes(bodies);
+
+    // Align Ball Butler 3D model with its mocap rigid body pose
+    const bbBody = bodies.find(b => b.name === 'Ball_Butler');
+    if (bbBody && bbBody.pose) {
+        const poseStamped = bbBody.pose;
+        const pose = poseStamped.pose || poseStamped;
+        if (pose.position && pose.orientation) {
+            updateBallButlerPose(pose.position, pose.orientation);
+        }
+    }
 }
 
 function onLegLengths(msg) {
