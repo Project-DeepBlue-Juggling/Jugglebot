@@ -132,6 +132,34 @@
     font-variant-numeric: tabular-nums;
 }
 
+#mocap-info .mocap-info-legend {
+    margin-top: 6px;
+    padding-top: 4px;
+    border-top: 1px solid var(--border-color);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    color: var(--text-muted);
+    font-size: var(--font-size-xs);
+}
+
+#mocap-info .mocap-info-legend-item {
+    display: flex;
+    align-items: center;
+}
+
+#mocap-info .mocap-dot-sm {
+    width: 6px;
+    height: 6px;
+    background: var(--text-secondary);
+}
+
+#mocap-info .mocap-dot-lg {
+    width: 14px;
+    height: 14px;
+    background: var(--text-secondary);
+}
+
 /* Scene menu overlay — top-right of viewer */
 #scene-menu {
     position: absolute;

@@ -122,6 +122,14 @@ function updateInfoBox(counts) {
             `</div>`;
     }
 
+    // Residual legend
+    html += `<div class="mocap-info-legend">` +
+        `<span class="mocap-info-legend-item">` +
+        `<span class="mocap-info-dot mocap-dot-sm"></span>&lt; 0.5 mm residual</span>` +
+        `<span class="mocap-info-legend-item">` +
+        `<span class="mocap-info-dot mocap-dot-lg"></span>3+ mm residual</span>` +
+        `</div>`;
+
     infoEl.innerHTML = html;
     infoEl.style.display = markerGroup && markerGroup.visible ? '' : 'none';
 }
