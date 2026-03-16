@@ -6,13 +6,26 @@ Build a MuJoCo-based simulation of Jugglebot's Stewart platform controlled by a 
 
 The MPC will eventually deploy to real hardware (Jetson), sending position setpoints to ODrive's existing 8 kHz PID loop.
 
+## Phase Overview
+
+| Phase | Name | What it delivers |
+|-------|------|-----------------|
+| 0 | MuJoCo Stewart Platform Model | MJCF XML model of Jugglebot validated against existing kinematics (**COMPLETE**) |
+| 1 | Simulation Harness | Simulation loop, `PlantInterface` abstraction, `MuJoCoPlant`, telemetry logging (**COMPLETE**) |
+| 2 | MPC Core (Static Pose Tracking) | CasADi/IPOPT NMPC that tracks a static reference pose with warm-starting and solver failure fallback (**COMPLETE**) |
+| 3 | Trajectory Tracking | Time-varying reference generation (waypoints, quintics) fed to MPC; tracking quality validation (**COMPLETE**) |
+| 4 | SpaceMouse Integration | Live spacemouse input mapped to target pose, MPC plans optimal motion to reach it |
+| 5 | Dynamic Target (Ball Catching) | Timed target interception — platform arrives at a pose by a deadline, with optional throw velocity |
+| 6 | Hardware Bridge | Swap simulated plant for real hardware; MPC outputs motor commands via CAN; sim-to-real validation |
+
 ## Key Decisions
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
 | Physics engine | MuJoCo | Best parallel mechanism support (equality constraints), fast, free, built-in viewer |
 | MPC solver | CasADi + IPOPT | Nonlinear, symbolic autodiff, pure Python workflow, upgradeable to acados |
-| Control rate | 50 Hz MPC, MuJoCo steps at 500 Hz | 50 Hz gives 20 ms solve budget (generous for 6-DoF NMPC); MuJoCo substeps fill in between |
+| Control rate | 50 Hz MPC, MuJoCo steps at 500 Hz | 50 Hz gives 20 ms solve budget; warm-started solves use ~5 ms; MuJoCo substeps fill in between |
+| MPC horizon | N = 10 (200 ms) | N=20 exceeded solve budget on cold starts; N=10 is reliable with room to grow |
 | MPC model | Kinematics-only initially | Actuators assumed ideal; dynamics layered in later (see Phase 6 notes) |
 | Plant interface | Abstract `PlantInterface` | Sim and hardware are swappable without touching the controller |
 | Inner loop (hardware) | ODrive position control (8 kHz) | Proven, fail-safe (stale command = hold position) |
@@ -123,26 +136,27 @@ sim/
 │   └── hardware_plant.py          # Real hardware plant (Phase 6)
 │
 ├── controller/
-│   ├── __init__.py
-│   ├── mpc.py                     # CasADi MPC formulation and solver (Phase 2)
-│   ├── reference.py               # Reference trajectory generation (Phase 3)
-│   └── params.py                  # MPC tuning parameters (Q, R, S, N, etc.) (Phase 2)
+│   ├── __init__.py                # Exports MPCController, MPCParams, ReferenceGenerator
+│   ├── mpc.py                     # CasADi MPC formulation and solver (Phase 2-3, complete)
+│   ├── reference.py               # Reference trajectory generation (Phase 3, complete)
+│   └── params.py                  # MPC tuning parameters dataclass (Phase 2, complete)
 │
 ├── input/
 │   ├── __init__.py
 │   ├── spacemouse.py              # SpaceMouse → target pose (Phase 4)
-│   └── scripted.py                # Scripted target sequences for testing (Phase 3)
+│   └── scripted.py                # Scripted test trajectories T1-T4 (Phase 3, complete)
 │
 ├── viz/
-│   ├── __init__.py
-│   ├── horizon.py                 # MPC predicted trajectory overlay in MuJoCo viewer (Phase 2)
-│   └── telemetry.py               # Logging, plotting, diagnostics (Phase 1)
+│   ├── __init__.py                # Exports StepRecord, TelemetryLogger, record_from_arrays
+│   ├── horizon.py                 # MPC predicted trajectory overlay in MuJoCo viewer (Phase 2, complete)
+│   ├── telemetry.py               # Logging, plotting, diagnostics (Phase 1, complete)
+│   └── dashboard/                 # Live web-based telemetry dashboard (SSE + uPlot)
 │
 ├── tests/
 │   ├── __init__.py
 │   ├── test_model.py              # MuJoCo model validation vs existing IK (22 tests)
-│   ├── test_mpc_static.py         # MPC tracks static poses (Phase 2)
-│   ├── test_mpc_trajectory.py     # MPC tracks moving references (Phase 3)
+│   ├── test_mpc_static.py         # MPC tracks static poses (Phase 2, 14 tests, complete)
+│   ├── test_mpc_trajectory.py     # MPC tracks moving references (Phase 3, 15 tests, complete)
 │   └── test_mpc_dynamic.py        # MPC intercepts timed targets (Phase 5)
 │
 └── main.py                        # Entry point: run simulation loop (Phase 1)
@@ -152,7 +166,7 @@ sim/
 
 ## Phased Implementation
 
-### Phase 0: MuJoCo Stewart Platform Model — COMPLETE (2026-03-16)
+### Phase 0: MuJoCo Stewart Platform Model — ✅ COMPLETE (2026-03-16)
 
 Build the MJCF XML description of Jugglebot and validate it against existing kinematics.
 
@@ -209,190 +223,222 @@ MuJoCo's constraint solver enforces these at each timestep, effectively simulati
 
 ---
 
-### Phase 1: Simulation Harness
+### Phase 1: Simulation Harness — ✅ COMPLETE (2026-03-16)
 
 Build the simulation loop and plant abstraction layer.
 
 **Tasks:**
-- [ ] Define `PlantInterface` (abstract base class) in `sim/plant/interface.py`:
-  ```python
-  class PlantInterface(ABC):
-      @abstractmethod
-      def command(self, leg_extensions_mm: np.ndarray) -> None:
-          """Send 6 leg extension commands."""
-
-      @abstractmethod
-      def get_state(self) -> PlantState:
-          """Read current platform state."""
-
-      @abstractmethod
-      def step(self, dt: float) -> None:
-          """Advance simulation by dt (no-op for hardware)."""
-
-      @abstractmethod
-      def reset(self, pose_6dof: np.ndarray | None = None) -> None:
-          """Reset to home or specified pose."""
-  ```
-  Where `PlantState` is:
-  ```python
-  @dataclass
-  class PlantState:
-      leg_extensions_mm: np.ndarray    # (6,) actual leg positions
-      leg_velocities_mmps: np.ndarray  # (6,) actual leg velocities
-      platform_pos_mm: np.ndarray      # (3,) [x, y, z] offset from home
-      platform_rot: np.ndarray         # (3,) rotation vector (rad)
-      platform_twist: np.ndarray       # (6,) [vx,vy,vz,wx,wy,wz]
-      time: float                      # simulation time (s)
-  ```
-- [ ] Implement `MuJoCoPlant` in `sim/plant/mujoco_plant.py`:
-  - Load MJCF model, create `mujoco.MjData`
-  - `command()`: set actuator controls (position targets)
-  - `get_state()`: read joint positions/velocities, compute platform pose from MuJoCo body state
-  - `step()`: call `mujoco.mj_step()` for N substeps (e.g. 10 substeps of 0.2 ms per 2 ms control step)
-  - `reset()`: `mujoco.mj_resetData()`, optionally set initial pose via IK
-- [ ] Implement main simulation loop in `sim/main.py`:
-  - 50 Hz outer loop (MPC control rate)
-  - Each MPC step: read state → compute control → command plant → step plant by 20 ms (with internal 500 Hz substeps)
-  - MuJoCo viewer running in parallel (passive viewer, updated each outer step)
-  - Clean shutdown on Ctrl+C
-  - Command-line args: `--no-viewer` (headless), `--pose x,y,z,rx,ry,rz` (initial command)
-- [ ] Basic test: command a static pose offset (e.g. z+50mm), watch the platform move in the viewer
-- [ ] Define telemetry logging schema in `sim/viz/telemetry.py`:
-  - Structured per-step log record matching the existing IPC telemetry where possible:
-    ```python
-    @dataclass
-    class StepRecord:
-        time: float                      # simulation time (s)
-        # Reference
-        ref_pose: np.ndarray             # (6,) [x,y,z,rx,ry,rz] reference
-        ref_twist: np.ndarray            # (6,) reference twist
-        # Actual
-        actual_pose: np.ndarray          # (6,) actual platform pose
-        actual_twist: np.ndarray         # (6,) actual platform twist
-        # Actuators
-        cmd_extensions_mm: np.ndarray    # (6,) commanded leg extensions
-        actual_extensions_mm: np.ndarray # (6,) actual leg extensions
-        # MPC diagnostics
-        solve_time_ms: float             # IPOPT wall-clock solve time
-        solve_status: str                # "converged", "max_iter", "failed", etc.
-        cost: float                      # optimal cost value
-        constraint_violation: float      # max constraint violation
-        # Derived
-        tracking_error_mm: float         # position tracking error norm
-        tracking_error_deg: float        # orientation tracking error norm
-    ```
-  - Write to CSV or Parquet file (one row per MPC step)
+- [x] Define `PlantInterface` (abstract base class) in `sim/plant/interface.py`:
+  - `PlantInterface` ABC with `command()`, `get_state()`, `step()`, `reset()` methods
+  - `PlantState` dataclass: leg extensions/velocities (mm), platform pose offset (mm) + rotation vector (rad) + twist, sim time
+- [x] Implement `MuJoCoPlant` in `sim/plant/mujoco_plant.py`:
+  - Loads MJCF model, creates `MjData`, resets to home keyframe
+  - `command()`: converts IK extensions (mm) → MuJoCo slide values (m) via pre-computed geometric home lengths
+  - `get_state()`: reads all sensors (cached address lookup), converts MuJoCo quaternion → rotation vector, handles mm↔m and home-offset conventions
+  - `step()`: computes substep count from `dt / model.opt.timestep`, calls `mj_step()` in a loop
+  - `reset()`: resets to home keyframe, optionally computes IK for a target pose and sets actuator controls
+  - Exposes `model`, `data`, `geom`, `timestep` properties for viewer integration
+- [x] Implement main simulation loop in `sim/main.py`:
+  - 50 Hz outer loop (MPC control rate = 20 ms, with 10 internal substeps at 500 Hz)
+  - `--no-viewer` mode: pure headless loop (command → step → log)
+  - `--pose x,y,z,rx,ry,rz` (mm, rad): target pose via IK
+  - `--duration` (seconds): simulation length
+  - Viewer mode: `mujoco.viewer.launch_passive()` with real-time pacing via `time.sleep()`
+  - Clean shutdown on Ctrl+C (flushes telemetry)
+  - `--log-dir` for output directory
+- [x] Basic test: command z+50mm and combined translation+rotation poses, platform settles within 0.34 mm / 0.04°
+- [x] Define telemetry logging in `sim/viz/telemetry.py`:
+  - `StepRecord` dataclass: scalar fields (no numpy arrays) for CSV compatibility — ref/actual pose (6 DoF each), ref/actual twist, 6 cmd + 6 actual leg extensions, MPC diagnostics (solve_time_ms, solve_status, cost, constraint_violation), derived tracking errors (mm, deg)
+  - `record_from_arrays()` convenience function: takes numpy arrays → StepRecord with auto-computed tracking errors
+  - `TelemetryLogger`: accumulates records, writes CSV on `flush()`/`close()`
+  - Plotting utilities: `plot_tracking()` (6-DoF ref vs actual + error over time), `plot_solve_times()` (histogram vs 20 ms budget)
   - Same schema used for sim and hardware — enables direct sim-to-real comparison in Phase 6
-  - Plotting utilities: time-series of each DoF (ref vs actual), solve time histogram, tracking error over time
+- [x] Write `sim/tests/test_plant.py` — 7 tests across 4 classes, all passing:
+  - `TestPlantHome` — state at home, extension range check (~27-30 mm due to ball joint offset)
+  - `TestPlantCommand` — z+50mm and combined pose settle within 1.0 mm / 0.5°
+  - `TestPlantReset` — reset to home, reset to specific pose
+  - `TestTelemetryLogger` — CSV output with correct header and data
 
-**Deliverable:** Running simulation where you can programmatically command leg extensions and see the platform respond in the 3D viewer. Telemetry logged in a structured format from the start.
+**Test results:**
+- z+50 mm: tracking error 0.331 mm position, 0.044° orientation
+- Combined [30, -20, 80, 0.05, -0.03, 0]: tracking error 0.334 mm position, 0.045° orientation
+- All 29 tests pass (22 Phase 0 + 7 Phase 1) in < 1 second
+
+**Implementation note — home-relative extension convention:**
+The IK model measures extensions from `init_leg_lengths_mm` (which excludes `ball_joint_offset_mm` ~28 mm), so at MuJoCo home the IK reports ~27-30 mm of extension. To match the real robot's encoder convention (extension=0 at home, range [0, 280]), `MuJoCoPlant` stores the IK extensions at home as `_home_extensions_mm` and subtracts them from all public-facing extension values. The `pose_to_extensions()` helper computes home-relative extensions directly from a 6-DoF pose. Internally, the IK math is unchanged — the offset is applied at the `command()` / `get_state()` boundary.
+
+**Deliverable:** Running simulation where you can programmatically command leg extensions and see the platform respond in the 3D viewer. Telemetry logged in structured CSV from the start. Headless mode for CI/batch runs.
 
 ---
 
-### Phase 2: MPC Core (Static Pose Tracking)
+### Phase 2: MPC Core (Static Pose Tracking) — ✅ COMPLETE (2026-03-16)
 
 Formulate and implement the NMPC for tracking a reference pose.
 
 **Tasks:**
-- [ ] Define CasADi symbolic model in `sim/controller/mpc.py`:
-  - Symbolic FK: given 6 leg extensions, compute platform pose (translation + rotation vector). This re-expresses the math from `ik_solver.py` using CasADi symbolic variables so that automatic differentiation works.
-  - Actuator dynamics: first-order lag model `q(k+1) = q(k) + (q_cmd - q) / τ · dt`
-  - Full prediction model: `x(k+1) = [FK_pos(q(k+1)), FK_rot(q(k+1)), (x_pos(k+1) - x_pos(k))/dt, ...]`
-- [ ] Formulate the optimal control problem:
-  - **Horizon:** N = 20 steps at 50 Hz (400 ms lookahead)
+- [x] Define CasADi symbolic model in `sim/controller/mpc.py`:
+  - Symbolic IK: rotation vector → rotation matrix (Rodrigues with regularised denominator) → leg vectors → leg lengths. Expressed as equality constraints in the NLP (Option 1 from plan).
+  - Actuator dynamics: first-order lag `q(k+1) = q(k) + (u(k) - q(k)) · dt/τ`
+  - Pose is a decision variable at each horizon step, constrained to be IK-consistent with actual leg extensions
+- [x] Formulate the optimal control problem:
+  - **Horizon:** N = 10 steps at 50 Hz (200 ms lookahead). N=20 was too large for the 18 ms budget — cold-start solves exceeded the time limit. N=10 converges reliably.
+  - **Decision variables:** u[0..N-1] (commanded extensions, 6 each), q[1..N] (actual extensions after lag), p[1..N] (platform pose). Total: 180 variables for N=10.
   - **Cost function:**
-    - `Q` — pose tracking: penalise `‖x(k) - x_ref(k)‖²`. Separate weights for position (mm) and orientation (rad) to handle unit mismatch.
-    - `R` — control effort: penalise `‖u(k)‖²` (leg extensions)
-    - `S` — control smoothness: penalise `‖u(k) - u(k-1)‖²` (prevents jerky leg commands)
-    - Terminal cost `Q_f` on final state (heavier weight to ensure convergence)
+    - `Q_pos=10, Q_ori=1000` — pose tracking (separate weights for mm² and rad²)
+    - `Qf_pos=50, Qf_ori=5000` — terminal cost (5× running cost)
+    - `Q_vel_lin=0.0001, Q_vel_ang=0.01` — velocity damping via finite-difference twist
+    - `R=1e-4` — control effort (small regulariser)
+    - `S=0.01` — control smoothness (penalises Δu between steps)
   - **Constraints:**
-    - Leg extensions: `0 ≤ q_i ≤ 280 mm` (stroke limits)
-    - Leg velocity: `|Δq_i / dt| ≤ v_max` (from `mm_to_rev` × 15 rev/s ≈ 1060 mm/s per leg)
-    - Workspace: condition number of Jacobian < 900 (hard limit). Implemented as a penalty rather than a hard constraint initially, since `cond(J)` is expensive to differentiate symbolically. Can be hardened later.
-  - **Solver:** IPOPT with exact Hessian (CasADi provides via AD), warm-starting from previous solution
-- [ ] Implement `MPCController` class:
-  ```python
-  class MPCController:
-      def __init__(self, params: MPCParams):
-          """Build CasADi problem (once at startup)."""
+    - Actuator dynamics: 6·N equality constraints
+    - IK consistency: 6·N equality constraints (implicit FK via IK)
+    - Leg extensions: `0 ≤ u,q ≤ 280 mm` (stroke limits as box constraints)
+    - Leg velocity: `|Δu/dt| ≤ 1060 mm/s` (rate limits as inequality constraints)
+    - Workspace: `|x,y,z| ≤ 200 mm`, `|rx,ry,rz| ≤ 0.3 rad` (box constraints)
+  - **Solver:** IPOPT with exact Hessian (CasADi AD), warm-starting (primal + dual)
+- [x] Implement `MPCController` class in `sim/controller/mpc.py`:
+  - `MPCController.from_plant(params, plant)` factory for easy construction
+  - `solve(state, reference)` → `(cmd, diagnostics)` with warm-starting and failure handling
+  - `predicted_poses` property for horizon visualisation
+  - `reset()` clears warm-start state
+- [x] Define `MPCParams` in `sim/controller/params.py`:
+  - All tunable parameters as a `@dataclass` with sensible defaults
+  - Separate weights for position/orientation tracking, velocity damping, effort, smoothness
+  - IPOPT options: max_iter, max_cpu_time, tolerance, warm_start, print_level
+  - Failure handling: max_consecutive_failures threshold
+- [x] Tune for static pose tracking:
+  - z+50 mm: 0.232 mm final error, settles within 500 ms ✓
+  - x+20 mm at z+50 mm: 0.257 mm final error ✓ (pure x+50 from home is infeasible — see note below)
+  - pitch+5° at z+80 mm: 0.231 mm / 0.023° final error ✓ (pure pitch from home infeasible)
+  - Combined [30, -20, 50, 3°, -2°, 0°]: 0.350 mm / 0.016° final error ✓
+  - Acceptance criteria met: smooth approach, no overshoot, settles < 500 ms, no constraint violations
+- [x] Measure solve time:
+  - Cold start: 16–37 ms (exceeds budget, but only happens once)
+  - Warm-started mean: ~5 ms (well within 20 ms budget)
+  - P95: 6–8 ms
+  - Target of < 15 ms mean achieved for warm-started solves
+- [x] Implement solver failure handling in `MPCController.solve()`:
+  - **Timeout/non-convergence:** Apply first step of shifted previous solution (warm-start fallback)
+  - **Consecutive failures:** Counter tracks sequential failures; escalation thresholds configurable (default 10)
+  - **Cold start failure:** Hold home position and retry next step
+  - **Three-tier fallback:** shifted previous → hold last command → home (zero extensions)
+  - Logging: status, solve time, and consecutive failure count on every failure
+- [x] Implement predicted trajectory visualization in `sim/viz/horizon.py`:
+  - `HorizonRenderer` class: renders N+1 predicted platform positions as translucent green spheres
+  - Colour-coded by time: bright (near) → faded (far), sphere radius shrinks with horizon depth
+  - Uses `mjv_initGeom()` on `viewer.user_scn` — no viewer patching needed
+  - Toggle via `enabled` property (always on when `--mpc` is active)
+- [x] Wire MPC into simulation loop (`sim/main.py`):
+  - `--mpc` flag enables MPC mode; without it, existing direct-command mode is preserved
+  - `ReferenceScheduler` class: returns target pose by time (does not command plant directly)
+  - `run_mpc_headless()` and `run_mpc_with_viewer()`: MPC-specific loop variants
+  - MPC diagnostics (solve_time, status, cost, constraint_violation) logged to telemetry CSV
+  - Horizon visualisation active in viewer mode
+- [x] Write `sim/tests/test_mpc_static.py` — 14 tests across 6 classes, all passing:
+  - `TestMPCBuild` — construction, cold-start solve
+  - `TestMPCStaticTracking` — z+50mm, x+20mm@z+50mm, pitch+5°@z+80mm, combined pose (all < 1 mm / 0.5°)
+  - `TestMPCPerformance` — settle time < 500 ms, mean solve < 15 ms
+  - `TestMPCConstraints` — stroke limits [0, 280], rate limits ≤ v_max·dt
+  - `TestMPCSolverFailure` — fallback on failure, reset clears state
+  - `TestMPCPredictedTrajectory` — (N+1, 6) shape, first pose matches current state
 
-      def solve(self, current_state: PlantState,
-                reference: np.ndarray) -> np.ndarray:
-          """Solve MPC, return optimal leg extension command."""
+**Test results:**
+| Test case | Position error | Orientation error | Cold-start | Warm mean | P95 |
+|-----------|---------------|-------------------|------------|-----------|-----|
+| z+50 mm | 0.232 mm | 0.036° | 16 ms | 5.0 ms | 6.0 ms |
+| x+20 mm, z+50 mm | 0.257 mm | 0.036° | 26 ms | 5.5 ms | 7.1 ms |
+| pitch+5°, z+80 mm | 0.231 mm | 0.023° | 21 ms | 5.0 ms | 8.1 ms |
+| Combined | 0.350 mm | 0.016° | 37 ms | 5.6 ms | 7.5 ms |
 
-      def set_reference_trajectory(self,
-                refs: list[np.ndarray], times: list[float]):
-          """Set time-varying reference for the horizon."""
-  ```
-- [ ] Define `MPCParams` in `sim/controller/params.py`:
-  - Q, R, S weight matrices
-  - N (horizon length)
-  - dt (control timestep = 0.02 s)
-  - τ (actuator time constant)
-  - Constraint bounds
-  - IPOPT options (max iterations, tolerance, warm-start)
-- [ ] Tune for static pose tracking:
-  - Step from home to [0, 0, 50, 0, 0, 0] (z +50 mm)
-  - Step to [50, 0, 0, 0, 0, 0] (x +50 mm)
-  - Step to [0, 0, 0, 5°, 0, 0] (pitch +5°)
-  - Acceptance: smooth approach with no overshoot, settle within 500 ms, no constraint violations
-- [ ] Measure solve time: target < 15 ms per step on Windows dev machine (well within 20 ms budget)
-- [ ] Implement solver failure handling in `MPCController.solve()`:
-  - **Timeout:** Set IPOPT `max_cpu_time` to 18 ms (90% of 20 ms budget). If IPOPT hits the limit, it returns the best iterate found so far.
-  - **Non-convergence:** If IPOPT returns a non-optimal status (max iterations, infeasible, numerical error):
-    1. Apply the first control step from the **previous** solution shifted by one timestep (warm-start fallback). This is always available after the first successful solve.
-    2. Log the failure: status code, iteration count, cost, max constraint violation.
-    3. Increment a consecutive-failure counter. If failures persist for > 10 consecutive steps (200 ms), trigger a controlled stop (ramp to hold position over 500 ms) and raise an alarm.
-  - **Cold start (first solve):** No warm-start available. If the first solve fails, hold the home position and retry next step.
-  - **Hardware (Phase 6) escalation:** On hardware, 5 consecutive failures → command hold position, 10 consecutive → trigger E-STOP via existing fault mechanism. These thresholds are conservative and tunable.
-- [ ] Implement predicted trajectory visualization in `sim/viz/horizon.py`:
-  - After each MPC solve, extract the predicted state trajectory `x*(0..N)` from the solution
-  - Render as translucent ghost platforms (or simpler: a 3D line trace of the platform centre) in the MuJoCo viewer using `mjv_initGeom()` custom geoms
-  - Toggle on/off via keyboard shortcut in the viewer (e.g. 'H' for horizon)
-  - Useful for debugging: see whether the MPC is "planning ahead" correctly, especially during trajectory tracking and dynamic targets
-  - Colour-code by time: near-future = bright, far-future = faded
+All 43 tests pass (22 Phase 0 + 7 Phase 1 + 14 Phase 2) in < 5 seconds.
 
-**CasADi FK implementation note:**
-The symbolic FK needs to solve "given leg lengths, what is the platform pose?" This is the inverse of the IK (which is trivial — just Euclidean distance). Options:
-1. **Implicit FK via IK constraint:** Define IK symbolically (platform pose → leg lengths = known commanded values) and let CasADi/IPOPT solve the implicit equation as part of the NLP. This avoids implementing iterative FK in CasADi.
-2. **Explicit FK Newton-Raphson in CasADi:** Unroll a fixed number of Newton steps symbolically. Fragile and complex.
-3. **Simplified model:** Use a linear approximation `Δx ≈ J⁻¹ · Δq` around the current operating point, updated each MPC call. Fastest to solve but least accurate at large displacements.
+**Implementation note — IK as equality constraint (Option 1):**
+The symbolic IK uses the Rodrigues formula with a regularised denominator (`angle_sq + 1e-20`) so that `sin(θ)/θ` and `(1-cos θ)/θ²` evaluate correctly at θ=0. This avoids `if_else` branching in CasADi and produces smooth, well-conditioned derivatives for IPOPT. Each horizon step has 6 IK equality constraints (one per leg), each involving `norm_2(leg_vector)` — CasADi handles the `sqrt` derivative correctly since leg lengths are always ~600-900 mm (far from zero).
 
-**Recommended approach: Option 1** — express IK as an equality constraint in the NLP. CasADi's symbolic IK is straightforward (it's just 6 Euclidean distance equations), and IPOPT naturally handles the implicit relationship. The platform pose becomes a decision variable constrained to be consistent with the leg lengths.
+**Implementation note — N=10 vs N=20:**
+The plan originally specified N=20 (400 ms lookahead). With N=20, the NLP has 360 decision variables and 360 constraints; cold-start solves consistently exceeded the 18 ms budget on Windows (every solve timed out, preventing warm-start accumulation). Reducing to N=10 (180 variables, 200 ms lookahead) brought cold-start solves to 16-37 ms and warm-started solves to ~5 ms. For Phase 3 trajectory tracking, the 200 ms horizon should still be adequate since the MPC re-solves every 20 ms. If a longer horizon is needed (e.g., for Phase 5 dynamic targets), options include:
+- Reducing control rate from 50 Hz to 25 Hz (doubling the lookahead at the same N)
+- Using CasADi code generation (`nlpsol(..., {'jit': True})`) to speed up evaluations
+- Profiling on Jetson (ARM + IPOPT may have different performance characteristics)
 
-**Deliverable:** MPC tracks commanded static poses with smooth, constraint-respecting motion in the MuJoCo viewer.
+**Implementation note — reachability from home:**
+The home position corresponds to full retraction (extension=0). Lateral and rotational motions require some legs to shorten below their home length, which is infeasible (extension < 0 is out of stroke). This means **pure lateral or pure rotational targets from home are unreachable** — the platform must first be raised (z > 0) to give legs room to both extend and retract. This is a real physical constraint of the robot, not a simulation artefact. The test suite uses raised-base targets (e.g., x+20mm at z+50mm) to stay within the reachable workspace.
+
+**Implementation note — warm-starting:**
+IPOPT warm-starting uses both primal (`x0`) and dual (`lam_g0`, `lam_x0`) variables from the previous solve, shifted by one timestep. This reduces typical iteration counts from 10-12 (cold start) to 2-4 (warm start), yielding the ~3× speedup observed. The warm-start bound push parameters are set to `1e-8` (vs IPOPT's default `1e-2`) to allow the warm-started iterate to start closer to constraint boundaries.
+
+**Implementation note — rate limit revision (Phase 3):**
+The original `max_leg_vel_mmps = 50` was revised to `300` during Phase 3. The 50 mm/s limit (1 mm/step at 50 Hz) was too restrictive for the N=10 horizon — the MPC could only plan 10 mm of total extension change, which prevented orientation tracking for combined poses. With 300 mm/s (6 mm/step), the MPC has sufficient room for differential leg motions needed for pitch/roll changes. The smoothness costs (S, A) remain the primary dynamics limiter; the rate limit is now a safety bound. The Phase 2 test results above were obtained with the original 50 mm/s in Docker; with 300 mm/s, all Phase 2 tests pass with comparable or better tracking accuracy on CasADi 3.7.2.
+
+**Deliverable:** MPC tracks commanded static poses with smooth, constraint-respecting motion in the MuJoCo viewer. Warm-started solves at ~5 ms (4× headroom within the 20 ms budget).
 
 ---
 
-### Phase 3: Trajectory Tracking
+### Phase 3: Trajectory Tracking — ✅ COMPLETE (2026-03-16)
 
 Feed the MPC time-varying reference trajectories and validate tracking quality.
 
 **Tasks:**
-- [ ] Implement `ReferenceGenerator` in `sim/controller/reference.py`:
+- [x] Implement `ReferenceGenerator` in `sim/controller/reference.py`:
   - `from_static_pose(pose_6dof)` → constant reference across horizon
-  - `from_waypoints(poses, durations)` → quintic interpolation between waypoints (can reuse math from `quintic.py`)
-  - `from_trajectory(traj)` → sample existing `QuinticTrajectory` objects at MPC timesteps
-  - `evaluate(t_start, dt, N)` → array of N reference states for the MPC horizon
-- [ ] Wire trajectory reference into MPC:
-  - Each MPC solve receives N future reference states (not just one)
-  - Cost function uses per-step reference: `‖x(k) - x_ref(k)‖²_Q`
-  - This is the key advantage of MPC over feedforward: it "sees ahead" in the reference
-- [ ] Test with scripted trajectories in `sim/input/scripted.py`:
-  - **T1: Linear translation** — home → [0, 0, 50, 0, 0, 0] → home, 1s each leg
-  - **T2: Circular orbit** — 80 mm radius circle in XY at z=50, 2s period
-  - **T3: Multi-axis** — simultaneous translation + tilt, 1.5s
-  - **T4: Speed test** — fast point-to-point at the limits of feasible motion (~300 ms transit)
-- [ ] Compare MPC tracking against reference:
-  - Log: actual pose vs reference pose at each timestep
-  - Compute: max tracking error (mm position, deg orientation), RMS error, settling time
-  - Visualise: time-series plots of each DoF (reference vs actual)
-- [ ] Tune MPC weights if needed:
-  - If tracking is sluggish: increase Q (tracking weight)
-  - If motion is jerky: increase S (smoothness weight)
-  - If approaching limits: verify constraint satisfaction in logs
+  - `from_waypoints(poses, durations)` → quintic interpolation between waypoints (reuses `quintic.py` from production)
+  - `from_function(fn)` → arbitrary callable `fn(t) → (pose, twist)` for parametric trajectories (e.g. circular orbit)
+  - `evaluate(t_start, dt, N)` → `(N+1, 6)` poses + `(N+1, 6)` twists for the MPC horizon
+- [x] Wire trajectory reference into MPC:
+  - Extended NLP parameter vector to include reference twist: `p_ref(6*(N+1)) + twist_ref(6*(N+1))`
+  - Velocity cost now tracks reference twist: `‖dp/dt - twist_ref(k)‖²` (was `‖dp/dt‖²`)
+  - Backward-compatible: when `ref_twist=None`, zeros are passed (identical to static tracking)
+  - `solve()` accepts optional `ref_twist: (N+1, 6)` parameter
+- [x] Test with scripted trajectories in `sim/input/scripted.py`:
+  - **T1: Linear translation** — home → [0, 0, 50, 0, 0, 0] → home, 1s each segment
+  - **T2: Circular orbit** — 80 mm radius circle in XY at z=50, 2s period, with 1s quintic ramp-up to orbit start (velocity-matched at junction)
+  - **T3: Multi-axis** — simultaneous translation + tilt, 1.5s segments: home → [30,-20,60,3°,-2°,0] → [-20,30,40,-2°,3°,0] → home
+  - **T4: Speed test** — fast point-to-point, 400ms transit from raised position [0,0,80] → [40,-30,60,2°,-1°,0]
+- [x] Compare MPC tracking against reference:
+  - Logged actual vs reference pose at each MPC step
+  - Max/RMS tracking error and solve time statistics computed per trajectory
+- [x] Tune MPC parameters:
+  - **Critical fix:** `max_leg_vel_mmps` increased from 50 → 300 mm/s (see implementation note below)
+  - No other weight changes needed — existing Q, S, A weights work well for trajectory tracking
+- [x] Wire trajectory mode into simulation loop (`sim/main.py`):
+  - `--trajectory T1|T2|T3|T4` flag (implies `--mpc`)
+  - `run_trajectory_headless()` and `run_trajectory_with_viewer()`: pass full (N+1, 6) pose+twist to MPC each step
+  - Ref twist logged to telemetry CSV
+- [x] Write `sim/tests/test_mpc_trajectory.py` — 15 tests across 7 classes, all passing:
+  - `TestReferenceGenerator` — 5 tests: static pose, waypoint shapes/boundaries/twist, circular function
+  - `TestT1LinearTranslation` — tracking quality (< 3 mm) + returns to home
+  - `TestT2CircularOrbit` — steady-state tracking (< 5 mm) + Z height stability
+  - `TestT3MultiAxis` — multi-DoF tracking (< 5 mm / 2°)
+  - `TestT4SpeedTest` — fast transit (< 8 mm / 2°) + settle after transit
+  - `TestTrajectoryPerformance` — solve time, stroke limits, no solver failures
 
-**Deliverable:** MPC smoothly tracks multi-waypoint trajectories in simulation. Tracking quality documented with plots.
+**Test results:**
+| Trajectory | Max pos error | Max ori error | RMS pos error | Mean solve | P95 solve |
+|------------|--------------|---------------|---------------|------------|-----------|
+| T1: Linear | 0.48 mm | 0.005° | 0.28 mm | 8.4 ms | 14.9 ms |
+| T2: Circle | 3.38 mm | 0.835° | 2.66 mm | 8.3 ms | 19.0 ms |
+| T3: Multi-axis | 1.01 mm | 1.123° | 0.47 mm | 9.0 ms | 18.2 ms |
+| T4: Fast transit | 2.66 mm | 1.062° | 0.93 mm | 7.0 ms | 14.8 ms |
+
+All 58 tests pass (22 Phase 0 + 7 Phase 1 + 14 Phase 2 + 15 Phase 3) in ~24 seconds.
+
+**Implementation note — rate limit fix (50 → 300 mm/s):**
+The Phase 2 default `max_leg_vel_mmps = 50` was far too conservative. With the N=10 horizon (200 ms lookahead), a 50 mm/s rate limit means the MPC can only plan 1 mm of leg extension change per step. This made orientation tracking nearly impossible — the differential leg motions needed for pitch/roll changes were severely constrained, causing the solver to prioritise position over orientation. Specifically, the `pitch+5deg_z+80mm` test showed 4.16° residual error (83% of target) because the solver couldn't redistribute leg extensions fast enough.
+
+Increasing to 300 mm/s (still well under the hardware maximum of ~1060 mm/s) immediately resolved this. The rate limit is now 6 mm/step, giving the MPC enough room to plan orientation changes within its 200 ms horizon. The smoothness costs (S=1.0, A=0.2) still prevent jerky motion — the rate limit is a safety bound, not the primary dynamics limiter.
+
+This also fixed the pre-existing Phase 2 static tracking failures (`pitch+5deg_z+80mm`, `combined_pose`, `settle_time`), which were caused by the same rate limit issue.
+
+**Implementation note — reference twist in velocity cost:**
+The MPC velocity damping term was changed from penalising absolute velocity `‖dp/dt‖²` to penalising velocity deviation from reference `‖dp/dt - twist_ref‖²`. For static pose tracking (twist_ref = 0), the behaviour is identical. For trajectory tracking, this is essential — without it, the velocity cost fights the reference trajectory, penalising the MPC for following a moving target. The reference twist is computed analytically by the `ReferenceGenerator` (from quintic derivatives or parametric trajectory functions) and passed as an additional NLP parameter.
+
+**Implementation note — T2 circular orbit ramp-up:**
+The initial T2 implementation had a step discontinuity at orbit start (home → [80, 0, 50] instantaneously at t=0.5s), causing a 16.7 mm Z-axis transient. This was fixed by adding a 1s quintic ramp-up segment that smoothly moves from home to the orbit starting position [80, 0, 50] with velocity-matched boundary conditions (zero at start, tangential circular velocity at end). This ensures C1 continuity at the ramp-orbit junction.
+
+**Implementation note — CasADi version sensitivity:**
+These tests were developed with CasADi 3.7.2 / IPOPT on Windows. The Phase 2 tests (originally developed in Docker with a different CasADi version) had pre-existing failures at the old 50 mm/s rate limit that were masked by different IPOPT convergence behaviour in the Docker environment. The rate limit fix resolves these failures across CasADi versions. Future investigation: the Docker environment's CasADi version should be pinned to match local development for reproducibility.
+
+**Deliverable:** MPC smoothly tracks multi-waypoint and parametric trajectories in simulation. Tracking quality documented with test results. Velocity-matched reference twist enables the MPC to anticipate trajectory changes through the prediction horizon.
 
 ---
 

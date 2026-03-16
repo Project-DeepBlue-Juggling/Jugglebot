@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Jugglebot Sim Telemetry</title>
+    <link rel="stylesheet" href="lib/uPlot.min.css">
+    <link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+    <!-- Top bar -->
+    <header id="topbar">
+        <div class="topbar-left">
+            <h1 class="topbar-title">Jugglebot <span class="topbar-subtitle">Sim Telemetry</span></h1>
+            <span class="status-pill" id="status-pill">
+                <span class="status-dot disconnected" id="status-dot"></span>
+                <span id="status-text">Disconnected</span>
+            </span>
+        </div>
+        <div class="topbar-right">
+            <label class="control-group">
+                <span class="control-label">Window</span>
+                <select id="time-window">
+                    <option value="5">5 s</option>
+                    <option value="10" selected>10 s</option>
+                    <option value="30">30 s</option>
+                    <option value="60">60 s</option>
+                </select>
+            </label>
+            <button class="toolbar-btn" id="btn-pause">
+                <svg class="btn-icon" viewBox="0 0 16 16" fill="currentColor"><path id="pause-icon" d="M5 3h2v10H5zM9 3h2v10H9z"/></svg>
+                <span id="pause-label">Pause</span>
+            </button>
+        </div>
+    </header>
+
+    <!-- Chart sections are built by JS -->
+    <main id="content"></main>
+
+    <script src="lib/uPlot.iife.min.js"></script>
+    <script src="dashboard.js"></script>
+</body>
+</html>

@@ -121,7 +121,7 @@ def generate_mjcf(config, mesh_dir=None):
 
     # Simulation options
     ET.SubElement(mujoco, 'option', **{
-        'timestep': '0.002',      # 500 Hz
+        'timestep': '0.001',      # 1000 Hz (needed for stiff actuators with realistic masses)
         'gravity': f'0 0 {-gravity}',
         'solver': 'Newton',
         'iterations': '100',
@@ -245,9 +245,17 @@ def generate_mjcf(config, mesh_dir=None):
                                  pos=fmt(base_nodes_m[i]),
                                  quat=fmt(quat))
 
-        # Small mass for the leg base (MuJoCo requires mass > 0 for jointed bodies)
-        ET.SubElement(leg_base, 'inertial', pos=f'0 0 {home_len/2:.6f}', mass='0.1',
-                      diaginertia='0.0001 0.0001 0.00001')
+        # Outer leg: tube (~0.5 kg) + motor (~0.89 kg) = 1.39 kg
+        # CoM at ~35% up the leg from the base node
+        outer_mass = 1.39
+        outer_com_z = home_len * 0.35
+        # Approximate as thin rod (length ~0.65m, radius ~0.02m)
+        outer_len = home_len
+        outer_Izz = outer_mass * 0.02**2 / 2               # axial
+        outer_Ixx = outer_mass * (3 * 0.02**2 + outer_len**2) / 12  # transverse
+        ET.SubElement(leg_base, 'inertial',
+                      pos=f'0 0 {outer_com_z:.6f}', mass=f'{outer_mass}',
+                      diaginertia=f'{outer_Ixx:.6f} {outer_Ixx:.6f} {outer_Izz:.6f}')
 
         # Ball joint at base (2 hinges — no axial spin needed)
         ET.SubElement(leg_base, 'joint', name=f'leg_{i}_hinge_x',
@@ -273,9 +281,14 @@ def generate_mjcf(config, mesh_dir=None):
         #   base_node + R_leg * [0, 0, home_len] = plat_node_world
         leg_tip = ET.SubElement(leg_base, 'body', name=f'leg_{i}',
                                 pos=f'0 0 {home_len:.6f}')
-        # Small mass for the sliding element (MuJoCo requires mass > 0)
-        ET.SubElement(leg_tip, 'inertial', pos='0 0 0', mass='0.05',
-                      diaginertia='0.00001 0.00001 0.00001')
+        # Inner leg (sliding tube): ~0.1 kg
+        # CoM near the body origin (platform attachment end)
+        inner_mass = 0.1
+        inner_Izz = inner_mass * 0.015**2 / 2
+        inner_Ixx = inner_mass * (3 * 0.015**2 + 0.3**2) / 12  # ~300mm visible length
+        ET.SubElement(leg_tip, 'inertial',
+                      pos='0 0 0', mass=f'{inner_mass}',
+                      diaginertia=f'{inner_Ixx:.6f} {inner_Ixx:.6f} {inner_Izz:.6f}')
 
         # Prismatic joint: extension beyond home length
         # slide=0 → leg at geometric home length (home position)
@@ -320,7 +333,8 @@ def generate_mjcf(config, mesh_dir=None):
         # ctrl=0 → home position; ctrl=0.280 → max extension
         ET.SubElement(actuator, 'position', name=f'act_{i}',
                       joint=f'leg_{i}_slide',
-                      kp='10000',      # stiff position tracking
+                      kp='200000',     # stiff position tracking (high-inertia motors)
+                      kv='600',        # near-critical damping for ~0.3kg effective mass
                       ctrlrange=f'{-slide_margin_m:.6f} {leg_stroke_m + slide_margin_m:.6f}',
                       ctrllimited='true')
 
