@@ -105,6 +105,10 @@ class BallTracker:
         self._marker_tracks: Dict[int, _MarkerTrack] = {}
         self._next_track_id = 1
 
+        # Diagnostic: acceleration residuals from parabolic checks.
+        # Each entry is (residual_mmps2, was_promoted). Useful for tuning.
+        self.accel_residuals: List[Tuple[float, bool]] = []
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -442,9 +446,12 @@ class BallTracker:
 
         avg_accel = np.mean(accels, axis=0)
         expected = np.array([0.0, 0.0, -GRAVITY_MMPS2])
-        residual = np.linalg.norm(avg_accel - expected)
+        residual = float(np.linalg.norm(avg_accel - expected))
 
-        return residual < self.parabolic_accel_threshold
+        is_match = residual < self.parabolic_accel_threshold
+        self.accel_residuals.append((residual, is_match))
+
+        return is_match
 
     def _promote_to_ball(self, track: _MarkerTrack, current_time: float):
         """Create a new Ball from a parabolic marker track."""
