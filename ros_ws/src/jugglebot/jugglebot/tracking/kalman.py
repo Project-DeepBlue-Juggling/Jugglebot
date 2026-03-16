@@ -6,6 +6,7 @@ Measurement: 3D position [x, y, z] from mocap markers.
 
 Lifted and cleaned up from archived/kalman_filter.py.
 """
+from __future__ import annotations
 
 import numpy as np
 from typing import Optional, Tuple

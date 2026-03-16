@@ -12,6 +12,7 @@ on the telemetry address (TOPIC_DYN_FEEDBACK).
 
 Clock domain conversion: ROS2 landing_time → perf_counter arrival_time.
 """
+from __future__ import annotations
 
 import time
 

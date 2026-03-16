@@ -9,6 +9,7 @@ BallTracker is the main class that owns all Ball objects and drives:
 No ROS2 dependency. The ROS2 node (ball_tracker_node.py) feeds data in
 and reads results out.
 """
+from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple
 
