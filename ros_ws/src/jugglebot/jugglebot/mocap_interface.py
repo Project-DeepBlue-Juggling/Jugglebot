@@ -67,6 +67,9 @@ class MocapInterface:
         # Threading lock for data synchronization
         self.data_lock = threading.Lock()
 
+        # Flag to request parameter re-fetch from the asyncio thread
+        self._params_need_refresh = False
+
         # Event loop and thread for asynchronous operations
         self.loop = None
         self.thread = None
@@ -136,6 +139,30 @@ class MocapInterface:
                 self.logger.error(f"Unexpected error connecting to QTM: {e}")
                 return  # Don't retry on unexpected errors
 
+    async def _refresh_parameters(self):
+        """Re-fetch 3D/6DOF parameter dictionaries from QTM.
+
+        Called when streaming data suggests the cached dicts are stale
+        (e.g. QTM measurement started after we connected).
+        """
+        try:
+            xml_6d = await self.connection.get_parameters(parameters=["6d"])
+            new_body_dict = self.create_body_dict(xml_6d)
+
+            xml_3d = await self.connection.get_parameters(parameters=["3d"])
+            new_marker_dict = self.create_marker_dict(xml_3d)
+
+            self.body_dict = new_body_dict
+            self.marker_dict = new_marker_dict
+            self._params_need_refresh = False
+
+            self.logger.info(
+                f"QTM parameters refreshed: {len(new_marker_dict)} markers, "
+                f"{len(new_body_dict)} bodies"
+            )
+        except Exception as e:
+            self.logger.error(f"Error refreshing QTM parameters: {e}")
+
     async def start_streaming(self):
         """
         Start streaming frames from QTM.
@@ -159,6 +186,31 @@ class MocapInterface:
         # Do this before the ready_to_publish check so sync warms up during startup
         self._update_qtm_clock_sync(packet)
 
+        # ── Extract labelled markers once (reused for staleness check + processing) ──
+        markers_residual = packet.get_3d_markers_residual()
+
+        # ── Detect stale parameter dicts and schedule a re-fetch ───────
+        # If QTM was started after we connected, marker_dict will be empty
+        # but the packet will contain labelled markers.
+        if markers_residual is not None:
+            _, markers_check = markers_residual
+            if len(markers_check) > 0 and len(self.marker_dict) == 0:
+                if not self._params_need_refresh:
+                    self._params_need_refresh = True
+                    self.logger.info(
+                        "Received labelled markers but marker_dict is empty — "
+                        "scheduling parameter refresh"
+                    )
+                    self.loop.create_task(self._refresh_parameters())
+            elif len(markers_check) != len(self.marker_dict) and len(self.marker_dict) > 0:
+                if not self._params_need_refresh:
+                    self._params_need_refresh = True
+                    self.logger.info(
+                        f"Marker count changed ({len(self.marker_dict)} → {len(markers_check)}) — "
+                        "scheduling parameter refresh"
+                    )
+                    self.loop.create_task(self._refresh_parameters())
+
         # Check if we are ready to publish data
         if not self.ready_to_publish:
             return
@@ -169,7 +221,6 @@ class MocapInterface:
         To ensure best ball tracking, we broadcast ALL marker data to the rest of the ROS2 network.
         """
         labelled_markers = []
-        markers_residual = packet.get_3d_markers_residual()
         try:
             if markers_residual is not None:
                 header, markers = markers_residual
