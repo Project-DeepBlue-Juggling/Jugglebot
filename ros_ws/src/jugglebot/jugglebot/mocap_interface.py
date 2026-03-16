@@ -68,6 +68,10 @@ class MocapInterface:
         self._qtm_last_timestamp_us: Optional[int] = None  # For detecting QTM restart
         self._qtm_sync_lock = threading.Lock()
 
+        # Packet freshness tracking — lets the publisher detect when QTM stops
+        # sending data, regardless of whether _on_qtm_disconnect fires.
+        self._last_packet_time: Optional[float] = None
+
         # Threading lock for data synchronization
         self.data_lock = threading.Lock()
 
@@ -203,6 +207,11 @@ class MocapInterface:
         except Exception as e:
             self.logger.error(f"Error starting frame streaming: {e}")
 
+    def is_receiving(self, timeout_s: float = 1.0) -> bool:
+        """True if a QTM packet arrived within the last *timeout_s* seconds."""
+        return (self._last_packet_time is not None
+                and (time.monotonic() - self._last_packet_time) < timeout_s)
+
     def on_packet(self, packet):
         """
         Callback to process incoming data packets.
@@ -210,6 +219,8 @@ class MocapInterface:
         Parameters:
         - packet: The data packet received from QTM.
         """
+        self._last_packet_time = time.monotonic()
+
         # ── Update QTM ↔ ROS clock offset every frame ──────────────────
         # Do this before the ready_to_publish check so sync warms up during startup
         self._update_qtm_clock_sync(packet)
