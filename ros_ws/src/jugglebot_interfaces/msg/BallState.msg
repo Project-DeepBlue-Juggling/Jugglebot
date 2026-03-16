@@ -12,10 +12,6 @@ string source                          # Source of ball: "human_throw", "ball_bu
 geometry_msgs/Point position           # Current estimated position (mm)
 geometry_msgs/Vector3 velocity         # Current estimated velocity (mm/s)
 
-# Target information
-string target_id                       # Assigned target ID (empty string if none/unknown)
-geometry_msgs/Point target_position    # Target position at time of assignment (mm)
-
 # Predicted landing state (where ball crosses target z-plane, or default z-plane if no target)
 geometry_msgs/Point landing_position   # Predicted (x, y, z) at landing (mm)
 geometry_msgs/Vector3 landing_velocity # Predicted velocity at landing (mm/s)

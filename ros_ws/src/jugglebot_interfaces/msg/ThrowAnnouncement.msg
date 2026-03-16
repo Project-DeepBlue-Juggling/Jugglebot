@@ -5,8 +5,6 @@ std_msgs/Header header
 string thrower_name                    # Source: "ball_butler", "jugglebot", etc.
 geometry_msgs/Point initial_position   # Position at throw time (mm)
 geometry_msgs/Vector3 initial_velocity # Velocity at throw time (mm/s)
-string target_id                       # Target this throw is aimed at (empty if none)
-geometry_msgs/Point target_position    # Target position at throw time (mm)
 builtin_interfaces/Time throw_time     # When the throw will occur (use header.stamp if immediate)
 float64 predicted_tof_sec              # Predicted time of flight (sec)
 geometry_msgs/Point landing_position   # Predicted position at landing plane (mm, global frame)
