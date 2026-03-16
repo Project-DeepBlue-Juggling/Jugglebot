@@ -27,7 +27,7 @@
     </default>
   </default>
   <worldbody>
-    <geom name="floor" type="plane" size="1.0 1.0 0.01" material="grid_mat" pos="0 0 -0.05"/>
+    <geom name="floor" type="plane" size="1.0 1.0 0.01" material="grid_mat" pos="0 0 -0.082"/>
     <light directional="true" diffuse="0.8 0.8 0.8" pos="0 0 2" dir="0 0 -1"/>
     <geom name="base_visual" type="mesh" mesh="base_mesh" pos="0 0 -0.082" material="base_mat" contype="0" conaffinity="0"/>
     <site name="base_site_0" pos="-0.385274 -0.140228 0.000000" size="0.015" rgba="0.9 0.2 0.2 1"/>
@@ -56,7 +56,7 @@
       <body name="leg_0" pos="0 0 0.648419">
         <inertial pos="0 0 0" mass="0.05" diaginertia="0.00001 0.00001 0.00001"/>
         <joint name="leg_0_slide" type="slide" axis="0 0 1" limited="true" range="-0.005000 0.285000" class="leg"/>
-        <geom name="leg_0_inner_visual" type="mesh" mesh="leg_inner_mesh" pos="0 0 -1.352889" material="leg_mat" contype="0" conaffinity="0"/>
+        <geom name="leg_0_inner_visual" type="mesh" mesh="leg_inner_mesh" pos="0 0 -0.70447" material="leg_mat" contype="0" conaffinity="0"/>
         <site name="leg_0_tip" pos="0 0 0" size="0.010" rgba="0.9 0.9 0.2 1"/>
       </body>
     </body>
@@ -68,7 +68,7 @@
       <body name="leg_1" pos="0 0 0.648419">
         <inertial pos="0 0 0" mass="0.05" diaginertia="0.00001 0.00001 0.00001"/>
         <joint name="leg_1_slide" type="slide" axis="0 0 1" limited="true" range="-0.005000 0.285000" class="leg"/>
-        <geom name="leg_1_inner_visual" type="mesh" mesh="leg_inner_mesh" pos="0 0 -1.352889" material="leg_mat" contype="0" conaffinity="0"/>
+        <geom name="leg_1_inner_visual" type="mesh" mesh="leg_inner_mesh" pos="0 0 -0.70447" material="leg_mat" contype="0" conaffinity="0"/>
         <site name="leg_1_tip" pos="0 0 0" size="0.010" rgba="0.9 0.9 0.2 1"/>
       </body>
     </body>
@@ -80,7 +80,7 @@
       <body name="leg_2" pos="0 0 0.648419">
         <inertial pos="0 0 0" mass="0.05" diaginertia="0.00001 0.00001 0.00001"/>
         <joint name="leg_2_slide" type="slide" axis="0 0 1" limited="true" range="-0.005000 0.285000" class="leg"/>
-        <geom name="leg_2_inner_visual" type="mesh" mesh="leg_inner_mesh" pos="0 0 -1.352889" material="leg_mat" contype="0" conaffinity="0"/>
+        <geom name="leg_2_inner_visual" type="mesh" mesh="leg_inner_mesh" pos="0 0 -0.70447" material="leg_mat" contype="0" conaffinity="0"/>
         <site name="leg_2_tip" pos="0 0 0" size="0.010" rgba="0.9 0.9 0.2 1"/>
       </body>
     </body>
@@ -92,7 +92,7 @@
       <body name="leg_3" pos="0 0 0.648419">
         <inertial pos="0 0 0" mass="0.05" diaginertia="0.00001 0.00001 0.00001"/>
         <joint name="leg_3_slide" type="slide" axis="0 0 1" limited="true" range="-0.005000 0.285000" class="leg"/>
-        <geom name="leg_3_inner_visual" type="mesh" mesh="leg_inner_mesh" pos="0 0 -1.352889" material="leg_mat" contype="0" conaffinity="0"/>
+        <geom name="leg_3_inner_visual" type="mesh" mesh="leg_inner_mesh" pos="0 0 -0.70447" material="leg_mat" contype="0" conaffinity="0"/>
         <site name="leg_3_tip" pos="0 0 0" size="0.010" rgba="0.9 0.9 0.2 1"/>
       </body>
     </body>
@@ -104,7 +104,7 @@
       <body name="leg_4" pos="0 0 0.648419">
         <inertial pos="0 0 0" mass="0.05" diaginertia="0.00001 0.00001 0.00001"/>
         <joint name="leg_4_slide" type="slide" axis="0 0 1" limited="true" range="-0.005000 0.285000" class="leg"/>
-        <geom name="leg_4_inner_visual" type="mesh" mesh="leg_inner_mesh" pos="0 0 -1.352889" material="leg_mat" contype="0" conaffinity="0"/>
+        <geom name="leg_4_inner_visual" type="mesh" mesh="leg_inner_mesh" pos="0 0 -0.70447" material="leg_mat" contype="0" conaffinity="0"/>
         <site name="leg_4_tip" pos="0 0 0" size="0.010" rgba="0.9 0.9 0.2 1"/>
       </body>
     </body>
@@ -116,7 +116,7 @@
       <body name="leg_5" pos="0 0 0.648419">
         <inertial pos="0 0 0" mass="0.05" diaginertia="0.00001 0.00001 0.00001"/>
         <joint name="leg_5_slide" type="slide" axis="0 0 1" limited="true" range="-0.005000 0.285000" class="leg"/>
-        <geom name="leg_5_inner_visual" type="mesh" mesh="leg_inner_mesh" pos="0 0 -1.352889" material="leg_mat" contype="0" conaffinity="0"/>
+        <geom name="leg_5_inner_visual" type="mesh" mesh="leg_inner_mesh" pos="0 0 -0.70447" material="leg_mat" contype="0" conaffinity="0"/>
         <site name="leg_5_tip" pos="0 0 0" size="0.010" rgba="0.9 0.9 0.2 1"/>
       </body>
     </body>

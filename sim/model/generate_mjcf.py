@@ -176,7 +176,7 @@ def generate_mjcf(config, mesh_dir=None):
 
     # Ground plane
     ET.SubElement(worldbody, 'geom', name='floor', type='plane',
-                  size='1.0 1.0 0.01', material='grid_mat', pos='0 0 -0.05')
+                  size='1.0 1.0 0.01', material='grid_mat', pos='0 0 -0.082')
     ET.SubElement(worldbody, 'light', directional='true', diffuse='0.8 0.8 0.8',
                   pos='0 0 2', dir='0 0 -1')
 
@@ -287,13 +287,11 @@ def generate_mjcf(config, mesh_dir=None):
 
         # Leg inner visual
         if has_meshes['leg_inner']:
-            # STL origin is 704.47mm below the base ball joint centre along leg Z.
-            # In the inner body frame (origin at platform attachment = home_len from
-            # ball joint), the mesh origin is at (0, 0, -(704.47mm + home_len)).
-            inner_mesh_offset_m = -(704.47 / 1000.0 + home_len)
+            # STL origin is 704.47mm below the joint centre along leg Z.
+            # Inner body frame origin is at platform attachment point.
             ET.SubElement(leg_tip, 'geom', name=f'leg_{i}_inner_visual',
                           type='mesh', mesh='leg_inner_mesh',
-                          pos=f'0 0 {inner_mesh_offset_m:.6f}',
+                          pos='0 0 -0.70447',
                           material='leg_mat', contype='0', conaffinity='0')
 
         # Site at leg tip (for visualization)
