@@ -829,6 +829,7 @@ class CanInterfaceNode(Node):
             x=prediction.initial_velocity[0],
             y=prediction.initial_velocity[1],
             z=prediction.initial_velocity[2])
+        ann.target_id = "jugglebot"
         ann.throw_time = throw_time.to_msg()
         ann.predicted_tof_sec = prediction.tof_s
         ann.landing_position = Point(

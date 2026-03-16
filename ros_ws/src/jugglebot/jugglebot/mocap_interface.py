@@ -1,4 +1,5 @@
 import asyncio
+import collections
 import logging
 import threading
 import time
@@ -42,8 +43,9 @@ class MocapInterface:
         self.body_dict = {}
         self.marker_dict = {}
 
-        # Set which bodies should be in the base frame
-        self.base_frame_bodies = ["Base", "Ball_Butler", "Catching_Cone"]
+        # Bodies whose poses are in the world/base frame (not platform frame).
+        # Uses raw QTM names — checked BEFORE space/hyphen sanitization.
+        self.base_frame_bodies = {"Base", "Ball Butler", "Ball_Butler", "Catching Cone", "Catching_Cone"}
 
         # ── Alignment check ────────────────────────────────────────────
         self.is_aligned = False  # Updated every frame from the "Base" rigid body
@@ -51,7 +53,8 @@ class MocapInterface:
         self._align_rot_thresh_deg = 1.0
 
         # Performance statistics from the incoming packet header.
-        self.residuals_unlabelled = []
+        # Rolling window: ~5 seconds at 200 Hz
+        self.residuals_unlabelled: collections.deque = collections.deque(maxlen=1000)
         self.drop_rate = 0
         self.out_of_sync_rate = 0
 
@@ -62,6 +65,7 @@ class MocapInterface:
         self._qtm_to_ros_offset_ns: Optional[int] = None
         self._qtm_sync_alpha = 0.01  # Smoothing factor (lower = more stable, slower to adapt)
         self._qtm_sync_count = 0
+        self._qtm_last_timestamp_us: Optional[int] = None  # For detecting QTM restart
         self._qtm_sync_lock = threading.Lock()
 
         # Threading lock for data synchronization
@@ -103,6 +107,20 @@ class MocapInterface:
 
     _RETRY_DELAYS = [2, 5, 10, 30]  # seconds between reconnection attempts
 
+    def _on_qtm_disconnect(self, exc):
+        """Called by qtm_rt when the connection drops."""
+        reason = str(exc) if exc else "unknown"
+        self.logger.warning(f"QTM disconnected ({reason}) — scheduling reconnection")
+        self.connection = None
+        # Reset clock sync so stale offsets aren't used during the gap
+        with self._qtm_sync_lock:
+            self._qtm_to_ros_offset_ns = None
+            self._qtm_sync_count = 0
+            self._qtm_last_timestamp_us = None
+        self._params_need_refresh = False
+        if self.loop and self.loop.is_running():
+            self.loop.create_task(self.connect())
+
     async def connect(self):
         """
         Asynchronously connect to QTM and start streaming data.
@@ -111,7 +129,10 @@ class MocapInterface:
         attempt = 0
         while True:
             try:
-                self.connection = await qtm_rt.connect(self.host, port=self.port, timeout=5.0)
+                self.connection = await qtm_rt.connect(
+                    self.host, port=self.port, timeout=5.0,
+                    on_disconnect=self._on_qtm_disconnect,
+                )
                 if self.connection is None:
                     raise ConnectionError("QTM returned None connection")
 
@@ -190,26 +211,28 @@ class MocapInterface:
         markers_residual = packet.get_3d_markers_residual()
 
         # ── Detect stale parameter dicts and schedule a re-fetch ───────
-        # If QTM was started after we connected, marker_dict will be empty
-        # but the packet will contain labelled markers.
+        # If QTM was started after we connected, marker/body dicts will be empty
+        # but the packet will contain data.
+        needs_refresh = False
         if markers_residual is not None:
             _, markers_check = markers_residual
             if len(markers_check) > 0 and len(self.marker_dict) == 0:
-                if not self._params_need_refresh:
-                    self._params_need_refresh = True
-                    self.logger.info(
-                        "Received labelled markers but marker_dict is empty — "
-                        "scheduling parameter refresh"
-                    )
-                    self.loop.create_task(self._refresh_parameters())
+                needs_refresh = True
             elif len(markers_check) != len(self.marker_dict) and len(self.marker_dict) > 0:
-                if not self._params_need_refresh:
-                    self._params_need_refresh = True
-                    self.logger.info(
-                        f"Marker count changed ({len(self.marker_dict)} → {len(markers_check)}) — "
-                        "scheduling parameter refresh"
-                    )
-                    self.loop.create_task(self._refresh_parameters())
+                needs_refresh = True
+
+        sixdof_data = packet.get_6d()
+        if sixdof_data is not None:
+            _, bodies_check = sixdof_data
+            if len(bodies_check) > 0 and len(self.body_dict) == 0:
+                needs_refresh = True
+            elif len(bodies_check) != len(self.body_dict) and len(self.body_dict) > 0:
+                needs_refresh = True
+
+        if needs_refresh and not self._params_need_refresh:
+            self._params_need_refresh = True
+            self.logger.info("QTM parameter mismatch detected — scheduling refresh")
+            self.loop.create_task(self._refresh_parameters())
 
         # Check if we are ready to publish data
         if not self.ready_to_publish:
@@ -263,30 +286,33 @@ class MocapInterface:
         # Process 6dof data to know the body positions.
         # Build all poses in a local dict, then atomically replace under the
         # lock so readers never see a mix of old and new frame data.
-        info, bodies = packet.get_6d()
+        # Reuse sixdof_data extracted above for staleness check.
         new_body_poses = {}
 
-        for i, body in enumerate(bodies):
-            body_name = self.get_name_from_index(i, self.body_dict)
+        if sixdof_data is None:
+            self.logger.debug("No 6DOF data in packet")
+            with self.data_lock:
+                self.body_poses = new_body_poses
+            return
 
-            # Detect if 'body_name' has any unwanted characters. If any are present, replace them with an underscore
-            if any(char in body_name for char in [' ', '-']):
-                body_name = body_name.replace(' ', '_')
-                body_name = body_name.replace('-', '_')
+        info, bodies = sixdof_data
+        for i, body in enumerate(bodies):
+            raw_name = self.get_name_from_index(i, self.body_dict)
+            is_base_frame = raw_name in self.base_frame_bodies
+
+            # Sanitise name for ROS topic/TF compatibility
+            body_name = raw_name.replace(' ', '_').replace('-', '_')
 
             # Compose a PoseStamped for this rigid body
             pose = PoseStamped()
             pose.header.stamp = self.node.get_clock().now().to_msg()
-            if body_name in self.base_frame_bodies:
-                pose.header.frame_id = "world"
-            else:
-                pose.header.frame_id = "platform_start"
+            pose.header.frame_id = "world" if is_base_frame else "platform_start"
 
             pose.pose.position.x = body[0].x
             pose.pose.position.y = body[0].y
 
             # Leave base-frame bodies' Z unchanged; shift others into the platform frame
-            if body_name in self.base_frame_bodies:
+            if is_base_frame:
                 pose.pose.position.z = body[0].z
             elif self.base_to_platform_transformation is not None:
                 pose.pose.position.z = body[0].z - self.base_to_platform_transformation
@@ -382,8 +408,20 @@ class MocapInterface:
             measured_offset = ros_ns - qtm_ns
 
             with self._qtm_sync_lock:
+                # Detect QTM restart: timestamp jumped backwards or by > 5 s
+                if self._qtm_last_timestamp_us is not None:
+                    dt_us = qtm_us - self._qtm_last_timestamp_us
+                    if dt_us < 0 or dt_us > 5_000_000:
+                        self.logger.warning(
+                            f"QTM timestamp discontinuity ({dt_us / 1e6:.3f} s) — "
+                            "resetting clock sync"
+                        )
+                        self._qtm_to_ros_offset_ns = None
+                        self._qtm_sync_count = 0
+                self._qtm_last_timestamp_us = qtm_us
+
                 if self._qtm_to_ros_offset_ns is None:
-                    # First sample — initialise directly
+                    # First sample (or after reset) — initialise directly
                     self._qtm_to_ros_offset_ns = measured_offset
                     self._qtm_sync_count = 1
                     self.logger.info(

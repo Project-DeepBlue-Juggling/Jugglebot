@@ -131,6 +131,7 @@ class ThrowAnnouncement:
     thrower_name: str = ""
     initial_position: object = None
     initial_velocity: object = None
+    target_id: str = ""
     throw_time: object = None
     predicted_tof_sec: float = 0.0
     landing_position: object = None
