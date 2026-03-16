@@ -612,12 +612,11 @@ class MocapInterface:
 
         return np.array([qx, qy, qz, qw])
 
-    def clear_unlabelled_markers(self):
-        """
-        Clear the unlabelled marker data.
-        """
+    def clear_markers(self):
+        """Clear both labelled and unlabelled marker data after publishing."""
         with self.data_lock:
             self.all_markers = np.empty((0, 4))
+            self.labelled_markers = []
 
     #########################################################################################################
     #                                        Get Robot Geometry                                             #

@@ -143,9 +143,9 @@ class MocapNode(Node):
                     s.position.z = float(unlabelled[i, 2])
                     s.residual = float(unlabelled[i, 3])
                     msg.markers.append(s)
-                self.mocap.clear_unlabelled_markers()
 
             self.pub_mocap.publish(msg)
+            self.mocap.clear_markers()
         except Exception as e:
             self.get_logger().error(f'Error publishing markers: {e}')
 
