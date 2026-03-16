@@ -3,6 +3,7 @@
 ## Implementation Notes
 
 - **Working on `refactor` branch** — we can modify files in place, no need for a parallel package. The `main` branch remains untouched as a safety net.
+- **ROS2 Foxy** on Jetson Orin Nano (Ubuntu 20.04, Python 3.8). Code must avoid Python 3.9+ syntax (use `from __future__ import annotations` for `list[x]`/`dict[x,y]` type hints).
 
 ## Context
 
