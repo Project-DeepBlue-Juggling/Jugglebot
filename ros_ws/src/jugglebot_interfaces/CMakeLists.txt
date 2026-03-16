@@ -41,6 +41,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ThrowDebug.msg"
   "msg/BallButlerHeartbeat.msg"
   "msg/BallButlerCalibrationResult.msg"
+  "msg/DynamicTargetCommand.msg"
 
   "srv/GetRobotGeometry.srv"
   "srv/ActivateOrDeactivate.srv"

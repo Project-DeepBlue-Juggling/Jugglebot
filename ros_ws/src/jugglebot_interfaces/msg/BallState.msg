@@ -1,12 +1,14 @@
-# Comprehensive state of a single tracked ball in flight
+# Comprehensive state of a single tracked ball
 # Published as part of BallStateArray on /balls topic
-# Only balls confirmed to be in projectile motion are published
 
 std_msgs/Header header
 uint32 id                              # Unique monotonic ball ID (never reused in a session)
 
-# Source information
+# Lifecycle and tracking
+uint8 status                           # BallStatus: 0=TO_BE_THROWN, 1=IN_FLIGHT, 2=CAUGHT, 3=DROPPED, 4=UNKNOWN
+uint8 tracking                         # TrackingConfidence: 0=ANNOUNCED, 1=CONFIRMED
 string source                          # Source of ball: "human_throw", "ball_butler", etc.
+string destination                     # Robot this ball is heading to (empty = unassigned)
 
 # Current state (from Kalman Filter estimate, or predicted from launch state if not yet matched)
 geometry_msgs/Point position           # Current estimated position (mm)

@@ -148,7 +148,7 @@ A working Kalman filter exists at `jugglebot/archived/kalman_filter.py` (230 lin
 
 2. **From mocap detection**: Initialize from first 2-3 marker positions, with velocity estimated by finite difference. Tighter initial covariance on position, wider on velocity.
 
-**Note**: ThrowAnnouncement publication must be implemented. The archived `ball_butler_node.py` published announcements; in the new architecture, `can_node.py` needs to detect the BB THROWING state transition and publish ThrowAnnouncement on `/throw_announcements`. Verify this exists or implement it during this phase.
+**Implemented**: `can_node.py` publishes `ThrowAnnouncement` on `/throw_announcements` when a throw command is sent via the `bb/send_throw_command` service. Ballistic prediction is computed by `can/throw_ballistics.py` (pure Python), using BB position and yaw offset from `bb/calibration_result` (TRANSIENT_LOCAL subscription). The announcement fires at command-send time (before the throw), giving the ball tracker maximum lead time.
 
 ### Landing Prediction
 
@@ -159,7 +159,7 @@ z + vz·t + 0.5·(-9810)·t² = ground_z
 
 Returns `(landing_pos_xy, landing_vel_xyz, time_to_land)` or `None` if no real positive solution.
 
-**Landing Z plane**: Configurable, default = `GEOM_INITIAL_HEIGHT_MM + 160.0` = 734.3 mm. This will become adaptive in the future (set by the motion planner based on hand position), but a fixed offset is sufficient for initial implementation.
+**Landing Z plane**: Configurable, default = `GEOM_INITIAL_HEIGHT_MM + 160.0` = 734.3 mm. Will become adaptive in the future, but a fixed offset is sufficient for initial implementation.
 
 ---
 
@@ -303,8 +303,6 @@ uint32 id
 string source
 geometry_msgs/Point position
 geometry_msgs/Vector3 velocity
-string target_id              # → will use for destination
-geometry_msgs/Point target_position
 geometry_msgs/Point landing_position
 geometry_msgs/Vector3 landing_velocity
 builtin_interfaces/Time time_at_land
@@ -319,11 +317,11 @@ uint8 tracking                # TrackingConfidence enum (0=ANNOUNCED, 1=CONFIRME
 string destination            # Robot this ball is heading to (empty = unassigned)
 ```
 
-**Note**: The existing `target_id` field could be repurposed for `destination`, but its semantics are different (target_id was "what the throw was aimed at", destination is "who should catch it"). Keep both — `target_id` comes from the ThrowAnnouncement, `destination` is set by the tracker/coordinator.
+**Note**: `target_id` and `target_position` were removed from both `ThrowAnnouncement.msg` and `BallState.msg` — the catch coordinator knows its own position, and `destination` (who should catch the ball) is a policy decision owned by the coordinator, not embedded in the message.
 
 ### Existing Messages Used As-Is
 
-- `ThrowAnnouncement.msg` — published by can_node when BB enters THROWING state
+- `ThrowAnnouncement.msg` — published by can_node when throw command is sent (IMPLEMENTED)
 - `BallStateArray.msg` — `BallState[] balls`, published on `/balls`
 - `MocapDataMulti.msg` / `MocapDataSingle.msg` — marker positions from mocap node
 - `BallButlerHeartbeat.msg` — BB state, yaw/pitch/hand positions
@@ -334,12 +332,12 @@ string destination            # Robot this ball is heading to (empty = unassigne
 
 ### Ball Butler Throw Path
 
-1. Ball Butler CAN heartbeat transitions to `THROWING` state
-2. `can_node.py` detects state change, publishes `ThrowAnnouncement` on `/throw_announcements`
-   - `initial_position`: BB position in global frame (from calibration)
-   - `initial_velocity`: computed from throw parameters (yaw, pitch, speed)
-   - `throw_time`: when the ball will leave the hand
-   - `landing_position`, `landing_velocity`, `landing_time`: pre-computed from ballistics
+1. Caller invokes `bb/send_throw_command` service with yaw, pitch, speed, delay
+2. `can_node.py` sends CAN frame, then publishes `ThrowAnnouncement` on `/throw_announcements` **(IMPLEMENTED)**
+   - `initial_position`: BB position in global frame (from `bb/calibration_result` subscription)
+   - `initial_velocity`: computed from throw parameters (yaw + yaw_offset, pitch, speed) by `can/throw_ballistics.py`
+   - `throw_time`: `now + delay_s`
+   - `landing_position`, `landing_velocity`, `landing_time`: pre-computed from ballistics (catch plane = initial_height + 160mm)
 3. `ball_tracker_node.py` receives announcement:
    - Creates `Ball(status=TO_BE_THROWN, tracking=ANNOUNCED, source="ball_butler")`
    - Initializes Kalman filter from `initial_position` and `initial_velocity`
@@ -360,7 +358,7 @@ string destination            # Robot this ball is heading to (empty = unassigne
 1. `matcher.py` monitors all unlabelled mocap markers
 2. Detects parabolic motion (3-4 consecutive frames with gravity-consistent acceleration)
 3. Creates `Ball(status=IN_FLIGHT, tracking=CONFIRMED, source="human_throw")`
-   - `destination` assigned via trajectory analysis: if the ball's predicted landing position is within the platform's reachable workspace, set `destination = "jugglebot"`. Otherwise leave empty.
+   - `destination` is always empty for human throws — the coordinator only catches balls explicitly aimed at it via BB announcements (`ThrowAnnouncement.target_id`)
    - Landing state computed from current Kalman filter estimate
 4. Same tracking cycle as above
 
@@ -386,8 +384,6 @@ string destination            # Robot this ball is heading to (empty = unassigne
 6. On each subsequent `/balls` update: re-send with refined prediction
    - Motion planner handles C2 splice replanning automatically
    - If planner rejects (infeasible), increment rejection counter for blacklist
-7. Hand positioning: command hand height via separate topic/IPC based on `landing_time` and `landing_velocity`. The hand only moves vertically (up/down relative to the platform) — there is no open/close mechanism.
-
 ---
 
 ## Key Constants & Parameters
@@ -467,9 +463,67 @@ The ball tracker node processes mocap data at 200Hz. If the ROS2 executor is mul
 
 ---
 
-## Testing Plan
+## Implementation Phases
 
-### Offline Tests (`tracking/tests/`)
+### Phase 1: Perception — `tracking/` subpackage (pure Python) — ✅ COMPLETE (2026-03-16)
+
+All ball detection, tracking, and prediction logic. No ROS2, no IPC — fully testable offline.
+
+**Deliverables:**
+- `tracking/ball.py` — `Ball` dataclass, `BallStatus`, `TrackingConfidence` enums
+- `tracking/kalman.py` — 6D Kalman filter lifted from `archived/kalman_filter.py`, with gravity model and both initialization modes (announcement + mocap detection)
+- `tracking/ballistics.py` — `predict_landing_state()` quadratic solver
+- `tracking/matcher.py` — `BallTracker` class: parabolic motion detection, announced ball matching, frame-to-frame association, ball lifecycle management (status transitions, cleanup)
+
+**Test results:** 32 tests, all passing in 0.20s
+- `test_ballistics.py` (8 tests) — Vertical throw, angled throw, edge cases
+- `test_kalman.py` (7 tests) — Gravity model, convergence, noise rejection, initialization modes, landing prediction
+- `test_matcher.py` (8 tests) — Parabolic detection, announced matching, frame-to-frame with missed frames
+- `test_lifecycle.py` (9 tests) — Status transitions, terminal cleanup, multi-ball tracking
+
+**Implementation notes:**
+- `GRAVITY_MMPS2 = 9806.0` is hardcoded in `ballistics.py` to keep the tracking subpackage free of `jugglebot.hardware_config` imports (standalone testability). Must be kept in sync with `hw.GRAVITY_MPS2 * 1000`.
+- The Kalman filter uses a **fixed dt** for its predict step (the nominal mocap interval). This means `process_frame()` must be called at a steady rate — large time jumps between calls will cause the KF state to diverge from reality because each predict advances by only `dt` regardless of wall clock. This is correct for the 200 Hz mocap path but would need variable-dt predict if used with irregular timestamps.
+- Announced ball matching uses the KF's predicted position (after `predict()`) vs observed marker. The adaptive threshold grows with time-since-throw and ball speed (capped at 400mm) to handle BB timing uncertainty.
+- Parabolic detection uses finite-difference acceleration on the last 3-4 frames of each unlabelled marker track, compared against `[0, 0, -9806]` mm/s². The threshold (default 3000 mm/s²) is generous to handle real-world noise; it may need tightening if false positives occur with non-ball markers.
+- The `min_height_above_landing_mm` filter (default 50mm) prevents matching markers near/below the catch plane. Tests must account for this: markers at positions below `landing_z + 50` will be ignored during announced matching.
+- The `DROPPED` status transition is **not yet implemented** — the plan describes it as "marker reappears on new path", but detecting this requires comparing a re-acquired marker's trajectory against the predicted continuation. Deferred to Phase 2 integration when real data can inform the heuristic.
+- Landing prediction is refreshed every frame for tracked balls (even during missed-frame periods via KF predict-only propagation). The absolute `landing_time` stays consistent because the KF predict step preserves the ballistic trajectory analytically.
+
+---
+
+### Phase 2: Policy & Integration — coordinator + ROS2 nodes + IPC feedback — ✅ COMPLETE (2026-03-16)
+
+Wire perception to the motion planner. Adds the decision-making layer and all ROS2/IPC glue.
+
+**Deliverables:**
+- `catch_coordinator.py` — Pure Python policy: ball filtering, selection, catch pose computation (velocity→quaternion with scipy), blacklist management
+- `BallState.msg` update — Added `status` (uint8), `tracking` (uint8), `destination` (string) fields
+- `DynamicTargetCommand.msg` — Dedicated message type for catch coordinator → bridge → control loop
+- `ball_tracker_node.py` — ROS2 wrapper subscribing `/mocap_data` + `/throw_announcements`, publishing `/balls`
+- `catch_coordinator_node.py` — ROS2 wrapper subscribing `/balls`, publishing `DynamicTargetCommand` on `catch/dynamic_target`, clock domain conversion (ROS2→perf_counter with periodic refresh)
+- `motion_bridge_node.py` update — Added subscription to `catch/dynamic_target`, forwards to control process via IPC
+- IPC feedback channel — `TOPIC_DYN_FEEDBACK` topic + `make_dynamic_target_feedback()` in `motion/ipc.py`, `send_dynamic_feedback()` on `ControlProcessIPC`, `recv_dynamic_feedback()` on `BridgeIPC`, emitted from `control_loop.py._poll_async_result()`
+- `setup.py` update — Added `tracking` subpackage, `ball_tracker_node` and `catch_coordinator_node` entry points
+
+**Test results:** 17 coordinator tests, all passing
+- `test_coordinator.py` — 4 orientation tests, 3 catch pose tests, 4 blacklist tests, 6 ball selection tests
+
+**Implementation notes:**
+- **Quaternion convention**: scipy `as_quat()` returns `[x,y,z,w]`. The coordinator explicitly reorders to `[w,x,y,z]` for the dynamic target API. A helper method `compute_catch_orientation()` encapsulates this.
+- **IPC architecture for coordinator node**: The coordinator does NOT use ZMQ directly for sending commands. Instead, it publishes on ROS2 topic `catch/dynamic_target` (`DynamicTargetCommand.msg`), and `motion_bridge_node.py` subscribes and forwards via its existing `ipc.send_dynamic_target()`. This preserves the single-PUB ZMQ topology (bridge PUB binds → control SUBs connect). The coordinator does use a direct ZMQ SUB for receiving feedback from the control process's telemetry PUB — this is safe because multiple SUBs can connect to one PUB.
+- **Clock domain conversion**: Measured at startup via 10 samples of `perf_counter() - ros2_time()`, then re-measured every 30s using a rolling median of the last 20 measurements. Tracks drift indefinitely with sub-millisecond accuracy.
+- **Feedback correlation**: Dynamic target feedback is correlated by `arrival_time` (approximate match within 100ms). This is simple but sufficient since there's typically only one outstanding target at a time.
+- **Blacklist stores landing position snapshot**: When a ball is blacklisted, we snapshot its `landing_position`. If the position later shifts by >50mm (Kalman filter converging), the ball is removed from the blacklist and re-evaluated.
+- **Destination assignment**: Announced balls (BB path) get `destination` from `ThrowAnnouncement.target_id`. Human throws always have empty destination — the coordinator only catches balls explicitly aimed at "jugglebot".
+- **DROPPED transition still deferred**: Same as Phase 1 — needs real data to inform the heuristic.
+- **Build required**: `BallState.msg` and `DynamicTargetCommand.msg` were added/modified. `setup.py` updated with `tracking` subpackage and new node entry points. Run `colcon build --packages-select jugglebot_interfaces jugglebot` on the Jetson.
+
+---
+
+## Testing Plan (detail)
+
+### Phase 1 Offline Tests (`tracking/tests/`)
 
 1. **test_kalman.py**
    - Filter convergence on synthetic parabolic trajectory (known initial state, verify position/velocity converge)
@@ -495,6 +549,8 @@ The ball tracker node processes mocap data at 200Hz. If the ROS2 executor is mul
    - IN_FLIGHT → UNKNOWN (timeout with no resolution)
    - Terminal state cleanup after retention period
 
+### Phase 2 Tests
+
 5. **test_coordinator.py**
    - Catch pose computation: known landing velocity → correct quaternion orientation
    - Angle limit: steep approach angle → returns None (uncatchable)
@@ -511,8 +567,8 @@ The ball tracker node processes mocap data at 200Hz. If the ROS2 executor is mul
 
 ### End-to-End
 
-1. Full catch sequence: BB throw → track → predict → platform moves → catch
+1. Full catch sequence: BB throw (target_id="jugglebot") → track → predict → platform moves → catch
 2. Timing accuracy: platform arrives within ±20ms of predicted landing time
-3. Human throw catch: throw ball by hand → detected → caught
-4. Infeasible ball: throw to unreachable location → blacklisted after 3 rejections → platform stays home
+3. Human throw tracking: throw ball by hand → detected as IN_FLIGHT with empty destination → tracked but NOT caught (correct behaviour — coordinator ignores unassigned balls)
+4. Infeasible ball: BB throw to unreachable location → blacklisted after 3 rejections → platform stays home
 

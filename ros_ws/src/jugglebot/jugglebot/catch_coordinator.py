@@ -1,0 +1,273 @@
+"""Catch coordinator — pure Python catch policy.
+
+Decides which ball to catch, computes the catch pose, and manages
+a feasibility blacklist. No ROS2 dependency.
+
+The ROS2 wrapper (catch_coordinator_node.py) feeds Ball objects in
+and reads CatchCommand objects out, then sends them via IPC.
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional
+
+import numpy as np
+from scipy.spatial.transform import Rotation
+
+from jugglebot.tracking.ball import Ball, BallStatus
+
+
+# ---------------------------------------------------------------------------
+# Output dataclass
+# ---------------------------------------------------------------------------
+
+@dataclass
+class CatchCommand:
+    """Output of the coordinator: what to send to the motion planner."""
+    ball_id: int
+    target_pos: np.ndarray     # [x, y, z] platform offset from home (mm)
+    target_quat: np.ndarray    # [w, x, y, z] quaternion orientation
+    target_vel: np.ndarray     # [vx, vy, vz] mm/s — always [0,0,0] for a catch
+    landing_time: float        # Absolute landing time (ROS2 seconds)
+
+
+# ---------------------------------------------------------------------------
+# Blacklist entry
+# ---------------------------------------------------------------------------
+
+@dataclass
+class _BlacklistEntry:
+    ball_id: int
+    landing_position_snapshot: np.ndarray  # Position when blacklisted
+    rejection_count: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Coordinator
+# ---------------------------------------------------------------------------
+
+class CatchCoordinator:
+    """Stateless-ish catch policy. Call ``update()`` each cycle with current balls.
+
+    Parameters
+    ----------
+    robot_name : str
+        Only balls with ``destination == robot_name`` are considered.
+    initial_height_mm : float
+        Platform initial height (GEOM_INITIAL_HEIGHT_MM).
+    landing_z_offset_mm : float
+        Offset above initial height for the catch plane.
+    catch_angle_limit_deg : float
+        Maximum approach angle from vertical (degrees).
+    blacklist_rejection_threshold : int
+        Consecutive rejections before blacklisting a ball.
+    blacklist_reeval_threshold_mm : float
+        Landing position shift to remove a ball from the blacklist.
+    min_lead_time_s : float
+        Minimum time before landing to attempt a catch.
+    xy_range_mm : float
+        Maximum XY distance from origin for preliminary feasibility.
+    """
+
+    def __init__(
+        self,
+        robot_name: str = "jugglebot",
+        initial_height_mm: float = 574.3,
+        landing_z_offset_mm: float = 160.0,
+        catch_angle_limit_deg: float = 30.0,
+        blacklist_rejection_threshold: int = 3,
+        blacklist_reeval_threshold_mm: float = 50.0,
+        min_lead_time_s: float = 0.3,
+        xy_range_mm: float = 400.0,
+    ):
+        self.robot_name = robot_name
+        self.initial_height_mm = initial_height_mm
+        self.catch_z_offset_mm = landing_z_offset_mm
+        self.catch_angle_limit_rad = math.radians(catch_angle_limit_deg)
+        self.blacklist_rejection_threshold = blacklist_rejection_threshold
+        self.blacklist_reeval_threshold_mm = blacklist_reeval_threshold_mm
+        self.min_lead_time_s = min_lead_time_s
+        self.xy_range_mm = xy_range_mm
+
+        # Blacklist: ball_id → _BlacklistEntry
+        self._blacklist: Dict[int, _BlacklistEntry] = {}
+        # Track consecutive rejections per ball (reset on acceptance)
+        self._rejection_counts: Dict[int, int] = {}
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def update(
+        self,
+        balls: List[Ball],
+        current_time: float,
+    ) -> Optional[CatchCommand]:
+        """Process current ball states and return a catch command (or None).
+
+        Args:
+            balls: All active balls from the tracker.
+            current_time: Current ROS2 time in seconds.
+
+        Returns:
+            CatchCommand for the best catchable ball, or None if nothing to catch.
+        """
+        # Clean up blacklist entries for balls no longer in flight
+        active_ids = {b.id for b in balls if b.status == BallStatus.IN_FLIGHT}
+        stale = [bid for bid in self._blacklist if bid not in active_ids]
+        for bid in stale:
+            del self._blacklist[bid]
+            self._rejection_counts.pop(bid, None)
+
+        # Filter candidates
+        candidates = []
+        for ball in balls:
+            if ball.status != BallStatus.IN_FLIGHT:
+                continue
+            if ball.destination != self.robot_name:
+                continue
+            if self._is_blacklisted(ball):
+                continue
+            if not self._preliminary_feasibility(ball, current_time):
+                continue
+            candidates.append(ball)
+
+        if not candidates:
+            return None
+
+        # Select best: earliest landing time
+        candidates.sort(key=lambda b: b.landing_time)
+        best = candidates[0]
+
+        # Compute catch pose
+        return self._compute_catch_command(best)
+
+    def report_rejection(self, ball_id: int):
+        """Report that the motion planner rejected a dynamic target for this ball."""
+        count = self._rejection_counts.get(ball_id, 0) + 1
+        self._rejection_counts[ball_id] = count
+
+        if count >= self.blacklist_rejection_threshold:
+            # Find the ball's current landing position for the snapshot
+            # (caller should provide this, but we store from last update)
+            if ball_id not in self._blacklist:
+                self._blacklist[ball_id] = _BlacklistEntry(
+                    ball_id=ball_id,
+                    landing_position_snapshot=np.zeros(3),  # Updated below
+                )
+
+    def report_rejection_with_position(self, ball_id: int, landing_position: np.ndarray):
+        """Report rejection with the ball's current landing position."""
+        count = self._rejection_counts.get(ball_id, 0) + 1
+        self._rejection_counts[ball_id] = count
+
+        if count >= self.blacklist_rejection_threshold:
+            self._blacklist[ball_id] = _BlacklistEntry(
+                ball_id=ball_id,
+                landing_position_snapshot=landing_position.copy(),
+                rejection_count=count,
+            )
+
+    def report_acceptance(self, ball_id: int):
+        """Report that the motion planner accepted a dynamic target for this ball."""
+        self._rejection_counts.pop(ball_id, None)
+
+    # ------------------------------------------------------------------
+    # Catch pose computation
+    # ------------------------------------------------------------------
+
+    def _compute_catch_command(self, ball: Ball) -> Optional[CatchCommand]:
+        """Compute the catch pose from a ball's landing state."""
+        quat = self.compute_catch_orientation(ball.landing_velocity)
+        if quat is None:
+            return None
+
+        # Position: convert from base frame to platform frame
+        # Platform frame origin is at (0, 0, initial_height) in base frame
+        target_pos = np.array([
+            ball.landing_position[0],
+            ball.landing_position[1],
+            ball.landing_position[2] - self.initial_height_mm,
+        ])
+
+        return CatchCommand(
+            ball_id=ball.id,
+            target_pos=target_pos,
+            target_quat=quat,
+            target_vel=np.zeros(3),  # Stationary catch
+            landing_time=ball.landing_time,
+        )
+
+    def compute_catch_orientation(
+        self,
+        landing_velocity: np.ndarray,
+    ) -> Optional[np.ndarray]:
+        """Compute quaternion [w,x,y,z] to orient platform normal to ball velocity.
+
+        Returns None if the approach angle exceeds the catch angle limit.
+        """
+        v = landing_velocity
+        norm = np.linalg.norm(v)
+        if norm < 1e-6:
+            # Near-zero velocity: identity orientation
+            return np.array([1.0, 0.0, 0.0, 0.0])
+
+        v_hat = v / norm
+        reference = np.array([0.0, 0.0, -1.0])  # Platform Z-axis (downward)
+
+        dot = np.clip(np.dot(reference, v_hat), -1.0, 1.0)
+        angle = math.acos(dot)
+
+        if angle > self.catch_angle_limit_rad:
+            return None  # Uncatchable angle
+
+        if angle < 1e-9:
+            # Nearly aligned: identity
+            return np.array([1.0, 0.0, 0.0, 0.0])
+
+        axis = np.cross(reference, v_hat)
+        axis_norm = np.linalg.norm(axis)
+        if axis_norm < 1e-9:
+            # Anti-parallel: arbitrary 180° rotation
+            return np.array([0.0, 1.0, 0.0, 0.0])
+
+        axis = axis / axis_norm
+        rot = Rotation.from_rotvec(angle * axis)
+        # scipy returns [x, y, z, w] — convert to [w, x, y, z]
+        q_xyzw = rot.as_quat()
+        return np.array([q_xyzw[3], q_xyzw[0], q_xyzw[1], q_xyzw[2]])
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _preliminary_feasibility(self, ball: Ball, current_time: float) -> bool:
+        """Quick checks: time and XY range."""
+        # Enough lead time?
+        time_to_land = ball.landing_time - current_time
+        if time_to_land < self.min_lead_time_s:
+            return False
+
+        # Within XY range?
+        xy = ball.landing_position[:2]
+        if abs(xy[0]) > self.xy_range_mm or abs(xy[1]) > self.xy_range_mm:
+            return False
+
+        return True
+
+    def _is_blacklisted(self, ball: Ball) -> bool:
+        """Check if a ball is blacklisted, with re-eval escape hatch."""
+        entry = self._blacklist.get(ball.id)
+        if entry is None:
+            return False
+
+        # Re-eval: if landing position shifted significantly, remove from blacklist
+        shift = np.linalg.norm(ball.landing_position - entry.landing_position_snapshot)
+        if shift > self.blacklist_reeval_threshold_mm:
+            del self._blacklist[ball.id]
+            self._rejection_counts.pop(ball.id, None)
+            return False
+
+        return True

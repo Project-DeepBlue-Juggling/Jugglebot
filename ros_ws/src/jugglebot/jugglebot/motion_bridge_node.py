@@ -19,10 +19,13 @@ import rclpy
 from rclpy.node import Node
 from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
 from std_msgs.msg import Float64MultiArray, String
-from jugglebot_interfaces.msg import PlatformPoseCommand, RobotState
+from jugglebot_interfaces.msg import (
+    DynamicTargetCommand, PlatformPoseCommand, RobotState,
+)
 
 from jugglebot.motion.ipc import (
     BridgeIPC,
+    make_dynamic_target_command,
     make_mode_command,
     make_target_state,
 )
@@ -70,6 +73,11 @@ class MotionBridgeNode(Node):
         self.create_subscription(
             Float64MultiArray, 'smoother_limits',
             self._on_smoother_limits, 10)
+
+        # Dynamic target from catch coordinator
+        self.create_subscription(
+            DynamicTargetCommand, 'catch/dynamic_target',
+            self._on_catch_dynamic_target, 10)
 
         # ------------------------------------------------------------------
         # ROS2 publishers (IPC → ROS2)
@@ -171,6 +179,17 @@ class MotionBridgeNode(Node):
                                 vel_limit_rps=vel_rps,
                                 accel_limit_rps2=accel_rps2)
         self.ipc.send_mode_command(cmd)
+
+    def _on_catch_dynamic_target(self, msg: DynamicTargetCommand) -> None:
+        """Forward dynamic target from catch coordinator to the control process."""
+        cmd = make_dynamic_target_command(
+            target_pos=[msg.target_pos.x, msg.target_pos.y, msg.target_pos.z],
+            target_quat=[msg.target_quat.w, msg.target_quat.x,
+                         msg.target_quat.y, msg.target_quat.z],
+            target_vel=[msg.target_vel.x, msg.target_vel.y, msg.target_vel.z],
+            arrival_time=msg.arrival_time,
+        )
+        self.ipc.send_dynamic_target(cmd)
 
     def _on_gravity_offset(self, msg: Float64MultiArray) -> None:
         """Forward gravity offset to the control process via IPC."""

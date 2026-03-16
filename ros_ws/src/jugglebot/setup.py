@@ -11,6 +11,7 @@ setup(
         package_name,
         f'{package_name}.can',
         f'{package_name}.motion',
+        f'{package_name}.tracking',
     ],
     data_files=[
         ('share/ament_index/resource_index/packages',['resource/' + package_name]),
@@ -35,6 +36,9 @@ setup(
             'mocap_node = jugglebot.mocap_node:main',
             'spacemouse_handler = jugglebot.spacemouse_handler:main',
             'sp_ik = jugglebot.sp_ik:main',
+            # ── Ball tracking & catch ──────────────────────────
+            'ball_tracker_node = jugglebot.ball_tracker_node:main',
+            'catch_coordinator_node = jugglebot.catch_coordinator_node:main',
             # ── Standalone processes (not ROS2 nodes) ─────────
             'control_loop = jugglebot.motion.control_loop:main',
         ],

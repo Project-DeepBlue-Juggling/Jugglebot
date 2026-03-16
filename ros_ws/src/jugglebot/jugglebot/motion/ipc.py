@@ -42,6 +42,7 @@ TOPIC_TELEMETRY = b'telem'
 TOPIC_MOTOR_FB = b'motorfb'
 TOPIC_TRAJECTORY = b'traj'
 TOPIC_DYN_TARGET = b'dyntgt'
+TOPIC_DYN_FEEDBACK = b'dynfb'   # dynamic target accept/reject feedback
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +224,31 @@ def make_dynamic_target_command(
     }
 
 
+def make_dynamic_target_feedback(
+        accepted: bool,
+        arrival_time: float,
+        violations: list[str] | None = None) -> dict:
+    """Create a dynamic target feedback message.
+
+    Sent from the control loop back to the bridge whenever a dynamic
+    target is accepted or rejected by the async feasibility pipeline.
+
+    Parameters
+    ----------
+    accepted : True if the target was committed, False if rejected.
+    arrival_time : The arrival_time from the original request (for correlation).
+    violations : List of violation descriptions if rejected, or None.
+    """
+    msg = {
+        'type': 'dynamic_target_feedback',
+        'accepted': accepted,
+        'arrival_time': arrival_time,
+    }
+    if violations:
+        msg['violations'] = violations
+    return msg
+
+
 def make_motor_feedback(positions: list | tuple,
                         velocities: list | tuple,
                         currents: list | tuple) -> dict:
@@ -329,6 +355,10 @@ class ControlProcessIPC:
         """Publish telemetry to the bridge."""
         self._pub.send_multipart(_pack(TOPIC_TELEMETRY, msg), flags=zmq.NOBLOCK)
 
+    def send_dynamic_feedback(self, msg: dict) -> None:
+        """Publish dynamic target accept/reject feedback to the bridge."""
+        self._pub.send_multipart(_pack(TOPIC_DYN_FEEDBACK, msg), flags=zmq.NOBLOCK)
+
     @property
     def seconds_since_last_recv(self) -> float:
         """Seconds since any message was last received from the bridge."""
@@ -358,12 +388,19 @@ class BridgeIPC:
         self._pub = self._ctx.socket(zmq.PUB)
         self._pub.bind(command_addr)
 
-        # SUB socket — receives telemetry from control process
+        # SUB socket — receives telemetry from control process (CONFLATE: latest only)
         self._sub = self._ctx.socket(zmq.SUB)
         self._sub.connect(telemetry_addr)
         self._sub.setsockopt(zmq.SUBSCRIBE, TOPIC_TELEMETRY)
         self._sub.setsockopt(zmq.RCVTIMEO, 0)  # non-blocking
         self._sub.setsockopt(zmq.CONFLATE, 1)
+
+        # SUB socket — receives dynamic target feedback (no CONFLATE: every msg delivered)
+        self._sub_dyn_fb = self._ctx.socket(zmq.SUB)
+        self._sub_dyn_fb.connect(telemetry_addr)
+        self._sub_dyn_fb.setsockopt(zmq.SUBSCRIBE, TOPIC_DYN_FEEDBACK)
+        self._sub_dyn_fb.setsockopt(zmq.RCVTIMEO, 0)  # non-blocking
+        self._sub_dyn_fb.setsockopt(zmq.RCVHWM, 64)
 
     def send_target(self, msg: dict) -> None:
         """Send a TargetState message to the control process."""
@@ -394,7 +431,17 @@ class BridgeIPC:
         except zmq.Again:
             return None
 
+    def recv_dynamic_feedback(self) -> dict | None:
+        """Non-blocking: receive a dynamic target feedback message, or None."""
+        try:
+            frames = self._sub_dyn_fb.recv_multipart(flags=zmq.NOBLOCK)
+            _, msg = _unpack(frames)
+            return msg
+        except zmq.Again:
+            return None
+
     def close(self) -> None:
         self._pub.close()
         self._sub.close()
+        self._sub_dyn_fb.close()
         self._ctx.term()

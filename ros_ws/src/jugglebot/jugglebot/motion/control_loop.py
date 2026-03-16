@@ -680,16 +680,35 @@ class ControlLoop:
         if result is None:
             return
 
+        arrival_time = result.get('arrival_time', 0.0)
+
         if result['accepted']:
             accepted = self._traj_manager.commit_async_trajectory(result)
             if accepted:
                 logger.info("Async dynamic target committed")
+                self._send_dynamic_feedback(True, arrival_time)
             else:
                 logger.debug("Async dynamic target commit failed (stale/expired)")
+                self._send_dynamic_feedback(False, arrival_time, ['stale_or_expired'])
         else:
+            violations = result.get('violations', [])
             logger.debug(
                 f"Async dynamic target rejected: "
-                f"{'; '.join(result.get('violations', []))}")
+                f"{'; '.join(violations)}")
+            self._send_dynamic_feedback(False, arrival_time, violations)
+
+    def _send_dynamic_feedback(
+        self, accepted: bool, arrival_time: float,
+        violations: list[str] | None = None,
+    ) -> None:
+        """Send accept/reject feedback for a dynamic target via IPC."""
+        from jugglebot.motion.ipc import make_dynamic_target_feedback
+        msg = make_dynamic_target_feedback(
+            accepted=accepted,
+            arrival_time=arrival_time,
+            violations=violations,
+        )
+        self.ipc.send_dynamic_feedback(msg)
 
     # ------------------------------------------------------------------
     # Control computation
