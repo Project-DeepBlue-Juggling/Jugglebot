@@ -61,6 +61,17 @@ def read_bag(bag_path: str) -> tuple[list, list]:
         print("Install with: pip install rosbags")
         sys.exit(1)
 
+    # Build a typestore and register our custom message types
+    typestore = get_typestore(Stores.ROS2_FOXY)
+
+    # Register jugglebot_interfaces messages
+    msg_dir = Path(__file__).resolve().parent.parent / 'ros_ws' / 'src' / 'jugglebot_interfaces' / 'msg'
+    if msg_dir.exists():
+        _register_custom_msgs(typestore, msg_dir)
+    else:
+        print(f"WARNING: Message directory not found at {msg_dir}")
+        print("  Custom message deserialization may fail.")
+
     mocap_frames = []
     announcements = []
 
@@ -73,13 +84,11 @@ def read_bag(bag_path: str) -> tuple[list, list]:
             print(f"WARNING: No /mocap_data topic found in {bag_path}")
             print(f"  Available topics: {[c.topic for c in reader.connections]}")
 
-        from rosbags.serde import deserialize_cdr
-
         for conn, timestamp, rawdata in reader.messages():
             t_s = timestamp / 1e9  # nanoseconds → seconds
 
             if conn.topic == '/mocap_data':
-                msg = deserialize_cdr(rawdata, conn.msgtype)
+                msg = typestore.deserialize_cdr(rawdata, conn.msgtype)
                 markers = []
                 for m in msg.markers:
                     markers.append((
@@ -90,7 +99,7 @@ def read_bag(bag_path: str) -> tuple[list, list]:
                 mocap_frames.append((t_s, markers))
 
             elif conn.topic == '/throw_announcements':
-                msg = deserialize_cdr(rawdata, conn.msgtype)
+                msg = typestore.deserialize_cdr(rawdata, conn.msgtype)
                 throw_time = msg.throw_time.sec + msg.throw_time.nanosec * 1e-9
                 landing_time = msg.landing_time.sec + msg.landing_time.nanosec * 1e-9
 
@@ -122,6 +131,25 @@ def read_bag(bag_path: str) -> tuple[list, list]:
                 }))
 
     return mocap_frames, announcements
+
+
+def _register_custom_msgs(typestore, msg_dir: Path):
+    """Register all .msg files from jugglebot_interfaces with the typestore."""
+    from rosbags.typesys import get_types_from_msg
+
+    # Collect all .msg definitions
+    msg_texts = {}
+    for msg_file in sorted(msg_dir.glob('*.msg')):
+        name = msg_file.stem
+        full_name = f'jugglebot_interfaces/msg/{name}'
+        msg_texts[full_name] = msg_file.read_text()
+
+    # Parse and register (handles inter-message dependencies)
+    add_types = {}
+    for name, text in msg_texts.items():
+        add_types.update(get_types_from_msg(text, name))
+
+    typestore.register(add_types)
 
 
 # ---------------------------------------------------------------------------
