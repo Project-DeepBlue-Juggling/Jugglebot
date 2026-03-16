@@ -117,6 +117,13 @@ class MocapInterface:
             self._qtm_to_ros_offset_ns = None
             self._qtm_sync_count = 0
             self._qtm_last_timestamp_us = None
+        # Clear all cached data so downstream sees empty state, not stale data
+        with self.data_lock:
+            self.all_markers = np.empty((0, 4))
+            self.labelled_markers = []
+            self.ball_butler_markers = np.full((5, 4), np.nan)
+            self.body_poses = {}
+        self.is_aligned = False
         self._params_need_refresh = False
         if self.loop and self.loop.is_running():
             self.loop.create_task(self.connect())

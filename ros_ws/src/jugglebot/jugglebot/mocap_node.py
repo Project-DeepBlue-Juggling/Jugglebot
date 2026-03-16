@@ -83,6 +83,10 @@ class MocapNode(Node):
         )
         self._bb_last_state: int | None = None
 
+        # Track whether QTM has ever connected, so we don't publish empty
+        # messages during initial startup but DO publish after a disconnect.
+        self._qtm_was_connected = False
+
         # ── Calibration state ─────────────────────────────────────────────
         self._calibrating = False
         self._calib_data: dict[int, list[np.ndarray]] = {}
@@ -105,10 +109,14 @@ class MocapNode(Node):
     def _publish_mocap_data(self):
         is_aligned = self.mocap.is_aligned
 
-        # ── All markers (labelled + unlabelled, always published once QTM is live) ──
+        # ── All markers (labelled + unlabelled) ──
+        # Keep publishing even when QTM is disconnected so downstream
+        # (GUI, other nodes) sees empty data / aligned=False, not stale state.
         qtm_status = self.mocap.get_qtm_sync_status()
-        if not qtm_status.get('synced', False):
-            return  # QTM not connected yet — nothing to publish
+        if qtm_status.get('synced', False):
+            self._qtm_was_connected = True
+        elif not self._qtm_was_connected:
+            return  # QTM hasn't connected yet at all — nothing to publish
 
         unlabelled = self.mocap.get_all_markers_base_frame()
         labelled = self.mocap.get_labelled_markers()
