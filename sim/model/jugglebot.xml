@@ -1,0 +1,161 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="jugglebot">
+  <compiler angle="radian" coordinate="local"/>
+  <option timestep="0.002" gravity="0 0 -9.806" solver="Newton" iterations="100" tolerance="1e-10" impratio="1"/>
+  <size nconmax="100" njmax="500"/>
+  <visual>
+    <global azimuth="135" elevation="-30"/>
+    <quality shadowsize="2048"/>
+  </visual>
+  <asset>
+    <texture name="grid" type="2d" builtin="checker" width="512" height="512" rgb1="0.9 0.9 0.9" rgb2="0.7 0.7 0.7"/>
+    <material name="grid_mat" texture="grid" texrepeat="8 8" reflectance="0.1"/>
+    <material name="platform_mat" rgba="0.3 0.3 0.8 0.9"/>
+    <material name="base_mat" rgba="0.4 0.4 0.4 0.8"/>
+    <material name="leg_mat" rgba="0.7 0.7 0.7 1.0"/>
+    <material name="joint_mat" rgba="0.9 0.2 0.2 1.0"/>
+    <mesh name="base_mesh" file="meshes/base.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="platform_mesh" file="meshes/platform.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="leg_outer_mesh" file="meshes/leg_outer.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="leg_inner_mesh" file="meshes/leg_inner.stl" scale="0.001 0.001 0.001"/>
+  </asset>
+  <default>
+    <joint damping="50" armature="0.01"/>
+    <default class="leg">
+      <joint damping="200"/>
+      <geom type="capsule" size="0.012" material="leg_mat" contype="0" conaffinity="0"/>
+    </default>
+  </default>
+  <worldbody>
+    <geom name="floor" type="plane" size="1.0 1.0 0.01" material="grid_mat" pos="0 0 -0.05"/>
+    <light directional="true" diffuse="0.8 0.8 0.8" pos="0 0 2" dir="0 0 -1"/>
+    <geom name="base_visual" type="mesh" mesh="base_mesh" pos="0 0 -0.082" material="base_mat" contype="0" conaffinity="0"/>
+    <site name="base_site_0" pos="-0.385274 -0.140228 0.000000" size="0.015" rgba="0.9 0.2 0.2 1"/>
+    <site name="base_site_1" pos="-0.314078 -0.263543 0.000000" size="0.015" rgba="0.9 0.2 0.2 1"/>
+    <site name="base_site_2" pos="0.314078 -0.263543 0.000000" size="0.015" rgba="0.9 0.2 0.2 1"/>
+    <site name="base_site_3" pos="0.385274 -0.140228 0.000000" size="0.015" rgba="0.9 0.2 0.2 1"/>
+    <site name="base_site_4" pos="0.071196 0.403771 0.000000" size="0.015" rgba="0.9 0.2 0.2 1"/>
+    <site name="base_site_5" pos="-0.071196 0.403771 0.000000" size="0.015" rgba="0.9 0.2 0.2 1"/>
+    <body name="platform" pos="0 0 0.574300">
+      <freejoint name="platform_joint"/>
+      <inertial pos="-0.009680 -0.068640 0.052730" mass="1.2" fullinertia="0.016349800 0.014987903 0.009298383 -0.000402572 0.000191094 0.000979411"/>
+      <geom name="platform_visual" type="mesh" mesh="platform_mesh" pos="0 0 0" material="platform_mat" contype="0" conaffinity="0"/>
+      <site name="platform_origin" pos="0 0 0" size="0.005" rgba="1 1 1 0"/>
+      <site name="plat_site_0" pos="-0.197405 0.095000 0.000000" size="0.012" rgba="0.2 0.8 0.2 1"/>
+      <site name="plat_site_1" pos="-0.016431 -0.218458 0.000000" size="0.012" rgba="0.2 0.8 0.2 1"/>
+      <site name="plat_site_2" pos="0.016431 -0.218458 0.000000" size="0.012" rgba="0.2 0.8 0.2 1"/>
+      <site name="plat_site_3" pos="0.197405 0.095000 0.000000" size="0.012" rgba="0.2 0.8 0.2 1"/>
+      <site name="plat_site_4" pos="0.180975 0.123458 0.000000" size="0.012" rgba="0.2 0.8 0.2 1"/>
+      <site name="plat_site_5" pos="-0.180975 0.123458 0.000000" size="0.012" rgba="0.2 0.8 0.2 1"/>
+    </body>
+    <body name="leg_0_base" pos="-0.385274 -0.140228 0.000000" quat="0.971003 -0.186803 0.149193 0.000000">
+      <inertial pos="0 0 0.324210" mass="0.1" diaginertia="0.0001 0.0001 0.00001"/>
+      <joint name="leg_0_hinge_x" type="hinge" axis="1 0 0" limited="false" class="leg"/>
+      <joint name="leg_0_hinge_y" type="hinge" axis="0 1 0" limited="false" class="leg"/>
+      <geom name="leg_0_outer_visual" type="mesh" mesh="leg_outer_mesh" pos="0 0 -0.064" material="leg_mat" contype="0" conaffinity="0"/>
+      <body name="leg_0" pos="0 0 0.648419">
+        <inertial pos="0 0 0" mass="0.05" diaginertia="0.00001 0.00001 0.00001"/>
+        <joint name="leg_0_slide" type="slide" axis="0 0 1" limited="true" range="-0.005000 0.285000" class="leg"/>
+        <geom name="leg_0_inner_visual" type="mesh" mesh="leg_inner_mesh" pos="0 0 -1.352889" material="leg_mat" contype="0" conaffinity="0"/>
+        <site name="leg_0_tip" pos="0 0 0" size="0.010" rgba="0.9 0.9 0.2 1"/>
+      </body>
+    </body>
+    <body name="leg_1_base" pos="-0.314078 -0.263543 0.000000" quat="0.971003 -0.035804 0.236372 0.000000">
+      <inertial pos="0 0 0.324209" mass="0.1" diaginertia="0.0001 0.0001 0.00001"/>
+      <joint name="leg_1_hinge_x" type="hinge" axis="1 0 0" limited="false" class="leg"/>
+      <joint name="leg_1_hinge_y" type="hinge" axis="0 1 0" limited="false" class="leg"/>
+      <geom name="leg_1_outer_visual" type="mesh" mesh="leg_outer_mesh" pos="0 0 -0.064" material="leg_mat" contype="0" conaffinity="0"/>
+      <body name="leg_1" pos="0 0 0.648419">
+        <inertial pos="0 0 0" mass="0.05" diaginertia="0.00001 0.00001 0.00001"/>
+        <joint name="leg_1_slide" type="slide" axis="0 0 1" limited="true" range="-0.005000 0.285000" class="leg"/>
+        <geom name="leg_1_inner_visual" type="mesh" mesh="leg_inner_mesh" pos="0 0 -1.352889" material="leg_mat" contype="0" conaffinity="0"/>
+        <site name="leg_1_tip" pos="0 0 0" size="0.010" rgba="0.9 0.9 0.2 1"/>
+      </body>
+    </body>
+    <body name="leg_2_base" pos="0.314078 -0.263543 0.000000" quat="0.971003 -0.035804 -0.236372 0.000000">
+      <inertial pos="0 0 0.324209" mass="0.1" diaginertia="0.0001 0.0001 0.00001"/>
+      <joint name="leg_2_hinge_x" type="hinge" axis="1 0 0" limited="false" class="leg"/>
+      <joint name="leg_2_hinge_y" type="hinge" axis="0 1 0" limited="false" class="leg"/>
+      <geom name="leg_2_outer_visual" type="mesh" mesh="leg_outer_mesh" pos="0 0 -0.064" material="leg_mat" contype="0" conaffinity="0"/>
+      <body name="leg_2" pos="0 0 0.648419">
+        <inertial pos="0 0 0" mass="0.05" diaginertia="0.00001 0.00001 0.00001"/>
+        <joint name="leg_2_slide" type="slide" axis="0 0 1" limited="true" range="-0.005000 0.285000" class="leg"/>
+        <geom name="leg_2_inner_visual" type="mesh" mesh="leg_inner_mesh" pos="0 0 -1.352889" material="leg_mat" contype="0" conaffinity="0"/>
+        <site name="leg_2_tip" pos="0 0 0" size="0.010" rgba="0.9 0.9 0.2 1"/>
+      </body>
+    </body>
+    <body name="leg_3_base" pos="0.385274 -0.140228 0.000000" quat="0.971003 -0.186803 -0.149193 0.000000">
+      <inertial pos="0 0 0.324210" mass="0.1" diaginertia="0.0001 0.0001 0.00001"/>
+      <joint name="leg_3_hinge_x" type="hinge" axis="1 0 0" limited="false" class="leg"/>
+      <joint name="leg_3_hinge_y" type="hinge" axis="0 1 0" limited="false" class="leg"/>
+      <geom name="leg_3_outer_visual" type="mesh" mesh="leg_outer_mesh" pos="0 0 -0.064" material="leg_mat" contype="0" conaffinity="0"/>
+      <body name="leg_3" pos="0 0 0.648419">
+        <inertial pos="0 0 0" mass="0.05" diaginertia="0.00001 0.00001 0.00001"/>
+        <joint name="leg_3_slide" type="slide" axis="0 0 1" limited="true" range="-0.005000 0.285000" class="leg"/>
+        <geom name="leg_3_inner_visual" type="mesh" mesh="leg_inner_mesh" pos="0 0 -1.352889" material="leg_mat" contype="0" conaffinity="0"/>
+        <site name="leg_3_tip" pos="0 0 0" size="0.010" rgba="0.9 0.9 0.2 1"/>
+      </body>
+    </body>
+    <body name="leg_4_base" pos="0.071196 0.403771 0.000000" quat="0.971003 0.222606 0.087179 -0.000000">
+      <inertial pos="0 0 0.324210" mass="0.1" diaginertia="0.0001 0.0001 0.00001"/>
+      <joint name="leg_4_hinge_x" type="hinge" axis="1 0 0" limited="false" class="leg"/>
+      <joint name="leg_4_hinge_y" type="hinge" axis="0 1 0" limited="false" class="leg"/>
+      <geom name="leg_4_outer_visual" type="mesh" mesh="leg_outer_mesh" pos="0 0 -0.064" material="leg_mat" contype="0" conaffinity="0"/>
+      <body name="leg_4" pos="0 0 0.648419">
+        <inertial pos="0 0 0" mass="0.05" diaginertia="0.00001 0.00001 0.00001"/>
+        <joint name="leg_4_slide" type="slide" axis="0 0 1" limited="true" range="-0.005000 0.285000" class="leg"/>
+        <geom name="leg_4_inner_visual" type="mesh" mesh="leg_inner_mesh" pos="0 0 -1.352889" material="leg_mat" contype="0" conaffinity="0"/>
+        <site name="leg_4_tip" pos="0 0 0" size="0.010" rgba="0.9 0.9 0.2 1"/>
+      </body>
+    </body>
+    <body name="leg_5_base" pos="-0.071196 0.403771 0.000000" quat="0.971003 0.222606 -0.087179 0.000000">
+      <inertial pos="0 0 0.324210" mass="0.1" diaginertia="0.0001 0.0001 0.00001"/>
+      <joint name="leg_5_hinge_x" type="hinge" axis="1 0 0" limited="false" class="leg"/>
+      <joint name="leg_5_hinge_y" type="hinge" axis="0 1 0" limited="false" class="leg"/>
+      <geom name="leg_5_outer_visual" type="mesh" mesh="leg_outer_mesh" pos="0 0 -0.064" material="leg_mat" contype="0" conaffinity="0"/>
+      <body name="leg_5" pos="0 0 0.648419">
+        <inertial pos="0 0 0" mass="0.05" diaginertia="0.00001 0.00001 0.00001"/>
+        <joint name="leg_5_slide" type="slide" axis="0 0 1" limited="true" range="-0.005000 0.285000" class="leg"/>
+        <geom name="leg_5_inner_visual" type="mesh" mesh="leg_inner_mesh" pos="0 0 -1.352889" material="leg_mat" contype="0" conaffinity="0"/>
+        <site name="leg_5_tip" pos="0 0 0" size="0.010" rgba="0.9 0.9 0.2 1"/>
+      </body>
+    </body>
+  </worldbody>
+  <equality>
+    <connect body1="platform" body2="leg_0" anchor="-0.197405 0.095000 0.000000" solref="0.005 1" solimp="0.99 0.99 0.001"/>
+    <connect body1="platform" body2="leg_1" anchor="-0.016431 -0.218458 0.000000" solref="0.005 1" solimp="0.99 0.99 0.001"/>
+    <connect body1="platform" body2="leg_2" anchor="0.016431 -0.218458 0.000000" solref="0.005 1" solimp="0.99 0.99 0.001"/>
+    <connect body1="platform" body2="leg_3" anchor="0.197405 0.095000 0.000000" solref="0.005 1" solimp="0.99 0.99 0.001"/>
+    <connect body1="platform" body2="leg_4" anchor="0.180975 0.123458 0.000000" solref="0.005 1" solimp="0.99 0.99 0.001"/>
+    <connect body1="platform" body2="leg_5" anchor="-0.180975 0.123458 0.000000" solref="0.005 1" solimp="0.99 0.99 0.001"/>
+  </equality>
+  <actuator>
+    <position name="act_0" joint="leg_0_slide" kp="10000" ctrlrange="-0.005000 0.285000" ctrllimited="true"/>
+    <position name="act_1" joint="leg_1_slide" kp="10000" ctrlrange="-0.005000 0.285000" ctrllimited="true"/>
+    <position name="act_2" joint="leg_2_slide" kp="10000" ctrlrange="-0.005000 0.285000" ctrllimited="true"/>
+    <position name="act_3" joint="leg_3_slide" kp="10000" ctrlrange="-0.005000 0.285000" ctrllimited="true"/>
+    <position name="act_4" joint="leg_4_slide" kp="10000" ctrlrange="-0.005000 0.285000" ctrllimited="true"/>
+    <position name="act_5" joint="leg_5_slide" kp="10000" ctrlrange="-0.005000 0.285000" ctrllimited="true"/>
+  </actuator>
+  <keyframe>
+    <key name="home" qpos="0.000000 0.000000 0.574300 1.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000"/>
+  </keyframe>
+  <sensor>
+    <jointpos name="slide_pos_0" joint="leg_0_slide"/>
+    <jointvel name="slide_vel_0" joint="leg_0_slide"/>
+    <jointpos name="slide_pos_1" joint="leg_1_slide"/>
+    <jointvel name="slide_vel_1" joint="leg_1_slide"/>
+    <jointpos name="slide_pos_2" joint="leg_2_slide"/>
+    <jointvel name="slide_vel_2" joint="leg_2_slide"/>
+    <jointpos name="slide_pos_3" joint="leg_3_slide"/>
+    <jointvel name="slide_vel_3" joint="leg_3_slide"/>
+    <jointpos name="slide_pos_4" joint="leg_4_slide"/>
+    <jointvel name="slide_vel_4" joint="leg_4_slide"/>
+    <jointpos name="slide_pos_5" joint="leg_5_slide"/>
+    <jointvel name="slide_vel_5" joint="leg_5_slide"/>
+    <framepos name="platform_pos" objtype="site" objname="platform_origin"/>
+    <framequat name="platform_quat" objtype="site" objname="platform_origin"/>
+    <framelinvel name="platform_linvel" objtype="site" objname="platform_origin"/>
+    <frameangvel name="platform_angvel" objtype="site" objname="platform_origin"/>
+  </sensor>
+</mujoco>

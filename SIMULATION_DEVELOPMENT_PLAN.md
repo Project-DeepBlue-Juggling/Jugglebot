@@ -20,6 +20,7 @@ The MPC will eventually deploy to real hardware (Jetson), sending position setpo
 | Ball model | Target pose at time T | No contact physics; ball = a pose deadline |
 | Code location | `sim/` top-level directory | Separate from ROS2; imports from `motion/` where useful |
 | ROS2 dependency | None in sim path | Pure Python; ROS2 only enters at hardware bridge (Phase 6) |
+| Containerisation | Docker (Linux container) | One `docker compose up` from clone to running sim on any machine (Windows/Linux). GPU passthrough for MuJoCo viewer via `--gpus all` + WSLg (Windows) or native X11 (Linux) |
 
 ## Architecture
 
@@ -101,12 +102,15 @@ Where `τ` is a tunable actuator time constant (~20-50 ms, matching real ODrive 
 
 ```
 sim/
-├── README.md                      # Setup instructions, dependencies
+├── Dockerfile                     # Linux container: Python 3.11 + GPU libs + pip deps
+├── compose.yaml                   # `docker compose up` — viewer, headless, and test profiles
+├── .dockerignore                  # Exclude .git, __pycache__, logs, etc.
+├── README.md                      # Setup instructions (Docker-first)
 ├── requirements.txt               # mujoco, casadi, pyspacemouse, numpy, etc.
 │
 ├── model/
 │   ├── jugglebot.xml              # MuJoCo MJCF model of Stewart platform
-│   └── meshes/                    # Optional STL meshes for visualization
+│   └── meshes/                    # STL meshes exported from Onshape (visual geoms)
 │
 ├── plant/
 │   ├── __init__.py
@@ -157,13 +161,25 @@ A Stewart platform is a closed-loop (parallel) mechanism with 6 legs connecting 
 MuJoCo's constraint solver enforces these at each timestep, effectively simulating the parallel mechanism. This is well-documented and works reliably for Stewart platforms specifically.
 
 **Tasks:**
+- [ ] Set up Docker environment:
+  - Create `sim/Dockerfile` (NVIDIA CUDA base, Python 3.11, OpenGL/GLEW/OSMesa libs, libhidapi, pip deps)
+  - Create `sim/compose.yaml` with GPU reservation, display forwarding, SpaceMouse device, log volume
+  - Create `sim/.dockerignore` (exclude `.git`, `__pycache__`, `logs/`, etc.)
+  - Create `sim/requirements.txt` (mujoco, casadi, numpy, pyspacemouse, matplotlib, pytest)
+  - Verify: `docker compose build` succeeds, `docker compose run --rm sim python -c "import mujoco; print(mujoco.__version__)"` prints the version
+- [ ] Export STL meshes from Onshape:
+  - Use Onshape's URDF export to get individual part STLs (ignore the URDF kinematic tree — it can't represent the parallel mechanism)
+  - Key parts: platform plate, base frame, leg assemblies (upper/lower), ball joint housings
+  - Place in `sim/model/meshes/` (e.g. `platform.stl`, `base.stl`, `leg_upper.stl`, `leg_lower.stl`)
+  - Simplify/decimate meshes if any are > 1 MB (MuJoCo loads them every startup; keep total < 5 MB)
 - [ ] Create `sim/model/jugglebot.xml` MJCF file:
   - Base frame: 6 base nodes from `hardware_config.yaml` `base_nodes_mm` (fixed)
   - Platform body: free joint, mass 1.2 kg, inertia from `dynamics` section
   - 6 legs: each a body with prismatic slide joint, connecting base node to platform node
   - Equality constraints: `connect` constraints at each ball joint (base and platform endpoints)
   - Actuators: 6 position actuators driving the prismatic joints
-  - Collision geometry: basic shapes for visualization (not needed for contact)
+  - Visual geoms: STL meshes from Onshape (referenced via `<mesh>` assets, attached to each body)
+  - Collision geoms: simple shapes (cylinders for legs, box for platform) — lightweight for solver, no contact physics needed
 - [ ] Set MuJoCo solver parameters: constraint solver tolerance, timestep (2 ms = 500 Hz)
 - [ ] Validate: load model in `mujoco.viewer`, verify platform is visible and connected
 - [ ] Write `sim/tests/test_model.py`:
@@ -394,9 +410,10 @@ Wire spacemouse input to MPC as a pose reference.
   - Target outside workspace: MPC constraint satisfaction automatically clips to feasible region (log a warning)
   - Zero input (spacemouse at rest): MPC holds current pose (tracking cost → 0 when at reference)
 - [ ] Cross-platform validation:
-  - Test on Windows (primary dev machine)
-  - Test on Jetson (if display available)
-  - Verify `pyspacemouse` and `mujoco.viewer` work on both
+  - Test Docker container on Windows (Docker Desktop + WSLg) and Linux
+  - Verify MuJoCo viewer renders correctly via display forwarding on both
+  - Verify SpaceMouse USB passthrough works (Linux: `--device`, Windows: `usbipd-win`)
+  - Test on Jetson (native, not Docker — Jetson runs the hardware path in Phase 6)
 
 **Deliverable:** Move the simulated Stewart platform with the spacemouse in real-time. Motion is smooth and respects workspace limits even with aggressive spacemouse input.
 
@@ -539,15 +556,117 @@ Train a small neural network on sim-to-real tracking error data to capture unmod
 
 | Package | Version | Purpose | Platform |
 |---------|---------|---------|----------|
-| `mujoco` | ≥ 3.0 | Physics simulation + viewer | Windows + Jetson (pip) |
-| `casadi` | ≥ 3.6 | Symbolic NLP + IPOPT solver | Windows + Jetson (pip) |
-| `numpy` | ≥ 1.24 | Array operations | Both (already installed) |
-| `pyspacemouse` | ≥ 0.6 | SpaceMouse input | Both (already installed) |
-| `matplotlib` | ≥ 3.7 | Post-hoc plotting | Both (already installed) |
+| `mujoco` | ≥ 3.0 | Physics simulation + viewer | All (pip) |
+| `casadi` | ≥ 3.6 | Symbolic NLP + IPOPT solver | All (pip) |
+| `numpy` | ≥ 1.24 | Array operations | All (pip) |
+| `pyspacemouse` | ≥ 0.6 | SpaceMouse input | All (pip) |
+| `matplotlib` | ≥ 3.7 | Post-hoc plotting | All (pip) |
+| `docker` | ≥ 24.0 | Container runtime | Host machine |
+| `nvidia-container-toolkit` | latest | GPU passthrough for MuJoCo viewer | Host machine (if NVIDIA GPU) |
 
 CasADi ships with IPOPT bundled — no separate solver installation required.
 
 MuJoCo is pure pip install since version 2.3.0 (no separate binary download).
+
+All Python dependencies are installed inside the Docker container — the only host requirement is Docker Desktop (Windows) or Docker Engine + NVIDIA Container Toolkit (Linux).
+
+---
+
+## Docker Environment
+
+The entire simulation runs inside a Docker container. A new machine goes from clone to running sim in under 5 minutes.
+
+### Prerequisites (host machine only)
+
+- **Docker Desktop** (Windows) or **Docker Engine** (Linux) — [install guide](https://docs.docker.com/get-docker/)
+- **NVIDIA GPU drivers** installed on the host (for MuJoCo viewer hardware acceleration)
+- **NVIDIA Container Toolkit** (Linux) or **WSLg** (Windows, included in Windows 11 / recent Windows 10) for GPU passthrough
+
+### Quickstart
+
+```bash
+git clone https://github.com/<you>/Jugglebot.git
+cd Jugglebot/sim
+
+# Build the container (~3 min first time, cached after)
+docker compose build
+
+# Run tests (headless, no GPU needed)
+docker compose run --rm sim pytest tests/
+
+# Run simulation with viewer
+docker compose up sim
+
+# Run simulation headless (logging only, no display)
+docker compose run --rm sim python main.py --no-viewer --trajectory T1
+```
+
+### Dockerfile (overview)
+
+```dockerfile
+FROM nvidia/cuda:12.2.0-runtime-ubuntu22.04
+
+RUN apt-get update && apt-get install -y \
+    python3.11 python3.11-venv python3-pip \
+    libgl1-mesa-glx libglew-dev libosmesa6-dev \
+    libhidapi-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . /app
+WORKDIR /app
+```
+
+The NVIDIA CUDA base image provides GPU access for MuJoCo's OpenGL rendering. `libhidapi-dev` enables SpaceMouse USB access inside the container.
+
+### compose.yaml (overview)
+
+```yaml
+services:
+  sim:
+    build: .
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    environment:
+      - DISPLAY=${DISPLAY:-:0}
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix      # X11 (Linux)
+      - ./logs:/app/logs                    # Persist telemetry logs
+    devices:
+      - /dev/hidraw0:/dev/hidraw0           # SpaceMouse (adjust device path)
+    command: python main.py
+```
+
+### Compose profiles
+
+| Command | What it does |
+|---------|-------------|
+| `docker compose up sim` | Viewer + SpaceMouse + full simulation |
+| `docker compose run --rm sim pytest tests/` | Run all tests headless |
+| `docker compose run --rm sim python main.py --no-viewer` | Headless sim with telemetry logging |
+| `docker compose run --rm sim python main.py --trajectory T2` | Run a specific scripted trajectory |
+
+### Display forwarding by OS
+
+| Host OS | How the viewer reaches your screen |
+|---------|-----------------------------------|
+| **Linux** | Native X11: mount `/tmp/.X11-unix`, set `DISPLAY`. Works out of the box. |
+| **Windows** | WSLg (Windows 11 / recent Win 10): Docker Desktop with WSL2 backend automatically provides a Wayland/X11 display. No extra config. |
+
+### SpaceMouse USB passthrough
+
+The SpaceMouse is a USB HID device. To use it inside the container:
+- **Linux:** `--device /dev/hidraw0` (check `ls /dev/hidraw*` to find the right device)
+- **Windows (WSL2):** Requires `usbipd-win` to attach the USB device to WSL, then `--device` as above. One-time setup: `usbipd bind --busid <BUS_ID>`, then `usbipd attach --wsl --busid <BUS_ID>`.
+
+If no SpaceMouse is connected, the sim runs normally — spacemouse input simply produces no data (same as existing `spacemouse_handler.py` behaviour).
 
 ---
 
@@ -559,3 +678,4 @@ MuJoCo is pure pip install since version 2.3.0 (no separate binary download).
 - **Warm-starting is critical.** IPOPT converges much faster when initialised with the previous solution shifted by one timestep. This is standard MPC practice and should be implemented from Phase 2.
 - **Solver failure is expected, not exceptional.** IPOPT will occasionally fail to converge — aggressive targets, cold starts, numerical issues near singularities. The fallback strategy (apply shifted previous solution) must be implemented from Phase 2 and tested explicitly. On hardware, consecutive failures escalate to hold → E-STOP.
 - **Log everything.** Every MPC solve should log to the `StepRecord` schema: solve time, cost, status, constraint violations, reference vs actual. This data is invaluable for tuning and is the basis for quantitative sim-to-real comparison in Phase 6. Use the same schema in sim and on hardware.
+- **Docker is the canonical environment.** All development, testing, and CI runs inside the Docker container. If a dependency or system library is needed, add it to the `Dockerfile` — never rely on host-installed packages. This ensures any machine with Docker + an NVIDIA GPU can reproduce the full environment.

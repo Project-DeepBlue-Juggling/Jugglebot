@@ -16,6 +16,7 @@ Thumbs.db
 # Virtual environment
 venv/
 env/
+.venv/
 
 # Build output
 build/
@@ -43,6 +44,9 @@ __pycache__/
 *.pyo
 *.pyd
 *.pyd
+.pytest_cache/
+*.egg-info/
+.mypy_cache/
 
 # Ignore specific ROS generated files
 .rviz/

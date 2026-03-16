@@ -674,6 +674,10 @@ def preview_all_tests():
     dt = 1.0 / 500.0  # 500 Hz eval rate
     dt_target = 1.0 / 100.0  # 100 Hz target rate
 
+    # Workspace enforcement (matching control_loop.py / simulate_spacemouse)
+    ws_limits = WorkspaceLimits.from_geometry(geom)
+    last_safe_pose = home.copy()
+
     # Single-pass simulation across all tests
     all_ts = []
     all_poses = []
@@ -708,8 +712,25 @@ def preview_all_tests():
             pose, twist, accel = smoother.evaluate(t)
             pos_rev, vel_ff, torque_ff, _ = cartesian_to_motor_commands(
                 pose, twist, accel, geom, dyn, feedforward_enabled=True)
+
+            # Workspace hard-limit enforcement
+            commanded_ext = revs_to_extensions_mm(pos_rev, geom)
             rot = rotvec_to_rot_matrix(pose[3:6])
-            ext = pose_to_leg_lengths(pose[:3], rot, geom)
+            cond = compute_condition_number(pose[:3], rot, geom)
+            ws_check = check_workspace_limits(commanded_ext, cond, ws_limits)
+
+            if ws_check.status == WorkspaceStatus.HARD_LIMIT:
+                pos_rev, vel_ff, torque_ff, _ = cartesian_to_motor_commands(
+                    last_safe_pose, np.zeros(6), np.zeros(6),
+                    geom, dyn, feedforward_enabled=True)
+                commanded_ext = revs_to_extensions_mm(pos_rev, geom)
+                pose = last_safe_pose.copy()
+                twist = np.zeros(6)
+                accel = np.zeros(6)
+            else:
+                last_safe_pose = pose.copy()
+
+            ext = commanded_ext
 
             all_ts.append(t)
             all_poses.append(pose)
@@ -732,8 +753,25 @@ def preview_all_tests():
             pose, twist, accel = smoother.evaluate(t)
             pos_rev, vel_ff, torque_ff, _ = cartesian_to_motor_commands(
                 pose, twist, accel, geom, dyn, feedforward_enabled=True)
+
+            # Workspace hard-limit enforcement
+            commanded_ext = revs_to_extensions_mm(pos_rev, geom)
             rot = rotvec_to_rot_matrix(pose[3:6])
-            ext = pose_to_leg_lengths(pose[:3], rot, geom)
+            cond = compute_condition_number(pose[:3], rot, geom)
+            ws_check = check_workspace_limits(commanded_ext, cond, ws_limits)
+
+            if ws_check.status == WorkspaceStatus.HARD_LIMIT:
+                pos_rev, vel_ff, torque_ff, _ = cartesian_to_motor_commands(
+                    last_safe_pose, np.zeros(6), np.zeros(6),
+                    geom, dyn, feedforward_enabled=True)
+                commanded_ext = revs_to_extensions_mm(pos_rev, geom)
+                pose = last_safe_pose.copy()
+                twist = np.zeros(6)
+                accel = np.zeros(6)
+            else:
+                last_safe_pose = pose.copy()
+
+            ext = commanded_ext
 
             all_ts.append(t)
             all_poses.append(pose)
