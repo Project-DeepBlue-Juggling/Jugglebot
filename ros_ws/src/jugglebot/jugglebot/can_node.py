@@ -129,7 +129,7 @@ class CanInterfaceNode(Node):
         self._bb_heartbeat_timeout_s = proto.BB_HEARTBEAT_TIMEOUT_MS / 1000.0
 
         # BB calibration data (populated by bb/calibration_result subscription)
-        self._bb_position_mm: tuple[float, float, float] | None = None
+        self._bb_position_mm = None  # Optional tuple (x, y, z) in mm
         self._bb_yaw_offset_rad: float = 0.0
 
         # Operational limits (mutable, can be changed via topics)

@@ -8,7 +8,7 @@ state (position, velocity, time-of-flight) at a configurable catch height.
 
 import math
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Tuple
 
 import jugglebot.hardware_config as hw
 
@@ -26,12 +26,12 @@ class ThrowPrediction:
     All positions in mm (global frame), velocities in mm/s, times in seconds.
     """
     # Initial state at throw time
-    initial_position: tuple[float, float, float]
-    initial_velocity: tuple[float, float, float]
+    initial_position: Tuple[float, float, float]
+    initial_velocity: Tuple[float, float, float]
 
     # Predicted landing state
-    landing_position: tuple[float, float, float]
-    landing_velocity: tuple[float, float, float]
+    landing_position: Tuple[float, float, float]
+    landing_velocity: Tuple[float, float, float]
     tof_s: float  # time of flight from throw to landing
 
 
@@ -39,7 +39,7 @@ def predict_throw(
     yaw_rad: float,
     pitch_rad: float,
     speed_mps: float,
-    bb_position_mm: tuple[float, float, float],
+    bb_position_mm: Tuple[float, float, float],
     yaw_offset_rad: float = 0.0,
     catch_height_mm: Optional[float] = None,
 ) -> Optional[ThrowPrediction]:
