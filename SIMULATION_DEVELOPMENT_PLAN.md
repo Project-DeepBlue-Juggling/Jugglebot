@@ -103,51 +103,56 @@ Where `τ` is a tunable actuator time constant (~20-50 ms, matching real ODrive 
 ```
 sim/
 ├── Dockerfile                     # Linux container: Python 3.11 + GPU libs + pip deps
-├── compose.yaml                   # `docker compose up` — viewer, headless, and test profiles
+├── compose.yaml                   # Two services: sim (GPU+display) and test (headless)
 ├── .dockerignore                  # Exclude .git, __pycache__, logs, etc.
-├── README.md                      # Setup instructions (Docker-first)
-├── requirements.txt               # mujoco, casadi, pyspacemouse, numpy, etc.
+├── requirements.txt               # mujoco, casadi, pyspacemouse, numpy, pytest, pyyaml, etc.
 │
 ├── model/
-│   ├── jugglebot.xml              # MuJoCo MJCF model of Stewart platform
+│   ├── generate_mjcf.py           # Generates jugglebot.xml from hardware_config.yaml
+│   ├── jugglebot.xml              # Auto-generated MJCF model (do not edit by hand)
 │   └── meshes/                    # STL meshes exported from Onshape (visual geoms)
+│       ├── base.stl               # Base frame
+│       ├── platform.stl           # Platform assembly
+│       ├── leg_outer.stl          # Outer tube (shared by all 6 legs)
+│       └── leg_inner.stl          # Inner tube (shared by all 6 legs)
 │
 ├── plant/
 │   ├── __init__.py
-│   ├── interface.py               # Abstract PlantInterface base class
-│   ├── mujoco_plant.py            # MuJoCo simulation plant
+│   ├── interface.py               # Abstract PlantInterface base class (Phase 1)
+│   ├── mujoco_plant.py            # MuJoCo simulation plant (Phase 1)
 │   └── hardware_plant.py          # Real hardware plant (Phase 6)
 │
 ├── controller/
 │   ├── __init__.py
-│   ├── mpc.py                     # CasADi MPC formulation and solver
-│   ├── reference.py               # Reference trajectory generation
-│   └── params.py                  # MPC tuning parameters (Q, R, S, N, etc.)
+│   ├── mpc.py                     # CasADi MPC formulation and solver (Phase 2)
+│   ├── reference.py               # Reference trajectory generation (Phase 3)
+│   └── params.py                  # MPC tuning parameters (Q, R, S, N, etc.) (Phase 2)
 │
 ├── input/
 │   ├── __init__.py
-│   ├── spacemouse.py              # SpaceMouse → target pose
-│   └── scripted.py                # Scripted target sequences for testing
+│   ├── spacemouse.py              # SpaceMouse → target pose (Phase 4)
+│   └── scripted.py                # Scripted target sequences for testing (Phase 3)
 │
 ├── viz/
 │   ├── __init__.py
-│   ├── horizon.py                 # MPC predicted trajectory overlay in MuJoCo viewer
-│   └── telemetry.py               # Logging, plotting, diagnostics
+│   ├── horizon.py                 # MPC predicted trajectory overlay in MuJoCo viewer (Phase 2)
+│   └── telemetry.py               # Logging, plotting, diagnostics (Phase 1)
 │
 ├── tests/
-│   ├── test_model.py              # MuJoCo model validation vs existing IK
-│   ├── test_mpc_static.py         # MPC tracks static poses
-│   ├── test_mpc_trajectory.py     # MPC tracks moving references
-│   └── test_mpc_dynamic.py        # MPC intercepts timed targets
+│   ├── __init__.py
+│   ├── test_model.py              # MuJoCo model validation vs existing IK (22 tests)
+│   ├── test_mpc_static.py         # MPC tracks static poses (Phase 2)
+│   ├── test_mpc_trajectory.py     # MPC tracks moving references (Phase 3)
+│   └── test_mpc_dynamic.py        # MPC intercepts timed targets (Phase 5)
 │
-└── main.py                        # Entry point: run simulation loop
+└── main.py                        # Entry point: run simulation loop (Phase 1)
 ```
 
 ---
 
 ## Phased Implementation
 
-### Phase 0: MuJoCo Stewart Platform Model
+### Phase 0: MuJoCo Stewart Platform Model — COMPLETE (2026-03-16)
 
 Build the MJCF XML description of Jugglebot and validate it against existing kinematics.
 
@@ -161,32 +166,33 @@ A Stewart platform is a closed-loop (parallel) mechanism with 6 legs connecting 
 MuJoCo's constraint solver enforces these at each timestep, effectively simulating the parallel mechanism. This is well-documented and works reliably for Stewart platforms specifically.
 
 **Tasks:**
-- [ ] Set up Docker environment:
-  - Create `sim/Dockerfile` (NVIDIA CUDA base, Python 3.11, OpenGL/GLEW/OSMesa libs, libhidapi, pip deps)
-  - Create `sim/compose.yaml` with GPU reservation, display forwarding, SpaceMouse device, log volume
-  - Create `sim/.dockerignore` (exclude `.git`, `__pycache__`, `logs/`, etc.)
-  - Create `sim/requirements.txt` (mujoco, casadi, numpy, pyspacemouse, matplotlib, pytest)
-  - Verify: `docker compose build` succeeds, `docker compose run --rm sim python -c "import mujoco; print(mujoco.__version__)"` prints the version
-- [ ] Export STL meshes from Onshape:
-  - Use Onshape's URDF export to get individual part STLs (ignore the URDF kinematic tree — it can't represent the parallel mechanism)
-  - Key parts: platform plate, base frame, leg assemblies (upper/lower), ball joint housings
-  - Place in `sim/model/meshes/` (e.g. `platform.stl`, `base.stl`, `leg_upper.stl`, `leg_lower.stl`)
-  - Simplify/decimate meshes if any are > 1 MB (MuJoCo loads them every startup; keep total < 5 MB)
-- [ ] Create `sim/model/jugglebot.xml` MJCF file:
-  - Base frame: 6 base nodes from `hardware_config.yaml` `base_nodes_mm` (fixed)
-  - Platform body: free joint, mass 1.2 kg, inertia from `dynamics` section
-  - 6 legs: each a body with prismatic slide joint, connecting base node to platform node
-  - Equality constraints: `connect` constraints at each ball joint (base and platform endpoints)
-  - Actuators: 6 position actuators driving the prismatic joints
-  - Visual geoms: STL meshes from Onshape (referenced via `<mesh>` assets, attached to each body)
-  - Collision geoms: simple shapes (cylinders for legs, box for platform) — lightweight for solver, no contact physics needed
-- [ ] Set MuJoCo solver parameters: constraint solver tolerance, timestep (2 ms = 500 Hz)
-- [ ] Validate: load model in `mujoco.viewer`, verify platform is visible and connected
-- [ ] Write `sim/tests/test_model.py`:
-  - Command known leg extensions → read resulting platform pose from MuJoCo
-  - Compare against `ik_solver.py` FK for 10+ test poses across the workspace
-  - Acceptance: position error < 1 mm, orientation error < 0.5° for all test poses
-  - Verify leg extension limits match `leg_stroke_mm: 280`
+- [x] Set up Docker environment:
+  - Created `sim/Dockerfile` (NVIDIA CUDA 12.2 base, Python 3.11, OpenGL/GLEW/OSMesa libs, libhidapi, pip deps)
+  - Created `sim/compose.yaml` with two services: `sim` (GPU, display forwarding, SpaceMouse) and `test` (headless, OSMesa)
+  - Created `sim/.dockerignore` (exclude `.git`, `__pycache__`, `logs/`, etc.)
+  - Created `sim/requirements.txt` (mujoco, casadi, numpy, pyspacemouse, matplotlib, pytest, pyyaml)
+- [x] Export STL meshes from Onshape:
+  - Meshes exported directly from Onshape (not URDF): `base.stl`, `platform.stl`, `leg_outer.stl`, `leg_inner.stl`
+  - All legs identical — single copy of each leg mesh, reused for all 6 legs
+  - Placed in `sim/model/meshes/`; generator auto-detects mesh presence and falls back to primitives if absent
+  - See [Appendix A](#appendix-a-stl-mesh-coordinate-conventions) for mesh origin conventions and offsets
+- [x] Create `sim/model/jugglebot.xml` MJCF file (auto-generated by `sim/model/generate_mjcf.py`):
+  - Reads all geometry from `config/hardware_config.yaml` — no hardcoded values
+  - Base frame: 6 base nodes as attachment sites (fixed in worldbody)
+  - Platform body: free joint, mass/inertia from `dynamics` section, CoM offset applied
+  - 6 legs: nested body structure — see [Appendix B](#appendix-b-mujoco-modelling-lessons) for rationale
+  - Equality constraints: `connect` constraints between platform and each leg tip
+  - Actuators: 6 position actuators (kp=10000) driving slide joints
+  - Visual geoms: STL meshes with mm→m scaling, or capsule/cylinder primitives as fallback
+  - Sensors: `framepos`/`framequat` on platform site (not body — see Appendix B)
+- [x] Set MuJoCo solver parameters: timestep 2 ms (500 Hz), Newton solver, constraint tolerance defaults
+- [x] Validate: model loads and renders correctly in `mujoco.viewer` on both Windows and Jetson
+- [x] Write `sim/tests/test_model.py` — 22 tests across 5 classes, all passing:
+  - `TestModelLoads` — model structure, actuators, sensors
+  - `TestHomePosition` — height (574.3 mm), orientation (identity), XY (origin)
+  - `TestFKValidation` — 13 parametrized poses compared against analytical FK (<0.023 mm position, <0.002° orientation)
+  - `TestLegLimits` — slide range covers 280 mm stroke
+  - `TestConstraintSatisfaction` — equality constraint violations negligible at home and offset poses
 
 **Key geometry values (from `hardware_config.yaml`):**
 | Parameter | Value | Used for |
@@ -199,7 +205,7 @@ MuJoCo's constraint solver enforces these at each timestep, effectively simulati
 | `platform_com_offset_mm` | [-9.68, -68.64, 52.73] | CoM in platform frame |
 | `platform_inertia_tensor_kgmm2` | 6 components | Rotational inertia |
 
-**Deliverable:** A `.xml` model that opens in MuJoCo's viewer, shows a Stewart platform at home position, and whose FK matches existing code to < 1 mm.
+**Deliverable:** A `.xml` model that opens in MuJoCo's viewer, shows a Stewart platform at home position, and whose FK matches existing code to < 0.023 mm (far exceeding the < 1 mm target). Validated on Windows 10 and Jetson Orin Nano.
 
 ---
 
@@ -679,3 +685,68 @@ If no SpaceMouse is connected, the sim runs normally — spacemouse input simply
 - **Solver failure is expected, not exceptional.** IPOPT will occasionally fail to converge — aggressive targets, cold starts, numerical issues near singularities. The fallback strategy (apply shifted previous solution) must be implemented from Phase 2 and tested explicitly. On hardware, consecutive failures escalate to hold → E-STOP.
 - **Log everything.** Every MPC solve should log to the `StepRecord` schema: solve time, cost, status, constraint violations, reference vs actual. This data is invaluable for tuning and is the basis for quantitative sim-to-real comparison in Phase 6. Use the same schema in sim and on hardware.
 - **Docker is the canonical environment.** All development, testing, and CI runs inside the Docker container. If a dependency or system library is needed, add it to the `Dockerfile` — never rely on host-installed packages. This ensures any machine with Docker + an NVIDIA GPU can reproduce the full environment.
+- **Jetson requires `MUJOCO_GL=egl`.** The Jetson Orin Nano uses NVIDIA's EGL (not GLX). Set `export MUJOCO_GL=egl` before launching the MuJoCo viewer. For headless testing, `MUJOCO_GL=osmesa` with `libosmesa6-dev` also works.
+- **Local venv for Windows development.** A local venv at `sim/.venv/` is used for Windows development outside Docker. Created with `python -m venv sim/.venv` and `pip install -r sim/requirements.txt`.
+
+---
+
+## Appendices
+
+### Appendix A: STL Mesh Coordinate Conventions
+
+All STL meshes are exported from Onshape in **millimeters**. The MJCF generator applies `scale="0.001 0.001 0.001"` to convert to meters at load time.
+
+Each mesh has its Onshape origin at a specific offset from the functional attachment point. The generator compensates with a `pos` attribute on the mesh geom:
+
+| Mesh | Onshape origin relative to attachment | MuJoCo `pos` offset (m) | Notes |
+|------|---------------------------------------|-------------------------|-------|
+| `base.stl` | (0, 0, -82) mm from ball joint plane (global origin) | `0 0 -0.082` | Base sits below the Z=0 ball joint plane |
+| `platform.stl` | At platform body frame origin | `0 0 0` | No offset needed |
+| `leg_outer.stl` | (0, 0, -64) mm from ball joint centre, Z along leg axis | `0 0 -0.064` | Placed in leg base body (ball joint at origin) |
+| `leg_inner.stl` | (0, 0, -704.47) mm from ball joint centre, Z along leg axis | `0 0 -0.70447` | Placed in leg inner body (platform attachment at origin) |
+
+All leg meshes are identical across the 6 legs. The per-leg rotation is handled by the body `quat` attribute on each `leg_{i}_base` body.
+
+If meshes are absent from `sim/model/meshes/`, the generator falls back to primitive shapes (capsules for legs, cylinder for base, cylinder for platform). This allows the model to work without Onshape exports.
+
+### Appendix B: MuJoCo Modelling Lessons
+
+Key issues encountered during Phase 0 development and their solutions:
+
+**1. Nested body structure for correct constraint anchors**
+
+MuJoCo computes `connect` equality constraint anchor positions at **compile time** using the reference configuration (all joints at `qpos0`). The initial approach — a single body per leg with the slide joint spanning the full leg length — failed because at `qpos0=0` the leg tip body was at the base node, not the platform node. The constraint anchor was computed 648 mm away from where it needed to be, causing the platform to fly apart on simulation start.
+
+**Solution:** Nested body structure. Each leg has an **outer body** at the base node (with 2 hinge joints for ball joint DoF) containing an **inner body** offset by the geometric home leg length. The slide joint is on the inner body. At compile time (`slide=0`), the inner body is already at the platform attachment point, so the `connect` constraint anchor is `(0, 0, 0)` — the body origin.
+
+```
+leg_{i}_base (at base_node, with quat aligning Z to leg direction)
+├── joint: hinge_x, hinge_y (ball joint approximation)
+├── geom: outer tube mesh or capsule
+└── leg_{i} (offset by [0, 0, home_len] — at platform node when slide=0)
+    ├── joint: slide along Z (range: [-margin, stroke+margin])
+    ├── geom: inner tube mesh
+    └── site: leg_tip (for visualization)
+```
+
+**2. Site-based sensors for body origin (not CoM)**
+
+MuJoCo's `framepos` and `framequat` sensors with `objtype="body"` return the **inertial frame** (centre of mass), not the body origin. For the platform, this was offset by `platform_com_offset_mm = [-9.68, -68.64, 52.73]`, causing an apparent 69 mm position error at home.
+
+**Solution:** Add a `<site name="platform_origin" pos="0 0 0"/>` to the platform body and use `objtype="site"` on the sensors. Sites report their actual position, not the CoM.
+
+**3. IK extension coordinate system vs geometric lengths**
+
+The IK model uses `init_leg_lengths_mm` (raw measured leg lengths, per-leg, WITHOUT `ball_joint_offset_mm`) as the zero reference for extensions. MuJoCo's slide joints use geometric home lengths (uniform, computed from node positions) as their zero reference. The conversion between IK extensions and MuJoCo slide values must account for this:
+
+```python
+# IK extensions (mm) → MuJoCo slide values (m)
+abs_length_m = (geom.init_leg_lengths_mm + extensions_mm) / 1000.0
+slide_m = abs_length_m - geometric_home_lengths_m
+```
+
+The per-leg discrepancy between measured and geometric lengths (~2-5 mm) means commanding "IK home" (extensions=0) results in slightly different slide positions per leg. FK validation must compare MuJoCo's pose against FK of the **actual slide positions**, not the commanded pose.
+
+**4. Ground plane alignment**
+
+The base mesh's Onshape origin is 82 mm below the ball joint plane. The ground plane must be at `pos="0 0 -0.082"` to sit at the base bottom, not at `Z=0` (which cuts through the base).
