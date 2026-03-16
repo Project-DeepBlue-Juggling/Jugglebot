@@ -15,12 +15,14 @@ from rclpy.node import Node
 from rclpy.action import ActionServer
 
 from jugglebot_interfaces.msg import (
+    BallButlerCalibrationResult,
     BallButlerHeartbeat as BallButlerHeartbeatMsg,
     CanTrafficReportMessage,
     HandTelemetryMessage,
     LegsTargetReachedMessage,
     RobotState,
     SetMotorVelCurrLimitsMessage,
+    ThrowAnnouncement,
 )
 from jugglebot_interfaces.srv import (
     ActivateOrDeactivate,
@@ -34,12 +36,13 @@ from jugglebot_interfaces.srv import (
 from jugglebot_interfaces.action import HomeMotors
 from std_msgs.msg import Float64MultiArray, String
 from std_srvs.srv import Trigger
-from geometry_msgs.msg import Quaternion
+from geometry_msgs.msg import Point, Quaternion, Vector3
 
 from jugglebot.can.bus import CANBus
 from jugglebot.can import odrive
 from jugglebot.can import ball_butler
 from jugglebot.can.motor_state import MotorStateTracker
+from jugglebot.can.throw_ballistics import predict_throw
 import jugglebot.protocol_config as proto
 import jugglebot.hardware_config as hw
 
@@ -125,6 +128,10 @@ class CanInterfaceNode(Node):
         self._bb_last_can_rx_time = 0.0  # monotonic time of last CAN heartbeat frame
         self._bb_heartbeat_timeout_s = proto.BB_HEARTBEAT_TIMEOUT_MS / 1000.0
 
+        # BB calibration data (populated by bb/calibration_result subscription)
+        self._bb_position_mm: tuple[float, float, float] | None = None
+        self._bb_yaw_offset_rad: float = 0.0
+
         # Operational limits (mutable, can be changed via topics)
         self.leg_vel_limit = odrive.DEFAULT_VEL_CURR['leg_vel']
         self.leg_curr_limit = odrive.DEFAULT_VEL_CURR['leg_curr']
@@ -204,6 +211,11 @@ class CanInterfaceNode(Node):
         self.create_subscription(SetMotorVelCurrLimitsMessage, 'set_motor_vel_curr_limits', self._sub_vel_curr_limits, 10)
         self.create_subscription(String, 'control_mode_topic', self._sub_control_mode, 10)
         self.create_subscription(Float64MultiArray, 'set_level_state', self._sub_set_level_state, 10)
+        # BB calibration result (TRANSIENT_LOCAL — receives latched message even if published before us)
+        from rclpy.qos import QoSProfile, DurabilityPolicy
+        bb_cal_qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self.create_subscription(BallButlerCalibrationResult, 'bb/calibration_result',
+                                 self._sub_bb_calibration, bb_cal_qos)
 
         # ── Publishers ─────────────────────────────────────────
         self.robot_state_pub = self.create_publisher(RobotState, 'robot_state', 10)
@@ -211,6 +223,7 @@ class CanInterfaceNode(Node):
         self.hand_telemetry_pub = self.create_publisher(HandTelemetryMessage, 'hand_telemetry', 10)
         self.target_reached_pub = self.create_publisher(LegsTargetReachedMessage, 'platform_target_reached', 10)
         self.bb_heartbeat_pub = self.create_publisher(BallButlerHeartbeatMsg, 'bb/heartbeat', 10)
+        self.throw_announcement_pub = self.create_publisher(ThrowAnnouncement, '/throw_announcements', 10)
 
         # ── Timers ─────────────────────────────────────────────
         can_poll_period = 0.001  # 1 kHz CAN poll
@@ -769,10 +782,84 @@ class CanInterfaceNode(Node):
             self.bus.send(msg)
             res.success = True
             res.message = "Throw command sent."
+            self._publish_throw_announcement(
+                req.yaw_angle_rad, req.pitch_angle_rad,
+                req.throw_speed, req.throw_time)
         except Exception as e:
             res.success = False
             res.message = str(e)
         return res
+
+    def _publish_throw_announcement(self, yaw_rad, pitch_rad, speed_mps, delay_s):
+        """Compute ballistic prediction and publish a ThrowAnnouncement.
+
+        Requires BB calibration data (position + yaw offset) to have been
+        received.  If not yet calibrated, logs a warning and skips.
+        """
+        if self._bb_position_mm is None:
+            self.get_logger().warning(
+                "Cannot publish throw announcement: BB calibration not received",
+                throttle_duration_sec=5.0)
+            return
+
+        prediction = predict_throw(
+            yaw_rad=yaw_rad,
+            pitch_rad=pitch_rad,
+            speed_mps=speed_mps,
+            bb_position_mm=self._bb_position_mm,
+            yaw_offset_rad=self._bb_yaw_offset_rad,
+        )
+        if prediction is None:
+            self.get_logger().warning("Throw prediction: ball never reaches catch plane")
+            return
+
+        now = self.get_clock().now()
+        throw_time = now + rclpy.time.Duration(seconds=delay_s)
+        landing_time = throw_time + rclpy.time.Duration(seconds=prediction.tof_s)
+
+        ann = ThrowAnnouncement()
+        ann.header.stamp = now.to_msg()
+        ann.header.frame_id = "base"
+        ann.thrower_name = "ball_butler"
+        ann.initial_position = Point(
+            x=prediction.initial_position[0],
+            y=prediction.initial_position[1],
+            z=prediction.initial_position[2])
+        ann.initial_velocity = Vector3(
+            x=prediction.initial_velocity[0],
+            y=prediction.initial_velocity[1],
+            z=prediction.initial_velocity[2])
+        ann.target_id = "jugglebot"
+        ann.target_position = Point()  # Not known at CAN layer
+        ann.throw_time = throw_time.to_msg()
+        ann.predicted_tof_sec = prediction.tof_s
+        ann.landing_position = Point(
+            x=prediction.landing_position[0],
+            y=prediction.landing_position[1],
+            z=prediction.landing_position[2])
+        ann.landing_velocity = Vector3(
+            x=prediction.landing_velocity[0],
+            y=prediction.landing_velocity[1],
+            z=prediction.landing_velocity[2])
+        ann.landing_time = landing_time.to_msg()
+
+        self.throw_announcement_pub.publish(ann)
+        self.get_logger().info(
+            f"Throw announced: tof={prediction.tof_s:.3f}s, "
+            f"landing=({prediction.landing_position[0]:.0f}, "
+            f"{prediction.landing_position[1]:.0f}, "
+            f"{prediction.landing_position[2]:.0f}) mm")
+
+    def _sub_bb_calibration(self, msg):
+        """Store BB calibration result for throw announcements."""
+        if not msg.success:
+            return
+        self._bb_position_mm = (msg.position_mm.x, msg.position_mm.y, msg.position_mm.z)
+        self._bb_yaw_offset_rad = msg.yaw_offset_rad
+        self.get_logger().info(
+            f"BB calibration received: pos=({msg.position_mm.x:.1f}, "
+            f"{msg.position_mm.y:.1f}, {msg.position_mm.z:.1f}) mm, "
+            f"yaw_offset={math.degrees(msg.yaw_offset_rad):.2f} deg")
 
     def _svc_bb_reload(self, req, res):
         return self._bb_state_cmd(ball_butler.RELOAD_CMD_ID, "reload", res)

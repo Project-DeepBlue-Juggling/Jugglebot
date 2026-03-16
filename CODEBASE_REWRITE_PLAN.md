@@ -245,8 +245,8 @@ ros_ws/src/jugglebot/
 - [x] Hardening & operational readiness (Phase 6 of MOTION_PLANNER_PLAN)
   - Workspace limits, singularity monitoring, fault detection — completed 2026-03-01
   - **Post-incident safety hardening (2026-03-11):** After a broken actuator caused by a step discontinuity, added defense-in-depth motor command safety: slew rate limiter (9.5 rev/s against actual motor feedback), motor feedback gating (no feedback → no commands), feedback staleness check (100ms), motor overspeed fault, tracking error fault (10mm), sustained slew fault (0.5s → ESTOP), lead-time gate (300ms minimum for dynamic targets), and bridge motor feedback forwarding. 8 offline tests in `test_safety.py`. See [docs/motion_planner/safety.md](docs/motion_planner/safety.md) for full documentation.
-- [ ] Absorb `gently_move_platform_to_setpoint()` as a trajectory-planned move
-- [ ] Absorb platform leveling as a planner method
+- [x] ~~Absorb `gently_move_platform_to_setpoint()` as a trajectory-planned move~~ — **DECIDED AGAINST (2026-03-16)**: TRAP_TRAJ runs entirely on the ODrive at 8 kHz with no host involvement. Routing these slow moves through the Python position-control pipeline would add failure modes (control process must be alive, IPC must be working, bridge must be forwarding) for zero functional gain. Keeping TRAP_TRAJ for homing, leveling, and gentle repositioning is strictly safer.
+- [x] ~~Absorb platform leveling as a planner method~~ — same rationale as above; leveling uses TRAP_TRAJ and should stay that way
 - [ ] **Test**: Spacemouse control through new pipeline. A/B compare with old system
 
 #### Mocap Gravity Alignment Check (Placeholder)

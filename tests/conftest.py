@@ -115,7 +115,46 @@ class SetTrapTrajLimitsMessage:
     trap_dec_limit: float = 0.0
 
 
+@dataclass
+class BallButlerCalibrationResult:
+    position_mm: object = None
+    yaw_offset_rad: float = 0.0
+    yaw_offset_std_deg: float = 0.0
+    axis_tilt_deg: float = 0.0
+    success: bool = False
+    message: str = ""
+
+
+@dataclass
+class ThrowAnnouncement:
+    header: object = field(default_factory=lambda: MagicMock())
+    thrower_name: str = ""
+    initial_position: object = None
+    initial_velocity: object = None
+    target_id: str = ""
+    target_position: object = None
+    throw_time: object = None
+    predicted_tof_sec: float = 0.0
+    landing_position: object = None
+    landing_velocity: object = None
+    landing_time: object = None
+
+
 # ── geometry_msgs mock ────────────────────────────────────────
+
+
+@dataclass
+class Point:
+    x: float = 0.0
+    y: float = 0.0
+    z: float = 0.0
+
+
+@dataclass
+class Vector3:
+    x: float = 0.0
+    y: float = 0.0
+    z: float = 0.0
 
 
 @dataclass
@@ -239,12 +278,27 @@ class MockLogger:
     def debug(self, msg, **kw): pass
 
 
+class MockTime:
+    """Stand-in for rclpy.time.Time — supports to_msg() and Duration addition."""
+    def __init__(self, nanoseconds=0):
+        self._ns = nanoseconds
+    def to_msg(self):
+        return self._ns
+    def __add__(self, other):
+        if isinstance(other, MockDuration):
+            return MockTime(self._ns + other._ns)
+        return NotImplemented
+
+
+class MockDuration:
+    """Stand-in for rclpy.time.Duration."""
+    def __init__(self, seconds=0.0, nanoseconds=0):
+        self._ns = int(seconds * 1e9) + nanoseconds
+
+
 class MockClock:
-    class _Now:
-        def to_msg(self):
-            return None
     def now(self):
-        return self._Now()
+        return MockTime()
 
 
 class MockPublisher:
@@ -361,6 +415,7 @@ class MockServiceClient:
 _create_mock_module('jugglebot_interfaces')
 _create_mock_module('jugglebot_interfaces.msg', {
     'MotorStateSingle': MotorStateSingle,
+    'BallButlerCalibrationResult': BallButlerCalibrationResult,
     'BallButlerHeartbeat': BallButlerHeartbeatMsg,
     'CanTrafficReportMessage': CanTrafficReportMessage,
     'HandTelemetryMessage': HandTelemetryMessage,
@@ -368,6 +423,7 @@ _create_mock_module('jugglebot_interfaces.msg', {
     'RobotState': RobotState,
     'SetMotorVelCurrLimitsMessage': SetMotorVelCurrLimitsMessage,
     'SetTrapTrajLimitsMessage': SetTrapTrajLimitsMessage,
+    'ThrowAnnouncement': ThrowAnnouncement,
 })
 _create_mock_module('jugglebot_interfaces.srv', {
     'ActivateOrDeactivate': ActivateOrDeactivate,
@@ -383,7 +439,11 @@ _create_mock_module('jugglebot_interfaces.action', {
 })
 
 _create_mock_module('geometry_msgs')
-_create_mock_module('geometry_msgs.msg', {'Quaternion': Quaternion})
+_create_mock_module('geometry_msgs.msg', {
+    'Point': Point,
+    'Quaternion': Quaternion,
+    'Vector3': Vector3,
+})
 
 _create_mock_module('std_msgs')
 _create_mock_module('std_msgs.msg', {
@@ -400,11 +460,31 @@ mock_rclpy.ok = MagicMock(return_value=True)
 mock_rclpy.init = MagicMock()
 mock_rclpy.shutdown = MagicMock()
 mock_rclpy.spin_once = MagicMock()
+mock_rclpy.time = types.SimpleNamespace(Duration=MockDuration, Time=MockTime)
 
 _create_mock_module('rclpy.node', {'Node': MockNode})
 _create_mock_module('rclpy.action', {
     'ActionServer': MockActionServer,
     'ActionClient': MockActionClient,
+})
+_create_mock_module('rclpy.time', {
+    'Time': MockTime,
+    'Duration': MockDuration,
+})
+
+# rclpy.qos — minimal mock for DurabilityPolicy and QoSProfile
+class _MockDurabilityPolicy:
+    TRANSIENT_LOCAL = 1
+    VOLATILE = 2
+
+class _MockQoSProfile:
+    def __init__(self, depth=10, durability=None, **kw):
+        self.depth = depth
+        self.durability = durability
+
+_create_mock_module('rclpy.qos', {
+    'QoSProfile': _MockQoSProfile,
+    'DurabilityPolicy': _MockDurabilityPolicy,
 })
 
 
