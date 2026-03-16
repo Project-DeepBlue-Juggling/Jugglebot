@@ -307,13 +307,11 @@ class MocapInterface:
         # Reuse sixdof_data extracted above for staleness check.
         new_body_poses = {}
 
-        if sixdof_data is None:
-            self.logger.debug("No 6DOF data in packet")
-            with self.data_lock:
-                self.body_poses = new_body_poses
-            return
+        if sixdof_data is not None:
+            info, bodies = sixdof_data
+        else:
+            bodies = []
 
-        info, bodies = sixdof_data
         for i, body in enumerate(bodies):
             raw_name = self.get_name_from_index(i, self.body_dict)
             is_base_frame = raw_name in self.base_frame_bodies
