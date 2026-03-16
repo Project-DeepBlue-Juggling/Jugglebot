@@ -55,11 +55,7 @@ def read_bag(bag_path: str) -> tuple[list, list]:
     """
     try:
         from rosbags.rosbag2 import Reader
-        from rosbags.typesys import get_types_from_msg, register_types, Stores
-        from rosbags.typesys.stores.ros2_humble import (
-            geometry_msgs__msg__Point as Point,
-            geometry_msgs__msg__Vector3 as Vector3,
-        )
+        from rosbags.typesys import get_typestore, Stores
     except ImportError:
         print("ERROR: 'rosbags' package not installed.")
         print("Install with: pip install rosbags")
