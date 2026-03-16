@@ -359,7 +359,7 @@ namespace BBHand {
 namespace BBSM {
   constexpr uint32_t HOMING_TIMEOUT_MS = 10000u;
   constexpr uint32_t HOMING_RETRY_DELAY_MS = 500u;
-  constexpr uint32_t RELOAD_TIMEOUT_MS = 10000u;
+  constexpr uint32_t RELOAD_TIMEOUT_MS = 20000u;
   constexpr uint32_t POST_THROW_DELAY_MS = 1000u;
   constexpr uint32_t IDLE_NO_CMD_TIMEOUT_MS = 5000u;
   constexpr float RELOAD_HAND_TOP_REV = 8.7f;

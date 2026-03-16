@@ -122,6 +122,7 @@ void StateMachine::enterState_(RobotState newState) {
     case RobotState::RELOADING:
       reload_attempt_ = 0;
       reload_sub_state_ = 0;
+      reload_failed_ = false;
       ball_check_samples_collected_ = 0;
       ball_check_positive_ = false;
       // Put the pitch and hand axes in CLOSED_LOOP_CONTROL mode
@@ -374,8 +375,8 @@ void StateMachine::handleThrowing_() {
 //   6: Move pitch back to ready angle before checking for ball in hand
 //   7: Await pitch arrival
 //   8: Check for ball in hand (wait for multiple samples)
-//   9: Move all axes to success positions (hand down, yaw home)
-//   10: Wait for hand and pitch to reach final positions, then transition to IDLE
+//   9: Move all axes to home positions (hand down, yaw home, pitch home)
+//   10: Wait for hand and pitch to reach final positions, then IDLE (or ERROR if reload_failed_)
 // --------------------------------------------------------------------
 void StateMachine::handleReloading_() {
   const uint32_t elapsed = millis() - state_enter_ms_;
@@ -387,8 +388,9 @@ void StateMachine::handleReloading_() {
   CanInterface::AxisHeartbeat hb_hand;
   CanInterface::AxisHeartbeat hb_pitch;
 
-  // Check for overall timeout
-  if (elapsed > config_.reload_timeout_ms) {
+  // Check for overall timeout (skip if already returning home after failure —
+  // sub-states 9/10 with reload_failed_ will reach ERROR on their own)
+  if (elapsed > config_.reload_timeout_ms && !reload_failed_) {
     triggerError("Reload sequence timeout");
     return;
   }
@@ -513,12 +515,12 @@ void StateMachine::handleReloading_() {
         sub_state_ms_ = millis();
         break;
       } else {
-        // Reset positions and trigger error
-        moveHandToPosition_(config_.hand_rev_home);
-        pitch_.setTargetDeg(config_.pitch_deg_home);
-        yaw_.setTargetDeg(config_.yaw_deg_home);
-
-        triggerError("No ball after max reload attempts");
+        // Mark as failed, then reuse sub-states 9/10 to return home before ERROR
+        debugf_("[SM] Reload failed after %d attempts, returning home before ERROR\n",
+                config_.max_reload_attempts);
+        reload_failed_ = true;
+        reload_sub_state_ = 9;
+        sub_state_ms_ = millis();
       }
       break;
 
@@ -532,15 +534,20 @@ void StateMachine::handleReloading_() {
       sub_state_ms_ = millis();
       break;
 
-    case 10:  // Wait for hand and pitch to reach final positions. Don't require yaw to be home before accepting tracking/throwing targets
+    case 10: {  // Wait for hand and pitch to reach final positions. Don't require yaw to be home before accepting tracking/throwing targets
       // Determine whether the hand is at the bottom from the proprioception reading
       const float hand_pos = PRO.getHandPosRev();
       const bool hand_at_bottom = (hand_pos >= config_.reload_hand_bottom_rev - config_.reload_hand_bottom_tolerance_rev) &&
                                  (hand_pos <= config_.reload_hand_bottom_rev + config_.reload_hand_bottom_tolerance_rev);
       if (hand_at_bottom && can_.getAxisHeartbeat(config_.pitch_node_id, hb_pitch) && hb_pitch.trajectory_done) {
-        enterState_(RobotState::IDLE);
+        if (reload_failed_) {
+          triggerError("No ball after max reload attempts");
+        } else {
+          enterState_(RobotState::IDLE);
+        }
       }
       break;
+    }
   }
 }
 

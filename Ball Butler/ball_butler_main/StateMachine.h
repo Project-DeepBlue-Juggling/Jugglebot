@@ -242,6 +242,7 @@ private:
   uint32_t homing_retry_ms_    = 0;   // Timestamp for retry delay
   uint8_t  reload_attempt_     = 0;
   uint8_t  reload_sub_state_   = 0;   // Sub-state within reload sequence
+  bool     reload_failed_      = false; // True if reload exhausted all attempts (return home then ERROR)
   uint8_t  ball_check_samples_collected_ = 0;  // Counter for ball check samples
   bool     ball_check_positive_   = false;     // True if any ball check was positive
   uint8_t  calibration_sub_state_ = 0;  // Sub-state within calibration
