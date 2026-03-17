@@ -7,10 +7,14 @@ The key_callback must be passed to ``mujoco.viewer.launch_passive()`` at
 construction time — it cannot be installed after the viewer is created.
 Use ``KeyboardInput.key_callback`` as the callback argument.
 
-Hold-to-move: holding a key applies continuous motion at a fixed rate
-(mm/s or deg/s).  The control loop calls ``apply(dt)`` each step to
-accumulate increments for all currently-held keys.  A key is considered
-released when no callback has been received for it within a short timeout.
+Each key press moves the target by a fixed step.  The step size depends
+on sensitivity and the control rate: ``pos_rate * sensitivity * dt`` per
+callback.  At 1.0x sensitivity and 50 Hz, each press moves ~3 mm / 0.6°.
+
+Note: MuJoCo's C++ simulate only forwards GLFW_PRESS to the Python
+key_callback (not GLFW_REPEAT or GLFW_RELEASE), so holding a key
+produces only one movement step.  Tap repeatedly for larger moves, or
+increase sensitivity with Numpad +.
 
 Controls (displayed in terminal on startup):
     Arrow Up/Down    — Y forward/backward
@@ -22,7 +26,7 @@ Controls (displayed in terminal on startup):
     Home             — Reset to default pose
     Numpad +/-       — Increase/decrease sensitivity
 
-Sensitivity scales the movement rate (e.g. 2.0x = twice as fast).
+Sensitivity scales the step size (e.g. 2.0x = twice as far per tap).
 
 Note: letter keys (WASD etc.) conflict with MuJoCo viewer's built-in
 visualisation toggles, so we use arrow/numpad keys instead.
@@ -248,12 +252,13 @@ class KeyboardInput:
     @staticmethod
     def _print_help() -> None:
         print("\n--- Keyboard Controls (focus MuJoCo viewer window) ---")
-        print("  Arrow Up/Down   : Y forward/back    (hold for continuous)")
-        print("  Arrow Left/Right: X left/right       (hold for continuous)")
-        print("  Page Up/Down    : Z up/down           (hold for continuous)")
-        print("  Numpad 8/2      : Pitch               (hold for continuous)")
-        print("  Numpad 4/6      : Roll                (hold for continuous)")
-        print("  Numpad 7/9      : Yaw                 (hold for continuous)")
+        print("  Arrow Up/Down   : Y forward/back")
+        print("  Arrow Left/Right: X left/right")
+        print("  Page Up/Down    : Z up/down")
+        print("  Numpad 8/2      : Pitch")
+        print("  Numpad 4/6      : Roll")
+        print("  Numpad 7/9      : Yaw")
         print("  Home            : Reset to default pose")
-        print("  Numpad +/-      : Sensitivity (rate multiplier)")
+        print("  Numpad +/-      : Sensitivity (step size multiplier)")
+        print("  Tap repeatedly for larger moves; Numpad + for bigger steps")
         print("------------------------------------------------------\n")
