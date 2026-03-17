@@ -5,6 +5,20 @@
 - **Working on `refactor` branch** — we can modify files in place, no need for a parallel package. The `main` branch remains untouched as a safety net.
 - **ROS2 Foxy** on Jetson Orin Nano (Ubuntu 20.04, Python 3.8). Code must avoid Python 3.9+ syntax (use `from __future__ import annotations` for `list[x]`/`dict[x,y]` type hints).
 
+## Phase Summary
+
+| Phase | Status | Key Points |
+|-------|--------|------------|
+| **Phase 0: Preparation** | DONE | Created `hardware_config.yaml` (17 sections), extended codegen, restructured package (`can/`, `motion/`, `archived/`), archived 22 obsolete files |
+| **Phase 1: CAN Interface** | DONE | Replaced 3,157-line monolith with 5 focused modules (~1,180 lines). Dropped cantools/DBC dependency, explicit leg inversion, generator-based async operations, safety hardening (watchdog, heartbeat gating, emergency idle) |
+| **Phase 2: State Machine + Orchestrator** | DONE | Pure Python state machine (~320 lines) with registry pattern. 5 states (BOOT→HOMING→IDLE↔ACTIVE, FAULT). Async-first orchestrator, request/response pattern between handlers and ROS2 node |
+| **Phase 3: Motion Planner** | DONE (re-eval) | Pure Python `motion/` subpackage, no ROS2. Standalone control process via ZeroMQ IPC. Full IK/FK/Jacobian, quintic trajectory generator, Newton-Euler dynamics (gravity + inertia feedforward), workspace limits, fault detection. Async feasibility pipeline for dynamic targets with C2-continuous splicing. Post-incident safety hardening (slew rate limiter, feedback gating, overspeed/tracking faults). All hardware tests PASS through Phase 7. **MPC-based replanner under development in `sim/` — may replace the quintic trajectory pipeline** |
+| **Phase 4: Mocap Integration** | DONE | Lifted `MocapInterface` class into new `mocap_node.py`. Removed stale dependencies (`get_robot_geometry`, `end_session`). Added BB calibration pipeline (circle fit, rotation axis, yaw offset) published on latched `bb/calibration_result` topic |
+| **Phase 5: Integration + Polish** | IN PROGRESS | New `jugglebot_launch.py`, full system test PASS (power on→homing→spacemouse). Rosbag verification and `archived/` cleanup remaining |
+| **Phase 6: Advanced Features** | FUTURE | Ball prediction → dynamic target API, BB aiming/coordination, force estimation, mocap-based pose correction |
+
+---
+
 ## Context
 
 The Jugglebot ROS2 workspace has grown organically around specific behaviors (catching, volley testing, hoop sinker, etc.) resulting in 18 Python nodes (~12,900 lines), scattered constants, monolithic files (`can_interface.py` at 2,351 lines), duplicated nodes (ball_butler + volley_testing are 95% identical), and no motion planner. The system going forward has a fundamentally different shape: 4-6 focused nodes centered around a **motion planner** that doesn't exist today.
