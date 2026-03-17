@@ -36,6 +36,7 @@ class ActiveMode(Enum):
     SPACEMOUSE = 'SPACEMOUSE'
     SHELL = 'SHELL'
     GUI = 'GUI'
+    CATCH = 'CATCH'
 
 
 # ── Timeouts ─────────────────────────────────────────────────────
@@ -406,7 +407,7 @@ class ActiveHandler(StateHandler):
         cmd = ctx.consume_command()
         if cmd == 'deactivate':
             return RobotState.IDLE
-        elif cmd in ('spacemouse', 'shell', 'gui'):
+        elif cmd in ('spacemouse', 'shell', 'gui', 'catch'):
             ctx.active_mode = ActiveMode(cmd.upper())
             ctx.control_mode = ctx.active_mode.value
         # Other commands silently discarded (already logged on receipt)

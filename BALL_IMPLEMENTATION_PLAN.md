@@ -17,9 +17,13 @@ Mocap (200Hz markers)  ──►  Ball Tracker Node  ──►  /balls (BallStat
 BB heartbeat (throw)   ──┘     (perception)              │
                                                           ▼
                                               Catch Coordinator Node  ──► dynamic_target IPC
-                                                 (control policy)              │
-                                                                               ▼
-                                                                    Motion Planner (already built)
+                                                 (control policy)    │          │
+                                                                     │          ▼
+                                                                     │  Motion Planner (already built)
+                                                                     │
+                                                                     ├──► set_hand_traj_cmd (CAN node)
+                                                                     ├──► smooth_move_hand  (CAN node)
+                                                                     └──► set_hand_gains    (CAN node)
 ```
 
 ### New Components
@@ -518,6 +522,49 @@ Wire perception to the motion planner. Adds the decision-making layer and all RO
 - **Destination assignment**: Announced balls (BB path) get `destination` from `ThrowAnnouncement.target_id`. Human throws always have empty destination — the coordinator only catches balls explicitly aimed at "jugglebot".
 - **DROPPED transition still deferred**: Same as Phase 1 — needs real data to inform the heuristic.
 - **Build required**: `BallState.msg` and `DynamicTargetCommand.msg` were added/modified. `setup.py` updated with `tracking` subpackage and new node entry points. Run `colcon build --packages-select jugglebot_interfaces jugglebot` on the Jetson.
+
+---
+
+### Phase 3: Hand Control Integration — catch coordinator commands the hand — ✅ COMPLETE (2026-03-17)
+
+Wire the catch coordinator to Jugglebot's hand motor for synchronized platform + hand catch sequences.
+
+**Problem**: The catch coordinator (Phase 2) only commanded platform motion via dynamic targets. The hand motor — which performs the physical catch action via a Teensy-generated trajectory — was not connected. The old `catch_from_ball_butler_node.py` handled both, but was a monolithic node that has been archived.
+
+**Solution**: Extend the existing catch coordinator to also command the hand, keeping the single-coordinator-per-catch design. The hand trajectory is armed via ROS2 services on `can_node.py`, while the Teensy handles the real-time 500 Hz trajectory execution.
+
+**Deliverables:**
+- `SetHandGains.srv` — New service definition: `pos_gain`, `vel_gain`, `vel_integrator_gain` → `success`, `message`
+- `can_node.py` — New `set_hand_gains` service: sends `set_pos_gain` + `set_vel_gains` CAN commands to hand axis, tracks current gains
+- `state_machine.py` — Added `CATCH` to `ActiveMode` enum; `ActiveHandler` accepts `catch` command
+- `can_node.py` — `CATCH` control mode handler: legs in CLOSED_LOOP, hand in CLOSED_LOOP + POSITION/PASSTHROUGH (other active modes idle the hand)
+- `motion_bridge_node.py` — Added `CATCH` to the set of modes that enable the control loop
+- `catch_coordinator.py` — `CatchCommand` extended with `arm_hand` (bool) and `event_vel_mps` (float); `_compute_catch_command()` populates hand fields from landing velocity
+- `catch_coordinator_node.py` — Full hand control lifecycle:
+  - Hand priming: `smooth_move_hand` to top of stroke on first catchable ball
+  - Catch gains: sets softer `pos_gain` (20.0 vs default 35.0) for compliant catch
+  - Trajectory arming: `set_hand_traj_cmd` with `event_delay` and `event_vel`, armed once per ball
+  - Gain restore: defaults restored on node shutdown
+- `hardware_config.yaml` — Added `hand_catch_prime_rev: 9.858` to jugglebot_operational section
+- `test_coordinator.py` — 4 new hand command tests (21 total, all passing)
+
+**Test results:** 53 tests across tracking suite, all passing in 0.34s
+- `test_coordinator.py` — 21 tests: +4 hand command tests (arm_hand flag, velocity clamping low/high, 3D speed)
+
+**Architecture decisions:**
+- **Hand commands via ROS2 services, not IPC**: The hand motor is controlled by the Teensy via CAN, not by the motion control process. Hand trajectory commands go `coordinator_node → can_node service → CAN bus → Teensy`, completely independent of the IPC/ZeroMQ path used for platform control. This matches the old architecture and avoids coupling hand control to the motion planner.
+- **Arm once per ball, not every update**: The hand catch trajectory is armed once when a ball first becomes catchable (tracked by `_hand_traj_armed_for_ball`). Subsequent coordinator updates for the same ball refine the *platform* target (via dynamic target replanning) but don't re-arm the hand — the Teensy executes the catch trajectory autonomously at 500 Hz from the initial arming.
+- **Soft gains for catch compliance**: The catch coordinator sets `pos_gain=20.0` (vs default 35.0) when entering catch mode. This gives the hand more compliance during ball impact, reducing bounce-off risk. The vel_gain and vel_int_gain are left at defaults — the compliance is primarily in position tracking stiffness. Gains are restored to defaults on node shutdown.
+- **Priming is one-shot per session**: The hand is primed (moved to top of stroke) on the first catchable ball detection. If the hand is already primed (e.g., from a previous catch attempt), the flag persists and priming is skipped. A CATCH→other mode→CATCH transition does NOT reset the prime flag — the hand position is assumed to be managed correctly by the catch lifecycle.
+- **CATCH mode in state machine**: The orchestrator now accepts a `catch` command when in the ACTIVE state, setting `control_mode='CATCH'`. The CAN node handles this by keeping legs AND hand in CLOSED_LOOP (unlike SPACEMOUSE/SHELL/GUI which idle the hand). The motion bridge enables the control loop for CATCH mode, allowing dynamic targets to be forwarded.
+
+**Items for investigation:**
+- **Hand prime position (9.858 rev)**: This value is from the archived `catch_from_ball_butler_node`. It should be verified against the current hand mechanism geometry — it represents the position where the hand is open and ready to catch. If the spool or hand mechanism has been modified, this value may need updating.
+- **Catch gains tuning**: The `pos_gain=20.0` for catch compliance is an initial value. The optimal stiffness depends on ball mass, impact speed, and hand mechanism compliance. This needs tuning with real catches. Consider making the catch gains configurable via hardware_config.yaml if tuning proves iterative.
+- **Hand re-arming on ball switch**: If the coordinator switches to a different ball (earlier landing time), the hand trajectory is armed for the new ball. However, the Teensy may already be executing a trajectory from the previous arming. The Teensy handles this by accepting new trajectory commands mid-execution, but the timing should be verified — a new smooth-move prelude starts immediately, which may cause a visible hand jerk.
+- **No hand feedback to coordinator**: The coordinator does not currently monitor whether the hand trajectory was successfully armed or completed. The `_on_hand_traj_done` callback logs success/failure but doesn't feed back into the coordinator policy. If the hand fails to arm (e.g., CAN timeout), the platform still moves to the catch position — the catch will just fail silently. Consider adding hand status to the coordinator's decision-making in the future.
+- **CATCH mode exit**: When the orchestrator transitions out of CATCH mode (e.g., `deactivate` or `spacemouse` command), the CAN node idles the hand (standard behavior for non-CATCH modes). However, the catch coordinator's `_hand_primed` flag is not reset. If the user re-enters CATCH mode, the hand won't be re-primed. This is intentional (the hand position is managed by the catch lifecycle), but could be surprising if the hand was manually moved between catch sessions.
+- **Build required**: `SetHandGains.srv` was added. `CMakeLists.txt` and `hardware_config.yaml` updated. Run `python config/generate_config.py` from repo root, then `colcon build --packages-select jugglebot_interfaces jugglebot` on the Jetson.
 
 ---
 

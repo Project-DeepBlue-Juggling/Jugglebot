@@ -30,6 +30,7 @@ from jugglebot_interfaces.srv import (
     ODriveCommandService,
     SendBallButlerCommand,
     SetFloat,
+    SetHandGains,
     SetHandTrajCmd,
     SetString,
 )
@@ -197,6 +198,7 @@ class CanInterfaceNode(Node):
         self.create_service(SetString, 'set_hand_state', self._svc_set_hand_state)
         self.create_service(SetHandTrajCmd, 'set_hand_traj_cmd', self._svc_set_hand_traj)
         self.create_service(SetFloat, 'smooth_move_hand', self._svc_smooth_move_hand)
+        self.create_service(SetHandGains, 'set_hand_gains', self._svc_set_hand_gains)
         self.create_service(SendBallButlerCommand, 'bb/send_throw_command', self._svc_bb_throw)
         self.create_service(Trigger, 'bb/reload', self._svc_bb_reload)
         self.create_service(Trigger, 'bb/reset', self._svc_bb_reset)
@@ -767,6 +769,25 @@ class CanInterfaceNode(Node):
             res.message = str(e)
         return res
 
+    def _svc_set_hand_gains(self, req, res):
+        try:
+            self.bus.send(odrive.encode_set_pos_gain(odrive.HAND_AXIS, req.pos_gain))
+            time.sleep(0.002)  # CAN bus pacing
+            self.bus.send(odrive.encode_set_vel_gains(
+                odrive.HAND_AXIS, req.vel_gain, req.vel_integrator_gain))
+            self.hand_gains = {
+                'pos_gain': req.pos_gain,
+                'vel_gain': req.vel_gain,
+                'vel_int_gain': req.vel_integrator_gain,
+            }
+            res.success = True
+            res.message = (f"Hand gains set: pos={req.pos_gain}, "
+                           f"vel={req.vel_gain}, vel_int={req.vel_integrator_gain}")
+        except Exception as e:
+            res.success = False
+            res.message = str(e)
+        return res
+
     def _svc_bb_throw(self, req, res):
         try:
             msg = ball_butler.encode_throw_command(req.yaw_angle_rad, req.pitch_angle_rad,
@@ -967,8 +988,9 @@ class CanInterfaceNode(Node):
     def _sub_control_mode(self, msg):
         """Handle control mode changes from the orchestrator.
 
-        Valid modes: '', 'ERROR', 'SPACEMOUSE', 'SHELL', 'LEVELLING', 'GUI'.
+        Valid modes: '', 'ERROR', 'SPACEMOUSE', 'SHELL', 'LEVELLING', 'GUI', 'CATCH'.
         Legs always remain in POSITION+PASSTHROUGH controller mode.
+        CATCH mode keeps hand in CLOSED_LOOP (other active modes idle the hand).
         """
         # Skip duplicate messages (orchestrator publishes every tick)
         prev = getattr(self, '_prev_control_mode', None)
@@ -986,6 +1008,19 @@ class CanInterfaceNode(Node):
                 self.get_logger().error("Error state detected. Stowing platform.")
                 self._gently_move_to_setpoint(0.0, deactivating=True)
                 self.stowed_due_to_error = True
+
+            elif msg.data == 'CATCH':
+                self.get_logger().info('Control mode: CATCH')
+                if not legs_closed:
+                    for axis_id in odrive.LEG_AXES:
+                        self.bus.send(odrive.encode_set_state(axis_id, 'CLOSED_LOOP'))
+                        time.sleep(0.005)
+                # Hand stays in CLOSED_LOOP for catch — hand traj commands need it
+                if not hand_closed:
+                    self.bus.send(odrive.encode_set_state(odrive.HAND_AXIS, 'CLOSED_LOOP'))
+                    time.sleep(0.005)
+                    self.bus.send(odrive.encode_set_controller_mode(
+                        odrive.HAND_AXIS, 'POSITION', 'PASSTHROUGH'))
 
             elif msg.data in ('SPACEMOUSE', 'SHELL', 'LEVELLING', 'GUI'):
                 self.get_logger().info(f'Control mode: {msg.data}')

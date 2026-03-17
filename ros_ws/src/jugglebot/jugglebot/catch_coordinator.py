@@ -25,12 +25,23 @@ from jugglebot.tracking.ball import Ball, BallStatus
 
 @dataclass
 class CatchCommand:
-    """Output of the coordinator: what to send to the motion planner."""
+    """Output of the coordinator: what to send to the motion planner and hand."""
     ball_id: int
     target_pos: np.ndarray     # [x, y, z] platform offset from home (mm)
     target_quat: np.ndarray    # [w, x, y, z] quaternion orientation
     target_vel: np.ndarray     # [vx, vy, vz] mm/s — always [0,0,0] for a catch
     landing_time: float        # Absolute landing time (ROS2 seconds)
+
+    # Hand control — populated by the coordinator for the node to execute.
+    # event_vel_mps is the ball speed at landing (m/s), clamped to Teensy range.
+    # The node computes event_delay from landing_time and current time.
+    arm_hand: bool = False         # True when hand catch trajectory should be armed
+    event_vel_mps: float = 0.0     # Ball speed at landing, m/s (clamped [0.3, 7.0])
+
+
+# Hand trajectory constants (Teensy limits)
+_MIN_EVENT_VEL_MPS = 0.3
+_MAX_EVENT_VEL_MPS = 7.0
 
 
 # ---------------------------------------------------------------------------
@@ -179,7 +190,7 @@ class CatchCoordinator:
     # ------------------------------------------------------------------
 
     def _compute_catch_command(self, ball: Ball) -> Optional[CatchCommand]:
-        """Compute the catch pose from a ball's landing state."""
+        """Compute the catch pose and hand parameters from a ball's landing state."""
         quat = self.compute_catch_orientation(ball.landing_velocity)
         if quat is None:
             return None
@@ -192,12 +203,18 @@ class CatchCoordinator:
             ball.landing_position[2] - self.initial_height_mm,
         ])
 
+        # Hand: compute ball speed at landing, clamped to Teensy range
+        speed_mps = float(np.linalg.norm(ball.landing_velocity)) / 1000.0
+        speed_mps = max(_MIN_EVENT_VEL_MPS, min(_MAX_EVENT_VEL_MPS, speed_mps))
+
         return CatchCommand(
             ball_id=ball.id,
             target_pos=target_pos,
             target_quat=quat,
             target_vel=np.zeros(3),  # Stationary catch
             landing_time=ball.landing_time,
+            arm_hand=True,
+            event_vel_mps=speed_mps,
         )
 
     def compute_catch_orientation(

@@ -1,0 +1,9 @@
+# Set hand motor PID gains on the ODrive.
+# Sends set_pos_gain and set_vel_gains CAN commands to the hand axis.
+
+float32 pos_gain            # Position gain (default 35.0)
+float32 vel_gain            # Velocity gain (default 0.007)
+float32 vel_integrator_gain # Velocity integrator gain (default 0.07)
+---
+bool success
+string message

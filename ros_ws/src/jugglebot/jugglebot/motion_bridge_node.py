@@ -136,7 +136,7 @@ class MotionBridgeNode(Node):
         prev = self._current_control_mode
         self._current_control_mode = mode
 
-        if mode in ('SPACEMOUSE', 'SHELL', 'GUI'):
+        if mode in ('SPACEMOUSE', 'SHELL', 'GUI', 'CATCH'):
             self._active_publisher = mode
             if prev != mode:
                 cmd = make_mode_command('enable', source=mode)
@@ -149,7 +149,7 @@ class MotionBridgeNode(Node):
             # not the motion planner.  Do NOT enable the control loop.
             self._active_publisher = mode
             if prev != mode:
-                if prev in ('SPACEMOUSE', 'SHELL', 'GUI'):
+                if prev in ('SPACEMOUSE', 'SHELL', 'GUI', 'CATCH'):
                     cmd = make_mode_command('disable')
                     self.ipc.send_mode_command(cmd)
                     self._control_loop_enabled = False

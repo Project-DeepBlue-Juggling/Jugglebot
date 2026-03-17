@@ -298,3 +298,46 @@ class TestBallSelection:
         coord = CatchCoordinator(initial_height_mm=INITIAL_HEIGHT)
         cmd = coord.update([], current_time=5.0)
         assert cmd is None
+
+
+class TestHandCommand:
+    """Hand control fields on CatchCommand."""
+
+    def test_arm_hand_set_on_catch(self):
+        """CatchCommand populates hand fields for a catchable ball."""
+        coord = CatchCoordinator(initial_height_mm=INITIAL_HEIGHT)
+        ball = _make_ball(landing_vel=[0.0, 0.0, -3000.0])  # 3 m/s down
+
+        cmd = coord.update([ball], current_time=5.0)
+        assert cmd is not None
+        assert cmd.arm_hand is True
+        assert cmd.event_vel_mps == pytest.approx(3.0, abs=0.01)
+
+    def test_event_vel_clamped_low(self):
+        """Very slow ball → event_vel clamped to minimum (0.3 m/s)."""
+        coord = CatchCoordinator(initial_height_mm=INITIAL_HEIGHT)
+        ball = _make_ball(landing_vel=[0.0, 0.0, -100.0])  # 0.1 m/s
+
+        cmd = coord.update([ball], current_time=5.0)
+        assert cmd is not None
+        assert cmd.event_vel_mps == pytest.approx(0.3)
+
+    def test_event_vel_clamped_high(self):
+        """Very fast ball → event_vel clamped to maximum (7.0 m/s)."""
+        coord = CatchCoordinator(initial_height_mm=INITIAL_HEIGHT)
+        ball = _make_ball(landing_vel=[0.0, 0.0, -10000.0])  # 10 m/s
+
+        cmd = coord.update([ball], current_time=5.0)
+        assert cmd is not None
+        assert cmd.event_vel_mps == pytest.approx(7.0)
+
+    def test_event_vel_from_3d_speed(self):
+        """event_vel uses full 3D speed, not just Z component."""
+        coord = CatchCoordinator(initial_height_mm=INITIAL_HEIGHT)
+        # Angled approach within 30° limit: ~14° tilt, speed = 5.099 m/s
+        ball = _make_ball(landing_vel=[1250.0, 0.0, -5000.0])
+
+        cmd = coord.update([ball], current_time=5.0)
+        assert cmd is not None
+        expected_speed = np.linalg.norm([1250.0, 0.0, -5000.0]) / 1000.0
+        assert cmd.event_vel_mps == pytest.approx(expected_speed, abs=0.01)
