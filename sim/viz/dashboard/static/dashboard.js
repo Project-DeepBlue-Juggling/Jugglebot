@@ -5,8 +5,20 @@
  * data at 50 Hz, and renders grouped charts using uPlot.
  */
 
-// ---- Colour palette ----------------------------------------------------
+// ---- Colour palette (matched to prod GUI: ros_ws/gui/js/telemetry-charts.js)
 const C = {
+    // Signal-type colours (prod canonical)
+    pos:       '#3b82f6',  // position measured — blue
+    pos_cmd:   '#60a5fa',  // position commanded — light blue
+    vel:       '#22c55e',  // velocity — green
+    cur_set:   '#f59e0b',  // current setpoint — amber
+    cur_meas:  '#fbbf24',  // current measured — light amber
+    temp_fet:  '#ef4444',  // FET temperature — red
+    temp_mot:  '#f87171',  // motor temperature — light red
+    bus_v:     '#a78bfa',  // bus voltage — purple
+    bus_i:     '#c084fc',  // bus current — light purple
+
+    // General semantic colours
     blue:   '#3b82f6',
     green:  '#22c55e',
     amber:  '#f59e0b',
@@ -14,12 +26,7 @@ const C = {
     purple: '#a78bfa',
     pink:   '#ec4899',
     cyan:   '#06b6d4',
-    lime:   '#84cc16',
 };
-const LEG_COLORS = [C.blue, C.green, C.amber, C.red, C.purple, C.pink];
-
-// Dimmer variants for "actual" signals (same hue, lower opacity feel)
-const LEG_COLORS_DIM = ['#60a5fa', '#4ade80', '#fbbf24', '#f87171', '#c4b5fd', '#f9a8d4'];
 
 const RAD2DEG = 180 / Math.PI;
 
@@ -32,9 +39,9 @@ const SECTIONS = [
         charts: Array.from({length: 6}, (_, i) => ({
             id: `leg${i}`, title: `Leg ${i}`,
             signals: [
-                { key: `cmd_L${i}`,  label: 'Cmd (mm)',    color: LEG_COLORS[i],     scale: 'pos', extract: d => d.cmd_ext[i] },
-                { key: `act_L${i}`,  label: 'Actual (mm)', color: LEG_COLORS_DIM[i], scale: 'pos', extract: d => d.act_ext[i] },
-                { key: `vel_L${i}`,  label: 'Vel (mm/s)',  color: '#64748b',         scale: 'vel', extract: d => d.leg_vel[i] },
+                { key: `cmd_L${i}`,  label: 'Cmd (mm)',    color: C.pos_cmd, scale: 'pos', extract: d => d.cmd_ext[i] },
+                { key: `act_L${i}`,  label: 'Actual (mm)', color: C.pos,     scale: 'pos', extract: d => d.act_ext[i] },
+                { key: `vel_L${i}`,  label: 'Vel (mm/s)',  color: C.vel,     scale: 'vel', extract: d => d.leg_vel[i] },
             ],
         })),
     },
@@ -43,16 +50,17 @@ const SECTIONS = [
         cols: 2,
         charts: [
             {
-                id: 'pos', title: 'Position (mm)',
+                id: 'pos', title: 'Position (mm)', scaleId: 'plat_pos',
+                // Per-axis hue spread within the blue family; dim variant for actual
                 signals: ['X', 'Y', 'Z'].flatMap((axis, i) => [
-                    { key: `ref_${axis}`, label: `Ref ${axis}`, color: [C.blue, C.green, C.amber][i],
+                    { key: `ref_${axis}`, label: `Ref ${axis}`, color: ['#2563eb', '#3b82f6', '#60a5fa'][i],
                       extract: d => d.ref[i] },
-                    { key: `act_${axis}`, label: `Act ${axis}`, color: [C.cyan, C.lime, '#fb923c'][i],
+                    { key: `act_${axis}`, label: `Act ${axis}`, color: ['#93c5fd', '#7dd3fc', '#bae6fd'][i],
                       extract: d => d.act[i] },
                 ]),
             },
             {
-                id: 'ori', title: 'Orientation (deg)',
+                id: 'ori', title: 'Orientation (deg)', scaleId: 'plat_ori',
                 signals: ['Rx', 'Ry', 'Rz'].flatMap((axis, i) => [
                     { key: `ref_${axis}`, label: `Ref ${axis}`, color: [C.purple, C.pink, C.cyan][i],
                       extract: d => d.ref[i + 3] * RAD2DEG },
@@ -69,16 +77,16 @@ const SECTIONS = [
             {
                 id: 'err', title: 'Tracking Error',
                 signals: [
-                    { key: 'err_mm',  label: 'Pos (mm)',  color: C.red,  extract: d => d.err.mm },
-                    { key: 'err_deg', label: 'Ori (deg)', color: C.blue, extract: d => d.err.deg },
+                    { key: 'err_mm',  label: 'Pos (mm)',  color: C.pos,   scale: 'err_mm',  extract: d => d.err.mm },
+                    { key: 'err_deg', label: 'Ori (deg)', color: C.amber, scale: 'err_deg', extract: d => d.err.deg },
                 ],
             },
             {
                 id: 'mpc', title: 'MPC Solver',
                 signals: [
-                    { key: 'solve_ms', label: 'Solve (ms)',  color: C.green, extract: d => d.mpc.solve_ms },
-                    { key: 'cost',     label: 'Cost',        color: C.amber, extract: d => d.mpc.cost },
-                    { key: 'cv',       label: 'Constr Viol', color: C.red,   extract: d => d.mpc.cv },
+                    { key: 'solve_ms', label: 'Solve (ms)',  color: C.green, scale: 'solve_ms', extract: d => d.mpc.solve_ms },
+                    { key: 'cost',     label: 'Cost',        color: C.amber, scale: 'cost',     extract: d => d.mpc.cost },
+                    { key: 'cv',       label: 'Constr Viol', color: C.red,   scale: 'cv',       extract: d => d.mpc.cv },
                 ],
             },
         ],
@@ -87,6 +95,51 @@ const SECTIONS = [
 
 // Flatten charts for data processing
 const ALL_CHARTS = SECTIONS.flatMap(s => s.charts);
+
+// ---- Minimum axis ranges ------------------------------------------------
+// Maps scale name → minimum visible span.  For non-negative signals (errors,
+// solve time, cost, constraint violation) the floor is 0 and the span sets
+// the ceiling.  For bipolar signals (position, velocity) the span is centred
+// on the data.
+const MIN_RANGE = {
+    // Legs
+    pos:       10,     // mm  — small moves shouldn't collapse to a flat line
+    vel:       100,    // mm/s
+    // Platform
+    plat_pos:  10,     // mm
+    plat_ori:  2,      // deg
+    // Diagnostics — tracking error
+    err_mm:    3,      // mm  (hardware threshold is 2-3 mm)
+    err_deg:   1,      // deg
+    // Diagnostics — MPC solver
+    solve_ms:  25,     // ms  (budget is 20 ms, so show headroom)
+    cost:      100,    // cost units
+    cv:        0.1,    // constraint violation
+};
+
+/** Build a uPlot-compatible range function that enforces a minimum span. */
+function rangeForScale(scaleName) {
+    const minSpan = MIN_RANGE[scaleName];
+    if (minSpan == null) return (u, dMin, dMax) => [dMin, dMax];
+
+    // Non-negative signals: floor at 0, ensure ceiling >= minSpan
+    const NON_NEG = new Set(['err_mm', 'err_deg', 'solve_ms', 'cost', 'cv']);
+    if (NON_NEG.has(scaleName)) {
+        return (_u, dMin, dMax) => {
+            const lo = 0;
+            const hi = Math.max(dMax ?? minSpan, minSpan);
+            return [lo, hi];
+        };
+    }
+    // Bipolar: keep data centred, widen symmetrically if span too small
+    return (_u, dMin, dMax) => {
+        if (dMin == null || dMax == null) return [-minSpan / 2, minSpan / 2];
+        const span = dMax - dMin;
+        if (span >= minSpan) return [dMin, dMax];
+        const mid = (dMin + dMax) / 2;
+        return [mid - minSpan / 2, mid + minSpan / 2];
+    };
+}
 
 // ---- State -------------------------------------------------------------
 let windowSec = 10;
@@ -167,10 +220,23 @@ const AXIS_STYLE = {
 function buildOpts(chart, width) {
     const active = chart.signals.filter(s => chart.activeKeys.has(s.key));
 
-    // Detect dual-axis from ALL signals the chart defines (not just active),
-    // so axes stay stable when signals are toggled on/off.
-    const allScaleNames = new Set(chart.signals.map(s => s.scale).filter(Boolean));
-    const dualAxis = allScaleNames.size > 1;
+    // Build a stable, ordered list of distinct scales from ALL signals (not
+    // just active) so that axes don't shift when signals are toggled.
+    const scaleOrder = [];
+    const scaleSeen = new Set();
+    for (const s of chart.signals) {
+        const sc = s.scale || 'y';
+        if (!scaleSeen.has(sc)) { scaleSeen.add(sc); scaleOrder.push(sc); }
+    }
+
+    // Map each scale name to the colour of the first signal that uses it.
+    const scaleColor = {};
+    for (const s of chart.signals) {
+        const sc = s.scale || 'y';
+        if (!scaleColor[sc]) scaleColor[sc] = s.color;
+    }
+
+    const multiAxis = scaleOrder.length > 1;
 
     const series = [
         { label: 'Time (s)' },
@@ -193,50 +259,49 @@ function buildOpts(chart, width) {
 
     let axes, scales;
 
-    if (dualAxis) {
-        axes = [
-            xAxis,
-            {
-                ...AXIS_STYLE,
-                label: 'mm',
-                labelSize: 14,
-                labelFont: '10px Inter, sans-serif',
-                labelGap: 2,
-                scale: 'pos',
-                side: 3,
-                size: 50,
-                grid: { stroke: 'rgba(255,255,255,0.03)', width: 1 },
-                ticks: { stroke: 'rgba(255,255,255,0.06)', width: 1 },
-            },
-            {
-                ...AXIS_STYLE,
-                label: 'mm/s',
-                labelSize: 14,
-                labelFont: '10px Inter, sans-serif',
-                labelGap: 2,
-                scale: 'vel',
-                side: 1,
-                size: 50,
-                grid: { show: false },
-                ticks: { stroke: 'rgba(255,255,255,0.06)', width: 1 },
-            },
-        ];
-        scales = {
-            x:   { time: false },
-            pos: { auto: true },
-            vel: { auto: true },
-        };
-    } else {
-        axes = [
-            xAxis,
-            {
-                ...AXIS_STYLE,
-                grid: { stroke: 'rgba(255,255,255,0.03)', width: 1 },
-                ticks: { stroke: 'rgba(255,255,255,0.06)', width: 1 },
-                size: 50,
-            },
-        ];
+    if (multiAxis) {
+        // Distribute axes: alternate left (3) / right (1) so they don't
+        // pile up on one side.  Only the first axis draws a background grid.
+        const nScales = scaleOrder.length;
+        const axisSize = nScales > 2 ? 42 : 50;
+        axes = [xAxis];
         scales = { x: { time: false } };
+
+        scaleOrder.forEach((sc, i) => {
+            const color = scaleColor[sc];
+            // Find the label text from the first signal on this scale
+            const sig = chart.signals.find(s => (s.scale || 'y') === sc);
+            const label = sig ? sig.label : sc;
+            axes.push({
+                ...AXIS_STYLE,
+                stroke: color,
+                label: label,
+                labelSize: 14,
+                labelFont: 'bold 10px Inter, sans-serif',
+                labelGap: 2,
+                scale: sc,
+                side: i % 2 === 0 ? 3 : 1,  // even → left, odd → right
+                size: axisSize,
+                grid: i === 0
+                    ? { stroke: 'rgba(255,255,255,0.03)', width: 1 }
+                    : { show: false },
+                ticks: { stroke: color + '40', width: 1 },
+            });
+            scales[sc] = { auto: true, range: rangeForScale(sc) };
+        });
+    } else {
+        // Single shared y-axis.  Use the chart's scaleId (if set) for min-range.
+        const scId = chart.scaleId || scaleOrder[0] || 'y';
+        axes = [
+            xAxis,
+            {
+                ...AXIS_STYLE,
+                grid: { stroke: 'rgba(255,255,255,0.03)', width: 1 },
+                ticks: { stroke: 'rgba(255,255,255,0.06)', width: 1 },
+                size: 50,
+            },
+        ];
+        scales = { x: { time: false }, y: { auto: true, range: rangeForScale(scId) } };
     }
 
     return {

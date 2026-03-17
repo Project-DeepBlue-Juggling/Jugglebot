@@ -1,7 +1,7 @@
-"""Keyboard input — cross-platform alternative to SpaceMouse.
+"""Keyboard input — alternative to SpaceMouse.
 
 Uses MuJoCo viewer's key callback to move the platform interactively.
-Works on both Windows and Linux without any special hardware.
+Works on Windows (and Linux with a working GLX stack — not Jetson).
 
 The key_callback must be passed to ``mujoco.viewer.launch_passive()`` at
 construction time — it cannot be installed after the viewer is created.

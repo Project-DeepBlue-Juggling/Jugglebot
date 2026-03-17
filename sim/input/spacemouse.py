@@ -4,7 +4,8 @@ Reads raw SpaceMouse state via ``pyspacemouse`` and converts it to a 6-DoF
 target pose ``[x, y, z, rx, ry, rz]`` (mm, rad) using sensitivity multipliers
 from ``hardware_config.yaml``.
 
-Linux-only: requires ``libhidapi-dev`` and USB HID access.
+Requires ``libhidapi-dev`` and USB HID access (Linux desktop, not Jetson —
+the MuJoCo viewer does not work on Jetson due to Tegra GLX incompatibility).
 
 Usage::
 
