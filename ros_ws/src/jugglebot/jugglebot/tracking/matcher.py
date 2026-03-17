@@ -95,8 +95,11 @@ class BallTracker:
 
         # Active balls keyed by id
         self._balls: Dict[int, Ball] = {}
-        # Kalman filters keyed by ball id (only for CONFIRMED balls)
+        # Kalman filters keyed by ball id
         self._filters: Dict[int, KalmanFilter] = {}
+        # Announcement initial states for analytical ballistic prediction
+        # keyed by ball id: (initial_position, initial_velocity, throw_time)
+        self._announcement_states: Dict[int, Tuple[np.ndarray, np.ndarray, float]] = {}
         # Next monotonic ball id
         self._next_id = 1
 
@@ -174,6 +177,11 @@ class BallTracker:
         )
         self._filters[ball_id] = kf
         self._balls[ball_id] = ball
+        self._announcement_states[ball_id] = (
+            np.array(initial_position, dtype=np.float64),
+            np.array(initial_velocity, dtype=np.float64),
+            throw_time,
+        )
         return ball_id
 
     def process_frame(
@@ -343,6 +351,9 @@ class BallTracker:
                 ball.velocity = kf.velocity
                 ball.timestamp = current_time
                 self._update_landing_prediction(ball, from_filter=True)
+                # Kill any parabolic marker tracks near this marker to
+                # prevent duplicate detection of the same physical ball
+                self._kill_tracks_near(markers[best_idx])
             else:
                 ball.frames_without_measurement += 1
 
@@ -405,6 +416,11 @@ class BallTracker:
 
         for track_id in promote_ids:
             track = self._marker_tracks.pop(track_id)
+            # Suppress duplicate: if this track's position is near an
+            # existing ball (announced or already tracked), it's the same
+            # physical ball — don't create a second Ball object.
+            if self._is_near_existing_ball(track.last_position, current_time):
+                continue
             self._promote_to_ball(track, current_time)
 
         # Prune stale tracks (no update for > 50ms)
@@ -452,6 +468,66 @@ class BallTracker:
         self.accel_residuals.append((residual, is_match))
 
         return is_match
+
+    def _is_near_existing_ball(
+        self, position: np.ndarray, current_time: float = 0.0,
+    ) -> bool:
+        """Check if a position is close to any existing in-flight ball.
+
+        Used to suppress duplicate detections: if the parabolic detector
+        finds a track near an already-tracked ball (e.g. an announced BB
+        throw), we discard it rather than creating a second Ball.
+
+        For ANNOUNCED balls, uses analytical ballistic prediction from the
+        announcement's initial state — this is far more accurate than the
+        KF, which accumulates process noise during predict-only steps.
+        """
+        threshold = self.match_threshold_base_mm  # ~100mm
+
+        for ball_id, ball in self._balls.items():
+            if ball.status not in (BallStatus.IN_FLIGHT, BallStatus.TO_BE_THROWN):
+                continue
+
+            # For CONFIRMED balls, use the filtered position
+            if ball.tracking == TrackingConfidence.CONFIRMED:
+                dist = np.linalg.norm(position - ball.position)
+                if dist < threshold:
+                    return True
+                continue
+
+            # For ANNOUNCED balls, compute analytical ballistic position
+            # from the stored announcement initial state
+            ann = self._announcement_states.get(ball_id)
+            if ann is not None:
+                init_pos, init_vel, throw_time = ann
+                if current_time >= throw_time:
+                    dt = current_time - throw_time
+                    predicted = np.array([
+                        init_pos[0] + init_vel[0] * dt,
+                        init_pos[1] + init_vel[1] * dt,
+                        init_pos[2] + init_vel[2] * dt - 0.5 * GRAVITY_MMPS2 * dt * dt,
+                    ])
+                    dist = np.linalg.norm(position - predicted)
+                    if dist < threshold:
+                        return True
+
+        return False
+
+    def _kill_tracks_near(self, position: np.ndarray):
+        """Remove any marker tracks whose last position is near a given point.
+
+        Called when an announced ball gets confirmed by a marker, to prevent
+        stale tracks from later being promoted as duplicate parabolic detections.
+        """
+        to_remove = []
+        for track_id, track in self._marker_tracks.items():
+            if not track.positions:
+                continue
+            dist = np.linalg.norm(track.last_position - position)
+            if dist < self.gate_radius_mm * 3:
+                to_remove.append(track_id)
+        for tid in to_remove:
+            del self._marker_tracks[tid]
 
     def _promote_to_ball(self, track: _MarkerTrack, current_time: float):
         """Create a new Ball from a parabolic marker track."""
@@ -526,6 +602,7 @@ class BallTracker:
         for ball_id in to_remove:
             del self._balls[ball_id]
             self._filters.pop(ball_id, None)
+            self._announcement_states.pop(ball_id, None)
 
     # ------------------------------------------------------------------
     # Internal: Landing prediction
