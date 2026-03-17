@@ -335,7 +335,7 @@ def print_report(result: AnalysisResult, label: str = ""):
         print(f"  BB confirmation rate: {result.confirmed_balls}/{result.announced_balls} ({pct:.0f}%)")
 
     if result.announced_balls == 0 and result.parabolic_detections > 0:
-        print(f"  ⚠ FALSE POSITIVES: {result.parabolic_detections} parabolic detections "
+        print(f"  WARNING — FALSE POSITIVES: {result.parabolic_detections} parabolic detections "
               f"with no announcements")
 
     if result.accel_residuals:
@@ -361,10 +361,10 @@ def print_report(result: AnalysisResult, label: str = ""):
             min_rejected = min(rejected)
             if max_promoted < min_rejected:
                 mid = (max_promoted + min_rejected) / 2
-                print(f"    → Clean separation! Suggested threshold: {mid:.0f} mm/s²")
+                print(f"    CLEAN SEPARATION. Suggested threshold: {mid:.0f} mm/s2")
             else:
-                print(f"    → Overlap between promoted ({max_promoted:.0f}) and "
-                      f"rejected ({min_rejected:.0f}) — may need more frames or tighter gate")
+                print(f"    OVERLAP between promoted ({max_promoted:.0f}) and "
+                      f"rejected ({min_rejected:.0f}) -- may need more frames or tighter gate")
         print()
 
     if result.ball_details:
