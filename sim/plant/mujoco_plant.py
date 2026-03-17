@@ -12,6 +12,9 @@ Coordinate convention:
     reference.  This plant handles the offset transparently.
 """
 
+from __future__ import annotations
+
+import logging
 import os
 import sys
 
@@ -32,6 +35,8 @@ from jugglebot.motion.ik_solver import (
 )
 
 from .interface import PlantInterface, PlantState
+
+logger = logging.getLogger(__name__)
 
 # Default MJCF model path
 _DEFAULT_MODEL_PATH = os.path.join(
@@ -86,6 +91,10 @@ class MuJoCoPlant(PlantInterface):
         )
         for name in sensor_names:
             sid = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_SENSOR, name)
+            if sid < 0:
+                raise RuntimeError(
+                    f"Sensor '{name}' not found in MJCF model '{model_path}'"
+                )
             adr = self._model.sensor_adr[sid]
             dim = self._model.sensor_dim[sid]
             self._sensor_adr[name] = (adr, dim)
@@ -100,8 +109,16 @@ class MuJoCoPlant(PlantInterface):
 
         extension=0 → home position.  Range: [0, leg_stroke_mm].
         """
+        ext = np.asarray(leg_extensions_mm, dtype=float)
+        stroke = self._geom.leg_stroke_mm
+        eps = 1.0  # mm tolerance for numerical noise
+        if np.any(ext < -eps) or np.any(ext > stroke + eps):
+            logger.warning(
+                "command() extensions outside [0, %.1f] mm: min=%.2f, max=%.2f",
+                stroke, ext.min(), ext.max(),
+            )
         # Convert home-relative → IK-convention (add home offset) → slide
-        ik_ext = np.asarray(leg_extensions_mm, dtype=float) + self._home_extensions_mm
+        ik_ext = ext + self._home_extensions_mm
         slide_m = self._extensions_to_slide(ik_ext)
         self._data.ctrl[:6] = slide_m
 

@@ -6,6 +6,8 @@ accumulates records and writes CSV, and plotting utilities for post-hoc analysis
 The same schema is used for sim and hardware — enables direct comparison in Phase 6.
 """
 
+from __future__ import annotations
+
 import csv
 import os
 from dataclasses import dataclass, field, fields, asdict

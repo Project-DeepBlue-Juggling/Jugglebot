@@ -4,6 +4,8 @@ Renders the MPC's predicted platform trajectory as a series of translucent
 spheres colour-coded by time: bright green (near future) → faded (far future).
 """
 
+from __future__ import annotations
+
 import numpy as np
 import mujoco
 

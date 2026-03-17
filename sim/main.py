@@ -12,6 +12,10 @@ Usage examples:
     python sim/main.py --mpc --pose 0,0,50,0,0,0
     python sim/main.py --mpc --sequence "0,0,50,0,0,0@0.5 0,0,0,0,0,0@2.0"
 
+    # Interactive input (Phase 4): MPC plans smooth motion to live target
+    python sim/main.py --spacemouse                  # SpaceMouse (Linux only)
+    python sim/main.py --keyboard                    # Keyboard (cross-platform)
+
     # Live telemetry dashboard (open http://localhost:8082 in browser)
     python sim/main.py --dashboard --mpc --pose 0,0,50,0,0,0
 """
@@ -60,6 +64,10 @@ def parse_args():
     p.add_argument('--trajectory', type=str, default=None,
                    help='Scripted trajectory name (T1, T2, T3, T4). '
                         'Implies --mpc. Overrides --pose/--sequence.')
+    p.add_argument('--spacemouse', action='store_true',
+                   help='SpaceMouse interactive input (Linux only, implies --mpc)')
+    p.add_argument('--keyboard', action='store_true',
+                   help='Keyboard interactive input (cross-platform, implies --mpc)')
     p.add_argument('--dashboard', action='store_true',
                    help='Start live telemetry dashboard (web browser)')
     p.add_argument('--dashboard-port', type=int, default=8082,
@@ -393,6 +401,71 @@ def run_trajectory_with_viewer(plant: MuJoCoPlant, mpc, ref_gen, duration: float
     _print_mpc_summary(logger)
 
 
+## ---------------------------------------------------------------------------
+# Interactive input MPC loops (Phase 4)
+# ---------------------------------------------------------------------------
+
+def run_interactive_with_viewer(plant: MuJoCoPlant, mpc, input_source,
+                                duration: float, logger: TelemetryLogger,
+                                dashboard=None) -> None:
+    """Run MPC with live interactive input (spacemouse or keyboard), with viewer.
+
+    Parameters
+    ----------
+    input_source : object
+        Must have a ``read() -> np.ndarray`` method returning (6,) target pose,
+        and optionally a ``key_callback`` attribute for keyboard input.
+    """
+    import mujoco.viewer
+    from viz.horizon import HorizonRenderer
+
+    horizon = HorizonRenderer(plant.geom.init_height_mm)
+
+    # key_callback must be passed at construction — cannot be set later
+    kc = getattr(input_source, 'key_callback', None)
+    with mujoco.viewer.launch_passive(
+        plant.model, plant.data, key_callback=kc
+    ) as viewer:
+        start_wall = time.monotonic()
+        sim_time_target = 0.0
+
+        while viewer.is_running() and sim_time_target < duration:
+            state = plant.get_state()
+
+            # Integrate held-key motion (keyboard); no-op for spacemouse
+            if hasattr(input_source, 'apply'):
+                input_source.apply(CONTROL_DT)
+
+            # Read the latest target from the input device
+            target_pose = input_source.read()
+
+            # Build a static reference for the MPC horizon
+            # (MPC plans smooth optimal path to reach the target)
+            ref_poses = np.tile(target_pose, (mpc.params.N + 1, 1))
+            ref_twists = np.zeros_like(ref_poses)
+
+            cmd, diag = mpc.solve(state, ref_poses, ref_twist=ref_twists)
+            plant.command(cmd)
+            plant.step(CONTROL_DT)
+            sim_time_target += CONTROL_DT
+
+            _log_mpc_step(logger, state, target_pose, cmd, diag,
+                          ref_twist=np.zeros(6), dashboard=dashboard)
+
+            horizon.update(mpc.predicted_poses)
+            horizon.render(viewer)
+            viewer.sync()
+
+            # Real-time pacing
+            elapsed = time.monotonic() - start_wall
+            sleep_time = sim_time_target - elapsed
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+
+    logger.flush()
+    _print_mpc_summary(logger)
+
+
 def _print_mpc_summary(logger: TelemetryLogger) -> None:
     """Print summary statistics from an MPC run."""
     if not logger.records:
@@ -414,14 +487,34 @@ def _print_mpc_summary(logger: TelemetryLogger) -> None:
 def main():
     args = parse_args()
 
+    # Interactive input mode (Phase 4) — overrides everything else
+    input_source = None
+    if args.spacemouse:
+        args.mpc = True
+        from input.spacemouse import SpaceMouseInput
+        input_source = SpaceMouseInput()
+        if not input_source.connected:
+            print("ERROR: SpaceMouse not available. Use --keyboard instead.")
+            sys.exit(1)
+        label = "SpaceMouse interactive"
+        default_duration = 300.0  # 5 minutes, effectively unlimited
+    elif args.keyboard:
+        args.mpc = True
+        from input.keyboard import KeyboardInput
+        input_source = KeyboardInput()
+        label = "Keyboard interactive"
+        default_duration = 300.0
+
     # Trajectory mode (Phase 3) — overrides --pose/--sequence
     ref_gen = None
-    if args.trajectory:
+    if args.trajectory and input_source is None:
         args.mpc = True  # trajectories always use MPC
         from input.scripted import get_trajectory
         ref_gen, default_duration = get_trajectory(args.trajectory)
         label = f"Trajectory: {args.trajectory}"
         schedule = None  # not used in trajectory mode
+    elif input_source is not None:
+        schedule = None  # not used in interactive mode
     elif args.sequence:
         schedule = _parse_sequence(args.sequence)
         label = f"Sequence: {len(schedule)} poses"
@@ -470,7 +563,7 @@ def main():
         # The tight 18ms budget is for production (Phase 6) where the control
         # period is a hard deadline. In simulation, we want correct solutions.
         param_overrides = dict(max_cpu_time=2.0, max_iter=500)
-        if ref_gen is not None:
+        if ref_gen is not None or input_source is not None:
             param_overrides['max_leg_vel_mmps'] = 1000.0
         mpc = MPCController.from_plant(MPCParams(**param_overrides), plant)
         print("MPC controller initialised "
@@ -478,7 +571,15 @@ def main():
               f"v_max={mpc.params.max_leg_vel_mmps:.0f} mm/s)")
 
     try:
-        if ref_gen is not None:
+        if input_source is not None:
+            # Interactive input mode (Phase 4) — viewer required
+            if args.no_viewer:
+                print("ERROR: --spacemouse/--keyboard requires the viewer "
+                      "(remove --no-viewer)")
+                sys.exit(1)
+            run_interactive_with_viewer(plant, mpc, input_source, duration,
+                                       logger, dashboard)
+        elif ref_gen is not None:
             # Trajectory mode (Phase 3)
             if args.no_viewer:
                 run_trajectory_headless(plant, mpc, ref_gen, duration, logger, dashboard)
@@ -498,6 +599,8 @@ def main():
         print("\nInterrupted — flushing telemetry...")
         logger.flush()
     finally:
+        if input_source is not None and hasattr(input_source, 'close'):
+            input_source.close()
         if dashboard is not None:
             dashboard.stop()
 

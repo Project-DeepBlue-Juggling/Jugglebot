@@ -63,10 +63,12 @@ def make_T2(start_time: float = 0.5) -> tuple[ReferenceGenerator, float]:
     from jugglebot.motion.quintic import create_trajectory, evaluate as quintic_evaluate
 
     # Quintic ramp: home → [radius, 0, z_offset, 0, 0, 0] with zero twist at
-    # start and matching circular velocity at end
+    # start and matching circular velocity + centripetal acceleration at end
     orbit_start_pose = np.array([radius, 0.0, z_offset, 0.0, 0.0, 0.0])
     # Velocity at orbit start: vx=0, vy=radius*omega (tangent to circle at theta=0)
     orbit_start_twist = np.array([0.0, radius * omega, 0.0, 0.0, 0.0, 0.0])
+    # Centripetal acceleration at theta=0: ax=-r*omega^2, ay=0 (points inward)
+    orbit_start_accel = np.array([-radius * omega ** 2, 0.0, 0.0, 0.0, 0.0, 0.0])
 
     ramp_traj = create_trajectory(
         start_pose=np.zeros(6),
@@ -74,7 +76,7 @@ def make_T2(start_time: float = 0.5) -> tuple[ReferenceGenerator, float]:
         start_accel=np.zeros(6),
         end_pose=orbit_start_pose,
         end_twist=orbit_start_twist,
-        end_accel=np.zeros(6),
+        end_accel=orbit_start_accel,
         duration=ramp_duration,
         t_start=start_time,
     )
@@ -92,7 +94,10 @@ def make_T2(start_time: float = 0.5) -> tuple[ReferenceGenerator, float]:
 
         t_orbit = t - orbit_start
         if t_orbit > orbit_time:
-            # After orbit: hold at orbit start
+            # After orbit: hold at orbit start with zero twist.
+            # NOTE: velocity discontinuity here — orbit ends with vy=r*omega
+            # (~251 mm/s) but hold reference has zero twist. MPC handles
+            # deceleration naturally via its prediction horizon.
             return orbit_start_pose.copy(), np.zeros(6)
 
         theta = omega * t_orbit
