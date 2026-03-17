@@ -14,7 +14,7 @@
 | **Phase 2: State Machine + Orchestrator** | DONE | Pure Python state machine (~320 lines) with registry pattern. 5 states (BOOT→HOMING→IDLE↔ACTIVE, FAULT). Async-first orchestrator, request/response pattern between handlers and ROS2 node |
 | **Phase 3: Motion Planner** | DONE (re-eval) | Pure Python `motion/` subpackage, no ROS2. Standalone control process via ZeroMQ IPC. Full IK/FK/Jacobian, quintic trajectory generator, Newton-Euler dynamics (gravity + inertia feedforward), workspace limits, fault detection. Async feasibility pipeline for dynamic targets with C2-continuous splicing. Post-incident safety hardening (slew rate limiter, feedback gating, overspeed/tracking faults). All hardware tests PASS through Phase 7. **MPC-based replanner under development in `sim/` — may replace the quintic trajectory pipeline** |
 | **Phase 4: Mocap Integration** | DONE | Lifted `MocapInterface` class into new `mocap_node.py`. Removed stale dependencies (`get_robot_geometry`, `end_session`). Added BB calibration pipeline (circle fit, rotation axis, yaw offset) published on latched `bb/calibration_result` topic |
-| **Phase 5: Integration + Polish** | IN PROGRESS | New `jugglebot_launch.py`, full system test PASS (power on→homing→spacemouse). Rosbag verification and `archived/` cleanup remaining |
+| **Phase 5: Integration + Polish** | DONE | New `jugglebot_launch.py`, full system test PASS (power on→homing→spacemouse). Topic name audit, rosbag recording expanded (20 topics), `archived/` kept for reference (no active imports, no `__init__.py`) |
 | **Phase 6: Advanced Features** | FUTURE | Ball prediction → dynamic target API, BB aiming/coordination, force estimation, mocap-based pose correction |
 
 ---
@@ -294,17 +294,19 @@ When mocap integration is complete, update the LEVELLING state to:
 - Key architectural change: calibration results are now published as ROS2 messages on a latched topic instead of stored as ROS2 parameters on the ball_butler_node. This decouples the calibration producer (mocap node) from consumers (GUI, future aiming node)
 - **Investigate**: The `mocap_interface.py` class creates its own asyncio thread and calls `self.node.get_clock()` from that thread for clock sync — this cross-thread ROS2 clock access may not be fully thread-safe. Works in practice because `get_clock()` returns a cached reference, but worth noting for future robustness
 
-### Phase 5: Integration + Polish
+### Phase 5: Integration + Polish — DONE (2026-03-17)
 - [x] Write new `jugglebot_launch.py` for the new node set
   - Added `motion_bridge_node` and `control_loop` to launch description
   - `control_loop` registered as console_scripts entry point in `setup.py`, launched via `ExecuteProcess`
   - Fixed ZeroMQ bind addresses (`localhost` → `127.0.0.1`) for Jetson compatibility
   - Added `/motion/tracking_error`, `/motion/motor_feedback`, `/motion/diagnostics` topics + rosbag recording
 - [x] Full system test: power on → homing → ACTIVE (spacemouse control) → shutdown
-- [ ] Verify rosbag recording
-- [ ] Clean up `archived/` directory (remove or keep as reference)
+- [x] Verify rosbag recording — expanded to 20 topics (added `catch/dynamic_target`, `gravity_offset`, `leg_torques_diagnostic`)
+- [x] Clean up `archived/` directory — **KEPT**: 23 files, no `__init__.py`, no active imports, zero runtime cost. Useful as quick-reference during development; git history preserves everything regardless.
 - [x] ~~Remove YASMIN vendored package (`ros_ws/src/yasmin/`)~~ — DONE (2026-03-12)
 - [x] ~~Remove rosbridge dependency if no longer needed~~ — KEPT: rosbridge is actively required for the GUI WebSocket bridge (`ros-bridge.js` → port 9090). Cannot be removed without rewriting GUI communication.
+- [x] Topic name consistency audit — standardized all topic names to relative (no leading `/`). Fixed in `can_node.py`, `ball_tracker_node.py`, `catch_coordinator_node.py`.
+- [x] Added `catch_coordinator_node` to launch file (was missing — it publishes `catch/dynamic_target` consumed by `motion_bridge_node`)
 
 ### Phase 6 (Future): Advanced Features
 - [ ] **Ball prediction → motion planner integration**: Connect the ball predictor to the motion planner's dynamic target API (`submit_dynamic_target` / `request_dynamic_target`). The predictor outputs `(target_pos, target_quat, target_vel, arrival_time)` and the planner handles feasibility checking, trajectory generation, mid-motion replanning (C2 continuity), and auto-return-to-home. Key sub-tasks:
@@ -352,7 +354,7 @@ When mocap integration is complete, update the LEVELLING state to:
 Files to extract from (now in `archived/`):
 - `can_interface.py` (2,351 lines) — ODrive protocol, BB heartbeat, motor state
 - `can_interface_node.py` (806 lines) — control mode switching, activate/deactivate
-- `sp_ik.py` — IK math (still active, not yet archived)
+- `sp_ik.py` — IK math (archived — superseded by `motion/ik_solver.py`)
 - `mocap_interface.py` (524 lines) — QTM interface (still active)
 - `spacemouse_handler.py` (178 lines) — minor adaptation needed (still active)
 
@@ -695,3 +697,48 @@ All four isolated-leg bench tests passed on ODrive axis 0 using `tools/single_le
 - **Thread-safety of QTM clock sync**: `mocap_interface.py` calls `self.node.get_clock().now()` from its asyncio thread (not the ROS2 executor thread). This works under CPython's GIL but is technically a race condition. Low priority — the clock object is thread-safe in rclpy's current implementation.
 - **`mocap_interface.py` starts connection in `__init__`**: The QTM connection attempt begins immediately on construction. If QTM is not reachable, the node still starts (connection failure is logged, not fatal). This is acceptable behavior.
 - **Old `mocap_interface_node.py` retained**: Kept in the package with its `setup.py` entry point for backward compatibility, but the launch file now uses `mocap_node`. Can be removed once Phase 5 integration testing confirms the new node works on hardware.
+
+---
+
+## Appendix F: Phase 5 Completion Notes — Integration + Polish (2026-03-17)
+
+### Topic name consistency audit
+
+Full cross-node audit of all ROS2 topic names, service names, and action names. Found and fixed inconsistent leading slashes (`/topic` vs `topic`) in 3 files:
+- `can_node.py`: `/throw_announcements` → `throw_announcements`
+- `ball_tracker_node.py`: `/mocap_data`, `/throw_announcements`, `/balls` → relative names
+- `catch_coordinator_node.py`: `/balls` → `balls`
+
+ROS2 normalizes leading slashes so this was not a functional bug, but inconsistency made automated topic validation harder and violated code standards.
+
+### Missing launch file entry
+
+`catch_coordinator_node` was registered in `setup.py` as a console_scripts entry point but was not included in `jugglebot_launch.py`. Added — it publishes `catch/dynamic_target` which `motion_bridge_node` subscribes to for the catch pipeline.
+
+### Rosbag recording expanded (17 → 20 topics)
+
+Added 3 topics that were published but not recorded:
+- `catch/dynamic_target` — critical for replaying catch attempts
+- `gravity_offset` — needed to reproduce levelling state
+- `leg_torques_diagnostic` — useful for motion planner diagnostics
+
+Topics deliberately NOT recorded (low value, high volume, or GUI-only):
+- `can_traffic` — CAN bus debug, very high volume
+- `smoother_limits`, `set_motor_vel_curr_limits` — GUI-only runtime config
+- `bb/markers` — raw BB fiducials, only useful during calibration
+- `leg_state_topic` — sp_ik.py boundary state, low priority
+
+### Archived directory: kept
+
+23 files in `archived/` — no `__init__.py`, no active imports, not registered as a package in `setup.py`. Zero runtime cost. Useful as quick-reference during development (grep-able without `git show`). Decision: keep as-is.
+
+### ~~Dual-publisher pattern on `leg_lengths_topic`~~ — RESOLVED
+
+~~Both `motion_bridge_node.py` and `sp_ik.py` published to `leg_lengths_topic`.~~ `sp_ik.py` archived — `motion_bridge_node.py` is now the sole publisher of `leg_lengths_topic`.
+
+### Items for investigation
+
+- **~~Orphan `pose_offset_topic` subscriber in `sp_ik.py`~~** — **RESOLVED**: `sp_ik.py` archived (see below).
+- **~~Old `mocap_interface_node.py`~~** — **RESOLVED**: Already in `archived/`, entry point already removed from `setup.py`.
+- **`sp_ik.py` archived (2026-03-17)**: Moved to `archived/`. All active control modes (`SPACEMOUSE`, `SHELL`, `GUI`) were gated out by `_MOTION_BRIDGE_MODES`, so sp_ik never processed a single message in the current architecture. The `motion_bridge_node` → `control_loop` pipeline fully supersedes it. Entry point removed from `setup.py`, node removed from launch file. `leg_state_topic` (only published by sp_ik) had no active subscribers.
+- **rigid_body_poses origin check**: Still deferred from Phase 1/2. The orchestrator should verify the QTM "Base" rigid body is at the origin before allowing activation. Now that both mocap and orchestrator are integrated, this can be implemented as a pre-activation check in the ACTIVE handler.
