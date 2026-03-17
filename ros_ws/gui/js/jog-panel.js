@@ -9,8 +9,7 @@
  *
  * Pose commands are published to platform_pose_topic with publisher='GUI'.
  * The motion_bridge_node forwards these to the control loop's stream
- * smoother, which generates C2-continuous quintic profiles.  sp_ik.py is
- * gated to ignore GUI mode, preventing dual-publisher conflicts.
+ * smoother, which generates C2-continuous quintic profiles.
  */
 
 import * as ros from './ros-bridge.js';

@@ -53,6 +53,11 @@ def generate_launch_description():
         executable='ball_tracker_node',
     )
 
+    catch_coordinator_node = Node(
+        package='jugglebot',
+        executable='catch_coordinator_node',
+    )
+
     # ── Standalone control process (not a ROS2 node) ─────────────
     # Installed as a console_scripts entry point alongside other executables
     pkg_lib_dir = os.path.join(
@@ -95,6 +100,9 @@ def generate_launch_description():
             '/qtm_clock_offset_sec',
             '/motion/tracking_error',
             '/motion/diagnostics',
+            '/catch/dynamic_target',
+            '/gravity_offset',
+            '/leg_torques_diagnostic',
             '/balls',
             '/throw_announcements',
             '-s', 'mcap', '-o', bag_dir,
@@ -115,8 +123,8 @@ def generate_launch_description():
         motion_bridge_node,
         mocap_node,
         spacemouse_handler,
-        Node(package='jugglebot', executable='sp_ik'),
         ball_tracker_node,
+        catch_coordinator_node,
         # Standalone processes
         control_loop,
         # Recording (conditional)

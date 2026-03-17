@@ -1,7 +1,7 @@
 """ROS2 wrapper for the catch coordinator.
 
 Subscribes to:
-  - /balls (BallStateArray) — tracked balls from ball_tracker_node
+  - balls (BallStateArray) — tracked balls from ball_tracker_node
 
 Publishes:
   - catch/dynamic_target (DynamicTargetCommand) — forwarded by
@@ -50,7 +50,7 @@ class CatchCoordinatorNode(Node):
 
         # Subscriber: tracked balls
         self._balls_sub = self.create_subscription(
-            BallStateArray, '/balls', self._on_balls, 10)
+            BallStateArray, 'balls', self._on_balls, 10)
 
         # IPC SUB for feedback (connects to control process telemetry PUB)
         self._feedback_ipc = _FeedbackIPC()

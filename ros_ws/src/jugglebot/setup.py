@@ -35,7 +35,6 @@ setup(
             'motion_bridge_node = jugglebot.motion_bridge_node:main',
             'mocap_node = jugglebot.mocap_node:main',
             'spacemouse_handler = jugglebot.spacemouse_handler:main',
-            'sp_ik = jugglebot.sp_ik:main',
             # ── Ball tracking & catch ──────────────────────────
             'ball_tracker_node = jugglebot.ball_tracker_node:main',
             'catch_coordinator_node = jugglebot.catch_coordinator_node:main',

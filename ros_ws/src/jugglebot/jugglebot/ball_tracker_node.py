@@ -1,11 +1,11 @@
 """ROS2 wrapper for the tracking/ subpackage.
 
 Subscribes to:
-  - /mocap_data (MocapDataMulti) — unlabelled markers at ~200 Hz
-  - /throw_announcements (ThrowAnnouncement) — Ball Butler throw events
+  - mocap_data (MocapDataMulti) — unlabelled markers at ~200 Hz
+  - throw_announcements (ThrowAnnouncement) — Ball Butler throw events
 
 Publishes:
-  - /balls (BallStateArray) — all tracked balls at mocap rate
+  - balls (BallStateArray) — all tracked balls at mocap rate
 """
 
 import rclpy
@@ -47,12 +47,12 @@ class BallTrackerNode(Node):
 
         # Subscribers
         self._mocap_sub = self.create_subscription(
-            MocapDataMulti, '/mocap_data', self._on_mocap, 10)
+            MocapDataMulti, 'mocap_data', self._on_mocap, 10)
         self._announcement_sub = self.create_subscription(
-            ThrowAnnouncement, '/throw_announcements', self._on_announcement, 10)
+            ThrowAnnouncement, 'throw_announcements', self._on_announcement, 10)
 
         # Publisher
-        self._balls_pub = self.create_publisher(BallStateArray, '/balls', 10)
+        self._balls_pub = self.create_publisher(BallStateArray, 'balls', 10)
 
         self.get_logger().info(
             f"BallTrackerNode ready: landing_z={self._landing_z:.1f}mm, "

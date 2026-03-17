@@ -10,7 +10,7 @@ from rclpy.node import Node
 from std_msgs.msg import String
 from jugglebot_interfaces.msg import PlatformPoseCommand
 from geometry_msgs.msg import PoseStamped
-from std_srvs.srv import Trigger
+
 import quaternion  # numpy quaternion
 import pyspacemouse
 import math
@@ -23,9 +23,6 @@ class SpaceMouseHandler(Node):
 
         # Initialise shutdown flag
         self.shutdown_flag = False
-
-        # Set up a service to trigger closing the node
-        self.service = self.create_service(Trigger, 'end_session', self.end_session)
 
         # Subscribe to control_mode_topic to see if spacemouse is enabled
         self.subscription = self.create_subscription(String, 'control_mode_topic', self.control_mode_callback, 10)
@@ -143,14 +140,7 @@ class SpaceMouseHandler(Node):
         except Exception as e:
             self.get_logger().error(f"Error during node shutdown: {e}")
 
-    def end_session(self, request, response):
-        """Service callback to end the session from the GUI"""
-        self.get_logger().info("End session requested. Shutting down...")
-        response.success = True
-        response.message = "Session ended. Shutting down node."
-        self.shutdown_flag = True
-        return response
-        
+
 
 def main(args=None):
     rclpy.init(args=args)

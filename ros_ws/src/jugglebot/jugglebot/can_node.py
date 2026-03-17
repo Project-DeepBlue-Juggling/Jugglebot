@@ -191,7 +191,6 @@ class CanInterfaceNode(Node):
 
         # ── Services ───────────────────────────────────────────
         self.create_service(Trigger, 'encoder_search', self._svc_encoder_search)
-        self.create_service(Trigger, 'end_session', self._svc_end_session)
         self.create_service(ODriveCommandService, 'odrive_command', self._svc_odrive_command)
         self.create_service(GetTiltReadingService, 'get_platform_tilt', self._svc_get_tilt)
         self.create_service(ActivateOrDeactivate, 'activate_or_deactivate', self._svc_activate_or_deactivate)
@@ -223,7 +222,7 @@ class CanInterfaceNode(Node):
         self.hand_telemetry_pub = self.create_publisher(HandTelemetryMessage, 'hand_telemetry', 10)
         self.target_reached_pub = self.create_publisher(LegsTargetReachedMessage, 'platform_target_reached', 10)
         self.bb_heartbeat_pub = self.create_publisher(BallButlerHeartbeatMsg, 'bb/heartbeat', 10)
-        self.throw_announcement_pub = self.create_publisher(ThrowAnnouncement, '/throw_announcements', 10)
+        self.throw_announcement_pub = self.create_publisher(ThrowAnnouncement, 'throw_announcements', 10)
 
         # ── Timers ─────────────────────────────────────────────
         can_poll_period = 0.001  # 1 kHz CAN poll
@@ -685,13 +684,6 @@ class CanInterfaceNode(Node):
             self.get_logger().error(f"Encoder search error: {e}")
             res.success = False
             res.message = str(e)
-        return res
-
-    def _svc_end_session(self, req, res):
-        self.get_logger().info("End session requested")
-        res.success = True
-        res.message = "Shutting down."
-        self.shutdown_flag = True
         return res
 
     def _svc_odrive_command(self, req, res):

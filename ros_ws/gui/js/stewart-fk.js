@@ -1,7 +1,7 @@
 /**
  * stewart-fk.js — Forward Kinematics solver for the Stewart platform.
  *
- * Ports the IK from sp_ik.py and adds a Newton-Raphson FK solver.
+ * Ports the IK from motion/ik_solver.py and adds a Newton-Raphson FK solver.
  * All geometry in mm, rotation as rotation vectors (Rodrigues).
  */
 
@@ -185,7 +185,7 @@ let prevState = [0, 0, 0, 0, 0, 0];
  * FK: given motor positions (revolutions), solve for platform pose.
  * Uses Newton-Raphson iteration with warm-start from previous solution.
  *
- * Motor convention: positive revs = extension (matches sp_ik.py which publishes
+ * Motor convention: positive revs = extension (motion_bridge_node publishes
  * positive revs via leg_lengths_topic, and ODrive reports positive pos_estimate
  * for extended legs after homing sets leg_abs_pos_rev = 0.1).
  *

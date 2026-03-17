@@ -1,7 +1,7 @@
 """Phase 1 verification tests for the kinematic model.
 
 Tests:
-  1. Regression vs sp_ik.py — position IK matches the legacy implementation
+  1. Regression vs legacy IK — position IK matches the original implementation
   2. Numerical Jacobian check — analytical J matches finite-difference J
   3. Round-trip test — twist → leg velocities → integrate → verify pose
   4. Bias term test — Jdot*twist matches numerically differentiated J*twist
@@ -79,16 +79,16 @@ def _random_small_twist(rng: np.random.Generator,
 
 
 # ---------------------------------------------------------------------------
-# Test 1: Regression vs sp_ik.py
+# Test 1: Regression vs legacy IK (archived sp_ik.py)
 # ---------------------------------------------------------------------------
 
-def test_regression_vs_sp_ik():
-    """Verify new position IK matches the old sp_ik.py implementation."""
+def test_regression_vs_legacy_ik():
+    """Verify position IK matches the original legacy implementation."""
     import jugglebot.hardware_config as hw
 
     geom = StewartGeometry()
 
-    # Replicate sp_ik.py logic verbatim
+    # Replicate the legacy IK logic verbatim
     start_pos = np.array([0.0, 0.0, hw.GEOM_INITIAL_HEIGHT_MM])
     base_nodes = np.array(hw.GEOM_BASE_NODES_MM)
     init_plat_nodes = np.array(hw.GEOM_INIT_PLAT_NODES_MM)
@@ -113,7 +113,7 @@ def test_regression_vs_sp_ik():
         # --- New code ---
         new_ext = pose_to_leg_lengths(pos_offset, rot, geom)
 
-        # --- Old sp_ik.py logic ---
+        # --- Legacy IK logic ---
         new_position = pos_offset.reshape(3, 1) + start_pos.reshape(3, 1)
         old_plat_world = (new_position + rot @ init_plat_nodes.T).T
         old_ext = norm(old_plat_world - base_nodes, axis=1) - init_leg_lengths
@@ -122,7 +122,7 @@ def test_regression_vs_sp_ik():
         max_err = max(max_err, err)
 
     passed = max_err < 1e-10
-    print(f"  [{'PASS' if passed else 'FAIL'}] regression vs sp_ik.py  "
+    print(f"  [{'PASS' if passed else 'FAIL'}] regression vs legacy IK  "
           f"(max error: {max_err:.2e} mm)")
     return passed
 
@@ -358,7 +358,7 @@ def main():
     print()
 
     tests = [
-        ("1. Regression vs sp_ik.py", test_regression_vs_sp_ik),
+        ("1. Regression vs legacy IK", test_regression_vs_legacy_ik),
         ("2. Numerical Jacobian", test_numerical_jacobian),
         ("3. Round-trip (twist integration)", test_round_trip),
         ("4. Bias term (Jdot * twist)", test_bias_term),

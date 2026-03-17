@@ -1,14 +1,14 @@
 """Mocap Interface Node — QTM streaming, tf2 broadcast, BB calibration.
 
 Publishes:
-  /mocap_data             (MocapDataMulti)   — all markers (labelled + unlabelled) at 200 Hz
-  /rigid_body_poses       (RigidBodyPoses)   — all rigid bodies at 200 Hz
-  /bb/markers             (MocapDataMulti)   — BB fiducial markers (always, when QTM connected)
-  /bb/calibration_result  (BallButlerCalibrationResult) — latched, after each calibration
-  /qtm_clock_offset_sec   (Float64)          — QTM↔ROS clock offset at 1 Hz
+  mocap_data             (MocapDataMulti)   — all markers (labelled + unlabelled) at 200 Hz
+  rigid_body_poses       (RigidBodyPoses)   — all rigid bodies at 200 Hz
+  bb/markers             (MocapDataMulti)   — BB fiducial markers (always, when QTM connected)
+  bb/calibration_result  (BallButlerCalibrationResult) — latched, after each calibration
+  qtm_clock_offset_sec   (Float64)          — QTM↔ROS clock offset at 1 Hz
 
 Subscribes:
-  /bb/heartbeat           (BallButlerHeartbeat) — toggles marker publishing + calibration
+  bb/heartbeat           (BallButlerHeartbeat) — toggles marker publishing + calibration
 
 Static TF:
   world → platform_start  (Z offset = GEOM_INITIAL_HEIGHT_MM)
