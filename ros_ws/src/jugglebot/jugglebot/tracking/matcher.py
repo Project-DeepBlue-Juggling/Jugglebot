@@ -152,6 +152,7 @@ class BallTracker:
             destination=destination,
             position=np.array(initial_position, dtype=np.float64),
             velocity=np.array(initial_velocity, dtype=np.float64),
+            timestamp=throw_time,  # pos/vel represent state at throw_time
             throw_time=throw_time,
         )
 
