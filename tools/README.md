@@ -101,3 +101,37 @@ All test harnesses share these safety principles:
 | `juggling_test.py` | 7+ | Ball-catching juggling pattern tests |
 | `smoother_test.py` | — | StreamSmoother validation (S1-S5, direct-target smoothing) |
 | `trajectory_viewer.py` | — | 3D Stewart platform viewer + trajectory plot utility |
+| `catch_sim_test.py` | 6 | Offline catch simulation (no hardware). Full tracking + coordinator + hand control pipeline with 3D viewer |
+| `tracking_analyzer.py` | 6 | Rosbag analysis for ball tracking data |
+
+### catch_sim_test.py
+
+Offline catch simulation that exercises the full pure-Python pipeline: `BallTracker` (Kalman filter + marker matching) → `CatchCoordinator` (catch pose + hand commands) → `TrajectoryManager` (async feasibility + trajectory execution). No ROS2 or hardware required.
+
+**3D visualization** (`--viz`): animated Stewart platform with ball trajectory, KF estimate, landing prediction, hand state indicator, landing error chart, and event timeline. Supports pause/step (Space, arrow keys).
+
+```bash
+# Default throw (BB position → platform center)
+python tools/catch_sim_test.py --viz
+
+# Specify landing position (mm, base frame XY)
+python tools/catch_sim_test.py --viz --landing 50 -30
+
+# Custom launch position for steep angles
+python tools/catch_sim_test.py --viz --landing 0 0 --launch 300 -300 900
+
+# Longer flight time (gentler arc, more tracking time)
+python tools/catch_sim_test.py --landing 0 0 --tof 1.0
+
+# High mocap noise
+python tools/catch_sim_test.py --viz --noise 10
+
+# Noise sweep (text table, no viz)
+python tools/catch_sim_test.py --sweep
+
+# Playback controls (in --viz mode):
+#   SPACE         play/pause
+#   RIGHT/LEFT    step +1/-1 frame
+#   SHIFT+arrows  step +10/-10
+#   HOME/END      first/last frame
+```
