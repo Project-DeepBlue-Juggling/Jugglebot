@@ -15,7 +15,8 @@
 | **Phase 3: Motion Planner** | DONE (re-eval) | Pure Python `motion/` subpackage, no ROS2. Standalone control process via ZeroMQ IPC. Full IK/FK/Jacobian, quintic trajectory generator, Newton-Euler dynamics (gravity + inertia feedforward), workspace limits, fault detection. Async feasibility pipeline for dynamic targets with C2-continuous splicing. Post-incident safety hardening (slew rate limiter, feedback gating, overspeed/tracking faults). All hardware tests PASS through Phase 7. **MPC-based replanner under development in `sim/` — may replace the quintic trajectory pipeline** |
 | **Phase 4: Mocap Integration** | DONE | Lifted `MocapInterface` class into new `mocap_node.py`. Removed stale dependencies (`get_robot_geometry`, `end_session`). Added BB calibration pipeline (circle fit, rotation axis, yaw offset) published on latched `bb/calibration_result` topic |
 | **Phase 5: Integration + Polish** | DONE | New `jugglebot_launch.py`, full system test PASS (power on→homing→spacemouse). Topic name audit, rosbag recording expanded (20 topics), `archived/` kept for reference (no active imports, no `__init__.py`) |
-| **Phase 6: Advanced Features** | FUTURE | Ball prediction → dynamic target API, BB aiming/coordination, force estimation, mocap-based pose correction |
+| **Phase 6: Ball Tracking + Catch** | DONE | Ball tracking (`tracking/` subpackage: Kalman filter, ballistic prediction, marker matching, parabolic detection). Catch coordinator (policy, blacklist, orientation). Hand control integration (priming, catch gains, trajectory arming via Teensy). `CATCH` active mode. `SetHandGains` service. Offline catch sim with 3D viewer (`tools/catch_sim_test.py`). 53 tests passing. See `BALL_IMPLEMENTATION_PLAN.md` for details |
+| **Phase 7: Future** | FUTURE | Force estimation, mocap-based pose correction, MPC replanning integration |
 
 ---
 
@@ -308,18 +309,29 @@ When mocap integration is complete, update the LEVELLING state to:
 - [x] Topic name consistency audit — standardized all topic names to relative (no leading `/`). Fixed in `can_node.py`, `ball_tracker_node.py`, `catch_coordinator_node.py`.
 - [x] Added `catch_coordinator_node` to launch file (was missing — it publishes `catch/dynamic_target` consumed by `motion_bridge_node`)
 
-### Phase 6 (Future): Advanced Features
-- [ ] **Ball prediction → motion planner integration**: Connect the ball predictor to the motion planner's dynamic target API (`submit_dynamic_target` / `request_dynamic_target`). The predictor outputs `(target_pos, target_quat, target_vel, arrival_time)` and the planner handles feasibility checking, trajectory generation, mid-motion replanning (C2 continuity), and auto-return-to-home. Key sub-tasks:
-  - [ ] Ball predictor node: processes mocap ball tracking data → predicts intercept point/time/velocity
-  - [ ] Bridge between ball predictor output and motion planner IPC (`TOPIC_DYN_TARGET` / `make_dynamic_target_command()`)
-  - [ ] Mode sequencing in orchestrator: IDLE → TRACKING → catching → return-to-home → IDLE
-  - [ ] Timeout handling: if no feasible target arrives within deadline, return to IDLE
-  - [ ] Graceful target updates: re-plan from current state when prediction improves as ball approaches
-  - [ ] Validation with synthetic ball trajectories before live predictor
-  - [ ] End-to-end timing accuracy test (planned arrival vs actual)
-- [ ] Re-add Ball Butler aiming/coordination (depends on Phase 4 BB calibration position publisher — `bb/calibration_result` provides the `bb_mocap_position` and `bb_yaw_offset_rad` needed by `global_to_bb_frame()` for aim calculations)
-- [ ] Add force estimation + stability analysis to `motion/workspace.py`
-- [ ] Pose correction (feedforward from mocap)
+### Phase 6: Ball Tracking + Catch — DONE (2026-03-18)
+
+Full ball tracking, catch coordination, and hand control. Detailed design and completion notes in `BALL_IMPLEMENTATION_PLAN.md`.
+
+**Deliverables:**
+
+- [x] `tracking/` subpackage (pure Python, no ROS2): Kalman filter (6D, gravity model), ballistic landing prediction, marker-to-ball matching (announced + parabolic detection), ball lifecycle management
+- [x] `ball_tracker_node.py`: ROS2 wrapper subscribing `/mocap_data` + `/throw_announcements`, publishing `/balls` (BallStateArray)
+- [x] `catch_coordinator.py`: Pure Python catch policy — ball filtering, selection (earliest landing), catch pose computation (velocity→quaternion), feasibility blacklist with re-eval escape hatch
+- [x] `catch_coordinator_node.py`: ROS2 wrapper subscribing `/balls`, publishing `catch/dynamic_target` via IPC. Full hand control lifecycle: priming (`smooth_move_hand`), soft catch gains (`set_hand_gains`), trajectory arming (`set_hand_traj_cmd`), gain restoration on shutdown. Retry-on-failure for all hand service calls
+- [x] `SetHandGains.srv`: New service definition for hand PID gains
+- [x] `set_hand_gains` service on `can_node.py`: sends `set_pos_gain` + `set_vel_gains` CAN commands to hand axis
+- [x] `CATCH` active mode: added to `ActiveMode` enum in `state_machine.py`, handled in `can_node.py` (hand stays CLOSED_LOOP), enabled in `motion_bridge_node.py`
+- [x] `CatchCommand` extended with hand fields (`arm_hand`, `event_vel_mps`)
+- [x] `hand_catch_prime_rev` added to `hardware_config.yaml`
+- [x] IPC feedback channel (`TOPIC_DYN_FEEDBACK`) for accept/reject from motion planner
+- [x] `tools/catch_sim_test.py`: Offline catch simulation with 3D matplotlib viewer (pause/step/play), landing prediction error chart, event timeline. Configurable launch position, landing position, noise, flight time. Integrates real `TrajectoryManager` with async feasibility
+- [x] 53 tests passing across tracking suite (ballistics, kalman, matcher, lifecycle, coordinator including 4 hand command tests)
+
+**Remaining (Phase 7):**
+- [ ] Force estimation + stability analysis in `motion/workspace.py`
+- [ ] Mocap-based pose correction (feedforward)
+- [ ] MPC replanning integration (under development in `sim/`)
 
 ---
 
