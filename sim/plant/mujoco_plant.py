@@ -38,6 +38,13 @@ from .interface import PlantInterface, PlantState
 
 logger = logging.getLogger(__name__)
 
+# Import BallManager (optional — may not exist in minimal setups)
+try:
+    from ball.manager import BallManager, BallState
+    _HAS_BALL = True
+except ImportError:
+    _HAS_BALL = False
+
 # Default MJCF model path
 _DEFAULT_MODEL_PATH = os.path.join(
     os.path.dirname(__file__), '..', 'model', 'jugglebot.xml'
@@ -82,6 +89,17 @@ class MuJoCoPlant(PlantInterface):
             self._geom_home_lengths_m * 1000.0 - self._geom.init_leg_lengths_mm
         )
 
+        # Detect hand actuator/sensors
+        hand_act_id = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_ACTUATOR, 'act_hand')
+        self._has_hand = hand_act_id >= 0
+        self._hand_act_idx = hand_act_id if self._has_hand else None
+
+        # Hand stroke (mm) and prime position (mm)
+        if self._has_hand:
+            self._hand_stroke_mm = 355.0  # from hardware_config
+            # Catch prime: 9.858 rev × 2π × 5.21 mm/rev ≈ 322.7 mm
+            self._hand_prime_mm = 9.858 * 2.0 * np.pi * 5.21
+
         # Cache sensor addresses for fast reads
         self._sensor_adr: dict[str, tuple[int, int]] = {}
         sensor_names = (
@@ -89,6 +107,9 @@ class MuJoCoPlant(PlantInterface):
             + [f'slide_vel_{i}' for i in range(6)]
             + ['platform_pos', 'platform_quat', 'platform_linvel', 'platform_angvel']
         )
+        # Add optional sensors (hand, ball) — don't fail if absent
+        optional_sensors = ['hand_slide_pos', 'hand_slide_vel',
+                            'ball_pos', 'ball_vel']
         for name in sensor_names:
             sid = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_SENSOR, name)
             if sid < 0:
@@ -98,6 +119,19 @@ class MuJoCoPlant(PlantInterface):
             adr = self._model.sensor_adr[sid]
             dim = self._model.sensor_dim[sid]
             self._sensor_adr[name] = (adr, dim)
+        for name in optional_sensors:
+            sid = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_SENSOR, name)
+            if sid >= 0:
+                adr = self._model.sensor_adr[sid]
+                dim = self._model.sensor_dim[sid]
+                self._sensor_adr[name] = (adr, dim)
+
+        # Detect ball body and create BallManager if present
+        self._ball_manager: BallManager | None = None
+        if _HAS_BALL:
+            ball_id = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_BODY, 'ball')
+            if ball_id >= 0:
+                self._ball_manager = BallManager(self._model, self._data)
 
         # Reset to home keyframe
         self.reset()
@@ -150,6 +184,13 @@ class MuJoCoPlant(PlantInterface):
 
         twist = np.concatenate([linvel * 1000.0, angvel])  # mm/s + rad/s
 
+        # Hand state (optional)
+        hand_pos_mm = None
+        hand_vel_mmps = None
+        if self._has_hand and 'hand_slide_pos' in self._sensor_adr:
+            hand_pos_mm = float(self._sensor('hand_slide_pos')[0] * 1000.0)
+            hand_vel_mmps = float(self._sensor('hand_slide_vel')[0] * 1000.0)
+
         return PlantState(
             leg_extensions_mm=extensions_mm,
             leg_velocities_mmps=velocities_mmps,
@@ -157,6 +198,8 @@ class MuJoCoPlant(PlantInterface):
             platform_rot=rot_vec,
             platform_twist=twist,
             time=self._data.time,
+            hand_pos_mm=hand_pos_mm,
+            hand_vel_mmps=hand_vel_mmps,
         )
 
     def step(self, dt: float) -> None:
@@ -185,7 +228,78 @@ class MuJoCoPlant(PlantInterface):
             slide_m = self._extensions_to_slide(ik_extensions_mm)
             self._data.ctrl[:6] = slide_m
 
+        # Reset hand to bottom of travel
+        if self._has_hand:
+            self._data.ctrl[self._hand_act_idx] = 0.0
+
+        # Reset ball (park out of scene, disable weld)
+        if self._ball_manager is not None:
+            self._ball_manager.reset()
+
         mujoco.mj_forward(self._model, self._data)
+
+    # ---- Hand control -----------------------------------------------------
+
+    @property
+    def has_hand(self) -> bool:
+        """Whether the model includes a hand actuator."""
+        return self._has_hand
+
+    def command_hand(self, pos_mm: float) -> None:
+        """Command the hand to a linear position (mm from bottom of travel).
+
+        No-op if the model has no hand actuator.
+        """
+        if not self._has_hand:
+            return
+        pos_m = np.clip(pos_mm / 1000.0, 0.0, self._hand_stroke_mm / 1000.0)
+        self._data.ctrl[self._hand_act_idx] = pos_m
+
+    def hand_to_home(self) -> None:
+        """Command hand to bottom of travel (position 0)."""
+        self.command_hand(0.0)
+
+    def hand_to_prime(self) -> None:
+        """Command hand to catch prime position (~323 mm)."""
+        self.command_hand(self._hand_prime_mm)
+
+    # ---- Ball management ---------------------------------------------------
+
+    @property
+    def has_ball(self) -> bool:
+        """Whether the model includes a ball body with BallManager."""
+        return self._ball_manager is not None
+
+    @property
+    def ball_manager(self) -> BallManager | None:
+        """Direct access to BallManager (for advanced use). None if no ball."""
+        return self._ball_manager
+
+    def spawn_ball(self, position_mm: np.ndarray, velocity_mms: np.ndarray) -> None:
+        """Teleport ball to position and set velocity. No-op if no ball."""
+        if self._ball_manager is not None:
+            self._ball_manager.spawn(position_mm, velocity_mms)
+            mujoco.mj_forward(self._model, self._data)
+
+    def check_and_capture(self) -> bool:
+        """Check capture proximity and activate weld if triggered.
+
+        Returns True on the frame that capture occurs. False otherwise.
+        """
+        if self._ball_manager is not None:
+            return self._ball_manager.check_capture()
+        return False
+
+    def get_ball_state(self) -> BallState | None:
+        """Read ball state. None if no ball in model."""
+        if self._ball_manager is not None:
+            return self._ball_manager.get_state()
+        return None
+
+    def release_ball(self, velocity_mms: np.ndarray | None = None) -> None:
+        """Release ball from weld. Optionally set ejection velocity."""
+        if self._ball_manager is not None:
+            self._ball_manager.release(velocity_mms)
 
     # ---- Public accessors ------------------------------------------------
 

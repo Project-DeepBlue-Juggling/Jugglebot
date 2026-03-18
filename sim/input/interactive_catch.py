@@ -1,0 +1,639 @@
+"""Interactive catch mode — spawn balls on demand and watch the catch pipeline.
+
+Provides ``InteractiveCatchController`` which manages:
+  - Spawn presets (configurable ball initial conditions)
+  - Keyboard input (spawn, cycle presets, pause/step/speed)
+  - State machine (STARTUP → READY → CATCHING → RETURNING → COOLDOWN → READY)
+  - Console feedback (spawn info, feasibility result, catch outcome)
+
+All catch pipeline components (CatchCoordinator, FeasibilityChecker,
+HandCatchSequence) are used as-is — this is purely a frontend.
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+from enum import Enum, auto
+
+import numpy as np
+
+import os, sys
+_sim_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if _sim_dir not in sys.path:
+    sys.path.insert(0, _sim_dir)
+
+from controller.reference import ReferenceGenerator
+from catch.coordinator import CatchCoordinator, DynamicTarget, BallSpawn, CatchPhase
+from catch.hand_trajectory import HandCatchSequence
+from input.scripted import _compute_catch_target, _ball_landing
+
+from jugglebot.motion.quintic import create_trajectory, evaluate as quintic_evaluate
+
+logger = logging.getLogger(__name__)
+
+import mujoco
+
+# GLFW key codes
+_KEY_SPACE = 32
+_KEY_RIGHT = 262
+_KEY_LEFT = 263
+_KEY_UP = 265
+_KEY_DOWN = 264
+_KEY_PAGE_UP = 266
+_KEY_PAGE_DOWN = 267
+_KEY_B = 66
+_KEY_N = 78
+_KEY_M = 77
+_KEY_1 = 49
+_KEY_2 = 50
+_KEY_3 = 51
+_KEY_4 = 52
+_KEY_5 = 53
+_KEY_R = 82
+_KEY_NUMPAD_8 = 328   # vz faster (more negative)
+_KEY_NUMPAD_2 = 322   # vz slower (less negative)
+_KEY_NUMPAD_4 = 324   # vxy X nudge -
+_KEY_NUMPAD_6 = 326   # vxy X nudge +
+_KEY_NUMPAD_7 = 327   # vxy Y nudge -
+_KEY_NUMPAD_9 = 329   # vxy Y nudge +
+
+# Adjustment increments
+_HEIGHT_STEP = 200.0      # mm
+_XY_STEP = 20.0           # mm
+_VZ_STEP = 200.0          # mm/s
+_VXY_STEP = 50.0          # mm/s
+
+# Platform initial height for world-frame conversion
+_PLATFORM_HEIGHT_M = 0.5743
+
+
+# ---------------------------------------------------------------------------
+# Spawn presets
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SpawnPreset:
+    """Named set of ball spawn parameters."""
+    name: str
+    spawn_height_mm: float       # Z above world origin
+    xy_offset_mm: np.ndarray     # (2,) lateral offset from centre
+    vz_mms: float                # initial Z velocity (negative = down)
+    vxy_mms: np.ndarray          # (2,) horizontal velocity
+
+
+DEFAULT_PRESETS = [
+    SpawnPreset("Centre drop (rest)", 1500.0, np.array([0.0, 0.0]),
+                0.0, np.array([0.0, 0.0])),
+    SpawnPreset("Offset drop", 1500.0, np.array([40.0, -30.0]),
+                -500.0, np.array([0.0, 0.0])),
+    SpawnPreset("Fast drop", 1500.0, np.array([0.0, 0.0]),
+                -1500.0, np.array([0.0, 0.0])),
+    SpawnPreset("Angled throw", 1500.0, np.array([20.0, 0.0]),
+                -300.0, np.array([-100.0, 50.0])),
+    SpawnPreset("Edge case", 1500.0, np.array([80.0, -60.0]),
+                -500.0, np.array([0.0, 0.0])),
+]
+
+
+# ---------------------------------------------------------------------------
+# State machine
+# ---------------------------------------------------------------------------
+
+class InteractiveCatchState(Enum):
+    STARTUP = auto()     # Ramping to active height + priming hand
+    READY = auto()       # Waiting for user to spawn a ball
+    CATCHING = auto()    # Catch coordinator running
+    RETURNING = auto()   # Returning to ready pose after catch attempt
+    COOLDOWN = auto()    # Brief pause before accepting next spawn
+
+
+# Ready pose: platform at default active Z, hand primed
+_READY_POSE = np.array([0.0, 0.0, 170.0, 0.0, 0.0, 0.0])
+_STARTUP_DURATION = 1.0   # seconds to ramp from home to ready pose
+_RETURN_DURATION = 1.0    # seconds to return to ready pose
+_COOLDOWN_DURATION = 0.3  # seconds before accepting next spawn
+_CATCH_TIMEOUT = 5.0      # max seconds for a catch attempt
+
+
+# ---------------------------------------------------------------------------
+# Controller
+# ---------------------------------------------------------------------------
+
+class InteractiveCatchController:
+    """Interactive ball catch controller for the MuJoCo viewer.
+
+    Parameters
+    ----------
+    feasibility_checker
+        The ``FeasibilityChecker`` instance for platform feasibility.
+    presets : list[SpawnPreset] | None
+        Ball spawn presets.  Defaults to ``DEFAULT_PRESETS``.
+    """
+
+    def __init__(self, feasibility_checker=None, presets: list[SpawnPreset] | None = None):
+        self._feasibility = feasibility_checker
+        self._presets = presets or list(DEFAULT_PRESETS)
+        self._preset_idx = 0
+
+        # Sim control (pause/step/speed)
+        self.paused = False
+        self.speed = 1.0
+        self._step_once = False
+
+        # State machine
+        self._state = InteractiveCatchState.STARTUP
+        self._state_start_time = 0.0
+        self._spawn_count = 0
+
+        # Startup trajectory
+        self._startup_ref: ReferenceGenerator | None = None
+        self._startup_built = False
+
+        # Catch state
+        self._coordinator: CatchCoordinator | None = None
+        self._active_hand_seq: HandCatchSequence | None = None
+        self._pending_spawn: BallSpawn | None = None
+        self._spawn_requested = False
+
+        # Return trajectory
+        self._return_ref: ReferenceGenerator | None = None
+
+        # Ready-state reference (hold at ready pose)
+        self._ready_ref = ReferenceGenerator.from_static_pose(_READY_POSE)
+
+        self._printed_ready = False
+
+    # ------------------------------------------------------------------
+    # Keyboard callback
+    # ------------------------------------------------------------------
+
+    def key_callback(self, keycode: int) -> None:
+        """Handle keyboard events from the MuJoCo viewer."""
+        # Sim control keys
+        if keycode == _KEY_SPACE:
+            self.paused = not self.paused
+            tag = "PAUSED" if self.paused else "RUNNING"
+            print(f"  [{tag}]  speed={self.speed:.2f}x")
+            return
+        if keycode == _KEY_RIGHT:
+            if self.paused:
+                self._step_once = True
+            return
+        if keycode == _KEY_UP:
+            self.speed = min(self.speed * 2.0, 16.0)
+            print(f"  speed={self.speed:.2f}x")
+            return
+        if keycode == _KEY_DOWN:
+            self.speed = max(self.speed / 2.0, 0.0625)
+            print(f"  speed={self.speed:.2f}x")
+            return
+        if keycode == _KEY_R:
+            self.speed = 1.0
+            print(f"  speed={self.speed:.2f}x")
+            return
+
+        # Spawn
+        if keycode == _KEY_B:
+            if self._state == InteractiveCatchState.READY:
+                self._spawn_requested = True
+            else:
+                print(f"  (ignoring spawn — state is {self._state.name})")
+            return
+
+        # Preset cycling
+        if keycode == _KEY_N:
+            self._preset_idx = (self._preset_idx + 1) % len(self._presets)
+            self._print_preset()
+            return
+        if keycode == _KEY_M:
+            self._preset_idx = (self._preset_idx - 1) % len(self._presets)
+            self._print_preset()
+            return
+
+        # Direct preset selection (1-5)
+        if _KEY_1 <= keycode <= _KEY_5:
+            idx = keycode - _KEY_1
+            if idx < len(self._presets):
+                self._preset_idx = idx
+                self._print_preset()
+            return
+
+        # Adjust spawn position
+        p = self._presets[self._preset_idx]
+        if keycode == _KEY_PAGE_UP:
+            p.spawn_height_mm += _HEIGHT_STEP
+            self._print_preset()
+            return
+        if keycode == _KEY_PAGE_DOWN:
+            p.spawn_height_mm = max(500.0, p.spawn_height_mm - _HEIGHT_STEP)
+            self._print_preset()
+            return
+        if keycode == _KEY_LEFT:
+            p.xy_offset_mm[0] -= _XY_STEP
+            self._print_preset()
+            return
+        if keycode == _KEY_RIGHT and not self.paused:
+            # Right arrow is step-when-paused, so only use for XY when running
+            p.xy_offset_mm[0] += _XY_STEP
+            self._print_preset()
+            return
+
+        # Adjust spawn velocity (numpad)
+        if keycode == _KEY_NUMPAD_8:
+            p.vz_mms -= _VZ_STEP  # more negative = faster downward
+            self._print_preset()
+            return
+        if keycode == _KEY_NUMPAD_2:
+            p.vz_mms = min(0.0, p.vz_mms + _VZ_STEP)  # less negative, capped at 0
+            self._print_preset()
+            return
+        if keycode == _KEY_NUMPAD_4:
+            p.vxy_mms[0] -= _VXY_STEP
+            self._print_preset()
+            return
+        if keycode == _KEY_NUMPAD_6:
+            p.vxy_mms[0] += _VXY_STEP
+            self._print_preset()
+            return
+        if keycode == _KEY_NUMPAD_7:
+            p.vxy_mms[1] -= _VXY_STEP
+            self._print_preset()
+            return
+        if keycode == _KEY_NUMPAD_9:
+            p.vxy_mms[1] += _VXY_STEP
+            self._print_preset()
+            return
+
+    def should_step(self) -> bool:
+        """Return True if the sim should advance one step."""
+        if not self.paused:
+            return True
+        if self._step_once:
+            self._step_once = False
+            return True
+        return False
+
+    @property
+    def sleep_factor(self) -> float:
+        return 1.0 / self.speed
+
+    # ------------------------------------------------------------------
+    # Main update
+    # ------------------------------------------------------------------
+
+    def update(
+        self,
+        sim_time: float,
+        current_pose: np.ndarray,
+        hand_pos_mm: float,
+    ) -> tuple[ReferenceGenerator | None, str | HandCatchSequence | None, BallSpawn | None]:
+        """Advance the state machine.
+
+        Returns
+        -------
+        ref_gen : ReferenceGenerator or None
+            Reference trajectory for the MPC.
+        hand_cmd : str, HandCatchSequence, or None
+            'prime' / 'home' / HandCatchSequence / None.
+        ball_spawn : BallSpawn or None
+            If a ball should be spawned this step.
+        """
+        hand_cmd = None
+        ball_spawn = None
+
+        # -- STARTUP: ramp to active height --
+        if self._state == InteractiveCatchState.STARTUP:
+            if not self._startup_built:
+                self._startup_ref = self._build_ramp(
+                    sim_time, current_pose, _READY_POSE, _STARTUP_DURATION)
+                self._state_start_time = sim_time
+                self._startup_built = True
+                hand_cmd = 'prime'
+
+            elapsed = sim_time - self._state_start_time
+            if elapsed >= _STARTUP_DURATION + 0.2:
+                self._state = InteractiveCatchState.READY
+                self._state_start_time = sim_time
+                self._print_ready()
+                return self._ready_ref, None, None
+
+            return self._startup_ref, hand_cmd, None
+
+        # -- READY: hold at ready pose, wait for spawn --
+        if self._state == InteractiveCatchState.READY:
+            if not self._printed_ready:
+                self._print_ready()
+                self._printed_ready = True
+
+            if self._spawn_requested:
+                self._spawn_requested = False
+                ball_spawn = self._do_spawn(sim_time, current_pose, hand_pos_mm)
+                if ball_spawn is not None:
+                    # Transition to CATCHING
+                    self._state = InteractiveCatchState.CATCHING
+                    self._state_start_time = sim_time
+                    self._printed_ready = False
+
+                    # Get first coordinator update
+                    ref_gen, hcmd = self._coordinator.update(
+                        sim_time, current_pose, hand_pos_mm=hand_pos_mm)
+                    if isinstance(hcmd, HandCatchSequence):
+                        self._active_hand_seq = hcmd
+                    elif hcmd == 'prime':
+                        hand_cmd = 'prime'
+                    return ref_gen or self._ready_ref, hand_cmd, ball_spawn
+
+            return self._ready_ref, None, None
+
+        # -- CATCHING: delegate to coordinator --
+        if self._state == InteractiveCatchState.CATCHING:
+            # Check ball spawn from coordinator
+            if self._coordinator is not None:
+                spawn = self._coordinator.should_spawn_ball(sim_time)
+                if spawn is not None:
+                    ball_spawn = spawn
+
+                ref_gen, hcmd = self._coordinator.update(
+                    sim_time, current_pose, hand_pos_mm=hand_pos_mm)
+
+                if isinstance(hcmd, HandCatchSequence):
+                    self._active_hand_seq = hcmd
+                elif hcmd == 'prime':
+                    hand_cmd = 'prime'
+                elif hcmd == 'home':
+                    hand_cmd = 'home'
+                    self._active_hand_seq = None
+
+                # Sample active hand trajectory
+                if self._active_hand_seq is not None:
+                    pos = self._active_hand_seq.sample(sim_time)
+                    if pos is not None:
+                        hand_cmd = pos  # float position
+                    else:
+                        self._active_hand_seq = None
+
+                # Check if coordinator is done
+                elapsed = sim_time - self._state_start_time
+                coordinator_idle = (self._coordinator.phase == CatchPhase.IDLE
+                                    and elapsed > 0.5)
+                timed_out = elapsed > _CATCH_TIMEOUT
+
+                if coordinator_idle or timed_out:
+                    self._print_catch_result(timed_out)
+                    self._state = InteractiveCatchState.RETURNING
+                    self._state_start_time = sim_time
+                    self._return_ref = self._build_ramp(
+                        sim_time, current_pose, _READY_POSE, _RETURN_DURATION)
+                    self._active_hand_seq = None
+                    return self._return_ref, 'prime', None
+
+                return ref_gen or self._ready_ref, hand_cmd, ball_spawn
+
+        # -- RETURNING: ramp back to ready pose --
+        if self._state == InteractiveCatchState.RETURNING:
+            elapsed = sim_time - self._state_start_time
+            if elapsed >= _RETURN_DURATION + 0.2:
+                self._state = InteractiveCatchState.COOLDOWN
+                self._state_start_time = sim_time
+            return self._return_ref or self._ready_ref, None, None
+
+        # -- COOLDOWN: brief pause --
+        if self._state == InteractiveCatchState.COOLDOWN:
+            elapsed = sim_time - self._state_start_time
+            if elapsed >= _COOLDOWN_DURATION:
+                self._state = InteractiveCatchState.READY
+                self._state_start_time = sim_time
+                self._printed_ready = False
+            return self._ready_ref, None, None
+
+        return self._ready_ref, None, None
+
+    # ------------------------------------------------------------------
+    # Ball spawning
+    # ------------------------------------------------------------------
+
+    def _do_spawn(
+        self,
+        sim_time: float,
+        current_pose: np.ndarray,
+        hand_pos_mm: float,
+    ) -> BallSpawn | None:
+        """Compute catch target from current preset and create coordinator.
+
+        Returns the BallSpawn if the catch is feasible, or None if rejected.
+        """
+        preset = self._presets[self._preset_idx]
+        self._spawn_count += 1
+
+        spawn_pos = np.array([
+            preset.xy_offset_mm[0],
+            preset.xy_offset_mm[1],
+            preset.spawn_height_mm,
+        ])
+        spawn_vel = np.array([
+            preset.vxy_mms[0],
+            preset.vxy_mms[1],
+            preset.vz_mms,
+        ])
+        spawn_time = sim_time + 0.05  # 50ms delay
+
+        # Compute catch target from ballistics
+        try:
+            target, ball_spawn = _compute_catch_target(
+                spawn_pos, spawn_vel, spawn_time,
+                active_z_offset_mm=_READY_POSE[2])
+        except ValueError as e:
+            print(f"\n=== Ball #{self._spawn_count} ===")
+            print(f"  Preset: \"{preset.name}\"")
+            print(f"  REJECTED: ballistic prediction failed — {e}")
+            return None
+
+        # Print spawn info
+        print(f"\n=== Ball #{self._spawn_count} ===")
+        print(f"  Preset: \"{preset.name}\"")
+        print(f"  Spawn: pos={_fmt_vec(spawn_pos)} mm, "
+              f"vel={_fmt_vec(spawn_vel)} mm/s")
+
+        flight_time = target.arrival_time - spawn_time
+        landing_z = 574.3 + (-129.0 + 322.7 + 109.0)  # approximate
+        print(f"  Flight time: {flight_time:.3f}s, "
+              f"arrival at t={target.arrival_time:.3f}s")
+        print(f"  Target pose: {_fmt_vec(target.pose_6dof)}")
+        if target.event_vel_mps is not None:
+            print(f"  Event velocity: {target.event_vel_mps:.2f} m/s")
+
+        # Create fresh coordinator with feasibility checker
+        self._coordinator = CatchCoordinator(
+            feasibility_checker=self._feasibility)
+        self._coordinator.submit_target(target, ball_spawn)
+
+        # Force the coordinator to process the target (advances to next)
+        # by calling update once — this triggers feasibility + hand timing
+        ref_gen, hcmd = self._coordinator.update(
+            sim_time, current_pose, hand_pos_mm=hand_pos_mm)
+
+        # Check if it was rejected by feasibility
+        events = self._coordinator.events
+        if events and events[-1].arrival_error_mm == -1.0:
+            print(f"  Feasibility: REJECTED")
+            print(f"  Result: REJECTED — target infeasible\n")
+            self._coordinator = None
+            return None
+
+        print(f"  Feasibility: ACCEPTED")
+
+        return ball_spawn
+
+    # ------------------------------------------------------------------
+    # Console output
+    # ------------------------------------------------------------------
+
+    def _print_preset(self) -> None:
+        p = self._presets[self._preset_idx]
+        print(f"  Preset [{self._preset_idx + 1}/{len(self._presets)}]: "
+              f"\"{p.name}\"")
+        print(f"    pos: xy={_fmt_vec(p.xy_offset_mm)}mm, "
+              f"height={p.spawn_height_mm:.0f}mm")
+        print(f"    vel: vz={p.vz_mms:.0f}mm/s, "
+              f"vxy={_fmt_vec(p.vxy_mms)}mm/s")
+
+    def _print_ready(self) -> None:
+        p = self._presets[self._preset_idx]
+        print(f"\n  READY — Press B to spawn ball")
+        print(f"  Preset [{self._preset_idx + 1}/{len(self._presets)}]: "
+              f"\"{p.name}\"")
+        print(f"    pos: xy={_fmt_vec(p.xy_offset_mm)}mm, "
+              f"height={p.spawn_height_mm:.0f}mm")
+        print(f"    vel: vz={p.vz_mms:.0f}mm/s, "
+              f"vxy={_fmt_vec(p.vxy_mms)}mm/s")
+
+    def _print_catch_result(self, timed_out: bool) -> None:
+        if self._coordinator is None:
+            return
+
+        events = self._coordinator.events
+        if timed_out:
+            print(f"  Result: TIMED OUT ({_CATCH_TIMEOUT:.0f}s)")
+        elif not events:
+            print(f"  Result: MISSED — no events recorded")
+        else:
+            for ev in events:
+                if ev.captured:
+                    print(f"  Result: CAUGHT at t={ev.time:.3f}s "
+                          f"(pos_err={ev.arrival_error_mm:.1f}mm, "
+                          f"timing_err={ev.arrival_timing_error_s*1000:+.0f}ms)")
+                elif ev.arrival_error_mm == -1.0:
+                    pass  # already printed as REJECTED
+                else:
+                    print(f"  Result: MISSED — {ev.phase.name} at t={ev.time:.3f}s "
+                          f"(pos_err={ev.arrival_error_mm:.1f}mm)")
+        print()
+
+    # ------------------------------------------------------------------
+    # 3D preview rendering
+    # ------------------------------------------------------------------
+
+    def render_preview(self, viewer) -> None:
+        """Draw a ghost ball and velocity arrow at the current spawn position.
+
+        Called each frame by the viewer loop.  Only draws while in READY state.
+        Adds geoms to ``viewer.user_scn`` (shared with HorizonRenderer, which
+        sets ngeom=0 at the start of its render — so call this BEFORE horizon).
+        """
+        if self._state != InteractiveCatchState.READY:
+            return
+
+        p = self._presets[self._preset_idx]
+        # Spawn position in world frame (metres)
+        ball_pos_m = np.array([
+            p.xy_offset_mm[0] / 1000.0,
+            p.xy_offset_mm[1] / 1000.0,
+            p.spawn_height_mm / 1000.0,
+        ])
+
+        scn = viewer.user_scn
+        if scn.ngeom >= scn.maxgeom - 2:
+            return  # not enough room
+
+        # Ghost ball — translucent orange sphere
+        geom = scn.geoms[scn.ngeom]
+        mujoco.mjv_initGeom(
+            geom,
+            mujoco.mjtGeom.mjGEOM_SPHERE,
+            np.array([0.02, 0.0, 0.0]),      # radius 20mm
+            ball_pos_m,
+            np.eye(3).flatten(),
+            np.array([1.0, 0.5, 0.0, 0.4], dtype=np.float32),  # orange, translucent
+        )
+        scn.ngeom += 1
+
+        # Velocity arrow — cylinder from ball pos in the direction of velocity
+        vel_mms = np.array([p.vxy_mms[0], p.vxy_mms[1], p.vz_mms])
+        speed_mms = np.linalg.norm(vel_mms)
+        if speed_mms < 1.0:
+            return  # no arrow for near-zero velocity
+
+        vel_dir = vel_mms / speed_mms
+        # Arrow length: scale speed to a visible length (1000 mm/s → 0.3m arrow)
+        arrow_len_m = min(speed_mms / 1000.0 * 0.3, 0.8)
+
+        # Arrow endpoint
+        arrow_end_m = ball_pos_m + vel_dir * arrow_len_m
+
+        # MuJoCo ARROW geom: needs 'from' and 'to' positions.
+        # mjv_initGeom with ARROW isn't straightforward — use a connector.
+        # Instead, use mjv_connector which draws a line/arrow between two points.
+        if scn.ngeom >= scn.maxgeom:
+            return
+
+        geom2 = scn.geoms[scn.ngeom]
+        from_pt = np.array(ball_pos_m, dtype=np.float64)
+        to_pt = np.array(arrow_end_m, dtype=np.float64)
+        mujoco.mjv_connector(
+            geom2,
+            mujoco.mjtGeom.mjGEOM_ARROW,
+            0.005,  # width (5mm radius)
+            from_pt, to_pt,
+        )
+        geom2.rgba[:] = [1.0, 0.3, 0.0, 0.7]
+        scn.ngeom += 1
+
+    # ------------------------------------------------------------------
+    # Trajectory helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_ramp(
+        now: float,
+        current_pose: np.ndarray,
+        target_pose: np.ndarray,
+        duration: float,
+    ) -> ReferenceGenerator:
+        """Build a quintic ramp from current pose to target."""
+        zeros = np.zeros(6)
+        traj = create_trajectory(
+            start_pose=current_pose.copy(),
+            start_twist=zeros,
+            start_accel=zeros,
+            end_pose=target_pose.copy(),
+            end_twist=zeros,
+            end_accel=zeros,
+            duration=duration,
+            t_start=now,
+        )
+
+        def _eval(t):
+            if t < now:
+                return current_pose.copy(), zeros.copy()
+            if t > now + duration:
+                return target_pose.copy(), zeros.copy()
+            pose, twist, _ = quintic_evaluate(traj, t)
+            return pose, twist
+
+        return ReferenceGenerator.from_function(_eval, duration=duration)
+
+
+def _fmt_vec(v: np.ndarray) -> str:
+    """Format a small vector for console output."""
+    return '[' + ', '.join(f'{x:.1f}' for x in v) + ']'

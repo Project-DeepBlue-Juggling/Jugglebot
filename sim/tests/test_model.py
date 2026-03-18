@@ -184,8 +184,8 @@ class TestModelLoads:
         assert model.nq > 0  # has joints
 
     def test_has_actuators(self, model):
-        """Model has 6 actuators."""
-        assert model.nu == 6
+        """Model has 6 leg actuators + hand actuator."""
+        assert model.nu == 7
 
     def test_has_sensors(self, model):
         """Model has the expected sensors."""

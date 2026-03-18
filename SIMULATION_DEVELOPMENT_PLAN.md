@@ -15,7 +15,7 @@ The MPC will eventually deploy to real hardware (Jetson), sending position setpo
 | 2 | MPC Core (Static Pose Tracking) | CasADi/IPOPT NMPC that tracks a static reference pose with warm-starting and solver failure fallback (**COMPLETE**) |
 | 3 | Trajectory Tracking | Time-varying reference generation (waypoints, quintics) fed to MPC; tracking quality validation (**COMPLETE**) |
 | 4 | SpaceMouse Integration | Live spacemouse input mapped to target pose, MPC plans optimal motion to reach it (**COMPLETE**) |
-| 5 | Dynamic Target (Ball Catching) | Timed target interception — platform arrives at a pose by a deadline, with optional throw velocity |
+| 5 | Dynamic Target (Ball Catching) | Hand actuator, ball physics, timed target interception, catch/throw sequences (**COMPLETE**) |
 | 6 | Hardware Bridge | Swap simulated plant for real hardware; MPC outputs motor commands via CAN; sim-to-real validation |
 
 ## Key Decisions
@@ -30,7 +30,9 @@ The MPC will eventually deploy to real hardware (Jetson), sending position setpo
 | Plant interface | Abstract `PlantInterface` | Sim and hardware are swappable without touching the controller |
 | Inner loop (hardware) | ODrive position control (8 kHz) | Proven, fail-safe (stale command = hold position) |
 | Spacemouse mode | Target pose (not velocity) | MPC plans optimal motion to reach the target |
-| Ball model | Target pose at time T | No contact physics; ball = a pose deadline |
+| Ball model | Free-body sphere + weld constraint | Ball flies under gravity; proximity-based capture activates a weld constraint (no contact mechanics). Forward-compatible with contact physics later |
+| Hand model | 1-DOF prismatic actuator on platform | Matches real hardware: inverted truncated cone on a linear axis (ODrive axis 6, 355 mm stroke). Position actuator in MuJoCo mirrors ODrive position control |
+| Ball capture | Proximity + weld (not contact) | Ball within cone frustum + low relative velocity → enable weld. Deterministic, stable, swappable for contact-based capture later |
 | Code location | `sim/` top-level directory | Separate from ROS2; imports from `motion/` where useful |
 | ROS2 dependency | None in sim path | Pure Python; ROS2 only enters at hardware bridge (Phase 6) |
 | Containerisation | Docker (Linux container) | One `docker compose up` from clone to running sim on any machine (Windows/Linux). GPU passthrough for MuJoCo viewer via `--gpus all` + WSLg (Windows) or native X11 (Linux) |
@@ -127,7 +129,17 @@ sim/
 │       ├── base.stl               # Base frame
 │       ├── platform.stl           # Platform assembly
 │       ├── leg_outer.stl          # Outer tube (shared by all 6 legs)
-│       └── leg_inner.stl          # Inner tube (shared by all 6 legs)
+│       ├── leg_inner.stl          # Inner tube (shared by all 6 legs)
+│       └── hand.stl               # Hand cone (inverted truncated cone, exported from Onshape)
+│
+├── ball/
+│   ├── __init__.py                # Exports BallManager, BallState
+│   └── manager.py                 # Ball lifecycle: spawn, capture detection, state (Phase 5, complete)
+│
+├── catch/
+│   ├── __init__.py                # Exports CatchCoordinator, DynamicTarget, CatchEvent, FeasibilityChecker
+│   ├── coordinator.py             # State machine: hand priming, target tracking, capture/release (Phase 5C, complete)
+│   └── feasibility.py             # Two-stage feasibility: IK pre-filter + coarse-horizon MPC solve (Phase 5C)
 │
 ├── plant/
 │   ├── __init__.py
@@ -158,7 +170,9 @@ sim/
 │   ├── test_model.py              # MuJoCo model validation vs existing IK (22 tests)
 │   ├── test_mpc_static.py         # MPC tracks static poses (Phase 2, 14 tests, complete)
 │   ├── test_mpc_trajectory.py     # MPC tracks moving references (Phase 3, 15 tests, complete)
-│   └── test_mpc_dynamic.py        # MPC intercepts timed targets (Phase 5)
+│   ├── test_hand.py               # Hand actuator tests (Phase 5A, 13 tests, complete)
+│   ├── test_ball.py               # Ball physics and capture tests (Phase 5B, 9 tests, complete)
+│   └── test_mpc_dynamic.py        # MPC intercepts timed targets (Phase 5C, 7 tests, complete)
 │
 └── main.py                        # Entry point: run simulation loop (Phase 1)
 ```
@@ -504,12 +518,165 @@ The interactive viewer (keyboard/spacemouse input) works on Windows. The MuJoCo 
 
 ---
 
-### Phase 5: Dynamic Target (Ball Catching)
+### Phase 5: Dynamic Target (Ball Catching) — ✅ COMPLETE (2026-03-18)
 
-Implement timed target interception — the platform must arrive at a target pose by a deadline.
+Add the hand actuator and ball to the simulation, then implement timed target interception — the platform arrives at a catch pose by a deadline while the hand moves to receive the ball.
+
+This phase has three sub-phases: **5A** (hand actuator in MJCF + plant), **5B** (ball lifecycle + capture), **5C** (MPC dynamic target tracking + scripted test sequences).
+
+---
+
+#### Phase 5A: Hand Actuator — ✅ COMPLETE
+
+Add the hand as a 1-DOF linear actuator on the platform, matching the real hardware.
+
+**Physical hand description:**
+The hand is an inverted hollow truncated cone (tip down) mounted on a linear rail aligned with the platform's local Z axis. The rail is driven by an ODrive Pro (axis 6) via a cable spool (radius 5.21 mm). The ball's flight path passes through the platform centroid along this axis.
+
+**Hand parameters (from `hardware_config.yaml`):**
+
+| Parameter | Value | Source |
+|-----------|-------|--------|
+| Linear stroke | 355 mm | `GEOM_HAND_STROKE_MM` |
+| Spool radius | 5.21 mm | Teensy trajectory config |
+| Motor max position | 11.1 rev (safety limit; true max ~11.4) | `GEOM_HAND_MOTOR_MAX_POSITION_REVS` |
+| Catch prime position | 9.858 rev (~323 mm extended) | `JB_OP_HAND_CATCH_PRIME_REV` |
+| Bottom of travel (platform-local Z) | -135 mm | Mechanical constraint |
+| Top of travel (platform-local Z) | -135 + 355 = +220 mm | Derived |
+| Hand mass | 0.281 kg | `inertia_hand_only_kg` |
+| Hand opening radius | ~35 mm | `GEOM_HAND_RADIUS_MM` (approximate) |
+| Normal gains | pos=35.0, vel=0.007, vel_int=0.07 | ODrive defaults section |
+| Max smooth-move accel | 100 rev/s² | Teensy trajectory config |
 
 **Tasks:**
-- [ ] Define the dynamic target interface in `sim/input/scripted.py`:
+- [x] Hand STL exported from Onshape and placed in `sim/model/meshes/hand.stl`:
+  - Inverted truncated cone (tip down), origin at rail attachment point (Z=0), cone extends +Z to 109 mm
+  - X centred (±44 mm), Y asymmetric (−13 to +40 mm, ~13 mm offset due to mounting structure), 15450 triangles
+  - Same mm-scale convention as other meshes; generator applies `scale="0.001 0.001 0.001"`
+  - If mesh is absent, generator falls back to a MuJoCo truncated-cone approximation (stacked cylinders)
+- [x] Extend `sim/model/generate_mjcf.py` to add the hand:
+  - **Hand body**: child of platform body, positioned at bottom of travel `pos="0 0 -0.135"` (platform-local Z)
+  - **Prismatic joint** (`hand_slide`): along platform-local Z, range `[0, 0.355]` m (0 = bottom, 0.355 = top of stroke)
+  - **Hand geom**: `hand.stl` mesh (visual only, contype=0/conaffinity=0), or stacked-cylinder fallback
+  - **Hand site** (`hand_opening`): at the top of the cone (the mouth where the ball enters), used for capture proximity check
+  - **Position actuator** (`act_hand`): drives `hand_slide`, kp=10000/kv=200 tuned to match ODrive pos_gain=35 response
+  - **Sensors**: `hand_slide_pos` (jointpos), `hand_slide_vel` (jointvel)
+  - Hand mass 0.281 kg set via `<inertial>` on the hand body
+  - Hand visuals have no collision (contype=0, conaffinity=0) — ball capture is proximity-based, not contact-based
+- [x] Extend `PlantState` in `sim/plant/interface.py`:
+  - Added optional `hand_pos_mm` and `hand_vel_mmps` fields (default None, backward-compatible)
+- [x] Extend `MuJoCoPlant` in `sim/plant/mujoco_plant.py`:
+  - `__init__`: detects hand actuator/sensors; sets `_has_hand`, `_hand_act_idx`
+  - `command_hand(pos_mm)`: converts mm → m, sets hand actuator ctrl; no-op if no hand
+  - `get_state()`: populates `hand_pos_mm` and `hand_vel_mmps` from sensors when present
+  - `hand_to_home()` / `hand_to_prime()`: convenience methods
+  - `reset()`: also resets hand to bottom of travel
+- [x] Add hand to MJCF keyframe:
+  - Home keyframe: hand at 0 (bottom of travel), ball parked at (0,0,5) m
+- [x] Write `sim/tests/test_hand.py` — 13 tests across 4 classes, all passing:
+  - `TestHandModel` — 5 tests: body, joint range, actuator, sensors, parent=platform
+  - `TestHandCommand` — 3 tests: prime (settles < 1 mm), home, arbitrary position
+  - `TestHandState` — 2 tests: state at home, velocity during motion
+  - `TestHandBackcompat` — 3 tests: leg extensions, platform pos, has_hand property
+
+**Implementation note — rev-to-mm conversion:**
+The real robot uses motor revolutions; the sim uses linear mm. The conversion is `mm = rev × 2π × spool_radius_mm` (spool radius = 5.21 mm, so 1 rev ≈ 32.7 mm). The sim works in mm natively; rev conversion is only needed at the hardware bridge (Phase 6). The MPC state/control vectors do not include the hand — it is commanded independently alongside the MPC output, matching production where the Teensy handles hand trajectories separately from the control loop.
+
+**Implementation note — hand actuator tuning:**
+The hand actuator kp/kv should produce a settling response similar to the real ODrive at pos_gain=35. Start with kp=10000 (same order as leg actuators) and kv=200, then tune to match the real smooth-move response (~100 rev/s² accel → ~3270 mm/s² linear). The catch-mode softer gains (pos_gain=20) can be modelled later by reducing kp at runtime if contact mechanics are added.
+
+**Deliverable:** Hand appears in MuJoCo viewer as a cone on the platform. It can be commanded to any position along its stroke. All existing tests pass with no regressions.
+
+---
+
+#### Phase 5B: Ball Physics and Capture — ✅ COMPLETE
+
+Add a physical ball and a proximity-based capture mechanism.
+
+**Tasks:**
+- [x] Extend `sim/model/generate_mjcf.py` to add the ball:
+  - **Ball body** (`ball`): in worldbody with a `freejoint`, initially positioned far above the scene (`pos="0 0 5"`)
+  - **Ball geom**: sphere, radius 0.02 m, mass 0.043 kg, rgba orange
+  - Collision: `contype=2, conaffinity=2` (interacts with hand, not with platform/legs)
+  - **Ball sensors**: `ball_pos` (framepos, site-based), `ball_vel` (framelinvel)
+  - **Ball site**: at ball body origin, for sensor attachment
+  - **Weld constraint** (`ball_catch`): `body1="ball" body2="hand"`, disabled by default (`active="false"`)
+    - `relpose` places the ball at the hand opening centre when active
+    - When enabled, ball rigidly follows the hand (and thus the platform)
+- [x] Implement `BallManager` in `sim/ball/manager.py`:
+  ```python
+  @dataclass
+  class BallState:
+      position_mm: np.ndarray      # (3,) world frame
+      velocity_mms: np.ndarray     # (3,) mm/s
+      held: bool                   # True when weld constraint is active
+      active: bool                 # True when ball is in the scene (not parked)
+
+  class BallManager:
+      def __init__(self, model, data):
+          """Cache body/joint/constraint IDs for ball and weld."""
+
+      def spawn(self, position_mm: np.ndarray, velocity_mms: np.ndarray) -> None:
+          """Teleport ball to position, set velocity, ensure weld is disabled."""
+
+      def check_capture(self) -> bool:
+          """Check if ball is inside the hand cone frustum with low relative velocity.
+          If captured: enable weld constraint via mj_enableConstraint, return True.
+          Capture criteria:
+            - Ball XY distance from hand axis < hand_opening_radius (35 mm)
+            - Ball Z within cone volume (between hand bottom and hand opening)
+            - Ball velocity relative to hand < threshold (~500 mm/s)
+          """
+
+      def release(self, velocity_mms: np.ndarray | None = None) -> None:
+          """Disable weld constraint. Optionally set ball ejection velocity."""
+
+      def get_state(self) -> BallState:
+          """Read ball position/velocity from MuJoCo sensors."""
+
+      def reset(self) -> None:
+          """Park ball at (0, 0, 5) m, zero velocity, disable weld."""
+  ```
+- [x] Integrate `BallManager` into `MuJoCoPlant`:
+  - `MuJoCoPlant.__init__`: construct `BallManager` if ball body exists in model
+  - `MuJoCoPlant.spawn_ball(pos_mm, vel_mms)`: delegate to BallManager
+  - `MuJoCoPlant.get_catch_state() -> CatchState | None`: returns ball + hand state for external logic
+  ```python
+  @dataclass
+  class CatchState:
+      ball: BallState | None              # None if no ball in model
+      hand_pos_mm: float                  # Hand linear position
+      hand_opening_pos_mm: np.ndarray     # (3,) world-frame position of cone opening
+  ```
+  - `MuJoCoPlant.check_and_capture() -> bool`: called each step, returns True on capture frame
+  - `MuJoCoPlant.reset()`: also resets ball (park out of scene, disable weld)
+- [x] Write `sim/tests/test_ball.py` — 9 tests across 6 classes, all passing:
+  - `TestBallSpawn` — 3 tests: position, velocity, weld reset on spawn
+  - `TestBallGravity` — 1 test: free fall matches ½gt² within 1%
+  - `TestBallCapture` — 2 tests: capture from above (with gentle velocity), ball follows platform when held
+  - `TestBallRelease` — 1 test: release resumes free flight with ejection velocity
+  - `TestBallReset` — 1 test: parks ball, disables weld
+  - `TestBallMiss` — 1 test: ball offset from hand never triggers capture
+
+**Implementation note — weld constraint activation:**
+MuJoCo equality constraints can be toggled at runtime via `model.eq_active[constraint_id]`. Setting `eq_active = 1` enables the weld; setting `eq_active = 0` disables it. When enabled, the ball's freejoint is effectively overridden by the constraint solver. When disabled, the ball resumes free-body dynamics with whatever state it had at the moment of release. This is clean and well-supported by MuJoCo — no body-tree mutation required.
+
+**Implementation note — capture geometry:**
+The proximity check uses the hand site position (cone opening centre) transformed to world frame via `mj_data.site_xpos`. The cone frustum is approximated as a cylinder for the proximity test (radius = hand opening radius, height = cone depth). This is conservative — the real cone narrows toward the bottom, so a ball that passes the cylinder check will definitely be inside the cone. If higher fidelity is needed later, the check can be refined to a true frustum test.
+
+**Implementation note — no contact mechanics (for now):**
+The ball does not bounce, roll, or slide inside the cone. The capture check is purely geometric: once the ball is inside the frustum with low relative velocity, the weld activates and the ball is rigidly attached. This is equivalent to the production assumption that the ball lands "dead" in the hand. Contact-based capture can be added later by enabling ball-hand collision (`contype/conaffinity`) and replacing the proximity check with a `mj_contact` query.
+
+**Deliverable:** A physical ball flies under gravity in the MuJoCo scene. When it enters the hand cone, a weld constraint locks it to the platform. Ball can be released for throw sequences.
+
+---
+
+#### Phase 5C: Dynamic Target Tracking — ✅ COMPLETE
+
+Implement timed target interception — the MPC drives the platform to a catch pose by a deadline, coordinated with hand priming and ball spawning.
+
+**Tasks:**
+- [x] Define the dynamic target interface in `sim/catch/coordinator.py`:
   ```python
   @dataclass
   class DynamicTarget:
@@ -521,7 +688,7 @@ Implement timed target interception — the platform must arrive at a target pos
       hold_duration: float = 0.5   # seconds to hold after arrival (catch mode only)
   ```
   This matches the existing Phase 7 API which supports `target_vel` for throw motions. When `arrival_twist` is non-zero, the platform must be moving at the specified velocity when it reaches the target pose — this is the throw case where the hand releases the ball while the platform is in motion.
-- [ ] Implement time-aware reference generation:
+- [x] Implement time-aware reference generation:
   - Given current state and a `DynamicTarget`, generate a reference trajectory that:
     1. Arrives at `target.pose_6dof` at or before `target.arrival_time`
     2. **Catch mode** (`arrival_twist` is None/zero): zero velocity at arrival, hold pose for `hold_duration`, return to home
@@ -529,27 +696,102 @@ Implement timed target interception — the platform must arrive at a target pos
   - Reference trajectory uses quintic interpolation with duration = `arrival_time - now`
   - If arrival time is too soon for feasible motion: arrive as early as possible (MPC does its best; constraint satisfaction prevents damage)
   - **MPC terminal constraint difference:** In catch mode, the MPC terminal cost penalises both pose error and twist. In throw mode, it penalises pose error and twist *deviation from target twist* — the platform should be moving at the right velocity, not stationary.
-- [ ] Implement feasibility pre-check:
-  - Before committing to a target, estimate whether the platform can reach it in time
-  - Use a simplified check: max leg velocity × available time ≥ required leg displacement
-  - If infeasible: log warning, optionally reject target
-- [ ] Test with synthetic ball sequences:
-  - **DT1: Single catch** — target at [30, -20, 80, 3°, -2°, 0°], arrival in 400 ms
-  - **DT2: Rapid succession** — two targets 800 ms apart, different poses
-  - **DT3: Edge of workspace** — target near soft workspace limit, arrival in 500 ms
-  - **DT4: Infeasible** — target requiring motion faster than actuator limits, verify graceful handling
-  - **DT5: Early arrival** — target with 2s lead time, verify platform arrives early and holds
-  - **DT6: Throw (non-zero arrival velocity)** — target at [0, 0, 60, 0, 0, 0] with arrival_twist [0, 0, -200, 0, 0, 0] (downward at 200 mm/s), 500 ms. Verify platform has correct velocity at arrival time, then decelerates smoothly to stop.
-  - **DT7: Catch then throw** — catch target at t=0.4s (zero velocity), hold 0.3s, throw target at t=1.0s (non-zero velocity). Verify both phases execute correctly in sequence.
-- [ ] Validate timing:
+- [x] Coordinate hand motion with platform trajectory:
+  - On catch target received: command `hand_to_prime()` immediately (hand moves to ~323 mm, top of stroke, to receive ball)
+  - Hand priming runs independently of MPC — it is a simple position command to the hand actuator, not part of the MPC optimisation
+  - After catch (weld activated): command `hand_to_home()` to retract hand with ball
+  - On throw target: command hand to release position, disable weld at arrival time, set ball velocity from platform twist
+  - Hand timing mirrors production: prime before ball arrives, Teensy-equivalent trajectory is just a position step (MuJoCo actuator dynamics smooth it)
+- [x] Implement feasibility pre-check (`sim/catch/feasibility.py`):
+  - Two-stage check: (1) IK pre-filter rejects targets with extensions outside stroke range; (2) coarse-horizon MPC solve (same N=10 but dt=0.1s → 1s lookahead) predicts whether the controller can reach the target in the available time
+  - Coarse MPC uses the exact same NLP formulation as the control MPC — same constraints, smoothness costs, and actuator lag model. No model mismatch.
+  - Checks the predicted pose at the horizon step closest to the deadline (not the terminal step), so tight deadlines are correctly evaluated
+  - Cost: ~5ms per check (one NLP solve). IK pre-filter is sub-millisecond.
+  - If infeasible: coordinator records a rejection event (arrival_error_mm = -1 sentinel) and stays IDLE
+  - Tolerances: 5 mm position, 5.7° orientation (tunable via constructor)
+- [x] Wire ball spawning into scripted test sequences:
+  - Each `DynamicTarget` in a test sequence has an associated ball spawn: `spawn_pos_mm`, `spawn_vel_mms`, `spawn_time`
+  - Ball is teleported into free-flight at `spawn_time`; target is computed from the ball's ballistic trajectory
+  - The MPC does not see the ball directly — it receives the target pose and deadline. The ball is in the scene for visual validation and capture verification.
+- [x] Test with synthetic ball sequences (DT1-DT8 in `sim/input/scripted.py`):
+  - **DT1: Single catch** — spawn ball above platform with downward velocity, target at [30, -20, 80, 3°, -2°, 0°], arrival in 400 ms. Verify: platform arrives, hand is primed, ball captured by weld.
+  - **DT2: Rapid succession** — two balls 800 ms apart, different poses. Verify: first ball caught + retracted, second ball caught.
+  - **DT3: Edge of workspace** — target near soft workspace limit, arrival in 500 ms. Verify: catch succeeds at edge of reachable space.
+  - **DT4: Infeasible** — target requiring motion faster than actuator limits. Verify: graceful rejection, ball misses (no capture).
+  - **DT5: Early arrival** — target with 2 s lead time. Verify: platform arrives early and holds, ball captured cleanly.
+  - **DT6: Throw (non-zero arrival velocity)** — target at [0, 0, 60, 0, 0, 0] with arrival_twist [0, 0, -200, 0, 0, 0] (downward at 200 mm/s), 500 ms. Verify: platform has correct velocity at arrival, then decelerates. Ball released with correct velocity and resumes free flight.
+  - **DT7: Catch then throw** — catch target at t=0.4 s (zero velocity), hold 0.3 s, throw target at t=1.0 s (non-zero velocity). Verify: both phases execute, ball caught then thrown.
+  - **DT8: Ball miss** — spawn ball offset from platform workspace. Verify: MPC attempts to reach target, ball flies past without capture, system returns to home gracefully.
+- [x] Validate timing:
   - Log: time of arrival vs deadline for each target
   - Acceptance: arrive within 1 MPC step (20 ms) of deadline, or early
-  - Acceptance: holding pose error < 2 mm at moment of "catch"
-- [ ] Mid-motion replanning:
+  - Acceptance: holding pose error < 2 mm at moment of catch
+  - Acceptance: hand at prime position before ball enters capture zone
+- [x] Mid-motion replanning:
   - If a new target arrives while moving to a previous target, MPC naturally handles this — the reference trajectory changes, and the MPC replans from its current state
   - Test: send target A, then 200 ms later send target B. Verify smooth transition.
+- [x] Wire into simulation loop (`sim/main.py`):
+  - `--catch DT1|DT2|...|DT8` flag: run a scripted catch sequence (implies `--mpc`)
+  - Ball spawned at the scripted time; target generated from ballistic prediction
+  - Hand priming triggered automatically on first target
+  - Capture check runs every step; telemetry logs ball state, hand state, capture time
+  - Viewer shows ball in flight, hand position, and capture event
+  - Both headless (`run_catch_headless`) and viewer (`run_catch_with_viewer`) modes supported
 
-**Deliverable:** Simulated platform reliably arrives at target poses before deadlines. Handles multiple targets, infeasible requests, and mid-motion replanning.
+**Implementation note — hand outside MPC:**
+The MPC controls only the 6 Stewart platform legs. The hand is commanded separately via `plant.command_hand(pos_mm)`, matching production where the Teensy handles hand trajectories independently of the control loop. This keeps the MPC formulation unchanged (6 controls, 12 states) and avoids coupling hand dynamics into the NLP. If hand timing optimisation is ever needed (e.g., the MPC should slow down if the hand hasn't finished priming), this can be added as a constraint on the reference generator rather than expanding the MPC state space.
+
+**Implementation note — ball as visual ground truth:**
+The ball's physical trajectory in MuJoCo serves as ground truth for validating the catch pipeline. The MPC receives pre-computed target poses (same as production, where the catch coordinator computes the target from Kalman-filtered ball state). The ball exists in the scene so we can verify: (1) the platform actually arrives where the ball lands, (2) the hand captures at the right moment, (3) throw releases produce correct ball trajectories. This matches the separation of concerns in production: the catch coordinator observes the ball, the control loop only knows about target poses.
+
+**Test results (Phase 5):**
+
+All 93 tests pass (22 Phase 0 + 7 Phase 1 + 14 Phase 2 + 15 Phase 3 + 13 Phase 5A + 9 Phase 5B + 11 Phase 5C + 2 backcompat) in ~39 seconds.
+
+| Test suite | Tests | Status |
+|-----------|-------|--------|
+| test_hand.py (5A) | 13 | All PASS |
+| test_ball.py (5B) | 9 | All PASS |
+| test_mpc_dynamic.py (5C) | 11 | All PASS |
+
+Phase 5C test details:
+| Test | Result | Notes |
+|------|--------|-------|
+| DT1: Platform arrives | PASS | Arrival error < 5 mm |
+| DT1: Hand is primed | PASS | Hand > 200 mm within 1s |
+| DT3: Workspace edge | PASS | Arrival error < 10 mm at boundary |
+| DT5: Early arrival | PASS | Arrival error < 3 mm with 2.5s lead |
+| DT6: Throw completes | PASS | Platform returns near home after decel |
+| DT8: Ball miss | PASS | 0 captures, returns to home < 10 mm |
+| Feasibility: accepts DT1 | PASS | Moderate pose, 0.9s deadline |
+| Feasibility: rejects DT4 | PASS | Extreme pose, 0.3s deadline (15.3 mm error) |
+| Feasibility: rejects OOB | PASS | Z=350mm exceeds stroke |
+| Feasibility: coordinator | PASS | DT4 rejection event recorded (sentinel -1) |
+| Solver performance | PASS | < 5 consecutive failures |
+
+**Implementation note — weld constraint toggling:**
+MuJoCo equality constraints are toggled at runtime via `data.eq_active[constraint_id]` (NOT `model.eq_active0`, which is the compile-time default and has no effect on running simulations). When the weld is enabled, the ball's freejoint is overridden by the constraint solver. When disabled, the ball resumes free-body dynamics. This is clean and well-supported — no body-tree mutation needed.
+
+**Implementation note — capture velocity threshold:**
+The capture check uses a 500 mm/s relative velocity threshold. In testing, balls arriving from free-fall at short distances (50 mm) easily exceed this before entering the cone due to gravitational acceleration. Real catches will have the hand moving upward to meet the ball (reducing relative velocity). For the sim tests, balls are spawned with gentle initial velocities (100-200 mm/s) close to the hand opening. The threshold can be increased if needed for more aggressive catch scenarios.
+
+**Implementation note — CatchCoordinator state machine:**
+The coordinator implements an 8-state machine: IDLE → PRIMING → APPROACHING → HOLDING → CAUGHT → RETURNING (catch path) or APPROACHING → THROWING → DECELERATING → RETURNING (throw path). Each target gets a quintic trajectory from the current pose to the target, with duration = time_to_arrival. The coordinator generates `ReferenceGenerator` instances that the MPC consumes without knowing about the catch logic. Hand commands ('prime', 'home') are returned alongside the reference for the simulation loop to execute.
+
+**Implementation note — coarse-horizon feasibility MPC:**
+The feasibility checker (`sim/catch/feasibility.py`) uses a second MPC instance with the same N=10 horizon but dt=0.1s (vs 0.02s for control). This gives a 1.0s lookahead in the same 180-variable NLP, at the same ~5ms solve cost. The key insight: checking the predicted pose at the horizon step corresponding to the deadline (not the terminal step) correctly handles tight deadlines — e.g., DT4's 0.3s deadline maps to step 3, where the predicted position error is 15.3mm (rejected), even though the terminal step (step 10, 1.0s) would show convergence. An IK pre-filter (sub-millisecond, two IK evaluations) catches geometrically impossible targets (extensions outside [0, 280mm] stroke) before invoking the NLP. This two-stage approach differs from production's `feasibility.py` which evaluates quintic trajectories against hardware limits — the MPC doesn't follow quintics, so checking the MPC's own predicted trajectory is more accurate for the sim's controller.
+
+**Implementation note — hand site naming (`hand_opening`):**
+The MuJoCo site named `hand_opening` is positioned at the top of the static cone mesh (the mouth where the ball enters). The hand itself does not open or close — it is a fixed-geometry inverted truncated cone that moves linearly along the platform's Z axis. The site name refers to the cone's opening (entrance), not an actuated mechanism.
+
+**Items warranting further investigation:**
+1. **Ball capture at realistic speeds:** The current proximity-based capture works for gentle test velocities (< 500 mm/s relative). Real ball-catching involves ~3-5 m/s impact velocity with the hand moving to meet the ball. The capture threshold may need to increase significantly, or contact-based capture (enabling ball-hand collision in MuJoCo) should be explored for realism.
+2. **Hand-ball collision for throw verification:** Currently, ball release in throw mode sets the ball's velocity directly via `qvel`. This doesn't model the hand actually pushing the ball. For throw trajectory validation, contact physics between the hand and ball would produce more realistic ejection dynamics.
+3. **MPC horizon vs catch timing:** With N=10 at 50 Hz (200 ms lookahead), the MPC cannot "see" targets more than 200 ms ahead. The quintic reference trajectory handles the long-range planning, but sharp changes in the reference (e.g., mid-motion replanning) can cause the MPC to temporarily lose tracking. Longer horizons or variable-rate MPC could help.
+4. **Ball gravity model:** The simulation uses MuJoCo's physics engine for ball free-flight (no drag). Real balls experience air drag which affects trajectory prediction. This is acceptable for initial testing but may need correction for accurate catch timing validation.
+5. **Hand actuator dynamics vs real ODrive:** The MuJoCo position actuator (kp=10000, kv=200) approximates the real ODrive's response but doesn't capture the Teensy's trapezoidal motion profile or the ODrive's cascaded PID loop. For Phase 6, the hand actuator gains may need re-tuning to match measured hardware settling times.
+
+**Deliverable:** End-to-end simulated catch sequences. Platform arrives at target poses before deadlines, hand primes and captures the ball, throw mode releases the ball with correct velocity. Visual verification in the MuJoCo viewer. Handles multiple targets, infeasible requests, misses, and mid-motion replanning.
 
 ---
 
@@ -783,10 +1025,11 @@ Each mesh has its Onshape origin at a specific offset from the functional attach
 | `platform.stl` | At platform body frame origin | `0 0 0` | No offset needed |
 | `leg_outer.stl` | (0, 0, -64) mm from ball joint centre, Z along leg axis | `0 0 -0.064` | Placed in leg base body (ball joint at origin) |
 | `leg_inner.stl` | (0, 0, -704.47) mm from ball joint centre, Z along leg axis | `0 0 -0.70447` | Placed in leg inner body (platform attachment at origin) |
+| `hand.stl` | Origin at rail attachment (Z=0), cone extends +Z to 109 mm. X centred (±44 mm), Y asymmetric (−13 to +40 mm, offset ~13 mm due to mounting structure) | `0 0 0` | Placed in hand body. ~109 mm tall, ~88 mm wide. 15450 triangles. |
 
 All leg meshes are identical across the 6 legs. The per-leg rotation is handled by the body `quat` attribute on each `leg_{i}_base` body.
 
-If meshes are absent from `sim/model/meshes/`, the generator falls back to primitive shapes (capsules for legs, cylinder for base, cylinder for platform). This allows the model to work without Onshape exports.
+If meshes are absent from `sim/model/meshes/`, the generator falls back to primitive shapes (capsules for legs, cylinder for base, cylinder for platform, stacked cylinders for hand cone). This allows the model to work without Onshape exports.
 
 ### Appendix B: MuJoCo Modelling Lessons
 

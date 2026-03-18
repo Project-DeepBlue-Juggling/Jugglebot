@@ -248,7 +248,7 @@ def get_trajectory(name: str, **kwargs) -> tuple[ReferenceGenerator, float]:
     Parameters
     ----------
     name : str
-        Trajectory name (T1, T2, T3, T4).
+        Trajectory name (T1, T2, T3, T4, T5, T6).
 
     Returns
     -------
@@ -261,3 +261,340 @@ def get_trajectory(name: str, **kwargs) -> tuple[ReferenceGenerator, float]:
             f"Unknown trajectory '{name}'. Available: {list(TRAJECTORIES.keys())}"
         )
     return TRAJECTORIES[name](**kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Dynamic target (catch) test sequences — Phase 5C
+# ---------------------------------------------------------------------------
+
+from catch.coordinator import DynamicTarget, BallSpawn
+
+
+def _ball_landing(
+    spawn_pos_mm: np.ndarray,
+    spawn_vel_mms: np.ndarray,
+    target_z_mm: float,
+) -> tuple[float, np.ndarray, np.ndarray]:
+    """Predict ball's position and velocity at a given Z height.
+
+    Returns (flight_time_s, landing_pos_mm, landing_vel_mms).
+    Uses basic ballistic equations (no drag).
+    """
+    g = 9806.0  # mm/s²
+    z0 = spawn_pos_mm[2]
+    vz0 = spawn_vel_mms[2]
+
+    # Solve z0 + vz0*t - 0.5*g*t^2 = target_z for t
+    # -0.5*g*t^2 + vz0*t + (z0 - target_z) = 0
+    a = -0.5 * g
+    b = vz0
+    c = z0 - target_z_mm
+
+    disc = b**2 - 4 * a * c
+    if disc < 0:
+        raise ValueError("Ball never reaches target Z")
+
+    # Take the positive root (first time ball reaches target Z)
+    t1 = (-b + np.sqrt(disc)) / (2 * a)
+    t2 = (-b - np.sqrt(disc)) / (2 * a)
+    t = min(t for t in [t1, t2] if t > 0)
+
+    landing_pos = spawn_pos_mm.copy()
+    landing_pos[0] += spawn_vel_mms[0] * t
+    landing_pos[1] += spawn_vel_mms[1] * t
+    landing_pos[2] = target_z_mm
+
+    landing_vel = spawn_vel_mms.copy()
+    landing_vel[2] -= g * t
+
+    return float(t), landing_pos, landing_vel
+
+
+def _compute_catch_target(
+    spawn_pos_mm: np.ndarray,
+    spawn_vel_mms: np.ndarray,
+    spawn_time: float,
+    platform_height_mm: float = 574.3,
+    hand_prime_mm: float = 322.7,
+    hand_bottom_z_mm: float = -129.0,
+    cone_height_mm: float = 109.0,
+    active_z_offset_mm: float = 0.0,
+) -> tuple[DynamicTarget, BallSpawn]:
+    """Compute a DynamicTarget from a ball trajectory.
+
+    The catch Z is the hand opening position in world frame when the
+    platform is at ``active_z_offset_mm`` above home.
+    """
+    # Hand opening Z in world frame = platform_height + platform_z_offset + hand_bottom + hand_prime + cone_top
+    # At home (z_offset=0): world_z = platform_height + hand_bottom + hand_pos + cone_height
+    # But the platform moves, so we compute the target Z we want the ball to arrive at
+    # The hand opening is at platform local z = hand_bottom + hand_prime + cone_height
+    hand_opening_local_z = hand_bottom_z_mm + hand_prime_mm + cone_height_mm
+    # Target Z in platform offset coords = hand_opening_local_z (since platform is at home + offset)
+
+    # We want the ball to land at the hand opening. The hand opening world Z
+    # depends on the platform Z offset. For simplicity, we compute the target
+    # platform Z offset that puts the hand opening at the ball's predicted landing Z.
+
+    # Catch Z = hand opening world Z when platform is at active_z_offset
+    catch_z_world = platform_height_mm + active_z_offset_mm + hand_opening_local_z
+
+    flight_time, landing_pos, landing_vel = _ball_landing(
+        spawn_pos_mm, spawn_vel_mms, catch_z_world)
+
+    arrival_time = spawn_time + flight_time
+
+    # Target pose: XY from ball landing, Z offset to put hand at catch height.
+    # The platform centroid must be at catch_z_world - hand_opening_local_z
+    # in world frame.  z_offset is relative to home (initial_height), so:
+    target_z_offset = catch_z_world - hand_opening_local_z - platform_height_mm
+    target_pose = np.array([
+        landing_pos[0],
+        landing_pos[1],
+        target_z_offset,
+        0.0, 0.0, 0.0,  # no tilt for basic catches
+    ])
+
+    # Compute event_vel from ball landing speed (mm/s → m/s, clamped)
+    landing_speed_mps = float(np.linalg.norm(landing_vel)) / 1000.0
+    event_vel_mps = max(0.3, min(7.0, landing_speed_mps))
+
+    target = DynamicTarget(
+        pose_6dof=target_pose,
+        arrival_time=arrival_time,
+        arrival_twist=None,  # catch mode
+        hold_duration=0.5,
+        event_vel_mps=event_vel_mps,
+    )
+
+    ball = BallSpawn(
+        position_mm=spawn_pos_mm.copy(),
+        velocity_mms=spawn_vel_mms.copy(),
+        spawn_time=spawn_time,
+    )
+
+    return target, ball
+
+
+def _ball_landing_speed_mps(
+    spawn_pos_mm: np.ndarray,
+    spawn_vel_mms: np.ndarray,
+    target_z_mm: float,
+) -> float:
+    """Compute ball speed at landing height, clamped to Teensy event_vel range."""
+    _, _, landing_vel = _ball_landing(spawn_pos_mm, spawn_vel_mms, target_z_mm)
+    speed_mps = float(np.linalg.norm(landing_vel)) / 1000.0
+    return max(0.3, min(7.0, speed_mps))
+
+
+def make_DT1() -> tuple[list[tuple[DynamicTarget, BallSpawn | None]], float]:
+    """DT1: Single catch — ball dropped from above with slight lateral offset.
+
+    Returns ([(target, ball_spawn)], total_duration).
+    """
+    spawn_pos = np.array([30.0, -20.0, 1500.0])
+    spawn_vel = np.array([0.0, 0.0, -500.0])
+    # Approximate hand opening Z in world frame (~870 mm)
+    catch_z_world = 574.3 + (-135.0 + 322.7 + 109.0) + 80.0
+    event_vel = _ball_landing_speed_mps(spawn_pos, spawn_vel, catch_z_world)
+
+    target = DynamicTarget(
+        pose_6dof=np.array([30.0, -20.0, 80.0,
+                            np.radians(3.0), np.radians(-2.0), 0.0]),
+        arrival_time=0.9,
+        arrival_twist=None,
+        hold_duration=0.5,
+        event_vel_mps=event_vel,
+    )
+
+    ball = BallSpawn(
+        position_mm=spawn_pos.copy(),
+        velocity_mms=spawn_vel.copy(),
+        spawn_time=0.1,
+    )
+
+    return [(target, ball)], 3.0
+
+
+def make_DT2() -> tuple[list[tuple[DynamicTarget, BallSpawn | None]], float]:
+    """DT2: Rapid succession — two catches 800 ms apart, different poses."""
+    spawn1 = np.array([20.0, 0.0, 1500.0])
+    vel1 = np.array([0.0, 0.0, -500.0])
+    catch_z1 = 574.3 + (-135.0 + 322.7 + 109.0) + 80.0
+
+    target1 = DynamicTarget(
+        pose_6dof=np.array([20.0, 0.0, 80.0, 0.0, 0.0, 0.0]),
+        arrival_time=0.8,
+        arrival_twist=None,
+        hold_duration=0.3,
+        event_vel_mps=_ball_landing_speed_mps(spawn1, vel1, catch_z1),
+    )
+    ball1 = BallSpawn(position_mm=spawn1, velocity_mms=vel1, spawn_time=0.1)
+
+    spawn2 = np.array([-20.0, 30.0, 1500.0])
+    vel2 = np.array([0.0, 0.0, -500.0])
+    catch_z2 = 574.3 + (-135.0 + 322.7 + 109.0) + 60.0
+
+    target2 = DynamicTarget(
+        pose_6dof=np.array([-20.0, 30.0, 60.0, 0.0, 0.0, 0.0]),
+        arrival_time=2.5,
+        arrival_twist=None,
+        hold_duration=0.3,
+        event_vel_mps=_ball_landing_speed_mps(spawn2, vel2, catch_z2),
+    )
+    ball2 = BallSpawn(position_mm=spawn2, velocity_mms=vel2, spawn_time=1.8)
+
+    return [(target1, ball1), (target2, ball2)], 5.0
+
+
+def make_DT3() -> tuple[list[tuple[DynamicTarget, BallSpawn | None]], float]:
+    """DT3: Edge of workspace — target near workspace boundary."""
+    spawn_pos = np.array([80.0, -60.0, 1500.0])
+    spawn_vel = np.array([0.0, 0.0, -500.0])
+    catch_z = 574.3 + (-135.0 + 322.7 + 109.0) + 100.0
+
+    target = DynamicTarget(
+        pose_6dof=np.array([80.0, -60.0, 100.0,
+                            np.radians(4.0), np.radians(-3.0), 0.0]),
+        arrival_time=1.0,
+        arrival_twist=None,
+        hold_duration=0.5,
+        event_vel_mps=_ball_landing_speed_mps(spawn_pos, spawn_vel, catch_z),
+    )
+    ball = BallSpawn(position_mm=spawn_pos, velocity_mms=spawn_vel, spawn_time=0.1)
+
+    return [(target, ball)], 3.5
+
+
+def make_DT4() -> tuple[list[tuple[DynamicTarget, BallSpawn | None]], float]:
+    """DT4: Infeasible — target requiring impossibly fast motion.
+
+    Platform can't reach [120, 120, 200] with 5° combined tilt in 200 ms from home.
+    The MPC should do its best but the ball should miss.
+    """
+    spawn_pos = np.array([120.0, 120.0, 1500.0])
+    spawn_vel = np.array([0.0, 0.0, -2000.0])
+    catch_z = 574.3 + (-135.0 + 322.7 + 109.0) + 200.0
+
+    target = DynamicTarget(
+        pose_6dof=np.array([120.0, 120.0, 200.0,
+                            np.radians(5.0), np.radians(5.0), 0.0]),
+        arrival_time=0.3,  # way too soon
+        arrival_twist=None,
+        hold_duration=0.5,
+        event_vel_mps=_ball_landing_speed_mps(spawn_pos, spawn_vel, catch_z),
+    )
+    ball = BallSpawn(position_mm=spawn_pos, velocity_mms=spawn_vel, spawn_time=0.05)
+
+    return [(target, ball)], 3.0
+
+
+def make_DT5() -> tuple[list[tuple[DynamicTarget, BallSpawn | None]], float]:
+    """DT5: Early arrival — target with 2s lead time. Platform should arrive early and hold."""
+    spawn_pos = np.array([0.0, 0.0, 1500.0])
+    spawn_vel = np.array([0.0, 0.0, -300.0])
+    catch_z = 574.3 + (-135.0 + 322.7 + 109.0) + 60.0
+
+    target = DynamicTarget(
+        pose_6dof=np.array([0.0, 0.0, 60.0, 0.0, 0.0, 0.0]),
+        arrival_time=2.5,
+        arrival_twist=None,
+        hold_duration=0.5,
+        event_vel_mps=_ball_landing_speed_mps(spawn_pos, spawn_vel, catch_z),
+    )
+    ball = BallSpawn(position_mm=spawn_pos, velocity_mms=spawn_vel, spawn_time=1.5)
+
+    return [(target, ball)], 5.0
+
+
+def make_DT6() -> tuple[list[tuple[DynamicTarget, BallSpawn | None]], float]:
+    """DT6: Throw — arrive with nonzero velocity, then decelerate.
+
+    Platform moves downward at 200 mm/s at arrival. Ball released with that velocity.
+    """
+    target = DynamicTarget(
+        pose_6dof=np.array([0.0, 0.0, 60.0, 0.0, 0.0, 0.0]),
+        arrival_time=1.0,
+        arrival_twist=np.array([0.0, 0.0, -200.0, 0.0, 0.0, 0.0]),
+        hold_duration=0.0,
+    )
+
+    return [(target, None)], 3.0
+
+
+def make_DT7() -> tuple[list[tuple[DynamicTarget, BallSpawn | None]], float]:
+    """DT7: Catch then throw — catch at t=0.9, hold 0.3s, throw at t=1.5."""
+    spawn_pos = np.array([0.0, 0.0, 1500.0])
+    spawn_vel = np.array([0.0, 0.0, -500.0])
+    catch_z = 574.3 + (-135.0 + 322.7 + 109.0) + 80.0
+
+    catch_target = DynamicTarget(
+        pose_6dof=np.array([0.0, 0.0, 80.0, 0.0, 0.0, 0.0]),
+        arrival_time=0.9,
+        arrival_twist=None,
+        hold_duration=0.3,
+        event_vel_mps=_ball_landing_speed_mps(spawn_pos, spawn_vel, catch_z),
+    )
+    catch_ball = BallSpawn(position_mm=spawn_pos, velocity_mms=spawn_vel, spawn_time=0.1)
+
+    throw_target = DynamicTarget(
+        pose_6dof=np.array([0.0, 0.0, 60.0, 0.0, 0.0, 0.0]),
+        arrival_time=2.5,
+        arrival_twist=np.array([0.0, 0.0, -150.0, 0.0, 0.0, 0.0]),
+        hold_duration=0.0,
+    )
+
+    return [(catch_target, catch_ball), (throw_target, None)], 5.0
+
+
+def make_DT8() -> tuple[list[tuple[DynamicTarget, BallSpawn | None]], float]:
+    """DT8: Ball miss — ball spawned far from reachable platform workspace.
+
+    Platform tries to reach target but ball flies past. System returns to home.
+    """
+    spawn_pos = np.array([300.0, 0.0, 1500.0])
+    spawn_vel = np.array([0.0, 0.0, -800.0])
+    catch_z = 574.3 + (-135.0 + 322.7 + 109.0) + 80.0
+
+    target = DynamicTarget(
+        pose_6dof=np.array([0.0, 0.0, 80.0, 0.0, 0.0, 0.0]),
+        arrival_time=0.8,
+        arrival_twist=None,
+        hold_duration=0.5,
+        event_vel_mps=_ball_landing_speed_mps(spawn_pos, spawn_vel, catch_z),
+    )
+    ball = BallSpawn(position_mm=spawn_pos, velocity_mms=spawn_vel, spawn_time=0.1)
+
+    return [(target, ball)], 3.0
+
+
+# Dynamic target registry
+CATCH_SEQUENCES = {
+    'DT1': make_DT1,
+    'DT2': make_DT2,
+    'DT3': make_DT3,
+    'DT4': make_DT4,
+    'DT5': make_DT5,
+    'DT6': make_DT6,
+    'DT7': make_DT7,
+    'DT8': make_DT8,
+}
+
+
+def get_catch_sequence(
+    name: str,
+) -> tuple[list[tuple[DynamicTarget, BallSpawn | None]], float]:
+    """Look up a scripted catch sequence by name.
+
+    Returns
+    -------
+    sequence : list of (DynamicTarget, BallSpawn | None)
+    duration : float
+        Recommended simulation duration.
+    """
+    if name not in CATCH_SEQUENCES:
+        raise ValueError(
+            f"Unknown catch sequence '{name}'. "
+            f"Available: {list(CATCH_SEQUENCES.keys())}"
+        )
+    return CATCH_SEQUENCES[name]()

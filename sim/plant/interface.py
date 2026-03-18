@@ -26,6 +26,9 @@ class PlantState:
     platform_rot: np.ndarray          # (3,) rotation vector (rad)
     platform_twist: np.ndarray        # (6,) [vx, vy, vz, wx, wy, wz]
     time: float                       # simulation time (s)
+    # Hand fields — None when model has no hand (backward-compatible)
+    hand_pos_mm: float | None = None      # Hand linear position (mm from bottom of travel)
+    hand_vel_mmps: float | None = None    # Hand linear velocity (mm/s)
 
 
 class PlantInterface(ABC):

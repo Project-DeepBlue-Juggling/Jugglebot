@@ -73,6 +73,7 @@ def generate_mjcf(config, mesh_dir=None):
         'platform': os.path.join(mesh_dir, 'platform.stl'),
         'leg_outer': os.path.join(mesh_dir, 'leg_outer.stl'),
         'leg_inner': os.path.join(mesh_dir, 'leg_inner.stl'),
+        'hand': os.path.join(mesh_dir, 'hand.stl'),
     }
     has_meshes = {k: os.path.exists(v) for k, v in mesh_files.items()}
 
@@ -80,6 +81,13 @@ def generate_mjcf(config, mesh_dir=None):
     initial_height_m = geom['initial_height_mm'] / 1000.0
     leg_stroke_m = geom['leg_stroke_mm'] / 1000.0
     ball_joint_offset_m = geom['ball_joint_offset_mm'] / 1000.0
+    hand_stroke_m = geom['hand_stroke_mm'] / 1000.0   # 0.355 m
+    hand_radius_m = geom['hand_radius_mm'] / 1000.0   # ~0.035 m
+
+    # Hand dynamics
+    teensy_traj = config['teensy_trajectory']
+    hand_mass_kg = teensy_traj['inertia_hand_only_kg']  # 0.281 kg
+    hand_bottom_z_m = -0.135  # Bottom of travel in platform-local Z (mechanical constraint)
 
     base_nodes_m = np.array(geom['base_nodes_mm']) / 1000.0  # (6, 3)
     plat_nodes_m = np.array(geom['init_plat_nodes_mm']) / 1000.0  # (6, 3) in platform frame
@@ -147,6 +155,8 @@ def generate_mjcf(config, mesh_dir=None):
     ET.SubElement(asset, 'material', name='base_mat', rgba='0.4 0.4 0.4 0.8')
     ET.SubElement(asset, 'material', name='leg_mat', rgba='0.7 0.7 0.7 1.0')
     ET.SubElement(asset, 'material', name='joint_mat', rgba='0.9 0.2 0.2 1.0')
+    ET.SubElement(asset, 'material', name='hand_mat', rgba='0.8 0.6 0.2 0.9')
+    ET.SubElement(asset, 'material', name='ball_mat', rgba='1.0 0.5 0.0 1.0')
     # STL meshes (included only when files are present in meshes/)
     # All STLs exported from Onshape in mm — scale to meters
     mesh_scale = '0.001 0.001 0.001'
@@ -161,6 +171,9 @@ def generate_mjcf(config, mesh_dir=None):
                       scale=mesh_scale)
     if has_meshes['leg_inner']:
         ET.SubElement(asset, 'mesh', name='leg_inner_mesh', file='meshes/leg_inner.stl',
+                      scale=mesh_scale)
+    if has_meshes['hand']:
+        ET.SubElement(asset, 'mesh', name='hand_mesh', file='meshes/hand.stl',
                       scale=mesh_scale)
 
     # Default classes
@@ -222,6 +235,56 @@ def generate_mjcf(config, mesh_dir=None):
     for i, pn in enumerate(plat_nodes_m):
         ET.SubElement(platform, 'site', name=f'plat_site_{i}',
                       pos=fmt(pn), size='0.012', rgba='0.2 0.8 0.2 1')
+
+    # ---- Hand body (child of platform) ----
+    # Hand is a 1-DOF prismatic actuator on the platform's local Z axis.
+    # Bottom of travel at Z = -135 mm in platform frame.
+    # Stroke: 355 mm, so top of travel at Z = +220 mm.
+    hand_body = ET.SubElement(platform, 'body', name='hand',
+                               pos=f'0 0 {hand_bottom_z_m:.6f}')
+    ET.SubElement(hand_body, 'inertial',
+                  pos='0 0 0.055', mass=str(hand_mass_kg),
+                  diaginertia='0.000200 0.000200 0.000050')
+    # Prismatic joint along platform-local Z
+    ET.SubElement(hand_body, 'joint', name='hand_slide',
+                  type='slide', axis='0 0 1', limited='true',
+                  range=f'0 {hand_stroke_m:.6f}',
+                  damping='50', armature='0.001')
+    # Hand visual
+    if has_meshes['hand']:
+        # Mesh rotation: -90° X, +90° Y, +90° Y = quat (w,x,y,z) = (0, 0, 0.707107, 0.707107)
+        # Mesh origin is at platform centroid; offset to hand body frame
+        ET.SubElement(hand_body, 'geom', name='hand_visual',
+                      type='mesh', mesh='hand_mesh',
+                      pos=f'0 -0.065 0',
+                      quat='0 0 0.707107 0.707107',
+                      material='hand_mat', contype='0', conaffinity='0',
+                      mass='0')  # mass already set via inertial
+    else:
+        # Fallback: stacked cylinders approximating truncated cone
+        ET.SubElement(hand_body, 'geom', name='hand_cone_base',
+                      type='cylinder', size=f'{hand_radius_m:.4f} 0.030',
+                      pos='0 0 0.080', material='hand_mat',
+                      contype='0', conaffinity='0', mass='0')
+        ET.SubElement(hand_body, 'geom', name='hand_cone_tip',
+                      type='cylinder', size=f'{hand_radius_m * 0.5:.4f} 0.025',
+                      pos='0 0 0.030', material='hand_mat',
+                      contype='0', conaffinity='0', mass='0')
+    # Collision disc at the bottom of the cone — catches the ball
+    # The ball lands on this disc and stops (dead contact).
+    # Separate from the visual mesh so collision shape stays simple.
+    ET.SubElement(hand_body, 'geom', name='hand_catch_disc',
+                  type='cylinder', size=f'{hand_radius_m:.4f} 0.003',
+                  pos='0 0 0.003',
+                  contype='2', conaffinity='2',
+                  solref='0.005 2.0',       # overdamped (no bounce)
+                  solimp='0.99 0.99 0.001',
+                  friction='1.0 0.005 0.0001',
+                  rgba='0 0 0 0', mass='0')  # invisible, massless
+    # Site at the cone opening centre — used for capture proximity check
+    # The cone is ~40 mm tall, opening at the top
+    ET.SubElement(hand_body, 'site', name='hand_opening',
+                  pos='0 0 0.040', size='0.010', rgba='1.0 0.8 0.0 1')
 
     # ---- Leg bodies (nested structure) ----
     # Outer body: at base node with ball joint (2 hinges)
@@ -312,6 +375,20 @@ def generate_mjcf(config, mesh_dir=None):
                       pos='0 0 0', size='0.010',
                       rgba='0.9 0.9 0.2 1')
 
+    # ---- Ball body (free-flying, for catch simulation) ----
+    ball_body = ET.SubElement(worldbody, 'body', name='ball', pos='0 0 5')
+    ET.SubElement(ball_body, 'freejoint', name='ball_joint')
+    # contype=3, conaffinity=3: collides with ground (bit 0) AND hand (bit 1)
+    # solref overdamped: ball stops dead on contact (no bounce)
+    ET.SubElement(ball_body, 'geom', name='ball_geom', type='sphere',
+                  size='0.02', mass='0.043', material='ball_mat',
+                  contype='3', conaffinity='3',
+                  solref='0.005 2.0',
+                  solimp='0.99 0.99 0.001',
+                  friction='1.0 0.005 0.0001')
+    ET.SubElement(ball_body, 'site', name='ball_site', pos='0 0 0',
+                  size='0.005', rgba='1 1 1 0')
+
     # ---- Equality constraints ----
     equality = ET.SubElement(mujoco, 'equality')
     for i in range(6):
@@ -326,6 +403,15 @@ def generate_mjcf(config, mesh_dir=None):
                       solref='0.005 1',   # tight constraint
                       solimp='0.99 0.99 0.001')
 
+    # Ball-to-hand weld constraint (disabled by default, activated on capture)
+    # relpose places ball at the hand opening site when active
+    ET.SubElement(equality, 'weld', name='ball_catch',
+                  body1='hand', body2='ball',
+                  relpose='0 0 0.040 1 0 0 0',   # at hand_opening site
+                  active='false',
+                  solref='0.005 1',
+                  solimp='0.99 0.99 0.001')
+
     # ---- Actuators ----
     actuator = ET.SubElement(mujoco, 'actuator')
     for i in range(6):
@@ -337,18 +423,30 @@ def generate_mjcf(config, mesh_dir=None):
                       kv='600',        # near-critical damping for ~0.3kg effective mass
                       ctrlrange=f'{-slide_margin_m:.6f} {leg_stroke_m + slide_margin_m:.6f}',
                       ctrllimited='true')
+    # Hand actuator: position control matching ODrive response
+    # kp=10000 + kv=200 produces settling similar to real ODrive at pos_gain=35
+    ET.SubElement(actuator, 'position', name='act_hand',
+                  joint='hand_slide',
+                  kp='10000', kv='200',
+                  ctrlrange=f'0 {hand_stroke_m:.6f}',
+                  ctrllimited='true')
 
     # ---- Keyframe: home position ----
     keyframe = ET.SubElement(mujoco, 'keyframe')
     # qpos order: platform free joint (7: pos xyz + quat wxyz),
-    #             then for each leg: hinge_x, hinge_y, slide (3 per leg)
-    # At home: platform at [0,0,height] with identity quat, all hinges=0, slides=0
+    #             hand_slide (1),
+    #             then for each leg: hinge_x, hinge_y, slide (3 per leg),
+    #             ball free joint (7: pos xyz + quat wxyz)
+    # At home: platform at [0,0,height] with identity quat, hand at 0, all hinges=0, slides=0,
+    #          ball parked at (0,0,5) above scene
     platform_qpos = [0, 0, initial_height_m, 1, 0, 0, 0]  # pos + quat (wxyz)
+    hand_qpos = [0]  # hand at bottom of travel
     leg_qpos = []
     for i in range(6):
         leg_qpos.extend([0, 0, 0])  # hinge_x, hinge_y, slide (0 = home)
+    ball_qpos = [0, 0, 5, 1, 0, 0, 0]  # parked high above scene
 
-    all_qpos = platform_qpos + leg_qpos
+    all_qpos = platform_qpos + hand_qpos + leg_qpos + ball_qpos
     ET.SubElement(keyframe, 'key', name='home',
                   qpos=' '.join(f'{v:.6f}' for v in all_qpos))
 
@@ -365,6 +463,12 @@ def generate_mjcf(config, mesh_dir=None):
     # Velocities still use the body (CoM frame is fine for angular velocity)
     ET.SubElement(sensor, 'framelinvel', name='platform_linvel', objtype='site', objname='platform_origin')
     ET.SubElement(sensor, 'frameangvel', name='platform_angvel', objtype='site', objname='platform_origin')
+    # Hand sensors
+    ET.SubElement(sensor, 'jointpos', name='hand_slide_pos', joint='hand_slide')
+    ET.SubElement(sensor, 'jointvel', name='hand_slide_vel', joint='hand_slide')
+    # Ball sensors
+    ET.SubElement(sensor, 'framepos', name='ball_pos', objtype='site', objname='ball_site')
+    ET.SubElement(sensor, 'framelinvel', name='ball_vel', objtype='site', objname='ball_site')
 
     return mujoco
 
