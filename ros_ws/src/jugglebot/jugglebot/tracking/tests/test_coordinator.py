@@ -10,6 +10,7 @@ from jugglebot.catch_coordinator import CatchCoordinator
 
 
 INITIAL_HEIGHT = 574.3
+HAND_CATCH_OFFSET = 64.78  # From codegen: hand_axis_bottom_offset + x5 * 1000
 LANDING_Z = INITIAL_HEIGHT + 160.0
 
 
@@ -98,8 +99,15 @@ class TestCatchPose:
     """Full catch command generation."""
 
     def test_catch_position_frame_conversion(self):
-        """Landing position in base frame → target_pos in platform frame."""
-        coord = CatchCoordinator(initial_height_mm=INITIAL_HEIGHT)
+        """Landing position in base frame → target_pos in platform frame.
+
+        For a straight-down ball (identity orientation), the platform centroid
+        is offset below the landing position by hand_catch_offset along Z.
+        """
+        coord = CatchCoordinator(
+            initial_height_mm=INITIAL_HEIGHT,
+            hand_catch_offset_mm=HAND_CATCH_OFFSET,
+        )
         ball = _make_ball(
             landing_pos=[50.0, -30.0, LANDING_Z],
             landing_vel=[0.0, 0.0, -3000.0],
@@ -107,10 +115,44 @@ class TestCatchPose:
 
         cmd = coord.update([ball], current_time=5.0)
         assert cmd is not None
-        # target_pos should be [landing_x, landing_y, landing_z - initial_height]
+        # XY unchanged; Z = landing_z - hand_offset - initial_height
         assert cmd.target_pos[0] == pytest.approx(50.0)
         assert cmd.target_pos[1] == pytest.approx(-30.0)
-        assert cmd.target_pos[2] == pytest.approx(LANDING_Z - INITIAL_HEIGHT)
+        assert cmd.target_pos[2] == pytest.approx(
+            LANDING_Z - HAND_CATCH_OFFSET - INITIAL_HEIGHT, abs=0.1)
+
+    def test_angled_catch_offsets_along_platform_z(self):
+        """Angled approach → centroid offset along tilted platform Z, not world Z."""
+        coord = CatchCoordinator(
+            initial_height_mm=INITIAL_HEIGHT,
+            hand_catch_offset_mm=HAND_CATCH_OFFSET,
+        )
+        # 15° approach from +X direction
+        angle = math.radians(15)
+        speed = 5000.0
+        vel = [speed * math.sin(angle), 0.0, -speed * math.cos(angle)]
+        ball = _make_ball(
+            landing_pos=[100.0, 0.0, LANDING_Z],
+            landing_vel=vel,
+        )
+
+        cmd = coord.update([ball], current_time=5.0)
+        assert cmd is not None
+
+        # The platform tilts so its -Z aligns with the ball's velocity.
+        # Platform local Z points opposite to the approach direction, so
+        # tilted platform_z ≈ [-sin(15°), 0, cos(15°)].
+        # Centroid = landing_pos - offset * platform_z, meaning:
+        #   centroid X > landing X (offset pushes centroid in +X)
+        dx = cmd.target_pos[0] - 100.0
+        assert dx > 0
+        assert dx == pytest.approx(HAND_CATCH_OFFSET * math.sin(angle), abs=1.0)
+
+        # Z offset is the cos component of the full hand offset
+        z_in_base = cmd.target_pos[2] + INITIAL_HEIGHT
+        z_offset_from_landing = LANDING_Z - z_in_base
+        assert z_offset_from_landing == pytest.approx(
+            HAND_CATCH_OFFSET * math.cos(angle), abs=1.0)
 
     def test_stationary_catch(self):
         """Catch velocity should always be zero."""
