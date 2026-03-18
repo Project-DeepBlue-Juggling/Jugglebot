@@ -2,9 +2,23 @@
 
 ## Context
 
-Phase 6 of the Jugglebot rewrite connects ball perception to the motion planner's dynamic target API. The platform needs to detect balls (from Ball Butler throws and human throws), predict where they'll land, and command the platform to catch them.
+This is the implementation plan for **Phase 6 (Ball Tracking + Catch)** of the Jugglebot codebase rewrite (see `CODEBASE_REWRITE_PLAN.md` for the full rewrite roadmap). The rewrite replaced 18 organically-grown ROS2 nodes with 4-6 focused ones on the `refactor` branch, keeping `main` as a safety net.
 
-The motion planner's dynamic target API is already built and hardware-tested (Phase 7 of motion planner). It accepts `(target_pos, target_quat, target_vel, arrival_time)` and handles feasibility checking, trajectory generation, mid-motion replanning with C2 continuity, and auto-decelerate-to-stop. This phase produces the inputs that API consumes.
+**Phases 0-5** built the foundation: a CAN interface, state machine + orchestrator, a full motion planner (IK/dynamics/trajectory/workspace/fault detection), mocap integration, and system-level integration. **Phase 7 of the motion planner** added the dynamic target API — accepting `(target_pos, target_quat, target_vel, arrival_time)` with background feasibility checking, C2-continuous mid-motion replanning, and auto-decelerate-to-stop. That API is hardware-tested and working.
+
+This phase connects ball perception to that dynamic target API. The platform needs to detect balls (from Ball Butler throws and human throws), predict where they'll land, compute a catch pose, and command the platform + hand to execute the catch. The core design principle — matching the rest of the rewrite — is **pure Python logic with thin ROS2 wrappers**: all tracking, prediction, and policy code is standalone-testable without ROS2.
+
+**Key hardware context**: The Ball Butler (BB) is a separate throw mechanism that announces throws over CAN. The hand motor on the platform executes catch trajectories via a Teensy at 500 Hz — it's armed from the Jetson but runs autonomously. Mocap (QTM) provides 200 Hz marker data. The motion planner runs in a standalone process communicating over ZeroMQ IPC.
+
+---
+
+## Phase Summary
+
+| Phase | Status | Key Points |
+|-------|--------|------------|
+| **Phase 1: Perception** | DONE (2026-03-16) | `tracking/` pure Python subpackage: 6D Kalman filter with gravity model, ballistic landing prediction (quadratic solver), marker-to-ball matching (announced BB path + parabolic detection for human throws), ball lifecycle management. 32 tests passing in 0.20s |
+| **Phase 2: Policy & Integration** | DONE (2026-03-16) | `catch_coordinator.py` pure Python policy (ball selection, catch pose via velocity→quaternion, feasibility blacklist with re-eval escape). ROS2 nodes for tracker + coordinator. IPC feedback channel for feasibility accept/reject. Clock domain conversion (ROS2→perf_counter). `BallState.msg` extended, `DynamicTargetCommand.msg` added. 17 coordinator tests passing |
+| **Phase 3: Hand Control** | DONE (2026-03-17) | Catch coordinator commands hand motor: primes to top of stroke, sets soft catch gains (pos_gain=20.0), arms Teensy trajectory with event_delay/event_vel, restores defaults on shutdown. `SetHandGains.srv` added. `CATCH` active mode in state machine (legs + hand in CLOSED_LOOP). 53 total tests passing in 0.34s |
 
 ---
 
@@ -559,11 +573,9 @@ Wire the catch coordinator to Jugglebot's hand motor for synchronized platform +
 - **CATCH mode in state machine**: The orchestrator now accepts a `catch` command when in the ACTIVE state, setting `control_mode='CATCH'`. The CAN node handles this by keeping legs AND hand in CLOSED_LOOP (unlike SPACEMOUSE/SHELL/GUI which idle the hand). The motion bridge enables the control loop for CATCH mode, allowing dynamic targets to be forwarded.
 
 **Items for investigation:**
-- **Hand prime position (9.858 rev)**: This value is from the archived `catch_from_ball_butler_node`. It should be verified against the current hand mechanism geometry — it represents the position where the hand is open and ready to catch. If the spool or hand mechanism has been modified, this value may need updating.
-- **Catch gains tuning**: The `pos_gain=20.0` for catch compliance is an initial value. The optimal stiffness depends on ball mass, impact speed, and hand mechanism compliance. This needs tuning with real catches. Consider making the catch gains configurable via hardware_config.yaml if tuning proves iterative.
-- **Hand re-arming on ball switch**: If the coordinator switches to a different ball (earlier landing time), the hand trajectory is armed for the new ball. However, the Teensy may already be executing a trajectory from the previous arming. The Teensy handles this by accepting new trajectory commands mid-execution, but the timing should be verified — a new smooth-move prelude starts immediately, which may cause a visible hand jerk.
-- **No hand feedback to coordinator**: The coordinator does not currently monitor whether the hand trajectory was successfully armed or completed. The `_on_hand_traj_done` callback logs success/failure but doesn't feed back into the coordinator policy. If the hand fails to arm (e.g., CAN timeout), the platform still moves to the catch position — the catch will just fail silently. Consider adding hand status to the coordinator's decision-making in the future.
+- **Catch gains tuning**: The `pos_gain=20.0` for catch compliance is an initial value. The optimal stiffness depends on ball mass, impact speed, and hand mechanism compliance. This needs tuning with real catches. Consider making the catch gains configurable via `hardware_config.yaml` if tuning proves iterative.
 - **CATCH mode exit**: When the orchestrator transitions out of CATCH mode (e.g., `deactivate` or `spacemouse` command), the CAN node idles the hand (standard behavior for non-CATCH modes). However, the catch coordinator's `_hand_primed` flag is not reset. If the user re-enters CATCH mode, the hand won't be re-primed. This is intentional (the hand position is managed by the catch lifecycle), but could be surprising if the hand was manually moved between catch sessions.
+- **Landing prediction for sub-catch-plane throws**: When the Ball Butler is below the catch plane and throws upward, `predict_landing_state()` returns the ascending crossing (smallest positive root). The tracker's KF continuously recomputes the prediction each frame, so once the ball passes above the catch plane, the prediction correctly switches to the descending crossing. This means the announcement's initial landing prediction may be wrong for sub-catch-plane throws, but it self-corrects within the first few hundred ms. Verified via `tools/catch_sim_test.py`.
 - **Build required**: `SetHandGains.srv` was added. `CMakeLists.txt` and `hardware_config.yaml` updated. Run `python config/generate_config.py` from repo root, then `colcon build --packages-select jugglebot_interfaces jugglebot` on the Jetson.
 
 ---
