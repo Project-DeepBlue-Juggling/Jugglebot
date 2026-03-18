@@ -121,9 +121,11 @@ class KalmanFilter:
             raise ValueError(f"Timestamps must be increasing, got dt={dt}")
 
         raw_vel = (p1 - p0) / dt
-        # Correct z-velocity: observed dz includes gravity contribution
-        # v_z_actual ≈ dz/dt + 0.5*g*dt  (velocity at the later time)
-        raw_vel[2] += 0.5 * GRAVITY_MMPS2 * dt
+        # Correct z-velocity: finite-difference gives the average velocity
+        # over [t0, t1], but we want vz at t1 (consistent with position=p1).
+        #   raw_vz = Δz/dt = vz(t0) - 0.5*g*dt
+        #   vz(t1) = vz(t0) - g*dt = raw_vz - 0.5*g*dt
+        raw_vel[2] -= 0.5 * GRAVITY_MMPS2 * dt
 
         self.state[3:] = raw_vel
         self.covariance = np.diag([
