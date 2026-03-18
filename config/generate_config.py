@@ -468,6 +468,26 @@ def compute_derived(cfg: dict) -> dict:
     tt = cfg["teensy_trajectory"]
     derived["TEENSY_LINEAR_GAIN"] = tt["linear_gain_factor"] / (math.pi * tt["hand_spool_radius_m"] * 2.0)
 
+    # Hand catch/throw positions — derived from Trajectory.h algebra.
+    # These are velocity-independent (v_throw cancels out).
+    total_stroke = tt["hand_stroke_m"] - 2.0 * tt["stroke_margin_m"]
+    ir = tt["inertia_ratio"]
+    # Throw: x2 = accelStroke / (ir + 1) + velHold
+    throw_vel_hold = tt["throw_vel_hold_pct"] * total_stroke
+    throw_accel_stroke = total_stroke - throw_vel_hold
+    x2_m = throw_accel_stroke / (ir + 1.0) + throw_vel_hold  # hand pos at ball release
+    x3_m = total_stroke  # top of throw stroke (≈ totalStroke)
+    # Catch: x5 = x3 - accS * ir / (1 + ir)
+    catch_vel_hold = tt["catch_vel_hold_pct"] * total_stroke
+    catch_accel_stroke = total_stroke - catch_vel_hold
+    x5_m = x3_m - catch_accel_stroke * ir / (1.0 + ir)  # hand pos at ball catch
+    derived["HAND_THROW_POS_M"] = round(x2_m, 6)   # x2: hand position at ball release
+    derived["HAND_CATCH_POS_M"] = round(x5_m, 6)   # x5: hand position at ball catch
+
+    # Hand catch offset: height of hand catch point above platform centroid (mm)
+    hand_bottom = geom["hand_axis_bottom_offset_mm"]
+    derived["HAND_CATCH_OFFSET_MM"] = round(hand_bottom + x5_m * 1000.0, 2)
+
     # Ball Butler linear gain: rev/m
     bt = cfg["ball_butler_trajectory"]
     derived["BB_LINEAR_GAIN"] = bt["linear_gain_factor"] / (math.pi * bt["hand_spool_radius_m"] * 2.0)
@@ -524,6 +544,9 @@ def generate_hw_python(cfg: dict) -> str:
     lines.append(f"INIT_LEG_LENGTHS_WITH_OFFSET_MM = {derived['INIT_LEG_LENGTHS_WITH_OFFSET_MM']}")
     lines.append(f"JB_OP_ACTIVATE_POSITION_REVS = {derived['ACTIVATE_POSITION_REVS']}")
     lines.append(f"TEENSY_LINEAR_GAIN = {derived['TEENSY_LINEAR_GAIN']}")
+    lines.append(f"HAND_THROW_POS_M = {derived['HAND_THROW_POS_M']}")
+    lines.append(f"HAND_CATCH_POS_M = {derived['HAND_CATCH_POS_M']}")
+    lines.append(f"HAND_CATCH_OFFSET_MM = {derived['HAND_CATCH_OFFSET_MM']}")
     lines.append(f"BB_LINEAR_GAIN = {derived['BB_LINEAR_GAIN']}")
     lines.append(f"BB_MAX_THROW_SAMPLES = {derived['BB_MAX_THROW_SAMPLES']}")
     lines.append(f"BB_MAX_TRAJ_FRAMES = {derived['BB_MAX_TRAJ_FRAMES']}")

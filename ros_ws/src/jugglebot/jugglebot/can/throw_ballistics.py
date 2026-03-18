@@ -16,7 +16,9 @@ import jugglebot.hardware_config as hw
 _G_MMPS2 = hw.GRAVITY_MPS2 * 1000.0
 
 # Default landing plane: platform home height + vertical offset for catch
-_DEFAULT_CATCH_HEIGHT_MM = hw.GEOM_INITIAL_HEIGHT_MM + 160.0
+_DEFAULT_CATCH_HEIGHT_MM = (hw.GEOM_INITIAL_HEIGHT_MM
+                           + hw.JB_OP_DEFAULT_ACTIVE_Z_MM
+                           + hw.HAND_CATCH_OFFSET_MM)
 
 
 @dataclass

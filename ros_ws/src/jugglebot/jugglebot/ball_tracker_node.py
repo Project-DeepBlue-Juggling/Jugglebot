@@ -31,7 +31,11 @@ class BallTrackerNode(Node):
         super().__init__('ball_tracker_node')
 
         # Tracking config from hardware_config
-        self._landing_z = hw.GEOM_INITIAL_HEIGHT_MM + 160.0  # Default catch plane
+        # Catch plane: platform home height + active Z offset + hand catch offset.
+        # This is where the hand actually meets the ball when the platform is active.
+        self._landing_z = (hw.GEOM_INITIAL_HEIGHT_MM
+                           + hw.JB_OP_DEFAULT_ACTIVE_Z_MM
+                           + hw.HAND_CATCH_OFFSET_MM)
 
         self._tracker = BallTracker(
             dt=hw.TRACKING_MOCAP_DT_S,

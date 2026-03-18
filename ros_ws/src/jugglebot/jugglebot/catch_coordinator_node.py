@@ -53,7 +53,8 @@ class CatchCoordinatorNode(Node):
         self._coordinator = CatchCoordinator(
             robot_name="jugglebot",
             initial_height_mm=hw.GEOM_INITIAL_HEIGHT_MM,
-            landing_z_offset_mm=160.0,
+            landing_z_offset_mm=hw.JB_OP_DEFAULT_ACTIVE_Z_MM + hw.HAND_CATCH_OFFSET_MM,
+            hand_catch_offset_mm=hw.HAND_CATCH_OFFSET_MM,
             catch_angle_limit_deg=30.0,
         )
 
@@ -77,6 +78,7 @@ class CatchCoordinatorNode(Node):
         # Track which ball we last submitted a target for
         self._last_submitted_ball_id: int | None = None
         self._last_arrival_time: float = 0.0
+        self._last_landing_position: np.ndarray = np.zeros(3)
 
         # ── Hand control state ────────────────────────────────────
         self._hand_primed = False
@@ -172,6 +174,7 @@ class CatchCoordinatorNode(Node):
 
         self._last_submitted_ball_id = cmd.ball_id
         self._last_arrival_time = arrival_time_perf
+        self._last_landing_position = cmd.target_pos.copy()
 
         # Arm hand catch trajectory (once per ball, after first target submit)
         if cmd.arm_hand and self._hand_traj_armed_for_ball != cmd.ball_id:
@@ -204,7 +207,8 @@ class CatchCoordinatorNode(Node):
             self.get_logger().debug(f"Ball {ball_id}: target accepted")
         else:
             violations = fb.get('violations', [])
-            self._coordinator.report_rejection(ball_id)
+            self._coordinator.report_rejection_with_position(
+                ball_id, self._last_landing_position)
             self.get_logger().info(
                 f"Ball {ball_id}: target rejected — {', '.join(violations)}")
 
@@ -230,7 +234,10 @@ class CatchCoordinatorNode(Node):
         future.add_done_callback(self._on_prime_done)
 
     def _on_prime_done(self, future):
-        """Callback when hand priming completes."""
+        """Callback when hand priming completes.
+
+        On failure, _hand_primed stays False so the next _on_balls cycle retries.
+        """
         try:
             result = future.result()
             if result.success:
@@ -293,7 +300,10 @@ class CatchCoordinatorNode(Node):
         future.add_done_callback(self._on_catch_gains_done)
 
     def _on_catch_gains_done(self, future):
-        """Callback when catch gains are set."""
+        """Callback when catch gains are set.
+
+        On failure, _catch_gains_active stays False so _prime_hand retries.
+        """
         try:
             result = future.result()
             if result.success:

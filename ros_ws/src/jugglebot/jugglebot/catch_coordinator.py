@@ -70,6 +70,8 @@ class CatchCoordinator:
         Platform initial height (GEOM_INITIAL_HEIGHT_MM).
     landing_z_offset_mm : float
         Offset above initial height for the catch plane.
+    hand_catch_offset_mm : float
+        Height of hand catch point above platform centroid along local Z (HAND_CATCH_OFFSET_MM).
     catch_angle_limit_deg : float
         Maximum approach angle from vertical (degrees).
     blacklist_rejection_threshold : int
@@ -87,6 +89,7 @@ class CatchCoordinator:
         robot_name: str = "jugglebot",
         initial_height_mm: float = 574.3,
         landing_z_offset_mm: float = 160.0,
+        hand_catch_offset_mm: float = 64.78,
         catch_angle_limit_deg: float = 30.0,
         blacklist_rejection_threshold: int = 3,
         blacklist_reeval_threshold_mm: float = 50.0,
@@ -96,6 +99,7 @@ class CatchCoordinator:
         self.robot_name = robot_name
         self.initial_height_mm = initial_height_mm
         self.catch_z_offset_mm = landing_z_offset_mm
+        self.hand_catch_offset_mm = hand_catch_offset_mm
         self.catch_angle_limit_rad = math.radians(catch_angle_limit_deg)
         self.blacklist_rejection_threshold = blacklist_rejection_threshold
         self.blacklist_reeval_threshold_mm = blacklist_reeval_threshold_mm
@@ -195,12 +199,25 @@ class CatchCoordinator:
         if quat is None:
             return None
 
-        # Position: convert from base frame to platform frame
-        # Platform frame origin is at (0, 0, initial_height) in base frame
+        # The hand catches the ball, not the platform centroid. The hand's catch
+        # point is offset from the centroid along the platform's local Z axis by
+        # hand_catch_offset_mm. We position the platform so that the hand (not the
+        # centroid) is at the ball's landing position.
+        #
+        # Platform local Z after tilting = rotation applied to [0,0,1].
+        rot = Rotation.from_quat([quat[1], quat[2], quat[3], quat[0]])  # scipy: xyzw
+        platform_z = rot.apply(np.array([0.0, 0.0, 1.0]))
+
+        # Ball landing position in base frame → desired hand position in base frame.
+        # Platform centroid = hand position - offset * platform_z
+        centroid_base = ball.landing_position - self.hand_catch_offset_mm * platform_z
+
+        # Convert from base frame to platform-home-relative coordinates.
+        # Platform home is at (0, 0, initial_height) in base frame.
         target_pos = np.array([
-            ball.landing_position[0],
-            ball.landing_position[1],
-            ball.landing_position[2] - self.initial_height_mm,
+            centroid_base[0],
+            centroid_base[1],
+            centroid_base[2] - self.initial_height_mm,
         ])
 
         # Hand: compute ball speed at landing, clamped to Teensy range
