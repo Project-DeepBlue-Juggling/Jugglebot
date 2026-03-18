@@ -567,6 +567,7 @@ private:
   volatile float Ki_          = YawDefaults::KI;
   volatile float Kd_          = YawDefaults::KD;
   volatile float FF_PWM_      = YawDefaults::FF_PWM;
+  volatile float FF_TAPER_DEG_= YawDefaults::FF_TAPER_DEG;
   volatile float POS_TOL_REV_ = YawDefaults::POS_TOL_REV;
   volatile float ACCEL_PPS_   = YawDefaults::ACCEL_PPS;
   volatile float DECEL_PPS_   = YawDefaults::DECEL_PPS;

@@ -78,6 +78,7 @@ jugglebot_geometry:
   arm_height_from_platform_mm: 210.25  # Height of ball entry opening above the platform leg nodes {mm}
   hand_stroke_mm: 355.0              # Stroke of the jugglebot hand {mm}. Must be accurate — used to detect overextension.
   hand_radius_mm: 35.0               # Radius of hand {mm}. Approximate.
+  hand_axis_bottom_offset_mm: -129.0  # Hand axis bottom position relative to platform centroid {mm} (CAD measurement)
 
   # Ball joint offset: 12.50 mm radius of ball joint + 13 mm gap between the
   # 'measuring face' and the connection point to the upper leg. Added to init_leg_lengths
@@ -363,6 +364,7 @@ ball_butler_yaw:
   ki: 0.0                              # Integral gain
   kd: 0.0                              # Derivative gain
   ff_pwm: 10.0                         # Friction feedforward {PWM counts}
+  ff_taper_deg: 5.0                    # FF taper range {deg} — FF scales linearly from 0 at target to full at this distance
   pos_tol_rev: 0.0014                  # Position tolerance {rev} (~0.5 deg)
 
   # Motion limits
@@ -421,9 +423,9 @@ ball_butler_hand:
 # ============================================================
 ball_butler_state_machine:
   # Timeouts
-  homing_timeout_ms: 10000             # Max time for homing sequence {ms}
+  homing_timeout_ms: 20000             # Max time for homing sequence {ms}
   homing_retry_delay_ms: 500           # Delay between homing retries {ms}
-  reload_timeout_ms: 10000             # Max time for reload sequence {ms}
+  reload_timeout_ms: 20000             # Max time for reload sequence {ms}
   post_throw_delay_ms: 1000            # Delay after throw before reload begins {ms}
   idle_no_cmd_timeout_ms: 5000         # Stow pitch if idle this long {ms}
 

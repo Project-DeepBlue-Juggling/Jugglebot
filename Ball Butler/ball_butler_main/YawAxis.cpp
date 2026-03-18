@@ -851,8 +851,11 @@ void YawAxis::controlISR() {
   // Derivative term (on velocity, not error, to avoid setpoint kick)
   float d = -Kd_ * vel_rps_;
   
-  // Feedforward for friction
-  float u_ff = (err_rev > 0) ? FF_PWM_ : ((err_rev < 0) ? -FF_PWM_ : 0.0f);
+  // Feedforward for friction — tapered near target so it doesn't dominate
+  // the P term and cause limit-cycle oscillation on the non-backdrivable axis.
+  // Full FF at >= FF_TAPER_DEG_ away, linearly fading to zero at the target.
+  float ff_scale = fminf(1.0f, fabsf(err_deg) / FF_TAPER_DEG_);
+  float u_ff = ff_scale * ((err_rev > 0) ? FF_PWM_ : ((err_rev < 0) ? -FF_PWM_ : 0.0f));
   
   // Total control effort (before limiting)
   float u = p + d + u_ff + i_term_;

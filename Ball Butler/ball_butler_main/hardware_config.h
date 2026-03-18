@@ -53,6 +53,7 @@ namespace Geometry {
   constexpr float ARM_HEIGHT_FROM_PLATFORM_MM = 210.25f;
   constexpr float HAND_STROKE_MM = 355.0f;
   constexpr float HAND_RADIUS_MM = 35.0f;
+  constexpr float HAND_AXIS_BOTTOM_OFFSET_MM = -129.0f;
   constexpr float BALL_JOINT_OFFSET_MM = 25.5f;
   constexpr float BASE_NODES_MM[6][3] = {
     {-385.274f, -140.228f, 0.0f},
@@ -132,6 +133,7 @@ namespace ODriveDefaults {
 
 namespace JBOp {
   constexpr float DEFAULT_ACTIVE_Z_MM = 170.0f;
+  constexpr float HAND_CATCH_PRIME_REV = 9.858f;
   constexpr float TARGET_REACHED_POS_TOL_REV = 0.01f;
   constexpr float TARGET_REACHED_VEL_TOL_RPS = 0.1f;
   constexpr float GENTLE_MOVE_VEL_LIMIT_RPS = 2.5f;
@@ -306,6 +308,7 @@ namespace BBYaw {
   constexpr float KI = 0.0f;
   constexpr float KD = 0.0f;
   constexpr float FF_PWM = 10.0f;
+  constexpr float FF_TAPER_DEG = 5.0f;
   constexpr float POS_TOL_REV = 0.0014f;
   constexpr float ACCEL_PPS = 500.0f;
   constexpr float DECEL_PPS = 450.0f;
@@ -357,7 +360,7 @@ namespace BBHand {
 // ==========================================================================
 
 namespace BBSM {
-  constexpr uint32_t HOMING_TIMEOUT_MS = 10000u;
+  constexpr uint32_t HOMING_TIMEOUT_MS = 20000u;
   constexpr uint32_t HOMING_RETRY_DELAY_MS = 500u;
   constexpr uint32_t RELOAD_TIMEOUT_MS = 20000u;
   constexpr uint32_t POST_THROW_DELAY_MS = 1000u;

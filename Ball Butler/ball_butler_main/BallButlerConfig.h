@@ -102,6 +102,7 @@ namespace YawDefaults {
   constexpr float KI                  = BBYaw::KI;
   constexpr float KD                  = BBYaw::KD;
   constexpr float FF_PWM              = BBYaw::FF_PWM;
+  constexpr float FF_TAPER_DEG        = BBYaw::FF_TAPER_DEG;
   constexpr float POS_TOL_REV         = BBYaw::POS_TOL_REV;
 
   // Motion limits
