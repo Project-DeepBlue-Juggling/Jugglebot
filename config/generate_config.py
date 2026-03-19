@@ -30,7 +30,7 @@ OUTPUT_DIR = SCRIPT_DIR / "generated"
 
 # Additional output locations so consumers can import/include directly
 ROS_PKG_DIR = REPO_ROOT / "ros_ws" / "src" / "jugglebot" / "jugglebot"
-BB_FIRMWARE_DIR = REPO_ROOT / "Ball Butler" / "ball_butler_main"
+BB_FIRMWARE_DIR = REPO_ROOT.parent / "BallButler" / "ball_butler_main"
 PLATFORM_FIRMWARE_DIR = REPO_ROOT / "ros_ws" / "src" / "jugglebot" / "Teensy_code"
 GUI_JS_DIR = REPO_ROOT / "ros_ws" / "gui" / "js"
 
@@ -788,6 +788,14 @@ def generate_gui_js(hw_cfg: dict, proto_cfg: dict) -> str:
 
 # ── Main ────────────────────────────────────────────────────────────────────
 
+def _rel(path: Path) -> str:
+    """Return a display path relative to the repo root's parent directory."""
+    try:
+        return str(path.relative_to(REPO_ROOT.parent))
+    except ValueError:
+        return str(path)
+
+
 def main():
     yaml_path = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_YAML
     if not yaml_path.exists():
@@ -796,6 +804,9 @@ def main():
 
     cfg = load_yaml(yaml_path)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Check for external BallButler repo
+    bb_available = BB_FIRMWARE_DIR.exists()
 
     # ── Protocol config ──
     cpp_path = OUTPUT_DIR / "protocol_config.h"
@@ -807,8 +818,8 @@ def main():
     cpp_path.write_text(cpp_content, encoding="utf-8")
     py_path.write_text(py_content, encoding="utf-8")
 
-    print(f"Generated: {cpp_path}")
-    print(f"Generated: {py_path}")
+    print(f"Generated: {_rel(cpp_path)}")
+    print(f"Generated: {_rel(py_path)}")
 
     # Copy protocol files to consumer directories
     extra_copies = [
@@ -819,9 +830,9 @@ def main():
     for content, dest in extra_copies:
         if dest.parent.exists():
             dest.write_text(content, encoding="utf-8")
-            print(f"Copied:    {dest}")
+            print(f"Copied:    {_rel(dest)}")
         else:
-            print(f"Skipped (dir not found): {dest}")
+            print(f"Skipped (dir not found): {_rel(dest)}")
 
     # ── Hardware config ──
     hw_cfg = None
@@ -837,8 +848,8 @@ def main():
         hw_cpp_path.write_text(hw_cpp_content, encoding="utf-8")
         hw_py_path.write_text(hw_py_content, encoding="utf-8")
 
-        print(f"Generated: {hw_cpp_path}")
-        print(f"Generated: {hw_py_path}")
+        print(f"Generated: {_rel(hw_cpp_path)}")
+        print(f"Generated: {_rel(hw_py_path)}")
 
         # Copy hardware config to consumer directories
         hw_copies = [
@@ -849,26 +860,35 @@ def main():
         for content, dest in hw_copies:
             if dest.parent.exists():
                 dest.write_text(content, encoding="utf-8")
-                print(f"Copied:    {dest}")
+                print(f"Copied:    {_rel(dest)}")
             else:
-                print(f"Skipped (dir not found): {dest}")
+                print(f"Skipped (dir not found): {_rel(dest)}")
     else:
-        print(f"Skipped hardware config (not found): {HW_YAML}")
+        print(f"Skipped hardware config (not found): {_rel(HW_YAML)}")
 
     # ── GUI JavaScript config ──
     if hw_cfg is not None:
         gui_js_content = generate_gui_js(hw_cfg, cfg)
         gui_js_path = OUTPUT_DIR / "geometry-config.js"
         gui_js_path.write_text(gui_js_content, encoding="utf-8")
-        print(f"Generated: {gui_js_path}")
+        print(f"Generated: {_rel(gui_js_path)}")
 
         # Deliver to GUI directory
         gui_dest = GUI_JS_DIR / "geometry-config.js"
         if gui_dest.parent.exists():
             gui_dest.write_text(gui_js_content, encoding="utf-8")
-            print(f"Delivered: {gui_dest}")
+            print(f"Delivered: {_rel(gui_dest)}")
         else:
-            print(f"Skipped GUI delivery (dir not found): {gui_dest}")
+            print(f"Skipped GUI delivery (dir not found): {_rel(gui_dest)}")
+
+    # Print BallButler warning at the very end so it's impossible to miss
+    if not bb_available:
+        print()
+        print("!" * 78)
+        print("!!  WARNING: BallButler directory not found!".ljust(77) + "!")
+        print("!!  Ball Butler config files were NOT updated.".ljust(77) + "!")
+        print(f"!!  Expected: {_rel(BB_FIRMWARE_DIR)} at same level as repo root.".ljust(77) + "!")
+        print("!" * 78)
 
 
 if __name__ == "__main__":
