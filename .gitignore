@@ -85,3 +85,4 @@ Ball Butler/hand_sensor_pcb_rail/PCB Rail.dxf
 Ball Butler/hand_sensor_pcb_rail/fp-info-cache
 /Ball Butler/zTesting/throw_testing/accuracy_testing/.venv
 /.claude
+sim/tests/results/
