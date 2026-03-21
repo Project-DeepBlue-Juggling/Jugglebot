@@ -177,4 +177,4 @@ Motion is smooth within each tier but has a visible kink where fine meets coarse
 
 1. Increase `A` (acceleration smoothness) — this specifically targets tier-boundary jerk.
 2. Consider adding a third intermediate tier (e.g., 3 × 20 ms + 3 × 80 ms + 4 × 250 ms).
-3. See B-01 in [MPC_BUGS.md](../../sim/MPC_BUGS.md) for the rate limit tightness issue at the boundary.
+3. See B-01 in [MPC_BUGS.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/sim/MPC_BUGS.md) for the rate limit tightness issue at the boundary.
