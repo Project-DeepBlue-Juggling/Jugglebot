@@ -21,11 +21,21 @@ Complete technical documentation for the motion planning and control subsystem, 
 - **[Operations Guide](motion_planner/operations.md)** — Running tests, tuning gains, extending the system
 - **[Validation Results](motion_planner/results.md)** — Summary of hardware test outcomes
 
+### [Simulation MPC](sim_mpc/index.md) — CasADi Nonlinear MPC
+
+The simulation MPC is a parallel development path that replaces the production quintic trajectory planner with a **receding-horizon nonlinear MPC** using CasADi/IPOPT. It runs in the MuJoCo simulation environment (`sim/`) and models actuator dynamics, IK constraints, and variable-resolution horizons for ball catching.
+
+- **[NLP Formulation](sim_mpc/nlp_formulation.md)** — Decision variables, cost function, IK constraints, warm-starting
+- **[Variable Horizon](sim_mpc/variable_horizon.md)** — Fine/coarse timestep schedule, urgency ramp, feasibility checking
+- **[Control Loop](sim_mpc/control_loop.md)** — 50 Hz loop, target source adapters, hand coordination
+- **[Plant Interface](sim_mpc/plant.md)** — MuJoCo plant, coordinate conventions, ball management
+- **[Tuning Guide](sim_mpc/tuning.md)** — Parameters, weights, solver options, common scenarios
+
 ## Repository Structure
 
 ```
 Jugglebot/
-├── config/                     # Code-generated protocol & hardware constants 
+├── config/                     # Code-generated protocol & hardware constants
 │   ├── jugglebot_protocol.yaml
 │   ├── hardware_config.yaml
 │   └── generate_config.py
@@ -37,6 +47,14 @@ Jugglebot/
 │       ├── orchestrator_node.py
 │       ├── state_machine.py
 │       └── motion_bridge_node.py
+├── sim/                        # MuJoCo simulation + MPC controller
+│   ├── controller/             # CasADi NMPC (mpc.py, params.py)
+│   ├── plant/                  # MuJoCo plant interface
+│   ├── hand/                   # Hand coordination, catch/throw trajectories
+│   ├── input/                  # Input adapters (scripted, interactive, keyboard)
+│   ├── viz/                    # Telemetry logging, horizon renderer, dashboard
+│   ├── model/                  # MJCF model + generator
+│   └── main.py                 # Entry point + 50 Hz control loop
 ├── tools/                      # Standalone hardware test harnesses
 ├── docs/                       # This documentation
 └── MOTION_PLANNER_PLAN.md      # Historical development plan & test log

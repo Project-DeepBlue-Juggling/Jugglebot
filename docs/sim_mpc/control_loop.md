@@ -1,0 +1,178 @@
+# Control Loop
+
+This page describes the 50 Hz simulation loop, the target source abstraction, and how the hand coordinator integrates with MPC planning.
+
+**Source files:**
+
+- `sim/main.py` — entry point, loop functions, target source adapters
+- `sim/hand/coordinator.py` — hand state machine + ball lifecycle
+- `sim/hand/trajectory.py` — catch/throw hand trajectories
+- `sim/input/sim_control.py` — pause/step/speed controls
+
+## Loop Architecture
+
+The simulation runs at a fixed **50 Hz** control rate (`CONTROL_DT = 0.02 s`). Each control step:
+
+1. Reads the full plant state from MuJoCo sensors.
+2. Queries the active `TargetSource` for the current target.
+3. Processes ball spawning and hand commands.
+4. Calls `mpc.solve()` with the target pose, arrival time, and twist.
+5. Applies the resulting leg command to the plant.
+6. Steps MuJoCo physics by `CONTROL_DT`.
+7. Checks for ball capture.
+8. Logs telemetry.
+
+### Viewer Loop vs Headless Loop
+
+Two loop implementations exist:
+
+- **`run_mpc_headless()`** — No viewer. Runs `n_steps = duration / CONTROL_DT` iterations without real-time pacing. Used for batch testing and CI.
+- **`run_mpc_with_viewer()`** — MuJoCo passive viewer with real-time pacing, pause/step/speed controls, automatic looping (if the source supports `reset()`), and optional custom rendering (horizon preview, ball trajectory).
+
+Both loops share the same core logic via `_mpc_solve()` and `_execute_hand_cmd()` helper functions.
+
+### Real-Time Pacing (Viewer Mode)
+
+The viewer loop uses an accumulated wall-clock budget to maintain real-time playback:
+
+```python
+wall_budget += CONTROL_DT * sleep_factor
+elapsed = time.monotonic() - start_wall
+sleep_time = wall_budget - elapsed
+if sleep_time > 0:
+    time.sleep(sleep_time)
+elif sleep_time < -0.5:
+    # Fallen behind (e.g., speed change) — resync
+    start_wall = time.monotonic()
+    wall_budget = 0.0
+```
+
+The `sleep_factor` comes from the `SimController` (default 1.0, adjustable with Up/Down arrow keys). The resync threshold (-0.5 s) prevents runaway catch-up after pausing or speed changes.
+
+## Target Sources
+
+The `TargetSource` protocol defines a single required method:
+
+```python
+class TargetSource(Protocol):
+    def update(self, sim_time: float, state: PlantState) -> TargetCommand: ...
+```
+
+A `TargetCommand` bundles everything the loop needs for one control step:
+
+| Field | Type | Purpose |
+|---|---|---|
+| `target_pose` | `(6,)` ndarray | Target `[x,y,z,rx,ry,rz]` for MPC |
+| `arrival_time` | `float` or `None` | Deadline; None = ASAP |
+| `target_twist` | `(6,)` or `None` | Desired twist at arrival; None = zero |
+| `hand_cmd` | various or `None` | Hand command this step |
+| `ball_spawn` | `BallSpawn` or `None` | Ball to spawn this step |
+
+### Adapter Hierarchy
+
+Each input mode has a dedicated adapter that converts its domain-specific logic into `TargetCommand`:
+
+| Adapter | Input Mode | Features |
+|---|---|---|
+| `StaticTargetSource` | `--pose`, `--sequence` | Time-triggered pose schedule |
+| `WaypointTargetSource` | `--trajectory T1..T6` | Waypoint list with arrival times |
+| `InteractiveTargetSource` | `--spacemouse`, `--keyboard` | Continuous ASAP targets |
+| `CatchTargetSource` | `--catch DT1..DT8` | Scripted catch sequences with ball physics |
+| `ThrowCatchTargetSource` | `--throw-catch TC1..TC4` | Throw → catch cycle with ball release |
+| `InteractiveCatchSource` | `--interactive-catch` | User-spawned balls, dynamic feasibility |
+| `ContinuousThrowCatchSource` | `--juggle` | Self-throw-catch loop with parameter tuning |
+
+### Optional Lifecycle Methods
+
+Target sources may optionally implement:
+
+| Method | Purpose |
+|---|---|
+| `reset()` | Enables viewer looping — source resets to initial state |
+| `close()` | Cleanup (e.g., close input devices) |
+| `key_callback(keycode)` | Viewer keyboard events |
+| `should_step() -> bool` | Pause gate (replaces default SimController) |
+| `sleep_factor -> float` | Speed multiplier for real-time pacing |
+| `render(viewer)` | Custom per-frame rendering |
+| `notify_capture(sim_time)` | Ball capture notification |
+| `print_summary()` | End-of-run statistics |
+
+These are detected via `hasattr()` at runtime — no base class required.
+
+## Hand Coordination
+
+The hand actuator is independent of the MPC. The MPC controls the 6 platform legs; the hand is commanded by the `HandCoordinator` state machine.
+
+### Hand State Machine
+
+```
+IDLE → PRIMING → APPROACHING → HOLDING → CAUGHT → RETURNING → IDLE
+                                  ↓
+                              (timeout → RETURNING)
+```
+
+For throw-catch sequences, additional states:
+
+```
+IDLE → APPROACHING_THROW → THROWING → TRANSITIONING → HOLDING → CAUGHT → ...
+```
+
+### Hand Commands
+
+The `_execute_hand_cmd()` function processes the `hand_cmd` field from `TargetCommand`:
+
+| Command Type | Action |
+|---|---|
+| `BallRelease(velocity_mms)` | Release ball from kinematic hold with specified velocity |
+| `HandCatchSequence` / `HandThrowSequence` | Install as active sequence (sampled each step) |
+| `float` / `int` | Direct position command (mm) |
+| `'prime'` | Move hand to prime position (~323 mm) |
+| `'home'` | Move hand to bottom of travel (0 mm) |
+
+Active hand sequences (`HandCatchSequence`, `HandThrowSequence`) are sampled at the current simulation time each step. When the sequence returns `None` (complete), the active sequence is cleared.
+
+### Ball Lifecycle
+
+Ball management flows through the `MuJoCoPlant.ball_manager`:
+
+1. **Spawn:** `plant.spawn_ball(position_mm, velocity_mms)` teleports the ball and sets its velocity. Alternatively, `ball_manager.spawn_in_hand()` places the ball in the hand for throw sequences.
+
+2. **Flight:** MuJoCo physics simulates the ball under gravity. The ball manager runs capture detection every physics substep inside `plant.step()`.
+
+3. **Capture:** When the ball enters the hand's capture zone (checked every physics substep), the ball manager latches the capture flag. The control loop harvests it via `plant.check_and_capture()` and notifies the target source.
+
+4. **Hold:** After capture, the ball is held kinematically in the hand (position updated each substep to follow the hand).
+
+## Telemetry
+
+Each control step produces a `StepRecord` logged to CSV:
+
+| Field | Source |
+|---|---|
+| `time` | Simulation time |
+| `ref_pose`, `ref_twist` | Target from TargetCommand |
+| `actual_pose`, `actual_twist` | PlantState sensors |
+| `cmd_extensions` | MPC output (u[0]) |
+| `actual_extensions` | PlantState sensors |
+| `leg_velocities` | PlantState sensors |
+| `hand_cmd_mm`, `hand_pos_mm`, `hand_vel_mmps` | Hand state |
+| `solve_time_ms` | Wall-clock IPOPT solve duration |
+| `solve_status` | IPOPT return status string |
+| `cost` | Optimal objective value |
+| `constraint_violation` | Max constraint residual |
+
+The optional live dashboard (`--dashboard`) broadcasts each record via WebSocket to a browser-based visualization at `http://localhost:8082`.
+
+## Viewer Controls
+
+Available in all viewer-mode MPC runs:
+
+| Key | Action |
+|---|---|
+| Space | Pause / unpause simulation |
+| Right arrow | Step one frame (while paused) |
+| Up arrow | Speed × 2 (max 16×) |
+| Down arrow | Speed × 0.5 (min 0.0625×) |
+| R | Reset speed to 1× |
+
+Interactive modes add their own keys (B for ball spawn, T for throw, etc.) via the `key_callback` composition system. Multiple key callbacks are combined with `_combine_key_callbacks()`.
