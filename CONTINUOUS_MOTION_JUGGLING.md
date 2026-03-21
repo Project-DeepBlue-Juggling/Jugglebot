@@ -93,12 +93,12 @@ enabling continuous motion.
 
 ## Phase Summary
 
-| Phase | Description | Complexity | Key work |
-|-------|-------------|------------|----------|
-| **A** | Vertical toss-to-self (stationary platform) | Low | Refactor `--juggle` parameterisation: swap `flight_time` → `cycle_time + hold_ratio`, derive timing from model instead of fixed constants. All infrastructure exists. |
-| **B** | Toss between positions (platform moves) | Low–moderate | Add position selection logic and workspace envelope check. `ThrowCatchPlanner` already handles different positions with tilt; MPC already tracks dynamic targets with deadlines. |
-| **C** | Velocity-at-events (continuous motion) | Moderate | New physics: ballistic equations account for platform velocity, settle margin removed, hand trajectories fire while platform moves. First phase requiring new thinking rather than rearranging existing pieces. |
-| **D** | Orbit optimisation | High (if needed) | Fourier orbit optimiser + time-varying MPC tracking weights. Only pursue if Phase C reveals excessive jerk from MPC-planned transits. May be skipped entirely. |
+| Phase | Status | Description | Key work |
+|-------|--------|-------------|----------|
+| **A** | **DONE** | Vertical toss-to-self (stationary platform) | New `TossLoopController` with `cycle_time + hold_ratio` timing model. 12/12 catches at 1.2 s, 11/11 at 1.0 s. |
+| **B** | **DONE** | Toss between positions (platform moves) | Position alternation via `--lateral-spacing`. 16/16 catches at 120 mm spacing. MPC transit + ThrowCatchPlanner tilt work out of the box. |
+| **C** | **DONE** | Velocity-at-events (continuous motion) | Platform twist enters ballistic equations. `ThrowCatchPlanner` accepts platform velocity, computes hand-relative throw/catch speeds. Tilt reduced ~50% at 120 mm spacing. 16/16 catches at event_speed=0.5 and 0.8. |
+| **D** | Pending | Orbit optimisation (if needed) | Fourier orbit optimiser + time-varying MPC tracking weights. Only pursue if Phase C reveals excessive jerk from MPC-planned transits. May be skipped entirely. |
 
 ---
 
@@ -325,7 +325,7 @@ def _compute_cycle_timing(self, catch_end_time: float) -> tuple[float, float]:
     return next_throw_time, next_catch_time
 ```
 
-**CLI:** `--toss-loop [cycle_time]` (or refactor `--juggle` to accept these params).
+**CLI:** `--cycle-time [cycle_time]` (or refactor `--juggle` to accept these params).
 Optional `--hold-ratio 0.4`.
 
 **Validates:**
@@ -340,6 +340,42 @@ Optional `--hold-ratio 0.4`.
 **Success criteria:** the robot tosses a ball straight up 10+ times in a row at
 cycle_time = 1.2 s without a drop.  Actual cycle timing matches intended to within
 ±20 ms.
+
+**Status: DONE** (2026-03-21)
+
+Implementation: new `TossLoopController` in `sim/input/toss_loop.py` alongside the
+existing `ContinuousThrowCatchController` (preserving `--juggle` mode).  Chose new
+controller over in-place refactor because the timing model and state machine are
+fundamentally different (cycle-time-anchored vs. flight-time + fixed pauses).
+
+Key implementation decisions:
+- **No HandCoordinator**: the toss loop manages hand sequences and MPC targets
+  directly, avoiding the coordinator's CAUGHT → RETURNING → IDLE flow (which takes
+  ~2s and is incompatible with tight cycle timing).
+- **Cycle anchoring**: `next_throw_time = last_throw_time + cycle_time`.  The cycle
+  clock is absolute — dwell time absorbs timing jitter from capture detection.
+- **Ball Z**: computed as average of throw-release and catch-arrival hand offsets
+  from platform centroid (700.1 mm), keeping the platform within ~3.5 mm of home Z
+  for vertical toss.
+- **Auto-respawn**: on drop, ball respawns after 0.5 s (no manual B-key required).
+
+Test results (headless, 50 Hz):
+
+| Config | Duration | Catches | Drops | Streak | Timing err (mean/max) |
+|--------|----------|---------|-------|--------|-----------------------|
+| 1.2 s, Phase A | 15 s | 12/12 | 0 | 12 | +11.7 / 20.0 ms |
+| 1.0 s, Phase A (tight) | 12 s | 11/11 | 0 | 11 | +10.0 / 20.0 ms |
+| 1.2 s, Phase B, 120 mm | 20 s | 16/16 | 0 | 16 | +12.5 / 20.0 ms |
+
+All timing errors are within one control step (20 ms at 50 Hz) — inherent to
+discrete-time control, not a timing model issue.
+
+Notes for future phases:
+- The 20 ms release timing quantisation could matter at tighter cycle times.
+  A sub-step release mechanism (interpolating within the control step) would
+  reduce this to <1 ms if needed.
+- The dwell time at 1.0 s cycle (50 ms) is tight but functional.  Below ~0.93 s
+  the timing model becomes infeasible at hold_ratio=0.4.
 
 ---
 
@@ -443,6 +479,64 @@ The `_SETTLE_MARGIN_S = 0.1` in the planner (which forces the platform to arrive
 times.  Ball trajectories match predictions (actual landing position within 10 mm
 of predicted).
 
+**Status: DONE** (2026-03-21)
+
+Implementation: `ThrowCatchPlanner.plan()` gains optional `throw_platform_twist`
+and `catch_platform_twist` parameters. `TossLoopController` gains `platform_event_speed_ratio`
+parameter, exposed via `--platform-event-speed-ratio` CLI flag.
+
+Key implementation decisions:
+- **Hand-relative velocity decomposition**: `v_hand_rel = v_ball_world - v_platform`.
+  The hand throw speed is the dot product of `v_hand_rel` with platform local Z,
+  not the norm of the world-frame ball velocity.  The orientation aligns platform Z
+  with `v_hand_rel` (not `v_launch`), so the platform tilts less when its velocity
+  already carries part of the lateral ball velocity.
+- **Event velocity model**: At both throw and catch, the platform velocity is
+  `event_speed_frac × (catch_pos − throw_pos) / air_time` — a fraction of the
+  average transit velocity, pointing from throw toward catch.  Both events get the
+  same velocity vector (uniform direction during transit).  Angular velocity at
+  events is zero (tilt changes are smooth via MPC).
+- **Settle margin removed**: When platform twist is non-None, `settle_margin_s = 0`.
+  The MPC plans pass-through targets (arrive with velocity) rather than arrive-and-hold.
+- **arrival_twist propagation**: DynamicTargets carry the platform twist through
+  the toss loop → ContinuousThrowCatchSource → TargetCommand → MPC solver chain.
+  Phase B targets remain `arrival_twist=None` (arrive and stop).
+
+Physics observations:
+- **Tilt reduction**: At 120 mm spacing with event_speed=0.5 (83 mm/s platform
+  velocity), throw tilt drops from 2.72° (Phase B) to 1.35° (Phase C) — a ~50%
+  reduction.  The platform's lateral velocity carries half the lateral ball velocity.
+- **Ball velocity unchanged**: The world-frame ball velocity is identical between
+  Phase B and C (same positions and flight time).  Only the decomposition into
+  hand-speed + platform-speed changes.
+- **No catch accuracy degradation**: 100% catch rate across all configurations tested,
+  suggesting the MPC tracks pass-through targets accurately enough for the proximity
+  capture radius.
+
+Test results (headless, 50 Hz):
+
+| Config | Duration | Catches | Drops | Streak | Timing err (mean/max) |
+|--------|----------|---------|-------|--------|-----------------------|
+| 1.2 s, 120 mm, speed=0 (Phase B regression) | 15 s | 12/12 | 0 | 12 | +11.7 / 20.0 ms |
+| 1.2 s, 120 mm, speed=0.5 | 20 s | 16/16 | 0 | 16 | +12.5 / 20.0 ms |
+| 1.2 s, 120 mm, speed=0.8 | 20 s | 16/16 | 0 | 16 | +12.5 / 20.0 ms |
+| 1.0 s, 120 mm, speed=0.5 (tight) | 12 s | 11/11 | 0 | 11 | +10.0 / 20.0 ms |
+
+Notes for future phases:
+- The event velocity model is intentionally simple (same velocity at both endpoints).
+  A more sophisticated model could use different velocities at throw vs. catch
+  (e.g., higher at catch to soften the relative impact, lower at throw for accuracy).
+- The MPC handles the velocity reversal during hold_time (event velocity points
+  toward catch; next cycle needs it to point the opposite way).  At 0.8 event speed
+  the reversal requires ~350 mm/s² average acceleration during 480 ms hold — well
+  within MPC capability but worth monitoring as spacing increases.
+- Phase D (orbit optimisation) appears unnecessary: the MPC's built-in smoothness
+  costs produce acceptable jerk without a prescribed orbit.  However, this should
+  be verified with actual per-leg jerk telemetry if hardware tests are planned.
+- At event_speed=1.0 (uniform velocity, no acceleration during transit), the
+  platform would need to reverse 2× the average velocity during hold_time, which
+  may become infeasible at larger spacings or shorter cycle times.
+
 ---
 
 ### Phase D: Orbit optimisation (if needed)
@@ -468,20 +562,29 @@ This is the most complex component in the plan and may turn out to be unnecessar
 
 ---
 
-## How to Run (once implemented)
+## How to Run
 
 ```bash
 # Phase A: vertical toss, default 1.2s cycle, 0.4 hold ratio
-python sim/main.py --toss-loop 1.2
+python sim/main.py --cycle-time 1.2
 
 # Phase A: adjust hold ratio
-python sim/main.py --toss-loop 1.2 --hold-ratio 0.4
+python sim/main.py --cycle-time 1.2 --hold-ratio 0.4
 
 # Phase A: faster cycle (tighter timing)
-python sim/main.py --toss-loop 1.0
+python sim/main.py --cycle-time 1.0
 
-# Phase B: toss between positions (positions selected automatically)
-python sim/main.py --toss-loop 1.2 --lateral-spacing 120
+# Phase B: toss between positions (platform stops at events)
+python sim/main.py --cycle-time 1.2 --lateral-spacing 120
+
+# Phase C: continuous motion (platform moves through events)
+python sim/main.py --cycle-time 1.2 --lateral-spacing 120 --platform-event-speed-ratio 0.5
+
+# Phase C: more aggressive (80% of average transit velocity at events)
+python sim/main.py --cycle-time 1.2 --lateral-spacing 120 --platform-event-speed-ratio 0.8
+
+# Headless (for testing / benchmarking)
+python sim/main.py --cycle-time 1.2 --lateral-spacing 120 --platform-event-speed-ratio 0.5 --no-viewer --duration 20
 
 # Existing mode (preserved for compatibility)
 python sim/main.py --juggle
