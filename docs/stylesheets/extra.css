@@ -1,0 +1,31 @@
+/* ── Navigation section headings (top-level groups like "Motion Planner") ── */
+
+/* Section labels in the left nav */
+.md-nav--primary > .md-nav__list > .md-nav__item--section > .md-nav__link,
+.md-nav--primary > .md-nav__list > .md-nav__item--nested > .md-nav__link {
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  margin-top: 0.8rem;
+  padding: 0.45rem 0.6rem;
+  border-left: 3px solid var(--md-primary-fg-color);
+  border-radius: 0 4px 4px 0;
+  background: var(--md-primary-fg-color--light);
+  opacity: 0.92;
+}
+
+/* Dark mode: subtler background that still pops */
+[data-md-color-scheme="slate"]
+.md-nav--primary > .md-nav__list > .md-nav__item--section > .md-nav__link,
+[data-md-color-scheme="slate"]
+.md-nav--primary > .md-nav__list > .md-nav__item--nested > .md-nav__link {
+  background: rgba(255, 255, 255, 0.06);
+  border-left-color: var(--md-accent-fg-color);
+}
+
+/* First section: no extra top margin */
+.md-nav--primary > .md-nav__list > .md-nav__item--section:first-child > .md-nav__link,
+.md-nav--primary > .md-nav__list > .md-nav__item--nested:first-child > .md-nav__link {
+  margin-top: 0;
+}
