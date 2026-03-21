@@ -95,6 +95,24 @@ def parse_args():
     p.add_argument('--bb', action='store_true',
                    help='Enable Ball Butler throws in interactive-catch mode '
                         '(T key). Requires --interactive-catch.')
+    p.add_argument('--cycle-time', type=float, nargs='?', const=1.2,
+                   default=None, dest='cycle_time',
+                   help='Continuous toss loop mode (Phase A/B/C). Optional arg: '
+                        'cycle time in seconds (default: 1.2). Implies --mpc.')
+    p.add_argument('--hold-ratio', type=float, default=0.4,
+                   dest='hold_ratio',
+                   help='Hold ratio for --cycle-time (default: 0.4). '
+                        'Fraction of cycle spent holding the ball.')
+    p.add_argument('--lateral-spacing', type=float, default=0.0,
+                   dest='lateral_spacing',
+                   help='Lateral spacing in mm for Phase B toss between '
+                        'positions (default: 0 = Phase A vertical toss).')
+    p.add_argument('--platform-event-speed-ratio', type=float, default=0.0,
+                   dest='platform_event_speed_ratio',
+                   help='Phase C: platform velocity at throw/catch as a '
+                        'fraction of average transit velocity (0..1). '
+                        '0 = stop at events (Phase B), '
+                        '>0 = continuous motion (Phase C). Default: 0.')
     p.add_argument('--dashboard', action='store_true',
                    help='Start live telemetry dashboard (web browser)')
     p.add_argument('--dashboard-port', type=int, default=8082,
@@ -887,7 +905,22 @@ def main():
     catch_sequence = None    # raw sequence for CatchTargetSource
     throw_catch_plan = None  # ThrowCatchPlan for ThrowCatchTargetSource
 
-    if args.juggle:
+    if args.cycle_time is not None:
+        args.mpc = True
+        needs_viewer = not args.no_viewer  # allow headless for testing
+        needs_high_vel = True
+        spacing = args.lateral_spacing
+        if args.platform_event_speed_ratio > 0 and spacing > 0:
+            phase = "C"
+        elif spacing > 0:
+            phase = "B"
+        else:
+            phase = "A"
+        label = (f"Toss loop phase {phase} "
+                 f"(cycle={args.cycle_time}s, hold={args.hold_ratio})")
+        default_duration = 600.0
+
+    elif args.juggle:
         args.mpc = True
         needs_viewer = True
         needs_high_vel = True
@@ -1011,7 +1044,26 @@ def main():
     # Passed to coordinators so return-to-home targets use the true home.
     home_pose = np.zeros(6)
 
-    if args.juggle:
+    if args.cycle_time is not None:
+        from input.toss_loop import TossLoopController
+        controller = TossLoopController(
+            cycle_time=args.cycle_time,
+            hold_ratio=args.hold_ratio,
+            lateral_spacing_mm=args.lateral_spacing,
+            platform_event_speed_ratio=args.platform_event_speed_ratio,
+            home_pose=home_pose,
+        )
+        source = ContinuousThrowCatchSource(controller)
+        print("  ─── Controls ─────────────────────────────────")
+        print("  Space       Pause / unpause")
+        print("  Up / Down   Speed ×2 / ×0.5")
+        print("  R           Reset speed to 1×")
+        print("  B           Reset ball (force restart)")
+        print("  PgUp / PgDn Raise / lower ball height")
+        print("  ─────────────────────────────────────────────\n")
+        plant.model.vis.quality.shadowsize = 0
+
+    elif args.juggle:
         from input.continuous_throw_catch import ContinuousThrowCatchController
         controller = ContinuousThrowCatchController(home_pose=home_pose)
         source = ContinuousThrowCatchSource(controller)

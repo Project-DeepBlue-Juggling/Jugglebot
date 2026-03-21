@@ -165,6 +165,46 @@ python main.py --juggle
 | F / G | Flight time -/+ 0.05s |
 | B | Reset ball (on drop or force-reset) |
 
+### Toss Loop (Continuous Motion Juggling)
+
+Timing-driven toss loop with three phases of increasing difficulty. The platform throws to itself repeatedly, with all timing derived from two parameters: cycle time and hold ratio.
+
+```bash
+# Phase A: vertical toss-to-self (default 1.2s cycle, 0.4 hold ratio)
+python main.py --cycle-time 1.2
+
+# Adjust hold ratio (fraction of cycle the ball is in the hand)
+python main.py --cycle-time 1.2 --hold-ratio 0.3
+
+# Phase B: toss between two lateral positions (platform stops at each end)
+python main.py --cycle-time 1.2 --lateral-spacing 120
+
+# Phase C: continuous motion (platform moves through throw/catch events)
+python main.py --cycle-time 1.2 --lateral-spacing 120 --platform-event-speed-ratio 0.5
+```
+
+**Parameters:**
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--cycle-time [T]` | 1.2 | Total cycle duration in seconds (throw-to-throw) |
+| `--hold-ratio R` | 0.4 | Fraction of cycle the ball is in the hand (0..1) |
+| `--lateral-spacing D` | 0 | Distance in mm between toss positions. 0 = Phase A (vertical), >0 = Phase B/C |
+| `--platform-event-speed-ratio F` | 0 | Platform velocity at throw/catch as a fraction of average transit velocity (0..1). 0 = stop at events (Phase B), >0 = continuous motion (Phase C) |
+
+**Phases:**
+
+- **Phase A** (`--lateral-spacing 0`): Vertical toss-to-self. The platform stays centred and throws straight up.
+- **Phase B** (`--lateral-spacing >0`, `--platform-event-speed-ratio 0`): Toss between two positions. The platform stops at each end before throwing/catching.
+- **Phase C** (`--lateral-spacing >0`, `--platform-event-speed-ratio >0`): Continuous motion. The platform carries velocity through throw and catch events.
+
+**Keyboard controls:**
+
+| Key | Action |
+|---|---|
+| B | Reset ball (force restart) |
+| PgUp / PgDn | Raise / lower ball height |
+
 ### Interactive Input (SpaceMouse / Keyboard)
 
 Continuous ASAP target from a physical input device. The MPC smoothly tracks the moving target.
