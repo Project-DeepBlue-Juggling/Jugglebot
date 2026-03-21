@@ -132,7 +132,7 @@ def run(viewer_mode, dashboard=None):
 
                 step_callback(state, target, cmd, diag)
 
-                horizon.update(mpc.predicted_poses)
+                horizon.update(mpc.predicted_poses, mpc.predicted_times)
                 horizon.render(viewer)
                 viewer.sync()
 

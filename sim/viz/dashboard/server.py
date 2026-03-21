@@ -42,6 +42,11 @@ def _record_to_payload(record) -> dict:
             "cost": d["cost"],
             "cv": d["constraint_violation"],
         },
+        "hand": {
+            "cmd": d["hand_cmd_mm"],
+            "pos": d["hand_pos_mm"],
+            "vel": d["hand_vel_mmps"],
+        },
         "err": {"mm": d["tracking_error_mm"], "deg": d["tracking_error_deg"]},
     }
 

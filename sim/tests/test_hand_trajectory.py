@@ -1,4 +1,4 @@
-"""Tests for hand catch trajectory generator (sim/catch/hand_trajectory.py).
+"""Tests for hand catch trajectory generator (sim/hand/trajectory.py).
 
 Validates that the Python port matches the Teensy Trajectory.h math for
 buildCatch() and makeSmoothMove().
@@ -15,7 +15,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from catch.hand_trajectory import (
+from hand.trajectory import (
     HandCatchTrajectory,
     HandSmoothMove,
     HandCatchSequence,
@@ -310,9 +310,10 @@ class TestCatchTrajectoryTeensyMatch:
     """Cross-check against hand-computed Teensy values for event_vel=3.0 m/s."""
 
     def test_catch_velocity(self):
-        """vC = -0.6 * 3.0 = -1.8 m/s."""
+        """vC = -CATCH_VEL_RATIO * 3.0."""
         traj = HandCatchTrajectory(event_vel_mps=3.0)
-        assert abs(traj.catch_velocity_mps - (-1.8)) < 1e-6
+        expected = -CATCH_VEL_RATIO * 3.0
+        assert abs(traj.catch_velocity_mps - expected) < 1e-6
 
     def test_segment_durations(self):
         """Verify segment timing matches Teensy calcCatch() for v_throw=3.0."""

@@ -102,6 +102,7 @@ All test harnesses share these safety principles:
 | `smoother_test.py` | — | StreamSmoother validation (S1-S5, direct-target smoothing) |
 | `trajectory_viewer.py` | — | 3D Stewart platform viewer + trajectory plot utility |
 | `catch_sim_test.py` | 6 | Offline catch simulation (no hardware). Full tracking + coordinator + hand control pipeline with 3D viewer |
+| `throw_catch_test.py` | 6 | Throw-catch cycle test: platform throws ball to itself, repositions, catches. Reuses catch_sim_test visualizer |
 | `tracking_analyzer.py` | 6 | Rosbag analysis for ball tracking data |
 
 ### catch_sim_test.py
@@ -110,28 +111,31 @@ Offline catch simulation that exercises the full pure-Python pipeline: `BallTrac
 
 **3D visualization** (`--viz`): animated Stewart platform with ball trajectory, KF estimate, landing prediction, hand state indicator, landing error chart, and event timeline. Supports pause/step (Space, arrow keys).
 
+### throw_catch_test.py
+
+Throw-catch cycle: platform throws a ball to itself ((-100,0,170) → (100,0,170) mm), repositions during flight, and catches. Validates the full pipeline including hand throw/catch trajectory timing, platform tilt for throw, and hand catch offset. Reuses the `catch_sim_test.py` animated 3D visualizer.
+
 ```bash
-# Default throw (BB position → platform center)
-python tools/catch_sim_test.py --viz
+python tools/throw_catch_test.py           # text-only results
+python tools/throw_catch_test.py --viz     # animated 3D playback
+python tools/throw_catch_test.py --viz --apex 500   # lower throw (500mm apex)
+```
 
-# Specify landing position (mm, base frame XY)
-python tools/catch_sim_test.py --viz --landing 50 -30
+### catch_sim_test.py
 
-# Custom launch position for steep angles
-python tools/catch_sim_test.py --viz --landing 0 0 --launch 300 -300 900
+Offline catch simulation that exercises the full pure-Python pipeline: `BallTracker` (Kalman filter + marker matching) → `CatchCoordinator` (catch pose + hand commands) → `TrajectoryManager` (async feasibility + trajectory execution). No ROS2 or hardware required.
 
-# Longer flight time (gentler arc, more tracking time)
-python tools/catch_sim_test.py --landing 0 0 --tof 1.0
+**3D visualization** (`--viz`): animated Stewart platform with ball trajectory, KF estimate, landing prediction, hand state, leg extensions, and event timeline.
 
-# High mocap noise
-python tools/catch_sim_test.py --viz --noise 10
+```bash
+python tools/catch_sim_test.py --viz                           # Default throw
+python tools/catch_sim_test.py --viz --landing 50 -30          # Specific landing XY
+python tools/catch_sim_test.py --viz --landing 0 0 --launch 300 -300 900  # Custom launch
+python tools/catch_sim_test.py --landing 0 0 --tof 1.0        # Longer flight
+python tools/catch_sim_test.py --viz --noise 10                # High mocap noise
+python tools/catch_sim_test.py --sweep                         # Noise sweep (text table)
 
-# Noise sweep (text table, no viz)
-python tools/catch_sim_test.py --sweep
-
-# Playback controls (in --viz mode):
-#   SPACE         play/pause
-#   RIGHT/LEFT    step +1/-1 frame
-#   SHIFT+arrows  step +10/-10
-#   HOME/END      first/last frame
+# Playback controls (--viz):
+#   SPACE       play/pause       . / ,     step +1/-1
+#   ] / [       step +10/-10     0 / 9     first/last frame
 ```

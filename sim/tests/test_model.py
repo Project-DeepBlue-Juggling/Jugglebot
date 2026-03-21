@@ -314,16 +314,28 @@ class TestLegLimits:
 class TestConstraintSatisfaction:
     """Verify equality constraints remain satisfied during operation."""
 
+    @staticmethod
+    def _max_equality_violation(model, data):
+        """Return the max violation across only equality constraint rows.
+
+        data.efc_pos includes both equality and contact constraints.
+        We filter to equality rows only so that contact penetration
+        depths (from ball-hand collision) don't pollute the check.
+        """
+        if data.efc_pos.size == 0:
+            return 0.0
+        # efc_type tells us which rows are equality (type 0 in MuJoCo)
+        eq_mask = data.efc_type == mujoco.mjtConstraint.mjCNSTR_EQUALITY
+        if not np.any(eq_mask):
+            return 0.0
+        return float(np.max(np.abs(data.efc_pos[eq_mask])))
+
     def test_constraints_at_home(self, model, data):
         """Constraint violations at home position are negligible."""
         # Step a few times to let constraints settle
         for _ in range(100):
             mujoco.mj_step(model, data)
-        # Check constraint force magnitude — small means constraints are satisfied
-        # efc_force contains constraint forces; we just check they're not huge
-        # A more direct check: look at constraint violations in data.efc_pos
-        # For connect constraints, violations are in data.efc_pos (3 per constraint)
-        max_violation = np.max(np.abs(data.efc_pos)) if data.efc_pos.size > 0 else 0
+        max_violation = self._max_equality_violation(model, data)
         print(f"  Max constraint violation at home: {max_violation:.2e} m")
         assert max_violation < 0.001, \
             f"Constraint violation {max_violation:.2e} m too large at home"
@@ -337,7 +349,7 @@ class TestConstraintSatisfaction:
 
         _command_and_settle(model, data, slide_targets, settle_s=3.0)
 
-        max_violation = np.max(np.abs(data.efc_pos)) if data.efc_pos.size > 0 else 0
+        max_violation = self._max_equality_violation(model, data)
         print(f"  Max constraint violation at offset: {max_violation:.2e} m")
         assert max_violation < 0.001, \
             f"Constraint violation {max_violation:.2e} m too large at offset"

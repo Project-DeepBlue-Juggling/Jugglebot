@@ -47,7 +47,7 @@ const SECTIONS = [
     },
     {
         title: 'Platform',
-        cols: 2,
+        cols: 3,
         charts: [
             {
                 id: 'pos', title: 'Position (mm)', scaleId: 'plat_pos',
@@ -67,6 +67,14 @@ const SECTIONS = [
                     { key: `act_${axis}`, label: `Act ${axis}`, color: ['#c4b5fd', '#f9a8d4', '#67e8f9'][i],
                       extract: d => d.act[i + 3] * RAD2DEG },
                 ]),
+            },
+            {
+                id: 'hand', title: 'Hand (mm)',
+                signals: [
+                    { key: 'hand_cmd',  label: 'Cmd (mm)',    color: C.pos_cmd, scale: 'hand_pos', extract: d => d.hand.cmd },
+                    { key: 'hand_pos',  label: 'Actual (mm)', color: C.pos,     scale: 'hand_pos', extract: d => d.hand.pos },
+                    { key: 'hand_vel',  label: 'Vel (mm/s)',  color: C.vel,     scale: 'hand_vel', extract: d => d.hand.vel },
+                ],
             },
         ],
     },
@@ -108,6 +116,9 @@ const MIN_RANGE = {
     // Platform
     plat_pos:  10,     // mm
     plat_ori:  2,      // deg
+    // Hand
+    hand_pos:  50,     // mm  — stroke is ~355mm, keep visible at idle
+    hand_vel:  200,    // mm/s
     // Diagnostics — tracking error
     err_mm:    3,      // mm  (hardware threshold is 2-3 mm)
     err_deg:   1,      // deg

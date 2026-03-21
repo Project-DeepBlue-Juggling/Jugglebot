@@ -116,9 +116,9 @@ class TestHandState:
         """Hand velocity is nonzero while moving."""
         plant.hand_to_prime()
         plant.step(0.02)
-        plant.step(0.02)
         state = plant.get_state()
-        # Should be moving (velocity > some threshold)
+        # After one 20ms step the hand should still be moving (high gains
+        # settle fast, so check after just 1 step, not 2)
         assert abs(state.hand_vel_mmps) > 10.0, \
             f"Hand velocity {state.hand_vel_mmps:.1f} mm/s seems too low during motion"
 

@@ -27,6 +27,33 @@ from plant.interface import PlantState
 logger = logging.getLogger(__name__)
 
 
+def _geodesic_angle(rv1: np.ndarray, rv2: np.ndarray) -> float:
+    """Exact geodesic angle between two rotation vectors.
+
+    Computes ``||log(exp(-rv1) · exp(rv2))||`` via the Rodrigues trace
+    shortcut: ``cos(θ) = (tr(R₁ᵀ R₂) - 1) / 2``.  Building each 3×3
+    matrix from a rotation vector costs ~15 FLOPs (Rodrigues formula),
+    and the trace of the product is 9 multiplies + 5 adds, so the total
+    is ~50 FLOPs — negligible for a per-target check.
+    """
+    def _rotmat(rv: np.ndarray) -> np.ndarray:
+        angle = np.linalg.norm(rv)
+        if angle < 1e-10:
+            return np.eye(3)
+        k = rv / angle
+        K = np.array([[0, -k[2], k[1]],
+                       [k[2], 0, -k[0]],
+                       [-k[1], k[0], 0]])
+        return np.eye(3) + np.sin(angle) * K + (1 - np.cos(angle)) * (K @ K)
+
+    R1 = _rotmat(rv1)
+    R2 = _rotmat(rv2)
+    # tr(R1^T R2) = sum of element-wise product
+    trace = np.sum(R1 * R2)  # equivalent to np.trace(R1.T @ R2) but no matmul
+    cos_theta = np.clip((trace - 1.0) / 2.0, -1.0, 1.0)
+    return float(np.arccos(cos_theta))
+
+
 class FeasibilityChecker:
     """Predicts whether the MPC can reach a target pose in time.
 
@@ -64,7 +91,7 @@ class FeasibilityChecker:
 
         # Build coarse-horizon MPC — same formulation, wider timestep
         coarse_params = MPCParams(
-            dt=coarse_dt,
+            dt_schedule=MPCParams.uniform_schedule(N=10, dt=coarse_dt),
             max_leg_vel_mmps=1000.0,
             max_cpu_time=0.5,   # generous budget for one-shot solve
             max_iter=300,
@@ -73,7 +100,7 @@ class FeasibilityChecker:
         )
         self._coarse_mpc = MPCController.from_plant(coarse_params, plant)
         self._coarse_dt = coarse_dt
-        self._horizon_s = coarse_params.N * coarse_dt
+        self._horizon_s = coarse_params.horizon_s
 
     def check(
         self,
@@ -115,33 +142,36 @@ class FeasibilityChecker:
             return False, f'extension above stroke: {worst:.1f} mm'
 
         # ---- Stage 2: coarse MPC solve ----
-        # The coarse MPC has a fixed horizon of N*coarse_dt seconds.
-        # We check the predicted pose at the step closest to time_available.
+        # Use the 1-D target interface (ASAP mode, no urgency ramp) for a
+        # neutral reachability prediction.  The urgency ramp is designed for
+        # receding-horizon online solves, not one-shot feasibility checks —
+        # it would make the optimizer over-optimistic about reaching the target.
         N = self._coarse_mpc.params.N
-        ref_poses = np.tile(target_pose, (N + 1, 1))
-        ref_twists = np.zeros_like(ref_poses)
 
         # Reset coarse MPC state (no warm-start carryover)
         self._coarse_mpc.reset()
 
-        _, diag = self._coarse_mpc.solve(current_state, ref_poses, ref_twist=ref_twists)
+        _, diag = self._coarse_mpc.solve(
+            current_state, target_pose, arrival_time=None)
 
         predicted = self._coarse_mpc.predicted_poses
         if predicted is None:
             return False, 'coarse MPC produced no prediction'
 
-        # Find the horizon step closest to the deadline
-        # step_k corresponds to time k * coarse_dt
-        deadline_step = min(N, max(1, round(time_available / self._coarse_dt)))
+        # Find the horizon step closest to the deadline using cumulative times
+        cum_times = self._coarse_mpc.params.cumulative_times  # (N+1,)
+        deadline_step = int(np.clip(
+            np.searchsorted(cum_times, time_available), 1, N))
         check_pose = predicted[deadline_step]
 
         pos_err = np.linalg.norm(check_pose[:3] - target_pose[:3])
-        ori_err = np.linalg.norm(check_pose[3:] - target_pose[3:])
+        ori_err = _geodesic_angle(check_pose[3:], target_pose[3:])
 
+        step_time = float(cum_times[deadline_step])
         if pos_err > self._terminal_pos_tol:
             return False, (
                 f'coarse MPC pos error {pos_err:.1f} mm at step {deadline_step} '
-                f'({deadline_step * self._coarse_dt:.1f}s) > {self._terminal_pos_tol:.1f} mm')
+                f'({step_time:.2f}s) > {self._terminal_pos_tol:.1f} mm')
         if ori_err > self._terminal_ori_tol:
             return False, (
                 f'coarse MPC ori error {np.degrees(ori_err):.1f} deg at step {deadline_step} '

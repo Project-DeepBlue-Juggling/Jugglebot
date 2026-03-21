@@ -818,15 +818,25 @@ Swap the simulated plant for real hardware. MPC outputs motor commands via CAN.
   - Use existing Phase 3-7 hardware test logs (step responses, trajectory tracking error)
   - Method: fit first-order lag `q_actual(t) = q_cmd · (1 - e^{-t/τ})` to step response data from ODrive encoder feedback
   - Alternatively: measure tracking delay at multiple speeds during T1-T3 trajectory replays
+  - Alternatively: use `python -m analysis.compare <sim_csv> <hw_csv> --estimate-tau` which fits per-leg τ from cmd-vs-actual extensions and gives a recommended `MPCParams.tau`
   - Expected range: 20-50 ms. If τ varies significantly by leg (due to mechanical differences like leg 2), consider per-leg τ values.
   - Update `MPCParams.tau` with the calibrated value. Re-run sim trajectories and compare tracking error — sim should now predict real tracking error within 20%.
 - [ ] Staged hardware bring-up:
   1. **Bench (25% speed):** Run MPC at 50 Hz, feed targets to control_loop.py via IPC, observe tracking
   2. **50% speed:** Increase speed scaling, log tracking error vs simulation predictions
   3. **100% speed:** Full-speed operation, compare with simulation
-- [ ] Sim-to-real validation:
-  - Record same trajectory in sim and on hardware using identical `StepRecord` telemetry schema (defined in Phase 1)
-  - Compare side-by-side: tracking error, leg velocities, solve times, constraint violations
+- [x] Sim-to-real validation tooling (`sim/analysis/`):
+  - **Baseline recorder** (`python -m analysis.record_baselines`): runs T1-T6 through MPC in headless sim, saves reference CSVs to `sim/analysis/baselines/`. Accepts specific trajectory names or `--force` to overwrite. All 6 baselines (T1-T6) pre-recorded.
+  - **Comparison tool** (`python -m analysis.compare <sim_csv> <hw_csv>`): loads two StepRecord CSVs and produces:
+    - 4 overlay figures: per-DoF pose tracking, tracking error, per-leg extensions, solve time histograms
+    - Gap metrics table: RMS/peak tracking error for sim vs hw, per-DoF actual-pose divergence
+    - Pass/fail verdict against configurable threshold (default 30% RMS ratio)
+    - Optional `--estimate-tau`: per-leg + aggregate actuator time constant from hardware data
+    - `--save <path>` for non-interactive figure export, `--no-plot` for metrics-only
+  - Exit code 0/1 for CI integration
+- [ ] Sim-to-real validation execution:
+  - Record same trajectory on hardware using identical `StepRecord` telemetry schema (defined in Phase 1)
+  - Run `python -m analysis.compare baselines/T1_baseline.csv <hw_csv>` for each trajectory
   - Key metrics: sim-predicted tracking error vs actual (target: within 30%), sim-predicted solve time vs actual on Jetson
   - Document any sim-to-real discrepancies — these inform whether dynamics integration (see Future Work) is needed
   - If discrepancies are large, re-calibrate τ and re-run. If still large, consider Approach A from Dynamics Integration.

@@ -70,6 +70,11 @@ class StepRecord:
     leg_vel_4: float = 0.0
     leg_vel_5: float = 0.0
 
+    # Hand actuator
+    hand_cmd_mm: float = 0.0
+    hand_pos_mm: float = 0.0
+    hand_vel_mmps: float = 0.0
+
     # MPC diagnostics (populated from Phase 2 onward)
     solve_time_ms: float = 0.0
     solve_status: str = "n/a"
@@ -90,6 +95,9 @@ def record_from_arrays(
     cmd_extensions: np.ndarray,
     actual_extensions: np.ndarray,
     leg_velocities: np.ndarray | None = None,
+    hand_cmd_mm: float = 0.0,
+    hand_pos_mm: float = 0.0,
+    hand_vel_mmps: float = 0.0,
     solve_time_ms: float = 0.0,
     solve_status: str = "n/a",
     cost: float = 0.0,
@@ -116,6 +124,8 @@ def record_from_arrays(
         actual_ext_3=actual_extensions[3], actual_ext_4=actual_extensions[4], actual_ext_5=actual_extensions[5],
         leg_vel_0=lv[0], leg_vel_1=lv[1], leg_vel_2=lv[2],
         leg_vel_3=lv[3], leg_vel_4=lv[4], leg_vel_5=lv[5],
+        hand_cmd_mm=hand_cmd_mm, hand_pos_mm=hand_pos_mm,
+        hand_vel_mmps=hand_vel_mmps,
         solve_time_ms=solve_time_ms, solve_status=solve_status,
         cost=cost, constraint_violation=constraint_violation,
         tracking_error_mm=pos_err, tracking_error_deg=ori_err,

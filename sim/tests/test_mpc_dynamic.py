@@ -17,8 +17,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from plant.mujoco_plant import MuJoCoPlant
 from controller import MPCController, MPCParams
-from catch.coordinator import CatchCoordinator, DynamicTarget, CatchPhase
-from catch.hand_trajectory import HandCatchSequence
+from hand.coordinator import HandCoordinator, DynamicTarget, HandPhase
+from hand.trajectory import HandCatchSequence
 from input.scripted import get_catch_sequence, BallSpawn
 
 # MPC control rate
@@ -28,13 +28,13 @@ CONTROL_DT = 0.02  # 50 Hz
 def _run_catch_sim(
     plant: MuJoCoPlant,
     mpc: MPCController,
-    coordinator: CatchCoordinator,
+    coordinator: HandCoordinator,
     duration: float,
 ) -> dict:
     """Run a complete catch simulation and return diagnostic info.
 
     Returns dict with keys:
-        events: list of CatchEvent
+        events: list of HandEvent
         final_pose: (6,) final platform pose
         ball_state: final BallState or None
         max_pos_error_mm: max position error during approach
@@ -56,8 +56,9 @@ def _run_catch_sim(
             plant.spawn_ball(spawn.position_mm, spawn.velocity_mms)
 
         # Update coordinator
-        ref_gen, hand_cmd = coordinator.update(
-            state.time, current_pose, hand_pos_mm=hand_pos)
+        target, hand_cmd = coordinator.update(
+            state.time, current_pose, hand_pos_mm=hand_pos,
+            plant_state=state)
 
         if isinstance(hand_cmd, HandCatchSequence):
             active_hand_seq = hand_cmd
@@ -77,15 +78,16 @@ def _run_catch_sim(
                 active_hand_seq = None
 
         # MPC solve
-        if ref_gen is not None:
-            poses, twists = ref_gen.evaluate(state.time, CONTROL_DT, mpc.params.N)
-            cmd, diag = mpc.solve(state, poses, ref_twist=twists)
-            # Track error to current reference
-            pos_err = np.linalg.norm(current_pose[:3] - poses[0, :3])
+        if target is not None:
+            cmd, diag = mpc.solve(
+                state, target.pose_6dof,
+                arrival_time=target.arrival_time,
+                target_twist=target.arrival_twist)
+            # Track error to target
+            pos_err = np.linalg.norm(current_pose[:3] - target.pose_6dof[:3])
             max_pos_err = max(max_pos_err, pos_err)
         else:
-            home_ref = np.zeros((mpc.params.N + 1, 6))
-            cmd, diag = mpc.solve(state, home_ref)
+            cmd, diag = mpc.solve(state, np.zeros(6))
 
         plant.command(cmd)
         plant.step(CONTROL_DT)
@@ -126,7 +128,7 @@ class TestDT1SingleCatch:
     """DT1: Single catch — platform arrives at target, ball captured."""
 
     def test_platform_arrives(self, plant, mpc):
-        coordinator = CatchCoordinator()
+        coordinator = HandCoordinator()
         sequence, duration = get_catch_sequence('DT1')
         for target, ball in sequence:
             coordinator.submit_target(target, ball)
@@ -142,7 +144,7 @@ class TestDT1SingleCatch:
             f"Arrival error {ev.arrival_error_mm:.1f} mm exceeds 5 mm threshold"
 
     def test_hand_is_primed(self, plant, mpc):
-        coordinator = CatchCoordinator()
+        coordinator = HandCoordinator()
         sequence, duration = get_catch_sequence('DT1')
         for target, ball in sequence:
             coordinator.submit_target(target, ball)
@@ -156,8 +158,9 @@ class TestDT1SingleCatch:
             spawn = coordinator.should_spawn_ball(state.time)
             if spawn:
                 plant.spawn_ball(spawn.position_mm, spawn.velocity_mms)
-            ref_gen, hand_cmd = coordinator.update(
-                state.time, pose, hand_pos_mm=hand_pos)
+            target_out, hand_cmd = coordinator.update(
+                state.time, pose, hand_pos_mm=hand_pos,
+                plant_state=state)
             if isinstance(hand_cmd, HandCatchSequence):
                 active_hand_seq = hand_cmd
             elif hand_cmd == 'prime':
@@ -168,11 +171,13 @@ class TestDT1SingleCatch:
                     plant.command_hand(p)
                 else:
                     active_hand_seq = None
-            if ref_gen:
-                poses, twists = ref_gen.evaluate(state.time, CONTROL_DT, mpc.params.N)
-                cmd, _ = mpc.solve(state, poses, ref_twist=twists)
+            if target_out is not None:
+                cmd, _ = mpc.solve(
+                    state, target_out.pose_6dof,
+                    arrival_time=target_out.arrival_time,
+                    target_twist=target_out.arrival_twist)
             else:
-                cmd, _ = mpc.solve(state, np.zeros((mpc.params.N + 1, 6)))
+                cmd, _ = mpc.solve(state, np.zeros(6))
             plant.command(cmd)
             plant.step(CONTROL_DT)
 
@@ -190,7 +195,7 @@ class TestDT3WorkspaceBoundary:
     """DT3: Target near workspace edge — should still reach."""
 
     def test_reaches_edge_target(self, plant, mpc):
-        coordinator = CatchCoordinator()
+        coordinator = HandCoordinator()
         sequence, duration = get_catch_sequence('DT3')
         for target, ball in sequence:
             coordinator.submit_target(target, ball)
@@ -208,7 +213,7 @@ class TestDT5EarlyArrival:
     """DT5: Long lead time — platform should arrive early and hold."""
 
     def test_arrives_early_and_holds(self, plant, mpc):
-        coordinator = CatchCoordinator()
+        coordinator = HandCoordinator()
         sequence, duration = get_catch_sequence('DT5')
         for target, ball in sequence:
             coordinator.submit_target(target, ball)
@@ -226,7 +231,7 @@ class TestDT6Throw:
     """DT6: Throw mode — arrive with nonzero velocity."""
 
     def test_throw_completes(self, plant, mpc):
-        coordinator = CatchCoordinator()
+        coordinator = HandCoordinator()
         sequence, duration = get_catch_sequence('DT6')
         for target, ball in sequence:
             coordinator.submit_target(target, ball)
@@ -236,7 +241,7 @@ class TestDT6Throw:
         # Should have a throw event
         assert len(result['events']) >= 1
         ev = result['events'][0]
-        assert ev.phase == CatchPhase.THROWING
+        assert ev.phase == HandPhase.THROWING
 
         # Platform should return near home after deceleration
         final_pos_err = np.linalg.norm(result['final_pose'][:3])
@@ -248,7 +253,7 @@ class TestDT8BallMiss:
     """DT8: Ball misses — system returns to home gracefully."""
 
     def test_miss_returns_home(self, plant, mpc):
-        coordinator = CatchCoordinator()
+        coordinator = HandCoordinator()
         sequence, duration = get_catch_sequence('DT8')
         for target, ball in sequence:
             coordinator.submit_target(target, ball)
@@ -269,7 +274,7 @@ class TestFeasibilityChecker:
 
     def test_accepts_feasible_target(self, plant):
         """DT1 (moderate pose, 0.9s deadline) should be feasible."""
-        from catch.feasibility import FeasibilityChecker
+        from hand.feasibility import FeasibilityChecker
         checker = FeasibilityChecker(plant)
         sequence, _ = get_catch_sequence('DT1')
         target, _ = sequence[0]
@@ -279,7 +284,7 @@ class TestFeasibilityChecker:
 
     def test_rejects_infeasible_target(self, plant):
         """DT4 (extreme pose, 0.3s deadline) should be rejected."""
-        from catch.feasibility import FeasibilityChecker
+        from hand.feasibility import FeasibilityChecker
         checker = FeasibilityChecker(plant)
         sequence, _ = get_catch_sequence('DT4')
         target, _ = sequence[0]
@@ -290,7 +295,7 @@ class TestFeasibilityChecker:
 
     def test_rejects_out_of_stroke(self, plant):
         """Target with extensions beyond stroke should be rejected at IK stage."""
-        from catch.feasibility import FeasibilityChecker
+        from hand.feasibility import FeasibilityChecker
         checker = FeasibilityChecker(plant)
         # Extreme Z that exceeds stroke
         extreme_pose = np.array([0, 0, 350, 0, 0, 0])
@@ -301,9 +306,9 @@ class TestFeasibilityChecker:
 
     def test_coordinator_rejects_with_checker(self, plant, mpc):
         """When feasibility checker is wired in, DT4 gets a rejection event."""
-        from catch.feasibility import FeasibilityChecker
+        from hand.feasibility import FeasibilityChecker
         checker = FeasibilityChecker(plant)
-        coordinator = CatchCoordinator(feasibility_checker=checker)
+        coordinator = HandCoordinator(feasibility_checker=checker)
         sequence, duration = get_catch_sequence('DT4')
         for target, ball in sequence:
             coordinator.submit_target(target, ball)
@@ -323,7 +328,7 @@ class TestSolverPerformance:
 
     def test_no_consecutive_failures(self, plant, mpc):
         """MPC should not have excessive consecutive solver failures."""
-        coordinator = CatchCoordinator()
+        coordinator = HandCoordinator()
         sequence, duration = get_catch_sequence('DT1')
         for target, ball in sequence:
             coordinator.submit_target(target, ball)

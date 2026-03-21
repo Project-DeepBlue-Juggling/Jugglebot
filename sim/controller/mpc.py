@@ -17,14 +17,15 @@ Parameters (set each solve):
     p_ref   (6*(N+1))  : reference pose at each horizon step
 
 Constraints:
-    Actuator dynamics:  q[k+1] = q[k] + (u[k] - q[k]) · dt/τ
+    Actuator dynamics:  q[k+1] = q[k] + (u[k] - q[k]) · α_k,  α_k = 1 - exp(-dt_k/τ)
     IK consistency:     ‖leg_vec_i(p[k])‖ - init_len_i = q[k]_i + home_ext_i
-    Rate limits:        |u[k] - u[k-1]| ≤ v_max · dt
+    Rate limits:        |u[k] - u[k-1]| ≤ v_max · dt_between
 """
 
 from __future__ import annotations
 
 import logging
+import math
 import time as _time
 
 import numpy as np
@@ -159,10 +160,10 @@ class MPCController:
 
     def _build_problem(self):
         N = self._params.N
-        dt = self._params.dt
+        dt_schedule = self._params.dt_schedule
         tau = self._params.tau
         stroke = self._params.stroke_mm
-        v_max_dt = self._params.max_leg_vel_mmps * dt
+        max_leg_vel = self._params.max_leg_vel_mmps
 
         sym_ik = _build_symbolic_ik(
             self._base_nodes, self._plat_nodes,
@@ -171,8 +172,8 @@ class MPCController:
 
         # ---- Parameters (change every solve) ------------------------------
         # p_init(6) + q_init(6) + u_prev(6) + u_prev_prev(6)
-        # + p_ref(6*(N+1)) + twist_ref(6*(N+1))
-        n_param = 24 + 12 * (N + 1)
+        # + p_ref(6*(N+1)) + twist_ref(6*(N+1)) + urgency(N)
+        n_param = 24 + 12 * (N + 1) + N
         P = cs.SX.sym('P', n_param)
 
         p_init = P[:6]
@@ -183,6 +184,8 @@ class MPCController:
         p_ref = [P[ref_offset + k * 6: ref_offset + (k + 1) * 6] for k in range(N + 1)]
         twist_offset = ref_offset + 6 * (N + 1)
         twist_ref = [P[twist_offset + k * 6: twist_offset + (k + 1) * 6] for k in range(N + 1)]
+        urgency_offset = twist_offset + 6 * (N + 1)
+        urgency = [P[urgency_offset + k] for k in range(N)]  # multiplier for nodes 1..N
 
         # ---- Decision variables -------------------------------------------
         # Layout: u[0..N-1](6N)  |  q[1..N](6N)  |  p[1..N](6N)
@@ -194,6 +197,7 @@ class MPCController:
         p = [p_init] + [W[12 * N + k * 6: 12 * N + (k + 1) * 6] for k in range(N)]
 
         # ---- Cost ---------------------------------------------------------
+        home_ext_dm = cs.DM(self._home_ext)
         Qp = self._params.Q_pos
         Qo = self._params.Q_ori
         Qfp = self._params.Qf_pos
@@ -208,27 +212,60 @@ class MPCController:
 
         for k in range(1, N + 1):
             err = p[k] - p_ref[k]
+            dt_k = dt_schedule[k - 1]  # dt of the interval ending at node k
+            urg_k = urgency[k - 1]     # urgency multiplier for this node
+
             if k < N:
-                J += Qp * cs.dot(err[:3], err[:3])
-                J += Qo * cs.dot(err[3:], err[3:])
+                J += Qp * urg_k * cs.dot(err[:3], err[:3])
+                J += Qo * urg_k * cs.dot(err[3:], err[3:])
             else:
                 # Terminal cost (heavier)
-                J += Qfp * cs.dot(err[:3], err[:3])
-                J += Qfo * cs.dot(err[3:], err[3:])
+                J += Qfp * urg_k * cs.dot(err[:3], err[:3])
+                J += Qfo * urg_k * cs.dot(err[3:], err[3:])
 
             # Velocity tracking (finite-difference twist vs reference twist)
-            dp = (p[k] - p[k - 1]) / dt
+            dp = (p[k] - p[k - 1]) / dt_k
             twist_err = dp - twist_ref[k]
-            J += Qvl * cs.dot(twist_err[:3], twist_err[:3])
-            J += Qva * cs.dot(twist_err[3:], twist_err[3:])
+            J += Qvl * urg_k * cs.dot(twist_err[:3], twist_err[:3])
+            J += Qva * urg_k * cs.dot(twist_err[3:], twist_err[3:])
 
         for k in range(N):
-            # Control effort
-            J += R_w * cs.dot(u[k], u[k])
-            # Smoothness (velocity penalty)
+            # -- dt_between: effective interval for the u[k-1] → u[k] transition --
+            #
+            # Rate limits use dt_schedule[k-1] (the *previous* step's duration)
+            # because the control loop emits at the fine rate: the physical time
+            # available for the transition u[k-1]→u[k] is the interval that
+            # *produced* u[k-1], not the one u[k] controls.  For k=0 (transition
+            # from the external u_prev), this is one fine control step.
+            #
+            # For smoothness and acceleration costs, the tier boundary (k = first
+            # coarse step) is special: the transition straddles a fine step on one
+            # side and a coarse step on the other.  Using the fine dt alone would
+            # over-penalise this edge (12.5× heavier than neighboring coarse
+            # steps); using the coarse dt would under-penalise it.  The geometric
+            # mean sqrt(dt_fine * dt_coarse) splits the penalty evenly in
+            # log-space between the two tiers, giving a balanced ~3.5× ratio.
+            dt_rate = dt_schedule[0] if k == 0 else dt_schedule[k - 1]
+            if k == 0:
+                dt_smooth = dt_schedule[0]
+            elif dt_schedule[k - 1] != dt_schedule[k]:
+                # Tier boundary: geometric mean of the two neighboring intervals
+                dt_smooth = math.sqrt(dt_schedule[k - 1] * dt_schedule[k])
+            else:
+                dt_smooth = dt_schedule[k - 1]
+
+            # Control effort (relative to home extensions to avoid bias at elevated poses)
+            u_dev = u[k] - home_ext_dm
+            J += R_w * cs.dot(u_dev, u_dev)
+            # Smoothness: penalise command rate ||du/dt||², integrated over dt.
+            # = S/dt * ||du||²  (normalised so coarse and fine steps are comparable)
             du_k = u[k] - (u_prev_sym if k == 0 else u[k - 1])
-            J += S_w * cs.dot(du_k, du_k)
-            # Acceleration smoothness (penalises change in Δu)
+            J += (S_w / dt_smooth) * cs.dot(du_k, du_k)
+            # Acceleration smoothness: A/dt · ||ddu||².
+            # The physically "correct" jerk penalty would be A/dt³, but that
+            # makes coarse-tier jerk ~2000× cheaper than fine-tier (dt ratio
+            # cubed).  A/dt gives a 12.5× ratio, keeping coarse steps from
+            # jerking freely while still penalising fine-tier oscillation more.
             if k == 0:
                 du_prev = u_prev_sym - u_prev_prev_sym
             elif k == 1:
@@ -236,14 +273,19 @@ class MPCController:
             else:
                 du_prev = u[k - 1] - u[k - 2]
             ddu = du_k - du_prev
-            J += A_w * cs.dot(ddu, ddu)
+            J += (A_w / dt_smooth) * cs.dot(ddu, ddu)
 
         # ---- Constraints --------------------------------------------------
         g_list = []
 
         # 1. Actuator dynamics  (6·N equality)
+        # Use exact exponential decay: alpha_k = 1 - exp(-dt_k / tau).
+        # Forward Euler (dt/tau) is unstable when dt/tau > 2 (coarse steps
+        # have dt/tau = 0.25/0.03 = 8.33).  Exact form is unconditionally
+        # stable: alpha ∈ (0, 1) for any positive dt.
         for k in range(N):
-            q_pred = q[k] + (u[k] - q[k]) * (dt / tau)
+            alpha_k = 1.0 - math.exp(-dt_schedule[k] / tau)
+            q_pred = q[k] + (u[k] - q[k]) * alpha_k
             g_list.append(q[k + 1] - q_pred)
 
         # 2. IK consistency  (6·N equality)
@@ -266,15 +308,24 @@ class MPCController:
 
         lbg = np.zeros(n_g)
         ubg = np.zeros(n_g)
-        lbg[n_eq:] = -v_max_dt
-        ubg[n_eq:] = v_max_dt
+        # Per-step rate limits: |du| <= v_max * dt_rate
+        # du = u[k] - u[k-1] spans the interval ending at u[k].
+        # For k=0: the interval is one control step (dt_schedule[0]).
+        # For k>0: the interval is dt_schedule[k-1] (the previous step's duration).
+        # Rate limits use the *physical* interval (not the geometric mean used
+        # for smoothness cost) because they are hard constraints on actuator speed.
+        for k in range(N):
+            dt_rate = dt_schedule[0] if k == 0 else dt_schedule[k - 1]
+            v_max_dt_k = max_leg_vel * dt_rate
+            lbg[n_eq + k * 6: n_eq + (k + 1) * 6] = -v_max_dt_k
+            ubg[n_eq + k * 6: n_eq + (k + 1) * 6] = v_max_dt_k
 
         # ---- Variable bounds ----------------------------------------------
         lbw = np.full(n_w, -np.inf)
         ubw = np.full(n_w, np.inf)
 
         for k in range(N):
-            # u bounds [0, stroke]
+            # u bounds [0, stroke] — full physical range
             lbw[k * 6: (k + 1) * 6] = 0.0
             ubw[k * 6: (k + 1) * 6] = stroke
             # q bounds [0, stroke]
@@ -307,6 +358,8 @@ class MPCController:
         self._solver = cs.nlpsol('mpc', 'ipopt', nlp, opts)
         self._n_w = n_w
         self._N = N
+        self._dt_schedule = dt_schedule
+        self._cumulative_times = self._params.cumulative_times
         self._lbw = lbw
         self._ubw = ubw
         self._lbg = lbg
@@ -319,8 +372,10 @@ class MPCController:
     def solve(
         self,
         state: PlantState,
-        reference: np.ndarray,
-        ref_twist: np.ndarray | None = None,
+        target_pose: np.ndarray,
+        *,
+        arrival_time: float | None = None,
+        target_twist: np.ndarray | None = None,
     ) -> tuple[np.ndarray, dict]:
         """Solve MPC for one step.
 
@@ -328,11 +383,14 @@ class MPCController:
         ----------
         state : PlantState
             Current plant state.
-        reference : (6,) or (N+1, 6) ndarray
-            Static target pose, or per-step reference trajectory.
-        ref_twist : (N+1, 6) ndarray or None
-            Per-step reference twist for velocity tracking.
-            If None, zero twist is used (static pose tracking).
+        target_pose : (6,) ndarray
+            Target pose ``[x, y, z, rx, ry, rz]`` (mm, rad).
+        arrival_time : float or None
+            Absolute time by which the platform should reach the target pose.
+            None = "as soon as possible" (drive to target as fast as
+            constraints allow).
+        target_twist : (6,) ndarray or None
+            Desired twist at arrival.  None = zero (hold at target).
 
         Returns
         -------
@@ -343,16 +401,13 @@ class MPCController:
         """
         N = self._N
 
-        ref = np.asarray(reference, dtype=float)
-        if ref.ndim == 1:
-            ref_traj = np.tile(ref, (N + 1, 1))
-        else:
-            ref_traj = ref
-
-        if ref_twist is not None:
-            twist_traj = np.asarray(ref_twist, dtype=float)
-        else:
-            twist_traj = np.zeros((N + 1, 6))
+        target = np.asarray(target_pose, dtype=float)
+        tw = None
+        if target_twist is not None:
+            tw = np.asarray(target_twist, dtype=float)
+        ref_traj, twist_traj = self._build_reference(
+            state, target, arrival_time, tw)
+        urgency = self._compute_urgency(state.time, arrival_time)
 
         # Current state
         p_cur = np.concatenate([state.platform_pos_mm, state.platform_rot])
@@ -364,6 +419,7 @@ class MPCController:
         p_param = np.concatenate([
             p_cur, q_cur, u_prev, u_prev_prev,
             ref_traj.ravel(), twist_traj.ravel(),
+            urgency,
         ])
 
         # Initial guess
@@ -436,17 +492,22 @@ class MPCController:
         the IK equality constraints approximately.
         """
         N = self._N
+        margin = self._params.stroke_margin_mm
+        stroke = self._params.stroke_mm
+        t_cumulative = self._cumulative_times  # (N+1,) array starting at 0
+        t_total = t_cumulative[-1]
         w0 = np.zeros(self._n_w)
         for k in range(N):
-            alpha = (k + 1) / N
+            alpha = t_cumulative[k + 1] / t_total
             # p: interpolate from current pose toward final reference
             p_k = p_cur * (1.0 - alpha) + ref_traj[-1] * alpha
             w0[12 * N + k * 6: 12 * N + (k + 1) * 6] = p_k
-            # q: compute IK-consistent extensions for this pose
-            q_k = self._numerical_ik(p_k)
+            # q: compute IK-consistent extensions (full physical range)
+            q_k = np.clip(self._numerical_ik(p_k), 0.0, stroke)
             w0[6 * N + k * 6: 6 * N + (k + 1) * 6] = q_k
-            # u: command the same extensions (no lag in initial guess)
-            w0[k * 6: (k + 1) * 6] = q_k
+            # u: clamp to command bounds [margin, stroke - margin]
+            u_k = np.clip(q_k, margin, stroke - margin)
+            w0[k * 6: (k + 1) * 6] = u_k
         return w0
 
     def _numerical_ik(self, pose_6dof: np.ndarray) -> np.ndarray:
@@ -494,6 +555,83 @@ class MPCController:
         return w0
 
     # ------------------------------------------------------------------
+    # Reference construction (target-based interface)
+    # ------------------------------------------------------------------
+
+    def _build_reference(
+        self,
+        state: PlantState,
+        target_pose: np.ndarray,
+        arrival_time: float | None,
+        target_twist: np.ndarray | None,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Construct (N+1, 6) reference arrays from a target pose + timing.
+
+        All reference nodes are set to the target pose.  The MPC finds the
+        optimal feasible path via its cost function and constraints — no
+        intermediate waypoints are imposed.  The urgency system
+        (``_compute_urgency``) provides timing incentive for timed targets.
+
+        Twist reference is zero before the deadline (let MPC plan velocity)
+        and ``target_twist`` at/after the deadline.
+        """
+        N = self._N
+        ref_traj = np.empty((N + 1, 6))
+        twist_traj = np.zeros((N + 1, 6))
+
+        tw = target_twist if target_twist is not None else np.zeros(6)
+
+        ref_traj[:] = target_pose
+
+        if arrival_time is not None:
+            time_budget = arrival_time - state.time
+            if time_budget <= 0:
+                # Past deadline: apply target twist everywhere
+                twist_traj[:] = tw
+            else:
+                # Apply target twist only at/past the deadline
+                t_nodes = self._cumulative_times
+                for k in range(N + 1):
+                    if t_nodes[k] >= time_budget:
+                        twist_traj[k] = tw
+
+        return ref_traj, twist_traj
+
+    def _compute_urgency(
+        self,
+        t_now: float,
+        arrival_time: float | None,
+    ) -> np.ndarray:
+        """Compute per-node urgency multipliers for the tracking cost.
+
+        Returns (N,) array of multipliers for nodes 1..N.
+
+        - ASAP mode (arrival_time is None): uniform 1.0.
+        - Timed mode: ``urgency_base`` far from the deadline, ramping
+          linearly to ``urgency_max`` over the ``urgency_ramp_s`` window.
+          The low base lets the MPC choose its own path to the target
+          without heavy cost pressure on nodes that are far from feasible.
+          The terminal cost (Qf) and ramp ensure accurate arrival.
+        """
+        N = self._N
+        if arrival_time is None:
+            return np.ones(N)
+
+        ramp_s = self._params.urgency_ramp_s
+        urg_base = self._params.urgency_base
+        urg_max = self._params.urgency_max
+        t_nodes = self._cumulative_times  # (N+1,) relative from t_now
+
+        urgency = np.full(N, urg_base)
+        for k in range(N):
+            t_k = t_now + t_nodes[k + 1]  # absolute time of node k+1
+            time_to_deadline = max(arrival_time - t_k, 0.0)
+            ramp = max(0.0, 1.0 - time_to_deadline / ramp_s) if ramp_s > 0 else 1.0
+            urgency[k] = urg_base + (urg_max - urg_base) * ramp
+
+        return urgency
+
+    # ------------------------------------------------------------------
     # Failure handling
     # ------------------------------------------------------------------
 
@@ -512,11 +650,14 @@ class MPCController:
             'constraint_violation': 0.0,
         }
 
+        stroke = self._params.stroke_mm
+        margin = self._params.stroke_margin_mm
+
         if (self._prev_w is not None
                 and self._consecutive_failures <= self._params.max_consecutive_failures):
             # Apply first step of shifted previous solution
             shifted = self._shift_warm_start(self._prev_w)
-            cmd = shifted[:6].copy()
+            cmd = np.clip(shifted[:6], margin, stroke - margin)
             self._prev_prev_u = self._prev_u.copy() if self._prev_u is not None else cmd.copy()
             self._prev_u = cmd
             return cmd, diag
@@ -527,9 +668,9 @@ class MPCController:
             diag['status'] = f'hold({status_str})'
             return self._prev_u.copy(), diag
 
-        # Absolute fallback: home
+        # Absolute fallback: hold at margin-safe position (lowest feasible)
         diag['status'] = f'cold_hold({status_str})'
-        return np.zeros(6), diag
+        return np.full(6, margin), diag
 
     # ------------------------------------------------------------------
     # Post-solve extraction
@@ -551,7 +692,14 @@ class MPCController:
     @property
     def predicted_poses(self) -> np.ndarray | None:
         """(N+1, 6) predicted platform poses from last solve, or None."""
-        return self._predicted_poses
+        if self._predicted_poses is None:
+            return None
+        return self._predicted_poses.copy()
+
+    @property
+    def predicted_times(self) -> np.ndarray:
+        """(N+1,) cumulative times from current step (0 to horizon_s)."""
+        return self._cumulative_times.copy()
 
     @property
     def consecutive_failures(self) -> int:

@@ -6,7 +6,7 @@ Provides ``InteractiveCatchController`` which manages:
   - State machine (STARTUP → READY → CATCHING → RETURNING → COOLDOWN → READY)
   - Console feedback (spawn info, feasibility result, catch outcome)
 
-All catch pipeline components (CatchCoordinator, FeasibilityChecker,
+All catch pipeline components (HandCoordinator, FeasibilityChecker,
 HandCatchSequence) are used as-is — this is purely a frontend.
 """
 
@@ -23,26 +23,22 @@ _sim_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if _sim_dir not in sys.path:
     sys.path.insert(0, _sim_dir)
 
-from controller.reference import ReferenceGenerator
-from catch.coordinator import CatchCoordinator, DynamicTarget, BallSpawn, CatchPhase
-from catch.hand_trajectory import HandCatchSequence
+from hand.coordinator import HandCoordinator, DynamicTarget, BallSpawn, HandPhase
+from hand.trajectory import HandCatchSequence
 from input.scripted import _compute_catch_target, _ball_landing
-
-from jugglebot.motion.quintic import create_trajectory, evaluate as quintic_evaluate
+from input.sim_control import SimController
+from plant.interface import PlantState
 
 logger = logging.getLogger(__name__)
 
 import mujoco
 
-# GLFW key codes
-_KEY_SPACE = 32
-_KEY_RIGHT = 262
+# GLFW key codes (catch-specific only; sim control keys live in SimController)
 _KEY_LEFT = 263
-_KEY_UP = 265
-_KEY_DOWN = 264
 _KEY_PAGE_UP = 266
 _KEY_PAGE_DOWN = 267
-_KEY_B = 66
+_KEY_B = 66           # Primary spawn (BB throw when --bb, else preset)
+_KEY_GRAVE = 96       # Preset spawn (backtick `)  — not used by MuJoCo
 _KEY_N = 78
 _KEY_M = 77
 _KEY_1 = 49
@@ -50,22 +46,21 @@ _KEY_2 = 50
 _KEY_3 = 51
 _KEY_4 = 52
 _KEY_5 = 53
-_KEY_R = 82
 _KEY_NUMPAD_8 = 328   # vz faster (more negative)
 _KEY_NUMPAD_2 = 322   # vz slower (less negative)
 _KEY_NUMPAD_4 = 324   # vxy X nudge -
 _KEY_NUMPAD_6 = 326   # vxy X nudge +
 _KEY_NUMPAD_7 = 327   # vxy Y nudge -
 _KEY_NUMPAD_9 = 329   # vxy Y nudge +
+_KEY_NUMPAD_1 = 321   # xy offset Y -
+_KEY_NUMPAD_3 = 323   # xy offset Y +
+_KEY_NUMPAD_0 = 320   # xy offset X +
 
 # Adjustment increments
 _HEIGHT_STEP = 200.0      # mm
 _XY_STEP = 20.0           # mm
 _VZ_STEP = 200.0          # mm/s
 _VXY_STEP = 50.0          # mm/s
-
-# Platform initial height for world-frame conversion
-_PLATFORM_HEIGHT_M = 0.5743
 
 
 # ---------------------------------------------------------------------------
@@ -131,36 +126,36 @@ class InteractiveCatchController:
         Ball spawn presets.  Defaults to ``DEFAULT_PRESETS``.
     """
 
-    def __init__(self, feasibility_checker=None, presets: list[SpawnPreset] | None = None):
+    def __init__(self, feasibility_checker=None, presets: list[SpawnPreset] | None = None,
+                 home_pose: np.ndarray | None = None, ball_butler_sim=None):
         self._feasibility = feasibility_checker
+        self._home_pose = home_pose
         self._presets = presets or list(DEFAULT_PRESETS)
+        self._bb_sim = ball_butler_sim  # Optional BallButlerSim for T-key throws
         self._preset_idx = 0
 
-        # Sim control (pause/step/speed)
-        self.paused = False
-        self.speed = 1.0
-        self._step_once = False
+        # Sim control — delegate to SimController (pause/step/speed)
+        self._sim_ctrl = SimController()
 
         # State machine
         self._state = InteractiveCatchState.STARTUP
         self._state_start_time = 0.0
         self._spawn_count = 0
 
-        # Startup trajectory
-        self._startup_ref: ReferenceGenerator | None = None
+        # Startup target (set on first update)
+        self._startup_target: DynamicTarget | None = None
         self._startup_built = False
 
         # Catch state
-        self._coordinator: CatchCoordinator | None = None
+        self._coordinator: HandCoordinator | None = None
         self._active_hand_seq: HandCatchSequence | None = None
         self._pending_spawn: BallSpawn | None = None
         self._spawn_requested = False
+        self._bb_spawn_requested = False
+        self._rejected_spawn: BallSpawn | None = None
 
-        # Return trajectory
-        self._return_ref: ReferenceGenerator | None = None
-
-        # Ready-state reference (hold at ready pose)
-        self._ready_ref = ReferenceGenerator.from_static_pose(_READY_POSE)
+        # Return target
+        self._return_target: DynamicTarget | None = None
 
         self._printed_ready = False
 
@@ -169,32 +164,29 @@ class InteractiveCatchController:
     # ------------------------------------------------------------------
 
     def key_callback(self, keycode: int) -> None:
-        """Handle keyboard events from the MuJoCo viewer."""
-        # Sim control keys
-        if keycode == _KEY_SPACE:
-            self.paused = not self.paused
-            tag = "PAUSED" if self.paused else "RUNNING"
-            print(f"  [{tag}]  speed={self.speed:.2f}x")
-            return
-        if keycode == _KEY_RIGHT:
-            if self.paused:
-                self._step_once = True
-            return
-        if keycode == _KEY_UP:
-            self.speed = min(self.speed * 2.0, 16.0)
-            print(f"  speed={self.speed:.2f}x")
-            return
-        if keycode == _KEY_DOWN:
-            self.speed = max(self.speed / 2.0, 0.0625)
-            print(f"  speed={self.speed:.2f}x")
-            return
-        if keycode == _KEY_R:
-            self.speed = 1.0
-            print(f"  speed={self.speed:.2f}x")
+        """Handle keyboard events from the MuJoCo viewer.
+
+        Sim-control keys (Space, arrows, R) are delegated to SimController.
+        Remaining keys are catch-specific (spawn, presets, adjustments).
+        """
+        # Delegate sim control keys (pause/step/speed)
+        self._sim_ctrl.key_callback(keycode)
+
+        # Spawn: B is the primary action.
+        #   --bb mode:  B = Ball Butler throw,  ` = preset spawn
+        #   no --bb:    B = preset spawn
+        if keycode == _KEY_B:
+            if self._state != InteractiveCatchState.READY:
+                print(f"  (ignoring spawn — state is {self._state.name})")
+                return
+            if self._bb_sim is not None:
+                self._bb_spawn_requested = True
+            else:
+                self._spawn_requested = True
             return
 
-        # Spawn
-        if keycode == _KEY_B:
+        # Backtick (`) always triggers preset spawn (useful when --bb is active)
+        if keycode == _KEY_GRAVE:
             if self._state == InteractiveCatchState.READY:
                 self._spawn_requested = True
             else:
@@ -233,9 +225,16 @@ class InteractiveCatchController:
             p.xy_offset_mm[0] -= _XY_STEP
             self._print_preset()
             return
-        if keycode == _KEY_RIGHT and not self.paused:
-            # Right arrow is step-when-paused, so only use for XY when running
+        if keycode == _KEY_NUMPAD_0:
             p.xy_offset_mm[0] += _XY_STEP
+            self._print_preset()
+            return
+        if keycode == _KEY_NUMPAD_1:
+            p.xy_offset_mm[1] -= _XY_STEP
+            self._print_preset()
+            return
+        if keycode == _KEY_NUMPAD_3:
+            p.xy_offset_mm[1] += _XY_STEP
             self._print_preset()
             return
 
@@ -245,7 +244,7 @@ class InteractiveCatchController:
             self._print_preset()
             return
         if keycode == _KEY_NUMPAD_2:
-            p.vz_mms = min(0.0, p.vz_mms + _VZ_STEP)  # less negative, capped at 0
+            p.vz_mms += _VZ_STEP  # more positive = faster upward
             self._print_preset()
             return
         if keycode == _KEY_NUMPAD_4:
@@ -267,16 +266,11 @@ class InteractiveCatchController:
 
     def should_step(self) -> bool:
         """Return True if the sim should advance one step."""
-        if not self.paused:
-            return True
-        if self._step_once:
-            self._step_once = False
-            return True
-        return False
+        return self._sim_ctrl.should_step()
 
     @property
     def sleep_factor(self) -> float:
-        return 1.0 / self.speed
+        return self._sim_ctrl.sleep_factor
 
     # ------------------------------------------------------------------
     # Main update
@@ -287,13 +281,14 @@ class InteractiveCatchController:
         sim_time: float,
         current_pose: np.ndarray,
         hand_pos_mm: float,
-    ) -> tuple[ReferenceGenerator | None, str | HandCatchSequence | None, BallSpawn | None]:
+        plant_state: PlantState | None = None,
+    ) -> tuple[DynamicTarget | None, str | HandCatchSequence | None, BallSpawn | None]:
         """Advance the state machine.
 
         Returns
         -------
-        ref_gen : ReferenceGenerator or None
-            Reference trajectory for the MPC.
+        target : DynamicTarget or None
+            Target for MPC this step.
         hand_cmd : str, HandCatchSequence, or None
             'prime' / 'home' / HandCatchSequence / None.
         ball_spawn : BallSpawn or None
@@ -302,11 +297,16 @@ class InteractiveCatchController:
         hand_cmd = None
         ball_spawn = None
 
+        # Ready-pose target (ASAP hold)
+        ready_target = DynamicTarget(pose_6dof=_READY_POSE.copy())
+
         # -- STARTUP: ramp to active height --
         if self._state == InteractiveCatchState.STARTUP:
             if not self._startup_built:
-                self._startup_ref = self._build_ramp(
-                    sim_time, current_pose, _READY_POSE, _STARTUP_DURATION)
+                self._startup_target = DynamicTarget(
+                    pose_6dof=_READY_POSE.copy(),
+                    arrival_time=sim_time + _STARTUP_DURATION,
+                )
                 self._state_start_time = sim_time
                 self._startup_built = True
                 hand_cmd = 'prime'
@@ -316,9 +316,9 @@ class InteractiveCatchController:
                 self._state = InteractiveCatchState.READY
                 self._state_start_time = sim_time
                 self._print_ready()
-                return self._ready_ref, None, None
+                return ready_target, None, None
 
-            return self._startup_ref, hand_cmd, None
+            return self._startup_target, hand_cmd, None
 
         # -- READY: hold at ready pose, wait for spawn --
         if self._state == InteractiveCatchState.READY:
@@ -326,9 +326,33 @@ class InteractiveCatchController:
                 self._print_ready()
                 self._printed_ready = True
 
+            if self._bb_spawn_requested:
+                self._bb_spawn_requested = False
+                ball_spawn = self._do_bb_spawn(sim_time, current_pose, hand_pos_mm,
+                                               plant_state=plant_state)
+                if ball_spawn is not None:
+                    # Transition to CATCHING (same flow as preset spawn)
+                    self._state = InteractiveCatchState.CATCHING
+                    self._state_start_time = sim_time
+                    self._printed_ready = False
+
+                    target, hcmd = self._coordinator.update(
+                        sim_time, current_pose, hand_pos_mm=hand_pos_mm,
+                        plant_state=plant_state)
+                    if isinstance(hcmd, HandCatchSequence):
+                        self._active_hand_seq = hcmd
+                    elif hcmd == 'prime':
+                        hand_cmd = 'prime'
+                    return target or ready_target, hand_cmd, ball_spawn
+                elif self._rejected_spawn is not None:
+                    rejected = self._rejected_spawn
+                    self._rejected_spawn = None
+                    return ready_target, None, rejected
+
             if self._spawn_requested:
                 self._spawn_requested = False
-                ball_spawn = self._do_spawn(sim_time, current_pose, hand_pos_mm)
+                ball_spawn = self._do_spawn(sim_time, current_pose, hand_pos_mm,
+                                            plant_state=plant_state)
                 if ball_spawn is not None:
                     # Transition to CATCHING
                     self._state = InteractiveCatchState.CATCHING
@@ -336,15 +360,21 @@ class InteractiveCatchController:
                     self._printed_ready = False
 
                     # Get first coordinator update
-                    ref_gen, hcmd = self._coordinator.update(
-                        sim_time, current_pose, hand_pos_mm=hand_pos_mm)
+                    target, hcmd = self._coordinator.update(
+                        sim_time, current_pose, hand_pos_mm=hand_pos_mm,
+                        plant_state=plant_state)
                     if isinstance(hcmd, HandCatchSequence):
                         self._active_hand_seq = hcmd
                     elif hcmd == 'prime':
                         hand_cmd = 'prime'
-                    return ref_gen or self._ready_ref, hand_cmd, ball_spawn
+                    return target or ready_target, hand_cmd, ball_spawn
+                elif self._rejected_spawn is not None:
+                    # Ball was rejected but still spawn it visually
+                    rejected = self._rejected_spawn
+                    self._rejected_spawn = None
+                    return ready_target, None, rejected
 
-            return self._ready_ref, None, None
+            return ready_target, None, None
 
         # -- CATCHING: delegate to coordinator --
         if self._state == InteractiveCatchState.CATCHING:
@@ -354,8 +384,9 @@ class InteractiveCatchController:
                 if spawn is not None:
                     ball_spawn = spawn
 
-                ref_gen, hcmd = self._coordinator.update(
-                    sim_time, current_pose, hand_pos_mm=hand_pos_mm)
+                target, hcmd = self._coordinator.update(
+                    sim_time, current_pose, hand_pos_mm=hand_pos_mm,
+                    plant_state=plant_state)
 
                 if isinstance(hcmd, HandCatchSequence):
                     self._active_hand_seq = hcmd
@@ -375,7 +406,7 @@ class InteractiveCatchController:
 
                 # Check if coordinator is done
                 elapsed = sim_time - self._state_start_time
-                coordinator_idle = (self._coordinator.phase == CatchPhase.IDLE
+                coordinator_idle = (self._coordinator.phase == HandPhase.IDLE
                                     and elapsed > 0.5)
                 timed_out = elapsed > _CATCH_TIMEOUT
 
@@ -383,12 +414,14 @@ class InteractiveCatchController:
                     self._print_catch_result(timed_out)
                     self._state = InteractiveCatchState.RETURNING
                     self._state_start_time = sim_time
-                    self._return_ref = self._build_ramp(
-                        sim_time, current_pose, _READY_POSE, _RETURN_DURATION)
+                    self._return_target = DynamicTarget(
+                        pose_6dof=_READY_POSE.copy(),
+                        arrival_time=sim_time + _RETURN_DURATION,
+                    )
                     self._active_hand_seq = None
-                    return self._return_ref, 'prime', None
+                    return self._return_target, 'prime', None
 
-                return ref_gen or self._ready_ref, hand_cmd, ball_spawn
+                return target or ready_target, hand_cmd, ball_spawn
 
         # -- RETURNING: ramp back to ready pose --
         if self._state == InteractiveCatchState.RETURNING:
@@ -396,7 +429,7 @@ class InteractiveCatchController:
             if elapsed >= _RETURN_DURATION + 0.2:
                 self._state = InteractiveCatchState.COOLDOWN
                 self._state_start_time = sim_time
-            return self._return_ref or self._ready_ref, None, None
+            return self._return_target or ready_target, None, None
 
         # -- COOLDOWN: brief pause --
         if self._state == InteractiveCatchState.COOLDOWN:
@@ -405,9 +438,9 @@ class InteractiveCatchController:
                 self._state = InteractiveCatchState.READY
                 self._state_start_time = sim_time
                 self._printed_ready = False
-            return self._ready_ref, None, None
+            return ready_target, None, None
 
-        return self._ready_ref, None, None
+        return ready_target, None, None
 
     # ------------------------------------------------------------------
     # Ball spawning
@@ -418,6 +451,7 @@ class InteractiveCatchController:
         sim_time: float,
         current_pose: np.ndarray,
         hand_pos_mm: float,
+        plant_state: PlantState | None = None,
     ) -> BallSpawn | None:
         """Compute catch target from current preset and create coordinator.
 
@@ -456,7 +490,6 @@ class InteractiveCatchController:
               f"vel={_fmt_vec(spawn_vel)} mm/s")
 
         flight_time = target.arrival_time - spawn_time
-        landing_z = 574.3 + (-129.0 + 322.7 + 109.0)  # approximate
         print(f"  Flight time: {flight_time:.3f}s, "
               f"arrival at t={target.arrival_time:.3f}s")
         print(f"  Target pose: {_fmt_vec(target.pose_6dof)}")
@@ -464,25 +497,97 @@ class InteractiveCatchController:
             print(f"  Event velocity: {target.event_vel_mps:.2f} m/s")
 
         # Create fresh coordinator with feasibility checker
-        self._coordinator = CatchCoordinator(
+        self._coordinator = HandCoordinator(
+            home_pose=self._home_pose,
             feasibility_checker=self._feasibility)
         self._coordinator.submit_target(target, ball_spawn)
 
         # Force the coordinator to process the target (advances to next)
         # by calling update once — this triggers feasibility + hand timing
-        ref_gen, hcmd = self._coordinator.update(
-            sim_time, current_pose, hand_pos_mm=hand_pos_mm)
+        target_out, hcmd = self._coordinator.update(
+            sim_time, current_pose, hand_pos_mm=hand_pos_mm,
+            plant_state=plant_state)
 
         # Check if it was rejected by feasibility
         events = self._coordinator.events
         if events and events[-1].arrival_error_mm == -1.0:
-            print(f"  Feasibility: REJECTED")
-            print(f"  Result: REJECTED — target infeasible\n")
+            print(f"  Feasibility: REJECTED (ball still released)")
             self._coordinator = None
+            # Return the ball_spawn so the ball is still shown in the viewer,
+            # but return None from the outer caller to stay in READY state
+            self._rejected_spawn = ball_spawn
             return None
 
         print(f"  Feasibility: ACCEPTED")
 
+        return ball_spawn
+
+    def _do_bb_spawn(
+        self,
+        sim_time: float,
+        current_pose: np.ndarray,
+        hand_pos_mm: float,
+        plant_state: PlantState | None = None,
+    ) -> BallSpawn | None:
+        """Spawn a ball from Ball Butler using realistic throw kinematics.
+
+        Same flow as _do_spawn but uses BallButlerSim to compute the ball's
+        release state instead of using a preset.
+        """
+        self._spawn_count += 1
+        spawn_time = sim_time + 0.05
+
+        try:
+            ball_spawn_raw = self._bb_sim.throw_at_jugglebot(
+                spawn_time=spawn_time,
+                scatter_mm=0.0,
+            )
+        except ValueError as e:
+            print(f"\n=== Ball #{self._spawn_count} (BB throw) ===")
+            print(f"  REJECTED: Ball Butler throw failed — {e}")
+            return None
+
+        # Compute catch target from ball trajectory
+        try:
+            target, ball_spawn = _compute_catch_target(
+                ball_spawn_raw.position_mm, ball_spawn_raw.velocity_mms,
+                ball_spawn_raw.spawn_time,
+                active_z_offset_mm=_READY_POSE[2])
+        except ValueError as e:
+            print(f"\n=== Ball #{self._spawn_count} (BB throw) ===")
+            print(f"  REJECTED: catch target computation failed — {e}")
+            return None
+
+        # Print throw info
+        speed_mps = float(np.linalg.norm(ball_spawn_raw.velocity_mms)) / 1000.0
+        flight_time = target.arrival_time - spawn_time
+        print(f"\n=== Ball #{self._spawn_count} (BB throw) ===")
+        print(f"  Release: pos={_fmt_vec(ball_spawn_raw.position_mm)} mm, "
+              f"speed={speed_mps:.2f} m/s")
+        print(f"  Flight time: {flight_time:.3f}s, "
+              f"arrival at t={target.arrival_time:.3f}s")
+        print(f"  Target pose: {_fmt_vec(target.pose_6dof)}")
+        if target.event_vel_mps is not None:
+            print(f"  Event velocity: {target.event_vel_mps:.2f} m/s")
+
+        # Create coordinator and submit
+        self._coordinator = HandCoordinator(
+            home_pose=self._home_pose,
+            feasibility_checker=self._feasibility)
+        self._coordinator.submit_target(target, ball_spawn)
+
+        target_out, hcmd = self._coordinator.update(
+            sim_time, current_pose, hand_pos_mm=hand_pos_mm,
+            plant_state=plant_state)
+
+        events = self._coordinator.events
+        if events and events[-1].arrival_error_mm == -1.0:
+            print(f"  Feasibility: REJECTED (ball still released)")
+            self._coordinator = None
+            self._rejected_spawn = ball_spawn
+            return None
+
+        print(f"  Feasibility: ACCEPTED")
         return ball_spawn
 
     # ------------------------------------------------------------------
@@ -500,13 +605,22 @@ class InteractiveCatchController:
 
     def _print_ready(self) -> None:
         p = self._presets[self._preset_idx]
-        print(f"\n  READY — Press B to spawn ball")
+        if self._bb_sim is not None:
+            print(f"\n  READY — Press B for Ball Butler throw, ` for preset spawn")
+        else:
+            print(f"\n  READY — Press B to spawn ball")
         print(f"  Preset [{self._preset_idx + 1}/{len(self._presets)}]: "
               f"\"{p.name}\"")
         print(f"    pos: xy={_fmt_vec(p.xy_offset_mm)}mm, "
               f"height={p.spawn_height_mm:.0f}mm")
         print(f"    vel: vz={p.vz_mms:.0f}mm/s, "
               f"vxy={_fmt_vec(p.vxy_mms)}mm/s")
+
+    def notify_capture(self, sim_time: float) -> None:
+        """Notify the controller that a ball was captured."""
+        if (self._coordinator is not None
+                and self._state == InteractiveCatchState.CATCHING):
+            self._coordinator.notify_capture(sim_time)
 
     def _print_catch_result(self, timed_out: bool) -> None:
         if self._coordinator is None:
@@ -552,11 +666,15 @@ class InteractiveCatchController:
             p.spawn_height_mm / 1000.0,
         ])
 
+        # Velocity vector for label + arrow
+        vel_mms = np.array([p.vxy_mms[0], p.vxy_mms[1], p.vz_mms])
+        speed_mms = np.linalg.norm(vel_mms)
+
         scn = viewer.user_scn
         if scn.ngeom >= scn.maxgeom - 2:
             return  # not enough room
 
-        # Ghost ball — translucent orange sphere
+        # Ghost ball — translucent orange sphere with label
         geom = scn.geoms[scn.ngeom]
         mujoco.mjv_initGeom(
             geom,
@@ -566,11 +684,11 @@ class InteractiveCatchController:
             np.eye(3).flatten(),
             np.array([1.0, 0.5, 0.0, 0.4], dtype=np.float32),  # orange, translucent
         )
+        label = f"[B] {p.name}  |v|={speed_mms:.0f}mm/s"
+        geom.label = label[:99]  # MuJoCo label buffer limit
         scn.ngeom += 1
 
-        # Velocity arrow — cylinder from ball pos in the direction of velocity
-        vel_mms = np.array([p.vxy_mms[0], p.vxy_mms[1], p.vz_mms])
-        speed_mms = np.linalg.norm(vel_mms)
+        # Velocity arrow
         if speed_mms < 1.0:
             return  # no arrow for near-zero velocity
 
@@ -598,40 +716,6 @@ class InteractiveCatchController:
         )
         geom2.rgba[:] = [1.0, 0.3, 0.0, 0.7]
         scn.ngeom += 1
-
-    # ------------------------------------------------------------------
-    # Trajectory helpers
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _build_ramp(
-        now: float,
-        current_pose: np.ndarray,
-        target_pose: np.ndarray,
-        duration: float,
-    ) -> ReferenceGenerator:
-        """Build a quintic ramp from current pose to target."""
-        zeros = np.zeros(6)
-        traj = create_trajectory(
-            start_pose=current_pose.copy(),
-            start_twist=zeros,
-            start_accel=zeros,
-            end_pose=target_pose.copy(),
-            end_twist=zeros,
-            end_accel=zeros,
-            duration=duration,
-            t_start=now,
-        )
-
-        def _eval(t):
-            if t < now:
-                return current_pose.copy(), zeros.copy()
-            if t > now + duration:
-                return target_pose.copy(), zeros.copy()
-            pose, twist, _ = quintic_evaluate(traj, t)
-            return pose, twist
-
-        return ReferenceGenerator.from_function(_eval, duration=duration)
 
 
 def _fmt_vec(v: np.ndarray) -> str:

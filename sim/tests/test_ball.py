@@ -1,7 +1,7 @@
-"""Tests for ball physics and capture (Phase 5B).
+"""Tests for ball physics and kinematic hold capture.
 
-Validates ball spawning, gravity, proximity-based capture via weld constraint,
-release, and reset behavior.
+Validates ball spawning, gravity, proximity-based capture via kinematic
+hold, release, reset, and hold tracking behavior.
 """
 
 from __future__ import annotations
@@ -45,8 +45,8 @@ class TestBallSpawn:
         state = plant.get_ball_state()
         np.testing.assert_allclose(state.velocity_mms, [500, -300, -1000], atol=50)
 
-    def test_spawn_resets_weld(self, plant):
-        """Spawning a ball disables any active weld."""
+    def test_spawn_clears_held(self, plant):
+        """Spawning a ball clears any active hold state."""
         plant.spawn_ball(np.array([0, 0, 1000]), np.array([0, 0, 0]))
         state = plant.get_ball_state()
         assert state.held is False
@@ -75,7 +75,7 @@ class TestBallGravity:
 
 
 class TestBallCapture:
-    """Ball capture via proximity check and weld constraint."""
+    """Ball capture via proximity check and kinematic hold."""
 
     def _prime_hand_and_settle(self, plant):
         """Prime the hand and step until it settles."""
@@ -84,7 +84,8 @@ class TestBallCapture:
             plant.step(0.02)
 
     def test_capture_from_above(self, plant):
-        """Spawn ball just above hand opening with slow downward velocity."""
+        """Spawn ball near hand opening — it should be captured instantly
+        when it enters the proximity zone."""
         self._prime_hand_and_settle(plant)
 
         # Get hand opening position in world frame
@@ -92,55 +93,52 @@ class TestBallCapture:
         hand_opening_pos_m = plant.data.site_xpos[hand_site_id].copy()
         hand_opening_mm = hand_opening_pos_m * 1000
 
-        # Spawn ball 10mm above hand opening with slow downward velocity
-        # This gives the ball time to enter the cone before exceeding the
-        # capture velocity threshold (500 mm/s)
+        # Spawn ball 10mm above hand opening with gentle downward velocity.
+        # Ball enters the capture zone and is instantly caught (no settle).
         spawn_pos = hand_opening_mm.copy()
         spawn_pos[2] += 10
-        plant.spawn_ball(spawn_pos, np.array([0, 0, -100]))  # gentle drop
+        plant.spawn_ball(spawn_pos, np.array([0, 0, -200]))  # gentle drop
 
-        # Step at physics rate to ensure we catch the capture frame
+        # Step until captured — should be near-instant
         captured = False
-        for _ in range(500):  # up to 0.5s
+        for _ in range(500):
             plant.step(0.001)
-            if plant.check_and_capture():
+            state = plant.get_ball_state()
+            if state and state.held:
                 captured = True
                 break
 
         assert captured, "Ball was not captured"
-        state = plant.get_ball_state()
-        assert state.held is True
 
-    def test_ball_follows_platform_when_held(self, plant):
-        """After capture, ball should move with the platform."""
+    def test_ball_stays_locked_to_hand(self, plant):
+        """After capture, ball tracks hand opening site exactly (kinematic hold)."""
         self._prime_hand_and_settle(plant)
 
-        # Get hand opening and spawn ball right at it with zero velocity
+        # Spawn ball at hand opening with zero velocity — instant capture
         hand_site_id = mujoco.mj_name2id(plant.model, mujoco.mjtObj.mjOBJ_SITE, 'hand_opening')
         hand_opening_mm = plant.data.site_xpos[hand_site_id] * 1000
 
-        # Spawn exactly at hand opening with zero velocity (instant capture)
         plant.spawn_ball(hand_opening_mm.copy(), np.array([0, 0, 0]))
-        mujoco.mj_forward(plant.model, plant.data)
-        plant.check_and_capture()
 
-        state = plant.get_ball_state()
-        assert state.held, "Ball should be captured at hand opening"
+        # Step until captured
+        for _ in range(100):
+            plant.step(0.001)
+            if plant.get_ball_state().held:
+                break
+        assert plant.get_ball_state().held, "Ball should be captured"
 
-        # Now command the platform to move and check ball follows
-        z_before = state.position_mm[2]
-        plant.command(plant.pose_to_extensions(np.array([0, 0, 50, 0, 0, 0])))
-        for _ in range(25):
+        # Step for 1 second and verify ball tracks hand site
+        for _ in range(50):
             plant.step(0.02)
 
-        state = plant.get_ball_state()
-        # Ball should have moved up with the platform (~50mm)
-        z_delta = state.position_mm[2] - z_before
-        assert z_delta > 30, f"Ball Z moved only {z_delta:.1f} mm, expected ~50 mm"
+        site_pos_mm = plant.data.site_xpos[hand_site_id] * 1000
+        ball_pos_mm = plant.get_ball_state().position_mm
+        drift = np.linalg.norm(ball_pos_mm - site_pos_mm)
+        assert drift < 0.1, f"Ball drifted {drift:.3f} mm from hand site (kinematic hold should be exact)"
 
 
 class TestBallRelease:
-    """Ball can be released from weld and resumes free flight."""
+    """Ball can be released from kinematic hold and resumes free flight."""
 
     def test_release_resumes_free_flight(self, plant):
         # Prime hand and capture ball
@@ -152,8 +150,10 @@ class TestBallRelease:
         hand_opening_mm = plant.data.site_xpos[hand_site_id] * 1000
 
         plant.spawn_ball(hand_opening_mm.copy(), np.array([0, 0, 0]))
-        mujoco.mj_forward(plant.model, plant.data)
-        plant.check_and_capture()
+        for _ in range(100):
+            plant.step(0.001)
+            if plant.get_ball_state().held:
+                break
         assert plant.get_ball_state().held
 
         # Release with upward velocity
@@ -193,7 +193,7 @@ class TestBallMiss:
         hand_site_id = mujoco.mj_name2id(plant.model, mujoco.mjtObj.mjOBJ_SITE, 'hand_opening')
         hand_opening_mm = plant.data.site_xpos[hand_site_id] * 1000
 
-        # Spawn 200 mm to the side (well outside 35mm capture radius)
+        # Spawn 200 mm to the side (well outside 30mm capture radius)
         spawn_pos = hand_opening_mm.copy()
         spawn_pos[0] += 200
         spawn_pos[2] += 50

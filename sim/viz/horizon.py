@@ -17,10 +17,27 @@ class HorizonRenderer:
         self._init_height_m = init_height_mm / 1000.0
         self._enabled = enabled
         self._poses: np.ndarray | None = None
+        self._times: np.ndarray | None = None
 
-    def update(self, predicted_poses: np.ndarray | None) -> None:
-        """Update with the latest predicted trajectory from the MPC."""
+    def update(
+        self,
+        predicted_poses: np.ndarray | None,
+        cumulative_times: np.ndarray | None = None,
+    ) -> None:
+        """Update with the latest predicted trajectory from the MPC.
+
+        Parameters
+        ----------
+        predicted_poses : (N+1, 6) array or None
+        cumulative_times : (N+1,) array of cumulative horizon times (seconds),
+            starting at 0.  When provided, the colour fade and sphere size use
+            time-proportional fractions instead of linear index fractions.
+            This gives a visually accurate representation of the variable-
+            resolution horizon (fine steps are close together, coarse steps
+            are spread out).
+        """
         self._poses = predicted_poses
+        self._times = cumulative_times
 
     @property
     def enabled(self) -> bool:
@@ -50,8 +67,14 @@ class HorizonRenderer:
                 pose[2] / 1000.0 + self._init_height_m,
             ])
 
-            # Colour: green, fading with horizon depth
-            t_frac = k / max(1, n - 1)
+            # Colour: green, fading with horizon depth.
+            # Use time-proportional fraction when cumulative times are
+            # available so that coarse-tier spheres (representing longer
+            # intervals) are visually distinct from fine-tier ones.
+            if self._times is not None and len(self._times) == n and self._times[-1] > 0:
+                t_frac = float(self._times[k] / self._times[-1])
+            else:
+                t_frac = k / max(1, n - 1)
             alpha = float(max(0.15, 1.0 - 0.85 * t_frac))
             rgba = np.array([0.2, 0.9, 0.2, alpha], dtype=np.float32)
 

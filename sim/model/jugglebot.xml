@@ -2,7 +2,7 @@
 <mujoco model="jugglebot">
   <compiler angle="radian" coordinate="local"/>
   <option timestep="0.001" gravity="0 0 -9.806" solver="Newton" iterations="100" tolerance="1e-10" impratio="1"/>
-  <size nconmax="100" njmax="500"/>
+  <size nconmax="200" njmax="1000"/>
   <visual>
     <global azimuth="135" elevation="-30"/>
     <quality shadowsize="2048"/>
@@ -21,6 +21,14 @@
     <mesh name="leg_outer_mesh" file="meshes/leg_outer.stl" scale="0.001 0.001 0.001"/>
     <mesh name="leg_inner_mesh" file="meshes/leg_inner.stl" scale="0.001 0.001 0.001"/>
     <mesh name="hand_mesh" file="meshes/hand.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="hand_part_0" file="meshes/Hand - Part 1.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="hand_part_1" file="meshes/Hand - Part 2.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="hand_part_2" file="meshes/Hand - Part 3.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="hand_part_3" file="meshes/Hand - Part 4.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="hand_part_4" file="meshes/Hand - Part 5.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="hand_part_5" file="meshes/Hand - Part 6.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="hand_part_6" file="meshes/Hand - Part 7.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="hand_part_7" file="meshes/Hand - Part 8.stl" scale="0.001 0.001 0.001"/>
   </asset>
   <default>
     <joint damping="50" armature="0.01"/>
@@ -50,12 +58,19 @@
       <site name="plat_site_3" pos="0.197405 0.095000 0.000000" size="0.012" rgba="0.2 0.8 0.2 1"/>
       <site name="plat_site_4" pos="0.180975 0.123458 0.000000" size="0.012" rgba="0.2 0.8 0.2 1"/>
       <site name="plat_site_5" pos="-0.180975 0.123458 0.000000" size="0.012" rgba="0.2 0.8 0.2 1"/>
-      <body name="hand" pos="0 0 -0.135000">
+      <body name="hand" pos="0 0 -0.129000">
         <inertial pos="0 0 0.055" mass="0.281" diaginertia="0.000200 0.000200 0.000050"/>
         <joint name="hand_slide" type="slide" axis="0 0 1" limited="true" range="0 0.355000" damping="50" armature="0.001"/>
         <geom name="hand_visual" type="mesh" mesh="hand_mesh" pos="0 -0.065 0" quat="0 0 0.707107 0.707107" material="hand_mat" contype="0" conaffinity="0" mass="0"/>
-        <geom name="hand_catch_disc" type="cylinder" size="0.0350 0.003" pos="0 0 0.003" contype="2" conaffinity="2" solref="0.005 2.0" solimp="0.99 0.99 0.001" friction="1.0 0.005 0.0001" rgba="0 0 0 0" mass="0"/>
-        <site name="hand_opening" pos="0 0 0.040" size="0.010" rgba="1.0 0.8 0.0 1"/>
+        <geom name="hand_collision_0" type="mesh" mesh="hand_part_0" pos="0 0 0.010" quat="0.707107 0.707107 0 0" rgba="0 0 0 0" mass="0" contype="0" conaffinity="0"/>
+        <geom name="hand_collision_1" type="mesh" mesh="hand_part_1" pos="0 0 0.010" quat="0.707107 0.707107 0 0" rgba="0 0 0 0" mass="0" contype="0" conaffinity="0"/>
+        <geom name="hand_collision_2" type="mesh" mesh="hand_part_2" pos="0 0 0.010" quat="0.707107 0.707107 0 0" rgba="0 0 0 0" mass="0" contype="0" conaffinity="0"/>
+        <geom name="hand_collision_3" type="mesh" mesh="hand_part_3" pos="0 0 0.010" quat="0.707107 0.707107 0 0" rgba="0 0 0 0" mass="0" contype="0" conaffinity="0"/>
+        <geom name="hand_collision_4" type="mesh" mesh="hand_part_4" pos="0 0 0.010" quat="0.707107 0.707107 0 0" rgba="0 0 0 0" mass="0" contype="0" conaffinity="0"/>
+        <geom name="hand_collision_5" type="mesh" mesh="hand_part_5" pos="0 0 0.010" quat="0.707107 0.707107 0 0" rgba="0 0 0 0" mass="0" contype="0" conaffinity="0"/>
+        <geom name="hand_collision_6" type="mesh" mesh="hand_part_6" pos="0 0 0.010" quat="0.707107 0.707107 0 0" rgba="0 0 0 0" mass="0" contype="0" conaffinity="0"/>
+        <geom name="hand_collision_7" type="mesh" mesh="hand_part_7" pos="0 0 0.010" quat="0.707107 0.707107 0 0" rgba="0 0 0 0" mass="0" contype="0" conaffinity="0"/>
+        <site name="hand_opening" pos="0 0 0.0444" size="0.010" rgba="1.0 0.8 0.0 1"/>
       </body>
     </body>
     <body name="leg_0_base" pos="-0.385274 -0.140228 0.000000" quat="0.971003 -0.186803 0.149193 0.000000">
@@ -132,7 +147,7 @@
     </body>
     <body name="ball" pos="0 0 5">
       <freejoint name="ball_joint"/>
-      <geom name="ball_geom" type="sphere" size="0.02" mass="0.043" material="ball_mat" contype="3" conaffinity="3" solref="0.005 2.0" solimp="0.99 0.99 0.001" friction="1.0 0.005 0.0001"/>
+      <geom name="ball_geom" type="sphere" size="0.02" mass="0.043" material="ball_mat" contype="1" conaffinity="1" solref="0.005 2.0" solimp="0.99 0.99 0.001" friction="2.0 0.005 0.0001"/>
       <site name="ball_site" pos="0 0 0" size="0.005" rgba="1 1 1 0"/>
     </body>
   </worldbody>
@@ -143,7 +158,6 @@
     <connect body1="platform" body2="leg_3" anchor="0.197405 0.095000 0.000000" solref="0.005 1" solimp="0.99 0.99 0.001"/>
     <connect body1="platform" body2="leg_4" anchor="0.180975 0.123458 0.000000" solref="0.005 1" solimp="0.99 0.99 0.001"/>
     <connect body1="platform" body2="leg_5" anchor="-0.180975 0.123458 0.000000" solref="0.005 1" solimp="0.99 0.99 0.001"/>
-    <weld name="ball_catch" body1="hand" body2="ball" relpose="0 0 0.040 1 0 0 0" active="false" solref="0.005 1" solimp="0.99 0.99 0.001"/>
   </equality>
   <actuator>
     <position name="act_0" joint="leg_0_slide" kp="200000" kv="600" ctrlrange="-0.005000 0.285000" ctrllimited="true"/>
@@ -152,7 +166,7 @@
     <position name="act_3" joint="leg_3_slide" kp="200000" kv="600" ctrlrange="-0.005000 0.285000" ctrllimited="true"/>
     <position name="act_4" joint="leg_4_slide" kp="200000" kv="600" ctrlrange="-0.005000 0.285000" ctrllimited="true"/>
     <position name="act_5" joint="leg_5_slide" kp="200000" kv="600" ctrlrange="-0.005000 0.285000" ctrllimited="true"/>
-    <position name="act_hand" joint="hand_slide" kp="10000" kv="200" ctrlrange="0 0.355000" ctrllimited="true"/>
+    <position name="act_hand" joint="hand_slide" kp="100000" kv="350" ctrlrange="0 0.355000" ctrllimited="true"/>
   </actuator>
   <keyframe>
     <key name="home" qpos="0.000000 0.000000 0.574300 1.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 5.000000 1.000000 0.000000 0.000000 0.000000"/>

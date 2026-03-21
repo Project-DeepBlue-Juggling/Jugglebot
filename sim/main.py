@@ -20,11 +20,15 @@ Usage examples:
     python sim/main.py --dashboard --mpc --pose 0,0,50,0,0,0
 """
 
+from __future__ import annotations
+
 import argparse
 import os
 import sys
 import time
 import datetime
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import numpy as np
 
@@ -35,72 +39,17 @@ if _sim_dir not in sys.path:
 
 from plant.mujoco_plant import MuJoCoPlant
 from plant.interface import PlantState
+from input.sim_control import SimController
 from viz.telemetry import TelemetryLogger, StepRecord, record_from_arrays
+
+if TYPE_CHECKING:
+    from hand.coordinator import BallSpawn
+    from hand.trajectory import HandCatchSequence
 
 
 # MPC control rate (Hz).
 CONTROL_RATE_HZ = 50
 CONTROL_DT = 1.0 / CONTROL_RATE_HZ
-
-
-class SimController:
-    """Pause / step / speed controls for the viewer.
-
-    Keyboard bindings (active in the MuJoCo viewer window):
-        Space       pause / unpause
-        Right arrow step one frame (while paused)
-        Up arrow    speed up (2×)
-        Down arrow  slow down (0.5×)
-        R           reset speed to 1×
-
-    Pass ``sim_ctrl.key_callback`` to ``launch_passive(key_callback=...)``.
-    Call ``sim_ctrl.wait()`` each loop iteration — it blocks while paused
-    (except when stepping) and applies the speed multiplier.
-    """
-
-    # GLFW key codes
-    _KEY_SPACE = 32
-    _KEY_RIGHT = 262
-    _KEY_UP = 265
-    _KEY_DOWN = 264
-    _KEY_R = 82
-
-    def __init__(self):
-        self.paused = False
-        self.speed = 1.0
-        self._step_once = False
-
-    def key_callback(self, keycode):
-        if keycode == self._KEY_SPACE:
-            self.paused = not self.paused
-            state = "PAUSED" if self.paused else "RUNNING"
-            print(f"  [{state}]  speed={self.speed:.2f}x")
-        elif keycode == self._KEY_RIGHT:
-            if self.paused:
-                self._step_once = True
-        elif keycode == self._KEY_UP:
-            self.speed = min(self.speed * 2.0, 16.0)
-            print(f"  speed={self.speed:.2f}x")
-        elif keycode == self._KEY_DOWN:
-            self.speed = max(self.speed / 2.0, 0.0625)
-            print(f"  speed={self.speed:.2f}x")
-        elif keycode == self._KEY_R:
-            self.speed = 1.0
-            print(f"  speed={self.speed:.2f}x")
-
-    def should_step(self) -> bool:
-        """Return True if the sim should advance one step this iteration."""
-        if not self.paused:
-            return True
-        if self._step_once:
-            self._step_once = False
-            return True
-        return False
-
-    @property
-    def sleep_factor(self) -> float:
-        """Multiply the normal sleep duration by this to control speed."""
-        return 1.0 / self.speed
 
 
 def parse_args():
@@ -129,12 +78,23 @@ def parse_args():
     p.add_argument('--keyboard', action='store_true',
                    help='Keyboard interactive input (cross-platform, implies --mpc)')
     p.add_argument('--catch', type=str, default=None,
-                   help='Scripted catch sequence (DT1..DT8). '
+                   help='Scripted catch sequence (DT1..DT8, BB1..BB4). '
                         'Implies --mpc. Dynamic target + ball physics.')
+    p.add_argument('--throw-catch', type=str, default=None,
+                   dest='throw_catch',
+                   help='Scripted throw-catch sequence (TC1..TC4). '
+                        'Implies --mpc. Full throw → catch cycle.')
     p.add_argument('--interactive-catch', action='store_true',
                    dest='interactive_catch',
                    help='Interactive ball catch mode — spawn balls with B key. '
                         'Implies --mpc. Requires viewer.')
+    p.add_argument('--juggle', action='store_true',
+                   help='Continuous throw-catch mode. Jugglebot throws to '
+                        'itself in a loop with real-time parameter adjustment. '
+                        'Implies --mpc. Requires viewer.')
+    p.add_argument('--bb', action='store_true',
+                   help='Enable Ball Butler throws in interactive-catch mode '
+                        '(T key). Requires --interactive-catch.')
     p.add_argument('--dashboard', action='store_true',
                    help='Start live telemetry dashboard (web browser)')
     p.add_argument('--dashboard-port', type=int, default=8082,
@@ -168,35 +128,6 @@ def _parse_sequence(seq_str: str) -> list[tuple[float, np.ndarray]]:
 def _pose_6dof_from_state(state: PlantState) -> np.ndarray:
     """Extract [x,y,z,rx,ry,rz] from a PlantState."""
     return np.concatenate([state.platform_pos_mm, state.platform_rot])
-
-
-# ---------------------------------------------------------------------------
-# Reference scheduler (for MPC — does NOT command the plant directly)
-# ---------------------------------------------------------------------------
-
-class ReferenceScheduler:
-    """Returns the target pose based on a time schedule.
-
-    Unlike PoseScheduler, this does not call plant.command() — the MPC
-    controller is responsible for generating and applying commands.
-    """
-
-    def __init__(self, schedule: list[tuple[float, np.ndarray]]):
-        self._schedule = schedule
-        self._target_pose = np.zeros(6)
-
-    def update(self, sim_time: float) -> np.ndarray:
-        """Return the target pose for the given simulation time."""
-        for t, pose in self._schedule:
-            if sim_time >= t:
-                self._target_pose = pose
-            else:
-                break
-        return self._target_pose
-
-    @property
-    def target_pose(self) -> np.ndarray:
-        return self._target_pose
 
 
 # ---------------------------------------------------------------------------
@@ -267,7 +198,8 @@ def _log_step(logger: TelemetryLogger, state: PlantState,
 def _log_mpc_step(logger: TelemetryLogger, state: PlantState,
                   ref_pose: np.ndarray, cmd_ext: np.ndarray,
                   diag: dict, ref_twist: np.ndarray | None = None,
-                  dashboard=None) -> None:
+                  dashboard=None,
+                  hand_cmd_mm: float = 0.0) -> None:
     """Record one telemetry step (MPC mode)."""
     record = record_from_arrays(
         time=state.time,
@@ -278,6 +210,9 @@ def _log_mpc_step(logger: TelemetryLogger, state: PlantState,
         cmd_extensions=cmd_ext,
         actual_extensions=state.leg_extensions_mm,
         leg_velocities=state.leg_velocities_mmps,
+        hand_cmd_mm=hand_cmd_mm,
+        hand_pos_mm=state.hand_pos_mm if state.hand_pos_mm is not None else 0.0,
+        hand_vel_mmps=state.hand_vel_mmps if state.hand_vel_mmps is not None else 0.0,
         solve_time_ms=diag.get('solve_time_ms', 0.0),
         solve_status=diag.get('status', 'n/a'),
         cost=diag.get('cost', 0.0),
@@ -286,6 +221,312 @@ def _log_mpc_step(logger: TelemetryLogger, state: PlantState,
     logger.append(record)
     if dashboard is not None:
         dashboard.broadcast(record)
+
+
+# ---------------------------------------------------------------------------
+# TargetCommand + TargetSource adapters (Phase 4)
+# ---------------------------------------------------------------------------
+
+@runtime_checkable
+class TargetSource(Protocol):
+    """Protocol for objects that provide MPC targets each control step.
+
+    Implementations must provide ``update(sim_time, state) -> TargetCommand``.
+    Optional lifecycle methods (``reset``, ``close``, ``key_callback``, etc.)
+    are duck-typed by the loop functions.
+    """
+
+    def update(self, sim_time: float, state: PlantState) -> TargetCommand: ...
+
+
+@dataclass
+class TargetCommand:
+    """Command returned by a target source each control step.
+
+    Fields
+    ------
+    target_pose : (6,) target pose for MPC.
+    arrival_time : absolute sim time to arrive; None = ASAP.
+    target_twist : (6,) twist at arrival; None = zero (hold).
+    hand_cmd : hand command this step (str / HandCatchSequence / float / None).
+    ball_spawn : BallSpawn to spawn this step, or None.
+    """
+    target_pose: np.ndarray
+    arrival_time: float | None = None
+    target_twist: np.ndarray | None = None
+    hand_cmd: str | float | HandCatchSequence | None = None
+    ball_spawn: BallSpawn | None = None
+
+
+class StaticTargetSource:
+    """Adapts a pose schedule (--pose / --sequence) to the TargetSource protocol."""
+
+    def __init__(self, schedule: list[tuple[float, np.ndarray]]):
+        self._schedule = schedule
+        self._target = np.zeros(6)
+
+    def update(self, sim_time: float, state: PlantState) -> TargetCommand:
+        for t, pose in self._schedule:
+            if sim_time >= t:
+                self._target = pose
+            else:
+                break
+        return TargetCommand(target_pose=self._target)
+
+
+class WaypointTargetSource:
+    """Adapts a waypoint list (T1-T6) to the TargetSource protocol.
+
+    Advances through waypoints as their arrival times are reached.
+    The MPC plans optimal motion between waypoints internally.
+    """
+
+    def __init__(self, waypoints: list[tuple[np.ndarray, float]]):
+        """
+        Parameters
+        ----------
+        waypoints : list of (pose_6dof, arrival_time)
+            Sorted by arrival_time.
+        """
+        self._waypoints = waypoints
+        self._idx = 0
+
+    def update(self, sim_time: float, state: PlantState) -> TargetCommand:
+        while (self._idx + 1 < len(self._waypoints)
+               and sim_time >= self._waypoints[self._idx][1]):
+            self._idx += 1
+        pose, arrival = self._waypoints[self._idx]
+        return TargetCommand(target_pose=pose, arrival_time=arrival)
+
+
+class InteractiveTargetSource:
+    """Adapts SpaceMouseInput / KeyboardInput to the TargetSource protocol."""
+
+    def __init__(self, input_source, control_dt: float):
+        self._src = input_source
+        self._dt = control_dt
+
+    def update(self, sim_time: float, state: PlantState) -> TargetCommand:
+        if hasattr(self._src, 'apply'):
+            self._src.apply(self._dt)
+        return TargetCommand(target_pose=self._src.read())
+
+    @property
+    def key_callback(self):
+        return getattr(self._src, 'key_callback', None)
+
+    def close(self):
+        if hasattr(self._src, 'close'):
+            self._src.close()
+
+
+class CatchTargetSource:
+    """Adapts a scripted catch sequence to the TargetSource protocol.
+
+    Wraps HandCoordinator and handles ball spawning, hand commands,
+    and capture notification.  Supports ``reset()`` for looping in the
+    viewer.
+    """
+
+    def __init__(self, catch_sequence, feasibility_checker=None,
+                 home_pose: np.ndarray | None = None):
+        self._sequence = catch_sequence
+        self._feasibility = feasibility_checker
+        self._home_pose = home_pose
+        self._coord = None  # type: ignore[assignment]
+        self._build_coordinator()
+
+    def _build_coordinator(self):
+        from hand.coordinator import HandCoordinator
+        self._coord = HandCoordinator(
+            home_pose=self._home_pose,
+            feasibility_checker=self._feasibility)
+        for target, ball in self._sequence:
+            self._coord.submit_target(target, ball)
+
+    def reset(self):
+        self._build_coordinator()
+
+    def update(self, sim_time: float, state: PlantState) -> TargetCommand:
+        current_pose = _pose_6dof_from_state(state)
+        hand_pos = state.hand_pos_mm if state.hand_pos_mm is not None else 0.0
+
+        spawn = self._coord.should_spawn_ball(sim_time)
+        target, hand_cmd = self._coord.update(
+            sim_time, current_pose, hand_pos_mm=hand_pos, plant_state=state)
+
+        return TargetCommand(
+            target_pose=target.pose_6dof if target is not None else np.zeros(6),
+            arrival_time=target.arrival_time if target is not None else None,
+            target_twist=target.arrival_twist if target is not None else None,
+            hand_cmd=hand_cmd,
+            ball_spawn=spawn,
+        )
+
+    def notify_capture(self, sim_time: float):
+        self._coord.notify_capture(sim_time)
+
+    def print_summary(self):
+        _print_catch_summary(self._coord)
+
+
+class ThrowCatchTargetSource:
+    """Adapts a ThrowCatchPlan to the TargetSource protocol.
+
+    Manages the ball lifecycle: spawns ball in hand at start, releases
+    at throw time via BallRelease, catches via standard capture.
+    """
+
+    def __init__(self, plan, home_pose: np.ndarray | None = None):
+        from hand.planner import ThrowCatchPlan
+        self._plan = plan
+        self._home_pose = home_pose
+        self._coord = None
+        self._ball_spawned_in_hand = False
+        self._build_coordinator()
+
+    def _build_coordinator(self):
+        from hand.coordinator import HandCoordinator
+        self._coord = HandCoordinator(home_pose=self._home_pose)
+        self._coord.submit_throw_catch(self._plan)
+        self._ball_spawned_in_hand = False
+
+    def reset(self):
+        self._build_coordinator()
+
+    def update(self, sim_time: float, state: PlantState) -> TargetCommand:
+        current_pose = _pose_6dof_from_state(state)
+        hand_pos = state.hand_pos_mm if state.hand_pos_mm is not None else 0.0
+
+        target, hand_cmd = self._coord.update(
+            sim_time, current_pose, hand_pos_mm=hand_pos, plant_state=state)
+
+        # Spawn ball in hand at simulation start (before throw begins)
+        ball_spawn = None
+        if not self._ball_spawned_in_hand and sim_time > 0.1:
+            self._ball_spawned_in_hand = True
+            # Signal to spawn ball in hand (special marker)
+            ball_spawn = 'spawn_in_hand'
+
+        return TargetCommand(
+            target_pose=target.pose_6dof if target is not None else np.zeros(6),
+            arrival_time=target.arrival_time if target is not None else None,
+            target_twist=target.arrival_twist if target is not None else None,
+            hand_cmd=hand_cmd,
+            ball_spawn=ball_spawn,
+        )
+
+    def notify_capture(self, sim_time: float):
+        self._coord.notify_capture(sim_time)
+
+    def print_summary(self):
+        _print_catch_summary(self._coord)
+
+
+class InteractiveCatchSource:
+    """Adapts InteractiveCatchController to the TargetSource protocol.
+
+    Exposes pause/speed/key_callback/render for the unified viewer loop.
+    """
+
+    def __init__(self, controller, home_pose: np.ndarray | None = None):
+        self._ctrl = controller
+        # home_pose stored for future use; controller handles its own ready pose
+
+    def update(self, sim_time: float, state: PlantState) -> TargetCommand:
+        current_pose = _pose_6dof_from_state(state)
+        hand_pos = state.hand_pos_mm if state.hand_pos_mm is not None else 0.0
+        target, hand_cmd, ball_spawn = self._ctrl.update(
+            sim_time, current_pose, hand_pos, plant_state=state)
+
+        return TargetCommand(
+            target_pose=target.pose_6dof if target is not None else np.zeros(6),
+            arrival_time=target.arrival_time if target is not None else None,
+            target_twist=target.arrival_twist if target is not None else None,
+            hand_cmd=hand_cmd,
+            ball_spawn=ball_spawn,
+        )
+
+    def should_step(self) -> bool:
+        return self._ctrl.should_step()
+
+    @property
+    def sleep_factor(self) -> float:
+        return self._ctrl.sleep_factor
+
+    @property
+    def key_callback(self):
+        return self._ctrl.key_callback
+
+    def render(self, viewer):
+        self._ctrl.render_preview(viewer)
+
+    def notify_capture(self, sim_time: float):
+        self._ctrl.notify_capture(sim_time)
+
+    def close(self):
+        pass  # no cleanup needed
+
+
+class ContinuousThrowCatchSource:
+    """Adapts ContinuousThrowCatchController to the TargetSource protocol.
+
+    Exposes pause/speed/key_callback/render for the unified viewer loop.
+    """
+
+    def __init__(self, controller):
+        self._ctrl = controller
+
+    def update(self, sim_time: float, state: PlantState) -> TargetCommand:
+        current_pose = _pose_6dof_from_state(state)
+        hand_pos = state.hand_pos_mm if state.hand_pos_mm is not None else 0.0
+        target, hand_cmd, ball_spawn = self._ctrl.update(
+            sim_time, current_pose, hand_pos, plant_state=state)
+
+        return TargetCommand(
+            target_pose=target.pose_6dof if target is not None else np.zeros(6),
+            arrival_time=target.arrival_time if target is not None else None,
+            target_twist=target.arrival_twist if target is not None else None,
+            hand_cmd=hand_cmd,
+            ball_spawn=ball_spawn,
+        )
+
+    def should_step(self) -> bool:
+        return self._ctrl.should_step()
+
+    @property
+    def sleep_factor(self) -> float:
+        return self._ctrl.sleep_factor
+
+    @property
+    def key_callback(self):
+        return self._ctrl.key_callback
+
+    def render(self, viewer):
+        self._ctrl.render_preview(viewer)
+
+    def notify_capture(self, sim_time: float):
+        self._ctrl.notify_capture(sim_time)
+
+    def print_summary(self):
+        self._ctrl.print_summary()
+
+    def close(self):
+        pass
+
+
+def _combine_key_callbacks(*callbacks):
+    """Create a single key callback that dispatches to multiple handlers."""
+    active = [cb for cb in callbacks if cb is not None]
+    if not active:
+        return None
+    if len(active) == 1:
+        return active[0]
+
+    def combined(keycode):
+        for cb in active:
+            cb(keycode)
+    return combined
 
 
 # ---------------------------------------------------------------------------
@@ -350,503 +591,253 @@ def run_with_viewer(plant: MuJoCoPlant, schedule: list[tuple[float, np.ndarray]]
 
 
 # ---------------------------------------------------------------------------
-# MPC loops
+# Unified MPC loops (Phase 4)
 # ---------------------------------------------------------------------------
 
-def run_mpc_headless(plant: MuJoCoPlant, mpc, schedule, duration: float,
-                     logger: TelemetryLogger, dashboard=None) -> None:
-    """Run the MPC simulation loop without a viewer."""
-    ref = ReferenceScheduler(schedule)
-    n_steps = int(duration / CONTROL_DT)
+def _execute_hand_cmd(plant, hand_cmd, active_hand_seq, last_hand_cmd_mm,
+                      sim_time):
+    """Process a hand command from a TargetCommand.
 
-    for step_idx in range(n_steps):
-        state = plant.get_state()
-        target = ref.update(state.time)
-        cmd, diag = mpc.solve(state, target)
-        plant.command(cmd)
-        plant.step(CONTROL_DT)
-        _log_mpc_step(logger, state, target, cmd, diag, dashboard=dashboard)
-
-    logger.flush()
-    _print_mpc_summary(logger)
-
-
-def run_mpc_with_viewer(plant: MuJoCoPlant, mpc, schedule, duration: float,
-                        logger: TelemetryLogger, dashboard=None) -> None:
-    """Run the MPC simulation loop with the MuJoCo passive viewer."""
-    import mujoco.viewer
-    from viz.horizon import HorizonRenderer
-
-    ref = ReferenceScheduler(schedule)
-    horizon = HorizonRenderer(plant.geom.init_height_mm)
-
-    with mujoco.viewer.launch_passive(plant.model, plant.data) as viewer:
-        start_wall = time.monotonic()
-        sim_time_target = 0.0
-
-        while viewer.is_running() and sim_time_target < duration:
-            state = plant.get_state()
-            target = ref.update(state.time)
-            cmd, diag = mpc.solve(state, target)
-            plant.command(cmd)
-            plant.step(CONTROL_DT)
-            sim_time_target += CONTROL_DT
-
-            _log_mpc_step(logger, state, target, cmd, diag, dashboard=dashboard)
-
-            # Horizon visualisation
-            horizon.update(mpc.predicted_poses)
-            horizon.render(viewer)
-
-            viewer.sync()
-
-            # Real-time pacing
-            elapsed = time.monotonic() - start_wall
-            sleep_time = sim_time_target - elapsed
-            if sleep_time > 0:
-                time.sleep(sleep_time)
-
-    logger.flush()
-    _print_mpc_summary(logger)
-
-
-# ---------------------------------------------------------------------------
-# Trajectory-aware MPC loops (Phase 3)
-# ---------------------------------------------------------------------------
-
-def run_trajectory_headless(plant: MuJoCoPlant, mpc, ref_gen, duration: float,
-                            logger: TelemetryLogger, dashboard=None) -> None:
-    """Run MPC with a ReferenceGenerator (trajectory mode), headless."""
-    n_steps = int(duration / CONTROL_DT)
-
-    for step_idx in range(n_steps):
-        state = plant.get_state()
-        poses, twists = ref_gen.evaluate(state.time, CONTROL_DT, mpc.params.N)
-        cmd, diag = mpc.solve(state, poses, ref_twist=twists)
-        plant.command(cmd)
-        plant.step(CONTROL_DT)
-        _log_mpc_step(logger, state, poses[0], cmd, diag,
-                      ref_twist=twists[0], dashboard=dashboard)
-
-    logger.flush()
-    _print_mpc_summary(logger)
-
-
-def run_trajectory_with_viewer(plant: MuJoCoPlant, mpc, ref_gen, duration: float,
-                               logger: TelemetryLogger, dashboard=None) -> None:
-    """Run MPC with a ReferenceGenerator (trajectory mode), with viewer."""
-    import mujoco.viewer
-    from viz.horizon import HorizonRenderer
-
-    horizon = HorizonRenderer(plant.geom.init_height_mm)
-
-    with mujoco.viewer.launch_passive(plant.model, plant.data) as viewer:
-        start_wall = time.monotonic()
-        sim_time_target = 0.0
-
-        while viewer.is_running() and sim_time_target < duration:
-            state = plant.get_state()
-            poses, twists = ref_gen.evaluate(state.time, CONTROL_DT, mpc.params.N)
-            cmd, diag = mpc.solve(state, poses, ref_twist=twists)
-            plant.command(cmd)
-            plant.step(CONTROL_DT)
-            sim_time_target += CONTROL_DT
-
-            _log_mpc_step(logger, state, poses[0], cmd, diag,
-                          ref_twist=twists[0], dashboard=dashboard)
-
-            horizon.update(mpc.predicted_poses)
-            horizon.render(viewer)
-            viewer.sync()
-
-            elapsed = time.monotonic() - start_wall
-            sleep_time = sim_time_target - elapsed
-            if sleep_time > 0:
-                time.sleep(sleep_time)
-
-    logger.flush()
-    _print_mpc_summary(logger)
-
-
-# ---------------------------------------------------------------------------
-# Interactive input MPC loops (Phase 4)
-# ---------------------------------------------------------------------------
-
-def run_interactive_with_viewer(plant: MuJoCoPlant, mpc, input_source,
-                                duration: float, logger: TelemetryLogger,
-                                dashboard=None) -> None:
-    """Run MPC with live interactive input (spacemouse or keyboard), with viewer.
-
-    Parameters
-    ----------
-    input_source : object
-        Must have a ``read() -> np.ndarray`` method returning (6,) target pose,
-        and optionally a ``key_callback`` attribute for keyboard input.
+    Returns (active_hand_seq, last_hand_cmd_mm) — updated state.
     """
-    import mujoco.viewer
-    from viz.horizon import HorizonRenderer
+    from hand.trajectory import HandCatchSequence, HandThrowSequence
+    from hand.coordinator import BallRelease
 
-    horizon = HorizonRenderer(plant.geom.init_height_mm)
+    if isinstance(hand_cmd, BallRelease):
+        # Release the ball with specified velocity
+        if hasattr(plant, 'ball_manager') and plant.ball_manager is not None:
+            plant.ball_manager.release(hand_cmd.velocity_mms)
+    elif isinstance(hand_cmd, (HandCatchSequence, HandThrowSequence)):
+        active_hand_seq = hand_cmd
+    elif isinstance(hand_cmd, (int, float)):
+        plant.command_hand(float(hand_cmd))
+        last_hand_cmd_mm = float(hand_cmd)
+        active_hand_seq = None
+    elif hand_cmd == 'prime':
+        plant.hand_to_prime()
+        active_hand_seq = None
+    elif hand_cmd == 'home':
+        plant.hand_to_home()
+        active_hand_seq = None
 
-    # key_callback must be passed at construction — cannot be set later
-    kc = getattr(input_source, 'key_callback', None)
-    with mujoco.viewer.launch_passive(
-        plant.model, plant.data, key_callback=kc
-    ) as viewer:
-        start_wall = time.monotonic()
-        sim_time_target = 0.0
-
-        while viewer.is_running() and sim_time_target < duration:
-            state = plant.get_state()
-
-            # Integrate held-key motion (keyboard); no-op for spacemouse
-            if hasattr(input_source, 'apply'):
-                input_source.apply(CONTROL_DT)
-
-            # Read the latest target from the input device
-            target_pose = input_source.read()
-
-            # Build a static reference for the MPC horizon
-            # (MPC plans smooth optimal path to reach the target)
-            ref_poses = np.tile(target_pose, (mpc.params.N + 1, 1))
-            ref_twists = np.zeros_like(ref_poses)
-
-            cmd, diag = mpc.solve(state, ref_poses, ref_twist=ref_twists)
-            plant.command(cmd)
-            plant.step(CONTROL_DT)
-            sim_time_target += CONTROL_DT
-
-            _log_mpc_step(logger, state, target_pose, cmd, diag,
-                          ref_twist=np.zeros(6), dashboard=dashboard)
-
-            horizon.update(mpc.predicted_poses)
-            horizon.render(viewer)
-            viewer.sync()
-
-            # Real-time pacing
-            elapsed = time.monotonic() - start_wall
-            sleep_time = sim_time_target - elapsed
-            if sleep_time > 0:
-                time.sleep(sleep_time)
-
-    logger.flush()
-    _print_mpc_summary(logger)
-
-
-# ---------------------------------------------------------------------------
-# Catch loops (Phase 5C)
-# ---------------------------------------------------------------------------
-
-def run_catch_headless(plant: MuJoCoPlant, mpc, catch_coordinator,
-                       duration: float, logger: TelemetryLogger,
-                       dashboard=None) -> None:
-    """Run MPC with dynamic targets + ball physics, headless."""
-    from catch.coordinator import CatchPhase
-    from catch.hand_trajectory import HandCatchSequence
-    n_steps = int(duration / CONTROL_DT)
-    active_hand_seq = None  # Currently executing HandCatchSequence
-
-    for step_idx in range(n_steps):
-        state = plant.get_state()
-        current_pose = _pose_6dof_from_state(state)
-        hand_pos = state.hand_pos_mm if state.hand_pos_mm is not None else 0.0
-
-        # Check if ball should be spawned
-        spawn = catch_coordinator.should_spawn_ball(state.time)
-        if spawn is not None:
-            plant.spawn_ball(spawn.position_mm, spawn.velocity_mms)
-
-        # Update coordinator → get reference + hand command
-        ref_gen, hand_cmd = catch_coordinator.update(
-            state.time, current_pose, hand_pos_mm=hand_pos)
-
-        # Execute hand command
-        if isinstance(hand_cmd, HandCatchSequence):
-            active_hand_seq = hand_cmd
-        elif hand_cmd == 'prime':
-            plant.hand_to_prime()
-            active_hand_seq = None
-        elif hand_cmd == 'home':
-            plant.hand_to_home()
-            active_hand_seq = None
-
-        # Sample active hand catch trajectory every step
-        if active_hand_seq is not None:
-            pos = active_hand_seq.sample(state.time)
-            if pos is not None:
-                plant.command_hand(pos)
-            else:
-                active_hand_seq = None
-
-        # Run MPC with the reference
-        if ref_gen is not None:
-            poses, twists = ref_gen.evaluate(state.time, CONTROL_DT, mpc.params.N)
-            cmd, diag = mpc.solve(state, poses, ref_twist=twists)
+    # Sample active hand sequence (catch or throw)
+    if active_hand_seq is not None:
+        pos = active_hand_seq.sample(sim_time)
+        if pos is not None:
+            plant.command_hand(pos)
+            last_hand_cmd_mm = pos
         else:
-            # No reference — hold home
-            home_ref = np.zeros((mpc.params.N + 1, 6))
-            cmd, diag = mpc.solve(state, home_ref)
+            active_hand_seq = None
 
-        plant.command(cmd)
-        plant.step(CONTROL_DT)
-
-        # Check for ball capture
-        if plant.has_ball:
-            if plant.check_and_capture():
-                catch_coordinator.notify_capture(state.time)
-
-        # Log
-        ref_pose = poses[0] if ref_gen is not None else np.zeros(6)
-        ref_twist = twists[0] if ref_gen is not None else np.zeros(6)
-        _log_mpc_step(logger, state, ref_pose, cmd, diag,
-                      ref_twist=ref_twist, dashboard=dashboard)
-
-    logger.flush()
-    _print_mpc_summary(logger)
-    _print_catch_summary(catch_coordinator)
+    return active_hand_seq, last_hand_cmd_mm
 
 
-def run_catch_with_viewer(plant: MuJoCoPlant, mpc, catch_sequence,
-                          duration: float, logger: TelemetryLogger,
-                          dashboard=None) -> None:
-    """Run MPC with dynamic targets + ball physics, with viewer.
+def _mpc_solve(mpc, state, tc: TargetCommand):
+    """Call mpc.solve() with the target from a TargetCommand.
 
-    Loops the catch sequence until the viewer is closed.
+    Returns (cmd, diag, ref_pose, ref_twist).
+    """
+    cmd, diag = mpc.solve(
+        state, tc.target_pose,
+        arrival_time=tc.arrival_time,
+        target_twist=tc.target_twist,
+    )
+    ref_pose = tc.target_pose
+    ref_twist = tc.target_twist if tc.target_twist is not None else np.zeros(6)
+    return cmd, diag, ref_pose, ref_twist
+
+
+def run_mpc_headless(plant: MuJoCoPlant, mpc, source, duration: float,
+                     logger: TelemetryLogger, dashboard=None) -> None:
+    """Unified headless MPC loop.
 
     Parameters
     ----------
-    catch_sequence : list of (DynamicTarget, BallSpawn | None)
-        The raw sequence — rebuilt into a fresh CatchCoordinator each loop.
+    source : TargetSource
+        Any object with ``update(sim_time, state) -> TargetCommand``.
+        May optionally provide ``notify_capture(sim_time)`` and
+        ``print_summary()``.
+    """
+    n_steps = int(duration / CONTROL_DT)
+    active_hand_seq = None
+    last_hand_cmd_mm = 0.0
+
+    for _ in range(n_steps):
+        state = plant.get_state()
+        tc = source.update(state.time, state)
+
+        # Ball spawning
+        if tc.ball_spawn is not None:
+            if tc.ball_spawn == 'spawn_in_hand':
+                if (hasattr(plant, 'ball_manager')
+                        and plant.ball_manager is not None):
+                    plant.ball_manager.spawn_in_hand()
+            else:
+                if (hasattr(plant, 'ball_manager')
+                        and plant.ball_manager is not None):
+                    plant.ball_manager.reset()
+                plant.spawn_ball(tc.ball_spawn.position_mm,
+                                 tc.ball_spawn.velocity_mms)
+
+        # Hand commands
+        active_hand_seq, last_hand_cmd_mm = _execute_hand_cmd(
+            plant, tc.hand_cmd, active_hand_seq, last_hand_cmd_mm, state.time)
+
+        # MPC solve
+        cmd, diag, ref_pose, ref_twist = _mpc_solve(mpc, state, tc)
+        plant.command(cmd)
+        plant.step(CONTROL_DT)
+
+        # Ball capture
+        if plant.has_ball and plant.check_and_capture():
+            if hasattr(source, 'notify_capture'):
+                source.notify_capture(state.time)
+
+        _log_mpc_step(logger, state, ref_pose, cmd, diag,
+                      ref_twist=ref_twist, dashboard=dashboard,
+                      hand_cmd_mm=last_hand_cmd_mm)
+
+    logger.flush()
+    _print_mpc_summary(logger)
+    if hasattr(source, 'print_summary'):
+        source.print_summary()
+
+
+def run_mpc_with_viewer(plant: MuJoCoPlant, mpc, source, duration: float,
+                        logger: TelemetryLogger, dashboard=None) -> None:
+    """Unified MPC loop with the MuJoCo passive viewer.
+
+    Supports pause/step/speed control, optional custom rendering, and
+    automatic looping when the source has a ``reset()`` method.
+
+    Parameters
+    ----------
+    source : TargetSource
+        Any object with ``update(sim_time, state) -> TargetCommand``.
+        Optional attributes checked at runtime:
+        - ``should_step() -> bool`` + ``sleep_factor -> float``: pause/speed
+        - ``key_callback(keycode)``: viewer keyboard events
+        - ``render(viewer)``: custom per-frame rendering (e.g. spawn preview)
+        - ``notify_capture(sim_time)``: ball capture notification
+        - ``reset()``: enables looping (viewer mode only)
+        - ``print_summary()``: called after each run
     """
     import mujoco.viewer
     from viz.horizon import HorizonRenderer
-    from catch.coordinator import CatchCoordinator
 
     horizon = HorizonRenderer(plant.geom.init_height_mm)
-    sim_ctrl = SimController()
+
+    # Sim control: use source's if available, else create default
+    has_source_ctrl = (hasattr(source, 'should_step')
+                       and hasattr(source, 'sleep_factor'))
+    sim_ctrl = None if has_source_ctrl else SimController()
+
+    # Combine key callbacks: source's keys + sim control's pause/speed
+    source_kc = getattr(source, 'key_callback', None)
+    ctrl_kc = sim_ctrl.key_callback if sim_ctrl is not None else None
+    combined_kc = _combine_key_callbacks(source_kc, ctrl_kc)
+
+    can_loop = hasattr(source, 'reset')
+    has_render = hasattr(source, 'render')
 
     print("\n  Controls:  Space=pause  Right=step  Up/Down=speed  R=reset speed\n")
 
     with mujoco.viewer.launch_passive(
-        plant.model, plant.data, key_callback=sim_ctrl.key_callback
+        plant.model, plant.data, key_callback=combined_kc
     ) as viewer:
         iteration = 0
 
         while viewer.is_running():
-            # Fresh coordinator each loop
-            catch_coordinator = CatchCoordinator(
-                feasibility_checker=feasibility_checker)
-            for target, ball in catch_sequence:
-                catch_coordinator.submit_target(target, ball)
-
-            # Reset plant + MPC for a clean start
-            plant.reset()
-            mpc.reset()
             iteration += 1
+            if iteration > 1:
+                if not can_loop:
+                    break
+                source.reset()
+                plant.reset()
+                mpc.reset()
+
             active_hand_seq = None
-
+            last_hand_cmd_mm = 0.0
+            wall_budget = 0.0
             start_wall = time.monotonic()
-            sim_time_target = 0.0
 
-            while viewer.is_running() and sim_time_target < duration:
-                # Pause / step gate
-                if not sim_ctrl.should_step():
+            while viewer.is_running():
+                # Pause gate
+                should_step = (source.should_step() if has_source_ctrl
+                               else sim_ctrl.should_step())
+                if not should_step:
+                    start_wall = time.monotonic()
+                    wall_budget = 0.0
                     viewer.sync()
-                    time.sleep(0.01)  # don't spin at 100% CPU while paused
+                    time.sleep(0.01)
                     continue
 
                 state = plant.get_state()
-                current_pose = _pose_6dof_from_state(state)
-                hand_pos = state.hand_pos_mm if state.hand_pos_mm is not None else 0.0
 
-                # Check if ball should be spawned
-                spawn = catch_coordinator.should_spawn_ball(state.time)
-                if spawn is not None:
-                    plant.spawn_ball(spawn.position_mm, spawn.velocity_mms)
+                # Check sim-time duration
+                if state.time >= duration:
+                    break
 
-                # Update coordinator → get reference + hand command
-                ref_gen, hand_cmd = catch_coordinator.update(
-                    state.time, current_pose, hand_pos_mm=hand_pos)
+                tc = source.update(state.time, state)
 
-                from catch.hand_trajectory import HandCatchSequence
-                if isinstance(hand_cmd, HandCatchSequence):
-                    active_hand_seq = hand_cmd
-                elif hand_cmd == 'prime':
-                    plant.hand_to_prime()
-                    active_hand_seq = None
-                elif hand_cmd == 'home':
-                    plant.hand_to_home()
-                    active_hand_seq = None
-
-                # Sample active hand catch trajectory every step
-                if active_hand_seq is not None:
-                    pos = active_hand_seq.sample(state.time)
-                    if pos is not None:
-                        plant.command_hand(pos)
+                # Ball spawning
+                if tc.ball_spawn is not None:
+                    if tc.ball_spawn == 'spawn_in_hand':
+                        if (hasattr(plant, 'ball_manager')
+                                and plant.ball_manager is not None):
+                            plant.ball_manager.spawn_in_hand()
                     else:
-                        active_hand_seq = None
+                        if (hasattr(plant, 'ball_manager')
+                                and plant.ball_manager is not None):
+                            plant.ball_manager.reset()
+                        plant.spawn_ball(tc.ball_spawn.position_mm,
+                                         tc.ball_spawn.velocity_mms)
 
-                # Run MPC
-                if ref_gen is not None:
-                    poses, twists = ref_gen.evaluate(
-                        state.time, CONTROL_DT, mpc.params.N)
-                    cmd, diag = mpc.solve(state, poses, ref_twist=twists)
-                else:
-                    home_ref = np.zeros((mpc.params.N + 1, 6))
-                    cmd, diag = mpc.solve(state, home_ref)
+                # Hand commands
+                active_hand_seq, last_hand_cmd_mm = _execute_hand_cmd(
+                    plant, tc.hand_cmd, active_hand_seq, last_hand_cmd_mm,
+                    state.time)
 
+                # MPC solve
+                cmd, diag, ref_pose, ref_twist = _mpc_solve(mpc, state, tc)
                 plant.command(cmd)
                 plant.step(CONTROL_DT)
-                sim_time_target += CONTROL_DT
 
-                # Check for ball capture
-                if plant.has_ball:
-                    if plant.check_and_capture():
-                        catch_coordinator.notify_capture(state.time)
+                # Ball capture
+                if plant.has_ball and plant.check_and_capture():
+                    if hasattr(source, 'notify_capture'):
+                        source.notify_capture(state.time)
 
-                # Log + visualise
-                ref_pose = poses[0] if ref_gen is not None else np.zeros(6)
-                ref_twist = twists[0] if ref_gen is not None else np.zeros(6)
+                # Log
                 _log_mpc_step(logger, state, ref_pose, cmd, diag,
-                              ref_twist=ref_twist, dashboard=dashboard)
+                              ref_twist=ref_twist, dashboard=dashboard,
+                              hand_cmd_mm=last_hand_cmd_mm)
 
-                horizon.update(mpc.predicted_poses)
+                # Render
+                horizon.update(mpc.predicted_poses, mpc.predicted_times)
                 horizon.render(viewer)
+                if has_render:
+                    source.render(viewer)
                 viewer.sync()
 
-                # Real-time pacing (adjusted by speed multiplier)
+                # Real-time pacing (accumulated budget approach)
+                sleep_fac = (source.sleep_factor if has_source_ctrl
+                             else sim_ctrl.sleep_factor)
+                wall_budget += CONTROL_DT * sleep_fac
                 elapsed = time.monotonic() - start_wall
-                sleep_time = (sim_time_target * sim_ctrl.sleep_factor) - elapsed
+                sleep_time = wall_budget - elapsed
                 if sleep_time > 0:
                     time.sleep(sleep_time)
+                elif sleep_time < -0.5:
+                    # Fallen behind (e.g., speed change) — resync
+                    start_wall = time.monotonic()
+                    wall_budget = 0.0
 
-            # Print summary for this iteration
-            print(f"\n--- Iteration {iteration} ---")
-            _print_catch_summary(catch_coordinator)
-
-    logger.flush()
-    _print_mpc_summary(logger)
-
-
-def run_interactive_catch_with_viewer(
-    plant: MuJoCoPlant,
-    mpc,
-    feasibility_checker,
-    logger: TelemetryLogger,
-    dashboard=None,
-) -> None:
-    """Interactive catch mode — spawn balls on demand with the viewer.
-
-    The user presses B to spawn balls, N/M to cycle presets, and watches
-    the full catch pipeline execute.
-    """
-    import mujoco.viewer
-    from viz.horizon import HorizonRenderer
-    from input.interactive_catch import InteractiveCatchController
-    from catch.hand_trajectory import HandCatchSequence
-
-    controller = InteractiveCatchController(
-        feasibility_checker=feasibility_checker)
-    horizon = HorizonRenderer(plant.geom.init_height_mm)
-
-    print("\n  Interactive Catch Mode")
-    print("  ─────────────────────────────────────────────────────")
-    print("  B           Spawn ball with current parameters")
-    print("  N / M       Next / previous preset")
-    print("  1-5         Select preset directly")
-    print("  ─── Adjust spawn position ────────────────────────")
-    print("  PgUp/PgDn   Spawn height  ±200mm")
-    print("  Left arrow  XY offset X   -20mm")
-    print("  ─── Adjust spawn velocity (numpad) ───────────────")
-    print("  Num 8/2     Vz (down speed)  ±200mm/s")
-    print("  Num 4/6     Vxy X            ±50mm/s")
-    print("  Num 7/9     Vxy Y            ±50mm/s")
-    print("  ─── Playback ─────────────────────────────────────")
-    print("  Space       Pause / unpause")
-    print("  Up/Down     Speed ×2 / ×0.5")
-    print("  R           Reset speed to 1×")
-    print("  ─────────────────────────────────────────────────────\n")
-
-    with mujoco.viewer.launch_passive(
-        plant.model, plant.data,
-        key_callback=controller.key_callback,
-    ) as viewer:
-        wall_budget = 0.0  # accumulated wall-time budget (speed-adjusted)
-        start_wall = time.monotonic()
-
-        while viewer.is_running():
-            if not controller.should_step():
-                # While paused, keep wall budget in sync so we don't
-                # accumulate a huge deficit
-                start_wall = time.monotonic()
-                wall_budget = 0.0
-                viewer.sync()
-                time.sleep(0.01)
-                continue
-
-            state = plant.get_state()
-            current_pose = _pose_6dof_from_state(state)
-            hand_pos = state.hand_pos_mm if state.hand_pos_mm is not None else 0.0
-
-            # Update controller — returns ref, hand command, and optional ball spawn
-            ref_gen, hand_cmd, ball_spawn = controller.update(
-                state.time, current_pose, hand_pos)
-
-            # Spawn ball if requested
-            if ball_spawn is not None:
-                if plant.ball_manager is not None:
-                    plant.ball_manager.reset()
-                plant.spawn_ball(ball_spawn.position_mm, ball_spawn.velocity_mms)
-
-            # Execute hand command
-            if isinstance(hand_cmd, (int, float)):
-                plant.command_hand(float(hand_cmd))
-            elif hand_cmd == 'prime':
-                plant.hand_to_prime()
-            elif hand_cmd == 'home':
-                plant.hand_to_home()
-
-            # MPC solve
-            if ref_gen is not None:
-                poses, twists = ref_gen.evaluate(
-                    state.time, CONTROL_DT, mpc.params.N)
-                cmd, diag = mpc.solve(state, poses, ref_twist=twists)
-            else:
-                home_ref = np.zeros((mpc.params.N + 1, 6))
-                cmd, diag = mpc.solve(state, home_ref)
-
-            plant.command(cmd)
-            plant.step(CONTROL_DT)
-
-            # Check for ball capture
-            if plant.has_ball and plant.check_and_capture():
-                from input.interactive_catch import InteractiveCatchState
-                if (controller._coordinator is not None
-                        and controller._state == InteractiveCatchState.CATCHING):
-                    controller._coordinator.notify_capture(state.time)
-
-            # Log + visualise
-            ref_pose = poses[0] if ref_gen is not None else np.zeros(6)
-            ref_twist = twists[0] if ref_gen is not None else np.zeros(6)
-            _log_mpc_step(logger, state, ref_pose, cmd, diag,
-                          ref_twist=ref_twist, dashboard=dashboard)
-
-            # Render: MPC horizon first (resets ngeom), then spawn preview on top
-            horizon.update(mpc.predicted_poses)
-            horizon.render(viewer)
-            controller.render_preview(viewer)
-            viewer.sync()
-
-            # Real-time pacing: each step adds CONTROL_DT / speed to budget
-            wall_budget += CONTROL_DT * controller.sleep_factor
-            elapsed = time.monotonic() - start_wall
-            sleep_time = wall_budget - elapsed
-            if sleep_time > 0:
-                time.sleep(sleep_time)
-            elif sleep_time < -0.5:
-                # Fallen too far behind (e.g., after speed change) — resync
-                start_wall = time.monotonic()
-                wall_budget = 0.0
+            # End-of-iteration summary
+            if hasattr(source, 'print_summary'):
+                if can_loop:
+                    print(f"\n--- Iteration {iteration} ---")
+                source.print_summary()
 
     logger.flush()
     _print_mpc_summary(logger)
@@ -886,72 +877,89 @@ def _print_mpc_summary(logger: TelemetryLogger) -> None:
 def main():
     args = parse_args()
 
-    # Interactive input mode (Phase 4) — overrides everything else
-    input_source = None
-    if args.spacemouse:
+    # ---- Mode selection → TargetSource + label + default_duration ----
+
+    source = None            # TargetSource (set below for MPC modes)
+    schedule = None          # pose schedule (direct-command only)
+    needs_viewer = False     # True if mode requires viewer
+    needs_feasibility = False
+    needs_high_vel = False   # raise MPC velocity limit
+    catch_sequence = None    # raw sequence for CatchTargetSource
+    throw_catch_plan = None  # ThrowCatchPlan for ThrowCatchTargetSource
+
+    if args.juggle:
         args.mpc = True
-        from input.spacemouse import SpaceMouseInput
-        input_source = SpaceMouseInput()
-        if not input_source.connected:
-            print("ERROR: SpaceMouse not available. Use --keyboard instead.")
-            sys.exit(1)
+        needs_viewer = True
+        needs_high_vel = True
+        label = "Continuous throw-catch (juggle)"
+        default_duration = 600.0
+
+    elif args.interactive_catch:
+        args.mpc = True
+        needs_viewer = True
+        needs_feasibility = True
+        needs_high_vel = True
+        label = "Interactive catch"
+        default_duration = 600.0
+
+    elif args.throw_catch:
+        args.mpc = True
+        needs_high_vel = True
+        from input.scripted import get_throw_catch_sequence
+        throw_catch_plan, default_duration = get_throw_catch_sequence(args.throw_catch)
+        label = f"Throw-catch: {args.throw_catch}"
+
+    elif args.catch:
+        args.mpc = True
+        needs_feasibility = True
+        needs_high_vel = True
+        from input.scripted import get_catch_sequence
+        catch_sequence, default_duration = get_catch_sequence(args.catch)
+        label = f"Catch: {args.catch}"
+
+    elif args.spacemouse:
+        args.mpc = True
+        needs_viewer = True
+        needs_high_vel = True
         label = "SpaceMouse interactive"
-        default_duration = 300.0  # 5 minutes, effectively unlimited
+        default_duration = 300.0
+
     elif args.keyboard:
         args.mpc = True
-        from input.keyboard import KeyboardInput
-        input_source = KeyboardInput()
+        needs_viewer = True
+        needs_high_vel = True
         label = "Keyboard interactive"
         default_duration = 300.0
 
-    # Mode selection: interactive catch > scripted catch > trajectory > pose/sequence
-    interactive_catch = False
-    catch_coordinator = None
-    ref_gen = None
-
-    if args.interactive_catch and input_source is None:
-        # Interactive catch mode
+    elif args.trajectory:
         args.mpc = True
-        interactive_catch = True
-        label = "Interactive catch"
-        default_duration = 600.0  # 10 minutes (effectively unlimited)
-        schedule = None
-
-    elif args.catch and input_source is None:
-        # Scripted catch mode (Phase 5C)
-        args.mpc = True
-        from input.scripted import get_catch_sequence
-        from catch.coordinator import CatchCoordinator
-        catch_sequence, default_duration = get_catch_sequence(args.catch)
-        catch_coordinator = CatchCoordinator()
-        for target, ball in catch_sequence:
-            catch_coordinator.submit_target(target, ball)
-        label = f"Catch: {args.catch}"
-        schedule = None
-
-    elif args.trajectory and input_source is None:
-        args.mpc = True  # trajectories always use MPC
+        needs_high_vel = True
         from input.scripted import get_trajectory
-        ref_gen, default_duration = get_trajectory(args.trajectory)
+        waypoints, default_duration = get_trajectory(args.trajectory)
         label = f"Trajectory: {args.trajectory}"
-        schedule = None  # not used in trajectory mode
-    elif input_source is not None:
-        schedule = None  # not used in interactive mode
+
     elif args.sequence:
         schedule = _parse_sequence(args.sequence)
         label = f"Sequence: {len(schedule)} poses"
         default_duration = schedule[-1][0] + 2.0
+
     elif args.pose:
         target = _parse_pose(args.pose)
         schedule = [(0.0, target)]
         label = f"Static pose: {target}"
         default_duration = 10.0
+
     else:
         schedule = [(0.0, np.zeros(6))]
         label = "Home"
         default_duration = 10.0
 
     duration = args.duration if args.duration is not None else default_duration
+
+    # Viewer requirement check
+    if needs_viewer and args.no_viewer:
+        print(f"ERROR: this mode requires the viewer (remove --no-viewer)")
+        sys.exit(1)
 
     mode = "MPC" if args.mpc else "Direct"
     print(f"{label} [{mode}]")
@@ -979,67 +987,132 @@ def main():
 
     # Build feasibility checker for catch modes (needs plant)
     feasibility_checker = None
-    if catch_coordinator is not None or interactive_catch:
-        from catch.feasibility import FeasibilityChecker
+    if needs_feasibility:
+        from hand.feasibility import FeasibilityChecker
         feasibility_checker = FeasibilityChecker(plant)
-        if catch_coordinator is not None:
-            catch_coordinator._feasibility = feasibility_checker
         print(f"Feasibility checker: coarse MPC (dt={feasibility_checker._coarse_dt}s, "
               f"horizon={feasibility_checker._horizon_s}s)")
 
-    # Optional MPC controller
+    # Build MPC controller
     mpc = None
     if args.mpc:
         from controller import MPCController, MPCParams
-        # Use generous solver budget for interactive use (cold starts need headroom).
-        # The tight 18ms budget is for production (Phase 6) where the control
-        # period is a hard deadline. In simulation, we want correct solutions.
         param_overrides = dict(max_cpu_time=2.0, max_iter=500)
-        if ref_gen is not None or input_source is not None or catch_coordinator is not None or interactive_catch:
+        if needs_high_vel:
             param_overrides['max_leg_vel_mmps'] = 1000.0
         mpc = MPCController.from_plant(MPCParams(**param_overrides), plant)
         print("MPC controller initialised "
               f"(N={mpc.params.N}, tau={mpc.params.tau*1000:.0f} ms, "
               f"v_max={mpc.params.max_leg_vel_mmps:.0f} mm/s)")
 
-    try:
-        if input_source is not None:
-            # Interactive input mode (Phase 4) — viewer required
-            if args.no_viewer:
-                print("ERROR: --spacemouse/--keyboard requires the viewer "
-                      "(remove --no-viewer)")
-                sys.exit(1)
-            run_interactive_with_viewer(plant, mpc, input_source, duration,
-                                       logger, dashboard)
-        elif interactive_catch:
-            # Interactive catch mode — viewer required
-            if args.no_viewer:
-                print("ERROR: --interactive-catch requires the viewer "
-                      "(remove --no-viewer)")
-                sys.exit(1)
-            run_interactive_catch_with_viewer(plant, mpc, feasibility_checker,
-                                             logger, dashboard)
-        elif catch_coordinator is not None:
-            # Catch mode (Phase 5C)
-            if args.no_viewer:
-                run_catch_headless(plant, mpc, catch_coordinator, duration,
-                                  logger, dashboard)
-            else:
-                # Viewer mode loops until closed — pass raw sequence
-                run_catch_with_viewer(plant, mpc, catch_sequence, duration,
-                                     logger, dashboard)
-        elif ref_gen is not None:
-            # Trajectory mode (Phase 3)
-            if args.no_viewer:
-                run_trajectory_headless(plant, mpc, ref_gen, duration, logger, dashboard)
-            else:
-                run_trajectory_with_viewer(plant, mpc, ref_gen, duration, logger, dashboard)
-        elif args.mpc:
-            if args.no_viewer:
-                run_mpc_headless(plant, mpc, schedule, duration, logger, dashboard)
-            else:
-                run_mpc_with_viewer(plant, mpc, schedule, duration, logger, dashboard)
+    # ---- Build TargetSource for MPC modes ----
+
+    # Home pose: the platform's resting position (all zeros = no offset).
+    # Passed to coordinators so return-to-home targets use the true home.
+    home_pose = np.zeros(6)
+
+    if args.juggle:
+        from input.continuous_throw_catch import ContinuousThrowCatchController
+        controller = ContinuousThrowCatchController(home_pose=home_pose)
+        source = ContinuousThrowCatchSource(controller)
+        print("\n  Continuous Throw-Catch Mode (Juggle)")
+        print("  ─────────────────────────────────────────────────────")
+        print("  T           Toggle editing: throw ↔ catch position")
+        print("  Left / Num0 Selected pos X  -/+20mm")
+        print("  Num1 / Num3 Selected pos Y  -/+20mm")
+        print("  PgUp / PgDn Ball height     ±20mm")
+        print("  F / G       Flight time     -/+0.05s")
+        print("  B           Reset ball (on drop or force-reset)")
+        print("  ─── Playback ─────────────────────────────────────")
+        print("  Space       Pause / unpause")
+        print("  Up / Down   Speed ×2 / ×0.5")
+        print("  R           Reset speed to 1×")
+        print("  ─────────────────────────────────────────────────────\n")
+        plant.model.vis.quality.shadowsize = 0
+
+    elif args.interactive_catch:
+        from input.interactive_catch import InteractiveCatchController
+
+        bb_sim = None
+        if args.bb:
+            from ball_butler.sim import BallButlerSim
+            import math
+            bb_pos = np.array([300.0, -400.0, 1500.0])
+            bb_yaw = math.atan2(-bb_pos[1], -bb_pos[0])
+            bb_sim = BallButlerSim.from_hardware_config(bb_pos, bb_yaw)
+            print(f"Ball Butler enabled at pos={bb_pos.tolist()} mm, "
+                  f"yaw={math.degrees(bb_yaw):.1f}°")
+
+        controller = InteractiveCatchController(
+            feasibility_checker=feasibility_checker,
+            home_pose=home_pose,
+            ball_butler_sim=bb_sim)
+        source = InteractiveCatchSource(controller, home_pose=home_pose)
+        # Print interactive catch help
+        print("\n  Interactive Catch Mode")
+        print("  ─────────────────────────────────────────────────────")
+        if bb_sim is not None:
+            print("  B           Ball Butler throw")
+            print("  ` (grave)   Spawn ball with current preset")
         else:
+            print("  B           Spawn ball with current parameters")
+        print("  N / M       Next / previous preset")
+        print("  1-5         Select preset directly")
+        print("  ─── Adjust spawn position ────────────────────────")
+        print("  PgUp/PgDn   Spawn height  ±200mm")
+        print("  Left/Num 0  XY offset X   ±20mm")
+        print("  Num 1/3     XY offset Y   ±20mm")
+        print("  ─── Adjust spawn velocity (numpad) ───────────────")
+        print("  Num 8/2     Vz (down/up)    ±200mm/s")
+        print("  Num 4/6     Vxy X           ±50mm/s")
+        print("  Num 7/9     Vxy Y           ±50mm/s")
+        print("  ─── Playback ─────────────────────────────────────")
+        print("  Space       Pause / unpause")
+        print("  Up/Down     Speed ×2 / ×0.5")
+        print("  R           Reset speed to 1×")
+        print("  ─────────────────────────────────────────────────────\n")
+        plant.model.vis.quality.shadowsize = 0
+
+    elif throw_catch_plan is not None:
+        source = ThrowCatchTargetSource(throw_catch_plan, home_pose=home_pose)
+
+    elif catch_sequence is not None:
+        source = CatchTargetSource(catch_sequence,
+                                   feasibility_checker=feasibility_checker,
+                                   home_pose=home_pose)
+
+    elif args.spacemouse:
+        from input.spacemouse import SpaceMouseInput
+        raw_input = SpaceMouseInput()
+        if not raw_input.connected:
+            print("ERROR: SpaceMouse not available. Use --keyboard instead.")
+            sys.exit(1)
+        source = InteractiveTargetSource(raw_input, CONTROL_DT)
+
+    elif args.keyboard:
+        from input.keyboard import KeyboardInput
+        raw_input = KeyboardInput()
+        source = InteractiveTargetSource(raw_input, CONTROL_DT)
+
+    elif args.trajectory:
+        source = WaypointTargetSource(waypoints)
+
+    elif args.mpc and schedule is not None:
+        source = StaticTargetSource(schedule)
+
+    # ---- Run ----
+
+    try:
+        if source is not None:
+            # Unified MPC path
+            if args.no_viewer:
+                run_mpc_headless(plant, mpc, source, duration, logger,
+                                dashboard)
+            else:
+                run_mpc_with_viewer(plant, mpc, source, duration, logger,
+                                   dashboard)
+        else:
+            # Direct-command path (no MPC)
             if args.no_viewer:
                 run_headless(plant, schedule, duration, logger, dashboard)
             else:
@@ -1048,8 +1121,8 @@ def main():
         print("\nInterrupted — flushing telemetry...")
         logger.flush()
     finally:
-        if input_source is not None and hasattr(input_source, 'close'):
-            input_source.close()
+        if source is not None and hasattr(source, 'close'):
+            source.close()
         if dashboard is not None:
             dashboard.stop()
 

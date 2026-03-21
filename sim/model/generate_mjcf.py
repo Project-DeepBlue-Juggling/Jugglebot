@@ -77,6 +77,15 @@ def generate_mjcf(config, mesh_dir=None):
     }
     has_meshes = {k: os.path.exists(v) for k, v in mesh_files.items()}
 
+    # Hand collision parts: 8 convex pieces that together form the concave
+    # cone interior.  Each part's convex hull is individually correct, so
+    # MuJoCo collision faithfully represents the cup shape.
+    hand_part_files = sorted(
+        f for f in os.listdir(mesh_dir)
+        if f.lower().startswith('hand - part') and f.lower().endswith('.stl')
+    ) if os.path.isdir(mesh_dir) else []
+    has_hand_parts = len(hand_part_files) > 0
+
     # ---- Extract geometry values (convert mm → m) ----
     initial_height_m = geom['initial_height_mm'] / 1000.0
     leg_stroke_m = geom['leg_stroke_mm'] / 1000.0
@@ -87,7 +96,7 @@ def generate_mjcf(config, mesh_dir=None):
     # Hand dynamics
     teensy_traj = config['teensy_trajectory']
     hand_mass_kg = teensy_traj['inertia_hand_only_kg']  # 0.281 kg
-    hand_bottom_z_m = -0.135  # Bottom of travel in platform-local Z (mechanical constraint)
+    hand_bottom_z_m = -0.129  # Bottom of travel in platform-local Z (from hardware_config hand_axis_bottom_offset_mm)
 
     base_nodes_m = np.array(geom['base_nodes_mm']) / 1000.0  # (6, 3)
     plat_nodes_m = np.array(geom['init_plat_nodes_mm']) / 1000.0  # (6, 3) in platform frame
@@ -138,7 +147,7 @@ def generate_mjcf(config, mesh_dir=None):
     })
 
     # Size
-    ET.SubElement(mujoco, 'size', nconmax='100', njmax='500')
+    ET.SubElement(mujoco, 'size', nconmax='200', njmax='1000')
 
     # Visual
     visual = ET.SubElement(mujoco, 'visual')
@@ -175,6 +184,9 @@ def generate_mjcf(config, mesh_dir=None):
     if has_meshes['hand']:
         ET.SubElement(asset, 'mesh', name='hand_mesh', file='meshes/hand.stl',
                       scale=mesh_scale)
+    for i, part_file in enumerate(hand_part_files):
+        ET.SubElement(asset, 'mesh', name=f'hand_part_{i}',
+                      file=f'meshes/{part_file}', scale=mesh_scale)
 
     # Default classes
     default = ET.SubElement(mujoco, 'default')
@@ -250,18 +262,56 @@ def generate_mjcf(config, mesh_dir=None):
                   type='slide', axis='0 0 1', limited='true',
                   range=f'0 {hand_stroke_m:.6f}',
                   damping='50', armature='0.001')
-    # Hand visual
-    if has_meshes['hand']:
-        # Mesh rotation: -90° X, +90° Y, +90° Y = quat (w,x,y,z) = (0, 0, 0.707107, 0.707107)
-        # Mesh origin is at platform centroid; offset to hand body frame
-        ET.SubElement(hand_body, 'geom', name='hand_visual',
+    # Hand geometry — the hand is a truncated cone (cup) with a concave
+    # interior.  MuJoCo convex-hulls each mesh, so a single mesh would fill
+    # in the cup opening.  Instead, the hand is split into 8 convex parts
+    # (radial wedges) whose individual convex hulls faithfully represent the
+    # concave interior.  The original hand.stl is kept as visual-only.
+    #
+    # Ball-hand interaction uses kinematic hold (direct qpos override), not
+    # physics contact.  Hand collision geoms are visual-only (no contact).
+    hand_contact_params = dict(
+        contype='0', conaffinity='0',
+    )
+    # Mesh transforms — the original hand.stl and the decomposed parts use
+    # different coordinate systems:
+    #   hand.stl:   cone axis is rotated; needs 180° around YZ diagonal + Y offset
+    #   Hand parts: cone axis along STL Y; needs 90° around X + Z offset
+    hand_visual_pos = '0 -0.065 0'
+    hand_visual_quat = '0 0 0.707107 0.707107'
+    # Parts: 90° around X maps STL Y → body Z.  Cone bottom (STL Y=-10mm)
+    # lands at body Z=0 with a +10mm Z offset.
+    hand_parts_pos = '0 0 0.010'
+    hand_parts_quat = '0.707107 0.707107 0 0'
+
+    if has_hand_parts:
+        # Visual: original mesh, no collision
+        if has_meshes['hand']:
+            ET.SubElement(hand_body, 'geom', name='hand_visual',
+                          type='mesh', mesh='hand_mesh',
+                          pos=hand_visual_pos, quat=hand_visual_quat,
+                          material='hand_mat',
+                          contype='0', conaffinity='0',
+                          mass='0')
+        # Collision: 8 convex parts (invisible — visual handled above)
+        for i in range(len(hand_part_files)):
+            ET.SubElement(hand_body, 'geom', name=f'hand_collision_{i}',
+                          type='mesh', mesh=f'hand_part_{i}',
+                          pos=hand_parts_pos, quat=hand_parts_quat,
+                          rgba='0 0 0 0',  # invisible
+                          mass='0',
+                          **hand_contact_params)
+    elif has_meshes['hand']:
+        # Fallback: single mesh for both visual and collision (convex hull
+        # fills in the cup — less accurate but functional)
+        ET.SubElement(hand_body, 'geom', name='hand_collision',
                       type='mesh', mesh='hand_mesh',
-                      pos=f'0 -0.065 0',
-                      quat='0 0 0.707107 0.707107',
-                      material='hand_mat', contype='0', conaffinity='0',
-                      mass='0')  # mass already set via inertial
+                      pos=hand_visual_pos, quat=hand_visual_quat,
+                      material='hand_mat',
+                      mass='0',
+                      **hand_contact_params)
     else:
-        # Fallback: stacked cylinders approximating truncated cone
+        # Fallback: stacked cylinders approximating truncated cone (visual only)
         ET.SubElement(hand_body, 'geom', name='hand_cone_base',
                       type='cylinder', size=f'{hand_radius_m:.4f} 0.030',
                       pos='0 0 0.080', material='hand_mat',
@@ -270,21 +320,17 @@ def generate_mjcf(config, mesh_dir=None):
                       type='cylinder', size=f'{hand_radius_m * 0.5:.4f} 0.025',
                       pos='0 0 0.030', material='hand_mat',
                       contype='0', conaffinity='0', mass='0')
-    # Collision disc at the bottom of the cone — catches the ball
-    # The ball lands on this disc and stops (dead contact).
-    # Separate from the visual mesh so collision shape stays simple.
-    ET.SubElement(hand_body, 'geom', name='hand_catch_disc',
-                  type='cylinder', size=f'{hand_radius_m:.4f} 0.003',
-                  pos='0 0 0.003',
-                  contype='2', conaffinity='2',
-                  solref='0.005 2.0',       # overdamped (no bounce)
-                  solimp='0.99 0.99 0.001',
-                  friction='1.0 0.005 0.0001',
-                  rgba='0 0 0 0', mass='0')  # invisible, massless
-    # Site at the cone opening centre — used for capture proximity check
-    # The cone is ~40 mm tall, opening at the top
+        # Flat disc fallback for collision when no mesh
+        ET.SubElement(hand_body, 'geom', name='hand_catch_disc',
+                      type='cylinder', size=f'{hand_radius_m:.4f} 0.003',
+                      pos='0 0 0.003',
+                      rgba='0 0 0 0', mass='0',
+                      **hand_contact_params)
+    # Site at ball COM when seated in the hand — used for capture proximity
+    # check.  Ball COM sits 4.4 mm above the cone rim (40 mm from hand body
+    # origin), giving 44.4 mm total.
     ET.SubElement(hand_body, 'site', name='hand_opening',
-                  pos='0 0 0.040', size='0.010', rgba='1.0 0.8 0.0 1')
+                  pos='0 0 0.0444', size='0.010', rgba='1.0 0.8 0.0 1')
 
     # ---- Leg bodies (nested structure) ----
     # Outer body: at base node with ball joint (2 hinges)
@@ -296,9 +342,12 @@ def generate_mjcf(config, mesh_dir=None):
     # equality constraint anchors from this reference configuration, so the
     # connect constraint anchor on the leg body is correctly at [0,0,0].
     #
-    # Slide range: [-0.005, stroke + 0.005] to accommodate the ~1.5mm
-    # discrepancy between geometric and measured home leg lengths.
-    slide_margin_m = 0.005
+    # Joint range: [-0.005, stroke + 0.005] — physical hard stops, accommodates
+    # ~1.5mm discrepancy between geometric and measured home leg lengths.
+    # Ctrl range matches joint range — safety margins are enforced by the MPC's
+    # own stroke bounds, not by MuJoCo actuator clamping.
+    joint_margin_m = 0.005
+    ctrl_margin_m = joint_margin_m  # same as joint range — full actuator reach
     for i in range(6):
         quat = rotation_from_z_to_dir(leg_dirs[i])
         home_len = home_slide[i]
@@ -358,7 +407,7 @@ def generate_mjcf(config, mesh_dir=None):
         # slide>0 → leg extended, platform pushed further
         ET.SubElement(leg_tip, 'joint', name=f'leg_{i}_slide',
                       type='slide', axis='0 0 1', limited='true',
-                      range=f'{-slide_margin_m:.6f} {leg_stroke_m + slide_margin_m:.6f}',
+                      range=f'{-joint_margin_m:.6f} {leg_stroke_m + joint_margin_m:.6f}',
                       **{'class': 'leg'})
 
         # Leg inner visual
@@ -378,14 +427,14 @@ def generate_mjcf(config, mesh_dir=None):
     # ---- Ball body (free-flying, for catch simulation) ----
     ball_body = ET.SubElement(worldbody, 'body', name='ball', pos='0 0 5')
     ET.SubElement(ball_body, 'freejoint', name='ball_joint')
-    # contype=3, conaffinity=3: collides with ground (bit 0) AND hand (bit 1)
-    # solref overdamped: ball stops dead on contact (no bounce)
+    # contype=1, conaffinity=1: collides with ground (bit 0) only.
+    # Ball-hand interaction uses kinematic hold (no physics contact).
     ET.SubElement(ball_body, 'geom', name='ball_geom', type='sphere',
                   size='0.02', mass='0.043', material='ball_mat',
-                  contype='3', conaffinity='3',
+                  contype='1', conaffinity='1',
                   solref='0.005 2.0',
                   solimp='0.99 0.99 0.001',
-                  friction='1.0 0.005 0.0001')
+                  friction='2.0 0.005 0.0001')
     ET.SubElement(ball_body, 'site', name='ball_site', pos='0 0 0',
                   size='0.005', rgba='1 1 1 0')
 
@@ -403,14 +452,7 @@ def generate_mjcf(config, mesh_dir=None):
                       solref='0.005 1',   # tight constraint
                       solimp='0.99 0.99 0.001')
 
-    # Ball-to-hand weld constraint (disabled by default, activated on capture)
-    # relpose places ball at the hand opening site when active
-    ET.SubElement(equality, 'weld', name='ball_catch',
-                  body1='hand', body2='ball',
-                  relpose='0 0 0.040 1 0 0 0',   # at hand_opening site
-                  active='false',
-                  solref='0.005 1',
-                  solimp='0.99 0.99 0.001')
+    # Ball-hand interaction uses kinematic hold — no weld constraint needed.
 
     # ---- Actuators ----
     actuator = ET.SubElement(mujoco, 'actuator')
@@ -421,13 +463,18 @@ def generate_mjcf(config, mesh_dir=None):
                       joint=f'leg_{i}_slide',
                       kp='200000',     # stiff position tracking (high-inertia motors)
                       kv='600',        # near-critical damping for ~0.3kg effective mass
-                      ctrlrange=f'{-slide_margin_m:.6f} {leg_stroke_m + slide_margin_m:.6f}',
+                      ctrlrange=f'{-ctrl_margin_m:.6f} {leg_stroke_m + ctrl_margin_m:.6f}',
                       ctrllimited='true')
-    # Hand actuator: position control matching ODrive response
-    # kp=10000 + kv=200 produces settling similar to real ODrive at pos_gain=35
+    # Hand actuator: position control with gains high enough to track the catch
+    # trajectory.  Steady-state ramp-tracking lag = v*(kv+B)/kp.  At kp=100000,
+    # kv=350, B=50 (joint damping), lag ≈ 12mm at 2.94 m/s catch velocity —
+    # within the 40mm capture zone.  Damping ratio ζ ≈ 0.84 (underdamped, fast
+    # tracking with mild overshoot).  Higher kp couples hand reaction forces
+    # into the platform; 100000 is the practical limit before platform tracking
+    # degrades.
     ET.SubElement(actuator, 'position', name='act_hand',
                   joint='hand_slide',
-                  kp='10000', kv='200',
+                  kp='100000', kv='350',
                   ctrlrange=f'0 {hand_stroke_m:.6f}',
                   ctrllimited='true')
 

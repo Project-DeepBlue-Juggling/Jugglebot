@@ -66,6 +66,7 @@ class MuJoCoPlant(PlantInterface):
         self,
         model_path: str | None = None,
         geom: StewartGeometry | None = None,
+        cmd_margin_mm: float = 0.0,
     ):
         if model_path is None:
             model_path = os.path.abspath(_DEFAULT_MODEL_PATH)
@@ -88,6 +89,10 @@ class MuJoCoPlant(PlantInterface):
         self._home_extensions_mm = (
             self._geom_home_lengths_m * 1000.0 - self._geom.init_leg_lengths_mm
         )
+
+        # Command safety margin — clamp all commanded extensions to
+        # [margin, stroke - margin] to prevent actuator overshoot at mechanical stops.
+        self._cmd_margin_mm = cmd_margin_mm
 
         # Detect hand actuator/sensors
         hand_act_id = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_ACTUATOR, 'act_hand')
@@ -141,18 +146,21 @@ class MuJoCoPlant(PlantInterface):
     def command(self, leg_extensions_mm: np.ndarray) -> None:
         """Set actuator targets from home-relative leg extensions (mm).
 
-        extension=0 → home position.  Range: [0, leg_stroke_mm].
+        Commands are clamped to [margin, stroke - margin] to prevent
+        actuator overshoot at mechanical stops.
         """
         ext = np.asarray(leg_extensions_mm, dtype=float)
         stroke = self._geom.leg_stroke_mm
-        eps = 1.0  # mm tolerance for numerical noise
-        if np.any(ext < -eps) or np.any(ext > stroke + eps):
+        lo = self._cmd_margin_mm
+        hi = stroke - self._cmd_margin_mm
+        ext_clamped = np.clip(ext, lo, hi)
+        if not np.allclose(ext, ext_clamped, atol=0.1):
             logger.warning(
-                "command() extensions outside [0, %.1f] mm: min=%.2f, max=%.2f",
-                stroke, ext.min(), ext.max(),
+                "command() clamped extensions: requested [%.2f, %.2f] → [%.2f, %.2f]",
+                ext.min(), ext.max(), ext_clamped.min(), ext_clamped.max(),
             )
         # Convert home-relative → IK-convention (add home offset) → slide
-        ik_ext = ext + self._home_extensions_mm
+        ik_ext = ext_clamped + self._home_extensions_mm
         slide_m = self._extensions_to_slide(ik_ext)
         self._data.ctrl[:6] = slide_m
 
@@ -203,11 +211,22 @@ class MuJoCoPlant(PlantInterface):
         )
 
     def step(self, dt: float) -> None:
-        """Advance simulation by *dt* seconds using internal substeps."""
+        """Advance simulation by *dt* seconds using internal substeps.
+
+        Each substep: physics integration, then ball lifecycle —
+        kinematic hold (if held) or capture detection (if free).
+        """
         model_dt = self._model.opt.timestep
         n_steps = max(1, round(dt / model_dt))
+        bm = self._ball_manager
         for _ in range(n_steps):
             mujoco.mj_step(self._model, self._data)
+            if bm is not None:
+                bm.tick_cooldowns()
+                if bm._held:
+                    bm.apply_kinematic_hold()
+                else:
+                    bm.check_capture()
 
     def reset(self, pose_6dof: np.ndarray | None = None) -> None:
         """Reset to home (default) or to a specified pose.
@@ -232,7 +251,7 @@ class MuJoCoPlant(PlantInterface):
         if self._has_hand:
             self._data.ctrl[self._hand_act_idx] = 0.0
 
-        # Reset ball (park out of scene, disable weld)
+        # Reset ball (park out of scene)
         if self._ball_manager is not None:
             self._ball_manager.reset()
 
@@ -282,12 +301,14 @@ class MuJoCoPlant(PlantInterface):
             mujoco.mj_forward(self._model, self._data)
 
     def check_and_capture(self) -> bool:
-        """Check capture proximity and activate weld if triggered.
+        """Return True on the control step that capture occurs.
 
-        Returns True on the frame that capture occurs. False otherwise.
+        Capture detection runs every physics substep inside step().
+        This method harvests the result — it does not run detection
+        itself, since no physics has advanced since the last substep.
         """
         if self._ball_manager is not None:
-            return self._ball_manager.check_capture()
+            return self._ball_manager.poll_capture()
         return False
 
     def get_ball_state(self) -> BallState | None:
@@ -297,7 +318,7 @@ class MuJoCoPlant(PlantInterface):
         return None
 
     def release_ball(self, velocity_mms: np.ndarray | None = None) -> None:
-        """Release ball from weld. Optionally set ejection velocity."""
+        """Release ball from kinematic hold. Optionally set ejection velocity."""
         if self._ball_manager is not None:
             self._ball_manager.release(velocity_mms)
 

@@ -177,7 +177,7 @@ z + vz·t + 0.5·(-9810)·t² = ground_z
 
 Returns `(landing_pos_xy, landing_vel_xyz, time_to_land)` or `None` if no real positive solution.
 
-**Landing Z plane**: Configurable, default = `GEOM_INITIAL_HEIGHT_MM + 160.0` = 734.3 mm. Will become adaptive in the future, but a fixed offset is sufficient for initial implementation.
+**Landing Z plane**: `GEOM_INITIAL_HEIGHT_MM + JB_OP_DEFAULT_ACTIVE_Z_MM + HAND_CATCH_OFFSET_MM` ≈ 809 mm. This is the height where the hand's catch point (x5) meets the ball when the platform is at its active Z offset. The hand catch offset (64.78 mm) is derived by codegen from Trajectory.h constants — see "Hand Geometry & Catch Offset" section below.
 
 ---
 
@@ -231,11 +231,8 @@ Each tracking cycle, existing `CONFIRMED` balls need to be matched to current mo
 
 ### Catch Pose Computation
 
-**Position**: `[landing_x, landing_y, catch_z - initial_height]` (convert to platform frame)
+**Orientation**: Quaternion such that platform normal aligns with incoming ball velocity direction. Computed first, because the position depends on it.
 
-**Orientation**: Quaternion such that platform normal aligns with incoming ball velocity direction.
-
-From archived `catch_thrown_ball_node.py`:
 ```python
 reference = [0, 0, -1]            # Platform Z-axis (downward)
 v_norm = landing_velocity / ||landing_velocity||
@@ -249,6 +246,22 @@ axis = axis / ||axis||
 quat = Rotation.from_rotvec(angle * axis).as_quat()  # scipy: [x, y, z, w]
 # Convert to [w, x, y, z] for dynamic target API
 ```
+
+**Position**: The hand catches the ball, not the platform centroid. The hand's catch point (x5) is offset from the centroid by `HAND_CATCH_OFFSET_MM` (64.78 mm) along the platform's **tilted** local Z axis. The platform centroid is positioned so that the hand — not the centroid — meets the ball at the landing position:
+
+```python
+# Platform local Z after tilting
+rot = Rotation.from_quat(quat_xyzw)
+platform_z = rot.apply([0, 0, 1])
+
+# Centroid in base frame = landing position - offset along tilted Z
+centroid_base = ball.landing_position - hand_catch_offset_mm * platform_z
+
+# Convert to platform-home-relative coordinates
+target_pos = [centroid_base[0], centroid_base[1], centroid_base[2] - initial_height]
+```
+
+For an angled approach, this shifts the centroid in both XY and Z relative to the ball's landing position, ensuring the hand intercepts the ball along its approach axis.
 
 **Important**: The dynamic target API expects quaternion as `[w, x, y, z]`. The scipy `as_quat()` returns `[x, y, z, w]`. The coordinator must reorder.
 
@@ -355,7 +368,7 @@ string destination            # Robot this ball is heading to (empty = unassigne
    - `initial_position`: BB position in global frame (from `bb/calibration_result` subscription)
    - `initial_velocity`: computed from throw parameters (yaw + yaw_offset, pitch, speed) by `can/throw_ballistics.py`
    - `throw_time`: `now + delay_s`
-   - `landing_position`, `landing_velocity`, `landing_time`: pre-computed from ballistics (catch plane = initial_height + 160mm)
+   - `landing_position`, `landing_velocity`, `landing_time`: pre-computed from ballistics (catch plane = initial_height + active_z + hand_catch_offset)
 3. `ball_tracker_node.py` receives announcement:
    - Creates `Ball(status=TO_BE_THROWN, tracking=ANNOUNCED, source="ball_butler")`
    - Initializes Kalman filter from `initial_position` and `initial_velocity`
@@ -388,12 +401,12 @@ string destination            # Robot this ball is heading to (empty = unassigne
    - Skip blacklisted ball IDs (unless landing_position has shifted >50mm from blacklist snapshot)
    - Select best candidate: earliest `landing_time` that passes preliminary feasibility (within XY range, sufficient lead time)
 3. Compute catch pose:
-   - Position: `[landing_x, landing_y, catch_z - initial_height]` in platform frame
-   - Orientation: quaternion normal to `landing_velocity` (see algorithm above)
+   - Orientation: quaternion normal to `landing_velocity` (computed first — position depends on it)
+   - Position: offset platform centroid along tilted Z so the hand catch point meets the ball (see "Catch Pose Computation" above)
    - Velocity: `[0, 0, 0]` (platform should be stationary at catch — ball velocity is absorbed by compliance, not matched)
 4. Convert to dynamic target:
    ```python
-   target_pos = [landing_x, landing_y, catch_z_offset]
+   target_pos = centroid_base - [0, 0, initial_height]  # hand-offset-corrected
    target_quat = [w, x, y, z]  # from catch orientation computation
    target_vel = [0, 0, 0]      # stationary catch
    arrival_time = landing_time + ros_to_perf_offset  # clock domain conversion
@@ -411,8 +424,12 @@ string destination            # Robot this ball is heading to (empty = unassigne
 | Gravity | -9810.0 mm/s² | `hardware_config.py` (GRAVITY_MMPS2) |
 | Mocap rate | 200 Hz (dt = 5ms) | `hardware_config.py` (TRACKING_MOCAP_DT_S) |
 | Platform initial height | 574.3 mm | `hardware_config.py` (GEOM_INITIAL_HEIGHT_MM) |
-| Landing Z offset | 160.0 mm | Configurable, will become adaptive |
-| Landing Z plane | 734.3 mm | initial_height + offset (default) |
+| Default active Z | 170.0 mm | `hardware_config.py` (JB_OP_DEFAULT_ACTIVE_Z_MM) |
+| Hand axis bottom offset | -129.0 mm | `hardware_config.py` (GEOM_HAND_AXIS_BOTTOM_OFFSET_MM) — CAD measurement |
+| Hand catch position (x5) | 193.8 mm | `hardware_config.py` (HAND_CATCH_POS_M) — derived by codegen from Trajectory.h constants |
+| Hand throw position (x2) | 187.0 mm | `hardware_config.py` (HAND_THROW_POS_M) — derived by codegen |
+| Hand catch offset | 64.78 mm | `hardware_config.py` (HAND_CATCH_OFFSET_MM) — bottom_offset + x5, height of catch point above centroid |
+| Landing Z plane | ~809 mm | initial_height + active_z + hand_catch_offset |
 | KF process noise | 1.0 | Tunable, from archived implementation |
 | KF measurement noise | 3.0 | Tunable, from archived implementation |
 | KF initial covariance | 500.0 | Large initial uncertainty |
@@ -428,6 +445,49 @@ string destination            # Robot this ball is heading to (empty = unassigne
 | Blacklist re-eval threshold | 50 mm | Landing position shift to re-evaluate blacklisted ball |
 | Min lead time (planner) | 300 ms | `MIN_LEAD_TIME_S` in trajectory_manager.py |
 | Splice lead time (planner) | 200 ms | `SPLICE_LEAD_TIME_S` in trajectory_manager.py |
+
+---
+
+## Hand Geometry & Catch Offset
+
+The hand catches the ball, not the platform centroid. The hand's catch point (x5 from Trajectory.h) is offset from the centroid along the platform's local Z axis.
+
+### Geometry
+
+```
+Platform centroid
+    │
+    │  hand_axis_bottom_offset_mm = -129.0 mm (below centroid, from CAD)
+    ▼
+Hand rail bottom (x=0)
+    │
+    │  x5 = 193.8 mm (hand position at catch, from Trajectory.h algebra)
+    ▼
+Hand catch point ← ball meets hand here
+    │
+    │  HAND_CATCH_OFFSET_MM = -129.0 + 193.8 = +64.78 mm above centroid
+```
+
+### Derivation
+
+The hand positions x2 (throw release) and x5 (catch point) are **velocity-independent** — the throw speed cancels out in the Trajectory.h algebra:
+
+```
+x5 = totalStroke - accelStroke × INERTIA_RATIO / (1 + INERTIA_RATIO)
+x2 = accelStroke / (INERTIA_RATIO + 1) + velHold
+```
+
+Both depend only on `hand_stroke`, `stroke_margin`, `inertia_ratio`, and `vel_hold_pct` — all constants in `hardware_config.yaml`. The `generate_config.py` codegen derives `HAND_CATCH_POS_M`, `HAND_THROW_POS_M`, and `HAND_CATCH_OFFSET_MM` from these source constants, keeping the Python planner automatically in sync with the Teensy firmware.
+
+### Impact on Catch Planning
+
+1. **Landing Z plane**: Set to `initial_height + active_z + hand_catch_offset` (~809 mm) — where the hand actually catches, not where the centroid is.
+2. **Platform positioning**: Centroid is offset along the **tilted** platform Z axis so the hand meets the ball. For angled approaches, this shifts the centroid in both XY and Z.
+3. **Hand trajectory timing**: The Teensy catch trajectory (accel → vel-hold → decel) starts `t_acc` seconds **before** the ball arrives, so the hand is at x5 moving at constant velocity vC when the ball enters. The `catch_sim_test.py` HandSim replicates this timing exactly.
+
+### Offline Validation
+
+`tools/throw_catch_test.py` validates the full throw-catch cycle: platform throws a ball from (-100, 0, 170) to (100, 0, 170) mm in platform frame, reaching 1m height. The platform tilts for the throw, repositions during flight, and catches with the hand correctly offset. Catch error: ~3mm (well within 35mm hand radius).
 
 ---
 
@@ -460,8 +520,8 @@ string destination            # Robot this ball is heading to (empty = unassigne
 - **Mocap markers**: Base frame (world frame shifted by `GEOM_INITIAL_HEIGHT_MM` on Z)
 - **Ball positions**: Same base frame (mm)
 - **Dynamic target `target_pos`**: Platform offset from home position (mm). This is relative to the home/center position, NOT absolute world coordinates.
-  - `target_pos = [landing_x, landing_y, landing_z - initial_height]` approximately, but verify against how the motion planner defines "home"
-- **Landing Z plane**: `GEOM_INITIAL_HEIGHT_MM + 160.0` mm (734.3 mm). Configurable; will become adaptive in the future.
+  - `target_pos = centroid_base - [0, 0, initial_height]` where centroid_base is the hand-offset-corrected position (see "Catch Pose Computation")
+- **Landing Z plane**: `GEOM_INITIAL_HEIGHT_MM + JB_OP_DEFAULT_ACTIVE_Z_MM + HAND_CATCH_OFFSET_MM` ≈ 809 mm. This is where the hand's catch point will be when the platform is at its default active height.
 
 ### Thread Safety
 
@@ -577,6 +637,27 @@ Wire the catch coordinator to Jugglebot's hand motor for synchronized platform +
 - **CATCH mode exit**: When the orchestrator transitions out of CATCH mode (e.g., `deactivate` or `spacemouse` command), the CAN node idles the hand (standard behavior for non-CATCH modes). However, the catch coordinator's `_hand_primed` flag is not reset. If the user re-enters CATCH mode, the hand won't be re-primed. This is intentional (the hand position is managed by the catch lifecycle), but could be surprising if the hand was manually moved between catch sessions.
 - **Landing prediction for sub-catch-plane throws**: When the Ball Butler is below the catch plane and throws upward, `predict_landing_state()` returns the ascending crossing (smallest positive root). The tracker's KF continuously recomputes the prediction each frame, so once the ball passes above the catch plane, the prediction correctly switches to the descending crossing. This means the announcement's initial landing prediction may be wrong for sub-catch-plane throws, but it self-corrects within the first few hundred ms. Verified via `tools/catch_sim_test.py`.
 - **Build required**: `SetHandGains.srv` was added. `CMakeLists.txt` and `hardware_config.yaml` updated. Run `python config/generate_config.py` from repo root, then `colcon build --packages-select jugglebot_interfaces jugglebot` on the Jetson.
+
+---
+
+### Post-Phase 3: Hand Catch Offset Corrections (2026-03-18)
+
+Corrected the catch planner to account for the physical offset between the platform centroid and the hand's catch point.
+
+**Problem**: The original implementation placed the platform centroid at the ball's landing position. But the hand — not the centroid — catches the ball, and the hand's catch point (x5) is +64.78 mm above the centroid along the platform's local Z axis.
+
+**Changes:**
+- `hardware_config.yaml` — Added `hand_axis_bottom_offset_mm: -129.0` (CAD measurement)
+- `generate_config.py` — Derives `HAND_THROW_POS_M` (x2), `HAND_CATCH_POS_M` (x5), `HAND_CATCH_OFFSET_MM` from Trajectory.h constants via codegen. These are velocity-independent.
+- `catch_coordinator.py` — `_compute_catch_command()` now computes orientation first, then offsets the platform centroid along the **tilted** local Z so the hand meets the ball
+- `ball_tracker_node.py` — Landing Z updated to `initial_height + active_z + hand_catch_offset` (~809 mm)
+- `catch_coordinator_node.py` — Passes `hand_catch_offset_mm` and composite `landing_z_offset_mm` from config
+- `throw_ballistics.py`, `catch_sim_test.py` — Landing Z updated to match
+- `catch_sim_test.py` — HandSim now replicates Trajectory.h's 3-segment catch timing (hand starts moving t_acc before ball arrives, at x5 moving at vC when ball arrives)
+- `sim/input/scripted.py` — `hand_bottom_z_mm` default updated to -129 mm
+- Tests: 54 passing (1 new test for angled catch offset verification)
+
+**New tool:** `tools/throw_catch_test.py` — Throw-catch cycle test. Platform throws a ball to itself from (-100,0,170) to (100,0,170), 1m apex. Validates the full pipeline: throw ballistics → platform repositioning → ball tracking → catch coordination → hand timing. Uses the same 3D visualizer as `catch_sim_test.py`.
 
 ---
 
