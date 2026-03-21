@@ -59,3 +59,10 @@ nav:
     - System Integration: motion_planner/integration.md
     - Operations Guide: motion_planner/operations.md
     - Validation Results: motion_planner/results.md
+  - Simulation MPC:
+    - Overview: sim_mpc/index.md
+    - NLP Formulation: sim_mpc/nlp_formulation.md
+    - Variable Horizon: sim_mpc/variable_horizon.md
+    - Control Loop: sim_mpc/control_loop.md
+    - Plant Interface: sim_mpc/plant.md
+    - Tuning Guide: sim_mpc/tuning.md
