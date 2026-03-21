@@ -52,7 +52,7 @@ The horizon nodes occur at these absolute times from the current step:
 The fine-to-coarse transition (step 4→5) creates an asymmetry: the command delta `u[4]→u[5]` straddles two different timescales. The cost function handles this with:
 
 - **Smoothness and acceleration costs:** Use the geometric mean `√(dt_fine × dt_coarse) = √(0.02 × 0.25) ≈ 0.071 s` as the effective interval. This splits the penalty evenly in log-space between the tiers.
-- **Rate limits:** Use the physical interval `dt_schedule[k-1]` (the previous step's duration). See [MPC_BUGS.md](../../sim/MPC_BUGS.md) B-01 for a discussion of this choice.
+- **Rate limits:** Use the physical interval `dt_schedule[k-1]` (the previous step's duration). See [MPC_BUGS.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/sim/MPC_BUGS.md) B-01 for a discussion of this choice.
 
 ## Actuator Dynamics Across Tiers
 
@@ -141,4 +141,4 @@ The `FeasibilityChecker` (in `sim/hand/feasibility.py`) uses a separate coarse-h
 
 ### Limitations
 
-The feasibility checker uses ASAP mode while the real controller uses the urgency ramp. This makes the checker slightly optimistic — see [MPC_BUGS.md](../../sim/MPC_BUGS.md) B-03 for details.
+The feasibility checker uses ASAP mode while the real controller uses the urgency ramp. This makes the checker slightly optimistic — see [MPC_BUGS.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/sim/MPC_BUGS.md) B-03 for details.

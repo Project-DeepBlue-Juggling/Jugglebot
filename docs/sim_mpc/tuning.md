@@ -160,7 +160,7 @@ The platform arrives late for timed targets.
 1. Increase `urgency_base` — e.g., 0.2 or 0.3 — so the MPC starts moving earlier.
 2. Increase `max_leg_vel_mmps` if the rate limits are binding.
 3. Widen `urgency_ramp_s` — e.g., 0.8 s — to start ramping earlier.
-4. Check feasibility: if the coarse MPC says "feasible" but the real MPC misses, see B-02 and B-03 in [MPC_BUGS.md](../../sim/MPC_BUGS.md).
+4. Check feasibility: if the coarse MPC says "feasible" but the real MPC misses, see B-02 and B-03 in [MPC_BUGS.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/sim/MPC_BUGS.md).
 
 ### Scenario: Solver frequently fails
 
