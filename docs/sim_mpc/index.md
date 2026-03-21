@@ -60,12 +60,16 @@ sim/
 ├── plant/
 │   ├── interface.py    PlantInterface ABC + PlantState dataclass
 │   └── mujoco_plant.py MuJoCo simulation plant
+├── ball/
+│   └── manager.py      Ball spawn, capture detection, kinematic hold
+├── ball_butler/
+│   └── sim.py          Ball Butler throw simulator (pure-kinematic)
 ├── hand/
 │   ├── coordinator.py  Hand state machine + ball lifecycle
 │   ├── trajectory.py   Catch/throw hand trajectories (Teensy port)
 │   ├── feasibility.py  Coarse-horizon MPC reachability check
-│   ├── ballistics.py   Parabolic ball flight prediction
-│   └── planner.py      Throw-catch plan generation
+│   ├── ballistics.py   Inverse ballistics + orientation computation
+│   └── planner.py      Throw-catch plan generation (12-step pipeline)
 ├── input/
 │   ├── scripted.py     Pre-defined test sequences (T1-T6, DT1-DT8)
 │   ├── interactive_catch.py  Interactive ball spawn + catch
@@ -111,6 +115,7 @@ Each control step (20 ms) follows this sequence:
 | [Usage](usage.md) | Installation, CLI modes, telemetry, tests | How do I run and analyze the simulation? |
 | [NLP Formulation](nlp_formulation.md) | Decision variables, cost, constraints | How does the optimizer find leg commands? |
 | [Variable Horizon](variable_horizon.md) | Fine/coarse timesteps, urgency ramp | How does the MPC see both near and far? |
+| [Hand & Ball Physics](hand_and_ball.md) | Trajectories, ballistics, capture, throw-catch | How does catching/throwing work? |
 | [Control Loop](control_loop.md) | 50 Hz loop, target sources, hand coordination | What happens every 20 ms? |
 | [Plant Interface](plant.md) | MuJoCo plant, coordinate conventions | How does the sim model the robot? |
 | [Tuning Guide](tuning.md) | Parameters, weights, solver options | How do I tune the MPC? |

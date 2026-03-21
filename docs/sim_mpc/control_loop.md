@@ -68,6 +68,8 @@ A `TargetCommand` bundles everything the loop needs for one control step:
 | `hand_cmd` | various or `None` | Hand command this step |
 | `ball_spawn` | `BallSpawn` or `None` | Ball to spawn this step |
 
+Note: the `DynamicTarget` that feeds into `TargetCommand` has a `settle_margin_s` field (default 0.1 s). The coordinator subtracts this from the ball's `arrival_time` to set the MPC's deadline, so the platform arrives and settles **before** the ball gets there. See [Hand & Ball Physics — DynamicTarget](hand_and_ball.md#dynamictarget) for the full field list.
+
 ### Adapter Hierarchy
 
 Each input mode has a dedicated adapter that converts its domain-specific logic into `TargetCommand`:
@@ -176,3 +178,7 @@ Available in all viewer-mode MPC runs:
 | R | Reset speed to 1× |
 
 Interactive modes add their own keys (B for ball spawn, T for throw, etc.) via the `key_callback` composition system. Multiple key callbacks are combined with `_combine_key_callbacks()`.
+
+## Test Sequences
+
+Pre-defined test sequences are available via command-line flags. For detailed descriptions and what each sequence validates, see [Hand & Ball Physics — Test Sequences](hand_and_ball.md#test-sequences).

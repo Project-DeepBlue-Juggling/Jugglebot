@@ -110,7 +110,7 @@ See [Variable Horizon — Urgency System](variable_horizon.md#urgency-system) fo
 
 **Notes:**
 - `stroke_margin_mm` only affects the cold-start and failure fallback clamping, not the NLP bounds. The NLP bounds use the full `[0, stroke_mm]` range.
-- `max_leg_vel_mmps` is raised to 1000.0 for catch/throw modes (hardware max is ~1060 mm/s). The default 300 mm/s is conservative for static pose tracking.
+- `max_leg_vel_mmps` defaults to 300 mm/s for the **online MPC** (conservative for smooth pose tracking). The **feasibility checker** (`sim/hand/feasibility.py`) builds its own `MPCParams` with `max_leg_vel_mmps=1000` mm/s (close to hardware max ~1060) to evaluate reachability at the platform's full physical capability. The online MPC itself always uses the configured value — it does not dynamically switch velocity limits between modes.
 
 ### Solver Options
 
@@ -121,6 +121,13 @@ See [Variable Horizon — Urgency System](variable_horizon.md#urgency-system) fo
 | `tol` | 1e-4 | Convergence tolerance |
 | `warm_start` | True | Use previous solution as initial guess |
 | `print_level` | 0 | IPOPT verbosity (0 = silent) |
+
+Additional IPOPT options set in the NLP construction (not exposed in `MPCParams`):
+
+| Option | Value | Effect |
+|---|---|---|
+| `ipopt.sb` | `'yes'` | Suppress IPOPT startup banner |
+| `ipopt.warm_start_mult_bound_push` | `1e-8` | Tight dual variable bounds for warm-start (matches `warm_start_bound_push`) |
 
 **Simulation overrides:** `main.py` sets `max_iter=500` and `max_cpu_time=2.0` because the simulation isn't real-time constrained. These would need to revert for real hardware.
 

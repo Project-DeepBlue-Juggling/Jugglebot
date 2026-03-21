@@ -174,6 +174,9 @@ python main.py --spacemouse       # SpaceMouse (Linux only)
 python main.py --keyboard         # Keyboard (cross-platform)
 ```
 
+!!! warning "SpaceMouse input is untested"
+    The SpaceMouse adapter (`sim/input/spacemouse.py`) has been implemented but has **not been tested** with real hardware. The keyboard input mode is the recommended interactive option.
+
 ## Common Options
 
 These flags work with any mode:

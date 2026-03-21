@@ -137,7 +137,7 @@ The `FeasibilityChecker` (in `sim/hand/feasibility.py`) uses a separate coarse-h
 
 1. **IK pre-filter:** Reject targets whose leg extensions fall outside `[0, stroke_mm]` with 2 mm tolerance. This catches geometrically impossible poses (costs ~0.1 ms).
 
-2. **Coarse MPC solve:** Solve with constant target reference. Find the horizon node closest to the deadline. If the predicted pose at that node is within tolerance (5 mm position, 5.7° orientation), the target is feasible (costs ~5 ms).
+2. **Coarse MPC solve:** Solve with constant target reference. Find the horizon node closest to the deadline. If the predicted pose at that node is within tolerance (5 mm position, 5.7° orientation), the target is feasible (costs ~5 ms). Orientation error uses the **geodesic angle** `arccos((tr(R₁ᵀ R₂) - 1) / 2)`, not a rotation vector norm — see [Hand & Ball Physics — Geodesic Angle](hand_and_ball.md#orientation-error-geodesic-angle).
 
 ### Limitations
 

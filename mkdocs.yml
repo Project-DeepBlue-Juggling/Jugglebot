@@ -67,6 +67,7 @@ nav:
     - Usage: sim_mpc/usage.md
     - NLP Formulation: sim_mpc/nlp_formulation.md
     - Variable Horizon: sim_mpc/variable_horizon.md
+    - Hand & Ball Physics: sim_mpc/hand_and_ball.md
     - Control Loop: sim_mpc/control_loop.md
     - Plant Interface: sim_mpc/plant.md
     - Tuning Guide: sim_mpc/tuning.md

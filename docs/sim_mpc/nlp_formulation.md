@@ -141,7 +141,7 @@ This ensures every predicted platform pose `p[k]` is kinematically consistent wi
 |u[k] - u[k-1]| ≤ v_max × dt_rate
 ```
 
-Where `v_max` is `max_leg_vel_mmps` (default 300 mm/s, raised to 1000 mm/s for catch modes) and `dt_rate` is the physical time available for the transition.
+Where `v_max` is `max_leg_vel_mmps` (default 300 mm/s for the online MPC) and `dt_rate` is the physical time available for the transition. The [feasibility checker](hand_and_ball.md#velocity-limit-override) uses a separate MPC instance with 1000 mm/s.
 
 ## Symbolic IK
 
@@ -185,7 +185,7 @@ q_warm[k] = q_opt[k+1]     for k = 0..N-2,  q_warm[N-1] = q_opt[N-1]
 p_warm[k] = p_opt[k+1]     for k = 0..N-2,  p_warm[N-1] = p_opt[N-1]
 ```
 
-The last node is duplicated (held constant). Lagrange multipliers (`lam_g`, `lam_x`) are also carried forward.
+The last node is duplicated (held constant). Lagrange multipliers (`lam_g0`, `lam_x0`) are also carried forward — these dual variables encode constraint activity from the previous solution and are critical for fast warm-start convergence. Without them, IPOPT must re-discover the active set, negating much of the warm-start benefit.
 
 ### Cold Start
 
