@@ -108,6 +108,7 @@ Each control step (20 ms) follows this sequence:
 
 | Topic | Page | Key Question |
 |---|---|---|
+| [Usage](usage.md) | Installation, CLI modes, telemetry, tests | How do I run and analyze the simulation? |
 | [NLP Formulation](nlp_formulation.md) | Decision variables, cost, constraints | How does the optimizer find leg commands? |
 | [Variable Horizon](variable_horizon.md) | Fine/coarse timesteps, urgency ramp | How does the MPC see both near and far? |
 | [Control Loop](control_loop.md) | 50 Hz loop, target sources, hand coordination | What happens every 20 ms? |

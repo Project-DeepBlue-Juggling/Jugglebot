@@ -64,6 +64,7 @@ nav:
     - Validation Results: motion_planner/results.md
   - Simulation MPC:
     - Overview: sim_mpc/index.md
+    - Usage: sim_mpc/usage.md
     - NLP Formulation: sim_mpc/nlp_formulation.md
     - Variable Horizon: sim_mpc/variable_horizon.md
     - Control Loop: sim_mpc/control_loop.md
