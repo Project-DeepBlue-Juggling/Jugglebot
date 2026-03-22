@@ -721,15 +721,32 @@ class ControlLoop:
         if np.any(np.abs(delta) > max_delta):
             clamped_delta = np.clip(delta, -max_delta, max_delta)
             self._commanded_pos_rev = actual + clamped_delta
-            # Scale vel_ff proportionally to how much each leg was clamped.
-            # This keeps the feedforward direction correct while reducing
-            # magnitude.  torque_ff (gravity comp) is left unchanged —
-            # zeroing it removed gravity compensation and caused oscillation.
+            # Set vel_ff to the actual slew velocity so the ODrive knows
+            # the intended rate of motion.  Without this, the motor sees
+            # position steps with zero velocity hint — each step looks
+            # like a tiny quintic "ramp-up" frame that never builds
+            # momentum, causing jitter.
+            #
+            # For non-MPC modes (trajectory, direct-target) where vel_ff
+            # is already computed from the trajectory polynomial, scaling
+            # proportionally preserves the feedforward direction while
+            # reducing magnitude.  For MPC mode where vel_ff may be zero
+            # (static target), the slew velocity replaces zero.
             abs_delta = np.abs(delta)
+            slew_vel = clamped_delta / dt  # rev/s implied by the clamped step
+            abs_vel_ff = np.abs(self._commanded_vel_ff_rps)
+            abs_slew_vel = np.abs(slew_vel)
+            # Use whichever is larger: the original vel_ff (scaled) or
+            # the slew velocity.  This ensures the motor always gets at
+            # least the slew velocity as feedforward during clamping.
             scale = np.where(abs_delta > 1e-9,
                              np.abs(clamped_delta) / abs_delta,
                              1.0)
-            self._commanded_vel_ff_rps *= scale
+            scaled_vel_ff = self._commanded_vel_ff_rps * scale
+            self._commanded_vel_ff_rps = np.where(
+                abs_slew_vel > np.abs(scaled_vel_ff),
+                slew_vel,
+                scaled_vel_ff)
             self._slew_limited = True
             self._slew_limit_count += 1
             # Only log on first activation to avoid spamming at 500 Hz
