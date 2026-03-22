@@ -75,6 +75,7 @@ from jugglebot.motion.dynamics import (
 from jugglebot.motion.ipc import (
     TOPIC_DYN_TARGET,
     TOPIC_MODE,
+    TOPIC_MPC_CMD,
     TOPIC_MOTOR_FB,
     TOPIC_TARGET,
     TOPIC_TRAJECTORY,
@@ -120,6 +121,13 @@ MAX_TRACKING_ERROR_MM = 10.0
 # 150 ms gives ~50% headroom over the 100 Hz feedback rate (10ms period),
 # tolerating a single dropped packet plus typical IPC latency (~1ms).
 MOTOR_FB_STALENESS_S = 0.15
+
+# MPC command staleness timeout (seconds).  If no fresh MPC command has
+# arrived within this window while in MPC pass-through mode, the control
+# loop triggers E-STOP.  The MPC runs at 50 Hz (20 ms period), so 200 ms
+# is 10× the expected period — generous for solve time jitter while still
+# catching a crashed MPC within ~200 ms.
+MPC_CMD_STALENESS_S = 0.2
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +277,16 @@ class ControlLoop:
         self._slew_limit_count = 0
         self._slew_limited = False
 
+        # MPC pass-through state (Phase 6 hardware bridge)
+        self._mpc_passthrough_active = False
+        self._mpc_cmd_ext_mm = np.zeros(6)
+        self._mpc_cmd_vel_mm_s = np.zeros(6)
+        self._mpc_cmd_torque_Nm = np.zeros(6)
+        self._mpc_cmd_pose_6dof = np.zeros(6)
+        self._has_mpc_cmd = False
+        self._mpc_cmd_timestamp = 0.0
+        self._mpc_cmd_seq = -1
+
         # Gravity correction (from levelling)
         self._gravity_correction: np.ndarray | None = None
 
@@ -359,6 +377,8 @@ class ControlLoop:
                 self._on_dynamic_target(msg)
             elif topic == TOPIC_MOTOR_FB:
                 self._on_motor_feedback(msg)
+            elif topic == TOPIC_MPC_CMD:
+                self._on_mpc_command(msg)
 
     def _on_target(self, msg: dict) -> None:
         """Handle an incoming target state.
@@ -366,6 +386,8 @@ class ControlLoop:
         Converts the quaternion target to a 6-DoF pose (rotvec) and feeds
         it into the stream smoother for C2-continuous profiling.
         """
+        if self._mpc_passthrough_active:
+            return  # MPC is sole command source; ignore Cartesian targets
         try:
             pos = np.array(msg['pos'], dtype=float)
             quat = msg['rot']  # [w, x, y, z]
@@ -406,17 +428,26 @@ class ControlLoop:
                 self._fault_state = None
                 # Apply mode-specific smoother limits
                 source = params.get('source', '')
-                self._apply_smoother_limits(source)
+                self._mpc_passthrough_active = (source == 'MPC')
+                if self._mpc_passthrough_active:
+                    self._has_mpc_cmd = False
+                    self._mpc_cmd_timestamp = time.perf_counter()
+                else:
+                    self._apply_smoother_limits(source)
                 # Initialise outputs to the home/activate pose so the first
                 # telemetry cycle sends the current platform position rather
                 # than stale zeros.
                 self._seed_home_pose()
-                logger.info(f"Control loop ENABLED (source={source})")
+                logger.info(
+                    f"Control loop ENABLED (source={source}"
+                    f"{', mpc_passthrough=True' if self._mpc_passthrough_active else ''})")
         elif cmd == 'disable':
             self.mode = ControlMode.DISABLED
             self._zero_outputs()
             self._traj_manager.cancel()
             self._smoother.reset(self._traj_manager.home_pose)
+            self._mpc_passthrough_active = False
+            self._has_mpc_cmd = False
             self._fault_state = None
             logger.info("Control loop DISABLED")
         elif cmd == 'estop':
@@ -425,6 +456,8 @@ class ControlLoop:
                 self._zero_outputs()
                 self._traj_manager.cancel()
                 self._smoother.reset(self._traj_manager.home_pose)
+                self._mpc_passthrough_active = False
+                self._has_mpc_cmd = False
                 self._fault_state = msg.get('params', {}).get('reason', 'external')
                 logger.warning(f"E-STOP triggered via command: {self._fault_state}")
         elif cmd == 'set_feedforward':
@@ -454,6 +487,8 @@ class ControlLoop:
             self._zero_outputs()
             self._traj_manager.cancel()
             self._smoother.reset(self._traj_manager.home_pose)
+            self._mpc_passthrough_active = False
+            self._has_mpc_cmd = False
             self._fault_state = fault_desc
             logger.error(f"ODrive FAULT received: {fault_desc} -- E-STOP")
         else:
@@ -461,6 +496,8 @@ class ControlLoop:
 
     def _on_trajectory(self, msg: dict) -> None:
         """Handle an incoming trajectory command."""
+        if self._mpc_passthrough_active:
+            return  # MPC is sole command source; ignore trajectory commands
         try:
             arrays = {}
             for key in ('start_pose', 'start_twist', 'start_accel',
@@ -493,6 +530,8 @@ class ControlLoop:
         for the current trajectory while the check runs.  Results are
         picked up on the next cycle via ``_poll_async_result()``.
         """
+        if self._mpc_passthrough_active:
+            return  # MPC is sole command source; ignore dynamic targets
         try:
             target_pos = np.array(msg['target_pos'], dtype=float)
             target_quat = np.array(msg['target_quat'], dtype=float)
@@ -542,6 +581,47 @@ class ControlLoop:
         self._motor_fb_cur_A = cur
         self._has_motor_fb = True
         self._motor_fb_timestamp = time.perf_counter()
+
+    def _on_mpc_command(self, msg: dict) -> None:
+        """Handle pre-computed motor commands from an external MPC controller.
+
+        In MPC pass-through mode, the control loop receives leg extensions
+        (mm) directly — no IK or stream smoother needed.  The Cartesian
+        pose is included for workspace/condition-number checks.
+        """
+        if not self._mpc_passthrough_active:
+            return  # Silently ignore if not in MPC mode
+        try:
+            ext = np.array(msg['ext_mm'], dtype=float)
+            pose = np.array(msg['pose_6dof'], dtype=float)
+            if ext.shape != (6,):
+                logger.warning(f"Malformed mpc_cmd: ext_mm shape {ext.shape}")
+                return
+            if pose.shape != (6,):
+                logger.warning(f"Malformed mpc_cmd: pose_6dof shape {pose.shape}")
+                return
+        except (KeyError, TypeError, ValueError) as e:
+            logger.warning(f"Malformed mpc_cmd message, ignoring: {e}")
+            return
+
+        self._mpc_cmd_ext_mm = ext
+        self._mpc_cmd_pose_6dof = pose
+
+        vel = msg.get('vel_mm_s')
+        if vel is not None:
+            self._mpc_cmd_vel_mm_s = np.array(vel, dtype=float)
+        else:
+            self._mpc_cmd_vel_mm_s = np.zeros(6)
+
+        torque = msg.get('torque_Nm')
+        if torque is not None:
+            self._mpc_cmd_torque_Nm = np.array(torque, dtype=float)
+        else:
+            self._mpc_cmd_torque_Nm = np.zeros(6)
+
+        self._mpc_cmd_seq = msg.get('seq', -1)
+        self._mpc_cmd_timestamp = time.perf_counter()
+        self._has_mpc_cmd = True
 
     # ------------------------------------------------------------------
     # Heartbeat watchdog
@@ -717,15 +797,18 @@ class ControlLoop:
     def _compute(self) -> None:
         """Compute control output for this cycle.
 
-        Two modes of operation:
+        Three modes of operation:
         1. **Trajectory mode** (Phase 4): when a trajectory is executing,
            evaluate the trajectory at the current time to get motor commands.
-        2. **Direct-target mode** (Phase 3): use the latest IPC target pose
+        2. **MPC pass-through mode** (Phase 6): receive pre-computed leg
+           extensions from an external MPC controller.  No IK or stream
+           smoother — just unit conversion + safety pipeline.
+        3. **Direct-target mode** (Phase 3): use the latest IPC target pose
            for IK + dynamics.  Used by spacemouse, shell commands, etc.
 
         Phase 6 additions:
         - After computing motor commands, check workspace limits.
-        - If hard limit violated in trajectory mode, abort and E-stop.
+        - If hard limit violated in trajectory/MPC mode, abort and E-stop.
         - If hard limit violated in direct-target mode, hold last safe
           pose (no E-stop) so the spacemouse can recover.
         - Compute tracking error from motor feedback.
@@ -754,6 +837,40 @@ class ControlLoop:
             self._commanded_torque_ff_Nm = torque
             pose_6dof = self._traj_manager.current_pose_6dof
             cached_J = self._traj_manager.last_jacobian
+        elif self._mpc_passthrough_active and self._has_mpc_cmd:
+            # MPC pass-through: convert pre-computed extensions to motor
+            # commands.  No IK, no stream smoother — the MPC already
+            # solved for these values.
+            t_now = time.perf_counter()
+
+            # Staleness check: E-stop if MPC has gone silent
+            mpc_age = t_now - self._mpc_cmd_timestamp
+            if mpc_age > MPC_CMD_STALENESS_S:
+                self.mode = ControlMode.ESTOP
+                self._zero_outputs()
+                self._mpc_passthrough_active = False
+                self._has_mpc_cmd = False
+                self._fault_state = (
+                    f'mpc_cmd_stale: {mpc_age:.3f}s since last command')
+                logger.error(
+                    f"MPC command stale ({mpc_age:.3f}s > "
+                    f"{MPC_CMD_STALENESS_S}s) — E-STOP")
+                return
+
+            # Extensions (mm) → motor revolutions
+            self._commanded_pos_rev = extensions_mm_to_revs(
+                self._mpc_cmd_ext_mm, self.geom)
+            # Leg velocities (mm/s) → motor velocities (rev/s)
+            self._commanded_vel_ff_rps = leg_velocities_to_motor_velocities(
+                self._mpc_cmd_vel_mm_s, self.geom)
+            # Torques already in Nm — direct pass-through
+            self._commanded_torque_ff_Nm = self._mpc_cmd_torque_Nm.copy()
+
+            # Compute Jacobian from MPC-provided pose for condition number
+            pose_6dof = self._mpc_cmd_pose_6dof
+            pos_cart = pose_6dof[:3]
+            rot_mat = rotvec_to_rot_matrix(pose_6dof[3:6])
+            cached_J = compute_jacobian(pos_cart, rot_mat, self.geom)
         elif self._has_target:
             # Direct-target mode: evaluate the C2-continuous smoother
             t_now = time.perf_counter()
@@ -793,7 +910,11 @@ class ControlLoop:
         self._workspace_speed_scale = ws_check.speed_scale
 
         # Determine whether we're in direct-target mode (spacemouse, shell, etc.)
-        in_direct_mode = traj_state == TrajectoryState.IDLE and self._has_target
+        # MPC pass-through is NOT direct mode — it should E-stop on hard limits,
+        # not hold-pose, because MPC is autonomous (not human-in-the-loop).
+        in_direct_mode = (traj_state == TrajectoryState.IDLE
+                          and self._has_target
+                          and not self._mpc_passthrough_active)
 
         if ws_check.status == WorkspaceStatus.HARD_LIMIT:
             if in_direct_mode and self._last_safe_pose_6dof is not None:

@@ -11,11 +11,16 @@ Architecture::
       PUB  ─── tcp://localhost:5555 ──►  SUB   (targets, commands)
       SUB  ◄── tcp://localhost:5556 ───  PUB   (telemetry)
 
+    HardwarePlant (MPC)
+      PUB  ─── tcp://localhost:5557 ──►  SUB   (mpc commands)
+      SUB  ◄── tcp://localhost:5556 ───        (telemetry, shared)
+
 Message types:
   - TargetState:   desired platform pose/twist/accel from the planner
   - ModeCommand:   enable, disable, estop, set_gains, etc.
   - Telemetry:     control loop output (leg states, timing, torques)
   - MotorFeedback: encoder positions/velocities/currents from CAN node
+  - MPCCommand:    pre-computed motor commands from external MPC controller
 
 No ROS2 dependency.  Requires: pyzmq, msgpack.
 """
@@ -32,8 +37,9 @@ import zmq
 logger = logging.getLogger(__name__)
 
 # Default IPC addresses
-COMMAND_ADDR = 'tcp://127.0.0.1:5555'   # bridge PUB → control SUB
-TELEMETRY_ADDR = 'tcp://127.0.0.1:5556'  # control PUB → bridge SUB
+COMMAND_ADDR = 'tcp://127.0.0.1:5555'       # bridge PUB → control SUB
+TELEMETRY_ADDR = 'tcp://127.0.0.1:5556'     # control PUB → bridge SUB
+MPC_COMMAND_ADDR = 'tcp://127.0.0.1:5557'   # HardwarePlant PUB → control SUB
 
 # Topic prefixes for ZMQ PUB/SUB filtering
 TOPIC_TARGET = b'target'
@@ -43,6 +49,7 @@ TOPIC_MOTOR_FB = b'motorfb'
 TOPIC_TRAJECTORY = b'traj'
 TOPIC_DYN_TARGET = b'dyntgt'
 TOPIC_DYN_FEEDBACK = b'dynfb'   # dynamic target accept/reject feedback
+TOPIC_MPC_CMD = b'mpccmd'       # pre-computed motor commands from MPC
 
 
 # ---------------------------------------------------------------------------
@@ -261,6 +268,40 @@ def make_motor_feedback(positions: list | tuple,
     }
 
 
+def make_mpc_command(ext_mm: list | tuple,
+                     pose_6dof: list | tuple,
+                     vel_mm_s: list | tuple | None = None,
+                     torque_Nm: list | tuple | None = None,
+                     seq: int = 0) -> dict:
+    """Create an MPC pass-through command message.
+
+    Sent by the external MPC controller (HardwarePlant) directly to the
+    control loop, bypassing the stream smoother and IK.  The control loop
+    converts extensions to motor revolutions and applies the full safety
+    pipeline (slew limiter, workspace checks, overspeed, tracking error).
+
+    Parameters
+    ----------
+    ext_mm : 6 home-relative leg extensions (mm), range [0, 280]
+    pose_6dof : [x, y, z, rx, ry, rz] in mm, rad — Cartesian pose for
+        workspace/condition-number checks (from MPC predicted_poses[0])
+    vel_mm_s : 6 leg velocities (mm/s), or None for zeros
+    torque_Nm : 6 motor torques (Nm), or None for zeros
+    seq : monotonic sequence number (for debugging / drop detection)
+    """
+    msg = {
+        'type': 'mpc_cmd',
+        'ext_mm': list(ext_mm),
+        'pose_6dof': list(pose_6dof),
+        'seq': seq,
+    }
+    if vel_mm_s is not None:
+        msg['vel_mm_s'] = list(vel_mm_s)
+    if torque_Nm is not None:
+        msg['torque_Nm'] = list(torque_Nm)
+    return msg
+
+
 # ---------------------------------------------------------------------------
 # Serialisation
 # ---------------------------------------------------------------------------
@@ -284,21 +325,27 @@ def _unpack(frames: list[bytes]) -> tuple[bytes, dict]:
 class ControlProcessIPC:
     """IPC endpoints for the standalone control process.
 
-    Uses three SUB sockets to isolate message types:
+    Uses four SUB sockets to isolate message types:
       - ``_sub_mode``: mode/trajectory/dynamic-target commands (no CONFLATE)
       - ``_sub_target``: platform pose targets (CONFLATE=1)
       - ``_sub_motor_fb``: motor feedback from CAN node (CONFLATE=1)
+      - ``_sub_mpc_cmd``: MPC pass-through commands (CONFLATE=1, separate port)
 
     Targets and motor feedback each get their own CONFLATE socket so that
     high-frequency motor feedback (100 Hz) cannot overwrite target messages
     and vice-versa.  Without this separation, ZMQ CONFLATE keeps only the
     single latest message *regardless of topic prefix*, silently dropping
     whichever message arrived first.
+
+    The MPC command socket listens on a separate port (MPC_COMMAND_ADDR)
+    because the bridge already ``bind()``s PUB on COMMAND_ADDR — ZMQ does
+    not support two PUB ``bind()``s on the same address.
     """
 
     def __init__(self,
                  command_addr: str = COMMAND_ADDR,
-                 telemetry_addr: str = TELEMETRY_ADDR):
+                 telemetry_addr: str = TELEMETRY_ADDR,
+                 mpc_command_addr: str = MPC_COMMAND_ADDR):
         self._ctx = zmq.Context()
 
         # SUB socket for pose targets — CONFLATE keeps only latest
@@ -325,6 +372,16 @@ class ControlProcessIPC:
         self._sub_mode.setsockopt(zmq.RCVTIMEO, 0)  # non-blocking
         self._sub_mode.setsockopt(zmq.RCVHWM, 64)   # bound queue size
 
+        # SUB socket for MPC pass-through commands — CONFLATE, separate port.
+        # Also subscribes to TOPIC_MODE so HardwarePlant can send enable/disable
+        # directly without going through the bridge.
+        self._sub_mpc_cmd = self._ctx.socket(zmq.SUB)
+        self._sub_mpc_cmd.connect(mpc_command_addr)
+        self._sub_mpc_cmd.setsockopt(zmq.SUBSCRIBE, TOPIC_MPC_CMD)
+        self._sub_mpc_cmd.setsockopt(zmq.SUBSCRIBE, TOPIC_MODE)
+        self._sub_mpc_cmd.setsockopt(zmq.RCVTIMEO, 0)  # non-blocking
+        self._sub_mpc_cmd.setsockopt(zmq.CONFLATE, 1)   # keep only latest
+
         # PUB socket — publishes telemetry to bridge
         self._pub = self._ctx.socket(zmq.PUB)
         self._pub.bind(telemetry_addr)
@@ -334,13 +391,15 @@ class ControlProcessIPC:
     def recv_all(self) -> list[tuple[bytes, dict]]:
         """Non-blocking: receive all pending messages.
 
-        Drains mode commands first (critical), then targets, then motor
-        feedback.  Returns list of (topic, message_dict) tuples.  Empty
-        list if nothing available.
+        Drains mode commands first (critical), then MPC commands, then
+        targets, then motor feedback.  Returns list of (topic, message_dict)
+        tuples.  Empty list if nothing available.
         """
         messages = []
-        # Drain mode commands first — these are rare but critical
-        for sub in (self._sub_mode, self._sub_target, self._sub_motor_fb):
+        # Drain mode commands first — these are rare but critical.
+        # MPC commands next (CONFLATE socket, at most one pending).
+        for sub in (self._sub_mode, self._sub_mpc_cmd,
+                    self._sub_target, self._sub_motor_fb):
             while True:
                 try:
                     frames = sub.recv_multipart(flags=zmq.NOBLOCK)
@@ -368,6 +427,7 @@ class ControlProcessIPC:
         self._sub_target.close()
         self._sub_motor_fb.close()
         self._sub_mode.close()
+        self._sub_mpc_cmd.close()
         self._pub.close()
         self._ctx.term()
 

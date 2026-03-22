@@ -113,6 +113,9 @@ def parse_args():
                         'fraction of average transit velocity (0..1). '
                         '0 = stop at events (Phase B), '
                         '>0 = continuous motion (Phase C). Default: 0.')
+    p.add_argument('--hardware', action='store_true',
+                   help='Use real hardware via HardwarePlant (MPC pass-through '
+                        'to control_loop.py). Implies --mpc --no-viewer.')
     p.add_argument('--dashboard', action='store_true',
                    help='Start live telemetry dashboard (web browser)')
     p.add_argument('--dashboard-port', type=int, default=8082,
@@ -703,11 +706,18 @@ def run_mpc_headless(plant: MuJoCoPlant, mpc, source, duration: float,
 
         # MPC solve
         cmd, diag, ref_pose, ref_twist = _mpc_solve(mpc, state, tc)
+
+        # For HardwarePlant: pass predicted Cartesian pose for workspace checks
+        if hasattr(plant, 'set_pose'):
+            poses = mpc.predicted_poses
+            if poses is not None:
+                plant.set_pose(poses[0])
+
         plant.command(cmd)
         plant.step(CONTROL_DT)
 
-        # Ball capture
-        if plant.has_ball and plant.check_and_capture():
+        # Ball capture (sim only — hardware has no ball manager)
+        if hasattr(plant, 'has_ball') and plant.has_ball and plant.check_and_capture():
             if hasattr(source, 'notify_capture'):
                 source.notify_capture(state.time)
 
@@ -994,15 +1004,26 @@ def main():
         print(f"ERROR: this mode requires the viewer (remove --no-viewer)")
         sys.exit(1)
 
+    # Hardware mode implies MPC + headless
+    if args.hardware:
+        args.mpc = True
+        args.no_viewer = True
+
     mode = "MPC" if args.mpc else "Direct"
-    print(f"{label} [{mode}]")
+    plant_label = "HARDWARE" if args.hardware else "sim"
+    print(f"{label} [{mode}, {plant_label}]")
     if schedule is not None:
         for t, pose in schedule:
             print(f"  t={t:.1f}s -> [{', '.join(f'{v:.2f}' for v in pose)}]")
     print(f"Duration: {duration:.1f}s, Control rate: {CONTROL_RATE_HZ} Hz")
 
     # Create plant
-    plant = MuJoCoPlant()
+    if args.hardware:
+        from plant import HardwarePlant
+        plant = HardwarePlant()
+        print("HardwarePlant: connected to control_loop.py via IPC")
+    else:
+        plant = MuJoCoPlant()
 
     # Set up telemetry logging
     timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -1155,6 +1176,12 @@ def main():
     # ---- Run ----
 
     try:
+        # Enable HardwarePlant pass-through mode before the MPC loop
+        if args.hardware:
+            plant.enable()
+            # Brief pause for the control loop to process the enable command
+            time.sleep(0.05)
+
         if source is not None:
             # Unified MPC path
             if args.no_viewer:
@@ -1173,6 +1200,11 @@ def main():
         print("\nInterrupted — flushing telemetry...")
         logger.flush()
     finally:
+        # Disable HardwarePlant before closing
+        if args.hardware:
+            plant.disable()
+            time.sleep(0.05)
+            plant.close()
         if source is not None and hasattr(source, 'close'):
             source.close()
         if dashboard is not None:
