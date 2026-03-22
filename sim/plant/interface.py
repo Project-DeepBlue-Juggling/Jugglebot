@@ -6,6 +6,7 @@ physical or simulated plant. Implementations:
   - HardwarePlant: sends commands via CAN to real ODrives (Phase 6)
 """
 
+from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
