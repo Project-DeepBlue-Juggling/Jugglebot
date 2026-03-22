@@ -270,6 +270,7 @@ def make_motor_feedback(positions: list | tuple,
 
 def make_mpc_command(ext_mm: list | tuple,
                      pose_6dof: list | tuple,
+                     motor_rev: list | tuple | None = None,
                      vel_mm_s: list | tuple | None = None,
                      torque_Nm: list | tuple | None = None,
                      seq: int = 0) -> dict:
@@ -277,14 +278,18 @@ def make_mpc_command(ext_mm: list | tuple,
 
     Sent by the external MPC controller (HardwarePlant) directly to the
     control loop, bypassing the stream smoother and IK.  The control loop
-    converts extensions to motor revolutions and applies the full safety
-    pipeline (slew limiter, workspace checks, overspeed, tracking error).
+    uses motor_rev directly as commanded positions (matching ODrive encoder
+    convention where 0 = STOW), and applies the full safety pipeline.
 
     Parameters
     ----------
-    ext_mm : 6 home-relative leg extensions (mm), range [0, 280]
+    ext_mm : 6 IK-convention leg extensions (mm) — for workspace checks
     pose_6dof : [x, y, z, rx, ry, rz] in mm, rad — Cartesian pose for
-        workspace/condition-number checks (from MPC predicted_poses[0])
+        condition-number checks (from MPC predicted_poses[0])
+    motor_rev : 6 absolute motor positions (rev) in ODrive convention
+        (0 = STOW).  Includes the stow offset.  If None, the control loop
+        falls back to ``extensions_mm_to_revs(ext_mm)`` (no stow offset —
+        only correct for unit tests / sim).
     vel_mm_s : 6 leg velocities (mm/s), or None for zeros
     torque_Nm : 6 motor torques (Nm), or None for zeros
     seq : monotonic sequence number (for debugging / drop detection)
@@ -295,6 +300,8 @@ def make_mpc_command(ext_mm: list | tuple,
         'pose_6dof': list(pose_6dof),
         'seq': seq,
     }
+    if motor_rev is not None:
+        msg['motor_rev'] = list(motor_rev)
     if vel_mm_s is not None:
         msg['vel_mm_s'] = list(vel_mm_s)
     if torque_Nm is not None:

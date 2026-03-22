@@ -423,11 +423,10 @@ class ControlLoop:
             return
         params = msg.get('params', {})
         if cmd == 'enable':
+            source = params.get('source', '')
             if self.mode == ControlMode.DISABLED:
                 self.mode = ControlMode.ENABLED
                 self._fault_state = None
-                # Apply mode-specific smoother limits
-                source = params.get('source', '')
                 self._mpc_passthrough_active = (source == 'MPC')
                 if self._mpc_passthrough_active:
                     self._has_mpc_cmd = False
@@ -441,6 +440,19 @@ class ControlLoop:
                 logger.info(
                     f"Control loop ENABLED (source={source}"
                     f"{', mpc_passthrough=True' if self._mpc_passthrough_active else ''})")
+            elif self.mode == ControlMode.ENABLED and source == 'MPC':
+                # Already enabled — switch to MPC pass-through mode.
+                # This allows the orchestrator to activate the robot first
+                # (putting ODrives in CLOSED_LOOP), then the HardwarePlant
+                # takes over as the command source.  The slew limiter
+                # ensures smooth transition regardless of any position
+                # difference between the smoother's current output and the
+                # first MPC command.
+                if not self._mpc_passthrough_active:
+                    self._mpc_passthrough_active = True
+                    self._has_mpc_cmd = False
+                    self._mpc_cmd_timestamp = time.perf_counter()
+                    logger.info("Switched to MPC pass-through mode (was already ENABLED)")
         elif cmd == 'disable':
             self.mode = ControlMode.DISABLED
             self._zero_outputs()
@@ -606,6 +618,16 @@ class ControlLoop:
 
         self._mpc_cmd_ext_mm = ext
         self._mpc_cmd_pose_6dof = pose
+
+        # Motor revolutions (absolute, ODrive convention: 0 = STOW).
+        # When present, used directly as commanded position — avoids the
+        # stow offset issue where extensions_mm_to_revs() is missing the
+        # ~2.2 rev base offset between STOW and the IK zero reference.
+        motor_rev = msg.get('motor_rev')
+        if motor_rev is not None:
+            self._mpc_cmd_motor_rev = np.array(motor_rev, dtype=float)
+        else:
+            self._mpc_cmd_motor_rev = None
 
         vel = msg.get('vel_mm_s')
         if vel is not None:
@@ -857,9 +879,14 @@ class ControlLoop:
                     f"{MPC_CMD_STALENESS_S}s) — E-STOP")
                 return
 
-            # Extensions (mm) → motor revolutions
-            self._commanded_pos_rev = extensions_mm_to_revs(
-                self._mpc_cmd_ext_mm, self.geom)
+            # Motor positions: use pre-computed absolute revolutions if
+            # available (includes stow offset), otherwise fall back to
+            # extensions_mm_to_revs (only correct in unit tests / sim).
+            if self._mpc_cmd_motor_rev is not None:
+                self._commanded_pos_rev = self._mpc_cmd_motor_rev.copy()
+            else:
+                self._commanded_pos_rev = extensions_mm_to_revs(
+                    self._mpc_cmd_ext_mm, self.geom)
             # Leg velocities (mm/s) → motor velocities (rev/s)
             self._commanded_vel_ff_rps = leg_velocities_to_motor_velocities(
                 self._mpc_cmd_vel_mm_s, self.geom)

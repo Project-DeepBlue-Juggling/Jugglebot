@@ -88,6 +88,16 @@ class HardwarePlant(PlantInterface):
         geom_home_lengths_mm = np.linalg.norm(plat_world_m - base_m, axis=1) * 1000.0
         self._home_extensions_mm = geom_home_lengths_mm - self._geom.init_leg_lengths_mm
 
+        # Stow offset: the motor revolutions at IK extension = 0.
+        # The IK model's init_leg_lengths_mm represents a physical leg length
+        # that requires ~154mm of cable extension from STOW (motor = 0 rev).
+        # The activate position (from hardware_config) is the motor position
+        # at IK home.  The stow offset is activate_rev - home_ik_rev.
+        import jugglebot.hardware_config as hw
+        self._activate_rev = np.array(hw.JB_OP_ACTIVATE_POSITION_REVS)
+        home_ik_rev = self._home_extensions_mm * self._geom.mm_to_rev
+        self._stow_offset_rev = self._activate_rev - home_ik_rev
+
         # Pose to include in MPC commands (for workspace checks).
         # Set by caller via set_pose() before command().
         self._last_pose_6dof = np.zeros(6)
@@ -123,21 +133,25 @@ class HardwarePlant(PlantInterface):
     def command(self, leg_extensions_mm: np.ndarray) -> None:
         """Send leg extension commands to the control loop.
 
-        The control loop converts these to motor revolutions and applies
-        the full safety pipeline (slew limiter, workspace checks, etc.).
+        Converts MPC home-relative extensions to absolute motor revolutions
+        (matching the ODrive encoder convention where 0 = STOW).
+
+        The control loop applies the full safety pipeline (slew limiter,
+        workspace checks via the included pose_6dof, overspeed, etc.).
 
         Parameters
         ----------
         leg_extensions_mm : (6,) ndarray — home-relative extensions in mm
             (MPC convention: 0 = home position)
         """
-        # Convert from MPC home-relative convention (0 = home) to
-        # IK convention (0 = fully retracted, home ≈ 28mm).
-        # The control loop's extensions_mm_to_revs() and workspace checks
-        # expect IK convention — same as pose_to_leg_lengths() returns.
+        # Convert: MPC home-relative (mm) → IK convention (mm) → motor rev
+        # The stow offset accounts for the ~154mm of cable at STOW that
+        # the IK model's init_leg_lengths_mm already includes.
         ik_extensions_mm = np.asarray(leg_extensions_mm) + self._home_extensions_mm
+        motor_rev = ik_extensions_mm * self._geom.mm_to_rev + self._stow_offset_rev
         msg = make_mpc_command(
             ext_mm=ik_extensions_mm.tolist(),
+            motor_rev=motor_rev.tolist(),
             pose_6dof=self._last_pose_6dof.tolist(),
             seq=self._seq,
         )
@@ -175,13 +189,15 @@ class HardwarePlant(PlantInterface):
 
         telem = self._last_telem
 
-        # Motor feedback (rev) → leg extensions (mm, home-relative)
+        # Motor feedback (rev, absolute ODrive convention) → home-relative mm
         motor_pos = telem.get('motor_pos')
         motor_vel = telem.get('motor_vel')
         if motor_pos is not None:
             pos_rev = np.array(motor_pos, dtype=float)
-            ik_ext_mm = revs_to_extensions_mm(pos_rev, self._geom)
-            # Convert IK convention → home-relative (MPC convention)
+            # Subtract stow offset to get IK-convention revolutions,
+            # then convert to IK extensions (mm), then to home-relative.
+            ik_rev = pos_rev - self._stow_offset_rev
+            ik_ext_mm = ik_rev / self._geom.mm_to_rev
             ext_mm = ik_ext_mm - self._home_extensions_mm
         else:
             ext_mm = np.zeros(6)
