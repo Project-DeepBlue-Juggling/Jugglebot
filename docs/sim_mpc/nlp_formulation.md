@@ -55,7 +55,7 @@ The NLP has a fixed parameter vector `P` that changes every solve call:
 | `twist_ref[0..N]` | 6 × (N+1) | Reference twist at each horizon node |
 | `urgency[1..N]` | N | Per-node tracking weight multiplier |
 
-Total: `24 + 12(N+1) + N` scalars (with N=10: 156 parameters).
+Total: `24 + 12(N+1) + N` scalars (with N=10: 166 parameters).
 
 ## Cost Function
 

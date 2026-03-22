@@ -130,10 +130,10 @@ The `BallManager` handles:
 
 - **Spawning:** Teleport ball to position, set velocity, enable physics.
 - **Flight:** Standard MuJoCo rigid body simulation under gravity.
-- **Capture detection:** Each physics substep, check if the ball is within the hand's capture zone (XY distance from hand axis ≤ 30 mm, Z within [-10, +80] mm of hand origin, relative velocity ≤ 1500 mm/s). Relative velocity uses the **hand site velocity** (`v_body + ω × r_offset`) to account for the platform's angular velocity contribution. Capture is latched — polled by the control loop via `check_and_capture()`.
-- **Anti-re-capture:** After release, the ball must physically **exit** the capture zone before it can be recaptured (`_must_exit_zone` flag). A 30-substep cooldown provides a secondary guard. This prevents immediate re-capture when the ball is thrown along the hand axis.
+- **Capture detection:** Each physics substep, the ball manager checks MuJoCo's contact list for ball-hand geom pairs. When the contact solver reports a collision between the ball geom and any hand collision geom, the ball transitions to kinematic hold. Capture is latched — polled by the control loop via `check_and_capture()`.
+- **Anti-re-capture:** After release, ball-hand collision is **disabled** (`contype=1`, ground-only) so the contact solver cannot trigger re-capture. The ball must reach 100 mm separation from the hand body before collision is re-enabled (`_must_exit_zone` flag). A 30-substep cooldown provides a secondary guard. This prevents immediate re-capture when the ball is thrown along the hand axis.
 - **Kinematic hold:** After capture, the ball `qpos`/`qvel` are overwritten each substep to track the hand opening site exactly. No weld constraint or contact solver — purely kinematic.
 - **Spawn in hand:** `spawn_in_hand()` places the ball at the hand opening site in kinematic hold with zero relative velocity. Used for throw sequences where the ball must be carried by the hand before release.
 - **Release:** Ball is freed from kinematic hold with an optional ejection velocity (for throw sequences).
 
-Capture detection runs at the physics substep rate (typically 2000 Hz with 0.5 ms timestep), not the 50 Hz control rate, to avoid missing fast-moving balls. See [Hand & Ball Physics — Ball Capture Detection](hand_and_ball.md#ball-capture-detection) for full details.
+Capture detection runs at the physics substep rate (typically 2000 Hz with 0.5 ms timestep), not the 50 Hz control rate, to avoid missing fast-moving balls that pass through the hand between control steps. See [Hand & Ball Physics — Ball Capture Detection](hand_and_ball.md#ball-capture-detection) for full details.

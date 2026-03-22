@@ -142,3 +142,28 @@ The `FeasibilityChecker` (in `sim/hand/feasibility.py`) uses a separate coarse-h
 ### Limitations
 
 The feasibility checker uses ASAP mode while the real controller uses the urgency ramp. This makes the checker slightly optimistic — see [MPC_BUGS.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/sim/MPC_BUGS.md) B-03 for details.
+
+## Toss Loop Bypass
+
+The continuous toss loop (`--cycle-time`, `TossLoopController`) does **not** use the urgency system or timed targets. Instead, it computes a time-varying platform reference via quintic Hermite interpolation and sends it as an ASAP target each step.
+
+### Why the Urgency System Doesn't Work for Continuous Motion
+
+The urgency ramp was designed for one-shot targets (catch a single ball, move to a waypoint). For a periodic toss cycle it creates two problems:
+
+1. **Premature arrival.** With `urgency_ramp_s = 0.5` and `air_time = 0.72 s`, the ramp begins just 220 ms into the flight. The coarse horizon nodes (250 ms steps) and terminal cost (Qf_pos × urgency_max) create strong pull, driving the platform to arrive at the catch pose well before the ball. The platform decelerates to zero and holds — defeating Phase C's pass-through intent.
+
+2. **Target-switch jerk.** When the ball is captured and the MPC target switches to the next throw pose (opposite side, reversed velocity), the urgency profile changes discontinuously. The old target was at max urgency (deadline passed); the new target's deadline is within the hold time (~480 ms), so even the first fine nodes have urgency > 0.8. This creates an abrupt platform shift visible on legs 0, 3, 4, and 5.
+
+3. **Twist reference timing.** The twist reference is zero before the deadline and `target_twist` at/after. This means the MPC actively drives velocity to zero during approach. By the time the deadline passes and the twist reference activates, the platform is already stationary. The velocity tracking weight (`Q_vel_lin = 0.001`) is too weak to overcome the position hold.
+
+### Quintic Hermite Solution
+
+The toss loop replaces the static endpoint target with a **continuous motion stream**: a quintic Hermite spline evaluated at the current simulation time. The spline matches position, velocity, and acceleration (all zero) at segment boundaries, giving C2 continuity.
+
+- All targets are ASAP (`arrival_time = None`), so urgency is uniformly 1.0.
+- The MPC simply tracks the moving reference with its standard cost function.
+- The platform arrives at each event pose on time (because the reference itself is correctly timed) and at the correct velocity (because the reference encodes the velocity).
+- No discontinuities at target transitions — the reference is smooth everywhere.
+
+See [Usage — Toss Loop](usage.md#toss-loop-continuous-motion-juggling) for CLI usage and [Control Loop — Toss Loop Adapter](control_loop.md#toss-loop-adapter) for the data flow.

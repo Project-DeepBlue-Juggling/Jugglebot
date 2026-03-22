@@ -74,15 +74,18 @@ Note: the `DynamicTarget` that feeds into `TargetCommand` has a `settle_margin_s
 
 Each input mode has a dedicated adapter that converts its domain-specific logic into `TargetCommand`:
 
-| Adapter | Input Mode | Features |
-|---|---|---|
-| `StaticTargetSource` | `--pose`, `--sequence` | Time-triggered pose schedule |
-| `WaypointTargetSource` | `--trajectory T1..T6` | Waypoint list with arrival times |
-| `InteractiveTargetSource` | `--spacemouse`, `--keyboard` | Continuous ASAP targets |
-| `CatchTargetSource` | `--catch DT1..DT8` | Scripted catch sequences with ball physics |
-| `ThrowCatchTargetSource` | `--throw-catch TC1..TC4` | Throw → catch cycle with ball release |
-| `InteractiveCatchSource` | `--interactive-catch` | User-spawned balls, dynamic feasibility |
-| `ContinuousThrowCatchSource` | `--juggle` | Self-throw-catch loop with parameter tuning |
+| Adapter | Input Mode | Controller | Features |
+|---|---|---|---|
+| `StaticTargetSource` | `--pose`, `--sequence` | — | Time-triggered pose schedule |
+| `WaypointTargetSource` | `--trajectory T1..T6` | — | Waypoint list with arrival times |
+| `InteractiveTargetSource` | `--spacemouse`, `--keyboard` | — | Continuous ASAP targets |
+| `CatchTargetSource` | `--catch DT1..DT8` | `HandCoordinator` | Scripted catch sequences with ball physics |
+| `ThrowCatchTargetSource` | `--throw-catch TC1..TC4` | `HandCoordinator` | Throw → catch cycle with ball release |
+| `InteractiveCatchSource` | `--interactive-catch` | `HandCoordinator` | User-spawned balls, dynamic feasibility |
+| `ContinuousThrowCatchSource` | `--juggle` | `ContinuousThrowCatchController` | Self-throw-catch loop with parameter tuning |
+| `ContinuousThrowCatchSource` | `--cycle-time` | `TossLoopController` | Toss loop with quintic Hermite platform motion |
+
+Note: `ContinuousThrowCatchSource` is a generic wrapper that adapts any controller with `update()`, `reset()`, and viewer lifecycle methods to the `TargetSource` protocol. The `--juggle` and `--cycle-time` modes use different controllers inside the same wrapper.
 
 ### Optional Lifecycle Methods
 
@@ -145,6 +148,29 @@ Ball management flows through the `MuJoCoPlant.ball_manager`:
 
 4. **Hold:** After capture, the ball is held kinematically in the hand (position updated each substep to follow the hand).
 
+## Toss Loop Adapter
+
+The toss loop (`--cycle-time`, `TossLoopController` in `sim/input/toss_loop.py`) is a specialized target source for continuous-motion juggling. It differs from other adapters in several ways:
+
+**Bypasses HandCoordinator.** The toss loop manages hand sequences and ball lifecycle directly, without the `HandCoordinator` state machine. The coordinator's post-catch return-to-home flow (which takes ~2 s) is incompatible with tight cycle timing (~480 ms hold time).
+
+**Quintic Hermite platform reference.** Instead of returning a static target with `arrival_time`, the toss loop evaluates a quintic Hermite spline at the current sim time and returns the result as an ASAP target. The MPC sees a smoothly moving reference with no urgency ramps or deadline pressure. See [Variable Horizon — Toss Loop Bypass](variable_horizon.md#toss-loop-bypass) for the motivation.
+
+**Time-driven targets.** Platform target transitions are driven by the cycle clock, not by ball capture detection. When the ball is captured, only the ball state changes (kinematic hold); the platform reference continues along its pre-planned spline uninterrupted. This eliminates the target-switch jerk that occurs when platform motion is coupled to capture events.
+
+**Pre-planned cycles.** The next cycle is planned at startup and at each cycle transition (not at capture time). Positions alternate deterministically, so the hand position at the next throw prelude can be predicted in advance.
+
+**Data flow:**
+
+```
+_quintic_interp()                          (module-level in toss_loop.py)
+    → interpolated pose (ASAP, no arrival_time)
+        → TossLoopController.update()
+            → ContinuousThrowCatchSource.update()
+                → TargetCommand(target_pose, arrival_time=None)
+                    → mpc.solve(state, pose)   [urgency = 1.0 everywhere]
+```
+
 ## Telemetry
 
 Each control step produces a `StepRecord` logged to CSV:
@@ -163,7 +189,7 @@ Each control step produces a `StepRecord` logged to CSV:
 | `cost` | Optimal objective value |
 | `constraint_violation` | Max constraint residual |
 
-The optional live dashboard (`--dashboard`) broadcasts each record via WebSocket to a browser-based visualization at `http://localhost:8082`.
+The optional live dashboard (`--dashboard`) broadcasts each record via Server-Sent Events (SSE) to a browser-based visualization at `http://localhost:8082`.
 
 ## Viewer Controls
 

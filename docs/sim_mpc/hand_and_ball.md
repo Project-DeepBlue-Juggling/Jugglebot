@@ -128,7 +128,7 @@ This offset is used to compute the platform centroid position from the desired b
 
 ## Throw-Catch Planner
 
-The `ThrowCatchPlanner` converts user-level inputs (throw position, catch position, throw time, catch time) into a complete `ThrowCatchPlan` via a 12-step pipeline:
+The `ThrowCatchPlanner` converts user-level inputs (throw position, catch position, throw time, catch time) into a complete `ThrowCatchPlan` via a 14-step pipeline:
 
 ### Planning Pipeline
 
@@ -142,17 +142,21 @@ The `ThrowCatchPlanner` converts user-level inputs (throw position, catch positi
 8. **Catch orientation** — rotation vector aligning platform +Z with **negative** arrival velocity (face into incoming ball).
 9. **Catch centroid** — platform centroid = catch_pos - hand_offset × platform_Z_catch. The hand offset uses `_HAND_CATCH_X5_MM`, the stroke position where the ball meets the hand during the catch velocity-hold phase.
 10. **Build catch hand trajectory** — `HandCatchSequence` with event velocity clamped to [0.3, 7.0] m/s.
-11. **Build DynamicTargets** — throw target (arrive before throw prelude starts) and catch target (arrive at catch time). Both include `settle_margin_s = 0.1` for early platform arrival.
-12. **Timing feasibility** — throw hand trajectory must end before catch prelude starts.
+11. **Build DynamicTargets** — throw target (at throw time) and catch target (at catch time). Both include `settle_margin_s = 0.1` for the coordinator flow. The toss loop ignores `arrival_time` and `settle_margin_s`, reading only `pose_6dof` and `arrival_twist` to build its quintic Hermite reference.
+12. **Build BallSpawn** — records the throw position and launch velocity at throw_time, for spawning the ball into the simulation when the throw begins.
+13. **Timing feasibility** — throw hand trajectory must end before catch prelude starts.
+14. **Return plan** — assemble all components into a `ThrowCatchPlan` dataclass.
 
 ### `_HAND_CATCH_X5_MM`
 
 This is the hand position (in mm from physical bottom) where the ball contacts the hand during the catch velocity-hold phase. It's derived from the Teensy firmware's segment geometry:
 
 ```python
-_x5_m = TOTAL_STROKE - (TOTAL_STROKE - CATCH_VEL_HOLD_PCT * TOTAL_STROKE) * INERTIA_RATIO / (1 + INERTIA_RATIO)
-_HAND_CATCH_X5_MM = STROKE_MARGIN_MM + _x5_m * 1000.0
+_x5_m = _TOTAL_STROKE_M - (_TOTAL_STROKE_M - CATCH_VEL_HOLD_PCT * _TOTAL_STROKE_M) * INERTIA_RATIO / (1.0 + INERTIA_RATIO)
+_HAND_CATCH_X5_MM = STROKE_MARGIN_M * 1000.0 + _x5_m * 1000.0
 ```
+
+Where `_TOTAL_STROKE_M = HAND_STROKE_M - 2 × STROKE_MARGIN_M = 0.315 m` (the effective stroke in metres).
 
 This position determines the hand offset used for computing the catch platform centroid — ensuring the ball arrives at the correct position along the hand axis.
 
@@ -217,32 +221,29 @@ The hold timeout is **deferred by one step**: when `sim_time >= hold_end_time`, 
 
 ## Ball Capture Detection
 
-The `BallManager` runs capture detection every **physics substep** (typically 2000 Hz), not just at the 50 Hz control rate. This prevents missing fast-moving balls that traverse the capture zone between control steps.
+The `BallManager` runs capture detection every **physics substep** (typically 2000 Hz), not just at the 50 Hz control rate. This prevents missing fast-moving balls that pass through the hand between control steps.
 
-### Capture Zone
+### Contact-Based Capture
 
-The capture zone is defined in the hand body's local frame:
+Capture uses **MuJoCo's contact solver**, not a geometric zone check. Each substep, the ball manager iterates over `data.ncon` active contacts looking for pairs involving the ball geom and any hand collision geom:
 
-| Criterion | Threshold | Meaning |
-|---|---|---|
-| XY distance from hand axis | ≤ 30 mm | Ball centered over the hand cone |
-| Z above hand body origin | -10 mm to +80 mm | Ball within the cone height |
-| Relative velocity (ball - hand) | ≤ 1500 mm/s | Ball not moving too fast relative to hand |
-
-Relative velocity is computed using the **hand site velocity**, not just the hand body velocity:
-
-```
-v_site = v_body + ω × r_offset
+```python
+for i in range(data.ncon):
+    c = data.contact[i]
+    if ball_geom in (c.geom1, c.geom2) and hand_geom in (c.geom1, c.geom2):
+        # Capture triggered
 ```
 
-Where `r_offset` is the hand opening site position (44.4 mm along hand Z) rotated into world frame. This accounts for the platform's angular velocity contribution to the hand site's linear velocity.
+When a ball-hand contact pair is found, the ball transitions to kinematic hold. Capture is latched (`_capture_pending`) and polled by the control loop via `check_and_capture()`.
+
+The hand model uses soft contact physics (`solref` with a long time constant) so the contact solver produces a cushioned interaction. The ball and hand geoms use `contype=3, conaffinity=3` (bits 0 and 1 = ground + hand).
 
 ### Post-Release Anti-Re-Capture
 
 After a ball is released (thrown), two mechanisms prevent immediate re-capture:
 
-1. **Zone exit requirement** (`_must_exit_zone`): the ball must physically **exit** the capture zone before it can be recaptured. This handles the case where the ball is thrown along the hand axis and remains geometrically inside the zone for several substeps after release.
-2. **Cooldown timer** (`_release_cooldown = 30`): a brief 30-substep guard as a secondary safety net.
+1. **Collision disable + separation requirement** (`_must_exit_zone`): at release, ball-hand collision is **disabled** (`contype=1`, ground-only) so the contact solver cannot trigger re-capture. The ball must reach **100 mm separation** from the hand body before collision is re-enabled. This handles the case where the ball is thrown along the hand axis and remains geometrically close to the hand for several substeps after release.
+2. **Cooldown timer** (`_release_cooldown = 30`): a 30-substep guard as a secondary safety net.
 
 ### `spawn_in_hand()`
 

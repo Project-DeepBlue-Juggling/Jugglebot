@@ -169,18 +169,20 @@ python main.py --juggle
 
 Timing-driven toss loop with three phases of increasing difficulty. The platform throws to itself repeatedly, with all timing derived from two parameters: cycle time and hold ratio.
 
+The platform follows a **quintic Hermite spline** between event poses, giving C2-continuous motion (position, velocity, and acceleration are all continuous at segment boundaries). This eliminates the jerk spikes that would occur with static endpoint targets and urgency-based arrival. See [Variable Horizon — Toss Loop Bypass](variable_horizon.md#toss-loop-bypass) for why the urgency system is not used here.
+
 ```bash
 # Phase A: vertical toss-to-self (default 1.2s cycle, 0.4 hold ratio)
 python main.py --cycle-time 1.2
 
 # Adjust hold ratio (fraction of cycle the ball is in the hand)
-python main.py --cycle-time 1.2 --hold-ratio 0.3
+python main.py --cycle-time 1.2 --hold-ratio 0.35
 
 # Phase B: toss between two lateral positions (platform stops at each end)
 python main.py --cycle-time 1.2 --lateral-spacing 120
 
 # Phase C: continuous motion (platform moves through throw/catch events)
-python main.py --cycle-time 1.2 --lateral-spacing 120 --platform-event-speed-ratio 0.5
+python main.py --cycle-time 1.2 --lateral-spacing 120 --platform-event-speed-ratio 0.8
 ```
 
 **Parameters:**
@@ -195,8 +197,17 @@ python main.py --cycle-time 1.2 --lateral-spacing 120 --platform-event-speed-rat
 **Phases:**
 
 - **Phase A** (`--lateral-spacing 0`): Vertical toss-to-self. The platform stays centred and throws straight up.
-- **Phase B** (`--lateral-spacing >0`, `--platform-event-speed-ratio 0`): Toss between two positions. The platform stops at each end before throwing/catching.
-- **Phase C** (`--lateral-spacing >0`, `--platform-event-speed-ratio >0`): Continuous motion. The platform carries velocity through throw and catch events.
+- **Phase B** (`--lateral-spacing >0`, `--platform-event-speed-ratio 0`): Toss between two positions. The quintic spline produces a smooth S-curve transit (zero velocity at endpoints).
+- **Phase C** (`--lateral-spacing >0`, `--platform-event-speed-ratio >0`): Continuous motion. The platform carries velocity through throw and catch events. During the hold phase (ball in hand), the quintic curves the platform away from the event position (~20 mm at default settings) and back, smoothly reversing velocity for the next transit.
+
+**Platform motion architecture:**
+
+The toss loop computes a time-varying platform reference via quintic Hermite interpolation between event poses. Two alternating segments cover the full cycle:
+
+1. **Flight segment** (throw_time → catch_time): interpolates from throw pose/twist to catch pose/twist.
+2. **Hold segment** (catch_time → next_throw_time): interpolates from catch pose/twist to next throw pose/twist.
+
+Acceleration is zero at all segment boundaries. The MPC receives the interpolated pose as an ASAP target (no `arrival_time`) each control step, so it uses uniform urgency and simply tracks the moving reference. Platform targets are **time-driven** (based on the cycle clock), not event-driven (ball capture detection only updates ball state, not the platform reference).
 
 **Keyboard controls:**
 

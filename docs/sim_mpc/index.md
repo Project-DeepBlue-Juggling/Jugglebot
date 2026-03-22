@@ -69,18 +69,19 @@ sim/
 │   ├── trajectory.py   Catch/throw hand trajectories (Teensy port)
 │   ├── feasibility.py  Coarse-horizon MPC reachability check
 │   ├── ballistics.py   Inverse ballistics + orientation computation
-│   └── planner.py      Throw-catch plan generation (12-step pipeline)
+│   └── planner.py      Throw-catch plan generation (14-step pipeline)
 ├── input/
 │   ├── scripted.py     Pre-defined test sequences (T1-T6, DT1-DT8)
 │   ├── interactive_catch.py  Interactive ball spawn + catch
-│   ├── continuous_throw_catch.py  Self-throw-catch juggling loop
+│   ├── continuous_throw_catch.py  Self-throw-catch juggling loop (--juggle)
+│   ├── toss_loop.py    Continuous-motion toss loop (--cycle-time)
 │   ├── sim_control.py  Pause/step/speed viewer controls
 │   ├── spacemouse.py   SpaceMouse input adapter
 │   └── keyboard.py     Keyboard input adapter
 ├── viz/
 │   ├── telemetry.py    CSV logging + StepRecord dataclass
 │   ├── horizon.py      MPC predicted-horizon renderer
-│   └── dashboard/      Live web dashboard (WebSocket)
+│   └── dashboard/      Live web dashboard (SSE)
 ├── main.py             Entry point + 50 Hz loop + TargetSource adapters
 ├── demo_mpc.py         Standalone MPC demo (Phase 2)
 └── MPC_BUGS.md         Known issues tracker
@@ -97,7 +98,8 @@ Each control step (20 ms) follows this sequence:
 4. Handle hand commands (prime, catch/throw sequence, position)
 5. MPC solve:
    a. Build reference trajectory (all nodes = target pose)
-   b. Compute urgency multipliers (for timed targets)
+   b. Compute urgency multipliers (timed targets use ramp;
+      toss loop uses ASAP = uniform 1.0)
    c. Pack parameter vector (current state + reference + urgency)
    d. Warm-start from shifted previous solution
    e. IPOPT solve → optimal leg commands
@@ -115,7 +117,7 @@ Each control step (20 ms) follows this sequence:
 | [Usage](usage.md) | Installation, CLI modes, telemetry, tests | How do I run and analyze the simulation? |
 | [NLP Formulation](nlp_formulation.md) | Decision variables, cost, constraints | How does the optimizer find leg commands? |
 | [Variable Horizon](variable_horizon.md) | Fine/coarse timesteps, urgency ramp | How does the MPC see both near and far? |
-| [Hand & Ball Physics](hand_and_ball.md) | Trajectories, ballistics, capture, throw-catch | How does catching/throwing work? |
+| [Hand & Ball Physics](hand_and_ball.md) | Trajectories, ballistics, capture, throw-catch, toss loop | How does catching/throwing work? |
 | [Control Loop](control_loop.md) | 50 Hz loop, target sources, hand coordination | What happens every 20 ms? |
 | [Plant Interface](plant.md) | MuJoCo plant, coordinate conventions | How does the sim model the robot? |
 | [Tuning Guide](tuning.md) | Parameters, weights, solver options | How do I tune the MPC? |
