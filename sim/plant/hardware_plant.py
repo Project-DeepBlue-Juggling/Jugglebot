@@ -35,6 +35,7 @@ from jugglebot.motion.ipc import (
 )
 from jugglebot.motion.conversions import revs_to_extensions_mm
 from jugglebot.motion.geometry import StewartGeometry
+from jugglebot.motion.ik_solver import leg_lengths_to_pose, rot_matrix_to_rotvec, rotvec_to_rot_matrix
 from jugglebot.motion.motor_commands import cartesian_to_motor_commands
 from jugglebot.motion.dynamics import DynamicsParams
 
@@ -115,6 +116,11 @@ class HardwarePlant(PlantInterface):
         # Latest telemetry from control loop
         self._last_telem: dict | None = None
 
+        # FK warm-start: cache last FK result as initial guess for next call.
+        # Newton-Raphson converges in 1-2 iterations when warm-started from
+        # a nearby pose (motor feedback at 50-100 Hz moves very little).
+        self._fk_last_guess: tuple[np.ndarray, np.ndarray] | None = None
+
         # ZeroMQ context and sockets
         self._ctx = zmq.Context()
 
@@ -177,8 +183,12 @@ class HardwarePlant(PlantInterface):
         """Read the latest telemetry from the control loop.
 
         Returns a PlantState constructed from motor feedback fields in
-        the telemetry message.  If no telemetry has been received yet,
-        returns a zero-state at the current elapsed time.
+        the telemetry message.  When motor positions are available,
+        forward kinematics is used to compute the actual Cartesian pose
+        so the MPC sees the real platform state (not its own prediction).
+
+        If no telemetry has been received yet, returns a zero-state at
+        the current elapsed time.
         """
         # Drain to get the latest (CONFLATE socket, but drain anyway)
         while True:
@@ -203,17 +213,16 @@ class HardwarePlant(PlantInterface):
 
         telem = self._last_telem
 
-        # Motor feedback (rev, absolute ODrive convention) → home-relative mm
+        # Motor feedback (rev, absolute ODrive convention) → IK extensions → home-relative
         motor_pos = telem.get('motor_pos')
         motor_vel = telem.get('motor_vel')
         if motor_pos is not None:
             pos_rev = np.array(motor_pos, dtype=float)
-            # Subtract stow offset to get IK-convention revolutions,
-            # then convert to IK extensions (mm), then to home-relative.
             ik_rev = pos_rev - self._stow_offset_rev
             ik_ext_mm = ik_rev / self._geom.mm_to_rev
             ext_mm = ik_ext_mm - self._home_extensions_mm
         else:
+            ik_ext_mm = None
             ext_mm = np.zeros(6)
 
         if motor_vel is not None:
@@ -222,15 +231,33 @@ class HardwarePlant(PlantInterface):
         else:
             vel_mmps = np.zeros(6)
 
-        # We don't have direct Cartesian feedback from the control loop
-        # telemetry (it sends motor-space data).  Use the last commanded
-        # pose as a reasonable approximation — the MPC already knows the
-        # actual state from its own model.
+        # Compute Cartesian pose from actual motor positions via FK.
+        # This closes the feedback loop: the MPC sees where the platform
+        # actually is, not where it predicted it would be.
+        if ik_ext_mm is not None:
+            try:
+                pos_offset, rot_matrix = leg_lengths_to_pose(
+                    ik_ext_mm, self._geom,
+                    initial_guess=self._fk_last_guess)
+                rot_vec = rot_matrix_to_rotvec(rot_matrix)
+                # Cache for warm-starting next FK call
+                self._fk_last_guess = (pos_offset.copy(), rot_matrix.copy())
+                platform_pos_mm = pos_offset
+                platform_rot = rot_vec
+            except RuntimeError:
+                # FK failed to converge — fall back to last commanded pose
+                logger.warning("FK did not converge; using last commanded pose")
+                platform_pos_mm = self._last_pose_6dof[:3].copy()
+                platform_rot = self._last_pose_6dof[3:6].copy()
+        else:
+            platform_pos_mm = self._last_pose_6dof[:3].copy()
+            platform_rot = self._last_pose_6dof[3:6].copy()
+
         return PlantState(
             leg_extensions_mm=ext_mm,
             leg_velocities_mmps=vel_mmps,
-            platform_pos_mm=self._last_pose_6dof[:3].copy(),
-            platform_rot=self._last_pose_6dof[3:6].copy(),
+            platform_pos_mm=platform_pos_mm,
+            platform_rot=platform_rot,
             platform_twist=np.zeros(6),
             time=t,
         )

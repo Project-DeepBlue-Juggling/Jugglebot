@@ -707,7 +707,10 @@ def run_mpc_headless(plant: MuJoCoPlant, mpc, source, duration: float,
         # MPC solve
         cmd, diag, ref_pose, ref_twist = _mpc_solve(mpc, state, tc)
 
-        # For HardwarePlant: pass predicted Cartesian pose for workspace checks
+        # For HardwarePlant: pass predicted pose for feedforward computation
+        # and workspace checks in command().  Note: get_state() computes the
+        # actual Cartesian pose from motor FK independently — this only sets
+        # the feedforward torques and the pose field in the IPC message.
         if hasattr(plant, 'set_pose'):
             poses = mpc.predicted_poses
             if poses is not None:
