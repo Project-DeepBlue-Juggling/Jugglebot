@@ -129,9 +129,15 @@ class HardwarePlant(PlantInterface):
         Parameters
         ----------
         leg_extensions_mm : (6,) ndarray — home-relative extensions in mm
+            (MPC convention: 0 = home position)
         """
+        # Convert from MPC home-relative convention (0 = home) to
+        # IK convention (0 = fully retracted, home ≈ 28mm).
+        # The control loop's extensions_mm_to_revs() and workspace checks
+        # expect IK convention — same as pose_to_leg_lengths() returns.
+        ik_extensions_mm = np.asarray(leg_extensions_mm) + self._home_extensions_mm
         msg = make_mpc_command(
-            ext_mm=leg_extensions_mm.tolist(),
+            ext_mm=ik_extensions_mm.tolist(),
             pose_6dof=self._last_pose_6dof.tolist(),
             seq=self._seq,
         )
@@ -169,12 +175,14 @@ class HardwarePlant(PlantInterface):
 
         telem = self._last_telem
 
-        # Motor feedback (rev) → leg extensions (mm)
+        # Motor feedback (rev) → leg extensions (mm, home-relative)
         motor_pos = telem.get('motor_pos')
         motor_vel = telem.get('motor_vel')
         if motor_pos is not None:
             pos_rev = np.array(motor_pos, dtype=float)
-            ext_mm = revs_to_extensions_mm(pos_rev, self._geom)
+            ik_ext_mm = revs_to_extensions_mm(pos_rev, self._geom)
+            # Convert IK convention → home-relative (MPC convention)
+            ext_mm = ik_ext_mm - self._home_extensions_mm
         else:
             ext_mm = np.zeros(6)
 
