@@ -35,6 +35,8 @@ from jugglebot.motion.ipc import (
 )
 from jugglebot.motion.conversions import revs_to_extensions_mm
 from jugglebot.motion.geometry import StewartGeometry
+from jugglebot.motion.motor_commands import cartesian_to_motor_commands
+from jugglebot.motion.dynamics import DynamicsParams
 
 from .interface import PlantInterface, PlantState
 
@@ -98,9 +100,17 @@ class HardwarePlant(PlantInterface):
         home_ik_rev = self._home_extensions_mm * self._geom.mm_to_rev
         self._stow_offset_rev = self._activate_rev - home_ik_rev
 
+        # Dynamics parameters for feedforward computation
+        self._dynamics_params = DynamicsParams.from_config()
+
         # Pose to include in MPC commands (for workspace checks).
         # Set by caller via set_pose() before command().
         self._last_pose_6dof = np.zeros(6)
+
+        # Feedforward: computed from the MPC's predicted pose via the
+        # existing dynamics model (gravity + inertia).  Set by set_pose().
+        self._ff_vel_mm_s: np.ndarray | None = None
+        self._ff_torque_Nm: np.ndarray | None = None
 
         # Latest telemetry from control loop
         self._last_telem: dict | None = None
@@ -153,6 +163,10 @@ class HardwarePlant(PlantInterface):
             ext_mm=ik_extensions_mm.tolist(),
             motor_rev=motor_rev.tolist(),
             pose_6dof=self._last_pose_6dof.tolist(),
+            vel_mm_s=(self._ff_vel_mm_s.tolist()
+                      if self._ff_vel_mm_s is not None else None),
+            torque_Nm=(self._ff_torque_Nm.tolist()
+                       if self._ff_torque_Nm is not None else None),
             seq=self._seq,
         )
         self._pub.send_multipart(
@@ -239,13 +253,37 @@ class HardwarePlant(PlantInterface):
     # MPC-specific methods
     # ------------------------------------------------------------------
 
-    def set_pose(self, pose_6dof: np.ndarray) -> None:
-        """Set the Cartesian pose to include in the next MPC command.
+    def set_pose(self, pose_6dof: np.ndarray,
+                 twist_6dof: np.ndarray | None = None) -> None:
+        """Set the Cartesian pose and compute feedforward for the next command.
 
-        The control loop uses this for workspace/condition-number checks.
-        Call this with ``mpc.predicted_poses[0]`` before ``command()``.
+        Computes velocity and torque feedforward from the pose using the
+        existing dynamics model (gravity + inertia).  These are included
+        in the next ``command()`` call so the ODrive PID doesn't have to
+        fight gravity alone.
+
+        Parameters
+        ----------
+        pose_6dof : [x, y, z, rx, ry, rz] in mm, rad
+            From ``mpc.predicted_poses[0]``.
+        twist_6dof : [vx, vy, vz, wx, wy, wz] in mm/s, rad/s, or None
+            Platform twist (velocity).  If None, zeros are used (static).
         """
         self._last_pose_6dof = np.asarray(pose_6dof, dtype=float).copy()
+
+        if twist_6dof is None:
+            twist_6dof = np.zeros(6)
+        accel_6dof = np.zeros(6)
+
+        # Compute feedforward using the production dynamics model
+        _, vel_ff_rps, torque_ff_Nm, _ = cartesian_to_motor_commands(
+            pose_6dof, twist_6dof, accel_6dof,
+            self._geom, self._dynamics_params,
+            feedforward_enabled=True)
+
+        # Convert vel_ff from rev/s back to mm/s for the IPC message
+        self._ff_vel_mm_s = vel_ff_rps / self._geom.mm_to_rev
+        self._ff_torque_Nm = torque_ff_Nm
 
     def enable(self) -> None:
         """Send enable command with source='MPC' to activate pass-through mode."""
