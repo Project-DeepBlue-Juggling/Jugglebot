@@ -1,13 +1,13 @@
 """Ball lifecycle management: spawn, capture detection, release, reset.
 
-The ball is a free-body sphere in MuJoCo.  Ball-hand interaction uses
-**kinematic hold** — when held, the ball's qpos/qvel are overwritten
-each substep to exactly track the hand opening site.  No weld constraint
-or contact physics between ball and hand.
+The ball is a free-body sphere in MuJoCo.  Ball-hand contact uses soft
+physics (solref with long time constant) for a cushioned catch.  Capture
+is detected via MuJoCo's contact list — when the solver reports a
+ball-hand contact pair, the ball transitions to **kinematic hold** where
+its qpos/qvel are overwritten each substep to track the hand opening site.
 
-The ball only collides with the ground (contype=1, conaffinity=1).
-Capture is detected via geometric proximity (XY distance from hand axis
-+ relative velocity threshold), and is instant (no settle time).
+The ball collides with both ground (bit 0) and hand (bit 1):
+contype=3, conaffinity=3.
 """
 
 from __future__ import annotations
@@ -38,39 +38,24 @@ _HAND_OPENING_OFFSET = np.array([0.0, 0.0, 0.0444])
 class BallManager:
     """Manages the ball lifecycle in the MuJoCo simulation.
 
+    Capture detection uses MuJoCo's contact solver — the ball is considered
+    captured when it is in contact with any hand collision geom.
+
     Parameters
     ----------
     model : mujoco.MjModel
         The compiled MuJoCo model (must contain 'ball' body).
     data : mujoco.MjData
         The MuJoCo data instance.
-    capture_radius_mm : float
-        XY distance from hand axis for capture detection.
-    capture_height_mm : float
-        Maximum height above hand body origin for the capture zone.
-    capture_min_z_mm : float
-        Minimum height above hand body origin for the capture zone.
-        Slightly negative to allow margin during fast approaches.
-    capture_max_rel_vel_mms : float
-        Maximum ball-hand relative velocity for capture detection (mm/s).
-        Capture is instant — no settle time required.
     """
 
     def __init__(
         self,
         model: mujoco.MjModel,
         data: mujoco.MjData,
-        capture_radius_mm: float = 30.0,
-        capture_height_mm: float = 80.0,
-        capture_min_z_mm: float = -10.0,
-        capture_max_rel_vel_mms: float = 1500.0,
     ):
         self._model = model
         self._data = data
-        self._capture_radius_m = capture_radius_mm / 1000.0
-        self._capture_height_m = capture_height_mm / 1000.0
-        self._capture_min_z_m = capture_min_z_mm / 1000.0
-        self._capture_max_rel_vel = capture_max_rel_vel_mms / 1000.0  # m/s
 
         # Cache MuJoCo IDs
         self._ball_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, 'ball')
@@ -84,6 +69,14 @@ class BallManager:
 
         # Ball geom ID (for toggling collision)
         self._ball_geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, 'ball_geom')
+
+        # Hand collision geom IDs — collect all geoms belonging to the hand body
+        # that have contype != 0 (i.e. are collision geoms, not visual-only).
+        self._hand_geom_ids: set[int] = set()
+        for geom_id in range(model.ngeom):
+            if (model.geom_bodyid[geom_id] == self._hand_body_id
+                    and model.geom_contype[geom_id] != 0):
+                self._hand_geom_ids.add(geom_id)
 
         # Sensor addresses
         self._ball_pos_adr = self._get_sensor_adr('ball_pos')
@@ -117,9 +110,9 @@ class BallManager:
         pos_m = np.asarray(position_mm, dtype=float) / 1000.0
         vel_mps = np.asarray(velocity_mms, dtype=float) / 1000.0
 
-        # Enable ball collision (ground only)
-        self._model.geom_contype[self._ball_geom_id] = 1
-        self._model.geom_conaffinity[self._ball_geom_id] = 1
+        # Enable ball collision (ground + hand)
+        self._model.geom_contype[self._ball_geom_id] = 3
+        self._model.geom_conaffinity[self._ball_geom_id] = 3
 
         # Set ball qpos (position xyz + quaternion wxyz)
         adr = self._ball_qpos_adr
@@ -140,43 +133,25 @@ class BallManager:
         if self._release_cooldown > 0:
             self._release_cooldown -= 1
 
-    def _in_capture_zone(self) -> tuple[bool, float]:
-        """Test whether the ball is inside the capture zone.
-
-        Returns (in_zone, rel_vel_mps).  Geometric checks (XY + Z) are
-        evaluated first; if out of the zone, rel_vel is returned as inf.
-        """
-        ball_pos = self._data.sensordata[self._ball_pos_adr:self._ball_pos_adr + 3].copy()
-        ball_vel = self._data.sensordata[self._ball_vel_adr:self._ball_vel_adr + 3].copy()
-
-        hand_pos = self._data.xpos[self._hand_body_id].copy()
-        hand_rot = self._data.xmat[self._hand_body_id].reshape(3, 3)
-        ball_in_hand = hand_rot.T @ (ball_pos - hand_pos)
-
-        # XY distance from hand axis
-        xy_dist = np.sqrt(ball_in_hand[0]**2 + ball_in_hand[1]**2)
-        if xy_dist > self._capture_radius_m:
-            return False, float('inf')
-
-        # Z range
-        if ball_in_hand[2] < self._capture_min_z_m or ball_in_hand[2] > self._capture_height_m + 0.001:
-            return False, float('inf')
-
-        # Relative velocity
-        hand_vel = self._hand_site_velocity()
-        rel_vel = float(np.linalg.norm(ball_vel - hand_vel))
-        return True, rel_vel
+    def _ball_contacts_hand(self) -> bool:
+        """Check if the ball geom is in contact with any hand collision geom."""
+        ball_id = self._ball_geom_id
+        for i in range(self._data.ncon):
+            c = self._data.contact[i]
+            if ((c.geom1 == ball_id and c.geom2 in self._hand_geom_ids)
+                    or (c.geom2 == ball_id and c.geom1 in self._hand_geom_ids)):
+                return True
+        return False
 
     def check_capture(self) -> bool:
-        """Check if ball is within the capture zone of the hand.
+        """Check if the ball is in contact with the hand.
 
-        Capture is instant — no settle time.  The ball must be within
-        the XY capture radius of the hand axis, within the Z capture
-        zone, and have relative velocity below the threshold.
+        Uses MuJoCo's contact list — capture triggers when the solver
+        detects a ball-hand contact pair.
 
-        After a release, the ball must first **exit** the capture zone
-        before it can be recaptured.  This prevents immediate re-capture
-        when the ball is thrown along the hand axis.
+        After a release, the ball must first **lose** contact before it
+        can be recaptured.  This prevents immediate re-capture when the
+        ball is thrown along the hand axis.
 
         Returns True on the substep that the ball is first considered held.
         """
@@ -185,18 +160,22 @@ class BallManager:
         if self._release_cooldown > 0:
             return False
 
-        in_zone, rel_vel = self._in_capture_zone()
-
-        # After release, require ball to leave the zone before re-capture
+        # After release, wait until the ball is geometrically clear of
+        # the hand before re-enabling contact.  We can't use the contact
+        # list here because contacts are disabled (contype=1) during this
+        # phase — they'd always read as empty.
         if self._must_exit_zone:
-            if not in_zone:
+            ball_pos = self._data.sensordata[self._ball_pos_adr:self._ball_pos_adr + 3]
+            hand_pos = self._data.xpos[self._hand_body_id]
+            dist = float(np.linalg.norm(ball_pos - hand_pos))
+            if dist > 0.10:  # 100 mm clearance
                 self._must_exit_zone = False
+                self._model.geom_contype[self._ball_geom_id] = 3
+                self._model.geom_conaffinity[self._ball_geom_id] = 3
             return False
 
-        if not in_zone:
-            return False
-
-        if rel_vel > self._capture_max_rel_vel:
+        in_contact = self._ball_contacts_hand()
+        if not in_contact:
             return False
 
         # Capture — start kinematic hold
@@ -260,9 +239,9 @@ class BallManager:
         self._data.qvel[vadr:vadr + 3] = v_site
         self._data.qvel[vadr + 3:vadr + 6] = 0.0
 
-        # Enable ground collision (ball may land on ground after release)
-        self._model.geom_contype[self._ball_geom_id] = 1
-        self._model.geom_conaffinity[self._ball_geom_id] = 1
+        # Enable collision (ground + hand)
+        self._model.geom_contype[self._ball_geom_id] = 3
+        self._model.geom_conaffinity[self._ball_geom_id] = 3
 
         self._held = True
         self._release_cooldown = 0
@@ -274,14 +253,21 @@ class BallManager:
         If velocity_mms is provided, it becomes the ball's velocity.
         Otherwise the ball retains the hand site velocity from the
         last kinematic hold step.
+
+        Temporarily disables ball-hand contact so the soft contact solver
+        doesn't decelerate the ball on its way out.  Contact is re-enabled
+        once the ball separates (see check_capture).
         """
         self._held = False
         self._capture_pending = False
-        # Ball must leave the capture zone before it can be recaptured.
-        # This prevents immediate re-capture when thrown along the hand axis.
+        # Ball must lose contact before it can be recaptured.
         self._must_exit_zone = True
         # Brief cooldown as a secondary guard
         self._release_cooldown = 30  # 30 ms at 1 kHz
+
+        # Disable hand contact — ground only until ball separates
+        self._model.geom_contype[self._ball_geom_id] = 1
+        self._model.geom_conaffinity[self._ball_geom_id] = 1
 
         if velocity_mms is not None:
             vel_mps = np.asarray(velocity_mms, dtype=float) / 1000.0

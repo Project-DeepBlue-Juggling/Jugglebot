@@ -268,10 +268,13 @@ def generate_mjcf(config, mesh_dir=None):
     # (radial wedges) whose individual convex hulls faithfully represent the
     # concave interior.  The original hand.stl is kept as visual-only.
     #
-    # Ball-hand interaction uses kinematic hold (direct qpos override), not
-    # physics contact.  Hand collision geoms are visual-only (no contact).
+    # Ball-hand physics contact with soft, cushioned solref to absorb the
+    # ball gradually (long time constant = compliant surface, like a cup).
     hand_contact_params = dict(
-        contype='0', conaffinity='0',
+        contype='2', conaffinity='2',
+        solref='0.05 2.0',        # 50ms time constant, overdamped — soft catch
+        solimp='0.99 0.99 0.001',
+        friction='1.0 0.005 0.0001',
     )
     # Mesh transforms — the original hand.stl and the decomposed parts use
     # different coordinate systems:
@@ -427,14 +430,14 @@ def generate_mjcf(config, mesh_dir=None):
     # ---- Ball body (free-flying, for catch simulation) ----
     ball_body = ET.SubElement(worldbody, 'body', name='ball', pos='0 0 5')
     ET.SubElement(ball_body, 'freejoint', name='ball_joint')
-    # contype=1, conaffinity=1: collides with ground (bit 0) only.
-    # Ball-hand interaction uses kinematic hold (no physics contact).
+    # contype=3, conaffinity=3: collides with ground (bit 0) AND hand (bit 1).
+    # Soft solref (long time constant) so the ball sinks into the hand gently.
     ET.SubElement(ball_body, 'geom', name='ball_geom', type='sphere',
                   size='0.02', mass='0.043', material='ball_mat',
-                  contype='1', conaffinity='1',
-                  solref='0.005 2.0',
+                  contype='3', conaffinity='3',
+                  solref='0.05 2.0',
                   solimp='0.99 0.99 0.001',
-                  friction='2.0 0.005 0.0001')
+                  friction='1.0 0.005 0.0001')
     ET.SubElement(ball_body, 'site', name='ball_site', pos='0 0 0',
                   size='0.005', rgba='1 1 1 0')
 
@@ -452,7 +455,8 @@ def generate_mjcf(config, mesh_dir=None):
                       solref='0.005 1',   # tight constraint
                       solimp='0.99 0.99 0.001')
 
-    # Ball-hand interaction uses kinematic hold — no weld constraint needed.
+    # Ball-hand: physics contact handles initial collision (soft solref),
+    # then kinematic hold takes over once capture is confirmed.
 
     # ---- Actuators ----
     actuator = ET.SubElement(mujoco, 'actuator')

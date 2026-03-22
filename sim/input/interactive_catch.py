@@ -149,6 +149,7 @@ class InteractiveCatchController:
         # Catch state
         self._coordinator: HandCoordinator | None = None
         self._active_hand_seq: HandCatchSequence | None = None
+        self._home_pending = False
         self._pending_spawn: BallSpawn | None = None
         self._spawn_requested = False
         self._bb_spawn_requested = False
@@ -393,8 +394,9 @@ class InteractiveCatchController:
                 elif hcmd == 'prime':
                     hand_cmd = 'prime'
                 elif hcmd == 'home':
-                    hand_cmd = 'home'
-                    self._active_hand_seq = None
+                    # Defer 'home' until the active catch sequence finishes
+                    # naturally — sending it now would snap the hand to 0.
+                    self._home_pending = True
 
                 # Sample active hand trajectory
                 if self._active_hand_seq is not None:
@@ -403,6 +405,10 @@ class InteractiveCatchController:
                         hand_cmd = pos  # float position
                     else:
                         self._active_hand_seq = None
+                        # Sequence finished — now send the deferred home
+                        if self._home_pending:
+                            hand_cmd = 'home'
+                            self._home_pending = False
 
                 # Check if coordinator is done
                 elapsed = sim_time - self._state_start_time
