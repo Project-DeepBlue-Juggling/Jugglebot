@@ -79,6 +79,15 @@ class HardwarePlant(PlantInterface):
         self._seq = 0
         self._start_time = time.perf_counter()
 
+        # Home extensions: same computation as MuJoCoPlant.
+        # Geometric home leg lengths (mm) minus IK init_leg_lengths_mm.
+        base_m = self._geom.base_nodes / 1000.0
+        plat_m = self._geom.plat_nodes / 1000.0
+        height_m = self._geom.init_height_mm / 1000.0
+        plat_world_m = plat_m + np.array([0.0, 0.0, height_m])
+        geom_home_lengths_mm = np.linalg.norm(plat_world_m - base_m, axis=1) * 1000.0
+        self._home_extensions_mm = geom_home_lengths_mm - self._geom.init_leg_lengths_mm
+
         # Pose to include in MPC commands (for workspace checks).
         # Set by caller via set_pose() before command().
         self._last_pose_6dof = np.zeros(6)
@@ -239,6 +248,11 @@ class HardwarePlant(PlantInterface):
     def last_telemetry(self) -> dict | None:
         """The most recent telemetry message, or None."""
         return self._last_telem
+
+    @property
+    def home_extensions_mm(self) -> np.ndarray:
+        """IK extensions at home (the offset used by the MPC for warm-starting)."""
+        return self._home_extensions_mm.copy()
 
     @property
     def geom(self) -> StewartGeometry:
