@@ -219,7 +219,7 @@ class TossLoopController:
                 f"Min cycle_time ≈ {min_ct:.2f}s at hold_ratio={hold_ratio}.")
 
         # Ball Z: average of throw release and catch arrival hand offsets
-        self._ball_z = self._compute_ball_z()
+        self._ball_z = self._compute_ball_z() + 60.0  # +60mm (3× PgUp steps)
 
         # Components
         self._planner = ThrowCatchPlanner()
