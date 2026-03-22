@@ -128,24 +128,24 @@ This offset is used to compute the platform centroid position from the desired b
 
 ## Throw-Catch Planner
 
-The `ThrowCatchPlanner` converts user-level inputs (throw position, catch position, throw time, catch time) into a complete `ThrowCatchPlan` via a 14-step pipeline:
+The `ThrowCatchPlanner` converts user-level inputs (throw position, catch position, throw time, catch time) into a complete `ThrowCatchPlan` via a 14-step pipeline. Step numbers match the `--- N. ... ---` comments in `planner.py`:
 
 ### Planning Pipeline
 
 1. **Validate inputs** — throw_time ≥ 0, catch_time > throw_time.
-2. **Inverse ballistics** — compute launch velocity from throw/catch positions and flight time.
-3. **Throw orientation** — rotation vector aligning platform +Z with launch velocity direction.
-4. **Throw speed check** — hand throw speed (= launch velocity magnitude) must be ≤ 7.0 m/s.
-5. **Build throw hand trajectory** — `HandThrowSequence` anchored to throw_time.
-6. **Throw centroid** — platform centroid = throw_pos - hand_offset × platform_Z_throw. The hand offset uses the release position from the throw trajectory.
-7. **Arrival velocity** — compute ball velocity at catch time (launch velocity + gravity).
-8. **Catch orientation** — rotation vector aligning platform +Z with **negative** arrival velocity (face into incoming ball).
-9. **Catch centroid** — platform centroid = catch_pos - hand_offset × platform_Z_catch. The hand offset uses `_HAND_CATCH_X5_MM`, the stroke position where the ball meets the hand during the catch velocity-hold phase.
-10. **Build catch hand trajectory** — `HandCatchSequence` with event velocity clamped to [0.3, 7.0] m/s.
-11. **Build DynamicTargets** — throw target (at throw time) and catch target (at catch time). Both include `settle_margin_s = 0.1` for the coordinator flow. The toss loop ignores `arrival_time` and `settle_margin_s`, reading only `pose_6dof` and `arrival_twist` to build its quintic Hermite reference.
-12. **Build BallSpawn** — records the throw position and launch velocity at throw_time, for spawning the ball into the simulation when the throw begins.
-13. **Timing feasibility** — throw hand trajectory must end before catch prelude starts.
-14. **Return plan** — assemble all components into a `ThrowCatchPlan` dataclass.
+2. **Compute launch velocity** — inverse ballistics from throw/catch positions and flight time (world-frame ball velocity).
+3. **Hand-relative throw velocity** — subtract platform velocity (if continuous motion) to get the velocity the hand must impart: `v_hand_rel = v_launch - v_platform`.
+4. **Throw orientation** — rotation vector aligning platform +Z with the hand-relative launch direction.
+5. **Throw speed check** — project hand-relative velocity onto platform Z to get scalar hand throw speed. Must be ≤ 7.0 m/s and non-negative (negative means platform velocity overshoots launch velocity).
+6. **Build throw hand trajectory** — `HandThrowSequence` anchored to throw_time.
+7. **Throw centroid** — platform centroid = throw_pos - hand_offset × platform_Z_throw. The hand offset uses the release position from the throw trajectory.
+8. **Arrival velocity** — compute ball velocity at catch time (launch velocity + gravity), then subtract platform catch velocity to get hand-relative catch velocity.
+9. **Catch orientation** — rotation vector aligning platform +Z with **negative** hand-relative arrival velocity (face into incoming ball).
+10. **Catch centroid** — platform centroid = catch_pos - hand_offset × platform_Z_catch. The hand offset uses `_HAND_CATCH_X5_MM`, the stroke position where the ball meets the hand during the catch velocity-hold phase.
+11. **Build catch hand trajectory** — `HandCatchSequence` with event velocity (projection of relative velocity onto platform Z) clamped to [0.3, 7.0] m/s.
+12. **Build DynamicTargets** — throw target (at throw time) and catch target (at catch time). Both include `settle_margin_s = 0.1` for the coordinator flow (set to 0 in continuous-motion mode). The toss loop ignores `arrival_time` and `settle_margin_s`, reading only `pose_6dof` and `arrival_twist` to build its quintic Hermite reference.
+13. **Build BallSpawn** — records the throw position and launch velocity at throw_time, for spawning the ball into the simulation when the throw begins.
+14. **Timing feasibility** — throw hand trajectory must end before catch prelude starts. Raises `ValueError` if insufficient transit time.
 
 ### `_HAND_CATCH_X5_MM`
 

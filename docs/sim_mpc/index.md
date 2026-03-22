@@ -82,8 +82,14 @@ sim/
 │   ├── telemetry.py    CSV logging + StepRecord dataclass
 │   ├── horizon.py      MPC predicted-horizon renderer
 │   └── dashboard/      Live web dashboard (SSE)
+├── analysis/
+│   ├── record_baselines.py  Record sim baselines for T1-T6 (headless)
+│   ├── compare.py           Sim-to-real overlay plots + gap metrics
+│   └── baselines/           Saved baseline CSVs
 ├── main.py             Entry point + 50 Hz loop + TargetSource adapters
 ├── demo_mpc.py         Standalone MPC demo (Phase 2)
+├── sweep_speed_ratio.py  Batch sweep of --platform-event-speed-ratio
+├── test_hand_stroke.py   Visual hand stroke smoke test
 └── MPC_BUGS.md         Known issues tracker
 ```
 

@@ -20,7 +20,7 @@ class PlantState:
       - Positions in mm, velocities in mm/s, rotations as rotation vectors (rad).
       - Platform pose is an *offset* from home ([0, 0, initial_height_mm]).
     """
-    leg_extensions_mm: np.ndarray     # (6,) actual leg positions (IK convention)
+    leg_extensions_mm: np.ndarray     # (6,) actual leg positions (home-relative: 0 = home)
     leg_velocities_mmps: np.ndarray   # (6,) actual leg velocities
     platform_pos_mm: np.ndarray       # (3,) [x, y, z] offset from home
     platform_rot: np.ndarray          # (3,) rotation vector (rad)
