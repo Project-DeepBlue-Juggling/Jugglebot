@@ -89,7 +89,6 @@ def generate_mjcf(config, mesh_dir=None):
     # ---- Extract geometry values (convert mm → m) ----
     initial_height_m = geom['initial_height_mm'] / 1000.0
     leg_stroke_m = geom['leg_stroke_mm'] / 1000.0
-    ball_joint_offset_m = geom['ball_joint_offset_mm'] / 1000.0  # legacy: 0.0
     hand_stroke_m = geom['hand_stroke_mm'] / 1000.0   # 0.355 m
     hand_radius_m = geom['hand_radius_mm'] / 1000.0   # ~0.035 m
 
