@@ -80,11 +80,11 @@ jugglebot_geometry:
   hand_radius_mm: 35.0               # Radius of hand {mm}. Approximate.
   hand_axis_bottom_offset_mm: -129.0  # Hand axis bottom position relative to platform centroid {mm} (CAD measurement)
 
-  # Ball joint offset: 12.50 mm radius of ball joint + 13 mm gap between the
-  # 'measuring face' and the connection point to the upper leg. Added to init_leg_lengths
-  # because length measurements were taken to the ball joint radius.
-  # Source: robot_geometry.py line 93
-  ball_joint_offset_mm: 25.50
+  # Ball joint offset — LEGACY, set to 0.0 because init_leg_lengths_mm now
+  # includes the full joint-centre-to-joint-centre distance (derived from
+  # geometry). Kept as a field so generate_config.py doesn't break.
+  # Previous value: 25.50 mm (12.50 mm ball joint radius + 13 mm measurement gap)
+  ball_joint_offset_mm: 0.0
 
   # Pre-computed base node positions in the base frame {mm}.
   # Calculated from base_radius and base_small_angle via build_platform().
@@ -106,9 +106,18 @@ jugglebot_geometry:
     - [180.975, 123.458, 0.0]
     - [-180.975, 123.458, 0.0]
 
-  # Initial leg lengths {mm}, measured experimentally (see Livestream #51 @ ~28min).
-  # These are the raw actuator measurements BEFORE adding ball_joint_offset_mm.
-  init_leg_lengths_mm: [621.389, 618.160, 622.074, 620.653, 620.652, 620.091]
+  # Initial leg lengths {mm} — joint-centre-to-joint-centre distance at STOW.
+  #
+  # DERIVED from geometry: the Euclidean distance from each base_node to its
+  # corresponding plat_node when the platform is at initial_height_mm (STOW).
+  # This makes pose_to_leg_lengths() return 0 at STOW by construction, so
+  # IK extension = 0 = STOW = motor 0. No ball_joint_offset or per-leg
+  # calibration needed — per-leg differences are handled by the LEVELLING command.
+  #
+  # Previous values (measured experimentally, Livestream #51 @ ~28min, to ball
+  # joint surface — did NOT include ball joint offset):
+  #   [621.389, 618.160, 622.074, 620.653, 620.652, 620.091]
+  init_leg_lengths_mm: [648.419, 648.419, 648.419, 648.419, 648.419, 648.419]
 
   # Per-leg mm-to-revolutions conversion factors, found experimentally.
   # Each leg has a slightly different mechanical ratio.

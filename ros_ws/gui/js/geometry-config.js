@@ -16,7 +16,7 @@ export const INITIAL_HEIGHT_MM = 574.3;
 export const BASE_RADIUS_MM = 410.0;
 export const PLAT_RADIUS_MM = 219.075;
 export const LEG_STROKE_MM = 280.0;
-export const BALL_JOINT_OFFSET_MM = 25.5;
+export const BALL_JOINT_OFFSET_MM = 0.0;
 
 // Arm / hand structure
 export const ARM_RADIUS_MM = 70.0;
@@ -44,11 +44,11 @@ export const INIT_PLAT_NODES_MM = [
     [-180.975, 123.458, 0.0],
 ];
 
-// Initial leg lengths (mm), measured experimentally (BEFORE ball_joint_offset)
-export const INIT_LEG_LENGTHS_MM = [621.389, 618.16, 622.074, 620.653, 620.652, 620.091];
+// Initial leg lengths (mm) — geometry-derived joint-centre-to-joint-centre at STOW
+export const INIT_LEG_LENGTHS_MM = [648.419, 648.419, 648.419, 648.419, 648.419, 648.419];
 
-// Init leg lengths WITH ball joint offset added (derived)
-export const INIT_LEG_LENGTHS_WITH_OFFSET_MM = [646.889, 643.66, 647.574, 646.153, 646.152, 645.591];
+// Init leg lengths WITH ball joint offset added (legacy: offset=0, so equals INIT_LEG_LENGTHS_MM)
+export const INIT_LEG_LENGTHS_WITH_OFFSET_MM = [648.419, 648.419, 648.419, 648.419, 648.419, 648.419];
 
 // Per-leg mm-to-revolutions conversion factors
 export const MM_TO_REV = [0.01418332, 0.01419076, 0.01408956, 0.01418684, 0.01426801, 0.01424951];

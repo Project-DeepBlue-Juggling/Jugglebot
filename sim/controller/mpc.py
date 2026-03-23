@@ -6,7 +6,7 @@ be kinematically consistent with the leg extensions via the Stewart platform IK
 equations expressed symbolically in CasADi.
 
 Decision variables (per horizon, N steps):
-    u[0..N-1]  (6 each) : commanded leg extensions (mm, home-relative)
+    u[0..N-1]  (6 each) : commanded leg extensions (mm, STOW-relative)
     q[1..N]    (6 each) : actual leg extensions after actuator lag
     p[1..N]    (6 each) : platform pose [x, y, z, rx, ry, rz] (mm, rad)
 
@@ -18,7 +18,7 @@ Parameters (set each solve):
 
 Constraints:
     Actuator dynamics:  q[k+1] = q[k] + (u[k] - q[k]) · α_k,  α_k = 1 - exp(-dt_k/τ)
-    IK consistency:     ‖leg_vec_i(p[k])‖ - init_len_i = q[k]_i + home_ext_i
+    IK consistency:     ‖leg_vec_i(p[k])‖ - init_len_i = q[k]_i   (q IS IK extension)
     Rate limits:        |u[k] - u[k-1]| ≤ v_max · dt_between
 """
 
@@ -111,13 +111,13 @@ class MPCController:
         plat_nodes: np.ndarray,
         init_height_mm: float,
         init_leg_lengths_mm: np.ndarray,
-        home_extensions_mm: np.ndarray,
+        active_extensions_mm: np.ndarray,
     ):
         if cs is None:
             raise ImportError("CasADi is required for MPC — pip install casadi")
 
         self._params = params
-        self._home_ext = np.asarray(home_extensions_mm, dtype=float)
+        self._active_ext = np.asarray(active_extensions_mm, dtype=float)
         self._init_height_mm = init_height_mm
 
         # Geometry (plain arrays for CasADi)
@@ -143,15 +143,25 @@ class MPCController:
 
     @classmethod
     def from_plant(cls, params: MPCParams, plant) -> MPCController:
-        """Create controller from a MuJoCoPlant instance."""
+        """Create controller from a plant instance.
+
+        Computes ``active_extensions_mm`` — the IK extensions at the Active
+        position (default_active_z) — for the effort cost reference.
+        """
         geom = plant.geom
+
+        # Compute IK extensions at the Active pose [0, 0, default_z, 0, 0, 0]
+        import jugglebot.hardware_config as hw
+        active_rev = np.array(hw.JB_OP_ACTIVATE_POSITION_REVS)
+        active_ext = active_rev / geom.mm_to_rev
+
         return cls(
             params=params,
             base_nodes=geom.base_nodes,
             plat_nodes=geom.plat_nodes,
             init_height_mm=geom.init_height_mm,
             init_leg_lengths_mm=geom.init_leg_lengths_mm,
-            home_extensions_mm=plant.home_extensions_mm,
+            active_extensions_mm=active_ext,
         )
 
     # ------------------------------------------------------------------
@@ -197,7 +207,7 @@ class MPCController:
         p = [p_init] + [W[12 * N + k * 6: 12 * N + (k + 1) * 6] for k in range(N)]
 
         # ---- Cost ---------------------------------------------------------
-        home_ext_dm = cs.DM(self._home_ext)
+        active_ext_dm = cs.DM(self._active_ext)
         Qp = self._params.Q_pos
         Qo = self._params.Q_ori
         Qfp = self._params.Qf_pos
@@ -254,8 +264,8 @@ class MPCController:
             else:
                 dt_smooth = dt_schedule[k - 1]
 
-            # Control effort (relative to home extensions to avoid bias at elevated poses)
-            u_dev = u[k] - home_ext_dm
+            # Control effort (relative to Active position to avoid bias)
+            u_dev = u[k] - active_ext_dm
             J += R_w * cs.dot(u_dev, u_dev)
             # Smoothness: penalise command rate ||du/dt||², integrated over dt.
             # = S/dt * ||du||²  (normalised so coarse and fine steps are comparable)
@@ -288,11 +298,10 @@ class MPCController:
             q_pred = q[k] + (u[k] - q[k]) * alpha_k
             g_list.append(q[k + 1] - q_pred)
 
-        # 2. IK consistency  (6·N equality)
-        home_ext_dm = cs.DM(self._home_ext)
+        # 2. IK consistency  (6·N equality) — q IS IK extension, direct equality
         for k in range(1, N + 1):
             ik_ext = sym_ik(p[k])
-            g_list.append(ik_ext - (q[k] + home_ext_dm))
+            g_list.append(ik_ext - q[k])
 
         # 3. Rate limits  (6·N inequality)
         for k in range(N):
@@ -395,7 +404,8 @@ class MPCController:
         Returns
         -------
         cmd : (6,) ndarray
-            Home-relative leg extension command (mm).
+            STOW-relative leg extension command (mm).  At Active position,
+            cmd ≈ [154.5, ...] per leg.
         diag : dict
             Diagnostics: solve_time_ms, status, cost, constraint_violation.
         """
@@ -511,7 +521,7 @@ class MPCController:
         return w0
 
     def _numerical_ik(self, pose_6dof: np.ndarray) -> np.ndarray:
-        """Compute home-relative leg extensions for a pose using numpy IK."""
+        """Compute STOW-relative leg extensions for a pose using numpy IK."""
         pos = pose_6dof[:3]
         rv = pose_6dof[3:]
         # Rodrigues rotation
@@ -525,7 +535,7 @@ class MPCController:
         for i in range(6):
             plat_w = pos + self._init_height_vec + R @ self._plat_nodes[i]
             leg_vec = plat_w - self._base_nodes[i]
-            exts[i] = np.linalg.norm(leg_vec) - self._init_leg_lengths[i] - self._home_ext[i]
+            exts[i] = np.linalg.norm(leg_vec) - self._init_leg_lengths[i]
         return exts
 
     def _shift_warm_start(self, prev_w):

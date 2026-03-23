@@ -28,6 +28,8 @@ class StewartGeometry:
         self.init_height_mm = float(hw.GEOM_INITIAL_HEIGHT_MM)
         self.init_leg_lengths_mm = np.array(hw.GEOM_INIT_LEG_LENGTHS_MM,
                                             dtype=np.float64)
+        # Legacy: ball_joint_offset_mm is now 0.0, so this equals init_leg_lengths_mm.
+        # Kept for backward compatibility with GUI and catch coordinator consumers.
         self.leg_lengths_with_offset_mm = np.array(
             hw.INIT_LEG_LENGTHS_WITH_OFFSET_MM, dtype=np.float64)
         self.ball_joint_offset_mm = float(hw.GEOM_BALL_JOINT_OFFSET_MM)

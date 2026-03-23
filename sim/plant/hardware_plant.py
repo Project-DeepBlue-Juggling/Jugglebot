@@ -7,6 +7,10 @@ Architecture:
   - PUB socket on MPC_COMMAND_ADDR (:5557): sends mpc_cmd and mode messages
   - SUB socket on TELEMETRY_ADDR (:5556): receives telemetry from control loop
 
+Coordinate convention (post STOW-zero refactor):
+  - Extensions are STOW-relative: q=0 at STOW, q≈154.5mm at Active.
+  - Motor conversion is direct: motor_rev = q × mm_to_rev (no offsets).
+
 The control loop's safety pipeline (slew limiter, workspace checks, overspeed,
 tracking error, staleness watchdog) remains active — this plant only converts
 and transmits, never bypasses safety.
@@ -33,7 +37,6 @@ from jugglebot.motion.ipc import (
     _pack,
     _unpack,
 )
-from jugglebot.motion.conversions import revs_to_extensions_mm
 from jugglebot.motion.geometry import StewartGeometry
 from jugglebot.motion.ik_solver import leg_lengths_to_pose, rot_matrix_to_rotvec, rotvec_to_rot_matrix
 from jugglebot.motion.motor_commands import cartesian_to_motor_commands
@@ -81,25 +84,6 @@ class HardwarePlant(PlantInterface):
         self._geom = geom or StewartGeometry()
         self._seq = 0
         self._start_time = time.perf_counter()
-
-        # Home extensions: same computation as MuJoCoPlant.
-        # Geometric home leg lengths (mm) minus IK init_leg_lengths_mm.
-        base_m = self._geom.base_nodes / 1000.0
-        plat_m = self._geom.plat_nodes / 1000.0
-        height_m = self._geom.init_height_mm / 1000.0
-        plat_world_m = plat_m + np.array([0.0, 0.0, height_m])
-        geom_home_lengths_mm = np.linalg.norm(plat_world_m - base_m, axis=1) * 1000.0
-        self._home_extensions_mm = geom_home_lengths_mm - self._geom.init_leg_lengths_mm
-
-        # Stow offset: the motor revolutions at IK extension = 0.
-        # The IK model's init_leg_lengths_mm represents a physical leg length
-        # that requires ~154mm of cable extension from STOW (motor = 0 rev).
-        # The activate position (from hardware_config) is the motor position
-        # at IK home.  The stow offset is activate_rev - home_ik_rev.
-        import jugglebot.hardware_config as hw
-        self._activate_rev = np.array(hw.JB_OP_ACTIVATE_POSITION_REVS)
-        home_ik_rev = self._home_extensions_mm * self._geom.mm_to_rev
-        self._stow_offset_rev = self._activate_rev - home_ik_rev
 
         # Dynamics parameters for feedforward computation
         self._dynamics_params = DynamicsParams.from_config()
@@ -149,24 +133,21 @@ class HardwarePlant(PlantInterface):
     def command(self, leg_extensions_mm: np.ndarray) -> None:
         """Send leg extension commands to the control loop.
 
-        Converts MPC home-relative extensions to absolute motor revolutions
-        (matching the ODrive encoder convention where 0 = STOW).
+        Converts STOW-relative extensions to motor revolutions directly:
+        motor_rev = ext_mm × mm_to_rev (no offsets).
 
         The control loop applies the full safety pipeline (slew limiter,
         workspace checks via the included pose_6dof, overspeed, etc.).
 
         Parameters
         ----------
-        leg_extensions_mm : (6,) ndarray — home-relative extensions in mm
-            (MPC convention: 0 = home position)
+        leg_extensions_mm : (6,) ndarray — STOW-relative extensions in mm
+            (0 = STOW, ~154.5 = Active position)
         """
-        # Convert: MPC home-relative (mm) → IK convention (mm) → motor rev
-        # The stow offset accounts for the ~154mm of cable at STOW that
-        # the IK model's init_leg_lengths_mm already includes.
-        ik_extensions_mm = np.asarray(leg_extensions_mm) + self._home_extensions_mm
-        motor_rev = ik_extensions_mm * self._geom.mm_to_rev + self._stow_offset_rev
+        ext_mm = np.asarray(leg_extensions_mm, dtype=float)
+        motor_rev = ext_mm * self._geom.mm_to_rev
         msg = make_mpc_command(
-            ext_mm=ik_extensions_mm.tolist(),
+            ext_mm=ext_mm.tolist(),
             motor_rev=motor_rev.tolist(),
             pose_6dof=self._last_pose_6dof.tolist(),
             vel_mm_s=(self._ff_vel_mm_s.tolist()
@@ -213,14 +194,13 @@ class HardwarePlant(PlantInterface):
 
         telem = self._last_telem
 
-        # Motor feedback (rev, absolute ODrive convention) → IK extensions → home-relative
+        # Motor feedback (rev, ODrive convention: 0 = STOW) → extensions (mm)
         motor_pos = telem.get('motor_pos')
         motor_vel = telem.get('motor_vel')
         if motor_pos is not None:
             pos_rev = np.array(motor_pos, dtype=float)
-            ik_rev = pos_rev - self._stow_offset_rev
-            ik_ext_mm = ik_rev / self._geom.mm_to_rev
-            ext_mm = ik_ext_mm - self._home_extensions_mm
+            ext_mm = pos_rev / self._geom.mm_to_rev  # direct: motor_rev / mm_to_rev
+            ik_ext_mm = ext_mm  # same thing (q = IK ext after refactor)
         else:
             ik_ext_mm = None
             ext_mm = np.zeros(6)
@@ -337,11 +317,6 @@ class HardwarePlant(PlantInterface):
     def last_telemetry(self) -> dict | None:
         """The most recent telemetry message, or None."""
         return self._last_telem
-
-    @property
-    def home_extensions_mm(self) -> np.ndarray:
-        """IK extensions at home (the offset used by the MPC for warm-starting)."""
-        return self._home_extensions_mm.copy()
 
     @property
     def geom(self) -> StewartGeometry:

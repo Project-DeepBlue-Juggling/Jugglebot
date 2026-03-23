@@ -434,7 +434,9 @@ def compute_derived(cfg: dict) -> dict:
     g = cfg["physics"]["gravity_mps2"]
     derived["GRAVITY_MMPS2"] = g * 1000.0
 
-    # Init leg lengths with ball joint offset added
+    # Init leg lengths with ball joint offset added.
+    # Legacy: ball_joint_offset_mm is now 0.0, so this equals init_leg_lengths_mm.
+    # Kept as a derived alias for backward compatibility with GUI / geometry consumers.
     geom = cfg["jugglebot_geometry"]
     offset = geom["ball_joint_offset_mm"]
     derived["INIT_LEG_LENGTHS_WITH_OFFSET_MM"] = [
@@ -674,10 +676,10 @@ def generate_gui_js(hw_cfg: dict, proto_cfg: dict) -> str:
         f"// Initial platform node positions in the platform frame (mm)",
         f"export const INIT_PLAT_NODES_MM = {_js_array(geom['init_plat_nodes_mm'])};",
         "",
-        f"// Initial leg lengths (mm), measured experimentally (BEFORE ball_joint_offset)",
+        f"// Initial leg lengths (mm) — geometry-derived joint-centre-to-joint-centre at STOW",
         f"export const INIT_LEG_LENGTHS_MM = {_js_array(geom['init_leg_lengths_mm'])};",
         "",
-        f"// Init leg lengths WITH ball joint offset added (derived)",
+        f"// Init leg lengths WITH ball joint offset added (legacy: offset=0, so equals INIT_LEG_LENGTHS_MM)",
         f"export const INIT_LEG_LENGTHS_WITH_OFFSET_MM = {_js_array(derived['INIT_LEG_LENGTHS_WITH_OFFSET_MM'])};",
         "",
         f"// Per-leg mm-to-revolutions conversion factors",

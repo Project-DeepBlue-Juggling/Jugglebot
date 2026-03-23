@@ -123,8 +123,9 @@ def _slide_m_to_extensions_mm(slide_m, geom):
 def _extensions_mm_to_slide_m(extensions_mm, geom):
     """Convert IK extensions (mm) to MuJoCo slide joint values (m).
 
-    The IK defines: extension = absolute_leg_length - init_leg_lengths_mm
-    where init_leg_lengths_mm are raw measurements WITHOUT ball joint offset.
+    The IK defines: extension = absolute_leg_length - init_leg_lengths_mm.
+    After STOW-zero refactor, init_leg_lengths_mm IS the geometric home
+    length, so slide ≈ extension / 1000 (small rounding differences only).
 
     MuJoCo slide = 0 means legs at geometric home length (computed from nodes).
     So:  slide = (absolute_leg_length - geom_home) / 1000
@@ -226,18 +227,21 @@ class TestFKValidation:
     """Command leg extensions, compare MuJoCo platform pose against IK solver FK."""
 
     # Test poses: [x_mm, y_mm, z_mm, rx_deg, ry_deg, rz_deg]
+    # All poses must have sufficient z (or small xy) to keep all leg extensions
+    # positive (STOW-relative).  At STOW height (z=0), large xy translations
+    # compress some legs below the hard stop (~-7mm).
     TEST_POSES = [
         # Pure translations
         ([0, 0, 0, 0, 0, 0], 'home'),
         ([0, 0, 50, 0, 0, 0], 'z+50mm'),
         ([0, 0, 100, 0, 0, 0], 'z+100mm'),
-        ([50, 0, 0, 0, 0, 0], 'x+50mm'),
-        ([0, 50, 0, 0, 0, 0], 'y+50mm'),
-        ([-30, 40, 20, 0, 0, 0], 'xyz_offset'),
-        # Pure rotations
-        ([0, 0, 0, 5, 0, 0], 'pitch+5deg'),
-        ([0, 0, 0, 0, 5, 0], 'roll+5deg'),
-        ([0, 0, 0, 0, 0, 3], 'yaw+3deg'),
+        ([50, 0, 50, 0, 0, 0], 'x+50_z+50'),
+        ([0, 50, 50, 0, 0, 0], 'y+50_z+50'),
+        ([-30, 40, 50, 0, 0, 0], 'xyz_offset'),
+        # Pure rotations (at z=30 to stay above STOW)
+        ([0, 0, 30, 5, 0, 0], 'pitch+5deg'),
+        ([0, 0, 30, 0, 5, 0], 'roll+5deg'),
+        ([0, 0, 30, 0, 0, 3], 'yaw+3deg'),
         # Combined
         ([0, 0, 50, 3, 0, 0], 'z50_pitch3'),
         ([30, -20, 80, 3, -2, 0], 'dynamic_target'),

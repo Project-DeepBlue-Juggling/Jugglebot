@@ -1,15 +1,14 @@
 """MuJoCo simulation plant for the Jugglebot Stewart platform.
 
 Wraps a MuJoCo model + data pair behind the PlantInterface ABC.
-Handles coordinate conversions between home-relative extensions (mm) and
+Handles coordinate conversions between STOW-relative extensions (mm) and
 MuJoCo slide joint values (m), and extracts platform state from MuJoCo sensors.
 
 Coordinate convention:
-    The public interface uses **home-relative extensions** where extension=0
-    means "at home position" — matching the real robot's encoder convention.
-    Internally, MuJoCo slide=0 also means home, but the IK model uses
-    init_leg_lengths_mm (which excludes ball_joint_offset_mm) as its zero
-    reference.  This plant handles the offset transparently.
+    The public interface uses **STOW-relative extensions** where extension=0
+    means STOW (motor = 0 rev).  MuJoCo slide=0 also means STOW (geometric
+    home).  With init_leg_lengths_mm set to the geometric home length,
+    IK extensions equal STOW-relative extensions directly — no offset needed.
 """
 
 from __future__ import annotations
@@ -75,20 +74,14 @@ class MuJoCoPlant(PlantInterface):
         self._data = mujoco.MjData(self._model)
         self._geom = geom or StewartGeometry()
 
-        # Pre-compute geometric home leg lengths (m) — needed for slide ↔ extension conversion
+        # Pre-compute geometric home leg lengths (m) — needed for slide ↔ extension conversion.
+        # With init_leg_lengths_mm set to the geometric home length, IK extensions
+        # are STOW-relative directly (no offset needed).
         base_m = self._geom.base_nodes / 1000.0
         plat_m = self._geom.plat_nodes / 1000.0
         height_m = self._geom.init_height_mm / 1000.0
         plat_world_m = plat_m + np.array([0.0, 0.0, height_m])
         self._geom_home_lengths_m = np.linalg.norm(plat_world_m - base_m, axis=1)
-
-        # Home offset: IK extensions at MuJoCo home (slide=0).
-        # IK measures from init_leg_lengths_mm (excludes ball_joint_offset),
-        # so at geometric home the IK reports ~27-30 mm of extension.
-        # We subtract this offset so the public interface sees extension=0 at home.
-        self._home_extensions_mm = (
-            self._geom_home_lengths_m * 1000.0 - self._geom.init_leg_lengths_mm
-        )
 
         # Command safety margin — clamp all commanded extensions to
         # [margin, stroke - margin] to prevent actuator overshoot at mechanical stops.
@@ -144,7 +137,7 @@ class MuJoCoPlant(PlantInterface):
     # ---- PlantInterface implementation ---------------------------------
 
     def command(self, leg_extensions_mm: np.ndarray) -> None:
-        """Set actuator targets from home-relative leg extensions (mm).
+        """Set actuator targets from STOW-relative leg extensions (mm).
 
         Commands are clamped to [margin, stroke - margin] to prevent
         actuator overshoot at mechanical stops.
@@ -159,9 +152,8 @@ class MuJoCoPlant(PlantInterface):
                 "command() clamped extensions: requested [%.2f, %.2f] → [%.2f, %.2f]",
                 ext.min(), ext.max(), ext_clamped.min(), ext_clamped.max(),
             )
-        # Convert home-relative → IK-convention (add home offset) → slide
-        ik_ext = ext_clamped + self._home_extensions_mm
-        slide_m = self._extensions_to_slide(ik_ext)
+        # STOW-relative extensions = IK extensions (direct, no offset)
+        slide_m = self._extensions_to_slide(ext_clamped)
         self._data.ctrl[:6] = slide_m
 
     def get_state(self) -> PlantState:
@@ -170,8 +162,7 @@ class MuJoCoPlant(PlantInterface):
         slide_pos_m = np.array([self._sensor(f'slide_pos_{i}')[0] for i in range(6)])
         slide_vel_mps = np.array([self._sensor(f'slide_vel_{i}')[0] for i in range(6)])
 
-        ik_extensions_mm = self._slide_to_extensions(slide_pos_m)
-        extensions_mm = ik_extensions_mm - self._home_extensions_mm  # home-relative
+        extensions_mm = self._slide_to_extensions(slide_pos_m)  # STOW-relative = IK ext
         velocities_mmps = slide_vel_mps * 1000.0  # m/s → mm/s
 
         # Platform pose
@@ -341,21 +332,14 @@ class MuJoCoPlant(PlantInterface):
         """Internal physics timestep (seconds)."""
         return self._model.opt.timestep
 
-    @property
-    def home_extensions_mm(self) -> np.ndarray:
-        """IK extensions at MuJoCo home (the offset subtracted from public values)."""
-        return self._home_extensions_mm.copy()
-
     def pose_to_extensions(self, pose_6dof: np.ndarray) -> np.ndarray:
-        """Convert a [x,y,z,rx,ry,rz] pose to home-relative leg extensions (mm).
+        """Convert a [x,y,z,rx,ry,rz] pose to STOW-relative leg extensions (mm).
 
-        This is the IK call with the home offset applied — ready to pass
-        directly to ``command()``.
+        IK extensions are STOW-relative directly — ready to pass to ``command()``.
         """
         pose = np.asarray(pose_6dof, dtype=float)
         rot = rotvec_to_rot_matrix(pose[3:])
-        ik_ext = pose_to_leg_lengths(pose[:3], rot, self._geom)
-        return ik_ext - self._home_extensions_mm
+        return pose_to_leg_lengths(pose[:3], rot, self._geom)
 
     # ---- Internal helpers ------------------------------------------------
 

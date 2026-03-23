@@ -89,9 +89,9 @@ def _enable_mpc(loop: ControlLoop, ipc: MockIPC) -> None:
 
 def _inject_mpc_cmd(ipc: MockIPC, ext_mm=None, pose_6dof=None,
                      vel_mm_s=None, torque_Nm=None, seq=0) -> None:
-    """Inject an MPC command message (no motor_rev — tests use IK fallback)."""
+    """Inject an MPC command message (no motor_rev — tests use direct ext*mm_to_rev)."""
     if ext_mm is None:
-        ext_mm = [140.0] * 6  # mid-stroke (IK convention)
+        ext_mm = [140.0] * 6  # mid-stroke (STOW-relative)
     if pose_6dof is None:
         pose_6dof = [0.0, 0.0, 50.0, 0.0, 0.0, 0.0]
     msg = make_mpc_command(

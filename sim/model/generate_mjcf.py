@@ -89,7 +89,7 @@ def generate_mjcf(config, mesh_dir=None):
     # ---- Extract geometry values (convert mm → m) ----
     initial_height_m = geom['initial_height_mm'] / 1000.0
     leg_stroke_m = geom['leg_stroke_mm'] / 1000.0
-    ball_joint_offset_m = geom['ball_joint_offset_mm'] / 1000.0
+    ball_joint_offset_m = geom['ball_joint_offset_mm'] / 1000.0  # legacy: 0.0
     hand_stroke_m = geom['hand_stroke_mm'] / 1000.0   # 0.355 m
     hand_radius_m = geom['hand_radius_mm'] / 1000.0   # ~0.035 m
 
@@ -110,10 +110,9 @@ def generate_mjcf(config, mesh_dir=None):
     leg_lengths = np.linalg.norm(leg_vecs, axis=1)  # (6,)
     leg_dirs = leg_vecs / leg_lengths[:, None]  # (6, 3) unit vectors
 
-    # Geometric home leg length (from node positions)
-    # This is used as the slide joint home value
-    # The init_leg_lengths from hardware are close but not identical due to
-    # measurement + ball joint offset differences
+    # Geometric home leg length (from node positions).
+    # After STOW-zero refactor, init_leg_lengths_mm IS the geometric home
+    # length, so slide=0 corresponds exactly to STOW (IK ext = 0).
     home_slide = leg_lengths  # (6,) geometric home lengths
 
     # ---- Platform dynamics (convert to SI) ----
@@ -557,8 +556,8 @@ def main():
     leg_lens = np.linalg.norm(leg_vecs, axis=1)
 
     print(f"\nGeometric home leg lengths (mm): {leg_lens}")
-    print(f"Config init_leg_lengths + offset (mm): "
-          f"{np.array(geom['init_leg_lengths_mm']) + geom['ball_joint_offset_mm']}")
+    print(f"Config init_leg_lengths (mm):    {np.array(geom['init_leg_lengths_mm'])}")
+    print(f"Difference (should be ~0):       {leg_lens - np.array(geom['init_leg_lengths_mm'])}")
     print(f"Platform height: {height} mm")
     print(f"Leg stroke: {geom['leg_stroke_mm']} mm")
     print(f"Slide range per leg: [{leg_lens[0]:.3f}, {leg_lens[0] + geom['leg_stroke_mm']:.3f}] mm")

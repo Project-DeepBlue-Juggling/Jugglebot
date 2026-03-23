@@ -620,9 +620,8 @@ class ControlLoop:
         self._mpc_cmd_pose_6dof = pose
 
         # Motor revolutions (absolute, ODrive convention: 0 = STOW).
-        # When present, used directly as commanded position — avoids the
-        # stow offset issue where extensions_mm_to_revs() is missing the
-        # ~2.2 rev base offset between STOW and the IK zero reference.
+        # After STOW-zero refactor, motor_rev = ext_mm × mm_to_rev directly.
+        # When present, used as-is to avoid redundant multiplication.
         motor_rev = msg.get('motor_rev')
         if motor_rev is not None:
             self._mpc_cmd_motor_rev = np.array(motor_rev, dtype=float)
@@ -880,13 +879,12 @@ class ControlLoop:
                 return
 
             # Motor positions: use pre-computed absolute revolutions if
-            # available (includes stow offset), otherwise fall back to
-            # extensions_mm_to_revs (only correct in unit tests / sim).
+            # available, otherwise direct conversion (q × mm_to_rev).
+            # After STOW-zero refactor, both paths produce the same result.
             if self._mpc_cmd_motor_rev is not None:
                 self._commanded_pos_rev = self._mpc_cmd_motor_rev.copy()
             else:
-                self._commanded_pos_rev = extensions_mm_to_revs(
-                    self._mpc_cmd_ext_mm, self.geom)
+                self._commanded_pos_rev = self._mpc_cmd_ext_mm * self.geom.mm_to_rev
             # Leg velocities (mm/s) → motor velocities (rev/s)
             self._commanded_vel_ff_rps = leg_velocities_to_motor_velocities(
                 self._mpc_cmd_vel_mm_s, self.geom)

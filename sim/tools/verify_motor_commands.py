@@ -1,15 +1,16 @@
 """Verify MPC → motor revolution commands WITHOUT sending to hardware.
 
-Runs the MPC with a HardwarePlant but never connects to the control loop.
-Instead, intercepts the motor_rev values that *would* be sent and plots
-them against JB_OP_ACTIVATE_POSITION_REVS to confirm zero step change
-at the Active position.
+After the STOW-zero refactor, the conversion is direct:
+    motor_rev = IK_extension_mm × mm_to_rev
+
+This tool computes motor_rev for various poses and compares against
+JB_OP_ACTIVATE_POSITION_REVS to confirm zero step change at the Active
+position (default_active_z).
 
 Usage:
     cd Jugglebot/sim
     python tools/verify_motor_commands.py
-    python tools/verify_motor_commands.py --pose 0,0,10,0,0,0
-    python tools/verify_motor_commands.py --trajectory T1
+    python tools/verify_motor_commands.py --pose 0,0,0,0,0,0
 """
 
 from __future__ import annotations
@@ -30,61 +31,54 @@ for p in (_sim_dir, _ros_dir):
 import jugglebot.hardware_config as hw
 from jugglebot.motion.geometry import StewartGeometry
 from jugglebot.motion.ik_solver import pose_to_leg_lengths, rotvec_to_rot_matrix
-from jugglebot.motion.conversions import extensions_mm_to_revs
 
 
-def compute_motor_rev_for_pose(pose_6dof: np.ndarray, geom: StewartGeometry,
-                                home_ext_mm: np.ndarray,
-                                stow_offset_rev: np.ndarray) -> np.ndarray:
-    """Replicate HardwarePlant's conversion: MPC extensions → motor rev."""
-    # MPC would output home-relative extensions for this pose
+def compute_motor_rev_for_pose(pose_6dof: np.ndarray,
+                                geom: StewartGeometry) -> tuple[np.ndarray, np.ndarray]:
+    """Compute motor revolutions for a pose using direct conversion.
+
+    Returns (motor_rev, ik_ext_mm).
+    """
     rot = rotvec_to_rot_matrix(pose_6dof[3:6])
     ik_ext = pose_to_leg_lengths(pose_6dof[:3], rot, geom)
-    mpc_ext = ik_ext - home_ext_mm  # home-relative
-
-    # HardwarePlant.command() conversion
-    ik_ext_mm = mpc_ext + home_ext_mm  # back to IK convention
-    motor_rev = ik_ext_mm * geom.mm_to_rev + stow_offset_rev
-    return motor_rev, mpc_ext, ik_ext
+    motor_rev = ik_ext * geom.mm_to_rev
+    return motor_rev, ik_ext
 
 
 def main():
     parser = argparse.ArgumentParser(description='Verify motor commands (no hardware)')
-    parser.add_argument('--pose', type=str, default='0,0,0,0,0,0',
-                        help='Target pose: x,y,z,rx,ry,rz (mm, rad)')
-    parser.add_argument('--trajectory', type=str, default=None,
-                        help='Trajectory name (T1, T2, etc.) — runs MPC loop')
+    parser.add_argument('--pose', type=str, default=None,
+                        help='Target pose: x,y,z,rx,ry,rz (mm, rad). '
+                             'Default: Active position [0,0,default_z,0,0,0]')
     parser.add_argument('--duration', type=float, default=5.0,
-                        help='Duration in seconds (for trajectory mode)')
+                        help='Duration in seconds (for sweep mode)')
     args = parser.parse_args()
 
     geom = StewartGeometry()
-
-    # Compute offsets (same as HardwarePlant.__init__)
-    base_m = geom.base_nodes / 1000.0
-    plat_m = geom.plat_nodes / 1000.0
-    height_m = geom.init_height_mm / 1000.0
-    plat_world_m = plat_m + np.array([0.0, 0.0, height_m])
-    geom_home_mm = np.linalg.norm(plat_world_m - base_m, axis=1) * 1000.0
-    home_ext_mm = geom_home_mm - geom.init_leg_lengths_mm
-
     activate_rev = np.array(hw.JB_OP_ACTIVATE_POSITION_REVS)
-    home_ik_rev = home_ext_mm * geom.mm_to_rev
-    stow_offset_rev = activate_rev - home_ik_rev
 
-    print("=== Motor Command Verification ===\n")
+    # Compute active extensions for reference
+    active_ext_mm = activate_rev / geom.mm_to_rev
+
+    print("=== Motor Command Verification (STOW-Zero) ===\n")
     print(f"Active position (rev):  {activate_rev}")
-    print(f"Home IK ext (mm):       {home_ext_mm}")
-    print(f"Stow offset (rev):      {stow_offset_rev}")
+    print(f"Active extensions (mm): {active_ext_mm}")
+    print(f"mm_to_rev:              {geom.mm_to_rev}")
     print()
 
-    # Static pose check
-    pose = np.array([float(x) for x in args.pose.split(',')])
-    motor_rev, mpc_ext, ik_ext = compute_motor_rev_for_pose(
-        pose, geom, home_ext_mm, stow_offset_rev)
+    # Determine test pose
+    if args.pose is not None:
+        pose = np.array([float(x) for x in args.pose.split(',')])
+        label = f"Custom pose {pose}"
+    else:
+        # Default: Active position [0, 0, default_active_z, 0, 0, 0]
+        default_z = float(hw.JB_OP_DEFAULT_ACTIVE_Z_MM)
+        pose = np.array([0.0, 0.0, default_z, 0.0, 0.0, 0.0])
+        label = f"Active position (z={default_z}mm)"
+
+    motor_rev, ik_ext = compute_motor_rev_for_pose(pose, geom)
 
     print(f"Target pose:            {pose}")
-    print(f"MPC extensions (mm):    {mpc_ext}")
     print(f"IK extensions (mm):     {ik_ext}")
     print(f"Motor rev (computed):   {motor_rev}")
     print(f"Active position (rev):  {activate_rev}")
@@ -92,19 +86,21 @@ def main():
     print(f"Delta from Active (mm): {(motor_rev - activate_rev) / geom.mm_to_rev}")
     print()
 
-    if np.allclose(motor_rev, activate_rev, atol=1e-6):
-        print("PASS: At home pose, motor commands MATCH Active position (zero step change)")
+    if args.pose is None:
+        # At Active position, motor commands should match activate_rev exactly
+        if np.allclose(motor_rev, activate_rev, atol=1e-6):
+            print("PASS: At Active pose, motor commands MATCH JB_OP_ACTIVATE_POSITION_REVS")
+        else:
+            delta_mm = (motor_rev - activate_rev) / geom.mm_to_rev
+            print(f"FAIL: MISMATCH: max delta = {np.max(np.abs(delta_mm)):.6f} mm")
     else:
-        delta_mm = (motor_rev - activate_rev) / geom.mm_to_rev
-        print(f"FAIL: MISMATCH: max delta = {np.max(np.abs(delta_mm)):.3f} mm")
+        print(f"(Custom pose — no pass/fail for Active position match)")
 
     # Sweep test: smooth Z ramp from 0 to 50mm and back
-    _run_sweep_verification(geom, home_ext_mm, stow_offset_rev, activate_rev,
-                            args.duration)
+    _run_sweep_verification(geom, activate_rev, args.duration)
 
 
-def _run_sweep_verification(geom, home_ext_mm, stow_offset_rev, activate_rev,
-                            duration):
+def _run_sweep_verification(geom, activate_rev, duration):
     """Sweep through Z offsets and plot motor_rev to show smooth transitions."""
     try:
         import matplotlib.pyplot as plt
@@ -130,8 +126,7 @@ def _run_sweep_verification(geom, home_ext_mm, stow_offset_rev, activate_rev,
             z = z_max * (2 * (1.0 - phase))  # z_max → 0
 
         pose = np.array([0.0, 0.0, z, 0.0, 0.0, 0.0])
-        motor_rev, mpc_ext, ik_ext = compute_motor_rev_for_pose(
-            pose, geom, home_ext_mm, stow_offset_rev)
+        motor_rev, ik_ext = compute_motor_rev_for_pose(pose, geom)
 
         delta_mm = (motor_rev - activate_rev) / geom.mm_to_rev
 
@@ -151,11 +146,11 @@ def _run_sweep_verification(geom, home_ext_mm, stow_offset_rev, activate_rev,
     print(f"Motor rev range:    [{all_motor_rev.min():.4f}, {all_motor_rev.max():.4f}]")
     print(f"Delta from Active:  [{all_delta_mm.min():.3f}, {all_delta_mm.max():.3f}] mm")
     print(f"Max step-to-step:   {max_step_rev:.6f} rev = {max_step_mm:.3f} mm")
-    print(f"First sample delta: {all_delta_mm[0]} mm (should be ~0)")
+    print(f"First sample delta: {all_delta_mm[0]} mm (STOW offset from Active)")
 
     # Plot
     fig, axes = plt.subplots(3, 1, figsize=(14, 10), sharex=True)
-    fig.suptitle('Motor Command Verification — Z Sweep', fontsize=14)
+    fig.suptitle('Motor Command Verification — Z Sweep (STOW-Zero)', fontsize=14)
 
     # Top: absolute motor revolutions
     ax = axes[0]

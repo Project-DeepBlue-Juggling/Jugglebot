@@ -54,7 +54,7 @@ namespace Geometry {
   constexpr float HAND_STROKE_MM = 355.0f;
   constexpr float HAND_RADIUS_MM = 35.0f;
   constexpr float HAND_AXIS_BOTTOM_OFFSET_MM = -129.0f;
-  constexpr float BALL_JOINT_OFFSET_MM = 25.5f;
+  constexpr float BALL_JOINT_OFFSET_MM = 0.0f;
   constexpr float BASE_NODES_MM[6][3] = {
     {-385.274f, -140.228f, 0.0f},
     {-314.078f, -263.543f, 0.0f},
@@ -71,7 +71,7 @@ namespace Geometry {
     {180.975f, 123.458f, 0.0f},
     {-180.975f, 123.458f, 0.0f},
   };
-  constexpr float INIT_LEG_LENGTHS_MM[6] = {621.389f, 618.16f, 622.074f, 620.653f, 620.652f, 620.091f};
+  constexpr float INIT_LEG_LENGTHS_MM[6] = {648.419f, 648.419f, 648.419f, 648.419f, 648.419f, 648.419f};
   constexpr float MM_TO_REV[6] = {0.01418332f, 0.01419076f, 0.01408956f, 0.01418684f, 0.01426801f, 0.01424951f};
   constexpr float LEG_MOTOR_MAX_POSITION_REVS = 4.2f;
   constexpr float HAND_MOTOR_MAX_POSITION_REVS = 11.1f;

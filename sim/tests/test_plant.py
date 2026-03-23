@@ -54,8 +54,9 @@ class TestPlantHome:
 
     def test_home_extensions(self, plant):
         state = plant.get_state()
-        # Home-relative convention: extensions ≈ 0 at home.
-        # The ball_joint_offset is subtracted internally.
+        # STOW-relative convention: extensions = 0 at STOW (motor = 0 rev).
+        # init_leg_lengths_mm is now the geometric home length, so IK
+        # extensions at home (slide=0) are 0 by construction.
         assert np.all(np.abs(state.leg_extensions_mm) < 0.01)
 
 
