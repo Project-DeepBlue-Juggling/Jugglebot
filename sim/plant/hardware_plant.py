@@ -92,10 +92,12 @@ class HardwarePlant(PlantInterface):
         # Set by caller via set_pose() before command().
         self._last_pose_6dof = np.zeros(6)
 
-        # Feedforward: computed from the MPC's predicted pose via the
-        # existing dynamics model (gravity + inertia).  Set by set_pose().
+        # Feedforward: torque_ff from dynamics model (set_pose), vel_ff from
+        # finite-difference of consecutive extension commands (command()).
         self._ff_vel_mm_s: np.ndarray | None = None
         self._ff_torque_Nm: np.ndarray | None = None
+        self._prev_ext_mm: np.ndarray | None = None  # for vel_ff finite-diff
+        self._prev_cmd_time: float = 0.0
 
         # Latest telemetry from control loop
         self._last_telem: dict | None = None
@@ -145,6 +147,20 @@ class HardwarePlant(PlantInterface):
             (0 = STOW, ~154.5 = Active position)
         """
         ext_mm = np.asarray(leg_extensions_mm, dtype=float)
+
+        # Compute vel_ff from finite-difference of consecutive extensions.
+        # This is simpler and more direct than the Cartesian twist → Jacobian
+        # path in set_pose(), and gives the ODrive the velocity hint it needs.
+        t_now = time.perf_counter()
+        if self._prev_ext_mm is not None:
+            dt = t_now - self._prev_cmd_time
+            if dt > 1e-6:
+                self._ff_vel_mm_s = (ext_mm - self._prev_ext_mm) / dt
+            else:
+                self._ff_vel_mm_s = np.zeros(6)
+        self._prev_ext_mm = ext_mm.copy()
+        self._prev_cmd_time = t_now
+
         motor_rev = ext_mm * self._geom.mm_to_rev
         msg = make_mpc_command(
             ext_mm=ext_mm.tolist(),
@@ -262,12 +278,11 @@ class HardwarePlant(PlantInterface):
 
     def set_pose(self, pose_6dof: np.ndarray,
                  twist_6dof: np.ndarray | None = None) -> None:
-        """Set the Cartesian pose and compute feedforward for the next command.
+        """Set the Cartesian pose and compute torque feedforward.
 
-        Computes velocity and torque feedforward from the pose using the
-        existing dynamics model (gravity + inertia).  These are included
-        in the next ``command()`` call so the ODrive PID doesn't have to
-        fight gravity alone.
+        Computes torque feedforward (gravity + inertia) from the pose using
+        the existing dynamics model.  Velocity feedforward is computed
+        separately in ``command()`` via finite-difference of extensions.
 
         Parameters
         ----------
@@ -282,14 +297,13 @@ class HardwarePlant(PlantInterface):
             twist_6dof = np.zeros(6)
         accel_6dof = np.zeros(6)
 
-        # Compute feedforward using the production dynamics model
-        _, vel_ff_rps, torque_ff_Nm, _ = cartesian_to_motor_commands(
+        # Compute torque feedforward using the production dynamics model.
+        # vel_ff is computed from finite-difference in command() instead.
+        _, _, torque_ff_Nm, _ = cartesian_to_motor_commands(
             pose_6dof, twist_6dof, accel_6dof,
             self._geom, self._dynamics_params,
             feedforward_enabled=True)
 
-        # Convert vel_ff from rev/s back to mm/s for the IPC message
-        self._ff_vel_mm_s = vel_ff_rps / self._geom.mm_to_rev
         self._ff_torque_Nm = torque_ff_Nm
 
     def enable(self) -> None:

@@ -286,6 +286,11 @@ class ControlLoop:
         self._has_mpc_cmd = False
         self._mpc_cmd_timestamp = 0.0
         self._mpc_cmd_seq = -1
+        self._mpc_cmd_new = False  # True when an unforwarded command is waiting
+        self._mpc_cmd_motor_rev: np.ndarray | None = None  # pre-computed motor revolutions
+        self._mpc_prev_ext_mm: np.ndarray | None = None  # for vel_ff finite-diff
+        self._mpc_prev_timestamp = 0.0
+        self._has_new_output = False  # gates telemetry publishing in MPC mode
 
         # Gravity correction (from levelling)
         self._gravity_correction: np.ndarray | None = None
@@ -343,7 +348,10 @@ class ControlLoop:
             #    a reduced telemetry message (with fault_state) is sent so
             #    the bridge has visibility into the control loop state.
             if self.mode == ControlMode.ENABLED and ok_to_publish:
-                self._publish_telemetry(dt_actual)
+                # In MPC mode, only publish when a fresh command was processed.
+                # Re-sending stale commands at 500 Hz creates step responses.
+                if self._has_new_output:
+                    self._publish_telemetry(dt_actual)
             elif self.mode == ControlMode.ESTOP:
                 self._publish_fault_telemetry(dt_actual)
 
@@ -430,6 +438,8 @@ class ControlLoop:
                 self._mpc_passthrough_active = (source == 'MPC')
                 if self._mpc_passthrough_active:
                     self._has_mpc_cmd = False
+                    self._mpc_cmd_new = False
+                    self._mpc_prev_ext_mm = None
                     self._mpc_cmd_timestamp = time.perf_counter()
                 else:
                     self._apply_smoother_limits(source)
@@ -451,6 +461,8 @@ class ControlLoop:
                 if not self._mpc_passthrough_active:
                     self._mpc_passthrough_active = True
                     self._has_mpc_cmd = False
+                    self._mpc_cmd_new = False
+                    self._mpc_prev_ext_mm = None
                     self._mpc_cmd_timestamp = time.perf_counter()
                     logger.info("Switched to MPC pass-through mode (was already ENABLED)")
         elif cmd == 'disable':
@@ -460,6 +472,8 @@ class ControlLoop:
             self._smoother.reset(self._traj_manager.home_pose)
             self._mpc_passthrough_active = False
             self._has_mpc_cmd = False
+            self._mpc_cmd_new = False
+            self._mpc_prev_ext_mm = None
             self._fault_state = None
             logger.info("Control loop DISABLED")
         elif cmd == 'estop':
@@ -470,6 +484,8 @@ class ControlLoop:
                 self._smoother.reset(self._traj_manager.home_pose)
                 self._mpc_passthrough_active = False
                 self._has_mpc_cmd = False
+                self._mpc_cmd_new = False
+                self._mpc_prev_ext_mm = None
                 self._fault_state = msg.get('params', {}).get('reason', 'external')
                 logger.warning(f"E-STOP triggered via command: {self._fault_state}")
         elif cmd == 'set_feedforward':
@@ -501,6 +517,8 @@ class ControlLoop:
             self._smoother.reset(self._traj_manager.home_pose)
             self._mpc_passthrough_active = False
             self._has_mpc_cmd = False
+            self._mpc_cmd_new = False
+            self._mpc_prev_ext_mm = None
             self._fault_state = fault_desc
             logger.error(f"ODrive FAULT received: {fault_desc} -- E-STOP")
         else:
@@ -628,12 +646,6 @@ class ControlLoop:
         else:
             self._mpc_cmd_motor_rev = None
 
-        vel = msg.get('vel_mm_s')
-        if vel is not None:
-            self._mpc_cmd_vel_mm_s = np.array(vel, dtype=float)
-        else:
-            self._mpc_cmd_vel_mm_s = np.zeros(6)
-
         torque = msg.get('torque_Nm')
         if torque is not None:
             self._mpc_cmd_torque_Nm = np.array(torque, dtype=float)
@@ -643,6 +655,23 @@ class ControlLoop:
         self._mpc_cmd_seq = msg.get('seq', -1)
         self._mpc_cmd_timestamp = time.perf_counter()
         self._has_mpc_cmd = True
+
+        # Compute vel_ff via finite-difference of consecutive extensions.
+        # This replaces the IPC-carried vel_mm_s (which may be zero if the
+        # sender doesn't provide twist information).
+        if self._mpc_prev_ext_mm is not None:
+            dt_mpc = self._mpc_cmd_timestamp - self._mpc_prev_timestamp
+            if dt_mpc > 1e-6:
+                self._mpc_cmd_vel_mm_s = (ext - self._mpc_prev_ext_mm) / dt_mpc
+            else:
+                self._mpc_cmd_vel_mm_s = np.zeros(6)
+        else:
+            # First command — no previous, vel_ff = 0
+            self._mpc_cmd_vel_mm_s = np.zeros(6)
+
+        self._mpc_prev_ext_mm = ext.copy()
+        self._mpc_prev_timestamp = self._mpc_cmd_timestamp
+        self._mpc_cmd_new = True
 
     # ------------------------------------------------------------------
     # Heartbeat watchdog
@@ -838,6 +867,8 @@ class ControlLoop:
         if self.mode != ControlMode.ENABLED:
             return
 
+        self._has_new_output = False
+
         # Track trajectory state transitions for smoother reset
         traj_state = self._traj_manager.state
         if (traj_state == TrajectoryState.IDLE
@@ -856,21 +887,24 @@ class ControlLoop:
             self._commanded_pos_rev = pos
             self._commanded_vel_ff_rps = vel
             self._commanded_torque_ff_Nm = torque
+            self._has_new_output = True
             pose_6dof = self._traj_manager.current_pose_6dof
             cached_J = self._traj_manager.last_jacobian
         elif self._mpc_passthrough_active and self._has_mpc_cmd:
-            # MPC pass-through: convert pre-computed extensions to motor
-            # commands.  No IK, no stream smoother — the MPC already
-            # solved for these values.
+            # MPC pass-through: forward pre-computed extensions to motors.
+            # Each command is forwarded exactly once — no re-sending between
+            # MPC updates.  The ODrive's 8 kHz PID uses vel_ff to interpolate.
             t_now = time.perf_counter()
 
-            # Staleness check: E-stop if MPC has gone silent
+            # Staleness check: runs every cycle regardless of new-command flag
             mpc_age = t_now - self._mpc_cmd_timestamp
             if mpc_age > MPC_CMD_STALENESS_S:
                 self.mode = ControlMode.ESTOP
                 self._zero_outputs()
                 self._mpc_passthrough_active = False
                 self._has_mpc_cmd = False
+                self._mpc_cmd_new = False
+                self._mpc_prev_ext_mm = None
                 self._fault_state = (
                     f'mpc_cmd_stale: {mpc_age:.3f}s since last command')
                 logger.error(
@@ -878,18 +912,28 @@ class ControlLoop:
                     f"{MPC_CMD_STALENESS_S}s) — E-STOP")
                 return
 
+            # Only forward new commands — don't re-send stale ones.
+            # Re-sending the same position with vel_ff=0 at 500 Hz creates
+            # a staircase of step responses; forwarding once lets the ODrive
+            # coast smoothly using vel_ff between MPC updates.
+            if not self._mpc_cmd_new:
+                return
+            self._mpc_cmd_new = False
+
             # Motor positions: use pre-computed absolute revolutions if
             # available, otherwise direct conversion (q × mm_to_rev).
-            # After STOW-zero refactor, both paths produce the same result.
             if self._mpc_cmd_motor_rev is not None:
                 self._commanded_pos_rev = self._mpc_cmd_motor_rev.copy()
             else:
                 self._commanded_pos_rev = self._mpc_cmd_ext_mm * self.geom.mm_to_rev
             # Leg velocities (mm/s) → motor velocities (rev/s)
+            # vel_mm_s is computed from finite-difference in _on_mpc_command()
             self._commanded_vel_ff_rps = leg_velocities_to_motor_velocities(
                 self._mpc_cmd_vel_mm_s, self.geom)
             # Torques already in Nm — direct pass-through
             self._commanded_torque_ff_Nm = self._mpc_cmd_torque_Nm.copy()
+
+            self._has_new_output = True
 
             # Compute Jacobian from MPC-provided pose for condition number
             pose_6dof = self._mpc_cmd_pose_6dof
@@ -909,6 +953,7 @@ class ControlLoop:
             self._commanded_pos_rev = pos_rev
             self._commanded_vel_ff_rps = vel_ff
             self._commanded_torque_ff_Nm = torque_ff
+            self._has_new_output = True
             pose_6dof = pose
         else:
             return
