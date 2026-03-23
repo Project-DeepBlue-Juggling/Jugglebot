@@ -297,6 +297,10 @@ class ControlLoop:
         self._mpc_prev_ext_mm: np.ndarray | None = None  # for vel_ff finite-diff
         self._mpc_prev_timestamp = 0.0
         self._has_new_output = False  # gates telemetry publishing in MPC mode
+        # Linear interpolation state: base position + velocity from last MPC update
+        self._mpc_base_pos_rev = np.zeros(6)
+        self._mpc_base_vel_rps = np.zeros(6)
+        self._mpc_base_timestamp = 0.0
 
         # Gravity correction (from levelling)
         self._gravity_correction: np.ndarray | None = None
@@ -354,8 +358,8 @@ class ControlLoop:
             #    a reduced telemetry message (with fault_state) is sent so
             #    the bridge has visibility into the control loop state.
             if self.mode == ControlMode.ENABLED and ok_to_publish:
-                # In MPC mode, only publish when a fresh command was processed.
-                # Re-sending stale commands at 500 Hz creates step responses.
+                # Publish when we have a computed output this cycle.
+                # In MPC mode, the interpolator produces output every cycle.
                 if self._has_new_output:
                     self._publish_telemetry(dt_actual)
             elif self.mode == ControlMode.ESTOP:
@@ -748,14 +752,12 @@ class ControlLoop:
                 f"(threshold {MAX_TRACKING_ERROR_MM:.1f})")
 
         # --- Slew rate limit ---
-        # In MPC pass-through mode, commands arrive as 20 ms position steps
-        # but the loop runs at 500 Hz (2 ms).  Using the loop dt would
-        # systematically clamp every MPC step by ~10×.  Scale the budget
-        # by the MPC period instead so the full step passes through.
+        # With the MPC interpolator upsampling to 500 Hz, each cycle's
+        # position step is a small increment (not a 20 ms MPC jump), so
+        # the standard per-cycle budget applies uniformly to all modes.
         actual = self._motor_fb_pos_rev
         delta = self._commanded_pos_rev - actual
-        slew_dt = MPC_SLEW_DT_S if self._mpc_passthrough_active else dt
-        max_delta = MAX_SLEW_RATE_REV_PER_S * slew_dt
+        max_delta = MAX_SLEW_RATE_REV_PER_S * dt
 
         if np.any(np.abs(delta) > max_delta):
             clamped_delta = np.clip(delta, -max_delta, max_delta)
@@ -902,9 +904,19 @@ class ControlLoop:
             pose_6dof = self._traj_manager.current_pose_6dof
             cached_J = self._traj_manager.last_jacobian
         elif self._mpc_passthrough_active and self._has_mpc_cmd:
-            # MPC pass-through: forward pre-computed extensions to motors.
-            # Each command is forwarded exactly once — no re-sending between
-            # MPC updates.  The ODrive's 8 kHz PID uses vel_ff to interpolate.
+            # MPC pass-through with linear interpolation.
+            #
+            # The MPC sends commands at 50 Hz but the ODrive needs frequent
+            # position updates in PASSTHROUGH mode.  Rather than forwarding
+            # once and letting vel_ff persist (which causes overshoot), we
+            # linearly interpolate between MPC updates:
+            #
+            #   pos(t) = mpc_pos + vel_ff × (t - t_mpc_cmd)
+            #
+            # This upsamples the 50 Hz MPC trajectory to the control loop
+            # rate (500 Hz), giving the ODrive smooth position ramps with
+            # matching vel_ff and torque_ff.  No IK or dynamics needed —
+            # just one multiply-add per cycle.
             t_now = time.perf_counter()
 
             # Staleness check: runs every cycle regardless of new-command flag
@@ -923,25 +935,23 @@ class ControlLoop:
                     f"{MPC_CMD_STALENESS_S}s) — E-STOP")
                 return
 
-            # Only forward new commands — don't re-send stale ones.
-            # Re-sending the same position with vel_ff=0 at 500 Hz creates
-            # a staircase of step responses; forwarding once lets the ODrive
-            # coast smoothly using vel_ff between MPC updates.
-            if not self._mpc_cmd_new:
-                return
-            self._mpc_cmd_new = False
+            # Latch the base position and vel_ff when a new MPC command arrives.
+            if self._mpc_cmd_new:
+                self._mpc_cmd_new = False
+                if self._mpc_cmd_motor_rev is not None:
+                    self._mpc_base_pos_rev = self._mpc_cmd_motor_rev.copy()
+                else:
+                    self._mpc_base_pos_rev = self._mpc_cmd_ext_mm * self.geom.mm_to_rev
+                self._mpc_base_vel_rps = leg_velocities_to_motor_velocities(
+                    self._mpc_cmd_vel_mm_s, self.geom)
+                self._mpc_base_timestamp = self._mpc_cmd_timestamp
 
-            # Motor positions: use pre-computed absolute revolutions if
-            # available, otherwise direct conversion (q × mm_to_rev).
-            if self._mpc_cmd_motor_rev is not None:
-                self._commanded_pos_rev = self._mpc_cmd_motor_rev.copy()
-            else:
-                self._commanded_pos_rev = self._mpc_cmd_ext_mm * self.geom.mm_to_rev
-            # Leg velocities (mm/s) → motor velocities (rev/s)
-            # vel_mm_s is computed from finite-difference in _on_mpc_command()
-            self._commanded_vel_ff_rps = leg_velocities_to_motor_velocities(
-                self._mpc_cmd_vel_mm_s, self.geom)
-            # Torques already in Nm — direct pass-through
+            # Linearly extrapolate from the last MPC command.
+            dt_since_cmd = t_now - self._mpc_base_timestamp
+            self._commanded_pos_rev = (
+                self._mpc_base_pos_rev + self._mpc_base_vel_rps * dt_since_cmd)
+            self._commanded_vel_ff_rps = self._mpc_base_vel_rps.copy()
+            # Torques (gravity comp) are static — pass through unchanged.
             self._commanded_torque_ff_Nm = self._mpc_cmd_torque_Nm.copy()
 
             self._has_new_output = True
