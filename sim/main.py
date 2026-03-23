@@ -668,9 +668,13 @@ def _mpc_solve(mpc, state, tc: TargetCommand):
     return cmd, diag, ref_pose, ref_twist
 
 
-def run_mpc_headless(plant: MuJoCoPlant, mpc, source, duration: float,
+def run_mpc_headless(plant, mpc, source, duration: float,
                      logger: TelemetryLogger, dashboard=None) -> None:
     """Unified headless MPC loop.
+
+    Paces iterations to wall-clock CONTROL_DT so the MPC's horizon
+    predictions match real elapsed time.  If a solve overruns the budget,
+    the next iteration runs immediately (no accumulated debt).
 
     Parameters
     ----------
@@ -682,6 +686,8 @@ def run_mpc_headless(plant: MuJoCoPlant, mpc, source, duration: float,
     n_steps = int(duration / CONTROL_DT)
     active_hand_seq = None
     last_hand_cmd_mm = 0.0
+    wall_budget = 0.0
+    start_wall = time.monotonic()
 
     for _ in range(n_steps):
         state = plant.get_state()
@@ -727,6 +733,19 @@ def run_mpc_headless(plant: MuJoCoPlant, mpc, source, duration: float,
         _log_mpc_step(logger, state, ref_pose, cmd, diag,
                       ref_twist=ref_twist, dashboard=dashboard,
                       hand_cmd_mm=last_hand_cmd_mm)
+
+        # Wall-clock pacing: sleep to maintain CONTROL_DT cadence.
+        # If a solve overruns (e.g. cold-start), skip sleeping and
+        # resync rather than trying to catch up at double speed.
+        wall_budget += CONTROL_DT
+        elapsed = time.monotonic() - start_wall
+        sleep_time = wall_budget - elapsed
+        if sleep_time > 0:
+            time.sleep(sleep_time)
+        elif sleep_time < -CONTROL_DT:
+            # Fallen behind by more than one full step — resync
+            start_wall = time.monotonic()
+            wall_budget = 0.0
 
     logger.flush()
     _print_mpc_summary(logger)
