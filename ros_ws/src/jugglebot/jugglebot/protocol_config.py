@@ -65,6 +65,7 @@ ODRIVE_CONTROL_MODES = {
 ODRIVE_INPUT_MODES = {
     "PASSTHROUGH": 1,
     "VEL_RAMP": 2,
+    "POS_FILTER": 3,
     "TRAP_TRAJ": 5,
 }
 

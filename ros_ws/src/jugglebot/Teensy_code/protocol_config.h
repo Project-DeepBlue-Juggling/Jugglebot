@@ -68,6 +68,7 @@ namespace ODriveControlMode {
 namespace ODriveInputMode {
   constexpr uint32_t PASSTHROUGH = 1u;
   constexpr uint32_t VEL_RAMP = 2u;
+  constexpr uint32_t POS_FILTER = 3u;
   constexpr uint32_t TRAP_TRAJ = 5u;
 }
 

@@ -55,6 +55,7 @@ odrive:
   input_modes:
     PASSTHROUGH:  1
     VEL_RAMP:     2
+    POS_FILTER:   3
     TRAP_TRAJ:    5
 
   # Known error bit masks

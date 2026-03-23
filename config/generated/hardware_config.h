@@ -143,7 +143,7 @@ namespace JBOp {
   constexpr float MAX_VALID_TILT_RAD = 0.785f;
   constexpr float INCLINOMETER_OFFSET_DEG[2] = {-0.6f, -0.2f};
   constexpr float LEVELLING_SETTLE_S = 0.5f;
-  constexpr float MAX_POSITION_STEP_REV = 0.2f;
+  constexpr float MAX_POSITION_STEP_REV = 0.3f;
   constexpr uint32_t FEASIBILITY_WORKER_MAX_RESTARTS = 3u;
 }
 

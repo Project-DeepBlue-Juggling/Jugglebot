@@ -201,13 +201,14 @@ jugglebot_operational:
   max_valid_tilt_rad: 0.785              # Maximum valid tilt reading before retry {rad} (~45 deg)
   inclinometer_offset_deg: [-0.6, -0.2]  # Sensor mounting offset [tiltX, tiltY] {deg}. Found experimentally.
   levelling_settle_s: 0.5                # Settle time after activation before reading inclinometer {s}
-  max_position_step_rev: 0.2             # Maximum allowed per-command position jump for any leg {rev}.
+  max_position_step_rev: 0.3             # Maximum allowed per-command position jump for any leg {rev}.
                                          # If a leg_lengths_topic command would move any leg more than
                                          # this from its current encoder position, the ENTIRE command
                                          # is rejected.  Prevents stale, erroneous, or competing
-                                         # position sources from slamming the platform.  Normal control
-                                         # loop steps are ~0.03 rev/cycle at max speed; 0.2 rev gives
-                                         # ~7x headroom while catching catastrophic jumps.
+                                         # position sources from slamming the platform.  At 50 Hz MPC
+                                         # with max velocity (9.5 rev/s), one step = 0.19 rev; 0.3 rev
+                                         # gives ~58% headroom for timing jitter while catching
+                                         # catastrophic jumps.
   feasibility_worker_max_restarts: 3     # Max restart attempts for the feasibility worker process
                                          # before triggering a permanent FAULT requiring system restart.
 

@@ -105,6 +105,12 @@ DEFAULT_RATE_HZ = 500
 # Conservative limit: ~667 mm/s Cartesian ≈ 200 mm in 0.3 s.
 MAX_SLEW_RATE_REV_PER_S = 9.5
 
+# MPC period used for slew budget in MPC pass-through mode.
+# The MPC runs at 50 Hz; commands arrive as 20 ms position steps.
+# Using the MPC period (instead of the loop dt) allows the full step
+# to pass through unclamped as long as velocity is within limits.
+MPC_SLEW_DT_S = 0.02
+
 # Trigger FAULT if slew limiter clamps for this many consecutive seconds.
 SLEW_FAULT_DURATION_S = 0.5
 
@@ -742,9 +748,14 @@ class ControlLoop:
                 f"(threshold {MAX_TRACKING_ERROR_MM:.1f})")
 
         # --- Slew rate limit ---
+        # In MPC pass-through mode, commands arrive as 20 ms position steps
+        # but the loop runs at 500 Hz (2 ms).  Using the loop dt would
+        # systematically clamp every MPC step by ~10×.  Scale the budget
+        # by the MPC period instead so the full step passes through.
         actual = self._motor_fb_pos_rev
         delta = self._commanded_pos_rev - actual
-        max_delta = MAX_SLEW_RATE_REV_PER_S * dt
+        slew_dt = MPC_SLEW_DT_S if self._mpc_passthrough_active else dt
+        max_delta = MAX_SLEW_RATE_REV_PER_S * slew_dt
 
         if np.any(np.abs(delta) > max_delta):
             clamped_delta = np.clip(delta, -max_delta, max_delta)
