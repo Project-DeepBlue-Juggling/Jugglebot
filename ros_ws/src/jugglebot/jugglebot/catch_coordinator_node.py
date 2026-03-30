@@ -12,8 +12,8 @@ Services called (on can_node):
   - set_hand_traj_cmd (SetHandTrajCmd) — arm catch trajectory on Teensy
   - set_hand_gains (SetHandGains) — adjust hand PID gains for catch
 
-Receives accept/reject feedback from the control process via IPC SUB
-on the telemetry address (TOPIC_DYN_FEEDBACK).
+Receives accept/reject feedback from the MPC process via IPC SUB
+on MPC_FEEDBACK_ADDR (:5559, TOPIC_TARGET_FB).
 
 Clock domain conversion: ROS2 landing_time → perf_counter arrival_time.
 """
@@ -58,7 +58,7 @@ class CatchCoordinatorNode(Node):
             catch_angle_limit_deg=30.0,
         )
 
-        # Publisher: dynamic target → motion_bridge_node → IPC → control loop
+        # Publisher: dynamic target → mpc_bridge_node → IPC → MPC process
         self._dyn_target_pub = self.create_publisher(
             DynamicTargetCommand, 'catch/dynamic_target', 10)
 
@@ -66,8 +66,9 @@ class CatchCoordinatorNode(Node):
         self._balls_sub = self.create_subscription(
             BallStateArray, 'balls', self._on_balls, 10)
 
-        # IPC SUB for feedback (connects to control process telemetry PUB)
-        self._feedback_ipc = _FeedbackIPC()
+        # IPC SUB for target accept/reject feedback from MPC process
+        from jugglebot.motion.ipc import TargetFeedbackSub
+        self._feedback_ipc = TargetFeedbackSub()
 
         # Poll for IPC feedback at 50 Hz
         self._feedback_timer = self.create_timer(0.02, self._poll_feedback)
@@ -372,40 +373,6 @@ class CatchCoordinatorNode(Node):
         self._restore_default_gains()
         self._feedback_ipc.close()
         super().destroy_node()
-
-
-class _FeedbackIPC:
-    """Lightweight IPC receiver for dynamic target accept/reject feedback.
-
-    Connects a SUB socket to the control process's telemetry PUB address.
-    Only subscribes to TOPIC_DYN_FEEDBACK — does not interfere with the
-    bridge's telemetry subscription.
-    """
-
-    def __init__(self):
-        import zmq
-        from jugglebot.motion.ipc import TELEMETRY_ADDR, TOPIC_DYN_FEEDBACK, _unpack
-        self._unpack = _unpack
-        self._zmq = zmq
-
-        self._ctx = zmq.Context()
-        self._sub = self._ctx.socket(zmq.SUB)
-        self._sub.connect(TELEMETRY_ADDR)
-        self._sub.setsockopt(zmq.SUBSCRIBE, TOPIC_DYN_FEEDBACK)
-        self._sub.setsockopt(zmq.RCVTIMEO, 0)
-        self._sub.setsockopt(zmq.RCVHWM, 64)
-
-    def recv(self) -> dict | None:
-        try:
-            frames = self._sub.recv_multipart(flags=self._zmq.NOBLOCK)
-            _, msg = self._unpack(frames)
-            return msg
-        except self._zmq.Again:
-            return None
-
-    def close(self):
-        self._sub.close()
-        self._ctx.term()
 
 
 def main(args=None):

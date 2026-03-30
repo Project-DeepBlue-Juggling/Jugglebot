@@ -35,10 +35,10 @@ ILL_CONDITION_THRESHOLD = 100.0
 LEG_SOFT_MARGIN_MM = 15.0   # soft limit = [margin, stroke - margin]
 LEG_HARD_MARGIN_MM = 5.0    # hard limit = [margin, stroke - margin]
 
-# Condition number thresholds (relative to home).
-# Computed once at startup: home cond ~450, so soft ~675, hard ~900.
-COND_SOFT_FACTOR = 1.5      # soft = 1.5 * cond_home
-COND_HARD_FACTOR = 2.0      # hard = 2.0 * cond_home (matches feasibility checker)
+# Condition number thresholds (relative to reference pose).
+# With normalized Jacobian, reference cond is ~3-8 (not the raw ~450).
+COND_SOFT_FACTOR = 1.5      # soft = 1.5 * cond_reference
+COND_HARD_FACTOR = 2.0      # hard = 2.0 * cond_reference (matches feasibility checker)
 
 
 class WorkspaceStatus(enum.Enum):
@@ -59,24 +59,23 @@ class WorkspaceLimits:
     leg_soft_max_mm: float
     leg_hard_min_mm: float
     leg_hard_max_mm: float
-    cond_home: float
+    cond_reference: float
     cond_soft: float
     cond_hard: float
 
     @staticmethod
     def from_geometry(geom: StewartGeometry) -> 'WorkspaceLimits':
         stroke = geom.leg_stroke_mm
-        cond_home = float(np.linalg.cond(
-            compute_jacobian(np.zeros(3), np.eye(3), geom)))
+        cond_reference = compute_condition_number(np.zeros(3), np.eye(3), geom)
         return WorkspaceLimits(
             leg_stroke_mm=stroke,
             leg_soft_min_mm=LEG_SOFT_MARGIN_MM,
             leg_soft_max_mm=stroke - LEG_SOFT_MARGIN_MM,
             leg_hard_min_mm=LEG_HARD_MARGIN_MM,
             leg_hard_max_mm=stroke - LEG_HARD_MARGIN_MM,
-            cond_home=cond_home,
-            cond_soft=COND_SOFT_FACTOR * cond_home,
-            cond_hard=COND_HARD_FACTOR * cond_home,
+            cond_reference=cond_reference,
+            cond_soft=COND_SOFT_FACTOR * cond_reference,
+            cond_hard=COND_HARD_FACTOR * cond_reference,
         )
 
 
@@ -195,9 +194,15 @@ def compute_condition_number(pos: np.ndarray,
                              J: np.ndarray | None = None) -> float:
     """Condition number of the Jacobian at a given pose.
 
+    The raw Jacobian has mixed units (dimensionless translational columns,
+    mm/rad rotational columns) which inflates the condition number to ~450
+    at the reference pose even though the matrix is far from singular.  We normalize by
+    the platform circumradius (the characteristic length that converts
+    angular velocity to linear velocity at the platform nodes) so the
+    condition number reflects true geometric sensitivity.
+
     A large condition number indicates proximity to a singularity.
-    Typical good values are < 10; the ill-conditioned threshold
-    from the motion planner plan is 100.
+    Typical good values are < 10.
 
     Parameters
     ----------
@@ -206,7 +211,11 @@ def compute_condition_number(pos: np.ndarray,
     """
     if J is None:
         J = compute_jacobian(pos, rot, geom)
-    return float(np.linalg.cond(J))
+    # Normalize rotational columns by characteristic length so all columns
+    # have consistent units.  This is equivalent to J @ diag(1,1,1,1/Lc,1/Lc,1/Lc).
+    J_norm = J.copy()
+    J_norm[:, 3:] /= geom.plat_radius_mm
+    return float(np.linalg.cond(J_norm))
 
 
 def check_reachability(pos: np.ndarray,
@@ -216,7 +225,7 @@ def check_reachability(pos: np.ndarray,
 
     Parameters
     ----------
-    pos : (3,) ndarray — platform offset from home
+    pos : (3,) ndarray — platform offset from stow pose
     rot : (3,3) ndarray — rotation matrix
 
     Returns
@@ -238,7 +247,7 @@ def map_singularities(geom: StewartGeometry,
     Parameters
     ----------
     geom : StewartGeometry
-    z_range : (min_z, max_z) — vertical offset range from home (mm)
+    z_range : (min_z, max_z) — vertical offset range from active pose (mm)
     xy_range : float — maximum horizontal offset (mm) in each direction
     tilt_max_deg : float — maximum tilt angle (deg) to sample
     resolution : int — number of grid points per dimension (higher = finer)

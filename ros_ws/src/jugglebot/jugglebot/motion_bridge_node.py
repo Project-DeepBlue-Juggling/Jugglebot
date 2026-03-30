@@ -1,14 +1,14 @@
-"""ROS2 bridge node for the standalone motion control process.
+"""ROS2 bridge node for the motor guard process.
 
 Translates between the ROS2 topic/service world and the ZeroMQ IPC
-layer used by the control process.
+layer used by the motor guard.
 
 ROS2 → IPC:
-  - PlatformPoseCommand (from spacemouse, catch nodes, etc.) → TargetState
   - control_mode_topic (from orchestrator) → ModeCommand
+  - robot_state (from CAN node) → MotorFeedback
 
 IPC → ROS2:
-  - Telemetry (from control loop) → leg_lengths_topic (18 values:
+  - Telemetry (from motor guard) → leg_lengths_topic (18 values:
     6 pos_rev + 6 vel_ff_rps + 6 torque_ff_Nm for CAN node's set_input_pos)
 """
 
@@ -19,20 +19,17 @@ import rclpy
 from rclpy.node import Node
 from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
 from std_msgs.msg import Float64MultiArray, String
-from jugglebot_interfaces.msg import (
-    DynamicTargetCommand, PlatformPoseCommand, RobotState,
-)
+from jugglebot_interfaces.msg import RobotState
 
 from jugglebot.motion.ipc import (
     BridgeIPC,
-    make_dynamic_target_command,
     make_mode_command,
-    make_target_state,
+    make_motor_feedback,
 )
 
 
 class MotionBridgeNode(Node):
-    """Bridges ROS2 topics to/from the standalone control process via ZeroMQ."""
+    """Bridges ROS2 topics to/from the motor guard process via ZeroMQ."""
 
     def __init__(self):
         super().__init__('motion_bridge')
@@ -49,35 +46,15 @@ class MotionBridgeNode(Node):
         # ROS2 subscriptions (ROS2 → IPC)
         # ------------------------------------------------------------------
 
-        # Platform pose commands from spacemouse, catch planner, etc.
-        self.create_subscription(
-            PlatformPoseCommand, 'platform_pose_topic',
-            self._on_pose_command, 10)
-
         # Control mode from orchestrator
         self.create_subscription(
             String, 'control_mode_topic',
             self._on_control_mode, 10)
 
-        # Gravity offset from orchestrator (levelling result)
-        self.create_subscription(
-            Float64MultiArray, 'gravity_offset',
-            self._on_gravity_offset, 10)
-
-        # Robot state from CAN node (motor feedback for control loop)
+        # Robot state from CAN node (motor feedback for motor guard)
         self.create_subscription(
             RobotState, 'robot_state',
             self._on_robot_state, 10)
-
-        # Smoother speed limits from GUI
-        self.create_subscription(
-            Float64MultiArray, 'smoother_limits',
-            self._on_smoother_limits, 10)
-
-        # Dynamic target from catch coordinator
-        self.create_subscription(
-            DynamicTargetCommand, 'catch/dynamic_target',
-            self._on_catch_dynamic_target, 10)
 
         # ------------------------------------------------------------------
         # ROS2 publishers (IPC → ROS2)
@@ -108,27 +85,11 @@ class MotionBridgeNode(Node):
         # State tracking
         # ------------------------------------------------------------------
         self._current_control_mode = ''
-        self._active_publisher = ''  # which source is allowed (matches control_mode)
-        self._control_loop_enabled = False  # gate for leg command publishing
+        self._motor_guard_enabled = False  # gate for leg command publishing
 
     # ------------------------------------------------------------------
     # ROS2 → IPC callbacks
     # ------------------------------------------------------------------
-
-    def _on_pose_command(self, msg: PlatformPoseCommand) -> None:
-        """Forward platform pose commands to the control process."""
-        # Gate: only forward if the publisher matches the active control mode
-        publisher = msg.publisher
-        if publisher != self._current_control_mode:
-            return
-
-        pose = msg.pose_stamped.pose
-        pos = [pose.position.x, pose.position.y, pose.position.z]
-        quat = [pose.orientation.w, pose.orientation.x,
-                pose.orientation.y, pose.orientation.z]
-
-        target = make_target_state(pos=pos, rot_quat=quat)
-        self.ipc.send_target(target)
 
     def _on_control_mode(self, msg: String) -> None:
         """Translate control mode changes to IPC mode commands."""
@@ -137,80 +98,49 @@ class MotionBridgeNode(Node):
         self._current_control_mode = mode
 
         if mode in ('SPACEMOUSE', 'SHELL', 'GUI', 'CATCH'):
-            self._active_publisher = mode
             if prev != mode:
+                # Always reset motor guard before enabling —
+                # clears ESTOP from fault recovery or any unexpected state.
+                self.ipc.send_mode_command(make_mode_command('disable'))
                 cmd = make_mode_command('enable', source=mode)
                 self.ipc.send_mode_command(cmd)
-                self._control_loop_enabled = True
-                self.get_logger().info(f"Sent 'enable' to control process "
-                                       f"(mode: {mode})")
+                self._motor_guard_enabled = True
+                self.get_logger().info(f"Sent 'disable'+'enable' to motor "
+                                       f"guard (mode: {mode})")
         elif mode == 'LEVELLING':
             # LEVELLING uses the CAN node's profiled gentle-move commands,
-            # not the motion planner.  Do NOT enable the control loop.
-            self._active_publisher = mode
+            # not the motion planner.  Do NOT enable the motor guard.
             if prev != mode:
                 if prev in ('SPACEMOUSE', 'SHELL', 'GUI', 'CATCH'):
                     cmd = make_mode_command('disable')
                     self.ipc.send_mode_command(cmd)
-                    self._control_loop_enabled = False
+                    self._motor_guard_enabled = False
                 self.get_logger().info(
-                    "LEVELLING mode — control loop stays disabled")
+                    "LEVELLING mode — motor guard stays disabled")
         elif mode == 'ERROR':
             if prev != 'ERROR':
                 cmd = make_mode_command('estop')
                 self.ipc.send_mode_command(cmd)
-                self._control_loop_enabled = False
-                self.get_logger().warning("Sent 'estop' to control process")
+                self._motor_guard_enabled = False
+                self.get_logger().warning("Sent 'estop' to motor guard")
         elif mode == '' or mode is None:
-            self._active_publisher = ''
             if prev and prev not in ('', 'ERROR'):
                 cmd = make_mode_command('disable')
                 self.ipc.send_mode_command(cmd)
-                self._control_loop_enabled = False
-                self.get_logger().info("Sent 'disable' to control process")
-
-    def _on_smoother_limits(self, msg: Float64MultiArray) -> None:
-        """Forward smoother speed limits from GUI to the control process."""
-        if len(msg.data) < 2:
-            return
-        vel_rps = msg.data[0]
-        accel_rps2 = msg.data[1]
-        cmd = make_mode_command('set_smoother_limits',
-                                vel_limit_rps=vel_rps,
-                                accel_limit_rps2=accel_rps2)
-        self.ipc.send_mode_command(cmd)
-
-    def _on_catch_dynamic_target(self, msg: DynamicTargetCommand) -> None:
-        """Forward dynamic target from catch coordinator to the control process."""
-        cmd = make_dynamic_target_command(
-            target_pos=[msg.target_pos.x, msg.target_pos.y, msg.target_pos.z],
-            target_quat=[msg.target_quat.w, msg.target_quat.x,
-                         msg.target_quat.y, msg.target_quat.z],
-            target_vel=[msg.target_vel.x, msg.target_vel.y, msg.target_vel.z],
-            arrival_time=msg.arrival_time,
-        )
-        self.ipc.send_dynamic_target(cmd)
-
-    def _on_gravity_offset(self, msg: Float64MultiArray) -> None:
-        """Forward gravity offset to the control process via IPC."""
-        cmd = make_mode_command(
-            'set_gravity_offset', tilt_x=msg.data[0], tilt_y=msg.data[1])
-        self.ipc.send_mode_command(cmd)
-        self.get_logger().info(
-            f"Sent gravity offset to control process: "
-            f"[{msg.data[0]:.4f}, {msg.data[1]:.4f}] rad")
+                self._motor_guard_enabled = False
+                self.get_logger().info("Sent 'disable' to motor guard")
 
     def _on_robot_state(self, msg: RobotState) -> None:
-        """Forward motor feedback from CAN node to the control process."""
+        """Forward motor feedback from CAN node to the motor guard."""
         states = msg.motor_states
         if len(states) < 6:
             return
         # First 6 entries are the leg motors
-        fb = {
-            'pos': [states[i].pos_estimate for i in range(6)],
-            'vel': [states[i].vel_estimate for i in range(6)],
-            'cur': [states[i].iq_measured for i in range(6)],
-        }
+        fb = make_motor_feedback(
+            positions=[states[i].pos_estimate for i in range(6)],
+            velocities=[states[i].vel_estimate for i in range(6)],
+            currents=[states[i].iq_measured for i in range(6)],
+        )
         self.ipc.send_motor_feedback(fb)
 
     # ------------------------------------------------------------------
@@ -218,20 +148,20 @@ class MotionBridgeNode(Node):
     # ------------------------------------------------------------------
 
     def _poll_telemetry(self) -> None:
-        """Poll telemetry from the control process and publish to ROS2."""
+        """Poll telemetry from the motor guard and publish to ROS2."""
         telem = self.ipc.recv_telemetry()
         if telem is None:
             return
 
         positions = telem.get('leg_pos')
         velocities = telem.get('leg_vel')
-        torques = telem.get('cmd_torques')
+        torques = telem.get('leg_torques')
 
         # Publish unified command to CAN node: 6 pos + 6 vel_ff + 6 torque_ff
-        # Only when control loop is enabled AND telemetry contains valid motor
+        # Only when motor guard is enabled AND telemetry contains valid motor
         # commands.  Refusing to publish when keys are missing prevents sending
         # default zeros which would command full retraction.
-        if (self._control_loop_enabled
+        if (self._motor_guard_enabled
                 and positions is not None
                 and velocities is not None
                 and torques is not None):
@@ -240,10 +170,9 @@ class MotionBridgeNode(Node):
             self._leg_pub.publish(leg_msg)
 
         # Publish feedforward torques on diagnostic topic (monitoring only)
-        ff_torques = telem.get('ff_torques')
-        if ff_torques:
+        if torques:
             diag_msg = Float64MultiArray()
-            diag_msg.data = ff_torques
+            diag_msg.data = torques
             self._torque_pub.publish(diag_msg)
 
         # Publish per-leg tracking errors (mm)
@@ -258,13 +187,11 @@ class MotionBridgeNode(Node):
         if cond is not None:
             ws_status = telem.get('workspace_status', 'unknown')
             ws_scale = telem.get('workspace_speed_scale', 1.0)
-            traj_state = telem.get('traj_state', 'unknown')
-            traj_progress = telem.get('traj_progress')
             fault = telem.get('fault_state')
 
             diag_msg = DiagnosticStatus()
-            diag_msg.name = 'motion/control_loop'
-            diag_msg.hardware_id = 'motion_planner'
+            diag_msg.name = 'motion/motor_guard'
+            diag_msg.hardware_id = 'motor_guard'
 
             # Set level based on workspace/fault status
             if fault:
@@ -284,11 +211,7 @@ class MotionBridgeNode(Node):
                 KeyValue(key='cond_number', value=f'{cond:.1f}'),
                 KeyValue(key='workspace_status', value=str(ws_status)),
                 KeyValue(key='workspace_speed_scale', value=f'{ws_scale:.3f}'),
-                KeyValue(key='traj_state', value=str(traj_state)),
             ]
-            if traj_progress is not None:
-                diag_msg.values.append(
-                    KeyValue(key='traj_progress', value=f'{traj_progress:.3f}'))
             if fault:
                 diag_msg.values.append(
                     KeyValue(key='fault_state', value=str(fault)))
@@ -301,7 +224,7 @@ class MotionBridgeNode(Node):
 
     def on_shutdown(self) -> None:
         """Clean up IPC on node shutdown."""
-        # Send disable to control process
+        # Send disable to motor guard
         try:
             cmd = make_mode_command('disable')
             self.ipc.send_mode_command(cmd)

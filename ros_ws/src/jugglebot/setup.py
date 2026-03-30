@@ -33,13 +33,14 @@ setup(
             'can_node = jugglebot.can_node:main',
             'orchestrator_node = jugglebot.orchestrator_node:main',
             'motion_bridge_node = jugglebot.motion_bridge_node:main',
+            'mpc_bridge_node = jugglebot.mpc_bridge_node:main',
             'mocap_node = jugglebot.mocap_node:main',
             'spacemouse_handler = jugglebot.spacemouse_handler:main',
             # ── Ball tracking & catch ──────────────────────────
             'ball_tracker_node = jugglebot.ball_tracker_node:main',
             'catch_coordinator_node = jugglebot.catch_coordinator_node:main',
             # ── Standalone processes (not ROS2 nodes) ─────────
-            'control_loop = jugglebot.motion.control_loop:main',
+            'motor_guard = jugglebot.motion.motor_guard:main',
         ],
     },
 )

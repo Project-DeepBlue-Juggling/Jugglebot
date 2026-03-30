@@ -27,7 +27,7 @@ from jugglebot.tracking.ball import Ball, BallStatus
 class CatchCommand:
     """Output of the coordinator: what to send to the motion planner and hand."""
     ball_id: int
-    target_pos: np.ndarray     # [x, y, z] platform offset from home (mm)
+    target_pos: np.ndarray     # [x, y, z] platform offset from stow pose (mm)
     target_quat: np.ndarray    # [w, x, y, z] quaternion orientation
     target_vel: np.ndarray     # [vx, vy, vz] mm/s — always [0,0,0] for a catch
     landing_time: float        # Absolute landing time (ROS2 seconds)
@@ -212,8 +212,8 @@ class CatchCoordinator:
         # Platform centroid = hand position - offset * platform_z
         centroid_base = ball.landing_position - self.hand_catch_offset_mm * platform_z
 
-        # Convert from base frame to platform-home-relative coordinates.
-        # Platform home is at (0, 0, initial_height) in base frame.
+        # Convert from base frame to platform-active-relative coordinates.
+        # Platform active pose is at (0, 0, initial_height) in base frame.
         target_pos = np.array([
             centroid_base[0],
             centroid_base[1],

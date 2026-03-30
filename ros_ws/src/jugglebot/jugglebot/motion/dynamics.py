@@ -237,7 +237,7 @@ def gravity_to_leg_forces(pos: np.ndarray, rot: np.ndarray,
 
     Parameters
     ----------
-    pos : (3,) ndarray — platform offset from home (mm)
+    pos : (3,) ndarray — platform offset from stow pose (mm)
     rot : (3, 3) ndarray — rotation matrix (platform → world)
     geom : StewartGeometry
     params : DynamicsParams
@@ -267,7 +267,7 @@ def gravity_to_motor_torques(pos: np.ndarray, rot: np.ndarray,
 
     Parameters
     ----------
-    pos : (3,) ndarray — platform offset from home (mm)
+    pos : (3,) ndarray — platform offset from stow pose (mm)
     rot : (3, 3) ndarray — rotation matrix (platform → world)
     geom : StewartGeometry
     params : DynamicsParams
@@ -309,7 +309,7 @@ def compute_full_feedforward_torques(
 
     Parameters
     ----------
-    pos : (3,) ndarray — platform offset from home (mm)
+    pos : (3,) ndarray — platform offset from stow pose (mm)
     rot : (3, 3) ndarray — rotation matrix (platform → world)
     twist : (6,) ndarray — [vx, vy, vz, wx, wy, wz] in mm/s, rad/s
     accel : (6,) ndarray — [ax, ay, az, alphax, alphay, alphaz] in mm/s², rad/s²

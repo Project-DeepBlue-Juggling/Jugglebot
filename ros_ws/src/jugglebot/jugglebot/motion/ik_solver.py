@@ -12,12 +12,12 @@ Coordinate conventions
 ----------------------
 - **Base frame**: origin at base centre, z = 0 at base plane, +z up.
 - **Platform frame** (body-fixed): origin at platform centre, aligned with
-  the base frame when the platform is at its initial (home) pose.
-- **Pose**: the *offset* of the platform centre from the home position,
-  expressed in the base frame.  At home the offset is [0, 0, 0].
+  the base frame when the platform is at its initial (active) pose.
+- **Pose**: the *offset* of the platform centre from the active position,
+  expressed in the base frame.  At active the offset is [0, 0, 0].
   The absolute platform centre is therefore ``pos + [0, 0, init_height]``.
 - **Rotation matrix** ``R``: rotates vectors from the platform frame into
-  the base frame.  Identity at home.
+  the base frame.  Identity at active.
 - **Twist**: ``[vx, vy, vz, ωx, ωy, ωz]`` in the base frame (mm/s, rad/s).
 - **Leg extensions**: 0 mm = fully retracted, ``leg_stroke_mm`` = fully
   extended.  Positive extension → leg gets longer.
@@ -146,7 +146,7 @@ def compute_leg_vectors(pos: np.ndarray,
 
     Parameters
     ----------
-    pos : (3,) ndarray — platform offset from home [x, y, z] in mm
+    pos : (3,) ndarray — platform offset from stow pose [x, y, z] in mm
     rot : (3,3) ndarray — rotation matrix (platform → base)
     geom : StewartGeometry
 
@@ -169,7 +169,7 @@ def pose_to_leg_lengths(pos: np.ndarray,
 
     Parameters
     ----------
-    pos : (3,) ndarray — platform offset from home [x, y, z] in mm
+    pos : (3,) ndarray — platform offset from stow pose [x, y, z] in mm
     rot : (3,3) ndarray — rotation matrix (platform → base)
     geom : StewartGeometry
 
@@ -196,7 +196,7 @@ def compute_jacobian(pos: np.ndarray,
 
     Parameters
     ----------
-    pos : (3,) ndarray — platform offset from home
+    pos : (3,) ndarray — platform offset from stow pose
     rot : (3,3) ndarray — rotation matrix (platform → base)
     geom : StewartGeometry
 
@@ -347,13 +347,13 @@ def leg_lengths_to_pose(extensions_mm: np.ndarray,
     extensions_mm : (6,) ndarray — target leg extensions in mm
     geom : StewartGeometry
     initial_guess : optional (pos, rot) starting point.
-        Defaults to home pose (zero offset, identity rotation).
+        Defaults to active pose (zero offset, identity rotation).
     tol : convergence tolerance on max residual (mm)
     max_iter : maximum Newton iterations
 
     Returns
     -------
-    pos : (3,) ndarray — platform offset from home
+    pos : (3,) ndarray — platform offset from stow pose
     rot : (3, 3) ndarray — rotation matrix (platform → base)
 
     Raises
@@ -365,7 +365,7 @@ def leg_lengths_to_pose(extensions_mm: np.ndarray,
         pos, rot = initial_guess
         x = np.concatenate([pos, rot_matrix_to_rotvec(rot)])
     else:
-        x = np.zeros(6)  # home: zero offset, zero rotation
+        x = np.zeros(6)  # active: zero offset, zero rotation
 
     for iteration in range(max_iter):
         pos_cur = x[:3]

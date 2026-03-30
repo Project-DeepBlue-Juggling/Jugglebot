@@ -58,12 +58,18 @@ def generate_launch_description():
         executable='catch_coordinator_node',
     )
 
-    # ── Standalone control process (not a ROS2 node) ─────────────
-    # Installed as a console_scripts entry point alongside other executables
+    mpc_bridge_node = Node(
+        package='jugglebot',
+        executable='mpc_bridge_node',
+    )
+
+    # ── Standalone motor guard process (not a ROS2 node) ────────
+    # 500 Hz interpolator + safety monitor between MPC and motor hardware.
+    # Installed as a console_scripts entry point alongside other executables.
     pkg_lib_dir = os.path.join(
         get_package_share_directory('jugglebot'), '..', '..', 'lib', 'jugglebot')
-    control_loop = ExecuteProcess(
-        cmd=[os.path.join(pkg_lib_dir, 'control_loop'), '--rate', '500'],
+    motor_guard = ExecuteProcess(
+        cmd=[os.path.join(pkg_lib_dir, 'motor_guard'), '--rate', '500'],
         output='screen',
     )
 
@@ -125,8 +131,9 @@ def generate_launch_description():
         spacemouse_handler,
         ball_tracker_node,
         catch_coordinator_node,
+        mpc_bridge_node,
         # Standalone processes
-        control_loop,
+        motor_guard,
         # Recording (conditional)
         rosbag_record,
     ])

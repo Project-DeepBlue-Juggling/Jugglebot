@@ -1,26 +1,45 @@
 """ZeroMQ-based IPC layer for the motion control system.
 
-Provides communication between the standalone control process and the
-ROS2 bridge node.  Messages are serialised with msgpack for speed.
+Provides communication between the motor guard process, the ROS2 bridge
+nodes, and the MPC process.  Messages are serialised with msgpack for speed.
 
 Architecture::
 
-    ROS2 Bridge                          Control Process
-    ──────────                          ───────────────
-    BridgeIPC                           ControlProcessIPC
-      PUB  ─── tcp://localhost:5555 ──►  SUB   (targets, commands)
+    ROS2 Motion Bridge                   Motor Guard (500 Hz)
+    ──────────────────                  ────────────────────
+    BridgeIPC                           MotorGuardIPC
+      PUB  ─── tcp://localhost:5555 ──►  SUB   (mode cmds, motor feedback)
       SUB  ◄── tcp://localhost:5556 ───  PUB   (telemetry)
 
-    HardwarePlant (MPC)
-      PUB  ─── tcp://localhost:5557 ──►  SUB   (mpc commands)
+    HardwarePlant (MPC process)
+      PUB  ─── tcp://localhost:5557 ──►  SUB   (mpc commands + fallback enable)
       SUB  ◄── tcp://localhost:5556 ───        (telemetry, shared)
 
+    ROS2 MPC Bridge                      MPC Process
+    ───────────────                     ───────────
+    MpcBridgeIPC                        MpcTargetIPC
+      PUB  ─── tcp://localhost:5558 ──►  SUB   (target poses, mode)
+
+    MPC Process                          Catch Coordinator Node
+    ───────────                         ──────────────────────
+    TargetFeedbackPub                   TargetFeedbackSub
+      PUB  ─── tcp://localhost:5559 ──►  SUB   (target accept/reject)
+
 Message types:
-  - TargetState:   desired platform pose/twist/accel from the planner
-  - ModeCommand:   enable, disable, estop, set_gains, etc.
-  - Telemetry:     control loop output (leg states, timing, torques)
+  - ModeCommand:   enable, disable, estop, fault, etc.
+  - Telemetry:     motor guard output (leg states, timing, torques)
   - MotorFeedback: encoder positions/velocities/currents from CAN node
   - MPCCommand:    pre-computed motor commands from external MPC controller
+  - MPCTarget:     target pose for the MPC to track (from any input source)
+  - MPCMode:       active input mode forwarded to the MPC process
+  - TargetFeedback: accept/reject decision for catch targets (MPC → coordinator)
+
+Lifecycle authority:
+  - The ROS2 motion bridge on :5555 is the primary authority for motor guard
+    enable/disable/estop.  It sends disable+enable on every mode transition.
+  - HardwarePlant on :5557 sends a fallback enable for direct hardware mode
+    (no ROS2).  When the bridge is running, this resolves to a no-op at the
+    motor guard (enable-when-already-ENABLED is idempotent).
 
 No ROS2 dependency.  Requires: pyzmq, msgpack.
 """
@@ -37,46 +56,25 @@ import zmq
 logger = logging.getLogger(__name__)
 
 # Default IPC addresses
-COMMAND_ADDR = 'tcp://127.0.0.1:5555'       # bridge PUB → control SUB
-TELEMETRY_ADDR = 'tcp://127.0.0.1:5556'     # control PUB → bridge SUB
-MPC_COMMAND_ADDR = 'tcp://127.0.0.1:5557'   # HardwarePlant PUB → control SUB
+COMMAND_ADDR = 'tcp://127.0.0.1:5555'       # bridge PUB → motor guard SUB
+TELEMETRY_ADDR = 'tcp://127.0.0.1:5556'     # motor guard PUB → bridge SUB
+MPC_COMMAND_ADDR = 'tcp://127.0.0.1:5557'   # HardwarePlant PUB → motor guard SUB
+MPC_TARGET_ADDR = 'tcp://127.0.0.1:5558'    # mpc_bridge PUB → MPC process SUB
+MPC_FEEDBACK_ADDR = 'tcp://127.0.0.1:5559'  # MPC process PUB → catch coordinator SUB
 
 # Topic prefixes for ZMQ PUB/SUB filtering
-TOPIC_TARGET = b'target'
 TOPIC_MODE = b'mode'
 TOPIC_TELEMETRY = b'telem'
 TOPIC_MOTOR_FB = b'motorfb'
-TOPIC_TRAJECTORY = b'traj'
-TOPIC_DYN_TARGET = b'dyntgt'
-TOPIC_DYN_FEEDBACK = b'dynfb'   # dynamic target accept/reject feedback
 TOPIC_MPC_CMD = b'mpccmd'       # pre-computed motor commands from MPC
+TOPIC_MPC_TARGET = b'mpctgt'    # target pose for MPC to track
+TOPIC_MPC_MODE = b'mpcmode'     # active input mode for MPC process
+TOPIC_TARGET_FB = b'tgtfb'      # target accept/reject feedback from MPC
 
 
 # ---------------------------------------------------------------------------
 # Message constructors
 # ---------------------------------------------------------------------------
-
-def make_target_state(pos: list | tuple,
-                      rot_quat: list | tuple,
-                      twist: list | tuple | None = None,
-                      accel: list | tuple | None = None) -> dict:
-    """Create a TargetState message.
-
-    Parameters
-    ----------
-    pos : [x, y, z] platform offset from home (mm)
-    rot_quat : [w, x, y, z] quaternion (platform → base)
-    twist : [vx, vy, vz, ωx, ωy, ωz] or None (mm/s, rad/s)
-    accel : [ax, ay, az, αx, αy, αz] or None (mm/s², rad/s²)
-    """
-    return {
-        'type': 'target',
-        'pos': list(pos),
-        'rot': list(rot_quat),
-        'twist': list(twist) if twist is not None else [0.0] * 6,
-        'accel': list(accel) if accel is not None else [0.0] * 6,
-    }
-
 
 def make_mode_command(command: str, **params) -> dict:
     """Create a ModeCommand message.
@@ -95,12 +93,8 @@ def make_mode_command(command: str, **params) -> dict:
 
 def make_telemetry(leg_positions: list | tuple,
                    leg_velocities: list | tuple,
-                   commanded_torques: list | tuple,
+                   leg_torques: list | tuple,
                    loop_dt_s: float,
-                   ff_torques: list | tuple | None = None,
-                   pd_torques: list | tuple | None = None,
-                   traj_state: str | None = None,
-                   traj_progress: float | None = None,
                    cond_number: float | None = None,
                    workspace_status: str | None = None,
                    workspace_speed_scale: float | None = None,
@@ -109,16 +103,12 @@ def make_telemetry(leg_positions: list | tuple,
                    motor_pos: list | tuple | None = None,
                    motor_vel: list | tuple | None = None,
                    motor_cur: list | tuple | None = None,
-                   slew_limited: bool = False,
-                   workspace_clamped: bool = False) -> dict:
-    """Create a Telemetry message from the control loop.
+                   timestamp: float | None = None) -> dict:
+    """Create a Telemetry message from the motor guard.
 
     Parameters
     ----------
-    ff_torques : per-motor gravity feedforward torques (Nm), or None
-    pd_torques : per-motor PD feedback torques (Nm), or None
-    traj_state : trajectory state string ('idle', 'executing', 'complete'), or None
-    traj_progress : trajectory progress 0.0-1.0, or None
+    leg_torques : per-motor feedforward torques (Nm)
     cond_number : Jacobian condition number at current pose, or None
     workspace_status : 'ok', 'soft', or 'hard', or None
     workspace_speed_scale : workspace-imposed speed scale 0.0-1.0, or None
@@ -127,23 +117,15 @@ def make_telemetry(leg_positions: list | tuple,
     motor_pos : 6 actual motor positions (rev) from encoder feedback, or None
     motor_vel : 6 actual motor velocities (rev/s) from encoder feedback, or None
     motor_cur : 6 actual motor currents (A) from encoder feedback, or None
-    slew_limited : True if the slew limiter is actively clamping this cycle
+    timestamp : time.perf_counter() at message creation, or None
     """
     msg = {
         'type': 'telemetry',
         'leg_pos': list(leg_positions),
         'leg_vel': list(leg_velocities),
-        'cmd_torques': list(commanded_torques),
+        'leg_torques': list(leg_torques),
         'dt': loop_dt_s,
     }
-    if ff_torques is not None:
-        msg['ff_torques'] = list(ff_torques)
-    if pd_torques is not None:
-        msg['pd_torques'] = list(pd_torques)
-    if traj_state is not None:
-        msg['traj_state'] = traj_state
-    if traj_progress is not None:
-        msg['traj_progress'] = traj_progress
     if cond_number is not None:
         msg['cond_number'] = cond_number
     if workspace_status is not None:
@@ -160,99 +142,7 @@ def make_telemetry(leg_positions: list | tuple,
         msg['motor_vel'] = list(motor_vel)
     if motor_cur is not None:
         msg['motor_cur'] = list(motor_cur)
-    if slew_limited:
-        msg['slew_limited'] = True
-    if workspace_clamped:
-        msg['workspace_clamped'] = True
-    return msg
-
-
-def make_trajectory_command(
-        start_pose: list | tuple,
-        start_twist: list | tuple,
-        start_accel: list | tuple,
-        end_pose: list | tuple,
-        end_twist: list | tuple,
-        end_accel: list | tuple,
-        duration: float,
-        speed_scale: float = 1.0) -> dict:
-    """Create a trajectory command message.
-
-    Parameters
-    ----------
-    start_pose : [x, y, z, rx, ry, rz] in mm, rad
-    start_twist : [vx, vy, vz, wx, wy, wz] in mm/s, rad/s
-    start_accel : [ax, ay, az, alphax, alphay, alphaz] in mm/s^2, rad/s^2
-    end_pose, end_twist, end_accel : same as start
-    duration : trajectory duration in seconds (before speed scaling)
-    speed_scale : 0.0-1.0, uniformly scales velocities/accelerations
-    """
-    return {
-        'type': 'trajectory',
-        'start_pose': list(start_pose),
-        'start_twist': list(start_twist),
-        'start_accel': list(start_accel),
-        'end_pose': list(end_pose),
-        'end_twist': list(end_twist),
-        'end_accel': list(end_accel),
-        'duration': duration,
-        'speed_scale': speed_scale,
-    }
-
-
-def make_dynamic_target_command(
-        target_pos: list | tuple,
-        target_quat: list | tuple,
-        target_vel: list | tuple,
-        arrival_time: float,
-        speed_scale: float = 1.0) -> dict:
-    """Create a dynamic target command message.
-
-    The caller specifies only the desired end state.  The control process
-    automatically samples the current platform state as the start and plans
-    a quintic trajectory with feasibility checking.
-
-    Parameters
-    ----------
-    target_pos : [x, y, z] platform offset from home (mm)
-    target_quat : [w, x, y, z] quaternion orientation
-    target_vel : [vx, vy, vz] linear velocity at target (mm/s).
-        Angular velocity is always zero.
-    arrival_time : absolute arrival time (perf_counter timestamp)
-    speed_scale : 0.0-1.0, uniformly scales velocities/accelerations
-    """
-    return {
-        'type': 'dynamic_target',
-        'target_pos': list(target_pos),
-        'target_quat': list(target_quat),
-        'target_vel': list(target_vel),
-        'arrival_time': arrival_time,
-        'speed_scale': speed_scale,
-    }
-
-
-def make_dynamic_target_feedback(
-        accepted: bool,
-        arrival_time: float,
-        violations: list[str] | None = None) -> dict:
-    """Create a dynamic target feedback message.
-
-    Sent from the control loop back to the bridge whenever a dynamic
-    target is accepted or rejected by the async feasibility pipeline.
-
-    Parameters
-    ----------
-    accepted : True if the target was committed, False if rejected.
-    arrival_time : The arrival_time from the original request (for correlation).
-    violations : List of violation descriptions if rejected, or None.
-    """
-    msg = {
-        'type': 'dynamic_target_feedback',
-        'accepted': accepted,
-        'arrival_time': arrival_time,
-    }
-    if violations:
-        msg['violations'] = violations
+    msg['timestamp'] = timestamp
     return msg
 
 
@@ -272,25 +162,29 @@ def make_mpc_command(ext_mm: list | tuple,
                      pose_6dof: list | tuple,
                      motor_rev: list | tuple | None = None,
                      vel_mm_s: list | tuple | None = None,
+                     acc_mm_s2: list | tuple | None = None,
                      torque_Nm: list | tuple | None = None,
                      seq: int = 0) -> dict:
-    """Create an MPC pass-through command message.
+    """Create an MPC command message.
 
     Sent by the external MPC controller (HardwarePlant) directly to the
-    control loop, bypassing the stream smoother and IK.  The control loop
-    uses motor_rev directly as commanded positions (matching ODrive encoder
-    convention where 0 = STOW), and applies the full safety pipeline.
+    motor guard.  The motor guard uses motor_rev directly as commanded
+    positions (matching ODrive encoder convention where 0 = STOW), and
+    applies the full safety pipeline.
 
     Parameters
     ----------
-    ext_mm : 6 IK-convention leg extensions (mm) — for workspace checks
-    pose_6dof : [x, y, z, rx, ry, rz] in mm, rad — Cartesian pose for
+    ext_mm : 6 IK-convention leg extensions (mm) -- for workspace checks
+    pose_6dof : [x, y, z, rx, ry, rz] in mm, rad -- Cartesian pose for
         condition-number checks (from MPC predicted_poses[0])
     motor_rev : 6 absolute motor positions (rev) in ODrive convention
-        (0 = STOW).  Includes the stow offset.  If None, the control loop
-        falls back to ``extensions_mm_to_revs(ext_mm)`` (no stow offset —
+        (0 = STOW).  Includes the stow offset.  If None, the motor guard
+        falls back to ``extensions_mm_to_revs(ext_mm)`` (no stow offset --
         only correct for unit tests / sim).
     vel_mm_s : 6 leg velocities (mm/s), or None for zeros
+    acc_mm_s2 : 6 leg accelerations (mm/s²), or None for zeros.
+        Used by the motor guard for quadratic interpolation between 50 Hz
+        MPC commands (eliminates position step at command boundaries).
     torque_Nm : 6 motor torques (Nm), or None for zeros
     seq : monotonic sequence number (for debugging / drop detection)
     """
@@ -304,8 +198,87 @@ def make_mpc_command(ext_mm: list | tuple,
         msg['motor_rev'] = list(motor_rev)
     if vel_mm_s is not None:
         msg['vel_mm_s'] = list(vel_mm_s)
+    if acc_mm_s2 is not None:
+        msg['acc_mm_s2'] = list(acc_mm_s2)
     if torque_Nm is not None:
         msg['torque_Nm'] = list(torque_Nm)
+    return msg
+
+
+def make_mpc_target(target_pose: list | tuple,
+                    arrival_time: float | None = None,
+                    target_twist: list | tuple | None = None,
+                    source: str = '') -> dict:
+    """Create an MPC target message.
+
+    Sent by the MPC bridge node to the MPC process.  Contains the target
+    pose that the MPC should track, optionally with an arrival deadline
+    and a desired twist at arrival.
+
+    Parameters
+    ----------
+    target_pose : [x, y, z, rx, ry, rz] in mm / rad (rotation vector)
+    arrival_time : absolute time (perf_counter) to arrive, or None = ASAP
+    target_twist : [vx, vy, vz, wx, wy, wz] in mm/s / rad/s, or None = hold
+    source : input source identifier ('spacemouse', 'gui', 'shell', 'catch')
+    """
+    msg = {
+        'type': 'mpc_target',
+        'target_pose': list(target_pose),
+        'source': source,
+    }
+    if arrival_time is not None:
+        msg['arrival_time'] = arrival_time
+    if target_twist is not None:
+        msg['target_twist'] = list(target_twist)
+    return msg
+
+
+def make_mpc_mode(mode: str) -> dict:
+    """Create an MPC mode message.
+
+    Sent by the MPC bridge node to inform the MPC process of the current
+    active input mode.
+
+    Parameters
+    ----------
+    mode : 'spacemouse', 'gui', 'shell', 'catch', or 'disabled'
+    """
+    return {'type': 'mpc_mode', 'mode': mode}
+
+
+def make_target_feedback(arrival_time: float,
+                         accepted: bool,
+                         source: str = '',
+                         violations: list | None = None) -> dict:
+    """Create a target feedback message (accept/reject).
+
+    Published by the MPC process after evaluating a catch target.  Consumed
+    by the catch coordinator node to maintain its blacklist.
+
+    Parameters
+    ----------
+    arrival_time : float
+        The ``arrival_time`` from the original target request (used to
+        correlate feedback with the submitted target).
+    accepted : bool
+        True if the MPC solver converged and the predicted trajectory
+        reaches the target by ``arrival_time``.  False if the solver
+        failed or the target is unreachable in time.
+    source : str
+        Input source identifier (e.g. 'catch').
+    violations : list of str or None
+        Human-readable reasons for rejection (e.g. ['solver_failed',
+        'unreachable_in_time']).  Empty/None when accepted.
+    """
+    msg = {
+        'type': 'target_feedback',
+        'arrival_time': arrival_time,
+        'accepted': accepted,
+        'source': source,
+    }
+    if violations:
+        msg['violations'] = violations
     return msg
 
 
@@ -326,26 +299,32 @@ def _unpack(frames: list[bytes]) -> tuple[bytes, dict]:
 
 
 # ---------------------------------------------------------------------------
-# Control Process side
+# Motor Guard (standalone process) side
 # ---------------------------------------------------------------------------
 
-class ControlProcessIPC:
-    """IPC endpoints for the standalone control process.
+class MotorGuardIPC:
+    """IPC endpoints for the motor guard process.
 
     Uses four SUB sockets to isolate message types:
-      - ``_sub_mode``: mode/trajectory/dynamic-target commands (no CONFLATE)
-      - ``_sub_target``: platform pose targets (CONFLATE=1)
+      - ``_sub_mode``: mode commands from the bridge (no CONFLATE)
       - ``_sub_motor_fb``: motor feedback from CAN node (CONFLATE=1)
-      - ``_sub_mpc_cmd``: MPC pass-through commands (CONFLATE=1, separate port)
+      - ``_sub_mpc_cmd``: MPC commands (CONFLATE=1, separate port)
+      - ``_sub_mpc_mode``: mode commands from HardwarePlant (no CONFLATE,
+        separate port)
 
-    Targets and motor feedback each get their own CONFLATE socket so that
-    high-frequency motor feedback (100 Hz) cannot overwrite target messages
-    and vice-versa.  Without this separation, ZMQ CONFLATE keeps only the
-    single latest message *regardless of topic prefix*, silently dropping
-    whichever message arrived first.
+    Motor feedback gets its own CONFLATE socket so that high-frequency
+    feedback (100 Hz) cannot overwrite mode messages and vice-versa.
+    Without this separation, ZMQ CONFLATE keeps only the single latest
+    message *regardless of topic prefix*, silently dropping whichever
+    message arrived first.
+
+    Mode commands from HardwarePlant (enable/disable/estop) get their own
+    non-CONFLATE socket on the MPC port for the same reason — mixing them
+    with MPC commands on a single CONFLATE socket would silently drop
+    whichever message arrived first in the same poll window.
 
     The MPC command socket listens on a separate port (MPC_COMMAND_ADDR)
-    because the bridge already ``bind()``s PUB on COMMAND_ADDR — ZMQ does
+    because the bridge already ``bind()``s PUB on COMMAND_ADDR -- ZMQ does
     not support two PUB ``bind()``s on the same address.
     """
 
@@ -355,41 +334,39 @@ class ControlProcessIPC:
                  mpc_command_addr: str = MPC_COMMAND_ADDR):
         self._ctx = zmq.Context()
 
-        # SUB socket for pose targets — CONFLATE keeps only latest
-        self._sub_target = self._ctx.socket(zmq.SUB)
-        self._sub_target.connect(command_addr)
-        self._sub_target.setsockopt(zmq.SUBSCRIBE, TOPIC_TARGET)
-        self._sub_target.setsockopt(zmq.RCVTIMEO, 0)  # non-blocking
-        self._sub_target.setsockopt(zmq.CONFLATE, 1)   # keep only latest
-
-        # SUB socket for motor feedback — CONFLATE keeps only latest
+        # SUB socket for motor feedback -- CONFLATE keeps only latest
         self._sub_motor_fb = self._ctx.socket(zmq.SUB)
         self._sub_motor_fb.connect(command_addr)
         self._sub_motor_fb.setsockopt(zmq.SUBSCRIBE, TOPIC_MOTOR_FB)
         self._sub_motor_fb.setsockopt(zmq.RCVTIMEO, 0)  # non-blocking
         self._sub_motor_fb.setsockopt(zmq.CONFLATE, 1)   # keep only latest
 
-        # SUB socket for mode/trajectory/dynamic-target commands — no CONFLATE,
-        # every command delivered
+        # SUB socket for mode commands -- no CONFLATE, every command delivered
         self._sub_mode = self._ctx.socket(zmq.SUB)
         self._sub_mode.connect(command_addr)
         self._sub_mode.setsockopt(zmq.SUBSCRIBE, TOPIC_MODE)
-        self._sub_mode.setsockopt(zmq.SUBSCRIBE, TOPIC_TRAJECTORY)
-        self._sub_mode.setsockopt(zmq.SUBSCRIBE, TOPIC_DYN_TARGET)
         self._sub_mode.setsockopt(zmq.RCVTIMEO, 0)  # non-blocking
         self._sub_mode.setsockopt(zmq.RCVHWM, 64)   # bound queue size
 
-        # SUB socket for MPC pass-through commands — CONFLATE, separate port.
-        # Also subscribes to TOPIC_MODE so HardwarePlant can send enable/disable
-        # directly without going through the bridge.
+        # SUB socket for MPC commands -- CONFLATE, separate port.
         self._sub_mpc_cmd = self._ctx.socket(zmq.SUB)
         self._sub_mpc_cmd.connect(mpc_command_addr)
         self._sub_mpc_cmd.setsockopt(zmq.SUBSCRIBE, TOPIC_MPC_CMD)
-        self._sub_mpc_cmd.setsockopt(zmq.SUBSCRIBE, TOPIC_MODE)
         self._sub_mpc_cmd.setsockopt(zmq.RCVTIMEO, 0)  # non-blocking
         self._sub_mpc_cmd.setsockopt(zmq.CONFLATE, 1)   # keep only latest
 
-        # PUB socket — publishes telemetry to bridge
+        # SUB socket for mode commands from HardwarePlant -- no CONFLATE,
+        # every enable/disable/estop is delivered.  Separate from _sub_mpc_cmd
+        # because CONFLATE keeps only the single latest message regardless of
+        # topic prefix — mixing mode + MPC on one CONFLATE socket silently
+        # drops whichever arrives first in the same poll window.
+        self._sub_mpc_mode = self._ctx.socket(zmq.SUB)
+        self._sub_mpc_mode.connect(mpc_command_addr)
+        self._sub_mpc_mode.setsockopt(zmq.SUBSCRIBE, TOPIC_MODE)
+        self._sub_mpc_mode.setsockopt(zmq.RCVTIMEO, 0)  # non-blocking
+        self._sub_mpc_mode.setsockopt(zmq.RCVHWM, 64)   # bound queue size
+
+        # PUB socket -- publishes telemetry to bridge
         self._pub = self._ctx.socket(zmq.PUB)
         self._pub.bind(telemetry_addr)
 
@@ -399,14 +376,15 @@ class ControlProcessIPC:
         """Non-blocking: receive all pending messages.
 
         Drains mode commands first (critical), then MPC commands, then
-        targets, then motor feedback.  Returns list of (topic, message_dict)
-        tuples.  Empty list if nothing available.
+        motor feedback.  Returns list of (topic, message_dict) tuples.
+        Empty list if nothing available.
         """
         messages = []
-        # Drain mode commands first — these are rare but critical.
-        # MPC commands next (CONFLATE socket, at most one pending).
-        for sub in (self._sub_mode, self._sub_mpc_cmd,
-                    self._sub_target, self._sub_motor_fb):
+        # Drain mode commands first -- these are rare but critical.
+        # Both bridge mode (_sub_mode) and HardwarePlant mode (_sub_mpc_mode)
+        # are drained before MPC commands.
+        for sub in (self._sub_mode, self._sub_mpc_mode, self._sub_mpc_cmd,
+                    self._sub_motor_fb):
             while True:
                 try:
                     frames = sub.recv_multipart(flags=zmq.NOBLOCK)
@@ -421,22 +399,19 @@ class ControlProcessIPC:
         """Publish telemetry to the bridge."""
         self._pub.send_multipart(_pack(TOPIC_TELEMETRY, msg), flags=zmq.NOBLOCK)
 
-    def send_dynamic_feedback(self, msg: dict) -> None:
-        """Publish dynamic target accept/reject feedback to the bridge."""
-        self._pub.send_multipart(_pack(TOPIC_DYN_FEEDBACK, msg), flags=zmq.NOBLOCK)
-
     @property
     def seconds_since_last_recv(self) -> float:
         """Seconds since any message was last received from the bridge."""
         return time.monotonic() - self._last_recv_time
 
     def close(self) -> None:
-        self._sub_target.close()
         self._sub_motor_fb.close()
         self._sub_mode.close()
         self._sub_mpc_cmd.close()
+        self._sub_mpc_mode.close()
         self._pub.close()
         self._ctx.term()
+
 
 
 # ---------------------------------------------------------------------------
@@ -451,42 +426,23 @@ class BridgeIPC:
                  telemetry_addr: str = TELEMETRY_ADDR):
         self._ctx = zmq.Context()
 
-        # PUB socket — sends targets and mode commands to control process
+        # PUB socket -- sends mode commands and motor feedback to motor guard
         self._pub = self._ctx.socket(zmq.PUB)
         self._pub.bind(command_addr)
 
-        # SUB socket — receives telemetry from control process (CONFLATE: latest only)
+        # SUB socket -- receives telemetry from motor guard (CONFLATE: latest only)
         self._sub = self._ctx.socket(zmq.SUB)
         self._sub.connect(telemetry_addr)
         self._sub.setsockopt(zmq.SUBSCRIBE, TOPIC_TELEMETRY)
         self._sub.setsockopt(zmq.RCVTIMEO, 0)  # non-blocking
         self._sub.setsockopt(zmq.CONFLATE, 1)
 
-        # SUB socket — receives dynamic target feedback (no CONFLATE: every msg delivered)
-        self._sub_dyn_fb = self._ctx.socket(zmq.SUB)
-        self._sub_dyn_fb.connect(telemetry_addr)
-        self._sub_dyn_fb.setsockopt(zmq.SUBSCRIBE, TOPIC_DYN_FEEDBACK)
-        self._sub_dyn_fb.setsockopt(zmq.RCVTIMEO, 0)  # non-blocking
-        self._sub_dyn_fb.setsockopt(zmq.RCVHWM, 64)
-
-    def send_target(self, msg: dict) -> None:
-        """Send a TargetState message to the control process."""
-        self._pub.send_multipart(_pack(TOPIC_TARGET, msg), flags=zmq.NOBLOCK)
-
     def send_mode_command(self, msg: dict) -> None:
-        """Send a ModeCommand message to the control process."""
+        """Send a ModeCommand message to the motor guard."""
         self._pub.send_multipart(_pack(TOPIC_MODE, msg), flags=zmq.NOBLOCK)
 
-    def send_trajectory_command(self, msg: dict) -> None:
-        """Send a trajectory command to the control process."""
-        self._pub.send_multipart(_pack(TOPIC_TRAJECTORY, msg), flags=zmq.NOBLOCK)
-
-    def send_dynamic_target(self, msg: dict) -> None:
-        """Send a dynamic target command to the control process."""
-        self._pub.send_multipart(_pack(TOPIC_DYN_TARGET, msg), flags=zmq.NOBLOCK)
-
     def send_motor_feedback(self, msg: dict) -> None:
-        """Send MotorFeedback to the control process."""
+        """Send MotorFeedback to the motor guard."""
         self._pub.send_multipart(_pack(TOPIC_MOTOR_FB, msg), flags=zmq.NOBLOCK)
 
     def recv_telemetry(self) -> dict | None:
@@ -498,17 +454,152 @@ class BridgeIPC:
         except zmq.Again:
             return None
 
-    def recv_dynamic_feedback(self) -> dict | None:
-        """Non-blocking: receive a dynamic target feedback message, or None."""
+    def close(self) -> None:
+        self._pub.close()
+        self._sub.close()
+        self._ctx.term()
+
+
+# ---------------------------------------------------------------------------
+# MPC Bridge (ROS2 node) side — publishes targets to MPC process
+# ---------------------------------------------------------------------------
+
+class MpcBridgeIPC:
+    """IPC endpoint for the MPC bridge node (PUB side).
+
+    Publishes target poses and mode changes to the MPC process on
+    MPC_TARGET_ADDR (:5558).
+    """
+
+    def __init__(self, target_addr: str = MPC_TARGET_ADDR):
+        self._ctx = zmq.Context()
+        self._pub = self._ctx.socket(zmq.PUB)
+        self._pub.bind(target_addr)
+
+    def send_target(self, msg: dict) -> None:
+        """Publish an MPC target command."""
+        self._pub.send_multipart(
+            _pack(TOPIC_MPC_TARGET, msg), flags=zmq.NOBLOCK)
+
+    def send_mode(self, msg: dict) -> None:
+        """Publish an MPC mode change."""
+        self._pub.send_multipart(
+            _pack(TOPIC_MPC_MODE, msg), flags=zmq.NOBLOCK)
+
+    def close(self) -> None:
+        self._pub.close()
+        self._ctx.term()
+
+
+# ---------------------------------------------------------------------------
+# MPC Process (standalone) side — receives targets from bridge
+# ---------------------------------------------------------------------------
+
+class MpcTargetIPC:
+    """IPC endpoint for the MPC process (SUB side).
+
+    Uses two SUB sockets on MPC_TARGET_ADDR (:5558):
+      - ``_sub_target``: target poses (CONFLATE=1, latest wins)
+      - ``_sub_mode``: mode changes (no CONFLATE, every message delivered)
+
+    Separate sockets prevent CONFLATE from silently dropping mode messages
+    when a target arrives in the same inter-poll window (the same pattern
+    used by MotorGuardIPC).
+    """
+
+    def __init__(self, target_addr: str = MPC_TARGET_ADDR):
+        self._ctx = zmq.Context()
+
+        # CONFLATE SUB for targets — only the latest matters
+        self._sub_target = self._ctx.socket(zmq.SUB)
+        self._sub_target.connect(target_addr)
+        self._sub_target.setsockopt(zmq.SUBSCRIBE, TOPIC_MPC_TARGET)
+        self._sub_target.setsockopt(zmq.RCVTIMEO, 0)   # non-blocking
+        self._sub_target.setsockopt(zmq.CONFLATE, 1)    # keep only latest
+
+        # Non-CONFLATE SUB for mode — every transition matters
+        self._sub_mode = self._ctx.socket(zmq.SUB)
+        self._sub_mode.connect(target_addr)
+        self._sub_mode.setsockopt(zmq.SUBSCRIBE, TOPIC_MPC_MODE)
+        self._sub_mode.setsockopt(zmq.RCVTIMEO, 0)     # non-blocking
+        self._sub_mode.setsockopt(zmq.RCVHWM, 64)      # bound queue size
+
+    def recv_all(self) -> list[tuple[bytes, dict]]:
+        """Non-blocking: receive all pending messages.
+
+        Drains mode messages first (critical), then the latest target.
+        Returns list of (topic, message_dict) tuples.
+        """
+        messages = []
+        for sub in (self._sub_mode, self._sub_target):
+            while True:
+                try:
+                    frames = sub.recv_multipart(flags=zmq.NOBLOCK)
+                    topic, msg = _unpack(frames)
+                    messages.append((topic, msg))
+                except zmq.Again:
+                    break
+        return messages
+
+    def close(self) -> None:
+        self._sub_target.close()
+        self._sub_mode.close()
+        self._ctx.term()
+
+
+# ---------------------------------------------------------------------------
+# Target Feedback (MPC process → catch coordinator)
+# ---------------------------------------------------------------------------
+
+class TargetFeedbackPub:
+    """PUB endpoint for target accept/reject feedback.
+
+    Used by the MPC process to inform the catch coordinator whether a
+    catch target was accepted (solver converged, target reachable by
+    arrival_time) or rejected (solver failed / unreachable).
+
+    Binds on MPC_FEEDBACK_ADDR (:5559).
+    """
+
+    def __init__(self, feedback_addr: str = MPC_FEEDBACK_ADDR):
+        self._ctx = zmq.Context()
+        self._pub = self._ctx.socket(zmq.PUB)
+        self._pub.bind(feedback_addr)
+
+    def send(self, msg: dict) -> None:
+        """Publish a target feedback message."""
+        self._pub.send_multipart(
+            _pack(TOPIC_TARGET_FB, msg), flags=zmq.NOBLOCK)
+
+    def close(self) -> None:
+        self._pub.close()
+        self._ctx.term()
+
+
+class TargetFeedbackSub:
+    """SUB endpoint for target accept/reject feedback.
+
+    Used by the catch coordinator node to receive accept/reject decisions
+    from the MPC process.  Connects to MPC_FEEDBACK_ADDR (:5559).
+    """
+
+    def __init__(self, feedback_addr: str = MPC_FEEDBACK_ADDR):
+        self._ctx = zmq.Context()
+        self._sub = self._ctx.socket(zmq.SUB)
+        self._sub.connect(feedback_addr)
+        self._sub.setsockopt(zmq.SUBSCRIBE, TOPIC_TARGET_FB)
+        self._sub.setsockopt(zmq.RCVTIMEO, 0)   # non-blocking
+        self._sub.setsockopt(zmq.RCVHWM, 64)
+
+    def recv(self) -> dict | None:
+        """Non-blocking: receive the next feedback message, or None."""
         try:
-            frames = self._sub_dyn_fb.recv_multipart(flags=zmq.NOBLOCK)
+            frames = self._sub.recv_multipart(flags=zmq.NOBLOCK)
             _, msg = _unpack(frames)
             return msg
         except zmq.Again:
             return None
 
     def close(self) -> None:
-        self._pub.close()
         self._sub.close()
-        self._sub_dyn_fb.close()
         self._ctx.term()
