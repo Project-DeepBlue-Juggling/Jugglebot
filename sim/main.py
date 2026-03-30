@@ -1457,9 +1457,7 @@ def main():
         # Skip when using ZmqTargetSource — the loop manages enable/disable
         # transitions based on mode messages from mpc_bridge_node.
         if args.hardware and not hasattr(source, 'enabled'):
-            plant.enable()
-            # Brief pause for the motor guard to process the enable command
-            time.sleep(0.05)
+            plant.enable()  # blocks until motor feedback telemetry arrives
 
         if source is not None:
             # Unified MPC path

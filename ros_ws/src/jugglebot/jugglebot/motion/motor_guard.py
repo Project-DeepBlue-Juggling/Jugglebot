@@ -311,6 +311,12 @@ class MotorGuard:
             # 3. Interpolate and send if enabled
             if self.mode == GuardMode.ENABLED and self._has_mpc_cmd:
                 self._interpolate_and_send(dt_actual)
+            elif self.mode == GuardMode.ENABLED and not self._has_mpc_cmd:
+                # Publish feedback-only telemetry so the MPC plant can
+                # read the actual motor state before sending its first
+                # command.  Without this, get_state() returns zeros and
+                # the MPC's first command triggers MAX_DEVIATION.
+                self._publish_feedback_telemetry(dt_actual)
             elif self.mode == GuardMode.ESTOP:
                 self._publish_fault_telemetry(dt_actual)
 
@@ -768,6 +774,37 @@ class MotorGuard:
             'workspace_status': self._workspace_status.value,
             'timestamp': time.perf_counter(),
         }
+        self.ipc.send_telemetry(msg)
+
+    def _publish_feedback_telemetry(self, dt_actual: float) -> None:
+        """Publish motor feedback while waiting for the first MPC command.
+
+        Sends motor_pos/motor_vel/motor_cur so the HardwarePlant can read
+        the actual platform state before the MPC computes its first command.
+        Command fields (leg_pos, leg_vel, leg_torques) are None so the
+        bridge will not send motor commands.
+        """
+        msg = {
+            'type': 'telemetry',
+            'leg_pos': None,
+            'leg_vel': None,
+            'leg_torques': None,
+            'dt': dt_actual,
+            'fault_state': None,
+            'cond_number': self._cond_number,
+            'workspace_status': self._workspace_status.value,
+            'workspace_speed_scale': self._workspace_speed_scale,
+            'tracking_error_mm': None,
+            'timestamp': time.perf_counter(),
+        }
+        if self._has_motor_fb:
+            msg['motor_pos'] = self._motor_fb_pos_rev.tolist()
+            msg['motor_vel'] = self._motor_fb_vel_rps.tolist()
+            msg['motor_cur'] = self._motor_fb_cur_A.tolist()
+        else:
+            msg['motor_pos'] = None
+            msg['motor_vel'] = None
+            msg['motor_cur'] = None
         self.ipc.send_telemetry(msg)
 
     # ------------------------------------------------------------------

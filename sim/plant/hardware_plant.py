@@ -428,20 +428,47 @@ class HardwarePlant(PlantInterface):
 
         self._ff_torque_Nm = torque_ff_Nm
 
-    def enable(self) -> None:
-        """Send enable command with source='MPC' to the motor guard.
+    def enable(self, timeout_s: float = 2.0) -> None:
+        """Send enable command and wait for motor feedback telemetry.
 
-        In direct hardware mode (no ROS2 bridge), this is the sole enabler
-        and transitions the motor guard from DISABLED to ENABLED.
+        Blocks until the motor guard publishes telemetry containing valid
+        motor positions, so the MPC's first ``get_state()`` call returns
+        the actual platform pose (not zeros).  Without this, the MPC
+        would plan a trajectory from STOW to Active and trigger
+        MAX_DEVIATION on the first command.
 
-        When a ROS2 bridge is running, the bridge owns lifecycle via its
-        disable+enable sequence on :5555.  This enable arrives on :5557 and
-        is treated as a no-op by the motor guard (already ENABLED).
+        Parameters
+        ----------
+        timeout_s : float
+            Maximum time to wait for valid telemetry (default 2 s).
+
+        Raises
+        ------
+        RuntimeError
+            If no telemetry with motor positions arrives within timeout.
         """
         msg = make_mode_command('enable', source='MPC')
         self._pub.send_multipart(
             _pack(TOPIC_MODE, msg), flags=zmq.NOBLOCK)
         logger.info("HardwarePlant: sent enable (source=MPC)")
+
+        # Wait for the motor guard to publish telemetry with valid motor
+        # positions.  The guard publishes feedback-only telemetry while
+        # waiting for the first MPC command, which gives us the actual
+        # motor state to seed the MPC.
+        deadline = time.perf_counter() + timeout_s
+        while time.perf_counter() < deadline:
+            self.get_state()  # drains telemetry into _last_telem
+            if (self._last_telem is not None
+                    and self._last_telem.get('motor_pos') is not None):
+                logger.info(
+                    "HardwarePlant: received motor feedback from guard")
+                return
+            time.sleep(0.01)
+
+        raise RuntimeError(
+            f"HardwarePlant: no motor feedback telemetry within {timeout_s}s "
+            "— is the motor guard running and receiving CAN feedback?")
 
     def disable(self) -> None:
         """Send disable command to the motor guard."""
