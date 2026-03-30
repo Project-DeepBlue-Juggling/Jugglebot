@@ -252,6 +252,9 @@ class MotorGuard:
         # --- Fault state ---
         self._fault_state: str | None = None
 
+        # --- Rate-limited warning timestamps ---
+        self._last_fb_nan_warn_t = 0.0
+
         # --- Pre-allocated telemetry dict (updated in-place each cycle) ---
         self._telem_msg: dict = {
             'type': 'telemetry',
@@ -552,7 +555,10 @@ class MotorGuard:
             return
         if not (np.all(np.isfinite(pos)) and np.all(np.isfinite(vel))
                 and np.all(np.isfinite(cur))):
-            logger.warning("Motor feedback contains NaN/Inf -- rejected")
+            now = time.perf_counter()
+            if now - self._last_fb_nan_warn_t >= 2.0:
+                logger.warning("Motor feedback contains NaN/Inf -- rejected")
+                self._last_fb_nan_warn_t = now
             return
         self._motor_fb_pos_rev = pos
         self._motor_fb_vel_rps = vel
