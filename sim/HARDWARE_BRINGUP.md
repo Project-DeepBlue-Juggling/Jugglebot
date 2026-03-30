@@ -145,7 +145,7 @@ ps aux | grep motor_guard  # should show the process
 
 ---
 
-## Phase 2: Zero-Motion Hardware Test (Motors On, No Commanded Movement)
+## Phase 2: Zero-Motion Hardware Test (Motors On, No Commanded Movement) — COMPLETE (2026-03-30)
 
 **From this point: HAND ON PHYSICAL E-STOP AT ALL TIMES.**
 
@@ -158,22 +158,26 @@ Confirm normal activation (all 6 legs to Active ~2.19 rev). This uses the existi
 
 **Go:** All motors at Active position, healthy. **Abort:** Any motor fault or homing failure.
 
-### 2.2 Verify motor feedback flows through IPC
-With robot at Active, check that motor guard (still DISABLED) receives feedback:
-```bash
-ros2 topic echo /motion/diagnostics --once
-```
-Motor positions should show ~2.19 rev on all legs.
+### 2.2 Verify motor guard receives feedback and enters SHELL cleanly
+The `/motion/diagnostics` topic only publishes once the motor guard is ENABLED
+**and** has received at least one MPC command.  In DISABLED mode, no telemetry
+flows.  Instead, verify via motor guard logs in the launch terminal.
 
-### 2.3 Test motor guard enable→E-stop cycle (no MPC running)
 ```bash
 ros2 topic pub --once /orchestrator_command std_msgs/msg/String "data: 'shell'"
 ```
-The bridge sends `enable` to motor guard. Since no MPC is running, motor guard will E-stop within 200ms due to `mpc_cmd_stale`. **This is expected and verifies the staleness watchdog works.**
 
-**CRITICAL CHECK:** Motors must NOT move during this 200ms enable→E-stop window. If they do, hit physical E-stop immediately.
+**What to expect in launch terminal:**
+- `Motor guard DISABLED` then `Motor guard ENABLED (source=SHELL)`
+- Periodic loop timing logs (mean ~2 ms, jitter < 1 ms)
+- `cond#` and `ws=ok` — confirms motor feedback is flowing and FK is working
+- **No E-stop** — the staleness watchdog only triggers after the motor guard
+  has received its *first* MPC command (`_has_mpc_cmd` flag).  Before that,
+  the guard sits ENABLED but sends no motor commands — safe by design.
 
-**Go:** Motor guard transitions DISABLED→ENABLED→ESTOP(mpc_cmd_stale). Zero motor movement.
+**CRITICAL CHECK:** Motors must NOT move. If they do, hit physical E-stop.
+
+**Go:** Motor guard ENABLED, loop timing healthy, cond# reasonable (~2-5), no motor movement.
 
 ### 2.4 MPC hold at Active position
 ```bash
@@ -214,6 +218,8 @@ The startup sequence:
 **Abort:** Any visible movement. Tracking error > 5mm. Motor guard E-stop.
 
 **Go:** 60+ seconds of perfect stillness. Tracking error < 2mm. Solve time < 15ms.
+
+**Result (2026-03-30):** PASS — zero platform movement, tracking error ≤0.04mm, MPC staleness E-stop fired correctly on exit.
 
 ---
 

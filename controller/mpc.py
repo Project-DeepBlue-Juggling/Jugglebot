@@ -770,11 +770,17 @@ class MPCController:
                 )
                 violation = np.maximum(g_viol, x_viol)
 
-                # Forward-looking velocity: (cmd - q_cur) / dt_fine.
-                # Uses the MPC's own q_cur (not measured state from the
-                # previous step), so it doesn't include tracking error.
+                # Command-rate velocity for motor guard interpolation.
+                # Uses the rate of change of the command sequence (cmd -
+                # prev_cmd), NOT the state-to-command gap (cmd - q_cur).
+                # The motor guard extrapolates: pos(dt) = cmd + vel*dt,
+                # so vel must be the command trajectory derivative, not
+                # the traversal velocity from current state to command.
                 dt0 = self._params.dt_schedule[0]
-                cmd_vel = (cmd - q_cur) / dt0
+                if self._prev_u is not None:
+                    cmd_vel = (cmd - self._prev_u) / dt0
+                else:
+                    cmd_vel = np.zeros(6)  # first solve: safe zero-vel startup
 
                 return cmd, cmd_vel, {
                     'solve_time_ms': solve_ms,
@@ -943,9 +949,10 @@ class MPCController:
             if q_cur is not None:
                 max_delta = self._params.max_leg_vel_mmps * dt0
                 cmd = np.clip(cmd, q_cur - max_delta, q_cur + max_delta)
-            self._prev_prev_u = self._prev_u.copy() if self._prev_u is not None else cmd.copy()
+            prev_u = self._prev_u
+            self._prev_prev_u = prev_u.copy() if prev_u is not None else cmd.copy()
+            cmd_vel = (cmd - prev_u) / dt0 if prev_u is not None else np.zeros(6)
             self._prev_u = cmd
-            cmd_vel = (cmd - q_cur) / dt0 if q_cur is not None else np.zeros(6)
             return cmd, cmd_vel, diag
 
         if self._prev_u is not None:

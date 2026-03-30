@@ -82,6 +82,14 @@ MPC_CMD_STALENESS_S = 0.2
 # At ~71.5 mm/rev, 0.5 rev ~ 36 mm -- generous but catches runaway.
 MAX_DEVIATION_REV = 0.5
 
+# Maximum command lead relative to actual encoder position (rev).
+# Caps how far ahead the interpolated command can run before the motors
+# catch up.  Set to half the CAN step-limit (0.3 rev) so that commands
+# reaching the CAN node are always accepted.  At ~70.5 mm/rev this is
+# ~10.6 mm -- well above the largest per-step increment at max catch
+# speed (700 mm/s → 0.020 rev/step at 500 Hz).
+MAX_LEAD_REV = 0.15
+
 # Maximum extrapolation time before velocity decay begins (seconds).
 # 2x MPC period (50 Hz = 20 ms) covers normal timing jitter.
 MAX_EXTRAP_DT_S = 0.04
@@ -689,6 +697,21 @@ class MotorGuard:
             self._commanded_vel_ff_rps = vel_at_boundary * decay_frac
 
         self._commanded_torque_ff_Nm = self._mpc_base_torque_Nm.copy()
+
+        # Tracking clamp: never let the commanded position run more than
+        # MAX_LEAD_REV ahead of actual encoder position.  This guarantees
+        # CAN commands are always within the step-limit (0.3 rev) and
+        # prevents velocity accumulation from feedforward errors.
+        if self._has_motor_fb:
+            pre_clamp_pos = self._commanded_pos_rev.copy()
+            deviation = self._commanded_pos_rev - self._motor_fb_pos_rev
+            np.clip(deviation, -MAX_LEAD_REV, MAX_LEAD_REV, out=deviation)
+            self._commanded_pos_rev = self._motor_fb_pos_rev + deviation
+            # Zero vel_ff on legs that were clamped to prevent ODrive
+            # from driving past the clamp boundary.
+            lead_clamped = pre_clamp_pos != self._commanded_pos_rev
+            if lead_clamped.any():
+                self._commanded_vel_ff_rps[lead_clamped] = 0.0
 
         # Clamp to stroke hard limits — backstop against extrapolation
         # overshooting physical boundaries.

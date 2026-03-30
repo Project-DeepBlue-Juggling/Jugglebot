@@ -863,6 +863,10 @@ def test_extrapolation_vel_decays():
     dt_test = MAX_EXTRAP_DT_S + 0.5 * EXTRAP_DECAY_DT_S
     guard._mpc_base_timestamp = time.perf_counter() - dt_test
 
+    # Simulate motors having tracked during the backdated interval so the
+    # tracking clamp doesn't interfere with the extrapolation math under test.
+    guard._motor_fb_pos_rev = guard._mpc_base_pos_rev + test_vel * dt_test
+
     guard._interpolate_and_send(guard.dt_target)
 
     # At midpoint, decay_frac = 0.5 → vel_ff should be ~50% of original
@@ -897,6 +901,12 @@ def test_extrapolation_hold_after_decay():
     dt_test = 0.150
     guard._mpc_base_timestamp = time.perf_counter() - dt_test
 
+    # Simulate motors having tracked to the expected coast-down endpoint so the
+    # tracking clamp doesn't interfere with the extrapolation math under test.
+    coast_endpoint = (base_pos + test_vel * MAX_EXTRAP_DT_S
+                      + test_vel * EXTRAP_DECAY_DT_S * 0.5)
+    guard._motor_fb_pos_rev = coast_endpoint.copy()
+
     guard._interpolate_and_send(guard.dt_target)
 
     # vel_ff should be zero
@@ -914,6 +924,7 @@ def test_extrapolation_hold_after_decay():
 
     # A second call 10ms later should give the same position
     guard._mpc_base_timestamp = time.perf_counter() - 0.160
+    guard._motor_fb_pos_rev = coast_endpoint.copy()
     guard._interpolate_and_send(guard.dt_target)
     np.testing.assert_allclose(
         guard._commanded_pos_rev, expected_pos, atol=1e-6,
@@ -944,6 +955,12 @@ def test_extrapolation_bounded():
     # Backdate by 150ms (just before staleness E-stop at 200ms)
     dt_test = 0.150
     guard._mpc_base_timestamp = time.perf_counter() - dt_test
+
+    # Simulate motors having tracked to the expected coast-down endpoint so the
+    # tracking clamp doesn't interfere with the extrapolation math under test.
+    coast_endpoint = (base_pos + test_vel * MAX_EXTRAP_DT_S
+                      + test_vel * EXTRAP_DECAY_DT_S * 0.5)
+    guard._motor_fb_pos_rev = coast_endpoint.copy()
 
     guard._interpolate_and_send(guard.dt_target)
 
@@ -1118,9 +1135,12 @@ def test_stroke_clamp_workspace_status():
     assert guard._workspace_speed_scale == 1.0, \
         f"Expected speed_scale=1.0 before clamp, got {guard._workspace_speed_scale}"
 
-    # Force position past stroke limits via absurd velocity
+    # Force position past stroke limits via absurd velocity.
+    # Set motor feedback near stroke max so the tracking clamp allows the
+    # extrapolation to reach the stroke boundary.
     guard._mpc_base_vel_rps = np.full(6, 100.0)
     guard._mpc_base_timestamp = time.perf_counter() - MAX_EXTRAP_DT_S
+    guard._motor_fb_pos_rev = guard._stroke_max_rev.copy()
 
     guard._interpolate_and_send(guard.dt_target)
 
