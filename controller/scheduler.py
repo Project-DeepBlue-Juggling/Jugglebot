@@ -1,0 +1,694 @@
+"""Event scheduler for C2-continuous catch/throw/return sequencing.
+
+Manages an ordered sequence of events (catch, throw, return-to-active),
+performs pairwise quintic Hermite chaining, and outputs MPC-compatible
+``TargetCommand`` with ``ref_events`` each control step.
+
+Supports:
+- Live target refinement (continuous catch updates from ball tracker)
+- Event replacement (next event can be swapped mid-motion)
+- Graceful cancellation (decelerate to hold at current position)
+
+This module has NO sim or ROS2 dependencies — pure Python + numpy.
+
+Architecture
+------------
+The scheduler maintains at most two events: the *current* event being
+approached and an optional *next* event for lookahead.  A quintic Hermite
+segment connects the motion start state to the current event, and (if a
+next event exists) a second segment connects the current event to the
+next.  The MPC receives sampled ``ref_events`` spanning its horizon.
+
+Phases::
+
+    IDLE ──submit──▶ APPROACHING ──arrive──▶ HOLDING
+      ▲                                        │
+      │                              (next exists)
+      │                                        ▼
+      ◀──arrive──── RETURNING ◀──cancel── TRANSITIONING
+"""
+
+from __future__ import annotations
+
+import itertools
+import logging
+from dataclasses import dataclass, field
+from enum import Enum, auto
+from typing import List, Optional
+
+import numpy as np
+
+from .hermite import quintic_interp, quintic_interp_with_accel
+from .target import ReferenceEvent, TargetCommand
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Data structures
+# ---------------------------------------------------------------------------
+
+
+class EventType(Enum):
+    """Types of scheduled motion events."""
+    CATCH = auto()
+    THROW = auto()
+    RETURN_TO_ACTIVE = auto()
+
+
+class SchedulerPhase(Enum):
+    """Scheduler state machine phases."""
+    IDLE = auto()           # At active pose, no events queued
+    APPROACHING = auto()    # Moving toward current event
+    HOLDING = auto()        # At current event pose, waiting / dwelling
+    TRANSITIONING = auto()  # Moving from current event to next event
+    RETURNING = auto()      # Returning to active pose
+
+
+@dataclass
+class ScheduledEvent:
+    """A single motion event (catch, throw, or return-to-active).
+
+    Parameters
+    ----------
+    event_id : int
+        Unique monotonic identifier for tracking and cancellation.
+    event_type : EventType
+        What kind of event this is.
+    pose : (6,) ndarray
+        Target platform pose [x, y, z, rx, ry, rz] in mm / rad.
+    time : float
+        Absolute arrival time (seconds, same clock as sim_time).
+    twist : (6,) ndarray or None
+        Desired twist at arrival.  None = zero (hold at pose).
+    hand_vel_mps : float or None
+        Ball speed for hand trajectory calculation.  Only meaningful
+        for CATCH and THROW events.
+    metadata : dict
+        Opaque bag for caller use (ball_id, source, etc.).
+    """
+    event_id: int
+    event_type: EventType
+    pose: np.ndarray
+    time: float
+    twist: np.ndarray | None = None
+    hand_vel_mps: float | None = None
+    metadata: dict = field(default_factory=dict)
+
+
+@dataclass
+class HandNotification:
+    """Notification from scheduler to hand coordinator about phase changes.
+
+    The hand coordinator uses these to trigger priming, catch/throw
+    sequences, etc.
+    """
+    event: ScheduledEvent
+    notification_type: str    # 'approaching', 'arrived', 'leaving', 'cancelled'
+
+
+@dataclass
+class SchedulerOutput:
+    """Output of a single scheduler update step.
+
+    Contains everything the control loop needs: a ``TargetCommand`` for the
+    MPC, optional hand notification, and scheduler state info.
+    """
+    target_command: TargetCommand
+    hand_notification: HandNotification | None = None
+    active_event: ScheduledEvent | None = None
+    next_event: ScheduledEvent | None = None
+    phase: SchedulerPhase = SchedulerPhase.IDLE
+
+
+# ---------------------------------------------------------------------------
+# Quintic segment
+# ---------------------------------------------------------------------------
+
+@dataclass
+class _QuinticSegment:
+    """A single quintic Hermite segment between two boundary states."""
+    p0: np.ndarray
+    v0: np.ndarray
+    a0: np.ndarray
+    p1: np.ndarray
+    v1: np.ndarray
+    a1: np.ndarray
+    t_start: float    # absolute time at segment start
+    duration: float   # segment duration in seconds
+
+    @property
+    def t_end(self) -> float:
+        return self.t_start + self.duration
+
+    def evaluate(self, t_abs: float) -> tuple[np.ndarray, np.ndarray]:
+        """Evaluate pose and twist at absolute time *t_abs*."""
+        t_local = t_abs - self.t_start
+        return quintic_interp(
+            self.p0, self.v0, self.a0,
+            self.p1, self.v1, self.a1,
+            self.duration, t_local,
+        )
+
+    def evaluate_full(self, t_abs: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Evaluate pose, twist, and acceleration at absolute time *t_abs*."""
+        t_local = t_abs - self.t_start
+        return quintic_interp_with_accel(
+            self.p0, self.v0, self.a0,
+            self.p1, self.v1, self.a1,
+            self.duration, t_local,
+        )
+
+
+# ---------------------------------------------------------------------------
+# EventScheduler
+# ---------------------------------------------------------------------------
+
+_id_counter = itertools.count()
+
+
+def _next_event_id() -> int:
+    return next(_id_counter)
+
+
+# Minimum segment duration to avoid degenerate quintics
+_MIN_DURATION_S = 0.05
+
+# How close (mm position, rad orientation) before we consider "arrived"
+_ARRIVAL_POS_TOL_MM = 5.0
+_ARRIVAL_ROT_TOL_RAD = 0.02  # ~1.1 degrees
+
+
+class EventScheduler:
+    """Manages event sequencing with C2-continuous quintic Hermite chaining.
+
+    Parameters
+    ----------
+    active_pose : (6,) ndarray
+        The ACTIVE pose (geometric centre, all legs equal).  Used as the
+        return destination when no events are queued.
+    cumulative_times : (N+1,) ndarray
+        MPC horizon node times from ``MPCParams.cumulative_times``.
+        Used to sample ``ref_events`` at the correct time offsets.
+    return_duration : float
+        Default duration for return-to-active segments (seconds).
+    """
+
+    def __init__(
+        self,
+        active_pose: np.ndarray,
+        cumulative_times: np.ndarray,
+        return_duration: float = 2.0,
+    ) -> None:
+        self._active_pose = np.asarray(active_pose, dtype=np.float64)
+        self._cumulative_times = np.asarray(cumulative_times, dtype=np.float64)
+        self._return_duration = return_duration
+        self._zero6 = np.zeros(6, dtype=np.float64)
+
+        # State
+        self._phase = SchedulerPhase.IDLE
+        self._current_event: ScheduledEvent | None = None
+        self._next_event: ScheduledEvent | None = None
+
+        # Active quintic segments
+        self._seg_current: _QuinticSegment | None = None   # toward current event
+        self._seg_next: _QuinticSegment | None = None       # toward next event
+        self._seg_return: _QuinticSegment | None = None     # toward active pose
+
+        # Cached state at last update (for replan continuity)
+        self._last_pose = self._active_pose.copy()
+        self._last_twist = self._zero6.copy()
+        self._last_accel = self._zero6.copy()
+
+        # Pending hand notifications (consumed by caller after update)
+        self._pending_notification: HandNotification | None = None
+
+    # ------------------------------------------------------------------
+    # Properties
+    # ------------------------------------------------------------------
+
+    @property
+    def phase(self) -> SchedulerPhase:
+        return self._phase
+
+    @property
+    def active_event(self) -> ScheduledEvent | None:
+        return self._current_event
+
+    @property
+    def next_event(self) -> ScheduledEvent | None:
+        return self._next_event
+
+    # ------------------------------------------------------------------
+    # Event management
+    # ------------------------------------------------------------------
+
+    def submit_event(self, event: ScheduledEvent) -> None:
+        """Add an event to the schedule.
+
+        If no current event exists, this becomes the current event and the
+        scheduler begins approaching it.  If a current event exists, this
+        replaces the next event.
+        """
+        if self._current_event is None:
+            self._current_event = event
+            self._phase = SchedulerPhase.APPROACHING
+            # Segment will be built on next update() when we have sim_time
+            self._seg_current = None
+            self._pending_notification = HandNotification(
+                event=event, notification_type='approaching',
+            )
+            logger.info(
+                "Scheduler: new current event %s id=%d at t=%.3f",
+                event.event_type.name, event.event_id, event.time,
+            )
+        else:
+            old_next = self._next_event
+            self._next_event = event
+            self._seg_next = None  # will be rebuilt
+            if old_next is not None:
+                logger.info(
+                    "Scheduler: replaced next event id=%d with id=%d",
+                    old_next.event_id, event.event_id,
+                )
+            else:
+                logger.info(
+                    "Scheduler: queued next event %s id=%d at t=%.3f",
+                    event.event_type.name, event.event_id, event.time,
+                )
+
+    def update_current_event(self, event: ScheduledEvent) -> None:
+        """Refine the current event (live catch tracking update).
+
+        The event_id should match the current event.  The quintic segment
+        is marked stale and will be recomputed from the current motion
+        state on the next ``update()`` call.
+        """
+        if self._current_event is None:
+            logger.warning("update_current_event called with no current event")
+            return
+        if event.event_id != self._current_event.event_id:
+            logger.warning(
+                "update_current_event: id mismatch (got %d, expected %d)",
+                event.event_id, self._current_event.event_id,
+            )
+            return
+        self._current_event = event
+        self._seg_current = None  # force replan on next update()
+
+    def replace_next_event(self, event: ScheduledEvent) -> None:
+        """Replace the next event.
+
+        If currently transitioning toward the old next event, the segment
+        is replanned from the current motion state to the new event.
+        """
+        old = self._next_event
+        self._next_event = event
+        self._seg_next = None  # force rebuild
+
+        if self._phase == SchedulerPhase.TRANSITIONING:
+            # Mid-transition: will replan from current state on next update()
+            logger.info(
+                "Scheduler: mid-transition replacement, old id=%s new id=%d",
+                old.event_id if old else None, event.event_id,
+            )
+
+    def cancel_next(self) -> ScheduledEvent | None:
+        """Cancel the next event.  Returns the cancelled event or None."""
+        cancelled = self._next_event
+        self._next_event = None
+        self._seg_next = None
+        return cancelled
+
+    def clear(self) -> None:
+        """Cancel all events and return to IDLE at current position."""
+        self._current_event = None
+        self._next_event = None
+        self._seg_current = None
+        self._seg_next = None
+        self._seg_return = None
+        self._phase = SchedulerPhase.IDLE
+
+    # ------------------------------------------------------------------
+    # Per-step update
+    # ------------------------------------------------------------------
+
+    def update(
+        self,
+        sim_time: float,
+        current_pose: np.ndarray,
+        current_twist: np.ndarray,
+    ) -> SchedulerOutput:
+        """Advance scheduler state and produce MPC target for this step.
+
+        Called at MPC rate (typically 50 Hz).
+
+        Parameters
+        ----------
+        sim_time : float
+            Current simulation / wall-clock time.
+        current_pose : (6,) ndarray
+            Current platform pose from plant state.
+        current_twist : (6,) ndarray
+            Current platform twist from plant state.
+
+        Returns
+        -------
+        SchedulerOutput
+            Contains ``TargetCommand`` for MPC plus scheduler metadata.
+        """
+        # Don't clear _pending_notification here — submit_event() may have
+        # set one that should be delivered on this update.  Each handler
+        # either overwrites it or leaves the existing value.
+
+        if self._phase == SchedulerPhase.IDLE:
+            return self._update_idle(sim_time, current_pose, current_twist)
+        elif self._phase == SchedulerPhase.APPROACHING:
+            return self._update_approaching(sim_time, current_pose, current_twist)
+        elif self._phase == SchedulerPhase.HOLDING:
+            return self._update_holding(sim_time, current_pose, current_twist)
+        elif self._phase == SchedulerPhase.TRANSITIONING:
+            return self._update_transitioning(sim_time, current_pose, current_twist)
+        elif self._phase == SchedulerPhase.RETURNING:
+            return self._update_returning(sim_time, current_pose, current_twist)
+        else:
+            # Should never happen
+            return self._make_hold_output(current_pose)
+
+    # ------------------------------------------------------------------
+    # Phase handlers
+    # ------------------------------------------------------------------
+
+    def _update_idle(
+        self, sim_time: float, pose: np.ndarray, twist: np.ndarray,
+    ) -> SchedulerOutput:
+        """IDLE: hold at active pose.  If an event was submitted, we
+        already transitioned to APPROACHING in submit_event()."""
+        self._last_pose = pose.copy()
+        self._last_twist = twist.copy()
+        self._last_accel = self._zero6.copy()
+        return self._make_hold_output(self._active_pose)
+
+    def _update_approaching(
+        self, sim_time: float, pose: np.ndarray, twist: np.ndarray,
+    ) -> SchedulerOutput:
+        """APPROACHING: moving toward current event via quintic segment."""
+        event = self._current_event
+        assert event is not None
+
+        # Build segment if needed (first call or after replan)
+        if self._seg_current is None:
+            self._seg_current = self._build_segment_to_event(
+                sim_time, pose, twist, event,
+            )
+
+        seg = self._seg_current
+
+        # Check if we've arrived (past the segment end time)
+        if sim_time >= seg.t_end:
+            self._phase = SchedulerPhase.HOLDING
+            self._last_pose = event.pose.copy()
+            self._last_twist = (
+                event.twist.copy() if event.twist is not None else self._zero6.copy()
+            )
+            self._last_accel = self._zero6.copy()
+            self._pending_notification = HandNotification(
+                event=event, notification_type='arrived',
+            )
+            logger.info(
+                "Scheduler: arrived at event id=%d, entering HOLDING",
+                event.event_id,
+            )
+            return self._update_holding(sim_time, pose, twist)
+
+        # Evaluate quintic and build ref_events
+        ref_pose, ref_twist = seg.evaluate(sim_time)
+        p, v, a = seg.evaluate_full(sim_time)
+        self._last_pose = p.copy()
+        self._last_twist = v.copy()
+        self._last_accel = a.copy()
+
+        ref_events = self._sample_segments(sim_time, [seg])
+
+        return SchedulerOutput(
+            target_command=TargetCommand(
+                target_pose=ref_pose,
+                arrival_time=event.time,
+                target_twist=event.twist,
+                ref_events=ref_events,
+            ),
+            hand_notification=self._pop_notification(),
+            active_event=self._current_event,
+            next_event=self._next_event,
+            phase=self._phase,
+        )
+
+    def _update_holding(
+        self, sim_time: float, pose: np.ndarray, twist: np.ndarray,
+    ) -> SchedulerOutput:
+        """HOLDING: at current event pose.  Advance to next or return."""
+        event = self._current_event
+        assert event is not None
+
+        # If next event exists, transition to it
+        if self._next_event is not None:
+            self._pending_notification = HandNotification(
+                event=event, notification_type='leaving',
+            )
+            self._phase = SchedulerPhase.TRANSITIONING
+            self._seg_next = None  # build on next update
+            logger.info(
+                "Scheduler: HOLDING → TRANSITIONING toward event id=%d",
+                self._next_event.event_id,
+            )
+            return self._update_transitioning(sim_time, pose, twist)
+
+        # No next event: hold at current event pose (MPC tracks it ASAP)
+        self._last_pose = event.pose.copy()
+        self._last_twist = (
+            event.twist.copy() if event.twist is not None else self._zero6.copy()
+        )
+        self._last_accel = self._zero6.copy()
+
+        return SchedulerOutput(
+            target_command=TargetCommand(
+                target_pose=event.pose,
+                target_twist=event.twist,
+            ),
+            hand_notification=self._pop_notification(),
+            active_event=self._current_event,
+            next_event=self._next_event,
+            phase=self._phase,
+        )
+
+    def _update_transitioning(
+        self, sim_time: float, pose: np.ndarray, twist: np.ndarray,
+    ) -> SchedulerOutput:
+        """TRANSITIONING: moving from current event to next event."""
+        next_ev = self._next_event
+        assert next_ev is not None
+
+        # Build segment if needed
+        if self._seg_next is None:
+            # Start from current motion state (handles mid-transition replan)
+            self._seg_next = self._build_segment_to_event(
+                sim_time, self._last_pose, self._last_twist, next_ev,
+            )
+
+        seg = self._seg_next
+
+        # Check arrival
+        if sim_time >= seg.t_end:
+            # Promote next → current
+            old_current = self._current_event
+            self._current_event = next_ev
+            self._next_event = None
+            self._seg_current = None
+            self._seg_next = None
+            self._phase = SchedulerPhase.HOLDING
+            self._last_pose = next_ev.pose.copy()
+            self._last_twist = (
+                next_ev.twist.copy() if next_ev.twist is not None else self._zero6.copy()
+            )
+            self._last_accel = self._zero6.copy()
+            self._pending_notification = HandNotification(
+                event=next_ev, notification_type='arrived',
+            )
+            logger.info(
+                "Scheduler: arrived at next event id=%d, promoting to current",
+                next_ev.event_id,
+            )
+            return self._update_holding(sim_time, pose, twist)
+
+        # Evaluate
+        ref_pose, ref_twist = seg.evaluate(sim_time)
+        p, v, a = seg.evaluate_full(sim_time)
+        self._last_pose = p.copy()
+        self._last_twist = v.copy()
+        self._last_accel = a.copy()
+
+        ref_events = self._sample_segments(sim_time, [seg])
+
+        return SchedulerOutput(
+            target_command=TargetCommand(
+                target_pose=ref_pose,
+                arrival_time=next_ev.time,
+                target_twist=next_ev.twist,
+                ref_events=ref_events,
+            ),
+            hand_notification=self._pop_notification(),
+            active_event=self._current_event,
+            next_event=self._next_event,
+            phase=self._phase,
+        )
+
+    def _update_returning(
+        self, sim_time: float, pose: np.ndarray, twist: np.ndarray,
+    ) -> SchedulerOutput:
+        """RETURNING: moving back to active pose."""
+        if self._seg_return is None:
+            # Build return segment from current state
+            duration = self._return_duration
+            self._seg_return = _QuinticSegment(
+                p0=self._last_pose.copy(),
+                v0=self._last_twist.copy(),
+                a0=self._last_accel.copy(),
+                p1=self._active_pose.copy(),
+                v1=self._zero6.copy(),
+                a1=self._zero6.copy(),
+                t_start=sim_time,
+                duration=max(duration, _MIN_DURATION_S),
+            )
+
+        seg = self._seg_return
+
+        # Check arrival
+        if sim_time >= seg.t_end:
+            self._current_event = None
+            self._seg_return = None
+            self._phase = SchedulerPhase.IDLE
+            self._last_pose = self._active_pose.copy()
+            self._last_twist = self._zero6.copy()
+            self._last_accel = self._zero6.copy()
+            logger.info("Scheduler: returned to active pose, entering IDLE")
+            return self._make_hold_output(self._active_pose)
+
+        ref_pose, ref_twist = seg.evaluate(sim_time)
+        p, v, a = seg.evaluate_full(sim_time)
+        self._last_pose = p.copy()
+        self._last_twist = v.copy()
+        self._last_accel = a.copy()
+
+        ref_events = self._sample_segments(sim_time, [seg])
+
+        return SchedulerOutput(
+            target_command=TargetCommand(
+                target_pose=ref_pose,
+                ref_events=ref_events,
+            ),
+            hand_notification=self._pop_notification(),
+            active_event=None,
+            next_event=None,
+            phase=self._phase,
+        )
+
+    # ------------------------------------------------------------------
+    # Trigger return to active
+    # ------------------------------------------------------------------
+
+    def begin_return(self) -> None:
+        """Signal the scheduler to return to active pose.
+
+        Call this after a catch is confirmed, hand retraction completes,
+        etc.  If called during HOLDING with no next event, begins the
+        return.  If called during other phases, queues a RETURN_TO_ACTIVE
+        as the next event.
+        """
+        if self._phase == SchedulerPhase.HOLDING and self._next_event is None:
+            self._phase = SchedulerPhase.RETURNING
+            self._seg_return = None  # build on next update
+            self._pending_notification = HandNotification(
+                event=self._current_event,
+                notification_type='leaving',
+            ) if self._current_event else None
+            self._current_event = None
+            logger.info("Scheduler: HOLDING → RETURNING to active pose")
+        elif self._phase == SchedulerPhase.IDLE:
+            pass  # already at active
+        else:
+            # Queue a return as next event
+            ret_event = ScheduledEvent(
+                event_id=_next_event_id(),
+                event_type=EventType.RETURN_TO_ACTIVE,
+                pose=self._active_pose.copy(),
+                time=0.0,  # will be computed when segment is built
+                twist=None,
+            )
+            self._next_event = ret_event
+            self._seg_next = None
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _build_segment_to_event(
+        self,
+        sim_time: float,
+        start_pose: np.ndarray,
+        start_twist: np.ndarray,
+        event: ScheduledEvent,
+    ) -> _QuinticSegment:
+        """Build a quintic segment from current state to event."""
+        duration = max(event.time - sim_time, _MIN_DURATION_S)
+        end_twist = event.twist if event.twist is not None else self._zero6
+        return _QuinticSegment(
+            p0=start_pose.copy(),
+            v0=start_twist.copy(),
+            a0=self._last_accel.copy(),
+            p1=event.pose.copy(),
+            v1=end_twist.copy(),
+            a1=self._zero6.copy(),  # zero accel at event boundary
+            t_start=sim_time,
+            duration=duration,
+        )
+
+    def _sample_segments(
+        self,
+        sim_time: float,
+        segments: list[_QuinticSegment],
+    ) -> list[ReferenceEvent]:
+        """Sample quintic segments at MPC horizon node times."""
+        events: list[ReferenceEvent] = []
+        for dt in self._cumulative_times:
+            t_abs = sim_time + dt
+            # Find the segment containing this time
+            pose, twist, accel = None, None, None
+            for seg in segments:
+                if t_abs <= seg.t_end or seg is segments[-1]:
+                    pose, twist, accel = seg.evaluate_full(t_abs)
+                    break
+            assert pose is not None
+            events.append(ReferenceEvent(
+                time=t_abs,
+                pose=pose,
+                twist=twist,
+                accel=accel,
+            ))
+        return events
+
+    def _pop_notification(self) -> HandNotification | None:
+        """Consume and return the pending notification (if any)."""
+        n = self._pending_notification
+        self._pending_notification = None
+        return n
+
+    def _make_hold_output(self, pose: np.ndarray) -> SchedulerOutput:
+        """Output for holding at a static pose (IDLE or end-of-return)."""
+        return SchedulerOutput(
+            target_command=TargetCommand(
+                target_pose=pose.copy(),
+            ),
+            hand_notification=self._pop_notification(),
+            active_event=self._current_event,
+            next_event=self._next_event,
+            phase=self._phase,
+        )

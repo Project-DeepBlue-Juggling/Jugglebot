@@ -72,21 +72,31 @@ class MPCParams:
     Qf_ori: float = 5000.0   # terminal orientation weight
 
     # Velocity tracking (finite-difference twist vs reference twist)
-    # At these weights: 1mm position error ≈ 100 mm/s velocity error in cost.
-    # Higher values degrade position tracking without improving velocity
-    # (actuator lag τ is the bottleneck, not the cost weight).
+    # These are the default weights used for flat-reference callers
+    # (spacemouse, keyboard, catch coordinator).  Conservative to avoid
+    # penalizing motion toward the target (twist_ref=0 on flat path).
     Q_vel_lin: float = 0.001   # linear velocity (per (mm/s)²)
     Q_vel_ang: float = 0.1     # angular velocity (per (rad/s)²)
 
-    # ---- Arrival urgency ------------------------------------------------
-    urgency_ramp_s: float = 0.5   # ramp window: tracking weight ramps base→max
-                                   # over this many seconds before the deadline
-    urgency_base: float = 0.05    # base multiplier for timed targets (nodes far
-                                   # from deadline).  Low value lets the MPC choose
-                                   # its own path without penalty for being far from
-                                   # the target; terminal cost still provides pull.
-                                   # ASAP mode always uses 1.0.
-    urgency_max: float = 10.0     # peak multiplier at/past the deadline
+    # Terminal velocity tracking — default weights for flat reference.
+    Qf_vel_lin: float = 0.001  # terminal linear velocity weight
+    Qf_vel_ang: float = 0.1    # terminal angular velocity weight
+
+    # Event-boosted velocity weights (used when ref_events is provided).
+    # With event-based references, twist_ref is kinematically consistent
+    # with the position reference, so higher weights cooperate rather than
+    # fight.  These are injected as NLP parameters per-solve.
+    Q_vel_lin_events: float = 0.05    # boosted linear velocity weight
+    Q_vel_ang_events: float = 0.1     # boosted angular velocity weight
+    Qf_vel_lin_events: float = 0.5    # boosted terminal linear velocity
+    Qf_vel_ang_events: float = 0.1    # boosted terminal angular velocity
+
+    # Cartesian acceleration tracking (penalises finite-difference accel vs
+    # reference accel from quintic interpolation).  Defaults to zero (opt-in)
+    # to preserve existing behavior.  Suggested starting values when enabled:
+    # Q_accel_lin=0.0005, Q_accel_ang=0.05.
+    Q_accel_lin: float = 0.0          # linear accel (per (mm/s²)²)
+    Q_accel_ang: float = 0.0          # angular accel (per (rad/s²)²)
 
     # ---- Control cost ---------------------------------------------------
     R: float = 1e-4          # control effort — small regulariser
@@ -96,14 +106,24 @@ class MPCParams:
     # ---- Constraints ----------------------------------------------------
     stroke_mm: float = 280.0
     stroke_margin_mm: float = 5.0    # safety margin from each end of stroke range
-    max_leg_vel_mmps: float = 300.0  # mm/s per leg (hardware max ~1060)
+    max_leg_vel_mmps: float = 700.0  # mm/s per leg (hardware max ~1060)
 
     # ---- IPOPT options --------------------------------------------------
     max_iter: int = 200
-    max_cpu_time: float = 0.018  # 18 ms (90 % of 20 ms budget)
+    max_cpu_time: float = 0.019  # 19 ms (95% of 20 ms budget)
     tol: float = 1e-4
     warm_start: bool = True
     print_level: int = 0        # 0 = silent
 
     # ---- Failure handling -----------------------------------------------
-    max_consecutive_failures: int = 10
+    max_consecutive_failures: int = 3
+
+    def __post_init__(self):
+        # Coerce to tuple so cached_property on cumulative_times is safe
+        if not isinstance(self.dt_schedule, tuple):
+            object.__setattr__(self, 'dt_schedule', tuple(self.dt_schedule))
+        if any(dt <= 0 for dt in self.dt_schedule):
+            raise ValueError(
+                f"dt_schedule must contain only positive values, "
+                f"got {self.dt_schedule}"
+            )

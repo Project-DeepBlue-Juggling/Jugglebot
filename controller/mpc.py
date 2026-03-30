@@ -38,8 +38,225 @@ except ImportError:
     cs = None
 
 
-from plant.interface import PlantState
+from typing import TYPE_CHECKING
+
+from .hermite import quintic_interp, quintic_interp_with_accel
 from .params import MPCParams
+from .target import ReferenceEvent
+
+if TYPE_CHECKING:
+    from typing import List
+    from plant.interface import PlantState
+
+
+# ---------------------------------------------------------------------------
+# Hermite interpolation for time-varying references
+# ---------------------------------------------------------------------------
+
+def _hermite_interp(
+    t: float,
+    t0: float, p0: np.ndarray, v0: np.ndarray,
+    t1: float, p1: np.ndarray, v1: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Cubic Hermite interpolation between two events.
+
+    Returns (pose, twist) at time *t* in [t0, t1], matching pose and twist
+    exactly at both endpoints.
+
+    Parameters
+    ----------
+    t : float
+        Query time.
+    t0, t1 : float
+        Endpoint times (t0 < t1).
+    p0, p1 : (6,) ndarray
+        Endpoint poses.
+    v0, v1 : (6,) ndarray
+        Endpoint twists (derivatives of pose w.r.t. time).
+
+    Returns
+    -------
+    pose : (6,) ndarray
+    twist : (6,) ndarray
+    """
+    dt = t1 - t0
+    if dt < 1e-9:
+        # Degenerate interval — return endpoint to avoid division by zero.
+        return p1.copy(), v1.copy()
+    s = (t - t0) / dt          # normalised time in [0, 1]
+    s2 = s * s
+    s3 = s2 * s
+
+    # Hermite basis functions
+    h00 = 2.0 * s3 - 3.0 * s2 + 1.0
+    h10 = s3 - 2.0 * s2 + s
+    h01 = -2.0 * s3 + 3.0 * s2
+    h11 = s3 - s2
+
+    pose = h00 * p0 + h10 * (dt * v0) + h01 * p1 + h11 * (dt * v1)
+
+    # Derivatives of basis functions w.r.t. s, divided by dt for d/dt
+    dh00 = (6.0 * s2 - 6.0 * s) / dt
+    dh10 = (3.0 * s2 - 4.0 * s + 1.0)        # * dt / dt cancels
+    dh01 = (-6.0 * s2 + 6.0 * s) / dt
+    dh11 = (3.0 * s2 - 2.0 * s)               # * dt / dt cancels
+
+    twist = dh00 * p0 + dh10 * v0 + dh01 * p1 + dh11 * v1
+
+    return pose, twist
+
+
+def _quintic_interp_events(
+    t: float,
+    t0: float, p0: np.ndarray, v0: np.ndarray, a0: np.ndarray,
+    t1: float, p1: np.ndarray, v1: np.ndarray, a1: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Quintic Hermite interpolation between two events (absolute time).
+
+    Drop-in companion to ``_hermite_interp`` when acceleration boundary
+    conditions are available.  Uses the quintic basis from ``hermite.py``
+    which matches pos, vel, and accel at both endpoints (C2-continuous).
+
+    Returns (pose, twist, accel).
+    """
+    dt = t1 - t0
+    if dt < 1e-9:
+        return p1.copy(), v1.copy(), a1.copy()
+    return quintic_interp_with_accel(p0, v0, a0, p1, v1, a1, dt, t - t0)
+
+
+def _build_reference_from_events(
+    events: List[ReferenceEvent],
+    t_now: float,
+    cumulative_times: np.ndarray,
+    n_nodes: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Build (N+1, 6) reference arrays from a list of timed events.
+
+    Uses quintic Hermite interpolation (C2) between events that provide
+    acceleration, falling back to cubic Hermite (C1) otherwise.  Before
+    the first event, uses quadratic backward extrapolation when accel is
+    available (linear otherwise).  After the last event, quadratic forward
+    extrapolation (linear fallback).
+
+    Parameters
+    ----------
+    events : list[ReferenceEvent]
+        Sorted by time (ascending).  Must have at least one event.
+    t_now : float
+        Current absolute time (``state.time``).
+    cumulative_times : (N+1,) ndarray
+        Relative times at each horizon node (starting at 0).
+    n_nodes : int
+        Number of horizon nodes (N+1).
+
+    Returns
+    -------
+    ref_traj : (N+1, 6) ndarray
+        Per-node reference poses.
+    twist_traj : (N+1, 6) ndarray
+        Per-node reference twists.
+    accel_traj : (N+1, 6) ndarray
+        Per-node reference accelerations.  Populated from quintic
+        interpolation when available, finite-differenced from twist
+        otherwise.
+    """
+    ref_traj = np.empty((n_nodes, 6))
+    twist_traj = np.empty((n_nodes, 6))
+    accel_traj = np.zeros((n_nodes, 6))
+    accel_filled = np.zeros(n_nodes, dtype=bool)  # tracks authoritative accel
+
+    n_ev = len(events)
+    # Pre-extract arrays for fast access
+    ev_times = np.array([e.time for e in events])
+    ev_poses = np.array([e.pose for e in events])
+    ev_twists = np.array([
+        e.twist if e.twist is not None else np.zeros(6) for e in events
+    ])
+    ev_accels = [e.accel for e in events]  # None or (6,) per event
+
+    if __debug__ and n_ev > 1 and np.any(np.diff(ev_times) < 0):
+        raise ValueError("ref_events must be sorted by time (ascending)")
+
+    ev_idx = 0  # reuse search position across nodes (times are monotonic)
+
+    for k in range(n_nodes):
+        t_k = t_now + cumulative_times[k]
+
+        if t_k <= ev_times[0]:
+            # Before first event: extrapolate backward
+            dt_back = t_k - ev_times[0]
+            a0 = ev_accels[0]
+            if a0 is not None:
+                # Quadratic extrapolation (C2 at boundary)
+                ref_traj[k] = (ev_poses[0] + ev_twists[0] * dt_back
+                               + 0.5 * a0 * dt_back * dt_back)
+                twist_traj[k] = ev_twists[0] + a0 * dt_back
+                accel_traj[k] = a0
+                accel_filled[k] = True
+            else:
+                # Linear extrapolation (C1 at boundary)
+                ref_traj[k] = ev_poses[0] + ev_twists[0] * dt_back
+                twist_traj[k] = ev_twists[0]
+
+        elif t_k >= ev_times[-1]:
+            # After last event: extrapolate forward
+            dt_fwd = t_k - ev_times[-1]
+            a_last = ev_accels[-1]
+            if a_last is not None:
+                ref_traj[k] = (ev_poses[-1] + ev_twists[-1] * dt_fwd
+                               + 0.5 * a_last * dt_fwd * dt_fwd)
+                twist_traj[k] = ev_twists[-1] + a_last * dt_fwd
+                accel_traj[k] = a_last
+                accel_filled[k] = True
+            else:
+                ref_traj[k] = ev_poses[-1] + ev_twists[-1] * dt_fwd
+                twist_traj[k] = ev_twists[-1]
+
+        else:
+            # Between events: interpolate
+            # Advance ev_idx to find the bracketing interval
+            while ev_idx < n_ev - 2 and ev_times[ev_idx + 1] < t_k:
+                ev_idx += 1
+            i = ev_idx
+            if ev_times[i + 1] - ev_times[i] < 1e-6:
+                # Degenerate interval: snap to endpoint
+                ref_traj[k] = ev_poses[i + 1]
+                twist_traj[k] = ev_twists[i + 1]
+                if ev_accels[i + 1] is not None:
+                    accel_traj[k] = ev_accels[i + 1]
+                    accel_filled[k] = True
+            elif ev_accels[i] is not None and ev_accels[i + 1] is not None:
+                # Quintic Hermite (C2) — both endpoints have accel
+                pose, twist, accel = _quintic_interp_events(
+                    t_k,
+                    ev_times[i], ev_poses[i], ev_twists[i], ev_accels[i],
+                    ev_times[i + 1], ev_poses[i + 1], ev_twists[i + 1],
+                    ev_accels[i + 1],
+                )
+                ref_traj[k] = pose
+                twist_traj[k] = twist
+                accel_traj[k] = accel
+                accel_filled[k] = True
+            else:
+                # Cubic Hermite (C1) — fallback when accel missing
+                pose, twist = _hermite_interp(
+                    t_k,
+                    ev_times[i], ev_poses[i], ev_twists[i],
+                    ev_times[i + 1], ev_poses[i + 1], ev_twists[i + 1],
+                )
+                ref_traj[k] = pose
+                twist_traj[k] = twist
+
+    # Fill accel gaps via finite-difference for nodes where no authoritative
+    # source (quintic interpolation, quadratic extrapolation) provided accel.
+    for k in range(n_nodes):
+        if not accel_filled[k] and k > 0:
+            dt_k = cumulative_times[k] - cumulative_times[k - 1]
+            if dt_k > 1e-9:
+                accel_traj[k] = (twist_traj[k] - twist_traj[k - 1]) / dt_k
+
+    return ref_traj, twist_traj, accel_traj
 
 
 # ---------------------------------------------------------------------------
@@ -136,6 +353,9 @@ class MPCController:
         self._prev_prev_u: np.ndarray | None = None
         self._consecutive_failures: int = 0
         self._predicted_poses: np.ndarray | None = None
+        self._last_ref_traj: np.ndarray | None = None
+        self._last_twist_traj: np.ndarray | None = None
+        self._last_accel_traj: np.ndarray | None = None
 
     # ------------------------------------------------------------------
     # Factory
@@ -182,8 +402,10 @@ class MPCController:
 
         # ---- Parameters (change every solve) ------------------------------
         # p_init(6) + q_init(6) + u_prev(6) + u_prev_prev(6)
-        # + p_ref(6*(N+1)) + twist_ref(6*(N+1)) + urgency(N)
-        n_param = 24 + 12 * (N + 1) + N
+        # + p_ref(6*(N+1)) + twist_ref(6*(N+1)) + accel_ref(6*(N+1))
+        # + vel_weights(4): [Q_vel_lin, Q_vel_ang, Qf_vel_lin, Qf_vel_ang]
+        # + accel_weights(2): [Q_accel_lin, Q_accel_ang]
+        n_param = 24 + 18 * (N + 1) + 6
         P = cs.SX.sym('P', n_param)
 
         p_init = P[:6]
@@ -194,8 +416,15 @@ class MPCController:
         p_ref = [P[ref_offset + k * 6: ref_offset + (k + 1) * 6] for k in range(N + 1)]
         twist_offset = ref_offset + 6 * (N + 1)
         twist_ref = [P[twist_offset + k * 6: twist_offset + (k + 1) * 6] for k in range(N + 1)]
-        urgency_offset = twist_offset + 6 * (N + 1)
-        urgency = [P[urgency_offset + k] for k in range(N)]  # multiplier for nodes 1..N
+        accel_offset = twist_offset + 6 * (N + 1)
+        accel_ref = [P[accel_offset + k * 6: accel_offset + (k + 1) * 6] for k in range(N + 1)]
+        weights_offset = accel_offset + 6 * (N + 1)
+        Qvl_sym = P[weights_offset]       # Q_vel_lin (per-solve)
+        Qva_sym = P[weights_offset + 1]   # Q_vel_ang
+        Qfvl_sym = P[weights_offset + 2]  # Qf_vel_lin
+        Qfva_sym = P[weights_offset + 3]  # Qf_vel_ang
+        Qal_sym = P[weights_offset + 4]   # Q_accel_lin
+        Qaa_sym = P[weights_offset + 5]   # Q_accel_ang
 
         # ---- Decision variables -------------------------------------------
         # Layout: u[0..N-1](6N)  |  q[1..N](6N)  |  p[1..N](6N)
@@ -212,8 +441,6 @@ class MPCController:
         Qo = self._params.Q_ori
         Qfp = self._params.Qf_pos
         Qfo = self._params.Qf_ori
-        Qvl = self._params.Q_vel_lin
-        Qva = self._params.Q_vel_ang
         R_w = self._params.R
         S_w = self._params.S
         A_w = self._params.A
@@ -223,21 +450,42 @@ class MPCController:
         for k in range(1, N + 1):
             err = p[k] - p_ref[k]
             dt_k = dt_schedule[k - 1]  # dt of the interval ending at node k
-            urg_k = urgency[k - 1]     # urgency multiplier for this node
 
             if k < N:
-                J += Qp * urg_k * cs.dot(err[:3], err[:3])
-                J += Qo * urg_k * cs.dot(err[3:], err[3:])
+                J += Qp * cs.dot(err[:3], err[:3])
+                J += Qo * cs.dot(err[3:], err[3:])
             else:
                 # Terminal cost (heavier)
-                J += Qfp * urg_k * cs.dot(err[:3], err[:3])
-                J += Qfo * urg_k * cs.dot(err[3:], err[3:])
+                J += Qfp * cs.dot(err[:3], err[:3])
+                J += Qfo * cs.dot(err[3:], err[3:])
 
             # Velocity tracking (finite-difference twist vs reference twist)
+            # Velocity weights are NLP parameters (set per-solve) so that
+            # event-based callers can use heavier weights without degrading
+            # flat-reference callers.
             dp = (p[k] - p[k - 1]) / dt_k
             twist_err = dp - twist_ref[k]
-            J += Qvl * urg_k * cs.dot(twist_err[:3], twist_err[:3])
-            J += Qva * urg_k * cs.dot(twist_err[3:], twist_err[3:])
+            if k < N:
+                J += Qvl_sym * cs.dot(twist_err[:3], twist_err[:3])
+                J += Qva_sym * cs.dot(twist_err[3:], twist_err[3:])
+            else:
+                # Terminal velocity cost (heavier — match twist at horizon end)
+                J += Qfvl_sym * cs.dot(twist_err[:3], twist_err[:3])
+                J += Qfva_sym * cs.dot(twist_err[3:], twist_err[3:])
+
+            # Acceleration tracking (finite-difference accel vs reference)
+            # Requires two consecutive velocity estimates, so starts at k=2.
+            if k >= 2:
+                dt_km1 = dt_schedule[k - 2]  # interval ending at node k-1
+                vel_k = dp  # already computed above: (p[k] - p[k-1]) / dt_k
+                vel_km1 = (p[k - 1] - p[k - 2]) / dt_km1
+                # Backward difference at node k, consistent with how vel_k
+                # itself is computed.  Avoids systematic bias at the
+                # fine→coarse tier boundary where dt_k ≠ dt_km1.
+                accel_fd = (vel_k - vel_km1) / dt_k
+                accel_err = accel_fd - accel_ref[k]
+                J += Qal_sym * cs.dot(accel_err[:3], accel_err[:3])
+                J += Qaa_sym * cs.dot(accel_err[3:], accel_err[3:])
 
         for k in range(N):
             # -- dt_between: effective interval for the u[k-1] → u[k] transition --
@@ -333,18 +581,19 @@ class MPCController:
         lbw = np.full(n_w, -np.inf)
         ubw = np.full(n_w, np.inf)
 
+        margin = self._params.stroke_margin_mm
         for k in range(N):
-            # u bounds [0, stroke] — full physical range
-            lbw[k * 6: (k + 1) * 6] = 0.0
-            ubw[k * 6: (k + 1) * 6] = stroke
-            # q bounds [0, stroke]
+            # u bounds [margin, stroke - margin] — match motor_guard hard limits
+            lbw[k * 6: (k + 1) * 6] = margin
+            ubw[k * 6: (k + 1) * 6] = stroke - margin
+            # q bounds [0, stroke] — actual leg extensions (after actuator lag)
             lbw[6 * N + k * 6: 6 * N + (k + 1) * 6] = 0.0
             ubw[6 * N + k * 6: 6 * N + (k + 1) * 6] = stroke
             # p bounds (workspace limits — generous, stroke limits are the real safety net)
             bp = 12 * N + k * 6
             lbw[bp: bp + 2] = -200.0       # x, y (mm)
             ubw[bp: bp + 2] = 200.0
-            lbw[bp + 2] = -50.0            # z (mm) — can't go below home much
+            lbw[bp + 2] = -50.0            # z (mm) — can't go below active pose much
             ubw[bp + 2] = 300.0            # z (mm) — stroke limit caps at ~275
             lbw[bp + 3: bp + 6] = -0.3     # rx, ry, rz (rad ≈ ±17°)
             ubw[bp + 3: bp + 6] = 0.3
@@ -366,6 +615,7 @@ class MPCController:
 
         self._solver = cs.nlpsol('mpc', 'ipopt', nlp, opts)
         self._n_w = n_w
+        self._n_param = n_param
         self._N = N
         self._dt_schedule = dt_schedule
         self._cumulative_times = self._params.cumulative_times
@@ -383,9 +633,9 @@ class MPCController:
         state: PlantState,
         target_pose: np.ndarray,
         *,
-        arrival_time: float | None = None,
-        target_twist: np.ndarray | None = None,
-    ) -> tuple[np.ndarray, dict]:
+        ref_events: List[ReferenceEvent] | None = None,
+        boost_vel_weights: bool = False,
+    ) -> tuple[np.ndarray, np.ndarray, dict]:
         """Solve MPC for one step.
 
         Parameters
@@ -393,31 +643,41 @@ class MPCController:
         state : PlantState
             Current plant state.
         target_pose : (6,) ndarray
-            Target pose ``[x, y, z, rx, ry, rz]`` (mm, rad).
-        arrival_time : float or None
-            Absolute time by which the platform should reach the target pose.
-            None = "as soon as possible" (drive to target as fast as
-            constraints allow).
-        target_twist : (6,) ndarray or None
-            Desired twist at arrival.  None = zero (hold at target).
+            Fallback target pose ``[x, y, z, rx, ry, rz]`` (mm, rad).
+            Used only when ``ref_events`` is None (safety fallback).
+        ref_events : list[ReferenceEvent] or None
+            Time-varying reference trajectory.  The MPC builds per-node
+            references via quintic Hermite interpolation (C2) between
+            events with acceleration, falling back to cubic Hermite (C1)
+            for events without.  All sources should provide this via
+            ``flat_target_to_events()`` or equivalent.
+        boost_vel_weights : bool
+            If True, use the heavier event-based velocity tracking weights
+            (``Q_vel_lin_events`` etc.).  Should be True only for sources
+            with kinematically consistent twist references (toss loop,
+            scheduler).  Default False uses conservative weights that
+            don't penalize motion toward a target.
 
         Returns
         -------
         cmd : (6,) ndarray
             STOW-relative leg extension command (mm).  At Active position,
             cmd ≈ [154.5, ...] per leg.
+        cmd_vel : (6,) ndarray
+            Forward-looking command velocity (mm/s): ``(cmd - q_cur) / dt_fine``.
+            Analytically cleaner than backward-differencing against measured
+            state because it uses the same ``q_cur`` the MPC optimized against
+            and doesn't include tracking error noise.
         diag : dict
             Diagnostics: solve_time_ms, status, cost, constraint_violation.
         """
-        N = self._N
-
         target = np.asarray(target_pose, dtype=float)
-        tw = None
-        if target_twist is not None:
-            tw = np.asarray(target_twist, dtype=float)
-        ref_traj, twist_traj = self._build_reference(
-            state, target, arrival_time, tw)
-        urgency = self._compute_urgency(state.time, arrival_time)
+
+        ref_traj, twist_traj, accel_traj = self._build_reference(
+            state, target, ref_events=ref_events)
+        self._last_ref_traj = ref_traj
+        self._last_twist_traj = twist_traj
+        self._last_accel_traj = accel_traj
 
         # Current state
         p_cur = np.concatenate([state.platform_pos_mm, state.platform_rot])
@@ -425,12 +685,33 @@ class MPCController:
         u_prev = self._prev_u if self._prev_u is not None else q_cur.copy()
         u_prev_prev = self._prev_prev_u if self._prev_prev_u is not None else u_prev.copy()
 
+        # Velocity weights: boosted for trajectory-aware sources (toss loop,
+        # scheduler) where the twist reference is kinematically consistent.
+        # Conservative for convergence sources (interactive, catch) where
+        # twist_ref is zero and boosting would penalize motion toward target.
+        par = self._params
+        if boost_vel_weights:
+            vel_weights = np.array([
+                par.Q_vel_lin_events, par.Q_vel_ang_events,
+                par.Qf_vel_lin_events, par.Qf_vel_ang_events,
+            ])
+        else:
+            vel_weights = np.array([
+                par.Q_vel_lin, par.Q_vel_ang,
+                par.Qf_vel_lin, par.Qf_vel_ang,
+            ])
+
+        accel_weights = np.array([par.Q_accel_lin, par.Q_accel_ang])
+
         # Parameter vector
         p_param = np.concatenate([
             p_cur, q_cur, u_prev, u_prev_prev,
-            ref_traj.ravel(), twist_traj.ravel(),
-            urgency,
+            ref_traj.ravel(), twist_traj.ravel(), accel_traj.ravel(),
+            vel_weights, accel_weights,
         ])
+        assert len(p_param) == self._n_param, (
+            f"Parameter vector length {len(p_param)} != expected {self._n_param}"
+        )
 
         # Initial guess
         if self._prev_w is not None:
@@ -461,6 +742,10 @@ class MPCController:
             if success:
                 self._consecutive_failures = 0
                 w_opt = np.asarray(sol['x']).ravel()
+                if not np.all(np.isfinite(w_opt)):
+                    logger.warning("MPC solve returned non-finite primal solution")
+                    return self._handle_failure(
+                        solve_ms, 'non_finite_solution', q_cur)
                 self._prev_w = w_opt
                 self._prev_lam_g = np.asarray(sol['lam_g']).ravel()
                 self._prev_lam_x = np.asarray(sol['lam_x']).ravel()
@@ -470,25 +755,46 @@ class MPCController:
                 self._prev_u = cmd
                 self._extract_predicted_poses(w_opt, p_cur)
 
-                # Compute true constraint violation (distance outside bounds)
+                # Compute true constraint violation (distance outside bounds).
+                # Includes both g-constraints (dynamics, IK, rate limits) and
+                # x-bounds (stroke, workspace) for complete diagnostics.
                 g_vals = np.asarray(sol['g']).ravel()
-                violation = np.maximum(
+                g_viol = np.maximum(
                     np.maximum(0.0, g_vals - self._ubg),
                     np.maximum(0.0, self._lbg - g_vals),
                 )
+                x_vals = w_opt
+                x_viol = np.maximum(
+                    np.maximum(0.0, x_vals - self._ubw),
+                    np.maximum(0.0, self._lbw - x_vals),
+                )
+                violation = np.maximum(g_viol, x_viol)
 
-                return cmd, {
+                # Forward-looking velocity: (cmd - q_cur) / dt_fine.
+                # Uses the MPC's own q_cur (not measured state from the
+                # previous step), so it doesn't include tracking error.
+                dt0 = self._params.dt_schedule[0]
+                cmd_vel = (cmd - q_cur) / dt0
+
+                return cmd, cmd_vel, {
                     'solve_time_ms': solve_ms,
                     'status': ret,
                     'cost': float(sol['f']),
                     'constraint_violation': float(np.max(violation)),
                 }
             else:
-                return self._handle_failure(solve_ms, ret)
+                return self._handle_failure(solve_ms, ret, q_cur)
 
         except Exception as exc:
             solve_ms = (_time.perf_counter() - t0) * 1000.0
-            return self._handle_failure(solve_ms, f'exception: {exc}')
+            # Clear warm-start to prevent corruption cascade — the exception
+            # may have left CasADi's internal state inconsistent, so reusing
+            # _prev_w could cause repeated failures.  Forces cold-start on
+            # the next solve.
+            self._prev_w = None
+            self._prev_lam_g = None
+            self._prev_lam_x = None
+            return self._handle_failure(solve_ms, f'exception: {exc}', q_cur)
 
     # ------------------------------------------------------------------
     # Warm-start helpers
@@ -497,9 +803,12 @@ class MPCController:
     def _cold_start(self, p_cur, q_cur, ref_traj):
         """Generate IK-consistent initial guess by interpolating toward the reference.
 
-        Interpolates pose linearly from current to final reference, then computes
-        matching leg extensions via numerical IK so the initial guess satisfies
-        the IK equality constraints approximately.
+        Interpolates pose linearly from current toward each node's reference
+        pose, then computes matching leg extensions via numerical IK so the
+        initial guess satisfies the IK equality constraints approximately.
+
+        Works correctly for both flat references (all nodes identical) and
+        time-varying references (each node has a distinct target).
         """
         N = self._N
         margin = self._params.stroke_margin_mm
@@ -509,8 +818,8 @@ class MPCController:
         w0 = np.zeros(self._n_w)
         for k in range(N):
             alpha = t_cumulative[k + 1] / t_total
-            # p: interpolate from current pose toward final reference
-            p_k = p_cur * (1.0 - alpha) + ref_traj[-1] * alpha
+            # p: interpolate from current pose toward this node's reference
+            p_k = p_cur * (1.0 - alpha) + ref_traj[k + 1] * alpha
             w0[12 * N + k * 6: 12 * N + (k + 1) * 6] = p_k
             # q: compute IK-consistent extensions (full physical range)
             q_k = np.clip(self._numerical_ik(p_k), 0.0, stroke)
@@ -572,81 +881,41 @@ class MPCController:
         self,
         state: PlantState,
         target_pose: np.ndarray,
-        arrival_time: float | None,
-        target_twist: np.ndarray | None,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Construct (N+1, 6) reference arrays from a target pose + timing.
+        ref_events: List[ReferenceEvent] | None = None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Construct (N+1, 6) reference arrays for the MPC horizon.
 
-        All reference nodes are set to the target pose.  The MPC finds the
-        optimal feasible path via its cost function and constraints — no
-        intermediate waypoints are imposed.  The urgency system
-        (``_compute_urgency``) provides timing incentive for timed targets.
+        Quintic Hermite (C2) interpolation between events with acceleration,
+        cubic Hermite (C1) fallback for events without acceleration.
 
-        Twist reference is zero before the deadline (let MPC plan velocity)
-        and ``target_twist`` at/after the deadline.
+        If ``ref_events`` is None or empty, falls back to holding at
+        ``target_pose`` with zero twist and acceleration.  All sources
+        should emit ``ref_events`` via ``flat_target_to_events()`` or
+        equivalent; this fallback is a safety net only.
         """
+        if ref_events is not None and len(ref_events) > 0:
+            return _build_reference_from_events(
+                ref_events, state.time,
+                self._cumulative_times, self._N + 1,
+            )
+
+        # Safety fallback: hold at target_pose
         N = self._N
         ref_traj = np.empty((N + 1, 6))
-        twist_traj = np.zeros((N + 1, 6))
-
-        tw = target_twist if target_twist is not None else np.zeros(6)
-
         ref_traj[:] = target_pose
-
-        if arrival_time is not None:
-            time_budget = arrival_time - state.time
-            if time_budget <= 0:
-                # Past deadline: apply target twist everywhere
-                twist_traj[:] = tw
-            else:
-                # Apply target twist only at/past the deadline
-                t_nodes = self._cumulative_times
-                for k in range(N + 1):
-                    if t_nodes[k] >= time_budget:
-                        twist_traj[k] = tw
-
-        return ref_traj, twist_traj
-
-    def _compute_urgency(
-        self,
-        t_now: float,
-        arrival_time: float | None,
-    ) -> np.ndarray:
-        """Compute per-node urgency multipliers for the tracking cost.
-
-        Returns (N,) array of multipliers for nodes 1..N.
-
-        - ASAP mode (arrival_time is None): uniform 1.0.
-        - Timed mode: ``urgency_base`` far from the deadline, ramping
-          linearly to ``urgency_max`` over the ``urgency_ramp_s`` window.
-          The low base lets the MPC choose its own path to the target
-          without heavy cost pressure on nodes that are far from feasible.
-          The terminal cost (Qf) and ramp ensure accurate arrival.
-        """
-        N = self._N
-        if arrival_time is None:
-            return np.ones(N)
-
-        ramp_s = self._params.urgency_ramp_s
-        urg_base = self._params.urgency_base
-        urg_max = self._params.urgency_max
-        t_nodes = self._cumulative_times  # (N+1,) relative from t_now
-
-        urgency = np.full(N, urg_base)
-        for k in range(N):
-            t_k = t_now + t_nodes[k + 1]  # absolute time of node k+1
-            time_to_deadline = max(arrival_time - t_k, 0.0)
-            ramp = max(0.0, 1.0 - time_to_deadline / ramp_s) if ramp_s > 0 else 1.0
-            urgency[k] = urg_base + (urg_max - urg_base) * ramp
-
-        return urgency
+        twist_traj = np.zeros((N + 1, 6))
+        accel_traj = np.zeros((N + 1, 6))
+        return ref_traj, twist_traj, accel_traj
 
     # ------------------------------------------------------------------
     # Failure handling
     # ------------------------------------------------------------------
 
-    def _handle_failure(self, solve_ms, status_str):
-        """Fallback strategy on solver failure."""
+    def _handle_failure(self, solve_ms, status_str, q_cur=None):
+        """Fallback strategy on solver failure.
+
+        Returns (cmd, cmd_vel, diag) matching solve()'s return signature.
+        """
         self._consecutive_failures += 1
         logger.warning(
             "MPC solve failed (%d consecutive): %s (%.1f ms)",
@@ -662,25 +931,32 @@ class MPCController:
 
         stroke = self._params.stroke_mm
         margin = self._params.stroke_margin_mm
+        dt0 = self._params.dt_schedule[0]
 
         if (self._prev_w is not None
                 and self._consecutive_failures <= self._params.max_consecutive_failures):
             # Apply first step of shifted previous solution
             shifted = self._shift_warm_start(self._prev_w)
             cmd = np.clip(shifted[:6], margin, stroke - margin)
+            # Rate-limit against current state to prevent jumps when the
+            # plant has drifted since the last successful solve.
+            if q_cur is not None:
+                max_delta = self._params.max_leg_vel_mmps * dt0
+                cmd = np.clip(cmd, q_cur - max_delta, q_cur + max_delta)
             self._prev_prev_u = self._prev_u.copy() if self._prev_u is not None else cmd.copy()
             self._prev_u = cmd
-            return cmd, diag
+            cmd_vel = (cmd - q_cur) / dt0 if q_cur is not None else np.zeros(6)
+            return cmd, cmd_vel, diag
 
         if self._prev_u is not None:
             # Hold last command — Δu = 0 so prev_prev = prev
             self._prev_prev_u = self._prev_u.copy()
             diag['status'] = f'hold({status_str})'
-            return self._prev_u.copy(), diag
+            return self._prev_u.copy(), np.zeros(6), diag
 
         # Absolute fallback: hold at margin-safe position (lowest feasible)
         diag['status'] = f'cold_hold({status_str})'
-        return np.full(6, margin), diag
+        return np.full(6, margin), np.zeros(6), diag
 
     # ------------------------------------------------------------------
     # Post-solve extraction
@@ -701,15 +977,61 @@ class MPCController:
 
     @property
     def predicted_poses(self) -> np.ndarray | None:
-        """(N+1, 6) predicted platform poses from last solve, or None."""
+        """(N+1, 6) predicted platform poses from last solve, or None.
+
+        Returns a copy — safe for external consumers and tests.
+        For hot-path use (control loop), prefer ``predicted_poses_view``.
+        """
         if self._predicted_poses is None:
             return None
         return self._predicted_poses.copy()
 
     @property
+    def predicted_poses_view(self) -> np.ndarray | None:
+        """(N+1, 6) predicted poses — non-copying read-only view.
+
+        Returns the internal array directly.  Callers MUST NOT modify it.
+        Use this in the control loop hot path to avoid per-step allocation.
+        """
+        return self._predicted_poses
+
+    @property
     def predicted_times(self) -> np.ndarray:
-        """(N+1,) cumulative times from current step (0 to horizon_s)."""
+        """(N+1,) cumulative times from current step (0 to horizon_s).
+
+        Returns a copy — safe for external consumers and tests.
+        For hot-path use, prefer ``predicted_times_view``.
+        """
         return self._cumulative_times.copy()
+
+    @property
+    def predicted_times_view(self) -> np.ndarray:
+        """(N+1,) cumulative times — non-copying read-only view.
+
+        The underlying array is immutable (writeable=False).
+        """
+        return self._cumulative_times
+
+    @property
+    def last_ref_traj(self) -> np.ndarray | None:
+        """(N+1, 6) reference trajectory from last solve, or None."""
+        if self._last_ref_traj is None:
+            return None
+        return self._last_ref_traj.copy()
+
+    @property
+    def last_twist_traj(self) -> np.ndarray | None:
+        """(N+1, 6) reference twist trajectory from last solve, or None."""
+        if self._last_twist_traj is None:
+            return None
+        return self._last_twist_traj.copy()
+
+    @property
+    def last_accel_traj(self) -> np.ndarray | None:
+        """(N+1, 6) reference accel trajectory from last solve, or None."""
+        if self._last_accel_traj is None:
+            return None
+        return self._last_accel_traj.copy()
 
     @property
     def consecutive_failures(self) -> int:
@@ -728,3 +1050,6 @@ class MPCController:
         self._prev_prev_u = None
         self._consecutive_failures = 0
         self._predicted_poses = None
+        self._last_ref_traj = None
+        self._last_twist_traj = None
+        self._last_accel_traj = None
