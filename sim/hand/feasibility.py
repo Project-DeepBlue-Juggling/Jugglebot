@@ -19,9 +19,13 @@ import os, sys
 _sim_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if _sim_dir not in sys.path:
     sys.path.insert(0, _sim_dir)
+_repo_root = os.path.dirname(_sim_dir)
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
 
 from controller.mpc import MPCController
 from controller.params import MPCParams
+from controller.target import ReferenceEvent
 from plant.interface import PlantState
 
 logger = logging.getLogger(__name__)
@@ -107,6 +111,7 @@ class FeasibilityChecker:
         current_state: PlantState,
         target_pose: np.ndarray,
         time_available: float,
+        target_twist: np.ndarray | None = None,
     ) -> tuple[bool, str]:
         """Check whether the target is feasible.
 
@@ -118,6 +123,12 @@ class FeasibilityChecker:
             Target [x, y, z, rx, ry, rz] in mm/rad.
         time_available : float
             Seconds until the target must be reached.
+        target_twist : (6,) array or None
+            Desired twist at arrival.  When provided, the coarse MPC
+            receives a time-aware reference (current state → target)
+            via ``ref_events``, matching the main MPC's event-based
+            reference path.  ``None`` preserves the legacy flat-reference
+            (ASAP) behavior.
 
         Returns
         -------
@@ -142,17 +153,38 @@ class FeasibilityChecker:
             return False, f'extension above stroke: {worst:.1f} mm'
 
         # ---- Stage 2: coarse MPC solve ----
-        # Use the 1-D target interface (ASAP mode, no urgency ramp) for a
-        # neutral reachability prediction.  The urgency ramp is designed for
-        # receding-horizon online solves, not one-shot feasibility checks —
-        # it would make the optimizer over-optimistic about reaching the target.
         N = self._coarse_mpc.params.N
 
         # Reset coarse MPC state (no warm-start carryover)
         self._coarse_mpc.reset()
 
-        _, diag = self._coarse_mpc.solve(
-            current_state, target_pose, arrival_time=None)
+        # Build ref_events when target_twist is provided, giving the
+        # coarse MPC a time-aware reference that matches what the main
+        # MPC will see (Hermite interpolation: current → target).
+        ref_events = None
+        if target_twist is not None:
+            current_pose = np.concatenate([
+                current_state.platform_pos_mm,
+                current_state.platform_rot,
+            ])
+            ref_events = [
+                ReferenceEvent(
+                    time=current_state.time,
+                    pose=current_pose,
+                    twist=current_state.platform_twist.copy(),
+                    accel=np.zeros(6),
+                ),
+                ReferenceEvent(
+                    time=current_state.time + time_available,
+                    pose=target_pose.copy(),
+                    twist=np.asarray(target_twist, dtype=float),
+                    accel=np.zeros(6),
+                ),
+            ]
+
+        _, _, diag = self._coarse_mpc.solve(
+            current_state, target_pose,
+            ref_events=ref_events)
 
         predicted = self._coarse_mpc.predicted_poses
         if predicted is None:

@@ -38,7 +38,7 @@ _KEY_LEFT = 263
 _KEY_PAGE_UP = 266
 _KEY_PAGE_DOWN = 267
 _KEY_B = 66           # Primary spawn (BB throw when --bb, else preset)
-_KEY_GRAVE = 96       # Preset spawn (backtick `)  — not used by MuJoCo
+_KEY_G = 71           # Preset spawn (G key) — not used by MuJoCo
 _KEY_N = 78
 _KEY_M = 77
 _KEY_1 = 49
@@ -105,9 +105,9 @@ class InteractiveCatchState(Enum):
 
 # Ready pose: platform at default active Z, hand primed
 _READY_POSE = np.array([0.0, 0.0, 170.0, 0.0, 0.0, 0.0])
-_STARTUP_DURATION = 1.0   # seconds to ramp from home to ready pose
-_RETURN_DURATION = 1.0    # seconds to return to ready pose
-_COOLDOWN_DURATION = 0.3  # seconds before accepting next spawn
+_STARTUP_DURATION = 1.0   # seconds to ramp from active pose to ready pose
+_RETURN_DURATION = 0.3    # seconds to return to ready pose
+_COOLDOWN_DURATION = 0.1  # seconds before accepting next spawn
 _CATCH_TIMEOUT = 5.0      # max seconds for a catch attempt
 
 
@@ -127,9 +127,9 @@ class InteractiveCatchController:
     """
 
     def __init__(self, feasibility_checker=None, presets: list[SpawnPreset] | None = None,
-                 home_pose: np.ndarray | None = None, ball_butler_sim=None):
+                 active_pose: np.ndarray | None = None, ball_butler_sim=None):
         self._feasibility = feasibility_checker
-        self._home_pose = home_pose
+        self._active_pose = active_pose
         self._presets = presets or list(DEFAULT_PRESETS)
         self._bb_sim = ball_butler_sim  # Optional BallButlerSim for T-key throws
         self._preset_idx = 0
@@ -186,8 +186,8 @@ class InteractiveCatchController:
                 self._spawn_requested = True
             return
 
-        # Backtick (`) always triggers preset spawn (useful when --bb is active)
-        if keycode == _KEY_GRAVE:
+        # G key always triggers preset spawn (useful when --bb is active)
+        if keycode == _KEY_G:
             if self._state == InteractiveCatchState.READY:
                 self._spawn_requested = True
             else:
@@ -410,10 +410,14 @@ class InteractiveCatchController:
                             hand_cmd = 'home'
                             self._home_pending = False
 
-                # Check if coordinator is done
+                # Check if coordinator is done — but don't exit while the
+                # hand catch sequence is still active (the coordinator may
+                # go idle before the hand finishes its catch motion).
                 elapsed = sim_time - self._state_start_time
+                hand_done = self._active_hand_seq is None
                 coordinator_idle = (self._coordinator.phase == HandPhase.IDLE
-                                    and elapsed > 0.5)
+                                    and elapsed > 0.1
+                                    and hand_done)
                 timed_out = elapsed > _CATCH_TIMEOUT
 
                 if coordinator_idle or timed_out:
@@ -502,9 +506,26 @@ class InteractiveCatchController:
         if target.event_vel_mps is not None:
             print(f"  Event velocity: {target.event_vel_mps:.2f} m/s")
 
+        # Apply hand catch lead time: in MuJoCo sim the ball contacts the
+        # hand's physical geometry ~80ms before the analytical arrival time
+        # (collision at hand cup top vs predicted mid-catch position).
+        # Shift the hand sequence earlier so ball and hand meet at mid-stroke.
+        if target.event_vel_mps is not None and target.arrival_time is not None:
+            from hand.coordinator import _hand_catch_lead_time
+            lead = _hand_catch_lead_time(target.event_vel_mps)
+            target = DynamicTarget(
+                pose_6dof=target.pose_6dof,
+                arrival_time=target.arrival_time - lead,
+                arrival_twist=target.arrival_twist,
+                hold_duration=target.hold_duration + lead,  # extend hold to compensate
+                event_vel_mps=target.event_vel_mps,
+                settle_margin_s=target.settle_margin_s,
+                mode=target.mode,
+            )
+
         # Create fresh coordinator with feasibility checker
         self._coordinator = HandCoordinator(
-            home_pose=self._home_pose,
+            active_pose=self._active_pose,
             feasibility_checker=self._feasibility)
         self._coordinator.submit_target(target, ball_spawn)
 
@@ -525,6 +546,10 @@ class InteractiveCatchController:
             return None
 
         print(f"  Feasibility: ACCEPTED")
+
+        # Mark ball as already spawned so should_spawn_ball() doesn't re-trigger
+        # (main.py spawns the ball immediately from our returned ball_spawn)
+        self._coordinator._ball_spawned = True
 
         return ball_spawn
 
@@ -576,9 +601,23 @@ class InteractiveCatchController:
         if target.event_vel_mps is not None:
             print(f"  Event velocity: {target.event_vel_mps:.2f} m/s")
 
+        # Apply hand catch lead time (same as _do_spawn)
+        if target.event_vel_mps is not None and target.arrival_time is not None:
+            from hand.coordinator import _hand_catch_lead_time
+            lead = _hand_catch_lead_time(target.event_vel_mps)
+            target = DynamicTarget(
+                pose_6dof=target.pose_6dof,
+                arrival_time=target.arrival_time - lead,
+                arrival_twist=target.arrival_twist,
+                hold_duration=target.hold_duration + lead,
+                event_vel_mps=target.event_vel_mps,
+                settle_margin_s=target.settle_margin_s,
+                mode=target.mode,
+            )
+
         # Create coordinator and submit
         self._coordinator = HandCoordinator(
-            home_pose=self._home_pose,
+            active_pose=self._active_pose,
             feasibility_checker=self._feasibility)
         self._coordinator.submit_target(target, ball_spawn)
 
@@ -594,6 +633,10 @@ class InteractiveCatchController:
             return None
 
         print(f"  Feasibility: ACCEPTED")
+
+        # Mark ball as already spawned so should_spawn_ball() doesn't re-trigger
+        self._coordinator._ball_spawned = True
+
         return ball_spawn
 
     # ------------------------------------------------------------------
@@ -612,7 +655,7 @@ class InteractiveCatchController:
     def _print_ready(self) -> None:
         p = self._presets[self._preset_idx]
         if self._bb_sim is not None:
-            print(f"\n  READY — Press B for Ball Butler throw, ` for preset spawn")
+            print(f"\n  READY — Press B for Ball Butler throw, G for preset spawn")
         else:
             print(f"\n  READY — Press B to spawn ball")
         print(f"  Preset [{self._preset_idx + 1}/{len(self._presets)}]: "

@@ -7,7 +7,7 @@ horizon), so no external trajectory generator is needed.
 Trajectories
 ------------
 T1 : Linear translation
-    home -> [0,0,50,0,0,0] -> home, 1s each segment.
+    active pose -> [0,0,50,0,0,0] -> active pose, 1s each segment.
 T2 : Circular orbit
     80 mm radius circle in XY at z=50, 2s period.
 T3 : Multi-axis
@@ -62,19 +62,19 @@ def _waypoints_from_poses(
 
 
 def make_T1(start_time: float = 0.5) -> tuple[list[tuple[np.ndarray, float]], float]:
-    """T1: Linear translation — home -> z+50mm -> home, 1s each.
+    """T1: Linear translation — low -> z+50mm -> low, 1s each.
 
     Returns (waypoints, total_duration).
     """
-    home = np.zeros(6)
-    raised = np.array([0.0, 0.0, 50.0, 0.0, 0.0, 0.0])
-    return _waypoints_from_poses([home, raised, home], [1.0, 1.0], start_time)
+    low = np.array([0.0, 0.0, 10.0, 0.0, 0.0, 0.0])
+    raised = np.array([0.0, 0.0, 60.0, 0.0, 0.0, 0.0])
+    return _waypoints_from_poses([low, raised, low], [1.0, 1.0], start_time)
 
 
 def make_T2(start_time: float = 0.5) -> tuple[list[tuple[np.ndarray, float]], float]:
     """T2: Circular orbit — 80mm radius in XY at z=50, 2s period.
 
-    Includes a 1s ramp from home to the orbit start position, then 2 full
+    Includes a 1s ramp from active pose to the orbit start position, then 2 full
     periods of circular motion (4s), sampled at the control rate (50 Hz).
     The MPC plans the ramp internally; the orbit phase uses dense waypoints
     so the MPC always has a nearby target to track.
@@ -95,7 +95,7 @@ def make_T2(start_time: float = 0.5) -> tuple[list[tuple[np.ndarray, float]], fl
 
     waypoints: list[tuple[np.ndarray, float]] = []
 
-    # Phase 1: MPC plans a smooth ramp from home to orbit start
+    # Phase 1: MPC plans a smooth ramp from active pose to orbit start
     waypoints.append((orbit_start_pose.copy(), orbit_start_time))
 
     # Phase 2: dense circle waypoints at control rate
@@ -121,43 +121,45 @@ def make_T2(start_time: float = 0.5) -> tuple[list[tuple[np.ndarray, float]], fl
 def make_T3(start_time: float = 0.5) -> tuple[list[tuple[np.ndarray, float]], float]:
     """T3: Multi-axis — simultaneous translation + tilt, 1.5s segments.
 
-    Path: home -> [30, -20, 60, 3deg, -2deg, 0] -> [-20, 30, 40, -2deg, 3deg, 0] -> home
+    Path: low -> [30, -20, 60, 3deg, -2deg, 0] -> [-20, 30, 40, -2deg, 3deg, 0] -> low
 
     Returns (waypoints, total_duration).
     """
-    home = np.zeros(6)
+    low = np.array([0.0, 0.0, 10.0, 0.0, 0.0, 0.0])
     pose_a = np.array([30.0, -20.0, 60.0, np.radians(3.0), np.radians(-2.0), 0.0])
     pose_b = np.array([-20.0, 30.0, 40.0, np.radians(-2.0), np.radians(3.0), 0.0])
     return _waypoints_from_poses(
-        [home, pose_a, pose_b, home], [1.5, 1.5, 1.5], start_time)
+        [low, pose_a, pose_b, low], [1.5, 1.5, 1.5], start_time)
 
 
 def make_T4(start_time: float = 0.5) -> tuple[list[tuple[np.ndarray, float]], float]:
     """T4: Speed test — fast point-to-point, 400ms transit.
 
     Uses a raised start position so lateral motion is feasible.
-    Path: home -> [0,0,80,0,0,0] -> [40,-30,60,2deg,-1deg,0], then hold.
+    Path: active pose -> [0,0,80,0,0,0] -> [40,-30,60,2deg,-1deg,0], then hold.
 
     Returns (waypoints, total_duration).
     """
+    low = np.array([0.0, 0.0, 10.0, 0.0, 0.0, 0.0])
     pose_start = np.array([0.0, 0.0, 80.0, 0.0, 0.0, 0.0])
     pose_end = np.array([40.0, -30.0, 60.0, np.radians(2.0), np.radians(-1.0), 0.0])
     return _waypoints_from_poses(
-        [np.zeros(6), pose_start, pose_end], [1.0, 0.4], start_time)
+        [low, pose_start, pose_end], [1.0, 0.4], start_time)
 
 
 def make_T5(start_time: float = 0.5) -> tuple[list[tuple[np.ndarray, float]], float]:
     """T5: Grand tour — 10 poses spanning the workspace, 1.2s per segment.
 
     Exercises all 6 DoFs with a mix of high/low Z, lateral excursions,
-    combined tilts, and yaw. Returns to home at the end.
+    combined tilts, and yaw. Returns to active pose at the end.
 
     Returns (waypoints, total_duration).
     """
     d = np.radians
 
+    low = np.array([0.0, 0.0, 10.0, 0.0, 0.0, 0.0])
     poses = [
-        np.zeros(6),                                                        # home
+        low,                                                                # low (just above STOW)
         np.array([  0.0,   0.0, 100.0,      0.0,      0.0,      0.0]),     # straight up
         np.array([ 60.0,  40.0,  80.0,   d(4.0),   d(-3.0),     0.0]),     # front-right, tilted
         np.array([-50.0,  50.0,  60.0,  d(-3.0),    d(4.0),  d(2.0)]),     # back-left, yaw
@@ -168,7 +170,7 @@ def make_T5(start_time: float = 0.5) -> tuple[list[tuple[np.ndarray, float]], fl
         np.array([-40.0,   0.0, 120.0,  d(-2.0),   d(-4.0),     0.0]),     # left, highest
         np.array([ 50.0, -50.0,  70.0,   d(4.0),    d(4.0),  d(1.0)]),     # front-right-low, dual tilt
         np.array([  0.0,   0.0, 100.0,      0.0,      0.0,      0.0]),     # centre high (smooth exit)
-        np.zeros(6),                                                        # home
+        low,                                                                # low
     ]
     seg_duration = 1.2
     return _waypoints_from_poses(
@@ -186,8 +188,9 @@ def make_T6(start_time: float = 0.5) -> tuple[list[tuple[np.ndarray, float]], fl
     """
     d = np.radians
 
+    low = np.array([0.0, 0.0, 10.0, 0.0, 0.0, 0.0])
     poses = [
-        np.zeros(6),                                                          # home
+        low,                                                                  # low (just above STOW)
         np.array([  0.0,   0.0, 120.0,       0.0,      0.0,      0.0]),      # rise to cruise height
         np.array([120.0,   0.0, 100.0,       0.0,   d(-5.0),     0.0]),      # far right, leaning
         np.array([-100.0, 100.0, 100.0,   d(-4.0),    d(4.0), d(-3.0)]),     # opposite corner
@@ -200,7 +203,7 @@ def make_T6(start_time: float = 0.5) -> tuple[list[tuple[np.ndarray, float]], fl
         np.array([100.0, -80.0, 140.0,    d(3.0),   d(-3.0),  d(2.0)]),      # opposite again
         np.array([  0.0,   0.0, 260.0,    d(5.0),    d(5.0),     0.0]),      # sky high + tilt
         np.array([  0.0,   0.0, 120.0,       0.0,      0.0,      0.0]),      # back to cruise
-        np.zeros(6),                                                          # home
+        low,                                                                  # low
     ]
     durations = [1.0] + [1.2] * (len(poses) - 3) + [1.0]
     return _waypoints_from_poses(poses, durations, start_time)
@@ -392,7 +395,7 @@ def _compute_catch_target(
     the catching axis with the ball's approach direction.
 
     The catch Z is the hand opening position in world frame when the
-    platform is at ``active_z_offset_mm`` above home.
+    platform is at ``active_z_offset_mm`` above the active pose.
 
     Parameters
     ----------
@@ -429,7 +432,7 @@ def _compute_catch_target(
     # Platform centroid in world frame
     centroid_world = landing_pos - hand_catch_offset_mm * platform_z
 
-    # Convert to platform offset coordinates (relative to home)
+    # Convert to platform offset coordinates (relative to active pose)
     target_z_offset = centroid_world[2] - platform_height_mm
 
     arrival_time = spawn_time + flight_time
@@ -487,7 +490,7 @@ def _ball_landing_speed_mps(
 # trajectory prelude (~0.85 s lead required).
 # ---------------------------------------------------------------------------
 
-# Default platform Z offset for catch height computation (mm above home).
+# Default platform Z offset for catch height computation (mm above active pose).
 # The catch intercept height is platform_height + active_z + hand_catch_offset.
 _DT_ACTIVE_Z_MM = 80.0
 
@@ -565,7 +568,7 @@ def make_DT3() -> tuple[list[tuple[DynamicTarget, BallSpawn | None]], float]:
 def make_DT4() -> tuple[list[tuple[DynamicTarget, BallSpawn | None]], float]:
     """DT4: Infeasible — target requiring impossibly fast motion.
 
-    Platform can't reach [120, 120, 200] with 5° combined tilt in 200 ms from home.
+    Platform can't reach [120, 120, 200] with 5° combined tilt in 200 ms from active pose.
     The MPC should do its best but the ball should miss.
     """
     spawn_pos = np.array([120.0, 120.0, 1500.0])
@@ -744,7 +747,7 @@ def make_DT8() -> tuple[list[tuple[DynamicTarget, BallSpawn | None]], float]:
     The ball is spawned at x=300mm (well outside the ~120mm reachable radius).
     The target is centred at the origin — deliberately NOT computed from
     ballistics so the ball and target are misaligned.  The system should
-    attempt the catch, fail, and return home gracefully.
+    attempt the catch, fail, and return to active pose gracefully.
     """
     spawn_pos = np.array([300.0, 0.0, 1500.0])
     spawn_vel = np.array([0.0, 0.0, -800.0])

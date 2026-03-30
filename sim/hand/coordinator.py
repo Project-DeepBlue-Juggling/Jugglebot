@@ -71,7 +71,7 @@ class HandPhase(Enum):
     HOLDING = auto()            # At catch pose, waiting for ball
     CAUGHT = auto()             # Ball captured, retracting hand
     DECELERATING = auto()       # After throw, decelerating to stop (legacy)
-    RETURNING = auto()          # Returning to home
+    RETURNING = auto()          # Returning to active pose
 
 
 @dataclass
@@ -83,6 +83,48 @@ class HandEvent:
     arrival_error_mm: float = 0.0
     arrival_timing_error_s: float = 0.0
     captured: bool = False
+
+
+# Proximity tolerances for arrival_time=None ("ASAP") targets.
+# When no time deadline is set, transition once the platform is within these bounds.
+_ARRIVAL_POS_TOL_MM = 5.0
+_ARRIVAL_ROT_TOL_RAD = 0.02  # ~1.1 degrees
+
+# Return-to-active-pose duration estimation.
+# Conservative velocity (30% of MPC max 300 mm/s) for gentle motion.
+_RETURN_VEL_MMPS = 90.0
+_RETURN_ROT_SCALE_MM = 100.0   # mm-equivalent per radian of rotation
+_RETURN_MIN_S = 1.0
+_RETURN_MAX_S = 3.0
+_RETURN_MARGIN_S = 0.3         # additive buffer for accel/decel phases
+_RETURN_SAFETY_TIMEOUT_S = 4.0  # hard timeout if proximity never triggers
+
+
+def _hand_catch_lead_time(event_vel_mps: float) -> float:
+    """Seconds earlier the hand sequence should start relative to ball arrival.
+
+    The catch ``arrival_time`` is computed for the ball reaching the hand's
+    mid-catch position (hand_catch_offset ~ 65 mm above centroid).  But
+    the ball first contacts the physical hand geometry at the top of the
+    primed hand cup, which is ~184 mm higher in world frame.
+
+    Calibrated from MuJoCo simulation sweeps: the speed-dependent geometric
+    offset (184mm / ball_speed) is augmented by a fixed 30ms margin to
+    account for physics substep granularity and collision geometry extent.
+    At 3.7 m/s, this gives ~80ms total lead, which positions the hand at
+    the velocity-hold zone (~200mm on slider) at ball contact.
+    """
+    _PHYSICAL_OFFSET_MM = 184.0
+    _MARGIN_S = 0.025
+    ball_speed_mms = max(event_vel_mps, 0.3) * 1000.0
+    return _PHYSICAL_OFFSET_MM / ball_speed_mms + _MARGIN_S
+
+
+def _arrived_by_proximity(current_pose: np.ndarray, target_pose: np.ndarray) -> bool:
+    """Check if the platform is close enough to the target to count as arrived."""
+    pos_err = np.linalg.norm(current_pose[:3] - target_pose[:3])
+    rot_err = np.linalg.norm(current_pose[3:] - target_pose[3:])
+    return pos_err < _ARRIVAL_POS_TOL_MM and rot_err < _ARRIVAL_ROT_TOL_RAD
 
 
 class HandCoordinator:
@@ -97,8 +139,8 @@ class HandCoordinator:
         3. Query ``events`` for telemetry logging
     """
 
-    def __init__(self, home_pose: np.ndarray | None = None, feasibility_checker=None):
-        self._home = home_pose if home_pose is not None else np.zeros(6)
+    def __init__(self, active_pose: np.ndarray | None = None, feasibility_checker=None):
+        self._active = active_pose if active_pose is not None else np.zeros(6)
         self._feasibility = feasibility_checker  # FeasibilityChecker or None
         self._targets: list[tuple[DynamicTarget, BallSpawn | None]] = []
         self._current_idx = -1
@@ -246,14 +288,14 @@ class HandCoordinator:
                     if not feasible:
                         logger.warning(
                             "Catch target infeasible after throw: %s — "
-                            "returning home", reason)
+                            "returning to active pose", reason)
                         self._events.append(HandEvent(
                             target_idx=self._current_idx,
                             phase=HandPhase.TRANSITIONING,
                             time=sim_time,
                             arrival_error_mm=-1.0,  # sentinel
                         ))
-                        self._start_return(sim_time)
+                        self._start_return(sim_time, current_pose)
                         return self._current_target, hand_cmd
 
                     # Set MPC target to catch pose
@@ -282,7 +324,9 @@ class HandCoordinator:
             # Wait for platform to reach catch pose, then go straight to HOLDING
             catch_target = self._targets[self._current_idx][0]
 
-            if catch_target.arrival_time is not None and sim_time >= catch_target.arrival_time:
+            arrived_by_time = catch_target.arrival_time is not None and sim_time >= catch_target.arrival_time
+            arrived_by_pos = catch_target.arrival_time is None and _arrived_by_proximity(current_pose, catch_target.pose_6dof)
+            if arrived_by_time or arrived_by_pos:
                 self._phase = HandPhase.HOLDING
                 self._phase_start_time = sim_time
                 self._hold_end_time = sim_time + catch_target.hold_duration
@@ -322,7 +366,10 @@ class HandCoordinator:
                     hand_cmd = self._hand_catch_seq
                     self._hand_catch_seq = None
 
-            if target.arrival_time is not None and sim_time >= target.arrival_time:
+            arrived_by_time = target.arrival_time is not None and sim_time >= target.arrival_time
+            arrived_by_pos = target.arrival_time is None and _arrived_by_proximity(current_pose, target.pose_6dof)
+            if arrived_by_time or arrived_by_pos:
+                timing_err = (sim_time - target.arrival_time) if target.arrival_time is not None else 0.0
                 if self.is_catch_mode:
                     self._phase = HandPhase.HOLDING
                     self._hold_end_time = sim_time + target.hold_duration
@@ -337,7 +384,7 @@ class HandCoordinator:
                         time=sim_time,
                         arrival_error_mm=float(np.linalg.norm(
                             current_pose[:3] - target.pose_6dof[:3])),
-                        arrival_timing_error_s=sim_time - target.arrival_time,
+                        arrival_timing_error_s=timing_err,
                     ))
                 else:
                     self._phase = HandPhase.THROWING
@@ -347,7 +394,7 @@ class HandCoordinator:
                         time=sim_time,
                         arrival_error_mm=float(np.linalg.norm(
                             current_pose[:3] - target.pose_6dof[:3])),
-                        arrival_timing_error_s=sim_time - target.arrival_time,
+                        arrival_timing_error_s=timing_err,
                     ))
 
         elif self._phase == HandPhase.HOLDING:
@@ -355,7 +402,7 @@ class HandCoordinator:
                 # Deferred timeout: hold expired last step and notify_capture
                 # did not fire in between — treat as a miss.
                 hand_cmd = 'prime'
-                self._start_return(sim_time)
+                self._start_return(sim_time, current_pose)
             elif sim_time >= self._hold_end_time:
                 # Mark expired but don't transition yet — give the main loop
                 # one more chance to call notify_capture() for this step.
@@ -364,14 +411,16 @@ class HandCoordinator:
         elif self._phase == HandPhase.CAUGHT:
             # Ball in hand — retract hand to bottom to secure the ball
             hand_cmd = 'home'
-            self._start_return(sim_time)
+            self._start_return(sim_time, current_pose)
 
         elif self._phase == HandPhase.DECELERATING:
             if sim_time >= self._phase_start_time + 1.0:
-                self._start_return(sim_time)
+                self._start_return(sim_time, current_pose)
 
         elif self._phase == HandPhase.RETURNING:
-            if sim_time >= self._phase_start_time + 1.0:
+            arrived = _arrived_by_proximity(current_pose, self._active)
+            timed_out = sim_time >= self._phase_start_time + _RETURN_SAFETY_TIMEOUT_S
+            if arrived or timed_out:
                 self._phase = HandPhase.IDLE
                 self._current_target = None
                 self._hand_primed = False
@@ -461,7 +510,8 @@ class HandCoordinator:
                     time=sim_time,
                 )
             feasible, reason = self._feasibility.check(
-                feas_state, target.pose_6dof, time_to_arrival)
+                feas_state, target.pose_6dof, time_to_arrival,
+                target_twist=target.arrival_twist)
             if not feasible:
                 return False, reason
 
@@ -538,7 +588,7 @@ class HandCoordinator:
             self._phase = HandPhase.APPROACHING_THROW
         elif is_catch:
             # Catch-only flow
-            if target.event_vel_mps is not None:
+            if target.event_vel_mps is not None and target.arrival_time is not None:
                 result = HandCatchSequence.try_create(
                     event_vel_mps=target.event_vel_mps,
                     arrival_time=target.arrival_time,
@@ -569,12 +619,20 @@ class HandCoordinator:
             )
             self._phase = HandPhase.APPROACHING
 
-    def _start_return(self, now: float) -> None:
-        """Command a return to home via the MPC."""
+    def _start_return(self, now: float, current_pose: np.ndarray) -> None:
+        """Command a gentle return to active pose via the MPC."""
+        dist_mm = np.linalg.norm(current_pose[:3] - self._active[:3])
+        rot_rad = np.linalg.norm(current_pose[3:] - self._active[3:])
+        effective_dist = max(dist_mm, rot_rad * _RETURN_ROT_SCALE_MM)
+        duration = float(np.clip(
+            effective_dist / _RETURN_VEL_MMPS + _RETURN_MARGIN_S,
+            _RETURN_MIN_S, _RETURN_MAX_S,
+        ))
+
         self._phase_start_time = now
         self._current_target = DynamicTarget(
-            pose_6dof=self._home.copy(),
-            arrival_time=now + 1.0,
+            pose_6dof=self._active.copy(),
+            arrival_time=now + duration,
         )
         self._phase = HandPhase.RETURNING
         self._throw_catch_plan = None  # Clear completed plan

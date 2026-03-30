@@ -239,7 +239,7 @@ class KeyboardInput:
         for i in range(3):
             lo = -self._pos_limits[i]
             hi = self._pos_limits[i]
-            if i == 2:  # Z: 0 to limit (home-relative)
+            if i == 2:  # Z: 0 to limit (relative to active pose)
                 lo = 0.0
             self._target_pose[i] = np.clip(self._target_pose[i], lo, hi)
         for i in range(3):

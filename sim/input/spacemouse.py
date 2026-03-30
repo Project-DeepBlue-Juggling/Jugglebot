@@ -99,7 +99,7 @@ class SpaceMouseInput:
     """Reads a 3Dconnexion SpaceMouse and produces a target pose.
 
     The target pose is an absolute pose ``[x, y, z, rx, ry, rz]`` (mm, rad)
-    offset from home.  SpaceMouse at rest → ``[0, 0, z_offset, 0, 0, 0]``
+    offset from stow pose.  SpaceMouse at rest → ``[0, 0, z_offset, 0, 0, 0]``
     where ``z_offset = default_active_z_mm`` from hardware config.
 
     Parameters

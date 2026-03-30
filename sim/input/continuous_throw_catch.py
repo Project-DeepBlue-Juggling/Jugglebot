@@ -92,15 +92,15 @@ class ContinuousThrowCatchController:
 
     Parameters
     ----------
-    home_pose : (6,) array or None
-        Platform home pose (default: zeros).
+    active_pose : (6,) array or None
+        Platform active pose (default: zeros).
     params : JuggleParams or None
         Initial throw-catch parameters.  Defaults to TC2-like settings.
     """
 
-    def __init__(self, home_pose: np.ndarray | None = None,
+    def __init__(self, active_pose: np.ndarray | None = None,
                  params: JuggleParams | None = None):
-        self._home_pose = home_pose if home_pose is not None else np.zeros(6)
+        self._active_pose = active_pose if active_pose is not None else np.zeros(6)
         self._params = params if params is not None else JuggleParams()
         self._planner = ThrowCatchPlanner()
         self._sim_ctrl = SimController()
@@ -236,7 +236,7 @@ class ContinuousThrowCatchController:
         """
         hand_cmd = None
         ball_spawn = None
-        home_target = DynamicTarget(pose_6dof=self._home_pose.copy())
+        active_target = DynamicTarget(pose_6dof=self._active_pose.copy())
 
         # -- STARTUP: spawn ball in hand and plan first throw --
         if self._state == JuggleState.STARTUP:
@@ -255,7 +255,7 @@ class ContinuousThrowCatchController:
                     self._print_cycle_header()
                 # If planning fails, stay in STARTUP and retry next frame
 
-            return home_target, hand_cmd, ball_spawn
+            return active_target, hand_cmd, ball_spawn
 
         # -- CYCLE_ACTIVE: coordinator running throw-catch --
         if self._state == JuggleState.CYCLE_ACTIVE:
@@ -266,8 +266,8 @@ class ContinuousThrowCatchController:
                 self._state = JuggleState.BETWEEN_CYCLES
                 self._state_start_time = sim_time
                 self._coordinator = None
-                print("  Force reset — returning to home, replanning...")
-                return home_target, 'home', ball_spawn
+                print("  Force reset — returning to active pose, replanning...")
+                return active_target, 'home', ball_spawn
 
             if self._coordinator is not None:
                 target, hcmd = self._coordinator.update(
@@ -296,7 +296,7 @@ class ContinuousThrowCatchController:
                         self._state = JuggleState.DROPPED
                         self._state_start_time = sim_time
 
-                return (target or home_target), hand_cmd, ball_spawn
+                return (target or active_target), hand_cmd, ball_spawn
 
         # -- BETWEEN_CYCLES: brief pause then plan next throw --
         if self._state == JuggleState.BETWEEN_CYCLES:
@@ -314,7 +314,7 @@ class ContinuousThrowCatchController:
                     self._state = JuggleState.DROPPED
                     self._state_start_time = sim_time
 
-            return home_target, None, None
+            return active_target, None, None
 
         # -- DROPPED: wait for reset --
         if self._state == JuggleState.DROPPED:
@@ -325,9 +325,9 @@ class ContinuousThrowCatchController:
                 self._state_start_time = sim_time
                 print("  Ball reset — planning next cycle...")
 
-            return home_target, None, ball_spawn
+            return active_target, None, ball_spawn
 
-        return home_target, None, None
+        return active_target, None, None
 
     # ------------------------------------------------------------------
     # Planning
@@ -360,7 +360,7 @@ class ContinuousThrowCatchController:
             return False
 
         self._plan = plan
-        self._coordinator = HandCoordinator(home_pose=self._home_pose)
+        self._coordinator = HandCoordinator(active_pose=self._active_pose)
         self._coordinator.submit_throw_catch(plan)
 
         print(f"  Throw: {_fmt_vec(self._params.throw_pos_mm)} -> "

@@ -25,6 +25,9 @@ import numpy as np
 _sim_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if _sim_dir not in sys.path:
     sys.path.insert(0, _sim_dir)
+_repo_root = os.path.dirname(_sim_dir)
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
 
 from plant.mujoco_plant import MuJoCoPlant
 from controller.mpc import MPCController
@@ -56,7 +59,12 @@ def run_trajectory(
             idx += 1
         target_pose, arrival_time = waypoints[idx]
 
-        cmd, diag = mpc.solve(state, target_pose, arrival_time=arrival_time)
+        from controller.target import flat_target_to_events
+        current_pose = np.concatenate([state.platform_pos_mm, state.platform_rot])
+        ref_events = flat_target_to_events(
+            current_pose, state.platform_twist, target_pose, state.time,
+            arrival_time=arrival_time)
+        cmd, _cmd_vel, diag = mpc.solve(state, target_pose, ref_events=ref_events)
         plant.command(cmd)
         plant.step(CONTROL_DT)
 
@@ -77,7 +85,8 @@ def run_trajectory(
         )
         logger.append(record)
 
-    return logger.records
+    logger.flush()
+    return logger.load()
 
 
 def record_baseline(

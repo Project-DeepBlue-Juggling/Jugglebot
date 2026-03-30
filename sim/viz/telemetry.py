@@ -133,38 +133,99 @@ def record_from_arrays(
 
 
 class TelemetryLogger:
-    """Accumulates StepRecords and writes them to CSV.
+    """Accumulates StepRecords and periodically flushes them to CSV.
+
+    Records are written to disk in batches to bound memory usage and provide
+    crash safety.  A rolling tail of recent records is kept in memory for
+    end-of-run summary stats.  Use :meth:`load` to read the full history back
+    from the CSV after the run.
 
     Usage::
 
         logger = TelemetryLogger("logs/run_001.csv")
         for step in sim_loop:
             logger.append(record)
-        logger.flush()  # writes to disk (also called on close)
+        logger.flush()          # writes remaining records to disk
+        all_records = logger.load()  # read full history from CSV
     """
+
+    _FLUSH_EVERY: int = 5000   # records between disk writes
+    _TAIL_SIZE: int = 200      # keep last N in memory for summary stats
 
     def __init__(self, path: str | None = None):
         self._records: list[StepRecord] = []
         self._path = path
+        self._total_count: int = 0
+        self._header_written: bool = False
+        self._flushed_tail: int = 0  # number of leading records already on disk
 
     def append(self, record: StepRecord) -> None:
         self._records.append(record)
+        self._total_count += 1
+        if self._path and len(self._records) >= self._FLUSH_EVERY:
+            self._flush_batch()
 
     @property
     def records(self) -> list[StepRecord]:
+        """Recent records (rolling window).  Use load() for full history."""
         return self._records
 
-    def flush(self) -> None:
-        """Write all accumulated records to CSV."""
+    @property
+    def total_count(self) -> int:
+        """Total number of records appended (including those already flushed)."""
+        return self._total_count
+
+    def _flush_batch(self) -> None:
+        """Append new records to CSV, then trim to tail."""
         if not self._path or not self._records:
+            return
+        new_records = self._records[self._flushed_tail:]
+        if not new_records:
             return
         os.makedirs(os.path.dirname(self._path) or '.', exist_ok=True)
         field_names = [f.name for f in fields(StepRecord)]
-        with open(self._path, 'w', newline='') as f:
+        mode = 'a' if self._header_written else 'w'
+        with open(self._path, mode, newline='') as f:
             writer = csv.DictWriter(f, fieldnames=field_names)
-            writer.writeheader()
-            for rec in self._records:
+            if not self._header_written:
+                writer.writeheader()
+                self._header_written = True
+            for rec in new_records:
                 writer.writerow(asdict(rec))
+        self._records = self._records[-self._TAIL_SIZE:]
+        self._flushed_tail = len(self._records)
+
+    def flush(self) -> None:
+        """Flush remaining in-memory records to disk."""
+        if self._path and self._records:
+            self._flush_batch()
+
+    def load(self) -> list[StepRecord]:
+        """Read the full history back from the CSV on disk.
+
+        Automatically flushes any pending records before reading.
+        Returns whatever is in memory if no path was set or the file
+        doesn't exist.
+        """
+        self.flush()
+        if not self._path or not os.path.exists(self._path):
+            return list(self._records)  # fallback: return whatever is in memory
+        out: list[StepRecord] = []
+        field_names = {f.name for f in fields(StepRecord)}
+        float_fields = {f.name for f in fields(StepRecord) if f.type == 'float'}
+        with open(self._path, 'r', newline='') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                kwargs = {}
+                for key, val in row.items():
+                    if key not in field_names:
+                        continue
+                    if key in float_fields:
+                        kwargs[key] = float(val)
+                    else:
+                        kwargs[key] = val
+                out.append(StepRecord(**kwargs))
+        return out
 
     def close(self) -> None:
         self.flush()

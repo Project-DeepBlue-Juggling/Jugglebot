@@ -30,14 +30,25 @@ class PlantState:
     # Hand fields — None when model has no hand (backward-compatible)
     hand_pos_mm: float | None = None      # Hand linear position (mm from bottom of travel)
     hand_vel_mmps: float | None = None    # Hand linear velocity (mm/s)
+    # Telemetry freshness — None for sim (always fresh), seconds for hardware
+    data_age_s: float | None = None
 
 
 class PlantInterface(ABC):
     """Abstract interface for controlling a Stewart platform plant."""
 
     @abstractmethod
-    def command(self, leg_extensions_mm: np.ndarray) -> None:
-        """Send 6 leg extension commands (mm, IK convention)."""
+    def command(self, leg_extensions_mm: np.ndarray,
+                vel_mm_s: np.ndarray | None = None) -> None:
+        """Send 6 leg extension commands (mm, IK convention).
+
+        Parameters
+        ----------
+        leg_extensions_mm : (6,) ndarray — STOW-relative extensions in mm
+        vel_mm_s : (6,) ndarray or None — forward-looking command velocity
+            (mm/s).  When provided by the MPC, this is preferred over the
+            backward-difference computed from consecutive commands.
+        """
 
     @abstractmethod
     def get_state(self) -> PlantState:

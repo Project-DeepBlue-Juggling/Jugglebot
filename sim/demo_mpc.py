@@ -25,6 +25,9 @@ import numpy as np
 _sim_dir = os.path.dirname(os.path.abspath(__file__))
 if _sim_dir not in sys.path:
     sys.path.insert(0, _sim_dir)
+_repo_root = os.path.dirname(_sim_dir)
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
 
 from plant.mujoco_plant import MuJoCoPlant
 from controller.mpc import MPCController
@@ -37,13 +40,13 @@ CONTROL_DT = 0.02  # 50 Hz
 # Demo pose sequence: (time_s, [x, y, z, rx, ry, rz])
 # All poses are reachable (all extensions > 0)
 DEMO_SEQUENCE = [
-    (0.0,  [0.0,   0.0,    0.0,  0.0,              0.0,              0.0]),        # home
+    (0.0,  [0.0,   0.0,    0.0,  0.0,              0.0,              0.0]),        # active pose
     (0.5,  [0.0,   0.0,   50.0,  0.0,              0.0,              0.0]),        # z +50 mm
     (2.0,  [20.0, -15.0,  60.0,  0.0,              0.0,              0.0]),        # lateral offset
     (3.5,  [0.0,   0.0,   80.0,  np.radians(5.0),  np.radians(-3.0), 0.0]),       # tilt at z+80
     (5.0,  [30.0, -20.0,  50.0,  np.radians(3.0),  np.radians(-2.0), 0.0]),       # combined
     (6.5,  [0.0,   0.0,   50.0,  0.0,              0.0,              0.0]),        # back to z+50
-    (8.0,  [0.0,   0.0,    0.0,  0.0,              0.0,              0.0]),        # return home
+    (8.0,  [0.0,   0.0,    0.0,  0.0,              0.0,              0.0]),        # return to active pose
 ]
 
 
@@ -125,7 +128,7 @@ def run(viewer_mode, dashboard=None):
             while viewer.is_running() and sim_target < duration:
                 state = plant.get_state()
                 target = get_target(state.time, DEMO_SEQUENCE)
-                cmd, diag = mpc.solve(state, target)
+                cmd, _cmd_vel, diag = mpc.solve(state, target)
                 plant.command(cmd)
                 plant.step(CONTROL_DT)
                 sim_target += CONTROL_DT
@@ -144,7 +147,7 @@ def run(viewer_mode, dashboard=None):
         for _ in range(n_steps):
             state = plant.get_state()
             target = get_target(state.time, DEMO_SEQUENCE)
-            cmd, diag = mpc.solve(state, target)
+            cmd, _cmd_vel, diag = mpc.solve(state, target)
             plant.command(cmd)
             plant.step(CONTROL_DT)
             step_callback(state, target, cmd, diag)

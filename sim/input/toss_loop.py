@@ -47,6 +47,7 @@ from hand.trajectory import (
 )
 from input.sim_control import SimController
 from plant.interface import PlantState
+from controller.target import ReferenceEvent
 
 logger = logging.getLogger(__name__)
 
@@ -73,86 +74,6 @@ class _Phase(Enum):
     POST_CATCH = auto()         # Ball captured, catch finishing, planning next
 
 
-# ------------------------------------------------------------------
-# Quintic Hermite interpolation (C2 continuous)
-# ------------------------------------------------------------------
-
-def _quintic_interp(
-    p0: np.ndarray,
-    v0: np.ndarray,
-    a0: np.ndarray,
-    p1: np.ndarray,
-    v1: np.ndarray,
-    a1: np.ndarray,
-    duration: float,
-    t: float,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Quintic Hermite interpolation: matches position, velocity, and
-    acceleration at both endpoints, giving C2 continuity at segment
-    boundaries.
-
-    The polynomial in normalised time s = t/T is::
-
-        p(s) = (1 - 10s³ + 15s⁴ - 6s⁵) p0
-             + s(1 - 6s² + 8s³ - 3s⁴) T·v0
-             + ½s²(1 - 3s + 3s² - s³) T²·a0
-             + (10s³ - 15s⁴ + 6s⁵) p1
-             + s²(-4s + 7s² - 3s³ + s⁻¹·0) ...   [see basis below]
-
-    Parameters
-    ----------
-    p0, p1 : (6,) start and end poses
-    v0, v1 : (6,) start and end twists (real-time units, e.g. mm/s)
-    a0, a1 : (6,) start and end accelerations (real-time units, e.g. mm/s²)
-    duration : segment duration in seconds
-    t : time since segment start (clamped to [0, duration])
-
-    Returns
-    -------
-    pose : (6,) interpolated pose
-    twist : (6,) interpolated twist (velocity in real-time units)
-    """
-    if duration <= 0:
-        return p1.copy(), v1.copy()
-
-    t = max(0.0, min(t, duration))
-    T = duration
-    s = t / T
-
-    # Scale derivatives to normalised time
-    V0 = v0 * T
-    V1 = v1 * T
-    A0 = a0 * (T * T)
-    A1 = a1 * (T * T)
-
-    s2 = s * s
-    s3 = s2 * s
-    s4 = s3 * s
-    s5 = s4 * s
-
-    # Quintic Hermite basis functions
-    h0 = 1 - 10 * s3 + 15 * s4 - 6 * s5
-    h1 = s - 6 * s3 + 8 * s4 - 3 * s5
-    h2 = 0.5 * s2 - 1.5 * s3 + 1.5 * s4 - 0.5 * s5
-    h3 = 10 * s3 - 15 * s4 + 6 * s5
-    h4 = -4 * s3 + 7 * s4 - 3 * s5
-    h5 = 0.5 * s3 - s4 + 0.5 * s5
-
-    pose = h0 * p0 + h1 * V0 + h2 * A0 + h3 * p1 + h4 * V1 + h5 * A1
-
-    # First derivative of basis (w.r.t. s), divided by T for real-time velocity
-    inv_T = 1.0 / T
-    dh0 = (-30 * s2 + 60 * s3 - 30 * s4) * inv_T
-    dh1 = (1 - 18 * s2 + 32 * s3 - 15 * s4) * inv_T
-    dh2 = (s - 4.5 * s2 + 6 * s3 - 2.5 * s4) * inv_T
-    dh3 = (30 * s2 - 60 * s3 + 30 * s4) * inv_T
-    dh4 = (-12 * s2 + 28 * s3 - 15 * s4) * inv_T
-    dh5 = (1.5 * s2 - 4 * s3 + 2.5 * s4) * inv_T
-
-    twist = dh0 * p0 + dh1 * V0 + dh2 * A0 + dh3 * p1 + dh4 * V1 + dh5 * A1
-
-    return pose, twist
-
 
 class TossLoopController:
     """Continuous toss loop driven by cycle_time and hold_ratio.
@@ -160,7 +81,7 @@ class TossLoopController:
     Platform motion uses quintic Hermite interpolation between event poses,
     producing C2-continuous motion (position, velocity, and acceleration
     are all continuous at segment boundaries).  The MPC tracks a moving
-    ASAP reference — no arrival_time deadlines, no urgency ramps.
+    ASAP reference — no arrival_time deadlines.
 
     Parameters
     ----------
@@ -175,8 +96,8 @@ class TossLoopController:
         Platform velocity at throw/catch as a fraction of average transit
         velocity (0..1). 0 = stop at events (Phase B), >0 = continuous
         motion (Phase C).
-    home_pose : (6,) array or None
-        Platform home pose (default zeros).
+    active_pose : (6,) array or None
+        Platform active pose (default zeros).
     """
 
     def __init__(
@@ -185,14 +106,14 @@ class TossLoopController:
         hold_ratio: float = 0.4,
         lateral_spacing_mm: float = 0.0,
         platform_event_speed_ratio: float = 0.0,
-        home_pose: np.ndarray | None = None,
+        active_pose: np.ndarray | None = None,
     ):
         self._cycle_time = cycle_time
         self._hold_ratio = hold_ratio
         self._lateral_spacing = lateral_spacing_mm
         self._event_speed_ratio = platform_event_speed_ratio
         self._continuous = platform_event_speed_ratio > 0
-        self._home_pose = home_pose if home_pose is not None else np.zeros(6)
+        self._active_pose = active_pose if active_pose is not None else np.zeros(6)
 
         # Derived timing
         self._air_time = (1.0 - hold_ratio) * cycle_time
@@ -219,7 +140,7 @@ class TossLoopController:
                 f"Min cycle_time ≈ {min_ct:.2f}s at hold_ratio={hold_ratio}.")
 
         # Ball Z: average of throw release and catch arrival hand offsets
-        self._ball_z = self._compute_ball_z() + 60.0  # +60mm (3× PgUp steps)
+        self._ball_z = self._compute_ball_z() + 120.0
 
         # Components
         self._planner = ThrowCatchPlanner()
@@ -243,6 +164,7 @@ class TossLoopController:
         self._approach_start_time = 0.0
         self._position_idx = 0
 
+        # Hold-to-throw transition state: saved when _start_cycle replaces
         # Stats
         self._cycle_count = 0
         self._catch_count = 0
@@ -305,7 +227,7 @@ class TossLoopController:
         return hi
 
     def _compute_ball_z(self) -> float:
-        """Ball Z that keeps the platform near home for vertical toss."""
+        """Ball Z that keeps the platform near active pose for vertical toss."""
         throw_traj = HandThrowTrajectory(self._v_launch_mps)
         throw_offset = compute_hand_offset_mm(throw_traj.release_pos_mm)
         catch_offset = compute_hand_offset_mm(_HAND_CATCH_X5_MM)
@@ -343,9 +265,10 @@ class TossLoopController:
         """Compute platform twist at throw and catch events.
 
         Returns (throw_twist, catch_twist), each (6,) or None.
-        Phase C: the platform velocity at each event is a fraction of the
-        average transit velocity (displacement / air_time), pointing from
-        throw toward catch.
+        Phase C: the platform has velocity at throw (reducing hand throw
+        speed), but always stops at catch.  The catch twist is zero to
+        prevent the hold-segment velocity reversal that causes overshoot
+        when catch and next_throw are co-located.
         """
         if not self._continuous or self._lateral_spacing == 0:
             return None, None
@@ -356,15 +279,14 @@ class TossLoopController:
         event_vel = self._event_speed_ratio * avg_vel
 
         # Build 6-DOF twist: [vx, vy, vz, wx, wy, wz]
-        # Translational velocity at both events; no angular velocity.
+        # Throw: platform velocity reduces required hand throw speed.
         throw_twist = np.array([
             event_vel[0], event_vel[1], event_vel[2],
             0.0, 0.0, 0.0,
         ])
-        catch_twist = np.array([
-            event_vel[0], event_vel[1], event_vel[2],
-            0.0, 0.0, 0.0,
-        ])
+        # Catch: platform stops.  The hand absorbs the full ball arrival
+        # velocity.  This eliminates the hold-segment velocity reversal.
+        catch_twist = None
         return throw_twist, catch_twist
 
     # ------------------------------------------------------------------
@@ -410,8 +332,16 @@ class TossLoopController:
         self._ball_captured = False
         self._cycle_count += 1
         self._position_idx += 1
+        tz = plan.throw_target.pose_6dof[2]
+        cz = plan.catch_target.pose_6dof[2]
+        tt = self._twist_or_zero(plan.throw_target)
         print(f"\n  --- Cycle {self._cycle_count} "
               f"(caught: {self._catch_count}, streak: {self._streak}) ---")
+        print(f"  throw_z={tz:.1f}mm  catch_z={cz:.1f}mm  "
+              f"(dZ={cz - tz:+.1f}mm during flight)")
+        if np.any(tt != 0):
+            print(f"  throw_twist=[{tt[0]:.0f}, {tt[1]:.0f}, {tt[2]:.0f}] mm/s"
+                  f"  catch_twist=[0, 0, 0] mm/s")
 
     def _handle_drop(self, sim_time: float):
         """Transition to DROPPED state."""
@@ -464,78 +394,85 @@ class TossLoopController:
     @staticmethod
     def _twist_or_zero(target: DynamicTarget) -> np.ndarray:
         if target.arrival_twist is not None:
-            return target.arrival_twist
+            return target.arrival_twist.copy()
         return np.zeros(6)
 
-    def _approach_target(self, sim_time: float) -> DynamicTarget:
-        """Quintic interpolation from home to the first throw pose.
+    # ------------------------------------------------------------------
+    # Multi-event MPC lookahead (single source of truth for platform motion)
+    # ------------------------------------------------------------------
 
-        Used during the initial approach before the first throw.
-        Matches C2 boundary conditions: start from rest at home,
-        arrive at throw_pose with throw_twist.
+    def _build_ref_events(self, sim_time: float) -> list[ReferenceEvent] | None:
+        """Construct ReferenceEvent list covering the current MPC horizon.
+
+        All cycle events (throw/catch for current + next cycle) are included
+        unconditionally — even past events.  Past events serve as left
+        interpolation boundaries so the MPC can quintic-interpolate the
+        current segment correctly.  Without the left boundary, the MPC would
+        backward-extrapolate from the next event's velocity, pulling the
+        platform the wrong way.
+
+        The MPC's ``_build_reference_from_events()`` uses quintic Hermite
+        interpolation (C2-continuous) between events that provide
+        acceleration, producing smooth, overshoot-free references.
+
+        Returns None when no plan is active (STARTUP, DROPPED).
         """
-        plan = self._plan
-        throw_pose = plan.throw_target.pose_6dof
-        throw_twist = self._twist_or_zero(plan.throw_target)
+        if self._plan is None:
+            return None
 
-        t_seg = sim_time - self._approach_start_time
-        duration = self._last_throw_time - self._approach_start_time
-
-        pose, _ = _quintic_interp(
-            self._home_pose, np.zeros(6), np.zeros(6),
-            throw_pose, throw_twist, np.zeros(6),
-            duration, t_seg,
-        )
-        return DynamicTarget(pose_6dof=pose)
-
-    def _interpolated_target(self, sim_time: float) -> DynamicTarget:
-        """Compute the platform target by quintic Hermite interpolation.
-
-        During flight (throw_time -> catch_time):
-            Interpolate from throw_pose/twist to catch_pose/twist.
-
-        During hold (catch_time -> next_throw_time):
-            Interpolate from catch_pose/twist to next_throw_pose/twist.
-
-        Acceleration is zero at all segment boundaries, giving C2
-        continuity where flight and hold segments meet.
-
-        Returns an ASAP DynamicTarget (no arrival_time) so the MPC uses
-        uniform urgency and simply tracks the moving reference.
-        """
         plan = self._plan
         throw_time = self._last_throw_time
         catch_time = throw_time + self._air_time
+        next_throw_time = throw_time + self._cycle_time
 
-        throw_pose = plan.throw_target.pose_6dof
-        throw_twist = self._twist_or_zero(plan.throw_target)
-        catch_pose = plan.catch_target.pose_6dof
-        catch_twist = self._twist_or_zero(plan.catch_target)
-        zero = np.zeros(6)
+        events: list[ReferenceEvent] = []
 
-        if sim_time <= catch_time:
-            # Flight segment: throw_pose -> catch_pose
-            t_seg = sim_time - throw_time
-            pose, _ = _quintic_interp(
-                throw_pose, throw_twist, zero,
-                catch_pose, catch_twist, zero,
-                self._air_time, t_seg,
-            )
-        elif self._next_plan is not None:
-            # Hold segment: catch_pose -> next_throw_pose
-            next_throw_pose = self._next_plan.throw_target.pose_6dof
-            next_throw_twist = self._twist_or_zero(
-                self._next_plan.throw_target)
-            t_seg = sim_time - catch_time
-            pose, _ = _quintic_interp(
-                catch_pose, catch_twist, zero,
-                next_throw_pose, next_throw_twist, zero,
-                self._hold_time, t_seg,
-            )
-        else:
-            pose = catch_pose.copy()
+        # During initial approach, anchor the reference at the start pose
+        # so the MPC can interpolate smoothly from rest to the throw event.
+        if (self._phase == _Phase.APPROACHING_THROW
+                and sim_time < throw_time
+                and self._approach_start_time <= sim_time):
+            events.append(ReferenceEvent(
+                time=self._approach_start_time,
+                pose=self._active_pose.copy(),
+                twist=np.zeros(6),
+                accel=np.zeros(6),
+            ))
 
-        return DynamicTarget(pose_6dof=pose)
+        # Current cycle's throw event (always included as boundary)
+        events.append(ReferenceEvent(
+            time=throw_time,
+            pose=plan.throw_target.pose_6dof.copy(),
+            twist=self._twist_or_zero(plan.throw_target),
+            accel=np.zeros(6),
+        ))
+
+        # Current cycle's catch event (always included as boundary)
+        events.append(ReferenceEvent(
+            time=catch_time,
+            pose=plan.catch_target.pose_6dof.copy(),
+            twist=self._twist_or_zero(plan.catch_target),
+            accel=np.zeros(6),
+        ))
+
+        # Next cycle's events (if pre-planned)
+        if self._next_plan is not None:
+            events.append(ReferenceEvent(
+                time=next_throw_time,
+                pose=self._next_plan.throw_target.pose_6dof.copy(),
+                twist=self._twist_or_zero(self._next_plan.throw_target),
+                accel=np.zeros(6),
+            ))
+
+            next_catch_time = next_throw_time + self._air_time
+            events.append(ReferenceEvent(
+                time=next_catch_time,
+                pose=self._next_plan.catch_target.pose_6dof.copy(),
+                twist=self._twist_or_zero(self._next_plan.catch_target),
+                accel=np.zeros(6),
+            ))
+
+        return events
 
     # ------------------------------------------------------------------
     # Main update
@@ -547,7 +484,7 @@ class TossLoopController:
         current_pose: np.ndarray,
         hand_pos_mm: float,
         plant_state: PlantState | None = None,
-    ) -> tuple[DynamicTarget | None, object, object]:
+    ) -> tuple[DynamicTarget | None, object, object, list[ReferenceEvent] | None]:
         """Advance the state machine.
 
         Returns
@@ -556,22 +493,27 @@ class TossLoopController:
             MPC target this step (ASAP, no arrival_time).
         hand_cmd : HandThrowSequence, HandCatchSequence, BallRelease, or None
         ball_spawn : 'spawn_in_hand' or None
+        ref_events : list[ReferenceEvent] or None
+            Multi-event reference for the MPC.  The MPC quintic-interpolates
+            between these events (C2-continuous) to produce the platform
+            trajectory.  This is the single source of truth for platform
+            motion — there is no separate ASAP target path.
         """
-        home = DynamicTarget(pose_6dof=self._home_pose.copy())
+        rest = DynamicTarget(pose_6dof=self._active_pose.copy())
 
         # -- STARTUP: spawn ball, plan first throw --
         if self._state == _State.STARTUP:
             if not self._ball_spawned:
                 self._ball_spawned = True
                 self._startup_time = sim_time
-                return home, None, 'spawn_in_hand'
+                return rest, None, 'spawn_in_hand', None
             if sim_time - self._startup_time < 0.3:
-                return home, None, None
+                return rest, None, None, None
             # Plan first throw
             throw_time = sim_time + _INITIAL_APPROACH_S
             plan = self._make_plan(throw_time, hand_pos_mm, sim_time)
             if plan is None:
-                return home, None, None
+                return rest, None, None, None
             self._approach_start_time = sim_time
             self._start_cycle(plan, throw_time)
             self._state = _State.ACTIVE
@@ -589,21 +531,20 @@ class TossLoopController:
             if sim_time - self._drop_time > _DROP_RESPAWN_DELAY:
                 self._state = _State.STARTUP
                 self._ball_spawned = False
-            return home, None, None
+            return rest, None, None, None
 
         # -- ACTIVE --
         if self._state == _State.ACTIVE:
             return self._update_active(sim_time, current_pose, hand_pos_mm)
 
-        return home, None, None
+        return rest, None, None, None
 
     def _update_active(self, sim_time, current_pose, hand_pos_mm):
         """Run the cycle phase state machine.
 
-        Platform target is always computed by Hermite interpolation
-        (time-driven, continuous).  The phase machine only controls
-        hand commands and ball lifecycle — it does NOT affect the
-        platform reference.
+        Platform trajectory is defined entirely by ref_events — the MPC
+        quintic-interpolates between them to produce a C2-continuous path.
+        The phase machine only controls hand commands and ball lifecycle.
         """
         plan = self._plan
         hand_cmd = None
@@ -611,12 +552,15 @@ class TossLoopController:
         catch_time = throw_time + self._air_time
         next_throw_time = throw_time + self._cycle_time
 
-        # -- Platform target: always interpolated --
-        if sim_time < throw_time:
-            # Initial approach: quintic from home to throw pose
-            target = self._approach_target(sim_time)
+        # -- Event-based reference (single source of truth) --
+        ref_events = self._build_ref_events(sim_time)
+
+        # Target pose for diagnostics / fallback: use the first upcoming
+        # event's pose, or current pose if no events.
+        if ref_events:
+            target = DynamicTarget(pose_6dof=ref_events[0].pose.copy())
         else:
-            target = self._interpolated_target(sim_time)
+            target = DynamicTarget(pose_6dof=current_pose.copy())
 
         # -- APPROACHING_THROW: send hand sequence, wait for release --
         if self._phase == _Phase.APPROACHING_THROW:
@@ -632,7 +576,7 @@ class TossLoopController:
                 self._timing_errors.append(error_s)
                 logger.debug("Released at %.3f (target %.3f, err %+.1fms)",
                              sim_time, plan.ball_release_time, error_s * 1000)
-            return target, hand_cmd, None
+            return target, hand_cmd, None, ref_events
 
         # -- THROWING: throw decel finishing, then start catch hand seq --
         if self._phase == _Phase.THROWING:
@@ -640,7 +584,7 @@ class TossLoopController:
                 hand_cmd = plan.catch_hand_seq
                 self._catch_hand_sent = True
                 self._phase = _Phase.IN_FLIGHT
-            return target, hand_cmd, None
+            return target, hand_cmd, None, ref_events
 
         # -- IN_FLIGHT: wait for capture or timeout --
         if self._phase == _Phase.IN_FLIGHT:
@@ -655,9 +599,9 @@ class TossLoopController:
             elif sim_time > plan.catch_hand_seq.end_time + _DROP_TIMEOUT_MARGIN:
                 self._handle_drop(sim_time)
                 return DynamicTarget(
-                    pose_6dof=self._home_pose.copy()), None, None
+                    pose_6dof=self._active_pose.copy()), None, None, None
 
-            return target, hand_cmd, None
+            return target, hand_cmd, None, ref_events
 
         # -- POST_CATCH: wait for hold to end, start next cycle --
         if self._phase == _Phase.POST_CATCH:
@@ -667,7 +611,7 @@ class TossLoopController:
                 # Planning failed — drop
                 self._handle_drop(sim_time)
                 return DynamicTarget(
-                    pose_6dof=self._home_pose.copy()), None, None
+                    pose_6dof=self._active_pose.copy()), None, None, None
 
             # Start next cycle when it's time for the throw hand prelude
             prelude_due = (sim_time >=
@@ -686,12 +630,12 @@ class TossLoopController:
                     next_plan.catch_hand_seq.catch_trajectory.end_pos_mm,
                     sim_time)
 
-                return target, hand_cmd, None
+                return target, hand_cmd, None, ref_events
 
-            return target, hand_cmd, None
+            return target, hand_cmd, None, ref_events
 
         # Fallback
-        return DynamicTarget(pose_6dof=self._home_pose.copy()), None, None
+        return DynamicTarget(pose_6dof=self._active_pose.copy()), None, None, None
 
     # ------------------------------------------------------------------
     # Preview rendering
