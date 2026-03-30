@@ -106,7 +106,9 @@ class MPCParams:
     # ---- Constraints ----------------------------------------------------
     stroke_mm: float = 280.0
     stroke_margin_mm: float = 5.0    # safety margin from each end of stroke range
-    max_leg_vel_mmps: float = 700.0  # mm/s per leg (hardware max ~1060)
+    max_leg_vel_mmps: float = 280.0  # mm/s per leg; matches ODrive 4.0 rps limit
+    # during bringup.  Raise to 700 mm/s (~10 rps) for production once
+    # ODrive vel limit is raised via SetMotorVelCurrLimitsMessage.
 
     # ---- IPOPT options --------------------------------------------------
     max_iter: int = 200
