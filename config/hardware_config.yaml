@@ -209,28 +209,16 @@ jugglebot_operational:
                                          # with max velocity (9.5 rev/s), one step = 0.19 rev; 0.3 rev
                                          # gives ~58% headroom for timing jitter while catching
                                          # catastrophic jumps.
-  feasibility_worker_max_restarts: 3     # Max restart attempts for the feasibility worker process
-                                         # before triggering a permanent FAULT requiring system restart.
 
 # ============================================================
 # 7. Jugglebot SpaceMouse
-#    SpaceMouse input scaling and trajectory parameters.
+#    SpaceMouse input scaling parameters.
 # ============================================================
 jugglebot_spacemouse:
   xy_mult_mm: 150.0                      # XY axis sensitivity {mm}
   z_mult_mm: 140.0                       # Z axis sensitivity {mm}
   pitch_roll_mult_deg: 30.0              # Pitch/roll sensitivity {deg}
   yaw_mult_deg: 10.0                     # Yaw sensitivity {deg}
-  smoother_vel_limit_rps: 5.0             # Stream smoother velocity limit for spacemouse {rev/s}
-  smoother_accel_limit_rps2: 6.0         # Stream smoother acceleration limit for spacemouse {rev/s^2}
-
-# ============================================================
-# 7b. Jugglebot GUI
-#     Stream smoother limits for GUI jog commands.
-# ============================================================
-jugglebot_gui:
-  smoother_vel_limit_rps: 5.0             # Stream smoother velocity limit for GUI jog {rev/s}
-  smoother_accel_limit_rps2: 6.0          # Stream smoother acceleration limit for GUI jog {rev/s^2}
 
 # ============================================================
 # 8. Teensy Trajectory
