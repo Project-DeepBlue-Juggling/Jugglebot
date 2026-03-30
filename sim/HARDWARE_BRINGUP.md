@@ -26,7 +26,7 @@ MPC (50 Hz) → HardwarePlant (:5557) → MotorGuard (500 Hz) → MotionBridge �
 
 ---
 
-## Phase 0: Pre-Deployment Verification (Desktop, No Jetson)
+## Phase 0: Pre-Deployment Verification (Desktop, No Jetson) — COMPLETE (2026-03-30)
 
 ### 0.1 Run all tests
 ```bash
@@ -280,6 +280,15 @@ Then re-run Phase 4 tests and compare tracking improvement.
 
 ## Phase 6: Dynamic Trajectories
 
+### Pre-requisite: Raise velocity limits for dynamic motion
+
+Before running trajectories faster than ~280 mm/s, raise both limits:
+
+1. **MPC velocity limit** — change `max_leg_vel_mmps` in `controller/params.py` from 280 to 700
+2. **ODrive velocity limit** — publish `SetMotorVelCurrLimitsMessage` with `legs_vel_limit=10.0` via `motion_bridge_node` (or add this to the MPC bridge startup sequence)
+
+Until these are raised, all trajectories are capped at ~280 mm/s leg speed. T1 and slow T2 should work fine at this limit; T4 (fast transit) will not.
+
 ### 6.1 T1 trajectory (gentle Z sinusoid)
 ```bash
 python3 main.py --hardware --mpc --trajectory T1 --duration 30
@@ -360,7 +369,8 @@ Only after all prior phases pass — real ball throws from Ball Butler.
 | mm_to_rev | ~0.01418 per leg | All position commands wrong |
 | tau | 30ms (default) | Oscillation (too low) or sluggishness (too high) |
 | Stroke limits | [5, 275]mm hard | Physical damage if exceeded |
-| MPC vel limit | 700 mm/s | Motor/cable damage if exceeded |
+| MPC vel limit | 280 mm/s (bringup) / 700 mm/s (production) | Motor/cable damage if exceeded |
+| ODrive vel limit | 4.0 rps (bringup) / 10.0 rps (production) | Extra hardware speed cap |
 | Slew rate | 9.5 rev/s | Excess jerk if too high |
 | MAX_DEVIATION | 0.5 rev (~35mm) | E-stop if cmd diverges from actual |
 | MPC staleness | 200ms | E-stop if MPC stops sending |

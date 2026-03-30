@@ -799,21 +799,24 @@ The MuJoCo site named `hand_opening` is positioned at the top of the static cone
 
 Swap the simulated plant for real hardware. MPC outputs motor commands via CAN.
 
+**Architecture decision (resolved via MPC-native refactor):**  The MPC is the sole motion
+planner.  `control_loop.py` has been replaced by `motor_guard.py` — a 500 Hz interpolator
++ safety monitor that receives pre-computed motor commands from the MPC (via `HardwarePlant`)
+and forwards them to the CAN layer.  See `MPC_NATIVE_REFACTOR_PLAN.md` for the full
+migration.
+
 **Tasks:**
-- [ ] Implement `HardwarePlant` in `sim/plant/hardware_plant.py`:
-  - `command()`: convert leg extensions (mm) → motor positions (rev) using per-leg `mm_to_rev` factors, then send via CAN
-  - `get_state()`: read motor encoder positions/velocities from CAN feedback, convert to `PlantState`
+- [x] Implement `HardwarePlant` in `sim/plant/hardware_plant.py`:
+  - `command()`: convert leg extensions (mm) → motor positions (rev), compute vel_ff and acc from consecutive commands, compute torque_ff via Newton-Euler dynamics, send via ZMQ :5557 to motor_guard
+  - `get_state()`: read motor encoder positions/velocities from ZMQ telemetry, convert to `PlantState` via FK + J⁻¹·q̇ for real platform twist
   - `step()`: no-op (hardware runs in real time)
-  - `reset()`: send active-pose command via existing trajectory system
-  - Communication: either direct CAN (reusing `can/bus.py` + `can/odrive.py`) or via IPC to the existing control loop
-- [ ] Decide integration approach (two options):
-  - **Option A: MPC replaces control_loop.py** — MPC runs at 50 Hz, sends `set_input_pos(pos, vel_ff, torque_ff)` directly to ODrives via CAN. `vel_ff` and `torque_ff` are zero initially (position-only). Cleanest but requires MPC to handle all safety checks (slew limiter, workspace enforcement).
-  - **Option B: MPC feeds into control_loop.py** — MPC outputs target poses at 50 Hz via IPC (same `TOPIC_TARGET` protocol). The existing 500 Hz control loop handles IK, feedforward, safety, and motor commands. Safest, reuses proven infrastructure.
-  - **Recommended: Option B initially**, then Option A once MPC is proven.
-- [ ] Safety integration:
-  - Workspace checks: either replicated in MPC constraints (Option A) or handled by existing control_loop.py (Option B)
-  - E-stop: hardware kill switch remains independent of software
-  - Slew limiter: existing `max_position_step_rev: 0.2` enforcement
+  - `enable()`/`disable()`: send mode commands to motor_guard via ZMQ :5557
+  - Communication: ZMQ IPC to motor_guard (not direct CAN)
+- [x] Integration approach: **MPC-native** (neither Option A nor B from original plan)
+  - MPC runs at 50 Hz, outputs leg extensions + velocity + torque feedforward
+  - `motor_guard.py` (500 Hz) quadratically interpolates between MPC commands, validates against motor feedback, forwards to bridge → CAN
+  - Safety: max-deviation check (replaces slew limiter), workspace check, overspeed, staleness, NaN rejection, bounded extrapolation, stroke clamping
+  - No IK, dynamics, trajectory manager, or smoother in the motor guard — all handled by MPC
 - [ ] Calibrate actuator time constant `τ` from real hardware data:
   - Use existing Phase 3-7 hardware test logs (step responses, trajectory tracking error)
   - Method: fit first-order lag `q_actual(t) = q_cmd · (1 - e^{-t/τ})` to step response data from ODrive encoder feedback
@@ -822,7 +825,7 @@ Swap the simulated plant for real hardware. MPC outputs motor commands via CAN.
   - Expected range: 20-50 ms. If τ varies significantly by leg (due to mechanical differences like leg 2), consider per-leg τ values.
   - Update `MPCParams.tau` with the calibrated value. Re-run sim trajectories and compare tracking error — sim should now predict real tracking error within 20%.
 - [ ] Staged hardware bring-up:
-  1. **Bench (25% speed):** Run MPC at 50 Hz, feed targets to control_loop.py via IPC, observe tracking
+  1. **Bench (25% speed):** Run MPC at 50 Hz via `sim/main.py --hardware`, motor_guard interpolates to 500 Hz, observe tracking
   2. **50% speed:** Increase speed scaling, log tracking error vs simulation predictions
   3. **100% speed:** Full-speed operation, compare with simulation
 - [x] Sim-to-real validation tooling (`sim/analysis/`):
@@ -853,7 +856,7 @@ The initial MPC uses a kinematics-only prediction model (actuators track command
 At current Phase 7 speeds (worst tracking 2.4 mm), the kinematic model should suffice because ODrive's 8 kHz PID loop handles the dynamics locally. Dynamics become important when:
 - Catching motions require > 50% of actuator force capacity (inertial loads compete with gravity)
 - Tracking error exceeds acceptable limits due to unmodelled inertial coupling between legs
-- You want MPC to produce `vel_ff` and `torque_ff` for better tracking (replacing or augmenting control_loop.py's feedforward)
+- You want MPC to produce `vel_ff` and `torque_ff` for better tracking (augmenting the Newton-Euler feedforward in HardwarePlant)
 
 ### Implementation approaches
 
