@@ -5,4 +5,15 @@ addopts = [
     "--ignore=tests/hardware",
     "-p", "no:launch_testing_ros",
     "-p", "no:launch_testing",
+    "-p", "no:ament_copyright",
+    "-p", "no:ament_flake8",
+    "-p", "no:ament_pep257",
+    "-p", "no:ament_xmllint",
+    "-p", "no:ament_lint",
 ]
+
+# On Jetson (ROS2 Foxy), the system launch_testing plugin is incompatible
+# with pytest >=8.  If you see "consider_namespace_packages" errors, either:
+#   pip3 install 'pytest<8'
+# or set the environment variable to skip all setuptools plugin loading:
+#   PYTEST_DISABLE_PLUGIN_REGISTRATION=1 python3 -m pytest -v
