@@ -38,7 +38,7 @@ Index arithmetic: `u[k]` starts at offset `6k`, `q[k]` at `6N + 6(k-1)`, `p[k]` 
 | `u[k]` | 0 | `stroke_mm` (280) | Full physical stroke range |
 | `q[k]` | 0 | `stroke_mm` (280) | Actuator can't be outside stroke |
 | `p[k] x, y` | -200 mm | +200 mm | Generous workspace envelope |
-| `p[k] z` | -50 mm | +300 mm | Below home is limited; stroke caps ~275 |
+| `p[k] z` | -50 mm | +300 mm | Below active pose is limited; stroke caps ~275 |
 | `p[k] rx, ry, rz` | -0.3 rad | +0.3 rad | ~17 degrees — beyond this, Rodrigues linearization degrades |
 
 ## Parameters (Updated Each Solve)
@@ -53,9 +53,8 @@ The NLP has a fixed parameter vector `P` that changes every solve call:
 | `u_prev_prev` | 6 | Two steps ago (for acceleration smoothness) |
 | `p_ref[0..N]` | 6 × (N+1) | Reference pose at each horizon node |
 | `twist_ref[0..N]` | 6 × (N+1) | Reference twist at each horizon node |
-| `urgency[1..N]` | N | Per-node tracking weight multiplier |
 
-Total: `24 + 12(N+1) + N` scalars (with N=10: 166 parameters).
+Total: `24 + 12(N+1)` scalars (with N=10: 156 parameters).
 
 ## Cost Function
 
@@ -64,19 +63,17 @@ The cost is a weighted sum of tracking, velocity, effort, smoothness, and accele
 ### Tracking Cost (nodes k = 1..N)
 
 ```
-J_track = Σ_{k=1}^{N-1} urgency[k] * ( Q_pos * ||err_pos[k]||² + Q_ori * ||err_ori[k]||² )
-        + urgency[N] * ( Qf_pos * ||err_pos[N]||² + Qf_ori * ||err_ori[N]||² )
+J_track = Σ_{k=1}^{N-1} ( Q_pos * ||err_pos[k]||² + Q_ori * ||err_ori[k]||² )
+        + ( Qf_pos * ||err_pos[N]||² + Qf_ori * ||err_ori[N]||² )
 ```
 
-Where `err[k] = p[k] - p_ref[k]`. The terminal node (k = N) uses heavier weights (`Qf_pos = 50` vs `Q_pos = 10`) to pull the solution toward the target at the horizon end.
-
-The `urgency` multiplier modulates tracking weight per node — see [Variable Horizon](variable_horizon.md) for details.
+Where `err[k] = p[k] - p_ref[k]`. The terminal node (k = N) uses heavier weights (`Qf_pos = 50` vs `Q_pos = 10`) to pull the solution toward the target at the horizon end. All tracking costs use uniform weight — there is no per-node urgency multiplier. For event-based callers (catch sequences), the reference trajectory encodes timing. For flat-reference callers, the terminal cost (`Qf`) provides deadline pull.
 
 ### Velocity Tracking Cost (nodes k = 1..N)
 
 ```
-J_vel = Σ_{k=1}^{N} urgency[k] * ( Q_vel_lin * ||dp_lin/dt - twist_ref_lin[k]||²
-                                   + Q_vel_ang * ||dp_ang/dt - twist_ref_ang[k]||² )
+J_vel = Σ_{k=1}^{N} ( Q_vel_lin * ||dp_lin/dt - twist_ref_lin[k]||²
+                     + Q_vel_ang * ||dp_ang/dt - twist_ref_ang[k]||² )
 ```
 
 Velocity is estimated by finite difference: `dp/dt = (p[k] - p[k-1]) / dt_k`. This penalizes deviation from the desired twist at arrival, used for throw trajectories where the platform needs nonzero velocity at the target.
@@ -157,7 +154,7 @@ K = skew(rv)
 R = I + (sin θ / θ) × K + ((1 - cos θ) / θ²) × K²
 ```
 
-The denominator is regularized: `θ² + 1e-20` ensures `sin θ / θ → 1` and `(1 - cos θ) / θ² → 0.5` as `θ → 0`, avoiding division by zero at the home orientation.
+The denominator is regularized: `θ² + 1e-20` ensures `sin θ / θ → 1` and `(1 - cos θ) / θ² → 0.5` as `θ → 0`, avoiding division by zero at the active pose orientation.
 
 ### Leg Vector Geometry
 

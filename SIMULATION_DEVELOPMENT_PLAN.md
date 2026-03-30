@@ -97,7 +97,7 @@ The MPC will eventually deploy to real hardware (Jetson), sending position setpo
 x = [x, y, z, rx, ry, rz, vx, vy, vz, ωx, ωy, ωz]
      ├── pose (mm, rad) ──┤├── twist (mm/s, rad/s) ──┤
 ```
-Platform pose as position offset from home + rotation vector, plus their time derivatives. Rotation vector representation is valid for the tilt range Jugglebot operates in (≤15°).
+Platform pose as position offset from the active pose + rotation vector, plus their time derivatives. Rotation vector representation is valid for the tilt range Jugglebot operates in (≤15°).
 
 **Control `u` (6-dimensional):**
 ```
@@ -228,13 +228,13 @@ MuJoCo's constraint solver enforces these at each timestep, effectively simulati
 |-----------|-------|----------|
 | `base_nodes_mm` | 6×3 array | Base attachment sites |
 | `init_plat_nodes_mm` | 6×3 array | Platform attachment sites |
-| `initial_height_mm` | 574.3 | Home position Z offset |
+| `initial_height_mm` | 574.3 | Active pose Z offset |
 | `leg_stroke_mm` | 280.0 | Prismatic joint range |
 | `platform_mass_kg` | 1.2 | Platform body mass |
 | `platform_com_offset_mm` | [-9.68, -68.64, 52.73] | CoM in platform frame |
 | `platform_inertia_tensor_kgmm2` | 6 components | Rotational inertia |
 
-**Deliverable:** A `.xml` model that opens in MuJoCo's viewer, shows a Stewart platform at home position, and whose FK matches existing code to < 0.023 mm (far exceeding the < 1 mm target). Validated on Windows 10 and Jetson Orin Nano.
+**Deliverable:** A `.xml` model that opens in MuJoCo's viewer, shows a Stewart platform at the active pose, and whose FK matches existing code to < 0.023 mm (far exceeding the < 1 mm target). Validated on Windows 10 and Jetson Orin Nano.
 
 ---
 
@@ -323,8 +323,8 @@ Formulate and implement the NMPC for tracking a reference pose.
   - Failure handling: max_consecutive_failures threshold
 - [x] Tune for static pose tracking:
   - z+50 mm: 0.232 mm final error, settles within 500 ms ✓
-  - x+20 mm at z+50 mm: 0.257 mm final error ✓ (pure x+50 from home is infeasible — see note below)
-  - pitch+5° at z+80 mm: 0.231 mm / 0.023° final error ✓ (pure pitch from home infeasible)
+  - x+20 mm at z+50 mm: 0.257 mm final error ✓ (pure x+50 from the active pose is infeasible — see note below)
+  - pitch+5° at z+80 mm: 0.231 mm / 0.023° final error ✓ (pure pitch from the active pose infeasible)
   - Combined [30, -20, 50, 3°, -2°, 0°]: 0.350 mm / 0.016° final error ✓
   - Acceptance criteria met: smooth approach, no overshoot, settles < 500 ms, no constraint violations
 - [x] Measure solve time:
@@ -335,8 +335,8 @@ Formulate and implement the NMPC for tracking a reference pose.
 - [x] Implement solver failure handling in `MPCController.solve()`:
   - **Timeout/non-convergence:** Apply first step of shifted previous solution (warm-start fallback)
   - **Consecutive failures:** Counter tracks sequential failures; escalation thresholds configurable (default 10)
-  - **Cold start failure:** Hold home position and retry next step
-  - **Three-tier fallback:** shifted previous → hold last command → home (zero extensions)
+  - **Cold start failure:** Hold active position and retry next step
+  - **Three-tier fallback:** shifted previous → hold last command → active pose (zero extensions)
   - Logging: status, solve time, and consecutive failure count on every failure
 - [x] Implement predicted trajectory visualization in `sim/viz/horizon.py`:
   - `HorizonRenderer` class: renders N+1 predicted platform positions as translucent green spheres
@@ -376,11 +376,11 @@ The plan originally specified N=20 (400 ms lookahead). With N=20, the NLP has 36
 - Using CasADi code generation (`nlpsol(..., {'jit': True})`) to speed up evaluations
 - Profiling on Jetson (ARM + IPOPT may have different performance characteristics)
 
-**Implementation note — reachability from home:**
-The home position corresponds to full retraction (extension=0). Lateral and rotational motions require some legs to shorten below their home length, which is infeasible (extension < 0 is out of stroke). This means **pure lateral or pure rotational targets from home are unreachable** — the platform must first be raised (z > 0) to give legs room to both extend and retract. This is a real physical constraint of the robot, not a simulation artefact. The test suite uses raised-base targets (e.g., x+20mm at z+50mm) to stay within the reachable workspace.
+**Implementation note — reachability from the active pose:**
+The active pose corresponds to full retraction (extension=0). Lateral and rotational motions require some legs to shorten below their active-pose length, which is infeasible (extension < 0 is out of stroke). This means **pure lateral or pure rotational targets from the active pose are unreachable** — the platform must first be raised (z > 0) to give legs room to both extend and retract. This is a real physical constraint of the robot, not a simulation artefact. The test suite uses raised-base targets (e.g., x+20mm at z+50mm) to stay within the reachable workspace.
 
 **Implementation note — warm-starting:**
-IPOPT warm-starting uses both primal (`x0`) and dual (`lam_g0`, `lam_x0`) variables from the previous solve, shifted by one timestep. This reduces typical iteration counts from 10-12 (cold start) to 2-4 (warm start), yielding the ~3× speedup observed. The warm-start bound push parameters are set to `1e-8` (vs IPOPT's default `1e-2`) to allow the warm-started iterate to start closer to constraint boundaries.
+IPOPT warm-starting uses both primal (`x0`) and dual (`lam_g0`, `lam_x0`) variables from the previous solve, shifted forward by `dt_fine` using time-based piecewise-linear interpolation. The interpolation map is precomputed at construction since `dt_schedule` is immutable. Within uniform-dt regions the interpolation degenerates to an exact index shift; at tier boundaries (fine→coarse) it blends neighbouring nodes proportionally. Dual variables (`lam_g`) are zeroed at tier boundaries where the constraint structure changes (different `alpha_k`, different rate-limit bounds). This reduces typical iteration counts from 10-12 (cold start) to 2-4 (warm start), yielding the ~3× speedup observed. The warm-start bound push parameters are set to `1e-8` (vs IPOPT's default `1e-2`) to allow the warm-started iterate to start closer to constraint boundaries.
 
 **Implementation note — rate limit revision (Phase 3):**
 The original `max_leg_vel_mmps = 50` was revised to `300` during Phase 3. The 50 mm/s limit (1 mm/step at 50 Hz) was too restrictive for the N=10 horizon — the MPC could only plan 10 mm of total extension change, which prevented orientation tracking for combined poses. With 300 mm/s (6 mm/step), the MPC has sufficient room for differential leg motions needed for pitch/roll changes. The smoothness costs (S, A) remain the primary dynamics limiter; the rate limit is now a safety bound. The Phase 2 test results above were obtained with the original 50 mm/s in Docker; with 300 mm/s, all Phase 2 tests pass with comparable or better tracking accuracy on CasADi 3.7.2.
@@ -405,9 +405,9 @@ Feed the MPC time-varying reference trajectories and validate tracking quality.
   - Backward-compatible: when `ref_twist=None`, zeros are passed (identical to static tracking)
   - `solve()` accepts optional `ref_twist: (N+1, 6)` parameter
 - [x] Test with scripted trajectories in `sim/input/scripted.py`:
-  - **T1: Linear translation** — home → [0, 0, 50, 0, 0, 0] → home, 1s each segment
+  - **T1: Linear translation** — active → [0, 0, 50, 0, 0, 0] → active, 1s each segment
   - **T2: Circular orbit** — 80 mm radius circle in XY at z=50, 2s period, with 1s quintic ramp-up to orbit start (velocity- and acceleration-matched at junction for C2 continuity)
-  - **T3: Multi-axis** — simultaneous translation + tilt, 1.5s segments: home → [30,-20,60,3°,-2°,0] → [-20,30,40,-2°,3°,0] → home
+  - **T3: Multi-axis** — simultaneous translation + tilt, 1.5s segments: active → [30,-20,60,3°,-2°,0] → [-20,30,40,-2°,3°,0] → active
   - **T4: Speed test** — fast point-to-point, 400ms transit from raised position [0,0,80] → [40,-30,60,2°,-1°,0]
 - [x] Compare MPC tracking against reference:
   - Logged actual vs reference pose at each MPC step
@@ -421,7 +421,7 @@ Feed the MPC time-varying reference trajectories and validate tracking quality.
   - Ref twist logged to telemetry CSV
 - [x] Write `sim/tests/test_mpc_trajectory.py` — 15 tests across 7 classes, all passing:
   - `TestReferenceGenerator` — 5 tests: static pose, waypoint shapes/boundaries/twist, circular function
-  - `TestT1LinearTranslation` — tracking quality (< 3 mm) + returns to home
+  - `TestT1LinearTranslation` — tracking quality (< 3 mm) + returns to active pose
   - `TestT2CircularOrbit` — steady-state tracking (< 5 mm) + Z height stability
   - `TestT3MultiAxis` — multi-DoF tracking (< 5 mm / 2°)
   - `TestT4SpeedTest` — fast transit (< 8 mm / 2°) + settle after transit
@@ -448,7 +448,7 @@ This also fixed the pre-existing Phase 2 static tracking failures (`pitch+5deg_z
 The MPC velocity damping term was changed from penalising absolute velocity `‖dp/dt‖²` to penalising velocity deviation from reference `‖dp/dt - twist_ref‖²`. For static pose tracking (twist_ref = 0), the behaviour is identical. For trajectory tracking, this is essential — without it, the velocity cost fights the reference trajectory, penalising the MPC for following a moving target. The reference twist is computed analytically by the `ReferenceGenerator` (from quintic derivatives or parametric trajectory functions) and passed as an additional NLP parameter.
 
 **Implementation note — T2 circular orbit ramp-up:**
-The initial T2 implementation had a step discontinuity at orbit start (home → [80, 0, 50] instantaneously at t=0.5s), causing a 16.7 mm Z-axis transient. This was fixed by adding a 1s quintic ramp-up segment that smoothly moves from home to the orbit starting position [80, 0, 50] with velocity- and acceleration-matched boundary conditions. Start: zero twist/accel. End: tangential velocity `[0, r*omega, 0]` and centripetal acceleration `[-r*omega^2, 0, 0]`. This ensures C2 continuity at the ramp-orbit junction (no jerk spike). Note: the orbit-end transition back to hold has a velocity discontinuity (`vy = r*omega → 0`), which the MPC handles naturally via its prediction horizon.
+The initial T2 implementation had a step discontinuity at orbit start (active pose → [80, 0, 50] instantaneously at t=0.5s), causing a 16.7 mm Z-axis transient. This was fixed by adding a 1s quintic ramp-up segment that smoothly moves from the active pose to the orbit starting position [80, 0, 50] with velocity- and acceleration-matched boundary conditions. Start: zero twist/accel. End: tangential velocity `[0, r*omega, 0]` and centripetal acceleration `[-r*omega^2, 0, 0]`. This ensures C2 continuity at the ramp-orbit junction (no jerk spike). Note: the orbit-end transition back to hold has a velocity discontinuity (`vy = r*omega → 0`), which the MPC handles naturally via its prediction horizon.
 
 **Implementation note — CasADi version sensitivity:**
 These tests were developed with CasADi 3.7.2 / IPOPT on Windows. The Phase 2 tests (originally developed in Docker with a different CasADi version) had pre-existing failures at the old 50 mm/s rate limit that were masked by different IPOPT convergence behaviour in the Docker environment. The rate limit fix resolves these failures across CasADi versions. Future investigation: the Docker environment's CasADi version should be pinned to match local development for reproducibility.
@@ -691,8 +691,8 @@ Implement timed target interception — the MPC drives the platform to a catch p
 - [x] Implement time-aware reference generation:
   - Given current state and a `DynamicTarget`, generate a reference trajectory that:
     1. Arrives at `target.pose_6dof` at or before `target.arrival_time`
-    2. **Catch mode** (`arrival_twist` is None/zero): zero velocity at arrival, hold pose for `hold_duration`, return to home
-    3. **Throw mode** (`arrival_twist` is non-zero): specified velocity at arrival, then decelerate to stop at a physically-computed endpoint (not home — momentum carries the platform). Return to home after deceleration.
+    2. **Catch mode** (`arrival_twist` is None/zero): zero velocity at arrival, hold pose for `hold_duration`, return to active pose
+    3. **Throw mode** (`arrival_twist` is non-zero): specified velocity at arrival, then decelerate to stop at a physically-computed endpoint (not the active pose — momentum carries the platform). Return to active pose after deceleration.
   - Reference trajectory uses quintic interpolation with duration = `arrival_time - now`
   - If arrival time is too soon for feasible motion: arrive as early as possible (MPC does its best; constraint satisfaction prevents damage)
   - **MPC terminal constraint difference:** In catch mode, the MPC terminal cost penalises both pose error and twist. In throw mode, it penalises pose error and twist *deviation from target twist* — the platform should be moving at the right velocity, not stationary.
@@ -721,7 +721,7 @@ Implement timed target interception — the MPC drives the platform to a catch p
   - **DT5: Early arrival** — target with 2 s lead time. Verify: platform arrives early and holds, ball captured cleanly.
   - **DT6: Throw (non-zero arrival velocity)** — target at [0, 0, 60, 0, 0, 0] with arrival_twist [0, 0, -200, 0, 0, 0] (downward at 200 mm/s), 500 ms. Verify: platform has correct velocity at arrival, then decelerates. Ball released with correct velocity and resumes free flight.
   - **DT7: Catch then throw** — catch target at t=0.4 s (zero velocity), hold 0.3 s, throw target at t=1.0 s (non-zero velocity). Verify: both phases execute, ball caught then thrown.
-  - **DT8: Ball miss** — spawn ball offset from platform workspace. Verify: MPC attempts to reach target, ball flies past without capture, system returns to home gracefully.
+  - **DT8: Ball miss** — spawn ball offset from platform workspace. Verify: MPC attempts to reach target, ball flies past without capture, system returns to active pose gracefully.
 - [x] Validate timing:
   - Log: time of arrival vs deadline for each target
   - Acceptance: arrive within 1 MPC step (20 ms) of deadline, or early
@@ -761,8 +761,8 @@ Phase 5C test details:
 | DT1: Hand is primed | PASS | Hand > 200 mm within 1s |
 | DT3: Workspace edge | PASS | Arrival error < 10 mm at boundary |
 | DT5: Early arrival | PASS | Arrival error < 3 mm with 2.5s lead |
-| DT6: Throw completes | PASS | Platform returns near home after decel |
-| DT8: Ball miss | PASS | 0 captures, returns to home < 10 mm |
+| DT6: Throw completes | PASS | Platform returns near active pose after decel |
+| DT8: Ball miss | PASS | 0 captures, returns to active pose < 10 mm |
 | Feasibility: accepts DT1 | PASS | Moderate pose, 0.9s deadline |
 | Feasibility: rejects DT4 | PASS | Extreme pose, 0.3s deadline (15.3 mm error) |
 | Feasibility: rejects OOB | PASS | Z=350mm exceeds stroke |
@@ -804,7 +804,7 @@ Swap the simulated plant for real hardware. MPC outputs motor commands via CAN.
   - `command()`: convert leg extensions (mm) → motor positions (rev) using per-leg `mm_to_rev` factors, then send via CAN
   - `get_state()`: read motor encoder positions/velocities from CAN feedback, convert to `PlantState`
   - `step()`: no-op (hardware runs in real time)
-  - `reset()`: send home position command via existing trajectory system
+  - `reset()`: send active-pose command via existing trajectory system
   - Communication: either direct CAN (reusing `can/bus.py` + `can/odrive.py`) or via IPC to the existing control loop
 - [ ] Decide integration approach (two options):
   - **Option A: MPC replaces control_loop.py** — MPC runs at 50 Hz, sends `set_input_pos(pos, vel_ff, torque_ff)` directly to ODrives via CAN. `vel_ff` and `torque_ff` are zero initially (position-only). Cleanest but requires MPC to handle all safety checks (slew limiter, workspace enforcement).

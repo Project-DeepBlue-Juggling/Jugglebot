@@ -104,12 +104,10 @@ Each control step (20 ms) follows this sequence:
 4. Handle hand commands (prime, catch/throw sequence, position)
 5. MPC solve:
    a. Build reference trajectory (all nodes = target pose)
-   b. Compute urgency multipliers (timed targets use ramp;
-      toss loop uses ASAP = uniform 1.0)
-   c. Pack parameter vector (current state + reference + urgency)
-   d. Warm-start from shifted previous solution
-   e. IPOPT solve → optimal leg commands
-   f. Extract first command u[0]
+   b. Pack parameter vector (current state + reference)
+   c. Warm-start from shifted previous solution
+   d. IPOPT solve → optimal leg commands
+   e. Extract first command u[0]
 6. Apply leg command to plant
 7. Step MuJoCo physics
 8. Check ball capture
@@ -122,7 +120,7 @@ Each control step (20 ms) follows this sequence:
 |---|---|---|
 | [Usage](usage.md) | Installation, CLI modes, telemetry, tests | How do I run and analyze the simulation? |
 | [NLP Formulation](nlp_formulation.md) | Decision variables, cost, constraints | How does the optimizer find leg commands? |
-| [Variable Horizon](variable_horizon.md) | Fine/coarse timesteps, urgency ramp | How does the MPC see both near and far? |
+| [Variable Horizon](variable_horizon.md) | Fine/coarse timesteps, tracking cost weighting | How does the MPC see both near and far? |
 | [Hand & Ball Physics](hand_and_ball.md) | Trajectories, ballistics, capture, throw-catch, toss loop | How does catching/throwing work? |
 | [Control Loop](control_loop.md) | 50 Hz loop, target sources, hand coordination | What happens every 20 ms? |
 | [Plant Interface](plant.md) | MuJoCo plant, coordinate conventions | How does the sim model the robot? |

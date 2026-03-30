@@ -76,7 +76,7 @@ python main.py --mpc --sequence "0,0,50,0,0,0@0.5 0,0,0,0,0,0@2.0"
 Pre-defined waypoint sequences with arrival times. The MPC plans optimal motion between waypoints.
 
 ```bash
-python main.py --trajectory T1     # Linear: home -> z+50 -> home
+python main.py --trajectory T1     # Linear: active -> z+50 -> active
 python main.py --trajectory T2     # Circular orbit (80mm radius, z=50)
 python main.py --trajectory T3     # Multi-axis translation + tilt
 python main.py --trajectory T4     # Speed test (~400ms transit)
@@ -86,7 +86,7 @@ python main.py --trajectory T6     # Extreme tour (large sweeping motions)
 
 | Trajectory | Motion | Duration |
 |---|---|---|
-| T1 | Linear Z translation (home → +50mm → home) | ~3 s |
+| T1 | Linear Z translation (active → +50mm → active) | ~3 s |
 | T2 | Circular XY orbit at z=50mm, 80mm radius | ~6.5 s |
 | T3 | Multi-axis translation + tilt, 3 segments | ~5.5 s |
 | T4 | Fast point-to-point (~400ms transit) | ~3 s |
@@ -108,7 +108,7 @@ python main.py --catch BB1        # Ball Butler throw (angled)
 |---|---|
 | DT1-DT5 | Vertical/angled drops at various positions and speeds |
 | DT6-DT7 | Edge cases (timing, velocity) |
-| DT8 | Ball miss — tests graceful failure and return home |
+| DT8 | Ball miss — tests graceful failure and return to active pose |
 | BB1-BB4 | Ball Butler throws (angled trajectories from external launcher) |
 
 ### Scripted Throw-Catch (TC1-TC4)
@@ -169,7 +169,7 @@ python main.py --juggle
 
 Timing-driven toss loop with three phases of increasing difficulty. The platform throws to itself repeatedly, with all timing derived from two parameters: cycle time and hold ratio.
 
-The platform follows a **quintic Hermite spline** between event poses, giving C2-continuous motion (position, velocity, and acceleration are all continuous at segment boundaries). This eliminates the jerk spikes that would occur with static endpoint targets and urgency-based arrival. See [Variable Horizon — Toss Loop Bypass](variable_horizon.md#toss-loop-bypass) for why the urgency system is not used here.
+The platform follows a **quintic Hermite spline** between event poses, giving C2-continuous motion (position, velocity, and acceleration are all continuous at segment boundaries). This eliminates the jerk spikes that would occur with static endpoint targets. See [Variable Horizon — Toss Loop Bypass](variable_horizon.md#toss-loop-bypass) for the motivation behind the quintic Hermite approach.
 
 ```bash
 # Phase A: vertical toss-to-self (default 1.2s cycle, 0.4 hold ratio)
@@ -207,7 +207,7 @@ The toss loop computes a time-varying platform reference via quintic Hermite int
 1. **Flight segment** (throw_time → catch_time): interpolates from throw pose/twist to catch pose/twist.
 2. **Hold segment** (catch_time → next_throw_time): interpolates from catch pose/twist to next throw pose/twist.
 
-Acceleration is zero at all segment boundaries. The MPC receives the interpolated pose as an ASAP target (no `arrival_time`) each control step, so it uses uniform urgency and simply tracks the moving reference. Platform targets are **time-driven** (based on the cycle clock), not event-driven (ball capture detection only updates ball state, not the platform reference).
+Acceleration is zero at all segment boundaries. The MPC receives the interpolated pose as an ASAP target (no `arrival_time`) each control step, so it uses uniform tracking weight and simply tracks the moving reference. Platform targets are **time-driven** (based on the cycle clock), not event-driven (ball capture detection only updates ball state, not the platform reference).
 
 **Keyboard controls:**
 
@@ -323,7 +323,7 @@ python -m pytest tests/ -v
 | `test_mpc_static.py` | MPC static pose tracking (cold start, warm start, convergence) |
 | `test_mpc_trajectory.py` | MPC waypoint tracking (T1-T4 trajectories) |
 | `test_mpc_dynamic.py` | MPC dynamic targets (catch sequences DT1-DT5) |
-| `test_variable_horizon.py` | Variable-resolution horizon and urgency system |
+| `test_variable_horizon.py` | Variable-resolution horizon and cost weighting |
 | `test_plant.py` | MuJoCo plant: sensors, commands, coordinate conversions |
 | `test_model.py` | MJCF model generation and validation |
 | `test_hand.py` | Hand coordinator state machine |
@@ -332,7 +332,7 @@ python -m pytest tests/ -v
 | `test_ballistics.py` | Parabolic ball flight prediction |
 | `test_planner.py` | Throw-catch plan generation |
 | `test_throw_trajectory.py` | Throw trajectory integration |
-| `test_post_catch.py` | Post-catch behavior (retract, return home) |
+| `test_post_catch.py` | Post-catch behavior (retract, return to active pose) |
 | `test_target_interface.py` | TargetSource adapters |
 | `test_ball_butler_sim.py` | Ball Butler simulator |
 

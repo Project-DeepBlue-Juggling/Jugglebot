@@ -66,32 +66,17 @@ Velocity weights are intentionally low. Higher values degrade position tracking 
 - If the platform oscillates near the target → decrease `Q_pos` / `Q_ori` or increase smoothness `S`.
 - If throw velocity at release is inaccurate → increase `Q_vel_lin` (but watch position tracking).
 
-### Urgency
-
-| Parameter | Default | Effect |
-|---|---|---|
-| `urgency_ramp_s` | 0.5 s | Window over which urgency ramps from base to max |
-| `urgency_base` | 0.05 | Tracking weight multiplier far from deadline |
-| `urgency_max` | 10.0 | Tracking weight multiplier at/past deadline |
-
-See [Variable Horizon — Urgency System](variable_horizon.md#urgency-system) for detailed behavior.
-
-**Tuning guidance:**
-- If the platform doesn't start moving soon enough for timed targets → increase `urgency_base` (e.g., 0.2-0.5).
-- If the platform is jerky near the deadline → decrease `urgency_max`.
-- If catches are consistently late → increase `urgency_ramp_s` to start ramping earlier.
-
 ### Control Cost
 
 | Parameter | Default | Units | Effect |
 |---|---|---|---|
-| `R` | 1e-4 | per mm² | Control effort (deviation from home) |
+| `R` | 1e-4 | per mm² | Control effort (deviation from active pose) |
 | `S` | 0.02 | — | Command rate smoothness (Δu/dt) |
 | `A` | 0.004 | — | Command acceleration smoothness (ΔΔu/dt) |
 
 **Effect of each:**
 
-- **R (effort):** Penalizes commands far from home. Very small — just enough to regularize the NLP and break ties. Increasing it makes the platform reluctant to move far from home.
+- **R (effort):** Penalizes commands far from the active pose. Very small — just enough to regularize the NLP and break ties. Increasing it makes the platform reluctant to move far from the active pose.
 - **S (smoothness):** Penalizes rapid command changes. Higher values → smoother but slower motion. This is the primary knob for trading speed vs smoothness.
 - **A (acceleration):** Penalizes jerky command changes (second derivative). Prevents high-frequency oscillation in the command signal. Increasing it makes transitions smoother but reduces the platform's ability to make sharp corrections.
 
@@ -164,9 +149,9 @@ The platform reaches the target but oscillates around it.
 
 The platform arrives late for timed targets.
 
-1. Increase `urgency_base` — e.g., 0.2 or 0.3 — so the MPC starts moving earlier.
+1. Increase `Qf_pos` / `Qf_ori` to strengthen deadline pull from the terminal cost.
 2. Increase `max_leg_vel_mmps` if the rate limits are binding.
-3. Widen `urgency_ramp_s` — e.g., 0.8 s — to start ramping earlier.
+3. Decrease `S` (smoothness) to allow more aggressive command changes.
 4. Check feasibility: if the coarse MPC says "feasible" but the real MPC misses, see B-02 and B-03 in [MPC_BUGS.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/sim/MPC_BUGS.md).
 
 ### Scenario: Solver frequently fails

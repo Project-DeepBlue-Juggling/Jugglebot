@@ -23,11 +23,11 @@ geom = StewartGeometry()
 |---|---|---|
 | `base_nodes` | 6×3 array | Base attachment points (mm), in the base frame |
 | `plat_nodes` | 6×3 array | Platform attachment points (mm), in the platform body frame |
-| `init_height_mm` | 574.3 | Home height: distance from base to platform centre (mm) |
+| `init_height_mm` | 574.3 | Initial height: distance from base to platform centre (mm) |
 | `leg_stroke_mm` | 280 | Total available leg extension range (mm) |
 | `spool_radius_mm` | ~11.4 per leg | String spool radius, derived from `mm_to_rev` conversion |
 | `ball_joint_offset_mm` | offset | Ball joint offset applied to initial leg lengths |
-| `init_leg_lengths_mm` | 6-element | Leg lengths at the home pose (mm) |
+| `init_leg_lengths_mm` | 6-element | Leg lengths at the active pose (mm) |
 
 ### Leg Extension Convention
 
@@ -35,13 +35,13 @@ Leg extensions are measured from fully retracted:
 
 - `0 mm` = fully retracted 
 - `280 mm` = fully extended
-- At home, each leg is at its `init_leg_lengths_mm` value (somewhere in the middle of the stroke)
+- At the active pose, each leg is at its `init_leg_lengths_mm` value (somewhere in the middle of the stroke)
 
 ## Position Inverse Kinematics
 
 **Function:** `pose_to_leg_lengths(pos, rot, geom)` → 6 leg extensions in mm
 
-Given a platform pose (position offset from home + rotation matrix), compute the length of each leg.
+Given a platform pose (position offset from stow pose + rotation matrix), compute the length of each leg.
 
 ### How It Works
 
@@ -57,7 +57,7 @@ The extension is:
 
 $$\text{extension}_i = \|\mathbf{l}_i\| - L_{i,\text{init}} + L_{i,\text{init\_ext}}$$
 
-where $L_{i,\text{init}}$ is the geometric leg length at home and $L_{i,\text{init\_ext}}$ is the home extension.
+where $L_{i,\text{init}}$ is the geometric leg length at the active pose and $L_{i,\text{init\_ext}}$ is the initial extension.
 
 ### Usage
 
@@ -65,7 +65,7 @@ where $L_{i,\text{init}}$ is the geometric leg length at home and $L_{i,\text{in
 from jugglebot.motion.ik_solver import pose_to_leg_lengths, rotvec_to_rot_matrix
 import numpy as np
 
-pos = np.array([0.0, 0.0, 10.0])        # 10mm above home
+pos = np.array([0.0, 0.0, 10.0])        # 10mm above active pose
 rot = rotvec_to_rot_matrix(np.zeros(3))  # no tilt
 extensions = pose_to_leg_lengths(pos, rot, geom)  # (6,) array in mm
 ```
@@ -95,20 +95,20 @@ where $\mathbf{r}_i = \mathbf{R} \cdot \mathbf{a}_i$ is the platform node positi
 
 The first three columns of $\mathbf{J}$ relate translational velocity (mm/s) to leg velocity (mm/s) — they are dimensionless direction cosines. The last three columns relate angular velocity (rad/s) to leg velocity (mm/s) — they have units of mm/rad.
 
-This means the raw condition number of $\mathbf{J}$ is ~450 at home, which seems high but is normal for this unit convention. All condition-number thresholds in the system use **relative** values (multiples of the home condition number) rather than absolute values.
+This means the raw condition number of $\mathbf{J}$ is ~450 at the active pose, which seems high but is normal for this unit convention. All condition-number thresholds in the system use **relative** values (multiples of the reference condition number) rather than absolute values.
 
 ### Condition Number
 
 The condition number $\kappa(\mathbf{J})$ indicates how sensitive leg motions are to Cartesian motions. A high condition number means small Cartesian motions require large (or uneven) leg motions — indicating proximity to a singularity.
 
-At home: $\kappa \approx 450$. Across the reachable workspace: $\kappa \in [449, 644]$.
+At the active pose: $\kappa \approx 450$. Across the reachable workspace: $\kappa \in [449, 644]$.
 
 Thresholds used in the system:
 
 | Threshold | Value | Used By |
 |---|---|---|
-| Soft limit | $1.5 \times \kappa_{\text{home}} \approx 675$ | `workspace.py` — speed ramp-down |
-| Hard limit | $2.0 \times \kappa_{\text{home}} \approx 900$ | `workspace.py` — trajectory abort; `feasibility.py` — feasibility rejection |
+| Soft limit | $1.5 \times \kappa_{\text{reference}} \approx 675$ | `workspace.py` — speed ramp-down |
+| Hard limit | $2.0 \times \kappa_{\text{reference}} \approx 900$ | `workspace.py` — trajectory abort; `feasibility.py` — feasibility rejection |
 
 ## Velocity Inverse Kinematics
 
@@ -134,7 +134,7 @@ This is used by the dynamics model to compute reflected motor inertia feedforwar
 
 Given 6 leg extensions, find the platform pose. This is an iterative solution using Newton-Raphson:
 
-1. Start from an initial guess (defaults to home pose)
+1. Start from an initial guess (defaults to active pose)
 2. Compute leg lengths at current guess via position IK
 3. Compute the error between target and current leg lengths
 4. Update the guess using the Jacobian: $\Delta\mathbf{x} = \mathbf{J}^{-1} \cdot \Delta\mathbf{q}$

@@ -443,9 +443,9 @@ def compute_derived(cfg: dict) -> dict:
         ll + offset for ll in geom["init_leg_lengths_mm"]
     ]
 
-    # Activate position per leg (rev): IK of the home pose [0, 0, default_z, 0, 0, 0].
+    # Activate position per leg (rev): IK of the active pose [0, 0, default_z, 0, 0, 0].
     # This ensures the gentle-move activation target matches the control loop's
-    # home pose exactly, avoiding a position discontinuity at handoff.
+    # active pose exactly, avoiding a position discontinuity at handoff.
     op = cfg["jugglebot_operational"]
     default_z = op["default_active_z_mm"]
     init_height = geom["initial_height_mm"]

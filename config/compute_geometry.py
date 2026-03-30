@@ -86,7 +86,7 @@ def compute_plat_nodes(plat_radius: float, plat_small_angle_deg: float,
     return nodes
 
 def compute_theoretical_leg_lengths(base_nodes, plat_nodes, initial_height: float):
-    """Compute leg lengths from geometry (platform at home position, no ball-joint offset)."""
+    """Compute leg lengths from geometry (platform at active position, no ball-joint offset)."""
     lengths = []
     for i in range(6):
         dx = plat_nodes[i][0] - base_nodes[i][0]

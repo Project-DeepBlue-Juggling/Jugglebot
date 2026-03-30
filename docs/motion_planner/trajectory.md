@@ -75,11 +75,11 @@ For example, a 1-second trajectory at `speed_scale=0.25` becomes a 4-second traj
 
 **Function:** `make_rest_to_rest(end_pose, duration, speed_scale, start_pose, t_start)` → `QuinticTrajectory`
 
-Creates a trajectory with zero velocity and acceleration at both ends. If `start_pose` is omitted, defaults to home `[0, 0, 0, 0, 0, 0]`.
+Creates a trajectory with zero velocity and acceleration at both ends. If `start_pose` is omitted, defaults to the active pose `[0, 0, 0, 0, 0, 0]`.
 
 ```python
 traj = make_rest_to_rest(
-    end_pose=np.array([0, 0, 30, 0, 0, 0]),  # 30mm above home
+    end_pose=np.array([0, 0, 30, 0, 0, 0]),  # 30mm above active pose
     duration=1.0,
     speed_scale=0.5
 )
@@ -100,7 +100,7 @@ Three time regions:
 | $t > t_{\text{end}}$ | Returns end **pose** with **zero** twist and accel (hold at target) |
 
 !!! warning "Evaluate at t_end returns zero velocity"
-    `evaluate()` past the end time returns zeros for twist and acceleration (hold behaviour). **Never use `evaluate(traj, t_end)` to read boundary conditions** — use `traj.end_state` directly. This caused a real bug: `_plan_return_to_home()` originally used `evaluate()` to get the end velocity for the return trajectory, which gave zeros and created a velocity discontinuity.
+    `evaluate()` past the end time returns zeros for twist and acceleration (hold behaviour). **Never use `evaluate(traj, t_end)` to read boundary conditions** — use `traj.end_state` directly. This caused a real bug: `_plan_return_to_active()` originally used `evaluate()` to get the end velocity for the return trajectory, which gave zeros and created a velocity discontinuity.
 
 ### Jerk Evaluation
 
@@ -137,7 +137,7 @@ Before any trajectory is executed on hardware, it must pass a feasibility check.
 | Leg extension | 5 mm from each endpoint | Hardware stroke with safety margin |
 | Motor velocity | 15 rev/s | `hardware_config` |
 | Motor acceleration | 30 rev/s² | `hardware_config` |
-| Jacobian condition number | 2.0 × home cond (~900) | Singularity avoidance |
+| Jacobian condition number | 2.0 × reference cond (~900) | Singularity avoidance |
 | Motor feedforward torque | None (disabled by default) | ODrive current limits |
 | Translational jerk | 50,000 mm/s³ | Mechanical smoothness |
 | Rotational jerk | 400 rad/s³ | Mechanical smoothness |
@@ -193,14 +193,14 @@ This is used by dynamic target handling to automatically select an appropriate t
       |                    |  (nonzero end vel)   |
       |                    ▼                      |
       +───────────── RETURNING ◄───────────────────+
-                     (auto return to home)
+                     (auto return to active)
 ```
 
 | State | Meaning | Output |
 |---|---|---|
-| `IDLE` | No trajectory active. Holding at home. | Hold pose commands |
+| `IDLE` | No trajectory active. Holding at active pose. | Hold pose commands |
 | `EXECUTING` | Running a forward trajectory. | Evaluate quintic at current time |
-| `RETURNING` | Auto-returning to home after a non-zero-velocity target. | Evaluate return quintic |
+| `RETURNING` | Auto-returning to active pose after a non-zero-velocity target. | Evaluate return quintic |
 | `COMPLETE` | Trajectory finished. Holding at end pose. | Hold pose commands |
 
 ### Initialization
@@ -250,7 +250,7 @@ if result.feasible:
 | `progress` | `float` | 0.0 to 1.0, updated each `evaluate()` call |
 | `time_remaining` | `float` | Seconds remaining in active trajectory |
 | `current_pose_6dof` | `np.ndarray` | Latest evaluated [x, y, z, rx, ry, rz] |
-| `home_pose` | `np.ndarray` | Read-only copy of home pose |
+| `active_pose` | `np.ndarray` | Read-only copy of active pose |
 
 ## Dynamic Targets
 
@@ -297,9 +297,9 @@ The worker process runs `check_feasibility()` without blocking the 500 Hz loop. 
 !!! note "Synchronous path (test-only)"
     For offline tests with frozen clocks, `submit_dynamic_target_sync()` in `tests/helpers.py` provides a blocking synchronous wrapper. This is not used in production.
 
-### Return to Home
+### Return to Active
 
-When a target has nonzero velocity (the platform is moving when it arrives), the manager automatically plans a return-to-home trajectory. The return uses `find_min_feasible_duration()` to find the shortest feasible duration, then adds a 20% safety margin.
+When a target has nonzero velocity (the platform is moving when it arrives), the manager automatically plans a return-to-active trajectory. The return uses `find_min_feasible_duration()` to find the shortest feasible duration, then adds a 20% safety margin.
 
 The return trajectory is **precomputed in the background** while the outbound trajectory is still executing. When the outbound completes, the return trajectory is ready to start immediately.
 

@@ -64,10 +64,10 @@ Where `home_extensions_mm` is the IK extension at MuJoCo home (slide = 0), typic
 
 ### Platform Pose Convention
 
-The platform pose is expressed as an **offset from home**:
+The platform pose is expressed as an **offset from the active pose**:
 
-- **Position** `[x, y, z]`: displacement in mm from the home center. At home, `pos = [0, 0, 0]` and the absolute platform height is `init_height_mm` (574.3 mm).
-- **Orientation** `[rx, ry, rz]`: rotation vector in radians. At home, `rot = [0, 0, 0]`.
+- **Position** `[x, y, z]`: displacement in mm from the active pose center. At the active pose, `pos = [0, 0, 0]` and the absolute platform height is `init_height_mm` (574.3 mm).
+- **Orientation** `[rx, ry, rz]`: rotation vector in radians. At the active pose, `rot = [0, 0, 0]`.
 
 This matches the production motion planner convention and keeps the MPC's decision variables centered near zero for better numerical conditioning.
 
@@ -79,7 +79,7 @@ Platform state is read from MuJoCo sensors (not directly from `qpos`/`qvel`):
 |---|---|---|
 | Leg position | `slide_pos_0..5` | m → IK extension → home-relative (mm) |
 | Leg velocity | `slide_vel_0..5` | m/s → mm/s (× 1000) |
-| Platform position | `platform_pos` | m → offset from home (mm) |
+| Platform position | `platform_pos` | m → offset from stow pose (mm) |
 | Platform orientation | `platform_quat` | wxyz quat → rotation matrix → rotation vector |
 | Platform linear velocity | `platform_linvel` | m/s → mm/s |
 | Platform angular velocity | `platform_angvel` | rad/s (no conversion) |

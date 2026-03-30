@@ -202,7 +202,7 @@ IDLE → PRIMING → APPROACHING → HOLDING → CAUGHT → RETURNING → IDLE
 2. **APPROACHING** — MPC drives platform to catch pose. Hand catch sequence is queued and starts playing when the prelude time arrives.
 3. **HOLDING** — at catch pose, hand trajectory playing, waiting for ball. Times out after `hold_duration` if no capture.
 4. **CAUGHT** — ball captured. Hand retracts to bottom (`'home'`).
-5. **RETURNING** — MPC drives platform back to home. After 1.0 s, transitions to IDLE.
+5. **RETURNING** — MPC drives platform back to active pose. After 1.0 s, transitions to IDLE.
 
 ### Throw-Catch Flow
 
@@ -306,7 +306,7 @@ Pre-defined test sequences are available via command-line flags. Each exercises 
 
 | Name | Description |
 |---|---|
-| T1 | Linear Z translation (home → z+50 → home), 1 s segments |
+| T1 | Linear Z translation (active → z+50 → active), 1 s segments |
 | T2 | Circular XY orbit at z=50 mm, 80 mm radius, 2 s period |
 | T3 | Multi-axis translation + tilt, 1.5 s segments |
 | T4 | Fast point-to-point (~400 ms transit) |

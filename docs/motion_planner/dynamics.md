@@ -156,7 +156,7 @@ This is the top-level function called by the control loop every cycle. It combin
 
 | Scenario | Per-leg gravity torque | Per-leg inertia torque | Motor stiction |
 |---|---|---|---|
-| Static hold at home | ~0.018 Nm | 0 Nm | ~0.075 Nm |
+| Static hold at active pose | ~0.018 Nm | 0 Nm | ~0.075 Nm |
 | Moderate trajectory (50% speed) | ~0.018 Nm | ~0.005 Nm | ~0.075 Nm |
 | Fast trajectory (100% speed) | ~0.018 Nm | ~0.02 Nm | ~0.075 Nm |
 | Ball-catching speed | ~0.018 Nm | significant | ~0.075 Nm |
@@ -201,10 +201,10 @@ The dynamics model was validated with 7 offline tests and multiple hardware test
 
 | Test | Result |
 |---|---|
-| Gravity wrench at home (level) | Zero torque component (CoM torque only when tilted) |
+| Gravity wrench at active pose (level) | Zero torque component (CoM torque only when tilted) |
 | Gravity wrench at tilt | Torque direction and magnitude match geometry |
 | Leg force decomposition round-trip | $\mathbf{J}^T \cdot \mathbf{f} = \mathbf{W}$ verified to machine precision |
-| Motor torque sign convention | All positive at home (legs support upward) |
+| Motor torque sign convention | All positive at active pose (legs support upward) |
 | Hardware gravity ff | 55.8% reduction in ODrive corrective current; 10.1% magnitude match |
 | Hardware inertia ff (T5–T7) | Full FF reduces PID effort by 1.5–2.8% at 100% speed |
 

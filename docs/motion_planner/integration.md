@@ -196,7 +196,7 @@ For development or when running the motion planner separately:
 2. **Start control process:** `python -m jugglebot.motion.control_loop --rate 500` (separate terminal). Starts in `DISABLED` mode with zero outputs.
 3. **IPC connection:** The bridge's BridgeIPC binds on port 5555. The control loop's ControlProcessIPC connects. ZeroMQ handles the connection/reconnection automatically.
 4. **Homing:** The orchestrator commands homing via the CAN node. ODrives find their encoder references.
-5. **Activate:** The orchestrator transitions to ACTIVE, publishing a mode on `control_mode_topic`. The bridge sends an `enable` command. The control loop transitions to `ENABLED` and seeds the home pose.
+5. **Activate:** The orchestrator transitions to ACTIVE, publishing a mode on `control_mode_topic`. The bridge sends an `enable` command. The control loop transitions to `ENABLED` and seeds the active pose.
 6. **Operation:** The active input source (spacemouse, shell, ball predictor) publishes `PlatformPoseCommand` messages. The bridge forwards them. The control loop computes motor commands.
 
 ## Shutdown Sequence

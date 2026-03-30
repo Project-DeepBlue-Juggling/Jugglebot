@@ -45,15 +45,15 @@ The Jacobian condition number indicates proximity to singular configurations (po
 
 | Threshold | Value | Behaviour |
 |---|---|---|
-| Home condition | ~450 | Normal baseline (mixed mm/rad units) |
-| Soft limit | 1.5× home (~675) | Speed ramp-down begins |
-| Hard limit | 2.0× home (~900) | Trajectory aborts, E-stop triggered |
+| Reference condition | ~450 | Normal baseline (mixed mm/rad units) |
+| Soft limit | 1.5× reference (~675) | Speed ramp-down begins |
+| Hard limit | 2.0× reference (~900) | Trajectory aborts, E-stop triggered |
 
 The soft limit uses the same linear ramp-down as leg extensions, applied between the soft and hard thresholds.
 
 ### Why Relative Thresholds?
 
-The raw condition number is ~450 at home due to the Jacobian's mixed units (mm/s and rad/s). This number is not inherently meaningful — it just reflects the unit convention. Using relative thresholds (multiples of the home value) makes the limits independent of unit choices and directly meaningful: "2× worse than home" is a clear, physical threshold.
+The raw condition number is ~450 at the active pose due to the Jacobian's mixed units (mm/s and rad/s). This number is not inherently meaningful — it just reflects the unit convention. Using relative thresholds (multiples of the reference value) makes the limits independent of unit choices and directly meaningful: "2× worse than reference" is a clear, physical threshold.
 
 ## WorkspaceLimits Configuration
 
@@ -65,7 +65,7 @@ geom = StewartGeometry()
 limits = WorkspaceLimits.from_geometry(geom)
 ```
 
-The factory method precomputes the home condition number and derives all thresholds:
+The factory method precomputes the reference condition number (at the active pose) and derives all thresholds:
 
 | Field | Value | Derivation |
 |---|---|---|
@@ -74,9 +74,9 @@ The factory method precomputes the home condition number and derives all thresho
 | `leg_soft_max_mm` | 265 | `stroke - LEG_SOFT_MARGIN_MM` |
 | `leg_hard_min_mm` | 5 | `LEG_HARD_MARGIN_MM` |
 | `leg_hard_max_mm` | 275 | `stroke - LEG_HARD_MARGIN_MM` |
-| `cond_home` | ~450 | Computed at home pose |
-| `cond_soft` | ~675 | `COND_SOFT_FACTOR × cond_home` |
-| `cond_hard` | ~900 | `COND_HARD_FACTOR × cond_home` |
+| `cond_reference` | ~450 | Computed at the active pose |
+| `cond_soft` | ~675 | `COND_SOFT_FACTOR × cond_reference` |
+| `cond_hard` | ~900 | `COND_HARD_FACTOR × cond_reference` |
 
 ## Runtime Checking
 
@@ -166,9 +166,9 @@ From the Phase 1 singularity map (8×8×8×4×4 grid = 8192 poses):
 | Reachable | 929 (47.8%) |
 | Unreachable | 1015 (52.2%) |
 | Condition range (reachable) | 449 – 644 |
-| Home condition | ~450 |
+| Reference condition | ~450 |
 
-The workspace is roughly a truncated cone — wider near home height, narrowing at extreme Z positions and tilts.
+The workspace is roughly a truncated cone — wider near initial height, narrowing at extreme Z positions and tilts.
 
 ## Verification
 

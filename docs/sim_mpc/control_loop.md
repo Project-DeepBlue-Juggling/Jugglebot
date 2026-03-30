@@ -154,7 +154,7 @@ The toss loop (`--cycle-time`, `TossLoopController` in `sim/input/toss_loop.py`)
 
 **Bypasses HandCoordinator.** The toss loop manages hand sequences and ball lifecycle directly, without the `HandCoordinator` state machine. The coordinator's post-catch return-to-home flow (which takes ~2 s) is incompatible with tight cycle timing (~480 ms hold time).
 
-**Quintic Hermite platform reference.** Instead of returning a static target with `arrival_time`, the toss loop evaluates a quintic Hermite spline at the current sim time and returns the result as an ASAP target. The MPC sees a smoothly moving reference with no urgency ramps or deadline pressure. See [Variable Horizon — Toss Loop Bypass](variable_horizon.md#toss-loop-bypass) for the motivation.
+**Quintic Hermite platform reference.** Instead of returning a static target with `arrival_time`, the toss loop evaluates a quintic Hermite spline at the current sim time and returns the result as an ASAP target. The MPC sees a smoothly moving reference and tracks it with uniform cost weighting. See [Variable Horizon — Toss Loop Bypass](variable_horizon.md#toss-loop-bypass) for the motivation.
 
 **Time-driven targets.** Platform target transitions are driven by the cycle clock, not by ball capture detection. When the ball is captured, only the ball state changes (kinematic hold); the platform reference continues along its pre-planned spline uninterrupted. This eliminates the target-switch jerk that occurs when platform motion is coupled to capture events.
 
@@ -168,7 +168,7 @@ _quintic_interp()                          (module-level in toss_loop.py)
         → TossLoopController.update()
             → ContinuousThrowCatchSource.update()
                 → TargetCommand(target_pose, arrival_time=None)
-                    → mpc.solve(state, pose)   [urgency = 1.0 everywhere]
+                    → mpc.solve(state, pose)   [uniform tracking weight]
 ```
 
 ## Telemetry

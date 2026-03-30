@@ -188,8 +188,8 @@ jugglebot_odrive_defaults:
 # ============================================================
 jugglebot_operational:
   # NOTE: activate_position_rev is now a DERIVED per-leg list (JB_OP_ACTIVATE_POSITION_REVS)
-  # computed by generate_config.py from the home pose IK at [0, 0, default_active_z_mm, 0, 0, 0].
-  # This ensures the gentle-move target matches the control loop's home pose exactly.
+  # computed by generate_config.py from the active pose IK at [0, 0, default_active_z_mm, 0, 0, 0].
+  # This ensures the gentle-move target matches the control loop's active pose exactly.
   default_active_z_mm: 170.0             # Default platform Z during active catching {mm}
   hand_catch_prime_rev: 9.858            # Hand position for catch priming (top of stroke) {rev}
   target_reached_pos_tol_rev: 0.01       # Position tolerance for target-reached check {rev}

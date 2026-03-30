@@ -152,14 +152,14 @@ Steps 1–6 are detailed in the [Kinematics](kinematics.md) and [Dynamics](dynam
 ### Frames
 
 - **Base frame:** Origin at the geometric centre of the base. Z-axis points up. This is the world frame.
-- **Platform frame:** Body-fixed to the platform. At the home pose, it is aligned with the base frame, with the platform centre at height `init_height_mm` (574.3 mm) above the base.
+- **Platform frame:** Body-fixed to the platform. At the active pose, it is aligned with the base frame, with the platform centre at height `init_height_mm` (574.3 mm) above the base.
 
 ### Pose Representation
 
-A platform pose is specified as an **offset from home**:
+A platform pose is specified as an **offset from the active pose**:
 
-- **Position:** `[x, y, z]` in mm — displacement of the platform centre from its home position. At home, `pos = [0, 0, 0]` and the absolute platform height is `init_height_mm`.
-- **Orientation:** Rotation vector `[rx, ry, rz]` in radians (axis × angle). At home, `rot = [0, 0, 0]`. Valid for tilts up to ~15 degrees. Internally converted to a 3×3 rotation matrix.
+- **Position:** `[x, y, z]` in mm — displacement of the platform centre from its active position. At the active pose, `pos = [0, 0, 0]` and the absolute platform height is `init_height_mm`.
+- **Orientation:** Rotation vector `[rx, ry, rz]` in radians (axis × angle). At the active pose, `rot = [0, 0, 0]`. Valid for tilts up to ~15 degrees. Internally converted to a 3×3 rotation matrix.
 
 ### Leg Extensions
 
@@ -186,7 +186,7 @@ A platform pose is specified as an **offset from home**:
 | Wrench | N and N·mm (mixed due to Jacobian units) |
 | Acceleration | mm/s², rad/s² |
 
-The Jacobian maps `[mm/s, mm/s, mm/s, rad/s, rad/s, rad/s]` to `[mm/s × 6]`, so its columns have mixed units. This causes the raw condition number to be ~450 at home — high in absolute terms but normal for this convention. All condition-number thresholds use relative factors (1.5× and 2.0× the home value) to account for this.
+The Jacobian maps `[mm/s, mm/s, mm/s, rad/s, rad/s, rad/s]` to `[mm/s × 6]`, so its columns have mixed units. This causes the raw condition number to be ~450 at the active pose — high in absolute terms but normal for this convention. All condition-number thresholds use relative factors (1.5× and 2.0× the reference value) to account for this.
 
 ## Source Files
 

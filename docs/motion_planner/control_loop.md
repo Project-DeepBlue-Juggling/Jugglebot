@@ -166,10 +166,10 @@ A telemetry message is published every cycle (when safety checks pass) containin
 
 When transitioning from `DISABLED` to `ENABLED`:
 
-1. `_seed_home_pose()` initializes all outputs to the home pose
-2. The trajectory manager's hold pose is set to home
-3. Target state variables are set to home
-4. The control process immediately publishes home-pose commands
+1. `_seed_active_pose()` initializes all outputs to the active pose
+2. The trajectory manager's hold pose is set to the active pose
+3. Target state variables are set to the active pose
+4. The control process immediately publishes active-pose commands
 
 This ensures the ODrives receive a valid position command on the first cycle after enable, rather than zeros (which would command the motors to the zero-extension position).
 

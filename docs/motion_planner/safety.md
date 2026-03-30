@@ -10,7 +10,7 @@ This page describes the defense-in-depth safety system that prevents the Stewart
 
 ## Motivation
 
-On 2026-03-11, the control loop commanded the home pose as a step discontinuity after LEVELLING finished, slamming the platform down and breaking an actuator. The root cause: the control loop was continuously commanding home position `(0,0,0,0,0,0)` while LEVELLING moved the platform to a different position. When LEVELLING released control, the control loop's stale home command was applied as a step — 200+ mm of instantaneous travel.
+On 2026-03-11, the control loop commanded the active pose as a step discontinuity after LEVELLING finished, slamming the platform down and breaking an actuator. The root cause: the control loop was continuously commanding the active position `(0,0,0,0,0,0)` while LEVELLING moved the platform to a different position. When LEVELLING released control, the control loop's stale active-pose command was applied as a step — 200+ mm of instantaneous travel.
 
 This incident exposed a gap: while the system had workspace limits and trajectory feasibility checking, there was no velocity-aware rate limiting on the final motor commands. The safety system described here closes that gap with multiple independent layers.
 
@@ -64,14 +64,14 @@ if any(|delta| > max_delta):
 | Situation | Response |
 |---|---|
 | Normal trajectory (deltas well under limit) | Transparent — commands pass through unchanged |
-| Step discontinuity (e.g., stale home command) | Clamped to safe rate (~667 mm/s) |
+| Step discontinuity (e.g., stale active-pose command) | Clamped to safe rate (~667 mm/s) |
 | Sustained clamping (>0.5s) | Warning logged; cycle count derived from loop rate |
 | No motor feedback available | All commands suppressed |
 | Motor feedback stale (>100ms) | All commands suppressed |
 
 ### Why Clamp Instead of Reject?
 
-Rejecting a large command would leave the ODrives holding their last position, which is safe but doesn't recover. Clamping allows the platform to move toward the target at a safe rate, which handles benign cases (e.g., enable at a non-home position) while still catching pathological ones via the sustained-clamping fault.
+Rejecting a large command would leave the ODrives holding their last position, which is safe but doesn't recover. Clamping allows the platform to move toward the target at a safe rate, which handles benign cases (e.g., enable at a non-active position) while still catching pathological ones via the sustained-clamping fault.
 
 ### Velocity and Torque Feedforward During Clamping
 
@@ -164,7 +164,7 @@ They catch different failure modes:
 | **Slew limiter** (control loop) | Velocity-aware rate limiting against actual motor position. Handles sustained high-speed commands that individually pass the step check but collectively are too fast |
 | **CAN step check** (CAN node) | Last-resort guard at a different layer. Catches commands from any source (not just the control loop), race conditions on mode transitions, and potential bugs in the slew limiter itself |
 
-The CAN step check was confirmed working during the DEACTIVATE race condition: when the control loop briefly publishes stale home-pose commands before its IPC `disable` message arrives, the CAN node rejects them. At 500 Hz, the per-command step check allows up to 100 rev/s effective velocity — far too fast for safety — which is why the slew limiter is needed. But as a last-resort catch-all at a different layer, the step check has near-zero cost (6 float comparisons per command) and provides valuable defense in depth.
+The CAN step check was confirmed working during the DEACTIVATE race condition: when the control loop briefly publishes stale active-pose commands before its IPC `disable` message arrives, the CAN node rejects them. At 500 Hz, the per-command step check allows up to 100 rev/s effective velocity — far too fast for safety — which is why the slew limiter is needed. But as a last-resort catch-all at a different layer, the step check has near-zero cost (6 float comparisons per command) and provides valuable defense in depth.
 
 ## FAULT Chain
 
@@ -187,7 +187,7 @@ When any safety check triggers an ESTOP in the control loop, the following seque
 
 5. CAN node receives ERROR
    → _gently_move_to_setpoint(0.0, deactivating=True)
-   → TRAP_TRAJ profiled stow to home position
+   → TRAP_TRAJ profiled stow to stow position
 ```
 
 All faults ultimately lead to a gentle, profiled stow. The platform never free-spins or drops under gravity.

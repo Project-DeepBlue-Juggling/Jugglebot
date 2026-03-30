@@ -1,11 +1,11 @@
 # Variable-Resolution Horizon
 
-This page explains the variable-timestep horizon and the urgency system that lets the MPC handle both immediate tracking and timed targets (ball catches).
+This page explains the variable-timestep horizon that lets the MPC handle both immediate tracking and timed targets (ball catches).
 
 **Source files:**
 
-- `sim/controller/params.py` — `dt_schedule`, urgency parameters
-- `sim/controller/mpc.py` — `_build_reference()`, `_compute_urgency()`
+- `sim/controller/params.py` — `dt_schedule`
+- `sim/controller/mpc.py` — `_build_reference()`
 
 ## The Problem
 
@@ -75,61 +75,28 @@ All N+1 nodes are set to the target pose. The MPC finds the optimal path via its
 
 - The MPC's own dynamics prevent instantaneous jumps (actuator lag constraint).
 - The smoothness cost penalizes jerky transitions.
-- The urgency system controls *when* the tracking cost kicks in.
+- The terminal cost (`Qf`) provides deadline pull toward the target at the horizon end.
 
 ### Twist Reference
 
 - **ASAP targets** (`arrival_time = None`): All twist references are zero. The MPC drives to the target as fast as constraints allow.
 - **Timed targets with nonzero arrival twist:** Twist reference is zero for nodes before the deadline and `target_twist` at/after the deadline. This lets the MPC plan its own velocity profile during approach, then match the desired velocity at arrival (used for throw targets).
 
-## Urgency System
+## Tracking Cost Weighting
 
-The urgency system controls how strongly the MPC tracks the reference at each horizon node. This is the mechanism that converts "arrive at time T" into optimizer behavior.
+All tracking costs use **uniform weight** across horizon nodes — there is no per-node urgency multiplier. An earlier version of the MPC used an urgency ramp that scaled tracking weights from a low base to a high peak near the deadline, but this was removed because it caused premature arrival, target-switch jerk, and complicated interactions with the terminal cost.
 
-### ASAP Mode (arrival_time = None)
+The current design relies on two mechanisms to handle timed targets:
 
-All nodes get `urgency = 1.0`. The MPC pushes toward the target uniformly — there's no timing constraint, so full tracking pressure everywhere is appropriate.
-
-### Timed Mode
-
-Each node's urgency ramps from `urgency_base` (0.05) to `urgency_max` (10.0) as the node's absolute time approaches the deadline:
-
-```python
-time_to_deadline = max(arrival_time - t_node, 0)
-ramp = max(0, 1 - time_to_deadline / urgency_ramp_s)   # 0 far, 1 at deadline
-urgency = urgency_base + (urgency_max - urgency_base) * ramp
-```
-
-The ramp window is `urgency_ramp_s = 0.5 s`.
-
-### Why Low Base Urgency?
-
-With a constant reference (all nodes = target), high uniform urgency would penalize early nodes for being far from the target even though they physically can't be there yet. The low base (0.05) lets the MPC choose its own trajectory for "how to get there", while the ramp and terminal cost ensure accurate arrival.
-
-### Urgency Timeline Example
-
-Target: arrive at t = 1.0 s from now. Ramp window: 0.5 s.
-
-| Node | Time from now | Time to deadline | Ramp | Urgency |
-|---|---|---|---|---|
-| 1 | 0.02 s | 0.98 s | 0.0 | 0.05 |
-| 2 | 0.04 s | 0.96 s | 0.0 | 0.05 |
-| ... | ... | ... | ... | ... |
-| 5 | 0.10 s | 0.90 s | 0.0 | 0.05 |
-| 6 | 0.35 s | 0.65 s | 0.0 | 0.05 |
-| 7 | 0.60 s | 0.40 s | 0.2 | 2.04 |
-| 8 | 0.85 s | 0.15 s | 0.7 | 7.00 |
-| 9 | 1.10 s | 0.0 s | 1.0 | 10.0 |
-| 10 | 1.35 s | 0.0 s | 1.0 | 10.0 |
-
-Nodes 9 and 10 (past the deadline) see full urgency, creating strong pull toward the target. Nodes 1-6 see minimal urgency, allowing the MPC to plan an efficient approach path.
+- **Event-based callers** (catch sequences, toss loop): the reference trajectory itself encodes timing. The MPC simply tracks the moving reference with uniform cost.
+- **Flat-reference callers** (static targets, waypoint sequences): the terminal cost (`Qf_pos`, `Qf_ori`) provides deadline pull toward the target at the horizon end, while the stage costs (`Q_pos`, `Q_ori`) apply uniform pressure at all nodes.
 
 ## Feasibility Checking
 
 The `FeasibilityChecker` (in `sim/hand/feasibility.py`) uses a separate coarse-horizon MPC to predict whether the controller can reach a target in time. It runs a one-shot solve with:
 
 - Uniform 0.1 s timesteps × 10 nodes = 1.0 s horizon
-- ASAP mode (no urgency ramp)
+- ASAP mode (uniform tracking weight)
 - Higher velocity limit (1000 mm/s)
 - No warm-start
 
@@ -141,27 +108,17 @@ The `FeasibilityChecker` (in `sim/hand/feasibility.py`) uses a separate coarse-h
 
 ### Limitations
 
-The feasibility checker uses ASAP mode while the real controller uses the urgency ramp. This makes the checker slightly optimistic — see [MPC_BUGS.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/sim/MPC_BUGS.md) B-03 for details.
+The feasibility checker uses a coarse uniform-timestep horizon (10 x 0.1 s) while the real controller uses the two-tier variable-resolution schedule. This structural difference means the checker is slightly optimistic — see [MPC_BUGS.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/sim/MPC_BUGS.md) B-03 for details.
 
 ## Toss Loop Bypass
 
-The continuous toss loop (`--cycle-time`, `TossLoopController`) does **not** use the urgency system or timed targets. Instead, it computes a time-varying platform reference via quintic Hermite interpolation and sends it as an ASAP target each step.
-
-### Why the Urgency System Doesn't Work for Continuous Motion
-
-The urgency ramp was designed for one-shot targets (catch a single ball, move to a waypoint). For a periodic toss cycle it creates two problems:
-
-1. **Premature arrival.** With `urgency_ramp_s = 0.5` and `air_time = 0.72 s`, the ramp begins just 220 ms into the flight. The coarse horizon nodes (250 ms steps) and terminal cost (Qf_pos × urgency_max) create strong pull, driving the platform to arrive at the catch pose well before the ball. The platform decelerates to zero and holds — defeating Phase C's pass-through intent.
-
-2. **Target-switch jerk.** When the ball is captured and the MPC target switches to the next throw pose (opposite side, reversed velocity), the urgency profile changes discontinuously. The old target was at max urgency (deadline passed); the new target's deadline is within the hold time (~480 ms), so even the first fine nodes have urgency > 0.8. This creates an abrupt platform shift visible on legs 0, 3, 4, and 5.
-
-3. **Twist reference timing.** The twist reference is zero before the deadline and `target_twist` at/after. This means the MPC actively drives velocity to zero during approach. By the time the deadline passes and the twist reference activates, the platform is already stationary. The velocity tracking weight (`Q_vel_lin = 0.001`) is too weak to overcome the position hold.
+The continuous toss loop (`--cycle-time`, `TossLoopController`) computes a time-varying platform reference via quintic Hermite interpolation and sends it as an ASAP target each step, rather than using static endpoint targets with arrival deadlines.
 
 ### Quintic Hermite Solution
 
 The toss loop replaces the static endpoint target with a **continuous motion stream**: a quintic Hermite spline evaluated at the current simulation time. The spline matches position, velocity, and acceleration (all zero) at segment boundaries, giving C2 continuity.
 
-- All targets are ASAP (`arrival_time = None`), so urgency is uniformly 1.0.
+- All targets are ASAP (`arrival_time = None`), with uniform tracking weight across all nodes.
 - The MPC simply tracks the moving reference with its standard cost function.
 - The platform arrives at each event pose on time (because the reference itself is correctly timed) and at the correct velocity (because the reference encodes the velocity).
 - No discontinuities at target transitions — the reference is smooth everywhere.

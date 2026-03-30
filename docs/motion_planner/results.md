@@ -77,7 +77,7 @@ All tested on axis 0 using `tools/single_leg_test.py`. ODrive current limit at 5
 
 | Test | Result | Worst Tracking | Threshold | Detail |
 |---|---|---|---|---|
-| T1: Small move from home | PASS | 0.45 mm | 1.5 mm | 10mm Z step |
+| T1: Small move from active pose | PASS | 0.45 mm | 1.5 mm | 10mm Z step |
 | T2: Graduated distance | PASS | 0.85 mm | 1.5 mm | 30mm Z + 5° tilt |
 | T3: Multi-pose sequence | PASS | 1.17 mm | 1.5 mm | 4-pose workspace tour |
 | T4: Speed scale comparison | marginal FAIL | 1.535 mm | 1.5 mm | Threshold artefact, not functional |
@@ -139,14 +139,14 @@ All tested on axis 0 using `tools/single_leg_test.py`. ODrive current limit at 5
 | Test | Result | Worst Tracking | Threshold | Detail |
 |---|---|---|---|---|
 | DT1: Static target +30mm Z | PASS | 1.502 mm | 3.0 mm | Simple dynamic target |
-| DT2: Nonzero velocity + return | PASS | 2.436 mm | 3.0 mm | Auto return, final error 0.000 mm from home |
+| DT2: Nonzero velocity + return | PASS | 2.436 mm | 3.0 mm | Auto return, final error 0.000 mm from active pose |
 | DT3: Mid-motion replan | PASS | 1.187 mm | 3.0 mm | 2/2 targets accepted |
 | DT4: Rapid updates (2 Hz) | PASS | — | — | 10/10 accepted, 0 ODrive faults |
 | DT5: Infeasible target ignored | PASS | 2.093 mm | 3.0 mm | Infeasible correctly rejected |
 
 ### Bugs Found During Phase 7 Hardware Validation
 
-1. **`_plan_return_to_home()` velocity discontinuity:** Originally used `evaluate(traj, t_end)` to get the end velocity, but `evaluate()` returns zero velocity past `t_end` (hold behaviour). Fix: read `traj.end_state` directly.
+1. **`_plan_return_to_active()` velocity discontinuity:** Originally used `evaluate(traj, t_end)` to get the end velocity, but `evaluate()` returns zero velocity past `t_end` (hold behaviour). Fix: read `traj.end_state` directly.
 
 2. **Feasibility-check stall:** `submit_dynamic_target()` blocked the control loop for ~250 ms. Fix: async feasibility pipeline with background thread and generation-counter staleness detection.
 
@@ -193,4 +193,4 @@ Hardware validation (AP1–AP5) pending.
 | 18 ms first-sample spike | One-time startup transient | Benign — no tracking impact |
 | Full FF loop ~290 Hz | Below target 500 Hz | May need optimization for ball-catching speeds |
 | Soft limit no active speed reduction | Logs warning only | Planned for future (feasibility checker prevents entry) |
-| Condition number uses mixed units | Raw values ~450 at home | Mitigated by relative thresholds |
+| Condition number uses mixed units | Raw values ~450 at active pose | Mitigated by relative thresholds |
