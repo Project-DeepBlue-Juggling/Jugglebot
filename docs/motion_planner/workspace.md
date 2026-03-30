@@ -8,8 +8,8 @@ This page covers how the motion planner keeps the platform within safe operating
 
 The workspace safety system operates at two levels:
 
-1. **Planning time** — The [feasibility checker](trajectory.md#feasibility-checking) rejects trajectories that would violate constraints before they execute.
-2. **Runtime** — The [control loop](control_loop.md) checks workspace limits every cycle (500 Hz) and can slow down or abort if the platform approaches danger.
+1. **Planning time** — The MPC solver enforces workspace constraints as part of its optimization, ensuring all planned trajectories satisfy leg extension and condition number limits.
+2. **Runtime** — The [motor guard](control_loop.md) checks workspace limits on every MPC command arrival (50 Hz) and E-stops if the platform exceeds hard limits.
 
 Both levels use the same margin constants, so a trajectory that passes feasibility will not trigger runtime limits under normal conditions.
 
@@ -82,7 +82,7 @@ The factory method precomputes the reference condition number (at the active pos
 
 **Function:** `check_workspace_limits(extensions_mm, cond_number, limits)` → `WorkspaceCheck`
 
-Called every control cycle by the control loop. Returns:
+Called on every MPC command arrival by the motor guard. Returns:
 
 ```python
 @dataclass
@@ -145,7 +145,7 @@ Used during Phase 1 to characterize the workspace. Results: 929/1944 poses reach
 
 ## Motor Command Safety
 
-In addition to workspace limits, the control loop enforces a set of runtime safety checks on every motor command — slew rate limiting against actual motor feedback, overspeed detection, tracking error faults, and feedback staleness gating. These are documented separately in [Motor Command Safety](safety.md).
+In addition to workspace limits, the motor guard enforces a set of runtime safety checks — max-deviation against actual motor feedback, overspeed detection, staleness checks, and NaN rejection. These are documented separately in [Motor Command Safety](safety.md).
 
 ## Agreement Between Planning and Runtime
 

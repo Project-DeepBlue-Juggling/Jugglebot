@@ -4,95 +4,99 @@ This page describes the defense-in-depth safety system that prevents the Stewart
 
 **Source files:**
 
-- [control_loop.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/control_loop.py) — slew limiter, fault checks
-- [trajectory_manager.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/trajectory_manager.py) — lead-time gate
+- [motor_guard.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/motor_guard.py) — safety checks, max-deviation, bounded extrapolation
 - [can_node.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/can_node.py) — per-command step check
+
+!!! note "Replaces slew limiter"
+    The old `control_loop.py` used a per-cycle **slew rate limiter** as its primary safety mechanism. The motor guard replaces this with a **max-deviation check** at MPC command arrival plus **bounded quadratic extrapolation** between commands. The slew limiter was removed because the motor guard receives pre-computed motor commands from the MPC — there is no IK or trajectory evaluation that could produce step discontinuities. The max-deviation check catches the dangerous case (corrupted or stale MPC command far from actual position), while the interpolator ensures smooth inter-sample motion.
 
 ## Motivation
 
 On 2026-03-11, the control loop commanded the active pose as a step discontinuity after LEVELLING finished, slamming the platform down and breaking an actuator. The root cause: the control loop was continuously commanding the active position `(0,0,0,0,0,0)` while LEVELLING moved the platform to a different position. When LEVELLING released control, the control loop's stale active-pose command was applied as a step — 200+ mm of instantaneous travel.
 
-This incident exposed a gap: while the system had workspace limits and trajectory feasibility checking, there was no velocity-aware rate limiting on the final motor commands. The safety system described here closes that gap with multiple independent layers.
+The MPC-native architecture eliminates this class of failure: the MPC replans from measured state every 20 ms, so it can never command a position far from where the platform actually is. The motor guard's max-deviation check provides a safety net against MPC solver failures or corrupted IPC messages.
 
 ## Defense in Depth
 
-Safety checks are applied at three independent layers. Each layer catches different failure modes, and any single layer is sufficient to prevent dangerous motion.
+Safety checks are applied at two independent layers. Each layer catches different failure modes.
 
 ```
-                    Planning Time
-                    ─────────────
-  1. Trajectory feasibility checker (rejects unsafe trajectories)
-  2. Lead-time gate (rejects targets arriving too soon)
-
-                    Runtime — Control Loop
-                    ───────────────────────
-  3. Motor feedback gate (no feedback → no commands)
-  4. Feedback staleness check (old feedback → no commands)
-  5. Motor overspeed check (feedback velocity too high → ESTOP)
-  6. Tracking error check (commanded vs actual divergence → warning)
-  7. Slew rate limiter (clamps rate of position change vs feedback)
-  8. Sustained slew fault (clamping too long → warning)
+                    Runtime — Motor Guard (500 Hz)
+                    ────────────────────────────────
+  1. Motor feedback gate (no feedback → no commands)
+  2. Feedback staleness check (old feedback → no commands)
+  3. Motor overspeed check (feedback velocity too high → ESTOP)
+  4. Max deviation check (MPC command too far from actual → ESTOP)
+  5. Workspace check (extension or condition number out of bounds → ESTOP)
+  6. NaN/Inf rejection (non-finite values in command or feedback → reject)
+  7. MPC staleness check (no command in 200ms → ESTOP)
+  8. IPC heartbeat (no messages in 500ms → ESTOP)
+  9. Bounded extrapolation (velocity decay after 40ms, stop after 100ms)
+ 10. Stroke clamping (position clamped to hard limits every cycle)
 
                     Runtime — CAN Node
                     ───────────────────
-  9. Per-command step check (rejects any single command > 0.2 rev)
+ 11. Per-command step check (rejects any single command > 0.3 rev)
 ```
 
-## Slew Rate Limiter
+## Max Deviation Check
 
-The primary safety mechanism. Runs every control cycle (500 Hz) in the control loop, after motor commands are computed and before telemetry is published.
-
-### How It Works
-
-Each cycle, the limiter compares the commanded motor position against the actual motor position (from encoder feedback). If the difference exceeds the maximum allowed change per cycle, the command is clamped.
+The primary safety mechanism. Runs once per MPC command arrival (50 Hz), comparing the incoming MPC position against the actual motor position from encoder feedback.
 
 ```python
-MAX_SLEW_RATE_REV_PER_S = 9.5   # ~667 mm/s, 200mm in 0.3s
-max_delta = MAX_SLEW_RATE_REV_PER_S * dt  # per-cycle limit
+MAX_DEVIATION_REV = 0.5   # ~36 mm at standard spool radius
 
-delta = commanded_pos - actual_pos
-if any(|delta| > max_delta):
-    clamped_delta = clip(delta, -max_delta, max_delta)
-    commanded_pos = actual_pos + clamped_delta
-    scale = |clamped_delta| / |delta|  # per-leg ratio
-    vel_ff *= scale           # proportional to clamping
-    # torque_ff unchanged — gravity comp must be preserved
+deviation = abs(mpc_commanded_pos - actual_motor_pos)
+if any(deviation > MAX_DEVIATION_REV):
+    → ESTOP (fault: max_deviation)
 ```
 
-### Key Behaviours
+### Why Check at Arrival, Not Every Cycle?
 
-| Situation | Response |
-|---|---|
-| Normal trajectory (deltas well under limit) | Transparent — commands pass through unchanged |
-| Step discontinuity (e.g., stale active-pose command) | Clamped to safe rate (~667 mm/s) |
-| Sustained clamping (>0.5s) | Warning logged; cycle count derived from loop rate |
-| No motor feedback available | All commands suppressed |
-| Motor feedback stale (>100ms) | All commands suppressed |
+The deviation between the incoming MPC position and the *current* motor feedback is checked once when the command arrives, not every 500 Hz cycle. Rationale: the interpolator only extrapolates from the MPC command, so per-cycle drift is bounded by `vel_ff × dt` (small). Checking at arrival catches the dangerous case: a corrupted or stale MPC command that jumps far from the actual motor position.
 
-### Why Clamp Instead of Reject?
+### Why 0.5 rev?
 
-Rejecting a large command would leave the ODrives holding their last position, which is safe but doesn't recover. Clamping allows the platform to move toward the target at a safe rate, which handles benign cases (e.g., enable at a non-active position) while still catching pathological ones via the sustained-clamping fault.
+At the standard spool radius (~71.5 mm/rev), 0.5 rev ≈ 36 mm. This is generous enough to tolerate:
 
-### Velocity and Torque Feedforward During Clamping
+- Normal MPC step sizes (0.19 rev at max velocity)
+- Interpolation lag between MPC command and motor feedback
+- Timing jitter in ZMQ message delivery
 
-When the slew limiter clamps a position command:
+But tight enough to catch a crashed MPC sending garbage positions.
 
-- **vel_ff** is scaled proportionally to the clamping ratio per leg (`|clamped_delta| / |original_delta|`). This keeps the feedforward direction correct while reducing magnitude to match the reduced travel.
-- **torque_ff** is left **unchanged**. The gravity compensation torque is still physically correct (the platform's weight hasn't changed) and zeroing it caused oscillation during testing — the ODrive's PID had to rediscover the gravity load from scratch each cycle the limiter was active.
+## Bounded Extrapolation
+
+The interpolator (`_interpolate_and_send`) extrapolates from the last MPC command using quadratic interpolation. Without bounds, at max velocity (9.5 rev/s), a missed MPC command could drift ~1.9 rev (~136 mm) before the 200 ms staleness E-stop.
+
+**Two-phase approach:**
+
+1. **Normal extrapolation** (0–40 ms): quadratic extrapolation `pos = base + vel·dt + ½·acc·dt²`
+2. **Velocity decay** (40–100 ms): velocity decays linearly to zero. Position follows a parabolic coast-down (C0-continuous in velocity — no step discontinuity)
+
+Worst-case travel at max velocity: ~0.665 rev (~47.5 mm).
+
+### Stroke Clamping
+
+Every interpolation cycle, `_commanded_pos_rev` is clamped against stroke hard limits (in rev-space). When clamping activates:
+
+- `vel_ff` is zeroed for the clamped leg (prevents velocity loop fighting position clamp)
+- `torque_ff` is zeroed for the clamped leg (prevents gravity/inertia push against the limit)
+- A warning is logged, but no E-stop (the MPC should recover on the next command)
 
 ## Motor Feedback Gate
 
-The slew limiter requires current motor positions to function. Without feedback, it cannot verify that commands are safe.
+Safety checks require current motor positions to function. Without feedback, commands cannot be verified as safe.
 
 **Rule: No feedback → no commands.**
 
-The control loop tracks three feedback states:
+The motor guard tracks three feedback states:
 
 | State | Condition | Effect |
 |---|---|---|
 | No feedback received | `_has_motor_fb == False` | All commands suppressed |
-| Feedback stale | Age > `MOTOR_FB_STALENESS_S` (100ms) | All commands suppressed |
-| Feedback current | Age ≤ 100ms | Normal operation |
+| Feedback stale | Age > `MOTOR_FB_STALENESS_S` (150 ms) | All commands suppressed |
+| Feedback current | Age ≤ 150 ms | Normal operation |
 
 When commands are suppressed, the ODrives hold their last commanded position via internal PID. This is safe — a stale position command means "stay where you are."
 
@@ -102,15 +106,17 @@ Motor feedback flows from the ODrive encoders through the full system:
 
 ```
 ODrive encoders → CAN bus → can_node.py → /robot_state (100 Hz)
-    → motion_bridge_node.py → IPC (TOPIC_MOTOR_FB)
-    → control_loop.py _on_motor_feedback()
+    → motion_bridge_node.py → IPC (TOPIC_MOTOR_FB) → ZMQ :5555
+    → motor_guard _on_motor_feedback()
 ```
 
-The bridge extracts `pos_estimate`, `vel_estimate`, and `iq_measured` from the first 6 entries of the `/robot_state` message (the leg motors) and forwards them to the control loop.
+The bridge extracts `pos_estimate`, `vel_estimate`, and `iq_measured` from the first 6 entries of the `/robot_state` message (the leg motors) and forwards them to the motor guard.
+
+**NaN validation:** Motor feedback is validated for NaN/Inf values on arrival. Corrupt feedback is silently dropped — `NaN > threshold` evaluates to `False` in numpy, so without this check, corrupt feedback would silently bypass overspeed and max-deviation E-stop checks.
 
 ## Motor Overspeed Check
 
-If any motor's feedback velocity exceeds 110% of the ODrive's configured trap velocity limit (`ODRIVE_TRAP_VEL_LIMIT_RPS`), the control loop triggers an immediate ESTOP.
+If any motor's feedback velocity exceeds 110% of the ODrive's configured trap velocity limit (`ODRIVE_TRAP_VEL_LIMIT_RPS`), the motor guard triggers an immediate ESTOP.
 
 ```python
 MAX_MOTOR_VEL_RPS = ODRIVE_TRAP_VEL_LIMIT_RPS * 1.1
@@ -121,60 +127,60 @@ if any(|feedback_velocity| > MAX_MOTOR_VEL_RPS):
 
 This catches hardware failures (broken encoder, controller runaway) that could cause dangerous motion. The 10% headroom avoids false positives during normal high-speed trajectories.
 
-## Tracking Error Check
+## MPC Staleness Check
 
-The control loop computes per-leg tracking error: the difference between commanded and actual motor positions, converted to millimetres. If any leg exceeds `MAX_TRACKING_ERROR_MM` (10 mm), a warning is logged identifying the worst leg and error magnitude.
+If the motor guard has not received an MPC command for 200 ms (10× the expected 20 ms period), it triggers an E-stop. This catches:
 
-```python
-if any(tracking_error_mm > MAX_TRACKING_ERROR_MM):
-    → log warning (worst leg index, error in mm)
-```
+- MPC process crash
+- ZMQ connection loss
+- MPC solver stuck in an infinite loop
 
-Large tracking errors are logged but do **not** trigger ESTOP. The slew limiter already rate-limits motor commands, so the motors will naturally catch up. Freezing the platform (ESTOP) would be worse than allowing recovery, especially during manual spacemouse control where the operator can move back to reduce error.
+The 200 ms timeout provides generous headroom for occasional long IPOPT solves while still catching a dead MPC quickly.
 
-## Lead-Time Gate
+## Workspace Check
 
-Dynamic targets (ball-catching) must arrive with sufficient lead time for the trajectory planner to compute and verify a feasible path. Targets with less than `MIN_LEAD_TIME_S` (300ms) of lead time are rejected.
+On each MPC command arrival, the motor guard evaluates workspace limits:
 
-```python
-MIN_LEAD_TIME_S = 0.3
+1. Convert commanded positions (rev) to leg extensions (mm)
+2. Compute Jacobian condition number at the commanded pose
+3. Call `check_workspace_limits(extensions, cond, limits)`
 
-duration = arrival_time - t_now
-if duration < MIN_LEAD_TIME_S:
-    → reject (log warning, continue current trajectory)
-```
+| Result | Action |
+|---|---|
+| `OK` | Command accepted |
+| `SOFT_LIMIT` | Warning logged, command accepted |
+| `HARD_LIMIT` | E-stop |
 
-This applies to both the async production path (`request_dynamic_target`) and the test-only synchronous helper (`submit_dynamic_target_sync` in `tests/helpers.py`). The 300ms minimum accounts for feasibility checking time (~250ms on Jetson) plus a small margin.
+Workspace limits: soft = 15 mm from endpoints, hard = 5 mm. Condition number: soft = 1.5× home, hard = 2.0× home (~643/858).
 
 ## CAN Node Step Check
 
-The CAN node (`can_node.py`) independently validates every motor command before sending it to the ODrives. If any single command changes position by more than `JB_OP_MAX_POSITION_STEP_REV` (0.2 rev ≈ 14.3 mm), the command is rejected.
+The CAN node (`can_node.py`) independently validates every motor command before sending it to the ODrives. If any single command changes position by more than `JB_OP_MAX_POSITION_STEP_REV` (0.3 rev ≈ 21.5 mm), the command is rejected.
 
 ```python
 if abs(new_pos - last_pos) > JB_OP_MAX_POSITION_STEP_REV:
     → reject command, log warning
 ```
 
-### Why Keep Both the Slew Limiter and CAN Step Check?
+### Why Keep Both Max-Deviation and CAN Step Check?
 
 They catch different failure modes:
 
 | Layer | Catches |
 |---|---|
-| **Slew limiter** (control loop) | Velocity-aware rate limiting against actual motor position. Handles sustained high-speed commands that individually pass the step check but collectively are too fast |
-| **CAN step check** (CAN node) | Last-resort guard at a different layer. Catches commands from any source (not just the control loop), race conditions on mode transitions, and potential bugs in the slew limiter itself |
-
-The CAN step check was confirmed working during the DEACTIVATE race condition: when the control loop briefly publishes stale active-pose commands before its IPC `disable` message arrives, the CAN node rejects them. At 500 Hz, the per-command step check allows up to 100 rev/s effective velocity — far too fast for safety — which is why the slew limiter is needed. But as a last-resort catch-all at a different layer, the step check has near-zero cost (6 float comparisons per command) and provides valuable defense in depth.
+| **Max-deviation** (motor guard) | Corrupted MPC command far from actual position. Checks against actual encoder position, not just previous command |
+| **CAN step check** (CAN node) | Last-resort guard at a different layer. Catches commands from any source (not just the motor guard), race conditions on mode transitions, and potential bugs in the interpolator |
 
 ## FAULT Chain
 
-When any safety check triggers an ESTOP in the control loop, the following sequence occurs:
+When any safety check triggers an ESTOP in the motor guard, the following sequence occurs:
 
 ```
-1. Control loop → mode = ESTOP
-   → _zero_outputs()              # all commands go to zero
-   → cancel active trajectory
-   → publish fault telemetry (diagnostic fields only, no motor commands)
+1. Motor guard → mode = ESTOP
+   → _trigger_estop(reason)
+   → zero all outputs (pos, vel_ff, torque_ff)
+   → reset MPC interpolation state
+   → publish fault telemetry
 
 2. ODrives hold last commanded position
    (position control fail-safe — no drift, no free-spin)
@@ -194,57 +200,72 @@ All faults ultimately lead to a gentle, profiled stow. The platform never free-s
 
 ## Telemetry
 
-The slew limiter's state is included in the control loop's IPC telemetry:
+Safety-relevant fields in the motor guard's telemetry:
 
 | Field | Type | Description |
 |---|---|---|
-| `slew_limited` | bool | `True` if the limiter clamped commands this cycle |
-| `tracking_error_mm` | float[6] | Per-leg tracking error (mm) |
-| `fault_state` | string | Fault description if any (e.g., `slew_limit_sustained`) |
+| `tracking_error_mm` | float[6] | Per-leg tracking error (mm) — informational, no E-stop |
+| `workspace_status` | string | OK / SOFT_LIMIT / HARD_LIMIT |
+| `cond_number` | float | Current Jacobian condition number |
+| `fault_state` | string | Fault description if any (e.g., `max_deviation`) |
 
 These are published on `/motion/diagnostics` by the bridge and recorded in rosbag for post-incident analysis.
 
 ## Constants
 
-All safety constants are defined as module-level values in `control_loop.py` (not in config files), since they are consumed only there:
+Safety constants are defined as module-level values in `motor_guard.py`:
 
 | Constant | Value | Rationale |
 |---|---|---|
-| `MAX_SLEW_RATE_REV_PER_S` | 9.5 | ~667 mm/s — 200mm of travel takes ≥0.3s |
-| `SLEW_FAULT_DURATION_S` | 0.5 | Converted to cycles at runtime (`int(0.5 * rate_hz)`) |
 | `MAX_MOTOR_VEL_RPS` | `ODRIVE_TRAP_VEL_LIMIT_RPS × 1.1` | 10% above configured ODrive velocity limit |
-| `MAX_TRACKING_ERROR_MM` | 10.0 | ~3.5% of full stroke (280mm) |
-| `MOTOR_FB_STALENESS_S` | 0.1 | 100ms ≈ 50 control cycles at 500 Hz |
-| `MIN_LEAD_TIME_S` | 0.3 | In `trajectory_manager.py` — matches feasibility check time + margin |
-| `JB_OP_MAX_POSITION_STEP_REV` | 0.2 | In `hardware_config` — CAN node step check |
+| `MAX_DEVIATION_REV` | 0.5 | ~36 mm — catches runaway MPC, tolerates normal jitter |
+| `MPC_CMD_STALENESS_S` | 0.2 | 10× the MPC period (20 ms) |
+| `MOTOR_FB_STALENESS_S` | 0.15 | ~50% headroom over 100 Hz feedback (10 ms period) |
+| `IPC_HEARTBEAT_TIMEOUT_S` | 0.5 | Catches bridge crash or network loss |
+| `MAX_EXTRAP_DT_S` | 0.04 | 2× MPC period before velocity decay begins |
+| `EXTRAP_DECAY_DT_S` | 0.06 | Velocity decays to zero over this duration |
+| `JB_OP_MAX_POSITION_STEP_REV` | 0.3 | In `hardware_config` — CAN node step check |
 
 ## Verification
 
 ### Offline Tests
 
-8 tests in `motion/tests/test_safety.py`:
+28 tests in `tests/motion/test_motor_guard.py`:
 
 | # | Test | Validates |
 |---|---|---|
-| 1 | Slew clamp | Large step clamped to max_delta per cycle |
-| 2 | Slew transparency | Normal trajectory deltas pass through unchanged |
-| 3 | Sustained slew fault | >250 cycles clamping → ESTOP |
-| 4 | No feedback suppresses | `_has_motor_fb=False` → no commands |
-| 5 | Stale feedback suppresses | 200ms-old timestamp → no commands |
-| 6 | Motor overspeed | Feedback velocity > limit → ESTOP |
-| 7 | Tracking error | Error > 10mm → warning logged |
-| 8 | Lead-time gate | Dynamic target with <0.3s lead → rejected |
-
-Tests 1-7 require pyzmq/msgpack (Jetson-only); test 8 always runs.
+| 1 | Loop timing (500 Hz jitter) | Mean dt and p99 jitter within bounds |
+| 2 | IPC latency (ZMQ round-trip) | Median latency and delivery rate |
+| 3 | Force conversion (round-trip) | mm/rev conversion consistency |
+| 4 | MPC enable | Enable command activates guard |
+| 5 | MPC command flow | Commands forwarded correctly |
+| 6 | MPC staleness E-stop | No command in 200 ms → ESTOP |
+| 7 | Disable clears state | Disable resets all MPC state |
+| 8 | Workspace hard limit E-stop | Out-of-bounds extension → ESTOP |
+| 9 | Torque passthrough | Torque values forwarded unchanged |
+| 10 | Zeros when no feedforward | Missing FF fields → zero |
+| 11 | No feedback suppresses | No motor feedback → no commands |
+| 12 | Stale feedback suppresses | Old feedback → no commands |
+| 13 | Motor overspeed E-stop | High velocity → ESTOP |
+| 14 | Max deviation E-stop | Large position jump → ESTOP |
+| 15 | NaN command rejection | Non-finite command → rejected |
+| 16 | NaN feedback rejection | Non-finite feedback → dropped |
+| 17 | IPC heartbeat E-stop | No messages in 500 ms → ESTOP |
+| 18 | Interpolation output | Linear extrapolation produces correct values |
+| 19 | Vel_ff finite-difference | Velocity computed from consecutive extensions |
+| 20-24 | Bounded extrapolation | Decay, coast-down, stroke clamp |
+| 25 | Enable idempotent | Double enable is no-op |
+| 26 | Bridge disable+enable | Clears and resets state correctly |
 
 ```bash
-python -m jugglebot.motion.tests.test_safety
+pytest tests/motion/test_motor_guard.py -v
 ```
 
 ### Recommended Hardware Tests
 
 | # | Test | What to verify |
 |---|---|---|
-| H1 | LEVELLING → ACTIVATE handoff | Platform does not slam; slew limiter ramps smoothly |
-| H2 | Spacemouse session | `slew_limited` never appears in telemetry during normal use |
-| H3 | Trajectory at 50% speed | Tracking error stays well under 10mm threshold |
+| H1 | Mode transition handoff | Platform does not slam on ACTIVATE; max-deviation catches stale commands |
+| H2 | Spacemouse session | Tracking error stays low during normal use |
+| H3 | MPC staleness | Kill MPC process; motor guard E-stops within 200 ms |
+| H4 | Bounded extrapolation | Introduce artificial MPC delay; verify smooth coast-down |

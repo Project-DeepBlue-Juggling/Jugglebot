@@ -140,7 +140,7 @@ Given 6 leg extensions, find the platform pose. This is an iterative solution us
 4. Update the guess using the Jacobian: $\Delta\mathbf{x} = \mathbf{J}^{-1} \cdot \Delta\mathbf{q}$
 5. Repeat until error < $10^{-10}$ mm or 50 iterations
 
-FK is used primarily for validation (IK → FK round-trip tests), not in the real-time control loop.
+FK is used for validation (IK → FK round-trip tests) and by `HardwarePlant.get_state()` to convert encoder positions to a Cartesian platform pose for MPC feedback.
 
 ## Rotation Utilities
 

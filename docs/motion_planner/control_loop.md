@@ -1,20 +1,44 @@
-# Control Loop
+# Motor Guard
 
-This page describes the 500 Hz control process — what happens every 2 ms, how IPC messages are handled, and how the loop transitions between modes.
+This page describes the 500 Hz motor guard process — what happens every 2 ms, how IPC messages are handled, and how the guard protects the hardware.
 
 **Source files:**
 
-- [control_loop.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/control_loop.py) (~690 lines)
+- [motor_guard.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/motor_guard.py) (~860 lines)
 - [ipc.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/ipc.py) (~375 lines)
+
+!!! note "Replaces control_loop.py"
+    The motor guard replaced `control_loop.py` as part of the MPC-native refactor. The old control loop computed IK, dynamics, trajectories, and smoothing at 500 Hz. The motor guard is a pure **interpolator + safety monitor** — all motion planning is done by the MPC at 50 Hz. See [MPC_NATIVE_REFACTOR_PLAN.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/MPC_NATIVE_REFACTOR_PLAN.md) for the full migration rationale.
 
 ## Architecture
 
-The control loop runs as a **standalone Python process**, separate from ROS2. It communicates with the ROS2 bridge node via ZeroMQ IPC. This separation ensures deterministic timing — the loop maintains 500 Hz with 0.093 ms p99 jitter on the Jetson, independent of ROS2 executor scheduling.
+The motor guard runs as a **standalone Python process**, separate from ROS2. It communicates with the ROS2 bridge node and the MPC process via ZeroMQ IPC. This separation ensures deterministic timing — the guard maintains 500 Hz with sub-millisecond jitter, independent of ROS2 executor scheduling.
 
 ```python
 # Entry point
-python -m jugglebot.motion.control_loop --rate 500 --log-level INFO
+python -m jugglebot.motion.motor_guard --rate 500 --log-level INFO
 ```
+
+### Role in the Pipeline
+
+The motor guard sits between the MPC solver and the CAN hardware:
+
+```
+MPC (50 Hz)
+    → HardwarePlant.command()
+    → ZMQ :5557
+    → motor_guard (500 Hz)    ← quadratic interpolation + safety checks
+    → ZMQ :5556
+    → motion_bridge_node
+    → CAN node
+    → ODrives (PASSTHROUGH mode)
+```
+
+The MPC outputs pre-computed motor commands (position in rev, velocity in rev/s, torque in Nm) at 50 Hz. The motor guard **does not** compute IK, dynamics, or trajectories — it only:
+
+1. **Interpolates** between 50 Hz MPC commands at 500 Hz for smooth motor output
+2. **Validates** every command against safety checks
+3. **Forwards** approved commands to the bridge
 
 ## The Main Loop
 
@@ -22,15 +46,11 @@ Every cycle follows this sequence:
 
 ```
   1. Record cycle timing
-  2. Process IPC messages (targets, modes, feedback)
-  3. Poll async feasibility results
-  4. Check heartbeat (E-stop if no messages > 0.5s)
-  5. Compute motor commands
-  6. Check workspace limits
-  7. Slew limit + safety checks (see Motor Command Safety)
-  8. Publish telemetry (if safety checks pass)
-  9. Periodic logging (every 5 seconds)
- 10. Sleep for remainder of cycle
+  2. Process IPC messages (MPC commands, mode commands, motor feedback)
+  3. Check safety (heartbeat, staleness, overspeed)
+  4. Interpolate and send (quadratic extrapolation from last MPC command)
+  5. Periodic logging (every 5 seconds)
+  6. Sleep for remainder of cycle
 ```
 
 ### Step 1: Timing
@@ -47,83 +67,47 @@ Each cycle's wall-clock duration is recorded in a `LoopStats` object (sliding wi
 
 ### Step 2: Process IPC
 
-All pending messages from both IPC sockets are drained and dispatched:
+All pending messages from IPC sockets are drained and dispatched:
 
 | Topic | Handler | Action |
 |---|---|---|
-| `target` | `_on_target()` | Store latest pose/twist/accel for direct-target mode |
-| `mode` | `_on_mode_command()` | Handle enable/disable/estop/feedforward/gravity/fault |
-| `traj` | `_on_trajectory()` | Create and submit quintic trajectory |
-| `dyntgt` | `_on_dynamic_target()` | Queue for async feasibility check |
+| `mpccmd` | `_on_mpc_command()` | Validate and latch new MPC command for interpolation |
+| `mode` | `_on_mode_command()` | Handle enable/disable/estop |
 | `motorfb` | `_on_motor_feedback()` | Store encoder positions/velocities/currents |
 
-Mode commands are processed **before** data messages (the mode socket is drained first), ensuring an E-stop arrives before any target updates in the same batch.
+Mode commands are processed **before** data messages (the mode socket is drained first), ensuring an E-stop arrives before any MPC updates in the same batch.
 
-### Step 3: Poll Async Results
+### Step 3: Safety Checks
 
-If a dynamic target feasibility check completed in the background worker process, the result is polled via `poll_pending_result()`. If accepted, a splice re-check is queued via `commit_async_trajectory()`. When the splice re-check passes, the trajectory is committed internally.
+Runs every cycle regardless of new commands:
 
-### Step 4: Heartbeat
+| Check | Condition | Action |
+|---|---|---|
+| IPC heartbeat | No messages for > 500 ms | E-stop |
+| MPC command staleness | No MPC command for > 200 ms | E-stop |
+| Motor feedback staleness | No feedback for > 150 ms | Suppress commands |
+| Motor overspeed | Any motor > 110% of trap velocity limit | E-stop |
 
-If no IPC message has been received for 0.5 seconds, the loop triggers an E-stop (`ipc_heartbeat_lost`). This catches cases where the bridge node crashes or the network connection drops.
+### Step 4: Interpolate and Send
 
-### Step 5: Compute Motor Commands
-
-This is the core computation. The behaviour depends on whether a trajectory is active:
-
-**Trajectory mode** (state is `EXECUTING` or `RETURNING`):
-
-```python
-pos_rev, vel_ff_rps, torque_ff_Nm = traj_manager.evaluate(time.perf_counter())
-```
-
-The trajectory manager evaluates quintic polynomials and runs them through the full [kinematics](kinematics.md) and [dynamics](dynamics.md) pipeline internally.
-
-**Direct-target mode** (no active trajectory):
+This is the core computation. The motor guard **quadratically extrapolates** from the last MPC command:
 
 ```python
-# 1. Apply gravity correction if set
-effective_rot = gravity_correction @ target_rot
+dt = t_now - mpc_base_timestamp
 
-# 2. Position IK
-extensions_mm = pose_to_leg_lengths(target_pos, effective_rot, geom)
-pos_rev = extensions_mm_to_revs(extensions_mm, geom)
-
-# 3. Velocity IK
-leg_vel = twist_to_leg_velocities(target_twist, target_pos, effective_rot, geom)
-vel_ff_rps = leg_velocities_to_motor_velocities(leg_vel, geom)
-
-# 4. Feedforward torques
-torque_ff_Nm = compute_full_feedforward_torques(
-    target_pos, effective_rot, target_twist, target_accel, geom, params
-)
+# Quadratic extrapolation (position, velocity, torque)
+pos = base_pos + vel * dt + 0.5 * acc * dt**2
+vel_ff = vel + acc * dt
+torque_ff = base_torque  # unchanged between MPC commands
 ```
 
-### Step 6: Workspace Check
+This upsamples 50 Hz MPC commands to 500 Hz smooth ramps. Each 2 ms cycle sends an incremental position step to the ODrive with matching `vel_ff`. The ODrive sees small position deltas with velocity feedforward that acts as the *slope* of the ramp — not a persistent push that causes overshoot (see Phase 1B findings).
 
-After computing motor commands, the loop verifies workspace limits:
+**Bounded extrapolation:** If the MPC command is late (> 40 ms), velocity decays linearly to zero over 60 ms. Position follows a parabolic coast-down (C0-continuous in velocity). Worst-case travel at max velocity: ~0.665 rev (~47.5 mm).
 
-1. Convert commanded positions (rev) to leg extensions (mm)
-2. Compute Jacobian condition number at current pose
-3. Call `check_workspace_limits(extensions, cond, limits)`
+**Stroke clamping:** Every cycle, interpolated positions are clamped against stroke hard limits. When a leg is clamped, its `vel_ff` and `torque_ff` are zeroed to prevent the velocity loop from fighting the position clamp.
 
-If the result is `HARD_LIMIT`: cancel trajectory, E-stop, set fault state.
-If the result is `SOFT_LIMIT`: log warning; in direct-target mode, scale the smoother velocity and acceleration limits by `speed_scale` to slow the platform as it approaches hard boundaries.
-
-### Step 7: Slew Limit + Safety Checks
-
-After workspace checks, the `_slew_limit()` method runs the [motor command safety](safety.md) checks. This is the final gate before telemetry is published. It verifies:
-
-1. Motor feedback is available and current (not stale)
-2. No motor is overspeeding
-3. No leg has excessive tracking error
-4. The rate of position change vs actual motor position is within bounds
-
-If any check fails, commands are suppressed (or an ESTOP is triggered for critical faults like motor overspeed). On ESTOP, the control loop publishes **fault telemetry** (diagnostic fields only, no motor commands) so the bridge can report the fault to the orchestrator. Normal telemetry (with motor commands) is only published when `_slew_limit()` returns `True`.
-
-See [Motor Command Safety](safety.md) for full details.
-
-### Step 8: Publish Telemetry
+### Step 5: Publish Telemetry
 
 A telemetry message is published every cycle (when safety checks pass) containing:
 
@@ -131,19 +115,14 @@ A telemetry message is published every cycle (when safety checks pass) containin
 |---|---|
 | `leg_pos` | 6 motor positions (rev) |
 | `leg_vel` | 6 motor velocities (rev/s) |
-| `cmd_torques` | 6 motor torques (Nm) |
+| `leg_torques` | 6 motor torques (Nm) |
 | `dt` | Actual cycle time (s) |
-| `ff_torques` | 6 feedforward torques (Nm) |
-| `traj_state` | Trajectory state string |
-| `traj_progress` | Trajectory completion fraction |
 | `cond_number` | Current Jacobian condition number |
 | `workspace_status` | OK / SOFT_LIMIT / HARD_LIMIT |
-| `workspace_speed_scale` | Speed scale from workspace limits |
 | `tracking_error_mm` | 6 per-leg tracking errors (mm) |
-| `slew_limited` | Whether slew limiter clamped commands this cycle |
 | `fault_state` | Fault description if any |
 
-## Control Modes
+## Guard Modes
 
 ```
                  enable
@@ -156,58 +135,79 @@ A telemetry message is published every cycle (when safety checks pass) containin
                   ◄─────────────────────+
 ```
 
-| Mode | Outputs | Trajectories | Transitions |
-|---|---|---|---|
-| `DISABLED` | All zero | Cancelled | → `ENABLED` on `enable` command |
-| `ENABLED` | Active computation | Active | → `DISABLED` on `disable`; → `ESTOP` on fault/heartbeat |
-| `ESTOP` | All zero | Cancelled | → `DISABLED` on `disable` (requires explicit recovery) |
+| Mode | Outputs | Transitions |
+|---|---|---|
+| `DISABLED` | All zero | → `ENABLED` on `enable` command |
+| `ENABLED` | Active interpolation | → `DISABLED` on `disable`; → `ESTOP` on fault/heartbeat |
+| `ESTOP` | All zero | → `DISABLED` on `disable` (requires explicit recovery) |
 
 ### Enable Sequence
 
-When transitioning from `DISABLED` to `ENABLED`:
+When transitioning from `DISABLED` to `ENABLED`, the motor guard **waits for the first MPC command** before sending any output. This differs from the old control loop which seeded the active pose on enable. No motor commands are published during the window between enable and the first MPC command.
 
-1. `_seed_active_pose()` initializes all outputs to the active pose
-2. The trajectory manager's hold pose is set to the active pose
-3. Target state variables are set to the active pose
-4. The control process immediately publishes active-pose commands
+**Enable idempotency:** Receiving an enable command when already ENABLED is a no-op (no state reset). This handles the case where both the motion bridge (:5555) and HardwarePlant (:5557) send enable commands — the ordering is nondeterministic, but the end state is always correct.
 
-This ensures the ODrives receive a valid position command on the first cycle after enable, rather than zeros (which would command the motors to the zero-extension position).
+### E-stop
 
-### Gravity Correction
+All safety violations funnel through a single `_trigger_estop()` method that:
 
-The `set_gravity_offset` mode command applies a rotation correction to all IK computations. This is used for levelling — if the base isn't perfectly level, the gravity correction rotates the coordinate frame so "down" in the motion planner matches actual gravity.
+1. Sets mode to ESTOP
+2. Zeros all outputs
+3. Resets MPC interpolation state
+4. Records the fault reason
+5. Publishes fault telemetry
 
-The correction is a rotation matrix constructed from `tilt_x` and `tilt_y` angles (radians), pre-multiplied before all rotation matrices in IK computations.
+This eliminates the scattered E-stop logic that existed in the old control loop.
+
+## MPC Command Validation
+
+When an MPC command arrives (50 Hz), several checks run before it is accepted as the new interpolation base:
+
+| Check | Action |
+|---|---|
+| NaN/Inf in position, velocity, or torque | Reject command |
+| Max deviation from actual motor position | E-stop if > 0.5 rev (~36 mm) |
+| Workspace hard limit (leg extension or condition number) | E-stop |
+| Workspace soft limit | Log warning |
+
+If a command passes validation, it becomes the new interpolation base: position, velocity, acceleration, and torque are latched, and the interpolation timestamp resets.
+
+**Velocity computation:** `vel_ff` is computed from consecutive MPC extensions using the deterministic MPC period (`dt = 0.02s`), not wall-clock time. This makes the velocity estimate immune to ZMQ delivery jitter.
+
+**Acceleration computation:** `acc` is computed from three consecutive extensions: `acc = (u_curr - 2*u_prev + u_prev_prev) / dt^2`. This enables quadratic interpolation that eliminates the 50 Hz position ripple that linear interpolation would produce during accelerating trajectories.
 
 ## IPC Layer Detail
 
-### Two-Socket Design
+### Three-Port Design
 
-The control process subscribes to the command channel (tcp://localhost:5555) with **two** sockets:
+The motor guard communicates on three ZeroMQ ports:
 
-**Data socket** — for `target` and `motorfb` topics:
+| Port | Direction | Content |
+|---|---|---|
+| `:5555` | SUB ← Bridge | Mode commands (enable/disable/estop), motor feedback |
+| `:5557` | SUB ← HardwarePlant | MPC commands (pos, vel, torque, extensions, pose) |
+| `:5556` | PUB → Bridge | Telemetry (motor commands + diagnostics) |
 
-- `CONFLATE=1`: only the most recent message is kept in the buffer
-- Purpose: at 500 Hz target updates, we only care about the latest one
+### Socket Design
 
-**Mode socket** — for `mode`, `traj`, and `dyntgt` topics:
+The motor guard has **three** SUB sockets:
 
-- No CONFLATE: every message is delivered in order
-- `RCVHWM=64`: high-water mark prevents unbounded queue growth
-- Purpose: an `estop` command must never be dropped or overwritten
+| Socket | Port | Topics | Mode | Purpose |
+|---|---|---|---|---|
+| Data socket | :5555 | `motorfb` | CONFLATE (latest only) | Motor feedback — only the most recent matters |
+| Mode socket | :5555 | `mode` | Ordered (every message) | Safety-critical commands must not be dropped |
+| MPC socket | :5557 | `mpccmd` | CONFLATE (latest only) | MPC commands — only the latest matters |
 
-Both sockets are polled non-blocking (`zmq.NOBLOCK`) every cycle. Mode messages are drained first to ensure safety-critical commands are processed before data.
+Mode messages are drained first to ensure safety-critical commands are processed before data.
 
 ### Message Serialization
 
 All messages are serialized with **msgpack** — a compact binary format. Each ZeroMQ frame consists of:
 
 ```
-Frame 0: topic (bytes, e.g., b'target')
+Frame 0: topic (bytes, e.g., b'mpccmd')
 Frame 1: msgpack-encoded dict
 ```
-
-Messages do not include timestamps — the control loop uses `time.perf_counter()` for all internal timing and `time.monotonic()` for heartbeat tracking.
 
 ## Timing Statistics
 
@@ -225,16 +225,33 @@ Properties: `mean`, `std`, `percentile_99`, `max`, `jitter_99` (p99 of |dt - tar
 
 A summary is logged every 5 seconds during operation.
 
+## What Was Removed (vs control_loop.py)
+
+The following components existed in `control_loop.py` but are **not** in the motor guard — the MPC handles all of these:
+
+| Component | Replacement |
+|---|---|
+| Position IK (`pose_to_leg_lengths`) | MPC outputs leg extensions directly |
+| Velocity IK (`twist_to_leg_velocities`) | HardwarePlant computes vel_ff |
+| Dynamics (`gravity_to_motor_torques`) | HardwarePlant computes torque_ff via Newton-Euler |
+| StreamSmoother | MPC produces smooth trajectories |
+| TrajectoryManager | MPC IS the trajectory planner |
+| FeasibilityWorker | MPC constraints handle feasibility |
+| Quintic polynomial evaluation | MPC doesn't use quintics |
+| Direct-target mode | Replaced by MPC target-setting |
+| Workspace speed scaling | MPC respects its own constraints |
+| Per-cycle slew limiter | Replaced by max-deviation check at command arrival |
+
 ## API Reference
 
-### ControlLoop
+### MotorGuard
 
 ```python
-class ControlLoop:
+class MotorGuard:
     def __init__(self,
-                 target_rate_hz: float = 500,
+                 rate_hz: float = 500,
                  geom: StewartGeometry | None = None,
-                 ipc: ControlProcessIPC | None = None)
+                 ipc: MotorGuardIPC | None = None)
 
     def run(self) -> None     # blocks until stop() or signal
     def stop(self) -> None    # sets _running = False
@@ -242,7 +259,7 @@ class ControlLoop:
 
 ### IPC Classes
 
-**ControlProcessIPC** (used by control_loop.py):
+**MotorGuardIPC** (used by motor_guard.py):
 
 | Method | Description |
 |---|---|
@@ -255,10 +272,7 @@ class ControlLoop:
 
 | Method | Description |
 |---|---|
-| `send_target(msg)` | Send pose target to control process |
-| `send_mode_command(msg)` | Send mode command |
-| `send_trajectory_command(msg)` | Send trajectory |
-| `send_dynamic_target(msg)` | Send dynamic target |
-| `send_motor_feedback(msg)` | Forward encoder data |
+| `send_mode_command(msg)` | Send mode command to motor guard |
+| `send_motor_feedback(msg)` | Forward encoder data to motor guard |
 | `recv_telemetry()` → dict or None | Receive latest telemetry |
 | `close()` | Clean shutdown |

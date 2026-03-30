@@ -140,7 +140,7 @@ where $\ddot{q}_{\text{motor}}$ is the motor angular acceleration (rad/s²), com
 
 **Function:** `compute_full_feedforward_torques(pos, rot, twist, accel, geom, params)` → 6 motor torques (Nm)
 
-This is the top-level function called by the control loop every cycle. It combines all three components:
+This is the top-level function called by `HardwarePlant.set_pose()` on every MPC command. It combines all three components:
 
 ```
 1. Compute gravity wrench → W_gravity

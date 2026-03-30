@@ -1,10 +1,10 @@
 # Architecture
 
-This page describes the overall design of the motion planner — how the pieces fit together, why they're structured the way they are, and how data flows from a desired platform pose to motor commands on the CAN bus.
+This page describes the overall design of the motion system — how the pieces fit together, why they're structured the way they are, and how data flows from a desired platform pose to motor commands on the CAN bus.
 
 ## The Big Picture
 
-The motion planner's job is straightforward: given where the platform should be, compute what each motor should do. But "what each motor should do" is three things, not one:
+The motion system's job is straightforward: given where the platform should be, compute what each motor should do. But "what each motor should do" is three things, not one:
 
 1. **Position** — where the motor shaft should be (revolutions)
 2. **Velocity feedforward** — how fast it should be moving (rev/s)
@@ -27,125 +27,176 @@ Current loop (40+ kHz):
     PWM drive
 ```
 
-The motion planner provides `target_pos`, `vel_ff`, and `torque_ff`. The ODrive handles everything else. This split has four key advantages:
+The motion system provides `target_pos`, `vel_ff`, and `torque_ff`. The ODrive handles everything else. This split has four key advantages:
 
 **The dynamics model is expressed through feedforward.** Gravity compensation, inertia feedforward, Jacobian-based force decomposition — all of this flows through `vel_ff` and `torque_ff`. In a well-tuned system, the feedforward does the heavy lifting; the ODrive's PID only corrects for modelling errors and disturbances.
 
 **The ODrive's feedback runs 16x faster than Python.** Closing a PID at 8 kHz on dedicated hardware will always outperform a 500 Hz Python loop for disturbance rejection and tracking bandwidth.
 
-**Fail-safe on communication loss.** If the Python loop stalls, the ODrive holds the last commanded position. In torque or velocity mode, a stale command would mean the motor keeps applying force or keeps moving — potentially into an end-stop.
+**Fail-safe on communication loss.** If the Python process stalls, the ODrive holds the last commanded position. In torque or velocity mode, a stale command would mean the motor keeps applying force or keeps moving — potentially into an end-stop.
 
-**Natural trajectory interface.** The quintic trajectory generator produces position, velocity, and acceleration at each timestep. These map directly to `input_pos`, `vel_ff`, and `torque_ff` (via the dynamics model).
+**Natural MPC interface.** The MPC solver outputs leg extensions directly (via symbolic IK constraints). These map directly to `input_pos`, and `vel_ff`/`torque_ff` are computed from the predicted trajectory's velocity and acceleration.
 
 ## Process Architecture
 
-The system runs as two separate OS processes connected by ZeroMQ IPC:
+The system runs as three separate OS processes connected by ZeroMQ IPC:
 
 ```
-Process 1: ROS2 Nodes                    Process 2: Control Loop
-+----------------------------------+     +---------------------------+
-|                                  |     |                           |
-|  orchestrator_node.py            |     |  control_loop.py          |
-|  can_node.py                     |     |    quintic.py             |
-|  motion_bridge_node.py -------IPC----->    feasibility.py          |
-|  spacemouse_handler.py           |     |    trajectory_manager.py  |
-|  mocap_interface.py        <--IPC------    ik_solver.py            |
-|                                  |     |    dynamics.py            |
-|                                  |     |    workspace.py           |
-+----------------------------------+     +---------------------------+
+Process 1: ROS2 Nodes
++-------------------------------------------------------+
+|                                                       |
+|  orchestrator_node.py         spacemouse_handler.py   |
+|  can_node.py                  mocap_interface.py      |
+|  motion_bridge_node.py  ←--→  ZMQ :5555/:5556        |
+|  mpc_bridge_node.py     ←--→  ZMQ :5558              |
+|  catch_coordinator_node.py                            |
+|  ball_tracker_node.py                                 |
++-------------------------------------------------------+
+
+Process 2: MPC Solver (50 Hz)
++-------------------------------------------------------+
+|  sim/main.py --hardware                               |
+|                                                       |
+|  ZmqTargetSource  ←--- ZMQ :5558 --- mpc_bridge_node |
+|  MPCController (CasADi/IPOPT)                         |
+|  HardwarePlant ---→ ZMQ :5557 ---→ motor_guard        |
++-------------------------------------------------------+
+
+Process 3: Motor Guard (500 Hz)
++-------------------------------------------------------+
+|  motor_guard.py                                       |
+|                                                       |
+|  Quadratic interpolation (50 Hz → 500 Hz)             |
+|  Safety checks (every cycle)                          |
+|  workspace.py    ik_solver.py (condition number only) |
++-------------------------------------------------------+
 ```
 
-**Why a separate process?** ROS2's executor is designed for message passing, not deterministic timing. The control loop needs consistent 2 ms cycles. Running it in its own process with a simple `time.sleep()` loop gives predictable timing — measured at 500 Hz mean, 0.093 ms p99 jitter on the Jetson.
+**Why three processes?**
+
+- **ROS2 nodes** handle message routing, mode management, and CAN communication. They use ROS2's executor for event-driven callbacks.
+- **MPC solver** runs at 50 Hz with its own timing. It stays ROS2-free so the same code runs identically in MuJoCo simulation (on Windows) and on hardware (on Jetson). CasADi/IPOPT solve times vary; a dedicated process prevents solve-time jitter from affecting motor output timing.
+- **Motor guard** needs consistent 2 ms cycles. Running it in its own process with a simple `time.sleep()` loop gives predictable timing — measured at 500 Hz mean, 0.093 ms p99 jitter on the Jetson.
 
 **Why ZeroMQ?** It's lightweight, has no ROS2 dependency, supports PUB/SUB patterns, and adds minimal latency (median 0.755 ms, well under one control cycle).
 
-## IPC Layer
+## Signal Flow
 
-Communication between the bridge and control process uses two ZeroMQ channels:
+### Target → MPC → Motors
+
+All input modes (spacemouse, GUI, shell, catch coordinator) route through the MPC:
 
 ```
-Bridge (ROS2 side)                     Control Process
+spacemouse_handler ──┐
+GUI (rosbridge)    ──┼──► platform_pose_topic ──► mpc_bridge_node ──► ZMQ :5558
+shell commands     ──┘                                                    │
+catch_coordinator ────► catch/dynamic_target ──► mpc_bridge_node ──► ZMQ :5558
+                                                                          │
+                                                                          ▼
+                                                                    ZmqTargetSource
+                                                                          │
+                                                                          ▼
+                                                              MPCController.solve()
+                                                                          │
+                                                                          ▼
+                                                              HardwarePlant.command()
+                                                                          │
+                                                                    ZMQ :5557
+                                                                          │
+                                                                          ▼
+                                                              motor_guard (500 Hz)
+                                                                          │
+                                                                    ZMQ :5556
+                                                                          │
+                                                                          ▼
+                                                            motion_bridge_node
+                                                                          │
+                                                              leg_lengths_topic
+                                                                          │
+                                                                          ▼
+                                                                   can_node.py
+                                                                          │
+                                                                       CAN bus
+                                                                          │
+                                                                          ▼
+                                                                 6× ODrive Motors
+```
 
-  PUB ──tcp://localhost:5555──────► SUB   (commands in)
-  SUB ◄──tcp://localhost:5556────── PUB   (telemetry out)
+### Motor Feedback Loop
+
+Motor feedback closes the loop at every MPC tick (50 Hz):
+
+```
+Encoders → CAN → can_node → /robot_state (100 Hz)
+    → motion_bridge_node → ZMQ :5555 → motor_guard (safety checks)
+    → motion_bridge_node → /robot_state → HardwarePlant.get_state()
+        → FK (encoder positions → Cartesian pose)
+        → J⁻¹ · q̇ (encoder velocities → platform twist)
+        → PlantState (actual pose + twist)
+            → mpc.solve(actual_state, target)
+```
+
+The MPC replans from measured state every 20 ms — it never plans from its own prediction. If a disturbance pushes the platform off-plan, the next solve sees the real position *and velocity* and adapts.
+
+## IPC Layer
+
+Communication uses four ZeroMQ channels:
+
+```
+Bridge → Motor Guard:
+  PUB ──tcp://localhost:5555──────► SUB   (mode + motor feedback)
+
+Motor Guard → Bridge:
+  SUB ◄──tcp://localhost:5556────── PUB   (telemetry: motor commands + diagnostics)
+
+MPC → Motor Guard:
+  HardwarePlant PUB ──tcp://localhost:5557──► SUB   (MPC commands)
+
+MPC Bridge → MPC Process:
+  PUB ──tcp://localhost:5558──────► SUB   (target poses + mode transitions)
+
+MPC Process → Catch Coordinator:
+  PUB ──tcp://localhost:5559──────► SUB   (target accept/reject feedback)
 ```
 
 Messages are serialized with msgpack (compact binary, faster than JSON).
-
-### Command Channel (5555) — Bridge to Control Process
-
-The control process has **two** SUB sockets on this channel:
-
-| Socket | Topics | Mode | Purpose |
-|---|---|---|---|
-| Data socket | `target`, `motorfb` | CONFLATE (keep latest only) | High-frequency pose targets and motor feedback — only the most recent matters |
-| Mode socket | `mode`, `traj`, `dyntgt` | Ordered (deliver every message) | Critical commands that must not be dropped |
-
-This dual-socket design means a burst of high-frequency target updates won't queue behind each other, while mode commands like "estop" are guaranteed to arrive.
-
-### Telemetry Channel (5556) — Control Process to Bridge
-
-Single PUB socket with CONFLATE on the subscriber side. Carries the computed motor commands plus diagnostics (timing, workspace status, tracking error, fault state).
 
 ### Message Types
 
 | Topic | Constructor | Content |
 |---|---|---|
-| `target` | `make_target_state()` | Platform pose (pos + quaternion), twist, acceleration |
-| `mode` | `make_mode_command()` | enable, disable, estop, set_feedforward, set_gravity_offset, fault |
-| `traj` | `make_trajectory_command()` | Quintic trajectory boundary conditions + duration |
-| `dyntgt` | `make_dynamic_target_command()` | Dynamic target: position, quaternion, velocity, arrival time |
+| `mode` | `make_mode_command()` | enable, disable, estop |
+| `mpccmd` | `make_mpc_command()` | Motor positions (rev), velocities (rev/s), torques (Nm), extensions (mm), pose |
 | `motorfb` | `make_motor_feedback()` | Encoder positions, velocities, currents from CAN |
-| `telem` | `make_telemetry()` | Motor commands, feedforward torques, timing, workspace status, faults |
+| `telem` | (pre-allocated dict) | Motor commands, torques, timing, workspace status, faults |
+| `mpctgt` | `make_mpc_target()` | Target pose (rotation vector), arrival time, twist, source |
+| `mpcmode` | `make_mpc_mode()` | MPC enable/disable transitions |
 
 See [ipc.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/ipc.py) for the complete message definitions.
 
 ## Control Modes
 
-The control loop has three modes:
+The motor guard has three modes:
 
 | Mode | Behaviour |
 |---|---|
 | `DISABLED` | All outputs zero. No motor commands sent. |
-| `ENABLED` | Active control. Computes and publishes motor commands. |
+| `ENABLED` | Active interpolation. Quadratically extrapolates MPC commands at 500 Hz. |
 | `ESTOP` | Emergency stop. All outputs zero. Requires explicit re-enable. |
 
-Within `ENABLED`, the loop operates in one of two sub-modes:
+The MPC process has its own lifecycle managed by the `mpc_bridge_node`:
 
-**Trajectory mode:** When a trajectory is active (state is EXECUTING or RETURNING), the loop evaluates the quintic polynomials at the current time to get Cartesian pose/twist/acceleration, then maps these to motor commands through IK and dynamics.
+- Mode transitions on `control_mode_topic` are forwarded to the MPC process via ZMQ :5558
+- `ZmqTargetSource.enabled` drives `HardwarePlant.enable()` / `disable()` calls
+- While disabled, the MPC idles (no solves, no commands)
 
-**Direct-target mode:** When no trajectory is active, the loop uses the most recent target pose from IPC (e.g., from the spacemouse or shell commands) and computes IK + dynamics directly.
+## Where IK and Dynamics Live
 
-## The Computation Pipeline
+**IK is inside the MPC solver.** The MPC formulates `q[k] = IK(p[k])` as an equality constraint using CasADi symbolic IK. Every optimization step enforces kinematic consistency. The solver outputs leg extensions directly — no external IK step is needed anywhere in the pipeline.
 
-Every 2 ms, the control loop runs the same pipeline regardless of sub-mode:
+**Dynamics are computed in HardwarePlant.** When the MPC outputs a command, `HardwarePlant.set_pose()` computes the full Newton-Euler torque feedforward (gravity + platform inertia + reflected motor inertia) via `cartesian_to_motor_commands()`. Platform twist and acceleration are derived from the MPC's predicted trajectory (finite-differencing the first three nodes at 20 ms spacing).
 
-```
-1. Cartesian state: (pos, twist, accel)
-        |
-        v
-2. Rotation: rotvec -> rotation matrix (+ gravity correction if set)
-        |
-        v
-3. Position IK: pose -> leg extensions (mm)
-        |
-        v
-4. Unit conversion: extensions (mm) -> motor positions (rev)
-        |
-        v
-5. Velocity IK: twist -> leg velocities (mm/s) -> motor velocities (rev/s)
-        |
-        v
-6. Dynamics: gravity wrench + inertia wrench -> J^{-T} -> leg forces -> motor torques
-        |
-        v
-7. Workspace check: verify extensions and condition number within limits
-        |
-        v
-8. Output: (pos_rev, vel_ff_rps, torque_ff_Nm) x 6 legs
-```
-
-Steps 1–6 are detailed in the [Kinematics](kinematics.md) and [Dynamics](dynamics.md) pages. Step 7 is covered in [Workspace Safety](workspace.md). The full loop is described in [Control Loop](control_loop.md).
+**The motor guard does no IK or dynamics.** It receives pre-computed motor-space commands (position in rev, velocity in rev/s, torque in Nm) and only interpolates + validates.
 
 ## Coordinate Frames and Conventions
 
@@ -171,7 +222,7 @@ A platform pose is specified as an **offset from the active pose**:
 
 - Positive leg force = extension direction (unwinding string)
 - Positive motor torque = extension direction
-- The CAN node handles ODrive-specific sign inversion — the motion planner never deals with it
+- The CAN node handles ODrive-specific sign inversion — the motion system never deals with it
 
 ### Units
 
@@ -190,6 +241,17 @@ The Jacobian maps `[mm/s, mm/s, mm/s, rad/s, rad/s, rad/s]` to `[mm/s × 6]`, so
 
 ## Source Files
 
+### Motor Guard + IPC
+
+| File | Lines | Purpose |
+|---|---|---|
+| [motor_guard.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/motor_guard.py) | ~860 | Interpolator + safety monitor |
+| [ipc.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/ipc.py) | ~375 | ZeroMQ IPC layer |
+| [motion_bridge_node.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion_bridge_node.py) | ~195 | ROS2 ↔ ZMQ bridge (motor guard side) |
+| [mpc_bridge_node.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/mpc_bridge_node.py) | ~170 | ROS2 ↔ ZMQ bridge (MPC target side) |
+
+### Motion Primitives (used by MPC / HardwarePlant)
+
 | File | Lines | Purpose |
 |---|---|---|
 | [geometry.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/geometry.py) | ~65 | Platform geometry constants |
@@ -197,11 +259,25 @@ The Jacobian maps `[mm/s, mm/s, mm/s, rad/s, rad/s, rad/s]` to `[mm/s × 6]`, so
 | [conversions.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/conversions.py) | ~100 | Unit conversions |
 | [dynamics.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/dynamics.py) | ~360 | Gravity + inertia feedforward |
 | [workspace.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/workspace.py) | ~300 | Workspace limits |
-| [quintic.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/quintic.py) | ~280 | Quintic polynomial solver + evaluation |
 | [motor_commands.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/motor_commands.py) | ~85 | Cartesian → motor command mapping |
-| [feasibility.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/feasibility.py) | ~340 | Feasibility checking + convenience constructors |
-| [trajectory_manager.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/trajectory_manager.py) | ~530 | Execution state machine + async pipeline |
-| [feasibility_worker.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/feasibility_worker.py) | ~380 | Background worker process |
-| [ipc.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/ipc.py) | ~375 | ZeroMQ IPC layer |
-| [control_loop.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/control_loop.py) | ~690 | Control process |
-| [motion_bridge_node.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion_bridge_node.py) | ~195 | ROS2 bridge |
+
+### MPC Solver (top-level package)
+
+| File | Lines | Purpose |
+|---|---|---|
+| [controller/mpc.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/controller/mpc.py) | — | MPCController class (CasADi/IPOPT) |
+| [controller/params.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/controller/params.py) | — | MPCParams tuning parameters |
+| [controller/target.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/controller/target.py) | — | TargetCommand + TargetSource protocol |
+
+### Archived (replaced by MPC)
+
+The following were archived to `ros_ws/.../archived/` during the MPC-native refactor:
+
+| File | Replaced by |
+|---|---|
+| `control_loop.py` | `motor_guard.py` |
+| `stream_smoother.py` | MPC trajectory smoothing |
+| `trajectory_manager.py` | MPC trajectory planning |
+| `feasibility.py` | MPC constraints |
+| `feasibility_worker.py` | MPC constraints |
+| `quintic.py` | MPC trajectory generation |

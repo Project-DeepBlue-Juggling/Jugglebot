@@ -58,7 +58,7 @@ nav:
     - Trajectory Planning: motion_planner/trajectory.md
     - Workspace Safety: motion_planner/workspace.md
     - Motor Command Safety: motion_planner/safety.md
-    - Control Loop: motion_planner/control_loop.md
+    - Motor Guard: motion_planner/control_loop.md
     - System Integration: motion_planner/integration.md
     - Operations Guide: motion_planner/operations.md
     - Validation Results: motion_planner/results.md
@@ -70,4 +70,5 @@ nav:
     - Hand & Ball Physics: sim_mpc/hand_and_ball.md
     - Control Loop: sim_mpc/control_loop.md
     - Plant Interface: sim_mpc/plant.md
+    - Velocity Tracking: sim_mpc/velocity_tracking.md
     - Tuning Guide: sim_mpc/tuning.md

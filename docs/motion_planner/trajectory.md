@@ -1,14 +1,17 @@
 # Trajectory Planning
 
-This page covers how smooth motions are planned — from the quintic polynomial math to feasibility checking to the trajectory manager that handles dynamic targets and mid-motion replanning.
+!!! warning "Historical Documentation"
+    This page documents the **pre-MPC trajectory planning system** (`quintic.py`, `feasibility.py`, `trajectory_manager.py`, `feasibility_worker.py`), which has been **archived** as part of the MPC-native refactor. The MPC solver now handles all trajectory planning, feasibility checking, and motion smoothing. This documentation is retained for historical reference. See [Architecture](architecture.md) for the current system design.
 
-**Source files:**
+This page covers how smooth motions were planned in the pre-MPC architecture — from the quintic polynomial math to feasibility checking to the trajectory manager that handled dynamic targets and mid-motion replanning.
 
-- [quintic.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/quintic.py) — polynomial solver, trajectory dataclass, evaluation
-- [motor_commands.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/motor_commands.py) — Cartesian → motor command mapping
-- [feasibility.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/feasibility.py) — feasibility checking, convenience constructors
-- [trajectory_manager.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/trajectory_manager.py) — execution state machine, async pipeline
-- [feasibility_worker.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/feasibility_worker.py) — background worker process
+**Source files (archived):**
+
+- [quintic.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/archived/quintic.py) — polynomial solver, trajectory dataclass, evaluation
+- [motor_commands.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/motor_commands.py) — Cartesian → motor command mapping (still active)
+- [feasibility.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/archived/feasibility.py) — feasibility checking, convenience constructors
+- [trajectory_manager.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/archived/trajectory_manager.py) — execution state machine, async pipeline
+- [feasibility_worker.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/archived/feasibility_worker.py) — background worker process
 
 ## Concepts
 

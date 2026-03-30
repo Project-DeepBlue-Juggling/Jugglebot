@@ -1,10 +1,11 @@
 # System Integration
 
-This page describes how the motion planner connects to the rest of the Jugglebot system — the ROS2 bridge, the CAN interface, and how the full system starts up and shuts down.
+This page describes how the motion system connects to the rest of the Jugglebot system — the ROS2 bridges, the MPC solver, the motor guard, the CAN interface, and how the full system starts up and shuts down.
 
 **Source files:**
 
-- [motion_bridge_node.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion_bridge_node.py) — ROS2 bridge
+- [motion_bridge_node.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion_bridge_node.py) — ROS2 ↔ motor guard bridge
+- [mpc_bridge_node.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/mpc_bridge_node.py) — ROS2 ↔ MPC target bridge
 - [can_node.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/can_node.py) — CAN interface
 - [orchestrator_node.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/orchestrator_node.py) — State machine coordinator
 
@@ -20,80 +21,111 @@ This page describes how the motion planner connects to the rest of the Jugglebot
 │  └──────┬───────┘   └──────┬───────┘   └──────┬───────┘  │
 │         │                  │                   │          │
 │         ▼                  ▼                   ▼          │
-│  ┌─────────────────────────────────────────────────────┐  │
-│  │              motion_bridge_node.py                  │  │
-│  │                                                     │  │
-│  │  ROS2 Topics ←──→ ZeroMQ IPC ←──→ Telemetry Pub   │  │
-│  └─────────────────────┬───────────────────────────────┘  │
-│                        │ ZeroMQ                           │
-│  ┌─────────────────────┴───────────────────────────────┐  │
-│  │                  can_node.py                        │  │
-│  │                                                     │  │
-│  │  leg_lengths_topic → CAN set_input_pos × 6 axes    │  │
-│  │  ODrive feedback → motor_feedback / robot_state     │  │
-│  └─────────────────────┬───────────────────────────────┘  │
-└─────────────────────────┼─────────────────────────────────┘
-                          │ CAN Bus
-                ┌─────────┴─────────┐
-                │  6× ODrive Motor  │
-                │   Controllers     │
-                └───────────────────┘
+│  ┌──────────────────────────────┐  ┌──────────────────┐  │
+│  │    motion_bridge_node.py    │  │ mpc_bridge_node  │  │
+│  │  ROS2 ←→ ZMQ :5555/:5556   │  │ ROS2 → ZMQ :5558│  │
+│  └──────────────┬──────────────┘  └────────┬─────────┘  │
+│                 │                          │             │
+│  ┌──────────────┴──────────────────────────┘             │
+│  │                                                       │
+│  │  ┌─────────────────────────────────────────────────┐  │
+│  │  │                  can_node.py                    │  │
+│  │  │  leg_lengths_topic → CAN set_input_pos × 6     │  │
+│  │  │  ODrive feedback → motor_feedback / robot_state │  │
+│  │  └─────────────────────┬───────────────────────────┘  │
+│  │                        │ CAN Bus                      │
+└──┼────────────────────────┼──────────────────────────────┘
+   │                ┌───────┴─────────┐
+   │                │  6× ODrive Motor│
+   │                │   Controllers   │
+   │                └─────────────────┘
+   │
+┌──┼────────────────────────────────────────────────────────┐
+│  │            MPC Process (50 Hz, separate)                │
+│  │                                                         │
+│  │  ┌─────────────────────────────────────────────────┐    │
+│  │  │  sim/main.py --hardware                         │    │
+│  │  │                                                 │    │
+│  │  │  ZmqTargetSource ← ZMQ :5558 ← mpc_bridge_node │    │
+│  │  │  MPCController (CasADi/IPOPT)                   │    │
+│  │  │  HardwarePlant → ZMQ :5557 → motor_guard        │    │
+│  │  └─────────────────────────────────────────────────┘    │
+└────────────────────────────────────────────────────────────┘
 
 ┌───────────────────────────────────────────────────────────┐
-│                  Control Process (separate)               │
-│                                                           │
-│  ┌─────────────────────────────────────────────────────┐  │
-│  │              control_loop.py (500 Hz)               │  │
-│  │                                                     │  │
-│  │  trajectory_manager  quintic  feasibility            │  │
-│  │  ik_solver  dynamics  workspace  conversions         │  │
-│  └─────────────────────────────────────────────────────┘  │
+│               Motor Guard Process (500 Hz, separate)       │
+│                                                            │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │              motor_guard.py                         │   │
+│  │                                                     │   │
+│  │  Quadratic interpolation (50 Hz → 500 Hz)           │   │
+│  │  Safety checks (every cycle)                        │   │
+│  │  workspace.py   ik_solver.py (cond# only)           │   │
+│  └─────────────────────────────────────────────────────┘   │
 └───────────────────────────────────────────────────────────┘
 ```
 
 ## The Motion Bridge Node
 
-The bridge translates between the ROS2 topic world and the ZeroMQ IPC layer. It has no motion planning logic of its own — it's a pure adapter.
+The motion bridge translates between the ROS2 topic world and the motor guard's ZeroMQ IPC layer. It has no motion planning logic of its own — it's a pure adapter.
 
-### ROS2 → Control Process
+### ROS2 → Motor Guard
 
 | ROS2 Topic | Message Type | IPC Topic | Behaviour |
 |---|---|---|---|
-| `platform_pose_topic` | `PlatformPoseCommand` | `target` | Forward pose to control process. **Gated:** only forwards if `msg.publisher` matches the current active control mode |
 | `control_mode_topic` | `String` | `mode` | Map mode strings to enable/disable/estop commands |
-| `gravity_offset` | `Float64MultiArray` | `mode` | Forward tilt correction as `set_gravity_offset` |
-| `robot_state` | `RobotState` | `motorfb` | Forward motor positions/velocities/currents (first 6 axes = legs) to control process for [safety checks](safety.md) |
+| `robot_state` | `RobotState` | `motorfb` | Forward motor positions/velocities/currents (first 6 axes = legs) to motor guard for [safety checks](safety.md) |
 
-### Control Process → ROS2
+### Motor Guard → ROS2
 
 | IPC Topic | ROS2 Topic | Message Type | Content |
 |---|---|---|---|
 | `telem` | `leg_lengths_topic` | `Float64MultiArray` | 18 values: [6 positions (rev), 6 velocities (rev/s), 6 torques (Nm)] |
 | `telem` | `leg_torques_diagnostic` | `Float64MultiArray` | 6 feedforward torques (monitoring only) |
 | `telem` | `motion/tracking_error` | `Float64MultiArray` | 6 per-leg tracking errors (mm) |
-| `telem` | `motion/diagnostics` | `DiagnosticStatus` | Condition number, workspace status, slew limiter state, faults |
+| `telem` | `motion/diagnostics` | `DiagnosticStatus` | Condition number, workspace status, faults |
 
-Telemetry is polled at 500 Hz (matching the control loop rate).
+Telemetry is polled at 500 Hz (matching the motor guard rate).
 
-### Control Mode Gating
+## The MPC Bridge Node
 
-The bridge tracks which control source is currently active (spacemouse, shell, levelling, GUI). When a `PlatformPoseCommand` arrives, the bridge checks `msg.publisher` against the active mode. Only matching messages are forwarded — this prevents one source from interfering with another.
+The MPC bridge forwards target poses from ROS2 input sources to the MPC process via ZMQ. It is mode-gated: only the active source's targets are forwarded.
 
-| Mode String | Active Publisher | IPC Action |
+### ROS2 → MPC Process
+
+| ROS2 Topic | Message Type | ZMQ Topic | Behaviour |
+|---|---|---|---|
+| `platform_pose_topic` | `PlatformPoseCommand` | `mpctgt` | Forward pose to MPC. **Gated:** only forwards if `msg.publisher` matches the current active mode |
+| `catch/dynamic_target` | `DynamicTargetCommand` | `mpctgt` | Forward catch target to MPC. **Gated:** only forwards when mode is CATCH |
+| `control_mode_topic` | `String` | `mpcmode` | Forward mode transitions (enable/disable) |
+| `gravity_offset` | `Float64MultiArray` | — | Stored as correction rotation matrix; composed into every outgoing target orientation |
+
+### Mode Gating
+
+| Mode String | Active Publisher | Action |
 |---|---|---|
-| `SPACEMOUSE` | spacemouse | `enable` (if mode changed) |
-| `SHELL` | shell | `enable` (if mode changed) |
-| `LEVELLING` | levelling | `disable` if previously enabled; control loop stays disabled (CAN node handles levelling directly) |
-| `GUI` | gui | `enable` (if mode changed) |
-| `ERROR` | — | `estop` |
-| empty/None | — | `disable` (if was active) |
+| `SPACEMOUSE` | spacemouse | Forward platform_pose_topic, send `mpcmode:spacemouse` |
+| `SHELL` | shell | Forward platform_pose_topic, send `mpcmode:shell` |
+| `GUI` | gui | Forward platform_pose_topic, send `mpcmode:gui` |
+| `CATCH` | catch_coordinator | Forward catch/dynamic_target, send `mpcmode:catch` |
+| `LEVELLING` | — | Send `mpcmode:disabled` |
+| `ERROR` | — | Send `mpcmode:disabled` |
+| empty/None | — | Send `mpcmode:disabled` |
+
+### Catch Target Feedback
+
+When the MPC receives a catch target (via `:5558`), it sends accept/reject feedback to the catch coordinator via a dedicated ZMQ channel on `:5559` (`TargetFeedbackPub` → `TargetFeedbackSub`). This tells the coordinator whether the solver was able to plan a trajectory to the requested catch position and timing.
+
+### Gravity Correction
+
+The `gravity_offset` topic provides tilt correction for base levelling. The MPC bridge stores the correction as a rotation matrix and pre-multiplies it into every outgoing target orientation before reaching the MPC. The MPC sees corrected references transparently — it does not need to know about the gravity correction.
 
 ## The CAN Interface
 
-The CAN node (`can_node.py`) handles all communication with the ODrive motor controllers. The motion planner's output reaches the ODrives through this path:
+The CAN node (`can_node.py`) handles all communication with the ODrive motor controllers. The motor guard's output reaches the ODrives through this path:
 
 ```
-control_loop.py
+motor_guard.py
     → telemetry (pos_rev, vel_ff_rps, torque_ff_Nm)
     → motion_bridge_node.py
     → leg_lengths_topic (18 Float64 values)
@@ -120,9 +152,9 @@ The CAN node handles:
 
 ### Motor Feedback
 
-The CAN node receives encoder feedback from each ODrive at ~100 Hz and publishes it on the `/robot_state` topic as a `RobotState` message containing a `MotorStateSingle` per axis. The bridge subscribes to this topic, extracts `pos_estimate`, `vel_estimate`, and `iq_measured` from the first 6 entries (the leg motors), and forwards them to the control process as `motorfb` IPC messages.
+The CAN node receives encoder feedback from each ODrive at ~100 Hz and publishes it on the `/robot_state` topic as a `RobotState` message containing a `MotorStateSingle` per axis. The bridge subscribes to this topic, extracts `pos_estimate`, `vel_estimate`, and `iq_measured` from the first 6 entries (the leg motors), and forwards them to the motor guard as `motorfb` IPC messages.
 
-This feedback is critical for the [motor command safety](safety.md) system — the slew rate limiter compares commanded positions against these actual encoder positions. Without current feedback, the control loop suppresses all motor commands.
+This feedback is critical for the [motor command safety](safety.md) system — the max-deviation check and overspeed check both require current encoder data. Without current feedback, the motor guard suppresses all motor commands.
 
 ### CAN Bus Timing
 
@@ -134,18 +166,21 @@ All 6 axes receive commands within a single control cycle (2 ms). CAN bus throug
 
 ## The Orchestrator
 
-The orchestrator (`orchestrator_node.py`) manages the overall robot state machine. It doesn't directly interact with the motion planner, but it controls the **mode** that determines which input source is forwarded to the control process.
+The orchestrator (`orchestrator_node.py`) manages the overall robot state machine. It doesn't directly interact with the motion system, but it controls the **mode** that determines which input source is forwarded to the MPC.
 
-State transitions relevant to the motion planner:
+State transitions relevant to the motion system:
 
 ```
-BOOT → HOMING → IDLE → ACTIVE (SPACEMOUSE | SHELL | ...)
+BOOT → HOMING → IDLE → ACTIVE (SPACEMOUSE | SHELL | GUI | CATCH)
                   ↑              |
                   +──────────────+  (deactivate)
 FAULT ← (any state on error)
 ```
 
-The orchestrator publishes mode changes on `control_mode_topic`, which the bridge translates into enable/disable/estop commands for the control process.
+The orchestrator publishes mode changes on `control_mode_topic`, which both bridges translate into appropriate commands:
+
+- **motion_bridge_node** → enable/disable/estop for the motor guard
+- **mpc_bridge_node** → enable/disable for the MPC process
 
 ## Startup Sequence
 
@@ -159,21 +194,11 @@ ros2 launch jugglebot jugglebot_launch.py
 
 # With rosbag recording
 ros2 launch jugglebot jugglebot_launch.py record:=true
-
-# With simulator instead of hardware
-ros2 launch jugglebot jugglebot_launch.py use_simulator:=true
 ```
 
 **Launch file:** [`ros_ws/src/jugglebot/launch/jugglebot_launch.py`](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/launch/jugglebot_launch.py)
 
-**Launch arguments:**
-
-| Argument | Default | Purpose |
-|---|---|---|
-| `use_simulator` | `false` | Use Webots simulator instead of real hardware |
-| `record` | `false` | Enable rosbag recording (MCAP format, saved to `~/Desktop/rosbags/`) |
-
-**Nodes started by the launch file:**
+**Nodes and processes started by the launch file:**
 
 | Node / Process | Condition | Purpose |
 |---|---|---|
@@ -182,63 +207,70 @@ ros2 launch jugglebot jugglebot_launch.py use_simulator:=true
 | `spacemouse_handler` | Always | SpaceMouse input |
 | `sp_ik` | Always | Legacy Stewart platform IK node |
 | `rosbridge_websocket` | Always | WebSocket bridge for GUI |
+| `motion_bridge_node` | Always | Motor guard ↔ ROS2 bridge |
+| `mpc_bridge_node` | Always | MPC target ↔ ROS2 bridge |
+| `motor_guard` | Always | 500 Hz interpolator + safety |
 | `rosbag record` | If `record:=true` | Records selected topics in MCAP format |
-| Webots simulator | If `use_simulator:=true` | Simulated environment |
-
-!!! note "Motion planner not yet in launch file"
-    The `motion_bridge_node` and `control_loop` process are defined in the launch file but are currently **commented out** (lines 123 and 128). Until they are uncommented, the motion planner must be started manually in separate terminals alongside the launch file. This will be integrated once the motion planner is the primary control path.
 
 ### Manual Startup (When Not Using Launch File)
 
-For development or when running the motion planner separately:
+For development or when running processes separately:
 
 1. **Launch ROS2 nodes** (via launch file or individually)
-2. **Start control process:** `python -m jugglebot.motion.control_loop --rate 500` (separate terminal). Starts in `DISABLED` mode with zero outputs.
-3. **IPC connection:** The bridge's BridgeIPC binds on port 5555. The control loop's ControlProcessIPC connects. ZeroMQ handles the connection/reconnection automatically.
-4. **Homing:** The orchestrator commands homing via the CAN node. ODrives find their encoder references.
-5. **Activate:** The orchestrator transitions to ACTIVE, publishing a mode on `control_mode_topic`. The bridge sends an `enable` command. The control loop transitions to `ENABLED` and seeds the active pose.
-6. **Operation:** The active input source (spacemouse, shell, ball predictor) publishes `PlatformPoseCommand` messages. The bridge forwards them. The control loop computes motor commands.
+2. **Start motor guard:** `python -m jugglebot.motion.motor_guard --rate 500` (separate terminal). Starts in `DISABLED` mode with zero outputs.
+3. **Start MPC process:** `python sim/main.py --hardware` (separate terminal). Defaults to `ZmqTargetSource` for receiving targets from `mpc_bridge_node`.
+4. **IPC connection:** ZeroMQ handles connection/reconnection automatically on all ports.
+5. **Homing:** The orchestrator commands homing via the CAN node. ODrives find their encoder references.
+6. **Activate:** The orchestrator transitions to ACTIVE, publishing a mode on `control_mode_topic`. Both bridges forward enable commands. The MPC begins solving; the motor guard begins interpolating.
+7. **Operation:** The active input source (spacemouse, shell, catch coordinator) publishes targets. The MPC bridge forwards them. The MPC plans a trajectory. The motor guard interpolates and sends to hardware.
 
 ## Shutdown Sequence
 
 On shutdown:
 
-1. The bridge sends a `disable` mode command to the control process
-2. The control loop zeros all outputs and cancels any active trajectory
-3. The trajectory manager's feasibility worker process is shut down (2-second timeout)
+1. The motion bridge sends a `disable` mode command to the motor guard
+2. The MPC bridge sends `disabled` to the MPC process
+3. The motor guard zeros all outputs
 4. IPC sockets are closed
 5. ROS2 nodes are destroyed
 
-If the control process crashes or is killed, the ODrives hold the last commanded position (position control fail-safe). The bridge's heartbeat watchdog will detect the loss and can trigger an E-stop through the orchestrator.
+If the motor guard crashes or is killed, the ODrives hold the last commanded position (position control fail-safe). The bridge's heartbeat watchdog will detect the loss and can trigger an E-stop through the orchestrator.
+
+If the MPC process crashes, the motor guard detects it via the MPC staleness timeout (200 ms) and triggers an E-stop.
 
 ## Error Handling
 
 ### ODrive Faults
 
-If an ODrive reports a fault (overcurrent, encoder error, etc.), the CAN node detects it and publishes on `robot_state`. The orchestrator parses this and publishes `ERROR` on `control_mode_topic`. The bridge sends an `estop` command to the control process. All motor outputs go to zero.
-
-The control process can also receive faults directly via the `fault` mode command, which triggers the same E-stop sequence.
+If an ODrive reports a fault (overcurrent, encoder error, etc.), the CAN node detects it and publishes on `robot_state`. The orchestrator parses this and publishes `ERROR` on `control_mode_topic`. Both bridges propagate the error: the motion bridge sends `estop` to the motor guard, and the MPC bridge sends `disabled` to the MPC process. All motor outputs go to zero.
 
 ### IPC Loss
 
-If the control process receives no messages for 0.5 seconds, it self-triggers an E-stop (`ipc_heartbeat_lost`). This protects against bridge crashes, network issues, or ROS2 hangs.
+If the motor guard receives no messages for 0.5 seconds, it self-triggers an E-stop (`ipc_heartbeat_lost`). This protects against bridge crashes, network issues, or ROS2 hangs.
+
+### MPC Process Loss
+
+If the motor guard receives no MPC command for 200 ms, it self-triggers an E-stop (`mpc_cmd_staleness`). This catches MPC process crashes, solver hangs, or ZMQ connection loss.
 
 ### Workspace Violations
 
-If a workspace hard limit is triggered during operation, the control loop cancels the active trajectory and E-stops. This catches situations where external disturbances or modelling errors push the platform beyond safe bounds.
+If a workspace hard limit is triggered on an incoming MPC command, the motor guard E-stops. This catches cases where the MPC solver produces an out-of-bounds solution (constraint violation).
 
 ## Dependencies
 
-The motion planner core (`motion/` subpackage) depends only on:
+The motor guard (`motion/` subpackage) depends only on:
 
 - **numpy** — array math
 - **pyzmq** — ZeroMQ bindings (IPC)
 - **msgpack** — message serialization
 
-These are Jetson-only dependencies (not needed on Windows dev machines for offline testing, though pyzmq and msgpack are available there too).
+The MPC process additionally depends on:
 
-The bridge node additionally depends on:
+- **casadi** — symbolic optimization
+- **IPOPT** — nonlinear solver (via CasADi)
+
+The bridge nodes additionally depend on:
 
 - **rclpy** — ROS2 Python client
 - Standard ROS2 message types (`std_msgs`, `geometry_msgs`)
-- Custom Jugglebot message types (`PlatformPoseCommand`)
+- Custom Jugglebot message types (`PlatformPoseCommand`, `DynamicTargetCommand`)

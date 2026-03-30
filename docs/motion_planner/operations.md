@@ -2,16 +2,19 @@
 
 This page covers how to work with the motion planner in practice — running tests, tuning ODrive gains, using the test harnesses, and extending the system.
 
-## Running the Control Process
+## Running the Motor Guard
 
 ### On the Jetson (Production)
 
 ```bash
-# Start the control loop (separate terminal from ROS2)
-python -m jugglebot.motion.control_loop --rate 500 --log-level INFO
+# Start the motor guard (separate terminal from ROS2)
+python -m jugglebot.motion.motor_guard --rate 500 --log-level INFO
+
+# Start the MPC process (separate terminal)
+python sim/main.py --hardware
 ```
 
-The control loop starts in `DISABLED` mode. It will connect to the bridge's ZeroMQ socket automatically and wait for an `enable` command.
+The motor guard starts in `DISABLED` mode. It connects to the bridge's ZeroMQ socket automatically and waits for an `enable` command. The MPC process defaults to `ZmqTargetSource`, which receives targets from `mpc_bridge_node` via ZMQ :5558.
 
 ### Offline Testing (No Hardware)
 
@@ -20,31 +23,20 @@ The motion modules have no ROS2 dependency and can be used directly in Python:
 ```python
 from jugglebot.motion.geometry import StewartGeometry
 from jugglebot.motion.dynamics import DynamicsParams
-from jugglebot.motion.feasibility import make_rest_to_rest, check_feasibility
-from jugglebot.motion.quintic import evaluate
+from jugglebot.motion.motor_commands import cartesian_to_motor_commands
 import numpy as np
 
 geom = StewartGeometry()
 params = DynamicsParams.from_config()
 
-# Create a trajectory
-traj = make_rest_to_rest(
-    end_pose=np.array([0, 0, 30, 0, 0, 0]),  # 30mm up
-    duration=1.0,
-    speed_scale=0.5
+# Compute motor commands for a given pose
+pose_6dof = np.array([0, 0, 30, 0, 0, 0])  # 30mm up
+twist_6dof = np.zeros(6)
+accel_6dof = np.zeros(6)
+
+pos_rev, vel_ff_rps, torque_ff_Nm = cartesian_to_motor_commands(
+    pose_6dof, twist_6dof, accel_6dof, geom, params
 )
-
-# Check feasibility
-result = check_feasibility(traj, geom, params)
-print(f"Feasible: {result.feasible}")
-if not result.feasible:
-    for v in result.violations:
-        print(f"  - {v}")
-
-# Evaluate at specific times
-for t in np.linspace(0, traj.duration, 50):
-    pose, twist, accel = evaluate(traj, t)
-    print(f"t={t:.3f}s  z={pose[2]:.1f}mm  vz={twist[2]:.1f}mm/s")
 ```
 
 ## Running the Test Suites
@@ -52,20 +44,17 @@ for t in np.linspace(0, traj.duration, 50):
 ### Offline Tests (No Hardware Required)
 
 ```bash
+# Motor guard tests (28 tests)
+pytest tests/motion/test_motor_guard.py -v
+
 # Kinematics verification (6 tests)
-python -m pytest ros_ws/src/jugglebot/jugglebot/motion/tests/test_kinematics.py -v
+pytest tests/motion/test_kinematics.py -v
 
-# Control loop tests (3 tests)
-python -m pytest ros_ws/src/jugglebot/jugglebot/motion/tests/test_control_loop.py -v
+# Dynamics tests (13 tests)
+pytest tests/motion/test_dynamics.py -v
 
-# Dynamics tests (7 tests)
-python -m pytest ros_ws/src/jugglebot/jugglebot/motion/tests/test_dynamics.py -v
-
-# Trajectory tests (7 tests)
-python -m pytest ros_ws/src/jugglebot/jugglebot/motion/tests/test_trajectory.py -v
-
-# Async pipeline tests (8 tests)
-python -m pytest ros_ws/src/jugglebot/jugglebot/motion/tests/test_async_pipeline.py -v
+# MPC tests (59 tests)
+pytest tests/sim/ -v
 ```
 
 ### Hardware Test Harnesses
@@ -107,69 +96,59 @@ harness.disconnect()
 |---|---|---|
 | `tools/single_leg_test.py` | Phase 2/3A isolated leg tests | N/A |
 | `tools/free_platform_test.py` | Phase 3C platform tests | Low |
-| `tools/trajectory_test.py` | Phase 4 trajectory tracking (T1–T4) | ≤25% |
-| `tools/hardening_test.py` | Phase 6 workspace, endurance (H1–H6) | 25–100% |
-| `tools/dynamic_target_test.py` | Phase 7 dynamic targets (DT1–DT5) | 100% |
+| `tools/supported_platform_test.py` | Supported platform tests | Low |
 
-#### Trajectory Viewer
+!!! note "Archived test harnesses"
+    Several harnesses (`trajectory_test.py`, `hardening_test.py`, `dynamic_target_test.py`, `trajectory_viewer.py`) are in `tools/archived/` — they depend on the pre-MPC trajectory system and need MPC-based equivalents. Their test scenarios remain valid references for future MPC hardware tests.
 
-A standalone 3D matplotlib viewer for previewing trajectories before execution:
+## Motion Preview
+
+### MPC Simulation Preview
+
+The canonical way to preview motion before running on hardware is through the MPC simulation:
 
 ```bash
-# Standalone viewer
-python tools/trajectory_viewer.py
+# Preview a static pose target
+python sim/main.py --mpc --pose 20,0,30,0.05,0,0 --no-viewer --duration 3
 
-# Preview mode (used by trajectory_test.py)
-python tools/trajectory_test.py --preview
+# Preview with the 3D viewer
+python sim/main.py --mpc --pose 20,0,30,0.05,0,0 --duration 5
+
+# Preview with the telemetry dashboard (http://localhost:8082)
+python sim/main.py --dashboard --mpc --pose 20,0,30,0.05,0,0
+
+# Keyboard-controlled interactive preview
+python sim/main.py --keyboard --mpc
 ```
 
-## Trajectory Visualization
+### Joint-Space Analysis
 
-### Pre-Execution Preview
-
-Before running a trajectory on hardware, preview it offline. The `tools/trajectory_viewer.py` provides a 3D matplotlib visualization of the Stewart platform moving through a trajectory.
-
-For Cartesian and joint-space analysis, you can plot trajectories programmatically:
+To plot leg extensions for a given pose (without running the MPC):
 
 ```python
 import matplotlib.pyplot as plt
 import numpy as np
-from jugglebot.motion.feasibility import make_rest_to_rest, check_feasibility
-from jugglebot.motion.quintic import evaluate
 from jugglebot.motion.ik_solver import pose_to_leg_lengths, rotvec_to_rot_matrix
 from jugglebot.motion.geometry import StewartGeometry
-from jugglebot.motion.dynamics import DynamicsParams
 
 geom = StewartGeometry()
-params = DynamicsParams.from_config()
-traj = make_rest_to_rest(np.array([20, 0, 30, 0.05, 0, 0]), duration=1.5)
 
-times = np.linspace(0, traj.duration, 200)
-poses = np.array([evaluate(traj, t)[0] for t in times])
-twists = np.array([evaluate(traj, t)[1] for t in times])
+# Sweep Z from 0 to 50 mm
+z_values = np.linspace(0, 50, 100)
+poses = np.array([[0, 0, z, 0, 0, 0] for z in z_values])
 
-# Cartesian space
-fig, axes = plt.subplots(2, 3, figsize=(12, 6), sharex=True)
-labels = ['X (mm)', 'Y (mm)', 'Z (mm)', 'RX (rad)', 'RY (rad)', 'RZ (rad)']
-for i, (ax, label) in enumerate(zip(axes.flat, labels)):
-    ax.plot(times, poses[:, i])
-    ax.set_ylabel(label)
-axes[-1, 1].set_xlabel('Time (s)')
-plt.suptitle('Cartesian Trajectory')
-plt.tight_layout()
-
-# Joint space (leg extensions)
 extensions = np.array([
     pose_to_leg_lengths(p[:3], rotvec_to_rot_matrix(p[3:6]), geom)
     for p in poses
 ])
-fig2, ax2 = plt.subplots(figsize=(10, 4))
+
+fig, ax = plt.subplots(figsize=(10, 4))
 for i in range(6):
-    ax2.plot(times, extensions[:, i], label=f'Leg {i}')
-ax2.set_xlabel('Time (s)')
-ax2.set_ylabel('Extension (mm)')
-ax2.legend()
-ax2.set_title('Leg Extensions')
+    ax.plot(z_values, extensions[:, i], label=f'Leg {i}')
+ax.set_xlabel('Z displacement (mm)')
+ax.set_ylabel('Extension (mm)')
+ax.legend()
+ax.set_title('Leg Extensions vs Z')
 plt.tight_layout()
 plt.show()
 ```
@@ -219,28 +198,28 @@ Gains are set via the `set_gains` mode command through the IPC layer. The CAN no
 
 ## Extending the System
 
-### Adding a New Trajectory Type
+### Adding a New Motion Mode
 
-To add a new trajectory creation function:
+All motion modes route through the MPC. To add a new mode (e.g., joystick, automated sequence):
 
-1. Add the function to `feasibility.py` alongside `make_rest_to_rest()`
-2. Ensure it returns a `QuinticTrajectory` (via `create_trajectory()` from `quintic.py`)
-3. Always run `check_feasibility()` before submitting to hardware
-4. Add an IPC message constructor to `ipc.py` if the bridge needs to pass parameters
+1. Create a `TargetSource` implementation in `sim/input/` (implements `update(sim_time, state) → TargetCommand`)
+2. For hardware: create a ROS2 node that publishes targets, and the `mpc_bridge_node` forwards them to the MPC via ZMQ :5558
+3. Register the mode in the orchestrator's state machine (`state_machine.py`)
+4. The MPC handles trajectory planning, feasibility, and smoothing automatically — you only provide target poses
 
-### Adding a New Input Source
+### Adding a New Input Source (ROS2 Side)
 
-To add a new control source (e.g., joystick, ball predictor):
+On the ROS2 side, a new input source publishes target poses that the `mpc_bridge_node` forwards to the MPC:
 
 1. Create a ROS2 node that publishes `PlatformPoseCommand` messages on `platform_pose_topic`
 2. Set the `publisher` field in each message to your source name (e.g., `JOYSTICK`)
-3. Register the source name in the bridge's mode handling (the `_on_control_mode` method)
-4. The orchestrator publishes mode changes on `control_mode_topic` — add your mode to its state machine
+3. Register the source name in `mpc_bridge_node`'s mode handling (the `_on_control_mode` method)
+4. Add the mode to the orchestrator's state machine (`state_machine.py`)
 
 ### Adding New Telemetry Fields
 
-1. Add the field to `make_telemetry()` in `ipc.py`
-2. Populate it in `_publish_telemetry()` in `control_loop.py`
+1. Add the field to the pre-allocated `_telem_msg` dict in `motor_guard.py` `__init__()`
+2. Populate it in `_publish_telemetry()` in `motor_guard.py`
 3. Extract it in `_poll_telemetry()` in `motion_bridge_node.py`
 4. Publish on a ROS2 topic if needed
 
@@ -248,48 +227,24 @@ To add a new control source (e.g., joystick, ball predictor):
 
 1. Add limit constants to `workspace.py` (follow the existing `LEG_SOFT_MARGIN_MM` pattern)
 2. Add the check to `check_workspace_limits()` for runtime enforcement
-3. Add a corresponding check to `check_feasibility()` in `feasibility.py` for planning-time enforcement
-4. **Critical:** Ensure both use the same margins so planning and runtime agree
+3. Add the check to `_on_mpc_command()` in `motor_guard.py` for command-arrival validation
+4. **Critical:** Ensure workspace check margins match the MPC solver's constraints
 
 ## Common Patterns
 
-### Previewing a Trajectory Offline
+### Previewing Motion via MPC Simulation
 
-```python
-import matplotlib.pyplot as plt
-from jugglebot.motion.feasibility import make_rest_to_rest, check_feasibility
-from jugglebot.motion.quintic import evaluate
-from jugglebot.motion.geometry import StewartGeometry
-from jugglebot.motion.dynamics import DynamicsParams
-import numpy as np
+The MPC simulation is the canonical way to preview motion offline. Run with `--no-viewer` for headless mode or `--dashboard` for real-time telemetry:
 
-geom = StewartGeometry()
-params = DynamicsParams.from_config()
+```bash
+# Quick check: does the MPC reach this pose smoothly?
+python sim/main.py --mpc --pose 20,0,30,0.05,0,0 --no-viewer --duration 3
 
-traj = make_rest_to_rest(
-    end_pose=np.array([20, 0, 30, 0.05, 0, 0]),
-    duration=1.5
-)
-
-result = check_feasibility(traj, geom, params)
-print(f"Feasible: {result.feasible}")
-print(f"Peak vel: {result.peak_leg_vel_rps.max():.2f} rev/s")
-print(f"Peak accel: {result.peak_leg_accel_rps2.max():.2f} rev/s²")
-print(f"Peak cond: {result.peak_condition_number:.0f}")
-
-# Plot
-times = np.linspace(0, traj.duration, 200)
-poses = np.array([evaluate(traj, t)[0] for t in times])
-
-fig, axes = plt.subplots(2, 3, figsize=(12, 6))
-labels = ['X (mm)', 'Y (mm)', 'Z (mm)', 'RX (rad)', 'RY (rad)', 'RZ (rad)']
-for i, (ax, label) in enumerate(zip(axes.flat, labels)):
-    ax.plot(times, poses[:, i])
-    ax.set_ylabel(label)
-    ax.set_xlabel('Time (s)')
-plt.tight_layout()
-plt.show()
+# Full dashboard with telemetry plots
+python sim/main.py --dashboard --mpc --pose 20,0,30,0.05,0,0
 ```
+
+The simulation runs the same MPC solver and `HardwarePlant` code path used on hardware, so motion behavior is representative.
 
 ### Computing Feedforward Torques at a Pose
 
@@ -330,21 +285,23 @@ if check.violations:
 
 ## Troubleshooting
 
-### Control loop won't start
+### Motor guard won't start
 
-- Check that the bridge node is running (the control loop connects to port 5555)
+- Check that the bridge node is running (the motor guard connects to port 5555)
 - Check ZeroMQ is installed: `pip install pyzmq msgpack`
-- Check for port conflicts: another process may be bound to 5555 or 5556
+- Check for port conflicts: another process may be bound to 5555, 5556, or 5557
 
 ### E-stop on first enable
 
-- The heartbeat timeout is 0.5 seconds. If the bridge isn't publishing messages fast enough, the control loop will E-stop. Ensure the bridge's poll timer is running.
+- The heartbeat timeout is 0.5 seconds. If the bridge isn't publishing messages fast enough, the motor guard will E-stop. Ensure the bridge's poll timer is running.
+- The MPC staleness timeout is 200 ms. If the MPC process isn't running, the motor guard will E-stop after enable.
 
-### Trajectory rejected as infeasible
+### MPC solver fails or returns poor trajectories
 
-- Check `result.violations` for specific constraint violations
-- Common causes: trajectory too fast (reduce speed_scale), poses near workspace boundary, extreme tilts approaching singularity
-- Try `find_min_feasible_duration()` to find the shortest feasible duration
+- Check the MPC solver status in telemetry — `Solve_Succeeded` or `Solved_To_Acceptable_Level` are normal
+- Common causes of solver failure: target pose outside workspace, extreme tilts approaching singularity, target velocity too high
+- Check MPC tuning parameters in `controller/params.py` — cost weights and horizon length affect trajectory quality
+- Run `sim/main.py --mpc --pose <target>` to reproduce the issue in simulation before debugging on hardware
 
 ### Tracking error too high
 
