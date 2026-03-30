@@ -54,7 +54,7 @@ python main.py --mpc --pose 0,0,170,0.05,0,0 --no-viewer --duration 5
 
 ---
 
-## Phase 1: Jetson Deployment (No Motors)
+## Phase 1: Jetson Deployment (No Motors) — COMPLETE (2026-03-30)
 
 ### 1.1 Install dependencies
 ```bash
@@ -81,35 +81,60 @@ motor_guard --rate 500
 ```
 **Go:** Starts cleanly, no crashes.
 
-### 1.4 MPC solver timing on Jetson
+### 1.4 MPC solver timing on Jetson — PASS (2026-03-30)
 ```bash
-cd ~/Jugglebot
-python3 -c "
+cd ~/Desktop/Jugglebot/sim
+PYTHONPATH=..:../ros_ws/src/jugglebot:../config/generated python3 -c "
 from controller.mpc import MPCController
 from controller.params import MPCParams
+from plant.interface import PlantState
 from jugglebot.motion.geometry import StewartGeometry
+import jugglebot.hardware_config as hw
 import numpy as np, time
 
 geom = StewartGeometry()
 params = MPCParams()
-mpc = MPCController(params, geom)
+active_rev = np.array(hw.JB_OP_ACTIVATE_POSITION_REVS)
+active_ext = active_rev / geom.mm_to_rev
 
-# 10 warm solves
+mpc = MPCController(
+    params=params,
+    base_nodes=geom.base_nodes,
+    plat_nodes=geom.plat_nodes,
+    init_height_mm=geom.init_height_mm,
+    init_leg_lengths_mm=geom.init_leg_lengths_mm,
+    active_extensions_mm=active_ext,
+)
+
+state = PlantState(
+    leg_extensions_mm=active_ext,
+    leg_velocities_mmps=np.zeros(6),
+    platform_pos_mm=np.array([0., 0., 170.]),
+    platform_rot=np.zeros(3),
+    platform_twist=np.zeros(6),
+    time=0.0,
+)
+target = np.array([0., 0., 170., 0., 0., 0.])
+
+t0 = time.perf_counter()
+cmd, vel, diag = mpc.solve(state, target)
+t1 = time.perf_counter()
+print(f'Cold solve: {(t1-t0)*1000:.1f} ms')
+
 times = []
 for _ in range(10):
     t0 = time.perf_counter()
-    # Solve with dummy state at Active position
-    mpc.solve_from_extensions(np.full(6, 154.5), np.zeros(6),
-                               np.array([0.,0.,170.,0.,0.,0.]))
+    cmd, vel, diag = mpc.solve(state, target)
     times.append((time.perf_counter()-t0)*1000)
-print(f'Warm: mean={np.mean(times):.1f}ms, max={np.max(times):.1f}ms')
+print(f'Warm: mean={np.mean(times):.1f}ms, max={np.max(times):.1f}ms, p99={np.percentile(times,99):.1f}ms')
 "
 ```
-*(Adjust `solve_from_extensions` to actual API — check `mpc.py` method signatures.)*
+
+**Result:** Cold solve 8.7 ms, warm mean 2.1 ms, max 2.7 ms — well within 19 ms budget.
 
 **Go:** Warm solve < 15ms mean, < 18ms max. **Abort:** > 18ms consistently.
 
-### 1.5 Full launch IPC test (motors OFF / CAN disconnected)
+### 1.5 Full launch IPC test (motors OFF / CAN disconnected) — PASS (2026-03-30)
 ```bash
 ros2 launch jugglebot jugglebot_launch.py
 # In another terminal:
