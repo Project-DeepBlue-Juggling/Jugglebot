@@ -25,6 +25,11 @@ Architecture::
     TargetFeedbackPub                   TargetFeedbackSub
       PUB  ─── tcp://localhost:5559 ──►  SUB   (target accept/reject)
 
+    MPC Process (sim/main.py)            ROS2 MPC Bridge
+    ─────────────────────────           ───────────────
+    SessionMetadataPush                 SessionMetadataPull
+      PUSH ─── tcp://localhost:5560 ──►  PULL  (session CSV filename)
+
 Message types:
   - ModeCommand:   enable, disable, estop, fault, etc.
   - Telemetry:     motor guard output (leg states, timing, torques)
@@ -61,6 +66,7 @@ TELEMETRY_ADDR = 'tcp://127.0.0.1:5556'     # motor guard PUB → bridge SUB
 MPC_COMMAND_ADDR = 'tcp://127.0.0.1:5557'   # HardwarePlant PUB → motor guard SUB
 MPC_TARGET_ADDR = 'tcp://127.0.0.1:5558'    # mpc_bridge PUB → MPC process SUB
 MPC_FEEDBACK_ADDR = 'tcp://127.0.0.1:5559'  # MPC process PUB → catch coordinator SUB
+SESSION_ADDR = 'tcp://127.0.0.1:5560'       # MPC process PUSH → mpc_bridge PULL (session metadata)
 
 # Topic prefixes for ZMQ PUB/SUB filtering
 TOPIC_MODE = b'mode'
@@ -235,6 +241,20 @@ def make_mpc_target(target_pose: list | tuple,
     if target_twist is not None:
         msg['target_twist'] = list(target_twist)
     return msg
+
+
+def make_session_start(csv_filename: str) -> dict:
+    """Create a session-start metadata message.
+
+    Sent by the MPC process (sim/main.py) when a new telemetry CSV is
+    created, so that the MPC bridge node can log the filename into ROS2
+    logs for later correlation with hardware diagnosis.
+
+    Parameters
+    ----------
+    csv_filename : basename of the CSV file (e.g. 'mpc_20260330_093356.csv')
+    """
+    return {'type': 'session_start', 'csv_filename': csv_filename}
 
 
 def make_mpc_mode(mode: str) -> dict:
@@ -613,4 +633,68 @@ class TargetFeedbackSub:
 
     def close(self) -> None:
         self._sub.close()
+        self._ctx.term()
+
+
+# ---------------------------------------------------------------------------
+# Session metadata (MPC process → mpc_bridge for ROS2 log correlation)
+# ---------------------------------------------------------------------------
+
+class SessionMetadataPush:
+    """PUSH endpoint for session metadata.
+
+    Used by the MPC process (sim/main.py) to send a one-shot session-start
+    message to the MPC bridge node, which logs the CSV filename into ROS2
+    logs for later correlation with hardware diagnosis.
+
+    Uses PUSH/PULL (not PUB/SUB) for guaranteed delivery of this single
+    important message — PUB/SUB can drop messages during the slow-joiner
+    window.
+    """
+
+    def __init__(self, session_addr: str = SESSION_ADDR):
+        self._ctx = zmq.Context()
+        self._push = self._ctx.socket(zmq.PUSH)
+        self._push.setsockopt(zmq.SNDTIMEO, 1000)  # 1s timeout
+        self._push.setsockopt(zmq.LINGER, 1000)
+        self._push.connect(session_addr)
+
+    def send_session_start(self, csv_filename: str) -> None:
+        """Send session-start metadata (CSV filename)."""
+        msg = make_session_start(csv_filename)
+        try:
+            self._push.send(msgpack.packb(msg, use_bin_type=True))
+        except zmq.Again:
+            logger.warning("Session metadata send timed out (bridge not running?)")
+
+    def close(self) -> None:
+        self._push.close()
+        self._ctx.term()
+
+
+class SessionMetadataPull:
+    """PULL endpoint for session metadata.
+
+    Used by mpc_bridge_node to receive session-start messages from the
+    MPC process.  The bridge logs the CSV filename via ROS2 so that
+    hardware diagnosis can correlate MPC telemetry CSVs with ROS2 log
+    sessions.
+    """
+
+    def __init__(self, session_addr: str = SESSION_ADDR):
+        self._ctx = zmq.Context()
+        self._pull = self._ctx.socket(zmq.PULL)
+        self._pull.setsockopt(zmq.RCVTIMEO, 0)  # non-blocking
+        self._pull.bind(session_addr)
+
+    def recv(self) -> dict | None:
+        """Non-blocking: receive a session metadata message, or None."""
+        try:
+            data = self._pull.recv(flags=zmq.NOBLOCK)
+            return msgpack.unpackb(data, raw=False)
+        except zmq.Again:
+            return None
+
+    def close(self) -> None:
+        self._pull.close()
         self._ctx.term()

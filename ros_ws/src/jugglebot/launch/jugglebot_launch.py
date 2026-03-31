@@ -18,7 +18,7 @@ def generate_launch_description():
     record = LaunchConfiguration('record')
     record_arg = DeclareLaunchArgument(
         'record',
-        default_value='false',
+        default_value='true',
     )
 
     # ── CAN node ─────────────────────────────────────────────────

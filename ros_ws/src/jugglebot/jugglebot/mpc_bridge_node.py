@@ -31,6 +31,7 @@ from jugglebot_interfaces.msg import PlatformPoseCommand, DynamicTargetCommand
 
 from jugglebot.motion.ipc import (
     MpcBridgeIPC,
+    SessionMetadataPull,
     make_mpc_target,
     make_mpc_mode,
 )
@@ -64,9 +65,10 @@ class MpcBridgeNode(Node):
 
         # ZMQ publisher for MPC targets and mode
         self._ipc = MpcBridgeIPC()
+        self._session_pull = SessionMetadataPull()
         self.get_logger().info(
             "MPC target bridge initialised "
-            "(targets → tcp://127.0.0.1:5558)")
+            "(targets → tcp://127.0.0.1:5558, session ← tcp://127.0.0.1:5560)")
 
         # Current active mode from orchestrator
         self._current_mode = ''
@@ -97,6 +99,21 @@ class MpcBridgeNode(Node):
         self.create_subscription(
             DynamicTargetCommand, 'catch/dynamic_target',
             self._on_catch_target, 10)
+
+        # Poll for session metadata from MPC process (1 Hz is plenty)
+        self.create_timer(1.0, self._poll_session_metadata)
+
+    # ------------------------------------------------------------------
+    # Session metadata (for hardware diagnosis log correlation)
+    # ------------------------------------------------------------------
+
+    def _poll_session_metadata(self) -> None:
+        """Check for session-start messages from the MPC process."""
+        msg = self._session_pull.recv()
+        if msg is not None and msg.get('type') == 'session_start':
+            csv_filename = msg.get('csv_filename', 'unknown')
+            self.get_logger().info(
+                f"MPC session started: {csv_filename}")
 
     # ------------------------------------------------------------------
     # Mode handling
@@ -224,6 +241,7 @@ class MpcBridgeNode(Node):
         except Exception:
             pass
         self._ipc.close()
+        self._session_pull.close()
         self.get_logger().info("MPC target bridge closed")
 
 

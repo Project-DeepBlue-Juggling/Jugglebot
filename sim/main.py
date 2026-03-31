@@ -1332,6 +1332,15 @@ def main():
     logger = TelemetryLogger(log_path)
     print(f"Logging to: {log_path}")
 
+    # Send session metadata to MPC bridge for ROS2 log correlation
+    if args.hardware:
+        from jugglebot.motion.ipc import SessionMetadataPush
+        session_push = SessionMetadataPush()
+        time.sleep(0.1)  # brief pause for ZMQ connection establishment
+        session_push.send_session_start(os.path.basename(log_path))
+        session_push.close()
+        print(f"Session metadata sent to mpc_bridge_node")
+
     # Optional live dashboard
     dashboard = None
     if args.dashboard:

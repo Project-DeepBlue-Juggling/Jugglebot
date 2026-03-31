@@ -1,0 +1,227 @@
+# Known failure patterns for hardware diagnosis.
+#
+# Each entry defines a machine-readable signature that the /diagnose slash
+# command can cross-reference against analysis results.  The diagnosis agent
+# matches flags from diagnose.py against these patterns to suggest root causes.
+#
+# Fields:
+#   id:          unique identifier (UPPER_SNAKE_CASE)
+#   name:        short human-readable name
+#   severity:    critical | high | medium | low
+#   status:      fixed | active | known  (fixed = resolved but kept for history)
+#   description: what the issue is
+#   signatures:  list of detection criteria (type + thresholds)
+#   fix:         suggested remediation
+#   reference:   path to relevant code/docs (optional)
+
+version: 1
+
+issues:
+  # -----------------------------------------------------------------------
+  # MPC-derived patterns (detected from CSV telemetry metrics)
+  # -----------------------------------------------------------------------
+
+  - id: VEL_FF_BUG
+    name: "Velocity feedforward semantic mismatch"
+    severity: critical
+    status: fixed
+    fixed_date: "2026-03-30"
+    description: >
+      cmd_vel was computed as (cmd - q_cur)/dt instead of (cmd - prev_cmd)/dt,
+      causing the ODrive PID cascade to overshoot and oscillate.  The motor
+      guard's tracking clamp (MAX_LEAD_REV) limited the severity but the
+      platform exhibited dangerous jerky movement.
+    signatures:
+      - type: oscillation
+        chatter_threshold: 0.5
+        amplitude_growing: true
+    fix: "Use (cmd - prev_cmd)/dt for velocity feedforward.  See feedback_velocity_feedforward.md."
+    reference: "sim/plant/hardware_plant.py"
+
+  - id: ASSIGNMENT_ORDER
+    name: "Assignment-order bug in feedforward computation"
+    severity: critical
+    status: fixed
+    description: >
+      prev_cmd was overwritten before being used to compute velocity
+      feedforward, resulting in a single-step discontinuity in the commanded
+      position.
+    signatures:
+      - type: discontinuity
+        field: cmd_ext
+        threshold_mm: 20.0
+    fix: "Ensure prev_cmd is captured before overwriting cmd in the control loop."
+    reference: "sim/plant/hardware_plant.py"
+
+  - id: MPC_STALENESS
+    name: "MPC solve time exceeding budget"
+    severity: high
+    status: active
+    description: >
+      MPC solver takes too long, causing the motor guard to receive stale
+      commands.  At 40 Hz the budget is ~24ms.  3+ consecutive violations
+      risk triggering the motor guard's staleness E-stop (200ms timeout).
+    signatures:
+      - type: solve_time
+        max_consecutive_violations: 3
+    fix: >
+      Reduce horizon length, increase max_cpu_time, ensure warm-start is
+      working, or check for thermal throttling on Jetson.
+    reference: "controller/params.py"
+
+  - id: TIMING_FIRST_SAMPLE
+    name: "First-sample cold-start solve spike"
+    severity: low
+    status: known
+    description: >
+      The first MPC solve is always slower due to CasADi JIT compilation
+      and IPOPT warm-start initialisation.  This is expected behaviour and
+      does not affect operation (the motor guard tolerates a single late
+      command).
+    signatures:
+      - type: solve_time_spike
+        sample_index: 0
+        threshold_ms: 15.0
+    fix: "Expected behaviour.  No action needed unless it exceeds ~50ms."
+
+  - id: LEG2_TRACKING
+    name: "Leg 2 consistently worst tracker"
+    severity: medium
+    status: active
+    description: >
+      Leg 2 consistently has the highest tracking error across all test
+      sessions.  Identified during Phase 4 and Phase 5 hardware tests.
+      Likely a mechanical issue (cable routing, coupler play, or friction).
+    signatures:
+      - type: per_leg_tracking
+        leg: 2
+        rms_ratio_vs_median: 1.5
+    fix: >
+      Inspect leg 2 mechanical assembly: check coupler backlash, cable
+      routing interference, and bearing friction.
+    reference: "tests/hardware/free_platform_test.py"
+
+  - id: WORKSPACE_SINGULARITY
+    name: "High condition number near workspace boundary"
+    severity: high
+    status: active
+    description: >
+      The Jacobian condition number rises sharply near workspace boundaries.
+      High condition numbers amplify small position errors into large force
+      errors and can cause the workspace limiter to engage.
+    signatures:
+      - type: condition_number
+        soft_threshold: 643
+        hard_threshold: 858
+    fix: >
+      Retract from the workspace boundary.  Check that the target pose is
+      well within the reachable envelope.  Condition number at home is
+      ~450 (inherent to mm/rad mixed units).
+    reference: "ros_ws/src/jugglebot/jugglebot/motion/workspace.py"
+
+  # -----------------------------------------------------------------------
+  # ROS2/rosbag-derived patterns (detected from node logs and messages)
+  # -----------------------------------------------------------------------
+
+  - id: CAN_BUS_WATCHDOG
+    name: "CAN bus watchdog restore"
+    severity: high
+    status: active
+    description: >
+      The CAN bus was lost and restored by the watchdog timer.  During the
+      outage, motor commands were not delivered.  This can cause tracking
+      divergence and potentially an E-stop if the outage exceeds the motor
+      guard's feedback staleness timeout (150ms).
+    signatures:
+      - type: ros2_log_pattern
+        pattern: "CAN bus restored by watchdog"
+        level: ["ERROR", "WARN"]
+    fix: >
+      Check CAN bus wiring, termination resistors, and EMI shielding.
+      If recurring, check for ground loops or power supply noise.
+    reference: "ros_ws/src/jugglebot/jugglebot/can_node.py"
+
+  - id: ODRIVE_DISARM
+    name: "ODrive axis disarmed in CLOSED_LOOP"
+    severity: critical
+    status: active
+    description: >
+      An ODrive motor controller disarmed while the robot was in closed-loop
+      control.  This causes immediate loss of motor torque on the affected
+      axis and will trigger a fault.
+    signatures:
+      - type: ros2_log_pattern
+        pattern: "Axis disarmed while in CLOSED_LOOP"
+        level: ["ERROR"]
+    fix: >
+      Check the disarm reason in the log (follows the disarm message).
+      Common causes: overcurrent, overvoltage, encoder error, motor overtemp.
+    reference: "ros_ws/src/jugglebot/jugglebot/can_node.py"
+
+  - id: BOOT_TIMEOUT
+    name: "Boot timeout — no ODrive heartbeats"
+    severity: high
+    status: active
+    description: >
+      The orchestrator did not receive heartbeats from ODrive controllers
+      within the 30-second boot timeout.  The state machine transitions to
+      FAULT.
+    signatures:
+      - type: ros2_log_pattern
+        pattern: "Boot timeout: no ODrive heartbeats"
+        level: ["ERROR"]
+    fix: >
+      Check power supply, CAN bus connections, and ODrive firmware.
+      Verify CAN bus termination (120 ohm at each end).
+    reference: "ros_ws/src/jugglebot/jugglebot/orchestrator_node.py"
+
+  - id: MOTOR_FEEDBACK_STALE
+    name: "Motor feedback stale"
+    severity: medium
+    status: active
+    description: >
+      The motor guard did not receive motor feedback (encoder positions) for
+      longer than the staleness timeout (150ms).  Commands are suppressed
+      until feedback resumes.
+    signatures:
+      - type: ros2_log_pattern
+        pattern: "motor feedback stale|Motor FB stale"
+        level: ["WARN", "ERROR"]
+    fix: >
+      Check CAN bus throughput.  May indicate bus congestion, dropped
+      frames, or a slow CAN node cycle.
+    reference: "ros_ws/src/jugglebot/jugglebot/motion/motor_guard.py"
+
+  - id: CAN_STEP_REJECT
+    name: "CAN node leg command rejected"
+    severity: critical
+    status: active
+    description: >
+      The CAN node rejected a leg command because at least one leg would
+      step more than 0.2 rev from its current position.  This is the
+      last-resort safety check that prevents catastrophic platform jumps.
+    signatures:
+      - type: ros2_log_pattern
+        pattern: "Leg command REJECTED"
+        level: ["ERROR"]
+    fix: >
+      Investigate the source of the large step.  Common causes: unit
+      mismatch (mm vs rev), stale command after mode transition, or
+      MPC solver divergence.
+    reference: "ros_ws/src/jugglebot/jugglebot/can_node.py"
+
+  - id: FIRMWARE_MISMATCH
+    name: "ODrive firmware version mismatch"
+    severity: high
+    status: active
+    description: >
+      One or more ODrive controllers have firmware versions that don't match
+      the expected versions.  Protocol differences could cause encoding bugs.
+    signatures:
+      - type: ros2_log_pattern
+        pattern: "firmware.*mismatch|firmware check FAILED"
+        level: ["ERROR", "WARN"]
+    fix: >
+      Flash all ODrive controllers to the expected firmware version.
+      Check config/protocol_config.yaml for the expected version.
+    reference: "ros_ws/src/jugglebot/jugglebot/can_node.py"
