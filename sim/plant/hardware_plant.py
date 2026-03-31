@@ -63,9 +63,9 @@ logger = logging.getLogger(__name__)
 # Time to wait for ZMQ PUB socket to connect before sending first message
 _ZMQ_CONNECT_SETTLE_S = 0.1
 
-# Telemetry staleness thresholds (MPC runs at 50 Hz = 20 ms period)
-_TELEM_STALE_WARN_S = 0.060   # 3x MPC period — log warning
-_TELEM_STALE_HARD_S = 0.100   # 5x MPC period — zero velocities
+# Telemetry staleness thresholds (MPC runs at 40 Hz = 25 ms period)
+_TELEM_STALE_WARN_S = 0.075   # 3x MPC period — log warning
+_TELEM_STALE_HARD_S = 0.125   # 5x MPC period — zero velocities
 
 
 class HardwarePlant(PlantInterface):
@@ -89,7 +89,7 @@ class HardwarePlant(PlantInterface):
         geom: StewartGeometry | None = None,
         mpc_command_addr: str = MPC_COMMAND_ADDR,
         telemetry_addr: str = TELEMETRY_ADDR,
-        control_dt: float = 0.02,
+        control_dt: float = 0.025,
     ):
         self._geom = geom or StewartGeometry()
         self._seq = 0
@@ -116,6 +116,8 @@ class HardwarePlant(PlantInterface):
         # compute acc = (u_curr - 2·u_prev + u_prev_prev) / dt².
         self._prev_cmd_ext_mm: np.ndarray | None = None
         self._prev_prev_cmd_ext_mm: np.ndarray | None = None
+        self._prev_cmd_time: float | None = None
+        self._prev_prev_cmd_time: float | None = None
 
         # Latest telemetry from motor guard
         self._last_telem: dict | None = None
@@ -135,7 +137,7 @@ class HardwarePlant(PlantInterface):
         # Consecutive FK failure counter.  If FK fails for too many cycles
         # in a row, something is seriously wrong — trigger e-stop.
         self._fk_fail_count = 0
-        self._FK_FAIL_ESTOP_THRESHOLD = 5  # 5 × 20ms = 100ms at 50 Hz
+        self._FK_FAIL_ESTOP_THRESHOLD = 5  # 5 × 25ms = 125ms at 40 Hz
         self._jacobian_singular_warned = False
 
         # ZeroMQ context and sockets
@@ -189,25 +191,40 @@ class HardwarePlant(PlantInterface):
         if vel_mm_s is not None:
             vel_mm_s = np.asarray(vel_mm_s, dtype=float)
         elif self._last_state_ext_mm is not None:
-            vel_mm_s = (ext_mm - self._last_state_ext_mm) / self._control_dt
+            # Use actual elapsed time for backward-diff (not fixed control_dt)
+            if self._prev_cmd_time is not None:
+                bd_dt = max(time.perf_counter() - self._prev_cmd_time,
+                            self._control_dt * 0.5)
+            else:
+                bd_dt = self._control_dt
+            vel_mm_s = (ext_mm - self._last_state_ext_mm) / bd_dt
         else:
             vel_mm_s = np.zeros(6)
 
         # Acceleration feedforward from three-point second difference of
-        # consecutive commanded extensions.  Requires two prior commands.
+        # consecutive commanded extensions.  Uses actual wall-clock dt
+        # (not fixed control_dt) so acceleration is correct regardless of
+        # MPC loop jitter.
         acc_mm_s2 = None
         if (self._prev_cmd_ext_mm is not None
-                and self._prev_prev_cmd_ext_mm is not None):
-            dt2 = self._control_dt * self._control_dt
+                and self._prev_prev_cmd_ext_mm is not None
+                and self._prev_cmd_time is not None
+                and self._prev_prev_cmd_time is not None):
+            t_now = time.perf_counter()
+            dt1 = t_now - self._prev_cmd_time
+            dt2 = self._prev_cmd_time - self._prev_prev_cmd_time
+            avg_dt = max(0.5 * (dt1 + dt2), self._control_dt * 0.5)
             acc_mm_s2 = (
                 ext_mm - 2.0 * self._prev_cmd_ext_mm
-                + self._prev_prev_cmd_ext_mm) / dt2
+                + self._prev_prev_cmd_ext_mm) / (avg_dt * avg_dt)
 
-        # Shift command history
+        # Shift command history (extensions and timestamps)
         self._prev_prev_cmd_ext_mm = (
             self._prev_cmd_ext_mm.copy()
             if self._prev_cmd_ext_mm is not None else None)
         self._prev_cmd_ext_mm = ext_mm.copy()
+        self._prev_prev_cmd_time = self._prev_cmd_time
+        self._prev_cmd_time = time.perf_counter()
 
         msg = make_mpc_command(
             ext_mm=ext_mm.tolist(),

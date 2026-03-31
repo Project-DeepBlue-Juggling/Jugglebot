@@ -352,6 +352,8 @@ class MPCController:
         self._prev_u: np.ndarray | None = None
         self._prev_prev_u: np.ndarray | None = None
         self._consecutive_failures: int = 0
+        self._prev_solve_time: float | None = None
+        self._last_actual_dt: float | None = None
         self._predicted_poses: np.ndarray | None = None
         self._last_ref_traj: np.ndarray | None = None
         self._last_twist_traj: np.ndarray | None = None
@@ -719,8 +721,11 @@ class MPCController:
         else:
             w0 = self._cold_start(p_cur, q_cur, ref_traj)
 
-        # Solve
+        # Solve — track wall-clock dt for accurate feedforward velocity
         t0 = _time.perf_counter()
+        actual_dt = (t0 - self._prev_solve_time) if self._prev_solve_time is not None else None
+        self._prev_solve_time = t0
+        self._last_actual_dt = actual_dt
         try:
             kw = dict(
                 x0=w0, p=p_param,
@@ -751,7 +756,8 @@ class MPCController:
                 self._prev_lam_x = np.asarray(sol['lam_x']).ravel()
 
                 cmd = w_opt[:6].copy()
-                self._prev_prev_u = self._prev_u.copy() if self._prev_u is not None else u_prev.copy()
+                prev_u = self._prev_u  # read BEFORE overwrite
+                self._prev_prev_u = prev_u.copy() if prev_u is not None else u_prev.copy()
                 self._prev_u = cmd
                 self._extract_predicted_poses(w_opt, p_cur)
 
@@ -776,9 +782,13 @@ class MPCController:
                 # The motor guard extrapolates: pos(dt) = cmd + vel*dt,
                 # so vel must be the command trajectory derivative, not
                 # the traversal velocity from current state to command.
+                #
+                # Uses actual wall-clock dt (not dt_schedule[0]) so the
+                # velocity is correct regardless of MPC loop jitter.
                 dt0 = self._params.dt_schedule[0]
-                if self._prev_u is not None:
-                    cmd_vel = (cmd - self._prev_u) / dt0
+                if prev_u is not None:
+                    ff_dt = max(actual_dt, dt0 * 0.5) if actual_dt is not None else dt0
+                    cmd_vel = (cmd - prev_u) / ff_dt
                 else:
                     cmd_vel = np.zeros(6)  # first solve: safe zero-vel startup
 
@@ -951,7 +961,8 @@ class MPCController:
                 cmd = np.clip(cmd, q_cur - max_delta, q_cur + max_delta)
             prev_u = self._prev_u
             self._prev_prev_u = prev_u.copy() if prev_u is not None else cmd.copy()
-            cmd_vel = (cmd - prev_u) / dt0 if prev_u is not None else np.zeros(6)
+            ff_dt = max(self._last_actual_dt, dt0 * 0.5) if self._last_actual_dt is not None else dt0
+            cmd_vel = (cmd - prev_u) / ff_dt if prev_u is not None else np.zeros(6)
             self._prev_u = cmd
             return cmd, cmd_vel, diag
 
