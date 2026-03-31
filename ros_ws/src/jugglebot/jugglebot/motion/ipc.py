@@ -183,7 +183,7 @@ def make_mpc_command(ext_mm: list | tuple,
         only correct for unit tests / sim).
     vel_mm_s : 6 leg velocities (mm/s), or None for zeros
     acc_mm_s2 : 6 leg accelerations (mm/s²), or None for zeros.
-        Used by the motor guard for quadratic interpolation between 50 Hz
+        Used by the motor guard for cubic interpolation between 40 Hz
         MPC commands (eliminates position step at command boundaries).
     torque_Nm : 6 motor torques (Nm), or None for zeros
     seq : monotonic sequence number (for debugging / drop detection)

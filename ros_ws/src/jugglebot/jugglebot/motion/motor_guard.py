@@ -1,7 +1,7 @@
 """500 Hz interpolator + safety monitor between MPC and motor hardware.
 
 Receives pre-computed motor commands from the MPC (via HardwarePlant) at
-50 Hz, cubically interpolates to 500 Hz for smooth PASSTHROUGH-mode
+40 Hz, cubically interpolates to 500 Hz for smooth PASSTHROUGH-mode
 operation, validates against motor feedback, and forwards approved
 commands to the ROS2 bridge via ZeroMQ.
 
@@ -58,8 +58,8 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-# Default loop rate (Hz).  500 Hz is required for smooth linear
-# interpolation of 50 Hz MPC commands.
+# Default loop rate (Hz).  500 Hz is required for smooth cubic
+# interpolation of 40 Hz MPC commands.
 DEFAULT_RATE_HZ = 500
 
 # Maximum time without any IPC message before triggering E-stop.
@@ -74,8 +74,8 @@ MAX_MOTOR_VEL_RPS = hw.ODRIVE_TRAP_VEL_LIMIT_RPS * 1.1
 MOTOR_FB_STALENESS_S = 0.15
 
 # MPC command staleness timeout (seconds).
-# MPC runs at 50 Hz (20 ms period); 200 ms = 10x the expected period.
-MPC_CMD_STALENESS_S = 0.2
+# MPC runs at 40 Hz (25 ms period); 250 ms = 10x the expected period.
+MPC_CMD_STALENESS_S = 0.25
 
 # Max deviation threshold (rev).  E-stop if commanded position diverges
 # from actual motor position by more than this.
@@ -91,8 +91,8 @@ MAX_DEVIATION_REV = 0.5
 MAX_LEAD_REV = 0.15
 
 # Maximum extrapolation time before velocity decay begins (seconds).
-# 2x MPC period (50 Hz = 20 ms) covers normal timing jitter.
-MAX_EXTRAP_DT_S = 0.04
+# 2x MPC period (40 Hz = 25 ms) covers normal timing jitter.
+MAX_EXTRAP_DT_S = 0.05
 
 # Duration over which extrapolation velocity decays linearly to zero
 # after MAX_EXTRAP_DT_S is exceeded (seconds).  Provides smooth
@@ -179,7 +179,7 @@ class MotorGuard:
     """Interpolator + safety monitor between MPC and motor hardware.
 
     Receives pre-computed motor commands from the MPC (via HardwarePlant),
-    cubically interpolates between 50 Hz MPC updates at 500 Hz, validates
+    cubically interpolates between 40 Hz MPC updates at 500 Hz, validates
     against motor feedback, and forwards approved commands to the bridge.
 
     Does NOT compute IK, dynamics, or trajectories -- the MPC handles all
@@ -188,7 +188,7 @@ class MotorGuard:
     Parameters
     ----------
     rate_hz : float
-        Target loop rate.  500 Hz for smooth interpolation of 50 Hz MPC.
+        Target loop rate.  500 Hz for smooth interpolation of 40 Hz MPC.
     geom : StewartGeometry
         Platform geometry (for unit conversions and workspace checks).
     ipc : MotorGuardIPC
@@ -438,10 +438,10 @@ class MotorGuard:
         self._mpc_prev_timestamp = t_now
 
         # --- Workspace check on incoming command ---
-        # Runs at MPC rate (50 Hz), not interpolation rate (500 Hz).
+        # Runs at MPC rate (40 Hz), not interpolation rate (500 Hz).
         # This is safe because:
         #   - Leg extension hard limits are enforced every cycle via stroke clamp
-        #   - Condition number is geometrically smooth (negligible change in 20ms)
+        #   - Condition number is geometrically smooth (negligible change in 25ms)
         #   - speed_scale is informational only (not consumed by any controller)
         pos_cart = pose[:3]
         rot_mat = rotvec_to_rot_matrix(pose[3:6])

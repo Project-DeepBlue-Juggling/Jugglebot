@@ -15,9 +15,9 @@ import numpy as np
 def _default_dt_schedule() -> Tuple[float, ...]:
     """Default variable-resolution horizon: 5 fine + 5 coarse steps."""
     return (
-        0.02, 0.02, 0.02, 0.02, 0.02,   # fine:   5 × 20 ms  = 100 ms
-        0.25, 0.25, 0.25, 0.25, 0.25,    # coarse: 5 × 250 ms = 1250 ms
-    )                                      # total: 10 steps, 1.35 s horizon
+        0.025, 0.025, 0.025, 0.025, 0.025,  # fine:   5 × 25 ms  = 125 ms
+        0.25, 0.25, 0.25, 0.25, 0.25,       # coarse: 5 × 250 ms = 1250 ms
+    )                                         # total: 10 steps, 1.375 s horizon
 
 
 @dataclass
@@ -112,7 +112,7 @@ class MPCParams:
 
     # ---- IPOPT options --------------------------------------------------
     max_iter: int = 200
-    max_cpu_time: float = 0.019  # 19 ms (95% of 20 ms budget)
+    max_cpu_time: float = 0.024  # 24 ms (96% of 25 ms budget)
     tol: float = 1e-4
     warm_start: bool = True
     print_level: int = 0        # 0 = silent

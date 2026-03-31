@@ -340,7 +340,7 @@ class EventScheduler:
     ) -> SchedulerOutput:
         """Advance scheduler state and produce MPC target for this step.
 
-        Called at MPC rate (typically 50 Hz).
+        Called at MPC rate (typically 40 Hz).
 
         Parameters
         ----------

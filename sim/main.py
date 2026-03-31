@@ -51,14 +51,14 @@ if TYPE_CHECKING:
 
 
 # MPC control rate (Hz).
-CONTROL_RATE_HZ = 50
+CONTROL_RATE_HZ = 40
 CONTROL_DT = 1.0 / CONTROL_RATE_HZ
 
 # Telemetry data age threshold for MPC deceleration (seconds).
 # When motor feedback is older than this, override target to hold-in-place.
-# Must be less than motor guard's MPC_CMD_STALENESS_S (0.2 s) so the MPC
+# Must be less than motor guard's MPC_CMD_STALENESS_S (0.25 s) so the MPC
 # decelerates smoothly before the motor guard triggers E-STOP.
-_MPC_STALE_DECEL_S = 0.100
+_MPC_STALE_DECEL_S = 0.125
 
 
 def parse_args():
@@ -1279,7 +1279,7 @@ def main():
     feedback_pub = None
     if args.hardware:
         from plant import HardwarePlant
-        plant = HardwarePlant()
+        plant = HardwarePlant(control_dt=CONTROL_DT)
         print("HardwarePlant: connected to motor_guard via IPC")
 
         # Target feedback for catch coordinator (accept/reject on :5559)
