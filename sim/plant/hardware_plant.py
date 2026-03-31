@@ -140,6 +140,10 @@ class HardwarePlant(PlantInterface):
         self._FK_FAIL_ESTOP_THRESHOLD = 5  # 5 × 25ms = 125ms at 40 Hz
         self._jacobian_singular_warned = False
 
+        # Lightweight diagnostics (read by main loop for telemetry)
+        self._last_fk_iterations = 0
+        self._last_ff_torque_max_Nm = 0.0
+
         # ZeroMQ context and sockets
         self._ctx = zmq.Context()
 
@@ -218,22 +222,21 @@ class HardwarePlant(PlantInterface):
                 ext_mm - 2.0 * self._prev_cmd_ext_mm
                 + self._prev_prev_cmd_ext_mm) / (avg_dt * avg_dt)
 
-        # Shift command history (extensions and timestamps)
-        self._prev_prev_cmd_ext_mm = (
-            self._prev_cmd_ext_mm.copy()
-            if self._prev_cmd_ext_mm is not None else None)
+        # Shift command history (extensions and timestamps).
+        # prev→prev_prev is a reference swap (no copy needed — we never
+        # mutate stored arrays).  Only the new entry needs a copy.
+        self._prev_prev_cmd_ext_mm = self._prev_cmd_ext_mm
         self._prev_cmd_ext_mm = ext_mm.copy()
         self._prev_prev_cmd_time = self._prev_cmd_time
         self._prev_cmd_time = time.perf_counter()
 
         msg = make_mpc_command(
-            ext_mm=ext_mm.tolist(),
-            motor_rev=motor_rev.tolist(),
-            pose_6dof=self._last_pose_6dof.tolist(),
-            vel_mm_s=vel_mm_s.tolist() if vel_mm_s is not None else None,
-            acc_mm_s2=acc_mm_s2.tolist() if acc_mm_s2 is not None else None,
-            torque_Nm=(self._ff_torque_Nm.tolist()
-                       if self._ff_torque_Nm is not None else None),
+            ext_mm=ext_mm,
+            motor_rev=motor_rev,
+            pose_6dof=self._last_pose_6dof,
+            vel_mm_s=vel_mm_s,
+            acc_mm_s2=acc_mm_s2,
+            torque_Nm=self._ff_torque_Nm,
             seq=self._seq,
         )
         self._pub.send_multipart(
@@ -251,15 +254,13 @@ class HardwarePlant(PlantInterface):
         If no telemetry has been received yet, returns a zero-state at
         the current elapsed time.
         """
-        # Drain to get the latest (CONFLATE socket, but drain anyway)
-        while True:
-            try:
-                frames = self._sub.recv_multipart(flags=zmq.NOBLOCK)
-                _, msg = _unpack(frames)
-                self._last_telem = msg
-                self._last_telem_recv_time = time.perf_counter()
-            except zmq.Again:
-                break
+        # CONFLATE socket keeps only the latest message — single recv suffices.
+        try:
+            frames = self._sub.recv_multipart(flags=zmq.NOBLOCK)
+            _, self._last_telem = _unpack(frames)
+            self._last_telem_recv_time = time.perf_counter()
+        except zmq.Again:
+            pass
 
         now = time.perf_counter()
         t = now - self._start_time
@@ -303,18 +304,22 @@ class HardwarePlant(PlantInterface):
         # This closes the feedback loop: the MPC sees where the platform
         # actually is, not where it predicted it would be.
         rot_matrix = None
+        fk_jacobian = None  # Reuse Jacobian from FK for twist solve
         if ik_ext_mm is not None:
             try:
-                pos_offset, rot_matrix = leg_lengths_to_pose(
+                pos_offset, rot_matrix, fk_jacobian = leg_lengths_to_pose(
                     ik_ext_mm, self._geom,
                     initial_guess=self._fk_last_guess)
                 rot_vec = rot_matrix_to_rotvec(rot_matrix)
-                # Cache for warm-starting next FK call
-                self._fk_last_guess = (pos_offset.copy(), rot_matrix.copy())
+                # Cache for warm-starting next FK call.
+                # FK returns fresh arrays, so we can store references directly.
+                # The cache is only read (never mutated) by the next FK call.
+                self._fk_last_guess = (pos_offset, rot_matrix)
                 # Cache measured pose for honest fallback
                 self._last_measured_pose[:3] = pos_offset
                 self._last_measured_pose[3:6] = rot_vec
                 self._fk_fail_count = 0
+                self._last_fk_iterations = leg_lengths_to_pose.last_iterations
                 platform_pos_mm = pos_offset
                 platform_rot = rot_vec
             except RuntimeError:
@@ -364,9 +369,13 @@ class HardwarePlant(PlantInterface):
         platform_twist = np.zeros(6)
         if motor_vel is not None and np.any(vel_mmps != 0.0):
             try:
-                if rot_matrix is None:
-                    rot_matrix = rotvec_to_rot_matrix(platform_rot)
-                J = compute_jacobian(platform_pos_mm, rot_matrix, self._geom)
+                # Reuse Jacobian from FK when available (avoids recomputation)
+                if fk_jacobian is not None:
+                    J = fk_jacobian
+                else:
+                    if rot_matrix is None:
+                        rot_matrix = rotvec_to_rot_matrix(platform_rot)
+                    J = compute_jacobian(platform_pos_mm, rot_matrix, self._geom)
                 L_c = self._geom.plat_radius_mm
                 J_norm = J.copy()
                 J_norm[:, 3:] /= L_c
@@ -412,10 +421,11 @@ class HardwarePlant(PlantInterface):
                  accel_6dof: np.ndarray | None = None) -> None:
         """Set the Cartesian pose and compute torque feedforward.
 
-        Computes torque feedforward (gravity + platform inertia + reflected
-        motor inertia) from the pose, twist, and acceleration using the
-        full Newton-Euler dynamics model.  Velocity feedforward is computed
-        by ``command()`` as ``(cmd - q_init) / control_dt``.
+        Computes torque feedforward (gravity + platform inertia) from the
+        pose, twist, and acceleration using the Newton-Euler dynamics model.
+        Reflected motor inertia is skipped to avoid the expensive numerical
+        J_dot computation (2 extra Jacobian evaluations); its contribution
+        is marginal (~2% PID effort reduction at current speeds).
 
         Parameters
         ----------
@@ -425,9 +435,8 @@ class HardwarePlant(PlantInterface):
             Platform twist (velocity).  If None, zeros are used (static).
         accel_6dof : [ax, ay, az, alphax, alphay, alphaz] in mm/s², rad/s²
             Platform acceleration.  If None, zeros are used (gravity-only
-            feedforward).  Providing real acceleration enables inertia
-            feedforward (platform + reflected motor), reducing PID effort
-            during dynamic motion.
+            feedforward).  Providing real acceleration enables platform
+            inertia feedforward, reducing PID effort during dynamic motion.
         """
         self._last_pose_6dof = np.asarray(pose_6dof, dtype=float).copy()
 
@@ -437,13 +446,16 @@ class HardwarePlant(PlantInterface):
             accel_6dof = np.zeros(6)
 
         # Compute torque feedforward using the production dynamics model.
-        # vel_ff is computed by the motor guard from consecutive extensions.
+        # Reflected motor inertia is skipped (skip_reflected_inertia=True)
+        # to avoid 2 extra Jacobian evaluations per tick (~0.5 ms saved).
         _, _, torque_ff_Nm, _ = cartesian_to_motor_commands(
             pose_6dof, twist_6dof, accel_6dof,
             self._geom, self._dynamics_params,
-            feedforward_enabled=True)
+            feedforward_enabled=True,
+            skip_reflected_inertia=True)
 
         self._ff_torque_Nm = torque_ff_Nm
+        self._last_ff_torque_max_Nm = float(np.max(np.abs(torque_ff_Nm)))
 
     def enable(self, timeout_s: float = 2.0) -> None:
         """Send enable command and wait for motor feedback telemetry.
@@ -509,6 +521,16 @@ class HardwarePlant(PlantInterface):
     @property
     def geom(self) -> StewartGeometry:
         return self._geom
+
+    @property
+    def last_fk_iterations(self) -> int:
+        """FK Newton-Raphson iteration count from last get_state()."""
+        return self._last_fk_iterations
+
+    @property
+    def last_ff_torque_max_Nm(self) -> float:
+        """Max absolute feedforward torque (Nm) from last set_pose()."""
+        return self._last_ff_torque_max_Nm
 
     # ------------------------------------------------------------------
     # Cleanup

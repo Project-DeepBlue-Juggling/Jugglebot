@@ -188,20 +188,23 @@ def make_mpc_command(ext_mm: list | tuple,
     torque_Nm : 6 motor torques (Nm), or None for zeros
     seq : monotonic sequence number (for debugging / drop detection)
     """
+    # Values are passed through as-is (ndarrays, lists, etc.).
+    # The _pack() serialiser handles ndarray → list conversion via its
+    # default handler, avoiding redundant .tolist() calls on the caller side.
     msg = {
         'type': 'mpc_cmd',
-        'ext_mm': list(ext_mm),
-        'pose_6dof': list(pose_6dof),
+        'ext_mm': ext_mm,
+        'pose_6dof': pose_6dof,
         'seq': seq,
     }
     if motor_rev is not None:
-        msg['motor_rev'] = list(motor_rev)
+        msg['motor_rev'] = motor_rev
     if vel_mm_s is not None:
-        msg['vel_mm_s'] = list(vel_mm_s)
+        msg['vel_mm_s'] = vel_mm_s
     if acc_mm_s2 is not None:
-        msg['acc_mm_s2'] = list(acc_mm_s2)
+        msg['acc_mm_s2'] = acc_mm_s2
     if torque_Nm is not None:
-        msg['torque_Nm'] = list(torque_Nm)
+        msg['torque_Nm'] = torque_Nm
     return msg
 
 
@@ -286,9 +289,17 @@ def make_target_feedback(arrival_time: float,
 # Serialisation
 # ---------------------------------------------------------------------------
 
+def _ndarray_default(obj):
+    """msgpack default handler: convert numpy arrays to lists."""
+    if hasattr(obj, 'tolist'):
+        return obj.tolist()
+    raise TypeError(f"Unknown type: {type(obj)}")
+
+
 def _pack(topic: bytes, msg: dict) -> list[bytes]:
     """Serialise a message for ZMQ multipart send."""
-    return [topic, msgpack.packb(msg, use_bin_type=True)]
+    return [topic, msgpack.packb(msg, use_bin_type=True,
+                                 default=_ndarray_default)]
 
 
 def _unpack(frames: list[bytes]) -> tuple[bytes, dict]:

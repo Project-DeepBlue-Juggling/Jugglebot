@@ -290,7 +290,7 @@ def test_fk_round_trip():
         extensions = pose_to_leg_lengths(pos_orig, rot_orig, geom)
 
         # FK: leg lengths → pose
-        pos_recovered, rot_recovered = leg_lengths_to_pose(
+        pos_recovered, rot_recovered, _ = leg_lengths_to_pose(
             extensions, geom, initial_guess=(pos_orig, rot_orig))
 
         # Verify: pose matches
@@ -302,7 +302,7 @@ def test_fk_round_trip():
 
     # Also test FK from active pose without a close initial guess
     ext_active = pose_to_leg_lengths(np.zeros(3), np.eye(3), geom)
-    pos_active, rot_active = leg_lengths_to_pose(ext_active, geom)
+    pos_active, rot_active, _ = leg_lengths_to_pose(ext_active, geom)
     active_pos_err = norm(pos_active)
     active_rot_err = norm(rot_matrix_to_rotvec(rot_active))
     max_pos_err = max(max_pos_err, active_pos_err)

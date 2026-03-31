@@ -40,6 +40,7 @@ def cartesian_to_motor_commands(
     dynamics_params: DynamicsParams,
     feedforward_enabled: bool = True,
     gravity_correction: np.ndarray | None = None,
+    skip_reflected_inertia: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Convert a Cartesian state to motor commands.
 
@@ -60,6 +61,8 @@ def cartesian_to_motor_commands(
         Whether to include torque_ff (gravity + inertia).
     gravity_correction : (3,3) ndarray or None
         Pre-multiply rotation to align platform with gravity.
+    skip_reflected_inertia : bool
+        Skip reflected motor inertia (avoids expensive J_dot computation).
 
     Returns
     -------
@@ -89,7 +92,8 @@ def cartesian_to_motor_commands(
     # Torque feedforward: gravity + platform inertia + reflected motor inertia
     if feedforward_enabled:
         torque_ff_Nm = compute_full_feedforward_torques(
-            pos, rot, twist, accel, geom, dynamics_params, J=J)
+            pos, rot, twist, accel, geom, dynamics_params, J=J,
+            skip_reflected_inertia=skip_reflected_inertia)
     else:
         torque_ff_Nm = np.zeros(6)
 

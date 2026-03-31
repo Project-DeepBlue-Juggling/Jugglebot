@@ -280,7 +280,7 @@ class TestFKValidation:
         actual_ext_mm = _slide_m_to_extensions_mm(actual_slides_m, geom)
 
         # Compute analytical FK from the actual leg extensions
-        pos_fk, rot_fk = leg_lengths_to_pose(actual_ext_mm, geom)
+        pos_fk, rot_fk, _ = leg_lengths_to_pose(actual_ext_mm, geom)
 
         # Compare MuJoCo pose against analytical FK
         pos_err, ori_err = _compare_poses(pos_mj_mm, rot_mj, pos_fk, rot_fk, name)

@@ -354,7 +354,8 @@ class MPCController:
         self._consecutive_failures: int = 0
         self._prev_solve_time: float | None = None
         self._last_actual_dt: float | None = None
-        self._predicted_poses: np.ndarray | None = None
+        # _predicted_poses is pre-allocated in _build_problem(); don't reset it.
+        self._predicted_poses_valid = False
         self._last_ref_traj: np.ndarray | None = None
         self._last_twist_traj: np.ndarray | None = None
         self._last_accel_traj: np.ndarray | None = None
@@ -626,6 +627,21 @@ class MPCController:
         self._lbg = lbg
         self._ubg = ubg
 
+        # Pre-allocated buffers to avoid per-solve allocations
+        par = self._params
+        self._p_cur_buf = np.empty(6)
+        self._p_param_buf = np.empty(n_param)
+        self._vel_weights_normal = np.array([
+            par.Q_vel_lin, par.Q_vel_ang,
+            par.Qf_vel_lin, par.Qf_vel_ang,
+        ])
+        self._vel_weights_boosted = np.array([
+            par.Q_vel_lin_events, par.Q_vel_ang_events,
+            par.Qf_vel_lin_events, par.Qf_vel_ang_events,
+        ])
+        self._accel_weights = np.array([par.Q_accel_lin, par.Q_accel_ang])
+        self._predicted_poses = np.zeros((N + 1, 6))
+
     # ------------------------------------------------------------------
     # Solve
     # ------------------------------------------------------------------
@@ -681,8 +697,10 @@ class MPCController:
         self._last_twist_traj = twist_traj
         self._last_accel_traj = accel_traj
 
-        # Current state
-        p_cur = np.concatenate([state.platform_pos_mm, state.platform_rot])
+        # Current state — fill pre-allocated buffer instead of concatenate
+        p_cur = self._p_cur_buf
+        p_cur[:3] = state.platform_pos_mm
+        p_cur[3:] = state.platform_rot
         q_cur = state.leg_extensions_mm.copy()
         u_prev = self._prev_u if self._prev_u is not None else q_cur.copy()
         u_prev_prev = self._prev_prev_u if self._prev_prev_u is not None else u_prev.copy()
@@ -691,29 +709,27 @@ class MPCController:
         # scheduler) where the twist reference is kinematically consistent.
         # Conservative for convergence sources (interactive, catch) where
         # twist_ref is zero and boosting would penalize motion toward target.
-        par = self._params
-        if boost_vel_weights:
-            vel_weights = np.array([
-                par.Q_vel_lin_events, par.Q_vel_ang_events,
-                par.Qf_vel_lin_events, par.Qf_vel_ang_events,
-            ])
-        else:
-            vel_weights = np.array([
-                par.Q_vel_lin, par.Q_vel_ang,
-                par.Qf_vel_lin, par.Qf_vel_ang,
-            ])
+        vel_weights = (self._vel_weights_boosted if boost_vel_weights
+                       else self._vel_weights_normal)
+        accel_weights = self._accel_weights
 
-        accel_weights = np.array([par.Q_accel_lin, par.Q_accel_ang])
-
-        # Parameter vector
-        p_param = np.concatenate([
-            p_cur, q_cur, u_prev, u_prev_prev,
-            ref_traj.ravel(), twist_traj.ravel(), accel_traj.ravel(),
-            vel_weights, accel_weights,
-        ])
-        assert len(p_param) == self._n_param, (
-            f"Parameter vector length {len(p_param)} != expected {self._n_param}"
-        )
+        # Parameter vector — fill pre-allocated buffer in-place
+        N1_6 = (self._N + 1) * 6
+        p_param = self._p_param_buf
+        p_param[:6] = p_cur
+        p_param[6:12] = q_cur
+        p_param[12:18] = u_prev
+        p_param[18:24] = u_prev_prev
+        off = 24
+        p_param[off:off + N1_6] = ref_traj.ravel()
+        off += N1_6
+        p_param[off:off + N1_6] = twist_traj.ravel()
+        off += N1_6
+        p_param[off:off + N1_6] = accel_traj.ravel()
+        off += N1_6
+        p_param[off:off + 4] = vel_weights
+        off += 4
+        p_param[off:off + 2] = accel_weights
 
         # Initial guess
         if self._prev_w is not None:
@@ -864,28 +880,22 @@ class MPCController:
         return exts
 
     def _shift_warm_start(self, prev_w):
-        """Shift previous optimal solution by one timestep."""
+        """Shift previous optimal solution by one timestep.
+
+        Each of the three blocks (u, q, p) is shifted left by one node
+        (6 elements), with the last node repeated.  Vectorised: one
+        bulk copy per block instead of N-1 scalar-loop iterations.
+        """
         N = self._N
-        w0 = np.zeros(self._n_w)
+        w0 = np.empty(self._n_w)
 
-        # u: [u1*, u2*, ..., u_{N-1}*, u_{N-1}*]
-        for k in range(N - 1):
-            w0[k * 6: (k + 1) * 6] = prev_w[(k + 1) * 6: (k + 2) * 6]
-        w0[(N - 1) * 6: N * 6] = prev_w[(N - 1) * 6: N * 6]
-
-        # q: [q2*, q3*, ..., qN*, qN*]
-        for k in range(N - 1):
-            src = 6 * N + (k + 1) * 6
-            dst = 6 * N + k * 6
-            w0[dst: dst + 6] = prev_w[src: src + 6]
-        w0[6 * N + (N - 1) * 6: 6 * N + N * 6] = prev_w[6 * N + (N - 1) * 6: 6 * N + N * 6]
-
-        # p: [p2*, p3*, ..., pN*, pN*]
-        for k in range(N - 1):
-            src = 12 * N + (k + 1) * 6
-            dst = 12 * N + k * 6
-            w0[dst: dst + 6] = prev_w[src: src + 6]
-        w0[12 * N + (N - 1) * 6: 12 * N + N * 6] = prev_w[12 * N + (N - 1) * 6: 12 * N + N * 6]
+        # For each block (u, q, p): shift left by 6, repeat last node
+        for base in (0, 6 * N, 12 * N):
+            end = base + N * 6
+            # Copy [1:] → [0:-1]  (shift left by one node)
+            w0[base: end - 6] = prev_w[base + 6: end]
+            # Repeat last node
+            w0[end - 6: end] = prev_w[end - 6: end]
 
         return w0
 
@@ -983,11 +993,9 @@ class MPCController:
     def _extract_predicted_poses(self, w_opt, p_cur):
         """Store N+1 predicted platform poses from the solution."""
         N = self._N
-        poses = np.zeros((N + 1, 6))
-        poses[0] = p_cur
-        for k in range(N):
-            poses[k + 1] = w_opt[12 * N + k * 6: 12 * N + (k + 1) * 6]
-        self._predicted_poses = poses
+        self._predicted_poses[0] = p_cur
+        self._predicted_poses[1:] = w_opt[12 * N: 18 * N].reshape(N, 6)
+        self._predicted_poses_valid = True
 
     # ------------------------------------------------------------------
     # Public properties
@@ -1000,7 +1008,7 @@ class MPCController:
         Returns a copy — safe for external consumers and tests.
         For hot-path use (control loop), prefer ``predicted_poses_view``.
         """
-        if self._predicted_poses is None:
+        if not self._predicted_poses_valid:
             return None
         return self._predicted_poses.copy()
 
@@ -1011,6 +1019,8 @@ class MPCController:
         Returns the internal array directly.  Callers MUST NOT modify it.
         Use this in the control loop hot path to avoid per-step allocation.
         """
+        if not self._predicted_poses_valid:
+            return None
         return self._predicted_poses
 
     @property
@@ -1067,7 +1077,7 @@ class MPCController:
         self._prev_u = None
         self._prev_prev_u = None
         self._consecutive_failures = 0
-        self._predicted_poses = None
+        self._predicted_poses_valid = False
         self._last_ref_traj = None
         self._last_twist_traj = None
         self._last_accel_traj = None

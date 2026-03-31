@@ -292,6 +292,7 @@ def compute_full_feedforward_torques(
     geom: StewartGeometry,
     params: DynamicsParams,
     J: np.ndarray | None = None,
+    skip_reflected_inertia: bool = False,
 ) -> np.ndarray:
     """Compute the full feedforward motor torques (gravity + inertia + reflected motor).
 
@@ -316,16 +317,15 @@ def compute_full_feedforward_torques(
     geom : StewartGeometry
     params : DynamicsParams
     J : (6,6) ndarray or None — pre-computed Jacobian (skips recomputation)
+    skip_reflected_inertia : bool — when True, skip the reflected motor
+        inertia computation (component 3).  This avoids the expensive
+        numerical J_dot (2 extra Jacobian evaluations) for a marginal
+        contribution (~2% PID effort reduction at current speeds).
 
     Returns
     -------
     torque_ff_Nm : (6,) ndarray — total feedforward motor torques in Nm
     """
-    from jugglebot.motion.ik_solver import (
-        accel_to_leg_accels,
-        twist_to_leg_velocities,
-    )
-
     if J is None:
         J = compute_jacobian(pos, rot, geom)
 
@@ -344,9 +344,14 @@ def compute_full_feedforward_torques(
         return np.zeros(6)
     torque_platform = leg_forces_to_motor_torques(f_legs, geom)
 
+    if skip_reflected_inertia:
+        return torque_platform
+
     # --- Component 3: Reflected motor inertia ---
     # Motor angular acceleration: q_ddot (mm/s²) → rev/s² → rad/s²
     # q_ddot = J @ accel + J_dot @ twist (mm/s²)
+    from jugglebot.motion.ik_solver import accel_to_leg_accels
+
     q_ddot_mm_s2 = accel_to_leg_accels(accel, twist, pos, rot, geom, J=J)
     # Convert mm/s² → rev/s² using mm_to_rev, then → rad/s² (* 2π)
     q_ddot_rps2 = q_ddot_mm_s2 * geom.mm_to_rev          # rev/s²

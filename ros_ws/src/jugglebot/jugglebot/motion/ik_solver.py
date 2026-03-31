@@ -336,7 +336,7 @@ def leg_lengths_to_pose(extensions_mm: np.ndarray,
                         geom: StewartGeometry,
                         initial_guess: tuple[np.ndarray, np.ndarray] | None = None,
                         tol: float = 1e-10,
-                        max_iter: int = 50) -> tuple[np.ndarray, np.ndarray]:
+                        max_iter: int = 50) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Position FK: leg extensions → platform pose (Newton-Raphson).
 
     Solves for the pose ``(pos, R)`` such that
@@ -355,27 +355,35 @@ def leg_lengths_to_pose(extensions_mm: np.ndarray,
     -------
     pos : (3,) ndarray — platform offset from stow pose
     rot : (3, 3) ndarray — rotation matrix (platform → base)
+    J : (6, 6) ndarray — Jacobian at the converged pose (from the last
+        Newton iteration).  Callers can reuse this to avoid recomputing
+        the Jacobian for twist/force decomposition.
 
     Raises
     ------
     RuntimeError
         If Newton-Raphson does not converge within *max_iter* iterations.
     """
+    # Work directly with (pos, rot_matrix) to avoid rotvec ↔ rot_matrix
+    # round-trips on each iteration.  Newton updates are applied as:
+    #   pos += dx[:3],  rot = rotvec_to_rot_matrix(dx[3:]) @ rot
     if initial_guess is not None:
-        pos, rot = initial_guess
-        x = np.concatenate([pos, rot_matrix_to_rotvec(rot)])
+        pos_cur = initial_guess[0].copy()
+        rot_cur = initial_guess[1].copy()
     else:
-        x = np.zeros(6)  # active: zero offset, zero rotation
+        pos_cur = np.zeros(3)
+        rot_cur = np.eye(3)
 
     for iteration in range(max_iter):
-        pos_cur = x[:3]
-        rot_cur = rotvec_to_rot_matrix(x[3:])
-
         # Residual: actual − target leg extensions
         residual = pose_to_leg_lengths(pos_cur, rot_cur, geom) - extensions_mm
 
         if np.max(np.abs(residual)) < tol:
-            return pos_cur, rot_cur
+            # Compute Jacobian at the converged pose (not a stale one
+            # from a prior iteration) so callers get the correct J.
+            J = compute_jacobian(pos_cur, rot_cur, geom)
+            leg_lengths_to_pose.last_iterations = iteration + 1
+            return pos_cur, rot_cur, J
 
         J = compute_jacobian(pos_cur, rot_cur, geom)
         # Newton step: δx = -J⁻¹ · residual
@@ -383,9 +391,17 @@ def leg_lengths_to_pose(extensions_mm: np.ndarray,
             dx = np.linalg.solve(J, -residual)
         except np.linalg.LinAlgError:
             raise RuntimeError("FK failed: singular Jacobian at current pose")
-        x += dx
 
+        # Apply update: translate position, compose incremental rotation
+        pos_cur += dx[:3]
+        if norm(dx[3:]) > 1e-14:
+            rot_cur = rotvec_to_rot_matrix(dx[3:]) @ rot_cur
+
+    leg_lengths_to_pose.last_iterations = max_iter
     raise RuntimeError(
         f"FK did not converge after {max_iter} iterations "
         f"(max residual: {np.max(np.abs(residual)):.2e} mm)"
     )
+
+# Diagnostic: iteration count from last successful call (zero-cost when unread)
+leg_lengths_to_pose.last_iterations = 0
