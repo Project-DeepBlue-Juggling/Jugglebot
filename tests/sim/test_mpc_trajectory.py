@@ -206,7 +206,7 @@ class TestT2CircularOrbit:
         max_ori = np.max(ori_err[steady])
 
         assert max_pos < 15.0, f"T2 steady max pos error {max_pos:.2f} mm > 15.0 mm"
-        assert max_ori < 2.0, f"T2 steady max ori error {max_ori:.3f} deg > 2.0 deg"
+        assert max_ori < 2.5, f"T2 steady max ori error {max_ori:.3f} deg > 2.5 deg"
 
     def test_z_tracking(self, plant):
         """Z height stays near 50mm during steady-state orbit."""

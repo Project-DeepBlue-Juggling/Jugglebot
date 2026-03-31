@@ -63,7 +63,7 @@ class MPCParams:
         return tuple(dt for _ in range(N))
 
     # ---- Actuator model -------------------------------------------------
-    tau: float = 0.03        # first-order lag time constant (s)
+    tau: float = 0.065       # calibrated from Phase 4.3 hardware data (was 0.03)
 
     # ---- Tracking cost --------------------------------------------------
     Q_pos: float = 10.0      # position tracking weight (per mm²)
