@@ -230,7 +230,10 @@ def _log_mpc_step(logger: TelemetryLogger, state: PlantState,
                   ref_pose: np.ndarray, cmd_ext: np.ndarray,
                   diag: dict, ref_twist: np.ndarray | None = None,
                   dashboard=None,
-                  hand_cmd_mm: float = 0.0) -> None:
+                  hand_cmd_mm: float = 0.0,
+                  overhead_ms: float = 0.0,
+                  fk_iterations: int = 0,
+                  ff_torque_max_Nm: float = 0.0) -> None:
     """Record one telemetry step (MPC mode)."""
     record = record_from_arrays(
         time=state.time,
@@ -248,6 +251,9 @@ def _log_mpc_step(logger: TelemetryLogger, state: PlantState,
         solve_status=diag.get('status', 'n/a'),
         cost=diag.get('cost', 0.0),
         constraint_violation=diag.get('constraint_violation', 0.0),
+        overhead_ms=overhead_ms,
+        fk_iterations=fk_iterations,
+        ff_torque_max_Nm=ff_torque_max_Nm,
     )
     logger.append(record)
     if dashboard is not None:
@@ -889,6 +895,7 @@ def run_mpc_headless(plant, mpc, source, duration: float,
                 wall_budget = 0.0
                 continue
 
+        _t_overhead = time.perf_counter()
         state = plant.get_state()
         tc = source.update(state.time, state)
 
@@ -953,6 +960,10 @@ def run_mpc_headless(plant, mpc, source, duration: float,
         plant.command(cmd, vel_mm_s=cmd_vel)
         plant.step(CONTROL_DT)
 
+        # Non-solve overhead: total step wall-clock minus the MPC solve time.
+        _overhead_ms = ((time.perf_counter() - _t_overhead) * 1000.0
+                        - diag.get('solve_time_ms', 0.0))
+
         # Ball capture (sim only — hardware has no ball manager)
         if hasattr(plant, 'has_ball') and plant.has_ball and plant.check_and_capture():
             if hasattr(source, 'notify_capture'):
@@ -960,7 +971,10 @@ def run_mpc_headless(plant, mpc, source, duration: float,
 
         _log_mpc_step(logger, state, ref_pose, cmd, diag,
                       ref_twist=ref_twist, dashboard=dashboard,
-                      hand_cmd_mm=last_hand_cmd_mm)
+                      hand_cmd_mm=last_hand_cmd_mm,
+                      overhead_ms=_overhead_ms,
+                      fk_iterations=getattr(plant, 'last_fk_iterations', 0),
+                      ff_torque_max_Nm=getattr(plant, 'last_ff_torque_max_Nm', 0.0))
 
         # Wall-clock pacing: sleep to maintain CONTROL_DT cadence.
         # If a solve overruns (e.g. cold-start), skip sleeping and
@@ -1050,6 +1064,7 @@ def run_mpc_with_viewer(plant: MuJoCoPlant, mpc, source, duration: float,
                     time.sleep(0.01)
                     continue
 
+                _t_overhead = time.perf_counter()
                 state = plant.get_state()
 
                 # Check sim-time duration
@@ -1083,6 +1098,9 @@ def run_mpc_with_viewer(plant: MuJoCoPlant, mpc, source, duration: float,
                 plant.command(cmd, vel_mm_s=cmd_vel)
                 plant.step(CONTROL_DT)
 
+                _overhead_ms = ((time.perf_counter() - _t_overhead) * 1000.0
+                                - diag.get('solve_time_ms', 0.0))
+
                 # Ball capture
                 if plant.has_ball and plant.check_and_capture():
                     if hasattr(source, 'notify_capture'):
@@ -1091,7 +1109,10 @@ def run_mpc_with_viewer(plant: MuJoCoPlant, mpc, source, duration: float,
                 # Log
                 _log_mpc_step(logger, state, ref_pose, cmd, diag,
                               ref_twist=ref_twist, dashboard=dashboard,
-                              hand_cmd_mm=last_hand_cmd_mm)
+                              hand_cmd_mm=last_hand_cmd_mm,
+                              overhead_ms=_overhead_ms,
+                              fk_iterations=getattr(plant, 'last_fk_iterations', 0),
+                              ff_torque_max_Nm=getattr(plant, 'last_ff_torque_max_Nm', 0.0))
 
                 # Render
                 horizon.update(mpc.predicted_poses_view, mpc.predicted_times_view)
@@ -1148,6 +1169,21 @@ def _print_mpc_summary(logger: TelemetryLogger) -> None:
         print(f"Solve time: mean={np.mean(solve_times):.1f} ms, "
               f"max={np.max(solve_times):.1f} ms, "
               f"p95={np.percentile(solve_times, 95):.1f} ms")
+
+    # Overhead verification diagnostics
+    overhead = [r.overhead_ms for r in logger.records if r.overhead_ms > 0]
+    if overhead:
+        print(f"Non-solve overhead: median={np.median(overhead):.1f} ms, "
+              f"p95={np.percentile(overhead, 95):.1f} ms")
+    fk_iters = [r.fk_iterations for r in logger.records if r.fk_iterations > 0]
+    if fk_iters:
+        print(f"FK iterations: mean={np.mean(fk_iters):.1f}, "
+              f"max={np.max(fk_iters)}")
+    ff_torques = [r.ff_torque_max_Nm for r in logger.records
+                  if r.ff_torque_max_Nm > 0]
+    if ff_torques:
+        print(f"FF torque max: mean={np.mean(ff_torques):.3f} Nm, "
+              f"max={np.max(ff_torques):.3f} Nm")
 
 
 # ---------------------------------------------------------------------------

@@ -85,6 +85,11 @@ class StepRecord:
     tracking_error_mm: float = 0.0
     tracking_error_deg: float = 0.0
 
+    # Overhead verification (optional, zero when not populated)
+    overhead_ms: float = 0.0           # non-solve overhead per MPC step
+    fk_iterations: int = 0             # FK Newton-Raphson iterations
+    ff_torque_max_Nm: float = 0.0      # max feedforward torque magnitude
+
 
 def record_from_arrays(
     time: float,
@@ -102,6 +107,9 @@ def record_from_arrays(
     solve_status: str = "n/a",
     cost: float = 0.0,
     constraint_violation: float = 0.0,
+    overhead_ms: float = 0.0,
+    fk_iterations: int = 0,
+    ff_torque_max_Nm: float = 0.0,
 ) -> StepRecord:
     """Build a StepRecord from numpy arrays (convenience helper)."""
     pos_err = np.linalg.norm(actual_pose[:3] - ref_pose[:3])
@@ -129,6 +137,8 @@ def record_from_arrays(
         solve_time_ms=solve_time_ms, solve_status=solve_status,
         cost=cost, constraint_violation=constraint_violation,
         tracking_error_mm=pos_err, tracking_error_deg=ori_err,
+        overhead_ms=overhead_ms, fk_iterations=fk_iterations,
+        ff_torque_max_Nm=ff_torque_max_Nm,
     )
 
 
