@@ -4,6 +4,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
+Jugglebot is a real-time robotics control codebase (MPC planner, MuJoCo simulation, ODrive PID). Incorrect velocity, feedforward, or timing changes can cause dangerous jerky hardware movement. Always verify physics/control implications of changes, not just test passage.
+
 Jugglebot is a Stewart platform robot that catches and throws balls. The codebase has three main subsystems that share a common config layer:
 
 1. **ROS2 hardware stack** (`ros_ws/`) — runs on Jetson Orin Nano (Ubuntu 20.04, ROS2 Foxy, Python 3.8)
@@ -80,6 +82,13 @@ ros2 launch jugglebot jugglebot_launch.py
 mkdocs serve   # local preview at http://localhost:8000
 ```
 
+## Workflow Rules
+
+- **Grep before refactoring**: before renaming or refactoring any symbol, grep the entire codebase for all references first. List every file and line number, count total occurrences. After making changes, verify the count drops to zero. A partial find-and-replace is not acceptable.
+- **Analyze control-system implications before changes**: before implementing changes to MPC, feedforward, or timing code, analyze the control-system implications first. What happens to the feedforward path? Could this cause discontinuities, oscillation, or timing issues at 40 Hz? Walk through one MPC cycle step-by-step with the proposed change.
+- **TodoWrite checklist for multi-file tasks**: for tasks involving changes to multiple files, create a TodoWrite checklist before starting. List every file that needs changes, every test that needs updating, and a final verification step. Check off each item as you complete it. Do not declare the task done until all items are checked.
+- **Run tests after code changes**: after any code changes, run the full test suite (`pytest tests/ -v`) and ensure all tests pass before considering the task complete. Report the test count and results.
+
 ## Critical Conventions
 
 - **Python 3.8 compatibility** in `ros_ws/`: always use `from __future__ import annotations` for modern type hints
@@ -90,3 +99,4 @@ mkdocs serve   # local preview at http://localhost:8000
 - Force decomposition: `f = J^{-T} * W` (use `np.linalg.solve(J.T, W)`), NOT `J^T * W`
 - All movements must use profiled trajectories — never command step position changes
 - CAN encoding must match `can_node.py`: negate, scale by appropriate value (check protocol_config), int16, clamp
+- Log files and temporary artifacts are in `temp/`, not `/tmp/`

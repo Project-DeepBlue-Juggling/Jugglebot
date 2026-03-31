@@ -223,7 +223,7 @@ The startup sequence:
 
 ---
 
-## Phase 3: Tiny Motions (5mm Scale)
+## Phase 3: Tiny Motions (5mm Scale) — COMPLETE (2026-03-30)
 
 ### 3.1 Z+5mm
 ```bash
@@ -247,6 +247,8 @@ python3 main.py --hardware --mpc --pose 0,0,170,0.02,0,0 --duration 30
 ```
 
 **Go for all:** Smooth motion. No overshoot > 1mm. Settles within 1s. No oscillation.
+
+**Result (2026-03-30):** PASS — controlled platform movement, no overshoot > 1 mm, MPC staleness E-stop fired correctly on exit.
 
 ---
 
