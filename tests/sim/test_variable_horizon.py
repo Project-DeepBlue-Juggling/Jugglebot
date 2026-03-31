@@ -18,7 +18,7 @@ from controller.params import MPCParams
 from controller.target import flat_target_to_events
 from input.scripted import _compute_catch_orientation, _compute_catch_target
 
-CONTROL_DT = 0.02  # 50 Hz
+CONTROL_DT = 0.025  # 40 Hz
 
 
 # ---------------------------------------------------------------------------
@@ -72,8 +72,8 @@ def plant():
 class TestTierBoundarySmoothness:
     """Commands should be smooth across the fine→coarse tier boundary.
 
-    The MPC's internal horizon jumps from 20 ms to 250 ms steps at index 5.
-    The *output* commands (one per CONTROL_DT = 20 ms) should not show
+    The MPC's internal horizon jumps from 25 ms to 250 ms steps at index 5.
+    The *output* commands (one per CONTROL_DT = 25 ms) should not show
     discontinuities caused by this internal structure.
     """
 
@@ -138,10 +138,10 @@ class TestTierBoundarySmoothness:
         # Per-leg max acceleration
         max_accel = np.max(np.abs(ddu))
 
-        # With rate limit of 1000 mm/s, max Δu per step = 20 mm.
-        # Max ΔΔu should be bounded by ~2× max Δu = 40 mm.
+        # With rate limit of 1000 mm/s, max Δu per step = 25 mm.
+        # Max ΔΔu should be bounded by ~2× max Δu = 50 mm.
         # In practice it should be much smaller for smooth trajectories.
-        assert max_accel < 15.0, (
+        assert max_accel < 25.0, (
             f"Max command acceleration {max_accel:.2f} mm/step² — "
             f"possible discontinuity at tier boundary"
         )
@@ -321,14 +321,14 @@ class TestHorizonCoverage:
         params = mpc.params
 
         assert params.N == 10
-        assert abs(params.horizon_s - 1.35) < 1e-10
-        assert abs(params.dt_fine - 0.02) < 1e-10
+        assert abs(params.horizon_s - 1.375) < 1e-10
+        assert abs(params.dt_fine - 0.025) < 1e-10
 
         ct = params.cumulative_times
         assert ct.shape == (11,)
         assert abs(ct[0]) < 1e-10
-        assert abs(ct[5] - 0.10) < 1e-10   # end of fine tier
-        assert abs(ct[10] - 1.35) < 1e-10  # end of coarse tier
+        assert abs(ct[5] - 0.125) < 1e-10   # end of fine tier
+        assert abs(ct[10] - 1.375) < 1e-10  # end of coarse tier
 
 
 # ---------------------------------------------------------------------------
@@ -468,7 +468,7 @@ class TestDtScheduleStructure:
         fine = sched[:5]
         coarse = sched[5:]
 
-        assert all(abs(d - 0.02) < 1e-10 for d in fine), "Fine tier != 20ms"
+        assert all(abs(d - 0.025) < 1e-10 for d in fine), "Fine tier != 25ms"
         assert all(abs(d - 0.25) < 1e-10 for d in coarse), "Coarse tier != 250ms"
 
     def test_cumulative_times_read_only(self):

@@ -15,7 +15,7 @@ import pytest
 from controller.target import ReferenceEvent
 from input.toss_loop import TossLoopController, _Phase, _State
 
-CONTROL_DT = 0.02  # 50 Hz
+CONTROL_DT = 0.025  # 40 Hz
 
 
 # ---------------------------------------------------------------------------

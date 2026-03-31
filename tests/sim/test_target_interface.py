@@ -15,7 +15,7 @@ from controller.mpc import MPCController
 from controller.params import MPCParams
 from controller.target import flat_target_to_events
 
-CONTROL_DT = 0.02
+CONTROL_DT = 0.025
 
 
 def _create_mpc(plant, **overrides):

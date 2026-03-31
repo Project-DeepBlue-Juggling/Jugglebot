@@ -19,7 +19,7 @@ from input.scripted import get_catch_sequence, BallSpawn
 from helpers import run_catch_sim, IDLE_POSE
 
 # MPC control rate
-CONTROL_DT = 0.02  # 50 Hz
+CONTROL_DT = 0.025  # 40 Hz
 
 
 def _run_catch_sim(plant, mpc, coordinator, duration, **kwargs):
@@ -368,7 +368,10 @@ class TestDT7CatchThenThrow:
         for target, ball in sequence:
             coordinator.submit_target(target, ball)
 
-        result = _run_catch_sim(plant, mpc, coordinator, duration,
+        # Add headroom: at 40 Hz the MPC has fewer steps to complete the
+        # catch→hold→return→throw pipeline, so the throw phase may start
+        # slightly later.
+        result = _run_catch_sim(plant, mpc, coordinator, duration + 1.0,
                                 record_states=True)
 
         # Verify the throw phase was entered (target_twist with nonzero Z)

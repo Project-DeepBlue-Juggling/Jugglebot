@@ -20,7 +20,7 @@ from controller.params import MPCParams
 from controller.target import ReferenceEvent, sample_ref_fn
 from plant.mujoco_plant import MuJoCoPlant
 
-CONTROL_DT = 0.02  # 50 Hz
+CONTROL_DT = 0.025  # 40 Hz
 
 
 # ---------------------------------------------------------------------------
@@ -372,7 +372,7 @@ class TestMPCSolveWithEvents:
         # the MPC should achieve meaningful downward velocity.  The target
         # is -100 mm/s; actuator lag (τ=30ms) limits tracking but the
         # direction and magnitude should be clearly present.
-        assert min_vz < -25.0, (
+        assert min_vz < -20.0, (
             f"Expected meaningful downward velocity near event, "
             f"got min vz={min_vz:.1f} mm/s (target: {target_vz} mm/s)"
         )

@@ -19,7 +19,7 @@ from hand.coordinator import BallSpawn
 from hand.trajectory import HandCatchSequence
 from input.scripted import _compute_catch_target
 
-CONTROL_DT = 0.02  # 50 Hz
+CONTROL_DT = 0.025  # 40 Hz
 IDLE_POSE = np.array([0.0, 0.0, 10.0, 0.0, 0.0, 0.0])
 
 

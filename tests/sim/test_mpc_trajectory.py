@@ -30,7 +30,7 @@ from controller.params import MPCParams
 from controller.target import flat_target_to_events
 from input.scripted import make_T1, make_T2, make_T3, make_T4, make_T5, make_T6
 
-CONTROL_DT = 0.02  # 50 Hz
+CONTROL_DT = 0.025  # 40 Hz
 
 
 # ---------------------------------------------------------------------------

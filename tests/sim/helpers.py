@@ -13,7 +13,7 @@ from controller.mpc import MPCController
 from hand.coordinator import HandCoordinator
 from hand.trajectory import HandCatchSequence
 
-CONTROL_DT = 0.02  # 50 Hz
+CONTROL_DT = 0.025  # 40 Hz
 # Idle pose just above STOW — keeps all leg extensions above the 5mm margin.
 IDLE_POSE = np.array([0.0, 0.0, 10.0, 0.0, 0.0, 0.0])
 

@@ -22,7 +22,7 @@ from viz.telemetry import TelemetryLogger, StepRecord, record_from_arrays
 SETTLE_TIME_S = 2.0
 POS_TOL_MM = 1.0
 ORI_TOL_DEG = 0.5
-CONTROL_DT = 0.02  # 50 Hz
+CONTROL_DT = 0.025  # 40 Hz
 
 
 @pytest.fixture(scope='module')

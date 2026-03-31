@@ -22,7 +22,7 @@ from plant.mujoco_plant import MuJoCoPlant
 from controller.mpc import MPCController
 from controller.params import MPCParams
 
-CONTROL_DT = 0.02   # 50 Hz
+CONTROL_DT = 0.025   # 40 Hz
 SETTLE_TIME_S = 0.5  # 500 ms
 POS_TOL_MM = 1.0     # 1 mm position tolerance
 ORI_TOL_DEG = 0.5    # 0.5° orientation tolerance

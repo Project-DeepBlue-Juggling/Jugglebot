@@ -30,7 +30,7 @@ _DT_SCHEDULE = [_FINE_DT] * 5 + [_COARSE_DT] * 5
 _CUMULATIVE_TIMES = np.array([0.0] + list(np.cumsum(_DT_SCHEDULE)))
 
 ACTIVE_POSE = np.zeros(6)
-CONTROL_DT = 0.02  # 50 Hz
+CONTROL_DT = 0.025  # 40 Hz
 
 
 def _make_event(
