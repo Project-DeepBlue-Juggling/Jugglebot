@@ -1,17 +1,24 @@
 """Hardware diagnosis analysis engine.
 
-Reads MPC telemetry CSVs, ROS2 plain-text logs, and rosbag (MCAP) recordings
-to produce a structured JSON diagnostic report.  Designed to be invoked by the
-/diagnose Claude Code slash command, which interprets the output and presents
-it to the user.
+Reads MPC telemetry CSVs and rosbag (MCAP) recordings to produce a structured
+JSON diagnostic report.  Designed to be invoked by the /diagnose Claude Code
+slash command, which interprets the output and presents it to the user.
+
+Primary data sources:
+  - MPC telemetry CSV (sim/logs/mpc_*.csv) — 55-field StepRecord at 40 Hz
+  - Rosbag MCAP (~/Desktop/rosbags/<timestamp>/) — 19 ROS2 topics recorded
+    automatically by the launch file
+
+Note: ROS2 Foxy does NOT write per-node text log files (that's Humble+).
+The --ros-log-dir option is retained for forward compatibility but is not
+part of the standard diagnosis workflow.
 
 Usage:
     python sim/analysis/diagnose.py <csv_path> --json
-    python sim/analysis/diagnose.py <csv_path> --ros-log-dir <path> --json
     python sim/analysis/diagnose.py <csv_path> --rosbag <path> --json
-    python sim/analysis/diagnose.py <csv_path> --ros-log-dir <path> --rosbag <path> --json
+    python sim/analysis/diagnose.py <csv_path> --ros-log-dir <path> --json  (optional)
 
-Runs on Python 3.8+ (Jetson).  Requires: numpy, pyyaml (optional: rosbags).
+Runs on Python 3.8+ (Jetson).  Requires: numpy (optional: pyyaml, rosbags).
 """
 
 from __future__ import annotations

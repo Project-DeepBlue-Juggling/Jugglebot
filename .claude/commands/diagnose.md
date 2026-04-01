@@ -1,10 +1,16 @@
 ---
-description: Analyse hardware test logs — MPC telemetry, ROS2 logs, and rosbag recordings. Invoke with /diagnose [csv_filename | --latest | --all-new].
+description: Analyse hardware test logs — MPC telemetry and rosbag recordings. Invoke with /diagnose [csv_filename | --latest | --all-new].
 ---
 
 # Hardware Diagnosis Agent
 
-Analyse hardware test session data from MPC telemetry CSVs, ROS2 node logs, and optionally rosbag (MCAP) recordings.  Cross-reference findings against known failure patterns and present a structured diagnostic report.
+Analyse hardware test session data from MPC telemetry CSVs and rosbag (MCAP) recordings.  Cross-reference findings against known failure patterns and present a structured diagnostic report.
+
+**Data sources:**
+- **MPC telemetry CSV** (`sim/logs/mpc_*.csv`) — 55-field StepRecord at 40 Hz: pose, tracking error, solve times, leg extensions, torques
+- **Rosbag MCAP** (`~/Desktop/rosbags/<timestamp>/`) — 19 ROS2 topics recorded automatically: motor state, leg commands, hand telemetry, state transitions, diagnostics, etc.
+
+Note: ROS2 Foxy does NOT write per-node text log files (that's a Humble+ feature).  The rosbag is the primary source for ROS2 event data.
 
 ## Arguments
 
@@ -24,19 +30,19 @@ Follow these steps in order:
 3. If `--latest` or no args: scan `sim/logs/mpc_*.csv`, find the most recent file not marked `analyzed: true` in the index
 4. If `--all-new`: find all unanalysed files
 
-### Step 2: Find correlated ROS2 session
+### Step 2: Find correlated rosbag
 
 For each target CSV:
-1. Search ROS2 log directories (`~/.ros/log/`) for a session that contains the marker `"MPC session started: <csv_filename>"` in any node's log file
-2. If no marker found, fall back to timestamp matching: parse the CSV filename timestamp (format: `YYYYMMDD_HHMMSS`) and find the ROS2 session directory whose timestamp is closest and within 1 hour
-3. Look for a matching rosbag in `~/Desktop/rosbags/` using the same timestamp proximity
+1. Parse the CSV filename timestamp (format: `YYYYMMDD_HHMMSS`)
+2. Scan `~/Desktop/rosbags/` for a directory whose timestamp is closest and within 1 hour
+3. Multiple MPC sessions may exist within one rosbag session — use the CSV timestamp to identify the relevant time window
 
 ### Step 3: Run the analysis engine
 
 Run the diagnosis script with all available data sources:
 
 ```bash
-python sim/analysis/diagnose.py <csv_path> [--ros-log-dir <path>] [--rosbag <path>] --json
+python sim/analysis/diagnose.py <csv_path> [--rosbag <path>] --json
 ```
 
 Read the JSON output.
@@ -62,15 +68,16 @@ Use this format:
 ```
 ## Hardware Diagnosis: <csv_filename>
 **Phase:** <phase>  |  **Duration:** <N>s  |  **Source:** <mpc/hardware>
-**ROS2 Session:** <session_dir or "not found">  |  **Rosbag:** <dir or "none">
+**Rosbag:** <dir or "none">
 
 ### Verdict: PASS / NEEDS ATTENTION / FAIL
 
 <1-2 sentence overall assessment>
 
 ### Event Timeline
-<Merged chronological timeline: state transitions from ROS2 + MPC anomaly timestamps>
-<Only include if ROS2 logs are available; skip section otherwise>
+<Chronological timeline from rosbag: state transitions (/orchestrator_state), mode changes (/control_mode_topic), errors>
+<Include MPC anomaly timestamps (discontinuities, solve spikes) interleaved>
+<Only include if rosbag is available; skip section otherwise>
 
 ### Tracking Performance
 | Leg | RMS (mm) | Peak (mm) | Mean (mm) |
@@ -89,9 +96,8 @@ Use this format:
 <Compare against baseline if available>
 
 ### Motor & CAN Health
-<From rosbag if available: motor errors, disarms, CAN rejections>
-<From ROS2 logs: CAN watchdog events, firmware validation>
-<Skip section if neither source available>
+<From rosbag: motor errors (/robot_state), disarms, CAN rejections, firmware validation>
+<Skip section if rosbag not available>
 
 ### Stability
 - Oscillation: <detected/not detected>, chatter ratios per leg
@@ -120,7 +126,7 @@ Update `sim/analysis/log_index.json`:
 - Set `verdict` to PASS, NEEDS_ATTENTION, or FAIL
 - Set `flags_count` to the number of flags
 - Set `phase` if identifiable from context
-- Set `ros2_session` and `rosbag` paths if found
+- Set `rosbag` path if found
 
 ## Verdict Criteria
 
@@ -132,6 +138,6 @@ Update `sim/analysis/log_index.json`:
 
 - This is a **read-only** analysis agent.  Never send commands to the robot.
 - The analysis engine (`diagnose.py`) handles all numeric computation.  The LLM's role is interpretation, cross-referencing, and presentation.
-- MPC CSV time is relative (starts at 0).  ROS2 timestamps are absolute.  Use the session start marker for correlation.
+- MPC CSV time is relative (starts at 0).  Rosbag timestamps are absolute.  Use the session start marker for correlation.
 - If `rosbags` library is not installed, rosbag analysis will be skipped gracefully.
 - The `known_issues.yaml` is a living document.  If you discover a new failure pattern during analysis, suggest adding it.
