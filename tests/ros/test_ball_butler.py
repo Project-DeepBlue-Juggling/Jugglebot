@@ -196,14 +196,13 @@ class TestEncodeThrowCommand:
         # Note: exact +pi overflows int16 (32768 > 32767), so use just below pi
         encode_throw_command(math.pi - 1e-6, math.pi / 2, 6.5535, 65.535)
 
-    def test_yaw_exact_pi_overflows_int16(self):
-        """Exact yaw=pi causes int16 overflow — this is a known edge case.
+    def test_yaw_exact_pi_rejected(self):
+        """Exact yaw=pi is rejected by validation (half-open range [-pi, pi)).
 
-        The validation allows [-pi, pi] but int(pi * 32768 / pi) = 32768
-        which exceeds int16 max (32767).  The firmware never commands
-        exact pi so this is acceptable.
+        int(pi * 32768 / pi) = 32768 which exceeds int16 max (32767),
+        so the validation uses an exclusive upper bound to prevent overflow.
         """
-        with pytest.raises(struct.error):
+        with pytest.raises(ValueError, match="Yaw"):
             encode_throw_command(math.pi, 0.0, 0.0, 0.0)
 
 

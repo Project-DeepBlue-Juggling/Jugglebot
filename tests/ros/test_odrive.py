@@ -402,10 +402,10 @@ class TestErrorNames:
     def test_no_errors(self):
         assert odrive.error_names(0) == []
 
-    def test_unknown_bits_ignored(self):
-        # Bit 7 (128) is not in ERROR_CODES
+    def test_unknown_bits_surfaced(self):
+        # Bit 7 (128) is not in ERROR_CODES — should be reported, not dropped
         names = odrive.error_names(128)
-        assert names == []
+        assert names == ['UNKNOWN(0x80)']
 
     def test_all_known_codes(self):
         # OR all known error codes together and check we get them all back
