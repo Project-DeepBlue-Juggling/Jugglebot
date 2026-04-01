@@ -1,4 +1,115 @@
 {
   "version": 1,
-  "sessions": {}
+  "sessions": {
+    "mpc_20260401_131845.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-01T14:05:00Z",
+      "verdict": "NEEDS_ATTENTION",
+      "flags_count": 20,
+      "phase": "4.1",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-01_13-18-01"
+    },
+    "mpc_20260401_131858.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-01T14:05:00Z",
+      "verdict": "FAIL",
+      "flags_count": 44,
+      "phase": "4.1-return",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-01_13-18-01"
+    },
+    "mpc_20260401_131912.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-01T14:05:00Z",
+      "verdict": "FAIL",
+      "flags_count": 86,
+      "phase": "4.2",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-01_13-18-01"
+    },
+    "mpc_20260401_131926.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-01T14:05:00Z",
+      "verdict": "FAIL",
+      "flags_count": 104,
+      "phase": "4.2-return",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-01_13-18-01"
+    },
+    "mpc_20260401_131940.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-01T14:05:00Z",
+      "verdict": "FAIL",
+      "flags_count": 43,
+      "phase": "4.3",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-01_13-18-01"
+    },
+    "mpc_20260401_131950.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-01T14:05:00Z",
+      "verdict": "FAIL",
+      "flags_count": 38,
+      "phase": "4.3-return",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-01_13-18-01"
+    },
+    "mpc_20260401_133718.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-01T14:10:00Z",
+      "verdict": "FAIL",
+      "flags_count": 26,
+      "phase": "4.3-rerun",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-01_13-36-57"
+    },
+    "mpc_20260401_133731.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-01T14:10:00Z",
+      "verdict": "FAIL",
+      "flags_count": 56,
+      "phase": "4.3-rerun-return",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-01_13-36-57"
+    },
+    "mpc_20260401_143817.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-01T15:05:00Z",
+      "verdict": "PASS",
+      "flags_count": 1,
+      "phase": "solver-fix-validation-static",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-01_14-37-59"
+    },
+    "mpc_20260401_143845.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-01T15:05:00Z",
+      "verdict": "FAIL",
+      "flags_count": 4,
+      "phase": "solver-fix-validation-motion",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-01_14-37-59",
+      "notes": "Cold-start timeout cascade — fixed by salvaging IPOPT partial solutions"
+    },
+    "mpc_20260401_152048.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-01T15:30:00Z",
+      "verdict": "PASS",
+      "flags_count": 1,
+      "phase": "solver-fix-validation-static",
+      "ros2_session": "/home/jetson/.ros/log/python3_56892_1775017221068.log",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-01_15-20-18"
+    },
+    "mpc_20260401_152101.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-01T15:30:00Z",
+      "verdict": "FAIL",
+      "flags_count": 19,
+      "phase": "solver-fix-validation-motion",
+      "ros2_session": "/home/jetson/.ros/log/python3_56892_1775017221068.log",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-01_15-20-18",
+      "notes": "Cold-hold fallback commands stroke minimum (5mm) causing 150mm+ discontinuities. Solve times 25-35ms exceed 24ms budget for off-centre targets."
+    }
+  }
 }

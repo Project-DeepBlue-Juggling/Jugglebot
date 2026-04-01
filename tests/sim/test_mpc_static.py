@@ -318,6 +318,33 @@ class TestMPCSolverFailure:
         assert hold_count >= 1, \
             f"Expected at least 1 hold status after escalation, got statuses: {statuses}"
 
+    def test_cold_hold_uses_q_cur(self, plant):
+        """cold_hold with q_cur returns current position, not stroke minimum."""
+        plant.reset()
+        # First do a successful solve to move the sim to a known state
+        mpc_seed = _create_mpc(plant)
+        ref = np.array([0.0, 0.0, 80.0, 0.0, 0.0, 0.0])
+        _run_mpc(plant, mpc_seed, ref, 1.0)
+
+        # Now create a restricted MPC that will always fail
+        mpc = _create_mpc(plant, max_iter=1, max_cpu_time=0.001)
+        state = plant.get_state()
+        q_cur = state.leg_extensions_mm.copy()
+        assert np.all(q_cur > 20), f"Expected extensions > 20mm, got {q_cur}"
+
+        # Wipe warm-start / prev_u so we hit the cold_hold path
+        mpc._prev_w = None
+        mpc._prev_u = None
+
+        cmd, cmd_vel, diag = mpc.solve(state, self._INFEASIBLE_REF)
+
+        assert 'cold_hold' in diag['status'], \
+            f"Expected cold_hold status, got: {diag['status']}"
+        # cmd should be close to q_cur, NOT the stroke margin (5mm)
+        np.testing.assert_allclose(cmd, q_cur, atol=0.1,
+            err_msg="cold_hold should hold at current position, not stroke minimum")
+        np.testing.assert_array_equal(cmd_vel, np.zeros(6))
+
     def test_recovery_after_failure(self, plant):
         """A successful solve after failures resets consecutive_failures to 0."""
         plant.reset()

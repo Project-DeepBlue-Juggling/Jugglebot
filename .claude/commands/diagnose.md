@@ -42,8 +42,10 @@ For each target CSV:
 Run the diagnosis script with all available data sources:
 
 ```bash
-python sim/analysis/diagnose.py <csv_path> [--rosbag <path>] --json
+python3 sim/analysis/diagnose.py <csv_path> [--rosbag <path>] --json
 ```
+
+**Note:** Always use `python3` — on the Jetson, `python` may resolve to Python 2.7.
 
 Read the JSON output.
 

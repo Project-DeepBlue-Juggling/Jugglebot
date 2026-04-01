@@ -235,7 +235,8 @@ def _log_mpc_step(logger: TelemetryLogger, state: PlantState,
                   hand_cmd_mm: float = 0.0,
                   overhead_ms: float = 0.0,
                   fk_iterations: int = 0,
-                  ff_torque_max_Nm: float = 0.0) -> None:
+                  ff_torque_max_Nm: float = 0.0,
+                  ipopt_iter: int = 0) -> None:
     """Record one telemetry step (MPC mode)."""
     record = record_from_arrays(
         time=state.time,
@@ -256,6 +257,7 @@ def _log_mpc_step(logger: TelemetryLogger, state: PlantState,
         overhead_ms=overhead_ms,
         fk_iterations=fk_iterations,
         ff_torque_max_Nm=ff_torque_max_Nm,
+        ipopt_iter=diag.get('iter_count', 0),
     )
     logger.append(record)
     if dashboard is not None:
@@ -1261,7 +1263,12 @@ def main():
     mpc = None
     if args.mpc:
         from controller import MPCController, MPCParams
-        param_overrides = dict(max_cpu_time=2.0, max_iter=500)
+        if args.hardware:
+            # Hardware: real-time budget — 20ms solver + ~5ms overhead = 25ms period
+            param_overrides = dict(max_cpu_time=0.022, max_iter=100)
+        else:
+            # Simulation: accuracy over speed — no real-time constraint
+            param_overrides = dict(max_cpu_time=2.0, max_iter=500)
         if needs_high_vel:
             param_overrides['max_leg_vel_mmps'] = 1000.0
         mpc = MPCController.from_plant(MPCParams(**param_overrides), plant)

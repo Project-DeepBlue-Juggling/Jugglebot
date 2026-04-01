@@ -32,6 +32,14 @@ tools/                       ← standalone utilities (tracking_analyzer)
 - IPC between processes uses ZeroMQ PUB/SUB on tcp://localhost:5556 (telemetry) and :5557 (commands), msgpack serialization
 - `motor_guard.py` is the safety-critical 500 Hz control loop; MPC runs at 40 Hz in a separate process
 
+## Environment
+
+On the Jetson, always use the project virtualenv for all Python commands (tests, sim, scripts):
+```bash
+source ~/Desktop/PDJ_venv/venv/bin/activate
+```
+The system `python3` (3.8.10) lacks MuJoCo and other project dependencies. The venv at `~/Desktop/PDJ_venv/venv/` has everything installed.
+
 ## Commands
 
 ### Config generation (run from repo root)

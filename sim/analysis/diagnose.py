@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """Hardware diagnosis analysis engine.
 
 Reads MPC telemetry CSVs and rosbag (MCAP) recordings to produce a structured

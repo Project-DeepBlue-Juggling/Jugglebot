@@ -345,10 +345,17 @@ class MPCController:
 
         self._build_problem()
 
-        # Warm-start state
+        # Warm-start state — _prev_w is the last *successful* solution,
+        # used both for warm-start and for fallback commanding in
+        # _handle_failure.  _timeout_hint is a partial (unconverged)
+        # solution from a CpuTime timeout — used ONLY as the initial
+        # guess for the next solve, never for commanding.
         self._prev_w: np.ndarray | None = None
         self._prev_lam_g: np.ndarray | None = None
         self._prev_lam_x: np.ndarray | None = None
+        self._timeout_hint: np.ndarray | None = None
+        self._timeout_lam_g: np.ndarray | None = None
+        self._timeout_lam_x: np.ndarray | None = None
         self._prev_u: np.ndarray | None = None
         self._prev_prev_u: np.ndarray | None = None
         self._consecutive_failures: int = 0
@@ -610,11 +617,22 @@ class MPCController:
             'ipopt.print_level': self._params.print_level,
             'ipopt.sb': 'yes',
             'print_time': 0,
+            # Adaptive barrier reduces iterations by 20-40% on coupled NLPs
+            # (tau=0.065 creates tight actuator-IK coupling).
+            'ipopt.mu_strategy': 'adaptive',
+            # Early termination: accept 10x-relaxed solution after 3
+            # consecutive "acceptable" iterations.  For a 25ms re-solve
+            # loop, 1e-3 tolerance is perfectly adequate.
+            'ipopt.acceptable_tol': 1e-3,
+            'ipopt.acceptable_iter': 3,
         }
         if self._params.warm_start:
             opts['ipopt.warm_start_init_point'] = 'yes'
             opts['ipopt.warm_start_bound_push'] = 1e-8
             opts['ipopt.warm_start_mult_bound_push'] = 1e-8
+            # Match barrier init to tolerance so warm-started solves skip
+            # unnecessary barrier reduction phases.
+            opts['ipopt.mu_init'] = 1e-4
 
         self._solver = cs.nlpsol('mpc', 'ipopt', nlp, opts)
         self._n_w = n_w
@@ -731,9 +749,12 @@ class MPCController:
         off += 4
         p_param[off:off + 2] = accel_weights
 
-        # Initial guess
+        # Initial guess — prefer last successful solution, then timeout
+        # hint (partial/unconverged), then cold-start as last resort.
         if self._prev_w is not None:
             w0 = self._shift_warm_start(self._prev_w)
+        elif self._timeout_hint is not None:
+            w0 = self._shift_warm_start(self._timeout_hint)
         else:
             w0 = self._cold_start(p_cur, q_cur, ref_traj)
 
@@ -748,20 +769,41 @@ class MPCController:
                 lbx=self._lbw, ubx=self._ubw,
                 lbg=self._lbg, ubg=self._ubg,
             )
-            if self._prev_lam_g is not None:
-                kw['lam_g0'] = self._prev_lam_g
-            if self._prev_lam_x is not None:
-                kw['lam_x0'] = self._prev_lam_x
+            # Dual variable warm-start: prefer successful, fall back to timeout
+            lam_g = self._prev_lam_g if self._prev_lam_g is not None else self._timeout_lam_g
+            lam_x = self._prev_lam_x if self._prev_lam_x is not None else self._timeout_lam_x
+            if lam_g is not None:
+                kw['lam_g0'] = lam_g
+            if lam_x is not None:
+                kw['lam_x0'] = lam_x
 
             sol = self._solver(**kw)
             solve_ms = (_time.perf_counter() - t0) * 1000.0
 
             stats = self._solver.stats()
             ret = stats.get('return_status', 'unknown')
+            iter_count = stats.get('iter_count', -1)
             success = ret in ('Solve_Succeeded', 'Solved_To_Acceptable_Level')
+
+            # Timeout produces a suboptimal but often usable primal guess.
+            # Save it as a warm-start HINT for the next solve so it doesn't
+            # cold-start (which would also timeout, creating a cascade).
+            # Stored separately from _prev_w so _handle_failure never uses
+            # an unconverged solution for commanding — only for initial guess.
+            if not success and ret == 'Maximum_CpuTime_Exceeded':
+                w_partial = np.asarray(sol['x']).ravel()
+                if np.all(np.isfinite(w_partial)):
+                    self._timeout_hint = w_partial
+                    self._timeout_lam_g = np.asarray(sol['lam_g']).ravel()
+                    self._timeout_lam_x = np.asarray(sol['lam_x']).ravel()
 
             if success:
                 self._consecutive_failures = 0
+                # Clear timeout hint — no longer needed once we have a
+                # converged solution.
+                self._timeout_hint = None
+                self._timeout_lam_g = None
+                self._timeout_lam_x = None
                 w_opt = np.asarray(sol['x']).ravel()
                 if not np.all(np.isfinite(w_opt)):
                     logger.warning("MPC solve returned non-finite primal solution")
@@ -811,6 +853,7 @@ class MPCController:
                 return cmd, cmd_vel, {
                     'solve_time_ms': solve_ms,
                     'status': ret,
+                    'iter_count': iter_count,
                     'cost': float(sol['f']),
                     'constraint_violation': float(np.max(violation)),
                 }
@@ -826,6 +869,9 @@ class MPCController:
             self._prev_w = None
             self._prev_lam_g = None
             self._prev_lam_x = None
+            self._timeout_hint = None
+            self._timeout_lam_g = None
+            self._timeout_lam_x = None
             return self._handle_failure(solve_ms, f'exception: {exc}', q_cur)
 
     # ------------------------------------------------------------------
@@ -982,8 +1028,15 @@ class MPCController:
             diag['status'] = f'hold({status_str})'
             return self._prev_u.copy(), np.zeros(6), diag
 
-        # Absolute fallback: hold at margin-safe position (lowest feasible)
+        # Absolute fallback: hold at current position if known, otherwise
+        # margin-safe minimum.  Using q_cur prevents the dangerous ~150mm
+        # command jump that occurs when the solver times out on first solve
+        # while the platform is at Active (~154mm).
         diag['status'] = f'cold_hold({status_str})'
+        if q_cur is not None:
+            cmd = np.clip(q_cur.copy(), margin, stroke - margin)
+            self._prev_u = cmd
+            return cmd, np.zeros(6), diag
         return np.full(6, margin), np.zeros(6), diag
 
     # ------------------------------------------------------------------
@@ -1074,6 +1127,9 @@ class MPCController:
         self._prev_w = None
         self._prev_lam_g = None
         self._prev_lam_x = None
+        self._timeout_hint = None
+        self._timeout_lam_g = None
+        self._timeout_lam_x = None
         self._prev_u = None
         self._prev_prev_u = None
         self._consecutive_failures = 0

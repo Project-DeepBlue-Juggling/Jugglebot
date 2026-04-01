@@ -1349,12 +1349,16 @@ def test_decay_boundary_continuity():
     pos_after = guard._commanded_pos_rev.copy()
     vel_after = guard._commanded_vel_ff_rps.copy()
 
-    # Position and velocity should be nearly identical across the boundary
+    # Position and velocity should be nearly identical across the boundary.
+    # Velocity tolerance is slightly wider because the decay branch scales
+    # velocity by (1 - dt_over / EXTRAP_DECAY_DT_S), so even a few
+    # microseconds of wall-clock jitter between samples produces a small
+    # slope-dependent difference (~vel_boundary / EXTRAP_DECAY_DT_S * dt_jitter).
     np.testing.assert_allclose(
         pos_before, pos_after, atol=1e-4,
         err_msg="Position discontinuity at decay boundary")
     np.testing.assert_allclose(
-        vel_before, vel_after, atol=1e-4,
+        vel_before, vel_after, atol=1e-3,
         err_msg="Velocity discontinuity at decay boundary")
 
     print("  [PASS] test_decay_boundary_continuity")

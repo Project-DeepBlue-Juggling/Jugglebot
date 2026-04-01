@@ -38,6 +38,26 @@ issues:
     fix: "Use (cmd - prev_cmd)/dt for velocity feedforward.  See feedback_velocity_feedforward.md."
     reference: "sim/plant/hardware_plant.py"
 
+  - id: COLD_HOLD_STROKE_MIN
+    name: "Cold-hold fallback commanded stroke minimum"
+    severity: critical
+    status: fixed
+    fixed_date: "2026-04-01"
+    description: >
+      When the MPC solver timed out on its very first solve (no prev_w, no
+      prev_u), the cold_hold fallback returned cmd_ext = stroke_margin_mm
+      (5mm) for all legs.  On hardware at Active position (~154mm) this
+      produced a ~150mm command discontinuity.  The CAN step-reject safety
+      would catch it, but the session would abort with a fault.
+    signatures:
+      - type: discontinuity
+        field: cmd_ext
+        threshold_mm: 100.0
+      - type: solve_status_pattern
+        pattern: "cold_hold"
+    fix: "Fixed: cold_hold now holds at q_cur (current actual extensions) when available."
+    reference: "controller/mpc.py"
+
   - id: ASSIGNMENT_ORDER
     name: "Assignment-order bug in feedforward computation"
     severity: critical
