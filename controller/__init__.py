@@ -6,4 +6,9 @@ from .scheduler import (
     EventScheduler, EventType, HandNotification, ScheduledEvent,
     SchedulerOutput, SchedulerPhase,
 )
-from .target import ReferenceEvent, TargetCommand, TargetSource, sample_ref_fn
+from .plant import PlantInterface, PlantState
+from .target import (
+    ReferenceEvent, TargetCommand, TargetSource, sample_ref_fn,
+    StaticTargetSource, WaypointTargetSource,
+)
+from .telemetry import TelemetryLogger, StepRecord, record_from_arrays

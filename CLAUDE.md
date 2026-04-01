@@ -17,7 +17,8 @@ Jugglebot is a Stewart platform robot that catches and throws balls. The codebas
 ```
 config/hardware_config.yaml  ← single source of truth for all physical parameters
 config/generate_config.py    ← generates .py/.h/.js constants → config/generated/ + consumer dirs
-controller/                  ← CasADi NMPC solver, shared by sim and hardware
+controller/                  ← MPC runtime: solver, plant abstractions, telemetry, MPC loop, hardware plant
+run_mpc.py                   ← hardware MPC entry point (uses controller/)
 sim/                         ← MuJoCo simulation (plant/, hand/, ball/, input/, viz/)
 ros_ws/src/jugglebot/        ← ROS2 package (can/, motion/, tracking/, nodes)
 tests/                       ← all tests (ros/, sim/, motion/, hardware/, archived/)
@@ -27,9 +28,9 @@ tools/                       ← standalone utilities (tracking_analyzer)
 **Key architectural boundaries:**
 - `ros_ws/.../motion/` and `controller/` are pure Python — no ROS2 imports allowed
 - ROS2 nodes (`*_node.py`) are thin wrappers; business logic lives in pure-Python modules
-- `sim/plant/interface.py` defines `PlantInterface` — implemented by `MuJoCoPlant` (sim) and `HardwarePlant` (real robot via ZMQ IPC)
+- `controller/plant.py` defines `PlantInterface` — implemented by `MuJoCoPlant` (sim) and `HardwarePlant` (real robot via ZMQ IPC)
 - IPC between processes uses ZeroMQ PUB/SUB on tcp://localhost:5556 (telemetry) and :5557 (commands), msgpack serialization
-- `motor_guard.py` is the safety-critical 500 Hz control loop; MPC runs at 50 Hz in a separate thread
+- `motor_guard.py` is the safety-critical 500 Hz control loop; MPC runs at 40 Hz in a separate process
 
 ## Commands
 
@@ -51,6 +52,18 @@ python sim/main.py --dashboard --mpc --pose 0,0,50,0,0,0
 
 # Docker (GPU required)
 cd sim && docker compose up
+```
+
+### Hardware MPC (on Jetson)
+```bash
+# Hold at active pose
+python run_mpc.py --pose 0,0,170,0,0,0 --duration 10
+
+# Production: receive targets from ROS2 via mpc_bridge_node
+python run_mpc.py
+
+# With live dashboard
+python run_mpc.py --dashboard
 ```
 
 ### Tests

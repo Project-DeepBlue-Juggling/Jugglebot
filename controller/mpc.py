@@ -46,7 +46,7 @@ from .target import ReferenceEvent
 
 if TYPE_CHECKING:
     from typing import List
-    from plant.interface import PlantState
+    from .plant import PlantState
 
 
 # ---------------------------------------------------------------------------

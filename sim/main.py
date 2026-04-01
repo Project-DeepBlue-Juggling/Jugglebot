@@ -1,5 +1,7 @@
 """Simulation entry point — run the MuJoCo Stewart platform simulation.
 
+For real hardware, use ``run_mpc.py`` at the repo root instead.
+
 Usage examples:
     python sim/main.py                              # viewer, hold at active pose
     python sim/main.py --pose 0,0,50,0,0,0          # command z+50mm (direct)
@@ -283,56 +285,7 @@ class TargetCommand(_BaseTargetCommand):
     ball_spawn: BallSpawn | None = None
 
 
-class StaticTargetSource:
-    """Adapts a pose schedule (--pose / --sequence) to the TargetSource protocol."""
-
-    def __init__(self, schedule: list[tuple[float, np.ndarray]]):
-        self._schedule = schedule
-        self._target = np.zeros(6)
-
-    def update(self, sim_time: float, state: PlantState) -> TargetCommand:
-        for t, pose in self._schedule:
-            if sim_time >= t:
-                self._target = pose
-            else:
-                break
-        return TargetCommand(
-            target_pose=self._target,
-            ref_events=flat_target_to_events(
-                _pose_6dof_from_state(state), state.platform_twist,
-                self._target, sim_time),
-        )
-
-
-class WaypointTargetSource:
-    """Adapts a waypoint list (T1-T6) to the TargetSource protocol.
-
-    Advances through waypoints as their arrival times are reached.
-    The MPC plans optimal motion between waypoints internally.
-    """
-
-    def __init__(self, waypoints: list[tuple[np.ndarray, float]]):
-        """
-        Parameters
-        ----------
-        waypoints : list of (pose_6dof, arrival_time)
-            Sorted by arrival_time.
-        """
-        self._waypoints = waypoints
-        self._idx = 0
-
-    def update(self, sim_time: float, state: PlantState) -> TargetCommand:
-        while (self._idx + 1 < len(self._waypoints)
-               and sim_time >= self._waypoints[self._idx][1]):
-            self._idx += 1
-        pose, arrival = self._waypoints[self._idx]
-        return TargetCommand(
-            target_pose=pose,
-            arrival_time=arrival,
-            ref_events=flat_target_to_events(
-                _pose_6dof_from_state(state), state.platform_twist,
-                pose, sim_time, arrival_time=arrival),
-        )
+from controller.target import StaticTargetSource, WaypointTargetSource  # noqa: E402
 
 
 class InteractiveTargetSource:
@@ -835,7 +788,7 @@ def _send_target_feedback(feedback_pub, source, tc, diag, last_arrival):
 def run_mpc_headless(plant, mpc, source, duration: float,
                      logger: TelemetryLogger, dashboard=None,
                      feedback_pub=None) -> None:
-    """Unified headless MPC loop.
+    """Unified headless MPC loop — delegates to controller.runner.
 
     Paces iterations to wall-clock CONTROL_DT so the MPC's horizon
     predictions match real elapsed time.  If a solve overruns the budget,
@@ -851,66 +804,23 @@ def run_mpc_headless(plant, mpc, source, duration: float,
         If provided, publishes accept/reject feedback for catch targets
         on ZMQ :5559.  Only relevant in hardware mode.
     """
-    n_steps = int(duration / CONTROL_DT)
-    active_hand_seq = None
-    last_hand_cmd_mm = 0.0
-    wall_budget = 0.0
-    start_wall = time.monotonic()
+    from controller.runner import run_mpc_loop, MpcLoopHooks
+    from controller.target import TargetCommand as BaseTargetCommand
 
-    # Enable/disable lifecycle for sources that manage their own mode
-    # (ZmqTargetSource).  Sources without .enabled are always active.
-    has_lifecycle = hasattr(source, 'enabled')
-    was_enabled = not has_lifecycle  # non-lifecycle sources start enabled
+    # --- Sim-specific state captured by closures ---
+    _sim_state = {'active_hand_seq': None, 'last_hand_cmd_mm': 0.0}
+    _fb_last_arrival = [None]  # mutable container for closure
 
-    # Target feedback: track last arrival_time to deduplicate.
-    # The catch coordinator sends many updates per ball (Kalman refinement).
-    # Only send feedback when arrival_time shifts by > 50 ms to avoid
-    # spamming report_rejection (which counts toward blacklisting).
-    _fb_last_arrival = None
-
-    for _ in range(n_steps):
-        # --- Lifecycle: enable/disable plant based on source mode ---
-        if has_lifecycle:
-            source.poll()  # drain ZMQ so .enabled is up-to-date
-            now_enabled = source.enabled
-            if now_enabled and not was_enabled:
-                # Mode transition: disabled → active
-                if hasattr(plant, 'enable'):
-                    plant.enable()
-                    time.sleep(0.05)  # let motor guard process enable
-                print(f"MPC loop: source enabled "
-                      f"(mode={getattr(source, 'mode', '?')})")
-            elif not now_enabled and was_enabled:
-                # Mode transition: active → disabled
-                if hasattr(plant, 'disable'):
-                    plant.disable()
-                print("MPC loop: source disabled")
-            was_enabled = now_enabled
-
-            if not now_enabled:
-                # Idle: sleep and continue without solving or commanding
-                time.sleep(CONTROL_DT)
-                # Keep wall-clock budget in sync
-                start_wall = time.monotonic()
-                wall_budget = 0.0
-                continue
-
-        _t_overhead = time.perf_counter()
-        state = plant.get_state()
-        tc = source.update(state.time, state)
-
-        # Stale telemetry — override target to hold at last known pose.
-        # The MPC naturally decelerates when target = current pose with
-        # zero twist and no deadline.  This fires well before the motor
-        # guard's ESTOP threshold (0.2 s), giving the MPC time to stop.
+    # --- Hook: target override (stale telemetry → hold-in-place) ---
+    def _on_target_override(state, tc):
         if (state.data_age_s is not None
                 and state.data_age_s > _MPC_STALE_DECEL_S):
-            tc = TargetCommand(
+            return BaseTargetCommand(
                 target_pose=np.concatenate(
                     [state.platform_pos_mm, state.platform_rot]),
             )
 
-        # Ball spawning (sim-only — ZmqTargetSource has no ball_spawn)
+        # Ball spawning (sim-only)
         if getattr(tc, 'ball_spawn', None) is not None:
             if tc.ball_spawn == 'spawn_in_hand':
                 if (hasattr(plant, 'ball_manager')
@@ -923,76 +833,62 @@ def run_mpc_headless(plant, mpc, source, duration: float,
                 plant.spawn_ball(tc.ball_spawn.position_mm,
                                  tc.ball_spawn.velocity_mms)
 
-        # Hand commands (sim-only — ZmqTargetSource has no hand_cmd)
+        # Hand commands (sim-only)
         hand_cmd = getattr(tc, 'hand_cmd', None)
-        active_hand_seq, last_hand_cmd_mm = _execute_hand_cmd(
-            plant, hand_cmd, active_hand_seq, last_hand_cmd_mm, state.time)
+        _sim_state['active_hand_seq'], _sim_state['last_hand_cmd_mm'] = (
+            _execute_hand_cmd(
+                plant, hand_cmd,
+                _sim_state['active_hand_seq'],
+                _sim_state['last_hand_cmd_mm'],
+                state.time))
 
-        # MPC solve
-        cmd, cmd_vel, diag, ref_pose, ref_twist = _mpc_solve(mpc, state, tc)
+        return tc
 
-        # Target feedback for catch coordinator (hardware mode only)
+    # --- Hook: post-solve (target feedback for catch coordinator) ---
+    def _on_post_solve(tc, diag):
         if feedback_pub is not None:
-            _fb_last_arrival = _send_target_feedback(
-                feedback_pub, source, tc, diag, _fb_last_arrival)
+            _fb_last_arrival[0] = _send_target_feedback(
+                feedback_pub, source, tc, diag, _fb_last_arrival[0])
 
-        # For HardwarePlant: pass predicted pose, twist, and acceleration
-        # for feedforward computation and workspace checks in command().
-        # Note: get_state() computes the actual Cartesian pose from motor FK
-        # independently — this only sets the feedforward torques and the
-        # pose field in the IPC message.
-        #
-        # Twist and acceleration are finite-differenced from the MPC's
-        # predicted trajectory.  Twist feeds the Coriolis/gyroscopic terms;
-        # acceleration feeds the platform inertia and reflected motor
-        # inertia terms in the Newton-Euler dynamics model.
-        if hasattr(plant, 'set_pose'):
-            poses = mpc.predicted_poses_view
-            times = mpc.predicted_times_view
+    # --- Hook: pre-command (feedforward torques for HardwarePlant) ---
+    def _on_pre_command(plant_, mpc_, tc, cmd, cmd_vel, diag):
+        if hasattr(plant_, 'set_pose'):
+            poses = mpc_.predicted_poses_view
+            times = mpc_.predicted_times_view
             if poses is not None:
                 dt0 = times[1] - times[0]
                 dt1 = times[2] - times[1]
                 twist = (poses[1] - poses[0]) / dt0
                 twist_next = (poses[2] - poses[1]) / dt1
                 accel = (twist_next - twist) / (0.5 * (dt0 + dt1))
-                plant.set_pose(poses[0], twist_6dof=twist, accel_6dof=accel)
+                plant_.set_pose(poses[0], twist_6dof=twist, accel_6dof=accel)
 
-        plant.command(cmd, vel_mm_s=cmd_vel)
-        plant.step(CONTROL_DT)
-
-        # Non-solve overhead: total step wall-clock minus the MPC solve time.
-        _overhead_ms = ((time.perf_counter() - _t_overhead) * 1000.0
-                        - diag.get('solve_time_ms', 0.0))
-
-        # Ball capture (sim only — hardware has no ball manager)
+    # --- Hook: post-step (ball capture, sim-only) ---
+    def _on_post_step(state, sim_time):
         if hasattr(plant, 'has_ball') and plant.has_ball and plant.check_and_capture():
             if hasattr(source, 'notify_capture'):
-                source.notify_capture(state.time)
+                source.notify_capture(sim_time)
 
-        _log_mpc_step(logger, state, ref_pose, cmd, diag,
-                      ref_twist=ref_twist, dashboard=dashboard,
-                      hand_cmd_mm=last_hand_cmd_mm,
-                      overhead_ms=_overhead_ms,
-                      fk_iterations=getattr(plant, 'last_fk_iterations', 0),
-                      ff_torque_max_Nm=getattr(plant, 'last_ff_torque_max_Nm', 0.0))
+    # --- Hook: log extras ---
+    def _on_log_extras(plant_):
+        return {
+            'hand_cmd_mm': _sim_state['last_hand_cmd_mm'],
+            'fk_iterations': getattr(plant_, 'last_fk_iterations', 0),
+            'ff_torque_max_Nm': getattr(plant_, 'last_ff_torque_max_Nm', 0.0),
+        }
 
-        # Wall-clock pacing: sleep to maintain CONTROL_DT cadence.
-        # If a solve overruns (e.g. cold-start), skip sleeping and
-        # resync rather than trying to catch up at double speed.
-        wall_budget += CONTROL_DT
-        elapsed = time.monotonic() - start_wall
-        sleep_time = wall_budget - elapsed
-        if sleep_time > 0:
-            time.sleep(sleep_time)
-        elif sleep_time < -CONTROL_DT:
-            # Fallen behind by more than one full step — resync
-            start_wall = time.monotonic()
-            wall_budget = 0.0
+    hooks = MpcLoopHooks(
+        on_target_override=_on_target_override,
+        on_pre_command=_on_pre_command,
+        on_post_solve=_on_post_solve,
+        on_post_step=_on_post_step,
+        on_log_extras=_on_log_extras,
+    )
 
-    logger.flush()
-    _print_mpc_summary(logger)
-    if hasattr(source, 'print_summary'):
-        source.print_summary()
+    run_mpc_loop(
+        plant, mpc, source, duration, logger,
+        control_dt=CONTROL_DT, dashboard=dashboard, hooks=hooks,
+    )
 
 
 def run_mpc_with_viewer(plant: MuJoCoPlant, mpc, source, duration: float,
@@ -1300,6 +1196,11 @@ def main():
 
     # Hardware mode implies MPC + headless
     if args.hardware:
+        import warnings
+        warnings.warn(
+            "sim/main.py --hardware is deprecated. "
+            "Use 'python run_mpc.py' instead.",
+            DeprecationWarning, stacklevel=1)
         args.mpc = True
         args.no_viewer = True
 

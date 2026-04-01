@@ -199,3 +199,64 @@ class TargetSource(Protocol):
         The MPC target for this control step.
     """
     def update(self, sim_time: float, state: Any) -> TargetCommand: ...
+
+
+# ---------------------------------------------------------------------------
+# Concrete TargetSource implementations (generic, no sim dependencies)
+# ---------------------------------------------------------------------------
+
+def _pose_6dof_from_state(state: Any) -> np.ndarray:
+    """Extract [x,y,z,rx,ry,rz] from a PlantState."""
+    return np.concatenate([state.platform_pos_mm, state.platform_rot])
+
+
+class StaticTargetSource:
+    """Adapts a pose schedule (--pose / --sequence) to the TargetSource protocol."""
+
+    def __init__(self, schedule: List[Tuple[float, np.ndarray]]):
+        self._schedule = schedule
+        self._target = np.zeros(6)
+
+    def update(self, sim_time: float, state: Any) -> TargetCommand:
+        for t, pose in self._schedule:
+            if sim_time >= t:
+                self._target = pose
+            else:
+                break
+        return TargetCommand(
+            target_pose=self._target,
+            ref_events=flat_target_to_events(
+                _pose_6dof_from_state(state), state.platform_twist,
+                self._target, sim_time),
+        )
+
+
+class WaypointTargetSource:
+    """Adapts a waypoint list (T1-T6) to the TargetSource protocol.
+
+    Advances through waypoints as their arrival times are reached.
+    The MPC plans optimal motion between waypoints internally.
+    """
+
+    def __init__(self, waypoints: List[Tuple[np.ndarray, float]]):
+        """
+        Parameters
+        ----------
+        waypoints : list of (pose_6dof, arrival_time)
+            Sorted by arrival_time.
+        """
+        self._waypoints = waypoints
+        self._idx = 0
+
+    def update(self, sim_time: float, state: Any) -> TargetCommand:
+        while (self._idx + 1 < len(self._waypoints)
+               and sim_time >= self._waypoints[self._idx][1]):
+            self._idx += 1
+        pose, arrival = self._waypoints[self._idx]
+        return TargetCommand(
+            target_pose=pose,
+            arrival_time=arrival,
+            ref_events=flat_target_to_events(
+                _pose_6dof_from_state(state), state.platform_twist,
+                pose, sim_time, arrival_time=arrival),
+        )
