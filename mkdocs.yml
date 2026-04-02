@@ -72,3 +72,7 @@ nav:
     - Plant Interface: sim_mpc/plant.md
     - Velocity Tracking: sim_mpc/velocity_tracking.md
     - Tuning Guide: sim_mpc/tuning.md
+  - Hardware Analysis:
+    - Overview: analysis/index.md
+    - Diagnosis Tools: analysis/diagnosis.md
+    - Engineering Logbook: analysis/logbook.md

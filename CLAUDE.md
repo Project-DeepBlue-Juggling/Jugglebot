@@ -19,7 +19,7 @@ config/hardware_config.yaml  ← single source of truth for all physical paramet
 config/generate_config.py    ← generates .py/.h/.js constants → config/generated/ + consumer dirs
 controller/                  ← MPC runtime: solver, plant abstractions, telemetry, MPC loop, hardware plant
 run_mpc.py                   ← hardware MPC entry point (uses controller/)
-sim/                         ← MuJoCo simulation (plant/, hand/, ball/, input/, viz/)
+sim/                         ← MuJoCo simulation (plant/, hand/, ball/, input/, viz/, analysis/)
 ros_ws/src/jugglebot/        ← ROS2 package (can/, motion/, tracking/, nodes)
 tests/                       ← all tests (ros/, sim/, motion/, hardware/, archived/)
 tools/                       ← standalone utilities (tracking_analyzer)

@@ -18,6 +18,7 @@ The user may provide arguments after `/diagnose`:
 - **No args** or **`--latest`**: analyse the most recent unanalysed log in `sim/logs/`
 - **`<csv_filename>`**: analyse a specific MPC log (filename or full path)
 - **`--all-new`**: analyse all unanalysed logs
+- **`--compare <csv_a> <csv_b>`**: compare two sessions side-by-side (see Comparison Mode below)
 
 ## Protocol
 
@@ -154,6 +155,53 @@ Update `sim/analysis/log_index.json`:
 - **PASS**: No error-severity flags, all metrics within expected ranges for the phase
 - **NEEDS ATTENTION**: Warning-severity flags only, or minor threshold exceedances
 - **FAIL**: Any error-severity flag, or metrics significantly outside expected ranges
+
+## Comparison Mode
+
+When invoked with `--compare <csv_a> <csv_b>`, skip the standard diagnosis protocol
+and instead run a side-by-side session comparison:
+
+### Step 1: Resolve CSV paths
+
+Resolve both CSV paths using the same logic as single-session mode:
+- Accept bare filenames (look in `sim/logs/`) or full paths
+- Verify both files exist
+
+### Step 2: Run comparison
+
+```bash
+python sim/analysis/compare_sessions.py <csv_a> <csv_b> --json
+```
+
+Optionally add `--labels "before fix" "after fix"` if the user provides context about
+which session is which.
+
+### Step 3: Generate interactive report
+
+```bash
+python sim/analysis/compare_sessions.py <csv_a> <csv_b> --html
+```
+
+This generates a Plotly HTML report in `sim/reports/` with dual-trace overlays
+(legs, tracking error, solve times). Tell the user the report path.
+
+### Step 4: Present comparison
+
+Format the JSON output as a delta table:
+
+```
+## Session Comparison: <file_a> vs <file_b>
+
+| Metric                    | Before       | After        | Delta    |
+|---------------------------|-------------|-------------|----------|
+| Tracking RMS (mm)         | ...         | ...         | ...      |
+| ...                       | ...         | ...         | ...      |
+| Verdict                   | ...         | ...         | ...      |
+```
+
+Highlight notable improvements and any regressions. If the comparison shows a fix
+worked, note which metrics improved and by how much. If any metrics regressed,
+flag them prominently.
 
 ## Important Notes
 

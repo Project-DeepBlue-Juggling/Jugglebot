@@ -88,13 +88,21 @@ the diagnosis. Report the entry path and exit. The entry can be resumed later wi
 
 ### Step 4: Discuss potential fixes
 
+Extract flag types and subsystem tags from the diagnosis to enable prior art search:
+- **Flag types:** classify each flag message into: `oscillation`, `discontinuity`,
+  `solve_time`, `tracking`, `workspace`, `torque` (based on the flag content)
+- **Subsystems:** extract from the flagged file paths (e.g., `controller/` → `controller`,
+  `motion/` → `motion`) and from the logbook entry's `subsystem:` frontmatter
+
 Spawn the **fix-proposer** agent with:
 - The diagnosis report (verdict, flags, key metrics)
 - Flagged issue details and known_issues.yaml references
 - The phase context from the bringup plan
+- The flag types and subsystem tags as JSON arrays (for logbook prior art search)
 
-The fix-proposer will read relevant source code and propose 1-3 fixes with
-risk assessment and hardware re-test requirements.
+The fix-proposer will search the logbook for similar past investigations, then
+read relevant source code and propose 1-3 fixes with risk assessment and
+hardware re-test requirements.
 
 ---
 
@@ -185,6 +193,11 @@ Present the proposed commit (files to stage + message).
 ---
 
 ### Step 9: Update logbook outcome
+
+**If a re-test was performed after the fix**, suggest comparing the before/after sessions:
+> "Run `/diagnose --compare <pre_fix_csv> <post_fix_csv>` to see a side-by-side
+> comparison of metrics before and after the fix."
+The pre-fix CSV is available from the logbook entry's `sessions:` frontmatter field.
 
 Spawn the **logbook-updater** agent to:
 1. Populate `files_changed:` in frontmatter from `git diff --name-only` of the commit(s)

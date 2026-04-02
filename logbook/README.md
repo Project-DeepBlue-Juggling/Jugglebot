@@ -185,9 +185,13 @@ plans/
     YYYY-MM-DD <name>.md          ← prefixed with completion date
 
 sim/analysis/
-  diagnose.py           ← analysis engine
+  diagnose.py           ← analysis engine (MPC telemetry + rosbag)
+  compare_sessions.py   ← compare two hardware sessions (before/after)
+  logbook_search.py     ← search logbook by flag types/subsystems (prior art)
   plot_interactive.py   ← Plotly interactive reports
   plot_diagnosis.py     ← matplotlib static plots (fallback)
+  compare.py            ← sim-vs-hardware accuracy comparison
+  report_html.py        ← HTML report generation
   known_issues.yaml     ← signature catalog for auto-detection
   log_index.json        ← per-session metadata
 

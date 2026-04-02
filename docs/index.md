@@ -34,6 +34,13 @@ The MPC solver uses CasADi/IPOPT to solve a **receding-horizon nonlinear MPC** a
 - **[Velocity Tracking](sim_mpc/velocity_tracking.md)** — MPC velocity tracking problem scope and analysis
 - **[Tuning Guide](sim_mpc/tuning.md)** — Parameters, weights, solver options, common scenarios
 
+### [Hardware Analysis](analysis/index.md) -- Diagnosis & Engineering Logbook
+
+Tools for diagnosing hardware test sessions, comparing before/after results, and maintaining a structured engineering logbook with full traceability from code to investigation.
+
+- **[Diagnosis Tools](analysis/diagnosis.md)** -- Session analysis engine, interactive Plotly reports, session comparison, known issues catalog
+- **[Engineering Logbook](analysis/logbook.md)** -- Structured investigation records, prior-art search, `/investigate` pipeline, commit traceability
+
 ## Repository Structure
 
 ```
@@ -60,7 +67,9 @@ Jugglebot/
 │   ├── input/                  # Input adapters (scripted, interactive, ZMQ)
 │   ├── viz/                    # Telemetry logging, horizon renderer, dashboard
 │   ├── model/                  # MJCF model + generator
+│   ├── analysis/               # Hardware diagnosis, comparison, reporting
 │   └── main.py                 # Entry point + 50 Hz MPC loop
+├── logbook/                    # Engineering logbook (investigation entries)
 ├── tools/                      # Standalone hardware test harnesses
 ├── docs/                       # This documentation
 └── MOTION_PLANNER_PLAN.md      # Historical development plan & test log
