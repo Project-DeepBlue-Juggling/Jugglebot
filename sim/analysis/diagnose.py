@@ -866,9 +866,11 @@ def main():
                         help='Generate plots: "auto", "all", "none", or '
                              'comma-separated list (e.g. legs,solver,tracking)')
     parser.add_argument('--html', action='store_true', default=True,
-                        help='Generate self-contained HTML report (default: on)')
+                        help='Generate interactive HTML report (default: on)')
     parser.add_argument('--no-html', dest='html', action='store_false',
                         help='Disable HTML report generation')
+    parser.add_argument('--static-plots', action='store_true', default=False,
+                        help='Use static matplotlib PNGs instead of interactive Plotly')
     args = parser.parse_args()
 
     # --html implies --plots auto (unless user explicitly passed --plots)
@@ -887,23 +889,56 @@ def main():
         else:
             plot_cats = parsed
 
+    # Run the core analysis (no matplotlib plots for the default Plotly path)
+    use_static = args.static_plots
     result = run_diagnosis(
         csv_path=args.csv_path,
         ros_log_dir=args.ros_log_dir,
         rosbag_path=args.rosbag,
         budget_ms=args.budget_ms,
-        plots=plot_cats,
+        plots=plot_cats if use_static else None,
     )
 
-    # Generate HTML report if requested
-    if args.html:
-        from analysis.report_html import generate_html_report
+    # Generate HTML report
+    if args.html and plot_cats is not None:
         html_prefix = args.csv_path
         if html_prefix.lower().endswith('.csv'):
             html_prefix = html_prefix[:-4]
-        html_path = generate_html_report(result, f'{html_prefix}_report.html')
+        html_path = f'{html_prefix}_report.html'
+
+        if use_static:
+            # Static matplotlib PNGs embedded in HTML
+            from analysis.report_html import generate_html_report
+            html_path = generate_html_report(result, html_path)
+            print(f'Static HTML report: {html_path}', file=sys.stderr)
+        else:
+            # Interactive Plotly report (default)
+            try:
+                from analysis.plot_interactive import generate_interactive_report
+                # Load records for Plotly (run_diagnosis doesn't expose them)
+                telemetry_records = load_csv(args.csv_path)
+                categories = None if plot_cats == 'auto' else plot_cats
+                html_path = generate_interactive_report(
+                    telemetry_records, result, html_path,
+                    categories=categories)
+                print(f'Interactive report: {html_path}', file=sys.stderr)
+            except ImportError as exc:
+                print(f'[diagnose] Plotly not available ({exc}), '
+                      f'falling back to static plots. '
+                      f'Install with: pip install plotly', file=sys.stderr)
+                # Re-run with matplotlib plots and generate static HTML
+                result = run_diagnosis(
+                    csv_path=args.csv_path,
+                    ros_log_dir=args.ros_log_dir,
+                    rosbag_path=args.rosbag,
+                    budget_ms=args.budget_ms,
+                    plots=plot_cats,
+                )
+                from analysis.report_html import generate_html_report
+                html_path = generate_html_report(result, html_path)
+                print(f'Static HTML report: {html_path}', file=sys.stderr)
+
         result['html_report'] = html_path
-        print(f'HTML report: {html_path}', file=sys.stderr)
 
     if args.json:
         # Compact JSON for machine consumption
