@@ -4,13 +4,13 @@ description: Audit a just-completed code change, then propose and apply fixes. I
 
 # Code Audit & Fix Pipeline
 
-Orchestrates a three-stage pipeline with user review gates between each stage:
+Orchestrates a three-stage pipeline:
 
 1. **Audit** (audit-reporter agent) — read-only analysis, produces findings
 2. **User review** — approve/reject/modify findings before proceeding
 3. **Fix proposals** (audit-fixer agent) — concrete fixes with risk assessment
-4. **User review** — approve which fixes to apply
-5. **Apply** — execute approved fixes in the main conversation
+4. **Apply** — auto-apply LOW/MEDIUM risk fixes; pause for HIGH risk approval
+5. **Wrap-up** — run tests, summarize, prompt for `/commit`
 
 ## Arguments
 
@@ -78,27 +78,52 @@ produce the structured output with before/after snippets, risk assessment,
 and test guidance.
 ```
 
-When the agent returns, present the full fix proposals to the user.
+When the agent returns, present the full fix proposals to the user, then proceed
+based on risk level.
 
-### Review Gate 2
+### Auto-Apply vs Review Gate 2
 
-After presenting the fix proposals, ask:
+The user has already acknowledged the findings in Review Gate 1. Fix proposals
+inherit that acknowledgment — **a second approval is only needed for HIGH risk
+fixes**.
 
-> **Review the proposed fixes above.** You can:
-> - **apply all** — I'll make all the proposed changes
-> - **apply N,N,...** — I'll apply only the listed fix numbers
-> - **reject** — stop here, no changes made
-> - **modify** — describe what you'd change about a proposal before I apply it
+**Categorize each fix by its risk level** (as assessed by the audit-fixer agent):
+
+- **LOW risk** — typo, missing import, stale reference, simple off-by-one.
+  Auto-apply immediately after presenting.
+- **MEDIUM risk** — logic change, signature update, ripple effects confined to
+  tests or a single caller. Auto-apply immediately after presenting.
+- **HIGH risk** — safety-critical code (motor_guard, workspace, fault detection),
+  IPC/CAN protocol changes, changes with broad ripple effects, or anything the
+  audit-fixer agent flagged as HIGH. **Pause and ask for explicit approval.**
+
+After presenting the fix proposals, proceed as follows:
+
+1. If **all fixes are LOW/MEDIUM**: announce "All fixes are low/medium risk —
+   applying now." and proceed directly to Stage 3.
+2. If **some fixes are HIGH**: announce which fixes will be auto-applied and which
+   need approval. Apply the LOW/MEDIUM fixes immediately, then ask:
+
+> **The following HIGH-risk fixes need your approval:**
+> <list the HIGH-risk fixes with their risk rationale>
 >
-> Which fixes should I apply?
+> - **approve all** — apply all remaining fixes
+> - **approve N,N,...** — apply only the listed fix numbers
+> - **reject** — skip these, keep only the already-applied fixes
+> - **modify** — describe what you'd change before I apply
+>
+> Which HIGH-risk fixes should I apply?
 
-**Do not proceed past this gate without explicit user approval.**
+3. If **all fixes are HIGH**: present them and ask for approval before applying any.
+
+**Do not auto-apply HIGH-risk fixes without explicit user approval.**
 
 ---
 
 ## Stage 3: Apply Fixes
 
-For each approved fix, in the recommended order from the fix proposals:
+For each fix (auto-approved or explicitly approved), in the recommended order from
+the fix proposals:
 
 1. **Read the target file** to get the current state
 2. **Apply the change** using the Edit tool
@@ -118,10 +143,32 @@ If any test fails after applying fixes:
 
 ---
 
+## Stage 4: Wrap-up
+
+After all fixes are applied and tests pass (or the user has acknowledged failures):
+
+1. Present a final summary:
+
+> ### Audit Complete
+>
+> **Applied N fixes** (N auto-applied, N user-approved)
+> **Tests**: all passing / N failures acknowledged
+> **Files changed**: `file1.py`, `file2.py`, ...
+>
+> Ready to commit? Run `/commit` to review and commit these changes.
+
+2. If there are no remaining issues and the working tree has changes, suggest
+   `/commit` as the natural next step. Do not run it automatically — just prompt.
+
+---
+
 ## Constraints
 
-- **Never skip a review gate.** The user must explicitly approve before the pipeline
-  advances to the next stage.
+- **Review Gate 1 is mandatory.** The user must acknowledge findings before any fixes
+  are proposed or applied.
+- **Review Gate 2 is risk-gated.** LOW/MEDIUM fixes auto-apply after the user has
+  acknowledged the finding in Gate 1. HIGH-risk fixes always require explicit
+  approval at Gate 2.
 - **Agents are read-only.** Only the main conversation (Stage 3) modifies files.
 - **Respect the user's selections.** If they approved only findings 1 and 3, do not
   sneak finding 2 into the fix proposals. If they approved only fix 1, do not apply
@@ -130,3 +177,5 @@ If any test fails after applying fixes:
   code beyond the scope of the approved fixes.
 - **Be transparent about test failures.** If tests fail after fixes, present the
   information clearly and let the user decide the path forward.
+- **Always suggest `/commit` when done.** If the pipeline produced changes and tests
+  pass, prompt the user to run `/commit` — but never run it automatically.

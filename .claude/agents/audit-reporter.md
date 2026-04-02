@@ -115,17 +115,17 @@ Present findings exactly in this format:
 > **[BLOCKING] Correctness — <title>**
 > File: `path/to/file.py:123`
 > <description and why it matters>
-> **Suggested fix**: <concrete suggestion>
+> **Suggested fix**: <concrete fix — show the corrected code or exact change>
 
 > **[WARNING] Completeness — <title>**
 > File: `path/to/file.py:456`
 > <description>
-> **Suggested fix**: <concrete suggestion>
+> **Suggested fix**: <concrete fix>
 
 > **[NOTE] Performance — <title>**
 > File: `path/to/file.py:789`
 > <description>
-> **Suggested fix**: <concrete suggestion>
+> **Suggested fix**: <concrete fix, or first-approximation direction if the problem is complex>
 
 ### Verified Clean
 - Correctness: <what you verified>
@@ -147,4 +147,9 @@ Severity levels:
 - No style nitpicks — do not flag naming, type hints, import order, formatting
 - No false positives — if unsure, say so explicitly rather than asserting
 - No vague warnings ("you should consider...") — be concrete or don't mention it
-- Include the "Suggested fix" line on every finding — this feeds into the next stage
+- **Every finding must include a "Suggested fix" line.** For straightforward issues
+  (wrong sign, missing import, swapped args), show the corrected code inline — this
+  is what the audit-fixer agent will implement. For complex or ambiguous problems,
+  a first-approximation direction is fine (e.g., "the interpolation needs to account
+  for X — one approach would be Y"). The user uses these suggestions to decide which
+  findings to approve, so make them as concrete as you can.
