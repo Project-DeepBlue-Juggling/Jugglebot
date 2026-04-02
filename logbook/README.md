@@ -1,0 +1,206 @@
+# Engineering Logbook
+
+A structured, searchable record of every investigation, bugfix, refactor, feature, and optimization in the Jugglebot project. Every code change gets a logbook entry that captures *why* the change was made, not just *what* changed.
+
+## Why This Exists
+
+Git history tells you *what* changed. Commit messages tell you *what* was intended. But neither captures the full story: what symptoms were observed, what hypotheses were considered and rejected, what tradeoffs were made, or what side effects were discovered. This logbook fills that gap.
+
+Future collaborators (human or AI) can search the logbook to understand:
+- Why a particular file looks the way it does
+- What investigations have touched a subsystem
+- What issues were encountered and how they were resolved
+- What's still open or partially addressed
+
+## Quick Reference
+
+| Command | Purpose |
+|---------|---------|
+| `/investigate` | Full hardware diagnosis-to-fix pipeline (gated) |
+| `/log <type> <title>` | Log a non-hardware code change |
+| `/logbook` | Browse, search, and filter entries |
+| `/archive-plan <name>` | Archive a completed plan (with critical review) |
+
+## Workflows
+
+### After a hardware test session
+
+```
+/investigate                          # latest unanalysed session
+/investigate mpc_20260401_152101.csv  # specific session
+/investigate --dry-run                # diagnose + log, skip fix steps
+/investigate --resume <entry>         # resume a paused investigation
+```
+
+The `/investigate` pipeline walks through 9 gated steps:
+
+1. **Determine scope** — find target CSVs
+2. **Diagnose** — run analysis engine, cross-reference known issues
+3. **Create logbook entry** — via logbook-updater agent
+4. **Propose fixes** — via fix-proposer agent (1-3 options with risk assessment)
+5. **Implement** — make code changes
+6. **Test** — run `pytest tests/ -v`
+7. **Commit** — with `Logbook-Entry:` trailer
+8. **Push** — optional
+9. **Update outcome** — fill in results, set status
+
+Each step is gated — you can stop at any point and resume later.
+
+### After a code change (non-hardware)
+
+```
+/log refactor Extract MPC orchestration into controller/
+/log bugfix Fix race condition in IPC handshake
+/log feature Add dashboard auto-reconnect
+/log optimization Reduce solver warm-start overhead
+/log --from-commits a32bf27,3a3381f    # retroactive
+```
+
+Subsystem tags are auto-detected from file paths. The entry uses sections appropriate to the type (e.g., a refactor gets Motivation/Changes/Verification instead of Symptoms/Diagnosis).
+
+### Browsing the logbook
+
+```
+/logbook                        # full index with status counts
+/logbook --summary              # digest of recent entries
+/logbook --timeline             # chronological view with plan milestones
+/logbook --search velocity      # keyword search across all entries
+/logbook --file motor_guard.py  # reverse lookup: what entries touched this file?
+/logbook --subsystem mpc        # filter by subsystem
+/logbook --status open          # show unfinished entries
+/logbook <entry-name>           # read a specific entry
+/logbook --new "my title"       # create a blank entry manually
+```
+
+### Archiving a plan
+
+```
+/archive-plan hardware-bringup
+```
+
+The plan-reviewer agent critically checks every milestone against the actual codebase before allowing archival. Plans move from `plans/active/` to `plans/archived/` with a completion date.
+
+## Entry Format
+
+Every entry is a markdown file with YAML frontmatter:
+
+```yaml
+---
+title: Velocity feedforward semantic mismatch causing violent oscillation
+type: investigation          # investigation | bugfix | refactor | feature | optimization
+date: 2026-03-30
+status: resolved             # open | in-progress | resolved
+phase: "3.1"                 # bringup phase (optional)
+related_plan: hardware-bringup.md
+related_issues:
+  - VEL_FF_BUG
+sessions:
+  - mpc_20260330_171932.csv
+files_changed:               # enables reverse lookups
+  - controller/mpc.py
+  - ros_ws/src/jugglebot/jugglebot/motion/motor_guard.py
+commits:                     # git traceability
+  - a618751
+subsystem:                   # controlled vocabulary
+  - mpc
+  - motion
+tags:
+  - safety
+---
+```
+
+### Entry types and their sections
+
+| Type | Use when... | Sections |
+|------|-------------|----------|
+| **investigation** | Diagnosing a hardware anomaly | Symptoms, Diagnosis, Discussion, Fix, Outcome |
+| **bugfix** | Fixing a software bug | Problem, Root Cause, Fix, Verification |
+| **refactor** | Restructuring code | Motivation, Changes, Verification |
+| **feature** | Adding new functionality | Motivation, Design, Implementation, Verification |
+| **optimization** | Improving performance | Motivation, Approach, Benchmarks, Verification |
+
+All types share: **Summary** (at top) and **Open Questions** (at bottom).
+
+### Tag taxonomy
+
+**Subsystem tags** (auto-detected from file paths):
+
+| Tag | Covers |
+|-----|--------|
+| `mpc` | `controller/mpc.py`, `controller/params.py` |
+| `controller` | `controller/` (non-MPC) |
+| `motion` | `ros_ws/.../motion/` |
+| `can` | `ros_ws/.../can/`, `can_node.py` |
+| `tracking` | `ros_ws/.../tracking/` |
+| `ros` | orchestrator, state machine, bridge nodes |
+| `gui` | `ros_ws/gui/` |
+| `sim` | `sim/` |
+| `config` | `config/` |
+| `tools` | `tools/` |
+
+**Content tags** (applied manually):
+`safety`, `performance`, `IPC`, `kinematics`, `dynamics`, `testing`, `docs`
+
+## Commit Traceability
+
+Code-change commits include a `Logbook-Entry:` trailer:
+
+```
+fix: cold-hold fallback holds at current position instead of stroke minimum
+
+Logbook-Entry: 2026-04-01-cold-hold-fallback-stroke-minimum
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+```
+
+This creates a one-hop path from `git blame` to the full investigation:
+**code line** → `git blame` → **commit** → `Logbook-Entry` trailer → **logbook entry** (with symptoms, discussion, alternatives considered, outcome)
+
+## Interactive Diagnosis Reports
+
+The diagnosis engine generates interactive HTML reports (Plotly) by default:
+
+```bash
+python3 sim/analysis/diagnose.py sim/logs/mpc_20260401_152101.csv --json
+```
+
+**Features:** scroll-zoom, box-select zoom, pan, hover tooltips, legend toggle (click to show/hide series).
+
+**8 plot categories:** legs, pose, tracking, solver, velocity, hand, workspace, chatter. Auto-selected based on detected anomalies.
+
+**Fallback:** `--static-plots` for matplotlib PNGs when Plotly isn't installed.
+
+## Directory Structure
+
+```
+logbook/
+  INDEX.md              ← summary table (auto-maintained)
+  TEMPLATE.md           ← entry format reference
+  README.md             ← this file
+  YYYY-MM-DD-slug.md    ← individual entries
+
+plans/
+  active/                         ← in-progress plans
+    <name>.md
+  archived/                       ← completed/superseded plans
+    YYYY-MM-DD <name>.md          ← prefixed with completion date
+
+sim/analysis/
+  diagnose.py           ← analysis engine
+  plot_interactive.py   ← Plotly interactive reports
+  plot_diagnosis.py     ← matplotlib static plots (fallback)
+  known_issues.yaml     ← signature catalog for auto-detection
+  log_index.json        ← per-session metadata
+
+.claude/commands/       ← slash commands
+.claude/agents/         ← dedicated agents
+```
+
+## Agents
+
+The system uses dedicated agents to keep each task focused:
+
+| Agent | Purpose | Used by |
+|-------|---------|---------|
+| **fix-proposer** | Reads diagnosis + source code, proposes 1-3 fixes with risk assessment | `/investigate` |
+| **logbook-updater** | Creates/updates entries, maintains INDEX.md, cross-references | `/investigate`, `/log` |
+| **plan-reviewer** | Critically checks plan completeness before archiving | `/archive-plan` |

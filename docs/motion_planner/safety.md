@@ -151,7 +151,7 @@ On each MPC command arrival, the motor guard evaluates workspace limits:
 | `SOFT_LIMIT` | Warning logged, command accepted |
 | `HARD_LIMIT` | E-stop |
 
-Workspace limits: soft = 15 mm from endpoints, hard = 5 mm. Condition number: soft = 1.5× home, hard = 2.0× home (~643/858).
+Workspace limits: soft = 15 mm from endpoints, hard = 5 mm. Condition number (normalized Jacobian): soft = 1.5× home, hard = 2.0× home (~5-12/~7-16).
 
 ## CAN Node Step Check
 

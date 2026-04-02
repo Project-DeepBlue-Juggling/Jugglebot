@@ -1,3 +1,9 @@
+---
+title: MPC Hardware Bringup
+created: 2026-03-28
+status: active
+---
+
 # MPC Hardware Bringup Plan
 
 ## Context
@@ -414,6 +420,6 @@ Only after all prior phases pass — real ball throws from Ball Butler.
 After each phase, check:
 1. No motor guard E-stops (unless expected, as in Step 2.3)
 2. Tracking error within phase-specific thresholds
-3. Condition number below soft limit (~643)
+3. Condition number below soft limit (1.5× home, ~5-12 with normalized Jacobian)
 4. Motor currents reasonable (< 5A during normal operation)
 5. CSV telemetry log saved and reviewable

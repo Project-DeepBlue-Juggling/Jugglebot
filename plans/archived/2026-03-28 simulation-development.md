@@ -1,3 +1,10 @@
+---
+title: MPC Simulation Development
+created: 2026-03-01
+status: completed
+completed: 2026-03-28
+---
+
 # Jugglebot MPC Simulation: Stewart Platform with Model Predictive Control
 
 ## Summary

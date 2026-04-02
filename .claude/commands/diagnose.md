@@ -73,7 +73,7 @@ Read `sim/analysis/known_issues.yaml`.  For each flag in the analysis output:
 
 ### Step 5: Gather context
 
-Read `sim/HARDWARE_BRINGUP.md` to understand:
+Read `plans/active/hardware-bringup.md` to understand:
 - What bringup phase this test belongs to
 - What the pass/fail criteria are for this phase
 - Whether the observed behaviour is expected for this phase

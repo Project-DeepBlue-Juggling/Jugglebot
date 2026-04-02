@@ -23,7 +23,16 @@ sim/                         ← MuJoCo simulation (plant/, hand/, ball/, input/
 ros_ws/src/jugglebot/        ← ROS2 package (can/, motion/, tracking/, nodes)
 tests/                       ← all tests (ros/, sim/, motion/, hardware/, archived/)
 tools/                       ← standalone utilities (tracking_analyzer)
+logbook/                     ← engineering logbook (investigation entries, INDEX.md)
+plans/active/                ← in-progress plans and implementation reports
+plans/archived/              ← completed or superseded plans
 ```
+
+**Engineering logbook & planning:**
+- All code changes are logged in `logbook/` — see `logbook/README.md` for the full guide
+- `/investigate` — hardware diagnosis-to-fix pipeline; `/log` — log non-hardware changes; `/logbook` — browse/search entries
+- `/archive-plan` — move completed plans from `plans/active/` to `plans/archived/` (with critical review)
+- Commits include `Logbook-Entry: <slug>` trailers for traceability from `git blame` to logbook entries
 
 **Key architectural boundaries:**
 - `ros_ws/.../motion/` and `controller/` are pure Python — no ROS2 imports allowed
@@ -115,7 +124,7 @@ mkdocs serve   # local preview at http://localhost:8000
 - **Python 3.8 compatibility** in `ros_ws/`: always use `from __future__ import annotations` for modern type hints
 - **Config codegen**: after editing `hardware_config.yaml` or `protocol_config.yaml`, run `python config/generate_config.py` — never hand-edit generated files
 - `tests/conftest.py` sets up shared paths; `tests/ros/conftest.py` injects mock ROS2 modules for Windows
-- Stewart platform uses mixed mm/rad units throughout; condition numbers are naturally high (~450-650) due to this
+- Stewart platform uses mixed mm/rad units; Jacobian is normalized by `plat_radius_mm` before numeric work (condition number ~3-8 at home, not the raw ~450)
 - Jacobian convention: J maps `[vx,vy,vz,wx,wy,wz]` to `[q_dot_1..q_dot_6]`
 - Force decomposition: `f = J^{-T} * W` (use `np.linalg.solve(J.T, W)`), NOT `J^T * W`
 - All movements must use profiled trajectories — never command step position changes

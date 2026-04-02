@@ -1,6 +1,16 @@
 {
   "version": 1,
   "sessions": {
+    "mpc_20260330_171932.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-03-30T22:00:00Z",
+      "verdict": "FAIL",
+      "flags_count": 3,
+      "phase": "3.1",
+      "ros2_session": null,
+      "rosbag": null,
+      "logbook_entry": "2026-03-30-velocity-feedforward-oscillation.md"
+    },
     "mpc_20260401_131845.csv": {
       "analyzed": true,
       "last_analyzed": "2026-04-01T14:05:00Z",
@@ -90,7 +100,8 @@
       "phase": "solver-fix-validation-motion",
       "ros2_session": null,
       "rosbag": "/home/jetson/Desktop/rosbags/2026-04-01_14-37-59",
-      "notes": "Cold-start timeout cascade — fixed by salvaging IPOPT partial solutions"
+      "notes": "Cold-start timeout cascade — fixed by salvaging IPOPT partial solutions",
+      "logbook_entry": "2026-04-01-cold-hold-fallback-stroke-minimum.md"
     },
     "mpc_20260401_152048.csv": {
       "analyzed": true,
@@ -109,7 +120,8 @@
       "phase": "solver-fix-validation-motion",
       "ros2_session": "/home/jetson/.ros/log/python3_56892_1775017221068.log",
       "rosbag": "/home/jetson/Desktop/rosbags/2026-04-01_15-20-18",
-      "notes": "Cold-hold fallback commands stroke minimum (5mm) causing 150mm+ discontinuities (COLD_HOLD_STROKE_MIN, now fixed). Solve times p50=24.8ms, max=35.2ms exceed 24ms budget for off-centre targets (MPC_STALENESS). 89% budget violations, 175 consecutive. Platform dropped to STOW."
+      "notes": "Cold-hold fallback commands stroke minimum (5mm) causing 150mm+ discontinuities (COLD_HOLD_STROKE_MIN, now fixed). Solve times p50=24.8ms, max=35.2ms exceed 24ms budget for off-centre targets (MPC_STALENESS). 89% budget violations, 175 consecutive. Platform dropped to STOW.",
+      "logbook_entry": "2026-04-01-cold-hold-fallback-stroke-minimum.md"
     }
   }
 }

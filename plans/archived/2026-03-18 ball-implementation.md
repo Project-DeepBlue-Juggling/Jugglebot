@@ -1,8 +1,15 @@
+---
+title: Ball Tracking & Catch Coordination
+created: 2026-03-10
+status: completed
+completed: 2026-03-18
+---
+
 # Ball Tracking & Catch Coordination — Implementation Plan
 
 ## Context
 
-This is the implementation plan for **Phase 6 (Ball Tracking + Catch)** of the Jugglebot codebase rewrite (see `CODEBASE_REWRITE_PLAN.md` for the full rewrite roadmap). The rewrite replaced 18 organically-grown ROS2 nodes with 4-6 focused ones on the `refactor` branch, keeping `main` as a safety net.
+This is the implementation plan for **Phase 6 (Ball Tracking + Catch)** of the Jugglebot codebase rewrite (see `plans/archived/2026-03-18 codebase-rewrite.md` for the full rewrite roadmap). The rewrite replaced 18 organically-grown ROS2 nodes with 4-6 focused ones on the `refactor` branch, keeping `main` as a safety net.
 
 **Phases 0-5** built the foundation: a CAN interface, state machine + orchestrator, a full motion planner (IK/dynamics/trajectory/workspace/fault detection), mocap integration, and system-level integration. **Phase 7 of the motion planner** added the dynamic target API — accepting `(target_pos, target_quat, target_vel, arrival_time)` with background feasibility checking, C2-continuous mid-motion replanning, and auto-decelerate-to-stop. That API is hardware-tested and working.
 

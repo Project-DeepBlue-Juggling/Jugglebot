@@ -1,3 +1,10 @@
+---
+title: Phase 3.1 Oscillation — Root Cause Analysis
+created: 2026-03-30
+status: completed
+completed: 2026-03-30
+---
+
 # Phase 3.1 Oscillation — Root Cause Analysis
 
 **Date:** 2026-03-30

@@ -44,7 +44,7 @@ Based on your exploration:
 
 ### Phase 4: Write the Report
 
-Save the report as a markdown file in the `sim/` directory (or another location if more appropriate for the topic). Use the user's description to derive a filename in SCREAMING_SNAKE_CASE (e.g., `CAN_PROCESS_REFACTOR.md`, `KALMAN_FILTER_REDESIGN.md`).
+Save the report as a markdown file in `plans/active/` using kebab-case (e.g., `can-process-refactor.md`, `kalman-filter-redesign.md`). Add YAML frontmatter with `title`, `created` (today's date), and `status: active`.
 
 The report MUST contain these sections, in this order:
 

@@ -1,3 +1,10 @@
+---
+title: Codebase Overhaul — ROS2 Layer Rewrite
+created: 2026-02-17
+status: completed
+completed: 2026-03-18
+---
+
 # Jugglebot Codebase Overhaul: Targeted Rewrite of the ROS2 Layer
 
 ## Implementation Notes
@@ -311,7 +318,7 @@ When mocap integration is complete, update the LEVELLING state to:
 
 ### Phase 6: Ball Tracking + Catch — DONE (2026-03-18)
 
-Full ball tracking, catch coordination, and hand control. Detailed design and completion notes in `BALL_IMPLEMENTATION_PLAN.md`.
+Full ball tracking, catch coordination, and hand control. Detailed design and completion notes in `plans/archived/2026-03-18 ball-implementation.md`.
 
 **Deliverables:**
 
