@@ -14,6 +14,7 @@ logbook entry that captures the full arc: symptom, diagnosis, discussion, fix, o
 - **`<csv_filename>`**: investigate a specific session
 - **`--resume <entry>`**: resume an existing logbook entry (filename with or without .md)
 - **`--sessions csv1,csv2,...`**: investigate multiple related sessions together
+- **`--dry-run`**: diagnose and create logbook entry, but skip fix/implement/commit steps
 
 ## Protocol
 
@@ -32,9 +33,14 @@ logbook entry that captures the full arc: symptom, diagnosis, discussion, fix, o
 **If starting fresh:**
 1. Determine target CSV(s) using the same logic as `/diagnose`:
    read `sim/analysis/log_index.json`, find latest unanalysed or specified file
-2. Check if any existing logbook entry already references these sessions
+2. **Auto-group related sessions:** Check `log_index.json` for other CSVs that share
+   the same `rosbag` path or have timestamps within 1 hour of the target. If found,
+   offer to include them all in a single investigation:
+   > "Found 4 related sessions from the same rosbag session (2026-04-01_13-18-01).
+   > Include all in this investigation, or just the specified one?"
+3. Check if any existing logbook entry already references these sessions
    (grep `logbook/` for the CSV filename)
-3. If found, ask the user whether to update the existing entry or create a new one
+4. If found, ask the user whether to update the existing entry or create a new one
 
 ### Step 2: Diagnose
 
@@ -62,12 +68,23 @@ Present the diagnosis findings to the user.
 
 Spawn the **logbook-updater** agent to:
 1. Generate a slug from the most prominent issue
-2. Create `logbook/YYYY-MM-DD-<slug>.md`
-3. Fill in: title, date, phase, sessions, related_issues, tags
+2. Create `logbook/YYYY-MM-DD-<slug>.md` with `type: investigation`
+3. Fill in frontmatter:
+   - title, type, date, phase, sessions, related_issues
+   - `subsystem:` — auto-detect from files referenced in the diagnosis flags
+   - `tags:` — use controlled vocabulary (see TEMPLATE.md)
+   - `files_changed:` — leave empty (populated after fix is implemented)
+   - `commits:` — leave empty (populated after committing)
 4. Fill in: Summary (from verdict), Symptoms, Diagnosis sections
 5. Set status to `in-progress`
 6. Update `logbook/INDEX.md`
 7. Update `sim/analysis/log_index.json` with `logbook_entry` pointers
+
+**If `--dry-run` was specified:** Stop here. The logbook entry has been created with
+the diagnosis. Report the entry path and exit. The entry can be resumed later with
+`/investigate --resume <entry>` when the user is ready to work on fixes.
+
+---
 
 ### Step 4: Discuss potential fixes
 
@@ -139,7 +156,8 @@ Present test results.
 Follow the project's commit convention:
 1. Stage the relevant files (code changes + logbook entry + index updates)
 2. Propose a commit message with conventional prefix (fix:, feat:, refactor:, etc.)
-3. Wait for user approval before executing
+3. Include `Logbook-Entry: <entry-slug>` trailer on the code-change commit
+4. Wait for user approval before executing
 
 ---
 
@@ -169,13 +187,15 @@ Present the proposed commit (files to stage + message).
 ### Step 9: Update logbook outcome
 
 Spawn the **logbook-updater** agent to:
-1. Fill in the Outcome section:
+1. Populate `files_changed:` in frontmatter from `git diff --name-only` of the commit(s)
+2. Populate `commits:` in frontmatter with the commit hash(es)
+3. Fill in the Outcome section:
    - Test results (pass/fail, key metrics)
    - Commit hash and message
    - Whether pushed
-2. If all symptoms are addressed: set status to `resolved`
-3. If partially addressed: keep status `in-progress`, note what remains in Open Questions
-4. Update `logbook/INDEX.md` with new status
+4. If all symptoms are addressed: set status to `resolved`
+5. If partially addressed: keep status `in-progress`, note what remains in Open Questions
+6. Update `logbook/INDEX.md` with new status
 
 ## Gating Design
 

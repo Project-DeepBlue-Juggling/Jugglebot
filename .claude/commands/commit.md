@@ -69,10 +69,46 @@ For each commit in order:
    ```
 3. Confirm success before moving to the next commit
 
+### Logbook-Entry trailer
+
+If the current conversation has an active logbook entry (created by `/investigate`,
+`/log`, or `/logbook --new`), add a `Logbook-Entry:` trailer to commits that
+contain the code changes described by that entry:
+
+```bash
+git commit -m "$(cat <<'EOF'
+fix: cold-hold fallback holds at current position instead of stroke minimum
+
+Logbook-Entry: 2026-04-01-cold-hold-fallback-stroke-minimum
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+EOF
+)"
+```
+
+This enables one-hop traceability: `git blame` → commit → `Logbook-Entry` trailer
+→ full logbook entry with context, discussion, and outcome.
+
+Only add the trailer to commits containing the actual code fix/change — not to
+commits that only update the logbook entry itself.
+
 After all commits are done, report the final state:
 - Branch name
 - Number of commits created
 - Commit hashes and messages
+
+### Phase 4: Suggest logbook entry
+
+After committing, check whether the committed files are covered by an existing
+logbook entry. To check: grep `logbook/` for the committed file paths in
+`files_changed:` frontmatter.
+
+If **no logbook entry** covers these files, suggest:
+> "These changes don't have a logbook entry. Consider running:
+> `/log <suggested-type> <suggested-title-from-commit-message>`
+> or `/log --from-commits <hash>` to document this change."
+
+Only suggest — never create a logbook entry automatically. Skip the suggestion
+if the commit only touches documentation, test files, or logbook files themselves.
 
 Do NOT push unless the user explicitly asks. If the user asks to push and it is rejected (e.g. remote has diverged), report the error clearly and ask how to proceed.
 

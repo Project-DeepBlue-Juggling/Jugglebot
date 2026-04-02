@@ -42,7 +42,9 @@ Present the review to the user.
 
 ### Step 4: Execute archival
 
-1. Move the file: `git mv plans/active/<name>.md plans/archived/<name>.md`
+1. Move the file with completion date prefix:
+   `git mv plans/active/<name>.md "plans/archived/YYYY-MM-DD <name>.md"`
+   where YYYY-MM-DD is today's date (the completion date)
 2. Update the frontmatter:
    - Set `status: completed` (or `superseded` if replaced by a new plan)
    - Add `completed: YYYY-MM-DD`
