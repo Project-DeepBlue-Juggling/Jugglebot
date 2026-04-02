@@ -47,6 +47,7 @@ if _repo_root not in sys.path:
     sys.path.insert(0, _repo_root)
 
 from analysis.compare import load_csv, estimate_tau
+from analysis.plot_diagnosis import generate_diagnostic_plots, parse_categories
 from viz.telemetry import StepRecord
 
 
@@ -786,8 +787,12 @@ def generate_flags(result: Dict[str, Any]) -> List[Dict[str, Any]]:
 def run_diagnosis(csv_path: str,
                   ros_log_dir: Optional[str] = None,
                   rosbag_path: Optional[str] = None,
-                  budget_ms: float = DEFAULT_BUDGET_MS) -> Dict[str, Any]:
-    """Run full diagnosis and return structured result."""
+                  budget_ms: float = DEFAULT_BUDGET_MS,
+                  plots: Any = None) -> Dict[str, Any]:
+    """Run full diagnosis and return structured result.
+
+    plots: None=no plots, 'auto'=auto-select, list of str=specific categories.
+    """
     result = {
         'file': os.path.basename(csv_path),
         'source': 'hardware' if 'hardware' in csv_path.lower() else 'unknown',
@@ -828,6 +833,20 @@ def run_diagnosis(csv_path: str,
     # Generate flags
     result['flags'] = generate_flags(result)
 
+    # Generate diagnostic plots (if requested)
+    # plots=None => no plots, 'auto' => auto-select, list => specific categories
+    if plots is not None:
+        prefix = csv_path
+        if prefix.lower().endswith('.csv'):
+            prefix = prefix[:-4]
+        categories = None if plots == 'auto' else plots
+        result['plots'] = generate_diagnostic_plots(
+            records, result, prefix, categories=categories)
+        result['plots_generated'] = list(result['plots'].keys())
+    else:
+        result['plots'] = {}
+        result['plots_generated'] = []
+
     return result
 
 
@@ -843,14 +862,48 @@ def main():
                         help=f'MPC solve budget in ms (default: {DEFAULT_BUDGET_MS})')
     parser.add_argument('--json', action='store_true',
                         help='Output structured JSON (for slash command consumption)')
+    parser.add_argument('--plots', default=None, metavar='CATEGORIES',
+                        help='Generate plots: "auto", "all", "none", or '
+                             'comma-separated list (e.g. legs,solver,tracking)')
+    parser.add_argument('--html', action='store_true', default=True,
+                        help='Generate self-contained HTML report (default: on)')
+    parser.add_argument('--no-html', dest='html', action='store_false',
+                        help='Disable HTML report generation')
     args = parser.parse_args()
+
+    # --html implies --plots auto (unless user explicitly passed --plots)
+    if args.html and args.plots is None:
+        args.plots = 'auto'
+
+    # Parse --plots: None=no plots, 'auto'=auto-select, list=specific categories
+    plot_cats = None  # default: no plots
+    if args.plots is not None:
+        parsed = parse_categories(args.plots)
+        # parse_categories returns None for 'auto', [] for 'none', list for specific
+        if parsed is None:
+            plot_cats = 'auto'
+        elif parsed == []:
+            plot_cats = None  # 'none' => no plots
+        else:
+            plot_cats = parsed
 
     result = run_diagnosis(
         csv_path=args.csv_path,
         ros_log_dir=args.ros_log_dir,
         rosbag_path=args.rosbag,
         budget_ms=args.budget_ms,
+        plots=plot_cats,
     )
+
+    # Generate HTML report if requested
+    if args.html:
+        from analysis.report_html import generate_html_report
+        html_prefix = args.csv_path
+        if html_prefix.lower().endswith('.csv'):
+            html_prefix = html_prefix[:-4]
+        html_path = generate_html_report(result, f'{html_prefix}_report.html')
+        result['html_report'] = html_path
+        print(f'HTML report: {html_path}', file=sys.stderr)
 
     if args.json:
         # Compact JSON for machine consumption

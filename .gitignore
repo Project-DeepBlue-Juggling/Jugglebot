@@ -87,6 +87,7 @@ Ball Butler/hand_sensor_pcb_rail/fp-info-cache
 /.claude/*
 !/.claude/commands/
 sim/tests/results/
+sim/logs/
 
 # MkDocs build output
 site/

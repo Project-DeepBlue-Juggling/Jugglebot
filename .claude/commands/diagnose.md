@@ -47,7 +47,22 @@ python3 sim/analysis/diagnose.py <csv_path> [--rosbag <path>] --json
 
 **Note:** Always use `python3` — on the Jetson, `python` may resolve to Python 2.7.
 
+HTML report generation and plot generation are both **on by default**.  Pass `--no-html` to disable the HTML report, or `--plots none` to skip plot generation.
+
+The `--plots` flag controls diagnostic plot generation:
+- `auto` (default when HTML is enabled): auto-selects relevant plots based on detected flags (always includes `legs`, `tracking`, `solver`; adds `chatter`, `workspace`, `velocity`, `pose`, `hand` when relevant anomalies are found)
+- `all`: generates all 8 plot categories
+- `none`: skips plot generation
+- Comma-separated list: e.g. `legs,solver,chatter` for specific plots
+
 Read the JSON output.
+
+### Step 3b: Open diagnostic report
+
+If the analysis JSON contains an `html_report` key with a file path:
+1. Open the HTML report in the browser: `xdg-open <html_report_path>`
+2. Tell the user the report path and that it has been opened
+3. The HTML report contains embedded plots and structured tables — no need to read PNG files separately
 
 ### Step 4: Cross-reference against known issues
 
@@ -90,12 +105,14 @@ Use this format:
 
 <Flag worst leg if ratio > 1.5x median>
 <Report transient vs steady-state metrics if available>
+<Display legs plot and tracking plot here if generated>
 
 ### MPC Solver
 - p50: ... ms, p95: ... ms, p99: ... ms, max: ... ms
 - Budget violations: N (X%)
 - First-sample: ... ms (expected cold-start if > 15ms)
 <Compare against baseline if available>
+<Display solver plot here if generated>
 
 ### Motor & CAN Health
 <From rosbag: motor errors (/robot_state), disarms, CAN rejections, firmware validation>
@@ -105,11 +122,13 @@ Use this format:
 - Oscillation: <detected/not detected>, chatter ratios per leg
 - Discontinuities: <count> command jumps, <count> actual jumps
 - Torque: max <N> Nm, mean <N> Nm
+<Display chatter and velocity plots here if generated>
 
 ### Workspace
 - Extension range: [<min>, <max>] mm
 - Margin to lower limit: <N> mm
 - Margin to upper limit: <N> mm
+<Display workspace plot here if generated>
 
 ### Flagged Issues
 For each flag:
