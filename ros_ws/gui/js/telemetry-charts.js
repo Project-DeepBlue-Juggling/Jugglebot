@@ -43,7 +43,7 @@ const SCALE_META = {
 
 // ---- Motor layout ----
 
-const CHART_LABELS = ['L0', 'L1', 'L2', 'L3', 'L4', 'L5', 'Hand', 'BB Pitch', 'BB Hand'];
+const CHART_LABELS = ['Leg 0', 'Leg 1', 'Leg 2', 'Leg 3', 'Leg 4', 'Leg 5', 'Hand', 'BB Pitch', 'BB Hand'];
 const MOTOR_COUNT = 9;
 
 // ---- State ----

@@ -12,7 +12,7 @@ import { onWorkspaceStatus } from './jog-panel.js';
 
 // ---- Motor grid ----
 
-const MOTOR_LABELS = ['L0', 'L1', 'L2', 'L3', 'L4', 'L5', 'Hand'];
+const MOTOR_LABELS = ['Leg 0', 'Leg 1', 'Leg 2', 'Leg 3', 'Leg 4', 'Leg 5', 'Hand'];
 
 export function initMotorGrid() {
     const grid = document.getElementById('motor-grid');
@@ -644,7 +644,7 @@ export function initTrackingGrid() {
     const grid = document.getElementById('tracking-grid');
     if (!grid) return;
 
-    const labels = ['L0', 'L1', 'L2', 'L3', 'L4', 'L5', 'Hand'];
+    const labels = ['Leg 0', 'Leg 1', 'Leg 2', 'Leg 3', 'Leg 4', 'Leg 5', 'Hand'];
     for (let i = 0; i < 7; i++) {
         const col = document.createElement('div');
         col.className = 'tracking-col';
