@@ -5,7 +5,9 @@ disable-model-invocation: true
 
 # Git Commit Manager
 
-Survey all uncommitted changes in the repository, propose sensible commit groupings with clear messages, get explicit user approval, then execute the commits.
+Survey all uncommitted changes in the repository, propose sensible commit groupings
+with clear messages, and execute them. Low/moderate complexity commits auto-execute
+after presenting the plan; high complexity commits require explicit user approval.
 
 ## Phase 1: Survey
 
@@ -47,14 +49,42 @@ Example format:
 - *Rationale: isolated bug fix, separate from feature work*
 ---
 
-Then explicitly ask:
-> "Does this look right? You can approve as-is, ask me to re-group, rename any messages, or exclude any files before I proceed."
+Then assess the **complexity** of the overall commit plan:
 
-**Do not run any git commands that modify state until the user has explicitly approved.**
+**LOW complexity** — all of:
+- Single commit (or multiple commits that are all trivially separable)
+- Changes are small, self-contained, and obvious (config, docs, tooling, small fixes)
+- No safety-critical files (motor_guard, workspace, fault detection, CAN encoding)
+- No ambiguity in grouping — there's clearly only one sensible way to commit these
 
-## Phase 3: Execute (only after explicit approval)
+**MODERATE complexity** — any of:
+- 2-3 commits with clear, unambiguous groupings
+- Moderate-sized changes where the intent is obvious from the diff
+- No safety-critical files
 
-Once the user approves (or after incorporating any requested changes):
+**HIGH complexity** — any of:
+- Ambiguous grouping (multiple reasonable ways to split the commits)
+- Safety-critical files touched (motor_guard, workspace, fault detection, CAN, IPC)
+- Large or cross-cutting changes where the commit message needs careful framing
+- Mixed concerns that could reasonably be grouped differently
+
+### Approval Gate
+
+**LOW/MODERATE complexity**: present the plan, then announce "Straightforward
+changes — committing now." and proceed directly to Phase 3. Do not wait for
+approval.
+
+**HIGH complexity**: present the plan and ask:
+> "Does this look right? You can approve as-is, ask me to re-group, rename any
+> messages, or exclude any files before I proceed."
+
+**Do not proceed past Phase 2 for HIGH complexity commits without explicit user
+approval.**
+
+## Phase 3: Execute
+
+For LOW/MODERATE, execute immediately after presenting the plan. For HIGH, execute
+once the user approves (or after incorporating requested changes).
 
 For each commit in order:
 1. `git add` only the specific files for that commit (never `git add .` or `git add -A`)
@@ -115,6 +145,6 @@ Do NOT push unless the user explicitly asks. If the user asks to push and it is 
 ## Constraints
 - Never use `git add .` or `git add -A` — always stage files explicitly
 - Never amend, rebase, or force push without explicit user instruction
-- Never proceed past Phase 2 without clear user approval
+- Never proceed past Phase 2 for HIGH complexity commits without clear user approval
 - Never push without explicit user instruction
 - If anything looks ambiguous or risky, ask rather than assume
