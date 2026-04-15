@@ -365,12 +365,14 @@ class MotorGuardIPC:
                  mpc_command_addr: str = MPC_COMMAND_ADDR):
         self._ctx = zmq.Context()
 
-        # SUB socket for motor feedback -- CONFLATE keeps only latest
+        # SUB socket for motor feedback -- no CONFLATE (ZMQ 4.3.5 drops
+        # all messages when CONFLATE + topic filter are combined on a
+        # late-connecting SUB).  recv_all() drains to latest instead.
         self._sub_motor_fb = self._ctx.socket(zmq.SUB)
         self._sub_motor_fb.connect(command_addr)
         self._sub_motor_fb.setsockopt(zmq.SUBSCRIBE, TOPIC_MOTOR_FB)
         self._sub_motor_fb.setsockopt(zmq.RCVTIMEO, 0)  # non-blocking
-        self._sub_motor_fb.setsockopt(zmq.CONFLATE, 1)   # keep only latest
+        self._sub_motor_fb.setsockopt(zmq.RCVHWM, 2)    # small buffer, drain to latest
 
         # SUB socket for mode commands -- no CONFLATE, every command delivered
         self._sub_mode = self._ctx.socket(zmq.SUB)
@@ -379,12 +381,19 @@ class MotorGuardIPC:
         self._sub_mode.setsockopt(zmq.RCVTIMEO, 0)  # non-blocking
         self._sub_mode.setsockopt(zmq.RCVHWM, 64)   # bound queue size
 
-        # SUB socket for MPC commands -- CONFLATE, separate port.
+        # SUB socket for MPC commands -- separate port.
+        # No CONFLATE: ZMQ 4.3.5 drops all messages when CONFLATE + topic
+        # filter are combined on a late-connecting SUB.  Instead, recv_all()
+        # drains all pending messages and the caller uses the latest.
+        # Cap reconnect interval: the MPC process (HardwarePlant) binds PUB
+        # on this port minutes after the motor guard starts.
         self._sub_mpc_cmd = self._ctx.socket(zmq.SUB)
+        self._sub_mpc_cmd.setsockopt(zmq.RECONNECT_IVL, 100)      # 100ms base
+        self._sub_mpc_cmd.setsockopt(zmq.RECONNECT_IVL_MAX, 200)  # 200ms cap
         self._sub_mpc_cmd.connect(mpc_command_addr)
         self._sub_mpc_cmd.setsockopt(zmq.SUBSCRIBE, TOPIC_MPC_CMD)
         self._sub_mpc_cmd.setsockopt(zmq.RCVTIMEO, 0)  # non-blocking
-        self._sub_mpc_cmd.setsockopt(zmq.CONFLATE, 1)   # keep only latest
+        self._sub_mpc_cmd.setsockopt(zmq.RCVHWM, 2)    # small buffer, drain to latest
 
         # SUB socket for mode commands from HardwarePlant -- no CONFLATE,
         # every enable/disable/estop is delivered.  Separate from _sub_mpc_cmd
@@ -392,6 +401,8 @@ class MotorGuardIPC:
         # topic prefix — mixing mode + MPC on one CONFLATE socket silently
         # drops whichever arrives first in the same poll window.
         self._sub_mpc_mode = self._ctx.socket(zmq.SUB)
+        self._sub_mpc_mode.setsockopt(zmq.RECONNECT_IVL, 100)      # 100ms base
+        self._sub_mpc_mode.setsockopt(zmq.RECONNECT_IVL_MAX, 200)  # 200ms cap
         self._sub_mpc_mode.connect(mpc_command_addr)
         self._sub_mpc_mode.setsockopt(zmq.SUBSCRIBE, TOPIC_MODE)
         self._sub_mpc_mode.setsockopt(zmq.RCVTIMEO, 0)  # non-blocking
@@ -462,9 +473,16 @@ class BridgeIPC:
         self._pub.bind(command_addr)
 
         # SUB socket -- receives telemetry from motor guard (CONFLATE: latest only)
+        # Use SUBSCRIBE=b'' instead of TOPIC_TELEMETRY filter — ZMQ 4.3.5
+        # drops all messages when CONFLATE + topic filter are combined on a
+        # late-connecting SUB.  Safe: motor guard PUB only publishes telemetry.
+        # Cap reconnect interval to match MotorGuardIPC pattern — prevents
+        # ZMQ exponential backoff (100ms → 30s) from freezing telemetry.
         self._sub = self._ctx.socket(zmq.SUB)
+        self._sub.setsockopt(zmq.RECONNECT_IVL, 100)      # 100ms base
+        self._sub.setsockopt(zmq.RECONNECT_IVL_MAX, 200)   # 200ms cap
         self._sub.connect(telemetry_addr)
-        self._sub.setsockopt(zmq.SUBSCRIBE, TOPIC_TELEMETRY)
+        self._sub.setsockopt(zmq.SUBSCRIBE, b'')
         self._sub.setsockopt(zmq.RCVTIMEO, 0)  # non-blocking
         self._sub.setsockopt(zmq.CONFLATE, 1)
 

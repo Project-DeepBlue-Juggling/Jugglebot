@@ -1264,8 +1264,9 @@ def main():
     if args.mpc:
         from controller import MPCController, MPCParams
         if args.hardware:
-            # Hardware: real-time budget — 20ms solver + ~5ms overhead = 25ms period
-            param_overrides = dict(max_cpu_time=0.022, max_iter=100)
+            # Hardware: real-time budget — params.py max_cpu_time is authoritative.
+            # Cap max_iter for safety (fewer iterations = bounded worst-case).
+            param_overrides = dict(max_iter=100)
         else:
             # Simulation: accuracy over speed — no real-time constraint
             param_overrides = dict(max_cpu_time=2.0, max_iter=500)

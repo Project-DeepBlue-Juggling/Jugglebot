@@ -66,6 +66,7 @@ _ZMQ_CONNECT_SETTLE_S = 0.1
 # Telemetry staleness thresholds (MPC runs at 40 Hz = 25 ms period)
 _TELEM_STALE_WARN_S = 0.075   # 3x MPC period — log warning
 _TELEM_STALE_HARD_S = 0.125   # 5x MPC period — zero velocities
+_TELEM_STALE_ESTOP_S = 0.5    # 20x MPC period — telemetry definitely lost
 
 
 class HardwarePlant(PlantInterface):
@@ -136,7 +137,10 @@ class HardwarePlant(PlantInterface):
 
         # Consecutive FK failure counter.  If FK fails for too many cycles
         # in a row, something is seriously wrong — trigger e-stop.
+        # Only counted after at least one successful FK (cold-start failures
+        # are expected when the initial guess is None).
         self._fk_fail_count = 0
+        self._fk_ever_succeeded = False
         self._FK_FAIL_ESTOP_THRESHOLD = 5  # 5 × 25ms = 125ms at 40 Hz
         self._jacobian_singular_warned = False
 
@@ -152,9 +156,18 @@ class HardwarePlant(PlantInterface):
         self._pub.bind(mpc_command_addr)
 
         # SUB socket — receives telemetry from motor guard (CONFLATE: latest)
+        # IMPORTANT: use SUBSCRIBE=b'' (accept all) instead of a topic filter.
+        # ZMQ 4.3.5 has a bug where CONFLATE + topic filter on a late-connecting
+        # SUB permanently drops all messages.  The motor guard PUB on this port
+        # only publishes telemetry, so accepting all is safe and equivalent.
+        # Cap reconnect interval: without this, ZMQ exponential backoff
+        # (100ms → 30s) can leave telemetry frozen for seconds after any
+        # transient disconnect on :5556.
         self._sub = self._ctx.socket(zmq.SUB)
+        self._sub.setsockopt(zmq.RECONNECT_IVL, 100)      # 100ms base
+        self._sub.setsockopt(zmq.RECONNECT_IVL_MAX, 200)   # 200ms cap
         self._sub.connect(telemetry_addr)
-        self._sub.setsockopt(zmq.SUBSCRIBE, TOPIC_TELEMETRY)
+        self._sub.setsockopt(zmq.SUBSCRIBE, b'')
         self._sub.setsockopt(zmq.RCVTIMEO, 0)  # non-blocking
         self._sub.setsockopt(zmq.CONFLATE, 1)
 
@@ -319,6 +332,7 @@ class HardwarePlant(PlantInterface):
                 self._last_measured_pose[:3] = pos_offset
                 self._last_measured_pose[3:6] = rot_vec
                 self._fk_fail_count = 0
+                self._fk_ever_succeeded = True
                 self._last_fk_iterations = leg_lengths_to_pose.last_iterations
                 platform_pos_mm = pos_offset
                 platform_rot = rot_vec
@@ -326,8 +340,10 @@ class HardwarePlant(PlantInterface):
                 self._fk_fail_count += 1
                 logger.warning(
                     "FK did not converge; using last measured pose "
-                    f"(consecutive failures: {self._fk_fail_count})")
-                if self._fk_fail_count >= self._FK_FAIL_ESTOP_THRESHOLD:
+                    f"(consecutive failures: {self._fk_fail_count}, "
+                    f"ever_succeeded: {self._fk_ever_succeeded})")
+                if (self._fk_ever_succeeded
+                        and self._fk_fail_count >= self._FK_FAIL_ESTOP_THRESHOLD):
                     logger.error(
                         f"FK failed {self._fk_fail_count} consecutive times "
                         "— triggering e-stop")
@@ -338,6 +354,14 @@ class HardwarePlant(PlantInterface):
             # No motor position data — use last measured pose (not MPC prediction)
             platform_pos_mm = self._last_measured_pose[:3].copy()
             platform_rot = self._last_measured_pose[3:6].copy()
+
+        # E-stop when telemetry is completely lost — prevents runaway commands
+        # when MPC keeps seeing stale position feedback and ramping commands.
+        if telem_age is not None and telem_age > _TELEM_STALE_ESTOP_S:
+            logger.error(
+                f"Telemetry stale ({telem_age:.3f}s > "
+                f"{_TELEM_STALE_ESTOP_S}s) — triggering e-stop")
+            self.estop(reason='telemetry_stale')
 
         # Degrade velocity data when telemetry is stale
         if telem_age is not None and telem_age > _TELEM_STALE_HARD_S:
@@ -481,8 +505,8 @@ class HardwarePlant(PlantInterface):
             _pack(TOPIC_MODE, msg), flags=zmq.NOBLOCK)
         logger.info("HardwarePlant: sent enable (source=MPC)")
 
-        # Wait for the motor guard to publish telemetry with valid motor
-        # positions.  The guard publishes feedback-only telemetry while
+        # Phase 1: Wait for the motor guard to publish telemetry with valid
+        # motor positions.  The guard publishes feedback-only telemetry while
         # waiting for the first MPC command, which gives us the actual
         # motor state to seed the MPC.
         deadline = time.perf_counter() + timeout_s
@@ -492,12 +516,53 @@ class HardwarePlant(PlantInterface):
                     and self._last_telem.get('motor_pos') is not None):
                 logger.info(
                     "HardwarePlant: received motor feedback from guard")
+                break
+            time.sleep(0.01)
+        else:
+            raise RuntimeError(
+                f"HardwarePlant: no motor feedback telemetry within "
+                f"{timeout_s}s — is the motor guard running and receiving "
+                f"CAN feedback?")
+
+        # Phase 2: Verify the command channel (PUB :5557 → motor guard SUB)
+        # is connected by sending a hold-at-current probe command and waiting
+        # for the motor guard to acknowledge it (telemetry with leg_pos set).
+        # Without this, ZMQ reconnect backoff on the motor guard's SUB can
+        # delay command delivery by seconds, causing the MPC to fly blind.
+        motor_pos = np.array(self._last_telem['motor_pos'], dtype=float)
+        ext_mm = motor_pos / self._geom.mm_to_rev
+        probe_msg = make_mpc_command(
+            ext_mm=ext_mm,
+            motor_rev=motor_pos,
+            pose_6dof=self._last_measured_pose.copy(),
+            vel_mm_s=np.zeros(6),
+            torque_Nm=np.zeros(6),
+            seq=-1,
+        )
+
+        probe_deadline = time.perf_counter() + timeout_s
+        probe_interval = 0.05  # resend every 50ms
+        next_send = 0.0
+        while time.perf_counter() < probe_deadline:
+            now = time.perf_counter()
+            if now >= next_send:
+                self._pub.send_multipart(
+                    _pack(TOPIC_MPC_CMD, probe_msg), flags=zmq.NOBLOCK)
+                next_send = now + probe_interval
+
+            self.get_state()
+            if (self._last_telem is not None
+                    and self._last_telem.get('leg_pos') is not None):
+                logger.info(
+                    "HardwarePlant: command channel verified "
+                    "(motor guard received probe)")
                 return
             time.sleep(0.01)
 
         raise RuntimeError(
-            f"HardwarePlant: no motor feedback telemetry within {timeout_s}s "
-            "— is the motor guard running and receiving CAN feedback?")
+            "HardwarePlant: motor guard did not acknowledge probe command "
+            f"within {timeout_s}s — ZMQ command channel (:5557) may not be "
+            "connected")
 
     def disable(self) -> None:
         """Send disable command to the motor guard."""

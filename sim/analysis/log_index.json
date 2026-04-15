@@ -122,6 +122,28 @@
       "rosbag": "/home/jetson/Desktop/rosbags/2026-04-01_15-20-18",
       "notes": "Cold-hold fallback commands stroke minimum (5mm) causing 150mm+ discontinuities (COLD_HOLD_STROKE_MIN, now fixed). Solve times p50=24.8ms, max=35.2ms exceed 24ms budget for off-centre targets (MPC_STALENESS). 89% budget violations, 175 consecutive. Platform dropped to STOW.",
       "logbook_entry": "2026-04-01-cold-hold-fallback-stroke-minimum.md"
+    },
+    "mpc_20260415_144916.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-15T15:10:00Z",
+      "verdict": "FAIL",
+      "flags_count": 4,
+      "phase": "4.1",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-15_14-47-31",
+      "notes": "ZMQ feedback delay: HardwarePlant received stale motor positions for 5.5s. Motor guard executed perfectly (tracking <0.1mm per rosbag), but MPC flew blind and overcorrected when feedback resumed. Also: main.py overrides max_cpu_time=0.022 for hardware mode, bypassing params.py.",
+      "logbook_entry": "2026-04-15-zmq-telemetry-stale-reconnect-ivl.md"
+    },
+    "mpc_20260415_192410.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-15T20:00:00Z",
+      "verdict": "FAIL",
+      "flags_count": 99,
+      "phase": "4.1",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-15_19-23-29",
+      "notes": "ZMQ telemetry stale (same root cause as 144916): MPC feedback frozen at Active while commands oscillate. Solver timeout cascade causes cmd_ext sawtooth (succeed→ramp, timeout→fallback→drop). Motor guard faithfully executed oscillating commands, causing physical platform oscillation. Orchestrator faulted at bag_t=41.8. The RECONNECT_IVL fix was applied to :5557 SUBs but the stale channel is :5556 (telemetry). HardwarePlant SUB on :5556 also needs RECONNECT_IVL cap.",
+      "logbook_entry": "2026-04-15-zmq-telemetry-stale-reconnect-ivl.md"
     }
   }
 }

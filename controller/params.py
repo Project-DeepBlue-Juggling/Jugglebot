@@ -112,7 +112,7 @@ class MPCParams:
 
     # ---- IPOPT options --------------------------------------------------
     max_iter: int = 200
-    max_cpu_time: float = 0.024  # 24 ms (96% of 25 ms budget)
+    max_cpu_time: float = 0.018  # 18 ms (72% of budget, leaves headroom for overhead)
     tol: float = 1e-4
     warm_start: bool = True
     print_level: int = 0        # 0 = silent

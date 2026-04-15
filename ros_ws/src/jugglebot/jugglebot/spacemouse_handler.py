@@ -38,7 +38,10 @@ class SpaceMouseHandler(Node):
         self._is_open = False
 
         for attempt in range(1, max_attempts + 1):
-            self._is_open = pyspacemouse.open()
+            try:
+                self._is_open = bool(pyspacemouse.open())
+            except Exception:
+                self._is_open = False
             if self._is_open:
                 self.get_logger().info("SpaceMouse connected successfully.")
                 break
@@ -61,6 +64,8 @@ class SpaceMouseHandler(Node):
         Read the state of the SpaceMouse and publish this state to the 'platform_pose' topic
         Start by checking if the spacemouse is the chosen control method
         """
+        if not self._is_open:
+            return
         if not self.spacemouse_enabled:
             pyspacemouse.read()  # Read the state of the spacemouse to clear the buffer
             return

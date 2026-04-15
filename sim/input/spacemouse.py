@@ -126,7 +126,10 @@ class SpaceMouseInput:
         # Attempt connection
         import pyspacemouse
         for attempt in range(1, max_retries + 1):
-            self._connected = pyspacemouse.open()
+            try:
+                self._connected = bool(pyspacemouse.open())
+            except Exception:
+                self._connected = False
             if self._connected:
                 print(f"SpaceMouse connected (attempt {attempt}/{max_retries})")
                 break
