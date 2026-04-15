@@ -118,6 +118,7 @@ def log_mpc_step(logger: TelemetryLogger, state: PlantState,
         solve_status=diag.get('status', 'n/a'),
         cost=diag.get('cost', 0.0),
         constraint_violation=diag.get('constraint_violation', 0.0),
+        ipopt_iter=diag.get('iter_count', 0),
         **extras,
     )
     logger.append(record)
