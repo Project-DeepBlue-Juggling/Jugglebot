@@ -63,7 +63,18 @@ class MPCParams:
         return tuple(dt for _ in range(N))
 
     # ---- Actuator model -------------------------------------------------
-    tau: float = 0.065       # calibrated from Phase 4.3 hardware data (was 0.03)
+    # The Phase 4.3 calibration (2026-04-01, commit 1aaf9b7) measured tau=65ms,
+    # but the calibration run had a latent bug: the HardwarePlant's ZMQ SUB
+    # set CONFLATE after connect (silently ignored), so get_state() returned
+    # telemetry drained one-message-per-poll from a 500 Hz FIFO backlog with
+    # hundreds of ms of lag.  That calibration therefore captured
+    # actuator_tau + fifo_latency, not the actuator alone.  With the drain-to-
+    # latest fix (2026-04-16, commit TBD) feedback latency is ~2ms, so the
+    # true actuator tau is closer to the pre-calibration default of ~30ms.
+    # Sim is model-consistent at either value (MuJoCo has no hidden lag),
+    # but on hardware tau=65ms under-predicts actuator response, causing MPC
+    # over-correction and ~8.8 Hz limit-cycle oscillation.
+    tau: float = 0.040
 
     # ---- Tracking cost --------------------------------------------------
     Q_pos: float = 10.0      # position tracking weight (per mm²)
