@@ -117,9 +117,12 @@ class MPCParams:
     # ---- Constraints ----------------------------------------------------
     stroke_mm: float = 280.0
     stroke_margin_mm: float = 5.0    # safety margin from each end of stroke range
-    max_leg_vel_mmps: float = 280.0  # mm/s per leg; matches ODrive 4.0 rps limit
-    # during bringup.  Raise to 700 mm/s (~10 rps) for production once
-    # ODrive vel limit is raised via SetMotorVelCurrLimitsMessage.
+    max_leg_vel_mmps: float = 70.0   # mm/s per leg — conservative bringup cap.
+    # Lowered from 280 (2026-04-17): a 50mm Z move at v_max=280 drove the
+    # platform to ~2.7G peak accel, exceeding what the tau=40ms actuator
+    # model can predict accurately and causing MPC over-command + visible
+    # oscillation (see Run 2 in the 2026-04-17 FF-ablation session).
+    # Raise back toward 280–700 mm/s once accel profile is validated.
 
     # ---- IPOPT options --------------------------------------------------
     max_iter: int = 200

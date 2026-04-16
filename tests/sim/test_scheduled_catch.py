@@ -32,7 +32,10 @@ def plant():
 def mpc(plant):
     # Generous time budget for CI; the default 18ms is too tight for the
     # extended parameter vector (accel_ref + weights).
-    return MPCController.from_plant(MPCParams(max_cpu_time=0.05), plant)
+    # max_leg_vel_mmps=280 (prior bringup value) so catch tests keep their
+    # prior dynamics budget; hardware default was lowered to 70 on 2026-04-17.
+    return MPCController.from_plant(
+        MPCParams(max_cpu_time=0.05, max_leg_vel_mmps=280.0), plant)
 
 
 @pytest.fixture

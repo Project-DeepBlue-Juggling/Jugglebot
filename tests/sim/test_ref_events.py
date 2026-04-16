@@ -28,7 +28,10 @@ CONTROL_DT = 0.025  # 40 Hz
 # ---------------------------------------------------------------------------
 
 def _create_mpc(plant, **param_overrides):
-    defaults = dict(max_cpu_time=2.0, max_iter=500)
+    # max_leg_vel_mmps defaults to 280 (prior bringup value) rather than the
+    # hardware-conservative 70 introduced 2026-04-17, so tests that exercise
+    # fast dynamics keep their prior budget.
+    defaults = dict(max_cpu_time=2.0, max_iter=500, max_leg_vel_mmps=280.0)
     defaults.update(param_overrides)
     params = MPCParams(**defaults)
     return MPCController.from_plant(params, plant)

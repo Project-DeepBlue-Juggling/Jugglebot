@@ -267,7 +267,11 @@ class TestMPCIntegration:
     def mpc(self, plant):
         from controller.mpc import MPCController
         from controller.params import MPCParams
-        params = MPCParams(max_cpu_time=2.0, max_iter=500)
+        # max_leg_vel_mmps=280 (prior bringup value) so multi-event tests keep
+        # their prior dynamics budget; hardware default was lowered to 70 on
+        # 2026-04-17.
+        params = MPCParams(
+            max_cpu_time=2.0, max_iter=500, max_leg_vel_mmps=280.0)
         return MPCController.from_plant(params, plant)
 
     def test_mpc_accepts_multi_event_list(self, plant, mpc):

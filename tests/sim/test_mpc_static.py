@@ -37,8 +37,13 @@ def _create_mpc(plant, **param_overrides):
 
     Uses a generous CPU time budget (2s) so that cold-start solves succeed
     reliably in CI.  The solve-time *test* asserts the warm-started average.
+
+    ``max_leg_vel_mmps`` defaults to 280 mm/s (prior bringup value) rather
+    than the hardware-conservative 70 mm/s so that existing settle-time
+    and static-tracking assertions remain valid.  The hardware default in
+    ``controller/params.py`` was lowered on 2026-04-17 for safety.
     """
-    defaults = dict(max_cpu_time=2.0, max_iter=500)
+    defaults = dict(max_cpu_time=2.0, max_iter=500, max_leg_vel_mmps=280.0)
     defaults.update(param_overrides)
     params = MPCParams(**defaults)
     return MPCController.from_plant(params, plant)
