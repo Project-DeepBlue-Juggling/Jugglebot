@@ -155,21 +155,25 @@ class HardwarePlant(PlantInterface):
         self._pub = self._ctx.socket(zmq.PUB)
         self._pub.bind(mpc_command_addr)
 
-        # SUB socket — receives telemetry from motor guard (CONFLATE: latest)
-        # IMPORTANT: use SUBSCRIBE=b'' (accept all) instead of a topic filter.
-        # ZMQ 4.3.5 has a bug where CONFLATE + topic filter on a late-connecting
-        # SUB permanently drops all messages.  The motor guard PUB on this port
+        # SUB socket — receives telemetry from motor guard.
+        # Use SUBSCRIBE=b'' (accept all) instead of a topic filter: ZMQ 4.3.5
+        # has a bug where CONFLATE + topic filter on a late-connecting SUB
+        # permanently drops all messages.  The motor guard PUB on this port
         # only publishes telemetry, so accepting all is safe and equivalent.
-        # Cap reconnect interval: without this, ZMQ exponential backoff
+        # Cap RECONNECT_IVL: without this, ZMQ exponential backoff
         # (100ms → 30s) can leave telemetry frozen for seconds after any
         # transient disconnect on :5556.
+        # RCVHWM=2 + drain-in-loop in get_state() is used in lieu of CONFLATE:
+        # CONFLATE must be set *before* connect() to take effect, and even
+        # when correctly ordered it silently ignores multi-part messages on
+        # some libzmq versions.  Explicit draining is robust.
         self._sub = self._ctx.socket(zmq.SUB)
         self._sub.setsockopt(zmq.RECONNECT_IVL, 100)      # 100ms base
         self._sub.setsockopt(zmq.RECONNECT_IVL_MAX, 200)   # 200ms cap
+        self._sub.setsockopt(zmq.RCVHWM, 2)                # bounded queue
         self._sub.connect(telemetry_addr)
         self._sub.setsockopt(zmq.SUBSCRIBE, b'')
         self._sub.setsockopt(zmq.RCVTIMEO, 0)  # non-blocking
-        self._sub.setsockopt(zmq.CONFLATE, 1)
 
         # Let ZMQ sockets settle (PUB bind needs time before first send)
         time.sleep(_ZMQ_CONNECT_SETTLE_S)
@@ -267,13 +271,20 @@ class HardwarePlant(PlantInterface):
         If no telemetry has been received yet, returns a zero-state at
         the current elapsed time.
         """
-        # CONFLATE socket keeps only the latest message — single recv suffices.
-        try:
-            frames = self._sub.recv_multipart(flags=zmq.NOBLOCK)
-            _, self._last_telem = _unpack(frames)
+        # Drain all pending messages, keep only the latest.  Explicit drain
+        # is more robust than ZMQ_CONFLATE (which only works when set before
+        # connect).  At 40–100 Hz polling vs 500 Hz publishing, a single
+        # recv per poll would fall behind and read stale telemetry.
+        got_msg = False
+        while True:
+            try:
+                frames = self._sub.recv_multipart(flags=zmq.NOBLOCK)
+                _, self._last_telem = _unpack(frames)
+                got_msg = True
+            except zmq.Again:
+                break
+        if got_msg:
             self._last_telem_recv_time = time.perf_counter()
-        except zmq.Again:
-            pass
 
         now = time.perf_counter()
         t = now - self._start_time

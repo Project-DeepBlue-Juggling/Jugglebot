@@ -52,11 +52,44 @@ Additional changes in the same diff (applied before this session):
 - FK cold-start: skip FK E-STOP until first successful convergence (`_fk_ever_succeeded` flag)
 - HardwarePlant.enable() two-phase handshake: verify both telemetry and command channels before starting MPC
 
+## Follow-up: Stale telemetry was actually a CONFLATE bug (2026-04-16)
+
+Hardware verification on 2026-04-16 revealed the RECONNECT_IVL fix alone was
+insufficient. A new `--pose 0,0,190` run failed with `HardwarePlant: motor guard
+did not acknowledge probe command within 2.0s`. The rosbag showed motor_guard
+was publishing 941 `leg_lengths_topic` messages during the probe window, meaning
+the telemetry (with `leg_pos` set) was flowing — HardwarePlant just wasn't
+seeing it.
+
+Root cause: `CONFLATE=1` was set **after** `socket.connect()`, which ZMQ
+silently ignores. This made the SUB a FIFO queue with default HWM=1000. At
+500 Hz publish rate and 40–100 Hz poll rate in HardwarePlant, messages piled
+up and we read from the back of the queue — always stale.
+
+This is also what caused the `mpc_20260415_192410.csv` oscillation: the
+"frozen" `actual_ext` at 154.5mm was actually old telemetry from before the
+platform started moving.  The `motion_bridge_node` polls at 500 Hz so it
+happened to keep up despite the same bug.
+
+### Follow-up fix
+
+- Drain the SUB in a `while`-loop in `HardwarePlant.get_state()` and
+  `BridgeIPC.recv_telemetry()`, keeping only the latest message — robust
+  regardless of CONFLATE semantics.
+- Remove `CONFLATE=1` and use `RCVHWM=2` instead for bounded memory.
+- Explicit drain also avoids the libzmq issue where CONFLATE + multi-part
+  messages can drop the topic frame on some versions.
+
 ## Verification
 
 - 895 tests pass (`pytest tests/ -v`)
-- Hardware verification pending: need to run `ros2 launch` and verify `actual_ext` updates in MPC CSV
+- Hardware verification: next hardware run should succeed past `plant.enable()`
+  and `actual_ext` in the MPC CSV should track commanded extensions.
 
 ## Outcome
 
-Defense-in-depth: even if RECONNECT_IVL fails to prevent stale telemetry for a new reason, the platform will E-stop at 0.5s rather than running away with diverging commands.
+Defense-in-depth:
+- Explicit drain eliminates CONFLATE semantics as a failure mode.
+- RECONNECT_IVL cap prevents slow reconnect from freezing telemetry.
+- `_TELEM_STALE_ESTOP_S` (0.5s) triggers E-STOP if telemetry is ever
+  completely lost, preventing runaway commands.

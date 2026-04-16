@@ -472,19 +472,23 @@ class BridgeIPC:
         self._pub = self._ctx.socket(zmq.PUB)
         self._pub.bind(command_addr)
 
-        # SUB socket -- receives telemetry from motor guard (CONFLATE: latest only)
+        # SUB socket -- receives telemetry from motor guard.
         # Use SUBSCRIBE=b'' instead of TOPIC_TELEMETRY filter — ZMQ 4.3.5
         # drops all messages when CONFLATE + topic filter are combined on a
         # late-connecting SUB.  Safe: motor guard PUB only publishes telemetry.
         # Cap reconnect interval to match MotorGuardIPC pattern — prevents
         # ZMQ exponential backoff (100ms → 30s) from freezing telemetry.
+        # RCVHWM=2 + drain-in-loop in recv_telemetry() is used in lieu of
+        # CONFLATE: CONFLATE must be set *before* connect() to take effect,
+        # and even when correctly ordered it silently ignores multi-part
+        # messages on some libzmq versions.  Explicit draining is robust.
         self._sub = self._ctx.socket(zmq.SUB)
         self._sub.setsockopt(zmq.RECONNECT_IVL, 100)      # 100ms base
         self._sub.setsockopt(zmq.RECONNECT_IVL_MAX, 200)   # 200ms cap
+        self._sub.setsockopt(zmq.RCVHWM, 2)                # bounded queue
         self._sub.connect(telemetry_addr)
         self._sub.setsockopt(zmq.SUBSCRIBE, b'')
         self._sub.setsockopt(zmq.RCVTIMEO, 0)  # non-blocking
-        self._sub.setsockopt(zmq.CONFLATE, 1)
 
     def send_mode_command(self, msg: dict) -> None:
         """Send a ModeCommand message to the motor guard."""
@@ -495,13 +499,21 @@ class BridgeIPC:
         self._pub.send_multipart(_pack(TOPIC_MOTOR_FB, msg), flags=zmq.NOBLOCK)
 
     def recv_telemetry(self) -> dict | None:
-        """Non-blocking: receive the latest telemetry message, or None."""
-        try:
-            frames = self._sub.recv_multipart(flags=zmq.NOBLOCK)
-            _, msg = _unpack(frames)
-            return msg
-        except zmq.Again:
-            return None
+        """Non-blocking: drain the SUB and return the latest telemetry, or None.
+
+        Drains all pending messages (not just one) because the motor guard
+        publishes at 500 Hz and a slow caller would otherwise accumulate
+        stale messages.  CONFLATE is not used — see the SUB construction
+        comment.
+        """
+        latest: dict | None = None
+        while True:
+            try:
+                frames = self._sub.recv_multipart(flags=zmq.NOBLOCK)
+                _, latest = _unpack(frames)
+            except zmq.Again:
+                break
+        return latest
 
     def close(self) -> None:
         self._pub.close()
