@@ -671,6 +671,7 @@ class MPCController:
         *,
         ref_events: List[ReferenceEvent] | None = None,
         boost_vel_weights: bool = False,
+        t_now: float | None = None,
     ) -> tuple[np.ndarray, np.ndarray, dict]:
         """Solve MPC for one step.
 
@@ -693,6 +694,11 @@ class MPCController:
             with kinematically consistent twist references (toss loop,
             scheduler).  Default False uses conservative weights that
             don't penalize motion toward a target.
+        t_now : float or None
+            Reference-clock time to sample events at.  ``None`` uses
+            ``state.time``.  The runner passes a separately-maintained
+            ``t_ref`` that is frozen while the solver is in a fallback
+            class so the reference does not run away from the platform.
 
         Returns
         -------
@@ -710,7 +716,7 @@ class MPCController:
         target = np.asarray(target_pose, dtype=float)
 
         ref_traj, twist_traj, accel_traj = self._build_reference(
-            state, target, ref_events=ref_events)
+            state, target, ref_events=ref_events, t_now=t_now)
         self._last_ref_traj = ref_traj
         self._last_twist_traj = twist_traj
         self._last_accel_traj = accel_traj
@@ -814,6 +820,8 @@ class MPCController:
                 self._prev_lam_x = np.asarray(sol['lam_x']).ravel()
 
                 cmd = w_opt[:6].copy()
+                cmd_next = w_opt[6:12].copy()   # u[1]: next-step command
+                cmd_next2 = w_opt[12:18].copy()  # u[2]: step after next
                 prev_u = self._prev_u  # read BEFORE overwrite
                 self._prev_prev_u = prev_u.copy() if prev_u is not None else u_prev.copy()
                 self._prev_u = cmd
@@ -834,21 +842,16 @@ class MPCController:
                 )
                 violation = np.maximum(g_viol, x_viol)
 
-                # Command-rate velocity for motor guard interpolation.
-                # Uses the rate of change of the command sequence (cmd -
-                # prev_cmd), NOT the state-to-command gap (cmd - q_cur).
-                # The motor guard extrapolates: pos(dt) = cmd + vel*dt,
-                # so vel must be the command trajectory derivative, not
-                # the traversal velocity from current state to command.
-                #
-                # Uses actual wall-clock dt (not dt_schedule[0]) so the
-                # velocity is correct regardless of MPC loop jitter.
+                # Forward-looking command velocity for motor guard
+                # interpolation.  Uses the MPC's own planned trajectory:
+                # (u[1] - u[0]) / dt_fine, which is the derivative of the
+                # command sequence the MPC just optimized.  Forward-looking
+                # (not backward-differenced), so direction changes are
+                # anticipated rather than reacted to.  Uses the nominal
+                # dt_schedule[0] because the MPC optimized for this interval
+                # regardless of wall-clock jitter.
                 dt0 = self._params.dt_schedule[0]
-                if prev_u is not None:
-                    ff_dt = max(actual_dt, dt0 * 0.5) if actual_dt is not None else dt0
-                    cmd_vel = (cmd - prev_u) / ff_dt
-                else:
-                    cmd_vel = np.zeros(6)  # first solve: safe zero-vel startup
+                cmd_vel = (cmd_next - cmd) / dt0
 
                 return cmd, cmd_vel, {
                     'solve_time_ms': solve_ms,
@@ -856,6 +859,8 @@ class MPCController:
                     'iter_count': iter_count,
                     'cost': float(sol['f']),
                     'constraint_violation': float(np.max(violation)),
+                    'cmd_next_mm': cmd_next,
+                    'cmd_next2_mm': cmd_next2,
                 }
             else:
                 return self._handle_failure(solve_ms, ret, q_cur)
@@ -999,6 +1004,8 @@ class MPCController:
             'status': f'fallback({status_str})',
             'cost': 0.0,
             'constraint_violation': 0.0,
+            'cmd_next_mm': None,
+            'cmd_next2_mm': None,
         }
 
         stroke = self._params.stroke_mm

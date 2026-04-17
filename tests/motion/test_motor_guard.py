@@ -1366,6 +1366,424 @@ def test_decay_boundary_continuity():
 
 
 # ---------------------------------------------------------------------------
+# Hermite interpolation tests (cmd_next)
+# ---------------------------------------------------------------------------
+
+def _inject_mpc_cmd_with_next(ipc, ext_mm, cmd_next_mm, pose_6dof=None,
+                               vel_mm_s=None, seq=0, cmd_next2_mm=None):
+    """Inject an MPC command with cmd_next_mm (and optional cmd_next2_mm)."""
+    if pose_6dof is None:
+        pose_6dof = [0.0, 0.0, 50.0, 0.0, 0.0, 0.0]
+    msg = make_mpc_command(
+        ext_mm=ext_mm, pose_6dof=pose_6dof,
+        vel_mm_s=vel_mm_s, seq=seq,
+        cmd_next_mm=cmd_next_mm,
+        cmd_next2_mm=cmd_next2_mm)
+    ipc.inject(TOPIC_MPC_CMD, msg)
+
+
+def test_hermite_interpolation_with_cmd_next():
+    """Hermite interpolation hits both endpoints exactly.
+
+    At s=0: pos = base_pos.  At s=1: pos = next_pos.
+    Mid-segment: pos is between them.
+    """
+    guard, ipc = _make_guard()
+    _enable(guard, ipc)
+    geom = guard.geom
+
+    ext_0 = [140.0] * 6
+    ext_1 = [145.0] * 6
+    vel = [v / 0.025 for v in [5.0] * 6]  # chord velocity = (145-140)/0.025
+
+    _provide_matching_feedback(guard, ipc, ext_mm=ext_0)
+    _inject_mpc_cmd_with_next(ipc, ext_mm=ext_0, cmd_next_mm=ext_1,
+                               vel_mm_s=vel, seq=0)
+    guard._process_ipc()
+
+    assert guard._mpc_next_pos_rev is not None, "cmd_next should be latched"
+
+    p0_rev = np.array(ext_0) * geom.mm_to_rev
+    p1_rev = np.array(ext_1) * geom.mm_to_rev
+
+    # At s≈0 (dt≈0): pos ≈ p0
+    # Note: wall-clock drift between setting timestamp and calling
+    # _interpolate_and_send means s is not exactly 0.  Use generous
+    # tolerance (1e-3 rev ≈ 0.07mm) to absorb this.
+    guard._mpc_base_timestamp = time.perf_counter()
+    guard._interpolate_and_send(guard.dt_target)
+    np.testing.assert_allclose(
+        guard._commanded_pos_rev, p0_rev, atol=1e-3,
+        err_msg="At s≈0, position should be near base")
+
+    # At s=1 (dt=T): pos = p1 (clamped exactly at endpoint)
+    guard._mpc_base_timestamp = time.perf_counter() - 0.025
+    guard._interpolate_and_send(guard.dt_target)
+    np.testing.assert_allclose(
+        guard._commanded_pos_rev, p1_rev, atol=1e-6,
+        err_msg="At s=1, position should equal cmd_next")
+
+    # At s=0.5 (dt=T/2): pos between p0 and p1
+    guard._mpc_base_timestamp = time.perf_counter() - 0.0125
+    guard._interpolate_and_send(guard.dt_target)
+    for i in range(6):
+        lo = min(p0_rev[i], p1_rev[i])
+        hi = max(p0_rev[i], p1_rev[i])
+        assert lo <= guard._commanded_pos_rev[i] <= hi, \
+            f"Mid-segment pos[{i}] should be between endpoints"
+
+    print("  [PASS] test_hermite_interpolation_with_cmd_next")
+    return True
+
+
+def test_hermite_no_overshoot():
+    """Hermite interpolation never overshoots cmd_next for a positive move.
+
+    Samples 50 points across [0, T] and verifies position stays in [p0, p1].
+    """
+    guard, ipc = _make_guard()
+    _enable(guard, ipc)
+    geom = guard.geom
+
+    ext_0 = [140.0] * 6
+    ext_1 = [150.0] * 6  # +10mm move
+    chord_vel = [(150.0 - 140.0) / 0.025] * 6
+
+    _provide_matching_feedback(guard, ipc, ext_mm=ext_0)
+    _inject_mpc_cmd_with_next(ipc, ext_mm=ext_0, cmd_next_mm=ext_1,
+                               vel_mm_s=chord_vel, seq=0)
+    guard._process_ipc()
+
+    p0_rev = np.array(ext_0) * geom.mm_to_rev
+    p1_rev = np.array(ext_1) * geom.mm_to_rev
+
+    for k in range(51):
+        s = k / 50.0
+        guard._mpc_base_timestamp = time.perf_counter() - s * 0.025
+        guard._interpolate_and_send(guard.dt_target)
+        for i in range(6):
+            assert guard._commanded_pos_rev[i] >= p0_rev[i] - 1e-9, \
+                f"s={s:.2f}: pos[{i}] below p0"
+            assert guard._commanded_pos_rev[i] <= p1_rev[i] + 1e-9, \
+                f"s={s:.2f}: pos[{i}] above p1"
+
+    print("  [PASS] test_hermite_no_overshoot")
+    return True
+
+
+def test_hermite_late_mpc_clamps_at_endpoint():
+    """When MPC is late (dt > T), position clamps at cmd_next, not extrapolated."""
+    guard, ipc = _make_guard()
+    _enable(guard, ipc)
+    geom = guard.geom
+
+    ext_0 = [140.0] * 6
+    ext_1 = [150.0] * 6
+    chord_vel = [(150.0 - 140.0) / 0.025] * 6
+
+    _provide_matching_feedback(guard, ipc, ext_mm=ext_0)
+    _inject_mpc_cmd_with_next(ipc, ext_mm=ext_0, cmd_next_mm=ext_1,
+                               vel_mm_s=chord_vel, seq=0)
+    guard._process_ipc()
+
+    p1_rev = np.array(ext_1) * geom.mm_to_rev
+
+    # dt = 40ms = 1.6T (MPC is late)
+    guard._mpc_base_timestamp = time.perf_counter() - 0.040
+    guard._interpolate_and_send(guard.dt_target)
+    np.testing.assert_allclose(
+        guard._commanded_pos_rev, p1_rev, atol=1e-6,
+        err_msg="Late MPC: should clamp at cmd_next, not extrapolate past")
+
+    print("  [PASS] test_hermite_late_mpc_clamps_at_endpoint")
+    return True
+
+
+def test_hermite_fallback_when_cmd_next_absent():
+    """Without cmd_next, falls back to Taylor extrapolation."""
+    guard, ipc = _make_guard()
+    _enable(guard, ipc)
+
+    ext_mm = [140.0] * 6
+    _provide_matching_feedback(guard, ipc, ext_mm=ext_mm)
+    _inject_mpc_cmd(ipc, ext_mm=ext_mm, vel_mm_s=[100.0]*6, seq=0)
+    guard._process_ipc()
+
+    assert guard._mpc_next_pos_rev is None, \
+        "Without cmd_next_mm, _mpc_next_pos_rev should be None"
+
+    # Verify extrapolation runs (velocity should cause pos to advance)
+    guard._mpc_base_timestamp = time.perf_counter() - 0.010
+    guard._interpolate_and_send(guard.dt_target)
+    base_pos = np.array(ext_mm) * guard.geom.mm_to_rev
+    assert np.any(guard._commanded_pos_rev != base_pos), \
+        "Taylor extrapolation should advance position with nonzero velocity"
+
+    print("  [PASS] test_hermite_fallback_when_cmd_next_absent")
+    return True
+
+
+def test_hermite_cmd_next_nan_rejected():
+    """cmd_next_mm with NaN falls back to extrapolation."""
+    guard, ipc = _make_guard()
+    _enable(guard, ipc)
+
+    ext_mm = [140.0] * 6
+    _provide_matching_feedback(guard, ipc, ext_mm=ext_mm)
+
+    bad_next = [145.0, 145.0, float('nan'), 145.0, 145.0, 145.0]
+    _inject_mpc_cmd_with_next(ipc, ext_mm=ext_mm, cmd_next_mm=bad_next,
+                               vel_mm_s=[100.0]*6, seq=0)
+    guard._process_ipc()
+
+    assert guard._mpc_next_pos_rev is None, \
+        "NaN in cmd_next_mm should be rejected (fallback to extrapolation)"
+
+    print("  [PASS] test_hermite_cmd_next_nan_rejected")
+    return True
+
+
+def test_hermite_cleared_on_disable():
+    """Disable clears cmd_next state."""
+    guard, ipc = _make_guard()
+    _enable(guard, ipc)
+
+    ext_mm = [140.0] * 6
+    _provide_matching_feedback(guard, ipc, ext_mm=ext_mm)
+    _inject_mpc_cmd_with_next(ipc, ext_mm=ext_mm,
+                               cmd_next_mm=[145.0]*6,
+                               vel_mm_s=[200.0]*6, seq=0)
+    guard._process_ipc()
+    assert guard._mpc_next_pos_rev is not None
+
+    # Disable
+    ipc.inject(TOPIC_MODE, make_mode_command('disable'))
+    guard._process_ipc()
+    assert guard._mpc_next_pos_rev is None, \
+        "Disable should clear _mpc_next_pos_rev"
+
+    print("  [PASS] test_hermite_cleared_on_disable")
+    return True
+
+
+def test_hermite_direction_reversal():
+    """On direction reversal, guard stays bounded within first segment.
+
+    Command 1: move from 140→150.  Command 2: move from 150→142 (reversal).
+    During segment 1, guard should never exceed 150.
+    """
+    guard, ipc = _make_guard()
+    _enable(guard, ipc)
+    geom = guard.geom
+
+    ext_0 = [140.0] * 6
+    ext_1 = [150.0] * 6
+    chord_vel_1 = [(150.0 - 140.0) / 0.025] * 6
+
+    _provide_matching_feedback(guard, ipc, ext_mm=ext_0)
+    _inject_mpc_cmd_with_next(ipc, ext_mm=ext_0, cmd_next_mm=ext_1,
+                               vel_mm_s=chord_vel_1, seq=0)
+    guard._process_ipc()
+
+    p1_rev = np.array(ext_1) * geom.mm_to_rev
+
+    # Sample through entire segment — all should be <= p1
+    for k in range(51):
+        s = k / 50.0
+        guard._mpc_base_timestamp = time.perf_counter() - s * 0.025
+        guard._interpolate_and_send(guard.dt_target)
+        for i in range(6):
+            assert guard._commanded_pos_rev[i] <= p1_rev[i] + 1e-9, \
+                f"s={s:.2f}: pos[{i}] overshoots segment endpoint"
+
+    # Now inject segment 2 (reversal: 150→142)
+    ext_2 = [142.0] * 6
+    chord_vel_2 = [(142.0 - 150.0) / 0.025] * 6
+    _provide_matching_feedback(guard, ipc, ext_mm=ext_1)
+    _inject_mpc_cmd_with_next(ipc, ext_mm=ext_1, cmd_next_mm=ext_2,
+                               vel_mm_s=chord_vel_2, seq=1)
+    guard._process_ipc()
+
+    # Verify the guard accepted the reversal (new base = 150, new next = 142)
+    p2_rev = np.array(ext_2) * geom.mm_to_rev
+    np.testing.assert_allclose(
+        guard._mpc_next_pos_rev, p2_rev, atol=1e-6,
+        err_msg="Reversal: cmd_next should be latched at 142mm")
+
+    print("  [PASS] test_hermite_direction_reversal")
+    return True
+
+
+# ---------------------------------------------------------------------------
+# C1-continuous Hermite tests (cmd_next2)
+# ---------------------------------------------------------------------------
+
+def test_c1_continuity_across_segment_boundary():
+    """Velocity is continuous across segment boundaries when cmd_next2 provided.
+
+    This is THE test for the 40Hz noise fix.  With u[0], u[1], u[2] available:
+      - Segment 1: Hermite from u[0] to u[1] with v1 = (u[2] - u[1]) / T
+      - Then new command arrives: new_u[0] = old_u[1], new_u[1] = old_u[2]
+      - Segment 2 starts with v0 = (new_u[1] - new_u[0]) / T
+                             = (old_u[2] - old_u[1]) / T
+                             = v1 of segment 1    ← C1 CONTINUOUS
+    """
+    guard, ipc = _make_guard()
+    _enable(guard, ipc)
+
+    # Accelerating trajectory: u[0]=140, u[1]=142, u[2]=145 (Δ=2, Δ=3)
+    u0 = [140.0] * 6
+    u1 = [142.0] * 6
+    u2 = [145.0] * 6
+    T = 0.025
+    v0_rps = [(142.0 - 140.0) / T] * 6  # will be chord of (u0,u1)
+
+    _provide_matching_feedback(guard, ipc, ext_mm=u0)
+    _inject_mpc_cmd_with_next(ipc, ext_mm=u0, cmd_next_mm=u1,
+                               cmd_next2_mm=u2, vel_mm_s=v0_rps, seq=0)
+    guard._process_ipc()
+    assert guard._mpc_next2_pos_rev is not None
+
+    # Sample velocity at end of segment 1 (s≈1, i.e., dt≈T)
+    guard._mpc_base_timestamp = time.perf_counter() - (T - 1e-4)
+    guard._interpolate_and_send(guard.dt_target)
+    vel_seg1_end = guard._commanded_vel_ff_rps.copy()
+
+    # Now simulate the next MPC tick arriving:
+    # new_u[0] = old_u[1], new_u[1] = old_u[2], new_u[2] = something else
+    u3 = [149.0] * 6  # further acceleration
+    # The MPC would have cmd_vel = (new_u[1] - new_u[0]) / T = (u2 - u1) / T
+    new_v0_rps = [(145.0 - 142.0) / T] * 6
+
+    _provide_matching_feedback(guard, ipc, ext_mm=u1)
+    _inject_mpc_cmd_with_next(ipc, ext_mm=u1, cmd_next_mm=u2,
+                               cmd_next2_mm=u3, vel_mm_s=new_v0_rps, seq=1)
+    guard._process_ipc()
+
+    # Sample velocity at start of segment 2 (s≈0, i.e., dt≈0)
+    guard._mpc_base_timestamp = time.perf_counter()
+    guard._interpolate_and_send(guard.dt_target)
+    vel_seg2_start = guard._commanded_vel_ff_rps.copy()
+
+    # Velocity should be C1-continuous: vel_seg1_end ≈ vel_seg2_start
+    # Tolerance absorbs tiny wall-clock drift (~1us).
+    np.testing.assert_allclose(
+        vel_seg1_end, vel_seg2_start, atol=0.02,
+        err_msg="Velocity discontinuity at segment boundary — C1 broken")
+
+    print("  [PASS] test_c1_continuity_across_segment_boundary")
+    return True
+
+
+def test_c1_without_cmd_next2_falls_back_to_chord():
+    """Without cmd_next2_mm, v1 falls back to chord — existing behavior."""
+    guard, ipc = _make_guard()
+    _enable(guard, ipc)
+
+    u0 = [140.0] * 6
+    u1 = [145.0] * 6
+    T = 0.025
+    chord_vel_rps = [(145.0 - 140.0) / T] * 6
+
+    _provide_matching_feedback(guard, ipc, ext_mm=u0)
+    _inject_mpc_cmd_with_next(ipc, ext_mm=u0, cmd_next_mm=u1,
+                               vel_mm_s=chord_vel_rps, seq=0)
+    guard._process_ipc()
+
+    assert guard._mpc_next_pos_rev is not None
+    assert guard._mpc_next2_pos_rev is None, \
+        "cmd_next2 absent → _mpc_next2_pos_rev should be None"
+
+    # Velocity at s=1 should equal chord velocity (fallback behavior)
+    guard._mpc_base_timestamp = time.perf_counter() - T
+    guard._interpolate_and_send(guard.dt_target)
+    # Compute expected chord in rev/s
+    p0_rev = np.array(u0) * guard.geom.mm_to_rev
+    p1_rev = np.array(u1) * guard.geom.mm_to_rev
+    expected_chord_rps = (p1_rev - p0_rev) / T
+
+    np.testing.assert_allclose(
+        guard._commanded_vel_ff_rps, expected_chord_rps, atol=1e-4,
+        err_msg="At s=1 without cmd_next2, v1 should equal chord velocity")
+
+    print("  [PASS] test_c1_without_cmd_next2_falls_back_to_chord")
+    return True
+
+
+def test_c1_cmd_next2_nan_rejected():
+    """NaN in cmd_next2_mm falls back to chord (v1 = (u[1]-u[0])/T)."""
+    guard, ipc = _make_guard()
+    _enable(guard, ipc)
+
+    u0 = [140.0] * 6
+    u1 = [145.0] * 6
+    bad_u2 = [150.0, 150.0, float('nan'), 150.0, 150.0, 150.0]
+    T = 0.025
+    chord_vel_rps = [(145.0 - 140.0) / T] * 6
+
+    _provide_matching_feedback(guard, ipc, ext_mm=u0)
+    _inject_mpc_cmd_with_next(ipc, ext_mm=u0, cmd_next_mm=u1,
+                               cmd_next2_mm=bad_u2,
+                               vel_mm_s=chord_vel_rps, seq=0)
+    guard._process_ipc()
+
+    assert guard._mpc_next_pos_rev is not None, \
+        "cmd_next_mm valid → should still be latched"
+    assert guard._mpc_next2_pos_rev is None, \
+        "NaN in cmd_next2_mm → should be rejected"
+
+    print("  [PASS] test_c1_cmd_next2_nan_rejected")
+    return True
+
+
+def test_c1_cmd_next2_ignored_without_cmd_next():
+    """cmd_next2_mm without cmd_next_mm is ignored (no Hermite without endpoint)."""
+    guard, ipc = _make_guard()
+    _enable(guard, ipc)
+
+    u0 = [140.0] * 6
+    u2 = [150.0] * 6  # u[2] without u[1] is meaningless
+
+    _provide_matching_feedback(guard, ipc, ext_mm=u0)
+    # Send cmd_next2_mm but NOT cmd_next_mm
+    msg = make_mpc_command(
+        ext_mm=u0, pose_6dof=[0.0, 0.0, 50.0, 0.0, 0.0, 0.0],
+        vel_mm_s=[0.0]*6, seq=0,
+        cmd_next2_mm=u2)
+    ipc.inject(TOPIC_MPC_CMD, msg)
+    guard._process_ipc()
+
+    assert guard._mpc_next_pos_rev is None
+    assert guard._mpc_next2_pos_rev is None, \
+        "cmd_next2 without cmd_next should be ignored"
+
+    print("  [PASS] test_c1_cmd_next2_ignored_without_cmd_next")
+    return True
+
+
+def test_c1_cleared_on_disable():
+    """Disable clears cmd_next2_mm state."""
+    guard, ipc = _make_guard()
+    _enable(guard, ipc)
+
+    _provide_matching_feedback(guard, ipc, ext_mm=[140.0]*6)
+    _inject_mpc_cmd_with_next(ipc, ext_mm=[140.0]*6,
+                               cmd_next_mm=[142.0]*6,
+                               cmd_next2_mm=[145.0]*6,
+                               vel_mm_s=[80.0]*6, seq=0)
+    guard._process_ipc()
+    assert guard._mpc_next2_pos_rev is not None
+
+    ipc.inject(TOPIC_MODE, make_mode_command('disable'))
+    guard._process_ipc()
+    assert guard._mpc_next2_pos_rev is None, \
+        "Disable should clear _mpc_next2_pos_rev"
+
+    print("  [PASS] test_c1_cleared_on_disable")
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -1415,6 +1833,30 @@ def main():
          test_jerk_reset_on_disable),
         ("33. Decay boundary continuity",
          test_decay_boundary_continuity),
+        ("34. Hermite interpolation with cmd_next",
+         test_hermite_interpolation_with_cmd_next),
+        ("35. Hermite no overshoot",
+         test_hermite_no_overshoot),
+        ("36. Hermite late MPC clamps at endpoint",
+         test_hermite_late_mpc_clamps_at_endpoint),
+        ("37. Hermite fallback when cmd_next absent",
+         test_hermite_fallback_when_cmd_next_absent),
+        ("38. Hermite cmd_next NaN rejected",
+         test_hermite_cmd_next_nan_rejected),
+        ("39. Hermite cleared on disable",
+         test_hermite_cleared_on_disable),
+        ("40. Hermite direction reversal",
+         test_hermite_direction_reversal),
+        ("41. C1 continuity across segment boundary",
+         test_c1_continuity_across_segment_boundary),
+        ("42. C1 without cmd_next2 falls back to chord",
+         test_c1_without_cmd_next2_falls_back_to_chord),
+        ("43. C1 cmd_next2 NaN rejected",
+         test_c1_cmd_next2_nan_rejected),
+        ("44. C1 cmd_next2 ignored without cmd_next",
+         test_c1_cmd_next2_ignored_without_cmd_next),
+        ("45. C1 cleared on disable",
+         test_c1_cleared_on_disable),
     ]
 
     results = []

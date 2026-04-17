@@ -39,7 +39,9 @@ class PlantInterface(ABC):
 
     @abstractmethod
     def command(self, leg_extensions_mm: np.ndarray,
-                vel_mm_s: np.ndarray | None = None) -> None:
+                vel_mm_s: np.ndarray | None = None,
+                cmd_next_mm: np.ndarray | None = None,
+                cmd_next2_mm: np.ndarray | None = None) -> None:
         """Send 6 leg extension commands (mm, IK convention).
 
         Parameters
@@ -48,6 +50,13 @@ class PlantInterface(ABC):
         vel_mm_s : (6,) ndarray or None — forward-looking command velocity
             (mm/s).  When provided by the MPC, this is preferred over the
             backward-difference computed from consecutive commands.
+        cmd_next_mm : (6,) ndarray or None — MPC's predicted next-step
+            command (u[1]).  When provided, the motor guard interpolates
+            between the current command and this waypoint instead of
+            extrapolating.  None falls back to Taylor extrapolation.
+        cmd_next2_mm : (6,) ndarray or None — MPC's predicted step-after-
+            next command (u[2]).  Used with cmd_next_mm to make Hermite
+            interpolation C1-continuous across segment boundaries.
         """
 
     @abstractmethod

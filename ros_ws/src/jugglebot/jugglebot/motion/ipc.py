@@ -170,7 +170,9 @@ def make_mpc_command(ext_mm: list | tuple,
                      vel_mm_s: list | tuple | None = None,
                      acc_mm_s2: list | tuple | None = None,
                      torque_Nm: list | tuple | None = None,
-                     seq: int = 0) -> dict:
+                     seq: int = 0,
+                     cmd_next_mm: list | tuple | None = None,
+                     cmd_next2_mm: list | tuple | None = None) -> dict:
     """Create an MPC command message.
 
     Sent by the external MPC controller (HardwarePlant) directly to the
@@ -193,6 +195,15 @@ def make_mpc_command(ext_mm: list | tuple,
         MPC commands (eliminates position step at command boundaries).
     torque_Nm : 6 motor torques (Nm), or None for zeros
     seq : monotonic sequence number (for debugging / drop detection)
+    cmd_next_mm : 6 leg extensions (mm) for the MPC's predicted next
+        step (u[1]).  When present, the motor guard uses cubic Hermite
+        interpolation between ext_mm and cmd_next_mm instead of Taylor
+        extrapolation from ext_mm alone.  None falls back to extrapolation.
+    cmd_next2_mm : 6 leg extensions (mm) for the MPC's predicted step
+        after next (u[2]).  When present with cmd_next_mm, the motor guard
+        uses (u[2] - u[1]) / T as the endpoint velocity of the current
+        Hermite segment, producing C1-continuous position across segment
+        boundaries (eliminates 40 Hz velocity discontinuity).
     """
     # Values are passed through as-is (ndarrays, lists, etc.).
     # The _pack() serialiser handles ndarray → list conversion via its
@@ -211,6 +222,10 @@ def make_mpc_command(ext_mm: list | tuple,
         msg['acc_mm_s2'] = acc_mm_s2
     if torque_Nm is not None:
         msg['torque_Nm'] = torque_Nm
+    if cmd_next_mm is not None:
+        msg['cmd_next_mm'] = cmd_next_mm
+    if cmd_next2_mm is not None:
+        msg['cmd_next2_mm'] = cmd_next2_mm
     return msg
 
 

@@ -251,7 +251,10 @@ def run_mpc_loop(
         if hooks.on_pre_command is not None:
             hooks.on_pre_command(plant, mpc, tc, cmd, cmd_vel, diag)
 
-        plant.command(cmd, vel_mm_s=cmd_vel)
+        cmd_next = diag.get('cmd_next_mm')
+        cmd_next2 = diag.get('cmd_next2_mm')
+        plant.command(cmd, vel_mm_s=cmd_vel,
+                      cmd_next_mm=cmd_next, cmd_next2_mm=cmd_next2)
         plant.step(control_dt)
 
         # Non-solve overhead

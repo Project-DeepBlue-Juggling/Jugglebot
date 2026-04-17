@@ -218,6 +218,18 @@ class MotorGuard:
         self._mpc_prev_accel_rps2: np.ndarray | None = None  # previous accel for jerk estimation
         self._mpc_base_jerk_rps3 = np.zeros(6)               # estimated jerk (EMA-filtered)
 
+        # Forward-looking waypoint from MPC u[1] — enables Hermite
+        # interpolation between u[0] and u[1] instead of Taylor extrapolation.
+        # None when absent (solver failure, old MPC) → fallback to extrapolation.
+        self._mpc_next_pos_rev: np.ndarray | None = None
+        # MPC u[2] — used to compute endpoint velocity at u[1] as
+        # (u[2] - u[1]) / T, matching the next segment's v0 so Hermite
+        # interpolation is C1-continuous across segment boundaries (no
+        # velocity step at 40 Hz tick transitions).  When absent, falls
+        # back to the chord velocity v1 = (u[1] - u[0]) / T.
+        self._mpc_next2_pos_rev: np.ndarray | None = None
+        self._mpc_segment_T: float = 0.025  # nominal MPC fine step (s)
+
         # Raw MPC command fields (for workspace/condition checks)
         self._mpc_cmd_ext_mm = np.zeros(6)
         self._mpc_cmd_pose_6dof = np.zeros(6)
@@ -491,7 +503,7 @@ class MotorGuard:
         self._mpc_base_torque_Nm = torque_Nm.copy()
         self._mpc_base_timestamp = t_now
 
-        # --- Jerk estimation (for cubic interpolation) ---
+        # --- Jerk estimation (for cubic extrapolation fallback) ---
         new_accel = self._mpc_base_accel_rps2
         if self._mpc_prev_accel_rps2 is not None:
             dt_mpc = t_now - prev_ts
@@ -503,6 +515,31 @@ class MotorGuard:
         else:
             self._mpc_base_jerk_rps3 = np.zeros(6)
         self._mpc_prev_accel_rps2 = new_accel.copy()
+
+        # --- Forward-looking waypoints (u[1], u[2]) for Hermite interpolation ---
+        cmd_next_raw = msg.get('cmd_next_mm')
+        if cmd_next_raw is not None:
+            cmd_next_arr = np.array(cmd_next_raw, dtype=float)
+            if (np.all(np.isfinite(cmd_next_arr))
+                    and cmd_next_arr.shape == (6,)):
+                self._mpc_next_pos_rev = cmd_next_arr * self.geom.mm_to_rev
+            else:
+                self._mpc_next_pos_rev = None
+        else:
+            self._mpc_next_pos_rev = None
+
+        # u[2]: used to compute C1-continuous v1 = (u[2] - u[1]) / T.
+        # Only meaningful when u[1] is also present.
+        cmd_next2_raw = msg.get('cmd_next2_mm')
+        if cmd_next2_raw is not None and self._mpc_next_pos_rev is not None:
+            cmd_next2_arr = np.array(cmd_next2_raw, dtype=float)
+            if (np.all(np.isfinite(cmd_next2_arr))
+                    and cmd_next2_arr.shape == (6,)):
+                self._mpc_next2_pos_rev = cmd_next2_arr * self.geom.mm_to_rev
+            else:
+                self._mpc_next2_pos_rev = None
+        else:
+            self._mpc_next2_pos_rev = None
 
     def _on_mode_command(self, msg: dict) -> None:
         """Handle mode commands (enable, disable, estop, fault)."""
@@ -648,15 +685,63 @@ class MotorGuard:
                 f"Motor feedback stale ({fb_age:.3f}s) -- suppressing commands")
             return
 
-        # Extrapolate from last MPC command with bounded drift.
-        # Normal cubic interpolation for up to MAX_EXTRAP_DT_S, then
-        # velocity decays linearly to zero over EXTRAP_DECAY_DT_S to
-        # prevent unbounded position drift if the MPC is late.
+        # Interpolate from last MPC command.  Three modes:
+        #
+        # 1. Hermite interpolation (cmd_next present): cubic Hermite between
+        #    u[0] and u[1], clamped at s=1 when MPC is late.  Bounded — never
+        #    extrapolates past the known next waypoint.
+        #
+        # 2. Taylor extrapolation (cmd_next absent, dt <= MAX_EXTRAP_DT_S):
+        #    fallback cubic polynomial from base position.  Used when the MPC
+        #    solver failed or is an older version without cmd_next.
+        #
+        # 3. Velocity decay (cmd_next absent, dt > MAX_EXTRAP_DT_S):
+        #    velocity ramps linearly to zero to prevent unbounded drift.
         t_now = time.perf_counter()
         dt_since_cmd = t_now - self._mpc_base_timestamp
 
-        if dt_since_cmd <= MAX_EXTRAP_DT_S:
-            # Cubic interpolation — within expected MPC timing
+        if self._mpc_next_pos_rev is not None:
+            # --- Hermite interpolation between u[0] and u[1] ---
+            T = self._mpc_segment_T
+            s = min(dt_since_cmd / T, 1.0)  # clamp: hold at u[1] if late
+            s2 = s * s
+            s3 = s2 * s
+
+            p0 = self._mpc_base_pos_rev
+            p1 = self._mpc_next_pos_rev
+            v0 = self._mpc_base_vel_rps       # forward-looking from MPC
+            # Endpoint velocity at u[1]:
+            #   If u[2] is available, use (u[2] - u[1]) / T — this matches
+            #   the next segment's v0 = (new_u[1] - new_u[0]) / T when the
+            #   next MPC tick arrives (since new_u[0] = old_u[1] and
+            #   new_u[1] = old_u[2]).  C1-continuous across boundaries.
+            #   Fallback: chord velocity (u[1] - u[0]) / T.
+            if self._mpc_next2_pos_rev is not None:
+                v1 = (self._mpc_next2_pos_rev - p1) / T
+            else:
+                v1 = (p1 - p0) / T                # chord velocity at endpoint
+
+            # Cubic Hermite basis functions
+            h00 = 2.0 * s3 - 3.0 * s2 + 1.0
+            h10 = s3 - 2.0 * s2 + s
+            h01 = -2.0 * s3 + 3.0 * s2
+            h11 = s3 - s2
+
+            self._commanded_pos_rev = (
+                h00 * p0 + h10 * (T * v0) + h01 * p1 + h11 * (T * v1))
+
+            # Velocity: dp/dt = (1/T) · dp/ds
+            inv_T = 1.0 / T
+            dh00 = (6.0 * s2 - 6.0 * s) * inv_T
+            dh10 = 3.0 * s2 - 4.0 * s + 1.0
+            dh01 = (-6.0 * s2 + 6.0 * s) * inv_T
+            dh11 = 3.0 * s2 - 2.0 * s
+
+            self._commanded_vel_ff_rps = (
+                dh00 * p0 + dh10 * v0 + dh01 * p1 + dh11 * v1)
+
+        elif dt_since_cmd <= MAX_EXTRAP_DT_S:
+            # --- Fallback: cubic Taylor extrapolation (unchanged) ---
             dt2 = dt_since_cmd * dt_since_cmd
             self._commanded_pos_rev = (
                 self._mpc_base_pos_rev
@@ -853,6 +938,8 @@ class MotorGuard:
         self._mpc_prev_ext_mm = None
         self._mpc_prev_accel_rps2 = None
         self._mpc_base_jerk_rps3 = np.zeros(6)
+        self._mpc_next_pos_rev = None
+        self._mpc_next2_pos_rev = None
 
     def _finite_diff_velocity(self, ext: np.ndarray, t_now: float
                               ) -> np.ndarray:

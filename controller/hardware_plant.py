@@ -91,11 +91,17 @@ class HardwarePlant(PlantInterface):
         mpc_command_addr: str = MPC_COMMAND_ADDR,
         telemetry_addr: str = TELEMETRY_ADDR,
         control_dt: float = 0.025,
+        enable_torque_ff: bool = True,
+        enable_vel_ff: bool = True,
+        enable_acc_ff: bool = True,
     ):
         self._geom = geom or StewartGeometry()
         self._seq = 0
         self._start_time = time.perf_counter()
         self._control_dt = control_dt
+        self._enable_torque_ff = enable_torque_ff
+        self._enable_vel_ff = enable_vel_ff
+        self._enable_acc_ff = enable_acc_ff
 
         # Dynamics parameters for feedforward computation
         self._dynamics_params = DynamicsParams.from_config()
@@ -187,7 +193,9 @@ class HardwarePlant(PlantInterface):
     # ------------------------------------------------------------------
 
     def command(self, leg_extensions_mm: np.ndarray,
-                vel_mm_s: np.ndarray | None = None) -> None:
+                vel_mm_s: np.ndarray | None = None,
+                cmd_next_mm: np.ndarray | None = None,
+                cmd_next2_mm: np.ndarray | None = None) -> None:
         """Send leg extension commands to the motor guard.
 
         Converts STOW-relative extensions to motor revolutions directly:
@@ -202,6 +210,12 @@ class HardwarePlant(PlantInterface):
             over the backward-difference fallback because it uses the MPC's
             own ``q_cur`` (no tracking error noise) and is forward-looking.
             Falls back to ``(cmd - last_measured) / control_dt`` when None.
+        cmd_next_mm : (6,) ndarray or None — MPC's predicted next-step
+            command (u[1]).  Sent to the motor guard for Hermite
+            interpolation between the current and next command.
+        cmd_next2_mm : (6,) ndarray or None — MPC's predicted step-after-
+            next command (u[2]).  Used with cmd_next_mm for C1-continuous
+            Hermite interpolation across segment boundaries.
         """
         ext_mm = np.asarray(leg_extensions_mm, dtype=float)
         motor_rev = ext_mm * self._geom.mm_to_rev
@@ -247,6 +261,11 @@ class HardwarePlant(PlantInterface):
         self._prev_prev_cmd_time = self._prev_cmd_time
         self._prev_cmd_time = time.perf_counter()
 
+        if not self._enable_vel_ff:
+            vel_mm_s = np.zeros(6)
+        if not self._enable_acc_ff:
+            acc_mm_s2 = np.zeros(6)
+
         msg = make_mpc_command(
             ext_mm=ext_mm,
             motor_rev=motor_rev,
@@ -255,6 +274,8 @@ class HardwarePlant(PlantInterface):
             acc_mm_s2=acc_mm_s2,
             torque_Nm=self._ff_torque_Nm,
             seq=self._seq,
+            cmd_next_mm=cmd_next_mm,
+            cmd_next2_mm=cmd_next2_mm,
         )
         self._pub.send_multipart(
             _pack(TOPIC_MPC_CMD, msg), flags=zmq.NOBLOCK)
@@ -474,6 +495,11 @@ class HardwarePlant(PlantInterface):
             inertia feedforward, reducing PID effort during dynamic motion.
         """
         self._last_pose_6dof = np.asarray(pose_6dof, dtype=float).copy()
+
+        if not self._enable_torque_ff:
+            self._ff_torque_Nm = np.zeros(6)
+            self._last_ff_torque_max_Nm = 0.0
+            return
 
         if twist_6dof is None:
             twist_6dof = np.zeros(6)

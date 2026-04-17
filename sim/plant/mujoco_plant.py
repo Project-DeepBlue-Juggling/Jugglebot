@@ -137,13 +137,15 @@ class MuJoCoPlant(PlantInterface):
     # ---- PlantInterface implementation ---------------------------------
 
     def command(self, leg_extensions_mm: np.ndarray,
-                vel_mm_s: np.ndarray | None = None) -> None:
+                vel_mm_s: np.ndarray | None = None,
+                cmd_next_mm: np.ndarray | None = None,
+                cmd_next2_mm: np.ndarray | None = None) -> None:
         """Set actuator targets from STOW-relative leg extensions (mm).
 
         Commands are clamped to [margin, stroke - margin] to prevent
-        actuator overshoot at mechanical stops.  ``vel_mm_s`` is accepted
-        for API compatibility but ignored — MuJoCo actuators handle their
-        own dynamics via kp/kv gains.
+        actuator overshoot at mechanical stops.  ``vel_mm_s``, ``cmd_next_mm``,
+        and ``cmd_next2_mm`` are accepted for API compatibility but ignored —
+        MuJoCo actuators handle their own dynamics via kp/kv gains.
         """
         ext = np.asarray(leg_extensions_mm, dtype=float)
         stroke = self._geom.leg_stroke_mm
