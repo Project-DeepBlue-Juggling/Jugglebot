@@ -46,7 +46,7 @@ External:
 
 - `motion_bridge_node.py` — ROS2 node that bridges motor guard ↔ CAN via IPC
 - `mpc_bridge_node.py` — ROS2 node that bridges input targets → MPC via IPC
-- `sim/plant/hardware_plant.py` — Converts MPC output to motor commands with feedforward
+- `controller/hardware_plant.py` — Converts MPC output to motor commands with feedforward
 - `tools/*.py` — Standalone hardware test harnesses that bypass ROS2
 
 ## Data Flow Summary

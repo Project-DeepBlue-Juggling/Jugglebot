@@ -13,7 +13,7 @@ The MPC-based motion planner has only ever run in simulation. The hardware has p
 - `motor_guard.py` — 500 Hz safety-critical interpolator (replaces `control_loop.py`)
 - `mpc_bridge_node.py` — ROS2 bridge for MPC target commands
 - `controller/mpc.py` — CasADi NMPC solver
-- `sim/plant/hardware_plant.py` — ZMQ plant connecting MPC to motor guard
+- `controller/hardware_plant.py` — ZMQ plant connecting MPC to motor guard
 
 These are wired into `jugglebot_launch.py` and `setup.py` but have **never been deployed to the Jetson**.
 
@@ -393,7 +393,7 @@ Only after all prior phases pass — real ball throws from Ball Butler.
 | File | Role |
 |------|------|
 | `ros_ws/src/jugglebot/jugglebot/motion/motor_guard.py` | 500 Hz safety loop — all safety checks |
-| `sim/plant/hardware_plant.py` | MPC ↔ motor guard ZMQ bridge |
+| `controller/hardware_plant.py` | MPC ↔ motor guard ZMQ bridge |
 | `controller/params.py` | MPC tuning (tau, velocity limits, horizon) |
 | `sim/main.py` | Entry point for `--hardware --mpc` mode |
 | `ros_ws/src/jugglebot/jugglebot/motion_bridge_node.py` | ROS2 ↔ motor guard IPC bridge |
