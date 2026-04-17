@@ -1,7 +1,6 @@
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = [
-    "--ignore=tests/archived",
     "--ignore=tests/hardware",
     "-p", "no:launch_testing_ros",
     "-p", "no:launch_testing",
