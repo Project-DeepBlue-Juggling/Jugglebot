@@ -363,6 +363,11 @@ class MPCController:
         self._prev_u: np.ndarray | None = None
         self._prev_prev_u: np.ndarray | None = None
         self._consecutive_failures: int = 0
+        # Index of the planned node to emit on the NEXT fallback tick.
+        # Reset to 0 on success; incremented after each fallback so
+        # consecutive fallbacks walk forward along the last successful plan
+        # (prev_w[6k : 6(k+1)]) instead of all emitting the same u[1].
+        self._fallback_step: int = 0
         self._prev_solve_time: float | None = None
         self._last_actual_dt: float | None = None
         # _predicted_poses is pre-allocated in _build_problem(); don't reset it.
@@ -900,6 +905,7 @@ class MPCController:
 
             if success:
                 self._consecutive_failures = 0
+                self._fallback_step = 0
                 # Clear timeout hint — no longer needed once we have a
                 # converged solution.
                 self._timeout_hint = None
@@ -972,6 +978,7 @@ class MPCController:
             self._timeout_hint = None
             self._timeout_lam_g = None
             self._timeout_lam_x = None
+            self._fallback_step = 0
             return self._handle_failure(solve_ms, f'exception: {exc}', q_cur)
 
     # ------------------------------------------------------------------
@@ -1179,19 +1186,42 @@ class MPCController:
 
         if (self._prev_w is not None
                 and self._consecutive_failures <= self._params.max_consecutive_failures):
-            # Apply first step of shifted previous solution
-            shifted = self._shift_warm_start(self._prev_w)
-            cmd = np.clip(shifted[:6], margin, stroke - margin)
-            # Rate-limit against current state to prevent jumps when the
-            # plant has drifted since the last successful solve.
-            if q_cur is not None:
-                max_delta = self._params.max_leg_vel_mmps * dt0
-                cmd = np.clip(cmd, q_cur - max_delta, q_cur + max_delta)
+            # Walk forward along the last successful plan: on the k-th
+            # consecutive fallback emit prev_w[6k : 6(k+1)] — i.e. u[k]
+            # from the plan the solver computed at the last success.
+            # This is the step the MPC would have commanded had the next
+            # k solves converged, so it stays on the previously optimal
+            # trajectory rather than freezing at u[1] (which was the old
+            # behaviour that caused the cmd_ext sawtooth and 440-sample
+            # hold stutter on off-Active multi-axis moves).
+            self._fallback_step += 1
+            N = self._N
+            k = min(self._fallback_step, N - 1)
+            cmd = np.clip(self._prev_w[6 * k: 6 * (k + 1)], margin, stroke - margin)
+            # Rate-limit against the last emitted command (NOT q_cur —
+            # clamping against q_cur pulls cmd toward the plant when it
+            # has overshot a held command, producing the large backwards
+            # single-sample drops previously observed).  prev_w already
+            # respects the plan's rate limit by construction; this clamp
+            # is belt-and-braces for the first fallback after a success
+            # where prev_u and prev_w[0:6] may differ slightly.
             prev_u = self._prev_u
+            if prev_u is not None:
+                max_delta = self._params.max_leg_vel_mmps * dt0
+                cmd = np.clip(cmd, prev_u - max_delta, prev_u + max_delta)
+            # Forward-looking cmd_vel from the NEXT planned node, so the
+            # motor guard keeps its feedforward signal during the fallback
+            # chain (previously cmd_vel went to zero after the first tick,
+            # contributing to the overshoot).
+            k_next = min(k + 1, N - 1)
+            cmd_next = np.clip(
+                self._prev_w[6 * k_next: 6 * (k_next + 1)],
+                margin, stroke - margin,
+            )
+            cmd_vel = (cmd_next - cmd) / dt0
             self._prev_prev_u = prev_u.copy() if prev_u is not None else cmd.copy()
-            ff_dt = max(self._last_actual_dt, dt0 * 0.5) if self._last_actual_dt is not None else dt0
-            cmd_vel = (cmd - prev_u) / ff_dt if prev_u is not None else np.zeros(6)
             self._prev_u = cmd
+            diag['fallback_step'] = k
             return cmd, cmd_vel, diag
 
         if self._prev_u is not None:
@@ -1305,6 +1335,7 @@ class MPCController:
         self._prev_u = None
         self._prev_prev_u = None
         self._consecutive_failures = 0
+        self._fallback_step = 0
         self._predicted_poses_valid = False
         self._last_ref_traj = None
         self._last_twist_traj = None

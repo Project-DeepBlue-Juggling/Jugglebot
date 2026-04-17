@@ -16,7 +16,9 @@ sessions:
   - mpc_20260417_184547.csv
   - mpc_20260417_184601.csv
 # --- Traceability ---
-files_changed: []
+files_changed:
+  - controller/mpc.py
+  - run_mpc.py
 commits: []
 # --- Classification ---
 subsystem:
@@ -91,11 +93,55 @@ MPC_FALLBACK_SAWTOOTH: cmd_ext jumps backwards > 2 mm between consecutive sample
 
 ## Discussion
 
-<!-- To be filled in during /investigate discussion step. -->
+Summary of the options weighed (by the /investigate fix-proposer agent, with risks):
+
+1. **Walk forward along `prev_w` during fallback (correctness).** Each consecutive fallback emits `prev_w[6k : 6(k+1)]` — the next planned node from the last successful solve — instead of repeatedly emitting the shifted `prev_w[6:12]`. Rate-limit clamp switches from clipping against `q_cur` to clipping against `self._prev_u`, so the cmd cannot be pulled backward by a momentum-overshot plant. Medium risk. Chosen.
+
+2. **Realign IPOPT budget (tuning).** `run_mpc.py` was overriding `max_cpu_time=0.022` s, contradicting the documented `params.py` default of 0.018 s and the value that `controller/generate_solver.py` was AOT-compiled against. The 22 ms wall-clock was the reason p50 solve = 25.9 ms timed out so often. Low risk. Chosen, stacks on top of (1).
+
+3. **Emit `_timeout_hint` (partial IPOPT iterate) as cmd source.** Rejected. Partial iterates can violate IK equality or rate-limit constraints; commanding them is unsafe without extensive sanity checks. Walk-forward along `prev_w` is a safer realisation of "smarter fallback" because the plan is already feasible by construction.
+
+Three additional bugs the agent surfaced while tracing the mechanism:
+- **Same `prev_w[6:12]` emitted every consecutive fallback tick.** `_shift_warm_start(self._prev_w)[:6]` always returns `prev_w[6:12]` and `_prev_w` only refreshes on success — so 440 consecutive fallbacks all emitted one fixed 6-vector. This is the real reason `cmd_ext_2` froze at 145.32 mm for 440 samples, not the `hold(...)` branch.
+- **Rate-limit clamp against `q_cur` is wrong during overshoot.** When actual has overshot the held cmd, `q_cur` is ahead in the direction of travel and `np.clip(cmd, q_cur ± max_delta, …)` pulls cmd toward `q_cur`, i.e. toward the overshoot — causing the ~10 mm single-sample backwards kicks.
+- **`cmd_vel` collapses to zero after the first fallback.** `self._prev_u = cmd` is assigned inside the fallback branch, so on the next fallback tick `cmd == prev_u` and the feedforward velocity is 0 — losing the motor guard's FF signal during the fallback chain.
+
+Rejected alternatives considered:
+- Reducing horizon (N=10 -> N=5) would reduce solve time directly but changes the AOT-compiled solver's structure and costs lookahead. Deferred until we see whether Fix 1 + Fix 2 alone resolve the stutter.
+- Adaptive `max_cpu_time` based on ref-change magnitude. Needlessly complex for a bringup issue that turns out to have a straightforward correctness fix.
 
 ## Fix
 
-<!-- To be filled in during /investigate fix step. -->
+Two file changes, in one commit.
+
+### `controller/mpc.py` — walk-forward fallback
+
+1. Added `self._fallback_step: int = 0` to `__init__` (near the other per-solve state around the `_consecutive_failures` field) with a docstring explaining its purpose.
+2. Added `self._fallback_step = 0` to `reset()` alongside the existing `_consecutive_failures = 0` line.
+3. Added `self._fallback_step = 0` to the success branch of `solve()`, right after `self._consecutive_failures = 0`, so a successful solve restarts the walk-forward cursor.
+4. Added `self._fallback_step = 0` to the exception handler that already clears `_prev_w`, `_prev_lam_*`, and `_timeout_*` — keeps the invariant "if `_prev_w` is None, `_fallback_step` is 0".
+5. Rewrote the first branch of `_handle_failure` (the one gated on `_prev_w is not None and _consecutive_failures <= max_consecutive_failures`):
+   - Increments `self._fallback_step` first, then takes `k = min(self._fallback_step, N - 1)` so the cursor caps at the last planned node.
+   - Emits `cmd = np.clip(self._prev_w[6k : 6(k+1)], margin, stroke - margin)`.
+   - Rate-limit clamp now uses `self._prev_u ± max_leg_vel_mmps * dt0` (NOT `q_cur ±`). Prior code: `cmd = np.clip(cmd, q_cur - max_delta, q_cur + max_delta)` (only applied when `q_cur is not None`). New code: `cmd = np.clip(cmd, prev_u - max_delta, prev_u + max_delta)` when `prev_u is not None`.
+   - Computes forward-looking `cmd_vel = (prev_w[6*k_next : 6*(k_next+1)] - cmd) / dt0` with `k_next = min(k + 1, N - 1)`, so the motor guard's feedforward signal stays live across the fallback chain instead of collapsing to 0 after tick 1.
+   - Adds `diag['fallback_step'] = k` so downstream telemetry/logging can see the walk-forward progression (not yet wired into the CSV — kept in diag dict only).
+
+The existing `hold(...)` branch (fires once `_consecutive_failures > max_consecutive_failures`, default 3) is unchanged and now naturally holds at whatever the last walk-forward cmd was (<= u[3] of the old plan), which is still strictly better than the old behaviour (always holding at u[1]).
+
+### `run_mpc.py` — IPOPT budget realignment
+
+Changed `MPCParams(max_cpu_time=0.022, max_iter=100)` to `MPCParams(max_cpu_time=0.018, max_iter=100)`. The inline comment now documents the 18 ms IPOPT + 5 ms overhead = 23 ms budget inside the 25 ms MPC period, and references this logbook entry so future readers know why the value was pinned back to the `params.py` default.
+
+### Files changed
+- `controller/mpc.py` (+40 / -11 approx; state field, three single-line resets, and the fallback-branch rewrite)
+- `run_mpc.py` (+6 / -2; one-value change plus expanded comment)
+
+### What was deliberately NOT changed
+- `controller/runner.py` `t_ref` freeze during fallback — already correct, no change.
+- `controller/hardware_plant.py` staleness thresholds — the 108 telemetry-stale E-STOPs in 184601 are a downstream consequence of the sawtooth; no threshold change needed.
+- `controller/telemetry.py` / `StepRecord` — `fallback_step` stays in the `diag` dict for now; wiring it into the CSV column schema is left for a follow-up if it proves useful during hardware validation.
+- `sim/analysis/known_issues.yaml` — the `MPC_FALLBACK_SAWTOOTH` entry will be added only once hardware validation confirms the fix works (pattern signature and status `fixed` should not be claimed before that).
 
 ## Outcome
 

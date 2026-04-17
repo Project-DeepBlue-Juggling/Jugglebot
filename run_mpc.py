@@ -207,8 +207,13 @@ def main():
         dashboard.start()
 
     # --- Build MPC controller ---
-    # Hardware: real-time budget — 20ms solver + ~5ms overhead = 25ms period
-    params = MPCParams(max_cpu_time=0.022, max_iter=100)
+    # Hardware real-time budget: 18 ms IPOPT (matches params.py default and the
+    # AOT-compiled solver in controller/generated/) + ~5 ms overhead = 23 ms,
+    # comfortably inside the 25 ms MPC period.  The earlier 22 ms override
+    # drove p50 solves over budget on off-Active multi-axis moves and kept
+    # the fallback path firing constantly (see logbook
+    # 2026-04-17-mpc-fallback-cmd-sawtooth-stutter.md).
+    params = MPCParams(max_cpu_time=0.018, max_iter=100)
     mpc = MPCController.from_plant(params, plant)
     assert abs(CONTROL_DT - mpc.params.dt_fine) < 1e-6, (
         f"CONTROL_DT ({CONTROL_DT}) must match MPC dt_fine "
