@@ -405,7 +405,7 @@ def generate_diagnostic_plots(
     analysis_result : dict
         Output of analyse_csv() + generate_flags().
     output_prefix : str
-        Path prefix for PNGs, e.g. "sim/logs/mpc_20260401_153529".
+        Path prefix for PNGs, e.g. "temp/logs/mpc_20260401_153529".
         Each plot appends "_{category}.png".
     categories : list of str, optional
         Which plots to generate.  None = auto-select based on flags.

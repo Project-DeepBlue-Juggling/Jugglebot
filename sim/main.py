@@ -79,7 +79,7 @@ def parse_args():
     p.add_argument('--duration', type=float, default=None,
                    help='Simulation duration in seconds '
                         '(default: 10, or last sequence time + 2)')
-    p.add_argument('--log-dir', type=str, default=os.path.join(_sim_dir, 'logs'),
+    p.add_argument('--log-dir', type=str, default=os.path.join(_repo_root, 'temp', 'logs'),
                    help='Directory for telemetry CSV output')
     p.add_argument('--trajectory', type=str, default=None,
                    help='Scripted trajectory name (T1, T2, T3, T4). '

@@ -6,7 +6,7 @@ JSON diagnostic report.  Designed to be invoked by the /diagnose Claude Code
 slash command, which interprets the output and presents it to the user.
 
 Primary data sources:
-  - MPC telemetry CSV (sim/logs/mpc_*.csv) — 55-field StepRecord at 40 Hz
+  - MPC telemetry CSV (temp/logs/mpc_*.csv) — 55-field StepRecord at 40 Hz
   - Rosbag MCAP (~/Desktop/rosbags/<timestamp>/) — 19 ROS2 topics recorded
     automatically by the launch file
 

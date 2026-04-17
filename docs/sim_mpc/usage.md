@@ -47,7 +47,7 @@ python main.py --mpc --pose 0,0,50,0,0,0 --no-viewer --duration 5
 python main.py --pose 0,0,50,0,0,0
 ```
 
-Every run writes a telemetry CSV to `sim/logs/` and prints a summary of tracking error and solve times.
+Every run writes a telemetry CSV to `temp/logs/` and prints a summary of tracking error and solve times.
 
 ## Operating Modes
 
@@ -238,7 +238,7 @@ These flags work with any mode:
 | `--duration N` | varies | Simulation duration in seconds |
 | `--dashboard` | off | Start live telemetry dashboard |
 | `--dashboard-port N` | 8082 | Dashboard HTTP port |
-| `--log-dir PATH` | `sim/logs/` | Telemetry CSV output directory |
+| `--log-dir PATH` | `temp/logs/` | Telemetry CSV output directory |
 
 ### Viewer Controls
 
@@ -263,7 +263,7 @@ Then open [http://localhost:8082](http://localhost:8082) in a browser. The dashb
 
 ## Telemetry Output
 
-Every run writes a CSV to `sim/logs/` with the naming pattern `{mpc|sim}_{timestamp}.csv`.
+Every run writes a CSV to `temp/logs/` with the naming pattern `{mpc|sim}_{timestamp}.csv`.
 
 ### CSV Columns
 
@@ -288,7 +288,7 @@ Load a CSV with pandas or numpy for post-hoc analysis:
 import pandas as pd
 import matplotlib.pyplot as plt
 
-df = pd.read_csv('sim/logs/mpc_20260321_143000.csv')
+df = pd.read_csv('temp/logs/mpc_20260321_143000.csv')
 
 fig, axes = plt.subplots(3, 1, sharex=True)
 axes[0].plot(df.time, df.ref_pose_z, '--', label='ref')

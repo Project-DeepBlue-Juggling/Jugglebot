@@ -7,7 +7,7 @@ description: Analyse hardware test logs — MPC telemetry and rosbag recordings.
 Analyse hardware test session data from MPC telemetry CSVs and rosbag (MCAP) recordings.  Cross-reference findings against known failure patterns and present a structured diagnostic report.
 
 **Data sources:**
-- **MPC telemetry CSV** (`sim/logs/mpc_*.csv`) — 55-field StepRecord at 40 Hz: pose, tracking error, solve times, leg extensions, torques
+- **MPC telemetry CSV** (`temp/logs/mpc_*.csv`) — 55-field StepRecord at 40 Hz: pose, tracking error, solve times, leg extensions, torques
 - **Rosbag MCAP** (`~/Desktop/rosbags/<timestamp>/`) — 19 ROS2 topics recorded automatically: motor state, leg commands, hand telemetry, state transitions, diagnostics, etc.
 
 Note: ROS2 Foxy does NOT write per-node text log files (that's a Humble+ feature).  The rosbag is the primary source for ROS2 event data.
@@ -15,7 +15,7 @@ Note: ROS2 Foxy does NOT write per-node text log files (that's a Humble+ feature
 ## Arguments
 
 The user may provide arguments after `/diagnose`:
-- **No args** or **`--latest`**: analyse the most recent unanalysed log in `sim/logs/`
+- **No args** or **`--latest`**: analyse the most recent unanalysed log in `temp/logs/`
 - **`<csv_filename>`**: analyse a specific MPC log (filename or full path)
 - **`--all-new`**: analyse all unanalysed logs
 - **`--compare <csv_a> <csv_b>`**: compare two sessions side-by-side (see Comparison Mode below)
@@ -27,8 +27,8 @@ Follow these steps in order:
 ### Step 1: Determine target log(s)
 
 1. Read `sim/analysis/log_index.json` to find session metadata
-2. If the user specified a filename, locate it in `sim/logs/`
-3. If `--latest` or no args: scan `sim/logs/mpc_*.csv`, find the most recent file not marked `analyzed: true` in the index
+2. If the user specified a filename, locate it in `temp/logs/`
+3. If `--latest` or no args: scan `temp/logs/mpc_*.csv`, find the most recent file not marked `analyzed: true` in the index
 4. If `--all-new`: find all unanalysed files
 
 ### Step 2: Find correlated rosbag
@@ -164,7 +164,7 @@ and instead run a side-by-side session comparison:
 ### Step 1: Resolve CSV paths
 
 Resolve both CSV paths using the same logic as single-session mode:
-- Accept bare filenames (look in `sim/logs/`) or full paths
+- Accept bare filenames (look in `temp/logs/`) or full paths
 - Verify both files exist
 
 ### Step 2: Run comparison
@@ -182,7 +182,7 @@ which session is which.
 python sim/analysis/compare_sessions.py <csv_a> <csv_b> --html
 ```
 
-This generates a Plotly HTML report in `sim/reports/` with dual-trace overlays
+This generates a Plotly HTML report in `temp/reports/` with dual-trace overlays
 (legs, tracking error, solve times). Tell the user the report path.
 
 ### Step 4: Present comparison

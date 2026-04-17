@@ -6,7 +6,7 @@ structured analysis tables.  No external dependencies beyond stdlib.
 
 Usage (typically called from diagnose.py):
     from analysis.report_html import generate_html_report
-    path = generate_html_report(result, "sim/logs/mpc_20260401_152048_report.html")
+    path = generate_html_report(result, "temp/logs/mpc_20260401_152048_report.html")
 """
 
 from __future__ import annotations

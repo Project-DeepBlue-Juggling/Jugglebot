@@ -33,14 +33,14 @@ The analysis engine can be run directly without the slash command:
 
 ```bash
 # JSON output (for programmatic use)
-python sim/analysis/diagnose.py sim/logs/mpc_20260401_143845.csv --json
+python sim/analysis/diagnose.py temp/logs/mpc_20260401_143845.csv --json
 
 # With rosbag correlation
-python sim/analysis/diagnose.py sim/logs/mpc_20260401_143845.csv \
+python sim/analysis/diagnose.py temp/logs/mpc_20260401_143845.csv \
     --rosbag ~/Desktop/rosbags/2026-04-01_14-37-59 --json
 
 # With interactive Plotly report
-python sim/analysis/diagnose.py sim/logs/mpc_20260401_143845.csv --plots auto
+python sim/analysis/diagnose.py temp/logs/mpc_20260401_143845.csv --plots auto
 ```
 
 ### Verdict Criteria

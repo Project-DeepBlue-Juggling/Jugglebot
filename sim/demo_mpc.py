@@ -79,7 +79,7 @@ def run(viewer_mode, dashboard=None):
     n_steps = int(duration / CONTROL_DT)
 
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_dir = os.path.join(_sim_dir, "logs")
+    log_dir = os.path.join(_repo_root, "temp", "logs")
     log_path = os.path.join(log_dir, f"mpc_demo_{timestamp}.csv")
     logger = TelemetryLogger(log_path)
 

@@ -160,7 +160,7 @@ This creates a one-hop path from `git blame` to the full investigation:
 The diagnosis engine generates interactive HTML reports (Plotly) by default:
 
 ```bash
-python3 sim/analysis/diagnose.py sim/logs/mpc_20260401_152101.csv --json
+python3 sim/analysis/diagnose.py temp/logs/mpc_20260401_152101.csv --json
 ```
 
 **Features:** scroll-zoom, box-select zoom, pan, hover tooltips, legend toggle (click to show/hide series).

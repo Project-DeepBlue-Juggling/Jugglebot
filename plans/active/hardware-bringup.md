@@ -291,7 +291,7 @@ Tests multi-target transitions.
 ### 5.1 Record step response
 ```bash
 python3 main.py --hardware --mpc --pose 0,0,220,0,0,0 --duration 15
-# CSV saved to sim/logs/mpc_YYYYMMDD_HHMMSS.csv
+# CSV saved to temp/logs/mpc_YYYYMMDD_HHMMSS.csv
 ```
 
 ### 5.2 Estimate tau from CSV

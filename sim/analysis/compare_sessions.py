@@ -335,7 +335,7 @@ def generate_comparison_html(csv_a: str, csv_b: str,
     if output_path is None:
         base_a = os.path.splitext(os.path.basename(csv_a))[0]
         base_b = os.path.splitext(os.path.basename(csv_b))[0]
-        output_dir = os.path.join(_sim_dir, 'reports')
+        output_dir = os.path.join(_repo_root, 'temp', 'reports')
         os.makedirs(output_dir, exist_ok=True)
         output_path = os.path.join(output_dir, f'compare_{base_a}_vs_{base_b}.html')
 
@@ -490,7 +490,7 @@ def main():
                         help='Output comparison as JSON')
     parser.add_argument('--html', metavar='PATH', nargs='?', const='auto',
                         help='Generate interactive Plotly HTML report '
-                             '(default path: sim/reports/)')
+                             '(default path: temp/reports/)')
     args = parser.parse_args()
 
     labels = tuple(args.labels) if args.labels else None

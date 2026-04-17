@@ -99,10 +99,10 @@ class TestCompareSessionsIntegration:
         """Find two real CSV files to compare."""
         repo_root = os.path.dirname(os.path.dirname(os.path.dirname(
             os.path.abspath(__file__))))
-        logs_dir = os.path.join(repo_root, 'sim', 'logs')
+        logs_dir = os.path.join(repo_root, 'temp', 'logs')
 
         if not os.path.isdir(logs_dir):
-            pytest.skip('sim/logs directory not found')
+            pytest.skip('temp/logs directory not found')
 
         csvs = sorted(
             f for f in os.listdir(logs_dir)

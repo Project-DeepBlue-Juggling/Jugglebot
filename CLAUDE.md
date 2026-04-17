@@ -129,4 +129,4 @@ mkdocs serve   # local preview at http://localhost:8000
 - Force decomposition: `f = J^{-T} * W` (use `np.linalg.solve(J.T, W)`), NOT `J^T * W`
 - All movements must use profiled trajectories — never command step position changes
 - CAN encoding must match `can_node.py`: negate, scale by appropriate value (check protocol_config), int16, clamp
-- Log files and temporary artifacts are in `temp/`, not `/tmp/`
+- All runtime artifacts live under `temp/` (not `/tmp/`, not under `sim/`). Both `sim/main.py` and `run_mpc.py` write telemetry CSVs and companion `.log`/`.png`/`_report.html` files to `temp/logs/`. Cross-session comparison HTML reports go to `temp/reports/`. Nothing under `sim/` should accumulate runtime output.
