@@ -1233,7 +1233,7 @@ def main():
     # Create plant
     feedback_pub = None
     if args.hardware:
-        from plant import HardwarePlant
+        from controller.hardware_plant import HardwarePlant
         plant = HardwarePlant(control_dt=CONTROL_DT)
         print("HardwarePlant: connected to motor_guard via IPC")
 
