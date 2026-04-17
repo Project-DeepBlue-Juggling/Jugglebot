@@ -1,6 +1,160 @@
 {
   "version": 1,
   "sessions": {
+    "mpc_20260417_184446.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-17T19:00:00Z",
+      "verdict": "PASS",
+      "flags_count": 1,
+      "phase": "post-STANDBY-refactor-multiaxis-test",
+      "notes": "Clean pure-Z move, baseline.",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-17_18-44-22",
+      "logbook_entry": "2026-04-17-mpc-fallback-cmd-sawtooth-stutter.md"
+    },
+    "mpc_20260417_184516.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-17T19:00:00Z",
+      "verdict": "PASS",
+      "flags_count": 1,
+      "phase": "post-STANDBY-refactor-multiaxis-test",
+      "notes": "Clean pure-Z move, baseline.",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-17_18-44-22",
+      "logbook_entry": "2026-04-17-mpc-fallback-cmd-sawtooth-stutter.md"
+    },
+    "mpc_20260417_184532.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-17T19:00:00Z",
+      "verdict": "PASS",
+      "flags_count": 1,
+      "phase": "post-STANDBY-refactor-multiaxis-test",
+      "notes": "Clean pure-Z move, baseline.",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-17_18-44-22",
+      "logbook_entry": "2026-04-17-mpc-fallback-cmd-sawtooth-stutter.md"
+    },
+    "mpc_20260417_184547.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-17T19:00:00Z",
+      "verdict": "NEEDS_ATTENTION",
+      "flags_count": 4,
+      "phase": "post-STANDBY-refactor-multiaxis-test",
+      "notes": "174 mm diagonal, solver 90% but ran out of time, 29.6 mm final err.",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-17_18-44-22",
+      "logbook_entry": "2026-04-17-mpc-fallback-cmd-sawtooth-stutter.md"
+    },
+    "mpc_20260417_184601.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-17T19:00:00Z",
+      "verdict": "FAIL",
+      "flags_count": 7,
+      "phase": "post-STANDBY-refactor-multiaxis-test",
+      "notes": "First session post-STANDBY refactor. Solver saturated (74.2% timeouts, max 440 consecutive = ~11s of 18.6s run). p50 solve 25.9ms > 24ms budget — typical solve over budget, not just peaks. Two cmd discontinuities at t=1.477s (leg 2: 10.5mm, leg 3: 9.4mm) at the moment ref stops moving — new/unknown pattern (MPC_FALLBACK_SAWTOOTH candidate). Trajectory was multi-axis (~40mm X + 50mm Y + 27mm Z combined), starting off-Active from unfinished command 4. act2 coasted 18mm past frozen cmd during 440-step hold before settling. LEG2_TRACKING known-issue match. HardwarePlant telemetry-stale E-STOP fired 108 times at t~11s — consequence, not cause. Rosbag confirms ACTIVE:STANDBY transition working as designed. Orchestrator refactor itself not implicated — saturation is the story.",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-17_18-44-22",
+      "logbook_entry": "2026-04-17-mpc-fallback-cmd-sawtooth-stutter.md"
+    },
+    "mpc_20260417_151131.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-17T15:30:00Z",
+      "verdict": "FAIL",
+      "flags_count": 4,
+      "phase": "7.2-spacemouse-mode",
+      "notes": "SPACEMOUSE mode via ROS2 pipeline (rosbag 2026-04-17_15-11-19 confirms ACTIVE:SPACEMOUSE at bag_t=3.8, mode=SPACEMOUSE at bag_t=6.1). 30.7% solver timeouts (184/600), max 178 CONSECUTIVE at t=0.9-6.6s during the initial z=170→189 ref jump. After 6s the solver clears completely (0 timeouts t=7-10s). p95 solve 30.4ms (was 19.7ms in 141354 static) — 54% regression vs last session. Tracking error grows during timeout burst (4.5mm → 26.8mm peak at t=7s), platform never catches ref (actual_z 211mm vs ref_z 220mm at final sample, 8.8mm pos error at end). No oscillation, 0 cmd_jumps (C1 fix still intact), no E-stop, no motor errors, clean state transitions. Root cause candidate: SpaceMouse-driven ref injects larger deviations than static-pose path → IPOPT blows CPU budget on bigger transients; 40ms tau may also be too fast for SpaceMouse step-like inputs. Rosbag shows orchestrator IDLE→ACTIVE:SPACEMOUSE→IDLE cleanly, so it's a planner-horizon-vs-CPU issue, not a plant/motor issue.",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-17_15-11-19"
+    },
+    "mpc_20260417_141354.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-17T14:30:00Z",
+      "verdict": "NEEDS_ATTENTION",
+      "flags_count": 10,
+      "phase": "c1-continuity-validation",
+      "notes": "z=220 vel_ff ON, Hermite+C1 fix live. 40Hz peak in leg_lengths_topic DROPPED 325x (7.0e-7 → 2.2e-9). Δpos_setpoint std dropped 24x (0.145mm → 0.006mm). C1 fix confirmed working — ODrive GUI 40Hz noise should be eliminated. Remaining issues: 18 solver timeouts at cold start (max 10 consec) → initial stutters; slow convergence (ss_rms 11.5mm, final 0.97mm at t=15s) — both separate from interpolation.",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-17_14-09-52"
+    },
+    "mpc_20260417_135708.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-17T14:10:00Z",
+      "verdict": "INVALID",
+      "flags_count": 4,
+      "phase": "c1-continuity-contaminated",
+      "notes": "INVALID — VS Code auto-triggered pytest at 126% CPU during hardware test, starving IPOPT. 99.2% solver timeouts, 0 iterations per solve, platform barely moved. Not a code regression.",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-17_13-56-51"
+    },
+    "mpc_20260417_130811.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-17T14:30:00Z",
+      "verdict": "NEEDS_ATTENTION",
+      "flags_count": 4,
+      "phase": "hermite-interp-validation",
+      "notes": "z=220 --no-vel-ff, Hermite interpolation fix live. RMS 13.5mm but platform still converging at t=5s (v_max=140, slow approach). Rosbag 500Hz FFT confirms ~40Hz noise in leg_lengths_topic (37-42Hz band) = Hermite segment-boundary velocity discontinuity. 11 solver timeouts at start (max 8 consecutive) matching observed initial stutters. Need C1-continuous Hermite: send u[2] alongside u[0]+u[1] so v1_old == v0_new.",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-17_13-07-49"
+    },
+    "mpc_20260417_123226.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-17T13:05:00Z",
+      "verdict": "FAIL",
+      "flags_count": 13,
+      "phase": "4.1-quintic-ref-validation",
+      "notes": "z=220 --no-vel-ff with quintic reference: SOLVER SATURATED (52% timeouts, 142 consecutive). Per-tick quintic reshaping defeats warm-start. Reference caching fix applied. No oscillation detected — quintic S-curve is working but IPOPT can't keep up.",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-17_12-31-55"
+    },
+    "mpc_20260417_002020.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-17T00:45:00Z",
+      "verdict": "NEEDS_ATTENTION",
+      "flags_count": 61,
+      "phase": "ff-ablation-run4",
+      "notes": "z=220 --no-torque-ff --no-vel-ff: smooth-but-laggy, 6.4mm RMS, no oscillation",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-17_00-20-04"
+    },
+    "mpc_20260417_001936.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-17T00:45:00Z",
+      "verdict": "NEEDS_ATTENTION",
+      "flags_count": 21,
+      "phase": "ff-ablation-run3",
+      "notes": "z=190 --no-torque-ff --no-vel-ff: clean static hold, 2.9mm RMS",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-17_00-19-02"
+    },
+    "mpc_20260417_001826.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-17T00:45:00Z",
+      "verdict": "FAIL",
+      "flags_count": 144,
+      "phase": "ff-ablation-run2",
+      "notes": "z=220 --no-torque-ff: LIMIT-CYCLE OSCILLATION, 12mm RMS, 18 consecutive solver timeouts",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-17_00-17-54"
+    },
+    "mpc_20260417_001705.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-17T00:45:00Z",
+      "verdict": "NEEDS_ATTENTION",
+      "flags_count": 22,
+      "phase": "ff-ablation-run1",
+      "notes": "z=190 --no-torque-ff: clean static hold, similar to baseline",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-17_00-16-51"
+    },
+    "mpc_20260416_232851.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-16T23:40:00Z",
+      "verdict": "NEEDS_ATTENTION",
+      "flags_count": 31,
+      "phase": "baseline-all-FF",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-16_23-28-36"
+    },
     "mpc_20260330_171932.csv": {
       "analyzed": true,
       "last_analyzed": "2026-03-30T22:00:00Z",

@@ -200,6 +200,36 @@ issues:
   # Known behaviour (expected, no action needed)
   # -----------------------------------------------------------------------
 
+  - id: PILOT_ESTOP
+    name: "Pilot E-stop button pressed"
+    severity: low   # severity of the EVENT itself — it is a normal safe stop
+    status: known
+    description: >
+      The physical E-stop button was pressed.  This cuts power to the ODrive
+      DC bus, which immediately causes DC_BUS_UNDER_VOLTAGE (error 512) on
+      every powered motor, and triggers an orchestrator FAULT within a few
+      hundred milliseconds.
+
+      The E-stop is ALWAYS a pilot intervention — it is a RESPONSE to
+      concerning behaviour, never a primary cause.  When diagnose.py detects
+      this signature it emits an `estop_event` info flag and tags all
+      downstream events (STOW-drop discontinuities, motor disarms, tracking
+      blowups, FAULT transition, control mode → ERROR) as `post_estop: true`
+      with severity downgraded to `info`.
+    signatures:
+      - type: motor_error_cascade
+        error_code: 512    # ERR_DC_BUS_UNDER_VOLTAGE
+        affected_motors_min: 2
+        cascade_window_ms: 200
+      - type: orchestrator_fault_after_motor_error
+        within_ms: 500
+    fix: >
+      Not a fault — expected behaviour.  Investigate the PRE-E-stop MPC /
+      plant behaviour; that is the real failure that prompted the operator
+      to intervene.  Do NOT flag the E-stop, STOW-drop, or cascading motor
+      errors as independent issues.
+    reference: "sim/analysis/diagnose.py:detect_estop_event"
+
   - id: TIMING_FIRST_SAMPLE
     name: "First-sample cold-start solve spike"
     severity: low

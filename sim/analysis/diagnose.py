@@ -170,6 +170,91 @@ def analyse_solve_times(records: List[StepRecord],
     }
 
 
+def analyse_solver_status(records: List[StepRecord]) -> Dict[str, Any]:
+    """Tally the MPC solver-status column — the richer signal than solve time alone.
+
+    A solve can land under the time budget and still be a fallback/hold (e.g.
+    Maximum_CpuTime_Exceeded that IPOPT returned slightly under the cap), or
+    land over budget and still be a successful solve.  The `solve_status`
+    column captures what the solver ACTUALLY returned each step:
+
+      - 'Solve_Succeeded' / 'Solved_To_Acceptable_Level' — good solve
+      - 'fallback(<reason>)'  — applied shifted warm-start (previous trajectory)
+      - 'hold(<reason>)'      — held previous command (degraded fallback)
+      - 'cold_hold(<reason>)' — first-solve failure; held at q_cur
+
+    This is the structured equivalent of the MPC stdout 'solve failed' log
+    lines, but per-step and already in the CSV — no stdout tee required.
+    """
+    if not records:
+        return {'total': 0}
+
+    statuses = [r.solve_status or 'n/a' for r in records]
+    from collections import Counter
+    by_status = Counter(statuses)
+
+    total = len(statuses)
+    succeeded = sum(1 for s in statuses
+                    if s in ('Solve_Succeeded', 'Solved_To_Acceptable_Level'))
+
+    def _classify(s: str) -> str:
+        if s.startswith('hold('):
+            return 'hold'
+        if s.startswith('cold_hold('):
+            return 'cold_hold'
+        if s.startswith('fallback('):
+            return 'fallback'
+        if s in ('Solve_Succeeded', 'Solved_To_Acceptable_Level'):
+            return 'success'
+        return 'other'
+
+    class_counts = Counter(_classify(s) for s in statuses)
+
+    # Consecutive non-success runs (any non-success)
+    max_consec_nonsuccess = 0
+    cur = 0
+    for s in statuses:
+        if _classify(s) != 'success':
+            cur += 1
+            max_consec_nonsuccess = max(max_consec_nonsuccess, cur)
+        else:
+            cur = 0
+
+    # Consecutive timeouts (hold/fallback/cold_hold with Maximum_CpuTime_Exceeded)
+    def _is_timeout(s: str) -> bool:
+        return 'Maximum_CpuTime_Exceeded' in s and _classify(s) != 'success'
+
+    max_consec_timeout = 0
+    cur = 0
+    timeout_total = 0
+    for s in statuses:
+        if _is_timeout(s):
+            cur += 1
+            timeout_total += 1
+            max_consec_timeout = max(max_consec_timeout, cur)
+        else:
+            cur = 0
+
+    # Other (non-timeout) failure reasons — surface them for investigation
+    other_reasons: Dict[str, int] = {}
+    for s, n in by_status.items():
+        if _classify(s) != 'success' and not _is_timeout(s):
+            other_reasons[s] = n
+
+    return {
+        'total': total,
+        'succeeded': succeeded,
+        'success_rate_pct': round(100.0 * succeeded / total, 2) if total else 0.0,
+        'by_class': dict(class_counts),
+        'by_status': dict(by_status),
+        'timeout_total': timeout_total,
+        'timeout_pct': round(100.0 * timeout_total / total, 2) if total else 0.0,
+        'max_consecutive_non_success': max_consec_nonsuccess,
+        'max_consecutive_timeout': max_consec_timeout,
+        'other_failure_reasons': other_reasons,
+    }
+
+
 def analyse_oscillation(records: List[StepRecord]) -> Dict[str, Any]:
     """Detect oscillation via chatter ratio (sign changes in command deltas)."""
     n = len(records)
@@ -400,6 +485,7 @@ def analyse_csv(records: List[StepRecord],
         'dt_median_ms': round(dt_median * 1000, 2),
         'tracking': analyse_tracking(records),
         'solve_times': analyse_solve_times(records, budget_ms),
+        'solver_status': analyse_solver_status(records),
         'oscillation': analyse_oscillation(records),
         'discontinuities': analyse_discontinuities(records),
         'workspace': analyse_workspace(records),
@@ -572,10 +658,14 @@ def analyse_rosbag(rosbag_path: str) -> Dict[str, Any]:
 
     Uses the rosbags library (pure Python MCAP reader).  Degrades gracefully
     if rosbags is not installed.
+
+    Performs a two-pass scan:
+      1. Lightweight pass — count messages per topic.
+      2. Targeted deep scan — extract state transitions, motor errors, and
+         detect pilot E-stop events (DC_BUS_UNDER_VOLTAGE cascade → FAULT).
     """
     try:
-        from rosbags.rosbag2 import Reader
-        from rosbags.serde import deserialize_cdr
+        from rosbags.highlevel import AnyReader  # type: ignore
     except ImportError:
         return {
             'available': False,
@@ -592,33 +682,295 @@ def analyse_rosbag(rosbag_path: str) -> Dict[str, Any]:
     }  # type: Dict[str, Any]
 
     try:
-        with Reader(rosbag_path) as reader:
-            # Report available topics
+        from pathlib import Path as _Path
+        with AnyReader([_Path(rosbag_path)]) as reader:
+            start_ns = reader.start_time
+            end_ns = reader.end_time
+            start_s = start_ns / 1e9
+            results['start_time_s'] = start_s
+            results['end_time_s'] = end_ns / 1e9
+            results['duration_s'] = round((end_ns - start_ns) / 1e9, 3)
+
+            # Topic inventory
             topic_info = {}
             for conn in reader.connections:
-                topic_info[conn.topic] = {
+                topic_info.setdefault(conn.topic, {
                     'msgtype': conn.msgtype,
                     'count': 0,
-                }
+                })
 
-            # Count messages per topic (lightweight scan)
-            for conn, _ts, _data in reader.messages():
+            # Deep scans
+            state_transitions: List[Dict[str, Any]] = []
+            mode_transitions: List[Dict[str, Any]] = []
+            motor_errors: List[Dict[str, Any]] = []   # [{t,motor,error,prev_error}]
+            prev_state = None
+            prev_mode = None
+            # Per-motor last active_errors value, for edge detection
+            prev_motor_err: Dict[int, int] = {}
+
+            for conn, ts, raw in reader.messages():
                 if conn.topic in topic_info:
                     topic_info[conn.topic]['count'] += 1
 
+                rel = ts / 1e9 - start_s
+
+                if conn.topic == '/orchestrator_state':
+                    msg = reader.deserialize(raw, conn.msgtype)
+                    data = getattr(msg, 'data', None)
+                    if data is not None and data != prev_state:
+                        state_transitions.append({'t_s': round(rel, 3),
+                                                  'state': data})
+                        prev_state = data
+
+                elif conn.topic == '/control_mode_topic':
+                    msg = reader.deserialize(raw, conn.msgtype)
+                    data = getattr(msg, 'data', None)
+                    if data != prev_mode:
+                        mode_transitions.append({'t_s': round(rel, 3),
+                                                 'mode': data or ''})
+                        prev_mode = data
+
+                elif conn.topic == '/robot_state':
+                    msg = reader.deserialize(raw, conn.msgtype)
+                    motor_states = getattr(msg, 'motor_states', None) or []
+                    for i, ms in enumerate(motor_states):
+                        err = (getattr(ms, 'active_errors', None)
+                               or getattr(ms, 'error', None) or 0)
+                        if err != prev_motor_err.get(i):
+                            # Edge (0→err or err_a→err_b); record rising only
+                            if err and err != 0 and err != prev_motor_err.get(i, -1):
+                                motor_errors.append({
+                                    't_s': round(rel, 3),
+                                    'motor': i,
+                                    'active_errors': int(err),
+                                })
+                            prev_motor_err[i] = err
+
             results['topics'] = topic_info
             results['topics_found'] = list(topic_info.keys())
-
-            # TODO: Deep analysis of specific topics (robot_state, leg_lengths,
-            # tracking_error, diagnostics) will be added as we understand the
-            # exact message types and their CDR layout on the Jetson.
-            # For now, topic inventory and message counts are sufficient for
-            # the slash command to report what data is available.
+            results['state_transitions'] = state_transitions
+            results['mode_transitions'] = mode_transitions
+            results['motor_errors'] = motor_errors
+            results['estop'] = detect_estop_event(
+                motor_errors=motor_errors,
+                state_transitions=state_transitions,
+                mode_transitions=mode_transitions,
+            )
 
     except Exception as e:
         results['error'] = f'Failed to read rosbag: {e}'
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# Pilot E-stop detection
+# ---------------------------------------------------------------------------
+
+# ODrive error bit for DC bus under-voltage — pressing the physical E-stop
+# cuts the bus voltage, so this is the reliable signature of an E-stop.
+# Definition mirrors ros_ws/src/jugglebot/jugglebot/can/odrive.py:ERR_DC_BUS_UNDER_VOLTAGE
+ERR_DC_BUS_UNDER_VOLTAGE = 512
+
+# Cascade window for co-occurring motor undervolts — tight because a physical
+# E-stop collapses the bus within microseconds; 200ms is a generous bound that
+# still excludes unrelated faults.
+ESTOP_CASCADE_WINDOW_S = 0.200
+
+# Max delay between motor undervolt cascade and orchestrator FAULT for the
+# FAULT to be attributable to the E-stop (vs. an independent fault).
+ESTOP_TO_FAULT_WINDOW_S = 0.500
+
+
+def detect_estop_event(
+    motor_errors: List[Dict[str, Any]],
+    state_transitions: List[Dict[str, Any]],
+    mode_transitions: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Detect pilot E-stop from motor-error cascade + orchestrator FAULT.
+
+    The physical E-stop cuts the ODrive DC bus, so every motor reports
+    DC_BUS_UNDER_VOLTAGE (bit 512) within a few ms of each other, followed
+    within ~500ms by an orchestrator FAULT.  This is unambiguous and always
+    operator-initiated — the E-stop is a RESPONSE, never a primary cause.
+
+    Returns a dict with 'detected' and, when detected, timing and affected
+    motors.  `bag_time_s` is the timestamp of the first undervolt edge.
+    """
+    undervolts = [e for e in motor_errors
+                  if (e['active_errors'] & ERR_DC_BUS_UNDER_VOLTAGE)]
+    if len(undervolts) < 2:
+        return {'detected': False}
+
+    # Cluster the first cascade
+    undervolts.sort(key=lambda e: e['t_s'])
+    first_t = undervolts[0]['t_s']
+    cluster = [e for e in undervolts
+               if e['t_s'] - first_t <= ESTOP_CASCADE_WINDOW_S]
+    affected = sorted({e['motor'] for e in cluster})
+    if len(affected) < 2:
+        return {'detected': False}
+
+    # Find an orchestrator FAULT shortly after the cascade (diagnostic, not
+    # required — the undervolt cascade alone is strong evidence)
+    fault_t: Optional[float] = None
+    for st in state_transitions:
+        if 'FAULT' in (st.get('state') or '').upper() and st['t_s'] >= first_t:
+            if st['t_s'] - first_t <= ESTOP_TO_FAULT_WINDOW_S:
+                fault_t = st['t_s']
+            break
+
+    mode_error_t: Optional[float] = None
+    for md in mode_transitions:
+        if 'ERROR' in (md.get('mode') or '').upper() and md['t_s'] >= first_t:
+            if md['t_s'] - first_t <= ESTOP_TO_FAULT_WINDOW_S:
+                mode_error_t = md['t_s']
+            break
+
+    cascade_span = max(e['t_s'] for e in cluster) - first_t
+
+    return {
+        'detected': True,
+        'bag_time_s': round(first_t, 3),
+        'affected_motors': affected,
+        'cascade_span_ms': round(cascade_span * 1000, 1),
+        'orchestrator_fault_at_s': (round(fault_t, 3)
+                                    if fault_t is not None else None),
+        'control_mode_error_at_s': (round(mode_error_t, 3)
+                                    if mode_error_t is not None else None),
+        'evidence': (
+            f"DC_BUS_UNDER_VOLTAGE (err 512) on motors "
+            f"{affected} within {cascade_span*1000:.0f}ms"
+            + (f", orchestrator FAULT at +{(fault_t-first_t)*1000:.0f}ms"
+               if fault_t is not None else "")
+        ),
+        'attribution_rule': (
+            "Pilot E-stop is ALWAYS a RESPONSE to concerning behaviour, never "
+            "a primary cause.  All events at or after bag_time_s are downstream."
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Companion MPC stdout log (optional)
+# ---------------------------------------------------------------------------
+
+# Regex catalogue for interesting MPC stdout lines — extends the structured
+# per-step signal in `solve_status` with session-level context (solver
+# initialisation, final summary, FK warnings, etc.) that only appears in
+# stdout.
+_MPC_STDOUT_PATTERNS = [
+    (re.compile(r'MPC solve failed \((\d+) consecutive\): '
+                r'(?P<reason>\S+)\s*\((?P<ms>[\d.]+)\s*ms\)'),
+     'solve_failed'),
+    (re.compile(r'FK did not converge'), 'fk_did_not_converge'),
+    (re.compile(r'MPC controller initialised\s+\((?P<config>.*?)\)'),
+     'mpc_init'),
+    (re.compile(r'Final tracking error:\s+(?P<pos>[\d.]+)\s*mm,\s*'
+                r'(?P<ori>[\d.]+)\s*deg'),
+     'final_tracking'),
+    (re.compile(r'Solve time:\s+mean=(?P<mean>[\d.]+)\s*ms,\s+'
+                r'max=(?P<max>[\d.]+)\s*ms,\s+p95=(?P<p95>[\d.]+)\s*ms'),
+     'solve_summary'),
+    (re.compile(r'HardwarePlant:\s+(?P<msg>.*)'), 'hardware_plant'),
+    (re.compile(r'TargetFeedbackPub:\s+(?P<msg>.*)'), 'target_feedback_pub'),
+    (re.compile(r'Logging to:\s+(?P<path>\S+)'), 'logging_to'),
+]
+
+
+def _parse_companion_stdout_log(csv_path: str) -> Dict[str, Any]:
+    """Parse an MPC stdout log co-located with the CSV, if present.
+
+    Looks for either `<csv_stem>.log` or `<csv_stem>.stdout.log` next to the
+    telemetry CSV.  Returns a structured summary of matched lines plus the
+    raw line count.  Unmatched lines are reported as `unmatched_lines` count
+    (not stored verbatim, to keep JSON output small).
+
+    Users can capture MPC stdout with:
+        python run_mpc.py --pose ... 2>&1 | tee temp/logs/mpc_<ts>.log
+    """
+    csv_dir = os.path.dirname(csv_path) or '.'
+    stem = os.path.basename(csv_path)
+    if stem.lower().endswith('.csv'):
+        stem = stem[:-4]
+
+    candidates = [
+        os.path.join(csv_dir, f'{stem}.log'),
+        os.path.join(csv_dir, f'{stem}.stdout.log'),
+    ]
+    log_path = next((p for p in candidates if os.path.isfile(p)), None)
+    if log_path is None:
+        return {'available': False,
+                'searched': candidates,
+                'hint': ("Capture MPC stdout with: "
+                         "`python run_mpc.py ... 2>&1 | tee "
+                         "temp/logs/mpc_<ts>.log`")}
+
+    result: Dict[str, Any] = {
+        'available': True,
+        'path': log_path,
+        'total_lines': 0,
+        'unmatched_lines': 0,
+        'events': {},   # category -> count
+        'solve_failures': {},  # reason -> count
+        'max_consecutive_solve_failures': 0,
+        'fk_non_convergences': 0,
+        'mpc_config': None,
+        'final_tracking': None,
+        'solve_summary': None,
+        'excerpts': [],  # first occurrence per category (human-readable)
+    }
+
+    try:
+        with open(log_path, 'r', errors='replace') as f:
+            for line in f:
+                result['total_lines'] += 1
+                matched = False
+                for rx, cat in _MPC_STDOUT_PATTERNS:
+                    m = rx.search(line)
+                    if not m:
+                        continue
+                    matched = True
+                    result['events'][cat] = result['events'].get(cat, 0) + 1
+                    if cat == 'solve_failed':
+                        reason = m.group('reason')
+                        result['solve_failures'][reason] = (
+                            result['solve_failures'].get(reason, 0) + 1)
+                        try:
+                            n_consec = int(m.group(1))
+                            result['max_consecutive_solve_failures'] = max(
+                                result['max_consecutive_solve_failures'],
+                                n_consec)
+                        except (TypeError, ValueError):
+                            pass
+                    elif cat == 'fk_did_not_converge':
+                        result['fk_non_convergences'] += 1
+                    elif cat == 'mpc_init' and result['mpc_config'] is None:
+                        result['mpc_config'] = m.group('config')
+                    elif cat == 'final_tracking':
+                        result['final_tracking'] = {
+                            'pos_mm': float(m.group('pos')),
+                            'ori_deg': float(m.group('ori')),
+                        }
+                    elif cat == 'solve_summary':
+                        result['solve_summary'] = {
+                            'mean_ms': float(m.group('mean')),
+                            'max_ms': float(m.group('max')),
+                            'p95_ms': float(m.group('p95')),
+                        }
+                    # Capture first excerpt per category for human context
+                    if not any(e['category'] == cat for e in result['excerpts']):
+                        result['excerpts'].append({
+                            'category': cat,
+                            'line': line.rstrip(),
+                        })
+                    break
+                if not matched:
+                    result['unmatched_lines'] += 1
+    except Exception as e:
+        result['error'] = f'Failed to read stdout log: {e}'
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -671,6 +1023,7 @@ def generate_flags(result: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     tracking = result.get('tracking', {})
     solve = result.get('solve_times', {})
+    status = result.get('solver_status', {})
     osc = result.get('oscillation', {})
     disc = result.get('discontinuities', {})
     ws = result.get('workspace', {})
@@ -711,6 +1064,43 @@ def generate_flags(result: Dict[str, Any]) -> List[Dict[str, Any]]:
                         f"({solve['budget_violation_pct']:.1f}%, max {solve['max_ms']:.1f}ms)"),
         })
 
+    # Solver-status flags — richer than solve-time alone.  A solve can finish
+    # under the time cap yet still be a fallback (IPOPT terminated with
+    # Maximum_CpuTime_Exceeded at ~cap ms).  `status` counts what IPOPT
+    # actually returned per step.
+    if status.get('total', 0) > 0:
+        timeout_pct = status.get('timeout_pct', 0.0)
+        success_pct = status.get('success_rate_pct', 100.0)
+        max_consec_timeout = status.get('max_consecutive_timeout', 0)
+        other_reasons = status.get('other_failure_reasons', {})
+
+        if timeout_pct >= 50.0:
+            flags.append({
+                'severity': 'error',
+                'source': 'mpc',
+                'message': (f"MPC solver saturated: {timeout_pct:.1f}% of steps "
+                            f"timed out (Maximum_CpuTime_Exceeded), "
+                            f"success rate {success_pct:.1f}%, "
+                            f"max {max_consec_timeout} consecutive timeouts"),
+            })
+        elif timeout_pct >= 10.0 or max_consec_timeout >= 5:
+            flags.append({
+                'severity': 'warning',
+                'source': 'mpc',
+                'message': (f"MPC solver timeouts: {timeout_pct:.1f}% of steps, "
+                            f"max {max_consec_timeout} consecutive "
+                            f"(success rate {success_pct:.1f}%)"),
+            })
+
+        if other_reasons:
+            # Non-timeout failure reasons (numerical issues, infeasibility, etc.)
+            reason_summary = ', '.join(f"{k}×{v}" for k, v in other_reasons.items())
+            flags.append({
+                'severity': 'warning',
+                'source': 'mpc',
+                'message': f"Non-timeout solver failures: {reason_summary}",
+            })
+
     # Oscillation flags
     if osc.get('detected', False):
         msg = "Oscillation detected: chatter ratio > 0.5 on legs " + \
@@ -722,11 +1112,13 @@ def generate_flags(result: Dict[str, Any]) -> List[Dict[str, Any]]:
         else:
             flags.append({'severity': 'warning', 'source': 'mpc', 'message': msg})
 
-    # Discontinuity flags
+    # Discontinuity flags (include time_s so post-E-stop tagging can downgrade
+    # STOW-drop discontinuities caused by the operator's E-stop)
     for jump in disc.get('cmd_jumps', []):
         flags.append({
             'severity': 'error',
             'source': 'mpc',
+            'time_s': jump['time_s'],
             'message': (f"Command discontinuity: leg {jump['leg']} jumped "
                         f"{jump['magnitude_mm']:.1f}mm at t={jump['time_s']:.3f}s"),
         })
@@ -784,6 +1176,85 @@ def generate_flags(result: Dict[str, Any]) -> List[Dict[str, Any]]:
 # Main
 # ---------------------------------------------------------------------------
 
+def _parse_csv_start_time_s(csv_path: str) -> Optional[float]:
+    """Extract wall-clock start time (unix seconds) from an mpc_<YYYYMMDD>_<HHMMSS>.csv.
+
+    Returns None if the filename doesn't match.  Used to align CSV relative
+    time (t=0 at session start) with rosbag absolute time.
+    """
+    import re as _re
+    from datetime import datetime as _dt
+    m = _re.search(r'mpc_(\d{8})_(\d{6})', os.path.basename(csv_path))
+    if not m:
+        return None
+    try:
+        return _dt.strptime(m.group(1) + m.group(2), '%Y%m%d%H%M%S').timestamp()
+    except ValueError:
+        return None
+
+
+def _estop_csv_time_s(rosbag_result: Dict[str, Any],
+                      csv_path: str) -> Optional[float]:
+    """Translate the E-stop's rosbag-relative time into CSV-relative time.
+
+    CSV time starts at 0 when the MPC session begins; rosbag time starts at 0
+    when recording began.  Alignment comes from the CSV filename timestamp
+    (wall-clock session start) minus the rosbag start time.  Returns None if
+    an E-stop wasn't detected or alignment isn't possible.
+    """
+    if not rosbag_result or not rosbag_result.get('available'):
+        return None
+    estop = rosbag_result.get('estop') or {}
+    if not estop.get('detected'):
+        return None
+
+    bag_t_estop = estop['bag_time_s']
+    bag_start = rosbag_result.get('start_time_s')
+    csv_start = _parse_csv_start_time_s(csv_path)
+    if bag_start is None or csv_start is None:
+        return None
+
+    # CSV-relative time = rosbag-absolute time - CSV start time
+    # rosbag-absolute time = bag_start + bag_t_estop
+    return (bag_start + bag_t_estop) - csv_start
+
+
+def _tag_post_estop_flags(flags: List[Dict[str, Any]],
+                          estop_csv_t: Optional[float],
+                          estop_bag_t: Optional[float]) -> None:
+    """Mark flags that occur at or after the E-stop as downstream.
+
+    Downstream flags are tagged with `post_estop: True` and downgraded to
+    'info' severity with an explanatory note.  Rationale: E-stop collapses
+    the bus, which causes commanded STOW drops, motor disarms, tracking
+    blowups, etc. — these are consequences of the operator's intervention,
+    not independent faults.
+    """
+    if estop_csv_t is None and estop_bag_t is None:
+        return
+
+    def _after_estop(flag: Dict[str, Any]) -> bool:
+        t = flag.get('time_s')
+        if t is None:
+            return False
+        src = flag.get('source', 'mpc')
+        if src == 'mpc' and estop_csv_t is not None:
+            # A small pre-trigger tolerance (20ms ≈ 1 MPC step) absorbs the
+            # fact that the operator presses E-stop in response to motion
+            # already in flight.
+            return t >= estop_csv_t - 0.020
+        if src == 'rosbag' and estop_bag_t is not None:
+            return t >= estop_bag_t - 0.020
+        return False
+
+    for f in flags:
+        if _after_estop(f):
+            f['post_estop'] = True
+            f['original_severity'] = f.get('severity')
+            f['severity'] = 'info'
+            f['message'] = f"[post-E-stop downstream] {f['message']}"
+
+
 def run_diagnosis(csv_path: str,
                   ros_log_dir: Optional[str] = None,
                   rosbag_path: Optional[str] = None,
@@ -808,6 +1279,9 @@ def run_diagnosis(csv_path: str,
     csv_result = analyse_csv(records, budget_ms)
     result.update(csv_result)
 
+    # Optional: companion MPC stdout log
+    result['mpc_stdout'] = _parse_companion_stdout_log(csv_path)
+
     # ROS2 log analysis
     if ros_log_dir:
         ros2_result = parse_ros2_log_dir(ros_log_dir)
@@ -830,8 +1304,45 @@ def run_diagnosis(csv_path: str,
     result['correlations'] = correlate_sources(
         csv_result, ros2_result)
 
-    # Generate flags
-    result['flags'] = generate_flags(result)
+    # E-stop alignment: translate bag time to CSV time for downstream tagging
+    rosbag_res = result.get('rosbag') or {}
+    estop = (rosbag_res.get('estop') or {}) if isinstance(rosbag_res, dict) else {}
+    estop_csv_t = _estop_csv_time_s(rosbag_res, csv_path) if estop.get('detected') else None
+    estop_bag_t = estop.get('bag_time_s') if estop.get('detected') else None
+    result['estop_alignment'] = {
+        'detected': bool(estop.get('detected')),
+        'estop_bag_time_s': estop_bag_t,
+        'estop_csv_time_s': (round(estop_csv_t, 3)
+                             if estop_csv_t is not None else None),
+    }
+
+    # Generate flags (attach time_s where applicable so we can tag downstream)
+    flags = generate_flags(result)
+
+    # Tag post-E-stop flags as downstream
+    _tag_post_estop_flags(flags, estop_csv_t, estop_bag_t)
+
+    # Add an info-severity marker for the E-stop itself (not a fault — pilot
+    # intervention).  Place it first so it reads at the top of the flag list
+    # after sorting by severity.
+    if estop.get('detected'):
+        flags.append({
+            'severity': 'info',
+            'source': 'rosbag',
+            'message': (
+                f"Pilot E-stop detected at bag_t={estop['bag_time_s']:.3f}s"
+                + (f" (CSV t={estop_csv_t:.3f}s)" if estop_csv_t is not None else "")
+                + f" — {estop.get('evidence','')}. "
+                "This is operator-initiated; look upstream for what prompted it."
+            ),
+            'estop_event': True,
+            'time_s': estop_csv_t if estop_csv_t is not None else estop['bag_time_s'],
+        })
+
+    # Re-sort by severity after tagging
+    severity_order = {'error': 0, 'warning': 1, 'info': 2}
+    flags.sort(key=lambda f: severity_order.get(f.get('severity', 'info'), 3))
+    result['flags'] = flags
 
     # Generate diagnostic plots (if requested)
     # plots=None => no plots, 'auto' => auto-select, list => specific categories
