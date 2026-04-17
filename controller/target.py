@@ -100,12 +100,16 @@ def flat_target_to_events(
     response_time: float = 0.3,
     target_twist: np.ndarray | None = None,
     arrival_time: float | None = None,
+    cruise_speed: float = 80.0,
 ) -> List[ReferenceEvent]:
     """Convert a flat target into a 2-event quintic reference.
 
     Produces two ``ReferenceEvent`` objects with zero acceleration at both
     endpoints.  The MPC quintic-interpolates between them, generating a
     smooth S-curve from the current state to the target.
+
+    When the platform is already at (or very near) the target, falls back
+    to a single hold event to avoid degenerate near-zero-duration quintics.
 
     Parameters
     ----------
@@ -118,31 +122,60 @@ def flat_target_to_events(
     t_now : float
         Current absolute time (seconds).
     response_time : float
-        Duration for the quintic transition (seconds).  Shorter = faster
-        response.  Used when ``arrival_time`` is None.
+        Minimum duration for the quintic transition (seconds).  Acts as
+        a floor when the distance-based duration is shorter.
     target_twist : (6,) ndarray or None
         Desired twist at the target.  None = zero (hold at target).
     arrival_time : float or None
-        Absolute arrival time.  If provided, overrides ``response_time``.
+        Absolute arrival time.  If provided, overrides distance-based
+        and ``response_time`` computation.
+    cruise_speed : float
+        Approximate Cartesian cruise speed (mm/s) used to estimate
+        arrival time from translation distance when ``arrival_time``
+        is None.  Default 80 mm/s.
 
     Returns
     -------
     list[ReferenceEvent]
-        Two events: current state at ``t_now`` and target at arrival.
+        Two events (start + arrival) for quintic interpolation, or one
+        hold event when already at the target.
     """
+    cur = np.asarray(current_pose, dtype=np.float64)
+    tgt = np.asarray(target_pose, dtype=np.float64)
+    tw_start = np.asarray(current_twist, dtype=np.float64)
     tw_end = target_twist if target_twist is not None else _ZERO6
 
-    # Single hold-at-target event: the MPC sees the target at the
-    # specified time and forward-extrapolates (hold) for later nodes.
-    # Nodes before the event get backward-extrapolated.  This gives the
-    # MPC full freedom to plan its own optimal approach path rather than
-    # constraining it to follow a prescribed ramp.
-    t_event = arrival_time if (arrival_time is not None
-                               and arrival_time > t_now) else t_now
+    # Compute arrival time
+    if arrival_time is not None and arrival_time > t_now:
+        t_arrival = arrival_time
+    else:
+        # Distance-based duration from translation component
+        dist = float(np.linalg.norm(tgt[:3] - cur[:3]))
+        duration = max(response_time, dist / max(cruise_speed, 1.0))
+        t_arrival = t_now + duration
+
+    # Degenerate guard: if arrival is essentially now, emit a single
+    # hold event to avoid near-zero-duration quintic with huge velocities.
+    if t_arrival - t_now < 0.05:
+        return [
+            ReferenceEvent(
+                time=t_now,
+                pose=tgt.copy(),
+                twist=np.asarray(tw_end, dtype=np.float64),
+                accel=_ZERO6.copy(),
+            ),
+        ]
+
     return [
         ReferenceEvent(
-            time=t_event,
-            pose=np.asarray(target_pose, dtype=np.float64),
+            time=t_now,
+            pose=cur.copy(),
+            twist=tw_start.copy(),
+            accel=_ZERO6.copy(),
+        ),
+        ReferenceEvent(
+            time=t_arrival,
+            pose=tgt.copy(),
             twist=np.asarray(tw_end, dtype=np.float64),
             accel=_ZERO6.copy(),
         ),
@@ -211,23 +244,41 @@ def _pose_6dof_from_state(state: Any) -> np.ndarray:
 
 
 class StaticTargetSource:
-    """Adapts a pose schedule (--pose / --sequence) to the TargetSource protocol."""
+    """Adapts a pose schedule (--pose / --sequence) to the TargetSource protocol.
+
+    Caches the quintic reference events so the MPC sees a stable optimization
+    landscape between target changes.  Without caching, rebuilding the quintic
+    from current state every tick defeats IPOPT warm-starting and causes solver
+    timeouts on constrained hardware (Jetson).
+    """
 
     def __init__(self, schedule: List[Tuple[float, np.ndarray]]):
         self._schedule = schedule
         self._target = np.zeros(6)
+        self._cached_events: List[ReferenceEvent] | None = None
+        self._cached_target: np.ndarray | None = None
 
     def update(self, sim_time: float, state: Any) -> TargetCommand:
+        prev_target = self._target.copy()
         for t, pose in self._schedule:
             if sim_time >= t:
                 self._target = pose
             else:
                 break
+
+        # Regenerate quintic only when target changes or on first call
+        target_changed = (self._cached_target is None
+                          or not np.array_equal(self._target, self._cached_target))
+        if target_changed:
+            self._cached_events = flat_target_to_events(
+                _pose_6dof_from_state(state), state.platform_twist,
+                self._target, sim_time)
+            self._cached_target = self._target.copy()
+
         return TargetCommand(
             target_pose=self._target,
-            ref_events=flat_target_to_events(
-                _pose_6dof_from_state(state), state.platform_twist,
-                self._target, sim_time),
+            ref_events=self._cached_events,
+            boost_vel_weights=True,
         )
 
 
@@ -235,7 +286,7 @@ class WaypointTargetSource:
     """Adapts a waypoint list (T1-T6) to the TargetSource protocol.
 
     Advances through waypoints as their arrival times are reached.
-    The MPC plans optimal motion between waypoints internally.
+    Caches the quintic reference per waypoint for solver warm-start stability.
     """
 
     def __init__(self, waypoints: List[Tuple[np.ndarray, float]]):
@@ -247,16 +298,25 @@ class WaypointTargetSource:
         """
         self._waypoints = waypoints
         self._idx = 0
+        self._cached_idx: int = -1
+        self._cached_events: List[ReferenceEvent] | None = None
 
     def update(self, sim_time: float, state: Any) -> TargetCommand:
         while (self._idx + 1 < len(self._waypoints)
                and sim_time >= self._waypoints[self._idx][1]):
             self._idx += 1
         pose, arrival = self._waypoints[self._idx]
+
+        # Regenerate quintic only when waypoint index advances
+        if self._idx != self._cached_idx:
+            self._cached_events = flat_target_to_events(
+                _pose_6dof_from_state(state), state.platform_twist,
+                pose, sim_time, arrival_time=arrival)
+            self._cached_idx = self._idx
+
         return TargetCommand(
             target_pose=pose,
             arrival_time=arrival,
-            ref_events=flat_target_to_events(
-                _pose_6dof_from_state(state), state.platform_twist,
-                pose, sim_time, arrival_time=arrival),
+            ref_events=self._cached_events,
+            boost_vel_weights=True,
         )

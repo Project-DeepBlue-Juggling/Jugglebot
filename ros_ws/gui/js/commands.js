@@ -6,7 +6,7 @@
  */
 
 import * as ros from './ros-bridge.js';
-import { currentOrchestratorState } from './panels.js';
+import { currentOrchestratorState, currentSubMode } from './panels.js';
 
 /** @type {{ publish: function } | null} */
 let cmdPublisher = null;
@@ -27,6 +27,7 @@ const COMMANDS = [
     { id: 'cmd-level',      label: 'Level',          command: 'level',        cssClass: 'btn-home' },
     { id: 'cmd-activate',   label: 'Activate',       command: 'activate',     cssClass: 'btn-activate' },
     { id: 'cmd-deactivate', label: 'Deactivate',     command: 'deactivate',   cssClass: 'btn-deactivate' },
+    { id: 'cmd-standby',    label: 'Standby',        command: 'standby',      cssClass: '' },
     { id: 'cmd-spacemouse', label: 'SpaceMouse',     command: 'spacemouse',   cssClass: '' },
     { id: 'cmd-shell',      label: 'Shell',          command: 'shell',        cssClass: '' },
     { id: 'cmd-gui',        label: 'GUI',            command: 'gui',          cssClass: '' },
@@ -54,7 +55,7 @@ export function initCommands() {
                 cmdPublisher.publish({ data: cmd.command });
             }
             // Notify mode change listener for immediate UI response
-            if (onModeChangeCallback && ['gui', 'spacemouse', 'shell'].includes(cmd.command)) {
+            if (onModeChangeCallback && ['standby', 'gui', 'spacemouse', 'shell'].includes(cmd.command)) {
                 onModeChangeCallback(cmd.command);
             }
         });
@@ -69,14 +70,17 @@ export function initCommands() {
  */
 export function updateCommandStates() {
     const state = currentOrchestratorState;
+    const sub = currentSubMode;
+    const active = state === 'ACTIVE';
 
     setEnabled('cmd-home', state === 'IDLE' || state === 'BOOT');
     setEnabled('cmd-level', state === 'IDLE');
     setEnabled('cmd-activate', state === 'IDLE');
-    setEnabled('cmd-deactivate', state === 'ACTIVE');
-    setEnabled('cmd-spacemouse', state === 'ACTIVE');
-    setEnabled('cmd-shell', state === 'ACTIVE');
-    setEnabled('cmd-gui', state === 'ACTIVE');
+    setEnabled('cmd-deactivate', active);
+    setEnabled('cmd-standby', active && sub !== 'STANDBY');
+    setEnabled('cmd-spacemouse', active && sub !== 'SPACEMOUSE');
+    setEnabled('cmd-shell', active && sub !== 'SHELL');
+    setEnabled('cmd-gui', active && sub !== 'GUI');
     setEnabled('cmd-clear', true); // always available
 }
 

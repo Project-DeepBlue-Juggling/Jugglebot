@@ -24,9 +24,13 @@ Constraints:
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import math
 import time as _time
+from dataclasses import asdict
+from pathlib import Path
 
 import numpy as np
 
@@ -367,6 +371,9 @@ class MPCController:
         self._last_twist_traj: np.ndarray | None = None
         self._last_accel_traj: np.ndarray | None = None
 
+        if params.prime_solver:
+            self._prime_solver()
+
     # ------------------------------------------------------------------
     # Factory
     # ------------------------------------------------------------------
@@ -393,6 +400,90 @@ class MPCController:
             init_leg_lengths_mm=geom.init_leg_lengths_mm,
             active_extensions_mm=active_ext,
         )
+
+    # ------------------------------------------------------------------
+    # Ahead-of-time compiled NLP loading
+    # ------------------------------------------------------------------
+
+    _AOT_SO_PATH = Path(__file__).resolve().parent / 'generated' / 'mpc_gen.so'
+    _AOT_HASH_PATH = Path(__file__).resolve().parent / 'generated' / 'mpc_gen.hash'
+
+    # Params that do NOT affect the symbolic NLP CasADi compiles into the
+    # .so.  They are either IPOPT runtime options, orchestration toggles,
+    # or numeric bounds that the solver receives as `lbx`/`ubx`/`lbg`/`ubg`
+    # data at each call.  Excluding them from the hash keeps the AOT
+    # binary valid across common tuning changes (``max_cpu_time``,
+    # ``max_leg_vel_mmps``, ``stroke_mm``, etc.) — ONLY cost weights,
+    # horizon structure, and geometry invalidate the compiled code.
+    _NLP_HASH_EXCLUDE_PARAMS = frozenset({
+        # Runtime IPOPT options
+        'max_iter', 'max_cpu_time', 'tol', 'print_level', 'warm_start',
+        # Orchestration toggles
+        'max_consecutive_failures', 'prime_solver', 'use_aot_solver',
+        # Numeric bounds (applied at runtime via lbw/ubw/lbg/ubg arrays,
+        # not baked into the compiled callbacks)
+        'stroke_mm', 'stroke_margin_mm', 'max_leg_vel_mmps',
+    })
+
+    def _nlp_source_hash(self) -> str:
+        """SHA256 of everything that affects the generated NLP structure.
+
+        Used by ``controller/generate_solver.py`` to stamp the .so and by
+        ``_load_nlpsol`` to detect stale binaries.  Anything that changes
+        the decision-variable layout, constraint structure, cost terms, or
+        geometry must flow through here.  Runtime solver options (max_iter,
+        max_cpu_time, prime_solver, etc.) are deliberately excluded — they
+        are passed as IPOPT ``opts`` at load time, not baked into the .so.
+        """
+        h = hashlib.sha256()
+        mpc_py = Path(__file__).resolve()
+        h.update(mpc_py.read_bytes())
+
+        structural_params = {
+            k: v for k, v in asdict(self._params).items()
+            if k not in self._NLP_HASH_EXCLUDE_PARAMS
+        }
+        h.update(json.dumps(structural_params,
+                            sort_keys=True, default=str).encode())
+        h.update(np.ascontiguousarray(self._base_nodes).tobytes())
+        h.update(np.ascontiguousarray(self._plat_nodes).tobytes())
+        h.update(np.float64(self._init_height_mm).tobytes())
+        h.update(np.ascontiguousarray(self._init_leg_lengths).tobytes())
+        h.update(np.ascontiguousarray(self._active_ext).tobytes())
+        h.update(cs.__version__.encode())
+        return h.hexdigest()
+
+    def _load_nlpsol(self, nlp: dict, opts: dict):
+        """Construct the CasADi IPOPT solver, preferring an AOT .so if present.
+
+        Policy:
+          * ``params.use_aot_solver == False`` → always build in-process
+            (e.g. ``FeasibilityChecker``'s coarse-horizon one-shot MPC)
+          * ``.so`` present + hash matches   → load precompiled (production)
+          * ``.so`` present + hash mismatch  → ``RuntimeError`` (refuse to
+            silently run with stale C code)
+          * ``.so`` absent                   → in-process build (dev/test)
+        """
+        if not self._params.use_aot_solver:
+            return cs.nlpsol('mpc', 'ipopt', nlp, opts)
+        so_path = self._AOT_SO_PATH
+        hash_path = self._AOT_HASH_PATH
+        if so_path.exists():
+            expected = self._nlp_source_hash()
+            stored = hash_path.read_text().strip() if hash_path.exists() else ''
+            if stored != expected:
+                raise RuntimeError(
+                    f"{so_path} is stale (hash mismatch).  Regenerate with: "
+                    f"python controller/generate_solver.py\n"
+                    f"  expected: {expected[:16]}...\n"
+                    f"  found:    {stored[:16] if stored else '<missing>'}..."
+                )
+            logger.info("MPC: loading AOT-compiled solver from %s", so_path)
+            return cs.nlpsol('mpc', 'ipopt', str(so_path), opts)
+        logger.info("MPC: no AOT solver found, building in-process "
+                    "(run `python controller/generate_solver.py` to "
+                    "precompile)")
+        return cs.nlpsol('mpc', 'ipopt', nlp, opts)
 
     # ------------------------------------------------------------------
     # NLP construction (called once)
@@ -634,11 +725,15 @@ class MPCController:
             # unnecessary barrier reduction phases.
             opts['ipopt.mu_init'] = 1e-4
 
-        self._solver = cs.nlpsol('mpc', 'ipopt', nlp, opts)
         self._n_w = n_w
         self._n_param = n_param
         self._N = N
         self._dt_schedule = dt_schedule
+        # Load the NLP.  Prefer an ahead-of-time compiled .so when one is
+        # available and matches the current source+params hash; otherwise
+        # fall back to an in-process build.  See
+        # ``controller/generate_solver.py`` for the AOT generator.
+        self._solver = self._load_nlpsol(nlp, opts)
         self._cumulative_times = self._params.cumulative_times
         self._lbw = lbw
         self._ubw = ubw
@@ -884,32 +979,40 @@ class MPCController:
     # ------------------------------------------------------------------
 
     def _cold_start(self, p_cur, q_cur, ref_traj):
-        """Generate IK-consistent initial guess by interpolating toward the reference.
+        """Generate initial guess for the first solve (or after reset).
 
-        Interpolates pose linearly from current toward each node's reference
-        pose, then computes matching leg extensions via numerical IK so the
-        initial guess satisfies the IK equality constraints approximately.
+        Strategy:
+          * Pose guess (``p`` block): use ``ref_traj`` directly — each node's
+            optimal pose is the reference pose at that node (the optimiser
+            only needs to tolerate tracking and dynamics constraints).
+          * q / u guess: a single numerical IK call for the final reference
+            pose gives ``q_final``; intermediate nodes are a linear q-space
+            interpolation from ``q_cur`` toward ``q_final``.  The IK
+            equality constraints will be driven to feasibility by IPOPT;
+            the guess only needs to be close.
 
-        Works correctly for both flat references (all nodes identical) and
-        time-varying references (each node has a distinct target).
+        Why one IK call instead of N:
+          * N IK calls per cold-start risk FK non-convergence — observed 5
+            in a 15s run during solver saturation (2026-04-17-130811).
+          * A monotonic q-space sweep is a cleaner seed than N
+            independently-IK'd poses (which may overshoot individual nodes).
         """
         N = self._N
         margin = self._params.stroke_margin_mm
         stroke = self._params.stroke_mm
-        t_cumulative = self._cumulative_times  # (N+1,) array starting at 0
-        t_total = t_cumulative[-1]
         w0 = np.zeros(self._n_w)
+
+        q_final = np.clip(self._numerical_ik(ref_traj[N]), 0.0, stroke)
+
         for k in range(N):
-            alpha = t_cumulative[k + 1] / t_total
-            # p: interpolate from current pose toward this node's reference
-            p_k = p_cur * (1.0 - alpha) + ref_traj[k + 1] * alpha
-            w0[12 * N + k * 6: 12 * N + (k + 1) * 6] = p_k
-            # q: compute IK-consistent extensions (full physical range)
-            q_k = np.clip(self._numerical_ik(p_k), 0.0, stroke)
+            alpha = (k + 1) / N
+            # p: use the node's reference pose directly
+            w0[12 * N + k * 6: 12 * N + (k + 1) * 6] = ref_traj[k + 1]
+            # q: linear interpolate in joint space from q_cur toward q_final
+            q_k = q_cur * (1.0 - alpha) + q_final * alpha
             w0[6 * N + k * 6: 6 * N + (k + 1) * 6] = q_k
-            # u: clamp to command bounds [margin, stroke - margin]
-            u_k = np.clip(q_k, margin, stroke - margin)
-            w0[k * 6: (k + 1) * 6] = u_k
+            # u: clamp q_k to command bounds
+            w0[k * 6: (k + 1) * 6] = np.clip(q_k, margin, stroke - margin)
         return w0
 
     def _numerical_ik(self, pose_6dof: np.ndarray) -> np.ndarray:
@@ -929,6 +1032,66 @@ class MPCController:
             leg_vec = plat_w - self._base_nodes[i]
             exts[i] = np.linalg.norm(leg_vec) - self._init_leg_lengths[i]
         return exts
+
+    def _prime_solver(self) -> None:
+        """Invoke the solver once at construction to pay cold-start costs upfront.
+
+        The first call into any CasADi nlpsol instance pays one-time costs
+        that are independent of the problem data: function-table warmup,
+        page faults on the IPOPT shared libraries, BLAS/LAPACK init, and
+        (for JIT backends) C compilation of the callback functions.  Doing
+        this in ``__init__`` keeps that cost out of the operator-visible
+        control loop — the first real solve then runs at steady-state
+        latency (~3-15ms) instead of 27-100ms.
+
+        The solve itself uses neutral parameters (home pose, flat reference
+        at home) and may legitimately time out within the configured
+        ``max_cpu_time``.  That is fine — the warmup work happens during
+        the first callback evaluations regardless of whether IPOPT
+        converges.  Outputs are discarded; no warm-start state is seeded,
+        which would otherwise bias the first real solve toward home.
+        """
+        N = self._N
+        home_pose = np.zeros(6)
+        home_q = np.zeros(6)
+        # Flat reference: all nodes hold at home pose with zero twist/accel.
+        ref_traj = np.tile(home_pose, (N + 1, 1))
+        twist_traj = np.zeros((N + 1, 6))
+        accel_traj = np.zeros((N + 1, 6))
+
+        # Pack parameters using the same layout as solve().
+        par = self._params
+        vel_weights = np.array([
+            par.Q_vel_lin, par.Q_vel_ang,
+            par.Qf_vel_lin, par.Qf_vel_ang,
+        ])
+        accel_weights = np.array([par.Q_accel_lin, par.Q_accel_ang])
+        N1_6 = (self._N + 1) * 6
+        p_param = np.empty(self._n_param)
+        p_param[:6] = home_pose
+        p_param[6:12] = home_q
+        p_param[12:18] = home_q  # u_prev
+        p_param[18:24] = home_q  # u_prev_prev
+        off = 24
+        p_param[off:off + N1_6] = ref_traj.ravel(); off += N1_6
+        p_param[off:off + N1_6] = twist_traj.ravel(); off += N1_6
+        p_param[off:off + N1_6] = accel_traj.ravel(); off += N1_6
+        p_param[off:off + 4] = vel_weights; off += 4
+        p_param[off:off + 2] = accel_weights
+
+        # Cold-start the decision vector the same way solve() would.
+        w0 = self._cold_start(home_pose, home_q, ref_traj)
+
+        # One solver call.  Exceptions are swallowed — a timeout or numeric
+        # issue here is acceptable; the goal is warmup, not convergence.
+        try:
+            self._solver(
+                x0=w0, p=p_param,
+                lbx=self._lbw, ubx=self._ubw,
+                lbg=self._lbg, ubg=self._ubg,
+            )
+        except Exception as exc:
+            logger.info("Prime solve completed with exception (expected): %s", exc)
 
     def _shift_warm_start(self, prev_w):
         """Shift previous optimal solution by one timestep.
@@ -959,6 +1122,7 @@ class MPCController:
         state: PlantState,
         target_pose: np.ndarray,
         ref_events: List[ReferenceEvent] | None = None,
+        t_now: float | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Construct (N+1, 6) reference arrays for the MPC horizon.
 
@@ -970,9 +1134,10 @@ class MPCController:
         should emit ``ref_events`` via ``flat_target_to_events()`` or
         equivalent; this fallback is a safety net only.
         """
+        sample_t = state.time if t_now is None else t_now
         if ref_events is not None and len(ref_events) > 0:
             return _build_reference_from_events(
-                ref_events, state.time,
+                ref_events, sample_t,
                 self._cumulative_times, self._N + 1,
             )
 

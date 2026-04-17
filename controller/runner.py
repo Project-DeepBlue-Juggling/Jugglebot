@@ -65,7 +65,8 @@ class MpcLoopHooks:
 # MPC solve helper
 # ---------------------------------------------------------------------------
 
-def mpc_solve(mpc, state: PlantState, tc: TargetCommand):
+def mpc_solve(mpc, state: PlantState, tc: TargetCommand,
+              t_now: float | None = None):
     """Call mpc.solve() with the target from a TargetCommand.
 
     Returns (cmd, cmd_vel, diag, ref_pose, ref_twist).
@@ -74,11 +75,16 @@ def mpc_solve(mpc, state: PlantState, tc: TargetCommand):
     (quintic Hermite between events).  This ensures telemetry tracking
     error is measured against the reference the MPC actually optimized
     against.
+
+    ``t_now`` overrides ``state.time`` for reference event sampling.
+    ``None`` uses ``state.time``; the main loop passes the frozen ``t_ref``
+    so the reference does not run away during fallback chains.
     """
     cmd, cmd_vel, diag = mpc.solve(
         state, tc.target_pose,
         ref_events=tc.ref_events,
         boost_vel_weights=tc.boost_vel_weights,
+        t_now=t_now,
     )
 
     # Use the MPC's own reference for telemetry.
@@ -101,7 +107,7 @@ def mpc_solve(mpc, state: PlantState, tc: TargetCommand):
 def log_mpc_step(logger: TelemetryLogger, state: PlantState,
                  ref_pose: np.ndarray, cmd_ext: np.ndarray,
                  diag: dict, ref_twist: np.ndarray | None = None,
-                 dashboard=None, **extras) -> None:
+                 dashboard=None, t_ref_s: float = 0.0, **extras) -> None:
     """Record one telemetry step (MPC mode)."""
     record = record_from_arrays(
         time=state.time,
@@ -119,6 +125,7 @@ def log_mpc_step(logger: TelemetryLogger, state: PlantState,
         cost=diag.get('cost', 0.0),
         constraint_violation=diag.get('constraint_violation', 0.0),
         ipopt_iter=diag.get('iter_count', 0),
+        t_ref_s=t_ref_s,
         **extras,
     )
     logger.append(record)
@@ -209,6 +216,14 @@ def run_mpc_loop(
     has_lifecycle = hasattr(source, 'enabled')
     was_enabled = not has_lifecycle  # non-lifecycle sources start enabled
 
+    # Reference clock — advances only on success-class solver status.
+    # Initialised lazily on the first iteration (to match the plant's
+    # actual start time, which may be non-zero on hardware).  While the
+    # solver is in a fallback class the reference stays frozen so the
+    # commanded platform does not fall behind a running reference.
+    t_ref: float | None = None
+    _FALLBACK_KEYWORDS = ('fallback', 'hold', 'cold_hold')
+
     for _ in range(n_steps):
         # --- Lifecycle: enable/disable plant based on source mode ---
         if has_lifecycle:
@@ -234,14 +249,17 @@ def run_mpc_loop(
 
         _t_overhead = _time.perf_counter()
         state = plant.get_state()
-        tc = source.update(state.time, state)
+        if t_ref is None:
+            t_ref = state.time
+        tc = source.update(t_ref, state)
 
         # Hook: target override (e.g. stale telemetry → hold-in-place)
         if hooks.on_target_override is not None:
             tc = hooks.on_target_override(state, tc)
 
         # MPC solve
-        cmd, cmd_vel, diag, ref_pose, ref_twist = mpc_solve(mpc, state, tc)
+        cmd, cmd_vel, diag, ref_pose, ref_twist = mpc_solve(
+            mpc, state, tc, t_now=t_ref)
 
         # Hook: post-solve (e.g. target feedback publishing)
         if hooks.on_post_solve is not None:
@@ -265,12 +283,25 @@ def run_mpc_loop(
         if hooks.on_post_step is not None:
             hooks.on_post_step(state, state.time)
 
-        # Telemetry logging
+        # Telemetry logging.  Log the t_ref that was used for THIS solve
+        # (pre-advance), so the column matches the reference the MPC
+        # actually sampled at.
         extras = {'overhead_ms': _overhead_ms}
         if hooks.on_log_extras is not None:
             extras.update(hooks.on_log_extras(plant))
         log_mpc_step(logger, state, ref_pose, cmd, diag,
-                     ref_twist=ref_twist, dashboard=dashboard, **extras)
+                     ref_twist=ref_twist, dashboard=dashboard,
+                     t_ref_s=t_ref, **extras)
+
+        # Advance t_ref only when the solver returned a success-class
+        # status.  Fallback / hold / cold_hold all hold the platform
+        # commands — the reference must pause too, or it accumulates lag
+        # at v_max per tick and the platform lands far behind when the
+        # solver recovers.
+        status = diag.get('status', '')
+        is_fallback = any(kw in status for kw in _FALLBACK_KEYWORDS)
+        if not is_fallback:
+            t_ref += control_dt
 
         # Wall-clock pacing
         wall_budget += control_dt

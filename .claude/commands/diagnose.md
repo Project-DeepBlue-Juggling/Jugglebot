@@ -7,10 +7,26 @@ description: Analyse hardware test logs — MPC telemetry and rosbag recordings.
 Analyse hardware test session data from MPC telemetry CSVs and rosbag (MCAP) recordings.  Cross-reference findings against known failure patterns and present a structured diagnostic report.
 
 **Data sources:**
-- **MPC telemetry CSV** (`temp/logs/mpc_*.csv`) — 55-field StepRecord at 40 Hz: pose, tracking error, solve times, leg extensions, torques
+- **MPC telemetry CSV** (`temp/logs/mpc_*.csv`) — 55-field StepRecord at 40 Hz: pose, tracking error, solve times, leg extensions, torques, and `solve_status` (per-step IPOPT status — the structured equivalent of MPC stdout log lines).
+- **MPC stdout log** (`temp/logs/<csv_stem>.log` — OPTIONAL, only if the operator tees stdout with e.g. `python run_mpc.py ... 2>&1 | tee temp/logs/mpc_<ts>.log`). `diagnose.py` parses this automatically when present and surfaces session-level context not captured in the CSV (MPC config string, FK non-convergence warnings, session summary). Absence is reported with `available: false` and a hint for the operator.
 - **Rosbag MCAP** (`~/Desktop/rosbags/<timestamp>/`) — 19 ROS2 topics recorded automatically: motor state, leg commands, hand telemetry, state transitions, diagnostics, etc.
 
 Note: ROS2 Foxy does NOT write per-node text log files (that's a Humble+ feature).  The rosbag is the primary source for ROS2 event data.
+
+## Pilot E-stop attribution rule (CRITICAL — read first)
+
+When the rosbag shows `DC_BUS_UNDER_VOLTAGE` (ODrive error 512) appearing on **≥2 motors within ≤200ms**, followed within ~500ms by an orchestrator FAULT, this is a **pilot E-stop** — the operator physically pressed the E-stop button. `diagnose.py` detects this automatically and populates `result['rosbag']['estop']` with timing, affected motors, evidence, and `result['estop_alignment']` with the E-stop's time in the CSV's frame.
+
+**The E-stop is ALWAYS a RESPONSE to concerning behaviour, NEVER a cause.** Treat it as a pilot intervention marker, not a fault.
+
+When an E-stop is detected:
+- Present it in the Event Timeline as "Pilot E-stop" with its `bag_time_s` and `csv_time_s`.
+- `diagnose.py` has already tagged all flags at or after the E-stop as `post_estop: true` and downgraded them to `info` severity (message prefix `[post-E-stop downstream]`). Do NOT re-escalate these in your report.
+- Downstream events to recognise as consequences (not separate issues): STOW-drop command discontinuities, motor `active_errors` cascades, motor disarms, tracking blowups, orchestrator FAULT, control mode → ERROR.
+- **Focus the diagnosis on the pre-E-stop window.** That is where the real failure lives — it is what the operator saw and responded to.
+- Do NOT list the E-stop, the 512 cascade, or the post-E-stop STOW drop among the "Flagged Issues" or "Recommendations" as independent problems.
+
+If `result['rosbag']['estop']['detected']` is false, skip this rule — no E-stop occurred in this session.
 
 ## Arguments
 
@@ -56,7 +72,12 @@ The `--plots` flag controls which plot categories are included:
 - `none`: skip plots
 - Comma-separated list: e.g. `legs,solver,chatter`
 
-Read the JSON output.
+Read the JSON output. Important blocks to inspect:
+- `solver_status` — per-step IPOPT return codes (success / hold / fallback / cold_hold and timeout reasons). Richer than `solve_times` alone.
+- `mpc_stdout` — parsed companion MPC stdout log if present (`temp/logs/<csv_stem>.log`), with `events`, `solve_failures`, `max_consecutive_solve_failures`, `fk_non_convergences`, `mpc_config`, `final_tracking`, `solve_summary`.
+- `rosbag.estop` — pilot E-stop detection (see Pilot E-stop attribution rule above). Read this BEFORE writing the report.
+- `estop_alignment` — E-stop time in both rosbag and CSV frames for timeline construction.
+- `rosbag.state_transitions`, `rosbag.mode_transitions`, `rosbag.motor_errors` — pre-extracted by the deep rosbag scan; use these for the Event Timeline instead of re-reading the rosbag.
 
 ### Step 3b: Open diagnostic report
 
@@ -112,6 +133,12 @@ Use this format:
 - p50: ... ms, p95: ... ms, p99: ... ms, max: ... ms
 - Budget violations: N (X%)
 - First-sample: ... ms (expected cold-start if > 15ms)
+- **Solver status** (from the `solver_status` block — richer than solve-time alone; a solve can land under the time cap yet still be a `hold`/`fallback` because IPOPT terminated with `Maximum_CpuTime_Exceeded` at ~cap ms):
+  - Success rate: X% (N of M steps `Solve_Succeeded` / `Solved_To_Acceptable_Level`)
+  - Timeouts (`Maximum_CpuTime_Exceeded`): X% (N steps), max K consecutive
+  - Non-success breakdown: `hold(...)×N`, `fallback(...)×N`, `cold_hold(...)×N`
+  - Other failure reasons (non-timeout): list them if present (numerical issues, infeasibility)
+- **MPC stdout excerpts** (from `result['mpc_stdout']`, if `available: true`): surface `mpc_config` line, `final_tracking`, any `fk_did_not_converge` count, and any solve-failure summary. If `available: false`, mention the hint once so the operator knows to tee stdout next time.
 <Compare against baseline if available>
 <Display solver plot here if generated>
 
@@ -137,8 +164,14 @@ For each flag:
   - **Known issue:** <ID> — <fix suggestion> (if matched)
   - **Unknown:** Suggest investigation path (if not matched)
 
+**E-stop handling in this section:**
+- Flags with `post_estop: true` (already downgraded to `info` by `diagnose.py`) represent downstream consequences of the operator's E-stop. Collapse them into a single line like "Post-E-stop downstream events (not independent issues): N flags — see Event Timeline" rather than listing each one. Never classify them as FAIL-worthy.
+- The E-stop `info` flag itself (`estop_event: true`) should be reported once in the timeline, not repeated here.
+- Verdict is determined by the PRE-E-stop flags only. A session where the only error-severity flags are post-E-stop downstream is NOT a FAIL — the actual verdict is driven by what was happening before the operator intervened.
+
 ### Recommendations
 <Prioritised list of next steps based on flags and phase context>
+<If an E-stop was detected, frame recommendations around fixing what prompted the operator to press it — not around the E-stop itself.>
 ```
 
 ### Step 7: Update the log index

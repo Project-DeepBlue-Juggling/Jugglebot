@@ -4,12 +4,17 @@ Translates between the ROS2 topic/service world and the ZeroMQ IPC
 layer used by the motor guard.
 
 ROS2 → IPC:
-  - control_mode_topic (from orchestrator) → ModeCommand
+  - control_mode_topic (from orchestrator) → ESTOP on ERROR only
   - robot_state (from CAN node) → MotorFeedback
 
 IPC → ROS2:
   - Telemetry (from motor guard) → leg_lengths_topic (18 values:
     6 pos_rev + 6 vel_ff_rps + 6 torque_ff_Nm for CAN node's set_input_pos)
+
+Motor-guard enable/disable is owned by ``HardwarePlant`` (in run_mpc.py), not
+this bridge.  Launching run_mpc.py enables the guard; Ctrl-C disables it.
+This bridge only forwards ESTOP on ERROR mode and gates topic publishing
+based on whether the current control_mode permits motor motion.
 """
 
 from __future__ import annotations
@@ -91,44 +96,30 @@ class MotionBridgeNode(Node):
     # ROS2 → IPC callbacks
     # ------------------------------------------------------------------
 
+    # Modes that permit motor_guard telemetry to be forwarded to CAN.
+    # STANDBY is included because run_mpc.py may be running and driving the
+    # platform; the motor guard's own enable state is owned by HardwarePlant.
+    _ACTIVE_MODES = frozenset(
+        {'STANDBY', 'SPACEMOUSE', 'SHELL', 'GUI', 'CATCH'})
+
     def _on_control_mode(self, msg: String) -> None:
-        """Translate control mode changes to IPC mode commands."""
+        """Translate control mode changes to IPC mode commands.
+
+        The only IPC mode command this bridge sends is ``estop`` on ERROR.
+        Enable/disable is owned by ``HardwarePlant`` (run_mpc.py).  The local
+        ``_motor_guard_enabled`` flag gates ``leg_lengths_topic`` publishing
+        based on whether the orchestrator's mode permits motor motion.
+        """
         mode = msg.data
         prev = self._current_control_mode
         self._current_control_mode = mode
 
-        if mode in ('SPACEMOUSE', 'SHELL', 'GUI', 'CATCH'):
-            if prev != mode:
-                # Always reset motor guard before enabling —
-                # clears ESTOP from fault recovery or any unexpected state.
-                self.ipc.send_mode_command(make_mode_command('disable'))
-                cmd = make_mode_command('enable', source=mode)
-                self.ipc.send_mode_command(cmd)
-                self._motor_guard_enabled = True
-                self.get_logger().info(f"Sent 'disable'+'enable' to motor "
-                                       f"guard (mode: {mode})")
-        elif mode == 'LEVELLING':
-            # LEVELLING uses the CAN node's profiled gentle-move commands,
-            # not the motion planner.  Do NOT enable the motor guard.
-            if prev != mode:
-                if prev in ('SPACEMOUSE', 'SHELL', 'GUI', 'CATCH'):
-                    cmd = make_mode_command('disable')
-                    self.ipc.send_mode_command(cmd)
-                    self._motor_guard_enabled = False
-                self.get_logger().info(
-                    "LEVELLING mode — motor guard stays disabled")
-        elif mode == 'ERROR':
-            if prev != 'ERROR':
-                cmd = make_mode_command('estop')
-                self.ipc.send_mode_command(cmd)
-                self._motor_guard_enabled = False
-                self.get_logger().warning("Sent 'estop' to motor guard")
-        elif mode == '' or mode is None:
-            if prev and prev not in ('', 'ERROR'):
-                cmd = make_mode_command('disable')
-                self.ipc.send_mode_command(cmd)
-                self._motor_guard_enabled = False
-                self.get_logger().info("Sent 'disable' to motor guard")
+        self._motor_guard_enabled = mode in self._ACTIVE_MODES
+
+        if mode == 'ERROR' and prev != 'ERROR':
+            cmd = make_mode_command('estop')
+            self.ipc.send_mode_command(cmd)
+            self.get_logger().warning("Sent 'estop' to motor guard")
 
     def _on_robot_state(self, msg: RobotState) -> None:
         """Forward motor feedback from CAN node to the motor guard."""

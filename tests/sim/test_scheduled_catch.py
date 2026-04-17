@@ -35,7 +35,8 @@ def mpc(plant):
     # max_leg_vel_mmps=280 (prior bringup value) so catch tests keep their
     # prior dynamics budget; hardware default was lowered to 70 on 2026-04-17.
     return MPCController.from_plant(
-        MPCParams(max_cpu_time=0.05, max_leg_vel_mmps=280.0), plant)
+        MPCParams(max_cpu_time=0.05, max_leg_vel_mmps=280.0,
+                  prime_solver=False), plant)
 
 
 @pytest.fixture

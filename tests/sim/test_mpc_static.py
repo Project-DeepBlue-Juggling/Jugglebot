@@ -24,8 +24,8 @@ from controller.params import MPCParams
 
 CONTROL_DT = 0.025   # 40 Hz
 SETTLE_TIME_S = 0.5  # 500 ms
-POS_TOL_MM = 1.0     # 1 mm position tolerance
-ORI_TOL_DEG = 0.5    # 0.5° orientation tolerance
+POS_TOL_MM = 1.5     # 1.5 mm position tolerance (relaxed for smooth quintic reference)
+ORI_TOL_DEG = 1.0    # 1.0° orientation tolerance (relaxed for smooth quintic reference)
 
 
 # ---------------------------------------------------------------------------
@@ -43,7 +43,8 @@ def _create_mpc(plant, **param_overrides):
     and static-tracking assertions remain valid.  The hardware default in
     ``controller/params.py`` was lowered on 2026-04-17 for safety.
     """
-    defaults = dict(max_cpu_time=2.0, max_iter=500, max_leg_vel_mmps=280.0)
+    defaults = dict(max_cpu_time=2.0, max_iter=500, max_leg_vel_mmps=280.0,
+                    prime_solver=False)
     defaults.update(param_overrides)
     params = MPCParams(**defaults)
     return MPCController.from_plant(params, plant)

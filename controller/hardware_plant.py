@@ -519,9 +519,14 @@ class HardwarePlant(PlantInterface):
         self._last_ff_torque_max_Nm = float(np.max(np.abs(torque_ff_Nm)))
 
     def enable(self, timeout_s: float = 2.0) -> None:
-        """Send enable command and wait for motor feedback telemetry.
+        """Send disable+enable and wait for motor feedback telemetry.
 
-        Blocks until the motor guard publishes telemetry containing valid
+        A leading ``disable`` is required because motor_guard's mode handler
+        ignores ``enable`` received while in ESTOP (only ``DISABLED → ENABLED``
+        is valid).  Sending ``disable`` first forces a clean DISABLED state,
+        clearing any lingering ESTOP from a previous session or external fault.
+
+        Then blocks until the motor guard publishes telemetry containing valid
         motor positions, so the MPC's first ``get_state()`` call returns
         the actual platform pose (not zeros).  Without this, the MPC
         would plan a trajectory from STOW to Active and trigger
@@ -537,10 +542,13 @@ class HardwarePlant(PlantInterface):
         RuntimeError
             If no telemetry with motor positions arrives within timeout.
         """
+        self._pub.send_multipart(
+            _pack(TOPIC_MODE, make_mode_command('disable')),
+            flags=zmq.NOBLOCK)
         msg = make_mode_command('enable', source='MPC')
         self._pub.send_multipart(
             _pack(TOPIC_MODE, msg), flags=zmq.NOBLOCK)
-        logger.info("HardwarePlant: sent enable (source=MPC)")
+        logger.info("HardwarePlant: sent disable+enable (source=MPC)")
 
         # Phase 1: Wait for the motor guard to publish telemetry with valid
         # motor positions.  The guard publishes feedback-only telemetry while

@@ -28,6 +28,7 @@ def mpc(plant):
         max_cpu_time=2.0,
         max_iter=500,
         max_leg_vel_mmps=1000.0,
+        prime_solver=False,
     )
     return MPCController.from_plant(params, plant)
 

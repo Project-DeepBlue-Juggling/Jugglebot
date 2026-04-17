@@ -1,0 +1,6 @@
+# Generated artifacts from controller/generate_solver.py — never committed.
+# Each build machine (e.g. the Jetson) produces its own arch-specific .so.
+*.so
+*.c
+*.o
+*.hash

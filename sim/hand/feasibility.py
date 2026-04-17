@@ -93,7 +93,12 @@ class FeasibilityChecker:
         self._terminal_pos_tol = terminal_pos_tol_mm
         self._terminal_ori_tol = terminal_ori_tol_rad
 
-        # Build coarse-horizon MPC — same formulation, wider timestep
+        # Build coarse-horizon MPC — same formulation, wider timestep.
+        # ``use_aot_solver=False`` because this NLP's dt_schedule differs
+        # from production; it would (correctly) hash-mismatch the main
+        # AOT .so and we don't want the one-shot solver path to hard-fail.
+        # ``prime_solver=False`` because this MPC only solves sporadically
+        # — the ~100ms prime cost would dominate feasibility-check latency.
         coarse_params = MPCParams(
             dt_schedule=MPCParams.uniform_schedule(N=10, dt=coarse_dt),
             max_leg_vel_mmps=1000.0,
@@ -101,6 +106,8 @@ class FeasibilityChecker:
             max_iter=300,
             warm_start=False,   # no warm-start for one-shot feasibility
             print_level=0,
+            use_aot_solver=False,
+            prime_solver=False,
         )
         self._coarse_mpc = MPCController.from_plant(coarse_params, plant)
         self._coarse_dt = coarse_dt

@@ -236,7 +236,8 @@ def _log_mpc_step(logger: TelemetryLogger, state: PlantState,
                   overhead_ms: float = 0.0,
                   fk_iterations: int = 0,
                   ff_torque_max_Nm: float = 0.0,
-                  ipopt_iter: int = 0) -> None:
+                  ipopt_iter: int = 0,
+                  t_ref_s: float = 0.0) -> None:
     """Record one telemetry step (MPC mode)."""
     record = record_from_arrays(
         time=state.time,
@@ -258,6 +259,7 @@ def _log_mpc_step(logger: TelemetryLogger, state: PlantState,
         fk_iterations=fk_iterations,
         ff_torque_max_Nm=ff_torque_max_Nm,
         ipopt_iter=diag.get('iter_count', 0),
+        t_ref_s=t_ref_s,
     )
     logger.append(record)
     if dashboard is not None:
@@ -732,7 +734,7 @@ def _execute_hand_cmd(plant, hand_cmd, active_hand_seq, last_hand_cmd_mm,
     return active_hand_seq, last_hand_cmd_mm
 
 
-def _mpc_solve(mpc, state, tc: TargetCommand):
+def _mpc_solve(mpc, state, tc: TargetCommand, t_now: float | None = None):
     """Call mpc.solve() with the target from a TargetCommand.
 
     Returns (cmd, cmd_vel, diag, ref_pose, ref_twist).
@@ -746,6 +748,7 @@ def _mpc_solve(mpc, state, tc: TargetCommand):
         state, tc.target_pose,
         ref_events=tc.ref_events,
         boost_vel_weights=tc.boost_vel_weights,
+        t_now=t_now,
     )
 
     # Use the MPC's own reference for telemetry.
@@ -949,6 +952,10 @@ def run_mpc_with_viewer(plant: MuJoCoPlant, mpc, source, duration: float,
             active_hand_seq = None
             last_hand_cmd_mm = 0.0
             wall_budget = 0.0
+            # Reference clock — gated by solver success.  See controller/runner.py
+            # for the rationale (mirror logic kept in sync here).
+            t_ref: float | None = None
+            _FALLBACK_KEYWORDS = ('fallback', 'hold', 'cold_hold')
             start_wall = time.monotonic()
 
             while viewer.is_running():
@@ -969,7 +976,9 @@ def run_mpc_with_viewer(plant: MuJoCoPlant, mpc, source, duration: float,
                 if state.time >= duration:
                     break
 
-                tc = source.update(state.time, state)
+                if t_ref is None:
+                    t_ref = state.time
+                tc = source.update(t_ref, state)
 
                 # Ball spawning (sim-only — ZmqTargetSource has no ball_spawn)
                 ball_spawn = getattr(tc, 'ball_spawn', None)
@@ -991,8 +1000,9 @@ def run_mpc_with_viewer(plant: MuJoCoPlant, mpc, source, duration: float,
                     plant, hand_cmd, active_hand_seq, last_hand_cmd_mm,
                     state.time)
 
-                # MPC solve
-                cmd, cmd_vel, diag, ref_pose, ref_twist = _mpc_solve(mpc, state, tc)
+                # MPC solve (t_ref = frozen ref clock; state.time = physics clock)
+                cmd, cmd_vel, diag, ref_pose, ref_twist = _mpc_solve(
+                    mpc, state, tc, t_now=t_ref)
                 plant.command(cmd, vel_mm_s=cmd_vel)
                 plant.step(CONTROL_DT)
 
@@ -1004,13 +1014,19 @@ def run_mpc_with_viewer(plant: MuJoCoPlant, mpc, source, duration: float,
                     if hasattr(source, 'notify_capture'):
                         source.notify_capture(state.time)
 
-                # Log
+                # Log (record t_ref used for THIS solve, pre-advance)
                 _log_mpc_step(logger, state, ref_pose, cmd, diag,
                               ref_twist=ref_twist, dashboard=dashboard,
                               hand_cmd_mm=last_hand_cmd_mm,
                               overhead_ms=_overhead_ms,
                               fk_iterations=getattr(plant, 'last_fk_iterations', 0),
-                              ff_torque_max_Nm=getattr(plant, 'last_ff_torque_max_Nm', 0.0))
+                              ff_torque_max_Nm=getattr(plant, 'last_ff_torque_max_Nm', 0.0),
+                              t_ref_s=t_ref)
+
+                # Advance t_ref only on success-class solver status.
+                status = diag.get('status', '')
+                if not any(kw in status for kw in _FALLBACK_KEYWORDS):
+                    t_ref += CONTROL_DT
 
                 # Render
                 horizon.update(mpc.predicted_poses_view, mpc.predicted_times_view)
@@ -1232,8 +1248,28 @@ def main():
     timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
     prefix = 'mpc' if args.mpc else 'sim'
     log_path = os.path.join(args.log_dir, f'{prefix}_{timestamp}.csv')
+    # Tee stdout/stderr to companion .log file (hardware runs only — sim spam
+    # is not useful to capture and can bloat logs).
+    stdout_log_path = None
+    if args.hardware:
+        stdout_log_path = os.path.splitext(log_path)[0] + '.log'
+        os.makedirs(os.path.dirname(stdout_log_path), exist_ok=True)
+        _fh = open(stdout_log_path, 'w', buffering=1)
+        class _Tee:
+            def __init__(self, *s): self._s = s
+            def write(self, d):
+                for s in self._s:
+                    s.write(d); s.flush()
+                return len(d)
+            def flush(self):
+                for s in self._s: s.flush()
+            def isatty(self): return False
+        sys.stdout = _Tee(sys.__stdout__, _fh)
+        sys.stderr = _Tee(sys.__stderr__, _fh)
     logger = TelemetryLogger(log_path)
     print(f"Logging to: {log_path}")
+    if stdout_log_path:
+        print(f"Stdout log: {stdout_log_path}")
 
     # Send session metadata to MPC bridge for ROS2 log correlation
     if args.hardware:

@@ -77,7 +77,7 @@ class MPCParams:
     tau: float = 0.040
 
     # ---- Tracking cost --------------------------------------------------
-    Q_pos: float = 10.0      # position tracking weight (per mm²)
+    Q_pos: float = 2.0       # position tracking weight (per mm²)
     Q_ori: float = 1000.0    # orientation tracking weight (per rad²)
     Qf_pos: float = 50.0     # terminal position weight
     Qf_ori: float = 5000.0   # terminal orientation weight
@@ -99,7 +99,7 @@ class MPCParams:
     # fight.  These are injected as NLP parameters per-solve.
     Q_vel_lin_events: float = 0.05    # boosted linear velocity weight
     Q_vel_ang_events: float = 0.1     # boosted angular velocity weight
-    Qf_vel_lin_events: float = 0.5    # boosted terminal linear velocity
+    Qf_vel_lin_events: float = 1.0    # boosted terminal linear velocity
     Qf_vel_ang_events: float = 0.1    # boosted terminal angular velocity
 
     # Cartesian acceleration tracking (penalises finite-difference accel vs
@@ -111,18 +111,16 @@ class MPCParams:
 
     # ---- Control cost ---------------------------------------------------
     R: float = 1e-4          # control effort — small regulariser
-    S: float = 0.02          # control smoothness (penalises Δu rate, dt-normalised)
-    A: float = 0.004         # acceleration smoothness (penalises ΔΔu rate, dt-normalised)
+    S: float = 0.05          # control smoothness (penalises Δu rate, dt-normalised)
+    A: float = 0.01          # acceleration smoothness (penalises ΔΔu rate, dt-normalised)
 
     # ---- Constraints ----------------------------------------------------
     stroke_mm: float = 280.0
     stroke_margin_mm: float = 5.0    # safety margin from each end of stroke range
-    max_leg_vel_mmps: float = 70.0   # mm/s per leg — conservative bringup cap.
-    # Lowered from 280 (2026-04-17): a 50mm Z move at v_max=280 drove the
-    # platform to ~2.7G peak accel, exceeding what the tau=40ms actuator
-    # model can predict accurately and causing MPC over-command + visible
-    # oscillation (see Run 2 in the 2026-04-17 FF-ablation session).
-    # Raise back toward 280–700 mm/s once accel profile is validated.
+    max_leg_vel_mmps: float = 140.0  # mm/s per leg �� raised from 70 after
+    # quintic reference trajectory shaping (2026-04-17).  The S-curve
+    # reference prevents the aggressive accelerations that drove 2.7G peak
+    # at v_max=280.  Raise further toward 280–700 once validated on hardware.
 
     # ---- IPOPT options --------------------------------------------------
     max_iter: int = 200
@@ -133,6 +131,25 @@ class MPCParams:
 
     # ---- Failure handling -----------------------------------------------
     max_consecutive_failures: int = 3
+
+    # ---- Solver priming -------------------------------------------------
+    # If True, MPCController.__init__ invokes the solver once with neutral
+    # parameters after NLP construction.  This amortises CasADi's first-
+    # call warmup (function tables, linear-solver symbolic factorisation,
+    # page faults, etc.) into startup time, so the first operator-visible
+    # control-loop solve does not eat the ~27-100ms cold-start penalty.
+    # Set False in CI/tests to avoid the ~50-150ms construction overhead
+    # when the solver will not actually be driven in real time.
+    prime_solver: bool = True
+
+    # ---- AOT solver loading ---------------------------------------------
+    # If True, try to load the ahead-of-time-compiled NLP from
+    # ``controller/generated/mpc_gen.so`` when present.  Set False for
+    # MPC instances that intentionally use a non-default NLP structure
+    # (e.g. ``sim/hand/feasibility.py``'s coarse-horizon checker): the
+    # main AOT binary is built for the production horizon and would
+    # (correctly) hash-mismatch against a one-off variant.
+    use_aot_solver: bool = True
 
     def __post_init__(self):
         # Coerce to tuple so cached_property on cumulative_times is safe

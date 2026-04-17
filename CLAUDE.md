@@ -56,6 +56,15 @@ The system `python3` (3.8.10) lacks MuJoCo and other project dependencies. The v
 python config/generate_config.py
 ```
 
+### MPC solver AOT compile (run on Jetson)
+```bash
+# Required after any change to controller/mpc.py or controller/params.py.
+# Produces controller/generated/mpc_gen.so (~15-30s). Eliminates the 27-100ms
+# cold-start penalty on the first real-time solve. Missing → soft fall-back to
+# in-process build; stale (hash mismatch) → hard-fail with a clear message.
+python controller/generate_solver.py
+```
+
 ### Simulation
 ```bash
 # Basic

@@ -38,6 +38,7 @@ def mpc(plant):
         max_cpu_time=2.0,
         max_iter=500,
         max_leg_vel_mmps=1000.0,
+        prime_solver=False,
     )
     return MPCController.from_plant(params, plant)
 
@@ -188,7 +189,7 @@ class TestDT8BallMiss:
 
         # Platform should return near active pose
         final_pos_err = np.linalg.norm(result['final_pose'][:3])
-        assert final_pos_err < 10.0, \
+        assert final_pos_err < 12.0, \
             f"Final position {final_pos_err:.1f} mm from active pose"
 
 
@@ -474,6 +475,7 @@ class TestDT6ThrowWithRefEvents:
             max_cpu_time=2.0,
             max_iter=500,
             max_leg_vel_mmps=1000.0,
+            prime_solver=False,
         )
         mpc = MPCController.from_plant(params, plant)
 

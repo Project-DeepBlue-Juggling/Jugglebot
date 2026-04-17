@@ -91,6 +91,12 @@ class StepRecord:
     ff_torque_max_Nm: float = 0.0      # max feedforward torque magnitude
     ipopt_iter: int = 0                # IPOPT iteration count per solve
 
+    # Reference clock — advances only on success-class solver status so the
+    # reference does not run away from the platform during fallback chains.
+    # Lags state.time during saturation; equals state.time during healthy
+    # operation.  See controller/runner.py (t_ref gating).
+    t_ref_s: float = 0.0
+
 
 def record_from_arrays(
     time: float,
@@ -112,6 +118,7 @@ def record_from_arrays(
     fk_iterations: int = 0,
     ff_torque_max_Nm: float = 0.0,
     ipopt_iter: int = 0,
+    t_ref_s: float = 0.0,
 ) -> StepRecord:
     """Build a StepRecord from numpy arrays (convenience helper)."""
     pos_err = np.linalg.norm(actual_pose[:3] - ref_pose[:3])
@@ -141,6 +148,7 @@ def record_from_arrays(
         tracking_error_mm=pos_err, tracking_error_deg=ori_err,
         overhead_ms=overhead_ms, fk_iterations=fk_iterations,
         ff_torque_max_Nm=ff_torque_max_Nm, ipopt_iter=ipopt_iter,
+        t_ref_s=t_ref_s,
     )
 
 

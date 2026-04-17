@@ -33,6 +33,7 @@ class ErrorSeverity(Enum):
 
 class ActiveMode(Enum):
     """Sub-modes within the ACTIVE state."""
+    STANDBY = 'STANDBY'
     SPACEMOUSE = 'SPACEMOUSE'
     SHELL = 'SHELL'
     GUI = 'GUI'
@@ -76,7 +77,7 @@ class Context:
         self.control_mode = None             # Control mode string to publish (None = no change)
 
         # ── Shared state ──────────────────────────────────────────
-        self.active_mode = ActiveMode.SPACEMOUSE
+        self.active_mode = ActiveMode.STANDBY
         self.error_severity = None
         self.boot_timed_out = False
 
@@ -391,6 +392,11 @@ class ActiveHandler(StateHandler):
 
     def on_enter(self, ctx):
         self._activated = False
+        # Always reset to STANDBY on entry so re-activation never inherits a
+        # prior sub-mode.  The orchestrator's control_mode becomes a target-
+        # routing signal only — STANDBY silences all ROS2 input sources so
+        # a manually-launched run_mpc.py is the sole command source.
+        ctx.active_mode = ActiveMode.STANDBY
         ctx.request = 'activate'
         ctx.operation_result = None
 
@@ -407,7 +413,7 @@ class ActiveHandler(StateHandler):
         cmd = ctx.consume_command()
         if cmd == 'deactivate':
             return RobotState.IDLE
-        elif cmd in ('spacemouse', 'shell', 'gui', 'catch'):
+        elif cmd in ('standby', 'spacemouse', 'shell', 'gui', 'catch'):
             ctx.active_mode = ActiveMode(cmd.upper())
             ctx.control_mode = ctx.active_mode.value
         # Other commands silently discarded (already logged on receipt)

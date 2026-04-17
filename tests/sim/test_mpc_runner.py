@@ -38,7 +38,7 @@ def plant():
 
 @pytest.fixture
 def mpc(plant):
-    params = MPCParams(max_cpu_time=2.0, max_iter=500)
+    params = MPCParams(max_cpu_time=2.0, max_iter=500, prime_solver=False)
     return MPCController.from_plant(params, plant)
 
 

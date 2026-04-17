@@ -7,6 +7,21 @@ Usage examples:
     python run_mpc.py --dashboard                   # with live telemetry dashboard
 
 This is the production entry point for hardware. For simulation, use sim/main.py.
+
+Operational notes:
+  - The orchestrator must be in ACTIVE (STANDBY or any sub-mode) for motor
+    feedback telemetry to flow.  Launching this script in IDLE will fail
+    at the `HardwarePlant.enable()` telemetry wait.
+  - This process owns the motor guard's enable state.  Startup sends
+    `disable+enable` (the leading `disable` clears any lingering ESTOP);
+    shutdown (Ctrl-C) sends `disable`.
+  - DO NOT launch two `run_mpc.py` processes simultaneously.  Both publish
+    commands on :5557 and the motor guard will see interleaved commands
+    from two planners, causing jerky or unsafe motion.  No safeguard
+    currently prevents this — enforce manually.
+  - Ctrl-C this process before clicking Deactivate in the GUI.  Deactivating
+    while MPC is running leaves the motor guard in a self-ESTOP state
+    (harmless but noisy in telemetry).
 """
 
 from __future__ import annotations
@@ -63,6 +78,17 @@ def parse_args():
                    help='Start live telemetry dashboard (web browser)')
     p.add_argument('--dashboard-port', type=int, default=8082,
                    help='Dashboard server port (default: 8082)')
+    p.add_argument('--no-torque-ff', dest='enable_torque_ff',
+                   action='store_false',
+                   help='Disable torque feedforward (send zeros to motor_guard). '
+                        'For ablation testing.')
+    p.add_argument('--no-vel-ff', dest='enable_vel_ff',
+                   action='store_false',
+                   help='Disable velocity feedforward (send zeros to motor_guard).')
+    p.add_argument('--no-acc-ff', dest='enable_acc_ff',
+                   action='store_false',
+                   help='Disable acceleration feedforward (zeros cubic interp '
+                        'acc+jerk terms in motor_guard).')
     return p.parse_args()
 
 
@@ -83,6 +109,32 @@ def _parse_sequence(seq_str: str) -> list[tuple[float, np.ndarray]]:
         schedule.append((float(time_str), _parse_pose(pose_str)))
     schedule.sort(key=lambda x: x[0])
     return schedule
+
+
+class _StdoutTee:
+    """Duplicate writes to multiple streams; used to tee stdout/stderr to a log file."""
+    def __init__(self, *streams):
+        self._streams = streams
+    def write(self, data):
+        for s in self._streams:
+            s.write(data)
+            s.flush()
+        return len(data)
+    def flush(self):
+        for s in self._streams:
+            s.flush()
+    def isatty(self):
+        return False
+
+
+def _start_stdout_tee(log_path: str):
+    """Tee stdout/stderr to a companion .log file next to the CSV log_path."""
+    stdout_log_path = os.path.splitext(log_path)[0] + '.log'
+    os.makedirs(os.path.dirname(stdout_log_path), exist_ok=True)
+    fh = open(stdout_log_path, 'w', buffering=1)  # line-buffered
+    sys.stdout = _StdoutTee(sys.__stdout__, fh)
+    sys.stderr = _StdoutTee(sys.__stderr__, fh)
+    return stdout_log_path
 
 
 def main():
@@ -109,8 +161,18 @@ def main():
 
     # --- Create HardwarePlant ---
     from controller.hardware_plant import HardwarePlant
-    plant = HardwarePlant(control_dt=CONTROL_DT)
+    plant = HardwarePlant(
+        control_dt=CONTROL_DT,
+        enable_torque_ff=args.enable_torque_ff,
+        enable_vel_ff=args.enable_vel_ff,
+        enable_acc_ff=args.enable_acc_ff,
+    )
     print("HardwarePlant: connected to motor_guard via IPC")
+    print(
+        f"Feedforward: torque={'ON' if args.enable_torque_ff else 'OFF'} "
+        f"vel={'ON' if args.enable_vel_ff else 'OFF'} "
+        f"acc={'ON' if args.enable_acc_ff else 'OFF'}"
+    )
 
     # --- Target feedback for catch coordinator (accept/reject on :5559) ---
     from jugglebot.motion.ipc import TargetFeedbackPub
@@ -120,8 +182,10 @@ def main():
     # --- Telemetry logging ---
     timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
     log_path = os.path.join(args.log_dir, f'mpc_{timestamp}.csv')
+    stdout_log_path = _start_stdout_tee(log_path)
     logger = TelemetryLogger(log_path)
     print(f"Logging to: {log_path}")
+    print(f"Stdout log: {stdout_log_path}")
 
     # --- Session metadata for ROS2 log correlation ---
     from jugglebot.motion.ipc import SessionMetadataPush

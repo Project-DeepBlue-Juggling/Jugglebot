@@ -988,7 +988,8 @@ class CanInterfaceNode(Node):
     def _sub_control_mode(self, msg):
         """Handle control mode changes from the orchestrator.
 
-        Valid modes: '', 'ERROR', 'SPACEMOUSE', 'SHELL', 'LEVELLING', 'GUI', 'CATCH'.
+        Valid modes: '', 'ERROR', 'STANDBY', 'SPACEMOUSE', 'SHELL',
+        'LEVELLING', 'GUI', 'CATCH'.
         Legs always remain in POSITION+PASSTHROUGH controller mode.
         CATCH mode keeps hand in CLOSED_LOOP (other active modes idle the hand).
         """
@@ -1022,7 +1023,7 @@ class CanInterfaceNode(Node):
                     self.bus.send(odrive.encode_set_controller_mode(
                         odrive.HAND_AXIS, 'POSITION', 'PASSTHROUGH'))
 
-            elif msg.data in ('SPACEMOUSE', 'SHELL', 'LEVELLING', 'GUI'):
+            elif msg.data in ('STANDBY', 'SPACEMOUSE', 'SHELL', 'LEVELLING', 'GUI'):
                 self.get_logger().info(f'Control mode: {msg.data}')
                 if not legs_closed:
                     for axis_id in odrive.LEG_AXES:

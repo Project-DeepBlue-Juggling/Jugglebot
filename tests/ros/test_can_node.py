@@ -333,6 +333,24 @@ class TestSubControlMode:
         # Should have sent CLOSED_LOOP for legs (6 commands)
         assert len(send_calls) >= 6
 
+    def test_standby_mode_legs_closed_loop(self, node):
+        """STANDBY (default sub-mode on activate) puts legs in CLOSED_LOOP.
+
+        Without this, activating would trigger the 'Unknown control mode'
+        branch and stow the platform.
+        """
+        from jugglebot.can import odrive
+        for axis_id in odrive.JUGGLEBOT_AXES:
+            node.motors.update(axis_id, current_state=odrive.AXIS_STATES['IDLE'])
+        node.motors.get_states()
+
+        with patch.object(node, '_gently_move_to_setpoint') as mock_move:
+            node._sub_control_mode(self._make_mode_msg('STANDBY'))
+            mock_move.assert_not_called()
+
+        send_calls = node.bus.send.call_args_list
+        assert len(send_calls) >= 6
+
     def test_shell_mode_legs_closed_loop(self, node):
         """SHELL puts legs in CLOSED_LOOP, hand in IDLE."""
         from jugglebot.can import odrive

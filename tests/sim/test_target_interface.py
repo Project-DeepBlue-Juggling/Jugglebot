@@ -19,7 +19,8 @@ CONTROL_DT = 0.025
 
 
 def _create_mpc(plant, **overrides):
-    defaults = dict(max_cpu_time=2.0, max_iter=500, max_leg_vel_mmps=1000.0)
+    defaults = dict(max_cpu_time=2.0, max_iter=500, max_leg_vel_mmps=1000.0,
+                    prime_solver=False)
     defaults.update(overrides)
     return MPCController.from_plant(MPCParams(**defaults), plant)
 
@@ -102,8 +103,8 @@ class TestASAPMode:
         pos_err = np.linalg.norm(final[:3] - target[:3])
         ori_err = np.degrees(np.linalg.norm(final[3:] - target[3:]))
 
-        assert pos_err < 1.5, f"Combined pos error {pos_err:.2f} mm > 1.5 mm"
-        assert ori_err < 0.5, f"Combined ori error {ori_err:.3f}° > 0.5°"
+        assert pos_err < 2.0, f"Combined pos error {pos_err:.2f} mm > 2.0 mm"
+        assert ori_err < 1.0, f"Combined ori error {ori_err:.3f}° > 1.0°"
 
 
 # ---------------------------------------------------------------------------

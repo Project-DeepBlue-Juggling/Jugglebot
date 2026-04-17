@@ -46,6 +46,9 @@ class TestRobotStateEnum:
 
 
 class TestActiveModeEnum:
+    def test_standby_value(self):
+        assert ActiveMode.STANDBY.value == 'STANDBY'
+
     def test_spacemouse_value(self):
         assert ActiveMode.SPACEMOUSE.value == 'SPACEMOUSE'
 
@@ -53,6 +56,7 @@ class TestActiveModeEnum:
         assert ActiveMode.SHELL.value == 'SHELL'
 
     def test_from_uppercase_string(self):
+        assert ActiveMode('STANDBY') == ActiveMode.STANDBY
         assert ActiveMode('SPACEMOUSE') == ActiveMode.SPACEMOUSE
         assert ActiveMode('SHELL') == ActiveMode.SHELL
 
@@ -77,7 +81,7 @@ class TestContext:
         assert ctx.consume_command() is None
         assert ctx.request is None
         assert ctx.control_mode is None
-        assert ctx.active_mode == ActiveMode.SPACEMOUSE
+        assert ctx.active_mode == ActiveMode.STANDBY
         assert ctx.error_severity is None
         assert ctx.boot_timed_out is False
 
@@ -564,12 +568,23 @@ class TestActiveHandler:
     def test_activation_success_sets_control_mode(self):
         handler = ActiveHandler()
         ctx = Context()
-        ctx.active_mode = ActiveMode.SPACEMOUSE
         handler.on_enter(ctx)
         ctx.operation_result = True
         assert handler.execute(ctx) is None
         assert handler._activated is True
-        assert ctx.control_mode == 'SPACEMOUSE'
+        # Default sub-mode on activation is STANDBY (ROS2 input sources
+        # silenced; platform responsive only to run_mpc.py).
+        assert ctx.active_mode == ActiveMode.STANDBY
+        assert ctx.control_mode == 'STANDBY'
+
+    def test_on_enter_resets_prior_sub_mode_to_standby(self):
+        """Re-activation after FAULT or DEACTIVATE must always default to
+        STANDBY — never inherit a prior session's sub-mode."""
+        handler = ActiveHandler()
+        ctx = Context()
+        ctx.active_mode = ActiveMode.SPACEMOUSE  # stale state from prior run
+        handler.on_enter(ctx)
+        assert ctx.active_mode == ActiveMode.STANDBY
 
     def test_deactivate_command_returns_idle(self):
         handler = ActiveHandler()
@@ -583,10 +598,9 @@ class TestActiveHandler:
     def test_spacemouse_command_switches_mode(self):
         handler = ActiveHandler()
         ctx = Context()
-        ctx.active_mode = ActiveMode.SHELL
         handler.on_enter(ctx)
         ctx.operation_result = True
-        handler.execute(ctx)  # Complete activation
+        handler.execute(ctx)  # Complete activation (active_mode = STANDBY)
         ctx.enqueue_command('spacemouse')
         assert handler.execute(ctx) is None
         assert ctx.active_mode == ActiveMode.SPACEMOUSE
@@ -595,14 +609,29 @@ class TestActiveHandler:
     def test_shell_command_switches_mode(self):
         handler = ActiveHandler()
         ctx = Context()
-        ctx.active_mode = ActiveMode.SPACEMOUSE
         handler.on_enter(ctx)
         ctx.operation_result = True
-        handler.execute(ctx)  # Complete activation
+        handler.execute(ctx)
         ctx.enqueue_command('shell')
         assert handler.execute(ctx) is None
         assert ctx.active_mode == ActiveMode.SHELL
         assert ctx.control_mode == 'SHELL'
+
+    def test_standby_command_returns_to_standby(self):
+        """From any sub-mode, 'standby' returns to STANDBY (ROS2 inputs
+        silenced, motors held at last MPC-commanded pose)."""
+        handler = ActiveHandler()
+        ctx = Context()
+        handler.on_enter(ctx)
+        ctx.operation_result = True
+        handler.execute(ctx)
+        ctx.enqueue_command('spacemouse')
+        handler.execute(ctx)
+        assert ctx.active_mode == ActiveMode.SPACEMOUSE
+        ctx.enqueue_command('standby')
+        assert handler.execute(ctx) is None
+        assert ctx.active_mode == ActiveMode.STANDBY
+        assert ctx.control_mode == 'STANDBY'
 
     def test_unknown_command_after_activation_stays(self):
         handler = ActiveHandler()
