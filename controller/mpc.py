@@ -333,6 +333,8 @@ class MPCController:
         init_height_mm: float,
         init_leg_lengths_mm: np.ndarray,
         active_extensions_mm: np.ndarray,
+        init_pose_6dof: np.ndarray | None = None,
+        init_leg_extensions_mm: np.ndarray | None = None,
     ):
         if cs is None:
             raise ImportError("CasADi is required for MPC — pip install casadi")
@@ -377,7 +379,10 @@ class MPCController:
         self._last_accel_traj: np.ndarray | None = None
 
         if params.prime_solver:
-            self._prime_solver()
+            self._prime_solver(
+                init_pose_6dof=init_pose_6dof,
+                init_leg_extensions_mm=init_leg_extensions_mm,
+            )
 
     # ------------------------------------------------------------------
     # Factory
@@ -389,6 +394,13 @@ class MPCController:
 
         Computes ``active_extensions_mm`` — the IK extensions at the Active
         position (default_active_z) — for the effort cost reference.
+
+        If the plant has live telemetry (``get_state`` returns a non-trivial
+        pose), the starting state is passed to ``_prime_solver`` so the
+        first real solve is warm-started at the actual pose.  For hardware
+        plants that may not have telemetry yet at construction time, the
+        state check is lenient: absent or all-zero leg extensions fall back
+        to the old behaviour (prime without warm-start seeding).
         """
         geom = plant.geom
 
@@ -397,6 +409,42 @@ class MPCController:
         active_rev = np.array(hw.JB_OP_ACTIVATE_POSITION_REVS)
         active_ext = active_rev / geom.mm_to_rev
 
+        # Best-effort read of live plant state for warm-start priming.
+        # Sim plants return meaningful state on the first call; HardwarePlant
+        # may need a few hundred ms for its :5556 SUB to receive its first
+        # telemetry packet, so we poll for up to 500 ms in that case.
+        # Skipped entirely when prime_solver is off (seed is discarded anyway).
+        init_pose_6dof = None
+        init_leg_extensions_mm = None
+
+        def _probe_state():
+            state = plant.get_state()
+            legs = np.asarray(state.leg_extensions_mm, dtype=float)
+            if legs.shape == (6,) and np.any(np.abs(legs) > 1e-3):
+                pose = np.concatenate([
+                    np.asarray(state.platform_pos_mm, dtype=float).reshape(3),
+                    np.asarray(state.platform_rot, dtype=float).reshape(3),
+                ])
+                return pose, legs
+            return None, None
+
+        if params.prime_solver:
+            try:
+                init_pose_6dof, init_leg_extensions_mm = _probe_state()
+                if init_leg_extensions_mm is None:
+                    import time as _time_mod
+                    deadline = _time_mod.perf_counter() + 0.5
+                    while _time_mod.perf_counter() < deadline:
+                        _time_mod.sleep(0.05)
+                        init_pose_6dof, init_leg_extensions_mm = _probe_state()
+                        if init_leg_extensions_mm is not None:
+                            break
+            except (AttributeError, RuntimeError) as exc:
+                logger.warning(
+                    "from_plant: plant state unavailable for warm-start "
+                    "seeding (%s: %s)", type(exc).__name__, exc,
+                )
+
         return cls(
             params=params,
             base_nodes=geom.base_nodes,
@@ -404,6 +452,8 @@ class MPCController:
             init_height_mm=geom.init_height_mm,
             init_leg_lengths_mm=geom.init_leg_lengths_mm,
             active_extensions_mm=active_ext,
+            init_pose_6dof=init_pose_6dof,
+            init_leg_extensions_mm=init_leg_extensions_mm,
         )
 
     # ------------------------------------------------------------------
@@ -1040,7 +1090,11 @@ class MPCController:
             exts[i] = np.linalg.norm(leg_vec) - self._init_leg_lengths[i]
         return exts
 
-    def _prime_solver(self) -> None:
+    def _prime_solver(
+        self,
+        init_pose_6dof: np.ndarray | None = None,
+        init_leg_extensions_mm: np.ndarray | None = None,
+    ) -> None:
         """Invoke the solver once at construction to pay cold-start costs upfront.
 
         The first call into any CasADi nlpsol instance pays one-time costs
@@ -1051,18 +1105,46 @@ class MPCController:
         control loop — the first real solve then runs at steady-state
         latency (~3-15ms) instead of 27-100ms.
 
-        The solve itself uses neutral parameters (home pose, flat reference
-        at home) and may legitimately time out within the configured
-        ``max_cpu_time``.  That is fine — the warmup work happens during
-        the first callback evaluations regardless of whether IPOPT
-        converges.  Outputs are discarded; no warm-start state is seeded,
-        which would otherwise bias the first real solve toward home.
+        If ``init_pose_6dof`` and ``init_leg_extensions_mm`` are supplied,
+        the prime solves at the live starting state and — on success —
+        seeds ``_prev_w`` / ``_prev_lam_g`` / ``_prev_lam_x`` so the first
+        real solve is warm-started on a feasible plan at the actual pose.
+        This eliminates the cold-start iteration cascade observed at the
+        start of each ``run_mpc.py`` invocation when the platform begins
+        off-Active (see logbook 2026-04-17-mpc-fallback-cmd-sawtooth-stutter).
+
+        If no live state is supplied, falls back to the old behaviour:
+        prime at STOW (zero pose, zero extensions) with no warm-start
+        seeding — only the JIT/BLAS warmup is paid.
         """
         N = self._N
-        home_pose = np.zeros(6)
-        home_q = np.zeros(6)
-        # Flat reference: all nodes hold at home pose with zero twist/accel.
-        ref_traj = np.tile(home_pose, (N + 1, 1))
+        seed_warm_start = False
+        if init_pose_6dof is not None and init_leg_extensions_mm is not None:
+            p_init = np.asarray(init_pose_6dof, dtype=float).reshape(6)
+            q_init = np.asarray(init_leg_extensions_mm, dtype=float).reshape(6)
+            # Validate (p, q) kinematic consistency before accepting the
+            # seed.  During HardwarePlant cold-start, motor telemetry can
+            # arrive before FK has converged — get_state() then returns
+            # non-zero extensions alongside a zero platform pose (stale
+            # copy of _last_measured_pose).  Seeding from that mismatched
+            # pair would either fail to converge or produce a misleading
+            # warm-start.
+            ik_residual = np.max(np.abs(self._numerical_ik(p_init) - q_init))
+            if ik_residual <= 5.0:
+                seed_warm_start = True
+            else:
+                logger.info(
+                    "Prime: discarding inconsistent seed (max IK residual "
+                    "%.2f mm > 5 mm); priming without seed",
+                    ik_residual,
+                )
+                p_init = np.zeros(6)
+                q_init = np.zeros(6)
+        else:
+            p_init = np.zeros(6)
+            q_init = np.zeros(6)
+        # Flat reference: all nodes hold at the priming pose with zero twist/accel.
+        ref_traj = np.tile(p_init, (N + 1, 1))
         twist_traj = np.zeros((N + 1, 6))
         accel_traj = np.zeros((N + 1, 6))
 
@@ -1075,10 +1157,10 @@ class MPCController:
         accel_weights = np.array([par.Q_accel_lin, par.Q_accel_ang])
         N1_6 = (self._N + 1) * 6
         p_param = np.empty(self._n_param)
-        p_param[:6] = home_pose
-        p_param[6:12] = home_q
-        p_param[12:18] = home_q  # u_prev
-        p_param[18:24] = home_q  # u_prev_prev
+        p_param[:6] = p_init
+        p_param[6:12] = q_init
+        p_param[12:18] = q_init  # u_prev
+        p_param[18:24] = q_init  # u_prev_prev
         off = 24
         p_param[off:off + N1_6] = ref_traj.ravel(); off += N1_6
         p_param[off:off + N1_6] = twist_traj.ravel(); off += N1_6
@@ -1087,16 +1169,35 @@ class MPCController:
         p_param[off:off + 2] = accel_weights
 
         # Cold-start the decision vector the same way solve() would.
-        w0 = self._cold_start(home_pose, home_q, ref_traj)
+        w0 = self._cold_start(p_init, q_init, ref_traj)
 
         # One solver call.  Exceptions are swallowed — a timeout or numeric
         # issue here is acceptable; the goal is warmup, not convergence.
         try:
-            self._solver(
+            sol = self._solver(
                 x0=w0, p=p_param,
                 lbx=self._lbw, ubx=self._ubw,
                 lbg=self._lbg, ubg=self._ubg,
             )
+            if seed_warm_start:
+                ret = self._solver.stats().get('return_status', 'unknown')
+                if ret in ('Solve_Succeeded', 'Solved_To_Acceptable_Level'):
+                    w = np.asarray(sol['x']).ravel()
+                    if np.all(np.isfinite(w)):
+                        self._prev_w = w
+                        self._prev_lam_g = np.asarray(sol['lam_g']).ravel()
+                        self._prev_lam_x = np.asarray(sol['lam_x']).ravel()
+                        self._prev_u = w[:6].copy()
+                        self._prev_prev_u = w[:6].copy()
+                        logger.info(
+                            "Prime seeded warm-start at pose=%s (status=%s)",
+                            np.round(p_init, 2).tolist(), ret,
+                        )
+                else:
+                    logger.info(
+                        "Prime did not converge (status=%s); no warm-start seeded",
+                        ret,
+                    )
         except Exception as exc:
             logger.info("Prime solve completed with exception (expected): %s", exc)
 

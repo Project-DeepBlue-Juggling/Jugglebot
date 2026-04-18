@@ -123,18 +123,56 @@ class TestPrimeSolver:
             MPCController.from_plant(params, plant)
         assert mock_prime.call_count == 1
 
-    def test_prime_solver_does_not_seed_warm_start(self, plant):
-        """After prime-solve, _prev_w must remain None.
-
-        Using the prime-solve output as a warm-start seed would bias the
-        first real solve toward home and delay convergence.
+    def test_prime_skips_seeding_when_plant_at_stow(self, plant):
+        """When the plant reports zero leg extensions (e.g. freshly-reset
+        sim at home keyframe), ``from_plant`` intentionally skips the
+        warm-start seeding path — there's nothing meaningful to seed from
+        at STOW — so ``_prev_w`` stays None after the prime-solve completes.
         """
+        plant.reset()
         params = MPCParams(
             max_cpu_time=0.5, max_iter=50, prime_solver=True,
         )
         mpc = MPCController.from_plant(params, plant)
         assert mpc._prev_w is None
         assert mpc._timeout_hint is None
+
+    def test_prime_seeds_warm_start_from_non_stow_state(self, plant):
+        """When supplied with a non-zero, IK-consistent (p, q) pair, the
+        prime solver seeds ``_prev_w`` / ``_prev_u`` so the first real
+        solve is warm-started at the live pose.
+        """
+        plant.reset()
+        params = MPCParams(
+            max_cpu_time=2.0, max_iter=500, prime_solver=False,
+        )
+        mpc = MPCController.from_plant(params, plant)
+        p_seed = np.array([0.0, 0.0, 50.0, 0.0, 0.0, 0.0])
+        q_seed = mpc._numerical_ik(p_seed)
+        mpc._prime_solver(
+            init_pose_6dof=p_seed,
+            init_leg_extensions_mm=q_seed,
+        )
+        assert mpc._prev_w is not None, "expected warm-start seed after prime"
+        assert mpc._prev_u is not None
+        assert np.all(np.isfinite(mpc._prev_w))
+
+    def test_prime_rejects_inconsistent_seed(self, plant):
+        """An (p, q) pair that fails IK-consistency (as would happen during
+        HardwarePlant cold-start when motor telemetry arrives before FK
+        converges) is rejected; ``_prev_w`` stays None.
+        """
+        plant.reset()
+        params = MPCParams(
+            max_cpu_time=0.5, max_iter=50, prime_solver=False,
+        )
+        mpc = MPCController.from_plant(params, plant)
+        # Inconsistent: claim pose is at STOW while legs are fully extended.
+        mpc._prime_solver(
+            init_pose_6dof=np.zeros(6),
+            init_leg_extensions_mm=np.full(6, 100.0),
+        )
+        assert mpc._prev_w is None
 
 
 # ---------------------------------------------------------------------------
