@@ -86,6 +86,77 @@ issues:
       working, or check for thermal throttling on Jetson.
     reference: "controller/params.py"
 
+  - id: MPC_OVERSHOOT_SATURATION
+    name: "MPC NLP saturation when plant overshoots the ref"
+    severity: medium
+    status: active
+    logbook_entry: "2026-04-18-move5-overshoot-stall-and-plant-collapse.md"
+    description: >
+      At move-start, when the plant is carrying residual motion or starts off
+      the commanded initial pose, actual extension can lead cmd extension by
+      10+ mm while the reference is still accelerating.  IPOPT is asked to
+      unwind the overshoot against an accelerating ref within a 24 ms budget
+      and bails out before completing one iteration (ipopt_iter==0), so the
+      walk-forward fallback (commit 64742f2) freezes cmd and the plant holds
+      until ref catches up.  Signature-wise this is distinct from generic
+      MPC_STALENESS: consecutive timeouts PLUS an overshoot direction PLUS a
+      still-moving ref.  Fix target is the ref source, not the solver —
+      prepend a warm-up Hermite segment from (current plant pose, current
+      twist) on move transitions so the NLP is never asked to reverse the
+      plant against an accelerating ref.  Safety-wise benign with walk-forward
+      fallback in place, but it creates a multi-hundred-ms tracking hole that
+      matters for dynamic juggling.
+    signatures:
+      - type: overshoot_saturation
+        zero_iter_run_min: 10
+        ext_lead_mm: 10.0
+    fix: >
+      On each new move / target update, inject a synthetic ReferenceEvent at
+      t=t_now carrying the current plant pose and twist. Clamp injected twist
+      to ±v_max to guard against noisy FK-derived velocity. See controller/
+      zmq_target.py and controller/target.py.
+    reference: "controller/mpc.py"
+
+  - id: PLANT_TELEMETRY_COLLAPSE
+    name: "Plant telemetry collapse (motors lost torque, feedback frozen)"
+    severity: high
+    status: active
+    logbook_entry: "2026-04-18-move5-overshoot-stall-and-plant-collapse.md"
+    description: >
+      A two-phase signature: (1) >=5 legs show abs(leg_vel) > 1.5*v_max in the
+      same sample — uncommanded motion consistent with motors unarming and
+      legs free-falling under platform weight; followed within ~500 ms by
+      (2) a run of >=20 consecutive samples where every actual_ext_i reads
+      exactly 0.0 — the stale/empty-payload sentinel the HardwarePlant ZMQ
+      SUB hands back when the feedback publisher dies.
+
+      Upstream cause is exogenous to the MPC: the operator Ctrl+C'd the
+      ROS2 launch (motor_guard dies, legs fall, mpc_bridge_node dies), or
+      the CAN bus dropped, or a power-supply fault.  The HardwarePlant
+      telemetry-staleness E-stop (commit 17a239c) does NOT currently halt
+      run_mpc.py — it only publishes a ZMQ mode message — so the MPC
+      process keeps writing CSV rows against zero-sentinel feedback for
+      whatever remains of its duration, producing a ghost solve-loop.
+
+      When detected, diagnose.py truncates aggregate metrics (tracking,
+      solve_times, workspace, steady_state, etc.) to the pre-collapse slice
+      and downgrades downstream flags to info.  Without this, post-collapse
+      noise dominates the session metrics and healthy runs can be
+      misclassified as FAIL (see logbook entry for the Move 5 case).
+    signatures:
+      - type: plant_collapse
+        vmax_ratio: 1.5
+        legs_min: 5
+        zero_run_min: 20
+        window_s: 0.5
+    fix: >
+      Fix is runtime-side, not analysis-side. Add an estop_requested flag on
+      HardwarePlant (flipped inside estop()) and make run_mpc.py / runner.py
+      break their loop cleanly when it's set. Also detect persistent stale
+      contents (telemetry fresh-looking but unchanging) as a separate trigger
+      for estop. See Bundle B in logbook entry.
+    reference: "controller/hardware_plant.py"
+
   - id: LEG2_TRACKING
     name: "Leg 2 consistently worst tracker"
     severity: medium

@@ -1,6 +1,57 @@
 {
   "version": 1,
   "sessions": {
+    "mpc_20260418_014959.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-18T02:05:00Z",
+      "verdict": "NEEDS_ATTENTION",
+      "flags_count": 3,
+      "phase": "post-walk-forward-fallback-multiaxis-session",
+      "notes": "Move 1/5 of single-rosbag session. Active->z=220 pure-Z up (15.1s). Success 98.5% (9 timeouts, max 3 consec). p50=10.8ms p95=13.6ms. Tracking RMS 2.35mm, final err 0.08mm. Close to 04-17 Move 1 baseline but 9x more timeouts. Lightly jerky observationally. cmd_jumps=0 (walk-forward fix holding).",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-18_01-49-42"
+    },
+    "mpc_20260418_015027.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-18T02:05:00Z",
+      "verdict": "NEEDS_ATTENTION",
+      "flags_count": 3,
+      "phase": "post-walk-forward-fallback-multiaxis-session",
+      "notes": "Move 2/5. z=220->Active pure-Z down (5.1s). Success 94.5% (11 timeouts). p50=10.8ms p95=21.3ms max=39.6ms (budget 24). Tracking RMS 4.83mm, final 0.87mm. Degradation relative to Move 1.",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-18_01-49-42"
+    },
+    "mpc_20260418_015044.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-18T02:05:00Z",
+      "verdict": "NEEDS_ATTENTION",
+      "flags_count": 3,
+      "phase": "post-walk-forward-fallback-multiaxis-session",
+      "notes": "Move 3/5. Active->y=50 (2.1s). Success 91.3% (7 timeouts, max 5 consec error-severity). p95=25.3ms. Tracking RMS 4.84mm, final 1.79mm. Budget violations trending up across session.",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-18_01-49-42"
+    },
+    "mpc_20260418_015056.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-18T02:05:00Z",
+      "verdict": "FAIL",
+      "flags_count": 3,
+      "phase": "post-walk-forward-fallback-multiaxis-session",
+      "notes": "Move 4/5. Small reorient y~51->y~45 + 0.003rad wx (2.2s). SOLVER SATURATED: 78.8% timeouts (63/80), success 21.3%, p50=20.66ms (2x nominal), mean ipopt_iter=0.9 — IPOPT barely starting before time cap. dt_median=26.5ms (loop slipping). Classic thermal/CPU-contention signature; trajectory itself is trivial. Candidate new known-issue MPC_CPU_THROTTLED (distinct from MPC_STALENESS). No motor errors, no E-stop, cond_number=3.6 normal.",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-18_01-49-42"
+    },
+    "mpc_20260418_015112.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-18T02:20:00Z",
+      "verdict": "NEEDS_ATTENTION",
+      "flags_count": 5,
+      "phase": "post-walk-forward-fallback-multiaxis-session",
+      "notes": "Move 5/5. Diagonal->z=220 (15.3s). TWO distinct stalls found on /investigate: (1) Early overshoot-recovery stall step 16-65 (t=0.74-2.11s, 50 consec hold/fallback) — plant 12mm AHEAD of ref, IPOPT can't unwind overshoot while ref accelerates; walk-forward fallback freezes cmd, recovers once ref catches up. (2) Terminal 'stall' step 538-599 is NOT an MPC failure — it is plant collapse: between step 530-537 (180ms) all 6 legs free-fall at -170mm/s (exceeds v_max=140), then feedback freezes at q_i=0.00 sentinel. Correlates with rosbag ending at CSV t=12.9s (~0.9s before collapse) — operator Ctrl+C'd launch, motor_guard died, legs fell, HardwarePlant telemetry stale. Real MPC tracking was 0.16mm RMS during steps 67-530. 'Final error 37mm' is shutdown artefact; true end-of-motion was sub-mm. Walk-forward fallback worked correctly throughout. Investigation: plans/active or logbook/.",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-18_01-49-42",
+      "logbook_entry": "2026-04-18-move5-overshoot-stall-and-plant-collapse.md"
+    },
     "mpc_20260417_184446.csv": {
       "analyzed": true,
       "last_analyzed": "2026-04-17T19:00:00Z",

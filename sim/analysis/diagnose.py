@@ -78,6 +78,25 @@ STEADY_STATE_RMS_THRESHOLD_MM = 0.5
 # Reference change detection (mm for position, rad for orientation)
 REF_CHANGE_THRESHOLD = 0.01
 
+# Plant telemetry collapse detection.  v_max mirrors
+# controller.params.MPCParams.max_leg_vel_mmps (the rate cap MPC enforces).
+# Free-fall signature: all 6 legs retract together at mean speed beyond the
+# rate cap (the MPC couldn't command that profile, so it's uncommanded).
+# The "all legs exactly 0.0" sentinel is what HardwarePlant's ZMQ SUB hands
+# back when telemetry stops flowing.
+V_MAX_MM_S = 140.0
+PLANT_COLLAPSE_MEAN_SPEED_MM_S = V_MAX_MM_S  # mean(|leg_vel|) across 6 legs
+PLANT_COLLAPSE_SAME_SIGN_MIN = 5             # at least this many legs moving same direction
+PLANT_COLLAPSE_ZERO_RUN_MIN = 20             # consecutive all-zero-extension steps
+PLANT_COLLAPSE_WINDOW_S = 0.5                # overspeed must precede zero-run within this window
+
+# Overshoot-induced NLP saturation detection.  Signature: IPOPT hits the
+# CPU cap before finishing one iteration while the plant pose is far from
+# the reference and the reference is still moving.  Distinct from generic
+# MPC_STALENESS (which has no overshoot context).
+OVERSHOOT_ZERO_ITER_RUN_MIN = 10         # consecutive ipopt_iter==0 steps
+OVERSHOOT_TRACKING_ERR_MM = 10.0         # tracking_error_mm must exceed this in the run
+
 
 # ---------------------------------------------------------------------------
 # MPC CSV analysis
@@ -467,9 +486,197 @@ def analyse_torques(records: List[StepRecord]) -> Dict[str, Any]:
     }
 
 
+def analyse_plant_collapse(records: List[StepRecord]) -> Dict[str, Any]:
+    """Detect a plant collapse + stale-telemetry event in the CSV.
+
+    Signature (both conditions required, second following the first within
+    PLANT_COLLAPSE_WINDOW_S):
+      1. A step where mean(|leg_vel|) across the 6 legs exceeds
+         PLANT_COLLAPSE_MEAN_SPEED_MM_S AND at least
+         PLANT_COLLAPSE_SAME_SIGN_MIN legs share the same direction of
+         motion — i.e., the platform is falling/rising uncommanded at a
+         speed the MPC rate cap would not have produced.
+      2. A run of >= PLANT_COLLAPSE_ZERO_RUN_MIN consecutive steps where
+         every actual_ext_i == 0.0 — the sentinel/empty payload the
+         HardwarePlant ZMQ SUB hands back when the feedback publisher dies.
+
+    When matched, everything at or after the overspeed timestamp is
+    downstream of an exogenous failure (operator Ctrl+C on the launch,
+    motor guard crash, CAN disconnect) and must not be conflated with MPC
+    solver misbehaviour.  See logbook entry
+    2026-04-18-move5-overshoot-stall-and-plant-collapse.md.
+    """
+    n = len(records)
+    if n < PLANT_COLLAPSE_ZERO_RUN_MIN:
+        return {'detected': False}
+
+    times = _extract(records, 'time')
+    leg_vels = np.stack(
+        [_extract(records, f'leg_vel_{i}') for i in range(6)], axis=1)     # (n, 6)
+    actual_exts = np.stack(
+        [_extract(records, f'actual_ext_{i}') for i in range(6)], axis=1)  # (n, 6)
+
+    mean_speed = np.mean(np.abs(leg_vels), axis=1)                         # (n,)
+    # Count legs moving "forward" (>0) vs "backward" (<0); treat exact zeros
+    # as neutral so a single stalled leg doesn't kill the signature.
+    n_pos = np.sum(leg_vels > 0, axis=1)
+    n_neg = np.sum(leg_vels < 0, axis=1)
+    same_sign_legs = np.maximum(n_pos, n_neg)                              # (n,)
+
+    overspeed_mask = (
+        (mean_speed > PLANT_COLLAPSE_MEAN_SPEED_MM_S) &
+        (same_sign_legs >= PLANT_COLLAPSE_SAME_SIGN_MIN)
+    )                                                                       # (n,)
+
+    # All-zero-extension rows (exact zeros — the sentinel, not near-zero)
+    zero_mask = np.all(actual_exts == 0.0, axis=1)                         # (n,)
+
+    # Find runs of >= PLANT_COLLAPSE_ZERO_RUN_MIN consecutive zero rows
+    runs = []
+    run_start = None
+    for i, z in enumerate(zero_mask):
+        if z:
+            if run_start is None:
+                run_start = i
+        else:
+            if run_start is not None:
+                if i - run_start >= PLANT_COLLAPSE_ZERO_RUN_MIN:
+                    runs.append((run_start, i - 1))
+                run_start = None
+    if run_start is not None and n - run_start >= PLANT_COLLAPSE_ZERO_RUN_MIN:
+        runs.append((run_start, n - 1))
+
+    if not runs:
+        return {'detected': False}
+
+    # Pair the first qualifying zero-run with a preceding overspeed event
+    overspeed_idx = np.flatnonzero(overspeed_mask)
+    for zero_start, zero_end in runs:
+        t_zero = float(times[zero_start])
+        # Most recent overspeed step strictly before the zero-run start
+        preceding = overspeed_idx[overspeed_idx < zero_start]
+        if preceding.size == 0:
+            continue
+        t_overspeed = float(times[preceding[-1]])
+        if t_zero - t_overspeed > PLANT_COLLAPSE_WINDOW_S:
+            continue
+        # Match.
+        overspeed_step = int(preceding[-1])
+        return {
+            'detected': True,
+            'overspeed_step': overspeed_step,
+            'overspeed_time_s': round(t_overspeed, 4),
+            'zero_run_start_step': int(zero_start),
+            'zero_run_start_time_s': round(t_zero, 4),
+            'zero_run_length': int(zero_end - zero_start + 1),
+            'peak_mean_leg_speed_mmps': round(float(np.max(mean_speed)), 1),
+            'peak_abs_leg_vel_mmps': round(float(np.max(np.abs(leg_vels))), 1),
+            'overspeed_threshold_mmps': round(PLANT_COLLAPSE_MEAN_SPEED_MM_S, 1),
+        }
+
+    return {'detected': False}
+
+
+def analyse_overshoot_saturation(records: List[StepRecord]) -> Dict[str, Any]:
+    """Detect overshoot-induced NLP saturation.
+
+    Signature (all three required over a window of >= OVERSHOOT_ZERO_ITER_RUN_MIN
+    consecutive steps):
+      1. `ipopt_iter == 0` on every step — IPOPT hits the CPU cap before
+         completing one iteration, signalled by the walk-forward fallback
+         status codes (hold/fallback/cold_hold).
+      2. `tracking_error_mm` exceeds OVERSHOOT_TRACKING_ERR_MM — the plant
+         pose is far from the reference pose during the run.
+      3. The reference is still changing (ref_delta > REF_CHANGE_THRESHOLD)
+         somewhere in the window — otherwise this is a hold, not an
+         overshoot/settle failure.
+
+    Distinct from the generic MPC_STALENESS known-issue: that one fires on
+    any consecutive-timeout run.  Overshoot saturation additionally
+    requires pose-level tracking error with a moving ref, which points to
+    a specific fix (ref-from-current-plant-state on move boundaries — see
+    logbook entry 2026-04-18-move5-overshoot-stall-and-plant-collapse.md,
+    option (b)).
+
+    Note: tracking_error_mm is the magnitude of |actual_pose - ref_pose|
+    over the position DOFs; we do not infer direction here (the interesting
+    direction — plant ahead of ref — is a human-side interpretation, not
+    what triggers the detector).
+    """
+    n = len(records)
+    if n < OVERSHOOT_ZERO_ITER_RUN_MIN:
+        return {'detected': False, 'events': []}
+
+    times = _extract(records, 'time')
+    ipopt_iters = _extract(records, 'ipopt_iter').astype(int)
+    tracking_err = _extract(records, 'tracking_error_mm')
+
+    # Reference motion indicator (same weighting as analyse_steady_state)
+    ref_x = _extract(records, 'ref_pose_x')
+    ref_y = _extract(records, 'ref_pose_y')
+    ref_z = _extract(records, 'ref_pose_z')
+    ref_rx = _extract(records, 'ref_pose_rx')
+    ref_ry = _extract(records, 'ref_pose_ry')
+    ref_rz = _extract(records, 'ref_pose_rz')
+    ref_delta = (np.abs(np.diff(ref_x)) + np.abs(np.diff(ref_y)) +
+                 np.abs(np.diff(ref_z)) + np.abs(np.diff(ref_rx)) * 1000 +
+                 np.abs(np.diff(ref_ry)) * 1000 + np.abs(np.diff(ref_rz)) * 1000)
+    # Pad to length n so indexing matches; step i's ref motion is delta[i-1]
+    ref_moving = np.concatenate(([False], ref_delta > REF_CHANGE_THRESHOLD))  # (n,)
+
+    # Walk the record, gather runs that satisfy (1)+(2); mark those that also
+    # meet (3) somewhere inside the run.
+    events = []
+    run_start = None
+    for i in range(n):
+        cond = ((ipopt_iters[i] == 0) and
+                (tracking_err[i] > OVERSHOOT_TRACKING_ERR_MM))
+        if cond:
+            if run_start is None:
+                run_start = i
+        else:
+            if run_start is not None and (i - run_start) >= OVERSHOOT_ZERO_ITER_RUN_MIN:
+                if np.any(ref_moving[run_start:i]):
+                    events.append({
+                        'start_step': int(run_start),
+                        'end_step': int(i - 1),
+                        'length': int(i - run_start),
+                        'start_time_s': round(float(times[run_start]), 4),
+                        'end_time_s': round(float(times[i - 1]), 4),
+                        'peak_tracking_err_mm': round(
+                            float(np.max(tracking_err[run_start:i])), 2),
+                    })
+            run_start = None
+    if run_start is not None and (n - run_start) >= OVERSHOOT_ZERO_ITER_RUN_MIN:
+        if np.any(ref_moving[run_start:n]):
+            events.append({
+                'start_step': int(run_start),
+                'end_step': int(n - 1),
+                'length': int(n - run_start),
+                'start_time_s': round(float(times[run_start]), 4),
+                'end_time_s': round(float(times[n - 1]), 4),
+                'peak_tracking_err_mm': round(
+                    float(np.max(tracking_err[run_start:n])), 2),
+            })
+
+    return {
+        'detected': bool(events),
+        'events': events,
+        'max_consecutive': int(max((e['length'] for e in events), default=0)),
+    }
+
+
 def analyse_csv(records: List[StepRecord],
                 budget_ms: float = DEFAULT_BUDGET_MS) -> Dict[str, Any]:
-    """Run all MPC CSV analyses and return combined results."""
+    """Run all MPC CSV analyses and return combined results.
+
+    When a plant telemetry collapse is detected mid-run, aggregate analyses
+    (tracking, solve_times, workspace, steady_state, etc.) are computed on
+    the pre-collapse slice only. Including post-collapse steps would fold
+    zero-sentinel feedback and ghost solve-loop activity into the numbers
+    and make a healthy run look like a failure (the Move 5 experience).
+    The collapse detection itself always runs on the full record set.
+    """
     n = len(records)
     if n == 0:
         return {'error': 'Empty CSV'}
@@ -479,18 +686,33 @@ def analyse_csv(records: List[StepRecord],
     dt_values = np.diff(times)
     dt_median = float(np.median(dt_values)) if len(dt_values) > 0 else 0
 
+    # Run collapse detection on the full record set first.
+    collapse = analyse_plant_collapse(records)
+
+    # If a collapse was detected, analyse the aggregate metrics on the
+    # pre-collapse slice only. Anything at/after the overspeed step is
+    # downstream of an exogenous failure and must not contaminate the numbers.
+    if collapse.get('detected'):
+        cut = int(collapse['overspeed_step'])
+        analysed_records = records[:cut] if cut > 0 else records
+    else:
+        analysed_records = records
+
     return {
         'n_samples': n,
+        'analysed_samples': len(analysed_records),
         'duration_s': round(duration, 3),
         'dt_median_ms': round(dt_median * 1000, 2),
-        'tracking': analyse_tracking(records),
-        'solve_times': analyse_solve_times(records, budget_ms),
-        'solver_status': analyse_solver_status(records),
-        'oscillation': analyse_oscillation(records),
-        'discontinuities': analyse_discontinuities(records),
-        'workspace': analyse_workspace(records),
-        'steady_state': analyse_steady_state(records),
-        'torques': analyse_torques(records),
+        'tracking': analyse_tracking(analysed_records),
+        'solve_times': analyse_solve_times(analysed_records, budget_ms),
+        'solver_status': analyse_solver_status(analysed_records),
+        'oscillation': analyse_oscillation(analysed_records),
+        'discontinuities': analyse_discontinuities(analysed_records),
+        'workspace': analyse_workspace(analysed_records),
+        'steady_state': analyse_steady_state(analysed_records),
+        'torques': analyse_torques(analysed_records),
+        'plant_collapse': collapse,
+        'overshoot_saturation': analyse_overshoot_saturation(analysed_records),
     }
 
 
@@ -1148,6 +1370,48 @@ def generate_flags(result: Dict[str, Any]) -> List[Dict[str, Any]]:
                         f"(threshold {STEADY_STATE_RMS_THRESHOLD_MM}mm)"),
         })
 
+    # Plant telemetry collapse — exogenous failure (motor guard death, CAN loss,
+    # operator killing the launch).  Emit at error severity with time_s set to
+    # the overspeed event; _tag_post_event_flags will downgrade everything after
+    # it so MPC-side flags are not blamed.
+    collapse = result.get('plant_collapse', {})
+    if collapse.get('detected'):
+        flags.append({
+            'severity': 'error',
+            'source': 'plant',
+            'time_s': collapse['overspeed_time_s'],
+            'plant_collapse_event': True,
+            'message': (
+                f"Plant telemetry collapse: uncommanded overspeed "
+                f"(peak {collapse['peak_abs_leg_vel_mmps']:.0f} mm/s "
+                f">{collapse['overspeed_threshold_mmps']:.0f} threshold) "
+                f"at t={collapse['overspeed_time_s']:.3f}s, followed by "
+                f"{collapse['zero_run_length']}-step zero-extension sentinel "
+                f"from t={collapse['zero_run_start_time_s']:.3f}s — "
+                f"exogenous failure, downstream MPC flags are consequences."),
+        })
+
+    # Overshoot-induced NLP saturation — distinct from generic MPC_STALENESS.
+    # Fires when IPOPT spends every ms on solve setup without completing one
+    # iteration while the plant is ahead of cmd and ref is still moving.
+    # Warning severity: the walk-forward fallback (commit 64742f2) keeps this
+    # safe, but it IS a tracking hole that matters for dynamic motion.
+    overshoot = result.get('overshoot_saturation', {})
+    if overshoot.get('detected'):
+        ev0 = overshoot['events'][0]
+        n_events = len(overshoot['events'])
+        flags.append({
+            'severity': 'warning',
+            'source': 'mpc',
+            'time_s': ev0['start_time_s'],
+            'message': (
+                f"MPC overshoot saturation: "
+                f"{overshoot['max_consecutive']} consecutive ipopt_iter=0 "
+                f"steps with tracking err peak {ev0['peak_tracking_err_mm']:.1f}mm "
+                f"while ref still moving, starting t={ev0['start_time_s']:.3f}s"
+                + (f" ({n_events} events total)" if n_events > 1 else "")),
+        })
+
     # ROS2 flags
     ros2 = result.get('ros2_events_summary') or {}
     error_count = (ros2.get('level_counts') or {}).get('ERROR', 0)
@@ -1219,40 +1483,71 @@ def _estop_csv_time_s(rosbag_result: Dict[str, Any],
     return (bag_start + bag_t_estop) - csv_start
 
 
+def _tag_post_event_flags(flags: List[Dict[str, Any]],
+                          estop_csv_t: Optional[float],
+                          estop_bag_t: Optional[float],
+                          collapse_csv_t: Optional[float] = None) -> None:
+    """Mark flags that occur at or after an E-stop or plant-collapse event
+    as downstream consequences.
+
+    Downstream flags are tagged with `post_estop: True` (for E-stop) or
+    `post_collapse: True` (for plant-telemetry collapse) and downgraded to
+    'info' severity with an explanatory prefix.  Rationale: the triggering
+    event collapses the bus / kills telemetry, which causes commanded STOW
+    drops, motor disarms, tracking blowups, zero-sentinel feedback, etc.
+    These are consequences of the exogenous failure, not independent faults.
+
+    The event whose flag itself carries `estop_event` or `plant_collapse_event`
+    is exempt from downgrading — we keep it at its original severity so it
+    remains visible as the trigger.
+    """
+    if (estop_csv_t is None and estop_bag_t is None
+            and collapse_csv_t is None):
+        return
+
+    # 20ms ≈ 1 MPC step; absorbs the sub-step granularity of the trigger time.
+    TOL = 0.020
+
+    def _after_event(flag: Dict[str, Any]) -> Optional[str]:
+        """Return the event kind that already happened, or None."""
+        t = flag.get('time_s')
+        if t is None:
+            return None
+        src = flag.get('source', 'mpc')
+        # Plant collapse is always in CSV time — applies to any mpc/plant source.
+        if (collapse_csv_t is not None
+                and src in ('mpc', 'plant')
+                and t >= collapse_csv_t - TOL):
+            return 'collapse'
+        # E-stop comes from the rosbag; 'rosbag' flags use bag time, others CSV.
+        if src == 'mpc' and estop_csv_t is not None and t >= estop_csv_t - TOL:
+            return 'estop'
+        if src == 'rosbag' and estop_bag_t is not None and t >= estop_bag_t - TOL:
+            return 'estop'
+        return None
+
+    for f in flags:
+        # Never downgrade the trigger-marker flag itself.
+        if f.get('estop_event') or f.get('plant_collapse_event'):
+            continue
+        kind = _after_event(f)
+        if kind is None:
+            continue
+        f['original_severity'] = f.get('severity')
+        f['severity'] = 'info'
+        if kind == 'collapse':
+            f['post_collapse'] = True
+            f['message'] = f"[post-collapse downstream] {f['message']}"
+        else:
+            f['post_estop'] = True
+            f['message'] = f"[post-E-stop downstream] {f['message']}"
+
+
+# Back-compat alias — keep the old name callable.
 def _tag_post_estop_flags(flags: List[Dict[str, Any]],
                           estop_csv_t: Optional[float],
                           estop_bag_t: Optional[float]) -> None:
-    """Mark flags that occur at or after the E-stop as downstream.
-
-    Downstream flags are tagged with `post_estop: True` and downgraded to
-    'info' severity with an explanatory note.  Rationale: E-stop collapses
-    the bus, which causes commanded STOW drops, motor disarms, tracking
-    blowups, etc. — these are consequences of the operator's intervention,
-    not independent faults.
-    """
-    if estop_csv_t is None and estop_bag_t is None:
-        return
-
-    def _after_estop(flag: Dict[str, Any]) -> bool:
-        t = flag.get('time_s')
-        if t is None:
-            return False
-        src = flag.get('source', 'mpc')
-        if src == 'mpc' and estop_csv_t is not None:
-            # A small pre-trigger tolerance (20ms ≈ 1 MPC step) absorbs the
-            # fact that the operator presses E-stop in response to motion
-            # already in flight.
-            return t >= estop_csv_t - 0.020
-        if src == 'rosbag' and estop_bag_t is not None:
-            return t >= estop_bag_t - 0.020
-        return False
-
-    for f in flags:
-        if _after_estop(f):
-            f['post_estop'] = True
-            f['original_severity'] = f.get('severity')
-            f['severity'] = 'info'
-            f['message'] = f"[post-E-stop downstream] {f['message']}"
+    _tag_post_event_flags(flags, estop_csv_t, estop_bag_t, collapse_csv_t=None)
 
 
 def run_diagnosis(csv_path: str,
@@ -1319,8 +1614,16 @@ def run_diagnosis(csv_path: str,
     # Generate flags (attach time_s where applicable so we can tag downstream)
     flags = generate_flags(result)
 
-    # Tag post-E-stop flags as downstream
-    _tag_post_estop_flags(flags, estop_csv_t, estop_bag_t)
+    # Tag post-E-stop and post-plant-collapse flags as downstream consequences.
+    # A plant collapse (operator killed the launch, motor_guard died, CAN lost)
+    # produces the same kind of cascading downstream noise an E-stop does:
+    # tracking blowups, workspace-margin trips, MPC solver timeouts against
+    # stale feedback. Without this tagging, the MPC flags steal the blame.
+    collapse = (result.get('plant_collapse') or {})
+    collapse_csv_t = (collapse.get('overspeed_time_s')
+                      if collapse.get('detected') else None)
+    _tag_post_event_flags(flags, estop_csv_t, estop_bag_t,
+                          collapse_csv_t=collapse_csv_t)
 
     # Add an info-severity marker for the E-stop itself (not a fault — pilot
     # intervention).  Place it first so it reads at the top of the flag list
