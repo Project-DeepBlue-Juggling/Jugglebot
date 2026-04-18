@@ -153,6 +153,10 @@ class HardwarePlant(PlantInterface):
         # Lightweight diagnostics (read by main loop for telemetry)
         self._last_fk_iterations = 0
         self._last_ff_torque_max_Nm = 0.0
+        # Number of telemetry frames drained from the SUB on the most recent
+        # get_state() call.  Exposed so the MPC loop can correlate overhead
+        # spikes with ZMQ queue depth.
+        self._last_drain_count = 0
 
         # ZeroMQ context and sockets
         self._ctx = zmq.Context()
@@ -296,15 +300,16 @@ class HardwarePlant(PlantInterface):
         # is more robust than ZMQ_CONFLATE (which only works when set before
         # connect).  At 40–100 Hz polling vs 500 Hz publishing, a single
         # recv per poll would fall behind and read stale telemetry.
-        got_msg = False
+        drain_count = 0
         while True:
             try:
                 frames = self._sub.recv_multipart(flags=zmq.NOBLOCK)
                 _, self._last_telem = _unpack(frames)
-                got_msg = True
+                drain_count += 1
             except zmq.Again:
                 break
-        if got_msg:
+        self._last_drain_count = drain_count
+        if drain_count > 0:
             self._last_telem_recv_time = time.perf_counter()
 
         now = time.perf_counter()
@@ -641,6 +646,11 @@ class HardwarePlant(PlantInterface):
     def last_ff_torque_max_Nm(self) -> float:
         """Max absolute feedforward torque (Nm) from last set_pose()."""
         return self._last_ff_torque_max_Nm
+
+    @property
+    def last_drain_count(self) -> int:
+        """Number of ZMQ telemetry frames drained in the most recent get_state()."""
+        return self._last_drain_count
 
     # ------------------------------------------------------------------
     # Cleanup

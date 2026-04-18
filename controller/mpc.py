@@ -965,7 +965,8 @@ class MPCController:
                 if not np.all(np.isfinite(w_opt)):
                     logger.warning("MPC solve returned non-finite primal solution")
                     return self._handle_failure(
-                        solve_ms, 'non_finite_solution', q_cur)
+                        solve_ms, 'non_finite_solution', q_cur,
+                        q_dot=state.leg_velocities_mmps)
                 self._prev_w = w_opt
                 self._prev_lam_g = np.asarray(sol['lam_g']).ravel()
                 self._prev_lam_x = np.asarray(sol['lam_x']).ravel()
@@ -1014,7 +1015,9 @@ class MPCController:
                     'cmd_next2_mm': cmd_next2,
                 }
             else:
-                return self._handle_failure(solve_ms, ret, q_cur)
+                return self._handle_failure(
+                    solve_ms, ret, q_cur,
+                    q_dot=state.leg_velocities_mmps)
 
         except Exception as exc:
             solve_ms = (_time.perf_counter() - t0) * 1000.0
@@ -1029,7 +1032,9 @@ class MPCController:
             self._timeout_lam_g = None
             self._timeout_lam_x = None
             self._fallback_step = 0
-            return self._handle_failure(solve_ms, f'exception: {exc}', q_cur)
+            return self._handle_failure(
+                solve_ms, f'exception: {exc}', q_cur,
+                q_dot=state.leg_velocities_mmps)
 
     # ------------------------------------------------------------------
     # Warm-start helpers
@@ -1261,10 +1266,18 @@ class MPCController:
     # Failure handling
     # ------------------------------------------------------------------
 
-    def _handle_failure(self, solve_ms, status_str, q_cur=None):
+    def _handle_failure(self, solve_ms, status_str, q_cur=None, q_dot=None):
         """Fallback strategy on solver failure.
 
         Returns (cmd, cmd_vel, diag) matching solve()'s return signature.
+
+        When ``q_dot`` is provided (measured leg velocities) and the
+        walk-forward cursor has saturated at u[N-1], the fallback switches
+        from "freeze cmd at last planned node" to "extrapolate along
+        measured plant motion".  Without this, a burst longer than N-1
+        ticks leaves cmd stationary while the plant (tau=40 ms) coasts
+        past — the ODrive PID then has to recoil, producing the audible
+        fighting observed on every move.
         """
         self._consecutive_failures += 1
         logger.warning(
@@ -1284,6 +1297,7 @@ class MPCController:
         stroke = self._params.stroke_mm
         margin = self._params.stroke_margin_mm
         dt0 = self._params.dt_schedule[0]
+        N = self._N
 
         if (self._prev_w is not None
                 and self._consecutive_failures <= self._params.max_consecutive_failures):
@@ -1296,8 +1310,9 @@ class MPCController:
             # behaviour that caused the cmd_ext sawtooth and 440-sample
             # hold stutter on off-Active multi-axis moves).
             self._fallback_step += 1
-            N = self._N
             k = min(self._fallback_step, N - 1)
+            prev_u = self._prev_u
+            max_delta = self._params.max_leg_vel_mmps * dt0
             cmd = np.clip(self._prev_w[6 * k: 6 * (k + 1)], margin, stroke - margin)
             # Rate-limit against the last emitted command (NOT q_cur —
             # clamping against q_cur pulls cmd toward the plant when it
@@ -1306,9 +1321,7 @@ class MPCController:
             # respects the plan's rate limit by construction; this clamp
             # is belt-and-braces for the first fallback after a success
             # where prev_u and prev_w[0:6] may differ slightly.
-            prev_u = self._prev_u
             if prev_u is not None:
-                max_delta = self._params.max_leg_vel_mmps * dt0
                 cmd = np.clip(cmd, prev_u - max_delta, prev_u + max_delta)
             # Forward-looking cmd_vel from the NEXT planned node, so the
             # motor guard keeps its feedforward signal during the fallback
@@ -1326,10 +1339,28 @@ class MPCController:
             return cmd, cmd_vel, diag
 
         if self._prev_u is not None:
-            # Hold last command — Δu = 0 so prev_prev = prev
-            self._prev_prev_u = self._prev_u.copy()
+            prev_u = self._prev_u
+            # Prefer plant-tracking extrapolation over a pure freeze.  With
+            # cmd frozen at prev_u, the actuator (tau=40 ms) keeps coasting
+            # past cmd → ODrive PID recoils to correct → audible fighting.
+            # With cmd = q_cur + q_dot * dt, cmd leads the plant by one
+            # fine-step and the PID sees a continuous signal rather than a
+            # stationary one to fight.  Rate-limited so q_dot noise cannot
+            # command jumps larger than a normal solver-driven step.
+            # Falls back to the old freeze behavior when no measured state
+            # is available (cold path / sim paths that don't pass q_dot).
+            if q_cur is not None and q_dot is not None:
+                max_delta = self._params.max_leg_vel_mmps * dt0
+                cmd = np.clip(q_cur + q_dot * dt0, margin, stroke - margin)
+                cmd = np.clip(cmd, prev_u - max_delta, prev_u + max_delta)
+                self._prev_prev_u = prev_u.copy()
+                self._prev_u = cmd
+                diag['status'] = f'hold_extrap({status_str})'
+                return cmd, q_dot.copy(), diag
+            # Cold freeze — Δu = 0 so prev_prev = prev
+            self._prev_prev_u = prev_u.copy()
             diag['status'] = f'hold({status_str})'
-            return self._prev_u.copy(), np.zeros(6), diag
+            return prev_u.copy(), np.zeros(6), diag
 
         # Absolute fallback: hold at current position if known, otherwise
         # margin-safe minimum.  Using q_cur prevents the dangerous ~150mm

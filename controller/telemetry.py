@@ -91,6 +91,19 @@ class StepRecord:
     ff_torque_max_Nm: float = 0.0      # max feedforward torque magnitude
     ipopt_iter: int = 0                # IPOPT iteration count per solve
 
+    # Per-segment overhead breakdown (attributes overhead_ms to specific
+    # phases of the MPC loop).  Populated by the hardware/sim runner;
+    # zero when not measured.  Their sum approximates overhead_ms modulo
+    # measurement skew.
+    t_getstate_ms: float = 0.0         # plant.get_state() (ZMQ drain + FK + Jacobian)
+    t_target_ms: float = 0.0           # source.update + on_target_override
+    t_solve_setup_ms: float = 0.0      # mpc_solve wrapper minus solve_time_ms (ref build, param pack, warm-start shift)
+    t_hooks_ms: float = 0.0            # on_post_solve + on_pre_command (e.g. feedforward dynamics)
+    t_cmd_ms: float = 0.0              # plant.command (ZMQ send)
+    t_log_ms: float = 0.0              # log_mpc_step (record build + logger.append + dashboard broadcast)
+    gc_ms: float = 0.0                 # time spent in Python GC callbacks during this tick
+    zmq_drain_count: int = 0           # messages drained from telemetry SUB in get_state
+
     # Reference clock — advances only on success-class solver status so the
     # reference does not run away from the platform during fallback chains.
     # Lags state.time during saturation; equals state.time during healthy
@@ -119,6 +132,14 @@ def record_from_arrays(
     ff_torque_max_Nm: float = 0.0,
     ipopt_iter: int = 0,
     t_ref_s: float = 0.0,
+    t_getstate_ms: float = 0.0,
+    t_target_ms: float = 0.0,
+    t_solve_setup_ms: float = 0.0,
+    t_hooks_ms: float = 0.0,
+    t_cmd_ms: float = 0.0,
+    t_log_ms: float = 0.0,
+    gc_ms: float = 0.0,
+    zmq_drain_count: int = 0,
 ) -> StepRecord:
     """Build a StepRecord from numpy arrays (convenience helper)."""
     pos_err = np.linalg.norm(actual_pose[:3] - ref_pose[:3])
@@ -149,6 +170,10 @@ def record_from_arrays(
         overhead_ms=overhead_ms, fk_iterations=fk_iterations,
         ff_torque_max_Nm=ff_torque_max_Nm, ipopt_iter=ipopt_iter,
         t_ref_s=t_ref_s,
+        t_getstate_ms=t_getstate_ms, t_target_ms=t_target_ms,
+        t_solve_setup_ms=t_solve_setup_ms, t_hooks_ms=t_hooks_ms,
+        t_cmd_ms=t_cmd_ms, t_log_ms=t_log_ms,
+        gc_ms=gc_ms, zmq_drain_count=zmq_drain_count,
     )
 
 
