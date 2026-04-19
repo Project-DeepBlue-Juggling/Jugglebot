@@ -14,9 +14,11 @@ sessions:
   - mpc_20260418_222414.csv
   - mpc_20260419_094723.csv
   - mpc_20260419_094733.csv
-files_changed: []
+files_changed:
+  - controller/hardware_plant.py
 commits:
   - a89a4dd
+  - abc4a8e
 subsystem:
   - controller
   - mpc
@@ -30,6 +32,8 @@ tags:
 ## Summary
 
 On every STANDBY-mode move commanded via `run_mpc.py`, the platform produces an audible small-amplitude bidirectional "fighting" motion driven by the MPC command signal. Root mechanism: single-tick Python-level overhead spikes (observed 33–43 ms on a nominal 5 ms baseline) trigger short MPC-fallback bursts. When a burst exhausts the walk-forward plan, the existing `_handle_failure` endgame freezes `cmd` at `prev_w[6(N-1):6N]` while the platform (τ=40 ms) coasts past; the ODrive PID then recoils at −167 to −220 mm/s. That recoil is what the operator hears. This is not a regression from recent fixes (walk-forward fallback 64742f2, 22 ms IPOPT budget ae51fb7, prime-at-live-pose 31a56c5) — those all work as intended. The mechanism is "below" those fixes, in the Python control plane.
+
+> **See also:** `2026-04-18-hold-fighting-motion-onset-jitter.md` — the sub-LSB command dead-band in `controller/hardware_plant.py` (commit `abc4a8e`) addresses the HF `pos_setpoint` jitter at hold that is characterised in that entry. It is filed here because the MPC-side overhead-spike mechanism is the closest-related "fighting" failure mode, but the primary narrative for the dead-band fix lives in the hold-fighting entry.
 
 ## Symptoms
 

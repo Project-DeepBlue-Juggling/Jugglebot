@@ -23,7 +23,10 @@ files_changed:
   - ros_ws/src/jugglebot/jugglebot/hardware_config.py
   - ros_ws/src/jugglebot/jugglebot/can/odrive.py
   - ros_ws/src/jugglebot/jugglebot/can_node.py
-commits: []
+  - controller/hardware_plant.py
+commits:
+  - 56b7514
+  - abc4a8e
 subsystem:
   - motion
 tags:

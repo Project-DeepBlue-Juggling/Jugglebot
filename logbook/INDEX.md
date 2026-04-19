@@ -6,6 +6,7 @@ Browse with `/logbook`, create entries with `/investigate` or `/logbook --new <t
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-04-18 | in-progress | STANDBY-mode MPC (post-64742f2 fallback walk-forward) — tail-latency attribution | MPC-loop overhead spikes trigger fallback bursts; audible "fighting" on every move | [2026-04-18-mpc-overhead-spikes-fallback-bursts](2026-04-18-mpc-overhead-spikes-fallback-bursts.md) |
 | 2026-04-18 | in-progress | post-walk-forward-fallback-multiaxis-session-2 | Hold fighting + motion-onset jitter — residual hardware jitter downstream of clean MPC | [2026-04-18-hold-fighting-motion-onset-jitter](2026-04-18-hold-fighting-motion-onset-jitter.md) |
 | 2026-04-18 | in-progress | post-walk-forward-fallback-multiaxis-session | Move 5: MPC overshoot-recovery stall + plant-collapse misclassification | [2026-04-18-move5-overshoot-stall-and-plant-collapse](2026-04-18-move5-overshoot-stall-and-plant-collapse.md) |
 | 2026-04-17 | in-progress | STANDBY-mode multi-axis MPC | MPC fallback-command sawtooth produces visible stutter on off-Active multi-axis moves | [2026-04-17-mpc-fallback-cmd-sawtooth-stutter](2026-04-17-mpc-fallback-cmd-sawtooth-stutter.md) |

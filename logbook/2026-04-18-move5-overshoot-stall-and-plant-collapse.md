@@ -14,8 +14,12 @@ related_issues:
 sessions:
   - mpc_20260418_015112.csv
 # --- Traceability ---
-files_changed: []
-commits: []
+files_changed:
+  - sim/analysis/diagnose.py
+  - sim/analysis/known_issues.yaml
+  - sim/analysis/log_index.json
+commits:
+  - 0dbb4fa
 # --- Classification ---
 subsystem:
   - controller
