@@ -75,6 +75,21 @@ let pausedWindowEnd = 0;
 /** Cursor sync key shared by all charts */
 const SYNC_KEY = 'telemetry';
 
+/**
+ * View mode for the x-axis.
+ *   - 'live'   : axis follows getViewAnchor() each repaint (default).
+ *   - 'manual' : user has pan/zoomed — we honour manualXRange until reset.
+ */
+let viewMode = 'live';
+/** X-axis range while in manual view mode — {min, max} in seconds. */
+let manualXRange = null;
+/** Zoom factor applied per wheel notch (standard delta = ±100). */
+const WHEEL_ZOOM_STEP = 1.1;
+/** Minimum x-axis span (seconds) — stops zoom from collapsing to a point. */
+const MIN_X_SPAN_SEC = 0.05;
+/** Maximum x-axis span (seconds) — never exceed the cache retention. */
+const MAX_X_SPAN_SEC = CACHE_WINDOW_SEC;
+
 // ---- Data store ----
 
 class ChartDataStore {
@@ -270,6 +285,11 @@ function initTimeWindowSelector() {
     select.addEventListener('change', () => {
         currentWindowSec = parseInt(select.value, 10);
         saveTimeWindow();
+        // Changing the window width is an explicit redefinition of the
+        // visible slice — drop manual pan/zoom so the new width actually
+        // takes effect.
+        viewMode = 'live';
+        manualXRange = null;
         rebuildAllCharts();
     });
 }
@@ -299,7 +319,9 @@ function initPauseButton() {
             btn.textContent = 'Pause';
             btn.classList.remove('active');
             btn.style.removeProperty('--signal-color');
-            // Snap to live — trigger immediate repaint
+            // Snap to live — exit manual pan/zoom too.
+            viewMode = 'live';
+            manualXRange = null;
             if (!pendingRepaint) {
                 pendingRepaint = true;
                 requestAnimationFrame(() => repaintAllCharts());
@@ -409,6 +431,21 @@ function buildUPlotOpts(width, height, showXAxis = true) {
             show: true,
             sync: { key: SYNC_KEY, setSeries: false },
             points: { show: false },
+            // Enable LMB-drag x-selection for box-zoom, but with setScale off
+            // so we can broadcast the new range to every chart via the
+            // setSelect hook below (keeps all charts synced).
+            drag: { x: true, y: false, setScale: false },
+        },
+        hooks: {
+            setSelect: [(u) => {
+                if (u.select.width < 3) return;  // ignore accidental clicks
+                const min = u.posToVal(u.select.left, 'x');
+                const max = u.posToVal(u.select.left + u.select.width, 'x');
+                viewMode = 'manual';
+                setXRangeAllCharts(min, max);
+                // Clear the selection rectangle so it doesn't linger.
+                u.setSelect({ left: 0, top: 0, width: 0, height: 0 }, false);
+            }],
         },
         legend: { show: false },
         padding: [8, 8, 0, 0],
@@ -418,8 +455,15 @@ function buildUPlotOpts(width, height, showXAxis = true) {
 function buildAllCharts() {
     const signalList = getActiveSignalList();
     const signalKeys = signalList.map(s => s.key);
-    const anchor = getViewAnchor();
-    const windowStart = anchor - currentWindowSec;
+    // Preserve manual pan/zoom across signal-toggle rebuilds.
+    let windowStart, windowEnd;
+    if (viewMode === 'manual' && manualXRange) {
+        windowStart = manualXRange.min;
+        windowEnd = manualXRange.max;
+    } else {
+        windowEnd = getViewAnchor();
+        windowStart = windowEnd - currentWindowSec;
+    }
 
     for (let i = 0; i < MOTOR_COUNT; i++) {
         const cell = document.getElementById(`chart-${i}`);
@@ -450,7 +494,8 @@ function buildAllCharts() {
             : [new Float64Array(0), ...signalKeys.map(() => new Float64Array(0))];
 
         charts[i] = new uPlot(opts, initialData, cell);
-        charts[i].setScale('x', { min: windowStart, max: anchor });
+        charts[i].setScale('x', { min: windowStart, max: windowEnd });
+        attachMouseControls(charts[i]);
     }
 }
 
@@ -545,6 +590,121 @@ function getViewAnchor() {
     return (wall - lastT) < 1.0 ? wall : lastT;
 }
 
+/** Clamp a requested [min,max] span to the cache window and min-span guard. */
+function clampXRange(min, max) {
+    let span = max - min;
+    if (span < MIN_X_SPAN_SEC) {
+        const mid = (min + max) / 2;
+        min = mid - MIN_X_SPAN_SEC / 2;
+        max = mid + MIN_X_SPAN_SEC / 2;
+        span = MIN_X_SPAN_SEC;
+    }
+    if (span > MAX_X_SPAN_SEC) {
+        const mid = (min + max) / 2;
+        min = mid - MAX_X_SPAN_SEC / 2;
+        max = mid + MAX_X_SPAN_SEC / 2;
+    }
+    return { min, max };
+}
+
+/**
+ * Apply the same x-axis range to every chart, so pan/zoom stays synced.
+ * Callers set viewMode='manual' beforehand (for wheel/pan) to stop the
+ * live repaint loop from overwriting the range on the next frame.
+ */
+function setXRangeAllCharts(min, max) {
+    const clamped = clampXRange(min, max);
+    manualXRange = clamped;
+    for (let i = 0; i < MOTOR_COUNT; i++) {
+        const c = charts[i];
+        if (!c) continue;
+        c.setScale('x', clamped);
+    }
+}
+
+/** Drop out of manual view mode and snap back to the live-anchored window. */
+function resetViewToLive() {
+    viewMode = 'live';
+    manualXRange = null;
+    const anchor = getViewAnchor();
+    const windowStart = anchor - currentWindowSec;
+    for (let i = 0; i < MOTOR_COUNT; i++) {
+        if (!charts[i]) continue;
+        charts[i].setScale('x', { min: windowStart, max: anchor });
+    }
+    // Force a repaint so data re-aligns to the live window immediately.
+    repaintAllCharts(true);
+}
+
+/**
+ * Attach wheel-zoom, middle-click-pan, and dblclick-reset to a uPlot instance.
+ * All handlers set viewMode='manual' and delegate to setXRangeAllCharts() so
+ * every chart moves together.
+ */
+function attachMouseControls(u) {
+    const over = u.over;   // the event-capture layer inside uPlot
+    if (!over) return;
+
+    // --- Wheel: zoom x-axis around the cursor ---------------------------
+    over.addEventListener('wheel', (ev) => {
+        ev.preventDefault();
+        const rect = over.getBoundingClientRect();
+        const px = ev.clientX - rect.left;
+        const cursorT = u.posToVal(px, 'x');
+        const scale = u.scales.x;
+        if (scale.min == null || scale.max == null) return;
+
+        const factor = Math.pow(WHEEL_ZOOM_STEP, ev.deltaY / 100);
+        const newMin = cursorT - (cursorT - scale.min) * factor;
+        const newMax = cursorT + (scale.max - cursorT) * factor;
+
+        viewMode = 'manual';
+        setXRangeAllCharts(newMin, newMax);
+    }, { passive: false });
+
+    // --- Middle-click drag: pan x-axis ----------------------------------
+    let panStart = null;  // { px, min, max }
+
+    over.addEventListener('mousedown', (ev) => {
+        if (ev.button !== 1) return;  // middle button only
+        ev.preventDefault();
+        const scale = u.scales.x;
+        if (scale.min == null || scale.max == null) return;
+        const rect = over.getBoundingClientRect();
+        panStart = {
+            px: ev.clientX - rect.left,
+            min: scale.min,
+            max: scale.max,
+            width: rect.width,
+        };
+        viewMode = 'manual';
+    });
+
+    window.addEventListener('mousemove', (ev) => {
+        if (!panStart) return;
+        const rect = over.getBoundingClientRect();
+        const dxPx = (ev.clientX - rect.left) - panStart.px;
+        const span = panStart.max - panStart.min;
+        const dxT = -(dxPx / panStart.width) * span;
+        setXRangeAllCharts(panStart.min + dxT, panStart.max + dxT);
+    });
+
+    window.addEventListener('mouseup', (ev) => {
+        if (ev.button === 1) panStart = null;
+    });
+
+    // Block the browser's middle-click autoscroll bubble inside the chart.
+    over.addEventListener('auxclick', (ev) => {
+        if (ev.button === 1) ev.preventDefault();
+    });
+
+    // --- Double-click: reset to live view -------------------------------
+    over.addEventListener('dblclick', (ev) => {
+        ev.preventDefault();
+        resetViewToLive();
+    });
+}
+
 function repaintAllCharts(force = false) {
     pendingRepaint = false;
 
@@ -558,13 +718,26 @@ function repaintAllCharts(force = false) {
     if (signalList.length === 0) return;
 
     const signalKeys = signalList.map(s => s.key);
-    const anchor = getViewAnchor();
-    const windowStart = anchor - currentWindowSec;
+
+    // Pick the visible window: manual pan/zoom wins over the live anchor.
+    let windowStart, windowEnd;
+    if (viewMode === 'manual' && manualXRange) {
+        windowStart = manualXRange.min;
+        windowEnd = manualXRange.max;
+    } else {
+        windowEnd = getViewAnchor();
+        windowStart = windowEnd - currentWindowSec;
+    }
 
     for (let i = 0; i < MOTOR_COUNT; i++) {
         if (!charts[i] || !stores[i]) continue;
         const data = stores[i].getAlignedData(signalKeys, windowStart);
-        charts[i].setScale('x', { min: windowStart, max: anchor });
+        // In live mode we drive the x-scale every frame; in manual mode the
+        // user owns the scale (already set by setXRangeAllCharts) — don't
+        // fight them.
+        if (viewMode === 'live') {
+            charts[i].setScale('x', { min: windowStart, max: windowEnd });
+        }
         charts[i].setData(data, false);
     }
 }
