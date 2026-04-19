@@ -10,8 +10,13 @@ related_issues:
 sessions:
   - mpc_20260418_184845.csv
   - mpc_20260418_185014.csv
+  - mpc_20260418_222358.csv
+  - mpc_20260418_222414.csv
+  - mpc_20260419_094723.csv
+  - mpc_20260419_094733.csv
 files_changed: []
-commits: []
+commits:
+  - a89a4dd
 subsystem:
   - controller
   - mpc
@@ -69,7 +74,37 @@ Rejected alternatives: emitting `_timeout_hint` partial iterate as cmd (safety),
 
 ## Fix
 
-_To be filled by subsequent /investigate steps._
+### Fix A — instrumentation (commit a89a4dd)
+
+Added per-segment `perf_counter` timings to `run_mpc_loop`, a `_GCTracker` that attributes `gc.callbacks` pauses to ticks, a ZMQ drain counter on `HardwarePlant.get_state`, and a stdout `OH SPIKE` breakdown when `overhead_ms > 15`. Extended `StepRecord` with 8 new columns (`t_getstate_ms`, `t_target_ms`, `t_solve_setup_ms`, `t_hooks_ms`, `t_cmd_ms`, `t_log_ms`, `gc_ms`, `zmq_drain_count`). All fields default to 0 so sim and older analysis tools remain compatible.
+
+### Fix B — hold-branch plant-tracking extrapolation (commit a89a4dd)
+
+`_handle_failure` now accepts an optional `q_dot` (measured leg velocities). In the hold branch (fires after `max_consecutive_failures` walk-forward steps), when `q_cur` and `q_dot` are both available it emits `cmd = q_cur + q_dot * dt0` rate-limited to `|cmd − prev_u| ≤ v_max·dt` and returns status `hold_extrap(...)`. The original freeze-at-prev_u behaviour is retained as a fallback for sim/cold paths where `q_dot` is None. Three call sites in `solve()` updated to pass `state.leg_velocities_mmps`. Walk-forward branch and cold_hold branch are unchanged.
+
+### What the instrumentation revealed
+
+- `OH SPIKE` lines across two re-test sessions (`mpc_20260418_222358`, `mpc_20260419_094723`, `mpc_20260419_094733`) consistently show `getstate ≈ overhead` with companion stdout warnings `FK did not converge; using last measured pose`. GC callback count is zero on every spike — **GC was NOT the cause**; the primary hypothesis was wrong.
+- FK Newton-Raphson iterates to `max_iter = 50` at ~0.6 ms/iter = 30+ ms per failed call. Failure is correlated with motion onset where the cached `_fk_last_guess` lags the moving plant.
+- Example: UP session step 19 `oh=33.4 getstate=31.4 solve=10.2 drain=3` — a minimal-drain tick, so ZMQ queue growth is also ruled out. Pure FK.
+- ZMQ drain counts of 9–14 are normal (500 Hz publisher / 40 Hz consumer = 12.5 msgs expected); drain=43–45 on some ticks reflects the MPC running LATE as a consequence of a prior FK spike, not the cause.
+- Chronic solve-time overrun (p95 ~20–23 ms vs 18 ms budget) is a separate issue. The AOT solver / IPOPT options tuning would need to address it.
+- Fix B activated cleanly (step 1 emitted `hold_extrap(...)` on both 2026-04-19 sessions). The walk-forward endgame recoil is no longer a contributor in the current traces.
+
+### Fix C — FK real-time budget (uncommitted at time of writing)
+
+`controller/hardware_plant.py`: pass `max_iter=10, tol=1e-4` to `leg_lengths_to_pose(...)`.
+
+Rationale:
+- Default `tol=1e-10 mm` is 700 000× below the 0.07 mm encoder LSB — Newton iterates on floating-point noise long past any physically meaningful residual. `tol=1e-4 mm` is still 700× below LSB and is reached in 3 iters on the common path.
+- `max_iter=10` caps the divergence case at ~6 ms (was ~30 ms). When FK would have iterated to 50 and thrown, it now throws at 10 — the existing RuntimeError / `_last_measured_pose` fallback is unchanged, so safety semantics are preserved (`_FK_FAIL_ESTOP_THRESHOLD=5` still trips after 5 consecutive failures).
+- Call-site scope only — does not modify `ros_ws/src/jugglebot/jugglebot/motion/ik_solver.py`.
+
+Expected effect: eliminates the 30-ms FK-driven overhead spikes; total tick time on FK-failed ticks drops from ~65 ms (2.6× budget) to ~35 ms (1.4× budget), which should stay out of fallback cascades.
+
+### What Fix C does NOT address
+
+Chronic solve_time overrun during motion onset (p95 ~20–23 ms). Deferred — if Fix C alone does not quiet the fighting, next candidates are (a) better warm-start quality via `mpc.predicted_poses_view[0]` as FK initial guess, (b) IPOPT option retuning, (c) horizon reduction (invalidates AOT solver, expensive).
 
 ## Outcome
 

@@ -357,9 +357,19 @@ class HardwarePlant(PlantInterface):
         fk_jacobian = None  # Reuse Jacobian from FK for twist solve
         if ik_ext_mm is not None:
             try:
+                # Bound FK to a real-time-friendly iteration budget.  Default
+                # max_iter=50 and tol=1e-10 mm let Newton chase floating-point
+                # noise for ~30 ms before throwing on hard starting guesses
+                # (the 30 ms get_state spikes observed on motion onset).
+                # tol=1e-4 mm is 700× below encoder LSB and still converges
+                # in 3 iters on the common path; max_iter=10 caps the
+                # divergence case at ~6 ms before falling back to the last
+                # measured pose (same fallback semantics as before).
                 pos_offset, rot_matrix, fk_jacobian = leg_lengths_to_pose(
                     ik_ext_mm, self._geom,
-                    initial_guess=self._fk_last_guess)
+                    initial_guess=self._fk_last_guess,
+                    max_iter=10,
+                    tol=1e-4)
                 rot_vec = rot_matrix_to_rotvec(rot_matrix)
                 # Cache for warm-starting next FK call.
                 # FK returns fresh arrays, so we can store references directly.
