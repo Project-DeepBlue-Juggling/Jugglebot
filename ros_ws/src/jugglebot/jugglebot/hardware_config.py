@@ -113,6 +113,7 @@ ODRIVE_HAND_VEL_INT_GAIN = 0.07
 ODRIVE_LEG_POS_GAINS = [40.0, 30.0, 40.0, 40.0, 30.0, 40.0]
 ODRIVE_LEG_VEL_GAINS = [0.2, 0.2, 0.2, 0.2, 0.2, 0.2]
 ODRIVE_LEG_VEL_INT_GAINS = [0.32, 0.24, 0.32, 0.32, 0.24, 0.32]
+ODRIVE_LEG_MOTOR_ENC_CPR = 8192
 
 # ============================================================================
 # Jugglebot Operational

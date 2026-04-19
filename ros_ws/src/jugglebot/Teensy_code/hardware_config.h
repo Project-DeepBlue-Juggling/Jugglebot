@@ -128,6 +128,7 @@ namespace ODriveDefaults {
   constexpr float LEG_POS_GAINS[6] = {40.0f, 30.0f, 40.0f, 40.0f, 30.0f, 40.0f};
   constexpr float LEG_VEL_GAINS[6] = {0.2f, 0.2f, 0.2f, 0.2f, 0.2f, 0.2f};
   constexpr float LEG_VEL_INT_GAINS[6] = {0.32f, 0.24f, 0.32f, 0.32f, 0.24f, 0.32f};
+  constexpr uint32_t LEG_MOTOR_ENC_CPR = 8192u;
 }
 
 // ==========================================================================
