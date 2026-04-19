@@ -97,6 +97,59 @@ PLANT_COLLAPSE_WINDOW_S = 0.5                # overspeed must precede zero-run w
 OVERSHOOT_ZERO_ITER_RUN_MIN = 10         # consecutive ipopt_iter==0 steps
 OVERSHOOT_TRACKING_ERR_MM = 10.0         # tracking_error_mm must exceed this in the run
 
+# Hold-phase quiescence detection.  Identifies the longest run in which the
+# reference pose is stationary, skips a settling period, then reports per-leg
+# noise stats on the TAIL of that run — the Level-1 gain-tuning metric.
+# Settle-skip matters: the platform takes a second or two to converge on the
+# new ref after it becomes static, and including that transient contaminates
+# the stdev numbers.
+HOLD_REF_STATIC_TOL = 0.01               # same scale as REF_CHANGE_THRESHOLD
+HOLD_SETTLE_SKIP_S = 2.0                 # drop this many seconds after ref becomes static
+HOLD_MIN_TAIL_S = 3.0                    # minimum useful tail after skip
+HOLD_MAX_TAIL_S = 5.0                    # cap the measurement window (stats plateau quickly)
+assert HOLD_MAX_TAIL_S >= HOLD_MIN_TAIL_S, (
+    "HOLD_MAX_TAIL_S must be >= HOLD_MIN_TAIL_S, otherwise analyse_hold_phase "
+    "truncates every tail below the minimum and detected is never True."
+)
+HOLD_ASYMMETRY_WARN = 1.5                # worst/quietest ratio > this triggers a flag
+HOLD_LEG_STD_WARN_UM = 20.0              # per-leg act_std above this triggers a flag
+
+# MPC loop overhead (dt minus solve_time) analysis.  Used to separate
+# solver-induced latency from other causes (GC pauses, interpreter
+# housekeeping, logging, ZMQ drain surges).
+OVERHEAD_ISOLATED_RATIO = 3.0            # spike >= this × local neighbourhood
+OVERHEAD_NEIGHBOUR_WINDOW = 5            # ticks on each side for neighbourhood mean
+OVERHEAD_MIN_MS_FOR_SPIKE = 15.0         # floor: ignore below this absolute level
+OVERHEAD_BUDGET_MS = 10.0                # typical well-behaved overhead ceiling
+
+# cmd_ext spectral content during hold.  If >HF_ENERGY_WARN_PCT of the cmd
+# energy sits above 10 Hz, flag it so the operator doesn't mistake MPC
+# numerical-noise-floor jitter for a bug.
+CMD_SPECTRAL_HF_HZ = 10.0
+CMD_SPECTRAL_MID_HZ = 2.0
+HF_ENERGY_WARN_PCT = 25.0
+
+# Motion-onset dead-time detection.  Separates the "cmd has started ramping
+# but actual hasn't moved yet" silence from the stick-slip leap that follows.
+# Per-leg: find each hold→ramp transition in cmd_ext, then measure how long
+# until actual_ext diverges from the pre-onset hold position by more than
+# MOTION_DETECTION_THRESHOLD_MM.  The 6-leg sync window tells us whether
+# legs break free together (shared breakaway) or staggered (per-leg μ_s
+# asymmetry).
+#
+# Thresholds are picked so the detector fires on the Apr 18 signature
+# (~120 ms dead-time, 2 mm first-tick leap, all 6 legs within 25-50 ms)
+# without tripping on steady tracking or ordinary hold-phase noise.
+MOTION_ONSET_HOLD_VEL_MMPS = 1.0          # |cmd_vel| below this counts as hold
+MOTION_ONSET_RAMP_VEL_MMPS = 5.0          # |cmd_vel| above this counts as ramp
+MOTION_ONSET_PREHOLD_SAMPLES = 8          # 8 × 25 ms = 200 ms of sustained hold required
+MOTION_ONSET_SMOOTH_SAMPLES = 3           # rolling-mean window on cmd-vel
+MOTION_DETECTION_THRESHOLD_MM = 0.5       # actual deviation from hold-pos to count as "moved"
+MOTION_ONSET_SYNC_WINDOW_MS = 100.0       # group per-leg onsets within this window into one event
+MOTION_ONSET_SEARCH_WINDOW_S = 1.0        # per onset, give up after this long if actual never moves
+MOTION_ONSET_LATENCY_WARN_MS = 40.0       # latency above this triggers a warning flag
+MOTION_ONSET_LATENCY_ERROR_MS = 80.0      # latency above this triggers an error flag
+
 
 # ---------------------------------------------------------------------------
 # MPC CSV analysis
@@ -371,6 +424,174 @@ def analyse_discontinuities(records: List[StepRecord]) -> Dict[str, Any]:
     return {
         'cmd_jumps': sorted(cmd_jumps, key=lambda x: x['time_s']),
         'actual_jumps': sorted(actual_jumps, key=lambda x: x['time_s']),
+    }
+
+
+def _rolling_mean(x: np.ndarray, w: int) -> np.ndarray:
+    """Centred rolling mean, edge-extended so output has the same length as x."""
+    if w <= 1 or len(x) < w:
+        return x.astype(float, copy=True)
+    kernel = np.ones(w, dtype=float) / float(w)
+    return np.convolve(x, kernel, mode='same')
+
+
+def analyse_motion_onset(records: List[StepRecord]) -> Dict[str, Any]:
+    """Measure hold→ramp motion-onset dead-time per leg.
+
+    At each transition where cmd_ext emerges from a sustained hold into a
+    ramp, records how long (ms) until actual_ext diverges from the pre-onset
+    hold position by more than MOTION_DETECTION_THRESHOLD_MM.  Groups
+    per-leg onsets that fall within MOTION_ONSET_SYNC_WINDOW_MS of each
+    other into a single synchronised event (expected when all legs share
+    the same breakaway cadence).
+
+    Distinct from analyse_discontinuities: that detects the leap itself
+    (>=2 mm in one tick), this detects the silence before it.
+    """
+    n = len(records)
+    if n < MOTION_ONSET_PREHOLD_SAMPLES + 4:
+        return {'detected': False, 'events': [], 'per_leg_summary': {}}
+
+    times = _extract(records, 'time')
+    dt_median = float(np.median(np.diff(times))) if n > 1 else 0.025
+    if dt_median <= 0:
+        return {'detected': False, 'events': [], 'per_leg_summary': {}}
+
+    # Per-leg onset detection -------------------------------------------
+    per_leg_onsets: Dict[int, List[Dict[str, Any]]] = {leg: [] for leg in range(6)}
+
+    search_span = int(MOTION_ONSET_SEARCH_WINDOW_S / dt_median)
+
+    for leg in range(6):
+        cmd = _extract(records, f'cmd_ext_{leg}')
+        actual = _extract(records, f'actual_ext_{leg}')
+        cmd_vel = np.diff(cmd) / dt_median                  # length n-1, mm/s
+        cmd_vel_smooth = _rolling_mean(np.abs(cmd_vel),
+                                       MOTION_ONSET_SMOOTH_SAMPLES)
+
+        is_hold = cmd_vel_smooth < MOTION_ONSET_HOLD_VEL_MMPS
+        is_ramp = cmd_vel_smooth >= MOTION_ONSET_RAMP_VEL_MMPS
+
+        # Build list of ramp-onset indices (into cmd_vel / cmd_vel_smooth).
+        # Case A: the session starts with cmd already ramping — the preceding
+        # hold happened before the MPC logger came up.  Treat sample 0 as an
+        # implicit onset.  Case B: mid-session hold→ramp transitions with a
+        # sustained preceding hold of >= MOTION_ONSET_PREHOLD_SAMPLES.
+        onset_indices: List[int] = []
+        if len(is_ramp) > 0 and is_ramp[0]:
+            onset_indices.append(0)
+
+        hold_run = 0
+        last_onset = -10**9
+        for i in range(len(cmd_vel_smooth)):
+            if is_hold[i]:
+                hold_run += 1
+            elif is_ramp[i]:
+                if (hold_run >= MOTION_ONSET_PREHOLD_SAMPLES
+                        and i - last_onset > search_span):
+                    onset_indices.append(i)
+                    last_onset = i
+                hold_run = 0
+            # else: in the transition band — don't reset the hold counter.
+
+        for onset_cmd_idx in onset_indices:
+            # cmd_vel[i] reflects delta between sample i and i+1; the onset's
+            # anchoring record-index is i+1 in the record series.  At sample 0
+            # (pre-capture hold), use sample 0 directly.
+            record_idx = onset_cmd_idx if onset_cmd_idx == 0 else onset_cmd_idx + 1
+            onset_time = float(times[record_idx])
+            # Hold-position reference: mean of up-to-8 samples before onset.
+            # If pre-capture (record_idx==0), use the first actual sample.
+            ref_lo = max(0, record_idx - MOTION_ONSET_PREHOLD_SAMPLES)
+            hold_pos = float(np.mean(actual[ref_lo:record_idx + 1]))
+
+            search_limit = min(len(actual), record_idx + search_span)
+            moving_idx = None
+            for j in range(record_idx + 1, search_limit):
+                if abs(actual[j] - hold_pos) > MOTION_DETECTION_THRESHOLD_MM:
+                    moving_idx = j
+                    break
+
+            if moving_idx is not None:
+                latency_ms = float((times[moving_idx] - times[record_idx]) * 1000.0)
+                leap_mm = float(abs(actual[moving_idx] - actual[moving_idx - 1]))
+                per_leg_onsets[leg].append({
+                    'onset_time_s': round(onset_time, 4),
+                    'latency_ms': round(latency_ms, 1),
+                    'first_tick_leap_mm': round(leap_mm, 3),
+                    'hold_pos_mm': round(hold_pos, 3),
+                    'moving_time_s': round(float(times[moving_idx]), 4),
+                    'pre_capture_hold': onset_cmd_idx == 0,
+                })
+
+    # Group onsets across legs into synchronised events -----------------
+    all_onsets: List[Tuple[float, int, Dict[str, Any]]] = []
+    for leg, lst in per_leg_onsets.items():
+        for o in lst:
+            all_onsets.append((o['onset_time_s'], leg, o))
+    all_onsets.sort(key=lambda x: x[0])
+
+    events: List[Dict[str, Any]] = []
+    used = [False] * len(all_onsets)
+    sync_window_s = MOTION_ONSET_SYNC_WINDOW_MS / 1000.0
+    for i, (t0, leg0, o0) in enumerate(all_onsets):
+        if used[i]:
+            continue
+        group = [(leg0, o0)]
+        used[i] = True
+        for j in range(i + 1, len(all_onsets)):
+            if used[j]:
+                continue
+            tj, legj, oj = all_onsets[j]
+            if tj - t0 > sync_window_s:
+                break
+            if any(g[0] == legj for g in group):
+                continue  # same leg already in this event
+            group.append((legj, oj))
+            used[j] = True
+
+        latencies = [o['latency_ms'] for _, o in group]
+        leaps = [o['first_tick_leap_mm'] for _, o in group]
+        onset_times = [o['onset_time_s'] for _, o in group]
+        per_leg = {leg: {'latency_ms': o['latency_ms'],
+                         'first_tick_leap_mm': o['first_tick_leap_mm']}
+                   for leg, o in group}
+        events.append({
+            'onset_time_s': round(t0, 4),
+            'legs_involved': sorted(leg for leg, _ in group),
+            'median_latency_ms': round(float(np.median(latencies)), 1),
+            'max_latency_ms': round(float(np.max(latencies)), 1),
+            'min_latency_ms': round(float(np.min(latencies)), 1),
+            'max_first_tick_leap_mm': round(float(np.max(leaps)), 3),
+            'sync_window_ms': round((max(onset_times) - min(onset_times)) * 1000.0, 1),
+            'per_leg': per_leg,
+        })
+
+    # Per-leg summary across all events ---------------------------------
+    per_leg_summary: Dict[str, Any] = {}
+    for leg in range(6):
+        lats = [o['latency_ms'] for o in per_leg_onsets[leg]]
+        if lats:
+            per_leg_summary[f'leg_{leg}'] = {
+                'n_onsets': len(lats),
+                'median_latency_ms': round(float(np.median(lats)), 1),
+                'max_latency_ms': round(float(np.max(lats)), 1),
+            }
+        else:
+            per_leg_summary[f'leg_{leg}'] = {'n_onsets': 0}
+
+    all_lats = [o['latency_ms'] for lst in per_leg_onsets.values() for o in lst]
+    aggregate = {
+        'total_onsets_detected': len(all_lats),
+        'median_latency_ms': round(float(np.median(all_lats)), 1) if all_lats else None,
+        'max_latency_ms': round(float(np.max(all_lats)), 1) if all_lats else None,
+    }
+
+    return {
+        'detected': len(events) > 0,
+        'events': events,
+        'per_leg_summary': per_leg_summary,
+        'aggregate': aggregate,
     }
 
 
@@ -666,6 +887,324 @@ def analyse_overshoot_saturation(records: List[StepRecord]) -> Dict[str, Any]:
     }
 
 
+def _find_longest_hold_window(records: List[StepRecord]) -> Optional[Tuple[int, int]]:
+    """Return (start_idx, end_idx_exclusive) of the longest reference-static run.
+
+    Uses the same ref-delta definition as analyse_steady_state so hold-phase
+    metrics and steady-state metrics agree on what counts as "settled".
+    Returns None if no ref-static window is present.
+    """
+    n = len(records)
+    if n < 2:
+        return None
+    ref_x = _extract(records, 'ref_pose_x')
+    ref_y = _extract(records, 'ref_pose_y')
+    ref_z = _extract(records, 'ref_pose_z')
+    ref_rx = _extract(records, 'ref_pose_rx')
+    ref_ry = _extract(records, 'ref_pose_ry')
+    ref_rz = _extract(records, 'ref_pose_rz')
+    ref_delta = (np.abs(np.diff(ref_x)) + np.abs(np.diff(ref_y)) +
+                 np.abs(np.diff(ref_z)) + np.abs(np.diff(ref_rx)) * 1000 +
+                 np.abs(np.diff(ref_ry)) * 1000 + np.abs(np.diff(ref_rz)) * 1000)
+    static = ref_delta < HOLD_REF_STATIC_TOL           # (n-1,)
+
+    best_start = best_end = -1
+    best_len = 0
+    cur_start = None
+    for i, s in enumerate(static):
+        if s:
+            if cur_start is None:
+                cur_start = i
+        else:
+            if cur_start is not None:
+                cur_len = i - cur_start
+                if cur_len > best_len:
+                    best_len = cur_len
+                    best_start = cur_start
+                    best_end = i
+                cur_start = None
+    if cur_start is not None:
+        cur_len = len(static) - cur_start
+        if cur_len > best_len:
+            best_len = cur_len
+            best_start = cur_start
+            best_end = len(static)
+    if best_len == 0:
+        return None
+    # Ref delta at index i compares records[i] and records[i+1]; the static
+    # window covers samples (best_start .. best_end+1] in record space.
+    return (best_start + 1, best_end + 1)
+
+
+def analyse_hold_phase(records: List[StepRecord]) -> Dict[str, Any]:
+    """Per-leg cmd_ext and actual_ext noise stats during the longest hold.
+
+    The Level-1 gain-tuning metric (see plans/active/leg-gain-tuning-methodology.md).
+
+    Uses the tail of the longest ref-static run: skip HOLD_SETTLE_SKIP_S after
+    ref becomes static to let the platform converge, then take at most
+    HOLD_MAX_TAIL_S of remaining samples.  Returns `detected: False` if the
+    useful tail (after the skip) is shorter than HOLD_MIN_TAIL_S.
+    """
+    n = len(records)
+    if n < 10:
+        return {'detected': False, 'reason': 'too_few_samples'}
+    window = _find_longest_hold_window(records)
+    if window is None:
+        return {'detected': False, 'reason': 'ref_never_static'}
+    raw_start, end = window
+    times = _extract(records, 'time')
+    raw_t_start = float(times[raw_start])
+    t_end = float(times[end - 1]) if end > raw_start else raw_t_start
+    total_static_s = t_end - raw_t_start
+
+    # Skip settling samples.
+    skip_cutoff = raw_t_start + HOLD_SETTLE_SKIP_S
+    start = raw_start
+    while start < end and float(times[start]) < skip_cutoff:
+        start += 1
+    # Cap tail length: stats plateau once we have a few seconds.
+    t_start = float(times[start]) if start < end else raw_t_start
+    tail_s = t_end - t_start
+    if tail_s > HOLD_MAX_TAIL_S:
+        # Walk `start` forward until only HOLD_MAX_TAIL_S remain.
+        cap_cutoff = t_end - HOLD_MAX_TAIL_S
+        while start < end and float(times[start]) < cap_cutoff:
+            start += 1
+        t_start = float(times[start]) if start < end else raw_t_start
+        tail_s = t_end - t_start
+    duration_s = tail_s
+    if duration_s < HOLD_MIN_TAIL_S:
+        return {
+            'detected': False,
+            'reason': 'tail_too_short',
+            'raw_t_start_s': round(raw_t_start, 3),
+            'total_static_s': round(total_static_s, 3),
+            'tail_s': round(tail_s, 3),
+            'min_tail_s': HOLD_MIN_TAIL_S,
+            'settle_skip_s': HOLD_SETTLE_SKIP_S,
+        }
+
+    per_leg = []
+    for leg in range(6):
+        cmd = _extract(records, f'cmd_ext_{leg}')[start:end]
+        act = _extract(records, f'actual_ext_{leg}')[start:end]
+        vel = _extract(records, f'leg_vel_{leg}')[start:end]
+        # Stdev guarded against single-sample windows.
+        cmd_std = float(np.std(cmd, ddof=1)) if len(cmd) > 1 else 0.0
+        act_std = float(np.std(act, ddof=1)) if len(act) > 1 else 0.0
+        act_range = float(np.ptp(act)) if len(act) > 0 else 0.0
+        vel_abs_max = float(np.max(np.abs(vel))) if len(vel) > 0 else 0.0
+        per_leg.append({
+            'leg': leg,
+            'cmd_std_um': round(cmd_std * 1000, 2),
+            'act_std_um': round(act_std * 1000, 2),
+            'act_range_um': round(act_range * 1000, 2),
+            'vel_abs_max_mmps': round(vel_abs_max, 2),
+        })
+    leg_stds = [l['act_std_um'] for l in per_leg]
+    worst_leg = int(np.argmax(leg_stds))
+    quietest_leg = int(np.argmin(leg_stds))
+    worst_std = leg_stds[worst_leg]
+    quietest_std = max(leg_stds[quietest_leg], 0.01)  # avoid div/0
+    asymmetry = worst_std / quietest_std
+    aggregate = float(np.mean(leg_stds))
+    return {
+        'detected': True,
+        't_start_s': round(t_start, 3),
+        't_end_s': round(t_end, 3),
+        'duration_s': round(duration_s, 3),
+        'n_samples': int(end - start),
+        'raw_t_start_s': round(raw_t_start, 3),
+        'total_static_s': round(total_static_s, 3),
+        'settle_skip_s': HOLD_SETTLE_SKIP_S,
+        'per_leg': per_leg,
+        'worst_leg': worst_leg,
+        'worst_act_std_um': round(worst_std, 2),
+        'quietest_leg': quietest_leg,
+        'quietest_act_std_um': round(quietest_std, 2),
+        'asymmetry_ratio': round(asymmetry, 2),
+        'aggregate_act_std_um': round(aggregate, 2),
+    }
+
+
+def analyse_overhead(records: List[StepRecord]) -> Dict[str, Any]:
+    """MPC loop overhead = dt − solve_time per tick.
+
+    Separates solver time from everything else in the control loop (GC pause,
+    interpreter housekeeping, ZMQ drain, logging).  Flags "isolated spikes" —
+    single ticks whose overhead is >= OVERHEAD_ISOLATED_RATIO × its local
+    neighbourhood mean, which is the characteristic GC-pause signature.
+    """
+    n = len(records)
+    if n < 3:
+        return {'n_valid': 0}
+    times = _extract(records, 'time')
+    solve_ms = _extract(records, 'solve_time_ms')
+    # dt[i] is the interval between step i and step i+1; we attribute the
+    # overhead it reveals to step i+1 (the one that was served late).
+    dt_ms = np.diff(times) * 1000.0
+    overhead_ms = dt_ms - solve_ms[1:]
+    # Clamp negatives (numerical, or solve_time logged after dt end) to 0.
+    overhead_ms = np.clip(overhead_ms, 0.0, None)
+    if len(overhead_ms) == 0:
+        return {'n_valid': 0}
+
+    p50 = float(np.median(overhead_ms))
+    p95 = float(np.percentile(overhead_ms, 95))
+    p99 = float(np.percentile(overhead_ms, 99))
+    max_oh = float(np.max(overhead_ms))
+    above_budget = overhead_ms > OVERHEAD_BUDGET_MS
+    above_count = int(np.sum(above_budget))
+
+    # Isolated-spike detection: at each tick i with overhead >= floor, compare
+    # to the MEDIAN of the surrounding window (excluding i and its ±1
+    # neighbours).  Use the median, not the mean, so a cluster of adjacent
+    # spikes can't pull up its own baseline — a ±5 window that contains 3
+    # adjacent spikes will have a mean dragged up enough to suppress the
+    # whole cluster, while the median stays at the ambient level and the
+    # cluster is correctly flagged.  The ±1 gap further blunts leakage from
+    # dt-alignment jitter around a single pause.  The absolute floor
+    # (OVERHEAD_BASELINE_FLOOR_MS) prevents a perfectly quiet neighbourhood
+    # from producing infinite ratios and flagging every tick above the
+    # spike floor.
+    OVERHEAD_BASELINE_FLOOR_MS = 1.0
+    spikes = []
+    w = OVERHEAD_NEIGHBOUR_WINDOW
+    for i in range(len(overhead_ms)):
+        if overhead_ms[i] < OVERHEAD_MIN_MS_FOR_SPIKE:
+            continue
+        lo = max(0, i - w)
+        hi = min(len(overhead_ms), i + w + 1)
+        # Exclude i-1, i, i+1 from the neighbourhood.
+        left = overhead_ms[lo:max(lo, i - 1)]
+        right = overhead_ms[min(hi, i + 2):hi]
+        neighbours = np.concatenate([left, right])
+        if len(neighbours) == 0:
+            continue
+        neigh_median = float(np.median(neighbours))
+        baseline_for_ratio = max(neigh_median, OVERHEAD_BASELINE_FLOOR_MS)
+        ratio = overhead_ms[i] / baseline_for_ratio
+        if ratio < OVERHEAD_ISOLATED_RATIO:
+            continue
+        spikes.append({
+            'sample_idx': int(i + 1),               # back to record index
+            'time_s': round(float(times[i + 1]), 4),
+            'overhead_ms': round(float(overhead_ms[i]), 2),
+            'solve_ms': round(float(solve_ms[i + 1]), 2),
+            # Keep the key name 'neighbour_mean_ms' for schema stability; the
+            # value is a median, which is the robust baseline we actually use.
+            'neighbour_mean_ms': round(neigh_median, 2),
+            'ratio': round(float(ratio), 1),
+            'signature': 'GC_PAUSE_CANDIDATE',
+        })
+
+    return {
+        'n_valid': int(len(overhead_ms)),
+        'p50_ms': round(p50, 2),
+        'p95_ms': round(p95, 2),
+        'p99_ms': round(p99, 2),
+        'max_ms': round(max_oh, 2),
+        'above_budget_count': above_count,
+        'above_budget_pct': round(100.0 * above_count / len(overhead_ms), 2),
+        'budget_ms': OVERHEAD_BUDGET_MS,
+        'isolated_spikes': spikes,
+        'isolated_spike_count': len(spikes),
+    }
+
+
+def analyse_cmd_spectral(records: List[StepRecord]) -> Dict[str, Any]:
+    """FFT cmd_ext during the longest hold to expose HF numerical noise.
+
+    Bins the energy into three bands (low/mid/HF) and reports the peak
+    frequency per leg.  Above HF_ENERGY_WARN_PCT of energy in the HF band
+    triggers a flag — usually "MPC numerical noise floor" (IPOPT variance
+    between solves showing up in cmd_ext).
+    """
+    n = len(records)
+    if n < 32:
+        return {'detected': False, 'reason': 'too_few_samples'}
+    window = _find_longest_hold_window(records)
+    if window is None:
+        return {'detected': False, 'reason': 'ref_never_static'}
+    raw_start, end = window
+    times = _extract(records, 'time')
+    raw_t_start = float(times[raw_start])
+    t_end = float(times[end - 1]) if end > raw_start else raw_t_start
+    # Apply the same settle-skip AND HOLD_MAX_TAIL_S cap as analyse_hold_phase,
+    # so spectral energy is computed on the same samples the stdev metric
+    # sees.  Without the cap, holds > HOLD_MAX_TAIL_S post-settle would FFT
+    # over a longer window here than is measured for stdev, producing
+    # subtly different bin energies across sessions.
+    skip_cutoff = raw_t_start + HOLD_SETTLE_SKIP_S
+    start = raw_start
+    while start < end and float(times[start]) < skip_cutoff:
+        start += 1
+    t_start = float(times[start]) if start < end else raw_t_start
+    if (t_end - t_start) > HOLD_MAX_TAIL_S:
+        cap_cutoff = t_end - HOLD_MAX_TAIL_S
+        while start < end and float(times[start]) < cap_cutoff:
+            start += 1
+    length = end - start
+    if length < 32:
+        return {'detected': False, 'reason': 'tail_too_short'}
+    dt_mean = float(np.mean(np.diff(times[start:end])))
+    if dt_mean <= 0:
+        return {'detected': False, 'reason': 'bad_dt'}
+    fs = 1.0 / dt_mean
+    nyquist = fs / 2.0
+
+    per_leg = []
+    for leg in range(6):
+        cmd = _extract(records, f'cmd_ext_{leg}')[start:end].astype(np.float64)
+        cmd = cmd - cmd.mean()
+        # Hanning window for clean bin energy.
+        w = np.hanning(len(cmd))
+        X = np.fft.rfft(cmd * w)
+        freqs = np.fft.rfftfreq(len(cmd), dt_mean)
+        mag2 = np.abs(X) ** 2
+        mid_cut = min(CMD_SPECTRAL_MID_HZ, nyquist * 0.5)
+        hf_cut = min(CMD_SPECTRAL_HF_HZ, nyquist * 0.9)
+        band_mask = freqs > 0.1                      # ignore DC / sub-band leakage
+        e_low = float(np.sum(mag2[band_mask & (freqs < mid_cut)]))
+        e_mid = float(np.sum(mag2[(freqs >= mid_cut) & (freqs < hf_cut)]))
+        e_hf = float(np.sum(mag2[freqs >= hf_cut]))
+        total = e_low + e_mid + e_hf
+        # Confine peak-frequency reporting to the bands we actually report —
+        # otherwise peak_freq_hz can land at a DC residue (0.0 / 0.05 Hz) and
+        # mislead the reader into thinking the cmd has low-frequency motion.
+        if band_mask.any():
+            masked_mag2 = mag2.copy()
+            masked_mag2[~band_mask] = -np.inf
+            peak_freq = float(freqs[int(np.argmax(masked_mag2))])
+        else:
+            peak_freq = 0.0
+        if total > 0:
+            per_leg.append({
+                'leg': leg,
+                'pct_low': round(100.0 * e_low / total, 1),
+                'pct_mid': round(100.0 * e_mid / total, 1),
+                'pct_hf': round(100.0 * e_hf / total, 1),
+                'peak_freq_hz': round(peak_freq, 2),
+            })
+        else:
+            per_leg.append({
+                'leg': leg, 'pct_low': 0.0, 'pct_mid': 0.0,
+                'pct_hf': 0.0, 'peak_freq_hz': 0.0,
+            })
+    hf_max = max((l['pct_hf'] for l in per_leg), default=0.0)
+    return {
+        'detected': True,
+        'fs_hz': round(fs, 2),
+        'band_low_hz': [0.1, round(mid_cut, 2)],
+        'band_mid_hz': [round(mid_cut, 2), round(hf_cut, 2)],
+        'band_hf_hz': [round(hf_cut, 2), round(nyquist, 2)],
+        'per_leg': per_leg,
+        'hf_pct_max': round(hf_max, 1),
+        'hf_warn_pct': HF_ENERGY_WARN_PCT,
+    }
+
+
 def analyse_csv(records: List[StepRecord],
                 budget_ms: float = DEFAULT_BUDGET_MS) -> Dict[str, Any]:
     """Run all MPC CSV analyses and return combined results.
@@ -713,6 +1252,10 @@ def analyse_csv(records: List[StepRecord],
         'torques': analyse_torques(analysed_records),
         'plant_collapse': collapse,
         'overshoot_saturation': analyse_overshoot_saturation(analysed_records),
+        'hold_phase': analyse_hold_phase(analysed_records),
+        'overhead': analyse_overhead(analysed_records),
+        'cmd_spectral': analyse_cmd_spectral(analysed_records),
+        'motion_onset': analyse_motion_onset(analysed_records),
     }
 
 
@@ -1361,14 +1904,111 @@ def generate_flags(result: Dict[str, Any]) -> List[Dict[str, Any]]:
                         f"(max extension {ws['max_extension_mm']:.1f}mm)"),
         })
 
-    # Steady-state flags
+    # Steady-state flags — only trust the SS metric when the ref-static
+    # window is long enough to average over.  Short-hold runs (5s moves with
+    # 3s settling) mix transient into "steady state" and routinely exceed
+    # the 0.5mm threshold for uninteresting reasons.
+    hold = result.get('hold_phase', {}) or {}
+    hold_is_trustworthy = bool(hold.get('detected'))
     if ss.get('has_steady_state') and ss.get('ss_rms_mm', 0) > STEADY_STATE_RMS_THRESHOLD_MM:
+        if hold_is_trustworthy:
+            flags.append({
+                'severity': 'warning',
+                'source': 'mpc',
+                'message': (f"High steady-state error: {ss['ss_rms_mm']:.3f}mm RMS "
+                            f"(threshold {STEADY_STATE_RMS_THRESHOLD_MM}mm, "
+                            f"hold window {hold.get('duration_s', 0):.1f}s)"),
+            })
+        # else: skip the flag.  Hold tail was shorter than HOLD_MIN_TAIL_S, so
+        # the SS RMS is dominated by settling transient, not steady state.
+
+    # Hold-phase per-leg quiescence (Level-1 gain-tuning metric).
+    if hold.get('detected'):
+        asym = hold.get('asymmetry_ratio', 1.0)
+        worst_leg = hold.get('worst_leg')
+        worst_std = hold.get('worst_act_std_um', 0.0)
+        quietest_leg = hold.get('quietest_leg')
+        quietest_std = hold.get('quietest_act_std_um', 0.0)
+        if asym > HOLD_ASYMMETRY_WARN:
+            flags.append({
+                'severity': 'warning',
+                'source': 'mpc',
+                'message': (f"Hold-phase asymmetry: leg {worst_leg} "
+                            f"{worst_std:.1f}um stdev vs leg {quietest_leg} "
+                            f"{quietest_std:.1f}um ({asym:.1f}x) — candidate "
+                            f"for per-leg gain tuning"),
+            })
+        if worst_std > HOLD_LEG_STD_WARN_UM:
+            flags.append({
+                'severity': 'warning',
+                'source': 'mpc',
+                'message': (f"Leg {worst_leg} hold-phase noise "
+                            f"{worst_std:.1f}um stdev "
+                            f"(above {HOLD_LEG_STD_WARN_UM:.0f}um threshold) "
+                            f"over {hold.get('duration_s', 0):.1f}s hold window"),
+            })
+
+    # Overhead isolated-spike detection (non-solve latency pops).  These are
+    # the GC-pause / interpreter-housekeeping signature: single tick with
+    # overhead >> its neighbours AND a short solve.
+    oh = result.get('overhead', {}) or {}
+    if oh.get('isolated_spike_count', 0) > 0:
+        n_spikes = oh['isolated_spike_count']
+        max_spike = max((s['overhead_ms'] for s in oh['isolated_spikes']),
+                        default=0.0)
+        first_spike_t = oh['isolated_spikes'][0]['time_s']
         flags.append({
             'severity': 'warning',
             'source': 'mpc',
-            'message': (f"High steady-state error: {ss['ss_rms_mm']:.3f}mm RMS "
-                        f"(threshold {STEADY_STATE_RMS_THRESHOLD_MM}mm)"),
+            'message': (f"{n_spikes} isolated MPC overhead spike(s): "
+                        f"max {max_spike:.1f}ms, first at t={first_spike_t:.3f}s "
+                        f"(candidate GC pause — inspect vs solve_time)"),
         })
+
+    # Cmd-spectral HF energy (MPC numerical noise floor visible in cmd_ext).
+    spec = result.get('cmd_spectral', {}) or {}
+    if spec.get('detected') and spec.get('hf_pct_max', 0.0) > HF_ENERGY_WARN_PCT:
+        band = spec.get('band_hf_hz', [10.0, 20.0])
+        flags.append({
+            'severity': 'info',
+            'source': 'mpc',
+            'message': (f"Cmd has {spec['hf_pct_max']:.0f}% of energy in "
+                        f"{band[0]:.1f}-{band[1]:.1f}Hz band during hold "
+                        f"(MPC numerical noise floor — visible in pos_setpoint, "
+                        f"below mechanical bandwidth)"),
+        })
+
+    # Motion-onset dead-time — the silence between cmd ramp-onset and first
+    # actual motion.  Distinct from actual_jumps (which fires on the leap
+    # itself).  Worst-event latency drives the severity.
+    onset = result.get('motion_onset', {}) or {}
+    if onset.get('detected'):
+        worst_event = max(onset.get('events', []),
+                          key=lambda e: e.get('max_latency_ms', 0.0),
+                          default=None)
+        agg = onset.get('aggregate', {}) or {}
+        if worst_event is not None:
+            worst_ms = worst_event['max_latency_ms']
+            severity = None
+            if worst_ms >= MOTION_ONSET_LATENCY_ERROR_MS:
+                severity = 'error'
+            elif worst_ms >= MOTION_ONSET_LATENCY_WARN_MS:
+                severity = 'warning'
+            if severity is not None:
+                flags.append({
+                    'severity': severity,
+                    'source': 'mpc',
+                    'time_s': worst_event['onset_time_s'],
+                    'message': (
+                        f"Motion-onset dead-time: worst leg {worst_ms:.0f}ms "
+                        f"at t={worst_event['onset_time_s']:.3f}s "
+                        f"(median {worst_event['median_latency_ms']:.0f}ms, "
+                        f"sync {worst_event['sync_window_ms']:.0f}ms, "
+                        f"first-tick leap {worst_event['max_first_tick_leap_mm']:.2f}mm); "
+                        f"session median {agg.get('median_latency_ms', 0):.0f}ms "
+                        f"over {agg.get('total_onsets_detected', 0)} onsets — "
+                        f"stick-slip / backlash signature"),
+                })
 
     # Plant telemetry collapse — exogenous failure (motor guard death, CAN loss,
     # operator killing the launch).  Emit at error severity with time_s set to
@@ -1594,6 +2234,15 @@ def run_diagnosis(csv_path: str,
         result['rosbag'] = analyse_rosbag(rosbag_path)
     else:
         result['rosbag'] = None
+
+    # Session group — derived from the rosbag directory name.  All CSVs sharing
+    # the same rosbag belong to the same operational session, even though each
+    # /diagnose run targets one CSV at a time.  Downstream (log_index.json,
+    # /investigate --latest) uses this to auto-group moves.
+    if rosbag_path:
+        result['session_group'] = os.path.basename(os.path.normpath(rosbag_path))
+    else:
+        result['session_group'] = None
 
     # Cross-source correlation
     result['correlations'] = correlate_sources(
