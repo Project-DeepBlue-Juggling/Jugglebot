@@ -248,12 +248,20 @@ def run_mpc_loop(
     control_dt: float = 0.025,
     dashboard=None,
     hooks: MpcLoopHooks | None = None,
-) -> None:
+) -> bool:
     """Wall-clock-paced MPC loop shared by simulation and hardware.
 
     Paces iterations to wall-clock ``control_dt`` so the MPC's horizon
     predictions match real elapsed time.  If a solve overruns the budget,
     the next iteration runs immediately (no accumulated debt).
+
+    Returns
+    -------
+    bool
+        True if the loop exited because ``plant.estop_requested`` tripped
+        (clean shutdown triggered by HardwarePlant.estop()).  False if the
+        loop ran to its full duration.  The caller uses this to select a
+        distinct exit code.
 
     Parameters
     ----------
@@ -305,8 +313,22 @@ def run_mpc_loop(
     _OH_SPIKE_THRESHOLD_MS = 15.0
     _dash_sink: list[float] = [0.0]
 
+    # Set True by the loop when plant.estop_requested trips, so the caller
+    # can report it (e.g. run_mpc.py's distinct exit code).
+    estop_exit = False
+
     try:
         for _step_idx in range(n_steps):
+            # --- Clean-shutdown flag (hardware only) ---
+            # HardwarePlant.estop() flips this after publishing the ESTOP
+            # mode message, so motor_guard is already in ESTOP by the time
+            # we break out.  Sim plants don't expose the attribute; getattr
+            # default keeps the sim path unchanged.
+            if getattr(plant, 'estop_requested', False):
+                print("MPC loop: plant estop_requested — exiting cleanly")
+                estop_exit = True
+                break
+
             # --- Lifecycle: enable/disable plant based on source mode ---
             if has_lifecycle:
                 source.poll()  # drain ZMQ so .enabled is up-to-date
@@ -460,3 +482,4 @@ def run_mpc_loop(
     print_mpc_summary(logger)
     if hasattr(source, 'print_summary'):
         source.print_summary()
+    return estop_exit

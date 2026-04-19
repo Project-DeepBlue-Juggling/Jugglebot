@@ -262,6 +262,51 @@ class TestRunMpcLoop:
         captured = capsys.readouterr()
         assert "tracking error" in captured.out.lower()
 
+    def test_estop_requested_breaks_loop(self, plant, mpc):
+        """A plant advertising estop_requested=True must short-circuit the
+        loop; logger.flush() still runs and the loop returns True.
+
+        Uses an on_post_step hook to flip the attribute after 3 ticks so
+        the next iteration's loop-top check trips.
+        """
+        target = np.array([0.0, 0.0, 50.0, 0.0, 0.0, 0.0])
+        source = StaticTargetSource([(0.0, target)])
+        logger = TelemetryLogger()
+
+        # MuJoCoPlant has no estop_requested attribute; setattr simulates
+        # the HardwarePlant property without subclassing.
+        plant.estop_requested = False
+
+        ticks = {'n': 0}
+
+        def flip_after_three(state, sim_time):
+            ticks['n'] += 1
+            if ticks['n'] == 3:
+                plant.estop_requested = True
+
+        hooks = MpcLoopHooks(on_post_step=flip_after_three)
+        result = run_mpc_loop(
+            plant, mpc, source,
+            duration=50 * CONTROL_DT, logger=logger,
+            control_dt=CONTROL_DT, hooks=hooks,
+        )
+        # Loop returns True signalling clean-shutdown exit.
+        assert result is True
+        # Exactly 3 ticks ran: the 4th iteration's top-check breaks before
+        # another on_post_step can fire.
+        assert ticks['n'] == 3
+        # logger.flush() ran → records are still present.
+        assert logger.total_count == 3
+
+    def test_estop_not_requested_returns_false(self, plant, mpc):
+        """Full-duration run returns False (no estop)."""
+        source = StaticTargetSource([(0.0, np.zeros(6))])
+        logger = TelemetryLogger()
+        result = run_mpc_loop(plant, mpc, source,
+                              duration=3 * CONTROL_DT, logger=logger,
+                              control_dt=CONTROL_DT)
+        assert result is False
+
 
 # ---------------------------------------------------------------------------
 # log_mpc_step tests

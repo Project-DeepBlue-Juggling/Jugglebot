@@ -46,6 +46,7 @@ from jugglebot.motion.ik_solver import (
 )
 from jugglebot.motion.motor_commands import cartesian_to_motor_commands
 from jugglebot.motion.dynamics import DynamicsParams
+import jugglebot.hardware_config as _hw_cfg
 
 from .plant import PlantInterface, PlantState
 
@@ -67,14 +68,6 @@ _ZMQ_CONNECT_SETTLE_S = 0.1
 _TELEM_STALE_WARN_S = 0.075   # 3x MPC period — log warning
 _TELEM_STALE_HARD_S = 0.125   # 5x MPC period — zero velocities
 _TELEM_STALE_ESTOP_S = 0.5    # 20x MPC period — telemetry definitely lost
-
-# Leg motor incremental encoder resolution — used to derive a per-leg command
-# dead-band.  Any cmd change below one encoder count is un-actionable by the
-# motor (actual position cannot move sub-LSB), so forwarding such changes
-# only injects jitter into the motor-guard Hermite interp and the ODrive
-# pos_setpoint.  8192 CPR is the ODrive Pro leg encoder spec.
-_LEG_ENC_CPR = 8192
-
 
 class HardwarePlant(PlantInterface):
     """Stewart platform plant that communicates with real hardware via IPC.
@@ -138,6 +131,22 @@ class HardwarePlant(PlantInterface):
         self._last_telem_recv_time: float | None = None
         self._telem_stale_warned = False  # edge-triggered logging
 
+        # Clean-shutdown flag. Flipped by estop(); checked each loop iteration
+        # by run_mpc.py / controller.runner so the MPC process stops writing
+        # CSV rows against a dead plant instead of spinning to duration.
+        self._estop_requested: bool = False
+
+        # Persistent-stale-contents detector. Counts consecutive get_state()
+        # calls where motor_pos is byte-identical to the previous tick while
+        # the recv timestamp still looks fresh. Encoder LSB noise + FK
+        # re-projection means a legitimate hold virtually never produces a
+        # long identical run; 40 consecutive matches (~1 s at 40 Hz) is the
+        # escalate-to-estop threshold, with a one-time warning at 20.
+        self._frozen_motor_pos_count = 0
+        self._frozen_motor_pos_warned = False
+        self._FROZEN_MOTOR_POS_WARN = 20
+        self._FROZEN_MOTOR_POS_ESTOP = 40
+
         # FK warm-start: cache last FK result as initial guess for next call.
         # Newton-Raphson converges in 1-2 iterations when warm-started from
         # a nearby pose (motor feedback at 50-100 Hz moves very little).
@@ -169,8 +178,10 @@ class HardwarePlant(PlantInterface):
         # across legs due to slightly different mm_to_rev).  When the next
         # cmd is within this of the last sent cmd on every leg, we re-send
         # the last value to avoid passing sub-LSB jitter into the motor
-        # guard's Hermite interpolation.
-        self._cmd_deadband_mm = 1.0 / (_LEG_ENC_CPR * self._geom.mm_to_rev)
+        # guard's Hermite interpolation.  Encoder CPR comes from
+        # hardware_config.yaml (jugglebot_odrive_defaults.leg_motor_enc_cpr).
+        self._cmd_deadband_mm = 1.0 / (
+            _hw_cfg.ODRIVE_LEG_MOTOR_ENC_CPR * self._geom.mm_to_rev)
         self._last_sent_ext_mm: np.ndarray | None = None
         self._cmd_deadband_hit_count = 0  # diagnostic: how often dead-band fires
 
@@ -446,6 +457,49 @@ class HardwarePlant(PlantInterface):
                 f"{_TELEM_STALE_ESTOP_S}s) — triggering e-stop")
             self.estop(reason='telemetry_stale')
 
+        # Persistent-stale-contents detector: recv timestamps look fresh but
+        # the motor_pos payload has not moved for N consecutive *fresh*
+        # ticks. This is the publisher-alive-but-dead signature (e.g.
+        # motor_guard holding its last feedback frame after CAN drops).
+        #
+        # Gating:
+        #   * drain_count > 0 — only advance on a new frame. Zero-drain
+        #     ticks re-read the prior self._last_telem, which is trivially
+        #     byte-identical and would falsely increment the counter
+        #     (notably during enable()'s 100 Hz polling loop, or under
+        #     any timing jitter between 40 Hz MPC and ~50-100 Hz publish).
+        #   * self._fk_ever_succeeded gates the ESTOP escalation — mirrors
+        #     the FK-failure path above so de-energised start-up frames
+        #     (motor_guard in DISABLED, encoder counts truly constant)
+        #     cannot trip before the MPC has seen a real motion anchor.
+        if motor_pos is not None and drain_count > 0:
+            pos_tuple = tuple(motor_pos) if not isinstance(motor_pos, tuple) \
+                else motor_pos
+            prev = getattr(self, '_prev_motor_pos_snapshot', None)
+            if prev is not None and pos_tuple == prev:
+                self._frozen_motor_pos_count += 1
+                if (not self._frozen_motor_pos_warned
+                        and self._frozen_motor_pos_count
+                        >= self._FROZEN_MOTOR_POS_WARN):
+                    logger.warning(
+                        f"motor_pos frozen for "
+                        f"{self._frozen_motor_pos_count} consecutive ticks "
+                        f"(fresh timestamps) — publisher may be dead")
+                    self._frozen_motor_pos_warned = True
+                if (self._fk_ever_succeeded
+                        and self._frozen_motor_pos_count
+                        >= self._FROZEN_MOTOR_POS_ESTOP
+                        and not self._estop_requested):
+                    logger.error(
+                        f"motor_pos frozen for "
+                        f"{self._frozen_motor_pos_count} consecutive ticks "
+                        f"— triggering e-stop")
+                    self.estop(reason='telemetry_frozen')
+            else:
+                self._frozen_motor_pos_count = 0
+                self._frozen_motor_pos_warned = False
+            self._prev_motor_pos_snapshot = pos_tuple
+
         # Degrade velocity data when telemetry is stale
         if telem_age is not None and telem_age > _TELEM_STALE_HARD_S:
             vel_mmps = np.zeros(6)
@@ -672,10 +726,24 @@ class HardwarePlant(PlantInterface):
         logger.info("HardwarePlant: sent disable")
 
     def estop(self, reason: str = 'hardware_plant') -> None:
-        """Send E-stop command to the motor guard."""
+        """Send E-stop command to the motor guard and request MPC shutdown.
+
+        The ZMQ ``estop`` mode message is published *before* the
+        ``_estop_requested`` flag flips, so motor_guard receives ESTOP ahead
+        of the MPC loop breaking — the loop-top flag check in
+        :func:`controller.runner.run_mpc_loop` then exits cleanly on the
+        next iteration.
+        """
         msg = make_mode_command('estop', reason=reason)
         self._pub.send_multipart(
             _pack(TOPIC_MODE, msg), flags=zmq.NOBLOCK)
+        # Reset dead-band history — mirrors disable().  After E-stop the
+        # platform may drift or be repositioned externally; the first command
+        # after re-enable must pass through unfiltered.
+        self._last_sent_ext_mm = None
+        # Request clean MPC shutdown. Latched until the plant is closed
+        # and rebuilt — there is intentionally no clear method.
+        self._estop_requested = True
         logger.warning(f"HardwarePlant: sent E-STOP ({reason})")
 
     @property
@@ -706,6 +774,14 @@ class HardwarePlant(PlantInterface):
     def cmd_deadband_hit_count(self) -> int:
         """Total number of commands held by the dead-band over the run."""
         return self._cmd_deadband_hit_count
+
+    @property
+    def estop_requested(self) -> bool:
+        """True if estop() has been called — the MPC loop should exit.
+
+        Latched. Cleared only by rebuilding the plant instance.
+        """
+        return self._estop_requested
 
     # ------------------------------------------------------------------
     # Cleanup

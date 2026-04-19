@@ -8,6 +8,16 @@ Usage examples:
 
 This is the production entry point for hardware. For simulation, use sim/main.py.
 
+Exit codes:
+  0 — normal completion (duration elapsed) or Ctrl-C (KeyboardInterrupt
+      is caught, telemetry is flushed, and the finally block parks the
+      motor guard via disable() before returning).
+  1 — unhandled Python exception (propagates up; set by the interpreter).
+  3 — HardwarePlant tripped estop() mid-run (telemetry lost, telemetry
+      frozen, or FK convergence failure); CSV is finalised and summary
+      printed before exit. motor_guard remains latched in ESTOP with its
+      fault_state preserved (disable() is skipped on this path).
+
 Operational notes:
   - The orchestrator must be in ACTIVE (STANDBY or any sub-mode) for motor
     feedback telemetry to flow.  Launching this script in IDLE will fail
@@ -291,13 +301,14 @@ def main():
     )
 
     # --- Run ---
+    estop_exit = False
     try:
         # Enable pass-through mode (skip for ZmqTargetSource — the loop
         # manages enable/disable transitions based on mode messages).
         if not hasattr(source, 'enabled'):
             plant.enable()
 
-        run_mpc_loop(
+        estop_exit = run_mpc_loop(
             plant, mpc, source, duration, logger,
             control_dt=CONTROL_DT, dashboard=dashboard, hooks=hooks,
         )
@@ -305,7 +316,14 @@ def main():
         print("\nInterrupted — flushing telemetry...")
         logger.flush()
     finally:
-        plant.disable()
+        # On safety-triggered ESTOP (frozen telemetry, FK failure, stale
+        # telemetry) leave motor_guard latched in ESTOP with fault_state
+        # intact so operators see the trip reason in telemetry / GUI.
+        # A disable() here would transition ESTOP → DISABLED and erase
+        # _fault_state.  ESTOP already zeros outputs (physical safety
+        # unchanged); we only skip the operator-visibility-erasing step.
+        if not getattr(plant, 'estop_requested', False):
+            plant.disable()
         time.sleep(0.05)
         plant.close()
         feedback_pub.close()
@@ -315,6 +333,9 @@ def main():
             dashboard.stop()
 
     print(f"Logged {logger.total_count} records to {log_path}")
+    if estop_exit:
+        print("Exit 3: stopped by HardwarePlant estop()")
+        sys.exit(3)
 
 
 if __name__ == '__main__':
