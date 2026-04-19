@@ -1,6 +1,57 @@
 {
   "version": 1,
   "sessions": {
+    "mpc_20260418_164119.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-18T17:15:00Z",
+      "verdict": "NEEDS_ATTENTION",
+      "flags_count": 3,
+      "phase": "post-walk-forward-fallback-multiaxis-session-2",
+      "notes": "Move 1/5 (user-flagged worst jitter). Active->z=220 pure-Z up (15.28s, 600 samples). Solver EXCELLENT: 99.7% success (598/600), 2 timeouts (1 cold_hold, 1 fallback), p50=10.6ms p95=15.7ms max=35.6ms. cmd_ext smooth throughout (cmd_jumps=0, walk-forward fix holding). 39 actual_jumps clustered t=0.54-1.25s, 2-5mm magnitude, distributed across all 6 legs — physical jitter DOWNSTREAM of MPC. ~150ms dead-time between cmd ramp start (t=0.39s) and motor response (t=0.51s); 3-4mm error accrues before motors engage, then catches up. Peak actual-lag vs cmd = 12mm at t=0.71s. Leg velocities oscillate 0→130→-30 mm/s in early phase (backlash/PID signature). 13 dt>40ms gaps all in early motion (2 >60ms = skipped ticks). Steady-state tracking 2.93mm RMS, final 0.12mm. Pattern matches no existing known-issue. Candidate new: MOTOR_RAMP_DEADTIME / MOTOR_CMD_LAG_BACKLASH.",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-18_16-41-02",
+      "logbook_entry": "2026-04-18-hold-fighting-motion-onset-jitter.md"
+    },
+    "mpc_20260418_164142.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-18T17:15:00Z",
+      "verdict": "NEEDS_ATTENTION",
+      "flags_count": 3,
+      "phase": "post-walk-forward-fallback-multiaxis-session-2",
+      "notes": "Move 2/5. z=220->Active pure-Z down (5.03s, 200 samples). Solver 98.5% success, 3 consecutive timeouts early (max 27.0ms). cmd_jumps=0. 71 actual_jumps t=0.46-0.90s (max 5.14mm) — DENSER jitter than Move 1 in first second (71/200 samples vs 39/600). RMS 2.49mm, ss=1.04mm, final 0.32mm. Same motor-ramp-deadtime signature.",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-18_16-41-02"
+    },
+    "mpc_20260418_164159.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-18T17:15:00Z",
+      "verdict": "NEEDS_ATTENTION",
+      "flags_count": 3,
+      "phase": "post-walk-forward-fallback-multiaxis-session-2",
+      "notes": "Move 3/5. Active->y=50 (2.0s, 80 samples). Solver 97.5% success, p95=21.0ms max=33.8ms (4 violations 5%). cmd_jumps=0. 4 actual_jumps at t=0.65s (multi-leg simultaneous). RMS 2.91mm final 1.12mm. Short move — less jitter, same early pattern.",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-18_16-41-02"
+    },
+    "mpc_20260418_164208.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-18T17:15:00Z",
+      "verdict": "FAIL",
+      "flags_count": 3,
+      "phase": "post-walk-forward-fallback-multiaxis-session-2",
+      "notes": "Move 4/5 (WORST BY METRICS). Small reorient (2.4s, 80 samples). Solver 92.5% success, 10 consecutive violations (max 34.5ms), p50=20.0ms (2x nominal). RMS 18.9mm, peak 44.9mm, final 44.8mm — PLATFORM DID NOT REACH TARGET. Leg 4 tracking 1.8x median (RMS 4.45mm vs 2.47). Only 8 actual_jumps but tracking error grew monotonically. Same CPU-saturated-at-start signature as prior session's Move 4 (20260418_015056). Solver starts saturated and never recovers in short move. No E-stop, no motor errors, no cmd_jumps.",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-18_16-41-02"
+    },
+    "mpc_20260418_164222.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-18T17:15:00Z",
+      "verdict": "NEEDS_ATTENTION",
+      "flags_count": 6,
+      "phase": "post-walk-forward-fallback-multiaxis-session-2",
+      "notes": "Move 5/5. Diagonal->z=220 (15.27s, 600 samples). Solver 97.7% (13 timeouts max 7 consec, p95=22.7ms). Plus 1 novel solver exception: hold(exception: Function_call returned a result with an error set) — CasADi internal numerical issue on 1 solve, caught by fallback. 15 actual_jumps t=1.44-2.52s (up to 5.55mm). Leg 3 tracking 2.1x median. Final=0.0 (reported — ignore: operator Ctrl+C'd before MPC finished per user note). 227 'HardwarePlant: sent E-STOP (telemetry_stale)' lines in stdout — also consequence of early Ctrl+C, ignore per user.",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-18_16-41-02"
+    },
     "mpc_20260418_014959.csv": {
       "analyzed": true,
       "last_analyzed": "2026-04-18T02:05:00Z",
@@ -349,6 +400,72 @@
       "rosbag": "/home/jetson/Desktop/rosbags/2026-04-15_19-23-29",
       "notes": "ZMQ telemetry stale (same root cause as 144916): MPC feedback frozen at Active while commands oscillate. Solver timeout cascade causes cmd_ext sawtooth (succeed→ramp, timeout→fallback→drop). Motor guard faithfully executed oscillating commands, causing physical platform oscillation. Orchestrator faulted at bag_t=41.8. The RECONNECT_IVL fix was applied to :5557 SUBs but the stale channel is :5556 (telemetry). HardwarePlant SUB on :5556 also needs RECONNECT_IVL cap.",
       "logbook_entry": "2026-04-15-zmq-telemetry-stale-reconnect-ivl.md"
+    },
+    "mpc_20260418_164119.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-18T16:55:00Z",
+      "verdict": "PASS",
+      "flags_count": 1,
+      "phase": "post-walk-forward-plus-22ms-revert-validation",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-18_16-41-02",
+      "logbook_entry": "2026-04-18-hold-fighting-motion-onset-jitter.md",
+      "notes": "Pure-Z 170->220 ramp. 99.7% solver success (1 timeout), 0.12mm final err. Clean."
+    },
+    "mpc_20260418_181020.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-18T18:30:00Z",
+      "verdict": "NEEDS_ATTENTION",
+      "flags_count": 3,
+      "phase": "post-walk-forward-fallback-multiaxis-session-2",
+      "rosbag": null,
+      "logbook_entry": "2026-04-18-hold-fighting-motion-onset-jitter.md",
+      "notes": "Move 1 A/B rerun with --no-vel-ff. 99.8% solver success, cmd_jumps=0. Tracking RMS 2.45mm, ss_rms 1.14mm. 39 actual_jumps (identical count to vel-ff ON run 164119), magnitude 2.02-5.61mm, window shifted to t=1.13-1.81s (0.6s later). Confirms residual hardware jitter is NOT from MPC velocity feedforward path. Hold-phase analysis (t>11s): per-leg actual_ext stdev 2-3x cmd_ext stdev on legs 1 and 3 — motor fighting. Solver p95 25.4ms, 37 budget violations (6 consec). Used as reference for the MOTOR_HOLD_FIGHTING / ODRIVE_POS_LOOP_GAIN_HIGH investigation."
+    },
+    "mpc_20260418_164142.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-18T16:55:00Z",
+      "verdict": "PASS",
+      "flags_count": 1,
+      "phase": "post-walk-forward-plus-22ms-revert-validation",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-18_16-41-02",
+      "logbook_entry": "2026-04-17-mpc-fallback-cmd-sawtooth-stutter.md",
+      "notes": "Pure-Z 220->170 return. 98.5% success (2 timeouts), 0.32mm final err. Clean."
+    },
+    "mpc_20260418_164159.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-18T16:55:00Z",
+      "verdict": "PASS",
+      "flags_count": 1,
+      "phase": "post-walk-forward-plus-22ms-revert-validation",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-18_16-41-02",
+      "logbook_entry": "2026-04-17-mpc-fallback-cmd-sawtooth-stutter.md",
+      "notes": "Pure-Y 0->50mm. 97.5% success (1 timeout), 1.12mm final err. Clean."
+    },
+    "mpc_20260418_164208.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-18T16:55:00Z",
+      "verdict": "NEEDS_ATTENTION",
+      "flags_count": 3,
+      "phase": "post-walk-forward-plus-22ms-revert-validation",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-18_16-41-02",
+      "logbook_entry": "2026-04-17-mpc-fallback-cmd-sawtooth-stutter.md",
+      "notes": "Big 190mm X+Y diagonal (0,50,170) -> (77.7,-104.7,170) in 2.4s. 92.5% solver success (6 timeouts), but 44.85mm final err — platform physically couldn't finish in the given time window. Motion-time budget issue, not solver. Consider raising v_max from 140 to 200 mm/s."
+    },
+    "mpc_20260418_164222.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-18T16:55:00Z",
+      "verdict": "NEEDS_ATTENTION",
+      "flags_count": 6,
+      "phase": "post-walk-forward-plus-22ms-revert-validation",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-18_16-41-02",
+      "logbook_entry": "2026-04-17-mpc-fallback-cmd-sawtooth-stutter.md",
+      "notes": "(70,-90,170) -> (0,0,220). 97.8% solver success (13 timeouts, max 7 consec), vs 25.8% two days ago — walk-forward + 22ms revert working. 0 cmd_jumps (clean). Remaining jitters cluster in two short windows: cold-start (steps 0-10, ~0.6s), and one mid-traversal burst (steps 31-38, t=1.2-1.5s) producing 15 small actual_ext jumps of 2-5mm at t=1.4-1.9s. Isolated CasADi 'Function_call returned a result with an error set' exception at step 488/t=12.81s — unknown, one-off, worth watching. Post Ctrl-C telemetry_stale events ignored per operator. Leg 3 RMS 2.1x median (persistent LEG2_TRACKING). Before/after: 440 consec timeouts -> 7, 37.7mm err -> 0, visible sawtooth -> small jitter."
+    },
+    "mpc_20260418_184845.csv": {
+      "logbook_entry": "2026-04-18-mpc-overhead-spikes-fallback-bursts.md"
+    },
+    "mpc_20260418_185014.csv": {
+      "logbook_entry": "2026-04-18-mpc-overhead-spikes-fallback-bursts.md"
     }
   }
 }

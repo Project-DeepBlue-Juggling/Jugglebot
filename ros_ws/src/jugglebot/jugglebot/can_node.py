@@ -139,6 +139,7 @@ class CanInterfaceNode(Node):
         self.hand_vel_limit = odrive.DEFAULT_VEL_CURR['hand_vel']
         self.hand_curr_limit = odrive.DEFAULT_VEL_CURR['hand_curr']
         self.hand_gains = dict(odrive.DEFAULT_HAND_GAINS)
+        self.leg_gains = [dict(g) for g in odrive.DEFAULT_LEG_GAINS]
 
         # Teensy state (persisted on Teensy across reboots)
         self.last_known_state = {
@@ -637,6 +638,7 @@ class CanInterfaceNode(Node):
             self.bus.send(odrive.encode_set_state(axis_id, requested_state))
             time.sleep(0.005)
         self._set_hand_gains()
+        self._set_leg_gains()
 
     def _set_vel_curr_limits(self):
         """Apply current velocity/current limits to all Jugglebot axes."""
@@ -647,8 +649,29 @@ class CanInterfaceNode(Node):
 
     def _set_hand_gains(self):
         """Apply hand motor PID gains."""
-        self.bus.send(odrive.encode_set_pos_gain(odrive.HAND_AXIS, self.hand_gains['pos_gain']))
-        self.bus.send(odrive.encode_set_vel_gains(odrive.HAND_AXIS, self.hand_gains['vel_gain'], self.hand_gains['vel_int_gain']))
+        g = self.hand_gains
+        self.bus.send(odrive.encode_set_pos_gain(odrive.HAND_AXIS, g['pos_gain']))
+        self.bus.send(odrive.encode_set_vel_gains(odrive.HAND_AXIS, g['vel_gain'], g['vel_int_gain']))
+        self.get_logger().info(
+            f"Hand gains applied: pos={g['pos_gain']}, vel={g['vel_gain']}, "
+            f"vel_int={g['vel_int_gain']}")
+
+    def _set_leg_gains(self):
+        """Apply per-leg motor PID gains over CAN.
+
+        Source of truth is config/hardware_config.yaml → jugglebot_odrive_defaults.
+        Values here override whatever is flashed on the ODrive.
+        """
+        for i, axis_id in enumerate(odrive.LEG_AXES):
+            g = self.leg_gains[i]
+            self.bus.send(odrive.encode_set_pos_gain(axis_id, g['pos_gain']))
+            time.sleep(0.002)
+            self.bus.send(odrive.encode_set_vel_gains(axis_id, g['vel_gain'], g['vel_int_gain']))
+            time.sleep(0.002)
+        summary = ", ".join(
+            f"leg{i}={g['pos_gain']}/{g['vel_gain']}/{g['vel_int_gain']}"
+            for i, g in enumerate(self.leg_gains))
+        self.get_logger().info(f"Leg gains applied: {summary}")
 
     def _send_position_target(self, axis_id, setpoint, vel_ff=0.0, torque_ff=0.0):
         """Send a position command to an axis, with clipping, leg inversion, and int16 scaling.
@@ -1426,6 +1449,13 @@ class CanInterfaceNode(Node):
             self.bus.send(odrive.encode_set_controller_mode(
                 axis_id, 'POSITION', 'PASSTHROUGH'))
             time.sleep(0.005)
+
+        # Apply PID gains from config every activation.  _setup_odrives_steps
+        # only runs during homing, so without this the ODrive keeps flash
+        # defaults across non-homing sessions and YAML gain edits never take
+        # effect until the robot is re-homed.
+        self._set_hand_gains()
+        self._set_leg_gains()
 
         # Enter CLOSED_LOOP if not already.  Seed current position first
         # so the ODrive holds in place on the transition.

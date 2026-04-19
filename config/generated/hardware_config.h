@@ -125,6 +125,9 @@ namespace ODriveDefaults {
   constexpr float HAND_POS_GAIN = 35.0f;
   constexpr float HAND_VEL_GAIN = 0.007f;
   constexpr float HAND_VEL_INT_GAIN = 0.07f;
+  constexpr float LEG_POS_GAINS[6] = {40.0f, 30.0f, 40.0f, 40.0f, 30.0f, 40.0f};
+  constexpr float LEG_VEL_GAINS[6] = {0.2f, 0.2f, 0.2f, 0.2f, 0.2f, 0.2f};
+  constexpr float LEG_VEL_INT_GAINS[6] = {0.32f, 0.24f, 0.32f, 0.32f, 0.24f, 0.32f};
 }
 
 // ==========================================================================

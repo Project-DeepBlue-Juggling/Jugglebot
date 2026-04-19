@@ -181,6 +181,23 @@ jugglebot_odrive_defaults:
   hand_pos_gain: 35.0                    # Hand position gain
   hand_vel_gain: 0.007                   # Hand velocity gain
   hand_vel_int_gain: 0.07                # Hand velocity integrator gain
+  # Per-leg PID gains applied over CAN at boot by can_node._set_leg_gains().
+  # These override whatever is flashed on the ODrive. One entry per leg, index 0-5.
+  # Baseline values (all six uniform at 40.0 / 0.20 / 0.32) match ODrive flash
+  # as of 2026-04-18 — see config/ODrive config Files/odrive_pro_leg_config.json.
+  # Tuning: see the Discussion section of logbook/2026-04-18-hold-fighting-motion-onset-jitter.md.
+  # Level-1 tuning iteration 2 (2026-04-19):
+  #   leg 1:  40/0.32 → 30/0.24 (compromise — previous 20/0.16 halving helped at
+  #           high load z=220 but under-damped at low load z=170, making leg 1
+  #           the noisiest at rest). 30/0.24 splits the difference.
+  #   leg 4:  40/0.32 → 30/0.24 (first reduction — ranked 2nd-worst hold-stdev
+  #           at z=220 in session 094723, mid-pack at z=170).
+  # Ratio pos_gain : vel_int_gain held at 125 : 1 for all legs.
+  # Methodology: plans/active/leg-gain-tuning-methodology.md (Level 1).
+  # Logbook: 2026-04-18-hold-fighting-motion-onset-jitter.md.
+  leg_pos_gains:     [40.0, 30.0, 40.0, 40.0, 30.0, 40.0]
+  leg_vel_gains:     [0.20, 0.20, 0.20, 0.20, 0.20, 0.20]
+  leg_vel_int_gains: [0.32, 0.24, 0.32, 0.32, 0.24, 0.32]
 
 # ============================================================
 # 6. Jugglebot Operational

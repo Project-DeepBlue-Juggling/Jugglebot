@@ -61,6 +61,12 @@ DEFAULT_HAND_GAINS = {
     'vel_gain': hw.ODRIVE_HAND_VEL_GAIN,
     'vel_int_gain': hw.ODRIVE_HAND_VEL_INT_GAIN,
 }
+DEFAULT_LEG_GAINS = [
+    {'pos_gain': hw.ODRIVE_LEG_POS_GAINS[i],
+     'vel_gain': hw.ODRIVE_LEG_VEL_GAINS[i],
+     'vel_int_gain': hw.ODRIVE_LEG_VEL_INT_GAINS[i]}
+    for i in range(NUM_LEGS)
+]
 
 # ═══════════════════════════════════════════════════════════════
 # SDO endpoint IDs (for arbitrary parameter read/write)
