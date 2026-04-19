@@ -2,7 +2,18 @@
 title: <descriptive title>
 type: investigation        # investigation | bugfix | refactor | feature | optimization
 date: YYYY-MM-DD
-status: open               # open | in-progress | resolved
+status: open               # open | in-progress | tuned | resolved
+#
+# Status ladder (for investigation entries):
+#   open         — nothing done yet
+#   in-progress  — diagnosis done, fix/verification still ongoing
+#   tuned        — the specific symptom scoped to this entry is addressed
+#                  and verified on hardware, but there is an intentionally
+#                  open sibling investigation elsewhere. Use `tuned` rather
+#                  than leaving a real ship at `in-progress` forever.
+#   resolved     — every symptom in scope is addressed and verified; no open
+#                  follow-ups inside this entry's scope
+#
 # --- Context (use what's relevant) ---
 phase: ""                  # bringup phase, if applicable
 related_plan: ""           # filename only (e.g., hardware-bringup.md), searched in both plans/active/ and plans/archived/
@@ -105,6 +116,34 @@ before/after metrics.>
 ## Outcome
 
 <Results. Was the goal achieved? Any unexpected side effects?>
+
+## Withdrawn claims
+
+<!--
+  Use this section when an earlier interpretation within this entry
+  (or an earlier message in the investigating conversation) turned out
+  to be wrong. Record the retraction here rather than silently editing
+  the wrong claim out of the Diagnosis / Verification sections.
+
+  Format:
+    - [YYYY-MM-DD HH:MM] <one-line summary of the wrong claim>
+      WITHDRAWN: <why it was wrong, with evidence>
+      Superseded by: <what's true instead, with pointer to the section
+                      or commit that has the corrected finding>
+
+  Example (from the 2026-04-18 hold-fighting investigation):
+    - [2026-04-19 09:30] Claimed "gain halving applied" from a
+      hold-stdev drop across multiple legs.
+      WITHDRAWN: comparison used a 3 s window vs a 0.5 s window on
+      different pose targets; the drop was from the different operating
+      point, not from the gain change. User's ODriveGUI verification
+      (all ODrives read 40/0.2/0.32) is correct.
+      Superseded by: Fix section Part 2, commit 56b7514.
+
+  Leave this section empty if no claims were withdrawn. Do NOT delete
+  wrong claims to hide them — that destroys the investigation history
+  and makes the next person repeat the mistake.
+-->
 
 ## Open Questions
 

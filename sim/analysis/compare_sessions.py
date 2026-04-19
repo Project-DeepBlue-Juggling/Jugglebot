@@ -232,6 +232,42 @@ def compare_sessions(csv_a: str, csv_b: str,
         'improved': (err_b + warn_b) < (err_a + warn_a),
     })
 
+    # Per-leg hold-phase stdev rank delta.  This is the metric that drives
+    # gain-tuning decisions, and what matters for tuning work is which legs
+    # got quieter and which got noisier, in what order — not the aggregate.
+    hold_a = result_a.get('hold_phase', {}) or {}
+    hold_b = result_b.get('hold_phase', {}) or {}
+    if hold_a.get('detected') and hold_b.get('detected'):
+        a_per = {l['leg']: l['act_std_um'] for l in hold_a.get('per_leg', [])}
+        b_per = {l['leg']: l['act_std_um'] for l in hold_b.get('per_leg', [])}
+        # analyse_hold_phase emits exactly 6 per-leg rows when detected.  If
+        # the schema ever drifts, fail loudly here rather than carry silent
+        # fallbacks that would render misleading "leg missing, rank -1" rows.
+        assert (set(a_per.keys()) == set(range(6))
+                and set(b_per.keys()) == set(range(6))), (
+            f"hold_phase.per_leg schema drift: a={sorted(a_per.keys())}, "
+            f"b={sorted(b_per.keys())}"
+        )
+        a_rank = [lg for lg, _ in sorted(a_per.items(), key=lambda x: x[1])]
+        b_rank = [lg for lg, _ in sorted(b_per.items(), key=lambda x: x[1])]
+        per_leg_hold = []
+        for leg in range(6):
+            av = a_per[leg]
+            bv = b_per[leg]
+            a_pos = a_rank.index(leg)
+            b_pos = b_rank.index(leg)
+            per_leg_hold.append({
+                'leg': leg,
+                'before_std_um': av,
+                'after_std_um': bv,
+                'delta_um': round(bv - av, 2),
+                'before_rank': a_pos,
+                'after_rank': b_pos,
+                'rank_change': a_pos - b_pos,  # positive = got quieter
+            })
+    else:
+        per_leg_hold = None
+
     # Verdict
     verdict_a = _verdict(flags_a)
     verdict_b = _verdict(flags_b)
@@ -259,6 +295,7 @@ def compare_sessions(csv_a: str, csv_b: str,
         'duration_a': result_a.get('duration_s', 0),
         'duration_b': result_b.get('duration_s', 0),
         'rows': rows,
+        'per_leg_hold_rank_delta': per_leg_hold,
     }
 
 
@@ -295,6 +332,24 @@ def print_comparison_table(comparison: Dict[str, Any]) -> None:
     for row in comparison['rows']:
         print(f'  {row["metric"]:<{w_metric}s} {row["before"]:>{w_before}s} '
               f'{row["after"]:>{w_after}s} {row["delta"]:>{w_delta}s}')
+
+    # Per-leg hold rank delta — tells gain-tuning stories the aggregate can't.
+    per_leg = comparison.get('per_leg_hold_rank_delta')
+    if per_leg:
+        print()
+        print('  Hold-phase per-leg stdev (um) — rank change:')
+        print(f'  {"leg":>4} {"before":>10} {"after":>10} {"delta":>10} '
+              f'{"rank_b→a":>12}')
+        for row in per_leg:
+            rc = row['rank_change']
+            rc_str = f"{row['before_rank']+1}→{row['after_rank']+1}"
+            if rc > 0:
+                rc_str += ' (quieter)'
+            elif rc < 0:
+                rc_str += ' (noisier)'
+            print(f"  {row['leg']:>4} {row['before_std_um']:>10.2f} "
+                  f"{row['after_std_um']:>10.2f} {row['delta_um']:>+10.2f} "
+                  f"{rc_str:>12}")
 
     print()
     print('=' * 75)

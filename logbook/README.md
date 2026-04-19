@@ -89,7 +89,7 @@ Every entry is a markdown file with YAML frontmatter:
 title: Velocity feedforward semantic mismatch causing violent oscillation
 type: investigation          # investigation | bugfix | refactor | feature | optimization
 date: 2026-03-30
-status: resolved             # open | in-progress | resolved
+status: resolved             # open | in-progress | tuned | resolved
 phase: "3.1"                 # bringup phase (optional)
 related_plan: hardware-bringup.md
 related_issues:
@@ -119,7 +119,26 @@ tags:
 | **feature** | Adding new functionality | Motivation, Design, Implementation, Verification |
 | **optimization** | Improving performance | Motivation, Approach, Benchmarks, Verification |
 
-All types share: **Summary** (at top) and **Open Questions** (at bottom).
+All types share: **Summary** (at top), **Withdrawn claims** (investigations), and **Open Questions** (at bottom).
+
+### Status ladder
+
+| Status | When to use |
+|--------|-------------|
+| `open` | Nothing done yet. |
+| `in-progress` | Diagnosis is done, fix or verification is still ongoing. |
+| `tuned` | The specific symptom scoped to this entry is addressed and verified on hardware, but the entry intentionally has an open sibling investigation (tracked elsewhere or in Open Questions). Use this rather than leaving a real ship at `in-progress` forever. |
+| `resolved` | Every symptom in this entry's scope is addressed and verified; no open follow-ups inside this entry's scope. |
+
+### Withdrawn claims
+
+Investigation entries have a **Withdrawn claims** section near the bottom.
+When an earlier interpretation in the entry (or in the investigating
+conversation) turns out to be wrong, document the retraction there rather
+than silently editing the wrong claim out of the Diagnosis or Verification
+sections. This makes incorrect conclusions part of the investigation
+history so the next person — or the next LLM — doesn't repeat the mistake.
+Format and an example are in `TEMPLATE.md`.
 
 ### Tag taxonomy
 

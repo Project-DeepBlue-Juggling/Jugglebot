@@ -75,9 +75,13 @@ The `--plots` flag controls which plot categories are included:
 Read the JSON output. Important blocks to inspect:
 - `solver_status` — per-step IPOPT return codes (success / hold / fallback / cold_hold and timeout reasons). Richer than `solve_times` alone.
 - `mpc_stdout` — parsed companion MPC stdout log if present (`temp/logs/<csv_stem>.log`), with `events`, `solve_failures`, `max_consecutive_solve_failures`, `fk_non_convergences`, `mpc_config`, `final_tracking`, `solve_summary`.
+- `hold_phase` — per-leg cmd/actual stdev during the longest ref-static tail (the Level-1 gain-tuning metric). When `detected: true`, reports `per_leg` (`cmd_std_um`, `act_std_um`, `act_range_um`, `vel_abs_max_mmps`), `worst_leg`/`quietest_leg`, `asymmetry_ratio`, and `aggregate_act_std_um`. Surface this prominently — it is usually the metric that drives tuning decisions. When `detected: false`, the `reason` field explains (e.g. `tail_too_short` — run longer holds to get a trustworthy measurement).
+- `overhead` — MPC loop overhead distribution (dt − solve_time). `p50/p95/p99/max` describe the non-solve latency; `isolated_spikes` are single-tick overhead pops (≥3× their neighbourhood) tagged with a `GC_PAUSE_CANDIDATE` signature. These are the signature for Failure A in the hold-fighting / overhead-spikes investigation arc — if present, point directly at the GC / interpreter-housekeeping mechanism rather than misattributing to the solver.
+- `cmd_spectral` — FFT of cmd_ext during hold, bucketed into three bands. `hf_pct_max` above 25 % means the MPC is putting HF numerical noise into the cmd stream at levels visible on ODrive's `pos_setpoint` scope. Typically benign (sub-µm RMS, below mechanical bandwidth) but worth calling out so it's not mistaken for a bug.
 - `rosbag.estop` — pilot E-stop detection (see Pilot E-stop attribution rule above). Read this BEFORE writing the report.
 - `estop_alignment` — E-stop time in both rosbag and CSV frames for timeline construction.
 - `rosbag.state_transitions`, `rosbag.mode_transitions`, `rosbag.motor_errors` — pre-extracted by the deep rosbag scan; use these for the Event Timeline instead of re-reading the rosbag.
+- `session_group` — rosbag directory name; any two sessions sharing this value belong to the same operational session. Useful for `--latest` semantics in `/investigate` and for grouping in `log_index.json`.
 
 ### Step 3b: Open diagnostic report
 
@@ -138,9 +142,31 @@ Use this format:
   - Timeouts (`Maximum_CpuTime_Exceeded`): X% (N steps), max K consecutive
   - Non-success breakdown: `hold(...)×N`, `fallback(...)×N`, `cold_hold(...)×N`
   - Other failure reasons (non-timeout): list them if present (numerical issues, infeasibility)
+- **Loop overhead** (from the `overhead` block — dt minus solve_time per tick, separates non-solve latency from solver time):
+  - p50/p95/p99/max ms; count of ticks above the 10 ms budget
+  - **Isolated spikes**: list each one with time, overhead ms, solve ms, and ratio to its neighbourhood. These are the GC-pause / interpreter-housekeeping signature — surface them prominently when present; they are often the true cause of fallback bursts that look like solver problems.
 - **MPC stdout excerpts** (from `result['mpc_stdout']`, if `available: true`): surface `mpc_config` line, `final_tracking`, any `fk_did_not_converge` count, and any solve-failure summary. If `available: false`, mention the hint once so the operator knows to tee stdout next time.
 <Compare against baseline if available>
 <Display solver plot here if generated>
+
+### Hold-Phase Quiescence (when `hold_phase.detected` is true)
+- Window: t=<t_start>..<t_end>s, total ref-static <total_static>s (settle-skip <settle_skip>s)
+- Per-leg table:
+
+| Leg | cmd_std_um | act_std_um | act_range_um | \|vel\|_max_mmps |
+|-----|-----------:|-----------:|-------------:|-----------------:|
+| 0   | ...        | ...        | ...          | ...              |
+| ...                                                                   |
+
+- Ranked quietest→noisiest: <ranked list>
+- Asymmetry ratio: <worst_std / quietest_std>x (flag if > 1.5)
+- Aggregate per-leg act stdev: <mean> um
+
+When `hold_phase.detected` is false, skip this section but mention the reason in one line (e.g., "hold tail was only 2.25 s — run with longer holds for a trustworthy per-leg stdev measurement"). Never report per-leg stdev from a short-hold run as a tuning signal — the numbers are dominated by settling transient.
+
+### Spectral Content During Hold (when `cmd_spectral.detected` is true)
+- Per-leg % energy in low/mid/HF bands and peak frequency
+- If `hf_pct_max` > 25 %, call it out: the MPC is putting HF numerical noise into cmd at a level visible on ODrive's `pos_setpoint` scope. This is usually benign (sub-µm RMS, below mechanical bandwidth) and should not be mistaken for a bug — frame it as a cosmetic observation unless amplitude is large enough to actually move the motors.
 
 ### Motor & CAN Health
 <From rosbag: motor errors (/robot_state), disarms, CAN rejections, firmware validation>
@@ -182,6 +208,7 @@ Update `sim/analysis/log_index.json`:
 - Set `flags_count` to the number of flags
 - Set `phase` if identifiable from context
 - Set `rosbag` path if found
+- Set `session_group` to the value from `result['session_group']` (the rosbag directory basename) when present. For sim runs and tests with no correlated rosbag, `result['session_group']` is null; leave the `log_index.json` field null in that case. `/investigate --latest` assumes `session_group` is populated for hardware runs; when it is null, that command falls back to grouping sessions by CSV timestamps within 1 hour of each other (see `.claude/commands/investigate.md` Step 1).
 
 ## Verdict Criteria
 
@@ -235,6 +262,23 @@ Format the JSON output as a delta table:
 Highlight notable improvements and any regressions. If the comparison shows a fix
 worked, note which metrics improved and by how much. If any metrics regressed,
 flag them prominently.
+
+### Step 5: Per-leg rank-delta (when hold_phase is detected in both sessions)
+
+When the JSON result contains `per_leg_hold_rank_delta`, render it as a table:
+
+```
+| Leg | Before stdev (um) | After stdev (um) | Delta (um) | Rank before → after  |
+|----:|------------------:|-----------------:|-----------:|:---------------------|
+|  0  | ...               | ...              | ...        | 3 → 5 (noisier)      |
+|  1  | ...               | ...              | ...        | 5 → 6 (noisier)      |
+...
+```
+
+This is the metric that matters for per-leg gain tuning. Aggregate RMS can stay
+flat while individual legs flip places in the ranking — call those flips out
+explicitly rather than burying them in aggregate numbers. If a leg moved ≥ 2
+positions in the ranking, say so in the narrative.
 
 ## Important Notes
 

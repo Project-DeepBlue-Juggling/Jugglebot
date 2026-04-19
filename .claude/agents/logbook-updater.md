@@ -16,7 +16,7 @@ Every entry has YAML frontmatter with these fields:
 title: ""              # descriptive title
 type: ""               # investigation | bugfix | refactor | feature | optimization
 date: YYYY-MM-DD
-status: ""             # open | in-progress | resolved
+status: ""             # open | in-progress | tuned | resolved
 phase: ""              # bringup phase (optional)
 related_plan: ""       # filename in plans/ (optional)
 related_issues: []     # known_issues.yaml IDs (optional)

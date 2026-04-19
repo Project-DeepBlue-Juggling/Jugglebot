@@ -10,7 +10,7 @@ logbook entry that captures the full arc: symptom, diagnosis, discussion, fix, o
 
 ## Arguments
 
-- **No args** or **`--latest`**: investigate the most recent unanalysed session
+- **No args** or **`--latest`**: investigate the most recent session group. A session group is a set of CSVs that share a rosbag — all moves in one operational run. `--latest` finds every CSV belonging to the most-recent rosbag's `session_group` (see `/diagnose` → `result['session_group']` in `log_index.json`), not just the single most recent CSV. Ask the user whether to include all moves in the group or just a specific one.
 - **`<csv_filename>`**: investigate a specific session
 - **`--resume <entry>`**: resume an existing logbook entry (filename with or without .md)
 - **`--sessions csv1,csv2,...`**: investigate multiple related sessions together
@@ -34,9 +34,11 @@ logbook entry that captures the full arc: symptom, diagnosis, discussion, fix, o
 1. Determine target CSV(s) using the same logic as `/diagnose`:
    read `sim/analysis/log_index.json`, find latest unanalysed or specified file
 2. **Auto-group related sessions:** Check `log_index.json` for other CSVs that share
-   the same `rosbag` path or have timestamps within 1 hour of the target. If found,
-   offer to include them all in a single investigation:
-   > "Found 4 related sessions from the same rosbag session (2026-04-01_13-18-01).
+   the same `session_group` (populated by `/diagnose` from the rosbag directory name)
+   or — for older entries that predate `session_group` — the same `rosbag` path, or
+   timestamps within 1 hour of the target. If found, offer to include them all in a
+   single investigation:
+   > "Found 4 related sessions from session-group 2026-04-01_13-18-01.
    > Include all in this investigation, or just the specified one?"
 3. Check if any existing logbook entry already references these sessions
    (grep `logbook/` for the CSV filename)
@@ -49,6 +51,14 @@ Run the `/diagnose` protocol on the target session(s):
 2. Cross-reference against `sim/analysis/known_issues.yaml`
 3. Read `plans/active/hardware-bringup.md` for phase context
 
+**Flush `sim/analysis/log_index.json` immediately** after each diagnose run, not
+just at the very end of `/investigate`. The user may drop out of the investigation
+mid-flow (hitting "stop" on any gate, or just context-switching); if the index
+isn't updated here, the session is still marked unanalysed on the next `/diagnose`
+and the work is duplicated. Minimum fields to flush per session:
+`analyzed`, `last_analyzed`, `verdict`, `flags_count`, `rosbag`, `session_group`,
+plus `logbook_entry` if Step 3 has already run for this investigation.
+
 Present the diagnosis report.
 
 ---
@@ -58,7 +68,8 @@ Present the diagnosis report.
 Present the diagnosis findings to the user.
 
 **Options:**
-- **proceed** — create/update logbook entry with symptoms + diagnosis, continue to fix discussion
+- **proceed** — create/update logbook entry with symptoms + diagnosis, continue directly to `fix-proposer` (Step 4)
+- **discuss** — create/update the logbook entry, then pause for open-ended back-and-forth with the user **without** spawning the fix-proposer agent. Use this when the diagnosis raises design-level questions or the user wants to explore the data before committing to a fix direction. The fix-proposer is opinionated and expensive; it should only run when the user says "propose fixes" explicitly. When the user is ready, continue to Step 4.
 - **skip-to-fix** — user already knows the fix, skip discussion
 - **stop** — save diagnosis to logbook entry and stop here (can resume later with `--resume`)
 
@@ -132,10 +143,51 @@ Update the logbook entry's Fix section (via logbook-updater) with:
 Present the code changes (show `git diff`).
 
 **Options:**
-- **proceed** — run tests
+- **proceed** — continue to Step 5b (verify-applied) before running tests. For source-resident changes (Python-only on the Jetson, no CAN/IPC push), the subsequent VERIFY_APPLIED gate accepts `skip` and goes straight to TEST.
 - **revise** — modify the implementation
 - **revert** — undo changes and return to discussion
 - **stop** — save implementation details to logbook entry and stop here
+
+---
+
+### Step 5b: Verify the fix actually landed on the target device
+
+**This step is mandatory when the change modifies a value that lives on a
+second device.** Examples: ODrive gains, ODrive control / input modes,
+Teensy parameters, remote config pushed via IPC, any constant that is
+loaded at boot rather than read live. Skip this step only when the change
+is purely source-resident (Python-only logic on the Jetson, no CAN/IPC
+push involved).
+
+Why this gate exists: on 2026-04-19 an A/B leg-gain test produced misleading
+metrics because the gain setter was only called during homing, not on
+activation; the user had activated without re-homing, so the YAML edit and
+rebuild had no runtime effect. The bug was only caught because the user
+eyeballed ODriveGUI. A protocol-level check would have saved 30 minutes.
+
+Explicitly ask the user to verify the new value is present on the target
+hardware BEFORE running the performance test:
+
+> "Before we measure, please confirm the new value is live on the target
+> device. Options: (a) check ODriveGUI for gain values with an explicit
+> config re-read, (b) issue an odrivetool query that reads the live
+> register, (c) grep the startup log for the value the code claims to
+> have applied. Report the observed value here."
+
+Record the observation in the logbook Fix section as "Verified live
+value: X". If the observed value doesn't match the source code's
+intended value, something is wrong — do NOT run the performance test
+yet; go back to the fix, because the test will otherwise produce
+nonsense data that wastes a hardware session.
+
+---
+
+### Gate: VERIFY_APPLIED
+
+**Options:**
+- **confirmed** — the live value on the target matches the fix's intended value; proceed to TEST
+- **mismatch** — the live value is different from the intended value. Return to Step 5 (fix the application path). Do NOT run the performance test on a mismatched config.
+- **skip** — this change is source-resident only, no device-level push; verification N/A. Proceed to TEST.
 
 ---
 
@@ -206,9 +258,16 @@ Spawn the **logbook-updater** agent to:
    - Test results (pass/fail, key metrics)
    - Commit hash and message
    - Whether pushed
-4. If all symptoms are addressed: set status to `resolved`
-5. If partially addressed: keep status `in-progress`, note what remains in Open Questions
-6. Update `logbook/INDEX.md` with new status
+4. Set status according to this ladder:
+   - `resolved` — every symptom in the entry's scope is addressed and verified; no open follow-ups inside this entry's scope
+   - `tuned` — the specific thing this entry was investigating is addressed (e.g. hold-phase fighting brought into spec) but the entry intentionally leaves a sibling investigation open elsewhere. Use this when a committed change ships a real improvement but the entry's Open Questions or a sibling logbook entry still have work. This is better than stranding entries at `in-progress` forever.
+   - `in-progress` — neither of the above; the investigation is genuinely still unfinished
+5. Update `logbook/INDEX.md` with new status
+6. If the entry's Discussion section references a methodology plan in its
+   frontmatter (`related_plan:`), ensure that plan is linked inline from the
+   body text of the Discussion section (not just the frontmatter). A reader
+   landing in the entry from `git blame` should see the plan link in prose,
+   not have to read ahead to find it.
 
 ## Gating Design
 

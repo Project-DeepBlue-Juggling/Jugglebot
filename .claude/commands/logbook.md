@@ -14,7 +14,7 @@ Browse, search, and manage engineering logbook entries in `logbook/`.
 - **`--search <query>`**: search entries by keyword (greps entry files)
 - **`--file <path>`**: find entries that modified a specific file (searches `files_changed:` frontmatter)
 - **`--subsystem <name>`**: filter by subsystem tag (mpc, can, tracking, motion, sim, gui, etc.)
-- **`--status <status>`**: filter by status (open, in-progress, resolved)
+- **`--status <status>`**: filter by status (open, in-progress, tuned, resolved)
 - **`--phase <phase>`**: filter by bringup phase
 - **`--new <title>`**: create a new manual entry (not tied to /investigate)
 - **`<entry-name>`**: read and display a specific entry (filename with or without .md)
@@ -25,8 +25,11 @@ Browse, search, and manage engineering logbook entries in `logbook/`.
 
 1. Read `logbook/INDEX.md`
 2. Present the table
-3. Report counts: N entries (X open, Y in-progress, Z resolved)
-4. Highlight any `open` or `in-progress` entries as needing attention
+3. Report counts: N entries (X open, Y in-progress, Z tuned, W resolved)
+4. Highlight any `open` or `in-progress` entries as needing attention.
+   `tuned` entries intentionally leave a sibling investigation open — surface
+   them separately in a "Tuned (parked with open sibling)" bucket, not as
+   "needs attention".
 
 ### Summary mode (`--summary [N]`)
 
@@ -39,12 +42,18 @@ Generate a digest of recent logbook activity. N is the number of days to look ba
 ```
 ## Logbook Summary (last 7 days)
 
-**Activity:** 3 entries (1 resolved, 1 in-progress, 1 open)
+**Activity:** 4 entries (1 resolved, 1 tuned, 1 in-progress, 1 open)
 
 ### Resolved
 - 2026-04-01 [investigation] Cold-hold fallback commanded stroke minimum
   Files: controller/mpc.py, sim/analysis/diagnose.py (+3 more)
   Commit: 3a3381f
+
+### Tuned (parked with open sibling)
+- 2026-04-18 [investigation] Hold-fighting brought into Level-1 spec; Failure A
+  (onset burst) still open, tracked separately
+  Files: config/hardware_config.yaml, ros_ws/.../can_node.py (+5 more)
+  Commit: 56b7514
 
 ### In Progress
 - 2026-04-02 [refactor] Extract CAN process from ROS2 node
@@ -116,6 +125,8 @@ refactor that modified motor_guard.py.
 3. If the entry has status `open` or `in-progress`, suggest:
    - Resume investigation with `/investigate --resume <entry>`
    - Or update the entry manually
+   Entries with status `tuned` are deliberately parked with an open sibling
+   investigation elsewhere; do not prompt to resume them automatically.
 
 ### New entry mode (`--new <title>`)
 
