@@ -68,6 +68,13 @@ _TELEM_STALE_WARN_S = 0.075   # 3x MPC period — log warning
 _TELEM_STALE_HARD_S = 0.125   # 5x MPC period — zero velocities
 _TELEM_STALE_ESTOP_S = 0.5    # 20x MPC period — telemetry definitely lost
 
+# Leg motor incremental encoder resolution — used to derive a per-leg command
+# dead-band.  Any cmd change below one encoder count is un-actionable by the
+# motor (actual position cannot move sub-LSB), so forwarding such changes
+# only injects jitter into the motor-guard Hermite interp and the ODrive
+# pos_setpoint.  8192 CPR is the ODrive Pro leg encoder spec.
+_LEG_ENC_CPR = 8192
+
 
 class HardwarePlant(PlantInterface):
     """Stewart platform plant that communicates with real hardware via IPC.
@@ -158,6 +165,15 @@ class HardwarePlant(PlantInterface):
         # spikes with ZMQ queue depth.
         self._last_drain_count = 0
 
+        # Per-leg command dead-band: one encoder count in mm (varies ~1%
+        # across legs due to slightly different mm_to_rev).  When the next
+        # cmd is within this of the last sent cmd on every leg, we re-send
+        # the last value to avoid passing sub-LSB jitter into the motor
+        # guard's Hermite interpolation.
+        self._cmd_deadband_mm = 1.0 / (_LEG_ENC_CPR * self._geom.mm_to_rev)
+        self._last_sent_ext_mm: np.ndarray | None = None
+        self._cmd_deadband_hit_count = 0  # diagnostic: how often dead-band fires
+
         # ZeroMQ context and sockets
         self._ctx = zmq.Context()
 
@@ -222,6 +238,23 @@ class HardwarePlant(PlantInterface):
             Hermite interpolation across segment boundaries.
         """
         ext_mm = np.asarray(leg_extensions_mm, dtype=float)
+
+        # Per-leg dead-band: if every leg's cmd change is below one encoder
+        # count, hold at the last sent value.  Sub-LSB changes cannot move
+        # the motor; forwarding them only creates 40 Hz jitter at the
+        # motor-guard interpolation boundaries.  During real motion the
+        # deltas are far above LSB so this never fires.  Compared against
+        # the last SENT value (not the MPC's internal prev_u) so the
+        # dead-band tracks the actual command history downstream.
+        if self._last_sent_ext_mm is not None:
+            delta = np.abs(ext_mm - self._last_sent_ext_mm)
+            if np.all(delta < self._cmd_deadband_mm):
+                ext_mm = self._last_sent_ext_mm
+                vel_mm_s = np.zeros(6)
+                cmd_next_mm = ext_mm
+                cmd_next2_mm = ext_mm
+                self._cmd_deadband_hit_count += 1
+
         motor_rev = ext_mm * self._geom.mm_to_rev
 
         # Velocity feedforward: prefer MPC-provided forward-looking velocity.
@@ -284,6 +317,9 @@ class HardwarePlant(PlantInterface):
         self._pub.send_multipart(
             _pack(TOPIC_MPC_CMD, msg), flags=zmq.NOBLOCK)
         self._seq += 1
+        # Remember what we actually sent so the next dead-band comparison
+        # tracks the live command history, not the MPC's internal prev_u.
+        self._last_sent_ext_mm = ext_mm.copy()
 
     def get_state(self) -> PlantState:
         """Read the latest telemetry from the motor guard.
@@ -629,6 +665,10 @@ class HardwarePlant(PlantInterface):
         msg = make_mode_command('disable')
         self._pub.send_multipart(
             _pack(TOPIC_MODE, msg), flags=zmq.NOBLOCK)
+        # Reset dead-band history — the platform may be moved externally while
+        # disabled, so the first command after re-enable must pass through
+        # regardless of proximity to the last sent value.
+        self._last_sent_ext_mm = None
         logger.info("HardwarePlant: sent disable")
 
     def estop(self, reason: str = 'hardware_plant') -> None:
@@ -661,6 +701,11 @@ class HardwarePlant(PlantInterface):
     def last_drain_count(self) -> int:
         """Number of ZMQ telemetry frames drained in the most recent get_state()."""
         return self._last_drain_count
+
+    @property
+    def cmd_deadband_hit_count(self) -> int:
+        """Total number of commands held by the dead-band over the run."""
+        return self._cmd_deadband_hit_count
 
     # ------------------------------------------------------------------
     # Cleanup
