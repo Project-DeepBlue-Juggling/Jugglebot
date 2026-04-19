@@ -53,6 +53,9 @@ const WINDOW_STORAGE_KEY   = 'jugglebot-chart-window';
 const DEFAULT_SIGNALS      = ['pos_measured', 'vel_measured'];
 const DEFAULT_WINDOW_SEC   = 10;
 const DATA_RATE_HZ         = 20;
+// Retain 5 min of history regardless of the display window, so paused / ended
+// sessions keep their data when the user adjusts the view.
+const CACHE_WINDOW_SEC     = 300;
 
 let activeSignals = new Set();
 let currentWindowSec = DEFAULT_WINDOW_SEC;
@@ -197,7 +200,7 @@ function saveTimeWindow() {
 }
 
 function computeMaxPoints() {
-    maxPoints = currentWindowSec * DATA_RATE_HZ + 20; // small margin
+    maxPoints = CACHE_WINDOW_SEC * DATA_RATE_HZ + 20; // small margin
 }
 
 // ---- Stores ----
@@ -267,10 +270,6 @@ function initTimeWindowSelector() {
     select.addEventListener('change', () => {
         currentWindowSec = parseInt(select.value, 10);
         saveTimeWindow();
-        computeMaxPoints();
-        for (const store of stores) {
-            store.resize(maxPoints);
-        }
         rebuildAllCharts();
     });
 }
@@ -303,7 +302,7 @@ function initPauseButton() {
             // Snap to live — trigger immediate repaint
             if (!pendingRepaint) {
                 pendingRepaint = true;
-                requestAnimationFrame(repaintAllCharts);
+                requestAnimationFrame(() => repaintAllCharts());
             }
         }
     });
@@ -419,6 +418,8 @@ function buildUPlotOpts(width, height, showXAxis = true) {
 function buildAllCharts() {
     const signalList = getActiveSignalList();
     const signalKeys = signalList.map(s => s.key);
+    const anchor = getViewAnchor();
+    const windowStart = anchor - currentWindowSec;
 
     for (let i = 0; i < MOTOR_COUNT; i++) {
         const cell = document.getElementById(`chart-${i}`);
@@ -442,20 +443,22 @@ function buildAllCharts() {
         const isBottomRow = (i % 3 === 2);
         const opts = buildUPlotOpts(w, h, isBottomRow);
 
-        // Initial empty data matching the series count
-        const emptyData = [new Float64Array(0)];
-        for (let s = 0; s < signalKeys.length; s++) {
-            emptyData.push(new Float64Array(0));
-        }
+        // Initialise with real buffered data so we never flash empty after a
+        // toggle / window change — falls back to empty arrays before stores exist.
+        const initialData = stores[i]
+            ? stores[i].getAlignedData(signalKeys, windowStart)
+            : [new Float64Array(0), ...signalKeys.map(() => new Float64Array(0))];
 
-        charts[i] = new uPlot(opts, emptyData, cell);
+        charts[i] = new uPlot(opts, initialData, cell);
+        charts[i].setScale('x', { min: windowStart, max: anchor });
     }
 }
 
 function rebuildAllCharts() {
     buildAllCharts();
-    // Immediately repaint with buffered data
-    repaintAllCharts();
+    // User-driven rebuild: force repaint even if paused so the new UI
+    // state reflects the cached buffer instead of a blank chart.
+    repaintAllCharts(true);
 }
 
 /** Public entry point for triggering a chart rebuild (e.g. after un-collapsing). */
@@ -522,29 +525,46 @@ export function onTelemetryData(motorStates, commandedLegs, handTelemetry) {
     // Schedule a coalesced repaint
     if (!pendingRepaint) {
         pendingRepaint = true;
-        requestAnimationFrame(repaintAllCharts);
+        requestAnimationFrame(() => repaintAllCharts());
     }
 }
 
-function repaintAllCharts() {
+/**
+ * Pick the "latest visible time" for the x-axis.
+ *   - While paused: the frozen edge captured at pause time.
+ *   - While streaming: wall-clock now.
+ *   - After the stream goes stale (>1 s without a sample, e.g. session ended):
+ *     the last sample's timestamp, so data stays visible instead of walking off.
+ */
+function getViewAnchor() {
+    if (paused) return pausedWindowEnd;
+    const store = stores[0];
+    if (!store || store.length === 0) return Date.now() / 1000;
+    const lastT = store.timestamps[store.length - 1];
+    const wall = Date.now() / 1000;
+    return (wall - lastT) < 1.0 ? wall : lastT;
+}
+
+function repaintAllCharts(force = false) {
     pendingRepaint = false;
 
-    // Skip repaint if panel is collapsed or paused
+    // Skip repaint if panel is collapsed, or paused unless explicitly forced
+    // (user-driven rebuilds must reflect UI state even while paused).
     const panel = document.getElementById('chart-panel');
     if (panel && panel.classList.contains('collapsed')) return;
-    if (paused) return;
+    if (paused && !force) return;
 
     const signalList = getActiveSignalList();
     if (signalList.length === 0) return;
 
     const signalKeys = signalList.map(s => s.key);
-    const now = Date.now() / 1000;
-    const windowStart = now - currentWindowSec;
+    const anchor = getViewAnchor();
+    const windowStart = anchor - currentWindowSec;
 
     for (let i = 0; i < MOTOR_COUNT; i++) {
         if (!charts[i] || !stores[i]) continue;
         const data = stores[i].getAlignedData(signalKeys, windowStart);
-        charts[i].setScale('x', { min: windowStart, max: now });
+        charts[i].setScale('x', { min: windowStart, max: anchor });
         charts[i].setData(data, false);
     }
 }
