@@ -648,10 +648,23 @@ class CanInterfaceNode(Node):
         self.bus.send(odrive.encode_set_vel_curr_limits(odrive.HAND_AXIS, self.hand_vel_limit, self.hand_curr_limit))
 
     def _set_hand_gains(self):
-        """Apply hand motor PID gains."""
+        """Apply hand motor PID gains.  Raises RuntimeError if any CAN frame
+        fails to send, so callers can abort before entering CLOSED_LOOP with
+        the hand motor on flash defaults.
+        """
         g = self.hand_gains
-        self.bus.send(odrive.encode_set_pos_gain(odrive.HAND_AXIS, g['pos_gain']))
-        self.bus.send(odrive.encode_set_vel_gains(odrive.HAND_AXIS, g['vel_gain'], g['vel_int_gain']))
+        ok_pos = self.bus.send(odrive.encode_set_pos_gain(odrive.HAND_AXIS, g['pos_gain']))
+        ok_vel = self.bus.send(odrive.encode_set_vel_gains(
+            odrive.HAND_AXIS, g['vel_gain'], g['vel_int_gain']))
+        failed = []
+        if not ok_pos:
+            failed.append('hand.pos_gain')
+        if not ok_vel:
+            failed.append('hand.vel_gains')
+        if failed:
+            raise RuntimeError(
+                f"Hand gain write failed on CAN: {', '.join(failed)}. "
+                "Hand motor may be on flash defaults — refusing to proceed.")
         self.get_logger().info(
             f"Hand gains applied: pos={g['pos_gain']}, vel={g['vel_gain']}, "
             f"vel_int={g['vel_int_gain']}")
@@ -661,13 +674,27 @@ class CanInterfaceNode(Node):
 
         Source of truth is config/hardware_config.yaml → jugglebot_odrive_defaults.
         Values here override whatever is flashed on the ODrive.
+
+        Raises RuntimeError if any of the 12 CAN frames fails to send, so
+        callers (e.g. _gentle_move_steps) can abort before entering CLOSED_LOOP
+        with a leg on flash defaults.
         """
+        failed = []
         for i, axis_id in enumerate(odrive.LEG_AXES):
             g = self.leg_gains[i]
-            self.bus.send(odrive.encode_set_pos_gain(axis_id, g['pos_gain']))
+            ok_pos = self.bus.send(odrive.encode_set_pos_gain(axis_id, g['pos_gain']))
             time.sleep(0.002)
-            self.bus.send(odrive.encode_set_vel_gains(axis_id, g['vel_gain'], g['vel_int_gain']))
+            ok_vel = self.bus.send(odrive.encode_set_vel_gains(
+                axis_id, g['vel_gain'], g['vel_int_gain']))
             time.sleep(0.002)
+            if not ok_pos:
+                failed.append(f"leg{i}.pos_gain")
+            if not ok_vel:
+                failed.append(f"leg{i}.vel_gains")
+        if failed:
+            raise RuntimeError(
+                f"Leg gain write failed on CAN: {', '.join(failed)}. "
+                "Legs may be on flash defaults — refusing to proceed.")
         summary = ", ".join(
             f"leg{i}={g['pos_gain']}/{g['vel_gain']}/{g['vel_int_gain']}"
             for i, g in enumerate(self.leg_gains))

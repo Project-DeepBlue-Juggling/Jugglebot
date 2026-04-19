@@ -693,3 +693,90 @@ class TestPublishBbHeartbeat:
         msg = node.bb_heartbeat_pub.published[0]
         assert msg.ball_in_hand is True
         assert msg.yaw_deg == pytest.approx(45.0)
+
+
+# ════════════════════════════════════════════════════════════════
+# _set_leg_gains — per-leg PID gain application over CAN
+# ════════════════════════════════════════════════════════════════
+
+
+class TestSetLegGains:
+    def test_emits_12_frames_in_order(self, node):
+        """6 legs × 2 frames (pos_gain, vel_gains) in leg-0..leg-5 order."""
+        from jugglebot.can import odrive
+
+        node.bus.send = MagicMock(return_value=True)
+        node._set_leg_gains()
+
+        calls = node.bus.send.call_args_list
+        assert len(calls) == 12, f"expected 12 frames, got {len(calls)}"
+
+        for i, axis_id in enumerate(odrive.LEG_AXES):
+            pos_msg = calls[2 * i].args[0]
+            vel_msg = calls[2 * i + 1].args[0]
+            assert pos_msg.arbitration_id == odrive.arb_id(axis_id, 'set_pos_gain')
+            assert vel_msg.arbitration_id == odrive.arb_id(axis_id, 'set_vel_gains')
+
+            pos_gain = struct.unpack_from('<f', pos_msg.data, 0)[0]
+            vg, vig = struct.unpack_from('<ff', vel_msg.data, 0)
+            assert pos_gain == pytest.approx(node.leg_gains[i]['pos_gain'])
+            assert vg == pytest.approx(node.leg_gains[i]['vel_gain'])
+            assert vig == pytest.approx(node.leg_gains[i]['vel_int_gain'])
+
+    def test_uses_config_gains(self, node):
+        """Gains sent must match hardware_config arrays."""
+        node.bus.send = MagicMock(return_value=True)
+        node._set_leg_gains()
+        calls = node.bus.send.call_args_list
+        for i in range(6):
+            pos_msg = calls[2 * i].args[0]
+            vel_msg = calls[2 * i + 1].args[0]
+            pos_gain = struct.unpack_from('<f', pos_msg.data, 0)[0]
+            vg, vig = struct.unpack_from('<ff', vel_msg.data, 0)
+            assert pos_gain == pytest.approx(hw.ODRIVE_LEG_POS_GAINS[i])
+            assert vg == pytest.approx(hw.ODRIVE_LEG_VEL_GAINS[i])
+            assert vig == pytest.approx(hw.ODRIVE_LEG_VEL_INT_GAINS[i])
+
+    def test_raises_on_can_error(self, node):
+        """If any send() returns False, _set_leg_gains raises RuntimeError
+        naming the failed leg so the caller can surface it via the service."""
+        # Fail only the 6th frame (leg 2's vel_gains — index 5 in the 12-frame sequence)
+        results = [True] * 12
+        results[5] = False
+        node.bus.send = MagicMock(side_effect=results)
+
+        with pytest.raises(RuntimeError, match="leg2.vel_gains"):
+            node._set_leg_gains()
+
+    def test_raises_lists_all_failures(self, node):
+        """Failed writes from multiple legs are reported together."""
+        results = [True] * 12
+        results[0] = False   # leg0.pos_gain
+        results[3] = False   # leg1.vel_gains
+        results[10] = False  # leg5.pos_gain
+        node.bus.send = MagicMock(side_effect=results)
+
+        with pytest.raises(RuntimeError) as excinfo:
+            node._set_leg_gains()
+        msg = str(excinfo.value)
+        assert "leg0.pos_gain" in msg
+        assert "leg1.vel_gains" in msg
+        assert "leg5.pos_gain" in msg
+
+
+class TestSetHandGains:
+    def test_emits_two_frames(self, node):
+        from jugglebot.can import odrive
+        node.bus.send = MagicMock(return_value=True)
+        node._set_hand_gains()
+        calls = node.bus.send.call_args_list
+        assert len(calls) == 2
+        assert calls[0].args[0].arbitration_id == odrive.arb_id(
+            odrive.HAND_AXIS, 'set_pos_gain')
+        assert calls[1].args[0].arbitration_id == odrive.arb_id(
+            odrive.HAND_AXIS, 'set_vel_gains')
+
+    def test_raises_on_can_error(self, node):
+        node.bus.send = MagicMock(side_effect=[False, True])
+        with pytest.raises(RuntimeError, match="hand.pos_gain"):
+            node._set_hand_gains()

@@ -61,22 +61,27 @@ class CANBus:
 
     # ── Send / Receive ─────────────────────────────────────────
 
-    def send(self, msg: can.Message, timeout: Optional[float] = None):
+    def send(self, msg: can.Message, timeout: Optional[float] = None) -> bool:
         """Send a CAN message (thread-safe).
 
-        On buffer-full errors (errno 105), triggers reconnection.
+        Returns True when the frame was delivered to python-can (or the bus is
+        closed — short-circuit preserves legacy no-op semantics on teardown),
+        False when python-can raised ``can.CanError``.  On buffer-full errors
+        (errno 105), triggers reconnection.
         """
         if not self._bus:
-            return
+            return True
         try:
             with self._lock:
                 self._bus.send(msg, timeout=timeout)
+            return True
         except can.CanError as e:
             self._logger.warning(f'CAN send failed: {e}')
             # Check for buffer-full (ENOBUFS) via the wrapped OSError
             cause = getattr(e, '__cause__', None) or getattr(e, '__context__', None)
             if isinstance(cause, OSError) and cause.errno == errno.ENOBUFS:
                 self.attempt_restore()
+            return False
 
     def fetch_all(self, handler: Callable[[can.Message], None]):
         """Read all pending messages and dispatch each to handler(msg).
