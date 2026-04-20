@@ -319,6 +319,20 @@ class InteractiveTargetSource:
             self._src.close()
 
 
+def _warn_on_catch_rejection(reason: str, sim_time: float, source: str) -> None:
+    """Log K1–K6 rejection at most once per second per source so the operator
+    sees infeasible catches without 40 Hz console spam during rejection bursts."""
+    last = _warn_on_catch_rejection._last_emit.get(source, -1e9)
+    if sim_time - last < 1.0:
+        return
+    _warn_on_catch_rejection._last_emit[source] = sim_time
+    print(f"  [reference-layer] {source} catch target rejected "
+          f"at t={sim_time:.3f}s: {reason}. Holding current pose.")
+
+
+_warn_on_catch_rejection._last_emit = {}
+
+
 class CatchTargetSource:
     """Adapts a scripted catch sequence to the TargetSource protocol.
 
@@ -328,10 +342,16 @@ class CatchTargetSource:
     """
 
     def __init__(self, catch_sequence, feasibility_checker=None,
-                 active_pose: np.ndarray | None = None):
+                 active_pose: np.ndarray | None = None,
+                 v_max_mmps: float | None = None,
+                 tau_s: float | None = None,
+                 clamp_start_twist_mmps: float | None = None):
         self._sequence = catch_sequence
         self._feasibility = feasibility_checker
         self._active_pose = active_pose
+        self._v_max_mmps = v_max_mmps
+        self._tau_s = tau_s
+        self._clamp_start_twist_mmps = clamp_start_twist_mmps
         self._coord = None  # type: ignore[assignment]
         self._build_coordinator()
 
@@ -360,15 +380,18 @@ class CatchTargetSource:
             pose = target.pose_6dof
             arrival = target.arrival_time
             twist = target.arrival_twist
-            # TODO(W12): migrate sim catch source to K1–K6 contract — pass
-            # v_max_mmps=mpc.params.max_leg_vel_mmps, tau_s=mpc.params.tau,
-            # no_stretch=True (catch path), clamp_start_twist_mmps=
-            # mpc.params.max_ref_start_twist_mmps, and a feedback_pub.  The
-            # MPC instance is not currently plumbed into this source class;
-            # do that when the K1–K6 sim coverage gap shows up as a real bug.
-            ref_events = flat_target_to_events(
+            ref_events, reason = flat_target_to_events(
                 current_pose, state.platform_twist, pose, sim_time,
-                target_twist=twist, arrival_time=arrival)
+                target_twist=twist, arrival_time=arrival,
+                v_max_mmps=self._v_max_mmps, tau_s=self._tau_s,
+                clamp_start_twist_mmps=self._clamp_start_twist_mmps,
+                no_stretch=True, return_reason=True)
+            if reason is not None:
+                _warn_on_catch_rejection(reason, sim_time, 'CatchTargetSource')
+                pose = current_pose.copy()
+                arrival = None
+                twist = None
+                ref_events = None
         else:
             pose = current_pose.copy()
             arrival = None
@@ -398,10 +421,16 @@ class ThrowCatchTargetSource:
     at throw time via BallRelease, catches via standard capture.
     """
 
-    def __init__(self, plan, active_pose: np.ndarray | None = None):
+    def __init__(self, plan, active_pose: np.ndarray | None = None,
+                 v_max_mmps: float | None = None,
+                 tau_s: float | None = None,
+                 clamp_start_twist_mmps: float | None = None):
         from hand.planner import ThrowCatchPlan
         self._plan = plan
         self._active_pose = active_pose
+        self._v_max_mmps = v_max_mmps
+        self._tau_s = tau_s
+        self._clamp_start_twist_mmps = clamp_start_twist_mmps
         self._coord = None
         self._ball_spawned_in_hand = False
         self._build_coordinator()
@@ -434,13 +463,19 @@ class ThrowCatchTargetSource:
             pose = target.pose_6dof
             arrival = target.arrival_time
             twist = target.arrival_twist
-            # TODO(W12): migrate sim catch source to K1–K6 contract — pass
-            # v_max_mmps=mpc.params.max_leg_vel_mmps, tau_s=mpc.params.tau,
-            # no_stretch=True (catch path), clamp_start_twist_mmps=
-            # mpc.params.max_ref_start_twist_mmps, and a feedback_pub.
-            ref_events = flat_target_to_events(
+            ref_events, reason = flat_target_to_events(
                 current_pose, state.platform_twist, pose, sim_time,
-                target_twist=twist, arrival_time=arrival)
+                target_twist=twist, arrival_time=arrival,
+                v_max_mmps=self._v_max_mmps, tau_s=self._tau_s,
+                clamp_start_twist_mmps=self._clamp_start_twist_mmps,
+                no_stretch=True, return_reason=True)
+            if reason is not None:
+                _warn_on_catch_rejection(reason, sim_time,
+                                         'ThrowCatchTargetSource')
+                pose = current_pose.copy()
+                arrival = None
+                twist = None
+                ref_events = None
         else:
             pose = current_pose.copy()
             arrival = None
@@ -469,8 +504,14 @@ class InteractiveCatchSource:
     Exposes pause/speed/key_callback/render for the unified viewer loop.
     """
 
-    def __init__(self, controller, active_pose: np.ndarray | None = None):
+    def __init__(self, controller, active_pose: np.ndarray | None = None,
+                 v_max_mmps: float | None = None,
+                 tau_s: float | None = None,
+                 clamp_start_twist_mmps: float | None = None):
         self._ctrl = controller
+        self._v_max_mmps = v_max_mmps
+        self._tau_s = tau_s
+        self._clamp_start_twist_mmps = clamp_start_twist_mmps
         # active_pose stored for future use; controller handles its own ready pose
 
     def update(self, sim_time: float, state: PlantState) -> TargetCommand:
@@ -484,13 +525,19 @@ class InteractiveCatchSource:
             pose = target.pose_6dof
             arrival = target.arrival_time
             twist = target.arrival_twist
-            # TODO(W12): migrate sim catch source to K1–K6 contract — pass
-            # v_max_mmps=mpc.params.max_leg_vel_mmps, tau_s=mpc.params.tau,
-            # no_stretch=True (catch path), clamp_start_twist_mmps=
-            # mpc.params.max_ref_start_twist_mmps, and a feedback_pub.
-            ref_events = flat_target_to_events(
+            ref_events, reason = flat_target_to_events(
                 current_pose, state.platform_twist, pose, sim_time,
-                target_twist=twist, arrival_time=arrival)
+                target_twist=twist, arrival_time=arrival,
+                v_max_mmps=self._v_max_mmps, tau_s=self._tau_s,
+                clamp_start_twist_mmps=self._clamp_start_twist_mmps,
+                no_stretch=True, return_reason=True)
+            if reason is not None:
+                _warn_on_catch_rejection(reason, sim_time,
+                                         'InteractiveCatchSource')
+                pose = current_pose.copy()
+                arrival = None
+                twist = None
+                ref_events = None
         else:
             pose = current_pose.copy()
             arrival = None
@@ -1321,7 +1368,7 @@ def main():
             # Simulation: accuracy over speed — no real-time constraint
             param_overrides = dict(max_cpu_time=2.0, max_iter=500)
         if needs_high_vel:
-            param_overrides['max_leg_vel_mmps'] = 1000.0
+            param_overrides['max_leg_vel_mmps'] = 500.0
         mpc = MPCController.from_plant(MPCParams(**param_overrides), plant)
         assert abs(CONTROL_DT - mpc.params.dt_fine) < 1e-6, (
             f"CONTROL_DT ({CONTROL_DT}) must match MPC dt_fine "
@@ -1392,7 +1439,11 @@ def main():
             feasibility_checker=feasibility_checker,
             active_pose=active_pose,
             ball_butler_sim=bb_sim)
-        source = InteractiveCatchSource(controller, active_pose=active_pose)
+        source = InteractiveCatchSource(
+            controller, active_pose=active_pose,
+            v_max_mmps=mpc.params.max_leg_vel_mmps,
+            tau_s=mpc.params.tau,
+            clamp_start_twist_mmps=mpc.params.max_ref_start_twist_mmps)
         # Print interactive catch help
         print("\n  Interactive Catch Mode")
         print("  ─────────────────────────────────────────────────────")
@@ -1419,12 +1470,20 @@ def main():
         plant.model.vis.quality.shadowsize = 0
 
     elif throw_catch_plan is not None:
-        source = ThrowCatchTargetSource(throw_catch_plan, active_pose=active_pose)
+        source = ThrowCatchTargetSource(
+            throw_catch_plan, active_pose=active_pose,
+            v_max_mmps=mpc.params.max_leg_vel_mmps,
+            tau_s=mpc.params.tau,
+            clamp_start_twist_mmps=mpc.params.max_ref_start_twist_mmps)
 
     elif catch_sequence is not None:
-        source = CatchTargetSource(catch_sequence,
-                                   feasibility_checker=feasibility_checker,
-                                   active_pose=active_pose)
+        source = CatchTargetSource(
+            catch_sequence,
+            feasibility_checker=feasibility_checker,
+            active_pose=active_pose,
+            v_max_mmps=mpc.params.max_leg_vel_mmps,
+            tau_s=mpc.params.tau,
+            clamp_start_twist_mmps=mpc.params.max_ref_start_twist_mmps)
 
     elif args.spacemouse:
         from input.spacemouse import SpaceMouseInput
