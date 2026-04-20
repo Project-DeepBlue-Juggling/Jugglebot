@@ -55,45 +55,58 @@ def fast_mpc(plant):
 # ---------------------------------------------------------------------------
 
 class TestSimplifiedColdStart:
-    def test_cold_start_calls_ik_once(self, fast_mpc):
-        """_cold_start must call numerical IK exactly once (was N)."""
+    """W6 changes the _cold_start contract: per-node IK for every reference
+    pose, with a budget guard fallback to linear interpolation for nodes
+    past the budget cutoff.  Tests updated from the pre-W6 "single IK + q
+    linear interp" contract — see docs/reference_layer_contract.md."""
+
+    def test_cold_start_w6_calls_ik_per_node(self, fast_mpc):
+        """W6: _cold_start calls numerical IK once per horizon node (N+1 total).
+
+        The legacy "IK called exactly once" contract (pre-W6) was designed
+        to save compute; Section 5 measurements showed _numerical_ik is
+        ~118 µs p95, so (N+1) IK calls at N=10 is ~1.3 ms — well inside the
+        30% budget guard.  Per-node IK gives IPOPT a much tighter initial
+        guess, reducing cold-start iteration count.
+        """
         N = fast_mpc._N
         p_cur = np.zeros(6)
         q_cur = np.zeros(6)
         ref_traj = np.zeros((N + 1, 6))
-        ref_traj[1:, 2] = 50.0  # z=50 target for each future node
+        ref_traj[1:, 2] = 50.0
 
         with patch.object(
             fast_mpc, '_numerical_ik',
             wraps=fast_mpc._numerical_ik,
         ) as mock_ik:
             w0 = fast_mpc._cold_start(p_cur, q_cur, ref_traj)
-        assert mock_ik.call_count == 1, (
-            f"_cold_start should call IK exactly once; saw {mock_ik.call_count}"
+        # N+1 calls: one for q_final (budget-probe) + N for q_nodes[1..N]
+        assert mock_ik.call_count == N + 1, (
+            f"W6 per-node IK expects {N+1} calls; saw {mock_ik.call_count}"
         )
         assert w0.shape == (fast_mpc._n_w,)
         assert np.all(np.isfinite(w0))
 
-    def test_cold_start_q_endpoints(self, fast_mpc):
-        """q block should start near q_cur and end near IK(ref_traj[N])."""
+    def test_cold_start_w6_q_block_tracks_ref_traj(self, fast_mpc):
+        """W6: q block at node k is close to IK(ref_traj[k+1]) (direct IK seed)."""
         N = fast_mpc._N
         p_cur = np.zeros(6)
         q_cur = np.full(6, 10.0)
         ref_traj = np.zeros((N + 1, 6))
-        ref_traj[:, 2] = 40.0
+        ref_traj[:, 2] = 40.0  # all nodes at the same pose
 
         w0 = fast_mpc._cold_start(p_cur, q_cur, ref_traj)
         q_block = w0[6 * N: 12 * N].reshape(N, 6)
-        q_final_expected = np.clip(
-            fast_mpc._numerical_ik(ref_traj[N]), 0.0, fast_mpc._params.stroke_mm
+        q_expected = np.clip(
+            fast_mpc._numerical_ik(ref_traj[1]),  # all ref nodes identical
+            0.0, fast_mpc._params.stroke_mm,
         )
-        # First q-row should be closer to q_cur than to q_final; last row the
-        # reverse.  We only test monotonicity, not exact interpolation values.
-        first_to_cur = np.linalg.norm(q_block[0] - q_cur)
-        last_to_final = np.linalg.norm(q_block[-1] - q_final_expected)
-        first_to_final = np.linalg.norm(q_block[0] - q_final_expected)
-        assert first_to_cur < first_to_final
-        assert last_to_final < 1e-6
+        # Every q-row should equal the IK of the uniform ref pose (within FP).
+        for k in range(N):
+            np.testing.assert_allclose(
+                q_block[k], q_expected, atol=1e-6,
+                err_msg=f"node {k}: q-block should be IK(ref_traj[k+1])",
+            )
 
 
 # ---------------------------------------------------------------------------

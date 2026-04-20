@@ -22,7 +22,7 @@ from typing import Any, Callable, Optional
 import numpy as np
 
 from .plant import PlantInterface, PlantState
-from .target import TargetCommand, TargetSource, _pose_6dof_from_state
+from .target import TargetCommand, TargetSource, pose_6dof_from_state
 from .telemetry import TelemetryLogger, record_from_arrays
 
 
@@ -147,6 +147,7 @@ def mpc_solve(mpc, state: PlantState, tc: TargetCommand,
         ref_events=tc.ref_events,
         boost_vel_weights=tc.boost_vel_weights,
         t_now=t_now,
+        warm_start_valid=tc.warm_start_valid,
     )
 
     # Use the MPC's own reference for telemetry.
@@ -182,7 +183,7 @@ def log_mpc_step(logger: TelemetryLogger, state: PlantState,
         time=state.time,
         ref_pose=ref_pose,
         ref_twist=ref_twist if ref_twist is not None else np.zeros(6),
-        actual_pose=_pose_6dof_from_state(state),
+        actual_pose=pose_6dof_from_state(state),
         actual_twist=state.platform_twist,
         cmd_extensions=cmd_ext,
         actual_extensions=state.leg_extensions_mm,

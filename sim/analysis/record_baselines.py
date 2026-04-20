@@ -63,7 +63,8 @@ def run_trajectory(
         current_pose = np.concatenate([state.platform_pos_mm, state.platform_rot])
         ref_events = flat_target_to_events(
             current_pose, state.platform_twist, target_pose, state.time,
-            arrival_time=arrival_time)
+            arrival_time=arrival_time,
+            v_max_mmps=mpc.params.max_leg_vel_mmps, tau_s=mpc.params.tau)
         cmd, _cmd_vel, diag = mpc.solve(state, target_pose, ref_events=ref_events)
         plant.command(cmd)
         plant.step(CONTROL_DT)

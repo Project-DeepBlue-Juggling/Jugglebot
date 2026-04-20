@@ -122,6 +122,19 @@ class MPCParams:
     # reference prevents the aggressive accelerations that drove 2.7G peak
     # at v_max=280.  Raise further toward 280–700 once validated on hardware.
 
+    # Upper bound on the FK-derived start twist used as the quintic ref's
+    # start-velocity boundary (see ``flat_target_to_events``'s
+    # ``clamp_start_twist_mmps`` kwarg).  Distinct from ``max_leg_vel_mmps``
+    # — which is the kinematic ceiling — because a fallback-driven plant
+    # runaway can reach values below the kinematic ceiling that must NOT
+    # be honoured as a new ref's start velocity (they'd self-seed the next
+    # tick's quintic).  60 mm/s accommodates legitimate Phase-4 platform
+    # motion (typically 0–100 mm/s, mostly <60) while clipping runaways.
+    # Revisit for catch-phase work where legitimate mid-flight target
+    # updates may occur at higher plant speeds.  See logbook entry
+    # 2026-04-19-bundle-a-quintic-ref-settling-and-live-twist-trap.md.
+    max_ref_start_twist_mmps: float = 60.0
+
     # ---- IPOPT options --------------------------------------------------
     max_iter: int = 200
     max_cpu_time: float = 0.018  # 18 ms (72% of budget, leaves headroom for overhead)

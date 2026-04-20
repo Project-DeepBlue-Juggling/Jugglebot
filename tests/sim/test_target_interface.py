@@ -244,3 +244,59 @@ class TestBuildReference:
 
         # Last node (well past event) should extrapolate with the event's twist
         np.testing.assert_allclose(twist[-1], tw, atol=1e-8)
+
+
+# ---------------------------------------------------------------------------
+# flat_target_to_events — start-twist clamping (MPC_OVERSHOOT_SATURATION)
+# ---------------------------------------------------------------------------
+
+class TestFlatTargetTwistClamp:
+    """``clamp_start_twist_mmps`` guards the reference against an FK spike.
+
+    Without clamping, a noisy ``state.platform_twist`` that briefly reports
+    >>v_max becomes the start-velocity boundary condition of the quintic —
+    the MPC then has to plan a trajectory that matches a reference whose
+    initial velocity exceeds physical actuator limits.  See logbook
+    2026-04-18-move5-overshoot-stall-and-plant-collapse.md.
+    """
+
+    def _make(self, start_twist, clamp):
+        current_pose = np.array([0.0, 0.0, 170.0, 0.0, 0.0, 0.0])
+        target_pose = np.array([0.0, 0.0, 220.0, 0.0, 0.0, 0.0])
+        return flat_target_to_events(
+            current_pose, np.asarray(start_twist, dtype=float),
+            target_pose, t_now=0.0,
+            clamp_start_twist_mmps=clamp,
+        )
+
+    def test_noisy_linear_twist_is_clipped(self):
+        """FK-reported +500 mm/s is clipped to ±v_max on linear components."""
+        events = self._make([500.0, -500.0, 500.0, 0.0, 0.0, 0.0],
+                            clamp=140.0)
+        # First event is the synthetic t=t_now warm-up carrying plant state
+        np.testing.assert_allclose(events[0].twist[:3], [140.0, -140.0, 140.0])
+
+    def test_in_band_linear_twist_unchanged(self):
+        """A plausible twist (within ±v_max) is passed through untouched."""
+        events = self._make([50.0, -30.0, 10.0, 0.0, 0.0, 0.0],
+                            clamp=140.0)
+        np.testing.assert_allclose(events[0].twist[:3], [50.0, -30.0, 10.0])
+
+    def test_angular_components_untouched(self):
+        """Angular twist (rad/s) is left alone — the clamp is mm/s only."""
+        events = self._make([0.0, 0.0, 0.0, 2.5, -3.1, 4.0],
+                            clamp=140.0)
+        np.testing.assert_allclose(events[0].twist[3:], [2.5, -3.1, 4.0])
+
+    def test_none_disables_clamp(self):
+        """Passing ``None`` (default) means the twist is passed through raw."""
+        events = self._make([500.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                            clamp=None)
+        np.testing.assert_allclose(events[0].twist[:3], [500.0, 0.0, 0.0])
+
+    def test_clamp_does_not_mutate_caller_array(self):
+        """The clamp works on a copy — the caller's twist array is preserved."""
+        original = np.array([500.0, -500.0, 500.0, 0.0, 0.0, 0.0])
+        twist_arg = original.copy()
+        self._make(twist_arg, clamp=140.0)
+        np.testing.assert_allclose(twist_arg, original)

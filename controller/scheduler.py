@@ -198,11 +198,21 @@ class EventScheduler:
         active_pose: np.ndarray,
         cumulative_times: np.ndarray,
         return_duration: float = 2.0,
+        v_max_mmps: float | None = None,
+        tau_s: float | None = None,
+        strict_feasibility: bool = False,
     ) -> None:
         self._active_pose = np.asarray(active_pose, dtype=np.float64)
         self._cumulative_times = np.asarray(cumulative_times, dtype=np.float64)
         self._return_duration = return_duration
         self._zero6 = np.zeros(6, dtype=np.float64)
+        # W4: K2/K3 defense-in-depth.  When v_max_mmps + tau_s are provided,
+        # each constructed segment is verified against K2/K3 per
+        # docs/reference_layer_contract.md.  No auto-stretching — catch/toss
+        # deadlines are hard, so infeasibility is a scheduler bug to surface.
+        self._v_max_mmps = v_max_mmps
+        self._tau_s = tau_s
+        self._strict_feasibility = strict_feasibility
 
         # State
         self._phase = SchedulerPhase.IDLE
@@ -558,6 +568,7 @@ class EventScheduler:
                 t_start=sim_time,
                 duration=max(duration, _MIN_DURATION_S),
             )
+            self._verify_segment_feasibility(self._seg_return)
 
         seg = self._seg_return
 
@@ -640,7 +651,7 @@ class EventScheduler:
         """Build a quintic segment from current state to event."""
         duration = max(event.time - sim_time, _MIN_DURATION_S)
         end_twist = event.twist if event.twist is not None else self._zero6
-        return _QuinticSegment(
+        seg = _QuinticSegment(
             p0=start_pose.copy(),
             v0=start_twist.copy(),
             a0=self._last_accel.copy(),
@@ -650,6 +661,54 @@ class EventScheduler:
             t_start=sim_time,
             duration=duration,
         )
+        self._verify_segment_feasibility(seg)
+        return seg
+
+    def _verify_segment_feasibility(self, seg: _QuinticSegment) -> None:
+        """Defense-in-depth K2/K3 check on scheduler-built quintic segments.
+
+        The scheduler's internal quintic construction is BELIEVED feasible
+        because event durations are computed from distance/v_max ratios.
+        This method catches any deviation from that assumption.  No
+        auto-stretching — the catch/toss coordinator has hard arrival
+        deadlines and silent stretching would make the platform miss the
+        ball.  Infeasibility is a scheduler bug to surface, not hide.
+
+        Scope: this is a *linear-axis* (workspace x/y/z) check via
+        ``segment_is_feasible``.  It catches translation-dominated K2/K3
+        violations that any reasonable Stewart-platform Jacobian condition
+        would also fail at the leg level.  Angular twists routed through
+        the Jacobian (which couples translation and rotation into per-leg
+        velocities) can still produce per-leg velocities exceeding
+        ``v_max_mmps`` even when the linear check passes.  Per-leg-velocity
+        enforcement on quintic refs would require sampling the segment in
+        joint space, which is out of scope for this defensive check; the
+        MPC itself enforces leg-velocity bounds at every horizon node.
+
+        When ``strict_feasibility=True`` (tests), infeasibility raises.
+        When False (production), it logs a WARNING and continues — the MPC
+        will see the infeasible ref and degrade gracefully via W7's fallback
+        hardening, but operators will want to know this happened.
+        """
+        if self._v_max_mmps is None or self._tau_s is None:
+            return
+        from .feasibility import segment_is_feasible
+        feas, vr, ar = segment_is_feasible(
+            seg.p0, seg.v0, seg.a0, seg.p1, seg.v1, seg.a1,
+            seg.duration, self._v_max_mmps,
+            self._v_max_mmps / self._tau_s, beta=0.85,
+        )
+        if not feas:
+            msg = (
+                f"EventScheduler: segment violates K2/K3 "
+                f"(vr={vr:.2f} ar={ar:.2f}) — duration={seg.duration:.3f}s, "
+                f"p0→p1 Δ={np.linalg.norm(seg.p1[:3] - seg.p0[:3]):.2f}mm, "
+                f"|v0|={np.linalg.norm(seg.v0[:3]):.2f}, "
+                f"|v1|={np.linalg.norm(seg.v1[:3]):.2f} mm/s"
+            )
+            if self._strict_feasibility:
+                raise ValueError(msg)
+            logger.warning(msg)
 
     def _sample_segments(
         self,

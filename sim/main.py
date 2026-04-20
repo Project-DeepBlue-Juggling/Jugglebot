@@ -158,7 +158,7 @@ def _parse_sequence(seq_str: str) -> list[tuple[float, np.ndarray]]:
     return schedule
 
 
-def _pose_6dof_from_state(state: PlantState) -> np.ndarray:
+def pose_6dof_from_state(state: PlantState) -> np.ndarray:
     """Extract [x,y,z,rx,ry,rz] from a PlantState."""
     return np.concatenate([state.platform_pos_mm, state.platform_rot])
 
@@ -217,7 +217,7 @@ def _log_step(logger: TelemetryLogger, state: PlantState,
         time=state.time,
         ref_pose=scheduler.target_pose,
         ref_twist=np.zeros(6),
-        actual_pose=_pose_6dof_from_state(state),
+        actual_pose=pose_6dof_from_state(state),
         actual_twist=state.platform_twist,
         cmd_extensions=scheduler.cmd_extensions,
         actual_extensions=state.leg_extensions_mm,
@@ -243,7 +243,7 @@ def _log_mpc_step(logger: TelemetryLogger, state: PlantState,
         time=state.time,
         ref_pose=ref_pose,
         ref_twist=ref_twist if ref_twist is not None else np.zeros(6),
-        actual_pose=_pose_6dof_from_state(state),
+        actual_pose=pose_6dof_from_state(state),
         actual_twist=state.platform_twist,
         cmd_extensions=cmd_ext,
         actual_extensions=state.leg_extensions_mm,
@@ -306,7 +306,7 @@ class InteractiveTargetSource:
         return TargetCommand(
             target_pose=target,
             ref_events=flat_target_to_events(
-                _pose_6dof_from_state(state), state.platform_twist,
+                pose_6dof_from_state(state), state.platform_twist,
                 target, sim_time),
         )
 
@@ -347,7 +347,7 @@ class CatchTargetSource:
         self._build_coordinator()
 
     def update(self, sim_time: float, state: PlantState) -> TargetCommand:
-        current_pose = _pose_6dof_from_state(state)
+        current_pose = pose_6dof_from_state(state)
         hand_pos = state.hand_pos_mm if state.hand_pos_mm is not None else 0.0
 
         spawn = self._coord.should_spawn_ball(sim_time)
@@ -360,6 +360,12 @@ class CatchTargetSource:
             pose = target.pose_6dof
             arrival = target.arrival_time
             twist = target.arrival_twist
+            # TODO(W12): migrate sim catch source to K1–K6 contract — pass
+            # v_max_mmps=mpc.params.max_leg_vel_mmps, tau_s=mpc.params.tau,
+            # no_stretch=True (catch path), clamp_start_twist_mmps=
+            # mpc.params.max_ref_start_twist_mmps, and a feedback_pub.  The
+            # MPC instance is not currently plumbed into this source class;
+            # do that when the K1–K6 sim coverage gap shows up as a real bug.
             ref_events = flat_target_to_events(
                 current_pose, state.platform_twist, pose, sim_time,
                 target_twist=twist, arrival_time=arrival)
@@ -410,7 +416,7 @@ class ThrowCatchTargetSource:
         self._build_coordinator()
 
     def update(self, sim_time: float, state: PlantState) -> TargetCommand:
-        current_pose = _pose_6dof_from_state(state)
+        current_pose = pose_6dof_from_state(state)
         hand_pos = state.hand_pos_mm if state.hand_pos_mm is not None else 0.0
 
         target, hand_cmd = self._coord.update(
@@ -428,6 +434,10 @@ class ThrowCatchTargetSource:
             pose = target.pose_6dof
             arrival = target.arrival_time
             twist = target.arrival_twist
+            # TODO(W12): migrate sim catch source to K1–K6 contract — pass
+            # v_max_mmps=mpc.params.max_leg_vel_mmps, tau_s=mpc.params.tau,
+            # no_stretch=True (catch path), clamp_start_twist_mmps=
+            # mpc.params.max_ref_start_twist_mmps, and a feedback_pub.
             ref_events = flat_target_to_events(
                 current_pose, state.platform_twist, pose, sim_time,
                 target_twist=twist, arrival_time=arrival)
@@ -464,7 +474,7 @@ class InteractiveCatchSource:
         # active_pose stored for future use; controller handles its own ready pose
 
     def update(self, sim_time: float, state: PlantState) -> TargetCommand:
-        current_pose = _pose_6dof_from_state(state)
+        current_pose = pose_6dof_from_state(state)
         hand_pos = state.hand_pos_mm if state.hand_pos_mm is not None else 0.0
         target, hand_cmd, ball_spawn = self._ctrl.update(
             sim_time, current_pose, hand_pos, plant_state=state)
@@ -474,6 +484,10 @@ class InteractiveCatchSource:
             pose = target.pose_6dof
             arrival = target.arrival_time
             twist = target.arrival_twist
+            # TODO(W12): migrate sim catch source to K1–K6 contract — pass
+            # v_max_mmps=mpc.params.max_leg_vel_mmps, tau_s=mpc.params.tau,
+            # no_stretch=True (catch path), clamp_start_twist_mmps=
+            # mpc.params.max_ref_start_twist_mmps, and a feedback_pub.
             ref_events = flat_target_to_events(
                 current_pose, state.platform_twist, pose, sim_time,
                 target_twist=twist, arrival_time=arrival)
@@ -523,7 +537,7 @@ class ContinuousThrowCatchSource:
         self._ctrl = controller
 
     def update(self, sim_time: float, state: PlantState) -> TargetCommand:
-        current_pose = _pose_6dof_from_state(state)
+        current_pose = pose_6dof_from_state(state)
         hand_pos = state.hand_pos_mm if state.hand_pos_mm is not None else 0.0
         result = self._ctrl.update(
             sim_time, current_pose, hand_pos, plant_state=state)
@@ -593,7 +607,7 @@ class ScheduledCatchSource:
         self._coord: ScheduledCoordinator = coordinator
 
     def update(self, sim_time: float, state: PlantState) -> TargetCommand:
-        current_pose = _pose_6dof_from_state(state)
+        current_pose = pose_6dof_from_state(state)
         current_twist = state.platform_twist
         hand_pos = state.hand_pos_mm if state.hand_pos_mm is not None else 0.0
 
@@ -1426,10 +1440,27 @@ def main():
         source = InteractiveTargetSource(raw_input, CONTROL_DT)
 
     elif args.trajectory:
-        source = WaypointTargetSource(waypoints)
+        # W4: wire v_max + tau for K1–K6 enforcement.
+        v_max = mpc.params.max_leg_vel_mmps if mpc is not None else None
+        tau = mpc.params.tau if mpc is not None else None
+        clamp = (mpc.params.max_ref_start_twist_mmps
+                 if mpc is not None else None)
+        source = WaypointTargetSource(
+            waypoints,
+            clamp_start_twist_mmps=clamp,
+            v_max_mmps=v_max, tau_s=tau,
+        )
 
     elif args.mpc and schedule is not None:
-        source = StaticTargetSource(schedule)
+        v_max = mpc.params.max_leg_vel_mmps if mpc is not None else None
+        tau = mpc.params.tau if mpc is not None else None
+        clamp = (mpc.params.max_ref_start_twist_mmps
+                 if mpc is not None else None)
+        source = StaticTargetSource(
+            schedule,
+            clamp_start_twist_mmps=clamp,
+            v_max_mmps=v_max, tau_s=tau,
+        )
 
     elif args.hardware:
         # Hardware mode with no explicit target: receive targets from ROS2
@@ -1437,7 +1468,15 @@ def main():
         # path where spacemouse/GUI/catch all route through mpc_bridge_node.
         from input.zmq_target import ZmqTargetSource
         default_z = plant.home_extensions_mm[0] if hasattr(plant, 'home_extensions_mm') else 170.0
-        source = ZmqTargetSource(default_z_mm=default_z)
+        v_max = mpc.params.max_leg_vel_mmps if mpc is not None else None
+        tau = mpc.params.tau if mpc is not None else None
+        clamp = (mpc.params.max_ref_start_twist_mmps
+                 if mpc is not None else None)
+        source = ZmqTargetSource(
+            default_z_mm=default_z, v_max_mmps=v_max, tau_s=tau,
+            clamp_start_twist_mmps=clamp,
+            feedback_pub=feedback_pub,  # W11 catch rejection / stretch
+        )
         print("ZmqTargetSource: waiting for targets from mpc_bridge_node on :5558")
 
     # ---- Run ----

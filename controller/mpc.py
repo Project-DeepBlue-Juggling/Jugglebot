@@ -377,6 +377,15 @@ class MPCController:
         self._last_ref_traj: np.ndarray | None = None
         self._last_twist_traj: np.ndarray | None = None
         self._last_accel_traj: np.ndarray | None = None
+        # W7: snapshot of the reference at the last successful solve — used
+        # by _handle_failure to detect a large ref-shift during a fallback
+        # streak.  On large shift OR 500 ms staleness, walk-forward is
+        # abandoned in favour of hold_extrap (plant-tracking) to prevent
+        # the 223902 cascade where walk-forward committed to an old plan
+        # while the target flipped.
+        self._ref_at_last_success_mid: np.ndarray | None = None
+        self._twist_at_last_success: np.ndarray | None = None
+        self._t_at_last_success: float | None = None
 
         if params.prime_solver:
             self._prime_solver(
@@ -478,6 +487,9 @@ class MPCController:
         # Numeric bounds (applied at runtime via lbw/ubw/lbg/ubg arrays,
         # not baked into the compiled callbacks)
         'stroke_mm', 'stroke_margin_mm', 'max_leg_vel_mmps',
+        # Target-source-side runtime bound — clamps the FK-derived start
+        # twist used to seed the quintic ref; does not touch the NLP.
+        'max_ref_start_twist_mmps',
     })
 
     def _nlp_source_hash(self) -> str:
@@ -493,6 +505,16 @@ class MPCController:
         h = hashlib.sha256()
         mpc_py = Path(__file__).resolve()
         h.update(mpc_py.read_bytes())
+        # W9: include explicit semantic-version constants from the reference
+        # and feasibility layers.  Bumping either constant forces an AOT
+        # rebuild; pure docstring / comment / formatting edits do NOT (which
+        # is correct — they cannot affect generated NLP structure).  When the
+        # K1–K6 contract OR the closed-form peak math changes, the editor
+        # MUST bump the corresponding _*_VERSION constant.
+        from .target import _REFERENCE_LAYER_VERSION
+        from .feasibility import _FEASIBILITY_VERSION
+        h.update(f'reference_layer_v{_REFERENCE_LAYER_VERSION}'.encode())
+        h.update(f'feasibility_v{_FEASIBILITY_VERSION}'.encode())
 
         structural_params = {
             k: v for k, v in asdict(self._params).items()
@@ -822,6 +844,7 @@ class MPCController:
         ref_events: List[ReferenceEvent] | None = None,
         boost_vel_weights: bool = False,
         t_now: float | None = None,
+        warm_start_valid: bool = True,
     ) -> tuple[np.ndarray, np.ndarray, dict]:
         """Solve MPC for one step.
 
@@ -849,6 +872,13 @@ class MPCController:
             ``state.time``.  The runner passes a separately-maintained
             ``t_ref`` that is frozen while the solver is in a fallback
             class so the reference does not run away from the platform.
+        warm_start_valid : bool, default True
+            W5 hint: when False, the caller has detected that the new
+            reference differs structurally from the previous one
+            (large distance or direction reversal per
+            ``is_warm_start_invalidating``).  The MPC invalidates
+            ``_prev_w`` / ``_prev_lam_g`` / ``_prev_lam_x`` /
+            ``_timeout_hint`` and falls back to W6's per-node-IK cold start.
 
         Returns
         -------
@@ -864,6 +894,21 @@ class MPCController:
             Diagnostics: solve_time_ms, status, cost, constraint_violation.
         """
         target = np.asarray(target_pose, dtype=float)
+
+        # W5: invalidate warm-start state on caller-signalled structural shift.
+        if not warm_start_valid:
+            if self._prev_w is not None or self._timeout_hint is not None:
+                logger.info(
+                    "MPC: warm_start_valid=False — invalidating warm-start "
+                    "state for this solve"
+                )
+            self._prev_w = None
+            self._prev_lam_g = None
+            self._prev_lam_x = None
+            self._timeout_hint = None
+            self._timeout_lam_g = None
+            self._timeout_lam_x = None
+            self._fallback_step = 0
 
         ref_traj, twist_traj, accel_traj = self._build_reference(
             state, target, ref_events=ref_events, t_now=t_now)
@@ -970,6 +1015,14 @@ class MPCController:
                 self._prev_w = w_opt
                 self._prev_lam_g = np.asarray(sol['lam_g']).ravel()
                 self._prev_lam_x = np.asarray(sol['lam_x']).ravel()
+                # W7: snapshot ref mid-horizon at success so _handle_failure
+                # can detect ref shifts that happened AFTER this success.
+                # Mid-node (min(N, 5)) avoids edge-effects at the ref's
+                # extrapolation ends.
+                mid_k = min(self._N, 5)
+                self._ref_at_last_success_mid = ref_traj[mid_k].copy()
+                self._twist_at_last_success = twist_traj[0].copy()
+                self._t_at_last_success = _time.perf_counter()
 
                 cmd = w_opt[:6].copy()
                 cmd_next = w_opt[6:12].copy()   # u[1]: next-step command
@@ -1040,41 +1093,91 @@ class MPCController:
     # Warm-start helpers
     # ------------------------------------------------------------------
 
+    # W6: budget guard — if per-node-IK cold-start exceeds this fraction of
+    # max_cpu_time, revert to the cheap linear fallback.  Empirical
+    # _numerical_ik p95 is ~118 µs on Jetson, so (N+1)*IK ≈ 1.3 ms at N=10,
+    # well under 30% of 22 ms.  The guard is defense-in-depth against
+    # pathological BLAS behaviour, not expected to fire in steady state.
+    _COLD_START_BUDGET_FRACTION = 0.30
+
     def _cold_start(self, p_cur, q_cur, ref_traj):
-        """Generate initial guess for the first solve (or after reset).
+        """Generate initial guess for the first solve (or after W5 reset).
+
+        W6: per-node IK cold-start with budget guard.
 
         Strategy:
-          * Pose guess (``p`` block): use ``ref_traj`` directly — each node's
-            optimal pose is the reference pose at that node (the optimiser
-            only needs to tolerate tracking and dynamics constraints).
-          * q / u guess: a single numerical IK call for the final reference
-            pose gives ``q_final``; intermediate nodes are a linear q-space
-            interpolation from ``q_cur`` toward ``q_final``.  The IK
-            equality constraints will be driven to feasibility by IPOPT;
-            the guess only needs to be close.
+          * Pose block (``p``): use ``ref_traj`` directly — each node's
+            optimal pose is the reference pose at that node.
+          * Per-node IK for the ``q`` / ``u`` blocks: for each of the N+1
+            reference nodes, compute the closed-form numerical IK of the
+            reference pose.  ``_numerical_ik`` is a closed-form forward
+            calculation (pose → leg lengths), not an iterative FK — it
+            cannot diverge.  The legacy concern about "N IK calls risking
+            non-convergence" referred to the plant-side FK (iterative),
+            which this function does not use.
+          * Budget guard: if the IK loop itself exceeds
+            ``_COLD_START_BUDGET_FRACTION · max_cpu_time``, fall back to
+            the legacy linear-interpolation seed for the remaining nodes.
 
-        Why one IK call instead of N:
-          * N IK calls per cold-start risk FK non-convergence — observed 5
-            in a 15s run during solver saturation (2026-04-17-130811).
-          * A monotonic q-space sweep is a cleaner seed than N
-            independently-IK'd poses (which may overshoot individual nodes).
+        Rationale: IPOPT's first iteration from a per-node-IK seed is
+        feasible-or-near-feasible on every tracked reference — the
+        linear-interp seed leaves intermediate ``q`` values in physically
+        inconsistent configurations relative to the intermediate ``p``
+        nodes, so IPOPT spends 2–4 iterations just reconciling the two.
+        The improved seed is particularly important after W5 invalidates
+        warm-start on large direction changes (exactly the 223902 scenario).
         """
         N = self._N
         margin = self._params.stroke_margin_mm
         stroke = self._params.stroke_mm
         w0 = np.zeros(self._n_w)
 
-        q_final = np.clip(self._numerical_ik(ref_traj[N]), 0.0, stroke)
+        # Time-budgeted per-node IK.  If we run out of budget before
+        # reaching node N, fill the remainder with linear-interp from the
+        # last IK'd q.  This is strictly non-worse than the legacy cold
+        # start, since the legacy path only ever computed one IK call.
+        budget_s = (self._params.max_cpu_time
+                    * self._COLD_START_BUDGET_FRACTION)
+        t0 = _time.perf_counter()
 
+        q_final_approx = np.clip(self._numerical_ik(ref_traj[N]), 0.0, stroke)
+        q_nodes = np.empty((N + 1, 6))
+        q_nodes[0] = q_cur
+        last_ik_idx = N  # assume success
+        for k in range(1, N + 1):
+            if _time.perf_counter() - t0 > budget_s:
+                # Out of budget — stop IK'ing further nodes.
+                last_ik_idx = k - 1
+                logger.info(
+                    "_cold_start: per-node IK budget exceeded at node %d/%d; "
+                    "linear-interpolating remainder", k, N,
+                )
+                break
+            q_nodes[k] = np.clip(
+                self._numerical_ik(ref_traj[k]), 0.0, stroke,
+            )
+        else:
+            last_ik_idx = N
+
+        # Fill any non-IK'd tail with linear interpolation toward q_final.
+        if last_ik_idx < N:
+            q_anchor = q_nodes[last_ik_idx]
+            remaining = N - last_ik_idx
+            for j, k in enumerate(range(last_ik_idx + 1, N + 1), start=1):
+                alpha = j / remaining
+                q_nodes[k] = q_anchor * (1.0 - alpha) + q_final_approx * alpha
+
+        # Pack the seed into w0.  Layout matches _build_problem:
+        #   [u[0..N-1]] [q[1..N]] [p[1..N]]
         for k in range(N):
-            alpha = (k + 1) / N
-            # p: use the node's reference pose directly
+            # p block: node (k+1) takes ref_traj[k+1]
             w0[12 * N + k * 6: 12 * N + (k + 1) * 6] = ref_traj[k + 1]
-            # q: linear interpolate in joint space from q_cur toward q_final
-            q_k = q_cur * (1.0 - alpha) + q_final * alpha
-            w0[6 * N + k * 6: 6 * N + (k + 1) * 6] = q_k
-            # u: clamp q_k to command bounds
-            w0[k * 6: (k + 1) * 6] = np.clip(q_k, margin, stroke - margin)
+            # q block: node (k+1) takes q_nodes[k+1]
+            w0[6 * N + k * 6: 6 * N + (k + 1) * 6] = q_nodes[k + 1]
+            # u block: clamp q_nodes[k+1] to command bounds
+            w0[k * 6: (k + 1) * 6] = np.clip(
+                q_nodes[k + 1], margin, stroke - margin,
+            )
         return w0
 
     def _numerical_ik(self, pose_6dof: np.ndarray) -> np.ndarray:
@@ -1299,7 +1402,37 @@ class MPCController:
         dt0 = self._params.dt_schedule[0]
         N = self._N
 
+        # W7: detect when walk-forward on the old plan is unsafe.  Two
+        # conditions force a switch to plant-tracking hold_extrap:
+        #   (1) the current reference mid-node has moved > 20 mm vs the
+        #       snapshot taken at last success, OR any linear velocity axis
+        #       has reversed direction (plant is committed to one direction
+        #       while ref wants the other — the 223902 cascade mechanism);
+        #   (2) the last success is > 500 ms old (the cached plan is too
+        #       stale to be a trusted commander any further).
+        walk_forward_unsafe = False
+        if (self._ref_at_last_success_mid is not None
+                and self._last_ref_traj is not None):
+            mid_k = min(self._N, 5)
+            ref_mid_now = self._last_ref_traj[mid_k]
+            delta = ref_mid_now[:3] - self._ref_at_last_success_mid[:3]
+            if np.max(np.abs(delta)) > 20.0:
+                walk_forward_unsafe = True
+            if (not walk_forward_unsafe
+                    and self._twist_at_last_success is not None
+                    and self._last_twist_traj is not None):
+                v_new = self._last_twist_traj[0]
+                v_old = self._twist_at_last_success
+                for i in range(3):
+                    if abs(v_old[i]) > 10.0 and v_new[i] * v_old[i] < 0:
+                        walk_forward_unsafe = True
+                        break
+        if self._t_at_last_success is not None:
+            if _time.perf_counter() - self._t_at_last_success > 0.5:
+                walk_forward_unsafe = True
+
         if (self._prev_w is not None
+                and not walk_forward_unsafe
                 and self._consecutive_failures <= self._params.max_consecutive_failures):
             # Walk forward along the last successful plan: on the k-th
             # consecutive fallback emit prev_w[6k : 6(k+1)] — i.e. u[k]
@@ -1472,3 +1605,7 @@ class MPCController:
         self._last_ref_traj = None
         self._last_twist_traj = None
         self._last_accel_traj = None
+        # W7 snapshot state
+        self._ref_at_last_success_mid = None
+        self._twist_at_last_success = None
+        self._t_at_last_success = None

@@ -288,35 +288,84 @@ def make_mpc_mode(mode: str) -> dict:
 def make_target_feedback(arrival_time: float,
                          accepted: bool,
                          source: str = '',
-                         violations: list | None = None) -> dict:
-    """Create a target feedback message (accept/reject).
+                         violations: list | None = None,
+                         *,
+                         feedback_type: str = 'accepted',
+                         reason: str | None = None,
+                         stretch_ms: float | None = None) -> dict:
+    """Create a target feedback message.
 
-    Published by the MPC process after evaluating a catch target.  Consumed
-    by the catch coordinator node to maintain its blacklist.
+    Published by the MPC process after evaluating a target.  Consumed by
+    the catch coordinator node (and future consumers).
+
+    Three ``feedback_type`` values (W11 of the K1–K6 reference-feasibility
+    cycle — see ``docs/reference_layer_contract.md``):
+
+    * ``'accepted'`` — legacy/default tag for the original accept/reject
+      protocol.  ``accepted`` is True when the solver converged and the
+      target is feasible; ``accepted`` MAY be False when the solver failed
+      (in which case ``violations`` carries the failure reasons).  This is
+      the backward-compatible default for non-catch callers and for the
+      pre-K1–K6 catch-feedback path in ``run_mpc.py`` and ``sim/main.py``.
+      The K1–K6 feedback types (``'rejected_infeasible'`` /
+      ``'stretch_warning'``) carry stronger guarantees on the ``accepted``
+      field.
+    * ``'rejected_infeasible'`` — the reference-feasibility layer refused to
+      stretch the requested trajectory (catch-path only; ``no_stretch=True``
+      in ``make_feasible_events``).  ``accepted`` MUST be False, ``reason``
+      carries a short diagnostic string (e.g.
+      ``"peak_exceeds_no_stretch_allowed (segment 0: vr=1.49 ar=0.47)"``).
+      The platform continues the last feasible trajectory — see
+      ``ZmqTargetSource.update()``.
+    * ``'stretch_warning'`` — the reference-feasibility layer stretched the
+      trajectory's arrival_time to satisfy K2/K3.  ``accepted`` MUST be True
+      (the target will still be reached, just later than requested).
+      ``stretch_ms`` is the delay in milliseconds.  Intended for downstream
+      consumers that might want to re-plan around the delay; the existing
+      catch coordinator ignores this case (``accepted=True`` routes to
+      ``report_acceptance``, which is correct).
 
     Parameters
     ----------
     arrival_time : float
-        The ``arrival_time`` from the original target request (used to
-        correlate feedback with the submitted target).
+        Original ``arrival_time`` for correlation.
     accepted : bool
-        True if the MPC solver converged and the predicted trajectory
-        reaches the target by ``arrival_time``.  False if the solver
-        failed or the target is unreachable in time.
+        Required relationship with ``feedback_type``:
+          - ``'accepted'``: True on solver success, False on solver failure
+            (legacy callers).  ``violations`` carries the failure reasons
+            in the False case.
+          - ``'stretch_warning'``: MUST be True (the target will still be
+            reached, just later than requested).
+          - ``'rejected_infeasible'``: MUST be False.
     source : str
         Input source identifier (e.g. 'catch').
     violations : list of str or None
-        Human-readable reasons for rejection (e.g. ['solver_failed',
-        'unreachable_in_time']).  Empty/None when accepted.
+        Legacy field — human-readable solver-failure reasons when present.
+        Backward compat for the original accept/reject protocol.  Non-None
+        only on solver-failure rejections; K1–K6 rejections use ``reason``
+        instead.
+    feedback_type : str, default 'accepted'
+        One of 'accepted' / 'rejected_infeasible' / 'stretch_warning'.
+    reason : str or None
+        Machine-readable rejection reason from ``make_feasible_events``.
+        Only present when ``feedback_type == 'rejected_infeasible'``.
+    stretch_ms : float or None
+        Arrival-time delay in milliseconds.  Only present when
+        ``feedback_type == 'stretch_warning'``.
     """
     msg = {
         'type': 'target_feedback',
         'arrival_time': arrival_time,
         'accepted': accepted,
         'source': source,
+        'feedback_type': feedback_type,
     }
     if violations:
         msg['violations'] = violations
+    if reason is not None:
+        msg['reason'] = reason
+    if stretch_ms is not None:
+        msg['stretch_ms'] = stretch_ms
     return msg
 
 
