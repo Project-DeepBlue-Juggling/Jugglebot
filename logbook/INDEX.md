@@ -6,6 +6,7 @@ Browse with `/logbook`, create entries with `/investigate` or `/logbook --new <t
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-04-20 | resolved | | Add DOCUMENTATION_GUIDE.md as single reference for documentation architecture | [2026-04-20-documentation-guide-single-reference](2026-04-20-documentation-guide-single-reference.md) |
 | 2026-04-20 | resolved | hardware-bringup — Phase 4 (moderate motions) | K1–K6 reference-feasibility contract resolves MPC_OVERSHOOT_SATURATION | [2026-04-20-k1-k6-reference-feasibility-resolution](2026-04-20-k1-k6-reference-feasibility-resolution.md) |
 | 2026-04-19 | in-progress | hardware-bringup — Phase 4 (moderate motions) | Bundle A quintic-ref settling lag + ZMQ live-twist feedback trap | [2026-04-19-bundle-a-quintic-ref-settling-and-live-twist-trap](2026-04-19-bundle-a-quintic-ref-settling-and-live-twist-trap.md) |
 | 2026-04-19 | in-progress | hardware-bringup — Phase 4 (moderate motions) | Bundle A — ref-from-plant-state on move transitions (MPC overshoot-saturation fix) | [2026-04-19-bundle-a-mpc-overshoot-saturation-fix](2026-04-19-bundle-a-mpc-overshoot-saturation-fix.md) |

@@ -28,6 +28,9 @@ plans/active/                ← in-progress plans and implementation reports
 plans/archived/              ← completed or superseded plans
 ```
 
+**Documentation:**
+- `DOCUMENTATION_GUIDE.md` is the single reference for how documentation is organised across the codebase (logbook, plans, `docs/`, subsystem docs, `.claude/`, inline). Read it before creating or editing any markdown artifact, or when you're unsure which layer a piece of information belongs in.
+
 **Engineering logbook & planning:**
 - All code changes are logged in `logbook/` — see `logbook/README.md` for the full guide
 - `/investigate` — hardware diagnosis-to-fix pipeline; `/log` — log non-hardware changes; `/logbook` — browse/search entries
