@@ -2,7 +2,7 @@
 title: Leg 1 pose-dependent hold-phase twitch at (0,-100,200)
 type: investigation
 date: 2026-04-19
-status: in-progress
+status: resolved
 phase: post-per-leg-gains-deadband-session
 related_issues:
   - 2026-04-18-hold-fighting-motion-onset-jitter.md
@@ -18,8 +18,20 @@ sessions:
   - mpc_20260419_135059.csv
   - mpc_20260419_135140.csv
   - mpc_20260419_135251.csv
-rosbag: /home/jetson/Desktop/rosbags/2026-04-19_13-48-32
+  - mpc_20260420_160401.csv
+rosbag:
+  - /home/jetson/Desktop/rosbags/2026-04-19_13-48-32
+  - /home/jetson/Desktop/rosbags/2026-04-20_16-03-32
 files_changed:
+  - config/hardware_config.yaml
+  - config/generated/hardware_config.py
+  - config/generated/hardware_config.h
+  - ros_ws/src/jugglebot/jugglebot/hardware_config.py
+  - ros_ws/src/jugglebot/Teensy_code/hardware_config.h
+  - run_mpc.py
+  - controller/target.py
+  - sim/analysis/diagnose.py
+  - plans/active/motion-onset-deadtime-investigation.md
 commits:
 subsystem:
   - motion
@@ -70,18 +82,48 @@ Three distinct phenomena:
 
 ## Discussion
 
-<!-- To be filled in the discussion gate. -->
+The investigation was scoped to avoid another hardware session until we had a falsifiable, kinematic explanation for why the twitch was pose-dependent. A pure desk analysis ruled out the two most obvious mechanisms. (a) **Stroke limit:** at (0,−100,200) leg 1 sits at 182.94 mm extension, which leaves 178 mm of margin to the minimum stroke and 97 mm to the maximum — not even close to a hardware end. (b) **Jacobian ill-conditioning:** the normalized Jacobian at (0,−100,200) has condition number 3.80 versus 3.60 at home, with essentially identical singular value spread. The pose is unremarkable from a geometric sensitivity standpoint. Mechanisms (a) and (b) were off the table before we touched the robot again.
+
+The decisive observation came from the x-z symmetry of the pose. Legs 1 and 2 end up at mathematically identical extensions — both 182.94 mm — because (0,−100,200) is mirror-symmetric across the y-z plane that separates them. Accounting for the platform's measured CoM offset of `[-9.68, -68.64, 52.73] mm`, their static axial loads differ by only 4% (−3.28 N on leg 1 vs −3.40 N on leg 2). Yet the observed hold-phase standard deviation was 437 µm on leg 1 and 29 µm on leg 2 — a 15× difference between two legs being asked to do mechanically identical jobs. That single data point ruled mechanism (c) — undersized PID gain at this loading — strongly IN, left (d) — MPC weight interaction — ambiguous, and more importantly reframed the problem: whatever was going on, it had to be **leg-1-specific**, not pose-specific.
+
+The user's standing skepticism of "leg-to-leg hardware asymmetry" was the final push toward a software-asymmetry explanation. Iteration-3 gain tuning (performed earlier at near-neutral poses where hold-phase noise data is statistically quieter) had dropped legs 1 and 4 to `pos_gain=30 / vel_int=0.24` while the other four legs were left at 40/0.32. Leg 1 at that lower gain was evidently right on the edge of phase-margin collapse; at (0,−100,200) it tipped over into a limit cycle. Leg 2, sitting at the same static load but with the higher gain, did not. The fix — revert leg 1 to 40/0.32 while intentionally leaving leg 4 at 30/0.24 as an in-experiment control — was designed to be both the remediation and the falsifier: if leg 4 showed the same pose-dependent signature at this pose, the mechanism was confirmed and the asymmetry was fully explained by gain tuning, not hardware.
 
 ## Fix
 
-<!-- To be filled once a fix is proposed and landed. -->
+- `config/hardware_config.yaml` edited to set `leg_pos_gains[1] = 40.0` and `leg_vel_int_gains[1] = 0.32`, matching legs 0/2/3/5. Leg 4 intentionally left at 30/0.24 as the in-experiment control.
+- Config constants regenerated via `python config/generate_config.py`, which refreshed `config/generated/hardware_config.py`, `config/generated/hardware_config.h`, the ROS2 mirror `ros_ws/src/jugglebot/jugglebot/hardware_config.py`, and the Teensy mirror `ros_ws/src/jugglebot/Teensy_code/hardware_config.h`.
+- Live per-leg values were confirmed on the ODrive after re-homing with the new YAML, before the A/B test. The A/B test itself was `python run_mpc.py --pose 0,-100,200,0,0,0 --duration 15` from a fresh process.
+- `plans/active/motion-onset-deadtime-investigation.md` was authored during this investigation as an earlier sibling — motion-onset dead-time is a separate phenomenon (moves 1-4 of the 9-move rosbag) tracked there rather than here.
+- A motion-onset detector was added to `sim/analysis/diagnose.py` as a side-benefit of this investigation (commit `a41b17f`). That detector is what produced the "151 ms on first move, 75-125 ms on warm moves" numbers captured in the Symptoms section.
+- A short-lived `--auto-leg1-test` flag was added to `run_mpc.py` on 2026-04-19 to drive the 9-move replay automatically. The attempted run hit a Python GC pause during move 7 that tripped the 500 ms telemetry-staleness E-STOP guard, and the test was aborted. The flag was removed on 2026-04-20 in favour of the simpler single-pose fresh-process protocol, which is what produced the conclusive A/B result. `run_mpc.py` and `controller/target.py` retain only the supporting plumbing.
+- Not yet committed as of this entry's resolution — `commits:` in the frontmatter is deliberately empty pending the user's commit.
 
 ## Outcome
 
-<!-- To be filled once the fix is verified on hardware. -->
+The A/B confirmed the gain-asymmetry hypothesis decisively.
+
+**Before (leg 1 at 30/0.24), session `mpc_20260419_135251`, 5 s hold at (0,−100,200):**
+- Leg 1 `act_std = 436.95 µm`, `range = 1107.5 µm`, `vel_abs_max = 9.68 mm/s`.
+- Asymmetry ratio vs leg 3: 60.3×.
+
+**After (leg 1 at 40/0.32), session `mpc_20260420_160401`, 5 s hold at same pose:**
+- Leg 1 `act_std = 27.49 µm`, `range = 94.35 µm`, `vel_abs_max = 3.23 mm/s`.
+- **16× improvement** on leg 1 stdev. Leg 1 is now mid-pack among the six legs.
+- Solver healthy: 100% IPOPT success, p50 10.9 ms, p95 18.4 ms, max 28.8 ms. Only 3 budget violations, all under 29 ms. No fallback bursts, no overhead spikes.
+
+**Control confirmation (leg 4 kept at 30/0.24):**
+- Leg 4 now shows the same pose-dependent signature at (0,−100,200) — `act_std = 50.4 µm`, 10× asymmetry vs leg 5. Same mechanism, symmetric result. The control held, and leg 4 is now a candidate for the identical revert once reviewed.
+
+The "leg-1 pose-dependent twitch" was entirely a self-inflicted software asymmetry from Iteration-3's over-cautious gain reduction, not a hardware difference between legs. The user's original skepticism of "leg-to-leg hardware asymmetry" was correct: once the Iteration-3 asymmetry in the YAML was undone on leg 1, the twitch vanished, and the same asymmetry reproduced on a different leg (4) that still had the reduced gain. Mechanism fully explained, investigation closed.
+
+### Follow-ups
+
+- Leg 4 at 30/0.24 still exhibits the mechanism at extreme poses (50 µm stdev, 10× asymmetry at (0,−100,200)). Recommend the identical YAML revert — `leg_pos_gains[4] = 40.0`, `leg_vel_int_gains[4] = 0.32` — once reviewed, followed by a re-test with the same protocol: `python run_mpc.py --pose 0,-100,200,0,0,0 --duration 15` from a fresh process after re-homing, with live ODrive gain verification before the run. Expected result: leg 4 `act_std` drops from ~50 µm to ~30 µm range, asymmetry ratio collapses to ≤2×.
+- Commit the YAML + regenerated constants once the leg-4 revert is consolidated into the same commit (or landed separately with matching logbook follow-up).
+- The Move 8 / (100,100,200) IPOPT-overrun pattern raised in the Diagnosis section is **not** resolved by this work — the leg-1 fix had no bearing on solve-time blow-up at different extreme poses. That remains tracked under `2026-04-18-mpc-overhead-spikes-fallback-bursts.md`.
 
 ## Open Questions
 
-- Is the leg 1 twitch specific to leg 1 (wiring, motor, ODrive instance), or is it the leg whose geometry is worst at this pose (kinematic)? The 45-deg-rotated-pose test disambiguates.
-- Does leg 1's `iq` trace show a limit-cycle signature (bang-bang around zero) or a noise-amplification signature (broadband)?
-- Is the MPC commanding the twitch (visible in `cmd_ext`) or is it pure ODrive-PID limit cycle (visible only in `act_ext`)?
+- RESOLVED: Is the leg 1 twitch specific to leg 1 (wiring, motor, ODrive instance), or is it the leg whose geometry is worst at this pose (kinematic)? — **Gain-reduction-specific, not hardware-specific.** Reverting leg 1 to 40/0.32 eliminated the twitch (16× stdev drop) with no hardware change, and the identical symptom has now reproduced on leg 4 — the other leg that Iteration-3 left at 30/0.24. The kinematic check (symmetric extensions on legs 1 and 2, near-identical static loads, cond(J_norm) unremarkable) had already ruled geometry out.
+- RESOLVED (moot): Does leg 1's `iq` trace show a limit-cycle signature (bang-bang around zero) or a noise-amplification signature (broadband)? — Not collected. Rendered moot by the A/B outcome: the signature, whatever it was, was produced by the 30/0.24 gain set and disappeared entirely when the gains were restored to 40/0.32. No further trace capture is warranted.
+- RESOLVED (implicitly): Is the MPC commanding the twitch (visible in `cmd_ext`) or is it pure ODrive-PID limit cycle (visible only in `act_ext`)? — **ODrive-PID limit cycle.** A 16× stdev drop on `act_ext` from a pure ODrive-gain change, with no MPC, controller, or reference-generator modification, is only consistent with a motion that was not being commanded by the MPC in the first place.

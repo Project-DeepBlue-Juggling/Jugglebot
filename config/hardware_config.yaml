@@ -192,9 +192,13 @@ jugglebot_odrive_defaults:
   #           the noisiest at rest). 30/0.24 splits the difference.
   #   leg 4:  40/0.32 → 30/0.24 (first reduction — ranked 2nd-worst hold-stdev
   #           at z=220 in session 094723, mid-pack at z=170).
-  # 2026-04-19 (leg-1 twitch test): leg 1 reverted to 40/0.32 to test whether
-  # the reduced gain is the cause of the 436.9 μm hold-stdev observed at pose
-  # (0,−100,200) in mpc_20260419_135251. Leg 4 left at 30/0.24 as a control.
+  # 2026-04-20 iteration 2 reversal for leg 1: reverted to 40/0.32 after the
+  # reduced gain was shown to cause a 436.9 μm pose-dependent hold twitch at
+  # (0,−100,200) (mpc_20260419_135251). Single-pose A/B in session
+  # mpc_20260420_160401 confirmed the revert: leg 1 stdev 436.9 → 27.5 μm at
+  # the same pose (16× improvement). Leg 4 intentionally left at 30/0.24 as
+  # a control; it now shows the same pose-dependent signature (50 μm at
+  # (0,−100,200)) and is a candidate for the same revert once reviewed.
   # See logbook/2026-04-19-leg1-pose-dependent-hold-twitch.md.
   # Ratio pos_gain : vel_int_gain held at 125 : 1 for all legs.
   # Methodology: plans/active/leg-gain-tuning-methodology.md (Level 1).

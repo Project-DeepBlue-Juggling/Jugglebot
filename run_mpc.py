@@ -64,18 +64,6 @@ from controller.telemetry import TelemetryLogger
 from controller.runner import run_mpc_loop, MpcLoopHooks
 
 
-_LEG1_TEST_POSES = [
-    np.array([0.0,    0.0, 175.0, 0.0, 0.0, 0.0]),
-    np.array([0.0,    0.0, 180.0, 0.0, 0.0, 0.0]),
-    np.array([0.0,    0.0, 185.0, 0.0, 0.0, 0.0]),
-    np.array([0.0,    0.0, 190.0, 0.0, 0.0, 0.0]),
-    np.array([0.0,    0.0, 170.0, 0.0, 0.0, 0.0]),
-    np.array([0.0,    0.0, 220.0, 0.0, 0.0, 0.0]),
-    np.array([0.0,    0.0, 170.0, 0.0, 0.0, 0.0]),
-    np.array([100.0, 100.0, 200.0, 0.0, 0.0, 0.0]),
-    np.array([0.0, -100.0, 200.0, 0.0, 0.0, 0.0]),
-]
-
 # --auto-s-sweep: 4-pose hold program for pos_setpoint HF-noise S-weight study.
 # Each pose held with ``_S_SWEEP_HOLD_S`` of dwell so FFT has enough samples
 # to resolve the 0.1–20 Hz cmd spectrum.  Intentionally revisits the known
@@ -106,12 +94,6 @@ def parse_args():
                         'Z is STOW-relative; active position ≈ 170mm.')
     p.add_argument('--sequence', type=str, default=None,
                    help='Timed pose sequence: "pose@time pose@time ..."')
-    p.add_argument('--auto-leg1-test', dest='auto_leg1_test',
-                   action='store_true',
-                   help='TEMPORARY: replay the 9-move session from '
-                        '2026-04-19_13-48-32 for leg-1 gain A/B. Advances '
-                        'each move on convergence (not on a timer) and stows '
-                        'the platform on completion or exception.')
     p.add_argument('--auto-s-sweep', dest='auto_s_sweep',
                    action='store_true',
                    help='TEMPORARY: hold at 4 poses (Active, centered-200, '
@@ -197,18 +179,12 @@ def main():
     args = parse_args()
 
     # --- Target source selection ---
-    if args.auto_leg1_test and args.auto_s_sweep:
-        raise SystemExit("--auto-leg1-test and --auto-s-sweep are mutually exclusive.")
     if args.mpc_s is not None and not (0.0 < args.mpc_s < 0.5):
         raise SystemExit(
             f"--mpc-s={args.mpc_s} is outside the safe range (0, 0.5). "
             f"Values >=0.5 cause cmd drift per offline study.")
 
-    if args.auto_leg1_test:
-        schedule = None
-        source_label = f"Auto leg-1 test: {len(_LEG1_TEST_POSES)} poses + STOW"
-        default_duration = 240.0
-    elif args.auto_s_sweep:
+    if args.auto_s_sweep:
         schedule = None
         source_label = (f"Auto S-sweep: {len(_S_SWEEP_POSES)} poses + STOW "
                         f"(hold {_S_SWEEP_HOLD_S:.0f}s each)")
@@ -311,11 +287,7 @@ def main():
         v_max_mmps=mpc.params.max_leg_vel_mmps,
         tau_s=mpc.params.tau,
     )
-    if args.auto_leg1_test:
-        source = AutoSequenceTargetSource(_LEG1_TEST_POSES, **_src_kwargs)
-        print(f"AutoSequenceTargetSource: "
-              f"{len(_LEG1_TEST_POSES)} poses + terminal STOW")
-    elif args.auto_s_sweep:
+    if args.auto_s_sweep:
         source = AutoSequenceTargetSource(
             _S_SWEEP_POSES, hold_s=_S_SWEEP_HOLD_S, **_src_kwargs,
         )
@@ -396,7 +368,7 @@ def main():
         """Drive the platform to STOW via the MPC on an unexpected exit
         from an auto-* path.  Skipped when motor_guard is already latched
         in ESTOP (commands would be ignored)."""
-        if not (args.auto_leg1_test or args.auto_s_sweep):
+        if not args.auto_s_sweep:
             return
         if getattr(plant, 'estop_requested', False):
             print("Stow cleanup skipped: motor_guard already in ESTOP.")
