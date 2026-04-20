@@ -316,6 +316,31 @@ function gridShapeFor(n) {
 }
 
 /**
+ * Indices of charts that sit at the bottom of their column in the current
+ * layout — these are the ones that render the x-axis tick labels.
+ *
+ * The grid uses CSS `grid-auto-flow: column`, so visible cells fill
+ * top-to-bottom in column 1, then column 2, and so on, in DOM (motor-
+ * numeric) order.  For visible position k in a layout with `rows` per
+ * column, the bottom-of-column slot is reached when k % rows == rows - 1
+ * OR when k is the last visible chart (partial trailing column).
+ */
+function computeBottomOfColumnIds() {
+    const visible = [];
+    for (let i = 0; i < MOTOR_COUNT; i++) {
+        if (visibleCharts.has(i)) visible.push(i);
+    }
+    const n = visible.length;
+    if (n === 0) return new Set();
+    const { rows } = gridShapeFor(n);
+    const bottom = new Set();
+    for (let k = 0; k < n; k++) {
+        if (k % rows === rows - 1 || k === n - 1) bottom.add(visible[k]);
+    }
+    return bottom;
+}
+
+/**
  * Apply the grid template and hidden classes based on the current
  * visibleCharts set, then resize + repaint so uPlot adapts and the
  * freshly-unhidden charts immediately display their cached history.
@@ -336,10 +361,12 @@ function applyChartLayout() {
         cell.classList.toggle('chart-hidden', !visibleCharts.has(i));
     }
 
-    // Let uPlot adapt to the new cell dimensions, then repaint so newly-
-    // visible cells render their cached history immediately.
-    resizeAllCharts();
-    repaintAllCharts(true);
+    // Rebuild (rather than just resize) so the x-axis assignment refreshes:
+    // the bottom-of-column chart changes whenever the visible set changes,
+    // and the axis-tick `showXAxis` flag is baked into each uPlot at build
+    // time.  rebuildAllCharts() also repaints from cache so newly-visible
+    // cells render their history immediately.
+    rebuildAllCharts();
 }
 
 function initChartVisibilityToggles() {
@@ -578,6 +605,8 @@ function buildAllCharts() {
         windowStart = windowEnd - currentWindowSec;
     }
 
+    const bottomIds = computeBottomOfColumnIds();
+
     for (let i = 0; i < MOTOR_COUNT; i++) {
         const cell = document.getElementById(`chart-${i}`);
         if (!cell) continue;
@@ -596,8 +625,10 @@ function buildAllCharts() {
         const h = cell.clientHeight;
         if (w < 10 || h < 10) continue; // too small, skip
 
-        // Only bottom-row charts (indices 2,5,8) show x-axis labels
-        const isBottomRow = (i % 3 === 2);
+        // X-axis labels render only on the bottom chart in each column —
+        // computed dynamically because the visible set (and therefore the
+        // grid shape) changes at runtime.
+        const isBottomRow = bottomIds.has(i);
         const opts = buildUPlotOpts(w, h, isBottomRow);
 
         // Initialise with real buffered data so we never flash empty after a

@@ -135,18 +135,23 @@
     display: none;
 }
 
-/* Chart title overlaid on each cell */
+/* Chart title overlaid on each cell.  Sits above the y-axis tick labels
+   (z-index 2 vs the .u-wrap default), with a translucent background pill
+   so the title stays legible even when y-axis ticks fall behind it. */
 .chart-cell-title {
     position: absolute;
-    top: 2px;
+    top: 4px;
     left: 6px;
-    font-size: var(--font-size-xs);
-    font-weight: 600;
-    color: var(--text-muted);
-    z-index: 2;
+    font-size: var(--font-size-sm);
+    font-weight: 700;
+    color: var(--text-primary);
+    background: rgba(15, 23, 42, 0.78);
+    padding: 1px 6px;
+    border-radius: var(--border-radius-sm);
+    z-index: 3;
     pointer-events: none;
     text-transform: uppercase;
-    letter-spacing: 0.05em;
+    letter-spacing: 0.06em;
 }
 
 /* No-data overlay */
