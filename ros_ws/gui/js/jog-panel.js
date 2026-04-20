@@ -14,6 +14,7 @@
 
 import * as ros from './ros-bridge.js';
 import { DEFAULT_ACTIVE_Z_MM } from './geometry-config.js';
+import { emitEvent, EVENT_TYPES } from './event-store.js';
 
 // ---- Axis definitions ----
 
@@ -168,6 +169,14 @@ function onJogClick(axis, step) {
     jogTarget[axis.idx] += delta;
     publishPose();
     updateReadout();
+    // Emit AFTER the publish so the marker lines up with the command going
+    // out on the wire.  Unit suffix matches the click axis type.
+    const unit = axis.type === 'trans' ? 'mm' : '\u00b0';
+    emitEvent({
+        type: EVENT_TYPES.COMMAND,
+        label: `Jog ${axis.label}${step >= 0 ? '+' : ''}${step}${unit}`,
+        detail: `Jog ${axis.label} by ${step}${unit}`,
+    });
 }
 
 function publishPose() {

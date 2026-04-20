@@ -703,3 +703,120 @@
 .topic-table-hidden {
     opacity: 0.7;
 }
+
+/* ---- Event / command history panel ----
+   Bottom of the right sidebar.  Collapsible by clicking the header.  The
+   scrollable body caps at 220px so a burst of events doesn't push other
+   panels off-screen. */
+.panel-history .panel-header {
+    cursor: pointer;
+    user-select: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--gap-sm);
+}
+
+.history-legend {
+    display: flex;
+    gap: 8px;
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+}
+
+.history-legend-item {
+    position: relative;
+    padding-left: 10px;
+    cursor: pointer;
+    user-select: none;
+    transition: opacity var(--transition-fast), color var(--transition-fast);
+}
+
+.history-legend-item:hover {
+    color: var(--text-secondary);
+}
+
+/* Filtered-out: strikethrough + faded so the user can glance and tell
+   what's hidden.  Dot is dimmed via opacity rather than hue-shift so the
+   type-to-colour mapping stays consistent. */
+.history-legend-item.filtered-out {
+    opacity: 0.45;
+    text-decoration: line-through;
+}
+
+.history-legend-item::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--dot, var(--text-muted));
+}
+
+.history-body {
+    max-height: 220px;
+    overflow-y: auto;
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    margin-top: 6px;
+    transition: max-height var(--transition-normal);
+}
+
+.panel-history.collapsed .history-body {
+    max-height: 0;
+    margin-top: 0;
+    overflow: hidden;
+}
+
+.history-body::-webkit-scrollbar { width: 6px; }
+.history-body::-webkit-scrollbar-track { background: transparent; }
+.history-body::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 3px; }
+
+.history-empty {
+    color: var(--text-muted);
+    font-style: italic;
+    padding: 4px 2px;
+}
+
+.history-entry {
+    display: grid;
+    grid-template-columns: 10px 72px 1fr;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 4px;
+    border-bottom: 1px dashed var(--border-color);
+    border-radius: var(--border-radius-sm);
+    cursor: default;
+    transition: background var(--transition-fast);
+}
+
+.history-entry:hover {
+    background: var(--bg-card-hover);
+}
+
+.history-entry:last-child {
+    border-bottom: none;
+}
+
+.history-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.history-time {
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+
+.history-label {
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}

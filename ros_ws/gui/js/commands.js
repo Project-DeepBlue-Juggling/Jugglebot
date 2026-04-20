@@ -7,6 +7,7 @@
 
 import * as ros from './ros-bridge.js';
 import { currentOrchestratorState, currentSubMode } from './panels.js';
+import { emitEvent, EVENT_TYPES } from './event-store.js';
 
 /** @type {{ publish: function } | null} */
 let cmdPublisher = null;
@@ -54,6 +55,11 @@ export function initCommands() {
             if (cmdPublisher) {
                 cmdPublisher.publish({ data: cmd.command });
             }
+            emitEvent({
+                type: EVENT_TYPES.COMMAND,
+                label: cmd.label,
+                detail: `orchestrator_command: ${cmd.command}`,
+            });
             // Notify mode change listener for immediate UI response
             if (onModeChangeCallback && ['standby', 'gui', 'spacemouse', 'shell'].includes(cmd.command)) {
                 onModeChangeCallback(cmd.command);

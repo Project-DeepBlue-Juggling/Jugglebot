@@ -101,9 +101,38 @@
     cursor: pointer;
 }
 
+/* Wheel-zoomed off the dropdown preset — dropdown value no longer matches
+   actual liveWindowSec.  Italic + dim indicates "press R to snap back". */
+#chart-window-select.off-preset {
+    font-style: italic;
+    opacity: 0.6;
+}
+
 #chart-pause-btn {
     font-weight: 600;
     min-width: 52px;
+}
+
+/* ---- Delta-cursor readout --------------------------------------------
+   Shown in the chart toolbar while the user has placed at least one
+   delta-cursor bookmark.  Styled like a badge so it's visible but not
+   distracting when unused. */
+#chart-delta-readout {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary);
+    padding: 2px 8px;
+    border-radius: 9999px;
+    border: 1px solid transparent;
+    min-width: 0;
+    white-space: nowrap;
+    transition: border-color var(--transition-fast), color var(--transition-fast);
+}
+
+#chart-delta-readout.active {
+    color: var(--text-primary);
+    border-color: var(--accent-cyan);
+    background: var(--bg-card);
 }
 
 /* ---- Chart grid ----
@@ -181,6 +210,14 @@
     cursor: crosshair !important;
 }
 
+/* Box-zoom drag rectangle — default uPlot tint is nearly invisible against
+   the dark palette.  Soft grey fill + brighter border reads well in both
+   themes and doesn't fight with series colours. */
+.chart-cell .u-select {
+    background: rgba(148, 163, 184, 0.18) !important;
+    border: 1px solid rgba(148, 163, 184, 0.6) !important;
+}
+
 /* Axis tick labels */
 .chart-cell .u-axis {
     font-family: var(--font-mono) !important;
@@ -250,3 +287,71 @@
     background: var(--signal-color, var(--accent-blue));
     flex-shrink: 0;
 }
+
+/* ---- Delta-cursor per-chart readout -----------------------------------
+   Pinned to the top-right of each chart's plot area while both A/B
+   bookmarks are placed.  Shows one "label: ±Δ unit" pill per active
+   series, colour-matched to its line. */
+.chart-delta-callouts {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    display: none;
+    flex-direction: column;
+    gap: 2px;
+    padding: 4px 6px;
+    background: var(--chart-callout-bg);
+    border: 1px solid var(--accent-cyan);
+    border-radius: var(--border-radius-sm);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    /* Don't intercept mouse events — uPlot cursor + delta-click must still
+       reach the plot beneath. */
+    pointer-events: none;
+    z-index: 4;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+}
+
+.chart-delta-callouts.active {
+    display: flex;
+}
+
+.chart-delta-header {
+    font-weight: 700;
+    color: var(--accent-cyan);
+    letter-spacing: 0.04em;
+    font-size: 9px;
+    text-transform: uppercase;
+    padding-bottom: 2px;
+    border-bottom: 1px dashed var(--border-color);
+    margin-bottom: 2px;
+}
+
+.chart-delta-pill {
+    display: grid;
+    grid-template-columns: 8px auto 1fr;
+    align-items: center;
+    gap: 4px;
+    color: var(--text-primary);
+    white-space: nowrap;
+}
+
+.chart-delta-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--signal-color);
+}
+
+.chart-delta-pill-label {
+    color: var(--text-secondary);
+    font-size: 9px;
+}
+
+.chart-delta-pill-value {
+    text-align: right;
+    font-weight: 600;
+}
+
+.chart-delta-pill-value.positive { color: var(--accent-green); }
+.chart-delta-pill-value.negative { color: var(--accent-red); }

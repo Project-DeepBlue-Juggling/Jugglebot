@@ -25,9 +25,18 @@ import { initJogPanel, setJogPanelVisible,
          initSpeedLimitsPanel, setSpeedLimitsPanelVisible, resetSpeedLimitsForMode,
 } from './jog-panel.js';
 import { initTheme } from './theme.js';
+import { emitEvent, EVENT_TYPES } from './event-store.js';
+import { initCommandHistory } from './command-history.js';
 
 // ---- Latest data stores ----
 let latestCommandedLegs = null;  // Float64MultiArray data (revs)
+
+/** Human-readable labels for the fault flags we surface as event markers. */
+const FAULT_LABELS = {
+    has_fatal_odrive_error: 'ODrive Error',
+    has_fatal_can_error:    'CAN Error',
+    has_undervoltage:       'Undervoltage',
+};
 
 // ---- Initialisation ----
 
@@ -71,6 +80,9 @@ function init() {
     // 6b. Init theme toggle (runs after charts so the first rebuild picks
     //     up the saved palette without an unnecessary re-render).
     initTheme();
+
+    // 6c. Init command / event history panel.
+    initCommandHistory();
 
     // 7. Init ROS connection
     ros.onConnectionStateChange(onConnectionStateChange);
@@ -153,6 +165,13 @@ function subscribeAll() {
 let mocapConnTimeout = null;
 const MOCAP_CONN_TIMEOUT_MS = 2000;
 
+/** Last-seen fault flags — we emit a fault event only on false→true edges. */
+const lastFaultFlags = {
+    has_fatal_odrive_error: null,
+    has_fatal_can_error: null,
+    has_undervoltage: null,
+};
+
 function onRobotState(msg) {
     recordTopicMessage('robot_state');
     const motors = msg.motor_states || [];
@@ -161,6 +180,22 @@ function onRobotState(msg) {
     updateMotorGrid(motors);
     updateFlags(msg);
     updateLevellingPanel(msg);
+
+    // Fault-transition events (false → true only; we don't log clears as
+    // "events" to keep the marker forest readable, though we do reset the
+    // latch on true → false so the next fault re-triggers an event).
+    for (const key of Object.keys(lastFaultFlags)) {
+        const now = !!msg[key];
+        const prev = lastFaultFlags[key];
+        if (prev === false && now === true) {
+            emitEvent({
+                type: EVENT_TYPES.FAULT,
+                label: FAULT_LABELS[key] || key,
+                detail: `Fault rising edge on ${key}`,
+            });
+        }
+        lastFaultFlags[key] = now;
+    }
 
     // Feed telemetry charts
     onTelemetryData(motors, latestCommandedLegs, latestHandTelemetry);
@@ -216,10 +251,25 @@ function onBBHeartbeat(msg) {
     }
 }
 
+/** Previous orchestrator_state payload — used to detect transitions so we
+ *  only emit an event on change (the topic re-publishes continuously). */
+let lastOrchestratorState = null;
+
 function onOrchestratorState(msg) {
     recordTopicMessage('orchestrator_state');
     updateOrchestratorState(msg.data);
     updateCommandStates();
+
+    if (msg.data !== lastOrchestratorState) {
+        if (lastOrchestratorState !== null) {
+            emitEvent({
+                type: EVENT_TYPES.STATE,
+                label: msg.data,
+                detail: `State: ${lastOrchestratorState} \u2192 ${msg.data}`,
+            });
+        }
+        lastOrchestratorState = msg.data;
+    }
 
     // Show/hide jog + speed limits panels based on sub-mode (backup for control_mode_topic)
     const parts = msg.data.split(':');
@@ -292,9 +342,30 @@ function onMotionDiagnostics(msg) {
     updateMotionPanel(msg);
 }
 
+/** bb/calibration_result is latched — the first message that lands in a
+ *  short window after GUI init is the stale history record and is dropped
+ *  so reloading doesn't plant a phantom marker.  Any message after the
+ *  window is a genuine live publish and is emitted as an event.  Message
+ *  type has no header.stamp, so we can't gate on message age directly. */
+const BB_CALIBRATION_STALE_WINDOW_MS = 1000;
+const guiInitTimeMs = Date.now();
+let bbCalibrationInitialSkipped = false;
+
 function onBBCalibrationResult(msg) {
     recordTopicMessage('bb/calibration_result');
     updateBBCalibration(msg);
+    if (!bbCalibrationInitialSkipped &&
+        (Date.now() - guiInitTimeMs) < BB_CALIBRATION_STALE_WINDOW_MS) {
+        bbCalibrationInitialSkipped = true;
+        return;
+    }
+    bbCalibrationInitialSkipped = true;
+    const success = msg && msg.success !== false;
+    emitEvent({
+        type: EVENT_TYPES.CALIBRATION,
+        label: success ? 'BB calibrated' : 'BB calibration failed',
+        detail: msg && msg.message ? String(msg.message) : '',
+    });
 }
 
 // ---- Scene menu ----

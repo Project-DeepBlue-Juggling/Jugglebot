@@ -208,6 +208,23 @@
                 <div class="tracking-grid" id="tracking-grid"></div>
             </div>
 
+            <!-- Command / Event history (collapsible) -->
+            <div class="panel panel-history" id="panel-history">
+                <div class="panel-header" title="Click to expand/collapse">
+                    <span class="panel-title">Event Log</span>
+                    <span class="history-legend" title="Click a type to show/hide those entries">
+                        <span class="history-legend-item" data-type="command"     style="--dot:var(--accent-cyan)">cmd</span>
+                        <span class="history-legend-item" data-type="state"       style="--dot:var(--accent-amber)">state</span>
+                        <span class="history-legend-item" data-type="fault"       style="--dot:var(--accent-red)">fault</span>
+                        <span class="history-legend-item" data-type="calibration" style="--dot:var(--accent-purple)">calib</span>
+                    </span>
+                </div>
+                <div class="history-body">
+                    <div class="history-empty" id="history-empty">No events yet.</div>
+                    <div id="history-list"></div>
+                </div>
+            </div>
+
         </div>
 
         <!-- Horizontal resize handle for chart panel -->
@@ -222,8 +239,9 @@
             <div id="chart-toolbar">
                 <div id="signal-toggles"></div>
                 <div id="chart-right-group">
+                    <span id="chart-delta-readout" title="Click two points while paused to measure &#916;t"></span>
                     <div id="chart-visibility-toggles"></div>
-                    <div id="chart-time-window" title="Time window (shortcuts: [ / ] to step, R to reset pan/zoom)">
+                    <div id="chart-time-window" title="Live window size. Mouse-wheel zoom can expand past this, up to 10&#160;min of cached history. Shortcuts: [ / ] to step, R to reset pan/zoom.">
                         <label>Window:</label>
                         <select id="chart-window-select">
                             <option value="5">5s</option>

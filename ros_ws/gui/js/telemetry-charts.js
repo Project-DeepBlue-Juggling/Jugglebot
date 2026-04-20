@@ -16,6 +16,10 @@
 
 import { setStewartHighlight } from './stewart-model.js';
 import { setBallButlerHighlight } from './ball-butler-model.js';
+import {
+    getEventsInRange, subscribeEvents, subscribeHighlight,
+    getHighlightedEventId, EVENT_COLORS,
+} from './event-store.js';
 
 // ---- Signal definitions ----
 
@@ -98,12 +102,19 @@ const VISIBILITY_STORAGE_KEY = 'jugglebot-chart-visibility';
 const DEFAULT_SIGNALS      = ['pos_measured', 'vel_measured'];
 const DEFAULT_WINDOW_SEC   = 10;
 const DATA_RATE_HZ         = 20;
-// Retain 5 min of history regardless of the display window, so paused / ended
-// sessions keep their data when the user adjusts the view.
-const CACHE_WINDOW_SEC     = 300;
+// Retain 10 min of history regardless of the display window.  The dropdown
+// caps the *live* window at 60 s, but wheel-zoom can expand out to this
+// cache limit so users can look further back at paused / ended sessions
+// without reloading.
+const CACHE_WINDOW_SEC     = 600;
 
 let activeSignals = new Set();
 let currentWindowSec = DEFAULT_WINDOW_SEC;
+/** Effective live window — can be widened beyond `currentWindowSec` by
+ *  wheel-zooming while in live mode, so the stream keeps tracking but the
+ *  visible span grows.  Reset to `currentWindowSec` whenever the user
+ *  explicitly picks a new preset or presses R. */
+let liveWindowSec = DEFAULT_WINDOW_SEC;
 let maxPoints = 0;
 /** Set of visible chart indices (0..8).  Defaults to all visible. */
 let visibleCharts = new Set();
@@ -114,6 +125,8 @@ const stores = [];
 const charts = [];
 /** Per-chart callout metadata — populated during buildAllCharts. */
 const chartCallouts = [];
+/** Per-chart delta-readout callout metadata. */
+const chartDeltaCallouts = [];
 /** Whether a rAF repaint is already scheduled */
 let pendingRepaint = false;
 /** Whether chart updates are paused (data still accumulates) */
@@ -227,6 +240,21 @@ export function initTelemetryCharts() {
     buildAllCharts();
     initKeyboardShortcuts();
 
+    // Repaint event markers whenever the event store changes OR the user
+    // hovers a different row in the history panel.  Both coalesce through
+    // the same rAF slot so rapid hovers don't thrash 9 charts × redraws.
+    let overlayRepaintQueued = false;
+    const queueOverlayRepaint = () => {
+        if (overlayRepaintQueued) return;
+        overlayRepaintQueued = true;
+        requestAnimationFrame(() => {
+            overlayRepaintQueued = false;
+            redrawAllOverlays();
+        });
+    };
+    subscribeEvents(queueOverlayRepaint);
+    subscribeHighlight(queueOverlayRepaint);
+
     // Resize charts when the grid container changes size
     const grid = document.getElementById('chart-grid');
     if (grid) {
@@ -256,6 +284,7 @@ function loadSettings() {
         const v = parseInt(savedWin, 10);
         if ([5, 10, 30, 60].includes(v)) currentWindowSec = v;
     }
+    liveWindowSec = currentWindowSec;
 
     // Chart visibility — default to all 9 visible if missing/invalid.
     try {
@@ -426,6 +455,18 @@ function applyChartLayout() {
  *  non-button path (e.g. keyboard solo). */
 const visibilityButtons = [];
 
+/** Italicize / grey the window-size select when liveWindowSec no longer
+ *  matches the dropdown value — signals "wheel-zoomed; press R to snap
+ *  back".  Pure cosmetic; doesn't mutate liveWindowSec. */
+function syncWindowSelectState() {
+    const select = document.getElementById('chart-window-select');
+    if (!select) return;
+    const current = parseInt(select.value, 10);
+    const offPreset = !Number.isFinite(current) ||
+        Math.abs(liveWindowSec - current) > 0.01;
+    select.classList.toggle('off-preset', offPreset);
+}
+
 function syncVisibilityButtonStates() {
     const onlyOne = visibleCharts.size === 1;
     for (let i = 0; i < MOTOR_COUNT; i++) {
@@ -477,17 +518,64 @@ function initTimeWindowSelector() {
 
     select.addEventListener('change', () => {
         currentWindowSec = parseInt(select.value, 10);
+        liveWindowSec = currentWindowSec;
         saveTimeWindow();
         // Changing the window width is an explicit redefinition of the
         // visible slice — drop manual pan/zoom so the new width actually
         // takes effect.
         viewMode = 'live';
         manualXRange = null;
+        syncWindowSelectState();
         rebuildAllCharts();
     });
 }
 
 // ---- Pause button ----
+
+function applyPauseButtonUI() {
+    const btn = document.getElementById('chart-pause-btn');
+    if (!btn) return;
+    if (paused) {
+        btn.textContent = 'Resume';
+        btn.classList.add('active');
+        btn.style.setProperty('--signal-color', '#f59e0b');
+    } else {
+        btn.textContent = 'Pause';
+        btn.classList.remove('active');
+        btn.style.removeProperty('--signal-color');
+    }
+}
+
+/**
+ * Enter paused state.  No-op if already paused.  Snapshots the current
+ * on-screen span so un-pause can resume at the same width.
+ */
+function pauseCharts() {
+    if (paused) return;
+    paused = true;
+    const now = Date.now() / 1000;
+    pausedWindowStart = now - liveWindowSec;
+    pausedWindowEnd = now;
+    applyPauseButtonUI();
+}
+
+/**
+ * Leave paused state and snap to live tracking.  The zoom width
+ * (liveWindowSec) is preserved — only explicit R-reset or dropdown changes
+ * return the width to the dropdown preset.
+ */
+function resumeCharts() {
+    if (!paused) return;
+    paused = false;
+    applyPauseButtonUI();
+    viewMode = 'live';
+    manualXRange = null;
+    clearDeltaBookmarks();
+    if (!pendingRepaint) {
+        pendingRepaint = true;
+        requestAnimationFrame(() => repaintAllCharts());
+    }
+}
 
 function initPauseButton() {
     const container = document.getElementById('chart-time-window');
@@ -500,26 +588,8 @@ function initPauseButton() {
     btn.title = 'Pause/resume chart updates (shortcut: Space)';
 
     btn.addEventListener('click', () => {
-        paused = !paused;
-        if (paused) {
-            const now = Date.now() / 1000;
-            pausedWindowStart = now - currentWindowSec;
-            pausedWindowEnd = now;
-            btn.textContent = 'Resume';
-            btn.classList.add('active');
-            btn.style.setProperty('--signal-color', '#f59e0b');
-        } else {
-            btn.textContent = 'Pause';
-            btn.classList.remove('active');
-            btn.style.removeProperty('--signal-color');
-            // Snap to live — exit manual pan/zoom too.
-            viewMode = 'live';
-            manualXRange = null;
-            if (!pendingRepaint) {
-                pendingRepaint = true;
-                requestAnimationFrame(() => repaintAllCharts());
-            }
-        }
+        if (paused) resumeCharts();
+        else pauseCharts();
     });
 
     container.insertBefore(btn, container.firstChild);
@@ -648,11 +718,19 @@ function buildUPlotOpts(width, height, showXAxis = true, onCursor = null) {
                 const min = u.posToVal(u.select.left, 'x');
                 const max = u.posToVal(u.select.left + u.select.width, 'x');
                 viewMode = 'manual';
-                setXRangeAllCharts(min, max);
+                setXRangeAllCharts(min, max, true);
                 // Clear the selection rectangle so it doesn't linger.
                 u.setSelect({ left: 0, top: 0, width: 0, height: 0 }, false);
+                // Chromium fires a `click` after mouseup even when the
+                // pointer dragged — swallow that one so box-zoom doesn't
+                // plant an A bookmark at the drag-release position.
+                suppressNextClick = true;
             }],
             setCursor: onCursor ? [onCursor] : [],
+            // Drawn after every series/axis paint — lets us overlay event
+            // markers and delta-cursor bookmarks without touching the
+            // plotted data.
+            draw: [drawChartOverlays],
         },
         legend: { show: false },
         padding: [8, 8, 0, 0],
@@ -669,13 +747,14 @@ function buildAllCharts() {
         windowEnd = manualXRange.max;
     } else {
         windowEnd = getViewAnchor();
-        windowStart = windowEnd - currentWindowSec;
+        windowStart = windowEnd - liveWindowSec;
     }
 
     const bottomIds = computeBottomOfColumnIds();
 
     // Invalidate callout records — they'll be rebuilt alongside each chart.
     chartCallouts.length = 0;
+    chartDeltaCallouts.length = 0;
 
     for (let i = 0; i < MOTOR_COUNT; i++) {
         const cell = document.getElementById(`chart-${i}`);
@@ -725,10 +804,21 @@ function buildAllCharts() {
         charts[i].over.appendChild(calloutRecord.overlay);
         chartCallouts[i] = calloutRecord;
 
+        // Delta-callout overlay — absolutely positioned, pinned top-right;
+        // only visible once both delta bookmarks are placed.
+        const deltaRecord = createDeltaCalloutRecord(signalList);
+        charts[i].over.appendChild(deltaRecord.overlay);
+        chartDeltaCallouts[i] = deltaRecord;
+
         // Hover → 3D highlight.  Attached to the uPlot over-layer (not the
         // cell) so the title overlay's pointer-events don't swallow events.
         attachHighlightHandlers(charts[i].over, i);
     }
+
+    // A fresh build might have happened while bookmarks were still set
+    // (e.g. signal toggle during pause).  Re-run the delta UI so the new
+    // overlays show values instead of starting blank.
+    refreshDeltaUI();
 }
 
 function rebuildAllCharts() {
@@ -841,25 +931,79 @@ function clampXRange(min, max) {
 
 /**
  * Apply the same x-axis range to every chart, so pan/zoom stays synced.
- * Callers set viewMode='manual' beforehand (for wheel/pan) to stop the
- * live repaint loop from overwriting the range on the next frame.
+ *
+ * Direction matters:
+ *   - If the requested range reaches or overshoots wall-clock now, the
+ *     user has panned forward to (or past) the live edge — snap back to
+ *     live tracking at whatever span they're at, and auto-resume if paused.
+ *   - Otherwise they're viewing history — enter manual mode and auto-pause
+ *     so the stream doesn't keep drifting past the frozen snapshot.  The
+ *     store is re-sliced to fill the new range (repaintAllCharts is a
+ *     no-op while paused).
  */
-function setXRangeAllCharts(min, max) {
+function setXRangeAllCharts(min, max, fromSelection = false) {
     const clamped = clampXRange(min, max);
+    const wallNow = Date.now() / 1000;
+    const FUTURE_EPSILON = 0.1;
+
+    // Box-zoom selections honour the user's exact range — skip the live-
+    // snap branch even if their rightmost drag coord landed near now.
+    // Wheel-zoom and middle-drag pan keep the snap so panning forward past
+    // the live edge still resumes live tracking.
+    if (!fromSelection && clamped.max >= wallNow - FUTURE_EPSILON) {
+        // Caught up to (or overshot) live — return to live tracking.
+        const span = Math.max(
+            MIN_X_SPAN_SEC,
+            Math.min(MAX_X_SPAN_SEC, clamped.max - clamped.min),
+        );
+        liveWindowSec = span;
+        manualXRange = null;
+        viewMode = 'live';
+        syncWindowSelectState();
+        if (paused) resumeCharts();
+        else if (!pendingRepaint) {
+            pendingRepaint = true;
+            requestAnimationFrame(() => repaintAllCharts());
+        }
+        return;
+    }
+
+    // Historical view — freeze it.
     manualXRange = clamped;
+    viewMode = 'manual';
     for (let i = 0; i < MOTOR_COUNT; i++) {
         const c = charts[i];
         if (!c) continue;
         c.setScale('x', clamped);
     }
+    if (!paused) pauseCharts();
+    reloadChartDataFromStores(clamped.min);
 }
 
-/** Drop out of manual view mode and snap back to the live-anchored window. */
+/**
+ * Push fresh data slices from the stores to every chart for the given
+ * start timestamp, bypassing the paused-repaint guard.  Used whenever the
+ * visible x range changes while paused (zoom / pan) so the newly-visible
+ * region actually shows curves, not just event markers.
+ */
+function reloadChartDataFromStores(windowStart) {
+    const signalKeys = getActiveSignalList().map(s => s.key);
+    for (let i = 0; i < MOTOR_COUNT; i++) {
+        if (!charts[i] || !stores[i]) continue;
+        const data = stores[i].getAlignedData(signalKeys, windowStart);
+        charts[i].setData(data, false);
+    }
+}
+
+/** Drop out of manual view mode and snap back to the live-anchored window
+ *  at the dropdown preset width (discarding any wheel-zoom-driven widening). */
 function resetViewToLive() {
     viewMode = 'live';
     manualXRange = null;
+    liveWindowSec = currentWindowSec;
+    syncWindowSelectState();
     const anchor = getViewAnchor();
-    const windowStart = anchor - currentWindowSec;
+    const windowStart = anchor - liveWindowSec;
     for (let i = 0; i < MOTOR_COUNT; i++) {
         if (!charts[i]) continue;
         charts[i].setScale('x', { min: windowStart, max: anchor });
@@ -877,21 +1021,41 @@ function attachMouseControls(u) {
     const over = u.over;   // the event-capture layer inside uPlot
     if (!over) return;
 
-    // --- Wheel: zoom x-axis around the cursor ---------------------------
+    // --- Wheel: zoom x-axis ---------------------------------------------
+    // Two distinct behaviours so the stream never appears to freeze:
+    //   - Live + streaming: widen/narrow the tracked window width without
+    //     leaving live mode.  Right edge keeps following the anchor.
+    //   - Paused or already-manual: cursor-anchored zoom that flips (or
+    //     stays) in manual mode.  reloadChartDataFromStores() in
+    //     setXRangeAllCharts handles the paused-data-gap case.
     over.addEventListener('wheel', (ev) => {
         ev.preventDefault();
-        const rect = over.getBoundingClientRect();
-        const px = ev.clientX - rect.left;
-        const cursorT = u.posToVal(px, 'x');
         const scale = u.scales.x;
         if (scale.min == null || scale.max == null) return;
 
         const factor = Math.pow(WHEEL_ZOOM_STEP, ev.deltaY / 100);
-        const newMin = cursorT - (cursorT - scale.min) * factor;
-        const newMax = cursorT + (scale.max - cursorT) * factor;
 
-        viewMode = 'manual';
-        setXRangeAllCharts(newMin, newMax);
+        if (viewMode === 'live' && !paused) {
+            const currentSpan = scale.max - scale.min;
+            const newSpan = currentSpan * factor;
+            liveWindowSec = Math.max(MIN_X_SPAN_SEC,
+                                     Math.min(MAX_X_SPAN_SEC, newSpan));
+            syncWindowSelectState();
+            // Immediate repaint so the zoom feels instant — next telemetry
+            // frame would otherwise take up to 50 ms to land.
+            if (!pendingRepaint) {
+                pendingRepaint = true;
+                requestAnimationFrame(() => repaintAllCharts());
+            }
+        } else {
+            const rect = over.getBoundingClientRect();
+            const px = ev.clientX - rect.left;
+            const cursorT = u.posToVal(px, 'x');
+            const newMin = cursorT - (cursorT - scale.min) * factor;
+            const newMax = cursorT + (scale.max - cursorT) * factor;
+            viewMode = 'manual';
+            setXRangeAllCharts(newMin, newMax);
+        }
     }, { passive: false });
 
     // --- Middle-click drag: pan x-axis ----------------------------------
@@ -935,6 +1099,322 @@ function attachMouseControls(u) {
         ev.preventDefault();
         resetViewToLive();
     });
+
+    // --- Click: place / clear delta-cursor bookmarks (paused only) ------
+    // uPlot fires its own pointerdown for box-zoom, but `click` only fires
+    // when the pointer didn't move significantly — so drag-to-zoom and
+    // click-to-bookmark don't fight.
+    over.addEventListener('click', (ev) => {
+        if (ev.button !== 0) return;  // LMB only
+        if (suppressNextClick) {
+            suppressNextClick = false;
+            return;
+        }
+        handleDeltaCursorClick(u, ev.clientX, ev.clientY);
+    });
+}
+
+// ---- Canvas overlays: event markers + delta-cursor bookmarks ------------
+
+/**
+ * Delta-cursor bookmarks — active only while the chart panel is paused.
+ * `deltaA` is placed on the first click, `deltaB` on the second.  A third
+ * click clears them.  Values are timestamps in seconds since epoch.
+ */
+let deltaA = null;
+let deltaB = null;
+/** Set by the setSelect (box-zoom) hook so the click event Chromium fires
+ *  on the same mouseup doesn't plant a spurious A bookmark. */
+let suppressNextClick = false;
+
+/** Force every chart to redraw its canvas so the draw hook re-runs.  Both
+ *  flags false means "re-paint without rebuilding series paths or axes" —
+ *  the cheapest redraw uPlot offers, which is all we need for overlay
+ *  changes (event markers / delta bookmarks). */
+function redrawAllOverlays() {
+    for (let i = 0; i < MOTOR_COUNT; i++) {
+        const c = charts[i];
+        if (c) c.redraw(false, false);
+    }
+    refreshDeltaUI();
+}
+
+/**
+ * Draw hook — invoked by uPlot after its own series/axis paint.  We draw:
+ *   1. Event markers: faint vertical lines at each in-range event timestamp.
+ *   2. Delta-cursor bookmarks: bright vertical lines (A cyan, B cyan dashed)
+ *      with the A/B labels at the top of the plot area.
+ *
+ * Everything is in canvas pixels — u.valToPos with `canvas=true` returns
+ * the right coord system for the 2D ctx.
+ */
+function drawChartOverlays(u) {
+    const ctx = u.ctx;
+    if (!ctx || !u.bbox) return;
+    const { left, top, width, height } = u.bbox;
+    const xMin = u.scales.x.min;
+    const xMax = u.scales.x.max;
+    if (xMin == null || xMax == null) return;
+
+    ctx.save();
+    // Clip to the plot area so marker lines don't bleed into tick labels.
+    ctx.beginPath();
+    ctx.rect(left, top, width, height);
+    ctx.clip();
+
+    // ---- Event markers ----
+    // One pass: un-highlighted events drawn faint, the highlighted one drawn
+    // thicker + fully opaque on top so it pops against a marker forest.
+    const evs = getEventsInRange(xMin, xMax);
+    const hlId = getHighlightedEventId();
+    let hlEvent = null;
+    ctx.lineWidth = 1 * devicePixelRatio;
+    ctx.globalAlpha = 0.55;
+    for (const ev of evs) {
+        if (ev.id === hlId) { hlEvent = ev; continue; }
+        const xPx = u.valToPos(ev.t, 'x', true);
+        ctx.strokeStyle = EVENT_COLORS[ev.type] || '#94a3b8';
+        ctx.beginPath();
+        ctx.moveTo(xPx, top);
+        ctx.lineTo(xPx, top + height);
+        ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+
+    if (hlEvent) {
+        const xPx = u.valToPos(hlEvent.t, 'x', true);
+        const color = EVENT_COLORS[hlEvent.type] || '#94a3b8';
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2.5 * devicePixelRatio;
+        ctx.beginPath();
+        ctx.moveTo(xPx, top);
+        ctx.lineTo(xPx, top + height);
+        ctx.stroke();
+
+        // Label tag at the top, colour-matched to event type.
+        const tagH = 14 * devicePixelRatio;
+        const padX = 4 * devicePixelRatio;
+        ctx.font = `${10 * devicePixelRatio}px JetBrains Mono, monospace`;
+        const tagW = Math.ceil(ctx.measureText(hlEvent.label).width) + padX * 2;
+        // Skip the tag when it can't fit inside the plot width — the clip
+        // region would otherwise paint a one-sided truncation.  The marker
+        // line alone is enough to identify the event; the full label is
+        // visible in the history panel row being hovered.
+        if (tagW <= width) {
+            // Keep the tag inside the plot area so it's readable even when
+            // the marker is near the edge.
+            let tagX = xPx - tagW / 2;
+            if (tagX < left) tagX = left;
+            if (tagX + tagW > left + width) tagX = left + width - tagW;
+            ctx.fillStyle = color;
+            ctx.fillRect(tagX, top, tagW, tagH);
+            ctx.fillStyle = '#0f172a';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(hlEvent.label, tagX + padX, top + tagH / 2);
+        }
+    }
+
+    // ---- Delta-cursor bookmarks ----
+    // Drawn brighter and with a little A/B tag so they stand out from the
+    // event-marker forest.
+    const bookmarkColor = '#e0f2fe';  // near-white cyan — visible in both themes
+    ctx.lineWidth = 1.5 * devicePixelRatio;
+
+    const drawBookmark = (t, tag, dashed) => {
+        if (t == null || t < xMin || t > xMax) return;
+        const xPx = u.valToPos(t, 'x', true);
+        ctx.strokeStyle = bookmarkColor;
+        ctx.setLineDash(dashed ? [4 * devicePixelRatio, 3 * devicePixelRatio] : []);
+        ctx.beginPath();
+        ctx.moveTo(xPx, top);
+        ctx.lineTo(xPx, top + height);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // A/B tag
+        const tagW = 14 * devicePixelRatio;
+        const tagH = 14 * devicePixelRatio;
+        ctx.fillStyle = bookmarkColor;
+        ctx.fillRect(xPx - tagW / 2, top, tagW, tagH);
+        ctx.fillStyle = '#0f172a';
+        ctx.font = `${10 * devicePixelRatio}px JetBrains Mono, monospace`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(tag, xPx, top + tagH / 2);
+    };
+
+    drawBookmark(deltaA, 'A', false);
+    drawBookmark(deltaB, 'B', true);
+
+    ctx.restore();
+}
+
+/**
+ * Route an in-paused click on any chart to the delta-bookmark state
+ * machine.  Three clicks = place A, place B, clear.
+ */
+function handleDeltaCursorClick(u, clientX, clientY) {
+    if (!paused) return;  // bookmarks only valid while paused
+    const rect = u.over.getBoundingClientRect();
+    const px = clientX - rect.left;
+    const t = u.posToVal(px, 'x');
+    if (!Number.isFinite(t)) return;
+
+    if (deltaA == null) {
+        deltaA = t;
+    } else if (deltaB == null) {
+        deltaB = t;
+        // Ensure A <= B so Δt stays positive regardless of click order.
+        if (deltaB < deltaA) {
+            const tmp = deltaA; deltaA = deltaB; deltaB = tmp;
+        }
+    } else {
+        deltaA = null;
+        deltaB = null;
+    }
+    redrawAllOverlays();
+}
+
+/** Binary search: smallest index into a sorted timestamps array whose value
+ *  is >= t.  Returns timestamps.length if nothing qualifies. */
+function nearestTsIndex(timestamps, t) {
+    let lo = 0, hi = timestamps.length;
+    while (lo < hi) {
+        const mid = (lo + hi) >>> 1;
+        if (timestamps[mid] < t) lo = mid + 1;
+        else hi = mid;
+    }
+    // Clamp — caller usually wants the nearest valid index, and the typed-
+    // array view can be empty.
+    return Math.min(Math.max(lo, 0), Math.max(0, timestamps.length - 1));
+}
+
+/**
+ * Create the per-chart delta-callout overlay DOM.  Lives inside u.over so
+ * absolute positioning lines up with the plot area.  One pill per active
+ * series, all hidden until both bookmarks are set.
+ */
+function createDeltaCalloutRecord(signalList) {
+    const overlay = document.createElement('div');
+    overlay.className = 'chart-delta-callouts';
+
+    const header = document.createElement('div');
+    header.className = 'chart-delta-header';
+    header.textContent = '\u0394 (B \u2212 A)';
+    overlay.appendChild(header);
+
+    const pills = signalList.map(sig => {
+        const el = document.createElement('div');
+        el.className = 'chart-delta-pill';
+        el.style.setProperty('--signal-color', sig.color);
+
+        const dot = document.createElement('span');
+        dot.className = 'chart-delta-dot';
+        el.appendChild(dot);
+
+        const label = document.createElement('span');
+        label.className = 'chart-delta-pill-label';
+        label.textContent = sig.label;
+        el.appendChild(label);
+
+        const value = document.createElement('span');
+        value.className = 'chart-delta-pill-value';
+        el.appendChild(value);
+
+        overlay.appendChild(el);
+        return { el, textNode: value, sig };
+    });
+
+    return { overlay, pills };
+}
+
+/**
+ * Recompute the per-chart Δy pills for every chart.  Called from
+ * refreshDeltaUI whenever the bookmark state changes (and after chart
+ * rebuilds while bookmarks are still live).
+ */
+function refreshChartDeltaCallouts() {
+    const haveBoth = deltaA != null && deltaB != null;
+    for (let i = 0; i < MOTOR_COUNT; i++) {
+        const chart = charts[i];
+        const record = chartDeltaCallouts[i];
+        if (!record) continue;
+        if (!chart || !haveBoth) {
+            record.overlay.classList.remove('active');
+            continue;
+        }
+
+        const data = chart.data;
+        const ts = data && data[0];
+        if (!ts || ts.length === 0) {
+            record.overlay.classList.remove('active');
+            continue;
+        }
+        // Hide the pill when either bookmark is outside the visible x range
+        // — otherwise nearestTsIndex would clamp silently and the pill would
+        // display vB − v[first_visible_sample] instead of true vB − vA.
+        // Matches the bookmark-line culling in drawChartOverlays.
+        const xMin = chart.scales.x.min;
+        const xMax = chart.scales.x.max;
+        if (xMin == null || xMax == null ||
+            deltaA < xMin || deltaA > xMax ||
+            deltaB < xMin || deltaB > xMax) {
+            record.overlay.classList.remove('active');
+            continue;
+        }
+        const idxA = nearestTsIndex(ts, deltaA);
+        const idxB = nearestTsIndex(ts, deltaB);
+
+        // uPlot's data is [timestamps, series0, series1, …] so series j sits
+        // at column j+1.  Pills are built in the same order as signalList.
+        for (let j = 0; j < record.pills.length; j++) {
+            const { el, textNode, sig } = record.pills[j];
+            const vA = data[j + 1] ? data[j + 1][idxA] : undefined;
+            const vB = data[j + 1] ? data[j + 1][idxB] : undefined;
+            if (vA == null || vB == null || !Number.isFinite(vA) || !Number.isFinite(vB)) {
+                el.style.display = 'none';
+                continue;
+            }
+            el.style.display = '';
+            const dv = vB - vA;
+            const sign = dv >= 0 ? '+' : '\u2212';
+            const absStr = formatCalloutValue(Math.abs(dv), sig.scale);
+            textNode.textContent = `${sign}${absStr}`;
+            textNode.classList.toggle('positive', dv >= 0);
+            textNode.classList.toggle('negative', dv < 0);
+        }
+        record.overlay.classList.add('active');
+    }
+}
+
+/**
+ * Update the Δt toolbar badge AND the per-chart Δy pills.  Single entry
+ * point so bookmark state and UI stay in lock-step.
+ */
+function refreshDeltaUI() {
+    const el = document.getElementById('chart-delta-readout');
+    if (el) {
+        if (deltaA != null && deltaB != null) {
+            el.textContent = `\u0394t = ${(deltaB - deltaA).toFixed(3)} s`;
+            el.classList.add('active');
+        } else if (deltaA != null) {
+            el.textContent = '\u0394t: click B\u2026';
+            el.classList.add('active');
+        } else {
+            el.textContent = '';
+            el.classList.remove('active');
+        }
+    }
+    refreshChartDeltaCallouts();
+}
+
+/** Hide bookmarks and clear the readout — called whenever pause is released. */
+function clearDeltaBookmarks() {
+    if (deltaA == null && deltaB == null) return;
+    deltaA = null;
+    deltaB = null;
+    redrawAllOverlays();
 }
 
 // ---- Keyboard shortcuts -------------------------------------------------
@@ -1187,7 +1667,7 @@ function repaintAllCharts(force = false) {
         windowEnd = manualXRange.max;
     } else {
         windowEnd = getViewAnchor();
-        windowStart = windowEnd - currentWindowSec;
+        windowStart = windowEnd - liveWindowSec;
     }
 
     for (let i = 0; i < MOTOR_COUNT; i++) {
