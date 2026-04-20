@@ -34,6 +34,19 @@
     --border-radius: 8px;
     --border-radius-sm: 4px;
 
+    /* Chart surface colours — read by telemetry-charts.js at chart build time
+       (uPlot draws axes on canvas, so it can't pick up CSS directly). */
+    --chart-axis-stroke: #94a3b8;
+    --chart-grid-stroke: rgba(51, 65, 85, 0.5);
+    --chart-grid-stroke-minor: rgba(51, 65, 85, 0.3);
+    --chart-ticks-stroke: #334155;
+    --chart-callout-bg: rgba(15, 23, 42, 0.9);
+    --chart-callout-bg-hover: rgba(15, 23, 42, 1.0);
+    --chart-title-bg: rgba(15, 23, 42, 0.78);
+    --chart-copied-text: #0f172a;
+    --viewer-bg: #0f172a;
+    --table-zebra: rgba(15, 23, 42, 0.3);
+
     /* Spacing */
     --gap: 12px;
     --gap-sm: 8px;
@@ -60,6 +73,34 @@
     --transition-normal: 250ms ease;
 }
 
+/* Light theme — applied when <html data-theme="light"> is set.  Keeps the
+   same accent / state colours (they already work against both backgrounds)
+   and only swaps surfaces, text, borders, and chart canvas strokes. */
+:root[data-theme="light"] {
+    --bg-primary: #f8fafc;
+    --bg-secondary: #ffffff;
+    --bg-card: #ffffff;
+    --bg-card-hover: #f1f5f9;
+    --bg-overlay: rgba(248, 250, 252, 0.92);
+
+    --text-primary: #0f172a;
+    --text-secondary: #475569;
+    --text-muted: #64748b;
+
+    --border-color: #cbd5e1;
+
+    --chart-axis-stroke: #475569;
+    --chart-grid-stroke: rgba(100, 116, 139, 0.35);
+    --chart-grid-stroke-minor: rgba(100, 116, 139, 0.18);
+    --chart-ticks-stroke: #94a3b8;
+    --chart-callout-bg: rgba(248, 250, 252, 0.95);
+    --chart-callout-bg-hover: #ffffff;
+    --chart-title-bg: rgba(248, 250, 252, 0.85);
+    --chart-copied-text: #ffffff;
+    --viewer-bg: #e2e8f0;
+    --table-zebra: rgba(15, 23, 42, 0.04);
+}
+
 /* Reset & base */
 *,
 *::before,
@@ -77,6 +118,7 @@ html, body {
     background: var(--bg-primary);
     color: var(--text-primary);
     -webkit-font-smoothing: antialiased;
+    transition: background var(--transition-normal), color var(--transition-normal);
 }
 
 /* App layout: left sidebar + viewer + right sidebar, with optional chart panel below */
@@ -376,6 +418,14 @@ html, body {
     gap: 4px;
     padding: 0 2px;
     flex-shrink: 0;
+}
+
+.sidebar-toolbar-gap {
+    width: 8px;
+}
+
+#theme-toggle {
+    min-width: 44px;
 }
 
 .font-btn {

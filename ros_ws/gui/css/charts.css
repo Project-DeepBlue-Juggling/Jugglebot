@@ -145,7 +145,7 @@
     font-size: var(--font-size-sm);
     font-weight: 700;
     color: var(--text-primary);
-    background: rgba(15, 23, 42, 0.78);
+    background: var(--chart-title-bg);
     padding: 1px 6px;
     border-radius: var(--border-radius-sm);
     z-index: 3;
@@ -210,19 +210,36 @@
     font-size: 10px;
     font-weight: 600;
     color: var(--text-primary);
-    background: rgba(15, 23, 42, 0.9);
+    background: var(--chart-callout-bg);
     border: 1px solid var(--signal-color, var(--accent-blue));
     border-radius: var(--border-radius-sm);
     white-space: nowrap;
-    pointer-events: none;
+    /* Clickable for copy-to-clipboard; parent .chart-callouts keeps pointer
+       events off everywhere else so the uPlot cursor stays responsive. */
+    pointer-events: auto;
+    cursor: pointer;
+    user-select: none;
     /* Anchor point is the intersection itself — offset the pill right of the
        crosshair and vertically-centre on the curve. */
     transform: translate(8px, -50%);
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+    transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
 }
 
 .chart-callout.flip-left {
     transform: translate(calc(-100% - 8px), -50%);
+}
+
+.chart-callout:hover {
+    background: var(--chart-callout-bg-hover);
+    border-color: var(--text-primary);
+}
+
+/* Flashed briefly (~450ms) after a successful copy-to-clipboard. */
+.chart-callout.copied {
+    background: var(--accent-green);
+    color: var(--chart-copied-text);
+    border-color: var(--accent-green);
 }
 
 .chart-callout-dot {

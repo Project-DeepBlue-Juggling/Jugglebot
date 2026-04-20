@@ -24,6 +24,7 @@ import { initTelemetryCharts, onTelemetryData, rebuildCharts } from './telemetry
 import { initJogPanel, setJogPanelVisible,
          initSpeedLimitsPanel, setSpeedLimitsPanelVisible, resetSpeedLimitsForMode,
 } from './jog-panel.js';
+import { initTheme } from './theme.js';
 
 // ---- Latest data stores ----
 let latestCommandedLegs = null;  // Float64MultiArray data (revs)
@@ -66,6 +67,10 @@ function init() {
     // 6a. Init jog panel + speed limits
     initJogPanel();
     initSpeedLimitsPanel();
+
+    // 6b. Init theme toggle (runs after charts so the first rebuild picks
+    //     up the saved palette without an unnecessary re-render).
+    initTheme();
 
     // 7. Init ROS connection
     ros.onConnectionStateChange(onConnectionStateChange);

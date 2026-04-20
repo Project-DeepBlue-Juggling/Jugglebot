@@ -56,6 +56,40 @@ const SCALE_META = {
 const CHART_LABELS = ['Leg 0', 'Leg 1', 'Leg 2', 'Leg 3', 'Leg 4', 'Leg 5', 'Hand', 'BB Pitch', 'BB Hand'];
 const MOTOR_COUNT = 9;
 
+/**
+ * Human-readable tooltip for each chart cell — describes which physical
+ * actuator the motor drives.  Surfaced on hover via a title attr on the
+ * chart-cell-title pill.
+ */
+const CHART_TOOLTIPS = [
+    'Leg 0 — Stewart platform prismatic leg, CAN motor 0.',
+    'Leg 1 — Stewart platform prismatic leg, CAN motor 1.',
+    'Leg 2 — Stewart platform prismatic leg, CAN motor 2.',
+    'Leg 3 — Stewart platform prismatic leg, CAN motor 3.',
+    'Leg 4 — Stewart platform prismatic leg, CAN motor 4.',
+    'Leg 5 — Stewart platform prismatic leg, CAN motor 5.',
+    'Hand — linear hand actuator on the Stewart platform, CAN motor 6.',
+    'BB Pitch — Ball Butler pitch servo, CAN motor 7.',
+    'BB Hand — Ball Butler hand/throw servo, CAN motor 8.',
+];
+
+/**
+ * Tooltip copy shown on each signal-toggle pill, explaining units and (where
+ * non-obvious) sign conventions.  Deliberately terse — longer docs live in
+ * the engineering logbook.
+ */
+const SIGNAL_TOOLTIPS = {
+    pos_measured:  'Encoder position (revolutions from home). Toggle to show/hide on every chart.',
+    pos_commanded: 'Commanded position target (dashed). Source: leg_lengths_topic for legs, hand_telemetry for the hand.',
+    vel_measured:  'Motor velocity (rev/s). Signed — follows the motor\u2019s own direction convention.',
+    iq_setpoint:   'Commanded quadrature current (A) \u2014 proportional to commanded torque.',
+    iq_measured:   'Measured quadrature current (A, dashed) \u2014 proportional to actual torque.',
+    fet_temp:      'ODrive MOSFET temperature (\u00b0C).',
+    motor_temp:    'Motor winding temperature (\u00b0C).',
+    bus_voltage:   'DC bus voltage at the ODrive (V).',
+    bus_current:   'DC bus current (A). Negative values indicate regeneration back to the supply.',
+};
+
 // ---- State ----
 
 const SIGNALS_STORAGE_KEY    = 'jugglebot-chart-signals';
@@ -191,6 +225,7 @@ export function initTelemetryCharts() {
     addChartTitles();
     applyChartLayout();  // apply grid-template + hidden classes before building
     buildAllCharts();
+    initKeyboardShortcuts();
 
     // Resize charts when the grid container changes size
     const grid = document.getElementById('chart-grid');
@@ -271,6 +306,10 @@ function addChartTitles() {
     for (let i = 0; i < MOTOR_COUNT; i++) {
         const cell = document.getElementById(`chart-${i}`);
         if (!cell || cell.querySelector('.chart-cell-title')) continue;
+        // Tooltip on the cell (not the title pill) so the cursor tracker
+        // inside uPlot keeps receiving mouse events — the native tooltip
+        // still surfaces after a ~1 s stationary hover.
+        cell.title = CHART_TOOLTIPS[i];
         const title = document.createElement('span');
         title.className = 'chart-cell-title';
         title.textContent = CHART_LABELS[i];
@@ -289,6 +328,7 @@ function initSignalToggles() {
         btn.className = 'signal-toggle' + (activeSignals.has(sig.key) ? ' active' : '');
         btn.dataset.signal = sig.key;
         btn.style.setProperty('--signal-color', sig.color);
+        btn.title = SIGNAL_TOOLTIPS[sig.key] || sig.label;
 
         // Use a line indicator for dashed signals, dot for solid
         const indicator = sig.dash
@@ -381,49 +421,50 @@ function applyChartLayout() {
     rebuildAllCharts();
 }
 
+/** References to the visibility pill buttons — populated by init, read by
+ *  syncVisibilityButtonStates() whenever visibleCharts changes through a
+ *  non-button path (e.g. keyboard solo). */
+const visibilityButtons = [];
+
+function syncVisibilityButtonStates() {
+    const onlyOne = visibleCharts.size === 1;
+    for (let i = 0; i < MOTOR_COUNT; i++) {
+        const btn = visibilityButtons[i];
+        if (!btn) continue;
+        btn.classList.toggle('active', visibleCharts.has(i));
+        btn.classList.toggle('disabled', onlyOne && visibleCharts.has(i));
+    }
+}
+
 function initChartVisibilityToggles() {
     const container = document.getElementById('chart-visibility-toggles');
     if (!container) return;
-
-    const buttons = [];
-
-    const refreshDisabledState = () => {
-        const onlyOne = visibleCharts.size === 1;
-        for (let i = 0; i < MOTOR_COUNT; i++) {
-            const btn = buttons[i];
-            if (!btn) continue;
-            const isOnlyActive = onlyOne && visibleCharts.has(i);
-            btn.classList.toggle('disabled', isOnlyActive);
-        }
-    };
 
     for (let i = 0; i < MOTOR_COUNT; i++) {
         const btn = document.createElement('button');
         btn.className = 'signal-toggle' + (visibleCharts.has(i) ? ' active' : '');
         btn.dataset.chart = String(i);
         btn.textContent = CHART_LABELS[i];
-        btn.title = `Toggle ${CHART_LABELS[i]} chart visibility`;
+        btn.title = `Toggle ${CHART_LABELS[i]} chart visibility (keyboard: ${i + 1})`;
 
         btn.addEventListener('click', () => {
             if (visibleCharts.has(i)) {
                 // Enforce ≥1 visible chart.
                 if (visibleCharts.size === 1) return;
                 visibleCharts.delete(i);
-                btn.classList.remove('active');
             } else {
                 visibleCharts.add(i);
-                btn.classList.add('active');
             }
             saveChartVisibility();
-            refreshDisabledState();
+            syncVisibilityButtonStates();
             applyChartLayout();
         });
 
         container.appendChild(btn);
-        buttons.push(btn);
+        visibilityButtons.push(btn);
     }
 
-    refreshDisabledState();
+    syncVisibilityButtonStates();
 }
 
 // ---- Time window selector ----
@@ -456,7 +497,7 @@ function initPauseButton() {
     btn.id = 'chart-pause-btn';
     btn.className = 'signal-toggle';
     btn.textContent = 'Pause';
-    btn.title = 'Pause/resume chart updates';
+    btn.title = 'Pause/resume chart updates (shortcut: Space)';
 
     btn.addEventListener('click', () => {
         paused = !paused;
@@ -490,8 +531,21 @@ function getActiveSignalList() {
     return SIGNAL_GROUPS.filter(s => activeSignals.has(s.key));
 }
 
+/** Read a CSS custom property, falling back to a default if unset. */
+function cssVar(name, fallback) {
+    const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    return v || fallback;
+}
+
 function buildUPlotOpts(width, height, showXAxis = true, onCursor = null) {
     const signalList = getActiveSignalList();
+
+    // Chart surface colours — re-read each build so theme switches pick up
+    // without needing a page reload.
+    const axisStroke = cssVar('--chart-axis-stroke', '#94a3b8');
+    const gridStroke = cssVar('--chart-grid-stroke', 'rgba(51,65,85,0.5)');
+    const gridStrokeMinor = cssVar('--chart-grid-stroke-minor', 'rgba(51,65,85,0.3)');
+    const ticksStroke = cssVar('--chart-ticks-stroke', '#334155');
 
     // Determine which scale groups are in use
     const usedScales = new Map(); // scaleKey → first signal's unit
@@ -526,9 +580,9 @@ function buildUPlotOpts(width, height, showXAxis = true, onCursor = null) {
     const axes = [
         {
             // x-axis (time) — ISO 8601 formatted labels
-            stroke: '#94a3b8',
-            grid: { stroke: 'rgba(51,65,85,0.5)', width: 1 },
-            ticks: { stroke: showXAxis ? '#334155' : 'transparent', width: 1, size: showXAxis ? 6 : 0 },
+            stroke: axisStroke,
+            grid: { stroke: gridStroke, width: 1 },
+            ticks: { stroke: showXAxis ? ticksStroke : 'transparent', width: 1, size: showXAxis ? 6 : 0 },
             font: '11px JetBrains Mono, monospace',
             size: showXAxis ? 28 : 4,
             values: showXAxis
@@ -551,9 +605,9 @@ function buildUPlotOpts(width, height, showXAxis = true, onCursor = null) {
             label: unit,
             labelSize: 16,
             size: 60,
-            stroke: '#94a3b8',
-            grid: { stroke: 'rgba(51,65,85,0.3)', width: 1 },
-            ticks: { stroke: '#334155', width: 1 },
+            stroke: axisStroke,
+            grid: { stroke: gridStrokeMinor, width: 1 },
+            ticks: { stroke: ticksStroke, width: 1 },
             font: '14px JetBrains Mono, monospace',
             labelFont: '14px JetBrains Mono, monospace',
         });
@@ -883,6 +937,99 @@ function attachMouseControls(u) {
     });
 }
 
+// ---- Keyboard shortcuts -------------------------------------------------
+
+/**
+ * Return true if the focused element is something the user is typing into —
+ * we suppress chart shortcuts in that case so they don't hijack inputs.
+ */
+function isTypingTarget(el) {
+    if (!el) return false;
+    const tag = el.tagName;
+    return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable;
+}
+
+/** Toggle the pause button by replaying its click — keeps state in one place. */
+function togglePauseShortcut() {
+    document.getElementById('chart-pause-btn')?.click();
+}
+
+/**
+ * Step through the window-size dropdown by `dir` positions (±1).  Done
+ * through the <select> + change event so we reuse the existing persistence
+ * and viewMode-reset behaviour.
+ */
+function cycleWindowSize(dir) {
+    const select = document.getElementById('chart-window-select');
+    if (!select) return;
+    const options = Array.from(select.options).map(o => o.value);
+    let idx = options.indexOf(select.value);
+    if (idx < 0) idx = 0;
+    idx = Math.max(0, Math.min(options.length - 1, idx + dir));
+    if (options[idx] === select.value) return;
+    select.value = options[idx];
+    select.dispatchEvent(new Event('change'));
+}
+
+/**
+ * Solo chart `idx`: hide every other chart.  If `idx` is already the only
+ * visible chart, restore the full 9-chart grid instead.
+ *
+ * Deliberately stateless — no snapshot to drift out of sync with manual
+ * pill clicks.  The trade-off is that toggling off always returns to
+ * "show all", not to whatever subset the user had before soloing.
+ */
+function toggleSoloChart(idx) {
+    if (idx < 0 || idx >= MOTOR_COUNT) return;
+    const currentlySoloed = visibleCharts.size === 1 && visibleCharts.has(idx);
+    if (currentlySoloed) {
+        visibleCharts = new Set(Array.from({ length: MOTOR_COUNT }, (_, i) => i));
+    } else {
+        visibleCharts = new Set([idx]);
+    }
+    saveChartVisibility();
+    syncVisibilityButtonStates();
+    applyChartLayout();
+}
+
+function initKeyboardShortcuts() {
+    document.addEventListener('keydown', (ev) => {
+        // Never steal keys from real inputs, and leave modifier combos alone
+        // (browser shortcuts like Ctrl+R reload, etc).
+        if (isTypingTarget(document.activeElement)) return;
+        if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+
+        // Skip if the chart panel is collapsed — shortcuts would be confusing
+        // when the target UI isn't visible.
+        const panel = document.getElementById('chart-panel');
+        if (panel && panel.classList.contains('collapsed')) return;
+
+        switch (ev.key) {
+            case ' ':
+                ev.preventDefault();
+                togglePauseShortcut();
+                return;
+            case '[':
+                ev.preventDefault();
+                cycleWindowSize(-1);
+                return;
+            case ']':
+                ev.preventDefault();
+                cycleWindowSize(+1);
+                return;
+            case 'r':
+            case 'R':
+                ev.preventDefault();
+                resetViewToLive();
+                return;
+        }
+        if (/^[1-9]$/.test(ev.key)) {
+            ev.preventDefault();
+            toggleSoloChart(parseInt(ev.key, 10) - 1);
+        }
+    });
+}
+
 // ---- Per-curve value callouts -------------------------------------------
 
 /**
@@ -903,6 +1050,27 @@ function createCalloutRecord(signalList) {
         el.style.setProperty('--signal-color', sig.color);
         el.innerHTML = '<span class="chart-callout-dot"></span><span class="chart-callout-text"></span>';
         el.style.display = 'none';
+        el.title = `${sig.label} \u2014 click to copy value`;
+
+        // Click-to-copy: copies the raw numeric value (no unit) so it can be
+        // pasted straight into a script or calculator.  A brief .copied class
+        // flashes the pill green as confirmation.
+        el.addEventListener('click', async (ev) => {
+            ev.stopPropagation();
+            ev.preventDefault();
+            const raw = el.dataset.rawValue;
+            if (raw == null) return;
+            try {
+                await navigator.clipboard.writeText(raw);
+                el.classList.add('copied');
+                setTimeout(() => el.classList.remove('copied'), 450);
+            } catch {
+                // Clipboard can fail in unfocused windows / insecure contexts.
+                // Silent fail is fine here — the user will see no confirmation
+                // flash and can retry.
+            }
+        });
+
         overlay.appendChild(el);
         return { el, textNode: el.querySelector('.chart-callout-text'), sig };
     });
@@ -957,6 +1125,9 @@ function updateCallouts(u, record) {
         el.style.top = `${yPx}px`;
         el.classList.toggle('flip-left', flipLeft);
         textNode.textContent = formatCalloutValue(val, sig.scale);
+        // Raw numeric (no unit) for click-to-copy.  Kept at full precision so
+        // copy-paste into a script preserves everything we have.
+        el.dataset.rawValue = String(val);
     }
 }
 

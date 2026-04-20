@@ -636,7 +636,7 @@
 }
 
 .topic-table tr:nth-child(even) td {
-    background: rgba(15, 23, 42, 0.3);
+    background: var(--table-zebra);
 }
 
 .topic-table .col-topic {
