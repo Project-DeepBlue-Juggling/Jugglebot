@@ -127,6 +127,34 @@ def parse_args():
                    action='store_false',
                    help='Disable acceleration feedforward (zeros cubic interp '
                         'acc+jerk terms in motor_guard).')
+    p.add_argument('--toss-motion', dest='toss_motion', action='store_true',
+                   help='Platform-only back-and-forth ballistic test mode. '
+                        'Computes throw/catch 6-DOF poses from the current '
+                        'platform pose and --catch-pose (or --sequence). '
+                        'No hand, no ball.')
+    p.add_argument('--catch-pose', dest='catch_pose', type=str, default=None,
+                   help='--toss-motion catch position: x,y,z (mm, STOW-relative). '
+                        'The throw position is the platform pose when the '
+                        'cycle begins (for cycle 1, that is the pose at enable).')
+    p.add_argument('--cycles', type=int, default=1,
+                   help='--toss-motion cycle count. N>1 ping-pongs between '
+                        'the initial pose and --catch-pose.')
+    p.add_argument('--sequence-catches', dest='sequence_catches', type=str,
+                   default=None,
+                   help='--toss-motion catch sequence: '
+                        '"x1,y1,z1 x2,y2,z2 ..." (mm, STOW-relative). Each '
+                        'cycle throws from the previous catch position to '
+                        'the next listed position. Overrides --catch-pose / '
+                        '--cycles.')
+    p.add_argument('--apex', type=float, default=1.2,
+                   help='--toss-motion apex height above each throw (metres, '
+                        'default 1.2).')
+    p.add_argument('--hold-s', dest='hold_s', type=float, default=1.0,
+                   help='--toss-motion dwell at each catch pose before the '
+                        'next cycle (seconds, default 1.0).')
+    p.add_argument('--sim', dest='use_sim_plant', action='store_true',
+                   help='Dry-run against MuJoCoPlant instead of HardwarePlant. '
+                        'For --toss-motion sanity checks before hardware.')
     return p.parse_args()
 
 
@@ -147,6 +175,21 @@ def _parse_sequence(seq_str: str) -> list[tuple[float, np.ndarray]]:
         schedule.append((float(time_str), _parse_pose(pose_str)))
     schedule.sort(key=lambda x: x[0])
     return schedule
+
+
+def _parse_xyz(xyz_str: str) -> np.ndarray:
+    """Parse 'X,Y,Z' into a (3,) ndarray."""
+    vals = [float(v) for v in xyz_str.split(',')]
+    if len(vals) != 3:
+        raise ValueError(
+            f"Position must have 3 values (x,y,z), got {len(vals)}: {xyz_str}")
+    return np.array(vals, dtype=float)
+
+
+def _parse_catch_sequence(seq_str: str) -> list[np.ndarray]:
+    """Parse 'x1,y1,z1 x2,y2,z2 ...' into a list of (3,) ndarrays."""
+    entries = seq_str.strip().split()
+    return [_parse_xyz(entry) for entry in entries]
 
 
 class _StdoutTee:
@@ -184,7 +227,30 @@ def main():
             f"--mpc-s={args.mpc_s} is outside the safe range (0, 0.5). "
             f"Values >=0.5 cause cmd drift per offline study.")
 
-    if args.auto_s_sweep:
+    toss_catch_positions = None  # populated when --toss-motion is set
+    if args.toss_motion:
+        if args.sequence_catches:
+            toss_catch_positions = _parse_catch_sequence(args.sequence_catches)
+        elif args.catch_pose:
+            first_catch = _parse_xyz(args.catch_pose)
+            # Ping-pong: odd-indexed cycles return to the platform's pose at
+            # source start (None sentinel), even-indexed cycles go back to
+            # --catch-pose.  TossMotionSource captures the start pose on
+            # first update() and substitutes it anywhere None appears.
+            toss_catch_positions = []
+            for i in range(args.cycles):
+                toss_catch_positions.append(
+                    None if i % 2 == 1 else first_catch.copy())
+        else:
+            raise SystemExit(
+                "--toss-motion requires --catch-pose X,Y,Z or "
+                "--sequence-catches 'x1,y1,z1 x2,y2,z2 ...'")
+        schedule = None
+        source_label = (f"Toss motion: {len(toss_catch_positions)} cycle(s), "
+                        f"apex={args.apex:.2f} m, hold={args.hold_s:.1f} s, "
+                        f"plant={'sim' if args.use_sim_plant else 'hardware'}")
+        default_duration = 600.0  # finite; user can override with --duration
+    elif args.auto_s_sweep:
         schedule = None
         source_label = (f"Auto S-sweep: {len(_S_SWEEP_POSES)} poses + STOW "
                         f"(hold {_S_SWEEP_HOLD_S:.0f}s each)")
@@ -209,25 +275,50 @@ def main():
     print(f"Hardware MPC [{source_label}]")
     print(f"Duration: {duration:.1f}s, Control rate: {CONTROL_RATE_HZ} Hz")
 
-    # --- Create HardwarePlant ---
-    from controller.hardware_plant import HardwarePlant
-    plant = HardwarePlant(
-        control_dt=CONTROL_DT,
-        enable_torque_ff=args.enable_torque_ff,
-        enable_vel_ff=args.enable_vel_ff,
-        enable_acc_ff=args.enable_acc_ff,
-    )
-    print("HardwarePlant: connected to motor_guard via IPC")
-    print(
-        f"Feedforward: torque={'ON' if args.enable_torque_ff else 'OFF'} "
-        f"vel={'ON' if args.enable_vel_ff else 'OFF'} "
-        f"acc={'ON' if args.enable_acc_ff else 'OFF'}"
-    )
+    # --- Create plant (hardware by default, MuJoCo with --sim) ---
+    feedback_pub = None
+    if args.use_sim_plant:
+        _sim_dir = os.path.join(_repo_root, 'sim')
+        if _sim_dir not in sys.path:
+            sys.path.insert(0, _sim_dir)
+        from plant.mujoco_plant import MuJoCoPlant
+        plant = MuJoCoPlant()
+        # Hardware tests start from ACTIVE (z=170 mm STOW-relative).  Match
+        # that precondition in sim so the dry-run exercises the same motion
+        # envelope.  reset() sets actuator targets but does not teleport the
+        # joints — step the sim forward so the platform physically settles
+        # at ACTIVE before TossMotionSource reads the live pose.
+        _active_pose = np.array([0.0, 0.0, 170.0, 0.0, 0.0, 0.0])
+        plant.reset(_active_pose)
+        _active_ext = plant.pose_to_extensions(_active_pose)
+        plant.command(_active_ext)
+        plant.step(2.0)  # sim seconds of physical settling
+        _state = plant.get_state()
+        print(
+            f"MuJoCoPlant: sim dry-run, settled at "
+            f"({_state.platform_pos_mm[0]:+.1f}, "
+            f"{_state.platform_pos_mm[1]:+.1f}, "
+            f"{_state.platform_pos_mm[2]:+.1f}) mm (target ACTIVE z=170)")
+    else:
+        from controller.hardware_plant import HardwarePlant
+        plant = HardwarePlant(
+            control_dt=CONTROL_DT,
+            enable_torque_ff=args.enable_torque_ff,
+            enable_vel_ff=args.enable_vel_ff,
+            enable_acc_ff=args.enable_acc_ff,
+        )
+        print("HardwarePlant: connected to motor_guard via IPC")
+        print(
+            f"Feedforward: torque={'ON' if args.enable_torque_ff else 'OFF'} "
+            f"vel={'ON' if args.enable_vel_ff else 'OFF'} "
+            f"acc={'ON' if args.enable_acc_ff else 'OFF'}"
+        )
 
-    # --- Target feedback for catch coordinator (accept/reject on :5559) ---
-    from jugglebot.motion.ipc import TargetFeedbackPub
-    feedback_pub = TargetFeedbackPub()
-    print("TargetFeedbackPub: catch feedback on :5559")
+        # Target feedback for catch coordinator (accept/reject on :5559) —
+        # hardware only; sim dry-run doesn't publish to ROS2.
+        from jugglebot.motion.ipc import TargetFeedbackPub
+        feedback_pub = TargetFeedbackPub()
+        print("TargetFeedbackPub: catch feedback on :5559")
 
     # --- Telemetry logging ---
     timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -237,13 +328,14 @@ def main():
     print(f"Logging to: {log_path}")
     print(f"Stdout log: {stdout_log_path}")
 
-    # --- Session metadata for ROS2 log correlation ---
-    from jugglebot.motion.ipc import SessionMetadataPush
-    session_push = SessionMetadataPush()
-    time.sleep(0.1)  # ZMQ connection establishment
-    session_push.send_session_start(os.path.basename(log_path))
-    session_push.close()
-    print("Session metadata sent to mpc_bridge_node")
+    # --- Session metadata for ROS2 log correlation (hardware only) ---
+    if not args.use_sim_plant:
+        from jugglebot.motion.ipc import SessionMetadataPush
+        session_push = SessionMetadataPush()
+        time.sleep(0.1)  # ZMQ connection establishment
+        session_push.send_session_start(os.path.basename(log_path))
+        session_push.close()
+        print("Session metadata sent to mpc_bridge_node")
 
     # --- Optional live dashboard ---
     dashboard = None
@@ -265,7 +357,11 @@ def main():
     # the walk-forward fallback to handle the rare excursion past ~22 ms.
     # Safety budget is not the 25 ms MPC period but the motor-guard 75 ms
     # stale-warn / 200 ms E-STOP (see controller/hardware_plant.py).
-    params_kwargs = dict(max_cpu_time=0.022, max_iter=100)
+    if args.use_sim_plant:
+        # Sim dry-run: accuracy over speed; no real-time constraint.
+        params_kwargs = dict(max_cpu_time=2.0, max_iter=500)
+    else:
+        params_kwargs = dict(max_cpu_time=0.022, max_iter=100)
     if args.mpc_s is not None:
         params_kwargs['S'] = args.mpc_s
         print(f"MPCParams override: S={args.mpc_s}")
@@ -287,7 +383,54 @@ def main():
         v_max_mmps=mpc.params.max_leg_vel_mmps,
         tau_s=mpc.params.tau,
     )
-    if args.auto_s_sweep:
+    if args.toss_motion:
+        # Ping-pong via --catch-pose + --cycles: odd cycles go to
+        # --catch-pose, even cycles (None sentinel) return to the platform's
+        # captured-on-first-update initial pose.  TossMotionSource resolves
+        # the None at cycle start — no pre-enable poke needed here.
+        from controller.toss_motion_source import TossMotionSource
+        source = TossMotionSource(
+            catch_positions_mm=toss_catch_positions,
+            apex_height_mm=args.apex * 1000.0,  # metres → mm
+            hold_s=args.hold_s,
+            **_src_kwargs,
+        )
+        print(
+            f"TossMotionSource: {len(toss_catch_positions)} cycle(s), "
+            f"apex={args.apex:.2f} m ({args.apex * 1000.0:.0f} mm), "
+            f"hold={args.hold_s:.1f}s, "
+            f"v_max={mpc.params.max_leg_vel_mmps:.0f} mm/s")
+        for i, c in enumerate(toss_catch_positions):
+            if c is None:
+                print(f"  cycle {i}: return to initial pose (captured on start)")
+            else:
+                print(f"  cycle {i}: catch at ({c[0]:+.1f}, {c[1]:+.1f}, {c[2]:+.1f}) mm")
+
+        # Worst-case peak platform speed estimate: furthest horizontal catch
+        # divided by the symmetric-throw flight time at the configured apex.
+        # When d/T exceeds β·v_max, the K1–K6 layer silently stretches the
+        # transit past the ballistic deadline (no_stretch=False default).
+        from controller.ballistics import (
+            flight_time_from_apex as _flight_time_from_apex,
+        )
+        _t_est = _flight_time_from_apex(
+            np.zeros(3), np.zeros(3), args.apex * 1000.0)
+        _nonnull = [c for c in toss_catch_positions if c is not None]
+        _max_horizontal = (
+            max(float(np.linalg.norm(c[:2])) for c in _nonnull)
+            if _nonnull else 0.0)
+        _est_plat_speed = _max_horizontal / _t_est if _t_est > 0 else 0.0
+        _v_max = mpc.params.max_leg_vel_mmps
+        if _est_plat_speed > 0.85 * _v_max:
+            print(
+                f"WARN: estimated TRANSIT horizontal speed "
+                f"{_est_plat_speed:.0f} mm/s exceeds 0.85·v_max "
+                f"({0.85 * _v_max:.0f} mm/s). K1–K6 will stretch the "
+                f"quintic past the {_t_est:.2f}s ballistic deadline; "
+                f"observed transit will run longer than the notional "
+                f"ball's flight time. Reduce --apex, shorten --catch-pose, "
+                f"or raise max_leg_vel_mmps.")
+    elif args.auto_s_sweep:
         source = AutoSequenceTargetSource(
             _S_SWEEP_POSES, hold_s=_S_SWEEP_HOLD_S, **_src_kwargs,
         )
@@ -324,7 +467,12 @@ def main():
         return tc
 
     def _on_pre_command(plant_, mpc_, tc, cmd, cmd_vel, diag):
-        """Set feedforward torques from MPC's predicted trajectory."""
+        """Set feedforward torques from MPC's predicted trajectory.
+
+        No-op on MuJoCoPlant which has no feedforward channel (sim dry-run).
+        """
+        if not hasattr(plant_, 'set_pose'):
+            return
         poses = mpc_.predicted_poses_view
         times = mpc_.predicted_times_view
         if poses is not None:
@@ -394,7 +542,9 @@ def main():
     try:
         # Enable pass-through mode (skip for ZmqTargetSource — the loop
         # manages enable/disable transitions based on mode messages).
-        if not hasattr(source, 'enabled'):
+        # MuJoCoPlant has no enable()/disable() lifecycle, so guard on the
+        # plant too.
+        if not hasattr(source, 'enabled') and hasattr(plant, 'enable'):
             plant.enable()
 
         estop_exit = run_mpc_loop(
@@ -416,11 +566,14 @@ def main():
         # A disable() here would transition ESTOP → DISABLED and erase
         # _fault_state.  ESTOP already zeros outputs (physical safety
         # unchanged); we only skip the operator-visibility-erasing step.
-        if not getattr(plant, 'estop_requested', False):
+        if not getattr(plant, 'estop_requested', False) and hasattr(
+                plant, 'disable'):
             plant.disable()
         time.sleep(0.05)
-        plant.close()
-        feedback_pub.close()
+        if hasattr(plant, 'close'):
+            plant.close()
+        if feedback_pub is not None:
+            feedback_pub.close()
         if hasattr(source, 'close'):
             source.close()
         if dashboard is not None:

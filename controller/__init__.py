@@ -12,3 +12,4 @@ from .target import (
     StaticTargetSource, WaypointTargetSource,
 )
 from .telemetry import TelemetryLogger, StepRecord, record_from_arrays
+from .toss_motion_source import TossMotionSource
