@@ -89,8 +89,9 @@ issues:
   - id: MPC_OVERSHOOT_SATURATION
     name: "MPC NLP saturation when plant overshoots the ref"
     severity: medium
-    status: active
-    logbook_entry: "2026-04-18-move5-overshoot-stall-and-plant-collapse.md"
+    status: fixed
+    fixed_date: "2026-04-20"
+    logbook_entry: "2026-04-20-k1-k6-reference-feasibility-resolution.md"
     description: >
       At move-start, when the plant is carrying residual motion or starts off
       the commanded initial pose, actual extension can lead cmd extension by
