@@ -185,3 +185,51 @@
 .chart-cell .u-axis {
     font-family: var(--font-mono) !important;
 }
+
+/* ---- Per-curve crosshair callouts -------------------------------------
+   Positioned overlay lives inside uPlot's .u-over, so CSS-pixel coords
+   from u.valToPos line up exactly with the plot area.  Each .chart-callout
+   is anchored at the intersection point and nudged right of the crosshair;
+   near the right edge we flip it to sit on the left via .flip-left. */
+.chart-callouts {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 90ms ease-out;
+    z-index: 4;
+}
+
+.chart-callout {
+    position: absolute;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 5px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--text-primary);
+    background: rgba(15, 23, 42, 0.9);
+    border: 1px solid var(--signal-color, var(--accent-blue));
+    border-radius: var(--border-radius-sm);
+    white-space: nowrap;
+    pointer-events: none;
+    /* Anchor point is the intersection itself — offset the pill right of the
+       crosshair and vertically-centre on the curve. */
+    transform: translate(8px, -50%);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+}
+
+.chart-callout.flip-left {
+    transform: translate(calc(-100% - 8px), -50%);
+}
+
+.chart-callout-dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--signal-color, var(--accent-blue));
+    flex-shrink: 0;
+}

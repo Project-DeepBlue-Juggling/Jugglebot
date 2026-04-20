@@ -88,25 +88,33 @@ function arcPts(r, aDeg, bDeg, n, plane, off) {
     return pts;
 }
 
-/** Shared material for all axis tubes. */
+/** Shared material for yaw-arc tube (not part of any highlight group). */
 const axisMat = new THREE.MeshStandardMaterial({
     color: COL_AXIS,
     transparent: true,
     opacity: 0.7,
 });
 
+/** Dedicated material for pitch-arc + throw-tube — highlighted together when
+ *  the BB-Pitch chart is hovered. */
+const pitchMat = new THREE.MeshStandardMaterial({
+    color: COL_AXIS,
+    transparent: true,
+    opacity: 0.7,
+});
+
 /** Create a solid tube mesh following an arc (CatmullRomCurve3). */
-function arcTube(pts, tubeR) {
+function arcTube(pts, tubeR, mat = axisMat) {
     const curve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.0);
     const geom = new THREE.TubeGeometry(curve, pts.length * 2, tubeR * S, RADIAL_SEGS, false);
-    return new THREE.Mesh(geom, axisMat);
+    return new THREE.Mesh(geom, mat);
 }
 
 /** Create a solid tube mesh along a straight line (LineCurve3). */
-function lineTube(from, to, tubeR, segs) {
+function lineTube(from, to, tubeR, segs, mat = axisMat) {
     const curve = new THREE.LineCurve3(from, to);
     const geom = new THREE.TubeGeometry(curve, segs, tubeR * S, RADIAL_SEGS, false);
-    return new THREE.Mesh(geom, axisMat);
+    return new THREE.Mesh(geom, mat);
 }
 
 // ====================================================================
@@ -159,6 +167,7 @@ export function initBallButlerModel() {
     const pitchArc = arcTube(
         arcPts(PITCH_ARC_RADIUS, 5, 100, ARC_SEGMENTS, 'yz', pitchArcOffset),
         ARC_TUBE_R,
+        pitchMat,
     );
     yawGroup.add(pitchArc);
 
@@ -175,7 +184,7 @@ export function initBallButlerModel() {
     throwTube = lineTube(
         new THREE.Vector3(throwX, 0, 0),
         new THREE.Vector3(throwX, 0, -throwLen),
-        THROW_TUBE_R, 32,
+        THROW_TUBE_R, 32, pitchMat,
     );
     pitchGroup.add(throwTube);
 
@@ -240,4 +249,23 @@ export function updateBallButlerPose(position, orientation) {
  */
 export function setBallButlerVisible(visible) {
     if (bbGroup) bbGroup.visible = visible;
+}
+
+/**
+ * Highlight a single Ball Butler element (pitch group or hand) so it pops in
+ * the 3D scene.  Pass `null` to clear.
+ *
+ * @param {null | 'pitch' | 'hand'} target
+ */
+export function setBallButlerHighlight(target) {
+    const isPitchHi = target === 'pitch';
+    pitchMat.emissive.setHex(0xffffff);
+    pitchMat.emissiveIntensity = isPitchHi ? 0.8 : 0;
+    pitchMat.opacity = isPitchHi ? 1.0 : 0.7;
+
+    const isHandHi = target === 'hand';
+    if (handSphere) {
+        handSphere.material.emissiveIntensity = isHandHi ? 1.4 : 0.35;
+        handSphere.scale.setScalar(isHandHi ? 1.9 : 1);
+    }
 }

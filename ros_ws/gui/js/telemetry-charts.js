@@ -5,7 +5,17 @@
  * panel.  Each chart plots user-selected signals (position, velocity, current,
  * temperature, bus voltage/current) with shared Y-axes for same-unit signals
  * and synchronized crosshair cursors.
+ *
+ * Hover UX:
+ *   - Entering a chart cell highlights the matching element in the 3D scene
+ *     (leg 0..5 → Stewart leg, Hand → Stewart hand axis, BB Pitch/Hand → BB
+ *     pitch group / hand sphere).
+ *   - The vertical crosshair shows per-curve value callouts at each series
+ *     intersection, synced across all charts via uPlot's cursor sync group.
  */
+
+import { setStewartHighlight } from './stewart-model.js';
+import { setBallButlerHighlight } from './ball-butler-model.js';
 
 // ---- Signal definitions ----
 
@@ -33,12 +43,12 @@ const SIGNAL_GROUPS = [
 
 /** Map from scale key → display metadata */
 const SCALE_META = {
-    position:    { unit: 'rev' },
-    velocity:    { unit: 'rev/s' },
-    current:     { unit: 'A' },
-    temperature: { unit: '\u00b0C' },
-    voltage:     { unit: 'V' },
-    bus_current: { unit: 'A' },
+    position:    { unit: 'rev',   decimals: 3 },
+    velocity:    { unit: 'rev/s', decimals: 2 },
+    current:     { unit: 'A',     decimals: 2 },
+    temperature: { unit: '\u00b0C', decimals: 1 },
+    voltage:     { unit: 'V',     decimals: 2 },
+    bus_current: { unit: 'A',     decimals: 2 },
 };
 
 // ---- Motor layout ----
@@ -68,6 +78,8 @@ let visibleCharts = new Set();
 const stores = [];
 /** Per-motor uPlot instances */
 const charts = [];
+/** Per-chart callout metadata — populated during buildAllCharts. */
+const chartCallouts = [];
 /** Whether a rAF repaint is already scheduled */
 let pendingRepaint = false;
 /** Whether chart updates are paused (data still accumulates) */
@@ -478,7 +490,7 @@ function getActiveSignalList() {
     return SIGNAL_GROUPS.filter(s => activeSignals.has(s.key));
 }
 
-function buildUPlotOpts(width, height, showXAxis = true) {
+function buildUPlotOpts(width, height, showXAxis = true, onCursor = null) {
     const signalList = getActiveSignalList();
 
     // Determine which scale groups are in use
@@ -586,6 +598,7 @@ function buildUPlotOpts(width, height, showXAxis = true) {
                 // Clear the selection rectangle so it doesn't linger.
                 u.setSelect({ left: 0, top: 0, width: 0, height: 0 }, false);
             }],
+            setCursor: onCursor ? [onCursor] : [],
         },
         legend: { show: false },
         padding: [8, 8, 0, 0],
@@ -606,6 +619,9 @@ function buildAllCharts() {
     }
 
     const bottomIds = computeBottomOfColumnIds();
+
+    // Invalidate callout records — they'll be rebuilt alongside each chart.
+    chartCallouts.length = 0;
 
     for (let i = 0; i < MOTOR_COUNT; i++) {
         const cell = document.getElementById(`chart-${i}`);
@@ -629,7 +645,16 @@ function buildAllCharts() {
         // computed dynamically because the visible set (and therefore the
         // grid shape) changes at runtime.
         const isBottomRow = bottomIds.has(i);
-        const opts = buildUPlotOpts(w, h, isBottomRow);
+
+        // Callout overlay — created now and captured by the setCursor hook.
+        // Rebuilt every time buildAllCharts runs (so it stays in sync with
+        // the active signal list).  One label per active series, anchored to
+        // the vertical crosshair at the curve's Y value.
+        const calloutRecord = createCalloutRecord(signalList);
+
+        const opts = buildUPlotOpts(w, h, isBottomRow, (u) => {
+            updateCallouts(u, calloutRecord);
+        });
 
         // Initialise with real buffered data so we never flash empty after a
         // toggle / window change — falls back to empty arrays before stores exist.
@@ -640,6 +665,15 @@ function buildAllCharts() {
         charts[i] = new uPlot(opts, initialData, cell);
         charts[i].setScale('x', { min: windowStart, max: windowEnd });
         attachMouseControls(charts[i]);
+
+        // The overlay must live inside u.over so uPlot's valToPos CSS-pixel
+        // coords line up (they're measured from the plot area top-left).
+        charts[i].over.appendChild(calloutRecord.overlay);
+        chartCallouts[i] = calloutRecord;
+
+        // Hover → 3D highlight.  Attached to the uPlot over-layer (not the
+        // cell) so the title overlay's pointer-events don't swallow events.
+        attachHighlightHandlers(charts[i].over, i);
     }
 }
 
@@ -847,6 +881,118 @@ function attachMouseControls(u) {
         ev.preventDefault();
         resetViewToLive();
     });
+}
+
+// ---- Per-curve value callouts -------------------------------------------
+
+/**
+ * Build the DOM scaffolding for one chart's callout overlay — a positioned
+ * container plus one pill per active signal.  The pills are absolutely
+ * positioned on setCursor via updateCallouts().
+ *
+ * Returned record is owned by chartCallouts[i] and replaced whenever the
+ * chart is rebuilt (active signal set changed, layout changed, etc).
+ */
+function createCalloutRecord(signalList) {
+    const overlay = document.createElement('div');
+    overlay.className = 'chart-callouts';
+
+    const pills = signalList.map(sig => {
+        const el = document.createElement('div');
+        el.className = 'chart-callout';
+        el.style.setProperty('--signal-color', sig.color);
+        el.innerHTML = '<span class="chart-callout-dot"></span><span class="chart-callout-text"></span>';
+        el.style.display = 'none';
+        overlay.appendChild(el);
+        return { el, textNode: el.querySelector('.chart-callout-text'), sig };
+    });
+
+    return { overlay, pills, signalList };
+}
+
+function formatCalloutValue(v, scale) {
+    const meta = SCALE_META[scale] || {};
+    const decimals = meta.decimals ?? 2;
+    const unit = meta.unit || '';
+    return `${v.toFixed(decimals)}${unit ? ' ' + unit : ''}`;
+}
+
+/**
+ * Position the per-curve callouts at the current crosshair x.  uPlot fires
+ * setCursor on every mouse move (and on cursor sync from peer charts), so
+ * this runs at ~60 Hz while the user drags across the grid.
+ */
+function updateCallouts(u, record) {
+    if (!record) return;
+    const { overlay, pills } = record;
+    const idx = u.cursor.idx;
+    const data = u.data;
+    if (idx == null || idx < 0 || !data || !data[0] || idx >= data[0].length) {
+        overlay.style.opacity = '0';
+        return;
+    }
+    overlay.style.opacity = '1';
+
+    const t = data[0][idx];
+    const xPx = u.valToPos(t, 'x');
+    const plotW = u.bbox ? (u.bbox.width / devicePixelRatio) : u.over.clientWidth;
+
+    // Flip callout side when near the right edge so labels stay readable.
+    const flipLeft = xPx > plotW * 0.75;
+
+    for (let j = 0; j < pills.length; j++) {
+        const { el, textNode, sig } = pills[j];
+        const val = data[j + 1] ? data[j + 1][idx] : undefined;
+        if (val == null || !Number.isFinite(val)) {
+            el.style.display = 'none';
+            continue;
+        }
+        const yPx = u.valToPos(val, sig.scale);
+        if (!Number.isFinite(yPx)) {
+            el.style.display = 'none';
+            continue;
+        }
+        el.style.display = '';
+        el.style.left = `${xPx}px`;
+        el.style.top = `${yPx}px`;
+        el.classList.toggle('flip-left', flipLeft);
+        textNode.textContent = formatCalloutValue(val, sig.scale);
+    }
+}
+
+// ---- Chart-cell hover → 3D scene highlight ------------------------------
+
+/**
+ * Map a chart index (0..8) to the (subsystem, target) pair understood by the
+ * two 3D model modules.  Matches the CHART_LABELS layout.
+ */
+function highlightTargetFor(chartIdx) {
+    if (chartIdx >= 0 && chartIdx <= 5) return { subsystem: 'stewart', target: `leg${chartIdx}` };
+    if (chartIdx === 6) return { subsystem: 'stewart', target: 'hand' };
+    if (chartIdx === 7) return { subsystem: 'bb', target: 'pitch' };
+    if (chartIdx === 8) return { subsystem: 'bb', target: 'hand' };
+    return null;
+}
+
+function applyHighlight(chartIdx) {
+    const h = highlightTargetFor(chartIdx);
+    // Always clear both subsystems first so hovering between a Stewart and BB
+    // chart doesn't leave a stale glow on whichever side we just left.
+    setStewartHighlight(null);
+    setBallButlerHighlight(null);
+    if (!h) return;
+    if (h.subsystem === 'stewart') setStewartHighlight(h.target);
+    else if (h.subsystem === 'bb') setBallButlerHighlight(h.target);
+}
+
+function clearHighlight() {
+    setStewartHighlight(null);
+    setBallButlerHighlight(null);
+}
+
+function attachHighlightHandlers(el, chartIdx) {
+    el.addEventListener('mouseenter', () => applyHighlight(chartIdx));
+    el.addEventListener('mouseleave', clearHighlight);
 }
 
 function repaintAllCharts(force = false) {

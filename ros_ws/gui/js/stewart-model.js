@@ -26,6 +26,13 @@ let handLine;
 let currentPlatNodes = null;
 /** Current platform centre (world frame, mm) */
 let currentPlatCentre = null;
+/** Last-applied hand extension, cached so highlight updates can re-apply geometry. */
+let currentHandExtensionMM = 0;
+
+/** Per-leg radial scale multiplier (1 normally, >1 while highlighted). */
+const legRadialScale = [1, 1, 1, 1, 1, 1];
+/** Hand axis radial scale multiplier. */
+let handRadialScale = 1;
 
 // Colours
 const BASE_COLOR = 0x3b82f6;
@@ -67,6 +74,8 @@ export function initStewartModel() {
     platformGroup.add(platformMesh);
 
     // ---- Legs (cylinders between base and platform nodes) ----
+    // Each leg gets its own material so it can be colour-cycled by extension
+    // *and* toggled into a highlighted (emissive) state independently.
     for (let i = 0; i < 6; i++) {
         const leg = createLegCylinder();
         legMeshes.push(leg);
@@ -155,14 +164,17 @@ function createLegCylinder() {
 
 /**
  * Position a cylinder mesh between two points (in Three.js coords).
+ * radialScale multiplies the cross-section radius (x/z scale) so a caller can
+ * visually fatten a cylinder — used by the highlight API without needing a
+ * separate mesh path.
  */
-function positionCylinder(mesh, p1, p2) {
+function positionCylinder(mesh, p1, p2, radialScale = 1) {
     const mid = new THREE.Vector3().addVectors(p1, p2).multiplyScalar(0.5);
     mesh.position.copy(mid);
 
     const dir = new THREE.Vector3().subVectors(p2, p1);
     const len = dir.length();
-    mesh.scale.set(1, len, 1);
+    mesh.scale.set(radialScale, len, radialScale);
 
     // Orient cylinder (default Y axis) to point from p1 to p2
     if (len > 1e-10) {
@@ -184,7 +196,7 @@ function updateLegPositions() {
 
         const p1 = robotToThreeScaled(base[0], base[1], base[2]);
         const p2 = robotToThreeScaled(plat[0], plat[1], plat[2]);
-        positionCylinder(legMeshes[i], p1, p2);
+        positionCylinder(legMeshes[i], p1, p2, legRadialScale[i]);
 
         // Color by extension ratio
         const dx = plat[0] - base[0];
@@ -265,7 +277,7 @@ function updateHandAxis(extensionMM) {
     // Position the cylinder between handBase and handTip
     const base3 = robotToThreeScaled(handBase[0], handBase[1], handBase[2]);
     const tip3 = robotToThreeScaled(handTip[0], handTip[1], handTip[2]);
-    positionCylinder(handLine, base3, tip3);
+    positionCylinder(handLine, base3, tip3, handRadialScale);
 }
 
 /**
@@ -323,9 +335,41 @@ function updatePlatformMesh() {
 export function updateStewartPose(platNodes, platCentre, handExtensionMM) {
     currentPlatNodes = platNodes;
     currentPlatCentre = platCentre;
+    currentHandExtensionMM = handExtensionMM;
 
     updatePlatformMesh();
     updateLegPositions();
     updateHandAxis(handExtensionMM);
+}
+
+/**
+ * Highlight a single Stewart-platform element (leg 0..5 or the hand axis) so
+ * it pops visually in the 3D scene.  Pass `null` to clear.
+ *
+ * @param {null | 'leg0' | 'leg1' | 'leg2' | 'leg3' | 'leg4' | 'leg5' | 'hand'} target
+ */
+export function setStewartHighlight(target) {
+    for (let i = 0; i < 6; i++) {
+        const isHi = target === `leg${i}`;
+        legRadialScale[i] = isHi ? 2.4 : 1;
+        const mat = legMeshes[i]?.material;
+        if (mat) {
+            mat.emissive.setHex(isHi ? 0xffffff : 0x000000);
+            mat.emissiveIntensity = isHi ? 0.6 : 0;
+        }
+    }
+    const isHandHi = target === 'hand';
+    handRadialScale = isHandHi ? 2.4 : 1;
+    if (handLine) {
+        handLine.material.emissive.setHex(HAND_COLOR);
+        handLine.material.emissiveIntensity = isHandHi ? 1.2 : 0.3;
+    }
+
+    // Re-run positioning so the new radial scale is applied immediately,
+    // even if no telemetry frame arrives for a while.
+    if (currentPlatNodes) {
+        updateLegPositions();
+        updateHandAxis(currentHandExtensionMM);
+    }
 }
 
