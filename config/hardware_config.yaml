@@ -192,12 +192,16 @@ jugglebot_odrive_defaults:
   #           the noisiest at rest). 30/0.24 splits the difference.
   #   leg 4:  40/0.32 → 30/0.24 (first reduction — ranked 2nd-worst hold-stdev
   #           at z=220 in session 094723, mid-pack at z=170).
+  # 2026-04-19 (leg-1 twitch test): leg 1 reverted to 40/0.32 to test whether
+  # the reduced gain is the cause of the 436.9 μm hold-stdev observed at pose
+  # (0,−100,200) in mpc_20260419_135251. Leg 4 left at 30/0.24 as a control.
+  # See logbook/2026-04-19-leg1-pose-dependent-hold-twitch.md.
   # Ratio pos_gain : vel_int_gain held at 125 : 1 for all legs.
   # Methodology: plans/active/leg-gain-tuning-methodology.md (Level 1).
   # Logbook: 2026-04-18-hold-fighting-motion-onset-jitter.md.
-  leg_pos_gains:     [40.0, 30.0, 40.0, 40.0, 30.0, 40.0]
+  leg_pos_gains:     [40.0, 40.0, 40.0, 40.0, 30.0, 40.0]
   leg_vel_gains:     [0.20, 0.20, 0.20, 0.20, 0.20, 0.20]
-  leg_vel_int_gains: [0.32, 0.24, 0.32, 0.32, 0.24, 0.32]
+  leg_vel_int_gains: [0.32, 0.32, 0.32, 0.32, 0.24, 0.32]
   # Leg motor incremental encoder resolution (counts per revolution).
   # Consumed by controller/hardware_plant.py to compute the sub-LSB command
   # dead-band: deadband_mm_per_leg = 1 / (enc_cpr * mm_to_rev).
