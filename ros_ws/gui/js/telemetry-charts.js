@@ -235,6 +235,7 @@ export function initTelemetryCharts() {
     initChartVisibilityToggles();
     initTimeWindowSelector();
     initPauseButton();
+    initExportButton();
     addChartTitles();
     applyChartLayout();  // apply grid-template + hidden classes before building
     buildAllCharts();
@@ -486,9 +487,15 @@ function initChartVisibilityToggles() {
         btn.className = 'signal-toggle' + (visibleCharts.has(i) ? ' active' : '');
         btn.dataset.chart = String(i);
         btn.textContent = CHART_LABELS[i];
-        btn.title = `Toggle ${CHART_LABELS[i]} chart visibility (keyboard: ${i + 1})`;
+        btn.title = `Toggle ${CHART_LABELS[i]} chart visibility (click) · Shift-click or press ${i + 1} to solo`;
 
-        btn.addEventListener('click', () => {
+        btn.addEventListener('click', (ev) => {
+            // Shift-click = solo this chart (same as pressing the number
+            // key).  Double-solo returns to "show all".
+            if (ev.shiftKey) {
+                toggleSoloChart(i);
+                return;
+            }
             if (visibleCharts.has(i)) {
                 // Enforce ≥1 visible chart.
                 if (visibleCharts.size === 1) return;
@@ -1415,6 +1422,82 @@ function clearDeltaBookmarks() {
     deltaA = null;
     deltaB = null;
     redrawAllOverlays();
+}
+
+// ---- CSV export ---------------------------------------------------------
+
+/**
+ * Build an ISO 8601 basic-format timestamp suitable for a filename — colons
+ * swapped for dashes so it's portable across file systems, fractional
+ * seconds stripped.  Example: 2026-04-21T14-32-05.
+ */
+function isoFilenameStamp() {
+    return new Date().toISOString().replace(/:/g, '-').replace(/\..+$/, '');
+}
+
+/**
+ * Dump the current contents of every per-motor cache to one wide CSV
+ * (timestamp + one column per signal × motor).  Drives a browser download
+ * via an object-URL Blob, filename stamped with the local ISO time.
+ *
+ * All stores are fed in lock-step from onTelemetryData, so they share the
+ * master timestamp array from stores[0].
+ */
+function exportTelemetryCSV() {
+    const master = stores[0];
+    if (!master || master.length === 0) {
+        alert('No telemetry data to export yet.');
+        return;
+    }
+
+    const header = ['timestamp_s'];
+    for (let i = 0; i < MOTOR_COUNT; i++) {
+        const motor = CHART_LABELS[i].replace(/\s+/g, '_').toLowerCase();
+        for (const sg of SIGNAL_GROUPS) {
+            header.push(`${motor}.${sg.key}`);
+        }
+    }
+
+    const rows = [header.join(',')];
+    const N = master.length;
+    for (let k = 0; k < N; k++) {
+        const cells = [master.timestamps[k].toFixed(3)];
+        for (let i = 0; i < MOTOR_COUNT; i++) {
+            const store = stores[i];
+            for (const sg of SIGNAL_GROUPS) {
+                const col = store && store.columns[sg.key];
+                const v = col ? col[k] : NaN;
+                cells.push(Number.isFinite(v) ? v.toFixed(6) : '');
+            }
+        }
+        rows.push(cells.join(','));
+    }
+
+    const blob = new Blob([rows.join('\n')], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `jugglebot-telemetry-${isoFilenameStamp()}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    // Revoke on the next tick — Safari needs the URL to still resolve during
+    // click dispatch, so give it a frame before we free it.
+    requestAnimationFrame(() => URL.revokeObjectURL(url));
+}
+
+function initExportButton() {
+    const container = document.getElementById('chart-time-window');
+    if (!container) return;
+    const btn = document.createElement('button');
+    btn.id = 'chart-export-btn';
+    btn.className = 'signal-toggle';
+    btn.textContent = 'Export CSV';
+    btn.title = 'Download the cached telemetry window as a CSV file';
+    btn.addEventListener('click', exportTelemetryCSV);
+    // Slot it just before the pause button (first-child) — left-to-right
+    // reading order becomes: Export, Pause, Window.
+    container.insertBefore(btn, container.firstChild);
 }
 
 // ---- Keyboard shortcuts -------------------------------------------------
