@@ -205,26 +205,29 @@
             <!-- Signal toggle toolbar -->
             <div id="chart-toolbar">
                 <div id="signal-toggles"></div>
-                <div id="chart-time-window">
-                    <label>Window:</label>
-                    <select id="chart-window-select">
-                        <option value="5">5s</option>
-                        <option value="10" selected>10s</option>
-                        <option value="30">30s</option>
-                        <option value="60">60s</option>
-                    </select>
+                <div id="chart-right-group">
+                    <div id="chart-visibility-toggles"></div>
+                    <div id="chart-time-window">
+                        <label>Window:</label>
+                        <select id="chart-window-select">
+                            <option value="5">5s</option>
+                            <option value="10" selected>10s</option>
+                            <option value="30">30s</option>
+                            <option value="60">60s</option>
+                        </select>
+                    </div>
                 </div>
             </div>
-            <!-- 3x3 chart grid -->
+            <!-- Chart grid (motor-numeric DOM order; filled column-major by CSS) -->
             <div id="chart-grid">
                 <div class="chart-cell" id="chart-0"></div>
-                <div class="chart-cell" id="chart-3"></div>
-                <div class="chart-cell" id="chart-6"></div>
                 <div class="chart-cell" id="chart-1"></div>
-                <div class="chart-cell" id="chart-4"></div>
-                <div class="chart-cell" id="chart-7"></div>
                 <div class="chart-cell" id="chart-2"></div>
+                <div class="chart-cell" id="chart-3"></div>
+                <div class="chart-cell" id="chart-4"></div>
                 <div class="chart-cell" id="chart-5"></div>
+                <div class="chart-cell" id="chart-6"></div>
+                <div class="chart-cell" id="chart-7"></div>
                 <div class="chart-cell" id="chart-8"></div>
             </div>
         </div>

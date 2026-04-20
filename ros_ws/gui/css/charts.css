@@ -45,6 +45,11 @@
     color: var(--text-primary);
 }
 
+.signal-toggle.disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
 .signal-toggle .color-dot {
     width: 8px;
     height: 8px;
@@ -58,6 +63,21 @@
     height: 0;
     border-top: 2px dashed var(--signal-color);
     flex-shrink: 0;
+}
+
+/* ---- Right-aligned toolbar group (visibility pills + window + pause) ---- */
+#chart-right-group {
+    display: flex;
+    align-items: center;
+    gap: var(--gap);
+    margin-left: auto;
+    flex-shrink: 0;
+}
+
+#chart-visibility-toggles {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
 }
 
 /* ---- Time window selector ---- */
@@ -86,11 +106,16 @@
     min-width: 52px;
 }
 
-/* ---- 3x3 chart grid ---- */
+/* ---- Chart grid ----
+   DOM order is motor-numeric (chart-0 … chart-8); grid-auto-flow: column
+   fills top-to-bottom then left-to-right so col1 = L0/L1/L2, etc.  JS sets
+   grid-template-columns / grid-template-rows inline based on how many charts
+   are currently visible. */
 #chart-grid {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
     grid-template-rows: repeat(3, 1fr);
+    grid-auto-flow: column;
     gap: 2px;
     flex: 1;
     min-height: 0;
@@ -104,6 +129,10 @@
     border-radius: var(--border-radius-sm);
     min-height: 0;
     min-width: 0;
+}
+
+.chart-cell.chart-hidden {
+    display: none;
 }
 
 /* Chart title overlaid on each cell */

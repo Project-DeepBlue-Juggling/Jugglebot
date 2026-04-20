@@ -48,8 +48,9 @@ const MOTOR_COUNT = 9;
 
 // ---- State ----
 
-const SIGNALS_STORAGE_KEY  = 'jugglebot-chart-signals';
-const WINDOW_STORAGE_KEY   = 'jugglebot-chart-window';
+const SIGNALS_STORAGE_KEY    = 'jugglebot-chart-signals';
+const WINDOW_STORAGE_KEY     = 'jugglebot-chart-window';
+const VISIBILITY_STORAGE_KEY = 'jugglebot-chart-visibility';
 const DEFAULT_SIGNALS      = ['pos_measured', 'vel_measured'];
 const DEFAULT_WINDOW_SEC   = 10;
 const DATA_RATE_HZ         = 20;
@@ -60,6 +61,8 @@ const CACHE_WINDOW_SEC     = 300;
 let activeSignals = new Set();
 let currentWindowSec = DEFAULT_WINDOW_SEC;
 let maxPoints = 0;
+/** Set of visible chart indices (0..8).  Defaults to all visible. */
+let visibleCharts = new Set();
 
 /** Per-motor data stores */
 const stores = [];
@@ -170,9 +173,11 @@ export function initTelemetryCharts() {
     computeMaxPoints();
     createStores();
     initSignalToggles();
+    initChartVisibilityToggles();
     initTimeWindowSelector();
     initPauseButton();
     addChartTitles();
+    applyChartLayout();  // apply grid-template + hidden classes before building
     buildAllCharts();
 
     // Resize charts when the grid container changes size
@@ -204,6 +209,23 @@ function loadSettings() {
         const v = parseInt(savedWin, 10);
         if ([5, 10, 30, 60].includes(v)) currentWindowSec = v;
     }
+
+    // Chart visibility — default to all 9 visible if missing/invalid.
+    try {
+        const saved = localStorage.getItem(VISIBILITY_STORAGE_KEY);
+        if (saved) {
+            const arr = JSON.parse(saved);
+            if (Array.isArray(arr)) {
+                visibleCharts = new Set(
+                    arr.map(n => parseInt(n, 10))
+                        .filter(n => Number.isInteger(n) && n >= 0 && n < MOTOR_COUNT)
+                );
+            }
+        }
+    } catch { /* ignore */ }
+    if (visibleCharts.size === 0) {
+        visibleCharts = new Set(Array.from({ length: MOTOR_COUNT }, (_, i) => i));
+    }
 }
 
 function saveActiveSignals() {
@@ -212,6 +234,10 @@ function saveActiveSignals() {
 
 function saveTimeWindow() {
     localStorage.setItem(WINDOW_STORAGE_KEY, currentWindowSec.toString());
+}
+
+function saveChartVisibility() {
+    localStorage.setItem(VISIBILITY_STORAGE_KEY, JSON.stringify([...visibleCharts]));
 }
 
 function computeMaxPoints() {
@@ -272,6 +298,93 @@ function initSignalToggles() {
 
         container.appendChild(btn);
     }
+}
+
+// ---- Chart visibility toolbar ----
+
+/**
+ * Shape of the chart grid for N visible charts.  Column-major fill: charts
+ * go top-to-bottom in column 1, then column 2, etc., in motor-numeric order.
+ */
+function gridShapeFor(n) {
+    if (n <= 1) return { cols: 1, rows: 1 };
+    if (n === 2) return { cols: 2, rows: 1 };
+    if (n === 3) return { cols: 3, rows: 1 };
+    if (n === 4) return { cols: 2, rows: 2 };
+    if (n <= 6) return { cols: 3, rows: 2 };
+    return { cols: 3, rows: 3 };
+}
+
+/**
+ * Apply the grid template and hidden classes based on the current
+ * visibleCharts set, then resize + repaint so uPlot adapts and the
+ * freshly-unhidden charts immediately display their cached history.
+ */
+function applyChartLayout() {
+    const n = visibleCharts.size;
+    const { cols, rows } = gridShapeFor(n);
+
+    const grid = document.getElementById('chart-grid');
+    if (grid) {
+        grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+        grid.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
+    }
+
+    for (let i = 0; i < MOTOR_COUNT; i++) {
+        const cell = document.getElementById(`chart-${i}`);
+        if (!cell) continue;
+        cell.classList.toggle('chart-hidden', !visibleCharts.has(i));
+    }
+
+    // Let uPlot adapt to the new cell dimensions, then repaint so newly-
+    // visible cells render their cached history immediately.
+    resizeAllCharts();
+    repaintAllCharts(true);
+}
+
+function initChartVisibilityToggles() {
+    const container = document.getElementById('chart-visibility-toggles');
+    if (!container) return;
+
+    const buttons = [];
+
+    const refreshDisabledState = () => {
+        const onlyOne = visibleCharts.size === 1;
+        for (let i = 0; i < MOTOR_COUNT; i++) {
+            const btn = buttons[i];
+            if (!btn) continue;
+            const isOnlyActive = onlyOne && visibleCharts.has(i);
+            btn.classList.toggle('disabled', isOnlyActive);
+        }
+    };
+
+    for (let i = 0; i < MOTOR_COUNT; i++) {
+        const btn = document.createElement('button');
+        btn.className = 'signal-toggle' + (visibleCharts.has(i) ? ' active' : '');
+        btn.dataset.chart = String(i);
+        btn.textContent = CHART_LABELS[i];
+        btn.title = `Toggle ${CHART_LABELS[i]} chart visibility`;
+
+        btn.addEventListener('click', () => {
+            if (visibleCharts.has(i)) {
+                // Enforce ≥1 visible chart.
+                if (visibleCharts.size === 1) return;
+                visibleCharts.delete(i);
+                btn.classList.remove('active');
+            } else {
+                visibleCharts.add(i);
+                btn.classList.add('active');
+            }
+            saveChartVisibility();
+            refreshDisabledState();
+            applyChartLayout();
+        });
+
+        container.appendChild(btn);
+        buttons.push(btn);
+    }
+
+    refreshDisabledState();
 }
 
 // ---- Time window selector ----
