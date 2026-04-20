@@ -1,7 +1,7 @@
 """Closed-form peak-velocity / peak-acceleration bounds for quintic Hermite segments.
 
 Used by ``make_feasible_events`` in :mod:`controller.target` to enforce the K2/K3
-reference-feasibility invariants (see ``docs/reference_layer_contract.md``).
+reference-feasibility invariants (see ``controller/REFERENCE_LAYER_CONTRACT.md``).
 
 The quintic Hermite basis interpolates position, velocity, and acceleration at
 both segment endpoints.  For a segment over duration ``T`` with boundary

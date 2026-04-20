@@ -114,7 +114,7 @@ problem).
 ## Enforcement: ``make_feasible_events``
 
 All six invariants are enforced in one place:
-[controller/target.py:make_feasible_events](../controller/target.py).
+[controller/target.py:make_feasible_events](target.py).
 Every ``TargetSource`` calls this function (directly or via the
 ``flat_target_to_events`` wrapper) at the boundary where it emits events.
 
@@ -283,7 +283,7 @@ If an MPC session saturates again with the
   — original diagnosis of the pathology.
 - [2026-04-19 Bundle A fix](../logbook/2026-04-19-bundle-a-mpc-overshoot-saturation-fix.md)
   — the first ref-source-side fix (subsumed by K6).
-- [controller/feasibility.py](../controller/feasibility.py) — closed-form
+- [controller/feasibility.py](feasibility.py) — closed-form
   quintic peak-velocity / peak-acceleration math.
 - [tests/sim/test_make_feasible_events.py](../tests/sim/test_make_feasible_events.py)
   — K1–K6 property tests and scenario regression tests.

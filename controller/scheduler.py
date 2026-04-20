@@ -208,7 +208,7 @@ class EventScheduler:
         self._zero6 = np.zeros(6, dtype=np.float64)
         # W4: K2/K3 defense-in-depth.  When v_max_mmps + tau_s are provided,
         # each constructed segment is verified against K2/K3 per
-        # docs/reference_layer_contract.md.  No auto-stretching — catch/toss
+        # controller/REFERENCE_LAYER_CONTRACT.md.  No auto-stretching — catch/toss
         # deadlines are hard, so infeasibility is a scheduler bug to surface.
         self._v_max_mmps = v_max_mmps
         self._tau_s = tau_s

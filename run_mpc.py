@@ -305,7 +305,7 @@ def main():
 
     # --- Build target source ---
     # W4: every source is wired with v_max_mmps + tau_s so make_feasible_events
-    # enforces K1–K6 on emitted refs (docs/reference_layer_contract.md).
+    # enforces K1–K6 on emitted refs (controller/REFERENCE_LAYER_CONTRACT.md).
     _src_kwargs = dict(
         clamp_start_twist_mmps=mpc.params.max_ref_start_twist_mmps,
         v_max_mmps=mpc.params.max_leg_vel_mmps,

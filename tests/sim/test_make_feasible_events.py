@@ -12,7 +12,7 @@ investigation (see logbook/2026-04-19-bundle-a-*.md and the 223902 diagnosis)
 gets a named test reproducing its geometry.  These are the *specific* cases
 the contract is intended to defend.
 
-See ``docs/reference_layer_contract.md`` for the K1–K6 normative spec.
+See ``controller/REFERENCE_LAYER_CONTRACT.md`` for the K1–K6 normative spec.
 """
 
 from __future__ import annotations

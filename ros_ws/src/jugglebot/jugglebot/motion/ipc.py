@@ -299,7 +299,7 @@ def make_target_feedback(arrival_time: float,
     the catch coordinator node (and future consumers).
 
     Three ``feedback_type`` values (W11 of the K1–K6 reference-feasibility
-    cycle — see ``docs/reference_layer_contract.md``):
+    cycle — see ``controller/REFERENCE_LAYER_CONTRACT.md``):
 
     * ``'accepted'`` — legacy/default tag for the original accept/reject
       protocol.  ``accepted`` is True when the solver converged and the

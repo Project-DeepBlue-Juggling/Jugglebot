@@ -1,7 +1,7 @@
 """W8 — adversarial sim sequences that exercise the 14 failure-mode scenarios.
 
 Each scenario reproduces the geometry of one failure mode from the W1–W11
-investigation (see ``docs/reference_layer_contract.md`` and
+investigation (see ``controller/REFERENCE_LAYER_CONTRACT.md`` and
 ``logbook/2026-04-19-bundle-a-*.md``) against a live ``MuJoCoPlant`` through
 the real ``run_mpc_loop``.
 

@@ -58,7 +58,7 @@ class TestSimplifiedColdStart:
     """W6 changes the _cold_start contract: per-node IK for every reference
     pose, with a budget guard fallback to linear interpolation for nodes
     past the budget cutoff.  Tests updated from the pre-W6 "single IK + q
-    linear interp" contract — see docs/reference_layer_contract.md."""
+    linear interp" contract — see controller/REFERENCE_LAYER_CONTRACT.md."""
 
     def test_cold_start_w6_calls_ik_per_node(self, fast_mpc):
         """W6: _cold_start calls numerical IK once per horizon node (N+1 total).

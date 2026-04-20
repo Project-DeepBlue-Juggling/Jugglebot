@@ -10,7 +10,7 @@ The MPC solver consumes ``TargetCommand`` each control step:
     ref_events    → optional time-varying reference trajectory (list of events)
 
 Every reference this module emits must satisfy the K1–K6 feasibility contract
-documented in ``docs/reference_layer_contract.md``.  :func:`make_feasible_events`
+documented in ``controller/REFERENCE_LAYER_CONTRACT.md``.  :func:`make_feasible_events`
 is the canonical enforcement point; :func:`flat_target_to_events` is a thin
 compat wrapper that delegates to it.
 
@@ -165,7 +165,7 @@ def flat_target_to_events(
         Feasibility safety margin passed through to ``make_feasible_events``.
     no_stretch : bool
         Catch-path policy: reject rather than stretch infeasible segments.
-        See ``docs/reference_layer_contract.md``.
+        See ``controller/REFERENCE_LAYER_CONTRACT.md``.
     return_reason : bool
         When True, return ``(events, rejection_reason)``.  When False
         (default for backward compat), return just ``events``.
@@ -255,7 +255,7 @@ def _clamp_twist_in_place(twist: np.ndarray, clamp_mmps: float | None) -> None:
     """Element-wise clamp linear twist components to ±clamp_mmps.
 
     Angular components (indices 3..5) are untouched — see K6 rationale in
-    ``docs/reference_layer_contract.md``.  ``None`` is a no-op.
+    ``controller/REFERENCE_LAYER_CONTRACT.md``.  ``None`` is a no-op.
     """
     if clamp_mmps is None:
         return
@@ -328,7 +328,7 @@ def make_feasible_events(
 ) -> Tuple[List[ReferenceEvent], Optional[str]]:
     """Enforce the K1–K6 reference-feasibility contract on a proposed event list.
 
-    See ``docs/reference_layer_contract.md`` for the normative K1–K6 spec.
+    See ``controller/REFERENCE_LAYER_CONTRACT.md`` for the normative K1–K6 spec.
 
     Parameters
     ----------
@@ -355,7 +355,7 @@ def make_feasible_events(
         ``(events_proposal, <reason>)`` UNSTRETCHED.  The caller is
         responsible for acting on the rejection (e.g. hold at the last
         feasible pose).  This is the catch-path policy from
-        ``docs/reference_layer_contract.md``.
+        ``controller/REFERENCE_LAYER_CONTRACT.md``.
     beta : float, default 0.85
         Safety margin applied to both K2 and K3 limits (fraction of v_max
         and a_max).  Values < 1 give IPOPT tracking headroom.
@@ -586,7 +586,7 @@ class TargetCommand:
     invalidates ``_prev_w`` / ``_prev_lam_g`` / ``_prev_lam_x`` /
     ``_timeout_hint`` and cold-starts with W6's per-node-IK initial guess.
     The MPC is free to override this hint in either direction (e.g. on
-    sustained consecutive failures).  See ``docs/reference_layer_contract.md``."""
+    sustained consecutive failures).  See ``controller/REFERENCE_LAYER_CONTRACT.md``."""
 
 
 # ---------------------------------------------------------------------------
@@ -873,7 +873,7 @@ class WaypointTargetSource:
         v_max_mmps, tau_s : float or None
             When both provided, each waypoint is routed through
             ``make_feasible_events`` for K1–K6 enforcement
-            (``docs/reference_layer_contract.md``).  Without them the legacy
+            (``controller/REFERENCE_LAYER_CONTRACT.md``).  Without them the legacy
             path is used and a deprecation warning is emitted.
         """
         self._waypoints = waypoints
