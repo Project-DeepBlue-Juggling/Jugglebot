@@ -2,10 +2,11 @@
 title: "Bundle A quintic-ref settling lag + ZMQ live-twist feedback trap"
 type: investigation
 date: 2026-04-19
-status: in-progress
+status: resolved
 phase: "hardware-bringup — Phase 4 (moderate motions)"
 related_plan: "hardware-bringup.md"
 related_entries:
+  - 2026-04-20-k1-k6-reference-feasibility-resolution
   - 2026-04-19-bundle-a-mpc-overshoot-saturation-fix
   - 2026-04-19-leg1-pose-dependent-hold-twitch
   - 2026-04-18-move5-overshoot-stall-and-plant-collapse
@@ -18,8 +19,26 @@ sessions:
 rosbag:
   - /home/jetson/Desktop/rosbags/2026-04-19_22-36-46
   - /home/jetson/Desktop/rosbags/2026-04-19_22-44-29
-files_changed: []
-commits: []
+files_changed:
+  - controller/feasibility.py
+  - controller/mpc.py
+  - controller/params.py
+  - controller/runner.py
+  - controller/scheduler.py
+  - controller/target.py
+  - controller/zmq_target.py
+  - ros_ws/src/jugglebot/jugglebot/motion/ipc.py
+  - run_mpc.py
+  - sim/analysis/record_baselines.py
+  - sim/main.py
+  - tests/sim/test_cold_start_fixes.py
+  - tests/sim/test_make_feasible_events.py
+  - tests/sim/test_mpc_adversarial_sequences.py
+  - tests/sim/test_target_interface.py
+  - tests/sim/test_zmq_target.py
+commits:
+  - e8c5833
+  - 831ab6f
 subsystem:
   - controller
   - mpc
@@ -130,13 +149,22 @@ AOT solver regenerated via `python controller/generate_solver.py` (hash `72528f4
 
 ## Outcome
 
-*(Pending — this entry stays `in-progress` until the post-fix hardware re-test is run. Re-test plan recorded in the Discussion section of [2026-04-19-bundle-a-mpc-overshoot-saturation-fix.md](2026-04-19-bundle-a-mpc-overshoot-saturation-fix.md) and elaborated by the fix-proposer:*
+Resolved by the K1–K6 reference-feasibility contract that landed in commit `e8c5833` on 2026-04-20. The contract is a broader generalisation of Fix 1 (gate `_target_dirty` on pose/twist only) and Fix 3 (dedicated `MPCParams.max_ref_start_twist_mmps` clamp) that the fix-proposer originally recommended — both are included inside the larger W1–W11 work. The settling-lag half (originally deferred for a dedicated follow-up since the user wanted to keep speeds low) is addressed by the contract's per-node-IK cold start + walk-forward fallback hardening rather than by raising `cruise_speed`.
 
-*1. Repeat `python run_mpc.py --pose 0,0,170` then sequence 170↔220 — expect stable motion, no oscillation (22:37 replay; this will still show the 4-5 s settle per move since Fix 2a was deferred).*
-*2. Repeat `python run_mpc.py --auto-leg1-test` — expect no runaway, no PLANT_TELEMETRY_COLLAPSE trip. The 25-50 s slow transitions are expected to persist until Fix 2a lands, but no worse than 22:44.*
-*3. Stream-sender scenario that produced 223902 (spacemouse continuous publish while traversing to Z=210) — expect no 300+ mm/s overspeed, no `PLANT_TELEMETRY_COLLAPSE`. This is the critical regression target for Fix 1 + Fix 3.*
+Hardware validation on session group `2026-04-20_16-00-31` (commit `831ab6f`) reproduced the 223902 failure geometry under the fix:
 
-*Pass = all three clean on the same rebuilt AOT solver; fail = any one trips a detector.)*
+| Metric | 2026-04-19 fail | 2026-04-20 fixed | Δ |
+| --- | --- | --- | --- |
+| p50 solve time (ms) | 26.0 | 10.5 | -59% |
+| max consecutive timeouts | 147 | 5 | -97% |
+| success rate | 6.2% | 96.2% | +90pp |
+| E-stop required | YES | NO | ✓ |
+
+The K1 anchor is directly visible in the telemetry at the target-flip moment (sample 13, t=1.274 s): `ref_pose_z == actual_pose_z == 174.25 mm` exactly — the quintic is now rebuilt from live plant state at the transition rather than stepping away from it.
+
+Baselines were also re-validated: simple holds at z=220 and z=170 (`mpc_20260420_160120.csv` / `mpc_20260420_160159.csv`) match the pre-fix p50 of 10.6 ms with 100% / 99.9% success rates — zero regression from the contract on the clean-hold case. The rapid-succession W7 stress test (four targets in 2 s, `mpc_20260420_160242.csv`) passed with max 1 consecutive timeout — the live-twist-trap mechanism identified in this entry no longer fires.
+
+See [2026-04-20-k1-k6-reference-feasibility-resolution.md](2026-04-20-k1-k6-reference-feasibility-resolution.md) for the K1–K6 work's own narrative and `sim/analysis/known_issues.yaml` for the MPC_OVERSHOOT_SATURATION entry transition from `active` → `fixed`.
 
 ## Open Questions
 
