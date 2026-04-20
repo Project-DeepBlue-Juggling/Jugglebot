@@ -489,6 +489,19 @@ interpreter housekeeping). The user is pursuing this via parallel work on
 GC instrumentation in `run_mpc.py`. Status remains `in-progress` on this
 entry on account of Failure A.
 
+> **Postscript (2026-04-20):** The Iteration-3 per-leg reductions
+> documented in this entry (legs 1 and 4 at 30 / 0.2 / 0.24) were
+> **reversed** to the uniform 40 / 0.2 / 0.32 baseline after the reduced
+> leg-1 gain was shown to cause a 60× pose-dependent hold-phase asymmetry
+> at (0,−100,200) that the Level-1 test battery did not exercise.
+> See `logbook/2026-04-19-leg1-pose-dependent-hold-twitch.md` for the
+> investigation and A/B result, and the "Outcome for the hardware-bringup
+> stage" section of `plans/active/leg-gain-tuning-methodology.md` for the
+> revised Level-1 entry criteria (extreme-pose coverage is now required
+> before any per-leg reduction). The hold-phase work summarised in the
+> present entry remains valid as a **procedure** — it is the *result*
+> (per-leg reductions) that did not survive the expanded test coverage.
+
 **Open follow-ups:**
 
 - Revisit leg 1 with Level 2 (step-response tuning) if performance budgets

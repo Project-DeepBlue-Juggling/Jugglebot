@@ -3,14 +3,27 @@ title: Leg ODrive PID Gain Tuning Methodology
 status: active
 owner: harrison
 created: 2026-04-18
+last_updated: 2026-04-20
 related_logbook:
   - 2026-04-18-hold-fighting-motion-onset-jitter.md
+  - 2026-04-19-leg1-pose-dependent-hold-twitch.md
 related_config:
   - config/hardware_config.yaml → jugglebot_odrive_defaults.leg_pos_gains / leg_vel_gains / leg_vel_int_gains
 related_code:
   - ros_ws/src/jugglebot/jugglebot/can_node.py::_set_leg_gains
   - ros_ws/src/jugglebot/jugglebot/can/odrive.py::DEFAULT_LEG_GAINS
 ---
+
+> **2026-04-20 status:** Level-1 converged with all six legs uniform at the
+> original flash baseline **40/0.20/0.32**. The per-leg reductions Iteration-3
+> introduced (legs 1 and 4 at 30/0.24) were **reversed** after they were
+> shown to cause a pose-dependent hold-phase limit cycle at (0,−100,200).
+> See the updated "Outcome for the hardware-bringup stage" section at the
+> bottom of this document before opening a new tuning round — specifically,
+> the Level-1 procedure as originally written tunes against a single pose
+> and missed a failure mode that only shows up at extreme off-axis poses.
+> Future rounds should extend the test battery to the extremes **before**
+> reducing any gain from the uniform baseline.
 
 # Leg ODrive PID Gain Tuning Methodology
 
@@ -125,9 +138,25 @@ are committed:
 3. `Active → x=50, hold 5 s` (pure X)
 4. `Active → y=50, hold 5 s` (pure Y)
 5. `Active → (30, 40, 200, 0.05, 0.05, 0), hold 5 s` (diagonal with tilt)
+6. **`Active → (0, −100, 200, 0, 0, 0), hold 5 s`** (extreme Y offset —
+   added 2026-04-20 because this pose exposed a gain-margin failure that
+   none of the five near-centre moves above could see; see
+   `logbook/2026-04-19-leg1-pose-dependent-hold-twitch.md`)
+7. **`Active → (100, 100, 200, 0, 0, 0), hold 5 s`** (extreme diagonal
+   corner — companion to (6); also stresses IPOPT solve-time budget)
 
-Pass criteria: per-leg hold stdev within 1.5× of μ_best on every move, no
-error-severity flags from `/diagnose`, no motor errors in the rosbag.
+Pass criteria: per-leg hold stdev within 1.5× of μ_best on **every move
+including the extreme-pose moves 6 and 7**, no error-severity flags from
+`/diagnose`, no motor errors in the rosbag.
+
+> **Cautionary note — extreme-pose tests are non-negotiable.** The
+> Level-1 procedure as originally written (without moves 6 and 7) converged
+> cleanly with legs 1 and 4 at reduced 30/0.24 gains, but that "converged"
+> state had a 60× hold-phase asymmetry waiting at (0,−100,200). Gain
+> margin has a pose-dependent component — the load distribution, and thus
+> the effective phase margin of the closed-loop, changes with platform
+> pose via the CoM offset and the Jacobian row norm. Do not declare a gain
+> set "done" without exercising the full workspace.
 
 ## Level 2 — Step-response tuning
 
@@ -247,15 +276,101 @@ we probably never need Level 2 for the current juggling-accuracy budget.
 If Level 1 hits a ceiling, escalate to Level 2 for the leg in question
 only — don't rebuild Level 2 across all six legs unless needed.
 
+## Outcome for the hardware-bringup stage (2026-04-20)
+
+**Level 1 converged at uniform 40/0.20/0.32 across all six legs** —
+matching the original ODrive-flash baseline. Per-leg reductions turned
+out to be a false optimum.
+
+### Timeline
+
+- **Iteration 1 (2026-04-18):** legs 1 and 3 identified as worst hold-phase
+  outliers at neutral-pose hold. Leg 1 dropped to 20/0.16 (aggressive halving).
+  Improved neutral-pose stdev but under-damped at low load.
+- **Iteration 2 (2026-04-18/19):** leg 1 compromised to 30/0.24, leg 4 added
+  at 30/0.24 (2nd-worst at z=220). Passed all five near-centre moves in the
+  test battery. Declared converged.
+- **Iteration 3 reversal (2026-04-20):** session `mpc_20260419_135251.csv`
+  exposed a **60× hold-phase asymmetry** on leg 1 at pose (0,−100,200), a
+  pose not covered by Iteration 1/2 testing. `act_std` 437 µm vs 7 µm on the
+  quietest leg. Kinematic + static-force analysis (see
+  `logbook/2026-04-19-leg1-pose-dependent-hold-twitch.md`) showed legs 1 and
+  2 were in mathematically identical roles at that pose with near-equal
+  load — meaning the 60× difference could only be a software asymmetry
+  introduced by the per-leg gain vector, not a hardware difference. Revert
+  of leg 1 → 40/0.32 produced a **16× stdev drop** (437 → 27.5 µm) at the
+  same pose, validated in session `mpc_20260420_160401.csv`. Leg 4, held at
+  30/0.24 as an in-experiment control, reproduced the same pose-dependent
+  signature (50 µm stdev, 10× asymmetry) — confirming mechanism.
+- **2026-04-20 leg-4 revert:** leg 4 → 40/0.32. Validated in session
+  `mpc_20260420_182945.csv`: leg 4 stdev 50 → 36 µm at (0,−100,200);
+  overall asymmetry ratio 60× → 8.5× relative to the original Iteration-2
+  configuration. All six legs now uniform 40/0.20/0.32.
+
+### Lessons
+
+1. **Tuning against hold-phase stdev at a single pose is insufficient.**
+   The hold-phase metric is stationary *per pose* but the load distribution
+   (and thus effective phase margin) varies across the workspace via CoM
+   offset and Jacobian geometry. A gain value that is "just soft enough" at
+   neutral pose can be "over the edge" at an extreme pose.
+2. **When a leg's observed noise is high, the first move is to check
+   whether the YAML gives that leg a different gain from its peers.** We
+   spent substantial effort looking for hardware explanations (leg-specific
+   stiction, backlash, mechanical asymmetry) for a signal that turned out
+   to be entirely produced by our own YAML.
+3. **In-experiment controls are cheap and high-value.** Leg 4 was
+   deliberately left at 30/0.24 during the leg-1 revert test. That control
+   survived the A/B and reproduced the signature at a different leg,
+   upgrading the result from "plausible fix" to "mechanism confirmed."
+4. **"Per-leg" as a tool is right; "per-leg by trial-and-error at one
+   pose" is wrong.** The per-leg gain plumbing remains valuable for Level-2
+   or Level-3 work that actually measures plant asymmetry. It should not
+   be driven by single-pose stdev differences alone.
+
+### Revised Level-1 entry criteria (for any future round)
+
+Do not touch any leg's gain unless all five of the following are true for
+that leg, measured across the expanded test battery (including moves 6 and
+7 at extreme poses):
+
+1. Hold-phase stdev > 1.5× median across the test battery, in aggregate,
+   not at one pose.
+2. No other leg shows the same stdev at the same pose (rules out
+   pose-level effects masquerading as leg-level).
+3. The leg's observed stdev is above the mechanical-bandwidth floor of ~5
+   µm (below that, you are tuning against measurement noise).
+4. The motion-onset dead-time investigation
+   (`plans/active/motion-onset-deadtime-investigation.md`) is either
+   resolved or has a known contribution to the leg's observed stdev that
+   you can subtract.
+5. You have a written hypothesis about **why** this leg is different that
+   goes beyond "its stdev is higher." Without a mechanism, the revert
+   risk is too high.
+
+If any of these fail, do not open a per-leg gain change. Leave the YAML
+uniform.
+
 ## Open questions for later
 
 - Does leg 1 + leg 3 being the worst pair correlate with a specific
   manufacturing batch or assembly position in the hex? If so, we can
   predict outliers from the physical leg serial numbers rather than
-  discovering them at each recommission.
+  discovering them at each recommission. (**Updated 2026-04-20:** less
+  compelling now — at uniform 40/0.32, no leg stands out by more than
+  ~2× at the problem pose. The signal this question was chasing was
+  mostly Iteration-2's own asymmetry.)
 - Would a simple online adaptation (e.g., auto-tune the integrator from
   hold-phase stdev during the first 5 s at Active) remove the need to
   commit gain numbers to YAML at all? Explore in Phase 5+ once we have
   a baseline Level 1 result.
 - How do the gains need to change when catching a ball (brief high
   transient load)? Level 3 would let us predict this; Level 1 cannot.
+- **New 2026-04-20:** Is gain-scheduling across the workspace worth the
+  complexity? The (0,−100,200) data suggests phase margin is
+  pose-dependent even at uniform gains (the residual 36 µm on leg 4 and
+  58 µm on leg 1 at that pose, vs sub-15 µm on the other legs, is a hint).
+  Before pursuing: run the expanded 7-move battery at uniform gains and
+  see whether the residual asymmetry is material relative to the motion-
+  onset dead-time (currently ~100–200 ms, orders of magnitude larger in
+  tracking-error terms).

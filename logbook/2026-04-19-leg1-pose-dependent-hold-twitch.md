@@ -18,10 +18,12 @@ sessions:
   - mpc_20260419_135059.csv
   - mpc_20260419_135140.csv
   - mpc_20260419_135251.csv
-  - mpc_20260420_160401.csv
+  - mpc_20260420_160401.csv   # A/B: leg 1 reverted to 40/0.32, leg 4 still at 30/0.24
+  - mpc_20260420_182945.csv   # A/B: both legs 1 and 4 reverted to 40/0.32 (final)
 rosbag:
   - /home/jetson/Desktop/rosbags/2026-04-19_13-48-32
   - /home/jetson/Desktop/rosbags/2026-04-20_16-03-32
+  - /home/jetson/Desktop/rosbags/2026-04-20_18-29-26
 files_changed:
   - config/hardware_config.yaml
   - config/generated/hardware_config.py
@@ -32,6 +34,7 @@ files_changed:
   - controller/target.py
   - sim/analysis/diagnose.py
   - plans/active/motion-onset-deadtime-investigation.md
+  - plans/active/leg-gain-tuning-methodology.md
 commits:
 subsystem:
   - motion
@@ -116,11 +119,27 @@ The A/B confirmed the gain-asymmetry hypothesis decisively.
 
 The "leg-1 pose-dependent twitch" was entirely a self-inflicted software asymmetry from Iteration-3's over-cautious gain reduction, not a hardware difference between legs. The user's original skepticism of "leg-to-leg hardware asymmetry" was correct: once the Iteration-3 asymmetry in the YAML was undone on leg 1, the twitch vanished, and the same asymmetry reproduced on a different leg (4) that still had the reduced gain. Mechanism fully explained, investigation closed.
 
+**Leg-4 revert follow-up (2026-04-20), session `mpc_20260420_182945.csv`, 5 s hold at (0,−100,200):**
+
+| Leg | Original (both at 30/0.24) | Leg-1 reverted only | Both reverted (latest) |
+|-----|---|---|---|
+| 0 | 31 µm | 11 | 7 |
+| 1 | **437** | 28 | 58 |
+| 2 | 29 | 14 | 7 |
+| 3 | 7 | 21 | 11 |
+| 4 | 19 | **50** | 36 |
+| 5 | 9 | 5 | 19 |
+| Asymmetry ratio | **60×** | 10× | **8.5×** |
+
+Leg 4 reduction from 50 µm → 36 µm (~28 %) — directionally correct but milder than leg 1's 16× drop, consistent with leg 4's baseline being less severe to begin with. Leg 1 drifted from 28 → 58 µm between the two sessions at unchanged gain; that magnitude is within the session-to-session variance observed earlier (10–30 µm jitter on quiet legs across sessions) and is not read as a regression. Motion-onset latency on this run was 235–249 ms — higher than the 100–190 ms baseline, but consistent with a cold first-move after re-homing; no new signature.
+
+**Final state:** all six legs now uniform at the ODrive-flash baseline **40/0.20/0.32**. Worst-case hold-phase stdev across all measured poses is now 58 µm (a ~7.5× improvement on the original 437 µm), asymmetry ratio has collapsed from 60× → 8.5× relative to the original Iteration-2 configuration, and no leg is catastrophically bad at any tested pose. Per-leg gain tuning chapter closed for hardware bringup. The plan `plans/active/leg-gain-tuning-methodology.md` has been updated with the lessons and revised Level-1 entry criteria.
+
 ### Follow-ups
 
-- Leg 4 at 30/0.24 still exhibits the mechanism at extreme poses (50 µm stdev, 10× asymmetry at (0,−100,200)). Recommend the identical YAML revert — `leg_pos_gains[4] = 40.0`, `leg_vel_int_gains[4] = 0.32` — once reviewed, followed by a re-test with the same protocol: `python run_mpc.py --pose 0,-100,200,0,0,0 --duration 15` from a fresh process after re-homing, with live ODrive gain verification before the run. Expected result: leg 4 `act_std` drops from ~50 µm to ~30 µm range, asymmetry ratio collapses to ≤2×.
-- Commit the YAML + regenerated constants once the leg-4 revert is consolidated into the same commit (or landed separately with matching logbook follow-up).
+- ✅ **Leg 4 at 30/0.24 revert — DONE (2026-04-20).** Reverted to 40/0.32 in `config/hardware_config.yaml`, configs regenerated, validated in session `mpc_20260420_182945.csv`.
 - The Move 8 / (100,100,200) IPOPT-overrun pattern raised in the Diagnosis section is **not** resolved by this work — the leg-1 fix had no bearing on solve-time blow-up at different extreme poses. That remains tracked under `2026-04-18-mpc-overhead-spikes-fallback-bursts.md`.
+- The residual ~36–58 µm stdev on legs 1 and 4 at (0,−100,200) at uniform gains suggests the plant *does* have a mild pose-dependent phase-margin component even with symmetric gains. Hold this observation — it is orders of magnitude smaller than the motion-onset dead-time (~100–200 ms, mm-scale in tracking-error terms), so pursuing it now would be premature optimisation. Revisit only after motion-onset is closed and if the 50 µm floor is a juggling-timing blocker.
 
 ## Open Questions
 

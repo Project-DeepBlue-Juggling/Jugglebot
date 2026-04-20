@@ -192,20 +192,24 @@ jugglebot_odrive_defaults:
   #           the noisiest at rest). 30/0.24 splits the difference.
   #   leg 4:  40/0.32 → 30/0.24 (first reduction — ranked 2nd-worst hold-stdev
   #           at z=220 in session 094723, mid-pack at z=170).
-  # 2026-04-20 iteration 2 reversal for leg 1: reverted to 40/0.32 after the
-  # reduced gain was shown to cause a 436.9 μm pose-dependent hold twitch at
-  # (0,−100,200) (mpc_20260419_135251). Single-pose A/B in session
-  # mpc_20260420_160401 confirmed the revert: leg 1 stdev 436.9 → 27.5 μm at
-  # the same pose (16× improvement). Leg 4 intentionally left at 30/0.24 as
-  # a control; it now shows the same pose-dependent signature (50 μm at
-  # (0,−100,200)) and is a candidate for the same revert once reviewed.
+  # 2026-04-20 iteration 2 reversal:
+  #   leg 1:  30/0.24 → 40/0.32. The reduced gain was shown to cause a
+  #           436.9 μm pose-dependent hold twitch at (0,−100,200)
+  #           (mpc_20260419_135251). Single-pose A/B in mpc_20260420_160401
+  #           confirmed the revert: leg 1 stdev 436.9 → 27.5 μm (16×).
+  #           Leg 4 was kept at 30/0.24 through that test as an
+  #           in-experiment control, and reproduced the same signature at
+  #           (0,−100,200): 50.4 μm stdev, 10× asymmetry vs leg 5.
+  #   leg 4:  30/0.24 → 40/0.32. Same-mechanism revert, based on the
+  #           in-experiment control result above. All six legs now uniform
+  #           at 40/0.32, matching the original ODrive-flash baseline.
   # See logbook/2026-04-19-leg1-pose-dependent-hold-twitch.md.
   # Ratio pos_gain : vel_int_gain held at 125 : 1 for all legs.
   # Methodology: plans/active/leg-gain-tuning-methodology.md (Level 1).
   # Logbook: 2026-04-18-hold-fighting-motion-onset-jitter.md.
-  leg_pos_gains:     [40.0, 40.0, 40.0, 40.0, 30.0, 40.0]
+  leg_pos_gains:     [40.0, 40.0, 40.0, 40.0, 40.0, 40.0]
   leg_vel_gains:     [0.20, 0.20, 0.20, 0.20, 0.20, 0.20]
-  leg_vel_int_gains: [0.32, 0.32, 0.32, 0.32, 0.24, 0.32]
+  leg_vel_int_gains: [0.32, 0.32, 0.32, 0.32, 0.32, 0.32]
   # Leg motor incremental encoder resolution (counts per revolution).
   # Consumed by controller/hardware_plant.py to compute the sub-LSB command
   # dead-band: deadband_mm_per_leg = 1 / (enc_cpr * mm_to_rev).

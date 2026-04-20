@@ -34,12 +34,11 @@ Before enumerating candidates, these facts were verified by re-reading the curre
    - **Therefore:** the flashed ODrive config value `"input_mode": 5` (TRAP_TRAJ) in [config/ODrive config Files/odrive_pro_leg_config.json:182](../../config/ODrive%20config%20Files/odrive_pro_leg_config.json#L182) is overridden at boot and does **not** apply to running motion.
    - **Therefore:** `"input_filter_bandwidth": 20.0` at [line 181](../../config/ODrive%20config%20Files/odrive_pro_leg_config.json#L181) is inert — it only takes effect under `POS_FILTER` mode (per ODrive firmware semantics).
 
-2. **Leg PID gains (current, post-iteration-3):**
+2. **Leg PID gains (current, uniform across all six legs after 2026-04-20 reversal):**
    | Leg | pos_gain | vel_gain | vel_int_gain |
    |---|---|---|---|
-   | 0, 2, 3, 5 | 40 | 0.20 | 0.32 |
-   | 1, 4 | 30 | 0.20 | 0.24 |
-   Source: [hardware_config.yaml:198-200](../../config/hardware_config.yaml#L198-L200). Ratio `pos_gain : vel_int_gain ≈ 125:1`.
+   | 0–5 | 40 | 0.20 | 0.32 |
+   Source: [hardware_config.yaml:198-200](../../config/hardware_config.yaml#L198-L200). Ratio `pos_gain : vel_int_gain ≈ 125:1`. **Note:** this document was originally written when legs 1 and 4 were at 30/0.24 (Iteration 3). Those reductions were reversed after they were shown to cause a pose-dependent hold twitch at (0,−100,200) — see `logbook/2026-04-19-leg1-pose-dependent-hold-twitch.md` and the "Outcome for the hardware-bringup stage" section of `plans/active/leg-gain-tuning-methodology.md`. This does not change the analysis or the fix ranking below — motion-onset dead-time is orthogonal to per-leg gain asymmetry.
 
 3. **motor_guard Hermite interpolation is C¹ continuous at a hold→ramp transition.**
    - [motor_guard.py:703-742](../../ros_ws/src/jugglebot/jugglebot/motion/motor_guard.py#L703-L742).
@@ -236,11 +235,11 @@ Proposals are ranked lowest-risk-first. Several can be combined.
 
 **Recommendation.** Medium-to-long-term. Requires per-leg friction identification (a dedicated single-leg bench test). Do **not** implement blindly; mis-tuned friction FF is the most common cause of limit-cycle oscillation on machines that otherwise work fine.
 
-### 3.6 Control: tune per-leg `pos_gain` UP (inverse of iteration-3)
+### 3.6 Control: tune per-leg `pos_gain` UP above baseline 40
 
-**Change.** Iteration 3 of hold-fighting tuning *reduced* `pos_gain` on legs 1, 4 from 40 to 30 to suppress hold noise. A higher `pos_gain` would build up position error faster during a ramp-onset, shortening the dead-time. A staged exploration: try `pos_gain = 50, 60, 80` and see if onset-latency drops.
+**Change.** Baseline is now uniform 40/0.20/0.32 across all six legs (2026-04-20 reversal of Iteration 3 — see `logbook/2026-04-19-leg1-pose-dependent-hold-twitch.md`). A higher `pos_gain` would build up position error faster during a ramp-onset, shortening the dead-time. A staged exploration: try `pos_gain = 50, 60, 80` and see if onset-latency drops.
 
-**Risk.** High — directly trades against hold-fighting, which Iteration 3 worked to suppress. Any increase in `pos_gain` risks reintroducing the hold-fighting Failure B.
+**Risk.** High — directly trades against hold-fighting. Iteration-3's reductions were reversed because their per-leg asymmetry had unintended extreme-pose consequences, not because the reductions themselves were wrong at neutral pose. Raising gains above the uniform 40/0.32 baseline risks reintroducing the hold-fighting Failure B that iteration 3 was trying to suppress.
 
 **Benefit.** If `pos_gain · vel_int_gain` is the rate-limiting term and not mechanical friction, this is a one-line fix.
 
