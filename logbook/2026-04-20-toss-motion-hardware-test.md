@@ -11,12 +11,14 @@ related_entries:
 files_changed:
   - controller/__init__.py
   - controller/ballistics.py
+  - controller/runner.py
   - controller/toss_motion_source.py
   - run_mpc.py
   - sim/hand/ballistics.py
   - tests/sim/test_toss_geometry.py
 commits:
   - d09ed7d
+  - 111dea7
 subsystem:
   - controller
 tags:
@@ -249,12 +251,50 @@ and see the platform make one throw-to-(50,0,170) motion from wherever it is
 without any hand or ball. Ping-pong, off-axis catches, and chained sequences
 via `--sequence-catches` work in sim.
 
+## Updates
+
+### 2026-04-22 — source-driven termination; `--duration` ignored for `--toss-motion` (commit `111dea7`)
+
+First hardware run on 2026-04-22 (`--catch-pose 50,0,170 --cycles 1 --duration 8`)
+exposed an ergonomics issue with the wall-clock `--duration` flag:
+
+- A too-short `--duration` would hard-stop the MPC loop mid-cycle (not graceful).
+- A too-generous `--duration` left the platform holding at the final catch for
+  longer than necessary.
+- Neither matches the operator's intent, which is "run the motion you described".
+  For a finite-cycle toss plan the motion has a well-defined end.
+
+Fix: the source is now the termination signal, not a wall clock.
+
+- **`controller/runner.py`** polls `getattr(source, 'done', False)` each tick
+  and exits the loop cleanly on True. Sources without `.done` (ZMQ, static,
+  waypoint) are unaffected because the default is `False`.
+- **`controller/toss_motion_source.py`** has a new `final_hold_s` kwarg
+  (default `0.0`). On the final cycle's HOLD the hold duration becomes
+  `hold_s + final_hold_s` before `.done` flips — gives the operator an
+  observation window at the final catch pose before the runner exits.
+- **`run_mpc.py`** adds `--final-hold-s` (default `2.0 s`). For
+  `--toss-motion`, `--duration` is ignored (prints a one-line NOTE if
+  supplied) and the auto runtime is derived from the plan:
+  `N × (0.5 s approach + flight_time + hold_s) + final_hold_s + 2 s pad`.
+  The pad is a safety ceiling; the loop actually exits via `source.done`.
+
+Verification: `pytest tests/ -q` → 1033 passed, zero regressions. Sim
+dry-run with `--duration 900` against a 3-cycle plan prints the ignored-duration
+NOTE, computes an 11.5 s ceiling, and the runner logs
+`source signalled done — exiting cleanly` at ~8 s of actual motion.
+
 ## Open Questions
 
-1. **First hardware session is still pending.** Sim validation is
-   comprehensive but doesn't substitute for a hardware run. Recommended ramp:
-   `L = 50 mm → 75 mm → 100 mm` at `apex = 1.2 m`. Abort conditions: E-stop,
-   tracking error > 10 mm, operator-observable jerk.
+1. **First hardware run done (2026-04-22, `L = 50 mm`, `apex = 1.2 m`);
+   "stepped command" observation pending investigation.** Motion itself was
+   smooth but the commanded position was non-monotonic when zoomed out — small
+   step-like features that aren't present in the sim traces. Candidates: (a)
+   phase-boundary ref-events cache rebuilds emitting a fresh quintic from the
+   slightly-different live pose; (b) hardware-side hysteresis / cogging not
+   modelled in sim. `/investigate` on the session CSV (2026-04-22) is in
+   flight. Ramp is on hold at `L = 50 mm` until that is characterised; next
+   steps are `L = 75 → 100 mm` once clean.
 2. **`ContinuousThrowCatchSource` / `TossLoopController` still bypasses
    `flat_target_to_events`.** These sim-side paths build `ref_events` directly
    and are not part of the K1–K6 migration or this feature. Not urgent at
