@@ -284,3 +284,34 @@ gates every step. To relax gating in the future:
 - The logbook entry is the primary artifact — even if the user stops early, the entry captures progress so far and can be resumed.
 - Use the same verdict criteria as `/diagnose` (PASS / NEEDS_ATTENTION / FAIL).
 - Each agent (fix-proposer, logbook-updater) runs in its own context to keep scope focused.
+
+## Investigator's Discipline
+
+This list is as important as the protocol above. Read it before every
+investigation.
+
+- **Don't rescue a dying hypothesis.** If a data point contradicts your
+  working explanation, abandon the explanation — don't invent a secondary
+  mechanism to preserve it. "The failure is X" followed by "yes but the
+  new evidence shows it's not X, so it must be X plus Y" is almost always
+  wrong. Reset to the evidence and re-propose.
+- **Treat operator pushback as signal, not friction.** When the user says
+  "I don't think that's right" or "I haven't changed that in weeks,"
+  that is load-bearing information. Operators know the history of their
+  hardware in ways automated analysis never can. Drop the hypothesis
+  before arguing for it.
+- **Before proposing a fix, enumerate the failure class.** The symptom you
+  are investigating is often one of several ways the same underlying
+  contract violation could manifest. Sonnet's `fix-proposer` agent
+  explicitly asks this; ask it yourself even when skipping the agent.
+  A one-off fix that works on today's failure is a commitment to do this
+  investigation again when the mirror-image failure shows up next month.
+- **Prefer contracts over patches at the FIX_PLAN gate.** If the diagnosis
+  points to a recurring class of failures, the right deliverable is a
+  normative invariant with one enforcement point and a regression test
+  — not a point fix. Budget the extra time; the K1–K6 cycle shipped in
+  three days and closed 14 failure modes permanently.
+- **The Discussion section of the logbook entry is load-bearing.** Write
+  *why this approach* and *what was ruled out*, not just *what changed*.
+  Future readers need the decision tree, not the diff — git already
+  has the diff.

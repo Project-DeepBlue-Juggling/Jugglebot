@@ -104,3 +104,18 @@ docs/                      → docs
 - If the entry references a plan, set `related_plan:` in the frontmatter
 - The `files_changed:` field is critical for reverse lookups — be thorough
 - Use `--from-commits` for retroactive logging of changes already committed
+
+## Writing a logbook entry well
+
+- **The Discussion / Motivation section is the most valuable part.** Write
+  *why this approach over others*, *what was ruled out*, *what tradeoffs
+  were accepted*. Future sessions (human or AI) reconstruct the full arc
+  from this section. If it feels tedious to write, that's signal it's
+  exactly the one that'll save the most time later.
+- **Don't describe the diff — the diff is in git.** Describe the decision
+  tree that produced the diff. The next person to touch this code needs
+  to know why it looks the way it does, not what characters changed.
+- **If the change is a point fix for a pattern that could recur, say so
+  explicitly in the entry.** Flag the class of failures, not just this
+  instance. That primes the next investigator to climb one level of
+  abstraction before patching.

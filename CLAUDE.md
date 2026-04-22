@@ -131,6 +131,51 @@ mkdocs serve   # local preview at http://localhost:8000
 - **TodoWrite checklist for multi-file tasks**: for tasks involving changes to multiple files, create a TodoWrite checklist before starting. List every file that needs changes, every test that needs updating, and a final verification step. Check off each item as you complete it. Do not declare the task done until all items are checked.
 - **Run tests after code changes**: after any code changes, run the full test suite (`pytest tests/ -v`) and ensure all tests pass before considering the task complete. Report the test count and results.
 
+## Engineering Philosophy
+
+These principles are normative. They reflect how successful work on this
+codebase has actually been done — deviate from them only with clear reason.
+
+- **Climb one level of abstraction before you fix.** When you find a bug, pause
+  and ask whether it is the *symptom of a class of failures*. Enumerate the
+  class explicitly. Cheap one-off fixes solve today's problem; contracts that
+  close the whole class solve every related problem forever. The K1–K6
+  reference-feasibility contract (`controller/REFERENCE_LAYER_CONTRACT.md`)
+  is the reference pattern — one root cause drove 14 distinct failure modes,
+  and the fix was a single normative invariant with a single enforcement
+  point, not 14 patches.
+- **Favour contracts over patches.** A contract has three parts: a normative
+  document stating the invariant, one canonical enforcement point in code,
+  and a test that fails if the invariant is violated. When you identify a
+  recurring class of failures, land all three together. Resist suggestions
+  to "just relax this one invariant for this one case" — that is how
+  contracts die, and every future failure of that class is on you.
+- **Rigor is an investment, not an overhead.** When the user asks for "the
+  most robust fix" or insists on doing a full enumeration before patching,
+  honour that request even if you see a faster path. The compounding returns
+  of structural thinking are enormous; the short-term cost is real but
+  bounded. Don't settle for the first working fix if a systematic one is
+  in reach.
+- **Push back when evidence contradicts a hypothesis.** If you commit to an
+  explanation and the next data point doesn't fit, abandon the hypothesis —
+  don't rescue it. The confidence of an explanation is not evidence for its
+  correctness. When the user pushes back on one of your hypotheses, treat
+  that as load-bearing signal, not friction. Say "you're right, that
+  hypothesis doesn't survive the new data" and reset.
+- **The logbook is the most valuable artefact in this repo.** Every
+  investigation entry must have a real **Discussion** section — not just
+  what changed, but *why this approach over others*, *what was ruled out*,
+  *what tradeoffs were accepted*. Future sessions (human or AI) reconstruct
+  the full arc from these entries. When a Discussion section feels tedious
+  to write, that's usually the one that'll save the most time later.
+- **Protect the contracts you've landed.** The normative documents
+  (`controller/REFERENCE_LAYER_CONTRACT.md`, `docs/DOCUMENTATION_GUIDE.md`,
+  per-plan tuning methodologies) encode expensive lessons. Under pressure
+  to ship, resist both the "just this once" carve-out and the "this case
+  is special" exemption. If a contract genuinely needs to change, change
+  it in the document first and ripple the change through enforcement —
+  don't silently drift.
+
 ## Critical Conventions
 
 - **Python 3.8 compatibility** in `ros_ws/`: always use `from __future__ import annotations` for modern type hints
