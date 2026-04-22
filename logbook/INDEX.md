@@ -6,6 +6,7 @@ Browse with `/logbook`, create entries with `/investigate` or `/logbook --new <t
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-04-20 | in-progress | post-per-leg-gains-deadband-session | Motion-onset dead-time — cogging-torque-first investigation | [2026-04-20-motion-onset-dead-time-fix](2026-04-20-motion-onset-dead-time-fix.md) |
 | 2026-04-20 | resolved | hardware-bringup — platform-only dynamic-motion entry point | Add `--toss-motion` hardware test and `controller/ballistics` helpers | [2026-04-20-toss-motion-hardware-test](2026-04-20-toss-motion-hardware-test.md) |
 | 2026-04-20 | resolved | | Add DOCUMENTATION_GUIDE.md as single reference for documentation architecture | [2026-04-20-documentation-guide-single-reference](2026-04-20-documentation-guide-single-reference.md) |
 | 2026-04-20 | resolved | hardware-bringup — Phase 4 (moderate motions) | K1–K6 reference-feasibility contract resolves MPC_OVERSHOOT_SATURATION | [2026-04-20-k1-k6-reference-feasibility-resolution](2026-04-20-k1-k6-reference-feasibility-resolution.md) |

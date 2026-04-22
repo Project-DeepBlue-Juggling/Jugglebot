@@ -53,6 +53,14 @@ dynamics:
                                                 #   Method 1: hollow cylinder model (50% mass at ~35mm radius) → 2.76e-4
                                                 #   Method 2: τ/α from datasheet (3.86 Nm, 42.7 ms to 603 rad/s) → 2.73e-4
                                                 # Rounded to 2.75e-4. May be refined via system ID in Phase 6.
+  motor_pole_pairs: 7                         # Pole pairs in the leg motor (D6374-150Kv outrunner).
+                                                # Mirror of `config/ODrive config Files/odrive_pro_leg_config.json:145`.
+                                                # Used by diagnose.py to derive electrical angle from `pos_estimate`:
+                                                #   θ_elec = (pos_estimate_rev × 2π × motor_pole_pairs) mod 2π
+  motor_stator_slots: 12                      # Stator slot count on the leg motor.
+                                                # With motor_pole_pairs=7, cogging-torque fundamental period is
+                                                #   LCM(2·pole_pairs, slots) / mechanical_rev = LCM(14,12) / rev = 84 cycles/rev.
+                                                # Used by motion-onset cogging analysis (tools/motion_onset_cogging_study.py).
 
 # ============================================================
 # 2. Jugglebot Stewart Platform Geometry

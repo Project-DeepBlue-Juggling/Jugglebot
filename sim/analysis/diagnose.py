@@ -150,6 +150,38 @@ MOTION_ONSET_SEARCH_WINDOW_S = 1.0        # per onset, give up after this long i
 MOTION_ONSET_LATENCY_WARN_MS = 40.0       # latency above this triggers a warning flag
 MOTION_ONSET_LATENCY_ERROR_MS = 80.0      # latency above this triggers an error flag
 
+# Motor/leg parameters loaded from hardware_config.yaml for electrical-angle
+# derivation.  Populated lazily on first access so diagnose.py remains usable
+# when pyyaml is unavailable (fields return None and downstream study code
+# skips cogging-angle emission rather than failing).
+_MOTOR_PARAMS_CACHE: Optional[Dict[str, Any]] = None
+
+
+def _load_motor_params() -> Dict[str, Any]:
+    """Load motor_pole_pairs / motor_stator_slots / mm_to_rev[6] from YAML.
+
+    Returns a dict with keys {'pole_pairs', 'stator_slots', 'mm_to_rev'}.
+    Any missing key is set to None.  Result is cached.
+    """
+    global _MOTOR_PARAMS_CACHE
+    if _MOTOR_PARAMS_CACHE is not None:
+        return _MOTOR_PARAMS_CACHE
+    params: Dict[str, Any] = {'pole_pairs': None, 'stator_slots': None, 'mm_to_rev': None}
+    try:
+        import yaml  # type: ignore
+        yaml_path = os.path.join(_repo_root, 'config', 'hardware_config.yaml')
+        with open(yaml_path, 'r') as f:
+            cfg = yaml.safe_load(f)
+        dynamics = cfg.get('dynamics', {}) or {}
+        geometry = cfg.get('jugglebot_geometry', {}) or {}
+        params['pole_pairs'] = dynamics.get('motor_pole_pairs')
+        params['stator_slots'] = dynamics.get('motor_stator_slots')
+        params['mm_to_rev'] = geometry.get('mm_to_rev')
+    except Exception:
+        pass
+    _MOTOR_PARAMS_CACHE = params
+    return params
+
 
 # ---------------------------------------------------------------------------
 # MPC CSV analysis
@@ -462,9 +494,17 @@ def analyse_motion_onset(records: List[StepRecord]) -> Dict[str, Any]:
 
     search_span = int(MOTION_ONSET_SEARCH_WINDOW_S / dt_median)
 
+    # Motor params for electrical-angle derivation.  If YAML / pyyaml unavailable,
+    # angle fields are emitted as None rather than skipped, so downstream tools
+    # can see the sample count without guessing the schema.
+    motor_params = _load_motor_params()
+    pole_pairs = motor_params.get('pole_pairs')
+    mm_to_rev_list = motor_params.get('mm_to_rev') or [None] * 6
+
     for leg in range(6):
         cmd = _extract(records, f'cmd_ext_{leg}')
         actual = _extract(records, f'actual_ext_{leg}')
+        mm_to_rev_leg = mm_to_rev_list[leg] if leg < len(mm_to_rev_list) else None
         cmd_vel = np.diff(cmd) / dt_median                  # length n-1, mm/s
         cmd_vel_smooth = _rolling_mean(np.abs(cmd_vel),
                                        MOTION_ONSET_SMOOTH_SAMPLES)
@@ -515,6 +555,17 @@ def analyse_motion_onset(records: List[StepRecord]) -> Dict[str, Any]:
             if moving_idx is not None:
                 latency_ms = float((times[moving_idx] - times[record_idx]) * 1000.0)
                 leap_mm = float(abs(actual[moving_idx] - actual[moving_idx - 1]))
+                # Rest angles: derived from the "stuck" sample immediately before
+                # the leap.  Use hold_pos_mm (the averaged pre-onset reference)
+                # rather than a single sample — it's the position the motor was
+                # actually parked at, filtered against encoder LSB jitter.
+                rest_elec_angle_rad: Optional[float] = None
+                rest_mech_angle_rad: Optional[float] = None
+                if pole_pairs is not None and mm_to_rev_leg is not None:
+                    motor_rev = hold_pos * mm_to_rev_leg
+                    rest_mech_angle_rad = float((motor_rev * 2.0 * np.pi) % (2.0 * np.pi))
+                    rest_elec_angle_rad = float((motor_rev * pole_pairs * 2.0 * np.pi)
+                                                 % (2.0 * np.pi))
                 per_leg_onsets[leg].append({
                     'onset_time_s': round(onset_time, 4),
                     'latency_ms': round(latency_ms, 1),
@@ -522,6 +573,10 @@ def analyse_motion_onset(records: List[StepRecord]) -> Dict[str, Any]:
                     'hold_pos_mm': round(hold_pos, 3),
                     'moving_time_s': round(float(times[moving_idx]), 4),
                     'pre_capture_hold': onset_cmd_idx == 0,
+                    'rest_elec_angle_rad': (round(rest_elec_angle_rad, 4)
+                                            if rest_elec_angle_rad is not None else None),
+                    'rest_mech_angle_rad': (round(rest_mech_angle_rad, 4)
+                                            if rest_mech_angle_rad is not None else None),
                 })
 
     # Group onsets across legs into synchronised events -----------------
@@ -554,7 +609,10 @@ def analyse_motion_onset(records: List[StepRecord]) -> Dict[str, Any]:
         leaps = [o['first_tick_leap_mm'] for _, o in group]
         onset_times = [o['onset_time_s'] for _, o in group]
         per_leg = {leg: {'latency_ms': o['latency_ms'],
-                         'first_tick_leap_mm': o['first_tick_leap_mm']}
+                         'first_tick_leap_mm': o['first_tick_leap_mm'],
+                         'hold_pos_mm': o['hold_pos_mm'],
+                         'rest_elec_angle_rad': o.get('rest_elec_angle_rad'),
+                         'rest_mech_angle_rad': o.get('rest_mech_angle_rad')}
                    for leg, o in group}
         events.append({
             'onset_time_s': round(t0, 4),
