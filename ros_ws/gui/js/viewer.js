@@ -24,6 +24,30 @@ export let controls;
 /** Named groups for visibility toggles */
 export const sceneGroups = {};
 
+/** Meshes that should be hit-tested by the click-to-pick raycaster.  Each
+ *  mesh carries `userData.chartIdx` identifying the chart-panel cell it
+ *  maps to.  Models register themselves via `registerPickables`. */
+const pickableMeshes = [];
+
+/** Listeners notified with a chartIdx when the user clicks a pickable. */
+const pickListeners = new Set();
+
+/** Register one or more pickable meshes.  Safe to call multiple times. */
+export function registerPickables(meshes) {
+    for (const m of meshes) {
+        if (m && !pickableMeshes.includes(m)) pickableMeshes.push(m);
+    }
+}
+
+/**
+ * Subscribe to pick events.  The callback fires with the chartIdx of the
+ * mesh the user clicked.  Returns an unsubscribe fn.
+ */
+export function onMeshPick(cb) {
+    pickListeners.add(cb);
+    return () => pickListeners.delete(cb);
+}
+
 /**
  * Convert robot coordinates (Z-up, right-handed) to Three.js (Y-up, right-handed).
  *
@@ -42,6 +66,29 @@ const SCALE = 0.001;
 
 export function robotToThreeScaled(x, y, z) {
     return new THREE.Vector3(x * SCALE, z * SCALE, -y * SCALE);
+}
+
+/**
+ * Snapshot the camera state — used by the Save Preset feature.
+ * Returns plain-object coords so it round-trips cleanly through JSON.
+ */
+export function getCameraState() {
+    if (!camera || !controls) return null;
+    return {
+        position: { x: camera.position.x, y: camera.position.y, z: camera.position.z },
+        target:   { x: controls.target.x,  y: controls.target.y,  z: controls.target.z },
+    };
+}
+
+/**
+ * Instantly restore a previously-captured camera state.  No tweening —
+ * would add complexity and isn't strictly needed for the preset UX.
+ */
+export function setCameraState(state) {
+    if (!camera || !controls || !state || !state.position || !state.target) return;
+    camera.position.set(state.position.x, state.position.y, state.position.z);
+    controls.target.set(state.target.x, state.target.y, state.target.z);
+    controls.update();
 }
 
 /**
@@ -104,6 +151,38 @@ export function initViewer(container) {
         renderer.setSize(w, h);
     });
     resizeObserver.observe(container);
+
+    // Raycast pick — click a pickable mesh (leg / hand / BB element) to
+    // fire `onMeshPick` listeners with the chartIdx stored in userData.
+    // Uses mousedown-then-up-without-drag so OrbitControls orbit-drags
+    // don't fire picks (a 4 px movement threshold is enough for a typical
+    // orbit gesture).
+    const raycaster = new THREE.Raycaster();
+    const ndc = new THREE.Vector2();
+    let pickDownPx = null;
+    renderer.domElement.addEventListener('pointerdown', (ev) => {
+        if (ev.button !== 0) return;
+        pickDownPx = { x: ev.clientX, y: ev.clientY };
+    });
+    renderer.domElement.addEventListener('pointerup', (ev) => {
+        if (ev.button !== 0 || !pickDownPx) return;
+        const dx = ev.clientX - pickDownPx.x;
+        const dy = ev.clientY - pickDownPx.y;
+        pickDownPx = null;
+        if (dx * dx + dy * dy > 16) return;  // dragged — not a click
+
+        const rect = renderer.domElement.getBoundingClientRect();
+        ndc.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+        ndc.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
+        raycaster.setFromCamera(ndc, camera);
+        const hits = raycaster.intersectObjects(pickableMeshes, false);
+        if (hits.length === 0) return;
+        const idx = hits[0].object.userData?.chartIdx;
+        if (typeof idx !== 'number') return;
+        for (const cb of pickListeners) {
+            try { cb(idx); } catch { /* ignore listener errors */ }
+        }
+    });
 
     // Start render loop
     animate();

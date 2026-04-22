@@ -169,6 +169,7 @@ export function initBallButlerModel() {
         ARC_TUBE_R,
         pitchMat,
     );
+    pitchArc.userData.chartIdx = 7;  // BB Pitch motor
     yawGroup.add(pitchArc);
 
     // ---- Pitch group: origin at pivot, rotates around Three.js X ----
@@ -186,6 +187,7 @@ export function initBallButlerModel() {
         new THREE.Vector3(throwX, 0, -throwLen),
         THROW_TUBE_R, 32, pitchMat,
     );
+    throwTube.userData.chartIdx = 7;  // BB Pitch motor
     pitchGroup.add(throwTube);
 
     // ---- Hand sphere ----
@@ -196,10 +198,25 @@ export function initBallButlerModel() {
         emissiveIntensity: 0.35,
     });
     handSphere = new THREE.Mesh(handGeom, handMat);
+    handSphere.userData.chartIdx = 8;  // BB Hand motor
     pitchGroup.add(handSphere);
 
     scene.add(bbGroup);
     sceneGroups['Ball Butler'] = bbGroup;
+}
+
+/**
+ * Return the set of meshes that should be pickable for the
+ * click-in-3D-to-highlight-chart feature.  Each mesh carries
+ * `userData.chartIdx` pointing back to its chart cell index.
+ */
+export function getBallButlerPickables() {
+    const out = [];
+    if (throwTube) out.push(throwTube);
+    if (handSphere) out.push(handSphere);
+    // pitchArc is also chart-7; we don't push it to keep the pick list
+    // short, and the throwTube is the bigger visual anchor for pitch anyway.
+    return out;
 }
 
 /**
@@ -258,14 +275,114 @@ export function setBallButlerVisible(visible) {
  * @param {null | 'pitch' | 'hand'} target
  */
 export function setBallButlerHighlight(target) {
-    const isPitchHi = target === 'pitch';
-    pitchMat.emissive.setHex(0xffffff);
-    pitchMat.emissiveIntensity = isPitchHi ? 0.8 : 0;
-    pitchMat.opacity = isPitchHi ? 1.0 : 0.7;
+    if (pitchFaultState == null) {
+        const isPitchHi = target === 'pitch';
+        pitchMat.emissive.setHex(0xffffff);
+        pitchMat.emissiveIntensity = isPitchHi ? 0.8 : 0;
+        pitchMat.opacity = isPitchHi ? 1.0 : 0.7;
+    }
 
     const isHandHi = target === 'hand';
-    if (handSphere) {
+    if (handSphere && bbHandFaultState == null) {
         handSphere.material.emissiveIntensity = isHandHi ? 1.4 : 0.35;
+    }
+    if (handSphere) {
         handSphere.scale.setScalar(isHandHi ? 1.9 : 1);
+    }
+}
+
+// ---- Fault visualisation (motors 7 & 8) ---------------------------------
+
+const FAULT_COLOR_HEX = 0xef4444;
+const FAULT_NEW_DURATION_MS = 2000;
+let pitchFaultState = null;
+let pitchFaultStartMs = 0;
+let bbHandFaultState = null;
+let bbHandFaultStartMs = 0;
+let bbFaultRAF = null;
+
+/** Cache of original pitch-mat colour so we can restore on fault clear. */
+const PITCH_ORIG_COLOR_HEX = COL_AXIS;  // white
+const HAND_ORIG_COLOR_HEX = COL_HAND;
+
+function runBBFaultPulseLoop() {
+    if (bbFaultRAF != null) return;
+    const tick = () => {
+        const now = performance.now();
+        let anyActive = false;
+
+        if (pitchFaultState) {
+            anyActive = true;
+            if (pitchFaultState === 'new') {
+                const elapsed = now - pitchFaultStartMs;
+                if (elapsed > FAULT_NEW_DURATION_MS) {
+                    pitchFaultState = 'persistent';
+                    pitchMat.emissiveIntensity = 0.8;
+                } else {
+                    const pulse = 0.5 + 0.5 * Math.sin(elapsed / 125);
+                    pitchMat.emissiveIntensity = 0.4 + pulse * 1.0;
+                }
+            } else {
+                pitchMat.emissiveIntensity = 0.8;
+            }
+        }
+
+        if (bbHandFaultState && handSphere) {
+            anyActive = true;
+            const mat = handSphere.material;
+            if (bbHandFaultState === 'new') {
+                const elapsed = now - bbHandFaultStartMs;
+                if (elapsed > FAULT_NEW_DURATION_MS) {
+                    bbHandFaultState = 'persistent';
+                    mat.emissiveIntensity = 0.9;
+                } else {
+                    const pulse = 0.5 + 0.5 * Math.sin(elapsed / 125);
+                    mat.emissiveIntensity = 0.45 + pulse * 1.1;
+                }
+            } else {
+                mat.emissiveIntensity = 0.9;
+            }
+        }
+
+        bbFaultRAF = anyActive ? requestAnimationFrame(tick) : null;
+    };
+    bbFaultRAF = requestAnimationFrame(tick);
+}
+
+/** Rising-edge fault pulse for the BB pitch group (motor 7). */
+export function setBBPitchFault(faulted) {
+    const prev = pitchFaultState;
+    if (faulted && !prev) {
+        pitchFaultState = 'new';
+        pitchFaultStartMs = performance.now();
+        pitchMat.color.setHex(FAULT_COLOR_HEX);
+        pitchMat.emissive.setHex(FAULT_COLOR_HEX);
+        pitchMat.emissiveIntensity = 0.4;
+        pitchMat.opacity = 1.0;
+        runBBFaultPulseLoop();
+    } else if (!faulted && prev) {
+        pitchFaultState = null;
+        pitchMat.color.setHex(PITCH_ORIG_COLOR_HEX);
+        pitchMat.emissive.setHex(0x000000);
+        pitchMat.emissiveIntensity = 0;
+        pitchMat.opacity = 0.7;
+    }
+}
+
+/** Rising-edge fault pulse for the BB hand sphere (motor 8). */
+export function setBBHandFault(faulted) {
+    const prev = bbHandFaultState;
+    if (faulted && !prev && handSphere) {
+        bbHandFaultState = 'new';
+        bbHandFaultStartMs = performance.now();
+        handSphere.material.color.setHex(FAULT_COLOR_HEX);
+        handSphere.material.emissive.setHex(FAULT_COLOR_HEX);
+        handSphere.material.emissiveIntensity = 0.45;
+        runBBFaultPulseLoop();
+    } else if (!faulted && prev && handSphere) {
+        bbHandFaultState = null;
+        handSphere.material.color.setHex(HAND_ORIG_COLOR_HEX);
+        handSphere.material.emissive.setHex(HAND_ORIG_COLOR_HEX);
+        handSphere.material.emissiveIntensity = 0.35;
     }
 }

@@ -219,3 +219,63 @@
 .scene-toggle input[type="checkbox"] {
     accent-color: var(--accent-blue);
 }
+
+/* ---- Camera preset section (appended inside #scene-menu-dropdown) ---- */
+.scene-menu-section {
+    margin-top: var(--gap-sm);
+    padding-top: var(--gap-sm);
+    border-top: 1px solid var(--border-color);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.scene-menu-heading {
+    font-size: var(--font-size-xs);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    padding: 2px 4px 0;
+}
+
+.scene-menu-heading-sub {
+    margin-top: 4px;
+    font-weight: 400;
+    text-transform: none;
+    letter-spacing: 0;
+}
+
+.scene-preset-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 4px;
+}
+
+.scene-preset {
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-sm);
+    color: var(--text-secondary);
+    font-family: var(--font-sans);
+    font-size: var(--font-size-xs);
+    padding: 3px 6px;
+    cursor: pointer;
+    transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.scene-preset:hover {
+    background: var(--bg-card-hover);
+    color: var(--text-primary);
+}
+
+.scene-slot {
+    /* 3-slot row still uses the 4-col grid — let saved slots span remainder
+       cleanly.  grid-column: span 1; each button gets one column and the
+       fourth column ends up empty, which keeps widths consistent with the
+       4-preset row above it. */
+}
+
+.scene-slot.empty {
+    font-style: italic;
+    opacity: 0.65;
+}

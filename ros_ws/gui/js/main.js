@@ -6,11 +6,17 @@
  */
 
 import * as ros from './ros-bridge.js';
-import { initViewer, sceneGroups } from './viewer.js';
-import { initStewartModel, updateStewartPose } from './stewart-model.js';
+import { initViewer, sceneGroups, registerPickables, onMeshPick } from './viewer.js';
+import {
+    initStewartModel, updateStewartPose, setLegFault, setHandFault,
+    getStewartPickables,
+} from './stewart-model.js';
 import { legLengthsToPose } from './stewart-fk.js';
 import { initMocapMarkers, updateMocapMarkers, updateRigidBodyAxes } from './mocap-markers.js';
-import { initBallButlerModel, updateBallButler, updateBallButlerPose } from './ball-butler-model.js';
+import {
+    initBallButlerModel, updateBallButler, updateBallButlerPose,
+    setBBPitchFault, setBBHandFault, getBallButlerPickables,
+} from './ball-butler-model.js';
 import {
     initAllPanels, updateMotorGrid, updateOrchestratorState,
     updateFlags, updateLevellingPanel, updateBBPanel, updateBBCalibration,
@@ -20,13 +26,16 @@ import {
 } from './panels.js';
 import { initCommands, updateCommandStates, onModeButtonClick } from './commands.js';
 import { INITIAL_HEIGHT_MM, MM_TO_REV } from './geometry-config.js';
-import { initTelemetryCharts, onTelemetryData, rebuildCharts } from './telemetry-charts.js';
+import {
+    initTelemetryCharts, onTelemetryData, rebuildCharts, flashChart,
+} from './telemetry-charts.js';
 import { initJogPanel, setJogPanelVisible,
          initSpeedLimitsPanel, setSpeedLimitsPanelVisible, resetSpeedLimitsForMode,
 } from './jog-panel.js';
 import { initTheme } from './theme.js';
 import { emitEvent, EVENT_TYPES } from './event-store.js';
 import { initCommandHistory } from './command-history.js';
+import { initCameraPresets } from './camera-presets.js';
 
 // ---- Latest data stores ----
 let latestCommandedLegs = null;  // Float64MultiArray data (revs)
@@ -47,6 +56,12 @@ function init() {
     initStewartModel();
     initBallButlerModel();
     initMocapMarkers();
+
+    // Register pickable meshes + wire the pick-to-flash bridge.  Models
+    // init before this so their pickable lists are populated.
+    registerPickables(getStewartPickables());
+    registerPickables(getBallButlerPickables());
+    onMeshPick((chartIdx) => flashChart(chartIdx));
 
     // 2. Init panels
     initAllPanels();
@@ -195,6 +210,18 @@ function onRobotState(msg) {
             });
         }
         lastFaultFlags[key] = now;
+    }
+
+    // Per-motor fault viz — red pulse on rising edge, steady red while the
+    // fault persists.  A motor is faulted when either the ODrive errors or
+    // the disarm reason bitfields are non-zero.
+    for (let i = 0; i < Math.min(motors.length, 9); i++) {
+        const m = motors[i];
+        const faulted = (m.active_errors !== 0) || (m.disarm_reason !== 0);
+        if (i <= 5)      setLegFault(i, faulted);
+        else if (i === 6) setHandFault(faulted);
+        else if (i === 7) setBBPitchFault(faulted);
+        else if (i === 8) setBBHandFault(faulted);
     }
 
     // Feed telemetry charts
@@ -404,6 +431,9 @@ function initSceneMenu() {
             label.appendChild(document.createTextNode(name));
             dropdown.appendChild(label);
         }
+        // Camera presets append below the scene-group toggles — run here
+        // so they aren't wiped by the `dropdown.innerHTML = ''` above.
+        initCameraPresets();
     }, 100);
 }
 

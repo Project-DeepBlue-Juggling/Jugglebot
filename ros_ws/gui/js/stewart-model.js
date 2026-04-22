@@ -34,6 +34,18 @@ const legRadialScale = [1, 1, 1, 1, 1, 1];
 /** Hand axis radial scale multiplier. */
 let handRadialScale = 1;
 
+/** Per-leg fault phase: null | 'new' (pulsing, ~2 s) | 'persistent' (steady).
+ *  `handFault` mirrors the same state for the hand axis (motor 6). */
+const legFaultState = [null, null, null, null, null, null];
+const legFaultStartMs = [0, 0, 0, 0, 0, 0];
+let handFaultState = null;
+let handFaultStartMs = 0;
+/** rAF handle for the fault-pulse animation loop — null when idle. */
+let faultPulseRAF = null;
+
+const FAULT_COLOR_HEX = 0xef4444;
+const FAULT_NEW_DURATION_MS = 2000;
+
 // Colours
 const BASE_COLOR = 0x3b82f6;
 const PLAT_COLOR = 0xd1d5db;
@@ -78,6 +90,9 @@ export function initStewartModel() {
     // *and* toggled into a highlighted (emissive) state independently.
     for (let i = 0; i < 6; i++) {
         const leg = createLegCylinder();
+        // chartIdx links the mesh back to its chart-panel cell for the
+        // click-in-3D-to-highlight-chart feature.
+        leg.userData.chartIdx = i;
         legMeshes.push(leg);
         platformGroup.add(leg);
     }
@@ -94,11 +109,21 @@ export function initStewartModel() {
         handGeom,
         new THREE.MeshStandardMaterial({ color: HAND_COLOR, emissive: HAND_COLOR, emissiveIntensity: 0.3 })
     );
+    handLine.userData.chartIdx = 6;  // Hand motor
     platformGroup.add(handLine);
     updateHandAxis(0); // home position
 
     scene.add(platformGroup);
     sceneGroups['Platform'] = platformGroup;
+}
+
+/**
+ * Return the set of meshes that should be pickable for the
+ * click-in-3D-to-highlight-chart feature.  Each mesh carries
+ * `userData.chartIdx` pointing back to its chart cell index.
+ */
+export function getStewartPickables() {
+    return handLine ? [...legMeshes, handLine] : [...legMeshes];
 }
 
 /**
@@ -198,16 +223,19 @@ function updateLegPositions() {
         const p2 = robotToThreeScaled(plat[0], plat[1], plat[2]);
         positionCylinder(legMeshes[i], p1, p2, legRadialScale[i]);
 
-        // Color by extension ratio
-        const dx = plat[0] - base[0];
-        const dy = plat[1] - base[1];
-        const dz = plat[2] - base[2];
-        const absLen = Math.sqrt(dx * dx + dy * dy + dz * dz);
-        const ext = absLen - INIT_LEG_LENGTHS_MM[i];
-        const ratio = Math.max(0, Math.min(1, ext / LEG_STROKE_MM));
+        // Color by extension ratio — unless the leg is faulted, in which
+        // case the fault-pulse loop owns the colour and we skip here.
+        if (!legFaultState[i]) {
+            const dx = plat[0] - base[0];
+            const dy = plat[1] - base[1];
+            const dz = plat[2] - base[2];
+            const absLen = Math.sqrt(dx * dx + dy * dy + dz * dz);
+            const ext = absLen - INIT_LEG_LENGTHS_MM[i];
+            const ratio = Math.max(0, Math.min(1, ext / LEG_STROKE_MM));
 
-        const color = extensionColor(ratio);
-        legMeshes[i].material.color.setHex(color);
+            const color = extensionColor(ratio);
+            legMeshes[i].material.color.setHex(color);
+        }
     }
 }
 
@@ -352,6 +380,9 @@ export function setStewartHighlight(target) {
     for (let i = 0; i < 6; i++) {
         const isHi = target === `leg${i}`;
         legRadialScale[i] = isHi ? 2.4 : 1;
+        // Faulted legs own their own emissive/colour via the pulse loop —
+        // leave those properties alone so highlight doesn't stomp the red.
+        if (legFaultState[i]) continue;
         const mat = legMeshes[i]?.material;
         if (mat) {
             mat.emissive.setHex(isHi ? 0xffffff : 0x000000);
@@ -360,7 +391,7 @@ export function setStewartHighlight(target) {
     }
     const isHandHi = target === 'hand';
     handRadialScale = isHandHi ? 2.4 : 1;
-    if (handLine) {
+    if (handLine && handFaultState == null) {
         handLine.material.emissive.setHex(HAND_COLOR);
         handLine.material.emissiveIntensity = isHandHi ? 1.2 : 0.3;
     }
@@ -370,6 +401,117 @@ export function setStewartHighlight(target) {
     if (currentPlatNodes) {
         updateLegPositions();
         updateHandAxis(currentHandExtensionMM);
+    }
+}
+
+// ---- Fault visualisation ------------------------------------------------
+
+/**
+ * Animation loop for fault pulses.  A "new" fault oscillates the emissive
+ * intensity for FAULT_NEW_DURATION_MS before falling back to a steady red
+ * glow while the fault persists.  The loop self-exits when no leg/hand has
+ * an active fault.
+ */
+function runFaultPulseLoop() {
+    if (faultPulseRAF != null) return;
+    const tick = () => {
+        const now = performance.now();
+        let anyActive = false;
+
+        for (let i = 0; i < 6; i++) {
+            if (!legFaultState[i] || !legMeshes[i]) continue;
+            anyActive = true;
+            const mat = legMeshes[i].material;
+            if (legFaultState[i] === 'new') {
+                const elapsed = now - legFaultStartMs[i];
+                if (elapsed > FAULT_NEW_DURATION_MS) {
+                    legFaultState[i] = 'persistent';
+                    mat.emissiveIntensity = 0.7;
+                } else {
+                    const pulse = 0.5 + 0.5 * Math.sin(elapsed / 125);  // ~1.3 Hz
+                    mat.emissiveIntensity = 0.35 + pulse * 0.9;
+                }
+            } else {
+                mat.emissiveIntensity = 0.7;
+            }
+        }
+
+        if (handFaultState && handLine) {
+            anyActive = true;
+            const mat = handLine.material;
+            if (handFaultState === 'new') {
+                const elapsed = now - handFaultStartMs;
+                if (elapsed > FAULT_NEW_DURATION_MS) {
+                    handFaultState = 'persistent';
+                    mat.emissiveIntensity = 0.9;
+                } else {
+                    const pulse = 0.5 + 0.5 * Math.sin(elapsed / 125);
+                    mat.emissiveIntensity = 0.45 + pulse * 1.1;
+                }
+            } else {
+                mat.emissiveIntensity = 0.9;
+            }
+        }
+
+        faultPulseRAF = anyActive ? requestAnimationFrame(tick) : null;
+    };
+    faultPulseRAF = requestAnimationFrame(tick);
+}
+
+/**
+ * Set the fault state for a single Stewart leg (0..5).  Rising edge starts
+ * a 2 s "new" pulse; clearing (`faulted=false`) restores normal colouring
+ * on the next telemetry frame.
+ *
+ * @param {number} legIdx   – 0..5
+ * @param {boolean} faulted – whether the motor has active_errors or
+ *                            disarm_reason non-zero
+ */
+export function setLegFault(legIdx, faulted) {
+    if (legIdx < 0 || legIdx >= 6) return;
+    const prev = legFaultState[legIdx];
+    if (faulted && !prev) {
+        legFaultState[legIdx] = 'new';
+        legFaultStartMs[legIdx] = performance.now();
+        const mesh = legMeshes[legIdx];
+        if (mesh) {
+            mesh.material.color.setHex(FAULT_COLOR_HEX);
+            mesh.material.emissive.setHex(FAULT_COLOR_HEX);
+            mesh.material.emissiveIntensity = 0.35;
+        }
+        runFaultPulseLoop();
+    } else if (!faulted && prev) {
+        legFaultState[legIdx] = null;
+        const mesh = legMeshes[legIdx];
+        if (mesh) {
+            mesh.material.emissive.setHex(0x000000);
+            mesh.material.emissiveIntensity = 0;
+        }
+        // Leg color will be restored to the extension-ratio hue on the next
+        // updateLegPositions() call (triggered by the next telemetry frame).
+    }
+}
+
+/** Fault API for the Stewart hand axis (motor 6).  Same semantics as
+ *  setLegFault — rising edge pulses, persistent state is a steady glow. */
+export function setHandFault(faulted) {
+    const prev = handFaultState;
+    if (faulted && !prev) {
+        handFaultState = 'new';
+        handFaultStartMs = performance.now();
+        if (handLine) {
+            handLine.material.color.setHex(FAULT_COLOR_HEX);
+            handLine.material.emissive.setHex(FAULT_COLOR_HEX);
+            handLine.material.emissiveIntensity = 0.45;
+        }
+        runFaultPulseLoop();
+    } else if (!faulted && prev) {
+        handFaultState = null;
+        if (handLine) {
+            handLine.material.color.setHex(HAND_COLOR);
+            handLine.material.emissive.setHex(HAND_COLOR);
+            handLine.material.emissiveIntensity = 0.3;
+        }
     }
 }
 

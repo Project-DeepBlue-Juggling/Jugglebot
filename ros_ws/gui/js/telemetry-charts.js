@@ -840,6 +840,26 @@ export function rebuildCharts() {
     rebuildAllCharts();
 }
 
+/**
+ * Briefly pulse the border of chart cell `idx` — used by the click-in-3D
+ * pick feature to confirm which chart corresponds to the clicked mesh.
+ * If the chart is hidden, pulses the visibility pill instead so the user
+ * knows where to find it.
+ */
+export function flashChart(idx) {
+    if (idx < 0 || idx >= MOTOR_COUNT) return;
+    const target = visibleCharts.has(idx)
+        ? document.getElementById(`chart-${idx}`)
+        : visibilityButtons[idx];
+    if (!target) return;
+    target.classList.remove('chart-pick-flash');
+    // Force reflow so re-adding the class restarts the animation even
+    // when two picks fire back-to-back.
+    void target.offsetWidth;
+    target.classList.add('chart-pick-flash');
+    setTimeout(() => target.classList.remove('chart-pick-flash'), 900);
+}
+
 function resizeAllCharts() {
     let anyMissing = false;
     for (let i = 0; i < MOTOR_COUNT; i++) {
