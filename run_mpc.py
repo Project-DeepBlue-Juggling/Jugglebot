@@ -64,19 +64,6 @@ from controller.telemetry import TelemetryLogger
 from controller.runner import run_mpc_loop, MpcLoopHooks
 
 
-# --auto-s-sweep: 4-pose hold program for pos_setpoint HF-noise S-weight study.
-# Each pose held with ``_S_SWEEP_HOLD_S`` of dwell so FFT has enough samples
-# to resolve the 0.1–20 Hz cmd spectrum.  Intentionally revisits the known
-# leg-1 problem pose (0,-100,200) last so we also learn whether a heavier S
-# helps or hurts the pose-dependent LF twitch.  See logbook/2026-04-19-...
-_S_SWEEP_POSES = [
-    np.array([0.0,    0.0, 170.0, 0.0, 0.0, 0.0]),   # Active — baseline
-    np.array([0.0,    0.0, 200.0, 0.0, 0.0, 0.0]),   # centered at juggle height
-    np.array([0.0,  -50.0, 200.0, 0.0, 0.0, 0.0]),   # mild Y-offset (pose dep.)
-    np.array([0.0, -100.0, 200.0, 0.0, 0.0, 0.0]),   # known leg-1 twitch pose
-]
-_S_SWEEP_HOLD_S = 10.0
-
 # MPC control rate (Hz) — must match motor guard expectations
 CONTROL_RATE_HZ = 40
 CONTROL_DT = 1.0 / CONTROL_RATE_HZ
@@ -94,18 +81,6 @@ def parse_args():
                         'Z is STOW-relative; active position ≈ 170mm.')
     p.add_argument('--sequence', type=str, default=None,
                    help='Timed pose sequence: "pose@time pose@time ..."')
-    p.add_argument('--auto-s-sweep', dest='auto_s_sweep',
-                   action='store_true',
-                   help='TEMPORARY: hold at 4 poses (Active, centered-200, '
-                        'Y=-50, Y=-100) for 10s each for a pos_setpoint HF '
-                        'S-weight sweep. Pair with --mpc-s to sweep S across '
-                        'runs. Stows on completion/exception.')
-    p.add_argument('--mpc-s', dest='mpc_s', type=float, default=None,
-                   help='TEMPORARY: override MPCParams.S (control-smoothness '
-                        'weight, default 0.05). Larger S penalises cmd-rate '
-                        'more heavily. Safe range per offline study: '
-                        '[0.05, 0.35]. Values >=0.5 cause cmd drift — do not '
-                        'use on hardware.')
     p.add_argument('--duration', type=float, default=None,
                    help='Run duration in seconds (default: 24h for ZMQ, '
                         '10s for --pose)')
@@ -228,11 +203,6 @@ def main():
     args = parse_args()
 
     # --- Target source selection ---
-    if args.mpc_s is not None and not (0.0 < args.mpc_s < 0.5):
-        raise SystemExit(
-            f"--mpc-s={args.mpc_s} is outside the safe range (0, 0.5). "
-            f"Values >=0.5 cause cmd drift per offline study.")
-
     toss_catch_positions = None  # populated when --toss-motion is set
     if args.toss_motion:
         if args.sequence_catches:
@@ -276,13 +246,6 @@ def main():
                 f"--toss-motion; motion profile dictates runtime "
                 f"(~{default_duration:.1f}s).")
         args.duration = None  # force default_duration path below
-    elif args.auto_s_sweep:
-        schedule = None
-        source_label = (f"Auto S-sweep: {len(_S_SWEEP_POSES)} poses + STOW "
-                        f"(hold {_S_SWEEP_HOLD_S:.0f}s each)")
-        # Per-pose budget: move (~2-3s) + hold (10s) + margin. Total ~60s,
-        # add generous slack for traversal and convergence uncertainty.
-        default_duration = (len(_S_SWEEP_POSES) + 1) * 25.0
     elif args.sequence:
         schedule = _parse_sequence(args.sequence)
         source_label = f"Sequence: {len(schedule)} poses"
@@ -388,9 +351,6 @@ def main():
         params_kwargs = dict(max_cpu_time=2.0, max_iter=500)
     else:
         params_kwargs = dict(max_cpu_time=0.022, max_iter=100)
-    if args.mpc_s is not None:
-        params_kwargs['S'] = args.mpc_s
-        print(f"MPCParams override: S={args.mpc_s}")
     params = MPCParams(**params_kwargs)
     mpc = MPCController.from_plant(params, plant)
     assert abs(CONTROL_DT - mpc.params.dt_fine) < 1e-6, (
@@ -463,13 +423,6 @@ def main():
                 f"observed transit will run longer than the notional "
                 f"ball's flight time. Reduce --apex, shorten --catch-pose, "
                 f"or raise max_leg_vel_mmps.")
-    elif args.auto_s_sweep:
-        source = AutoSequenceTargetSource(
-            _S_SWEEP_POSES, hold_s=_S_SWEEP_HOLD_S, **_src_kwargs,
-        )
-        print(f"AutoSequenceTargetSource: "
-              f"{len(_S_SWEEP_POSES)} S-sweep poses + terminal STOW "
-              f"(hold {_S_SWEEP_HOLD_S:.0f}s each)")
     elif schedule is not None:
         source = StaticTargetSource(schedule, **_src_kwargs)
     else:
@@ -545,31 +498,6 @@ def main():
         on_log_extras=_on_log_extras,
     )
 
-    def _cleanup_stow():
-        """Drive the platform to STOW via the MPC on an unexpected exit
-        from an auto-* path.  Skipped when motor_guard is already latched
-        in ESTOP (commands would be ignored)."""
-        if not args.auto_s_sweep:
-            return
-        if getattr(plant, 'estop_requested', False):
-            print("Stow cleanup skipped: motor_guard already in ESTOP.")
-            return
-        if isinstance(source, AutoSequenceTargetSource) and source.done:
-            return  # already stowed by normal completion
-        print("Executing stow cleanup via MPC...")
-        try:
-            stow_source = AutoSequenceTargetSource(
-                [], clamp_start_twist_mmps=mpc.params.max_ref_start_twist_mmps,
-            )
-            run_mpc_loop(
-                plant, mpc, stow_source, 15.0, logger,
-                control_dt=CONTROL_DT, dashboard=dashboard, hooks=hooks,
-            )
-        except KeyboardInterrupt:
-            print("Second interrupt during stow cleanup — aborting.")
-        except Exception as e:  # noqa: BLE001
-            print(f"Stow cleanup failed: {e}")
-
     # --- Run ---
     estop_exit = False
     try:
@@ -587,10 +515,8 @@ def main():
     except KeyboardInterrupt:
         print("\nInterrupted — flushing telemetry...")
         logger.flush()
-        _cleanup_stow()
     except Exception:
         logger.flush()
-        _cleanup_stow()
         raise
     finally:
         # On safety-triggered ESTOP (frozen telemetry, FK failure, stale
