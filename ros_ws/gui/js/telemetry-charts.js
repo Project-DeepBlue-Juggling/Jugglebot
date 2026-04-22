@@ -237,8 +237,7 @@ export function initTelemetryCharts() {
     initPauseButton();
     initExportButton();
     addChartTitles();
-    applyChartLayout();  // apply grid-template + hidden classes before building
-    buildAllCharts();
+    applyChartLayout();  // also rebuilds all charts via rebuildAllCharts()
     initKeyboardShortcuts();
 
     // Repaint event markers whenever the event store changes OR the user
@@ -741,8 +740,12 @@ function buildUPlotOpts(width, height, showXAxis = true, onCursor = null) {
                 u.setSelect({ left: 0, top: 0, width: 0, height: 0 }, false);
                 // Chromium fires a `click` after mouseup even when the
                 // pointer dragged — swallow that one so box-zoom doesn't
-                // plant an A bookmark at the drag-release position.
+                // plant an A bookmark at the drag-release position.  Clear
+                // on the next tick so a *long* drag (which suppresses the
+                // synthetic click entirely) doesn't strand the flag and
+                // eat a future legitimate click.
                 suppressNextClick = true;
+                setTimeout(() => { suppressNextClick = false; }, 0);
             }],
             setCursor: onCursor ? [onCursor] : [],
             // Drawn after every series/axis paint — lets us overlay event
@@ -1097,34 +1100,26 @@ function attachMouseControls(u) {
     }, { passive: false });
 
     // --- Middle-click drag: pan x-axis ----------------------------------
-    let panStart = null;  // { px, min, max }
-
+    // The window-level mousemove/mouseup handlers are installed once at
+    // module load — see `activePan` near the top of this file — so chart
+    // rebuilds don't accumulate listeners.  This per-chart mousedown
+    // simply hands ownership of the pan to that singleton.
     over.addEventListener('mousedown', (ev) => {
         if (ev.button !== 1) return;  // middle button only
         ev.preventDefault();
         const scale = u.scales.x;
         if (scale.min == null || scale.max == null) return;
         const rect = over.getBoundingClientRect();
-        panStart = {
-            px: ev.clientX - rect.left,
-            min: scale.min,
-            max: scale.max,
-            width: rect.width,
+        activePan = {
+            over,
+            panStart: {
+                px: ev.clientX - rect.left,
+                min: scale.min,
+                max: scale.max,
+                width: rect.width,
+            },
         };
         viewMode = 'manual';
-    });
-
-    window.addEventListener('mousemove', (ev) => {
-        if (!panStart) return;
-        const rect = over.getBoundingClientRect();
-        const dxPx = (ev.clientX - rect.left) - panStart.px;
-        const span = panStart.max - panStart.min;
-        const dxT = -(dxPx / panStart.width) * span;
-        setXRangeAllCharts(panStart.min + dxT, panStart.max + dxT);
-    });
-
-    window.addEventListener('mouseup', (ev) => {
-        if (ev.button === 1) panStart = null;
     });
 
     // Block the browser's middle-click autoscroll bubble inside the chart.
@@ -1164,6 +1159,23 @@ let deltaB = null;
 /** Set by the setSelect (box-zoom) hook so the click event Chromium fires
  *  on the same mouseup doesn't plant a spurious A bookmark. */
 let suppressNextClick = false;
+
+/** Active middle-click pan — at most one across all charts.  Singleton so
+ *  the global mousemove/mouseup listeners can be installed once at module
+ *  load instead of being re-added on every chart rebuild. */
+let activePan = null;  // { over, panStart: { px, min, max, width } }
+window.addEventListener('mousemove', (ev) => {
+    if (!activePan) return;
+    const { over, panStart } = activePan;
+    const rect = over.getBoundingClientRect();
+    const dxPx = (ev.clientX - rect.left) - panStart.px;
+    const span = panStart.max - panStart.min;
+    const dxT = -(dxPx / panStart.width) * span;
+    setXRangeAllCharts(panStart.min + dxT, panStart.max + dxT);
+});
+window.addEventListener('mouseup', (ev) => {
+    if (ev.button === 1) activePan = null;
+});
 
 /** Force every chart to redraw its canvas so the draw hook re-runs.  Both
  *  flags false means "re-paint without rebuilding series paths or axes" —
@@ -1495,8 +1507,12 @@ function exportTelemetryCSV() {
         const cells = [master.timestamps[k].toFixed(3)];
         for (let i = 0; i < MOTOR_COUNT; i++) {
             const store = stores[i];
+            // Gate on store.length so empty stores (e.g. BB motors when
+            // the unit is offline) write blank cells instead of phantom
+            // 0.0s from the typed-array zero-fill capacity.
+            const inRange = store && k < store.length;
             for (const sg of SIGNAL_GROUPS) {
-                const col = store && store.columns[sg.key];
+                const col = inRange ? store.columns[sg.key] : null;
                 const v = col ? col[k] : NaN;
                 cells.push(Number.isFinite(v) ? v.toFixed(6) : '');
             }
@@ -1560,7 +1576,11 @@ function cycleWindowSize(dir) {
     let idx = options.indexOf(select.value);
     if (idx < 0) idx = 0;
     idx = Math.max(0, Math.min(options.length - 1, idx + dir));
-    if (options[idx] === select.value) return;
+    // Force the change-dispatch when liveWindowSec is off-preset, even if
+    // the next preset matches the displayed value — otherwise the user
+    // presses [/] expecting snap-back and gets nothing.
+    const offPreset = Math.abs(liveWindowSec - parseInt(select.value, 10)) > 0.01;
+    if (options[idx] === select.value && !offPreset) return;
     select.value = options[idx];
     select.dispatchEvent(new Event('change'));
 }

@@ -821,6 +821,10 @@ export function initTopicMonitor() {
 
     loadHiddenTopics();
     container.innerHTML = '<div class="topic-empty">No topics</div>';
+    // Single delegated click listener — innerHTML rebuilds in
+    // updateTopicMonitor() swap children, not the container itself, so
+    // one persistent listener handles every future row click.
+    container.addEventListener('click', onTopicTableClick);
 
     // Click to cycle window
     const label = document.getElementById('topic-window-label');
@@ -944,9 +948,8 @@ export function updateTopicMonitor() {
     }
 
     container.innerHTML = html;
-
-    // Wire up hide/unhide click handlers (event delegation)
-    container.addEventListener('click', onTopicTableClick, { once: true });
+    // Click handler is registered once in initTopicMonitor — no per-tick
+    // re-registration needed.
 }
 
 /**

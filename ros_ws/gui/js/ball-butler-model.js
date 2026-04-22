@@ -40,6 +40,12 @@ let pitchGroup;
 let throwTube;
 let handSphere;
 
+/** Track whether each highlightable element is currently hovered via the
+ *  chart-cell mouseenter handlers — read by the fault-clear branches so
+ *  a fault clearing under an active hover restores the highlight glow. */
+let bbPitchHighlighted = false;
+let bbHandHighlighted = false;
+
 // ---- Visual parameters (mm) ----
 const PEDESTAL_HEIGHT   = 66.5;
 const PEDESTAL_RADIUS   = 125;
@@ -275,19 +281,18 @@ export function setBallButlerVisible(visible) {
  * @param {null | 'pitch' | 'hand'} target
  */
 export function setBallButlerHighlight(target) {
+    bbPitchHighlighted = (target === 'pitch');
+    bbHandHighlighted = (target === 'hand');
     if (pitchFaultState == null) {
-        const isPitchHi = target === 'pitch';
         pitchMat.emissive.setHex(0xffffff);
-        pitchMat.emissiveIntensity = isPitchHi ? 0.8 : 0;
-        pitchMat.opacity = isPitchHi ? 1.0 : 0.7;
+        pitchMat.emissiveIntensity = bbPitchHighlighted ? 0.8 : 0;
+        pitchMat.opacity = bbPitchHighlighted ? 1.0 : 0.7;
     }
-
-    const isHandHi = target === 'hand';
     if (handSphere && bbHandFaultState == null) {
-        handSphere.material.emissiveIntensity = isHandHi ? 1.4 : 0.35;
+        handSphere.material.emissiveIntensity = bbHandHighlighted ? 1.4 : 0.35;
     }
     if (handSphere) {
-        handSphere.scale.setScalar(isHandHi ? 1.9 : 1);
+        handSphere.scale.setScalar(bbHandHighlighted ? 1.9 : 1);
     }
 }
 
@@ -363,9 +368,16 @@ export function setBBPitchFault(faulted) {
     } else if (!faulted && prev) {
         pitchFaultState = null;
         pitchMat.color.setHex(PITCH_ORIG_COLOR_HEX);
-        pitchMat.emissive.setHex(0x000000);
-        pitchMat.emissiveIntensity = 0;
-        pitchMat.opacity = 0.7;
+        if (bbPitchHighlighted) {
+            // Restore highlight emissive — chart cell is still hovered.
+            pitchMat.emissive.setHex(0xffffff);
+            pitchMat.emissiveIntensity = 0.8;
+            pitchMat.opacity = 1.0;
+        } else {
+            pitchMat.emissive.setHex(0x000000);
+            pitchMat.emissiveIntensity = 0;
+            pitchMat.opacity = 0.7;
+        }
     }
 }
 
@@ -383,6 +395,7 @@ export function setBBHandFault(faulted) {
         bbHandFaultState = null;
         handSphere.material.color.setHex(HAND_ORIG_COLOR_HEX);
         handSphere.material.emissive.setHex(HAND_ORIG_COLOR_HEX);
-        handSphere.material.emissiveIntensity = 0.35;
+        // Restore highlight intensity if still hovered.
+        handSphere.material.emissiveIntensity = bbHandHighlighted ? 1.4 : 0.35;
     }
 }

@@ -23,11 +23,17 @@ export function holdToConfirm(btn, onConfirm, holdMs = DEFAULT_HOLD_MS) {
         if (ev && ev.button !== undefined && ev.button !== 0) return;
         if (btn.disabled) return;
         if (timer != null) return;
+        // Strip a still-active confirmed flash so a rapid re-press shows
+        // only the new fill animation, not both.
+        btn.classList.remove('hold-confirmed');
         btn.classList.add('hold-active');
         btn.style.setProperty('--hold-ms', holdMs + 'ms');
         timer = setTimeout(() => {
             timer = null;
             btn.classList.remove('hold-active');
+            // Re-check disabled in case the button became disabled
+            // mid-hold (e.g. an orchestrator state change gated it).
+            if (btn.disabled) return;
             btn.classList.add('hold-confirmed');
             setTimeout(() => btn.classList.remove('hold-confirmed'), 350);
             try { onConfirm(); } catch { /* swallow */ }

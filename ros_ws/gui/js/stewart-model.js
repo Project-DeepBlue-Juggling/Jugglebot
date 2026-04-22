@@ -484,8 +484,11 @@ export function setLegFault(legIdx, faulted) {
         legFaultState[legIdx] = null;
         const mesh = legMeshes[legIdx];
         if (mesh) {
-            mesh.material.emissive.setHex(0x000000);
-            mesh.material.emissiveIntensity = 0;
+            // Restore highlight glow if the chart cell is still hovered;
+            // otherwise drop emissive entirely.
+            const isHi = legRadialScale[legIdx] > 1;
+            mesh.material.emissive.setHex(isHi ? 0xffffff : 0x000000);
+            mesh.material.emissiveIntensity = isHi ? 0.6 : 0;
         }
         // Leg color will be restored to the extension-ratio hue on the next
         // updateLegPositions() call (triggered by the next telemetry frame).
@@ -508,9 +511,11 @@ export function setHandFault(faulted) {
     } else if (!faulted && prev) {
         handFaultState = null;
         if (handLine) {
+            // Restore highlight intensity if hovered; otherwise base.
+            const isHi = handRadialScale > 1;
             handLine.material.color.setHex(HAND_COLOR);
             handLine.material.emissive.setHex(HAND_COLOR);
-            handLine.material.emissiveIntensity = 0.3;
+            handLine.material.emissiveIntensity = isHi ? 1.2 : 0.3;
         }
     }
 }

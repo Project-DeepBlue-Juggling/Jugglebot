@@ -171,6 +171,10 @@ function onConnectionStateChange(state) {
             // Drop the freshness latch so we don't claim "Stale" against
             // the *previous* session's clock when reconnect happens.
             lastRobotStateMs = 0;
+            // Drop the state-transition latch too — any state change that
+            // happened during disconnect shouldn't be emitted as a fake
+            // event with the reconnect timestamp.
+            lastOrchestratorState = null;
             setJogPanelVisible(false);
             setSpeedLimitsPanelVisible(false);
             stopTopicDiscovery();
@@ -427,8 +431,13 @@ let bbCalibrationInitialSkipped = false;
 function onBBCalibrationResult(msg) {
     recordTopicMessage('bb/calibration_result');
     updateBBCalibration(msg);
+    // Skip the latched-stale message during the wall-clock init window OR
+    // while no real telemetry has arrived yet — `lastRobotStateMs === 0`
+    // catches slow-handshake cases where the latched message lands after
+    // the 1 s window but before the link is genuinely live.
     if (!bbCalibrationInitialSkipped &&
-        (Date.now() - guiInitTimeMs) < BB_CALIBRATION_STALE_WINDOW_MS) {
+        ((Date.now() - guiInitTimeMs) < BB_CALIBRATION_STALE_WINDOW_MS ||
+         lastRobotStateMs === 0)) {
         bbCalibrationInitialSkipped = true;
         return;
     }
