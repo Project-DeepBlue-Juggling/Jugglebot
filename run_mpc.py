@@ -152,6 +152,12 @@ def parse_args():
     p.add_argument('--hold-s', dest='hold_s', type=float, default=1.0,
                    help='--toss-motion dwell at each catch pose before the '
                         'next cycle (seconds, default 1.0).')
+    p.add_argument('--final-hold-s', dest='final_hold_s', type=float,
+                   default=2.0,
+                   help='--toss-motion observation time at the final catch '
+                        'pose after the last cycle completes (seconds, '
+                        'default 2.0). The motion profile dictates total '
+                        'runtime — --duration is ignored for --toss-motion.')
     p.add_argument('--sim', dest='use_sim_plant', action='store_true',
                    help='Dry-run against MuJoCoPlant instead of HardwarePlant. '
                         'For --toss-motion sanity checks before hardware.')
@@ -249,7 +255,27 @@ def main():
         source_label = (f"Toss motion: {len(toss_catch_positions)} cycle(s), "
                         f"apex={args.apex:.2f} m, hold={args.hold_s:.1f} s, "
                         f"plant={'sim' if args.use_sim_plant else 'hardware'}")
-        default_duration = 600.0  # finite; user can override with --duration
+        # Duration for --toss-motion is derived from the motion profile:
+        # N cycles × (approach + flight + hold) + final observation hold.
+        # The MPC loop exits when TossMotionSource signals .done; this is
+        # a safety cap on total wall-clock time.  --duration is ignored.
+        from controller.ballistics import (
+            flight_time_from_apex as _flight_time_from_apex,
+        )
+        _APPROACH_EST_S = 0.5      # K1–K6 ASAP approach, conservative floor
+        _SAFETY_PAD_S = 2.0        # extra headroom above nominal estimate
+        _flight_est = _flight_time_from_apex(
+            np.zeros(3), np.zeros(3), args.apex * 1000.0)
+        _cycle_s = _APPROACH_EST_S + _flight_est + args.hold_s
+        default_duration = (
+            len(toss_catch_positions) * _cycle_s
+            + args.final_hold_s + _SAFETY_PAD_S)
+        if args.duration is not None:
+            print(
+                f"NOTE: --duration={args.duration:.1f}s ignored for "
+                f"--toss-motion; motion profile dictates runtime "
+                f"(~{default_duration:.1f}s).")
+        args.duration = None  # force default_duration path below
     elif args.auto_s_sweep:
         schedule = None
         source_label = (f"Auto S-sweep: {len(_S_SWEEP_POSES)} poses + STOW "
@@ -393,6 +419,7 @@ def main():
             catch_positions_mm=toss_catch_positions,
             apex_height_mm=args.apex * 1000.0,  # metres → mm
             hold_s=args.hold_s,
+            final_hold_s=args.final_hold_s,
             **_src_kwargs,
         )
         print(
@@ -405,6 +432,12 @@ def main():
                 print(f"  cycle {i}: return to initial pose (captured on start)")
             else:
                 print(f"  cycle {i}: catch at ({c[0]:+.1f}, {c[1]:+.1f}, {c[2]:+.1f}) mm")
+        print(
+            f"  auto runtime ~{default_duration:.1f}s "
+            f"({len(toss_catch_positions)} × ({_APPROACH_EST_S:.1f}s approach + "
+            f"{_flight_est:.2f}s flight + {args.hold_s:.1f}s hold) + "
+            f"{args.final_hold_s:.1f}s final hold + {_SAFETY_PAD_S:.1f}s pad). "
+            f"Loop exits when the plan completes.")
 
         # Worst-case peak platform speed estimate: furthest horizontal catch
         # divided by the symmetric-throw flight time at the configured apex.

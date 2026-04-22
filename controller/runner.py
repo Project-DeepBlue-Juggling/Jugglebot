@@ -330,6 +330,16 @@ def run_mpc_loop(
                 estop_exit = True
                 break
 
+            # --- Source-driven termination ---
+            # Sources that represent a finite plan (TossMotionSource,
+            # AutoSequenceTargetSource) expose a ``.done`` property.  When
+            # they flag completion the loop exits cleanly — no E-stop, no
+            # duration wait.  Sources without .done (ZmqTargetSource, etc.)
+            # are unaffected because getattr default is False.
+            if getattr(source, 'done', False):
+                print("MPC loop: source signalled done — exiting cleanly")
+                break
+
             # --- Lifecycle: enable/disable plant based on source mode ---
             if has_lifecycle:
                 source.poll()  # drain ZMQ so .enabled is up-to-date

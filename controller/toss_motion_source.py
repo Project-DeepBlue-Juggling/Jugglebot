@@ -103,6 +103,7 @@ class TossMotionSource:
                  catch_positions_mm: Sequence,
                  apex_height_mm: float = _DEFAULT_APEX_HEIGHT_MM,
                  hold_s: float = _DEFAULT_HOLD_S,
+                 final_hold_s: float = 0.0,
                  v_max_mmps: float | None = None,
                  tau_s: float | None = None,
                  clamp_start_twist_mmps: float | None = None):
@@ -118,6 +119,11 @@ class TossMotionSource:
             for p in catch_positions_mm]
         self._apex_mm = float(apex_height_mm)
         self._hold_s = float(hold_s)
+        # Extra observation time appended to the *final* cycle's HOLD before
+        # the source signals .done.  Lets operators watch for drift or
+        # oscillation after the motion is complete without the runner
+        # terminating immediately.  Zero = hold_s only, same as before.
+        self._final_hold_s = float(final_hold_s)
         self._v_max_mmps = v_max_mmps
         self._tau_s = tau_s
         self._clamp_start_twist_mmps = clamp_start_twist_mmps
@@ -272,7 +278,13 @@ class TossMotionSource:
                     "TossMotionSource: cycle %d TRANSIT→HOLD at t=%.3fs",
                     self._cycle_idx, sim_time)
         elif self._phase == self._PHASE_HOLD:
-            hold_end = self._phase_start_time + self._hold_s
+            # On the final cycle, tack on ``final_hold_s`` so operators can
+            # observe the platform at rest at the final catch pose before
+            # ``done`` flips and the runner exits.
+            is_last_cycle = (self._cycle_idx + 1 >= len(self._catches))
+            hold_duration = self._hold_s + (
+                self._final_hold_s if is_last_cycle else 0.0)
+            hold_end = self._phase_start_time + hold_duration
             if sim_time >= hold_end:
                 if self._cycle_idx + 1 < len(self._catches):
                     self._cycle_idx += 1
