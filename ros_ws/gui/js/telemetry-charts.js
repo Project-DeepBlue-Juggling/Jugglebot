@@ -624,11 +624,18 @@ function buildUPlotOpts(width, height, showXAxis = true, onCursor = null) {
     const gridStrokeMinor = cssVar('--chart-grid-stroke-minor', 'rgba(51,65,85,0.3)');
     const ticksStroke = cssVar('--chart-ticks-stroke', '#334155');
 
-    // Determine which scale groups are in use
-    const usedScales = new Map(); // scaleKey → first signal's unit
+    // Determine which scale groups are in use, and the colour to tint the
+    // axis with.  When several signals share a scale (e.g. measured +
+    // commanded position), the first signal's colour wins — the
+    // measured/commanded pairings happen to be hue-matched, so this still
+    // visually identifies the data on that axis.
+    const usedScales = new Map(); // scaleKey → { unit, color }
     for (const sig of signalList) {
         if (!usedScales.has(sig.scale)) {
-            usedScales.set(sig.scale, SCALE_META[sig.scale]?.unit || '');
+            usedScales.set(sig.scale, {
+                unit: SCALE_META[sig.scale]?.unit || '',
+                color: sig.color,
+            });
         }
     }
 
@@ -675,16 +682,20 @@ function buildUPlotOpts(width, height, showXAxis = true, onCursor = null) {
     ];
 
     let sideToggle = 3; // start left
-    for (const [scaleKey, unit] of usedScales) {
+    for (const [scaleKey, meta] of usedScales) {
         axes.push({
             scale: scaleKey,
             side: sideToggle,
-            label: unit,
+            label: meta.unit,
             labelSize: 16,
             size: 60,
-            stroke: axisStroke,
+            // Tint the tick labels and axis label with the series colour
+            // so multi-axis charts are unambiguous at a glance.  Grid
+            // strokes stay neutral — colour-tinted gridlines would be
+            // distracting.
+            stroke: meta.color,
             grid: { stroke: gridStrokeMinor, width: 1 },
-            ticks: { stroke: ticksStroke, width: 1 },
+            ticks: { stroke: meta.color, width: 1 },
             font: '14px JetBrains Mono, monospace',
             labelFont: '14px JetBrains Mono, monospace',
         });

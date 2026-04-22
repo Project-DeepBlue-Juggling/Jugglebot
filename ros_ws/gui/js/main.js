@@ -108,9 +108,47 @@ function init() {
 
     // 9. Start topic monitor timers
     setInterval(updateTopicMonitor, 1000);
+
+    // 10. Connection-quality indicator: 4 Hz tick on the robot_state age
+    setInterval(updateConnectionQuality, 250);
 }
 
 // ---- Connection state UI ----
+
+/**
+ * 4 Hz update of the connection-quality badge.  The badge surfaces how
+ * recently a robot_state landed — a useful proxy for end-to-end link
+ * health (rosbridge → ROS2 → CAN node → us).  Thresholds:
+ *   <  300 ms → "OK"     (green) — tracking the 100 Hz publisher fine
+ *   <  1.0 s  → "Slow"   (amber) — stalls / GC pauses / WiFi blip
+ *   ≥  1.0 s  → "Stale"  (red)   — link is effectively dead
+ */
+function updateConnectionQuality() {
+    const el = document.getElementById('conn-quality');
+    if (!el) return;
+    if (lastRobotStateMs === 0) {
+        // Before any robot_state has arrived — hide the badge so we don't
+        // claim "Stale" on a clean connect just because the publisher is
+        // ramping up.
+        el.textContent = '';
+        el.classList.remove('ok', 'slow', 'stale');
+        return;
+    }
+    const ageMs = Date.now() - lastRobotStateMs;
+    let label, klass;
+    if (ageMs < 300)        { label = 'OK';    klass = 'ok'; }
+    else if (ageMs < 1000)  { label = 'Slow';  klass = 'slow'; }
+    else                    { label = 'Stale'; klass = 'stale'; }
+    // Bake the age into the visible text — the parent #connection-status
+    // has pointer-events: none, which can swallow the native title tooltip
+    // depending on browser, so we don't rely on hover for the number.
+    const ageStr = ageMs < 1000
+        ? `${ageMs} ms`
+        : `${(ageMs / 1000).toFixed(1)} s`;
+    el.textContent = `${label} \u00b7 ${ageStr}`;
+    el.classList.remove('ok', 'slow', 'stale');
+    el.classList.add(klass);
+}
 
 function onConnectionStateChange(state) {
     const dot = document.getElementById('conn-dot');
@@ -130,6 +168,9 @@ function onConnectionStateChange(state) {
         case 'disconnected':
             dot.className = 'status-dot disconnected';
             text.textContent = 'Disconnected';
+            // Drop the freshness latch so we don't claim "Stale" against
+            // the *previous* session's clock when reconnect happens.
+            lastRobotStateMs = 0;
             setJogPanelVisible(false);
             setSpeedLimitsPanelVisible(false);
             stopTopicDiscovery();
@@ -180,6 +221,10 @@ function subscribeAll() {
 let mocapConnTimeout = null;
 const MOCAP_CONN_TIMEOUT_MS = 2000;
 
+/** Wall-clock ms of the most recent robot_state we received.  Drives the
+ *  connection-quality indicator next to the connection-status dot. */
+let lastRobotStateMs = 0;
+
 /** Last-seen fault flags — we emit a fault event only on false→true edges. */
 const lastFaultFlags = {
     has_fatal_odrive_error: null,
@@ -189,6 +234,7 @@ const lastFaultFlags = {
 
 function onRobotState(msg) {
     recordTopicMessage('robot_state');
+    lastRobotStateMs = Date.now();
     const motors = msg.motor_states || [];
 
     // Update panels

@@ -25,9 +25,32 @@
     border-radius: var(--border-radius-sm);
     font-size: var(--font-size-sm);
     z-index: 10;
+    /* The whole bar is non-interactive except the quality badge — that gets
+       pointer-events back via .conn-quality so the title tooltip fires. */
     pointer-events: none;
     transition: opacity var(--transition-normal);
 }
+
+/* Connection-quality badge — sits next to the status dot, shows freshness
+   of the robot_state stream (proxy for rosbridge + ROS2 link health). */
+.conn-quality {
+    margin-left: 6px;
+    padding: 1px 6px;
+    border-radius: 9999px;
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+    border: 1px solid transparent;
+    pointer-events: auto;
+    cursor: default;
+    transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.conn-quality:empty { display: none; }
+
+.conn-quality.ok    { color: var(--accent-green); border-color: var(--accent-green); }
+.conn-quality.slow  { color: var(--accent-amber); border-color: var(--accent-amber); }
+.conn-quality.stale { color: var(--accent-red);   border-color: var(--accent-red); }
 
 /* Command overlay — bottom of viewer */
 #command-overlay {
@@ -93,6 +116,48 @@
 .cmd-btn.btn-fault {
     border-color: var(--state-fault);
     color: var(--state-fault);
+}
+
+/* ---- Hold-to-confirm visual feedback --------------------------------
+   Used by .cmd-btn (Home / Clear Errors) and .jog-btn instances that the
+   commands.js / jog-panel.js wire up via holdToConfirm().
+
+   The pseudo-element grows from 0% → 100% width over the configured
+   --hold-ms; once it fills, holdToConfirm fires onConfirm and adds
+   .hold-confirmed for a brief celebratory flash.  Releasing pointer
+   early removes .hold-active and the bar snaps back to zero. */
+.hold-fillable {
+    position: relative;
+    overflow: hidden;
+}
+
+.hold-fillable::before {
+    content: '';
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 0;
+    background: var(--accent-blue);
+    opacity: 0.25;
+    pointer-events: none;
+    transition: width 0s linear;
+}
+
+.hold-fillable.hold-active::before {
+    width: 100%;
+    transition-duration: var(--hold-ms, 800ms);
+}
+
+@keyframes hold-confirmed-flash {
+    0%   { background: var(--accent-green); }
+    100% { background: transparent; }
+}
+
+.hold-fillable.hold-confirmed::before {
+    width: 100%;
+    background: var(--accent-green);
+    opacity: 0.55;
+    transition: none;
+    animation: hold-confirmed-flash 350ms ease-out;
 }
 
 /* Mocap marker info box — top-right of viewer, below scene menu */

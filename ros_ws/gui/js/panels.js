@@ -640,6 +640,13 @@ function drawSparkline() {
 
 // ---- Tracking error panel ----
 
+/** Per-axis ring buffer of recent error magnitudes for the inline
+ *  sparkline.  Sized for ~3 s of history at the 20 Hz robot_state rate
+ *  the panel is fed at. */
+const TRACKING_HIST_LEN = 60;
+const trackingHistory = [];
+const trackingSparklineCtx = [];
+
 export function initTrackingGrid() {
     const grid = document.getElementById('tracking-grid');
     if (!grid) return;
@@ -654,9 +661,81 @@ export function initTrackingGrid() {
                 <div class="tracking-bar-fill" id="track-bar-${i}"></div>
             </div>
             <span class="motor-value" id="track-val-${i}">--</span>
+            <canvas class="tracking-sparkline" id="track-spark-${i}"></canvas>
         `;
         grid.appendChild(col);
+
+        trackingHistory.push(new Float32Array(TRACKING_HIST_LEN));
+        trackingSparklineCtx.push(null);  // canvas ctx populated lazily
     }
+}
+
+/** Lazy canvas-context fetch + DPI-correct sizing (called from
+ *  updateTrackingError on every tick — so a panel resize naturally
+ *  reflows the sparkline without a separate ResizeObserver). */
+function getTrackingSparklineCtx(i) {
+    const canvas = document.getElementById(`track-spark-${i}`);
+    if (!canvas) return null;
+    const dpr = window.devicePixelRatio || 1;
+    const cssW = canvas.clientWidth;
+    const cssH = canvas.clientHeight;
+    if (cssW === 0 || cssH === 0) return null;
+    const targetW = Math.round(cssW * dpr);
+    const targetH = Math.round(cssH * dpr);
+    if (canvas.width !== targetW || canvas.height !== targetH) {
+        canvas.width = targetW;
+        canvas.height = targetH;
+    }
+    return canvas.getContext('2d');
+}
+
+/** Push the latest error magnitude onto the i-th history buffer and
+ *  redraw the sparkline.  Threshold-aware colouring matches the bar/
+ *  numeric value above it. */
+function drawTrackingSparkline(i, err, threshold) {
+    const buf = trackingHistory[i];
+    if (!buf) return;
+    // Shift left by 1 (cheap memcpy on a typed array), append the new
+    // value at the tail.
+    buf.copyWithin(0, 1);
+    buf[TRACKING_HIST_LEN - 1] = err;
+
+    const ctx = getTrackingSparklineCtx(i);
+    if (!ctx) return;
+    const w = ctx.canvas.width;
+    const h = ctx.canvas.height;
+    ctx.clearRect(0, 0, w, h);
+
+    // Y-scale: clamp to 2× warn-threshold so a single huge spike doesn't
+    // flatten everything else into the baseline.
+    const maxErr = threshold.warn * 2;
+
+    // Draw threshold lines (faint, behind the trace) so the user can
+    // tell at a glance how close to ok/warn the recent history has been.
+    ctx.strokeStyle = 'rgba(148, 163, 184, 0.35)';
+    ctx.lineWidth = 1;
+    const okY = h - (Math.min(threshold.ok, maxErr) / maxErr) * h * 0.92;
+    ctx.beginPath();
+    ctx.moveTo(0, okY);
+    ctx.lineTo(w, okY);
+    ctx.stroke();
+
+    // Trace itself.  Colour follows the *current* error so the line tip
+    // matches the numeric value's classification.
+    let stroke = 'rgb(34, 197, 94)';   // accent-green
+    if (err >= threshold.warn) stroke = 'rgb(239, 68, 68)';   // accent-red
+    else if (err >= threshold.ok) stroke = 'rgb(245, 158, 11)';  // accent-amber
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = 1.5 * (window.devicePixelRatio || 1);
+    ctx.beginPath();
+    for (let k = 0; k < TRACKING_HIST_LEN; k++) {
+        const x = (k / (TRACKING_HIST_LEN - 1)) * w;
+        const v = Math.min(buf[k], maxErr);
+        const y = h - (v / maxErr) * h * 0.92;
+        if (k === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
 }
 
 /**
@@ -698,6 +777,8 @@ export function updateTrackingError(errors) {
             else if (err < th.warn) val.className = 'motor-value tracking-error-warn';
             else val.className = 'motor-value tracking-error-bad';
         }
+
+        drawTrackingSparkline(i, err, th);
     }
 }
 

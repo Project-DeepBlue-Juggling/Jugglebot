@@ -148,11 +148,16 @@ export function initJogPanel() {
         grid.appendChild(buildAxisRow(axis));
     }
 
-    // Home button
+    // Home button — multi-axis reset.
     document.getElementById('jog-home').addEventListener('click', () => {
         jogTarget = [0, 0, 0, 0, 0, 0];
         publishPose();
         updateReadout();
+        emitEvent({
+            type: EVENT_TYPES.COMMAND,
+            label: 'Jog: home all',
+            detail: 'Jog panel home button: all 6 axes reset to 0',
+        });
     });
 
     updateReadout();

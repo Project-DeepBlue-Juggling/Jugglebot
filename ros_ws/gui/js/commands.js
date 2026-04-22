@@ -8,6 +8,12 @@
 import * as ros from './ros-bridge.js';
 import { currentOrchestratorState, currentSubMode } from './panels.js';
 import { emitEvent, EVENT_TYPES } from './event-store.js';
+import { holdToConfirm } from './hold-to-confirm.js';
+
+/** Commands gated by hold-to-confirm.  Clear Errors can re-arm a faulted
+ *  motor under load, so it's worth a deliberate gesture; everything else
+ *  responds to a single click. */
+const DESTRUCTIVE_COMMANDS = new Set(['clear_errors']);
 
 /** @type {{ publish: function } | null} */
 let cmdPublisher = null;
@@ -51,7 +57,7 @@ export function initCommands() {
         btn.textContent = cmd.label;
         btn.disabled = true;
 
-        btn.addEventListener('click', () => {
+        const dispatch = () => {
             if (cmdPublisher) {
                 cmdPublisher.publish({ data: cmd.command });
             }
@@ -64,7 +70,15 @@ export function initCommands() {
             if (onModeChangeCallback && ['standby', 'gui', 'spacemouse', 'shell'].includes(cmd.command)) {
                 onModeChangeCallback(cmd.command);
             }
-        });
+        };
+
+        if (DESTRUCTIVE_COMMANDS.has(cmd.command)) {
+            btn.classList.add('hold-fillable');
+            btn.title = `${cmd.label} — hold to confirm`;
+            holdToConfirm(btn, dispatch);
+        } else {
+            btn.addEventListener('click', dispatch);
+        }
 
         overlay.appendChild(btn);
     }
