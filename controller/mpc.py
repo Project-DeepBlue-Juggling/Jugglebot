@@ -129,11 +129,18 @@ def _quintic_interp_events(
     return quintic_interp_with_accel(p0, v0, a0, p1, v1, a1, dt, t - t0)
 
 
+_REF_BUILD_ZERO6 = np.zeros(6)
+
+
 def _build_reference_from_events(
     events: List[ReferenceEvent],
     t_now: float,
     cumulative_times: np.ndarray,
     n_nodes: int,
+    *,
+    ref_out: np.ndarray | None = None,
+    twist_out: np.ndarray | None = None,
+    accel_out: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Build (N+1, 6) reference arrays from a list of timed events.
 
@@ -153,6 +160,14 @@ def _build_reference_from_events(
         Relative times at each horizon node (starting at 0).
     n_nodes : int
         Number of horizon nodes (N+1).
+    ref_out, twist_out, accel_out : (n_nodes, 6) ndarray or None
+        Destination buffers.  When provided, filled in place and
+        returned as-is.  When None, fresh arrays are allocated (legacy
+        path for tests and sim callers).  The hot-loop path in
+        ``MPCController.solve`` passes pre-allocated buffers from
+        ``self._ref_traj_buf`` / ``_twist_traj_buf`` / ``_accel_traj_buf``
+        to satisfy the zero-allocation contract — see
+        ``controller/HOT_LOOP_CONTRACT.md``.
 
     Returns
     -------
@@ -165,92 +180,115 @@ def _build_reference_from_events(
         interpolation when available, finite-differenced from twist
         otherwise.
     """
-    ref_traj = np.empty((n_nodes, 6))
-    twist_traj = np.empty((n_nodes, 6))
-    accel_traj = np.zeros((n_nodes, 6))
-    accel_filled = np.zeros(n_nodes, dtype=bool)  # tracks authoritative accel
+    if ref_out is None:
+        ref_out = np.empty((n_nodes, 6))
+    if twist_out is None:
+        twist_out = np.empty((n_nodes, 6))
+    if accel_out is None:
+        accel_out = np.zeros((n_nodes, 6))
+    else:
+        # Caller-provided accel buffer may hold stale values from a
+        # previous tick.  Zero it before fill so the accel-gap
+        # finite-difference pass at the end reads a known baseline.
+        accel_out.fill(0.0)
+
+    # Tracks authoritative accel per node.  At N+1 = 11, this is tiny;
+    # keep as a local list rather than a pre-alloc ndarray — avoids a
+    # dtype=bool temporary on every call and dies on function return.
+    accel_filled = [False] * n_nodes
 
     n_ev = len(events)
-    # Pre-extract arrays for fast access
-    ev_times = np.array([e.time for e in events])
-    ev_poses = np.array([e.pose for e in events])
-    ev_twists = np.array([
-        e.twist if e.twist is not None else np.zeros(6) for e in events
-    ])
-    ev_accels = [e.accel for e in events]  # None or (6,) per event
-
-    if __debug__ and n_ev > 1 and np.any(np.diff(ev_times) < 0):
-        raise ValueError("ref_events must be sorted by time (ascending)")
+    # Iterate events directly without building intermediate ev_times /
+    # ev_poses / ev_twists ndarrays.  Pre-W4a this function built three
+    # small arrays per call (~300 B each); those allocations are gone
+    # now.  Event-time ordering is spot-checked inline if requested.
+    if __debug__ and n_ev > 1:
+        prev_t = events[0].time
+        for _e in events[1:]:
+            if _e.time < prev_t:
+                raise ValueError(
+                    "ref_events must be sorted by time (ascending)"
+                )
+            prev_t = _e.time
 
     ev_idx = 0  # reuse search position across nodes (times are monotonic)
+
+    first = events[0]
+    last = events[-1]
+    t_first = first.time
+    t_last = last.time
+    first_pose = first.pose
+    first_twist = first.twist if first.twist is not None else _REF_BUILD_ZERO6
+    first_accel = first.accel
+    last_pose = last.pose
+    last_twist = last.twist if last.twist is not None else _REF_BUILD_ZERO6
+    last_accel = last.accel
 
     for k in range(n_nodes):
         t_k = t_now + cumulative_times[k]
 
-        if t_k <= ev_times[0]:
+        if t_k <= t_first:
             # Before first event: extrapolate backward
-            dt_back = t_k - ev_times[0]
-            a0 = ev_accels[0]
-            if a0 is not None:
+            dt_back = t_k - t_first
+            if first_accel is not None:
                 # Quadratic extrapolation (C2 at boundary)
-                ref_traj[k] = (ev_poses[0] + ev_twists[0] * dt_back
-                               + 0.5 * a0 * dt_back * dt_back)
-                twist_traj[k] = ev_twists[0] + a0 * dt_back
-                accel_traj[k] = a0
+                ref_out[k] = (first_pose + first_twist * dt_back
+                              + 0.5 * first_accel * dt_back * dt_back)
+                twist_out[k] = first_twist + first_accel * dt_back
+                accel_out[k] = first_accel
                 accel_filled[k] = True
             else:
                 # Linear extrapolation (C1 at boundary)
-                ref_traj[k] = ev_poses[0] + ev_twists[0] * dt_back
-                twist_traj[k] = ev_twists[0]
+                ref_out[k] = first_pose + first_twist * dt_back
+                twist_out[k] = first_twist
 
-        elif t_k >= ev_times[-1]:
+        elif t_k >= t_last:
             # After last event: extrapolate forward
-            dt_fwd = t_k - ev_times[-1]
-            a_last = ev_accels[-1]
-            if a_last is not None:
-                ref_traj[k] = (ev_poses[-1] + ev_twists[-1] * dt_fwd
-                               + 0.5 * a_last * dt_fwd * dt_fwd)
-                twist_traj[k] = ev_twists[-1] + a_last * dt_fwd
-                accel_traj[k] = a_last
+            dt_fwd = t_k - t_last
+            if last_accel is not None:
+                ref_out[k] = (last_pose + last_twist * dt_fwd
+                              + 0.5 * last_accel * dt_fwd * dt_fwd)
+                twist_out[k] = last_twist + last_accel * dt_fwd
+                accel_out[k] = last_accel
                 accel_filled[k] = True
             else:
-                ref_traj[k] = ev_poses[-1] + ev_twists[-1] * dt_fwd
-                twist_traj[k] = ev_twists[-1]
+                ref_out[k] = last_pose + last_twist * dt_fwd
+                twist_out[k] = last_twist
 
         else:
-            # Between events: interpolate
-            # Advance ev_idx to find the bracketing interval
-            while ev_idx < n_ev - 2 and ev_times[ev_idx + 1] < t_k:
+            # Between events: interpolate.  Advance ev_idx to find the
+            # bracketing interval (times are monotonic, so the cursor
+            # never moves backward).
+            while ev_idx < n_ev - 2 and events[ev_idx + 1].time < t_k:
                 ev_idx += 1
-            i = ev_idx
-            if ev_times[i + 1] - ev_times[i] < 1e-6:
+            ei = events[ev_idx]
+            ej = events[ev_idx + 1]
+            ti, tj = ei.time, ej.time
+            pi, pj = ei.pose, ej.pose
+            vi = ei.twist if ei.twist is not None else _REF_BUILD_ZERO6
+            vj = ej.twist if ej.twist is not None else _REF_BUILD_ZERO6
+            ai, aj = ei.accel, ej.accel
+            if tj - ti < 1e-6:
                 # Degenerate interval: snap to endpoint
-                ref_traj[k] = ev_poses[i + 1]
-                twist_traj[k] = ev_twists[i + 1]
-                if ev_accels[i + 1] is not None:
-                    accel_traj[k] = ev_accels[i + 1]
+                ref_out[k] = pj
+                twist_out[k] = vj
+                if aj is not None:
+                    accel_out[k] = aj
                     accel_filled[k] = True
-            elif ev_accels[i] is not None and ev_accels[i + 1] is not None:
+            elif ai is not None and aj is not None:
                 # Quintic Hermite (C2) — both endpoints have accel
                 pose, twist, accel = _quintic_interp_events(
-                    t_k,
-                    ev_times[i], ev_poses[i], ev_twists[i], ev_accels[i],
-                    ev_times[i + 1], ev_poses[i + 1], ev_twists[i + 1],
-                    ev_accels[i + 1],
+                    t_k, ti, pi, vi, ai, tj, pj, vj, aj,
                 )
-                ref_traj[k] = pose
-                twist_traj[k] = twist
-                accel_traj[k] = accel
+                ref_out[k] = pose
+                twist_out[k] = twist
+                accel_out[k] = accel
                 accel_filled[k] = True
             else:
                 # Cubic Hermite (C1) — fallback when accel missing
-                pose, twist = _hermite_interp(
-                    t_k,
-                    ev_times[i], ev_poses[i], ev_twists[i],
-                    ev_times[i + 1], ev_poses[i + 1], ev_twists[i + 1],
-                )
-                ref_traj[k] = pose
-                twist_traj[k] = twist
+                pose, twist = _hermite_interp(t_k, ti, pi, vi, tj, pj, vj)
+                ref_out[k] = pose
+                twist_out[k] = twist
 
     # Fill accel gaps via finite-difference for nodes where no authoritative
     # source (quintic interpolation, quadratic extrapolation) provided accel.
@@ -258,9 +296,9 @@ def _build_reference_from_events(
         if not accel_filled[k] and k > 0:
             dt_k = cumulative_times[k] - cumulative_times[k - 1]
             if dt_k > 1e-9:
-                accel_traj[k] = (twist_traj[k] - twist_traj[k - 1]) / dt_k
+                accel_out[k] = (twist_out[k] - twist_out[k - 1]) / dt_k
 
-    return ref_traj, twist_traj, accel_traj
+    return ref_out, twist_out, accel_out
 
 
 # ---------------------------------------------------------------------------
@@ -803,6 +841,7 @@ class MPCController:
             opts['ipopt.mu_init'] = 1e-4
 
         self._n_w = n_w
+        self._n_g = n_g
         self._n_param = n_param
         self._N = N
         self._dt_schedule = dt_schedule
@@ -831,6 +870,62 @@ class MPCController:
         ])
         self._accel_weights = np.array([par.Q_accel_lin, par.Q_accel_ang])
         self._predicted_poses = np.zeros((N + 1, 6))
+
+        # W4a — pre-allocated solver-return and reference buffers.
+        # Before W4a each solve allocated fresh (n_w,) / (n_g,) ndarrays
+        # for the four CasADi DM → numpy conversions (x, lam_g, lam_x, g)
+        # and fresh (N+1, 6) reference arrays inside _build_reference.
+        # Those allocations are short-lived (refcount-freed before the
+        # next tick) so tracemalloc didn't see them, but they drove Gen 0
+        # promotion rate and kept Gen 1/2 populated with freshly-created
+        # and freshly-freed arrays.  Buffer reuse keeps the retained
+        # arrays stable — allocated once here, never replaced — so Gen 2
+        # never sees them as candidates for promotion/collection.
+        #
+        # Buffers are "retained across ticks" (success populates them;
+        # failure leaves them intact holding the last-successful values):
+        #   _prev_w_buf / _prev_lam_g_buf / _prev_lam_x_buf  ← primary
+        #   _timeout_hint_buf / _timeout_lam_g_buf / _timeout_lam_x_buf
+        #
+        # The existing ``self._prev_w is not None`` semantics are kept:
+        # when cleared by W5 invalidation or exception, the attribute
+        # goes to None; on a successful solve, it's re-pointed at the
+        # buffer.  That means buffer data persists past an invalidation
+        # but is unreachable (from the prev_w attribute) until the next
+        # success overwrites it.
+        self._prev_w_buf = np.empty(n_w)
+        self._prev_lam_g_buf = np.empty(n_g)
+        self._prev_lam_x_buf = np.empty(n_w)
+        self._timeout_hint_buf = np.empty(n_w)
+        self._timeout_lam_g_buf = np.empty(n_g)
+        self._timeout_lam_x_buf = np.empty(n_w)
+        # Short two-tick u history (u[0] from this tick and the previous).
+        # MUST be separate from _prev_w_buf: when _prev_w_buf is overwritten
+        # on the next success, any view into _prev_w_buf[:6] would silently
+        # track the new values — which would break the "_prev_prev_u holds
+        # u[0] from two ticks ago" invariant that prev_prev_u guards.
+        self._prev_u_buf = np.empty(6)
+        self._prev_prev_u_buf = np.empty(6)
+        # Constraint-violation scratch (per-solve, local scope only).
+        self._g_buf = np.empty(n_g)
+        # Reference arrays written in place by _build_reference_from_events
+        # (W4a refactor: function now takes destination buffers).
+        self._ref_traj_buf = np.empty((N + 1, 6))
+        self._twist_traj_buf = np.empty((N + 1, 6))
+        self._accel_traj_buf = np.empty((N + 1, 6))
+        # Warm-start output from _shift_warm_start — reused across ticks.
+        self._w0_buf = np.empty(n_w)
+        # Pre-allocated solve() return diag — keys never change, so
+        # mutating in place keeps it off the allocation critical path.
+        self._diag: dict = {
+            'solve_time_ms': 0.0,
+            'status': '',
+            'iter_count': 0,
+            'cost': 0.0,
+            'constraint_violation': 0.0,
+            'cmd_next_mm': None,
+            'cmd_next2_mm': None,
+        }
 
     # ------------------------------------------------------------------
     # Solve
@@ -992,11 +1087,19 @@ class MPCController:
             # Stored separately from _prev_w so _handle_failure never uses
             # an unconverged solution for commanding — only for initial guess.
             if not success and ret == 'Maximum_CpuTime_Exceeded':
-                w_partial = np.asarray(sol['x']).ravel()
-                if np.all(np.isfinite(w_partial)):
-                    self._timeout_hint = w_partial
-                    self._timeout_lam_g = np.asarray(sol['lam_g']).ravel()
-                    self._timeout_lam_x = np.asarray(sol['lam_x']).ravel()
+                # W4a: copy into pre-allocated buffer; flag with the
+                # attribute pointing at the buffer so the None-check
+                # pattern elsewhere keeps working.
+                np.copyto(self._timeout_hint_buf,
+                          np.asarray(sol['x']).ravel())
+                if np.all(np.isfinite(self._timeout_hint_buf)):
+                    self._timeout_hint = self._timeout_hint_buf
+                    np.copyto(self._timeout_lam_g_buf,
+                              np.asarray(sol['lam_g']).ravel())
+                    np.copyto(self._timeout_lam_x_buf,
+                              np.asarray(sol['lam_x']).ravel())
+                    self._timeout_lam_g = self._timeout_lam_g_buf
+                    self._timeout_lam_x = self._timeout_lam_x_buf
 
             if success:
                 self._consecutive_failures = 0
@@ -1006,15 +1109,25 @@ class MPCController:
                 self._timeout_hint = None
                 self._timeout_lam_g = None
                 self._timeout_lam_x = None
-                w_opt = np.asarray(sol['x']).ravel()
+                # W4a: copy solver-return into pre-allocated _prev_w_buf.
+                # w_opt is a VIEW into that buffer — downstream callers
+                # read it synchronously within this tick.  Next solve's
+                # copyto will overwrite the buffer; by then the caller
+                # is done with w_opt.
+                w_opt = self._prev_w_buf
+                np.copyto(w_opt, np.asarray(sol['x']).ravel())
                 if not np.all(np.isfinite(w_opt)):
                     logger.warning("MPC solve returned non-finite primal solution")
                     return self._handle_failure(
                         solve_ms, 'non_finite_solution', q_cur,
                         q_dot=state.leg_velocities_mmps)
                 self._prev_w = w_opt
-                self._prev_lam_g = np.asarray(sol['lam_g']).ravel()
-                self._prev_lam_x = np.asarray(sol['lam_x']).ravel()
+                np.copyto(self._prev_lam_g_buf,
+                          np.asarray(sol['lam_g']).ravel())
+                np.copyto(self._prev_lam_x_buf,
+                          np.asarray(sol['lam_x']).ravel())
+                self._prev_lam_g = self._prev_lam_g_buf
+                self._prev_lam_x = self._prev_lam_x_buf
                 # W7: snapshot ref mid-horizon at success so _handle_failure
                 # can detect ref shifts that happened AFTER this success.
                 # Mid-node (min(N, 5)) avoids edge-effects at the ref's
@@ -1024,28 +1137,60 @@ class MPCController:
                 self._twist_at_last_success = twist_traj[0].copy()
                 self._t_at_last_success = _time.perf_counter()
 
-                cmd = w_opt[:6].copy()
-                cmd_next = w_opt[6:12].copy()   # u[1]: next-step command
-                cmd_next2 = w_opt[12:18].copy()  # u[2]: step after next
-                prev_u = self._prev_u  # read BEFORE overwrite
-                self._prev_prev_u = prev_u.copy() if prev_u is not None else u_prev.copy()
-                self._prev_u = cmd
+                # W4a: use slice VIEWS into _prev_w_buf for cmd / cmd_next
+                # / cmd_next2 instead of per-tick .copy() allocations.
+                # Downstream consumers (plant.command, runner) read these
+                # synchronously before the next solve overwrites the
+                # underlying buffer.  HardwarePlant.command does its own
+                # .copy() into _last_sent_ext_mm when retention is needed.
+                cmd = w_opt[:6]
+                cmd_next = w_opt[6:12]     # u[1]: next-step command
+                cmd_next2 = w_opt[12:18]   # u[2]: step after next
+                # Shift the two-tick u history via copyto into dedicated
+                # (6,) buffers.  Done in this order (prev_u → prev_prev_u
+                # first, then new cmd → prev_u) so a single buffer pair
+                # captures the history without needing a ping-pong scheme.
+                # When self._prev_u is None (first-ever solve) we seed
+                # prev_prev from u_prev — matches the old fallback.
+                if self._prev_u is not None:
+                    np.copyto(self._prev_prev_u_buf, self._prev_u)
+                else:
+                    np.copyto(self._prev_prev_u_buf, u_prev)
+                self._prev_prev_u = self._prev_prev_u_buf
+                np.copyto(self._prev_u_buf, cmd)
+                self._prev_u = self._prev_u_buf
                 self._extract_predicted_poses(w_opt, p_cur)
 
                 # Compute true constraint violation (distance outside bounds).
                 # Includes both g-constraints (dynamics, IK, rate limits) and
                 # x-bounds (stroke, workspace) for complete diagnostics.
-                g_vals = np.asarray(sol['g']).ravel()
-                g_viol = np.maximum(
-                    np.maximum(0.0, g_vals - self._ubg),
-                    np.maximum(0.0, self._lbg - g_vals),
-                )
-                x_vals = w_opt
-                x_viol = np.maximum(
-                    np.maximum(0.0, x_vals - self._ubw),
-                    np.maximum(0.0, self._lbw - x_vals),
-                )
-                violation = np.maximum(g_viol, x_viol)
+                # W4a: scalar-loop reduction instead of a chain of
+                # np.maximum temporaries.  Copies g into a pre-allocated
+                # buffer (_g_buf) to avoid retaining a fresh ndarray across
+                # the loop iterations.
+                np.copyto(self._g_buf, np.asarray(sol['g']).ravel())
+                max_viol = 0.0
+                g_vals = self._g_buf
+                lbg = self._lbg
+                ubg = self._ubg
+                for _i in range(self._n_g):
+                    _v = g_vals[_i]
+                    _d1 = _v - ubg[_i]
+                    _d2 = lbg[_i] - _v
+                    if _d1 > max_viol:
+                        max_viol = _d1
+                    if _d2 > max_viol:
+                        max_viol = _d2
+                lbw = self._lbw
+                ubw = self._ubw
+                for _i in range(self._n_w):
+                    _v = w_opt[_i]
+                    _d1 = _v - ubw[_i]
+                    _d2 = lbw[_i] - _v
+                    if _d1 > max_viol:
+                        max_viol = _d1
+                    if _d2 > max_viol:
+                        max_viol = _d2
 
                 # Forward-looking command velocity for motor guard
                 # interpolation.  Uses the MPC's own planned trajectory:
@@ -1058,15 +1203,18 @@ class MPCController:
                 dt0 = self._params.dt_schedule[0]
                 cmd_vel = (cmd_next - cmd) / dt0
 
-                return cmd, cmd_vel, {
-                    'solve_time_ms': solve_ms,
-                    'status': ret,
-                    'iter_count': iter_count,
-                    'cost': float(sol['f']),
-                    'constraint_violation': float(np.max(violation)),
-                    'cmd_next_mm': cmd_next,
-                    'cmd_next2_mm': cmd_next2,
-                }
+                # W4a: mutate pre-allocated diag dict in place.
+                diag = self._diag
+                diag['solve_time_ms'] = solve_ms
+                diag['status'] = ret
+                diag['iter_count'] = iter_count
+                diag['cost'] = float(sol['f'])
+                diag['constraint_violation'] = max_viol
+                diag['cmd_next_mm'] = cmd_next
+                diag['cmd_next2_mm'] = cmd_next2
+                # Clear any fallback-specific field set by prior failure tick.
+                diag.pop('fallback_step', None)
+                return cmd, cmd_vel, diag
             else:
                 return self._handle_failure(
                     solve_ms, ret, q_cur,
@@ -1310,14 +1458,20 @@ class MPCController:
             logger.info("Prime solve completed with exception (expected): %s", exc)
 
     def _shift_warm_start(self, prev_w):
-        """Shift previous optimal solution by one timestep.
+        """Shift previous optimal solution by one timestep — hot-loop body.
 
         Each of the three blocks (u, q, p) is shifted left by one node
         (6 elements), with the last node repeated.  Vectorised: one
         bulk copy per block instead of N-1 scalar-loop iterations.
+
+        W4a: writes into the pre-allocated ``self._w0_buf`` so the call
+        is allocation-free.  Safe to reuse the buffer across ticks —
+        the CasADi solver copies x0 into its own state on entry, so the
+        buffer is free to be overwritten the moment ``_solver(**kw)``
+        returns.
         """
         N = self._N
-        w0 = np.empty(self._n_w)
+        w0 = self._w0_buf
 
         # For each block (u, q, p): shift left by 6, repeat last node
         for base in (0, 6 * N, 12 * N):
@@ -1352,18 +1506,24 @@ class MPCController:
         """
         sample_t = state.time if t_now is None else t_now
         if ref_events is not None and len(ref_events) > 0:
+            # W4a: pass pre-allocated buffers so _build_reference_from_events
+            # fills in place.  Buffers live on the MPCController and are
+            # shared across ticks — safe because the caller (mpc.solve)
+            # reads the returned views synchronously before the next call.
             return _build_reference_from_events(
                 ref_events, sample_t,
                 self._cumulative_times, self._N + 1,
+                ref_out=self._ref_traj_buf,
+                twist_out=self._twist_traj_buf,
+                accel_out=self._accel_traj_buf,
             )
 
-        # Safety fallback: hold at target_pose
-        N = self._N
-        ref_traj = np.empty((N + 1, 6))
-        ref_traj[:] = target_pose
-        twist_traj = np.zeros((N + 1, 6))
-        accel_traj = np.zeros((N + 1, 6))
-        return ref_traj, twist_traj, accel_traj
+        # Safety fallback: hold at target_pose — also uses pre-allocated
+        # buffers.  accel stays zero from __init__; twist too after fill.
+        self._ref_traj_buf[:] = target_pose
+        self._twist_traj_buf.fill(0.0)
+        self._accel_traj_buf.fill(0.0)
+        return self._ref_traj_buf, self._twist_traj_buf, self._accel_traj_buf
 
     # ------------------------------------------------------------------
     # Failure handling
