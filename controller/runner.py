@@ -323,6 +323,24 @@ def run_mpc_loop(
     _OH_SPIKE_THRESHOLD_MS = 15.0
     _dash_sink: list[float] = [0.0]
 
+    # W5 — GC scheduling on the idle sleep.
+    #
+    # The hot-loop zero-allocation contract (controller/HOT_LOOP_CONTRACT.md)
+    # keeps per-tick allocation < 1024 B, but Python's generational GC could
+    # still fire inside a tick on accumulated retention from elsewhere (e.g.
+    # CasADi solver state, ZMQ drain).  Disabling GC for the loop body and
+    # running a scheduled Gen-2 collection between ticks on the wall-clock
+    # sleep window guarantees:
+    #   * No in-tick GC pause can ever land inside a 25 ms budget.
+    #   * Accumulation is bounded — the periodic collect frees cycles that
+    #     refcount alone cannot.
+    # Re-enabled in the finally block so exceptions or normal exits don't
+    # leave the interpreter with GC disabled globally.
+    _GC_COLLECT_EVERY_N_TICKS = 200     # 5 s at 40 Hz
+    _GC_COLLECT_MIN_SLEEP_S = 0.005     # only fire when >=5 ms sleep budget
+    _was_gc_enabled = _gc.isenabled()
+    _gc.disable()
+
     # Set True by the loop when plant.estop_requested trips, so the caller
     # can report it (e.g. run_mpc.py's distinct exit code).
     estop_exit = False
@@ -422,7 +440,19 @@ def run_mpc_loop(
                 hooks.on_post_step(state, state.time)
 
             # --- GC attribution (events that finished inside this tick) ---
+            # With W5's gc.disable() active, the steady-state expectation is
+            # _gc_count == 0 on every tick.  Any non-zero count here means
+            # either (a) a manual gc.collect() call sneaked in from
+            # application code (unlikely; grep shows none on the hot path),
+            # or (b) gc.enable() got called by some third-party library.
+            # Either way it's a contract violation — emit a visible warning.
             _gc_ms, _gc_count, _gc_max_gen = gc_tracker.drain_since(_t_overhead)
+            if _gc_count > 0:
+                print(
+                    f"W5 VIOLATION step={_step_idx}: in-tick GC fired "
+                    f"(count={_gc_count}, gen={_gc_max_gen}, "
+                    f"ms={_gc_ms:.1f}) — gc.isenabled()={_gc.isenabled()}"
+                )
 
             # --- telemetry logging (record build + CSV append + dashboard) ---
             _drain_count = int(getattr(plant, 'last_drain_count', 0))
@@ -523,6 +553,23 @@ def run_mpc_loop(
             wall_budget += control_dt
             elapsed = _time.monotonic() - start_wall
             sleep_time = wall_budget - elapsed
+
+            # W5 — scheduled Gen-2 collection on the idle sleep window.
+            # Only fires when (a) we're at the cadence tick, and (b) there's
+            # real sleep budget to absorb the collection cost.  Gen 2 is
+            # explicitly requested (not Gen 0/1) because the point is to
+            # free the rare long-lived cycles that refcount cannot; the
+            # shorter Gen 0/1 sweeps would be wasted here given how little
+            # we allocate per-tick post-W4d.
+            if (sleep_time > _GC_COLLECT_MIN_SLEEP_S
+                    and _step_idx > 0
+                    and _step_idx % _GC_COLLECT_EVERY_N_TICKS == 0):
+                _t_gc_start = _time.perf_counter()
+                _gc.collect(generation=2)
+                _gc_manual_ms = (_time.perf_counter() - _t_gc_start) * 1000.0
+                # Subtract elapsed collection time so pacing stays honest.
+                sleep_time -= _gc_manual_ms / 1000.0
+
             if sleep_time > 0:
                 _time.sleep(sleep_time)
             elif sleep_time < -control_dt:
@@ -530,6 +577,11 @@ def run_mpc_loop(
                 wall_budget = 0.0
     finally:
         gc_tracker.uninstall()
+        # Restore the pre-loop GC state.  Using enable() unconditionally
+        # would clobber a caller who had already disabled GC for their own
+        # reasons; record state at entry and restore exactly.
+        if _was_gc_enabled:
+            _gc.enable()
 
     logger.flush()
     print_mpc_summary(logger)

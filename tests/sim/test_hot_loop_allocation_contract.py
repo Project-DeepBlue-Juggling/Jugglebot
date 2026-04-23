@@ -267,3 +267,79 @@ def test_hot_loop_allocation_contract():
             f"See controller/HOT_LOOP_CONTRACT.md for the invariant and "
             f"implementation guidance."
         )
+
+
+def test_no_in_tick_gc_events_under_w5_disable():
+    """Under W5's gc.disable() wrapper, no GC event lands inside any tick.
+
+    Companion to the allocation-budget contract: even if some future
+    code path retains a reference cycle, Python's GC must not be able to
+    sweep it mid-tick and violate the 25 ms budget.  W5 guarantees this
+    by calling ``gc.disable()`` at loop entry and scheduling collections
+    manually on the idle-sleep window.
+
+    The assertion here reads each StepRecord's ``gc_ms`` field (which
+    the runner fills from the per-tick ``_GCTracker.drain_since``) and
+    fails if any is non-zero.  The runner's own ``W5 VIOLATION ...``
+    stdout print catches the same condition at runtime; this test
+    surfaces it in CI.
+
+    Also asserts ``gc.isenabled()`` state is restored after the loop
+    exits — verifies the ``finally`` branch of the gc.enable/disable
+    bracket works correctly.
+    """
+    import gc
+    assert gc.isenabled(), (
+        "Pre-test: GC should be enabled before run_mpc_loop runs.  "
+        "Another test leaked gc.disable()?"
+    )
+
+    plant, mpc, source, logger = _build_fixture()
+    # Short run — 100 ticks ≈ 2.5 s wall-clock.  Long enough for a
+    # scheduled Gen-2 collect (cadence 200 ticks) to NOT fire, so any
+    # gc event recorded in-tick is an unambiguous violation.  If the
+    # cadence ever drops below 100, update this test accordingly.
+    _TEST_TICKS = 100
+
+    class _TickCounter:
+        def __init__(self):
+            self.tick_count = 0
+            self.done = False
+        def __call__(self, state, sim_time):
+            self.tick_count += 1
+            if self.tick_count == _TEST_TICKS:
+                self.done = True
+
+    hook = _TickCounter()
+    plant_wrapped = _EarlyExitPlantWrapper(plant, hook)
+
+    run_mpc_loop(
+        plant_wrapped, mpc, source,
+        duration=(_TEST_TICKS + 2) * CONTROL_DT,
+        logger=logger,
+        control_dt=CONTROL_DT,
+        hooks=MpcLoopHooks(on_post_step=hook),
+    )
+
+    assert gc.isenabled(), (
+        "Post-test: gc.isenabled() should be restored to True by the "
+        "finally block in run_mpc_loop.  W5 failed to re-enable GC."
+    )
+
+    records = logger.records
+    assert len(records) > 0, "Logger captured no records — loop exited too early?"
+
+    # Skip the first few ticks (JIT warmup can leave pending gc events
+    # from before the disable took effect).  Measurement window starts
+    # after tick 5.
+    violations = [
+        (i, r.gc_ms, r.time) for i, r in enumerate(records)
+        if i >= 5 and r.gc_ms > 0.0
+    ]
+    if violations:
+        pytest.fail(
+            f"W5 violation: {len(violations)} ticks had non-zero gc_ms "
+            f"(gc.disable() should have prevented this).\n"
+            f"First few violations: {violations[:5]}\n\n"
+            f"See controller/HOT_LOOP_CONTRACT.md, Enforcement section."
+        )
