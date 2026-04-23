@@ -27,8 +27,11 @@ files_changed:
   - tests/sim/test_hardware_plant_deadband.py
   - tests/sim/test_plant.py
   - tests/sim/test_zmq_target.py
+  - tests/sim/test_diagnose_oscillation.py
   - sim/analysis/diagnose.py
   - sim/main.py
+  - logbook/INDEX.md
+  - plans/archived/2026-04-23 hot-loop-zero-allocation-contract.md
 commits:
   - ec08312   # W1–W4d: audit + contract + enforcement + telemetry/runner/hook pre-alloc
   - f38abd3   # W5: gc.disable() wrapper + T-I4 in-tick GC assertion
@@ -41,7 +44,9 @@ commits:
   - 27755eb   # Pass 1 audit: GC-race hardening, dead _dash_sink, doc/comment sync
   - 7c44eb8   # Pass 2 audit: last_{ref,twist,accel}_traj_view — non-copying hot-path reads
   - a60cf49   # Pass 2 audit: HardwarePlant pre-alloc + hardware-path contract test
+  - 527b3f1   # Pass 1 + Pass 2 audit close-out (this entry)
   - 3082ff5   # W6 follow-up: diagnose.py chatter floor — sub-LSB IPOPT noise, not GC gaps
+  - ba06849   # Chatter follow-up correction (this entry)
 subsystem:
   - controller
   - mpc
@@ -504,6 +509,27 @@ hardware-measured cost documented in `controller/HOT_LOOP_CONTRACT.md`.
   original hypothesis: not the scheduled-GC 149 ms gaps, but sub-LSB
   IPOPT float-rounding noise in the commanded extensions (see "Post-W7
   audit", follow-ups section, for the actual mechanism).
+
+## Withdrawn claims
+
+- [2026-04-23 W6] Claimed the W6 session's "Oscillation detected on all
+  6 legs" flag was a false-positive caused by the 4 scheduled Gen-2 GC
+  149 ms inter-tick sleep gaps producing large `diff(cmd)` sign changes
+  that the chatter heuristic counted as oscillation.
+  **WITHDRAWN**: the first attempted fix (mask samples where
+  `dt > 5 × median`, added to `diagnose.py` in an interim version) only
+  moved chatter ratios from 0.54 → 0.52 — needle barely moved.  Raw-data
+  inspection showed that ~84 % of non-zero `Δcmd` values on the W6 hold
+  are sub-micron IPOPT float-rounding noise, NOT scheduled-GC-gap
+  deltas.  The chatter ratio of 0.54 is a real measurement of that
+  sub-LSB noise being counted as sign changes — the dt mask was the
+  wrong mitigation because it wasn't the dominant mechanism.
+  **Superseded by**: sub-LSB magnitude floor in
+  `analyse_oscillation` (``_CHATTER_MIN_DELTA_MM = 10 µm``), which
+  filters floats below one encoder LSB before the chatter-ratio
+  computation.  See commit 3082ff5 message and the "Post-W7 audit"
+  section's chatter-follow-up entry.  Resulting chatter ratio on W6
+  session: below detection threshold on all legs.
 
 ## Outcome
 

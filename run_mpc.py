@@ -443,13 +443,6 @@ def main():
     # --- Hardware hooks ---
     _fb_last_arrival = [None]
 
-    # Hot-loop contract: pre-allocate buffers in the hook closure so
-    # the per-tick ``_on_pre_command`` call does not allocate.  Each
-    # tick overwrites these in place via ``np.subtract(..., out=buf)``.
-    _twist_buf = np.empty(6)
-    _twist_next_buf = np.empty(6)
-    _accel_buf = np.empty(6)
-
     def _on_target_override(state: PlantState, tc: TargetCommand) -> TargetCommand:
         """Hold-in-place when telemetry is stale."""
         if (state.data_age_s is not None
@@ -460,35 +453,13 @@ def main():
             )
         return tc
 
-    def _on_pre_command(plant_, mpc_, tc, cmd, cmd_vel, diag):
-        """Set feedforward torques from MPC's predicted trajectory — hot-loop body.
-
-        No-op on MuJoCoPlant which has no feedforward channel (sim dry-run).
-        Uses pre-allocated twist/accel buffers from the enclosing closure.
-
-        Every in-place update uses ``np.divide(buf, scalar, out=buf)``
-        rather than ``buf /= scalar`` — the augmented-assignment form
-        would bind the buffer name as a local of this function and
-        shadow the closure reference, causing an UnboundLocalError on
-        the earlier ``np.subtract(..., out=buf)`` read.
-        """
-        if not hasattr(plant_, 'set_pose'):
-            return
-        poses = mpc_.predicted_poses_view
-        times = mpc_.predicted_times_view
-        if poses is not None:
-            dt0 = times[1] - times[0]
-            dt1 = times[2] - times[1]
-            # twist = (poses[1] - poses[0]) / dt0, in place
-            np.subtract(poses[1], poses[0], out=_twist_buf)
-            np.divide(_twist_buf, dt0, out=_twist_buf)
-            # twist_next = (poses[2] - poses[1]) / dt1, in place
-            np.subtract(poses[2], poses[1], out=_twist_next_buf)
-            np.divide(_twist_next_buf, dt1, out=_twist_next_buf)
-            # accel = (twist_next - twist) / (0.5 * (dt0 + dt1)), in place
-            np.subtract(_twist_next_buf, _twist_buf, out=_accel_buf)
-            np.divide(_accel_buf, 0.5 * (dt0 + dt1), out=_accel_buf)
-            plant_.set_pose(poses[0], twist_6dof=_twist_buf, accel_6dof=_accel_buf)
+    # Factory-created hook so the same callable is importable by the W3
+    # contract test — exercising the production code rather than a
+    # local test replica.  Pre-W3 this was an inline closure, which
+    # hid the augmented-assign bug (commit 149070d) from CI.  See
+    # ``controller/hardware_hooks.py`` for the factory.
+    from controller.hardware_hooks import make_feedforward_pre_command_hook
+    _on_pre_command = make_feedforward_pre_command_hook()
 
     def _on_post_solve(tc, diag):
         """Publish accept/reject feedback for catch targets."""

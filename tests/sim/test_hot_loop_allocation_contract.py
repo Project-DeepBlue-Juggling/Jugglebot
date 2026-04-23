@@ -381,40 +381,26 @@ def _build_hardware_fixture():
 
 
 def _production_hooks_for_hardware(snap_hook: _SnapshotHook) -> MpcLoopHooks:
-    """Replicate the hot-loop-relevant hooks from ``run_mpc.py:main()``.
+    """Import the production hooks from ``run_mpc.py`` exactly.
 
-    Critically wires ``_on_pre_command`` so ``plant.set_pose()`` runs
-    every tick — this is the code path that exercises
-    ``hardware_plant.py:725`` (pose copy) and ``:746`` (torque copy),
-    both of which were invisible to the MuJoCo contract fixture.
+    Previously this replicated the hook bodies locally, which left a
+    coverage gap — the W4d augmented-assign closure bug (fix 149070d)
+    would not have been caught by this test because the test used its
+    own (correctly-written) copy of the hook while the production
+    ``run_mpc.py`` hook could silently regress.  Post-refactor the
+    ``_on_pre_command`` closure lives in
+    ``controller/hardware_hooks.py::make_feedforward_pre_command_hook``
+    (module-level factory, importable).  This test exercises the same
+    callable ``run_mpc.py`` wires in, so any regression in the
+    production hook trips CI at commit time.
 
-    The hook closures pre-allocate twist/accel buffers exactly as the
-    production code does (run_mpc.py:449-451).  ``np.divide(..., out=buf)``
-    — NOT ``buf /= scalar`` — to avoid the closure augmented-assign trap
-    fixed in 149070d and documented in HOT_LOOP_CONTRACT.md.
+    The ``_on_log_extras`` hook is still lightweight enough to keep
+    locally.
     """
     from types import SimpleNamespace
+    from controller.hardware_hooks import make_feedforward_pre_command_hook
 
-    _twist_buf = np.empty(6)
-    _twist_next_buf = np.empty(6)
-    _accel_buf = np.empty(6)
-
-    def _on_pre_command(plant_, mpc_, tc, cmd, cmd_vel, diag):
-        if not hasattr(plant_, 'set_pose'):
-            return
-        poses = mpc_.predicted_poses_view
-        times = mpc_.predicted_times_view
-        if poses is not None:
-            dt0 = times[1] - times[0]
-            dt1 = times[2] - times[1]
-            np.subtract(poses[1], poses[0], out=_twist_buf)
-            np.divide(_twist_buf, dt0, out=_twist_buf)
-            np.subtract(poses[2], poses[1], out=_twist_next_buf)
-            np.divide(_twist_next_buf, dt1, out=_twist_next_buf)
-            np.subtract(_twist_next_buf, _twist_buf, out=_accel_buf)
-            np.divide(_accel_buf, 0.5 * (dt0 + dt1), out=_accel_buf)
-            plant_.set_pose(poses[0], twist_6dof=_twist_buf,
-                            accel_6dof=_accel_buf)
+    _on_pre_command = make_feedforward_pre_command_hook()
 
     _log_extras_ns = SimpleNamespace(fk_iterations=0, ff_torque_max_Nm=0.0)
 
