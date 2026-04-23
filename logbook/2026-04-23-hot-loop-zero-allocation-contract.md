@@ -2,7 +2,7 @@
 title: Hot-loop zero-allocation contract (W1 inventory → contract → enforcement → fixes)
 type: investigation
 date: 2026-04-23
-status: in-progress
+status: resolved
 phase: "hardware-bringup — GC-pause elimination on the MPC 40 Hz hot loop"
 related_plan: "hardware-bringup.md"
 related_issues:
@@ -10,9 +10,29 @@ related_issues:
 related_entries:
   - 2026-04-18-mpc-overhead-spikes-fallback-bursts
   - 2026-04-20-k1-k6-reference-feasibility-resolution
-sessions: []
-files_changed: []
-commits: []
+sessions:
+  - mpc_20260423_184647.csv   # W6 hardware validation — 60 s hold at (0,0,220)
+files_changed:
+  - controller/HOT_LOOP_CONTRACT.md
+  - controller/hot_loop_contract.py
+  - controller/runner.py
+  - controller/telemetry.py
+  - controller/mpc.py
+  - controller/target.py
+  - controller/zmq_target.py
+  - controller/hardware_plant.py
+  - ros_ws/src/jugglebot/jugglebot/motion/ipc.py
+  - run_mpc.py
+  - tests/sim/test_hot_loop_allocation_contract.py
+  - tests/sim/test_plant.py
+  - tests/sim/test_zmq_target.py
+commits:
+  - ec08312   # W1–W4d: audit + contract + enforcement + telemetry/runner/hook pre-alloc
+  - f38abd3   # W5: gc.disable() wrapper + T-I4 in-tick GC assertion
+  - 306d111   # W4a: mpc.solve buffer pre-alloc
+  - fb7e20b   # W4b+c: target sources, HardwarePlant, ipc pre-alloc
+  - a52c158   # W7: threshold ratchet 1024 → 256 B/tick
+  - 149070d   # W4d hook fix: closure augmented-assign shadowed free var
 subsystem:
   - controller
   - mpc
@@ -358,24 +378,159 @@ This is the number to drive below 1 KB for the contract.
 - **Steady-state cmd jitter unrelated to single-sample overhead spikes.**
   Hold-phase HF spectral content is a separate investigation entirely.
 
-## Next steps (gate)
+## Fix — final landed scope
 
-This is the W1 deliverable.  No code has been changed yet.  Awaiting
-operator approval on the inventory before W2 (contract document).
-Specific items to review:
+The W1 inventory was reviewed and approved on 2026-04-23 with three
+agreed adjustments to the original plan:
 
-1. **Threshold choice.**  The W3 test proposes `< 1024 bytes/tick` as the
-   contract.  Current measured per-tick allocation is ~19 KB, so the
-   threshold represents a >95 % reduction.  Is 1 KB the right target,
-   or should it be tighter (~256 B, essentially "nothing should
-   allocate") once the heavy hitters are fixed?
-2. **Scope — is anything in the priority list too aggressive?**  Fix 1
-   (CasADi DM → numpy) in particular touches the solver return path and
-   needs care around numeric correctness.  Fix 3 (StepRecord `__slots__`)
-   may interact with the CSV flush path (`asdict()` in `_flush_batch`).
-3. **Non-goals — anything missing?**  In particular, the
-   `ros_ws/src/jugglebot/jugglebot/motion/ipc.py` message constructors
-   (`make_mpc_command`, `make_motor_feedback`) were listed as audit
-   targets but end up in "per-tick, inside C6 of command()" — the dicts
-   they build are the hot thing, not the modules themselves.  Fine, or
-   do we want to separate-call them out?
+1. **Threshold:** ship at 1024 B/tick (W4e), ratchet to 256 B/tick (W7)
+   once the inventory was cleared.  Both thresholds are held in
+   `controller/hot_loop_contract.py::THRESHOLD_BYTES` — a single source
+   of truth shared with the contract doc and the enforcement test.
+2. **Scope carve-outs:** Fix #6 (ZMQ `recv_into` with pre-allocated
+   buffers) deferred to a follow-on ZMQ-hot-path investigation; Fix #11
+   (hook `set_pose` Newton-Euler) kept as closure-level pre-allocation
+   only (the set_pose internals are out-of-scope).  All other inventory
+   items landed.
+3. **`ipc.py` treatment:** message constructors (`make_mpc_command`)
+   gained an optional `out=` kwarg so HardwarePlant.command can mutate a
+   pre-allocated dict in place.  Other call sites (bridge nodes, tests)
+   keep the legacy fresh-dict path.
+
+### Commits
+
+| W | Commit | Summary |
+|---|--------|---------|
+| W1 | ec08312 | Audit (this entry) + contract + enforcement + W4d pool |
+| W2 | ec08312 | `controller/HOT_LOOP_CONTRACT.md` + `hot_loop_contract.py` |
+| W3 | ec08312 | `tests/sim/test_hot_loop_allocation_contract.py` with xfail |
+| W4a | 306d111 | `mpc.solve` buffer pre-alloc (solver returns, ref arrays, diag, constraint-violation scalar loop, `_shift_warm_start` reuse, two-tick u history) |
+| W4b+c | fb7e20b | Target sources, HardwarePlant PlantState+cmd buffers+Packer reuse, `ipc.make_mpc_command(out=)` kwarg |
+| W4d | ec08312 | `StepRecord` pool recycle + `next_record`/`last_record`/`fill_record_from_arrays` + runner extras SimpleNamespace + hook closure buffers |
+| W4d hook fix | 149070d | `_on_pre_command` augmented-assign shadowed closure free var (caught live during W6 prep) |
+| W4e | ec08312 | xfail lifted in the same W4d commit |
+| W5 | f38abd3 | `gc.disable()` / scheduled `gc.collect(2)` wrapper + T-I4 in-tick GC test + pre-loop gc-state preservation |
+| W7 | a52c158 | Threshold ratchet 1024 → 256 B/tick |
+
+Audit measurement vs test measurement — a late correction:
+The W1 audit estimated ~19 KB/tick of gross Python allocations.  The W3
+enforcement test, which measures *net retained bytes between snapshots*
+via `tracemalloc`, reported 2352 B/tick pre-W4 on that same code.  The
+discrepancy is tracemalloc's blind spot for short-lived temporaries —
+most of the 19 KB is refcount-freed before the snapshot fires.  Retained
+bytes are what drive Gen 2 GC pressure in practice, so the tracemalloc
+number is the right contract target.  Post-W4+W5+W7: 150 B/tick measured.
+
+## Verification
+
+### Unit + integration tests
+
+`pytest tests/ -v` — **1035 passed, 0 failed** on the Jetson.
+Baseline pre-cycle was 1033; +2 new tests (the W3 contract test +
+the W5 T-I4 in-tick-GC assertion); the existing 1033 continue to pass
+bit-exact, including the K1–K6 adversarial fixture which is our
+correctness gate for the buffer-reuse refactor.
+
+Contract test measurement ladder across the W-phases:
+
+| Phase | Measured B/tick | Threshold |
+|------:|----------------:|----------:|
+| Pre-W4 (W3 initial) | 2352 | 1024 (xfail) |
+| Post-W4d only      | 120 | 1024 (passing) |
+| Post-W5            | 172 | 1024 (passing) |
+| Post-W4a           | 150 | 1024 (passing) |
+| Post-W4b+c         | 137 | 1024 (passing) |
+| **Post-W7 (current)** | **150** | **256** |
+
+(The W5 tick from 120 → 172 is the scheduled-collect trace entry
+retained by tracemalloc — not a real regression.)
+
+### Hardware validation (W6, 2026-04-23)
+
+Session: `mpc_20260423_184647.csv` — 60 s hold at `(0, 0, 220, 0, 0, 0)`,
+Jetson Orin Nano, bringup stack up.
+
+Key measurements from `/diagnose --latest`:
+
+| Metric | Value | Expectation |
+|--------|-------|-------------|
+| In-tick overhead p50 | 5.9 ms | < 15 ms |
+| In-tick overhead p95 | 7.8 ms | < 15 ms |
+| In-tick `gc_ms` non-zero samples | **0 / 2400** | 0 (W5 invariant) |
+| `W5 VIOLATION` stdout count | **0** | 0 |
+| Solve success rate | 100 % (2400/2400) | > 99 % |
+| Consecutive solve failures | 0 | 0 |
+| Final tracking error | 0.021 mm / 0.0019° | < 2 mm |
+| Hold-phase asymmetry ratio | 1.26 | < 1.5 |
+| Per-leg hold act stdev (agg) | 5.93 μm | < 20 μm |
+
+Primary invariant (zero in-tick GC) holds.  Operator observation:
+"super clean on the ODrive GUI".
+
+#### Observation: scheduled Gen-2 collect cost on hardware
+
+W5's scheduled `gc.collect(generation=2)` (between-tick sleep window)
+was predicted to cost ~5 ms.  Measured on Jetson: **140–156 ms per
+firing**.  CasADi's Python wrappers + numpy + msgpack accumulate more
+Gen-2-eligible objects every 5 seconds than anticipated.
+
+Crucially, the cost lands *outside the tick body*:
+- Every tick's `gc_ms` column is 0 (W5 invariant: no in-tick GC).
+- Every tick's `overhead_ms` column (in-tick) is clean (p95 = 7.8 ms).
+- The 149 ms wall-clock gaps show up only in the *inter-tick* `dt`
+  series, which the motor guard's Hermite interpolation absorbs.
+
+Follow-up: cadence tuned from 200 ticks (5 s) to **1200 ticks (30 s)**
+after W6 — reduces collects from ~4/min to ~2/min.  Rationale +
+hardware-measured cost documented in `controller/HOT_LOOP_CONTRACT.md`.
+
+#### Known-false-positive flags in the W6 diagnose output
+
+- `Oscillation detected on all 6 legs` — `diagnose.py` computes chatter
+  from `diff(cmd)` sign changes over the full session.  The 4 scheduled-
+  GC 149 ms sleep gaps produce sign changes in the `diff` series that
+  get counted as chatter.  ODrive pos_setpoint scope is clean per the
+  operator — this is a diagnose.py measurement artefact, not a real
+  oscillation.  Filed as a follow-up to harden `diagnose.py` against
+  inter-tick dt anomalies.
+
+## Outcome
+
+`GC_PAUSE_CANDIDATE` on the MPC 40 Hz hot loop flipped from `active` →
+`fixed`.  `controller/HOT_LOOP_CONTRACT.md` is the normative spec
+defending the class of failures going forward:
+
+- Every new `TargetSource`, `PlantInterface`, or `MpcLoopHook` that
+  lands on the hot loop is required to be pre-allocation-compliant.
+- CI enforcement via `tests/sim/test_hot_loop_allocation_contract.py`
+  emits a top-10 allocation-site diagnostic on failure so a regression
+  is actionable without rerunning locally.
+- Threshold is 256 B/tick with a documented ratchet procedure for any
+  future relaxation.
+
+### Side-effect gains
+
+- Sim MPC mean overhead dropped from 14.8 ms → 5.9 ms on the W3 fixture
+  as a pure consequence of removing per-tick dict/dataclass churn.
+  Hardware measured at 5.9 ms median / 7.8 ms p95 in W6 (vs 10–15 ms
+  typical on pre-contract sessions).  Room regained for new hot-loop
+  work (e.g. an additional diagnostic or hook) without risking budget.
+- The class of failure extends beyond this specific tick: any future
+  hot-loop addition is now structurally prevented from reintroducing
+  GC pressure.  This is the same compounding value the K1–K6
+  reference-feasibility contract provides.
+
+### Open follow-ups
+
+- **Motion-onset dead-time** (197 ms worst leg, stick-slip signature).
+  Pre-existing, unchanged by this work.  Tracked in
+  [2026-04-20-motion-onset-dead-time-fix](2026-04-20-motion-onset-dead-time-fix.md).
+- **`diagnose.py` chatter false-positive on large inter-tick gaps.**
+  Minor measurement-tool bug surfaced by W6 — chatter heuristic should
+  skip samples where `dt > 5 × expected` (the scheduled-GC gap).
+  Cosmetic, non-blocking.
+- **`_on_pre_command` unit test gap.**  The augmented-assign closure
+  bug (fix commit 149070d) slipped through because the W3 contract
+  test uses MuJoCoPlant which doesn't wire hardware hooks.  Add a
+  direct unit test with a mock `set_pose` plant to catch this class
+  of closure-binding error at commit time.  Small follow-up.

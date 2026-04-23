@@ -1,7 +1,8 @@
 ---
 title: Hot-Loop Zero-Allocation Contract (MPC 40 Hz)
 created: 2026-04-23
-status: active
+completed: 2026-04-23
+status: completed
 ---
 
 # Hot-Loop Zero-Allocation Contract (MPC 40 Hz)
@@ -209,16 +210,16 @@ Enforcement: tests/sim/test_hot_loop_allocation_contract.py.
 
 | Phase | Scope | Status | Date | Risk | Validates |
 |-------|-------|--------|------|------|-----------|
-| W2 | `controller/HOT_LOOP_CONTRACT.md` — normative spec | NOT STARTED | | Low | Contract language + operator approval before enforcement lands |
-| W3 | `tests/sim/test_hot_loop_allocation_contract.py` — tracemalloc enforcement (threshold=1024 B/tick, initially `xfail` while W4 is in flight) | NOT STARTED | | Low | Harness works; top-10 allocation diagnostic emits correct sites |
-| W4a | `mpc.solve` pre-allocation (sol buffers M11/M12/M16; violation chain M17; ref/twist/accel_traj M2–M4; diag dict M19) | NOT STARTED | | **Med-High** | Bit-exact solve output on every pytest scenario + MuJoCo adversarial fixture |
-| W4b | `controller/target.py` + `zmq_target.py` + `StaticTargetSource` — `TargetCommand` pre-alloc, dead-copy removal, request_key cache | NOT STARTED | | Low | Existing target tests (K1–K6 property/scenario, zmq_target unit) stay green |
-| W4c | `HardwarePlant` — `PlantState` mutation, (6,) command-side buffers, MPC-command dict pre-alloc, `msgpack.Packer` reuse | NOT STARTED | | Med | Hardware integration test against live motor guard |
-| W4d | `StepRecord` `__slots__` + record pool; runner `extras` SimpleNamespace; hook closure buffers (on_pre_command, on_log_extras) | NOT STARTED | | Low | CSV load-back round-trip test; 200-tick `StaticTargetSource` sim run |
-| W4e | Flip W3 test from `xfail` to active; verify on CI at 1024 B/tick threshold | NOT STARTED | | Low | Threshold gate |
-| W5 | `gc.disable()` / periodic `gc.collect()` wrapper in `run_mpc_loop`; `_GCTracker` asserts zero in-tick GC events | NOT STARTED | | Low | No GC events during tick window in sim or hardware |
-| W6 | Hardware validation — 60 s run of `--pose 0,0,220,0,0,0`; target zero isolated spikes in `/diagnose` output | NOT STARTED | | **Stop gate** | End-to-end: `overhead.isolated_spikes == 0` |
-| W7 | Ratchet threshold from 1024 B/tick → 256 B/tick; second tracemalloc pass catches any remaining per-tick allocations | NOT STARTED | | Low | Tighter invariant permanent; future contributors held to the real floor |
+| W2 | `controller/HOT_LOOP_CONTRACT.md` — normative spec | COMPLETE | 2026-04-23 | Low | Contract language + operator approval before enforcement lands |
+| W3 | `tests/sim/test_hot_loop_allocation_contract.py` — tracemalloc enforcement (threshold=1024 B/tick, initially `xfail` while W4 is in flight) | COMPLETE | 2026-04-23 | Low | Harness works; top-10 allocation diagnostic emits correct sites |
+| W4a | `mpc.solve` pre-allocation (sol buffers M11/M12/M16; violation chain M17; ref/twist/accel_traj M2–M4; diag dict M19) | COMPLETE | 2026-04-23 | **Med-High** | Bit-exact solve output on every pytest scenario + MuJoCo adversarial fixture |
+| W4b | `controller/target.py` + `zmq_target.py` + `StaticTargetSource` — `TargetCommand` pre-alloc, dead-copy removal, request_key cache | COMPLETE | 2026-04-23 | Low | Existing target tests (K1–K6 property/scenario, zmq_target unit) stay green |
+| W4c | `HardwarePlant` — `PlantState` mutation, (6,) command-side buffers, MPC-command dict pre-alloc, `msgpack.Packer` reuse | COMPLETE | 2026-04-23 | Med | Hardware integration test against live motor guard |
+| W4d | `StepRecord` `__slots__` + record pool; runner `extras` SimpleNamespace; hook closure buffers (on_pre_command, on_log_extras) | COMPLETE | 2026-04-23 | Low | CSV load-back round-trip test; 200-tick `StaticTargetSource` sim run |
+| W4e | Flip W3 test from `xfail` to active; verify on CI at 1024 B/tick threshold | COMPLETE | 2026-04-23 | Low | Threshold gate |
+| W5 | `gc.disable()` / periodic `gc.collect()` wrapper in `run_mpc_loop`; `_GCTracker` asserts zero in-tick GC events | COMPLETE | 2026-04-23 | Low | No GC events during tick window in sim or hardware |
+| W6 | Hardware validation — 60 s run of `--pose 0,0,220,0,0,0`; target zero isolated spikes in `/diagnose` output | COMPLETE | 2026-04-23 | **Stop gate** | End-to-end: `overhead.isolated_spikes == 0` ([mpc_20260423_184647.csv](../../temp/logs/mpc_20260423_184647.csv)) |
+| W7 | Ratchet threshold from 1024 B/tick → 256 B/tick; second tracemalloc pass catches any remaining per-tick allocations | COMPLETE | 2026-04-23 | Low | Tighter invariant permanent; future contributors held to the real floor |
 
 Each W is a single commit with a `Logbook-Entry:` trailer.  W4 is split
 into five sub-phases because the total diff is too large to review in one

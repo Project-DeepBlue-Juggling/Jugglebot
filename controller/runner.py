@@ -343,7 +343,20 @@ def run_mpc_loop(
     #     refcount alone cannot.
     # Re-enabled in the finally block so exceptions or normal exits don't
     # leave the interpreter with GC disabled globally.
-    _GC_COLLECT_EVERY_N_TICKS = 200     # 5 s at 40 Hz
+    # Cadence tuned on W6 hardware validation (2026-04-23): the scheduled
+    # Gen-2 collect costs ~140 ms on the Jetson Orin Nano (much more than
+    # the 5 ms I initially predicted, because CasADi internals + numpy
+    # wrappers accumulate enough Gen 2 candidates every few seconds that a
+    # sweep walks a non-trivial object graph).  The collect itself fires
+    # during the idle-sleep window so it cannot land inside a tick — but
+    # every firing produces a ~140 ms gap in the 40 Hz command stream
+    # that the motor guard's Hermite interpolation has to absorb.
+    # 1200 ticks = 30 s gives ~2 collects/minute instead of the ~4/minute
+    # we measured at 200 ticks, without changing any correctness
+    # property.  If hardware testing ever shows Gen-2 memory accumulating
+    # faster than once per 30 s, shorten this — W5's gc.disable() keeps
+    # in-tick GC off regardless of cadence.
+    _GC_COLLECT_EVERY_N_TICKS = 1200    # 30 s at 40 Hz
     _GC_COLLECT_MIN_SLEEP_S = 0.005     # only fire when >=5 ms sleep budget
     _was_gc_enabled = _gc.isenabled()
     _gc.disable()

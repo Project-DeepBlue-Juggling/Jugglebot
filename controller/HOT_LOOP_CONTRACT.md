@@ -133,6 +133,31 @@ failure).
 
 ## Enforcement
 
+### Scheduled Gen-2 collection cost (measured on hardware)
+
+W5 wraps ``run_mpc_loop`` in ``gc.disable()`` and runs a manual
+``gc.collect(generation=2)`` every ``_GC_COLLECT_EVERY_N_TICKS`` ticks
+on the idle-sleep window — only when ``sleep_time > 5 ms`` at the gate
+check, so the collect cannot land inside a tick budget.
+
+W6 hardware validation (2026-04-23, Jetson Orin Nano, 60 s hold)
+measured the scheduled collect at **~140 ms per firing**, not the 5 ms
+I'd initially predicted in this document.  CasADi's internal Python
+wrappers plus numpy plus msgpack accumulate enough Gen-2-eligible
+objects every few seconds that a full sweep walks a non-trivial
+graph.  The 140 ms cost lands outside any tick body (verified: every
+tick's ``gc_ms`` column stays 0.00 and the in-tick ``overhead_ms``
+column p95 = 7.8 ms), but it does produce a measurable gap in the
+40 Hz command stream that the motor guard's Hermite interpolation
+has to absorb.
+
+The cadence constant was tuned to **1200 ticks (30 s at 40 Hz)** after
+W6 — that gives roughly 2 collects per minute instead of the 4 we
+measured at 200 ticks, trading modest extra retention between sweeps
+for fewer inter-tick gaps.  The specific cadence is non-normative
+(any value that keeps the motor-guard gap bounded is valid); it's
+documented here so future contributors know the measurement exists.
+
 ### The contract test
 
 All contract compliance is enforced in one place:
@@ -484,8 +509,8 @@ with upstream ticket references.
   — enforcement test; top-10 diagnostic on failure.
 - [logbook/2026-04-23-hot-loop-zero-allocation-contract.md](../logbook/2026-04-23-hot-loop-zero-allocation-contract.md)
   — W1 audit inventory; running log of contract evolution.
-- [plans/active/hot-loop-zero-allocation-contract.md](../plans/active/hot-loop-zero-allocation-contract.md)
-  — phased implementation plan (W2–W7).
+- [plans/archived/2026-04-23 hot-loop-zero-allocation-contract.md](../plans/archived/2026-04-23%20hot-loop-zero-allocation-contract.md)
+  — phased implementation plan (W2–W7), archived 2026-04-23.
 - [logbook/2026-04-18-mpc-overhead-spikes-fallback-bursts.md](../logbook/2026-04-18-mpc-overhead-spikes-fallback-bursts.md)
   — original GC-pause investigation; introduced the ``_GCTracker``
   instrumentation this contract builds on.

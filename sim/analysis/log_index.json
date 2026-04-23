@@ -587,6 +587,15 @@
       "session_group": "2026-04-19_19-59-46",
       "logbook_entry": null,
       "notes": "Not yet analyzed; between 19:47 and 22:36 sessions."
+    },
+    "mpc_20260423_184647.csv": {
+      "analyzed": true,
+      "last_analyzed": "2026-04-23T09:15:34.111823+00:00",
+      "verdict": "PASS",
+      "flags_count": 5,
+      "phase": "hardware-bringup \u2014 hot-loop zero-allocation contract W6 validation",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-23_18-46-25",
+      "session_group": "2026-04-23_18-46-25"
     }
   }
 }
