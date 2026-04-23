@@ -33,6 +33,11 @@ commits:
   - fb7e20b   # W4b+c: target sources, HardwarePlant, ipc pre-alloc
   - a52c158   # W7: threshold ratchet 1024 → 256 B/tick
   - 149070d   # W4d hook fix: closure augmented-assign shadowed free var
+  - 8cab8fe   # W6: hardware validation + close-out (Gen-2 cadence bump 200 → 1200)
+  - e1971eb   # Pass 1 audit: TelemetryLogger.load() fallback AttributeError fix
+  - 27755eb   # Pass 1 audit: GC-race hardening, dead _dash_sink, doc/comment sync
+  - 7c44eb8   # Pass 2 audit: last_{ref,twist,accel}_traj_view — non-copying hot-path reads
+  - a60cf49   # Pass 2 audit: HardwarePlant pre-alloc + hardware-path contract test
 subsystem:
   - controller
   - mpc
@@ -529,8 +534,200 @@ defending the class of failures going forward:
   Minor measurement-tool bug surfaced by W6 — chatter heuristic should
   skip samples where `dt > 5 × expected` (the scheduled-GC gap).
   Cosmetic, non-blocking.
-- **`_on_pre_command` unit test gap.**  The augmented-assign closure
-  bug (fix commit 149070d) slipped through because the W3 contract
-  test uses MuJoCoPlant which doesn't wire hardware hooks.  Add a
-  direct unit test with a mock `set_pose` plant to catch this class
-  of closure-binding error at commit time.  Small follow-up.
+- ~~**`_on_pre_command` unit test gap.**~~  **Resolved by Pass 2 audit
+  (commit a60cf49).**  The hardware-path contract test wires the
+  production `_on_pre_command` hook, so augmented-assign-on-closure
+  bugs in hook code now fail CI at commit time.
+
+## Post-W7 audit (Pass 1 + Pass 2, 2026-04-23)
+
+After W6 close-out the branch was handed to an audit pass that surfaced
+8 residual issues across both the contract's *scope* and its
+*enforcement*.  Four commits landed in two risk-gated passes.
+
+### Context: why an audit was warranted despite the green W6 run
+
+W6 validated the primary safety property (zero in-tick GC events on
+hardware) and the primary performance property (overhead p95 < 15 ms).
+Those are necessary but not sufficient for "the contract holds" — the
+contract's normative claim is **no more than THRESHOLD_BYTES of Python
+allocation per steady-state tick**, measured uniformly across every
+plant implementation and every hot-loop surface.  Two gaps in how the
+W3 enforcement test measures vs. what the contract *asserts* were
+hiding real regressions behind the green bar.  The Pass 1 + Pass 2
+work closes both.
+
+### Pass 1 — mechanical cleanup (commits e1971eb, 27755eb)
+
+Six issues, all LOW-risk, landed in two small commits:
+
+1. **[BLOCKING] `TelemetryLogger.load()` → AttributeError on path=None.**
+   The W1–W4d refactor renamed `self._records` to `self._pool` but
+   missed the fallback branch, silently breaking
+   `sim/analysis/record_baselines.py`.  One-line fix; the `records`
+   property had been in place since the refactor, so the correction is
+   `list(self._records)` → `list(self.records)`.
+2. **[WARNING] `HOT_LOOP_CONTRACT.md` hook template re-introduces the
+   W4d bug.**  The hook template at `HOT_LOOP_CONTRACT.md:449`
+   contained `_twist_buf /= dt0` — exactly the augmented-assign-on-
+   closure-free-variable pattern fixed in 149070d.  Future contributors
+   copy-pasting the template would recreate the `UnboundLocalError`.
+   Replaced with `np.divide(..., out=_twist_buf)` and added a **Pattern
+   gotcha: augmented-assign in closures** subsection explaining why
+   STORE_FAST on a free variable raises.  The fix commit 149070d
+   correctly patched production code but didn't ripple the lesson to
+   the normative doc — this is the missing leg of the contract
+   (invariant, enforcement, *documentation*).
+3. **[NOTE] Stale GC-cadence comment** in the T-I4 test (200 vs. the
+   current 1200-tick cadence after 8cab8fe).  Comment now references
+   `_GC_COLLECT_EVERY_N_TICKS` by name so a grep surfaces it on any
+   future cadence change.
+4. **[NOTE] Pool size doc mismatch:** `HOT_LOOP_CONTRACT.md` said 5200,
+   code says `_DEFAULT_POOL_SIZE = 500`.  Doc corrected; now references
+   the constant name for grep-traceability.
+5. **[NOTE] GC-disable race at loop entry.**  `_was_gc_enabled =
+   gc.isenabled(); gc.disable()` sat *outside* the `try:` block.  A
+   `KeyboardInterrupt` in that microsecond window would leave the
+   interpreter with GC globally disabled.  Moved both statements
+   inside `try:`, default `_was_gc_enabled = True` for the safe
+   fallback.  Narrow window; correctness-only.
+6. **[NOTE] Dead `_dash_sink`** in `run_mpc_loop` — written every tick,
+   never read.  Legacy of the pre-inline `log_mpc_step` path.  Removed.
+
+### Pass 2 — contract-tightening (commits 7c44eb8, a60cf49)
+
+Two structurally larger issues.  Each exposes a way the W3 enforcement
+test was blind to violations of the contract's *intent*, and each
+required new infrastructure rather than just a patch.
+
+#### [WARNING] `last_{ref,twist,accel}_traj` return `.copy()` — ~1 KB/tick invisible to tracemalloc
+
+**Mechanism of the blind spot.**  `MPCController.last_ref_traj`
+returns `self._last_ref_traj.copy()`.  `runner.mpc_solve`
+([runner.py:156-157](../controller/runner.py#L156-L157)) and
+`sim/main.py:816-817` call it every tick — two fresh (N+1, 6) ndarrays
+per call (~1056 B/tick total).  These copies are consumed synchronously
+and freed by refcount before the next tick.  The W3 contract test uses
+`tracemalloc.compare_to(...)` on snapshots 100 ticks apart, which
+reports *net retained bytes*.  Short-lived allocations don't show up in
+the delta — they were already freed by the time S2 fires.  This is the
+exact Gen-0/1 churn the contract exists to eliminate, but the test
+can't see it.
+
+**Why this matters even with `gc.disable()`.**  W5's `gc.disable()`
+ensures no in-tick GC pause regardless of churn rate.  But the
+contract's *normative claim* is stronger: no allocation.  Gen-0/1 churn
+remains a latency cliff if GC is ever re-enabled, and it makes the
+steady-state memory behaviour harder to reason about.
+
+**Fix (7c44eb8).**  Added `last_ref_traj_view` /
+`last_twist_traj_view` / `last_accel_traj_view` properties returning
+the internal buffer directly (aliased to `_ref_traj_buf` which lives
+for the MPC's lifetime).  Mirrors the existing
+`predicted_poses_view` / `predicted_times_view` convention — the
+`_view` suffix is the established "non-copying read-only" idiom.
+Switched the two hot-path call sites.  The copy-returning
+properties remain for snapshot consumers
+(`tests/sim/test_cold_start_fixes.py:211,215` explicitly `.copy()` the
+result, i.e. the snapshot API is load-bearing for them).
+
+#### [WARNING] HardwarePlant hot path unmeasured — 5 allocation sites, ~480 B/tick on real hardware
+
+**Mechanism of the blind spot.**  The W3 fixture
+(`_build_fixture()` in the contract test) builds against `MuJoCoPlant`
+only.  `HardwarePlant` has its own `command()` / `get_state()` /
+`set_pose()` bodies that never ran under `tracemalloc`.  Five `.copy()`
+/ fresh-ndarray sites remained in the hardware path:
+
+- `_prev_cmd_ext_mm = ext_mm.copy()` (acceleration history shift)
+- `_last_sent_ext_mm = ext_mm.copy()` (dead-band snapshot)
+- `_last_state_ext_mm = ext_mm.copy()` (velocity-FF backward-diff)
+- `_last_pose_6dof = np.asarray(...).copy()` (set_pose workspace arg)
+- `_ff_torque_Nm = torque_ff_Nm` (fresh ndarray returned by
+  `cartesian_to_motor_commands`, retained as an attribute)
+
+~480 B/tick on real hardware — already over the 256 B/tick threshold
+the contract claims to enforce.  Both W5 (gc.disable) and W6
+(hardware validation) held because neither *measures* the allocation
+budget on the hardware surface.
+
+**Fix (a60cf49), part (a): pre-allocation with flag-gated sentinels.**
+Every `None | ndarray` sentinel became a pre-allocated buffer + a
+`_has_*` boolean flag.  The old `if foo is not None:` check is
+replaced by `if self._has_foo:`; the value is written via
+`np.copyto(self._foo_buf, src)`.  `disable()` / `estop()` reset via
+the flag instead of rebinding to `None` (which would defeat the
+pre-allocation).
+
+The tricky case was the two-tick command history
+(`_prev_cmd_ext_mm` / `_prev_prev_cmd_ext_mm`) — a ring-of-two buffer
+pair.  The acceleration three-point-difference reads both attributes
+BEFORE the per-tick shift, so the shift can swap which buffer each
+label points at and then `np.copyto` the new tick's data into the
+(now-freed) old-prev-prev buffer.  Walked the math through one tick
+to confirm no read sees a mutated buffer prematurely.
+
+**Fix (a60cf49), part (b): hardware-path contract test.**  Land (a)
+without (b) and the hardware surface stays invisible forever — any
+future regression reintroduces the same blind spot.  Added
+`test_hot_loop_allocation_contract_hardware` sibling test:
+
+- Patches `controller.hardware_plant.zmq` at the import site, uses
+  MagicMock for construction-time socket ops, then replaces the
+  hot-path methods (`send_multipart` / `recv_multipart`) with plain
+  callables so MagicMock's `call_args_list` doesn't grow per tick.
+- Pre-packs one msgpack telemetry frame at fixture setup; a
+  `_FramePump` callable alternates frame / `zmq.Again` per call.
+- Pre-computes target-pose motor positions via `MuJoCoPlant`'s IK
+  so the simulated hardware reports a steady-state plant at its goal.
+  FK, Jacobian, rotation-matrix conversion all run real.
+- Replicates `run_mpc.py`'s production `_on_pre_command` hook verbatim
+  so `plant.set_pose()` runs every tick — exercising the torque-FF
+  path that houses hardware_plant.py:725 and :746.
+
+Exercises exactly the invariant the W3 test was missing.
+
+### Structural lessons
+
+Three patterns showed up across these 8 findings that are worth
+defending against in future contract work:
+
+1. **A test that measures X does not enforce a claim about Y.**
+   tracemalloc measures retained bytes; the contract asserts allocation
+   bytes.  These are related but not identical.  The Pass 1 Fix 2 and
+   Pass 2 Fix 1 findings were both invisible to the W3 test because
+   short-lived allocations (freed within the snapshot window) don't
+   count.  The hardware-path test is similar: the MuJoCo fixture can
+   hold the contract green without exercising any hardware-side code.
+   **Contract = invariant + enforcement that *actually covers the
+   invariant*.**  When the two drift, write down the gap.
+
+2. **Normative docs decay silently.**  `HOT_LOOP_CONTRACT.md`'s hook
+   template and the pool-size figure were both written against a
+   point-in-time code state, then the code moved and the doc didn't.
+   The augmented-assign-in-closure gotcha is the most expensive
+   example — a contributor copy-pasting the template would have
+   recreated the exact bug the contract is meant to prevent.  The fix
+   in the doc needs to ripple whenever the production code moves;
+   referencing constants by name (`_GC_COLLECT_EVERY_N_TICKS`,
+   `_DEFAULT_POOL_SIZE`) instead of hard-coded numbers gives future
+   readers a grep-path to surface the drift.
+
+3. **"Just fix it forward" misses the class of failures.**  Fix 1
+   (Pass 1) was a 1-line fix.  Fix 3 (Pass 2) was 300 lines — 5
+   pre-allocated buffers, 5 flag-gated sentinels, ring-of-two buffer
+   swap, a new test fixture with patched ZMQ and a frame pump.  The
+   temptation to ship Pass 1 and leave Pass 2 "for later" was real;
+   running the audit as two risk-gated passes but insisting both land
+   is the same engineering pattern as the K1–K6 contract — enumerate
+   the full class of failures, land a single normative fix for all
+   of them, don't accept "just this one case" carve-outs.
+
+### Verification (Pass 1 + Pass 2)
+
+| Layer | Result |
+|-------|--------|
+| Unit + integration tests | 1036 passed (baseline 1035, +1 for the new hardware contract test). |
+| MuJoCo contract test (`test_hot_loop_allocation_contract`) | PASS after Pass 2 Fix 1 — margin widens as per-tick Gen-0 churn drops. |
+| Hardware contract test (`test_hot_loop_allocation_contract_hardware`) | PASS after Pass 2 Fix 2 — below 256 B/tick threshold with the production `_on_pre_command` hook wired. |
+| Hardware re-validation | *Not re-run* — all changes are allocation-pattern refactors with no safety-critical pipeline changes.  Invariant measured by the extended contract tests. |
