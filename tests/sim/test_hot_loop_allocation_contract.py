@@ -106,15 +106,44 @@ def _build_fixture():
 
 
 def _snapshot_filters() -> tuple[tracemalloc.Filter, ...]:
-    """Exclude tracemalloc-internal and importlib noise from the snapshot.
+    """Exclude tracemalloc-internal, importlib, and non-hot-loop module noise.
 
     Without these filters, the top-10 diagnostic is dominated by pytest
-    plugin imports and tracemalloc's own trace-table growth.
+    plugin imports and tracemalloc's own trace-table growth, and the
+    total byte count can be polluted by module-level imports that a
+    sibling test dragged into the process.
+
+    The excluded paths and their rationale:
+
+    * ``tracemalloc.__file__`` / ``<frozen importlib._bootstrap{,_external}>``
+      — the interpreter's own per-snapshot state.
+    * ``*/sim/analysis/*`` — ``analyse_oscillation`` and its siblings are
+      post-hoc analysis utilities, never imported from the 40 Hz hot
+      loop.  A test that loads them (e.g. ``test_diagnose_oscillation``)
+      pulls matplotlib in transitively via ``plot_diagnosis.py``, which
+      then sits in ``sys.modules`` for the rest of the pytest session.
+      Matplotlib's internal caches grow lazily on use, so a subsequent
+      contract test could inherit tens of KB of unrelated allocation
+      if those caches warm mid-run.
+    * ``*/sim/viz/*`` — same concern, different path (dashboard /
+      plotting helpers that aren't hot-path).
+    * ``*/matplotlib/*`` — belt-and-braces, covers any future sibling
+      test that imports matplotlib directly.
+
+    The list is deliberately NOT a positive allow-list (e.g.  "only
+    count ``controller/`` allocations") — the contract's intent is
+    "any application allocation on the hot-loop body", and a hot-loop
+    leak originating from ``run_mpc.py`` or ``ros_ws/.../motion/ipc.py``
+    must still trip the test.  The negative-list approach keeps the
+    contract open-by-default.
     """
     return (
         tracemalloc.Filter(False, tracemalloc.__file__),
         tracemalloc.Filter(False, '<frozen importlib._bootstrap>'),
         tracemalloc.Filter(False, '<frozen importlib._bootstrap_external>'),
+        tracemalloc.Filter(False, '*/sim/analysis/*'),
+        tracemalloc.Filter(False, '*/sim/viz/*'),
+        tracemalloc.Filter(False, '*/matplotlib/*'),
     )
 
 

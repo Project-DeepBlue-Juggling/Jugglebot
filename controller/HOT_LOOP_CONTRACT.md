@@ -93,6 +93,18 @@ hot-loop call site.  Explicitly excluded:
 - **msgpack Packer internal buffers** (when used with
   ``msgpack.Packer`` reuse).  Same reason — C-level.
 - **OS kernel buffers** from ZMQ socket operations.  Same reason.
+- **Non-hot-path Python modules** filtered out by
+  ``_snapshot_filters`` in the enforcement test.  Currently excluded:
+  ``tracemalloc`` itself, the frozen importlib bootstrap, ``sim/analysis/``
+  (post-hoc analysis utilities never imported from the 40 Hz loop),
+  ``sim/viz/`` (dashboard / plotting helpers), and the whole
+  ``matplotlib/`` package.  A sibling test that imports analysis
+  modules transitively pulls matplotlib into ``sys.modules``, whose
+  lazily-warmed caches could otherwise pollute a subsequent contract
+  snapshot.  The filter list is a *negative* list (exclude these
+  paths) rather than a positive allow-list, so a real hot-loop leak
+  originating from ``controller/``, ``run_mpc.py``, or
+  ``ros_ws/.../motion/ipc.py`` still trips the test.
 
 ### Threshold values
 
