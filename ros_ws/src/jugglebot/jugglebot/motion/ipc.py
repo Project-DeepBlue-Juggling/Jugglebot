@@ -172,7 +172,9 @@ def make_mpc_command(ext_mm: list | tuple,
                      torque_Nm: list | tuple | None = None,
                      seq: int = 0,
                      cmd_next_mm: list | tuple | None = None,
-                     cmd_next2_mm: list | tuple | None = None) -> dict:
+                     cmd_next2_mm: list | tuple | None = None,
+                     *,
+                     out: dict | None = None) -> dict:
     """Create an MPC command message.
 
     Sent by the external MPC controller (HardwarePlant) directly to the
@@ -208,24 +210,44 @@ def make_mpc_command(ext_mm: list | tuple,
     # Values are passed through as-is (ndarrays, lists, etc.).
     # The _pack() serialiser handles ndarray → list conversion via its
     # default handler, avoiding redundant .tolist() calls on the caller side.
-    msg = {
-        'type': 'mpc_cmd',
-        'ext_mm': ext_mm,
-        'pose_6dof': pose_6dof,
-        'seq': seq,
-    }
-    if motor_rev is not None:
+    #
+    # When ``out`` is provided (hot-loop path from HardwarePlant.command),
+    # the dict is mutated in place instead of freshly allocated.  Every
+    # key is always written so stale fields from a previous tick cannot
+    # leak into a send where the current tick wanted them omitted.
+    msg = out if out is not None else {}
+    msg['type'] = 'mpc_cmd'
+    msg['ext_mm'] = ext_mm
+    msg['pose_6dof'] = pose_6dof
+    msg['seq'] = seq
+    # Optional fields: always write when provided; when None AND this is
+    # a fresh dict, leave the key absent (legacy behaviour).  When ``out``
+    # is provided we ALWAYS set — None explicitly clears the field, which
+    # matches the "stable schema" intent of the pre-alloc path.
+    if motor_rev is not None or out is not None:
         msg['motor_rev'] = motor_rev
-    if vel_mm_s is not None:
+    elif 'motor_rev' in msg:
+        del msg['motor_rev']
+    if vel_mm_s is not None or out is not None:
         msg['vel_mm_s'] = vel_mm_s
-    if acc_mm_s2 is not None:
+    elif 'vel_mm_s' in msg:
+        del msg['vel_mm_s']
+    if acc_mm_s2 is not None or out is not None:
         msg['acc_mm_s2'] = acc_mm_s2
-    if torque_Nm is not None:
+    elif 'acc_mm_s2' in msg:
+        del msg['acc_mm_s2']
+    if torque_Nm is not None or out is not None:
         msg['torque_Nm'] = torque_Nm
-    if cmd_next_mm is not None:
+    elif 'torque_Nm' in msg:
+        del msg['torque_Nm']
+    if cmd_next_mm is not None or out is not None:
         msg['cmd_next_mm'] = cmd_next_mm
-    if cmd_next2_mm is not None:
+    elif 'cmd_next_mm' in msg:
+        del msg['cmd_next_mm']
+    if cmd_next2_mm is not None or out is not None:
         msg['cmd_next2_mm'] = cmd_next2_mm
+    elif 'cmd_next2_mm' in msg:
+        del msg['cmd_next2_mm']
     return msg
 
 

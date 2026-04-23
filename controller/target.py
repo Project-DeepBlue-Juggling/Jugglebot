@@ -692,9 +692,22 @@ class StaticTargetSource:
         # W5: prev-reference tracking for warm-start invalidation hint.
         self._prev_ref_horizon_end_pose: np.ndarray | None = None
         self._prev_ref_horizon_end_twist: np.ndarray | None = None
+        # W4b: pre-allocated TargetCommand.  ``update`` mutates the
+        # fields in place and returns the same instance every tick —
+        # consumers read synchronously, so aliasing is safe.  See
+        # ``controller/HOT_LOOP_CONTRACT.md`` for the
+        # "new TargetSource" template.
+        self._tc = TargetCommand(
+            target_pose=self._target,
+            ref_events=None,
+            boost_vel_weights=True,
+            warm_start_valid=True,
+        )
 
     def update(self, sim_time: float, state: Any) -> TargetCommand:
-        prev_target = self._target.copy()
+        # W4b: dead ``prev_target = self._target.copy()`` removed — the
+        # variable was never read.  Schedule advance is now the only
+        # work in the non-recompute fast path.
         for t, pose in self._schedule:
             if sim_time >= t:
                 self._target = pose
@@ -725,12 +738,12 @@ class StaticTargetSource:
             self._prev_ref_horizon_end_pose = new_end_pose.copy()
             self._prev_ref_horizon_end_twist = new_end_twist.copy()
 
-        return TargetCommand(
-            target_pose=self._target,
-            ref_events=self._cached_events,
-            boost_vel_weights=True,
-            warm_start_valid=warm_start_valid,
-        )
+        # W4b: mutate the pre-allocated TargetCommand in place.
+        self._tc.target_pose = self._target
+        self._tc.ref_events = self._cached_events
+        self._tc.boost_vel_weights = True
+        self._tc.warm_start_valid = warm_start_valid
+        return self._tc
 
 
 class AutoSequenceTargetSource:
@@ -776,6 +789,13 @@ class AutoSequenceTargetSource:
         # W5: prev-ref tracking for warm-start invalidation hint.
         self._prev_ref_horizon_end_pose: np.ndarray | None = None
         self._prev_ref_horizon_end_twist: np.ndarray | None = None
+        # W4b: pre-allocated TargetCommand — see StaticTargetSource above.
+        self._tc = TargetCommand(
+            target_pose=self.STOW_POSE,
+            ref_events=None,
+            boost_vel_weights=True,
+            warm_start_valid=True,
+        )
 
     @property
     def done(self) -> bool:
@@ -843,12 +863,12 @@ class AutoSequenceTargetSource:
             self._prev_ref_horizon_end_pose = new_end_pose.copy()
             self._prev_ref_horizon_end_twist = new_end_twist.copy()
 
-        return TargetCommand(
-            target_pose=target,
-            ref_events=self._cached_events,
-            boost_vel_weights=True,
-            warm_start_valid=warm_start_valid,
-        )
+        # W4b: mutate pre-allocated TargetCommand in place.
+        self._tc.target_pose = target
+        self._tc.ref_events = self._cached_events
+        self._tc.boost_vel_weights = True
+        self._tc.warm_start_valid = warm_start_valid
+        return self._tc
 
 
 class WaypointTargetSource:
@@ -886,6 +906,16 @@ class WaypointTargetSource:
         # W5: prev-ref tracking for warm-start invalidation hint.
         self._prev_ref_horizon_end_pose: np.ndarray | None = None
         self._prev_ref_horizon_end_twist: np.ndarray | None = None
+        # W4b: pre-allocated TargetCommand — see StaticTargetSource above.
+        _seed_pose = (waypoints[0][0] if waypoints
+                      else np.zeros(6))
+        self._tc = TargetCommand(
+            target_pose=_seed_pose,
+            arrival_time=None,
+            ref_events=None,
+            boost_vel_weights=True,
+            warm_start_valid=True,
+        )
 
     def update(self, sim_time: float, state: Any) -> TargetCommand:
         while (self._idx + 1 < len(self._waypoints)
@@ -914,10 +944,10 @@ class WaypointTargetSource:
             self._prev_ref_horizon_end_pose = new_end_pose.copy()
             self._prev_ref_horizon_end_twist = new_end_twist.copy()
 
-        return TargetCommand(
-            target_pose=pose,
-            arrival_time=arrival,
-            ref_events=self._cached_events,
-            boost_vel_weights=True,
-            warm_start_valid=warm_start_valid,
-        )
+        # W4b: mutate pre-allocated TargetCommand in place.
+        self._tc.target_pose = pose
+        self._tc.arrival_time = arrival
+        self._tc.ref_events = self._cached_events
+        self._tc.boost_vel_weights = True
+        self._tc.warm_start_valid = warm_start_valid
+        return self._tc

@@ -323,6 +323,13 @@ def run_mpc_loop(
     _OH_SPIKE_THRESHOLD_MS = 15.0
     _dash_sink: list[float] = [0.0]
 
+    # W4c — pre-allocated buffer for pose_6dof_from_state's inline
+    # expansion in the per-tick record-fill path.  Before W4c this was a
+    # fresh np.concatenate alloc every tick; now the runner writes
+    # state.platform_pos_mm / state.platform_rot into a single 6-vector
+    # in place and passes a view.
+    _actual_pose_buf = np.empty(6)
+
     # W5 — GC scheduling on the idle sleep.
     #
     # The hot-loop zero-allocation contract (controller/HOT_LOOP_CONTRACT.md)
@@ -476,12 +483,16 @@ def run_mpc_loop(
             # for kwargs expansion.  log_mpc_step is retained for sim
             # callers that still take the legacy path.
             _rec = logger.next_record()
+            # W4c: inline pose_6dof_from_state into the pre-allocated
+            # buffer so the fill doesn't allocate a fresh (6,) every tick.
+            _actual_pose_buf[:3] = state.platform_pos_mm
+            _actual_pose_buf[3:] = state.platform_rot
             fill_record_from_arrays(
                 _rec,
                 time=state.time,
                 ref_pose=ref_pose,
                 ref_twist=ref_twist if ref_twist is not None else _LOG_ZERO6,
-                actual_pose=pose_6dof_from_state(state),
+                actual_pose=_actual_pose_buf,
                 actual_twist=state.platform_twist,
                 cmd_extensions=cmd,
                 actual_extensions=state.leg_extensions_mm,

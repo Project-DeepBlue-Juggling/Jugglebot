@@ -142,6 +142,10 @@ class TestRefEventsEmission:
         })
         state1 = _state(0.0, (0, 0, 170), (0, 0, 0, 0, 0, 0))
         tc1 = src.update(0.0, state1)
+        # W4b: ZmqTargetSource now returns the same TargetCommand each
+        # tick (mutated in place).  Snapshot ref_events BEFORE the next
+        # update so we can compare list identities.
+        events1 = tc1.ref_events
 
         # Distinct target arrives while plant has drifted and is moving
         ipc.enqueue(TOPIC_MPC_TARGET, {
@@ -151,7 +155,7 @@ class TestRefEventsEmission:
         state2 = _state(0.5, (0, 0, 185), (0, 0, 60, 0, 0, 0))
         tc2 = src.update(0.5, state2)
 
-        assert tc2.ref_events is not tc1.ref_events
+        assert tc2.ref_events is not events1
         ev0 = tc2.ref_events[0]
         # Rebuilt quintic starts at the *live* plant pose+twist at t=0.5
         assert ev0.time == pytest.approx(0.5)
@@ -332,6 +336,9 @@ class TestChangeDetection:
             'arrival_time': 1.0, 'source': 'spacemouse',
         })
         tc_a = src.update(0.0, _state(0.0, (0, 0, 170), (0, 0, 0, 0, 0, 0)))
+        # W4b: snapshot the ref_events list reference before the next
+        # update overwrites the pre-allocated TargetCommand's attribute.
+        events_a = tc_a.ref_events
 
         # New pose
         ipc.enqueue(TOPIC_MPC_TARGET, {
@@ -340,7 +347,7 @@ class TestChangeDetection:
         })
         tc_b = src.update(0.025, _state(0.025, (0, 0, 175), (0, 0, 50, 0, 0, 0)))
 
-        assert tc_b.ref_events is not tc_a.ref_events
+        assert tc_b.ref_events is not events_a
 
 
 # ---------------------------------------------------------------------------

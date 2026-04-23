@@ -139,6 +139,33 @@ class ZmqTargetSource:
         # solve only.
         self._warm_start_valid_hint: bool = True
 
+        # W4b: pre-allocated TargetCommand.  ``update`` returns the same
+        # instance every tick with fields mutated in place.  Also pre-
+        # allocate the single-event terminal-hold list used when the
+        # cached quintic expires (K1–K6 "hold at terminal pose" policy).
+        self._tc = TargetCommand(
+            target_pose=self._target_pose,
+            arrival_time=None,
+            target_twist=None,
+            ref_events=None,
+            warm_start_valid=True,
+        )
+        self._terminal_hold_event = ReferenceEvent(
+            time=0.0,
+            pose=np.empty(6),
+            twist=np.zeros(6),
+            accel=np.zeros(6),
+        )
+        self._terminal_hold_list: List[ReferenceEvent] = [
+            self._terminal_hold_event,
+        ]
+        # W4b: cache of ``self._target_pose.tobytes()``.  Invalidated on
+        # the dirty bit in poll() and in the rejection-fingerprint
+        # comparison below.  Without this the fingerprint tuple
+        # materialises fresh 48-byte bytes every tick just to compare
+        # against _last_rejected_request.
+        self._target_pose_bytes: bytes | None = None
+
     # ------------------------------------------------------------------
     # Properties
     # ------------------------------------------------------------------
@@ -245,6 +272,8 @@ class ZmqTargetSource:
                     self._has_target = True
                     if changed:
                         self._target_dirty = True
+                        # W4b: invalidate cached tobytes() view.
+                        self._target_pose_bytes = None
 
     # ------------------------------------------------------------------
     # TargetSource protocol
@@ -270,20 +299,39 @@ class ZmqTargetSource:
         """
         self.poll()
 
-        # Build a fingerprint of the current request so we can short-circuit
-        # the recompute when the last attempt with this exact request was
-        # rejected (see _last_rejected_request).
-        request_key = (
-            self._target_pose.tobytes(),
-            self._arrival_time,
-            self._source,
-        )
-        recompute = self._has_target and (
-            self._target_dirty
-            or (self._cached_events is None
-                and request_key != self._last_rejected_request)
-        )
+        # W4b: decide recompute without building the fingerprint tuple in
+        # the common case.  When not dirty and cache is populated, we
+        # don't need to look at _last_rejected_request at all — skip the
+        # tobytes() + tuple allocation entirely.
+        recompute = False
+        request_key = None
+        if self._has_target:
+            if self._target_dirty:
+                recompute = True
+            elif self._cached_events is None:
+                # Only now do we need the fingerprint to decide whether
+                # to retry a previously-rejected request.
+                if self._target_pose_bytes is None:
+                    self._target_pose_bytes = self._target_pose.tobytes()
+                request_key = (
+                    self._target_pose_bytes,
+                    self._arrival_time,
+                    self._source,
+                )
+                if request_key != self._last_rejected_request:
+                    recompute = True
         if recompute:
+            # Ensure request_key is populated for the rejection-memo path
+            # below.  When we entered ``recompute=True`` via target_dirty
+            # (not cache-miss), the fingerprint was skipped above.
+            if request_key is None:
+                if self._target_pose_bytes is None:
+                    self._target_pose_bytes = self._target_pose.tobytes()
+                request_key = (
+                    self._target_pose_bytes,
+                    self._arrival_time,
+                    self._source,
+                )
             current_pose = pose_6dof_from_state(state)
             current_twist = np.asarray(state.platform_twist, dtype=float)
             # Catch path: no_stretch=True → reject rather than silently
@@ -357,25 +405,31 @@ class ZmqTargetSource:
 
         # W11: once the cached quintic has expired in real time, hold at
         # its terminal pose (catch-rejection continuity — see Day-2 plan).
+        # W4b: mutate the pre-allocated terminal-hold event + list in
+        # place rather than allocating a fresh single-event list per
+        # tick.  Twist/accel stay at the init-time zeros; only pose and
+        # time need updating.
         ref_events_out = self._cached_events
         if ref_events_out is not None and len(ref_events_out) > 0:
             if sim_time > ref_events_out[-1].time + 1e-6:
                 terminal = ref_events_out[-1]
-                ref_events_out = [ReferenceEvent(
-                    time=sim_time,
-                    pose=terminal.pose.copy(),
-                    twist=np.zeros(6),
-                    accel=np.zeros(6),
-                )]
+                np.copyto(self._terminal_hold_event.pose, terminal.pose)
+                self._terminal_hold_event.time = sim_time
+                # Preserve the zeros already in twist/accel buffers from
+                # __init__; no need to re-zero.
+                ref_events_out = self._terminal_hold_list
 
-        return TargetCommand(
-            target_pose=self._target_pose.copy(),
-            arrival_time=self._arrival_time,
-            target_twist=(self._target_twist.copy()
-                          if self._target_twist is not None else None),
-            ref_events=ref_events_out,
-            warm_start_valid=warm_start_valid_out,
-        )
+        # W4b: mutate the pre-allocated TargetCommand in place.  Fields
+        # that are ndarray references (target_pose, target_twist) are
+        # assigned by REFERENCE — consumers don't mutate, and the
+        # .copy() defensiveness of the pre-W4b code had no call site
+        # justification (grep-verified on every TargetCommand consumer).
+        self._tc.target_pose = self._target_pose
+        self._tc.arrival_time = self._arrival_time
+        self._tc.target_twist = self._target_twist
+        self._tc.ref_events = ref_events_out
+        self._tc.warm_start_valid = warm_start_valid_out
+        return self._tc
 
     # ------------------------------------------------------------------
     # W11: feedback publication helpers

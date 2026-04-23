@@ -69,6 +69,12 @@ _TELEM_STALE_WARN_S = 0.075   # 3x MPC period — log warning
 _TELEM_STALE_HARD_S = 0.125   # 5x MPC period — zero velocities
 _TELEM_STALE_ESTOP_S = 0.5    # 20x MPC period — telemetry definitely lost
 
+# Shared zero-vector used as a read-only default for feedforward channels
+# when the caller doesn't supply one.  Module-level so no per-tick
+# allocation.  Consumers MUST NOT mutate.
+_ZERO6 = np.zeros(6)
+_ZERO6.setflags(write=False)
+
 class HardwarePlant(PlantInterface):
     """Stewart platform plant that communicates with real hardware via IPC.
 
@@ -146,6 +152,11 @@ class HardwarePlant(PlantInterface):
         self._frozen_motor_pos_warned = False
         self._FROZEN_MOTOR_POS_WARN = 20
         self._FROZEN_MOTOR_POS_ESTOP = 40
+        # W4c: buffer for the frozen-motor-pos detector's element-wise
+        # compare.  Replaces a per-tick ``tuple(motor_pos)`` allocation
+        # with an in-place ndarray scan.
+        self._prev_motor_pos_buf = np.empty(6)
+        self._has_prev_motor_pos = False
 
         # FK warm-start: cache last FK result as initial guess for next call.
         # Newton-Raphson converges in 1-2 iterations when warm-started from
@@ -215,6 +226,62 @@ class HardwarePlant(PlantInterface):
         # Let ZMQ sockets settle (PUB bind needs time before first send)
         time.sleep(_ZMQ_CONNECT_SETTLE_S)
 
+        # W4c — pre-allocated buffers and long-lived state for the hot
+        # loop.  Every per-tick ndarray / dict / msgpack.packb input that
+        # was previously built fresh is now mutated in place.  Consumers
+        # of ``get_state()`` MUST read fields synchronously within the
+        # tick — the same PlantState object is returned each call and
+        # its fields are overwritten on the next get_state().  See
+        # ``controller/HOT_LOOP_CONTRACT.md``.
+
+        # Pre-allocated PlantState returned from get_state().  Ndarray
+        # fields live across ticks; scalar fields (time, data_age_s) are
+        # re-assigned each call.
+        self._state = PlantState(
+            leg_extensions_mm=np.zeros(6),
+            leg_velocities_mmps=np.zeros(6),
+            platform_pos_mm=np.zeros(3),
+            platform_rot=np.zeros(3),
+            platform_twist=np.zeros(6),
+            time=0.0,
+            hand_pos_mm=None,
+            hand_vel_mmps=None,
+            data_age_s=None,
+        )
+        # J-normalization scratch buffer (get_state twist-solve path).
+        self._J_norm_buf = np.empty((6, 6))
+        # Per-tick command-side buffers.  HardwarePlant.command overwrites
+        # these via np.copyto / np.subtract(..., out=...).
+        self._cmd_ext_buf = np.empty(6)
+        self._cmd_delta_buf = np.empty(6)
+        self._cmd_motor_rev_buf = np.empty(6)
+        self._cmd_acc_buf = np.empty(6)
+        self._cmd_vel_buf = np.empty(6)
+        # Pre-allocated MPC-command dict with stable keys (value slots
+        # are mutated per tick via the ``out=`` kwarg to make_mpc_command).
+        self._cmd_msg = make_mpc_command(
+            ext_mm=self._cmd_ext_buf,
+            pose_6dof=self._last_pose_6dof,
+            motor_rev=self._cmd_motor_rev_buf,
+            vel_mm_s=self._cmd_vel_buf,
+            acc_mm_s2=self._cmd_acc_buf,
+            torque_Nm=np.zeros(6),
+            seq=0,
+            cmd_next_mm=np.empty(6),
+            cmd_next2_mm=np.empty(6),
+        )
+        # msgpack.Packer with use_bin_type + ndarray default handler.
+        # Pack() reuses its internal buffer between calls — bit-identical
+        # output to msgpack.packb() with the same kwargs (T-R1 guard).
+        from jugglebot.motion.ipc import _ndarray_default
+        self._packer = msgpack.Packer(
+            use_bin_type=True, default=_ndarray_default,
+        )
+        # Pre-allocated send-multipart frame list + topic prefix bytes.
+        # ZMQ copies frames into its own buffers at send() time so it's
+        # safe to reuse the list across calls.
+        self._send_frames: list = [TOPIC_MPC_CMD, b'']
+
         logger.info(
             f"HardwarePlant: PUB bound on {mpc_command_addr}, "
             f"SUB connected to {telemetry_addr}")
@@ -248,7 +315,11 @@ class HardwarePlant(PlantInterface):
             next command (u[2]).  Used with cmd_next_mm for C1-continuous
             Hermite interpolation across segment boundaries.
         """
-        ext_mm = np.asarray(leg_extensions_mm, dtype=float)
+        # W4c: copy caller's ext_mm into our pre-allocated buffer rather
+        # than retaining the caller's array (which is a view into the
+        # MPC's _prev_w_buf and will be overwritten on the next solve).
+        np.copyto(self._cmd_ext_buf, leg_extensions_mm)
+        ext_mm = self._cmd_ext_buf
 
         # Per-leg dead-band: if every leg's cmd change is below one encoder
         # count, hold at the last sent value.  Sub-LSB changes cannot move
@@ -257,22 +328,28 @@ class HardwarePlant(PlantInterface):
         # deltas are far above LSB so this never fires.  Compared against
         # the last SENT value (not the MPC's internal prev_u) so the
         # dead-band tracks the actual command history downstream.
+        # W4c: in-place subtract + abs via pre-allocated delta buffer.
         if self._last_sent_ext_mm is not None:
-            delta = np.abs(ext_mm - self._last_sent_ext_mm)
-            if np.all(delta < self._cmd_deadband_mm):
-                ext_mm = self._last_sent_ext_mm
-                vel_mm_s = np.zeros(6)
+            np.subtract(ext_mm, self._last_sent_ext_mm, out=self._cmd_delta_buf)
+            np.abs(self._cmd_delta_buf, out=self._cmd_delta_buf)
+            if np.all(self._cmd_delta_buf < self._cmd_deadband_mm):
+                # Dead-band fired — overwrite ext_mm with the last-sent
+                # values so the motor guard sees a true hold.
+                np.copyto(ext_mm, self._last_sent_ext_mm)
+                vel_mm_s = _ZERO6
                 cmd_next_mm = ext_mm
                 cmd_next2_mm = ext_mm
                 self._cmd_deadband_hit_count += 1
 
-        motor_rev = ext_mm * self._geom.mm_to_rev
+        # W4c: motor_rev = ext_mm * mm_to_rev via pre-allocated buffer.
+        np.multiply(ext_mm, self._geom.mm_to_rev, out=self._cmd_motor_rev_buf)
+        motor_rev = self._cmd_motor_rev_buf
 
         # Velocity feedforward: prefer MPC-provided forward-looking velocity.
         # Fall back to backward-diff from last measured state when not provided.
         # Default to zero on first command (platform is stationary at boot).
         if vel_mm_s is not None:
-            vel_mm_s = np.asarray(vel_mm_s, dtype=float)
+            np.copyto(self._cmd_vel_buf, vel_mm_s)
         elif self._last_state_ext_mm is not None:
             # Use actual elapsed time for backward-diff (not fixed control_dt)
             if self._prev_cmd_time is not None:
@@ -280,9 +357,12 @@ class HardwarePlant(PlantInterface):
                             self._control_dt * 0.5)
             else:
                 bd_dt = self._control_dt
-            vel_mm_s = (ext_mm - self._last_state_ext_mm) / bd_dt
+            np.subtract(ext_mm, self._last_state_ext_mm,
+                        out=self._cmd_vel_buf)
+            self._cmd_vel_buf /= bd_dt
         else:
-            vel_mm_s = np.zeros(6)
+            self._cmd_vel_buf.fill(0.0)
+        vel_mm_s = self._cmd_vel_buf
 
         # Acceleration feedforward from three-point second difference of
         # consecutive commanded extensions.  Uses actual wall-clock dt
@@ -297,9 +377,12 @@ class HardwarePlant(PlantInterface):
             dt1 = t_now - self._prev_cmd_time
             dt2 = self._prev_cmd_time - self._prev_prev_cmd_time
             avg_dt = max(0.5 * (dt1 + dt2), self._control_dt * 0.5)
-            acc_mm_s2 = (
-                ext_mm - 2.0 * self._prev_cmd_ext_mm
-                + self._prev_prev_cmd_ext_mm) / (avg_dt * avg_dt)
+            # W4c: acc = (ext - 2 prev + prev_prev) / dt², in place.
+            np.multiply(self._prev_cmd_ext_mm, -2.0, out=self._cmd_acc_buf)
+            self._cmd_acc_buf += ext_mm
+            self._cmd_acc_buf += self._prev_prev_cmd_ext_mm
+            self._cmd_acc_buf /= (avg_dt * avg_dt)
+            acc_mm_s2 = self._cmd_acc_buf
 
         # Shift command history (extensions and timestamps).
         # prev→prev_prev is a reference swap (no copy needed — we never
@@ -310,23 +393,35 @@ class HardwarePlant(PlantInterface):
         self._prev_cmd_time = time.perf_counter()
 
         if not self._enable_vel_ff:
-            vel_mm_s = np.zeros(6)
+            self._cmd_vel_buf.fill(0.0)
+            vel_mm_s = self._cmd_vel_buf
         if not self._enable_acc_ff:
-            acc_mm_s2 = np.zeros(6)
+            self._cmd_acc_buf.fill(0.0)
+            acc_mm_s2 = self._cmd_acc_buf
 
+        # W4c: mutate pre-allocated cmd_msg in place via make_mpc_command's
+        # ``out=`` kwarg.  No fresh dict per tick.
         msg = make_mpc_command(
             ext_mm=ext_mm,
             motor_rev=motor_rev,
             pose_6dof=self._last_pose_6dof,
             vel_mm_s=vel_mm_s,
             acc_mm_s2=acc_mm_s2,
-            torque_Nm=self._ff_torque_Nm,
+            torque_Nm=(self._ff_torque_Nm
+                       if self._ff_torque_Nm is not None else _ZERO6),
             seq=self._seq,
             cmd_next_mm=cmd_next_mm,
             cmd_next2_mm=cmd_next2_mm,
+            out=self._cmd_msg,
         )
-        self._pub.send_multipart(
-            _pack(TOPIC_MPC_CMD, msg), flags=zmq.NOBLOCK)
+        # W4c: reuse Packer across ticks (internal buffer reuse), and
+        # mutate the send-multipart frame list in place.  The packed
+        # bytes object is fresh each call — msgpack.Packer allocates one
+        # bytes per pack(), but it's a C-level allocation invisible to
+        # tracemalloc (per contract scope) and can't be avoided without
+        # a full msgpack rewrite.
+        self._send_frames[1] = self._packer.pack(msg)
+        self._pub.send_multipart(self._send_frames, flags=zmq.NOBLOCK)
         self._seq += 1
         # Remember what we actually sent so the next dead-band comparison
         # tracks the live command history, not the MPC's internal prev_u.
@@ -366,36 +461,47 @@ class HardwarePlant(PlantInterface):
         telem_age = (now - self._last_telem_recv_time
                      if self._last_telem_recv_time is not None else None)
 
+        # W4c: mutate the pre-allocated PlantState in place.  State is
+        # shared across ticks — consumers MUST read synchronously within
+        # the tick before the next get_state() overwrites it.
+        state = self._state
+        state.time = t
+        state.data_age_s = telem_age
+
         if self._last_telem is None:
-            return PlantState(
-                leg_extensions_mm=np.zeros(6),
-                leg_velocities_mmps=np.zeros(6),
-                platform_pos_mm=np.zeros(3),
-                platform_rot=np.zeros(3),
-                platform_twist=np.zeros(6),
-                time=t,
-                data_age_s=telem_age,
-            )
+            state.leg_extensions_mm.fill(0.0)
+            state.leg_velocities_mmps.fill(0.0)
+            state.platform_pos_mm.fill(0.0)
+            state.platform_rot.fill(0.0)
+            state.platform_twist.fill(0.0)
+            return state
 
         telem = self._last_telem
 
         # Motor feedback (rev, ODrive convention: 0 = STOW) → extensions (mm)
+        # W4c: np.divide with out= writes into the state buffer.  Input
+        # motor_pos may be a list-of-float (msgpack decode), an ndarray,
+        # or a list-of-ndarray depending on the publisher — np.divide
+        # handles all three via internal broadcasting.
         motor_pos = telem.get('motor_pos')
         motor_vel = telem.get('motor_vel')
+        mm_to_rev = self._geom.mm_to_rev
         if motor_pos is not None:
-            pos_rev = np.array(motor_pos, dtype=float)
-            ext_mm = pos_rev / self._geom.mm_to_rev  # direct: motor_rev / mm_to_rev
+            np.divide(motor_pos, mm_to_rev, out=state.leg_extensions_mm)
+            ext_mm = state.leg_extensions_mm
             ik_ext_mm = ext_mm  # same thing (q = IK ext after refactor)
             self._last_state_ext_mm = ext_mm.copy()
         else:
+            state.leg_extensions_mm.fill(0.0)
+            ext_mm = state.leg_extensions_mm
             ik_ext_mm = None
-            ext_mm = np.zeros(6)
 
         if motor_vel is not None:
-            vel_rps = np.array(motor_vel, dtype=float)
-            vel_mmps = vel_rps / self._geom.mm_to_rev
+            np.divide(motor_vel, mm_to_rev, out=state.leg_velocities_mmps)
+            vel_mmps = state.leg_velocities_mmps
         else:
-            vel_mmps = np.zeros(6)
+            state.leg_velocities_mmps.fill(0.0)
+            vel_mmps = state.leg_velocities_mmps
 
         # Compute Cartesian pose from actual motor positions via FK.
         # This closes the feedback loop: the MPC sees where the platform
@@ -428,8 +534,12 @@ class HardwarePlant(PlantInterface):
                 self._fk_fail_count = 0
                 self._fk_ever_succeeded = True
                 self._last_fk_iterations = leg_lengths_to_pose.last_iterations
-                platform_pos_mm = pos_offset
-                platform_rot = rot_vec
+                # W4c: copy into pre-allocated state buffers instead of
+                # re-pointing to the fresh FK outputs (which would keep
+                # them alive as state fields and prevent refcount free
+                # on the next tick).
+                np.copyto(state.platform_pos_mm, pos_offset)
+                np.copyto(state.platform_rot, rot_vec)
             except RuntimeError:
                 self._fk_fail_count += 1
                 logger.warning(
@@ -442,12 +552,16 @@ class HardwarePlant(PlantInterface):
                         f"FK failed {self._fk_fail_count} consecutive times "
                         "— triggering e-stop")
                     self.estop(reason='fk_convergence_failure')
-                platform_pos_mm = self._last_measured_pose[:3].copy()
-                platform_rot = self._last_measured_pose[3:6].copy()
+                # W4c: in-place copy from last_measured_pose slice into
+                # the state buffers — avoids fresh .copy() allocations.
+                np.copyto(state.platform_pos_mm, self._last_measured_pose[:3])
+                np.copyto(state.platform_rot, self._last_measured_pose[3:6])
         else:
             # No motor position data — use last measured pose (not MPC prediction)
-            platform_pos_mm = self._last_measured_pose[:3].copy()
-            platform_rot = self._last_measured_pose[3:6].copy()
+            np.copyto(state.platform_pos_mm, self._last_measured_pose[:3])
+            np.copyto(state.platform_rot, self._last_measured_pose[3:6])
+        platform_pos_mm = state.platform_pos_mm
+        platform_rot = state.platform_rot
 
         # E-stop when telemetry is completely lost — prevents runaway commands
         # when MPC keeps seeing stale position feedback and ramping commands.
@@ -473,10 +587,16 @@ class HardwarePlant(PlantInterface):
         #     (motor_guard in DISABLED, encoder counts truly constant)
         #     cannot trip before the MPC has seen a real motion anchor.
         if motor_pos is not None and drain_count > 0:
-            pos_tuple = tuple(motor_pos) if not isinstance(motor_pos, tuple) \
-                else motor_pos
-            prev = getattr(self, '_prev_motor_pos_snapshot', None)
-            if prev is not None and pos_tuple == prev:
+            # W4c: element-wise byte-equality via pre-allocated ndarray
+            # buffer.  ``np.array_equal`` handles list-of-float (msgpack
+            # decode), ndarray, or list-of-ndarray inputs uniformly.
+            # Equivalent safety guarantee to the prior tuple-based
+            # compare — a single float difference on any leg breaks the
+            # match, resetting the counter.
+            prev_buf = self._prev_motor_pos_buf
+            identical = (self._has_prev_motor_pos
+                         and np.array_equal(motor_pos, prev_buf))
+            if identical:
                 self._frozen_motor_pos_count += 1
                 if (not self._frozen_motor_pos_warned
                         and self._frozen_motor_pos_count
@@ -498,11 +618,16 @@ class HardwarePlant(PlantInterface):
             else:
                 self._frozen_motor_pos_count = 0
                 self._frozen_motor_pos_warned = False
-            self._prev_motor_pos_snapshot = pos_tuple
+            # Update the snapshot buffer with this tick's values via
+            # np.copyto, which accepts any array-like input.
+            np.copyto(prev_buf, motor_pos)
+            self._has_prev_motor_pos = True
 
         # Degrade velocity data when telemetry is stale
         if telem_age is not None and telem_age > _TELEM_STALE_HARD_S:
-            vel_mmps = np.zeros(6)
+            # W4c: zero the pre-allocated velocity buffer in place.
+            state.leg_velocities_mmps.fill(0.0)
+            vel_mmps = state.leg_velocities_mmps
             if not self._telem_stale_warned:
                 logger.warning(
                     f"Telemetry stale ({telem_age:.3f}s > "
@@ -527,7 +652,8 @@ class HardwarePlant(PlantInterface):
         # characteristic length), solve the better-conditioned system, then
         # un-scale to recover physical units.  Mathematically identical in
         # exact arithmetic, but distributes floating-point error evenly.
-        platform_twist = np.zeros(6)
+        # W4c: write twist into pre-allocated state buffer in place.
+        state.platform_twist.fill(0.0)
         if motor_vel is not None and np.any(vel_mmps != 0.0):
             try:
                 # Reuse Jacobian from FK when available (avoids recomputation)
@@ -538,26 +664,23 @@ class HardwarePlant(PlantInterface):
                         rot_matrix = rotvec_to_rot_matrix(platform_rot)
                     J = compute_jacobian(platform_pos_mm, rot_matrix, self._geom)
                 L_c = self._geom.plat_radius_mm
-                J_norm = J.copy()
-                J_norm[:, 3:] /= L_c
-                twist_scaled = np.linalg.solve(J_norm, vel_mmps)
+                # W4c: J.copy() + column scaling → in-place copy into
+                # pre-allocated _J_norm_buf.  np.linalg.solve still
+                # allocates its output internally (6-element LAPACK
+                # workspace), so we copy its result into the state
+                # buffer to stay contract-compliant.
+                np.copyto(self._J_norm_buf, J)
+                self._J_norm_buf[:, 3:] /= L_c
+                twist_scaled = np.linalg.solve(self._J_norm_buf, vel_mmps)
                 twist_scaled[3:] /= L_c  # un-scale angular components
-                platform_twist = twist_scaled
+                np.copyto(state.platform_twist, twist_scaled)
                 self._jacobian_singular_warned = False
             except np.linalg.LinAlgError:
                 if not self._jacobian_singular_warned:
                     logger.warning("Jacobian singular — platform twist zeroed")
                     self._jacobian_singular_warned = True
 
-        return PlantState(
-            leg_extensions_mm=ext_mm,
-            leg_velocities_mmps=vel_mmps,
-            platform_pos_mm=platform_pos_mm,
-            platform_rot=platform_rot,
-            platform_twist=platform_twist,
-            time=t,
-            data_age_s=telem_age,
-        )
+        return state
 
     def step(self, dt: float) -> None:
         """No-op — hardware runs in real time."""
