@@ -1742,6 +1742,30 @@ class MPCController:
         return self._last_accel_traj.copy()
 
     @property
+    def last_ref_traj_view(self) -> np.ndarray | None:
+        """(N+1, 6) reference trajectory — non-copying read-only view.
+
+        The returned ndarray aliases the internal ``_ref_traj_buf``
+        pre-allocated in ``_build_reference``.  Callers MUST treat it as
+        read-only and MUST consume it before the next ``solve()``, after
+        which the buffer is overwritten.  Use this on the control-loop
+        hot path; use ``last_ref_traj`` (copy) for snapshot consumers.
+        """
+        return self._last_ref_traj
+
+    @property
+    def last_twist_traj_view(self) -> np.ndarray | None:
+        """(N+1, 6) reference twist trajectory — non-copying view.  See
+        ``last_ref_traj_view`` for semantics."""
+        return self._last_twist_traj
+
+    @property
+    def last_accel_traj_view(self) -> np.ndarray | None:
+        """(N+1, 6) reference accel trajectory — non-copying view.  See
+        ``last_ref_traj_view`` for semantics."""
+        return self._last_accel_traj
+
+    @property
     def consecutive_failures(self) -> int:
         return self._consecutive_failures
 

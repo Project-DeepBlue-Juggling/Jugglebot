@@ -153,8 +153,8 @@ def mpc_solve(mpc, state: PlantState, tc: TargetCommand,
     )
 
     # Use the MPC's own reference for telemetry.
-    mpc_ref = mpc.last_ref_traj
-    mpc_twist = mpc.last_twist_traj
+    mpc_ref = mpc.last_ref_traj_view
+    mpc_twist = mpc.last_twist_traj_view
     if mpc_ref is not None:
         ref_pose = mpc_ref[0]
         ref_twist = mpc_twist[0] if mpc_twist is not None else np.zeros(6)
