@@ -479,7 +479,7 @@ class TelemetryLogger:
         """
         self.flush()
         if not self._path or not os.path.exists(self._path):
-            return list(self._records)  # fallback: return whatever is in memory
+            return list(self.records)  # fallback: return whatever is in memory
         out: list[StepRecord] = []
         field_names = {f.name for f in fields(StepRecord)}
         float_fields = {f.name for f in fields(StepRecord) if f.type == 'float'}
