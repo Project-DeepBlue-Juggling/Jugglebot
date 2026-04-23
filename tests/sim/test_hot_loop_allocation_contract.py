@@ -269,6 +269,225 @@ def test_hot_loop_allocation_contract():
         )
 
 
+# ---------------------------------------------------------------------------
+# Hardware-plant variant.
+#
+# The MuJoCo-path test above cannot see allocations on HardwarePlant's hot
+# path.  Per the W7 audit (Pass 2 #3), 5 per-tick allocation sites in
+# HardwarePlant were invisible to the MuJoCo fixture.  This variant patches
+# ZMQ, pumps synthetic telemetry, wires the production `_on_pre_command`
+# hook (so `plant.set_pose()` is exercised), and re-runs the same
+# tracemalloc bracketing against HardwarePlant.
+#
+# Shares ``THRESHOLD_BYTES`` with the MuJoCo case — same contract.
+# ---------------------------------------------------------------------------
+
+
+def _build_hardware_fixture():
+    """Hardware-plant contract fixture: patched ZMQ, synthetic telemetry.
+
+    Returns (plant, mpc, source, logger) mirroring the MuJoCo fixture's
+    shape so the test body can share the same snapshot-bracketing helpers.
+
+    Design notes:
+        * ZMQ PUB / SUB and ``time.sleep`` are mocked only during plant
+          construction; after init we swap in a lambda for
+          ``plant._pub.send_multipart`` (so MagicMock's call_args_list
+          doesn't grow each tick) and a tiny callable pump for
+          ``plant._sub.recv_multipart`` that alternates frame / Again.
+        * Synthetic telemetry reports motor positions corresponding to the
+          target pose, so the MPC sees a steady-state plant at its goal
+          and settles into a regular command pattern within the warmup
+          window.
+        * FK, jacobian, and rot_matrix conversions run real — not stubbed
+          — so the measured allocation profile matches production.
+    """
+    import zmq as _zmq_real
+    import msgpack as _msgpack
+    from unittest.mock import MagicMock, patch
+
+    # Pre-compute motor positions at TARGET_POSE via MuJoCoPlant's IK so
+    # the synthetic telemetry represents a plant already at its goal.
+    # Done once at fixture build, outside the measurement window.
+    from plant.mujoco_plant import MuJoCoPlant as _SimPlant
+    _sim_tmp = _SimPlant()
+    target_ext_mm = _sim_tmp.pose_to_extensions(TARGET_POSE)
+    target_motor_rev = target_ext_mm * _sim_tmp.geom.mm_to_rev
+    del _sim_tmp
+
+    telem_dict = {
+        'motor_pos': [float(v) for v in target_motor_rev],
+        'motor_vel': [0.0] * 6,
+    }
+    telem_payload = _msgpack.packb(telem_dict, use_bin_type=True)
+    telem_frame = [b'telemetry', telem_payload]
+
+    class _FramePump:
+        """recv_multipart replacement: yields one frame, then raises Again,
+        alternating forever.  One frame per get_state() call — the drain
+        loop in get_state reads one frame and breaks on the next Again.
+        """
+        __slots__ = ('_frame', '_yield_frame')
+
+        def __init__(self, frame):
+            self._frame = frame
+            self._yield_frame = True
+
+        def __call__(self, *args, **kwargs):
+            if self._yield_frame:
+                self._yield_frame = False
+                return self._frame
+            self._yield_frame = True
+            raise _zmq_real.Again()
+
+    pump = _FramePump(telem_frame)
+
+    with patch('controller.hardware_plant.zmq') as mock_zmq, \
+         patch('controller.hardware_plant.time.sleep'):
+        mock_ctx = MagicMock()
+        mock_pub = MagicMock()
+        mock_sub = MagicMock()
+        mock_ctx.socket.side_effect = [mock_pub, mock_sub]
+        mock_zmq.Context.return_value = mock_ctx
+        mock_zmq.Again = _zmq_real.Again
+        mock_zmq.NOBLOCK = 0
+
+        from controller.hardware_plant import HardwarePlant
+        plant = HardwarePlant(control_dt=CONTROL_DT)
+
+    # Replace MagicMock hot methods with plain callables.  MagicMock
+    # records every call in ``call_args_list``, whose backing list grows
+    # per tick — that growth would show up as per-tick allocation in
+    # tracemalloc even though none of it is in the plant's hot path.
+    plant._pub.send_multipart = lambda *a, **k: None
+    plant._sub.recv_multipart = pump
+
+    params = MPCParams(
+        max_cpu_time=2.0,          # sim: generous IPOPT budget
+        max_iter=500,
+        max_leg_vel_mmps=280.0,
+        prime_solver=False,        # cold-start cost absorbed by warmup
+    )
+    mpc = MPCController.from_plant(params, plant)
+    source = StaticTargetSource(
+        schedule=[(0.0, TARGET_POSE)],
+        v_max_mmps=params.max_leg_vel_mmps,
+        tau_s=params.tau,
+    )
+    # pool_size tuned to the warmup window so the pool wraps exactly
+    # once before measurement begins (see MuJoCo fixture for rationale).
+    logger = TelemetryLogger(pool_size=HOT_LOOP_CONTRACT_WARMUP_TICKS)
+    return plant, mpc, source, logger
+
+
+def _production_hooks_for_hardware(snap_hook: _SnapshotHook) -> MpcLoopHooks:
+    """Replicate the hot-loop-relevant hooks from ``run_mpc.py:main()``.
+
+    Critically wires ``_on_pre_command`` so ``plant.set_pose()`` runs
+    every tick — this is the code path that exercises
+    ``hardware_plant.py:725`` (pose copy) and ``:746`` (torque copy),
+    both of which were invisible to the MuJoCo contract fixture.
+
+    The hook closures pre-allocate twist/accel buffers exactly as the
+    production code does (run_mpc.py:449-451).  ``np.divide(..., out=buf)``
+    — NOT ``buf /= scalar`` — to avoid the closure augmented-assign trap
+    fixed in 149070d and documented in HOT_LOOP_CONTRACT.md.
+    """
+    from types import SimpleNamespace
+
+    _twist_buf = np.empty(6)
+    _twist_next_buf = np.empty(6)
+    _accel_buf = np.empty(6)
+
+    def _on_pre_command(plant_, mpc_, tc, cmd, cmd_vel, diag):
+        if not hasattr(plant_, 'set_pose'):
+            return
+        poses = mpc_.predicted_poses_view
+        times = mpc_.predicted_times_view
+        if poses is not None:
+            dt0 = times[1] - times[0]
+            dt1 = times[2] - times[1]
+            np.subtract(poses[1], poses[0], out=_twist_buf)
+            np.divide(_twist_buf, dt0, out=_twist_buf)
+            np.subtract(poses[2], poses[1], out=_twist_next_buf)
+            np.divide(_twist_next_buf, dt1, out=_twist_next_buf)
+            np.subtract(_twist_next_buf, _twist_buf, out=_accel_buf)
+            np.divide(_accel_buf, 0.5 * (dt0 + dt1), out=_accel_buf)
+            plant_.set_pose(poses[0], twist_6dof=_twist_buf,
+                            accel_6dof=_accel_buf)
+
+    _log_extras_ns = SimpleNamespace(fk_iterations=0, ff_torque_max_Nm=0.0)
+
+    def _on_log_extras(plant_):
+        _log_extras_ns.fk_iterations = getattr(
+            plant_, 'last_fk_iterations', 0)
+        _log_extras_ns.ff_torque_max_Nm = getattr(
+            plant_, 'last_ff_torque_max_Nm', 0.0)
+        return _log_extras_ns
+
+    return MpcLoopHooks(
+        on_pre_command=_on_pre_command,
+        on_log_extras=_on_log_extras,
+        on_post_step=snap_hook,
+    )
+
+
+def test_hot_loop_allocation_contract_hardware():
+    """The MPC 40 Hz hot loop MUST allocate < THRESHOLD_BYTES per tick
+    against HardwarePlant as well as MuJoCoPlant.
+
+    Mirrors ``test_hot_loop_allocation_contract`` but runs against
+    HardwarePlant with patched ZMQ, synthetic telemetry, and the
+    production ``_on_pre_command`` hook from run_mpc.py wired so
+    ``plant.set_pose()`` is exercised.
+    """
+    plant, mpc, source, logger = _build_hardware_fixture()
+
+    hook = _SnapshotHook()
+    plant_wrapped = _EarlyExitPlantWrapper(plant, hook)
+    hooks = _production_hooks_for_hardware(hook)
+
+    tracemalloc.start(HOT_LOOP_CONTRACT_TRACEBACK_FRAMES)
+    try:
+        run_mpc_loop(
+            plant_wrapped, mpc, source,
+            duration=_DURATION_S,
+            logger=logger,
+            control_dt=CONTROL_DT,
+            hooks=hooks,
+        )
+    finally:
+        tracemalloc.stop()
+
+    assert hook.snap_before is not None, (
+        f"S1 snapshot never taken (warmup={HOT_LOOP_CONTRACT_WARMUP_TICKS} "
+        f"ticks, reached tick {hook.tick_count}) — loop exited before warmup"
+    )
+    assert hook.snap_after is not None, (
+        f"S2 snapshot never taken (total={_TOTAL_TICKS} ticks, reached tick "
+        f"{hook.tick_count}) — loop exited before measurement window"
+    )
+
+    total_before = _total_bytes(hook.snap_before)
+    total_after = _total_bytes(hook.snap_after)
+    total_delta = total_after - total_before
+    bytes_per_tick = total_delta / HOT_LOOP_CONTRACT_WINDOW_TICKS
+
+    if bytes_per_tick >= THRESHOLD_BYTES:
+        diagnostic = _format_top_n_diagnostic(
+            hook.snap_before, hook.snap_after, n=10,
+        )
+        pytest.fail(
+            f"Hot loop (HardwarePlant path) allocated {bytes_per_tick:.0f} "
+            f"B/tick (threshold: {THRESHOLD_BYTES} B/tick).\n"
+            f"Total delta over {HOT_LOOP_CONTRACT_WINDOW_TICKS} ticks: "
+            f"{total_delta:,} bytes.\n\n"
+            f"{diagnostic}\n\n"
+            f"See controller/HOT_LOOP_CONTRACT.md for the invariant and "
+            f"implementation guidance."
+        )
+
+
 def test_no_in_tick_gc_events_under_w5_disable():
     """Under W5's gc.disable() wrapper, no GC event lands inside any tick.
 

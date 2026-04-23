@@ -97,7 +97,7 @@ class TestCmdDeadband:
         """After disable(), the next command always passes through."""
         plant.command(np.full(6, 100.0))
         plant.disable()
-        assert plant._last_sent_ext_mm is None
+        assert plant._has_last_sent_ext is False
         nudge = 0.5 * plant._cmd_deadband_mm
         plant.command(np.full(6, 100.0) + nudge)
         np.testing.assert_allclose(
@@ -108,7 +108,7 @@ class TestCmdDeadband:
         disable() (audit Fix 3)."""
         plant.command(np.full(6, 100.0))
         plant.estop(reason='test')
-        assert plant._last_sent_ext_mm is None
+        assert plant._has_last_sent_ext is False
 
     def test_deadband_value_from_hw_config(self, plant):
         """The dead-band threshold equals 1/(enc_cpr·mm_to_rev) from config,

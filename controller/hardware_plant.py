@@ -113,22 +113,40 @@ class HardwarePlant(PlantInterface):
         self._dynamics_params = DynamicsParams.from_config()
 
         # Pose to include in MPC commands (for workspace checks).
-        # Set by caller via set_pose() before command().
+        # Set by caller via set_pose() before command().  Stable buffer —
+        # set_pose() np.copyto()s into it rather than rebinding, so the
+        # _cmd_msg['pose_6dof'] alias set up in __init__ stays valid.
         self._last_pose_6dof = np.zeros(6)
 
         # Feedforward: torque_ff from dynamics model (set_pose).
-        # vel_ff computed here from (cmd - q_init) / control_dt and sent via IPC.
-        self._ff_torque_Nm: np.ndarray | None = None
+        # Pre-allocated buffer + has-flag — replaces the prior
+        # ``_ff_torque_Nm: None | ndarray`` sentinel.  The flag gates reads
+        # on the hot path (command() line ~410) so the _ZERO6 default still
+        # applies before the first set_pose() call.
+        self._ff_torque_buf = np.zeros(6)
+        self._has_ff_torque = False
+        # Scratch for set_pose()'s max-abs torque diagnostic (avoids a
+        # per-tick ``np.abs(torque_ff_Nm)`` allocation).
+        self._ff_abs_scratch = np.empty(6)
 
         # Cached actual leg extensions from the last get_state() call.
         # Used as q_init for velocity feedforward: vel = (cmd - q_init) / dt.
-        self._last_state_ext_mm: np.ndarray | None = None
+        # Pre-allocated buffer + has-flag.
+        self._last_state_ext_buf = np.empty(6)
+        self._has_last_state_ext = False
 
         # Extension command history for acceleration feedforward.
         # Tracks the two most recent commanded extensions so command() can
-        # compute acc = (u_curr - 2·u_prev + u_prev_prev) / dt².
-        self._prev_cmd_ext_mm: np.ndarray | None = None
-        self._prev_prev_cmd_ext_mm: np.ndarray | None = None
+        # compute acc = (u_curr - 2·u_prev + u_prev_prev) / dt².  Ring-of-
+        # two fixed buffers — each tick the prev/prev_prev attributes swap
+        # which buffer they point at, then np.copyto writes the new tick's
+        # values into the (just-vacated) buffer.  No allocation per tick.
+        self._cmd_hist_buf_a = np.empty(6)
+        self._cmd_hist_buf_b = np.empty(6)
+        self._prev_cmd_ext_mm = self._cmd_hist_buf_a
+        self._prev_prev_cmd_ext_mm = self._cmd_hist_buf_a
+        self._has_prev_cmd_ext = False
+        self._has_prev_prev_cmd_ext = False
         self._prev_cmd_time: float | None = None
         self._prev_prev_cmd_time: float | None = None
 
@@ -193,7 +211,11 @@ class HardwarePlant(PlantInterface):
         # hardware_config.yaml (jugglebot_odrive_defaults.leg_motor_enc_cpr).
         self._cmd_deadband_mm = 1.0 / (
             _hw_cfg.ODRIVE_LEG_MOTOR_ENC_CPR * self._geom.mm_to_rev)
-        self._last_sent_ext_mm: np.ndarray | None = None
+        # Pre-allocated "last sent" snapshot buffer + has-flag.  Reset via
+        # flag (not None-rebind) in disable() and estop() so the next
+        # command after re-enable always passes through.
+        self._last_sent_ext_buf = np.empty(6)
+        self._has_last_sent_ext = False
         self._cmd_deadband_hit_count = 0  # diagnostic: how often dead-band fires
 
         # ZeroMQ context and sockets
@@ -329,13 +351,13 @@ class HardwarePlant(PlantInterface):
         # the last SENT value (not the MPC's internal prev_u) so the
         # dead-band tracks the actual command history downstream.
         # W4c: in-place subtract + abs via pre-allocated delta buffer.
-        if self._last_sent_ext_mm is not None:
-            np.subtract(ext_mm, self._last_sent_ext_mm, out=self._cmd_delta_buf)
+        if self._has_last_sent_ext:
+            np.subtract(ext_mm, self._last_sent_ext_buf, out=self._cmd_delta_buf)
             np.abs(self._cmd_delta_buf, out=self._cmd_delta_buf)
             if np.all(self._cmd_delta_buf < self._cmd_deadband_mm):
                 # Dead-band fired — overwrite ext_mm with the last-sent
                 # values so the motor guard sees a true hold.
-                np.copyto(ext_mm, self._last_sent_ext_mm)
+                np.copyto(ext_mm, self._last_sent_ext_buf)
                 vel_mm_s = _ZERO6
                 cmd_next_mm = ext_mm
                 cmd_next2_mm = ext_mm
@@ -350,14 +372,14 @@ class HardwarePlant(PlantInterface):
         # Default to zero on first command (platform is stationary at boot).
         if vel_mm_s is not None:
             np.copyto(self._cmd_vel_buf, vel_mm_s)
-        elif self._last_state_ext_mm is not None:
+        elif self._has_last_state_ext:
             # Use actual elapsed time for backward-diff (not fixed control_dt)
             if self._prev_cmd_time is not None:
                 bd_dt = max(time.perf_counter() - self._prev_cmd_time,
                             self._control_dt * 0.5)
             else:
                 bd_dt = self._control_dt
-            np.subtract(ext_mm, self._last_state_ext_mm,
+            np.subtract(ext_mm, self._last_state_ext_buf,
                         out=self._cmd_vel_buf)
             self._cmd_vel_buf /= bd_dt
         else:
@@ -369,8 +391,8 @@ class HardwarePlant(PlantInterface):
         # (not fixed control_dt) so acceleration is correct regardless of
         # MPC loop jitter.
         acc_mm_s2 = None
-        if (self._prev_cmd_ext_mm is not None
-                and self._prev_prev_cmd_ext_mm is not None
+        if (self._has_prev_cmd_ext
+                and self._has_prev_prev_cmd_ext
                 and self._prev_cmd_time is not None
                 and self._prev_prev_cmd_time is not None):
             t_now = time.perf_counter()
@@ -385,10 +407,20 @@ class HardwarePlant(PlantInterface):
             acc_mm_s2 = self._cmd_acc_buf
 
         # Shift command history (extensions and timestamps).
-        # prev→prev_prev is a reference swap (no copy needed — we never
-        # mutate stored arrays).  Only the new entry needs a copy.
+        # Ring-of-two buffer swap: prev_prev takes over prev's buffer, then
+        # prev is re-pointed at the OTHER pre-allocated buffer and the new
+        # tick's data is np.copyto'd into it.  No allocation per tick — the
+        # old _prev_cmd_ext_mm = ext_mm.copy() pattern is replaced by a
+        # pointer swap + in-place write.
         self._prev_prev_cmd_ext_mm = self._prev_cmd_ext_mm
-        self._prev_cmd_ext_mm = ext_mm.copy()
+        self._prev_cmd_ext_mm = (
+            self._cmd_hist_buf_b
+            if self._prev_prev_cmd_ext_mm is self._cmd_hist_buf_a
+            else self._cmd_hist_buf_a
+        )
+        np.copyto(self._prev_cmd_ext_mm, ext_mm)
+        self._has_prev_prev_cmd_ext = self._has_prev_cmd_ext
+        self._has_prev_cmd_ext = True
         self._prev_prev_cmd_time = self._prev_cmd_time
         self._prev_cmd_time = time.perf_counter()
 
@@ -407,8 +439,8 @@ class HardwarePlant(PlantInterface):
             pose_6dof=self._last_pose_6dof,
             vel_mm_s=vel_mm_s,
             acc_mm_s2=acc_mm_s2,
-            torque_Nm=(self._ff_torque_Nm
-                       if self._ff_torque_Nm is not None else _ZERO6),
+            torque_Nm=(self._ff_torque_buf
+                       if self._has_ff_torque else _ZERO6),
             seq=self._seq,
             cmd_next_mm=cmd_next_mm,
             cmd_next2_mm=cmd_next2_mm,
@@ -425,7 +457,11 @@ class HardwarePlant(PlantInterface):
         self._seq += 1
         # Remember what we actually sent so the next dead-band comparison
         # tracks the live command history, not the MPC's internal prev_u.
-        self._last_sent_ext_mm = ext_mm.copy()
+        # In-place copy into the stable buffer; the has-flag makes the
+        # "never sent" → "sent once" transition observable without a
+        # None-rebind.
+        np.copyto(self._last_sent_ext_buf, ext_mm)
+        self._has_last_sent_ext = True
 
     def get_state(self) -> PlantState:
         """Read the latest telemetry from the motor guard.
@@ -490,7 +526,8 @@ class HardwarePlant(PlantInterface):
             np.divide(motor_pos, mm_to_rev, out=state.leg_extensions_mm)
             ext_mm = state.leg_extensions_mm
             ik_ext_mm = ext_mm  # same thing (q = IK ext after refactor)
-            self._last_state_ext_mm = ext_mm.copy()
+            np.copyto(self._last_state_ext_buf, ext_mm)
+            self._has_last_state_ext = True
         else:
             state.leg_extensions_mm.fill(0.0)
             ext_mm = state.leg_extensions_mm
@@ -722,17 +759,22 @@ class HardwarePlant(PlantInterface):
             feedforward).  Providing real acceleration enables platform
             inertia feedforward, reducing PID effort during dynamic motion.
         """
-        self._last_pose_6dof = np.asarray(pose_6dof, dtype=float).copy()
+        # In-place copy into the stable _last_pose_6dof buffer.  The
+        # _cmd_msg['pose_6dof'] dict slot set up in __init__ aliases this
+        # buffer, so command()'s make_mpc_command(out=...) writes the
+        # current value without a fresh ndarray allocation.
+        np.copyto(self._last_pose_6dof, pose_6dof)
 
         if not self._enable_torque_ff:
-            self._ff_torque_Nm = np.zeros(6)
+            self._ff_torque_buf.fill(0.0)
+            self._has_ff_torque = True
             self._last_ff_torque_max_Nm = 0.0
             return
 
         if twist_6dof is None:
-            twist_6dof = np.zeros(6)
+            twist_6dof = _ZERO6
         if accel_6dof is None:
-            accel_6dof = np.zeros(6)
+            accel_6dof = _ZERO6
 
         # Compute torque feedforward using the production dynamics model.
         # Reflected motor inertia is skipped (skip_reflected_inertia=True)
@@ -743,8 +785,16 @@ class HardwarePlant(PlantInterface):
             feedforward_enabled=True,
             skip_reflected_inertia=True)
 
-        self._ff_torque_Nm = torque_ff_Nm
-        self._last_ff_torque_max_Nm = float(np.max(np.abs(torque_ff_Nm)))
+        # np.abs into the scratch buffer first so .max()'s scalar reduction
+        # is the only remaining (C-internal) allocation; then copy the
+        # signed torque into the stable _ff_torque_buf.  The returned
+        # torque_ff_Nm ndarray is a fresh alloc from cartesian_to_motor_-
+        # commands but falls out of scope here, so tracemalloc sees no
+        # retained growth.
+        np.abs(torque_ff_Nm, out=self._ff_abs_scratch)
+        self._last_ff_torque_max_Nm = float(self._ff_abs_scratch.max())
+        np.copyto(self._ff_torque_buf, torque_ff_Nm)
+        self._has_ff_torque = True
 
     def enable(self, timeout_s: float = 2.0) -> None:
         """Send disable+enable and wait for motor feedback telemetry.
@@ -844,8 +894,10 @@ class HardwarePlant(PlantInterface):
             _pack(TOPIC_MODE, msg), flags=zmq.NOBLOCK)
         # Reset dead-band history — the platform may be moved externally while
         # disabled, so the first command after re-enable must pass through
-        # regardless of proximity to the last sent value.
-        self._last_sent_ext_mm = None
+        # regardless of proximity to the last sent value.  Flip the has-flag
+        # rather than rebinding _last_sent_ext_buf to None (which would
+        # defeat the pre-allocation).
+        self._has_last_sent_ext = False
         logger.info("HardwarePlant: sent disable")
 
     def estop(self, reason: str = 'hardware_plant') -> None:
@@ -863,7 +915,7 @@ class HardwarePlant(PlantInterface):
         # Reset dead-band history — mirrors disable().  After E-stop the
         # platform may drift or be repositioned externally; the first command
         # after re-enable must pass through unfiltered.
-        self._last_sent_ext_mm = None
+        self._has_last_sent_ext = False
         # Request clean MPC shutdown. Latched until the plant is closed
         # and rebuilt — there is intentionally no clear method.
         self._estop_requested = True
