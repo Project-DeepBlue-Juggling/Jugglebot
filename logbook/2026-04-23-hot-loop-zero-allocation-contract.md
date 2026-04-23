@@ -24,8 +24,11 @@ files_changed:
   - ros_ws/src/jugglebot/jugglebot/motion/ipc.py
   - run_mpc.py
   - tests/sim/test_hot_loop_allocation_contract.py
+  - tests/sim/test_hardware_plant_deadband.py
   - tests/sim/test_plant.py
   - tests/sim/test_zmq_target.py
+  - sim/analysis/diagnose.py
+  - sim/main.py
 commits:
   - ec08312   # W1–W4d: audit + contract + enforcement + telemetry/runner/hook pre-alloc
   - f38abd3   # W5: gc.disable() wrapper + T-I4 in-tick GC assertion
@@ -38,6 +41,7 @@ commits:
   - 27755eb   # Pass 1 audit: GC-race hardening, dead _dash_sink, doc/comment sync
   - 7c44eb8   # Pass 2 audit: last_{ref,twist,accel}_traj_view — non-copying hot-path reads
   - a60cf49   # Pass 2 audit: HardwarePlant pre-alloc + hardware-path contract test
+  - 3082ff5   # W6 follow-up: diagnose.py chatter floor — sub-LSB IPOPT noise, not GC gaps
 subsystem:
   - controller
   - mpc
@@ -491,13 +495,15 @@ hardware-measured cost documented in `controller/HOT_LOOP_CONTRACT.md`.
 
 #### Known-false-positive flags in the W6 diagnose output
 
-- `Oscillation detected on all 6 legs` — `diagnose.py` computes chatter
-  from `diff(cmd)` sign changes over the full session.  The 4 scheduled-
-  GC 149 ms sleep gaps produce sign changes in the `diff` series that
-  get counted as chatter.  ODrive pos_setpoint scope is clean per the
-  operator — this is a diagnose.py measurement artefact, not a real
-  oscillation.  Filed as a follow-up to harden `diagnose.py` against
-  inter-tick dt anomalies.
+- `Oscillation detected on all 6 legs` — `diagnose.py` computed chatter
+  from `diff(cmd)` sign changes over the full session.  ODrive
+  pos_setpoint scope was clean per the operator — this was a
+  `diagnose.py` measurement artefact, not real oscillation.  **Resolved
+  in commit 3082ff5** (see Pass 1 + Pass 2 close-out below), and the
+  diagnosed root cause turned out to be different from this note's
+  original hypothesis: not the scheduled-GC 149 ms gaps, but sub-LSB
+  IPOPT float-rounding noise in the commanded extensions (see "Post-W7
+  audit", follow-ups section, for the actual mechanism).
 
 ## Outcome
 
@@ -538,6 +544,25 @@ defending the class of failures going forward:
   (commit a60cf49).**  The hardware-path contract test wires the
   production `_on_pre_command` hook, so augmented-assign-on-closure
   bugs in hook code now fail CI at commit time.
+- ~~**`diagnose.py` chatter false-positive on large inter-tick gaps.**~~
+  **Resolved in commit 3082ff5 — but not for the reason originally
+  hypothesised.**  A dt-outlier mask for scheduled-GC gaps (the
+  intended fix) left the per-leg chatter ratios almost unchanged
+  (0.54 → 0.52).  Inspection of the raw W6 data showed the real cause:
+  84% of non-zero `cmd_ext` deltas during a steady-state hold are
+  **sub-micron float-rounding noise from IPOPT** (median |Δ| ≈ 1 µm,
+  well below one encoder LSB at ~15 µm).  `np.sign` promotes any
+  non-zero delta to ±1 regardless of magnitude, and ~half of those
+  flip — producing a spurious chatter ratio of ~0.5 across all legs
+  independent of any real oscillation.  The motor guard's dead-band
+  filters these before CAN transmit, so they are not physically
+  observable; applied the same physical floor (10 µm) to the
+  diagnostic.  The 5×-median dt mask was kept for the
+  `amplitude_growing` envelope regression (GC-gap deltas can still
+  skew the slope fit even though they don't dominate sign-change
+  counting).  Lesson: when a follow-up fix doesn't move the needle,
+  stop and diagnose; don't just claim victory on the hypothesis
+  written down months earlier.
 
 ## Post-W7 audit (Pass 1 + Pass 2, 2026-04-23)
 
