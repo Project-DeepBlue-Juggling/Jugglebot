@@ -141,32 +141,23 @@ def record_from_arrays(
     gc_ms: float = 0.0,
     zmq_drain_count: int = 0,
 ) -> StepRecord:
-    """Build a StepRecord from numpy arrays (convenience helper)."""
-    pos_err = np.linalg.norm(actual_pose[:3] - ref_pose[:3])
-    ori_err = np.degrees(np.linalg.norm(actual_pose[3:] - ref_pose[3:]))
-    lv = leg_velocities if leg_velocities is not None else np.zeros(6)
+    """Build a StepRecord from numpy arrays (convenience helper).
 
-    return StepRecord(
-        time=time,
-        ref_pose_x=ref_pose[0], ref_pose_y=ref_pose[1], ref_pose_z=ref_pose[2],
-        ref_pose_rx=ref_pose[3], ref_pose_ry=ref_pose[4], ref_pose_rz=ref_pose[5],
-        ref_twist_vx=ref_twist[0], ref_twist_vy=ref_twist[1], ref_twist_vz=ref_twist[2],
-        ref_twist_wx=ref_twist[3], ref_twist_wy=ref_twist[4], ref_twist_wz=ref_twist[5],
-        actual_pose_x=actual_pose[0], actual_pose_y=actual_pose[1], actual_pose_z=actual_pose[2],
-        actual_pose_rx=actual_pose[3], actual_pose_ry=actual_pose[4], actual_pose_rz=actual_pose[5],
-        actual_twist_vx=actual_twist[0], actual_twist_vy=actual_twist[1], actual_twist_vz=actual_twist[2],
-        actual_twist_wx=actual_twist[3], actual_twist_wy=actual_twist[4], actual_twist_wz=actual_twist[5],
-        cmd_ext_0=cmd_extensions[0], cmd_ext_1=cmd_extensions[1], cmd_ext_2=cmd_extensions[2],
-        cmd_ext_3=cmd_extensions[3], cmd_ext_4=cmd_extensions[4], cmd_ext_5=cmd_extensions[5],
-        actual_ext_0=actual_extensions[0], actual_ext_1=actual_extensions[1], actual_ext_2=actual_extensions[2],
-        actual_ext_3=actual_extensions[3], actual_ext_4=actual_extensions[4], actual_ext_5=actual_extensions[5],
-        leg_vel_0=lv[0], leg_vel_1=lv[1], leg_vel_2=lv[2],
-        leg_vel_3=lv[3], leg_vel_4=lv[4], leg_vel_5=lv[5],
+    Allocates a fresh ``StepRecord``.  NOT hot-path safe — the 40 Hz MPC
+    loop uses ``fill_record_from_arrays`` against a pool slot instead.
+    This function is retained for sim paths (``sim/main.py``,
+    ``sim/demo_mpc.py``) that predate the pool design.
+    """
+    rec = StepRecord()
+    fill_record_from_arrays(
+        rec, time=time, ref_pose=ref_pose, ref_twist=ref_twist,
+        actual_pose=actual_pose, actual_twist=actual_twist,
+        cmd_extensions=cmd_extensions, actual_extensions=actual_extensions,
+        leg_velocities=leg_velocities,
         hand_cmd_mm=hand_cmd_mm, hand_pos_mm=hand_pos_mm,
         hand_vel_mmps=hand_vel_mmps,
         solve_time_ms=solve_time_ms, solve_status=solve_status,
         cost=cost, constraint_violation=constraint_violation,
-        tracking_error_mm=pos_err, tracking_error_deg=ori_err,
         overhead_ms=overhead_ms, fk_iterations=fk_iterations,
         ff_torque_max_Nm=ff_torque_max_Nm, ipopt_iter=ipopt_iter,
         t_ref_s=t_ref_s,
@@ -175,6 +166,127 @@ def record_from_arrays(
         t_cmd_ms=t_cmd_ms, t_log_ms=t_log_ms,
         gc_ms=gc_ms, zmq_drain_count=zmq_drain_count,
     )
+    return rec
+
+
+_ZERO6 = np.zeros(6)
+
+
+def fill_record_from_arrays(
+    rec: StepRecord,
+    *,
+    time: float,
+    ref_pose: np.ndarray,
+    ref_twist: np.ndarray,
+    actual_pose: np.ndarray,
+    actual_twist: np.ndarray,
+    cmd_extensions: np.ndarray,
+    actual_extensions: np.ndarray,
+    leg_velocities: np.ndarray | None = None,
+    hand_cmd_mm: float = 0.0,
+    hand_pos_mm: float = 0.0,
+    hand_vel_mmps: float = 0.0,
+    solve_time_ms: float = 0.0,
+    solve_status: str = "n/a",
+    cost: float = 0.0,
+    constraint_violation: float = 0.0,
+    overhead_ms: float = 0.0,
+    fk_iterations: int = 0,
+    ff_torque_max_Nm: float = 0.0,
+    ipopt_iter: int = 0,
+    t_ref_s: float = 0.0,
+    t_getstate_ms: float = 0.0,
+    t_target_ms: float = 0.0,
+    t_solve_setup_ms: float = 0.0,
+    t_hooks_ms: float = 0.0,
+    t_cmd_ms: float = 0.0,
+    t_log_ms: float = 0.0,
+    gc_ms: float = 0.0,
+    zmq_drain_count: int = 0,
+) -> None:
+    """Fill a pre-existing StepRecord from numpy arrays — hot-loop body.
+
+    Mutates ``rec`` in place; does not allocate a new StepRecord.  Used
+    by ``run_mpc_loop`` against a pool slot from ``logger.next_record()``.
+
+    Field-by-field assignment uses ``float(arr[i])`` rather than
+    ``arr[i]`` so the slot stores Python floats (size ~16 B) rather
+    than numpy.float64 scalars (size ~32 B).  Once the pool wraps each
+    new assignment frees the prior Python float, keeping tracemalloc
+    net-growth flat.
+    """
+    lv = leg_velocities if leg_velocities is not None else _ZERO6
+
+    # Tracking-error reduction uses temporaries that are immediately
+    # freed (refcount=0 at end of statement) — cheap.
+    pos_err = float(np.linalg.norm(actual_pose[:3] - ref_pose[:3]))
+    ori_err = float(np.degrees(np.linalg.norm(actual_pose[3:] - ref_pose[3:])))
+
+    rec.time = time
+    rec.ref_pose_x = float(ref_pose[0])
+    rec.ref_pose_y = float(ref_pose[1])
+    rec.ref_pose_z = float(ref_pose[2])
+    rec.ref_pose_rx = float(ref_pose[3])
+    rec.ref_pose_ry = float(ref_pose[4])
+    rec.ref_pose_rz = float(ref_pose[5])
+    rec.ref_twist_vx = float(ref_twist[0])
+    rec.ref_twist_vy = float(ref_twist[1])
+    rec.ref_twist_vz = float(ref_twist[2])
+    rec.ref_twist_wx = float(ref_twist[3])
+    rec.ref_twist_wy = float(ref_twist[4])
+    rec.ref_twist_wz = float(ref_twist[5])
+    rec.actual_pose_x = float(actual_pose[0])
+    rec.actual_pose_y = float(actual_pose[1])
+    rec.actual_pose_z = float(actual_pose[2])
+    rec.actual_pose_rx = float(actual_pose[3])
+    rec.actual_pose_ry = float(actual_pose[4])
+    rec.actual_pose_rz = float(actual_pose[5])
+    rec.actual_twist_vx = float(actual_twist[0])
+    rec.actual_twist_vy = float(actual_twist[1])
+    rec.actual_twist_vz = float(actual_twist[2])
+    rec.actual_twist_wx = float(actual_twist[3])
+    rec.actual_twist_wy = float(actual_twist[4])
+    rec.actual_twist_wz = float(actual_twist[5])
+    rec.cmd_ext_0 = float(cmd_extensions[0])
+    rec.cmd_ext_1 = float(cmd_extensions[1])
+    rec.cmd_ext_2 = float(cmd_extensions[2])
+    rec.cmd_ext_3 = float(cmd_extensions[3])
+    rec.cmd_ext_4 = float(cmd_extensions[4])
+    rec.cmd_ext_5 = float(cmd_extensions[5])
+    rec.actual_ext_0 = float(actual_extensions[0])
+    rec.actual_ext_1 = float(actual_extensions[1])
+    rec.actual_ext_2 = float(actual_extensions[2])
+    rec.actual_ext_3 = float(actual_extensions[3])
+    rec.actual_ext_4 = float(actual_extensions[4])
+    rec.actual_ext_5 = float(actual_extensions[5])
+    rec.leg_vel_0 = float(lv[0])
+    rec.leg_vel_1 = float(lv[1])
+    rec.leg_vel_2 = float(lv[2])
+    rec.leg_vel_3 = float(lv[3])
+    rec.leg_vel_4 = float(lv[4])
+    rec.leg_vel_5 = float(lv[5])
+    rec.hand_cmd_mm = hand_cmd_mm
+    rec.hand_pos_mm = hand_pos_mm
+    rec.hand_vel_mmps = hand_vel_mmps
+    rec.solve_time_ms = solve_time_ms
+    rec.solve_status = solve_status
+    rec.cost = cost
+    rec.constraint_violation = constraint_violation
+    rec.tracking_error_mm = pos_err
+    rec.tracking_error_deg = ori_err
+    rec.overhead_ms = overhead_ms
+    rec.fk_iterations = fk_iterations
+    rec.ff_torque_max_Nm = ff_torque_max_Nm
+    rec.ipopt_iter = ipopt_iter
+    rec.t_ref_s = t_ref_s
+    rec.t_getstate_ms = t_getstate_ms
+    rec.t_target_ms = t_target_ms
+    rec.t_solve_setup_ms = t_solve_setup_ms
+    rec.t_hooks_ms = t_hooks_ms
+    rec.t_cmd_ms = t_cmd_ms
+    rec.t_log_ms = t_log_ms
+    rec.gc_ms = gc_ms
+    rec.zmq_drain_count = zmq_drain_count
 
 
 class TelemetryLogger:
@@ -185,47 +297,161 @@ class TelemetryLogger:
     end-of-run summary stats.  Use :meth:`load` to read the full history back
     from the CSV after the run.
 
-    Usage::
+    Hot-loop zero-allocation contract:
+        In steady state, ``next_record()`` + ``fill_record_from_arrays()``
+        recycles records from a pre-allocated pool of ``_POOL_SIZE`` slots.
+        Per-tick allocation is limited to the Python floats written into
+        pool slots; once the pool wraps (every ``_POOL_SIZE`` ticks), new
+        assignments free the prior floats and retention stays flat.  See
+        ``controller/HOT_LOOP_CONTRACT.md``.
+
+    Legacy API::
 
         logger = TelemetryLogger("logs/run_001.csv")
         for step in sim_loop:
-            logger.append(record)
-        logger.flush()          # writes remaining records to disk
-        all_records = logger.load()  # read full history from CSV
+            logger.append(record)    # copies into pool; still allocates
+        logger.flush()
+        all_records = logger.load()
+
+    Hot-loop API::
+
+        logger = TelemetryLogger("logs/run_001.csv")
+        for step in sim_loop:
+            rec = logger.next_record()
+            fill_record_from_arrays(rec, time=..., ref_pose=..., ...)
+        logger.flush()
     """
 
-    _FLUSH_EVERY: int = 5000   # records between disk writes
-    _TAIL_SIZE: int = 200      # keep last N in memory for summary stats
+    # Default pool size — sized to cover any existing test
+    # (max duration 3.0 s × 40 Hz = 120 ticks) plus generous headroom.
+    # 500 records at ~1.2 KB each = ~600 KB resident memory.  Production
+    # path= runs flush to disk every POOL_SIZE records, i.e. every
+    # 12.5 s at 40 Hz — crash-safety window is bounded.
+    _DEFAULT_POOL_SIZE: int = 500
 
-    def __init__(self, path: str | None = None):
-        self._records: list[StepRecord] = []
+    # Retained for backward-compat with test code that references the
+    # attribute.  After the pool refactor it's equal to the effective
+    # pool size.
+    _TAIL_SIZE: int = 500
+
+    def __init__(self, path: str | None = None, *, pool_size: int | None = None):
+        """Create a telemetry logger backed by a pre-allocated record pool.
+
+        Parameters
+        ----------
+        path : str or None
+            CSV output path.  None = in-memory only (no disk flush).
+        pool_size : int or None
+            Number of pre-allocated StepRecord slots.  Drives both the
+            in-memory record window and the disk-flush cadence (when
+            path is set, one flush per pool-wrap).  The hot-loop zero-
+            allocation contract requires pool_size ≤ warmup ticks for
+            the measurement window to see a steady-state wrap — see
+            ``controller/HOT_LOOP_CONTRACT.md``.
+            None = ``_DEFAULT_POOL_SIZE`` (500).
+        """
+        ps = int(pool_size) if pool_size is not None else self._DEFAULT_POOL_SIZE
+        if ps < 1:
+            raise ValueError(f"pool_size must be >= 1 (got {ps})")
+        # Pre-allocate the record pool once.  Each slot is a StepRecord
+        # with its default zero values; ``next_record()`` returns slots
+        # for in-place mutation and the caller is responsible for
+        # overwriting every field relevant to the record.
+        self._pool_size: int = ps
+        self._pool: list[StepRecord] = [StepRecord() for _ in range(ps)]
         self._path = path
         self._total_count: int = 0
+        self._write_idx: int = 0     # monotonic — number of records ever written
+        self._flushed_idx: int = 0   # monotonic — number already persisted to disk
         self._header_written: bool = False
-        self._flushed_tail: int = 0  # number of leading records already on disk
+
+    @property
+    def pool_size(self) -> int:
+        """Number of records retained in memory (rolling window size)."""
+        return self._pool_size
+
+    # ------------------------------------------------------------------
+    # Hot-loop-contract API
+    # ------------------------------------------------------------------
+
+    def next_record(self) -> StepRecord:
+        """Return the next pool slot for in-place population — hot-loop body.
+
+        Advances the monotonic write cursor.  The caller MUST fill every
+        relevant field of the returned record before the next call to
+        ``next_record()`` (the slot currently holds stale data from a
+        previous cycle).  When ``path`` is set, triggers a disk flush
+        just before the cursor would overwrite records not yet on disk.
+
+        Contract-test relevance: this is the sole record-source call on
+        the hot path.  Pre-allocation guarantees the slot is already
+        allocated, so the only per-tick allocations inside the fill path
+        are the Python floats being assigned into the slot's attributes.
+        Once the pool wraps (after ``_POOL_SIZE`` writes), those
+        allocations are matched by frees of the previous cycle's floats,
+        so tracemalloc sees no net growth.
+        """
+        # Flush before we overwrite records not yet on disk.  Skips when
+        # nothing needs flushing (path=None, or we haven't filled the
+        # pool yet).
+        if (self._path
+                and self._write_idx - self._flushed_idx >= self._pool_size):
+            self._flush_batch()
+        slot = self._write_idx % self._pool_size
+        self._write_idx += 1
+        self._total_count += 1
+        return self._pool[slot]
+
+    def last_record(self) -> StepRecord | None:
+        """Return the most recently written pool slot, or None if empty.
+
+        Hot-loop-safe read path for the runner's post-log ``t_log_ms``
+        stamp.  Does not allocate (unlike ``logger.records[-1]`` which
+        materialises a fresh list).
+        """
+        if self._write_idx == 0:
+            return None
+        return self._pool[(self._write_idx - 1) % self._pool_size]
+
+    # ------------------------------------------------------------------
+    # Legacy API (backward-compat)
+    # ------------------------------------------------------------------
 
     def append(self, record: StepRecord) -> None:
-        self._records.append(record)
-        self._total_count += 1
-        if self._path and len(self._records) >= self._FLUSH_EVERY:
-            self._flush_batch()
+        """Copy an externally-constructed StepRecord into the pool.
+
+        Allocates (field-by-field copy) and is NOT contract-compliant.
+        Retained so sim/demo_mpc.py and sim/main.py continue to work
+        without simultaneous migration.  Hot-path callers (run_mpc_loop)
+        MUST use ``next_record()`` + ``fill_record_from_arrays()``.
+        """
+        slot = self.next_record()
+        for f in fields(StepRecord):
+            setattr(slot, f.name, getattr(record, f.name))
 
     @property
     def records(self) -> list[StepRecord]:
-        """Recent records (rolling window).  Use load() for full history."""
-        return self._records
+        """Recent records, oldest first.  Fresh list on every read.
+
+        Safe to use after the run ends; NOT hot-path safe (list alloc).
+        The hot-loop code path uses ``last_record()`` instead.
+        """
+        start = max(0, self._write_idx - self._pool_size)
+        return [self._pool[i % self._pool_size]
+                for i in range(start, self._write_idx)]
 
     @property
     def total_count(self) -> int:
         """Total number of records appended (including those already flushed)."""
         return self._total_count
 
+    # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
+
     def _flush_batch(self) -> None:
-        """Append new records to CSV, then trim to tail."""
-        if not self._path or not self._records:
-            return
-        new_records = self._records[self._flushed_tail:]
-        if not new_records:
+        """Write pool records that haven't yet been persisted to disk."""
+        if not self._path or self._flushed_idx >= self._write_idx:
             return
         os.makedirs(os.path.dirname(self._path) or '.', exist_ok=True)
         field_names = [f.name for f in fields(StepRecord)]
@@ -235,14 +461,13 @@ class TelemetryLogger:
             if not self._header_written:
                 writer.writeheader()
                 self._header_written = True
-            for rec in new_records:
-                writer.writerow(asdict(rec))
-        self._records = self._records[-self._TAIL_SIZE:]
-        self._flushed_tail = len(self._records)
+            for i in range(self._flushed_idx, self._write_idx):
+                writer.writerow(asdict(self._pool[i % self._pool_size]))
+        self._flushed_idx = self._write_idx
 
     def flush(self) -> None:
         """Flush remaining in-memory records to disk."""
-        if self._path and self._records:
+        if self._path and self._write_idx > self._flushed_idx:
             self._flush_batch()
 
     def load(self) -> list[StepRecord]:

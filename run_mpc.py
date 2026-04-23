@@ -41,6 +41,7 @@ import datetime
 import os
 import sys
 import time
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -442,6 +443,13 @@ def main():
     # --- Hardware hooks ---
     _fb_last_arrival = [None]
 
+    # Hot-loop contract: pre-allocate buffers in the hook closure so
+    # the per-tick ``_on_pre_command`` call does not allocate.  Each
+    # tick overwrites these in place via ``np.subtract(..., out=buf)``.
+    _twist_buf = np.empty(6)
+    _twist_next_buf = np.empty(6)
+    _accel_buf = np.empty(6)
+
     def _on_target_override(state: PlantState, tc: TargetCommand) -> TargetCommand:
         """Hold-in-place when telemetry is stale."""
         if (state.data_age_s is not None
@@ -453,9 +461,10 @@ def main():
         return tc
 
     def _on_pre_command(plant_, mpc_, tc, cmd, cmd_vel, diag):
-        """Set feedforward torques from MPC's predicted trajectory.
+        """Set feedforward torques from MPC's predicted trajectory — hot-loop body.
 
         No-op on MuJoCoPlant which has no feedforward channel (sim dry-run).
+        Uses pre-allocated twist/accel buffers from the enclosing closure.
         """
         if not hasattr(plant_, 'set_pose'):
             return
@@ -464,10 +473,16 @@ def main():
         if poses is not None:
             dt0 = times[1] - times[0]
             dt1 = times[2] - times[1]
-            twist = (poses[1] - poses[0]) / dt0
-            twist_next = (poses[2] - poses[1]) / dt1
-            accel = (twist_next - twist) / (0.5 * (dt0 + dt1))
-            plant_.set_pose(poses[0], twist_6dof=twist, accel_6dof=accel)
+            # twist = (poses[1] - poses[0]) / dt0, in place
+            np.subtract(poses[1], poses[0], out=_twist_buf)
+            _twist_buf /= dt0
+            # twist_next = (poses[2] - poses[1]) / dt1, in place
+            np.subtract(poses[2], poses[1], out=_twist_next_buf)
+            _twist_next_buf /= dt1
+            # accel = (twist_next - twist) / (0.5 * (dt0 + dt1)), in place
+            np.subtract(_twist_next_buf, _twist_buf, out=_accel_buf)
+            _accel_buf /= 0.5 * (dt0 + dt1)
+            plant_.set_pose(poses[0], twist_6dof=_twist_buf, accel_6dof=_accel_buf)
 
     def _on_post_solve(tc, diag):
         """Publish accept/reject feedback for catch targets."""
@@ -485,11 +500,16 @@ def main():
             tc.arrival_time, accepted, 'catch', violations))
         _fb_last_arrival[0] = tc.arrival_time
 
+    # Hot-loop contract: pre-allocate the namespace once.  The runner
+    # reads fields via ``getattr`` so updating in place is safe.
+    _log_extras_ns = SimpleNamespace(fk_iterations=0, ff_torque_max_Nm=0.0)
+
     def _on_log_extras(plant_):
-        return {
-            'fk_iterations': getattr(plant_, 'last_fk_iterations', 0),
-            'ff_torque_max_Nm': getattr(plant_, 'last_ff_torque_max_Nm', 0.0),
-        }
+        """hot-loop body — mutates pre-allocated namespace, returns it."""
+        _log_extras_ns.fk_iterations = getattr(plant_, 'last_fk_iterations', 0)
+        _log_extras_ns.ff_torque_max_Nm = getattr(
+            plant_, 'last_ff_torque_max_Nm', 0.0)
+        return _log_extras_ns
 
     hooks = MpcLoopHooks(
         on_target_override=_on_target_override,

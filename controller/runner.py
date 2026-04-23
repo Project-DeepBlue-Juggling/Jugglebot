@@ -21,9 +21,11 @@ from typing import Any, Callable, Optional
 
 import numpy as np
 
+from types import SimpleNamespace
+
 from .plant import PlantInterface, PlantState
 from .target import TargetCommand, TargetSource, pose_6dof_from_state
-from .telemetry import TelemetryLogger, record_from_arrays
+from .telemetry import TelemetryLogger, fill_record_from_arrays, record_from_arrays
 
 
 # ---------------------------------------------------------------------------
@@ -167,22 +169,30 @@ def mpc_solve(mpc, state: PlantState, tc: TargetCommand,
 # Telemetry helpers
 # ---------------------------------------------------------------------------
 
+_LOG_ZERO6 = np.zeros(6)
+
+
 def log_mpc_step(logger: TelemetryLogger, state: PlantState,
                  ref_pose: np.ndarray, cmd_ext: np.ndarray,
                  diag: dict, ref_twist: np.ndarray | None = None,
                  dashboard=None, t_ref_s: float = 0.0,
                  dashboard_time_sink: list[float] | None = None,
                  **extras) -> None:
-    """Record one telemetry step (MPC mode).
+    """Record one telemetry step (MPC mode) — hot-loop body.
+
+    Uses the pool-recycle path: ``logger.next_record()`` returns a
+    pre-allocated slot, ``fill_record_from_arrays`` mutates it in place.
 
     ``dashboard_time_sink``: optional one-element list receiving the
     dashboard broadcast duration in ms, so callers can subtract it from
     t_log_ms and attribute the two costs separately.  Leave None to skip.
     """
-    record = record_from_arrays(
+    record = logger.next_record()
+    fill_record_from_arrays(
+        record,
         time=state.time,
         ref_pose=ref_pose,
-        ref_twist=ref_twist if ref_twist is not None else np.zeros(6),
+        ref_twist=ref_twist if ref_twist is not None else _LOG_ZERO6,
         actual_pose=pose_6dof_from_state(state),
         actual_twist=state.platform_twist,
         cmd_extensions=cmd_ext,
@@ -198,7 +208,6 @@ def log_mpc_step(logger: TelemetryLogger, state: PlantState,
         t_ref_s=t_ref_s,
         **extras,
     )
-    logger.append(record)
     if dashboard is not None:
         t_dash0 = _time.perf_counter()
         dashboard.broadcast(record)
@@ -417,32 +426,65 @@ def run_mpc_loop(
 
             # --- telemetry logging (record build + CSV append + dashboard) ---
             _drain_count = int(getattr(plant, 'last_drain_count', 0))
-            extras = {
-                'overhead_ms': _overhead_ms,
-                't_getstate_ms': _t_getstate_ms,
-                't_target_ms': _t_target_ms,
-                't_solve_setup_ms': _t_solve_setup_ms,
-                't_hooks_ms': _t_hooks_ms,
-                't_cmd_ms': _t_cmd_ms,
-                'gc_ms': _gc_ms,
-                'zmq_drain_count': _drain_count,
-            }
+            _fk_iterations = 0
+            _ff_torque_max_Nm = 0.0
             if hooks.on_log_extras is not None:
-                extras.update(hooks.on_log_extras(plant))
+                _hook_extras = hooks.on_log_extras(plant)
+                # Hook may return a dict (legacy) or a SimpleNamespace
+                # (contract-compliant pre-alloc).  Read via getattr/dict
+                # so either works; unknown keys are ignored.
+                if isinstance(_hook_extras, dict):
+                    _fk_iterations = _hook_extras.get('fk_iterations', 0)
+                    _ff_torque_max_Nm = _hook_extras.get('ff_torque_max_Nm', 0.0)
+                else:
+                    _fk_iterations = getattr(_hook_extras, 'fk_iterations', 0)
+                    _ff_torque_max_Nm = getattr(_hook_extras, 'ff_torque_max_Nm', 0.0)
 
             _t_log_start = _time.perf_counter()
             _dash_sink[0] = 0.0
-            log_mpc_step(logger, state, ref_pose, cmd, diag,
-                         ref_twist=ref_twist, dashboard=dashboard,
-                         t_ref_s=t_ref,
-                         dashboard_time_sink=_dash_sink,
-                         **extras)
+            # Inline the fill-record path so no ``extras`` dict is built
+            # for kwargs expansion.  log_mpc_step is retained for sim
+            # callers that still take the legacy path.
+            _rec = logger.next_record()
+            fill_record_from_arrays(
+                _rec,
+                time=state.time,
+                ref_pose=ref_pose,
+                ref_twist=ref_twist if ref_twist is not None else _LOG_ZERO6,
+                actual_pose=pose_6dof_from_state(state),
+                actual_twist=state.platform_twist,
+                cmd_extensions=cmd,
+                actual_extensions=state.leg_extensions_mm,
+                leg_velocities=state.leg_velocities_mmps,
+                hand_pos_mm=(state.hand_pos_mm
+                             if state.hand_pos_mm is not None else 0.0),
+                hand_vel_mmps=(state.hand_vel_mmps
+                               if state.hand_vel_mmps is not None else 0.0),
+                solve_time_ms=diag.get('solve_time_ms', 0.0),
+                solve_status=diag.get('status', 'n/a'),
+                cost=diag.get('cost', 0.0),
+                constraint_violation=diag.get('constraint_violation', 0.0),
+                ipopt_iter=diag.get('iter_count', 0),
+                t_ref_s=t_ref,
+                overhead_ms=_overhead_ms,
+                t_getstate_ms=_t_getstate_ms,
+                t_target_ms=_t_target_ms,
+                t_solve_setup_ms=_t_solve_setup_ms,
+                t_hooks_ms=_t_hooks_ms,
+                t_cmd_ms=_t_cmd_ms,
+                gc_ms=_gc_ms,
+                zmq_drain_count=_drain_count,
+                fk_iterations=_fk_iterations,
+                ff_torque_max_Nm=_ff_torque_max_Nm,
+            )
+            if dashboard is not None:
+                _t_dash0 = _time.perf_counter()
+                dashboard.broadcast(_rec)
+                _dash_sink[0] = (_time.perf_counter() - _t_dash0) * 1000.0
             _t_log_ms = (_time.perf_counter() - _t_log_start) * 1000.0
-            # Stamp the just-appended record with the measured log duration.
-            # logger.records[-1] is the row we just wrote; safe to mutate
-            # because _flush_batch() only runs on the next append boundary.
-            if logger.records:
-                logger.records[-1].t_log_ms = _t_log_ms
+            # Stamp the just-written record with the measured log duration.
+            # Pool slot is still held by _rec — no list[-1] allocation.
+            _rec.t_log_ms = _t_log_ms
 
             # Stdout diagnostic: attribute overhead when it spikes.  Quiet on
             # steady-state ticks.  `other` lumps residual time (pacing math,

@@ -138,10 +138,10 @@ class TestTelemetryLogger:
         """Auto-flush trims memory; load() recovers the full history."""
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, 'big.csv')
-            logger = TelemetryLogger(path)
-            # Force a low threshold so we don't need 5000 records
-            logger._FLUSH_EVERY = 50
-            logger._TAIL_SIZE = 10
+            # Small pool so the rolling-window behaviour kicks in after
+            # a handful of records — avoids needing to append the full
+            # default pool (500) to exercise the trim path.
+            logger = TelemetryLogger(path, pool_size=50)
 
             for i in range(120):
                 rec = record_from_arrays(
@@ -155,7 +155,7 @@ class TestTelemetryLogger:
                 )
                 logger.append(rec)
 
-            # Rolling window should be trimmed
+            # Rolling window should be bounded by pool_size
             assert len(logger.records) <= 50
             assert logger.total_count == 120
 
