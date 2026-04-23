@@ -249,9 +249,10 @@ whether the snapshot is really needed or whether a pre-allocated twin
 buffer + ``np.copyto`` suffices.
 
 **Pool-recycle instead of append.**  ``TelemetryLogger``'s record pool
-pre-allocates 5200 ``StepRecord``s; ``next_record()`` hands out the
-next slot for in-place population; ``_flush_batch`` iterates the
-filled prefix and writes to CSV.
+pre-allocates 500 ``StepRecord``s (``_DEFAULT_POOL_SIZE`` in
+``controller/telemetry.py``); ``next_record()`` hands out the next
+slot for in-place population; ``_flush_batch`` iterates the filled
+prefix and writes to CSV.
 
 **CasADi DM → pre-allocated numpy.**  Instead of
 ``np.asarray(sol['x']).ravel()`` (fresh array every tick), copy into a
@@ -444,9 +445,12 @@ def _on_pre_command(plant_, mpc_, tc, cmd, cmd_vel, diag):
     times = mpc_.predicted_times_view
     if poses is not None:
         dt0 = times[1] - times[0]
-        # Fill pre-allocated buffer, do not allocate new arrays
+        # Fill pre-allocated buffer, do not allocate new arrays.
+        # NOTE: use ``np.divide(buf, dt0, out=buf)`` — NOT
+        # ``buf /= dt0`` — see "Pattern gotcha: augmented-assign in
+        # closures" below.
         np.subtract(poses[1], poses[0], out=_twist_buf)
-        _twist_buf /= dt0
+        np.divide(_twist_buf, dt0, out=_twist_buf)
         # ...
         plant_.set_pose(poses[0], twist_6dof=_twist_buf, accel_6dof=_accel_buf)
 
@@ -468,6 +472,29 @@ def _on_log_extras(plant_):
 - ``on_target_override`` that replaces ``tc`` SHOULD return the existing
   ``tc`` (unchanged) or a pre-allocated override ``TargetCommand``.  A
   fresh ``TargetCommand(...)`` per tick fails the contract.
+
+### Pattern gotcha: augmented-assign in closures
+
+Inside a hook closure, NEVER write ``buf /= x``, ``buf += x``, or any
+other augmented-assign when ``buf`` is a free variable from the
+enclosing scope.  Python compiles ``buf /= x`` to a STORE_FAST on the
+name ``buf``, which promotes it to a local in the closure's frame and
+shadows the free-variable binding.  Any earlier reference in the same
+function (e.g. ``np.subtract(..., out=buf)``) then tries to read the
+local before it has been assigned and raises
+``UnboundLocalError`` at runtime.
+
+The trap does NOT fire when the left-hand side is an attribute or
+subscript (``self._buf /= x``, ``buf[:] /= x``) — those compile to
+STORE_ATTR / STORE_SUBSCR and don't create local bindings.
+
+Fix: use ``np.divide(buf, x, out=buf)`` (or ``np.multiply``,
+``np.add``, etc.).  Identical in-place semantics, same zero-allocation
+behaviour, no name-shadowing.
+
+Reference: commit ``149070d`` — hardware-only ``UnboundLocalError``
+in ``_on_pre_command``; the sim contract test couldn't catch it
+because sim doesn't wire the hook.
 
 ## Diagnosis
 

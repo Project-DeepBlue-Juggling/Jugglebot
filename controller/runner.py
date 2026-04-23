@@ -321,7 +321,6 @@ def run_mpc_loop(
     gc_tracker.install()
     # Print `OH SPIKE step=N ...` breakdown when overhead exceeds this.
     _OH_SPIKE_THRESHOLD_MS = 15.0
-    _dash_sink: list[float] = [0.0]
 
     # W4c — pre-allocated buffer for pose_6dof_from_state's inline
     # expansion in the per-tick record-fill path.  Before W4c this was a
@@ -358,14 +357,20 @@ def run_mpc_loop(
     # in-tick GC off regardless of cadence.
     _GC_COLLECT_EVERY_N_TICKS = 1200    # 30 s at 40 Hz
     _GC_COLLECT_MIN_SLEEP_S = 0.005     # only fire when >=5 ms sleep budget
-    _was_gc_enabled = _gc.isenabled()
-    _gc.disable()
+    # gc.isenabled() capture and gc.disable() live inside the try/finally so
+    # a signal raised in the microsecond between them can never leave the
+    # interpreter with GC globally disabled — the finally block must always
+    # run after a successful gc.disable().  Default True is the safe fallback
+    # if the interrupt lands before we read the real state.
+    _was_gc_enabled = True
 
     # Set True by the loop when plant.estop_requested trips, so the caller
     # can report it (e.g. run_mpc.py's distinct exit code).
     estop_exit = False
 
     try:
+        _was_gc_enabled = _gc.isenabled()
+        _gc.disable()
         for _step_idx in range(n_steps):
             # --- Clean-shutdown flag (hardware only) ---
             # HardwarePlant.estop() flips this after publishing the ESTOP
@@ -491,7 +496,6 @@ def run_mpc_loop(
                     _ff_torque_max_Nm = getattr(_hook_extras, 'ff_torque_max_Nm', 0.0)
 
             _t_log_start = _time.perf_counter()
-            _dash_sink[0] = 0.0
             # Inline the fill-record path so no ``extras`` dict is built
             # for kwargs expansion.  log_mpc_step is retained for sim
             # callers that still take the legacy path.
@@ -532,9 +536,7 @@ def run_mpc_loop(
                 ff_torque_max_Nm=_ff_torque_max_Nm,
             )
             if dashboard is not None:
-                _t_dash0 = _time.perf_counter()
                 dashboard.broadcast(_rec)
-                _dash_sink[0] = (_time.perf_counter() - _t_dash0) * 1000.0
             _t_log_ms = (_time.perf_counter() - _t_log_start) * 1000.0
             # Stamp the just-written record with the measured log duration.
             # Pool slot is still held by _rec — no list[-1] allocation.

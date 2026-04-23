@@ -295,10 +295,12 @@ def test_no_in_tick_gc_events_under_w5_disable():
     )
 
     plant, mpc, source, logger = _build_fixture()
-    # Short run — 100 ticks ≈ 2.5 s wall-clock.  Long enough for a
-    # scheduled Gen-2 collect (cadence 200 ticks) to NOT fire, so any
-    # gc event recorded in-tick is an unambiguous violation.  If the
-    # cadence ever drops below 100, update this test accordingly.
+    # Short run — 100 ticks ≈ 2.5 s wall-clock.  Well below the scheduled
+    # Gen-2 collect cadence (``_GC_COLLECT_EVERY_N_TICKS = 1200`` in
+    # ``controller/runner.py``, bumped in 8cab8fe after W6 hardware
+    # validation), so any gc event recorded in-tick is an unambiguous
+    # violation.  If that cadence is ever lowered to <=100, update this
+    # test accordingly.
     _TEST_TICKS = 100
 
     class _TickCounter:
