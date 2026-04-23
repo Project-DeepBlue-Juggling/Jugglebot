@@ -360,10 +360,64 @@ def analyse_solver_status(records: List[StepRecord]) -> Dict[str, Any]:
 
 
 def analyse_oscillation(records: List[StepRecord]) -> Dict[str, Any]:
-    """Detect oscillation via chatter ratio (sign changes in command deltas)."""
+    """Detect oscillation via chatter ratio (sign changes in command deltas).
+
+    Two noise sources are filtered before the sign-change count:
+
+    1. **Sub-LSB float noise.**  On a steady-state hold the MPC's cmd_ext
+       values drift by microns at every tick — a float-rounding signature
+       of the IPOPT solver, not physical oscillation.  ``np.sign`` promotes
+       any tiny non-zero delta to ±1 and ~half of those flip signs,
+       producing a spurious chatter ratio near 0.5 on clean holds.  The
+       motor guard's dead-band (``1 / (enc_cpr * mm_to_rev)`` — see
+       controller/hardware_plant.py) filters these before CAN transmit,
+       so they are not physically observable.  We apply the same floor:
+       deltas with |Δ| below ``_CHATTER_MIN_DELTA_MM`` are treated as
+       "no change" and excluded from both the numerator (sign changes)
+       and denominator (non-zero delta count).
+
+    2. **Scheduled-GC inter-tick gaps.**  The MPC loop's W5 scheduled
+       ``gc.collect(2)`` produces a ~149 ms wall-clock gap once per 30 s
+       (see logbook 2026-04-23-hot-loop-zero-allocation-contract).  The
+       associated delta can be large (motion accumulated during the gap),
+       which would corrupt the amplitude_growing slope fit.  Samples with
+       ``dt > 5× median`` are masked out before the envelope regression.
+
+    Without (1), the W6 hold-at-ACTIVE session reported "Oscillation
+    detected on all 6 legs" with chatter ~0.5 despite an operator-verified
+    clean ODrive pos_setpoint trace.  Without (2), a handful of GC-gap
+    deltas inflate the amplitude-growth slope.
+    """
+    # Chatter magnitude floor.  One encoder LSB on a typical leg is
+    # ~1 / (8192 counts/rev × 8 rev/mm) ≈ 15 µm; 10 µm sits just under
+    # that, capturing sub-LSB solver noise while leaving any genuinely
+    # physical oscillation (even at encoder resolution) above the floor.
+    # Hard-coded here rather than pulling from hardware_config to keep
+    # sim/analysis/ independent of ros_ws/.  If enc_cpr or mm_to_rev
+    # ever changes, recompute.
+    _CHATTER_MIN_DELTA_MM = 0.01
     n = len(records)
     if n < 10:
         return {'detected': False, 'per_leg_chatter': [], 'per_dof_chatter': []}
+
+    # Build a mask over the diff indices: keep index i iff records[i+1].time
+    # - records[i].time is within 5× the median dt.  Median over mean is
+    # deliberate — mean is dragged by the GC gaps we want to ignore.
+    times = np.asarray([r.time for r in records], dtype=float)
+    dt_series = np.diff(times)
+    if len(dt_series) >= 2:
+        median_dt = float(np.median(dt_series))
+        # Fall back to "no mask" if median is degenerate (constant time
+        # field, e.g. a synthetic fixture).  Otherwise a 5× envelope keeps
+        # real jitter (pacing slack up to ~2× expected) and rejects only
+        # the scheduled-GC outliers (typically 6× expected).
+        if median_dt > 1e-9:
+            dt_mask = dt_series <= 5.0 * median_dt
+        else:
+            dt_mask = np.ones(len(dt_series), dtype=bool)
+    else:
+        dt_mask = np.ones(len(dt_series), dtype=bool) if len(dt_series) else \
+            np.array([], dtype=bool)
 
     # Per-leg chatter (command extensions)
     per_leg_chatter = []
@@ -373,8 +427,9 @@ def analyse_oscillation(records: List[StepRecord]) -> Dict[str, Any]:
         if len(delta) < 2:
             per_leg_chatter.append(0.0)
             continue
+        # Magnitude floor: sub-LSB deltas are treated as "no change".
         signs = np.sign(delta)
-        # Remove zeros (no change)
+        signs[np.abs(delta) < _CHATTER_MIN_DELTA_MM] = 0
         nonzero = signs[signs != 0]
         if len(nonzero) < 2:
             per_leg_chatter.append(0.0)
@@ -383,7 +438,12 @@ def analyse_oscillation(records: List[StepRecord]) -> Dict[str, Any]:
         chatter = float(sign_changes / len(nonzero))
         per_leg_chatter.append(round(chatter, 3))
 
-    # Per-DoF chatter (actual pose)
+    # Per-DoF chatter (actual pose).  Pose is in mm / rad — the same
+    # _CHATTER_MIN_DELTA_MM floor is a reasonable lower bound for mm
+    # translations; rotation columns see ~100× smaller deltas (rad scale)
+    # so the floor effectively zeros rotation chatter unless there's real
+    # motion.  Good default; revisit if the diagnostic ever needs to
+    # distinguish genuine sub-milliradian rotation chatter.
     dof_attrs = ['actual_pose_x', 'actual_pose_y', 'actual_pose_z',
                  'actual_pose_rx', 'actual_pose_ry', 'actual_pose_rz']
     per_dof_chatter = []
@@ -394,6 +454,7 @@ def analyse_oscillation(records: List[StepRecord]) -> Dict[str, Any]:
             per_dof_chatter.append(0.0)
             continue
         signs = np.sign(delta)
+        signs[np.abs(delta) < _CHATTER_MIN_DELTA_MM] = 0
         nonzero = signs[signs != 0]
         if len(nonzero) < 2:
             per_dof_chatter.append(0.0)
@@ -407,6 +468,9 @@ def analyse_oscillation(records: List[StepRecord]) -> Dict[str, Any]:
         if per_leg_chatter[leg] > CHATTER_THRESHOLD:
             cmd = _extract(records, f'cmd_ext_{leg}')
             delta = np.diff(cmd)
+            # Apply the same dt-outlier mask so the GC-gap delta doesn't
+            # show up as a spurious envelope peak.
+            delta = delta[dt_mask] if len(delta) == len(dt_mask) else delta
             # Compute rolling envelope (abs of delta)
             envelope = np.abs(delta)
             if len(envelope) > AMPLITUDE_GROWTH_WINDOW * 2:
