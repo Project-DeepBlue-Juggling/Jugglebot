@@ -23,14 +23,19 @@ from __future__ import annotations
 # contract defends against).
 #
 # Historical ratchet:
-#   - Initial ship (after W4e, 2026-04-23 work):  1024 B/tick.
-#     Relaxed starting value that lets the W4 sub-phases land
-#     incrementally while the test stays green.
-#   - W7 ratchet:                                  256 B/tick.
-#     Tighter floor once the inventory is fully cleared; catches any
-#     new per-tick allocations that would otherwise slip in below the
-#     1 KB radar.
-THRESHOLD_BYTES: int = 1024
+#   - Initial ship (W4e, 2026-04-23):              1024 B/tick.
+#     Relaxed starting value that let the W4 sub-phases land
+#     incrementally while the test stayed green.
+#   - W7 ratchet (2026-04-23, post-W4+W5):          256 B/tick.
+#     Tighter floor once the full W1 inventory landed.  Post-W4+W5
+#     measurement was 137 B/tick (dominated by tracemalloc's own regex
+#     filter machinery + fnmatchcase — zero application code in the
+#     top-10).  256 B is ~2x current, enough headroom for minor
+#     interpreter-internal variation but strict enough that any new
+#     per-tick dict, ndarray, or similar-size retained object trips CI.
+#     Below ~200 B/tick trips on interpreter-internal allocations
+#     (f-string cache misses, exception objects on cold branches).
+THRESHOLD_BYTES: int = 256
 
 
 # Number of ticks the enforcement test runs past the warmup window.

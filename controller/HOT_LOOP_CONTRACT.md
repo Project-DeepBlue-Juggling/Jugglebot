@@ -96,10 +96,10 @@ hot-loop call site.  Explicitly excluded:
 
 ### Threshold values
 
-| Value | Applies after | Rationale |
-|------:|---------------|-----------|
-| `1024 B/tick` | W4e (initial ship) | Relaxed ceiling that lets the W4 sub-phases land incrementally while the enforcement test stays green at each commit. |
-| `256 B/tick`  | W7 ratchet         | Tighter floor once the W1 inventory is fully cleared.  Catches any new per-tick allocations that would otherwise slip in below the 1 KB radar.  Values tighter than ~200 B/tick trip on interpreter-internal allocations (f-string cache misses, exception objects on cold branches) — 256 B is the empirical floor. |
+| Value | Effective (date) | Rationale |
+|------:|------------------|-----------|
+| `1024 B/tick` | W4e (2026-04-23) | Relaxed ceiling that let the W4 sub-phases land incrementally while the enforcement test stayed green at each commit.  Superseded by the W7 ratchet below. |
+| `256 B/tick`  | **W7 (2026-04-23, current)** | Tightened to ~2x the measured 137 B/tick floor once the full W1 inventory shipped.  Enough headroom for minor interpreter-internal variation (tracemalloc's own filter machinery, f-string intern churn) but strict enough that any new per-tick dict, ndarray, or similar-size retained object trips CI.  Values tighter than ~200 B/tick trip on interpreter-internal allocations — 256 B is the empirical floor. |
 
 The threshold MUST be raised (a "relaxation") only via a commit that:
 
