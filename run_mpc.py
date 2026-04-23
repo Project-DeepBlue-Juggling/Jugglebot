@@ -465,6 +465,12 @@ def main():
 
         No-op on MuJoCoPlant which has no feedforward channel (sim dry-run).
         Uses pre-allocated twist/accel buffers from the enclosing closure.
+
+        Every in-place update uses ``np.divide(buf, scalar, out=buf)``
+        rather than ``buf /= scalar`` — the augmented-assignment form
+        would bind the buffer name as a local of this function and
+        shadow the closure reference, causing an UnboundLocalError on
+        the earlier ``np.subtract(..., out=buf)`` read.
         """
         if not hasattr(plant_, 'set_pose'):
             return
@@ -475,13 +481,13 @@ def main():
             dt1 = times[2] - times[1]
             # twist = (poses[1] - poses[0]) / dt0, in place
             np.subtract(poses[1], poses[0], out=_twist_buf)
-            _twist_buf /= dt0
+            np.divide(_twist_buf, dt0, out=_twist_buf)
             # twist_next = (poses[2] - poses[1]) / dt1, in place
             np.subtract(poses[2], poses[1], out=_twist_next_buf)
-            _twist_next_buf /= dt1
+            np.divide(_twist_next_buf, dt1, out=_twist_next_buf)
             # accel = (twist_next - twist) / (0.5 * (dt0 + dt1)), in place
             np.subtract(_twist_next_buf, _twist_buf, out=_accel_buf)
-            _accel_buf /= 0.5 * (dt0 + dt1)
+            np.divide(_accel_buf, 0.5 * (dt0 + dt1), out=_accel_buf)
             plant_.set_pose(poses[0], twist_6dof=_twist_buf, accel_6dof=_accel_buf)
 
     def _on_post_solve(tc, diag):
