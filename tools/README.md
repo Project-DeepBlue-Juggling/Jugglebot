@@ -104,6 +104,46 @@ All test harnesses share these safety principles:
 | `catch_sim_test.py` | 6 | Offline catch simulation (no hardware). Full tracking + coordinator + hand control pipeline with 3D viewer |
 | `throw_catch_test.py` | 6 | Throw-catch cycle test: platform throws ball to itself, repositions, catches. Reuses catch_sim_test visualizer |
 | `tracking_analyzer.py` | 6 | Rosbag analysis for ball tracking data |
+| `cogging_bench_test.py` | bench-rig | Velocity-mode bench runner with `--sweep`. Produces friction-vs-velocity sweeps for Stribeck fitting. |
+| `breakaway_ramp_test.py` | bench-rig | Torque-mode ramp from rest. Position-only escape detector measures stiction per starting electrical angle. |
+| `torque_step_test.py` | bench-rig | Bidirectional torque-step terminal-velocity test. Reveals controller-fight overhead in velocity-mode measurements. |
+| `friction_ff_demo.py` | bench-rig | Friction-FF effectiveness demo: pos_step / vel_step / sweep modes with Stribeck FF, stiction-boost, and vel_ff toggles. |
+
+### Friction characterisation & FF demo (single-leg bench rig)
+
+Four scripts under `tests/hardware/` form a complete friction-characterisation and feedforward-validation pipeline for a single ODrive leg on an isolated CAN bus. Used during the 2026-04-24 to 2026-04-27 bench-validation phase of the motion-onset dead-time investigation.
+
+**Canonical reference:** [logbook/2026-04-27-friction-feedforward-bench-validation.md](../logbook/2026-04-27-friction-feedforward-bench-validation.md) — the bench-validation arc, withdrawn hypotheses, and final fit parameters.
+
+**Pipeline:**
+
+```bash
+# 1. Fit Stribeck friction model from a velocity sweep
+python tests/hardware/cogging_bench_test.py --sweep 0.075,0.10,0.20,0.30,0.50,1.0,2.0,5.0
+python tools/friction_study_analyse.py --glob 'temp/logs/cogging_<ts>*.csv'
+
+# 2. Measure stiction breakaway per rotor angle
+python tests/hardware/breakaway_ramp_test.py --direction both --trials 8
+python tools/breakaway_analyse.py temp/logs/breakaway_<ts>.csv
+
+# 3. (optional) Confirm against terminal-velocity in TORQUE mode
+python tests/hardware/torque_step_test.py
+
+# 4. Validate friction FF + stiction-boost + vel_ff in POSITION mode
+python tests/hardware/friction_ff_demo.py
+```
+
+All four scripts share safety conventions: 3 rev stroke cap, brake-resistor-aware acceleration cap (250 rev/s²), heartbeat watchdog, IDLE-on-exit. See each script's `--dry-run` output for current parameter limits.
+
+### Friction-FF analysis tools (`tools/*_analyse.py`)
+
+| Script | Inputs | Outputs |
+|--------|--------|---------|
+| `cogging_map_analyse.py` | one cogging CSV | iq-vs-electrical-angle map, harmonic R² (n=1..12), position-drift slope |
+| `friction_study_analyse.py` | multiple cogging CSVs (a sweep) | Stribeck four-parameter fit (τ_c, τ_s, ω_s, b), tracking-quality plots, fwd-vs-rev electrical-map Pearson R |
+| `breakaway_analyse.py` | breakaway summary CSV | per-direction breakaway iq stats, angular-dependence harmonic fits, sanity check that breakaway moved more than half a cogging period |
+
+All three accept `--json <path>` to emit a machine-readable result; plots go to `temp/reports/`.
 
 ### catch_sim_test.py
 
