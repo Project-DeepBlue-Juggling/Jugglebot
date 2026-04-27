@@ -1,9 +1,28 @@
 # Motion-Onset Dead-Time — Investigation & Fix Plan
 
-**Status:** Proposal, awaiting diagnosis/fix-plan approval
-**Related logbook:** [2026-04-18-hold-fighting-motion-onset-jitter.md](../../logbook/2026-04-18-hold-fighting-motion-onset-jitter.md) (Failure A — unresolved)
+**Status:** Bench-validation phase complete (2026-04-27); friction-FF model fit and validated. Next: motor_guard integration on platform.
+**Related logbook:**
+- [2026-04-18-hold-fighting-motion-onset-jitter.md](../../logbook/2026-04-18-hold-fighting-motion-onset-jitter.md) (Failure A — original symptom)
+- [2026-04-20-motion-onset-dead-time-fix.md](../../logbook/2026-04-20-motion-onset-dead-time-fix.md) (early bench scoping; cogging-first hypothesis)
+- **[2026-04-27-friction-feedforward-bench-validation.md](../../logbook/2026-04-27-friction-feedforward-bench-validation.md) (bench characterisation, Stribeck fit, FF validation)** — current state
 **Primary CSV:** `mpc_20260418_164119.csv` (vel-ff ON) + `mpc_20260418_181020.csv` (vel-ff OFF A/B partner)
-**Author note:** This document is a research deliverable, NOT a fix. Do not touch control-loop code until diagnosis and fix plan are approved.
+**Author note:** This document was originally a research deliverable. The bench-validation phase has resolved the diagnosis and produced a working FF model. The next phase (motor_guard integration on platform) is pending its own plan document.
+
+---
+
+## Bench-validation outcomes (2026-04-27)
+
+The bench rig (single ODrive on isolated CAN, brake resistor borrowed from platform) was used to characterise the leg's friction across 0.075–10 rev/s and validate three feedforward terms. Key results:
+
+- **Stribeck friction model fitted** (R² = 0.983): τ_c = 1.094 A, τ_s = 1.953 A, ω_s = 0.251 rev/s, b = 0.0173 A/(rev/s), constant load offset = +0.173 A.
+- **Cogging hypothesis refuted** (§2.1's primary candidate): bench cruise fwd-vs-rev electrical-map Pearson R = 0 at smooth velocities; cogging amplitude is ~5 % of friction torque, not the primary motion-onset contributor.
+- **Velocity-loop cogging-fight identified** as a confound in initial Test A measurements: the velocity loop's mean iq during cruise (~1.1 A) includes substantial controller current fighting cogging at 84 cycles/rev, not just friction. The user's framing — *"0.14 A is enough to get the rotor moving, but 1 A is the minimum for smooth motion"* — captured this exactly. Test A's mean iq is the right value for FF (it's what the integrator would settle at anyway), even though it's not pure friction.
+- **FF stack validated on bench** (`tests/hardware/friction_ff_demo.py` in `pos_step` mode): friction torque-FF + stiction-boost (threshold 0.20 rev/s) + velocity-FF reduces motion-onset latency by ~2× (81 → 32 ms) and 90 %-target tracking lag by ~9× (53 → 6 ms), of which vel_ff on top of friction FF is the largest single component (~5×, 31 → 6 ms). Remaining 32 ms latency floor is inertia-limited (rotor + reflected leg load), not friction-limited.
+- **Encoder/motor cable noise ruled out** (separate-cables test): no measurable difference vs cables-bundled run.
+
+The complete arc — Test A iterations, Test B / Test C / FF demo / threshold sweep / vel_ff A/B / cable-separation control — is captured in the 2026-04-27 logbook entry referenced above.
+
+**Original §1–§7 below remain as the historical record of the diagnosis-phase plan; the cogging hypothesis ranking (§2.8) is now superseded by the bench-validation outcome.**
 
 ---
 

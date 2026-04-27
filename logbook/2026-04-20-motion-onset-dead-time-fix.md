@@ -2,8 +2,14 @@
 title: Motion-onset dead-time — cogging-torque-first investigation
 type: investigation
 date: 2026-04-20
-status: in-progress
+status: tuned
 phase: post-per-leg-gains-deadband-session
+# Status `tuned`: the bench-validation work picked up in this entry continued
+# in the follow-on entry `2026-04-27-friction-feedforward-bench-validation.md`,
+# which fitted a Stribeck friction model and bench-validated the FF stack.
+# The cogging hypothesis recorded here was refuted by the bench cruise
+# fwd-vs-rev R=0 result (cogging is small, ~5 % of friction torque, not the
+# primary cause).  Move next steps to the follow-on entry.
 related_plan: motion-onset-deadtime-investigation.md
 related_issues:
   - 2026-04-18-hold-fighting-motion-onset-jitter.md
@@ -172,6 +178,17 @@ Pending — no code touch until Step 0 analysis yields a verdict.
 
 ## Open Questions
 
-- Does Step 0 show a cogging fingerprint in existing data?
-- If cogging is material, is the compensation best applied in motor_guard (500 Hz, pre-CAN-encode) or pushed down to the ODrive as a per-leg `torque_offset` table? Motor_guard side keeps the control story in one place; ODrive side offloads the 500 Hz work.
-- Tester leg is asserted representative. How much inter-leg cogging variance do we expect in practice? If leg-to-leg cogging ripple varies by more than a factor of ~2, a single bench map won't generalise and we'd need per-leg measurement.
+- Does Step 0 show a cogging fingerprint in existing data? **RESOLVED (2026-04-27, NULL)** — see the follow-on entry [2026-04-27-friction-feedforward-bench-validation.md](2026-04-27-friction-feedforward-bench-validation.md) §"Cogging is not material at smooth-cruise velocities". Best harmonic R² = 0.010 in pooled platform data; bench cruise fwd-vs-rev Pearson R = 0 at smooth velocities. Cogging amplitude ~5 % of friction; not the primary motion-onset contributor.
+- If cogging is material, is the compensation best applied in motor_guard (500 Hz, pre-CAN-encode) or pushed down to the ODrive as a per-leg `torque_offset` table? **MOOT** given the resolution above — cogging compensation is deferred. If pursued later, it becomes a Phase 3 optimisation per the follow-on entry's open questions.
+- Tester leg is asserted representative. How much inter-leg cogging variance do we expect in practice? **DEFERRED** — to be re-asked at platform deployment as inter-leg friction variance, since friction (not cogging) is the dominant per-leg term to characterise.
+
+## Continued in the follow-on entry
+
+This investigation continued in [2026-04-27-friction-feedforward-bench-validation.md](2026-04-27-friction-feedforward-bench-validation.md), which:
+
+1. Built the bench rig (single ODrive on isolated CAN, brake resistor borrowed from platform).
+2. Ran the full Test A / Test B / Test C bench characterisation across four days of bench iteration (2026-04-24 through 2026-04-27).
+3. Fit the four-parameter Stribeck friction model (R² = 0.983).
+4. Built `tests/hardware/friction_ff_demo.py` and validated friction torque-FF + stiction-boost + velocity-FF on the bench.
+5. Demolished the cogging hypothesis recorded here, re-routed to friction FF as the primary fix.
+6. Reached a state where motor_guard integration is the next step.
