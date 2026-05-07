@@ -37,6 +37,10 @@ from jugglebot.motion.conversions import (
     leg_velocities_to_motor_velocities,
     revs_to_extensions_mm,
 )
+from jugglebot.motion.friction_ff_params import (
+    FrictionFFParams,
+    load_params as _load_friction_ff_params,
+)
 from jugglebot.motion.geometry import StewartGeometry
 from jugglebot.motion.ipc import (
     TOPIC_MODE,
@@ -253,6 +257,20 @@ class MotorGuard:
         self._commanded_pos_rev = np.zeros(6)
         self._commanded_vel_ff_rps = np.zeros(6)
         self._commanded_torque_ff_Nm = np.zeros(6)
+
+        # --- Friction feedforward ---
+        # Loaded lazily here (not at module import) so the test environment
+        # can construct a guard with a custom params instance via
+        # ``self._friction_ff_params = ...`` before any compute.
+        self._friction_ff_params: FrictionFFParams = _load_friction_ff_params()
+        # Preallocated result buffer.  ``_compute_friction_ff_Nm`` writes
+        # in-place via ``buf[:] = ...`` so the buffer's Python id is stable
+        # across calls (verified by tests/motion/test_motor_guard_friction_ff
+        # ::test_friction_ff_buffer_identity).  Length-6 temporaries from
+        # np.abs / np.sign / np.exp / np.where are tolerated — motor_guard's
+        # 500 Hz loop is not bound by the MPC 40 Hz hot-loop zero-allocation
+        # contract (logbook/2026-04-23-hot-loop-zero-allocation-contract.md).
+        self._friction_ff_buf = np.zeros(6)
 
         # --- Workspace monitoring ---
         self._workspace_limits = WorkspaceLimits.from_geometry(self.geom)
@@ -618,6 +636,73 @@ class MotorGuard:
         self._motor_fb_timestamp = time.perf_counter()
 
     # ------------------------------------------------------------------
+    # Friction feedforward
+    # ------------------------------------------------------------------
+
+    def _compute_friction_ff_Nm(self) -> np.ndarray:
+        """Per-leg Stribeck friction torque feedforward, in Nm.
+
+        Returns a (6,) array — the additive friction-FF contribution to
+        ``_commanded_torque_ff_Nm``.  Returns zeros when the global flag
+        ``friction_ff.enabled`` is False, so the disabled path costs one
+        branch + a memset.
+
+        At |v_cmd| ≥ stiction_boost_threshold the magnitude is the
+        Stribeck taper τ_c + (τ_s − τ_c)·exp(−(|v|/ω_s)²) + b·|v|.  In the
+        boost band (1e-4, threshold) the magnitude is the full stiction
+        peak τ_s + b·|v| — closes the residual ~12 % FF undersize at low
+        velocity that the bench sweep documented (see
+        logbook/2026-04-27-friction-feedforward-bench-validation.md).  At
+        |v| < 1e-4 (commanded hold) only the constant load_offset is
+        applied — there is no commanded motion to overcome friction for,
+        and applying full τ_s at v=0 would just be a constant disturbance
+        the position-loop integrator has to fight.
+
+        The function is the single canonical enforcement point of the
+        friction-FF contract — no other code path writes friction-derived
+        torque to ``_commanded_torque_ff_Nm`` (see §2 of
+        plans/active/friction-ff-motor-guard-integration.md).
+
+        This is the vectorised port of ``friction_ff_nm`` in
+        tests/hardware/friction_ff_demo.py:167-205.
+        """
+        p = self._friction_ff_params
+        if not p.enabled:
+            self._friction_ff_buf.fill(0.0)
+            return self._friction_ff_buf
+
+        v = self._commanded_vel_ff_rps
+        av = np.abs(v)
+        sgn = np.sign(v)
+
+        # Stribeck taper (all six legs vectorised — per-leg parameters)
+        stribeck = (p.tau_c_A
+                    + (p.tau_s_A - p.tau_c_A)
+                      * np.exp(-(av / p.omega_s_rps) ** 2)
+                    + p.b_A_per_rps * av)
+        # Stiction-boost band: τ_s instead of Stribeck-tapered for |v| in
+        # (1e-4, threshold).  Both branches share +b·|v| so the viscous
+        # term is continuous across the band edge — the only step is
+        # (τ_s − Stribeck(threshold)), which is bounded.
+        boosted = p.tau_s_A + p.b_A_per_rps * av
+        in_boost = (av >= 1e-4) & (av < p.stiction_boost_threshold_rps)
+        iq_friction = np.where(in_boost, boosted, stribeck)
+        # At v ≈ 0 (commanded hold), no friction term — only the constant
+        # load offset.  Mirrors friction_ff_demo.py:192-195 and avoids
+        # injecting stiction torque against an integrator that is already
+        # holding position.
+        iq_friction = np.where(av < 1e-4, 0.0, iq_friction)
+
+        # Sign convention: -sign(v) × |iq_friction| + load_offset, then
+        # mapped through ff_sign × Kt.  Direct vectorisation of the bench
+        # reference at friction_ff_demo.py:196-204.
+        iq_total = -sgn * iq_friction + p.load_offset_A
+        self._friction_ff_buf[:] = (iq_total
+                                    * p.ff_sign
+                                    * p.motor_kt_nm_per_a)
+        return self._friction_ff_buf
+
+    # ------------------------------------------------------------------
     # Safety checks
     # ------------------------------------------------------------------
 
@@ -781,7 +866,16 @@ class MotorGuard:
             self._commanded_pos_rev = pos_at_boundary + extra
             self._commanded_vel_ff_rps = vel_at_boundary * decay_frac
 
-        self._commanded_torque_ff_Nm = self._mpc_base_torque_Nm.copy()
+        # torque_ff = MPC-supplied rigid-body dynamics torque (gravity +
+        # platform inertia projected through the Jacobian, populated by
+        # controller/hardware_plant.py:_populate_ff_torque) + per-leg
+        # Stribeck friction FF.  The two stack additively — they model
+        # orthogonal physics (bulk rigid-body vs. transmission friction).
+        # Single canonical enforcement point per
+        # plans/active/friction-ff-motor-guard-integration.md §3.3.
+        np.add(self._mpc_base_torque_Nm,
+               self._compute_friction_ff_Nm(),
+               out=self._commanded_torque_ff_Nm)
 
         # Tracking clamp: never let the commanded position run more than
         # MAX_LEAD_REV ahead of actual encoder position.  This guarantees

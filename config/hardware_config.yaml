@@ -72,6 +72,39 @@ dynamics:
                                                 # Used by motion-onset cogging analysis (tools/motion_onset_cogging_study.py).
 
 # ============================================================
+# 1c. Friction Feedforward (Stribeck model)
+#     τ_friction(ω) = τ_c + (τ_s − τ_c)·exp(−(|ω|/ω_s)²) + b·|ω|
+#
+#     Per-leg arrays so the per-leg refinement protocol described in
+#     plans/active/friction-ff-motor-guard-integration.md §4 can land
+#     outlier-driven adjustments without a schema migration.  Bench-fit
+#     values from logbook/2026-04-27-friction-feedforward-bench-validation.md
+#     are the starting estimate (the bench is single-leg, single-pose;
+#     the platform validates the rest).
+#
+#     Placed as a TOP-LEVEL key (not under dynamics:) and intentionally
+#     omitted from generate_config.py's HW_SECTIONS so codegen does NOT
+#     emit DYNAMICS_FRICTION_FF_* constants into Python / C++ / JS
+#     consumers that don't need them.  motor_guard reads YAML directly
+#     via motion/friction_ff_params.py at runtime — matching the loader
+#     contract adopted for motor_kt_nm_per_a so platform tuning of
+#     friction params doesn't require a generate_config.py rebuild
+#     + ROS2 redeploy.
+# ============================================================
+friction_ff:
+  enabled: false                              # global feature flag — keep false until PR 3 platform validation
+  stiction_boost_threshold_rps: 0.20          # |v_cmd| in (1e-4, threshold) → apply τ_s instead of Stribeck taper
+  ff_sign: [-1, -1, -1, -1, -1, -1]           # per-leg motor-wiring polarity (verify on platform before flag flip)
+  tau_c_A:        [1.094, 1.094, 1.094, 1.094, 1.094, 1.094]   # kinetic Coulomb floor {A}
+  tau_s_A:        [1.953, 1.953, 1.953, 1.953, 1.953, 1.953]   # stiction peak {A}
+  omega_s_rps:    [0.251, 0.251, 0.251, 0.251, 0.251, 0.251]   # Stribeck breakaway scale {rev/s}
+  b_A_per_rps:    [0.0173, 0.0173, 0.0173, 0.0173, 0.0173, 0.0173]  # viscous slope {A/(rev/s)}
+  load_offset_A:  [0.000, 0.000, 0.000, 0.000, 0.000, 0.000]   # constant load {A}; bench had 0.173 from cable preload,
+                                                                 # platform legs see different gravity per pose — let the
+                                                                 # existing per-leg gain integrator handle gravity for now
+                                                                 # (Phase-2 refinement: per-leg gravity-from-kinematics).
+
+# ============================================================
 # 2. Jugglebot Stewart Platform Geometry
 #    Source: ros_ws/src/jugglebot/jugglebot/robot_geometry.py
 #    All node positions are pre-computed (from build_platform()) and stored
