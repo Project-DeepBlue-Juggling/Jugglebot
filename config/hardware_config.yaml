@@ -34,6 +34,10 @@ physics:
 #     Mass and inertia properties of the Stewart platform assembly
 #     (including throw axis as a static payload at its nominal position).
 #     Source: Onshape CAD model (2026-02-25).
+#
+#     Related: per-leg friction-FF parameters live in section 1c below
+#     (kept structurally separate so codegen does not ripple them — see
+#     the comment block above ``friction_ff:`` for the rationale).
 # ============================================================
 dynamics:
   platform_mass_kg: 1.2                          # Total platform mass {kg}, including throw axis assembly
@@ -75,21 +79,38 @@ dynamics:
 # 1c. Friction Feedforward (Stribeck model)
 #     τ_friction(ω) = τ_c + (τ_s − τ_c)·exp(−(|ω|/ω_s)²) + b·|ω|
 #
-#     Per-leg arrays so the per-leg refinement protocol described in
+#     Per-leg arrays so the refinement protocol described in
 #     plans/active/friction-ff-motor-guard-integration.md §4 can land
 #     outlier-driven adjustments without a schema migration.  Bench-fit
 #     values from logbook/2026-04-27-friction-feedforward-bench-validation.md
 #     are the starting estimate (the bench is single-leg, single-pose;
 #     the platform validates the rest).
 #
-#     Placed as a TOP-LEVEL key (not under dynamics:) and intentionally
-#     omitted from generate_config.py's HW_SECTIONS so codegen does NOT
-#     emit DYNAMICS_FRICTION_FF_* constants into Python / C++ / JS
-#     consumers that don't need them.  motor_guard reads YAML directly
-#     via motion/friction_ff_params.py at runtime — matching the loader
-#     contract adopted for motor_kt_nm_per_a so platform tuning of
-#     friction params doesn't require a generate_config.py rebuild
-#     + ROS2 redeploy.
+#     Logically these are dynamics-section params (they live next to
+#     motor_kt_nm_per_a / motor_pole_pairs / motor_rotor_inertia_kgm2
+#     conceptually).  They are kept STRUCTURALLY SEPARATE — top-level
+#     key, omitted from generate_config.py's HW_SECTIONS — for two
+#     concrete reasons:
+#
+#       1. No consumer needs the codegen output.  Teensy doesn't run
+#          friction FF (legs only).  GUI doesn't compute torque.  MPC
+#          plans against rigid-body dynamics, not transmission friction.
+#          motor_guard is the only consumer, and it loads YAML directly
+#          via motion/friction_ff_params.py — matching the runtime-load
+#          pattern adopted for motor_kt_nm_per_a so platform tuning of
+#          friction params doesn't require a generate_config.py rebuild
+#          + ROS2 redeploy.
+#       2. generate_config.py's C++ generator does not currently handle
+#          nested-list-in-dict (lists like ff_sign / tau_c_A / ... inside
+#          the friction_ff dict).  Nesting under dynamics: produces
+#          invalid C++ (constexpr auto FRICTION_FF_FF_SIGN = [-1, ...];).
+#          Fixing the generator is its own change; until then, top-level
+#          placement is the working configuration.
+#
+#     If reason (1) ceases to hold (e.g. Teensy starts running friction
+#     FF, or someone wants codegen-visible friction constants), reason
+#     (2) is what to fix first — at that point friction_ff: can move
+#     back under dynamics: cleanly.
 # ============================================================
 friction_ff:
   enabled: false                              # global feature flag — keep false until PR 3 platform validation
