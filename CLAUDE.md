@@ -129,7 +129,10 @@ mkdocs serve   # local preview at http://localhost:8000
 - **Grep before refactoring**: before renaming or refactoring any symbol, grep the entire codebase for all references first. List every file and line number, count total occurrences. After making changes, verify the count drops to zero. A partial find-and-replace is not acceptable.
 - **Analyze control-system implications before changes**: before implementing changes to MPC, feedforward, or timing code, analyze the control-system implications first. What happens to the feedforward path? Could this cause discontinuities, oscillation, or timing issues at 40 Hz? Walk through one MPC cycle step-by-step with the proposed change.
 - **TodoWrite checklist for multi-file tasks**: for tasks involving changes to multiple files, create a TodoWrite checklist before starting. List every file that needs changes, every test that needs updating, and a final verification step. Check off each item as you complete it. Do not declare the task done until all items are checked.
-- **Run tests after code changes**: after any code changes, run the full test suite (`pytest tests/ -v`) and ensure all tests pass before considering the task complete. Report the test count and results.
+- **Run pytest after code changes AND before `git commit`, automatically**: run `pytest tests/ -q` after any change to `*.py` or `*.yaml`, and run it again immediately before the commit gets written — both as part of the same response, without waiting for the user to ask. Scoped subsets (e.g. `pytest tests/motion/`) are fine for iteration but the full suite is the final pre-commit gate. For `*.yaml` changes under `config/` the order is: edit YAML → `python config/generate_config.py` → stage the regenerated artifacts → run tests → commit. Never commit known-failing code without the user's explicit acknowledgement; report the count and result in the same response as the commit. (Use `-q` consistently for the pre-commit gate; `-v` is fine for debugging when a test fails.)
+- **Audit multi-document narrative changes**: any commit that touches a logbook entry, a plan document, the README, CLAUDE.md, or a normative `*.md` (DOCUMENTATION_GUIDE, REFERENCE_LAYER_CONTRACT, per-plan tuning methodologies, etc) must be preceded by `/audit --unstaged`. Cross-document inconsistencies (swapped values, stale line refs, contradictory headlines) are common in narrative work and the audit catches them reliably. Code-only commits don't need this gate.
+- **Capture user-corrections as memory, proactively**: when the user manually does a step Claude could have done — pushing after a commit, fixing a typo Claude introduced, running a command Claude should have suggested — that is signal. Ask whether the behaviour should be saved to memory so future sessions don't repeat the omission. Memory lives in `~/.claude/projects/-home-jetson-Desktop-Jugglebot/memory/` as one short file per topic, indexed in `MEMORY.md` — follow the existing pattern (see `feedback_investigate_gating.md` and `feedback_auto_push_after_commits.md` for the format). A typical ask: *"I noticed you pushed manually after my commit — should I remember to push automatically after future commits on this branch?"* Don't wait for the user to invoke `/remember`.
+- **Invite physical-intuition pushback on hardware investigations**: at the start of any hardware-investigation session, and at every framing pivot during one, explicitly tell the user *"if your physical intuition disagrees with my framing, that's load-bearing signal — say so."* User intuition has repeatedly caught framing errors that Claude alone missed at conceptual pivots in this project's hardware investigations (see the friction-FF bench arc in `logbook/2026-04-27-friction-feedforward-bench-validation.md`'s Discussion section for the canonical example). Make it cheap for them to push back; you'll save days.
 
 ## Engineering Philosophy
 
@@ -168,6 +171,14 @@ codebase has actually been done — deviate from them only with clear reason.
   *what tradeoffs were accepted*. Future sessions (human or AI) reconstruct
   the full arc from these entries. When a Discussion section feels tedious
   to write, that's usually the one that'll save the most time later.
+  **The Discussion section is non-negotiable when any of the following
+  hold**: (a) a hypothesis was withdrawn or reframed mid-investigation,
+  (b) a non-obvious tradeoff was accepted, (c) the chosen approach beat
+  another reasonable approach for reasons future-readers wouldn't infer
+  from the code alone. Write the Discussion *before* the Fix section, so
+  the reasoning is fresh and the Fix's rationale is already in front of
+  you. Skipping Discussion in these cases is the single most common way
+  this project's investigations lose institutional memory.
 - **Protect the contracts you've landed.** The normative documents
   (`controller/REFERENCE_LAYER_CONTRACT.md`, `docs/DOCUMENTATION_GUIDE.md`,
   per-plan tuning methodologies) encode expensive lessons. Under pressure
