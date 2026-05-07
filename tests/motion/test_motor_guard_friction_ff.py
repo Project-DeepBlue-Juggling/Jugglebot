@@ -14,6 +14,7 @@ import math
 import time
 
 import numpy as np
+import pytest
 
 from jugglebot.motion.friction_ff_params import FrictionFFParams
 from jugglebot.motion.geometry import StewartGeometry
@@ -335,6 +336,17 @@ def test_friction_ff_clamped_leg_zeros():
     guard._motor_fb_pos_rev = guard._stroke_max_rev.copy()
     guard._mpc_base_vel_rps = np.full(6, 100.0)
     guard._mpc_base_timestamp = time.perf_counter() - MAX_EXTRAP_DT_S
+
+    # Sanity: with the velocity the interpolator will commit during the
+    # clamped cycle, friction-FF is non-zero — without this peek the
+    # post-clamp zero assertion would also pass if the friction code path
+    # were never entered (vacuous test).
+    guard._commanded_vel_ff_rps = guard._mpc_base_vel_rps.copy()
+    pre_clamp_friction = guard._compute_friction_ff_Nm().copy()
+    assert np.any(np.abs(pre_clamp_friction) > 1e-6), (
+        'pre-clamp friction is zero — test is degenerate, would pass '
+        'even if friction-FF code path were never invoked')
+
     guard._interpolate_and_send(guard.dt_target)
 
     # Stroke-clamp must have fired: position at stroke max, torque_ff zero.
@@ -434,3 +446,150 @@ def test_friction_ff_lead_clamped_leg_passes_torque_ff():
     # zeroed it), so friction should be nonzero on at least one leg.
     assert np.any(np.abs(guard._commanded_torque_ff_Nm) > 1e-9), (
         'Lead-clamp must preserve torque_ff — friction FF was zeroed too')
+
+    # Tighten: assert per-leg sign agreement with the model
+    # ``torque_ff = MPC_base + friction(extrapolated_v)``.  The Hermite
+    # interpolator commits a velocity slightly different from the raw
+    # base_vel (it samples the cubic at s = dt_since_cmd / T), so we
+    # avoid pinning the magnitude exactly — but the sign of friction is
+    # determined by sign(v) × ff_sign × Kt, which is robust to that
+    # discrepancy.  A regression that wired only one of {MPC base,
+    # friction} into torque_ff would fail this check.
+    guard._commanded_vel_ff_rps = guard._mpc_base_vel_rps.copy()
+    expected_friction = guard._compute_friction_ff_Nm().copy()
+    expected_torque = guard._mpc_base_torque_Nm + expected_friction
+    np.testing.assert_array_equal(
+        np.sign(guard._commanded_torque_ff_Nm),
+        np.sign(expected_torque),
+        err_msg='lead-clamped torque_ff sign disagrees with MPC + friction')
+
+
+def test_commanded_torque_ff_buffer_identity_across_estop():
+    """``_commanded_torque_ff_Nm`` keeps Python id across estop/disable/re-enable.
+
+    The buffer is the ``out=`` target of ``np.add`` in
+    ``_interpolate_and_send`` — rebinding in ``_zero_outputs`` would
+    silently break any future caller that caches ``id(buf)``.  Mirrors
+    the stability contract already held by ``_friction_ff_buf`` (see
+    ``test_friction_ff_buffer_identity``).
+    """
+    guard, ipc = _make_guard()
+    initial_torque_id = id(guard._commanded_torque_ff_Nm)
+    initial_pos_id = id(guard._commanded_pos_rev)
+    initial_vel_id = id(guard._commanded_vel_ff_rps)
+
+    # E-stop path — _trigger_estop calls _zero_outputs.
+    guard._trigger_estop('test')
+    assert id(guard._commanded_torque_ff_Nm) == initial_torque_id, \
+        'estop must not rebind _commanded_torque_ff_Nm'
+    assert id(guard._commanded_pos_rev) == initial_pos_id, \
+        'estop must not rebind _commanded_pos_rev'
+    assert id(guard._commanded_vel_ff_rps) == initial_vel_id, \
+        'estop must not rebind _commanded_vel_ff_rps'
+
+    # Disable path — also calls _zero_outputs.
+    guard.mode = GuardMode.ENABLED
+    ipc.inject(TOPIC_MODE, make_mode_command('disable'))
+    guard._process_ipc()
+    assert id(guard._commanded_torque_ff_Nm) == initial_torque_id
+    assert id(guard._commanded_pos_rev) == initial_pos_id
+    assert id(guard._commanded_vel_ff_rps) == initial_vel_id
+
+    # Re-enable — does not call _zero_outputs.
+    _enable(guard, ipc)
+    assert id(guard._commanded_torque_ff_Nm) == initial_torque_id
+
+
+def test_friction_ff_scratch_buffer_identity():
+    """All friction-FF scratch buffers keep Python id across many calls.
+
+    Extends the buffer-identity contract from ``_friction_ff_buf`` to
+    every internal scratch buffer — guarantees the zero-allocation
+    rewrite of ``_compute_friction_ff_Nm`` does not silently regress to
+    per-call allocation if a future edit reaches for ``np.abs(v)`` etc.
+    instead of ``np.abs(v, out=...)``.
+    """
+    guard, _ = _make_guard()
+    guard._friction_ff_params = _params(enabled=True)
+    rng = np.random.default_rng(7)
+    ids = {
+        '_friction_ff_buf':    id(guard._friction_ff_buf),
+        '_friction_av':        id(guard._friction_av),
+        '_friction_sgn':       id(guard._friction_sgn),
+        '_friction_tmp':       id(guard._friction_tmp),
+        '_friction_stribeck':  id(guard._friction_stribeck),
+        '_friction_boosted':   id(guard._friction_boosted),
+        '_friction_in_boost':  id(guard._friction_in_boost),
+        '_friction_dead_zone': id(guard._friction_dead_zone),
+        '_friction_iq':        id(guard._friction_iq),
+        '_friction_iq_total':  id(guard._friction_iq_total),
+        '_friction_tau_diff':  id(guard._friction_tau_diff),
+        '_friction_kt_signed': id(guard._friction_kt_signed),
+    }
+    for _ in range(1000):
+        guard._commanded_vel_ff_rps = rng.uniform(-2.0, 2.0, size=6)
+        guard._compute_friction_ff_Nm()
+    for name, initial in ids.items():
+        assert id(getattr(guard, name)) == initial, (
+            f'{name} was rebound during compute — zero-alloc contract '
+            f'violated')
+
+
+def test_friction_ff_no_steady_state_alloc():
+    """In steady state ``_compute_friction_ff_Nm`` allocates ~zero ndarrays.
+
+    Uses ``tracemalloc`` to measure heap growth across 1000 compute
+    calls AFTER a warm-up call (which fills the derived-params cache).
+    The threshold (4 KiB) is generous: a real per-call allocation
+    regression would produce hundreds of KiB of growth (1000 calls ×
+    ~10 ndarrays/call × ~100 bytes/ndarray header).  Anything under a
+    few KiB indicates true zero-alloc.
+    """
+    import tracemalloc
+
+    guard, _ = _make_guard()
+    guard._friction_ff_params = _params(enabled=True)
+    guard._commanded_vel_ff_rps = np.full(6, 0.5)
+    # Warm-up: trigger the derived-params cache fill so the measured
+    # window is steady-state only.
+    guard._compute_friction_ff_Nm()
+
+    tracemalloc.start()
+    snap0 = tracemalloc.take_snapshot()
+    for _ in range(1000):
+        guard._compute_friction_ff_Nm()
+    snap1 = tracemalloc.take_snapshot()
+    tracemalloc.stop()
+
+    diff = snap1.compare_to(snap0, 'lineno')
+    total_alloc = sum(stat.size_diff for stat in diff if stat.size_diff > 0)
+    assert total_alloc < 4096, (
+        f'_compute_friction_ff_Nm allocated {total_alloc} bytes over '
+        f'1000 calls — zero-alloc contract violated')
+
+
+@pytest.mark.parametrize('v_cmd, expect_boost', [
+    (1e-4 - 1e-12, False),  # below dead-zone clamp → load_offset only
+    (1e-4,         True),   # exact edge: boost branch fires (av >= 1e-4)
+    (1e-4 + 1e-12, True),   # just above edge: boost branch
+])
+def test_friction_ff_dead_zone_edge(v_cmd, expect_boost):
+    """Lock in the dead-zone-vs-boost band edge at av == 1e-4.
+
+    The bench reference uses strict ``< 1e-4`` for the dead zone, and
+    the port's boost band uses ``av >= 1e-4 & av < threshold``.  This
+    test pins both edges so any future tweak to the constant or the
+    inequality direction trips the test.
+    """
+    guard, _ = _make_guard()
+    p = _params(enabled=True, load_offset_A=np.zeros(6))  # isolate friction
+    guard._friction_ff_params = p
+    guard._commanded_vel_ff_rps = np.full(6, v_cmd)
+    out = guard._compute_friction_ff_Nm()
+    if expect_boost:
+        # Boost band: |out| ≈ τ_s × Kt + viscous ε
+        target = p.tau_s_A[0] * p.motor_kt_nm_per_a
+        np.testing.assert_allclose(np.abs(out), target, rtol=0.01)
+    else:
+        # Dead zone: load_offset only (zero here) ⇒ FF is zero
+        np.testing.assert_array_equal(out, np.zeros(6))

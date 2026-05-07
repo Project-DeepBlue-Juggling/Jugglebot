@@ -263,14 +263,30 @@ class MotorGuard:
         # can construct a guard with a custom params instance via
         # ``self._friction_ff_params = ...`` before any compute.
         self._friction_ff_params: FrictionFFParams = _load_friction_ff_params()
-        # Preallocated result buffer.  ``_compute_friction_ff_Nm`` writes
-        # in-place via ``buf[:] = ...`` so the buffer's Python id is stable
-        # across calls (verified by tests/motion/test_motor_guard_friction_ff
-        # ::test_friction_ff_buffer_identity).  Length-6 temporaries from
-        # np.abs / np.sign / np.exp / np.where are tolerated — motor_guard's
-        # 500 Hz loop is not bound by the MPC 40 Hz hot-loop zero-allocation
-        # contract (logbook/2026-04-23-hot-loop-zero-allocation-contract.md).
-        self._friction_ff_buf = np.zeros(6)
+        # Pre-allocated friction-FF buffers.  All length-6, all reused
+        # across calls — ``_compute_friction_ff_Nm`` makes zero per-call
+        # ndarray allocations beyond these buffers (zero-allocation hot
+        # path at 500 Hz; verified by
+        # ``test_friction_ff_scratch_buffer_identity`` and
+        # ``test_friction_ff_no_steady_state_alloc``).  Buffer
+        # identities are stable across enable/disable/estop cycles.
+        self._friction_ff_buf = np.zeros(6)            # result (returned)
+        self._friction_av = np.zeros(6)                # |v|
+        self._friction_sgn = np.zeros(6)               # sign(v)
+        self._friction_tmp = np.zeros(6)               # general scratch
+        self._friction_stribeck = np.zeros(6)          # Stribeck term
+        self._friction_boosted = np.zeros(6)           # boost-band term
+        self._friction_in_boost = np.zeros(6, dtype=bool)   # boost mask
+        self._friction_dead_zone = np.zeros(6, dtype=bool)  # |v|<1e-4 mask
+        self._friction_iq = np.zeros(6)                # iq_friction
+        self._friction_iq_total = np.zeros(6)          # iq_total
+        # Cached derived params, recomputed when the params instance
+        # changes (FrictionFFParams is frozen, so ``is`` identity tracks
+        # content).  First compute call after __init__ or after a test
+        # swap performs the cache fill in-place — still zero-alloc.
+        self._friction_params_cached: FrictionFFParams | None = None
+        self._friction_tau_diff = np.zeros(6)          # tau_s - tau_c
+        self._friction_kt_signed = np.zeros(6)         # ff_sign * Kt
 
         # --- Workspace monitoring ---
         self._workspace_limits = WorkspaceLimits.from_geometry(self.geom)
@@ -649,7 +665,7 @@ class MotorGuard:
 
         At |v_cmd| ≥ stiction_boost_threshold the magnitude is the
         Stribeck taper τ_c + (τ_s − τ_c)·exp(−(|v|/ω_s)²) + b·|v|.  In the
-        boost band (1e-4, threshold) the magnitude is the full stiction
+        boost band [1e-4, threshold) the magnitude is the full stiction
         peak τ_s + b·|v| — closes the residual ~12 % FF undersize at low
         velocity that the bench sweep documented (see
         logbook/2026-04-27-friction-feedforward-bench-validation.md).  At
@@ -663,44 +679,91 @@ class MotorGuard:
         torque to ``_commanded_torque_ff_Nm`` (see §2 of
         plans/active/friction-ff-motor-guard-integration.md).
 
+        Zero-allocation contract: this function makes no per-call
+        ndarray allocations.  All temporaries are pre-allocated in
+        ``__init__`` (``_friction_av`` etc.) and reused across calls
+        via numpy ``out=`` ufunc kwargs.  Verified by
+        ``test_friction_ff_scratch_buffer_identity`` and
+        ``test_friction_ff_no_steady_state_alloc``.
+
         This is the vectorised port of ``friction_ff_nm`` in
         tests/hardware/friction_ff_demo.py:167-205.
         """
         p = self._friction_ff_params
+        buf = self._friction_ff_buf
         if not p.enabled:
-            self._friction_ff_buf.fill(0.0)
-            return self._friction_ff_buf
+            buf.fill(0.0)
+            return buf
+
+        # Refresh derived-params cache when the params instance changes.
+        # FrictionFFParams is frozen, so ``is`` identity tracks content;
+        # tests that swap ``self._friction_ff_params`` get a new instance
+        # and trigger an in-place recompute on the next call.
+        if self._friction_params_cached is not p:
+            np.subtract(p.tau_s_A, p.tau_c_A, out=self._friction_tau_diff)
+            np.multiply(p.ff_sign, p.motor_kt_nm_per_a,
+                        out=self._friction_kt_signed)
+            self._friction_params_cached = p
 
         v = self._commanded_vel_ff_rps
-        av = np.abs(v)
-        sgn = np.sign(v)
+        av = self._friction_av
+        sgn = self._friction_sgn
+        tmp = self._friction_tmp
+        stribeck = self._friction_stribeck
+        boosted = self._friction_boosted
+        in_boost = self._friction_in_boost
+        dead = self._friction_dead_zone
+        iq = self._friction_iq
+        iq_total = self._friction_iq_total
 
-        # Stribeck taper (all six legs vectorised — per-leg parameters)
-        stribeck = (p.tau_c_A
-                    + (p.tau_s_A - p.tau_c_A)
-                      * np.exp(-(av / p.omega_s_rps) ** 2)
-                    + p.b_A_per_rps * av)
-        # Stiction-boost band: τ_s instead of Stribeck-tapered for |v| in
-        # (1e-4, threshold).  Both branches share +b·|v| so the viscous
-        # term is continuous across the band edge — the only step is
-        # (τ_s − Stribeck(threshold)), which is bounded.
-        boosted = p.tau_s_A + p.b_A_per_rps * av
-        in_boost = (av >= 1e-4) & (av < p.stiction_boost_threshold_rps)
-        iq_friction = np.where(in_boost, boosted, stribeck)
-        # At v ≈ 0 (commanded hold), no friction term — only the constant
-        # load offset.  Mirrors friction_ff_demo.py:192-195 and avoids
-        # injecting stiction torque against an integrator that is already
-        # holding position.
-        iq_friction = np.where(av < 1e-4, 0.0, iq_friction)
+        np.abs(v, out=av)
+        np.sign(v, out=sgn)
 
-        # Sign convention: -sign(v) × |iq_friction| + load_offset, then
-        # mapped through ff_sign × Kt.  Direct vectorisation of the bench
-        # reference at friction_ff_demo.py:196-204.
-        iq_total = -sgn * iq_friction + p.load_offset_A
-        self._friction_ff_buf[:] = (iq_total
-                                    * p.ff_sign
-                                    * p.motor_kt_nm_per_a)
-        return self._friction_ff_buf
+        # Stribeck taper:
+        #   stribeck = tau_c + (tau_s − tau_c) · exp(−(av/omega_s)²) + b·av
+        np.divide(av, p.omega_s_rps, out=tmp)            # tmp = av/ω_s
+        np.square(tmp, out=tmp)                          # tmp = (av/ω_s)²
+        np.negative(tmp, out=tmp)                        # tmp = −(av/ω_s)²
+        np.exp(tmp, out=tmp)                             # tmp = exp(...)
+        np.multiply(self._friction_tau_diff, tmp, out=stribeck)  # (τ_s−τ_c)·exp
+        np.add(stribeck, p.tau_c_A, out=stribeck)        # + τ_c
+        np.multiply(p.b_A_per_rps, av, out=tmp)          # tmp = b·av
+        np.add(stribeck, tmp, out=stribeck)              # + b·av
+
+        # Boost-band term: boosted = τ_s + b·av
+        np.multiply(p.b_A_per_rps, av, out=boosted)
+        np.add(boosted, p.tau_s_A, out=boosted)
+
+        # in_boost = (av >= 1e-4) & (av < threshold).  Reuse `dead` as a
+        # scratch bool buffer for the ``< threshold`` term — it gets
+        # overwritten with the dead-zone mask a few lines down.
+        np.greater_equal(av, 1e-4, out=in_boost)
+        np.less(av, p.stiction_boost_threshold_rps, out=dead)
+        np.logical_and(in_boost, dead, out=in_boost)
+
+        # iq = boosted where in_boost else stribeck.  ``copyto(..., where=)``
+        # is the in-place equivalent of np.where (no temporary).
+        np.copyto(iq, stribeck)
+        np.copyto(iq, boosted, where=in_boost)
+
+        # Dead zone (|v| < 1e-4): iq = 0.  This explicit clamp is the
+        # load-bearing safety net for the v=0 case when load_offset is
+        # non-zero — ``np.sign(0) == 0`` would already kill the friction
+        # term in the next step, but the clamp makes the intent explicit
+        # and survives any future change to how sgn is computed (e.g.
+        # switching to copysign, which preserves signbit on -0.0).
+        # Boolean indexing assignment is in-place; no temporary.
+        np.less(av, 1e-4, out=dead)
+        iq[dead] = 0.0
+
+        # iq_total = −sgn·iq + load_offset
+        np.multiply(sgn, iq, out=iq_total)
+        np.negative(iq_total, out=iq_total)
+        np.add(iq_total, p.load_offset_A, out=iq_total)
+
+        # buf = iq_total · (ff_sign · Kt)  [pre-cached]
+        np.multiply(iq_total, self._friction_kt_signed, out=buf)
+        return buf
 
     # ------------------------------------------------------------------
     # Safety checks
@@ -1021,10 +1084,19 @@ class MotorGuard:
         self._fault_state = reason
 
     def _zero_outputs(self) -> None:
-        """Zero all control outputs (safe state)."""
-        self._commanded_pos_rev = np.zeros(6)
-        self._commanded_vel_ff_rps = np.zeros(6)
-        self._commanded_torque_ff_Nm = np.zeros(6)
+        """Zero all control outputs (safe state).
+
+        In-place fill (not rebind) keeps buffer identity stable across
+        estop / disable / re-enable cycles.  The torque buffer in
+        particular is the ``out=`` target for ``np.add`` in
+        ``_interpolate_and_send`` — preserving its identity matches
+        the identity-stability contract held by the sibling
+        ``_friction_ff_buf`` and prevents a silent buffer swap on
+        E-stop from biting future callers that cache ``id(...)``.
+        """
+        self._commanded_pos_rev.fill(0.0)
+        self._commanded_vel_ff_rps.fill(0.0)
+        self._commanded_torque_ff_Nm.fill(0.0)
 
     def _reset_mpc_state(self) -> None:
         """Reset all MPC pass-through state."""
