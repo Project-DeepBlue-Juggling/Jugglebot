@@ -53,6 +53,15 @@ dynamics:
                                                 #   Method 1: hollow cylinder model (50% mass at ~35mm radius) → 2.76e-4
                                                 #   Method 2: τ/α from datasheet (3.86 Nm, 42.7 ms to 603 rad/s) → 2.73e-4
                                                 # Rounded to 2.75e-4. May be refined via system ID in Phase 6.
+  motor_kt_nm_per_a: 0.0624                   # Motor torque constant (Nm/A) for ODrive D6374-150Kv.
+                                                # Measured value from the Phase 2 multi-weight bench fit (R²=0.994);
+                                                # canonical historical reference: tests/hardware/single_leg_test.py:92.
+                                                # Datasheet theoretical value would be ~0.0637 (= 60/(2π·150 Kv)).
+                                                # Used by the friction feedforward stack to convert iq (A) to
+                                                # torque (Nm), and by tests/hardware/friction_ff_demo.py.
+                                                # Promoted to config 2026-05-07 in preparation for friction-FF
+                                                # integration into motor_guard (see plans/active/friction-ff-
+                                                # motor-guard-integration.md).
   motor_pole_pairs: 7                         # Pole pairs in the leg motor (D6374-150Kv outrunner).
                                                 # Mirror of `config/ODrive config Files/odrive_pro_leg_config.json:145`.
                                                 # Used by diagnose.py to derive electrical angle from `pos_estimate`:
