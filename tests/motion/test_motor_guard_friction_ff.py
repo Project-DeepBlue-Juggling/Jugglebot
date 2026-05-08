@@ -4,8 +4,16 @@ Covers the contract from
 ``plans/active/friction-ff-motor-guard-integration.md`` §2 — single
 canonical enforcement point ``MotorGuard._compute_friction_ff_Nm`` plus
 the additive integration into ``_commanded_torque_ff_Nm``.  Test list
-mirrors §7.1.  The function is the vectorised port of the bench-validated
-``friction_ff_nm`` in ``tests/hardware/friction_ff_demo.py:167-205``.
+mirrors §7.1, updated for PR 2.1's smooth-gate replacement of the
+bench-era boost band.  See
+``logbook/2026-05-08-friction-ff-platform-limit-cycle.md`` for why the
+boost band's hard 0 → τ_s step at v=±1e-4 was removed.
+
+The new function is:
+    iq_friction(v) = stribeck(v) · gate(v)
+where:
+    stribeck(v) = τ_c + (τ_s−τ_c)·exp(−(|v|/ω_s)²) + b·|v|
+    gate(v)     = 1 − exp(−(|v|/v_gate)²)
 """
 
 from __future__ import annotations
@@ -77,12 +85,18 @@ def _enable(guard: MotorGuard, ipc: _MockIPC) -> None:
 
 
 def _params(enabled: bool = True, **overrides) -> FrictionFFParams:
-    """Build a ``FrictionFFParams`` for tests.  Bench-fit defaults; overrides
-    let individual tests pin specific scalars or per-leg arrays."""
+    """Build a ``FrictionFFParams`` for tests.  Bench-fit τ_c/τ_s/ω_s/b,
+    platform-default ff_sign=+1 and v_gate=0.05.  Overrides let
+    individual tests pin specific scalars or per-leg arrays.
+
+    Scalar overrides (other than ``enabled``, ``v_gate_rps``,
+    ``motor_kt_nm_per_a``) auto-broadcast to a length-6 array so tests
+    can write e.g. ``_params(tau_s_A=5.0)`` to set every leg to 5 A.
+    """
     base = dict(
         enabled=enabled,
-        stiction_boost_threshold_rps=0.20,
-        ff_sign=np.full(6, -1.0),
+        v_gate_rps=0.05,
+        ff_sign=np.full(6, +1.0),
         tau_c_A=np.full(6, 1.094),
         tau_s_A=np.full(6, 1.953),
         omega_s_rps=np.full(6, 0.251),
@@ -92,7 +106,7 @@ def _params(enabled: bool = True, **overrides) -> FrictionFFParams:
     )
     for k, v in overrides.items():
         if isinstance(v, (int, float)) and k not in (
-                'enabled', 'stiction_boost_threshold_rps', 'motor_kt_nm_per_a'):
+                'enabled', 'v_gate_rps', 'motor_kt_nm_per_a'):
             base[k] = np.full(6, float(v))
         else:
             base[k] = v
@@ -101,21 +115,27 @@ def _params(enabled: bool = True, **overrides) -> FrictionFFParams:
 
 def _ref_friction_ff_nm(v_cmd: float, p: FrictionFFParams,
                         leg: int = 0) -> float:
-    """Scalar reference port of friction_ff_nm (bench, friction_ff_demo.py).
+    """Scalar reference port of the smooth-gate friction-FF function.
 
-    Used as ground truth for cross-checking the vectorised compute output.
+    This is the analytic ground truth for cross-checking the vectorised
+    ``_compute_friction_ff_Nm``.  The reference uses Python ``math``
+    (not numpy) so it is independent of the production path's ufunc
+    chain — any divergence flags an implementation bug.
+
+    Formula (mirrors motor_guard.py:_compute_friction_ff_Nm):
+        stribeck = τ_c + (τ_s−τ_c)·exp(−(|v|/ω_s)²) + b·|v|
+        gate     = 1 − exp(−(|v|/v_gate)²)
+        iq_total = −sign(v)·(stribeck·gate) + load_offset
+        torque   = iq_total · ff_sign · Kt
     """
     av = abs(v_cmd)
-    if av < 1e-4:
-        return p.load_offset_A[leg] * p.ff_sign[leg] * p.motor_kt_nm_per_a
-    s = math.copysign(1.0, v_cmd)
-    if av < p.stiction_boost_threshold_rps:
-        iq_friction = p.tau_s_A[leg] + p.b_A_per_rps[leg] * av
-    else:
-        iq_friction = (p.tau_c_A[leg]
-                       + (p.tau_s_A[leg] - p.tau_c_A[leg])
-                         * math.exp(-(av / p.omega_s_rps[leg]) ** 2)
-                       + p.b_A_per_rps[leg] * av)
+    s = 0.0 if av == 0.0 else math.copysign(1.0, v_cmd)
+    stribeck = (p.tau_c_A[leg]
+                + (p.tau_s_A[leg] - p.tau_c_A[leg])
+                  * math.exp(-(av / p.omega_s_rps[leg]) ** 2)
+                + p.b_A_per_rps[leg] * av)
+    gate = 1.0 - math.exp(-(av / p.v_gate_rps) ** 2)
+    iq_friction = stribeck * gate
     iq_total = -s * iq_friction + p.load_offset_A[leg]
     return iq_total * p.ff_sign[leg] * p.motor_kt_nm_per_a
 
@@ -190,53 +210,151 @@ def test_friction_ff_taper_to_coulomb():
         f'|FF| {np.abs(out)} vs τ_c·Kt {target} — diff > 5 %')
 
 
-def test_friction_ff_boost_at_low_v():
-    """At |v| = 0.5 × boost_threshold, magnitude is within 5 % of τ_s × Kt."""
-    guard, _ = _make_guard()
-    p = _params(enabled=True)
-    guard._friction_ff_params = p
-    v_cmd = 0.5 * p.stiction_boost_threshold_rps
-    guard._commanded_vel_ff_rps = np.full(6, v_cmd)
-    out = guard._compute_friction_ff_Nm()
-    target = p.tau_s_A[0] * p.motor_kt_nm_per_a
-    # Boosted value = (τ_s + b·|v|) × Kt — viscous term adds ~0.18 % at
-    # v=0.10 with b=0.0173.  Within 5 %.
-    assert np.all(np.abs(np.abs(out) - target) / target < 0.05), (
-        f'|FF| {np.abs(out)} vs τ_s·Kt {target} — diff > 5 %')
+def test_friction_ff_smooth_gate_at_v_gate():
+    """At |v| = v_gate, gate value is exactly 1 − e⁻¹ ≈ 0.6321.
 
-
-def test_friction_ff_continuity_at_boost_threshold():
-    """Discontinuity at threshold edge equals the predictable Stribeck-vs-τ_s gap.
-
-    Sanity check, not a tight tolerance — confirms the only step at the
-    band edge is the (τ_s − Stribeck(threshold)) term, with the viscous
-    term shared between both branches.
+    This pins the canonical operating point of the smooth gate.  At
+    |v| = v_gate the magnitude is ~63 % of the un-gated Stribeck value
+    — by definition, since gate(v_gate) = 1 − exp(−1).  Any drift of
+    this value would mean the gate function changed; tests below use
+    this as the reference.
     """
     guard, _ = _make_guard()
     p = _params(enabled=True)
     guard._friction_ff_params = p
-    eps = 1e-6
-    v_below = p.stiction_boost_threshold_rps - eps
-    v_above = p.stiction_boost_threshold_rps + eps
+    v_cmd = p.v_gate_rps
+    guard._commanded_vel_ff_rps = np.full(6, v_cmd)
+    out = guard._compute_friction_ff_Nm()
 
-    guard._commanded_vel_ff_rps = np.full(6, v_below)
-    below = guard._compute_friction_ff_Nm().copy()
-    guard._commanded_vel_ff_rps = np.full(6, v_above)
-    above = guard._compute_friction_ff_Nm().copy()
-
-    # Predicted gap: (τ_s − Stribeck(threshold)) × Kt × ff_sign
-    av = p.stiction_boost_threshold_rps
+    av = v_cmd
     stribeck = (p.tau_c_A[0]
                 + (p.tau_s_A[0] - p.tau_c_A[0])
                   * math.exp(-(av / p.omega_s_rps[0]) ** 2)
                 + p.b_A_per_rps[0] * av)
-    boosted = p.tau_s_A[0] + p.b_A_per_rps[0] * av
-    expected_gap = (boosted - stribeck) * p.motor_kt_nm_per_a  # positive iq diff
-    # Magnitudes: |below| should exceed |above| by expected_gap.  Tolerance
-    # absorbs the eps offset on either side of the threshold (b·eps + slope of
-    # Stribeck taper at threshold × eps), which contributes a few ×10⁻⁷ Nm.
+    expected_gate = 1.0 - math.exp(-1.0)   # = 0.6321...
+    expected = stribeck * expected_gate * p.motor_kt_nm_per_a
+    # ff_sign=+1, sgn=+1 → torque = -expected (sign flip)
     np.testing.assert_allclose(
-        np.abs(below) - np.abs(above), expected_gap, atol=1e-6)
+        np.abs(out), np.full(6, expected), rtol=1e-9,
+        err_msg='gate(v_gate) should be 1 − e⁻¹ ≈ 0.6321')
+
+
+def test_friction_ff_smooth_gate_kills_low_v():
+    """At |v| ≪ v_gate, the smooth gate suppresses friction below the
+    position-loop's natural absorption threshold.
+
+    THIS IS THE PR 2.1 REGRESSION GUARD.  In PR 2 the boost band emitted
+    full ±τ_s × Kt = ±0.122 Nm for any |v| > 1e-4, which kicked the
+    platform into a 5 Hz limit cycle.  The smooth gate's gate(v) = 1 −
+    exp(−(|v|/v_gate)²) at small |v| ≈ (|v|/v_gate)² (Taylor expansion),
+    so torque scales as |v|² — heavily damped at low velocity.
+
+    At |v| = v_gate/10 = 0.005 rev/s: gate ≈ 0.01.  At v_gate=0.05 with
+    bench params, expected |τ_ff| ≈ 0.012 Nm × 0.01 ≈ 1 mNm.  We assert
+    < 5 mNm to leave headroom for parameter perturbations.  The bench
+    boost band would have emitted 0.122 Nm at this same |v| — 100×
+    higher than the new smooth-gate value.
+    """
+    guard, _ = _make_guard()
+    p = _params(enabled=True)
+    guard._friction_ff_params = p
+    v_cmd = p.v_gate_rps / 10.0   # 0.005 rev/s = 5 mrev/s
+    guard._commanded_vel_ff_rps = np.full(6, v_cmd)
+    out = guard._compute_friction_ff_Nm()
+    assert np.all(np.abs(out) < 0.005), (
+        f'smooth gate must keep |τ_ff| below 5 mNm at |v|=v_gate/10 — got {out}')
+
+
+def test_friction_ff_smooth_gate_continuous_through_zero():
+    """The function is C⁰ (continuous) and C¹ (smooth) through v=0.
+
+    No discontinuity at any v_cmd — verifies the structural fix from
+    PR 2.1.  Sample the function at 200 points spanning [-2·v_gate,
+    +2·v_gate] and assert the per-step delta is bounded.
+
+    Per-step delta bound: with the smooth gate, the Lipschitz constant
+    of |τ_ff| is bounded by approximately 2·τ_s·Kt/v_gate.  For default
+    params that's ~5 Nm/(rev/s).  Across our 200-point sweep with step
+    Δv = 4·v_gate/200 = 1 mrev/s, the per-step delta should be well
+    below 5 mNm.
+    """
+    guard, _ = _make_guard()
+    p = _params(enabled=True)
+    guard._friction_ff_params = p
+
+    vs = np.linspace(-2.0 * p.v_gate_rps, 2.0 * p.v_gate_rps, 201)
+    out_vec = np.empty_like(vs)
+    for i, v in enumerate(vs):
+        guard._commanded_vel_ff_rps = np.full(6, v)
+        out_vec[i] = guard._compute_friction_ff_Nm()[0]
+
+    deltas = np.abs(np.diff(out_vec))
+    # Per the Lipschitz bound: max delta ≈ 2·τ_s·Kt / v_gate * Δv
+    #   = 2 · 1.953 · 0.0624 / 0.05 · (4·0.05/200) = 4.87 mNm
+    # Use 6 mNm tolerance (20 % headroom).
+    assert deltas.max() < 6e-3, (
+        f'|τ_ff| step exceeded smooth-gate Lipschitz bound: '
+        f'max Δ = {deltas.max()*1e3:.3f} mNm at v={vs[deltas.argmax()]:+.4f}')
+
+
+def test_friction_ff_smooth_gate_no_kick_on_baseline_holdnoise():
+    """Replay realistic BASELINE hold-phase vel_ff noise through the FF
+    function and assert the resulting torque stays small.
+
+    Hold-phase vel_ff in BASELINE (FF off) had this distribution
+    (measured 2026-05-08 from rosbag 2026-05-08_13-16-52):
+        median ≈ 0 rev/s, 99%ile ≈ 0.021 rev/s, max ≈ 0.29 rev/s.
+    A handful of samples cross [0.01, 0.20) — under the OLD boost band
+    those would have emitted full ±0.122 Nm kicks, bootstrapping the
+    limit cycle.  Under the smooth gate, the same samples should emit
+    far smaller torques.
+
+    This test synthesises a vel_ff stream matching the BASELINE
+    distribution and asserts that the resulting torque_ff stays below
+    a hold-quality threshold.  If a future change reintroduces a hard
+    step or removes the gate, this regression fires loudly.
+    """
+    guard, _ = _make_guard()
+    p = _params(enabled=True)
+    guard._friction_ff_params = p
+
+    # Synthesise vel_ff matching baseline-hold distribution: a Laplace
+    # with scale 0.005 (matches median≈0, 90%ile≈0.012, 99%ile≈0.025)
+    # plus rare excursions up to 0.30 rev/s.
+    rng = np.random.default_rng(42)
+    n_samples = 5000
+    vs = rng.laplace(loc=0.0, scale=0.005, size=n_samples)
+    # Inject 1 % large-excursion samples
+    excursion_idx = rng.choice(n_samples, size=n_samples // 100, replace=False)
+    vs[excursion_idx] = rng.uniform(-0.30, 0.30, size=excursion_idx.size)
+
+    torques = np.empty(n_samples)
+    for i, v in enumerate(vs):
+        guard._commanded_vel_ff_rps = np.full(6, v)
+        torques[i] = guard._compute_friction_ff_Nm()[0]
+
+    abs_torques = np.abs(torques)
+    median_abs = np.median(abs_torques)
+    p99_abs = np.percentile(abs_torques, 99)
+    max_abs = abs_torques.max()
+
+    # In a clean baseline-hold replay, the median torque should be tiny.
+    # The bench boost band would have given ~0.122 Nm median (since 95 %+
+    # of |v| samples cross 1e-4); smooth gate at scale=0.005 hold-noise
+    # gives gate ≈ (0.005/0.05)² = 0.01, torque ≈ 1.2 mNm.
+    assert median_abs < 0.005, (
+        f'smooth-gate median torque on baseline-hold replay too high: '
+        f'{median_abs*1e3:.2f} mNm (regression of the limit-cycle fix)')
+    # The 99th percentile catches any rare excursions.  Should still be
+    # well below the position-loop's absorption capacity.
+    assert p99_abs < 0.10, (
+        f'smooth-gate 99%ile torque too high: {p99_abs*1e3:.1f} mNm')
+    # Max can hit the Stribeck peak during large-excursion samples;
+    # bound it to the un-gated Stribeck max plus epsilon.
+    expected_max_bound = 1.05 * p.tau_s_A[0] * p.motor_kt_nm_per_a
+    assert max_abs < expected_max_bound, (
+        f'smooth-gate max torque {max_abs*1e3:.1f} mNm exceeds '
+        f'Stribeck max bound {expected_max_bound*1e3:.1f} mNm')
 
 
 def test_friction_ff_per_leg_independence():
@@ -508,6 +626,10 @@ def test_friction_ff_scratch_buffer_identity():
     rewrite of ``_compute_friction_ff_Nm`` does not silently regress to
     per-call allocation if a future edit reaches for ``np.abs(v)`` etc.
     instead of ``np.abs(v, out=...)``.
+
+    Buffer set updated in PR 2.1: removed the boost-band buffers
+    (``_friction_boosted``, ``_friction_in_boost``, ``_friction_dead_zone``)
+    and added ``_friction_gate`` for the smooth-gate replacement.
     """
     guard, _ = _make_guard()
     guard._friction_ff_params = _params(enabled=True)
@@ -518,9 +640,7 @@ def test_friction_ff_scratch_buffer_identity():
         '_friction_sgn':       id(guard._friction_sgn),
         '_friction_tmp':       id(guard._friction_tmp),
         '_friction_stribeck':  id(guard._friction_stribeck),
-        '_friction_boosted':   id(guard._friction_boosted),
-        '_friction_in_boost':  id(guard._friction_in_boost),
-        '_friction_dead_zone': id(guard._friction_dead_zone),
+        '_friction_gate':      id(guard._friction_gate),
         '_friction_iq':        id(guard._friction_iq),
         '_friction_iq_total':  id(guard._friction_iq_total),
         '_friction_tau_diff':  id(guard._friction_tau_diff),
@@ -634,32 +754,42 @@ def test_friction_ff_enable_override_preserves_other_params():
         guard_yaml._friction_ff_params.ff_sign)
     assert (guard_force._friction_ff_params.motor_kt_nm_per_a
             == guard_yaml._friction_ff_params.motor_kt_nm_per_a)
-    assert (guard_force._friction_ff_params.stiction_boost_threshold_rps
-            == guard_yaml._friction_ff_params.stiction_boost_threshold_rps)
+    assert (guard_force._friction_ff_params.v_gate_rps
+            == guard_yaml._friction_ff_params.v_gate_rps)
 
 
-@pytest.mark.parametrize('v_cmd, expect_boost', [
-    (1e-4 - 1e-12, False),  # below dead-zone clamp → load_offset only
-    (1e-4,         True),   # exact edge: boost branch fires (av >= 1e-4)
-    (1e-4 + 1e-12, True),   # just above edge: boost branch
+@pytest.mark.parametrize('v_factor, gate_check', [
+    (0.1,  lambda g: g < 0.02),    # |v|=v_gate/10:  gate ~0.01
+    (1.0,  lambda g: 0.62 < g < 0.64),  # |v|=v_gate:     gate = 1−1/e ≈ 0.6321
+    (2.0,  lambda g: 0.98 < g < 0.99),  # |v|=2·v_gate:   gate ≈ 0.982
+    (5.0,  lambda g: g > 0.999),   # |v|=5·v_gate:   gate ≈ 1.000
 ])
-def test_friction_ff_dead_zone_edge(v_cmd, expect_boost):
-    """Lock in the dead-zone-vs-boost band edge at av == 1e-4.
+def test_friction_ff_smooth_gate_table(v_factor, gate_check):
+    """Pin the smooth-gate function values at canonical points.
 
-    The bench reference uses strict ``< 1e-4`` for the dead zone, and
-    the port's boost band uses ``av >= 1e-4 & av < threshold``.  This
-    test pins both edges so any future tweak to the constant or the
-    inequality direction trips the test.
+    Replaces PR 2's parametrised dead-zone-edge test, which checked the
+    hard 0 → τ_s step at v=±1e-4 — that step is exactly what produced
+    the platform limit cycle.  With the smooth gate there is no edge,
+    so this test pins the gate's shape at canonical operating points
+    (10 %, 100 %, 200 %, 500 % of v_gate) instead.
+
+    Any future tweak to the gate function form (e.g. swap to tanh)
+    would break this table — flagging the change as deliberate.
     """
     guard, _ = _make_guard()
-    p = _params(enabled=True, load_offset_A=np.zeros(6))  # isolate friction
+    p = _params(enabled=True)
     guard._friction_ff_params = p
+    v_cmd = v_factor * p.v_gate_rps
     guard._commanded_vel_ff_rps = np.full(6, v_cmd)
     out = guard._compute_friction_ff_Nm()
-    if expect_boost:
-        # Boost band: |out| ≈ τ_s × Kt + viscous ε
-        target = p.tau_s_A[0] * p.motor_kt_nm_per_a
-        np.testing.assert_allclose(np.abs(out), target, rtol=0.01)
-    else:
-        # Dead zone: load_offset only (zero here) ⇒ FF is zero
-        np.testing.assert_array_equal(out, np.zeros(6))
+
+    av = v_cmd
+    stribeck = (p.tau_c_A[0]
+                + (p.tau_s_A[0] - p.tau_c_A[0])
+                  * math.exp(-(av / p.omega_s_rps[0]) ** 2)
+                + p.b_A_per_rps[0] * av)
+    expected_full = stribeck * p.motor_kt_nm_per_a
+    actual_gate = np.abs(out[0]) / expected_full
+    assert gate_check(actual_gate), (
+        f'gate value at v={v_factor}·v_gate is {actual_gate:.4f} '
+        f'(expected per check: {gate_check.__doc__ or "see lambda"})')

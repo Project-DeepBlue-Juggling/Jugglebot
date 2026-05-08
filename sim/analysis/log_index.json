@@ -1,414 +1,413 @@
 {
-  "version": 1,
   "sessions": {
-    "mpc_20260418_164119.csv": {
-      "analyzed": true,
-      "last_analyzed": "2026-04-18T16:55:00Z",
-      "verdict": "PASS",
-      "flags_count": 1,
-      "phase": "post-walk-forward-plus-22ms-revert-validation",
-      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-18_16-41-02",
-      "logbook_entry": "2026-04-18-hold-fighting-motion-onset-jitter.md",
-      "notes": "Pure-Z 170->220 ramp. 99.7% solver success (1 timeout), 0.12mm final err. Clean."
-    },
-    "mpc_20260418_164142.csv": {
-      "analyzed": true,
-      "last_analyzed": "2026-04-18T16:55:00Z",
-      "verdict": "PASS",
-      "flags_count": 1,
-      "phase": "post-walk-forward-plus-22ms-revert-validation",
-      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-18_16-41-02",
-      "logbook_entry": "2026-04-17-mpc-fallback-cmd-sawtooth-stutter.md",
-      "notes": "Pure-Z 220->170 return. 98.5% success (2 timeouts), 0.32mm final err. Clean."
-    },
-    "mpc_20260418_164159.csv": {
-      "analyzed": true,
-      "last_analyzed": "2026-04-18T16:55:00Z",
-      "verdict": "PASS",
-      "flags_count": 1,
-      "phase": "post-walk-forward-plus-22ms-revert-validation",
-      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-18_16-41-02",
-      "logbook_entry": "2026-04-17-mpc-fallback-cmd-sawtooth-stutter.md",
-      "notes": "Pure-Y 0->50mm. 97.5% success (1 timeout), 1.12mm final err. Clean."
-    },
-    "mpc_20260418_164208.csv": {
-      "analyzed": true,
-      "last_analyzed": "2026-04-18T16:55:00Z",
-      "verdict": "NEEDS_ATTENTION",
-      "flags_count": 3,
-      "phase": "post-walk-forward-plus-22ms-revert-validation",
-      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-18_16-41-02",
-      "logbook_entry": "2026-04-17-mpc-fallback-cmd-sawtooth-stutter.md",
-      "notes": "Big 190mm X+Y diagonal (0,50,170) -> (77.7,-104.7,170) in 2.4s. 92.5% solver success (6 timeouts), but 44.85mm final err \u2014 platform physically couldn't finish in the given time window. Motion-time budget issue, not solver. Consider raising v_max from 140 to 200 mm/s."
-    },
-    "mpc_20260418_164222.csv": {
-      "analyzed": true,
-      "last_analyzed": "2026-04-18T16:55:00Z",
-      "verdict": "NEEDS_ATTENTION",
-      "flags_count": 6,
-      "phase": "post-walk-forward-plus-22ms-revert-validation",
-      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-18_16-41-02",
-      "logbook_entry": "2026-04-17-mpc-fallback-cmd-sawtooth-stutter.md",
-      "notes": "(70,-90,170) -> (0,0,220). 97.8% solver success (13 timeouts, max 7 consec), vs 25.8% two days ago \u2014 walk-forward + 22ms revert working. 0 cmd_jumps (clean). Remaining jitters cluster in two short windows: cold-start (steps 0-10, ~0.6s), and one mid-traversal burst (steps 31-38, t=1.2-1.5s) producing 15 small actual_ext jumps of 2-5mm at t=1.4-1.9s. Isolated CasADi 'Function_call returned a result with an error set' exception at step 488/t=12.81s \u2014 unknown, one-off, worth watching. Post Ctrl-C telemetry_stale events ignored per operator. Leg 3 RMS 2.1x median (persistent LEG2_TRACKING). Before/after: 440 consec timeouts -> 7, 37.7mm err -> 0, visible sawtooth -> small jitter."
-    },
-    "mpc_20260418_014959.csv": {
-      "analyzed": true,
-      "last_analyzed": "2026-04-18T02:05:00Z",
-      "verdict": "NEEDS_ATTENTION",
-      "flags_count": 3,
-      "phase": "post-walk-forward-fallback-multiaxis-session",
-      "notes": "Move 1/5 of single-rosbag session. Active->z=220 pure-Z up (15.1s). Success 98.5% (9 timeouts, max 3 consec). p50=10.8ms p95=13.6ms. Tracking RMS 2.35mm, final err 0.08mm. Close to 04-17 Move 1 baseline but 9x more timeouts. Lightly jerky observationally. cmd_jumps=0 (walk-forward fix holding).",
-      "ros2_session": null,
-      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-18_01-49-42"
-    },
-    "mpc_20260418_015027.csv": {
-      "analyzed": true,
-      "last_analyzed": "2026-04-18T02:05:00Z",
-      "verdict": "NEEDS_ATTENTION",
-      "flags_count": 3,
-      "phase": "post-walk-forward-fallback-multiaxis-session",
-      "notes": "Move 2/5. z=220->Active pure-Z down (5.1s). Success 94.5% (11 timeouts). p50=10.8ms p95=21.3ms max=39.6ms (budget 24). Tracking RMS 4.83mm, final 0.87mm. Degradation relative to Move 1.",
-      "ros2_session": null,
-      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-18_01-49-42"
-    },
-    "mpc_20260418_015044.csv": {
-      "analyzed": true,
-      "last_analyzed": "2026-04-18T02:05:00Z",
-      "verdict": "NEEDS_ATTENTION",
-      "flags_count": 3,
-      "phase": "post-walk-forward-fallback-multiaxis-session",
-      "notes": "Move 3/5. Active->y=50 (2.1s). Success 91.3% (7 timeouts, max 5 consec error-severity). p95=25.3ms. Tracking RMS 4.84mm, final 1.79mm. Budget violations trending up across session.",
-      "ros2_session": null,
-      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-18_01-49-42"
-    },
-    "mpc_20260418_015056.csv": {
-      "analyzed": true,
-      "last_analyzed": "2026-04-18T02:05:00Z",
-      "verdict": "FAIL",
-      "flags_count": 3,
-      "phase": "post-walk-forward-fallback-multiaxis-session",
-      "notes": "Move 4/5. Small reorient y~51->y~45 + 0.003rad wx (2.2s). SOLVER SATURATED: 78.8% timeouts (63/80), success 21.3%, p50=20.66ms (2x nominal), mean ipopt_iter=0.9 \u2014 IPOPT barely starting before time cap. dt_median=26.5ms (loop slipping). Classic thermal/CPU-contention signature; trajectory itself is trivial. Candidate new known-issue MPC_CPU_THROTTLED (distinct from MPC_STALENESS). No motor errors, no E-stop, cond_number=3.6 normal.",
-      "ros2_session": null,
-      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-18_01-49-42"
-    },
-    "mpc_20260418_015112.csv": {
-      "analyzed": true,
-      "last_analyzed": "2026-04-18T02:20:00Z",
-      "verdict": "NEEDS_ATTENTION",
-      "flags_count": 5,
-      "phase": "post-walk-forward-fallback-multiaxis-session",
-      "notes": "Move 5/5. Diagonal->z=220 (15.3s). TWO distinct stalls found on /investigate: (1) Early overshoot-recovery stall step 16-65 (t=0.74-2.11s, 50 consec hold/fallback) \u2014 plant 12mm AHEAD of ref, IPOPT can't unwind overshoot while ref accelerates; walk-forward fallback freezes cmd, recovers once ref catches up. (2) Terminal 'stall' step 538-599 is NOT an MPC failure \u2014 it is plant collapse: between step 530-537 (180ms) all 6 legs free-fall at -170mm/s (exceeds v_max=140), then feedback freezes at q_i=0.00 sentinel. Correlates with rosbag ending at CSV t=12.9s (~0.9s before collapse) \u2014 operator Ctrl+C'd launch, motor_guard died, legs fell, HardwarePlant telemetry stale. Real MPC tracking was 0.16mm RMS during steps 67-530. 'Final error 37mm' is shutdown artefact; true end-of-motion was sub-mm. Walk-forward fallback worked correctly throughout. Investigation: plans/active or logbook/.",
-      "ros2_session": null,
-      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-18_01-49-42",
-      "logbook_entry": "2026-04-18-move5-overshoot-stall-and-plant-collapse.md"
-    },
-    "mpc_20260417_184446.csv": {
-      "analyzed": true,
-      "last_analyzed": "2026-04-17T19:00:00Z",
-      "verdict": "PASS",
-      "flags_count": 1,
-      "phase": "post-STANDBY-refactor-multiaxis-test",
-      "notes": "Clean pure-Z move, baseline.",
-      "ros2_session": null,
-      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-17_18-44-22",
-      "logbook_entry": "2026-04-17-mpc-fallback-cmd-sawtooth-stutter.md"
-    },
-    "mpc_20260417_184516.csv": {
-      "analyzed": true,
-      "last_analyzed": "2026-04-17T19:00:00Z",
-      "verdict": "PASS",
-      "flags_count": 1,
-      "phase": "post-STANDBY-refactor-multiaxis-test",
-      "notes": "Clean pure-Z move, baseline.",
-      "ros2_session": null,
-      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-17_18-44-22",
-      "logbook_entry": "2026-04-17-mpc-fallback-cmd-sawtooth-stutter.md"
-    },
-    "mpc_20260417_184532.csv": {
-      "analyzed": true,
-      "last_analyzed": "2026-04-17T19:00:00Z",
-      "verdict": "PASS",
-      "flags_count": 1,
-      "phase": "post-STANDBY-refactor-multiaxis-test",
-      "notes": "Clean pure-Z move, baseline.",
-      "ros2_session": null,
-      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-17_18-44-22",
-      "logbook_entry": "2026-04-17-mpc-fallback-cmd-sawtooth-stutter.md"
-    },
-    "mpc_20260417_184547.csv": {
-      "analyzed": true,
-      "last_analyzed": "2026-04-17T19:00:00Z",
-      "verdict": "NEEDS_ATTENTION",
-      "flags_count": 4,
-      "phase": "post-STANDBY-refactor-multiaxis-test",
-      "notes": "174 mm diagonal, solver 90% but ran out of time, 29.6 mm final err.",
-      "ros2_session": null,
-      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-17_18-44-22",
-      "logbook_entry": "2026-04-17-mpc-fallback-cmd-sawtooth-stutter.md"
-    },
-    "mpc_20260417_184601.csv": {
-      "analyzed": true,
-      "last_analyzed": "2026-04-17T19:00:00Z",
-      "verdict": "FAIL",
-      "flags_count": 7,
-      "phase": "post-STANDBY-refactor-multiaxis-test",
-      "notes": "First session post-STANDBY refactor. Solver saturated (74.2% timeouts, max 440 consecutive = ~11s of 18.6s run). p50 solve 25.9ms > 24ms budget \u2014 typical solve over budget, not just peaks. Two cmd discontinuities at t=1.477s (leg 2: 10.5mm, leg 3: 9.4mm) at the moment ref stops moving \u2014 new/unknown pattern (MPC_FALLBACK_SAWTOOTH candidate). Trajectory was multi-axis (~40mm X + 50mm Y + 27mm Z combined), starting off-Active from unfinished command 4. act2 coasted 18mm past frozen cmd during 440-step hold before settling. LEG2_TRACKING known-issue match. HardwarePlant telemetry-stale E-STOP fired 108 times at t~11s \u2014 consequence, not cause. Rosbag confirms ACTIVE:STANDBY transition working as designed. Orchestrator refactor itself not implicated \u2014 saturation is the story.",
-      "ros2_session": null,
-      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-17_18-44-22",
-      "logbook_entry": "2026-04-17-mpc-fallback-cmd-sawtooth-stutter.md"
-    },
-    "mpc_20260417_151131.csv": {
-      "analyzed": true,
-      "last_analyzed": "2026-04-17T15:30:00Z",
-      "verdict": "FAIL",
-      "flags_count": 4,
-      "phase": "7.2-spacemouse-mode",
-      "notes": "SPACEMOUSE mode via ROS2 pipeline (rosbag 2026-04-17_15-11-19 confirms ACTIVE:SPACEMOUSE at bag_t=3.8, mode=SPACEMOUSE at bag_t=6.1). 30.7% solver timeouts (184/600), max 178 CONSECUTIVE at t=0.9-6.6s during the initial z=170\u2192189 ref jump. After 6s the solver clears completely (0 timeouts t=7-10s). p95 solve 30.4ms (was 19.7ms in 141354 static) \u2014 54% regression vs last session. Tracking error grows during timeout burst (4.5mm \u2192 26.8mm peak at t=7s), platform never catches ref (actual_z 211mm vs ref_z 220mm at final sample, 8.8mm pos error at end). No oscillation, 0 cmd_jumps (C1 fix still intact), no E-stop, no motor errors, clean state transitions. Root cause candidate: SpaceMouse-driven ref injects larger deviations than static-pose path \u2192 IPOPT blows CPU budget on bigger transients; 40ms tau may also be too fast for SpaceMouse step-like inputs. Rosbag shows orchestrator IDLE\u2192ACTIVE:SPACEMOUSE\u2192IDLE cleanly, so it's a planner-horizon-vs-CPU issue, not a plant/motor issue.",
-      "ros2_session": null,
-      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-17_15-11-19"
-    },
-    "mpc_20260417_141354.csv": {
-      "analyzed": true,
-      "last_analyzed": "2026-04-17T14:30:00Z",
-      "verdict": "NEEDS_ATTENTION",
-      "flags_count": 10,
-      "phase": "c1-continuity-validation",
-      "notes": "z=220 vel_ff ON, Hermite+C1 fix live. 40Hz peak in leg_lengths_topic DROPPED 325x (7.0e-7 \u2192 2.2e-9). \u0394pos_setpoint std dropped 24x (0.145mm \u2192 0.006mm). C1 fix confirmed working \u2014 ODrive GUI 40Hz noise should be eliminated. Remaining issues: 18 solver timeouts at cold start (max 10 consec) \u2192 initial stutters; slow convergence (ss_rms 11.5mm, final 0.97mm at t=15s) \u2014 both separate from interpolation.",
-      "ros2_session": null,
-      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-17_14-09-52"
-    },
-    "mpc_20260417_135708.csv": {
-      "analyzed": true,
-      "last_analyzed": "2026-04-17T14:10:00Z",
-      "verdict": "INVALID",
-      "flags_count": 4,
-      "phase": "c1-continuity-contaminated",
-      "notes": "INVALID \u2014 VS Code auto-triggered pytest at 126% CPU during hardware test, starving IPOPT. 99.2% solver timeouts, 0 iterations per solve, platform barely moved. Not a code regression.",
-      "ros2_session": null,
-      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-17_13-56-51"
-    },
-    "mpc_20260417_130811.csv": {
-      "analyzed": true,
-      "last_analyzed": "2026-04-17T14:30:00Z",
-      "verdict": "NEEDS_ATTENTION",
-      "flags_count": 4,
-      "phase": "hermite-interp-validation",
-      "notes": "z=220 --no-vel-ff, Hermite interpolation fix live. RMS 13.5mm but platform still converging at t=5s (v_max=140, slow approach). Rosbag 500Hz FFT confirms ~40Hz noise in leg_lengths_topic (37-42Hz band) = Hermite segment-boundary velocity discontinuity. 11 solver timeouts at start (max 8 consecutive) matching observed initial stutters. Need C1-continuous Hermite: send u[2] alongside u[0]+u[1] so v1_old == v0_new.",
-      "ros2_session": null,
-      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-17_13-07-49"
-    },
-    "mpc_20260417_123226.csv": {
-      "analyzed": true,
-      "last_analyzed": "2026-04-17T13:05:00Z",
-      "verdict": "FAIL",
-      "flags_count": 13,
-      "phase": "4.1-quintic-ref-validation",
-      "notes": "z=220 --no-vel-ff with quintic reference: SOLVER SATURATED (52% timeouts, 142 consecutive). Per-tick quintic reshaping defeats warm-start. Reference caching fix applied. No oscillation detected \u2014 quintic S-curve is working but IPOPT can't keep up.",
-      "ros2_session": null,
-      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-17_12-31-55"
-    },
-    "mpc_20260417_002020.csv": {
-      "analyzed": true,
-      "last_analyzed": "2026-04-17T00:45:00Z",
-      "verdict": "NEEDS_ATTENTION",
-      "flags_count": 61,
-      "phase": "ff-ablation-run4",
-      "notes": "z=220 --no-torque-ff --no-vel-ff: smooth-but-laggy, 6.4mm RMS, no oscillation",
-      "ros2_session": null,
-      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-17_00-20-04"
-    },
-    "mpc_20260417_001936.csv": {
-      "analyzed": true,
-      "last_analyzed": "2026-04-17T00:45:00Z",
-      "verdict": "NEEDS_ATTENTION",
-      "flags_count": 21,
-      "phase": "ff-ablation-run3",
-      "notes": "z=190 --no-torque-ff --no-vel-ff: clean static hold, 2.9mm RMS",
-      "ros2_session": null,
-      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-17_00-19-02"
-    },
-    "mpc_20260417_001826.csv": {
-      "analyzed": true,
-      "last_analyzed": "2026-04-17T00:45:00Z",
-      "verdict": "FAIL",
-      "flags_count": 144,
-      "phase": "ff-ablation-run2",
-      "notes": "z=220 --no-torque-ff: LIMIT-CYCLE OSCILLATION, 12mm RMS, 18 consecutive solver timeouts",
-      "ros2_session": null,
-      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-17_00-17-54"
-    },
-    "mpc_20260417_001705.csv": {
-      "analyzed": true,
-      "last_analyzed": "2026-04-17T00:45:00Z",
-      "verdict": "NEEDS_ATTENTION",
-      "flags_count": 22,
-      "phase": "ff-ablation-run1",
-      "notes": "z=190 --no-torque-ff: clean static hold, similar to baseline",
-      "ros2_session": null,
-      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-17_00-16-51"
-    },
-    "mpc_20260416_232851.csv": {
-      "analyzed": true,
-      "last_analyzed": "2026-04-16T23:40:00Z",
-      "verdict": "NEEDS_ATTENTION",
-      "flags_count": 31,
-      "phase": "baseline-all-FF",
-      "ros2_session": null,
-      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-16_23-28-36"
-    },
     "mpc_20260330_171932.csv": {
       "analyzed": true,
-      "last_analyzed": "2026-03-30T22:00:00Z",
-      "verdict": "FAIL",
       "flags_count": 3,
+      "last_analyzed": "2026-03-30T22:00:00Z",
+      "logbook_entry": "2026-03-30-velocity-feedforward-oscillation.md",
       "phase": "3.1",
       "ros2_session": null,
       "rosbag": null,
-      "logbook_entry": "2026-03-30-velocity-feedforward-oscillation.md"
+      "verdict": "FAIL"
     },
     "mpc_20260401_131845.csv": {
       "analyzed": true,
-      "last_analyzed": "2026-04-01T14:05:00Z",
-      "verdict": "NEEDS_ATTENTION",
       "flags_count": 20,
+      "last_analyzed": "2026-04-01T14:05:00Z",
       "phase": "4.1",
       "ros2_session": null,
-      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-01_13-18-01"
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-01_13-18-01",
+      "verdict": "NEEDS_ATTENTION"
     },
     "mpc_20260401_131858.csv": {
       "analyzed": true,
-      "last_analyzed": "2026-04-01T14:05:00Z",
-      "verdict": "FAIL",
       "flags_count": 44,
+      "last_analyzed": "2026-04-01T14:05:00Z",
       "phase": "4.1-return",
       "ros2_session": null,
-      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-01_13-18-01"
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-01_13-18-01",
+      "verdict": "FAIL"
     },
     "mpc_20260401_131912.csv": {
       "analyzed": true,
-      "last_analyzed": "2026-04-01T14:05:00Z",
-      "verdict": "FAIL",
       "flags_count": 86,
+      "last_analyzed": "2026-04-01T14:05:00Z",
       "phase": "4.2",
       "ros2_session": null,
-      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-01_13-18-01"
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-01_13-18-01",
+      "verdict": "FAIL"
     },
     "mpc_20260401_131926.csv": {
       "analyzed": true,
-      "last_analyzed": "2026-04-01T14:05:00Z",
-      "verdict": "FAIL",
       "flags_count": 104,
+      "last_analyzed": "2026-04-01T14:05:00Z",
       "phase": "4.2-return",
       "ros2_session": null,
-      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-01_13-18-01"
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-01_13-18-01",
+      "verdict": "FAIL"
     },
     "mpc_20260401_131940.csv": {
       "analyzed": true,
-      "last_analyzed": "2026-04-01T14:05:00Z",
-      "verdict": "FAIL",
       "flags_count": 43,
+      "last_analyzed": "2026-04-01T14:05:00Z",
       "phase": "4.3",
       "ros2_session": null,
-      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-01_13-18-01"
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-01_13-18-01",
+      "verdict": "FAIL"
     },
     "mpc_20260401_131950.csv": {
       "analyzed": true,
-      "last_analyzed": "2026-04-01T14:05:00Z",
-      "verdict": "FAIL",
       "flags_count": 38,
+      "last_analyzed": "2026-04-01T14:05:00Z",
       "phase": "4.3-return",
       "ros2_session": null,
-      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-01_13-18-01"
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-01_13-18-01",
+      "verdict": "FAIL"
     },
     "mpc_20260401_133718.csv": {
       "analyzed": true,
-      "last_analyzed": "2026-04-01T14:10:00Z",
-      "verdict": "FAIL",
       "flags_count": 26,
+      "last_analyzed": "2026-04-01T14:10:00Z",
       "phase": "4.3-rerun",
       "ros2_session": null,
-      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-01_13-36-57"
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-01_13-36-57",
+      "verdict": "FAIL"
     },
     "mpc_20260401_133731.csv": {
       "analyzed": true,
-      "last_analyzed": "2026-04-01T14:10:00Z",
-      "verdict": "FAIL",
       "flags_count": 56,
+      "last_analyzed": "2026-04-01T14:10:00Z",
       "phase": "4.3-rerun-return",
       "ros2_session": null,
-      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-01_13-36-57"
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-01_13-36-57",
+      "verdict": "FAIL"
     },
     "mpc_20260401_143817.csv": {
       "analyzed": true,
-      "last_analyzed": "2026-04-01T15:05:00Z",
-      "verdict": "PASS",
       "flags_count": 1,
+      "last_analyzed": "2026-04-01T15:05:00Z",
       "phase": "solver-fix-validation-static",
       "ros2_session": null,
-      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-01_14-37-59"
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-01_14-37-59",
+      "verdict": "PASS"
     },
     "mpc_20260401_143845.csv": {
       "analyzed": true,
-      "last_analyzed": "2026-04-01T15:05:00Z",
-      "verdict": "FAIL",
       "flags_count": 4,
+      "last_analyzed": "2026-04-01T15:05:00Z",
+      "logbook_entry": "2026-04-01-cold-hold-fallback-stroke-minimum.md",
+      "notes": "Cold-start timeout cascade \u2014 fixed by salvaging IPOPT partial solutions",
       "phase": "solver-fix-validation-motion",
       "ros2_session": null,
       "rosbag": "/home/jetson/Desktop/rosbags/2026-04-01_14-37-59",
-      "notes": "Cold-start timeout cascade \u2014 fixed by salvaging IPOPT partial solutions",
-      "logbook_entry": "2026-04-01-cold-hold-fallback-stroke-minimum.md"
+      "verdict": "FAIL"
     },
     "mpc_20260401_152048.csv": {
       "analyzed": true,
-      "last_analyzed": "2026-04-01T18:00:00Z",
-      "verdict": "PASS",
       "flags_count": 1,
+      "last_analyzed": "2026-04-01T18:00:00Z",
       "phase": "solver-fix-validation-static",
       "ros2_session": "/home/jetson/.ros/log/python3_56892_1775017221068.log",
-      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-01_15-20-18"
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-01_15-20-18",
+      "verdict": "PASS"
     },
     "mpc_20260401_152101.csv": {
       "analyzed": true,
-      "last_analyzed": "2026-04-01T18:00:00Z",
-      "verdict": "FAIL",
       "flags_count": 20,
+      "last_analyzed": "2026-04-01T18:00:00Z",
+      "logbook_entry": "2026-04-01-cold-hold-fallback-stroke-minimum.md",
+      "notes": "Cold-hold fallback commands stroke minimum (5mm) causing 150mm+ discontinuities (COLD_HOLD_STROKE_MIN, now fixed). Solve times p50=24.8ms, max=35.2ms exceed 24ms budget for off-centre targets (MPC_STALENESS). 89% budget violations, 175 consecutive. Platform dropped to STOW.",
       "phase": "solver-fix-validation-motion",
       "ros2_session": "/home/jetson/.ros/log/python3_56892_1775017221068.log",
       "rosbag": "/home/jetson/Desktop/rosbags/2026-04-01_15-20-18",
-      "notes": "Cold-hold fallback commands stroke minimum (5mm) causing 150mm+ discontinuities (COLD_HOLD_STROKE_MIN, now fixed). Solve times p50=24.8ms, max=35.2ms exceed 24ms budget for off-centre targets (MPC_STALENESS). 89% budget violations, 175 consecutive. Platform dropped to STOW.",
-      "logbook_entry": "2026-04-01-cold-hold-fallback-stroke-minimum.md"
+      "verdict": "FAIL"
     },
     "mpc_20260415_144916.csv": {
       "analyzed": true,
-      "last_analyzed": "2026-04-15T15:10:00Z",
-      "verdict": "FAIL",
       "flags_count": 4,
+      "last_analyzed": "2026-04-15T15:10:00Z",
+      "logbook_entry": "2026-04-15-zmq-telemetry-stale-reconnect-ivl.md",
+      "notes": "ZMQ feedback delay: HardwarePlant received stale motor positions for 5.5s. Motor guard executed perfectly (tracking <0.1mm per rosbag), but MPC flew blind and overcorrected when feedback resumed. Also: main.py overrides max_cpu_time=0.022 for hardware mode, bypassing params.py.",
       "phase": "4.1",
       "ros2_session": null,
       "rosbag": "/home/jetson/Desktop/rosbags/2026-04-15_14-47-31",
-      "notes": "ZMQ feedback delay: HardwarePlant received stale motor positions for 5.5s. Motor guard executed perfectly (tracking <0.1mm per rosbag), but MPC flew blind and overcorrected when feedback resumed. Also: main.py overrides max_cpu_time=0.022 for hardware mode, bypassing params.py.",
-      "logbook_entry": "2026-04-15-zmq-telemetry-stale-reconnect-ivl.md"
+      "verdict": "FAIL"
     },
     "mpc_20260415_192410.csv": {
       "analyzed": true,
-      "last_analyzed": "2026-04-15T20:00:00Z",
-      "verdict": "FAIL",
       "flags_count": 99,
+      "last_analyzed": "2026-04-15T20:00:00Z",
+      "logbook_entry": "2026-04-15-zmq-telemetry-stale-reconnect-ivl.md",
+      "notes": "ZMQ telemetry stale (same root cause as 144916): MPC feedback frozen at Active while commands oscillate. Solver timeout cascade causes cmd_ext sawtooth (succeed\u2192ramp, timeout\u2192fallback\u2192drop). Motor guard faithfully executed oscillating commands, causing physical platform oscillation. Orchestrator faulted at bag_t=41.8. The RECONNECT_IVL fix was applied to :5557 SUBs but the stale channel is :5556 (telemetry). HardwarePlant SUB on :5556 also needs RECONNECT_IVL cap.",
       "phase": "4.1",
       "ros2_session": null,
       "rosbag": "/home/jetson/Desktop/rosbags/2026-04-15_19-23-29",
-      "notes": "ZMQ telemetry stale (same root cause as 144916): MPC feedback frozen at Active while commands oscillate. Solver timeout cascade causes cmd_ext sawtooth (succeed\u2192ramp, timeout\u2192fallback\u2192drop). Motor guard faithfully executed oscillating commands, causing physical platform oscillation. Orchestrator faulted at bag_t=41.8. The RECONNECT_IVL fix was applied to :5557 SUBs but the stale channel is :5556 (telemetry). HardwarePlant SUB on :5556 also needs RECONNECT_IVL cap.",
-      "logbook_entry": "2026-04-15-zmq-telemetry-stale-reconnect-ivl.md"
+      "verdict": "FAIL"
+    },
+    "mpc_20260416_232851.csv": {
+      "analyzed": true,
+      "flags_count": 31,
+      "last_analyzed": "2026-04-16T23:40:00Z",
+      "phase": "baseline-all-FF",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-16_23-28-36",
+      "verdict": "NEEDS_ATTENTION"
+    },
+    "mpc_20260417_001705.csv": {
+      "analyzed": true,
+      "flags_count": 22,
+      "last_analyzed": "2026-04-17T00:45:00Z",
+      "notes": "z=190 --no-torque-ff: clean static hold, similar to baseline",
+      "phase": "ff-ablation-run1",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-17_00-16-51",
+      "verdict": "NEEDS_ATTENTION"
+    },
+    "mpc_20260417_001826.csv": {
+      "analyzed": true,
+      "flags_count": 144,
+      "last_analyzed": "2026-04-17T00:45:00Z",
+      "notes": "z=220 --no-torque-ff: LIMIT-CYCLE OSCILLATION, 12mm RMS, 18 consecutive solver timeouts",
+      "phase": "ff-ablation-run2",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-17_00-17-54",
+      "verdict": "FAIL"
+    },
+    "mpc_20260417_001936.csv": {
+      "analyzed": true,
+      "flags_count": 21,
+      "last_analyzed": "2026-04-17T00:45:00Z",
+      "notes": "z=190 --no-torque-ff --no-vel-ff: clean static hold, 2.9mm RMS",
+      "phase": "ff-ablation-run3",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-17_00-19-02",
+      "verdict": "NEEDS_ATTENTION"
+    },
+    "mpc_20260417_002020.csv": {
+      "analyzed": true,
+      "flags_count": 61,
+      "last_analyzed": "2026-04-17T00:45:00Z",
+      "notes": "z=220 --no-torque-ff --no-vel-ff: smooth-but-laggy, 6.4mm RMS, no oscillation",
+      "phase": "ff-ablation-run4",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-17_00-20-04",
+      "verdict": "NEEDS_ATTENTION"
+    },
+    "mpc_20260417_123226.csv": {
+      "analyzed": true,
+      "flags_count": 13,
+      "last_analyzed": "2026-04-17T13:05:00Z",
+      "notes": "z=220 --no-vel-ff with quintic reference: SOLVER SATURATED (52% timeouts, 142 consecutive). Per-tick quintic reshaping defeats warm-start. Reference caching fix applied. No oscillation detected \u2014 quintic S-curve is working but IPOPT can't keep up.",
+      "phase": "4.1-quintic-ref-validation",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-17_12-31-55",
+      "verdict": "FAIL"
+    },
+    "mpc_20260417_130811.csv": {
+      "analyzed": true,
+      "flags_count": 4,
+      "last_analyzed": "2026-04-17T14:30:00Z",
+      "notes": "z=220 --no-vel-ff, Hermite interpolation fix live. RMS 13.5mm but platform still converging at t=5s (v_max=140, slow approach). Rosbag 500Hz FFT confirms ~40Hz noise in leg_lengths_topic (37-42Hz band) = Hermite segment-boundary velocity discontinuity. 11 solver timeouts at start (max 8 consecutive) matching observed initial stutters. Need C1-continuous Hermite: send u[2] alongside u[0]+u[1] so v1_old == v0_new.",
+      "phase": "hermite-interp-validation",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-17_13-07-49",
+      "verdict": "NEEDS_ATTENTION"
+    },
+    "mpc_20260417_135708.csv": {
+      "analyzed": true,
+      "flags_count": 4,
+      "last_analyzed": "2026-04-17T14:10:00Z",
+      "notes": "INVALID \u2014 VS Code auto-triggered pytest at 126% CPU during hardware test, starving IPOPT. 99.2% solver timeouts, 0 iterations per solve, platform barely moved. Not a code regression.",
+      "phase": "c1-continuity-contaminated",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-17_13-56-51",
+      "verdict": "INVALID"
+    },
+    "mpc_20260417_141354.csv": {
+      "analyzed": true,
+      "flags_count": 10,
+      "last_analyzed": "2026-04-17T14:30:00Z",
+      "notes": "z=220 vel_ff ON, Hermite+C1 fix live. 40Hz peak in leg_lengths_topic DROPPED 325x (7.0e-7 \u2192 2.2e-9). \u0394pos_setpoint std dropped 24x (0.145mm \u2192 0.006mm). C1 fix confirmed working \u2014 ODrive GUI 40Hz noise should be eliminated. Remaining issues: 18 solver timeouts at cold start (max 10 consec) \u2192 initial stutters; slow convergence (ss_rms 11.5mm, final 0.97mm at t=15s) \u2014 both separate from interpolation.",
+      "phase": "c1-continuity-validation",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-17_14-09-52",
+      "verdict": "NEEDS_ATTENTION"
+    },
+    "mpc_20260417_151131.csv": {
+      "analyzed": true,
+      "flags_count": 4,
+      "last_analyzed": "2026-04-17T15:30:00Z",
+      "notes": "SPACEMOUSE mode via ROS2 pipeline (rosbag 2026-04-17_15-11-19 confirms ACTIVE:SPACEMOUSE at bag_t=3.8, mode=SPACEMOUSE at bag_t=6.1). 30.7% solver timeouts (184/600), max 178 CONSECUTIVE at t=0.9-6.6s during the initial z=170\u2192189 ref jump. After 6s the solver clears completely (0 timeouts t=7-10s). p95 solve 30.4ms (was 19.7ms in 141354 static) \u2014 54% regression vs last session. Tracking error grows during timeout burst (4.5mm \u2192 26.8mm peak at t=7s), platform never catches ref (actual_z 211mm vs ref_z 220mm at final sample, 8.8mm pos error at end). No oscillation, 0 cmd_jumps (C1 fix still intact), no E-stop, no motor errors, clean state transitions. Root cause candidate: SpaceMouse-driven ref injects larger deviations than static-pose path \u2192 IPOPT blows CPU budget on bigger transients; 40ms tau may also be too fast for SpaceMouse step-like inputs. Rosbag shows orchestrator IDLE\u2192ACTIVE:SPACEMOUSE\u2192IDLE cleanly, so it's a planner-horizon-vs-CPU issue, not a plant/motor issue.",
+      "phase": "7.2-spacemouse-mode",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-17_15-11-19",
+      "verdict": "FAIL"
+    },
+    "mpc_20260417_184446.csv": {
+      "analyzed": true,
+      "flags_count": 1,
+      "last_analyzed": "2026-04-17T19:00:00Z",
+      "logbook_entry": "2026-04-17-mpc-fallback-cmd-sawtooth-stutter.md",
+      "notes": "Clean pure-Z move, baseline.",
+      "phase": "post-STANDBY-refactor-multiaxis-test",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-17_18-44-22",
+      "verdict": "PASS"
+    },
+    "mpc_20260417_184516.csv": {
+      "analyzed": true,
+      "flags_count": 1,
+      "last_analyzed": "2026-04-17T19:00:00Z",
+      "logbook_entry": "2026-04-17-mpc-fallback-cmd-sawtooth-stutter.md",
+      "notes": "Clean pure-Z move, baseline.",
+      "phase": "post-STANDBY-refactor-multiaxis-test",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-17_18-44-22",
+      "verdict": "PASS"
+    },
+    "mpc_20260417_184532.csv": {
+      "analyzed": true,
+      "flags_count": 1,
+      "last_analyzed": "2026-04-17T19:00:00Z",
+      "logbook_entry": "2026-04-17-mpc-fallback-cmd-sawtooth-stutter.md",
+      "notes": "Clean pure-Z move, baseline.",
+      "phase": "post-STANDBY-refactor-multiaxis-test",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-17_18-44-22",
+      "verdict": "PASS"
+    },
+    "mpc_20260417_184547.csv": {
+      "analyzed": true,
+      "flags_count": 4,
+      "last_analyzed": "2026-04-17T19:00:00Z",
+      "logbook_entry": "2026-04-17-mpc-fallback-cmd-sawtooth-stutter.md",
+      "notes": "174 mm diagonal, solver 90% but ran out of time, 29.6 mm final err.",
+      "phase": "post-STANDBY-refactor-multiaxis-test",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-17_18-44-22",
+      "verdict": "NEEDS_ATTENTION"
+    },
+    "mpc_20260417_184601.csv": {
+      "analyzed": true,
+      "flags_count": 7,
+      "last_analyzed": "2026-04-17T19:00:00Z",
+      "logbook_entry": "2026-04-17-mpc-fallback-cmd-sawtooth-stutter.md",
+      "notes": "First session post-STANDBY refactor. Solver saturated (74.2% timeouts, max 440 consecutive = ~11s of 18.6s run). p50 solve 25.9ms > 24ms budget \u2014 typical solve over budget, not just peaks. Two cmd discontinuities at t=1.477s (leg 2: 10.5mm, leg 3: 9.4mm) at the moment ref stops moving \u2014 new/unknown pattern (MPC_FALLBACK_SAWTOOTH candidate). Trajectory was multi-axis (~40mm X + 50mm Y + 27mm Z combined), starting off-Active from unfinished command 4. act2 coasted 18mm past frozen cmd during 440-step hold before settling. LEG2_TRACKING known-issue match. HardwarePlant telemetry-stale E-STOP fired 108 times at t~11s \u2014 consequence, not cause. Rosbag confirms ACTIVE:STANDBY transition working as designed. Orchestrator refactor itself not implicated \u2014 saturation is the story.",
+      "phase": "post-STANDBY-refactor-multiaxis-test",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-17_18-44-22",
+      "verdict": "FAIL"
+    },
+    "mpc_20260418_014959.csv": {
+      "analyzed": true,
+      "flags_count": 3,
+      "last_analyzed": "2026-04-18T02:05:00Z",
+      "notes": "Move 1/5 of single-rosbag session. Active->z=220 pure-Z up (15.1s). Success 98.5% (9 timeouts, max 3 consec). p50=10.8ms p95=13.6ms. Tracking RMS 2.35mm, final err 0.08mm. Close to 04-17 Move 1 baseline but 9x more timeouts. Lightly jerky observationally. cmd_jumps=0 (walk-forward fix holding).",
+      "phase": "post-walk-forward-fallback-multiaxis-session",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-18_01-49-42",
+      "verdict": "NEEDS_ATTENTION"
+    },
+    "mpc_20260418_015027.csv": {
+      "analyzed": true,
+      "flags_count": 3,
+      "last_analyzed": "2026-04-18T02:05:00Z",
+      "notes": "Move 2/5. z=220->Active pure-Z down (5.1s). Success 94.5% (11 timeouts). p50=10.8ms p95=21.3ms max=39.6ms (budget 24). Tracking RMS 4.83mm, final 0.87mm. Degradation relative to Move 1.",
+      "phase": "post-walk-forward-fallback-multiaxis-session",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-18_01-49-42",
+      "verdict": "NEEDS_ATTENTION"
+    },
+    "mpc_20260418_015044.csv": {
+      "analyzed": true,
+      "flags_count": 3,
+      "last_analyzed": "2026-04-18T02:05:00Z",
+      "notes": "Move 3/5. Active->y=50 (2.1s). Success 91.3% (7 timeouts, max 5 consec error-severity). p95=25.3ms. Tracking RMS 4.84mm, final 1.79mm. Budget violations trending up across session.",
+      "phase": "post-walk-forward-fallback-multiaxis-session",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-18_01-49-42",
+      "verdict": "NEEDS_ATTENTION"
+    },
+    "mpc_20260418_015056.csv": {
+      "analyzed": true,
+      "flags_count": 3,
+      "last_analyzed": "2026-04-18T02:05:00Z",
+      "notes": "Move 4/5. Small reorient y~51->y~45 + 0.003rad wx (2.2s). SOLVER SATURATED: 78.8% timeouts (63/80), success 21.3%, p50=20.66ms (2x nominal), mean ipopt_iter=0.9 \u2014 IPOPT barely starting before time cap. dt_median=26.5ms (loop slipping). Classic thermal/CPU-contention signature; trajectory itself is trivial. Candidate new known-issue MPC_CPU_THROTTLED (distinct from MPC_STALENESS). No motor errors, no E-stop, cond_number=3.6 normal.",
+      "phase": "post-walk-forward-fallback-multiaxis-session",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-18_01-49-42",
+      "verdict": "FAIL"
+    },
+    "mpc_20260418_015112.csv": {
+      "analyzed": true,
+      "flags_count": 5,
+      "last_analyzed": "2026-04-18T02:20:00Z",
+      "logbook_entry": "2026-04-18-move5-overshoot-stall-and-plant-collapse.md",
+      "notes": "Move 5/5. Diagonal->z=220 (15.3s). TWO distinct stalls found on /investigate: (1) Early overshoot-recovery stall step 16-65 (t=0.74-2.11s, 50 consec hold/fallback) \u2014 plant 12mm AHEAD of ref, IPOPT can't unwind overshoot while ref accelerates; walk-forward fallback freezes cmd, recovers once ref catches up. (2) Terminal 'stall' step 538-599 is NOT an MPC failure \u2014 it is plant collapse: between step 530-537 (180ms) all 6 legs free-fall at -170mm/s (exceeds v_max=140), then feedback freezes at q_i=0.00 sentinel. Correlates with rosbag ending at CSV t=12.9s (~0.9s before collapse) \u2014 operator Ctrl+C'd launch, motor_guard died, legs fell, HardwarePlant telemetry stale. Real MPC tracking was 0.16mm RMS during steps 67-530. 'Final error 37mm' is shutdown artefact; true end-of-motion was sub-mm. Walk-forward fallback worked correctly throughout. Investigation: plans/active or logbook/.",
+      "phase": "post-walk-forward-fallback-multiaxis-session",
+      "ros2_session": null,
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-18_01-49-42",
+      "verdict": "NEEDS_ATTENTION"
+    },
+    "mpc_20260418_164119.csv": {
+      "analyzed": true,
+      "flags_count": 1,
+      "last_analyzed": "2026-04-18T16:55:00Z",
+      "logbook_entry": "2026-04-18-hold-fighting-motion-onset-jitter.md",
+      "notes": "Pure-Z 170->220 ramp. 99.7% solver success (1 timeout), 0.12mm final err. Clean.",
+      "phase": "post-walk-forward-plus-22ms-revert-validation",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-18_16-41-02",
+      "verdict": "PASS"
+    },
+    "mpc_20260418_164142.csv": {
+      "analyzed": true,
+      "flags_count": 1,
+      "last_analyzed": "2026-04-18T16:55:00Z",
+      "logbook_entry": "2026-04-17-mpc-fallback-cmd-sawtooth-stutter.md",
+      "notes": "Pure-Z 220->170 return. 98.5% success (2 timeouts), 0.32mm final err. Clean.",
+      "phase": "post-walk-forward-plus-22ms-revert-validation",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-18_16-41-02",
+      "verdict": "PASS"
+    },
+    "mpc_20260418_164159.csv": {
+      "analyzed": true,
+      "flags_count": 1,
+      "last_analyzed": "2026-04-18T16:55:00Z",
+      "logbook_entry": "2026-04-17-mpc-fallback-cmd-sawtooth-stutter.md",
+      "notes": "Pure-Y 0->50mm. 97.5% success (1 timeout), 1.12mm final err. Clean.",
+      "phase": "post-walk-forward-plus-22ms-revert-validation",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-18_16-41-02",
+      "verdict": "PASS"
+    },
+    "mpc_20260418_164208.csv": {
+      "analyzed": true,
+      "flags_count": 3,
+      "last_analyzed": "2026-04-18T16:55:00Z",
+      "logbook_entry": "2026-04-17-mpc-fallback-cmd-sawtooth-stutter.md",
+      "notes": "Big 190mm X+Y diagonal (0,50,170) -> (77.7,-104.7,170) in 2.4s. 92.5% solver success (6 timeouts), but 44.85mm final err \u2014 platform physically couldn't finish in the given time window. Motion-time budget issue, not solver. Consider raising v_max from 140 to 200 mm/s.",
+      "phase": "post-walk-forward-plus-22ms-revert-validation",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-18_16-41-02",
+      "verdict": "NEEDS_ATTENTION"
+    },
+    "mpc_20260418_164222.csv": {
+      "analyzed": true,
+      "flags_count": 6,
+      "last_analyzed": "2026-04-18T16:55:00Z",
+      "logbook_entry": "2026-04-17-mpc-fallback-cmd-sawtooth-stutter.md",
+      "notes": "(70,-90,170) -> (0,0,220). 97.8% solver success (13 timeouts, max 7 consec), vs 25.8% two days ago \u2014 walk-forward + 22ms revert working. 0 cmd_jumps (clean). Remaining jitters cluster in two short windows: cold-start (steps 0-10, ~0.6s), and one mid-traversal burst (steps 31-38, t=1.2-1.5s) producing 15 small actual_ext jumps of 2-5mm at t=1.4-1.9s. Isolated CasADi 'Function_call returned a result with an error set' exception at step 488/t=12.81s \u2014 unknown, one-off, worth watching. Post Ctrl-C telemetry_stale events ignored per operator. Leg 3 RMS 2.1x median (persistent LEG2_TRACKING). Before/after: 440 consec timeouts -> 7, 37.7mm err -> 0, visible sawtooth -> small jitter.",
+      "phase": "post-walk-forward-plus-22ms-revert-validation",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-18_16-41-02",
+      "verdict": "NEEDS_ATTENTION"
     },
     "mpc_20260418_181020.csv": {
       "analyzed": true,
-      "last_analyzed": "2026-04-18T18:30:00Z",
-      "verdict": "NEEDS_ATTENTION",
       "flags_count": 3,
+      "last_analyzed": "2026-04-18T18:30:00Z",
+      "logbook_entry": "2026-04-18-hold-fighting-motion-onset-jitter.md",
+      "notes": "Move 1 A/B rerun with --no-vel-ff. 99.8% solver success, cmd_jumps=0. Tracking RMS 2.45mm, ss_rms 1.14mm. 39 actual_jumps (identical count to vel-ff ON run 164119), magnitude 2.02-5.61mm, window shifted to t=1.13-1.81s (0.6s later). Confirms residual hardware jitter is NOT from MPC velocity feedforward path. Hold-phase analysis (t>11s): per-leg actual_ext stdev 2-3x cmd_ext stdev on legs 1 and 3 \u2014 motor fighting. Solver p95 25.4ms, 37 budget violations (6 consec). Used as reference for the MOTOR_HOLD_FIGHTING / ODRIVE_POS_LOOP_GAIN_HIGH investigation.",
       "phase": "post-walk-forward-fallback-multiaxis-session-2",
       "rosbag": null,
-      "logbook_entry": "2026-04-18-hold-fighting-motion-onset-jitter.md",
-      "notes": "Move 1 A/B rerun with --no-vel-ff. 99.8% solver success, cmd_jumps=0. Tracking RMS 2.45mm, ss_rms 1.14mm. 39 actual_jumps (identical count to vel-ff ON run 164119), magnitude 2.02-5.61mm, window shifted to t=1.13-1.81s (0.6s later). Confirms residual hardware jitter is NOT from MPC velocity feedforward path. Hold-phase analysis (t>11s): per-leg actual_ext stdev 2-3x cmd_ext stdev on legs 1 and 3 \u2014 motor fighting. Solver p95 25.4ms, 37 budget violations (6 consec). Used as reference for the MOTOR_HOLD_FIGHTING / ODRIVE_POS_LOOP_GAIN_HIGH investigation."
+      "verdict": "NEEDS_ATTENTION"
     },
     "mpc_20260418_184845.csv": {
       "logbook_entry": "2026-04-18-mpc-overhead-spikes-fallback-bursts.md"
@@ -418,184 +417,212 @@
     },
     "mpc_20260419_134901.csv": {
       "analyzed": true,
-      "last_analyzed": "2026-04-19T05:23:54Z",
-      "verdict": "NEEDS_ATTENTION",
       "flags_count": 2,
-      "phase": "post-per-leg-gains-deadband-session",
+      "last_analyzed": "2026-04-19T05:23:54Z",
+      "logbook_entry": "2026-04-19-leg1-pose-dependent-hold-twitch.md",
       "notes": "Move 1/9. USER-FLAGGED: \"slightly staggered\" first move. 5s, 200 samples. Solver 100%, p95=13.5ms. Tracking RMS=1.66mm peak=3.04mm. Motion-onset latency 151ms (worst of short-move cluster) \u2014 cold-stiction signature, all 6 legs synchronized 0 ms sync window, 0.94mm first-tick leap. Leg 4 tracking 1.67x median (the pre-known leg-4 asymmetry).",
+      "phase": "post-per-leg-gains-deadband-session",
       "ros2_session": null,
       "rosbag": "/home/jetson/Desktop/rosbags/2026-04-19_13-48-32",
       "session_group": "2026-04-19_13-48-32",
-      "logbook_entry": "2026-04-19-leg1-pose-dependent-hold-twitch.md"
+      "verdict": "NEEDS_ATTENTION"
     },
     "mpc_20260419_134919.csv": {
       "analyzed": true,
-      "last_analyzed": "2026-04-19T05:23:54Z",
-      "verdict": "NEEDS_ATTENTION",
       "flags_count": 1,
-      "phase": "post-per-leg-gains-deadband-session",
+      "last_analyzed": "2026-04-19T05:23:54Z",
+      "logbook_entry": "2026-04-19-leg1-pose-dependent-hold-twitch.md",
       "notes": "Move 2/9. 5s. Solver 100% p95=13.1ms. RMS=0.52mm. Onset latency 113ms median, 126ms max \u2014 shorter than Move 1 (warming up).",
+      "phase": "post-per-leg-gains-deadband-session",
       "ros2_session": null,
       "rosbag": "/home/jetson/Desktop/rosbags/2026-04-19_13-48-32",
       "session_group": "2026-04-19_13-48-32",
-      "logbook_entry": "2026-04-19-leg1-pose-dependent-hold-twitch.md"
+      "verdict": "NEEDS_ATTENTION"
     },
     "mpc_20260419_134931.csv": {
       "analyzed": true,
-      "last_analyzed": "2026-04-19T05:23:54Z",
-      "verdict": "NEEDS_ATTENTION",
       "flags_count": 2,
-      "phase": "post-per-leg-gains-deadband-session",
+      "last_analyzed": "2026-04-19T05:23:54Z",
+      "logbook_entry": "2026-04-19-leg1-pose-dependent-hold-twitch.md",
       "notes": "Move 3/9. 5s. RMS=0.57mm. Onset 75ms median 100ms max. Oscillation chatter on leg 2 (warning).",
+      "phase": "post-per-leg-gains-deadband-session",
       "ros2_session": null,
       "rosbag": "/home/jetson/Desktop/rosbags/2026-04-19_13-48-32",
       "session_group": "2026-04-19_13-48-32",
-      "logbook_entry": "2026-04-19-leg1-pose-dependent-hold-twitch.md"
+      "verdict": "NEEDS_ATTENTION"
     },
     "mpc_20260419_134947.csv": {
       "analyzed": true,
-      "last_analyzed": "2026-04-19T05:23:54Z",
-      "verdict": "NEEDS_ATTENTION",
       "flags_count": 1,
-      "phase": "post-per-leg-gains-deadband-session",
+      "last_analyzed": "2026-04-19T05:23:54Z",
+      "logbook_entry": "2026-04-19-leg1-pose-dependent-hold-twitch.md",
       "notes": "Move 4/9. 5s. RMS=0.86mm. Onset 100ms all 6 legs.",
+      "phase": "post-per-leg-gains-deadband-session",
       "ros2_session": null,
       "rosbag": "/home/jetson/Desktop/rosbags/2026-04-19_13-48-32",
       "session_group": "2026-04-19_13-48-32",
-      "logbook_entry": "2026-04-19-leg1-pose-dependent-hold-twitch.md"
+      "verdict": "NEEDS_ATTENTION"
     },
     "mpc_20260419_135002.csv": {
       "analyzed": true,
-      "last_analyzed": "2026-04-19T05:23:54Z",
-      "verdict": "NEEDS_ATTENTION",
       "flags_count": 4,
-      "phase": "post-per-leg-gains-deadband-session",
+      "last_analyzed": "2026-04-19T05:23:54Z",
+      "logbook_entry": "2026-04-19-leg1-pose-dependent-hold-twitch.md",
       "notes": "Move 5/9. 20s hold session. RMS=0.63mm, final OK. Onset 75ms. Hold-phase: oscillation chatter on legs 0,2,3 (warn); steady-state RMS 0.606mm; hold asymmetry leg 1 14.1um vs leg 4 5.5um (2.6x).",
+      "phase": "post-per-leg-gains-deadband-session",
       "ros2_session": null,
       "rosbag": "/home/jetson/Desktop/rosbags/2026-04-19_13-48-32",
       "session_group": "2026-04-19_13-48-32",
-      "logbook_entry": "2026-04-19-leg1-pose-dependent-hold-twitch.md"
+      "verdict": "NEEDS_ATTENTION"
     },
     "mpc_20260419_135030.csv": {
       "analyzed": true,
-      "last_analyzed": "2026-04-19T05:23:54Z",
-      "verdict": "NEEDS_ATTENTION",
       "flags_count": 6,
-      "phase": "post-per-leg-gains-deadband-session",
+      "last_analyzed": "2026-04-19T05:23:54Z",
+      "logbook_entry": "2026-04-19-leg1-pose-dependent-hold-twitch.md",
       "notes": "Move 6/9. 20s. RMS=1.39mm peak=13.13mm. Onset 103ms w/ 2.44mm first-tick leap. ERROR: 3 consecutive solve budget violations (max 27.1ms). Oscillation on legs 0,1,2,4; SS RMS 0.964mm; hold asym leg 0 vs leg 4 (1.7x).",
+      "phase": "post-per-leg-gains-deadband-session",
       "ros2_session": null,
       "rosbag": "/home/jetson/Desktop/rosbags/2026-04-19_13-48-32",
       "session_group": "2026-04-19_13-48-32",
-      "logbook_entry": "2026-04-19-leg1-pose-dependent-hold-twitch.md"
+      "verdict": "NEEDS_ATTENTION"
     },
     "mpc_20260419_135059.csv": {
       "analyzed": true,
-      "last_analyzed": "2026-04-19T05:23:54Z",
-      "verdict": "NEEDS_ATTENTION",
       "flags_count": 6,
-      "phase": "post-per-leg-gains-deadband-session",
+      "last_analyzed": "2026-04-19T05:23:54Z",
+      "logbook_entry": "2026-04-19-leg1-pose-dependent-hold-twitch.md",
       "notes": "Move 7/9. 20s. RMS=1.41mm. Onset 135ms, 3.56mm first-tick leap. 5 solve budget violations (max 28.4ms). Oscillation legs 2,4,5; SS RMS 1.05mm.",
+      "phase": "post-per-leg-gains-deadband-session",
       "ros2_session": null,
       "rosbag": "/home/jetson/Desktop/rosbags/2026-04-19_13-48-32",
       "session_group": "2026-04-19_13-48-32",
-      "logbook_entry": "2026-04-19-leg1-pose-dependent-hold-twitch.md"
+      "verdict": "NEEDS_ATTENTION"
     },
     "mpc_20260419_135140.csv": {
       "analyzed": true,
-      "last_analyzed": "2026-04-19T05:23:54Z",
-      "verdict": "FAIL",
       "flags_count": 6,
-      "phase": "post-per-leg-gains-deadband-session",
+      "last_analyzed": "2026-04-19T05:23:54Z",
+      "logbook_entry": "2026-04-19-leg1-pose-dependent-hold-twitch.md",
       "notes": "Move 8/9. 20s. RMS=10.44mm peak=48.47mm \u2014 large traversal lag. ERROR: 9 CONSECUTIVE solve budget violations (max 40.4ms). Leg 0 tracking 2.3x median. Only 1 onset detected (CSV mid-motion); 173ms.",
+      "phase": "post-per-leg-gains-deadband-session",
       "ros2_session": null,
       "rosbag": "/home/jetson/Desktop/rosbags/2026-04-19_13-48-32",
       "session_group": "2026-04-19_13-48-32",
-      "logbook_entry": "2026-04-19-leg1-pose-dependent-hold-twitch.md"
+      "verdict": "FAIL"
     },
     "mpc_20260419_135251.csv": {
       "analyzed": true,
-      "last_analyzed": "2026-04-19T05:23:54Z",
-      "verdict": "FAIL",
       "flags_count": 6,
-      "phase": "post-per-leg-gains-deadband-session",
+      "last_analyzed": "2026-04-19T05:23:54Z",
+      "logbook_entry": "2026-04-19-leg1-pose-dependent-hold-twitch.md",
       "notes": "Move 9/9 \u2014 USER-FLAGGED as \"only non-smooth move\". Target (0,-100,200,0,0,0). 20s, 800 samples. RMS=10.90mm peak=64.27mm but FINAL tracking 0.237mm \u2014 the RMS is traversal lag, not endpoint error. ERROR: 7 consecutive solve budget violations (max 37.3ms); 9 IPOPT timeouts total. NEW SIGNATURE: Leg 1 hold-phase stdev 436.9um (range 1107.5um peak-to-peak, vel_max 9.68 mm/s) vs leg 3 at 7.25um \u2014 60.3x asymmetry. Leg 1 is NOT holding still at this pose, it is twitching at ~1mm peak-to-peak. Pose puts platform at extreme asymmetric offset (y=-100, z=200) \u2014 leg 1 near geometric edge.",
+      "phase": "post-per-leg-gains-deadband-session",
       "ros2_session": null,
       "rosbag": "/home/jetson/Desktop/rosbags/2026-04-19_13-48-32",
       "session_group": "2026-04-19_13-48-32",
-      "logbook_entry": "2026-04-19-leg1-pose-dependent-hold-twitch.md"
+      "verdict": "FAIL"
     },
     "mpc_20260419_194728.csv": {
       "analyzed": true,
-      "last_analyzed": "2026-04-19T19:55:00",
-      "verdict": "FAIL",
       "flags_count": 7,
+      "last_analyzed": "2026-04-19T19:55:00",
       "phase": "pos-setpoint-hf-noise-S-sweep",
       "rosbag": "/home/jetson/Desktop/rosbags/2026-04-19_19-47-07",
-      "session_group": "2026-04-19_19-47-07"
-    },
-    "mpc_20260419_223727.csv": {
-      "analyzed": true,
-      "last_analyzed": "2026-04-19T22:55:00Z",
-      "verdict": "NEEDS_ATTENTION",
-      "flags_count": 8,
-      "phase": "smooth-motion-regression-investigation",
-      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-19_22-36-46",
-      "session_group": "2026-04-19_22-36-46",
-      "logbook_entry": "2026-04-19-bundle-a-quintic-ref-settling-and-live-twist-trap.md",
-      "notes": "20s hold, Z 170-220 stepping. solve mean=10.9ms p95=13.4ms, tail_5s err 0.13mm \u2014 CLEAN. Motion-onset 140ms cold. Pilot E-stop at bag_t=135s (session cut short? no, tail data present \u2014 E-stop occurred AFTER this session ended; shared rosbag captures all three runs)."
-    },
-    "mpc_20260419_223756.csv": {
-      "analyzed": true,
-      "last_analyzed": "2026-04-19T22:55:00Z",
-      "verdict": "NEEDS_ATTENTION",
-      "flags_count": 8,
-      "phase": "smooth-motion-regression-investigation",
-      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-19_22-36-46",
-      "session_group": "2026-04-19_22-36-46",
-      "logbook_entry": "2026-04-19-bundle-a-quintic-ref-settling-and-live-twist-trap.md",
-      "notes": "20s hold, Z 170-220 stepping. solve mean=10.8ms p95=14.0ms, tail_5s err 0.06mm \u2014 EXCELLENT. Same profile as 223727; clean back-to-back."
-    },
-    "mpc_20260419_223902.csv": {
-      "analyzed": true,
-      "last_analyzed": "2026-04-19T22:55:00Z",
-      "verdict": "NEEDS_ATTENTION",
-      "flags_count": 6,
-      "phase": "smooth-motion-regression-investigation",
-      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-19_22-36-46",
-      "session_group": "2026-04-19_22-36-46",
-      "logbook_entry": "2026-04-19-bundle-a-quintic-ref-settling-and-live-twist-trap.md",
-      "notes": "4s truncated \u2014 PLANT_TELEMETRY_COLLAPSE: uncommanded 318mm/s overspeed at t=3.1s (2.3x v_max), followed by 78-step zero-extension sentinel, then pilot E-stop (DC_BUS_UNDER_VOLTAGE err 512 on all motors). solve mean=25.9ms p95=30.4ms (saturated at ipopt_iter=0 due to bad starting state). Final tracking 41.77mm \u2014 MEASUREMENT INVALID: session was terminated by safety event, not a steady-state performance measurement."
-    },
-    "mpc_20260419_224454.csv": {
-      "analyzed": true,
-      "last_analyzed": "2026-04-19T22:55:00Z",
-      "verdict": "FAIL",
-      "flags_count": 6,
-      "phase": "smooth-motion-regression-investigation",
-      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-19_22-44-29",
-      "session_group": "2026-04-19_22-44-29",
-      "logbook_entry": "2026-04-19-bundle-a-quintic-ref-settling-and-live-twist-trap.md",
-      "notes": "--auto-leg1-test 9-pose replay, 207s total. Poses 1-4 (Z=175-190) clean; transition pose 4\u21925 (190\u2192170) took 28s to converge (20mm retreat should take ~1-2s at v_max=140). Transition 5\u21926 (170\u2192220) took 50s. 1241 consecutive IPOPT solve violations (24.9% timeout rate). Motion-onset dead-time 1871ms at t=126s \u2014 LEG STICTION/STALL signature. \"Near lower stroke limit -5mm margin\" \u2014 legs pegged at stroke min during Z=220. Hold-phase asymmetry: leg 5 362\u03bcm stdev vs leg 3 83\u03bcm (4.4x) \u2014 leg 5 has taken over as worst hold-noise leg now that leg 1 is reverted to 40. Final tracking 14.7mm (incomplete stow)."
+      "session_group": "2026-04-19_19-47-07",
+      "verdict": "FAIL"
     },
     "mpc_20260419_200001.csv": {
       "analyzed": false,
-      "last_analyzed": null,
-      "verdict": null,
       "flags_count": null,
+      "last_analyzed": null,
+      "logbook_entry": null,
+      "notes": "Not yet analyzed; between 19:47 and 22:36 sessions.",
       "phase": "intermediate-session-20:00",
       "rosbag": "/home/jetson/Desktop/rosbags/2026-04-19_19-59-46",
       "session_group": "2026-04-19_19-59-46",
-      "logbook_entry": null,
-      "notes": "Not yet analyzed; between 19:47 and 22:36 sessions."
+      "verdict": null
+    },
+    "mpc_20260419_223727.csv": {
+      "analyzed": true,
+      "flags_count": 8,
+      "last_analyzed": "2026-04-19T22:55:00Z",
+      "logbook_entry": "2026-04-19-bundle-a-quintic-ref-settling-and-live-twist-trap.md",
+      "notes": "20s hold, Z 170-220 stepping. solve mean=10.9ms p95=13.4ms, tail_5s err 0.13mm \u2014 CLEAN. Motion-onset 140ms cold. Pilot E-stop at bag_t=135s (session cut short? no, tail data present \u2014 E-stop occurred AFTER this session ended; shared rosbag captures all three runs).",
+      "phase": "smooth-motion-regression-investigation",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-19_22-36-46",
+      "session_group": "2026-04-19_22-36-46",
+      "verdict": "NEEDS_ATTENTION"
+    },
+    "mpc_20260419_223756.csv": {
+      "analyzed": true,
+      "flags_count": 8,
+      "last_analyzed": "2026-04-19T22:55:00Z",
+      "logbook_entry": "2026-04-19-bundle-a-quintic-ref-settling-and-live-twist-trap.md",
+      "notes": "20s hold, Z 170-220 stepping. solve mean=10.8ms p95=14.0ms, tail_5s err 0.06mm \u2014 EXCELLENT. Same profile as 223727; clean back-to-back.",
+      "phase": "smooth-motion-regression-investigation",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-19_22-36-46",
+      "session_group": "2026-04-19_22-36-46",
+      "verdict": "NEEDS_ATTENTION"
+    },
+    "mpc_20260419_223902.csv": {
+      "analyzed": true,
+      "flags_count": 6,
+      "last_analyzed": "2026-04-19T22:55:00Z",
+      "logbook_entry": "2026-04-19-bundle-a-quintic-ref-settling-and-live-twist-trap.md",
+      "notes": "4s truncated \u2014 PLANT_TELEMETRY_COLLAPSE: uncommanded 318mm/s overspeed at t=3.1s (2.3x v_max), followed by 78-step zero-extension sentinel, then pilot E-stop (DC_BUS_UNDER_VOLTAGE err 512 on all motors). solve mean=25.9ms p95=30.4ms (saturated at ipopt_iter=0 due to bad starting state). Final tracking 41.77mm \u2014 MEASUREMENT INVALID: session was terminated by safety event, not a steady-state performance measurement.",
+      "phase": "smooth-motion-regression-investigation",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-19_22-36-46",
+      "session_group": "2026-04-19_22-36-46",
+      "verdict": "NEEDS_ATTENTION"
+    },
+    "mpc_20260419_224454.csv": {
+      "analyzed": true,
+      "flags_count": 6,
+      "last_analyzed": "2026-04-19T22:55:00Z",
+      "logbook_entry": "2026-04-19-bundle-a-quintic-ref-settling-and-live-twist-trap.md",
+      "notes": "--auto-leg1-test 9-pose replay, 207s total. Poses 1-4 (Z=175-190) clean; transition pose 4\u21925 (190\u2192170) took 28s to converge (20mm retreat should take ~1-2s at v_max=140). Transition 5\u21926 (170\u2192220) took 50s. 1241 consecutive IPOPT solve violations (24.9% timeout rate). Motion-onset dead-time 1871ms at t=126s \u2014 LEG STICTION/STALL signature. \"Near lower stroke limit -5mm margin\" \u2014 legs pegged at stroke min during Z=220. Hold-phase asymmetry: leg 5 362\u03bcm stdev vs leg 3 83\u03bcm (4.4x) \u2014 leg 5 has taken over as worst hold-noise leg now that leg 1 is reverted to 40. Final tracking 14.7mm (incomplete stow).",
+      "phase": "smooth-motion-regression-investigation",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-04-19_22-44-29",
+      "session_group": "2026-04-19_22-44-29",
+      "verdict": "FAIL"
     },
     "mpc_20260423_184647.csv": {
       "analyzed": true,
-      "last_analyzed": "2026-04-23T09:15:34.111823+00:00",
-      "verdict": "PASS",
       "flags_count": 5,
+      "last_analyzed": "2026-04-23T09:15:34.111823+00:00",
       "phase": "hardware-bringup \u2014 hot-loop zero-allocation contract W6 validation",
       "rosbag": "/home/jetson/Desktop/rosbags/2026-04-23_18-46-25",
-      "session_group": "2026-04-23_18-46-25"
+      "session_group": "2026-04-23_18-46-25",
+      "verdict": "PASS"
+    },
+    "mpc_20260508_131742.csv": {
+      "analyzed": true,
+      "flags_count": 6,
+      "last_analyzed": "2026-05-08T03:47:35Z",
+      "notes": "PR3a baseline Move 1 (Active->z=220, FF off). Hold-phase asymmetry 5.5x persists. Motion-onset 175ms median.",
+      "phase": "pr-3a-baseline",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-05-08_13-16-52",
+      "verdict": "NEEDS_ATTENTION"
+    },
+    "mpc_20260508_132415.csv": {
+      "analyzed": true,
+      "flags_count": 5,
+      "last_analyzed": "2026-05-08T03:47:35Z",
+      "notes": "PR3a FF-on (sign=-1) Move 1: aggregate hold act_std 862um (40x baseline). Limit cycle ~5-6 Hz; cmd_ext spread 1.8mm during hold.",
+      "phase": "pr-3a-ff-sign-neg1",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-05-08_13-21-42",
+      "verdict": "FAIL"
+    },
+    "mpc_20260508_133452.csv": {
+      "analyzed": true,
+      "flags_count": 6,
+      "last_analyzed": "2026-05-08T03:47:35Z",
+      "notes": "PR3a FF-on (sign=+1) Move 1: aggregate hold act_std 661um (30x baseline). Limit cycle persists. Sign-flip did not fix the dead-zone-step issue.",
+      "phase": "pr-3a-ff-sign-pos1",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-05-08_13-34-15",
+      "verdict": "FAIL"
     }
-  }
+  },
+  "version": 1
 }

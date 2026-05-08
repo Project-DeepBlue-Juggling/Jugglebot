@@ -76,15 +76,34 @@ dynamics:
                                                 # Used by motion-onset cogging analysis (tools/motion_onset_cogging_study.py).
 
 # ============================================================
-# 1c. Friction Feedforward (Stribeck model)
-#     τ_friction(ω) = τ_c + (τ_s − τ_c)·exp(−(|ω|/ω_s)²) + b·|ω|
+# 1c. Friction Feedforward (Stribeck model with smooth low-velocity gate)
+#
+#     Magnitude (mirrors bench fit):
+#         τ_friction(ω) = τ_c + (τ_s − τ_c)·exp(−(|ω|/ω_s)²) + b·|ω|
+#     Smooth gate (added 2026-05-08 after platform limit-cycle finding —
+#     see logbook/2026-05-08-friction-ff-platform-limit-cycle.md):
+#         gate(ω) = 1 − exp(−(|ω|/v_gate)²)
+#     Final output:
+#         iq_ff(ω) = τ_friction(ω) · gate(ω)
+#
+#     The smooth gate replaces the bench's hard "stiction-boost band"
+#     [1e-4, 0.20] which produced a 0 → τ_s discontinuity at v=±1e-4.
+#     On platform that discontinuity bootstrapped a self-sustaining 5 Hz
+#     limit cycle with ~1.5 mm peak-to-peak hold-phase oscillation.  The
+#     bench couldn't see this (Python-generated trapezoid trajectories
+#     made vel_ff exactly 0.0 during hold, never crossing the dead-zone
+#     edge).  The smooth gate scales the FF magnitude continuously with
+#     |v| so a small commanded-velocity correction during hold produces
+#     a small torque the position loop can absorb, while sustained
+#     real motion ramps the FF up smoothly within ~10–20 ms.
 #
 #     Per-leg arrays so the refinement protocol described in
 #     plans/active/friction-ff-motor-guard-integration.md §4 can land
 #     outlier-driven adjustments without a schema migration.  Bench-fit
-#     values from logbook/2026-04-27-friction-feedforward-bench-validation.md
-#     are the starting estimate (the bench is single-leg, single-pose;
-#     the platform validates the rest).
+#     τ_c, τ_s, ω_s, b values from
+#     logbook/2026-04-27-friction-feedforward-bench-validation.md are
+#     the starting estimate.  ``v_gate_rps`` and ``ff_sign`` defaults
+#     are platform-derived; see comments alongside each field below.
 #
 #     Logically these are dynamics-section params (they live next to
 #     motor_kt_nm_per_a / motor_pole_pairs / motor_rotor_inertia_kgm2
@@ -113,9 +132,21 @@ dynamics:
 #     back under dynamics: cleanly.
 # ============================================================
 friction_ff:
-  enabled: false                              # global feature flag — keep false until PR 3 platform validation
-  stiction_boost_threshold_rps: 0.20          # |v_cmd| in (1e-4, threshold) → apply τ_s instead of Stribeck taper
-  ff_sign: [-1, -1, -1, -1, -1, -1]           # per-leg motor-wiring polarity (verify on platform before flag flip)
+  enabled: false                              # global feature flag — keep false until on-platform A/B validates the smooth-gate fix
+  v_gate_rps: 0.05                            # smooth-gate scale {rev/s}: gate(v) = 1 − exp(−(|v|/v_gate)²).
+                                              #   Sized larger than the platform's natural hold-noise floor
+                                              #   (BASELINE 99%ile vel_ff during hold ≈ 0.02 rev/s) so hold-phase
+                                              #   commanded-vel corrections produce <1 mNm torque (well within the
+                                              #   position loop's natural absorption capacity), while motion-onset
+                                              #   ramps engage full FF within ~v=0.10 rev/s.  See
+                                              #   logbook/2026-05-08-friction-ff-platform-limit-cycle.md §"Sizing v_gate".
+  ff_sign:        [1, 1, 1, 1, 1, 1]          # per-leg torque-FF polarity {±1}.  PLATFORM uses +1 for all legs because
+                                              #   can_node._send_position_target negates torque_ff for leg axes via
+                                              #   _leg_sign(...).  The bench (which validated ff_sign=−1) bypassed
+                                              #   can_node and sent torque_ff direct to ODrive — the chain there is
+                                              #   one negation; on platform it's two (motor_guard + can_node) so the
+                                              #   sign in motor_guard must flip to compensate.  Re-verify at flag-flip
+                                              #   time per the integration plan §6.5.
   tau_c_A:        [1.094, 1.094, 1.094, 1.094, 1.094, 1.094]   # kinetic Coulomb floor {A}
   tau_s_A:        [1.953, 1.953, 1.953, 1.953, 1.953, 1.953]   # stiction peak {A}
   omega_s_rps:    [0.251, 0.251, 0.251, 0.251, 0.251, 0.251]   # Stribeck breakaway scale {rev/s}

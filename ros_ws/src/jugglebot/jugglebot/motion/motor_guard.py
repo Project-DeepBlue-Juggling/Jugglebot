@@ -293,23 +293,27 @@ class MotorGuard:
         # ``test_friction_ff_scratch_buffer_identity`` and
         # ``test_friction_ff_no_steady_state_alloc``).  Buffer
         # identities are stable across enable/disable/estop cycles.
+        #
+        # PR 2.1 (2026-05-08): the boost-band buffers from PR 2 are gone.
+        # The boost band's hard 0 → τ_s step at v=±1e-4 bootstrapped a
+        # platform 5 Hz limit cycle; the smooth gate runs entirely
+        # through ``_friction_stribeck`` × ``_friction_gate``.  See
+        # logbook/2026-05-08-friction-ff-platform-limit-cycle.md.
         self._friction_ff_buf = np.zeros(6)            # result (returned)
         self._friction_av = np.zeros(6)                # |v|
         self._friction_sgn = np.zeros(6)               # sign(v)
-        self._friction_tmp = np.zeros(6)               # general scratch
-        self._friction_stribeck = np.zeros(6)          # Stribeck term
-        self._friction_boosted = np.zeros(6)           # boost-band term
-        self._friction_in_boost = np.zeros(6, dtype=bool)   # boost mask
-        self._friction_dead_zone = np.zeros(6, dtype=bool)  # |v|<1e-4 mask
-        self._friction_iq = np.zeros(6)                # iq_friction
-        self._friction_iq_total = np.zeros(6)          # iq_total
+        self._friction_tmp = np.zeros(6)               # general scratch (Stribeck exp arg, gate exp arg)
+        self._friction_stribeck = np.zeros(6)          # Stribeck taper magnitude
+        self._friction_gate = np.zeros(6)              # smooth low-v gate ∈ [0, 1)
+        self._friction_iq = np.zeros(6)                # gated friction magnitude (Stribeck × gate)
+        self._friction_iq_total = np.zeros(6)          # iq_total = -sgn·iq + load_offset
         # Cached derived params, recomputed when the params instance
         # changes (FrictionFFParams is frozen, so ``is`` identity tracks
         # content).  First compute call after __init__ or after a test
         # swap performs the cache fill in-place — still zero-alloc.
         self._friction_params_cached: FrictionFFParams | None = None
-        self._friction_tau_diff = np.zeros(6)          # tau_s - tau_c
-        self._friction_kt_signed = np.zeros(6)         # ff_sign * Kt
+        self._friction_tau_diff = np.zeros(6)          # tau_s − tau_c (Stribeck taper amplitude)
+        self._friction_kt_signed = np.zeros(6)         # ff_sign × motor_kt_nm_per_a (final scale)
 
         # --- Workspace monitoring ---
         self._workspace_limits = WorkspaceLimits.from_geometry(self.geom)
@@ -679,23 +683,57 @@ class MotorGuard:
     # ------------------------------------------------------------------
 
     def _compute_friction_ff_Nm(self) -> np.ndarray:
-        """Per-leg Stribeck friction torque feedforward, in Nm.
+        """Per-leg Stribeck-with-smooth-gate friction torque feedforward, in Nm.
 
         Returns a (6,) array — the additive friction-FF contribution to
         ``_commanded_torque_ff_Nm``.  Returns zeros when the global flag
         ``friction_ff.enabled`` is False, so the disabled path costs one
         branch + a memset.
 
-        At |v_cmd| ≥ stiction_boost_threshold the magnitude is the
-        Stribeck taper τ_c + (τ_s − τ_c)·exp(−(|v|/ω_s)²) + b·|v|.  In the
-        boost band [1e-4, threshold) the magnitude is the full stiction
-        peak τ_s + b·|v| — closes the residual ~12 % FF undersize at low
-        velocity that the bench sweep documented (see
-        logbook/2026-04-27-friction-feedforward-bench-validation.md).  At
-        |v| < 1e-4 (commanded hold) only the constant load_offset is
-        applied — there is no commanded motion to overcome friction for,
-        and applying full τ_s at v=0 would just be a constant disturbance
-        the position-loop integrator has to fight.
+        Magnitude (mirrors bench fit):
+            stribeck(v) = τ_c + (τ_s − τ_c)·exp(−(|v|/ω_s)²) + b·|v|
+        Smooth low-v gate (replaces bench-era boost band):
+            gate(v) = 1 − exp(−(|v|/v_gate)²)
+        Output:
+            iq_friction(v) = stribeck(v) · gate(v)
+            torque_ff = (−sign(v) · iq_friction(v) + load_offset) · ff_sign · Kt
+
+        The smooth gate is the load-bearing change from PR 2 → PR 2.1:
+        the bench's hard "stiction-boost band" applied full τ_s for any
+        |v| in [1e-4, 0.20) and zero below.  That 0 → τ_s step at
+        v=±1e-4 produced a 0 → 0.122 Nm jump in torque_ff within a
+        single 500 Hz tick.  On platform — where MPC's hold-phase
+        commanded vel naturally crosses ±1e-4 (~5 % of hold time per
+        the BASELINE rosbag) — that step kicks the leg into a self-
+        sustaining 5 Hz limit cycle with ~1.5 mm peak-to-peak hold
+        oscillation.  The smooth gate scales the FF magnitude
+        continuously with |v|: hold-phase commanded-vel corrections
+        produce <1 mNm of torque (well within the position loop's
+        absorption capacity), while motion-onset ramps engage near-
+        full FF within ~v=0.10 rev/s.
+
+        The bench couldn't see the failure because its Python-generated
+        trapezoid trajectories produced ``vel_ff = 0.0`` exactly during
+        hold — never crossing the dead-zone edge.  See
+        logbook/2026-05-08-friction-ff-platform-limit-cycle.md for the
+        full analysis (rosbag-validated mechanism + sizing rationale
+        for v_gate).
+
+        At |v| ≪ v_gate (hold-phase noise): gate ≈ (|v|/v_gate)², so
+        torque scales as |v|², heavily damped — no kick, no chatter.
+        At |v| = v_gate: gate = 1 − e⁻¹ ≈ 0.63, torque ≈ 63 % of full.
+        At |v| = 2·v_gate: gate ≈ 0.98, torque ≈ full.  Effective
+        engagement velocity is ~2·v_gate.
+
+        Sign convention (verified against can_node 2026-05-08):
+            ``can_node._send_position_target`` negates ``torque_ff``
+            for leg axes via ``_leg_sign(axis_id, torque_ff)``
+            (can_node.py:713).  The bench bypassed can_node entirely
+            and validated ``ff_sign = -1`` against direct ODrive sends.
+            On platform, the chain is motor_guard's negation × can_node's
+            negation × ODrive's wiring inversion — two negations vs the
+            bench's one, so platform ``ff_sign`` must be flipped to +1.
+            YAML default reflects this.
 
         The function is the single canonical enforcement point of the
         friction-FF contract — no other code path writes friction-derived
@@ -709,8 +747,9 @@ class MotorGuard:
         ``test_friction_ff_scratch_buffer_identity`` and
         ``test_friction_ff_no_steady_state_alloc``.
 
-        This is the vectorised port of ``friction_ff_nm`` in
-        tests/hardware/friction_ff_demo.py:167-205.
+        Vectorised port of ``friction_ff_nm`` in
+        tests/hardware/friction_ff_demo.py:167-205, with the boost band
+        replaced by the smooth gate as documented above.
         """
         p = self._friction_ff_params
         buf = self._friction_ff_buf
@@ -733,9 +772,7 @@ class MotorGuard:
         sgn = self._friction_sgn
         tmp = self._friction_tmp
         stribeck = self._friction_stribeck
-        boosted = self._friction_boosted
-        in_boost = self._friction_in_boost
-        dead = self._friction_dead_zone
+        gate = self._friction_gate
         iq = self._friction_iq
         iq_total = self._friction_iq_total
 
@@ -743,7 +780,8 @@ class MotorGuard:
         np.sign(v, out=sgn)
 
         # Stribeck taper:
-        #   stribeck = tau_c + (tau_s − tau_c) · exp(−(av/omega_s)²) + b·av
+        #   stribeck = τ_c + (τ_s − τ_c) · exp(−(av/ω_s)²) + b·av
+        # Build via in-place ops on tmp + stribeck.
         np.divide(av, p.omega_s_rps, out=tmp)            # tmp = av/ω_s
         np.square(tmp, out=tmp)                          # tmp = (av/ω_s)²
         np.negative(tmp, out=tmp)                        # tmp = −(av/ω_s)²
@@ -751,40 +789,37 @@ class MotorGuard:
         np.multiply(self._friction_tau_diff, tmp, out=stribeck)  # (τ_s−τ_c)·exp
         np.add(stribeck, p.tau_c_A, out=stribeck)        # + τ_c
         np.multiply(p.b_A_per_rps, av, out=tmp)          # tmp = b·av
-        np.add(stribeck, tmp, out=stribeck)              # + b·av
+        np.add(stribeck, tmp, out=stribeck)              # + b·av  → full Stribeck taper
 
-        # Boost-band term: boosted = τ_s + b·av
-        np.multiply(p.b_A_per_rps, av, out=boosted)
-        np.add(boosted, p.tau_s_A, out=boosted)
+        # Smooth low-v gate:
+        #   gate = 1 − exp(−(av/v_gate)²)
+        # Same Gaussian form as the Stribeck τ_s−τ_c term (which decays
+        # FROM 1 to 0 as v rises) but flipped (rises FROM 0 to 1).  This
+        # parallel is intentional — both shapes are tuned to the leg's
+        # natural transition between hold-phase noise (av ≈ 0) and real
+        # commanded motion (av ≫ v_gate).
+        np.divide(av, p.v_gate_rps, out=tmp)             # tmp = av/v_gate
+        np.square(tmp, out=tmp)                          # tmp = (av/v_gate)²
+        np.negative(tmp, out=tmp)                        # tmp = −(av/v_gate)²
+        np.exp(tmp, out=gate)                            # gate = exp(...)  ∈ (0, 1]
+        np.subtract(1.0, gate, out=gate)                 # gate = 1 − exp  ∈ [0, 1)
 
-        # in_boost = (av >= 1e-4) & (av < threshold).  Reuse `dead` as a
-        # scratch bool buffer for the ``< threshold`` term — it gets
-        # overwritten with the dead-zone mask a few lines down.
-        np.greater_equal(av, 1e-4, out=in_boost)
-        np.less(av, p.stiction_boost_threshold_rps, out=dead)
-        np.logical_and(in_boost, dead, out=in_boost)
+        # iq_friction = stribeck · gate.  At |v| ≪ v_gate this kills the
+        # friction torque cleanly; at |v| ≫ v_gate gate≈1 and we get the
+        # full Stribeck taper.  No discontinuity, no boost-band step.
+        np.multiply(stribeck, gate, out=iq)
 
-        # iq = boosted where in_boost else stribeck.  ``copyto(..., where=)``
-        # is the in-place equivalent of np.where (no temporary).
-        np.copyto(iq, stribeck)
-        np.copyto(iq, boosted, where=in_boost)
-
-        # Dead zone (|v| < 1e-4): iq = 0.  This explicit clamp is the
-        # load-bearing safety net for the v=0 case when load_offset is
-        # non-zero — ``np.sign(0) == 0`` would already kill the friction
-        # term in the next step, but the clamp makes the intent explicit
-        # and survives any future change to how sgn is computed (e.g.
-        # switching to copysign, which preserves signbit on -0.0).
-        # Boolean indexing assignment is in-place; no temporary.
-        np.less(av, 1e-4, out=dead)
-        iq[dead] = 0.0
-
-        # iq_total = −sgn·iq + load_offset
+        # iq_total = −sgn·iq + load_offset.  ``np.sign(0)`` is exactly 0
+        # in numpy, so the v=0 case naturally yields iq_total = load_offset
+        # (only the constant load is applied at hold) without an explicit
+        # dead-zone clamp.  This is the structural replacement for PR 2's
+        # ``np.where(av < 1e-4, 0, ...)`` — at v=0 the gate is 0, iq is 0,
+        # and −sgn·iq is 0 regardless of how sgn is computed.
         np.multiply(sgn, iq, out=iq_total)
         np.negative(iq_total, out=iq_total)
         np.add(iq_total, p.load_offset_A, out=iq_total)
 
-        # buf = iq_total · (ff_sign · Kt)  [pre-cached]
+        # buf = iq_total · (ff_sign · Kt)  [pre-cached scaling]
         np.multiply(iq_total, self._friction_kt_signed, out=buf)
         return buf
 

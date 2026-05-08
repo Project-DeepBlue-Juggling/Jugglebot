@@ -44,10 +44,20 @@ class FrictionFFParams:
     than int) so the multiplication in
     ``MotorGuard._compute_friction_ff_Nm`` stays in float dtype without
     an upcast.
+
+    Schema notes:
+        - ``v_gate_rps`` is a global scalar (the same gate scale is used
+          for every leg).  It tunes the smooth low-velocity gate that
+          replaces the bench-era boost band — see
+          logbook/2026-05-08-friction-ff-platform-limit-cycle.md.
+        - The bench's ``stiction_boost_threshold_rps`` was removed in
+          PR 2.1 because the boost band's hard 0 → τ_s step at v=1e-4
+          bootstrapped a 5 Hz limit cycle on platform.  The smooth gate
+          is the structural replacement.
     """
 
     enabled: bool
-    stiction_boost_threshold_rps: float
+    v_gate_rps: float              # smooth low-v gate scale [rev/s]
     ff_sign: np.ndarray            # (6,) ±1.0 per leg
     tau_c_A: np.ndarray            # (6,) kinetic Coulomb floor [A]
     tau_s_A: np.ndarray            # (6,) stiction peak [A]
@@ -93,15 +103,16 @@ def load_params(yaml_path: str | None = None) -> FrictionFFParams:
             f"{path} is missing dynamics.motor_kt_nm_per_a; "
             f"required for the iq → torque conversion in the friction FF")
 
-    boost = float(ff['stiction_boost_threshold_rps'])
-    if boost <= 0.0:
+    v_gate = float(ff['v_gate_rps'])
+    if v_gate <= 0.0:
         raise ValueError(
-            f"friction_ff.stiction_boost_threshold_rps must be > 0, "
-            f"got {boost}")
+            f"friction_ff.v_gate_rps must be > 0 (smooth-gate scale; see "
+            f"logbook/2026-05-08-friction-ff-platform-limit-cycle.md), "
+            f"got {v_gate}")
 
     return FrictionFFParams(
         enabled=bool(ff['enabled']),
-        stiction_boost_threshold_rps=boost,
+        v_gate_rps=v_gate,
         ff_sign=_arr('ff_sign', ff['ff_sign']),
         tau_c_A=_arr('tau_c_A', ff['tau_c_A']),
         tau_s_A=_arr('tau_s_A', ff['tau_s_A']),
