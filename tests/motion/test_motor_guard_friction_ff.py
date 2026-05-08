@@ -691,19 +691,26 @@ def test_friction_ff_no_steady_state_alloc():
 def test_friction_ff_enable_override_none_uses_yaml():
     """``friction_ff_enable_override=None`` (default) preserves YAML setting.
 
-    YAML ships ``enabled: false`` for PR 2; that's the no-override
-    behaviour and must remain unchanged when the override is unset.
+    YAML default since PR 3b (2026-05-08) is ``enabled: true``; the
+    no-override path must reflect that.  If a future change flips the
+    YAML default, update this assertion AND add a logbook entry —
+    don't silently drift the runtime behaviour.
     """
     ipc = _MockIPC()
     geom = StewartGeometry()
     guard = MotorGuard(rate_hz=500, geom=geom, ipc=ipc,
                        friction_ff_enable_override=None)
-    # PR 2's YAML ships enabled: false; this asserts that.
-    assert guard._friction_ff_params.enabled is False
+    assert guard._friction_ff_params.enabled is True
 
 
 def test_friction_ff_enable_override_true_forces_enable():
-    """Override=True sets ``params.enabled=True`` regardless of YAML."""
+    """Override=True sets ``params.enabled=True`` regardless of YAML.
+
+    With YAML default already True (PR 3b), an explicit True is a
+    no-op — the override mechanism's `!=` guard skips the
+    ``dataclasses.replace`` call.  Behaviour-equivalent to the YAML
+    default; this test pins that.
+    """
     ipc = _MockIPC()
     geom = StewartGeometry()
     guard = MotorGuard(rate_hz=500, geom=geom, ipc=ipc,
@@ -712,7 +719,11 @@ def test_friction_ff_enable_override_true_forces_enable():
 
 
 def test_friction_ff_enable_override_false_forces_disable():
-    """Override=False sets ``params.enabled=False`` regardless of YAML."""
+    """Override=False forces ``params.enabled=False`` (overrides YAML default True).
+
+    This is the operator-facing kill-switch for ablation / safety:
+    ``ros2 launch jugglebot jugglebot_launch.py friction_ff_enable:=false``.
+    """
     ipc = _MockIPC()
     geom = StewartGeometry()
     guard = MotorGuard(rate_hz=500, geom=geom, ipc=ipc,

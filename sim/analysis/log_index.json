@@ -622,6 +622,177 @@
       "phase": "pr-3a-ff-sign-pos1",
       "rosbag": "/home/jetson/Desktop/rosbags/2026-05-08_13-34-15",
       "verdict": "FAIL"
+    },
+    "mpc_20260508_150357.csv": {
+      "analyzed": true,
+      "flags_count": 5,
+      "last_analyzed": "2026-05-08T05:19:25Z",
+      "notes": "Step 1 active hold smoke check (FF on smooth-gate, sign=+1). No limit cycle. Hold 21 um agg act_std \u2014 matches baseline.",
+      "phase": "pr-3a-revised-step1-active-hold-smoke",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-05-08_15-03-29",
+      "verdict": "PASS"
+    },
+    "mpc_20260508_150442.csv": {
+      "analyzed": true,
+      "flags_count": 6,
+      "last_analyzed": "2026-05-08T05:19:25Z",
+      "notes": "Step 2 single Move 1 (Active->z=220). 226ms motion-onset (slower than baseline 175ms). Hold 124 um. Cold-solve effect on first move.",
+      "phase": "pr-3a-revised-step2-sign-verify",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-05-08_15-03-29",
+      "verdict": "NEEDS_ATTENTION"
+    },
+    "mpc_20260508_150532.csv": {
+      "analyzed": true,
+      "flags_count": 4,
+      "last_analyzed": "2026-05-08T05:19:25Z",
+      "notes": "Step 3 Move 1: Active->z=220. 185ms motion-onset (~baseline). Hold 93 um. No limit cycle.",
+      "phase": "pr-3a-revised-step3-move1",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-05-08_15-05-17",
+      "verdict": "PASS"
+    },
+    "mpc_20260508_150548.csv": {
+      "analyzed": true,
+      "flags_count": 4,
+      "last_analyzed": "2026-05-08T05:19:25Z",
+      "notes": "Step 3 Move 2: z=220->Active. 173ms motion-onset (vs baseline 220ms; -21%).",
+      "phase": "pr-3a-revised-step3-move2",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-05-08_15-05-17",
+      "verdict": "PASS"
+    },
+    "mpc_20260508_150608.csv": {
+      "analyzed": true,
+      "flags_count": 4,
+      "last_analyzed": "2026-05-08T05:19:25Z",
+      "notes": "Step 3 Move 3: Active->x=50. Hold 312um (worse than baseline 263um but in ballpark of pre-existing condition).",
+      "phase": "pr-3a-revised-step3-move3",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-05-08_15-05-17",
+      "verdict": "NEEDS_ATTENTION"
+    },
+    "mpc_20260508_150630.csv": {
+      "analyzed": true,
+      "flags_count": 3,
+      "last_analyzed": "2026-05-08T05:19:25Z",
+      "notes": "Step 3 Move 4: Active->y=50. 312ms motion-onset vs baseline 165ms \u2014 likely sample-size artifact (only 2 legs detect onset, n=1 each).",
+      "phase": "pr-3a-revised-step3-move4",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-05-08_15-05-17",
+      "verdict": "NEEDS_ATTENTION"
+    },
+    "mpc_20260508_150708.csv": {
+      "analyzed": true,
+      "flags_count": 3,
+      "last_analyzed": "2026-05-08T05:19:25Z",
+      "notes": "Step 3 Move 5: Active->diag+tilt. 173ms motion-onset (vs baseline 323ms; -47%). Hold 44um (better than baseline 101um).",
+      "phase": "pr-3a-revised-step3-move5",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-05-08_15-05-17",
+      "verdict": "PASS"
+    },
+    "mpc_20260508_150732.csv": {
+      "analyzed": true,
+      "flags_count": 4,
+      "last_analyzed": "2026-05-08T05:19:25Z",
+      "notes": "Step 3 Move 6: Active->y=-100 extreme-pose. 171ms motion-onset (vs baseline 466ms; -63% \u2014 biggest improvement). Hold 209um (better).",
+      "phase": "pr-3a-revised-step3-move6",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-05-08_15-05-17",
+      "verdict": "PASS"
+    },
+    "mpc_20260508_150754.csv": {
+      "analyzed": true,
+      "flags_count": 4,
+      "last_analyzed": "2026-05-08T05:19:25Z",
+      "notes": "Step 3 Move 7: Active->100,100 extreme-pose. 295ms motion-onset (~baseline). Hold 838um (worse than baseline 605um) \u2014 pre-existing extreme-pose ringing amplified by FF; not a limit cycle.",
+      "phase": "pr-3a-revised-step3-move7",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-05-08_15-05-17",
+      "verdict": "NEEDS_ATTENTION"
+    },
+    "mpc_20260508_152800.csv": {
+      "analyzed": true,
+      "flags_count": 4,
+      "last_analyzed": "2026-05-08T05:44:35Z",
+      "notes": "Move 4 rep 1 fwd (PR 3b chaaracterisation). Reverse direction consistently slower (legs 1+2 dominant ~327/351 ms median). Forward direction has unreliable detection (small move).",
+      "phase": "pr-3b-move4-rep1-fwd",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-05-08_15-27-35",
+      "verdict": "PASS"
+    },
+    "mpc_20260508_152818.csv": {
+      "analyzed": true,
+      "flags_count": 4,
+      "last_analyzed": "2026-05-08T05:44:35Z",
+      "notes": "Move 4 rep 1 rev (PR 3b chaaracterisation). Reverse direction consistently slower (legs 1+2 dominant ~327/351 ms median). Forward direction has unreliable detection (small move).",
+      "phase": "pr-3b-move4-rep1-rev",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-05-08_15-27-35",
+      "verdict": "PASS"
+    },
+    "mpc_20260508_152836.csv": {
+      "analyzed": true,
+      "flags_count": 4,
+      "last_analyzed": "2026-05-08T05:44:35Z",
+      "notes": "Move 4 rep 2 fwd (PR 3b chaaracterisation). Reverse direction consistently slower (legs 1+2 dominant ~327/351 ms median). Forward direction has unreliable detection (small move).",
+      "phase": "pr-3b-move4-rep2-fwd",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-05-08_15-27-35",
+      "verdict": "PASS"
+    },
+    "mpc_20260508_152850.csv": {
+      "analyzed": true,
+      "flags_count": 4,
+      "last_analyzed": "2026-05-08T05:44:35Z",
+      "notes": "Move 4 rep 2 rev (PR 3b chaaracterisation). Reverse direction consistently slower (legs 1+2 dominant ~327/351 ms median). Forward direction has unreliable detection (small move).",
+      "phase": "pr-3b-move4-rep2-rev",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-05-08_15-27-35",
+      "verdict": "PASS"
+    },
+    "mpc_20260508_152903.csv": {
+      "analyzed": true,
+      "flags_count": 4,
+      "last_analyzed": "2026-05-08T05:44:35Z",
+      "notes": "Move 4 rep 3 fwd (PR 3b chaaracterisation). Reverse direction consistently slower (legs 1+2 dominant ~327/351 ms median). Forward direction has unreliable detection (small move).",
+      "phase": "pr-3b-move4-rep3-fwd",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-05-08_15-27-35",
+      "verdict": "PASS"
+    },
+    "mpc_20260508_152918.csv": {
+      "analyzed": true,
+      "flags_count": 4,
+      "last_analyzed": "2026-05-08T05:44:35Z",
+      "notes": "Move 4 rep 3 rev (PR 3b chaaracterisation). Reverse direction consistently slower (legs 1+2 dominant ~327/351 ms median). Forward direction has unreliable detection (small move).",
+      "phase": "pr-3b-move4-rep3-rev",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-05-08_15-27-35",
+      "verdict": "PASS"
+    },
+    "mpc_20260508_152931.csv": {
+      "analyzed": true,
+      "flags_count": 4,
+      "last_analyzed": "2026-05-08T05:44:35Z",
+      "notes": "Move 4 rep 4 fwd (PR 3b chaaracterisation). Reverse direction consistently slower (legs 1+2 dominant ~327/351 ms median). Forward direction has unreliable detection (small move).",
+      "phase": "pr-3b-move4-rep4-fwd",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-05-08_15-27-35",
+      "verdict": "PASS"
+    },
+    "mpc_20260508_152946.csv": {
+      "analyzed": true,
+      "flags_count": 4,
+      "last_analyzed": "2026-05-08T05:44:35Z",
+      "notes": "Move 4 rep 4 rev (PR 3b chaaracterisation). Reverse direction consistently slower (legs 1+2 dominant ~327/351 ms median). Forward direction has unreliable detection (small move).",
+      "phase": "pr-3b-move4-rep4-rev",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-05-08_15-27-35",
+      "verdict": "PASS"
+    },
+    "mpc_20260508_153000.csv": {
+      "analyzed": true,
+      "flags_count": 4,
+      "last_analyzed": "2026-05-08T05:44:35Z",
+      "notes": "Move 4 rep 5 fwd (PR 3b chaaracterisation). Reverse direction consistently slower (legs 1+2 dominant ~327/351 ms median). Forward direction has unreliable detection (small move).",
+      "phase": "pr-3b-move4-rep5-fwd",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-05-08_15-27-35",
+      "verdict": "PASS"
+    },
+    "mpc_20260508_153015.csv": {
+      "analyzed": true,
+      "flags_count": 4,
+      "last_analyzed": "2026-05-08T05:44:35Z",
+      "notes": "Move 4 rep 5 rev (PR 3b chaaracterisation). Reverse direction consistently slower (legs 1+2 dominant ~327/351 ms median). Forward direction has unreliable detection (small move).",
+      "phase": "pr-3b-move4-rep5-rev",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-05-08_15-27-35",
+      "verdict": "PASS"
     }
   },
   "version": 1

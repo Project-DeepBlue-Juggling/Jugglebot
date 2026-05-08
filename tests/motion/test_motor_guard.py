@@ -83,11 +83,22 @@ class MockIPC:
 # Test helpers
 # ---------------------------------------------------------------------------
 
-def _make_guard() -> tuple[MotorGuard, MockIPC]:
-    """Create a MotorGuard with a MockIPC for testing."""
+def _make_guard(friction_ff_enable_override: bool | None = False) -> tuple[MotorGuard, MockIPC]:
+    """Create a MotorGuard with a MockIPC for testing.
+
+    ``friction_ff_enable_override`` defaults to ``False`` so the existing
+    motor_guard tests (which were written before friction FF existed)
+    continue to test pure interpolation / clamping / safety behaviour
+    without friction-FF torque mixing into ``_commanded_torque_ff_Nm``.
+    Tests that explicitly want friction FF active should pass ``True``
+    or ``None`` (use YAML default, which is ``True`` since PR 3b).
+    Friction-FF-specific tests live in
+    ``tests/motion/test_motor_guard_friction_ff.py``.
+    """
     ipc = MockIPC()
     geom = StewartGeometry()
-    guard = MotorGuard(rate_hz=500, geom=geom, ipc=ipc)
+    guard = MotorGuard(rate_hz=500, geom=geom, ipc=ipc,
+                       friction_ff_enable_override=friction_ff_enable_override)
     return guard, ipc
 
 

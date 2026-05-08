@@ -24,9 +24,10 @@ from jugglebot.motion.friction_ff_params import (
 def test_load_params_returns_well_formed_arrays():
     p = load_params()
     assert isinstance(p, FrictionFFParams)
-    # Global flag — should ship disabled until on-platform A/B validates
-    # the smooth-gate fix.
-    assert p.enabled is False
+    # Global flag — enabled in PR 3b (2026-05-08) after on-platform A/B
+    # validation of the smooth-gate fix.  See logbook entry
+    # 2026-05-08-friction-ff-platform-limit-cycle.md.
+    assert p.enabled is True
     # Smooth-gate scale — sized larger than the platform's hold-noise
     # floor (BASELINE 99%ile vel_ff during hold ≈ 0.02 rev/s).
     assert 0.0 < p.v_gate_rps < 1.0

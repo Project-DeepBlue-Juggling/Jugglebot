@@ -132,7 +132,13 @@ dynamics:
 #     back under dynamics: cleanly.
 # ============================================================
 friction_ff:
-  enabled: false                              # global feature flag — keep false until on-platform A/B validates the smooth-gate fix
+  enabled: true                               # global feature flag.  Enabled 2026-05-08 after PR 3a-revised on-platform
+                                              #   A/B validation: motion-onset median improved 285 → 185 ms (1.54×) on the
+                                              #   7-move battery, max 555 → 337 ms (1.65×), no limit cycle, hold-phase quality
+                                              #   matches FF-off baseline (21 µm act_std).  See logbook/2026-05-08-friction-
+                                              #   ff-platform-limit-cycle.md.  Per-launch override is via the `--friction-ff`
+                                              #   CLI flag on motor_guard or the `friction_ff_enable:={true|false}` ROS2 launch
+                                              #   argument — useful for ablation testing without YAML edits.
   v_gate_rps: 0.05                            # smooth-gate scale {rev/s}: gate(v) = 1 − exp(−(|v|/v_gate)²).
                                               #   Sized larger than the platform's natural hold-noise floor
                                               #   (BASELINE 99%ile vel_ff during hold ≈ 0.02 rev/s) so hold-phase

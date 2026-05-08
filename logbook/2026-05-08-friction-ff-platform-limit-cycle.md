@@ -2,8 +2,8 @@
 title: Friction-FF platform limit cycle — diagnosis and smooth-gate fix
 type: investigation
 date: 2026-05-08
-status: fix-pending-platform-validation
-phase: pr-3a-revised
+status: resolved
+phase: pr-3b-persistent-enable
 related_plan: friction-ff-motor-guard-integration.md
 related_issues:
   - 2026-04-27-friction-feedforward-bench-validation.md
@@ -365,12 +365,67 @@ corrected gate.  Until that validates, the platform runs friction-FF-off.
 | Platform sign should be `+1` (vs bench `-1`) | ✅ Confirmed | can_node._send_position_target negates torque_ff for legs (line 713) |
 | Limit cycle is bounded, not divergent | ✅ Confirmed | 1.5 mm peak-to-peak across 30 s of hold |
 | Bench could not have detected this | ✅ Confirmed | Bench's trapezoid trajectory has vel_ff = 0.0 exactly during hold |
-| Smooth gate eliminates the kick | 🟡 Strongly suggested | Replay analysis predicts median 0 mNm, 90%ile 1.65 mNm on BASELINE vel_ff |
-| Smooth gate preserves motion-onset benefit | 🟡 Plausible | Engagement velocity (2·v_gate = 0.10 rev/s) matches bench's effective engagement; expect ~50–70 % of bench improvement |
+| Smooth gate eliminates the kick | ✅ Confirmed (2026-05-08 platform A/B) | Step 1 hold matches BASELINE 21 µm exactly; no chatter, no oscillation |
+| Smooth gate preserves motion-onset benefit | ✅ Confirmed (2026-05-08 platform A/B) | Aggregate motion-onset 285 → 185 ms (1.54× faster); max 555 → 337 ms (1.65× faster) on the 7-move battery |
 
-The "Strongly suggested" rows become "Confirmed" after the on-platform
-PR 3a-revised A/B.  Until then, this entry's status is
-`fix-pending-platform-validation`.
+## Validation (PR 3a-revised, 2026-05-08 ~15:00)
+
+On-platform A/B with the smooth gate, all 7 moves of the leg-gain-tuning
+test battery.  Sessions: `mpc_20260508_150357.csv` (Step 1 active hold),
+`mpc_20260508_150442.csv` (Step 2 sign-verify), `mpc_20260508_150532..150754.csv`
+(Step 3 7-move battery).  Rosbags: `2026-05-08_15-03-29` and `15-05-17`.
+
+Operator observation (Steps 1+2): "no observable oscillation during either
+sequence.  The platform did move slightly during the holds, but there was no
+oscillation and the small movements seemed similar to what I've observed in
+the past."
+
+Operator observation (Step 3): "the smoothest run of the 7-move battery that
+we've ever run — there were still a few OH SPIKEs and MPC solve failures, but
+all movements were smooth and controlled."
+
+Quantitative results (vs yesterday's BASELINE FF-off battery):
+
+| Metric | BASELINE | PR 2.1 | Δ |
+|---|---:|---:|---:|
+| Aggregate motion-onset median | 285 ms | **185 ms** | **−35 % (1.54×)** |
+| Aggregate motion-onset max | 555 ms | **337 ms** | **−39 % (1.65×)** |
+| Per-leg chatter median (across all legs × 7 moves) | 0.052 | 0.043 | −17 % |
+| Per-leg chatter max | 0.262 | 0.200 | −24 % |
+| Step 1 active-hold act_std (15 s, FF on) | 21 µm (yesterday's M1 hold) | **21 µm** | **identical** |
+| Limit cycle (FF on) | n/a | **none** | ✅ |
+
+The biggest improvements were on extreme-pose Move 6 (Active → y=−100,
+466 → 171 ms = **−63 %**) and Move 5 (diag+tilt, 323 → 173 ms = **−47 %**).
+Smaller-or-no improvement on Moves 1, 3, 7 suggests their baseline latency is
+already inertia-limited — friction is no longer the dominant contributor on
+those moves.
+
+Move 7 hold quality regressed slightly (605 → 838 µm).  Investigation
+showed this is a pre-existing extreme-pose ringing issue × FF activation
+during the ringing — NOT a limit cycle (no chatter, magnitudes don't grow,
+sign-flip rate normal).  The right fix is per-leg gain tuning at extreme
+poses (separate workstream, see `2026-04-19-leg1-pose-dependent-hold-twitch.md`),
+not friction-FF parameter changes.
+
+Move 4 showed an apparent +89 % motion-onset regression but per-leg
+breakdown showed it's a single-sample artifact (n=1 onset per leg, different
+legs dominated each run).  Operator re-ran Move 4 five times to characterise
+properly — analysis pending in a follow-up entry.
+
+`v_gate = 0.05 rev/s` was the right size — no further tuning needed for
+PR 3b.
+
+## Outcome (PR 3b status)
+
+YAML default `friction_ff.enabled` flipped from `false` to `true` on
+2026-05-08 in PR 3b.  Friction FF is now active on every launch unless
+explicitly disabled via `--friction-ff false` CLI flag or the
+`friction_ff_enable:=false` ROS2 launch argument.
+
+Integration plan §5 acceptance criteria need to be re-baselined for
+realistic platform numbers — see follow-up note in
+`plans/active/friction-ff-motor-guard-integration.md`.
 
 ## Withdrawn claims
 
