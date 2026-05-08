@@ -1,8 +1,10 @@
 # Friction-FF Integration into motor_guard
 
-**Status:** Proposal, awaiting approval
+**Status:** completed
+**Completed:** 2026-05-08
 **Predecessor:** [plans/active/motion-onset-deadtime-investigation.md](motion-onset-deadtime-investigation.md) — bench-validation phase complete
 **Bench-validation logbook:** [logbook/2026-04-27-friction-feedforward-bench-validation.md](../../logbook/2026-04-27-friction-feedforward-bench-validation.md)
+**Platform-validation logbook (supersedes §3.1 + §3.2 amendments):** [logbook/2026-05-08-friction-ff-platform-limit-cycle.md](../../logbook/2026-05-08-friction-ff-platform-limit-cycle.md)
 **Author note:** This is a research/integration deliverable. The plan describes the contract, the implementation, the per-leg tuning protocol, and the acceptance gates. Do not begin implementation until §6's open questions are resolved with the user.
 
 ---
@@ -66,6 +68,19 @@ Three parts, one each:
 
 ### 3.1 Per-leg parameters in `hardware_config.yaml`
 
+> **AMENDED IN PR 2.1 (2026-05-08)** — the as-shipped schema differs from
+> what's described below.  The bench's `stiction_boost_threshold_rps`
+> field was REMOVED and replaced with `v_gate_rps` (smooth low-velocity
+> gate) after the boost band's hard 0 → τ_s step at v=±1e-4 was found
+> to bootstrap a 5 Hz limit cycle on platform.  Default `ff_sign` was
+> also flipped from `[-1,...]` to `[+1,...]` (platform convention; the
+> bench's −1 was correct without can_node's leg negation, but the
+> platform has that negation).  See
+> `logbook/2026-05-08-friction-ff-platform-limit-cycle.md` for the full
+> diagnosis and the smooth-gate sizing rationale.  The text below is
+> preserved as the original design — refer to the logbook entry and the
+> current `config/hardware_config.yaml` for the as-shipped state.
+
 Add a new section under `jugglebot_odrive_defaults`:
 
 ```yaml
@@ -90,6 +105,19 @@ friction_ff:
 **Default `enabled: false`:** the FF lands behind a flag so the platform integrates safely. The first operational test enables it explicitly per-session, validating before persistent deployment.
 
 ### 3.2 The `_compute_friction_ff_Nm` function
+
+> **AMENDED IN PR 2.1 (2026-05-08)** — the boost-band branch in the
+> pseudocode below was replaced with a smooth multiplicative gate
+> `gate(v) = 1 − exp(−(|v|/v_gate)²)` applied to the Stribeck taper.
+> The `np.where(in_boost, ...)` and `np.where(av < 1e-4, 0, ...)`
+> clauses are gone; the smooth gate handles both the dead-zone and the
+> low-velocity boost regions continuously.  See the
+> `_compute_friction_ff_Nm` docstring in `motor_guard.py` for the
+> as-shipped function (~60 lines of design rationale and the
+> mathematical form), plus
+> `logbook/2026-05-08-friction-ff-platform-limit-cycle.md` for why the
+> structural change was needed.  The pseudocode below is preserved as
+> the original design.
 
 Single canonical implementation in motor_guard:
 
@@ -317,7 +345,9 @@ The `_compute_friction_ff_Nm` function is independent of any other motor_guard l
 ## 10. References
 
 - Bench-validation logbook: [logbook/2026-04-27-friction-feedforward-bench-validation.md](../../logbook/2026-04-27-friction-feedforward-bench-validation.md) — model fit, demo results, withdrawn claims, per-leg tuning rationale.
+- **Platform-validation logbook (PR 2.1 + PR 3b):** [logbook/2026-05-08-friction-ff-platform-limit-cycle.md](../../logbook/2026-05-08-friction-ff-platform-limit-cycle.md) — diagnosis of the boost-band's 5 Hz platform limit cycle, the smooth-gate structural fix, the on-platform A/B validation results, and the persistent-enable rollout. **This is the supersession reference for the §3.1 / §3.2 amendments.**
 - Original investigation: [plans/active/motion-onset-deadtime-investigation.md](motion-onset-deadtime-investigation.md) — symptom recap, candidate-mechanism enumeration, fix-option ranking.
 - Hot-loop zero-allocation contract: [logbook/2026-04-23-hot-loop-zero-allocation-contract.md](../../logbook/2026-04-23-hot-loop-zero-allocation-contract.md) — scoped to the MPC 40 Hz hot loop; motor_guard's 500 Hz loop is not formally bound by it.
 - Gain-tuning methodology: [plans/active/leg-gain-tuning-methodology.md](leg-gain-tuning-methodology.md) — per-leg tuning patterns, in-experiment controls, the 7-move battery referenced in §5.
 - Bench scripts and analysers: [tests/hardware/friction_ff_demo.py](../../tests/hardware/friction_ff_demo.py), [tools/friction_study_analyse.py](../../tools/friction_study_analyse.py).
+- Pre-flight diagnostic (PR 1, vel_ff plumbing): [tools/check_vel_ff_plumbing.py](../../tools/check_vel_ff_plumbing.py) — the script that resolved §6.1 (vel_ff was already live).

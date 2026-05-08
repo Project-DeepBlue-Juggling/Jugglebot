@@ -6,7 +6,7 @@ bench fit (R²=0.994; canonical historical reference is
 ``tests/hardware/single_leg_test.py:92``).  As of 2026-05-07 it was promoted
 to ``config/hardware_config.yaml:dynamics.motor_kt_nm_per_a`` to serve as the
 single source of truth that the friction-FF integration (PR 2 of
-``plans/active/friction-ff-motor-guard-integration.md``) reads at runtime.
+``plans/archived/2026-05-08 friction-ff-motor-guard-integration.md``) reads at runtime.
 
 This test pins down: if anyone re-measures Kt and updates one location, they
 must update *all* of them — the yaml value and the test-side literals must
@@ -39,7 +39,7 @@ def _load_yaml_kt() -> float:
     val = cfg.get('dynamics', {}).get('motor_kt_nm_per_a')
     assert val is not None, (
         'config/hardware_config.yaml is missing dynamics.motor_kt_nm_per_a; '
-        'see plans/active/friction-ff-motor-guard-integration.md §3.5')
+        'see plans/archived/2026-05-08 friction-ff-motor-guard-integration.md §3.5')
     return float(val)
 
 

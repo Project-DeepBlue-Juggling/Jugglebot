@@ -269,7 +269,7 @@ class MotorGuard:
         # set, supersedes the YAML default for this session only (no
         # YAML edit / no rebuild).  Used for on-platform A/B comparison
         # of baseline-off vs friction-on (see PR 3a in
-        # plans/active/friction-ff-motor-guard-integration.md §9).
+        # plans/archived/2026-05-08 friction-ff-motor-guard-integration.md §9).
         # ``FrictionFFParams`` is a frozen dataclass, so we ``replace``
         # to produce a new instance — this also correctly invalidates
         # the ``_compute_friction_ff_Nm`` derived-params cache on the
@@ -738,7 +738,7 @@ class MotorGuard:
         The function is the single canonical enforcement point of the
         friction-FF contract — no other code path writes friction-derived
         torque to ``_commanded_torque_ff_Nm`` (see §2 of
-        plans/active/friction-ff-motor-guard-integration.md).
+        plans/archived/2026-05-08 friction-ff-motor-guard-integration.md).
 
         Zero-allocation contract: this function makes no per-call
         ndarray allocations.  All temporaries are pre-allocated in
@@ -993,7 +993,7 @@ class MotorGuard:
         # Stribeck friction FF.  The two stack additively — they model
         # orthogonal physics (bulk rigid-body vs. transmission friction).
         # Single canonical enforcement point per
-        # plans/active/friction-ff-motor-guard-integration.md §3.3.
+        # plans/archived/2026-05-08 friction-ff-motor-guard-integration.md §3.3.
         np.add(self._mpc_base_torque_Nm,
                self._compute_friction_ff_Nm(),
                out=self._commanded_torque_ff_Nm)

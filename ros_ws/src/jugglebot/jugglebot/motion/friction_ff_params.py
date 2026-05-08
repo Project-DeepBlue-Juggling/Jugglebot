@@ -9,7 +9,7 @@ The block is intentionally kept out of ``generate_config.py``'s
 ``HW_SECTIONS`` so it is not emitted into Python/C++/JS consumers that
 don't need it.  See the comment block above ``friction_ff:`` in
 ``config/hardware_config.yaml`` and §3.1 of
-``plans/active/friction-ff-motor-guard-integration.md``.
+``plans/archived/2026-05-08 friction-ff-motor-guard-integration.md``.
 
 Lazy-loaded by ``MotorGuard.__init__`` at construction time (not at module
 import) so test environments without a reachable YAML do not fail when the
@@ -93,7 +93,7 @@ def load_params(yaml_path: str | None = None) -> FrictionFFParams:
     if 'friction_ff' not in cfg:
         raise KeyError(
             f"{path} is missing the top-level 'friction_ff' block; "
-            f"see plans/active/friction-ff-motor-guard-integration.md §3.1")
+            f"see plans/archived/2026-05-08 friction-ff-motor-guard-integration.md §3.1")
     ff = cfg['friction_ff']
 
     dyn = cfg.get('dynamics', {})

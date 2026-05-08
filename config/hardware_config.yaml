@@ -64,8 +64,8 @@ dynamics:
                                                 # Used by the friction feedforward stack to convert iq (A) to
                                                 # torque (Nm), and by tests/hardware/friction_ff_demo.py.
                                                 # Promoted to config 2026-05-07 in preparation for friction-FF
-                                                # integration into motor_guard (see plans/active/friction-ff-
-                                                # motor-guard-integration.md).
+                                                # integration into motor_guard (see "plans/archived/2026-05-08
+                                                # friction-ff-motor-guard-integration.md").
   motor_pole_pairs: 7                         # Pole pairs in the leg motor (D6374-150Kv outrunner).
                                                 # Mirror of `config/ODrive config Files/odrive_pro_leg_config.json:145`.
                                                 # Used by diagnose.py to derive electrical angle from `pos_estimate`:
@@ -98,7 +98,7 @@ dynamics:
 #     real motion ramps the FF up smoothly within ~10–20 ms.
 #
 #     Per-leg arrays so the refinement protocol described in
-#     plans/active/friction-ff-motor-guard-integration.md §4 can land
+#     plans/archived/2026-05-08 friction-ff-motor-guard-integration.md §4 can land
 #     outlier-driven adjustments without a schema migration.  Bench-fit
 #     τ_c, τ_s, ω_s, b values from
 #     logbook/2026-04-27-friction-feedforward-bench-validation.md are
