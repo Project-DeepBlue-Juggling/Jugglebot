@@ -10,7 +10,7 @@ phase: post-per-leg-gains-deadband-session
 # The cogging hypothesis recorded here was refuted by the bench cruise
 # fwd-vs-rev R=0 result (cogging is small, ~5 % of friction torque, not the
 # primary cause).  Move next steps to the follow-on entry.
-related_plan: motion-onset-deadtime-investigation.md
+related_plan: "2026-05-08 motion-onset-deadtime-investigation.md"
 related_issues:
   - 2026-04-18-hold-fighting-motion-onset-jitter.md
   - 2026-04-19-leg1-pose-dependent-hold-twitch.md
@@ -51,11 +51,11 @@ tags:
 
 ## Summary
 
-Session picking up from `plans/active/motion-onset-deadtime-investigation.md` §4.2 (mechanical audit). Working hypothesis revised: stiction + cogging torque are the primary candidates, backlash demoted. User has a standalone ODrive + "tester leg" bench rig available (no platform, no brake resistors, no fast movements allowed), which unlocks a cogging-torque bench measurement that was not tractable on the platform. Plan is four steps: (0) desk-check existing data for a cogging fingerprint, (1) bench cogging map on unloaded tester leg, (2) bench breakaway fingerprint vs rotor angle, (3) loaded repeat. Fix design follows from the decision tree at Step 4.
+Session picking up from `plans/archived/2026-05-08 motion-onset-deadtime-investigation.md` §4.2 (mechanical audit). Working hypothesis revised: stiction + cogging torque are the primary candidates, backlash demoted. User has a standalone ODrive + "tester leg" bench rig available (no platform, no brake resistors, no fast movements allowed), which unlocks a cogging-torque bench measurement that was not tractable on the platform. Plan is four steps: (0) desk-check existing data for a cogging fingerprint, (1) bench cogging map on unloaded tester leg, (2) bench breakaway fingerprint vs rotor angle, (3) loaded repeat. Fix design follows from the decision tree at Step 4.
 
 ## Symptoms
 
-Inherited from `plans/active/motion-onset-deadtime-investigation.md` §0. Detector already landed (commit `a41b17f`). Baseline across ~7 sessions: median onset latency 100–190 ms, max up to 250 ms after cold start, 6-leg synchrony within a single 25 ms tick, first-tick leap 0.5–3.5 mm.
+Inherited from `plans/archived/2026-05-08 motion-onset-deadtime-investigation.md` §0. Detector already landed (commit `a41b17f`). Baseline across ~7 sessions: median onset latency 100–190 ms, max up to 250 ms after cold start, 6-leg synchrony within a single 25 ms tick, first-tick leap 0.5–3.5 mm.
 
 Cogging-specific predictions (to be tested in Step 0):
 

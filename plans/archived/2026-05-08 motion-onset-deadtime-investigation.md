@@ -1,12 +1,14 @@
 # Motion-Onset Dead-Time — Investigation & Fix Plan
 
-**Status:** Bench-validation phase complete (2026-04-27); friction-FF model fit and validated. Next: motor_guard integration on platform.
+**Status:** superseded
+**Completed:** 2026-05-08
+**Superseded by:** [plans/archived/2026-05-08 friction-ff-motor-guard-integration.md](../archived/2026-05-08%20friction-ff-motor-guard-integration.md) (delivered §3.5 friction FF) and [logbook/2026-05-08-friction-ff-platform-limit-cycle.md](../../logbook/2026-05-08-friction-ff-platform-limit-cycle.md) (platform-validation arc).  See §8 for closeout details — what was delivered, what was skipped, and what genuinely remains.
 **Related logbook:**
 - [2026-04-18-hold-fighting-motion-onset-jitter.md](../../logbook/2026-04-18-hold-fighting-motion-onset-jitter.md) (Failure A — original symptom)
 - [2026-04-20-motion-onset-dead-time-fix.md](../../logbook/2026-04-20-motion-onset-dead-time-fix.md) (early bench scoping; cogging-first hypothesis)
-- **[2026-04-27-friction-feedforward-bench-validation.md](../../logbook/2026-04-27-friction-feedforward-bench-validation.md) (bench characterisation, Stribeck fit, FF validation)** — current state
+- [2026-04-27-friction-feedforward-bench-validation.md](../../logbook/2026-04-27-friction-feedforward-bench-validation.md) (bench characterisation, Stribeck fit, FF validation)
+- [2026-05-08-friction-ff-platform-limit-cycle.md](../../logbook/2026-05-08-friction-ff-platform-limit-cycle.md) (platform-validation, smooth-gate fix, persistent enable)
 **Primary CSV:** `mpc_20260418_164119.csv` (vel-ff ON) + `mpc_20260418_181020.csv` (vel-ff OFF A/B partner)
-**Author note:** This document was originally a research deliverable. The bench-validation phase has resolved the diagnosis and produced a working FF model. The next phase (motor_guard integration on platform) is pending its own plan document.
 
 ---
 
@@ -75,9 +77,9 @@ These rule out: TRAP_TRAJ planning lag, `input_filter_bandwidth` lag, Hermite di
 
 ## 2. Diagnosis — Candidate Mechanisms
 
-For each candidate, I give:
+Each candidate is presented with:
 - **Mechanism** — the physical or algorithmic cause
-- **Predicted signature** — what it would produce in the CSV
+- **Predicted signature** — the resulting CSV pattern
 - **Fit to observed data** — consistent, partial, or ruled out
 - **Distinguishing evidence** — the test that separates it from its neighbours
 
@@ -97,11 +99,11 @@ For each candidate, I give:
 1. Run an "N-repeat" move (idle → move → idle → move, with identical trajectories, back-to-back). Dead-time should shrink on repeat 2+ as the mechanism stays "warm."
 2. Compare motor `iq_measured` during the dead-time window to its value just after breakaway. A ramp-up-then-dip pattern is stiction; a monotonic rise is not.
 
-**Already-available data.** The Apr 18 entry did not publish `iq_measured` traces. The CSV columns include `cmd_vel`/`cmd_ext`/`actual_ext` per leg but I did not confirm `iq_measured` is logged at 500 Hz by motor_guard. If it is in the rosbag (`leg_lengths_topic`), a plot through t = 0.39–0.55 s would be decisive.
+**Already-available data.** The Apr 18 entry did not publish `iq_measured` traces. The CSV columns include `cmd_vel`/`cmd_ext`/`actual_ext` per leg, but whether `iq_measured` is logged at 500 Hz by motor_guard is unconfirmed. If the rosbag (`leg_lengths_topic`) carries it, a plot through t = 0.39–0.55 s will be decisive.
 
 ### 2.2 Mechanical backlash (coupler / cable / belt lost-motion)
 
-**Mechanism.** Each leg has a coupler between motor and ballscrew and a cable pulley. Under load reversal (or starting from rest against a load), the mechanism takes up lost motion before the ballscrew output moves. The leg-gain-tuning methodology explicitly notes this ([plan, Gotchas line 178](leg-gain-tuning-methodology.md)): *"Backlash eats the first ~0.2 mm of any step."*
+**Mechanism.** Each leg has a coupler between motor and ballscrew and a cable pulley. Under load reversal (or starting from rest against a load), the mechanism takes up lost motion before the ballscrew output moves. The leg-gain-tuning methodology explicitly notes this ([plan, Gotchas line 178](../active/leg-gain-tuning-methodology.md)): *"Backlash eats the first ~0.2 mm of any step."*
 
 **Predicted signature.**
 - Dead-time depends on the **direction** of the last motion versus the new motion.
@@ -177,7 +179,7 @@ For each candidate, I give:
 
 **Fit to observed data.** **Poor fit.** All 6 legs leap in the *same* 25 ms tick, which argues against per-leg CAN scheduling jitter.
 
-**Distinguishing evidence.** Check CAN drop counters / `attempt_restore()` triggers in the session log. If there were drops at t = 0.39 s, we'd see them; if not, CAN is exonerated.
+**Distinguishing evidence.** Check CAN drop counters / `attempt_restore()` triggers in the session log. Drops at t = 0.39 s would be visible in the diagnostics; their absence exonerates CAN.
 
 ### 2.8 Ranking of candidates
 
@@ -279,7 +281,7 @@ Proposals are ranked lowest-risk-first. Several can be combined.
 
 ## 4. Recommended Test Battery
 
-All tests should be runnable from the Jetson with the project venv (`source ~/Desktop/PDJ_venv/venv/bin/activate`). Match the format of the Level-1 gain-tuning methodology in [leg-gain-tuning-methodology.md](leg-gain-tuning-methodology.md).
+All tests should be runnable from the Jetson with the project venv (`source ~/Desktop/PDJ_venv/venv/bin/activate`). Match the format of the Level-1 gain-tuning methodology in [leg-gain-tuning-methodology.md](../active/leg-gain-tuning-methodology.md).
 
 ### 4.1 Baseline re-measurement (before any fix)
 
@@ -371,7 +373,7 @@ The last row is a **regression guard** — any fix that shortens onset at the co
 
 ### 5.2 What the Level-2/3 tuning methodology would buy us here
 
-From [leg-gain-tuning-methodology.md](leg-gain-tuning-methodology.md):
+From [leg-gain-tuning-methodology.md](../active/leg-gain-tuning-methodology.md):
 
 - **Level 2 (step-response tuning)** fits rise-time, overshoot, settling for a closed-loop PID on a 5 mm step. It measures bandwidth, not friction. The methodology's own Gotchas section acknowledges *"Backlash eats the first ~0.2 mm of any step"* and tells the operator to use ≥5 mm steps to work around it — **it does not detect or compensate for backlash.** It also does not measure stiction breakaway.
 - **Level 3 (system ID + loop shaping)** fits a second-order plant from a chirp. A second-order model **cannot represent** a dead-zone or Coulomb friction; the identification would smear the nonlinearity into the linear fit and produce a suboptimal controller.
@@ -385,21 +387,19 @@ From [leg-gain-tuning-methodology.md](leg-gain-tuning-methodology.md):
 
 ---
 
-## 6. Open Questions & Alignment Asks
+## 6. Open Questions
 
-Before any fix from §3 is implemented, I want alignment on:
+These questions remain open and need resolving before §3 fixes proceed:
 
-1. **Hypothesis agreement.** Do you buy the ranking in §2.8 (stiction #1, backlash #2, integrator wind-up #3)? If not, which candidate is under-weighted?
+1. **Hypothesis ranking.** §2.8 places stiction #1, backlash #2, integrator wind-up #3.  The ranking will be reviewed against bench evidence before any §3 fix proceeds; under-weighted candidates will be re-scored.
 
-2. **Mechanical-first sequencing.** I'm proposing 3.1 (detector) → 3.2 (mechanical audit) → pick-next-fix-based-on-audit-result. Is the mechanical audit (3.2) tractable on the current hardware (i.e. can you actually measure per-leg backlash)?
+2. **Mechanical-first sequencing.**  The recommended order is §3.1 (detector) → §3.2 (mechanical audit) → pick-next-fix-based-on-audit-result.  Whether the mechanical audit is tractable on the current hardware (i.e. whether per-leg backlash can be measured directly with a dial indicator) needs confirming.
 
-3. **Iq logging availability.** Is `iq_measured` already logged at 500 Hz in the rosbag `leg_lengths_topic`? If not, should I add it as a precondition for 4.5?
+3. **Iq logging availability.**  Whether `iq_measured` is logged at 500 Hz in the rosbag's `leg_lengths_topic` is unconfirmed.  If absent, adding it is a precondition for §4.5.
 
-4. **Risk tolerance on 3.3 (pre-move seating pulse).** A 50 μm counter-pulse before every hold→move transition is a visible hack. Is that acceptable if mechanical backlash turns out to be unavoidable, or is the policy "fix it mechanically or not at all"?
+4. **Risk tolerance on §3.3 (pre-move seating pulse).**  A 50 μm counter-pulse before every hold→move transition is a visible hack.  Whether this is acceptable as a fallback if mechanical backlash turns out to be unavoidable — or whether the policy is "fix it mechanically or not at all" — needs deciding.
 
-5. **Friction identification bench test.** Is there appetite for a dedicated single-leg test harness (possibly under [tests/hardware/single_leg_test.py](../../tests/hardware/single_leg_test.py)) that measures per-leg `τ_stiction` and `τ_kinetic` via slow-ramp-to-breakaway? This is a precondition for 3.5 and also valuable input to Level 3 loop-shaping.
-
-Awaiting approval on diagnosis + fix plan before writing any code.
+5. **Friction identification bench test.**  A dedicated single-leg test harness (possibly under [tests/hardware/single_leg_test.py](../../tests/hardware/single_leg_test.py)) measuring per-leg `τ_stiction` and `τ_kinetic` via slow-ramp-to-breakaway is a precondition for §3.5 and a valuable input to Level 3 loop-shaping.  Whether to build this harness needs deciding.
 
 ---
 
@@ -413,4 +413,70 @@ Awaiting approval on diagnosis + fix plan before writing any code.
 - [config/hardware_config.yaml:198-200](../../config/hardware_config.yaml#L198-L200) — current per-leg gains
 - [sim/analysis/diagnose.py:372-402](../../sim/analysis/diagnose.py#L372-L402) — `actual_jumps` detector (threshold 2 mm)
 - [logbook/2026-04-18-hold-fighting-motion-onset-jitter.md](../../logbook/2026-04-18-hold-fighting-motion-onset-jitter.md) — primary prior-art entry, Failure A section
-- [plans/active/leg-gain-tuning-methodology.md](leg-gain-tuning-methodology.md) — Level-2/3 procedures, Gotchas
+- [plans/active/leg-gain-tuning-methodology.md](../active/leg-gain-tuning-methodology.md) — Level-2/3 procedures, Gotchas
+
+---
+
+## 8. Closeout (added 2026-05-08)
+
+This plan is **superseded** by [plans/archived/2026-05-08 friction-ff-motor-guard-integration.md](../archived/2026-05-08%20friction-ff-motor-guard-integration.md), which delivered the §3.5 (Stribeck friction FF) option as a complete on-platform implementation, and by [logbook/2026-05-08-friction-ff-platform-limit-cycle.md](../../logbook/2026-05-08-friction-ff-platform-limit-cycle.md), which captures the platform-validation arc.  This closeout records what was delivered, what was skipped, and what genuinely remains for future work.
+
+### 8.1 What was delivered
+
+| Section | Status | Notes |
+|---|---|---|
+| §0 Symptom recap | ✅ Diagnostic baseline established | The 120 ms / 39-leap signature was the load-bearing observation that drove the entire arc. |
+| §1 Verified pipeline facts | ✅ All five facts confirmed | TRAP_TRAJ override, Hermite C¹, encoder-LSB dead-band, CLOSED_LOOP seeding, leg-gain reversal — all stand as verified. |
+| §2 Diagnosis (7 candidates ranked) | ✅ Bench-validated | Stiction confirmed dominant via Test A v5 (R² = 0.983 Stribeck fit) and Test C (controller-fight diagnosis).  Cogging refuted (fwd-vs-rev R = 0 at smooth velocities).  Vel-loop cogging-fight identified as a Test A confound.  See `logbook/2026-04-27-friction-feedforward-bench-validation.md`. |
+| §3.1 Motion-onset detector | ✅ **Delivered** | `analyse_motion_onset()` lives in `sim/analysis/diagnose.py` and was used heavily for both PR 3a-revised A/B and the Move 4 5-rep characterisation. |
+| §3.2 Mechanical backlash audit | ❌ **Not done** | The plan recommended doing this BEFORE any software fix.  The order was inverted: software-first.  See §8.2 below. |
+| §3.3 Pre-move seating micro-pulse | ⏸ Deferred | Only relevant if §3.2 surfaces non-trivial backlash. |
+| §3.4 Vel-integrator pre-load | ⏸ Implicitly addressed | `vel_ff` was confirmed live in PR 1's pre-flight diagnostic (`tools/check_vel_ff_plumbing.py`); explicit pre-load was not implemented but vel_ff covers the dominant component of this mechanism. |
+| §3.5 Stribeck friction FF | ✅ **Delivered** | Implemented as the entire `friction-ff-motor-guard-integration` plan.  Smooth-gate replacement of the bench's hard boost band landed in PR 2.1 after a 5 Hz limit-cycle was discovered on platform.  YAML default `enabled: true` since PR 3b. |
+| §3.6 Raise `pos_gain` | ✅ Correctly NOT done | Plan flagged as risky; bench analysis confirmed it would not have helped. |
+| §4.1 Baseline re-measurement | ✅ Done (yesterday's BASELINE 7-move battery) |
+| §4.2 Mechanical audit | ❌ Not done | Hardware-only step; deferred. |
+| §4.3 Warm vs cold A/B | ⚠ Partial | The bench Test A characterised friction directly across the v range; a platform-level warm/cold A/B was not run. |
+| §4.4 Direction-reversal A/B | ⚠ Partial | The Move 4 5-rep characterisation surfaced a direction asymmetry (legs 1 + 2 are slow on the retraction-side load); the dedicated §4.4 procedure was not run. |
+| §4.5 Iq-trace decisive test | ✅ Done on bench (Test C "controller-fight" diagnosis) | Not run at the platform level. |
+| §4.6 Validation runs against fix | ✅ Done (PR 3a-revised on-platform A/B) | Re-baselined acceptance metrics — see §8.3. |
+
+### 8.2 Why the mechanical-first sequencing was inverted
+
+§6.2 explicitly recommended `§3.1 (detector) → §3.2 (mechanical audit) → pick-next-fix`.  That order was inverted: the mechanical audit was skipped and the §3.5 friction FF was implemented directly.  This worked because stiction was indeed dominant (as §2.8 had ranked it) — the bench Stribeck fit (R² = 0.983) and the platform A/B's 1.54× motion-onset improvement both confirm friction is the right primary attack surface.  But the un-followed mechanical audit is a real loose end: backlash could still be additive, and any residual motion-onset latency below the achievable platform floor (currently ~145 ms above the bench's ≤ 40 ms target) cannot yet be cleanly attributed.
+
+### 8.3 Acceptance-metric reality check
+
+The original §4.6 targets were bench-derived and were **not met as written** on platform:
+
+| Metric | Original target | Original stretch | Platform reality (PR 3b) |
+|---|---:|---:|---:|
+| Median motion-onset latency | ≤ 40 ms | ≤ 20 ms | 185 ms |
+| First-tick leap magnitude | ≤ 0.5 mm | ≤ 0.2 mm | varies per move |
+| `actual_jumps` count in 0–2 s window | ≤ 10 | 0 | not directly measured |
+| Hold-phase `act_std` (regression) | ≤ 15 µm | unchanged | 21 µm at simple-pose hold |
+
+The `friction-ff-motor-guard-integration` plan re-baselined these to platform-realistic targets (≤ 200 ms median, ≤ 350 ms max, ≤ 50 µm hold) and the PR 3b on-platform A/B met those.  The re-baseline is justified by the bench's 81 → 32 ms result being achieved on a single-leg, single-pose, no-MPC-loop rig — a configuration that omits the platform's six-leg geometric coupling, MPC tier-up cold-solve cost, and elevated inertia floor (six legs vs. one).
+
+The ~145 ms residual latency above the original ≤ 40 ms target is **not closed** by friction FF alone.  Closing it (if needed for catch readiness) is the subject of §8.4.
+
+### 8.4 Genuinely-deferred items
+
+These items remain real follow-ups and are NOT addressed by the friction-ff-motor-guard-integration delivery:
+
+1. **§3.2 / §4.2 Mechanical backlash audit (per-leg dial-indicator measurement).**  Hardware step, ~30 minutes.  Will resolve whether backlash is additive to the residual latency floor, or whether the inertia/coupling floor is the entire residual.
+
+2. **§4.3 / §4.4 Platform-level warm/cold and direction-reversal A/Bs.**  The Move 4 5-rep characterisation surfaced a direction asymmetry (legs 1 + 2 slow on retraction-side load) but did not complete the §4.4 procedure.  A clean version: Move 6 (Active → y=−100, biggest legs-1/2 loading) with 10 reps each direction, plus a true cold-vs-warm comparison.
+
+3. **Acceleration FF as a Phase-2 candidate.**  The bench logbook (`2026-04-27-friction-feedforward-bench-validation.md`'s "Open Questions" §3) explicitly identifies the residual ~32 ms latency floor as **inertia-limited, not friction-limited**: `τ_ff += J_eff × dv/dt`.  On platform, the inertia floor is much higher (six legs, coupled).  If motion-onset below the current ~185 ms is needed for catch readiness, this is the next attack surface — not more friction tuning.
+
+4. **Per-leg `tau_s_A` / `omega_s_rps` refinement** (the §4 protocol of the archived friction-ff plan).  The Move 4 5-rep data hints that legs 1 + 2 may have higher actual stiction than the bench-fit τ_s = 1.953 A captures — not validated yet.  Requires cleaner multi-rep characterisation per item 2 above.
+
+### 8.5 Decision rule for re-opening this plan
+
+Re-open this work if:
+- Catch trajectories (`hardware-bringup.md` Phase 7.3) miss because of motion-onset latency at the start of catch ramps.
+- Diagnosis attributes catch-miss latency to per-leg friction or backlash asymmetry that the friction FF does not cover.
+- Acceleration FF or mechanical audit becomes higher-leverage than continued per-leg friction refinement.
+
+Otherwise, the friction-FF integration delivery is sufficient for the current bringup phase, and the residual latency floor is accepted as a platform-physical limit.

@@ -7,7 +7,7 @@ phase: post-per-leg-gains-deadband-session
 related_issues:
   - 2026-04-18-hold-fighting-motion-onset-jitter.md
   - 2026-04-18-mpc-overhead-spikes-fallback-bursts.md
-  - motion-onset-deadtime-investigation.md
+  - "2026-05-08 motion-onset-deadtime-investigation.md"
 sessions:
   - mpc_20260419_134901.csv
   - mpc_20260419_134919.csv
@@ -33,7 +33,7 @@ files_changed:
   - run_mpc.py
   - controller/target.py
   - sim/analysis/diagnose.py
-  - plans/active/motion-onset-deadtime-investigation.md
+  - plans/archived/2026-05-08 motion-onset-deadtime-investigation.md
   - plans/active/leg-gain-tuning-methodology.md
 commits:
 subsystem:
@@ -51,7 +51,7 @@ tags:
 
 ## Summary
 
-A 9-move rosbag session on 2026-04-19 confirmed two known issues and surfaced one new one. The user-reported "staggered first move" matched the cold-stiction motion-onset dead-time signature (Move 1 latency 151 ms, dropping to 75-125 ms on warm moves 2-4) exactly as predicted by `plans/active/motion-onset-deadtime-investigation.md`. The user-reported "only non-smooth" final move to (0, -100, 200, 0, 0, 0) ended with 0.237 mm final tracking error, but during the 5-second hold that followed, leg 1 oscillated with 436.9 um standard deviation (1107.5 um peak-to-peak, velocity max 9.68 mm/s) while the other five legs held between 7 and 31 um stdev — a 60.3x asymmetry ratio. This is a new, pose-dependent hold-phase failure mode not covered by Iteration-3 gain tuning (which was performed at neutral poses). Moves 6-9 also showed chronic IPOPT solve-budget overruns (up to 9 consecutive violations, 40.4 ms max) — an already-tracked issue deferred to future IPOPT tuning.
+A 9-move rosbag session on 2026-04-19 confirmed two known issues and surfaced one new one. The user-reported "staggered first move" matched the cold-stiction motion-onset dead-time signature (Move 1 latency 151 ms, dropping to 75-125 ms on warm moves 2-4) exactly as predicted by `plans/archived/2026-05-08 motion-onset-deadtime-investigation.md`. The user-reported "only non-smooth" final move to (0, -100, 200, 0, 0, 0) ended with 0.237 mm final tracking error, but during the 5-second hold that followed, leg 1 oscillated with 436.9 um standard deviation (1107.5 um peak-to-peak, velocity max 9.68 mm/s) while the other five legs held between 7 and 31 um stdev — a 60.3x asymmetry ratio. This is a new, pose-dependent hold-phase failure mode not covered by Iteration-3 gain tuning (which was performed at neutral poses). Moves 6-9 also showed chronic IPOPT solve-budget overruns (up to 9 consecutive violations, 40.4 ms max) — an already-tracked issue deferred to future IPOPT tuning.
 
 ## Symptoms
 
@@ -67,7 +67,7 @@ A 9-move rosbag session on 2026-04-19 confirmed two known issues and surfaced on
 
 Three distinct phenomena:
 
-1. **Motion-onset dead-time (confirmed, tracked elsewhere).** Moves 1-4 reproduce the cold->warm pattern predicted in `plans/active/motion-onset-deadtime-investigation.md`. Move 1 (post-idle) 151 ms; subsequent moves 75-125 ms as the mechanism de-seats backlash / reduces stiction. The user's perception "staggered first move then smooth" maps 1:1 to detector output. No new work needed from this entry — the investigation plan already handles it.
+1. **Motion-onset dead-time (confirmed, tracked elsewhere).** Moves 1-4 reproduce the cold->warm pattern predicted in `plans/archived/2026-05-08 motion-onset-deadtime-investigation.md`. Move 1 (post-idle) 151 ms; subsequent moves 75-125 ms as the mechanism de-seats backlash / reduces stiction. The user's perception "staggered first move then smooth" maps 1:1 to detector output. No new work needed from this entry — the investigation plan already handles it.
 
 2. **IPOPT solve-budget overruns on longer moves (tracked elsewhere).** 3/5/9/7 consecutive `Maximum_CpuTime_Exceeded` on moves 6-9. Already flagged as a deferred follow-up in `2026-04-18-mpc-overhead-spikes-fallback-bursts.md`. Not the focus of this entry.
 
@@ -96,7 +96,7 @@ The user's standing skepticism of "leg-to-leg hardware asymmetry" was the final 
 - `config/hardware_config.yaml` edited to set `leg_pos_gains[1] = 40.0` and `leg_vel_int_gains[1] = 0.32`, matching legs 0/2/3/5. Leg 4 intentionally left at 30/0.24 as the in-experiment control.
 - Config constants regenerated via `python config/generate_config.py`, which refreshed `config/generated/hardware_config.py`, `config/generated/hardware_config.h`, the ROS2 mirror `ros_ws/src/jugglebot/jugglebot/hardware_config.py`, and the Teensy mirror `ros_ws/src/jugglebot/Teensy_code/hardware_config.h`.
 - Live per-leg values were confirmed on the ODrive after re-homing with the new YAML, before the A/B test. The A/B test itself was `python run_mpc.py --pose 0,-100,200,0,0,0 --duration 15` from a fresh process.
-- `plans/active/motion-onset-deadtime-investigation.md` was authored during this investigation as an earlier sibling — motion-onset dead-time is a separate phenomenon (moves 1-4 of the 9-move rosbag) tracked there rather than here.
+- `plans/archived/2026-05-08 motion-onset-deadtime-investigation.md` was authored during this investigation as an earlier sibling — motion-onset dead-time is a separate phenomenon (moves 1-4 of the 9-move rosbag) tracked there rather than here.
 - A motion-onset detector was added to `sim/analysis/diagnose.py` as a side-benefit of this investigation (commit `a41b17f`). That detector is what produced the "151 ms on first move, 75-125 ms on warm moves" numbers captured in the Symptoms section.
 - A short-lived `--auto-leg1-test` flag was added to `run_mpc.py` on 2026-04-19 to drive the 9-move replay automatically. The attempted run hit a Python GC pause during move 7 that tripped the 500 ms telemetry-staleness E-STOP guard, and the test was aborted. The flag was removed on 2026-04-20 in favour of the simpler single-pose fresh-process protocol, which is what produced the conclusive A/B result. `run_mpc.py` and `controller/target.py` retain only the supporting plumbing.
 - Not yet committed as of this entry's resolution — `commits:` in the frontmatter is deliberately empty pending the user's commit.

@@ -192,6 +192,39 @@ The canonical section order is **Context → Architecture → Implementation Pha
 Summary (table) → Implementation Phases (detailed) → Testing Plan → Notes for
 Collaborators**.
 
+**Voice & style.** Plans are *informational roadmaps*, not conversations.
+
+- **Future tense, active voice.** "The detector will be added to
+  `diagnose.py`" — not "I'll add the detector" and not "the detector is
+  added". The plan describes work that *will* be done; once done it
+  moves to the logbook.
+- **No first-person pronouns.** No "I", "we", "me", "my", "us". A plan
+  has no author voice — it's a deliverable. Replace "I propose X" with
+  "The proposal is X" or just "X".
+- **No second-person addressing the reader.** No "do you buy this
+  ranking?", "should I add iq logging?", "what's your appetite for…".
+  Open questions become declarative: *"Whether iq is logged at 500 Hz
+  is unconfirmed; resolution required before §4.5"*. Decision points
+  become *"Decision required: …"*, not *"Awaiting your call on …"*.
+- **No conversation-closer artefacts.** No "Awaiting approval before
+  writing any code", no "let me know if…", no "happy to revise". The
+  plan stands as the deliverable; approvals and revisions are
+  conversation-layer concerns, not document content.
+- **Declarative throughout.** State the mechanism, the predicted
+  signature, the proposed fix, the acceptance criterion. Use
+  imperative for procedures ("Run X. Capture Y. Compare Z."). Avoid
+  hedges that read as deliberative speech ("I'd recommend", "I think
+  we should"); prefer "The recommended approach is X because Y".
+
+The voice rule applies to *new* plan prose. Plans authored before this
+guidance was added (pre-2026-05-08) may carry residual first-person
+text; rewrite on next substantive edit, not pre-emptively.
+
+A worked example of a rewrite (pre-2026-05-08 → post): see the
+diff in [plans/archived/2026-05-08 motion-onset-deadtime-investigation.md](plans/archived/2026-05-08%20motion-onset-deadtime-investigation.md)
+where §2 intro, §6 (Open Questions), and the closing line were
+restyled at supersession.
+
 **Lifecycle:**
 1. Create with `/implementation-report <task description>` (or by hand for
    simple bringup plans).

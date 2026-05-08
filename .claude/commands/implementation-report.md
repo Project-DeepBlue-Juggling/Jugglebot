@@ -126,3 +126,32 @@ Before presenting the report:
 - ASCII diagrams for architecture (not Mermaid or other formats)
 - Keep each section scannable — use tables, bullet lists, and code blocks
 - Do not pad with filler or repeat information across sections
+
+### Voice & style — plans are informational roadmaps, not conversations
+
+The full canonical guidance lives in
+[`DOCUMENTATION_GUIDE.md` §2.6 "Voice & style"](../../DOCUMENTATION_GUIDE.md).
+Summary rules — apply to every section the report writes:
+
+- **Future tense, active voice.** "The detector will be added to
+  `diagnose.py`" — not "I'll add the detector" and not "the detector is
+  added".
+- **No first-person pronouns.** No "I", "we", "me", "my", "us". Replace
+  "I propose X" with "The proposal is X" or just "X".
+- **No second-person addressing the reader.** No "do you buy this
+  ranking?", "should I add iq logging?". Open questions become
+  declarative: *"Whether iq is logged at 500 Hz is unconfirmed;
+  resolution required before §4.5"*. Decision points become *"Decision
+  required: …"*.
+- **No conversation-closer artefacts.** No "Awaiting approval before
+  writing any code", no "let me know if…", no "happy to revise". The
+  plan stands as the deliverable.
+- **Declarative throughout.** State the mechanism, the predicted
+  signature, the proposed fix, the acceptance criterion. Use
+  imperative for procedures ("Run X. Capture Y. Compare Z."). Avoid
+  hedges that read as deliberative speech ("I'd recommend"); prefer
+  "The recommended approach is X because Y".
+
+When the user's request describes a change in conversational terms
+("I want to refactor X so that Y"), translate that into the plan's
+declarative voice — never echo their phrasing back into the document.

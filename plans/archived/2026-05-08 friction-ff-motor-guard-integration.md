@@ -2,7 +2,7 @@
 
 **Status:** completed
 **Completed:** 2026-05-08
-**Predecessor:** [plans/active/motion-onset-deadtime-investigation.md](motion-onset-deadtime-investigation.md) — bench-validation phase complete
+**Predecessor:** [plans/archived/2026-05-08 motion-onset-deadtime-investigation.md](2026-05-08 motion-onset-deadtime-investigation.md) — bench-validation phase complete
 **Bench-validation logbook:** [logbook/2026-04-27-friction-feedforward-bench-validation.md](../../logbook/2026-04-27-friction-feedforward-bench-validation.md)
 **Platform-validation logbook (supersedes §3.1 + §3.2 amendments):** [logbook/2026-05-08-friction-ff-platform-limit-cycle.md](../../logbook/2026-05-08-friction-ff-platform-limit-cycle.md)
 **Author note:** This is a research/integration deliverable. The plan describes the contract, the implementation, the per-leg tuning protocol, and the acceptance gates. Do not begin implementation until §6's open questions are resolved with the user.
@@ -346,8 +346,8 @@ The `_compute_friction_ff_Nm` function is independent of any other motor_guard l
 
 - Bench-validation logbook: [logbook/2026-04-27-friction-feedforward-bench-validation.md](../../logbook/2026-04-27-friction-feedforward-bench-validation.md) — model fit, demo results, withdrawn claims, per-leg tuning rationale.
 - **Platform-validation logbook (PR 2.1 + PR 3b):** [logbook/2026-05-08-friction-ff-platform-limit-cycle.md](../../logbook/2026-05-08-friction-ff-platform-limit-cycle.md) — diagnosis of the boost-band's 5 Hz platform limit cycle, the smooth-gate structural fix, the on-platform A/B validation results, and the persistent-enable rollout. **This is the supersession reference for the §3.1 / §3.2 amendments.**
-- Original investigation: [plans/active/motion-onset-deadtime-investigation.md](motion-onset-deadtime-investigation.md) — symptom recap, candidate-mechanism enumeration, fix-option ranking.
+- Original investigation: [plans/archived/2026-05-08 motion-onset-deadtime-investigation.md](2026-05-08 motion-onset-deadtime-investigation.md) — symptom recap, candidate-mechanism enumeration, fix-option ranking.
 - Hot-loop zero-allocation contract: [logbook/2026-04-23-hot-loop-zero-allocation-contract.md](../../logbook/2026-04-23-hot-loop-zero-allocation-contract.md) — scoped to the MPC 40 Hz hot loop; motor_guard's 500 Hz loop is not formally bound by it.
-- Gain-tuning methodology: [plans/active/leg-gain-tuning-methodology.md](leg-gain-tuning-methodology.md) — per-leg tuning patterns, in-experiment controls, the 7-move battery referenced in §5.
+- Gain-tuning methodology: [plans/active/leg-gain-tuning-methodology.md](../active/leg-gain-tuning-methodology.md) — per-leg tuning patterns, in-experiment controls, the 7-move battery referenced in §5.
 - Bench scripts and analysers: [tests/hardware/friction_ff_demo.py](../../tests/hardware/friction_ff_demo.py), [tools/friction_study_analyse.py](../../tools/friction_study_analyse.py).
 - Pre-flight diagnostic (PR 1, vel_ff plumbing): [tools/check_vel_ff_plumbing.py](../../tools/check_vel_ff_plumbing.py) — the script that resolved §6.1 (vel_ff was already live).
