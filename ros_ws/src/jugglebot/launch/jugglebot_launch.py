@@ -21,6 +21,21 @@ def generate_launch_description():
         default_value='true',
     )
 
+    # PR 3a: per-launch override for the friction-FF enable flag.  Maps
+    # straight to motor_guard's --friction-ff CLI tri-state (yaml/true/
+    # false).  Default 'yaml' = use whatever hardware_config.yaml says.
+    # Use this for on-platform A/B comparison without YAML edits/rebuilds:
+    #   ros2 launch jugglebot jugglebot_launch.py                  # baseline (YAML default)
+    #   ros2 launch jugglebot jugglebot_launch.py friction_ff_enable:=true   # FF on
+    #   ros2 launch jugglebot jugglebot_launch.py friction_ff_enable:=false  # FF off explicit
+    friction_ff_enable = LaunchConfiguration('friction_ff_enable')
+    friction_ff_enable_arg = DeclareLaunchArgument(
+        'friction_ff_enable',
+        default_value='yaml',
+        description="Override hardware_config.yaml friction_ff.enabled "
+                    "for this launch (yaml | true | false).",
+    )
+
     # ── CAN node ─────────────────────────────────────────────────
     can_node = Node(
         package='jugglebot',
@@ -69,7 +84,11 @@ def generate_launch_description():
     pkg_lib_dir = os.path.join(
         get_package_share_directory('jugglebot'), '..', '..', 'lib', 'jugglebot')
     motor_guard = ExecuteProcess(
-        cmd=[os.path.join(pkg_lib_dir, 'motor_guard'), '--rate', '500'],
+        cmd=[
+            os.path.join(pkg_lib_dir, 'motor_guard'),
+            '--rate', '500',
+            '--friction-ff', friction_ff_enable,
+        ],
         output='screen',
     )
 
@@ -120,6 +139,7 @@ def generate_launch_description():
     # ── Assemble launch description ──────────────────────────────
     return LaunchDescription([
         record_arg,
+        friction_ff_enable_arg,
         # Infrastructure (gui_server.py runs independently in the background)
         rosbridge_include,
         # Hardware nodes

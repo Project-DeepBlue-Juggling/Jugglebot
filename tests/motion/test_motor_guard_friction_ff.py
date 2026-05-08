@@ -568,6 +568,76 @@ def test_friction_ff_no_steady_state_alloc():
         f'1000 calls — zero-alloc contract violated')
 
 
+def test_friction_ff_enable_override_none_uses_yaml():
+    """``friction_ff_enable_override=None`` (default) preserves YAML setting.
+
+    YAML ships ``enabled: false`` for PR 2; that's the no-override
+    behaviour and must remain unchanged when the override is unset.
+    """
+    ipc = _MockIPC()
+    geom = StewartGeometry()
+    guard = MotorGuard(rate_hz=500, geom=geom, ipc=ipc,
+                       friction_ff_enable_override=None)
+    # PR 2's YAML ships enabled: false; this asserts that.
+    assert guard._friction_ff_params.enabled is False
+
+
+def test_friction_ff_enable_override_true_forces_enable():
+    """Override=True sets ``params.enabled=True`` regardless of YAML."""
+    ipc = _MockIPC()
+    geom = StewartGeometry()
+    guard = MotorGuard(rate_hz=500, geom=geom, ipc=ipc,
+                       friction_ff_enable_override=True)
+    assert guard._friction_ff_params.enabled is True
+
+
+def test_friction_ff_enable_override_false_forces_disable():
+    """Override=False sets ``params.enabled=False`` regardless of YAML."""
+    ipc = _MockIPC()
+    geom = StewartGeometry()
+    guard = MotorGuard(rate_hz=500, geom=geom, ipc=ipc,
+                       friction_ff_enable_override=False)
+    assert guard._friction_ff_params.enabled is False
+
+
+def test_friction_ff_enable_override_preserves_other_params():
+    """Override only flips ``enabled``; the per-leg arrays + Kt are unchanged.
+
+    Critical: the override must not silently zero out friction
+    parameters or change the sign convention while flipping the flag.
+    """
+    ipc = _MockIPC()
+    geom = StewartGeometry()
+    guard_yaml = MotorGuard(rate_hz=500, geom=geom, ipc=ipc,
+                            friction_ff_enable_override=None)
+    guard_force = MotorGuard(rate_hz=500, geom=geom, ipc=_MockIPC(),
+                             friction_ff_enable_override=True)
+
+    # All per-leg arrays and Kt must match the unforced load.
+    np.testing.assert_array_equal(
+        guard_force._friction_ff_params.tau_c_A,
+        guard_yaml._friction_ff_params.tau_c_A)
+    np.testing.assert_array_equal(
+        guard_force._friction_ff_params.tau_s_A,
+        guard_yaml._friction_ff_params.tau_s_A)
+    np.testing.assert_array_equal(
+        guard_force._friction_ff_params.omega_s_rps,
+        guard_yaml._friction_ff_params.omega_s_rps)
+    np.testing.assert_array_equal(
+        guard_force._friction_ff_params.b_A_per_rps,
+        guard_yaml._friction_ff_params.b_A_per_rps)
+    np.testing.assert_array_equal(
+        guard_force._friction_ff_params.load_offset_A,
+        guard_yaml._friction_ff_params.load_offset_A)
+    np.testing.assert_array_equal(
+        guard_force._friction_ff_params.ff_sign,
+        guard_yaml._friction_ff_params.ff_sign)
+    assert (guard_force._friction_ff_params.motor_kt_nm_per_a
+            == guard_yaml._friction_ff_params.motor_kt_nm_per_a)
+    assert (guard_force._friction_ff_params.stiction_boost_threshold_rps
+            == guard_yaml._friction_ff_params.stiction_boost_threshold_rps)
+
+
 @pytest.mark.parametrize('v_cmd, expect_boost', [
     (1e-4 - 1e-12, False),  # below dead-zone clamp → load_offset only
     (1e-4,         True),   # exact edge: boost branch fires (av >= 1e-4)

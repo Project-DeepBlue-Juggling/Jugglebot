@@ -28,7 +28,7 @@ import signal
 import sys
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as _dc_replace
 
 import numpy as np
 
@@ -202,7 +202,8 @@ class MotorGuard:
     def __init__(self,
                  rate_hz: float = DEFAULT_RATE_HZ,
                  geom: StewartGeometry | None = None,
-                 ipc: MotorGuardIPC | None = None):
+                 ipc: MotorGuardIPC | None = None,
+                 friction_ff_enable_override: bool | None = None):
         self.rate_hz = rate_hz
         self.dt_target = 1.0 / rate_hz
         self.geom = geom or StewartGeometry()
@@ -263,6 +264,28 @@ class MotorGuard:
         # can construct a guard with a custom params instance via
         # ``self._friction_ff_params = ...`` before any compute.
         self._friction_ff_params: FrictionFFParams = _load_friction_ff_params()
+        # Per-launch enable override — wired to the ``--friction-ff`` CLI
+        # flag and the ``friction_ff_enable`` ROS2 launch argument.  When
+        # set, supersedes the YAML default for this session only (no
+        # YAML edit / no rebuild).  Used for on-platform A/B comparison
+        # of baseline-off vs friction-on (see PR 3a in
+        # plans/active/friction-ff-motor-guard-integration.md §9).
+        # ``FrictionFFParams`` is a frozen dataclass, so we ``replace``
+        # to produce a new instance — this also correctly invalidates
+        # the ``_compute_friction_ff_Nm`` derived-params cache on the
+        # next call (cache uses ``is`` identity).
+        if (friction_ff_enable_override is not None
+                and friction_ff_enable_override
+                != self._friction_ff_params.enabled):
+            self._friction_ff_params = _dc_replace(
+                self._friction_ff_params,
+                enabled=bool(friction_ff_enable_override))
+            logger.warning(
+                "friction_ff.enabled OVERRIDDEN via CLI to %s "
+                "(YAML default would have been %s).  This applies for "
+                "this launch session only.",
+                self._friction_ff_params.enabled,
+                not self._friction_ff_params.enabled)
         # Pre-allocated friction-FF buffers.  All length-6, all reused
         # across calls — ``_compute_friction_ff_Nm`` makes zero per-call
         # ndarray allocations beyond these buffers (zero-allocation hot
@@ -1148,6 +1171,16 @@ def main():
                         help=f"Loop rate in Hz (default: {DEFAULT_RATE_HZ})")
     parser.add_argument('--log-level', default='INFO',
                         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'])
+    parser.add_argument('--friction-ff', default='yaml',
+                        choices=['yaml', 'true', 'false'],
+                        help="Override hardware_config.yaml friction_ff.enabled "
+                             "for this launch only (no YAML edit / no rebuild). "
+                             "'yaml' (default): use the YAML setting.  'true': "
+                             "force enable.  'false': force disable.  Wired to "
+                             "the ros2 launch argument 'friction_ff_enable' so "
+                             "the platform A/B for PR 3a (see plans/active/"
+                             "friction-ff-motor-guard-integration.md §9) can "
+                             "be done by relaunching only.")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -1155,8 +1188,14 @@ def main():
         format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
     )
 
+    if args.friction_ff == 'yaml':
+        friction_ff_override: bool | None = None
+    else:
+        friction_ff_override = (args.friction_ff == 'true')
+
     geom = StewartGeometry()
-    guard = MotorGuard(rate_hz=args.rate, geom=geom)
+    guard = MotorGuard(rate_hz=args.rate, geom=geom,
+                       friction_ff_enable_override=friction_ff_override)
 
     # Graceful shutdown on SIGINT/SIGTERM
     def signal_handler(sig, frame):
