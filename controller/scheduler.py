@@ -207,13 +207,30 @@ class EventScheduler:
         self._cumulative_times = np.asarray(cumulative_times, dtype=np.float64)
         self._return_duration = return_duration
         self._zero6 = np.zeros(6, dtype=np.float64)
-        # W4: K2/K3 defense-in-depth.  When v_max_mmps + tau_s are provided,
-        # each constructed segment is verified against K2/K3 per
-        # controller/REFERENCE_LAYER_CONTRACT.md.  No auto-stretching — catch/toss
-        # deadlines are hard, so infeasibility is a scheduler bug to surface.
+        # W4 / S4: K2/K3 defense-in-depth.  When v_max_mmps + tau_s are
+        # provided, each constructed segment is verified against K2/K3 per
+        # controller/REFERENCE_LAYER_CONTRACT.md.  No auto-stretching —
+        # catch/toss deadlines are hard, so infeasibility is a scheduler
+        # bug to surface.  See SCHEDULER_CONTRACT.md S4.
         self._v_max_mmps = v_max_mmps
         self._tau_s = tau_s
         self._strict_feasibility = strict_feasibility
+
+        # S4: emit a single WARNING at construction when v_max_mmps or
+        # tau_s is unset — feasibility verification is then a no-op and
+        # the contract treats this as a documented test-only mode.
+        # Production callers MUST pass both.  The warning here makes the
+        # degraded mode visible in any session log so an operator can
+        # spot misconfiguration without grepping the constructor call.
+        if v_max_mmps is None or tau_s is None:
+            logger.warning(
+                "S4 unenforced: EventScheduler constructed without "
+                "v_max_mmps and/or tau_s (v_max_mmps=%r, tau_s=%r) — "
+                "K2/K3 peak-velocity/acceleration bounds NOT verified. "
+                "Production callers must pass both.  See "
+                "controller/SCHEDULER_CONTRACT.md S4.",
+                v_max_mmps, tau_s,
+            )
 
         # S1: clock-skew tolerance for submission-time check.  When None,
         # derive from cumulative_times[1] - [0] (one MPC tick).  See
@@ -252,6 +269,15 @@ class EventScheduler:
         # S1/S6 bookkeeping: most recent sim_time observed via update().
         # None until first update() — S1 disabled, per SCHEDULER_CONTRACT.md.
         self._last_sim_time: float | None = None
+
+        # S5 bootstrap flag: reset every time a new APPROACHING begins
+        # via submit_event().  Distinguishes the IDLE→APPROACHING bootstrap
+        # path (where _last_* is plant-tick-old or constructor-default and
+        # MUST be re-synced to live plant state) from the post-refinement
+        # path (where _last_* is segment-evaluated from the prior tick and
+        # MUST be preserved for C2 continuity at the splice).  See
+        # controller/SCHEDULER_CONTRACT.md S5.
+        self._approach_bootstrap_pending: bool = False
 
     # ------------------------------------------------------------------
     # Properties
@@ -301,6 +327,12 @@ class EventScheduler:
             self._phase = SchedulerPhase.APPROACHING
             # Segment will be built on next update() when we have sim_time
             self._seg_current = None
+            # S5: bootstrap path — first build for this approach must
+            # sync _last_* to plant state at update() entry.  Distinct
+            # from the post-refinement path that update_current_event
+            # triggers (which leaves this flag False so segment-evaluated
+            # _last_* is preserved for C2 continuity).
+            self._approach_bootstrap_pending = True
             self._pending_notification = HandNotification(
                 event=event, notification_type='approaching',
             )
@@ -378,13 +410,23 @@ class EventScheduler:
         return cancelled
 
     def clear(self) -> None:
-        """Cancel all events and return to IDLE at current position."""
+        """Cancel all events and return to IDLE at current position.
+
+        Also resets ``_last_sim_time`` to None — this is the documented
+        S6 reset workflow.  After ``clear()``, the next ``update()``
+        accepts any ``sim_time`` (including one earlier than the previous
+        observation) without raising S6.  Use this on sim restart to
+        rewind the scheduler's clock.  See controller/SCHEDULER_CONTRACT.md
+        S6.
+        """
         self._current_event = None
         self._next_event = None
         self._seg_current = None
         self._seg_next = None
         self._seg_return = None
         self._phase = SchedulerPhase.IDLE
+        self._last_sim_time = None
+        self._approach_bootstrap_pending = False
 
     # ------------------------------------------------------------------
     # Per-step update
@@ -414,17 +456,32 @@ class EventScheduler:
         SchedulerOutput
             Contains ``TargetCommand`` for MPC plus scheduler metadata.
         """
-        # S1/S6 bookkeeping: record the most recent observed sim_time so
-        # subsequent submit_event/replace_next_event calls can validate
-        # against it (S1).  Phase 3 will add the S6 monotonicity check
-        # before this assignment; for Phase 2 we only track.  Reject
-        # NaN / ±inf here — a poisoned _last_sim_time silently disables
-        # S1 because every subsequent comparison evaluates to False.
+        # S1/S6 bookkeeping.  Order: finiteness (S1+S6 prerequisite) →
+        # monotonicity (S6) → store.  Reject NaN / ±inf first; without it
+        # ``nan < threshold`` evaluates False and would silently bypass
+        # S6 just as it did S1 pre-Phase-2.  Then enforce monotonic
+        # sim_time across consecutive update() calls — backward jumps are
+        # caller bugs (sim restart without clear(), wall-clock source
+        # swap, monotonic-clock wraparound).  See SCHEDULER_CONTRACT.md
+        # S6 for rationale and the legitimate clear()-then-update reset
+        # workflow.
         if not np.isfinite(sim_time):
             raise ValueError(
                 f"sim_time must be finite, got {sim_time!r}"
             )
-        self._last_sim_time = float(sim_time)
+        sim_time_f = float(sim_time)
+        if (self._last_sim_time is not None
+                and sim_time_f < self._last_sim_time - 1e-9):
+            raise ValueError(
+                f"S6 violation in update: sim_time went backward "
+                f"(got {sim_time_f:.6f}, last seen "
+                f"{self._last_sim_time:.6f}, delta="
+                f"{sim_time_f - self._last_sim_time:.6e}s).  "
+                f"Backward sim_time produces negative-duration segments "
+                f"and corrupts arrival detection — call clear() before "
+                f"reusing this scheduler instance after a sim restart."
+            )
+        self._last_sim_time = sim_time_f
 
         # Don't clear _pending_notification here — submit_event() may have
         # set one that should be delivered on this update.  Each handler
@@ -465,11 +522,29 @@ class EventScheduler:
         event = self._current_event
         assert event is not None
 
-        # Build segment if needed (first call or after replan)
+        # Build segment if needed (first call or after replan).
+        # S5: the build helper reads from self._last_*.  On the bootstrap
+        # path (just after IDLE→APPROACHING via submit_event), _last_*
+        # may be stale plant state from the previous IDLE tick or the
+        # constructor default; sync to live plant state once before
+        # building so the segment starts at the actual current pose.
+        # On the post-refinement path (update_current_event) the flag
+        # is False and _last_* is segment-evaluated from the prior tick,
+        # so the new segment splices cleanly with C2 continuity.
         if self._seg_current is None:
-            self._seg_current = self._build_segment_to_event(
-                sim_time, pose, twist, event,
-            )
+            if self._approach_bootstrap_pending:
+                self._last_pose = pose.copy()
+                self._last_twist = twist.copy()
+                # APPROACHING bootstrap starts from rest.  Explicitly
+                # zero _last_accel — the IDLE handler does this every
+                # tick, but submit_event after clear() (without an
+                # intervening IDLE update) would otherwise inherit
+                # whatever stale segment-evaluated accel was set in the
+                # prior phase, contradicting the "starts from rest"
+                # contract.  See SCHEDULER_CONTRACT.md S5.
+                self._last_accel = self._zero6.copy()
+                self._approach_bootstrap_pending = False
+            self._seg_current = self._build_segment_to_event(sim_time, event)
 
         seg = self._seg_current
 
@@ -557,12 +632,12 @@ class EventScheduler:
         next_ev = self._next_event
         assert next_ev is not None
 
-        # Build segment if needed
+        # Build segment if needed.  S5: build helper reads self._last_*,
+        # which the prior tick's segment evaluation has kept in sync with
+        # the live motion state — including the mid-TRANSITIONING
+        # replace_next_event splice path.
         if self._seg_next is None:
-            # Start from current motion state (handles mid-transition replan)
-            self._seg_next = self._build_segment_to_event(
-                sim_time, self._last_pose, self._last_twist, next_ev,
-            )
+            self._seg_next = self._build_segment_to_event(sim_time, next_ev)
 
         seg = self._seg_next
 
@@ -783,16 +858,36 @@ class EventScheduler:
     def _build_segment_to_event(
         self,
         sim_time: float,
-        start_pose: np.ndarray,
-        start_twist: np.ndarray,
         event: ScheduledEvent,
     ) -> _QuinticSegment:
-        """Build a quintic segment from current state to event."""
+        """Build a quintic segment from the live motion state to *event*.
+
+        S5 enforcement: every newly-built segment starts at
+        ``self._last_pose / _last_twist / _last_accel`` — the scheduler's
+        recorded live motion state at build time.  This is the structural
+        invariant that guarantees C0 continuity (and operationally C2,
+        when the prior phase set ``_last_*`` from the previous segment's
+        evaluation) at every segment splice.  See
+        controller/SCHEDULER_CONTRACT.md S5.
+
+        Callers MUST ensure ``_last_*`` reflects the desired live state
+        before calling.  In practice:
+          * ``_update_idle`` sets ``_last_*`` to plant state every tick,
+            so the IDLE→APPROACHING bootstrap inherits it.
+          * ``_update_approaching`` may explicitly resync ``_last_*`` to
+            plant state on the bootstrap path (see
+            ``_approach_bootstrap_pending``).
+          * ``_update_holding`` sets ``_last_*`` to the current event's
+            pose at arrival, so HOLDING→TRANSITIONING inherits it.
+          * Mid-TRANSITIONING segment evaluation in the prior tick
+            already updated ``_last_*`` to the segment-evaluated state,
+            so ``replace_next_event`` mid-transition splices cleanly.
+        """
         duration = max(event.time - sim_time, _MIN_DURATION_S)
         end_twist = event.twist if event.twist is not None else self._zero6
         seg = _QuinticSegment(
-            p0=start_pose.copy(),
-            v0=start_twist.copy(),
+            p0=self._last_pose.copy(),
+            v0=self._last_twist.copy(),
             a0=self._last_accel.copy(),
             p1=event.pose.copy(),
             v1=end_twist.copy(),

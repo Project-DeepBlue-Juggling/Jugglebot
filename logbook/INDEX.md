@@ -6,6 +6,7 @@ Browse with `/logbook`, create entries with `/investigate` or `/logbook --new <t
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-05-09 | resolved | mpc-tier0-contracts — Phase 3 | Scheduler contract — Phase 3 enforcement of S4, S5, S6 + RuleBasedStateMachine | [2026-05-09-scheduler-contract-phase-3-s4-s6-enforcement](2026-05-09-scheduler-contract-phase-3-s4-s6-enforcement.md) |
 | 2026-05-09 | resolved | mpc-tier0-contracts — Phase 2 | Scheduler contract — Phase 2 enforcement of S1, S2, S3 | [2026-05-09-scheduler-contract-phase-2-s1-s3-enforcement](2026-05-09-scheduler-contract-phase-2-s1-s3-enforcement.md) |
 | 2026-05-09 | resolved | mpc-tier0-contracts — Phase 1 | Scheduler contract — Phase 1 audit and S1–S6 draft | [2026-05-09-scheduler-contract-phase-1-audit](2026-05-09-scheduler-contract-phase-1-audit.md) |
 | 2026-05-08 | resolved | pr-3b-persistent-enable | Friction-FF platform limit cycle — diagnosis and smooth-gate fix | [2026-05-08-friction-ff-platform-limit-cycle](2026-05-08-friction-ff-platform-limit-cycle.md) |

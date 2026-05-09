@@ -172,7 +172,7 @@ def __init__(self, *, control_dt: float = 0.025, **kw):
 |-------|-------|--------|------|------|-----------|
 | 1 | SCHEDULER_CONTRACT.md draft + scheduler audit | COMPLETE | 2026-05-09 | Low | Document captures every invariant the code currently relies on; no behaviour change |
 | 2 | Scheduler S1, S2, S3 enforcement (input-domain) | COMPLETE | 2026-05-09 | Med | Past-time events rejected; duplicate IDs handled deterministically; queue bounded |
-| 3 | Scheduler S4 tightening + S5, S6 enforcement (state-machine) | NOT STARTED | | Med | Mid-TRANSITIONING replace specified; backward `sim_time` rejected; S4 strict-by-default in tests |
+| 3 | Scheduler S4 tightening + S5, S6 enforcement (state-machine) | COMPLETE | 2026-05-09 | Med | Mid-TRANSITIONING replace specified; backward `sim_time` rejected; S4 strict-by-default in tests |
 | 4 | PLANT_INTERFACE_CONTRACT.md draft + interface audit | NOT STARTED | | Low | Document captures aliasing/reset/dt/validation conventions; no behaviour change |
 | 5 | PlantInterface P1 + P2 (aliasing + can_reset) | NOT STARTED | | Low | ABC additions; both `MuJoCoPlant` and `HardwarePlant` updated; contract test parameterized |
 | 6 | PlantInterface P3 + P4 (input-validation + control_dt) | NOT STARTED | | Med | Stale-telemetry thresholds derived from `control_dt`; `command()` validation contract surfaced |
@@ -241,7 +241,7 @@ def __init__(self, *, control_dt: float = 0.025, **kw):
 
 ---
 
-### Phase 3: Scheduler S4 tightening + S5, S6 enforcement — NOT STARTED
+### Phase 3: Scheduler S4 tightening + S5, S6 enforcement — COMPLETE (2026-05-09)
 
 **Scope.** State-machine invariants — those checked across `update()` calls or during phase transitions.
 
