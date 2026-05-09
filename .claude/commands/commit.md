@@ -88,7 +88,13 @@ once the user approves (or after incorporating requested changes).
 
 For each commit in order:
 1. `git add` only the specific files for that commit (never `git add .` or `git add -A`)
-2. Create the commit. Always pass the message via HEREDOC:
+2. **Verify the staged set matches expectations.** Run `git diff --cached --stat`
+   and read the output.  If it lists ONLY the files just added, proceed.  If
+   it lists ANY extra file, stop and surface to the user before committing —
+   the user may have staged work in parallel, or a hook may have auto-staged
+   something.  Skipping this check has caused real attribution incidents
+   (see `feedback_verify_staged_before_commit` in auto-memory).
+3. Create the commit. Always pass the message via HEREDOC:
    ```bash
    git commit -m "$(cat <<'EOF'
    commit message here
@@ -97,7 +103,7 @@ For each commit in order:
    EOF
    )"
    ```
-3. Confirm success before moving to the next commit
+4. Confirm success before moving to the next commit
 
 ### Logbook-Entry trailer
 
@@ -144,6 +150,9 @@ Do NOT push unless the user explicitly asks. If the user asks to push and it is 
 
 ## Constraints
 - Never use `git add .` or `git add -A` — always stage files explicitly
+- **Always run `git diff --cached --stat` between `git add` and `git commit`** —
+  catches parallel adds, auto-stage hooks, and leftover staged state.  Stop
+  if the staged set has anything other than what was just added.
 - Never amend, rebase, or force push without explicit user instruction
 - Never proceed past Phase 2 for HIGH complexity commits without clear user approval
 - Never push without explicit user instruction
