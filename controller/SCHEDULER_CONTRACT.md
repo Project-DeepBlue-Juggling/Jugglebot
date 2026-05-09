@@ -27,24 +27,26 @@ Pre-contract, the scheduler accepted a class of malformed inputs without
 diagnostic loudness:
 
 - **Past-time events** were silently clamped to ``_MIN_DURATION_S = 0.05 s``
-  (see [scheduler.py:652](scheduler.py)).  An event submitted with
+  (see [scheduler.py:791](scheduler.py)).  An event submitted with
   ``time < sim_time`` produced a 50 ms quintic to the event's pose, which
   is feasible kinematically (K2/K3 may pass) but is operationally
   incorrect — the event was supposed to arrive in the past, and the
   scheduler silently re-aimed at a near-future arrival.
-- **Duplicate event IDs** routed to the "else" branch in
-  [submit_event (scheduler.py:262–287)](scheduler.py): if
-  ``_current_event is not None``, the new event silently replaces
-  ``_next_event`` even when its ``event_id`` matches the current event's
-  ID — a caller intending to refine the current event via the wrong API
-  silently corrupts the next-event slot.
+- **Duplicate event IDs** routed to the "else" branch in the
+  pre-Phase-2 ``submit_event`` body: if ``_current_event is not None``,
+  the new event silently replaced ``_next_event`` even when its
+  ``event_id`` matched the current event's ID — a caller intending
+  to refine the current event via the wrong API silently corrupted
+  the next-event slot.  That branch was removed in Phase 2; the
+  post-Phase-2 ``submit_event`` body is at
+  [scheduler.py:276–319](scheduler.py).
 - **Three-deep submission** had no guard.  Today there are only two
   explicit slots (``_current_event``, ``_next_event``) plus one implicit
   return slot (``_seg_return``); a third ``submit_event`` overwrites
   ``_next_event`` without warning.
 - **K2/K3 feasibility check was conditionally skipped** when
   ``v_max_mmps`` or ``tau_s`` was unset
-  (see [_verify_segment_feasibility (scheduler.py:693)](scheduler.py)) —
+  (see [_verify_segment_feasibility (scheduler.py:832)](scheduler.py)) —
   silent degradation rather than a documented test-only mode.
 - **Phase-transition splices** (e.g., ``replace_next_event`` mid-
   TRANSITIONING) preserved C0 continuity by virtue of the
@@ -73,13 +75,22 @@ where ``last_sim_time`` is the most recent ``sim_time`` passed to
 ``τ_grace`` is a per-instance constructor parameter with a documented
 default of **1 × control_dt** (one tick of clock skew).
 
+Additionally, ``event.time`` MUST be finite — NaN and ±inf are
+structural input-shape errors that MUST raise ``ValueError`` at
+submission, regardless of whether ``update()`` has been called.
+The same finiteness requirement applies to ``sim_time`` passed to
+``update()``: a non-finite ``sim_time`` would silently disable S1
+(every subsequent comparison evaluates to False), so ``update()``
+MUST raise ``ValueError`` at entry on non-finite input.  The same
+applies to ``τ_grace`` itself, which is checked at construction.
+
 Violations MUST raise ``ValueError`` at submission, not silently degrade
 to a clamped-duration segment.
 
 **Why.** Past-time events are caller bugs: either a stale event was
 re-submitted, or the caller's clock is misaligned with the scheduler's.
 Silently clamping the segment duration to ``_MIN_DURATION_S`` (the pre-
-contract behaviour at [scheduler.py:652](scheduler.py)) hides the bug
+contract behaviour at [scheduler.py:791](scheduler.py)) hides the bug
 and produces a segment whose endpoint pose is at the *wrong absolute
 time* — useful for nothing.  A loud raise forces the caller to either
 fix the timestamp or explicitly use ``cancel_next`` / ``clear`` to
@@ -99,17 +110,20 @@ The legitimate refinement paths are:
 
 - ``update_current_event(event)`` — refines the current event in place;
   REQUIRES ``event.event_id == _current_event.event_id`` (already
-  validated at [scheduler.py:299–304](scheduler.py)).
+  validated at [scheduler.py:331–336](scheduler.py)).
 - ``replace_next_event(event)`` — replaces the next event; the new
   event's ID may differ from the old next event's ID, but MUST NOT match
   the current event's ID (would create an ambiguous event lifecycle).
 
 **Why.** Pre-contract, ``submit_event`` with a duplicate ID routed
-silently to the "else" branch at [scheduler.py:274–287](scheduler.py)
-(replacing ``_next_event`` rather than raising) — a caller intending
-"please refine event 42" via the wrong API would clobber the next-event
-slot with a duplicate of the current event, producing two distinct
-events with the same ID in the in-flight set.  Hand-notification
+silently to the "else" branch (replacing ``_next_event`` rather than
+raising) — a caller intending "please refine event 42" via the wrong
+API would clobber the next-event slot with a duplicate of the current
+event, producing two distinct events with the same ID in the in-flight
+set.  That branch was removed in Phase 2; the post-Phase-2
+``submit_event`` body at [scheduler.py:276–319](scheduler.py) raises
+on duplicate IDs (and on slot saturation, per S3) before any state
+mutation.  Hand-notification
 consumers, ID-based cancellation, and operator log-grepping all break
 when IDs are non-unique.  A raise forces the caller to choose the
 right API.
@@ -129,7 +143,7 @@ are non-None MUST raise ``ValueError``.  The caller is responsible for
 ``cancel_next`` / ``clear`` before submitting beyond the bounded set.
 
 The ``RETURN_TO_ACTIVE`` event queued by ``begin_return``
-([scheduler.py:628–638](scheduler.py)) when not in HOLDING is a
+([scheduler.py:689–698](scheduler.py)) when not in HOLDING is a
 legitimate use of the ``_next_event`` slot and counts toward the bound.
 
 **Why.** The structural design intent of the scheduler is "one active
@@ -144,7 +158,7 @@ of the in-flight slot set is a contract violation.
 Every ``_QuinticSegment`` constructed by the scheduler MUST be verified
 against K2 (peak velocity ≤ β · v_max) and K3 (peak acceleration
 ≤ β · v_max / τ) via
-[_verify_segment_feasibility (scheduler.py:667)](scheduler.py).
+[_verify_segment_feasibility (scheduler.py:806)](scheduler.py).
 
 Two enforcement modes:
 
@@ -156,7 +170,7 @@ Two enforcement modes:
   via [W7's hardening (REFERENCE_LAYER_CONTRACT.md, "Stretch policy")](REFERENCE_LAYER_CONTRACT.md).
 
 Schedulers constructed without ``v_max_mmps`` or ``tau_s`` (today: the
-"S4 silently skipped" mode at [scheduler.py:693–694](scheduler.py)) MUST
+"S4 silently skipped" mode at [scheduler.py:832–833](scheduler.py)) MUST
 log a single ``WARNING`` at construction stating "S4 unenforced" and
 SHOULD only be used in unit tests that do not exercise feasibility.
 Production callers MUST provide both parameters.
@@ -175,7 +189,7 @@ too tight relative to the inter-event pose delta.  S4 catches that
 class of caller error.
 
 Scope: S4's check is per-axis on the **linear** workspace components
-(see existing scope discussion in [scheduler.py:677–686](scheduler.py)).
+(see existing scope discussion in [scheduler.py:816–825](scheduler.py)).
 Per-leg-velocity enforcement on quintic refs is out of scope; the MPC
 itself enforces leg-velocity bounds at every horizon node.
 
@@ -224,7 +238,7 @@ bug analogous to S1.  S1 catches it at submission with the configured
 ``τ_grace``; S5 covers the segment-build path for events that pass S1
 but produce ``duration == _MIN_DURATION_S`` after the
 ``max(event.time - sim_time, _MIN_DURATION_S)`` clamp at
-[scheduler.py:652](scheduler.py).  Such segments still satisfy S5
+[scheduler.py:791](scheduler.py).  Such segments still satisfy S5
 (they start at live state), but their **end** state is the event's
 pose at ``sim_time + 0.05 s``, which is not the event's intended
 arrival time.  Callers MUST treat S5-compliant-but-S1-clamped segments
@@ -250,7 +264,7 @@ The legitimate sim-restart workflow is:
 **Why.** A scheduler with backward ``sim_time`` produces:
 
 - Negative-duration segments via the ``event.time - sim_time``
-  computation at [scheduler.py:652](scheduler.py); these clamp to
+  computation at [scheduler.py:791](scheduler.py); these clamp to
   ``_MIN_DURATION_S`` per S5's edge case but with no relationship to
   the original event's intended timing.
 - Undefined arrival detection: the ``sim_time >= seg.t_end`` check

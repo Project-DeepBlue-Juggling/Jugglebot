@@ -171,7 +171,7 @@ def __init__(self, *, control_dt: float = 0.025, **kw):
 | Phase | Scope | Status | Date | Risk | Validates |
 |-------|-------|--------|------|------|-----------|
 | 1 | SCHEDULER_CONTRACT.md draft + scheduler audit | COMPLETE | 2026-05-09 | Low | Document captures every invariant the code currently relies on; no behaviour change |
-| 2 | Scheduler S1, S2, S3 enforcement (input-domain) | NOT STARTED | | Med | Past-time events rejected; duplicate IDs handled deterministically; queue bounded |
+| 2 | Scheduler S1, S2, S3 enforcement (input-domain) | COMPLETE | 2026-05-09 | Med | Past-time events rejected; duplicate IDs handled deterministically; queue bounded |
 | 3 | Scheduler S4 tightening + S5, S6 enforcement (state-machine) | NOT STARTED | | Med | Mid-TRANSITIONING replace specified; backward `sim_time` rejected; S4 strict-by-default in tests |
 | 4 | PLANT_INTERFACE_CONTRACT.md draft + interface audit | NOT STARTED | | Low | Document captures aliasing/reset/dt/validation conventions; no behaviour change |
 | 5 | PlantInterface P1 + P2 (aliasing + can_reset) | NOT STARTED | | Low | ABC additions; both `MuJoCoPlant` and `HardwarePlant` updated; contract test parameterized |
@@ -205,7 +205,7 @@ def __init__(self, *, control_dt: float = 0.025, **kw):
 
 ---
 
-### Phase 2: Scheduler S1, S2, S3 enforcement — NOT STARTED
+### Phase 2: Scheduler S1, S2, S3 enforcement — COMPLETE (2026-05-09)
 
 **Scope.** Implement the input-domain invariants — those checked at `submit_event()`. These are easy to enforce because the validation point is a single function entry.
 

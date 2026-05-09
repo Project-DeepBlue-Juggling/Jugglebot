@@ -201,6 +201,7 @@ class EventScheduler:
         v_max_mmps: float | None = None,
         tau_s: float | None = None,
         strict_feasibility: bool = False,
+        tau_grace_s: float | None = None,
     ) -> None:
         self._active_pose = np.asarray(active_pose, dtype=np.float64)
         self._cumulative_times = np.asarray(cumulative_times, dtype=np.float64)
@@ -213,6 +214,22 @@ class EventScheduler:
         self._v_max_mmps = v_max_mmps
         self._tau_s = tau_s
         self._strict_feasibility = strict_feasibility
+
+        # S1: clock-skew tolerance for submission-time check.  When None,
+        # derive from cumulative_times[1] - [0] (one MPC tick).  See
+        # controller/SCHEDULER_CONTRACT.md S1.
+        if tau_grace_s is None:
+            if len(self._cumulative_times) >= 2:
+                tau_grace_s = float(
+                    self._cumulative_times[1] - self._cumulative_times[0]
+                )
+            else:
+                tau_grace_s = 0.025  # fallback for empty schedules
+        if not np.isfinite(tau_grace_s) or tau_grace_s < 0:
+            raise ValueError(
+                f"tau_grace_s must be finite and >= 0, got {tau_grace_s}"
+            )
+        self._tau_grace_s = float(tau_grace_s)
 
         # State
         self._phase = SchedulerPhase.IDLE
@@ -231,6 +248,10 @@ class EventScheduler:
 
         # Pending hand notifications (consumed by caller after update)
         self._pending_notification: HandNotification | None = None
+
+        # S1/S6 bookkeeping: most recent sim_time observed via update().
+        # None until first update() — S1 disabled, per SCHEDULER_CONTRACT.md.
+        self._last_sim_time: float | None = None
 
     # ------------------------------------------------------------------
     # Properties
@@ -256,9 +277,25 @@ class EventScheduler:
         """Add an event to the schedule.
 
         If no current event exists, this becomes the current event and the
-        scheduler begins approaching it.  If a current event exists, this
-        replaces the next event.
+        scheduler begins approaching it.  If a current event exists (and
+        the next slot is empty), this becomes the next event.
+
+        Raises
+        ------
+        ValueError
+            If the event violates S1 (past-time submission), S2 (event_id
+            collides with an in-flight event), or S3 (both slots already
+            occupied).  See controller/SCHEDULER_CONTRACT.md.
         """
+        # Contract enforcement.  Order: S1 (input shape) → S2 (state
+        # collision) → S3 (capacity).  Each helper raises ValueError on
+        # violation; composition produces a single first-fault report.
+        self._validate_submission_time(event, op_name='submit_event')   # S1
+        self._validate_id_uniqueness(
+            event, op_name='submit_event', check_next=True,
+        )                                                                # S2
+        self._validate_slot_capacity(op_name='submit_event')             # S3
+
         if self._current_event is None:
             self._current_event = event
             self._phase = SchedulerPhase.APPROACHING
@@ -272,19 +309,14 @@ class EventScheduler:
                 event.event_type.name, event.event_id, event.time,
             )
         else:
-            old_next = self._next_event
+            # S3 has already verified _next_event is None at this point,
+            # so this branch is purely the "queue beyond current" case.
             self._next_event = event
             self._seg_next = None  # will be rebuilt
-            if old_next is not None:
-                logger.info(
-                    "Scheduler: replaced next event id=%d with id=%d",
-                    old_next.event_id, event.event_id,
-                )
-            else:
-                logger.info(
-                    "Scheduler: queued next event %s id=%d at t=%.3f",
-                    event.event_type.name, event.event_id, event.time,
-                )
+            logger.info(
+                "Scheduler: queued next event %s id=%d at t=%.3f",
+                event.event_type.name, event.event_id, event.time,
+            )
 
     def update_current_event(self, event: ScheduledEvent) -> None:
         """Refine the current event (live catch tracking update).
@@ -310,7 +342,23 @@ class EventScheduler:
 
         If currently transitioning toward the old next event, the segment
         is replanned from the current motion state to the new event.
+
+        Raises
+        ------
+        ValueError
+            If the event violates S1 (past-time submission) or partial S2
+            (event_id matches the current event).  Replacement is allowed
+            to reuse the OLD next event's id (it's a refinement of the
+            same slot); collision is only checked against ``_current_event``.
+            See controller/SCHEDULER_CONTRACT.md.
         """
+        # S1 + partial S2 (current only — next is being replaced).  No
+        # S3 check: replace doesn't grow the slot set.
+        self._validate_submission_time(event, op_name='replace_next_event')
+        self._validate_id_uniqueness(
+            event, op_name='replace_next_event', check_next=False,
+        )
+
         old = self._next_event
         self._next_event = event
         self._seg_next = None  # force rebuild
@@ -366,6 +414,18 @@ class EventScheduler:
         SchedulerOutput
             Contains ``TargetCommand`` for MPC plus scheduler metadata.
         """
+        # S1/S6 bookkeeping: record the most recent observed sim_time so
+        # subsequent submit_event/replace_next_event calls can validate
+        # against it (S1).  Phase 3 will add the S6 monotonicity check
+        # before this assignment; for Phase 2 we only track.  Reject
+        # NaN / ±inf here — a poisoned _last_sim_time silently disables
+        # S1 because every subsequent comparison evaluates to False.
+        if not np.isfinite(sim_time):
+            raise ValueError(
+                f"sim_time must be finite, got {sim_time!r}"
+            )
+        self._last_sim_time = float(sim_time)
+
         # Don't clear _pending_notification here — submit_event() may have
         # set one that should be delivered on this update.  Each handler
         # either overwrites it or leaves the existing value.
@@ -640,6 +700,85 @@ class EventScheduler:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    # ---- S1/S2/S3 input-domain validation ----
+    # See controller/SCHEDULER_CONTRACT.md for normative spec.
+
+    def _validate_submission_time(
+        self, event: ScheduledEvent, *, op_name: str,
+    ) -> None:
+        """S1 enforcement.  Raises ``ValueError`` if event.time is non-
+        finite (NaN / ±inf), or more than ``_tau_grace_s`` in the past
+        relative to the most recent ``sim_time`` observed via
+        ``update()``.
+
+        The finiteness check is unconditional — NaN / inf are
+        structural input-shape errors that MUST be rejected even
+        before the first ``update()`` fires.  The clock-skew
+        comparison is no-op until ``update()`` has been called at
+        least once (``_last_sim_time is None``).
+        """
+        if not np.isfinite(event.time):
+            raise ValueError(
+                f"S1 violation in {op_name}: event.time={event.time!r} "
+                f"is not finite.  Reject NaN / ±inf at submission to "
+                f"prevent downstream NaN propagation into MPC targets."
+            )
+        if self._last_sim_time is None:
+            return  # S1 disabled until first update — see contract S1
+        threshold = self._last_sim_time - self._tau_grace_s
+        if event.time < threshold:
+            raise ValueError(
+                f"S1 violation in {op_name}: event.time={event.time:.6f} "
+                f"< last_sim_time - tau_grace_s = "
+                f"{self._last_sim_time:.6f} - {self._tau_grace_s:.6f} = "
+                f"{threshold:.6f}.  Past-time events are caller bugs; "
+                f"cancel/clear stale events before resubmitting."
+            )
+
+    def _validate_id_uniqueness(
+        self, event: ScheduledEvent, *, op_name: str, check_next: bool,
+    ) -> None:
+        """S2 enforcement.  Raises ``ValueError`` if ``event.event_id``
+        matches an in-flight event's id.
+
+        For ``submit_event`` (``check_next=True``), collision is checked
+        against both ``_current_event`` and ``_next_event``.  For
+        ``replace_next_event`` (``check_next=False``), only
+        ``_current_event`` is checked — a replacement may legitimately
+        reuse the OLD next event's id (it's a refinement of the same
+        slot).  See contract S2.
+        """
+        if (self._current_event is not None
+                and self._current_event.event_id == event.event_id):
+            raise ValueError(
+                f"S2 violation in {op_name}: event.event_id="
+                f"{event.event_id} matches the current event's id.  "
+                f"Use update_current_event() for refinements; "
+                f"submit_event/replace_next_event are for distinct events."
+            )
+        if check_next and self._next_event is not None and (
+                self._next_event.event_id == event.event_id):
+            raise ValueError(
+                f"S2 violation in {op_name}: event.event_id="
+                f"{event.event_id} matches the next event's id.  "
+                f"Use replace_next_event() with a fresh id, or "
+                f"cancel_next() before reusing the id."
+            )
+
+    def _validate_slot_capacity(self, *, op_name: str) -> None:
+        """S3 enforcement.  Raises ``ValueError`` if both
+        ``_current_event`` and ``_next_event`` are already occupied.
+        See contract S3.
+        """
+        if (self._current_event is not None
+                and self._next_event is not None):
+            raise ValueError(
+                f"S3 violation in {op_name}: both _current_event "
+                f"(id={self._current_event.event_id}) and _next_event "
+                f"(id={self._next_event.event_id}) are occupied.  Call "
+                f"cancel_next() or clear() before queuing more events."
+            )
 
     def _build_segment_to_event(
         self,
