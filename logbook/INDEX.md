@@ -6,6 +6,7 @@ Browse with `/logbook`, create entries with `/investigate` or `/logbook --new <t
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-05-09 | resolved | mpc-tier0-contracts — Phase 1 | Scheduler contract — Phase 1 audit and S1–S6 draft | [2026-05-09-scheduler-contract-phase-1-audit](2026-05-09-scheduler-contract-phase-1-audit.md) |
 | 2026-05-08 | resolved | pr-3b-persistent-enable | Friction-FF platform limit cycle — diagnosis and smooth-gate fix | [2026-05-08-friction-ff-platform-limit-cycle](2026-05-08-friction-ff-platform-limit-cycle.md) |
 | 2026-04-27 | tuned | post-per-leg-gains-deadband-session | Friction feedforward — bench characterisation, model fit, and FF validation | [2026-04-27-friction-feedforward-bench-validation](2026-04-27-friction-feedforward-bench-validation.md) |
 | 2026-04-23 | resolved | hardware-bringup — GC-pause elimination on the MPC 40 Hz hot loop | Hot-loop zero-allocation contract (W1 inventory → contract → enforcement → fixes) | [2026-04-23-hot-loop-zero-allocation-contract](2026-04-23-hot-loop-zero-allocation-contract.md) |

@@ -24,6 +24,17 @@ The hardware can destroy itself with high-jerk movements or movements past limit
 MPC (50 Hz) → HardwarePlant (:5557) → MotorGuard (500 Hz) → MotionBridge → CAN → ODrives (8 kHz)
 ```
 
+### Hardware entry point
+The hardware MPC entry point is `python run_mpc.py` at the repo root.
+Earlier revisions of this plan invoked `python3 main.py --hardware --mpc`
+from `sim/`; that path was split out to a dedicated `run_mpc.py`.  Phase
+hardware commands below have been migrated.  Sim-only runs (Phase 0.3)
+still use `sim/main.py`.  Phase 6 (`--trajectory`) and Phase 7 (`--catch`)
+flags have not yet been migrated to `run_mpc.py`; those phases retain
+the older `python3 main.py --hardware --mpc …` form pending a separate
+migration step — verify the entry point against the script's `--help`
+before running.
+
 ### Coordinate frame
 - `--pose X,Y,Z,RX,RY,RZ` — Z is **STOW-relative** in mm
 - **Active position = z=170mm** (NOT z=0)
@@ -194,8 +205,7 @@ ros2 topic pub --once /orchestrator_command std_msgs/msg/String "data: 'activate
 # Wait for activation complete
 
 # Start MPC holding at Active (z=170mm = current position)
-cd ~/Jugglebot/sim
-python3 main.py --hardware --mpc --pose 0,0,170,0,0,0 --duration 300
+python run_mpc.py --pose 0,0,170,0,0,0 --duration 300
 ```
 
 The startup sequence:
@@ -214,7 +224,7 @@ The startup sequence:
 **Monitor:**
 - `ros2 topic echo /motion/tracking_error` — should be near zero
 - `ros2 topic echo /motion/diagnostics` — workspace_status: ok
-- Console output from `main.py` shows solve times
+- Console output from `run_mpc.py` shows solve times
 
 **What to look for:**
 - ANY movement = extension convention mismatch. The slew limiter prevents a step, but you'll see slow drift.
@@ -233,23 +243,23 @@ The startup sequence:
 
 ### 3.1 Z+5mm
 ```bash
-python3 main.py --hardware --mpc --pose 0,0,175,0,0,0 --duration 30
+python run_mpc.py --pose 0,0,175,0,0,0 --duration 30
 ```
 **Expect:** Platform rises ~5mm smoothly. Peak leg velocity < 50mm/s. Settles in < 1s.
 
 ### 3.2 Return to Active
 ```bash
-python3 main.py --hardware --mpc --pose 0,0,170,0,0,0 --duration 30
+python run_mpc.py --pose 0,0,170,0,0,0 --duration 30
 ```
 
 ### 3.3 X+5mm (lateral — tests differential leg motion)
 ```bash
-python3 main.py --hardware --mpc --pose 5,0,170,0,0,0 --duration 30
+python run_mpc.py --pose 5,0,170,0,0,0 --duration 30
 ```
 
 ### 3.4 Tiny tilt (0.02 rad ≈ 1.1°)
 ```bash
-python3 main.py --hardware --mpc --pose 0,0,170,0.02,0,0 --duration 30
+python run_mpc.py --pose 0,0,170,0.02,0,0 --duration 30
 ```
 
 **Go for all:** Smooth motion. No overshoot > 1mm. Settles within 1s. No oscillation.
@@ -262,23 +272,23 @@ python3 main.py --hardware --mpc --pose 0,0,170,0.02,0,0 --duration 30
 
 ### 4.1 Z+20mm
 ```bash
-python3 main.py --hardware --mpc --pose 0,0,190,0,0,0 --duration 30
+python run_mpc.py --pose 0,0,190,0,0,0 --duration 30
 ```
 
 ### 4.2 Z+50mm
 ```bash
-python3 main.py --hardware --mpc --pose 0,0,220,0,0,0 --duration 30
+python run_mpc.py --pose 0,0,220,0,0,0 --duration 30
 ```
 
 ### 4.3 Combined translation + tilt
 ```bash
-python3 main.py --hardware --mpc --pose 20,20,190,0.05,0.05,0 --duration 30
+python run_mpc.py --pose 20,20,190,0.05,0.05,0 --duration 30
 ```
 Monitor condition number — should stay well below soft limit.
 
 ### 4.4 Sequence of poses
 ```bash
-python3 main.py --hardware --mpc --sequence "0,0,190,0,0,0@0.5 0,0,220,0,0,0@3 0,0,170,0,0,0@6" --duration 15
+python run_mpc.py --sequence "0,0,190,0,0,0@0.5 0,0,220,0,0,0@3 0,0,170,0,0,0@6" --duration 15
 ```
 Tests multi-target transitions.
 
@@ -290,7 +300,7 @@ Tests multi-target transitions.
 
 ### 5.1 Record step response
 ```bash
-python3 main.py --hardware --mpc --pose 0,0,220,0,0,0 --duration 15
+python run_mpc.py --pose 0,0,220,0,0,0 --duration 15
 # CSV saved to temp/logs/mpc_YYYYMMDD_HHMMSS.csv
 ```
 
@@ -328,26 +338,31 @@ Before running trajectories faster than ~280 mm/s, raise both limits:
 
 Until these are raised, all trajectories are capped at ~280 mm/s leg speed. T1 and slow T2 should work fine at this limit; T4 (fast transit) will not.
 
+> **Entry-point note:** `--trajectory` is currently only available on
+> `sim/main.py --hardware --mpc`; it has not yet been migrated to
+> `run_mpc.py`.  Verify with `python sim/main.py --help` before running.
+> If the flag has since moved, swap to `python run_mpc.py --trajectory …`.
+
 ### 6.1 T1 trajectory (gentle Z sinusoid)
 ```bash
-python3 main.py --hardware --mpc --trajectory T1 --duration 30
+python3 sim/main.py --hardware --mpc --trajectory T1 --duration 30
 ```
 **Expect:** Tracking error < 5mm. Sim baseline is ~0.48mm, so 10x margin is generous.
 
 ### 6.2 T2 trajectory (circular orbit)
 ```bash
-python3 main.py --hardware --mpc --trajectory T2 --duration 30
+python3 sim/main.py --hardware --mpc --trajectory T2 --duration 30
 ```
 **Expect:** Tracking error < 10mm. Sustained multi-axis motion.
 
 ### 6.3 T3 trajectory (multi-axis translation + tilt)
 ```bash
-python3 main.py --hardware --mpc --trajectory T3 --duration 30
+python3 sim/main.py --hardware --mpc --trajectory T3 --duration 30
 ```
 
 ### 6.4 T4 trajectory (fast transit — most aggressive)
 ```bash
-python3 main.py --hardware --mpc --trajectory T4 --duration 15
+python3 sim/main.py --hardware --mpc --trajectory T4 --duration 15
 ```
 **Expect:** Tracking error < 10mm. Peak velocity approaching 400-500mm/s.
 
@@ -362,9 +377,8 @@ python3 main.py --hardware --mpc --trajectory T4 --duration 15
 # Terminal 1: ROS2 launch
 ros2 launch jugglebot jugglebot_launch.py
 
-# Terminal 2: MPC process (receives targets from bridge)
-cd ~/Jugglebot/sim
-python3 main.py --hardware --mpc --duration 3600
+# Terminal 2: MPC process (receives targets from ZMQ; default duration 24h)
+python run_mpc.py
 
 # Terminal 3: Activate → SHELL mode
 ros2 topic pub --once /orchestrator_command std_msgs/msg/String "data: 'activate'"
@@ -378,8 +392,12 @@ Test SHELL → SPACEMOUSE → SHELL, SHELL → deactivate → activate → SHELL
 Verify clean transitions without motor jerks.
 
 ### 7.3 Catch trajectories (simulated ball events)
+> **Entry-point note:** `--catch` has not yet been migrated to
+> `run_mpc.py`.  Verify with `python sim/main.py --help` and swap if
+> the flag has since moved.
+
 ```bash
-python3 main.py --hardware --mpc --catch DT1 --duration 30
+python3 sim/main.py --hardware --mpc --catch DT1 --duration 30
 ```
 Start with slowest catch scenario. Progressively try DT2→DT5.
 
@@ -395,7 +413,8 @@ Only after all prior phases pass — real ball throws from Ball Butler.
 | `ros_ws/src/jugglebot/jugglebot/motion/motor_guard.py` | 500 Hz safety loop — all safety checks |
 | `controller/hardware_plant.py` | MPC ↔ motor guard ZMQ bridge |
 | `controller/params.py` | MPC tuning (tau, velocity limits, horizon) |
-| `sim/main.py` | Entry point for `--hardware --mpc` mode |
+| `run_mpc.py` | Hardware MPC entry point (`--pose`, `--sequence`, `--toss-motion`, ZMQ-listen mode) |
+| `sim/main.py` | Sim entry point + legacy host for `--trajectory` / `--catch` flags pending migration to `run_mpc.py` |
 | `ros_ws/src/jugglebot/jugglebot/motion_bridge_node.py` | ROS2 ↔ motor guard IPC bridge |
 | `ros_ws/src/jugglebot/jugglebot/mpc_bridge_node.py` | ROS2 target commands → MPC |
 | `ros_ws/src/jugglebot/jugglebot/motion/ipc.py` | ZMQ message protocol |
