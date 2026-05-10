@@ -20,7 +20,7 @@ files_changed:
   - logbook/2026-05-10-mpc-tier0-phase-8-ci-hypothesis-profiles.md
   - logbook/INDEX.md
 commits:
-  - <filled-after-commit>
+  - ce35625
 subsystem:
   - controller
   - mpc
