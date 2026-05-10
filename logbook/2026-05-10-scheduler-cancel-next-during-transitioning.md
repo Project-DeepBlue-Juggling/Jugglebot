@@ -17,7 +17,7 @@ files_changed:
   - logbook/2026-05-10-scheduler-cancel-next-during-transitioning.md
   - logbook/INDEX.md
 commits:
-  - <pending>
+  - 167b9f8
 subsystem:
   - controller
   - mpc
