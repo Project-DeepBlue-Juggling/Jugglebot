@@ -793,6 +793,16 @@
       "phase": "pr-3b-move4-rep5-rev",
       "rosbag": "/home/jetson/Desktop/rosbags/2026-05-08_15-27-35",
       "verdict": "PASS"
+    },
+    "mpc_20260510_151628.csv": {
+      "analyzed": true,
+      "flags_count": 2,
+      "last_analyzed": "2026-05-10T15:30:00Z",
+      "logbook_entry": "2026-05-10-plant-interface-contract-phase-6-p3-p4-enforcement.md",
+      "phase": "plan-1-phase-6-hw-smoke",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-05-10_15-15-57",
+      "session_group": "2026-05-10_15-15-57",
+      "verdict": "PASS"
     }
   },
   "version": 1

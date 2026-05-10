@@ -323,7 +323,7 @@ with the new contract tests) and full pytest suite passes (1167
   the new ``test_plant_interface_contract.py`` scenario count.  Zero
   regressions.
 
-### Hardware bringup smoke (recommended)
+### Hardware bringup smoke — PASS (2026-05-10)
 
 The plan's Phase 6 exit criterion includes a hardware bringup smoke:
 
@@ -331,10 +331,43 @@ The plan's Phase 6 exit criterion includes a hardware bringup smoke:
 python run_mpc.py --pose 0,0,170,0,0,0 --duration 5
 ```
 
-Confirms the P4 wiring on real hardware — the staleness watchdog
-should fire at the same wall-clock time as before for the default
-``control_dt=0.025``.  Not run as part of this phase commit
-(hardware test); user responsibility before Plan 1 closes.
+Run on 2026-05-10 by the user (CSV
+``temp/logs/mpc_20260510_151628.csv``, rosbag
+``2026-05-10_15-15-57``).  Result: clean PASS.
+
+- **Final tracking**: 0.089 mm position, 0.006° orientation.
+- **Solver**: 200 / 200 ``Solve_Succeeded``; p50 10.7 ms, p95
+  12.7 ms, max 14.6 ms (zero budget violations against the 24 ms
+  tick budget).
+- **Telemetry-staleness watchdog**: never fired during the 5 s
+  hold.  No motor errors, no CAN rejections, no orchestrator
+  FAULT, no E-stop over the entire 41.4 s rosbag.  At default
+  ``control_dt=0.025`` the per-instance thresholds (0.075 /
+  0.125 / 0.5 s) reproduce pre-Phase-6 wall-clock timing exactly,
+  as designed.
+- **State machine lifecycle**: BOOT → IDLE → ACTIVE:STANDBY →
+  IDLE — fully nominal.
+
+Two flags surfaced, both pre-existing background:
+
+- ``[warning]`` Leg 1 tracking 3.2× median (RMS 0.248 mm vs
+  median 0.078 mm) — known [leg-1 pose-dependent
+  asymmetry](2026-04-19-leg1-pose-dependent-hold-twitch.md),
+  unrelated to P4.
+- ``[info]`` Cmd HF energy on leg 5 (29% in 10–20 Hz band) —
+  MPC numerical-noise floor, sub-µm RMS, below mechanical
+  bandwidth, cosmetic.
+
+Plan 1's last deferred exit criterion is now satisfied.  Logged
+into ``sim/analysis/log_index.json`` with verdict PASS and
+``phase: "plan-1-phase-6-hw-smoke"``.
+
+(Capturing this retroactively: the hardware run happened on
+2026-05-10 between the Phase 6 commit and the eventual archival,
+but the Phase 6 logbook wasn't updated at the time.  The
+2026-05-10 ``/diagnose --latest`` analysis confirmed the run
+succeeded and this section was backfilled in the post-archival
+audit cleanup.)
 
 ## Discussion
 
