@@ -6,6 +6,7 @@ Browse with `/logbook`, create entries with `/investigate` or `/logbook --new <t
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-05-10 | resolved | mpc-sadpath-coverage-tiers-1-3 — Phase 0 | Scheduler — cancel_next during TRANSITIONING raises (Plan 2 Phase 0, bug 1 of 2) | [2026-05-10-scheduler-cancel-next-during-transitioning](2026-05-10-scheduler-cancel-next-during-transitioning.md) |
 | 2026-05-10 | resolved | mpc-tier0-contracts — Phase 8 (final) | MPC Tier-0 contracts — Phase 8 CI hypothesis profiles wired (Plan 1 closes) | [2026-05-10-mpc-tier0-phase-8-ci-hypothesis-profiles](2026-05-10-mpc-tier0-phase-8-ci-hypothesis-profiles.md) |
 | 2026-05-10 | resolved | mpc-tier0-contracts — Phase 7 | K1–K6 reference contract — Phase 7 hypothesis retroactive expansion | [2026-05-10-k1-k6-hypothesis-phase-7-retroactive-expansion](2026-05-10-k1-k6-hypothesis-phase-7-retroactive-expansion.md) |
 | 2026-05-10 | resolved | mpc-tier0-contracts — Phase 6 | Plant-interface contract — Phase 6 enforcement of P3, P4 | [2026-05-10-plant-interface-contract-phase-6-p3-p4-enforcement](2026-05-10-plant-interface-contract-phase-6-p3-p4-enforcement.md) |

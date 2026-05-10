@@ -201,7 +201,7 @@ ship.
 | ID | Test | How to drive | Pass criterion |
 |----|------|--------------|----------------|
 | T-U-T0-1 | `cancel_next` during `TRANSITIONING` | Submit → tick into TRANSITIONING → `cancel_next` | Documented behaviour (raise OR atomic transition); no inconsistent state |
-| T-U-T0-2 | `cancel_next` during `APPROACHING` (regression) | Submit → tick into APPROACHING → `cancel_next` | Existing behaviour preserved; `_next_event = None`; phase → `HOLDING` |
+| T-U-T0-2 | `cancel_next` during `APPROACHING` (regression) | Submit → tick into APPROACHING → `cancel_next` | Existing behaviour preserved; `_next_event = None`; phase unchanged at `APPROACHING` (next tick past arrival lands in `HOLDING`) |
 | T-U-T0-3 | `begin_return` with both slots filled | Submit current + submit next → `begin_return` | Raises per S3; state unchanged |
 | T-U-T0-4 | `begin_return` with only `_current_event` filled (regression) | Submit current → `begin_return` | Existing behaviour preserved |
 | T-U-T0-5 | State machine: `cancel_next` rule un-gated | Remove `@precondition` at scheduler test line 999–1001 | Random walk passes at ci-deep |

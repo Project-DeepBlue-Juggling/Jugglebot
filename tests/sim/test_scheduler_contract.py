@@ -792,6 +792,114 @@ class TestS5SegmentLiveState:
 
 
 # ---------------------------------------------------------------------
+# Phase 0 (Plan 2) — cancel_next state-machine semantics
+# ---------------------------------------------------------------------
+
+class TestCancelNextStateMachine:
+    """T-U-T0-1, T-U-T0-2 — ``cancel_next`` state-machine semantics.
+
+    Plan 2 Phase 0 closes a state-machine semantic gap orthogonal to
+    S4/S5/S6: pre-fix, ``cancel_next`` during TRANSITIONING set
+    ``_next_event = None`` without touching ``_phase``, leaving the
+    scheduler in TRANSITIONING with no destination event.  The next
+    ``update()`` then asserted in ``_update_transitioning`` (the
+    ``assert next_ev is not None`` at the top of the handler).
+
+    The fix raises ``ValueError`` at ``cancel_next`` entry when phase
+    is TRANSITIONING — consistent with the S2/S3 raise discipline at
+    ``submit_event``.  Callers who legitimately want to abort an
+    in-flight transition use ``clear()`` instead.
+
+    See ``logbook/2026-05-10-scheduler-cancel-next-during-
+    transitioning.md`` and
+    ``plans/active/mpc-sadpath-coverage-tiers-1-3.md`` Phase 0.
+    """
+
+    def test_cancel_next_during_transitioning_raises(self):
+        """T-U-T0-1: cancel_next during TRANSITIONING raises ValueError;
+        scheduler state is unchanged after the raise."""
+        sched = _scheduler()
+        ev1 = _event(time=0.1, pose=np.array([50.0, 0.0, 20.0, 0.0, 0.0, 0.0]))
+        ev2 = _event(time=1.0, pose=np.array([100.0, 0.0, 40.0, 0.0, 0.0, 0.0]))
+        sched.submit_event(ev1)
+        sched.submit_event(ev2)
+        sched.update(0.0, ACTIVE_POSE, np.zeros(6))    # APPROACHING ev1
+        sched.update(0.15, ACTIVE_POSE, np.zeros(6))   # arrival → TRANSITIONING
+        assert sched.phase == SchedulerPhase.TRANSITIONING
+        seg_before = sched._seg_next
+        assert seg_before is not None
+
+        with pytest.raises(ValueError, match="cancel_next during TRANSITIONING"):
+            sched.cancel_next()
+
+        # State unchanged: phase, slot, segment all preserved.
+        assert sched.phase == SchedulerPhase.TRANSITIONING
+        assert sched.next_event is ev2
+        assert sched._seg_next is seg_before
+
+        # Subsequent update() proceeds normally — the in-flight
+        # transition continues without corruption.
+        out = sched.update(0.2, ACTIVE_POSE, np.zeros(6))
+        assert out.phase == SchedulerPhase.TRANSITIONING
+
+    def test_cancel_next_during_approaching_regression(self):
+        """T-U-T0-2 regression: cancel_next during APPROACHING continues
+        to clear the lookahead and leave phase unchanged.  Subsequent
+        ticks past the current event's arrival land in HOLDING (no
+        next-event to transition to)."""
+        sched = _scheduler()
+        ev1 = _event(time=0.5, pose=np.array([50.0, 0.0, 20.0, 0.0, 0.0, 0.0]))
+        ev2 = _event(time=1.0, pose=np.array([100.0, 0.0, 40.0, 0.0, 0.0, 0.0]))
+        sched.submit_event(ev1)
+        sched.submit_event(ev2)
+        sched.update(0.0, ACTIVE_POSE, np.zeros(6))
+        assert sched.phase == SchedulerPhase.APPROACHING
+
+        cancelled = sched.cancel_next()
+        assert cancelled is ev2
+        assert sched.next_event is None
+        # cancel_next does not advance phase.
+        assert sched.phase == SchedulerPhase.APPROACHING
+
+        # Tick past ev1 arrival — without _next_event, lands in HOLDING.
+        sched.update(0.6, ACTIVE_POSE, np.zeros(6))
+        assert sched.phase == SchedulerPhase.HOLDING
+        assert sched.active_event is ev1
+
+    def test_cancel_next_during_holding_clears_lookahead(self):
+        """cancel_next during HOLDING (with a queued next event before
+        the next tick) clears the lookahead and stays in HOLDING."""
+        sched = _scheduler()
+        ev1 = _event(time=0.1, pose=np.array([50.0, 0.0, 20.0, 0.0, 0.0, 0.0]))
+        sched.submit_event(ev1)
+        sched.update(0.0, ACTIVE_POSE, np.zeros(6))
+        sched.update(0.15, ACTIVE_POSE, np.zeros(6))   # arrival → HOLDING
+        assert sched.phase == SchedulerPhase.HOLDING
+
+        # Queue a next event while HOLDING — submit_event just fills the
+        # next slot; the HOLDING→TRANSITIONING flip happens on the next
+        # update() call.
+        ev2 = _event(time=1.0, pose=np.array([100.0, 0.0, 40.0, 0.0, 0.0, 0.0]))
+        sched.submit_event(ev2)
+        assert sched.next_event is ev2
+        assert sched.phase == SchedulerPhase.HOLDING
+
+        cancelled = sched.cancel_next()
+        assert cancelled is ev2
+        assert sched.next_event is None
+        assert sched.phase == SchedulerPhase.HOLDING
+
+    def test_cancel_next_during_idle_is_noop(self):
+        """cancel_next during IDLE returns None and leaves phase IDLE.
+        Existing behaviour preserved by the new TRANSITIONING guard."""
+        sched = _scheduler()
+        sched.update(0.0, ACTIVE_POSE, np.zeros(6))
+        assert sched.phase == SchedulerPhase.IDLE
+        assert sched.cancel_next() is None
+        assert sched.phase == SchedulerPhase.IDLE
+
+
+# ---------------------------------------------------------------------
 # S6 — Monotonic sim_time
 # ---------------------------------------------------------------------
 
@@ -989,19 +1097,23 @@ class SchedulerStateMachine(RuleBasedStateMachine):
                 f"unexpected raise from replace_next_event: {exc}"
             )
 
-    # cancel_next during TRANSITIONING leaves the scheduler in an
-    # inconsistent state (TRANSITIONING phase with _next_event = None).
-    # That is a state-machine semantic gap orthogonal to S4/S5/S6 —
-    # filed as a Plan 2 follow-up (mpc-sadpath-coverage rollup, Tier 1
-    # state-machine completeness).  We gate the rule here so the
-    # property tests stay focused on the contract invariants this
-    # phase owns.
-    @precondition(
-        lambda self: self.scheduler.phase != SchedulerPhase.TRANSITIONING
-    )
+    # cancel_next during TRANSITIONING raises ValueError post Plan 2
+    # Phase 0 — _next_event is the active destination of the transition
+    # in that phase, not a lookahead.  Cancellation in any other phase
+    # clears the lookahead slot.  See TestCancelNextStateMachine above
+    # and the Plan 2 Phase 0 logbook entry for rationale.
     @rule()
     def cancel_next(self):
-        self.scheduler.cancel_next()
+        try:
+            self.scheduler.cancel_next()
+        except ValueError as exc:
+            assert 'cancel_next during TRANSITIONING' in str(exc), (
+                f"unexpected raise from cancel_next: {exc}"
+            )
+            assert self.scheduler.phase == SchedulerPhase.TRANSITIONING, (
+                f"cancel_next raised but phase was {self.scheduler.phase}, "
+                f"expected TRANSITIONING"
+            )
 
     # begin_return silently overwrites _next_event when both slots are
     # filled (begin_return assigns _next_event = ret_event without an

@@ -156,6 +156,19 @@ The ``RETURN_TO_ACTIVE`` event queued by ``begin_return``
 ([scheduler.py:759–767](scheduler.py)) when not in HOLDING is a
 legitimate use of the ``_next_event`` slot and counts toward the bound.
 
+#### S3 — Phase preconditions on slot mutators
+
+``cancel_next`` operates on the ``_next_event`` slot.  In every phase
+except ``TRANSITIONING`` the slot is a *lookahead* and ``cancel_next``
+MAY clear it.  In ``TRANSITIONING`` the slot is the *active
+destination* of an in-flight transition, not a lookahead — clearing it
+would leave the scheduler in ``TRANSITIONING`` with no destination
+event.  Therefore ``cancel_next`` MUST raise ``ValueError`` when called
+during ``TRANSITIONING``; callers who legitimately want to abort an
+in-flight transition use ``clear()`` (the documented full-reset path).
+See
+[logbook/2026-05-10-scheduler-cancel-next-during-transitioning.md](../logbook/2026-05-10-scheduler-cancel-next-during-transitioning.md).
+
 **Why.** The structural design intent of the scheduler is "one active
 target plus one lookahead."  Pre-contract, a third submission silently
 overwrote ``_next_event``, hiding the queue-saturation condition from

@@ -403,7 +403,25 @@ class EventScheduler:
             )
 
     def cancel_next(self) -> ScheduledEvent | None:
-        """Cancel the next event.  Returns the cancelled event or None."""
+        """Cancel the next event.  Returns the cancelled event or None.
+
+        MUST NOT be called during ``TRANSITIONING``: in that phase
+        ``_next_event`` is the active destination (the event being
+        transitioned to), not a lookahead.  Cancelling it would leave
+        the scheduler in ``TRANSITIONING`` with no destination event,
+        and the next ``update()`` would assert in
+        ``_update_transitioning``.  Use ``clear()`` to abort an
+        in-flight transition.
+        """
+        if self._phase == SchedulerPhase.TRANSITIONING:
+            raise ValueError(
+                "cancel_next during TRANSITIONING is invalid: "
+                "_next_event is the active destination of the in-flight "
+                "transition, not a lookahead.  Cancelling it would leave "
+                "the scheduler in TRANSITIONING with no destination "
+                "event, which subsequent update() calls would assert "
+                "on.  Use clear() to abort the transition."
+            )
         cancelled = self._next_event
         self._next_event = None
         self._seg_next = None
