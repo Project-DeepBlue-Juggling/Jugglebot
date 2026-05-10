@@ -36,7 +36,7 @@ The work is grouped into three tiers by the consequence of the failure on the ro
 
 ### Related
 
-- [mpc-tier0-contracts.md](mpc-tier0-contracts.md) — Plan 1, prerequisite
+- [mpc-tier0-contracts.md](../archived/2026-05-10%20mpc-tier0-contracts.md) — Plan 1, prerequisite
 - [REFERENCE_LAYER_CONTRACT.md](../../controller/REFERENCE_LAYER_CONTRACT.md) — K1–K6
 - [HOT_LOOP_CONTRACT.md](../../controller/HOT_LOOP_CONTRACT.md) — hot-loop budget (must remain green throughout)
 - [SCHEDULER_CONTRACT.md](../../controller/SCHEDULER_CONTRACT.md) — landed by Plan 1

@@ -12,7 +12,7 @@ It exists so that future ``PlantInterface`` implementations (a digital-
 twin twin running alongside hardware, a remote-machine plant for
 distributed simulation, a mocked plant for hermetic testing) can be
 implemented without reintroducing the failure modes that the Phase 4
-audit of the [mpc-tier0-contracts plan](../plans/archived/2026-05-10 mpc-tier0-contracts.md)
+audit of the [mpc-tier0-contracts plan](../plans/archived/2026-05-10%20mpc-tier0-contracts.md)
 identified.
 
 ## Background
@@ -449,8 +449,8 @@ If a ``PlantInterface``-related symptom surfaces in a session log:
   violator.
 - [tests/sim/test_plant_interface_contract.py](../tests/sim/test_plant_interface_contract.py)
   — enforcement tests (Phases 5 / 6 of the
-  [mpc-tier0-contracts plan](../plans/archived/2026-05-10 mpc-tier0-contracts.md)).
-- [plans/archived/2026-05-10 mpc-tier0-contracts.md](../plans/archived/2026-05-10 mpc-tier0-contracts.md)
+  [mpc-tier0-contracts plan](../plans/archived/2026-05-10%20mpc-tier0-contracts.md)).
+- [plans/archived/2026-05-10 mpc-tier0-contracts.md](../plans/archived/2026-05-10%20mpc-tier0-contracts.md)
   — phased implementation plan; this document is the Phase 4
   deliverable.
 - [logbook/2026-05-09-plant-interface-contract-phase-4-audit.md](../logbook/2026-05-09-plant-interface-contract-phase-4-audit.md)

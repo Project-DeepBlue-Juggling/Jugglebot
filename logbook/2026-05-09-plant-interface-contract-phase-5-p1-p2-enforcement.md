@@ -34,7 +34,7 @@ tags:
 
 ## Summary
 
-Phase 5 of the [mpc-tier0-contracts plan](../plans/archived/2026-05-10 mpc-tier0-contracts.md):
+Phase 5 of the [mpc-tier0-contracts plan](../plans/archived/2026-05-10%20mpc-tier0-contracts.md):
 implemented the two design-time invariants P1 (PlantState aliasing) and
 P2 (`can_reset` capability flag) defined in
 [controller/PLANT_INTERFACE_CONTRACT.md](../controller/PLANT_INTERFACE_CONTRACT.md)

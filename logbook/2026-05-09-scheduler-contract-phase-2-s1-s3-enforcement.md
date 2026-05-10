@@ -30,7 +30,7 @@ tags:
 
 ## Summary
 
-Phase 2 of the [mpc-tier0-contracts plan](../plans/archived/2026-05-10 mpc-tier0-contracts.md):
+Phase 2 of the [mpc-tier0-contracts plan](../plans/archived/2026-05-10%20mpc-tier0-contracts.md):
 implemented input-domain enforcement for the three input-shape /
 state-collision invariants S1 (submission time), S2 (unique IDs), and
 S3 (bounded slot set) defined in

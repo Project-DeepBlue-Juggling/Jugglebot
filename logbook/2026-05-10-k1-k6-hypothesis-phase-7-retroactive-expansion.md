@@ -29,7 +29,7 @@ tags:
 
 ## Summary
 
-Phase 7 of the [mpc-tier0-contracts plan](../plans/archived/2026-05-10 mpc-tier0-contracts.md):
+Phase 7 of the [mpc-tier0-contracts plan](../plans/archived/2026-05-10%20mpc-tier0-contracts.md):
 added four new hypothesis property tests to
 [tests/sim/test_make_feasible_events.py](../tests/sim/test_make_feasible_events.py),
 extending the K1–K6 property surface from two properties (the canonical

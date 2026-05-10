@@ -31,7 +31,7 @@ tags:
 
 ## Summary
 
-Phase 4 of the [mpc-tier0-contracts plan](../plans/archived/2026-05-10 mpc-tier0-contracts.md):
+Phase 4 of the [mpc-tier0-contracts plan](../plans/archived/2026-05-10%20mpc-tier0-contracts.md):
 audited [controller/plant.py](../controller/plant.py),
 [controller/hardware_plant.py](../controller/hardware_plant.py), and
 [sim/plant/mujoco_plant.py](../sim/plant/mujoco_plant.py) for invariants

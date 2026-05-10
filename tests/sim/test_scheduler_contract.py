@@ -30,7 +30,7 @@ import logging
 
 import numpy as np
 import pytest
-from hypothesis import assume, strategies as st
+from hypothesis import strategies as st
 from hypothesis.stateful import (
     RuleBasedStateMachine,
     invariant,

@@ -29,7 +29,7 @@ tags:
 
 ## Summary
 
-Phase 1 of the [mpc-tier0-contracts plan](../plans/archived/2026-05-10 mpc-tier0-contracts.md):
+Phase 1 of the [mpc-tier0-contracts plan](../plans/archived/2026-05-10%20mpc-tier0-contracts.md):
 audited [controller/scheduler.py](../controller/scheduler.py) for invariants
 the code currently relies on (explicit and implicit), then drafted
 [controller/SCHEDULER_CONTRACT.md](../controller/SCHEDULER_CONTRACT.md)
@@ -223,7 +223,7 @@ infeasible event would be worse than degrading.
 
 ### Phase 1 produces no code change — by design
 
-The plan ([mpc-tier0-contracts.md](../plans/archived/2026-05-10 mpc-tier0-contracts.md)
+The plan ([mpc-tier0-contracts.md](../plans/archived/2026-05-10%20mpc-tier0-contracts.md)
 Phase 1) explicitly excludes code changes from this phase.  Reason:
 *the contract document is the design artefact*.  Landing it
 independently lets the user review the *spec* before any *enforcement*

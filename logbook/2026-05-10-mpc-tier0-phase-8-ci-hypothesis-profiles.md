@@ -37,7 +37,7 @@ tags:
 ## Summary
 
 Phase 8 — the final phase of [Plan 1
-(mpc-tier0-contracts)](../plans/archived/2026-05-10 mpc-tier0-contracts.md) —
+(mpc-tier0-contracts)](../plans/archived/2026-05-10%20mpc-tier0-contracts.md) —
 introduces three hypothesis profiles (``ci-fast``, ``ci-deep``,
 ``dev``) and migrates every hypothesis test in the suite to be
 profile-driven.  Per-PR runs default to ``ci-fast``
@@ -496,6 +496,18 @@ enforced.  That's what Plan 1 was for.
   churn, (c) marker the hot-loop test as ``slow`` and run it in a
   separate pytest invocation.  Captured here as a Plan 2 item;
   Phase 8 itself does not change the hot-loop test.
+- **CPU-pressure flake on ``test_ref_mid_run_survives_cpu_pressure``
+  observed during the archival pre-commit ci-deep run.**  Distinct
+  from the allocation-contract flake above: this test fuzzes the
+  reference path under simulated CPU contention and gates on the
+  per-tick CPU budget rather than the allocation budget.  Same
+  underlying interpretation — heap-state / CPU-state interaction
+  amplified by ci-deep's 6–10× hypothesis churn vs. ci-fast — and
+  same mitigation menu applies (``gc.collect()``, test-order
+  pinning, marker-and-isolate).  Captured here so Plan 2's flake-
+  mitigation follow-up addresses both tests, not just the
+  allocation one.  Commit ``80d4214``'s message references this
+  flake; this entry ensures the logbook does too.
 - **Default profile is ``ci-fast``, not ``dev``.**  A contributor
   iterating locally on a flaky property might want ``dev`` (200
   examples) by default, not ``ci-fast`` (50).  We chose ci-fast as

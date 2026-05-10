@@ -36,7 +36,7 @@ tags:
 
 ## Summary
 
-Phase 6 of the [mpc-tier0-contracts plan](../plans/archived/2026-05-10 mpc-tier0-contracts.md):
+Phase 6 of the [mpc-tier0-contracts plan](../plans/archived/2026-05-10%20mpc-tier0-contracts.md):
 implemented the two remaining invariants P3 (trusted-callee
 ``command()``) and P4 (``control_dt`` awareness) defined in
 [controller/PLANT_INTERFACE_CONTRACT.md](../controller/PLANT_INTERFACE_CONTRACT.md)

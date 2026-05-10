@@ -32,7 +32,7 @@ tags:
 
 ## Summary
 
-Phase 3 of the [mpc-tier0-contracts plan](../plans/archived/2026-05-10 mpc-tier0-contracts.md):
+Phase 3 of the [mpc-tier0-contracts plan](../plans/archived/2026-05-10%20mpc-tier0-contracts.md):
 implemented the three state-machine invariants S4 (internal quintic
 feasibility), S5 (phase-transition C2 continuity), and S6 (sim_time
 monotonicity) defined in

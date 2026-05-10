@@ -311,15 +311,17 @@ def test_property_K6_idempotence(twist, clamp):
 def test_property_K1_K6_multi_event(proposal, v_max, tau):
     """K1–K6 hold for proposals with 3..6 events.
 
-    The two-event property at line 167 only exercises a single inter-event
-    segment.  Multi-event proposals exercise the cascade-shift logic at
-    ``target.py:511-526`` — when segment ``i`` is stretched by ``delta``,
-    every later event time is shifted by the same ``delta`` so spans (and
-    hence K4) survive.  This property catches any future regression where
-    the cascade-shift breaks K1, K2/K3, K4, or K6 across multiple stretches.
+    ``test_property_K1_K6_two_event_proposal`` only exercises a single
+    inter-event segment.  Multi-event proposals exercise the cascade-shift
+    logic at ``target.py:511-526`` — when segment ``i`` is stretched by
+    ``delta``, every later event time is shifted by the same ``delta`` so
+    spans (and hence K4) survive.  This property catches any future
+    regression where the cascade-shift breaks K1, K2/K3, K4, or K6 across
+    multiple stretches.
 
-    Mirrors the rejection-contract pin at line 182-187: ``reason is None``
-    means K1–K6 fully compliant; ``reason is not None`` means a non-empty
+    Mirrors the rejection-contract pin in
+    ``test_property_K1_K6_two_event_proposal``: ``reason is None`` means
+    K1–K6 fully compliant; ``reason is not None`` means a non-empty
     machine-readable string."""
     t_now = 0.0
     plant_pose = np.zeros(6)
