@@ -30,7 +30,7 @@ The work is grouped into three tiers by the consequence of the failure on the ro
 
 **After** Plan 1 (`mpc-tier0-contracts.md`) lands. Tier 1 phases reference contract-defined invariants in places (e.g., S6 monotonic sim_time when fuzzing time pathologies in Tier 3).
 
-**Concurrent with** the in-flight `refactor` branch. Test additions only (no production-code changes except where a test surfaces a real bug; see "Production-code changes triggered by tests" in Notes).
+**Concurrent with** the in-flight `refactor` branch. Test additions only (except Phase 0, which closes Plan 1's deferred bugs; see Notes). Production-code changes surfaced by later-phase tests are tracked separately per "Production-code changes triggered by tests" in Notes.
 
 **Prerequisites:** Plan 1 phases 1–3 (Scheduler contract enforced) and 5–6 (PlantInterface P1, P2, P4 enforced). Phase 8 (CI hypothesis profiles) ideally landed; if not, tier tests use a temporary local profile registration.
 
@@ -141,12 +141,13 @@ Time / resource / hooks           ◀──  Time-pathology fuzz                
 
 ### Files to modify
 
-Test additions only by design. Production-code changes triggered by tests are tracked separately (see "Production-code changes triggered by tests" in Notes for Collaborators) and land in their own commits with logbook entries.
+Test additions only by design (except Phase 0; see Notes). Production-code changes triggered by tests in Phases 1–8 are tracked separately (see "Production-code changes triggered by tests" in Notes for Collaborators) and land in their own commits with logbook entries.
 
 ## Implementation Phase Summary
 
 | Phase | Scope | Status | Date | Risk | Validates |
 |-------|-------|--------|------|------|-----------|
+| 0 | Close Plan 1's deferred `@precondition` gates (cancel_next mid-TRANSITIONING + begin_return overwrite) | NOT STARTED | | Med | Plan 2 starts on a clean foundation; the "no `@precondition` for known bugs" rule isn't immediately self-violating |
 | 1 | Tier 1a — Real IPOPT infeasibility + timeout exit codes | NOT STARTED | | Med | Solver-fallback latching on every documented exit code |
 | 2 | Tier 1b — Fallback escalation cascade + cold-start IK budget | NOT STARTED | | Med | walk_forward_unsafe → hold_extrap escalation; IK budget exhaustion path |
 | 3 | Tier 1c — NaN/Inf input fuzz on `solve()` | NOT STARTED | | Med | Adversarial inputs route through `_handle_failure`, never corrupt warm-start |
@@ -157,6 +158,78 @@ Test additions only by design. Production-code changes triggered by tests are tr
 | 8 | Tier 3b — Time pathologies, resources, hooks, races | NOT STARTED | | Med | Clock-skew, dt change, hook failures, concurrent-reset, resource exhaustion |
 
 ## Implementation Phases (detailed)
+
+### Phase 0: Close Plan 1's deferred `@precondition` gates — NOT STARTED
+
+**Scope.** Plan 1 Phase 3 landed two `@precondition` gates in
+[tests/sim/test_scheduler_contract.py:999–1015](../../tests/sim/test_scheduler_contract.py#L999)
+to suppress known scheduler bugs in the `SchedulerStateMachine` random walk.
+The gates are correctly tagged as Plan 2 Tier-1 follow-ups in their inline
+comments and in the [Phase 3 logbook](../../logbook/2026-05-09-scheduler-contract-phase-3-s4-s6-enforcement.md)'s
+Open Questions. Plan 2 starts by closing them out so the rest of the work
+begins on a clean foundation — and so the rule "no `@precondition` for
+known bugs" articulated in Plan 2's Working Notes (below) isn't
+self-violating from day one.
+
+**Bugs to fix.**
+
+1. **`cancel_next` mid-TRANSITIONING** leaves the scheduler in an
+   inconsistent state: the phase remains `TRANSITIONING` but
+   `_next_event` is `None`. Subsequent ticks produce undefined behaviour.
+   The fix is most likely either (a) `cancel_next` raises when called
+   during `TRANSITIONING` (and the caller transitions to a different
+   phase first), or (b) `cancel_next` transitions the scheduler to an
+   appropriate phase (likely `HOLDING` or `RETURNING`) atomically.
+2. **`begin_return` silently overwrites `_next_event`** when both
+   slots are filled, bypassing the S3 capacity check. The fix is to
+   raise per S3 (consistent with `submit_event`) — `begin_return` is
+   not a documented bypass for S3.
+
+Both bugs are state-machine semantic gaps orthogonal to S4/S5/S6 — Plan 1
+intentionally scoped them out so the contract enforcement work could
+ship.
+
+**New/modified files.**
+- `controller/scheduler.py` — production fix for both methods
+- `tests/sim/test_scheduler_contract.py` — remove both `@precondition`
+  gates; add direct scenario tests for the corrected behaviour
+- `tests/sim/test_scheduler.py` — adjust any existing happy-path tests
+  affected by the new fault behaviour
+
+**Test cases.**
+
+| ID | Test | How to drive | Pass criterion |
+|----|------|--------------|----------------|
+| T-U-T0-1 | `cancel_next` during `TRANSITIONING` | Submit → tick into TRANSITIONING → `cancel_next` | Documented behaviour (raise OR atomic transition); no inconsistent state |
+| T-U-T0-2 | `cancel_next` during `APPROACHING` (regression) | Submit → tick into APPROACHING → `cancel_next` | Existing behaviour preserved; `_next_event = None`; phase → `HOLDING` |
+| T-U-T0-3 | `begin_return` with both slots filled | Submit current + submit next → `begin_return` | Raises per S3; state unchanged |
+| T-U-T0-4 | `begin_return` with only `_current_event` filled (regression) | Submit current → `begin_return` | Existing behaviour preserved |
+| T-U-T0-5 | State machine: `cancel_next` rule un-gated | Remove `@precondition` at scheduler test line 999–1001 | Random walk passes at ci-deep |
+| T-U-T0-6 | State machine: `begin_return` rule un-gated | Remove `@precondition` at scheduler test line 1011–1013 | Random walk passes at ci-deep |
+
+**Critical details.**
+
+- The two fixes are independent — land each in its own commit with its
+  own logbook entry per the CLAUDE.md "Analyze control-system
+  implications before changes" rule. Discuss the chosen behaviour
+  (raise vs atomic transition) explicitly in each entry's Discussion
+  section.
+- The `@precondition` gates are removed in the *same* commit as the
+  fix that makes them unnecessary — preserving the "fix → un-gate
+  in one commit" symmetry that this plan's Production-code-changes
+  rule requires.
+- Run the full suite at ci-fast after each commit, and the full
+  suite at ci-deep before declaring Phase 0 complete.
+
+**Dependencies.** None. Plan 1 closure is the only prerequisite, and
+that's done.
+
+**Exit criteria.** Both `@precondition` gates removed from
+`test_scheduler_contract.py`. `SchedulerStateMachine.TestCase` passes at
+ci-deep with no rule gating. Two logbook entries (one per bug). Phase 1
+of Plan 2 cleared to start.
+
+---
 
 ### Phase 1: Tier 1a — Real IPOPT infeasibility + timeout exit codes — NOT STARTED
 
@@ -183,7 +256,7 @@ Test additions only by design. Production-code changes triggered by tests are tr
 - After a real failure, the next solve with normal params must succeed — verify the warm-start clearing logic at `mpc.py:1228–1234` doesn't permanently kill the controller.
 - Check `_consecutive_failures` counter increments and resets correctly across these scenarios.
 
-**Dependencies.** Plan 1 Phase 8 (CI hypothesis profiles) — useful but not strictly required.
+**Dependencies.** Phase 0 (deferred `@precondition` cleanup) — required so the `SchedulerStateMachine` random walk runs un-gated when this phase's tests cross-reference scheduler behaviour. Plan 1 Phase 8 (CI hypothesis profiles) — useful but not strictly required.
 
 **Exit criteria.** All 6 categories of solver exit confirmed. `_FALLBACK_KEYWORDS` matrix complete. Logbook entry `2026-XX-XX-tier1-real-solver-failures.md` documenting the IPOPT exit codes that ship with the pinned CasADi version (in case future upgrades add new codes).
 
@@ -447,10 +520,11 @@ Test additions only by design. Production-code changes triggered by tests are tr
 
 ### Unit tests (offline, no hardware)
 
-All tests in this plan are unit tests by design (test additions, not production-code changes).
+All tests in this plan are unit tests by design (test additions, not production-code changes — except Phase 0; see Notes).
 
 | Phase | New test file | Test count (approx) | Strategy |
 |-------|---------------|---------------------|----------|
+| 0 | `test_scheduler_contract.py` (modify) + `scheduler.py` production fix | ~6 | Scenario tests for both bugs + un-gate state machine |
 | 1 | `test_solver_failures.py` | ~15 | Scenarios + parameterized `_FALLBACK_KEYWORDS` matrix |
 | 2 | `test_solver_failures.py` (extend) | ~10 | Scenarios + 1 hypothesis property |
 | 3 | `test_mpc_input_fuzz.py` | ~10 | Hypothesis (composite strategies + stateful) |
@@ -460,7 +534,7 @@ All tests in this plan are unit tests by design (test additions, not production-
 | 7 | `test_mpc_input_fuzz.py` (extend) + `test_diag_schema_fuzz.py` | ~16 | Mix |
 | 8 | `test_mpc_time_pathologies.py` | ~14 | Mix |
 
-Total: ~93 new tests.
+Total: ~99 new tests (Phase 0's six + Phases 1–8's ~93).
 
 ### Integration tests
 
@@ -474,12 +548,28 @@ Limited to "the test suite still works" — full `pytest tests/ -q` after each p
 
 ### Hardware tests
 
-| ID | Test | Validates | Pass criterion |
-|----|------|-----------|----------------|
-| T-H-T2a-1 | After Phase 4 — actual FK divergence (force a transient encoder dropout via CAN unplug for ~150 ms) | FK watchdog fires E-stop on real hardware | `motor_guard` reports E-stop with `reason='telemetry_stale'` or `'fk_divergence'` |
-| T-H-T2b-1 | After Phase 5 — actual telemetry stall (kill the encoder publisher thread for 600 ms) | ESTOP threshold fires | E-stop fires within 500 ms ± 25 ms |
+**The original test framing was scope-mismatched** — CAN unplug doesn't
+drive FK divergence (a numerical convergence failure), it drives
+telemetry-stale (no leg-length data arriving at all). The corrected
+design separates the two concerns and re-orders them by safety.
 
-These hardware tests are NOT part of the regular test suite — they are manual bringup tests run after the corresponding phase lands. Each hardware test gets a logbook investigation entry under `/investigate`.
+| ID | Test | Validates | Pass criterion | Hazard profile |
+|----|------|-----------|----------------|----------------|
+| T-H-T2b-1 | After Phase 5 — encoder-publisher kill on the Jetson (`SIGSTOP` for ~1 s) | Jetson-side telemetry-stale watchdog fires E-stop while CAN bus stays live | E-stop fires within 500 ms ± 25 ms of publisher pause; ODrives stay armed throughout (CAN traffic uninterrupted from `motor_guard`); platform never freewheels | **Low.** ODrives keep receiving setpoints; platform stays held. The only thing affected is the Jetson-side observation of `/robot_state`. |
+| T-H-T2a-1 | After Phase 4 + T-H-T2b-1 PASS — CAN unplug for 1–2 s (operator's minimum guaranteed duration) | The cascaded safety chain on CAN loss: ODrive CAN heartbeat watchdog → ODrive disarm → Jetson observes telemetry stale → motor_guard fires E-stop → clean exit | Each link in the chain measurable; total time from unplug to E-stop within documented bounds; platform freewheels under gravity from the moment ODrives disarm; lands within mechanical workspace | **Medium-high.** Platform freewheels during the watchdog window. Mitigated by holding at low workspace (small drop) + operator E-stop on physical button. Run only after T-H-T2b-1 has demonstrated the watchdog mechanism works. |
+| T-H-T2a-2 | (DEFERRED — see Notes) — actual FK divergence on real hardware via deliberate near-singular pose or encoder noise injection | Numerical FK convergence failure path (distinct from CAN/telemetry loss) | FK divergence watchdog fires; E-stop reason includes `fk_convergence_failure` (not `telemetry_stale`) — see `controller/hardware_plant.py:613` | Mechanism design needed before this test can be specified. Phase 4's unit-test coverage with `HardwarePlantStub` injection is the primary verification; hardware verification of FK-divergence-specifically requires a separate driver. **Out of scope for Plan 2 unless designed.** |
+
+These hardware tests are NOT part of the regular test suite — they are manual bringup tests run after the corresponding phase lands. Each gets a logbook investigation entry under `/investigate`.
+
+**Pre-test setup checklist (apply to both T-H-T2b-1 and T-H-T2a-1):**
+
+1. Platform commanded to a **low safe pose** — close to the lower workspace bound so any freewheeling drop is mechanically bounded. Not the standard `0,0,170` mid-workspace pose.
+2. Hand detached. No ball. Platform-only mode.
+3. Operator hand on the physical E-stop button throughout the test.
+4. Second person present in the workshop.
+5. Test instrumented to log the timing chain (fault-injection time, ODrive disarm time, telemetry-stale fire time, motor_guard E-stop fire time). The test's real value is the timing breakdown, not a pass/fail boolean.
+6. **Run T-H-T2b-1 first.** If the publisher-kill test fails to fire the watchdog within the threshold, fix that before doing the more severe CAN-unplug test. T-H-T2b-1 validates the Jetson-side mechanism in isolation; T-H-T2a-1 validates the cascaded chain.
+7. Hardware exit-criterion checklist date set when the corresponding phase commits — not "before Plan 2 closes". Plan 1 nearly forgot Phase 6's smoke; this plan has TWO of them.
 
 ### Regression tests
 
@@ -495,9 +585,139 @@ Same as Plan 1: per-PR `ci-fast` (50 examples), nightly `ci-deep` (1000 examples
 
 ## Notes for Collaborators
 
+### Working notes — lessons from Plan 1
+
+These notes capture lessons that apply *specifically to Plan 2*. Read
+this section before starting any phase.  Cross-plan process patterns
+(audit gate, SHA backfill, etc.) live in `~/.claude/.../memory/` and
+are loaded automatically when relevant.
+
+**1. Drive real failures, not mocked ones — honour the plan's discipline.**
+
+The plan's framing — "Drives real solver failure paths, not synthetic
+ones" — is its most important self-imposed constraint.  Two specific
+places it will be tempting to cheat:
+
+- **Phase 1's `max_cpu_time=1e-6`** may cause CasADi to raise an
+  internal error before IPOPT even initialises, not return
+  `Maximum_CpuTime_Exceeded`. Find the value where IPOPT *genuinely*
+  times out (probably 1–2 ms for this MPC, not 1 µs). If a documented
+  exit code can't be driven cleanly with parameter tuning, document
+  why and fall back to a documented-second-best mechanism (e.g.,
+  monkey-patch the solver's CPU clock) — but never paper over with
+  "test passes if we mock the return value".
+- **Phase 4's FK divergence tests** must drive through `get_state()`
+  with simulated bad telemetry, not poke `_fk_fail_count` directly.
+  A test that pokes a private counter doesn't validate the watchdog —
+  it validates that the counter increments. The right surface is the
+  public interface; mocks belong at the *boundary* (the FK function
+  itself), not at the consumer (the watchdog).
+
+**2. xfail discipline — every xfail needs three fields and an exit plan.**
+
+The plan permits surfacing real bugs as xfail markers with a tracking
+reference (see "Production-code changes triggered by tests" below).
+Without discipline, xfails accumulate and become invisible. **Every
+xfail must carry three fields, in the phase's logbook entry**:
+
+(a) test ID, (b) tracking reference (issue or follow-up logbook entry),
+(c) target close phase or date.
+
+**Plan 2 archival gate**: zero unfixed xfails at archival, OR each
+residual xfail has a documented justification for why it's permanently
+acceptable. Plan 1 had no such gate (because it didn't use xfails);
+Plan 2 needs one because the xfail mechanism is a first-class part of
+its workflow.
+
+**3. Convert line citations to symbol references during implementation.**
+
+Plan 1 Phase 7's docstring refresh (commit `3c04bbe`) demonstrated the
+value: `test_property_K1_K6_two_event_proposal` doesn't drift; line
+167 does. Plan 2's phase descriptions cite many specific lines in
+`mpc.py` (e.g., `:1228–1234`, `:1295–1308`, `:1574–1592`). When
+implementing, refresh those to symbol references in test docstrings,
+even if the original plan used line numbers. The line numbers will
+drift the moment anyone touches `_handle_failure`.
+
+**4. Real-ZMQ harness in Phase 6 — the highest test-infra risk.**
+
+ZMQ tests are notoriously flaky: port collisions, lingering sockets
+after pytest interruption, timing-sensitive recv timeouts.
+`_zmq_test_harness.py` needs strict `setUp` / `tearDown` with explicit
+`socket.close()` + `context.term()` even on test failure (use pytest
+fixtures with `yield` and a cleanup block that runs on raise). Build
+a minimal prototype of the harness pattern *before* writing any
+corruption test. If the harness pattern looks fragile, mark this
+phase higher-risk and consider running its tests in a separate
+pytest invocation.
+
+**5. Hot-loop allocation contract will flake more under Plan 2.**
+
+Plan 2 adds substantial hypothesis fuzz (Phase 3 — Tier 1c NaN/Inf
+fuzz with stateful warm-start; Phase 7 — Tier 3a schema fuzz).
+[Phase 8's logbook](../../logbook/2026-05-10-mpc-tier0-phase-8-ci-hypothesis-profiles.md)
+already documented the heap-state flake on
+`test_hot_loop_allocation_contract` at ci-deep. Pre-empt: either add
+`gc.collect()` at the start of that test, or mark it `slow` and run
+it in a separate pytest invocation. **Don't wait for the second
+flake** — bake a mitigation in before Phase 3 lands.
+
+**6. Schema completeness as a contract, not just a test.**
+
+Phase 7's `diag` / `extras` schema-fuzz work is structurally similar
+to Plan 1's contract work — the schema is currently *implicit*.  If
+the test surfaces a gap (e.g., `hold_extrap` doesn't populate
+`cmd_next_mm`), the right fix is often to write a small
+`DIAG_SCHEMA_CONTRACT.md` (matching Plan 1's K1–K6 / S1–S6 / P1–P4
+pattern), not to add yet another keyword check. Resist leaving the
+schema implicit; the explicit contract is the higher-leverage outcome.
+
+**7. Hardware tests have target dates, not "before plan closes".**
+
+Plan 1 nearly forgot Phase 6's hardware bringup smoke — the user
+caught it post-archival, requiring a follow-up commit (`400418b`) to
+backfill the result into the logbook. Plan 2 has TWO in-scope hardware tests
+(T-H-T2b-1 and T-H-T2a-1; T-H-T2a-2 is deferred — see Testing Plan
+above for hazard profiles).
+**Each phase that depends on a hardware test sets the target date for
+that test in the phase's exit criteria, when the phase is committed.**
+Not "user responsibility before plan closes". The phase isn't
+COMPLETE until the hardware test runs and is logged.
+
+**8. Test count is not a quality metric.**
+
+The plan estimates ~93 new tests across 8 phases. Some will be
+genuinely high-leverage (driving real IPOPT exit codes; warm-start
+integrity property). Some will be lower-value (re-asserting the same
+invariant from a slightly different angle). Resist completionism. If a
+test category is "I've covered it with N=3, do I need N=8?", the
+answer is usually no. Quality > count, and the plan's exit criteria
+are about coverage of the *failure modes*, not the *test count*.
+
+**9. Hardware risk model is concentrated in two phases.**
+
+Phases 1–3, 6, 7, 8 are pure software (unit tests with stubs / fakes /
+real-but-in-process ZMQ). Zero hardware exposure. **Phases 4 and 5**
+have hardware bringup tests with non-trivial fault injection — read
+the Testing Plan's pre-test setup checklist before either lands. The
+CAN-unplug test (T-H-T2a-1) freewheels the platform under gravity for
+the duration of the watchdog window; it's strictly worse than the
+publisher-kill test (T-H-T2b-1) and should only run after the latter
+has demonstrated the watchdog works.
+
 ### Production-code changes triggered by tests
 
-This plan is test additions only by design. **However**, tests in this plan may surface real bugs (a documented failure path that doesn't actually behave as documented). When that happens:
+*Phase 0 is the documented exception to the rules below.* The two
+scheduler bugs Phase 0 fixes are inherited from Plan 1's deferred work,
+not surfaced by Plan 2's own tests. Removing their `@precondition`
+gates *requires* fixing the underlying bugs in the same commit (the
+gates can't be removed without the fix). Every later phase (1–8)
+follows the file-separately-and-xfail rule below.
+
+This plan is test additions only by design (with the Phase 0 carve-out
+above). **However**, tests in Phases 1–8 may surface real bugs (a
+documented failure path that doesn't actually behave as documented).
+When that happens:
 
 1. **Don't fix the bug in this plan's commits.** File it as a separate work item.
 2. **Add the test with `xfail` and a tracking reference.** Example: `@pytest.mark.xfail(reason='Surfaces hardware_plant.py:797 silent zero on singular FF; tracked in <issue>', strict=True)`.
@@ -531,6 +751,9 @@ No changes to startup ordering. This plan is test additions.
 
 | Path | Change | Phase |
 |------|--------|-------|
+| `controller/scheduler.py` | Modified (cancel_next mid-TRANSITIONING fix; begin_return S3 fix) | 0 |
+| `tests/sim/test_scheduler_contract.py` | Modified (remove `@precondition` gates; add T0 scenarios) | 0 |
+| `tests/sim/test_scheduler.py` | Modified (adjust any tests affected by the new fault behaviour) | 0 |
 | `tests/sim/test_solver_failures.py` | Created | 1, 2 |
 | `tests/sim/test_mpc_input_fuzz.py` | Created | 3, 7 |
 | `tests/sim/test_hardware_plant_failure_paths.py` | Created | 4, 5 |
@@ -539,7 +762,7 @@ No changes to startup ordering. This plan is test additions.
 | `tests/sim/_hardware_plant_stub.py` | Modified (extend with FK injection) | 4 |
 | `tests/sim/test_diag_schema_fuzz.py` | Created | 7 |
 | `tests/sim/test_mpc_time_pathologies.py` | Created | 8 |
-| `logbook/2026-XX-XX-...` | Created (one entry per phase) | 1, 2, 3, 4, 5, 6, 7, 8 |
+| `logbook/2026-XX-XX-...` | Created (one entry per phase, two for Phase 0) | 0, 1, 2, 3, 4, 5, 6, 7, 8 |
 
 ### Rollback plan
 
@@ -563,6 +786,7 @@ Phase 6: P3–P4 enforcement                ──── unblock Plan 2 Phase 5
 Phase 7: K1–K6 hypothesis expansion       ──── orthogonal (no Plan 2 dependency)
 Phase 8: CI hypothesis profiles           ──── unblock Plan 2 nightly CI
 
+                                                 Phase 0: Close Plan 1 @precondition gates
                                                  Phase 1: T1a real IPOPT failures
                                                  Phase 2: T1b escalation cascade
                                                  Phase 3: T1c NaN/Inf input fuzz
@@ -573,4 +797,4 @@ Phase 8: CI hypothesis profiles           ──── unblock Plan 2 nightly CI
                                                  Phase 8: T3b time / resources / hooks / races
 ```
 
-Plan 2 Phase 1 can start as soon as Plan 1 Phase 3 lands (scheduler contract enforcement complete). Plan 2 Phases 4–5 require Plan 1 Phase 6 (P4 wired). Plan 2 Phase 8 requires Plan 1 Phase 3 (S6 raises on backward time) — without that, the time-pathology tests have no contract to verify.
+Plan 2 begins with Phase 0 (Plan 1 cleanup of two deferred `@precondition` gates). Phase 1 starts after Phase 0 lands; all of Plan 1 Phase 3's prerequisites (scheduler contract enforcement) are already in place. Plan 2 Phases 4–5 require Plan 1 Phase 6 (P4 wired) — already landed. Plan 2 Phase 8 requires Plan 1 Phase 3 (S6 raises on backward time) — already landed. So Plan 2's external dependencies are all green; only Phase 0 (internal cleanup) gates Phase 1.
