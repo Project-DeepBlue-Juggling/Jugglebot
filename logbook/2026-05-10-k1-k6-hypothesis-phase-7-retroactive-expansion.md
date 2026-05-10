@@ -15,7 +15,7 @@ files_changed:
   - logbook/2026-05-10-k1-k6-hypothesis-phase-7-retroactive-expansion.md
   - logbook/INDEX.md
 commits:
-  - <filled-after-commit>
+  - 2b3674d
 subsystem:
   - controller
   - mpc
