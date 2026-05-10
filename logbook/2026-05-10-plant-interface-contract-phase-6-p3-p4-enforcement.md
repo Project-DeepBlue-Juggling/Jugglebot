@@ -22,7 +22,7 @@ files_changed:
   - logbook/2026-05-10-plant-interface-contract-phase-6-p3-p4-enforcement.md
   - logbook/INDEX.md
 commits:
-  - <filled-after-commit>
+  - e296a82
 subsystem:
   - controller
   - mpc

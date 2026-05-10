@@ -17,7 +17,7 @@ files_changed:
   - logbook/2026-05-09-plant-interface-contract-phase-4-audit.md
   - logbook/INDEX.md
 commits:
-  - <filled-after-commit>
+  - a5da552
 subsystem:
   - controller
   - mpc

@@ -18,7 +18,7 @@ files_changed:
   - logbook/2026-05-09-scheduler-contract-phase-3-s4-s6-enforcement.md
   - logbook/INDEX.md
 commits:
-  - <filled-after-commit>
+  - 2c56079
 subsystem:
   - controller
   - mpc

@@ -163,8 +163,8 @@ def __init__(self, *, control_dt: float = 0.025, **kw):
 | `sim/plant/mujoco_plant.py` | Implement `can_reset=True`, accept `control_dt` |
 | `controller/runner.py` | Pass `control_dt` to plant constructor (call site); already accepts `control_dt` parameter |
 | `tests/sim/test_make_feasible_events.py` | +K4 boundary property, +K5 coincident-twist property, +K6 idempotence property, +multi-event proposal property |
-| `tests/conftest.py` | `pytest_collection_modifyitems` to register hypothesis profiles + add `--hypothesis-profile=ci-fast` default |
-| `pytest.ini` (create if missing) | Markers: `slow`, `nightly`, `hypothesis_deep` |
+| `tests/conftest.py` | Import `conftest_hypothesis` (sibling helper) to register hypothesis profiles; ci-fast loaded by default at collection time |
+| `pyproject.toml` (existing `[tool.pytest.ini_options]`) | Add `markers = [slow, nightly, hypothesis_deep]` |
 
 ## Implementation Phase Summary
 
@@ -193,9 +193,9 @@ def __init__(self, *, control_dt: float = 0.025, **kw):
 - Document must contain: Background → Invariants (S1–S6) → Enforcement (canonical point) → Implementing-a-new-source template → Diagnosis → Related.
 - Each invariant follows the K1–K6 voice: a single normative MUST/MUST NOT statement, a "Why:" paragraph grounded in a specific failure mode, an enforcement pointer.
 - **S1 (submission time)** initial draft: every submitted `ScheduledEvent` MUST satisfy `event.time >= t_now - τ_grace` where `τ_grace ≤ 1×control_dt` (one-tick grace for clock skew); past-time events MUST raise or be rejected with a documented sentinel.
-- **S2 (unique IDs)** initial draft: `event.event_id` MUST be unique across `_current_event` and `_next_event`; replacement is the documented behaviour (already implemented at `scheduler.py:255–286`); attempting to submit an event whose ID matches an in-flight `_current_event` MUST update via `update_current_event` instead of stacking.
+- **S2 (unique IDs)** initial draft: `event.event_id` MUST be unique across `_current_event` and `_next_event`; replacement is the documented behaviour (already implemented at `scheduler.py:302–336 — current locations after Phase 2`); attempting to submit an event whose ID matches an in-flight `_current_event` MUST update via `update_current_event` instead of stacking.
 - **S3 (bounded in-flight slot set)** initial draft: the in-flight slot set is structurally bounded to 2 `ScheduledEvent` slots (`_current_event`, `_next_event`) + 1 `_QuinticSegment` return slot (`_seg_return`). Today the code happens to enforce this structurally (only 3 slots) — codify it. Future extensions to a deeper queue are explicit contract changes.
-- **S4 (internal quintic feasibility)** initial draft: every `_QuinticSegment` constructed by the scheduler MUST pass `_verify_segment_feasibility` (already at `scheduler.py:667–717`). In test contexts (`strict_feasibility=True`) the verifier raises; in production it warns + degrades. Promote the existing toggle to a contract invariant.
+- **S4 (internal quintic feasibility)** initial draft: every `_QuinticSegment` constructed by the scheduler MUST pass `_verify_segment_feasibility` (at `scheduler.py:901` (was `:667–717` pre-refactor)). In test contexts (`strict_feasibility=True`) the verifier raises; in production it warns + degrades. Promote the existing toggle to a contract invariant.
 - **S5 (C0 continuity at every newly-built segment)** initial draft: every `_QuinticSegment` constructed by the scheduler MUST start at the live motion state (`_last_pose / _last_twist / _last_accel`) at build time. This codifies an existing implementation invariant — guaranteeing C0 (and operationally C1) at every segment splice including IDLE→APPROACHING, HOLDING→TRANSITIONING, the `replace_next_event` mid-TRANSITIONING path, and HOLDING→RETURNING.
 - **S6 (clock monotonicity)** initial draft: `update(sim_time)` MUST satisfy `sim_time >= last_sim_time` across calls. Backward jumps are caller bugs (sim restart without `clear()`, timestamp wrap). Reject with `ValueError`; provide `clear()` as the documented reset.
 
@@ -225,7 +225,7 @@ def __init__(self, *, control_dt: float = 0.025, **kw):
 **Critical details.**
 
 - S1's `τ_grace` should be exposed as a constructor parameter on `EventScheduler` with a documented default, NOT hard-coded. Tests will exercise both paths.
-- S2 enforcement must distinguish the legitimate "replace next event" path from the illegitimate "stack two currents" path. Today the code happens to handle this correctly (`scheduler.py:255–286` branches on `_current_event is None`); the contract is just verifying it.
+- S2 enforcement must distinguish the legitimate "replace next event" path from the illegitimate "stack two currents" path. Today the code happens to handle this correctly (`scheduler.py:302–336 — current locations after Phase 2` branches on `_current_event is None`); the contract is just verifying it.
 - S3 is structural today (only 3 slots) — the assertion is defense-in-depth against future deepening of the queue without an explicit contract update.
 
 **Tests to add (initial; full suite in Phase 4).**
@@ -286,7 +286,7 @@ def __init__(self, *, control_dt: float = 0.025, **kw):
 **Critical details.**
 
 - **P1 (PlantState aliasing)** initial draft: `get_state()` MUST return the same `PlantState` instance on every call. Consumers MUST NOT retain references across ticks. Already documented in HOT_LOOP_CONTRACT.md:434–442 — this contract pulls it into the canonical interface document.
-- **P2 (can_reset capability)** initial draft: implementations MUST expose `can_reset: bool`. `reset()` is called only when `can_reset is True`; calling it when False MUST raise `NotImplementedError`. Removes the silent no-op at `hardware_plant.py:725–733`.
+- **P2 (can_reset capability)** initial draft: implementations MUST expose `can_reset: bool`. `reset()` is called only when `can_reset is True`; calling it when False MUST raise `NotImplementedError`. Removes the silent no-op at `hardware_plant.py:748` (pre-Phase-5: warn-and-return).
 - **P3 (input-validation contract)** initial draft: `command()` is a *trusted-callee* boundary — callers (hot loop) MUST guarantee finite, correctly-shaped inputs. `command()` MUST NOT silently coerce, clip, or default malformed inputs. Validation belongs at the upstream boundary (MPC `solve()` exit, motor guard input). The trusted-callee designation is a deliberate hot-loop choice — defensive validation in `command()` would burn ~100 ns/tick that we don't have.
 - **P4 (control_dt awareness)** initial draft: implementations MUST accept `control_dt: float` at construction. Internal time-window thresholds (telemetry staleness, watchdog deadlines) MUST derive from `control_dt`, not hard-code. Default `control_dt=0.025` (40 Hz) preserves current behaviour.
 
@@ -388,7 +388,7 @@ def __init__(self, *, control_dt: float = 0.025, **kw):
 **New/modified files.**
 - `tests/conftest_hypothesis.py` (new)
 - `tests/conftest.py` — import + register profiles
-- `pytest.ini` (create or modify) — markers
+- `pyproject.toml` (existing `[tool.pytest.ini_options]`) — add markers (this repo's pytest config lives in `pyproject.toml`, not `pytest.ini`; the implementation sketch below predates that discovery)
 - `CLAUDE.md` — one-line addition under "Tests" describing how to run nightly profile
 
 **Implementation sketch.**
@@ -465,6 +465,7 @@ pytest tests/ -v --hypothesis-profile=ci-deep   # max_examples=1000
 | T-U-S6-1 | Backward `sim_time` raises | S6 | Raises `ValueError` |
 | T-U-S6-2 | After `clear()`, backward `sim_time` accepted | S6 | Accepted |
 | T-U-S6-3 | Property: hypothesis-generated `(sim_time, op)` sequences (with `clear()` interleavings) never silently regress time | S6 (state-machine) | Invariant holds |
+| | **Implementation note:** ``T-U-S6-3`` shipped as scenario tests in `TestS6ClockMonotonicity` rather than as a state-machine `@invariant`. The state machine's `tick` rule advances `sim_time` strictly forward by a positive `dt`, so backward-time scenarios are unreachable from a state-machine random walk. Targeted backward-jump scenarios live in the explicit class. Rationale documented at `tests/sim/test_scheduler_contract.py:898–903`. | | |
 
 The state-machine tests use `hypothesis.stateful.RuleBasedStateMachine`:
 
@@ -541,9 +542,9 @@ Parameterized over `[MuJoCoPlant, HardwarePlantStub]` via `pytest.mark.parametri
 
 | Invariant | Location | Consequence of violation |
 |-----------|----------|-------------------------|
-| K1–K6 enforcement at `make_feasible_events()` | `controller/target.py:240` | Reference saturation → solver stall → motor jerk |
+| K1–K6 enforcement at `make_feasible_events()` | `controller/target.py:317` | Reference saturation → solver stall → motor jerk |
 | Hot-loop allocation budget `256 B/tick` | `controller/hot_loop_contract.py` | GC pause → cmd discontinuity |
-| `PlantState` instance aliasing | `controller/hardware_plant.py:260` (returns `self._state`); after Phase 5, formalised as P1 | Cross-tick reference retention by a consumer reads stale data on the next tick |
+| `PlantState` instance aliasing | `controller/hardware_plant.py:488` (`get_state()` returns `self._state`, initialised at `:284`); after Phase 5, formalised as P1 | Cross-tick reference retention by a consumer reads stale data on the next tick |
 | Telemetry-staleness watchdog thresholds | `hardware_plant.py:67–71` (after Phase 6: derived from `control_dt`) | Stale telemetry below threshold → MPC commands on stale pose |
 
 ### Architecture decisions (non-obvious)
@@ -576,7 +577,8 @@ No changes to startup ordering. Phase 6 adds a `control_dt` constructor argument
 | `tests/sim/test_make_feasible_events.py` | Modified (4 new properties) | 7 |
 | `tests/conftest_hypothesis.py` | Created | 8 |
 | `tests/conftest.py` | Modified (load profiles) | 8 |
-| `pytest.ini` | Created or modified (markers) | 8 |
+| `pyproject.toml` | Modified (markers added under `[tool.pytest.ini_options]`) | 8 |
+| `.gitignore` | Modified (`.hypothesis/` added next to `.pytest_cache/`) | 8 |
 | `CLAUDE.md` | Modified (1 line: nightly profile invocation) | 8 |
 | `logbook/2026-XX-XX-...` | Created (one entry per phase) | 1, 2, 3, 4, 5, 6, 7, 8 |
 
