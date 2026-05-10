@@ -19,9 +19,14 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from hypothesis import given, strategies as st, settings, HealthCheck
+from hypothesis import given, strategies as st, settings, HealthCheck, assume
 
-from controller.target import make_feasible_events, ReferenceEvent
+from controller.target import (
+    make_feasible_events,
+    ReferenceEvent,
+    _clamp_twist_in_place,
+    _K4_MIN_SPAN_S,
+)
 from controller.feasibility import (
     quintic_peak_vel_per_axis,
     quintic_peak_acc_per_axis,
@@ -132,6 +137,29 @@ _vmax_strat = st.floats(min_value=50.0, max_value=300.0, allow_nan=False)
 _tau_strat = st.floats(min_value=0.01, max_value=0.15, allow_nan=False)
 
 
+@st.composite
+def _multi_event_proposal(draw):
+    """N ∈ [3, 6] events with strictly increasing times, K4-compliant gaps.
+
+    Each adjacent gap is drawn from ``[_K4_MIN_SPAN_S, 1.0]`` so the input is
+    K4-clean by construction; the property under test is that K1–K6 hold on
+    *output* even after multi-segment stretching cascades through these
+    events (target.py:511-526)."""
+    N = draw(st.integers(min_value=3, max_value=6))
+    gaps = draw(st.lists(
+        st.floats(min_value=_K4_MIN_SPAN_S, max_value=1.0,
+                  allow_nan=False, allow_infinity=False),
+        min_size=N, max_size=N,
+    ))
+    times = np.cumsum(gaps)
+    poses = [draw(_pose_strat) for _ in range(N)]
+    twists = [draw(_twist_strat) for _ in range(N)]
+    return [
+        ReferenceEvent(time=float(t), pose=p, twist=v, accel=np.zeros(6))
+        for t, p, v in zip(times, poses, twists)
+    ]
+
+
 @given(p0=_pose_strat, v0=_twist_strat, p1=_pose_strat, v1=_twist_strat,
        T=_T_strat, v_max=_vmax_strat, tau=_tau_strat)
 @settings(max_examples=150, deadline=None,
@@ -184,6 +212,139 @@ def test_property_no_stretch_rejects_deterministically(p0, v0, p1, v1, T, v_max,
         assert abs(events[-1].time - (t_now + T)) < 1e-6, (
             "no_stretch: final event time must not move"
         )
+
+
+@given(p0=_pose_strat, v0=_twist_strat,
+       p1=_pose_strat, v1=_twist_strat,
+       p2=_pose_strat, v2=_twist_strat,
+       T1=st.floats(min_value=0.001, max_value=0.10, allow_nan=False),
+       T2=st.floats(min_value=_K4_MIN_SPAN_S, max_value=1.0, allow_nan=False),
+       v_max=_vmax_strat, tau=_tau_strat)
+@settings(max_examples=100, deadline=None,
+          suppress_health_check=[HealthCheck.too_slow])
+def test_property_K4_min_span(p0, v0, p1, v1, p2, v2, T1, T2, v_max, tau):
+    """K4 — output spans MUST be ≥ 50 ms; near-duplicate input events MUST
+    be merged (the second is dropped).
+
+    ``T1`` ∈ [1 ms, 100 ms] straddles the 50 ms K4 boundary — roughly half the
+    examples exercise the merge path, half preserve all three events. ``T2`` ≥
+    50 ms ensures the third event always survives, isolating the merge to the
+    middle event. The output assertion is unconditional (K4 holds whether or
+    not stretching subsequently rejected the segment)."""
+    t_now = 0.0
+    proposal = [
+        ReferenceEvent(time=t_now, pose=p0, twist=v0, accel=np.zeros(6)),
+        ReferenceEvent(time=t_now + T1, pose=p1, twist=v1, accel=np.zeros(6)),
+        ReferenceEvent(time=t_now + T1 + T2, pose=p2, twist=v2, accel=np.zeros(6)),
+    ]
+    events, _reason = make_feasible_events(
+        p0, v0, proposal, t_now, v_max_mmps=v_max, tau_s=tau,
+        max_stretch_ratio=8.0,
+    )
+    # K4 holds on output regardless of feasibility outcome (K4 runs at
+    # target.py:463-474, before K2/K3 stretching).
+    _assert_K4(events)
+    # Merge contract: when T1 < 50 ms, the middle event MUST be dropped.
+    if T1 < _K4_MIN_SPAN_S - 1e-9:
+        assert len(events) <= 2, (
+            f"K4 merge: T1={T1*1000:.2f} ms < 50 ms but {len(events)} "
+            f"events remain in output (expected ≤ 2 after merge)"
+        )
+
+
+@given(p=_pose_strat, twist_a=_twist_strat, twist_b=_twist_strat,
+       t_offset=st.floats(min_value=_K4_MIN_SPAN_S, max_value=2.0, allow_nan=False),
+       v_max=_vmax_strat, tau=_tau_strat)
+@settings(max_examples=100, deadline=None,
+          suppress_health_check=[HealthCheck.too_slow])
+def test_property_K5_coincident_twist(p, twist_a, twist_b, t_offset, v_max, tau):
+    """K5 — two events at identical times with mismatched twists MUST raise
+    ``ValueError`` whose message names the K5 invariant.
+
+    Critical: K5's check (target.py:435-443) runs *after* the K6 clamp
+    (target.py:419-433), so two raw twists that differ only in their
+    out-of-clamp linear components collapse to identical twists post-clamp
+    and are NOT a K5 violation.  We use ``assume`` to filter those cases."""
+    v_clamp = BETA * v_max
+    a_clamped = twist_a.copy()
+    b_clamped = twist_b.copy()
+    a_clamped[:3] = np.clip(a_clamped[:3], -v_clamp, v_clamp)
+    b_clamped[:3] = np.clip(b_clamped[:3], -v_clamp, v_clamp)
+    # Filter: K5 only fires when twists genuinely differ post-clamp.
+    assume(not np.allclose(a_clamped, b_clamped))
+    plant_pose = np.zeros(6)
+    plant_twist = np.zeros(6)
+    proposal = [
+        ReferenceEvent(time=t_offset, pose=p, twist=twist_a, accel=np.zeros(6)),
+        ReferenceEvent(time=t_offset, pose=p, twist=twist_b, accel=np.zeros(6)),
+    ]
+    with pytest.raises(ValueError, match="K5"):
+        make_feasible_events(
+            plant_pose, plant_twist, proposal, t_now=0.0,
+            v_max_mmps=v_max, tau_s=tau,
+        )
+
+
+@given(twist=_twist_strat,
+       clamp=st.floats(min_value=0.0, max_value=500.0,
+                       allow_nan=False, allow_infinity=False))
+@settings(max_examples=150, deadline=None,
+          suppress_health_check=[HealthCheck.too_slow])
+def test_property_K6_idempotence(twist, clamp):
+    """K6 — applying the linear-twist clamp twice yields the same result as
+    applying it once; angular components (3..5) are never modified.
+
+    Tests the canonical K6 enforcement helper ``_clamp_twist_in_place``
+    directly (target.py:254-263).  Idempotence is what lets every later
+    stage of ``make_feasible_events`` re-clamp without altering already-
+    compliant boundary conditions."""
+    once = twist.copy()
+    _clamp_twist_in_place(once, clamp)
+    twice = once.copy()
+    _clamp_twist_in_place(twice, clamp)
+    np.testing.assert_array_equal(
+        once, twice,
+        err_msg=f"K6: clamp not idempotent at clamp_mmps={clamp}",
+    )
+    # Linear components within ±clamp after one application
+    assert np.all(np.abs(once[:3]) <= clamp + 1e-12), (
+        f"K6: linear twist {once[:3]} exceeds ±{clamp} after clamp"
+    )
+    # Angular components untouched
+    np.testing.assert_array_equal(
+        once[3:], twist[3:],
+        err_msg="K6: angular components must not be clamped",
+    )
+
+
+@given(proposal=_multi_event_proposal(), v_max=_vmax_strat, tau=_tau_strat)
+@settings(max_examples=150, deadline=None,
+          suppress_health_check=[HealthCheck.too_slow])
+def test_property_K1_K6_multi_event(proposal, v_max, tau):
+    """K1–K6 hold for proposals with 3..6 events.
+
+    The two-event property at line 167 only exercises a single inter-event
+    segment.  Multi-event proposals exercise the cascade-shift logic at
+    ``target.py:511-526`` — when segment ``i`` is stretched by ``delta``,
+    every later event time is shifted by the same ``delta`` so spans (and
+    hence K4) survive.  This property catches any future regression where
+    the cascade-shift breaks K1, K2/K3, K4, or K6 across multiple stretches.
+
+    Mirrors the rejection-contract pin at line 182-187: ``reason is None``
+    means K1–K6 fully compliant; ``reason is not None`` means a non-empty
+    machine-readable string."""
+    t_now = 0.0
+    plant_pose = np.zeros(6)
+    plant_twist = np.zeros(6)
+    events, reason = make_feasible_events(
+        plant_pose, plant_twist, proposal, t_now,
+        v_max_mmps=v_max, tau_s=tau, max_stretch_ratio=8.0,
+    )
+    if reason is None:
+        _assert_K1_K6_compliant(events, t_now, plant_pose, plant_twist,
+                                v_max=v_max, tau=tau)
+    else:
+        assert isinstance(reason, str) and len(reason) > 0
 
 
 beta = BETA  # (fixture for the above)

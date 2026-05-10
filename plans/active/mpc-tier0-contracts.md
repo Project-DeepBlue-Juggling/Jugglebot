@@ -176,7 +176,7 @@ def __init__(self, *, control_dt: float = 0.025, **kw):
 | 4 | PLANT_INTERFACE_CONTRACT.md draft + interface audit | COMPLETE | 2026-05-09 | Low | Document captures aliasing/reset/dt/validation conventions; no behaviour change |
 | 5 | PlantInterface P1 + P2 (aliasing + can_reset) | COMPLETE | 2026-05-09 | Low | ABC additions; both `MuJoCoPlant` and `HardwarePlant` updated; contract test parameterized |
 | 6 | PlantInterface P3 + P4 (input-validation + control_dt) | COMPLETE | 2026-05-10 | Med | Stale-telemetry thresholds derived from `control_dt`; `command()` validation contract surfaced |
-| 7 | K1–K6 hypothesis retroactive expansion | NOT STARTED | | Low | 4 new properties added to `test_make_feasible_events.py`; existing tests still pass |
+| 7 | K1–K6 hypothesis retroactive expansion | COMPLETE | 2026-05-10 | Low | 4 new properties added to `test_make_feasible_events.py`; existing tests still pass |
 | 8 | CI hypothesis profiles wired | NOT STARTED | | Low | `ci-fast` (50 ex) for per-PR; `ci-deep` (1000 ex) for nightly; documented in CLAUDE.md |
 
 ## Implementation Phases (detailed)
@@ -353,9 +353,9 @@ def __init__(self, *, control_dt: float = 0.025, **kw):
 
 ---
 
-### Phase 7: K1–K6 hypothesis retroactive expansion — NOT STARTED
+### Phase 7: K1–K6 hypothesis retroactive expansion — COMPLETE (2026-05-10)
 
-**Scope.** Add four new hypothesis properties to the existing K1–K6 surface, mirroring the style at `tests/sim/test_make_feasible_events.py:135` and `:162`.
+**Scope.** Add four new hypothesis properties to the existing K1–K6 surface, mirroring the style at `tests/sim/test_make_feasible_events.py:163` (canonical two-event property) and `:190` (no-stretch rejection property).
 
 **New/modified files.**
 - `tests/sim/test_make_feasible_events.py` — extend
@@ -371,7 +371,7 @@ def __init__(self, *, control_dt: float = 0.025, **kw):
 
 **Critical details.**
 
-- Use the existing `_pose_strat`, `_twist_strat`, `_T_strat`, `_vmax_strat`, `_tau_strat` from `test_make_feasible_events.py:30–80` as building blocks.
+- Use the existing `_pose_strat`, `_twist_strat`, `_T_strat`, `_vmax_strat`, `_tau_strat` from `test_make_feasible_events.py:129-137` as building blocks.
 - For multi-event, the strategy must produce strictly increasing event times. Use `st.lists(min_size=3, max_size=6)` then sort + add `_K4_MIN_SPAN_S`.
 - Each new property uses `@settings(max_examples=ci_default(), deadline=None)` where `ci_default()` returns 50 in CI-fast and 1000 in CI-deep. This wires into Phase 8.
 
