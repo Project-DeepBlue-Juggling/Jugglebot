@@ -60,6 +60,23 @@ class PlantInterface(ABC):
         See controller/PLANT_INTERFACE_CONTRACT.md P2.
         """
 
+    @property
+    @abstractmethod
+    def control_dt(self) -> float:
+        """P4: configured control period in seconds.
+
+        Implementations MUST accept ``control_dt: float`` as a
+        constructor keyword argument (default 0.025 s = 40 Hz preserves
+        current behaviour).  Internal time-window thresholds — telemetry
+        staleness watchdogs, dead-band re-arm intervals, deadlock
+        deadlines — MUST derive from ``self._control_dt`` rather than
+        hard-coded magic numbers.  External consumers (the runner, the
+        scheduler's S1 ``τ_grace`` default) read the canonical period
+        from this property.
+
+        See controller/PLANT_INTERFACE_CONTRACT.md P4.
+        """
+
     @abstractmethod
     def command(self, leg_extensions_mm: np.ndarray,
                 vel_mm_s: np.ndarray | None = None,

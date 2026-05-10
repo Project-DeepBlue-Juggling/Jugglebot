@@ -272,7 +272,7 @@ def main():
         if _sim_dir not in sys.path:
             sys.path.insert(0, _sim_dir)
         from plant.mujoco_plant import MuJoCoPlant
-        plant = MuJoCoPlant()
+        plant = MuJoCoPlant(control_dt=CONTROL_DT)
         # Hardware tests start from ACTIVE (z=170 mm STOW-relative).  Match
         # that precondition in sim so the dry-run exercises the same motion
         # envelope.  reset() sets actuator targets but does not teleport the

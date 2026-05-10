@@ -37,11 +37,11 @@ invariants below; Phases 5 and 6 close the divergences:
 - **PlantState aliasing** — ``HardwarePlant.get_state()`` has always
   returned the same pre-allocated ``self._state`` instance every call
   (mutated in place; see
-  [hardware_plant.py:268–278, :506–519](hardware_plant.py)).
+  [hardware_plant.py:284–294, :521–535](hardware_plant.py)).
   Pre-Phase-5, ``MuJoCoPlant.get_state()`` constructed a fresh
   ``PlantState`` from fresh ndarrays every call.  Phase 5 brings it
   into compliance — see the post-Phase-5 in-place pattern at
-  [mujoco_plant.py:191–245](../sim/plant/mujoco_plant.py) (matches the
+  [mujoco_plant.py:211–265](../sim/plant/mujoco_plant.py) (matches the
   HardwarePlant reference).  Pre-Phase-5, consumers relying on
   aliasing for hot-loop budget compliance
   (see [HOT_LOOP_CONTRACT.md:434–442](HOT_LOOP_CONTRACT.md)) were
@@ -51,31 +51,36 @@ invariants below; Phases 5 and 6 close the divergences:
   this contract pulls it into the canonical interface document.
 - **Reset capability** — pre-Phase-5, ``HardwarePlant.reset()`` was a
   silent no-op with a ``logger.warning``.  Phase 5 lands the loud
-  raise (see [hardware_plant.py:732–748](hardware_plant.py)).  A
+  raise (see [hardware_plant.py:748–764](hardware_plant.py)).  A
   caller passing ``pose_6dof`` expecting the platform to move there
   would have been silently ignored pre-Phase-5; post-Phase-5 the
   caller crashes with ``NotImplementedError`` and a pointer to the
   orchestrator.  ``MuJoCoPlant.reset()`` (declared
-  [can_reset = True at mujoco_plant.py:66](../sim/plant/mujoco_plant.py))
+  [can_reset = True at mujoco_plant.py:75](../sim/plant/mujoco_plant.py))
   honours the call as before.
-- **Input-validation** — ``MuJoCoPlant.command()`` silently clamps
-  out-of-range extensions to ``[margin, stroke - margin]`` (see
-  [mujoco_plant.py:181](../sim/plant/mujoco_plant.py)) with a
-  ``logger.warning``.  ``HardwarePlant.command()`` does no input
-  validation.  The same call with the same inputs produces different
-  observable outputs on the two implementations — a future contributor
-  who writes "the plant accepts ext_mm and clamps" against MuJoCoPlant
-  is wrong on hardware.  Phase 6 lands the trusted-callee P3
-  specification + test.
-- **Period awareness** — ``HardwarePlant.__init__`` accepts
-  ``control_dt: float = 0.025`` (see
-  [hardware_plant.py:105](hardware_plant.py)) but uses module-level
-  hard-coded constants for staleness thresholds (see
-  [hardware_plant.py:68–70](hardware_plant.py)) that assume 40 Hz.
-  ``MuJoCoPlant.__init__`` does not accept ``control_dt`` at all (see
-  [mujoco_plant.py:68–73](../sim/plant/mujoco_plant.py)).  A future
-  20 Hz operating regime would break the watchdog thresholds without
-  touching ``HardwarePlant``'s code.  Phase 6 lands P4.
+- **Input-validation** — pre-Phase-6, ``MuJoCoPlant.command()``
+  silently clamped out-of-range extensions to
+  ``[margin, stroke - margin]`` with a ``logger.warning``.
+  ``HardwarePlant.command()`` did no input validation.  The same call
+  with the same inputs produced different observable outputs on the
+  two implementations — a future contributor who wrote "the plant
+  accepts ext_mm and clamps" against MuJoCoPlant was wrong on
+  hardware.  Phase 6 resolves: the post-Phase-6
+  [MuJoCoPlant.command body at mujoco_plant.py:191–209](../sim/plant/mujoco_plant.py)
+  is a pure trusted-callee — no clip, no warn.  Both implementations
+  now forward inputs without coercion.
+- **Period awareness** — pre-Phase-6, ``HardwarePlant.__init__``
+  accepted ``control_dt: float = 0.025`` but used module-level
+  hard-coded constants for staleness thresholds that assumed 40 Hz.
+  ``MuJoCoPlant.__init__`` did not accept ``control_dt`` at all.  A
+  20 Hz / 100 Hz operating regime would have broken the watchdog
+  thresholds.  Phase 6 resolves: ``HardwarePlant`` derives staleness
+  thresholds from ``self._control_dt`` (see
+  [hardware_plant.py:73–75](hardware_plant.py) for the multipliers
+  and [:128–132](hardware_plant.py) for the per-instance
+  derivation); ``MuJoCoPlant`` now accepts ``control_dt`` (see
+  [mujoco_plant.py:117](../sim/plant/mujoco_plant.py)); both
+  expose ``control_dt`` as a property.
 
 The P1–P4 invariants below close that whole class of divergence.
 
@@ -141,7 +146,7 @@ When ``can_reset is False``, ``reset()`` MUST raise
 pointing at the correct lifecycle API.  Silent no-ops with a
 ``logger.warning`` (the pre-Phase-5 ``HardwarePlant.reset()`` body)
 are a contract violation; the post-Phase-5 form at
-[hardware_plant.py:732–748](hardware_plant.py) raises with an
+[hardware_plant.py:748–764](hardware_plant.py) raises with an
 operator-actionable message.
 
 Callers that may run against either implementation MUST guard with
@@ -173,10 +178,12 @@ loop) MUST guarantee finite, correctly-shaped inputs:
 
 Implementations MUST NOT silently coerce, clip, default, or sanitise
 malformed inputs.  Specifically:
-- An out-of-range extension MUST NOT be silently clamped (the
-  ``MuJoCoPlant`` ``np.clip`` at
-  [mujoco_plant.py:181](../sim/plant/mujoco_plant.py) is a contract
-  violation; Phase 6 will resolve it).
+- An out-of-range extension MUST NOT be silently clamped.  The
+  pre-Phase-6 ``MuJoCoPlant`` ``np.clip`` at the head of
+  ``command()`` was the canonical example; Phase 6 removed it.
+  The post-Phase-6 ``command`` body at
+  [mujoco_plant.py:191–209](../sim/plant/mujoco_plant.py) is a pure
+  trusted-callee path matching ``HardwarePlant``.
 - A NaN or inf MUST NOT be silently zeroed or replaced.
 - A wrong-shape array MUST NOT be silently broadcast or reshaped.
 
@@ -219,7 +226,7 @@ Internal time-window thresholds (telemetry-staleness watchdogs,
 deadlock deadlines, dead-band re-arm intervals) MUST be derived from
 ``control_dt`` rather than hard-coded.  The current
 ``HardwarePlant`` constants
-([hardware_plant.py:68–70](hardware_plant.py)) —
+([hardware_plant.py:73–75](hardware_plant.py)) —
 
     _TELEM_STALE_WARN_S  = 0.075   # 3x MPC period — log warning
     _TELEM_STALE_HARD_S  = 0.125   # 5x MPC period — zero velocities
@@ -270,13 +277,15 @@ implementations).  The enforcement points are:
 |-----------|-------------|------------------|
 | P1 | ``get_state() -> PlantState`` (existing); contract test asserts ``id(plant.get_state())`` invariant + ndarray-field identity over 100 calls | ``tests/sim/test_plant_interface_contract.py::TestP1PlantStateAliasing`` (Phase 5, landed) — parameterised over ``[MuJoCoPlant, HardwarePlant via _hardware_plant_stub]`` |
 | P2 | New abstract property ``can_reset: bool`` (Phase 5, landed at [plant.py:49–61](plant.py)) | ``TestP2ResetCapability`` asserts ``plant.reset() raises NotImplementedError iff not plant.can_reset``, plus ``TestPlantInterfaceABC::test_can_reset_is_abstract_on_the_abc`` enforces declaration |
-| P3 | Existing ``command()`` signature; documented-only (Phase 4 / 6) | Contract test (Phase 6) feeds adversarial inputs and asserts no silent coercion |
-| P4 | New abstract property ``control_dt: float`` (Phase 6); constructor kwarg | Contract test (Phase 6) asserts ``plant.control_dt`` echoes constructor and that staleness thresholds scale linearly |
+| P3 | Documented on ``command()`` (Phase 4 / 6, landed at [plant.py:81–105](plant.py)).  ``MuJoCoPlant.command`` ``np.clip`` removed at Phase 6 — both implementations now trusted-callee. | ``TestP3TrustedCallee`` feeds NaN / out-of-range / negative inputs and asserts no silent coercion (parameterised over both impls) |
+| P4 | New abstract property ``control_dt: float`` (Phase 6, landed at [plant.py:64–79](plant.py)); constructor kwarg on both impls | ``TestP4ControlDtAwareness`` asserts ``plant.control_dt`` echoes constructor; ``HardwarePlant`` staleness thresholds scale linearly with ``control_dt``; default-period thresholds reproduce the pre-Phase-6 magic numbers |
 
 The contract document landed in **Phase 4** is the discovery + design
-pass.  **Phase 5** (this commit) lands the P1 + P2 enforcement — both
-abstract additions and the parameterised contract test.  Phase 6
-lands P3 + P4.
+pass.  **Phase 5** lands the P1 + P2 enforcement (abstract additions
++ parameterised contract test).  **Phase 6** (this commit) lands P3
++ P4: ``np.clip`` removed from ``MuJoCoPlant.command``;
+``control_dt`` plumbed through to staleness thresholds; ABC gains
+``control_dt`` abstract property; contract tests extended.
 
 ## Implementing a new ``PlantInterface``
 
@@ -375,7 +384,7 @@ If a ``PlantInterface``-related symptom surfaces in a session log:
    plant under test for ``return PlantState(...)`` (fresh dataclass)
    or ``np.array(...)`` inside ``get_state()`` (fresh ndarrays).
    ``HardwarePlant.get_state()``'s pattern at
-   [hardware_plant.py:506–519](hardware_plant.py) is the reference.
+   [hardware_plant.py:521–535](hardware_plant.py) is the reference.
 
 2. **A consumer reads stale plant state across ticks** — a cached
    ``state = plant.get_state()`` reference that's read on a later
@@ -400,9 +409,12 @@ If a ``PlantInterface``-related symptom surfaces in a session log:
 
 4. **Watchdog fires too early or too late at a non-default
    control_dt** — P4 violation.  Grep the plant for hard-coded
-   second-magnitudes.  In ``HardwarePlant``, the
-   [post-Phase-6 form (hardware_plant.py:68–70)](hardware_plant.py)
-   replaces them with ``self._control_dt`` multiples.
+   second-magnitudes.  In ``HardwarePlant``, the post-Phase-6 form
+   at [hardware_plant.py:128–132](hardware_plant.py) derives
+   ``self._telem_stale_*_s`` from
+   [the multipliers at hardware_plant.py:73–75](hardware_plant.py)
+   times ``self._control_dt`` — any new threshold should follow
+   the same pattern.
 
 5. **``plant.reset()`` returned but the platform didn't move** —
    P2 violation.  Pre-Phase-5, ``HardwarePlant.reset()`` was a

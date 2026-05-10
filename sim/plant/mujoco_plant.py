@@ -59,6 +59,15 @@ class MuJoCoPlant(PlantInterface):
         Path to the MJCF XML.  Defaults to ``sim/model/jugglebot.xml``.
     geom : StewartGeometry | None
         Stewart geometry instance.  Created automatically if not supplied.
+    cmd_margin_mm : float
+        Pre-Phase-6 ``np.clip`` margin (in mm) applied to ``command()``
+        inputs.  Retained for backward compatibility but UNUSED post-
+        Phase-6 — ``command()`` now forwards inputs to MuJoCo without
+        clipping per P3 (trusted-callee).  Will be removed in a
+        follow-up cleanup once no caller passes the kwarg.
+    control_dt : float
+        Configured control period in seconds.  Default 0.025 = 40 Hz.
+        See controller/PLANT_INTERFACE_CONTRACT.md P4.
     """
 
     # P2: MuJoCo simulation can be reset to home / arbitrary pose at any
@@ -70,6 +79,7 @@ class MuJoCoPlant(PlantInterface):
         model_path: str | None = None,
         geom: StewartGeometry | None = None,
         cmd_margin_mm: float = 0.0,
+        control_dt: float = 0.025,
     ):
         if model_path is None:
             model_path = os.path.abspath(_DEFAULT_MODEL_PATH)
@@ -87,9 +97,24 @@ class MuJoCoPlant(PlantInterface):
         plat_world_m = plat_m + np.array([0.0, 0.0, height_m])
         self._geom_home_lengths_m = np.linalg.norm(plat_world_m - base_m, axis=1)
 
-        # Command safety margin — clamp all commanded extensions to
-        # [margin, stroke - margin] to prevent actuator overshoot at mechanical stops.
+        # P3: pre-Phase-6 ``command()`` silently clipped extensions to
+        # [margin, stroke - margin].  Post-Phase-6 ``command()`` is a
+        # trusted-callee boundary (matching ``HardwarePlant``) and
+        # forwards inputs to MuJoCo without clipping; the model's slide
+        # joint range provides the physics-layer envelope.  This field
+        # stays as inert state so existing kwargs-based callers don't
+        # break, but it's no longer read by ``command()``.  See
+        # controller/PLANT_INTERFACE_CONTRACT.md P3.
         self._cmd_margin_mm = cmd_margin_mm
+
+        # P4: configured control period (seconds).  Stored so the
+        # ``control_dt`` property satisfies the abstract declaration on
+        # ``PlantInterface``; ``MuJoCoPlant`` itself has no control-period-
+        # derived thresholds today (no telemetry-staleness watchdog),
+        # but external consumers (the runner, the scheduler's S1
+        # τ_grace) read this property for the canonical period.
+        # See controller/PLANT_INTERFACE_CONTRACT.md P4.
+        self._control_dt = float(control_dt)
 
         # Detect hand actuator/sensors
         hand_act_id = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_ACTUATOR, 'act_hand')
@@ -169,23 +194,18 @@ class MuJoCoPlant(PlantInterface):
                 cmd_next2_mm: np.ndarray | None = None) -> None:
         """Set actuator targets from STOW-relative leg extensions (mm).
 
-        Commands are clamped to [margin, stroke - margin] to prevent
-        actuator overshoot at mechanical stops.  ``vel_mm_s``, ``cmd_next_mm``,
-        and ``cmd_next2_mm`` are accepted for API compatibility but ignored —
-        MuJoCo actuators handle their own dynamics via kp/kv gains.
+        P3: trusted-callee boundary.  Inputs are forwarded to MuJoCo
+        without validation, clipping, or coercion.  The MuJoCo model's
+        slide-joint range provides the physics-layer envelope at the
+        actuator level.  ``vel_mm_s``, ``cmd_next_mm``, and
+        ``cmd_next2_mm`` are accepted for API compatibility but ignored
+        — MuJoCo actuators handle their own dynamics via kp/kv gains.
+
+        See controller/PLANT_INTERFACE_CONTRACT.md P3.
         """
         ext = np.asarray(leg_extensions_mm, dtype=float)
-        stroke = self._geom.leg_stroke_mm
-        lo = self._cmd_margin_mm
-        hi = stroke - self._cmd_margin_mm
-        ext_clamped = np.clip(ext, lo, hi)
-        if not np.allclose(ext, ext_clamped, atol=0.1):
-            logger.warning(
-                "command() clamped extensions: requested [%.2f, %.2f] → [%.2f, %.2f]",
-                ext.min(), ext.max(), ext_clamped.min(), ext_clamped.max(),
-            )
         # STOW-relative extensions = IK extensions (direct, no offset)
-        slide_m = self._extensions_to_slide(ext_clamped)
+        slide_m = self._extensions_to_slide(ext)
         self._data.ctrl[:6] = slide_m
 
     def get_state(self) -> PlantState:
@@ -369,6 +389,12 @@ class MuJoCoPlant(PlantInterface):
     @property
     def geom(self) -> StewartGeometry:
         return self._geom
+
+    @property
+    def control_dt(self) -> float:
+        """P4: configured control period in seconds.  See
+        controller/PLANT_INTERFACE_CONTRACT.md P4."""
+        return self._control_dt
 
     @property
     def timestep(self) -> float:

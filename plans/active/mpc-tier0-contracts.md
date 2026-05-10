@@ -175,7 +175,7 @@ def __init__(self, *, control_dt: float = 0.025, **kw):
 | 3 | Scheduler S4 tightening + S5, S6 enforcement (state-machine) | COMPLETE | 2026-05-09 | Med | Mid-TRANSITIONING replace specified; backward `sim_time` rejected; S4 strict-by-default in tests |
 | 4 | PLANT_INTERFACE_CONTRACT.md draft + interface audit | COMPLETE | 2026-05-09 | Low | Document captures aliasing/reset/dt/validation conventions; no behaviour change |
 | 5 | PlantInterface P1 + P2 (aliasing + can_reset) | COMPLETE | 2026-05-09 | Low | ABC additions; both `MuJoCoPlant` and `HardwarePlant` updated; contract test parameterized |
-| 6 | PlantInterface P3 + P4 (input-validation + control_dt) | NOT STARTED | | Med | Stale-telemetry thresholds derived from `control_dt`; `command()` validation contract surfaced |
+| 6 | PlantInterface P3 + P4 (input-validation + control_dt) | COMPLETE | 2026-05-10 | Med | Stale-telemetry thresholds derived from `control_dt`; `command()` validation contract surfaced |
 | 7 | K1–K6 hypothesis retroactive expansion | NOT STARTED | | Low | 4 new properties added to `test_make_feasible_events.py`; existing tests still pass |
 | 8 | CI hypothesis profiles wired | NOT STARTED | | Low | `ci-fast` (50 ex) for per-PR; `ci-deep` (1000 ex) for nightly; documented in CLAUDE.md |
 
@@ -324,7 +324,7 @@ def __init__(self, *, control_dt: float = 0.025, **kw):
 
 ---
 
-### Phase 6: PlantInterface P3 + P4 (input-validation + control_dt) — NOT STARTED
+### Phase 6: PlantInterface P3 + P4 (input-validation + control_dt) — COMPLETE (2026-05-10)
 
 **Scope.** Document P3; implement P4 (`control_dt` parameter and threshold derivation).
 

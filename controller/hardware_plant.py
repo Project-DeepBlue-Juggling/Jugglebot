@@ -64,10 +64,15 @@ logger = logging.getLogger(__name__)
 # Time to wait for ZMQ PUB socket to connect before sending first message
 _ZMQ_CONNECT_SETTLE_S = 0.1
 
-# Telemetry staleness thresholds (MPC runs at 40 Hz = 25 ms period)
-_TELEM_STALE_WARN_S = 0.075   # 3x MPC period — log warning
-_TELEM_STALE_HARD_S = 0.125   # 5x MPC period — zero velocities
-_TELEM_STALE_ESTOP_S = 0.5    # 20x MPC period — telemetry definitely lost
+# Telemetry-staleness watchdog multipliers (in units of control_dt).
+# Thresholds derive from ``self._control_dt`` per
+# controller/PLANT_INTERFACE_CONTRACT.md P4 — keeps the watchdog correct
+# at any operating regime, not just the 40 Hz default.  At
+# control_dt=0.025 these reproduce the pre-Phase-6 magic numbers
+# (0.075, 0.125, 0.500).
+_TELEM_STALE_WARN_MULT = 3.0    # 3x control_dt — log warning
+_TELEM_STALE_HARD_MULT = 5.0    # 5x control_dt — zero velocities
+_TELEM_STALE_ESTOP_MULT = 20.0  # 20x control_dt — telemetry definitely lost
 
 # Shared zero-vector used as a read-only default for feedforward channels
 # when the caller doesn't supply one.  Module-level so no per-tick
@@ -110,10 +115,21 @@ class HardwarePlant(PlantInterface):
         self._geom = geom or StewartGeometry()
         self._seq = 0
         self._start_time = time.perf_counter()
-        self._control_dt = control_dt
+        self._control_dt = float(control_dt)
         self._enable_torque_ff = enable_torque_ff
         self._enable_vel_ff = enable_vel_ff
         self._enable_acc_ff = enable_acc_ff
+
+        # P4: telemetry-staleness watchdog thresholds derived from
+        # control_dt.  Pre-Phase-6 these were module-level magic numbers
+        # implicitly assuming 40 Hz; deriving them per-instance lets a
+        # 20 Hz / 100 Hz operating regime reuse the same code.  At
+        # control_dt=0.025 the values reproduce the pre-Phase-6 numbers
+        # exactly (0.075 / 0.125 / 0.500 s).  See
+        # controller/PLANT_INTERFACE_CONTRACT.md P4.
+        self._telem_stale_warn_s = _TELEM_STALE_WARN_MULT * self._control_dt
+        self._telem_stale_hard_s = _TELEM_STALE_HARD_MULT * self._control_dt
+        self._telem_stale_estop_s = _TELEM_STALE_ESTOP_MULT * self._control_dt
 
         # Dynamics parameters for feedforward computation
         self._dynamics_params = DynamicsParams.from_config()
@@ -608,10 +624,10 @@ class HardwarePlant(PlantInterface):
 
         # E-stop when telemetry is completely lost — prevents runaway commands
         # when MPC keeps seeing stale position feedback and ramping commands.
-        if telem_age is not None and telem_age > _TELEM_STALE_ESTOP_S:
+        if telem_age is not None and telem_age > self._telem_stale_estop_s:
             logger.error(
                 f"Telemetry stale ({telem_age:.3f}s > "
-                f"{_TELEM_STALE_ESTOP_S}s) — triggering e-stop")
+                f"{self._telem_stale_estop_s}s) — triggering e-stop")
             self.estop(reason='telemetry_stale')
 
         # Persistent-stale-contents detector: recv timestamps look fresh but
@@ -667,20 +683,20 @@ class HardwarePlant(PlantInterface):
             self._has_prev_motor_pos = True
 
         # Degrade velocity data when telemetry is stale
-        if telem_age is not None and telem_age > _TELEM_STALE_HARD_S:
+        if telem_age is not None and telem_age > self._telem_stale_hard_s:
             # W4c: zero the pre-allocated velocity buffer in place.
             state.leg_velocities_mmps.fill(0.0)
             vel_mmps = state.leg_velocities_mmps
             if not self._telem_stale_warned:
                 logger.warning(
                     f"Telemetry stale ({telem_age:.3f}s > "
-                    f"{_TELEM_STALE_HARD_S}s) — zeroing velocities")
+                    f"{self._telem_stale_hard_s}s) — zeroing velocities")
                 self._telem_stale_warned = True
-        elif telem_age is not None and telem_age > _TELEM_STALE_WARN_S:
+        elif telem_age is not None and telem_age > self._telem_stale_warn_s:
             if not self._telem_stale_warned:
                 logger.warning(
                     f"Telemetry aging ({telem_age:.3f}s > "
-                    f"{_TELEM_STALE_WARN_S}s)")
+                    f"{self._telem_stale_warn_s}s)")
                 self._telem_stale_warned = True
         else:
             self._telem_stale_warned = False
@@ -943,6 +959,12 @@ class HardwarePlant(PlantInterface):
     @property
     def geom(self) -> StewartGeometry:
         return self._geom
+
+    @property
+    def control_dt(self) -> float:
+        """P4: configured control period in seconds.  See
+        controller/PLANT_INTERFACE_CONTRACT.md P4."""
+        return self._control_dt
 
     @property
     def last_fk_iterations(self) -> int:

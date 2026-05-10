@@ -1303,7 +1303,7 @@ def main():
         feedback_pub = TargetFeedbackPub()
         print("TargetFeedbackPub: catch feedback on :5559")
     else:
-        plant = MuJoCoPlant()
+        plant = MuJoCoPlant(control_dt=CONTROL_DT)
 
     # Set up telemetry logging
     timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
