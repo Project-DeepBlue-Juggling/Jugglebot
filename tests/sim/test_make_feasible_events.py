@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from hypothesis import given, strategies as st, settings, HealthCheck, assume
+from hypothesis import given, strategies as st, assume
 
 from controller.target import (
     make_feasible_events,
@@ -162,8 +162,6 @@ def _multi_event_proposal(draw):
 
 @given(p0=_pose_strat, v0=_twist_strat, p1=_pose_strat, v1=_twist_strat,
        T=_T_strat, v_max=_vmax_strat, tau=_tau_strat)
-@settings(max_examples=150, deadline=None,
-          suppress_health_check=[HealthCheck.too_slow])
 def test_property_K1_K6_two_event_proposal(p0, v0, p1, v1, T, v_max, tau):
     """Random two-event proposals produce K1–K6 compliant events.
 
@@ -189,8 +187,6 @@ def test_property_K1_K6_two_event_proposal(p0, v0, p1, v1, T, v_max, tau):
 
 @given(p0=_pose_strat, v0=_twist_strat, p1=_pose_strat, v1=_twist_strat,
        T=_T_strat, v_max=_vmax_strat, tau=_tau_strat)
-@settings(max_examples=100, deadline=None,
-          suppress_health_check=[HealthCheck.too_slow])
 def test_property_no_stretch_rejects_deterministically(p0, v0, p1, v1, T, v_max, tau):
     """no_stretch=True either passes (K1–K6 via clamping alone) or rejects
     with a reason string and returns events unmodified (except K1 anchor + K6 clamp)."""
@@ -220,8 +216,6 @@ def test_property_no_stretch_rejects_deterministically(p0, v0, p1, v1, T, v_max,
        T1=st.floats(min_value=0.001, max_value=0.10, allow_nan=False),
        T2=st.floats(min_value=_K4_MIN_SPAN_S, max_value=1.0, allow_nan=False),
        v_max=_vmax_strat, tau=_tau_strat)
-@settings(max_examples=100, deadline=None,
-          suppress_health_check=[HealthCheck.too_slow])
 def test_property_K4_min_span(p0, v0, p1, v1, p2, v2, T1, T2, v_max, tau):
     """K4 — output spans MUST be ≥ 50 ms; near-duplicate input events MUST
     be merged (the second is dropped).
@@ -255,8 +249,6 @@ def test_property_K4_min_span(p0, v0, p1, v1, p2, v2, T1, T2, v_max, tau):
 @given(p=_pose_strat, twist_a=_twist_strat, twist_b=_twist_strat,
        t_offset=st.floats(min_value=_K4_MIN_SPAN_S, max_value=2.0, allow_nan=False),
        v_max=_vmax_strat, tau=_tau_strat)
-@settings(max_examples=100, deadline=None,
-          suppress_health_check=[HealthCheck.too_slow])
 def test_property_K5_coincident_twist(p, twist_a, twist_b, t_offset, v_max, tau):
     """K5 — two events at identical times with mismatched twists MUST raise
     ``ValueError`` whose message names the K5 invariant.
@@ -288,8 +280,6 @@ def test_property_K5_coincident_twist(p, twist_a, twist_b, t_offset, v_max, tau)
 @given(twist=_twist_strat,
        clamp=st.floats(min_value=0.0, max_value=500.0,
                        allow_nan=False, allow_infinity=False))
-@settings(max_examples=150, deadline=None,
-          suppress_health_check=[HealthCheck.too_slow])
 def test_property_K6_idempotence(twist, clamp):
     """K6 — applying the linear-twist clamp twice yields the same result as
     applying it once; angular components (3..5) are never modified.
@@ -318,8 +308,6 @@ def test_property_K6_idempotence(twist, clamp):
 
 
 @given(proposal=_multi_event_proposal(), v_max=_vmax_strat, tau=_tau_strat)
-@settings(max_examples=150, deadline=None,
-          suppress_health_check=[HealthCheck.too_slow])
 def test_property_K1_K6_multi_event(proposal, v_max, tau):
     """K1–K6 hold for proposals with 3..6 events.
 

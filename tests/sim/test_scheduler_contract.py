@@ -30,7 +30,7 @@ import logging
 
 import numpy as np
 import pytest
-from hypothesis import HealthCheck, assume, settings, strategies as st
+from hypothesis import assume, strategies as st
 from hypothesis.stateful import (
     RuleBasedStateMachine,
     invariant,
@@ -1098,15 +1098,12 @@ class SchedulerStateMachine(RuleBasedStateMachine):
             )
 
 
-# Settings template mirrors tests/sim/test_make_feasible_events.py:135 —
-# bounded examples + suppress the too_slow health check (state-machine
-# walks are inherently slower than scalar property tests).
+# Hypothesis profile-driven settings — see tests/conftest_hypothesis.py.
+# ci-fast (default) runs the state machine at max_examples=50; ci-deep
+# scales it to 1000 for nightly.  ``deadline=None`` and the health-check
+# suppressions (too_slow + filter_too_much) live on the profile, so no
+# per-test override is needed here.
 TestSchedulerStateMachine = SchedulerStateMachine.TestCase
-TestSchedulerStateMachine.settings = settings(
-    max_examples=50,
-    deadline=None,
-    suppress_health_check=[HealthCheck.too_slow, HealthCheck.filter_too_much],
-)
 
 
 if __name__ == '__main__':

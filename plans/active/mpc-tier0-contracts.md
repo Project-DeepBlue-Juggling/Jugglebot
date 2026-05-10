@@ -177,7 +177,7 @@ def __init__(self, *, control_dt: float = 0.025, **kw):
 | 5 | PlantInterface P1 + P2 (aliasing + can_reset) | COMPLETE | 2026-05-09 | Low | ABC additions; both `MuJoCoPlant` and `HardwarePlant` updated; contract test parameterized |
 | 6 | PlantInterface P3 + P4 (input-validation + control_dt) | COMPLETE | 2026-05-10 | Med | Stale-telemetry thresholds derived from `control_dt`; `command()` validation contract surfaced |
 | 7 | K1–K6 hypothesis retroactive expansion | COMPLETE | 2026-05-10 | Low | 4 new properties added to `test_make_feasible_events.py`; existing tests still pass |
-| 8 | CI hypothesis profiles wired | NOT STARTED | | Low | `ci-fast` (50 ex) for per-PR; `ci-deep` (1000 ex) for nightly; documented in CLAUDE.md |
+| 8 | CI hypothesis profiles wired | COMPLETE | 2026-05-10 | Low | `ci-fast` (50 ex) for per-PR; `ci-deep` (1000 ex) for nightly; documented in CLAUDE.md |
 
 ## Implementation Phases (detailed)
 
@@ -381,7 +381,7 @@ def __init__(self, *, control_dt: float = 0.025, **kw):
 
 ---
 
-### Phase 8: CI hypothesis profiles wired — NOT STARTED
+### Phase 8: CI hypothesis profiles wired — COMPLETE (2026-05-10)
 
 **Scope.** Two hypothesis profiles, integrated with pytest, defaulting to `ci-fast` and selectable via `--hypothesis-profile=ci-deep` for nightly.
 

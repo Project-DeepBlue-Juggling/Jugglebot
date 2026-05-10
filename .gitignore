@@ -45,6 +45,7 @@ __pycache__/
 *.pyd
 *.pyd
 .pytest_cache/
+.hypothesis/
 *.egg-info/
 .mypy_cache/
 

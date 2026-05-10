@@ -107,6 +107,9 @@ pytest tests/motion/ -v                       # motion module tests (kinematics,
 pytest tests/ros/test_can_node.py -v          # single file
 pytest tests/sim/test_mpc_static.py -v        # single file
 
+# Nightly hypothesis run (max_examples=1000, ~10 min wall-clock; ci-fast=50 is the per-PR default)
+pytest tests/ -q --hypothesis-profile=ci-deep
+
 # Hardware test harnesses (standalone scripts, require real robot)
 python tests/hardware/free_platform_test.py --test all
 python tests/hardware/single_leg_test.py --test all

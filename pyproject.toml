@@ -10,6 +10,11 @@ addopts = [
     "-p", "no:ament_xmllint",
     "-p", "no:ament_lint",
 ]
+markers = [
+    "slow: tests that take > 30s",
+    "nightly: tests run only in nightly CI",
+    "hypothesis_deep: hypothesis tests benefiting from --hypothesis-profile=ci-deep",
+]
 
 # On Jetson (ROS2 Foxy), the system launch_testing plugin is incompatible
 # with pytest >=8.  If you see "consider_namespace_packages" errors, either:
