@@ -17,7 +17,7 @@ files_changed:
   - logbook/2026-05-10-scheduler-begin-return-s3-overwrite.md
   - logbook/INDEX.md
 commits:
-  - <pending>
+  - 239a35d
 subsystem:
   - controller
   - mpc
