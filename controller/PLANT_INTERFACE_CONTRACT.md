@@ -23,50 +23,59 @@ the controller's pure-Python world and the physical (or simulated)
 robot — every safety-critical signal that the MPC sees, and every
 command that drives a real motor, crosses this boundary each tick.
 
-Pre-contract, the ABC at [plant.py:37–73](plant.py) specified four
-abstract methods (``command``, ``get_state``, ``step``, ``reset``)
-without normative guarantees on their semantics.  Two concrete
-implementations exist —
+Pre-contract, the ABC at
+[plant.py (the four abstract methods ``command`` / ``get_state`` /
+``step`` / ``reset``)](plant.py) specified the surface but not the
+semantics.  Phase 5 added ``can_reset`` as a fifth abstract property
+([plant.py:49–61](plant.py)).  Two concrete implementations exist —
 [MuJoCoPlant (sim/plant/mujoco_plant.py)](../sim/plant/mujoco_plant.py)
 and
-[HardwarePlant (controller/hardware_plant.py)](hardware_plant.py) —
-and they diverge silently on every one of the four invariants below:
+[HardwarePlant (controller/hardware_plant.py)](hardware_plant.py).
+Pre-contract they diverged silently on every one of the four
+invariants below; Phases 5 and 6 close the divergences:
 
-- **PlantState aliasing** — ``HardwarePlant.get_state()`` returns the
-  same pre-allocated ``self._state`` instance every call (mutated in
-  place; see [hardware_plant.py:262–272, :500–513](hardware_plant.py)).
-  ``MuJoCoPlant.get_state()`` constructs a fresh ``PlantState`` from
-  fresh ndarrays every call
-  (see [mujoco_plant.py:198–207](../sim/plant/mujoco_plant.py)).
-  Consumers that rely on aliasing for hot-loop budget compliance
-  (see [HOT_LOOP_CONTRACT.md:434–442](HOT_LOOP_CONTRACT.md)) are
-  silently broken under sim; consumers that retain references across
-  ticks are silently broken under hardware.  The aliasing convention
-  lives in HOT_LOOP_CONTRACT.md but isn't enforced at the ABC level —
+- **PlantState aliasing** — ``HardwarePlant.get_state()`` has always
+  returned the same pre-allocated ``self._state`` instance every call
+  (mutated in place; see
+  [hardware_plant.py:268–278, :506–519](hardware_plant.py)).
+  Pre-Phase-5, ``MuJoCoPlant.get_state()`` constructed a fresh
+  ``PlantState`` from fresh ndarrays every call.  Phase 5 brings it
+  into compliance — see the post-Phase-5 in-place pattern at
+  [mujoco_plant.py:191–245](../sim/plant/mujoco_plant.py) (matches the
+  HardwarePlant reference).  Pre-Phase-5, consumers relying on
+  aliasing for hot-loop budget compliance
+  (see [HOT_LOOP_CONTRACT.md:434–442](HOT_LOOP_CONTRACT.md)) were
+  silently broken under sim; consumers retaining references across
+  ticks were silently broken under hardware.  The aliasing convention
+  lives in HOT_LOOP_CONTRACT.md but wasn't enforced at the ABC level —
   this contract pulls it into the canonical interface document.
-- **Reset capability** — ``HardwarePlant.reset()`` is a silent no-op
-  with a ``logger.warning`` (see
-  [hardware_plant.py:726–734](hardware_plant.py)).  A caller passing
-  ``pose_6dof`` expecting the platform to move there would be silently
-  ignored.  ``MuJoCoPlant.reset()`` actually resets.  No way for the
-  caller to ask "does this plant honour reset?"
+- **Reset capability** — pre-Phase-5, ``HardwarePlant.reset()`` was a
+  silent no-op with a ``logger.warning``.  Phase 5 lands the loud
+  raise (see [hardware_plant.py:732–748](hardware_plant.py)).  A
+  caller passing ``pose_6dof`` expecting the platform to move there
+  would have been silently ignored pre-Phase-5; post-Phase-5 the
+  caller crashes with ``NotImplementedError`` and a pointer to the
+  orchestrator.  ``MuJoCoPlant.reset()`` (declared
+  [can_reset = True at mujoco_plant.py:66](../sim/plant/mujoco_plant.py))
+  honours the call as before.
 - **Input-validation** — ``MuJoCoPlant.command()`` silently clamps
   out-of-range extensions to ``[margin, stroke - margin]`` (see
-  [mujoco_plant.py:154](../sim/plant/mujoco_plant.py)) with a
+  [mujoco_plant.py:181](../sim/plant/mujoco_plant.py)) with a
   ``logger.warning``.  ``HardwarePlant.command()`` does no input
   validation.  The same call with the same inputs produces different
   observable outputs on the two implementations — a future contributor
   who writes "the plant accepts ext_mm and clamps" against MuJoCoPlant
-  is wrong on hardware.
+  is wrong on hardware.  Phase 6 lands the trusted-callee P3
+  specification + test.
 - **Period awareness** — ``HardwarePlant.__init__`` accepts
   ``control_dt: float = 0.025`` (see
-  [hardware_plant.py:99](hardware_plant.py)) but uses module-level
+  [hardware_plant.py:105](hardware_plant.py)) but uses module-level
   hard-coded constants for staleness thresholds (see
-  [hardware_plant.py:67–70](hardware_plant.py)) that assume 40 Hz.
+  [hardware_plant.py:68–70](hardware_plant.py)) that assume 40 Hz.
   ``MuJoCoPlant.__init__`` does not accept ``control_dt`` at all (see
-  [mujoco_plant.py:64–69](../sim/plant/mujoco_plant.py)).  A future
+  [mujoco_plant.py:68–73](../sim/plant/mujoco_plant.py)).  A future
   20 Hz operating regime would break the watchdog thresholds without
-  touching ``HardwarePlant``'s code.
+  touching ``HardwarePlant``'s code.  Phase 6 lands P4.
 
 The P1–P4 invariants below close that whole class of divergence.
 
@@ -130,9 +139,10 @@ reset (return to home, or to a specified ``pose_6dof``).
 When ``can_reset is False``, ``reset()`` MUST raise
 ``NotImplementedError`` with a message naming the implementation and
 pointing at the correct lifecycle API.  Silent no-ops with a
-``logger.warning`` (the current ``HardwarePlant.reset()`` behaviour at
-[hardware_plant.py:726–734](hardware_plant.py)) are a contract
-violation.
+``logger.warning`` (the pre-Phase-5 ``HardwarePlant.reset()`` body)
+are a contract violation; the post-Phase-5 form at
+[hardware_plant.py:732–748](hardware_plant.py) raises with an
+operator-actionable message.
 
 Callers that may run against either implementation MUST guard with
 ``if plant.can_reset: plant.reset(...)``.  Code that unconditionally
@@ -163,10 +173,10 @@ loop) MUST guarantee finite, correctly-shaped inputs:
 
 Implementations MUST NOT silently coerce, clip, default, or sanitise
 malformed inputs.  Specifically:
-- An out-of-range extension MUST NOT be silently clamped (the current
+- An out-of-range extension MUST NOT be silently clamped (the
   ``MuJoCoPlant`` ``np.clip`` at
-  [mujoco_plant.py:154](../sim/plant/mujoco_plant.py) is a contract
-  violation).
+  [mujoco_plant.py:181](../sim/plant/mujoco_plant.py) is a contract
+  violation; Phase 6 will resolve it).
 - A NaN or inf MUST NOT be silently zeroed or replaced.
 - A wrong-shape array MUST NOT be silently broadcast or reshaped.
 
@@ -209,7 +219,7 @@ Internal time-window thresholds (telemetry-staleness watchdogs,
 deadlock deadlines, dead-band re-arm intervals) MUST be derived from
 ``control_dt`` rather than hard-coded.  The current
 ``HardwarePlant`` constants
-([hardware_plant.py:67–70](hardware_plant.py)) —
+([hardware_plant.py:68–70](hardware_plant.py)) —
 
     _TELEM_STALE_WARN_S  = 0.075   # 3x MPC period — log warning
     _TELEM_STALE_HARD_S  = 0.125   # 5x MPC period — zero velocities
@@ -258,14 +268,15 @@ implementations).  The enforcement points are:
 
 | Invariant | ABC surface | Enforcement test |
 |-----------|-------------|------------------|
-| P1 | ``get_state() -> PlantState`` (existing); contract test asserts ``id(plant.get_state())`` invariant + ndarray-field identity over ≥100 calls | ``tests/sim/test_plant_interface_contract.py`` (Phase 5) parameterised over ``[MuJoCoPlant, HardwarePlantStub]`` |
-| P2 | New abstract property ``can_reset: bool`` (Phase 5) | Same test asserts ``plant.reset() raises NotImplementedError iff not plant.can_reset`` |
+| P1 | ``get_state() -> PlantState`` (existing); contract test asserts ``id(plant.get_state())`` invariant + ndarray-field identity over 100 calls | ``tests/sim/test_plant_interface_contract.py::TestP1PlantStateAliasing`` (Phase 5, landed) — parameterised over ``[MuJoCoPlant, HardwarePlant via _hardware_plant_stub]`` |
+| P2 | New abstract property ``can_reset: bool`` (Phase 5, landed at [plant.py:49–61](plant.py)) | ``TestP2ResetCapability`` asserts ``plant.reset() raises NotImplementedError iff not plant.can_reset``, plus ``TestPlantInterfaceABC::test_can_reset_is_abstract_on_the_abc`` enforces declaration |
 | P3 | Existing ``command()`` signature; documented-only (Phase 4 / 6) | Contract test (Phase 6) feeds adversarial inputs and asserts no silent coercion |
 | P4 | New abstract property ``control_dt: float`` (Phase 6); constructor kwarg | Contract test (Phase 6) asserts ``plant.control_dt`` echoes constructor and that staleness thresholds scale linearly |
 
-The contract document landed in **Phase 4** (this document) is the
-discovery + design pass — *no code change*.  Phases 5 and 6 land
-enforcement.
+The contract document landed in **Phase 4** is the discovery + design
+pass.  **Phase 5** (this commit) lands the P1 + P2 enforcement — both
+abstract additions and the parameterised contract test.  Phase 6
+lands P3 + P4.
 
 ## Implementing a new ``PlantInterface``
 
@@ -364,7 +375,7 @@ If a ``PlantInterface``-related symptom surfaces in a session log:
    plant under test for ``return PlantState(...)`` (fresh dataclass)
    or ``np.array(...)`` inside ``get_state()`` (fresh ndarrays).
    ``HardwarePlant.get_state()``'s pattern at
-   [hardware_plant.py:500–513](hardware_plant.py) is the reference.
+   [hardware_plant.py:506–519](hardware_plant.py) is the reference.
 
 2. **A consumer reads stale plant state across ticks** — a cached
    ``state = plant.get_state()`` reference that's read on a later
@@ -390,13 +401,17 @@ If a ``PlantInterface``-related symptom surfaces in a session log:
 4. **Watchdog fires too early or too late at a non-default
    control_dt** — P4 violation.  Grep the plant for hard-coded
    second-magnitudes.  In ``HardwarePlant``, the
-   [post-Phase-6 form (hardware_plant.py:67–70)](hardware_plant.py)
+   [post-Phase-6 form (hardware_plant.py:68–70)](hardware_plant.py)
    replaces them with ``self._control_dt`` multiples.
 
 5. **``plant.reset()`` returned but the platform didn't move** —
-   P2 violation.  Pre-Phase-5 ``HardwarePlant.reset()`` is a silent
-   no-op.  Audit for unconditional ``plant.reset()`` calls; gate
-   them with ``if plant.can_reset:``.
+   P2 violation.  Pre-Phase-5, ``HardwarePlant.reset()`` was a
+   silent no-op (the symptom).  Post-Phase-5 it raises
+   ``NotImplementedError`` instead, so this symptom should not
+   recur for current code; it remains a useful diagnosis for any
+   future implementation that regresses to a silent no-op.  Audit
+   for unconditional ``plant.reset()`` calls; gate them with
+   ``if plant.can_reset:``.
 
 ## Related
 

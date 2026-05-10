@@ -91,6 +91,12 @@ class HardwarePlant(PlantInterface):
         ZeroMQ address to connect SUB socket for telemetry.
     """
 
+    # P2: hardware homing is owned by the orchestrator, not the plant
+    # interface.  ``reset()`` raises NotImplementedError; callers must
+    # guard with ``if plant.can_reset:``.  See
+    # controller/PLANT_INTERFACE_CONTRACT.md P2.
+    can_reset: bool = False
+
     def __init__(
         self,
         geom: StewartGeometry | None = None,
@@ -726,12 +732,20 @@ class HardwarePlant(PlantInterface):
     def reset(self, pose_6dof: np.ndarray | None = None) -> None:
         """Not supported in hardware mode.
 
-        The motor guard handles homing via the orchestrator.  Calling
-        reset() on hardware would require commanding a trajectory to home,
-        which is out of scope for the plant interface.
+        Raises
+        ------
+        NotImplementedError
+            Always.  The motor guard owns homing via the orchestrator;
+            ``HardwarePlant.reset()`` is not a valid lifecycle API.
+            Callers MUST gate with ``if plant.can_reset:``.  See P2 in
+            controller/PLANT_INTERFACE_CONTRACT.md.
         """
-        logger.warning("HardwarePlant.reset() is a no-op; use the "
-                        "orchestrator for homing")
+        raise NotImplementedError(
+            "HardwarePlant.reset() is not supported (can_reset=False); "
+            "homing is owned by the orchestrator.  Callers must guard "
+            "with ``if plant.can_reset: plant.reset(...)`` per "
+            "controller/PLANT_INTERFACE_CONTRACT.md P2."
+        )
 
     # ------------------------------------------------------------------
     # MPC-specific methods

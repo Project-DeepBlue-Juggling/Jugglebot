@@ -174,7 +174,7 @@ def __init__(self, *, control_dt: float = 0.025, **kw):
 | 2 | Scheduler S1, S2, S3 enforcement (input-domain) | COMPLETE | 2026-05-09 | Med | Past-time events rejected; duplicate IDs handled deterministically; queue bounded |
 | 3 | Scheduler S4 tightening + S5, S6 enforcement (state-machine) | COMPLETE | 2026-05-09 | Med | Mid-TRANSITIONING replace specified; backward `sim_time` rejected; S4 strict-by-default in tests |
 | 4 | PLANT_INTERFACE_CONTRACT.md draft + interface audit | COMPLETE | 2026-05-09 | Low | Document captures aliasing/reset/dt/validation conventions; no behaviour change |
-| 5 | PlantInterface P1 + P2 (aliasing + can_reset) | NOT STARTED | | Low | ABC additions; both `MuJoCoPlant` and `HardwarePlant` updated; contract test parameterized |
+| 5 | PlantInterface P1 + P2 (aliasing + can_reset) | COMPLETE | 2026-05-09 | Low | ABC additions; both `MuJoCoPlant` and `HardwarePlant` updated; contract test parameterized |
 | 6 | PlantInterface P3 + P4 (input-validation + control_dt) | NOT STARTED | | Med | Stale-telemetry thresholds derived from `control_dt`; `command()` validation contract surfaced |
 | 7 | K1–K6 hypothesis retroactive expansion | NOT STARTED | | Low | 4 new properties added to `test_make_feasible_events.py`; existing tests still pass |
 | 8 | CI hypothesis profiles wired | NOT STARTED | | Low | `ci-fast` (50 ex) for per-PR; `ci-deep` (1000 ex) for nightly; documented in CLAUDE.md |
@@ -296,7 +296,7 @@ def __init__(self, *, control_dt: float = 0.025, **kw):
 
 ---
 
-### Phase 5: PlantInterface P1 + P2 (aliasing + can_reset) — NOT STARTED
+### Phase 5: PlantInterface P1 + P2 (aliasing + can_reset) — COMPLETE (2026-05-09)
 
 **Scope.** Add the two abstract properties; update `MuJoCoPlant` and `HardwarePlant` to declare them; add a parameterized contract test that exercises both implementations against the invariants.
 

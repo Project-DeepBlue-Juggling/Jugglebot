@@ -61,6 +61,10 @@ class MuJoCoPlant(PlantInterface):
         Stewart geometry instance.  Created automatically if not supplied.
     """
 
+    # P2: MuJoCo simulation can be reset to home / arbitrary pose at any
+    # time.  See controller/PLANT_INTERFACE_CONTRACT.md P2.
+    can_reset: bool = True
+
     def __init__(
         self,
         model_path: str | None = None,
@@ -131,6 +135,29 @@ class MuJoCoPlant(PlantInterface):
             if ball_id >= 0:
                 self._ball_manager = BallManager(self._model, self._data)
 
+        # P1: pre-allocated PlantState returned (aliased) by every
+        # ``get_state()`` call.  Ndarray fields live across ticks; scalar
+        # fields (time, hand_pos_mm, hand_vel_mmps) are re-assigned each
+        # call.  Mirrors the HardwarePlant pattern at
+        # controller/hardware_plant.py:262–272.  See
+        # controller/PLANT_INTERFACE_CONTRACT.md P1.
+        self._state = PlantState(
+            leg_extensions_mm=np.zeros(6),
+            leg_velocities_mmps=np.zeros(6),
+            platform_pos_mm=np.zeros(3),
+            platform_rot=np.zeros(3),
+            platform_twist=np.zeros(6),
+            time=0.0,
+            hand_pos_mm=None,
+            hand_vel_mmps=None,
+            data_age_s=None,
+        )
+        # Scratch buffer for the per-tick FK rot-matrix → rot-vec conversion.
+        # Mutated in place by ``get_state``; held off the PlantState surface
+        # because it is a transient computation, not part of the public state.
+        self._slide_pos_buf = np.empty(6)
+        self._slide_vel_buf = np.empty(6)
+
         # Reset to home keyframe
         self.reset()
 
@@ -162,13 +189,29 @@ class MuJoCoPlant(PlantInterface):
         self._data.ctrl[:6] = slide_m
 
     def get_state(self) -> PlantState:
-        """Read current plant state from MuJoCo sensors."""
-        # Leg positions & velocities
-        slide_pos_m = np.array([self._sensor(f'slide_pos_{i}')[0] for i in range(6)])
-        slide_vel_mps = np.array([self._sensor(f'slide_vel_{i}')[0] for i in range(6)])
+        """Read current plant state from MuJoCo sensors.
 
-        extensions_mm = self._slide_to_extensions(slide_pos_m)  # STOW-relative = IK ext
-        velocities_mmps = slide_vel_mps * 1000.0  # m/s → mm/s
+        P1: returns ``self._state`` — the same PlantState instance every
+        call — with ndarray fields mutated in place.  Consumers MUST NOT
+        retain references across ticks.  See
+        controller/PLANT_INTERFACE_CONTRACT.md P1.
+        """
+        state = self._state
+
+        # Leg positions & velocities — fill scratch buffers from sensor
+        # reads, then convert into the PlantState ndarray fields in place.
+        for i in range(6):
+            self._slide_pos_buf[i] = self._sensor(f'slide_pos_{i}')[0]
+            self._slide_vel_buf[i] = self._sensor(f'slide_vel_{i}')[0]
+        # STOW-relative IK extensions: ext_mm = abs_length_mm - init_leg_lengths_mm
+        # = (geom_home + slide_m) * 1000 - init_leg_lengths_mm.  In-place via
+        # the pre-allocated leg_extensions_mm buffer.
+        np.add(self._geom_home_lengths_m, self._slide_pos_buf,
+               out=state.leg_extensions_mm)
+        state.leg_extensions_mm *= 1000.0
+        state.leg_extensions_mm -= self._geom.init_leg_lengths_mm
+        # Velocities: slide_vel_mps × 1000 → mm/s.  In place.
+        np.multiply(self._slide_vel_buf, 1000.0, out=state.leg_velocities_mmps)
 
         # Platform pose
         pos_m = self._sensor('platform_pos')        # (3,) world position
@@ -177,34 +220,29 @@ class MuJoCoPlant(PlantInterface):
         angvel = self._sensor('platform_angvel')      # (3,) rad/s
 
         height_m = self._geom.init_height_mm / 1000.0
-        pos_offset_mm = np.array([
-            pos_m[0] * 1000.0,
-            pos_m[1] * 1000.0,
-            (pos_m[2] - height_m) * 1000.0,
-        ])
+        # platform_pos_mm: [x*1000, y*1000, (z - height_m)*1000] in place.
+        state.platform_pos_mm[0] = pos_m[0] * 1000.0
+        state.platform_pos_mm[1] = pos_m[1] * 1000.0
+        state.platform_pos_mm[2] = (pos_m[2] - height_m) * 1000.0
 
         rot_matrix = quat_to_rot_matrix(quat[0], quat[1], quat[2], quat[3])
-        rot_vec = rot_matrix_to_rotvec(rot_matrix)
+        # rot_matrix_to_rotvec returns a fresh (3,) ndarray; copy in place.
+        np.copyto(state.platform_rot, rot_matrix_to_rotvec(rot_matrix))
 
-        twist = np.concatenate([linvel * 1000.0, angvel])  # mm/s + rad/s
+        # Twist: [vx, vy, vz, wx, wy, wz] = [linvel*1000, angvel] in place.
+        np.multiply(linvel, 1000.0, out=state.platform_twist[:3])
+        np.copyto(state.platform_twist[3:], angvel)
 
-        # Hand state (optional)
-        hand_pos_mm = None
-        hand_vel_mmps = None
+        # Time + hand state (scalars; re-assigned each call).
+        state.time = self._data.time
         if self._has_hand and 'hand_slide_pos' in self._sensor_adr:
-            hand_pos_mm = float(self._sensor('hand_slide_pos')[0] * 1000.0)
-            hand_vel_mmps = float(self._sensor('hand_slide_vel')[0] * 1000.0)
+            state.hand_pos_mm = float(self._sensor('hand_slide_pos')[0] * 1000.0)
+            state.hand_vel_mmps = float(self._sensor('hand_slide_vel')[0] * 1000.0)
+        else:
+            state.hand_pos_mm = None
+            state.hand_vel_mmps = None
 
-        return PlantState(
-            leg_extensions_mm=extensions_mm,
-            leg_velocities_mmps=velocities_mmps,
-            platform_pos_mm=pos_offset_mm,
-            platform_rot=rot_vec,
-            platform_twist=twist,
-            time=self._data.time,
-            hand_pos_mm=hand_pos_mm,
-            hand_vel_mmps=hand_vel_mmps,
-        )
+        return state
 
     def step(self, dt: float) -> None:
         """Advance simulation by *dt* seconds using internal substeps.
