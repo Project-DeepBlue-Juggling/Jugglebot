@@ -11,7 +11,7 @@ related_entries:
   - 2026-04-20-k1-k6-reference-feasibility-resolution
 files_changed:
   - tests/sim/test_make_feasible_events.py
-  - plans/active/mpc-tier0-contracts.md
+  - plans/archived/2026-05-10 mpc-tier0-contracts.md
   - logbook/2026-05-10-k1-k6-hypothesis-phase-7-retroactive-expansion.md
   - logbook/INDEX.md
 commits:
@@ -29,7 +29,7 @@ tags:
 
 ## Summary
 
-Phase 7 of the [mpc-tier0-contracts plan](../plans/active/mpc-tier0-contracts.md):
+Phase 7 of the [mpc-tier0-contracts plan](../plans/archived/2026-05-10 mpc-tier0-contracts.md):
 added four new hypothesis property tests to
 [tests/sim/test_make_feasible_events.py](../tests/sim/test_make_feasible_events.py),
 extending the K1–K6 property surface from two properties (the canonical
@@ -190,7 +190,7 @@ events with K4-compliant cumulative gaps, reusing ``_pose_strat`` and
 all with ``deadline=None`` and ``HealthCheck.too_slow`` suppressed to match
 existing convention.
 
-### plans/active/mpc-tier0-contracts.md (modified)
+### plans/archived/2026-05-10 mpc-tier0-contracts.md (modified)
 
 Phase 7 marked ``COMPLETE (2026-05-10)`` in both the summary table and the
 detailed Phase 7 heading.

@@ -18,7 +18,7 @@ files_changed:
   - run_mpc.py
   - sim/main.py
   - tests/sim/test_plant_interface_contract.py
-  - plans/active/mpc-tier0-contracts.md
+  - plans/archived/2026-05-10 mpc-tier0-contracts.md
   - logbook/2026-05-10-plant-interface-contract-phase-6-p3-p4-enforcement.md
   - logbook/INDEX.md
 commits:
@@ -36,7 +36,7 @@ tags:
 
 ## Summary
 
-Phase 6 of the [mpc-tier0-contracts plan](../plans/active/mpc-tier0-contracts.md):
+Phase 6 of the [mpc-tier0-contracts plan](../plans/archived/2026-05-10 mpc-tier0-contracts.md):
 implemented the two remaining invariants P3 (trusted-callee
 ``command()``) and P4 (``control_dt`` awareness) defined in
 [controller/PLANT_INTERFACE_CONTRACT.md](../controller/PLANT_INTERFACE_CONTRACT.md)
@@ -287,7 +287,7 @@ on both.
 - Diagnosis #4 (watchdog at non-default control_dt) updated to
   point at the per-instance derivation site.
 
-### plans/active/mpc-tier0-contracts.md (modified)
+### plans/archived/2026-05-10 mpc-tier0-contracts.md (modified)
 
 Phase 6 marked ``COMPLETE (2026-05-10)`` in both the summary table
 and the detailed Phase 6 heading.

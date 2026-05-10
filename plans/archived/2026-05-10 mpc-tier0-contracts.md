@@ -1,7 +1,8 @@
 ---
 title: MPC Tier 0 — Scheduler & PlantInterface Contracts
 created: 2026-05-08
-status: active
+status: completed
+completed: 2026-05-10
 ---
 
 # MPC Tier 0 — Scheduler & PlantInterface Contracts

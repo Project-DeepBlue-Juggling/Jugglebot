@@ -10,7 +10,7 @@ related_entries:
   - 2026-04-23-hot-loop-zero-allocation-contract
 files_changed:
   - controller/SCHEDULER_CONTRACT.md
-  - plans/active/mpc-tier0-contracts.md
+  - plans/archived/2026-05-10 mpc-tier0-contracts.md
   - logbook/2026-05-09-scheduler-contract-phase-1-audit.md
   - logbook/INDEX.md
 commits:
@@ -29,7 +29,7 @@ tags:
 
 ## Summary
 
-Phase 1 of the [mpc-tier0-contracts plan](../plans/active/mpc-tier0-contracts.md):
+Phase 1 of the [mpc-tier0-contracts plan](../plans/archived/2026-05-10 mpc-tier0-contracts.md):
 audited [controller/scheduler.py](../controller/scheduler.py) for invariants
 the code currently relies on (explicit and implicit), then drafted
 [controller/SCHEDULER_CONTRACT.md](../controller/SCHEDULER_CONTRACT.md)
@@ -223,7 +223,7 @@ infeasible event would be worse than degrading.
 
 ### Phase 1 produces no code change — by design
 
-The plan ([mpc-tier0-contracts.md](../plans/active/mpc-tier0-contracts.md)
+The plan ([mpc-tier0-contracts.md](../plans/archived/2026-05-10 mpc-tier0-contracts.md)
 Phase 1) explicitly excludes code changes from this phase.  Reason:
 *the contract document is the design artefact*.  Landing it
 independently lets the user review the *spec* before any *enforcement*
@@ -236,7 +236,7 @@ gates.
 | Path | Change |
 |------|--------|
 | `controller/SCHEDULER_CONTRACT.md` | Created (~400 lines): Background, six S-invariants with Why + enforcement pointers, Enforcement table, new-source template, Diagnosis, Related |
-| `plans/active/mpc-tier0-contracts.md` | Phase 1 status: `NOT STARTED` → `IN PROGRESS (started 2026-05-09)` → `COMPLETE (2026-05-09)` |
+| `plans/archived/2026-05-10 mpc-tier0-contracts.md` | Phase 1 status: `NOT STARTED` → `IN PROGRESS (started 2026-05-09)` → `COMPLETE (2026-05-09)` |
 | `logbook/INDEX.md` | New entry row (this document) |
 
 No production code changes.

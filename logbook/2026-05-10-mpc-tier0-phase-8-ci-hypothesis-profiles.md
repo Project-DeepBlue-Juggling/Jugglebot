@@ -16,7 +16,7 @@ files_changed:
   - tests/sim/test_scheduler_contract.py
   - pyproject.toml
   - CLAUDE.md
-  - plans/active/mpc-tier0-contracts.md
+  - plans/archived/2026-05-10 mpc-tier0-contracts.md
   - logbook/2026-05-10-mpc-tier0-phase-8-ci-hypothesis-profiles.md
   - logbook/INDEX.md
 commits:
@@ -37,7 +37,7 @@ tags:
 ## Summary
 
 Phase 8 — the final phase of [Plan 1
-(mpc-tier0-contracts)](../plans/active/mpc-tier0-contracts.md) —
+(mpc-tier0-contracts)](../plans/archived/2026-05-10 mpc-tier0-contracts.md) —
 introduces three hypothesis profiles (``ci-fast``, ``ci-deep``,
 ``dev``) and migrates every hypothesis test in the suite to be
 profile-driven.  Per-PR runs default to ``ci-fast``
@@ -271,7 +271,7 @@ section.  The pre-existing ``addopts`` array was untouched.
 
 One-line nightly invocation added to the existing Tests section.
 
-### plans/active/mpc-tier0-contracts.md (modified)
+### plans/archived/2026-05-10 mpc-tier0-contracts.md (modified)
 
 Phase 8 marked ``COMPLETE (2026-05-10)`` in both the summary table
 and the detailed Phase 8 heading.
