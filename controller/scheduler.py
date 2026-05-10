@@ -764,8 +764,20 @@ class EventScheduler:
 
         Call this after a catch is confirmed, hand retraction completes,
         etc.  If called during HOLDING with no next event, begins the
-        return.  If called during other phases, queues a RETURN_TO_ACTIVE
-        as the next event.
+        return.  If called during other phases, queues a
+        ``RETURN_TO_ACTIVE`` as the next event — but per S3 the
+        in-flight slot set is bounded, so this MUST NOT silently
+        overwrite an existing ``_next_event``.
+
+        Raises
+        ------
+        ValueError
+            If both ``_current_event`` and ``_next_event`` slots are
+            already occupied (S3 violation).  ``begin_return`` is not
+            a documented bypass for S3; callers must
+            ``cancel_next()`` / ``clear()`` before requesting return
+            when the lookahead slot is occupied.
+            See controller/SCHEDULER_CONTRACT.md.
         """
         if self._phase == SchedulerPhase.HOLDING and self._next_event is None:
             self._phase = SchedulerPhase.RETURNING
@@ -779,7 +791,10 @@ class EventScheduler:
         elif self._phase == SchedulerPhase.IDLE:
             pass  # already at active
         else:
-            # Queue a return as next event
+            # Queue a return as the next event.  S3: refuse to overwrite
+            # an existing _next_event — begin_return is not a documented
+            # bypass for the bounded in-flight slot set.
+            self._validate_slot_capacity(op_name='begin_return')
             ret_event = ScheduledEvent(
                 event_id=_next_event_id(),
                 event_type=EventType.RETURN_TO_ACTIVE,

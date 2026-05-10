@@ -900,6 +900,119 @@ class TestCancelNextStateMachine:
 
 
 # ---------------------------------------------------------------------
+# Phase 0 (Plan 2) — begin_return slot-capacity semantics
+# ---------------------------------------------------------------------
+
+class TestBeginReturnSlotCapacity:
+    """T-U-T0-3, T-U-T0-4 — ``begin_return`` slot-capacity semantics.
+
+    Plan 2 Phase 0 closes the second of two state-machine semantic gaps
+    surfaced by Plan 1 Phase 3's ``RuleBasedStateMachine``.  Pre-fix,
+    when ``begin_return`` was called in a phase other than HOLDING /
+    IDLE *and* both ``_current_event`` and ``_next_event`` slots were
+    occupied, the implementation silently assigned
+    ``self._next_event = ret_event`` — clobbering the in-flight
+    ``_next_event`` and bypassing the S3 capacity bound.
+
+    The fix routes the third branch through the existing
+    ``_validate_slot_capacity`` helper (the same helper ``submit_event``
+    uses for S3 enforcement), raising ``ValueError`` with the canonical
+    "S3 violation in begin_return: …" message.  Callers must
+    ``cancel_next()`` / ``clear()`` before requesting a return when the
+    lookahead slot is occupied.
+
+    See ``logbook/2026-05-10-scheduler-begin-return-s3-overwrite.md``
+    and ``plans/active/mpc-sadpath-coverage-tiers-1-3.md`` Phase 0.
+    """
+
+    def test_begin_return_with_both_slots_filled_raises(self):
+        """T-U-T0-3: begin_return during APPROACHING with both slots
+        filled raises ValueError per S3; state is unchanged."""
+        sched = _scheduler()
+        ev1 = _event(time=1.0, pose=np.array([50.0, 0.0, 20.0, 0.0, 0.0, 0.0]))
+        ev2 = _event(time=2.0, pose=np.array([100.0, 0.0, 40.0, 0.0, 0.0, 0.0]))
+        sched.submit_event(ev1)
+        sched.submit_event(ev2)
+        sched.update(0.0, ACTIVE_POSE, np.zeros(6))    # APPROACHING ev1
+        assert sched.phase == SchedulerPhase.APPROACHING
+        assert sched.next_event is ev2
+
+        with pytest.raises(ValueError, match="S3 violation in begin_return"):
+            sched.begin_return()
+
+        # State unchanged after the raise: phase, both slots, _seg_next.
+        assert sched.phase == SchedulerPhase.APPROACHING
+        assert sched.active_event is ev1
+        assert sched.next_event is ev2
+
+    def test_begin_return_with_only_current_filled_regression(self):
+        """T-U-T0-4 regression: begin_return during APPROACHING with
+        only _current_event filled queues the RETURN_TO_ACTIVE event in
+        the next slot.  Existing behaviour preserved."""
+        sched = _scheduler()
+        ev1 = _event(time=1.0, pose=np.array([50.0, 0.0, 20.0, 0.0, 0.0, 0.0]))
+        sched.submit_event(ev1)
+        sched.update(0.0, ACTIVE_POSE, np.zeros(6))
+        assert sched.phase == SchedulerPhase.APPROACHING
+        assert sched.next_event is None
+
+        sched.begin_return()
+        # _next_event is now a RETURN_TO_ACTIVE event.
+        assert sched.next_event is not None
+        assert sched.next_event.event_type == EventType.RETURN_TO_ACTIVE
+        np.testing.assert_array_equal(sched.next_event.pose, ACTIVE_POSE)
+        # Phase unchanged — RETURN_TO_ACTIVE is queued as the next event;
+        # the actual transition to RETURNING happens later via the
+        # state machine, not synchronously inside begin_return.
+        assert sched.phase == SchedulerPhase.APPROACHING
+        assert sched.active_event is ev1
+
+    def test_begin_return_during_transitioning_with_destination_raises(self):
+        """begin_return during TRANSITIONING raises per S3 — the
+        _next_event slot holds the active destination, so queuing
+        a RETURN_TO_ACTIVE would clobber it."""
+        sched = _scheduler()
+        ev1 = _event(time=0.1, pose=np.array([50.0, 0.0, 20.0, 0.0, 0.0, 0.0]))
+        ev2 = _event(time=1.0, pose=np.array([100.0, 0.0, 40.0, 0.0, 0.0, 0.0]))
+        sched.submit_event(ev1)
+        sched.submit_event(ev2)
+        sched.update(0.0, ACTIVE_POSE, np.zeros(6))
+        sched.update(0.15, ACTIVE_POSE, np.zeros(6))   # arrival → TRANSITIONING
+        assert sched.phase == SchedulerPhase.TRANSITIONING
+        assert sched.next_event is ev2
+
+        with pytest.raises(ValueError, match="S3 violation in begin_return"):
+            sched.begin_return()
+
+        # State unchanged.
+        assert sched.phase == SchedulerPhase.TRANSITIONING
+        assert sched.next_event is ev2
+
+    def test_begin_return_from_holding_no_next_unchanged(self):
+        """Regression: begin_return during HOLDING with no next event
+        still flips to RETURNING (the canonical happy path).  The S3
+        guard only fires in the third branch, never in this one."""
+        sched = _scheduler()
+        ev1 = _event(time=0.1, pose=np.array([50.0, 0.0, 20.0, 0.0, 0.0, 0.0]))
+        sched.submit_event(ev1)
+        sched.update(0.0, ACTIVE_POSE, np.zeros(6))
+        sched.update(0.15, ACTIVE_POSE, np.zeros(6))
+        assert sched.phase == SchedulerPhase.HOLDING
+        assert sched.next_event is None
+        sched.begin_return()
+        assert sched.phase == SchedulerPhase.RETURNING
+
+    def test_begin_return_from_idle_unchanged(self):
+        """Regression: begin_return during IDLE is a no-op (already at
+        active pose).  Preserves pre-fix behaviour."""
+        sched = _scheduler()
+        sched.update(0.0, ACTIVE_POSE, np.zeros(6))
+        assert sched.phase == SchedulerPhase.IDLE
+        sched.begin_return()
+        assert sched.phase == SchedulerPhase.IDLE
+
+
+# ---------------------------------------------------------------------
 # S6 — Monotonic sim_time
 # ---------------------------------------------------------------------
 
@@ -1115,17 +1228,25 @@ class SchedulerStateMachine(RuleBasedStateMachine):
                 f"expected TRANSITIONING"
             )
 
-    # begin_return silently overwrites _next_event when both slots are
-    # filled (begin_return assigns _next_event = ret_event without an
-    # S3 check).  This is also a state-machine gap orthogonal to
-    # S4/S5/S6 — filed as a Plan 2 follow-up.  Gate to keep the
-    # property tests focused on the contract surface this phase owns.
-    @precondition(
-        lambda self: self.scheduler.next_event is None
-    )
+    # begin_return raises ValueError per S3 post Plan 2 Phase 0 when
+    # both _current_event and _next_event slots are occupied — the
+    # third branch routes through _validate_slot_capacity rather than
+    # silently overwriting _next_event.  See TestBeginReturnSlotCapacity
+    # above and the Plan 2 Phase 0 logbook entry for rationale.
     @rule()
     def begin_return(self):
-        self.scheduler.begin_return()
+        try:
+            self.scheduler.begin_return()
+        except ValueError as exc:
+            assert 'S3 violation in begin_return' in str(exc), (
+                f"unexpected raise from begin_return: {exc}"
+            )
+            assert (self.scheduler.active_event is not None
+                    and self.scheduler.next_event is not None), (
+                f"begin_return raised S3 but slots were not both "
+                f"filled (active={self.scheduler.active_event}, "
+                f"next={self.scheduler.next_event})"
+            )
 
     @rule(dt=_dt_strat)
     def tick(self, dt):

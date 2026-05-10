@@ -153,7 +153,7 @@ are non-None MUST raise ``ValueError``.  The caller is responsible for
 ``cancel_next`` / ``clear`` before submitting beyond the bounded set.
 
 The ``RETURN_TO_ACTIVE`` event queued by ``begin_return``
-([scheduler.py:759–767](scheduler.py)) when not in HOLDING is a
+([scheduler.py:762–807](scheduler.py)) when not in HOLDING is a
 legitimate use of the ``_next_event`` slot and counts toward the bound.
 
 #### S3 — Phase preconditions on slot mutators
@@ -168,6 +168,17 @@ during ``TRANSITIONING``; callers who legitimately want to abort an
 in-flight transition use ``clear()`` (the documented full-reset path).
 See
 [logbook/2026-05-10-scheduler-cancel-next-during-transitioning.md](../logbook/2026-05-10-scheduler-cancel-next-during-transitioning.md).
+
+``begin_return`` synthesises a ``RETURN_TO_ACTIVE`` event and queues
+it into the ``_next_event`` slot when called outside HOLDING/IDLE.
+That queueing is subject to the same bounded-slot-set invariant as
+``submit_event``: when both ``_current_event`` and ``_next_event``
+are already filled, ``begin_return`` MUST raise ``ValueError``
+(canonical message prefix "S3 violation in begin_return: …").
+``begin_return`` is not a documented S3 bypass.  Callers must
+``cancel_next`` / ``clear`` before requesting return when the
+lookahead slot is occupied.  See
+[logbook/2026-05-10-scheduler-begin-return-s3-overwrite.md](../logbook/2026-05-10-scheduler-begin-return-s3-overwrite.md).
 
 **Why.** The structural design intent of the scheduler is "one active
 target plus one lookahead."  Pre-contract, a third submission silently
