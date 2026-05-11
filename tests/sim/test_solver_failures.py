@@ -373,6 +373,12 @@ _FALLBACK_KEYWORD_MATRIX = [
     ('Diverging_Iterates',               False),
     ('User_Requested_Stop',              False),
     ('Internal_Error',                   False),
+    # Discovered by Phase 3's NaN/Inf input fuzz on solve(): when an
+    # adversarial input flows into the optimization, IPOPT detects the
+    # NaN at the first gradient evaluation and exits with this status
+    # rather than ``Internal_Error`` or ``Infeasible_Problem_Detected``.
+    # See logbook 2026-05-11-tier1c-input-fuzz.md.
+    ('Invalid_Number_Detected',          False),
 ]
 
 

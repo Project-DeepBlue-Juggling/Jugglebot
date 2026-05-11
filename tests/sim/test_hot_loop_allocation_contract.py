@@ -41,6 +41,7 @@ marker once the contract passes under the real threshold.
 
 from __future__ import annotations
 
+import gc
 import tracemalloc
 from typing import Any
 
@@ -249,7 +250,19 @@ def test_hot_loop_allocation_contract():
     ``run_mpc_loop`` — from ``plant.get_state()`` through the last line
     of ``log_mpc_step`` — is measured via ``tracemalloc`` over a
     100-tick window after a 50-tick warmup.
+
+    Plan 2 Working Note #5: hypothesis fuzz suites earlier in the run
+    (Plan 2 Phase 2 introduced the first stateful machine, Phase 3 adds
+    NaN/Inf input fuzz) leave the heap in a state that occasionally
+    pushes ``tracemalloc``'s baseline above the per-tick threshold even
+    though the loop body itself allocates well under it.  A single
+    ``gc.collect()`` here drops that baseline before snapshotting and
+    restores deterministic behaviour at ci-deep without changing the
+    contract under test.  See
+    [logbook/2026-05-11-tier1c-input-fuzz.md](../../logbook/2026-05-11-tier1c-input-fuzz.md)
+    Discussion for the rationale.
     """
+    gc.collect()
     plant, mpc, source, logger = _build_fixture()
 
     hook = _SnapshotHook()
@@ -455,7 +468,11 @@ def test_hot_loop_allocation_contract_hardware():
     HardwarePlant with patched ZMQ, synthetic telemetry, and the
     production ``_on_pre_command`` hook from run_mpc.py wired so
     ``plant.set_pose()`` is exercised.
+
+    Plan 2 Working Note #5 mitigation — see the MuJoCo variant above
+    for rationale.  Same one-line ``gc.collect()`` baseline reset.
     """
+    gc.collect()
     plant, mpc, source, logger = _build_hardware_fixture()
 
     hook = _SnapshotHook()

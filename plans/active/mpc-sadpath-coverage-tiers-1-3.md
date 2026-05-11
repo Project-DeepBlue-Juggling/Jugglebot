@@ -150,7 +150,7 @@ Test additions only by design (except Phase 0; see Notes). Production-code chang
 | 0 | Close Plan 1's deferred `@precondition` gates (cancel_next mid-TRANSITIONING + begin_return overwrite) | COMPLETE | 2026-05-11 | Med | Plan 2 starts on a clean foundation; the "no `@precondition` for known bugs" rule isn't immediately self-violating |
 | 1 | Tier 1a — Real IPOPT infeasibility + timeout exit codes | COMPLETE | 2026-05-11 | Med | Solver-fallback latching on every documented exit code |
 | 2 | Tier 1b — Fallback escalation cascade + cold-start IK budget | COMPLETE | 2026-05-11 | Med | walk_forward_unsafe → hold_extrap escalation; IK budget exhaustion path |
-| 3 | Tier 1c — NaN/Inf input fuzz on `solve()` | NOT STARTED | | Med | Adversarial inputs route through `_handle_failure`, never corrupt warm-start |
+| 3 | Tier 1c — NaN/Inf input fuzz on `solve()` | COMPLETE | 2026-05-11 | Med | Adversarial inputs route through `_handle_failure`, never corrupt warm-start |
 | 4 | Tier 2a — HardwarePlant FK degradation | NOT STARTED | | High | FK divergence watchdog, singular Jacobian, frozen-motor detector |
 | 5 | Tier 2b — HardwarePlant telemetry & FF | NOT STARTED | | High | Staleness threshold matrix; set_pose torque-FF singular; cold-start zero-state |
 | 6 | Tier 2c — ZMQ corruption (real-msgpack harness) | NOT STARTED | | Med | Partial frame, version-skew, connection drop |
@@ -399,7 +399,74 @@ Outcome paragraph above is authoritative for what actually shipped.*
 
 ---
 
-### Phase 3: Tier 1c — NaN/Inf input fuzz on `solve()` — NOT STARTED
+### Phase 3: Tier 1c — NaN/Inf input fuzz on `solve()` — COMPLETE (2026-05-11)
+
+**Outcome.** New file
+[tests/sim/test_mpc_input_fuzz.py](../../tests/sim/test_mpc_input_fuzz.py)
+adds **15 passing tests + 1 strict xfail** covering the entry-point
+input surface of ``MPCController.solve()``.  All adversarial values
+(NaN, ±Inf, extreme magnitudes, wrong shapes) route to one of five
+documented buckets (``Solve_Succeeded`` / ``fallback(...)`` /
+``hold(...)`` / ``hold_extrap(...)`` / ``cold_hold(...)``) with the
+warm-start
+integrity invariant ``_prev_w is None or np.all(np.isfinite(_prev_w))``
+preserved on every path.  Hypothesis property test T-U-T1c-7 holds at
+ci-deep (1000 examples, 363.68 s).
+
+Three Phase-3 byproducts landed in the same commit:
+
+* **Real production bug surfaced** — T-U-T1c-7 found that NaN in
+  ``state.leg_extensions_mm`` combined with a stale W7 snapshot
+  propagates through the ``hold_extrap`` arm into ``_prev_u``
+  (warm-start corruption).  Per Plan 2's "production-code changes
+  triggered by tests" rule the fix lands in its own commit; the
+  bug is captured by ``TestT1cLegExtNanCorruptsPrevU`` (xfail
+  strict, three-field accounting in this entry's logbook).  The
+  T-U-T1c-7 fuzz strategy is restricted to skip ``leg_extensions_mm``
+  pending the fix, with an inline comment listing the two
+  un-restriction actions to take in the same commit as the fix.
+* **``Invalid_Number_Detected`` matrix extension** — Phase 3's
+  probes immediately surfaced this as a real IPOPT exit code that
+  Phase 1's ``_FALLBACK_KEYWORD_MATRIX`` did not enumerate.  One-
+  line addition to
+  [tests/sim/test_solver_failures.py](../../tests/sim/test_solver_failures.py)
+  with an inline comment naming the discovery context.
+* **Working Note #5 mitigation landed** — ``gc.collect()`` at the
+  start of both ``test_hot_loop_allocation_contract`` and
+  ``test_hot_loop_allocation_contract_hardware``.  The deferral
+  from Phase 2 was justified at the time (Phase 2 only added one
+  property test); Phase 3 adds three more across two files, so the
+  pressure rationale tipped definitively.  Hardware-safe one-line
+  change; hot-loop contract still green at ci-deep post-mitigation
+  (3 / 3 in 15.87 s).
+
+Test additions only; **zero production-code changes**.  Pre-Phase-3
+1216 + 1 xfailed → post-Phase-3 **1232 + 2 xfailed** in 345.85 s
+ci-fast.
+
+See [logbook entry](../../logbook/2026-05-11-tier1c-input-fuzz.md)
+for the per-test recipe table, the ``platform_twist``-is-dead
+finding, the alias-break test infrastructure pitfall, and the full
+trace of the ``_prev_u`` corruption bug.  Phase 4 (Tier 2a —
+HardwarePlant FK degradation) cleared to start.
+
+**Plan 2 archival gate update.**  Two xfails on the suite at end of
+Phase 3:
+
+| Test ID         | Reason                                                          | Target close                          |
+|-----------------|-----------------------------------------------------------------|---------------------------------------|
+| T-U-T1a-4       | ``Restoration_Failed`` not drivable via ``MPCParams`` in CasADi 3.7.2 | Permanent (structural matrix coverage) |
+| T-U-T1c-7-bug   | ``_prev_u`` corruption when ``q_cur`` non-finite on ``hold_extrap`` | **Plan 2 archival blocker** — fix required before plan can archive |
+
+The T-U-T1c-7-bug is a hard archival gate: per Plan 2's archival-
+gate language ("zero unfixed xfails at archival, OR each residual
+xfail has a documented justification for why it's permanently
+acceptable"), the bug needs a fix commit + xfail removal before
+``/archive-plan mpc-sadpath-coverage-tiers-1-3`` will pass review.
+
+*Note: the Scope / Test cases / Critical details / Exit criteria
+sub-sections below are preserved as the as-planned record; the
+Outcome paragraph above is authoritative for what actually shipped.*
 
 **Scope.** Hypothesis-based fuzz on every input to `mpc.solve()`. Verify that adversarial (NaN/Inf/extreme-magnitude) inputs route through `_handle_failure` without corrupting `_prev_w`, `_prev_lam_g`, `_prev_lam_x`.
 
