@@ -149,7 +149,7 @@ Test additions only by design (except Phase 0; see Notes). Production-code chang
 |-------|-------|--------|------|------|-----------|
 | 0 | Close Plan 1's deferred `@precondition` gates (cancel_next mid-TRANSITIONING + begin_return overwrite) | COMPLETE | 2026-05-11 | Med | Plan 2 starts on a clean foundation; the "no `@precondition` for known bugs" rule isn't immediately self-violating |
 | 1 | Tier 1a — Real IPOPT infeasibility + timeout exit codes | COMPLETE | 2026-05-11 | Med | Solver-fallback latching on every documented exit code |
-| 2 | Tier 1b — Fallback escalation cascade + cold-start IK budget | NOT STARTED | | Med | walk_forward_unsafe → hold_extrap escalation; IK budget exhaustion path |
+| 2 | Tier 1b — Fallback escalation cascade + cold-start IK budget | COMPLETE | 2026-05-11 | Med | walk_forward_unsafe → hold_extrap escalation; IK budget exhaustion path |
 | 3 | Tier 1c — NaN/Inf input fuzz on `solve()` | NOT STARTED | | Med | Adversarial inputs route through `_handle_failure`, never corrupt warm-start |
 | 4 | Tier 2a — HardwarePlant FK degradation | NOT STARTED | | High | FK divergence watchdog, singular Jacobian, frozen-motor detector |
 | 5 | Tier 2b — HardwarePlant telemetry & FF | NOT STARTED | | High | Staleness threshold matrix; set_pose torque-FF singular; cold-start zero-state |
@@ -318,7 +318,58 @@ Outcome paragraph above is authoritative for what actually shipped.*
 
 ---
 
-### Phase 2: Tier 1b — Fallback escalation cascade + cold-start IK budget — NOT STARTED
+### Phase 2: Tier 1b — Fallback escalation cascade + cold-start IK budget — COMPLETE (2026-05-11)
+
+**Outcome.** Six new tests added to
+[tests/sim/test_solver_failures.py](../../tests/sim/test_solver_failures.py)
+covering all four W7 walk-forward escalation triggers and the
+cold-start IK budget guard:
+
+* **T-U-T1b-1, -2** — pair test on the 20 mm xyz ref-shift threshold
+  via direct mutation of `_ref_at_last_success_mid` (25 mm
+  Δ → `hold_extrap`; 5 mm Δ → `fallback` with `fallback_step=1`).
+* **T-U-T1b-3** — 600 ms wall-clock advance via `time.sleep(0.6)`
+  trips the staleness clause; status flips to `hold_extrap`.
+* **T-U-T1b-4** — strict-status escalation through
+  `max_consecutive_failures=2`: exact sequence
+  `[fallback, fallback, hold_extrap, hold_extrap]` confirmed with
+  per-tick `fallback_step` assertions.  Audit during implementation
+  found the existing
+  [test_mpc_static.py::test_escalation_fallback_to_hold](../../tests/sim/test_mpc_static.py)
+  drives the *ref-shift* branch (500 mm Δ trips the 20 mm
+  threshold), not the counter branch — T-U-T1b-4 is the strict
+  counter-isolated test the existing one only purported to be.
+* **T-U-T1b-5** — cold-start per-node IK budget exhaustion via
+  `_numerical_ik` monkey-patch sleeping 0.42 s per call.  Asserts
+  the `logger.info` budget-exceeded record (no `diag` sentinel
+  exists — the plan's hedge "or whichever sentinel the code
+  surfaces" was the right framing) AND that the cold-start still
+  completes with a finite `cmd`.
+* **T-U-T1b-6** — Hypothesis `RuleBasedStateMachine` over
+  `(succeed_solve, fail_solve, shift_snapshot_z, advance_time)`
+  rules with the load-bearing invariant `_prev_w is None or
+  np.all(np.isfinite(_prev_w))`.  Holds at ci-deep (1000 examples,
+  441.45 s).
+
+Test additions only; **zero production-code changes**.  Pre-Phase-2
+1210 + 1 xfailed → post-Phase-2 **1216 + 1 xfailed** in 321.35 s
+ci-fast.  Hot-loop allocation contract still green at ci-deep
+(3 / 3 in 15.49 s); per Working Note #5 the pre-emptive mitigation
+is *deferred to Phase 3* — surfaced as an explicit decision via
+`AskUserQuestion`, justified in the [Phase 2 logbook
+entry](../../logbook/2026-05-11-tier1b-fallback-escalation-cascade.md)'s
+Discussion.
+
+See [logbook entry](../../logbook/2026-05-11-tier1b-fallback-escalation-cascade.md)
+for the per-test recipe table, design discussion (snapshot-mutation
+vs honest end-to-end driver; pair-test pattern; singleton-MPC
+pitfall under hypothesis stateful), and the audit of the existing
+escalation test.  Phase 3 (Tier 1c — NaN/Inf input fuzz on
+`solve()`) cleared to start.
+
+*Note: the Scope / Test cases / Critical details / Exit criteria
+sub-sections below are preserved as the as-planned record; the
+Outcome paragraph above is authoritative for what actually shipped.*
 
 **Scope.** Drive the fallback escalation logic at `mpc.py:1574–1592` (walk_forward_unsafe → hold_extrap) and the cold-start IK budget exhaustion path at `mpc.py:1295–1308`.
 
