@@ -154,7 +154,7 @@ Test additions only by design (except Phase 0; see Notes). Production-code chang
 | 4 | Tier 2a — HardwarePlant FK degradation | COMPLETE | 2026-05-11 | High | FK divergence watchdog, singular Jacobian, frozen-motor detector |
 | 5 | Tier 2b — HardwarePlant telemetry & FF | COMPLETE | 2026-05-11 | High | Staleness threshold matrix (WARN/HARD/ESTOP) + linear-scaling property; set_pose torque-FF singular (real bug surfaced + same-session bugfix); cold-start zero-state |
 | 6 | Tier 2c — ZMQ corruption (real-msgpack harness) | COMPLETE | 2026-05-11 | Med | Partial frame, version-skew, connection drop; two real bugs surfaced + same-session bugfix |
-| 7 | Tier 3a — Numerical + schema fuzz | NOT STARTED | | Med | Every public API NaN-safe; `diag`/`extras` schema-complete |
+| 7 | Tier 3a — Numerical + schema fuzz | COMPLETE | 2026-05-11 | Med | Every public API NaN-safe; `diag` schema unified via new DIAG_SCHEMA_CONTRACT; T<=0 guard added to `quintic_peak_vel_per_axis`; S8 dropped (plan ambiguity) |
 | 8 | Tier 3b — Time pathologies, resources, hooks, races | NOT STARTED | | Med | Clock-skew, dt change, hook failures, concurrent-reset, resource exhaustion |
 
 ## Implementation Phases (detailed)
@@ -966,7 +966,132 @@ logbook's Discussion section for the traces.*
 
 ---
 
-### Phase 7: Tier 3a — Numerical + schema fuzz — NOT STARTED
+### Phase 7: Tier 3a — Numerical + schema fuzz — COMPLETE (2026-05-11)
+
+**Outcome.**  Extends
+[tests/sim/test_mpc_input_fuzz.py](../../tests/sim/test_mpc_input_fuzz.py)
+with **7 new test classes** (108 parametrised cases for T-U-T3a-N1
+alone; 19 cases total across N2–N7) covering NaN/Inf inputs and
+edge cases on every non-`solve()` public API surface
+(`feasibility`, `hermite`, `target`, `mpc._numerical_ik`,
+`runner.run_mpc_loop`), and adds
+[tests/sim/test_diag_schema_fuzz.py](../../tests/sim/test_diag_schema_fuzz.py)
+with **7 new test classes** pinning the `diag` schema-completeness
+contract across success / fallback walk-forward / hold_extrap /
+cold_hold / non_finite_solution / exception paths plus a
+hypothesis stateful property.
+
+| ID         | Surface                                                              | Driver                                                                  |
+|------------|----------------------------------------------------------------------|-------------------------------------------------------------------------|
+| T-U-T3a-N1 | `feasibility.segment_is_feasible` NaN/Inf                            | parametrised (3 values × 6 args × 6 axes = 108 cases)                   |
+| T-U-T3a-N2 | `feasibility.quintic_peak_vel_per_axis` T<=0                          | parametrised T ∈ {0, -0.5, -1e-12} — XFAIL-strict pre-bugfix             |
+| T-U-T3a-N3 | `hermite.quintic_interp_with_accel` boundary cases                    | 5 scenarios (duration<=0, t out, NaN/Inf propagation)                   |
+| T-U-T3a-N4 | `target.flat_target_to_events` degenerate arrival                     | 3 scenarios (below/above/equal-threshold)                                |
+| T-U-T3a-N5 | `target.make_feasible_events` NaN pose                                 | 2 scenarios (NaN in start / target proposal)                            |
+| T-U-T3a-N6 | `mpc._numerical_ik` zero-rotation                                     | 3 scenarios (norm 0, 1e-11, 0.1)                                        |
+| T-U-T3a-N7 | `runner.run_mpc_loop` duration=0                                       | 2 scenarios (0, -0.5)                                                   |
+| T-U-T3a-S1 | `diag` schema — Solve_Succeeded                                       | primed MPC + 3 settle solves                                            |
+| T-U-T3a-S2 | `diag` schema — fallback walk-forward                                 | primed MPC + NaN injection — XFAIL-strict pre-bugfix                    |
+| T-U-T3a-S3 | `diag` schema — hold_extrap escalation                                | 12× NaN spam — XFAIL-strict pre-bugfix                                   |
+| T-U-T3a-S4 | `diag` schema — cold_hold                                             | unprimed MPC + NaN first solve — XFAIL-strict pre-bugfix                |
+| T-U-T3a-S5 | `diag` schema — non_finite_solution                                   | monkey-patch `_solver` to NaN sol['x'] + report Solve_Succeeded stats   |
+| T-U-T3a-S6 | `diag` schema — exception path                                        | monkey-patch `_solver` to raise `RuntimeError`                          |
+| T-U-T3a-S7 | Property: every solve() leaves diag schema-complete                    | hypothesis stateful (clean_solve + nan_solve rules) — XFAIL-strict pre-bugfix |
+
+**Two real bugs surfaced — T-U-T3a-N2 (Bug C) and T-U-T3a-S2..S7
+(Bug D).**  Empirical probing on 2026-05-11
+(`/tmp/probe_phase7.py` + `/tmp/probe_phase7_schema.py`, neither
+committed) confirmed:
+
+* **Bug C** — `feasibility.quintic_peak_vel_per_axis` has no
+  `T <= 0` guard.  T=0 → NaN array (division-by-zero in
+  `_evaluate_poly(...)/T`); T<0 → finite-but-nonsensical peak
+  velocities (no sign-handling).  Production callers (e.g.
+  `flat_target_to_events` at `target.py:196-200`) guard at higher
+  levels, but the math primitive itself is a public API and a
+  future caller that doesn't pre-validate gets nonsense.
+
+* **Bug D** — `MPCController._handle_failure` does not populate
+  `iter_count` on any failure-path diag (`mpc.py:1588-1594`).
+  Six keys on failure (`solve_time_ms, status, cost,
+  constraint_violation, cmd_next_mm, cmd_next2_mm`) vs seven on
+  success (success adds `iter_count`).  Walk-forward fallback adds
+  `fallback_step` only.  Consumers (`runner.log_mpc_step` at
+  `runner.py:207`) defend with `diag.get('iter_count', 0)` so the
+  gap is **silent-truncation** (every CSV row for a failure tick
+  logs `ipopt_iter=0` even when IPOPT ran 30+ iterations before
+  timing out) — not a crash, but real diagnostic signal lost.
+
+Per CLAUDE.md's *"Fix surfaced bugs in the same session when
+diagnosis is clear"* — both fixes land as a **single combined
+follow-up commit** in this session (user-confirmed
+combined-commit choice matching Phase 6).  The bugfix commit
+introduces a new normative document
+[controller/DIAG_SCHEMA_CONTRACT.md](../../controller/DIAG_SCHEMA_CONTRACT.md)
+(Plan 1 K1–K6 contract template), the canonical enforcement point
+in `_handle_failure` (populate `iter_count=0` and `fallback_step=-1`
+sentinel on every failure path), AND the T<=0 guard in
+`quintic_peak_vel_per_axis`.  Three-part contract landing (doc +
+enforcement + test) per the Plan 1 template.  See
+[logbook 2026-05-11-tier3a-fuzz-bugfix.md](../../logbook/2026-05-11-tier3a-fuzz-bugfix.md).
+
+T-U-T3a-N2 (3 parametrised cases), T-U-T3a-S2, T-U-T3a-S3,
+T-U-T3a-S4, T-U-T3a-S7 marked `xfail(strict=True)` in this test
+commit; the bugfix commit flips a module-level
+`_PHASE_7_BUGFIX_LANDED` flag (single source of truth, mirrored
+into `test_diag_schema_fuzz.py` by import) lifting all 7 xfails
+atomically.
+
+**T-U-T3a-S8 dropped.**  The plan's S8 ("`extras` namespace
+populated identically across solve paths") refers to a surface
+that doesn't exist — there is no `extras` namespace on `diag`.
+The closest analog is the `**extras` kwargs collected by
+`log_mpc_step` from the `on_log_extras` hook (a runner construct,
+not an `mpc.solve()` return).  Phase 7 ships 14 tests (7 numerical
++ 7 schema) instead of the planned 15; the plan-text framing of
+S8 is acknowledged as incorrect in the logbook Discussion.
+
+Pre-Phase-7: **1258 passed + 1 xfailed** (`pytest tests/ -q`, run
+2026-05-11 against SHA `148dee1`).
+Post-Phase-7 (this test commit, before the bugfix): **1384
+passed + 8 xfailed in 348.95 s**
+(`pytest tests/ -q`, run 2026-05-11; +126 new passing test
+functions; +7 xfailed = T-U-T3a-N2×3 + S2 + S3 + S4 + S7 pending
+the combined bugfix commit).  Hot-loop allocation contract: no
+hot-loop production code touched.  Full triple repeated in the
+Phase 7 logbook's Verification section.
+
+**Plan 2 archival gate update.**  Seven xfails on the suite at end
+of Phase 7's test commit, all with documented exit plans:
+
+| Test ID                          | Reason                                                                 | Target close                                            |
+|----------------------------------|------------------------------------------------------------------------|---------------------------------------------------------|
+| T-U-T1a-4                        | `Restoration_Failed` not drivable via `MPCParams` in CasADi 3.7.2       | Permanent (CasADi 3.7.2 limitation)                     |
+| T-U-T3a-N2 (×3 cases)            | `quintic_peak_vel_per_axis` has no T<=0 guard (Bug C)                   | **Same session — follow-up bugfix commit**              |
+| T-U-T3a-S2 / S3 / S4 / S7        | Schema gap: iter_count missing on failure paths (Bug D)                 | Same session — follow-up bugfix commit                  |
+
+All six Phase 7 xfails resolve in the bugfix commit landing today.
+
+**Hardware-test target dates.**  Phase 7 has zero hardware
+dependency.  T-H-T2b-1 (2026-05-18) and T-H-T2a-1 (2026-05-25)
+target dates (fixed in Phase 5's Outcome) are unchanged.
+
+See [logbook entry](../../logbook/2026-05-11-tier3a-numerical-schema-fuzz.md)
+for the per-test empirical-probe recipe table, design discussion
+(monkey-patch boundary for S5/S6; S8 phantom-surface dropped;
+`_PHASE_7_BUGFIX_LANDED` single-flag pattern; schema-asymmetry
+silent-truncation analysis), and citation refresh against
+`feasibility.py`, `hermite.py`, `target.py`, `mpc.py`, `runner.py`.
+Phase 8 (Tier 3b — time pathologies, resource exhaustion, hooks,
+races) cleared to start after the Bug C + Bug D follow-up commit
+lands.
+
+*Note: the Scope / Test cases / Critical details / Exit criteria
+sub-sections below are preserved as the as-planned record; the
+Outcome paragraph above is authoritative for what actually shipped.
+S8 was dropped per the analysis above; pre-fix vs post-fix
+behaviour for N2 / S2-S4 / S7 documented in the logbook's
+empirical-probe table.*
 
 **Scope.** Two distinct fuzz surfaces: (a) numerical edge cases on every public API in the MPC layer, (b) schema-completeness on the `diag` and `extras` namespaces across every fallback branch.
 

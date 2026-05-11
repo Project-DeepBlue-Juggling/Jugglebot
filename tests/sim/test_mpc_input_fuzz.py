@@ -870,3 +870,473 @@ class TestT1cLegExtNanCorruptsPrevU:
             f"indicate the substitution policy changed away from "
             f"per-axis _prev_u."
         )
+
+
+# =====================================================================
+# Plan 2 Phase 7 (Tier 3a-1) — Numerical fuzz on non-`solve()` API surfaces
+# =====================================================================
+#
+# Coverage of the public API surfaces that Phase 3 (T-U-T1c-*) did NOT
+# touch.  Each test drives the production function with adversarial
+# NaN / Inf / zero-duration inputs and asserts the documented
+# behaviour — "returns sentinel value" OR "raises" OR "propagates
+# the non-finite input".  No test attempts to fix downstream behaviour
+# here; assertions pin what the code DOES today (with one xfail for
+# T-U-T3a-N2 pending a same-session guard-fix).
+#
+# Empirical findings (probe table, 2026-05-11 on this Jetson stack):
+#
+# | ID         | Surface                                       | Adversarial input         | Observed behaviour                                        |
+# |------------|-----------------------------------------------|---------------------------|-----------------------------------------------------------|
+# | T-U-T3a-N1 | feasibility.segment_is_feasible              | NaN/Inf in any of 6 args  | Raises LinAlgError from np.roots in quintic peak-vel       |
+# | T-U-T3a-N2 | feasibility.quintic_peak_vel_per_axis        | T=0 / T<0                 | Pre-fix: NaN array (T=0) or nonsense (T<0)                 |
+# | T-U-T3a-N3 | hermite.quintic_interp_with_accel            | duration<=0; NaN/Inf inputs| duration<=0 → returns p1/v1/a1; NaN/Inf propagate          |
+# | T-U-T3a-N4 | target.flat_target_to_events                 | arrival_time < t_now+0.05 | Returns single hold event per :204–209                     |
+# | T-U-T3a-N5 | target.make_feasible_events                  | NaN in proposal pose      | Raises LinAlgError (same downstream as N1)                 |
+# | T-U-T3a-N6 | mpc._numerical_ik                            | angle < 1e-10             | Returns identity rotation per :1336–1338                   |
+# | T-U-T3a-N7 | runner.run_mpc_loop                          | duration=0 → n_steps=0    | Returns False, 0 records logged                            |
+#
+# See logbook 2026-05-11-tier3a-numerical-schema-fuzz.md.
+# =====================================================================
+
+
+# Flag — flipped to True by the companion bugfix commit (logbook
+# 2026-05-11-tier3a-fuzz-bugfix.md) which adds the T<=0 guard to
+# quintic_peak_vel_per_axis AND lifts the iter_count/fallback_step
+# schema unification.  Used by T-U-T3a-N2 here AND by several tests
+# in test_diag_schema_fuzz.py.
+_PHASE_7_BUGFIX_LANDED = False
+
+
+# ---------------------------------------------------------------------
+# T-U-T3a-N1 — feasibility.segment_is_feasible NaN/Inf inputs
+# ---------------------------------------------------------------------
+
+class TestT3aN1SegmentIsFeasibleNanInf:
+    """T-U-T3a-N1 — ``feasibility.segment_is_feasible`` with NaN/Inf
+    in any of the six (p0, v0, a0, p1, v1, a1) inputs.
+
+    Production surface: ``segment_is_feasible`` delegates to
+    ``quintic_peak_vel_per_axis`` → ``_roots_in_unit_interval`` →
+    ``np.roots`` → ``np.linalg.eigvals``, which calls
+    ``_assert_finite`` on input and raises ``LinAlgError`` if any
+    coefficient is non-finite.
+
+    Pass criterion (per plan): "Returns ``(False, inf, inf)`` or
+    raises; never returns ``(True, ...)`` for NaN inputs".  Empirical:
+    raises ``LinAlgError`` for every non-finite injection.
+    """
+
+    @pytest.mark.parametrize('arg_idx', list(range(6)))
+    @pytest.mark.parametrize('axis', list(range(6)))
+    @pytest.mark.parametrize('value', [float('nan'), float('inf'), float('-inf')])
+    def test_t3a_n1_nan_inf_raises_or_returns_infeasible(
+        self, arg_idx, axis, value,
+    ):
+        """Every (arg, axis, value) combination either raises or
+        returns ``(False, ...)``.
+        """
+        from controller.feasibility import segment_is_feasible
+
+        args = [np.zeros(6, dtype=float) for _ in range(6)]
+        # Make p1 distinct so the baseline is non-degenerate
+        args[3] = np.array([0, 0, 50.0, 0, 0, 0])
+        args[arg_idx] = args[arg_idx].copy()
+        args[arg_idx][axis] = value
+
+        try:
+            feasible, vr, ar = segment_is_feasible(
+                *args, T=0.5, v_max_mmps=140.0, a_max_mmps2=300.0,
+            )
+            assert not feasible, (
+                f'arg{arg_idx}[{axis}]={value}: returned feasible=True '
+                f'(vr={vr}, ar={ar}) — must never return True for non-finite '
+                f'inputs'
+            )
+        except (np.linalg.LinAlgError, ValueError) as exc:
+            # Acceptable — math layer correctly refused the non-finite input.
+            _ = exc
+
+
+# ---------------------------------------------------------------------
+# T-U-T3a-N2 — feasibility.quintic_peak_vel_per_axis T<=0
+# ---------------------------------------------------------------------
+
+class TestT3aN2PeakVelZeroDuration:
+    """T-U-T3a-N2 — ``feasibility.quintic_peak_vel_per_axis(..., T)``
+    with ``T <= 0``.
+
+    Pre-fix (this commit): no ``T<=0`` guard.  ``T=0`` produces a
+    NaN array (division by zero inside ``_evaluate_poly(...) / T``);
+    ``T<0`` produces a finite-but-nonsense array (the per-axis math
+    treats T as a denominator without sign-handling).
+
+    Post-fix: ``ValueError`` raised when ``T <= 0`` (the math is
+    undefined; callers MUST pre-validate).  See companion bugfix
+    commit (logbook 2026-05-11-tier3a-fuzz-bugfix.md).
+    """
+
+    @pytest.mark.xfail(
+        condition=not _PHASE_7_BUGFIX_LANDED,
+        strict=True,
+        reason=(
+            'Pre-fix: quintic_peak_vel_per_axis has no T<=0 guard. '
+            'Test asserts the post-fix ValueError; will pass when '
+            'the bugfix commit adds the guard.'
+        ),
+    )
+    @pytest.mark.parametrize('T', [0.0, -0.5, -1e-12])
+    def test_t3a_n2_t_le_zero_raises(self, T):
+        """``T <= 0`` raises ``ValueError`` naming the parameter."""
+        from controller.feasibility import quintic_peak_vel_per_axis
+
+        p0 = np.zeros(6); v0 = np.zeros(6); a0 = np.zeros(6)
+        p1 = np.array([0, 0, 50.0, 0, 0, 0]); v1 = np.zeros(6); a1 = np.zeros(6)
+
+        with pytest.raises(ValueError, match=r'\bT\b'):
+            quintic_peak_vel_per_axis(p0, v0, a0, p1, v1, a1, T)
+
+
+# ---------------------------------------------------------------------
+# T-U-T3a-N3 — hermite.quintic_interp_with_accel
+# ---------------------------------------------------------------------
+
+class TestT3aN3HermiteInterpBoundary:
+    """T-U-T3a-N3 — ``hermite.quintic_interp_with_accel`` with
+    ``duration<=0``, ``t`` out of range, and non-finite inputs.
+
+    Documented behaviour (production code):
+
+    * ``duration <= 0`` (guard at :109) → returns ``(p1.copy(),
+      v1.copy(), a1.copy())``.
+    * ``t > duration`` (clamp at :112) → returns the endpoint values
+      at ``s=1``.
+    * ``t < 0`` (clamp at :112) → returns the start values at ``s=0``.
+    * NaN/Inf in any input → propagates through arithmetic (no guard).
+      This is by-design: the function is a math primitive; input
+      validation is the caller's responsibility.
+    """
+
+    def test_t3a_n3a_duration_zero_returns_endpoint(self):
+        """``duration=0`` returns ``(p1, v1, a1)`` exactly."""
+        from controller.hermite import quintic_interp_with_accel
+
+        p0 = np.zeros(6); v0 = np.zeros(6); a0 = np.zeros(6)
+        p1 = np.array([0, 0, 50.0, 0, 0, 0])
+        v1 = np.array([1, 2, 3.0, 0, 0, 0])
+        a1 = np.array([4, 5, 6.0, 0, 0, 0])
+
+        pose, twist, accel = quintic_interp_with_accel(
+            p0, v0, a0, p1, v1, a1, duration=0.0, t=0.0,
+        )
+        np.testing.assert_array_equal(pose, p1)
+        np.testing.assert_array_equal(twist, v1)
+        np.testing.assert_array_equal(accel, a1)
+
+    def test_t3a_n3b_duration_negative_returns_endpoint(self):
+        """``duration<0`` also enters the ``<=0`` guard."""
+        from controller.hermite import quintic_interp_with_accel
+
+        p0 = np.zeros(6); v0 = np.zeros(6); a0 = np.zeros(6)
+        p1 = np.array([0, 0, 50.0, 0, 0, 0])
+        v1 = np.zeros(6); a1 = np.zeros(6)
+
+        pose, twist, accel = quintic_interp_with_accel(
+            p0, v0, a0, p1, v1, a1, duration=-0.1, t=0.0,
+        )
+        np.testing.assert_array_equal(pose, p1)
+
+    def test_t3a_n3c_t_clamped_above_duration(self):
+        """``t > duration`` clamps to ``s=1`` (terminal pose)."""
+        from controller.hermite import quintic_interp_with_accel
+
+        p0 = np.zeros(6); v0 = np.zeros(6); a0 = np.zeros(6)
+        p1 = np.array([0, 0, 50.0, 0, 0, 0])
+        v1 = np.zeros(6); a1 = np.zeros(6)
+
+        pose, _, _ = quintic_interp_with_accel(
+            p0, v0, a0, p1, v1, a1, duration=0.5, t=1.0,  # 2× duration
+        )
+        np.testing.assert_allclose(pose, p1, atol=1e-9)
+
+    def test_t3a_n3d_finite_input_finite_output(self):
+        """Finite inputs produce finite output across the interior."""
+        from controller.hermite import quintic_interp_with_accel
+
+        p0 = np.array([1.0, 2.0, 3.0, 0.1, 0.2, 0.3])
+        v0 = np.array([10.0, -5.0, 0.0, 0.01, 0.0, -0.02])
+        a0 = np.array([0.0, 0.0, 100.0, 0.0, 0.0, 0.0])
+        p1 = np.array([0.0, 0.0, 50.0, 0.0, 0.0, 0.0])
+        v1 = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+        a1 = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+
+        for t in (0.0, 0.1, 0.25, 0.4, 0.5):
+            pose, twist, accel = quintic_interp_with_accel(
+                p0, v0, a0, p1, v1, a1, duration=0.5, t=t,
+            )
+            assert np.all(np.isfinite(pose)), f't={t} pose: {pose}'
+            assert np.all(np.isfinite(twist)), f't={t} twist: {twist}'
+            assert np.all(np.isfinite(accel)), f't={t} accel: {accel}'
+
+    def test_t3a_n3e_nan_input_propagates(self):
+        """NaN inputs propagate (no implicit guard at this layer)."""
+        from controller.hermite import quintic_interp_with_accel
+
+        p0 = np.zeros(6); p0[2] = np.nan
+        v0 = np.zeros(6); a0 = np.zeros(6)
+        p1 = np.zeros(6); v1 = np.zeros(6); a1 = np.zeros(6)
+
+        pose, _, _ = quintic_interp_with_accel(
+            p0, v0, a0, p1, v1, a1, duration=0.5, t=0.25,
+        )
+        # Documented: NaN propagates.  Caller is responsible for guarding.
+        assert np.isnan(pose[2])
+
+
+# ---------------------------------------------------------------------
+# T-U-T3a-N4 — target.flat_target_to_events degenerate arrival_time
+# ---------------------------------------------------------------------
+
+class TestT3aN4FlatTargetDegenerate:
+    """T-U-T3a-N4 — ``target.flat_target_to_events`` with
+    ``arrival_time`` so close to ``t_now`` that the quintic would be
+    degenerate.
+
+    Production guard at ``controller/target.py:204-209``:
+    when ``t_arrival - t_now < 0.05``, returns a single ``ReferenceEvent``
+    at the terminal pose (the "hold at target" policy).
+
+    The threshold is 0.05 s (50 ms).  Below threshold → single hold
+    event; AT or above threshold → two events (start + arrival).
+    Note: the threshold is checked AFTER the ``arrival_time > t_now``
+    test in the dist-based fallback at :196-200, so passing
+    ``arrival_time == t_now`` does NOT enter the single-hold branch —
+    it falls through to the dist-based duration.
+    """
+
+    def test_t3a_n4a_arrival_below_threshold_single_event(self):
+        """``arrival_time = t_now + 0.01 s`` (< 0.05 s) → single hold event."""
+        from controller.target import flat_target_to_events
+
+        cur = np.array([0, 0, 50, 0, 0, 0], dtype=float)
+        cur_tw = np.zeros(6)
+        tgt = np.array([0, 0, 100, 0, 0, 0], dtype=float)
+
+        events = flat_target_to_events(
+            cur, cur_tw, tgt, t_now=10.0, arrival_time=10.01,
+            v_max_mmps=140.0, tau_s=0.04,
+        )
+        assert len(events) == 1, f'expected 1 event, got {len(events)}'
+        np.testing.assert_array_equal(events[0].pose, tgt)
+        assert events[0].time == 10.0
+
+    def test_t3a_n4b_arrival_above_threshold_two_events(self):
+        """``arrival_time = t_now + 0.1 s`` (> 0.05 s) → two events."""
+        from controller.target import flat_target_to_events
+
+        cur = np.array([0, 0, 50, 0, 0, 0], dtype=float)
+        cur_tw = np.zeros(6)
+        tgt = np.array([0, 0, 100, 0, 0, 0], dtype=float)
+
+        events = flat_target_to_events(
+            cur, cur_tw, tgt, t_now=10.0, arrival_time=10.1,
+            v_max_mmps=140.0, tau_s=0.04,
+        )
+        assert len(events) == 2, f'expected 2 events, got {len(events)}'
+        # Event 0: start
+        np.testing.assert_array_equal(events[0].pose, cur)
+        # Event 1: arrival
+        np.testing.assert_array_equal(events[1].pose, tgt)
+
+    def test_t3a_n4c_arrival_equal_t_now_falls_to_dist_based(self):
+        """``arrival_time == t_now`` falls through to dist-based duration.
+
+        The production guard at :196 (``arrival_time > t_now``) requires
+        strict greater-than.  An arrival exactly at t_now does NOT take
+        the single-hold branch; instead, the dist-based duration kicks
+        in (max(response_time, dist/cruise_speed)).
+        """
+        from controller.target import flat_target_to_events
+
+        cur = np.array([0, 0, 50, 0, 0, 0], dtype=float)
+        cur_tw = np.zeros(6)
+        tgt = np.array([0, 0, 100, 0, 0, 0], dtype=float)
+
+        events = flat_target_to_events(
+            cur, cur_tw, tgt, t_now=10.0, arrival_time=10.0,
+            v_max_mmps=140.0, tau_s=0.04,
+        )
+        # 2 events expected (dist-based duration ≈ 0.625s for 50 mm at 80 mm/s)
+        assert len(events) == 2
+
+
+# ---------------------------------------------------------------------
+# T-U-T3a-N5 — target.make_feasible_events NaN pose
+# ---------------------------------------------------------------------
+
+class TestT3aN5MakeFeasibleEventsNan:
+    """T-U-T3a-N5 — ``target.make_feasible_events`` with NaN in
+    proposal pose.
+
+    Production surface: ``make_feasible_events`` invokes
+    ``segment_is_feasible`` per segment which delegates to
+    ``np.roots`` → ``np.linalg.eigvals``.  ``LinAlgError`` raises on
+    any NaN/Inf input.
+
+    Pass criterion (per plan): "Either raises with clear error or
+    routes through K1 anchor cleanly".  Empirical: raises
+    ``LinAlgError`` (same as N1).
+    """
+
+    def test_t3a_n5a_nan_start_pose_raises(self):
+        """NaN in proposal[0].pose raises ``LinAlgError``."""
+        from controller.target import make_feasible_events, ReferenceEvent
+
+        cur_nan = np.array([0, 0, np.nan, 0, 0, 0], dtype=float)
+        tgt = np.array([0, 0, 100, 0, 0, 0], dtype=float)
+        proposal = [
+            ReferenceEvent(time=10.0, pose=cur_nan.copy(),
+                           twist=np.zeros(6), accel=np.zeros(6)),
+            ReferenceEvent(time=10.5, pose=tgt.copy(),
+                           twist=np.zeros(6), accel=np.zeros(6)),
+        ]
+        with pytest.raises((np.linalg.LinAlgError, ValueError)):
+            make_feasible_events(
+                cur_nan, np.zeros(6), proposal, t_now=10.0,
+                v_max_mmps=140.0, tau_s=0.04,
+            )
+
+    def test_t3a_n5b_nan_target_pose_raises(self):
+        """NaN in proposal[1].pose also raises."""
+        from controller.target import make_feasible_events, ReferenceEvent
+
+        cur = np.array([0, 0, 50, 0, 0, 0], dtype=float)
+        tgt_nan = np.array([0, 0, np.nan, 0, 0, 0], dtype=float)
+        proposal = [
+            ReferenceEvent(time=10.0, pose=cur.copy(),
+                           twist=np.zeros(6), accel=np.zeros(6)),
+            ReferenceEvent(time=10.5, pose=tgt_nan.copy(),
+                           twist=np.zeros(6), accel=np.zeros(6)),
+        ]
+        with pytest.raises((np.linalg.LinAlgError, ValueError)):
+            make_feasible_events(
+                cur, np.zeros(6), proposal, t_now=10.0,
+                v_max_mmps=140.0, tau_s=0.04,
+            )
+
+
+# ---------------------------------------------------------------------
+# T-U-T3a-N6 — mpc._numerical_ik zero-rotation
+# ---------------------------------------------------------------------
+
+class TestT3aN6NumericalIkZeroRotation:
+    """T-U-T3a-N6 — ``MPCController._numerical_ik`` at the
+    zero-rotation edge case.
+
+    Production code at ``controller/mpc.py:1336-1338``:
+
+        angle = np.linalg.norm(rv)
+        if angle < 1e-10:
+            R = np.eye(3)
+
+    The guard prevents division-by-zero in the Rodrigues formula
+    (``sin(angle)/angle``, ``(1 - cos(angle))/(angle*angle)``).  Below
+    threshold, R defaults to identity — equivalent to "rotation is
+    too small to matter".
+
+    Pass criterion (per plan): "Returns identity rotation per
+    documented fallback".  Verifies the threshold and the identity-R
+    behaviour via the extension output.
+    """
+
+    def test_t3a_n6a_exact_zero_rotation(self, plant):
+        """Pose with rv=[0,0,0]: identity rotation; extensions finite."""
+        mpc = _create_mpc(plant)
+        pose = np.array([0.0, 0.0, 50.0, 0.0, 0.0, 0.0])
+        exts = mpc._numerical_ik(pose)
+        assert np.all(np.isfinite(exts))
+
+    def test_t3a_n6b_below_threshold_matches_zero(self, plant):
+        """rv with norm < 1e-10 produces identical extensions to rv=[0,0,0]."""
+        mpc = _create_mpc(plant)
+        pose_zero = np.array([0.0, 0.0, 50.0, 0.0, 0.0, 0.0])
+        pose_tiny = np.array([0.0, 0.0, 50.0, 1e-11, 0.0, 0.0])
+
+        exts_zero = mpc._numerical_ik(pose_zero)
+        exts_tiny = mpc._numerical_ik(pose_tiny)
+        # Below-threshold rv enters the angle<1e-10 branch → R = I.
+        # Above-threshold rv (e.g. 1e-9) enters the Rodrigues branch.
+        # At norm=1e-11, the difference SHOULD be at floating-point noise.
+        np.testing.assert_array_equal(exts_zero, exts_tiny)
+
+    def test_t3a_n6c_above_threshold_differs(self, plant):
+        """rv with norm >> 1e-10 produces different extensions."""
+        mpc = _create_mpc(plant)
+        pose_zero = np.array([0.0, 0.0, 50.0, 0.0, 0.0, 0.0])
+        pose_finite = np.array([0.0, 0.0, 50.0, 0.1, 0.0, 0.0])
+        exts_zero = mpc._numerical_ik(pose_zero)
+        exts_finite = mpc._numerical_ik(pose_finite)
+        # A 0.1-rad rotation should produce a measurable extension change.
+        assert not np.allclose(exts_zero, exts_finite, atol=1e-6)
+
+
+# ---------------------------------------------------------------------
+# T-U-T3a-N7 — runner.run_mpc_loop with duration=0
+# ---------------------------------------------------------------------
+
+class TestT3aN7RunMpcLoopZeroDuration:
+    """T-U-T3a-N7 — ``runner.run_mpc_loop`` with ``duration=0`` →
+    ``n_steps = int(0/control_dt) = 0`` → empty loop.
+
+    Production code at ``controller/runner.py:300``:
+    ``n_steps = int(duration / control_dt)``.  For ``duration=0`` the
+    main ``for _step_idx in range(n_steps):`` loop body never
+    executes.  The function returns ``estop_exit`` (default False)
+    and the telemetry logger contains zero records.
+
+    Pass criterion (per plan): "Either no-op return or raises;
+    documented".  Empirical: no-op return; ``estop_exit=False``;
+    zero records logged.
+    """
+
+    def test_t3a_n7a_duration_zero_returns_no_op(self, plant):
+        """``duration=0`` → returns False; zero log records."""
+        from controller.runner import run_mpc_loop
+        from controller.target import StaticTargetSource
+        from controller.telemetry import TelemetryLogger
+
+        mpc = _create_mpc(plant)
+        source = StaticTargetSource(
+            [(0.0, REF_NORMAL.copy())],
+            v_max_mmps=140.0, tau_s=0.04,
+        )
+        tlog = TelemetryLogger(pool_size=10)
+
+        plant.reset()
+        plant.step(0.025)
+        estop_exit = run_mpc_loop(plant, mpc, source,
+                                  duration=0.0, logger=tlog)
+        assert estop_exit is False, f'estop_exit was {estop_exit!r}'
+        assert len(tlog.records) == 0, (
+            f'expected 0 records, got {len(tlog.records)}'
+        )
+
+    def test_t3a_n7b_duration_negative_also_no_op(self, plant):
+        """``duration<0`` → ``int(neg/0.025) = 0`` → same no-op path."""
+        from controller.runner import run_mpc_loop
+        from controller.target import StaticTargetSource
+        from controller.telemetry import TelemetryLogger
+
+        mpc = _create_mpc(plant)
+        source = StaticTargetSource(
+            [(0.0, REF_NORMAL.copy())],
+            v_max_mmps=140.0, tau_s=0.04,
+        )
+        tlog = TelemetryLogger(pool_size=10)
+
+        plant.reset()
+        plant.step(0.025)
+        estop_exit = run_mpc_loop(plant, mpc, source,
+                                  duration=-0.5, logger=tlog)
+        assert estop_exit is False
+        assert len(tlog.records) == 0
