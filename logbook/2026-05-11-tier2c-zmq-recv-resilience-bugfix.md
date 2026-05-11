@@ -18,7 +18,7 @@ files_changed:
   - logbook/2026-05-11-tier2c-zmq-recv-resilience-bugfix.md
   - logbook/INDEX.md
 commits:
-  - <pending>
+  - e84f061
 subsystem:
   - controller
   - ipc
