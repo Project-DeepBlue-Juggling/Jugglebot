@@ -425,6 +425,16 @@ Process gates, in order:
      {TARGET_PHASE_PLUS_ONE} cleared to start" closer{END}{IF NOT TARGET_PHASE_PLUS_ONE}"This is the
      plan's final phase — consider running `/archive-plan {PLAN_NAME}`
      once any outstanding hardware-bringup / xfail items are resolved" closer{END}).
+     **Any test-count claim** (in the Outcome paragraph here OR in
+     the logbook Verification section) MUST cite the
+     `(date, command, result)` triple — not just the count.  Example
+     good: *"ci-deep (`pytest tests/ -q --hypothesis-profile=ci-deep`,
+     run 2026-05-11): **1193/1193 pass in 560.98 s**."*  Example bad:
+     *"Full suite passes at ci-deep (1193/1193, 560.98 s)."*  Without
+     the triple, the claim is unverifiable from the artefact alone
+     and the audit will flag it BLOCKING.  See the CLAUDE.md
+     workflow rule "Cite test-count claims with the
+     (date, command, result) triple".
 
   7. /audit --unstaged on the combined test + logbook + plan
      changes. Apply LOW/MEDIUM fixes auto; pause for HIGH-risk.

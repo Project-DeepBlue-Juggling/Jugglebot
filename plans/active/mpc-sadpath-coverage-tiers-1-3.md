@@ -178,10 +178,10 @@ preconditions at raise time.
 gained a new "S3 — Phase preconditions on slot mutators" sub-section
 (introduced in 167b9f8 with the `cancel_next` clause; extended in
 239a35d with the `begin_return` clause).  Full-suite ci-deep
-verification (`pytest tests/ -q --hypothesis-profile=ci-deep`) run at
-Phase 0 closure: **1193 / 1193 pass in 560.98 s** — every contract
-and property test green at nightly depth.  Phase 1 (Tier 1a real
-IPOPT failures) cleared to start.
+(`pytest tests/ -q --hypothesis-profile=ci-deep`, run 2026-05-11):
+**1193 / 1193 pass in 560.98 s** — every contract and property test
+green at nightly depth.  Phase 1 (Tier 1a real IPOPT failures)
+cleared to start.
 
 *Note: the Scope / Bugs to fix / New-modified files / Test cases /
 Critical details / Exit criteria sub-sections below are preserved as

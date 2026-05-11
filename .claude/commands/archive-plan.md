@@ -30,15 +30,54 @@ Present the review to the user.
 
 ### Step 3: Decision
 
+Before deciding READY/NOT READY, **always surface the "Residual
+xfail markers" section** from the plan-reviewer's output as a
+distinct, user-visible block — even when it's empty (empty is
+meaningful evidence that the plan added no permanent xfails).  For
+each marker classified:
+
+- **DOCUMENTED PERMANENT** — list it in a "Permanent xfails to
+  carry forward" sub-block.  Even if the marker's `reason=` is
+  well-documented in code, the user must explicitly acknowledge
+  that they accept the xfail as permanent at archival time.  The
+  acknowledgement creates a checkpoint for periodic re-audit; a
+  marker that nobody has acknowledged in 6 months may have lost
+  its load-bearing justification.
+- **UNDOCUMENTED** — block archival pending either (a) the user
+  documenting the marker's justification (target close phase, issue
+  reference, or "accept as permanent" decision) and committing that
+  update, or (b) the user explicitly waiving the requirement.
+
 **If READY TO ARCHIVE:**
-- Ask the user to confirm archiving
+- Surface the xfail block as above.
+- If any DOCUMENTED PERMANENT xfails exist, ask the user to confirm
+  each one is still load-bearing ("Accept `<test_id>` as permanent
+  / Re-audit later / Block archival to fix now").
+- If all xfails are accepted, ask the user to confirm final
+  archiving.
 
 **If NOT READY:**
-- Present the list of incomplete items
+- Present the list of incomplete items.
+- Surface any UNDOCUMENTED xfails as a separate "must resolve"
+  block (they block archival independently of the completion
+  check).
 - Ask the user whether to:
-  - **Archive anyway** — with the incomplete items noted in the frontmatter
-  - **Address items first** — stop here, fix the issues, then re-run `/archive-plan`
-  - **Split** — archive completed portions, create a new plan for remaining work
+  - **Archive anyway** — with the incomplete items AND any
+    accepted-permanent xfails noted in the frontmatter (under a
+    new `residual_xfails:` key listing test IDs).  Example
+    frontmatter shape:
+    ```yaml
+    residual_xfails:
+      - "tests/sim/test_solver_failures.py::TestRestorationFailedNotDrivable"
+    ```
+    Each entry is a pytest node-ID (the same form `pytest <id>`
+    accepts).  Future re-audits can `grep residual_xfails:`
+    across `plans/archived/` to enumerate the project's
+    permanently-acceptable xfail surface.
+  - **Address items first** — stop here, fix the issues / document
+    the xfails, then re-run `/archive-plan`.
+  - **Split** — archive completed portions, create a new plan for
+    remaining work (the new plan inherits any unresolved xfails).
 
 ### Step 4: Execute archival
 

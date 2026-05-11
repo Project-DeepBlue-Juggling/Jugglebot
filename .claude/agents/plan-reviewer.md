@@ -28,6 +28,34 @@ not just "mostly done" or "good enough".
 5. **Verify documentation is current:**
    - Does `CLAUDE.md` reflect the changes this plan introduced?
    - Are any config files or generated outputs up to date?
+6. **Enumerate residual `xfail` markers** introduced or extended by
+   this plan:
+   - For every test file the plan added or modified (cross-reference
+     against `git log --name-only` for the plan's commits, or the
+     plan's "Files to create / Files to modify" table), grep for
+     `@pytest.mark.xfail(` and list each marker's:
+     - test ID (function or class qualified name)
+     - `reason=` text (truncate to 200 chars if needed)
+     - `strict=` flag value
+   - Cross-reference each xfail against the plan's archival-gate
+     language.  Plans using xfail discipline typically include a
+     rule like "zero unfixed xfails at archival OR each residual
+     xfail has a documented justification for why it's permanently
+     acceptable" (see `plans/active/mpc-sadpath-coverage-tiers-1-3.md`'s
+     Working Notes for the canonical phrasing).
+   - Classify each xfail as either:
+     - **DOCUMENTED PERMANENT** — the xfail's `reason=` text
+       references a logbook entry, an issue tracker, or a "permanent
+       acceptance" justification consistent with the plan's
+       archival-gate language.
+     - **UNDOCUMENTED** — needs explicit user acknowledgement
+       (logbook reference, target close phase, or "accept as
+       permanent" decision) before archival can proceed.
+   - Mention every xfail by name in the output even if DOCUMENTED;
+     the archival step surfaces them to the user for explicit
+     acknowledgement, since "permanently acceptable" without
+     periodic re-audit becomes "permanently forgotten" two plans
+     later.
 
 ## Output
 
@@ -48,6 +76,11 @@ Present your findings as:
 
 ### Stale References
 <List any outdated references that need cleanup>
+
+### Residual xfail markers
+<Per-file enumeration; classify each as DOCUMENTED PERMANENT / UNDOCUMENTED.
+ If empty, state "No xfail markers in this plan's test files." Always
+ include this section — empty is meaningful evidence.>
 
 ### Recommendation
 <Archive as-is / Address items before archiving / Split remaining work into new plan>
