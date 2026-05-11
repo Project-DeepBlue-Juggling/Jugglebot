@@ -22,7 +22,7 @@ files_changed:
 # locally), but the CLAUDE.md codegen rule still requires the
 # regeneration to land in the same session as the source edit.
 commits:
-  - <pending>
+  - 6663a99
 subsystem:
   - controller
   - mpc
