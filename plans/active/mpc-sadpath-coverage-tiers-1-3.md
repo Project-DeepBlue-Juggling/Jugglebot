@@ -152,7 +152,7 @@ Test additions only by design (except Phase 0; see Notes). Production-code chang
 | 2 | Tier 1b — Fallback escalation cascade + cold-start IK budget | COMPLETE | 2026-05-11 | Med | walk_forward_unsafe → hold_extrap escalation; IK budget exhaustion path |
 | 3 | Tier 1c — NaN/Inf input fuzz on `solve()` | COMPLETE | 2026-05-11 | Med | Adversarial inputs route through `_handle_failure`, never corrupt warm-start |
 | 4 | Tier 2a — HardwarePlant FK degradation | COMPLETE | 2026-05-11 | High | FK divergence watchdog, singular Jacobian, frozen-motor detector |
-| 5 | Tier 2b — HardwarePlant telemetry & FF | NOT STARTED | | High | Staleness threshold matrix; set_pose torque-FF singular; cold-start zero-state |
+| 5 | Tier 2b — HardwarePlant telemetry & FF | COMPLETE | 2026-05-11 | High | Staleness threshold matrix (WARN/HARD/ESTOP) + linear-scaling property; set_pose torque-FF singular (real bug surfaced + same-session bugfix); cold-start zero-state |
 | 6 | Tier 2c — ZMQ corruption (real-msgpack harness) | NOT STARTED | | Med | Partial frame, version-skew, connection drop |
 | 7 | Tier 3a — Numerical + schema fuzz | NOT STARTED | | Med | Every public API NaN-safe; `diag`/`extras` schema-complete |
 | 8 | Tier 3b — Time pathologies, resources, hooks, races | NOT STARTED | | Med | Clock-skew, dt change, hook failures, concurrent-reset, resource exhaustion |
@@ -658,7 +658,116 @@ post-Phase-4 citations are ground truth.*
 
 ---
 
-### Phase 5: Tier 2b — HardwarePlant telemetry & FF — NOT STARTED
+### Phase 5: Tier 2b — HardwarePlant telemetry & FF — COMPLETE (2026-05-11)
+
+**Outcome.**  Extends
+[tests/sim/test_hardware_plant_failure_paths.py](../../tests/sim/test_hardware_plant_failure_paths.py)
+with **9 new tests** (8 + 1 boundary-pair) covering the
+telemetry-staleness three-tier watchdog (WARN @ 3× ``control_dt``,
+HARD @ 5×, ESTOP @ 20×), the ``set_pose()`` torque-FF singular-Jacobian
+path, and the cold-start zero-state path:
+
+| ID         | Surface                                                      | Driver                                                                          |
+|------------|--------------------------------------------------------------|---------------------------------------------------------------------------------|
+| T-U-T2b-1  | WARN cascade (``hardware_plant.py:695–700``)                  | ``drain_recv_pump`` + ``freeze_perf_counter_at(3.5 × control_dt)``               |
+| T-U-T2b-2  | HARD cascade (``:686–694``); zero vels                        | ``drain_recv_pump`` + ``freeze_perf_counter_at(5.5 × control_dt)``               |
+| T-U-T2b-3a | ESTOP gate (``:627–631``); ``reason='telemetry_stale'``       | ``drain_recv_pump`` + ``freeze_perf_counter_at(20.5 × control_dt)`` + spy        |
+| T-U-T2b-3b | (boundary regression) just below ESTOP at 19.5×              | ``freeze_perf_counter_at(19.5 × control_dt)``; ESTOP must NOT fire               |
+| T-U-T2b-4  | Edge-triggered re-arm (``:701–702``)                          | stale → recovery → stale-again; record counts 1 → 1 → 2                          |
+| T-U-T2b-5  | Property: thresholds scale linearly with ``control_dt`` (P4)  | ``@given(control_dt ∈ [0.01, 0.1], factor_choice)`` + per-example fresh plant    |
+| T-U-T2b-6  | **set_pose singular-FF** — XFAIL-strict pre-bugfix             | ``patch motor_commands.compute_jacobian`` → rank-5 matrix                         |
+| T-U-T2b-7  | Cold-start zero-state (``:529–535``)                          | ``drain_recv_pump`` BEFORE any ``get_state()``                                    |
+| T-U-T2b-8  | Cold-start + 1 s no recv → ESTOP                              | one prime tick, then ``drain_recv_pump`` + ``freeze_perf_counter_at(1.0)``        |
+
+Plus the property test (T-U-T2b-5) is the FIRST test in Plan 2 to
+exercise [controller/PLANT_INTERFACE_CONTRACT.md](../../controller/PLANT_INTERFACE_CONTRACT.md)
+P4's linear-scaling promise.  Holds at ci-deep
+(``--hypothesis-profile=ci-deep --hypothesis-seed=0``, run
+2026-05-11): **1 passed in 29.70 s** (1000 examples).
+
+[tests/sim/_hardware_plant_stub.py](../../tests/sim/_hardware_plant_stub.py)
+gained two telemetry-staleness driver helpers
+(``drain_recv_pump``, ``freeze_perf_counter_at``) — each patching at
+a PRODUCTION-CODE BOUNDARY per Plan 2 Working Note #1, never at the
+private ``_last_telem_recv_time`` field.  Plus a module-level
+``_IK_PRECOMPUTE_CACHE`` keyed on ``tuple(target_pose)`` that hoists
+the ~1 s ``MuJoCoPlant.pose_to_extensions`` cost out of repeated
+stubs — ~50× speedup on cache-hit builds, makes T-U-T2b-5's
+per-example fresh plant feasible at ci-deep.
+
+**Real bug surfaced — T-U-T2b-6.**  Empirical probe confirmed
+``dynamics.py:341–344`` silently catches ``LinAlgError`` in
+``np.linalg.solve(J.T, W_total)`` and returns ``np.zeros(6)``;
+``HardwarePlant.set_pose`` propagates the all-zero FF to
+``_ff_torque_buf`` with **no warning**, despite a parallel handler in
+``get_state()`` (``:737–740``) emitting a once-only 'Jacobian singular'
+warning on the twist-solve path.  Per CLAUDE.md's *"Fix surfaced bugs
+in the same session when diagnosis is clear"*, the fix lands as a
+follow-up commit in this session: add a once-only ``_singular_ff_warned``
+warning in ``set_pose`` mirroring the ``get_state()`` pattern.
+T-U-T2b-6 marked ``xfail(strict=True)`` at the test commit; the marker
+is removed when the bugfix commit lands.  Pattern mirrors Phase 3 →
+Phase 3 bugfix (cf. [logbook 2026-05-11-tier1c-input-fuzz-bugfix.md](../../logbook/2026-05-11-tier1c-input-fuzz-bugfix.md)).
+
+Pre-Phase-5: **1243 passed + 1 xfailed** (``pytest tests/ -q``, run
+2026-05-11 against SHA ``2ea1a33``, 383.33 s).
+Post-Phase-5 (this test commit): **1251 passed + 2 xfailed**
+(``pytest tests/ -q``, run 2026-05-11, 351.06 s).  Hot-loop allocation
+contract still green at ci-deep
+(``pytest tests/sim/test_hot_loop_allocation_contract.py
+--hypothesis-profile=ci-deep --hypothesis-seed=0 -q``, run
+2026-05-11): **3 passed in 16.00 s.**
+
+**Plan 2 archival gate update.**  Two xfails on the suite at end of
+Phase 5's test commit; both with documented exit plans:
+
+| Test ID         | Reason                                                              | Target close                                            |
+|-----------------|---------------------------------------------------------------------|---------------------------------------------------------|
+| T-U-T1a-4       | ``Restoration_Failed`` not drivable via ``MPCParams`` in CasADi 3.7.2 | Permanent (structural matrix coverage)                  |
+| T-U-T2b-6       | ``dynamics.py:341–344`` silent LinAlgError catch; no warning in set_pose | **Same session — follow-up bugfix commit**            |
+
+T-U-T2b-6's target close is the bugfix follow-up commit in this same
+session — it does NOT leave Phase 5 carrying a deferred bug.
+
+**Hardware-test target dates — T-H-T2b-1 and T-H-T2a-1.**  Per Plan 2
+Working Note #7, this commit fixes the absolute deadlines:
+
+| Test       | Hazard          | Target date    | Gating                                                 |
+|------------|-----------------|----------------|--------------------------------------------------------|
+| T-H-T2b-1  | Low             | **2026-05-18** | None — the gate test itself                            |
+| T-H-T2a-1  | Medium-high     | **2026-05-25** | T-H-T2b-1 PASS confirms the publisher-kill mechanism   |
+
+Both within 2 weeks of Phase 5's commit (today, 2026-05-11);
+T-H-T2b-1 within 1 week; T-H-T2a-1 day-after-PASS plus operator
+schedule buffer.  Phase 4's Outcome paragraph committed to "within
+2 weeks of Phase 5 commit" — this Outcome paragraph fixes that to
+the concrete dates above (the more aggressive 1-week T-H-T2b-1
+window honours the gate-first discipline at the Testing Plan).
+
+Hazardously T-H-T2b-1 is **Low** (ODrives keep receiving setpoints
+from ``motor_guard``; platform stays held; only the Jetson-side
+observation of ``/robot_state`` is affected) — see the Testing
+Plan's pre-test setup checklist.  T-H-T2a-1 is gated on T-H-T2b-1
+PASS per the same checklist.  Both tests follow the pre-test setup
+discipline (low pose, hand detached, operator on E-stop button,
+second person present, instrumented logging of the timing chain).
+
+See [logbook entry](../../logbook/2026-05-11-tier2b-hardware-plant-telemetry-ff.md)
+for the per-test empirical-probe recipe table, the design discussion
+(boundary-patch via ``time.perf_counter`` + drain-pump; @given vs
+RuleBasedStateMachine for the linear-scaling property; per-instance
+derivation invariant; bug-surfaced root-cause trace; xfail accounting;
+hardware-test target-date fixing), and the line-citation refresh
+against ``hardware_plant.py``.  Phase 6 (Tier 2c — ZMQ corruption
+real-msgpack harness) cleared to start.
+
+*Note: the Scope / Test cases / Critical details / Exit criteria
+sub-sections below are preserved as the as-planned record; the
+Outcome paragraph above is authoritative for what actually shipped.
+Plan-side line citations (e.g. ``hardware_plant.py:507–540``,
+``:625–631``) all drifted between plan-writing and Phase 5
+implementation; the Outcome's post-Phase-5 citations are ground
+truth.*
 
 **Scope.** Drive the telemetry-staleness threshold matrix (warn / hard / estop), the `set_pose()` torque-FF singular path, and the cold-start zero-state path.
 

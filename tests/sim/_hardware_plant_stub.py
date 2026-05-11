@@ -43,6 +43,29 @@ production code, not at a private counter — per Plan 2 Working Note #1
   hook supports per-tick variation (e.g. the 1-ULP bit-different
   variant T-U-T2a-7 uses to verify the bit-exact ``np.array_equal``
   compare).
+
+Phase 5 (Plan 2 — Tier 2b) adds two further helpers for the
+telemetry-staleness threshold matrix and cold-start paths:
+
+* ``drain_recv_pump(plant)`` — replace ``plant._sub.recv_multipart``
+  with one that always raises ``zmq.Again``, so ``get_state()`` runs
+  with ``drain_count == 0`` and ``_last_telem_recv_time`` is NOT
+  refreshed.  Combined with ``freeze_perf_counter_at``, this drives
+  the real ``telem_age = now - _last_telem_recv_time`` arithmetic in
+  production at the WARN / HARD / ESTOP boundaries
+  (``hardware_plant.py:627–702``).
+* ``freeze_perf_counter_at(plant, age_s)`` — context manager that
+  patches ``controller.hardware_plant.time`` so ``perf_counter()``
+  returns ``plant._last_telem_recv_time + age_s``.  Drives ``telem_age``
+  to exactly ``age_s`` in production code, hitting each documented
+  threshold (``_TELEM_STALE_*_MULT * control_dt``).
+
+The Phase 5 helpers honour Plan 2 Working Note #1: the watchdog
+surface under test is the production code's ``if telem_age >
+self._telem_stale_*_s`` cascade, not the timestamp itself.  The
+patches replace ``time.perf_counter`` at the production code's
+boundary, and the pump is replaced at the ZMQ socket boundary — no
+production state is poked directly.
 """
 
 from __future__ import annotations
@@ -59,6 +82,35 @@ import numpy as np
 # plant already at a credible production operating point.  Callers that
 # want a different operating point can pass ``target_pose=...``.
 _DEFAULT_TARGET_POSE = np.array([0.0, 0.0, 50.0, 0.0, 0.0, 0.0])
+
+# Module-level cache of (target_pose_tuple → (target_motor_rev, mm_to_rev))
+# computed via ``MuJoCoPlant.pose_to_extensions``.  The IK precompute is the
+# expensive part of ``build_hardware_plant_stub`` (~1-2 s per call).  Phase 5
+# (Tier 2b) introduced a hypothesis property test that constructs many
+# HardwarePlants at varying control_dt; without this cache, ci-deep cost
+# explodes.  Cache key is a tuple of the pose components (hashable; ndarrays
+# aren't).  See ``logbook/2026-05-11-tier2b-hardware-plant-telemetry-ff.md``.
+_IK_PRECOMPUTE_CACHE: dict[tuple, tuple] = {}
+
+
+def _get_cached_motor_rev(target_pose: np.ndarray) -> list[float]:
+    """Return ``target_motor_rev_list`` (length-6 list of floats) for
+    ``target_pose``.
+
+    Caches the MuJoCoPlant + IK precompute at module level so repeated
+    ``build_hardware_plant_stub`` calls at the same pose pay the cost only
+    once.  Returns a list (msgpack-friendly).
+    """
+    key = tuple(float(v) for v in target_pose)
+    if key not in _IK_PRECOMPUTE_CACHE:
+        from plant.mujoco_plant import MuJoCoPlant as _SimPlant
+        _sim_tmp = _SimPlant()
+        target_ext_mm = _sim_tmp.pose_to_extensions(target_pose)
+        target_motor_rev = [float(v) for v in
+                            target_ext_mm * _sim_tmp.geom.mm_to_rev]
+        del _sim_tmp
+        _IK_PRECOMPUTE_CACHE[key] = target_motor_rev
+    return _IK_PRECOMPUTE_CACHE[key]
 
 
 class _FramePump:
@@ -111,17 +163,15 @@ def build_hardware_plant_stub(
     # Pre-compute motor positions at target_pose via MuJoCoPlant's IK so
     # the synthetic telemetry represents a plant at the requested pose.
     # Done once at fixture build — outside the contract-test measurement
-    # window.
+    # window.  Phase 5 introduced a module-level cache (see
+    # ``_get_cached_motor_rev``) so the IK precompute is paid only once
+    # per unique pose, regardless of how many stubs are built.
     if target_pose is None:
         target_pose = _DEFAULT_TARGET_POSE
-    from plant.mujoco_plant import MuJoCoPlant as _SimPlant
-    _sim_tmp = _SimPlant()
-    target_ext_mm = _sim_tmp.pose_to_extensions(target_pose)
-    target_motor_rev = target_ext_mm * _sim_tmp.geom.mm_to_rev
-    del _sim_tmp
+    target_motor_rev = _get_cached_motor_rev(target_pose)
 
     telem_dict = {
-        'motor_pos': [float(v) for v in target_motor_rev],
+        'motor_pos': list(target_motor_rev),
         'motor_vel': [0.0] * 6,
     }
     telem_payload = _msgpack.packb(telem_dict, use_bin_type=True)
@@ -287,14 +337,9 @@ def install_telemetry_pump(plant, *, target_pose=None, motor_vel=None,
     else:
         motor_vel = [float(v) for v in motor_vel]
 
-    # Compute motor_rev at the requested pose (same path as
-    # ``build_hardware_plant_stub``).
-    from plant.mujoco_plant import MuJoCoPlant as _SimPlant
-    _sim_tmp = _SimPlant()
-    target_ext_mm = _sim_tmp.pose_to_extensions(target_pose)
-    target_motor_rev = [float(v) for v in
-                        target_ext_mm * _sim_tmp.geom.mm_to_rev]
-    del _sim_tmp
+    # Compute motor_rev at the requested pose (cached at module level —
+    # see ``_get_cached_motor_rev`` and Phase 5 module docstring).
+    target_motor_rev = _get_cached_motor_rev(target_pose)
 
     state = {'tick': 0, 'yield_frame': True}
 
@@ -314,3 +359,83 @@ def install_telemetry_pump(plant, *, target_pose=None, motor_vel=None,
 
     plant._sub.recv_multipart = pump
     return pump
+
+
+# ---------------------------------------------------------------------
+# Phase 5 (Plan 2 Tier 2b) — telemetry-staleness drivers
+# ---------------------------------------------------------------------
+
+def drain_recv_pump(plant):
+    """Replace the plant's ZMQ recv pump with one that always raises
+    ``zmq.Again``.
+
+    With no frames arriving, ``HardwarePlant.get_state()``'s drain loop at
+    ``hardware_plant.py:503–510`` exits immediately with
+    ``drain_count == 0``; ``_last_telem_recv_time`` is NOT refreshed (the
+    refresh at ``:512–513`` is gated on ``if drain_count > 0``).  The
+    cached ``_last_telem`` payload is reused, so FK and the frozen-motor
+    detector still see motor_pos data — but the staleness watchdog now
+    computes ``telem_age = now - _last_telem_recv_time`` against a
+    progressively older recv timestamp.
+
+    Pair with ``freeze_perf_counter_at`` to drive a specific staleness
+    target in one tick.
+    """
+    import zmq as _zmq
+
+    def _always_again(*_args, **_kwargs):
+        raise _zmq.Again()
+
+    plant._sub.recv_multipart = _always_again
+
+
+@contextlib.contextmanager
+def freeze_perf_counter_at(plant, age_s: float):
+    """Context manager: patch ``controller.hardware_plant.time`` so
+    ``perf_counter()`` returns ``plant._last_telem_recv_time + age_s``.
+
+    Drives the production code's ``telem_age = now - _last_telem_recv_time``
+    arithmetic at ``hardware_plant.py:519–520`` to exactly ``age_s``,
+    hitting the documented thresholds ``_TELEM_STALE_*_MULT * control_dt``
+    at ``:130–132``.  Patches at the time-module boundary
+    (``controller.hardware_plant.time``), NOT at the private timestamp
+    field — per Plan 2 Working Note #1 ("Drive real failures, not
+    mocked ones").
+
+    Caller MUST have run at least one ``plant.get_state()`` before
+    invoking this so ``_last_telem_recv_time`` is set; otherwise the
+    addition will fail with ``TypeError`` on ``None + age_s``.
+
+    Note that ``time.sleep`` is preserved (delegated to the real module)
+    so any production code paths that sleep still work — only
+    ``perf_counter`` is frozen.
+
+    Parameters
+    ----------
+    plant : HardwarePlant
+        Plant whose ``_last_telem_recv_time`` is the reference instant.
+    age_s : float
+        Seconds of staleness to simulate.  ``perf_counter()`` will return
+        ``plant._last_telem_recv_time + age_s`` for the duration of the
+        ``with`` block.
+    """
+    import controller.hardware_plant as _hp_mod
+
+    if plant._last_telem_recv_time is None:
+        raise RuntimeError(
+            "freeze_perf_counter_at: caller must prime the plant with at "
+            "least one get_state() before freezing time — "
+            "_last_telem_recv_time is None"
+        )
+
+    real_time = _hp_mod.time
+    target_now = plant._last_telem_recv_time + age_s
+
+    class _FrozenTime:
+        @staticmethod
+        def perf_counter():
+            return target_now
+        sleep = real_time.sleep
+
+    with patch.object(_hp_mod, 'time', _FrozenTime):
+        yield

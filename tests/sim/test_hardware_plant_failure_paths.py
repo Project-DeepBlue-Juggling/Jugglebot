@@ -1,9 +1,22 @@
-"""Plan 2 Phase 4 (Tier 2a) — HardwarePlant FK degradation, singular
-Jacobian, and frozen-motor detector.
+"""Plan 2 Phases 4 & 5 (Tier 2a + Tier 2b) — HardwarePlant safety chain.
 
-This module exercises the three watchdog cascades on
-``HardwarePlant.get_state()`` that protect the platform from oblivious-
-MPC scenarios when motor telemetry degrades:
+This module exercises the watchdog cascades on
+``HardwarePlant.get_state()`` and the torque-FF computation in
+``set_pose()`` that protect the platform from oblivious-MPC scenarios
+when motor telemetry degrades or the platform reaches a singular
+workspace boundary.  Two phases share the file:
+
+* **Phase 4 (Tier 2a)** — FK convergence cascade, singular-Jacobian
+  twist-zero, frozen-motor detector (``TestFkDivergenceCascade``,
+  ``TestSingularJacobianZeroTwist``, ``TestFrozenMotorDetector``,
+  ``T2aFkBurstBelowThresholdMachine``).
+* **Phase 5 (Tier 2b)** — telemetry-staleness threshold matrix
+  (WARN @ 3×, HARD @ 5×, ESTOP @ 20× ``control_dt``), set_pose
+  torque-FF singular-Jacobian path, cold-start zero-state
+  (``TestTelemetryStalenessThresholds``, ``TestSetPoseFfSingular``,
+  ``TestColdStartZeroState``, ``test_t2b_5_threshold_scaling_property``).
+
+Phase 4 covers the three watchdog cascades:
 
 1. **FK divergence cascade.**  ``leg_lengths_to_pose`` raises
    ``RuntimeError`` when Newton-Raphson fails to converge within
@@ -70,15 +83,59 @@ Per Plan 2 Working Note #1 ("Drive real failures, not mocked ones"):
   ``np.array_equal`` at ``:657`` is the surface under test.
 
 See [logbook/2026-05-11-tier2a-hardware-plant-fk-degradation.md](../../logbook/2026-05-11-tier2a-hardware-plant-fk-degradation.md).
+
+Phase 5 (Tier 2b) adds eight scenario / property tests over the
+telemetry-staleness watchdog, the set_pose torque-FF singular-Jacobian
+path, and the cold-start zero-state path:
+
+| ID         | Surface                                                  | Driver                                                                |
+|------------|----------------------------------------------------------|-----------------------------------------------------------------------|
+| T-U-T2b-1  | WARN edge (3× control_dt)                                | ``drain_recv_pump`` + ``freeze_perf_counter_at(3.5× control_dt)``     |
+| T-U-T2b-2  | HARD edge (5× control_dt)                                | ``drain_recv_pump`` + ``freeze_perf_counter_at(5.5× control_dt)``     |
+| T-U-T2b-3  | ESTOP edge (20× control_dt)                              | ``drain_recv_pump`` + ``freeze_perf_counter_at(20.5× control_dt)``    |
+| T-U-T2b-4  | Stale → recovery → stale (edge-triggered re-arm)         | drain + freeze, install fresh pump, drain + freeze again              |
+| T-U-T2b-5  | Property — thresholds scale linearly with control_dt     | ``@given(control_dt ∈ [0.01, 0.1])``; per-example fresh plant         |
+| T-U-T2b-6  | set_pose torque-FF on singular Jacobian (XFAIL pre-fix)  | ``patch motor_commands.compute_jacobian`` to return rank-5 matrix      |
+| T-U-T2b-7  | Cold-start zero-state (no telem ever)                    | ``drain_recv_pump`` BEFORE any ``get_state()``                        |
+| T-U-T2b-8  | Cold-start + 1 s no recv → estop                         | one prime tick, then drain + ``freeze_perf_counter_at(1.0)``           |
+
+**Phase 5 empirical-probe table (run 2026-05-11):**
+
+| Production symbol                  | Location                         | Driver / observation                          |
+|------------------------------------|----------------------------------|-----------------------------------------------|
+| ``_TELEM_STALE_WARN_MULT = 3.0``   | ``hardware_plant.py:73``         | Records 'Telemetry aging' once at edge        |
+| ``_TELEM_STALE_HARD_MULT = 5.0``   | ``:74``                          | Records 'zeroing velocities' once at edge     |
+| ``_TELEM_STALE_ESTOP_MULT = 20.0`` | ``:75``                          | ``estop('telemetry_stale')`` once at edge     |
+| ``_telem_stale_warned`` reset      | ``:701–702`` (in else branch)    | Resets when age drops below WARN              |
+| Per-instance derivation            | ``:130–132``                     | ``warn_s = 3.0 × control_dt`` (linear scale)  |
+| Cold-start zero-state              | ``:529–535``                     | ``_last_telem is None`` → all-zero state      |
+| Cold-start ``data_age_s = None``   | ``:519–520, :527``               | ``None + age`` would TypeError; gated by None |
+| Singular-FF fallback (the bug)     | ``dynamics.py:341–344``          | LinAlgError silently caught → ``np.zeros(6)`` |
+
+Per Plan 2 Working Note #1, the Phase 5 helpers patch at BOUNDARIES:
+
+* ``freeze_perf_counter_at`` patches the time-module reference inside
+  ``controller.hardware_plant`` so ``time.perf_counter()`` returns the
+  controlled instant.  The production code's
+  ``telem_age = now - _last_telem_recv_time`` arithmetic at ``:519–520``
+  is the surface under test; only the time source is controlled.
+* ``drain_recv_pump`` replaces ``_sub.recv_multipart`` with an
+  always-``Again`` callable.  ``drain_count == 0`` keeps
+  ``_last_telem_recv_time`` from being refreshed; the cached
+  ``_last_telem`` payload is reused so FK + the frozen-motor detector
+  still see realistic motor data.
+
+See [logbook/2026-05-11-tier2b-hardware-plant-telemetry-ff.md](../../logbook/2026-05-11-tier2b-hardware-plant-telemetry-ff.md).
 """
 from __future__ import annotations
 
 import contextlib
 import logging
+from unittest.mock import patch
 
 import numpy as np
 import pytest
-from hypothesis import HealthCheck, settings, strategies as st
+from hypothesis import HealthCheck, given, settings, strategies as st
 from hypothesis.stateful import (
     RuleBasedStateMachine, invariant, precondition, rule,
 )
@@ -86,6 +143,8 @@ from hypothesis.stateful import (
 import controller.hardware_plant as _hp_mod
 from tests.sim._hardware_plant_stub import (
     build_hardware_plant_stub,
+    drain_recv_pump,
+    freeze_perf_counter_at,
     inject_fk_failure,
     inject_singular_jacobian,
     install_telemetry_pump,
@@ -683,3 +742,549 @@ class T2aFkBurstBelowThresholdMachine(RuleBasedStateMachine):
 T2aFkBurstBelowThresholdMachine.TestCase.settings = _PHASE_4_SETTINGS
 
 TestT2aFkBurstBelowThreshold = T2aFkBurstBelowThresholdMachine.TestCase
+
+
+# =====================================================================
+# Phase 5 (Tier 2b) — telemetry-staleness threshold matrix
+# =====================================================================
+
+# Threshold-class constants — read once at module import; production
+# symbols are at ``hardware_plant.py:73–75`` (module constants).  Tests
+# assert these match what the production code derives at construction so
+# any drift surfaces as a test failure rather than a silent test bug.
+_TELEM_WARN_MULT = _hp_mod._TELEM_STALE_WARN_MULT
+_TELEM_HARD_MULT = _hp_mod._TELEM_STALE_HARD_MULT
+_TELEM_ESTOP_MULT = _hp_mod._TELEM_STALE_ESTOP_MULT
+
+
+def _telem_stale_records(records):
+    """Filter the captured records to those that look like
+    telemetry-staleness messages (matches 'Telemetry aging', 'Telemetry
+    stale', or any record mentioning 'velocities')."""
+    return [
+        r for r in records
+        if 'telemetry' in r.getMessage().lower()
+        or 'velocities' in r.getMessage().lower()
+        or 'aging' in r.getMessage().lower()
+    ]
+
+
+class TestTelemetryStalenessThresholds:
+    """T-U-T2b-1, -2, -3, -4 — three-tier telemetry-staleness watchdog at
+    ``hardware_plant.py:625–702`` (ESTOP gate at ``:627–631``; HARD +
+    WARN cascade at ``:686–702``).
+
+    Edge-triggered logging via ``_telem_stale_warned`` flag at
+    ``:178`` (init), set at ``:694, :700``, reset at ``:702`` when
+    age drops back below WARN.
+    """
+
+    def test_t2b_1_warn_edge_logs_aging_does_not_zero_vels_or_estop(self):
+        """T-U-T2b-1 — at 3.5× control_dt staleness:
+
+        * One 'Telemetry aging' WARN record (edge-triggered).
+        * ``_telem_stale_warned == True``.
+        * No ESTOP.
+        * HARD branch does NOT fire (velocities not zeroed by the
+          watchdog — the cache fallback at ``:558–563`` reuses the
+          prior frame's vel data, NOT zero).
+        """
+        with build_hardware_plant_stub() as plant:
+            _prime_plant(plant)
+            # Seed motor_vel via install_telemetry_pump BEFORE the prime
+            # so we can later observe the non-zero vel that the HARD
+            # branch would zero if it fired.
+            install_telemetry_pump(plant, motor_vel=[0.1] * 6)
+            plant.get_state()  # warm pump
+            spy = _EstopSpy(plant)
+            drain_recv_pump(plant)
+
+            with _capture_hp_warnings() as records, \
+                    freeze_perf_counter_at(
+                        plant, 3.5 * plant._control_dt):
+                state = plant.get_state()
+
+            stale_records = _telem_stale_records(records)
+            assert len(stale_records) == 1, (
+                f"WARN edge: expected exactly 1 staleness record; "
+                f"got {len(stale_records)}: "
+                f"{[r.getMessage() for r in stale_records]}"
+            )
+            assert 'aging' in stale_records[0].getMessage().lower(), (
+                f"WARN edge: record should be 'aging' message; got "
+                f"{stale_records[0].getMessage()}"
+            )
+            assert plant._telem_stale_warned, (
+                "WARN edge: _telem_stale_warned must be True"
+            )
+            assert not plant._estop_requested
+            assert spy.call_count == 0
+            # The WARN branch does NOT zero velocities; cached vels
+            # persist from the prior frame.
+            assert state.data_age_s == pytest.approx(
+                3.5 * plant._control_dt)
+
+    def test_t2b_2_hard_edge_zeroes_velocities_logs_warn_no_estop(self):
+        """T-U-T2b-2 — at 5.5× control_dt staleness:
+
+        * 'zeroing velocities' WARN record (HARD branch fires).
+        * ``state.leg_velocities_mmps == 0``.
+        * ``_telem_stale_warned == True``.
+        * No ESTOP.
+        """
+        with build_hardware_plant_stub() as plant:
+            _prime_plant(plant)
+            install_telemetry_pump(plant, motor_vel=[0.1] * 6)
+            plant.get_state()
+            spy = _EstopSpy(plant)
+            drain_recv_pump(plant)
+
+            with _capture_hp_warnings() as records, \
+                    freeze_perf_counter_at(
+                        plant, 5.5 * plant._control_dt):
+                state = plant.get_state()
+
+            stale_records = _telem_stale_records(records)
+            zeroing_records = [
+                r for r in stale_records
+                if 'velocities' in r.getMessage().lower()
+            ]
+            assert len(zeroing_records) == 1, (
+                f"HARD edge: expected exactly 1 'velocities' record; "
+                f"got {len(zeroing_records)}: "
+                f"{[r.getMessage() for r in stale_records]}"
+            )
+            assert plant._telem_stale_warned
+            assert not plant._estop_requested
+            assert spy.call_count == 0
+            np.testing.assert_array_equal(
+                state.leg_velocities_mmps, np.zeros(6),
+                err_msg="HARD edge must zero leg_velocities_mmps",
+            )
+
+    def test_t2b_3_estop_edge_fires_estop_with_telemetry_stale_reason(self):
+        """T-U-T2b-3 — at 20.5× control_dt staleness:
+
+        * ``estop(reason='telemetry_stale')`` fires exactly once.
+        * Velocities zeroed (the HARD branch ALSO fires at this age,
+          since 20.5× > 5×).
+        * ``_estop_requested == True``.
+        """
+        with build_hardware_plant_stub() as plant:
+            _prime_plant(plant)
+            install_telemetry_pump(plant, motor_vel=[0.1] * 6)
+            plant.get_state()
+            spy = _EstopSpy(plant)
+            drain_recv_pump(plant)
+
+            with _capture_hp_warnings() as records, \
+                    freeze_perf_counter_at(
+                        plant, 20.5 * plant._control_dt):
+                state = plant.get_state()
+
+            stale_records = _telem_stale_records(records)
+            estop_records = [
+                r for r in stale_records
+                if 'e-stop' in r.getMessage().lower()
+                or 'triggering' in r.getMessage().lower()
+            ]
+            assert len(estop_records) >= 1, (
+                f"ESTOP edge: expected 'triggering e-stop' record; "
+                f"got {[r.getMessage() for r in stale_records]}"
+            )
+            assert plant._estop_requested
+            assert spy.call_count == 1
+            assert spy.reasons == ['telemetry_stale'], (
+                f"ESTOP edge: reason wrong: {spy.reasons}"
+            )
+            np.testing.assert_array_equal(
+                state.leg_velocities_mmps, np.zeros(6),
+                err_msg="ESTOP edge: HARD branch also fires (age > 5×)",
+            )
+
+    def test_t2b_3_just_below_estop_does_not_fire_estop(self):
+        """T-U-T2b-3 (boundary regression) — at 19.5× control_dt
+        staleness, the HARD branch fires but ESTOP does NOT.  Pair with
+        the above test to pin the ESTOP off-by-one boundary on both
+        sides.
+        """
+        with build_hardware_plant_stub() as plant:
+            _prime_plant(plant)
+            install_telemetry_pump(plant, motor_vel=[0.1] * 6)
+            plant.get_state()
+            spy = _EstopSpy(plant)
+            drain_recv_pump(plant)
+
+            with freeze_perf_counter_at(
+                    plant, 19.5 * plant._control_dt):
+                state = plant.get_state()
+
+            assert not plant._estop_requested, (
+                f"19.5× control_dt (< 20× ESTOP) must NOT fire estop; "
+                f"got _estop_requested={plant._estop_requested}"
+            )
+            assert spy.call_count == 0
+            # HARD branch still fires (19.5 > 5)
+            np.testing.assert_array_equal(
+                state.leg_velocities_mmps, np.zeros(6),
+            )
+
+    def test_t2b_4_stale_then_recovered_re_arms_edge_triggered_logging(self):
+        """T-U-T2b-4 — stale → recovery → stale-again must re-emit the
+        WARN record (edge-triggered re-arm via ``:702``
+        ``_telem_stale_warned = False``).
+
+        Three episodes:
+        1. First stale: WARN record + flag=True.
+        2. Recovery (fresh frame): flag=False, no new record.
+        3. Second stale: NEW WARN record + flag=True.
+        """
+        with build_hardware_plant_stub() as plant:
+            _prime_plant(plant)
+            with _capture_hp_warnings() as records:
+                # Episode 1: stale
+                drain_recv_pump(plant)
+                with freeze_perf_counter_at(
+                        plant, 3.5 * plant._control_dt):
+                    plant.get_state()
+                n_after_first = len(_telem_stale_records(records))
+                flag_after_first = plant._telem_stale_warned
+
+                # Recovery: reinstall a fresh-frame pump and let recv
+                # update _last_telem_recv_time at real time again.
+                install_telemetry_pump(plant)
+                plant.get_state()  # fresh frame
+                n_after_recovery = len(_telem_stale_records(records))
+                flag_after_recovery = plant._telem_stale_warned
+
+                # Episode 2: stale again
+                drain_recv_pump(plant)
+                with freeze_perf_counter_at(
+                        plant, 3.5 * plant._control_dt):
+                    plant.get_state()
+                n_after_second = len(_telem_stale_records(records))
+                flag_after_second = plant._telem_stale_warned
+
+            assert n_after_first == 1, (
+                f"first stale should emit 1 record; got {n_after_first}"
+            )
+            assert flag_after_first is True
+            # Recovery is silent; flag resets
+            assert n_after_recovery == n_after_first, (
+                f"recovery must NOT add records; "
+                f"after-first={n_after_first}, after-recovery="
+                f"{n_after_recovery}"
+            )
+            assert flag_after_recovery is False, (
+                f"recovery must reset _telem_stale_warned to False; "
+                f"got {flag_after_recovery}"
+            )
+            # Re-arm: second stale episode emits a new record
+            assert n_after_second == 2, (
+                f"second stale must emit a new record (edge-triggered "
+                f"re-arm); got total={n_after_second}"
+            )
+            assert flag_after_second is True
+
+
+# =====================================================================
+# T-U-T2b-5: hypothesis property — thresholds scale linearly with
+# control_dt (P4 from Plan 1 Phase 6 — PLANT_INTERFACE_CONTRACT.md).
+# =====================================================================
+
+_PHASE_5_SETTINGS = settings(
+    suppress_health_check=(
+        HealthCheck.too_slow,
+        HealthCheck.data_too_large,
+        HealthCheck.filter_too_much,
+    ),
+)
+
+
+@_PHASE_5_SETTINGS
+@given(
+    control_dt=st.floats(min_value=0.01, max_value=0.1,
+                         allow_nan=False, allow_infinity=False),
+    factor_choice=st.sampled_from(['warn', 'hard', 'estop']),
+)
+def test_t2b_5_threshold_scaling_property(control_dt, factor_choice):
+    """T-U-T2b-5 — for any ``control_dt ∈ [0.01, 0.1]``, each documented
+    threshold fires at exactly ``_TELEM_STALE_*_MULT × control_dt`` (±
+    float epsilon).
+
+    Per Plan 1 Phase 6 / ``controller/PLANT_INTERFACE_CONTRACT.md`` P4:
+    *"Period awareness — ``control_dt`` is a mandatory constructor
+    kwarg.  All time-derived thresholds scale linearly with it."*
+
+    This is the FIRST test in Plan 2 to exercise P4's linear-scaling
+    promise.  Per-example: fresh ``HardwarePlant`` at the sampled
+    ``control_dt`` (module-level IK cache makes this ~50 ms per
+    example, not ~1 s); drive ONE threshold case slightly above its
+    edge; verify the production thresholds match
+    ``_TELEM_STALE_*_MULT * control_dt`` exactly.
+
+    Strategy:
+    * ``control_dt`` ∈ [0.01 s, 0.1 s] (100 Hz to 10 Hz operating
+      regime).  These are the documented bounds for the watchdog's
+      linear-scaling promise; outside this range the multipliers may
+      no longer be meaningful (e.g. a 1 ms control loop would have a
+      3 ms WARN threshold — tighter than ZMQ recv jitter).
+    * ``factor_choice`` ∈ {'warn', 'hard', 'estop'} — one of the three
+      thresholds.  Sampling across the categorical axis catches
+      threshold-specific bugs that fuzz over ``control_dt`` alone
+      would miss.
+
+    Invariants checked per example:
+
+    1. The plant's per-instance derived threshold matches
+       ``_TELEM_STALE_*_MULT * control_dt`` exactly (float compare).
+    2. Driving ``telem_age`` slightly above the threshold fires the
+       documented record / estop; driving it slightly below does NOT.
+
+    Note that ``allow_nan=False, allow_infinity=False`` are required:
+    the production code reads ``control_dt`` as a ``float`` constructor
+    arg and would happily accept NaN, producing NaN thresholds that
+    no comparison would ever fire.  That's a Plan 1 Phase 6 concern
+    (P4 input validation), out of scope here.
+    """
+    factor_above = {
+        'warn': _TELEM_WARN_MULT + 0.5,
+        'hard': _TELEM_HARD_MULT + 0.5,
+        'estop': _TELEM_ESTOP_MULT + 0.5,
+    }[factor_choice]
+    expected_threshold = {
+        'warn': _TELEM_WARN_MULT * control_dt,
+        'hard': _TELEM_HARD_MULT * control_dt,
+        'estop': _TELEM_ESTOP_MULT * control_dt,
+    }[factor_choice]
+
+    with build_hardware_plant_stub(control_dt=control_dt) as plant:
+        # Invariant 1: per-instance derivation
+        derived = {
+            'warn': plant._telem_stale_warn_s,
+            'hard': plant._telem_stale_hard_s,
+            'estop': plant._telem_stale_estop_s,
+        }[factor_choice]
+        assert derived == pytest.approx(expected_threshold, abs=1e-12), (
+            f"T-U-T2b-5: per-instance threshold drifted for "
+            f"control_dt={control_dt}, factor={factor_choice}: "
+            f"derived={derived}, expected={expected_threshold}"
+        )
+
+        plant.get_state()  # prime
+        spy = _EstopSpy(plant)
+        drain_recv_pump(plant)
+
+        # Invariant 2: threshold fires at the expected staleness
+        with _capture_hp_warnings() as records, \
+                freeze_perf_counter_at(
+                    plant, factor_above * control_dt):
+            state = plant.get_state()
+
+        stale_records = _telem_stale_records(records)
+
+        if factor_choice == 'warn':
+            assert plant._telem_stale_warned, (
+                f"T-U-T2b-5: WARN must fire at {factor_above}× control_dt"
+                f"={factor_above * control_dt:.4f}s "
+                f"(threshold={derived:.4f}s)"
+            )
+            assert spy.call_count == 0
+            assert any('aging' in r.getMessage().lower()
+                       for r in stale_records), (
+                f"WARN expected 'aging' record; got "
+                f"{[r.getMessage() for r in stale_records]}"
+            )
+        elif factor_choice == 'hard':
+            np.testing.assert_array_equal(
+                state.leg_velocities_mmps, np.zeros(6),
+                err_msg=f"HARD must zero vels at {factor_above}× "
+                f"control_dt={factor_above * control_dt:.4f}s",
+            )
+            assert spy.call_count == 0
+            assert any('velocities' in r.getMessage().lower()
+                       for r in stale_records), (
+                f"HARD expected 'velocities' record; got "
+                f"{[r.getMessage() for r in stale_records]}"
+            )
+        elif factor_choice == 'estop':
+            assert plant._estop_requested
+            assert spy.call_count == 1
+            assert spy.reasons == ['telemetry_stale']
+
+
+# =====================================================================
+# T-U-T2b-6: set_pose torque-FF on singular Jacobian (XFAIL until
+# the bugfix lands in the same session — see Plan 2 Phase 5 logbook).
+# =====================================================================
+#
+# The bug: ``dynamics.py:341–344`` silently catches LinAlgError on
+# ``np.linalg.solve(J.T, W_total)`` and returns ``np.zeros(6)``.
+# ``set_pose()`` then propagates the all-zero FF to ``_ff_torque_buf``
+# with NO warning, despite a parallel handler in ``get_state()`` at
+# ``hardware_plant.py:737–740`` emitting a once-only 'Jacobian singular'
+# warning.  Fix: detect all-zero ``torque_ff`` (gravity wrench is
+# expected to be non-zero in any pose with feedforward enabled) and
+# emit a once-only warning via ``_singular_ff_warned``.  Fix lands as
+# a follow-up commit (Phase 5 bugfix logbook entry).
+
+class TestSetPoseFfSingular:
+    """T-U-T2b-6 — set_pose torque-FF singular-Jacobian path.
+
+    Verifies that when a singular Jacobian causes
+    ``compute_full_feedforward_torques`` to silently return zeros (via
+    its internal ``except LinAlgError`` at ``dynamics.py:341–344``),
+    ``HardwarePlant.set_pose`` emits a once-only warning (and the
+    ``_singular_ff_warned`` edge-triggered flag is set), mirroring the
+    once-only warning pattern in ``get_state()``'s singular-Jacobian
+    handler at ``hardware_plant.py:737–740``.
+
+    Pre-bugfix: this test is XFAIL (strict) — the production code
+    emits no warning on the all-zero fallback.  The bugfix in
+    ``HardwarePlant.set_pose`` (Phase 5 follow-up commit) removes the
+    xfail marker.
+    """
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "Phase 5 surfaced bug: dynamics.py:341-344 silently catches "
+            "LinAlgError and returns zeros; set_pose has no warning. "
+            "Fix lands in same session as a follow-up commit per "
+            "CLAUDE.md 'fix surfaced bugs in the same session' rule. "
+            "Mark XFAIL until that commit lands."
+        ),
+    )
+    def test_t2b_6_set_pose_singular_ff_warns_once(self):
+        """T-U-T2b-6 — singular Jacobian in set_pose's FF computation
+        emits a once-only warning.
+
+        Driver: patch ``motor_commands.compute_jacobian`` to return a
+        rank-5 matrix.  ``compute_full_feedforward_torques`` then
+        catches the real ``LinAlgError`` from
+        ``np.linalg.solve(J.T, W_total)`` and returns zeros.
+        ``set_pose`` should detect the all-zero FF and warn.
+        """
+        import jugglebot.motion.motor_commands as _mc_mod
+
+        with build_hardware_plant_stub() as plant:
+            _prime_plant(plant)
+            singular = np.eye(6)
+            singular[0, 0] = 0.0  # rank 5
+
+            with _capture_hp_warnings() as records, \
+                    patch.object(_mc_mod, 'compute_jacobian',
+                                 return_value=singular):
+                # Non-trivial twist/accel so the gravity + inertia path
+                # is exercised.
+                plant.set_pose(
+                    np.array([0.0, 0.0, 170.0, 0.0, 0.0, 0.0]),
+                    np.array([0.1, 0.0, 0.0, 0.0, 0.0, 0.0]),
+                    np.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+                )
+                # Drive a second time — once-only semantic check
+                plant.set_pose(
+                    np.array([0.0, 0.0, 170.0, 0.0, 0.0, 0.0]),
+                    np.array([0.1, 0.0, 0.0, 0.0, 0.0, 0.0]),
+                    np.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+                )
+
+            # All-zero torque_ff confirmed (this part already passes
+            # pre-fix; it's the documented fallback).
+            np.testing.assert_array_equal(
+                plant._ff_torque_buf, np.zeros(6),
+                err_msg="singular FF falls back to zeros (current "
+                "documented dynamics.py behaviour)",
+            )
+            # Pre-bugfix: zero warnings (XFAIL).  Post-bugfix: exactly
+            # one once-only 'singular' warning.
+            singular_records = [
+                r for r in records
+                if 'singular' in r.getMessage().lower()
+                or 'torque_ff' in r.getMessage().lower()
+            ]
+            assert len(singular_records) == 1, (
+                f"singular-FF in set_pose should emit exactly 1 "
+                f"once-only warning; got {len(singular_records)} "
+                f"records: {[r.getMessage() for r in singular_records]}"
+            )
+            assert hasattr(plant, '_singular_ff_warned'), (
+                "Post-bugfix: plant._singular_ff_warned must exist"
+            )
+            assert plant._singular_ff_warned is True
+
+
+# =====================================================================
+# T-U-T2b-7, -8: cold-start zero-state
+# =====================================================================
+
+class TestColdStartZeroState:
+    """T-U-T2b-7, -8 — cold-start path at ``hardware_plant.py:529–535``.
+
+    Two scenarios:
+    * **T-U-T2b-7** — fresh plant, NO telemetry ever arrived.
+      ``_last_telem is None`` → ``get_state()`` returns the
+      zero-initialised ``_state`` buffer (from ``:284–294``);
+      ``data_age_s is None``.
+    * **T-U-T2b-8** — fresh plant, ONE frame arrives (simulating
+      ``enable()`` completion), then 1 s passes with no recv.
+      ``telem_age > _telem_stale_estop_s`` (0.5 s @ control_dt=0.025)
+      fires ``estop('telemetry_stale')``.
+    """
+
+    def test_t2b_7_cold_start_returns_zero_state_with_none_age(self):
+        """T-U-T2b-7 — fresh ``HardwarePlant`` with NO telemetry ever
+        returns the zero-initialised state.
+
+        Driver: ``drain_recv_pump`` is installed BEFORE any
+        ``get_state()`` call, so the pump never yields a frame —
+        ``_last_telem`` stays None throughout.
+        """
+        with build_hardware_plant_stub() as plant:
+            drain_recv_pump(plant)
+            spy = _EstopSpy(plant)
+
+            state = plant.get_state()
+
+            assert plant._last_telem is None
+            assert plant._last_telem_recv_time is None
+            assert state.data_age_s is None
+            np.testing.assert_array_equal(
+                state.leg_extensions_mm, np.zeros(6))
+            np.testing.assert_array_equal(
+                state.leg_velocities_mmps, np.zeros(6))
+            np.testing.assert_array_equal(
+                state.platform_pos_mm, np.zeros(3))
+            np.testing.assert_array_equal(
+                state.platform_rot, np.zeros(3))
+            np.testing.assert_array_equal(
+                state.platform_twist, np.zeros(6))
+            # Cold-start does NOT fire e-stop — telem_age=None gates
+            # the ESTOP check at ``:627``.
+            assert not plant._estop_requested
+            assert spy.call_count == 0
+            # FK never ran on this path
+            assert not plant._fk_ever_succeeded
+
+    def test_t2b_8_cold_start_then_one_second_no_recv_fires_estop(self):
+        """T-U-T2b-8 — one frame received (simulating ``enable()``
+        completion), then 1 s with no recv → ESTOP fires.
+
+        Driver: standard prime, then drain + advance time by 1.0 s.
+        At ``control_dt=0.025``, the ESTOP threshold is 0.5 s; 1.0 s
+        is well past it.
+        """
+        with build_hardware_plant_stub() as plant:
+            plant.get_state()  # prime — simulates enable() success
+            spy = _EstopSpy(plant)
+            drain_recv_pump(plant)
+
+            with freeze_perf_counter_at(plant, 1.0):
+                state = plant.get_state()
+
+            assert state.data_age_s == pytest.approx(1.0)
+            # 1.0 s > 0.5 s ESTOP threshold (20 × 0.025)
+            assert 1.0 > plant._telem_stale_estop_s
+            assert plant._estop_requested
+            assert spy.call_count == 1
+            assert spy.reasons == ['telemetry_stale']
