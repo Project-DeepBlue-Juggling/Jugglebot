@@ -620,25 +620,22 @@ def _t1c_get_singletons():
 
 # Strategies for the fuzz_solve rule.
 #
-# ``leg_extensions_mm`` is DELIBERATELY excluded — it surfaces a real
-# production bug (see ``TestT1cLegExtNanCorruptsPrevU`` below): when
-# combined with a stale W7 snapshot, NaN in ``state.leg_extensions_mm``
-# propagates through the ``hold_extrap`` arm into ``_prev_u``, leaving
-# the warm-start in a non-finite state.  The bug is demonstrated by an
-# xfail-strict scenario test below; once it's fixed in a follow-up
-# commit, this strategy MUST be widened to re-include
-# ``leg_extensions_mm`` and the xfail marker MUST be removed in the
-# same commit as the fix.
-#
-# ``state.leg_velocities_mmps`` is ALSO excluded for a related reason:
-# NaN in it doesn't cause a solver failure on its own (q_dot is read
-# only on the failure path), but combined with a forced fallback +
-# stale snapshot it would produce the same hold_extrap corruption via
-# ``cmd = q_cur + q_dot * dt``.  Same bug class; same xfail covers it.
+# All four input fields are exercised after the
+# 2026-05-11-tier1c-input-fuzz-bugfix landed the per-axis q_cur/q_dot
+# sanitization at the top of ``_handle_failure``.  Pre-bugfix,
+# ``leg_extensions_mm`` and ``leg_velocities_mmps`` were excluded
+# because non-finite values in either propagated through the
+# ``hold_extrap`` arm into ``_prev_u`` (the corruption cascade
+# T-U-T1c-7 surfaced).  Post-bugfix, both are safe to fuzz: the
+# sanitization substitutes per-axis from ``_prev_u`` (q_cur) or
+# zero (q_dot), so the warm-start integrity invariant holds across
+# the full input surface.
 _T1C_FAULT_FIELD = st.sampled_from([
-    ('platform_pos_mm', 3),  # 3 axes
-    ('platform_rot', 3),
-    ('target_pose', 6),
+    ('platform_pos_mm', 3),       # 3 axes
+    ('platform_rot', 3),          # 3 axes
+    ('leg_extensions_mm', 6),     # 6 axes — sanitized at _handle_failure entry
+    ('leg_velocities_mmps', 6),   # 6 axes — sanitized at _handle_failure entry
+    ('target_pose', 6),           # 6 axes
 ])
 _T1C_FAULT_VALUE = _NAN_OR_INF
 
@@ -803,41 +800,30 @@ TestT1cWarmStartIntegrity = T1cWarmStartIntegrityMachine.TestCase
 
 
 # ---------------------------------------------------------------------
-# T-U-T1c-7-bug: NaN in leg_extensions_mm + stale snapshot → _prev_u
-# corruption.  Real production bug surfaced by Phase 3's stateful
-# property; xfail-strict pending the fix.
+# T-U-T1c-7-bug: regression pin for the NaN-in-leg_extensions_mm +
+# stale-snapshot → _prev_u corruption path.  Bug fixed in
+# 2026-05-11-tier1c-input-fuzz-bugfix; this test asserts the fix holds.
 # ---------------------------------------------------------------------
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Real production bug surfaced by T-U-T1c-7's stateful "
-        "property.  NaN in state.leg_extensions_mm[i], combined with "
-        "walk_forward_unsafe=True (here forced via stale W7 snapshot), "
-        "routes through the hold_extrap arm of _handle_failure where "
-        "``cmd = np.clip(q_cur + q_dot * dt, ...)`` propagates the NaN "
-        "from q_cur (= state.leg_extensions_mm) into cmd, then into "
-        "self._prev_u.  Subsequent solves then warm-start from a "
-        "non-finite _prev_u — the corruption cascade the warm-start "
-        "integrity invariant exists to prevent.\n\n"
-        "Plan 2 Phase 3 surfaces the bug; per the plan's "
-        "'Production-code changes triggered by tests' rule the fix "
-        "lands in its own commit with its own logbook entry.  When "
-        "the fix is committed, this xfail marker MUST be removed in "
-        "the same commit, AND _T1C_FAULT_FIELD in this file MUST be "
-        "widened to re-include ('leg_extensions_mm', 6).\n\n"
-        "Three-field xfail accounting (Plan 2 WN#2):\n"
-        "  test ID:  T-U-T1c-7-bug\n"
-        "  tracking: logbook/2026-05-11-tier1c-input-fuzz.md "
-        "(Discussion → 'Bug surfaced — _prev_u corruption via "
-        "hold_extrap when q_cur is non-finite')\n"
-        "  target:   Plan 2 archival (the bug fix is the gate)"
-    ),
-)
 class TestT1cLegExtNanCorruptsPrevU:
-    """T-U-T1c-7-bug — deterministic demonstration of the
+    """T-U-T1c-7-bug — regression-pin for the
     NaN-in-leg_extensions_mm + stale-snapshot corruption path that
     T-U-T1c-7's hypothesis stateful machine surfaced.
+
+    History.  Phase 3 (commit 7582764) added this test marked
+    ``xfail(strict=True)`` because the corruption was a real
+    production bug:  q_cur (= ``state.leg_extensions_mm.copy()``)
+    flowed through the ``hold_extrap`` arm of ``_handle_failure``
+    via ``cmd = np.clip(q_cur + q_dot * dt, ...)``, propagating NaN
+    into ``self._prev_u`` and thereby corrupting the warm-start.
+
+    Fix (separate commit, see logbook
+    2026-05-11-tier1c-input-fuzz-bugfix.md): ``_handle_failure`` now
+    sanitizes non-finite ``q_cur`` / ``q_dot`` axes at function entry
+    — per-axis substitution from ``_prev_u`` (or stroke margin if
+    ``_prev_u`` is None) for ``q_cur``; per-axis substitution with
+    ``0.0`` for ``q_dot``.  This test now asserts the fix holds; if
+    it ever starts failing again, the corruption has regressed.
 
     Reproducer recipe:
       1. Seed a successful solve (populates ``_prev_u``, ``_prev_w``,
@@ -846,27 +832,41 @@ class TestT1cLegExtNanCorruptsPrevU:
          ``_t_at_last_success`` past 500 ms.
       3. Set ``state.leg_extensions_mm[0] = NaN``.
       4. Solve.
-      5. Assert ``_prev_u`` is finite.
-
-    Expected (current production behaviour, the bug): assertion fires.
-    Once fixed: assertion holds; remove xfail marker AND widen
-    ``_T1C_FAULT_FIELD`` in this file."""
+      5. Assert ``_prev_u`` is finite (sanitization substituted
+         ``_prev_u[0]`` for the NaN axis before the hold_extrap arm
+         constructed cmd).
+    """
 
     def test_nan_leg_ext_plus_stale_snapshot_keeps_prev_u_finite(self,
                                                                    fresh_plant):
         mpc = _create_mpc(fresh_plant)
         _seed_mpc(fresh_plant, mpc)
+        prev_u_pre = mpc._prev_u.copy()
         # Force walk_forward_unsafe via the staleness branch.
         mpc._t_at_last_success -= 0.6
         # Inject NaN through the alias.
         state = fresh_plant.get_state()
         state.leg_extensions_mm[0] = np.nan
 
-        mpc.solve(state, REF_NORMAL)
+        cmd, _, diag = mpc.solve(state, REF_NORMAL)
 
-        assert mpc._prev_u is None or np.all(np.isfinite(mpc._prev_u)), (
-            f"BUG: _prev_u contains non-finite values after a NaN-in-"
-            f"leg_extensions_mm fault on the hold_extrap path: "
-            f"{mpc._prev_u!r}.  This is the corruption cascade the "
-            f"warm-start integrity invariant exists to prevent."
+        assert mpc._prev_u is not None and np.all(np.isfinite(mpc._prev_u)), (
+            f"REGRESSION: _prev_u contains non-finite values after a "
+            f"NaN-in-leg_extensions_mm fault on the hold_extrap path: "
+            f"{mpc._prev_u!r}.  The _handle_failure entry sanitization "
+            f"that was added in 2026-05-11-tier1c-input-fuzz-bugfix has "
+            f"regressed."
+        )
+        assert np.all(np.isfinite(cmd)), (
+            f"cmd MUST be finite after the sanitization fix; got {cmd!r}"
+        )
+        # The sanitization should substitute prev_u[0] for the NaN axis,
+        # so cmd[0] should be near prev_u[0] + q_dot[0]*dt (q_dot is the
+        # plant's clean leg_velocities, ≈ 0 in steady state) — i.e.
+        # close to prev_u[0].
+        assert abs(cmd[0] - prev_u_pre[0]) < 1.0, (
+            f"After sanitization, cmd[0] should be ≈ prev_u[0] (pre-fault "
+            f"= {prev_u_pre[0]:.3f}); got cmd[0]={cmd[0]:.3f}.  This may "
+            f"indicate the substitution policy changed away from "
+            f"per-axis _prev_u."
         )

@@ -450,19 +450,29 @@ finding, the alias-break test infrastructure pitfall, and the full
 trace of the ``_prev_u`` corruption bug.  Phase 4 (Tier 2a —
 HardwarePlant FK degradation) cleared to start.
 
-**Plan 2 archival gate update.**  Two xfails on the suite at end of
-Phase 3:
+**Plan 2 archival gate update.**  After the same-session bugfix
+follow-up (see ``2026-05-11-tier1c-input-fuzz-bugfix``), one xfail
+on the suite at end of Phase 3:
 
 | Test ID         | Reason                                                          | Target close                          |
 |-----------------|-----------------------------------------------------------------|---------------------------------------|
 | T-U-T1a-4       | ``Restoration_Failed`` not drivable via ``MPCParams`` in CasADi 3.7.2 | Permanent (structural matrix coverage) |
-| T-U-T1c-7-bug   | ``_prev_u`` corruption when ``q_cur`` non-finite on ``hold_extrap`` | **Plan 2 archival blocker** — fix required before plan can archive |
 
-The T-U-T1c-7-bug is a hard archival gate: per Plan 2's archival-
-gate language ("zero unfixed xfails at archival, OR each residual
-xfail has a documented justification for why it's permanently
-acceptable"), the bug needs a fix commit + xfail removal before
-``/archive-plan mpc-sadpath-coverage-tiers-1-3`` will pass review.
+The original Phase 3 commit (7582764) introduced T-U-T1c-7-bug as a
+strict-xfail tracking the ``_prev_u`` corruption surfaced by the
+hypothesis property test.  The fix landed in the same session
+([logbook entry](../../logbook/2026-05-11-tier1c-input-fuzz-bugfix.md)):
+``_handle_failure`` now sanitizes non-finite ``q_cur`` / ``q_dot``
+axes at function entry (per-axis substitution from ``_prev_u`` for
+``q_cur``, zero for ``q_dot``).  The xfail was removed and the
+``T1cWarmStartIntegrityMachine``'s strategy was widened to fuzz the
+full 5-field input surface.  Property holds at ci-deep with the
+widened strategy.
+
+Same-session bugfix discipline established as a workflow rule in
+[CLAUDE.md](../../CLAUDE.md) — the deferral-by-default pattern that
+landed T-U-T1c-7-bug as xfail in the first place is the kind of
+"latest-acceptable-moment" scheduling the rule explicitly bans.
 
 *Note: the Scope / Test cases / Critical details / Exit criteria
 sub-sections below are preserved as the as-planned record; the

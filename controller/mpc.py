@@ -1541,12 +1541,49 @@ class MPCController:
         ticks leaves cmd stationary while the plant (tau=40 ms) coasts
         past — the ODrive PID then has to recoil, producing the audible
         fighting observed on every move.
+
+        Non-finite ``q_cur`` / ``q_dot`` axes are sanitized at entry —
+        per-axis substitution from ``_prev_u`` (or stroke margin if
+        ``_prev_u`` is None) for ``q_cur``, zero for ``q_dot``.  This
+        prevents the corruption cascade where a single bad sensor read
+        on the failure path propagates NaN through the ``hold_extrap``
+        / ``cold_hold`` arms into ``self._prev_u``, leaving the next
+        solve's warm-start corrupted.  See logbook
+        2026-05-11-tier1c-input-fuzz-bugfix.md for the full trace.
         """
         self._consecutive_failures += 1
         logger.warning(
             "MPC solve failed (%d consecutive): %s (%.1f ms)",
             self._consecutive_failures, status_str, solve_ms,
         )
+
+        stroke = self._params.stroke_mm
+        margin = self._params.stroke_margin_mm
+        dt0 = self._params.dt_schedule[0]
+        N = self._N
+
+        # Sanitize non-finite q_cur / q_dot before any downstream arm
+        # reads them.  Per-axis policy:
+        #   * q_cur: substitute the corresponding axis from self._prev_u
+        #     (the last commanded leg extension — our best-known-good
+        #     position when the live sensor read is corrupt).  If
+        #     _prev_u is None (cold start), substitute the stroke
+        #     margin to match cold_hold's absolute-fallback policy.
+        #   * q_dot: substitute zero (no known motion is the
+        #     conservative assumption when the velocity sensor is bad).
+        # Defensively .copy() before mutating because q_dot is passed
+        # from solve() as state.leg_velocities_mmps WITHOUT a copy
+        # (would otherwise mutate the plant's internal buffer).
+        if q_cur is not None and not np.all(np.isfinite(q_cur)):
+            q_cur = q_cur.copy()
+            bad = ~np.isfinite(q_cur)
+            if self._prev_u is not None:
+                q_cur[bad] = self._prev_u[bad]
+            else:
+                q_cur[bad] = margin
+        if q_dot is not None and not np.all(np.isfinite(q_dot)):
+            q_dot = q_dot.copy()
+            q_dot[~np.isfinite(q_dot)] = 0.0
 
         diag = {
             'solve_time_ms': solve_ms,
@@ -1556,11 +1593,6 @@ class MPCController:
             'cmd_next_mm': None,
             'cmd_next2_mm': None,
         }
-
-        stroke = self._params.stroke_mm
-        margin = self._params.stroke_margin_mm
-        dt0 = self._params.dt_schedule[0]
-        N = self._N
 
         # W7: detect when walk-forward on the old plan is unsafe.  Two
         # conditions force a switch to plant-tracking hold_extrap:
