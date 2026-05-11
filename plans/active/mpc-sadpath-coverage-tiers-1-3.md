@@ -153,7 +153,7 @@ Test additions only by design (except Phase 0; see Notes). Production-code chang
 | 3 | Tier 1c — NaN/Inf input fuzz on `solve()` | COMPLETE | 2026-05-11 | Med | Adversarial inputs route through `_handle_failure`, never corrupt warm-start |
 | 4 | Tier 2a — HardwarePlant FK degradation | COMPLETE | 2026-05-11 | High | FK divergence watchdog, singular Jacobian, frozen-motor detector |
 | 5 | Tier 2b — HardwarePlant telemetry & FF | COMPLETE | 2026-05-11 | High | Staleness threshold matrix (WARN/HARD/ESTOP) + linear-scaling property; set_pose torque-FF singular (real bug surfaced + same-session bugfix); cold-start zero-state |
-| 6 | Tier 2c — ZMQ corruption (real-msgpack harness) | NOT STARTED | | Med | Partial frame, version-skew, connection drop |
+| 6 | Tier 2c — ZMQ corruption (real-msgpack harness) | COMPLETE | 2026-05-11 | Med | Partial frame, version-skew, connection drop; two real bugs surfaced + same-session bugfix |
 | 7 | Tier 3a — Numerical + schema fuzz | NOT STARTED | | Med | Every public API NaN-safe; `diag`/`extras` schema-complete |
 | 8 | Tier 3b — Time pathologies, resources, hooks, races | NOT STARTED | | Med | Clock-skew, dt change, hook failures, concurrent-reset, resource exhaustion |
 
@@ -799,7 +799,143 @@ truth.*
 
 ---
 
-### Phase 6: Tier 2c — ZMQ corruption (real-msgpack harness) — NOT STARTED
+### Phase 6: Tier 2c — ZMQ corruption (real-msgpack harness) — COMPLETE (2026-05-11)
+
+**Outcome.**  Adds
+[tests/sim/_zmq_test_harness.py](../../tests/sim/_zmq_test_harness.py)
+(real-ZMQ + real-msgpack PUB harness with byte-level mutation
+injection) and
+[tests/sim/test_zmq_corruption.py](../../tests/sim/test_zmq_corruption.py)
+with **6 new tests** covering partial frames, byte-flip, schema skew,
+publisher death, and the random-byte-corruption codec invariant:
+
+| ID         | Surface                                                                         | Driver                                                                                              |
+|------------|---------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------|
+| T-U-T2c-1  | `MpcTargetIPC.recv_all` → `_unpack` (truncated frame)                            | `harness.corrupt_send(msg, truncate_half)`                                                          |
+| T-U-T2c-2  | same (byte-flip on string / float content)                                       | `harness.corrupt_send(msg, flip_mid_byte())`                                                        |
+| T-U-T2c-3  | `ZmqTargetSource.poll` extra-field forward-compat                                | `send_valid({..., 'experimental_field': '...'})`                                                    |
+| T-U-T2c-4  | `ZmqTargetSource.poll` missing-required-field                                    | `send_valid({'type': 'mpc_target', 'source': 'probe'})` (no `target_pose`)                          |
+| T-U-T2c-5  | `HardwarePlant._sub` recv + Phase 5 stale cascade (end-to-end through real ZMQ)  | `ZmqTelemetryPubHarness.close_pub()` + `freeze_perf_counter_at(20.5 × control_dt)`                  |
+| T-U-T2c-6  | `msgpack.unpackb` codec invariant (decode-or-fail; never silent partial-decode)  | `@given(byte_index, byte_xor, mutation_kind ∈ {flip, truncate_to, append, prepend})` × 1000 ci-deep |
+
+[tests/sim/_zmq_test_harness.py](../../tests/sim/_zmq_test_harness.py)
+contributes two harness classes (`ZmqTargetPubHarness` for :5558
+corruption tests; `ZmqTelemetryPubHarness` for :5556 publisher-drop)
+plus six byte-buffer mutation primitives.  Both harnesses bind to
+**ephemeral ports** via `bind('tcp://127.0.0.1:0')` +
+`getsockopt_string(LAST_ENDPOINT)` — no collision with running
+`mpc_bridge_node` / `motor_guard`; pytest worker isolation works out
+of the box.  Per-harness `zmq.Context` with `zmq.LINGER=0` on every
+socket; context-manager wrap guarantees `socket.close()` +
+`ctx.term()` on `__exit__` even if the test raises.
+
+T-U-T2c-6 holds at ci-deep
+(`pytest tests/sim/test_zmq_corruption.py::TestRandomCorruptionProperty::test_t2c_6_property_no_silent_partial_decode --hypothesis-profile=ci-deep --hypothesis-seed=0 -q`,
+run 2026-05-11): **1 passed in 3.60 s** (1000 examples).
+
+**Two real bugs surfaced — T-U-T2c-1, -2 (Bug A) and T-U-T2c-4 (Bug B).**
+Empirical probing on 2026-05-11 (`/tmp/probe_zmq_corruption.py`, not
+committed) confirmed two production-code gaps:
+
+* **Bug A** — `MpcTargetIPC.recv_all` (`jugglebot/motion/ipc.py:674-689`)
+  lets msgpack corruption errors propagate uncaught.  Truncated
+  frames raise `ValueError: incomplete input`; byte-flipped utf-8
+  bytes raise `UnicodeDecodeError`.  Neither inherits from
+  `msgpack.UnpackException` in msgpack 1.0.7 — a narrow
+  `except UnpackException` would miss both.  The exception
+  propagates through `ZmqTargetSource.poll` into the MPC hot loop;
+  one corrupt frame aborts the MPC tick.
+* **Bug B** — `ZmqTargetSource.poll`
+  (`controller/zmq_target.py:219-221`) silently drops messages with
+  missing or wrong-length `target_pose`.  Asymmetric to the parallel
+  non-finite-pose handler at `:223-228` which DOES warn.  No
+  operator-visible signal on schema-skew — same parallel-handler
+  asymmetry pattern Phase 5's set_pose bug exposed.
+
+Per CLAUDE.md's *"Fix surfaced bugs in the same session when
+diagnosis is clear"* — both fixes land as a **single follow-up
+commit** in this session (user-confirmed combined-commit choice;
+two bugs, one commit) — see
+[logbook 2026-05-11-tier2c-zmq-recv-resilience-bugfix.md](../../logbook/2026-05-11-tier2c-zmq-recv-resilience-bugfix.md).
+T-U-T2c-1, -2, -4 marked `xfail(strict=True)` in this test commit;
+the bugfix commit flips a module-level `_BUGFIX_LANDED` flag to
+`True`, lifting all three xfails atomically.  Pattern mirrors
+Phase 3 → Phase 3 bugfix and Phase 5 → Phase 5 bugfix.
+
+Pre-Phase-6: **1252 passed + 1 xfailed** (`pytest tests/ -q`, run
+2026-05-11 against SHA `cbd0664`, 348.53 s).
+Post-Phase-6 (this test commit, before the bugfix): **1255 passed
++ 4 xfailed in 353.52 s** (`pytest tests/ -q`, run
+2026-05-11; +3 new passing = T-U-T2c-3, -5, -6; +3 new xfailed =
+T-U-T2c-1, -2, -4 pending the bugfix follow-up commit).  Hot-loop
+allocation contract still green at ci-deep (`pytest
+tests/sim/test_hot_loop_allocation_contract.py
+--hypothesis-profile=ci-deep --hypothesis-seed=0 -q`, run
+2026-05-11): **3 passed in 17.09 s.**  Full triple repeated in the
+Phase 6 logbook's Verification section.
+
+**`slow` marker — pre-emptive isolation.**  Per Working Note #4, ZMQ
+tests are notoriously flaky.  Phase 6 pre-emptively marks
+`test_zmq_corruption.py` with `pytestmark = pytest.mark.slow`.  The
+default `pytest tests/ -q` gate still runs them (the project's
+`pyproject.toml` has no `addopts` to filter `slow`).  If a flake
+ever surfaces, mitigation is `pytest tests/ -q -m "not slow"` to
+exclude and `pytest tests/sim/test_zmq_corruption.py -m slow -q` to
+run in isolation.
+
+**Plan 2 archival gate update.**  Four xfails on the suite at end
+of Phase 6's test commit; all with documented exit plans:
+
+| Test ID         | Reason                                                                  | Target close                                            |
+|-----------------|-------------------------------------------------------------------------|---------------------------------------------------------|
+| T-U-T1a-4       | `Restoration_Failed` not drivable via `MPCParams` in CasADi 3.7.2        | Permanent (CasADi 3.7.2 limitation)                     |
+| T-U-T2c-1       | `MpcTargetIPC.recv_all` `ValueError` propagates (Bug A)                  | **Same session — follow-up bugfix commit**              |
+| T-U-T2c-2       | Same (`UnicodeDecodeError` from utf-8 flip path) (Bug A)                 | Same session — follow-up bugfix commit                  |
+| T-U-T2c-4       | `ZmqTargetSource.poll` silent-drop on missing `target_pose` (Bug B)      | Same session — follow-up bugfix commit                  |
+
+T-U-T2c-1, -2, -4's target close is the bugfix follow-up commit in
+this same session — Phase 6 does NOT leave the plan carrying a
+deferred bug.  Per Plan 2's archival-gate language: zero unfixed
+xfails at archival, OR each residual xfail has a permanent
+justification.  T-U-T1a-4 has a permanent justification; T-U-T2c-1,
+-2, -4 will be removed in the bugfix commit landing today.
+
+**T-U-T2c-5 framing correction.**  The plan's pass-criterion text for
+T-U-T2c-5 (*"data_age_s grows; eventually telemetry-stale watchdog
+fires"*) refers to a watchdog that lives on `HardwarePlant._sub`
+(:5556), NOT on `MpcTargetIPC` (:5558) which has no watchdog at all.
+The plan-author appears to have conflated the two ZMQ pipes.  The
+implementation routes T-U-T2c-5 against the actual `HardwarePlant`
+:5556 surface, verifying Phase 5's cascade fires end-to-end through
+real-ZMQ disconnect (a stronger pin than Phase 5's mocked-recv-pump
+driver).  Outcome paragraph documents the corrected framing.
+
+**Hardware-test target dates.**  Phase 5's commit fixed the absolute
+deadlines for T-H-T2b-1 (2026-05-18) and T-H-T2a-1 (2026-05-25).
+Phase 6 is unit-test-only with **zero hardware dependency** — those
+dates are **unchanged** by this phase.
+
+See [logbook entry](../../logbook/2026-05-11-tier2c-zmq-corruption.md)
+for the per-test empirical-probe recipe table, the design discussion
+(real-ZMQ harness over FakeIPC; xfail-strict gate via
+`_BUGFIX_LANDED` flag; msgpack 1.0.7 exception-hierarchy trap;
+narrow-vs-broad bugfix scope; T-U-T2c-5 framing-correction trace;
+the two parallel-handler asymmetry observations; `slow` marker
+rationale; ephemeral-port-vs-fixed tradeoff), and the line-citation
+refresh against `controller/zmq_target.py`,
+`controller/hardware_plant.py`, and
+`jugglebot/motion/ipc.py`.  Phase 7 (Tier 3a — Numerical + schema
+fuzz) cleared to start after the Bug A / Bug B follow-up commit
+lands.
+
+*Note: the Scope / Test cases / Critical details / Exit criteria
+sub-sections below are preserved as the as-planned record; the
+Outcome paragraph above is authoritative for what actually shipped.
+The plan's pass-criterion text on T-U-T2c-2 (raise
+`msgpack.UnpackException` or equivalent), T-U-T2c-4 (raise with
+clear error message), and T-U-T2c-5 (data_age_s on the target side)
+all required correction against empirical ground truth — see the
+logbook's Discussion section for the traces.*
 
 **Scope.** Replace `FakeIPC` with a real-ZMQ + real-msgpack harness for the corruption tests. Cover partial frames, version-skew (added/removed fields), and connection-drop simulation.
 

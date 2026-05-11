@@ -477,6 +477,18 @@ class TestScenario13_WalkForwardOldDir(object):
         CAN happen (so W7's success-snapshot state gets armed) but the
         direction reversal creates enough solver pressure to exercise the
         fallback path.
+
+        **Load-sensitivity note** (observed during Plan 2 Phase 6 work,
+        run 2026-05-11): the 18 ms budget is tight enough that this
+        test can flake on a busy Jetson — concurrent test invocations,
+        hypothesis ci-deep runs, or system build pressure push enough
+        solves into ``Maximum_CpuTime_Exceeded`` that the post-flip
+        fallback distribution shifts and the ``ratio >= 0.5`` assertion
+        fails.  The test passes reliably when run in isolation
+        (``pytest tests/sim/test_mpc_adversarial_sequences.py::TestScenario13_WalkForwardOldDir::test_ref_mid_run_survives_cpu_pressure``)
+        on an idle machine.  A failure on a loaded system does NOT
+        indicate a regression in W7's plant-tracking swap-in — verify
+        by re-running in isolation before treating as a real failure.
         """
         tight_params = MPCParams(
             max_cpu_time=0.018, max_iter=30,

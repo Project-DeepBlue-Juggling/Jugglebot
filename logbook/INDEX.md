@@ -6,6 +6,7 @@ Browse with `/logbook`, create entries with `/investigate` or `/logbook --new <t
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-05-11 | resolved | mpc-sadpath-coverage-tiers-1-3 — Phase 6 | MPC sad-path coverage — Phase 6 Tier 2c ZMQ corruption (real-msgpack harness) | [2026-05-11-tier2c-zmq-corruption](2026-05-11-tier2c-zmq-corruption.md) |
 | 2026-05-11 | resolved | mpc-sadpath-coverage-tiers-1-3 — Phase 5 (bugfix) | HardwarePlant set_pose — once-only singular-FF warning (Tier 2b bugfix) | [2026-05-11-tier2b-set-pose-singular-ff-bugfix](2026-05-11-tier2b-set-pose-singular-ff-bugfix.md) |
 | 2026-05-11 | resolved | mpc-sadpath-coverage-tiers-1-3 — Phase 5 | MPC sad-path coverage — Phase 5 Tier 2b HardwarePlant telemetry-staleness, set_pose FF, cold-start | [2026-05-11-tier2b-hardware-plant-telemetry-ff](2026-05-11-tier2b-hardware-plant-telemetry-ff.md) |
 | 2026-05-11 | resolved | mpc-sadpath-coverage-tiers-1-3 — Phase 4 | MPC sad-path coverage — Phase 4 Tier 2a HardwarePlant FK degradation, singular Jacobian, frozen motor | [2026-05-11-tier2a-hardware-plant-fk-degradation](2026-05-11-tier2a-hardware-plant-fk-degradation.md) |
