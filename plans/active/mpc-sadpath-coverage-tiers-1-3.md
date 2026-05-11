@@ -147,7 +147,7 @@ Test additions only by design (except Phase 0; see Notes). Production-code chang
 
 | Phase | Scope | Status | Date | Risk | Validates |
 |-------|-------|--------|------|------|-----------|
-| 0 | Close Plan 1's deferred `@precondition` gates (cancel_next mid-TRANSITIONING + begin_return overwrite) | NOT STARTED | | Med | Plan 2 starts on a clean foundation; the "no `@precondition` for known bugs" rule isn't immediately self-violating |
+| 0 | Close Plan 1's deferred `@precondition` gates (cancel_next mid-TRANSITIONING + begin_return overwrite) | COMPLETE | 2026-05-11 | Med | Plan 2 starts on a clean foundation; the "no `@precondition` for known bugs" rule isn't immediately self-violating |
 | 1 | Tier 1a — Real IPOPT infeasibility + timeout exit codes | NOT STARTED | | Med | Solver-fallback latching on every documented exit code |
 | 2 | Tier 1b — Fallback escalation cascade + cold-start IK budget | NOT STARTED | | Med | walk_forward_unsafe → hold_extrap escalation; IK budget exhaustion path |
 | 3 | Tier 1c — NaN/Inf input fuzz on `solve()` | NOT STARTED | | Med | Adversarial inputs route through `_handle_failure`, never corrupt warm-start |
@@ -159,7 +159,37 @@ Test additions only by design (except Phase 0; see Notes). Production-code chang
 
 ## Implementation Phases (detailed)
 
-### Phase 0: Close Plan 1's deferred `@precondition` gates — NOT STARTED
+### Phase 0: Close Plan 1's deferred `@precondition` gates — COMPLETE (2026-05-11)
+
+**Outcome.** Both gates removed.  Bug 1 (`cancel_next` mid-TRANSITIONING)
+fixed in commit `167b9f8` —
+[logbook entry](../../logbook/2026-05-10-scheduler-cancel-next-during-transitioning.md).
+Bug 2 (`begin_return` slot-overflow) fixed in commit `239a35d` —
+[logbook entry](../../logbook/2026-05-10-scheduler-begin-return-s3-overwrite.md).
+Both fixes raise `ValueError` (`cancel_next` with its own diagnostic
+about TRANSITIONING semantics; `begin_return` via the existing
+`_validate_slot_capacity('begin_return')` helper for canonical S3
+message symmetry with `submit_event`).
+`SchedulerStateMachine.cancel_next` and `.begin_return` rules
+un-gated; both now wrap the call in `try/except ValueError` and
+assert both the canonical message substring AND the phase/slot-state
+preconditions at raise time.
+[SCHEDULER_CONTRACT.md](../../controller/SCHEDULER_CONTRACT.md)
+gained a new "S3 — Phase preconditions on slot mutators" sub-section
+(introduced in 167b9f8 with the `cancel_next` clause; extended in
+239a35d with the `begin_return` clause).  Full-suite ci-deep
+verification (`pytest tests/ -q --hypothesis-profile=ci-deep`) run at
+Phase 0 closure: **1193 / 1193 pass in 560.98 s** — every contract
+and property test green at nightly depth.  Phase 1 (Tier 1a real
+IPOPT failures) cleared to start.
+
+*Note: the Scope / Bugs to fix / New-modified files / Test cases /
+Critical details / Exit criteria sub-sections below are preserved as
+the as-planned record; line citations (e.g.
+`test_scheduler_contract.py:999–1015`) and tense reflect pre-fix
+state.  The Outcome paragraph above is authoritative for what
+actually shipped; the two logbook entries are the canonical
+post-mortems.*
 
 **Scope.** Plan 1 Phase 3 landed two `@precondition` gates in
 [tests/sim/test_scheduler_contract.py:999–1015](../../tests/sim/test_scheduler_contract.py#L999)
