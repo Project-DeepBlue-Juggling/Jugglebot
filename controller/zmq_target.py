@@ -218,62 +218,79 @@ class ZmqTargetSource:
                         self._last_rejected_request = None
             elif topic == TOPIC_MPC_TARGET:
                 pose = msg.get('target_pose')
-                if pose is not None and len(pose) == 6:
-                    pose_arr = np.array(pose, dtype=float)
-                    if not np.all(np.isfinite(pose_arr)):
-                        logger.warning(
-                            "ZmqTargetSource: rejected target with "
-                            "non-finite pose: %s (source=%s)",
-                            pose_arr, msg.get('source', ''))
-                        continue
-                    twist = msg.get('target_twist')
-                    twist_arr = (
-                        np.array(twist, dtype=float)
-                        if twist is not None else None)
-                    if twist_arr is not None and not np.all(
-                            np.isfinite(twist_arr)):
-                        logger.warning(
-                            "ZmqTargetSource: rejected target with "
-                            "non-finite twist: %s (source=%s)",
-                            twist_arr, msg.get('source', ''))
-                        continue
-                    arrival = msg.get('arrival_time')
-                    if arrival is not None and not np.isfinite(arrival):
-                        logger.warning(
-                            "ZmqTargetSource: rejected target with "
-                            "non-finite arrival_time: %s (source=%s)",
-                            arrival, msg.get('source', ''))
-                        continue
-                    # Only mark the cache dirty when something actually
-                    # changed — spacemouse-like streams emit many ticks
-                    # with identical content, and rebuilding the quintic
-                    # every time would defeat IPOPT warm-start.
-                    #
-                    # arrival_time is INTENTIONALLY excluded from the dirty
-                    # check.  Stream senders that refresh arrival_time every
-                    # tick would otherwise rebuild the cache each tick, and
-                    # each rebuild re-reads the live plant twist as the
-                    # quintic's start-velocity boundary.  If the plant is in
-                    # a fallback-driven runaway (cmd extrapolation during
-                    # IPOPT hold_extrap), the runaway twist self-seeds the
-                    # next ref → positive feedback → PLANT_TELEMETRY_COLLAPSE
-                    # (see logbook 2026-04-19-bundle-a-quintic-ref-settling-
-                    # and-live-twist-trap.md).  The scalar arrival_time is
-                    # still forwarded on every TargetCommand below.
-                    changed = (
-                        not self._has_target
-                        or not np.array_equal(pose_arr, self._target_pose)
-                        or not _twist_equal(twist_arr, self._target_twist)
-                    )
-                    self._target_pose = pose_arr
-                    self._arrival_time = arrival
-                    self._target_twist = twist_arr
-                    self._source = msg.get('source', '')
-                    self._has_target = True
-                    if changed:
-                        self._target_dirty = True
-                        # W4b: invalidate cached tobytes() view.
-                        self._target_pose_bytes = None
+                # Missing / wrong-type / wrong-length target_pose — log
+                # warning naming the field, mirror the non-finite case
+                # below.  Pre-fix the entire branch was silently skipped
+                # with no diagnostic.  Non-sequence types (int / float /
+                # str) raised ``TypeError`` on ``len(pose)`` and aborted
+                # the MPC tick — same failure-class as Bug A's
+                # uncaught msgpack errors, one level higher.  See Plan 2
+                # Phase 6 bugfix Bug B
+                # (logbook 2026-05-11-tier2c-zmq-recv-resilience-bugfix.md).
+                if (pose is None
+                        or not isinstance(pose, (list, tuple))
+                        or len(pose) != 6):
+                    logger.warning(
+                        "ZmqTargetSource: rejected target with "
+                        "missing/wrong-type/wrong-length 'target_pose': "
+                        "%r (source=%s)",
+                        pose, msg.get('source', ''))
+                    continue
+                pose_arr = np.array(pose, dtype=float)
+                if not np.all(np.isfinite(pose_arr)):
+                    logger.warning(
+                        "ZmqTargetSource: rejected target with "
+                        "non-finite pose: %s (source=%s)",
+                        pose_arr, msg.get('source', ''))
+                    continue
+                twist = msg.get('target_twist')
+                twist_arr = (
+                    np.array(twist, dtype=float)
+                    if twist is not None else None)
+                if twist_arr is not None and not np.all(
+                        np.isfinite(twist_arr)):
+                    logger.warning(
+                        "ZmqTargetSource: rejected target with "
+                        "non-finite twist: %s (source=%s)",
+                        twist_arr, msg.get('source', ''))
+                    continue
+                arrival = msg.get('arrival_time')
+                if arrival is not None and not np.isfinite(arrival):
+                    logger.warning(
+                        "ZmqTargetSource: rejected target with "
+                        "non-finite arrival_time: %s (source=%s)",
+                        arrival, msg.get('source', ''))
+                    continue
+                # Only mark the cache dirty when something actually
+                # changed — spacemouse-like streams emit many ticks
+                # with identical content, and rebuilding the quintic
+                # every time would defeat IPOPT warm-start.
+                #
+                # arrival_time is INTENTIONALLY excluded from the dirty
+                # check.  Stream senders that refresh arrival_time every
+                # tick would otherwise rebuild the cache each tick, and
+                # each rebuild re-reads the live plant twist as the
+                # quintic's start-velocity boundary.  If the plant is in
+                # a fallback-driven runaway (cmd extrapolation during
+                # IPOPT hold_extrap), the runaway twist self-seeds the
+                # next ref → positive feedback → PLANT_TELEMETRY_COLLAPSE
+                # (see logbook 2026-04-19-bundle-a-quintic-ref-settling-
+                # and-live-twist-trap.md).  The scalar arrival_time is
+                # still forwarded on every TargetCommand below.
+                changed = (
+                    not self._has_target
+                    or not np.array_equal(pose_arr, self._target_pose)
+                    or not _twist_equal(twist_arr, self._target_twist)
+                )
+                self._target_pose = pose_arr
+                self._arrival_time = arrival
+                self._target_twist = twist_arr
+                self._source = msg.get('source', '')
+                self._has_target = True
+                if changed:
+                    self._target_dirty = True
+                    # W4b: invalidate cached tobytes() view.
+                    self._target_pose_bytes = None
 
     # ------------------------------------------------------------------
     # TargetSource protocol

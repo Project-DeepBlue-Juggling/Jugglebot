@@ -86,7 +86,7 @@ pytestmark = pytest.mark.slow
 # to gate the xfail markers on T-U-T2c-1, -2, -4 so the test commit
 # lands with xfail-strict; the bugfix commit removes the marker by
 # flipping this flag.
-_BUGFIX_LANDED = False
+_BUGFIX_LANDED = True
 
 
 # Hypothesis settings for T-U-T2c-6.  Per-example cost is dominated by
@@ -366,12 +366,18 @@ class TestMissingRequiredField:
                     default_z_mm=170.0,
                 )
                 try:
+                    # Let the freshly-constructed SUB inside
+                    # ZmqTargetSource complete its subscribe handshake
+                    # against the harness's PUB — the harness's own
+                    # 50 ms post-bind settle only covered the harness's
+                    # own consumer; this SUB is a separate socket.
+                    import time as _time
+                    _time.sleep(0.2)
                     # Send a frame missing the required `target_pose`
                     bad_msg = {'type': 'mpc_target', 'source': 'probe'}
                     h.send_valid(bad_msg)
                     # Settle so the SUB has the frame
-                    import time as _time
-                    _time.sleep(0.1)
+                    _time.sleep(0.2)
                     with _capture_logger('controller.zmq_target') as records:
                         src.poll()
                     warns = [r for r in records

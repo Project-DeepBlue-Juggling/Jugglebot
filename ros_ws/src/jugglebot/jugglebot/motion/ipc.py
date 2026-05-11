@@ -676,16 +676,31 @@ class MpcTargetIPC:
 
         Drains mode messages first (critical), then the latest target.
         Returns list of (topic, message_dict) tuples.
+
+        Corrupt frames (truncated, byte-flipped, malformed msgpack) are
+        logged at WARNING and dropped — the MPC loop continues with the
+        next frame.  See Plan 2 Phase 6 bugfix
+        (logbook 2026-05-11-tier2c-zmq-recv-resilience-bugfix.md):
+        msgpack 1.0.7 raises ``ValueError`` on truncated input and
+        ``UnicodeDecodeError`` on flipped utf-8 string bytes, neither
+        of which inherits from ``msgpack.UnpackException``.
         """
         messages = []
         for sub in (self._sub_mode, self._sub_target):
             while True:
                 try:
                     frames = sub.recv_multipart(flags=zmq.NOBLOCK)
-                    topic, msg = _unpack(frames)
-                    messages.append((topic, msg))
                 except zmq.Again:
                     break
+                try:
+                    topic, msg = _unpack(frames)
+                except (msgpack.UnpackException, ValueError,
+                        UnicodeDecodeError) as exc:
+                    logger.warning(
+                        "MpcTargetIPC: dropped corrupt frame "
+                        "(%s: %s)", type(exc).__name__, exc)
+                    continue
+                messages.append((topic, msg))
         return messages
 
     def close(self) -> None:
