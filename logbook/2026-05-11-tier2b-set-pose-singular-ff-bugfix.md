@@ -14,7 +14,7 @@ files_changed:
   - logbook/2026-05-11-tier2b-set-pose-singular-ff-bugfix.md
   - logbook/INDEX.md
 commits:
-  - <pending>
+  - 7867589
 subsystem:
   - controller
   - hardware-plant
