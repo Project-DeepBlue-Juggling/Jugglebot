@@ -217,6 +217,16 @@ class HardwarePlant(PlantInterface):
         self._FK_FAIL_ESTOP_THRESHOLD = 5  # 5 × 25ms = 125ms at 40 Hz
         self._jacobian_singular_warned = False
 
+        # Once-only warning flag for the set_pose() singular-FF fallback.
+        # dynamics.compute_full_feedforward_torques silently catches
+        # LinAlgError from np.linalg.solve(J.T, W_total) and returns
+        # np.zeros(6).  set_pose() detects the all-zero symptom and emits
+        # a once-only warning, mirroring _jacobian_singular_warned for
+        # the parallel handler in get_state()'s twist-solve path
+        # (:737–740).  Reset to False when set_pose sees a non-zero
+        # torque_ff again (the platform left the singular region).
+        self._singular_ff_warned = False
+
         # Lightweight diagnostics (read by main loop for telemetry)
         self._last_fk_iterations = 0
         self._last_ff_torque_max_Nm = 0.0
@@ -825,6 +835,27 @@ class HardwarePlant(PlantInterface):
         self._last_ff_torque_max_Nm = float(self._ff_abs_scratch.max())
         np.copyto(self._ff_torque_buf, torque_ff_Nm)
         self._has_ff_torque = True
+
+        # Singular-FF detection.  dynamics.compute_full_feedforward_torques
+        # silently catches LinAlgError on np.linalg.solve(J.T, W_total)
+        # and returns np.zeros(6) — leaving the operator with no signal
+        # that the FF model has failed at this pose.  Mirror the
+        # once-only Jacobian-singular warning in get_state()'s
+        # twist-solve path (:737–740): emit on the all-zero edge, reset
+        # when FF recovers.  The gravity wrench is non-zero in any pose
+        # with feedforward_enabled=True, so an all-zero torque_ff
+        # reliably indicates the singular fallback fired.
+        if self._last_ff_torque_max_Nm == 0.0:
+            if not self._singular_ff_warned:
+                logger.warning(
+                    "set_pose: torque_ff is all-zero (gravity wrench "
+                    "expected to be non-zero) — Jacobian likely singular "
+                    "at this pose; FF defaulted to zeros (see "
+                    "dynamics.py:341–344)"
+                )
+                self._singular_ff_warned = True
+        else:
+            self._singular_ff_warned = False
 
     def enable(self, timeout_s: float = 2.0) -> None:
         """Send disable+enable and wait for motor feedback telemetry.

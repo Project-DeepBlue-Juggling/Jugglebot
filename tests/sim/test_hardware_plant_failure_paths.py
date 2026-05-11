@@ -1139,22 +1139,12 @@ class TestSetPoseFfSingular:
     once-only warning pattern in ``get_state()``'s singular-Jacobian
     handler at ``hardware_plant.py:737–740``.
 
-    Pre-bugfix: this test is XFAIL (strict) — the production code
-    emits no warning on the all-zero fallback.  The bugfix in
-    ``HardwarePlant.set_pose`` (Phase 5 follow-up commit) removes the
-    xfail marker.
+    Bugfix landed in the same session — see logbook
+    ``2026-05-11-tier2b-set-pose-singular-ff-bugfix.md``.  Pre-bugfix
+    this test was xfail-strict; post-bugfix it asserts the once-only
+    warning + ``_singular_ff_warned`` flag set on the singular edge.
     """
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Phase 5 surfaced bug: dynamics.py:341-344 silently catches "
-            "LinAlgError and returns zeros; set_pose has no warning. "
-            "Fix lands in same session as a follow-up commit per "
-            "CLAUDE.md 'fix surfaced bugs in the same session' rule. "
-            "Mark XFAIL until that commit lands."
-        ),
-    )
     def test_t2b_6_set_pose_singular_ff_warns_once(self):
         """T-U-T2b-6 — singular Jacobian in set_pose's FF computation
         emits a once-only warning.
