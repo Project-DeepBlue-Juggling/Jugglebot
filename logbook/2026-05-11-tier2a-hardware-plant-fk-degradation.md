@@ -19,7 +19,7 @@ files_changed:
   - logbook/INDEX.md
   - plans/active/mpc-sadpath-coverage-tiers-1-3.md
 commits:
-  - <pending>
+  - 80d7978
 subsystem:
   - controller
   - hardware-plant
