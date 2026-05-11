@@ -18,7 +18,7 @@ files_changed:
   - logbook/INDEX.md
   - plans/active/mpc-sadpath-coverage-tiers-1-3.md
 commits:
-  - <pending>
+  - 7582764
 subsystem:
   - controller
   - mpc
