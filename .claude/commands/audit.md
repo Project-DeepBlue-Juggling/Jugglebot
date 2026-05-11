@@ -47,9 +47,27 @@ When the agent returns, present the full audit report to the user.
 
 ### Review Gate 1
 
-After presenting the audit report, ask:
+After presenting the audit report, present **your own recommendation for each
+finding** before asking the user to choose. The user wants Claude's judgment on
+the table, not just a passive list. Do not skip this — passive presentation
+forces the user to do the synthesis Claude should be doing.
 
-> **Review the findings above.** You can:
+For each finding, give a one-sentence recommendation: **Approve / Skip** plus
+the specific reason that drives the call. Examples of good recommendations:
+
+- *"**Approve** — typo fix, ~5 chars, no behaviour change."*
+- *"**Approve** — the misleading docstring will trip the next reader who
+  cross-checks against `_cold_start`. Doc-only."*
+- *"**Skip** — the audit flagged a missing comment but the code is
+  self-explanatory at the call site. Comment would be noise."*
+- *"**Approve with caveat** — fix is correct but the audit missed a ripple
+  in `foo.py:142`; I'll include it when I propose the fix."*
+
+Then close with:
+
+> **Recommendation: <approve all / approve N,N / skip / mixed — see per-finding>.**
+>
+> You can:
 > - **approve** — proceed to fix proposals for all findings
 > - **approve N,N,...** — proceed with only the listed finding numbers
 > - **reject** — stop here, no fixes needed
