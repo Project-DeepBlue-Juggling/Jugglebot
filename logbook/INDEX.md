@@ -6,6 +6,7 @@ Browse with `/logbook`, create entries with `/investigate` or `/logbook --new <t
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-05-11 | resolved | mpc-sadpath-coverage-tiers-1-3 — Phase 1 | MPC sad-path coverage — Phase 1 Tier 1a real IPOPT exit codes + fallback-keyword matrix | [2026-05-11-tier1a-real-solver-failures](2026-05-11-tier1a-real-solver-failures.md) |
 | 2026-05-10 | resolved | mpc-sadpath-coverage-tiers-1-3 — Phase 0 | Scheduler — begin_return raises S3 instead of overwriting _next_event (Plan 2 Phase 0, bug 2 of 2) | [2026-05-10-scheduler-begin-return-s3-overwrite](2026-05-10-scheduler-begin-return-s3-overwrite.md) |
 | 2026-05-10 | resolved | mpc-sadpath-coverage-tiers-1-3 — Phase 0 | Scheduler — cancel_next during TRANSITIONING raises (Plan 2 Phase 0, bug 1 of 2) | [2026-05-10-scheduler-cancel-next-during-transitioning](2026-05-10-scheduler-cancel-next-during-transitioning.md) |
 | 2026-05-10 | resolved | mpc-tier0-contracts — Phase 8 (final) | MPC Tier-0 contracts — Phase 8 CI hypothesis profiles wired (Plan 1 closes) | [2026-05-10-mpc-tier0-phase-8-ci-hypothesis-profiles](2026-05-10-mpc-tier0-phase-8-ci-hypothesis-profiles.md) |

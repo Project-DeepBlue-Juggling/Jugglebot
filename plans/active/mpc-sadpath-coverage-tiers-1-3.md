@@ -148,7 +148,7 @@ Test additions only by design (except Phase 0; see Notes). Production-code chang
 | Phase | Scope | Status | Date | Risk | Validates |
 |-------|-------|--------|------|------|-----------|
 | 0 | Close Plan 1's deferred `@precondition` gates (cancel_next mid-TRANSITIONING + begin_return overwrite) | COMPLETE | 2026-05-11 | Med | Plan 2 starts on a clean foundation; the "no `@precondition` for known bugs" rule isn't immediately self-violating |
-| 1 | Tier 1a — Real IPOPT infeasibility + timeout exit codes | NOT STARTED | | Med | Solver-fallback latching on every documented exit code |
+| 1 | Tier 1a — Real IPOPT infeasibility + timeout exit codes | COMPLETE | 2026-05-11 | Med | Solver-fallback latching on every documented exit code |
 | 2 | Tier 1b — Fallback escalation cascade + cold-start IK budget | NOT STARTED | | Med | walk_forward_unsafe → hold_extrap escalation; IK budget exhaustion path |
 | 3 | Tier 1c — NaN/Inf input fuzz on `solve()` | NOT STARTED | | Med | Adversarial inputs route through `_handle_failure`, never corrupt warm-start |
 | 4 | Tier 2a — HardwarePlant FK degradation | NOT STARTED | | High | FK divergence watchdog, singular Jacobian, frozen-motor detector |
@@ -261,7 +261,33 @@ of Plan 2 cleared to start.
 
 ---
 
-### Phase 1: Tier 1a — Real IPOPT infeasibility + timeout exit codes — NOT STARTED
+### Phase 1: Tier 1a — Real IPOPT infeasibility + timeout exit codes — COMPLETE (2026-05-11)
+
+**Outcome.** New file
+[tests/sim/test_solver_failures.py](../../tests/sim/test_solver_failures.py)
+adds 17 tests + 1 xfail covering the four IPOPT exit codes drivable
+via `MPCParams` on the pinned CasADi 3.7.2 (`Maximum_CpuTime_Exceeded`,
+`Maximum_Iterations_Exceeded`, `Infeasible_Problem_Detected`, plus
+the CasADi-exception path), the success-keyword classifier matrix
+over every documented IPOPT status string, and the warm-start /
+counter-dynamics critical details from the plan.  T-U-T1a-4
+(`Restoration_Failed`) is the documented permanent xfail — the
+IPOPT-internal options that would force it (`start_with_resto`,
+`expect_infeasible_problem`) are not exposed via `MPCParams` and
+adding them would be a production-code change orthogonal to this
+plan's discipline; structural coverage of the classifier for that
+string is in `TestFallbackKeywordMatrix`.  See [logbook
+entry](../../logbook/2026-05-11-tier1a-real-solver-failures.md) for
+the per-exit-code recipe table, the design discussion (real-driver
+vs synthetic-driver discipline; `_StatsInjector` rationale), and the
+xfail accounting against Plan 2's archival-gate language.  Full
+suite passes at ci-fast (1210/1210 + 1 xfailed in 287.81 s).
+Phase 2 (Tier 1b — fallback escalation cascade + cold-start IK
+budget) cleared to start.
+
+*Note: the Scope / Test cases / Critical details / Exit criteria
+sub-sections below are preserved as the as-planned record; the
+Outcome paragraph above is authoritative for what actually shipped.*
 
 **Scope.** Drive *real* CasADi exit codes (not synthetic infeasible references) and verify the fallback machinery responds correctly. Verify `_FALLBACK_KEYWORDS` substring matching against the actual strings IPOPT emits.
 
