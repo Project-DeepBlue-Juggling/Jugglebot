@@ -6,6 +6,7 @@ Browse with `/logbook`, create entries with `/investigate` or `/logbook --new <t
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-05-11 | resolved | mpc-sadpath-coverage-tiers-1-3 — Phase 4 | MPC sad-path coverage — Phase 4 Tier 2a HardwarePlant FK degradation, singular Jacobian, frozen motor | [2026-05-11-tier2a-hardware-plant-fk-degradation](2026-05-11-tier2a-hardware-plant-fk-degradation.md) |
 | 2026-05-11 | resolved | mpc-sadpath-coverage-tiers-1-3 — Phase 3 (bugfix) | MPC fallback — sanitize non-finite q_cur / q_dot at _handle_failure entry (Tier 1c bugfix) | [2026-05-11-tier1c-input-fuzz-bugfix](2026-05-11-tier1c-input-fuzz-bugfix.md) |
 | 2026-05-11 | resolved | mpc-sadpath-coverage-tiers-1-3 — Phase 3 | MPC sad-path coverage — Phase 3 Tier 1c NaN/Inf input fuzz on solve() | [2026-05-11-tier1c-input-fuzz](2026-05-11-tier1c-input-fuzz.md) |
 | 2026-05-11 | resolved | mpc-sadpath-coverage-tiers-1-3 — Phase 2 | MPC sad-path coverage — Phase 2 Tier 1b fallback escalation cascade + cold-start IK budget | [2026-05-11-tier1b-fallback-escalation-cascade](2026-05-11-tier1b-fallback-escalation-cascade.md) |

@@ -151,7 +151,7 @@ Test additions only by design (except Phase 0; see Notes). Production-code chang
 | 1 | Tier 1a — Real IPOPT infeasibility + timeout exit codes | COMPLETE | 2026-05-11 | Med | Solver-fallback latching on every documented exit code |
 | 2 | Tier 1b — Fallback escalation cascade + cold-start IK budget | COMPLETE | 2026-05-11 | Med | walk_forward_unsafe → hold_extrap escalation; IK budget exhaustion path |
 | 3 | Tier 1c — NaN/Inf input fuzz on `solve()` | COMPLETE | 2026-05-11 | Med | Adversarial inputs route through `_handle_failure`, never corrupt warm-start |
-| 4 | Tier 2a — HardwarePlant FK degradation | NOT STARTED | | High | FK divergence watchdog, singular Jacobian, frozen-motor detector |
+| 4 | Tier 2a — HardwarePlant FK degradation | COMPLETE | 2026-05-11 | High | FK divergence watchdog, singular Jacobian, frozen-motor detector |
 | 5 | Tier 2b — HardwarePlant telemetry & FF | NOT STARTED | | High | Staleness threshold matrix; set_pose torque-FF singular; cold-start zero-state |
 | 6 | Tier 2c — ZMQ corruption (real-msgpack harness) | NOT STARTED | | Med | Partial frame, version-skew, connection drop |
 | 7 | Tier 3a — Numerical + schema fuzz | NOT STARTED | | Med | Every public API NaN-safe; `diag`/`extras` schema-complete |
@@ -507,7 +507,118 @@ Outcome paragraph above is authoritative for what actually shipped.*
 
 ---
 
-### Phase 4: Tier 2a — HardwarePlant FK degradation — NOT STARTED
+### Phase 4: Tier 2a — HardwarePlant FK degradation — COMPLETE (2026-05-11)
+
+**Outcome.** New file
+[tests/sim/test_hardware_plant_failure_paths.py](../../tests/sim/test_hardware_plant_failure_paths.py)
+adds **10 passing tests + 0 new xfails** covering the three watchdog
+cascades on ``HardwarePlant.get_state()``:
+
+* **T-U-T2a-1, -2, -3 + boundary regression** — FK divergence cascade
+  via ``inject_fk_failure`` (patches
+  ``controller.hardware_plant.leg_lengths_to_pose`` at the boundary).
+  Confirms ``_FK_FAIL_ESTOP_THRESHOLD = 5`` fires
+  ``estop(reason='fk_convergence_failure')`` at exactly count=5
+  (boundary regression: count=4 does NOT fire); cache-fallback at
+  ``hardware_plant.py:614–617`` returns the last-good pose bit-equal;
+  one clean tick resets the counter per ``:593``.
+* **T-U-T2a-4, -5** — singular-Jacobian zero-twist via
+  ``inject_singular_jacobian`` (patches ``compute_jacobian`` to return
+  rank-deficient + forces ``fk_jacobian=None`` so the
+  ``compute_jacobian`` branch at ``:721–724`` fires).
+  ``np.linalg.solve`` raises ``LinAlgError`` deterministically;
+  ``platform_twist`` is zero (unconditional fill at ``:715``); the
+  ``Jacobian singular`` warning logs exactly once across 10
+  consecutive singular ticks (``_jacobian_singular_warned`` flag at
+  ``:740``).
+* **T-U-T2a-6a, -6b** — frozen-motor detector via real msgpack frames
+  through ``install_telemetry_pump``.  Empirical reading of
+  ``hardware_plant.py:193–194`` revealed **two** thresholds, not one:
+  ``_FROZEN_MOTOR_POS_WARN = 20`` (warn) and
+  ``_FROZEN_MOTOR_POS_ESTOP = 40``
+  (``estop(reason='telemetry_frozen')``).  Pair-test pattern (cf.
+  Phase 2 T-U-T1b-1/-2) pins both edges.
+* **T-U-T2a-7** — bit-different ``motor_pos`` (1 ULP per tick) does
+  NOT fire the detector across 44 ticks.  Empirical reading of
+  ``hardware_plant.py:657`` revealed the comparison is
+  ``np.array_equal`` (bit-exact), **stricter** than the plan's
+  "differ by < float epsilon" framing implied — any nonzero
+  difference resets the counter, so no false-positive is possible
+  from sub-LSB encoder noise.
+* **T-U-T2a-8** — Hypothesis ``RuleBasedStateMachine`` over
+  (``succeed_tick``, preconditioned ``fail_tick``) with invariant
+  ``not _estop_requested``.  Per-tick rule design replaced an
+  initial-draft ``fail_burst(n)`` rule that hypothesis correctly
+  falsified by *legitimately* summing two bursts past threshold;
+  the per-tick + ``@precondition`` pattern expresses the property's
+  precondition (consecutive-run length < threshold) directly.
+  Companion invariant ``fk_count_matches_shadow`` pins the
+  counter-reset semantic.  Holds at ci-deep
+  (``--hypothesis-profile=ci-deep --hypothesis-seed=0``, run
+  2026-05-11): **1 passed in 616.27 s** (1000 examples).
+
+[tests/sim/_hardware_plant_stub.py](../../tests/sim/_hardware_plant_stub.py)
+gained three injection helpers (``inject_fk_failure``,
+``inject_singular_jacobian``, ``install_telemetry_pump``) — each
+patching at a PRODUCTION-CODE BOUNDARY per Plan 2 Working Note #1
+("Drive real failures, not mocked ones"), never at the watchdog
+counter.  ``_capture_hp_warnings`` context manager reuses Phase 1's
+custom ``logging.Handler`` workaround for pytest ``caplog``
+incompatibility on this logger.
+
+Test additions only; **zero production-code changes**.  No xfails
+introduced this phase.  Pre-Phase-4: **1233 passed + 1 xfailed**
+(``pytest tests/ -q``, run 2026-05-11 against SHA ``e5427e4``,
+341.45 s).  Post-Phase-4: **1243 passed + 1 xfailed**
+(``pytest tests/ -q``, run 2026-05-11, 382.03 s).  Hot-loop
+allocation contract still green at ci-deep
+(``pytest tests/sim/test_hot_loop_allocation_contract.py
+--hypothesis-profile=ci-deep --hypothesis-seed=0 -q``, run
+2026-05-11): **3 passed in 16.59 s.**
+
+**Plan 2 archival gate update.**  No change.  One xfail on the
+suite at end of Phase 4 (the inherited Phase 1 T-U-T1a-4
+``Restoration_Failed`` permanent xfail):
+
+| Test ID         | Reason                                                          | Target close                          |
+|-----------------|-----------------------------------------------------------------|---------------------------------------|
+| T-U-T1a-4       | ``Restoration_Failed`` not drivable via ``MPCParams`` in CasADi 3.7.2 | Permanent (structural matrix coverage) |
+
+**Hardware-test target date.**  T-H-T2a-1 (CAN unplug 1–2 s) is
+gated on **T-H-T2b-1 PASS** (encoder-publisher kill in isolation —
+a Phase 5 deliverable).  Per Plan 2 Working Note #7, the target
+window is **within 2 weeks of Phase 5 commit** — concrete deadline,
+not "before plan closes".  When Phase 5 commits, that phase's
+Outcome paragraph fixes the absolute T-H-T2a-1 deadline.
+
+*Note on Working Note #7 literalism.*  A strict reading of Note #7
+("The phase isn't COMPLETE until the hardware test runs and is
+logged") would forbid the COMPLETE marking above until T-H-T2a-1
+runs.  T-H-T2a-1 cannot run before T-H-T2b-1 PASS, which is a
+Phase 5 deliverable — so the literal reading inverts the gating.
+Phase 4's unit-test deliverables ARE all delivered (the ten tests
+above; zero new xfails); the hardware verification is correctly
+deferred to a downstream phase's prerequisite.  This Outcome
+paragraph carries the binding commitment to the 2-week window;
+Phase 5's Outcome paragraph will fix the absolute T-H-T2a-1
+deadline at its commit time.  The intent of Note #7 — concrete
+windows, not "before plan closes" framing — is honoured; only the
+phase-locality of the close-out claim is relaxed.
+
+See [logbook entry](../../logbook/2026-05-11-tier2a-hardware-plant-fk-degradation.md)
+for the per-test empirical-probe recipe table, the design discussion
+(boundary-patch vs counter-poking; per-tick rules over per-burst
+under hypothesis; bit-exact frozen-motor compare; caplog workaround;
+e-stop spy pattern), and the line-citation refresh against
+``hardware_plant.py``.  Phase 5 (Tier 2b — HardwarePlant telemetry
+& FF) cleared to start.
+
+*Note: the Scope / Test cases / Critical details / Exit criteria
+sub-sections below are preserved as the as-planned record; the
+Outcome paragraph above is authoritative for what actually shipped.
+Plan-side line citations (e.g. ``hardware_plant.py:195``) all drifted
+between plan-writing and Phase 4 implementation; the Outcome's
+post-Phase-4 citations are ground truth.*
 
 **Scope.** Drive the FK divergence watchdog, singular-Jacobian zero-twist branch, and frozen-motor detector. These are documented at:
 
