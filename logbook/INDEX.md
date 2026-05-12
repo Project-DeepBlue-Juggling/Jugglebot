@@ -6,6 +6,7 @@ Browse with `/logbook`, create entries with `/investigate` or `/logbook --new <t
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-05-12 | resolved | mpc-sadpath-coverage-tiers-1-3 — Phase 8 (bugfix) | Runner — on_target_override hook treats None as "keep tc" (Tier 3b bugfix) | [2026-05-12-tier3b-hook-bugfix](2026-05-12-tier3b-hook-bugfix.md) |
 | 2026-05-12 | resolved | mpc-sadpath-coverage-tiers-1-3 — Phase 8 (final) | MPC sad-path coverage — Phase 8 Tier 3b time pathologies, resource exhaustion, hooks, races | [2026-05-12-tier3b-time-pathologies](2026-05-12-tier3b-time-pathologies.md) |
 | 2026-05-12 | resolved | mpc-sadpath-coverage-tiers-1-3 — Phase 7 (bugfix) | Tier 3a follow-up bugfix — quintic T<=0 guard + DIAG_SCHEMA_CONTRACT | [2026-05-12-tier3a-fuzz-bugfix](2026-05-12-tier3a-fuzz-bugfix.md) |
 | 2026-05-11 | resolved | mpc-sadpath-coverage-tiers-1-3 — Phase 7 | MPC sad-path coverage — Phase 7 Tier 3a numerical + schema fuzz | [2026-05-11-tier3a-numerical-schema-fuzz](2026-05-11-tier3a-numerical-schema-fuzz.md) |

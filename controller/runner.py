@@ -101,10 +101,13 @@ class MpcLoopHooks:
     appropriate phase of each iteration.
     """
 
-    on_target_override: Callable[[PlantState, TargetCommand], TargetCommand] | None = None
+    on_target_override: Callable[[PlantState, TargetCommand], TargetCommand | None] | None = None
     """Called after source.update().  May return a replacement TargetCommand
-    (e.g. hold-in-place on stale telemetry).  Return the original tc to
-    keep it unchanged."""
+    (e.g. hold-in-place on stale telemetry).  Return the original tc, or
+    ``None``, to keep tc unchanged for this tick.  ``None`` is treated
+    identically to returning the original tc — natural shorthand for the
+    "no override needed" case.  See logbook Plan 2 Phase 8 Bug E for
+    the prior crash mode this fallback closes."""
 
     on_pre_command: Callable[[PlantInterface, Any, TargetCommand, np.ndarray, np.ndarray, dict], None] | None = None
     """Called after MPC solve, before plant.command().  Receives
@@ -428,7 +431,15 @@ def run_mpc_loop(
             _t_seg = _time.perf_counter()
             tc = source.update(t_ref, state)
             if hooks.on_target_override is not None:
-                tc = hooks.on_target_override(state, tc)
+                # Hook may return ``None`` to mean "no override needed";
+                # docstring says "Return the original tc to keep it
+                # unchanged" — treat None identically so callers can
+                # write `if not should_override: return None` without
+                # the downstream `tc.target_pose` deref crashing.
+                # Plan 2 Phase 8 Bug E.
+                _override = hooks.on_target_override(state, tc)
+                if _override is not None:
+                    tc = _override
             _t_target_ms = (_time.perf_counter() - _t_seg) * 1000.0
 
             # --- MPC solve (ref build + param pack + IPOPT) ---

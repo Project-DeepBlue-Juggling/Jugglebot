@@ -98,8 +98,9 @@ CONTROL_DT = 0.025
 # Flag that gates the T-U-T3b-H1 xfail.  Flipped to True in the
 # same-session bugfix commit when `runner.py` treats a None return from
 # on_target_override as "keep tc unchanged".  Single source of truth —
-# one place to edit at bugfix-land time.
-_PHASE_8_BUGFIX_LANDED: bool = False
+# one place to edit at bugfix-land time.  Plan 2 Phase 8 Bug E bugfix
+# landed; see logbook/2026-05-12-tier3b-hook-bugfix.md.
+_PHASE_8_BUGFIX_LANDED: bool = True
 
 
 # ---------------------------------------------------------------------
