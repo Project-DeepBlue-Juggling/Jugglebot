@@ -155,7 +155,7 @@ Test additions only by design (except Phase 0; see Notes). Production-code chang
 | 5 | Tier 2b — HardwarePlant telemetry & FF | COMPLETE | 2026-05-11 | High | Staleness threshold matrix (WARN/HARD/ESTOP) + linear-scaling property; set_pose torque-FF singular (real bug surfaced + same-session bugfix); cold-start zero-state |
 | 6 | Tier 2c — ZMQ corruption (real-msgpack harness) | COMPLETE | 2026-05-11 | Med | Partial frame, version-skew, connection drop; two real bugs surfaced + same-session bugfix |
 | 7 | Tier 3a — Numerical + schema fuzz | COMPLETE | 2026-05-11 | Med | Every public API NaN-safe; `diag` schema unified via new DIAG_SCHEMA_CONTRACT; T<=0 guard added to `quintic_peak_vel_per_axis`; S8 dropped (plan ambiguity) |
-| 8 | Tier 3b — Time pathologies, resources, hooks, races | NOT STARTED | | Med | Clock-skew, dt change, hook failures, concurrent-reset, resource exhaustion |
+| 8 | Tier 3b — Time pathologies, resources, hooks, races | COMPLETE | 2026-05-12 | Med | Clock-skew, dt change, hook failures, concurrent-reset, resource exhaustion |
 
 ## Implementation Phases (detailed)
 
@@ -1136,7 +1136,53 @@ empirical-probe table.*
 
 ---
 
-### Phase 8: Tier 3b — Time pathologies, resource exhaustion, hooks, races — NOT STARTED
+### Phase 8: Tier 3b — Time pathologies, resource exhaustion, hooks, races — COMPLETE (2026-05-12)
+
+**Outcome.** Final phase of the Tier-3 rollup; new file
+[tests/sim/test_mpc_time_pathologies.py](../../tests/sim/test_mpc_time_pathologies.py)
+adds **13 test classes / 16 test functions** covering time pathologies
+(T1–T4), resource exhaustion (R1–R3), hooks (H1–H4), and concurrency
+(R4–R5).  Test additions only at this commit; one
+`xfail(strict=True)` marker (T-U-T3b-H1) gated on
+`_PHASE_8_BUGFIX_LANDED = False` — surfaces a real runner-side gap
+where `on_target_override` returning None crashes the loop with
+`AttributeError` (Bug E).  Fixed in the companion bugfix commit
+which adds a single None-check in `controller/runner.py` and treats
+None as "keep the original tc" (matches the docstring's "Return the
+original tc to keep it unchanged" intent).
+
+Two material citation drifts caught and refreshed in the logbook
+([2026-05-12-tier3b-time-pathologies.md](../../logbook/2026-05-12-tier3b-time-pathologies.md)
+Discussion section): `telemetry.py:260-270` → `:377-403`;
+`zmq_target.py:380-390` → `:530-540`.  S8-style "phantom surface"
+analysis was not needed — every Phase 8 surface exists in code.
+
+Pre-Phase-8 baseline: **1391 passed + 1 xfailed**
+(`pytest tests/ -q`, run 2026-05-12 against SHA `7d5e6da`).
+Post-Phase-8 (test additions, this commit): **1406 passed +
+2 xfailed in 423.26 s** (`pytest tests/ -q`, run 2026-05-12;
++15 passing test functions; +1 xfailed = T-U-T3b-H1; the inherited
+T-U-T1a-4 permanent xfail remains).  See the
+[logbook entry](../../logbook/2026-05-12-tier3b-time-pathologies.md)
+for the per-test empirical-probe recipe table, design discussion
+(`_PHASE_8_BUGFIX_LANDED` single-flag pattern; why no in-place
+dt_schedule swap exists; why R4's anticipated bug is structurally
+impossible on this architecture), and citation refresh against
+`runner.py`, `mpc.py`, `scheduler.py`, `telemetry.py`,
+`zmq_target.py`, `hot_loop_contract.py`.
+
+This completes Plan 2.  Consider running
+`/archive-plan mpc-sadpath-coverage-tiers-1-3` once any outstanding
+hardware-bringup tests (T-H-T2b-1, T-H-T2a-1) and any
+same-session-bugfix xfails (T-U-T3b-H1 via the Bug E follow-up
+commit) are resolved.  Per the plan's Working Note #7, the
+hardware-bringup tests are scheduled for **2026-05-18 (T-H-T2b-1)**
+and **2026-05-25 (T-H-T2a-1)** and must PASS before archival.
+
+*Note: the Scope / New-modified files / Test cases / Critical
+details / Exit criteria sub-sections below are preserved as the
+as-planned record; the Outcome paragraph above is authoritative for
+what actually shipped.*
 
 **Scope.** Final cleanup of remaining Tier-3 categories.
 
