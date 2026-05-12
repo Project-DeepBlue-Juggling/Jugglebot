@@ -1033,7 +1033,7 @@ in `_handle_failure` (populate `iter_count=0` and `fallback_step=-1`
 sentinel on every failure path), AND the T<=0 guard in
 `quintic_peak_vel_per_axis`.  Three-part contract landing (doc +
 enforcement + test) per the Plan 1 template.  See
-[logbook 2026-05-11-tier3a-fuzz-bugfix.md](../../logbook/2026-05-11-tier3a-fuzz-bugfix.md).
+[logbook 2026-05-12-tier3a-fuzz-bugfix.md](../../logbook/2026-05-12-tier3a-fuzz-bugfix.md).
 
 T-U-T3a-N2 (3 parametrised cases), T-U-T3a-S2, T-U-T3a-S3,
 T-U-T3a-S4, T-U-T3a-S7 marked `xfail(strict=True)` in this test

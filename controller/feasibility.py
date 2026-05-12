@@ -160,7 +160,21 @@ def quintic_peak_vel_per_axis(p0, v0, a0, p1, v1, a1, T):
     Method: extrema of velocity occur where the acceleration polynomial
     vanishes.  We find the roots of the accel cubic in [0, 1] and evaluate
     |dp/ds|/T at those roots and the endpoints.
+
+    Raises ``ValueError`` when ``T <= 0`` — the quintic peak-velocity
+    formula is mathematically undefined for non-positive durations
+    (the per-axis scaling divides by T; ``T=0`` produces NaN, ``T<0``
+    produces sign-flipped nonsense).  Production callers
+    (``flat_target_to_events`` at ``target.py:196-200``) already
+    pre-validate against ``arrival_time <= t_now``; this is
+    defense-in-depth at the math primitive.  See Plan 2 Phase 7
+    bugfix (logbook 2026-05-12-tier3a-fuzz-bugfix.md, Bug C).
     """
+    if T <= 0:
+        raise ValueError(
+            f"quintic_peak_vel_per_axis: T must be > 0 (got T={T!r}); "
+            "the quintic peak-velocity formula is undefined for "
+            "non-positive durations.")
     p0 = np.asarray(p0, dtype=float); v0 = np.asarray(v0, dtype=float)
     a0 = np.asarray(a0, dtype=float); p1 = np.asarray(p1, dtype=float)
     v1 = np.asarray(v1, dtype=float); a1 = np.asarray(a1, dtype=float)
@@ -180,7 +194,17 @@ def quintic_peak_vel_per_axis(p0, v0, a0, p1, v1, a1, T):
 
 
 def quintic_peak_acc_per_axis(p0, v0, a0, p1, v1, a1, T):
-    """Peak |d²p/dt²| per axis over t ∈ [0, T].  (6,) physical units."""
+    """Peak |d²p/dt²| per axis over t ∈ [0, T].  (6,) physical units.
+
+    Raises ``ValueError`` when ``T <= 0`` — mirrors
+    ``quintic_peak_vel_per_axis``'s defense-in-depth guard.  See Plan 2
+    Phase 7 bugfix (logbook 2026-05-12-tier3a-fuzz-bugfix.md, Bug C).
+    """
+    if T <= 0:
+        raise ValueError(
+            f"quintic_peak_acc_per_axis: T must be > 0 (got T={T!r}); "
+            "the quintic peak-acceleration formula is undefined for "
+            "non-positive durations.")
     p0 = np.asarray(p0, dtype=float); v0 = np.asarray(v0, dtype=float)
     a0 = np.asarray(a0, dtype=float); p1 = np.asarray(p1, dtype=float)
     v1 = np.asarray(v1, dtype=float); a1 = np.asarray(a1, dtype=float)

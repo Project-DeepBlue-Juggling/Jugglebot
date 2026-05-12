@@ -5,43 +5,46 @@ Pins the contract that every ``MPCController.solve()`` call returns a
 solve path executed (success / fallback walk-forward / hold_extrap /
 hold / cold_hold / non_finite_solution / exception).
 
-The schema is currently **implicit** in the codebase — keys are set
-ad-hoc in ``solve()`` (success path) and ``_handle_failure``
-(failure paths) without a single source of truth.  Empirical probe
-(2026-05-11, ``/tmp/probe_phase7_schema.py``, not committed) found
-two **schema asymmetries**:
+The schema is codified in
+[controller/DIAG_SCHEMA_CONTRACT.md](../../controller/DIAG_SCHEMA_CONTRACT.md)
+(landed by the Phase 7 bugfix commit — see logbook
+[2026-05-12-tier3a-fuzz-bugfix.md](../../logbook/2026-05-12-tier3a-fuzz-bugfix.md)):
+eight canonical keys uniformly present on every solve path
+(``solve_time_ms, status, iter_count, cost, constraint_violation,
+cmd_next_mm, cmd_next2_mm, fallback_step``), with ``iter_count=0``
+and ``fallback_step=-1`` sentinels where the value isn't meaningful.
 
-* ``iter_count`` — populated ONLY on ``Solve_Succeeded``; missing
-  from every failure path.
-* ``fallback_step`` — populated ONLY on the walk-forward fallback
-  path; missing from success, hold_extrap, hold, cold_hold.
+**Pre-fix history** (preserved here because it shaped the test
+design).  Phase 7's empirical probe (2026-05-11,
+``/tmp/probe_phase7_schema.py``, not committed) found two schema
+asymmetries that prompted the contract document:
+
+* ``iter_count`` was populated ONLY on ``Solve_Succeeded`` and
+  missing from every failure path.
+* ``fallback_step`` was populated ONLY on the walk-forward fallback
+  path and missing from success, hold_extrap, hold, cold_hold.
 
 Consumers (``runner.log_mpc_step`` at ``controller/runner.py:207``)
-defend with ``diag.get('iter_count', 0)`` so the missing keys produce
-silent default-zero values rather than a ``KeyError``.  The schema
-gap is therefore silent-truncation, not a crash — but the data lost
-on failure ticks (iteration counts during fallback / fallback_step on
-non-walk-forward paths) is real diagnostic signal.
+defended with ``diag.get('iter_count', 0)`` so the missing keys
+produced silent default-zero values rather than a ``KeyError`` — but
+the data lost on failure ticks (iteration counts during fallback /
+fallback_step counter on non-walk-forward paths) was real diagnostic
+signal.
 
-Phase 7 lands this test commit alongside:
-
-* [controller/DIAG_SCHEMA_CONTRACT.md](../../controller/DIAG_SCHEMA_CONTRACT.md)
-  (new normative document; lands in the companion bugfix commit).
-* ``_handle_failure`` diag unification: populate ``iter_count=0`` on
-  every failure path; populate ``fallback_step=-1`` (sentinel) when
-  the walk-forward branch is NOT taken.
-* The ``_PHASE_7_BUGFIX_LANDED`` flag in
-  [tests/sim/test_mpc_input_fuzz.py](test_mpc_input_fuzz.py),
-  flipped to ``True`` in the bugfix commit; this file gates its
-  contract-completeness asserts (T-U-T3a-S3, S4, S7) on the same
-  flag.
+This test commit (`2105bb4`) pinned the gap as failing assertions
+under ``xfail(strict=True)``; the companion bugfix commit lifted
+the markers atomically by flipping ``_PHASE_7_BUGFIX_LANDED = True``
+in [tests/sim/test_mpc_input_fuzz.py](test_mpc_input_fuzz.py) AND
+landing the producer-side enforcement (``__init__`` declares 8
+keys; success path populates ``fallback_step=-1``;
+``_handle_failure`` populates ``iter_count=0`` + ``fallback_step=-1``).
 
 Test cases (per the plan; S8 dropped — the "extras namespace" was
 not a real surface; see logbook Discussion):
 
 | ID         | Surface                                          | Strategy                                                |
 |------------|--------------------------------------------------|---------------------------------------------------------|
-| T-U-T3a-S1 | Solve_Succeeded                                  | Primed MPC + feasible target; assert all 7 keys present |
+| T-U-T3a-S1 | Solve_Succeeded                                  | Primed MPC + feasible target; assert all 8 keys present |
 | T-U-T3a-S2 | fallback walk-forward                            | NaN injection (Phase 3 mechanism); assert schema        |
 | T-U-T3a-S3 | hold_extrap                                      | Repeated NaN to escalate; assert schema (XFAIL pre-fix) |
 | T-U-T3a-S4 | cold_hold                                        | Fresh MPC + NaN on first solve; assert schema (XFAIL)   |
@@ -49,7 +52,9 @@ not a real surface; see logbook Discussion):
 | T-U-T3a-S6 | exception path                                   | Monkey-patch ``_solver`` to raise; status='exception:'  |
 | T-U-T3a-S7 | Property: every solve() leaves diag schema-complete | hypothesis stateful (XFAIL pre-fix)                 |
 
-See logbook 2026-05-11-tier3a-numerical-schema-fuzz.md.
+See logbook 2026-05-11-tier3a-numerical-schema-fuzz.md (test commit)
+and 2026-05-12-tier3a-fuzz-bugfix.md (companion bugfix commit
+landing the contract document).
 """
 from __future__ import annotations
 
@@ -80,7 +85,10 @@ TARGET = np.array([0.0, 0.0, 50.0, 0.0, 0.0, 0.0])
 
 
 # Documented canonical keys (always present, every path).
-# See controller/DIAG_SCHEMA_CONTRACT.md.
+# See controller/DIAG_SCHEMA_CONTRACT.md D1–D8.  Post-Phase-7-bugfix
+# the schema is uniformly 8 keys (with sentinels where the value
+# isn't meaningful — `iter_count=0` on failure, `fallback_step=-1`
+# on non-walk-forward paths).
 _CANONICAL_KEYS = frozenset({
     'solve_time_ms',
     'status',
@@ -89,11 +97,12 @@ _CANONICAL_KEYS = frozenset({
     'constraint_violation',
     'cmd_next_mm',
     'cmd_next2_mm',
+    'fallback_step',
 })
 
-# Conditional key — populated by the walk-forward fallback ONLY.
-# On all other paths the key is either absent (pre-fix) or set to
-# a sentinel value (-1, post-fix).
+# Convenience reference for the conditional-value key.  Walk-forward
+# fallback populates this with the per-step counter (>=0); every other
+# path populates it with the sentinel value -1.
 _FALLBACK_STEP_KEY = 'fallback_step'
 
 
@@ -150,14 +159,29 @@ def _solve(mpc, state, target=TARGET, ref_events=None, warm_start_valid=True):
 
 
 def _build_primed_mpc(plant):
-    """Construct a primed MPC instance ready to produce Solve_Succeeded."""
-    params = MPCParams(prime_solver=True, max_leg_vel_mmps=140.0)
+    """Construct a primed MPC instance ready to produce Solve_Succeeded.
+
+    Uses a generous ``max_cpu_time=0.2`` (200 ms) because the schema
+    tests are testing schema-completeness, not solve-time performance.
+    Under concurrent CPU load (parallel test runs, hypothesis ci-deep)
+    the default 18 ms budget makes solves hit
+    ``Maximum_CpuTime_Exceeded`` and the prime sequence fails to
+    reach ``Solve_Succeeded`` — irrelevant to the schema invariant
+    under test.
+    """
+    params = MPCParams(prime_solver=True, max_leg_vel_mmps=140.0,
+                       max_cpu_time=0.2)
     return MPCController.from_plant(params, plant)
 
 
 def _build_unprimed_mpc(plant):
-    """Construct an MPC without priming (for cold_hold path)."""
-    return MPCController.from_plant(MPCParams(prime_solver=False), plant)
+    """Construct an MPC without priming (for cold_hold path).
+
+    Same generous CPU budget as the primed variant — see
+    ``_build_primed_mpc`` docstring for the load-sensitivity rationale.
+    """
+    return MPCController.from_plant(
+        MPCParams(prime_solver=False, max_cpu_time=0.2), plant)
 
 
 def _assert_canonical_keys(diag, path_name):
@@ -183,7 +207,7 @@ class TestT3aS1SolveSucceededSchema:
     """T-U-T3a-S1 — every key in the canonical schema is populated
     on the success path.
 
-    The success path (``mpc.py:1207-1214``) explicitly assigns all 7
+    The success path (``mpc.py:1214-1228``) explicitly assigns all 8
     canonical keys.  This test pins that contract — if any one is
     dropped in a refactor, the test fails.
     """
@@ -238,17 +262,24 @@ class TestT3aS2FallbackWalkForwardSchema:
     ):
         mpc = _build_primed_mpc(plant)
         state = _state_at(plant)
+        # Build the reference ONCE from the clean state — passing the
+        # NaN-state to flat_target_to_events propagates NaN through the
+        # feasibility math (np.linalg.eigvals) and raises LinAlgError
+        # BEFORE solve() is reached.  We want solve() to see the NaN,
+        # not the ref builder.
+        ref = _build_ref(state)
         # Prime with a successful solve so _prev_w is populated
         # (required for walk-forward path).
         for _ in range(2):
-            cmd, cv, diag = _solve(mpc, state)
+            cmd, cv, diag = _solve(mpc, state, ref_events=ref)
         assert diag['status'] == 'Solve_Succeeded', (
             f'prime failed: {diag["status"]!r}'
         )
         # Now drive a NaN — should land on the walk-forward fallback
         # because _prev_w exists and we haven't hit max consecutive.
         state_nan = _state_with_nan_pos(state)
-        cmd, cv, diag = _solve(mpc, state_nan, warm_start_valid=True)
+        cmd, cv, diag = _solve(mpc, state_nan, ref_events=ref,
+                               warm_start_valid=True)
 
         assert diag['status'].startswith('fallback('), (
             f'expected fallback(...), got {diag["status"]!r}'
@@ -288,16 +319,18 @@ class TestT3aS3HoldExtrapSchema:
     def test_t3a_s3_hold_extrap_has_canonical_keys(self, plant):
         mpc = _build_primed_mpc(plant)
         state = _state_at(plant)
+        ref = _build_ref(state)  # see T-U-T3a-S2 for ref-from-clean rationale
         # Prime
         for _ in range(2):
-            _solve(mpc, state)
+            _solve(mpc, state, ref_events=ref)
 
         # NaN-spam to escalate.  max_consecutive_failures default is
         # small; 12 NaN solves is comfortably past the threshold.
         state_nan = _state_with_nan_pos(state)
         diag = None
         for _ in range(12):
-            _, _, diag = _solve(mpc, state_nan, warm_start_valid=True)
+            _, _, diag = _solve(mpc, state_nan, ref_events=ref,
+                                warm_start_valid=True)
 
         # Expect hold_extrap (or a downstream hold/cold_hold escalation;
         # the canonical-keys check applies to ANY of those).
@@ -330,9 +363,11 @@ class TestT3aS4ColdHoldSchema:
     def test_t3a_s4_cold_hold_has_canonical_keys(self, plant):
         mpc = _build_unprimed_mpc(plant)
         state = _state_at(plant)
+        ref = _build_ref(state)  # see T-U-T3a-S2 for ref-from-clean rationale
         state_nan = _state_with_nan_pos(state)
         # First solve, no prior success → cold_hold arm fires
-        _, _, diag = _solve(mpc, state_nan, warm_start_valid=False)
+        _, _, diag = _solve(mpc, state_nan, ref_events=ref,
+                            warm_start_valid=False)
         assert diag['status'].startswith(('cold_hold(', 'hold_extrap(',
                                           'hold(', 'fallback(')), (
             f'expected a non-success status; got {diag["status"]!r}'
@@ -367,11 +402,19 @@ class TestT3aS5NonFiniteSolutionSchema:
     def test_t3a_s5_non_finite_solver_output_routes_to_handle_failure(
         self, plant,
     ):
-        mpc = _build_primed_mpc(plant)
+        # Use an UNPRIMED MPC: priming + settle solves would store the
+        # successful solution's ``_prev_w`` (which IS
+        # ``_prev_w_buf`` by reference).  The next ``np.copyto`` into
+        # ``_prev_w_buf`` mutates ``_prev_w`` in place, so a NaN-poked
+        # solve would corrupt ``_prev_w`` BEFORE the isfinite-check
+        # fires, leaving ``_handle_failure``'s walk-forward arm
+        # reading NaN.  An unprimed MPC has ``_prev_w is None`` so the
+        # cold_hold arm fires instead — which uses ``q_cur`` (clean
+        # plant state) for the command.  Schema-completeness on the
+        # non_finite_solution + cold_hold combination is what this
+        # test exercises.
+        mpc = _build_unprimed_mpc(plant)
         state = _state_at(plant)
-        # Settle on success first
-        for _ in range(2):
-            _solve(mpc, state)
         ref_events = _build_ref(state)
 
         # Capture the real solver, replace with a callable OBJECT that
@@ -522,7 +565,8 @@ def _build_machine_singletons():
     plant_.reset()
     plant_.step(CONTROL_DT)
     state_ = plant_.get_state()
-    params_ = MPCParams(prime_solver=True, max_leg_vel_mmps=140.0)
+    params_ = MPCParams(prime_solver=True, max_leg_vel_mmps=140.0,
+                        max_cpu_time=0.2)
     mpc_ = MPCController.from_plant(params_, plant_)
     # Settle into success
     ref_ = flat_target_to_events(

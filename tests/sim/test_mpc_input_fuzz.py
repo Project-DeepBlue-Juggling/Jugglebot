@@ -901,11 +901,11 @@ class TestT1cLegExtNanCorruptsPrevU:
 
 
 # Flag — flipped to True by the companion bugfix commit (logbook
-# 2026-05-11-tier3a-fuzz-bugfix.md) which adds the T<=0 guard to
+# 2026-05-12-tier3a-fuzz-bugfix.md) which adds the T<=0 guard to
 # quintic_peak_vel_per_axis AND lifts the iter_count/fallback_step
-# schema unification.  Used by T-U-T3a-N2 here AND by several tests
-# in test_diag_schema_fuzz.py.
-_PHASE_7_BUGFIX_LANDED = False
+# schema unification (controller/DIAG_SCHEMA_CONTRACT.md).  Used by
+# T-U-T3a-N2 here AND by several tests in test_diag_schema_fuzz.py.
+_PHASE_7_BUGFIX_LANDED = True
 
 
 # ---------------------------------------------------------------------
@@ -973,7 +973,7 @@ class TestT3aN2PeakVelZeroDuration:
 
     Post-fix: ``ValueError`` raised when ``T <= 0`` (the math is
     undefined; callers MUST pre-validate).  See companion bugfix
-    commit (logbook 2026-05-11-tier3a-fuzz-bugfix.md).
+    commit (logbook 2026-05-12-tier3a-fuzz-bugfix.md).
     """
 
     @pytest.mark.xfail(

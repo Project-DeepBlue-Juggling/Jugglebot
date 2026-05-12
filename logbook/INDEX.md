@@ -6,6 +6,7 @@ Browse with `/logbook`, create entries with `/investigate` or `/logbook --new <t
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-05-12 | resolved | mpc-sadpath-coverage-tiers-1-3 — Phase 7 (bugfix) | Tier 3a follow-up bugfix — quintic T<=0 guard + DIAG_SCHEMA_CONTRACT | [2026-05-12-tier3a-fuzz-bugfix](2026-05-12-tier3a-fuzz-bugfix.md) |
 | 2026-05-11 | resolved | mpc-sadpath-coverage-tiers-1-3 — Phase 7 | MPC sad-path coverage — Phase 7 Tier 3a numerical + schema fuzz | [2026-05-11-tier3a-numerical-schema-fuzz](2026-05-11-tier3a-numerical-schema-fuzz.md) |
 | 2026-05-11 | resolved | mpc-sadpath-coverage-tiers-1-3 — Phase 6 (bugfix) | ZMQ recv resilience — Tier 2c follow-up bugfix (MpcTargetIPC + ZmqTargetSource) | [2026-05-11-tier2c-zmq-recv-resilience-bugfix](2026-05-11-tier2c-zmq-recv-resilience-bugfix.md) |
 | 2026-05-11 | resolved | mpc-sadpath-coverage-tiers-1-3 — Phase 6 | MPC sad-path coverage — Phase 6 Tier 2c ZMQ corruption (real-msgpack harness) | [2026-05-11-tier2c-zmq-corruption](2026-05-11-tier2c-zmq-corruption.md) |

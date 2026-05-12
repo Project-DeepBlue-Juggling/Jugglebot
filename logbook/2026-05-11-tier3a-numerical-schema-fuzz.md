@@ -6,7 +6,7 @@ status: resolved
 phase: "mpc-sadpath-coverage-tiers-1-3 — Phase 7"
 related_plan: "mpc-sadpath-coverage-tiers-1-3.md"
 related_entries:
-  - 2026-05-11-tier3a-fuzz-bugfix
+  - 2026-05-12-tier3a-fuzz-bugfix
   - 2026-05-11-tier2c-zmq-recv-resilience-bugfix
   - 2026-05-11-tier2c-zmq-corruption
   - 2026-05-11-tier1c-input-fuzz-bugfix
@@ -386,7 +386,7 @@ T-U-T1a-4 + 7 Phase-7-specific):
 | Test ID                          | Reason                                                                       | Tracking                                                                                                                       | Target close                          |
 |----------------------------------|------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------|---------------------------------------|
 | T-U-T1a-4                        | `Restoration_Failed` not drivable via `MPCParams` in CasADi 3.7.2             | [logbook 2026-05-11-tier1a-real-solver-failures.md](2026-05-11-tier1a-real-solver-failures.md) (Discussion → Xfail)             | Permanent (CasADi 3.7.2 limitation)   |
-| T-U-T3a-N2[0.0]                  | `quintic_peak_vel_per_axis` has no T<=0 guard; bug C                          | [logbook 2026-05-11-tier3a-fuzz-bugfix.md](2026-05-11-tier3a-fuzz-bugfix.md) (pending)                                          | Same session — bugfix follow-up        |
+| T-U-T3a-N2[0.0]                  | `quintic_peak_vel_per_axis` has no T<=0 guard; bug C                          | [logbook 2026-05-12-tier3a-fuzz-bugfix.md](2026-05-12-tier3a-fuzz-bugfix.md) (pending)                                          | Same session — bugfix follow-up        |
 | T-U-T3a-N2[-0.5]                 | same                                                                          | same                                                                                                                            | same                                  |
 | T-U-T3a-N2[-1e-12]               | same                                                                          | same                                                                                                                            | same                                  |
 | T-U-T3a-S2 (walk-forward)        | Schema gap: iter_count missing on failure paths; bug D                        | same                                                                                                                            | same                                  |
@@ -570,7 +570,7 @@ Rollback discipline:
 
 * [plans/active/mpc-sadpath-coverage-tiers-1-3.md](../plans/active/mpc-sadpath-coverage-tiers-1-3.md)
   — Plan 2 Phase 7 specification.
-* [logbook/2026-05-11-tier3a-fuzz-bugfix.md](2026-05-11-tier3a-fuzz-bugfix.md)
+* [logbook/2026-05-12-tier3a-fuzz-bugfix.md](2026-05-12-tier3a-fuzz-bugfix.md)
   — the follow-up bugfix commit covering Bug C (T<=0 guard) + Bug D
   (DIAG_SCHEMA_CONTRACT.md + diag unify).
 * [logbook/2026-05-11-tier2c-zmq-corruption.md](2026-05-11-tier2c-zmq-corruption.md)

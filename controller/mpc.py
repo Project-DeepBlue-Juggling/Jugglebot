@@ -917,6 +917,11 @@ class MPCController:
         self._w0_buf = np.empty(n_w)
         # Pre-allocated solve() return diag — keys never change, so
         # mutating in place keeps it off the allocation critical path.
+        # Schema — see controller/DIAG_SCHEMA_CONTRACT.md.  All 8
+        # documented keys are pre-allocated here; the success path
+        # overwrites every value, and the failure path constructs a
+        # fresh dict in _handle_failure with the same key set
+        # (sentinels where the value isn't meaningful).
         self._diag: dict = {
             'solve_time_ms': 0.0,
             'status': '',
@@ -925,6 +930,7 @@ class MPCController:
             'constraint_violation': 0.0,
             'cmd_next_mm': None,
             'cmd_next2_mm': None,
+            'fallback_step': -1,
         }
 
     # ------------------------------------------------------------------
@@ -1204,6 +1210,7 @@ class MPCController:
                 cmd_vel = (cmd_next - cmd) / dt0
 
                 # W4a: mutate pre-allocated diag dict in place.
+                # Schema — see controller/DIAG_SCHEMA_CONTRACT.md.
                 diag = self._diag
                 diag['solve_time_ms'] = solve_ms
                 diag['status'] = ret
@@ -1212,8 +1219,12 @@ class MPCController:
                 diag['constraint_violation'] = max_viol
                 diag['cmd_next_mm'] = cmd_next
                 diag['cmd_next2_mm'] = cmd_next2
-                # Clear any fallback-specific field set by prior failure tick.
-                diag.pop('fallback_step', None)
+                # fallback_step=-1 is the success-path sentinel.  Pre-
+                # Plan-2-Phase-7 this key was popped on success; the
+                # bugfix landed alongside DIAG_SCHEMA_CONTRACT.md keeps
+                # the key present (sentinel value) so consumers see a
+                # uniform schema across every solve path.
+                diag['fallback_step'] = -1
                 return cmd, cmd_vel, diag
             else:
                 return self._handle_failure(
@@ -1585,13 +1596,26 @@ class MPCController:
             q_dot = q_dot.copy()
             q_dot[~np.isfinite(q_dot)] = 0.0
 
+        # Diag schema — see controller/DIAG_SCHEMA_CONTRACT.md.
+        # All 8 canonical keys populated on every failure path;
+        # fallback_step=-1 is the sentinel meaning "no walk-forward
+        # step active" (overwritten with the per-step counter in the
+        # walk-forward branch below).  iter_count=0 means "no IPOPT
+        # iteration count available on this path" — the failure
+        # cases don't have a converged solve to report iterations
+        # for.  Consumers can distinguish "successful solve in 0
+        # iterations" (impossible: IPOPT always runs >=1 iter) from
+        # "failure path" via diag['status'] starting with one of
+        # the failure-class prefixes.
         diag = {
             'solve_time_ms': solve_ms,
             'status': f'fallback({status_str})',
+            'iter_count': 0,
             'cost': 0.0,
             'constraint_violation': 0.0,
             'cmd_next_mm': None,
             'cmd_next2_mm': None,
+            'fallback_step': -1,
         }
 
         # W7: detect when walk-forward on the old plan is unsafe.  Two

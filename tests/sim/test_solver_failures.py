@@ -671,10 +671,16 @@ class TestWalkForwardRefShiftThreshold:
             f"changed (or moved off the xyz axes) — refresh both this "
             f"test's delta and the test docstrings."
         )
-        # walk_forward path NOT taken → fallback_step key absent.
-        assert 'fallback_step' not in diag, (
-            f"hold_extrap path should NOT populate fallback_step; got "
-            f"diag={diag!r}"
+        # walk_forward path NOT taken → fallback_step is the sentinel
+        # value (-1).  See controller/DIAG_SCHEMA_CONTRACT.md (Plan 2
+        # Phase 7 bugfix, logbook 2026-05-12-tier3a-fuzz-bugfix.md):
+        # the schema is now uniformly 8 keys with sentinels rather
+        # than 6/7/8 by path.  Pre-Phase-7-bugfix this assertion was
+        # ``'fallback_step' not in diag``.
+        assert diag.get('fallback_step') == -1, (
+            f"hold_extrap path should populate fallback_step=-1 "
+            f"sentinel per DIAG_SCHEMA_CONTRACT.md; got "
+            f"fallback_step={diag.get('fallback_step')!r}"
         )
         assert mpc.consecutive_failures == 1
         assert np.all(np.isfinite(cmd))
@@ -753,7 +759,10 @@ class TestWalkForwardStaleness:
             f">500 ms staleness must escalate to hold_extrap; got "
             f"{diag['status']!r}"
         )
-        assert 'fallback_step' not in diag
+        # Plan 2 Phase 7 bugfix: fallback_step is now uniformly
+        # present on every path with sentinel -1 when no walk-forward
+        # step is active.  See DIAG_SCHEMA_CONTRACT.md.
+        assert diag.get('fallback_step') == -1
         assert mpc.consecutive_failures == 1
         assert np.all(np.isfinite(cmd))
 
@@ -821,9 +830,12 @@ class TestMaxConsecutiveFailuresEscalation:
         # Walk-forward arm: fallback_step monotonically increases.
         assert diags[0]['fallback_step'] == 1
         assert diags[1]['fallback_step'] == 2
-        # Hold arm: no fallback_step.
-        assert 'fallback_step' not in diags[2]
-        assert 'fallback_step' not in diags[3]
+        # Hold arm: fallback_step=-1 sentinel (the walk-forward path
+        # is NOT taken).  Plan 2 Phase 7 bugfix unified the schema —
+        # see DIAG_SCHEMA_CONTRACT.md.  Pre-Phase-7-bugfix this
+        # assertion was ``'fallback_step' not in diags[2]``.
+        assert diags[2].get('fallback_step') == -1
+        assert diags[3].get('fallback_step') == -1
         # Counter increments through every failure.
         assert mpc.consecutive_failures == 4
 
