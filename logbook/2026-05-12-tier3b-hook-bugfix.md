@@ -16,7 +16,7 @@ files_changed:
   - logbook/2026-05-12-tier3b-hook-bugfix.md
   - logbook/INDEX.md
 commits:
-  - <pending>
+  - be00fe9
 subsystem:
   - controller
   - runner
