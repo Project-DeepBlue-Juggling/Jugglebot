@@ -20,7 +20,7 @@ files_changed:
   - logbook/2026-05-12-tier3a-fuzz-bugfix.md
   - logbook/INDEX.md
 commits:
-  - <pending>
+  - f92db29
 subsystem:
   - controller
   - mpc
