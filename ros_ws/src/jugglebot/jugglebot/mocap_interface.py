@@ -72,6 +72,25 @@ class MocapInterface:
         # sending data, regardless of whether _on_qtm_disconnect fires.
         self._last_packet_time: Optional[float] = None
 
+        # Connection-outage logging gate. True once we've emitted the single
+        # "QTM unavailable / disconnected" WARNING for the current outage, so
+        # the perpetual reconnect loop stays silent (DEBUG) until QTM returns.
+        # Reset to False on a successful (re)connection so the next outage
+        # warns exactly once again.
+        self._conn_outage_logged = False
+
+        # The qtm_rt library logs `LOG.error(...)` on its own "qtm_rt" logger
+        # every failed connect attempt (it swallows the OSError and returns
+        # None — verified empirically against an unreachable host). That spam
+        # is independent of `self.logger`, so we gate the library logger by
+        # connection state: silenced while we're in an outage and retrying,
+        # restored to its normal level once connected (when its messages —
+        # e.g. "Non handled packet type" — are genuinely diagnostic). Start
+        # quiet so a QTM-down-at-startup produces zero qtm_rt ERROR lines.
+        self._qtm_rt_logger = logging.getLogger("qtm_rt")
+        self._qtm_rt_orig_level = self._qtm_rt_logger.level
+        self._set_qtm_lib_quiet(True)
+
         # Threading lock for data synchronization
         self.data_lock = threading.Lock()
 
@@ -111,10 +130,27 @@ class MocapInterface:
 
     _RETRY_DELAYS = [2, 5, 10, 30]  # seconds between reconnection attempts
 
+    def _set_qtm_lib_quiet(self, quiet: bool):
+        """Silence (or restore) the third-party qtm_rt library's own logger.
+
+        While quiet, qtm_rt's per-attempt connect-failure ERRORs (which are
+        expected and handled by our retry loop) are suppressed. Restored to
+        the original level once connected so genuine streaming-time errors
+        still surface.
+        """
+        self._qtm_rt_logger.setLevel(
+            logging.CRITICAL if quiet else self._qtm_rt_orig_level
+        )
+
     def _on_qtm_disconnect(self, exc):
         """Called by qtm_rt when the connection drops."""
         reason = str(exc) if exc else "unknown"
-        self.logger.warning(f"QTM disconnected ({reason}) — scheduling reconnection")
+        # Single WARNING for this mid-session drop. Mark the outage as logged so
+        # the reconnect loop below doesn't re-warn for the same outage; it will
+        # retry silently and INFO-log when QTM comes back.
+        self.logger.warning(f"QTM disconnected ({reason}) — reconnecting in background")
+        self._conn_outage_logged = True
+        self._set_qtm_lib_quiet(True)
         self.connection = None
         # Reset clock sync so stale offsets aren't used during the gap
         with self._qtm_sync_lock:
@@ -159,12 +195,23 @@ class MocapInterface:
 
                 # Start streaming frames with required components.
                 await self.start_streaming()
+                self._conn_outage_logged = False  # outage cleared
+                self._set_qtm_lib_quiet(False)    # restore qtm_rt logging
                 return  # streaming started successfully
             except (asyncio.TimeoutError, ConnectionError, OSError) as e:
                 delay = self._RETRY_DELAYS[min(attempt, len(self._RETRY_DELAYS) - 1)]
-                self.logger.warning(
-                    f"QTM connection failed ({e}), retrying in {delay}s "
-                    f"(attempt {attempt + 1})")
+                if not self._conn_outage_logged:
+                    # First failure of this outage (e.g. QTM not running at
+                    # startup). Emit exactly one WARNING, then go quiet.
+                    self._conn_outage_logged = True
+                    self.logger.warning(
+                        f"QTM unavailable at {self.host}:{self.port} ({e}) — "
+                        f"retrying in the background; will connect "
+                        f"automatically when QTM starts")
+                else:
+                    self.logger.debug(
+                        f"QTM connection retry failed ({e}), next attempt "
+                        f"in {delay}s (attempt {attempt + 1})")
                 await asyncio.sleep(delay)
                 attempt += 1
             except Exception as e:
