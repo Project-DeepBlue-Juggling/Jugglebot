@@ -74,8 +74,8 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _th_test_common import (
-    LogTailer, TestResult, find_latest_mpc_log, get_repo_sha,
-    safety_gate, wait_gate, write_artifacts,
+    LogTailer, TestResult, assert_log_is_live, find_latest_mpc_log,
+    get_repo_sha, safety_gate, wait_gate, write_artifacts,
 )
 
 
@@ -144,6 +144,7 @@ def main() -> int:
                    help="How long to wait between the UNPLUG prompt and "
                         "the PLUG-BACK-IN prompt.  Default 1.5 s.")
     args = p.parse_args()
+    script_start_s = time.time()
 
     print("=" * 72)
     print("T-H-T2a-1 — CAN unplug 1-2 s (Plan 2 Phase 5 hardware bringup)")
@@ -198,6 +199,11 @@ def main() -> int:
         print(f"\nABORTED — no MPC log file found at {log_path}.")
         print("Pass --log-path <path> to specify explicitly.")
         return 1
+    # Guard against the silent-false-FAIL trap (see _th_test_common).
+    # Critical for T-H-T2a-1: a false FAIL here could prompt an
+    # unnecessary repeat of a Medium-high-hazard freewheel test.
+    assert_log_is_live(log_path, script_start_s,
+                       explicit=args.log_path is not None)
     print(f"\nTailing MPC log: {log_path}")
 
     # --- Start candump (optional) ---
@@ -296,12 +302,28 @@ def main() -> int:
 
     # --- Verdict ---
     anomalies: list[str] = []
-    if chain['telem_stale_estop'] is None:
+    bytes_seen = tailer.bytes_observed()
+    if bytes_seen == 0:
+        # Tailed file never grew — instrumentation failure, NOT a cascade
+        # failure.  Do NOT prompt a repeat of this Medium-high-hazard
+        # freewheel test on the strength of a dead-tail false FAIL.
+        verdict = 'INDETERMINATE'
+        anomalies.append(
+            f"TAIL TARGET WAS DEAD — {log_path} did not grow during the "
+            f"observation window (0 bytes appended).  This is an "
+            f"INSTRUMENTATION failure, NOT a cascade failure.  The cascade "
+            f"was never observed.  Confirm the platform landed safely and "
+            f"the system is in a clean state, then re-run with the LIVE "
+            f"session log (tee the launch console; pass --log-path).  Do "
+            f"NOT conclude anything about the production cascade from this "
+            f"run.")
+    elif chain['telem_stale_estop'] is None:
         verdict = 'FAIL'
         anomalies.append(
-            'ESTOP pattern did not fire within the observation window — '
-            'cascade may be broken; operator MUST manually press physical '
-            'E-stop if not already done.')
+            f'ESTOP pattern did not fire within the observation window '
+            f'though the log grew by {bytes_seen} bytes (tailer WAS live) — '
+            f'cascade may be broken; operator MUST manually press physical '
+            f'E-stop if not already done.')
     else:
         lo, hi = EXPECTED_ESTOP_FIRE_WINDOW_MS
         if lo <= chain['telem_stale_estop'] <= hi:

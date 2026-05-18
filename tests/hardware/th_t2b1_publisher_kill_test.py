@@ -58,8 +58,9 @@ from pathlib import Path
 # when invoked as a script.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _th_test_common import (
-    LogTailer, TestResult, find_latest_mpc_log, find_pid_by_pattern,
-    get_repo_sha, safety_gate, wait_gate, write_artifacts,
+    LogTailer, TestResult, assert_log_is_live, find_latest_mpc_log,
+    find_pid_by_pattern, get_repo_sha, safety_gate, wait_gate,
+    write_artifacts,
 )
 
 
@@ -146,6 +147,7 @@ def main() -> int:
     p.add_argument('--no-cont', action='store_true',
                    help="Skip SIGCONT after the test (for debugging).")
     args = p.parse_args()
+    script_start_s = time.time()
 
     print("=" * 72)
     print("T-H-T2b-1 — encoder-publisher kill (Plan 2 Phase 5 hardware bringup)")
@@ -180,6 +182,11 @@ def main() -> int:
         print(f"\nABORTED — no MPC log file found at {log_path}.")
         print("Pass --log-path <path> to specify explicitly.")
         return 1
+    # Guard against the silent-false-FAIL trap: a stale auto-discovered
+    # log (jugglebot_launch.py does not write temp/logs/*.log) would make
+    # the tailer watch a dead file and report a bogus FAIL.
+    assert_log_is_live(log_path, script_start_s,
+                       explicit=args.log_path is not None)
     print(f"\nTailing MPC log: {log_path}")
 
     # --- Discover and confirm the publisher PID ---
@@ -259,11 +266,28 @@ def main() -> int:
 
     # --- Verdict ---
     anomalies: list[str] = []
-    if chain['telem_stale_estop'] is None:
+    bytes_seen = tailer.bytes_observed()
+    if bytes_seen == 0:
+        # The tailed file never grew — the script watched a dead file.
+        # This is an INSTRUMENTATION failure, NOT a watchdog failure.
+        # Reporting FAIL here would falsely impugn the production code
+        # (this is exactly what happened 2026-05-18).  Verdict is
+        # INDETERMINATE: re-run with correct logging, do NOT investigate
+        # the watchdog on this evidence.
+        verdict = 'INDETERMINATE'
+        anomalies.append(
+            f"TAIL TARGET WAS DEAD — {log_path} did not grow during the "
+            f"observation window (0 bytes appended).  This is an "
+            f"INSTRUMENTATION failure, NOT a watchdog failure.  The "
+            f"watchdog was never observed.  Re-run with the LIVE session "
+            f"log (tee the launch console; pass --log-path).  Do NOT "
+            f"conclude anything about the production watchdog from this run.")
+    elif chain['telem_stale_estop'] is None:
         verdict = 'FAIL'
         anomalies.append(
-            'ESTOP pattern did not fire within the 5 s observation window — '
-            'watchdog may be broken; investigate before T-H-T2a-1.')
+            f'ESTOP pattern did not fire within the 5 s observation window '
+            f'though the log grew by {bytes_seen} bytes (tailer WAS live) — '
+            f'watchdog may be broken; investigate before T-H-T2a-1.')
     else:
         lo, hi = EXPECTED_ESTOP_FIRE_WINDOW_MS
         if lo <= chain['telem_stale_estop'] <= hi:

@@ -97,11 +97,26 @@ def wait_gate(prompt: str) -> None:
 # MPC log discovery
 # ---------------------------------------------------------------------------
 
+# A discovered log whose mtime is older than this many seconds before the
+# script started is almost certainly NOT the live session's log.  ROS2
+# Foxy launch (jugglebot_launch.py) does NOT write temp/logs/*.log — the
+# controller.hardware_plant cascade messages go to the launch console via
+# Python stdlib logging.  Without this guard, find_latest_mpc_log() silently
+# returns an ancient dead log and the tailer watches a corpse → false FAIL.
+# (Root-caused 2026-05-18: T-H-T2b-1 tailed an 8-day-stale mpc_*.log and
+# reported FAIL though the watchdog was never observed.  See
+# logbook/2026-05-18-th-t2b-1-encoder-publisher-kill-bringup* if filed.)
+LOG_STALENESS_GRACE_S = 120.0
+
+
 def find_latest_mpc_log(repo_root: Path | None = None) -> Path | None:
     """Return the most-recently-modified ``temp/logs/*.log`` file.
 
-    Per CLAUDE.md, MPC writes its companion ``.log`` files there.
-    Returns None if no .log files exist (script will prompt operator).
+    Per CLAUDE.md, ``run_mpc.py`` writes its companion ``.log`` files
+    there ONLY when stdout is teed.  ``jugglebot_launch.py`` (ROS2 Foxy)
+    does NOT — see ``LOG_STALENESS_GRACE_S``.  Returns None if no .log
+    files exist (caller will prompt / abort).  Callers MUST pass the
+    result through ``assert_log_is_live`` before tailing it.
     """
     if repo_root is None:
         repo_root = Path(__file__).resolve().parents[2]
@@ -114,6 +129,50 @@ def find_latest_mpc_log(repo_root: Path | None = None) -> Path | None:
         reverse=True,
     )
     return candidates[0] if candidates else None
+
+
+def assert_log_is_live(log_path: Path, script_start_s: float,
+                        explicit: bool) -> None:
+    """Abort the test if ``log_path`` is stale relative to script start.
+
+    A live MPC session's log is written to continuously, so its mtime
+    must be within ``LOG_STALENESS_GRACE_S`` of *now*.  An auto-discovered
+    log that is older than that is the silent-false-FAIL trap: the script
+    would tail a dead file, observe zero cascade patterns, and report a
+    bogus FAIL that says nothing about the watchdog.
+
+    ``explicit`` = the operator passed ``--log-path`` themselves.  An
+    explicit stale path is a hard error (operator pointed at the wrong
+    file).  An auto-discovered stale path is also a hard error, but its
+    message additionally explains the ROS2-launch logging gap and the
+    tee-the-console fix.
+    """
+    age_s = time.time() - log_path.stat().st_mtime
+    if age_s <= LOG_STALENESS_GRACE_S:
+        return  # fresh — the live session is writing to it
+
+    print(f"\nABORTED — the log to tail is STALE.")
+    print(f"  Path:  {log_path}")
+    print(f"  mtime: {age_s:.0f} s ago "
+          f"(grace is {LOG_STALENESS_GRACE_S:.0f} s; a live MPC session "
+          f"writes continuously).")
+    if explicit:
+        print("  You passed --log-path explicitly; that file is not being "
+              "written to.\n  Point --log-path at the LIVE session's log.")
+    else:
+        print("  Auto-discovery picked the newest temp/logs/*.log, but it "
+              "is dead.\n"
+              "  Root cause: jugglebot_launch.py (ROS2 Foxy) does NOT write "
+              "temp/logs/*.log —\n"
+              "  the controller.hardware_plant cascade messages go to the "
+              "LAUNCH CONSOLE.\n"
+              "  Fix: tee the launch console to a file and pass it "
+              "explicitly, e.g.\n\n"
+              "    ros2 launch jugglebot jugglebot_launch.py 2>&1 \\\n"
+              "      | tee temp/logs/launch_$(date +%Y%m%d_%H%M%S).log\n\n"
+              "  then re-run this script with\n"
+              "    --log-path temp/logs/launch_<that-timestamp>.log\n")
+    sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -158,6 +217,13 @@ class LogTailer:
         # Open at end-of-file so we only see lines emitted after `start()`.
         self._file = open(self._log_path, 'r')
         self._file.seek(0, os.SEEK_END)
+        # Record the byte offset at start so stop() can tell whether the
+        # file grew at all during the observation window.  A live MPC
+        # session log grows every tick (40 Hz); zero growth means the
+        # tailer watched a dead file — an instrumentation failure, NOT a
+        # watchdog failure.  The two must not be conflated in the verdict.
+        self._initial_offset = self._file.tell()
+        self._final_offset = self._initial_offset
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
@@ -183,9 +249,25 @@ class LogTailer:
         if self._thread is not None:
             self._thread.join(timeout=2.0)
         try:
+            self._file.seek(0, os.SEEK_END)
+            self._final_offset = self._file.tell()
+        except Exception:
+            pass
+        try:
             self._file.close()
         except Exception:
             pass
+
+    def bytes_observed(self) -> int:
+        """Bytes appended to the tailed file between start() and stop().
+
+        Zero means the file never grew — the tailer watched a dead file.
+        A live 40 Hz MPC session appends continuously, so a real test
+        always sees thousands of bytes here.  Use this to distinguish an
+        instrumentation failure (re-run) from a genuine watchdog failure
+        (investigate the production code).
+        """
+        return max(0, self._final_offset - self._initial_offset)
 
     def compute_offsets(self, t0: float) -> None:
         with self._lock:
