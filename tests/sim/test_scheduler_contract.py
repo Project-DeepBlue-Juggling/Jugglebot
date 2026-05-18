@@ -812,7 +812,7 @@ class TestCancelNextStateMachine:
 
     See ``logbook/2026-05-10-scheduler-cancel-next-during-
     transitioning.md`` and
-    ``plans/active/mpc-sadpath-coverage-tiers-1-3.md`` Phase 0.
+    ``plans/archived/2026-05-18 mpc-sadpath-coverage-tiers-1-3.md`` Phase 0.
     """
 
     def test_cancel_next_during_transitioning_raises(self):
@@ -922,7 +922,7 @@ class TestBeginReturnSlotCapacity:
     lookahead slot is occupied.
 
     See ``logbook/2026-05-10-scheduler-begin-return-s3-overwrite.md``
-    and ``plans/active/mpc-sadpath-coverage-tiers-1-3.md`` Phase 0.
+    and ``plans/archived/2026-05-18 mpc-sadpath-coverage-tiers-1-3.md`` Phase 0.
     """
 
     def test_begin_return_with_both_slots_filled_raises(self):

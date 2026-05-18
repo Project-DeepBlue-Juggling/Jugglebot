@@ -14,7 +14,7 @@ files_changed:
   - tests/sim/test_solver_failures.py
   - logbook/2026-05-11-tier1a-real-solver-failures.md
   - logbook/INDEX.md
-  - plans/active/mpc-sadpath-coverage-tiers-1-3.md
+  - plans/archived/2026-05-18 mpc-sadpath-coverage-tiers-1-3.md
 commits:
   - f466829
 subsystem:
@@ -473,7 +473,7 @@ tests would not have caught:
 
 ## Related
 
-- [plans/active/mpc-sadpath-coverage-tiers-1-3.md](../plans/active/mpc-sadpath-coverage-tiers-1-3.md)
+- [plans/archived/2026-05-18 mpc-sadpath-coverage-tiers-1-3.md](../plans/archived/2026-05-18%20mpc-sadpath-coverage-tiers-1-3.md)
   — Plan 2 Phase 1 specification.
 - [logbook/2026-05-10-mpc-tier0-phase-8-ci-hypothesis-profiles.md](2026-05-10-mpc-tier0-phase-8-ci-hypothesis-profiles.md)
   — CI hypothesis profiles (Plan 1 Phase 8) used by Phase 1's matrix.

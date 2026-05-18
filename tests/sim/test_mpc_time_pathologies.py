@@ -7,7 +7,7 @@ raising), on_post_solve allocation in the hot loop, ZmqTargetSource.reset()
 mid-APPROACHING, and a concurrency-audit structural assertion.
 
 Test IDs from
-[plans/active/mpc-sadpath-coverage-tiers-1-3.md](../../plans/active/mpc-sadpath-coverage-tiers-1-3.md)
+[plans/archived/2026-05-18 mpc-sadpath-coverage-tiers-1-3.md](../../plans/archived/2026-05-18%20mpc-sadpath-coverage-tiers-1-3.md)
 Phase 8:
 
 | ID         | Surface                                                                      | Driver                                                                |

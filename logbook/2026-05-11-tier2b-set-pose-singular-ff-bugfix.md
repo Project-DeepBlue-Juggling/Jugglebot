@@ -385,7 +385,7 @@ fail-silent" bugs by structure, not by review.
   detect-cause in the fix").
 * [logbook/2026-05-11-tier1c-input-fuzz-bugfix.md](2026-05-11-tier1c-input-fuzz-bugfix.md)
   — Phase 3 → Phase 3 bugfix; same-session-fix arc precedent.
-* [plans/active/mpc-sadpath-coverage-tiers-1-3.md](../plans/active/mpc-sadpath-coverage-tiers-1-3.md)
+* [plans/archived/2026-05-18 mpc-sadpath-coverage-tiers-1-3.md](../plans/archived/2026-05-18%20mpc-sadpath-coverage-tiers-1-3.md)
   — Plan 2 Phase 5 specification + "Production-code changes
   triggered by tests" subsection.
 * [controller/hardware_plant.py](../controller/hardware_plant.py)

@@ -549,7 +549,7 @@ canonical pattern.
 
 * [logbook/2026-05-11-tier3a-numerical-schema-fuzz.md](2026-05-11-tier3a-numerical-schema-fuzz.md)
   — Phase 7 main entry; the test surface this bugfix lifts xfails on.
-* [plans/active/mpc-sadpath-coverage-tiers-1-3.md](../plans/active/mpc-sadpath-coverage-tiers-1-3.md)
+* [plans/archived/2026-05-18 mpc-sadpath-coverage-tiers-1-3.md](../plans/archived/2026-05-18%20mpc-sadpath-coverage-tiers-1-3.md)
   — Plan 2 Phase 7 specification.
 * [controller/DIAG_SCHEMA_CONTRACT.md](../controller/DIAG_SCHEMA_CONTRACT.md)
   — new normative document codifying the 8-key invariant.

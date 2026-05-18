@@ -15,7 +15,7 @@ asserts two safety properties hold for every adversarial input:
    returned ``cmd`` is always finite.
 
 Test IDs from
-[plans/active/mpc-sadpath-coverage-tiers-1-3.md](../../plans/active/mpc-sadpath-coverage-tiers-1-3.md)
+[plans/archived/2026-05-18 mpc-sadpath-coverage-tiers-1-3.md](../../plans/archived/2026-05-18%20mpc-sadpath-coverage-tiers-1-3.md)
 Phase 3:
 
 | ID         | Surface                                                              | Driver                                                                   |

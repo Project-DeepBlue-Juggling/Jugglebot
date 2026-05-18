@@ -13,7 +13,7 @@ full set of strings IPOPT may emit, or on the strings the classifier
 *depends on* but our problem rarely produces (``Solved_To_Acceptable_Level``).
 
 Test IDs from
-[plans/active/mpc-sadpath-coverage-tiers-1-3.md](../../plans/active/mpc-sadpath-coverage-tiers-1-3.md)
+[plans/archived/2026-05-18 mpc-sadpath-coverage-tiers-1-3.md](../../plans/archived/2026-05-18%20mpc-sadpath-coverage-tiers-1-3.md)
 Phase 1:
 
 | ID         | Real driver                                          | Exit code                       |

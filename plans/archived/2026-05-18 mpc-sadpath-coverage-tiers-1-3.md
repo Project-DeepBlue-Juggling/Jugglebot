@@ -1,7 +1,16 @@
 ---
 title: MPC Sad-Path Coverage Rollup — Tiers 1–3
 created: 2026-05-08
-status: active
+status: completed
+completed: 2026-05-18
+residual_xfails:
+  # Carried forward at archival (2026-05-18). NOT accepted as
+  # permanent — flagged for re-audit on the next CasADi upgrade:
+  # the limitation is CasADi 3.7.2-specific. Structural coverage
+  # exists via tests/sim/test_solver_failures.py
+  # TestFallbackKeywordMatrix. See
+  # logbook/2026-05-11-tier1a-real-solver-failures.md.
+  - "tests/sim/test_solver_failures.py::TestRestorationFailedNotDrivable::test_restoration_failed_drivable_via_mpcparams"  # T-U-T1a-4 — re-audit on CasADi upgrade
 ---
 
 # MPC Sad-Path Coverage Rollup — Tiers 1–3

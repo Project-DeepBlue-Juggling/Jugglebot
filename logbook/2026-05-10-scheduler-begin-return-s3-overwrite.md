@@ -71,7 +71,7 @@ silently overwrites ``_next_event`` (the ``begin_return`` body assigns
 ``self._next_event = ret_event`` without an S3 check)."
 
 Plan 1 deferred both bugs to Plan 2 so contract enforcement could
-ship.  [Plan 2 Phase 0](../plans/active/mpc-sadpath-coverage-tiers-1-3.md)
+ship.  [Plan 2 Phase 0](../plans/archived/2026-05-18%20mpc-sadpath-coverage-tiers-1-3.md)
 closes them as the documented exception to its "test additions only"
 discipline — removing a ``@precondition`` requires fixing the
 underlying bug in the same commit, otherwise the random walk would
@@ -214,7 +214,7 @@ fix made the test pass deterministically.
 ci-fast (``pytest tests/ -q``): pass (1192/1193; one transient flake
 on ``test_motor_guard.py::test_decay_boundary_continuity`` — the
 pre-existing heap-state contamination flake noted in
-[Plan 2 Working Note #5](../plans/active/mpc-sadpath-coverage-tiers-1-3.md);
+[Plan 2 Working Note #5](../plans/archived/2026-05-18%20mpc-sadpath-coverage-tiers-1-3.md);
 passes deterministically in module-level isolation).
 
 ci-deep on the contract test file (``pytest
@@ -337,5 +337,5 @@ under a single normative sub-heading.
 - [controller/SCHEDULER_CONTRACT.md](../controller/SCHEDULER_CONTRACT.md)
   — S3 normative spec; this fix updates the "S3 — Phase preconditions
   on slot mutators" sub-section.
-- [plans/active/mpc-sadpath-coverage-tiers-1-3.md](../plans/active/mpc-sadpath-coverage-tiers-1-3.md)
+- [plans/archived/2026-05-18 mpc-sadpath-coverage-tiers-1-3.md](../plans/archived/2026-05-18%20mpc-sadpath-coverage-tiers-1-3.md)
   — Plan 2 Phase 0 specification.

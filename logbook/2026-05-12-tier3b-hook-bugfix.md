@@ -269,7 +269,7 @@ Phase 6 / Phase 7 bugfixes followed.
 
 ## Related
 
-* [plans/active/mpc-sadpath-coverage-tiers-1-3.md](../plans/active/mpc-sadpath-coverage-tiers-1-3.md)
+* [plans/archived/2026-05-18 mpc-sadpath-coverage-tiers-1-3.md](../plans/archived/2026-05-18%20mpc-sadpath-coverage-tiers-1-3.md)
   — Plan 2 Phase 8 specification (final phase).
 * [logbook/2026-05-12-tier3b-time-pathologies.md](2026-05-12-tier3b-time-pathologies.md)
   — Phase 8 test commit; Bug E discovery + per-test empirical-probe

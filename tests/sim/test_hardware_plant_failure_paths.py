@@ -40,7 +40,7 @@ Phase 4 covers the three watchdog cascades:
    ``_fk_ever_succeeded`` so de-energised start-up frames cannot trip.
 
 Test IDs from
-[plans/active/mpc-sadpath-coverage-tiers-1-3.md](../../plans/active/mpc-sadpath-coverage-tiers-1-3.md)
+[plans/archived/2026-05-18 mpc-sadpath-coverage-tiers-1-3.md](../../plans/archived/2026-05-18%20mpc-sadpath-coverage-tiers-1-3.md)
 Phase 4:
 
 | ID         | Surface                                            | Driver                                                              |
