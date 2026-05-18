@@ -58,9 +58,9 @@ from pathlib import Path
 # when invoked as a script.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _th_test_common import (
-    LogTailer, TestResult, assert_log_is_live, find_latest_mpc_log,
-    find_pid_by_pattern, get_repo_sha, safety_gate, wait_gate,
-    write_artifacts,
+    LogTailer, TestResult, assert_log_is_live, evaluate_estop_contract,
+    find_latest_mpc_log, find_pid_by_pattern, get_repo_sha, safety_gate,
+    wait_gate, write_artifacts,
 )
 
 
@@ -266,6 +266,7 @@ def main() -> int:
 
     # --- Verdict ---
     anomalies: list[str] = []
+    contract_detail = ""
     bytes_seen = tailer.bytes_observed()
     if bytes_seen == 0:
         # The tailed file never grew — the script watched a dead file.
@@ -289,14 +290,14 @@ def main() -> int:
             f'though the log grew by {bytes_seen} bytes (tailer WAS live) — '
             f'watchdog may be broken; investigate before T-H-T2a-1.')
     else:
-        lo, hi = EXPECTED_ESTOP_FIRE_WINDOW_MS
-        if lo <= chain['telem_stale_estop'] <= hi:
-            verdict = 'PASS'
-        else:
-            verdict = 'FAIL'
-            anomalies.append(
-                f"ESTOP fire time {chain['telem_stale_estop']:.1f} ms outside "
-                f"expected window [{lo}, {hi}] ms.")
+        # Score on the watchdog's REAL contract: telem_age at fire vs the
+        # documented threshold (robust to ZMQ/OS buffer drain in the
+        # SIGSTOP→stale latency, which is a fault-injection artefact, NOT
+        # watchdog latency).  Wall-clock-from-SIGSTOP is informational.
+        estop_hit = tailer.first_hit('telem_stale_estop')
+        verdict, contract_detail, contract_anoms = evaluate_estop_contract(
+            estop_hit.log_line if estop_hit else "")
+        anomalies.extend(contract_anoms)
 
     # Frozen-motor detector firing during this test would indicate a
     # collision between the WARN/HARD/ESTOP cascade and the frozen-motor
@@ -313,9 +314,11 @@ def main() -> int:
     print("=" * 72)
     print(f"VERDICT: {verdict}")
     print("=" * 72)
-    print(f"  ESTOP fired at t+{chain['telem_stale_estop']} ms "
-          f"(expected window: {EXPECTED_ESTOP_FIRE_WINDOW_MS[0]}–"
-          f"{EXPECTED_ESTOP_FIRE_WINDOW_MS[1]} ms)")
+    if contract_detail:
+        print(f"  {contract_detail}")
+    print(f"  [informational] wall-clock SIGSTOP→ESTOP = "
+          f"{chain['telem_stale_estop']} ms (includes ZMQ/OS buffer drain; "
+          f"NOT the pass criterion)")
     if chain['telem_aging_warn'] is not None:
         print(f"  WARN fired at  t+{chain['telem_aging_warn']:.1f} ms")
     if chain['telem_stale_hard'] is not None:
@@ -377,6 +380,7 @@ def main() -> int:
         ],
         operator_notes=notes,
         anomalies=anomalies,
+        contract_detail=contract_detail,
     )
     json_path, md_path = write_artifacts(result)
 
