@@ -400,7 +400,7 @@ teensy_operational:
 #    QTM motion capture connection settings.
 # ============================================================
 mocap:
-  qtm_host: "192.168.20.16"              # QTM server IP address
+  qtm_host: "VR-Computer.local"          # QTM server mDNS name (survives DHCP IP changes; no router config)
   qtm_port: 22223                        # QTM server port
 
 # ============================================================
