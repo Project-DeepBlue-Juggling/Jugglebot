@@ -273,13 +273,6 @@ feasibility fixes before `z=30` is used as a trusted operating
 pose. Not a Plan 2 blocker — Plan 2's hardware gate is cleared by
 the cascade PASSes; this is a separate control-feasibility concern.
 
-### Working-tree note
-
-`ros_ws/src/jugglebot/jugglebot/mocap_interface.py` carried an
-uncommitted QTM disconnect-logging change not produced by this
-session and unrelated to this work — left untouched, surfaced to
-the operator. Not part of any commit here.
-
 ## Related
 
 - [plans/active/mpc-sadpath-coverage-tiers-1-3.md](../plans/active/mpc-sadpath-coverage-tiers-1-3.md)
