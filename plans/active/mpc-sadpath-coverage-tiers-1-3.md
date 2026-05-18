@@ -737,6 +737,31 @@ Working Note #7, this commit fixes the absolute deadlines:
 | T-H-T2b-1  | Low             | **2026-05-18** | None — the gate test itself                            |
 | T-H-T2a-1  | Medium-high     | **2026-05-25** | T-H-T2b-1 PASS confirms the publisher-kill mechanism   |
 
+**Hardware-test results — both COMPLETE and PASS (2026-05-18).**
+Both ran 2026-05-18 (T-H-T2a-1 ahead of its 2026-05-25 target).
+Evidence-backed from the live MPC logs:
+
+| Test       | Result   | Evidence                                                                 |
+|------------|----------|--------------------------------------------------------------------------|
+| T-H-T2b-1  | **PASS** | ESTOP at ``telem_age=0.525 s`` vs the 0.5 s threshold (1 poll late)       |
+| T-H-T2a-1  | **PASS** | ESTOP at ``telem_age=0.505 s`` vs the 0.5 s threshold; MPC clean-exit     |
+
+Both were mishandled by the test harness (two instrumentation
+bugs — stale-log false-FAIL, and a wall-clock-vs-``telem_age``
+criterion / exit-flush tailer race): T-H-T2b-1's harness verdict
+was FAIL; T-H-T2a-1's harness captured no cascade
+(``log_hits: []``) and was operator-overridden to PASS at the run.
+Both fixed (commits ``1e3bcc8``, ``7e4f84e``); both runs re-scored
+from captured data with no hardware re-run, independently
+confirming PASS on the watchdog contract.  **This
+discharges Plan 2's last archival obligation — the hardware gate is
+cleared.**  Full arc, the harness-bug root-causes, and an OPEN
+non-Plan-2 finding (the MPC could not solve at ``z=30`` — 1769+
+consecutive ``Maximum_CpuTime_Exceeded``; held on fallback the whole
+session; recommend a dedicated ``/investigate`` before trusting
+``z=30`` as an operating pose) are in
+[logbook/2026-05-18-hardware-bringup-t2b1-t2a1-cascade-validation.md](../../logbook/2026-05-18-hardware-bringup-t2b1-t2a1-cascade-validation.md).
+
 Both within 2 weeks of Phase 5's commit (today, 2026-05-11);
 T-H-T2b-1 within 1 week; T-H-T2a-1 day-after-PASS plus operator
 schedule buffer.  Phase 4's Outcome paragraph committed to "within

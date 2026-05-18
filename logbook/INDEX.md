@@ -6,6 +6,7 @@ Browse with `/logbook`, create entries with `/investigate` or `/logbook --new <t
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-05-18 | resolved-with-open-question | mpc-sadpath-coverage-tiers-1-3 — Phase 5 hardware obligations | Hardware bringup — T-H-T2b-1 + T-H-T2a-1 telemetry-stale cascade validation (+2 harness bugs, z=30 solve-failure OPEN) | [2026-05-18-hardware-bringup-t2b1-t2a1-cascade-validation](2026-05-18-hardware-bringup-t2b1-t2a1-cascade-validation.md) |
 | 2026-05-12 | resolved | mpc-sadpath-coverage-tiers-1-3 — Phase 8 (bugfix) | Runner — on_target_override hook treats None as "keep tc" (Tier 3b bugfix) | [2026-05-12-tier3b-hook-bugfix](2026-05-12-tier3b-hook-bugfix.md) |
 | 2026-05-12 | resolved | mpc-sadpath-coverage-tiers-1-3 — Phase 8 (final) | MPC sad-path coverage — Phase 8 Tier 3b time pathologies, resource exhaustion, hooks, races | [2026-05-12-tier3b-time-pathologies](2026-05-12-tier3b-time-pathologies.md) |
 | 2026-05-12 | resolved | mpc-sadpath-coverage-tiers-1-3 — Phase 7 (bugfix) | Tier 3a follow-up bugfix — quintic T<=0 guard + DIAG_SCHEMA_CONTRACT | [2026-05-12-tier3a-fuzz-bugfix](2026-05-12-tier3a-fuzz-bugfix.md) |
