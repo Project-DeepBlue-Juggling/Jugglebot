@@ -24,7 +24,8 @@ files_changed:
   - tests/sim/test_hardware_plant_failure_paths.py
   - tests/sim/_hardware_plant_stub.py
   - logbook/2026-05-18-hardware-bringup-t2b1-t2a1-cascade-validation.md
-commits: []
+commits:
+  - c8a5dd4
 subsystem:
   - controller
   - hardware-plant
