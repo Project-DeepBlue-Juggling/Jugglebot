@@ -24,7 +24,7 @@ files_changed:
   - sim/analysis/known_issues.yaml
   - sim/analysis/log_index.json
 commits:
-  - TBD
+  - d8bab95
 subsystem:
   - can
   - safety
