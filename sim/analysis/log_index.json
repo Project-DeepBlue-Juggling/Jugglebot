@@ -818,6 +818,18 @@
         "2026-05-19-findingb-motor-guard-estop-latch-observability.md"
       ],
       "logbook_note": "Primary entry resolves Finding A (telemetry-validity P5). Finding B (68 s motor_pos=None root cause = motor_guard GuardMode.ESTOP sticky latch, shared root cause with A) is the follow-up in logbook_entries_followup."
+    },
+    "mpc_20260519_200613.csv": {
+      "analyzed": true,
+      "flags_count": 2,
+      "last_analyzed": "2026-05-19T10:19:10Z",
+      "logbook_entry": "2026-05-19-can-loss-fault-response-safety-inversion.md",
+      "phase": "hardware-bringup \u2014 CAN-loss recovery",
+      "ros2_session": null,
+      "rosbag": "2026-05-19_20-05-46",
+      "verdict": "FAIL",
+      "session_group": "2026-05-19_20-05-46",
+      "note": "MPC session data itself clean (graceful telemetry_stale exit, correct); FAIL is the SYSTEM-level CAN-loss recovery behaviour \u2014 motors commanded IDLE on the CAN-fault->ERROR path, leaving the platform de-energised on reconnect (safe during disconnect, unsafe on reconnect). Operator-observed safety inversion; candidate /investigate."
     }
   },
   "version": 1

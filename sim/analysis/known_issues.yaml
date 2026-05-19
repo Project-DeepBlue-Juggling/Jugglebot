@@ -66,6 +66,32 @@ issues:
         threshold_mm: 20.0
     fix: "Capture prev_cmd before overwriting cmd in the control loop."
 
+  - id: CAN_LOSS_FAULT_INVERSION
+    name: "CAN-loss fault response de-energised healthy holding actuators"
+    severity: critical
+    status: fixed
+    fixed_date: "2026-05-19"
+    logbook_entry: "2026-05-19-can-loss-fault-response-safety-inversion.md"
+    description: >
+      A blanket "control_mode==ERROR ⇒ stow+IDLE" fault response in
+      can_node._sub_control_mode applied a single de-energising policy to a
+      heterogeneous fault set.  On a transient CAN loss the leg ODrives stay
+      CLOSED_LOOP and autonomously hold their last setpoint (safe while the
+      bus is down), but the ERROR-mode stow commanded them IDLE on reconnect
+      — collapsing an otherwise-stable pose.  Fixed by discriminating on
+      actuator integrity (legs CLOSED_LOOP + error/disarm-free ⇒ hold) and
+      deferring any genuine stow until the watchdog confirms the bus
+      restored.  Pre-fix signature: legs current_state 8→1 within ~120 ms
+      of control_mode→ERROR, ~1.8 s BEFORE FAULT→BOOT.
+    signatures:
+      - type: ros2_log_pattern
+        pattern: "holding last setpoint|deferring stow until the bus is restored"
+        level: ["ERROR"]
+    fix: >
+      Discriminating fault response with deferred-on-reconnect stow:
+      can_node._fault_response / _actuators_intact_and_holding.
+    reference: "ros_ws/src/jugglebot/jugglebot/can_node.py:_fault_response"
+
   # -----------------------------------------------------------------------
   # Active issues (need investigation or fix)
   # -----------------------------------------------------------------------

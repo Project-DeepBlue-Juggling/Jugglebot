@@ -6,6 +6,7 @@ Browse with `/logbook`, create entries with `/investigate` or `/logbook --new <t
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-05-19 | tuned | hardware-bringup | CAN-loss fault-response safety inversion — blanket "ERROR ⇒ stow+IDLE" de-energises healthy holding actuators on reconnect | [2026-05-19-can-loss-fault-response-safety-inversion](2026-05-19-can-loss-fault-response-safety-inversion.md) |
 | 2026-05-19 | tuned | hardware-bringup | Finding B — the 68 s motor_pos=None was a motor_guard GuardMode.ESTOP sticky latch, NOT a CAN dropout (shared root cause with Finding A) | [2026-05-19-findingb-motor-guard-estop-latch-observability](2026-05-19-findingb-motor-guard-estop-latch-observability.md) |
 | 2026-05-18 | resolved | standalone | Mocap QTM connection logging — state-transition + throttled-recurring WARNING, stale qtm_host→mDNS, unbounded-connect bug | [2026-05-18-mocap-qtm-connection-logging](2026-05-18-mocap-qtm-connection-logging.md) |
 | 2026-05-18 | tuned | hardware-bringup | z=30 solve-failure root cause — motor_pos=None after CAN drop evades both telemetry watchdogs (Finding 3 resolved) | [2026-05-18-z30-solve-failure-motor-pos-none-watchdog-gap](2026-05-18-z30-solve-failure-motor-pos-none-watchdog-gap.md) |

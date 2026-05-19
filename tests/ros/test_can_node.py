@@ -313,12 +313,28 @@ class TestSubControlMode:
         msg = MockString(data=mode_str)
         return msg
 
-    def test_error_mode_calls_gentle_move(self, node):
-        """ERROR mode should trigger stowing (gentle move to 0)."""
+    def test_error_mode_degraded_leg_healthy_bus_stows(self, node):
+        """ERROR with a degraded leg and a HEALTHY CAN bus → stow now.
+
+        This is the fail-safe path of the discriminating fault response
+        (logbook 2026-05-19-can-loss-fault-response-safety-inversion):
+        a leg is not CLOSED_LOOP, so the platform is genuinely compromised
+        and the existing stow+idle behaviour must still fire immediately.
+        """
+        from jugglebot.can import odrive
+        # All legs CLOSED_LOOP except leg 0 (IDLE) → not intact.
+        for axis_id in odrive.LEG_AXES:
+            node.motors.update(axis_id,
+                               current_state=odrive.AXIS_STATES['CLOSED_LOOP'])
+        node.motors.update(0, current_state=odrive.AXIS_STATES['IDLE'])
+        node.motors.get_states()
+        node.motors.fatal_can_error = False  # bus healthy
+
         with patch.object(node, '_gently_move_to_setpoint') as mock_move:
             node._sub_control_mode(self._make_mode_msg('ERROR'))
             mock_move.assert_called_once_with(0.0, deactivating=True)
             assert node.stowed_due_to_error is True
+            assert node._stow_pending_on_reconnect is False
 
     def test_spacemouse_mode_legs_closed_loop(self, node):
         """SPACEMOUSE puts legs in CLOSED_LOOP, hand in IDLE."""
@@ -407,6 +423,219 @@ class TestSubControlMode:
         with patch.object(node, '_gently_move_to_setpoint') as mock_move:
             node._sub_control_mode(self._make_mode_msg('UNKNOWN_MODE'))
             mock_move.assert_called_once_with(0.0, deactivating=True)
+
+
+# ════════════════════════════════════════════════════════════════
+# CAN-loss fault-response safety inversion
+# (logbook/2026-05-19-can-loss-fault-response-safety-inversion.md)
+#
+# Root cause: a blanket "fault ⇒ stow+idle" de-energises healthy,
+# autonomously-holding leg ODrives on CAN reconnect, collapsing an
+# otherwise-stable pose.  The fault response must discriminate on
+# actuator integrity, and must never command a stow into a down bus.
+# ════════════════════════════════════════════════════════════════
+
+
+def _immediately_done_gen(value):
+    """A generator whose first ``next()`` raises StopIteration(value).
+
+    Mirrors a completed ``attempt_restore_steps`` generator so
+    ``_watchdog_check`` takes its restore-success / restore-failure arm
+    deterministically without real CAN hardware.
+    """
+    return value
+    yield  # pragma: no cover — unreachable; makes this a generator
+
+
+class TestCanLossFaultResponse:
+    def _mode_msg(self, mode_str):
+        from tests.ros.conftest import MockString
+        return MockString(data=mode_str)
+
+    def _all_legs_closed_loop(self, node):
+        """Every leg CLOSED_LOOP, error/disarm-free — the 'intact and
+        holding' baseline."""
+        from jugglebot.can import odrive
+        for axis_id in odrive.LEG_AXES:
+            node.motors.update(
+                axis_id,
+                current_state=odrive.AXIS_STATES['CLOSED_LOOP'],
+                active_errors=0,
+                disarm_reason=0)
+        node.motors.get_states()
+
+    # ── Discriminator: ERROR mode ──────────────────────────────
+
+    def test_error_intact_actuators_holds_no_stow(self, node):
+        """CAN loss → ERROR while every leg is CLOSED_LOOP and error/disarm
+        free → HOLD: no gentle-move, no stow latch, no fatal escalation.
+
+        This is the safety-inversion fix: the ODrives keep their last
+        setpoint autonomously, so de-energising them would be the unsafe
+        action.  Mirrors the diagnosed rosbag 2026-05-19_20-05-46 state
+        at the STANDBY→ERROR edge (legs frozen-good CLOSED_LOOP).
+        """
+        self._all_legs_closed_loop(node)
+        node.motors.fatal_can_error = True  # CAN bus is down
+
+        with patch.object(node, '_gently_move_to_setpoint') as mock_move:
+            node._sub_control_mode(self._mode_msg('ERROR'))
+
+        mock_move.assert_not_called()
+        assert node.stowed_due_to_error is False
+        assert node._stow_pending_on_reconnect is False
+
+    def test_error_degraded_leg_bus_down_defers_stow(self, node):
+        """ERROR with a degraded leg WHILE CAN is down → defer the stow.
+
+        Must NOT command a profiled stow into a dead bus (frames would
+        land non-deterministically on reconnect).  The stow is latched
+        for the watchdog to execute once the bus is confirmed restored.
+        """
+        from jugglebot.can import odrive
+        self._all_legs_closed_loop(node)
+        node.motors.update(2, current_state=odrive.AXIS_STATES['IDLE'])
+        node.motors.get_states()
+        node.motors.fatal_can_error = True  # CAN bus down
+
+        with patch.object(node, '_gently_move_to_setpoint') as mock_move:
+            node._sub_control_mode(self._mode_msg('ERROR'))
+
+        mock_move.assert_not_called()
+        assert node._stow_pending_on_reconnect is True
+        assert node.stowed_due_to_error is False
+
+    def test_error_disarm_reason_counts_as_degraded(self, node):
+        """A non-zero disarm_reason on a still-CLOSED_LOOP leg is degraded
+        → fail-safe (here: bus healthy, so stow immediately)."""
+        self._all_legs_closed_loop(node)
+        node.motors.update(3, disarm_reason=0x1)
+        node.motors.get_states()
+        node.motors.fatal_can_error = False
+
+        with patch.object(node, '_gently_move_to_setpoint') as mock_move:
+            node._sub_control_mode(self._mode_msg('ERROR'))
+
+        mock_move.assert_called_once_with(0.0, deactivating=True)
+        assert node.stowed_due_to_error is True
+
+    # ── Discriminator generalises to the unknown-mode branch ───
+
+    def test_unknown_mode_intact_actuators_holds(self, node):
+        """The unknown-mode catch-all routes through the same policy:
+        intact actuators ⇒ hold, no stow."""
+        self._all_legs_closed_loop(node)
+        node.motors.fatal_can_error = False
+
+        with patch.object(node, '_gently_move_to_setpoint') as mock_move:
+            node._sub_control_mode(self._mode_msg('SOME_BOGUS_MODE'))
+
+        mock_move.assert_not_called()
+        assert node.stowed_due_to_error is False
+
+    # ── Deferred stow executes on confirmed reconnect ──────────
+
+    def test_watchdog_restore_success_runs_deferred_stow(self, node):
+        """Watchdog confirms bus restored → the deferred stow executes
+        now that commands will actually reach the ODrives."""
+        node._stow_pending_on_reconnect = True
+        node.motors.fatal_can_error = True
+        node._restore_gen = _immediately_done_gen(True)
+        node._restore_resume_time = 0.0
+
+        with patch.object(node, '_gently_move_to_setpoint') as mock_move:
+            node._watchdog_check()
+
+        mock_move.assert_called_once_with(0.0, deactivating=True)
+        assert node.stowed_due_to_error is True
+        assert node._stow_pending_on_reconnect is False
+        assert node.motors.fatal_can_error is False
+
+    def test_watchdog_restore_failure_clears_pending_and_emergency_idles(self, node):
+        """Bus never came back → deferred profiled stow is moot; the
+        terminal _emergency_idle fail-safe fires and the latch clears."""
+        node._stow_pending_on_reconnect = True
+        node.motors.fatal_can_error = True
+        node._restore_gen = _immediately_done_gen(False)
+        node._restore_resume_time = 0.0
+
+        with patch.object(node, '_emergency_idle') as mock_eidle, \
+                patch.object(node, '_gently_move_to_setpoint') as mock_move:
+            node._watchdog_check()
+
+        mock_eidle.assert_called_once()
+        mock_move.assert_not_called()
+        assert node._stow_pending_on_reconnect is False
+        assert node._watchdog_restore_failed is True
+
+    def test_watchdog_deferred_stow_runs_after_fatal_can_cleared(self, node):
+        """Load-bearing ordering: the deferred stow must run with
+        fatal_can_error already False.  If the clear did not precede the
+        move, the real _gentle_move_steps fatal_can_error guard would abort
+        every deferred stow to _emergency_idle (the silent-failure mode this
+        whole fix exists to prevent).  We do not mock the guard; we record
+        motors.fatal_can_error at the moment the move is invoked.
+        """
+        node._stow_pending_on_reconnect = True
+        node.motors.fatal_can_error = True
+        node._restore_gen = _immediately_done_gen(True)
+        node._restore_resume_time = 0.0
+
+        seen = {}
+
+        def _record(*args, **kwargs):
+            seen['fatal_can_error_at_call'] = node.motors.fatal_can_error
+            return True  # stow delivered cleanly
+
+        with patch.object(node, '_gently_move_to_setpoint',
+                          side_effect=_record) as mock_move:
+            node._watchdog_check()
+
+        mock_move.assert_called_once_with(0.0, deactivating=True)
+        assert seen['fatal_can_error_at_call'] is False, (
+            "deferred stow was invoked while fatal_can_error was still set "
+            "— the real _gentle_move_steps guard would abort it")
+        assert node.stowed_due_to_error is True
+        assert node._stow_pending_on_reconnect is False
+
+    def test_watchdog_deferred_stow_rearms_if_move_fails(self, node):
+        """If the just-restored bus re-drops mid-profile the deferred
+        _gently_move_to_setpoint returns False.  The latch must re-arm (so
+        the next confirmed reconnect retries) and stowed_due_to_error must
+        stay False (so on_shutdown's fail-safe stow is not skipped)."""
+        node._stow_pending_on_reconnect = True
+        node.motors.fatal_can_error = True
+        node._restore_gen = _immediately_done_gen(True)
+        node._restore_resume_time = 0.0
+
+        with patch.object(node, '_gently_move_to_setpoint',
+                          return_value=False) as mock_move:
+            node._watchdog_check()
+
+        mock_move.assert_called_once_with(0.0, deactivating=True)
+        assert node._stow_pending_on_reconnect is True, (
+            "failed deferred stow must re-arm for the next reconnect")
+        assert node.stowed_due_to_error is False, (
+            "stowed_due_to_error must stay False on a failed stow or "
+            "on_shutdown will skip its own fail-safe stow")
+
+    def test_intact_then_reconnect_never_stows(self, node):
+        """End-to-end: intact actuators + CAN loss → ERROR holds, and a
+        subsequent successful watchdog restore does NOT stow (no latch
+        was set).  The platform stays energised and holding."""
+        self._all_legs_closed_loop(node)
+        node.motors.fatal_can_error = True
+
+        with patch.object(node, '_gently_move_to_setpoint') as mock_move:
+            node._sub_control_mode(self._mode_msg('ERROR'))
+            node._restore_gen = _immediately_done_gen(True)
+            node._restore_resume_time = 0.0
+            node._watchdog_check()
+
+        mock_move.assert_not_called()
+        assert node.stowed_due_to_error is False
+        assert node._stow_pending_on_reconnect is False
+        assert node.motors.fatal_can_error is False
 
 
 # ════════════════════════════════════════════════════════════════

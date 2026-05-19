@@ -168,6 +168,11 @@ class CanInterfaceNode(Node):
         self.legs_target_position = [None] * odrive.NUM_LEGS
         self.legs_target_reached = [False] * odrive.NUM_LEGS
         self.stowed_due_to_error = False
+        # Deferred-stow latch: a fault-stow requested while the CAN bus is
+        # down is held here and executed only once the watchdog confirms the
+        # bus restored — never best-effort into a dead bus.  See
+        # logbook/2026-05-19-can-loss-fault-response-safety-inversion.md.
+        self._stow_pending_on_reconnect = False
         self._shutdown_deadline = float('inf')  # Set to finite value during shutdown
         self._encoder_data_received = [False] * odrive.NUM_LEGS  # Track whether real encoder data has arrived
 
@@ -1035,6 +1040,66 @@ class CanInterfaceNode(Node):
             self.hand_curr_limit = msg.hand_curr_limit
         self._set_vel_curr_limits()
 
+    def _actuators_intact_and_holding(self) -> bool:
+        """True iff every leg is CLOSED_LOOP and no leg reports an active
+        error or disarm — i.e. the leg ODrives are healthy and autonomously
+        holding their last commanded setpoint.
+
+        When this holds, a fault response MUST NOT de-energise the legs: the
+        ODrives retain their commanded position with zero CAN traffic (proven
+        forensically across a real CAN loss in
+        logbook/2026-05-19-findingb-motor-guard-estop-latch-observability.md
+        — zero ODrive disarm/error/CLOSED_LOOP-exit across the dropout).
+        Reads ``last_states``; during a CAN-down window this is the frozen
+        last-good heartbeat, so any *pre-freeze* degradation is still seen
+        here and correctly routes to the stow fail-safe.
+        """
+        states = self.motors.last_states
+        _CL = odrive.AXIS_STATES['CLOSED_LOOP']
+        legs_closed = all(s.current_state == _CL
+                          for s in states[:odrive.NUM_LEGS])
+        legs_clean = all(states[a].active_errors == 0
+                         and states[a].disarm_reason == 0
+                         for a in odrive.LEG_AXES)
+        return legs_closed and legs_clean
+
+    def _fault_response(self, reason: str):
+        """Discriminating fault response (CAN-loss safety-inversion fix).
+
+        A blanket "fault ⇒ stow + IDLE" de-energises healthy, autonomously
+        holding actuators on CAN reconnect — collapsing an otherwise-stable
+        pose.  Root cause + forensic timeline:
+        logbook/2026-05-19-can-loss-fault-response-safety-inversion.md.
+
+        Policy (single enforcement point for every fault-stow trigger in
+        this node — both the orchestrator 'ERROR' mode and the unknown-mode
+        catch-all route here):
+
+        * legs CLOSED_LOOP + error/disarm-free ⇒ **hold**.  No stow, no
+          ``stowed_due_to_error`` (so a later healthy-bus shutdown still
+          stows gracefully).  The ODrives keep their setpoint themselves.
+        * otherwise (a leg degraded) ⇒ stow + IDLE fail-safe, BUT if the
+          CAN bus is currently down (``fatal_can_error``) the stow is
+          **deferred** until the watchdog confirms the bus restored — we
+          never command a profiled stow into a dead bus where the frames
+          land non-deterministically on reconnect.  Bus healthy ⇒ stow now.
+        """
+        if self._actuators_intact_and_holding():
+            self.get_logger().error(
+                f"{reason}: all legs CLOSED_LOOP and error/disarm-free — "
+                f"holding last setpoint (ODrives retain commanded position "
+                f"autonomously). Not stowing.")
+            return
+        if self.motors.fatal_can_error:
+            self.get_logger().error(
+                f"{reason} with a degraded leg while CAN is down — "
+                f"deferring stow until the bus is restored.")
+            self._stow_pending_on_reconnect = True
+            return
+        self.get_logger().error(f"{reason}: degraded leg, stowing platform.")
+        self._gently_move_to_setpoint(0.0, deactivating=True)
+        self.stowed_due_to_error = True
+
     def _sub_control_mode(self, msg):
         """Handle control mode changes from the orchestrator.
 
@@ -1056,9 +1121,7 @@ class CanInterfaceNode(Node):
             hand_closed = states[odrive.HAND_AXIS].current_state == _CL
 
             if msg.data == 'ERROR':
-                self.get_logger().error("Error state detected. Stowing platform.")
-                self._gently_move_to_setpoint(0.0, deactivating=True)
-                self.stowed_due_to_error = True
+                self._fault_response("Error state detected")
 
             elif msg.data == 'CATCH':
                 self.get_logger().info('Control mode: CATCH')
@@ -1086,8 +1149,8 @@ class CanInterfaceNode(Node):
                 pass  # No action needed — legs stay in position mode
 
             else:
-                self.get_logger().warning(f"Unknown control mode: {msg.data}. Stowing.")
-                self._gently_move_to_setpoint(0.0, deactivating=True)
+                self.get_logger().warning(f"Unknown control mode: {msg.data}.")
+                self._fault_response(f"Unknown control mode {msg.data!r}")
 
         except Exception as e:
             self.get_logger().error(f"Control mode error: {e}")
@@ -1294,9 +1357,39 @@ class CanInterfaceNode(Node):
                     self.motors.fatal_can_error = False
                     self._watchdog_restore_failed = False
                     self.get_logger().info("CAN bus restored by watchdog")
+                    # Bus confirmed restored (rx+tx OK in attempt_restore_steps):
+                    # execute any stow deferred while the bus was down, now
+                    # that commands will actually reach the ODrives.  The
+                    # fatal_can_error clear above MUST stay before this move:
+                    # _gentle_move_steps aborts to _emergency_idle while
+                    # fatal_can_error is set.
+                    if self._stow_pending_on_reconnect:
+                        self.get_logger().error(
+                            "Executing deferred fault-stow now that CAN is "
+                            "restored.")
+                        stowed = self._gently_move_to_setpoint(
+                            0.0, deactivating=True)
+                        if stowed:
+                            self._stow_pending_on_reconnect = False
+                            self.stowed_due_to_error = True
+                        else:
+                            # Bus re-dropped mid-profile (or the move aborted):
+                            # keep the latch armed so the next watchdog
+                            # restore-success retries.  Do NOT set
+                            # stowed_due_to_error — the stow did not complete,
+                            # and setting it would make on_shutdown skip its
+                            # own fail-safe stow.
+                            self.get_logger().error(
+                                "Deferred fault-stow did not complete "
+                                "(bus re-dropped?) — re-arming for the next "
+                                "confirmed reconnect.")
                 else:
                     self._emergency_idle()
                     self._watchdog_restore_failed = True
+                    # Bus never came back — the deferred profiled stow is
+                    # moot (no bus); _emergency_idle above is the terminal
+                    # best-effort fail-safe.
+                    self._stow_pending_on_reconnect = False
                     self.get_logger().error(
                         "CAN bus restoration failed — sent emergency IDLE, fatal CAN error")
             return
