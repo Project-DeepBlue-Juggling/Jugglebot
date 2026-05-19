@@ -72,13 +72,6 @@ class MocapInterface:
         # sending data, regardless of whether _on_qtm_disconnect fires.
         self._last_packet_time: Optional[float] = None
 
-        # Connection-outage logging gate. True once we've emitted the single
-        # "QTM unavailable / disconnected" WARNING for the current outage, so
-        # the perpetual reconnect loop stays silent (DEBUG) until QTM returns.
-        # Reset to False on a successful (re)connection so the next outage
-        # warns exactly once again.
-        self._conn_outage_logged = False
-
         # The qtm_rt library logs `LOG.error(...)` on its own "qtm_rt" logger
         # every failed connect attempt (it swallows the OSError and returns
         # None — verified empirically against an unreachable host). That spam
@@ -130,6 +123,21 @@ class MocapInterface:
 
     _RETRY_DELAYS = [2, 5, 10, 30]  # seconds between reconnection attempts
 
+    # Hard ceiling on a single qtm_rt.connect() attempt. qtm_rt's own
+    # `timeout=` argument covers only the QRT protocol handshake, NOT TCP
+    # connection establishment: if the host resolves but the QTM port is
+    # filtered/down, the kernel sits in SYN-retry for minutes and connect()
+    # never reaches the retry/except path — so nothing is ever logged. We
+    # wrap the call in asyncio.wait_for() to bound it.
+    _CONNECT_TIMEOUT_S = 6.0
+
+    # Cadence of the "QTM unavailable" WARNING while disconnected. The
+    # message is rclpy-throttled: it logs immediately on the first failure
+    # and then at most once per this interval until QTM returns — a
+    # reliable, ongoing declaration of the no-connection state without
+    # per-attempt spam.
+    _OUTAGE_WARN_THROTTLE_S = 30.0
+
     def _set_qtm_lib_quiet(self, quiet: bool):
         """Silence (or restore) the third-party qtm_rt library's own logger.
 
@@ -145,11 +153,10 @@ class MocapInterface:
     def _on_qtm_disconnect(self, exc):
         """Called by qtm_rt when the connection drops."""
         reason = str(exc) if exc else "unknown"
-        # Single WARNING for this mid-session drop. Mark the outage as logged so
-        # the reconnect loop below doesn't re-warn for the same outage; it will
-        # retry silently and INFO-log when QTM comes back.
+        # Single WARNING for this mid-session drop (distinct call site, so it
+        # logs immediately). The reconnect loop then keeps a throttled
+        # "QTM unavailable" WARNING going until QTM returns.
         self.logger.warning(f"QTM disconnected ({reason}) — reconnecting in background")
-        self._conn_outage_logged = True
         self._set_qtm_lib_quiet(True)
         self.connection = None
         # Reset clock sync so stale offsets aren't used during the gap
@@ -176,9 +183,14 @@ class MocapInterface:
         attempt = 0
         while True:
             try:
-                self.connection = await qtm_rt.connect(
-                    self.host, port=self.port, timeout=5.0,
-                    on_disconnect=self._on_qtm_disconnect,
+                # asyncio.wait_for bounds the whole attempt — qtm_rt's own
+                # timeout= does not cover TCP connect (see _CONNECT_TIMEOUT_S).
+                self.connection = await asyncio.wait_for(
+                    qtm_rt.connect(
+                        self.host, port=self.port, timeout=5.0,
+                        on_disconnect=self._on_qtm_disconnect,
+                    ),
+                    timeout=self._CONNECT_TIMEOUT_S,
                 )
                 if self.connection is None:
                     raise ConnectionError("QTM returned None connection")
@@ -195,23 +207,23 @@ class MocapInterface:
 
                 # Start streaming frames with required components.
                 await self.start_streaming()
-                self._conn_outage_logged = False  # outage cleared
                 self._set_qtm_lib_quiet(False)    # restore qtm_rt logging
                 return  # streaming started successfully
             except (asyncio.TimeoutError, ConnectionError, OSError) as e:
                 delay = self._RETRY_DELAYS[min(attempt, len(self._RETRY_DELAYS) - 1)]
-                if not self._conn_outage_logged:
-                    # First failure of this outage (e.g. QTM not running at
-                    # startup). Emit exactly one WARNING, then go quiet.
-                    self._conn_outage_logged = True
-                    self.logger.warning(
-                        f"QTM unavailable at {self.host}:{self.port} ({e}) — "
-                        f"retrying in the background; will connect "
-                        f"automatically when QTM starts")
-                else:
-                    self.logger.debug(
-                        f"QTM connection retry failed ({e}), next attempt "
-                        f"in {delay}s (attempt {attempt + 1})")
+                # str(asyncio.TimeoutError) is "" — fall back to the type name
+                # so the line stays informative (e.g. "(TimeoutError)").
+                reason = str(e) or type(e).__name__
+                # rclpy-throttled: logs immediately on the first failure of an
+                # outage, then at most once per _OUTAGE_WARN_THROTTLE_S until
+                # QTM returns. A reliable, ongoing declaration of the
+                # no-connection state without per-attempt spam.
+                self.logger.warning(
+                    f"QTM unavailable at {self.host}:{self.port} ({reason}) — "
+                    f"retrying in background; will connect automatically "
+                    f"when QTM starts",
+                    throttle_duration_sec=self._OUTAGE_WARN_THROTTLE_S,
+                )
                 await asyncio.sleep(delay)
                 attempt += 1
             except Exception as e:
