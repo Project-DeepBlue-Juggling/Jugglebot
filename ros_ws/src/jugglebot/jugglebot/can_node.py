@@ -1066,35 +1066,47 @@ class CanInterfaceNode(Node):
     def _fault_response(self, reason: str):
         """Discriminating fault response (CAN-loss safety-inversion fix).
 
-        A blanket "fault ⇒ stow + IDLE" de-energises healthy, autonomously
-        holding actuators on CAN reconnect — collapsing an otherwise-stable
-        pose.  Root cause + forensic timeline:
+        A blanket "fault ⇒ immediate stow + IDLE" de-energises healthy,
+        autonomously-holding actuators *during* a CAN loss — and, commanded
+        into a dead bus, collapses the pose non-deterministically on
+        reconnect.  Root cause + forensic timeline:
         logbook/2026-05-19-can-loss-fault-response-safety-inversion.md.
 
         Policy (single enforcement point for every fault-stow trigger in
         this node — both the orchestrator 'ERROR' mode and the unknown-mode
         catch-all route here):
 
-        * legs CLOSED_LOOP + error/disarm-free ⇒ **hold**.  No stow, no
-          ``stowed_due_to_error`` (so a later healthy-bus shutdown still
-          stows gracefully).  The ODrives keep their setpoint themselves.
-        * otherwise (a leg degraded) ⇒ stow + IDLE fail-safe, BUT if the
-          CAN bus is currently down (``fatal_can_error``) the stow is
-          **deferred** until the watchdog confirms the bus restored — we
-          never command a profiled stow into a dead bus where the frames
-          land non-deterministically on reconnect.  Bus healthy ⇒ stow now.
+        * **CAN bus down** (``fatal_can_error``) ⇒ do NOT command anything
+          now (the ODrives autonomously hold their last CLOSED_LOOP
+          setpoint while the bus is down, so the platform stays put).  Arm
+          the deferred-stow latch: a mid-run CAN loss is a disastrous event
+          that always warrants investigation, so once the bus is *confirmed
+          restored* the platform is **always safely stowed** (the same
+          profiled ``_gently_move_to_setpoint(0.0, deactivating=True)``
+          procedure ``on_shutdown`` uses) rather than left holding for an
+          operator to babysit back to the off pose.  The watchdog's CAN-loss
+          detection also arms this latch, so the "always stow on reconnect"
+          guarantee does not depend on this path firing — this is an
+          idempotent backstop.
+        * **Bus healthy** (non-CAN fault): if the legs are CLOSED_LOOP and
+          error/disarm-free, **hold** — a transient/garbled non-CAN fault
+          (e.g. an unexpected control-mode string) must not collapse an
+          otherwise-healthy platform; no ``stowed_due_to_error`` (so a later
+          healthy-bus shutdown still stows gracefully).  Otherwise a leg is
+          degraded ⇒ stow now (existing fail-safe).
         """
+        if self.motors.fatal_can_error:
+            if not self._stow_pending_on_reconnect:
+                self.get_logger().error(
+                    f"{reason} (CAN bus down) — platform held by the "
+                    f"ODrives; it will be safely stowed once the bus is "
+                    f"restored.")
+            self._stow_pending_on_reconnect = True
+            return
         if self._actuators_intact_and_holding():
             self.get_logger().error(
-                f"{reason}: all legs CLOSED_LOOP and error/disarm-free — "
-                f"holding last setpoint (ODrives retain commanded position "
-                f"autonomously). Not stowing.")
-            return
-        if self.motors.fatal_can_error:
-            self.get_logger().error(
-                f"{reason} with a degraded leg while CAN is down — "
-                f"deferring stow until the bus is restored.")
-            self._stow_pending_on_reconnect = True
+                f"{reason}: bus healthy, all legs CLOSED_LOOP and "
+                f"error/disarm-free — holding. Not stowing.")
             return
         self.get_logger().error(f"{reason}: degraded leg, stowing platform.")
         self._gently_move_to_setpoint(0.0, deactivating=True)
@@ -1407,6 +1419,15 @@ class CanInterfaceNode(Node):
             "Heartbeat watchdog: CAN bus disconnection detected")
         self.motors.fatal_can_error = True
         self.motors.reset_heartbeats()
+        # A mid-run CAN disconnection is a disastrous event that always
+        # warrants investigation.  Arm the deferred-stow latch HERE — the
+        # canonical CAN-loss detection point — so the "always safely stow
+        # once the bus is restored" guarantee holds regardless of whether
+        # the orchestrator → 'ERROR' → _fault_response path also fires.
+        # The ODrives keep their CLOSED_LOOP setpoint while the bus is down
+        # (commands cannot be delivered anyway); the stow is executed by
+        # the restore-success arm above once the bus is confirmed back.
+        self._stow_pending_on_reconnect = True
 
         def poll_cb():
             self.bus.fetch_all(self._handle_message)

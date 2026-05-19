@@ -78,14 +78,18 @@ issues:
       heterogeneous fault set.  On a transient CAN loss the leg ODrives stay
       CLOSED_LOOP and autonomously hold their last setpoint (safe while the
       bus is down), but the ERROR-mode stow commanded them IDLE on reconnect
-      — collapsing an otherwise-stable pose.  Fixed by discriminating on
-      actuator integrity (legs CLOSED_LOOP + error/disarm-free ⇒ hold) and
-      deferring any genuine stow until the watchdog confirms the bus
-      restored.  Pre-fix signature: legs current_state 8→1 within ~120 ms
-      of control_mode→ERROR, ~1.8 s BEFORE FAULT→BOOT.
+      — collapsing an otherwise-stable pose.  Fixed: never command into a
+      down bus (ODrives hold autonomously); a mid-run CAN loss arms a
+      deferred stow at the watchdog detection point and the platform is
+      ALWAYS safely stowed (on_shutdown's profiled procedure) once the bus
+      is confirmed restored, so a disastrous CAN event self-parks for
+      investigation (operator policy 2026-05-19).  Healthy-bus non-CAN
+      faults retain a hold-if-intact / stow-if-degraded discriminator.
+      Pre-fix signature: legs current_state 8→1 within ~120 ms of
+      control_mode→ERROR, ~1.8 s BEFORE FAULT→BOOT.
     signatures:
       - type: ros2_log_pattern
-        pattern: "holding last setpoint|deferring stow until the bus is restored"
+        pattern: "will be safely stowed once the bus is restored|Executing deferred fault-stow now that CAN is restored"
         level: ["ERROR"]
     fix: >
       Discriminating fault response with deferred-on-reconnect stow:

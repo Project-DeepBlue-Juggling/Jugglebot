@@ -70,10 +70,27 @@ direction at the FIX_PLAN gate — never commanding a stow into a
 down bus: any genuine stow is **deferred until the watchdog confirms
 the bus restored**.
 
+**Policy revision (operator, 2026-05-19, after in-practice
+verification — see Discussion §6).** A hardware test confirmed the
+shipped fix: the legs stay `CLOSED_LOOP` across a real
+disconnect/reconnect (no collapse). The operator then revised the
+*reconnect* policy: a mid-run CAN loss is a **disastrous event that
+always warrants investigation**, and that investigation is far
+simpler if the platform does not have to be babysat back to its off
+pose. So the final policy is: **hold during the bus-down window**
+(ODrives autonomous — the safety-inversion fix) **then *always*
+safely stow on confirmed reconnect** (regardless of actuator
+integrity), via the *same profiled* `_gently_move_to_setpoint(0.0,
+deactivating=True)` procedure `on_shutdown` uses (operator-cited as
+known-stable). The deferred-stow latch is now armed at the
+**watchdog's CAN-loss detection point**, so the guarantee does not
+depend on the orchestrator→`ERROR`→`_fault_response` round-trip.
+
 Status `tuned`: the safety inversion (the symptom in scope) is
-addressed and verified; one sibling is intentionally left open (the
-frozen-telemetry residual / the deferred >2 s-dropout hardware
-validation — see Open Questions, tied to Finding B Recommendation 4).
+addressed and verified on hardware; one sibling is intentionally left
+open (the frozen-telemetry residual / the deferred >2 s-dropout
+hardware validation — see Open Questions, tied to Finding B
+Recommendation 4).
 
 ## Symptoms
 
@@ -254,6 +271,57 @@ Routing it through the same `_fault_response` keeps the policy in one
 place — resisting the "two nearly-identical stow sites" drift that
 contracts-over-patches exists to prevent.
 
+### 6. Policy revision after in-practice verification — "always stow on reconnect"
+
+The FIX_PLAN-approved behaviour for an intact CAN-down fault was
+**hold indefinitely** (the ODrives keep their setpoint; the operator
+later re-activates). After the operator ran a real
+disconnect/reconnect hardware test and *confirmed* the legs stay
+`CLOSED_LOOP` across it (the safety inversion is closed), they revised
+the *reconnect* policy with a clear root-cause rationale: a mid-run
+CAN loss is a **disastrous event that always warrants careful
+investigation**, and that investigation is materially simpler if the
+platform has already returned itself to the off/stow pose rather than
+sitting at an arbitrary held pose waiting to be babysat down. So
+"hold forever on reconnect" was the wrong terminal state even though
+it is *safe* — safety was necessary but not sufficient; operability
+of the post-incident investigation is also load-bearing.
+
+The revised policy keeps every safety property of the shipped fix and
+changes only the terminal action on reconnect:
+
+- **During the bus-down window**: unchanged — never command into a
+  dead bus; the ODrives autonomously hold (the inversion fix). The
+  platform does not collapse.
+- **On confirmed reconnect**: **always** stow, regardless of actuator
+  integrity, via the *same profiled* `_gently_move_to_setpoint(0.0,
+  deactivating=True)` the operator cited as known-stable
+  (`on_shutdown`'s procedure). This is a controlled, velocity/accel-
+  limited descent to `(0,0,0,0,0,0)` then IDLE — not a collapse.
+- **Enforcement point moved up**: the deferred-stow latch is armed at
+  the **watchdog's CAN-loss detection point** (where `fatal_can_error`
+  is set and the restore sequence is spawned), not only in
+  `_fault_response`. This makes the "always stow on reconnect"
+  guarantee independent of the orchestrator→`ERROR`→`_sub_control_mode`
+  →`_fault_response` round-trip and the control-mode de-dup —
+  `_fault_response`'s CAN-down arming is now an idempotent backstop.
+
+`_actuators_intact_and_holding` is **retained** but its scope narrows
+to the **healthy-bus, non-CAN fault** path only (e.g. a garbled
+control-mode string while everything is fine): there, holding a
+healthy platform is still correct — a transient bad string must not
+collapse it, and there is no "reconnect" event to stow on. A degraded
+leg on a healthy bus still stows immediately. This scoping was a
+deliberate non-over-reach: the operator's directive was explicitly
+"CAN reconnection following a mid-run disconnection", so the non-CAN
+healthy-bus discriminator was left intact and the boundary surfaced
+for them to extend if desired.
+
+The re-arm-on-mid-profile-re-drop safety from the `/audit` (Fix 3)
+composes with this unchanged: an *always*-armed reconnect stow that
+half-delivers and re-drops still re-arms for the next confirmed
+reconnect.
+
 ## Fix
 
 Single enforcement point in
@@ -263,9 +331,10 @@ Single enforcement point in
 |---------|--------|
 | `__init__` | New `self._stow_pending_on_reconnect = False` latch (beside `stowed_due_to_error`). |
 | `_actuators_intact_and_holding()` (new) | True iff all 6 legs `current_state==CLOSED_LOOP` **and** every leg `active_errors==0` and `disarm_reason==0`, read from `motors.last_states`. |
-| `_fault_response(reason)` (new) | The policy: intact ⇒ **hold** (no stow, no `stowed_due_to_error`); degraded **and** `fatal_can_error` ⇒ **defer** (`_stow_pending_on_reconnect=True`, no command into a down bus); degraded **and** bus healthy ⇒ stow now (`_gently_move_to_setpoint(0.0, deactivating=True)`, `stowed_due_to_error=True`). |
+| `_fault_response(reason)` (new) | The policy: **`fatal_can_error` (CAN down) ⇒ arm `_stow_pending_on_reconnect`, command nothing now** (ODrives hold autonomously; safe-stow happens on confirmed reconnect — operator policy §6); **bus healthy + intact ⇒ hold** (no stow, no `stowed_due_to_error`); **bus healthy + degraded leg ⇒ stow now** (`_gently_move_to_setpoint(0.0, deactivating=True)`, `stowed_due_to_error=True`). |
 | `_sub_control_mode` | `ERROR` branch and unknown-mode `else` branch both now call `_fault_response(...)` (was: direct `_gently_move_to_setpoint` + `stowed_due_to_error`). |
-| `_watchdog_check` | Restore-**success**: after clearing `fatal_can_error`, if `_stow_pending_on_reconnect` execute the deferred profiled stow now (bus confirmed rx+tx OK). Restore-**failure**: clear the latch (the existing `_emergency_idle()` is the terminal fail-safe; a profiled stow is impossible without a bus). |
+| `_watchdog_check` (CAN-loss **detection**) | Where it sets `fatal_can_error=True` + spawns the restore sequence, also `self._stow_pending_on_reconnect = True` — the canonical "always safe-stow on reconnect" enforcement point (§6), independent of the orchestrator path. |
+| `_watchdog_check` (restore arms) | Restore-**success**: after clearing `fatal_can_error`, if `_stow_pending_on_reconnect` run the deferred profiled stow (bus confirmed rx+tx OK); `stowed_due_to_error`/latch-clear only on a *successful* move, else re-arm (audit Fix 3). Restore-**failure**: clear the latch — the existing `_emergency_idle()` is the terminal fail-safe; a profiled stow is impossible without a bus. |
 
 The watchdog restore-failure `_emergency_idle()` path is otherwise
 **untouched** — genuine unrecoverable CAN loss still fails safe
@@ -275,52 +344,64 @@ exactly as before.
 
 Per the CLAUDE.md (date, exact command, result) triple rule:
 
-- Regression suite added to
-  [tests/ros/test_can_node.py](../tests/ros/test_can_node.py): new
-  `TestCanLossFaultResponse` (9 cases: ERROR-intact ⇒ hold;
-  ERROR-degraded-bus-down ⇒ defer; `disarm_reason` ⇒ degraded;
-  unknown-mode ⇒ same policy; watchdog restore-success ⇒ deferred stow
-  executes; restore-failure ⇒ latch cleared + `_emergency_idle`;
-  deferred stow runs only after `fatal_can_error` cleared
-  (clear-before-move ordering invariant); a failed deferred stow
-  re-arms the latch and leaves `stowed_due_to_error` False;
-  end-to-end intact→reconnect ⇒ never stows) plus the reframed
-  `test_error_mode_degraded_leg_healthy_bus_stows` (was
-  `test_error_mode_calls_gentle_move`, now explicit about the
-  fail-safe path).
-- Isolated, post-`/audit` fixes (`pytest tests/ros/test_can_node.py -q`,
-  run 2026-05-19): **80 passed in 2.97 s** (the 9 `TestCanLossFaultResponse`
-  cases + the reframed degraded-leg test + the pre-existing
-  `tests/ros/test_can_node.py` suite).
-- Authoritative full pre-commit gate, post-`/audit` fixes
-  (`pytest tests/ -q`, run 2026-05-19): **1427 passed, 1 xfailed in
-  434.00 s, exit 0 — fully clean.** 1427 = 1424 prior baseline + 1
-  (the documented load-induced `test_hot_loop_allocation_contract`
-  tracemalloc flake passed this run rather than flaking) + 2 new
-  ordering/re-arm tests. The 1 xfailed is the pre-existing inherited
-  T-U-T1a-4 `Restoration_Failed` permanent xfail (unrelated).
-- Pre-`/audit` gate (`pytest tests/ -q`, run 2026-05-19):
-  **1424 passed, 1 failed, 1 xfailed in 423.35 s** — the single failure
-  was the **documented load-induced
+- **Hardware verification (operator, 2026-05-19):** a real CAN
+  disconnect/reconnect test during an MPC run confirmed the legs
+  stay `CLOSED_LOOP` across the event — the platform does **not**
+  collapse. This validated the shipped fix and motivated the §6
+  policy revision (always safe-stow on reconnect).
+- Regression suite in
+  [tests/ros/test_can_node.py](../tests/ros/test_can_node.py),
+  `TestCanLossFaultResponse` (post-§6, 10 cases): ERROR-intact-CAN-down
+  ⇒ arm deferred stow (no command into a dead bus); ERROR-degraded-
+  CAN-down ⇒ defer; `disarm_reason` on healthy bus ⇒ stow now;
+  unknown-mode + healthy bus + intact ⇒ hold; watchdog restore-success
+  ⇒ deferred stow runs; restore-failure ⇒ latch cleared +
+  `_emergency_idle`; deferred stow runs only after `fatal_can_error`
+  cleared (clear-before-move ordering invariant); failed deferred stow
+  re-arms the latch + `stowed_due_to_error` stays False; **watchdog
+  CAN-loss detection arms the latch directly** (§6 enforcement point);
+  **end-to-end intact→reconnect ⇒ safely stows** (was "never stows"
+  pre-§6) — plus the reframed
+  `test_error_mode_degraded_leg_healthy_bus_stows`.
+- Isolated, post-§6 (`pytest tests/ros/test_can_node.py -q`, run
+  2026-05-19): **81 passed in 2.48 s**.
+- Authoritative full pre-commit gate, post-§6 (`pytest tests/ -q`,
+  run 2026-05-19): **1427 passed, 1 failed, 1 xfailed in 422.75 s** —
+  the single failure is the **documented load-induced
   `tests/sim/test_hot_loop_allocation_contract.py` tracemalloc-baseline
-  flake** (same class as the z=30 entry's Verification; that test builds
-  a `MuJoCoPlant` and never executes a line of `can_node` — structurally
-  impossible for this ROS2 change to have caused it). Confirmed by
-  isolation re-run (`pytest tests/sim/test_hot_loop_allocation_contract.py
-  -q`, run 2026-05-19): **3 passed in 15.88 s**, and the flake did not
-  recur in the authoritative post-`/audit` run above.
+  flake** (same class as the z=30 entry's Verification; that test
+  builds a `MuJoCoPlant` and never executes a line of `can_node` —
+  structurally impossible for this ROS2 change to have caused it).
+  Confirmed by isolation re-run
+  (`pytest tests/sim/test_hot_loop_allocation_contract.py -q`, run
+  2026-05-19): **3 passed in 15.92 s**. The 1 xfailed is the
+  pre-existing inherited T-U-T1a-4 `Restoration_Failed` permanent
+  xfail (unrelated).
+- (Pre-§6 history: the shipped fix's post-`/audit` gate
+  (`pytest tests/ -q`, run 2026-05-19) was **1427 passed, 1 xfailed in
+  434.00 s, fully clean**; that run's isolated can_node suite was
+  **80 passed**. The §6 policy revision adds the watchdog-detection
+  test and reworks the two intact-reconnect cases to assert
+  safe-stow.)
 
 ## Outcome
 
-The safety inversion is **closed and verified**: a CAN loss (or any
-FAULT→ERROR) with all legs CLOSED_LOOP and error/disarm-free now
-**holds** the pose — the ODrives keep their setpoint autonomously and
-the platform no longer collapses on reconnect. A genuine degraded-leg
-fault still stows, but **never into a down bus** — the stow is
-deferred to the watchdog-confirmed reconnect, or, if the bus never
-returns, the existing terminal `_emergency_idle()` fail-safe applies.
-The system is now safe **both** during the disconnect and on
-recovery. Commit hash backfilled after the COMMIT gate.
+The safety inversion is **closed and hardware-verified**: across a
+real mid-run CAN disconnect/reconnect the legs stay `CLOSED_LOOP` and
+the platform does not collapse. Per the §6 operator policy, the
+terminal behaviour on a confirmed reconnect after a mid-run CAN loss
+is now an **always-safe profiled stow** (the `on_shutdown` procedure),
+armed at the watchdog's CAN-loss detection point — so a disastrous
+CAN event leaves the platform parked at the off pose, ready for
+investigation, with no babysitting. During the bus-down window the
+platform is held by the ODrives (never commanded into a dead bus); if
+the bus never returns, the terminal `_emergency_idle()` fail-safe
+applies; a half-delivered deferred stow re-arms for the next confirmed
+reconnect. Healthy-bus non-CAN faults retain the
+hold-if-intact / stow-if-degraded discriminator. The system is safe
+**both** during the disconnect and on recovery, and now also
+self-parks. Commit hashes: `d8bab95` (original fix) + the §6
+policy-revision commit (backfilled after the COMMIT gate).
 
 ## Open Questions
 

@@ -466,14 +466,13 @@ class TestCanLossFaultResponse:
 
     # ── Discriminator: ERROR mode ──────────────────────────────
 
-    def test_error_intact_actuators_holds_no_stow(self, node):
+    def test_error_intact_actuators_can_down_arms_deferred_stow(self, node):
         """CAN loss → ERROR while every leg is CLOSED_LOOP and error/disarm
-        free → HOLD: no gentle-move, no stow latch, no fatal escalation.
-
-        This is the safety-inversion fix: the ODrives keep their last
-        setpoint autonomously, so de-energising them would be the unsafe
-        action.  Mirrors the diagnosed rosbag 2026-05-19_20-05-46 state
-        at the STANDBY→ERROR edge (legs frozen-good CLOSED_LOOP).
+        free → do NOT command anything now (ODrives hold autonomously,
+        platform stays put — the safety-inversion fix), but ARM the
+        deferred stow: a mid-run CAN loss always warrants a safe stow on
+        reconnect (operator policy 2026-05-19) so the platform does not
+        need babysitting back to the off pose before investigation.
         """
         self._all_legs_closed_loop(node)
         node.motors.fatal_can_error = True  # CAN bus is down
@@ -481,9 +480,9 @@ class TestCanLossFaultResponse:
         with patch.object(node, '_gently_move_to_setpoint') as mock_move:
             node._sub_control_mode(self._mode_msg('ERROR'))
 
-        mock_move.assert_not_called()
+        mock_move.assert_not_called()          # nothing into a dead bus
         assert node.stowed_due_to_error is False
-        assert node._stow_pending_on_reconnect is False
+        assert node._stow_pending_on_reconnect is True  # safe-stow armed
 
     def test_error_degraded_leg_bus_down_defers_stow(self, node):
         """ERROR with a degraded leg WHILE CAN is down → defer the stow.
@@ -619,23 +618,49 @@ class TestCanLossFaultResponse:
             "stowed_due_to_error must stay False on a failed stow or "
             "on_shutdown will skip its own fail-safe stow")
 
-    def test_intact_then_reconnect_never_stows(self, node):
-        """End-to-end: intact actuators + CAN loss → ERROR holds, and a
-        subsequent successful watchdog restore does NOT stow (no latch
-        was set).  The platform stays energised and holding."""
+    def test_intact_then_reconnect_safely_stows(self, node):
+        """End-to-end (operator policy 2026-05-19): intact actuators + CAN
+        loss → ERROR holds (no command into a dead bus), then a successful
+        watchdog restore SAFELY STOWS the platform via the profiled
+        _gently_move_to_setpoint procedure — even though the actuators were
+        intact.  A mid-run CAN loss is disastrous and always warrants a
+        no-babysit stow on reconnect."""
         self._all_legs_closed_loop(node)
         node.motors.fatal_can_error = True
 
-        with patch.object(node, '_gently_move_to_setpoint') as mock_move:
+        with patch.object(node, '_gently_move_to_setpoint',
+                          return_value=True) as mock_move:
             node._sub_control_mode(self._mode_msg('ERROR'))
+            assert node._stow_pending_on_reconnect is True  # armed, not run
+            mock_move.assert_not_called()                   # dead bus: no cmd
             node._restore_gen = _immediately_done_gen(True)
             node._restore_resume_time = 0.0
             node._watchdog_check()
 
-        mock_move.assert_not_called()
-        assert node.stowed_due_to_error is False
+        mock_move.assert_called_once_with(0.0, deactivating=True)
+        assert node.stowed_due_to_error is True
         assert node._stow_pending_on_reconnect is False
         assert node.motors.fatal_can_error is False
+
+    def test_watchdog_detection_arms_deferred_stow(self, node):
+        """The watchdog's own CAN-loss detection arms the deferred-stow
+        latch directly — the 'always safely stow on reconnect' guarantee
+        does not depend on the orchestrator → ERROR → _fault_response
+        round-trip."""
+        import time as _t
+        from jugglebot.can import odrive
+        node.motors._first_heartbeat_received = True
+        # Make every Jugglebot heartbeat stale (> _HEARTBEAT_TIMEOUT_S).
+        for axis_id in odrive.JUGGLEBOT_AXES:
+            node.motors._last_heartbeat_time[axis_id] = _t.time() - 30.0
+        assert node._restore_gen is None
+        assert node._stow_pending_on_reconnect is False
+
+        node._watchdog_check()
+
+        assert node.motors.fatal_can_error is True
+        assert node._stow_pending_on_reconnect is True
+        assert node._restore_gen is not None  # restore sequence started
 
 
 # ════════════════════════════════════════════════════════════════
