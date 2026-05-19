@@ -24,7 +24,8 @@ files_changed:
   - sim/analysis/known_issues.yaml
   - sim/analysis/log_index.json
 commits:
-  - d8bab95
+  - d8bab95   # original discriminating fault-response fix
+  - f551c97   # §6 policy revision — always safe-stow on CAN reconnect
 subsystem:
   - can
   - safety
@@ -400,8 +401,8 @@ applies; a half-delivered deferred stow re-arms for the next confirmed
 reconnect. Healthy-bus non-CAN faults retain the
 hold-if-intact / stow-if-degraded discriminator. The system is safe
 **both** during the disconnect and on recovery, and now also
-self-parks. Commit hashes: `d8bab95` (original fix) + the §6
-policy-revision commit (backfilled after the COMMIT gate).
+self-parks. Commit hashes: `d8bab95` (original fix) + `f551c97`
+(§6 policy revision).
 
 ## Open Questions
 
