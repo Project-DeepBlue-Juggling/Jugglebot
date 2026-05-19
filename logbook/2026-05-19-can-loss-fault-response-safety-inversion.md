@@ -345,11 +345,38 @@ exactly as before.
 
 Per the CLAUDE.md (date, exact command, result) triple rule:
 
-- **Hardware verification (operator, 2026-05-19):** a real CAN
-  disconnect/reconnect test during an MPC run confirmed the legs
-  stay `CLOSED_LOOP` across the event — the platform does **not**
+- **Hardware verification — original fix (operator, 2026-05-19):** a
+  real CAN disconnect/reconnect test during an MPC run confirmed the
+  legs stay `CLOSED_LOOP` across the event — the platform does **not**
   collapse. This validated the shipped fix and motivated the §6
   policy revision (always safe-stow on reconnect).
+- **Hardware verification — §6 final policy (operator, 2026-05-19;
+  rosbag `2026-05-19_23-38-20`, `mpc_20260519_233837`):** decisive
+  end-to-end confirmation of the *shipped* policy, decoded from
+  `/robot_state` (throwaway `/tmp/probe_caninv_verify.py`, not
+  committed):
+  - STANDBY hold pose ≈ **2.19 rev** on all 6 legs (a genuinely
+    elevated pose, not near-zero).
+  - Across the entire CAN-down window (`fatal_can_error` 0→1 at
+    t≈21.89 s → restore at t≈23.28 s, ~1.4 s) the legs stayed
+    **`CLOSED_LOOP(8)` frozen at ≈2.19 rev — zero `current_state`
+    transitions**. The ODrives autonomously held the elevated pose;
+    the platform did not budge (original safety inversion: gone).
+  - On confirmed reconnect, a **smooth monotonic velocity-limited
+    profiled descent**, all 6 legs in lockstep: ≈2.12 rev (t≈23.40 s)
+    → ≈0 (t≈24.47 s), ≈1.0 s, peak ≈**2.4 rev/s** (the configured
+    `JB_OP_GENTLE_MOVE_VEL_LIMIT_RPS`, identical to `on_shutdown`) —
+    a controlled stow, not a step. Converged → all axes **IDLE** at
+    t≈25.08 s → **parked at ≈0, stable for the remainder of the
+    recording** (no re-energise, no oscillation, no babysitting).
+  - `has_fatal_odrive_error` never set ⇒ `_emergency_idle` was **not**
+    invoked; the clean `_gently_move_to_setpoint` path ran. Single
+    stow, no re-arm (bus stayed up). MPC exited cleanly
+    (`telemetry_stale` ESTOP, Exit 3, `mpc_20260519_233837.log`).
+  Benign note: peak descent ≈2.4 rev/s is the configured gentle-move
+  limit (same as `on_shutdown`), tunable via
+  `JB_OP_GENTLE_MOVE_VEL_LIMIT_RPS` if a slower post-fault descent is
+  ever wanted; nothing here warrants it.
 - Regression suite in
   [tests/ros/test_can_node.py](../tests/ros/test_can_node.py),
   `TestCanLossFaultResponse` (post-§6, 10 cases): ERROR-intact-CAN-down
