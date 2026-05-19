@@ -173,12 +173,24 @@ class MotionBridgeNode(Node):
             err_msg.data = list(tracking_error)
             self._tracking_error_pub.publish(err_msg)
 
-        # Publish diagnostics as named key-value pairs
+        # Publish diagnostics as named key-value pairs.
+        #
+        # INVARIANT: a fault / ESTOP signal MUST NOT be gated behind an
+        # optional monitoring field.  Pre-2026-05-19 this block was
+        # gated solely on ``cond_number is not None``.  motor_guard's
+        # ESTOP-path telemetry (`_publish_fault_telemetry`) deliberately
+        # omits ``cond_number``, so a ``GuardMode.ESTOP`` was NEVER
+        # published here — the fault was invisible to operator / GUI /
+        # rosbag for the entire fault (root cause of a 68 s blind
+        # window; see
+        # logbook/2026-05-19-findingb-motor-guard-estop-latch-observability.md).
+        # Gate on "is there anything worth reporting" — a fault OR a
+        # cond reading — never on the monitoring field alone.
         cond = telem.get('cond_number')
-        if cond is not None:
+        fault = telem.get('fault_state')
+        if cond is not None or fault:
             ws_status = telem.get('workspace_status', 'unknown')
             ws_scale = telem.get('workspace_speed_scale', 1.0)
-            fault = telem.get('fault_state')
 
             diag_msg = DiagnosticStatus()
             diag_msg.name = 'motion/motor_guard'
@@ -199,10 +211,15 @@ class MotionBridgeNode(Node):
                 diag_msg.message = 'OK'
 
             diag_msg.values = [
-                KeyValue(key='cond_number', value=f'{cond:.1f}'),
                 KeyValue(key='workspace_status', value=str(ws_status)),
                 KeyValue(key='workspace_speed_scale', value=f'{ws_scale:.3f}'),
             ]
+            # cond_number is monitoring-only — include it when the
+            # telemetry path carries it (absent on the ESTOP path), at
+            # the head of the list to preserve the historical ordering.
+            if cond is not None:
+                diag_msg.values.insert(
+                    0, KeyValue(key='cond_number', value=f'{cond:.1f}'))
             if fault:
                 diag_msg.values.append(
                     KeyValue(key='fault_state', value=str(fault)))

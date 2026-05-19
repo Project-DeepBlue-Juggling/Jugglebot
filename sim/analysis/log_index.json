@@ -813,7 +813,11 @@
       "ros2_session": null,
       "rosbag": null,
       "verdict": "FAIL",
-      "session_group": null
+      "session_group": null,
+      "logbook_entries_followup": [
+        "2026-05-19-findingb-motor-guard-estop-latch-observability.md"
+      ],
+      "logbook_note": "Primary entry resolves Finding A (telemetry-validity P5). Finding B (68 s motor_pos=None root cause = motor_guard GuardMode.ESTOP sticky latch, shared root cause with A) is the follow-up in logbook_entries_followup."
     }
   },
   "version": 1
