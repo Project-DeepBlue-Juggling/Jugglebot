@@ -2,7 +2,7 @@
 title: Hardware bringup — T-H-T2b-1 + T-H-T2a-1 telemetry-stale cascade validation (+ 2 harness bugs, z=30 solve-failure)
 type: investigation
 date: 2026-05-18
-status: resolved-with-open-question
+status: resolved
 phase: "mpc-sadpath-coverage-tiers-1-3 — Phase 5 hardware obligations"
 related_plan: "mpc-sadpath-coverage-tiers-1-3.md"
 related_entries:
@@ -239,7 +239,18 @@ design for this specific test.
 
 ## Open Questions
 
-### Finding 3 (OPEN) — MPC cannot solve at z=30
+### Finding 3 (RESOLVED — superseded) — MPC cannot solve at z=30
+
+> **Superseded 2026-05-18 — root cause found.** See
+> [2026-05-18-z30-solve-failure-motor-pos-none-watchdog-gap.md](2026-05-18-z30-solve-failure-motor-pos-none-watchdog-gap.md).
+> The "numerically pathological / near-infeasible z=30" hypothesis
+> below was **refuted** by an in-data control (the same session held
+> z=30 cleanly for 16 s at 100 % solve success / 13.8 ms / 1.58 IPOPT
+> iters). The latch was a CAN-loss telemetry dropout
+> (`motor_pos=None` while frames stayed fresh) that evaded both
+> staleness watchdogs — a real safety gap, now closed by
+> `PLANT_INTERFACE_CONTRACT.md` P5. The original framing below is
+> preserved as the decision arc, not as a current claim.
 
 `mpc_20260518_200137.log` shows `MPC solve failed (N consecutive):
 Maximum_CpuTime_Exceeded` from **line 11 (session start, right after

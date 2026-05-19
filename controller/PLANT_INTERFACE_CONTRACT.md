@@ -1,4 +1,4 @@
-# Plant-Interface Contract (P1–P4)
+# Plant-Interface Contract (P1–P5)
 
 This document is the **normative specification** of the invariants that
 every implementation of [PlantInterface (controller/plant.py)](plant.py)
@@ -265,9 +265,78 @@ is one rename away from a silent contract violation.  Making
 needs the period reads it from the plant (the boundary that owns the
 real wall-clock relationship), not from inferred metadata elsewhere.
 
+### P5 — Telemetry validity
+
+A ``get_state()`` that reads sensor telemetry from a separate device
+MUST escalate to ``estop(reason='telemetry_invalid')`` if it cannot
+obtain a **usable** ``motor_pos`` for longer than the telemetry-stale
+ESTOP budget (``_telem_stale_estop_s`` — the *same* P4-scaled
+``20.0 * control_dt`` budget as total frame loss), **after having
+obtained at least one usable ``motor_pos``** (gated on
+``_fk_ever_succeeded``).  "Usable" means present and not ``None`` /
+absent; NaN / wrong-shape payloads are caught by the FK-failure
+cascade (``fk_convergence_failure``) and are out of P5's scope.
+
+The invariant names a *class*: **the MPC MUST NOT run blind for
+longer than the budget after arming**, where "blind" is *any* of —
+
+- **no frames** — recv-time staleness; ``estop('telemetry_stale')``
+  (the P4-scaled recv-time watchdog).
+- **frames, unchanging payload** — the publisher-alive-but-dead
+  byte-frozen signature; ``estop('telemetry_frozen')`` (the
+  ``_frozen_motor_pos_count`` content detector).
+- **frames, no usable payload** — ``motor_pos`` absent / ``None``
+  while frames stay fresh; ``estop('telemetry_invalid')`` (the P5
+  arm — *this invariant*).
+
+These are **three cooperating enforcement arms of one invariant**, not
+three independent features.  P5 is the contract-level name for the
+class; the document is the single source of truth even though
+enforcement is multi-armed.
+
+**Why.** This is the failure mode
+[2026-05-18-z30-solve-failure-motor-pos-none-watchdog-gap.md](../logbook/2026-05-18-z30-solve-failure-motor-pos-none-watchdog-gap.md)
+diagnosed.  After a CAN drop, ``motor_guard`` correctly keeps
+publishing telemetry at full rate but with ``motor_pos=None``
+([motor_guard.py:351,1078,1128](../ros_ws/src/jugglebot/jugglebot/motion/motor_guard.py)) —
+emitting ``None`` is *honest* (the alternative, fabricating or
+holding stale encoder values, is exactly the hazard the P-contracts
+exist to prevent).  The bug was the **consumer** swallowing that
+signal: frames stayed fresh so ``telemetry_stale`` was correctly
+silent, and the frozen-content detector is gated on
+``motor_pos is not None`` so it never ran.  Both pre-existing nets
+fell through and the MPC ran blind on ``leg_extensions=[0]*6`` + a
+frozen FK pose for **68 s** with zero safety escalation.  The two
+pre-P5 arms together did not cover "frames present, payload
+unusable" — P5 closes that, and names the class so a fourth
+unusable-payload variant lands as a documented arm rather than a
+silent gap.
+
+The budget is deliberately the **same** ``_telem_stale_estop_s`` as
+the no-frames path: one number answers "how long may the MPC run
+blind after arming", regardless of *how* it went blind.  Operational
+consequence, accepted deliberately (operator decision, 2026-05-18): a
+CAN bounce longer than the budget now ESTOPs and requires re-arm — it
+no longer silently rides through (which it never should have).  The
+``_fk_ever_succeeded`` gate is mandatory: a de-energised cold start
+with no CAN has ``motor_pos=None`` from tick 0 and MUST NOT ESTOP —
+identical reasoning to the FK-fail and frozen-content cold-start
+guards.
+
+**Mutual exclusivity with ``telemetry_stale``.**  P5's validity
+clock also refreshes on a zero-drain tick that re-reads a
+still-valid prior frame (``motor_pos is not None`` ⇒
+``_last_valid_motor_pos_time = now``).  The "valid frame, then
+frames stop entirely" case is therefore owned by ``telemetry_stale``
+(recv-time — ``_last_telem_recv_time`` is *not* refreshed on
+zero-drain), **not** by P5.  The two arms are mutually exclusive by
+construction and P5 deliberately does **not** double-cover total
+frame loss; do not weaken ``telemetry_stale`` on the assumption that
+P5 backs it up — it does not.
+
 ## Enforcement
 
-All four invariants are enforced at the canonical implementation:
+All five invariants are enforced at the canonical implementation:
 [controller/plant.py](plant.py) (the ABC) plus
 [controller/hardware_plant.py](hardware_plant.py) and
 [sim/plant/mujoco_plant.py](../sim/plant/mujoco_plant.py) (the two
@@ -279,13 +348,22 @@ implementations).  The enforcement points are:
 | P2 | New abstract property ``can_reset: bool`` (Phase 5, landed at [plant.py:49–61](plant.py)) | ``TestP2ResetCapability`` asserts ``plant.reset() raises NotImplementedError iff not plant.can_reset``, plus ``TestPlantInterfaceABC::test_can_reset_is_abstract_on_the_abc`` enforces declaration |
 | P3 | Documented on ``command()`` (Phase 4 / 6, landed at [plant.py:81–105](plant.py)).  ``MuJoCoPlant.command`` ``np.clip`` removed at Phase 6 — both implementations now trusted-callee. | ``TestP3TrustedCallee`` feeds NaN / out-of-range / negative inputs and asserts no silent coercion (parameterised over both impls) |
 | P4 | New abstract property ``control_dt: float`` (Phase 6, landed at [plant.py:64–79](plant.py)); constructor kwarg on both impls | ``TestP4ControlDtAwareness`` asserts ``plant.control_dt`` echoes constructor; ``HardwarePlant`` staleness thresholds scale linearly with ``control_dt``; default-period thresholds reproduce the pre-Phase-6 magic numbers |
+| P5 | ``HardwarePlant.get_state()`` ``telemetry_invalid`` arm + ``_last_valid_motor_pos_time`` refresh (landed [2026-05-18-z30-solve-failure-motor-pos-none-watchdog-gap.md](../logbook/2026-05-18-z30-solve-failure-motor-pos-none-watchdog-gap.md)); the recv-time (``telemetry_stale``) and content (``telemetry_frozen``) arms pre-date this and are unchanged | ``tests/sim/test_hardware_plant_failure_paths.py::TestP5TelemetryValidity`` (T-U-P5-1..4) — None-after-valid ESTOPs as ``telemetry_invalid`` (not ``telemetry_stale``); half-budget WARNs once; cold-start ``None`` is gated by ``_fk_ever_succeeded``; recovery resets the clock then re-trips |
 
 The contract document landed in **Phase 4** is the discovery + design
 pass.  **Phase 5** lands the P1 + P2 enforcement (abstract additions
-+ parameterised contract test).  **Phase 6** (this commit) lands P3
++ parameterised contract test).  **Phase 6** lands P3
 + P4: ``np.clip`` removed from ``MuJoCoPlant.command``;
 ``control_dt`` plumbed through to staleness thresholds; ABC gains
-``control_dt`` abstract property; contract tests extended.
+``control_dt`` abstract property; contract tests extended.  **P5**
+was added 2026-05-18 from the hardware-bringup investigation
+([2026-05-18-z30-solve-failure-motor-pos-none-watchdog-gap.md](../logbook/2026-05-18-z30-solve-failure-motor-pos-none-watchdog-gap.md)):
+the ``telemetry_invalid`` arm + ``_last_valid_motor_pos_time``
+tracker close the "frames fresh, ``motor_pos`` unusable" gap; the
+pre-existing ``telemetry_stale`` / ``telemetry_frozen`` arms are
+unchanged (the landed Tier-2a frozen-content contract and its
+T-U-T2a-6/7 tests were deliberately *not* refactored — P5 is
+additive at the contract layer).
 
 ## Implementing a new ``PlantInterface``
 
@@ -323,6 +401,14 @@ Implementations MUST:
    read-only ``control_dt`` property.  Derive any time-window
    thresholds from ``self._control_dt``, not from hard-coded
    constants.
+
+5. **Honour P5** *if* ``get_state()`` reads telemetry from a
+   separate device.  Track the wall-clock instant of the last
+   *usable* sensor payload; after at least one usable payload, if
+   none arrives for longer than the ``20.0 * control_dt`` budget,
+   ``estop(reason='telemetry_invalid')``.  An in-process plant
+   (``MuJoCoPlant``) that computes its own state has no separate
+   telemetry device and P5 is vacuously satisfied.
 
 Template:
 

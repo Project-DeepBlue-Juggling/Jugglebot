@@ -177,6 +177,20 @@ class HardwarePlant(PlantInterface):
         self._last_telem_recv_time: float | None = None
         self._telem_stale_warned = False  # edge-triggered logging
 
+        # P5 (telemetry-validity watchdog).  Wall-clock instant of the
+        # last get_state() that obtained a *usable* motor_pos.  None
+        # until the first valid frame.  The recv-time staleness watchdog
+        # above only fires on *no frames*; a publisher that stays alive
+        # but emits frames with motor_pos absent/None (motor_guard fault
+        # paths after CAN loss) keeps recv-time fresh AND is gated out of
+        # the frozen-content detector by its `motor_pos is not None`
+        # check — so neither net escalates and the MPC runs blind on
+        # leg_ext=[0]*6 + a frozen FK pose.  This tracker closes that
+        # gap.  See controller/PLANT_INTERFACE_CONTRACT.md P5 and
+        # logbook/2026-05-18-z30-solve-failure-motor-pos-none-watchdog-gap.md.
+        self._last_valid_motor_pos_time: float | None = None
+        self._telem_invalid_warned = False  # edge-triggered logging
+
         # Clean-shutdown flag. Flipped by estop(); checked each loop iteration
         # by run_mpc.py / controller.runner so the MPC process stops writing
         # CSV rows against a dead plant instead of spinning to duration.
@@ -560,6 +574,11 @@ class HardwarePlant(PlantInterface):
             ik_ext_mm = ext_mm  # same thing (q = IK ext after refactor)
             np.copyto(self._last_state_ext_buf, ext_mm)
             self._has_last_state_ext = True
+            # P5: a usable motor_pos this tick — refresh the validity
+            # clock and clear the edge-triggered WARN so a recovered
+            # feed (None → valid before the budget) does not escalate.
+            self._last_valid_motor_pos_time = now
+            self._telem_invalid_warned = False
         else:
             state.leg_extensions_mm.fill(0.0)
             ext_mm = state.leg_extensions_mm
@@ -639,6 +658,56 @@ class HardwarePlant(PlantInterface):
                 f"Telemetry stale ({telem_age:.3f}s > "
                 f"{self._telem_stale_estop_s}s) — triggering e-stop")
             self.estop(reason='telemetry_stale')
+
+        # P5 — telemetry-validity watchdog.  The recv-time check above
+        # only fires on *no frames*.  A publisher that stays alive but
+        # emits frames with motor_pos absent/None (motor_guard fault
+        # paths motor_guard.py:351,1078,1128 after CAN loss) keeps
+        # telem_age fresh, so telemetry_stale never fires — and the
+        # frozen-content detector below never runs because it is gated
+        # on `motor_pos is not None`.  Without this arm the MPC runs
+        # blind on leg_ext=[0]*6 + a frozen FK pose for as long as the
+        # publisher lives (observed: 68 s — see the logbook entry).
+        #
+        # Budget = _telem_stale_estop_s: the SAME blind-time budget as
+        # the no-frames path — one source of truth for "the MPC must
+        # not run blind for > this long after arming", whether blind via
+        # no-frames (telemetry_stale) or frames-without-usable-feedback
+        # (telemetry_invalid).  Gated on _fk_ever_succeeded so a
+        # never-armed cold start with no CAN (motor_pos legitimately
+        # None from tick 0) cannot trip — mirrors the FK-fail and
+        # frozen-content escalations.  `not _estop_requested` keeps
+        # telemetry_stale's reason authoritative on a total frame loss
+        # — on BOTH the ESTOP and the WARN branch, so P5 stays silent
+        # in the log stream too (frames are NOT fresh in that case;
+        # the WARN text would be misleading for a post-incident read).
+        #
+        # Mutual exclusivity with telemetry_stale: P5's validity clock
+        # also refreshes on a zero-drain tick that re-reads a still-
+        # valid prior frame (motor_pos is not None ⇒ line below sets
+        # _last_valid_motor_pos_time = now).  The "valid frame, then
+        # frames stop" case is therefore owned by telemetry_stale
+        # (recv-time, _last_telem_recv_time NOT refreshed on zero-drain),
+        # NOT by P5 — the two arms are mutually exclusive and P5
+        # deliberately does not double-cover total frame loss.  See
+        # controller/PLANT_INTERFACE_CONTRACT.md P5.
+        if (self._fk_ever_succeeded
+                and self._last_valid_motor_pos_time is not None):
+            invalid_age_s = now - self._last_valid_motor_pos_time
+            if (invalid_age_s > self._telem_stale_estop_s
+                    and not self._estop_requested):
+                logger.error(
+                    f"motor_pos absent/invalid for {invalid_age_s:.3f}s > "
+                    f"{self._telem_stale_estop_s}s (frames still fresh) "
+                    f"— triggering e-stop")
+                self.estop(reason='telemetry_invalid')
+            elif (invalid_age_s > 0.5 * self._telem_stale_estop_s
+                    and not self._estop_requested):
+                if not self._telem_invalid_warned:
+                    logger.warning(
+                        f"motor_pos absent/invalid for {invalid_age_s:.3f}s "
+                        f"(frames still fresh) — publisher may be blind")
+                    self._telem_invalid_warned = True
 
         # Persistent-stale-contents detector: recv timestamps look fresh but
         # the motor_pos payload has not moved for N consecutive *fresh*

@@ -147,6 +147,7 @@ from tests.sim._hardware_plant_stub import (
     freeze_perf_counter_at,
     inject_fk_failure,
     inject_singular_jacobian,
+    install_motor_pos_none_pump,
     install_telemetry_pump,
 )
 
@@ -183,8 +184,9 @@ _PHASE_4_SETTINGS = settings(
 def _prime_plant(plant):
     """Run one successful ``get_state()`` so ``_fk_ever_succeeded`` flips
     True and ``_last_measured_pose`` is populated.  Both are gating
-    preconditions for the watchdog cascade (see ``hardware_plant.py:608``
-    for the FK-fail ESTOP gate, ``:668`` for the frozen-motor ESTOP gate).
+    preconditions for the watchdog cascade (see ``hardware_plant.py:638``
+    for the FK-fail ESTOP gate, ``:748`` for the frozen-motor ESTOP gate;
+    refs updated post-P5 — the P5 arm shifted these down ~70 lines).
     """
     plant.get_state()
     assert plant._fk_ever_succeeded, (
@@ -1278,3 +1280,180 @@ class TestColdStartZeroState:
             assert plant._estop_requested
             assert spy.call_count == 1
             assert spy.reasons == ['telemetry_stale']
+
+
+# =====================================================================
+# T-U-P5: telemetry-validity watchdog (PLANT_INTERFACE_CONTRACT.md P5)
+# =====================================================================
+
+class TestP5TelemetryValidity:
+    """T-U-P5-1..4 — the P5 telemetry-validity watchdog at
+    ``hardware_plant.py`` (the ``telemetry_invalid`` ESTOP arm added
+    after the ``telemetry_stale`` block, plus the
+    ``_last_valid_motor_pos_time`` refresh in the ``motor_pos is not
+    None`` branch).
+
+    Root cause this guards (see
+    ``logbook/2026-05-18-z30-solve-failure-motor-pos-none-watchdog-gap.md``):
+    after a CAN drop, motor_guard stays alive but publishes
+    ``motor_pos=None`` (``motor_guard.py:351,1078,1128``).  Frames keep
+    arriving so the recv-time ``telemetry_stale`` watchdog stays fresh,
+    and the frozen-content detector is gated out by its
+    ``motor_pos is not None`` check — so without P5 the MPC ran blind
+    on ``leg_ext=[0]*6`` + a frozen FK pose for 68 s with zero
+    safety escalation.
+
+    Budget = ``_telem_stale_estop_s`` (0.5 s at control_dt=0.025) —
+    the SAME blind-time budget as the no-frames path (one source of
+    truth).  Empirically confirmed deterministic on the pinned stack
+    via ``/tmp/probe_p5_telemetry_invalid.py`` before this test was
+    written (CLAUDE.md empirical-probe rule); the recipe is: prime a
+    valid frame (``_fk_ever_succeeded`` True, validity clock set) →
+    ``install_motor_pos_none_pump`` → ``freeze_perf_counter_at`` at the
+    target no-valid-feedback age → one ``get_state()``.
+    """
+
+    def test_p5_1_none_after_valid_estops_past_budget(self):
+        """T-U-P5-1 — valid feed, then ``motor_pos=None`` while frames
+        stay fresh for > budget ⇒ exactly one
+        ``estop(reason='telemetry_invalid')`` and ``_estop_requested``.
+
+        Crucially asserts the recv-time ``telemetry_stale`` watchdog
+        does NOT fire (frames are fresh — that net is correctly silent;
+        P5 is what catches this), so the reason is ``telemetry_invalid``
+        and not ``telemetry_stale``.
+        """
+        with build_hardware_plant_stub() as plant:
+            _prime_plant(plant)
+            assert plant._last_valid_motor_pos_time is not None, (
+                "prime should set the P5 validity clock"
+            )
+            spy = _EstopSpy(plant)
+            install_motor_pos_none_pump(plant)
+            budget = plant._telem_stale_estop_s
+
+            with _capture_hp_warnings() as records, \
+                    freeze_perf_counter_at(plant, budget + 0.1):
+                state = plant.get_state()
+
+            assert spy.call_count == 1, (
+                f"expected exactly 1 estop; got {spy.call_count} "
+                f"({spy.reasons})"
+            )
+            assert spy.reasons == ['telemetry_invalid'], (
+                f"P5 must escalate as 'telemetry_invalid', not "
+                f"'telemetry_stale' (frames were fresh): {spy.reasons}"
+            )
+            assert plant._estop_requested
+            # Frames were fresh the whole time → telem_age ~0 → the
+            # recv-time staleness watchdog must NOT have fired.
+            assert state.data_age_s == pytest.approx(0.0, abs=1e-6), (
+                f"frames fresh: telem_age should be ~0, got "
+                f"{state.data_age_s}"
+            )
+            estop_recs = [
+                r for r in records
+                if 'absent/invalid' in r.getMessage()
+                and 'triggering e-stop' in r.getMessage()
+            ]
+            assert len(estop_recs) == 1, (
+                f"expected one P5 ESTOP log line; got "
+                f"{[r.getMessage() for r in estop_recs]}"
+            )
+
+    def test_p5_2_half_budget_warns_once_no_estop(self):
+        """T-U-P5-2 — between half-budget and budget: a once-only
+        'publisher may be blind' WARN, ``_telem_invalid_warned`` set,
+        and NO ESTOP.
+        """
+        with build_hardware_plant_stub() as plant:
+            _prime_plant(plant)
+            spy = _EstopSpy(plant)
+            install_motor_pos_none_pump(plant)
+            budget = plant._telem_stale_estop_s
+
+            with _capture_hp_warnings() as records, \
+                    freeze_perf_counter_at(plant, 0.6 * budget):
+                plant.get_state()
+
+            assert spy.call_count == 0, (
+                f"half-budget must not ESTOP; got {spy.reasons}"
+            )
+            assert plant._telem_invalid_warned, (
+                "_telem_invalid_warned should be True at the WARN edge"
+            )
+            warn_recs = [
+                r for r in records
+                if 'absent/invalid' in r.getMessage()
+                and 'publisher may be blind' in r.getMessage()
+            ]
+            assert len(warn_recs) == 1, (
+                f"expected exactly one once-only WARN; got "
+                f"{[r.getMessage() for r in warn_recs]}"
+            )
+
+    def test_p5_3_cold_start_none_never_estops(self):
+        """T-U-P5-3 — the ``_fk_ever_succeeded`` gate: a never-armed
+        cold start with ``motor_pos=None`` from tick 0 (no CAN at
+        boot) must NOT ESTOP even at an extreme no-valid-feedback age.
+
+        Without the gate this would false-ESTOP a de-energised robot
+        during normal start-up.  Mirrors the FK-fail and frozen-content
+        cold-start guards.
+        """
+        with build_hardware_plant_stub() as plant:
+            install_motor_pos_none_pump(plant)
+            plant.get_state()  # sets _last_telem_recv_time; FK never runs
+            assert not plant._fk_ever_succeeded, (
+                "cold start with motor_pos=None: FK must never have run"
+            )
+            assert plant._last_valid_motor_pos_time is None, (
+                "no valid frame ever ⇒ validity clock stays None"
+            )
+            spy = _EstopSpy(plant)
+
+            with freeze_perf_counter_at(plant, 10.0):  # extreme age
+                plant.get_state()
+
+            assert spy.call_count == 0, (
+                f"cold-start motor_pos=None must NOT ESTOP "
+                f"(_fk_ever_succeeded gate); got {spy.reasons}"
+            )
+            assert not plant._estop_requested
+
+    def test_p5_4_recovery_resets_clock_then_retrips(self):
+        """T-U-P5-4 — None→valid before budget clears the WARN flag and
+        refreshes the validity clock (no ESTOP); a subsequent sustained
+        None gap re-trips ``telemetry_invalid`` measured from the
+        recovery instant, proving the clock truly reset.
+        """
+        with build_hardware_plant_stub() as plant:
+            _prime_plant(plant)
+            spy = _EstopSpy(plant)
+            install_motor_pos_none_pump(plant)
+            budget = plant._telem_stale_estop_s
+
+            # Phase 1: drift to half-budget (WARN, no estop).
+            with freeze_perf_counter_at(plant, 0.6 * budget):
+                plant.get_state()
+            assert plant._telem_invalid_warned
+            assert spy.call_count == 0
+
+            # Phase 2: a valid frame recovers — clock + WARN reset.
+            install_telemetry_pump(plant)
+            plant.get_state()
+            assert not plant._telem_invalid_warned, (
+                "recovery must clear the once-only WARN flag"
+            )
+            assert plant._last_valid_motor_pos_time is not None
+            assert spy.call_count == 0
+
+            # Phase 3: a fresh sustained None gap past budget re-trips.
+            install_motor_pos_none_pump(plant)
+            with freeze_perf_counter_at(plant, budget + 0.1):
+                plant.get_state()
+            assert spy.reasons == ['telemetry_invalid'], (
+                f"clock should have reset at recovery and re-tripped: "
+                f"{spy.reasons}"
+            )
+            assert plant._estop_requested

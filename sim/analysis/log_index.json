@@ -803,6 +803,17 @@
       "rosbag": "/home/jetson/Desktop/rosbags/2026-05-10_15-15-57",
       "session_group": "2026-05-10_15-15-57",
       "verdict": "PASS"
+    },
+    "mpc_20260518_200137.csv": {
+      "analyzed": true,
+      "flags_count": 6,
+      "last_analyzed": "2026-05-18T12:55:34Z",
+      "logbook_entry": "2026-05-18-z30-solve-failure-motor-pos-none-watchdog-gap.md",
+      "phase": "hardware-bringup",
+      "ros2_session": null,
+      "rosbag": null,
+      "verdict": "FAIL",
+      "session_group": null
     }
   },
   "version": 1

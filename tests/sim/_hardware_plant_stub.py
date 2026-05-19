@@ -43,6 +43,11 @@ production code, not at a private counter — per Plan 2 Working Note #1
   hook supports per-tick variation (e.g. the 1-ULP bit-different
   variant T-U-T2a-7 uses to verify the bit-exact ``np.array_equal``
   compare).
+* ``install_motor_pos_none_pump(plant, *, motor_vel=None)`` — emit
+  live frames with ``motor_pos=None`` (the motor_guard
+  fault-path-after-CAN-loss signature).  Frames keep arriving so the
+  recv-time ``telemetry_stale`` watchdog stays fresh; drives the P5
+  ``telemetry_invalid`` ESTOP path (T-U-P5-*).
 
 Phase 5 (Plan 2 — Tier 2b) adds two further helpers for the
 telemetry-staleness threshold matrix and cold-start paths:
@@ -353,6 +358,51 @@ def install_telemetry_pump(plant, *, target_pose=None, motor_vel=None,
                 frame_mutator(state['tick'], mp, mv)
             payload = msgpack.packb(
                 {'motor_pos': mp, 'motor_vel': mv}, use_bin_type=True)
+            return [b'telemetry', payload]
+        state['yield_frame'] = True
+        raise _zmq.Again()
+
+    plant._sub.recv_multipart = pump
+    return pump
+
+
+def install_motor_pos_none_pump(plant, *, motor_vel=None):
+    """Pump that emits live telemetry frames with ``motor_pos=None``.
+
+    This is the motor_guard fault-path signature after CAN loss
+    (``motor_guard.py:351,1078,1128`` publish ``msg['motor_pos'] =
+    None`` while the publisher stays alive at full rate).  Frames keep
+    arriving — so ``drain_count > 0`` and the recv-time
+    ``telemetry_stale`` watchdog stays fresh — but every frame carries
+    no usable encoder feedback.  Drives the real P5 telemetry-validity
+    path through ``HardwarePlant.get_state()``
+    (``hardware_plant.py`` ``motor_pos is None`` branch +
+    ``telemetry_invalid`` ESTOP).  See
+    ``controller/PLANT_INTERFACE_CONTRACT.md`` P5 and
+    ``logbook/2026-05-18-z30-solve-failure-motor-pos-none-watchdog-gap.md``.
+
+    Pair with ``freeze_perf_counter_at`` to drive a specific
+    no-valid-feedback age in one tick.
+
+    Parameters
+    ----------
+    plant : HardwarePlant
+        Plant whose ``_sub.recv_multipart`` will be replaced.
+    motor_vel : (6,) array-like, optional
+        ``motor_vel`` payload to ship alongside the ``None``
+        ``motor_pos``.  Defaults to all-zero.  (motor_guard's fault
+        frames carry vel; only ``motor_pos`` is ``None``.)
+    """
+    import zmq as _zmq
+
+    mv = [0.0] * 6 if motor_vel is None else [float(v) for v in motor_vel]
+    state = {'yield_frame': True}
+
+    def pump(*_args, **_kwargs):
+        if state['yield_frame']:
+            state['yield_frame'] = False
+            payload = msgpack.packb(
+                {'motor_pos': None, 'motor_vel': mv}, use_bin_type=True)
             return [b'telemetry', payload]
         state['yield_frame'] = True
         raise _zmq.Again()
