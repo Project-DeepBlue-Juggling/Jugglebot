@@ -37,7 +37,8 @@ tags:
 files_changed:
   - ros_ws/src/jugglebot/jugglebot/motion_bridge_node.py
   - tests/ros/test_motion_bridge_node.py
-commits: []
+commits:
+  - 9159aa9
 ---
 
 # Finding B — the 68 s motor_pos=None was a motor_guard GuardMode.ESTOP sticky latch, NOT a CAN dropout (shared root cause with Finding A)
