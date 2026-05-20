@@ -2,11 +2,13 @@
 title: MPC-loop overhead spikes trigger fallback bursts — audible motor "fighting" on every move
 type: investigation
 date: 2026-04-18
-status: in-progress
+status: tuned
 phase: "STANDBY-mode MPC (post-64742f2 fallback walk-forward) — tail-latency attribution"
 related_plan: "hardware-bringup.md"
 related_issues:
   - MPC_STALENESS
+related_entries:
+  - 2026-05-20-mpc-warmstart-deadlock-escape
 sessions:
   - mpc_20260418_184845.csv
   - mpc_20260418_185014.csv
@@ -14,11 +16,14 @@ sessions:
   - mpc_20260418_222414.csv
   - mpc_20260419_094723.csv
   - mpc_20260419_094733.csv
+  - mpc_20260520_115857.csv
 files_changed:
   - controller/hardware_plant.py
+  - controller/mpc.py
 commits:
   - a89a4dd
   - abc4a8e
+  - b5d83df
 subsystem:
   - controller
   - mpc
@@ -95,9 +100,9 @@ Added per-segment `perf_counter` timings to `run_mpc_loop`, a `_GCTracker` that 
 - Chronic solve-time overrun (p95 ~20–23 ms vs 18 ms budget) is a separate issue. The AOT solver / IPOPT options tuning would need to address it.
 - Fix B activated cleanly (step 1 emitted `hold_extrap(...)` on both 2026-04-19 sessions). The walk-forward endgame recoil is no longer a contributor in the current traces.
 
-### Fix C — FK real-time budget (uncommitted at time of writing)
+### Fix C — FK real-time budget (commit b5d83df)
 
-`controller/hardware_plant.py`: pass `max_iter=10, tol=1e-4` to `leg_lengths_to_pose(...)`.
+`controller/hardware_plant.py:609-613`: pass `max_iter=10, tol=1e-4` to `leg_lengths_to_pose(...)`.
 
 Rationale:
 - Default `tol=1e-10 mm` is 700 000× below the 0.07 mm encoder LSB — Newton iterates on floating-point noise long past any physically meaningful residual. `tol=1e-4 mm` is still 700× below LSB and is reached in 3 iters on the common path.
@@ -112,4 +117,65 @@ Chronic solve_time overrun during motion onset (p95 ~20–23 ms). Deferred — i
 
 ## Outcome
 
-_To be filled by subsequent /investigate steps._
+Status flipped `in-progress` → `tuned` on 2026-05-20. All three planned
+fixes (A, B, C) landed; the original on-every-move "fighting" symptom is
+resolved on hardware. One residual jitter mechanism remains under separate
+investigation — see "Residual" below.
+
+### Fixes landed
+
+| Fix | Commit | What it addressed |
+|-----|--------|-------------------|
+| A — overhead instrumentation | `a89a4dd` (2026-04-18) | Added per-segment timings, `_GCTracker`, `OH SPIKE` stdout. Revealed `getstate ≈ overhead` with zero GC callbacks — falsified the GC hypothesis and pointed at FK Newton-Raphson divergence. |
+| B — hold-branch plant-tracking extrapolation | `a89a4dd` (2026-04-18) | `_handle_failure` `hold_extrap` arm emits `cmd = q_cur + q_dot·dt0` (rate-limited) instead of freezing at `prev_w[6(N-1):6N]`. Eliminated the walk-forward endgame recoil that produced −167 to −220 mm/s reversals. |
+| C — FK iteration budget cap | `b5d83df` (2026-04-19) | `leg_lengths_to_pose` capped at `max_iter=10, tol=1e-4`. Cuts the divergence-case wall-time from ~30 ms to ~6 ms; the existing RuntimeError → `_last_measured_pose` fallback path is unchanged. `_FK_FAIL_ESTOP_THRESHOLD=5` semantics preserved. |
+
+### Reframing for the chronic-solve-time overrun
+
+This entry's diagnosis section identified two compounding mechanisms:
+isolated overhead pops (resolved by Fix C) and a *chronic* solve-time
+overrun framed as "p95 solve = 28.5 ms > 22 ms IPOPT budget." That second
+framing turned out to be incomplete. The downstream 2026-05-20
+investigation showed the chronic phase of the cascade was driven by a
+distinct warm-start + `t_ref`-freeze deadlock: once a few solves tripped
+the CPU cap, IPOPT was burning the full 22 ms in init / KKT factorisation
+on poisoned warm-start vectors and exiting with `iter_count = 0`, and
+the runner's `t_ref` froze on the unchanging fallback status —
+presenting the solver with the bit-identical NLP every tick.
+
+That mechanism and its fix are documented in
+[2026-05-20-mpc-warmstart-deadlock-escape.md](2026-05-20-mpc-warmstart-deadlock-escape.md);
+commit `67ae3da` generalises the warm-start contract from
+*structural-reference-shift-driven* to *also failure-driven*. Hardware
+re-run at z=30 post-fix (`temp/logs/mpc_20260520_115857.csv`, 60 s,
+2400 ticks): 99.6 % success, zero chronic phase, two isolated singleton
+fallbacks across the full settle.
+
+### Residual under separate investigation
+
+The two singleton fallbacks visible at ticks 22 and 71 of
+`temp/logs/mpc_20260520_115857.csv` coincide with two operator-reported
+audible/visible "jerk" events during the z=170→z=30 settle. Candidate
+mechanism (working hypothesis, to be confirmed/refuted by an offline
+production-faithful replay): the walk-forward branch emits
+`_prev_w[6:12]` on `_consecutive_failures == 1`, but `_prev_w[6:12]` is
+`u[1]` from the *prior* tick's plan — computed as a prediction one step
+ahead of the prior tick's state, not a fresh solve against the current
+measured state. The rate-limit clamps the step at
+`max_leg_vel_mmps · dt0 = 140 × 0.025 = 3.5 mm`, and the recorded data
+shows `cmd_ext` discontinuities of 2.1 mm (tick 22) and 3.5 mm (tick 71
+— **exactly at the clamp**) which the motor-guard Hermite interpolation
+cannot fully smooth. That tick-71 event saturating the rate-limit
+exactly is itself evidence that the walk-forward singleton path is the
+mechanism producing the jerk — the clamp fired, which only happens when
+the emitted `_prev_w[6:12]` step against the current `_prev_u` exceeds
+the 3.5 mm budget.
+
+This is structurally distinct from the cascade case that the original
+walk-forward fix (`64742f2`) was designed for: a *cascade* rides the
+same old plan across multiple ticks (which is continuous by construction);
+a *singleton* is followed by a fresh `u[0]` from a healthy solve against
+the current state on the very next tick, exposing the prior tick's stale
+prediction as a one-tick discontinuity. The Fix B `hold_extrap` arm
+addresses the post-cascade case, not the singleton case. Tracked
+separately under the walk-forward singleton-emission investigation.
