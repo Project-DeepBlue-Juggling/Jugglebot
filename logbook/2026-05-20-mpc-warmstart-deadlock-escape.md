@@ -21,7 +21,7 @@ files_changed:
   - logbook/2026-05-20-mpc-warmstart-deadlock-escape.md
   - logbook/INDEX.md
 commits:
-  - <to-fill-after-commit>
+  - 67ae3da
 subsystem:
   - controller
   - mpc
