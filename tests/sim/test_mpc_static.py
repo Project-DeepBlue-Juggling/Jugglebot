@@ -324,6 +324,72 @@ class TestMPCSolverFailure:
         assert hold_count >= 1, \
             f"Expected at least 1 hold status after escalation, got statuses: {statuses}"
 
+    def test_warmstart_invalidated_after_max_consecutive_failures(self, plant):
+        """After max_consecutive_failures is exceeded, warm-start vectors
+        must be cleared so the next solve cold-starts.
+
+        Without this guard, a session that drifts past the budget cap can
+        enter a self-sustaining lockup: IPOPT exits with iter_count=0 on
+        every tick (the warm-start vectors are byproducts of failed
+        solves), the runner's t_ref freezes (it advances only on
+        success-class statuses), the source presents the bit-identical
+        NLP every tick, and there is no path that resets the warm-start.
+
+        The 2026-05-18 z=30 hardware session produced 1769 consecutive
+        failures in exactly this state.  Regression guard for
+        logbook/2026-05-20-mpc-warmstart-deadlock-escape.md; the offline
+        probe in that entry reproduces the lockup within 0.5 pp of the
+        recorded hardware ground truth.
+        """
+        plant.reset()
+
+        # Build a valid warm-start with a normal MPC.
+        mpc_ok = _create_mpc(plant)
+        state = plant.get_state()
+        cmd_ok, _v_ok, d_ok = mpc_ok.solve(
+            state, np.array([0.0, 0.0, 50.0, 0.0, 0.0, 0.0]))
+        assert 'fallback' not in d_ok['status'], "Seed solve should succeed"
+        assert mpc_ok._prev_w is not None, \
+            "Seed solve must populate warm-start (probe precondition)"
+
+        # Restricted MPC with max_consecutive_failures=3.  Seed warm-start
+        # from the successful MPC so the patch has something to invalidate.
+        plant.reset()
+        mpc = _create_mpc(plant, max_iter=1, max_cpu_time=0.001,
+                          max_consecutive_failures=3)
+        state = plant.get_state()
+        mpc._prev_w = mpc_ok._prev_w.copy()
+        mpc._prev_lam_g = mpc_ok._prev_lam_g.copy()
+        mpc._prev_lam_x = mpc_ok._prev_lam_x.copy()
+        mpc._prev_u = mpc_ok._prev_u.copy()
+        mpc._prev_prev_u = (
+            mpc_ok._prev_prev_u.copy() if mpc_ok._prev_prev_u is not None
+            else cmd_ok.copy())
+
+        # Drive enough consecutive failures to exceed the threshold.
+        # Ticks 1-3: walk-forward fallback fires; warm-start preserved.
+        # Tick 4+: at solve() entry, _consecutive_failures > 3 triggers
+        # the failure-driven invalidation block (mirrors W5).
+        for _ in range(5):
+            mpc.solve(state, self._INFEASIBLE_REF)
+
+        assert mpc.consecutive_failures > 3, (
+            f"Probe failed to drive >3 consecutive failures, got "
+            f"{mpc.consecutive_failures}")
+        # The patched invalidation should have fired at the start of the
+        # 4th+ solve.  Identical clearing list to the warm_start_valid=False
+        # block above it.
+        assert mpc._prev_w is None, (
+            "Warm-start primal must be invalidated after "
+            ">max_consecutive_failures")
+        assert mpc._prev_lam_g is None, (
+            "Warm-start dual (g) must be invalidated")
+        assert mpc._prev_lam_x is None, (
+            "Warm-start dual (x) must be invalidated")
+        assert mpc._timeout_hint is None, (
+            "Timeout hint must be cleared so the next cold-start "
+            "doesn't pick it up as fallback warm-start")
+
     def test_cold_hold_uses_q_cur(self, plant):
         """cold_hold with q_cur returns current position, not stroke minimum."""
         plant.reset()
