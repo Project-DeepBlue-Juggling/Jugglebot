@@ -1011,6 +1011,40 @@ class MPCController:
             self._timeout_lam_x = None
             self._fallback_step = 0
 
+        # Failure-driven warm-start invalidation (deadlock escape).  Once
+        # walk-forward has been exhausted (_consecutive_failures >
+        # max_consecutive_failures), the fallback chain has moved into
+        # hold_extrap and the cached warm-start vectors are byproducts of
+        # repeatedly-failed solves.  Reusing them creates a self-sustaining
+        # Maximum_CpuTime_Exceeded cascade where IPOPT exits with
+        # iter_count=0 on every subsequent tick (the ~22 ms budget is
+        # exhausted in init / KKT factorisation / bad-warm-start
+        # consumption before the iteration loop runs).  See
+        # logbook/2026-05-20-mpc-warmstart-deadlock-escape.md for the
+        # 1769-tick hardware chronic run this guard breaks (and the
+        # offline replay that reproduces it within 0.5 pp).  Mirrors the
+        # warm_start_valid=False block above — same canonical enforcement
+        # point, same clearing list, different trigger.  Generalises the
+        # K1–K6 / W5 warm-start contract: the cached vectors are
+        # invalidated when EITHER the reference shifts structurally OR
+        # sustained failure indicates they no longer reflect a usable
+        # solution.
+        if self._consecutive_failures > self._params.max_consecutive_failures:
+            if self._prev_w is not None or self._timeout_hint is not None:
+                logger.warning(
+                    "MPC: %d consecutive failures > max=%d — invalidating "
+                    "warm-start (deadlock escape)",
+                    self._consecutive_failures,
+                    self._params.max_consecutive_failures,
+                )
+            self._prev_w = None
+            self._prev_lam_g = None
+            self._prev_lam_x = None
+            self._timeout_hint = None
+            self._timeout_lam_g = None
+            self._timeout_lam_x = None
+            self._fallback_step = 0
+
         ref_traj, twist_traj, accel_traj = self._build_reference(
             state, target, ref_events=ref_events, t_now=t_now)
         self._last_ref_traj = ref_traj

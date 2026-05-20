@@ -6,6 +6,7 @@ Browse with `/logbook`, create entries with `/investigate` or `/logbook --new <t
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-05-20 | resolved | off-plan | MPC warm-start deadlock escape — failure-driven invalidation breaks chronic-CTE lockup (1769-tick hardware lockup → 21-tick worst burst; offline reproduction within 0.5 pp) | [2026-05-20-mpc-warmstart-deadlock-escape](2026-05-20-mpc-warmstart-deadlock-escape.md) |
 | 2026-05-19 | resolved | standalone | SpaceMouse resilient connection handling — keep-alive + throttled-recurring WARNING + auto-reconnect + home-to-ACTIVE on dropout (mocap-pattern transfer) | [2026-05-19-spacemouse-resilient-connection-handling](2026-05-19-spacemouse-resilient-connection-handling.md) |
 | 2026-05-19 | tuned | hardware-bringup | CAN-loss fault-response safety inversion — blanket "ERROR ⇒ stow+IDLE" de-energises healthy holding actuators on reconnect | [2026-05-19-can-loss-fault-response-safety-inversion](2026-05-19-can-loss-fault-response-safety-inversion.md) |
 | 2026-05-19 | tuned | hardware-bringup | Finding B — the 68 s motor_pos=None was a motor_guard GuardMode.ESTOP sticky latch, NOT a CAN dropout (shared root cause with Finding A) | [2026-05-19-findingb-motor-guard-estop-latch-observability](2026-05-19-findingb-motor-guard-estop-latch-observability.md) |
