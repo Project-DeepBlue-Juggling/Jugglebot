@@ -926,8 +926,10 @@ def analyse_overshoot_saturation(records: List[StepRecord]) -> Dict[str, Any]:
     Signature (all three required over a window of >= OVERSHOOT_ZERO_ITER_RUN_MIN
     consecutive steps):
       1. `ipopt_iter == 0` on every step — IPOPT hits the CPU cap before
-         completing one iteration, signalled by the walk-forward fallback
-         status codes (hold/fallback/cold_hold).
+         completing one iteration, signalled by the fallback status
+         codes (`fallback`, `fallback_extrap`, `fallback_hold`,
+         `cold_hold`; substring detection downstream is unchanged —
+         uses the `'fallback'` / `'hold'` / `'cold_hold'` keywords).
       2. `tracking_error_mm` exceeds OVERSHOOT_TRACKING_ERR_MM — the plant
          pose is far from the reference pose during the run.
       3. The reference is still changing (ref_delta > REF_CHANGE_THRESHOLD)
@@ -2156,8 +2158,10 @@ def generate_flags(result: Dict[str, Any]) -> List[Dict[str, Any]]:
     # Overshoot-induced NLP saturation — distinct from generic MPC_STALENESS.
     # Fires when IPOPT spends every ms on solve setup without completing one
     # iteration while the plant is ahead of cmd and ref is still moving.
-    # Warning severity: the walk-forward fallback (commit 64742f2) keeps this
-    # safe, but it IS a tracking hole that matters for dynamic motion.
+    # Warning severity: the Tier-1 fallback (cmd-stream extrapolation with
+    # 500 ms cold_hold escalation; logbook
+    # 2026-05-20-hold-extrap-positive-feedback-chaotic-motion.md) keeps
+    # this safe, but it IS a tracking hole that matters for dynamic motion.
     overshoot = result.get('overshoot_saturation', {})
     if overshoot.get('detected'):
         ev0 = overshoot['events'][0]

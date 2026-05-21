@@ -12,6 +12,7 @@ related_entries:
   - 2026-04-17-mpc-fallback-cmd-sawtooth-stutter
   - 2026-04-18-hold-fighting-motion-onset-jitter
   - 2026-04-20-k1-k6-reference-feasibility-resolution
+  - 2026-05-20-hold-extrap-positive-feedback-chaotic-motion
 sessions:
   - mpc_20260518_200137.csv
   - mpc_20260520_115857.csv

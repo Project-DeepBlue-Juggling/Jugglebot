@@ -128,15 +128,20 @@ issues:
       10+ mm while the reference is still accelerating.  IPOPT is asked to
       unwind the overshoot against an accelerating ref within a 24 ms budget
       and bails out before completing one iteration (ipopt_iter==0), so the
-      walk-forward fallback (commit 64742f2) freezes cmd and the plant holds
-      until ref catches up.  Signature-wise this is distinct from generic
-      MPC_STALENESS: consecutive timeouts PLUS an overshoot direction PLUS a
-      still-moving ref.  Fix target is the ref source, not the solver —
-      prepend a warm-up Hermite segment from (current plant pose, current
-      twist) on move transitions so the NLP is never asked to reverse the
-      plant against an accelerating ref.  Safety-wise benign with walk-forward
-      fallback in place, but it creates a multi-hundred-ms tracking hole that
-      matters for dynamic juggling.
+      Tier-1 fallback (logbook
+      2026-05-20-hold-extrap-positive-feedback-chaotic-motion.md) emits a
+      linear cmd-stream extrapolation `cmd = 2·prev_u − prev_prev_u`
+      (workspace-clamped, rate-limited) and the plant continues at the
+      cmd-stream's recent velocity until the solver recovers, with a 500 ms
+      escalation to `cold_hold(q_cur)` as the time-bounded safety net.
+      Signature-wise this is distinct from generic MPC_STALENESS:
+      consecutive timeouts PLUS an overshoot direction PLUS a still-moving
+      ref.  Fix target is the ref source, not the solver — prepend a
+      warm-up Hermite segment from (current plant pose, current twist) on
+      move transitions so the NLP is never asked to reverse the plant
+      against an accelerating ref.  Safety-wise benign with the cmd-stream
+      extrapolation + 500 ms cold_hold escalation, but it creates a
+      multi-hundred-ms tracking hole that matters for dynamic juggling.
     signatures:
       - type: overshoot_saturation
         zero_iter_run_min: 10

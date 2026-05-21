@@ -25,32 +25,35 @@ Phase 1:
 | T-U-T1a-5  | monkey-patch ``_solver`` to raise                    | ``exception: …``                |
 | T-U-T1a-6  | parametrize all status strings; stats() injection    | (all)                           |
 
-**Phase 2 (Tier 1b)** — drive the fallback escalation cascade
-(``walk_forward_unsafe`` → ``hold_extrap``) and the cold-start IK budget
-exhaustion path.  Each Tier-1b test is a *targeted* probe of one
-escalation branch — the real-driver discipline is preserved end-to-end
-on the *failure* arm (every failure is produced by injecting an IPOPT
-status into a real solver call), and the escalation triggers themselves
-are driven through the smallest internal-state mutation that isolates
-one branch:
+**Phase 2 (Tier 1b)** — drive the fallback escalation cascade and the
+cold-start IK budget exhaustion path.  Each Tier-1b test is a *targeted*
+probe of one escalation branch — the real-driver discipline is preserved
+end-to-end on the *failure* arm (every failure is produced by injecting
+an IPOPT status into a real solver call), and the escalation triggers
+themselves are driven through the smallest internal-state mutation that
+isolates one branch:
 
-| ID         | Branch                                                  | Driver                                                                                  |
-|------------|---------------------------------------------------------|-----------------------------------------------------------------------------------------|
-| T-U-T1b-1  | ``walk_forward_unsafe`` via 20 mm ref shift             | mutate ``_ref_at_last_success_mid`` to introduce a 25 mm Δ vs ``_last_ref_traj[mid_k]`` |
-| T-U-T1b-2  | ``walk_forward_unsafe`` NOT triggered for <20 mm shift  | same mutation, 5 mm Δ                                                                   |
-| T-U-T1b-3  | ``walk_forward_unsafe`` via >500 ms staleness           | ``time.sleep(0.6)`` between seed and failure                                            |
-| T-U-T1b-4  | escalation after ``max_consecutive_failures``           | small ref (no walk-forward trip), inject N+2 consecutive failures via ``_StatsInjector``|
-| T-U-T1b-5  | cold-start IK budget exhaustion                          | monkey-patch ``_numerical_ik`` to ``time.sleep(0.42)`` per call                          |
-| T-U-T1b-6  | warm-start integrity property (Hypothesis stateful)     | ``RuleBasedStateMachine`` over (succeed_solve, fail_solve, shift_snapshot_z, advance_time) |
+| ID         | Branch                                                            | Driver                                                                                  |
+|------------|-------------------------------------------------------------------|-----------------------------------------------------------------------------------------|
+| T-U-T1b-3  | Staleness escalation → ``cold_hold`` via >500 ms                  | ``time.sleep(0.6)`` between seed and failure                                            |
+| T-U-T1b-4  | Homogeneous cascade emission (all ``fallback_extrap``, no escalation) | small ref, inject N+2 consecutive failures via ``_StatsInjector``                       |
+| T-U-T1b-5  | cold-start IK budget exhaustion                                    | monkey-patch ``_numerical_ik`` to ``time.sleep(0.42)`` per call                          |
+| T-U-T1b-6  | warm-start integrity property (Hypothesis stateful)                | ``RuleBasedStateMachine`` over (succeed_solve, fail_solve, advance_time)                |
 
-The 20 mm threshold and 500 ms staleness numbers are normative invariants
-of the W7 walk-forward heuristic in
-[``mpc.py``::``_handle_failure``](../../controller/mpc.py); changes to
-either threshold should refresh both the test scenarios and the recipe
-table above.  The tests use the *current symbol names* (``_ref_at_last_
-success_mid``, ``_t_at_last_success``, ``_numerical_ik``, etc.) rather
-than line numbers — line citations in this file's docstrings are
-indicative anchors for code-review, not assertion targets.
+Tier-1b history: the original Phase 2 (commits prior to 2026-05-20) also
+included T-U-T1b-1 and T-U-T1b-2, which exercised the W7 "20 mm ref
+shift" walk-forward-unsafe guard.  The Tier-1 fallback rewrite of
+2026-05-20 (logbook
+``2026-05-20-hold-extrap-positive-feedback-chaotic-motion.md``) replaced
+the walk-forward + ``hold_extrap`` ladder with a single linear
+cmd-stream extrapolation arm + 500 ms ``cold_hold`` time bound; the
+20 mm threshold no longer exists, so T-U-T1b-1 and T-U-T1b-2 were
+deleted and T-U-T1b-3 / T-U-T1b-4 were rewritten with the semantics
+shown above.  The remaining 500 ms staleness number is the one
+surviving normative threshold; the tests use *current symbol names*
+(``_t_at_last_success``, ``_numerical_ik``, etc.) rather than line
+numbers — line citations in this file's docstrings are indicative
+anchors for code-review, not assertion targets.
 
 Pinned CasADi: **3.7.2**.  IPOPT's status-string set is stable across
 patch releases; a CasADi major-version upgrade should re-run this matrix
@@ -277,9 +280,19 @@ class TestRealIpoptExitCodes:
         state = plant.get_state()
         cmd, _vel, diag = mpc.solve(state, REF_NORMAL)
 
-        assert diag['status'].startswith('hold') or diag['status'].startswith('cold_hold'), (
-            f"exception path should route through hold/cold_hold fallback, "
-            f"got {diag['status']!r}"
+        # Post-Tier-1-rewrite (2026-05-20): the exception handler at
+        # mpc.py:1268-1283 clears the warm-start vectors (_prev_w,
+        # _prev_lam_g, _prev_lam_x, _timeout_hint) but does NOT clear
+        # _prev_u / _prev_prev_u (the cmd stream history is preserved
+        # for the new fallback_extrap arm).  So the exception path now
+        # routes through fallback_extrap rather than the deleted
+        # hold_extrap arm.  Pre-rewrite this asserted hold/cold_hold;
+        # post-rewrite accept any fallback-class family.
+        assert any(diag['status'].startswith(p)
+                   for p in ('fallback_extrap(', 'fallback_hold(',
+                             'cold_hold(', 'hold(', 'hold_extrap(')), (
+            f"exception path should route through a fallback-class "
+            f"family, got {diag['status']!r}"
         )
         assert 'exception' in diag['status'], (
             f"exception status string missing 'exception' prefix marker, "
@@ -440,8 +453,12 @@ class TestFallbackKeywordMatrix:
                 f"injected {status!r}"
             )
             assert any(prefix in diag['status']
-                       for prefix in ('fallback(', 'hold(', 'cold_hold(',
-                                      'hold_extrap(')), (
+                       for prefix in ('fallback(', 'fallback_extrap(',
+                                      'fallback_hold(', 'cold_hold(',
+                                      # Legacy (pre-2026-05-20 hold_extrap
+                                      # / hold arms; no longer produced
+                                      # but accepted for forward compat).
+                                      'hold(', 'hold_extrap(')), (
                 f"fallback-classified status should carry one of the "
                 f"_handle_failure prefixes; got {diag['status']!r}"
             )
@@ -595,217 +612,110 @@ class TestFailureBookkeeping:
 # ---------------------------------------------------------------------
 # T-U-T1b-1, -2: walk_forward_unsafe via ref-shift threshold (pair test)
 # ---------------------------------------------------------------------
-
-class TestWalkForwardRefShiftThreshold:
-    """Pair test for the 20 mm ref-shift branch of ``walk_forward_unsafe``
-    in [``_handle_failure``](../../controller/mpc.py).
-
-    The W7 heuristic compares the snapshotted mid-horizon ref from the
-    last successful solve (``_ref_at_last_success_mid``, captured at
-    success in the success branch) to the *current* mid-node ref
-    (``_last_ref_traj[mid_k]``, where ``mid_k = min(N, 5)``).  When the
-    L∞ delta on the xyz axes exceeds 20 mm, the fallback escalates from
-    walk-forward (status ``fallback(...)``) to plant-tracking
-    extrapolation (status ``hold_extrap(...)``).
-
-    Driver discipline: we mutate ``_ref_at_last_success_mid`` directly
-    (rather than running an honest end-to-end sequence with shifting
-    target poses) for two reasons —
-    (a) the mutation isolates the threshold cleanly: a 25 mm xyz delta
-        is unambiguously above 20 mm without coupling to twist
-        direction-flip, target-feasibility, or scheduler-event timing,
-    (b) it mirrors Phase 1's ``_StatsInjector`` discipline — failure
-        injection at the smallest internal-state surface that exposes
-        the branch.  An honest end-to-end driver was probed and works
-        (see logbook empirical-probe table) but adds 2-3 solves of
-        latency per test and couples to reference-builder behaviour
-        the W7 contract is independent of.
-    """
-
-    def _seed_then_inject_one_failure(self, plant, snap_z_delta_mm: float):
-        """Helper: seed a successful solve, mutate the snapshot mid-z by
-        ``snap_z_delta_mm`` (negative → snap is *below* current ref →
-        delta-against-current is positive), inject one
-        ``Maximum_CpuTime_Exceeded`` via ``_StatsInjector``, return diag.
-        """
-        plant.reset()
-        mpc = _create_mpc(plant)
-        _seed_warm_start(plant, mpc)
-        # Sanity: snapshot lives at the seeded ref's mid-node value, and
-        # the W7 mid-index is min(N, 5).
-        mid_k = min(mpc._N, 5)
-        snap_pre = mpc._ref_at_last_success_mid.copy()
-        ref_now = mpc._last_ref_traj[mid_k]
-        np.testing.assert_allclose(snap_pre, ref_now, atol=1e-12,
-            err_msg="snapshot should equal current mid-ref at end of "
-                    "the seed solve (zero shift); precondition for the "
-                    "delta-injection to be a clean threshold probe")
-        # Force the snapshot to be a float array so in-place mutation
-        # doesn't alias _last_ref_traj_buf.
-        mpc._ref_at_last_success_mid = snap_pre.copy()
-        mpc._ref_at_last_success_mid[2] += snap_z_delta_mm
-        injected_delta = ref_now[2] - mpc._ref_at_last_success_mid[2]
-        # Inject one failure — _StatsInjector keeps prev_w intact (the
-        # walk-forward path is gated on prev_w being finite).
-        mpc._solver = _StatsInjector(mpc._solver, 'Maximum_CpuTime_Exceeded')
-        state = plant.get_state()
-        cmd, _, diag = mpc.solve(state, REF_NORMAL)
-        return mpc, cmd, diag, injected_delta
-
-    def test_above_threshold_escalates_to_hold_extrap(self, plant):
-        """T-U-T1b-1: a 25 mm xyz delta on the snapshot vs current
-        mid-ref MUST flip the fallback from ``fallback(...)`` to
-        ``hold_extrap(...)``.  Strict pair partner of -2 below."""
-        # Set snap z = 25 below current ref (delta = +25 mm > 20 mm).
-        mpc, cmd, diag, delta = self._seed_then_inject_one_failure(
-            plant, snap_z_delta_mm=-25.0,
-        )
-        assert delta == pytest.approx(25.0, abs=1e-9), (
-            f"injected delta should be ~25 mm; got {delta} (sanity check "
-            f"on the helper's sign convention)"
-        )
-        assert diag['status'] == 'hold_extrap(Maximum_CpuTime_Exceeded)', (
-            f"25 mm ref-shift delta MUST trigger walk_forward_unsafe → "
-            f"hold_extrap branch; got {diag['status']!r}.  If this fails "
-            f"with status='fallback(...)', the W7 20 mm threshold has "
-            f"changed (or moved off the xyz axes) — refresh both this "
-            f"test's delta and the test docstrings."
-        )
-        # walk_forward path NOT taken → fallback_step is the sentinel
-        # value (-1).  See controller/DIAG_SCHEMA_CONTRACT.md (Plan 2
-        # Phase 7 bugfix, logbook 2026-05-12-tier3a-fuzz-bugfix.md):
-        # the schema is now uniformly 8 keys with sentinels rather
-        # than 6/7/8 by path.  Pre-Phase-7-bugfix this assertion was
-        # ``'fallback_step' not in diag``.
-        assert diag.get('fallback_step') == -1, (
-            f"hold_extrap path should populate fallback_step=-1 "
-            f"sentinel per DIAG_SCHEMA_CONTRACT.md; got "
-            f"fallback_step={diag.get('fallback_step')!r}"
-        )
-        assert mpc.consecutive_failures == 1
-        assert np.all(np.isfinite(cmd))
-
-    def test_below_threshold_stays_in_fallback(self, plant):
-        """T-U-T1b-2: a 5 mm xyz delta on the snapshot stays well below
-        the 20 mm threshold AND keeps the twist-direction-flip check
-        quiescent (zero seed twist), so the fallback stays in the
-        walk-forward arm with status ``fallback(...)``.  Pair partner
-        of -1 above."""
-        mpc, cmd, diag, delta = self._seed_then_inject_one_failure(
-            plant, snap_z_delta_mm=-5.0,
-        )
-        assert delta == pytest.approx(5.0, abs=1e-9)
-        assert diag['status'] == 'fallback(Maximum_CpuTime_Exceeded)', (
-            f"5 mm ref-shift delta is below the 20 mm threshold; the "
-            f"walk-forward arm should remain active with status "
-            f"'fallback(...)'.  Got {diag['status']!r}."
-        )
-        # Walk-forward path taken → fallback_step set to 1 on first
-        # consecutive failure.
-        assert diag.get('fallback_step') == 1, (
-            f"first walk-forward fallback must record fallback_step=1; "
-            f"got diag={diag!r}"
-        )
-        assert mpc.consecutive_failures == 1
-        assert np.all(np.isfinite(cmd))
+#
+# DELETED 2026-05-20 — the Tier-1 fallback rewrite removed the
+# walk-forward arm and its W7 escalation logic entirely.  The 20 mm
+# ref-shift threshold no longer exists as a code branch; cmd-stream
+# extrapolation does not read the reference at all during fallback,
+# so a ref shift cannot perturb the emission.  The underlying safety
+# property (cmd stays bounded when the reference shifts mid-cascade)
+# is now structural rather than gated on a threshold — see
+# tests/sim/test_mpc_static.py::test_fallback_no_positive_feedback_growth
+# and logbook/2026-05-20-hold-extrap-positive-feedback-chaotic-motion.md.
 
 
 # ---------------------------------------------------------------------
 # T-U-T1b-3: walk_forward_unsafe via 500 ms staleness
 # ---------------------------------------------------------------------
 
-class TestWalkForwardStaleness:
-    """The W7 heuristic also escalates when the last-success snapshot
-    is more than 500 ms old by ``_time.perf_counter()`` reckoning.
-    Driver: real wall-clock ``time.sleep(0.6)`` between the seed solve
-    and the failure-injected solve.
+class TestStalenessEscalation:
+    """The 500 ms staleness escalation survived the Tier-1 fallback
+    rewrite (2026-05-20).  Post-rewrite, when the last-success
+    snapshot is older than 500 ms by ``_time.perf_counter()``
+    reckoning, the fallback arm escalates to ``cold_hold(q_cur)``
+    (was ``hold_extrap(...)`` pre-rewrite).
 
-    Wall-clock vs monkey-patched perf_counter: Phase 1's
-    ``test_max_cpu_time_exceeded`` already accepts wall-clock budgets;
-    keeping this test in the same idiom (real wall-clock advance,
-    ``perf_counter()`` consulted by the production code as-is) preserves
-    consistency.  The cost is 0.6s per test run, acceptable in a suite
-    that already runs ~290s.
+    Driver: real wall-clock ``time.sleep(0.6)`` between the seed solve
+    and the failure-injected solve.  Mirrors Phase 1's
+    ``test_max_cpu_time_exceeded`` wall-clock-budget idiom.  Cost:
+    0.6s per test run.
     """
 
     def test_staleness_above_500ms_escalates(self, plant):
-        """T-U-T1b-3: 600 ms wall-clock advance after the seed solve
-        MUST flip the next fallback to ``hold_extrap(...)`` even
-        though the ref hasn't shifted.
+        """T-U-T1b-3 (updated 2026-05-20 for Tier-1 fallback rewrite):
+        600 ms wall-clock advance after the seed solve MUST flip the
+        next fallback to ``cold_hold(...)`` (was ``hold_extrap(...)``
+        pre-rewrite).
 
-        Note: the snapshot mid-ref is unchanged so the 20 mm ref-shift
-        branch CANNOT fire.  The escalation must come exclusively from
-        the staleness clause at the bottom of the W7 block in
-        ``_handle_failure``.
+        The escalation now bypasses the cmd-stream extrapolation arm
+        directly to ``cold_hold(q_cur)`` — a measured-position hold
+        with ``cmd_vel = 0`` — because at >500 ms of cascade we no
+        longer trust the cmd stream's recent history as a forward
+        predictor (the original W7 staleness rationale, preserved).
         """
         plant.reset()
         mpc = _create_mpc(plant)
         _seed_warm_start(plant, mpc)
-        # Sanity: snapshot equals current ref → ref-shift branch can't fire.
-        mid_k = min(mpc._N, 5)
-        np.testing.assert_allclose(
-            mpc._ref_at_last_success_mid, mpc._last_ref_traj[mid_k],
-            atol=1e-12,
-        )
 
         # Real-time advance of 600 ms.
         _time.sleep(0.6)
 
         mpc._solver = _StatsInjector(mpc._solver, 'Maximum_CpuTime_Exceeded')
         state = plant.get_state()
-        cmd, _, diag = mpc.solve(state, REF_NORMAL)
+        cmd, cmd_vel, diag = mpc.solve(state, REF_NORMAL)
 
-        assert diag['status'] == 'hold_extrap(Maximum_CpuTime_Exceeded)', (
-            f">500 ms staleness must escalate to hold_extrap; got "
+        assert diag['status'] == 'cold_hold(Maximum_CpuTime_Exceeded)', (
+            f">500 ms staleness must escalate to cold_hold; got "
             f"{diag['status']!r}"
         )
-        # Plan 2 Phase 7 bugfix: fallback_step is now uniformly
-        # present on every path with sentinel -1 when no walk-forward
-        # step is active.  See DIAG_SCHEMA_CONTRACT.md.
+        # Plan 2 Phase 7 bugfix: fallback_step is uniformly -1
+        # sentinel on every path.  See DIAG_SCHEMA_CONTRACT.md.
         assert diag.get('fallback_step') == -1
         assert mpc.consecutive_failures == 1
         assert np.all(np.isfinite(cmd))
+        # cmd_vel must be zero on the cold_hold escalation arm
+        # (no extrapolation; measured-position hold).
+        np.testing.assert_array_equal(cmd_vel, np.zeros(6))
 
 
 # ---------------------------------------------------------------------
 # T-U-T1b-4: escalation after max_consecutive_failures
 # ---------------------------------------------------------------------
 
-class TestMaxConsecutiveFailuresEscalation:
-    """The cascade's third branch: even when ``walk_forward_unsafe``
-    stays False (small / no ref shift, fresh snapshot), the walk-forward
-    arm is gated on ``consecutive_failures <= max_consecutive_failures``.
-    Once the counter exceeds the bound, subsequent failures route into
-    ``hold_extrap(...)`` (or ``hold(...)`` if no ``q_dot`` is available;
-    in practice ``solve()`` always passes ``state.leg_velocities_mmps``
-    so the live path is ``hold_extrap``).
+class TestHomogeneousCascadeEmission:
+    """The Tier-1 fallback rewrite (2026-05-20) replaced the
+    counter-gated walk-forward → hold_extrap ladder with a single
+    homogeneous arm: linear cmd-stream extrapolation
+    (``fallback_extrap(...)``) for the full duration of a cascade,
+    until the 500 ms time bound fires and escalates to
+    ``cold_hold(...)``.
 
-    Why this needs its own test (audit of
-    [test_mpc_static.py::test_escalation_fallback_to_hold](test_mpc_static.py)):
-    the existing test seeds at ``[0,0,50,...]`` then drives failures
-    against ``[500,500,500,...]``.  The 500 mm ref shift trips the
-    20 mm walk-forward-unsafe branch on the *first* failure tick, so
-    that test does NOT actually validate the
-    ``max_consecutive_failures`` counter — it validates the ref-shift
-    branch (now covered explicitly by T-U-T1b-1 above).  The loose
-    assertions ``fallback_count >= 1`` / ``hold_count >= 1`` hide the
-    surprise.  The plan calls for "verify and extend" — this test does
-    the verification (with strict per-tick status assertions) and the
-    extension (small-ref so only the counter branch fires).
+    Why this test replaces the prior ``TestMaxConsecutiveFailuresEscalation``:
+    the original test asserted a *counter-based escalation* pattern
+    (statuses == fallback, fallback, hold_extrap, hold_extrap with
+    max_consecutive_failures=2).  That branching no longer exists —
+    counter-based escalation was removed because the empirical
+    evidence from the 2026-05-20 chaotic-motion event showed
+    plant-state-driven escalation (``hold_extrap``) introduced a
+    positive-feedback bug class that the cmd-stream primitive avoids
+    structurally.  This test guards the new homogeneous behaviour:
+    every fallback in a short cascade (well under 500 ms) emits
+    ``fallback_extrap(...)``, never ``hold_extrap(...)``.
     """
 
-    def test_counter_drives_escalation_with_quiet_ref(self, plant):
-        """T-U-T1b-4: with ``max_consecutive_failures=2`` and a steady
-        ref (no walk-forward trip), the FIRST 2 failures stay in
-        ``fallback(...)`` with monotonically incrementing
-        ``fallback_step``; failures 3, 4 must escalate to
-        ``hold_extrap(...)``.
+    def test_short_cascade_stays_in_fallback_extrap(self, plant):
+        """T-U-T1b-4 (rewritten 2026-05-20): 4 consecutive failures
+        well under the 500 ms time bound all emit
+        ``fallback_extrap(Maximum_CpuTime_Exceeded)`` — no escalation
+        to ``hold_extrap`` (deleted arm) or ``cold_hold`` (only fires
+        at the 500 ms time bound).
         """
         plant.reset()
-        mpc = _create_mpc(plant, max_consecutive_failures=2)
+        mpc = _create_mpc(plant)
         _seed_warm_start(plant, mpc)
 
-        # Inject 4 consecutive failures.
+        # Inject 4 consecutive failures.  Wall-clock duration of the
+        # loop is well under the 500 ms time bound.
         mpc._solver = _StatsInjector(mpc._solver, 'Maximum_CpuTime_Exceeded')
         state = plant.get_state()
         diags = []
@@ -814,28 +724,20 @@ class TestMaxConsecutiveFailuresEscalation:
             diags.append(diag.copy())
 
         statuses = [d['status'] for d in diags]
-        assert statuses == [
-            'fallback(Maximum_CpuTime_Exceeded)',
-            'fallback(Maximum_CpuTime_Exceeded)',
-            'hold_extrap(Maximum_CpuTime_Exceeded)',
-            'hold_extrap(Maximum_CpuTime_Exceeded)',
-        ], (
-            f"Expected fallback, fallback, hold_extrap, hold_extrap; "
-            f"got {statuses}.  If failures 1-2 land in hold_extrap, the "
-            f"walk-forward path may be tripping on a non-counter branch "
-            f"(check that this test still seeds with REF_NORMAL and "
-            f"injects with the same REF — any ref shift would invalidate "
-            f"the counter-isolation)."
-        )
-        # Walk-forward arm: fallback_step monotonically increases.
-        assert diags[0]['fallback_step'] == 1
-        assert diags[1]['fallback_step'] == 2
-        # Hold arm: fallback_step=-1 sentinel (the walk-forward path
-        # is NOT taken).  Plan 2 Phase 7 bugfix unified the schema —
-        # see DIAG_SCHEMA_CONTRACT.md.  Pre-Phase-7-bugfix this
-        # assertion was ``'fallback_step' not in diags[2]``.
-        assert diags[2].get('fallback_step') == -1
-        assert diags[3].get('fallback_step') == -1
+        for s in statuses:
+            assert s == 'fallback_extrap(Maximum_CpuTime_Exceeded)', (
+                f"Tier-1 rewrite (2026-05-20) made every short-cascade "
+                f"fallback emit fallback_extrap.  Got statuses={statuses}. "
+                f"If a hold_extrap status appears, the deleted arm has "
+                f"been reintroduced — see logbook "
+                f"2026-05-20-hold-extrap-positive-feedback-chaotic-motion.md."
+            )
+        # fallback_step is the -1 sentinel on every path (walk-forward
+        # arm removed; see DIAG_SCHEMA_CONTRACT.md History entry).
+        for i, d in enumerate(diags):
+            assert d['fallback_step'] == -1, (
+                f"fallback_step on diag[{i}] should be -1 sentinel; "
+                f"got {d['fallback_step']!r}")
         # Counter increments through every failure.
         assert mpc.consecutive_failures == 4
 
@@ -997,30 +899,39 @@ def _w7_get_singletons():
     return _W7_PROP_PLANT, _W7_PROP_MPC, _W7_PROP_REAL_SOLVER
 
 
-class W7WarmStartIntegrityMachine(RuleBasedStateMachine):
+class WarmStartIntegrityMachine(RuleBasedStateMachine):
     """T-U-T1b-6 — warm-start integrity invariant under arbitrary
-    sequences of (succeed, fail, shift_target, advance_time).
+    sequences of (succeed_solve, fail_solve, advance_time).
 
     **Invariant (the load-bearing property):** at every observable
     point in the random walk, ``mpc._prev_w`` is either ``None`` or
-    contains only finite values.  No combination of failures, ref
-    shifts, or staleness advances may leave the warm-start in a
-    NaN/Inf state — that would corrupt the next solve and cascade.
+    contains only finite values.  No combination of failures or
+    staleness advances may leave the warm-start in a NaN/Inf state —
+    that would corrupt the next solve and cascade.
 
-    This invariant is the W7-relevant slice of the broader warm-start
-    integrity contract documented at the success branch of
-    [``solve()``](../../controller/mpc.py): the success path checks
-    ``np.all(np.isfinite(w_opt))`` and routes to ``_handle_failure``
-    (with status ``non_finite_solution``) on violation; the exception
-    path clears warm-start state to ``None``.  The failure paths
-    exercised in Phase 1 already validated that single-shot failures
-    preserve the invariant.  T-U-T1b-6 verifies it across-call under
-    the *escalation* triggers Phase 2 introduces (ref shift, staleness,
-    counter overflow).
+    This invariant is the warm-start integrity contract documented at
+    the success branch of [``solve()``](../../controller/mpc.py): the
+    success path checks ``np.all(np.isfinite(w_opt))`` and routes to
+    ``_handle_failure`` (with status ``non_finite_solution``) on
+    violation; the exception path clears warm-start state to ``None``.
+    The failure paths exercised in Phase 1 already validated that
+    single-shot failures preserve the invariant.  T-U-T1b-6 verifies it
+    across-call under arbitrary sequences of failure / success /
+    time-advance — the post-Tier-1-fallback-rewrite cascade triggers
+    (logbook
+    ``2026-05-20-hold-extrap-positive-feedback-chaotic-motion.md``).
+
+    History: prior to the Tier-1 fallback rewrite this class also
+    included a ``shift_snapshot_z`` rule (mutating
+    ``_ref_at_last_success_mid`` to cross the W7 20 mm ref-shift
+    threshold) and a ``snapshot_finite_or_none`` invariant on the W7
+    snapshot fields.  Both were removed when the walk-forward +
+    ``hold_extrap`` ladder was deleted; the surviving rules and
+    invariants are the load-bearing slice that survives the rewrite.
 
     Plan choice: ``RuleBasedStateMachine`` rather than ``@composite + @given``
     because the invariant is across-call — only a stateful walk
-    exposes the kind of (failure, succeed, fail, shift, fail) sequence
+    exposes the kind of (failure, succeed, fail, advance, fail) sequence
     that could plausibly leave ``_prev_w`` in an inconsistent state.
     Mirrors [``SchedulerStateMachine`` in
     test_scheduler_contract.py](test_scheduler_contract.py) as the
@@ -1030,7 +941,8 @@ class W7WarmStartIntegrityMachine(RuleBasedStateMachine):
     Plant + MPC are module-scoped singletons (see ``_w7_get_singletons``)
     rather than per-instance to keep ci-deep wall-clock under control.
     The ``__init__`` resets both before each StateMachine walk; the
-    rules drive only the public + internal-state surfaces W7 reads.
+    rules drive only the public + internal-state surfaces relevant to
+    the warm-start integrity property.
     """
 
     def __init__(self):
@@ -1095,17 +1007,6 @@ class W7WarmStartIntegrityMachine(RuleBasedStateMachine):
         effect."""
         self._do_succeed()
 
-    @rule(z_delta=st.floats(min_value=-50.0, max_value=50.0,
-                             allow_nan=False, allow_infinity=False))
-    def shift_snapshot_z(self, z_delta):
-        """Shift ``_ref_at_last_success_mid[2]`` by ``z_delta`` mm.
-        Crosses the 20 mm threshold when |z_delta| > 20."""
-        if self._mpc._ref_at_last_success_mid is None:
-            return  # nothing to shift before any success
-        snap = self._mpc._ref_at_last_success_mid.copy()
-        snap[2] += z_delta
-        self._mpc._ref_at_last_success_mid = snap
-
     @rule(t_advance=st.floats(min_value=0.0, max_value=1.5,
                                allow_nan=False, allow_infinity=False))
     def advance_time(self, t_advance):
@@ -1134,23 +1035,13 @@ class W7WarmStartIntegrityMachine(RuleBasedStateMachine):
     def prev_u_finite_or_none(self):
         """Companion invariant: ``_prev_u`` (the last commanded
         leg-extension vector) must be finite or None.  Used by the
-        walk-forward fallback as the rate-limit anchor."""
+        Tier-1 fallback (``fallback_extrap`` arm) as both the
+        rate-limit anchor and the extrapolation base
+        (``cmd = 2·_prev_u − _prev_prev_u``)."""
         u = self._mpc._prev_u
         assert u is None or np.all(np.isfinite(u)), (
             f"_prev_u contains non-finite values: {u!r}"
         )
 
-    @invariant()
-    def snapshot_finite_or_none(self):
-        """The W7 snapshot fields themselves must remain finite.  A
-        NaN snapshot would either trip ``np.max(np.abs(delta))`` to
-        NaN (and the inequality would behave unpredictably in
-        downstream branches) or silently propagate."""
-        for name in ('_ref_at_last_success_mid', '_twist_at_last_success'):
-            v = getattr(self._mpc, name)
-            assert v is None or np.all(np.isfinite(v)), (
-                f"W7 snapshot {name} contains non-finite values: {v!r}"
-            )
 
-
-TestW7WarmStartIntegrity = W7WarmStartIntegrityMachine.TestCase
+TestWarmStartIntegrity = WarmStartIntegrityMachine.TestCase

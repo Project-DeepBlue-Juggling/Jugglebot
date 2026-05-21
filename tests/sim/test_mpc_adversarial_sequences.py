@@ -464,31 +464,34 @@ class TestScenario12_FKNoiseSpike(object):
 # Scenario 13 — walk-forward on old plan after target flip (W7)
 # ---------------------------------------------------------------------------
 
-class TestScenario13_WalkForwardOldDir(object):
+class TestScenario13_FallbackSurvivesTargetReversal(object):
     def test_ref_mid_run_survives_cpu_pressure(self, plant, mpc):
         """Moderately-tight CPU budget + target reversal.
 
         The 223902 hardware failure was 147 consecutive timeouts with zero
-        recovery: walk-forward kept marching an old upward-bound plan while
-        the target flipped downward.  W7's plant-tracking swap-in (on large
-        ref shift) should prevent any cascade longer than ~25 ticks in sim.
+        recovery: the fallback marched an old upward-bound plan while
+        the target flipped downward.  Pre-2026-05-20 this was solved by
+        the W7 "ref-shift-detect → hold_extrap" swap-in; the Tier-1
+        rewrite (2026-05-20, logbook
+        2026-05-20-hold-extrap-positive-feedback-chaotic-motion.md)
+        replaced that whole branching mechanism with a homogeneous
+        linear cmd-stream extrapolation arm that has NO dependence on
+        the reference — so a ref direction-flip cannot, by construction,
+        produce a cmd that marches in the wrong direction.
 
-        The budget (18 ms) is chosen so that converged cold-start solves
-        CAN happen (so W7's success-snapshot state gets armed) but the
-        direction reversal creates enough solver pressure to exercise the
-        fallback path.
+        Post-rewrite, this scenario tests that the system survives a
+        ref-reversal under CPU pressure (eventually recovers, doesn't
+        get permanently stuck), without the specific
+        ``hold_extrap``-engagement check.
+
+        The budget (18 ms) is chosen so that converged cold-start
+        solves can happen but the direction reversal creates enough
+        solver pressure to exercise the fallback path.
 
         **Load-sensitivity note** (observed during Plan 2 Phase 6 work,
         run 2026-05-11): the 18 ms budget is tight enough that this
-        test can flake on a busy Jetson — concurrent test invocations,
-        hypothesis ci-deep runs, or system build pressure push enough
-        solves into ``Maximum_CpuTime_Exceeded`` that the post-flip
-        fallback distribution shifts and the ``ratio >= 0.5`` assertion
-        fails.  The test passes reliably when run in isolation
-        (``pytest tests/sim/test_mpc_adversarial_sequences.py::TestScenario13_WalkForwardOldDir::test_ref_mid_run_survives_cpu_pressure``)
-        on an idle machine.  A failure on a loaded system does NOT
-        indicate a regression in W7's plant-tracking swap-in — verify
-        by re-running in isolation before treating as a real failure.
+        test can flake on a busy Jetson.  Re-run in isolation if a
+        spurious failure appears on a loaded system.
         """
         tight_params = MPCParams(
             max_cpu_time=0.018, max_iter=30,
@@ -505,33 +508,27 @@ class TestScenario13_WalkForwardOldDir(object):
         records, max_run = _run_and_measure(
             plant, tight_mpc, source, duration=2.5,
         )
-        # The DIRECT test for W7 correctness: when the MPC is in a fallback
-        # streak AND the reference has shifted structurally, the fallback
-        # mode should switch from walk-forward (`fallback(…)`) to plant-
-        # tracking (`hold_extrap(…)`).  This is what prevents the 223902
-        # cascade where walk-forward marched an old upward plan into a
-        # downward-flipped target.
-        #
-        # Inspect fallback statuses AFTER the target flip (which happens at
-        # t=0.6s, sample ~24).
+        # Post-Tier-1-rewrite (2026-05-20) the W7 large-shift detection
+        # is removed; the safety property is now structural (cmd-stream
+        # extrapolation cannot march in the wrong direction because it
+        # doesn't read the reference at all during fallback).  Assert
+        # only the eventual-recovery property — the system must not be
+        # permanently stuck in fallback.
         flip_sample = int(0.6 / CONTROL_DT)
         post_flip_fallbacks = [
             r.solve_status for r in records[flip_sample:]
-            if 'fallback' in r.solve_status or 'hold_extrap' in r.solve_status
+            if any(kw in r.solve_status for kw in
+                   ('fallback', 'hold', 'cold_hold'))
         ]
-        if post_flip_fallbacks:
-            hold_extrap_count = sum(
-                1 for s in post_flip_fallbacks if 'hold_extrap' in s
-            )
-            # Once W7 activates (large-shift detected), every subsequent
-            # failure in the streak should use hold_extrap.  Require at
-            # least 50% of post-flip fallbacks be hold_extrap as a firm
-            # proof that W7's shift-detection is firing.
-            ratio = hold_extrap_count / len(post_flip_fallbacks)
-            assert ratio >= 0.5, (
-                f"W7 large-shift guard not engaging: "
-                f"{hold_extrap_count}/{len(post_flip_fallbacks)} "
-                f"= {ratio:.0%} hold_extrap post-flip (want ≥50%)"
+        # No path-specific assertion on hold_extrap engagement — the
+        # arm no longer exists.  All fallbacks should be in one of the
+        # new homogeneous families (fallback_extrap, fallback_hold,
+        # cold_hold, or the underlying fallback(...) wrapper).
+        for s in post_flip_fallbacks:
+            assert any(s.startswith(p) for p in
+                       ('fallback(', 'fallback_extrap(', 'fallback_hold(',
+                        'cold_hold(')), (
+                f"unexpected fallback status under Tier-1 design: {s!r}"
             )
         # Also assert the MPC eventually recovered — not permanently stuck.
         success_count = sum(

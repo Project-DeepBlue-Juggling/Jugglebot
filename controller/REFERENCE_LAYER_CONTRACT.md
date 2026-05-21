@@ -263,6 +263,13 @@ Caveats:
 
 ## Diagnosis
 
+> Note: the Tier-1 fallback rewrite (logbook
+> [2026-05-20-hold-extrap-positive-feedback-chaotic-motion.md](../logbook/2026-05-20-hold-extrap-positive-feedback-chaotic-motion.md))
+> restructured how the fallback chain protects against ref shifts:
+> walk-forward and `hold_extrap` were replaced by a single linear
+> cmd-stream extrapolation arm with a 500 ms `cold_hold` time bound.
+> Step 4 of the playbook below reflects the post-rewrite structure.
+
 If an MPC session saturates again with the
 [MPC_OVERSHOOT_SATURATION signature](../sim/analysis/known_issues.yaml):
 
@@ -272,8 +279,8 @@ If an MPC session saturates again with the
    None?  Those are rejections or stretch-failures worth surfacing.
 3. Inspect `is_warm_start_invalidating` firing — did W5 correctly flag
    the transition?
-4. Inspect `_handle_failure`'s `walk_forward_unsafe` — did W7's guard
-   activate when it should have?
+4. Inspect `_handle_failure`'s `cascade_too_long` check — did the 500 ms
+   staleness escalate to `cold_hold(q_cur)` when it should have?
 
 ## Related
 

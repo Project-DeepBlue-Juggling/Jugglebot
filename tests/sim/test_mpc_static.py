@@ -289,17 +289,28 @@ class TestMPCSolverFailure:
         assert mpc.consecutive_failures >= 3, \
             f"Expected >=3 consecutive failures, got {mpc.consecutive_failures}"
 
-    def test_escalation_fallback_to_hold(self, plant):
-        """After max_consecutive_failures, fallback escalates to hold."""
+    def test_fallback_extrap_homogeneous_across_cascade(self, plant):
+        """Cascade emissions stay on the fallback_extrap path (homogeneous).
+
+        Tier-1 rewrite (2026-05-20): removed the walk-forward →
+        hold_extrap ladder.  All consecutive fallbacks emit
+        ``fallback_extrap`` (linear cmd-stream extrapolation) until
+        the 500 ms time bound fires and escalates to ``cold_hold``.
+        This regression guards the homogeneity: prior bug-class was
+        the ladder switching to ``hold_extrap`` mid-cascade and
+        emitting against stale plant velocity, which created the
+        chaotic-motion positive-feedback loop documented in
+        ``logbook/2026-05-20-hold-extrap-positive-feedback-chaotic-motion.md``.
+        """
         plant.reset()
 
-        # First build a valid warm-start with a normal MPC
+        # Build a valid warm-start with a normal MPC.
         mpc_ok = _create_mpc(plant)
         state = plant.get_state()
         cmd_ok, _v_ok, d_ok = mpc_ok.solve(state, np.array([0.0, 0.0, 50.0, 0.0, 0.0, 0.0]))
         assert 'fallback' not in d_ok['status'], "Seed solve should succeed"
 
-        # Now create a restricted MPC and transplant the warm-start
+        # Restricted MPC; transplant the warm-start AND cmd history.
         plant.reset()
         mpc = _create_mpc(plant, max_iter=1, max_cpu_time=0.001,
                           max_consecutive_failures=2)
@@ -308,21 +319,141 @@ class TestMPCSolverFailure:
         mpc._prev_lam_g = mpc_ok._prev_lam_g.copy()
         mpc._prev_lam_x = mpc_ok._prev_lam_x.copy()
         mpc._prev_u = mpc_ok._prev_u.copy()
-        mpc._prev_prev_u = mpc_ok._prev_prev_u.copy() if mpc_ok._prev_prev_u is not None else cmd_ok.copy()
+        mpc._prev_prev_u = (
+            mpc_ok._prev_prev_u.copy() if mpc_ok._prev_prev_u is not None
+            else cmd_ok.copy())
 
         statuses = []
         for _ in range(4):
             cmd, _cmd_vel, diag = mpc.solve(state, self._INFEASIBLE_REF)
             statuses.append(diag['status'])
 
-        # Expect: first 2 failures → fallback (shifted warm-start), 3rd+ → hold
-        fallback_count = sum('fallback' in s for s in statuses)
-        hold_count = sum('hold' in s or 'cold_hold' in s for s in statuses)
+        # Under the new design every fallback in a short cascade
+        # (well below the 500 ms time bound) emits
+        # ``fallback_extrap`` — the walk-forward / hold_extrap ladder
+        # is gone.  No status should contain ``hold_extrap`` (deleted).
+        extrap_count = sum('fallback_extrap' in s for s in statuses)
+        hold_extrap_count = sum('hold_extrap' in s for s in statuses)
 
-        assert fallback_count >= 1, \
-            f"Expected at least 1 fallback status, got statuses: {statuses}"
-        assert hold_count >= 1, \
-            f"Expected at least 1 hold status after escalation, got statuses: {statuses}"
+        assert extrap_count == len(statuses), (
+            f"Expected all {len(statuses)} fallbacks to be fallback_extrap, "
+            f"got statuses: {statuses}")
+        assert hold_extrap_count == 0, (
+            f"hold_extrap is removed by the Tier-1 rewrite; got: {statuses}")
+
+    def test_fallback_no_positive_feedback_growth(self, plant):
+        """Repeated fallback emissions must NOT amplify cmd magnitude
+        when plant velocity is non-zero.
+
+        Regression guard for the 2026-05-20 chaotic-motion event:
+        the prior ``hold_extrap`` arm computed
+        ``cmd = q_cur + q_dot · dt0``, creating a positive-feedback
+        path from measured plant velocity to commanded cmd.  During
+        transients (cmd leads plant, q_dot non-trivial) this
+        produced unbounded amplitude growth — peak measured leg
+        velocity 336.9 mm/s in
+        ``temp/logs/mpc_20260520_220039.csv`` vs the 140 mm/s
+        ``max_leg_vel_mmps`` soft limit (2.41× over).
+
+        Under the Tier-1 rewrite, ``_handle_failure`` no longer
+        reads ``q_dot`` for cmd computation.  This test injects a
+        synthetic large ``leg_velocities_mmps`` into the plant state,
+        drives 10 consecutive fallbacks, and asserts:
+          1. cmd_step magnitude does not grow tick-over-tick.
+          2. Per-tick step honours the rate-limit
+             (``max_leg_vel_mmps · dt0 = 3.5 mm`` for 140 mm/s × 25 ms,
+             or the test's overridden ``v_max``).
+          3. No emission contains ``hold_extrap`` (the deleted arm).
+
+        Empirically-confirmed recipe: matches
+        ``tools/probes/replay_hardware_csv.py --variant unified``
+        which on offline replay of
+        ``temp/logs/mpc_20260520_115857.csv`` reduces the singleton
+        d_cmd_vel from 158 mm/s (baseline) to 121 mm/s with no
+        cascade.  See
+        ``logbook/2026-05-20-hold-extrap-positive-feedback-chaotic-motion.md``
+        for the full diagnosis.
+        """
+        plant.reset()
+
+        # Seed: two successful solves so both _prev_u AND
+        # _prev_prev_u are distinctly populated (one solve seeds
+        # _prev_prev_u = _prev_u; we need a difference for
+        # extrapolation to be non-degenerate).
+        mpc_ok = _create_mpc(plant)
+        state = plant.get_state()
+        ref = np.array([0.0, 0.0, 50.0, 0.0, 0.0, 0.0])
+        mpc_ok.solve(state, ref)
+        state2 = plant.get_state()
+        mpc_ok.solve(state2, ref)
+
+        # Restricted MPC; transplant cmd history.
+        plant.reset()
+        mpc = _create_mpc(plant, max_iter=1, max_cpu_time=0.001)
+        state_for_solve = plant.get_state()
+        mpc._prev_w = mpc_ok._prev_w.copy()
+        mpc._prev_lam_g = mpc_ok._prev_lam_g.copy()
+        mpc._prev_lam_x = mpc_ok._prev_lam_x.copy()
+        mpc._prev_u = mpc_ok._prev_u.copy()
+        mpc._prev_prev_u = mpc_ok._prev_prev_u.copy()
+
+        # Inject a synthetic non-zero plant velocity matching the
+        # structure of the chaos-arc transient: +100 mm/s upward on all
+        # legs (sign irrelevant for the growth assertion, which is
+        # magnitude-based — the old hold_extrap arm would have
+        # computed ``cmd = q_cur + 100·0.025 = q_cur + 2.5 mm``, then
+        # rate-limit clamped, i.e. emitted a step driven by q_dot
+        # regardless of sign).  Under the rewrite, q_dot has no path
+        # to cmd.
+        object.__setattr__(state_for_solve, 'leg_velocities_mmps',
+                           np.full(6, 100.0))
+
+        cmds = []
+        statuses = []
+        for _ in range(10):
+            cmd, _vel, diag = mpc.solve(state_for_solve, self._INFEASIBLE_REF)
+            cmds.append(cmd.copy())
+            statuses.append(diag['status'])
+
+        # All emissions are fallback-class.
+        for s in statuses:
+            assert ('fallback' in s or 'hold' in s or 'cold_hold' in s), (
+                f"Expected fallback-class status, got '{s}'")
+
+        # No emission contains hold_extrap (deleted arm).
+        for s in statuses:
+            assert 'hold_extrap' not in s, (
+                f"hold_extrap is removed by Tier-1 rewrite; got '{s}' "
+                f"in {statuses}")
+
+        # Rate-limit honoured per tick.  Under the test's _create_mpc
+        # default v_max=280 mm/s, max_delta = 280·0.025 = 7.0 mm.  Add
+        # a small numerical tolerance.
+        dt0 = mpc._params.dt_schedule[0]
+        v_max = mpc._params.max_leg_vel_mmps
+        rate_limit_mm = v_max * dt0
+        steps = [np.max(np.abs(cmds[i + 1] - cmds[i]))
+                 for i in range(len(cmds) - 1)]
+        for i, s in enumerate(steps):
+            assert s <= rate_limit_mm + 0.01, (
+                f"Rate-limit violated at step {i}: |Δcmd|={s:.3f} mm > "
+                f"v_max·dt0={rate_limit_mm:.3f} mm. Steps: {steps}")
+
+        # No positive-feedback growth: with the bug present, repeated
+        # q_dot-driven emissions would compound the per-tick step
+        # toward the rate-limit ceiling (3.5 mm under the production
+        # 140 mm/s v_max).  Under the fix, the step depends only on
+        # the (constant) ``2·_prev_u − _prev_prev_u`` extrapolation,
+        # which converges to a fixed direction or to zero as the
+        # cascade progresses.  Assertion: post-tick-2 steps must not
+        # exceed the first step's magnitude.
+        first_step = steps[0]
+        for i, s in enumerate(steps[1:], start=1):
+            assert s <= first_step + 0.5, (
+                f"Positive-feedback growth detected: step[{i}]={s:.3f} > "
+                f"step[0]={first_step:.3f} + 0.5 mm tolerance. "
+                f"Cascade steps: {steps}. q_dot should have no path "
+                f"to amplify cmd magnitude over time.")
 
     def test_warmstart_invalidated_after_max_consecutive_failures(self, plant):
         """After max_consecutive_failures is exceeded, warm-start vectors
@@ -367,7 +498,10 @@ class TestMPCSolverFailure:
             else cmd_ok.copy())
 
         # Drive enough consecutive failures to exceed the threshold.
-        # Ticks 1-3: walk-forward fallback fires; warm-start preserved.
+        # Ticks 1-3: fallback fires (under the 2026-05-20 Tier-1
+        # rewrite this is fallback_extrap; under the older walk-forward
+        # ladder it was fallback(...) — either way the warm-start is
+        # preserved up to max_consecutive_failures).
         # Tick 4+: at solve() entry, _consecutive_failures > 3 triggers
         # the failure-driven invalidation block (mirrors W5).
         for _ in range(5):
