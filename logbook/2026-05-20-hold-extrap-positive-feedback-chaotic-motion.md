@@ -19,8 +19,26 @@ sessions:
   - mpc_20260520_220039.csv
 session_group: "2026-05-20_21-58-43"
 rosbag: "/home/jetson/Desktop/rosbags/2026-05-20_21-58-43"
-files_changed: []
-commits: []
+files_changed:
+  - controller/mpc.py
+  - controller/DIAG_SCHEMA_CONTRACT.md
+  - controller/REFERENCE_LAYER_CONTRACT.md
+  - controller/zmq_target.py
+  - sim/analysis/diagnose.py
+  - sim/analysis/known_issues.yaml
+  - sim/analysis/log_index.json
+  - tests/sim/test_mpc_static.py
+  - tests/sim/test_solver_failures.py
+  - tests/sim/test_mpc_input_fuzz.py
+  - tests/sim/test_diag_schema_fuzz.py
+  - tests/sim/test_mpc_adversarial_sequences.py
+  - tools/probes/README.md
+  - tools/probes/replay_hardware_csv.py
+  - logbook/INDEX.md
+  - logbook/2026-04-18-mpc-overhead-spikes-fallback-bursts.md
+  - logbook/2026-05-20-mpc-warmstart-deadlock-escape.md
+commits:
+  - b4568e0
 subsystem:
   - controller
   - mpc
