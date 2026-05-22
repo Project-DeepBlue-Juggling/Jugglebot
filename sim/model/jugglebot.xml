@@ -16,6 +16,7 @@
     <material name="joint_mat" rgba="0.9 0.2 0.2 1.0"/>
     <material name="hand_mat" rgba="0.8 0.6 0.2 0.9"/>
     <material name="ball_mat" rgba="1.0 0.5 0.0 1.0"/>
+    <material name="ball2_mat" rgba="0.2 0.5 1.0 1.0"/>
     <mesh name="base_mesh" file="meshes/base.stl" scale="0.001 0.001 0.001"/>
     <mesh name="platform_mesh" file="meshes/platform.stl" scale="0.001 0.001 0.001"/>
     <mesh name="leg_outer_mesh" file="meshes/leg_outer.stl" scale="0.001 0.001 0.001"/>
@@ -150,6 +151,11 @@
       <geom name="ball_geom" type="sphere" size="0.035" mass="0.071" material="ball_mat" contype="3" conaffinity="3" solref="0.05 2.0" solimp="0.99 0.99 0.001" friction="1.0 0.005 0.0001"/>
       <site name="ball_site" pos="0 0 0" size="0.005" rgba="1 1 1 0"/>
     </body>
+    <body name="ball2" pos="0 0 6">
+      <freejoint name="ball2_joint"/>
+      <geom name="ball2_geom" type="sphere" size="0.035" mass="0.071" material="ball2_mat" contype="3" conaffinity="3" solref="0.05 2.0" solimp="0.99 0.99 0.001" friction="1.0 0.005 0.0001"/>
+      <site name="ball2_site" pos="0 0 0" size="0.005" rgba="1 1 1 0"/>
+    </body>
   </worldbody>
   <equality>
     <connect body1="platform" body2="leg_0" anchor="-0.197405 0.095000 0.000000" solref="0.005 1" solimp="0.99 0.99 0.001"/>
@@ -169,7 +175,7 @@
     <position name="act_hand" joint="hand_slide" kp="100000" kv="350" ctrlrange="0 0.355000" ctrllimited="true"/>
   </actuator>
   <keyframe>
-    <key name="home" qpos="0.000000 0.000000 0.574300 1.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 5.000000 1.000000 0.000000 0.000000 0.000000"/>
+    <key name="home" qpos="0.000000 0.000000 0.574300 1.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 5.000000 1.000000 0.000000 0.000000 0.000000 0.000000 0.000000 6.000000 1.000000 0.000000 0.000000 0.000000"/>
   </keyframe>
   <sensor>
     <jointpos name="slide_pos_0" joint="leg_0_slide"/>
@@ -192,5 +198,7 @@
     <jointvel name="hand_slide_vel" joint="hand_slide"/>
     <framepos name="ball_pos" objtype="site" objname="ball_site"/>
     <framelinvel name="ball_vel" objtype="site" objname="ball_site"/>
+    <framepos name="ball2_pos" objtype="site" objname="ball2_site"/>
+    <framelinvel name="ball2_vel" objtype="site" objname="ball2_site"/>
   </sensor>
 </mujoco>

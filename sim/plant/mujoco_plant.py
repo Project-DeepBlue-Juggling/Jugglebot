@@ -277,10 +277,11 @@ class MuJoCoPlant(PlantInterface):
             mujoco.mj_step(self._model, self._data)
             if bm is not None:
                 bm.tick_cooldowns()
-                if bm._held:
-                    bm.apply_kinematic_hold()
-                else:
-                    bm.check_capture()
+                for ball in bm.balls:
+                    if ball.held:
+                        ball.apply_kinematic_hold()
+                    else:
+                        ball.check_capture()
 
     def reset(self, pose_6dof: np.ndarray | None = None) -> None:
         """Reset to home (default) or to a specified pose.
@@ -344,37 +345,44 @@ class MuJoCoPlant(PlantInterface):
         return self._ball_manager is not None
 
     @property
+    def n_balls(self) -> int:
+        """Number of ball bodies in the model (0 if none)."""
+        return self._ball_manager.count if self._ball_manager is not None else 0
+
+    @property
     def ball_manager(self) -> BallManager | None:
         """Direct access to BallManager (for advanced use). None if no ball."""
         return self._ball_manager
 
-    def spawn_ball(self, position_mm: np.ndarray, velocity_mms: np.ndarray) -> None:
-        """Teleport ball to position and set velocity. No-op if no ball."""
+    def spawn_ball(self, position_mm: np.ndarray, velocity_mms: np.ndarray,
+                   ball: int = 0) -> None:
+        """Teleport ball *ball* to position and set velocity. No-op if no ball."""
         if self._ball_manager is not None:
-            self._ball_manager.spawn(position_mm, velocity_mms)
+            self._ball_manager.ball(ball).spawn(position_mm, velocity_mms)
             mujoco.mj_forward(self._model, self._data)
 
-    def check_and_capture(self) -> bool:
-        """Return True on the control step that capture occurs.
+    def check_and_capture(self, ball: int = 0) -> bool:
+        """Return True on the control step that ball *ball* is captured.
 
         Capture detection runs every physics substep inside step().
         This method harvests the result — it does not run detection
         itself, since no physics has advanced since the last substep.
         """
         if self._ball_manager is not None:
-            return self._ball_manager.poll_capture()
+            return self._ball_manager.ball(ball).poll_capture()
         return False
 
-    def get_ball_state(self) -> BallState | None:
-        """Read ball state. None if no ball in model."""
+    def get_ball_state(self, ball: int = 0) -> BallState | None:
+        """Read ball *ball*'s state. None if no ball in model."""
         if self._ball_manager is not None:
-            return self._ball_manager.get_state()
+            return self._ball_manager.ball(ball).get_state()
         return None
 
-    def release_ball(self, velocity_mms: np.ndarray | None = None) -> None:
-        """Release ball from kinematic hold. Optionally set ejection velocity."""
+    def release_ball(self, velocity_mms: np.ndarray | None = None,
+                     ball: int = 0) -> None:
+        """Release ball *ball* from kinematic hold. Optionally set ejection velocity."""
         if self._ball_manager is not None:
-            self._ball_manager.release(velocity_mms)
+            self._ball_manager.ball(ball).release(velocity_mms)
 
     # ---- Public accessors ------------------------------------------------
 
