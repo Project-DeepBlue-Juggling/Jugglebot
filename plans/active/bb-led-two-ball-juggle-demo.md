@@ -153,7 +153,7 @@ pure-Python modules" boundary).
 | Phase | Scope | Status | Date | Risk | Validates |
 |-------|-------|--------|------|------|-----------|
 | 1 | Tempo & geometry feasibility study | COMPLETE | 2026-05-22 | Low | Pattern closes at a sane throw height |
-| 2 | Offline trajectory optimiser & player core | NOT STARTED | | Med | Optimised platform trajectory is smooth, periodic, jerk-bounded; sim plant tracks it open-loop |
+| 2 | Offline trajectory optimiser & player core | IN PROGRESS | 2026-05-22 | Med | Optimised platform trajectory is smooth, periodic, jerk-bounded; sim plant tracks it open-loop |
 | 3 | Full sim juggle demo | NOT STARTED | | Med | 30+ catches in MuJoCo with sim hand model + BallButlerSim + master timeline |
 | 4 | Hardware bring-up (open-loop) | NOT STARTED | | High | CAN/ROS2 integration; leg-limit raise; first hardware catches |
 | 5 | Hardware robustness & polish | NOT STARTED | | High | Sustained 30+ catches; abort hardening; optional QTM correction |
@@ -212,7 +212,18 @@ nearly scale-invariant — the overhaul is what unlocks lower throws later.
 `leg_vel_limit_rps: 4.0` is a conservative test value; legs bench-tested to
 3.4 m/s), so the optimiser objective is jerk minimisation.
 
-### Phase 2: Offline trajectory optimiser & player core — NOT STARTED
+### Phase 2: Offline trajectory optimiser & player core — IN PROGRESS (started 2026-05-22)
+
+**Progress (2026-05-22).** The player core has landed: `controller/demo/pattern.py`
+(oval geometry + tempo, reproducing the Phase 1 numbers),
+`controller/demo/trajectory.py` (`JuggleTrajectory` — periodic C2 evaluator —
+plus `build_analytic_oval`, the un-optimised baseline), and
+`controller/demo/player.py` (`TrajectoryPlayer`). Validated by
+`tests/sim/test_demo_trajectory.py` (13 unit tests) and
+`tests/sim/test_demo_sim_playback.py` (2 tests — open-loop MuJoCo playback +
+commanded leg-jerk metric). The CasADi jerk-minimising optimiser
+(`juggle_optimizer.py`) is the remaining Phase 2 deliverable; until it lands,
+`build_analytic_oval` is the trajectory source.
 
 **New/modified files:**
 - `controller/demo/pattern.py` (new)
