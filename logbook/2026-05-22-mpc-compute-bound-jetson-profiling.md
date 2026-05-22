@@ -21,6 +21,7 @@ files_changed:
   - logbook/2026-05-22-mpc-compute-bound-jetson-profiling.md
 commits:
   - 07fb47c
+  - 20a3a1f
 subsystem:
   - mpc
   - can
