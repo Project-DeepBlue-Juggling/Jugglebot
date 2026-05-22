@@ -1,0 +1,7 @@
+# Dependencies for standalone utilities in tools/.
+# Install:  pip install -r tools/requirements.txt
+#
+# render_report.py — Markdown-to-HTML report renderer
+markdown>=3.5
+pygments>=2.10
+pyyaml>=6.0
