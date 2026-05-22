@@ -126,7 +126,7 @@ OFFLINE (host): trajectory optimiser chooses, per event:
 
 | Phase | Scope | Status | Date | Risk | Validates |
 |-------|-------|--------|------|------|-----------|
-| 1 | Characterise the current generator empirically | NOT STARTED | | Low | Quantifies the acceleration steps and the `v²`/`1/v` scaling |
+| 1 | Characterise the current generator empirically | COMPLETE | 2026-05-22 | Low | Quantifies the acceleration steps and the `v²`/`1/v` scaling |
 | 2 | Design the jerk-limited profile family & parameterisation | NOT STARTED | | Med | Closed-form profile, jerk-bounded, validated offline in Python |
 | 3 | Reimplement `Trajectory.h` + Python port in lockstep | NOT STARTED | | Med | Firmware and port agree; jerk bounded; unit tests pass |
 | 4 | Hardware bring-up & jerk measurement | NOT STARTED | | High | Real throw/catch work; measured jerk reduced |
@@ -135,7 +135,7 @@ Phases are incremental; no phase depends on a later one.
 
 ## 4. Implementation Phases (detailed)
 
-### Phase 1: Characterise the current generator — NOT STARTED
+### Phase 1: Characterise the current generator — COMPLETE
 
 **Scope:** an empirical probe that constructs the current throw and catch
 profiles across the event-velocity range (`0.3`–`7.0 m/s`) and plots position,
@@ -147,6 +147,23 @@ function of `v`, and the `duration ∝ 1/v` scaling.
 per the `tools/probes/` convention), outputs to `temp/probes/`.
 
 **Dependencies:** none — uses the existing `sim/hand/trajectory.py` port.
+
+**Outcome (2026-05-22, commit `<pending>`):** COMPLETE. The reusable probe
+`tools/probes/hand_profile_probe.py` drives the real port classes across the
+`0.3–7.0 m/s` sweep and quantifies the baseline. **Headline finding:** the
+current throw/catch generator has piecewise-constant acceleration — it steps
+discontinuously at every segment boundary, up to **191 m/s² per step** for a
+`7 m/s` throw (`= 6054 rev/s² = 60.5×` the jerk-bounded `makeSmoothMove`
+acceleration limit). Peak acceleration is an exact `v²` law (`3.908·v²` m/s²
+throw) and motion duration an exact `1/v` law (`0.614/v` s) — the inverted
+scaling the overhaul fixes. The `catch_vel_ratio` open item is resolved:
+the firmware runs the authoritative **0.6**; the port hardcodes a divergent
+**0.9** (introduced 2026-03-21, commit `6859a9c`) — to be reconciled in
+Phase 3. Verification: scoped `pytest tests/sim/test_hand_profile_probe.py
+-q`, run 2026-05-22 → **12 passed**; full `pytest tests/ -q`, run 2026-05-22
+→ **1461 passed, 1 xfailed** (no regressions). See
+`logbook/2026-05-22-hand-generator-phase1-characterisation.md`.
+**Phase 2 cleared to start.**
 
 ### Phase 2: Design the jerk-limited profile family — NOT STARTED
 
@@ -230,12 +247,18 @@ Phase 1 baseline; confirm release-velocity accuracy and repeatability.
 
 ### Open items / decisions required
 
-- **`catch_vel_ratio` discrepancy.** `config/hardware_config.yaml` sets
-  `catch_vel_ratio: 0.6`; the Python port `sim/hand/trajectory.py` reportedly
-  uses `0.9`. The port is supposed to mirror the firmware — this divergence is
-  exactly the failure mode this plan's lockstep rule guards against, and it
-  must be reconciled (Phase 1). It is also tracked in
-  `plans/active/bb-led-two-ball-juggle-demo.md` §6.
+- **`catch_vel_ratio` discrepancy — RESOLVED (Phase 1, 2026-05-22).**
+  `config/hardware_config.yaml` → `config/generated/hardware_config.h` sets
+  `CATCH_VEL_RATIO = 0.6f`, and `Trajectory.h` reads that generated constant,
+  so **the Teensy firmware runs 0.6 — the authoritative value.** The Python
+  port `sim/hand/trajectory.py:36` hardcodes a divergent `0.9` (introduced
+  2026-03-21, commit `6859a9c`). The port at 0.9 is the incorrect copy and
+  **must be reconciled to 0.6 in Phase 3's lockstep rewrite** — unless 0.9
+  was a deliberate design intent, in which case the YAML moves to 0.9 and
+  the Teensy is re-flashed (a user/Phase-3 decision). The
+  `bb-led-two-ball-juggle-demo` session used 0.6 in its feasibility
+  arithmetic, which is correct — its Phase 1 table needs no revisiting.
+  Tracked also in `plans/active/bb-led-two-ball-juggle-demo.md` §6.
 - **Profile family.** 7-segment S-curve vs piecewise-quintic — decided in
   Phase 2 against the Phase 1 characterisation.
 - **CAN payload.** Whether the time budget and stroke start/end fit existing

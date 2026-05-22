@@ -6,6 +6,7 @@ Browse with `/logbook`, create entries with `/investigate` or `/logbook --new <t
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-05-22 | resolved | hand-trajectory-generator-overhaul — Phase 1 | Hand generator Phase 1 characterisation — current throw/catch has unbounded jerk (up to 191 m/s² accel-steps), peak accel ∝ v² / duration ∝ 1/v; catch_vel_ratio divergence resolved (firmware 0.6, port 0.9) | [2026-05-22-hand-generator-phase1-characterisation](2026-05-22-hand-generator-phase1-characterisation.md) |
 | 2026-05-22 | in-progress | hardware diagnostics / compute-capacity assessment | MPC is compute-bound on the Jetson Orin Nano — 17-40% of solves exceed the 40 Hz CPU-time budget; system-profiling harness built | [2026-05-22-mpc-compute-bound-jetson-profiling](2026-05-22-mpc-compute-bound-jetson-profiling.md) |
 | 2026-05-20 | in-progress | hardware-safety / fallback redesign | hold_extrap fallback positive-feedback oscillation drove platform into chaotic motion (peak 336.9 mm/s leg velocity, 2.41× soft limit; borderline-E-stop) | [2026-05-20-hold-extrap-positive-feedback-chaotic-motion](2026-05-20-hold-extrap-positive-feedback-chaotic-motion.md) |
 | 2026-05-20 | resolved | off-plan | MPC warm-start deadlock escape — failure-driven invalidation breaks chronic-CTE lockup (1769-tick hardware lockup → 21-tick worst burst; offline reproduction within 0.5 pp) | [2026-05-20-mpc-warmstart-deadlock-escape](2026-05-20-mpc-warmstart-deadlock-escape.md) |
