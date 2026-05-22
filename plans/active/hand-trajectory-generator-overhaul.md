@@ -148,7 +148,7 @@ per the `tools/probes/` convention), outputs to `temp/probes/`.
 
 **Dependencies:** none — uses the existing `sim/hand/trajectory.py` port.
 
-**Outcome (2026-05-22, commit `<pending>`):** COMPLETE. The reusable probe
+**Outcome (2026-05-22, commits `f65c78f` probe + `389bbae` logbook/plan):** COMPLETE. The reusable probe
 `tools/probes/hand_profile_probe.py` drives the real port classes across the
 `0.3–7.0 m/s` sweep and quantifies the baseline. **Headline finding:** the
 current throw/catch generator has piecewise-constant acceleration — it steps

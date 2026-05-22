@@ -16,7 +16,8 @@ files_changed:
   - logbook/INDEX.md
   - plans/active/hand-trajectory-generator-overhaul.md
 commits:
-  - <pending>
+  - f65c78f
+  - 389bbae
 subsystem:
   - hand
   - teensy
