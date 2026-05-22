@@ -1,6 +1,6 @@
 # tools/probes/ — Reusable Empirical-Probe Harnesses
 
-Probes fall into two families:
+Probes fall into three families:
 
 1. **Offline drivers** — scripts that drive the MPC / controller stack in
    a production-faithful way from recorded telemetry, to reproduce
@@ -10,6 +10,10 @@ Probes fall into two families:
    session (real robot, real ROS2 stack, real MPC) so a later analysis
    pass can attribute failures to hardware bottlenecks (CPU saturation,
    thermal / DVFS throttling, memory bandwidth, etc).
+3. **Characterisation harnesses** — scripts that drive a production code
+   path across a pinned parameter sweep to quantify its behaviour
+   (scaling laws, discontinuities, limits) before a redesign. No hardware,
+   no recorded telemetry — the production code is the subject under test.
 
 **These probes are committed to the repo** — distinct from one-off
 exploratory probes which still go to `/tmp/probe_*.py`. The split is
@@ -55,3 +59,9 @@ adapt — go here so the references stay live.
 | Probe | Purpose | Motivating logbook entry |
 |-------|---------|--------------------------|
 | `profile_session.py` | Records `tegrastats` (CPU/EMC/thermal/power), `pidstat` (per-process CPU / context switches / IO wait), `mpstat` (per-core utilisation), optional `py-spy` flame graphs per process name (`--py-spy-targets run_mpc.py,can_node`), optional `candump` CAN trace (`--candump can0`), plus a pre-flight snapshot (nvpmodel / governors / max freqs / ptrace_scope). Auto-analyses into a `report.md` that flags CPU saturation, DVFS throttling, thermal warnings, EMC saturation, memory pressure, top processes, CAN frame rate / top arbitration IDs, and cross-references can_node CPU% against CAN traffic to estimate per-frame dispatch cost. Subcommands: `start` / `stop` / `record` (Ctrl-C-able blocking mode) / `analyze`. | `logbook/2026-05-22-mpc-compute-bound-jetson-profiling.md` — the investigation that built this harness and used it to show the MPC is compute-bound on the Jetson Orin Nano |
+
+### Characterisation harnesses
+
+| Probe | Purpose | Motivating logbook entry |
+|-------|---------|--------------------------|
+| `hand_profile_probe.py` | Characterises the *current* hand throw/catch generator (`sim/hand/trajectory.py`, the port of Teensy `Trajectory.h`). Drives the real `HandThrowTrajectory` / `HandCatchTrajectory` / `HandSmoothMove` classes across the `0.3–7.0 m/s` event-velocity sweep; quantifies the piecewise-constant-acceleration discontinuities (analytic accel-step magnitudes + finite-difference 500 Hz jerk), the `peak accel ∝ v²` and `duration ∝ 1/v` scaling laws, and contrasts against the jerk-bounded `HandSmoothMove` reference. Records the `catch_vel_ratio` port-vs-firmware divergence. Outputs CSV / JSON / PNG to `temp/probes/`. | `logbook/2026-05-22-hand-generator-phase1-characterisation.md` — Phase 1 of the hand-trajectory-generator overhaul |
