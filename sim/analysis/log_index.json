@@ -830,6 +830,168 @@
       "verdict": "FAIL",
       "session_group": "2026-05-19_20-05-46",
       "note": "MPC session data itself clean (graceful telemetry_stale exit, correct); FAIL is the SYSTEM-level CAN-loss recovery behaviour \u2014 motors commanded IDLE on the CAN-fault->ERROR path, leaving the platform de-energised on reconnect (safe during disconnect, unsafe on reconnect). Operator-observed safety inversion; candidate /investigate."
+    },
+    "mpc_20260520_215909.csv": {
+      "analyzed": true,
+      "flags_count": 3,
+      "verdict": "NEEDS_ATTENTION",
+      "last_analyzed": "2026-05-20T12:14:34.906886Z",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-05-20_21-58-43",
+      "session_group": "2026-05-20_21-58-43",
+      "logbook_entry": "2026-05-20-hold-extrap-positive-feedback-chaotic-motion.md"
+    },
+    "mpc_20260520_215924.csv": {
+      "analyzed": true,
+      "flags_count": 3,
+      "verdict": "NEEDS_ATTENTION",
+      "last_analyzed": "2026-05-20T12:14:34.906886Z",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-05-20_21-58-43",
+      "session_group": "2026-05-20_21-58-43",
+      "logbook_entry": "2026-05-20-hold-extrap-positive-feedback-chaotic-motion.md"
+    },
+    "mpc_20260520_215936.csv": {
+      "analyzed": true,
+      "flags_count": 3,
+      "verdict": "NEEDS_ATTENTION",
+      "last_analyzed": "2026-05-20T12:14:34.906886Z",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-05-20_21-58-43",
+      "session_group": "2026-05-20_21-58-43",
+      "logbook_entry": "2026-05-20-hold-extrap-positive-feedback-chaotic-motion.md"
+    },
+    "mpc_20260520_215950.csv": {
+      "analyzed": true,
+      "flags_count": 4,
+      "verdict": "FAIL",
+      "last_analyzed": "2026-05-20T12:14:34.906886Z",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-05-20_21-58-43",
+      "session_group": "2026-05-20_21-58-43",
+      "logbook_entry": "2026-05-20-hold-extrap-positive-feedback-chaotic-motion.md"
+    },
+    "mpc_20260520_220004.csv": {
+      "analyzed": true,
+      "flags_count": 5,
+      "verdict": "FAIL",
+      "last_analyzed": "2026-05-20T12:14:34.906886Z",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-05-20_21-58-43",
+      "session_group": "2026-05-20_21-58-43",
+      "logbook_entry": "2026-05-20-hold-extrap-positive-feedback-chaotic-motion.md"
+    },
+    "mpc_20260520_220020.csv": {
+      "analyzed": true,
+      "flags_count": 3,
+      "verdict": "FAIL",
+      "last_analyzed": "2026-05-20T12:14:34.906886Z",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-05-20_21-58-43",
+      "session_group": "2026-05-20_21-58-43",
+      "logbook_entry": "2026-05-20-hold-extrap-positive-feedback-chaotic-motion.md"
+    },
+    "mpc_20260520_220030.csv": {
+      "analyzed": true,
+      "flags_count": 6,
+      "verdict": "FAIL",
+      "last_analyzed": "2026-05-20T12:14:34.906886Z",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-05-20_21-58-43",
+      "session_group": "2026-05-20_21-58-43",
+      "logbook_entry": "2026-05-20-hold-extrap-positive-feedback-chaotic-motion.md"
+    },
+    "mpc_20260520_220039.csv": {
+      "analyzed": true,
+      "flags_count": 6,
+      "verdict": "FAIL",
+      "last_analyzed": "2026-05-20T12:14:34.906886Z",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-05-20_21-58-43",
+      "session_group": "2026-05-20_21-58-43",
+      "logbook_entry": "2026-05-20-hold-extrap-positive-feedback-chaotic-motion.md"
+    },
+    "mpc_20260521_162245.csv": {
+      "analyzed": true,
+      "flags_count": 1,
+      "verdict": "PASS",
+      "last_analyzed": "2026-05-21T06:32:16.801208Z",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-05-21_16-22-31",
+      "session_group": "2026-05-21_16-22-31",
+      "phase": "hardware-safety / Tier-1 fallback rewrite validation"
+    },
+    "mpc_20260521_162302.csv": {
+      "analyzed": true,
+      "flags_count": 3,
+      "verdict": "NEEDS_ATTENTION",
+      "last_analyzed": "2026-05-21T06:32:16.801208Z",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-05-21_16-22-31",
+      "session_group": "2026-05-21_16-22-31",
+      "phase": "hardware-safety / Tier-1 fallback rewrite validation"
+    },
+    "mpc_20260521_162317.csv": {
+      "analyzed": true,
+      "flags_count": 3,
+      "verdict": "NEEDS_ATTENTION",
+      "last_analyzed": "2026-05-21T06:32:16.801208Z",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-05-21_16-22-31",
+      "session_group": "2026-05-21_16-22-31",
+      "phase": "hardware-safety / Tier-1 fallback rewrite validation"
+    },
+    "mpc_20260521_162338.csv": {
+      "analyzed": true,
+      "flags_count": 6,
+      "verdict": "NEEDS_ATTENTION",
+      "last_analyzed": "2026-05-21T06:32:16.801208Z",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-05-21_16-22-31",
+      "session_group": "2026-05-21_16-22-31",
+      "phase": "hardware-safety / Tier-1 fallback rewrite validation"
+    },
+    "mpc_20260521_162354.csv": {
+      "analyzed": true,
+      "flags_count": 5,
+      "verdict": "FAIL",
+      "last_analyzed": "2026-05-21T06:32:16.801208Z",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-05-21_16-22-31",
+      "session_group": "2026-05-21_16-22-31",
+      "phase": "hardware-safety / Tier-1 fallback rewrite validation"
+    },
+    "mpc_20260521_162408.csv": {
+      "analyzed": true,
+      "flags_count": 2,
+      "verdict": "NEEDS_ATTENTION",
+      "last_analyzed": "2026-05-21T06:32:16.801208Z",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-05-21_16-22-31",
+      "session_group": "2026-05-21_16-22-31",
+      "phase": "hardware-safety / Tier-1 fallback rewrite validation"
+    },
+    "mpc_20260521_162418.csv": {
+      "analyzed": true,
+      "flags_count": 4,
+      "verdict": "NEEDS_ATTENTION",
+      "last_analyzed": "2026-05-21T06:32:16.801208Z",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-05-21_16-22-31",
+      "session_group": "2026-05-21_16-22-31",
+      "phase": "hardware-safety / Tier-1 fallback rewrite validation"
+    },
+    "mpc_20260521_162434.csv": {
+      "analyzed": true,
+      "flags_count": 3,
+      "verdict": "NEEDS_ATTENTION",
+      "last_analyzed": "2026-05-21T06:32:16.801208Z",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-05-21_16-22-31",
+      "session_group": "2026-05-21_16-22-31",
+      "phase": "hardware-safety / Tier-1 fallback rewrite validation"
+    },
+    "mpc_20260521_162444.csv": {
+      "analyzed": true,
+      "flags_count": 5,
+      "verdict": "FAIL",
+      "last_analyzed": "2026-05-21T06:32:16.801208Z",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-05-21_16-22-31",
+      "session_group": "2026-05-21_16-22-31",
+      "phase": "hardware-safety / Tier-1 fallback rewrite validation"
+    },
+    "mpc_20260521_162454.csv": {
+      "analyzed": true,
+      "flags_count": 4,
+      "verdict": "NEEDS_ATTENTION",
+      "last_analyzed": "2026-05-21T06:32:16.801208Z",
+      "rosbag": "/home/jetson/Desktop/rosbags/2026-05-21_16-22-31",
+      "session_group": "2026-05-21_16-22-31",
+      "phase": "hardware-safety / Tier-1 fallback rewrite validation"
     }
   },
   "version": 1

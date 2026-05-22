@@ -271,8 +271,10 @@ class ZmqTargetSource:
                 # tick would otherwise rebuild the cache each tick, and
                 # each rebuild re-reads the live plant twist as the
                 # quintic's start-velocity boundary.  If the plant is in
-                # a fallback-driven runaway (cmd extrapolation during
-                # IPOPT hold_extrap), the runaway twist self-seeds the
+                # a fallback-driven runaway (cmd extrapolation during an
+                # IPOPT-failure fallback arm — Tier-1 fallback_extrap,
+                # logbook 2026-05-20-hold-extrap-positive-feedback-
+                # chaotic-motion.md), the runaway twist self-seeds the
                 # next ref → positive feedback → PLANT_TELEMETRY_COLLAPSE
                 # (see logbook 2026-04-19-bundle-a-quintic-ref-settling-
                 # and-live-twist-trap.md).  The scalar arrival_time is

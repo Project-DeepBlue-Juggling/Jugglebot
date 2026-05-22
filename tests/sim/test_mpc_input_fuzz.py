@@ -9,9 +9,13 @@ asserts two safety properties hold for every adversarial input:
    load-bearing safety property: a corrupted warm-start would cascade
    into the next solve and command non-finite extensions to the
    actuators.
-2. **Status-routing finiteness** — every status string falls into one of
-   five documented buckets (``Solve_Succeeded`` / ``fallback(...)`` /
-   ``hold(...)`` / ``hold_extrap(...)`` / ``cold_hold(...)``); the
+2. **Status-routing finiteness** — every status string falls into one
+   of the documented buckets (``Solve_Succeeded`` /
+   ``fallback(...)`` / ``fallback_extrap(...)`` /
+   ``fallback_hold(...)`` / ``cold_hold(...)``, plus the legacy buckets
+   ``hold(...)`` and ``hold_extrap(...)`` retained for replay of
+   pre-2026-05-20 logs — see logbook
+   ``2026-05-20-hold-extrap-positive-feedback-chaotic-motion.md``); the
    returned ``cmd`` is always finite.
 
 Test IDs from
@@ -41,7 +45,7 @@ Plus one structural test that documents the dead-field finding:
 | NaN in ``state.platform_pos_mm[i]``        | ``Invalid_Number_Detected``           | ``fallback(Invalid_Number_Detected)``          |
 | Inf in ``state.platform_rot[i]``           | ``Invalid_Number_Detected``           | ``fallback(Invalid_Number_Detected)``          |
 | NaN in ``target_pose[i]``                  | ``Invalid_Number_Detected``           | ``fallback(Invalid_Number_Detected)``          |
-| Inf in ``target_pose[2]``                  | ``Invalid_Number_Detected``           | ``hold_extrap(Invalid_Number_Detected)`` *     |
+| Inf in ``target_pose[2]``                  | ``Invalid_Number_Detected``           | ``cold_hold(Invalid_Number_Detected)`` *       |
 | NaN in ``ref_events[i].twist``             | ``Invalid_Number_Detected``           | ``fallback(Invalid_Number_Detected)``          |
 | ±1e10 mm in ``target_pose[i]``             | ``Solve_Succeeded``                    | ``Solve_Succeeded``                            |
 | ±1e10 mm in ``state.platform_pos_mm[i]``   | ``Solve_Succeeded``                    | ``Solve_Succeeded``                            |
@@ -49,12 +53,16 @@ Plus one structural test that documents the dead-field finding:
 | NaN in ``state.leg_velocities_mmps``       | ``Solve_Succeeded`` (q_dot is failure-only) | ``Solve_Succeeded``                       |
 | NaN in ``state.platform_twist``            | dead field — solve() never reads it    | ``Solve_Succeeded`` (identical cmd to clean)   |
 
-\\* Inf in ``target_pose[2]`` produces a finite-vs-infinite mid-node ref
-delta that trips the W7 walk-forward-unsafe ref-shift branch covered by
-Phase 2 — the resulting status is ``hold_extrap(...)``, not
-``fallback(...)``.  This is correct cascade behaviour but worth flagging
-because the surface (target_pose) and the symptom (Inf) are both Phase 3
-inputs, while the path is Phase 2 escalation.
+\\* Inf in ``target_pose[2]`` produces a non-finite reference that
+results in repeated solver failures; under the Tier-1 fallback rewrite
+(logbook ``2026-05-20-hold-extrap-positive-feedback-chaotic-motion.md``)
+the resulting cascade trips the 500 ms staleness bound and escalates to
+``cold_hold(...)``.  The pre-rewrite path routed through the W7
+walk-forward-unsafe ref-shift branch and produced ``hold_extrap(...)``;
+the rewrite replaced both with the homogeneous ``fallback_extrap`` arm
++ ``cold_hold`` escalation.  This is correct cascade behaviour but
+worth flagging because the surface (target_pose) and the symptom (Inf)
+are both Phase 3 inputs, while the path is Phase 2 escalation.
 
 The NaN-routing path produces a NEW IPOPT exit code
 ``Invalid_Number_Detected`` that Phase 1's ``TestFallbackKeywordMatrix``
@@ -95,7 +103,14 @@ _NAN_FAULT_KEYWORD = 'Invalid_Number_Detected'
 # The four documented status prefixes a non-success solve may produce.
 # Used by the warm-start-integrity invariant to assert "status is
 # either Solve_Succeeded or one of the fallback prefixes".
-_FALLBACK_PREFIXES = ('fallback(', 'hold_extrap(', 'hold(', 'cold_hold(')
+_FALLBACK_PREFIXES = (
+    'fallback(',           # IPOPT non-success status passed through to _handle_failure
+    'fallback_extrap(',    # primary cmd-stream-extrapolation arm (Tier-1 rewrite 2026-05-20)
+    'fallback_hold(',      # bootstrap arm when _prev_prev_u is None
+    'hold_extrap(',        # legacy (pre-2026-05-20 hold_extrap arm; no longer produced)
+    'hold(',               # legacy (pre-2026-05-20 cold-freeze arm; no longer produced)
+    'cold_hold(',          # absolute-fallback arm (cold-start OR 500 ms time-bound escalation)
+)
 
 
 # ---------------------------------------------------------------------
@@ -247,9 +262,18 @@ class TestNanInPlatformPos:
             f"NaN in platform_pos_mm[{axis}] should produce "
             f"{_NAN_FAULT_KEYWORD!r} in status; got {diag['status']!r}"
         )
-        assert diag['status'].startswith('fallback('), (
-            f"NaN in platform_pos_mm should route through walk-forward "
-            f"fallback (the snapshot is fresh from the seed solve); "
+        # Post-Tier-1-rewrite (2026-05-20): the IPOPT
+        # Invalid_Number_Detected return code routes through
+        # _handle_failure's primary linear cmd-stream extrapolation
+        # arm (status prefix ``fallback_extrap(``).  Pre-rewrite this
+        # routed through the walk-forward arm with prefix
+        # ``fallback(``.  Accept either to keep the test stable across
+        # the design change while ensuring the safety-routing intent
+        # is preserved.
+        assert (diag['status'].startswith('fallback_extrap(')
+                or diag['status'].startswith('fallback(')), (
+            f"NaN in platform_pos_mm should route through the "
+            f"linear-extrap fallback arm (or legacy fallback(...)); "
             f"got {diag['status']!r}"
         )
         _assert_warm_start_integrity(mpc)
@@ -600,7 +624,7 @@ class TestRecoveryAfterFuzzFault:
 
 # Module-scoped plant + MPC singletons reused across StateMachine
 # instances.  Same singleton-management pattern as
-# [test_solver_failures.py::W7WarmStartIntegrityMachine](test_solver_failures.py):
+# [test_solver_failures.py::WarmStartIntegrityMachine](test_solver_failures.py):
 # capture the real solver ONCE at module init and unconditionally
 # restore it in __init__ so a prior walk's state cannot bleed into
 # data generation (would otherwise produce FlakyStrategyDefinition).
@@ -813,27 +837,33 @@ class TestT1cLegExtNanCorruptsPrevU:
     History.  Phase 3 (commit 7582764) added this test marked
     ``xfail(strict=True)`` because the corruption was a real
     production bug:  q_cur (= ``state.leg_extensions_mm.copy()``)
-    flowed through the ``hold_extrap`` arm of ``_handle_failure``
-    via ``cmd = np.clip(q_cur + q_dot * dt, ...)``, propagating NaN
-    into ``self._prev_u`` and thereby corrupting the warm-start.
+    flowed through the (then-extant) ``hold_extrap`` arm of
+    ``_handle_failure`` via ``cmd = np.clip(q_cur + q_dot * dt, ...)``,
+    propagating NaN into ``self._prev_u`` and thereby corrupting the
+    warm-start.
 
     Fix (separate commit, see logbook
     2026-05-11-tier1c-input-fuzz-bugfix.md): ``_handle_failure`` now
     sanitizes non-finite ``q_cur`` / ``q_dot`` axes at function entry
     — per-axis substitution from ``_prev_u`` (or stroke margin if
     ``_prev_u`` is None) for ``q_cur``; per-axis substitution with
-    ``0.0`` for ``q_dot``.  This test now asserts the fix holds; if
-    it ever starts failing again, the corruption has regressed.
+    ``0.0`` for ``q_dot``.  The Tier-1 fallback rewrite of 2026-05-20
+    (logbook
+    ``2026-05-20-hold-extrap-positive-feedback-chaotic-motion.md``)
+    further removed ``q_dot`` from the cmd RHS entirely, so the
+    propagation path that originally created this bug no longer exists
+    — but the entry-point sanitization (and this regression pin) are
+    retained because q_cur still flows through the cold_hold arm.
 
     Reproducer recipe:
       1. Seed a successful solve (populates ``_prev_u``, ``_prev_w``,
-         W7 snapshot fields).
-      2. Force the W7 staleness branch by aging
-         ``_t_at_last_success`` past 500 ms.
+         success-time snapshot fields).
+      2. Force the staleness branch (now: cascade_too_long →
+         cold_hold) by aging ``_t_at_last_success`` past 500 ms.
       3. Set ``state.leg_extensions_mm[0] = NaN``.
       4. Solve.
       5. Assert ``_prev_u`` is finite (sanitization substituted
-         ``_prev_u[0]`` for the NaN axis before the hold_extrap arm
+         ``_prev_u[0]`` for the NaN axis before the cold_hold arm
          constructed cmd).
     """
 
@@ -852,7 +882,7 @@ class TestT1cLegExtNanCorruptsPrevU:
 
         assert mpc._prev_u is not None and np.all(np.isfinite(mpc._prev_u)), (
             f"REGRESSION: _prev_u contains non-finite values after a "
-            f"NaN-in-leg_extensions_mm fault on the hold_extrap path: "
+            f"NaN-in-leg_extensions_mm fault on the cold_hold path: "
             f"{mpc._prev_u!r}.  The _handle_failure entry sanitization "
             f"that was added in 2026-05-11-tier1c-input-fuzz-bugfix has "
             f"regressed."

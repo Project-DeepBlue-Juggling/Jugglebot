@@ -9,6 +9,7 @@ related_issues:
   - MPC_STALENESS
 related_entries:
   - 2026-05-20-mpc-warmstart-deadlock-escape
+  - 2026-05-20-hold-extrap-positive-feedback-chaotic-motion
 sessions:
   - mpc_20260418_184845.csv
   - mpc_20260418_185014.csv
@@ -88,6 +89,16 @@ Rejected alternatives: emitting `_timeout_hint` partial iterate as cmd (safety),
 Added per-segment `perf_counter` timings to `run_mpc_loop`, a `_GCTracker` that attributes `gc.callbacks` pauses to ticks, a ZMQ drain counter on `HardwarePlant.get_state`, and a stdout `OH SPIKE` breakdown when `overhead_ms > 15`. Extended `StepRecord` with 8 new columns (`t_getstate_ms`, `t_target_ms`, `t_solve_setup_ms`, `t_hooks_ms`, `t_cmd_ms`, `t_log_ms`, `gc_ms`, `zmq_drain_count`). All fields default to 0 so sim and older analysis tools remain compatible.
 
 ### Fix B — hold-branch plant-tracking extrapolation (commit a89a4dd)
+
+> **Superseded by the Tier-1 fallback rewrite of 2026-05-20** — see
+> [2026-05-20-hold-extrap-positive-feedback-chaotic-motion.md](2026-05-20-hold-extrap-positive-feedback-chaotic-motion.md).
+> The `cmd = q_cur + q_dot · dt0` formula in this Fix B is the *cause* of
+> the chaotic-motion safety event observed in `mpc_20260520_220030.csv`
+> (peak leg velocity 336.9 mm/s, 2.41× the 140 mm/s soft limit): the
+> positive-feedback loop plant velocity → q_dot read → fallback cmd →
+> motor PID drives plant → larger plant velocity is structurally present
+> in this design.  `_handle_failure` no longer reads `q_dot` on the cmd
+> RHS; the Tier-1 fallback emits `cmd = 2·prev_u − prev_prev_u` instead.
 
 `_handle_failure` now accepts an optional `q_dot` (measured leg velocities). In the hold branch (fires after `max_consecutive_failures` walk-forward steps), when `q_cur` and `q_dot` are both available it emits `cmd = q_cur + q_dot * dt0` rate-limited to `|cmd − prev_u| ≤ v_max·dt` and returns status `hold_extrap(...)`. The original freeze-at-prev_u behaviour is retained as a fallback for sim/cold paths where `q_dot` is None. Three call sites in `solve()` updated to pass `state.leg_velocities_mmps`. Walk-forward branch and cold_hold branch are unchanged.
 

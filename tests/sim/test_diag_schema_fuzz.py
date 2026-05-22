@@ -237,15 +237,17 @@ class TestT3aS1SolveSucceededSchema:
 # T-U-T3a-S2 — fallback walk-forward path
 # =====================================================================
 
-class TestT3aS2FallbackWalkForwardSchema:
-    """T-U-T3a-S2 — fallback (walk-forward) populates schema +
-    fallback_step.
+class TestT3aS2FallbackExtrapSchema:
+    """T-U-T3a-S2 — fallback (cmd-stream extrapolation) populates the
+    canonical schema with ``fallback_step = -1`` sentinel.
 
     Drive: NaN in ``state.platform_pos_mm`` → IPOPT
-    ``Invalid_Number_Detected`` → ``_handle_failure`` →
-    walk-forward arm (``self._prev_w`` exists from priming) →
-    diag['status'] starts with 'fallback(' AND diag has
-    ``fallback_step``.
+    ``Invalid_Number_Detected`` → ``_handle_failure`` → linear
+    cmd-stream extrapolation arm (Tier-1 rewrite 2026-05-20; replaced
+    the prior walk-forward arm) → diag['status'] starts with
+    ``fallback_extrap(``.  fallback_step is now the ``-1`` sentinel
+    on every path (walk-forward arm removed; see
+    DIAG_SCHEMA_CONTRACT.md "2026-05-20" History entry).
     """
 
     @pytest.mark.xfail(
@@ -257,7 +259,7 @@ class TestT3aS2FallbackWalkForwardSchema:
             'diag dict.'
         ),
     )
-    def test_t3a_s2_fallback_has_canonical_keys_plus_fallback_step(
+    def test_t3a_s2_fallback_extrap_has_canonical_keys(
         self, plant,
     ):
         mpc = _build_primed_mpc(plant)
@@ -268,29 +270,42 @@ class TestT3aS2FallbackWalkForwardSchema:
         # BEFORE solve() is reached.  We want solve() to see the NaN,
         # not the ref builder.
         ref = _build_ref(state)
-        # Prime with a successful solve so _prev_w is populated
-        # (required for walk-forward path).
+        # Prime with two successful solves so _prev_u AND _prev_prev_u
+        # are populated (required for the fallback_extrap arm; with
+        # only one success, the bootstrap fallback_hold arm fires
+        # instead — also schema-compliant, but a different path).
         for _ in range(2):
             cmd, cv, diag = _solve(mpc, state, ref_events=ref)
         assert diag['status'] == 'Solve_Succeeded', (
             f'prime failed: {diag["status"]!r}'
         )
-        # Now drive a NaN — should land on the walk-forward fallback
-        # because _prev_w exists and we haven't hit max consecutive.
+        # Now drive a NaN — should land on the linear cmd-stream
+        # extrapolation arm (Tier-1 rewrite; replaces walk-forward).
         state_nan = _state_with_nan_pos(state)
         cmd, cv, diag = _solve(mpc, state_nan, ref_events=ref,
                                warm_start_valid=True)
 
-        assert diag['status'].startswith('fallback('), (
-            f'expected fallback(...), got {diag["status"]!r}'
+        # Accept any fallback-class status: fallback_extrap (primary
+        # path), fallback_hold (bootstrap edge), fallback(...) (legacy
+        # status string used by the non_finite_solution and exception
+        # call sites that pass status_str through unmodified), or
+        # cold_hold (cold-start path).  The schema check is the
+        # invariant we care about.
+        assert any(diag['status'].startswith(p)
+                   for p in ('fallback_extrap(', 'fallback_hold(',
+                             'fallback(', 'cold_hold(')), (
+            f'expected fallback-class status, got {diag["status"]!r}'
         )
-        _assert_canonical_keys(diag, 'fallback(walk-forward)')
+        _assert_canonical_keys(diag, diag['status'])
         assert _FALLBACK_STEP_KEY in diag, (
-            f'fallback(walk-forward) MUST include fallback_step; '
+            f'every fallback path MUST include fallback_step; '
             f'keys: {sorted(diag.keys())}'
         )
-        assert diag[_FALLBACK_STEP_KEY] >= 0, (
-            f'fallback_step must be non-negative; got '
+        # Post-Tier-1 rewrite (2026-05-20): walk-forward arm removed
+        # → fallback_step is always the -1 sentinel.
+        assert diag[_FALLBACK_STEP_KEY] == -1, (
+            f'post-Tier-1 rewrite, fallback_step is always -1 '
+            f'(no walk-forward arm exists); got '
             f'{diag[_FALLBACK_STEP_KEY]!r}'
         )
 
@@ -299,13 +314,23 @@ class TestT3aS2FallbackWalkForwardSchema:
 # T-U-T3a-S3 — hold_extrap (escalation) path
 # =====================================================================
 
-class TestT3aS3HoldExtrapSchema:
-    """T-U-T3a-S3 — hold_extrap fires after max-consecutive-failures
-    OR when walk-forward becomes unsafe.  Schema-completeness must
-    hold here too.
+class TestT3aS3EscalationSchema:
+    """T-U-T3a-S3 — sustained-cascade escalation populates the
+    canonical schema.
 
-    Drive: prime MPC; NaN-spam until the walk-forward cursor
-    saturates / max_consecutive_failures trips → hold_extrap.
+    Post-Tier-1-rewrite (2026-05-20): escalation is purely time-based
+    (500 ms since last success → cold_hold(q_cur)).  Pre-rewrite this
+    was a heterogeneous ladder (walk-forward → hold_extrap →
+    cold_hold) gated on the failure counter; both the counter-based
+    escalation and the hold_extrap arm were removed.  This test
+    drives a sustained cascade and asserts the resulting escalation
+    status carries the canonical 8-key schema — accepting any
+    fallback-class family the design happens to land on.
+
+    Drive: prime MPC; NaN-spam until escalation fires.  The exact
+    landing arm depends on whether 500 ms wall-clock elapses during
+    the NaN-spam loop (it usually does on CI given solve-time
+    variability and the 12-tick spam below).
     """
 
     @pytest.mark.xfail(
@@ -316,7 +341,7 @@ class TestT3aS3HoldExtrapSchema:
             'on no failure path.  Bugfix commit unifies the schema.'
         ),
     )
-    def test_t3a_s3_hold_extrap_has_canonical_keys(self, plant):
+    def test_t3a_s3_escalation_has_canonical_keys(self, plant):
         mpc = _build_primed_mpc(plant)
         state = _state_at(plant)
         ref = _build_ref(state)  # see T-U-T3a-S2 for ref-from-clean rationale
@@ -324,21 +349,24 @@ class TestT3aS3HoldExtrapSchema:
         for _ in range(2):
             _solve(mpc, state, ref_events=ref)
 
-        # NaN-spam to escalate.  max_consecutive_failures default is
-        # small; 12 NaN solves is comfortably past the threshold.
+        # NaN-spam to drive a sustained cascade.  Under the Tier-1
+        # rewrite the loop emits fallback_extrap until the 500 ms
+        # time bound trips, then cold_hold.  Either family is
+        # schema-compliant.
         state_nan = _state_with_nan_pos(state)
         diag = None
         for _ in range(12):
             _, _, diag = _solve(mpc, state_nan, ref_events=ref,
                                 warm_start_valid=True)
 
-        # Expect hold_extrap (or a downstream hold/cold_hold escalation;
-        # the canonical-keys check applies to ANY of those).
+        # Accept any fallback-class status family from the post-rewrite
+        # design.  The schema check is the invariant we care about.
         assert any(diag['status'].startswith(p)
-                   for p in ('hold_extrap(', 'hold(', 'cold_hold(')), (
-            f'expected an escalation status; got {diag["status"]!r}'
+                   for p in ('fallback_extrap(', 'fallback_hold(',
+                             'fallback(', 'cold_hold(')), (
+            f'expected a fallback-class status; got {diag["status"]!r}'
         )
-        _assert_canonical_keys(diag, 'hold_extrap')
+        _assert_canonical_keys(diag, diag['status'])
 
 
 # =====================================================================

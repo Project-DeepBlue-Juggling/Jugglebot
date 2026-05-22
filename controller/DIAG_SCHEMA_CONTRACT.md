@@ -20,13 +20,13 @@ non_finite_solution, exception):
 | ID | Key | Type | Domain | Producer | Consumer |
 |----|-----|------|--------|----------|----------|
 | **D1** | `solve_time_ms` | `float` | `[0, ∞)` | wall-clock cost of the solve attempt | `runner.log_mpc_step` → CSV column `solve_time_ms`; dashboards |
-| **D2** | `status` | `str` | one of: `Solve_Succeeded`, `Solved_To_Acceptable_Level`, `fallback(…)`, `hold_extrap(…)`, `hold(…)`, `cold_hold(…)` (where `…` is the underlying status string) | `solve()` (success) or `_handle_failure` (failure paths) | `runner.log_mpc_step` → `solve_status`; fallback-class detection at `runner.py:315` |
+| **D2** | `status` | `str` | one of: `Solve_Succeeded`, `Solved_To_Acceptable_Level`, `fallback(…)`, `fallback_extrap(…)`, `fallback_hold(…)`, `cold_hold(…)`, plus historical (pre-2026-05-20) values `hold_extrap(…)` and `hold(…)` (no longer produced; see "History") (where `…` is the underlying status string) | `solve()` (success) or `_handle_failure` (failure paths) | `runner.log_mpc_step` → `solve_status`; fallback-class detection at `runner.py:315` (substring match on `'fallback'`, `'hold'`, or `'cold_hold'` covers every documented family) |
 | **D3** | `iter_count` | `int` | `[0, ∞)`; `0` is the failure-path sentinel | `solver.stats()['iter_count']` (success) or `0` (failure) | `runner.log_mpc_step` → `ipopt_iter` |
 | **D4** | `cost` | `float` | `[0, ∞)` finite or `0.0` (failure sentinel) | `float(sol['f'])` (success) or `0.0` (failure) | `runner.log_mpc_step` → `cost` |
 | **D5** | `constraint_violation` | `float` | `[0, ∞)` finite or `0.0` (failure sentinel) | max bound/inequality violation (success) or `0.0` (failure) | `runner.log_mpc_step` → `constraint_violation` |
 | **D6** | `cmd_next_mm` | `np.ndarray (6,)` or `None` | per-leg next-step command (success) or `None` (failure) | success path or `None` sentinel on failure | motor guard's Hermite interpolation (see `HOT_LOOP_CONTRACT.md`) |
 | **D7** | `cmd_next2_mm` | `np.ndarray (6,)` or `None` | per-leg two-step-ahead command | same as D6 | motor guard look-ahead |
-| **D8** | `fallback_step` | `int` | `-1` (sentinel: no walk-forward active) or `[0, N-1]` | `_handle_failure` walk-forward arm | future debugging / dashboards (not currently logged to CSV) |
+| **D8** | `fallback_step` | `int` | `-1` (sentinel: walk-forward arm not active).  Pre-2026-05-20 the walk-forward arm overwrote this with `[0, N-1]`; after the Tier-1 fallback rewrite the value is `-1` on every path (no walk-forward arm exists) — the key remains present per the no-removal rule below. | `_handle_failure` (sentinel `-1` post-rewrite) | future debugging / dashboards (not currently logged to CSV) |
 
 ## D-INV: Invariants
 
@@ -36,7 +36,7 @@ non_finite_solution, exception):
 | **D-INV-2** | `D1 (solve_time_ms) >= 0`. |
 | **D-INV-3** | `D2 (status)` is one of the documented status families. |
 | **D-INV-4** | `D3 (iter_count) >= 0`.  Pre-fix, this key was MISSING on failure paths; post-fix it is always present (`0` sentinel on failure). |
-| **D-INV-5** | `D8 (fallback_step) == -1` on every path EXCEPT the walk-forward fallback arm, where `0 <= D8 <= N-1`.  Pre-fix, this key was MISSING on success and on the non-walk-forward failure arms. |
+| **D-INV-5** | `D8 (fallback_step) == -1` on every path.  Pre-2026-05-12 fix this key was MISSING on success and on the non-walk-forward failure arms.  Between 2026-05-12 and 2026-05-20 the walk-forward arm overwrote `D8 = k ∈ [0, N-1]`; the 2026-05-20 Tier-1 fallback rewrite removed walk-forward, so `D8` is now always `-1`.  The key remains present for schema stability per the no-removal rule. |
 
 The contract is enforced by:
 
@@ -135,3 +135,14 @@ tool.  If a key is no longer meaningful, pick a sentinel
   `fallback_step=-1`; success path populates `fallback_step=-1` too)
   in the Tier 3a bugfix commit.  All four schema xfails lifted; the
   property test now enforces the invariant.
+* **2026-05-20**: Tier-1 fallback rewrite removed the walk-forward
+  and `hold_extrap` arms after the 2026-05-20 hardware safety event
+  (positive-feedback oscillation via `q_dot`-driven `hold_extrap`;
+  peak leg_vel 336.9 mm/s, 2.41× soft limit; see
+  [logbook entry](../logbook/2026-05-20-hold-extrap-positive-feedback-chaotic-motion.md)).
+  D2 (status) gained `fallback_extrap(…)` and `fallback_hold(…)`
+  families.  D8 (`fallback_step`) is now `-1` on every path (the
+  key remains present per the no-removal rule).  `hold_extrap(…)`
+  and `hold(…)` are no longer emitted by `_handle_failure` but
+  remain documented above because historical CSVs / dashboards may
+  reference them.

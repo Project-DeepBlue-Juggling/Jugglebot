@@ -403,10 +403,13 @@ class MPCController:
         self._prev_u: np.ndarray | None = None
         self._prev_prev_u: np.ndarray | None = None
         self._consecutive_failures: int = 0
-        # Index of the planned node to emit on the NEXT fallback tick.
-        # Reset to 0 on success; incremented after each fallback so
-        # consecutive fallbacks walk forward along the last successful plan
-        # (prev_w[6k : 6(k+1)]) instead of all emitting the same u[1].
+        # TODO(tier2-fallback): Reserved for the Tier-2 trajectory-aware
+        # fallback (deferred per logbook
+        # 2026-05-20-hold-extrap-positive-feedback-chaotic-motion.md).
+        # Currently always 0; the post-rewrite _handle_failure does not
+        # increment it.  Reset writes at solve() success / warm_start_valid
+        # / deadlock-escape / exception / reset() are retained so the field
+        # is safe to revive without re-auditing those paths.
         self._fallback_step: int = 0
         self._prev_solve_time: float | None = None
         self._last_actual_dt: float | None = None
@@ -415,12 +418,16 @@ class MPCController:
         self._last_ref_traj: np.ndarray | None = None
         self._last_twist_traj: np.ndarray | None = None
         self._last_accel_traj: np.ndarray | None = None
-        # W7: snapshot of the reference at the last successful solve — used
-        # by _handle_failure to detect a large ref-shift during a fallback
-        # streak.  On large shift OR 500 ms staleness, walk-forward is
-        # abandoned in favour of hold_extrap (plant-tracking) to prevent
-        # the 223902 cascade where walk-forward committed to an old plan
-        # while the target flipped.
+        # Snapshots of the reference and time-of-last-success.  Post the
+        # Tier-1 fallback rewrite (logbook
+        # 2026-05-20-hold-extrap-positive-feedback-chaotic-motion.md) only
+        # _t_at_last_success is read on the failure path — the
+        # cascade_too_long check in _handle_failure escalates to
+        # cold_hold(q_cur) after 500 ms of consecutive failures.
+        # TODO(tier2-fallback): _ref_at_last_success_mid and
+        # _twist_at_last_success are dead state today; retained for the
+        # Tier-2 trajectory-aware fallback.  See the writer site below
+        # (success path of solve()) for the paired TODO.
         self._ref_at_last_success_mid: np.ndarray | None = None
         self._twist_at_last_success: np.ndarray | None = None
         self._t_at_last_success: float | None = None
@@ -1012,15 +1019,14 @@ class MPCController:
             self._fallback_step = 0
 
         # Failure-driven warm-start invalidation (deadlock escape).  Once
-        # walk-forward has been exhausted (_consecutive_failures >
-        # max_consecutive_failures), the fallback chain has moved into
-        # hold_extrap and the cached warm-start vectors are byproducts of
-        # repeatedly-failed solves.  Reusing them creates a self-sustaining
-        # Maximum_CpuTime_Exceeded cascade where IPOPT exits with
-        # iter_count=0 on every subsequent tick (the ~22 ms budget is
-        # exhausted in init / KKT factorisation / bad-warm-start
-        # consumption before the iteration loop runs).  See
-        # logbook/2026-05-20-mpc-warmstart-deadlock-escape.md for the
+        # the cmd-stream extrapolation has been emitted for more than
+        # max_consecutive_failures consecutive ticks, the cached warm-start
+        # vectors are byproducts of repeatedly-failed solves.  Reusing them
+        # creates a self-sustaining Maximum_CpuTime_Exceeded cascade where
+        # IPOPT exits with iter_count=0 on every subsequent tick (the
+        # ~22 ms budget is exhausted in init / KKT factorisation /
+        # bad-warm-start consumption before the iteration loop runs).
+        # See logbook/2026-05-20-mpc-warmstart-deadlock-escape.md for the
         # 1769-tick hardware chronic run this guard breaks (and the
         # offline replay that reproduces it within 0.5 pp).  Mirrors the
         # warm_start_valid=False block above — same canonical enforcement
@@ -1028,7 +1034,9 @@ class MPCController:
         # K1–K6 / W5 warm-start contract: the cached vectors are
         # invalidated when EITHER the reference shifts structurally OR
         # sustained failure indicates they no longer reflect a usable
-        # solution.
+        # solution.  Mechanism is unchanged from the pre-Tier-1-rewrite
+        # implementation; only the "what's running during the cascade"
+        # wording is updated.
         if self._consecutive_failures > self._params.max_consecutive_failures:
             if self._prev_w is not None or self._timeout_hint is not None:
                 logger.warning(
@@ -1168,10 +1176,16 @@ class MPCController:
                           np.asarray(sol['lam_x']).ravel())
                 self._prev_lam_g = self._prev_lam_g_buf
                 self._prev_lam_x = self._prev_lam_x_buf
-                # W7: snapshot ref mid-horizon at success so _handle_failure
-                # can detect ref shifts that happened AFTER this success.
-                # Mid-node (min(N, 5)) avoids edge-effects at the ref's
-                # extrapolation ends.
+                # TODO(tier2-fallback): _ref_at_last_success_mid and
+                # _twist_at_last_success are retained for the Tier-2
+                # trajectory-aware fallback (deferred per logbook
+                # 2026-05-20-hold-extrap-positive-feedback-chaotic-motion.md).
+                # Post-Tier-1 rewrite only _t_at_last_success is read on
+                # the failure path (cascade_too_long check in
+                # _handle_failure); the ref/twist snapshots are written
+                # but unread.  Kept on the hot path so Tier 2 can revive
+                # trajectory-aware emission without re-introducing a
+                # stateful sequencing bug.
                 mid_k = min(self._N, 5)
                 self._ref_at_last_success_mid = ref_traj[mid_k].copy()
                 self._twist_at_last_success = twist_traj[0].copy()
@@ -1579,22 +1593,33 @@ class MPCController:
 
         Returns (cmd, cmd_vel, diag) matching solve()'s return signature.
 
-        When ``q_dot`` is provided (measured leg velocities) and the
-        walk-forward cursor has saturated at u[N-1], the fallback switches
-        from "freeze cmd at last planned node" to "extrapolate along
-        measured plant motion".  Without this, a burst longer than N-1
-        ticks leaves cmd stationary while the plant (tau=40 ms) coasts
-        past — the ODrive PID then has to recoil, producing the audible
-        fighting observed on every move.
+        Tier-1 rewrite (2026-05-20): emits a *linear extrapolation of
+        the recent cmd stream* — ``cmd = 2·_prev_u − _prev_prev_u``,
+        workspace-clamped and rate-limited.  The emission does NOT
+        depend on measured plant velocity ``q_dot``.  This breaks the
+        positive-feedback path (plant velocity → q_dot read →
+        fallback cmd → motor PID drives plant → larger plant velocity)
+        that produced the chaotic motion event in
+        ``temp/logs/mpc_20260520_220030.csv`` (peak leg_vel
+        336.9 mm/s, 2.41× the 140 mm/s ``max_leg_vel_mmps`` soft
+        limit).  Replaces the prior walk-forward + ``hold_extrap``
+        ladder, which were both shown empirically and on hardware to
+        have failure modes the cmd-stream primitive does not.  See
+        logbook ``2026-05-20-hold-extrap-positive-feedback-chaotic-motion.md``
+        for the full diagnosis.
 
-        Non-finite ``q_cur`` / ``q_dot`` axes are sanitized at entry —
-        per-axis substitution from ``_prev_u`` (or stroke margin if
-        ``_prev_u`` is None) for ``q_cur``, zero for ``q_dot``.  This
-        prevents the corruption cascade where a single bad sensor read
-        on the failure path propagates NaN through the ``hold_extrap``
-        / ``cold_hold`` arms into ``self._prev_u``, leaving the next
-        solve's warm-start corrupted.  See logbook
-        2026-05-11-tier1c-input-fuzz-bugfix.md for the full trace.
+        Time-bounded: after 500 ms of consecutive failures (matching
+        the pre-existing W7 "plan stale" threshold), escalates to
+        ``cold_hold(q_cur)`` — a measured-position hold with
+        ``cmd_vel = 0``.
+
+        Non-finite ``q_cur`` axes are sanitized per-axis from
+        ``_prev_u`` (or stroke margin if ``_prev_u`` is None) so the
+        cold_hold escalation never propagates NaN.  See logbook
+        ``2026-05-11-tier1c-input-fuzz-bugfix.md`` for the original
+        sanitization trace.  ``q_dot`` is sanitized too (for
+        future-proofing and to match the prior signature) but does
+        not appear on the RHS of the emitted ``cmd``.
         """
         self._consecutive_failures += 1
         logger.warning(
@@ -1605,20 +1630,15 @@ class MPCController:
         stroke = self._params.stroke_mm
         margin = self._params.stroke_margin_mm
         dt0 = self._params.dt_schedule[0]
-        N = self._N
+        max_delta = self._params.max_leg_vel_mmps * dt0
 
-        # Sanitize non-finite q_cur / q_dot before any downstream arm
-        # reads them.  Per-axis policy:
-        #   * q_cur: substitute the corresponding axis from self._prev_u
-        #     (the last commanded leg extension — our best-known-good
-        #     position when the live sensor read is corrupt).  If
-        #     _prev_u is None (cold start), substitute the stroke
-        #     margin to match cold_hold's absolute-fallback policy.
-        #   * q_dot: substitute zero (no known motion is the
-        #     conservative assumption when the velocity sensor is bad).
-        # Defensively .copy() before mutating because q_dot is passed
-        # from solve() as state.leg_velocities_mmps WITHOUT a copy
-        # (would otherwise mutate the plant's internal buffer).
+        # Sanitize non-finite q_cur / q_dot.  q_cur's NaN-scrub
+        # protects the cold_hold escalation path below.  q_dot's
+        # scrub is preserved from the prior implementation for
+        # forward compatibility (q_dot does not influence cmd under
+        # this rewrite, but the .copy() defends the plant's internal
+        # buffer from in-place mutation by any future caller that
+        # reuses the sanitised view).
         if q_cur is not None and not np.all(np.isfinite(q_cur)):
             q_cur = q_cur.copy()
             bad = ~np.isfinite(q_cur)
@@ -1631,16 +1651,10 @@ class MPCController:
             q_dot[~np.isfinite(q_dot)] = 0.0
 
         # Diag schema — see controller/DIAG_SCHEMA_CONTRACT.md.
-        # All 8 canonical keys populated on every failure path;
-        # fallback_step=-1 is the sentinel meaning "no walk-forward
-        # step active" (overwritten with the per-step counter in the
-        # walk-forward branch below).  iter_count=0 means "no IPOPT
-        # iteration count available on this path" — the failure
-        # cases don't have a converged solve to report iterations
-        # for.  Consumers can distinguish "successful solve in 0
-        # iterations" (impossible: IPOPT always runs >=1 iter) from
-        # "failure path" via diag['status'] starting with one of
-        # the failure-class prefixes.
+        # All 8 canonical keys populated.  fallback_step=-1 is the
+        # sentinel meaning "no walk-forward step active"; with
+        # walk-forward removed this stays -1 on every path below
+        # (preserves the contract value for downstream consumers).
         diag = {
             'solve_time_ms': solve_ms,
             'status': f'fallback({status_str})',
@@ -1652,107 +1666,79 @@ class MPCController:
             'fallback_step': -1,
         }
 
-        # W7: detect when walk-forward on the old plan is unsafe.  Two
-        # conditions force a switch to plant-tracking hold_extrap:
-        #   (1) the current reference mid-node has moved > 20 mm vs the
-        #       snapshot taken at last success, OR any linear velocity axis
-        #       has reversed direction (plant is committed to one direction
-        #       while ref wants the other — the 223902 cascade mechanism);
-        #   (2) the last success is > 500 ms old (the cached plan is too
-        #       stale to be a trusted commander any further).
-        walk_forward_unsafe = False
-        if (self._ref_at_last_success_mid is not None
-                and self._last_ref_traj is not None):
-            mid_k = min(self._N, 5)
-            ref_mid_now = self._last_ref_traj[mid_k]
-            delta = ref_mid_now[:3] - self._ref_at_last_success_mid[:3]
-            if np.max(np.abs(delta)) > 20.0:
-                walk_forward_unsafe = True
-            if (not walk_forward_unsafe
-                    and self._twist_at_last_success is not None
-                    and self._last_twist_traj is not None):
-                v_new = self._last_twist_traj[0]
-                v_old = self._twist_at_last_success
-                for i in range(3):
-                    if abs(v_old[i]) > 10.0 and v_new[i] * v_old[i] < 0:
-                        walk_forward_unsafe = True
-                        break
-        if self._t_at_last_success is not None:
-            if _time.perf_counter() - self._t_at_last_success > 0.5:
-                walk_forward_unsafe = True
+        # 500 ms time-bound: escalate to cold_hold(q_cur) when the
+        # cascade has been running long enough that even the cmd
+        # stream's recent history is unreliable as a forward
+        # predictor.  Matches the W7 "plan too stale to trust"
+        # threshold used in the prior implementation.
+        cascade_too_long = (
+            self._t_at_last_success is not None
+            and _time.perf_counter() - self._t_at_last_success > 0.5
+        )
 
-        if (self._prev_w is not None
-                and not walk_forward_unsafe
-                and self._consecutive_failures <= self._params.max_consecutive_failures):
-            # Walk forward along the last successful plan: on the k-th
-            # consecutive fallback emit prev_w[6k : 6(k+1)] — i.e. u[k]
-            # from the plan the solver computed at the last success.
-            # This is the step the MPC would have commanded had the next
-            # k solves converged, so it stays on the previously optimal
-            # trajectory rather than freezing at u[1] (which was the old
-            # behaviour that caused the cmd_ext sawtooth and 440-sample
-            # hold stutter on off-Active multi-axis moves).
-            self._fallback_step += 1
-            k = min(self._fallback_step, N - 1)
+        # Primary path: linear cmd-stream extrapolation.
+        # cmd[k+1] = 2·_prev_u − _prev_prev_u continues the recent
+        # cmd trajectory at constant velocity.  Workspace-clamped
+        # and rate-limited against _prev_u (NOT q_cur — see
+        # 2026-04-17 sawtooth entry for why anchoring to plant
+        # state during overshoot makes things worse).
+        if (not cascade_too_long
+                and self._prev_u is not None
+                and self._prev_prev_u is not None):
             prev_u = self._prev_u
-            max_delta = self._params.max_leg_vel_mmps * dt0
-            cmd = np.clip(self._prev_w[6 * k: 6 * (k + 1)], margin, stroke - margin)
-            # Rate-limit against the last emitted command (NOT q_cur —
-            # clamping against q_cur pulls cmd toward the plant when it
-            # has overshot a held command, producing the large backwards
-            # single-sample drops previously observed).  prev_w already
-            # respects the plan's rate limit by construction; this clamp
-            # is belt-and-braces for the first fallback after a success
-            # where prev_u and prev_w[0:6] may differ slightly.
-            if prev_u is not None:
-                cmd = np.clip(cmd, prev_u - max_delta, prev_u + max_delta)
-            # Forward-looking cmd_vel from the NEXT planned node, so the
-            # motor guard keeps its feedforward signal during the fallback
-            # chain (previously cmd_vel went to zero after the first tick,
-            # contributing to the overshoot).
-            k_next = min(k + 1, N - 1)
-            cmd_next = np.clip(
-                self._prev_w[6 * k_next: 6 * (k_next + 1)],
-                margin, stroke - margin,
-            )
-            cmd_vel = (cmd_next - cmd) / dt0
-            self._prev_prev_u = prev_u.copy() if prev_u is not None else cmd.copy()
-            self._prev_u = cmd
-            diag['fallback_step'] = k
+            prev_prev_u = self._prev_prev_u
+            cmd = 2.0 * prev_u - prev_prev_u
+            cmd = np.clip(cmd, margin, stroke - margin)
+            cmd = np.clip(cmd, prev_u - max_delta, prev_u + max_delta)
+            cmd_vel = (cmd - prev_u) / dt0
+            diag['status'] = f'fallback_extrap({status_str})'
+            np.copyto(self._prev_prev_u_buf, prev_u)
+            self._prev_prev_u = self._prev_prev_u_buf
+            np.copyto(self._prev_u_buf, cmd)
+            self._prev_u = self._prev_u_buf
             return cmd, cmd_vel, diag
 
-        if self._prev_u is not None:
-            prev_u = self._prev_u
-            # Prefer plant-tracking extrapolation over a pure freeze.  With
-            # cmd frozen at prev_u, the actuator (tau=40 ms) keeps coasting
-            # past cmd → ODrive PID recoils to correct → audible fighting.
-            # With cmd = q_cur + q_dot * dt, cmd leads the plant by one
-            # fine-step and the PID sees a continuous signal rather than a
-            # stationary one to fight.  Rate-limited so q_dot noise cannot
-            # command jumps larger than a normal solver-driven step.
-            # Falls back to the old freeze behavior when no measured state
-            # is available (cold path / sim paths that don't pass q_dot).
-            if q_cur is not None and q_dot is not None:
-                max_delta = self._params.max_leg_vel_mmps * dt0
-                cmd = np.clip(q_cur + q_dot * dt0, margin, stroke - margin)
-                cmd = np.clip(cmd, prev_u - max_delta, prev_u + max_delta)
-                self._prev_prev_u = prev_u.copy()
-                self._prev_u = cmd
-                diag['status'] = f'hold_extrap({status_str})'
-                return cmd, q_dot.copy(), diag
-            # Cold freeze — Δu = 0 so prev_prev = prev
-            self._prev_prev_u = prev_u.copy()
-            diag['status'] = f'hold({status_str})'
-            return prev_u.copy(), np.zeros(6), diag
+        # Bootstrap path: only one tick of cmd history.  Emit a
+        # zero-velocity hold at the last commanded value.  Reached
+        # via two routes:
+        #   (1) The literal first failure after a single successful
+        #       solve, before _prev_prev_u differs from _prev_u.  In
+        #       production this is rare because the success path at
+        #       solve() (mpc.py:1195-1201) seeds _prev_prev_u from
+        #       _prev_u on every success, so by the second-ever
+        #       solve both are populated.
+        #   (2) The tick after a cold_hold cold-start emission
+        #       (below), which sets _prev_u to q_cur but leaves
+        #       _prev_prev_u as None.  If the next solve also fails,
+        #       fallback_extrap's (_prev_prev_u is not None) guard
+        #       is False and we land here.  Cold-start-followed-by-
+        #       sustained-failure is a legitimate code path on
+        #       hardware bringup or after reset() during a chronic-
+        #       failure window.
+        if not cascade_too_long and self._prev_u is not None:
+            cmd = self._prev_u.copy()
+            np.copyto(self._prev_prev_u_buf, self._prev_u)
+            self._prev_prev_u = self._prev_prev_u_buf
+            diag['status'] = f'fallback_hold({status_str})'
+            return cmd, np.zeros(6), diag
 
-        # Absolute fallback: hold at current position if known, otherwise
-        # margin-safe minimum.  Using q_cur prevents the dangerous ~150mm
-        # command jump that occurs when the solver times out on first solve
-        # while the platform is at Active (~154mm).
+        # Absolute fallback (cold_hold): hold at the current measured
+        # position with cmd_vel=0.  Reached on cold-start (no
+        # _prev_u yet, so the very first failed solve) OR after the
+        # 500 ms cascade time bound.  Anchoring on q_cur (not the
+        # extrapolated _prev_u) is intentional: at the safety-anchor
+        # point we want a clear "stop where you are" signal even if
+        # that means a one-tick discontinuity between the
+        # extrapolated cmd stream and the platform's measured
+        # position — this is by design at the escalation boundary.
         diag['status'] = f'cold_hold({status_str})'
         if q_cur is not None:
             cmd = np.clip(q_cur.copy(), margin, stroke - margin)
-            self._prev_u = cmd
+            if self._prev_u is not None:
+                np.copyto(self._prev_prev_u_buf, self._prev_u)
+                self._prev_prev_u = self._prev_prev_u_buf
+            np.copyto(self._prev_u_buf, cmd)
+            self._prev_u = self._prev_u_buf
             return cmd, np.zeros(6), diag
         return np.full(6, margin), np.zeros(6), diag
 
