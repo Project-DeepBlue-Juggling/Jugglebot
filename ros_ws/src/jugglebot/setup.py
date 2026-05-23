@@ -39,6 +39,7 @@ setup(
             # ── Ball tracking & catch ──────────────────────────
             'ball_tracker_node = jugglebot.ball_tracker_node:main',
             'catch_coordinator_node = jugglebot.catch_coordinator_node:main',
+            'catch_correlation_node = jugglebot.catch_correlation_node:main',
             # ── Standalone processes (not ROS2 nodes) ─────────
             'motor_guard = jugglebot.motion.motor_guard:main',
         ],
