@@ -24,6 +24,8 @@ CLI:
     python sim/juggle_demo.py                       # 30 s headless run
     python sim/juggle_demo.py --duration 10
     python sim/juggle_demo.py --viewer              # MuJoCo passive viewer
+    python sim/juggle_demo.py --realtime-rate 0.5   # half-speed slowmo
+    python sim/juggle_demo.py --dashboard           # http://localhost:8082
     python sim/juggle_demo.py --abort-at 5.0        # abort mid-pattern
 
 Programmatic:
@@ -70,6 +72,7 @@ if _repo_root not in sys.path:
 
 from controller.ballistics import compute_launch_velocity
 from controller.demo.pattern import JugglePattern
+from controller.telemetry import record_from_arrays
 from controller.demo.player import TrajectoryPlayer
 from controller.demo.timeline import (
     DEFAULT_BB_LEAD_S, Event, MasterTimeline,
@@ -143,6 +146,13 @@ class JuggleDemoConfig:
     log_path: Optional[str] = None
     headless: bool = True                  # if False, launch MuJoCo viewer
     use_optimised_trajectory: bool = True  # if False, use build_analytic_oval
+    realtime_rate: float = 0.0             # 0 = free-running (fastest); 1.0 =
+                                            # wall-clock real-time; 0.5 = half
+                                            # speed (slowmo). Wall-paces the
+                                            # main loop after each plant.step.
+    dashboard: bool = False                # if True, start the telemetry
+                                            # dashboard on `dashboard_port`
+    dashboard_port: int = 8082
 
 
 @dataclasses.dataclass
@@ -295,11 +305,24 @@ class _JuggleDemoRunner:
         if cfg.log_path:
             self._open_csv(cfg.log_path)
 
+        # ---- Live dashboard ---------------------------------------------
+        self._dashboard = None
+        if cfg.dashboard:
+            # Lazy import — the dashboard server pulls in http.server and
+            # threading; the headless integration tests don't need them.
+            from sim.viz.dashboard.server import DashboardServer
+            self._dashboard = DashboardServer(port=cfg.dashboard_port)
+            self._dashboard.start()
+        self._last_hand_cmd_mm = 0.0       # for the StepRecord.hand_cmd_mm field
+
     # ---- Lifecycle ------------------------------------------------------
     def close(self) -> None:
         if self._csv_fp is not None:
             self._csv_fp.close()
             self._csv_fp = None
+        if self._dashboard is not None:
+            self._dashboard.stop()
+            self._dashboard = None
 
     # ---- One control tick ----------------------------------------------
     def tick(self, t_wall: float) -> None:
@@ -346,15 +369,35 @@ class _JuggleDemoRunner:
         # 8. Telemetry.
         if self._csv_writer is not None:
             self._write_csv_row(new_t_wall, cmd)
+        if self._dashboard is not None:
+            self._broadcast_dashboard_record(new_t_wall, cmd)
 
     # ---- Run loop -------------------------------------------------------
     def run(self, viewer_handle=None) -> JuggleDemoStats:
         n_steps = int(round(self.cfg.duration_s / CONTROL_DT_S))
-        for _ in range(n_steps):
+        # Wall-time pacing: when ``realtime_rate > 0`` the loop sleeps so
+        # one tick of sim time takes ``CONTROL_DT_S / realtime_rate``
+        # seconds of wall time. ``1.0`` = real-time, ``0.5`` = half-speed
+        # slowmo, ``2.0`` = 2x fast playback. ``0`` (default) skips the
+        # pacing entirely so tests and headless runs go as fast as MuJoCo
+        # can integrate (the existing behaviour).
+        rate = self.cfg.realtime_rate
+        wall_dt = CONTROL_DT_S / rate if rate > 0.0 else 0.0
+        wall_t0 = time.monotonic()
+        for step in range(n_steps):
             t_wall = float(self.plant.get_state().time)
             self.tick(t_wall)
             if viewer_handle is not None:
                 viewer_handle.sync()
+            if wall_dt > 0.0:
+                # Sleep until the next tick's scheduled wall-time. Using
+                # an absolute schedule rather than per-tick sleep keeps
+                # the pacing accurate over long runs (no drift from
+                # cumulative sleep-undershoot).
+                target = wall_t0 + (step + 1) * wall_dt
+                remaining = target - time.monotonic()
+                if remaining > 0.0:
+                    time.sleep(remaining)
         return JuggleDemoStats(
             captures=list(self.captures),
             drops=list(self.drops),
@@ -499,6 +542,7 @@ class _JuggleDemoRunner:
                 pos = head.sequence.sample(t_wall)
                 if pos is not None:
                     self.plant.command_hand(pos)
+                    self._last_hand_cmd_mm = pos
                     if not head.released and t_wall >= head.sequence.release_time:
                         # Sim-only velocity override (see module docstring
                         # and :meth:`_analytic_release_velocity_world_mms`):
@@ -531,6 +575,7 @@ class _JuggleDemoRunner:
                 pos = head.sequence.sample(t_wall)
                 if pos is not None:
                     self.plant.command_hand(pos)
+                    self._last_hand_cmd_mm = pos
 
     # ---- Capture / drop polling ----------------------------------------
     def _poll_captures(self, t_wall: float) -> None:
@@ -586,6 +631,27 @@ class _JuggleDemoRunner:
             'cmd_ext0', 'cmd_ext1', 'cmd_ext2',
             'cmd_ext3', 'cmd_ext4', 'cmd_ext5',
         ])
+
+    def _broadcast_dashboard_record(self, t_wall: float, cmd) -> None:
+        """Push one StepRecord per tick to the connected dashboard clients."""
+        state = self.plant.get_state()
+        sim_time = t_wall - self._t_start
+        record = record_from_arrays(
+            time=sim_time,
+            ref_pose=cmd.pose,
+            ref_twist=cmd.twist,
+            actual_pose=np.concatenate([state.platform_pos_mm, state.platform_rot]),
+            actual_twist=state.platform_twist,
+            cmd_extensions=cmd.ext_mm,
+            actual_extensions=state.leg_extensions_mm,
+            leg_velocities=state.leg_velocities_mmps,
+            hand_cmd_mm=self._last_hand_cmd_mm,
+            hand_pos_mm=state.hand_pos_mm or 0.0,
+            hand_vel_mmps=state.hand_vel_mmps or 0.0,
+            solve_status="ok",     # no MPC; placeholder for the dashboard schema
+            t_ref_s=sim_time,
+        )
+        self._dashboard.broadcast(record)
 
     def _write_csv_row(self, t_wall: float, cmd) -> None:
         state = self.plant.get_state()
@@ -646,6 +712,15 @@ def main(argv: Optional[list[str]] = None) -> int:
                         help="Disable CSV logging")
     parser.add_argument('--analytic-baseline', action='store_true',
                         help="Use the un-optimised analytic oval (debugging only)")
+    parser.add_argument('--realtime-rate', type=float, default=0.0,
+                        help="Wall-clock pacing: 1.0 = real-time, 0.5 = half-"
+                             "speed slowmo, 2.0 = 2x, 0 (default) = free-"
+                             "running (fastest)")
+    parser.add_argument('--dashboard', action='store_true',
+                        help="Start the live telemetry dashboard "
+                             "(http://localhost:8082)")
+    parser.add_argument('--dashboard-port', type=int, default=8082,
+                        help="Dashboard HTTP/SSE port (default 8082)")
     args = parser.parse_args(argv)
 
     if args.no_log:
@@ -665,6 +740,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         log_path=log_path,
         headless=not args.viewer,
         use_optimised_trajectory=not args.analytic_baseline,
+        realtime_rate=args.realtime_rate,
+        dashboard=args.dashboard,
+        dashboard_port=args.dashboard_port,
     )
     t_start = time.time()
     stats = run(cfg)
