@@ -381,6 +381,7 @@ teensy_trajectory:
   end_profile_hold_s: 0.10              # Hold time at end of motion profile {s}
   sample_rate_hz: 500                   # Trajectory sample rate {Hz}
   max_smooth_move_hand_accel_rps2: 100.0  # Max hand acceleration for smooth moves {rev/s^2}
+  max_event_hand_accel_rps2: 6000.0       # Max hand acceleration for jerk-limited throw/catch events {rev/s^2}. Anchored on Phase 1 measurement of the legacy piecewise-constant generator (6054 rev/s^2 at v=7 m/s); Phase 4 tunes empirically on hardware. Used by Phase 2+ generator.
   quintic_s2_max: 5.7735027             # Max |s''| for quintic polynomial 10t^3 - 15t^4 + 6t^5
   min_event_vel_mps: 0.3                 # Minimum hand event velocity {m/s}
   max_event_vel_mps: 7.0                 # Maximum hand event velocity {m/s}

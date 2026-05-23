@@ -181,6 +181,7 @@ namespace TeensyTraj {
   constexpr float END_PROFILE_HOLD_S = 0.1f;
   constexpr uint32_t SAMPLE_RATE_HZ = 500u;
   constexpr float MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2 = 100.0f;
+  constexpr float MAX_EVENT_HAND_ACCEL_RPS2 = 6000.0f;
   constexpr float QUINTIC_S2_MAX = 5.7735027f;
   constexpr float MIN_EVENT_VEL_MPS = 0.3f;
   constexpr float MAX_EVENT_VEL_MPS = 7.0f;
