@@ -27,10 +27,9 @@ GRAVITY_MPS2 = 9.806
 # constants: effective stroke 0.315 m, inertia_ratio 0.747,
 # throw_vel_hold_pct 0.05, catch_vel_hold_pct 0.10, catch_vel_ratio 0.6.
 #
-# NOTE: catch_vel_ratio 0.6 is the hardware_config value; sim/hand/trajectory.py
-# currently uses 0.9. That discrepancy is tracked in both plan documents and
-# owned by the hand-generator side-quest; if it resolves to 0.9, CATCH_DUR_COEF
-# must be recomputed (a faster catch -> smaller coefficient).
+# The port `sim/hand/trajectory.py` was reconciled to catch_vel_ratio = 0.6
+# on 2026-05-23 (logbook/2026-05-23-catch-vel-ratio-port-reconciled.md), so
+# CATCH_DUR_COEF below is consistent with both firmware and port.
 THROW_DUR_COEF = 0.614
 CATCH_DUR_COEF = 0.998
 

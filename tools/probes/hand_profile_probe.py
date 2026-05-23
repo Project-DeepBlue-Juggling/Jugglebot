@@ -23,19 +23,15 @@ limitations Phase 1 of the overhaul plan needs measured:
 ``HandSmoothMove`` (the already-quintic, jerk-bounded point-to-point move) is
 characterised alongside as the design reference point for Phase 2.
 
-catch_vel_ratio divergence (open item, resolved by this probe)
---------------------------------------------------------------
+catch_vel_ratio — port reconciled to firmware (2026-05-23)
+----------------------------------------------------------
 ``config/hardware_config.yaml`` → ``config/generated/hardware_config.h`` sets
-``CATCH_VEL_RATIO = 0.6f`` — that is the value the Teensy firmware *compiles
-and runs*. The Python port hardcodes ``CATCH_VEL_RATIO = 0.9``
-(``sim/hand/trajectory.py`` line 36, introduced in commit 6859a9c). The
-firmware is the source of truth, so **0.6 is the authoritative hardware
-value** and the port is the divergent copy. The probe reads whatever the
-port exports, records both values in its JSON output, and prints a WARNING
-on every run so the divergence stays visible until Phase 3 reconciles the
-port. Catch acceleration magnitudes therefore scale with ``ratio^2``: at the
-firmware ratio the realised catch accel/jerk are ``(0.6/0.9)^2 = 0.44x`` the
-values this probe reports for the port.
+``CATCH_VEL_RATIO = 0.6f`` — what the Teensy firmware compiles and runs.
+Phase 1 found the Python port had drifted to a hardcoded ``0.9`` (introduced
+2026-03-21 in commit 6859a9c); the port was reconciled to ``0.6`` on
+2026-05-23 so port and firmware now agree. The probe still reads the port's
+exported value and records both side-by-side in the JSON for traceability;
+the WARNING fires only if a future drift re-opens the divergence.
 
 Outputs (all written to temp/probes/, gitignored)
 --------------------------------------------------
@@ -290,9 +286,12 @@ def run_probe() -> dict:
             "port_value": CATCH_VEL_RATIO,
             "firmware_value": FIRMWARE_CATCH_VEL_RATIO,
             "divergent": CATCH_VEL_RATIO != FIRMWARE_CATCH_VEL_RATIO,
-            "note": ("Firmware (config/hardware_config.h) is authoritative; "
-                     "port hardcodes a divergent value. Catch accel scales "
-                     "with ratio^2."),
+            "note": (
+                "Port matches firmware (config/hardware_config.h)."
+                if CATCH_VEL_RATIO == FIRMWARE_CATCH_VEL_RATIO else
+                "Port DIVERGES from firmware — firmware is authoritative. "
+                "Catch analytic accel scales with ratio^2."
+            ),
         },
         "velocity_sweep": {
             "min_mps": SWEEP_V_MIN, "max_mps": SWEEP_V_MAX,

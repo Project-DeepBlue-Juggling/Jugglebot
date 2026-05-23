@@ -15,7 +15,8 @@ The headline findings locked here:
   "backwards" scaling the overhaul fixes.
 * ``HandSmoothMove`` (already quintic) is jerk- and acceleration-bounded —
   the design reference for Phase 2.
-* The ``catch_vel_ratio`` port-vs-firmware divergence (0.9 vs 0.6).
+* The ``catch_vel_ratio`` port/firmware reconciliation (both 0.6 since
+  2026-05-23; the probe still records both side-by-side as a drift guard).
 
 Logbook: logbook/2026-05-22-hand-generator-phase1-characterisation.md
 """
@@ -146,11 +147,16 @@ def test_probe_measurements_are_deterministic():
     assert probe.run_probe() == probe.run_probe()
 
 
-# ── catch_vel_ratio divergence is surfaced ───────────────────────────────
+# ── catch_vel_ratio: port reconciled to firmware (0.6) ──────────────────
 
-def test_catch_vel_ratio_divergence_is_flagged():
-    """The probe records the port (0.9) vs firmware (0.6) catch_vel_ratio."""
+def test_catch_vel_ratio_matches_firmware():
+    """The port matches the firmware-authoritative value (both 0.6).
+
+    Phase 1 found the port had drifted to a hardcoded 0.9; it was reconciled
+    to 0.6 on 2026-05-23 so port and firmware agree. This test fails (and
+    surfaces the regression) if anyone re-introduces a drift.
+    """
     cvr = probe.run_probe()["catch_vel_ratio"]
-    assert cvr["port_value"] == 0.9
     assert cvr["firmware_value"] == 0.6
-    assert cvr["divergent"] is True
+    assert cvr["port_value"] == cvr["firmware_value"]
+    assert cvr["divergent"] is False

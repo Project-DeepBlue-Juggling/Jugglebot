@@ -22,7 +22,7 @@ Both catch and throw trajectories use the same 3-segment structure: **accelerate
 |---|---|---|
 | `HAND_STROKE_M` | 0.355 m | Physical hand stroke |
 | `STROKE_MARGIN_M` | 0.02 m | Safety margin at each end |
-| `CATCH_VEL_RATIO` | 0.9 | Hand velocity = 90% of ball speed |
+| `CATCH_VEL_RATIO` | 0.6 | Hand velocity = 60% of ball speed |
 | `INERTIA_RATIO` | 0.747 | Decel/accel duration ratio (asymmetric profile) |
 | `CATCH_VEL_HOLD_PCT` | 0.10 | 10% of effective stroke at constant velocity |
 | `THROW_VEL_HOLD_PCT` | 0.05 | 5% of effective stroke at constant velocity |
