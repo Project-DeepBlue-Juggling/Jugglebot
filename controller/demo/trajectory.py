@@ -5,10 +5,11 @@ of ``(pose, twist, accel)`` on a uniform time grid and evaluates it at any
 time by C2-continuous quintic-Hermite interpolation, wrapping periodically.
 
 ``build_analytic_oval`` produces a smooth analytic oval directly from a
-``JugglePattern``. It is the un-optimised baseline used to bring up and
-validate the player pipeline; the offline jerk optimiser
-(``juggle_optimizer.py``, Phase 2 — pending) will produce an optimised
-``JuggleTrajectory`` that replaces it.
+``JugglePattern``. The offline jerk optimiser (``juggle_optimizer.py``)
+produces an optimised ``JuggleTrajectory`` via
+:func:`optimise_juggle_trajectory`; ``build_analytic_oval`` remains
+available as the un-optimised baseline and as the optimiser's warm-start
+source.
 
 Pure NumPy — no ROS2, no CasADi.
 """

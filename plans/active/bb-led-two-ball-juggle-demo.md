@@ -214,16 +214,43 @@ nearly scale-invariant — the overhaul is what unlocks lower throws later.
 
 ### Phase 2: Offline trajectory optimiser & player core — IN PROGRESS (started 2026-05-22)
 
-**Progress (2026-05-22).** The player core has landed: `controller/demo/pattern.py`
-(oval geometry + tempo, reproducing the Phase 1 numbers),
-`controller/demo/trajectory.py` (`JuggleTrajectory` — periodic C2 evaluator —
-plus `build_analytic_oval`, the un-optimised baseline), and
+**Progress (2026-05-22 → 2026-05-23).** The player core landed 2026-05-22:
+`controller/demo/pattern.py` (oval geometry + tempo, reproducing the Phase 1
+numbers), `controller/demo/trajectory.py` (`JuggleTrajectory` — periodic C2
+evaluator — plus `build_analytic_oval`, the un-optimised baseline), and
 `controller/demo/player.py` (`TrajectoryPlayer`). Validated by
 `tests/sim/test_demo_trajectory.py` (13 unit tests) and
 `tests/sim/test_demo_sim_playback.py` (2 tests — open-loop MuJoCo playback +
-commanded leg-jerk metric). The CasADi jerk-minimising optimiser
-(`juggle_optimizer.py`) is the remaining Phase 2 deliverable; until it lands,
-`build_analytic_oval` is the trajectory source.
+commanded leg-jerk metric).
+
+The CasADi jerk-minimising optimiser landed 2026-05-23 (this commit) as
+`controller/demo/juggle_optimizer.py` — a **level-platform first cut**.
+Discretisation: N quintic-Hermite knots over one period (each knot stores
+`pose`, `twist`, `accel`); analytical per-segment jerk integral via
+`controller/hermite.quintic_jerk_integral` makes the objective a low-degree
+polynomial in the decision variables. Constraints: hard throw keyframe (pose
+== `pattern.throw_pose`; twist x/y match the ballistic launch velocity
+`(catch.x − throw.x) / flight_time`; twist z = 0), hard catch keyframe at
+`t_rel == catch_offset` (default `flight_time − P` per the `throw[k] ↔
+catch[k+1]` matching rule), level-locked banking (rx=ry=rz=0 and their
+twist/accel zeroed), simple xy/z workspace box. Periodicity is built into
+knot-index wraparound (`segment k → knot (k+1) % N`). Warm-started from the
+analytic oval; IPOPT converges in ~20 iterations from default seed. Output:
+an :class:`OptimizerResult` (dense-resampled `JuggleTrajectory` + the raw
+N-knot arrays + objective value + iteration count); `save_optimised_trajectory`
+writes `.npz` loadable by `JuggleTrajectory.load`.
+
+**Deferred to a follow-up cut** (own commit, later session): orientation
+banking as free DOFs during the carry phase, leg-space (not pose-space) jerk
+objective, leg velocity/acceleration inequality constraints (tied to the
+Phase 4 `hardware_config.yaml` raise), and the priming transient (the
+exit transient is already provided by Phase 3b's `ExitTransient`). The
+level-platform pose-jerk first cut is sufficient to unblock Phase 3c.
+
+Validated by `tests/sim/test_demo_juggle_optimizer.py` (17 tests covering
+T-U3 throw constraint / T-U4 catch constraint, periodicity, level-lock,
+workspace bounds, custom catch_offset, save/load roundtrip, IPOPT
+convergence, drop-in compatibility with `TrajectoryPlayer`).
 
 **New/modified files:**
 - `controller/demo/pattern.py` (new)
