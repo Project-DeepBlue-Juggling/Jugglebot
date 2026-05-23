@@ -101,6 +101,11 @@ can_ids:
     RESET_CMD:        0x7D3
     CALIBRATE_LOC_CMD: 0x7D4
 
+  # Catching Cone Teensy <-> Host
+  catching_cone:
+    CATCH_EVENT:      0x7E0
+    HEARTBEAT:        0x7E1
+
 # =============================================================================
 # Ball Butler State Machine
 # =============================================================================
@@ -123,6 +128,20 @@ ball_butler:
   errors:
     NONE:           0
     RELOAD_FAILED:  1
+
+# =============================================================================
+# Catching Cone State Machine
+# =============================================================================
+catching_cone:
+  # If no CAN heartbeat frame is received within this window, the cone is considered disconnected
+  heartbeat_timeout_ms: 500
+
+  # States — encoded in CONE_HEARTBEAT byte 0
+  states:
+    BOOT:      0
+    UNSYNCED:  1   # running, no time-sync acquired yet
+    READY:     2   # synced, armed, waiting for an impact
+    ERROR:     127
 
 # =============================================================================
 # Encoding / Scaling

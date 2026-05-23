@@ -103,6 +103,10 @@ CAN_ID_BB_RELOAD_CMD = 0x7D2
 CAN_ID_BB_RESET_CMD = 0x7D3
 CAN_ID_BB_CALIBRATE_LOC_CMD = 0x7D4
 
+# Catching Cone Teensy <-> Host
+CAN_ID_CC_CATCH_EVENT = 0x7E0
+CAN_ID_CC_HEARTBEAT = 0x7E1
+
 # ============================================================================
 # Ball Butler State Machine
 # ============================================================================
@@ -124,6 +128,19 @@ class BallButlerStates(IntEnum):
 class BallButlerError(IntEnum):
     NONE = 0
     RELOAD_FAILED = 1
+
+# ============================================================================
+# Catching Cone State Machine
+# ============================================================================
+
+CC_HEARTBEAT_TIMEOUT_MS = 500
+
+# States — encoded in CONE_HEARTBEAT byte 0
+class CatchingConeStates(IntEnum):
+    BOOT = 0
+    UNSYNCED = 1
+    READY = 2
+    ERROR = 127
 
 # ============================================================================
 # Encoding / Scaling

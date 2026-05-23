@@ -119,6 +119,12 @@ namespace BallButlerCanId {
   constexpr uint32_t CALIBRATE_LOC_CMD = 0x7D4;
 }
 
+// Catching Cone Teensy <-> Host
+namespace CatchingConeCanId {
+  constexpr uint32_t CATCH_EVENT = 0x7E0;
+  constexpr uint32_t HEARTBEAT = 0x7E1;
+}
+
 // ==========================================================================
 // Ball Butler State Machine
 // ==========================================================================
@@ -143,6 +149,22 @@ namespace BallButlerState {
 namespace BallButlerErrorCode {
   constexpr uint8_t NONE = 0;
   constexpr uint8_t RELOAD_FAILED = 1;
+}
+
+// ==========================================================================
+// Catching Cone State Machine
+// ==========================================================================
+
+namespace CatchingCone {
+  constexpr uint32_t HEARTBEAT_TIMEOUT_MS = 500u;
+}
+
+// States — encoded in CONE_HEARTBEAT byte 0
+namespace CatchingConeState {
+  constexpr uint8_t BOOT = 0;
+  constexpr uint8_t UNSYNCED = 1;
+  constexpr uint8_t READY = 2;
+  constexpr uint8_t ERROR = 127;
 }
 
 // ==========================================================================

@@ -385,6 +385,19 @@ BB_BD_MAX_MISSING_SAMPLES = 5
 BB_BD_CHECK_TIMEOUT_MS = 100
 
 # ============================================================================
+# Catching Cone
+# ============================================================================
+
+CC_PIEZO_PIN = 2
+CC_DEAD_TIME_US = 500000
+CC_REPORT_DELAY_US = 30000
+CC_HEARTBEAT_PERIOD_MS = 100
+CC_DELTA_OK_MS = 5.0
+CC_DELTA_WARN_MS = 15.0
+CC_OFFSET_DISPLAY_LIMIT_MS = 50.0
+CC_OFFSET_HISTORY_LEN = 12
+
+# ============================================================================
 # Derived Constants (computed by generator)
 # ============================================================================
 

@@ -32,6 +32,7 @@ OUTPUT_DIR = SCRIPT_DIR / "generated"
 ROS_PKG_DIR = REPO_ROOT / "ros_ws" / "src" / "jugglebot" / "jugglebot"
 BB_FIRMWARE_DIR = REPO_ROOT.parent / "BallButler" / "ball_butler_main"
 PLATFORM_FIRMWARE_DIR = REPO_ROOT / "ros_ws" / "src" / "jugglebot" / "Teensy_code"
+CATCHING_CONE_FIRMWARE_DIR = REPO_ROOT / "ros_ws" / "src" / "jugglebot" / "CatchingCone_code"
 GUI_JS_DIR = REPO_ROOT / "ros_ws" / "gui" / "js"
 
 
@@ -149,6 +150,14 @@ def generate_cpp(cfg: dict) -> str:
         lines.append(f"  constexpr uint32_t {name} = {fmt_hex(val)};")
     lines.append("}")
 
+    # Catching Cone CAN IDs
+    lines.append("")
+    lines.append("// Catching Cone Teensy <-> Host")
+    lines.append("namespace CatchingConeCanId {")
+    for name, val in cfg["can_ids"]["catching_cone"].items():
+        lines.append(f"  constexpr uint32_t {name} = {fmt_hex(val)};")
+    lines.append("}")
+
     # Ball Butler scalar constants
     lines += cpp_section("Ball Butler State Machine")
     lines.append("namespace BallButler {")
@@ -171,6 +180,21 @@ def generate_cpp(cfg: dict) -> str:
     lines.append("// Error codes — encoded in heartbeat byte 1 when state == ERROR")
     lines.append("namespace BallButlerErrorCode {")
     for name, val in cfg["ball_butler"]["errors"].items():
+        lines.append(f"  constexpr uint8_t {name} = {val};")
+    lines.append("}")
+
+    # Catching Cone scalar constants + states
+    lines += cpp_section("Catching Cone State Machine")
+    lines.append("namespace CatchingCone {")
+    for name, val in cfg["catching_cone"].items():
+        if not isinstance(val, dict):
+            ctype, cval = _cpp_type_and_val(val)
+            lines.append(f"  constexpr {ctype} {name.upper()} = {cval};")
+    lines.append("}")
+    lines.append("")
+    lines.append("// States — encoded in CONE_HEARTBEAT byte 0")
+    lines.append("namespace CatchingConeState {")
+    for name, val in cfg["catching_cone"]["states"].items():
         lines.append(f"  constexpr uint8_t {name} = {val};")
     lines.append("}")
 
@@ -306,6 +330,12 @@ def generate_python(cfg: dict) -> str:
     lines.append("# Ball Butler Teensy <-> Host")
     for name, val in cfg["can_ids"]["ball_butler"].items():
         lines.append(f"CAN_ID_BB_{name} = {fmt_hex(val)}")
+    lines.append("")
+
+    # Catching Cone CAN IDs
+    lines.append("# Catching Cone Teensy <-> Host")
+    for name, val in cfg["can_ids"]["catching_cone"].items():
+        lines.append(f"CAN_ID_CC_{name} = {fmt_hex(val)}")
 
     # Ball Butler scalar constants (e.g. heartbeat_timeout_ms)
     lines += py_section("Ball Butler State Machine")
@@ -325,6 +355,17 @@ def generate_python(cfg: dict) -> str:
     lines.append("# Error codes — encoded in heartbeat byte 1 when state == ERROR")
     lines.append("class BallButlerError(IntEnum):")
     for name, val in cfg["ball_butler"]["errors"].items():
+        lines.append(f"    {name} = {val}")
+
+    # Catching Cone scalar constants + states
+    lines += py_section("Catching Cone State Machine")
+    for name, val in cfg["catching_cone"].items():
+        if not isinstance(val, dict):
+            lines.append(f"CC_{name.upper()} = {val}")
+    lines.append("")
+    lines.append("# States — encoded in CONE_HEARTBEAT byte 0")
+    lines.append("class CatchingConeStates(IntEnum):")
+    for name, val in cfg["catching_cone"]["states"].items():
         lines.append(f"    {name} = {val}")
 
     # Heartbeat encoding
@@ -397,6 +438,8 @@ HW_SECTIONS = [
     ("ball_butler_operational",  "BB_OP_",     "BBOp",       "Ball Butler Operational"),
     ("ball_butler_heartbeat",    "BB_HB_",     "BBHb",       "Ball Butler Heartbeat Encoding"),
     ("ball_butler_ball_detect",  "BB_BD_",     "BBBallDetect","Ball Butler Ball Detection"),
+    # 23. Catching Cone
+    ("catching_cone",            "CC_",        "CatchingCone","Catching Cone"),
 ]
 
 
@@ -425,6 +468,26 @@ def _py_val(val) -> str:
     if isinstance(val, bool):
         return "True" if val else "False"
     return repr(val)
+
+
+def _check_catching_cone_key_collision(proto_cfg: dict, hw_cfg: dict) -> None:
+    """Both YAMLs reopen the `CatchingCone` C++ namespace.
+
+    Scalar key collisions across the two sections would cause a `constexpr`
+    redefinition compile error in the firmware (which #includes both
+    headers). Raise early with a clear diagnostic instead.
+    """
+    proto_cc = proto_cfg.get("catching_cone", {})
+    hw_cc = hw_cfg.get("catching_cone", {})
+    proto_scalars = {k for k, v in proto_cc.items() if not isinstance(v, dict)}
+    hw_scalars = {k for k, v in hw_cc.items() if not isinstance(v, dict)}
+    collisions = proto_scalars & hw_scalars
+    if collisions:
+        raise RuntimeError(
+            "catching_cone key collision between protocol_config.yaml and "
+            f"hardware_config.yaml: {sorted(collisions)} — both reopen the "
+            "C++ `CatchingCone` namespace; rename one or move the key."
+        )
 
 
 def compute_derived(cfg: dict) -> dict:
@@ -723,6 +786,19 @@ def generate_gui_js(hw_cfg: dict, proto_cfg: dict) -> str:
         f"export const BB_HAND_STROKE_MM = {bb_hand_stroke_mm};",
     ]
 
+    # Catching cone panel constants (delta thresholds + sound-bar axis)
+    cc = hw_cfg.get("catching_cone", {})
+    if cc:
+        lines += [
+            "",
+            "// ---- Catching cone (hardware_config.yaml -> catching_cone) ----",
+            "",
+            f"export const CC_DELTA_OK_MS = {cc['delta_ok_ms']};",
+            f"export const CC_DELTA_WARN_MS = {cc['delta_warn_ms']};",
+            f"export const CC_OFFSET_DISPLAY_LIMIT_MS = {cc['offset_display_limit_ms']};",
+            f"export const CC_OFFSET_HISTORY_LEN = {cc['offset_history_len']};",
+        ]
+
     # ODrive states from protocol config
     lines += [
         "",
@@ -827,6 +903,7 @@ def main():
     extra_copies = [
         (cpp_content, BB_FIRMWARE_DIR / "protocol_config.h"),
         (cpp_content, PLATFORM_FIRMWARE_DIR / "protocol_config.h"),
+        (cpp_content, CATCHING_CONE_FIRMWARE_DIR / "protocol_config.h"),
         (py_content, ROS_PKG_DIR / "protocol_config.py"),
     ]
     for content, dest in extra_copies:
@@ -840,6 +917,7 @@ def main():
     hw_cfg = None
     if HW_YAML.exists():
         hw_cfg = load_yaml(HW_YAML)
+        _check_catching_cone_key_collision(cfg, hw_cfg)
 
         hw_cpp_path = OUTPUT_DIR / "hardware_config.h"
         hw_py_path = OUTPUT_DIR / "hardware_config.py"
@@ -857,6 +935,7 @@ def main():
         hw_copies = [
             (hw_cpp_content, BB_FIRMWARE_DIR / "hardware_config.h"),
             (hw_cpp_content, PLATFORM_FIRMWARE_DIR / "hardware_config.h"),
+            (hw_cpp_content, CATCHING_CONE_FIRMWARE_DIR / "hardware_config.h"),
             (hw_py_content, ROS_PKG_DIR / "hardware_config.py"),
         ]
         for content, dest in hw_copies:

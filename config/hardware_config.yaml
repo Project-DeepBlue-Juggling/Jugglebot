@@ -663,3 +663,23 @@ ball_butler_ball_detect:
   check_interval_ms: 50                # How often to poll for ball in hand {ms}
   max_missing_samples: 5               # Consecutive false readings before entering CHECKING_BALL
   check_timeout_ms: 100                # SDO request timeout {ms}
+
+# ============================================================
+# 23. Catching Cone
+#     Source: CatchingCone_code firmware (NEW)
+#     Instrumented catching cone — a piezo contact sensor on a
+#     Teensy 4.x that broadcasts CAN-synced catch-event timing.
+# ============================================================
+catching_cone:
+  # --- Firmware (CatchingCone_code.ino) ---
+  piezo_pin: 2                         # Teensy interrupt-capable GPIO for the clamped piezo signal
+  dead_time_us: 500000                 # ISR refractory — ignores ring/bounce after a hit {µs}
+  report_delay_us: 30000               # CAN-send latency: defer CATCH_EVENT this long so retrigger_suppressed
+                                       # reflects the immediate ring window. Must be << dead_time_us.
+  heartbeat_period_ms: 100             # CONE_HEARTBEAT broadcast interval {ms}
+
+  # --- GUI panel (consumed via geometry-config.js) ---
+  delta_ok_ms: 5.0                     # |timing error| below this shows green
+  delta_warn_ms: 15.0                  # |timing error| below this shows amber, else red
+  offset_display_limit_ms: 50.0        # Sound-bar axis half-range (±) {ms}
+  offset_history_len: 12               # Recent catch offsets shown as sound-bar bars

@@ -78,6 +78,13 @@ export const BB_PITCH_Z_OFFSET_MM = 17.5;
 // Ball Butler trajectory
 export const BB_HAND_STROKE_MM = 280.0;
 
+// ---- Catching cone (hardware_config.yaml -> catching_cone) ----
+
+export const CC_DELTA_OK_MS = 5.0;
+export const CC_DELTA_WARN_MS = 15.0;
+export const CC_OFFSET_DISPLAY_LIMIT_MS = 50.0;
+export const CC_OFFSET_HISTORY_LEN = 12;
+
 // ---- ODrive state enum (protocol_config.yaml -> odrive.states) ----
 
 export const ODRIVE_STATE = {

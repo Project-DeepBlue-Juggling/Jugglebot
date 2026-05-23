@@ -433,3 +433,18 @@ namespace BBBallDetect {
   constexpr uint32_t MAX_MISSING_SAMPLES = 5u;
   constexpr uint32_t CHECK_TIMEOUT_MS = 100u;
 }
+
+// ==========================================================================
+// Catching Cone
+// ==========================================================================
+
+namespace CatchingCone {
+  constexpr uint32_t PIEZO_PIN = 2u;
+  constexpr uint32_t DEAD_TIME_US = 500000u;
+  constexpr uint32_t REPORT_DELAY_US = 30000u;
+  constexpr uint32_t HEARTBEAT_PERIOD_MS = 100u;
+  constexpr float DELTA_OK_MS = 5.0f;
+  constexpr float DELTA_WARN_MS = 15.0f;
+  constexpr float OFFSET_DISPLAY_LIMIT_MS = 50.0f;
+  constexpr uint32_t OFFSET_HISTORY_LEN = 12u;
+}
