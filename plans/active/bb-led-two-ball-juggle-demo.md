@@ -154,7 +154,7 @@ pure-Python modules" boundary).
 |-------|-------|--------|------|------|-----------|
 | 1 | Tempo & geometry feasibility study | COMPLETE | 2026-05-22 | Low | Pattern closes at a sane throw height |
 | 2 | Offline trajectory optimiser & player core | IN PROGRESS | 2026-05-22 | Med | Optimised platform trajectory is smooth, periodic, jerk-bounded; sim plant tracks it open-loop |
-| 3 | Full sim juggle demo | IN PROGRESS | 2026-05-22 | Med | 30+ catches in MuJoCo with sim hand model + BallButlerSim + master timeline |
+| 3 | Full sim juggle demo | COMPLETE | 2026-05-23 | Med | 30+ catches in MuJoCo with sim hand model + BallButlerSim + master timeline |
 | 4 | Hardware bring-up (open-loop) | NOT STARTED | | High | CAN/ROS2 integration; leg-limit raise; first hardware catches |
 | 5 | Hardware robustness & polish | NOT STARTED | | High | Sustained 30+ catches; abort hardening; optional QTM correction |
 
@@ -352,9 +352,61 @@ analytic oval; the constructor accepts an override so Phase 3c can align to
 the Phase 1 hand-tempo derivation (`throw_stroke_s + transit_window_s`) once
 the optimiser-shaped trajectory replaces the analytic baseline.
 
-Remaining 3c: the `sim/juggle_demo.py` runner that wires `MuJoCoPlant` +
-`TrajectoryPlayer` + sim hand model + `BallButlerSim` + the two-ball manager
-+ `MasterTimeline`, plus tuning to 30+ catches.
+Sub-phase **3c** is complete (2026-05-23): `sim/juggle_demo.py` lands the
+standalone runner that wires `MuJoCoPlant` + `TrajectoryPlayer` (loading the
+Phase 2 optimised trajectory) + the sim hand model (`HandThrowSequence` /
+`HandCatchSequence`) + `BallButlerSim` + the multi-ball manager +
+`MasterTimeline`. Notable mechanics:
+
+- **Schedule lead.** Hand events are pulled from the timeline up to
+  ``SCHEDULE_LEAD_S = 1.2 s`` in advance; the bootstrap throw needs ~0.75 s
+  of prelude smooth-move (hand from catch-prime at ~323 mm to throw-start
+  at ~20 mm). Steady-state throws/catches need almost zero prelude (hand
+  ends each catch at the stroke bottom, ready for the next throw). BB
+  throws are deferred to their exact ``t_wall`` via a small pending queue
+  so they spawn the ball at the right instant.
+- **BB lead calibration.** ``MasterTimeline.bb_lead_s`` is set so the BB
+  ball arrives at the first ``hand_catch`` event:
+  ``bb_lead = BB_TOF − catch_offset_s`` (~0.423 s for the default pattern
+  with BB at ``(0, −1500, 1500)`` mm).
+- **Catch target.** ``catch_z_world_mm`` is computed via
+  ``HandCatchTrajectory.sample(0.0)`` — the hand-slider position at the
+  midpoint of the catch velocity-hold phase (~198 mm), NOT the catch-prime
+  position. The BB and Jugglebot both aim at this z; the prior cut aimed
+  at the catch-prime height (~322 mm slider), ~125 mm too high.
+- **Hand sequence queues.** Per-event throw and catch sequences are queued
+  (not single-slot "active") so a second event of the same kind can be
+  pulled before the first fires without overwriting. The head's
+  ``sample(t_wall)`` drives the hand; throw takes priority over catch
+  during overlap (the catch's ``END_PROFILE_HOLD`` tail at the stroke
+  bottom is exactly the throw's prelude start, so giving throw priority
+  is the natural ordering).
+- **Sim-only release-velocity override.** In hardware the hand is commanded
+  at **500 Hz** by the Teensy / motor_guard and the kinematic-hold-
+  inherited velocity at release is the analytic throw_speed. The sim
+  runner only commands the hand at 40 Hz (the platform loop rate), so the
+  MuJoCo actuator tracking lags. The runner overrides the released ball's
+  velocity to the analytic value computed via
+  ``controller.ballistics.compute_launch_velocity`` from the ball's actual
+  world position to the matched catch's world position. This *models*
+  the hardware physics — it doesn't rewrite them.
+- **Ball-ball exclude.** `sim/model/jugglebot.xml` gains a `<contact><exclude
+  body1="ball" body2="ball2"/>` pair: in a 2-in-one-hand juggle the two
+  balls' single-arc trajectories cross each other (both go from THROW to
+  CATCH along similar parabolas), but physically the real pattern uses
+  two separated lanes; the un-banked optimised trajectory produces sim
+  collisions that aren't representative. The exclude routes around this
+  until banking + dual-arc support land in the Phase 2 follow-up.
+- **Abort.** ``--abort-at`` triggers ``MasterTimeline.abort`` + swaps the
+  player to the exit transient + drops every queued hand sequence whose
+  prelude hadn't yet started — sequences already in progress finish
+  cleanly (the hand can't safely be yanked mid-trajectory).
+
+Validated by `tests/sim/test_demo_juggle_sim.py` (5 tests: T-I3 30+ catches
+in 30 s, T-I6 abort mid-pattern, BB-primed catch + Jugglebot throw smoke
+test, deterministic-with-seed regression, event-order white-box check).
+On the Jetson the default 30 s run produces **33 captures, 0 drops** in
+~12 s of wall time — the Phase 3 §3 exit criterion (≥ 30 catches).
 
 **New/modified files:**
 - `sim/model/jugglebot.xml`, `sim/ball/manager.py`, `sim/ball/__init__.py`,
@@ -533,11 +585,24 @@ insufficient.
 
 ### Open items / decisions required
 
-- **`catch_vel_ratio` discrepancy.** `config/hardware_config.yaml:377` sets
-  `catch_vel_ratio: 0.6`; the sim Python port `sim/hand/trajectory.py` reportedly
-  uses `CATCH_VEL_RATIO = 0.9`. The Phase 1 feasibility math used 0.6. These
-  must be reconciled before Phase 3, and the sim port must be confirmed in
-  lockstep with `Trajectory.h`. Resolution required before §4 Phase 3.
+- **`catch_vel_ratio` discrepancy (still open).** `config/hardware_config.yaml`
+  sets `catch_vel_ratio: 0.6`; `sim/hand/trajectory.py:36` uses
+  `CATCH_VEL_RATIO = 0.9`. The Phase 1 feasibility math used 0.6, the Phase 3
+  sim runner uses 0.9 (whatever `HandCatchTrajectory` returns at `sample(0.0)`,
+  which is 198 mm slider / 858 mm world catch z under 0.9). Sim ↔ hardware
+  reconciliation is owned by the hand-generator overhaul side-quest
+  (`plans/active/hand-trajectory-generator-overhaul.md`); the demo as it
+  stands runs end-to-end against the sim port's 0.9. Resolve before §4
+  Phase 4 hardware bring-up.
+- **`BallButlerSim` scatter is non-deterministic.** `BallButlerSim.
+  throw_at_jugglebot` calls `np.random.default_rng().normal(...)` with a
+  fresh, unseeded `Generator` each invocation, so `bb_scatter_mm > 0` runs
+  are not reproducible under a `np.random.seed(...)` call. The Phase 3c
+  determinism test sidesteps this with `bb_scatter_mm = 0.0`; Phase 4
+  hardware bring-up (or any T-I7 catch-tolerance test) needs scatter to be
+  reproducible. Plumb a `Generator` parameter through
+  `BallButlerSim.from_hardware_config` and `throw_at_jugglebot` (~5 lines
+  in `sim/ball_butler/sim.py`).
 - **Hardware orchestrator form.** Two viable patterns for Phase 4:
   (A) a ROS2 node `juggle_demo_node` in `ros_ws/` — natural access to the
   `can_node` hand/BB services, runs the 40 Hz platform timer, imports the pure-
@@ -547,8 +612,7 @@ insufficient.
   hand/BB events. Pattern A is recommended (the discrete events need the ROS2
   services and the runtime player is NumPy-only by Phase 2 design). Decision
   required before §4 Phase 4.
-- **Sim entry point.** Add a `--juggle-demo` mode to `sim/main.py` vs a
-  standalone `sim/juggle_demo.py`. Decision required before §4 Phase 3.
+- **Sim entry point — RESOLVED.** Standalone `sim/juggle_demo.py` (Phase 3c).
 
 ### Safety-critical invariants
 

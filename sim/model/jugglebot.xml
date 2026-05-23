@@ -157,6 +157,15 @@
       <site name="ball2_site" pos="0 0 0" size="0.005" rgba="1 1 1 0"/>
     </body>
   </worldbody>
+  <contact>
+    <!-- Disable ball-ball collisions: in a 2-in-one-hand juggle the two
+         balls' flight arcs cross each other (both go from THROW to CATCH
+         along similar parabolas), but physically they'd be in separate
+         lanes — there is no real-world ball-ball collision. The sim's
+         single-arc throw produces mid-air collisions that are not
+         representative of the actual pattern, so exclude the pair. -->
+    <exclude body1="ball" body2="ball2"/>
+  </contact>
   <equality>
     <connect body1="platform" body2="leg_0" anchor="-0.197405 0.095000 0.000000" solref="0.005 1" solimp="0.99 0.99 0.001"/>
     <connect body1="platform" body2="leg_1" anchor="-0.016431 -0.218458 0.000000" solref="0.005 1" solimp="0.99 0.99 0.001"/>
