@@ -6,7 +6,9 @@
  */
 
 import { ODRIVE_STATE, BB_STATE_NAMES, LEG_STROKE_MM, MM_TO_REV,
-         CAN_BAUD_RATE, CAN_BITS_PER_FRAME_APPROX } from './geometry-config.js';
+         CAN_BAUD_RATE, CAN_BITS_PER_FRAME_APPROX,
+         CC_DELTA_OK_MS, CC_DELTA_WARN_MS,
+         CC_OFFSET_DISPLAY_LIMIT_MS, CC_OFFSET_HISTORY_LEN } from './geometry-config.js';
 import { callService } from './ros-bridge.js';
 import { onWorkspaceStatus } from './jog-panel.js';
 
@@ -1033,10 +1035,238 @@ export function clearTopicData() {
 
 // ---- Init all panels ----
 
+// ════════════════════════════════════════════════════════════════
+// Catching Cone panel
+//   cone/heartbeat      (CatchingConeHeartbeat) -> updateConeHeartbeat
+//   cone/timing_result  (CatchTimingResult)     -> updateConeTimingResult
+// ════════════════════════════════════════════════════════════════
+
+// Recent matched timing offsets (ms), oldest first — drives the sound bar.
+let coneDeltaHistory = [];
+
+function coneDeltaClass(ms) {
+    const a = Math.abs(ms);
+    if (a < CC_DELTA_OK_MS) return 'cc-delta-ok';
+    if (a < CC_DELTA_WARN_MS) return 'cc-delta-warn';
+    return 'cc-delta-bad';
+}
+
+function coneZoneColor(ms, css) {
+    const a = Math.abs(ms);
+    return css.getPropertyValue(
+        a < CC_DELTA_OK_MS ? '--accent-green'
+        : a < CC_DELTA_WARN_MS ? '--accent-amber' : '--accent-red').trim();
+}
+
+/** Format a builtin_interfaces/Time {sec, nanosec} as a HH:MM:SS.mmm clock string. */
+function fmtConeClock(t) {
+    if (!t || t.sec === undefined) return '--';
+    const ms = t.sec * 1000 + t.nanosec / 1e6;
+    const hms = new Date(ms).toLocaleTimeString('en-GB', { hour12: false });
+    return hms + '.' + String(Math.floor(((ms % 1000) + 1000) % 1000)).padStart(3, '0');
+}
+
+export function initCatchingConePanel() {
+    const content = document.getElementById('cc-content');
+    if (!content) return;
+    content.innerHTML = `
+        <div class="cc-sync-row">
+            <span class="cc-sync-dot offline" id="cc-sync-dot"></span>
+            <span id="cc-sync-text">No time-sync</span>
+            <span class="cc-sync-jitter" id="cc-sync-jitter">-- µs</span>
+        </div>
+        <div class="cc-readouts">
+            <div class="cc-readout">
+                <div class="label">Predicted</div>
+                <div class="value" id="cc-predicted">--</div>
+            </div>
+            <div class="cc-readout">
+                <div class="label">Actual</div>
+                <div class="value" id="cc-actual">--</div>
+            </div>
+            <div class="cc-readout cc-delta" id="cc-delta-cell">
+                <div class="label">Delta</div>
+                <div class="value" id="cc-delta">--</div>
+            </div>
+        </div>
+        <div class="cc-soundbar-caption">Recent timing offsets</div>
+        <canvas class="cc-soundbar" id="cc-soundbar"></canvas>
+        <div class="cc-footer">
+            <span id="cc-foot-left">no catches yet</span>
+            <span id="cc-foot-right"></span>
+        </div>
+    `;
+    window.addEventListener('resize', drawConeSoundBar);
+    drawConeSoundBar();
+}
+
+export function setCatchingConeDisconnected() {
+    const badge = document.getElementById('cc-state-badge');
+    if (badge) { badge.textContent = 'Disconnected'; badge.className = 'badge cc-state-badge cc-disconnected'; }
+    const dot = document.getElementById('cc-sync-dot');
+    if (dot) dot.className = 'cc-sync-dot offline';
+    const text = document.getElementById('cc-sync-text');
+    if (text) text.textContent = 'No time-sync';
+    const jit = document.getElementById('cc-sync-jitter');
+    if (jit) jit.textContent = '-- µs';
+    const foot = document.getElementById('cc-foot-left');
+    if (foot) foot.textContent = 'cone offline';
+}
+
+/** Update connection badge + time-sync line from a CatchingConeHeartbeat. */
+export function updateConeHeartbeat(hb) {
+    if (!hb.connected) { setCatchingConeDisconnected(); return; }
+    const badge = document.getElementById('cc-state-badge');
+    const dot = document.getElementById('cc-sync-dot');
+    const text = document.getElementById('cc-sync-text');
+    const jit = document.getElementById('cc-sync-jitter');
+    if (hb.time_synced) {
+        if (badge) { badge.textContent = 'Connected'; badge.className = 'badge cc-state-badge cc-connected'; }
+        if (dot) dot.className = 'cc-sync-dot synced';
+        if (text) text.textContent = 'Time-synced';
+        if (jit) jit.textContent = hb.sync_rms_us + ' µs';
+    } else {
+        if (badge) { badge.textContent = 'Unsynced'; badge.className = 'badge cc-state-badge cc-unsynced'; }
+        if (dot) dot.className = 'cc-sync-dot unsynced';
+        if (text) text.textContent = 'Acquiring sync…';
+        if (jit) jit.textContent = '-- µs';
+    }
+}
+
+/** Update predicted/actual/delta readouts + sound bar from a CatchTimingResult. */
+export function updateConeTimingResult(res) {
+    const predEl = document.getElementById('cc-predicted');
+    const actEl = document.getElementById('cc-actual');
+    const deltaEl = document.getElementById('cc-delta');
+    const cell = document.getElementById('cc-delta-cell');
+    const footL = document.getElementById('cc-foot-left');
+    const footR = document.getElementById('cc-foot-right');
+    if (!deltaEl) return;
+
+    if (actEl) actEl.textContent = fmtConeClock(res.actual_catch_time);
+
+    if (res.matched) {
+        if (predEl) predEl.textContent = fmtConeClock(res.predicted_landing_time);
+        const d = res.timing_error_ms;
+        const sign = d >= 0 ? '+' : '−';
+        deltaEl.textContent = sign + Math.abs(d).toFixed(1) + ' ms';
+        if (cell) cell.className = 'cc-readout cc-delta ' + coneDeltaClass(d);
+        coneDeltaHistory.push(d);
+        if (coneDeltaHistory.length > CC_OFFSET_HISTORY_LEN) coneDeltaHistory.shift();
+        if (footL) footL.textContent = 'last: ' + (res.thrower_name || '?');
+    } else {
+        // Unmatched catch — we know when, but not which throw.
+        if (predEl) predEl.textContent = '—';
+        deltaEl.textContent = '—';
+        if (cell) cell.className = 'cc-readout cc-delta';
+        if (footL) footL.textContent = 'unmatched catch';
+    }
+    if (footR) footR.textContent = coneDeltaHistory.length + ' recent';
+    drawConeSoundBar();
+}
+
+/** Draw recent offsets as vertical bars on a fixed -limit..0..+limit axis;
+ *  newest at full opacity, older bars fading out, coloured by threshold zone. */
+function drawConeSoundBar() {
+    const canvas = document.getElementById('cc-soundbar');
+    if (!canvas) return;
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    if (w === 0 || h === 0) return;
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    const ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, w, h);
+
+    const css = getComputedStyle(document.documentElement);
+    const cBorder = css.getPropertyValue('--border-color').trim();
+    const cMuted = css.getPropertyValue('--text-muted').trim();
+    const cGreen = css.getPropertyValue('--accent-green').trim();
+    const cAmber = css.getPropertyValue('--accent-amber').trim();
+    const fontSans = css.getPropertyValue('--font-sans');
+
+    const limit = CC_OFFSET_DISPLAY_LIMIT_MS;
+    const axisY = h - 20;
+    const barTop = 8;
+    const barBot = axisY - 3;
+    const pad = 10;
+    const xOf = (ms) => {
+        const c = Math.max(-limit, Math.min(limit, ms));
+        return w / 2 + (c / limit) * (w / 2 - pad);
+    };
+
+    // Threshold zones (faint bands behind the bars)
+    ctx.fillStyle = cAmber + '14';
+    ctx.fillRect(xOf(-CC_DELTA_WARN_MS), barTop,
+                 xOf(CC_DELTA_WARN_MS) - xOf(-CC_DELTA_WARN_MS), barBot - barTop);
+    ctx.fillStyle = cGreen + '24';
+    ctx.fillRect(xOf(-CC_DELTA_OK_MS), barTop,
+                 xOf(CC_DELTA_OK_MS) - xOf(-CC_DELTA_OK_MS), barBot - barTop);
+
+    // Zero line
+    ctx.strokeStyle = cMuted;
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(w / 2, barTop); ctx.lineTo(w / 2, axisY); ctx.stroke();
+
+    // Axis line + tick labels
+    ctx.strokeStyle = cBorder;
+    ctx.beginPath(); ctx.moveTo(0, axisY); ctx.lineTo(w, axisY); ctx.stroke();
+    ctx.fillStyle = cMuted;
+    ctx.font = '10px ' + fontSans;
+    ctx.textBaseline = 'top';
+    ctx.textAlign = 'left';   ctx.fillText('−' + limit + ' ms', 0, axisY + 5);
+    ctx.textAlign = 'center'; ctx.fillText('0', w / 2, axisY + 5);
+    ctx.textAlign = 'right';  ctx.fillText('+' + limit + ' ms', w, axisY + 5);
+    ctx.fillStyle = cBorder;
+    ctx.font = '9px ' + fontSans;
+    ctx.textAlign = 'left';   ctx.fillText('◀ early', 1, barTop - 2);
+    ctx.textAlign = 'right';  ctx.fillText('late ▶', w - 1, barTop - 2);
+
+    if (coneDeltaHistory.length === 0) {
+        ctx.fillStyle = cMuted;
+        ctx.font = '11px ' + fontSans;
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText('awaiting catch events…', w / 2, (barTop + barBot) / 2);
+        return;
+    }
+
+    const n = coneDeltaHistory.length;
+    coneDeltaHistory.forEach((d, i) => {
+        const newest = i === n - 1;
+        const recency = (i + 1) / n;
+        const x = xOf(d);
+        const bw = newest ? 6 : 4;
+        ctx.globalAlpha = 0.16 + 0.84 * recency;
+        ctx.fillStyle = coneZoneColor(d, css);
+        ctx.fillRect(x - bw / 2, barTop, bw, barBot - barTop);
+
+        // Chevron when an offset is past the display limit
+        if (Math.abs(d) > limit) {
+            const dir = d > 0 ? 1 : -1, cy = (barTop + barBot) / 2;
+            ctx.beginPath();
+            ctx.moveTo(x + dir * 5, cy - 4);
+            ctx.lineTo(x + dir * 9, cy);
+            ctx.lineTo(x + dir * 5, cy + 4);
+            ctx.fill();
+        }
+        // Marker triangle above the newest bar
+        if (newest) {
+            ctx.beginPath();
+            ctx.moveTo(x - 4, barTop - 6);
+            ctx.lineTo(x + 4, barTop - 6);
+            ctx.lineTo(x, barTop - 1);
+            ctx.fill();
+        }
+    });
+    ctx.globalAlpha = 1;
+}
+
 export function initAllPanels() {
     initFlagsGrid();
     initLevellingPanel();
     initBBPanel();
+    initCatchingConePanel();
     initCANPanel();
     initTrackingGrid();
     initTopicMonitor();

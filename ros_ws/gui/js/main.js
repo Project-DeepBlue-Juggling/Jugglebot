@@ -23,6 +23,7 @@ import {
     updateCANTraffic, updateTrackingError, updateMotionPanel,
     recordTopicMessage, registerTopic, updateTopicMonitor, clearTopicData,
     setMocapConnected, setMocapAligned,
+    updateConeHeartbeat, updateConeTimingResult,
 } from './panels.js';
 import { initCommands, updateCommandStates, onModeButtonClick } from './commands.js';
 import { INITIAL_HEIGHT_MM, MM_TO_REV } from './geometry-config.js';
@@ -191,6 +192,10 @@ function subscribeAll() {
     // BB heartbeat (10Hz, no throttle)
     ros.subscribe('bb/heartbeat', 'jugglebot_interfaces/msg/BallButlerHeartbeat', onBBHeartbeat, 0);
 
+    // Catching cone heartbeat (10Hz) + timing results (per catch)
+    ros.subscribe('cone/heartbeat', 'jugglebot_interfaces/msg/CatchingConeHeartbeat', onConeHeartbeat, 0);
+    ros.subscribe('cone/timing_result', 'jugglebot_interfaces/msg/CatchTimingResult', onConeTimingResult, 0);
+
     // Orchestrator state (on change)
     ros.subscribe('orchestrator_state', 'std_msgs/msg/String', onOrchestratorState, 0);
 
@@ -326,6 +331,16 @@ function onBBHeartbeat(msg) {
     if (msg.connected) {
         updateBallButler(msg.yaw_deg, msg.pitch_deg, msg.hand_pos_mm);
     }
+}
+
+function onConeHeartbeat(msg) {
+    recordTopicMessage('cone/heartbeat');
+    updateConeHeartbeat(msg);
+}
+
+function onConeTimingResult(msg) {
+    recordTopicMessage('cone/timing_result');
+    updateConeTimingResult(msg);
 }
 
 /** Previous orchestrator_state payload — used to detect transitions so we
@@ -731,7 +746,7 @@ const GUI_SUBSCRIBED_TOPICS = new Set([
     'robot_state', 'bb/heartbeat', 'orchestrator_state',
     'can_traffic', 'hand_telemetry', 'mocap_data', 'rigid_body_poses',
     'leg_lengths_topic', 'control_mode_topic', 'motion/diagnostics',
-    'bb/calibration_result',
+    'bb/calibration_result', 'cone/heartbeat', 'cone/timing_result',
 ]);
 
 /** Active spy subscriptions: Map<topicName, ROSLIB.Topic> */

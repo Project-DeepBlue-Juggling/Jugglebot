@@ -828,3 +828,90 @@
     text-overflow: ellipsis;
     white-space: nowrap;
 }
+
+/* ---- Catching Cone panel ---- */
+.cc-state-badge { font-size: var(--font-size-xs); padding: 3px 10px; }
+.cc-state-badge.cc-connected    { background: var(--accent-green); color: #000; }
+.cc-state-badge.cc-unsynced     { background: var(--accent-amber); color: #000; }
+.cc-state-badge.cc-disconnected { background: var(--text-muted);   color: #fff; }
+
+/* Time-sync status line */
+.cc-sync-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+    margin-bottom: var(--gap-sm);
+}
+
+.cc-sync-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.cc-sync-dot.synced   { background: var(--accent-green); box-shadow: 0 0 4px var(--accent-green); }
+.cc-sync-dot.unsynced { background: var(--accent-amber); }
+.cc-sync-dot.offline  { background: var(--text-muted); }
+
+.cc-sync-jitter {
+    margin-left: auto;
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+}
+
+/* Predicted / Actual / Delta readouts */
+.cc-readouts {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: var(--gap-xs);
+    margin-bottom: var(--gap-sm);
+}
+
+.cc-readout { text-align: center; }
+
+.cc-readout .label {
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+    text-transform: uppercase;
+    margin-bottom: 2px;
+}
+
+.cc-readout .value {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-base);
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+/* The delta is the headline number — larger + colour-coded against thresholds */
+.cc-readout.cc-delta .value { font-size: var(--font-size-lg); }
+.cc-delta-ok   .value { color: var(--accent-green); }
+.cc-delta-warn .value { color: var(--accent-amber); }
+.cc-delta-bad  .value { color: var(--accent-red); }
+
+/* Sound bar — recent timing offsets on a fixed -limit..0..+limit axis */
+.cc-soundbar-caption {
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 2px;
+}
+
+.cc-soundbar {
+    width: 100%;
+    height: 76px;
+    display: block;
+    margin-bottom: var(--gap-xs);
+}
+
+.cc-footer {
+    display: flex;
+    justify-content: space-between;
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+}
