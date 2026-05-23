@@ -247,17 +247,14 @@ Phase 1 baseline; confirm release-velocity accuracy and repeatability.
 
 ### Open items / decisions required
 
-- **`catch_vel_ratio` discrepancy — RESOLVED (Phase 1, 2026-05-22).**
+- **`catch_vel_ratio` discrepancy — CLOSED (port reconciled 2026-05-23).**
   `config/hardware_config.yaml` → `config/generated/hardware_config.h` sets
-  `CATCH_VEL_RATIO = 0.6f`, and `Trajectory.h` reads that generated constant,
-  so **the Teensy firmware runs 0.6 — the authoritative value.** The Python
-  port `sim/hand/trajectory.py:36` hardcodes a divergent `0.9` (introduced
-  2026-03-21, commit `6859a9c`). The port at 0.9 is the incorrect copy and
-  **must be reconciled to 0.6 in Phase 3's lockstep rewrite** — unless 0.9
-  was a deliberate design intent, in which case the YAML moves to 0.9 and
-  the Teensy is re-flashed (a user/Phase-3 decision). The
-  `bb-led-two-ball-juggle-demo` session used 0.6 in its feasibility
-  arithmetic, which is correct — its Phase 1 table needs no revisiting.
+  `CATCH_VEL_RATIO = 0.6f`; the Teensy firmware runs `0.6`. Phase 1 found
+  the Python port had drifted to a hardcoded `0.9` (commit `6859a9c`,
+  2026-03-21). The user confirmed 0.6 is intended; the port was reconciled
+  to `0.6` standalone (before Phase 2) — see
+  `logbook/2026-05-23-catch-vel-ratio-port-reconciled.md`. The
+  `bb-led-two-ball-juggle-demo` session's use of 0.6 was correct throughout.
   Tracked also in `plans/active/bb-led-two-ball-juggle-demo.md` §6.
 - **Profile family.** 7-segment S-curve vs piecewise-quintic — decided in
   Phase 2 against the Phase 1 characterisation.

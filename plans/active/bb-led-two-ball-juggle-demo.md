@@ -468,11 +468,13 @@ insufficient.
 
 ### Open items / decisions required
 
-- **`catch_vel_ratio` discrepancy.** `config/hardware_config.yaml:377` sets
-  `catch_vel_ratio: 0.6`; the sim Python port `sim/hand/trajectory.py` reportedly
-  uses `CATCH_VEL_RATIO = 0.9`. The Phase 1 feasibility math used 0.6. These
-  must be reconciled before Phase 3, and the sim port must be confirmed in
-  lockstep with `Trajectory.h`. Resolution required before §4 Phase 3.
+- **`catch_vel_ratio` discrepancy — CLOSED (port reconciled 2026-05-23).**
+  `config/hardware_config.yaml:377` sets `catch_vel_ratio: 0.6` (firmware
+  authoritative). The sim port `sim/hand/trajectory.py` was reconciled from
+  the divergent `0.9` to `0.6` on 2026-05-23 — see
+  `logbook/2026-05-23-catch-vel-ratio-port-reconciled.md`. The Phase 1
+  feasibility math (which already used 0.6) and `CATCH_DUR_COEF = 0.998`
+  in `controller/demo/pattern.py` need no revisiting.
 - **Hardware orchestrator form.** Two viable patterns for Phase 4:
   (A) a ROS2 node `juggle_demo_node` in `ros_ws/` — natural access to the
   `can_node` hand/BB services, runs the 40 Hz platform timer, imports the pure-
