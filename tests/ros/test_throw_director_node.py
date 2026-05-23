@@ -107,13 +107,40 @@ class TestSuccessPath:
         assert res.throw_delay_s == pytest.approx(1.0)
 
         # bb/send_throw_command received an encoded request with the same
-        # yaw/pitch/speed the director returned
+        # yaw/pitch/speed the director returned, with announcement suppressed
+        # so the director's own (solver-correct) announcement is the only one.
         assert len(called_requests) == 1
         bb_req = called_requests[0]
         assert bb_req.yaw_angle_rad == pytest.approx(res.yaw_rad)
         assert bb_req.pitch_angle_rad == pytest.approx(res.pitch_rad)
         assert bb_req.throw_speed == pytest.approx(res.throw_speed_mps)
         assert bb_req.throw_time == pytest.approx(res.throw_delay_s)
+        assert bb_req.suppress_announcement is True
+
+    def test_publishes_throw_announcement_with_solver_landing_geometry(self, calibrated_node):
+        """The director's announcement should report landing_position = the
+        actual target (cone position in world frame), and predicted_tof_sec
+        matching the solver — not predict_throw's platform-plane projection."""
+        cone_world = (1200.0, 50.0, 0.0)
+        calibrated_node._on_rigid_bodies(_rigid_bodies({'Catching_Cone': cone_world}))
+
+        req = ThrowAtTarget.Request()
+        req.target_name = 'Catching_Cone'
+        res = calibrated_node._svc_throw_at_target(req, ThrowAtTarget.Response())
+
+        pub = calibrated_node.throw_announcement_pub
+        assert len(pub.published) == 1, "expected exactly one ThrowAnnouncement"
+        ann = pub.published[0]
+
+        # Landing position is the actual cone position, not a projection
+        assert ann.landing_position.x == pytest.approx(cone_world[0])
+        assert ann.landing_position.y == pytest.approx(cone_world[1])
+        assert ann.landing_position.z == pytest.approx(cone_world[2])
+        # ToF matches the solver's
+        assert ann.predicted_tof_sec == pytest.approx(res.predicted_tof_s)
+        # Target identified by name so a multi-target session can match
+        assert ann.target_id == 'Catching_Cone'
+        assert ann.thrower_name == 'ball_butler'
 
     def test_caller_specified_delay_is_used(self, calibrated_node):
         calibrated_node._on_rigid_bodies(_rigid_bodies({

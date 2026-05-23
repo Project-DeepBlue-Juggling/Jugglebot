@@ -132,14 +132,15 @@ def test_solve_throw_local_lands_at_target_via_release_point_projectile():
     l = hw.BB_GEOM_RELEASE_L_POSITION_MM
     g_mmps2 = hw.GRAVITY_MPS2 * 1000.0
 
-    # Release point in BB local frame
+    # Release point in BB local frame.  Z includes the pitch-axis vertical
+    # offset from the yaw axis (BB_GEOM_PITCH_Z_OFFSET_MM) plus l*sin(pitch).
     cos_p = math.cos(sol.pitch_rad)
     sin_p = math.sin(sol.pitch_rad)
     r_rel = math.hypot(s, l * cos_p - d)
     alpha = sol.yaw_rad + math.atan2(s, l * cos_p - d)
     x_rel = r_rel * math.cos(alpha)
     y_rel = r_rel * math.sin(alpha)
-    z_rel = l * sin_p
+    z_rel = hw.BB_GEOM_PITCH_Z_OFFSET_MM + l * sin_p
 
     # Throw velocity (along yaw + pitch direction)
     v_mmps = sol.speed_mps * 1000.0

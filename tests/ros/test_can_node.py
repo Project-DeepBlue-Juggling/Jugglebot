@@ -1084,3 +1084,38 @@ class TestSetHandGains:
         node.bus.send = MagicMock(side_effect=[False, True])
         with pytest.raises(RuntimeError, match="hand.pos_gain"):
             node._set_hand_gains()
+
+
+class TestSvcBBThrow:
+    """The bb/send_throw_command service handler — covers the suppress_announcement opt-out."""
+
+    def _make_req(self, *, suppress=False):
+        from jugglebot_interfaces.srv import SendBallButlerCommand
+        req = SendBallButlerCommand.Request()
+        req.yaw_angle_rad = 0.1
+        req.pitch_angle_rad = 0.5
+        req.throw_speed = 3.0
+        req.throw_time = 1.0
+        req.suppress_announcement = suppress
+        return req
+
+    def test_announces_by_default(self, node):
+        from jugglebot_interfaces.srv import SendBallButlerCommand
+        node.bus.send = MagicMock(return_value=True)
+        # Make calibration present so _publish_throw_announcement doesn't early-return
+        node._bb_position_mm = (-900.0, -200.0, 1740.0)
+        node._bb_yaw_offset_rad = 0.0
+        res = node._svc_bb_throw(self._make_req(suppress=False),
+                                 SendBallButlerCommand.Response())
+        assert res.success is True
+        assert len(node.throw_announcement_pub.published) == 1
+
+    def test_suppress_skips_announcement(self, node):
+        from jugglebot_interfaces.srv import SendBallButlerCommand
+        node.bus.send = MagicMock(return_value=True)
+        node._bb_position_mm = (-900.0, -200.0, 1740.0)
+        node._bb_yaw_offset_rad = 0.0
+        res = node._svc_bb_throw(self._make_req(suppress=True),
+                                 SendBallButlerCommand.Response())
+        assert res.success is True
+        assert len(node.throw_announcement_pub.published) == 0

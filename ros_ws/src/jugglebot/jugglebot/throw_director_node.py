@@ -36,11 +36,16 @@ from rclpy.qos import (
     QoSProfile,
     ReliabilityPolicy,
 )
-from geometry_msgs.msg import Point
+from geometry_msgs.msg import Point, Vector3
 
-from jugglebot_interfaces.msg import BallButlerCalibrationResult, RigidBodyPoses
+from jugglebot_interfaces.msg import (
+    BallButlerCalibrationResult,
+    RigidBodyPoses,
+    ThrowAnnouncement,
+)
 from jugglebot_interfaces.srv import SendBallButlerCommand, ThrowAtTarget
 
+import jugglebot.hardware_config as hw
 from jugglebot.can.throw_ballistics import (
     ThrowSolution,
     global_to_bb_local,
@@ -51,6 +56,9 @@ from jugglebot.can.throw_ballistics import (
 # Default release delay (s) — leaves time for the CAN send + BB to schedule.
 # Matches the archived ball_butler_node's `seconds_to_throw_in` default.
 _DEFAULT_THROW_DELAY_S = 1.0
+
+# Gravity (mm/s²) — for landing-velocity decay in published ThrowAnnouncement.
+_G_MMPS2 = hw.GRAVITY_MPS2 * 1000.0
 
 
 class ThrowDirectorNode(Node):
@@ -85,6 +93,15 @@ class ThrowDirectorNode(Node):
         # ── Service client (call bb/send_throw_command on can_node) ──
         self._throw_client = self.create_client(
             SendBallButlerCommand, 'bb/send_throw_command')
+
+        # ── Publisher: ThrowAnnouncement (own, not can_node's) ──
+        # The director sends suppress_announcement=True on bb/send_throw_command
+        # so can_node skips its predict_throw-based announcement (which uses
+        # the platform default catch height; wrong for off-plane targets like
+        # the cone).  We publish here using the solver's actual target z and
+        # serial-chain-aware ToF.
+        self.throw_announcement_pub = self.create_publisher(
+            ThrowAnnouncement, 'throw_announcements', 10)
 
         # ── Service server (what the GUI calls) ─────────────────
         self.create_service(ThrowAtTarget, 'bb/throw_at_target', self._svc_throw_at_target)
@@ -168,12 +185,22 @@ class ThrowDirectorNode(Node):
         bb_req.pitch_angle_rad = float(sol.pitch_rad)
         bb_req.throw_speed = float(sol.speed_mps)
         bb_req.throw_time = float(delay_s)
+        # Tell can_node not to publish a predict_throw-based announcement
+        # (which would use the platform default catch height).  We publish
+        # our own below using the solver's actual target z + serial-chain
+        # ToF.
+        bb_req.suppress_announcement = True
 
-        # Fire-and-forget: we don't block on can_node's response.  can_node
-        # publishes the ThrowAnnouncement synchronously in its own service
-        # handler before returning, so by the time it returns, the
-        # downstream cone correlation already has the announcement.
+        # Fire-and-forget: we don't block on can_node's response.
         self._throw_client.call_async(bb_req)
+
+        # Publish our own ThrowAnnouncement with the correct landing geometry.
+        self._publish_throw_announcement(
+            target_name=req.target_name,
+            target_global_mm=(x_g, y_g, z_g),
+            sol=sol,
+            delay_s=delay_s,
+        )
 
         # Fill response.
         res.success = True
@@ -190,6 +217,52 @@ class ThrowDirectorNode(Node):
 
         self.get_logger().info(res.message)
         return res
+
+    def _publish_throw_announcement(self, target_name: str,
+                                    target_global_mm: Tuple[float, float, float],
+                                    sol: ThrowSolution, delay_s: float) -> None:
+        """Publish a ThrowAnnouncement with solver-correct landing geometry.
+
+        Unlike can_node's predict_throw-based announcement (which uses the
+        platform default catch height), this uses the solver's actual target z
+        and serial-chain-aware ToF — so cone catches are correlated against
+        the *actual* expected arrival time at the cone, not when the ball
+        would have crossed the platform catch plane.
+        """
+        x_g, y_g, z_g = target_global_mm
+
+        # Velocity at release (in world frame).  The solver yaws in BB local
+        # frame; convert to world by adding yaw_offset.
+        world_yaw = sol.yaw_rad + self._bb_yaw_offset_rad
+        cos_p = math.cos(sol.pitch_rad)
+        sin_p = math.sin(sol.pitch_rad)
+        v_mmps = sol.speed_mps * 1000.0
+        vx = v_mmps * cos_p * math.cos(world_yaw)
+        vy = v_mmps * cos_p * math.sin(world_yaw)
+        vz = v_mmps * sin_p
+        # Landing velocity: horizontal unchanged, vertical decays under g.
+        vz_land = vz - _G_MMPS2 * sol.tof_s
+
+        now = self.get_clock().now()
+        throw_time = now + rclpy.time.Duration(seconds=delay_s)
+        landing_time = throw_time + rclpy.time.Duration(seconds=sol.tof_s)
+
+        ann = ThrowAnnouncement()
+        ann.header.stamp = now.to_msg()
+        ann.header.frame_id = 'world'
+        ann.thrower_name = 'ball_butler'
+        ann.initial_position = Point(x=self._bb_position_mm[0],
+                                     y=self._bb_position_mm[1],
+                                     z=self._bb_position_mm[2])
+        ann.initial_velocity = Vector3(x=vx, y=vy, z=vz)
+        ann.target_id = target_name
+        ann.throw_time = throw_time.to_msg()
+        ann.predicted_tof_sec = float(sol.tof_s)
+        ann.landing_position = Point(x=x_g, y=y_g, z=z_g)
+        ann.landing_velocity = Vector3(x=vx, y=vy, z=vz_land)
+        ann.landing_time = landing_time.to_msg()
+
+        self.throw_announcement_pub.publish(ann)
 
 
 def main(args=None):

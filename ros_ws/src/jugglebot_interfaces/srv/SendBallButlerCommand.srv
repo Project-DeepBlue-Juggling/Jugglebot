@@ -6,6 +6,14 @@ float32 yaw_angle_rad   # The yaw angle in radians (-π to π)
 float32 pitch_angle_rad # The pitch angle in radians (0 to π/2)
 float32 throw_speed     # Throw speed in m/s (0 to 6.5 m/s)
 float32 throw_time      # The time to throw in seconds (0 to 65.5 seconds)
+
+# Optional: opt out of can_node's auto-published ThrowAnnouncement.
+# Set true when the caller will publish a more-accurate announcement
+# itself (e.g. throw_director_node, which knows the target z and the
+# solver's release-point ToF).  When false (default), can_node uses
+# predict_throw against the platform default catch height — fine for
+# platform catches, misleading for off-plane targets like the cone.
+bool suppress_announcement
 ---
 bool success   # Was this command received and processed without issue?
 string message # Any relevant message to be sent back to the sender

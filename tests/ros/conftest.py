@@ -291,7 +291,8 @@ ODriveCommandService = _make_service(
 )
 SendBallButlerCommand = _make_service(
     req_fields={'yaw_angle_rad': 0.0, 'pitch_angle_rad': 0.0,
-                'throw_speed': 0.0, 'throw_time': 0.0},
+                'throw_speed': 0.0, 'throw_time': 0.0,
+                'suppress_announcement': False},
     resp_fields={'success': False, 'message': ''},
 )
 ThrowAtTarget = _make_service(
