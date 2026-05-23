@@ -189,7 +189,7 @@ scoped in this phase.
 
 **Dependencies:** Phase 1.
 
-**Outcome (2026-05-23, commit `<pending>`):** COMPLETE. Family chosen:
+**Outcome (2026-05-23, commits `89dc933` prototype + `2d57f27` logbook/plan):** COMPLETE. Family chosen:
 **symmetric 3-segment quintic-linear-quintic**, C2 globally. Accel quintic
 `q(τ) = 2τ³ − τ⁴`, decel quintic `r(τ) = 2τ − 2τ³ + τ⁴` (mirror), cruise
 linear. Analytic peaks `|a|_max = 1.5·v/T_a`, `|j|_max = 6·v/T_a²`. New
