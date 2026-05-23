@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 from controller.demo.pattern import JugglePattern
-from controller.demo.trajectory import JuggleTrajectory, build_analytic_oval
+from controller.demo.trajectory import JuggleTrajectory
 from controller.demo.juggle_optimizer import (
     OptimizerConfig, OptimizerResult,
     optimise_juggle_trajectory,
@@ -68,41 +68,79 @@ def test_catch_offset_default_equals_flight_minus_period(pattern, result_default
 
 # --------------------------------------------------------------------------
 # Keyframe constraints — T-U3 (throw) and T-U4 (catch)
+#
+# Under the relaxed-throw cut (banking enabled by default), the throw
+# keyframe pins only the platform centroid's xyz; orientation is free
+# (within the tilt bound) and the platform's xy twist is whatever the
+# orientation-aware ball-release equality demands. The catch keyframe
+# pins only the centroid's xyz too; orientation, twist and accel at
+# catch are all free.
 # --------------------------------------------------------------------------
-def test_throw_keyframe_pose_is_throw_pose(pattern, result_default):
-    """At t=0 the optimised trajectory passes through ``pattern.throw_pose``."""
+def test_throw_keyframe_xyz_is_pinned(pattern, result_default):
+    """At t=0 the platform centroid xyz matches ``pattern.throw_pose[:3]``."""
     pose, _, _ = result_default.trajectory.eval(0.0)
-    np.testing.assert_allclose(pose, pattern.throw_pose, atol=1e-6)
+    np.testing.assert_allclose(pose[:3], pattern.throw_pose[:3], atol=1e-6)
 
 
-def test_throw_keyframe_twist_matches_ballistic_launch(pattern, result_default):
-    """At t=0 the platform's xy twist matches the ball's required launch velocity."""
-    _, twist, _ = result_default.trajectory.eval(0.0)
-    expected_vx = (pattern.catch_pose[0] - pattern.throw_pose[0]) / pattern.flight_time_s
-    expected_vy = (pattern.catch_pose[1] - pattern.throw_pose[1]) / pattern.flight_time_s
-    assert twist[0] == pytest.approx(expected_vx, abs=1e-6)
-    assert twist[1] == pytest.approx(expected_vy, abs=1e-6)
-    assert twist[2] == pytest.approx(0.0, abs=1e-6)
+def test_throw_ball_release_velocity_lands_at_catch(pattern, result_default):
+    """The orientation-aware throw equality holds: the ball thrown from the
+    optimised platform state lands at the matched catch's hand opening.
 
-
-def test_catch_keyframe_pose_is_catch_pose(pattern, result_default):
-    """At t=catch_offset the optimised trajectory passes through ``pattern.catch_pose``."""
-    pose, _, _ = result_default.trajectory.eval(result_default.catch_offset_s)
-    np.testing.assert_allclose(pose, pattern.catch_pose, atol=1e-3)
-
-
-def test_catch_keyframe_twist_matches_arrival_velocity(pattern, result_default):
-    """Matched-catch: platform xy twist at catch equals ball arrival velocity.
-
-    No horizontal acceleration during free flight, so arrival xy velocity
-    equals launch xy velocity.
+    Computes v_ball_release in world frame from the optimised pose +
+    twist at throw, propagates ballistically for ``flight_time_s``, and
+    checks the landing position matches the matched-catch hand opening
+    in xyz.
     """
-    _, twist, _ = result_default.trajectory.eval(result_default.catch_offset_s)
-    expected_vx = (pattern.catch_pose[0] - pattern.throw_pose[0]) / pattern.flight_time_s
-    expected_vy = (pattern.catch_pose[1] - pattern.throw_pose[1]) / pattern.flight_time_s
-    assert twist[0] == pytest.approx(expected_vx, abs=1e-3)
-    assert twist[1] == pytest.approx(expected_vy, abs=1e-3)
-    assert twist[2] == pytest.approx(0.0, abs=1e-3)
+    from controller.demo.juggle_optimizer import (
+        _hand_offset_at_release_mm, _hand_offset_at_arrival_mm,
+    )
+    GRAVITY_MMS2 = 9806.0
+
+    def rodrigues(rv):
+        theta = np.linalg.norm(rv)
+        if theta < 1e-12:
+            return np.eye(3)
+        k = rv / theta
+        K = np.array([[0, -k[2], k[1]],
+                      [k[2], 0, -k[0]],
+                      [-k[1], k[0], 0]])
+        return np.eye(3) + np.sin(theta) * K + (1 - np.cos(theta)) * (K @ K)
+
+    init_height = 574.3   # default cfg.platform_init_height_mm
+    h_release = _hand_offset_at_release_mm(pattern.throw_speed_mps)
+    h_arrival = _hand_offset_at_arrival_mm()
+
+    pose0, twist0, _ = result_default.trajectory.eval(0.0)
+    R_throw = rodrigues(pose0[3:6])
+    release_pos_world = np.array(
+        [pose0[0], pose0[1], pose0[2] + init_height]) + R_throw @ [0, 0, h_release]
+    v_ball = twist0[:3] + R_throw @ [0, 0, pattern.throw_speed_mps * 1000.0]
+
+    pose_c, _, _ = result_default.trajectory.eval(result_default.catch_offset_s)
+    R_catch = rodrigues(pose_c[3:6])
+    catch_target_world = np.array(
+        [pose_c[0], pose_c[1], pose_c[2] + init_height]) + R_catch @ [0, 0, h_arrival]
+
+    flight = pattern.flight_time_s
+    landing = (release_pos_world + v_ball * flight
+               + np.array([0, 0, -0.5 * GRAVITY_MMS2 * flight * flight]))
+    np.testing.assert_allclose(landing, catch_target_world, atol=1e-3)
+
+
+def test_catch_keyframe_xyz_is_pinned(pattern, result_default):
+    """At t=catch_offset the platform centroid xyz matches ``pattern.catch_pose[:3]``."""
+    pose, _, _ = result_default.trajectory.eval(result_default.catch_offset_s)
+    np.testing.assert_allclose(pose[:3], pattern.catch_pose[:3], atol=1e-3)
+
+
+def test_tilt_bound_respected_at_every_knot(result_default):
+    """Every knot's tilt (rx, ry) lies inside the configured tilt cap."""
+    from controller.ballistics import TILT_LIMIT_RAD
+    tilts = np.sqrt(result_default.knot_poses[:, 3] ** 2
+                    + result_default.knot_poses[:, 4] ** 2)
+    assert tilts.max() <= TILT_LIMIT_RAD + 1e-6, (
+        f"max tilt {np.degrees(tilts.max()):.2f}° exceeds bound "
+        f"{np.degrees(TILT_LIMIT_RAD):.2f}°")
 
 
 # --------------------------------------------------------------------------
@@ -118,13 +156,19 @@ def test_trajectory_is_periodic(pattern, result_default):
     np.testing.assert_allclose(a0, aP, atol=1e-9)
 
 
-def test_level_locked_orientation_is_zero_everywhere(result_default):
-    """``bank_locked_level=True`` zeros rx, ry, rz and their twist/accel components."""
-    np.testing.assert_allclose(result_default.knot_poses[:, 3:6], 0.0, atol=1e-9)
-    np.testing.assert_allclose(result_default.knot_twists[:, 3:6], 0.0, atol=1e-9)
-    np.testing.assert_allclose(result_default.knot_accels[:, 3:6], 0.0, atol=1e-9)
-    # Resampled trajectory inherits the level lock.
-    np.testing.assert_allclose(result_default.trajectory.poses[:, 3:6], 0.0, atol=1e-9)
+def test_level_locked_mode_zeros_orientation_everywhere(pattern):
+    """``bank_locked_level=True`` (opt-in legacy mode) zeros every orientation DOF.
+
+    This is the pre-relaxation behaviour, kept for A/B comparison. The
+    default-config tests above check the BANKING-ENABLED behaviour.
+    """
+    res = optimise_juggle_trajectory(
+        pattern, OptimizerConfig(n_knots=12, n_samples=64,
+                                 bank_locked_level=True))
+    np.testing.assert_allclose(res.knot_poses[:, 3:6], 0.0, atol=1e-9)
+    np.testing.assert_allclose(res.knot_twists[:, 3:6], 0.0, atol=1e-9)
+    np.testing.assert_allclose(res.knot_accels[:, 3:6], 0.0, atol=1e-9)
+    np.testing.assert_allclose(res.trajectory.poses[:, 3:6], 0.0, atol=1e-9)
 
 
 def test_workspace_bounds_respected_at_every_knot(result_default):
@@ -159,7 +203,11 @@ def test_optimised_objective_is_within_expected_magnitude(result_default):
 # Custom catch_offset
 # --------------------------------------------------------------------------
 def test_custom_catch_offset_is_honoured(pattern):
-    """A non-default catch_offset_s is solved for and reported."""
+    """A non-default catch_offset_s is solved for and reported.
+
+    Only the xyz centroid is pinned at the catch instant under the
+    relaxed-throw cut; orientation is left to the optimiser.
+    """
     P = pattern.platform_period_s
     custom = 0.5 * P
     res = optimise_juggle_trajectory(
@@ -167,7 +215,7 @@ def test_custom_catch_offset_is_honoured(pattern):
                                  catch_offset_s=custom))
     assert res.catch_offset_s == pytest.approx(custom)
     pose, _, _ = res.trajectory.eval(custom)
-    np.testing.assert_allclose(pose, pattern.catch_pose, atol=1e-3)
+    np.testing.assert_allclose(pose[:3], pattern.catch_pose[:3], atol=1e-3)
 
 
 # --------------------------------------------------------------------------

@@ -23,25 +23,28 @@ Constraints
 -----------
 **Throw instant** (``t_rel == 0``, knot 0):
 
-  - Pose equals ``pattern.throw_pose`` (level platform, at the THROW
-    keyframe).
-  - Horizontal twist equals the ball's required launch velocity
-    ``(catch.x - throw.x, catch.y - throw.y) / flight_time``. This is
-    what the plan §2 calls "platform horizontal velocity equals the
-    ball's required horizontal launch velocity (sets where the ball
-    lands)" — the open-loop runtime relies on kinematic-hold velocity
-    inheritance to set the ball's launch velocity, so the platform's
-    twist at throw *is* the throw spec.
-  - Vertical twist is zero (the hand axis is what imparts vertical
-    velocity to the ball).
+  - Platform centroid xyz equals ``pattern.throw_pose[:3]``; orientation
+    (rx, ry, rz) is free, subject to the per-knot tilt cap.
+  - Orientation-aware ball-release equality: the ball's release velocity
+    ``v_ball = twist[0,:3] + R_throw @ [0, 0, throw_speed_mms]`` is set
+    equal to the inverse-ballistic ``v_required = (catch_target −
+    release_pos) / flight + [0, 0, 0.5 · g · flight]``. ``release_pos``
+    and ``catch_target`` are the hand-opening *world* positions, derived
+    from the platform's throw and catch orientations respectively — so
+    a tilted platform shifts both endpoints and the optimiser may bank
+    the throw to give the hand-axis a horizontal kick.
 
 **Catch instant** (``t_rel == catch_offset_s``, mid-segment in general):
 
-  - Pose equals ``pattern.catch_pose``.
-  - Horizontal twist equals the (free-flight-preserved) launch velocity,
-    so the platform's xy velocity matches the ball's xy velocity at
-    contact — a soft-catch condition.
-  - Vertical twist is zero.
+  - Platform centroid xyz equals ``pattern.catch_pose[:3]``.
+  - Orientation, twist, and acceleration at catch are all free — the
+    optimiser may lean into or out of the arriving ball, and may move
+    its centroid at any velocity.
+
+**Tilt** — every knot satisfies ``rx² + ry² ≤ tilt_limit_rad²`` when
+``bank_locked_level=False`` (the default). With ``bank_locked_level=True``
+the orientation DOFs are pinned to zero everywhere (opt-in legacy mode,
+useful for A/B comparison against the level-locked first cut).
 
 **Periodic** — built into the wraparound, no explicit constraint.
 
@@ -49,8 +52,8 @@ Constraints
 
 **Leg velocity / acceleration limits** — *not* enforced in this cut;
 those tie into the Phase 4 ``hardware_config.yaml`` raise and are added
-in the Phase 2 follow-up that introduces banking + a leg-space jerk
-objective.
+in a later cut alongside a leg-space jerk objective and leg-velocity
+equalisation.
 
 Catch offset
 ------------
@@ -77,9 +80,60 @@ from typing import Optional
 import casadi as cs
 import numpy as np
 
+from controller.ballistics import TILT_LIMIT_RAD
 from controller.demo.pattern import JugglePattern
 from controller.demo.trajectory import JuggleTrajectory, build_analytic_oval
 from controller.hermite import quintic_interp_with_accel
+
+# Hand-stroke kinematics constants (mirroring sim/hand/trajectory.py
+# and sim/hand/ballistics.py). Lifted here so the optimiser stays inside
+# the controller/ boundary (no sim/ imports). These describe the
+# hardware hand actuator and are not sim-specific.
+_HAND_STROKE_MARGIN_MM = 20.0
+_HAND_TOTAL_STROKE_MM = 315.0
+_HAND_AXIS_BOTTOM_OFFSET_MM = -129.0   # from sim/hand/ballistics.py:22
+_HAND_BALL_SEAT_OFFSET_MM = 44.4       # from sim/hand/ballistics.py:25
+_HAND_INERTIA_RATIO = 0.747            # from sim/hand/trajectory.py:35
+_HAND_THROW_VEL_HOLD_PCT = 0.05        # from sim/hand/trajectory.py:48
+_HAND_CATCH_VEL_HOLD_PCT = 0.10        # from sim/hand/trajectory.py:37
+
+
+def _hand_offset_at_release_mm(throw_speed_mps: float) -> float:
+    """Platform-centroid → ball-COM offset (mm) at the throw release instant.
+
+    Mirrors ``HandThrowTrajectory`` at ``t == release_time`` (end of the
+    velocity-hold phase): slider position = stroke_margin + x1 +
+    v_throw * t_vel where x1 is the acceleration-phase displacement.
+    The ball offset is the slider position + the fixed seat-offset
+    geometry. Independent of pose; depends only on ``throw_speed_mps``
+    and the constants above.
+    """
+    accel_stroke_m = (1.0 - _HAND_THROW_VEL_HOLD_PCT) * (_HAND_TOTAL_STROKE_MM / 1000.0)
+    vel_hold_m = _HAND_THROW_VEL_HOLD_PCT * (_HAND_TOTAL_STROKE_MM / 1000.0)
+    t_acc = 2.0 / (_HAND_INERTIA_RATIO + 1.0) * accel_stroke_m / throw_speed_mps
+    t_vel = vel_hold_m / throw_speed_mps
+    throwA = throw_speed_mps / t_acc
+    x1_m = 0.5 * throwA * t_acc * t_acc
+    release_slider_mm = _HAND_STROKE_MARGIN_MM + (x1_m + throw_speed_mps * t_vel) * 1000.0
+    return _HAND_AXIS_BOTTOM_OFFSET_MM + release_slider_mm + _HAND_BALL_SEAT_OFFSET_MM
+
+
+def _hand_offset_at_arrival_mm() -> float:
+    """Platform-centroid → ball-COM offset (mm) at the catch arrival instant.
+
+    Independent of throw_speed (the catch-vel ratio cancels in the
+    midpoint-of-velocity-hold formula). The slider descent from the
+    top of stroke (335 mm) to arrival is ~137 mm for the standard hand
+    kinematics, putting the slider at ~198 mm.
+    """
+    descent_m = 0.5 * (_HAND_TOTAL_STROKE_MM / 1000.0) * (
+        2.0 * _HAND_INERTIA_RATIO / (_HAND_INERTIA_RATIO + 1.0)
+        * (1.0 - _HAND_CATCH_VEL_HOLD_PCT)
+        + _HAND_CATCH_VEL_HOLD_PCT
+    )
+    top_of_stroke_mm = _HAND_STROKE_MARGIN_MM + _HAND_TOTAL_STROKE_MM
+    arrival_slider_mm = top_of_stroke_mm - descent_m * 1000.0
+    return _HAND_AXIS_BOTTOM_OFFSET_MM + arrival_slider_mm + _HAND_BALL_SEAT_OFFSET_MM
 
 
 @dataclasses.dataclass
@@ -99,10 +153,12 @@ class OptimizerConfig:
         quintic-Hermite segments the optimiser solved for, so dense
         resampling is exact (no approximation).
     bank_locked_level : bool
-        If True (the default for the first-cut optimiser), forces
-        ``rx == ry == rz == 0`` and zero rotational twist/accel at every
-        knot. The follow-up cut relaxes this so the optimiser may bank
-        the platform during the carry phase to reduce leg jerk.
+        If True, pins ``rx == ry == rz == 0`` and zero rotational
+        twist/accel at every knot (opt-in legacy mode, useful for A/B
+        comparison against the level-locked first cut). Default
+        ``False`` — the optimiser banks the platform within
+        ``tilt_limit_rad`` to reduce pose-jerk and exploit the hand-axis
+        tilt-induced horizontal velocity contribution at throw.
     catch_offset_s : float or None
         Catch event time within the period. ``None`` derives it from
         the pattern's ballistics (``flight_time_s − platform_period_s``).
@@ -113,10 +169,17 @@ class OptimizerConfig:
     """
     n_knots: int = 16
     n_samples: int = 128
-    bank_locked_level: bool = True
+    bank_locked_level: bool = False
+    tilt_limit_rad: float = TILT_LIMIT_RAD
     catch_offset_s: Optional[float] = None
     workspace_xy_mm: float = 200.0
     workspace_z_mm: tuple[float, float] = (0.0, 300.0)
+    # World-frame z of the platform centroid at the STOW pose, mm. The
+    # optimiser works in STOW-relative pose coordinates but the ballistic
+    # constraints need world frame; the only quantity that bridges the
+    # frames is this offset. Default matches the StewartGeometry default
+    # (574.3 mm); override via the caller for non-default geometries.
+    platform_init_height_mm: float = 574.3
 
 
 @dataclasses.dataclass
@@ -198,6 +261,42 @@ def _quintic_eval_sym(p0, v0, a0, p1, v1, a1, T, t):
     return pose, twist, accel
 
 
+def _casadi_rodrigues(rv):
+    """CasADi-symbolic rotation matrix from a 3-vector rotation (Rodrigues).
+
+    ``rv`` is a 1x3 or 3x1 ``cs.MX`` rotation vector (axis × angle, radians).
+    Returns a 3x3 rotation matrix. Uses eps-padded denominators
+    (``theta_sq + 1e-30``) so ``sin(θ)/θ`` and ``(1 − cos θ)/θ²``
+    evaluate to their limits (1 and ½) at ``θ = 0``; the symbolic
+    Jacobian stays finite there.
+
+    Mirrors ``controller.mpc._casadi_rodrigues`` but inlined here to
+    keep the optimiser's import graph self-contained.
+    """
+    # Normalise rv to a column vector for indexing.
+    rv = cs.reshape(rv, 3, 1)
+    rx = rv[0]
+    ry = rv[1]
+    rz = rv[2]
+    theta_sq_raw = rx * rx + ry * ry + rz * rz
+    # eps padding used in BOTH theta and theta_sq denominators so the
+    # division is finite at theta=0. At theta=0 the limits are
+    # sin(θ)/θ → 1 and (1−cos(θ))/θ² → 1/2, and using the padded
+    # values recovers those limits to ~1e-15 (the small-angle Taylor
+    # truncation error of the formula itself).
+    theta_sq = theta_sq_raw + 1e-30
+    theta = cs.sqrt(theta_sq)
+
+    K = cs.vertcat(
+        cs.horzcat(0.0, -rz, ry),
+        cs.horzcat(rz, 0.0, -rx),
+        cs.horzcat(-ry, rx, 0.0),
+    )
+    I3 = cs.MX.eye(3)
+    # R = I + sin(θ)/θ K + (1-cos(θ))/θ² K²
+    return I3 + cs.sin(theta) / theta * K + (1.0 - cs.cos(theta)) / theta_sq * K @ K
+
+
 def _quintic_jerk_integral_sym(p0, v0, a0, p1, v1, a1, T):
     """CasADi-symbolic analytical jerk² integral mirroring
     :func:`controller.hermite.quintic_jerk_integral`.
@@ -260,15 +359,15 @@ def optimise_juggle_trajectory(pattern: JugglePattern,
 
     N = cfg.n_knots
     dt_knot = P / N
-
-    # Ball's required launch velocity (mm/s) — what the platform must
-    # carry at the moment of release so the ball lands at catch_pose.
     flight = pattern.flight_time_s
-    vx_throw = (pattern.catch_pose[0] - pattern.throw_pose[0]) / flight
-    vy_throw = (pattern.catch_pose[1] - pattern.throw_pose[1]) / flight
-    # Ball at catch: arrival xy velocity equals launch xy velocity
-    # (no horizontal accel during free flight) — matched-catch condition.
-    vx_catch, vy_catch = vx_throw, vy_throw
+
+    # Hand-opening offsets at the throw release / catch arrival instants
+    # (platform-local z above the centroid). Independent of pose; depend
+    # only on throw_speed_mps (release) and on the fixed hand kinematics
+    # (arrival).
+    h_release_mm = _hand_offset_at_release_mm(pattern.throw_speed_mps)
+    h_arrival_mm = _hand_offset_at_arrival_mm()
+    g_mms2 = 9806.0
 
     # Locate the catch instant: which segment is it in, and at what
     # local time within that segment? Constant integers; no symbolic
@@ -284,32 +383,83 @@ def optimise_juggle_trajectory(pattern: JugglePattern,
     twists = opti.variable(N, 6)
     accels = opti.variable(N, 6)
 
-    # Throw keyframe (knot 0).
-    opti.subject_to(poses[0, :].T == pattern.throw_pose)
-    opti.subject_to(twists[0, 0] == vx_throw)
-    opti.subject_to(twists[0, 1] == vy_throw)
-    opti.subject_to(twists[0, 2] == 0.0)
+    # ---- Throw keyframe (knot 0): xyz pinned, orientation free -----
+    #
+    # The orientation-aware ball-release-velocity constraint: the ball
+    # at release inherits ``v_platform + R_throw @ [0, 0, throw_speed]``
+    # from the kinematic hold + the hand's vertical throw stroke. The
+    # required release velocity is inverse-ballistics from the hand-
+    # opening's world position at release to the hand-opening's world
+    # position at the catch arrival. Both endpoints depend on platform
+    # orientation, so the whole system is coupled — but the equations
+    # are still smooth in the decision variables.
+    opti.subject_to(poses[0, 0] == pattern.throw_pose[0])    # x
+    opti.subject_to(poses[0, 1] == pattern.throw_pose[1])    # y
+    opti.subject_to(poses[0, 2] == pattern.throw_pose[2])    # z
 
-    # Catch keyframe (mid-segment in general).
-    pose_catch_sym, twist_catch_sym, _accel_catch_sym = _quintic_eval_sym(
+    R_throw = _casadi_rodrigues(poses[0, 3:6])
+    centroid_throw_world = cs.vertcat(
+        poses[0, 0],
+        poses[0, 1],
+        poses[0, 2] + cfg.platform_init_height_mm,
+    )
+    release_pos_world = centroid_throw_world + R_throw @ cs.vertcat(0.0, 0.0, h_release_mm)
+
+    # Catch keyframe (mid-segment in general). Only the pose is
+    # constrained; twist and accel at catch are free, so we discard
+    # those quintic-eval outputs.
+    pose_catch_sym, _twist_catch_sym, _accel_catch_sym = _quintic_eval_sym(
         poses[k_catch, :], twists[k_catch, :], accels[k_catch, :],
         poses[(k_catch + 1) % N, :], twists[(k_catch + 1) % N, :],
         accels[(k_catch + 1) % N, :],
         dt_knot, t_catch_local)
-    opti.subject_to(pose_catch_sym.T == pattern.catch_pose)
-    opti.subject_to(twist_catch_sym[0, 0] == vx_catch)
-    opti.subject_to(twist_catch_sym[0, 1] == vy_catch)
-    opti.subject_to(twist_catch_sym[0, 2] == 0.0)
 
-    # Level-platform lock (first-cut optimiser): rx, ry, rz and their
-    # twist/accel components are zero at every knot. Banking is added
-    # in the follow-up cut.
+    # ---- Catch keyframe: xyz pinned; twist + orientation FREE ------
+    # The optimiser's freedom at catch is the whole point of this cut —
+    # it can lean into / out of the ball, move with or against it, as
+    # long as the platform centroid sits at the right xyz for the
+    # arriving ball.
+    opti.subject_to(pose_catch_sym[0, 0] == pattern.catch_pose[0])
+    opti.subject_to(pose_catch_sym[0, 1] == pattern.catch_pose[1])
+    opti.subject_to(pose_catch_sym[0, 2] == pattern.catch_pose[2])
+
+    R_catch = _casadi_rodrigues(pose_catch_sym[0, 3:6])
+    centroid_catch_world = cs.vertcat(
+        pose_catch_sym[0, 0],
+        pose_catch_sym[0, 1],
+        pose_catch_sym[0, 2] + cfg.platform_init_height_mm,
+    )
+    catch_target_world = centroid_catch_world + R_catch @ cs.vertcat(0.0, 0.0, h_arrival_mm)
+
+    # ---- Orientation-aware throw equality (3 equations) -------------
+    # v_ball_release = v_platform_at_throw + R_throw @ [0, 0, throw_speed_mms]
+    # v_required = compute_launch_velocity(release_pos, target, flight)
+    #            = (target - release) / flight + [0, 0, 0.5 * g * flight]
+    v_required = (catch_target_world - release_pos_world) / flight + \
+                 cs.vertcat(0.0, 0.0, 0.5 * g_mms2 * flight)
+    v_ball_release = twists[0, 0:3].T + R_throw @ cs.vertcat(
+        0.0, 0.0, pattern.throw_speed_mps * 1000.0)
+    opti.subject_to(v_ball_release == v_required)
+
+    # ---- Level-platform lock (opt-in for back-compat / comparison) --
+    # Pre-relaxation default; useful for A/B comparing the optimiser
+    # against the level-locked first cut.
     if cfg.bank_locked_level:
         for k in range(N):
             for j in (3, 4, 5):
                 opti.subject_to(poses[k, j] == 0.0)
                 opti.subject_to(twists[k, j] == 0.0)
                 opti.subject_to(accels[k, j] == 0.0)
+    else:
+        # Tilt bound at every knot: rx² + ry² ≤ tilt_limit². rz (yaw)
+        # is unbounded — yaw doesn't change the hand-axis direction
+        # so it's purely cosmetic and the optimiser usually leaves it
+        # at zero on its own. Keeps the bound a simple convex circle
+        # rather than a more expensive full-tilt formula.
+        for k in range(N):
+            opti.subject_to(
+                poses[k, 3] ** 2 + poses[k, 4] ** 2
+                <= cfg.tilt_limit_rad ** 2)
 
     # Workspace bounds at every knot.
     for k in range(N):

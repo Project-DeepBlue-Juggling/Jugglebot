@@ -240,17 +240,36 @@ an :class:`OptimizerResult` (dense-resampled `JuggleTrajectory` + the raw
 N-knot arrays + objective value + iteration count); `save_optimised_trajectory`
 writes `.npz` loadable by `JuggleTrajectory.load`.
 
-**Deferred to a follow-up cut** (own commit, later session): orientation
-banking as free DOFs during the carry phase, leg-space (not pose-space) jerk
-objective, leg velocity/acceleration inequality constraints (tied to the
-Phase 4 `hardware_config.yaml` raise), and the priming transient (the
-exit transient is already provided by Phase 3b's `ExitTransient`). The
-level-platform pose-jerk first cut is sufficient to unblock Phase 3c.
+**Banking + relaxed throw constraint landed 2026-05-23 (cut 2).** The
+level-lock is now an opt-in switch (`bank_locked_level=True`); the default
+is banking-on with a 30° tilt bound at every knot. The throw constraint
+is now orientation-aware: ``v_ball_release = v_platform + R_throw @ [0, 0,
+throw_speed]`` set equal to inverse-ballistics ``compute_launch_velocity``
+from the orientation-aware release position to the orientation-aware
+catch hand opening. The catch keyframe pins only centroid xyz; orientation,
+twist, and acceleration at catch are free for the optimiser to choose.
+
+Result on the default pattern: the optimiser tilts ~3.6° forward at throw
+and ~7.7° backward at catch, and the platform moves at **+239 mm/s in +x at
+the throw event — *opposite* the ball's flight direction** — because the
+hand-tilt-induced horizontal velocity is more than enough to send the ball
+to the catch on its own. Pose-jerk² drops 29% vs the level-locked cut
+(9.94e8 vs 1.40e9). Sim demo still reaches 33 catches in 30 s (the catch
+keyframe's tilt of ~7.7° shifts the hand opening's world xy by ~15 mm,
+within the passive cone's catch tolerance).
+
+**Deferred to further cuts** (each its own commit / session): leg-space
+(not pose-space) jerk objective via CasADi IK + dense sub-sampling; leg-
+velocity equalisation via a minimax ``v_max`` slack so all six legs share
+peak velocity work; leg velocity/acceleration inequality constraints (tied
+to the Phase 4 `hardware_config.yaml` raise); and the priming transient
+(the exit transient is already provided by Phase 3b's `ExitTransient`).
 
 Validated by `tests/sim/test_demo_juggle_optimizer.py` (17 tests covering
-T-U3 throw constraint / T-U4 catch constraint, periodicity, level-lock,
-workspace bounds, custom catch_offset, save/load roundtrip, IPOPT
-convergence, drop-in compatibility with `TrajectoryPlayer`).
+throw xyz pin, orientation-aware ball release lands at the matched catch
+hand opening, catch xyz pin, tilt-bound at every knot, periodicity, the
+level-locked legacy mode, workspace bounds, custom catch_offset, save/load
+roundtrip, IPOPT convergence, drop-in compatibility with `TrajectoryPlayer`).
 
 **New/modified files:**
 - `controller/demo/pattern.py` (new)
@@ -613,6 +632,19 @@ insufficient.
   services and the runtime player is NumPy-only by Phase 2 design). Decision
   required before §4 Phase 4.
 - **Sim entry point — RESOLVED.** Standalone `sim/juggle_demo.py` (Phase 3c).
+- **Sim runner doesn't track banked-catch hand-opening offset.** With
+  banking enabled (Phase 2 cut #2), the optimiser tilts the platform ~7.7°
+  at the catch instant — the hand opening's world xy shifts by
+  ``sin(7.7°) × 113.4 ≈ 15 mm`` from the centroid. The sim runner's
+  ``_catch_z_world_mm`` and ``_analytic_release_velocity_world_mms``
+  target still assume a level catch, so balls land ~15 mm off the hand
+  centre. The passive cone tolerates this at the default apex (33/33
+  catches on 2026-05-23), but if the apex is raised or the cone is
+  shrunk, the runner should query the optimised trajectory's catch
+  orientation and apply the same ``R_catch @ [0,0,hand_offset]``
+  formula the optimiser uses. ~10 lines in
+  ``sim/juggle_demo.py:_execute_bb_throw`` and
+  ``_analytic_release_velocity_world_mms``.
 
 ### Safety-critical invariants
 
