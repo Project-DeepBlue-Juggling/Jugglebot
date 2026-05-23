@@ -292,21 +292,42 @@ dependency). No hardware.
 
 ### Phase 3: Full sim juggle demo — IN PROGRESS (started 2026-05-22)
 
-**Progress (2026-05-22).** Exploring the sim integration surface surfaced a
-blocker: the MuJoCo sim was single-ball (`sim/ball/manager.py` managed one
-`ball` body), but the demo is a two-ball juggle. Decision taken — **extend
-the sim to two balls** (over the alternative of a one-ball sim validation
-with the two-ball interleave deferred to hardware). Sub-phase **3a** is
-complete: the model gains a `ball2` body (`sim/model/jugglebot.xml` — body,
-material, keyframe `qpos`, sensors); `BallManager` is refactored into a
-per-ball `Ball` class plus a registry that auto-discovers `ball`/`ball2`/…,
-keeping its single-ball API (delegating to ball 0) so existing callers are
-unaffected; `MuJoCoPlant`'s ball methods take a `ball` index. Validated by
-`tests/sim/test_multiball.py` (6 tests, incl. one-held-one-in-flight) with
-no regression to `test_ball.py`. The sim entry-point decision (§6) is also
-resolved: a standalone `sim/juggle_demo.py`, not a `sim/main.py` mode.
-Remaining 3b/3c: `timeline.py`, the player abort path, the `juggle_demo.py`
-runner, and tuning to 30+ catches.
+**Progress (2026-05-22 → 2026-05-23).** Exploring the sim integration surface
+surfaced a blocker: the MuJoCo sim was single-ball (`sim/ball/manager.py`
+managed one `ball` body), but the demo is a two-ball juggle. Decision taken —
+**extend the sim to two balls** (over the alternative of a one-ball sim
+validation with the two-ball interleave deferred to hardware).
+
+Sub-phase **3a** is complete (2026-05-22): the model gains a `ball2` body
+(`sim/model/jugglebot.xml` — body, material, keyframe `qpos`, sensors);
+`BallManager` is refactored into a per-ball `Ball` class plus a registry that
+auto-discovers `ball`/`ball2`/…, keeping its single-ball API (delegating to
+ball 0) so existing callers are unaffected; `MuJoCoPlant`'s ball methods take
+a `ball` index. Validated by `tests/sim/test_multiball.py` (6 tests, incl.
+one-held-one-in-flight) with no regression to `test_ball.py`. The sim
+entry-point decision (§6) is also resolved: a standalone `sim/juggle_demo.py`,
+not a `sim/main.py` mode.
+
+Sub-phase **3b** is complete (2026-05-23): `controller/demo/timeline.py` lands
+`Event` (NamedTuple), `MasterTimeline` (BB priming + alternating hand
+throw/catch events on absolute wall-time; cursor-based `due_events`;
+idempotent `abort` that truncates the future schedule), and `ExitTransient`
+(single C2 quintic-Hermite segment from the abort-instant trajectory state to
+stow with zero twist and accel). `controller/demo/player.py` is extended
+with `TrajectoryPlayer.abort(exit_transient)` — the source-swap that routes
+subsequent `command_at` calls through the exit transient (lookahead included).
+Validated by `tests/sim/test_demo_timeline.py` (29 tests covering T-U8 event
+ordering / alternation / per-ball offset / traj_type / event_vel, T-U9 abort
+truncation + exit transient end-state, plus C2 continuity at the abort
+instant and the player abort-path integration). Catch-event placement is
+parametrised: the default `catch_offset_s = platform_period / 2` matches the
+analytic oval; the constructor accepts an override so Phase 3c can align to
+the Phase 1 hand-tempo derivation (`throw_stroke_s + transit_window_s`) once
+the optimiser-shaped trajectory replaces the analytic baseline.
+
+Remaining 3c: the `sim/juggle_demo.py` runner that wires `MuJoCoPlant` +
+`TrajectoryPlayer` + sim hand model + `BallButlerSim` + the two-ball manager
++ `MasterTimeline`, plus tuning to 30+ catches.
 
 **New/modified files:**
 - `sim/model/jugglebot.xml`, `sim/ball/manager.py`, `sim/ball/__init__.py`,

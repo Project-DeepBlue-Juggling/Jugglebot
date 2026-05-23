@@ -6,6 +6,8 @@ juggling demo — see ``plans/active/bb-led-two-ball-juggle-demo.md``.
   - ``pattern``    — oval geometry + tempo specification
   - ``trajectory`` — periodic C2 platform-pose trajectory + analytic builder
   - ``player``     — runtime open-loop trajectory player (wall-time -> command)
+  - ``timeline``   — master event schedule (BB priming + hand events) + abort
+                     path (``ExitTransient``)
   - ``juggle_optimizer`` — offline CasADi jerk-minimising optimiser (Phase 2,
     pending — replaces the analytic trajectory builder)
 

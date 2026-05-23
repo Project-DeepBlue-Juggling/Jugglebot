@@ -9,11 +9,17 @@ expects. No solver, no feedback, no state beyond the trajectory.
 It is a drop-in replacement for the MPC as the 40 Hz command source — see
 ``plans/active/bb-led-two-ball-juggle-demo.md`` §2.
 
+After an abort, :meth:`abort` swaps the trajectory source for an
+:class:`ExitTransient` (Phase 3 — produced by
+:meth:`MasterTimeline.abort`). The exit transient clamps past its end,
+so subsequent ``command_at`` calls hold the stow pose at zero twist
+indefinitely.
+
 Pure NumPy — no ROS2, no CasADi.
 """
 from __future__ import annotations
 
-from typing import NamedTuple
+from typing import NamedTuple, TYPE_CHECKING
 
 import numpy as np
 
@@ -26,6 +32,9 @@ from jugglebot.motion.ik_solver import (
 )
 
 from controller.demo.trajectory import JuggleTrajectory
+
+if TYPE_CHECKING:                                # pragma: no cover
+    from controller.demo.timeline import ExitTransient
 
 
 class PlayerCommand(NamedTuple):
@@ -56,6 +65,7 @@ class TrajectoryPlayer:
         self._traj = trajectory
         self._geom = geom if geom is not None else StewartGeometry()
         self._dt = float(control_dt)
+        self._exit: "ExitTransient | None" = None
 
     def _ik(self, pose):
         """Pose 6-vector -> (extensions_mm, pos, rot_matrix)."""
@@ -63,9 +73,33 @@ class TrajectoryPlayer:
         rot = rotvec_to_rot_matrix(np.asarray(pose[3:], dtype=float))
         return pose_to_leg_lengths(pos, rot, self._geom), pos, rot
 
+    def _eval(self, t_rel: float):
+        """Active trajectory source at ``t_rel`` -> (pose, twist, accel).
+
+        Returns the exit transient post-abort; the periodic trajectory
+        otherwise. Both expose ``eval(t) -> (pose, twist, accel)``.
+        """
+        src = self._exit if self._exit is not None else self._traj
+        return src.eval(t_rel)
+
+    @property
+    def aborted(self) -> bool:
+        return self._exit is not None
+
+    def abort(self, exit_transient: "ExitTransient") -> None:
+        """Switch the trajectory source to ``exit_transient``.
+
+        The companion call to :meth:`MasterTimeline.abort` produces the
+        ``ExitTransient``; the runner passes it here so subsequent
+        ``command_at`` calls trace the C2 ramp to stow.
+        """
+        if exit_transient is None:
+            raise ValueError("exit_transient must not be None")
+        self._exit = exit_transient
+
     def command_at(self, t_rel: float) -> PlayerCommand:
         """Player output for trajectory-relative time ``t_rel`` (seconds)."""
-        pose, twist, _accel = self._traj.eval(t_rel)
+        pose, twist, _accel = self._eval(t_rel)
         ext, pos, rot = self._ik(pose)
 
         # Leg-velocity feedforward from the platform twist. NOTE: the
@@ -77,8 +111,8 @@ class TrajectoryPlayer:
         J = compute_jacobian(pos, rot, self._geom)
         vel = twist_to_leg_velocities(twist, pos, rot, self._geom, J=J)
 
-        pose_n, _, _ = self._traj.eval(t_rel + self._dt)
-        pose_n2, _, _ = self._traj.eval(t_rel + 2.0 * self._dt)
+        pose_n, _, _ = self._eval(t_rel + self._dt)
+        pose_n2, _, _ = self._eval(t_rel + 2.0 * self._dt)
         ext_next = self._ik(pose_n)[0]
         ext_next2 = self._ik(pose_n2)[0]
 
