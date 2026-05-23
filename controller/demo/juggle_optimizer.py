@@ -174,6 +174,16 @@ class OptimizerConfig:
     catch_offset_s: Optional[float] = None
     workspace_xy_mm: float = 200.0
     workspace_z_mm: tuple[float, float] = (0.0, 300.0)
+    # Soft penalty weight for catch colinearity — the hand axis at catch
+    # is "encouraged" (not forced) to lie along the ball's arrival
+    # velocity direction. Penalty term added to the objective:
+    #   weight * ||v_ball_arrival × (R_catch @ [0,0,1])||²
+    # Scale: pose-jerk² ≈ 1e9 for the default pattern; a 5° catch
+    # mis-alignment at v ≈ 5000 mm/s gives ||v×ẑ||² ≈ 1.9e5, so the
+    # weighting needed to be comparable is ~1e3–1e4. Default 1000 is
+    # a gentle nudge that costs ~0.2% of pose-jerk for 5° miss; raise
+    # for a tighter alignment, set to 0.0 to disable.
+    catch_colinearity_weight: float = 1000.0
     # World-frame z of the platform centroid at the STOW pose, mm. The
     # optimiser works in STOW-relative pose coordinates but the ballistic
     # constraints need world frame; the only quantity that bridges the
@@ -479,6 +489,27 @@ def optimise_juggle_trajectory(pattern: JugglePattern,
             poses[k, :], twists[k, :], accels[k, :],
             poses[j, :], twists[j, :], accels[j, :],
             dt_knot)
+
+    # Soft catch-colinearity penalty (optional).
+    #
+    # The user-stated invariant is: the hand throws the ball ALONG the
+    # platform z-axis in the platform's frame; in world frame the ball's
+    # velocity is ``v_plat + R @ [0,0,throw_speed]``. The mirror at catch
+    # is that the ball arrives along the hand axis (in platform frame),
+    # which means the world-frame ball-arrival velocity is parallel to
+    # ``R_catch @ [0,0,1]``. This is a "should" not a "must" because the
+    # passive cone tolerates some mis-alignment; encode it as a soft
+    # penalty on the perpendicular component of v_ball_arrival.
+    #
+    # v_ball_arrival = v_required + [0, 0, −g·flight]  (gravity over flight)
+    # hand_axis_catch_world = R_catch @ [0,0,1]
+    # penalty = weight × ||v_ball_arrival × hand_axis_catch_world||²
+    if cfg.catch_colinearity_weight > 0.0:
+        v_ball_arrival = v_required + cs.vertcat(0.0, 0.0, -g_mms2 * flight)
+        hand_axis_catch = R_catch @ cs.vertcat(0.0, 0.0, 1.0)
+        cross = cs.cross(v_ball_arrival, hand_axis_catch)
+        cost = cost + cfg.catch_colinearity_weight * cs.dot(cross, cross)
+
     opti.minimize(cost)
 
     # Warm start from the analytic oval (same period, same n_samples == N).

@@ -139,7 +139,13 @@ class JuggleDemoConfig:
     """Knobs for :func:`run`. Sensible defaults match the plan's §4 Phase 3
     operating point.
     """
-    pattern: JugglePattern = dataclasses.field(default_factory=JugglePattern)
+    # Default pattern: apex 1.3 m (unchanged), throw–catch separation
+    # 200 mm (doubled from JugglePattern's 100 mm default). The wider
+    # spacing surfaces the optimiser's tilt + banking behaviour more
+    # visibly; override via the ``--apex-height-mm`` / ``--separation-mm``
+    # CLI flags or by passing a custom JugglePattern to ``run()``.
+    pattern: JugglePattern = dataclasses.field(
+        default_factory=lambda: JugglePattern(separation_mm=200.0))
     duration_s: float = 30.0
     n_catches: int = 32
     bb_position_mm: tuple[float, float, float] = (0.0, -1500.0, 1500.0)
@@ -864,6 +870,14 @@ def main(argv: Optional[list[str]] = None) -> int:
                         help="Disable CSV logging")
     parser.add_argument('--analytic-baseline', action='store_true',
                         help="Use the un-optimised analytic oval (debugging only)")
+    parser.add_argument('--apex-height-mm', type=float, default=None,
+                        help="Ball apex above the hand at release (mm). "
+                             "Default: JugglePattern's 1300 mm. Lower apex "
+                             "gives faster tempo and tighter control.")
+    parser.add_argument('--separation-mm', type=float, default=None,
+                        help="THROW–CATCH horizontal separation (mm). "
+                             "Default: 200 mm (this runner's default; "
+                             "doubled from JugglePattern's 100 mm).")
     parser.add_argument('--realtime-rate', type=float, default=0.0,
                         help="Wall-clock pacing: 1.0 = real-time, 0.5 = half-"
                              "speed slowmo, 2.0 = 2x, 0 (default) = free-"
@@ -883,7 +897,16 @@ def main(argv: Optional[list[str]] = None) -> int:
         ts = time.strftime('%Y%m%d_%H%M%S')
         log_path = f"temp/logs/juggle_demo_{ts}.csv"
 
+    # Override pattern fields from CLI flags (when provided).
+    pattern_kwargs: dict = {'separation_mm': 200.0}
+    if args.apex_height_mm is not None:
+        pattern_kwargs['apex_height_mm'] = args.apex_height_mm
+    if args.separation_mm is not None:
+        pattern_kwargs['separation_mm'] = args.separation_mm
+    pattern = JugglePattern(**pattern_kwargs)
+
     cfg = JuggleDemoConfig(
+        pattern=pattern,
         duration_s=args.duration,
         n_catches=args.n_catches,
         bb_scatter_mm=args.scatter_mm,
