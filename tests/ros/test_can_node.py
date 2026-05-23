@@ -89,6 +89,56 @@ class TestHandleMessage:
         node._handle_message(msg)
         assert node.last_bb_heartbeat.ball_in_hand is True
 
+    def test_routes_catch_event(self, node):
+        """A CATCH_EVENT frame routes to the catch-event branch, not ODrive."""
+        from jugglebot.can import catching_cone
+        data = struct.pack('<IBBH', 1_000_000, 5, 0x01, 0)  # ts, seq=5, time_synced
+        msg = can.Message(arbitration_id=catching_cone.CATCH_EVENT_ID, data=data)
+        node._handle_message(msg)
+        assert len(node.catch_event_pub.published) == 1
+        published = node.catch_event_pub.published[0]
+        assert published.sequence == 5
+        assert published.time_synced is True
+
+    def test_routes_catch_event_unsynced_still_published(self, node):
+        """An unsynced catch event is still published (time_synced=False), and
+        the stamp is host-arrival, not the raw cone µs counter (which would
+        place header.stamp near the Unix epoch and break downstream tools)."""
+        from jugglebot.can import catching_cone
+        data = struct.pack('<IBBH', 42, 9, 0x00, 0)  # flags=0 -> not synced
+        msg = can.Message(arbitration_id=catching_cone.CATCH_EVENT_ID, data=data)
+        node._handle_message(msg)
+        assert len(node.catch_event_pub.published) == 1
+        published = node.catch_event_pub.published[0]
+        assert published.time_synced is False
+        # header.stamp and catch_time should be the same host-derived instant
+        # (both set from self.get_clock().now().to_msg() in the unsynced branch).
+        assert published.header.stamp == published.catch_time
+
+    def test_routes_cone_heartbeat(self, node):
+        from jugglebot.can import catching_cone
+        # state=2 (READY), state_data=12, last_seq=3, ms_since=500, flags=0x01
+        data = bytes([2, 12, 3]) + (500).to_bytes(3, 'little') + bytes([0x01, 0])
+        msg = can.Message(arbitration_id=catching_cone.HEARTBEAT_ID, data=data)
+        node._handle_message(msg)
+        assert node._cone_heartbeat_received is True
+        assert node.last_cone_heartbeat.state == catching_cone.CatchingConeStates.READY
+        assert node.last_cone_heartbeat.sync_rms_us == 12
+
+    def test_publish_cone_heartbeat_reports_connected(self, node):
+        from jugglebot.can import catching_cone
+        # state=READY, sync_rms=8 µs, last_catch_seq=5, ms_since=100,
+        # flags = time_synced (0x01) | have_any_catch (0x02) = 0x03
+        data = bytes([2, 8, 5]) + (100).to_bytes(3, 'little') + bytes([0x03, 0])
+        node._handle_message(
+            can.Message(arbitration_id=catching_cone.HEARTBEAT_ID, data=data))
+        node._publish_cone_heartbeat()
+        assert len(node.cone_heartbeat_pub.published) == 1
+        hb = node.cone_heartbeat_pub.published[0]
+        assert hb.connected is True
+        assert hb.time_synced is True
+        assert hb.have_any_catch is True
+
     def test_routes_odrive_heartbeat(self, node):
         data = struct.pack('<IBBBB', 0, 8, 0, 0x01, 0)  # CLOSED_LOOP, traj_done
         msg = _odrive_msg(0, 'heartbeat_message', data)

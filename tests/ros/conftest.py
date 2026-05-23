@@ -72,6 +72,37 @@ class CanTrafficReportMessage:
 
 
 @dataclass
+class CatchEventMsg:
+    header: object = field(default_factory=lambda: MagicMock())
+    catch_time: object = None
+    sequence: int = 0
+    time_synced: bool = False
+    retrigger_suppressed: bool = False
+
+
+@dataclass
+class CatchingConeHeartbeatMsg:
+    connected: bool = False
+    state: int = 0
+    state_data: int = 0
+    sync_rms_us: int = 0
+    last_catch_seq: int = 0
+    ms_since_last_catch: int = 0
+    time_synced: bool = False
+    have_any_catch: bool = False
+
+
+@dataclass
+class CatchTimingResultMsg:
+    header: object = field(default_factory=lambda: MagicMock())
+    matched: bool = False
+    thrower_name: str = ""
+    predicted_landing_time: object = None
+    actual_catch_time: object = None
+    timing_error_ms: float = 0.0
+
+
+@dataclass
 class HandTelemetryMessage:
     timestamp: object = None
     pos_cmd: float = 0.0
@@ -293,6 +324,9 @@ class MockTime:
     """Stand-in for rclpy.time.Time — supports to_msg() and Duration addition."""
     def __init__(self, nanoseconds=0):
         self._ns = nanoseconds
+    @property
+    def nanoseconds(self):
+        return self._ns
     def to_msg(self):
         return self._ns
     def __add__(self, other):
@@ -429,6 +463,9 @@ _create_mock_module('jugglebot_interfaces.msg', {
     'BallButlerCalibrationResult': BallButlerCalibrationResult,
     'BallButlerHeartbeat': BallButlerHeartbeatMsg,
     'CanTrafficReportMessage': CanTrafficReportMessage,
+    'CatchEvent': CatchEventMsg,
+    'CatchingConeHeartbeat': CatchingConeHeartbeatMsg,
+    'CatchTimingResult': CatchTimingResultMsg,
     'HandTelemetryMessage': HandTelemetryMessage,
     'LegsTargetReachedMessage': LegsTargetReachedMessage,
     'RobotState': RobotState,

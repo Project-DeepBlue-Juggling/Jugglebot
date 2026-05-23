@@ -18,6 +18,8 @@ from jugglebot_interfaces.msg import (
     BallButlerCalibrationResult,
     BallButlerHeartbeat as BallButlerHeartbeatMsg,
     CanTrafficReportMessage,
+    CatchEvent as CatchEventMsg,
+    CatchingConeHeartbeat as CatchingConeHeartbeatMsg,
     HandTelemetryMessage,
     LegsTargetReachedMessage,
     RobotState,
@@ -42,6 +44,7 @@ from geometry_msgs.msg import Point, Quaternion, Vector3
 from jugglebot.can.bus import CANBus
 from jugglebot.can import odrive
 from jugglebot.can import ball_butler
+from jugglebot.can import catching_cone
 from jugglebot.can.motor_state import MotorStateTracker
 from jugglebot.can.throw_ballistics import predict_throw
 import jugglebot.protocol_config as proto
@@ -128,6 +131,12 @@ class CanInterfaceNode(Node):
         self._bb_heartbeat_received = False
         self._bb_last_can_rx_time = 0.0  # monotonic time of last CAN heartbeat frame
         self._bb_heartbeat_timeout_s = proto.BB_HEARTBEAT_TIMEOUT_MS / 1000.0
+
+        # Catching cone heartbeat tracking (mirrors the Ball Butler block above)
+        self.last_cone_heartbeat = catching_cone.ConeHeartbeat()
+        self._cone_heartbeat_received = False
+        self._cone_last_can_rx_time = 0.0  # monotonic time of last cone heartbeat frame
+        self._cone_heartbeat_timeout_s = proto.CC_HEARTBEAT_TIMEOUT_MS / 1000.0
 
         # BB calibration data (populated by bb/calibration_result subscription)
         self._bb_position_mm = None  # Optional tuple (x, y, z) in mm
@@ -231,6 +240,8 @@ class CanInterfaceNode(Node):
         self.target_reached_pub = self.create_publisher(LegsTargetReachedMessage, 'platform_target_reached', 10)
         self.bb_heartbeat_pub = self.create_publisher(BallButlerHeartbeatMsg, 'bb/heartbeat', 10)
         self.throw_announcement_pub = self.create_publisher(ThrowAnnouncement, 'throw_announcements', 10)
+        self.catch_event_pub = self.create_publisher(CatchEventMsg, 'cone/catch_event', 10)
+        self.cone_heartbeat_pub = self.create_publisher(CatchingConeHeartbeatMsg, 'cone/heartbeat', 10)
 
         # ── Timers ─────────────────────────────────────────────
         can_poll_period = 0.001  # 1 kHz CAN poll
@@ -238,6 +249,7 @@ class CanInterfaceNode(Node):
         ts_period = 0.01  # 100 Hz time-sync broadcast
         hand_telemetry_period = 0.002  # 500 Hz hand telemetry
         bb_heartbeat_period = 0.1  # 10 Hz Ball Butler heartbeat
+        cone_heartbeat_period = 0.1  # 10 Hz catching cone heartbeat
         target_reached_period = 0.1  # 10 Hz target reached check
 
         self.create_timer(can_poll_period, self._poll_can_bus)           # 1 kHz CAN poll
@@ -245,6 +257,7 @@ class CanInterfaceNode(Node):
         self.create_timer(ts_period, self.bus.broadcast_time)  # Time sync
         self.create_timer(hand_telemetry_period, self._publish_hand_telemetry) # 500 Hz hand
         self.create_timer(bb_heartbeat_period, self._publish_bb_heartbeat)     # 10 Hz BB
+        self.create_timer(cone_heartbeat_period, self._publish_cone_heartbeat) # 10 Hz cone
         self.create_timer(target_reached_period, self._check_target_reached)     # 10 Hz target
         self.create_timer(1.0, self._watchdog_check)                              # 1 Hz heartbeat watchdog
         self._watchdog_restore_failed = False
@@ -260,6 +273,7 @@ class CanInterfaceNode(Node):
             (self._publish_robot_state,     state_pub_period),
             (self._publish_hand_telemetry,  hand_telemetry_period),
             (self._publish_bb_heartbeat,    bb_heartbeat_period),
+            (self._publish_cone_heartbeat,  cone_heartbeat_period),
             (self._check_target_reached,    target_reached_period),
         ]
 
@@ -296,6 +310,19 @@ class CanInterfaceNode(Node):
                 self._bb_last_can_rx_time = time.monotonic()
             except ValueError as e:
                 self.get_logger().warning(f"Bad BB heartbeat frame: {e}", throttle_duration_sec=5.0)
+        elif aid == catching_cone.CATCH_EVENT_ID:
+            try:
+                evt = catching_cone.CatchEvent.from_can_frame(msg.data)
+                self._handle_catch_event(evt)
+            except ValueError as e:
+                self.get_logger().warning(f"Bad catch event frame: {e}", throttle_duration_sec=5.0)
+        elif aid == catching_cone.HEARTBEAT_ID:
+            try:
+                self.last_cone_heartbeat = catching_cone.ConeHeartbeat.from_can_frame(msg.data)
+                self._cone_heartbeat_received = True
+                self._cone_last_can_rx_time = time.monotonic()
+            except ValueError as e:
+                self.get_logger().warning(f"Bad cone heartbeat frame: {e}", throttle_duration_sec=5.0)
         else:
             # ODrive message: extract axis_id and command_id
             axis_id = aid >> odrive.NODE_ID_SHIFT
@@ -1249,6 +1276,67 @@ class CanInterfaceNode(Node):
             self.bb_heartbeat_pub.publish(msg)
         except Exception as e:
             self.get_logger().error(f"BB heartbeat publish error: {e}")
+
+    def _handle_catch_event(self, evt):
+        """Republish a decoded catching-cone catch event on cone/catch_event.
+
+        When the cone is time-synced, the frame's low-32 µs timestamp is
+        reconstructed into a full wall-clock instant. When it is NOT synced,
+        the cone's low32 µs counter is local-only and not comparable to wall
+        time — fall back to host arrival time so header.stamp / catch_time
+        are at least a valid recent instant. Consumers must still check the
+        time_synced flag before treating catch_time as impact-truth.
+        """
+        try:
+            msg = CatchEventMsg()
+            msg.header.frame_id = "catching_cone"
+            if evt.time_synced:
+                host_now_us = int(time.time() * 1e6)
+                catch_us = catching_cone.reconstruct_catch_time_us(
+                    evt.catch_time_us_low32, host_now_us)
+                # Defensive: a host-clock jump (NTP step, DST, manual `date`)
+                # between the last time-sync and this decode can place the
+                # reconstructed high bits in the wrong wrap window. Catches
+                # are necessarily within ms of the host's "now"; flag anything
+                # beyond ~1 s as a likely artefact.
+                delta_us = abs(catch_us - host_now_us)
+                if delta_us > 1_000_000:
+                    self.get_logger().warning(
+                        f"Catch seq {evt.sequence}: reconstructed time "
+                        f"{delta_us / 1e6:.2f} s from host now — possible host "
+                        "clock jump or stale time-sync.",
+                        throttle_duration_sec=5.0)
+                stamp = rclpy.time.Time(nanoseconds=catch_us * 1000).to_msg()
+                msg.header.stamp = stamp
+                msg.catch_time = stamp
+            else:
+                host_stamp = self.get_clock().now().to_msg()
+                msg.header.stamp = host_stamp
+                msg.catch_time = host_stamp
+            msg.sequence = evt.sequence
+            msg.time_synced = evt.time_synced
+            msg.retrigger_suppressed = evt.retrigger_suppressed
+            self.catch_event_pub.publish(msg)
+        except Exception as e:
+            self.get_logger().error(f"Catch event publish error: {e}")
+
+    def _publish_cone_heartbeat(self):
+        try:
+            hb = self.last_cone_heartbeat
+            connected = (self._cone_heartbeat_received
+                         and (time.monotonic() - self._cone_last_can_rx_time) < self._cone_heartbeat_timeout_s)
+            msg = CatchingConeHeartbeatMsg()
+            msg.connected = connected
+            msg.state = int(hb.state)
+            msg.state_data = hb.state_data
+            msg.sync_rms_us = hb.sync_rms_us
+            msg.last_catch_seq = hb.last_catch_seq
+            msg.ms_since_last_catch = hb.ms_since_last_catch
+            msg.time_synced = hb.time_synced
+            msg.have_any_catch = hb.have_any_catch
+            self.cone_heartbeat_pub.publish(msg)
+        except Exception as e:
+            self.get_logger().error(f"Cone heartbeat publish error: {e}")
 
     def _check_target_reached(self):
         try:
