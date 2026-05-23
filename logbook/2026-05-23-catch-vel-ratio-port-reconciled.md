@@ -18,7 +18,8 @@ files_changed:
   - logbook/INDEX.md
   - plans/active/hand-trajectory-generator-overhaul.md
 commits:
-  - <pending>
+  - 23f086d
+  - d2e0962
 subsystem:
   - hand
 tags:
