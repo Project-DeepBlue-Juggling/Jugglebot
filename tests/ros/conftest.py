@@ -178,6 +178,29 @@ class ThrowAnnouncement:
     landing_time: object = None
 
 
+@dataclass
+class _MockPoseInner:
+    """Just enough of geometry_msgs/Pose for the director's body.pose.pose.position access."""
+    position: object = None
+
+
+@dataclass
+class _MockPoseStamped:
+    pose: object = field(default_factory=_MockPoseInner)
+
+
+@dataclass
+class RigidBodyPose:
+    name: str = ""
+    pose: object = field(default_factory=_MockPoseStamped)
+
+
+@dataclass
+class RigidBodyPoses:
+    header: object = field(default_factory=lambda: MagicMock())
+    bodies: list = field(default_factory=list)
+
+
 # ── geometry_msgs mock ────────────────────────────────────────
 
 
@@ -270,6 +293,16 @@ SendBallButlerCommand = _make_service(
     req_fields={'yaw_angle_rad': 0.0, 'pitch_angle_rad': 0.0,
                 'throw_speed': 0.0, 'throw_time': 0.0},
     resp_fields={'success': False, 'message': ''},
+)
+ThrowAtTarget = _make_service(
+    req_fields={'target_name': '', 'throw_delay_s': 0.0},
+    resp_fields={
+        'success': False, 'message': '',
+        'yaw_rad': 0.0, 'pitch_rad': 0.0, 'throw_speed_mps': 0.0,
+        'throw_delay_s': 0.0, 'predicted_tof_s': 0.0,
+        'target_position_global_mm': None,
+        'target_position_bb_local_mm': None,
+    },
 )
 SetFloat = _make_service(
     req_fields={'data': 0.0},
@@ -468,6 +501,8 @@ _create_mock_module('jugglebot_interfaces.msg', {
     'CatchTimingResult': CatchTimingResultMsg,
     'HandTelemetryMessage': HandTelemetryMessage,
     'LegsTargetReachedMessage': LegsTargetReachedMessage,
+    'RigidBodyPose': RigidBodyPose,
+    'RigidBodyPoses': RigidBodyPoses,
     'RobotState': RobotState,
     'SetMotorVelCurrLimitsMessage': SetMotorVelCurrLimitsMessage,
     'SetTrapTrajLimitsMessage': SetTrapTrajLimitsMessage,
@@ -482,6 +517,7 @@ _create_mock_module('jugglebot_interfaces.srv', {
     'SetHandGains': SetHandGains,
     'SetHandTrajCmd': SetHandTrajCmd,
     'SetString': SetString,
+    'ThrowAtTarget': ThrowAtTarget,
 })
 _create_mock_module('jugglebot_interfaces.action', {
     'HomeMotors': HomeMotors,
@@ -521,19 +557,25 @@ _create_mock_module('rclpy.time', {
     'Duration': MockDuration,
 })
 
-# rclpy.qos — minimal mock for DurabilityPolicy and QoSProfile
+# rclpy.qos — minimal mock for DurabilityPolicy, ReliabilityPolicy, QoSProfile
 class _MockDurabilityPolicy:
     TRANSIENT_LOCAL = 1
     VOLATILE = 2
 
+class _MockReliabilityPolicy:
+    RELIABLE = 1
+    BEST_EFFORT = 2
+
 class _MockQoSProfile:
-    def __init__(self, depth=10, durability=None, **kw):
+    def __init__(self, depth=10, durability=None, reliability=None, **kw):
         self.depth = depth
         self.durability = durability
+        self.reliability = reliability
 
 _create_mock_module('rclpy.qos', {
     'QoSProfile': _MockQoSProfile,
     'DurabilityPolicy': _MockDurabilityPolicy,
+    'ReliabilityPolicy': _MockReliabilityPolicy,
 })
 
 

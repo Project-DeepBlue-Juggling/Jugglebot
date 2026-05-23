@@ -915,3 +915,35 @@
     color: var(--text-muted);
     font-family: var(--font-mono);
 }
+
+/* ───────────────────────────────────────────
+   Throw Director panel
+   ─────────────────────────────────────────── */
+.td-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+}
+.td-label { font-size: var(--font-size-xs); color: var(--text-muted); }
+.td-select {
+    background: var(--bg-input, #222);
+    color: var(--text-primary, #eee);
+    border: 1px solid var(--border, #444);
+    padding: 4px 6px;
+    border-radius: 4px;
+    flex: 1;
+    min-width: 0;
+}
+.td-status {
+    font-size: var(--font-size-xs);
+    font-family: var(--font-mono);
+    padding: 4px 6px;
+    border-radius: 4px;
+    min-height: 1em;
+    background: rgba(255, 255, 255, 0.04);
+    word-break: break-word;
+}
+.td-status-pending { color: var(--accent-amber); }
+.td-status-ok      { color: var(--accent-green); }
+.td-status-err     { color: var(--accent-red, #d44); }

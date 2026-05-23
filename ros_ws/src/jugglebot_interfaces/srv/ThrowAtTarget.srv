@@ -1,0 +1,22 @@
+# Throw a ball at a named target in the world frame.
+#
+# The director node:
+#   1. resolves target_name -> world position via the latest /rigid_body_poses
+#   2. transforms the position into BB's local frame
+#   3. solves inverse-ballistics for (yaw, pitch, speed, tof)
+#   4. checks feasibility against BB limits — aborts with success=false on
+#      no solution
+#   5. calls bb/send_throw_command(...) to actually fire
+
+string target_name           # rigid-body name from QTM (e.g. "Catching_Cone")
+float64 throw_delay_s        # delay from "now" to release (0 = use director default)
+---
+bool success
+string message               # human-readable success/failure detail
+float64 yaw_rad
+float64 pitch_rad
+float64 throw_speed_mps
+float64 throw_delay_s        # the actual delay sent to BB (after default)
+float64 predicted_tof_s
+geometry_msgs/Point target_position_global_mm
+geometry_msgs/Point target_position_bb_local_mm

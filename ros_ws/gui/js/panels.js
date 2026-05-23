@@ -1262,11 +1262,76 @@ function drawConeSoundBar() {
     ctx.globalAlpha = 1;
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// Throw Director panel — aim BB at a named target + throw
+// ─────────────────────────────────────────────────────────────────────
+
+// Candidate targets shown in the dropdown.  Add entries here when new
+// QTM rigid bodies become throw targets.  The string must match the
+// rigid_body name published by mocap_node.
+const TD_TARGETS = ['Catching_Cone'];
+
+function onThrowDirectorClick() {
+    const sel = document.getElementById('td-target-select');
+    const btn = document.getElementById('td-throw-btn');
+    const status = document.getElementById('td-status');
+    if (!sel || !btn || !status) return;
+    if (btn.disabled) return;
+
+    const targetName = sel.value;
+    btn.disabled = true;
+    btn.textContent = 'Throwing…';
+    status.textContent = `Calling bb/throw_at_target(${targetName})…`;
+    status.className = 'td-status td-status-pending';
+
+    callService('bb/throw_at_target',
+                'jugglebot_interfaces/srv/ThrowAtTarget',
+                { target_name: targetName, throw_delay_s: 0.0 })
+        .then((result) => {
+            if (result.success) {
+                status.textContent = result.message;
+                status.className = 'td-status td-status-ok';
+            } else {
+                status.textContent = result.message || 'Throw failed';
+                status.className = 'td-status td-status-err';
+            }
+        })
+        .catch((err) => {
+            status.textContent = 'Service error: ' + err.message;
+            status.className = 'td-status td-status-err';
+        })
+        .finally(() => {
+            setTimeout(() => {
+                btn.disabled = false;
+                btn.textContent = 'Throw';
+            }, 800);
+        });
+}
+
+export function initThrowDirectorPanel() {
+    const content = document.getElementById('td-content');
+    if (!content) return;
+    const options = TD_TARGETS
+        .map(t => `<option value="${t}">${t}</option>`).join('');
+    content.innerHTML = `
+        <div class="td-row">
+            <label class="td-label" for="td-target-select">Target</label>
+            <select class="td-select" id="td-target-select">${options}</select>
+            <button class="bb-calibrate-btn" id="td-throw-btn">Throw</button>
+        </div>
+        <div class="td-status" id="td-status">Ready.</div>
+    `;
+    const btn = document.getElementById('td-throw-btn');
+    if (btn) btn.addEventListener('click', onThrowDirectorClick);
+}
+
+
 export function initAllPanels() {
     initFlagsGrid();
     initLevellingPanel();
     initBBPanel();
     initCatchingConePanel();
+    initThrowDirectorPanel();
     initCANPanel();
     initTrackingGrid();
     initTopicMonitor();
