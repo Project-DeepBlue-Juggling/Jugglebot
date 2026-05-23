@@ -127,7 +127,7 @@ OFFLINE (host): trajectory optimiser chooses, per event:
 | Phase | Scope | Status | Date | Risk | Validates |
 |-------|-------|--------|------|------|-----------|
 | 1 | Characterise the current generator empirically | COMPLETE | 2026-05-22 | Low | Quantifies the acceleration steps and the `v²`/`1/v` scaling |
-| 2 | Design the jerk-limited profile family & parameterisation | NOT STARTED | | Med | Closed-form profile, jerk-bounded, validated offline in Python |
+| 2 | Design the jerk-limited profile family & parameterisation | COMPLETE | 2026-05-23 | Med | Closed-form profile, jerk-bounded, validated offline in Python |
 | 3 | Reimplement `Trajectory.h` + Python port in lockstep | NOT STARTED | | Med | Firmware and port agree; jerk bounded; unit tests pass |
 | 4 | Hardware bring-up & jerk measurement | NOT STARTED | | High | Real throw/catch work; measured jerk reduced |
 
@@ -165,7 +165,7 @@ Phase 3. Verification: scoped `pytest tests/sim/test_hand_profile_probe.py
 `logbook/2026-05-22-hand-generator-phase1-characterisation.md`.
 **Phase 2 cleared to start.**
 
-### Phase 2: Design the jerk-limited profile family — NOT STARTED
+### Phase 2: Design the jerk-limited profile family — COMPLETE
 
 **Scope:** select and specify the profile family — a 7-segment jerk-limited
 S-curve, or piecewise-quintic segments — both closed-form and cheap enough for
@@ -188,6 +188,29 @@ fields are required, the CAN encoding and `_send_hand_traj_cmd` change is
 scoped in this phase.
 
 **Dependencies:** Phase 1.
+
+**Outcome (2026-05-23, commit `<pending>`):** COMPLETE. Family chosen:
+**symmetric 3-segment quintic-linear-quintic**, C2 globally. Accel quintic
+`q(τ) = 2τ³ − τ⁴`, decel quintic `r(τ) = 2τ − 2τ³ + τ⁴` (mirror), cruise
+linear. Analytic peaks `|a|_max = 1.5·v/T_a`, `|j|_max = 6·v/T_a²`. New
+config field `teensy_trajectory.max_event_hand_accel_rps2 = 6000.0`
+(anchored on Phase 1's 6054 rev/s² legacy peak). Full `(v, T, stroke_lo,
+stroke_hi)` parameterisation; time-budget slack monotonically lowers both
+peak accel and peak jerk (sweep at v=3 m/s: T_min → mid-envelope drops
+peak |a| 63 %, peak |j| 86 %). Tradeoff knowingly accepted: v_max drops
+from 7.0 to 6.31 m/s at the chosen 6000 rev/s² bound (the symmetric
+quintic peak-accel formula gives `v² ≤ stroke·A_peak/1.5`). Phase 2 stays
+offline — no production code (`Trajectory.h`, `sim/hand/trajectory.py`,
+CAN payload) touched. Phase 3's CAN-payload decision is RECOMMENDED in the
+logbook: extend `0x6D0` with two stroke fields, derive `T` on-Teensy from
+the existing `event_delay`. Offline reference at
+`tools/probes/hand_jerk_limited_prototype.py`; 18 tests / 98 items at
+`tests/sim/test_hand_jerk_limited_prototype.py`. Verification: scoped
+`pytest tests/sim/test_hand_jerk_limited_prototype.py -q`, run 2026-05-23
+→ **98 passed** in 0.29 s; full `pytest tests/ -q`, run 2026-05-23 →
+**1553 passed, 1 xfailed** in 452.84 s (delta +98, no regressions). See
+`logbook/2026-05-23-hand-generator-phase2-jerk-limited-design.md`.
+**Phase 3 cleared to start.**
 
 ### Phase 3: Reimplement firmware + Python port — NOT STARTED
 
