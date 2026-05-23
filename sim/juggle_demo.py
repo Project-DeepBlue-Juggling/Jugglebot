@@ -25,8 +25,15 @@ CLI:
     python sim/juggle_demo.py --duration 10
     python sim/juggle_demo.py --viewer              # MuJoCo passive viewer
     python sim/juggle_demo.py --realtime-rate 0.5   # half-speed slowmo
-    python sim/juggle_demo.py --dashboard           # http://localhost:8082
+    python sim/juggle_demo.py --dashboard           # http://<jetson-ip>:8082
     python sim/juggle_demo.py --abort-at 5.0        # abort mid-pattern
+
+Viewer keyboard (when ``--viewer`` is on):
+    SPACE       pause / resume
+    RIGHT       step one 40 Hz tick (when paused)
+    ``[``       halve the wall-time playback rate (jumps out of free-running)
+    ``]``       double the wall-time playback rate
+    LEFT        no-op (sim can't run backwards)
 
 Programmatic:
     from sim.juggle_demo import run, JuggleDemoConfig
@@ -313,7 +320,61 @@ class _JuggleDemoRunner:
             from sim.viz.dashboard.server import DashboardServer
             self._dashboard = DashboardServer(port=cfg.dashboard_port)
             self._dashboard.start()
+            # The DashboardServer's own start() prints
+            # "Dashboard: http://localhost:<port>" — accurate only when a
+            # browser on the *same machine* is reaching it. Print the
+            # machine's LAN IPs too so a remote browser can connect.
+            _print_reachable_urls(cfg.dashboard_port)
         self._last_hand_cmd_mm = 0.0       # for the StepRecord.hand_cmd_mm field
+
+        # ---- Keyboard / interactive state -------------------------------
+        # Driven by the MuJoCo passive viewer's `key_callback`. When the
+        # demo runs headless (no viewer) the keys aren't observed and the
+        # defaults (not paused, configured rate, no pending step) apply.
+        self._paused = False
+        self._pending_frame_step = False
+        self._effective_realtime_rate = float(cfg.realtime_rate)
+
+    # ---- Keyboard --------------------------------------------------------
+    def key_callback(self, keycode: int) -> None:
+        """Handle a keypress from the MuJoCo passive viewer.
+
+        Bindings::
+
+            SPACE              toggle pause
+            RIGHT_ARROW        when paused, step exactly one 40 Hz tick
+            ``[`` / ``]``      halve / double the wall-time playback rate
+                               (jumping out of free-running mode if needed)
+            LEFT_ARROW         no-op (sim can't run backwards)
+        """
+        if keycode == _KEY_SPACE:
+            self._paused = not self._paused
+            state = "paused" if self._paused else "running"
+            print(f"[juggle_demo] {state} at sim_time "
+                  f"{float(self.plant.get_state().time) - self._t_start:.3f} s")
+        elif keycode == _KEY_RIGHT_ARROW:
+            if self._paused:
+                self._pending_frame_step = True
+        elif keycode == _KEY_LEFT_BRACKET:
+            # Halve the rate. Free-running (0) jumps to real-time first
+            # so the user has somewhere meaningful to step down from.
+            if self._effective_realtime_rate <= 0.0:
+                self._effective_realtime_rate = 1.0
+            else:
+                self._effective_realtime_rate = max(
+                    self._effective_realtime_rate * 0.5, 0.0625)
+            print(f"[juggle_demo] realtime rate = "
+                  f"{self._effective_realtime_rate:.3f}x")
+        elif keycode == _KEY_RIGHT_BRACKET:
+            if self._effective_realtime_rate <= 0.0:
+                self._effective_realtime_rate = 1.0
+            else:
+                self._effective_realtime_rate = min(
+                    self._effective_realtime_rate * 2.0, 16.0)
+            print(f"[juggle_demo] realtime rate = "
+                  f"{self._effective_realtime_rate:.3f}x")
+        elif keycode == _KEY_LEFT_ARROW:
+            pass   # documented no-op
 
     # ---- Lifecycle ------------------------------------------------------
     def close(self) -> None:
@@ -375,26 +436,68 @@ class _JuggleDemoRunner:
     # ---- Run loop -------------------------------------------------------
     def run(self, viewer_handle=None) -> JuggleDemoStats:
         n_steps = int(round(self.cfg.duration_s / CONTROL_DT_S))
-        # Wall-time pacing: when ``realtime_rate > 0`` the loop sleeps so
-        # one tick of sim time takes ``CONTROL_DT_S / realtime_rate``
+        # Wall-time pacing: when ``_effective_realtime_rate > 0`` the loop
+        # sleeps so one tick of sim time takes ``CONTROL_DT_S / rate``
         # seconds of wall time. ``1.0`` = real-time, ``0.5`` = half-speed
-        # slowmo, ``2.0`` = 2x fast playback. ``0`` (default) skips the
-        # pacing entirely so tests and headless runs go as fast as MuJoCo
-        # can integrate (the existing behaviour).
-        rate = self.cfg.realtime_rate
-        wall_dt = CONTROL_DT_S / rate if rate > 0.0 else 0.0
-        wall_t0 = time.monotonic()
-        for step in range(n_steps):
+        # slowmo, ``2.0`` = 2x fast playback. ``0`` skips the pacing so
+        # tests and headless runs go as fast as MuJoCo can integrate
+        # (the existing behaviour). The viewer's key_callback can mutate
+        # the rate live via ``[`` / ``]``; the loop re-reads it each
+        # iteration so the schedule re-targets immediately.
+        wall_anchor = time.monotonic()
+        steps_taken_for_schedule = 0       # sim ticks consumed since the
+                                            # last rate change or unpause —
+                                            # the schedule's "step" count
+        executed_steps = 0                  # count of ticks actually run;
+                                            # advances duration progress
+                                            # only when not paused
+        last_rate = self._effective_realtime_rate
+        while executed_steps < n_steps:
+            # Re-anchor the pacing schedule if the rate changed (live key
+            # bindings) so the new rate takes effect cleanly without
+            # racing to "catch up" against the old schedule.
+            if self._effective_realtime_rate != last_rate:
+                wall_anchor = time.monotonic()
+                steps_taken_for_schedule = 0
+                last_rate = self._effective_realtime_rate
+
+            if self._paused and not self._pending_frame_step:
+                # Idle: keep the viewer responsive (so key events fire
+                # and the user can drag the camera) but do not tick the
+                # sim. Re-anchor the schedule too — when we resume we
+                # don't want to suddenly run a backlog of "missed" ticks.
+                if viewer_handle is not None:
+                    viewer_handle.sync()
+                time.sleep(0.01)
+                wall_anchor = time.monotonic()
+                steps_taken_for_schedule = 0
+                continue
+            # If a single-frame step was requested while paused, do
+            # exactly one tick and re-pause.
+            consume_frame_step = self._pending_frame_step
+            self._pending_frame_step = False
+
             t_wall = float(self.plant.get_state().time)
             self.tick(t_wall)
             if viewer_handle is not None:
                 viewer_handle.sync()
-            if wall_dt > 0.0:
+            executed_steps += 1
+            steps_taken_for_schedule += 1
+
+            if consume_frame_step:
+                # One-shot step; immediately drop back into the paused
+                # branch on the next loop iteration. Don't bother pacing
+                # — single-frame stepping is meant to be instantaneous.
+                continue
+
+            if self._effective_realtime_rate > 0.0:
                 # Sleep until the next tick's scheduled wall-time. Using
-                # an absolute schedule rather than per-tick sleep keeps
-                # the pacing accurate over long runs (no drift from
-                # cumulative sleep-undershoot).
-                target = wall_t0 + (step + 1) * wall_dt
+                # an absolute schedule (anchored at the last rate change
+                # / unpause) keeps the pacing accurate over long runs
+                # (no drift from cumulative sleep-undershoot).
+                wall_dt = CONTROL_DT_S / self._effective_realtime_rate
+                target = (wall_anchor
+                          + steps_taken_for_schedule * wall_dt)
                 remaining = target - time.monotonic()
                 if remaining > 0.0:
                     time.sleep(remaining)
@@ -670,6 +773,52 @@ class _JuggleDemoRunner:
 
 
 # --------------------------------------------------------------------------
+# Helpers
+# --------------------------------------------------------------------------
+def _print_reachable_urls(port: int) -> None:
+    """Print every LAN IPv4 address the dashboard is reachable from.
+
+    The :class:`DashboardServer` itself prints ``http://localhost:<port>``,
+    which is accurate only for a browser on the same machine. A remote
+    browser (typical sim use: viewer on the Jetson, dashboard on the
+    workstation) needs the Jetson's LAN IP. List every non-loopback
+    IPv4 we can see so the user can copy-paste whichever one is on the
+    right network.
+    """
+    import socket
+    addrs: list[str] = []
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None,
+                                       family=socket.AF_INET):
+            ip = info[4][0]
+            if not ip.startswith('127.') and ip not in addrs:
+                addrs.append(ip)
+    except socket.gaierror:
+        pass
+    # Fallback: UDP socket trick to get the default-route IP.
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        if ip not in addrs and not ip.startswith('127.'):
+            addrs.append(ip)
+    except (OSError, socket.gaierror):
+        pass
+    for ip in addrs:
+        print(f"Dashboard: http://{ip}:{port}  (LAN)")
+
+
+# GLFW key codes used by mujoco.viewer's `key_callback`. Defined inline so
+# we don't need to import glfw just for the constants.
+_KEY_SPACE = 32
+_KEY_LEFT_BRACKET = 91     # `[`
+_KEY_RIGHT_BRACKET = 93    # `]`
+_KEY_RIGHT_ARROW = 262
+_KEY_LEFT_ARROW = 263      # accepted but no-op (sim can't run backwards)
+
+
+# --------------------------------------------------------------------------
 # Public entry points
 # --------------------------------------------------------------------------
 def run(cfg: Optional[JuggleDemoConfig] = None) -> JuggleDemoStats:
@@ -682,7 +831,10 @@ def run(cfg: Optional[JuggleDemoConfig] = None) -> JuggleDemoStats:
         if not cfg.headless:
             import mujoco.viewer  # type: ignore
             viewer_handle = mujoco.viewer.launch_passive(
-                runner.plant.model, runner.plant.data)
+                runner.plant.model, runner.plant.data,
+                key_callback=runner.key_callback)
+            print("[juggle_demo] keyboard: SPACE pause/resume   "
+                  "Right step (when paused)   [ slower / ] faster")
         return runner.run(viewer_handle=viewer_handle)
     finally:
         runner.close()
