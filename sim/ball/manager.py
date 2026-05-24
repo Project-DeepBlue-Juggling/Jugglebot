@@ -41,6 +41,23 @@ class BallState:
 # Ball COM sits 44.4 mm above hand body origin when seated.
 _HAND_OPENING_OFFSET = np.array([0.0, 0.0, 0.0444])
 
+# Capture-tolerance: an optional centre-to-cup-opening distance check
+# (m). When set, a ball is captured only when (a) it's in contact with
+# any hand collision geom, AND (b) its centre is within this radius of
+# the ``hand_opening`` site in world frame. Without it, MuJoCo's
+# contact-anywhere check fires on peripheral cup-rim contacts and the
+# kinematic hold then snaps the ball from the rim to the cup centre —
+# visually ugly at low-apex juggles but cosmetically tolerable at the
+# headline 1.3 m apex. ``None`` (the default) disables the gate
+# entirely, restoring the loose "any contact catches" behaviour the
+# sim shipped with through Phase 3c. A tight value (e.g. 0.030) is
+# the right setting for an actuator-tracking-accurate optimiser, which
+# Phase 2 cuts #4 (leg-jerk objective) and #5 (leg-vel bound) are
+# building toward; until those land the demo's open-loop runner can't
+# put the hand on the optimised target tightly enough for a 30 mm
+# gate to admit consistent catches.
+DEFAULT_CAPTURE_TOLERANCE_M: float | None = None
+
 
 def _ball_prefix(index: int) -> str:
     """MJCF name prefix for ball *index*: 'ball', 'ball2', 'ball3', …"""
@@ -56,7 +73,8 @@ class Ball:
 
     def __init__(self, model, data, *, prefix: str,
                  hand_body_id: int, hand_site_id: int,
-                 hand_geom_ids: "set[int]"):
+                 hand_geom_ids: "set[int]",
+                 capture_tolerance_m: "float | None" = DEFAULT_CAPTURE_TOLERANCE_M):
         self._model = model
         self._data = data
         self.name = prefix
@@ -75,6 +93,8 @@ class Ball:
         self._hand_body_id = hand_body_id
         self._hand_site_id = hand_site_id
         self._hand_geom_ids = hand_geom_ids
+        self._capture_tolerance_m: "float | None" = (
+            None if capture_tolerance_m is None else float(capture_tolerance_m))
 
         self._held = False
         self._release_cooldown = 0    # substeps to skip capture after release
@@ -168,6 +188,24 @@ class Ball:
 
         if not self._contacts_hand():
             return False
+
+        # Optional geometric gate (off by default — see
+        # ``DEFAULT_CAPTURE_TOLERANCE_M``). When enabled, the ball's
+        # centre must be within the configured tolerance of the
+        # ``hand_opening`` site. MuJoCo's contact list alone fires on
+        # peripheral cup-rim contacts; without this gate the
+        # subsequent kinematic hold snaps the ball from wherever it
+        # touched to the cup centre. Tightening this is the right
+        # thing once the optimiser produces actuator-trackable
+        # trajectories (Phase 2 cuts #4/#5); until then keeping it
+        # off preserves the demo's headline catch rate.
+        if self._capture_tolerance_m is not None:
+            ball_pos = self._data.sensordata[
+                self._ball_pos_adr:self._ball_pos_adr + 3]
+            opening_pos = self._data.site_xpos[self._hand_site_id]
+            dist = float(np.linalg.norm(ball_pos - opening_pos))
+            if dist > self._capture_tolerance_m:
+                return False
 
         self._held = True
         self._capture_pending = True
@@ -288,9 +326,15 @@ class BallManager:
         The compiled MuJoCo model (must contain at least a 'ball' body).
     data : mujoco.MjData
         The MuJoCo data instance.
+    capture_tolerance_m : float or None
+        Per-ball maximum centre-to-``hand_opening`` distance (m) at
+        capture. Applied to every ball managed here. ``None`` (the
+        default) disables the distance check entirely. See the
+        module-level ``DEFAULT_CAPTURE_TOLERANCE_M`` for the rationale.
     """
 
-    def __init__(self, model: mujoco.MjModel, data: mujoco.MjData):
+    def __init__(self, model: mujoco.MjModel, data: mujoco.MjData,
+                 *, capture_tolerance_m: "float | None" = DEFAULT_CAPTURE_TOLERANCE_M):
         self._model = model
         self._data = data
 
@@ -315,7 +359,8 @@ class BallManager:
                 break
             self._balls.append(Ball(
                 model, data, prefix=prefix, hand_body_id=hand_body_id,
-                hand_site_id=hand_site_id, hand_geom_ids=hand_geom_ids))
+                hand_site_id=hand_site_id, hand_geom_ids=hand_geom_ids,
+                capture_tolerance_m=capture_tolerance_m))
             index += 1
 
         if not self._balls:

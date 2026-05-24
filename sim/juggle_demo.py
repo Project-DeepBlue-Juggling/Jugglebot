@@ -89,7 +89,7 @@ from controller.demo.juggle_optimizer import (
 )
 from controller.demo.trajectory import JuggleTrajectory, build_analytic_oval
 from sim.ball_butler.sim import BallButlerSim
-from sim.hand.ballistics import compute_hand_offset_mm
+from sim.hand.ballistics import compute_hand_offset_mm, rodrigues
 from sim.hand.trajectory import (
     HandCatchSequence, HandCatchTrajectory, HandThrowSequence,
 )
@@ -166,6 +166,13 @@ class JuggleDemoConfig:
     dashboard: bool = False                # if True, start the telemetry
                                             # dashboard on `dashboard_port`
     dashboard_port: int = 8082
+    capture_tolerance_mm: Optional[float] = None  # None = no gate (default;
+                                            # any cup-rim contact catches).
+                                            # Set e.g. 30 mm for a strict
+                                            # centre-only catch — but with the
+                                            # current open-loop runner the
+                                            # catch rate drops substantially
+                                            # until Phase 2 cuts #4/#5 land.
 
 
 @dataclasses.dataclass
@@ -220,7 +227,10 @@ class _JuggleDemoRunner:
                                    - self.pattern.platform_period_s)
 
         # ---- Plant + player ---------------------------------------------
-        self.plant = MuJoCoPlant(control_dt=CONTROL_DT_S)
+        plant_kw = {}
+        if cfg.capture_tolerance_mm is not None:
+            plant_kw['capture_tolerance_m'] = cfg.capture_tolerance_mm / 1000.0
+        self.plant = MuJoCoPlant(control_dt=CONTROL_DT_S, **plant_kw)
         self.player = TrajectoryPlayer(self.trajectory,
                                        geom=self.plant.geom,
                                        control_dt=CONTROL_DT_S)
@@ -247,24 +257,36 @@ class _JuggleDemoRunner:
         self.bb_sim = BallButlerSim.from_hardware_config(
             np.array(cfg.bb_position_mm, dtype=float),
             cfg.bb_yaw_offset_rad)
-        # World-frame z of the hand opening at the CATCH event instant.
-        # The catch event is the *midpoint of the catch velocity-hold
-        # phase* (per HandCatchTrajectory's timeline convention) — by
-        # that time the hand has descended ~137 mm from the top of
-        # stroke (slider at ~198 mm), NOT at the catch-prime position.
-        # Querying the catch trajectory at t=0 gives the exact hand-
-        # slider position at arrival; the formula is independent of
-        # throw_speed (the vC ratio cancels).
-        _catch_at_arrival = HandCatchTrajectory(
+        # Catch-target = world-frame position of the hand opening at the
+        # CATCH event instant. The catch event is the *midpoint of the
+        # catch velocity-hold phase* (per HandCatchTrajectory's timeline
+        # convention) — by that time the hand has descended ~137 mm from
+        # the top of stroke (slider at ~198 mm). Querying the catch
+        # trajectory at t=0 gives the exact slider position at arrival;
+        # the formula is independent of throw_speed (the vC ratio
+        # cancels). The trajectory's catch-event pose (xyz + orientation)
+        # gives the platform centroid and the orientation; the hand
+        # opening is offset by R_catch @ [0, 0, hand_offset_at_arrival].
+        # The orientation matters — with banking enabled the optimised
+        # trajectory tilts at catch, shifting the hand opening's world
+        # xy by sin(tilt) * hand_offset (~35 mm at the 18° default-
+        # config catch tilt). Aiming at a level-assumed target would
+        # miss the cup by more than the BallManager's capture tolerance.
+        _catch_slider_at_arrival = HandCatchTrajectory(
             self.pattern.throw_speed_mps).sample(0.0)
-        hand_offset_at_arrival_mm = compute_hand_offset_mm(_catch_at_arrival)
-        self._catch_z_world_mm = (self.plant.geom.init_height_mm
-                                  + self.pattern.active_z_mm
-                                  + hand_offset_at_arrival_mm)
-        target = np.array([self.pattern.catch_pose[0],
-                           self.pattern.catch_pose[1],
-                           self._catch_z_world_mm])
-        _, _, self._bb_tof_s = self.bb_sim.compute_release_state(target)
+        hand_offset_at_arrival_mm = compute_hand_offset_mm(_catch_slider_at_arrival)
+        pose_at_catch, _, _ = self.trajectory.eval(self.catch_offset_s)
+        catch_centroid_world = np.array([
+            pose_at_catch[0],
+            pose_at_catch[1],
+            self.plant.geom.init_height_mm + pose_at_catch[2],
+        ])
+        R_catch = rodrigues(pose_at_catch[3:6])
+        self._catch_target_world_mm = (
+            catch_centroid_world
+            + R_catch @ np.array([0.0, 0.0, hand_offset_at_arrival_mm]))
+        _, _, self._bb_tof_s = self.bb_sim.compute_release_state(
+            self._catch_target_world_mm)
         bb_lead = self._bb_tof_s - self.catch_offset_s
         if bb_lead <= 0.0:
             # Pathological: BB TOF is shorter than the catch offset, i.e.
@@ -518,15 +540,19 @@ class _JuggleDemoRunner:
 
     # ---- Event dispatch (private) --------------------------------------
     def _execute_bb_throw(self, event: Event) -> None:
-        """BB releases the primed ball at this exact moment."""
-        # Landing xy = pose-frame xy of the first catch keyframe.
-        # catch_z_world_mm was cached at construction (it depends on the
-        # hand-prime position and the platform's init_height + active_z).
-        landing_xy = (self.pattern.catch_pose[0], self.pattern.catch_pose[1])
+        """BB releases the primed ball at this exact moment.
+
+        Aims at ``_catch_target_world_mm`` — the world-frame hand-opening
+        position at the matched catch event, computed from the optimised
+        trajectory's catch-event pose AND orientation. With banking
+        enabled the catch tilt shifts this target's xy by ~35 mm from a
+        level-assumed catch; aiming at the level-assumed target misses
+        the cup by more than the BallManager's capture tolerance.
+        """
         spawn = self.bb_sim.throw_at_jugglebot(
             spawn_time=event.t_wall,
-            landing_xy_mm=np.array(landing_xy, dtype=float),
-            catch_z_mm=self._catch_z_world_mm,
+            landing_xy_mm=self._catch_target_world_mm[:2],
+            catch_z_mm=float(self._catch_target_world_mm[2]),
             scatter_mm=self.cfg.bb_scatter_mm,
         )
         # Spawn into the sim now (event.t_wall == current t_wall by
@@ -595,16 +621,15 @@ class _JuggleDemoRunner:
         """
         ball_state = self.plant.get_ball_state(ball=event.ball)
         ball_world_mm = ball_state.position_mm.copy()
-        # Target: world-frame position of the hand opening at the matched
-        # catch event. The platform pose at the matched catch event is
-        # pattern.catch_pose (STOW-relative); world centroid = STOW + offset.
-        target_world_mm = np.array([
-            self.pattern.catch_pose[0],
-            self.pattern.catch_pose[1],
-            self._catch_z_world_mm,
-        ])
+        # Target: world-frame hand-opening position at the matched
+        # catch event. Computed from the optimised trajectory's catch-
+        # event pose+orientation at construction (see __init__) — *not*
+        # from a level-assumed catch_pose.xy. The orientation matters:
+        # with banking the actual catch hand-opening shifts ~35 mm in
+        # xy at the default-config catch tilt.
         return compute_launch_velocity(
-            ball_world_mm, target_world_mm, self.pattern.flight_time_s)
+            ball_world_mm, self._catch_target_world_mm,
+            self.pattern.flight_time_s)
 
     def _predict_hand_pos_at(self, t_wall: float) -> float:
         """Estimate the hand position at ``t_wall`` for prelude planning.
@@ -878,6 +903,11 @@ def main(argv: Optional[list[str]] = None) -> int:
                         help="THROW–CATCH horizontal separation (mm). "
                              "Default: 200 mm (this runner's default; "
                              "doubled from JugglePattern's 100 mm).")
+    parser.add_argument('--capture-tolerance-mm', type=float, default=None,
+                        help="Ball-centre-to-cup-opening distance (mm) for "
+                             "the strict capture gate. Default: no gate "
+                             "(any cup-rim contact catches). Set e.g. 30 to "
+                             "reject rim-snap artifacts visible at low apex.")
     parser.add_argument('--realtime-rate', type=float, default=0.0,
                         help="Wall-clock pacing: 1.0 = real-time, 0.5 = half-"
                              "speed slowmo, 2.0 = 2x, 0 (default) = free-"
@@ -918,6 +948,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         realtime_rate=args.realtime_rate,
         dashboard=args.dashboard,
         dashboard_port=args.dashboard_port,
+        capture_tolerance_mm=args.capture_tolerance_mm,
     )
     t_start = time.time()
     stats = run(cfg)

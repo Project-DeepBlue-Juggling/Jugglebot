@@ -80,6 +80,7 @@ class MuJoCoPlant(PlantInterface):
         geom: StewartGeometry | None = None,
         cmd_margin_mm: float = 0.0,
         control_dt: float = 0.025,
+        capture_tolerance_m: float | None = None,
     ):
         if model_path is None:
             model_path = os.path.abspath(_DEFAULT_MODEL_PATH)
@@ -153,12 +154,18 @@ class MuJoCoPlant(PlantInterface):
                 dim = self._model.sensor_dim[sid]
                 self._sensor_adr[name] = (adr, dim)
 
-        # Detect ball body and create BallManager if present
+        # Detect ball body and create BallManager if present.  The new
+        # `capture_tolerance_m` knob is propagated only if the caller
+        # set it explicitly — otherwise BallManager's default applies,
+        # so existing callers don't have to know about the parameter.
         self._ball_manager: BallManager | None = None
         if _HAS_BALL:
             ball_id = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_BODY, 'ball')
             if ball_id >= 0:
-                self._ball_manager = BallManager(self._model, self._data)
+                bm_kw = {}
+                if capture_tolerance_m is not None:
+                    bm_kw['capture_tolerance_m'] = capture_tolerance_m
+                self._ball_manager = BallManager(self._model, self._data, **bm_kw)
 
         # P1: pre-allocated PlantState returned (aliased) by every
         # ``get_state()`` call.  Ndarray fields live across ticks; scalar

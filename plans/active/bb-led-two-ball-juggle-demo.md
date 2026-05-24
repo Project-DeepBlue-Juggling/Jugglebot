@@ -249,14 +249,31 @@ from the orientation-aware release position to the orientation-aware
 catch hand opening. The catch keyframe pins only centroid xyz; orientation,
 twist, and acceleration at catch are free for the optimiser to choose.
 
-Result on the default pattern: the optimiser tilts ~3.6° forward at throw
-and ~7.7° backward at catch, and the platform moves at **+239 mm/s in +x at
-the throw event — *opposite* the ball's flight direction** — because the
-hand-tilt-induced horizontal velocity is more than enough to send the ball
-to the catch on its own. Pose-jerk² drops 29% vs the level-locked cut
-(9.94e8 vs 1.40e9). Sim demo still reaches 33 catches in 30 s (the catch
-keyframe's tilt of ~7.7° shifts the hand opening's world xy by ~15 mm,
-within the passive cone's catch tolerance).
+Result on the cut-2 default pattern (sep=100, no catch-colinearity
+penalty): the optimiser tilts ~3.6° forward at throw and ~7.7° backward
+at catch, and the platform moves at **+239 mm/s in +x at the throw event
+— *opposite* the ball's flight direction** — because the hand-tilt-
+induced horizontal velocity is more than enough to send the ball to the
+catch on its own. Pose-jerk² drops 29% vs the level-locked cut (9.94e8
+vs 1.40e9). At that time the sim demo reached 33 catches in 30 s with
+the loose (any-rim-contact) capture rule.
+
+**Cut #3 (2026-05-23) and runner update (2026-05-24).** Default sep
+bumped 100 → 200 mm and a soft catch-colinearity penalty added to the
+objective (weight 1000); the runner now queries the optimised
+trajectory's catch-event orientation for both BB priming throws and
+release-velocity overrides. With the wider sep + colinearity penalty
+the catch tilt grows to ~18° and the hand-opening xy shifts ~35 mm
+from the centroid under banking. The 2026-05-24 BallManager
+capture-tolerance gate (30 mm centre-to-cup, vs the prior any-rim-
+contact rule) eliminates the rim-snap artefact but reveals the
+open-loop runner's tracking error: catch rate with the gate ON is
+~60% at sep=100 and ~30% at sep=200. Cuts #4 + #5 are the principled
+fix. **(2026-05-24 follow-up: the tolerance default was reverted to
+``None`` — gate OFF — so the demo keeps the headline ~33/30 rate
+while cuts #4/#5 are pending. See the §6 "Open Items" entry below
+for the full chronology and the ``--capture-tolerance-mm`` CLI knob
+that re-enables the strict gate on demand.)**
 
 **Deferred to further cuts** (each its own commit / session): leg-space
 (not pose-space) jerk objective via CasADi IK + dense sub-sampling; leg-
@@ -388,11 +405,19 @@ Phase 2 optimised trajectory) + the sim hand model (`HandThrowSequence` /
   ball arrives at the first ``hand_catch`` event:
   ``bb_lead = BB_TOF − catch_offset_s`` (~0.423 s for the default pattern
   with BB at ``(0, −1500, 1500)`` mm).
-- **Catch target.** ``catch_z_world_mm`` is computed via
-  ``HandCatchTrajectory.sample(0.0)`` — the hand-slider position at the
-  midpoint of the catch velocity-hold phase (~198 mm), NOT the catch-prime
-  position. The BB and Jugglebot both aim at this z; the prior cut aimed
-  at the catch-prime height (~322 mm slider), ~125 mm too high.
+- **Catch target.** ``_catch_target_world_mm`` (since 2026-05-24) is a
+  3-vector computed at construction from the optimised trajectory's
+  catch-event pose (centroid xyz + orientation) as
+  ``catch_centroid_world + R_catch @ [0, 0, hand_offset_at_arrival_mm]``.
+  ``hand_offset_at_arrival_mm`` comes from
+  ``HandCatchTrajectory.sample(0.0)`` (slider at ~198 mm at the catch
+  velocity-hold midpoint, ~113 mm centroid → ball offset); ``R_catch``
+  reproduces the optimiser's banked catch orientation. Both BB priming
+  throws and the sim-only release-velocity override aim at this
+  3-vector. The prior cut aimed at the catch-prime height (~322 mm
+  slider), ~125 mm too high; a still-earlier interim cut aimed at the
+  level-assumed slider-198 height, which missed by ``sin(catch_tilt)·113``
+  mm in xy under banking.
 - **Hand sequence queues.** Per-event throw and catch sequences are queued
   (not single-slot "active") so a second event of the same kind can be
   pulled before the first fires without overwriting. The head's
@@ -632,19 +657,37 @@ insufficient.
   services and the runtime player is NumPy-only by Phase 2 design). Decision
   required before §4 Phase 4.
 - **Sim entry point — RESOLVED.** Standalone `sim/juggle_demo.py` (Phase 3c).
-- **Sim runner doesn't track banked-catch hand-opening offset.** With
-  banking enabled (Phase 2 cut #2), the optimiser tilts the platform ~7.7°
-  at the catch instant — the hand opening's world xy shifts by
-  ``sin(7.7°) × 113.4 ≈ 15 mm`` from the centroid. The sim runner's
-  ``_catch_z_world_mm`` and ``_analytic_release_velocity_world_mms``
-  target still assume a level catch, so balls land ~15 mm off the hand
-  centre. The passive cone tolerates this at the default apex (33/33
-  catches on 2026-05-23), but if the apex is raised or the cone is
-  shrunk, the runner should query the optimised trajectory's catch
-  orientation and apply the same ``R_catch @ [0,0,hand_offset]``
-  formula the optimiser uses. ~10 lines in
-  ``sim/juggle_demo.py:_execute_bb_throw`` and
-  ``_analytic_release_velocity_world_mms``.
+- **Sim runner now tracks banked-catch hand-opening offset — RESOLVED
+  (2026-05-24).** The runner queries the optimised trajectory at the
+  catch event, applies ``R_catch @ [0,0,hand_offset_at_arrival_mm]``
+  to find the matched-catch hand-opening world position, and aims
+  both the BB priming throw and the Jugglebot-throw release-velocity
+  override at that target. Both ``_execute_bb_throw`` and
+  ``_analytic_release_velocity_world_mms`` use
+  ``self._catch_target_world_mm``, cached at construction from
+  ``self.trajectory.eval(catch_offset_s)``.
+- **Open-loop catch rate vs the strict capture-tolerance gate.** The
+  ``BallManager`` grew an optional ``capture_tolerance_m`` parameter
+  on 2026-05-24 — a centre-to-cup-opening distance threshold that
+  rejects catches firing only on peripheral cup-rim contact (without
+  it, MuJoCo's contact-anywhere check captures whenever any cup
+  collision mesh touches the ball, and the kinematic hold then snaps
+  the ball to the cup centre — visible "snap-in" artefact at low
+  apex). **Default is None (gate off)**, preserving the demo's
+  headline catch rate (~33 in 30 s). Setting it to e.g. 30 mm makes
+  capture realistic but reveals the open-loop runner's tracking
+  error: catch rate drops to ~60% at sep=100, ~30% at sep=200,
+  because the optimiser produces feasible pose-trajectories but
+  doesn't bound leg velocities, so the platform actuators don't
+  track tightly enough at the wider separation. Cuts #4 (leg-space
+  jerk² objective via CasADi IK on a dense sub-grid) and #5
+  (leg-velocity equalisation via a minimax v_max slack with per-
+  leg per-sub-point ``|leg_vel_i(t)| ≤ v_max`` bound) are the
+  principled fix — penalising leg motion in the objective +
+  bounding leg velocity force the optimiser to pick trackable
+  trajectories. Once those land the tolerance default flips to a
+  tight value (~30 mm) and the snap-in artefact disappears without
+  a rate regression.
 
 ### Safety-critical invariants
 

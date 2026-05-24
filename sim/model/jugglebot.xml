@@ -5,11 +5,20 @@
   <size nconmax="200" njmax="1000"/>
   <visual>
     <global azimuth="135" elevation="-30"/>
-    <quality shadowsize="2048"/>
+    <!-- Renderer perf tweaks: shadowsize=0 disables shadow rendering
+         in both the passive viewer and offscreen renders. offsamples=0
+         disables MSAA for offscreen renders only — the passive viewer's
+         MSAA is set by GLFW hints and is unaffected by this knob. The
+         juggle demo needs smooth platform motion at full frame-rate on
+         the Jetson, not photo-realism. -->
+    <quality shadowsize="0" offsamples="0"/>
   </visual>
   <asset>
     <texture name="grid" type="2d" builtin="checker" width="512" height="512" rgb1="0.9 0.9 0.9" rgb2="0.7 0.7 0.7"/>
-    <material name="grid_mat" texture="grid" texrepeat="8 8" reflectance="0.1"/>
+    <!-- reflectance=0: the floor is no longer mirror-like (the demo's
+         juggling motion is the focus; floor reflections were extra GPU
+         load with no informational value). -->
+    <material name="grid_mat" texture="grid" texrepeat="8 8" reflectance="0"/>
     <material name="platform_mat" rgba="0.3 0.3 0.8 0.9"/>
     <material name="base_mat" rgba="0.4 0.4 0.4 0.8"/>
     <material name="leg_mat" rgba="0.7 0.7 0.7 1.0"/>
