@@ -203,7 +203,6 @@ def solve_throw_local(
     *,
     yaw_s_offset_mm: float = hw.BB_GEOM_YAW_S_OFFSET_MM,
     pitch_d_offset_mm: float = hw.BB_GEOM_PITCH_D_OFFSET_MM,
-    pitch_z_offset_mm: float = hw.BB_GEOM_PITCH_Z_OFFSET_MM,
     release_l_mm: float = hw.BB_GEOM_RELEASE_L_POSITION_MM,
     pitch_min_deg: float = hw.BB_GEOM_PITCH_MIN_DEG,
     pitch_max_deg: float = hw.BB_GEOM_PITCH_MAX_DEG,
@@ -217,15 +216,24 @@ def solve_throw_local(
     """Solve BB throw parameters to land at ``(x, y, z)`` in BB local frame.
 
     BB kinematics: yaw axis → pitch axis (offset ``d`` along x-local,
-    ``pitch_z_offset_mm`` above the yaw axis) → linear axis → release
+    ``pitch_z_offset`` above the yaw axis) → linear axis → release
     point (offset ``s`` lateral, ``l`` along the linear axis).  The yaw
     solution is independent of pitch / l / d (it's a 2-D ground-plane
     geometry).  Pitch is searched on a coarse grid, picking the pitch that
     minimises horizontal landing velocity (= the most-vertical landing) while
     respecting speed and height limits.
 
-    The release point in BB local frame:
-        z_release = pitch_z_offset_mm + l * sin(pitch)
+    Frame convention (load-bearing — read before changing z kinematics).
+    ``bb_calibration.py`` adds ``pitch_z_offset_mm`` to the marker-derived
+    avg_z when computing ``bb_mocap_position.z``.  The result is a mixed-
+    frame origin: ``(yaw_axis_x, yaw_axis_y, pitch_axis_z)``.  When
+    ``global_to_bb_local`` subtracts ``bb_mocap_position`` from a world
+    target, the resulting z is **already in pitch-axis frame** — the
+    release point's z above the input z=0 plane is just ``l*sin(pitch)``,
+    NOT ``pitch_z_offset + l*sin(pitch)``.  Adding pitch_z_offset here
+    would double-count it.  (For historical context: an earlier version
+    of this solver did add pitch_z_offset, which biased throws by 17.5 mm
+    vertically — caught when re-checking the working 2026-02-17 model.)
 
     All distance arguments are mm; angle arguments are degrees.  Mixing
     units keeps the call site readable against ``hardware_config`` defaults.
@@ -302,8 +310,9 @@ def solve_throw_local(
             continue
 
         # Throw height: vertical distance from release point to target.
-        # Release z = pitch_z_offset_mm + l*sin(pitch); target z = z_mm.
-        z_throw_mm = z_mm - (pitch_z_offset_mm + l * sin_p)
+        # Target z is already in pitch-axis frame (see frame convention in
+        # the function docstring).  Release z above pitch axis = l*sin(pitch).
+        z_throw_mm = z_mm - l * sin_p
 
         # Standard projectile: v² = g·R² / (R·sin(2φ) − Δz·(1+cos(2φ)))
         sin_2p = 2.0 * sin_p * cos_p
