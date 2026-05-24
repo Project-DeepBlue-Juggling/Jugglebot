@@ -47,13 +47,48 @@ def generate_launch_description():
         description='Record a rosbag of the cone test session.',
     )
 
+    apply_aim_correction = LaunchConfiguration('apply_aim_correction')
+    apply_aim_correction_arg = DeclareLaunchArgument(
+        'apply_aim_correction',
+        default_value='false',
+        description='Apply the 2D affine throw correction. Default OFF because '
+                    'the shipped session 1+2 matrix predates several FK + '
+                    'frame fixes and tends to make throws worse. Enable only '
+                    'once a fresh calibration matrix has been derived.',
+    )
+
+    invert_aim_correction = LaunchConfiguration('invert_aim_correction')
+    invert_aim_correction_arg = DeclareLaunchArgument(
+        'invert_aim_correction',
+        default_value='false',
+        description='Diagnostic: if true AND apply_aim_correction is true, '
+                    'invert the loaded matrix before use. Quick way to test '
+                    'whether the matrix is applied in the wrong direction.',
+    )
+
+    throw_delay_s = LaunchConfiguration('throw_delay_s')
+    throw_delay_s_arg = DeclareLaunchArgument(
+        'throw_delay_s',
+        default_value='2.5',
+        description='Default release delay (s) from service-call to ball '
+                    'release. Pitch axis takes up to ~1.6 s for a 60° move; '
+                    '2.5 s leaves margin. Override per-call via the service '
+                    'request field (non-zero wins).',
+    )
+
     # ── Nodes ────────────────────────────────────────────────────
     can_node = Node(package='jugglebot', executable='can_node')
     mocap_node = Node(package='jugglebot', executable='mocap_node')
     catch_correlation_node = Node(
         package='jugglebot', executable='catch_correlation_node')
     throw_director_node = Node(
-        package='jugglebot', executable='throw_director_node')
+        package='jugglebot', executable='throw_director_node',
+        parameters=[{
+            'apply_aim_correction': apply_aim_correction,
+            'invert_aim_correction': invert_aim_correction,
+            'throw_delay_s': throw_delay_s,
+        }],
+    )
 
     # ── Rosbridge (GUI websocket) ────────────────────────────────
     rosbridge_launch_file_path = os.path.join(
@@ -89,6 +124,9 @@ def generate_launch_description():
 
     return LaunchDescription([
         record_arg,
+        apply_aim_correction_arg,
+        invert_aim_correction_arg,
+        throw_delay_s_arg,
         rosbridge_include,
         can_node,
         mocap_node,

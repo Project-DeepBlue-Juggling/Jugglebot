@@ -111,8 +111,11 @@ class TestSuccessPath:
         assert 0.0 < res.throw_speed_mps <= 5.0
         assert math.radians(12.0) <= res.pitch_rad <= math.radians(85.0)
         assert res.predicted_tof_s > 0
-        # Default delay applied (caller passed 0.0)
-        assert res.throw_delay_s == pytest.approx(1.0)
+        # Default delay applied (caller passed 0.0).  Default is the
+        # `throw_delay_s` ROS param (declared at 2.5 s — gives the slow
+        # pitch axis time to settle before the hand fires).
+        from jugglebot.throw_director_node import _DEFAULT_THROW_DELAY_S
+        assert res.throw_delay_s == pytest.approx(_DEFAULT_THROW_DELAY_S)
 
         # bb/send_throw_command received an encoded request with the same
         # yaw/pitch/speed the director returned, with announcement suppressed
@@ -295,6 +298,91 @@ class TestAimCorrection:
         node._aim_correction_matrix = None
         node._load_aim_correction(str(path))
         assert node._aim_correction_matrix is None
+
+    def test_load_with_invert_inverts_the_matrix(self, node, tmp_path):
+        """`invert=True` loads the mathematical inverse — applying the
+        inverted matrix to a point and then the original to the result
+        should return the original point."""
+        import json
+        # Pick a matrix with non-trivial 2x2 + translation
+        mat = [[2.0, 0.0, 10.0],
+               [0.0, 0.5, -5.0],
+               [0.0, 0.0,  1.0]]
+        path = tmp_path / 'm.json'
+        path.write_text(json.dumps({'matrix': mat}))
+        node._aim_correction_matrix = None
+        node._load_aim_correction(str(path), invert=True)
+        assert node._aim_correction_matrix is not None
+        # Inverse of [[2,0,10],[0,0.5,-5]] is [[0.5,0,-5],[0,2,10]]
+        (a, b, tx), (c, d, ty) = node._aim_correction_matrix
+        assert (a, b, tx) == pytest.approx((0.5, 0.0, -5.0))
+        assert (c, d, ty) == pytest.approx((0.0, 2.0, 10.0))
+
+
+class TestInvertAffine3x3:
+    """Module-level helper: invert a 3x3 affine matrix in pure Python."""
+
+    def test_inverts_identity_to_identity(self):
+        from jugglebot.throw_director_node import _invert_affine_3x3
+        I = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+        inv = _invert_affine_3x3(I)
+        for r in range(3):
+            for c in range(3):
+                assert inv[r][c] == pytest.approx(I[r][c])
+
+    def test_inverts_pure_translation(self):
+        from jugglebot.throw_director_node import _invert_affine_3x3
+        T = [[1.0, 0.0, 10.0], [0.0, 1.0, -5.0], [0.0, 0.0, 1.0]]
+        inv = _invert_affine_3x3(T)
+        # Inverse of pure translation just negates the offsets
+        assert inv[0][2] == pytest.approx(-10.0)
+        assert inv[1][2] == pytest.approx(5.0)
+        # Linear part still identity
+        assert (inv[0][0], inv[0][1]) == pytest.approx((1.0, 0.0))
+        assert (inv[1][0], inv[1][1]) == pytest.approx((0.0, 1.0))
+
+    def test_inverts_rotation_plus_translation_correctly(self):
+        """A·A^-1 ≈ I (numerically)."""
+        from jugglebot.throw_director_node import _invert_affine_3x3
+        import math
+        ang = math.radians(20.0)
+        A = [[math.cos(ang), -math.sin(ang), 100.0],
+             [math.sin(ang),  math.cos(ang),  50.0],
+             [0.0, 0.0, 1.0]]
+        Ainv = _invert_affine_3x3(A)
+        # Multiply A @ Ainv manually (3x3)
+        prod = [[sum(A[i][k] * Ainv[k][j] for k in range(3)) for j in range(3)] for i in range(3)]
+        I = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+        for r in range(3):
+            for c in range(3):
+                assert prod[r][c] == pytest.approx(I[r][c], abs=1e-9)
+
+    def test_raises_on_singular_matrix(self):
+        from jugglebot.throw_director_node import _invert_affine_3x3
+        S = [[1.0, 2.0, 0.0], [2.0, 4.0, 0.0], [0.0, 0.0, 1.0]]  # rows linearly dependent
+        with pytest.raises(ValueError, match='singular'):
+            _invert_affine_3x3(S)
+
+
+class TestThrowDelayParam:
+    """The `throw_delay_s` ROS param sets the default delay for the throw."""
+
+    def test_default_is_value_of_module_constant(self, calibrated_node):
+        from jugglebot.throw_director_node import _DEFAULT_THROW_DELAY_S
+        assert calibrated_node._default_throw_delay_s == pytest.approx(
+            _DEFAULT_THROW_DELAY_S)
+
+    def test_caller_zero_uses_default(self, calibrated_node):
+        from jugglebot.throw_director_node import _DEFAULT_THROW_DELAY_S
+        calibrated_node._on_rigid_bodies(_rigid_bodies({
+            'Catching_Cone': (1200.0, 0.0, 0.0),
+        }))
+        req = ThrowAtTarget.Request()
+        req.target_name = 'Catching_Cone'
+        req.throw_delay_s = 0.0
+        res = calibrated_node._svc_throw_at_target(req, ThrowAtTarget.Response())
+        assert res.success is True
+        assert res.throw_delay_s == pytest.approx(_DEFAULT_THROW_DELAY_S)
 
 
 class TestCacheUpdates:

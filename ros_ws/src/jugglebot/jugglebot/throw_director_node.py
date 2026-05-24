@@ -57,9 +57,15 @@ from jugglebot.can.throw_ballistics import (
 )
 
 
-# Default release delay (s) — leaves time for the CAN send + BB to schedule.
-# Matches the archived ball_butler_node's `seconds_to_throw_in` default.
-_DEFAULT_THROW_DELAY_S = 1.0
+# Default release delay (s) from the bb/throw_at_target service call to the
+# actual ball release.  Pitch is the slow axis: trap-traj caps at 1 rev/s
+# (360°/s) with 0.5 rev/s² accel, so a 60° pitch change takes ~1.6 s of pure
+# motion + settling.  The BB firmware does NOT check yaw/pitch settled before
+# firing the hand — if the hand wind-up finishes while pitch is still
+# traversing, the ball gets released at the wrong angle.  Default 2.5 s
+# leaves ~2 s for axis motion + ~0.5 s margin; tune via the `throw_delay_s`
+# ROS param (or the service request field, which still wins when > 0).
+_DEFAULT_THROW_DELAY_S = 2.5
 
 # Gravity (mm/s²) — for landing-velocity decay in published ThrowAnnouncement.
 _G_MMPS2 = hw.GRAVITY_MPS2 * 1000.0
@@ -69,6 +75,29 @@ _G_MMPS2 = hw.GRAVITY_MPS2 * 1000.0
 # through the BB hardware, the ball lands at the desired position.
 # The default file is packaged as a share/jugglebot/resources/ artifact.
 _DEFAULT_AIM_CORRECTION_FILE = 'throw_affine_correction.json'
+
+
+def _invert_affine_3x3(m):
+    """Invert a 3x3 affine matrix (last row [0, 0, 1]).
+
+    Returns the 3x3 inverse as a list of lists.  Raises ``ValueError`` if
+    the upper-left 2x2 is singular.  Standalone module-level helper so the
+    node code stays compact and the math is easy to unit-test.
+    """
+    a, b, tx = m[0]
+    c, d, ty = m[1]
+    det = a * d - b * c
+    if abs(det) < 1e-12:
+        raise ValueError(f"Affine matrix is singular (det={det:.2e})")
+    inv_det = 1.0 / det
+    # 2x2 inverse times -translation
+    a2 =  d * inv_det
+    b2 = -b * inv_det
+    c2 = -c * inv_det
+    d2 =  a * inv_det
+    tx2 = -(a2 * tx + b2 * ty)
+    ty2 = -(c2 * tx + d2 * ty)
+    return [[a2, b2, tx2], [c2, d2, ty2], [0.0, 0.0, 1.0]]
 
 
 class ThrowDirectorNode(Node):
@@ -85,18 +114,36 @@ class ThrowDirectorNode(Node):
         self._bb_position_mm: Optional[Tuple[float, float, float]] = None
         self._bb_yaw_offset_rad: float = 0.0
 
-        # ── Affine aim-correction (BB-local frame, 2D) ──
-        # Loaded from a JSON file at startup.  Default: enabled; disable via
-        # ROS param `apply_aim_correction:=false` (e.g. for diagnostics or
-        # when re-running a calibration grid that must measure RAW bias).
-        self.declare_parameter('apply_aim_correction', True)
+        # ── Throw release delay (s) ──
+        # See _DEFAULT_THROW_DELAY_S docstring at module scope for why the
+        # default is 2.5 s (pitch is the slow axis; firmware doesn't gate
+        # the hand on axis-settled).  Caller can also override per-call
+        # via the service request's throw_delay_s field.
+        self.declare_parameter('throw_delay_s', _DEFAULT_THROW_DELAY_S)
+        self._default_throw_delay_s = float(
+            self.get_parameter('throw_delay_s').value)
+
+        # ── Affine aim-correction (2D) ──
+        # Default: DISABLED.  The shipped session 1+2 matrix is in WORLD frame
+        # and encodes biases (rotation, translation, scale) that subsequent
+        # bug fixes (QTM cal, global_to_bb_frame rotation, FK s/d/l offsets,
+        # pitch_z_offset) have already corrected in our code path.  Applying
+        # it makes throws worse, not better — confirmed in the first live
+        # session.  Enable explicitly when a fresh, BB-local calibration grid
+        # is available.
+        self.declare_parameter('apply_aim_correction', False)
         self.declare_parameter('aim_correction_file', _DEFAULT_AIM_CORRECTION_FILE)
+        # `invert_aim_correction`: if True, the loaded matrix is inverted at
+        # load time.  Diagnostic switch for testing whether the matrix is in
+        # the wrong direction (caller-suggested fix when throws got worse).
+        self.declare_parameter('invert_aim_correction', False)
         self._aim_correction_matrix: Optional[Tuple[Tuple[float, float, float],
                                                     Tuple[float, float, float]]] = None
-        self._aim_correction_source: str = '(none)'
+        self._aim_correction_source: str = '(disabled)'
         if self.get_parameter('apply_aim_correction').value:
             self._load_aim_correction(
-                self.get_parameter('aim_correction_file').value)
+                self.get_parameter('aim_correction_file').value,
+                invert=bool(self.get_parameter('invert_aim_correction').value))
 
         # ── Subscriptions ───────────────────────────────────────
         self.create_subscription(
@@ -156,12 +203,17 @@ class ThrowDirectorNode(Node):
     # Aim correction (2D affine on BB-local target)
     # ─────────────────────────────────────────────────────────────────
 
-    def _load_aim_correction(self, file_path_or_name: str) -> None:
+    def _load_aim_correction(self, file_path_or_name: str,
+                             invert: bool = False) -> None:
         """Load the 2D affine correction matrix from a JSON file.
 
         Looks up the file in this order:
           1. As an absolute or relative path (if it exists).
           2. As a basename inside `share/jugglebot/resources/`.
+
+        ``invert``: if True, the loaded matrix is mathematically inverted
+        before storage (3x3 affine inverse).  Useful as a diagnostic switch
+        when a matrix's direction is suspect.
 
         On any failure, falls back to identity (no correction) and logs
         the reason — never raises, so the node still starts.
@@ -186,16 +238,26 @@ class ThrowDirectorNode(Node):
             mat = data.get('matrix')
             if mat is None or len(mat) < 2 or any(len(row) != 3 for row in mat[:2]):
                 raise ValueError("missing or malformed 'matrix' (need 2x3 or 3x3)")
-            # Store as the 2x3 active part: ((a, b, tx), (c, d, ty))
+
+            # Pad to 3x3 for inversion if needed
+            mat3 = [
+                [float(mat[0][0]), float(mat[0][1]), float(mat[0][2])],
+                [float(mat[1][0]), float(mat[1][1]), float(mat[1][2])],
+                [0.0, 0.0, 1.0],
+            ]
+            if invert:
+                mat3 = _invert_affine_3x3(mat3)
+
             self._aim_correction_matrix = (
-                (float(mat[0][0]), float(mat[0][1]), float(mat[0][2])),
-                (float(mat[1][0]), float(mat[1][1]), float(mat[1][2])),
+                (mat3[0][0], mat3[0][1], mat3[0][2]),
+                (mat3[1][0], mat3[1][1], mat3[1][2]),
             )
-            self._aim_correction_source = path
+            self._aim_correction_source = path + (' (inverted)' if invert else '')
             prov = data.get('provenance', {})
             warn = prov.get('warning')
             self.get_logger().info(
-                f'Aim correction loaded from {path} '
+                f'Aim correction loaded from {path}'
+                f'{" (INVERTED)" if invert else ""} '
                 f'(n_pairs={data.get("n_pairs", "?")}).')
             if warn:
                 self.get_logger().warning(f'Aim correction warning: {warn}')
@@ -266,9 +328,11 @@ class ThrowDirectorNode(Node):
             res.message = f'Inverse-ballistics failed: {e}'
             return res
 
-        # Stage 5: send throw command to BB via can_node.  We use a default
-        # release delay if the caller didn't specify one (or specified 0).
-        delay_s = float(req.throw_delay_s) if req.throw_delay_s > 0 else _DEFAULT_THROW_DELAY_S
+        # Stage 5: send throw command to BB via can_node.  We use the
+        # node's default release delay if the caller didn't specify one
+        # (or specified 0).  The node default is from the `throw_delay_s`
+        # ROS param.
+        delay_s = float(req.throw_delay_s) if req.throw_delay_s > 0 else self._default_throw_delay_s
 
         if not self._throw_client.service_is_ready():
             res.success = False
