@@ -1,0 +1,28 @@
+{
+  "comment": "2D affine correction applied to throw targets in BB-local frame. Maps desired-landing → commanded-target so that, when fed through solve_throw_local + BB hardware, the ball lands at the desired position. Z is not corrected (matrix is 2D).",
+  "provenance": {
+    "source_dataset": "/home/jetson/Desktop/BallButler/zTesting/throw_testing/accuracy_testing/errors.json",
+    "sessions": "1+2 (10 throws to an 8x8 grid of 800x800 mm, 54 reachable targets after exclusions)",
+    "computed_by": "least-squares fit of target_pos → measured_mean, inverted to give command = A @ desired_landing",
+    "computed_on": "2026-05-24",
+    "warning": "Pre-FK-fix data: sessions 1+2 were before (a) QTM-based BB calibration, (b) global_to_bb_frame rotation fix, (c) FK with s/d/l offsets, and (d) the pitch_z_offset_mm fix from commit 455cf06. Our current code already corrects for these, so this matrix may OVER-CORRECT. Treat as a starting point only; run a fresh calibration grid and re-derive when possible.",
+    "z_caveat": "Calibration was done at BB-local z ≈ +750 mm (above BB origin). Targets at other heights (e.g. the cone at z ≈ -597 mm BB-local) may have different bias not captured here."
+  },
+  "n_pairs": 54,
+  "matrix": [
+    [0.8239156839379845, -0.14330787502086662, -88.55121841457229],
+    [0.2096970821301812,  1.0008611563372078,   82.4889524272642 ],
+    [0.0,                 0.0,                   1.0              ]
+  ],
+  "decomposition": {
+    "scale": [1.1978789408246666, 0.976754304836737],
+    "rotation_deg": -10.948685748510202,
+    "translation_mm": [89.86577155261119, -101.24635356623145],
+    "determinant_of_forward": 1.170033412123764
+  },
+  "training_errors_mm": {
+    "before_correction_mean": 146.18,
+    "before_correction_max":  324.74,
+    "before_correction_std":  83.23
+  }
+}

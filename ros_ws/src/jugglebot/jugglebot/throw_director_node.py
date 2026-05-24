@@ -26,7 +26,9 @@ introduce any new clocks.
 """
 from __future__ import annotations
 
+import json
 import math
+import os
 from typing import Dict, Optional, Tuple
 
 import rclpy
@@ -37,6 +39,8 @@ from rclpy.qos import (
     ReliabilityPolicy,
 )
 from geometry_msgs.msg import Point, Vector3
+
+from ament_index_python.packages import get_package_share_directory
 
 from jugglebot_interfaces.msg import (
     BallButlerCalibrationResult,
@@ -60,6 +64,12 @@ _DEFAULT_THROW_DELAY_S = 1.0
 # Gravity (mm/s²) — for landing-velocity decay in published ThrowAnnouncement.
 _G_MMPS2 = hw.GRAVITY_MPS2 * 1000.0
 
+# Default location of the 2D affine correction matrix (BB-local frame).
+# The file maps desired-landing → commanded-target so that, when run
+# through the BB hardware, the ball lands at the desired position.
+# The default file is packaged as a share/jugglebot/resources/ artifact.
+_DEFAULT_AIM_CORRECTION_FILE = 'throw_affine_correction.json'
+
 
 class ThrowDirectorNode(Node):
     """Aim Ball Butler at a named QTM rigid body and throw."""
@@ -74,6 +84,19 @@ class ThrowDirectorNode(Node):
         # BB calibration (latched).  None until first /bb/calibration_result.
         self._bb_position_mm: Optional[Tuple[float, float, float]] = None
         self._bb_yaw_offset_rad: float = 0.0
+
+        # ── Affine aim-correction (BB-local frame, 2D) ──
+        # Loaded from a JSON file at startup.  Default: enabled; disable via
+        # ROS param `apply_aim_correction:=false` (e.g. for diagnostics or
+        # when re-running a calibration grid that must measure RAW bias).
+        self.declare_parameter('apply_aim_correction', True)
+        self.declare_parameter('aim_correction_file', _DEFAULT_AIM_CORRECTION_FILE)
+        self._aim_correction_matrix: Optional[Tuple[Tuple[float, float, float],
+                                                    Tuple[float, float, float]]] = None
+        self._aim_correction_source: str = '(none)'
+        if self.get_parameter('apply_aim_correction').value:
+            self._load_aim_correction(
+                self.get_parameter('aim_correction_file').value)
 
         # ── Subscriptions ───────────────────────────────────────
         self.create_subscription(
@@ -130,6 +153,70 @@ class ThrowDirectorNode(Node):
             f'yaw_offset={math.degrees(self._bb_yaw_offset_rad):.2f}°')
 
     # ─────────────────────────────────────────────────────────────────
+    # Aim correction (2D affine on BB-local target)
+    # ─────────────────────────────────────────────────────────────────
+
+    def _load_aim_correction(self, file_path_or_name: str) -> None:
+        """Load the 2D affine correction matrix from a JSON file.
+
+        Looks up the file in this order:
+          1. As an absolute or relative path (if it exists).
+          2. As a basename inside `share/jugglebot/resources/`.
+
+        On any failure, falls back to identity (no correction) and logs
+        the reason — never raises, so the node still starts.
+        """
+        candidates = [file_path_or_name]
+        try:
+            share_dir = get_package_share_directory('jugglebot')
+            candidates.append(os.path.join(share_dir, 'resources', file_path_or_name))
+        except Exception:
+            pass
+
+        path = next((p for p in candidates if os.path.isfile(p)), None)
+        if path is None:
+            self.get_logger().warning(
+                f'Aim-correction file not found ({file_path_or_name}); '
+                f'proceeding without correction (identity).')
+            return
+
+        try:
+            with open(path, 'r') as f:
+                data = json.load(f)
+            mat = data.get('matrix')
+            if mat is None or len(mat) < 2 or any(len(row) != 3 for row in mat[:2]):
+                raise ValueError("missing or malformed 'matrix' (need 2x3 or 3x3)")
+            # Store as the 2x3 active part: ((a, b, tx), (c, d, ty))
+            self._aim_correction_matrix = (
+                (float(mat[0][0]), float(mat[0][1]), float(mat[0][2])),
+                (float(mat[1][0]), float(mat[1][1]), float(mat[1][2])),
+            )
+            self._aim_correction_source = path
+            prov = data.get('provenance', {})
+            warn = prov.get('warning')
+            self.get_logger().info(
+                f'Aim correction loaded from {path} '
+                f'(n_pairs={data.get("n_pairs", "?")}).')
+            if warn:
+                self.get_logger().warning(f'Aim correction warning: {warn}')
+        except Exception as e:
+            self.get_logger().error(
+                f'Failed to load aim correction from {path}: {e}. '
+                f'Proceeding without correction.')
+            self._aim_correction_matrix = None
+
+    def _apply_aim_correction(self, x_l: float, y_l: float) -> Tuple[float, float]:
+        """Apply the loaded 2D affine to a BB-local (x, y) target.
+
+        Returns (x, y) unchanged when no correction is loaded.
+        """
+        m = self._aim_correction_matrix
+        if m is None:
+            return x_l, y_l
+        (a, b, tx), (c, d, ty) = m
+        return a * x_l + b * y_l + tx, c * x_l + d * y_l + ty
+
+    # ─────────────────────────────────────────────────────────────────
     # Service handler
     # ─────────────────────────────────────────────────────────────────
 
@@ -161,11 +248,19 @@ class ThrowDirectorNode(Node):
             bb_position_mm=self._bb_position_mm,
             yaw_offset_rad=self._bb_yaw_offset_rad,
         )
-        res.target_position_bb_local_mm = Point(x=x_l, y=y_l, z=z_l)
+
+        # Stage 3b: apply 2D affine aim correction (BB-local).  The matrix
+        # maps desired-landing → commanded-target; the solver works on the
+        # commanded target so the actual ball lands at the desired one.  No
+        # correction → identity → x_cmd == x_l.
+        x_cmd, y_cmd = self._apply_aim_correction(x_l, y_l)
+        # Report the *commanded* position in the response: that's what the
+        # solver acts on and what determines where the ball is *aimed*.
+        res.target_position_bb_local_mm = Point(x=x_cmd, y=y_cmd, z=z_l)
 
         # Stage 4: inverse ballistics
         try:
-            sol: ThrowSolution = solve_throw_local(x_l, y_l, z_l)
+            sol: ThrowSolution = solve_throw_local(x_cmd, y_cmd, z_l)
         except ValueError as e:
             res.success = False
             res.message = f'Inverse-ballistics failed: {e}'
@@ -204,11 +299,16 @@ class ThrowDirectorNode(Node):
 
         # Fill response.
         res.success = True
+        correction_note = ''
+        if self._aim_correction_matrix is not None:
+            dx, dy = x_cmd - x_l, y_cmd - y_l
+            if abs(dx) > 0.5 or abs(dy) > 0.5:
+                correction_note = f' [aim corr: Δxy=({dx:+.0f},{dy:+.0f}) mm BB-local]'
         res.message = (
             f'Throwing at {req.target_name}: yaw={math.degrees(sol.yaw_rad):.1f}°, '
             f'pitch={math.degrees(sol.pitch_rad):.1f}°, '
             f'speed={sol.speed_mps:.2f} m/s, delay={delay_s:.2f} s, '
-            f'predicted ToF={sol.tof_s:.3f} s.')
+            f'predicted ToF={sol.tof_s:.3f} s.{correction_note}')
         res.yaw_rad = float(sol.yaw_rad)
         res.pitch_rad = float(sol.pitch_rad)
         res.throw_speed_mps = float(sol.speed_mps)

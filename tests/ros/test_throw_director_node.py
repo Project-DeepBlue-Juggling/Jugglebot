@@ -41,8 +41,16 @@ def _rigid_bodies(named_positions):
 
 @pytest.fixture
 def node():
+    """A throw_director_node with aim-correction DISABLED so the test
+    assertions exercise the raw transform / solver only.  Use the
+    `node_with_correction` fixture (or set `_aim_correction_matrix`
+    manually) to exercise the correction path."""
     from jugglebot.throw_director_node import ThrowDirectorNode
-    return ThrowDirectorNode()
+    n = ThrowDirectorNode()
+    # Force identity regardless of what's installed at share/jugglebot/resources/
+    n._aim_correction_matrix = None
+    n._aim_correction_source = '(disabled by test)'
+    return n
 
 
 @pytest.fixture
@@ -195,6 +203,98 @@ class TestInfeasible:
         res = calibrated_node._svc_throw_at_target(req, ThrowAtTarget.Response())
         assert res.success is False
         assert 'can_node' in res.message.lower()
+
+
+class TestAimCorrection:
+    """The 2D affine aim correction applied between global_to_bb_local
+    and solve_throw_local."""
+
+    def test_identity_when_no_matrix_loaded(self, node):
+        """No correction loaded → input passes through unchanged."""
+        assert node._aim_correction_matrix is None
+        x_c, y_c = node._apply_aim_correction(1234.0, 5678.0)
+        assert x_c == 1234.0
+        assert y_c == 5678.0
+
+    def test_matrix_applied_correctly(self, node):
+        # Pure-translation matrix: shift by (+100, -50)
+        node._aim_correction_matrix = ((1.0, 0.0, 100.0), (0.0, 1.0, -50.0))
+        x_c, y_c = node._apply_aim_correction(1000.0, 500.0)
+        assert x_c == pytest.approx(1100.0)
+        assert y_c == pytest.approx(450.0)
+
+    def test_full_affine_applied(self, node):
+        # 90° rotation + translation: (x, y) → (-y, x) + (10, 20)
+        node._aim_correction_matrix = ((0.0, -1.0, 10.0), (1.0, 0.0, 20.0))
+        x_c, y_c = node._apply_aim_correction(100.0, 200.0)
+        assert x_c == pytest.approx(-200.0 + 10.0)
+        assert y_c == pytest.approx(100.0 + 20.0)
+
+    def test_correction_feeds_solver_via_service(self, calibrated_node):
+        """When correction is loaded, the solver receives the corrected
+        BB-local position (not the raw one)."""
+        # Pick a matrix that shifts target by (+200, 0) in BB-local frame
+        calibrated_node._aim_correction_matrix = (
+            (1.0, 0.0, 200.0), (0.0, 1.0, 0.0))
+        # Cone at world (1000, 0, 0) with no BB yaw offset → BB-local (1000, 0)
+        calibrated_node._on_rigid_bodies(_rigid_bodies({
+            'Catching_Cone': (1000.0, 0.0, 0.0),
+        }))
+        req = ThrowAtTarget.Request()
+        req.target_name = 'Catching_Cone'
+        res = calibrated_node._svc_throw_at_target(req, ThrowAtTarget.Response())
+
+        assert res.success is True
+        # Solver got the corrected target → solver yaw is now toward (1200, 0)
+        # which is straight ahead → yaw ≈ 0.
+        assert res.target_position_bb_local_mm.x == pytest.approx(1200.0)
+        assert res.target_position_bb_local_mm.y == pytest.approx(0.0)
+        # The message should surface the correction delta
+        assert 'aim corr' in res.message
+
+    def test_no_correction_note_when_disabled(self, calibrated_node):
+        """With correction off, the success message has no '[aim corr: ...]' tag."""
+        assert calibrated_node._aim_correction_matrix is None
+        calibrated_node._on_rigid_bodies(_rigid_bodies({
+            'Catching_Cone': (1000.0, 0.0, 0.0),
+        }))
+        req = ThrowAtTarget.Request()
+        req.target_name = 'Catching_Cone'
+        res = calibrated_node._svc_throw_at_target(req, ThrowAtTarget.Response())
+        assert res.success is True
+        assert 'aim corr' not in res.message
+
+    def test_load_from_file(self, node, tmp_path):
+        """A valid JSON file at the given absolute path is loaded."""
+        import json
+        path = tmp_path / 'mat.json'
+        path.write_text(json.dumps({
+            'matrix': [[0.5, 0.0, 10.0],
+                       [0.0, 0.5, 20.0],
+                       [0.0, 0.0, 1.0]],
+            'n_pairs': 12,
+            'provenance': {'warning': 'test fixture — not real'},
+        }))
+        node._aim_correction_matrix = None
+        node._load_aim_correction(str(path))
+        assert node._aim_correction_matrix is not None
+        assert node._aim_correction_matrix[0] == (0.5, 0.0, 10.0)
+        assert node._aim_correction_matrix[1] == (0.0, 0.5, 20.0)
+
+    def test_missing_file_falls_back_to_identity(self, node):
+        node._aim_correction_matrix = None
+        node._load_aim_correction('/nonexistent/path/missing.json')
+        assert node._aim_correction_matrix is None  # identity (no correction)
+
+    def test_malformed_matrix_falls_back_to_identity(self, node, tmp_path):
+        """A bad matrix shape doesn't crash the node — falls back to identity
+        so the rest of the system keeps working."""
+        import json
+        path = tmp_path / 'bad.json'
+        path.write_text(json.dumps({'matrix': [[1, 2]]}))  # wrong shape
+        node._aim_correction_matrix = None
+        node._load_aim_correction(str(path))
+        assert node._aim_correction_matrix is None
 
 
 class TestCacheUpdates:

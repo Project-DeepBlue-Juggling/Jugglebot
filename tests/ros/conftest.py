@@ -388,6 +388,26 @@ class MockPublisher:
         self.published.append(msg)
 
 
+class _MockParameter:
+    def __init__(self, value):
+        self.value = value
+
+    def get_parameter_value(self):
+        return self
+
+    @property
+    def double_value(self):
+        return float(self.value)
+
+    @property
+    def string_value(self):
+        return str(self.value)
+
+    @property
+    def double_array_value(self):
+        return list(self.value) if self.value is not None else []
+
+
 class MockNode:
     """Stand-in for rclpy.node.Node."""
     def __init__(self, name='test_node'):
@@ -396,12 +416,20 @@ class MockNode:
         self._clock = MockClock()
         self._publishers = {}
         self._clients = {}
+        self._params = {}
 
     def get_logger(self):
         return self._logger
 
     def get_clock(self):
         return self._clock
+
+    def declare_parameter(self, name, default_value):
+        self._params[name] = default_value
+        return _MockParameter(default_value)
+
+    def get_parameter(self, name):
+        return _MockParameter(self._params.get(name))
 
     def create_service(self, *a, **kw):
         return MagicMock()
