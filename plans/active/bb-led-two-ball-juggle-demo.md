@@ -266,21 +266,61 @@ release-velocity overrides. With the wider sep + colinearity penalty
 the catch tilt grows to ~18° and the hand-opening xy shifts ~35 mm
 from the centroid under banking. The 2026-05-24 BallManager
 capture-tolerance gate (30 mm centre-to-cup, vs the prior any-rim-
-contact rule) eliminates the rim-snap artefact but reveals the
-open-loop runner's tracking error: catch rate with the gate ON is
-~60% at sep=100 and ~30% at sep=200. Cuts #4 + #5 are the principled
-fix. **(2026-05-24 follow-up: the tolerance default was reverted to
-``None`` — gate OFF — so the demo keeps the headline ~33/30 rate
-while cuts #4/#5 are pending. See the §6 "Open Items" entry below
-for the full chronology and the ``--capture-tolerance-mm`` CLI knob
-that re-enables the strict gate on demand.)**
+contact rule) eliminated the rim-snap artefact but with the cut #3
+pose-jerk² optimiser the open-loop runner's tracking error dragged
+the gate-ON catch rate down to ~60% at sep=100 / ~30% at sep=200.
+**(2026-05-24 follow-up: cuts #4 / #5 landed the same day. With the
+leg-jerk² + leg-vel-equalise optimiser producing trajectories the
+actuators can track to the cup centre, the juggle-demo runner's
+``JuggleDemoConfig.capture_tolerance_mm`` default flipped to the
+strict 30 mm gate — the snap-in artefact is gone and the headline
+~33/30 rate is preserved. See the cut #4/#5 paragraphs below and
+the RESOLVED §6 entry for the full chronology.)**
 
-**Deferred to further cuts** (each its own commit / session): leg-space
-(not pose-space) jerk objective via CasADi IK + dense sub-sampling; leg-
-velocity equalisation via a minimax ``v_max`` slack so all six legs share
-peak velocity work; leg velocity/acceleration inequality constraints (tied
-to the Phase 4 `hardware_config.yaml` raise); and the priming transient
-(the exit transient is already provided by Phase 3b's `ExitTransient`).
+**Cut #4 (2026-05-24): leg-space jerk² objective via CasADi IK on dense
+sub-sampled grid.** Pose-jerk² was unit-imbalanced (rotation jerk rad/s³
+~1e6× smaller than translation jerk mm/s³ in the same number), so
+orientation was essentially free and the optimiser would park the
+platform at near-constant tilt at low apex. Cut #4 ports the IK
+(``pose_to_leg_lengths``) to a CasADi-symbolic ``_ik_extensions_sym``,
+sub-samples each knot segment at ``n_sub_per_segment=4`` sub-points
+(default — total 48 sub-grid samples at N=12), and computes per-leg
+jerk via 3rd central difference on the periodic grid. Integrated
+``Σ ∫ leg_jerk² dt`` is the primary objective term
+(``leg_jerk_weight=1.0`` default); legacy pose-jerk² remains available
+as an optional regulariser (``pose_jerk_weight=0.0`` default).
+
+**Cut #5 (2026-05-24): leg-velocity equalisation via minimax ``v_max``
+slack.** A scalar ``v_max`` variable is added to the NLP, bounded
+``|leg_vel_i(t_m)| ≤ v_max`` for every leg ``i`` and sub-grid sample
+``t_m`` via 1st central difference on the same dense grid. The
+objective gains ``leg_vel_equalize_weight × v_max`` (default 0.01 — a
+gentle nudge that equalises peak leg velocity without dominating the
+jerk² primary). The optional ``leg_vel_hard_cap_mms`` provides a fixed
+upper bound for hardware-aware tuning.
+
+**Capture-tolerance default flipped to strict (2026-05-24).**
+``DEFAULT_CAPTURE_TOLERANCE_M = 0.030`` (was ``None``). The new
+optimiser produces trajectories tight enough that the strict 30 mm
+centre-to-cup gate admits the headline ~33/30 catch rate without
+relying on the "snap-in from cup rim" artefact the loose default
+allowed. ``--capture-tolerance-mm`` / ``capture_tolerance_m=None`` on
+any consumer restores the legacy loose behaviour.
+
+**N_knots default lowered (16 → 12).** The denser leg-jerk objective
+multiplied IPOPT iteration count at N=16 (~531 iter, ~120 s) but
+converged in ~40-65 iter at N=12 (~12 s). The sim catch rate is
+indistinguishable between the two; perf wins.
+
+**Optimiser-result cache** in ``sim/juggle_demo.py``: process-wide
+memoisation on ``(pattern, cfg)`` so the test suite's repeated
+``_JuggleDemoRunner`` constructions hit the ~12 s solve once and reuse
+it. Targeted-test runtime: 13:05 → 2:00.
+
+**Deferred to further cuts** (each its own commit / session): leg
+velocity/acceleration inequality constraints (tied to the Phase 4
+`hardware_config.yaml` raise); the priming transient (the exit transient
+is already provided by Phase 3b's `ExitTransient`).
 
 Validated by `tests/sim/test_demo_juggle_optimizer.py` (17 tests covering
 throw xyz pin, orientation-aware ball release lands at the matched catch
@@ -666,28 +706,23 @@ insufficient.
   ``_analytic_release_velocity_world_mms`` use
   ``self._catch_target_world_mm``, cached at construction from
   ``self.trajectory.eval(catch_offset_s)``.
-- **Open-loop catch rate vs the strict capture-tolerance gate.** The
-  ``BallManager`` grew an optional ``capture_tolerance_m`` parameter
-  on 2026-05-24 — a centre-to-cup-opening distance threshold that
-  rejects catches firing only on peripheral cup-rim contact (without
-  it, MuJoCo's contact-anywhere check captures whenever any cup
-  collision mesh touches the ball, and the kinematic hold then snaps
-  the ball to the cup centre — visible "snap-in" artefact at low
-  apex). **Default is None (gate off)**, preserving the demo's
-  headline catch rate (~33 in 30 s). Setting it to e.g. 30 mm makes
-  capture realistic but reveals the open-loop runner's tracking
-  error: catch rate drops to ~60% at sep=100, ~30% at sep=200,
-  because the optimiser produces feasible pose-trajectories but
-  doesn't bound leg velocities, so the platform actuators don't
-  track tightly enough at the wider separation. Cuts #4 (leg-space
-  jerk² objective via CasADi IK on a dense sub-grid) and #5
-  (leg-velocity equalisation via a minimax v_max slack with per-
-  leg per-sub-point ``|leg_vel_i(t)| ≤ v_max`` bound) are the
-  principled fix — penalising leg motion in the objective +
-  bounding leg velocity force the optimiser to pick trackable
-  trajectories. Once those land the tolerance default flips to a
-  tight value (~30 mm) and the snap-in artefact disappears without
-  a rate regression.
+- **Strict capture-tolerance gate is the juggle-demo default —
+  RESOLVED (2026-05-24).** Cuts #4 (leg-space jerk² objective via
+  CasADi IK on a dense sub-grid) and #5 (leg-velocity equalisation
+  via a minimax ``v_max`` slack with per-leg per-sub-point
+  ``|leg_vel_i(t)| ≤ v_max`` bound) make the optimiser produce
+  trajectories tight enough for the platform actuators to land the
+  ball at the cup centre rather than the rim. The juggle-demo
+  runner's ``JuggleDemoConfig.capture_tolerance_mm`` default flipped
+  ``None → 30.0``; the snap-in artefact is gone and the headline
+  catch rate is preserved (33 captures in 30 s at sep=200 with
+  seed=0, verified 2026-05-24). The **module-level
+  ``DEFAULT_CAPTURE_TOLERANCE_M`` stays ``None``** so non-juggle-demo
+  ``MuJoCoPlant`` consumers (MPC catch sims, hand-stroke tests, etc.)
+  don't see a silent behaviour change — those paths don't run the
+  new optimiser, and tightening the gate globally regressed an MPC
+  rapid-succession catch test. Each consumer that wants the gate
+  opts in explicitly.
 
 ### Safety-critical invariants
 

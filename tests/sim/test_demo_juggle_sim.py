@@ -19,35 +19,30 @@ integration tests.
 import pytest
 
 from sim.juggle_demo import (
-    JuggleDemoConfig, _JuggleDemoRunner, run,
+    JuggleDemoConfig, _JuggleDemoRunner, _optimise_cache, run,
 )
 
 
 # --------------------------------------------------------------------------
 # T-I3: sustained catches in MuJoCo — the plan §3 Phase 3 exit criterion.
 #
-# 2026-05-24 update: the BallManager capture tolerance was tightened
-# (30 mm centre-to-cup-opening, was effectively unlimited via MuJoCo's
-# contact-anywhere check) to eliminate "snap-in from the cup rim"
-# artifacts at lower apex. With the optimiser still using a pure
-# pose-jerk² objective the platform actuators can't track the
-# optimised trajectory tightly enough at the wider default separation,
-# and the catch-rate drops accordingly. Cuts #4 (leg-jerk² objective)
-# and #5 (leg-velocity cap) are the principled fix — by penalising
-# leg motion in the objective and bounding leg velocity, the
-# optimiser will choose trackable trajectories. Until those land, the
-# threshold here is set to reflect honest current performance.
+# 2026-05-24 state: the juggle-demo runner's JuggleDemoConfig defaults
+# to a strict 30 mm capture-tolerance gate (centre-to-cup-opening).
+# The Phase 2 optimiser cuts #4 (leg-jerk² objective via CasADi IK on
+# a dense sub-grid) + #5 (leg-velocity equalisation via minimax v_max
+# slack) make the platform's catches tight enough that the strict
+# gate doesn't cost catch rate — the headline 33 in 30 s is preserved.
+# The module-level ``DEFAULT_CAPTURE_TOLERANCE_M`` stays None so non-
+# juggle-demo MuJoCoPlant consumers (MPC catch sims, hand-stroke
+# tests) aren't affected.
 # --------------------------------------------------------------------------
 def test_full_sim_juggle_reaches_target_catches():
     """T-I3: the demo sustains the pattern past the 30-catch threshold.
 
-    The BallManager capture-tolerance gate is OFF by default (a gentle
-    revert applied 2026-05-24 — see ``DEFAULT_CAPTURE_TOLERANCE_M``),
-    so any cup-rim contact counts as a catch. With the orientation-
-    aware runner aim + the banking-enabled optimiser the demo still
-    lands all 32 events plus the BB priming for ~33 in 30 s. Cuts
-    #4 (leg-jerk objective) + #5 (leg-vel bound) will let us flip the
-    tolerance back on (~30 mm) without losing the headline rate.
+    Runs the default JuggleDemoConfig (strict 30 mm capture gate,
+    leg-jerk² + leg-vel-equalise optimiser, sep=200) for 30 s and
+    asserts >= 30 catches. Verified 2026-05-24: deterministic seed=0
+    run produces 33 captures, 0 drops.
     """
     stats = run(JuggleDemoConfig(duration_s=30.0, n_catches=32, seed=0))
     assert stats.n_captures >= 30, (
@@ -123,6 +118,11 @@ def test_runner_is_deterministic_with_fixed_seed():
     cfg = JuggleDemoConfig(duration_s=5.0, n_catches=8, seed=0,
                            bb_scatter_mm=0.0)
     a = run(cfg)
+    # Clear the runner's optimiser cache so the second run does a fresh
+    # IPOPT solve — without this the second run gets a cached result
+    # and we only test downstream determinism (MuJoCo + master timeline
+    # + hand sequences), not optimiser determinism.
+    _optimise_cache.clear()
     b = run(cfg)
     assert a.captures == b.captures
     assert a.drops == b.drops

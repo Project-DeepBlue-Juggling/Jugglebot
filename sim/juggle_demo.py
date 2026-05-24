@@ -97,6 +97,49 @@ from sim.plant.mujoco_plant import MuJoCoPlant
 
 
 CONTROL_DT_S = 0.025                       # 40 Hz player loop
+
+
+# Process-wide cache for offline-optimiser results, keyed on the pattern
+# parameters + a small subset of OptimizerConfig fields that actually
+# change the solve. Test suites construct many _JuggleDemoRunner
+# instances with the same pattern + cfg; without caching each pays the
+# ~12 s IPOPT cost. With caching, the second and later constructions
+# return the cached result in microseconds. Cleared by tests that need
+# a fresh solve (rare) via ``_optimise_cache.clear()``.
+_optimise_cache: dict = {}
+
+
+def _cache_key(pattern, cfg):
+    """Hashable key for a (pattern, cfg) pair. Includes only fields that
+    actually affect the solve.
+
+    Pattern: the four primary JugglePattern fields. The derived
+    properties (throw_speed_mps, flight_time_s, etc.) are determined
+    by these, so they don't add entropy.
+
+    Cfg: the optimiser-relevant fields. Output-grid fields like
+    ``n_samples`` don't affect the solve and therefore don't enter
+    the key — same solve, just resampled.
+    """
+    return (
+        pattern.apex_height_mm, pattern.separation_mm,
+        pattern.active_z_mm, pattern.oval_width_mm,
+        cfg.n_knots, cfg.n_sub_per_segment,
+        cfg.bank_locked_level, cfg.tilt_limit_rad,
+        cfg.catch_offset_s, cfg.workspace_xy_mm, cfg.workspace_z_mm,
+        cfg.platform_init_height_mm,
+        cfg.pose_jerk_weight, cfg.leg_jerk_weight,
+        cfg.leg_vel_equalize_weight, cfg.leg_vel_hard_cap_mms,
+        cfg.catch_colinearity_weight,
+    )
+
+
+def _cached_optimise(pattern, cfg):
+    """Memoised wrapper around :func:`optimise_juggle_trajectory`."""
+    key = _cache_key(pattern, cfg)
+    if key not in _optimise_cache:
+        _optimise_cache[key] = optimise_juggle_trajectory(pattern, cfg)
+    return _optimise_cache[key]
 SCHEDULE_LEAD_S = 1.2                      # hand-event lookahead — exceeds the
                                             # prelude duration for any throw /
                                             # catch this demo schedules. The
@@ -166,13 +209,18 @@ class JuggleDemoConfig:
     dashboard: bool = False                # if True, start the telemetry
                                             # dashboard on `dashboard_port`
     dashboard_port: int = 8082
-    capture_tolerance_mm: Optional[float] = None  # None = no gate (default;
-                                            # any cup-rim contact catches).
-                                            # Set e.g. 30 mm for a strict
-                                            # centre-only catch — but with the
-                                            # current open-loop runner the
-                                            # catch rate drops substantially
-                                            # until Phase 2 cuts #4/#5 land.
+    capture_tolerance_mm: Optional[float] = 30.0  # Strict 30 mm centre-to-
+                                            # cup-opening gate by default
+                                            # (since 2026-05-24 — cuts #4 + #5
+                                            # land a leg-jerk² + leg-vel-
+                                            # equalise optimiser whose
+                                            # trajectories the actuators
+                                            # track tightly enough to drop
+                                            # the ball at the cup centre).
+                                            # Set to None to restore the
+                                            # legacy "any cup-rim contact
+                                            # catches" behaviour (snap-in
+                                            # artefact visible at low apex).
 
 
 @dataclasses.dataclass
@@ -214,8 +262,17 @@ class _JuggleDemoRunner:
 
         # ---- Trajectory --------------------------------------------------
         if cfg.use_optimised_trajectory:
-            opt_cfg = OptimizerConfig(n_knots=16, n_samples=128)
-            self.opt_result = optimise_juggle_trajectory(self.pattern, opt_cfg)
+            # OptimizerConfig() picks up the project defaults — N=12
+            # knots, leg-jerk² primary, leg-vel equalisation 0.01,
+            # catch-colinearity weight 1000. Solve is cached on
+            # ``(pattern_primary_fields, optimiser_relevant_cfg_fields)``
+            # — see ``_cache_key`` for the exact set. Adding a new
+            # OptimizerConfig field that affects the solve requires
+            # extending ``_cache_key`` too. With the cache, the test
+            # suite's repeated runner constructions hit the ~12 s
+            # IPOPT solve once and reuse the result.
+            opt_cfg = OptimizerConfig()
+            self.opt_result = _cached_optimise(self.pattern, opt_cfg)
             self.trajectory: JuggleTrajectory = self.opt_result.trajectory
             self.catch_offset_s = self.opt_result.catch_offset_s
         else:
@@ -905,9 +962,15 @@ def main(argv: Optional[list[str]] = None) -> int:
                              "doubled from JugglePattern's 100 mm).")
     parser.add_argument('--capture-tolerance-mm', type=float, default=None,
                         help="Ball-centre-to-cup-opening distance (mm) for "
-                             "the strict capture gate. Default: no gate "
-                             "(any cup-rim contact catches). Set e.g. 30 to "
-                             "reject rim-snap artifacts visible at low apex.")
+                             "the strict capture gate. Default: 30 mm (the "
+                             "JuggleDemoConfig default since cuts #4/#5). "
+                             "Pass any value to override; pair with "
+                             "--no-capture-gate to disable the gate.")
+    parser.add_argument('--no-capture-gate', action='store_true',
+                        help="Disable the capture-tolerance gate entirely "
+                             "(any cup-rim contact catches). Restores the "
+                             "legacy 'snap-in from rim' behaviour visible "
+                             "at low apex with the loose default.")
     parser.add_argument('--realtime-rate', type=float, default=0.0,
                         help="Wall-clock pacing: 1.0 = real-time, 0.5 = half-"
                              "speed slowmo, 2.0 = 2x, 0 (default) = free-"
@@ -935,7 +998,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         pattern_kwargs['separation_mm'] = args.separation_mm
     pattern = JugglePattern(**pattern_kwargs)
 
-    cfg = JuggleDemoConfig(
+    # Capture-tolerance resolution: --no-capture-gate explicitly
+    # disables; an explicit --capture-tolerance-mm value sets it;
+    # otherwise let JuggleDemoConfig's dataclass default (30 mm) apply.
+    cfg_kwargs = dict(
         pattern=pattern,
         duration_s=args.duration,
         n_catches=args.n_catches,
@@ -948,8 +1014,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         realtime_rate=args.realtime_rate,
         dashboard=args.dashboard,
         dashboard_port=args.dashboard_port,
-        capture_tolerance_mm=args.capture_tolerance_mm,
     )
+    if args.no_capture_gate:
+        cfg_kwargs['capture_tolerance_mm'] = None
+    elif args.capture_tolerance_mm is not None:
+        cfg_kwargs['capture_tolerance_mm'] = args.capture_tolerance_mm
+    cfg = JuggleDemoConfig(**cfg_kwargs)
     t_start = time.time()
     stats = run(cfg)
     wall_elapsed = time.time() - t_start

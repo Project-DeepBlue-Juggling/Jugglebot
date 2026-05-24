@@ -1,9 +1,12 @@
 """Offline CasADi optimiser for the periodic juggle-demo platform trajectory.
 
 Solves, once, an NLP for the steady-state platform pose trajectory that
-satisfies the throw and catch keyframe constraints with minimum integrated
-pose-jerk. The runtime player loads the result (a :class:`JuggleTrajectory`)
-and plays it at 40 Hz with no solver in the loop.
+satisfies the throw and catch keyframe constraints. The default
+objective is **leg-space jerk² + leg-velocity minimax + soft catch
+colinearity** (cuts #4 + #5, 2026-05-24). Pose-jerk² is preserved as
+an opt-in regulariser. The runtime player loads the result (a
+:class:`JuggleTrajectory`) and plays it at 40 Hz with no solver in the
+loop.
 
 Discretisation
 --------------
@@ -84,6 +87,7 @@ from controller.ballistics import TILT_LIMIT_RAD
 from controller.demo.pattern import JugglePattern
 from controller.demo.trajectory import JuggleTrajectory, build_analytic_oval
 from controller.hermite import quintic_interp_with_accel
+from jugglebot.motion.geometry import StewartGeometry
 
 # Hand-stroke kinematics constants (mirroring sim/hand/trajectory.py
 # and sim/hand/ballistics.py). Lifted here so the optimiser stays inside
@@ -143,10 +147,11 @@ class OptimizerConfig:
     Attributes
     ----------
     n_knots : int
-        Number of quintic-Hermite knots per period. ``16`` is a sensible
-        baseline — coarse enough that IPOPT converges quickly, fine
-        enough that the C2 spline between knots stays close to the
-        underlying continuous optimal.
+        Number of quintic-Hermite knots per period. ``12`` is the
+        empirical sweet spot for the leg-jerk² objective — coarse
+        enough that IPOPT converges quickly (~40-65 iter, ~12 s
+        wall), fine enough that the spline + dense sub-grid captures
+        the trajectory's smoothness budget.
     n_samples : int
         Density of the resampled :class:`JuggleTrajectory` returned.
         Independent of ``n_knots`` — the resample uses the same
@@ -157,8 +162,8 @@ class OptimizerConfig:
         twist/accel at every knot (opt-in legacy mode, useful for A/B
         comparison against the level-locked first cut). Default
         ``False`` — the optimiser banks the platform within
-        ``tilt_limit_rad`` to reduce pose-jerk and exploit the hand-axis
-        tilt-induced horizontal velocity contribution at throw.
+        ``tilt_limit_rad`` to reduce leg-jerk² and exploit the hand-
+        axis tilt-induced horizontal velocity contribution at throw.
     catch_offset_s : float or None
         Catch event time within the period. ``None`` derives it from
         the pattern's ballistics (``flight_time_s − platform_period_s``).
@@ -167,13 +172,45 @@ class OptimizerConfig:
     workspace_z_mm : tuple of (float, float)
         Lower / upper bound on platform z at every knot, mm.
     """
-    n_knots: int = 16
+    n_knots: int = 12
     n_samples: int = 128
     bank_locked_level: bool = False
     tilt_limit_rad: float = TILT_LIMIT_RAD
     catch_offset_s: Optional[float] = None
     workspace_xy_mm: float = 200.0
     workspace_z_mm: tuple[float, float] = (0.0, 300.0)
+    # ---- Objective weights ------------------------------------------
+    # Leg-space jerk² is the primary smoothness term — penalises
+    # actuator-current jerk via finite differences on the dense sub-
+    # sampled IK output. Captures what the motors actually feel.
+    # Default 1.0 (primary).
+    leg_jerk_weight: float = 1.0
+    # Pose-space jerk² was the Phase 2 cut #1 objective; preserved as
+    # an optional regulariser. With banking + level-locked off, the
+    # mixed-unit rotation (rad/s³) vs translation (mm/s³) made it
+    # ~1e6× insensitive to orientation jerk, producing degenerate
+    # constant-tilt solutions at low apex. Default 0.0 (off).
+    pose_jerk_weight: float = 0.0
+    # ---- Leg-velocity equalisation (cut #5) -------------------------
+    # Number of sub-samples per knot segment for the dense leg-space
+    # FD computation. Total sub-grid = ``n_knots * n_sub_per_segment``.
+    # 4 is the empirical sweet spot for the default pattern (64 total
+    # sub-points at N=16); raise for tighter jerk integration, lower
+    # to speed up IPOPT.
+    n_sub_per_segment: int = 4
+    # Minimax slack: if ``leg_vel_equalize_weight > 0``, the NLP gains
+    # a scalar ``v_max`` variable with constraints ``|leg_vel_i(t_m)|
+    # ≤ v_max`` for every leg and sub-sample, and the objective gains
+    # ``leg_vel_equalize_weight × v_max``. Drives ALL six legs to
+    # share peak velocity (the "no leg works much harder than the
+    # others" criterion). Default 0.01 (gentle nudge — strong enough
+    # to equalise without dominating the leg-jerk² primary term).
+    leg_vel_equalize_weight: float = 0.01
+    # Hard cap on |leg_vel_i(t_m)| (mm/s); enforced as an inequality
+    # at every sub-sample. ``None`` (default) disables. Useful when
+    # the actuators have a known velocity ceiling and the optimiser
+    # should respect it directly. Independent of the minimax slack.
+    leg_vel_hard_cap_mms: Optional[float] = None
     # Soft penalty weight for catch colinearity — the hand axis at catch
     # is "encouraged" (not forced) to lie along the ball's arrival
     # velocity direction. Penalty term added to the objective:
@@ -203,9 +240,12 @@ class OptimizerResult:
     catch_offset_s : float
         The catch offset the NLP was solved for (in case it was derived).
     objective_value : float
-        Final value of the integrated pose-jerk² objective. Useful for
-        comparing optimiser cuts and for the "optimiser-improves-on-
-        analytic-oval" sanity test.
+        Final value of the composite objective at convergence
+        (weighted sum: leg-jerk² + optional pose-jerk² + minimax
+        ``v_max`` + catch-colinearity² penalty). Magnitude depends on
+        the weights set in ``OptimizerConfig``; useful for comparing
+        runs that share the same weighting and as a regression sanity
+        check.
     knot_poses, knot_twists, knot_accels : np.ndarray
         Raw NLP knot decision values, shape ``(n_knots, 6)``.
     n_iter : int
@@ -307,6 +347,52 @@ def _casadi_rodrigues(rv):
     return I3 + cs.sin(theta) / theta * K + (1.0 - cs.cos(theta)) / theta_sq * K @ K
 
 
+def _ik_extensions_sym(pos, R, geom: StewartGeometry):
+    """CasADi-symbolic IK: ``(pos, R) → 6 leg extensions (mm)``.
+
+    Mirrors :func:`jugglebot.motion.ik_solver.pose_to_leg_lengths`:
+
+      platform_centre_world = pos + [0, 0, init_height_mm]
+      plat_attach_i_world   = platform_centre_world + R @ plat_nodes[i]
+      leg_vec_i             = plat_attach_i_world − base_nodes[i]
+      ext_i                 = ||leg_vec_i|| − init_leg_lengths_mm[i]
+
+    Parameters
+    ----------
+    pos : 3x1 ``cs.MX``
+        Platform centroid offset from STOW (mm), as in
+        ``pose_to_leg_lengths``.
+    R : 3x3 ``cs.MX``
+        Platform rotation matrix (from :func:`_casadi_rodrigues`).
+    geom : StewartGeometry
+        Source of the constant ``plat_nodes`` / ``base_nodes`` /
+        ``init_leg_lengths_mm`` / ``init_height_mm`` arrays.
+
+    Returns
+    -------
+    cs.MX of shape (6, 1)
+        Leg extensions in mm, ordered legs 0..5.
+    """
+    init_height_offset = cs.DM(np.array([[0.0], [0.0], [geom.init_height_mm]]))
+    centroid_world = pos + init_height_offset
+    base = cs.DM(geom.base_nodes)            # (6, 3) constant
+    plat = cs.DM(geom.plat_nodes)            # (6, 3) constant
+    init_lengths = cs.DM(geom.init_leg_lengths_mm.reshape(6, 1))
+
+    extensions = []
+    for i in range(6):
+        plat_node_i = plat[i, :].T            # (3, 1)
+        base_node_i = base[i, :].T            # (3, 1)
+        plat_world = centroid_world + R @ plat_node_i
+        leg_vec = plat_world - base_node_i
+        # +1e-30 guards sqrt at the degenerate origin; the gradient
+        # is finite for ||leg_vec|| > 0 which always holds in
+        # practice (the legs are never zero-length).
+        leg_length = cs.sqrt(cs.dot(leg_vec, leg_vec) + 1e-30)
+        extensions.append(leg_length - init_lengths[i])
+    return cs.vertcat(*extensions)            # (6, 1)
+
+
 def _quintic_jerk_integral_sym(p0, v0, a0, p1, v1, a1, T):
     """CasADi-symbolic analytical jerk² integral mirroring
     :func:`controller.hermite.quintic_jerk_integral`.
@@ -343,10 +429,10 @@ def optimise_juggle_trajectory(pattern: JugglePattern,
 
     Raises :class:`RuntimeError` if IPOPT fails to converge — that
     usually means the keyframe constraints are infeasible with the
-    given pattern + workspace bounds. The current first-cut formulation
-    is convex-ish (quadratic objective in pose-knots, linear keyframe
-    constraints, box bounds) and converges in ~20 iterations from the
-    analytic-oval warm start.
+    given pattern + workspace bounds. The leg-jerk² objective composed
+    with the IK norm + Rodrigues rotation matrix is non-convex; IPOPT
+    converges in ~40-65 iterations at the default ``n_knots=12`` from
+    the analytic-oval warm start.
     """
     if cfg is None:
         cfg = OptimizerConfig()
@@ -370,6 +456,10 @@ def optimise_juggle_trajectory(pattern: JugglePattern,
     N = cfg.n_knots
     dt_knot = P / N
     flight = pattern.flight_time_s
+    # StewartGeometry: needed by the leg-space jerk objective + leg-vel
+    # bound (cuts #4 / #5). Defaults to the project's configured
+    # geometry; constructed once per optimiser call (cheap).
+    pattern_geom = StewartGeometry()
 
     # Hand-opening offsets at the throw release / catch arrival instants
     # (platform-local z above the centroid). Independent of pose; depend
@@ -480,15 +570,101 @@ def optimise_juggle_trajectory(pattern: JugglePattern,
         opti.subject_to(opti.bounded(
             cfg.workspace_z_mm[0], poses[k, 2], cfg.workspace_z_mm[1]))
 
-    # Objective: sum of analytical jerk integrals over all N segments
-    # (segment k connects knot k -> knot (k+1) mod N).
+    # ---- Objective construction --------------------------------------
     cost = 0
-    for k in range(N):
-        j = (k + 1) % N
-        cost = cost + _quintic_jerk_integral_sym(
-            poses[k, :], twists[k, :], accels[k, :],
-            poses[j, :], twists[j, :], accels[j, :],
-            dt_knot)
+
+    # Pose-jerk² (legacy / optional regulariser; default weight 0).
+    if cfg.pose_jerk_weight > 0.0:
+        pose_jerk_cost = 0
+        for k in range(N):
+            j = (k + 1) % N
+            pose_jerk_cost = pose_jerk_cost + _quintic_jerk_integral_sym(
+                poses[k, :], twists[k, :], accels[k, :],
+                poses[j, :], twists[j, :], accels[j, :],
+                dt_knot)
+        cost = cost + cfg.pose_jerk_weight * pose_jerk_cost
+
+    # Leg-space jerk² (primary smoothness objective from cut #4).
+    #
+    # Pose-jerk² is unit-imbalanced — rotation jerk (rad/s³) is ~1e6×
+    # smaller than translation jerk (mm/s³) in the same number, so
+    # orientation is essentially free, producing degenerate constant-
+    # tilt solutions at low apex. Leg-jerk² puts everything in mm
+    # via the IK, so all six DOFs feed into a uniformly-weighted
+    # actuator-current-jerk cost. Computed via finite differences on
+    # a dense sub-sampled grid (``n_sub_per_segment`` per knot
+    # segment); ``leg_extensions(t)`` is a nonlinear function of
+    # pose(t) so the analytical quintic-jerk integral doesn't apply.
+    M = cfg.n_sub_per_segment
+    if M < 4:
+        raise ValueError("n_sub_per_segment must be >= 4 (3rd central "
+                         "difference needs ±2 neighbours)")
+    M_total = N * M
+    dt_sub = dt_knot / M
+
+    # Sub-sample: at every sub-grid point compute pose(t) via quintic
+    # Hermite from the bracketing knot states, then IK to leg
+    # extensions. Pre-build the (M_total, 6) leg-extension matrix so
+    # both the jerk objective AND the leg-velocity bound (cut #5) can
+    # consume it without redoing the IK chain.
+    leg_ext_per_sub: list = []   # list of (6, 1) MX expressions
+    for k_seg in range(N):
+        j_seg = (k_seg + 1) % N
+        for m in range(M):
+            t_local = m * dt_sub
+            pose_sub, _, _ = _quintic_eval_sym(
+                poses[k_seg, :], twists[k_seg, :], accels[k_seg, :],
+                poses[j_seg, :], twists[j_seg, :], accels[j_seg, :],
+                dt_knot, t_local)
+            # pose_sub is (1, 6); slice as a 3x1 column vector.
+            pos_sub = pose_sub[0, 0:3].T
+            R_sub = _casadi_rodrigues(pose_sub[0, 3:6])
+            leg_ext_per_sub.append(_ik_extensions_sym(pos_sub, R_sub, pattern_geom))
+
+    # Periodic 3rd central difference for jerk at each sub-grid point.
+    # leg_jerk_i(m) ≈ (e[m+2] - 2 e[m+1] + 2 e[m-1] - e[m-2]) / (2 dt_sub³)
+    if cfg.leg_jerk_weight > 0.0:
+        leg_jerk_cost = 0
+        inv_2dt3 = 1.0 / (2.0 * dt_sub ** 3)
+        for m in range(M_total):
+            mp2 = (m + 2) % M_total
+            mp1 = (m + 1) % M_total
+            mm1 = (m - 1) % M_total
+            mm2 = (m - 2) % M_total
+            jerk = (leg_ext_per_sub[mp2] - 2 * leg_ext_per_sub[mp1]
+                    + 2 * leg_ext_per_sub[mm1] - leg_ext_per_sub[mm2]) * inv_2dt3
+            # Sum over 6 legs (Riemann × dt_sub for an ∫dt approximation).
+            leg_jerk_cost = leg_jerk_cost + cs.dot(jerk, jerk) * dt_sub
+        cost = cost + cfg.leg_jerk_weight * leg_jerk_cost
+
+    # ---- Leg-velocity bound (cut #5) --------------------------------
+    # Periodic 1st central difference for leg velocity at each sub-grid
+    # point. Used by both the hard cap and the minimax slack.
+    if (cfg.leg_vel_hard_cap_mms is not None
+            or cfg.leg_vel_equalize_weight > 0.0):
+        inv_2dt = 1.0 / (2.0 * dt_sub)
+        # Optional minimax slack: a scalar v_max bounds every leg-vel
+        # sample, and v_max is minimised (with weight) — drives all 6
+        # legs to share peak velocity (the "no leg works much harder
+        # than the others" criterion).
+        v_max_slack = None
+        if cfg.leg_vel_equalize_weight > 0.0:
+            v_max_slack = opti.variable()
+            opti.subject_to(v_max_slack >= 0.0)
+            cost = cost + cfg.leg_vel_equalize_weight * v_max_slack
+
+        for m in range(M_total):
+            mp1 = (m + 1) % M_total
+            mm1 = (m - 1) % M_total
+            vel = (leg_ext_per_sub[mp1] - leg_ext_per_sub[mm1]) * inv_2dt
+            # vel is (6, 1); per-leg per-sample bound on absolute value.
+            for i in range(6):
+                if cfg.leg_vel_hard_cap_mms is not None:
+                    cap = cfg.leg_vel_hard_cap_mms
+                    opti.subject_to(opti.bounded(-cap, vel[i], cap))
+                if v_max_slack is not None:
+                    opti.subject_to(opti.bounded(
+                        -v_max_slack, vel[i], v_max_slack))
 
     # Soft catch-colinearity penalty (optional).
     #

@@ -32,9 +32,13 @@ def pattern() -> JugglePattern:
 
 @pytest.fixture(scope="module")
 def result_default(pattern) -> OptimizerResult:
-    """Optimiser solution with default config (level-locked, 16 knots)."""
-    return optimise_juggle_trajectory(pattern, OptimizerConfig(n_knots=16,
-                                                               n_samples=128))
+    """Optimiser solution with the project default config.
+
+    Defaults (as of 2026-05-24): N=12 knots, n_samples=128, banking
+    enabled, leg-jerk² primary objective, leg-vel equalisation
+    weight 0.01, soft catch-colinearity penalty weight 1000.
+    """
+    return optimise_juggle_trajectory(pattern, OptimizerConfig())
 
 
 # --------------------------------------------------------------------------
@@ -53,9 +57,11 @@ def test_optimiser_converges(result_default):
 
 
 def test_result_arrays_have_expected_shapes(result_default):
-    assert result_default.knot_poses.shape == (16, 6)
-    assert result_default.knot_twists.shape == (16, 6)
-    assert result_default.knot_accels.shape == (16, 6)
+    # Shape depends on the default n_knots (12 since 2026-05-24).
+    n_knots_default = 12
+    assert result_default.knot_poses.shape == (n_knots_default, 6)
+    assert result_default.knot_twists.shape == (n_knots_default, 6)
+    assert result_default.knot_accels.shape == (n_knots_default, 6)
     assert isinstance(result_default.trajectory, JuggleTrajectory)
     assert result_default.trajectory.poses.shape == (128, 6)
 
@@ -180,16 +186,18 @@ def test_workspace_bounds_respected_at_every_knot(result_default):
 
 
 def test_optimised_objective_is_within_expected_magnitude(result_default):
-    """Regression sanity check on the integrated pose-jerk objective.
+    """Regression sanity check on the integrated objective value.
 
     Not a guaranteed lower-bound vs another trajectory — the optimiser
     minimises over a smaller feasible set (throw + catch + periodicity +
     box) than any arbitrary candidate lives in, so an apples-to-apples
     upper bound is hard to construct without resolving the NLP with a
     different objective. Instead, pin the result against a generous
-    empirical ceiling: on 2026-05-23 the default-config solve produces
-    ``objective_value ≈ 7.8e9`` (mm^2 / s^5, scale set by the analytical
-    quintic-jerk integral and the ~100 mm horizontal stroke at the
+    empirical ceiling: on 2026-05-24 the default-config solve (leg-jerk²
+    + leg-vel equalisation + catch colinearity) produces
+    ``objective_value ≈ 4e8`` at sep=100 / N=12 (mm² / s⁵ scale set by
+    the sub-sampled finite-difference jerk² and the ~100 mm horizontal
+    stroke at the
     Phase 1 tempo). A regression that pushes this above 1e11 indicates
     a real degradation worth investigating.
     """

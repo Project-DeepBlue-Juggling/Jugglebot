@@ -47,15 +47,14 @@ _HAND_OPENING_OFFSET = np.array([0.0, 0.0, 0.0444])
 # the ``hand_opening`` site in world frame. Without it, MuJoCo's
 # contact-anywhere check fires on peripheral cup-rim contacts and the
 # kinematic hold then snaps the ball from the rim to the cup centre —
-# visually ugly at low-apex juggles but cosmetically tolerable at the
-# headline 1.3 m apex. ``None`` (the default) disables the gate
-# entirely, restoring the loose "any contact catches" behaviour the
-# sim shipped with through Phase 3c. A tight value (e.g. 0.030) is
-# the right setting for an actuator-tracking-accurate optimiser, which
-# Phase 2 cuts #4 (leg-jerk objective) and #5 (leg-vel bound) are
-# building toward; until those land the demo's open-loop runner can't
-# put the hand on the optimised target tightly enough for a 30 mm
-# gate to admit consistent catches.
+# visually ugly at low-apex juggles. The juggle demo's runner
+# (``sim.juggle_demo``) sets this to ``0.030`` (30 mm) by default
+# since Phase 2 cuts #4 / #5 make the optimiser produce trajectories
+# that land balls at the cup centre rather than the rim. The
+# *module-level* default below stays ``None`` (gate off) so non-
+# juggle-demo consumers (MPC catch sims, hand-stroke tests, etc.)
+# don't see a silent behaviour change — each consumer opts in
+# explicitly when its motion is tight enough to survive the gate.
 DEFAULT_CAPTURE_TOLERANCE_M: float | None = None
 
 

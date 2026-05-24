@@ -83,7 +83,8 @@ Useful flags (full list: `python sim/juggle_demo.py --help`):
 | `--dashboard` | off | Start the live telemetry dashboard (HTTP + SSE on port 8082) |
 | `--log <path>` | `temp/logs/juggle_demo_<ts>.csv` | CSV of every 40 Hz tick |
 | `--no-log` | off | Disable CSV logging |
-| `--capture-tolerance-mm <mm>` | none | Strict catch gate: ball-centre within this distance of the cup centre. Default off (any rim-contact counts) — see §7. |
+| `--capture-tolerance-mm <mm>` | `30` | Strict catch gate: ball-centre within this distance of the cup-opening site. Default on at 30 mm since the cuts #4/#5 optimiser keeps the headline rate under it. Pair with `--no-capture-gate` to disable — see §7. |
+| `--no-capture-gate` | off | Disable the capture gate entirely (any cup-rim contact catches, legacy snap-in behaviour). |
 | `--scatter-mm <mm>` | `0` | Gaussian sigma on BB landing scatter |
 | `--seed <n>` | none | RNG seed |
 | `--analytic-baseline` | off | Skip the optimiser, use the un-optimised analytic oval (debugging only) |
@@ -130,27 +131,34 @@ ball positions live at the 40 Hz tick rate.
 
 ## 7. The capture-tolerance knob
 
-By default the demo uses MuJoCo's "any contact captures" rule —
-whenever the ball touches any hand-cup collision mesh, the catch fires
-and a kinematic hold locks the ball to the cup centre. This gives the
-demo's headline catch rate (33/30) and looks correct at the
-default 1.3 m apex.
+By default the demo uses a **strict 30 mm capture gate**: a catch only
+fires when the ball's centre is within 30 mm of the hand cup-opening
+site at contact time. This rejects the "snap-in from cup rim" artefact
+visible at lower apex (a ball brushing the rim instantly teleporting
+to the cup centre under the looser any-contact rule). The Phase 2
+optimiser cuts #4 (leg-jerk² objective) and #5 (leg-velocity
+equalisation via minimax `v_max` slack) make the platform's catches
+tight enough that the strict gate doesn't cost catch rate — the
+headline 33 in 30 s is preserved.
 
-At lower apexes (e.g. `--apex-height-mm 600`) the platform's actual
-catch position drifts further from the optimised target (the open-loop
-runner's tracking error is a larger fraction of the cup geometry), and
-the loose rule produces visible "snap-in" — the ball touches the cup
-rim and instantly teleports to the centre. To reject that:
+Tighten or loosen the gate:
 
 ```bash
-python sim/juggle_demo.py --viewer --capture-tolerance-mm 30
+python sim/juggle_demo.py --capture-tolerance-mm 15        # stricter
+python sim/juggle_demo.py --capture-tolerance-mm 50        # looser
 ```
 
-With the gate on, a catch only fires when the ball's centre is within
-30 mm of the cup-opening site at contact time. Catch rate drops
-substantially until the optimiser's Phase 2 follow-up cuts (leg-jerk
-objective + leg-velocity bound) constrain the trajectory to something
-the actuators track tightly.
+Or disable the gate entirely (restore the legacy "any contact catches"
+behaviour, which lets you see the snap-in artefact directly):
+
+```bash
+python sim/juggle_demo.py --no-capture-gate
+```
+
+Note this is *only* the juggle demo's default. The module-level
+`BallManager` default in `sim/ball/manager.py` stays "no gate" so
+unrelated `MuJoCoPlant` consumers (MPC catch sims, hand-stroke tests)
+aren't silently affected.
 
 ---
 
@@ -173,8 +181,8 @@ python sim/juggle_demo.py --viewer --duration 5 --abort-at 3.0
 # Headless benchmark — no window, no log; just measure catch rate
 python sim/juggle_demo.py --duration 30 --no-log
 
-# Strict capture gate (snap-in rejected, catch rate drops)
-python sim/juggle_demo.py --viewer --capture-tolerance-mm 30
+# Disable capture gate — see the legacy snap-in-from-rim artefact
+python sim/juggle_demo.py --viewer --no-capture-gate
 
 # Reproducible run with BB scatter
 python sim/juggle_demo.py --duration 30 --scatter-mm 5 --seed 42
@@ -226,9 +234,11 @@ generator; below that, the platform's idle window between catch and
 throw strokes goes negative — the hand finishes catching one ball
 after the other ball needs to be thrown.
 
-**Captures dropped after enabling `--capture-tolerance-mm`.** Expected
-— see §7. Cuts #4 / #5 of the Phase 2 optimiser will restore the
-headline rate with the strict gate on.
+**Captures dropped when tightening `--capture-tolerance-mm`.** The
+default 30 mm gate is calibrated to the current optimiser (cuts #4 +
+#5); tighter values may drop catches because the open-loop runner's
+tracking error consumes the rest of the margin. Loosen with a larger
+value, or `--no-capture-gate` to disable entirely.
 
 ---
 
