@@ -391,6 +391,16 @@ class _JuggleDemoRunner:
         self.abort_time_s: Optional[float] = None
         self._t_start = t_now
 
+        # ---- Telemetry state shared between CSV + dashboard --------------
+        # ``_last_event_kind`` reports the most recently dispatched
+        # timeline-event kind (``bb_throw`` / ``hand_throw`` /
+        # ``hand_catch`` / ``aborted``); empty before any event fires.
+        # ``_prev_leg_vel_*`` are the previous-tick snapshot used to
+        # compute the leg-acceleration derivative passed to the SSE feed.
+        self._last_event_kind: str = ""
+        self._prev_leg_vel_mmps: Optional[np.ndarray] = None
+        self._prev_telemetry_t: Optional[float] = None
+
         # ---- Telemetry CSV -----------------------------------------------
         self._csv_fp = None
         self._csv_writer = None
@@ -477,6 +487,7 @@ class _JuggleDemoRunner:
         #    within SCHEDULE_LEAD_S, defer BB events.
         for event in self.timeline.due_events(t_wall + SCHEDULE_LEAD_S):
             self.events_dispatched += 1
+            self._last_event_kind = event.kind
             if event.kind == 'bb_throw':
                 self._pending_bb_throws.append(event)
             elif event.kind == 'hand_throw':
@@ -513,10 +524,12 @@ class _JuggleDemoRunner:
             self._do_abort(new_t_wall)
 
         # 8. Telemetry.
-        if self._csv_writer is not None:
-            self._write_csv_row(new_t_wall, cmd)
-        if self._dashboard is not None:
-            self._broadcast_dashboard_record(new_t_wall, cmd)
+        if self._csv_writer is not None or self._dashboard is not None:
+            snap = self._telemetry_snapshot(new_t_wall)
+            if self._csv_writer is not None:
+                self._write_csv_row(new_t_wall, cmd, snap)
+            if self._dashboard is not None:
+                self._broadcast_dashboard_record(new_t_wall, cmd, snap)
 
     # ---- Run loop -------------------------------------------------------
     def run(self, viewer_handle=None) -> JuggleDemoStats:
@@ -800,6 +813,7 @@ class _JuggleDemoRunner:
         exit_transient = self.timeline.abort(t_wall)
         self.player.abort(exit_transient)
         self.aborted = True
+        self._last_event_kind = "aborted"
         self.abort_time_s = t_wall - self._t_start
         self._throw_queue = [st for st in self._throw_queue
                              if st.sequence.prelude_start_time <= t_wall]
@@ -823,12 +837,64 @@ class _JuggleDemoRunner:
             'cmd_ext3', 'cmd_ext4', 'cmd_ext5',
         ])
 
-    def _broadcast_dashboard_record(self, t_wall: float, cmd) -> None:
-        """Push one StepRecord per tick to the connected dashboard clients."""
+    def _telemetry_snapshot(self, t_wall: float) -> dict:
+        """Sample plant + ball state once per tick for both CSV and SSE.
+
+        Computes leg acceleration as a backward-difference derivative of
+        ``leg_velocities_mmps`` against the previous snapshot.  Two
+        consumers (CSV writer and dashboard broadcaster) share the same
+        snapshot so the dashboard view always matches the CSV row.
+        """
         state = self.plant.get_state()
+        b0 = self.plant.get_ball_state(ball=0)
+        b1 = self.plant.get_ball_state(ball=1)
         sim_time = t_wall - self._t_start
+
+        # Backward-difference leg acceleration (mm/s²).  First tick: zero.
+        # ``np.array(..., copy=True)`` is load-bearing: the plant returns a
+        # view into its internal state buffer that is overwritten in
+        # place each step.  Aliasing would make ``leg_acc`` read zero.
+        leg_vel = np.array(state.leg_velocities_mmps, dtype=float, copy=True)
+        if (self._prev_leg_vel_mmps is not None
+                and self._prev_telemetry_t is not None
+                and sim_time > self._prev_telemetry_t):
+            dt = sim_time - self._prev_telemetry_t
+            leg_acc = (leg_vel - self._prev_leg_vel_mmps) / dt
+        else:
+            leg_acc = np.zeros(6)
+        self._prev_leg_vel_mmps = leg_vel
+        self._prev_telemetry_t = sim_time
+
+        nan3 = np.full(3, np.nan)
+        ball_positions = np.stack([
+            np.asarray(b0.position_mm, dtype=float) if b0 else nan3,
+            np.asarray(b1.position_mm, dtype=float) if b1 else nan3,
+        ])
+        ball_velocities = np.stack([
+            np.asarray(b0.velocity_mms, dtype=float) if b0 else nan3,
+            np.asarray(b1.velocity_mms, dtype=float) if b1 else nan3,
+        ])
+        ball_held = np.array([
+            int(b0.held) if b0 else 0,
+            int(b1.held) if b1 else 0,
+        ], dtype=int)
+
+        return {
+            'sim_time': sim_time,
+            'state': state,
+            'b0': b0,
+            'b1': b1,
+            'leg_acc': leg_acc,
+            'ball_positions_mm': ball_positions,
+            'ball_velocities_mms': ball_velocities,
+            'ball_held': ball_held,
+        }
+
+    def _broadcast_dashboard_record(self, t_wall: float, cmd, snap: dict) -> None:
+        """Push one StepRecord per tick to the connected dashboard clients."""
+        state = snap['state']
         record = record_from_arrays(
-            time=sim_time,
+            time=snap['sim_time'],
             ref_pose=cmd.pose,
             ref_twist=cmd.twist,
             actual_pose=np.concatenate([state.platform_pos_mm, state.platform_rot]),
@@ -836,20 +902,26 @@ class _JuggleDemoRunner:
             cmd_extensions=cmd.ext_mm,
             actual_extensions=state.leg_extensions_mm,
             leg_velocities=state.leg_velocities_mmps,
+            leg_accelerations=snap['leg_acc'],
             hand_cmd_mm=self._last_hand_cmd_mm,
             hand_pos_mm=state.hand_pos_mm or 0.0,
             hand_vel_mmps=state.hand_vel_mmps or 0.0,
+            ball_positions_mm=snap['ball_positions_mm'],
+            ball_velocities_mms=snap['ball_velocities_mms'],
+            ball_held=snap['ball_held'],
+            throw_phase=self._last_event_kind,
+            catches_total=len(self.captures),
             solve_status="ok",     # no MPC; placeholder for the dashboard schema
-            t_ref_s=sim_time,
+            t_ref_s=snap['sim_time'],
         )
         self._dashboard.broadcast(record)
 
-    def _write_csv_row(self, t_wall: float, cmd) -> None:
-        state = self.plant.get_state()
-        b0 = self.plant.get_ball_state(ball=0)
-        b1 = self.plant.get_ball_state(ball=1)
+    def _write_csv_row(self, t_wall: float, cmd, snap: dict) -> None:
+        state = snap['state']
+        b0 = snap['b0']
+        b1 = snap['b1']
         self._csv_writer.writerow([
-            f"{t_wall - self._t_start:.6f}",
+            f"{snap['sim_time']:.6f}",
             *(f"{x:.3f}" for x in state.platform_pos_mm),
             f"{(state.hand_pos_mm or 0.0):.3f}",
             *(f"{x:.3f}" for x in (b0.position_mm if b0 else [np.nan]*3)),

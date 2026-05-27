@@ -75,6 +75,41 @@ class StepRecord:
     hand_pos_mm: float = 0.0
     hand_vel_mmps: float = 0.0
 
+    # Leg accelerations (mm/s^2; numerical derivative of leg_velocities
+    # computed by the broadcaster).  Sim juggle-demo only — zero elsewhere.
+    leg_acc_0: float = 0.0
+    leg_acc_1: float = 0.0
+    leg_acc_2: float = 0.0
+    leg_acc_3: float = 0.0
+    leg_acc_4: float = 0.0
+    leg_acc_5: float = 0.0
+
+    # Balls 0 and 1 — sim juggle-demo only.  position in mm; velocity in
+    # mm/s; held=1 while the ball is welded to the hand cup, 0 otherwise.
+    # NaN positions signal "no ball present" (e.g. before BB priming).
+    ball0_x: float = 0.0
+    ball0_y: float = 0.0
+    ball0_z: float = 0.0
+    ball0_vx: float = 0.0
+    ball0_vy: float = 0.0
+    ball0_vz: float = 0.0
+    ball0_held: int = 0
+    ball1_x: float = 0.0
+    ball1_y: float = 0.0
+    ball1_z: float = 0.0
+    ball1_vx: float = 0.0
+    ball1_vy: float = 0.0
+    ball1_vz: float = 0.0
+    ball1_held: int = 0
+
+    # Throw director (sim juggle-demo only).  ``throw_phase`` reports
+    # the kind of the most recently dispatched timeline event
+    # (``bb_throw`` / ``hand_throw`` / ``hand_catch`` / ``aborted``),
+    # or empty before any event has fired.  ``catches_total`` is the
+    # running BallManager.check_capture count.
+    throw_phase: str = ""
+    catches_total: int = 0
+
     # MPC diagnostics (populated from Phase 2 onward)
     solve_time_ms: float = 0.0
     solve_status: str = "n/a"
@@ -120,9 +155,15 @@ def record_from_arrays(
     cmd_extensions: np.ndarray,
     actual_extensions: np.ndarray,
     leg_velocities: np.ndarray | None = None,
+    leg_accelerations: np.ndarray | None = None,
     hand_cmd_mm: float = 0.0,
     hand_pos_mm: float = 0.0,
     hand_vel_mmps: float = 0.0,
+    ball_positions_mm: np.ndarray | None = None,
+    ball_velocities_mms: np.ndarray | None = None,
+    ball_held: np.ndarray | None = None,
+    throw_phase: str = "",
+    catches_total: int = 0,
     solve_time_ms: float = 0.0,
     solve_status: str = "n/a",
     cost: float = 0.0,
@@ -147,6 +188,10 @@ def record_from_arrays(
     loop uses ``fill_record_from_arrays`` against a pool slot instead.
     This function is retained for sim paths (``sim/main.py``,
     ``sim/demo_mpc.py``) that predate the pool design.
+
+    The ``leg_accelerations`` / ``ball_*`` / ``throw_*`` / ``catches_total``
+    kwargs are sim-juggle-demo additions; hardware MPC callers leave them
+    at their defaults and the corresponding StepRecord fields stay at 0.
     """
     rec = StepRecord()
     fill_record_from_arrays(
@@ -154,8 +199,14 @@ def record_from_arrays(
         actual_pose=actual_pose, actual_twist=actual_twist,
         cmd_extensions=cmd_extensions, actual_extensions=actual_extensions,
         leg_velocities=leg_velocities,
+        leg_accelerations=leg_accelerations,
         hand_cmd_mm=hand_cmd_mm, hand_pos_mm=hand_pos_mm,
         hand_vel_mmps=hand_vel_mmps,
+        ball_positions_mm=ball_positions_mm,
+        ball_velocities_mms=ball_velocities_mms,
+        ball_held=ball_held,
+        throw_phase=throw_phase,
+        catches_total=catches_total,
         solve_time_ms=solve_time_ms, solve_status=solve_status,
         cost=cost, constraint_violation=constraint_violation,
         overhead_ms=overhead_ms, fk_iterations=fk_iterations,
@@ -183,9 +234,15 @@ def fill_record_from_arrays(
     cmd_extensions: np.ndarray,
     actual_extensions: np.ndarray,
     leg_velocities: np.ndarray | None = None,
+    leg_accelerations: np.ndarray | None = None,
     hand_cmd_mm: float = 0.0,
     hand_pos_mm: float = 0.0,
     hand_vel_mmps: float = 0.0,
+    ball_positions_mm: np.ndarray | None = None,
+    ball_velocities_mms: np.ndarray | None = None,
+    ball_held: np.ndarray | None = None,
+    throw_phase: str = "",
+    catches_total: int = 0,
     solve_time_ms: float = 0.0,
     solve_status: str = "n/a",
     cost: float = 0.0,
@@ -216,6 +273,7 @@ def fill_record_from_arrays(
     net-growth flat.
     """
     lv = leg_velocities if leg_velocities is not None else _ZERO6
+    la = leg_accelerations if leg_accelerations is not None else _ZERO6
 
     # Tracking-error reduction uses temporaries that are immediately
     # freed (refcount=0 at end of statement) — cheap.
@@ -265,9 +323,34 @@ def fill_record_from_arrays(
     rec.leg_vel_3 = float(lv[3])
     rec.leg_vel_4 = float(lv[4])
     rec.leg_vel_5 = float(lv[5])
+    rec.leg_acc_0 = float(la[0])
+    rec.leg_acc_1 = float(la[1])
+    rec.leg_acc_2 = float(la[2])
+    rec.leg_acc_3 = float(la[3])
+    rec.leg_acc_4 = float(la[4])
+    rec.leg_acc_5 = float(la[5])
     rec.hand_cmd_mm = hand_cmd_mm
     rec.hand_pos_mm = hand_pos_mm
     rec.hand_vel_mmps = hand_vel_mmps
+    if ball_positions_mm is not None:
+        rec.ball0_x = float(ball_positions_mm[0, 0])
+        rec.ball0_y = float(ball_positions_mm[0, 1])
+        rec.ball0_z = float(ball_positions_mm[0, 2])
+        rec.ball1_x = float(ball_positions_mm[1, 0])
+        rec.ball1_y = float(ball_positions_mm[1, 1])
+        rec.ball1_z = float(ball_positions_mm[1, 2])
+    if ball_velocities_mms is not None:
+        rec.ball0_vx = float(ball_velocities_mms[0, 0])
+        rec.ball0_vy = float(ball_velocities_mms[0, 1])
+        rec.ball0_vz = float(ball_velocities_mms[0, 2])
+        rec.ball1_vx = float(ball_velocities_mms[1, 0])
+        rec.ball1_vy = float(ball_velocities_mms[1, 1])
+        rec.ball1_vz = float(ball_velocities_mms[1, 2])
+    if ball_held is not None:
+        rec.ball0_held = int(ball_held[0])
+        rec.ball1_held = int(ball_held[1])
+    rec.throw_phase = throw_phase
+    rec.catches_total = int(catches_total)
     rec.solve_time_ms = solve_time_ms
     rec.solve_status = solve_status
     rec.cost = cost
