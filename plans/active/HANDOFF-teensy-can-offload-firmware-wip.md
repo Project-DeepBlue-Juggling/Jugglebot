@@ -27,9 +27,9 @@ verified to the extent possible without the bench" — see
   - `hermite_xref/` — bit-for-bit cross-check of the C++-targeted interpolator
     port against the real `motor_guard.py`.
   - `jetson/` — Jetson-side diagnostic UDP consumer (CSV + matplotlib).
-- `config/generate_udp_protocol.py` + `config/udp_protocol_spec.py` —
-  single-source generator for the UDP wire protocol (emits the C++ header, the
-  Python module, and the markdown spec).
+- `config/generate_udp_protocol.py` — single-source generator for the UDP wire
+  protocol (the SPEC — constants/enums/messages — and the emitters live in this one
+  file; it produces the C++ header, the Python module, and the markdown spec).
 - `docs/teensy-udp-protocol.md` — the generated protocol reference.
 
 **No existing production code was modified.** Planned Jetson-side changes
@@ -252,7 +252,7 @@ Because the firmware cannot be compiled here, a 6-dimension adversarial review
 independently verified) was run over the C++ ports. 23 raw findings → 21 confirmed
 real; 2 correctly refuted (`lroundf` half-away-from-zero vs Python `round()` half-to-
 even — benign; an alleged E-STOP label-priority inversion — not real). **All 21 fixed
-or explicitly accepted** in commit `<review-fixes>`:
+or explicitly accepted** in commit `155b5f3`:
 
 - **Blocking — compile error:** `.ino` referenced `JbUdp::HEARTBEAT_J2T_SIZE` but the
   generator's `_screaming` emitted `HEARTBEAT_J2_T_SIZE` (split the digit→capital

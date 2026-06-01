@@ -150,9 +150,9 @@ static void interp_isr() {
   if (s_pending) { latch_from_staging(); s_pending = false; }
 
   // ── Deferred-stow descent (overrides the MPC ladder) ──
-  // Velocity-limited per-leg descent to the off pose (stroke min), emitted on
-  // CAN2. Runs only when output is enabled (the fault machine enables it on a
-  // confirmed CAN2 reconnect). Mirrors _gently_move_to_setpoint(0.0).
+  // Velocity-limited per-leg descent to the off pose (0.0 rev = fully retracted),
+  // emitted on CAN2. Runs only when output is enabled (the fault machine enables
+  // it on a confirmed CAN2 reconnect). Mirrors _gently_move_to_setpoint(0.0).
   if (s_stow_active) {
     const float dt_tick = INTERP_PERIOD_US * 1e-6f;
     // Accel-limit the descent speed (ramps 0 → limit) so there is no startup

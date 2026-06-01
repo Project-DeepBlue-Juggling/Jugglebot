@@ -6,9 +6,11 @@ can be validated against the real `motor_guard.py` offline (see xref.py): the
 C++ `leg_interp.cpp` mirrors THIS file line-for-line, so proving this matches
 `motor_guard` proves the firmware port is correct (within float precision).
 
-Ported from motor_guard.py:894-1048 (the Hermite → Taylor → velocity-decay
-ladder + lead-clamp + stroke-clamp). No numpy: lists + explicit per-leg loops,
-exactly as the C++ does. Keep the two in sync.
+Ported from motor_guard.py's `_interpolate_and_send` method (the ~870-1049
+method; the ladder proper is ~894-1048): the Hermite → Taylor → velocity-decay
+ladder + lead-clamp + stroke-clamp. No numpy: lists + explicit per-leg loops,
+exactly as the C++ does. Keep the two in sync. (Reference the method name, not
+the line numbers, when they drift.)
 
 NOTE: friction feedforward is intentionally NOT ported here — it is a separate
 additive torque term (motor_guard `_compute_friction_ff_Nm`) that does not affect

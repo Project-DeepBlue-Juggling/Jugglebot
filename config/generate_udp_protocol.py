@@ -16,7 +16,7 @@ and delivers copies of the C++ header and Python module to their consumers:
     tools/probes/teensy_link_profiling/jetson/udp_protocol.py
 
 Run:  python config/generate_udp_protocol.py
-Test: tests/hardware/test_udp_protocol_xlang.py  (cross-language consistency)
+Test: tests/firmware/test_udp_protocol_xlang.py  (cross-language consistency)
 
 Design rationale (see docs/teensy-udp-protocol.md and the firmware-WIP handoff):
   * Fixed-length, typed frames — NOT COBS. UDP datagrams already carry message
