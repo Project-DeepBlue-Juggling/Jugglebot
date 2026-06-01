@@ -35,7 +35,7 @@
 #include "telemetry.h"           // Phase 6
 #include "leg_interp.h"          // Phase 7
 #include "fault_machine.h"       // Phase 8
-// PROFILING: #include "profiling.h"
+#include "profiling.h"           // Profiling/instrumentation
 
 using namespace LegBridge;
 
@@ -165,11 +165,13 @@ static void task_diag(void*) {
     on = !on;
     digitalWriteFast(LED_PIN, on);
     if (on) {
+      profiling_step();          // emit the 1 Hz PROFILE frame on the LED-on edge
       const UdpStats s = udp_link_stats();
-      Serial.printf("[diag] link=%u rx=%lu tx=%lu crc_err=%lu seq_gaps=%lu synced=%d heap=%u\n",
-                    link_state(), (unsigned long)s.rx_frames, (unsigned long)s.tx_frames,
-                    (unsigned long)s.crc_errors, (unsigned long)s.seq_gaps,
-                    (int)time_synced(), (unsigned)xPortGetFreeHeapSize());
+      Serial.printf("[diag] link=%u fault=%u rx=%lu tx=%lu crc_err=%lu seq_gaps=%lu synced=%d heap=%u\n",
+                    link_state(), fault_state(), (unsigned long)s.rx_frames,
+                    (unsigned long)s.tx_frames, (unsigned long)s.crc_errors,
+                    (unsigned long)s.seq_gaps, (int)time_synced(),
+                    (unsigned)xPortGetFreeHeapSize());
     }
     vTaskDelayUntil(&last, pdMS_TO_TICKS(500));   // toggle every 500 ms → 1 Hz blink
   }
@@ -201,6 +203,7 @@ void setup() {
   telemetry_init();                // Phase 6
   fault_machine_init();            // Phase 8 (before interp so the output gate is off at boot)
   leg_interp_init();               // Phase 7: starts the 500 Hz IntervalTimer ISR
+  profiling_init();                // instrumentation baselines
 
   // Create tasks. (Higher number = higher priority in FreeRTOS.)
   xTaskCreate(task_can_rx,    "canrx", STACK_CAN_RX,    nullptr, PRIO_CAN_RX,    nullptr);

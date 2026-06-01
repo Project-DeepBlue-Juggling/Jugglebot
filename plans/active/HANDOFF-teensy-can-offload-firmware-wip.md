@@ -49,13 +49,16 @@ rather than applied.
 | 6 | Per-axis state cache + telemetry uplink | ✅ | cache + 100 Hz telem + on-change diag |
 | 7 | Hermite/Taylor interpolator port | ✅ | C++ + xref: 0.0 rev divergence vs motor_guard (synthetic + recorded) |
 | 8 | Fault state machine + watchdog/deferred-stow | ✅ | invariants ported; logic spec'd by tests; bench-replay pending |
-| — | Profiling / instrumentation tools | ⏳ | |
+| — | Profiling / instrumentation tools | ✅ | firmware PROFILE frame + Jetson consumer (CSV+plots) + stub client |
 
 Legend: ✅ implemented · ⚠️ partial · ❌ skipped · ⏳ not started.
 
 Phases 9 (encoder-search/homing), 10 (Jetson bridge), 11–13 (cutover,
 decommission) are **out of scope** for this hardware-free pass — they require
-the bench or modify production code. See parent plan.
+the bench or modify production code. See parent plan. The RPC envelope already
+reserves `ENCODER_SEARCH` / `HOME` methods (they return `ERR_NOT_IMPL`), and
+`SDO_READ`/`SDO_WRITE` are wired (the SDO response decode for encoder-search
+feedback lands with Phase 9), so Phase 9 slots in without a protocol change.
 
 ## Decisions made autonomously
 
@@ -309,4 +312,32 @@ before building.
 
 ## Recommended order of human review
 
-_(populated at the end)_
+Review in dependency order — the contract first, then the modules that build on it,
+then the safety-critical ports, then the tools:
+
+1. **Protocol contract** — `docs/teensy-udp-protocol.md` + `config/generate_udp_protocol.py`.
+   This is the spine; everything else encodes/decodes against it. Check the frame
+   layouts and the framing decision (D1/D2). `tests/firmware/test_udp_protocol_xlang.py`
+   enforces C++↔Python consistency.
+2. **Config + cache** — `legbridge_config.h` (pins, task table, the 1:1-ported control
+   constants) and `axis_state.h`. Sanity-check the pin map and FreeRTOS priorities against
+   your board.
+3. **ODrive port** — `odrive_protocol.h` vs `odrive.py`. Byte-validated by
+   `tests/firmware/test_odrive_protocol_xref.py`, but eyeball `encode_leg_setpoint`
+   (the sign/scale/clip chain) — it commands the legs.
+4. **Interpolator (safety-critical)** — `leg_interp.cpp` vs `teensy_interp.py` vs
+   `motor_guard.py`. The xref proves 0.0 rev; confirm the C++↔Python transcription by eye
+   and decide on the float32 residual + the friction-FF gap (D9).
+5. **Fault state machine (safety-critical)** — `fault_machine.cpp` vs `can_node.py:386-483`
+   / `:1443-1530` and the 2026-05-19 logbook. This is the most subtle port; the deferred-
+   stow invariants must hold. `tests/firmware/test_fault_logic.py` is the executable spec.
+   **Plan a bench replay of every logbook fault scenario before trusting it on hardware.**
+6. **CAN + time-sync + RPC + telemetry** — `can_buses.cpp`, `time_sync_master.cpp`,
+   `rpc.cpp`, `telemetry.cpp`. Confirm the 0x7DD payload matches `bus.py` and the RPC arg
+   layouts (D8).
+7. **Scaffold** — `Teensy_code_legbridge.ino` (task creation, wiring) + `net_ethernet.cpp`
+   / `udp_link.cpp` (the lwIP threading model, D-handoff).
+8. **Tools** — `tools/probes/teensy_link_profiling/` (xref harness + Jetson consumer + stub).
+
+Then: build it (no toolchain here — first bench step), and work the
+[Needs hardware validation](#needs-hardware-validation) list.

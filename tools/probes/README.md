@@ -55,3 +55,14 @@ adapt — go here so the references stay live.
 | Probe | Purpose | Motivating logbook entry |
 |-------|---------|--------------------------|
 | `profile_session.py` | Records `tegrastats` (CPU/EMC/thermal/power), `pidstat` (per-process CPU / context switches / IO wait), `mpstat` (per-core utilisation), optional `py-spy` flame graphs per process name (`--py-spy-targets run_mpc.py,can_node`), optional `candump` CAN trace (`--candump can0`), plus a pre-flight snapshot (nvpmodel / governors / max freqs / ptrace_scope). Auto-analyses into a `report.md` that flags CPU saturation, DVFS throttling, thermal warnings, EMC saturation, memory pressure, top processes, CAN frame rate / top arbitration IDs, and cross-references can_node CPU% against CAN traffic to estimate per-frame dispatch cost. Subcommands: `start` / `stop` / `record` (Ctrl-C-able blocking mode) / `analyze`. | `logbook/2026-05-22-mpc-compute-bound-jetson-profiling.md` — the investigation that built this harness and used it to show the MPC is compute-bound on the Jetson Orin Nano |
+
+### Leg-bridge Teensy (`teensy_link_profiling/`)
+
+Offline validation + bench/profiling tools for the new leg-bridge Teensy firmware.
+See `teensy_link_profiling/README.md`.
+
+| Tool | Purpose | Motivating plan |
+|------|---------|-----------------|
+| `teensy_link_profiling/hermite_xref/xref.py` | Offline cross-check: the firmware's 500 Hz interpolator (`leg_interp.cpp`, via the line-for-line Python port `teensy_interp.py`) vs. the real `motor_guard.py`. Proves 0.0 rev divergence over synthetic + recorded `mpc_*.csv`. | `plans/active/teensy-can-offload.md` Phase 7 |
+| `teensy_link_profiling/jetson/profile_monitor.py` | Live observer: ingests the 1 Hz PROFILE UDP frame (per-task CPU, CAN1/CAN2 util, UDP RTT/jitter, interp deadline-misses, heap) → CSV + matplotlib plots in `temp/probes/teensy_link_profiling/`. | `plans/active/teensy-can-offload.md` (profiling) |
+| `teensy_link_profiling/jetson/setpoint_stub.py` | Bench exerciser / Phase-4 stub client: sends a synthetic 40 Hz setpoint stream + heartbeats, answers the time-of-day RPC, prints uplink — exercises the firmware data path without the real MPC. | `plans/active/teensy-can-offload.md` Phase 4 |
