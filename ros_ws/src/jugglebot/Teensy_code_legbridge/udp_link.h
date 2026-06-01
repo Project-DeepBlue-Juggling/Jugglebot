@@ -27,6 +27,9 @@ void udp_on_heartbeat_j2t(FrameHandler h);
 // RPC requests are handled by the rpc dispatcher (see rpc.h); udp_link routes
 // RPC_REQUEST frames to it via this hook.
 void udp_on_rpc_request(FrameHandler h);
+// RPC responses arrive when the Teensy is the RPC *client* (time-of-day query —
+// the time-sync master bootstrap). Routed to the time master via this hook.
+void udp_on_rpc_response(FrameHandler h);
 
 // Bind sockets. Call after net_ethernet_begin(), before the scheduler starts.
 void udp_link_init();

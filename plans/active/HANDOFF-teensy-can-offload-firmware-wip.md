@@ -45,9 +45,9 @@ rather than applied.
 | 2 | FreeRTOS skeleton + Ethernet bring-up | ✅ | Scaffold + QNEthernet static IP + net/heartbeat/diag tasks |
 | 3 | UDP framing layer | ✅ | Fixed-length frames + CRC-16/CCITT-FALSE; cross-lang tested |
 | 4 | UDP protocol contract finalised | ✅ | Single-source generator → C++/Py/md; 23 xlang tests pass |
-| 5 | CAN1 time-sync master + CAN2 ODrive protocol | ⏳ | code only, no bench |
-| 6 | Per-axis state cache + telemetry uplink | ⏳ | cache struct ✅ (axis_state.h) |
-| 7 | Hermite/Taylor interpolator port | ⏳ | + offline xref harness |
+| 5 | CAN1 time-sync master + CAN2 ODrive protocol | ✅ | code only; ODrive port byte-validated vs odrive.py (22 tests) |
+| 6 | Per-axis state cache + telemetry uplink | ✅ | cache + 100 Hz telem + on-change diag |
+| 7 | Hermite/Taylor interpolator port | ⏳ | Python port done (xref 0.0 rev); C++ next |
 | 8 | Fault state machine + watchdog/deferred-stow | ⏳ | |
 | — | Profiling / instrumentation tools | ⏳ | |
 

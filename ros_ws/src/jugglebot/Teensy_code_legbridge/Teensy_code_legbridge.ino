@@ -28,8 +28,11 @@
 #include "time_base.h"
 #include "net_ethernet.h"
 #include "udp_link.h"
-// PHASE 5: #include "can_buses.h"  #include "odrive_protocol.h"  #include "time_sync_master.h"
-// PHASE 6: #include "axis_state.h" #include "telemetry.h"
+#include "can_buses.h"           // Phase 5
+#include "time_sync_master.h"    // Phase 5
+#include "rpc.h"                 // Phase 5
+#include "axis_state.h"          // Phase 6 (cache populated by CAN RX)
+#include "telemetry.h"           // Phase 6
 // PHASE 7: #include "leg_interp.h"
 // PHASE 8: #include "fault_machine.h"
 // PROFILING: #include "profiling.h"
@@ -59,11 +62,12 @@ static uint8_t link_state() {
 //  Heartbeat uplink (T→J) — also our liveness beacon
 // ─────────────────────────────────────────────────────────────────────────────
 static void send_heartbeat_t2j() {
+  const CanStats cs = can_buses_stats();
   JbUdp::HeartbeatT2JPayload p{};
   p.t_teensy_us = now_wall_us();
   p.link_state  = link_state();
-  p.bus1_health = JbUdp::BusHealth::UNKNOWN;   // PHASE 5 fills these
-  p.bus2_health = JbUdp::BusHealth::UNKNOWN;
+  p.bus1_health = cs.can1_health;
+  p.bus2_health = cs.can2_health;
   p.fault_state = JbUdp::FaultState::NONE;      // PHASE 8 fills this
   p.flags       = (time_synced() ? 0x1u : 0x0u);
   p.uptime_ms   = (uint32_t)(micros64() / 1000ULL);
@@ -82,6 +86,38 @@ static void task_net(void*) {
     // 1 ms cadence: well above the 40 Hz downlink + 10 Hz heartbeat rates while
     // leaving the CPU to the higher-priority CAN/interp tasks.
     vTaskDelayUntil(&last, pdMS_TO_TICKS(1));
+  }
+}
+
+// CAN RX/TX servicing (priority 5). Pumps both buses' events() so onReceive
+// callbacks decode into the cache and TX mailboxes drain.
+static void task_can_rx(void*) {
+  TickType_t last = xTaskGetTickCount();
+  for (;;) {
+    can_buses_service();
+    vTaskDelayUntil(&last, pdMS_TO_TICKS(1));   // 1 kHz CAN service (matches can_node poll)
+  }
+}
+
+// Time-sync master (priority 4) at TIME_SYNC_RATE_HZ. Broadcasts 0x7DD and paces
+// the time-of-day query.
+static void task_time_sync(void*) {
+  TickType_t last = xTaskGetTickCount();
+  const TickType_t period = pdMS_TO_TICKS(1000 / TIME_SYNC_RATE_HZ);
+  for (;;) {
+    time_sync_step();
+    vTaskDelayUntil(&last, period);
+  }
+}
+
+// Telemetry uplink (priority 3) at TELEM_RATE_HZ. 100 Hz motor state + on-change
+// diagnostics.
+static void task_telem(void*) {
+  TickType_t last = xTaskGetTickCount();
+  const TickType_t period = pdMS_TO_TICKS(1000 / TELEM_RATE_HZ);
+  for (;;) {
+    telemetry_step();
+    vTaskDelayUntil(&last, period);
   }
 }
 
@@ -131,23 +167,23 @@ void setup() {
 
   // Register downlink handlers before the scheduler starts.
   udp_on_heartbeat_j2t(on_jetson_heartbeat);
+  Rpc::rpc_server_init();          // Phase 5: Jetson→Teensy ODrive RPCs
+  time_sync_master_init();         // Phase 5: time-of-day RPC client
   // PHASE 7: udp_on_setpoint(interp_on_setpoint);
-  // PHASE 5: udp_on_rpc_request(rpc_dispatch);
 
   udp_link_init();
-
-  // PHASE 5: can_buses_init(); time_sync_master_init();
-  // PHASE 6: telemetry_init();
+  can_buses_init();                // Phase 5: CAN1 (shared) + CAN2 (legs)
+  telemetry_init();                // Phase 6
   // PHASE 7: leg_interp_init();   (starts the 500 Hz IntervalTimer)
   // PHASE 8: fault_machine_init();
 
   // Create tasks. (Higher number = higher priority in FreeRTOS.)
-  xTaskCreate(task_net,       "net",  STACK_UDP_RX,   nullptr, PRIO_UDP_RX,    nullptr);
-  xTaskCreate(task_heartbeat, "hb",   STACK_UDP_TX,   nullptr, PRIO_UDP_TX,    nullptr);
-  xTaskCreate(task_diag,      "diag", STACK_DIAG,     nullptr, PRIO_DIAG,      nullptr);
-  // PHASE 5: xTaskCreate(task_time_sync, "tsync", STACK_TIME_SYNC, ...);
-  //          xTaskCreate(task_can_rx,   "canrx", STACK_CAN_RX, ...);
-  // PHASE 6: xTaskCreate(task_telem,    "telem", STACK_UDP_TX, ...);
+  xTaskCreate(task_can_rx,    "canrx", STACK_CAN_RX,    nullptr, PRIO_CAN_RX,    nullptr);
+  xTaskCreate(task_time_sync, "tsync", STACK_TIME_SYNC, nullptr, PRIO_TIME_SYNC, nullptr);
+  xTaskCreate(task_net,       "net",   STACK_UDP_RX,    nullptr, PRIO_UDP_RX,    nullptr);
+  xTaskCreate(task_telem,     "telem", STACK_UDP_TX,    nullptr, PRIO_UDP_TX,    nullptr);
+  xTaskCreate(task_heartbeat, "hb",    STACK_UDP_TX,    nullptr, PRIO_UDP_TX,    nullptr);
+  xTaskCreate(task_diag,      "diag",  STACK_DIAG,      nullptr, PRIO_DIAG,      nullptr);
   // PHASE 8: xTaskCreate(task_fault,    "fault", STACK_FAULT, ...);
   //          xTaskCreate(task_watchdog, "wdog",  STACK_WATCHDOG, ...);
 

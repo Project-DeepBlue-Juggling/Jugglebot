@@ -30,10 +30,12 @@ struct NetLock {
 static FrameHandler s_h_setpoint = nullptr;
 static FrameHandler s_h_heartbeat = nullptr;
 static FrameHandler s_h_rpc = nullptr;
+static FrameHandler s_h_rpc_resp = nullptr;
 
 void udp_on_setpoint(FrameHandler h)      { s_h_setpoint = h; }
 void udp_on_heartbeat_j2t(FrameHandler h) { s_h_heartbeat = h; }
 void udp_on_rpc_request(FrameHandler h)   { s_h_rpc = h; }
+void udp_on_rpc_response(FrameHandler h)  { s_h_rpc_resp = h; }
 
 // ── Sequence counters + stats ─────────────────────────────────────────────────
 static uint16_t s_seq_stream_tx = 0;
@@ -96,6 +98,9 @@ static void drain_socket(EthernetUDP& sock, bool is_rpc) {
         break;
       case JbUdp::MsgType::RPC_REQUEST:
         if (s_h_rpc) s_h_rpc(hdr.seq, payload, hdr.length);
+        break;
+      case JbUdp::MsgType::RPC_RESPONSE:
+        if (s_h_rpc_resp) s_h_rpc_resp(hdr.seq, payload, hdr.length);
         break;
       default:
         // Phase 3 echo path: any otherwise-unhandled valid frame is echoed back
