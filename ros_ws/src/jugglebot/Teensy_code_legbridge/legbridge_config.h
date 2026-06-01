@@ -120,7 +120,11 @@ constexpr uint32_t ERR_DC_BUS_UNDER_VOLTAGE = 512u;
 // Deferred-stow profiled descent (mirrors can_node _gently_move_to_setpoint):
 // velocity-limited move to the off pose at the same limit on_shutdown uses.
 constexpr float GENTLE_MOVE_VEL_LIMIT_RPS = JBOp::GENTLE_MOVE_VEL_LIMIT_RPS;  // 2.5
+constexpr float STOW_OFF_POSE_REV = 0.0f;    // off pose = fully retracted (can_node stows to 0.0)
 constexpr float STOW_DONE_EPS_REV = 0.01f;   // legs within this of the off pose ⇒ stow complete
+// Accel limit for the stow descent so the commanded velocity ramps (no startup
+// step). Reaches the gentle-move velocity limit in ~0.25 s.
+constexpr float STOW_ACCEL_RPS2 = 10.0f;
 
 // ── Per-leg stroke clamp bounds (rev) ────────────────────────────────────────
 //  Backstop matching motor_guard's _stroke_min_rev / _stroke_max_rev, which are

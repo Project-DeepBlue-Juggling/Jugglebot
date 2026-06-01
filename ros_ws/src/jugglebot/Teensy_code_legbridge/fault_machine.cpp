@@ -17,6 +17,7 @@
 // =============================================================================
 #include "fault_machine.h"
 
+#include <cmath>
 #include "legbridge_config.h"
 #include "protocol_config.h"     // ODriveState
 #include "udp_protocol.h"        // FaultState, GuardMode
@@ -78,11 +79,12 @@ static void clear_error_flags() {
   s_soft_reset_attempts = 0;
 }
 // Send clear_errors to all legs (mirror can_node._clear_errors), only if the bus
-// is up — never command a dead bus.
-static void clear_errors_can() {
-  if (s_fatal_can_error) return;
+// is up — never command a dead bus. Returns true iff it actually sent.
+static bool clear_errors_can() {
+  if (s_fatal_can_error) return false;
   for (uint8_t i = 0; i < NUM_LEGS; ++i) can2_send(ODrive::encode_clear_errors(i));
   clear_error_flags();
+  return true;
 }
 
 // External CLEAR_ERRORS RPC resets the auto-retry budget (mirrors the operator path).
@@ -116,8 +118,11 @@ static void evaluate_errors() {
 
   if (any_disarmed && !any_cl) {                         // disarmed, none CLOSED_LOOP → try one clear
     if (s_soft_reset_attempts < MAX_SOFT_RESET_ATTEMPTS) {
-      clear_errors_can();                                // resets budget to 0...
-      s_soft_reset_attempts += 1;                        // ...then +1 → exactly one auto-retry
+      // Only consume the budget if the clear actually went out (bus up).
+      // clear_errors_can resets the budget to 0 on success; the +1 then makes it
+      // exactly one auto-retry. On a down bus it is a no-op and the budget is
+      // preserved (the CAN-down watchdog owns that case).
+      if (clear_errors_can()) s_soft_reset_attempts += 1;
     } else {
       is_fatal = true;                                   // budget exhausted → fatal
     }
@@ -194,6 +199,16 @@ static void evaluate_guard() {
   const bool ever_cmd = interp_last_setpoint_us() != 0;
   if (!estop && ever_cmd && s_mpc_active && age > MPC_CMD_STALENESS_US) {
     estop = true; state = JbUdp::FaultState::MPC_STALE;
+  }
+  // Max deviation: the incoming MPC command (interp base = u0) diverged too far
+  // from the encoder — catches stale zeros / sign errors / runaway command
+  // sources (motor_guard.py:539-551, checked at command-arrival not per-tick).
+  if (!estop && s_mpc_active && interp_have_latched()) {
+    for (uint8_t i = 0; i < NUM_LEGS; ++i) {
+      if (fabsf(interp_base_pos(i) - axes[i].pos_rev) > MAX_DEVIATION_REV) {
+        estop = true; state = JbUdp::FaultState::MAX_DEVIATION; break;
+      }
+    }
   }
 
   // Fault-state reporting priority (highest-severity active condition wins).

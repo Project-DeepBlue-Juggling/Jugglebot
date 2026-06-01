@@ -15,8 +15,26 @@
 // =============================================================================
 
 #include <cstdint>
+#include <Arduino.h>   // CMSIS __get_PRIMASK / __disable_irq / __set_PRIMASK
 
 namespace LegBridge {
+
+// 64-bit values shared between the 500 Hz IntervalTimer ISR and FreeRTOS tasks
+// are NOT atomically accessible on the 32-bit Cortex-M7 (a read/write splits into
+// two 32-bit ops that the ISR can interleave → torn value). These IRQ-guarded
+// accessors make such access atomic. PRIMASK is saved/restored so they are safe
+// to call from inside an ISR (or an already-masked region) too.
+static inline uint64_t atomic_read_u64(const volatile uint64_t* p) {
+  const uint32_t pm = __get_PRIMASK(); __disable_irq();
+  const uint64_t v = *p;
+  __set_PRIMASK(pm);
+  return v;
+}
+static inline void atomic_write_u64(volatile uint64_t* p, uint64_t v) {
+  const uint32_t pm = __get_PRIMASK(); __disable_irq();
+  *p = v;
+  __set_PRIMASK(pm);
+}
 
 // 64-bit monotonic microseconds since boot (wrap-safe).
 uint64_t micros64();

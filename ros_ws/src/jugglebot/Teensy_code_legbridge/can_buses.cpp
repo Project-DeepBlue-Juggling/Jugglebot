@@ -24,6 +24,8 @@ static void decode_into_cache(const CAN_message_t& msg) {
   const uint8_t axis = ODrive::axis_of(msg.id);
   const uint8_t cmd  = ODrive::cmd_of(msg.id);
   if (axis >= NUM_AXES) return;            // not a leg/hand axis we cache
+  if (msg.len < 8) return;                 // drop truncated frames (mirrors odrive.py _check_len;
+                                           // every ODrive telemetry frame we decode is DLC 8)
   AxisState& a = axes[axis];
   const uint8_t* d = msg.buf;
 

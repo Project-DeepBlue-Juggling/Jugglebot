@@ -206,10 +206,10 @@ static_assert(sizeof(RpcResponsePayload) == 8, "RpcResponsePayload size drift");
 
 // ── Per-message constants ──────────────────────────────────────────────
 constexpr uint16_t SETPOINT_SIZE = 156u;
-constexpr uint16_t HEARTBEAT_J2_T_SIZE = 12u;
+constexpr uint16_t HEARTBEAT_J2T_SIZE = 12u;
 constexpr uint16_t TELEMETRY_SIZE = 64u;
 constexpr uint16_t DIAGNOSTIC_SIZE = 36u;
-constexpr uint16_t HEARTBEAT_T2_J_SIZE = 20u;
+constexpr uint16_t HEARTBEAT_T2J_SIZE = 20u;
 constexpr uint16_t PROFILE_SIZE = 66u;
 constexpr uint16_t RPC_REQUEST_SIZE = 8u;
 constexpr uint16_t RPC_RESPONSE_SIZE = 8u;

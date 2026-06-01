@@ -162,10 +162,10 @@ class Setpoint:
         return cls(tuple(next(it) for _ in range(6)), tuple(next(it) for _ in range(6)), tuple(next(it) for _ in range(6)), tuple(next(it) for _ in range(6)), tuple(next(it) for _ in range(6)), tuple(next(it) for _ in range(6)), next(it), next(it))
 
 # HeartbeatJ2T: Jetson → Teensy liveness, ~10 Hz.
-HEARTBEAT_J2_T_FMT = '<QI'
-HEARTBEAT_J2_T_SIZE = 12
-_HEARTBEAT_J2_T_STRUCT = struct.Struct(HEARTBEAT_J2_T_FMT)
-assert _HEARTBEAT_J2_T_STRUCT.size == 12
+HEARTBEAT_J2T_FMT = '<QI'
+HEARTBEAT_J2T_SIZE = 12
+_HEARTBEAT_J2T_STRUCT = struct.Struct(HEARTBEAT_J2T_FMT)
+assert _HEARTBEAT_J2T_STRUCT.size == 12
 
 @dataclass
 class HeartbeatJ2T:
@@ -173,11 +173,11 @@ class HeartbeatJ2T:
     flags: int = 0
 
     def pack(self) -> bytes:
-        return _HEARTBEAT_J2_T_STRUCT.pack(self.t_jetson_us, self.flags)
+        return _HEARTBEAT_J2T_STRUCT.pack(self.t_jetson_us, self.flags)
 
     @classmethod
     def unpack(cls, data: bytes) -> 'HeartbeatJ2T':
-        vals = _HEARTBEAT_J2_T_STRUCT.unpack(data[:12])
+        vals = _HEARTBEAT_J2T_STRUCT.unpack(data[:12])
         it = iter(vals)
         return cls(next(it), next(it))
 
@@ -234,10 +234,10 @@ class Diagnostic:
         return cls(next(it), next(it), next(it), next(it), next(it), tuple(next(it) for _ in range(3)), next(it), next(it), next(it), next(it), next(it), next(it), next(it))
 
 # HeartbeatT2J: Teensy → Jetson liveness + link/bus health, ~10 Hz.
-HEARTBEAT_T2_J_FMT = '<QBBBBII'
-HEARTBEAT_T2_J_SIZE = 20
-_HEARTBEAT_T2_J_STRUCT = struct.Struct(HEARTBEAT_T2_J_FMT)
-assert _HEARTBEAT_T2_J_STRUCT.size == 20
+HEARTBEAT_T2J_FMT = '<QBBBBII'
+HEARTBEAT_T2J_SIZE = 20
+_HEARTBEAT_T2J_STRUCT = struct.Struct(HEARTBEAT_T2J_FMT)
+assert _HEARTBEAT_T2J_STRUCT.size == 20
 
 @dataclass
 class HeartbeatT2J:
@@ -250,11 +250,11 @@ class HeartbeatT2J:
     uptime_ms: int = 0
 
     def pack(self) -> bytes:
-        return _HEARTBEAT_T2_J_STRUCT.pack(self.t_teensy_us, self.link_state, self.bus1_health, self.bus2_health, self.fault_state, self.flags, self.uptime_ms)
+        return _HEARTBEAT_T2J_STRUCT.pack(self.t_teensy_us, self.link_state, self.bus1_health, self.bus2_health, self.fault_state, self.flags, self.uptime_ms)
 
     @classmethod
     def unpack(cls, data: bytes) -> 'HeartbeatT2J':
-        vals = _HEARTBEAT_T2_J_STRUCT.unpack(data[:20])
+        vals = _HEARTBEAT_T2J_STRUCT.unpack(data[:20])
         it = iter(vals)
         return cls(next(it), next(it), next(it), next(it), next(it), next(it), next(it))
 

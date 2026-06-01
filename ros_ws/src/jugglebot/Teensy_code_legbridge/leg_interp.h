@@ -29,6 +29,12 @@ void interp_on_setpoint(uint16_t seq, const uint8_t* payload, uint16_t len);
 // Wall-clock (us) of the last setpoint received — for the staleness watchdog.
 uint64_t interp_last_setpoint_us();
 
+// Latched interpolation base (= the incoming MPC command u0) for leg i, and
+// whether any setpoint has been latched — used by the fault machine's
+// max-deviation E-STOP (motor_guard.py:539-551, incoming-command vs encoder).
+float interp_base_pos(uint8_t i);
+bool  interp_have_latched();
+
 // Enable/disable command output (the fault state machine / guard-mode gate;
 // Phase 8 owns this). When false the ISR computes but does not transmit to CAN2.
 void interp_set_output_enabled(bool en);

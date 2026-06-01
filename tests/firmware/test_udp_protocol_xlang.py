@@ -201,9 +201,10 @@ def test_cpp_field_order_matches_python_struct(gen):
 
 
 def _screaming(camel: str) -> str:
+    # Must match generate_udp_protocol._screaming (split only on lowercase→capital).
     out = []
     for i, c in enumerate(camel):
-        if c.isupper() and i > 0 and not camel[i - 1].isupper():
+        if c.isupper() and i > 0 and camel[i - 1].islower():
             out.append("_")
         out.append(c.upper())
     return "".join(out)

@@ -60,6 +60,7 @@ static volatile bool     s_output_enabled = false;   // Phase 8 owns this gate
 static volatile bool s_stow_active = false;
 static volatile bool s_stow_complete = false;
 static float s_stow_pos[NUM_LEGS];
+static float s_stow_speed = 0.0f;        // accel-ramped descent speed (rev/s)
 static volatile uint32_t s_deadline_misses = 0;
 static volatile uint32_t s_max_jitter_us = 0;
 static uint64_t s_last_tick_us = 0;
@@ -74,7 +75,16 @@ void interp_on_setpoint(uint16_t /*seq*/, const uint8_t* payload, uint16_t len) 
   if (len < JbUdp::SETPOINT_SIZE) return;
   JbUdp::SetpointPayload sp;
   memcpy(&sp, payload, sizeof(sp));
+  const uint64_t recv = now_wall_us();
 
+  // Publish the staging atomically. The interp ISR runs ABOVE the FreeRTOS
+  // syscall ceiling and can preempt this net-task write at any instruction; if
+  // a second setpoint were written field-by-field while s_pending is still set
+  // from a first, the ISR could latch a half-written mix. Disabling IRQs around
+  // the fill + flag (PRIMASK save/restore) makes the publish a single atomic,
+  // fully-ordered step (also serves as the compiler/memory barrier the seqlock
+  // would otherwise provide). ~50 words copied → a couple of µs of IRQ-off.
+  const uint32_t pm = __get_PRIMASK(); __disable_irq();
   for (uint8_t i = 0; i < NUM_LEGS; ++i) {
     s_stage.u0[i]     = sp.u0[i];
     s_stage.u1[i]     = sp.u1[i];
@@ -85,10 +95,11 @@ void interp_on_setpoint(uint16_t /*seq*/, const uint8_t* payload, uint16_t len) 
   }
   s_stage.has_u1 = (sp.flags & 0x1u) != 0;
   s_stage.has_u2 = (sp.flags & 0x2u) != 0;
-  s_stage.recv_us = now_wall_us();
+  s_stage.recv_us = recv;
+  s_pending = true;
+  __set_PRIMASK(pm);
 
-  s_last_setpoint_us = s_stage.recv_us;
-  s_pending = true;          // publish last — staging is fully written above
+  atomic_write_u64(&s_last_setpoint_us, recv);   // 64-bit; read by the fault task
 }
 
 // ── Latch (consume staging) — port of teensy_interp.latch_setpoint ────────────
@@ -143,15 +154,27 @@ static void interp_isr() {
   // CAN2. Runs only when output is enabled (the fault machine enables it on a
   // confirmed CAN2 reconnect). Mirrors _gently_move_to_setpoint(0.0).
   if (s_stow_active) {
-    const float step = GENTLE_MOVE_VEL_LIMIT_RPS * (INTERP_PERIOD_US * 1e-6f);
+    const float dt_tick = INTERP_PERIOD_US * 1e-6f;
+    // Accel-limit the descent speed (ramps 0 → limit) so there is no startup
+    // velocity step — a trapezoidal-ish profile rather than a constant-velocity
+    // jump. (The deceleration near the target is handled by the within-step band.)
+    s_stow_speed += STOW_ACCEL_RPS2 * dt_tick;
+    if (s_stow_speed > GENTLE_MOVE_VEL_LIMIT_RPS) s_stow_speed = GENTLE_MOVE_VEL_LIMIT_RPS;
+    const float step = s_stow_speed * dt_tick;
     bool all_done = true;
     for (uint8_t i = 0; i < NUM_LEGS; ++i) {
-      const float target = STROKE_MIN_REV[i];      // off / fully-retracted pose
+      const float target = STOW_OFF_POSE_REV;     // 0.0 — matches can_node _gently_move_to_setpoint(0.0)
       float p = s_stow_pos[i];
       float v = 0.0f;
-      if (p > target + step)      { p -= step; v = -GENTLE_MOVE_VEL_LIMIT_RPS; all_done = false; }
-      else if (p < target - step) { p += step; v =  GENTLE_MOVE_VEL_LIMIT_RPS; all_done = false; }
-      else                        { p = target; v = 0.0f; }
+      const float d = target - p;
+      const float ad = (d < 0.0f) ? -d : d;
+      if (ad > STOW_DONE_EPS_REV) {
+        all_done = false;
+        if (ad <= step) { p = target; }
+        else            { p += (d > 0.0f ? step : -step); v = (d > 0.0f ? s_stow_speed : -s_stow_speed); }
+      } else {
+        p = target;
+      }
       s_stow_pos[i] = p;
       axes[i].target_pos_rev = p;
       axes[i].target_vel_rps = v;
@@ -257,7 +280,9 @@ void leg_interp_init() {
   s_timer.priority(32);
 }
 
-uint64_t interp_last_setpoint_us() { return s_last_setpoint_us; }
+uint64_t interp_last_setpoint_us() { return atomic_read_u64(&s_last_setpoint_us); }
+float interp_base_pos(uint8_t i) { return (i < NUM_LEGS) ? s_base_pos[i] : 0.0f; }
+bool  interp_have_latched() { return s_have_latched; }
 void interp_set_output_enabled(bool en) { s_output_enabled = en; }
 bool interp_output_enabled() { return s_output_enabled; }
 uint32_t interp_deadline_misses() { return s_deadline_misses; }
@@ -266,6 +291,7 @@ void interp_reset_jitter() { s_max_jitter_us = 0; }
 
 void interp_begin_stow() {
   for (uint8_t i = 0; i < NUM_LEGS; ++i) s_stow_pos[i] = axes[i].pos_rev;  // start from actual
+  s_stow_speed = 0.0f;          // ramp the descent speed up from rest
   s_stow_complete = false;
   s_stow_active = true;
 }

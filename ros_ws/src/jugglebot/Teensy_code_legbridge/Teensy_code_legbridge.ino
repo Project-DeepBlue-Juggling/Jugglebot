@@ -45,8 +45,8 @@ using namespace LegBridge;
 static volatile uint64_t g_last_jetson_hb_us = 0;
 
 static void on_jetson_heartbeat(uint16_t /*seq*/, const uint8_t* payload, uint16_t len) {
-  if (len < JbUdp::HEARTBEAT_J2T_SIZE) return;
-  g_last_jetson_hb_us = now_wall_us();
+  if (len < sizeof(JbUdp::HeartbeatJ2TPayload)) return;
+  atomic_write_u64(&g_last_jetson_hb_us, now_wall_us());   // 64-bit; read by link_state()
   JbUdp::HeartbeatJ2TPayload p;
   memcpy(&p, payload, sizeof(p));
   fault_set_mpc_active((p.flags & 0x1u) != 0);   // bit0 = MPC commanding (guard ENABLED)
@@ -64,8 +64,9 @@ static bool all_axis_heartbeats_ok() {
 
 static uint8_t link_state() {
   if (!net_link_up()) return JbUdp::LinkState::INIT;
-  if (g_last_jetson_hb_us == 0) return JbUdp::LinkState::INIT;
-  const uint64_t age = now_wall_us() - g_last_jetson_hb_us;
+  const uint64_t last = atomic_read_u64(&g_last_jetson_hb_us);
+  if (last == 0) return JbUdp::LinkState::INIT;
+  const uint64_t age = now_wall_us() - last;
   if (age > JETSON_LINK_TIMEOUT_US) return JbUdp::LinkState::LOST;
   return JbUdp::LinkState::UP;
 }

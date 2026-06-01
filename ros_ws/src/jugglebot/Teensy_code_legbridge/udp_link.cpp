@@ -85,7 +85,7 @@ static void drain_socket(EthernetUDP& sock, bool is_rpc) {
       continue;
     }
     s_stats.rx_frames++;
-    s_last_rx_us = now_wall_us();
+    atomic_write_u64(&s_last_rx_us, now_wall_us());   // 64-bit; read by the link-health watchdog
 
     if (!is_rpc) track_downlink_seq(hdr.seq);
 
@@ -125,11 +125,16 @@ void udp_link_service() {
 }
 
 static bool send_to(EthernetUDP& sock, uint16_t port, uint8_t msg_type,
-                    uint16_t seq, const uint8_t* payload, uint16_t len) {
+                    uint16_t* seq_ctr, const uint8_t* payload, uint16_t len) {
+  // Take the lock FIRST: the seq increment, the encode into the SHARED s_tx_buf,
+  // and the transmit must be one atomic step. Multiple tasks (telemetry,
+  // heartbeat, RPC) call this concurrently; encoding into the shared buffer or
+  // racing the seq++ outside the lock corrupts frames / loses sequence numbers.
+  NetLock lk;
+  const uint16_t seq = (*seq_ctr)++;
   const uint16_t total = JbUdp::encode_frame(msg_type, seq, payload, len,
                                              s_tx_buf, sizeof(s_tx_buf));
   if (total == 0) return false;
-  NetLock lk;
   if (!sock.beginPacket(kJetsonIP, port)) return false;
   sock.write(s_tx_buf, total);
   const bool ok = sock.endPacket();
@@ -138,17 +143,17 @@ static bool send_to(EthernetUDP& sock, uint16_t port, uint8_t msg_type,
 }
 
 bool udp_send_stream(uint8_t msg_type, const uint8_t* payload, uint16_t len) {
-  return send_to(s_stream, JbUdp::PORT_STREAM, msg_type, s_seq_stream_tx++, payload, len);
+  return send_to(s_stream, JbUdp::PORT_STREAM, msg_type, &s_seq_stream_tx, payload, len);
 }
 
 bool udp_send_rpc(uint8_t msg_type, const uint8_t* payload, uint16_t len) {
-  return send_to(s_rpc, JbUdp::PORT_RPC, msg_type, s_seq_rpc_tx++, payload, len);
+  return send_to(s_rpc, JbUdp::PORT_RPC, msg_type, &s_seq_rpc_tx, payload, len);
 }
 
 UdpStats udp_link_stats()      { return s_stats; }
 uint32_t udp_last_rtt_us()     { return s_last_rtt_us; }
 uint32_t udp_rtt_jitter_us()   { return s_rtt_jitter_us; }
-uint64_t udp_last_rx_us()      { return s_last_rx_us; }
+uint64_t udp_last_rx_us()      { return atomic_read_u64(&s_last_rx_us); }
 
 void udp_note_rtt(uint32_t rtt_us) {
   // EMA jitter estimate around the RTT mean (alpha = 1/4).

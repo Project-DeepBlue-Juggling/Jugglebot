@@ -491,9 +491,12 @@ def generate_cpp() -> str:
 
 
 def _screaming(camel: str) -> str:
+    # Insert "_" only before a capital that follows a LOWERCASE LETTER, so a
+    # digit→capital boundary is NOT split: HeartbeatJ2T → HEARTBEAT_J2T (not
+    # HEARTBEAT_J2_T), RpcRequest → RPC_REQUEST, Setpoint → SETPOINT.
     out = []
     for i, c in enumerate(camel):
-        if c.isupper() and i > 0 and not camel[i - 1].isupper():
+        if c.isupper() and i > 0 and camel[i - 1].islower():
             out.append("_")
         out.append(c.upper())
     return "".join(out)

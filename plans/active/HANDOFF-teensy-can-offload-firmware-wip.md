@@ -53,6 +53,22 @@ rather than applied.
 
 Legend: ✅ implemented · ⚠️ partial · ❌ skipped · ⏳ not started.
 
+### Verification summary
+
+The firmware C++ is **not compiled** here (no Teensy toolchain), so correctness
+rests on (a) cross-language/cross-reference tests against the production Python
+ground truth, and (b) an adversarial review pass. New tests (all in
+`tests/firmware/`, runnable with no ROS2/hardware):
+
+- `test_udp_protocol_xlang.py` (23) — C++↔Python protocol byte-consistency + CRC.
+- `test_odrive_protocol_xref.py` (22) — ODrive encoders/decoders byte-validated vs `odrive.py`/`bus.py`.
+- `test_hermite_xref.py` (3) — interpolator **0.0 rev** vs the real `MotorGuard` (synthetic + recorded) + stroke-bound match.
+- `test_fault_logic.py` (8) — executable spec for the fault-determination + deferred-stow invariants.
+
+Authoritative gate: `pytest tests/ -q` (run 2026-06-02): **1572 passed, 1 xfailed
+in 441.70 s** (the 1 xfailed is the pre-existing inherited permanent xfail,
+unrelated). The 56 new firmware tests are included.
+
 Phases 9 (encoder-search/homing), 10 (Jetson bridge), 11–13 (cutover,
 decommission) are **out of scope** for this hardware-free pass — they require
 the bench or modify production code. See parent plan. The RPC envelope already
@@ -228,6 +244,38 @@ In the cutover, the Jetson bridge may *also* arm a stow; the two compose idempot
 ownership and add jerk-limiting at Phase 10/11. **Bench-validation:** replay every
 logbook fault scenario (soft-reset bounce, CAN-loss safety inversion, undervoltage) and
 confirm the descent + IDLE handoff (plan Phase 8 "done when" + Risk note).
+
+## Adversarial review (post-implementation, 2026-06-02)
+
+Because the firmware cannot be compiled here, a 6-dimension adversarial review
+(29 agents: one skeptical reviewer per port dimension vs ground truth, each finding
+independently verified) was run over the C++ ports. 23 raw findings → 21 confirmed
+real; 2 correctly refuted (`lroundf` half-away-from-zero vs Python `round()` half-to-
+even — benign; an alleged E-STOP label-priority inversion — not real). **All 21 fixed
+or explicitly accepted** in commit `<review-fixes>`:
+
+- **Blocking — compile error:** `.ino` referenced `JbUdp::HEARTBEAT_J2T_SIZE` but the
+  generator's `_screaming` emitted `HEARTBEAT_J2_T_SIZE` (split the digit→capital
+  boundary). Fixed the generator to split only on lowercase→capital (names now
+  `HEARTBEAT_J2T_SIZE` etc.) AND switched the `.ino` check to `sizeof(...Payload)`.
+- **Blocking — dropped safety state:** `FaultState::MAX_DEVIATION` was never assigned.
+  Added the incoming-command-vs-encoder deviation E-STOP (motor_guard.py:539-551).
+- **High — concurrency (500 Hz path):** torn 64-bit reads / RMW races between the interp
+  ISR (above the FreeRTOS syscall ceiling) and tasks. Added IRQ-guarded atomic-64
+  accessors and applied them to `micros64`, `s_wall_offset_us`, `s_last_setpoint_us`,
+  `s_last_rx_us`, `g_last_jetson_hb_us`; made the setpoint staging publish atomic
+  (IRQ-guarded copy + flag = the barrier the seqlock would give); moved the UDP TX
+  seq-increment + encode-into-shared-buffer + transmit inside one `NetLock`.
+- **Medium:** soft-reset budget no longer consumed on a no-op clear (bus down); deferred
+  stow now descends to the true off pose 0.0 (was stroke-min) with an accel-limited ramp
+  (no startup velocity step) and uses `STOW_DONE_EPS_REV`; `decode_into_cache` drops
+  truncated (<8-byte) CAN frames (the omitted `_check_len`).
+- **Accepted (low, latent):** `clip_position` treats a non-leg/non-hand axis as the hand
+  rather than rejecting it — unreachable (only legs 0-5 call it) and the fallback is safe;
+  left as-is, noted here.
+
+After the fixes: `pytest tests/firmware/ -q` → 56 passed; the interpolator xref still
+shows **0.0 rev** divergence.
 
 ## Needs hardware validation
 
