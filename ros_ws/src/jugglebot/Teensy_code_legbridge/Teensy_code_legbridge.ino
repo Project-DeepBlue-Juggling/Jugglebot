@@ -33,8 +33,8 @@
 #include "rpc.h"                 // Phase 5
 #include "axis_state.h"          // Phase 6 (cache populated by CAN RX)
 #include "telemetry.h"           // Phase 6
-// PHASE 7: #include "leg_interp.h"
-// PHASE 8: #include "fault_machine.h"
+#include "leg_interp.h"          // Phase 7
+#include "fault_machine.h"       // Phase 8
 // PROFILING: #include "profiling.h"
 
 using namespace LegBridge;
@@ -47,7 +47,19 @@ static volatile uint64_t g_last_jetson_hb_us = 0;
 static void on_jetson_heartbeat(uint16_t /*seq*/, const uint8_t* payload, uint16_t len) {
   if (len < JbUdp::HEARTBEAT_J2T_SIZE) return;
   g_last_jetson_hb_us = now_wall_us();
-  // (Phase 8 consumes mpc_active flag from the payload for the guard mode gate.)
+  JbUdp::HeartbeatJ2TPayload p;
+  memcpy(&p, payload, sizeof(p));
+  fault_set_mpc_active((p.flags & 0x1u) != 0);   // bit0 = MPC commanding (guard ENABLED)
+}
+
+// True iff every axis has been seen and none is heartbeat-stale.
+static bool all_axis_heartbeats_ok() {
+  const uint64_t now = now_wall_us();
+  for (uint8_t i = 0; i < NUM_AXES; ++i) {
+    if (!axes[i].heartbeat_seen) return false;
+    if (now - axes[i].last_heartbeat_us > CAN_HEARTBEAT_TIMEOUT_US) return false;
+  }
+  return true;
 }
 
 static uint8_t link_state() {
@@ -68,8 +80,10 @@ static void send_heartbeat_t2j() {
   p.link_state  = link_state();
   p.bus1_health = cs.can1_health;
   p.bus2_health = cs.can2_health;
-  p.fault_state = JbUdp::FaultState::NONE;      // PHASE 8 fills this
-  p.flags       = (time_synced() ? 0x1u : 0x0u);
+  p.fault_state = fault_state();
+  p.flags       = (time_synced() ? 0x1u : 0x0u)
+                | (fault_stow_pending() ? 0x2u : 0x0u)
+                | (all_axis_heartbeats_ok() ? 0x4u : 0x0u);
   p.uptime_ms   = (uint32_t)(micros64() / 1000ULL);
   udp_send_stream(JbUdp::MsgType::HEARTBEAT_T2J, (const uint8_t*)&p, sizeof(p));
 }
@@ -117,6 +131,17 @@ static void task_telem(void*) {
   const TickType_t period = pdMS_TO_TICKS(1000 / TELEM_RATE_HZ);
   for (;;) {
     telemetry_step();
+    vTaskDelayUntil(&last, period);
+  }
+}
+
+// Fault state machine (priority 3) at FAULT_TASK_HZ. Error eval + CAN2 watchdog
+// + deferred stow + guard-mode/output gate.
+static void task_fault(void*) {
+  TickType_t last = xTaskGetTickCount();
+  const TickType_t period = pdMS_TO_TICKS(1000 / FAULT_TASK_HZ);
+  for (;;) {
+    fault_step();
     vTaskDelayUntil(&last, period);
   }
 }
@@ -169,23 +194,22 @@ void setup() {
   udp_on_heartbeat_j2t(on_jetson_heartbeat);
   Rpc::rpc_server_init();          // Phase 5: Jetson→Teensy ODrive RPCs
   time_sync_master_init();         // Phase 5: time-of-day RPC client
-  // PHASE 7: udp_on_setpoint(interp_on_setpoint);
+  udp_on_setpoint(interp_on_setpoint);   // Phase 7: 40 Hz setpoint downlink
 
   udp_link_init();
   can_buses_init();                // Phase 5: CAN1 (shared) + CAN2 (legs)
   telemetry_init();                // Phase 6
-  // PHASE 7: leg_interp_init();   (starts the 500 Hz IntervalTimer)
-  // PHASE 8: fault_machine_init();
+  fault_machine_init();            // Phase 8 (before interp so the output gate is off at boot)
+  leg_interp_init();               // Phase 7: starts the 500 Hz IntervalTimer ISR
 
   // Create tasks. (Higher number = higher priority in FreeRTOS.)
   xTaskCreate(task_can_rx,    "canrx", STACK_CAN_RX,    nullptr, PRIO_CAN_RX,    nullptr);
   xTaskCreate(task_time_sync, "tsync", STACK_TIME_SYNC, nullptr, PRIO_TIME_SYNC, nullptr);
   xTaskCreate(task_net,       "net",   STACK_UDP_RX,    nullptr, PRIO_UDP_RX,    nullptr);
+  xTaskCreate(task_fault,     "fault", STACK_FAULT,     nullptr, PRIO_FAULT,     nullptr);
   xTaskCreate(task_telem,     "telem", STACK_UDP_TX,    nullptr, PRIO_UDP_TX,    nullptr);
   xTaskCreate(task_heartbeat, "hb",    STACK_UDP_TX,    nullptr, PRIO_UDP_TX,    nullptr);
   xTaskCreate(task_diag,      "diag",  STACK_DIAG,      nullptr, PRIO_DIAG,      nullptr);
-  // PHASE 8: xTaskCreate(task_fault,    "fault", STACK_FAULT, ...);
-  //          xTaskCreate(task_watchdog, "wdog",  STACK_WATCHDOG, ...);
 
   Serial.println("[boot] starting FreeRTOS scheduler");
   vTaskStartScheduler();

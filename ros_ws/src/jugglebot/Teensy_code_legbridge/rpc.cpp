@@ -8,6 +8,7 @@
 #include "legbridge_config.h"
 #include "odrive_protocol.h"
 #include "can_buses.h"
+#include "fault_machine.h"
 
 namespace LegBridge {
 namespace Rpc {
@@ -123,6 +124,8 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
     }
     case RpcMethod::CLEAR_ERRORS: {
       ArgAxisOnly a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
+      // Operator clear refills the soft-reset auto-retry budget (clear_error_flags).
+      fault_notify_clear_errors();
       if (a.axis == AXIS_ALL) {
         if (!can2_commands_allowed()) return RpcStatus::ERR_BUS_DOWN;
         for (uint8_t i = 0; i < NUM_LEGS; ++i) can2_send(ODrive::encode_clear_errors(i));

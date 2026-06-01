@@ -117,6 +117,11 @@ constexpr uint8_t  MAX_SOFT_RESET_ATTEMPTS = 1;
 //  odrive.py ERR_DC_BUS_UNDER_VOLTAGE = 512.
 constexpr uint32_t ERR_DC_BUS_UNDER_VOLTAGE = 512u;
 
+// Deferred-stow profiled descent (mirrors can_node _gently_move_to_setpoint):
+// velocity-limited move to the off pose at the same limit on_shutdown uses.
+constexpr float GENTLE_MOVE_VEL_LIMIT_RPS = JBOp::GENTLE_MOVE_VEL_LIMIT_RPS;  // 2.5
+constexpr float STOW_DONE_EPS_REV = 0.01f;   // legs within this of the off pose ⇒ stow complete
+
 // ── Per-leg stroke clamp bounds (rev) ────────────────────────────────────────
 //  Backstop matching motor_guard's _stroke_min_rev / _stroke_max_rev, which are
 //  WorkspaceLimits.from_geometry(leg_hard_{min,max}_mm) * GEOM_MM_TO_REV (per-leg).

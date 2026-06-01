@@ -47,8 +47,8 @@ rather than applied.
 | 4 | UDP protocol contract finalised | ✅ | Single-source generator → C++/Py/md; 23 xlang tests pass |
 | 5 | CAN1 time-sync master + CAN2 ODrive protocol | ✅ | code only; ODrive port byte-validated vs odrive.py (22 tests) |
 | 6 | Per-axis state cache + telemetry uplink | ✅ | cache + 100 Hz telem + on-change diag |
-| 7 | Hermite/Taylor interpolator port | ⏳ | Python port done (xref 0.0 rev); C++ next |
-| 8 | Fault state machine + watchdog/deferred-stow | ⏳ | |
+| 7 | Hermite/Taylor interpolator port | ✅ | C++ + xref: 0.0 rev divergence vs motor_guard (synthetic + recorded) |
+| 8 | Fault state machine + watchdog/deferred-stow | ✅ | invariants ported; logic spec'd by tests; bench-replay pending |
 | — | Profiling / instrumentation tools | ⏳ | |
 
 Legend: ✅ implemented · ⚠️ partial · ❌ skipped · ⏳ not started.
@@ -144,6 +144,88 @@ codegen. Embedding + a TODO(Phase 10) to hoist them into codegen is lower-risk t
 modifying the generated `hardware_config` pipeline now. The xref harness asserts the
 embedded constants equal the running guard's, so drift is caught.
 
+### D7 — CAN RX decoded in the FlexCAN callback, not via an ISR→queue→task hop (Phase 5)
+
+**Decision:** `can_buses` decodes incoming ODrive frames straight into the cache in
+the `onReceive` callback (pumped by the CAN-RX task's `canX.events()`), not by
+enqueuing raw frames to a task as the plan's table sketches.
+
+**Rationale:** This is the proven platform-Teensy idiom (`Teensy_code.ino` `canSniff`).
+The decode is a few µs of `memcpy` + seqlock write — bounded and fast — so a queue hop
+adds latency and a copy for no benefit. Failure mode it avoids: a backed-up RX queue
+under a fault storm decoupling the cache from reality. The cache writes are
+seqlock-guarded so the interp ISR's reads are torn-read-free.
+
+### D8 — RPC method arg layouts co-located in `rpc.h`, not in the generator (Phase 5)
+
+**Decision:** The per-method RPC argument structs (`ArgAxisState`, `ArgVelCurr`, …)
+live as packed structs in `rpc.h`, not in `config/generate_udp_protocol.py`.
+
+**Rationale:** The consumer of these layouts — the Jetson UDP bridge — is Phase 10
+(out of scope tonight) and does not exist yet, so there is no second language to keep
+in sync *now*. Co-locating them with the dispatcher keeps them readable and reviewable.
+**Follow-up:** hoist into the generator at Phase 10 when the Jetson bridge becomes the
+second consumer (same single-source discipline as the frame layouts).
+
+### D9 — Friction feedforward NOT ported to the interpolator (Phase 7)
+
+**Decision:** `leg_interp` ports the position/velocity ladder + clamps but passes
+`torque_ff` through unchanged; it does **not** port `motor_guard._compute_friction_ff_Nm`
+(the Stribeck-with-smooth-gate friction model).
+
+**Rationale:** Friction FF is a separate additive *torque* term that does not affect the
+commanded position or velocity — which is what the ladder produces and what the xref
+validates (0.0 rev). Porting it requires the `FrictionFFParams` (a tuned bench fit with
+a load-bearing smooth-gate that prevented a 5 Hz limit cycle — see
+`logbook/2026-05-08-friction-ff-platform-limit-cycle.md`) and its own validation. It is
+a well-scoped **follow-on port**, flagged so the torque path isn't silently lossy on the
+bench. Until then the Teensy emits MPC-supplied `torque_ff` only (gravity+inertia).
+
+### D10 — Interpolator runs in a hardware IntervalTimer ISR above the FreeRTOS ceiling (Phase 7)
+
+**Decision:** The 500 Hz tick is a bare `IntervalTimer` ISR (`leg_interp.cpp`), set to a
+priority above `configMAX_SYSCALL_INTERRUPT_PRIORITY`, computing AND transmitting to CAN2
+directly in the ISR. It makes no FreeRTOS calls; setpoint hand-off uses a plain volatile
+pending flag.
+
+**Rationale:** The entire point of moving off Linux is non-negotiable 500 Hz determinism
+(plan §"Task layout": "the interp task is the highest priority… nothing else can preempt
+it"). An ISR above the RTOS syscall ceiling literally cannot be delayed by any RTOS
+critical section — stronger than a high-priority *task*, which still yields to critical
+sections and scheduler latency. **Bench-validation items** (handoff list): the exact
+priority value vs the syscall ceiling, and FlexCAN mailbox writes from ISR context.
+
+### D11 — Watchdog consolidated into the 10 Hz fault task (Phase 8)
+
+**Decision:** The CAN2 heartbeat watchdog runs inside `fault_step()` (10 Hz), not as a
+separate 1 Hz task with a socketcan restore generator (can_node's
+`_watchdog_check` + `attempt_restore_steps`).
+
+**Rationale:** can_node's restore generator re-initialises the *socketcan device* across
+ticks (a Linux-stack operation that can block). The Teensy's FlexCAN peripheral never
+goes away — "restore" is simply observing leg heartbeats resume, a passive check. So the
+generator/restore machinery has no analog here; folding the watchdog into the 10 Hz fault
+evaluation (faster than can_node's 1 Hz, strictly safer) keeps all fault logic at one
+enforcement point. The "confirmed reconnect = fresh leg heartbeats" signal replaces
+can_node's "attempt_restore_steps rx+tx OK".
+
+### D12 — Teensy-side deferred-stow execution = velocity-limited descent in the ISR (Phase 8)
+
+**Decision:** The deferred stow is executed on-Teensy as a velocity-limited per-leg
+descent to the off pose (stroke min) in the 500 Hz ISR (`interp_begin_stow`), at
+`JB_OP_GENTLE_MOVE_VEL_LIMIT_RPS`, then IDLE — the analog of can_node's
+`_gently_move_to_setpoint(0.0, deactivating=True)`.
+
+**Rationale:** The hard-won invariant (logbook 2026-05-19) is *never command a dead bus;
+stow only on confirmed reconnect*. The Teensy now owns CAN, so it owns the latch and the
+descent. The descent is velocity-limited (the safety-critical property; on_shutdown uses
+the same limit) but NOT yet jerk-limited like the Jetson's quintic — a simplification.
+In the cutover, the Jetson bridge may *also* arm a stow; the two compose idempotently
+(both drive to the same off pose). **Follow-up:** reconcile Teensy-vs-Jetson stow
+ownership and add jerk-limiting at Phase 10/11. **Bench-validation:** replay every
+logbook fault scenario (soft-reset bounce, CAN-loss safety inversion, undervoltage) and
+confirm the descent + IDLE handoff (plan Phase 8 "done when" + Risk note).
+
 ## Needs hardware validation
 
 Everything compiled-by-inspection only — no Teensy toolchain in this environment.
@@ -163,6 +245,33 @@ library-API drift) before behavioural testing.
 - **FreeRTOS heap sizing.** Total task stacks ≈ 25 KB; confirm `configTOTAL_HEAP_SIZE`
   is large enough and `vTaskStartScheduler()` does not return (the fatal path blinks
   fast).
+- **Phase 5 — time-sync master (0x7DD).** Sniff CAN1; confirm 100 Hz frames in the exact
+  `pack('<II', sec, usec)` format, and that all three slaves (platform 4.0, BB, cone)
+  still report `time_synced == true` with behaviourally-correct timing. Confirm the
+  Jetson stops broadcasting on CAN (its `bus.broadcast_time()` disabled — Phase 5
+  production change, not yet made; see below).
+- **Phase 5 — ODrive cycle.** Drive one bench ODrive on CAN2 through IDLE → CLOSED_LOOP →
+  position commands → IDLE; confirm all telemetry parses. The encoders are byte-validated
+  vs `odrive.py` offline, but on-wire confirmation is still required.
+- **Phase 5 — IntervalTimer ISR priority.** Confirm `s_timer.priority(32)` sits above
+  `configMAX_SYSCALL_INTERRUPT_PRIORITY` so the interp ISR is non-maskable by FreeRTOS,
+  and that FlexCAN `write()` from ISR context is safe under load.
+- **Phase 7 — float32 divergence.** The algorithm matches `motor_guard` to 0.0 rev in
+  float64 (xref). Measure the float32-on-hardware residual against a recorded throw; the
+  plan accepts "within a tolerance that doesn't affect tracking" if it isn't bit-exact.
+- **Phase 7 — friction FF gap.** Torque path currently omits the Stribeck friction FF
+  (decision D9). Either port it or confirm bench tracking is acceptable without it.
+- **Phase 8 — replay every logbook fault scenario.** The fault logic is spec'd by
+  `tests/firmware/test_fault_logic.py` (a Python mirror) but the C++↔can_node fidelity
+  and the real timing need bench replay: soft-reset bounce-loop cap, the CAN-loss
+  safety-inversion (legs stay CLOSED_LOOP during the down window; profiled stow on
+  confirmed reconnect; re-arm on mid-descent re-drop), and undervoltage recovery. The
+  plan's Phase 8 "done when" requires reproducing `can_node` test coverage on hardware.
+- **Phase 8 — interp ISR ↔ fault task race on the output gate / stow flags.** The fault
+  task (FreeRTOS, prio 3) writes `s_output_enabled` / stow flags that the interp ISR
+  (above the syscall ceiling) reads. Single-word volatiles are atomic on M7, but confirm
+  no multi-field tearing matters (the stow uses a single `s_stow_active` flag + a
+  separately-captured `s_stow_pos[]`; verify the begin/consume ordering on the bench).
 
 ## Blocked — needs human input
 
@@ -170,7 +279,24 @@ _(genuine blockers — none so far)_
 
 ## Planned production-side changes (not yet made)
 
-_(changes the cutover will require in existing files, documented not applied)_
+Per the hard constraint, **no existing production code was modified**. The cutover
+will require these — documented here, to be made in their own commits/sessions:
+
+- **Disable the Jetson time-sync master (Phase 5).** Remove/guard the
+  `self.create_timer(ts_period, self.bus.broadcast_time)` callsite and the
+  `bus.broadcast_time` keep-alive entry in `can_node.py.__init__`; the leg-bridge
+  Teensy now owns 0x7DD. Also fix the stale slave-list docstring in `bus.py:108`
+  (omits the cone Teensy) — flagged in the parent plan's follow-ups.
+- **Jetson UDP time-of-day responder (Phase 5).** A small UDP responder on
+  `PORT_RPC` answering `RpcMethod::TIME_OF_DAY_QUERY` with `CLOCK_REALTIME` µs
+  (the master's wall-clock anchor). New code; the Teensy is the client.
+- **`can_node.py` → UDP bridge (Phase 10).** Replace CAN encode/poll paths with the
+  UDP protocol; re-expose identical ROS2 topics/services; reimplement the watchdog
+  as a Teensy-link monitor. Hoist the RPC method arg layouts (decision D8) into the
+  generator at this point (the bridge is the second consumer).
+- **Move `JB_OP_MAX_POSITION_STEP_REV` per-step gate into the UDP sender (Phase 10).**
+- **Decommission socketcan (Phase 13).** Remove `python-can`, delete `bus.py` and
+  dead branches.
 
 ## Build instructions
 

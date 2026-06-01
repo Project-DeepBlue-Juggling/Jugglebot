@@ -1,0 +1,52 @@
+#pragma once
+// =============================================================================
+//  leg_interp.h — 500 Hz Hermite/Taylor interpolator (port of motor_guard)
+// =============================================================================
+//  Port of motor_guard.py:894-1048 — the Hermite → Taylor → velocity-decay
+//  ladder + lead-clamp + stroke-clamp. The math mirrors, line-for-line, the
+//  validated Python reference
+//    tools/probes/teensy_link_profiling/hermite_xref/teensy_interp.py
+//  which the xref harness proves matches the real motor_guard to 0.0 rev in
+//  float64 across all three modes + clamps over recorded data. On the Teensy
+//  the math runs in float32 (single-precision FPU) — the only expected residual
+//  is float32-vs-float64 rounding, a bench-validation item (plan Phase 7 risk).
+//
+//  Runs in a 500 Hz IntervalTimer ISR at a hardware priority ABOVE the FreeRTOS
+//  syscall ceiling, so nothing the RTOS does can preempt it (the entire point of
+//  moving off Linux — see plan §"Task layout"). The ISR therefore makes NO
+//  FreeRTOS calls; the setpoint hand-off uses a plain volatile pending flag.
+// =============================================================================
+
+#include <cstdint>
+
+namespace LegBridge {
+
+void leg_interp_init();   // start the 500 Hz IntervalTimer
+
+// udp_link setpoint handler (runs in the net task): stages the new waypoints.
+void interp_on_setpoint(uint16_t seq, const uint8_t* payload, uint16_t len);
+
+// Wall-clock (us) of the last setpoint received — for the staleness watchdog.
+uint64_t interp_last_setpoint_us();
+
+// Enable/disable command output (the fault state machine / guard-mode gate;
+// Phase 8 owns this). When false the ISR computes but does not transmit to CAN2.
+void interp_set_output_enabled(bool en);
+bool interp_output_enabled();
+
+// Profiling counters.
+uint32_t interp_deadline_misses();
+uint32_t interp_max_jitter_us();
+void     interp_reset_jitter();
+
+// ── Deferred-stow profiled descent (driven by the fault machine) ──────────────
+// When stow is active the 500 Hz ISR ignores the MPC ladder and runs a
+// velocity-limited descent of every leg to the off pose (stroke min), emitting
+// the setpoints on CAN2. This is the Teensy analog of can_node's
+// _gently_move_to_setpoint(0.0, deactivating=True).
+void interp_begin_stow();    // capture current encoder positions, start the descent
+void interp_end_stow();      // stop the descent (back to MPC ladder / hold)
+bool interp_stow_active();
+bool interp_stow_complete();  // true once all legs reached the off pose
+
+}  // namespace LegBridge
