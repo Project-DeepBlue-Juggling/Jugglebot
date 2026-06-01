@@ -52,11 +52,14 @@ Two reasons, in order of importance:
    six leg ODrives. Wiring a second device near the Jetson is straightforward;
    moving the existing one is not.
 2. **Scope isolation.** The existing Teensy's responsibilities (hand
-   trajectory, time-sync, inclinometer, state persistence) keep working
-   unchanged. Risk of regression on existing throw/catch behaviour is zero.
+   trajectory, time-sync slave-side IIR, inclinometer, state persistence)
+   keep working unchanged. Risk of regression on existing throw/catch
+   behaviour is zero.
 
-The new Teensy will join the same CAN1 bus as the existing one (for time-sync
-and shared aux state) and will own a private CAN2 bus to the leg ODrives.
+The new Teensy will join the same CAN1 bus as the existing one (where it
+becomes the time-sync **master** broadcasting to the existing slave Teensys,
+plus it sees shared aux state) and will own a private CAN2 bus to the leg
+ODrives. See "Time-sync master" below for the master-role change rationale.
 
 ---
 
@@ -68,8 +71,8 @@ and shared aux state) and will own a private CAN2 bus to the leg ODrives.
 +--------+              Ethernet           +-----------+   CAN1 (shared)   +--------------+
 | Jetson |<------ point-to-point UDP ----->| Teensy    |<----------------->| Hand ODrive  |
 |        |       (USB-Ethernet adapter)    | 4.1 (new) |     1 Mbps        | BB ctrl      |
-|        |       192.168.42.0/30           |           |                   | Cone Teensy  |
-| eth0   |                                 |           |                   | Platform     |
+|        |       192.168.42.0/30           |  [clock   |                   | Cone Teensy  |
+| eth0   |                                 |   master] |                   | Platform     |
 | (LAN)  |                                 |           |                   | Teensy 4.0   |
 +--------+                                 +-----------+                   +--------------+
                                                   |
@@ -79,6 +82,12 @@ and shared aux state) and will own a private CAN2 bus to the leg ODrives.
                                           +----------------+
                                           | 6 Leg ODrives  |
                                           +----------------+
+
+  Time-sync: new Teensy broadcasts 100 Hz wall-clock on CAN1 ID 0x7DD,
+  consumed by all three slave Teensys (platform 4.0, Ball Butler, catching
+  cone). Over UDP the new Teensy queries the Jetson once at boot + every
+  10-60 s for the wall-clock anchor (no master/slave on UDP — Teensy is the
+  client). Jetson is no longer the time-sync master.
 ```
 
 - Jetson's built-in Ethernet stays on the house LAN unchanged.
@@ -92,11 +101,119 @@ and shared aux state) and will own a private CAN2 bus to the leg ODrives.
 
 ### Why two CAN buses
 
-A single bus at 1 Mbps with all current traffic + 6× 500 Hz leg setpoints
-+ 6× 100 Hz leg telemetry runs ~87% utilised — feasible but with no headroom
-for transients (encoder-search SDO bursts, error storms). Splitting legs onto
-their own bus drops leg-bus utilisation to ~50% and isolates leg traffic from
-aux-side faults. Cost: one extra transceiver + connector.
+**A single bus is NOT bandwidth-saturated** — that was an earlier overstatement.
+Honest math, classical CAN 2.0B at 1 Mbps with 11-bit standard IDs:
+
+| Frame | Bits (incl. SOF, arb, CRC, ACK, EOF, IFS) | Notes |
+|---|---|---|
+| 8-byte payload nominal | ~111 | typical for `set_input_pos`, encoder estimates |
+| 8-byte worst-case (max bit-stuffing) | ~130 | rare |
+| 4-byte payload nominal | ~85 | heartbeat, voltage |
+
+At ~120 bits/frame average, the 1 Mbps ceiling is **~8,300 msg/s**; realistic
+sustained capacity ~7,500 msg/s.
+
+Consolidated traffic in the proposed architecture:
+
+| Source | Frames/s | Notes |
+|---|---|---|
+| Leg setpoints (6× at 500 Hz, 8 B) | 3,000 | hot path |
+| Leg telemetry — encoder + iq (100 Hz × 6 × 2) | 1,200 | 8 B each |
+| Leg telemetry — heartbeat (100 Hz × 6) | 600 | small frame |
+| Leg telemetry — temp + voltage (~10 Hz × 6 × 2) | 120 | slow signals |
+| Hand axis telemetry (1 axis, all streams) | ~320 | mirrors a leg |
+| Time-sync from master (100 Hz) | 100 | small frame |
+| Hand trajectory setpoints during throw (500 Hz, transient) | +500 peak | only during throws |
+| BB + cone heartbeats (10 Hz) | ~20 | small |
+
+**Steady-state aggregate: ~5,400 msg/s. With a throw active: ~5,900 msg/s.**
+At ~120 bits/frame (many smaller), that's **~65% / ~71% of the theoretical
+8,300 msg/s ceiling** — or, against the practical ~7,500 msg/s ceiling that
+accounts for bit-stuffing variance and IFS overhead, **~72% / ~79%**.
+Feasible either way; comfortably under saturation in both denominators.
+
+So a single bus is feasible. The case for two buses isn't bandwidth; it's:
+
+- **Isolation.** A fault storm on the leg side — multiple axes erroring
+  back-to-back at high rate — can briefly push bus load far above steady-state.
+  On a single bus this stalls hand/BB/cone traffic, including time-sync. On
+  separate buses, the leg storm is contained and time-sync to the rest of the
+  system keeps running.
+- **Determinism.** Leg setpoint latency is bounded by leg-bus traffic only,
+  not by whatever aux-side traffic happens to be flying. The hot 500 Hz
+  setpoint stream never contends with hand trajectory bursts or SDO replies.
+- **Transient headroom.** Encoder-search SDO bursts (6 axes querying
+  `commutation_mapper.pos_abs` back-to-back during homing) and error storms
+  can briefly push utilisation much higher than steady-state. Isolation means
+  these don't cross-contaminate.
+- **Physical wiring topology.** Same rationale that drove the two-Teensy
+  decision: a dedicated leg-bus harness from the new Teensy to the six leg
+  ODrives is a cleaner physical layout than retro-fitting them onto the
+  existing CAN1 harness.
+
+Cost: one extra transceiver + connector. Worth it for the substrate stability
+goal.
+
+### Time-sync master moves from Jetson to new Teensy
+
+Currently the **Jetson** is the time-sync master, broadcasting wall-clock at
+100 Hz on CAN1 ID 0x7DD; the platform Teensy 4.0 and catching cone Teensy are
+slaves that IIR-filter the incoming offset. Under this plan, the **new CAN
+Teensy** takes over the master role.
+
+The change is architecture-driven, not load-driven. The new Teensy already has
+a hardware-timer-driven monotonic clock for the 500 Hz interpolator ISR —
+sub-microsecond resolution, zero scheduler jitter, no preemption from Linux
+housekeeping. It has the cleanest time base on the entire system, which is
+exactly what the master role wants.
+
+Benefits:
+
+- **One canonical clock owner**, sitting on the device with the hardest
+  real-time properties. The CAN bus and the UDP bus share a single time
+  origin, simplifying log correlation.
+- **Decouples robot timing from Jetson load**. The Jetson can reboot, do GC
+  pauses, run ROS2 bookkeeping, or get bogged down by a heavy DDS subscriber
+  — none of it disturbs platform-level timing.
+- **Existing slave Teensys are unaffected.** All three current slaves —
+  platform Teensy 4.0, Ball Butler Teensy, and catching cone Teensy — keep
+  being slaves; the master identity is invisible to their IIR filter (it's
+  the same frame ID 0x7DD, same payload format). Zero changes on those
+  devices.
+
+Implementation pattern:
+
+- **Hardware**: Teensy 4.1's internal crystal (~20-50 ppm) drives all timing.
+  No external module needed. Optional: solder a CR2032 holder to the VBAT pin
+  (~$1) so the on-chip RTC preserves wall-clock across power-off — purely a
+  nicety for boot-time human-readable timestamps.
+- **Boot**: Teensy starts with monotonic time only. After UDP link comes up,
+  queries the Jetson once for current wall-clock (`time(NULL)`) and stores
+  the offset. From then on, broadcasts `wall_offset + monotonic_us` on
+  CAN1 0x7DD at 100 Hz.
+- **Drift correction**: Teensy re-queries the Jetson every 10-60 seconds
+  over UDP to correct long-term drift. The Jetson's clock is the
+  authoritative wall-clock anchor (NTP-disciplined upstream); the Teensy
+  owns the real-time *rate*.
+- **Jetson role**: changes from master to client. The current
+  `bus.broadcast_time()` callsite goes away; the Jetson stops broadcasting
+  on CAN entirely (it has no CAN bus to broadcast on after the cutover
+  anyway). The Jetson's system clock continues running as normal for its own
+  logs — no need to discipline it to the Teensy.
+
+CPU/load implications:
+
+- **New CAN Teensy as master**: +~0.5% CPU for the broadcast task + drift
+  re-sync. Negligible against the 12-15% baseline.
+- **Platform Teensy 4.0**: load **unchanged**. Same IIR filter on the same
+  incoming frames; master identity is irrelevant to the slave.
+- **Catching cone Teensy**: load **unchanged**. Same reason.
+- **Jetson**: small decrease — no longer broadcasting time-sync on CAN.
+  Gains a small UDP responder for the Teensy's time-of-day queries (~1
+  request per 10-60 s; trivial).
+
+This change pairs cleanly with the rest of the plan and adds no scope to any
+existing Teensy or to the Jetson-side bridge work.
 
 ### Why Teensy 4.1 (not 4.0)
 
@@ -112,9 +229,31 @@ Secondary factors:
   + fault state machine, with room for future growth.
 - microSD slot — optional local high-rate logging of CAN traffic.
 - Breadboard-friendly side rails with through-holes — easier prototyping.
+- **VBAT pin for battery-backed RTC** — optional CR2032 holder preserves
+  wall-clock across power-off, useful since the new Teensy is the time-sync
+  master under this plan.
 
 Cost difference: ~$12. Not worth penny-pinching on the device this plan is
 building the next several years on.
+
+### On-board clock is sufficient — no external module needed
+
+The Teensy 4.1 owns the system's real-time clock under this plan (see
+"Time-sync master" below). Everything it needs is on-chip:
+
+- **DWT_CYCCNT** (ARM cycle counter) — ~1.67 ns resolution at 600 MHz.
+- **IntervalTimer** — hardware-PIT-driven periodic interrupts; drives the
+  500 Hz interpolator ISR with sub-cycle determinism.
+- **micros()/millis()** — microsecond-resolution monotonic time.
+- **On-chip RTC** — battery-backable via VBAT pin (optional CR2032).
+- **On-board crystal** — ~20-50 ppm typical, ~100 ppm worst-case over
+  temperature. At 20 ppm drift is 20 µs/sec, invisible to a 2 ms control
+  loop and to the slave Teensys' IIR filters.
+
+Long-term drift is corrected by periodically re-syncing wall-clock from the
+Jetson over UDP (every 10-60 s); the Teensy owns the *rate*, the Jetson is
+the wall-clock *anchor*. No GPS PPS, TCXO, or external RTC module is needed
+for this application.
 
 ### Why Ethernet (not USB serial)
 
@@ -154,20 +293,25 @@ building the next several years on.
 | CAN transceiver × 2 | One per CAN bus | **TJA1051T/3** or **MCP2562** (3.3 V-tolerant logic side, required by Teensy 4.1 which is 3.3 V). | ~$2 each |
 | 120 Ω termination resistors × 2 | One per CAN bus end | Standard CAN termination. | <$1 |
 | microSD card | Local logging (optional) | 16-32 GB Class 10 is plenty. Defer if not logging on day one. | ~$10 |
+| CR2032 + battery holder | RTC backup (optional) | Solder to Teensy 4.1's VBAT pin. Preserves wall-clock across power-off so the time-sync master has a reasonable boot-time estimate before the Jetson UDP query completes. | ~$1 |
 | Enclosure / mounting | Physical | Sized to your robot. | varies |
 
 Total new BOM: **~$75** for the core electronics, plus enclosure and wiring.
 
 ### Existing hardware that does NOT change
 
-- Platform Teensy 4.0 — keeps its current scope (hand traj, time-sync,
-  inclinometer, state persistence) untouched.
+- Platform Teensy 4.0 — keeps its current scope (hand traj, time-sync
+  *slave*, inclinometer, state persistence) untouched. Only the master
+  identity of the time-sync broadcast changes; the IIR filter consumes the
+  same frame ID 0x7DD with the same payload format.
 - Catching cone Teensy — unchanged, stays on CAN1.
 - Ball Butler controller — unchanged, stays on CAN1.
 - Six leg ODrives — unchanged, move from "Jetson's socketcan bus" to "Teensy
   CAN2 private bus" by re-wiring (same connectors, same protocol).
 - Hand ODrive — stays on CAN1, still commanded by platform Teensy.
-- Jetson Orin Nano — unchanged, just adds the USB-Ethernet adapter.
+- Jetson Orin Nano — hardware unchanged, just adds the USB-Ethernet adapter.
+  Functional changes: stops being the time-sync master (becomes a wall-clock
+  anchor responder over UDP); stops touching socketcan entirely.
 
 ---
 
@@ -184,17 +328,16 @@ JetPack 5.x ships with NetworkManager. Use `nmcli` for persistence.
 ```bash
 # After plugging in the USB-Ethernet adapter, identify it:
 ip -c link show
-# Note the enxAABBCCDDEEFF-style name. That name is persistent (derived from
-# the adapter MAC), so survives reboots and re-plug events.
-
-# Substitute your interface name below:
-IFACE=$(ip -o link | awk -F': ' '/enx/ {print $2; exit}')
-echo "Using interface: $IFACE"
+# On this Jetson the kernel assigns traditional naming (eth1) for the USB
+# adapter rather than the predictable `enxXXXX` form. Either name works in
+# nmcli, but binding by MAC is more robust — survives boot order, plug events,
+# and adding additional USB-Ethernet adapters later. Note the adapter's MAC
+# from `ip link show` and substitute it below.
 
 sudo nmcli connection add \
   type ethernet \
-  ifname "$IFACE" \
   con-name teensy-link \
+  802-3-ethernet.mac-address AA:BB:CC:DD:EE:FF \
   ipv4.method manual \
   ipv4.addresses 192.168.42.1/30 \
   ipv6.method disabled \
@@ -202,6 +345,11 @@ sudo nmcli connection add \
 
 sudo nmcli connection up teensy-link
 ```
+
+**Worked example on this robot's Jetson** (recorded during Phase 1 bring-up):
+adapter MAC `6c:1f:f7:c6:e4:6b`, kernel-assigned name `eth1`. Substitute your
+own MAC into the `802-3-ethernet.mac-address` field; the connection then binds
+to that physical adapter regardless of interface naming.
 
 **Critical details:**
 
@@ -217,16 +365,25 @@ sudo nmcli connection up teensy-link
 ### Verification
 
 ```bash
-ip -c addr show dev "$IFACE"      # should show 192.168.42.1/30
+ip -c addr show dev eth1          # should show 192.168.42.1/30 once link is up
 ip -c route                       # default route should still go via eth0
 # Expected route entries:
 #   default via 192.168.X.1 dev eth0 proto dhcp ...
 #   192.168.X.0/24 dev eth0 proto kernel ...
-#   192.168.42.0/30 dev enx... proto kernel src 192.168.42.1
+#   192.168.42.0/30 dev eth1 proto kernel src 192.168.42.1   # only when Teensy link is up
+nmcli connection show teensy-link | grep -E "ipv4|autoconnect|mac"  # config sanity
 ```
 
 If you see two `default via` lines, the Teensy connection has a gateway set —
 remove it.
+
+**Expected at this stage (Phase 1, no Teensy firmware yet):** `eth1` will show
+`<NO-CARRIER>` and `state DOWN`; the USB-Ethernet adapter's link lights will
+NOT blink. This is normal — the Teensy's Ethernet PHY (DP83825I on the PJRC
+kit) is held in reset until firmware calls `Ethernet.begin()` in Phase 2.
+The IP, MAC binding, and route entry are all correct and will activate the
+moment the Teensy comes online. The 192.168.42.0/30 route entry will not
+appear in `ip route` until the link is up — that's also expected.
 
 ### Real-time tuning (defer until measured)
 
@@ -234,8 +391,8 @@ Defaults are fine for 40 Hz / 100 Hz traffic. If jitter measurement later shows
 something concerning:
 
 ```bash
-sudo ethtool -K "$IFACE" gro off lro off
-sudo ethtool -C "$IFACE" rx-usecs 0 tx-usecs 0 2>/dev/null || true
+sudo ethtool -K eth1 gro off lro off
+sudo ethtool -C eth1 rx-usecs 0 tx-usecs 0 2>/dev/null || true
 ```
 
 In the bridge code, consider `SO_PRIORITY=6` and SCHED_FIFO for the receive
@@ -270,7 +427,7 @@ thread. Don't tune blind — measure first with `ping -i 0.01 -c 1000 192.168.42
 | 5 | `can2_tx_task` | Queue from interp | 1 KB | Pacing-aware TX to leg ODrives. |
 | 5 | `can1_rx_task`, `can2_rx_task` | FlexCAN ISR + queue | 2 KB each | Decode + update per-axis state cache. |
 | 4 | `usb_rx_task` (UDP downlink) | lwIP callback | 4 KB | Decode Jetson commands, dispatch to subsystems. |
-| 4 | `time_sync_task` | CAN1 RX of sync frame | 1 KB | IIR offset update (matches existing platform-Teensy logic). |
+| 4 | `time_sync_master_task` | 100 Hz `IntervalTimer` | 1 KB | **Broadcasts** wall-clock sync on CAN1 ID 0x7DD (replacing the Jetson as time-sync master — see "Time-sync master" section). Also responds to UDP time queries from the Jetson. |
 | 3 | `usb_tx_task` (UDP uplink) | 100 Hz tick + event-driven | 4 KB | Telemetry stream + on-change diagnostics. |
 | 3 | `fault_state_task` | 10 Hz + CAN error events | 2 KB | Per-axis error tracking, soft-reset attempt limiter, undervoltage gate. Ports verbatim from [can_node.py:386-483](../../ros_ws/src/jugglebot/jugglebot/can_node.py#L386-L483). |
 | 2 | `watchdog_task` | 1 Hz | 1 KB | Heartbeat staleness, Jetson link health, deferred-stow latch. |
@@ -508,16 +665,19 @@ prototyped on breadboard, CAN transceivers wired and bench-tested in isolation
 (no leg ODrives yet).
 
 - Order BOM (see hardware list above).
-- Solder PJRC Ethernet kit to Teensy 4.1.
-- Connect the PJRC Ethernet kit's 6-pin ribbon to the Teensy 4.1 Ethernet pads (PHY is on the kit; no separate PHY wiring).
+- Solder PJRC Ethernet kit's 6-pin ribbon to the Teensy 4.1 Ethernet pads
+  (PHY is on the kit; no separate PHY wiring).
 - Wire two CAN transceivers (TJA1051T/3) to Teensy's CAN1 and CAN2 pins.
 - 120 Ω termination on both bus ends (CAN2 will be a 2-node bus
   Teensy↔leg-ODrive-chain).
 - Plan physical mounting: Teensy near Jetson (Ethernet cable run short),
   CAN2 to legs separate from existing CAN1.
 
-**Done when:** Bare Teensy boots, Ethernet link comes up to a laptop, both
-CAN transceivers loop back self-test frames.
+**Done when:** Bare Teensy boots (USB power-on LED visible), all solder joints
+inspected and continuity-tested. **Note:** the Ethernet PHY will NOT come up
+and the USB-Ethernet adapter's link lights will NOT blink at this stage — the
+PHY is held in reset until firmware calls `Ethernet.begin()` (Phase 2). This
+is expected and not a hardware fault.
 
 ---
 
@@ -534,7 +694,11 @@ firmware, with no impact on house LAN.
 - Verify house LAN still works (SSH from another machine, internet).
 
 **Done when:** `ip route` shows clean two-interface routing, reboot preserves
-config, house LAN unaffected.
+config, house LAN unaffected. **Expected at this stage:** `eth1` is
+`<NO-CARRIER>` and `state DOWN`, USB-Ethernet adapter link lights NOT blinking
+— the Teensy PHY is still held in reset until Phase 2 firmware boots it. The
+IP, MAC pin, and route entry are all correct; they will activate the moment
+the Teensy comes online.
 
 ---
 
@@ -551,8 +715,10 @@ config, house LAN unaffected.
 - Test: `ping -i 0.01 -c 1000 192.168.42.2` — record latency/jitter
   distribution as a baseline.
 
-**Done when:** Ping works reliably, latency under ~2 ms worst-case, Teensy
-serial console (USB CDC for debug only) shows clean FreeRTOS task scheduling.
+**Done when:** USB-Ethernet adapter link lights now blink (PHY out of reset),
+`eth1` flips to `state UP`, ping works reliably, latency under ~2 ms
+worst-case, Teensy serial console (USB CDC for debug only) shows clean
+FreeRTOS task scheduling.
 
 ---
 
@@ -579,7 +745,10 @@ CRC, loss rate <0.01%, end-to-end latency under ~1 ms.
 semantics, retry rules, error codes.
 
 - Define every frame type for both streams (setpoint downlink, telemetry
-  uplink, RPC request/response, heartbeats).
+  uplink, RPC request/response, heartbeats, **time-of-day query/response
+  used by the new Teensy's wall-clock bootstrap and drift re-sync — see
+  "Time-sync master"**). The time-of-day exchange can ride on the existing
+  RPC channel as a typed request; decide and record here.
 - Write a `docs/teensy-udp-protocol.md` reference (or inline in this plan).
 - Generate Python and C++ struct definitions from a single source (consider
   extending [config/generate_config.py](../../config/generate_config.py)
@@ -593,10 +762,35 @@ C++.
 
 ---
 
-### Phase 5 — CAN2 bring-up and ODrive protocol on Teensy
+### Phase 5 — CAN bring-up: CAN1 time-sync master, CAN2 ODrive protocol
 
-**Goal:** Teensy can encode/decode all ODrive CAN frames on CAN2, exchange
-heartbeats with one leg ODrive (on the bench, not the robot).
+**Goal:** Teensy is up on both CAN buses. CAN1 carries the time-sync master
+broadcast (replacing the Jetson); CAN2 can encode/decode all ODrive frames
+and exchange heartbeats with one leg ODrive on the bench (not the robot).
+
+CAN1 bring-up + time-sync master:
+
+- Wire the new Teensy onto the existing shared CAN1 bus (alongside the
+  platform Teensy 4.0, cone Teensy, hand ODrive, BB controller). 120 Ω
+  termination already present on this bus.
+- Implement `time_sync_master_task`: 100 Hz `IntervalTimer` broadcasts
+  `(wall_offset_us + monotonic_us)` on CAN1 ID 0x7DD using the same payload
+  format the Jetson currently emits (so the existing slaves' IIR filter
+  consumes it unchanged).
+- Implement Teensy-side bootstrap: on UDP link-up, query the Jetson for
+  `time(NULL)`, store offset, begin broadcasting. Re-query every 30 s for
+  drift correction.
+- Disable the Jetson's current `bus.broadcast_time()` callsite (in
+  `can_node.py`); the Jetson stops broadcasting on CAN, starts responding
+  to the Teensy's UDP time queries.
+- Verify on the bench (without the robot): hook a CAN sniffer to CAN1,
+  confirm 100 Hz frames from the new Teensy on ID 0x7DD, confirm all three
+  slaves (platform Teensy 4.0, Ball Butler Teensy, catching cone Teensy)
+  still report `time_synced == true` via their existing CAN heartbeats and
+  produce behaviourally-correct timing (e.g., BB throw sequencing aligns
+  with Jetson timestamps, cone catch events report consistent epochs).
+
+CAN2 bring-up + ODrive protocol:
 
 - Port ODrive frame encoders/decoders from
   [odrive.py](../../ros_ws/src/jugglebot/jugglebot/can/odrive.py) to C++.
@@ -606,9 +800,20 @@ heartbeats with one leg ODrive (on the bench, not the robot).
   gain writes, set_controller_mode.
 - Test SDO read (used for encoder-search feedback).
 
-**Done when:** Teensy can drive one ODrive on the bench through a full cycle
-(IDLE → CLOSED_LOOP → position commands → IDLE), with all telemetry parsed
-correctly.
+**Done when:**
+- CAN1: all three existing slaves (platform Teensy 4.0, Ball Butler Teensy,
+  catching cone Teensy) report `time_synced == true` and produce
+  behaviourally-correct timing under the new master, with no observable
+  difference from Jetson-as-master. (Note: the slaves' `wall_offset_us` is
+  a private internal — verification is by the externally-visible
+  `time_synced` flag plus behavioural proxies like throw sequencing and
+  catch-event epochs, not by reading the offset directly. If sharper
+  verification is needed, add a temporary diagnostic CAN frame or debug
+  serial print to one slave for bench-bringup only, then remove before
+  declaring Phase 5 done.) Jetson is no longer broadcasting on CAN.
+- CAN2: Teensy can drive one ODrive on the bench through a full cycle
+  (IDLE → CLOSED_LOOP → position commands → IDLE), with all telemetry
+  parsed correctly.
 
 ---
 
@@ -725,7 +930,10 @@ pipeline.
 architecture. Existing platform Teensy 4.0 and CAN1 unchanged.
 
 - Migrate remaining 5 legs to CAN2.
-- Verify CAN1 traffic (hand, BB, cone, time-sync) unchanged.
+- Verify CAN1 traffic — hand, BB, and cone protocol frames unchanged.
+  Time-sync on 0x7DD is now sourced from the new Teensy (cutover landed in
+  Phase 5); slaves still clock-locked, frame format/cadence/ID identical to
+  before.
 - Run full hardware test plan from
   [hardware-bringup.md](hardware-bringup.md): Active hold, dynamic moves,
   trajectory, catch.
@@ -770,9 +978,13 @@ don't re-litigate.
 - **Teensy 4.0** for the new device. **Rejected** because Ethernet on a 4.0
   requires an external SPI controller; on a 4.1 it's a soldered magjack +
   PHY breakout directly to the chip's MAC. Cost difference is ~$12.
-- **Single CAN bus on the new Teensy.** **Rejected** because aggregate
-  utilisation would be ~87% with no headroom for transients. Dual-bus drops
-  leg-bus utilisation to ~50% and isolates legs from aux-side faults.
+- **Single CAN bus on the new Teensy.** **Rejected** — but the math caveat
+  matters: a single bus is actually bandwidth-feasible (~65%/~71% of
+  theoretical or ~72%/~79% of practical 7,500 msg/s ceiling; see "Why two
+  CAN buses"). The rejection is on isolation, determinism, transient
+  headroom, and physical wiring topology grounds, not on strict bandwidth
+  necessity. Dual-bus contains leg-side fault storms and encoder-search
+  SDO bursts so they don't stall hand/BB/cone time-sync traffic.
 - **TCP for any protocol channel.** **Rejected** in favour of UDP throughout.
   Nothing here streams enough data to need head-of-line ordering; TCP's
   reliability comes at the cost of bufferbloat hurting real-time paths.
@@ -795,6 +1007,22 @@ To resolve as the plan progresses.
   source of truth)? Defer to Phase 6 telemetry design.
 - **Catching cone Teensy consolidation.** Stays separate for now (physical
   placement) but if a future redesign brings it physically closer, reconsider.
+
+---
+
+## Follow-up codebase fixes (deferred from audit)
+
+Surfaced by the audit-reporter during plan review but **out of scope for this
+plan's commits**. Captured here so the findings aren't lost.
+
+- **`bus.broadcast_time()` docstring is stale on the slave list.**
+  [`ros_ws/src/jugglebot/jugglebot/can/bus.py:108`](../../ros_ws/src/jugglebot/jugglebot/can/bus.py#L108)
+  reads *"Both Teensys (platform and Ball Butler) use this for clock
+  alignment"* and omits the catching cone Teensy, which has consumed 0x7DD
+  since the May 2026 cone-bringup. Independent of this plan. Natural moment
+  to fix: Phase 5, when `bus.broadcast_time()` gets disabled as part of the
+  master-role transfer — update the docstring in the same commit. Or
+  earlier as a small standalone docs fix.
 
 ---
 
