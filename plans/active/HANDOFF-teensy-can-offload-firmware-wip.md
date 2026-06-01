@@ -42,7 +42,7 @@ rather than applied.
 
 | Phase | Title | Status | Notes |
 |------:|-------|:------:|-------|
-| 2 | FreeRTOS skeleton + Ethernet bring-up | ⏳ | |
+| 2 | FreeRTOS skeleton + Ethernet bring-up | ✅ | Scaffold + QNEthernet static IP + net/heartbeat/diag tasks |
 | 3 | UDP framing layer | ✅ | Fixed-length frames + CRC-16/CCITT-FALSE; cross-lang tested |
 | 4 | UDP protocol contract finalised | ✅ | Single-source generator → C++/Py/md; 23 xlang tests pass |
 | 5 | CAN1 time-sync master + CAN2 ODrive protocol | ⏳ | code only, no bench |
@@ -146,7 +146,23 @@ embedded constants equal the running guard's, so drift is caught.
 
 ## Needs hardware validation
 
-_(specific behaviours only the bench can confirm)_
+Everything compiled-by-inspection only — no Teensy toolchain in this environment.
+The C++ has **not been compiled**. First bench step is a clean build (resolve any
+library-API drift) before behavioural testing.
+
+- **Build the firmware.** Confirm it compiles against the pinned FreeRTOS_TEENSY4
+  + QNEthernet + FlexCAN_T4 versions. Fix any API drift (esp. the FreeRTOS umbrella
+  header — `freertos_shim.h`; greiman vs tsandmann fork).
+- **Phase 2/3:** LED blinks 1 Hz (scheduler alive); `ping 192.168.42.2` works;
+  `ping -i 0.01 -c 1000` latency < ~2 ms; UDP echo round-trips; serial shows clean
+  task scheduling. The QNEthernet PHY brings the Jetson adapter link lights up.
+- **lwIP threading model.** `udp_link.cpp` serialises QNEthernet with a recursive
+  mutex (RX in `net` task, TX from any task). Confirm this holds under load, or
+  switch to a single net-task + TX-queue design (noted in the README). lwIP is not
+  reentrant — this is the highest-risk integration point.
+- **FreeRTOS heap sizing.** Total task stacks ≈ 25 KB; confirm `configTOTAL_HEAP_SIZE`
+  is large enough and `vTaskStartScheduler()` does not return (the fatal path blinks
+  fast).
 
 ## Blocked — needs human input
 
@@ -158,7 +174,12 @@ _(changes the cutover will require in existing files, documented not applied)_
 
 ## Build instructions
 
-_(see also `Teensy_code_legbridge/README.md`)_
+Full detail in [`Teensy_code_legbridge/README.md`](../../ros_ws/src/jugglebot/Teensy_code_legbridge/README.md).
+Summary: Teensy 4.1, Teensyduino 1.59+ (Arduino IDE 2.x or PlatformIO `teensy`),
+600 MHz, Optimize "Faster", USB type Serial. Libraries: FreeRTOS_TEENSY4 (greiman),
+QNEthernet (ssilverman), FlexCAN_T4 (bundled). Regenerate shared headers with
+`python config/generate_config.py` and `python config/generate_udp_protocol.py`
+before building.
 
 ## Recommended order of human review
 
