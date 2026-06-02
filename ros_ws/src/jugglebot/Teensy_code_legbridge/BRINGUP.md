@@ -245,7 +245,7 @@ That puts the firmware at the end of plan Phase 2 and ready for Phase 3
 | LED stays solid OR doesn't blink at 1 Hz | FreeRTOS scheduler didn't start, or fast-blink fatal path is engaged | Open `pio device monitor` — fatal-path firmware writes the failure reason to USB CDC. Check `configTOTAL_HEAP_SIZE` if it's a heap problem. |
 | `ping 192.168.42.2` times out, link lights ON | PHY up but firmware not bound | Check serial console for QNEthernet errors. Confirm the `ipv4.method manual` connection is up on the Jetson side. |
 | `ping` times out, link lights OFF | Cable problem or PHY not powered | Check the PJRC Ethernet kit ribbon orientation. Verify 3.3 V at the kit's power pin. |
-| `pio run -t upload` fails with `teensy_post_compile: ... GLIBC_2.34 not found` | `upload_protocol = teensy-cli` not set | Confirm `platformio.ini` line `upload_protocol = teensy-cli` under `[env:teensy41]`. |
+| `pio run -t upload` fails with `teensy_post_compile` OR `teensy_reboot: GLIBC_2.3x not found` | PlatformIO is using one of its bundled glibc-2.34 binaries | `platformio.ini` should have `upload_command = /usr/bin/teensy_loader_cli --mcu=TEENSY41 -w -v $SOURCE` (NOT `upload_protocol = teensy-cli` — that still invokes the broken `teensy_reboot`). |
 | `pio run -t upload` fails with `Cannot find teensy_loader_cli` | apt package not installed | Re-run Step 2's `sudo apt install -y teensy-loader-cli`. |
 
 For deeper issues, the firmware
