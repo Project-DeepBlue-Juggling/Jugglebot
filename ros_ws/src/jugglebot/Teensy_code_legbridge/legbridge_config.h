@@ -87,7 +87,7 @@ constexpr uint16_t STACK_TIME_SYNC = 1024 / 4;
 constexpr uint16_t STACK_UDP_TX    = 4096 / 4;
 constexpr uint16_t STACK_FAULT     = 2048 / 4;
 constexpr uint16_t STACK_WATCHDOG  = 1024 / 4;
-constexpr uint16_t STACK_DIAG      = 1024 / 4;
+constexpr uint16_t STACK_DIAG      = 4096 / 4;   // bumped from 1024: Serial.printf w/ 7 args overflows at 1024
 
 // ── Interpolator constants (PORTED 1:1 from motor_guard.py) ──────────────────
 //  Source: ros_ws/src/jugglebot/jugglebot/motion/motor_guard.py constants block.
