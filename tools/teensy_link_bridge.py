@@ -72,10 +72,12 @@ def _on_heartbeat_t2j(msg_type: int, seq: int, payload: bytes, addr: Tuple[str, 
         fault_name = FaultState(hb.fault_state).name
     except ValueError:
         fault_name = f"fault_{hb.fault_state}"
+    # Python's %-formatter does not support %b for binary (that's a printf-ism);
+    # bin() returns the '0b...' prefix already, so pass it as %s.
     logging.info(
-        "[T2J] uptime=%dms  link=%s  fault=%s  bus1=%d  bus2=%d  flags=0b%b",
+        "[T2J] uptime=%dms  link=%s  fault=%s  bus1=%d  bus2=%d  flags=%s",
         hb.uptime_ms, link_name, fault_name,
-        hb.bus1_health, hb.bus2_health, hb.flags,
+        hb.bus1_health, hb.bus2_health, bin(hb.flags),
     )
 
 
