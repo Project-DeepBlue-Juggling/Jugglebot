@@ -896,11 +896,56 @@ CAN involvement.
 identical to today; orchestrator, MPC bridge, throw director, BB nodes
 unmodified.
 
-- Replace CAN encoding paths with UDP sends.
-- Replace CAN polling with UDP subscriber.
-- Reimplement watchdog as Teensy-link health monitor.
+#### Phase 10a — Transport library + MVP daemon (DONE 2026-06-02)
+
+Landed as the prerequisite for the ROS-side rewrite:
+
+- **`controller/teensy_link/`** — pure-Python UDP transport library:
+  - `protocol.py` re-exports the generated `udp_protocol.py` codec on a
+    stable import path.
+  - `TeensyLinkClient` owns the two sockets, single RX thread, frame
+    decode + dispatch, sequence tracking, stats, callback subscription,
+    optional 10 Hz heartbeat thread.
+  - `RpcClient` for outgoing J→T RPCs — sequence-numbered request/
+    response correlation, timeout + retry, thread-safe concurrent calls.
+  - `RpcServer` for inbound T→J RPCs — generic handler registration.
+  - `TimeOfDayServer` — auto-handler for `TIME_OF_DAY_QUERY` (the
+    wall-clock anchor side of ADR-0008).
+- **`tools/teensy_link_bridge.py`** — runnable MVP daemon. Sends J→T
+  heartbeats at 10 Hz, responds to `TIME_OF_DAY_QUERY`, logs T→J
+  telemetry (throttled) / heartbeat / profile frames. No setpoint
+  stream, no ROS plumbing — just enough to verify the protocol layer
+  end-to-end on real hardware.
+- **`tests/teensy_link/` (25 tests, all passing)** — full coverage of
+  the codec (constants, CRC, roundtrips, error rejection), the client
+  (heartbeat send, telemetry decode, seq-gap tracking, CRC-error stats,
+  subscription lifecycle, wildcard), and RPC (J→T round-trip, error
+  status, timeout, concurrent calls, T→J handler dispatch, unknown
+  method, exception handling). Uses a `FakeTeensy` peer on loopback —
+  no hardware required.
+- Authoritative gate: `pytest tests/ -q` (run 2026-06-02):
+  **1597 passed, 1 xfailed in 442.27 s** (the xfail is the inherited
+  pre-existing one).
+
+#### Phase 10b — Full bridge rewrite (NOT STARTED)
+
+The remaining Phase-10 work, to follow once the MVP has been smoke-tested
+on real hardware:
+
+- Replace `can_node.py`'s CAN encoding paths with UDP sends via the
+  transport library.
+- Replace `can_node.py`'s CAN polling with the transport library's
+  subscriber callbacks.
+- Reimplement watchdog as Teensy-link health monitor (using
+  `client.time_since_last_t2j_heartbeat_us()` plus the deferred-stow
+  latch from `logbook/2026-05-19-can-loss-fault-response-safety-inversion.md`).
 - All ROS2 topic publishers and service handlers stay; just swap their
   data source.
+- The MPC setpoint stream (40 Hz Hermite waypoints) is fed by
+  `motor_guard.py`'s output — Phase 7's already-validated interpolator
+  output, packaged into `Setpoint` frames.
+- Hoist RPC method arg layouts (handoff D8) into the codegen at this
+  point — the Jetson bridge becomes the second consumer.
 - `pytest tests/ros/ -v` must pass with the bridge in place.
 
 **Done when:** Jetson runs without socketcan loaded. All existing ROS2 tests

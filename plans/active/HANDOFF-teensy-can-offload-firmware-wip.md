@@ -31,10 +31,22 @@ verified to the extent possible without the bench" — see
   protocol (the SPEC — constants/enums/messages — and the emitters live in this one
   file; it produces the C++ header, the Python module, and the markdown spec).
 - `docs/teensy-udp-protocol.md` — the generated protocol reference.
+- `controller/teensy_link/` (added 2026-06-02, Phase 10a) — pure-Python
+  Jetson-side transport library: `TeensyLinkClient` (UDP I/O, framing,
+  sequence tracking, callbacks, optional heartbeat thread), `RpcClient`
+  (outgoing J→T RPCs with retry/timeout), `RpcServer` (inbound T→J RPCs),
+  `TimeOfDayServer` (wall-clock anchor responder).
+- `tests/teensy_link/` (Phase 10a) — 25 tests covering codec, client,
+  RPC, including a `FakeTeensy` loopback peer. All passing.
+- `tools/teensy_link_bridge.py` (Phase 10a) — MVP daemon: 10 Hz J→T
+  heartbeats + TIME_OF_DAY responder + throttled uplink logging. Enough
+  to clear the Teensy's LINK_LOST fault and anchor its wall-clock; no
+  setpoint stream and no ROS plumbing yet.
 
-**No existing production code was modified.** Planned Jetson-side changes
-(`can_node.py` → UDP bridge, disabling `bus.broadcast_time()`) are Phases 10/13
-of the parent plan and are documented under
+**No existing production code was modified.** Planned full-bridge changes
+(`can_node.py` → UDP bridge using `controller/teensy_link/`, disabling
+`bus.broadcast_time()`) are Phase 10b/13 of the parent plan and are
+documented under
 [Planned production-side changes](#planned-production-side-changes-not-yet-made)
 rather than applied.
 
@@ -50,6 +62,8 @@ rather than applied.
 | 7 | Hermite/Taylor interpolator port | ✅ | C++ + xref: 0.0 rev divergence vs motor_guard (synthetic + recorded) |
 | 8 | Fault state machine + watchdog/deferred-stow | ✅ | invariants ported; logic spec'd by tests; bench-replay pending |
 | — | Profiling / instrumentation tools | ✅ | firmware PROFILE frame + Jetson consumer (CSV+plots) + stub client |
+| 10a | Jetson transport library + MVP daemon | ✅ | `controller/teensy_link/` (TeensyLinkClient, RpcClient/Server, TimeOfDayServer), `tools/teensy_link_bridge.py`, 25 tests pass (FakeTeensy loopback) — hardware-unvalidated |
+| 10b | Full `can_node.py` UDP-bridge rewrite | ⏳ | Replaces CAN code paths with calls to `controller/teensy_link/`; keeps ROS topic/service surface identical |
 
 Legend: ✅ implemented · ⚠️ partial · ❌ skipped · ⏳ not started.
 

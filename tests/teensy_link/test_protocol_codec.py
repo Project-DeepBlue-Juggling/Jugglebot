@@ -1,0 +1,117 @@
+"""Round-trip + edge-case tests for the wire-protocol codec."""
+
+from __future__ import annotations
+
+import struct
+
+import pytest
+
+from controller.teensy_link import protocol as p
+
+
+def test_constants_match_firmware_spec():
+    # These are load-bearing — if they ever drift we've broken the protocol.
+    assert p.PROTOCOL_VERSION == 1
+    assert p.MAGIC == 0x4A42  # "JB" little-endian
+    assert p.HEADER_SIZE == 8
+    assert p.CRC_SIZE == 2
+    assert p.PORT_STREAM == 5005
+    assert p.PORT_RPC == 5006
+    assert p.NUM_LEGS == 6
+    assert p.NUM_AXES == 7
+    assert p.HEARTBEAT_HZ == 10
+
+
+def test_crc16_canonical_check_value():
+    # CRC-16/CCITT-FALSE canonical test vector
+    assert p.crc16_ccitt(b"123456789") == 0x29B1
+
+
+def test_heartbeat_j2t_roundtrip():
+    hb = p.HeartbeatJ2T(t_jetson_us=0x0123_4567_89AB_CDEF, flags=0xDEAD_BEEF)
+    blob = hb.pack()
+    assert len(blob) == p.HEARTBEAT_J2T_SIZE
+    decoded = p.HeartbeatJ2T.unpack(blob)
+    assert decoded.t_jetson_us == hb.t_jetson_us
+    assert decoded.flags == hb.flags
+
+
+def test_telemetry_roundtrip():
+    tm = p.Telemetry(
+        t_teensy_us=12345678,
+        pos_rev=tuple(0.1 * i for i in range(p.NUM_AXES)),
+        vel_rps=tuple(-0.2 * i for i in range(p.NUM_AXES)),
+    )
+    blob = tm.pack()
+    assert len(blob) == p.TELEMETRY_SIZE
+    decoded = p.Telemetry.unpack(blob)
+    assert decoded.t_teensy_us == tm.t_teensy_us
+    assert decoded.pos_rev == pytest.approx(tm.pos_rev)
+    assert decoded.vel_rps == pytest.approx(tm.vel_rps)
+
+
+def test_setpoint_roundtrip():
+    sp = p.Setpoint(
+        u0=tuple(float(i) for i in range(6)),
+        u1=tuple(float(i + 10) for i in range(6)),
+        u2=tuple(float(i + 20) for i in range(6)),
+        v0=tuple(float(i + 30) for i in range(6)),
+        accel=tuple(float(i + 40) for i in range(6)),
+        torque_ff=tuple(float(i + 50) for i in range(6)),
+        flags=0b101,
+        t_origin_us=987654321,
+    )
+    blob = sp.pack()
+    assert len(blob) == p.SETPOINT_SIZE
+    decoded = p.Setpoint.unpack(blob)
+    assert decoded.flags == sp.flags
+    assert decoded.t_origin_us == sp.t_origin_us
+    assert decoded.u0 == pytest.approx(sp.u0)
+    assert decoded.u1 == pytest.approx(sp.u1)
+    assert decoded.u2 == pytest.approx(sp.u2)
+    assert decoded.v0 == pytest.approx(sp.v0)
+    assert decoded.accel == pytest.approx(sp.accel)
+    assert decoded.torque_ff == pytest.approx(sp.torque_ff)
+
+
+def test_encode_then_decode_full_frame():
+    hb = p.HeartbeatJ2T(t_jetson_us=42, flags=0)
+    frame = p.encode_frame(int(p.MsgType.HEARTBEAT_J2T), 7, hb.pack())
+    assert len(frame) == p.HEADER_SIZE + p.HEARTBEAT_J2T_SIZE + p.CRC_SIZE
+    mt, seq, payload = p.decode_frame(frame)
+    assert mt == int(p.MsgType.HEARTBEAT_J2T)
+    assert seq == 7
+    assert p.HeartbeatJ2T.unpack(payload).t_jetson_us == 42
+
+
+def test_decode_rejects_bad_magic():
+    frame = bytearray(p.encode_frame(int(p.MsgType.HEARTBEAT_J2T), 0, p.HeartbeatJ2T().pack()))
+    frame[0] = 0  # corrupt magic
+    with pytest.raises(ValueError, match="magic"):
+        p.decode_frame(bytes(frame))
+
+
+def test_decode_rejects_bad_crc():
+    frame = bytearray(p.encode_frame(int(p.MsgType.HEARTBEAT_J2T), 0, p.HeartbeatJ2T().pack()))
+    frame[-1] ^= 0xFF  # flip a CRC bit
+    with pytest.raises(ValueError, match="CRC"):
+        p.decode_frame(bytes(frame))
+
+
+def test_decode_rejects_inconsistent_length():
+    # Header says length=99 but frame too short to actually carry it
+    blob = b"\x00" * 4
+    head = struct.pack("<HBBHH", p.MAGIC, p.PROTOCOL_VERSION, int(p.MsgType.HEARTBEAT_J2T), 0, 99)
+    crc = p.crc16_ccitt(head + blob)
+    bogus = head + blob + struct.pack("<H", crc)
+    with pytest.raises(ValueError, match="length"):
+        p.decode_frame(bogus)
+
+
+def test_seq_wraps_at_16_bits():
+    # The encoded seq field truncates to uint16 — make sure a request for seq=70000
+    # still produces a valid frame whose decoded seq is the low 16 bits.
+    blob = b"\x00" * 4
+    frame = p.encode_frame(int(p.MsgType.HEARTBEAT_J2T), 70_000, p.HeartbeatJ2T().pack())
+    _, seq, _ = p.decode_frame(frame)
+    assert seq == 70_000 & 0xFFFF
