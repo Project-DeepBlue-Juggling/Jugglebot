@@ -66,6 +66,8 @@ from controller.teensy_link import (
 )
 from controller.teensy_link import protocol as p
 from controller.teensy_link.fault_logic import LinkLossLatch
+from controller.teensy_link.setpoint_pump import SetpointPump
+import jugglebot.hardware_config as hw
 
 
 # ── Constants ──────────────────────────────────────────────────
@@ -104,6 +106,52 @@ def _enum_name(enum_cls, value: int) -> str:
         return f"v{value}"
 
 
+class _MotorGuardSetpointSource:
+    """SUB-only connection to motor_guard's telemetry PUB (tcp://127.0.0.1:5556).
+
+    Deliberately does NOT reuse ``jugglebot.motion.ipc.BridgeIPC``: that also
+    BINDS the command PUB on :5555, which the production ``motion_bridge_node``
+    already binds — two binds on one address fail. The Teensy bridge only needs
+    to *read* the 500 Hz setpoint telemetry, never to command motor_guard.
+
+    Mirrors BridgeIPC's SUB tuning (RCVHWM=2 + drain-to-latest) and the msgpack
+    wire format (``[topic, msgpack(dict)]``). zmq/msgpack are imported lazily so
+    a read-only / setpoint-disabled bridge has no hard dependency on them.
+    """
+
+    def __init__(self, addr: str = 'tcp://127.0.0.1:5556'):
+        import zmq  # lazy — only when setpoint output is enabled
+        self._zmq = zmq
+        import msgpack
+        self._msgpack = msgpack
+        self._ctx = zmq.Context()
+        self._sub = self._ctx.socket(zmq.SUB)
+        self._sub.setsockopt(zmq.RECONNECT_IVL, 100)       # match BridgeIPC
+        self._sub.setsockopt(zmq.RECONNECT_IVL_MAX, 200)
+        self._sub.setsockopt(zmq.RCVHWM, 2)                # bounded queue
+        self._sub.connect(addr)
+        self._sub.setsockopt(zmq.SUBSCRIBE, b'')
+        self._sub.setsockopt(zmq.RCVTIMEO, 0)              # non-blocking
+
+    def recv_latest(self) -> dict | None:
+        """Drain the SUB and return the latest telemetry dict, or None."""
+        latest = None
+        while True:
+            try:
+                frames = self._sub.recv_multipart(flags=self._zmq.NOBLOCK)
+                latest = self._msgpack.unpackb(frames[1], raw=False)
+            except self._zmq.Again:
+                break
+        return latest
+
+    def close(self) -> None:
+        try:
+            self._sub.close()
+            self._ctx.term()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 class TeensyBridgeNode(Node):
     """ROS 2 node bridging the leg-bridge Teensy UDP link to ``/teensy/*``.
 
@@ -115,7 +163,8 @@ class TeensyBridgeNode(Node):
             the client on shutdown (the test fixture owns its lifecycle).
     """
 
-    def __init__(self, client: TeensyLinkClient | None = None):
+    def __init__(self, client: TeensyLinkClient | None = None,
+                 setpoint_source=None):
         super().__init__('teensy_bridge_node')
 
         # ── Parameters ─────────────────────────────────────────
@@ -191,6 +240,22 @@ class TeensyBridgeNode(Node):
         self.create_timer(0.1, self._publish_link_status)      # 10 Hz (heartbeat rate)
         self.create_timer(1.0, self._publish_profile)          # 1 Hz (profile rate)
         self.create_timer(1.0, self._health_check)             # 1 Hz link watchdog
+
+        # ── Setpoint downlink (Commit 3) — DEFAULT DISABLED ────
+        # The 40/500 Hz hot path. The SetpointPump (pure packing + per-step
+        # safety gate) is always constructed (cheap), but the ZMQ source and the
+        # ingest thread are created ONLY when ~enable_setpoint_output is true.
+        # While disabled there is NO setpoint thread and the heartbeat keeps
+        # mpc_active=0, so the Teensy will not enable leg output. The operator
+        # flips the parameter (and restarts the node) only after bench validation.
+        self._sp_pump = SetpointPump(
+            num_legs=p.NUM_LEGS, max_step_rev=hw.JB_OP_MAX_POSITION_STEP_REV)
+        self._sp_source = None
+        self._sp_thread = None
+        self._sp_stop = threading.Event()
+        enable_sp = bool(self.get_parameter('enable_setpoint_output').value)
+        if enable_sp:
+            self._start_setpoint_output(setpoint_source)
 
         peer = (self.get_parameter('teensy_ip').value
                 if client is None else 'injected')
@@ -411,6 +476,84 @@ class TeensyBridgeNode(Node):
             self.get_logger().error(f"Health check error: {e}",
                                     throttle_duration_sec=5.0)
 
+    # ═══════════════════════════════════════════════════════════
+    # Setpoint downlink (Commit 3) — gated, default disabled
+    # ═══════════════════════════════════════════════════════════
+
+    def _set_mpc_active(self, active: bool):
+        """Set the mpc_active state AND the J→T heartbeat flag together.
+
+        This is the ONLY place mpc_active becomes 1. The heartbeat flag tells the
+        Teensy the Jetson is driving setpoints (the firmware's guard-ENABLE
+        precondition). Pinned to 0 unless ~enable_setpoint_output is true.
+        """
+        self._mpc_active = bool(active)
+        self._client.set_heartbeat_flags(_FLAG_MPC_ACTIVE if active else 0)
+        self.get_logger().warning(
+            f"mpc_active set to {int(self._mpc_active)} — setpoint output "
+            f"{'ENABLED' if active else 'disabled'}.")
+
+    def _start_setpoint_output(self, setpoint_source=None):
+        """Bring up the setpoint source + ingest thread and set mpc_active=1.
+
+        Called from __init__ only when ~enable_setpoint_output is true.
+        ``setpoint_source`` may be injected (tests); otherwise a real ZMQ SUB on
+        motor_guard's :5556 is created.
+        """
+        if setpoint_source is not None:
+            self._sp_source = setpoint_source
+        else:
+            self._sp_source = _MotorGuardSetpointSource()
+        # Set mpc_active BEFORE starting the thread so the first tick it drains
+        # is not silently dropped by the mpc_active gate (and so the Teensy is
+        # told we are driving before any setpoint can flow).
+        self._set_mpc_active(True)
+        self._sp_stop.clear()
+        self._sp_thread = threading.Thread(
+            target=self._setpoint_loop, name="teensy_bridge_setpoint", daemon=True)
+        self._sp_thread.start()
+
+    def _setpoint_loop(self):
+        """Dedicated thread: drain motor_guard telemetry → pack → gate → send."""
+        while not self._sp_stop.is_set():
+            try:
+                telem = self._sp_source.recv_latest()
+            except Exception as e:  # noqa: BLE001
+                self.get_logger().error(f"Setpoint source error: {e}",
+                                        throttle_duration_sec=5.0)
+                telem = None
+            if telem is not None:
+                self._process_setpoint(telem)
+            else:
+                # ~1 kHz idle poll (motor_guard publishes at 500 Hz).
+                self._sp_stop.wait(0.001)
+
+    def _process_setpoint(self, telem: dict):
+        """Pack one telemetry tick into a Setpoint frame, gate it, and send.
+
+        SAFETY gates, in order:
+          1. mpc_active must be set (operator opt-in). Belt-and-suspenders — the
+             ingest thread only runs when enabled, but a direct caller is gated
+             here too.
+          2. Never command a dead link (the deferred-stow latch's command gate).
+          3. The SetpointPump's per-step clamp + NaN/short-vector rejection.
+        Only a clean, accepted frame is transmitted.
+        """
+        if not self._mpc_active:
+            return
+        if not self._link_latch.command_allowed():
+            return  # never command a dead link
+        t_origin_us = int(time.time() * 1_000_000)
+        sp, reason = self._sp_pump.build(telem, t_origin_us)
+        if reason is not None:
+            self.get_logger().error(
+                f"Setpoint REJECTED (not sent): {reason}",
+                throttle_duration_sec=1.0)
+            return
+        if sp is None:
+            return  # feedback-only telemetry — nothing to send
+        self._client.send_stream(int(MsgType.SETPOINT), sp.pack())
+
     def _publish_link_status(self):
         """Publish /teensy/link_status as a DiagnosticStatus.
 
@@ -471,6 +614,10 @@ class TeensyBridgeNode(Node):
                          value=str(int(self._link_latch.link_lost))),
                 KeyValue(key='bridge_stow_pending',
                          value=str(int(self._link_latch.stow_pending))),
+                KeyValue(key='setpoints_sent',
+                         value=str(self._sp_pump.frames_built)),
+                KeyValue(key='setpoints_rejected',
+                         value=str(self._sp_pump.frames_rejected)),
                 KeyValue(key='heartbeat_age_ms',
                          value=('n/a' if age_us is None else f'{age_us / 1000.0:.0f}')),
                 KeyValue(key='rx_frames', value=str(stats.rx_frames)),
@@ -541,6 +688,17 @@ class TeensyBridgeNode(Node):
     def on_shutdown(self):
         """Tear down the transport. Only stops the client if we created it."""
         self.get_logger().info("Shutting down TeensyBridgeNode...")
+        # Stop the setpoint thread first (so no frame is sent mid-teardown) and
+        # drop mpc_active so the final heartbeats (if any) carry flags=0.
+        self._sp_stop.set()
+        if self._sp_thread is not None and self._sp_thread.is_alive():
+            self._sp_thread.join(timeout=1.0)
+        self._mpc_active = False
+        if self._sp_source is not None:
+            try:
+                self._sp_source.close()
+            except Exception:  # noqa: BLE001
+                pass
         try:
             self._tod.close()
             self._rpc_server.close()

@@ -1,0 +1,182 @@
+"""Setpoint-downlink tests for teensy_bridge_node (Phase 10b, Commit 3).
+
+The 40/500 Hz hot path. The headline assertions are the SAFETY gates:
+  * default-disabled (no setpoint thread, mpc_active=0, no SETPOINT frames);
+  * mpc_active flips the J→T heartbeat flag only on explicit enable;
+  * per-step clamp + link-down gate suppress unsafe frames.
+
+Pure packing/gate logic is covered in tests/teensy_link/test_setpoint_pump.py;
+this file covers the node wiring through the real client + FakeTeensy.
+"""
+
+from __future__ import annotations
+
+import time
+
+import pytest
+
+from controller.teensy_link import MsgType, HeartbeatJ2T
+from controller.teensy_link.protocol import Setpoint
+
+from tests.ros.test_teensy_bridge_node_read import _build_paired_node, _wait_until
+
+
+class _FakeSource:
+    """Injectable setpoint source: yields queued dicts then None."""
+
+    def __init__(self, dicts=None):
+        self._q = list(dicts or [])
+        self.closed = False
+
+    def push(self, d):
+        self._q.append(d)
+
+    def recv_latest(self):
+        return self._q.pop(0) if self._q else None
+
+    def close(self):
+        self.closed = True
+
+
+def _telem(pos, vel=None, tor=None):
+    return {
+        'leg_pos': list(pos),
+        'leg_vel': list(vel if vel is not None else [0.0] * 6),
+        'leg_torques': list(tor if tor is not None else [0.0] * 6),
+    }
+
+
+def _node():
+    teensy, client, node = _build_paired_node()
+    return teensy, client, node
+
+
+def _teardown(teensy, client, node):
+    node.on_shutdown()
+    client.stop()
+    teensy.stop()
+
+
+# ── Default-disabled (the non-negotiable safety default) ──────
+
+def test_default_disabled_no_thread_no_mpc_active():
+    teensy, client, node = _node()
+    try:
+        assert node._mpc_active is False
+        assert node._sp_thread is None
+        assert node._sp_source is None
+        # Heartbeats carry flags=0 (mpc_active clear).
+        got = teensy.wait_for(int(MsgType.HEARTBEAT_J2T), count=1, timeout=2.0)
+        assert got and HeartbeatJ2T.unpack(got[-1].payload).flags == 0
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_disabled_process_setpoint_sends_nothing():
+    teensy, client, node = _node()
+    try:
+        # Even if a tick is fed directly, a disabled bridge sends no SETPOINT.
+        node._process_setpoint(_telem([0.1] * 6))
+        time.sleep(0.05)
+        assert teensy.received(int(MsgType.SETPOINT)) == []
+    finally:
+        _teardown(teensy, client, node)
+
+
+# ── mpc_active flag wiring ─────────────────────────────────────
+
+def _latest_hb_flags(teensy):
+    got = teensy.received(int(MsgType.HEARTBEAT_J2T))
+    return HeartbeatJ2T.unpack(got[-1].payload).flags if got else None
+
+
+def test_set_mpc_active_flips_heartbeat_flag():
+    teensy, client, node = _node()
+    try:
+        node._set_mpc_active(True)
+        assert node._mpc_active is True
+        # Poll for a heartbeat carrying flags=1 (the thread may still emit one
+        # in-flight flags=0 frame before the new flag takes effect).
+        assert _wait_until(lambda: _latest_hb_flags(teensy) == 0x1, timeout=2.0)
+
+        node._set_mpc_active(False)
+        assert _wait_until(lambda: _latest_hb_flags(teensy) == 0, timeout=2.0)
+    finally:
+        _teardown(teensy, client, node)
+
+
+# ── Enabled path (manual enable + injected source) ────────────
+
+def test_enabled_sends_setpoint_frame():
+    teensy, client, node = _node()
+    try:
+        src = _FakeSource([_telem([0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
+                                  vel=[1, 2, 3, 4, 5, 6],
+                                  tor=[0.01, 0.02, 0.03, 0.04, 0.05, 0.06])])
+        node._start_setpoint_output(src)         # starts thread + mpc_active=1
+        got = teensy.wait_for(int(MsgType.SETPOINT), count=1, timeout=2.0)
+        assert got, "no SETPOINT frame sent"
+        sp = Setpoint.unpack(got[0].payload)
+        assert sp.u0 == pytest.approx((0.1, 0.2, 0.3, 0.4, 0.5, 0.6), abs=1e-6)
+        assert sp.v0 == pytest.approx((1, 2, 3, 4, 5, 6), abs=1e-5)
+        assert sp.torque_ff == pytest.approx(
+            (0.01, 0.02, 0.03, 0.04, 0.05, 0.06), abs=1e-6)
+        assert sp.flags == 0           # no u1/u2 lookahead
+        assert sp.t_origin_us > 0
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_enabled_heartbeat_carries_mpc_active():
+    teensy, client, node = _node()
+    try:
+        node._start_setpoint_output(_FakeSource())
+        assert _wait_until(lambda: _latest_hb_flags(teensy) == 0x1, timeout=2.0)
+    finally:
+        _teardown(teensy, client, node)
+
+
+# ── Per-step safety gate ──────────────────────────────────────
+
+def test_step_violation_not_sent():
+    teensy, client, node = _node()
+    try:
+        node._mpc_active = True          # enable the send path directly
+        node._process_setpoint(_telem([0.0] * 6))      # baseline
+        time.sleep(0.02)
+        n_before = len(teensy.received(int(MsgType.SETPOINT)))
+        node._process_setpoint(_telem([0.0, 0.0, 0.0, 0.9, 0.0, 0.0]))  # 0.9 > 0.3
+        time.sleep(0.05)
+        n_after = len(teensy.received(int(MsgType.SETPOINT)))
+        assert n_after == n_before        # the jumping frame was NOT sent
+        assert node._sp_pump.frames_rejected == 1
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_link_down_blocks_setpoint():
+    teensy, client, node = _node()
+    try:
+        node._mpc_active = True
+        # Force the link latch into the lost state.
+        node._link_latch.first_heartbeat_seen = True
+        node._link_latch.update(stale=True, seen=True)
+        assert node._link_latch.command_allowed() is False
+        node._process_setpoint(_telem([0.1] * 6))
+        time.sleep(0.05)
+        assert teensy.received(int(MsgType.SETPOINT)) == []
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_feedback_only_telemetry_sends_nothing():
+    teensy, client, node = _node()
+    try:
+        node._mpc_active = True
+        node._process_setpoint({'leg_pos': None, 'leg_vel': None,
+                                'leg_torques': None})
+        time.sleep(0.05)
+        assert teensy.received(int(MsgType.SETPOINT)) == []
+        assert node._sp_pump.frames_skipped == 1
+    finally:
+        _teardown(teensy, client, node)
