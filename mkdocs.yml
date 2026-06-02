@@ -76,3 +76,17 @@ nav:
     - Overview: analysis/index.md
     - Diagnosis Tools: analysis/diagnosis.md
     - Engineering Logbook: analysis/logbook.md
+  - Architecture Decisions:
+    - Index: adr/index.md
+    - "ADR-0001: Offload CAN to MCU": adr/0001-offload-can-and-interpolator-from-jetson.md
+    - "ADR-0002: Dedicated second Teensy": adr/0002-dedicated-second-teensy.md
+    - "ADR-0003: Teensy 4.1 over 4.0": adr/0003-teensy-4_1-over-4_0.md
+    - "ADR-0004: Dual CAN buses": adr/0004-dual-can-buses.md
+    - "ADR-0005: Ethernet over USB serial": adr/0005-ethernet-over-usb-serial.md
+    - "ADR-0006: UDP not TCP": adr/0006-udp-not-tcp.md
+    - "ADR-0007: Point-to-point static link": adr/0007-point-to-point-static-link.md
+    - "ADR-0008: Time-sync master on leg-bridge": adr/0008-time-sync-master-on-leg-bridge.md
+    - "ADR-0009: FreeRTOS (tsandmann fork)": adr/0009-freertos-tsandmann-port.md
+    - "ADR-0010: On-board clock sufficient": adr/0010-onboard-clock-sufficient.md
+    - "ADR-0011: MAC-pinned nmcli": adr/0011-mac-pinned-nmcli.md
+    - "ADR-0012: Hermite interpolator port": adr/0012-hermite-interpolator-port.md
