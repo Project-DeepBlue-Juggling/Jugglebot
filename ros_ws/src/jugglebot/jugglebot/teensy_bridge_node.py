@@ -65,6 +65,7 @@ from controller.teensy_link import (
     Profile,
 )
 from controller.teensy_link import protocol as p
+from controller.teensy_link.fault_logic import LinkLossLatch
 
 
 # ── Constants ──────────────────────────────────────────────────
@@ -155,6 +156,12 @@ class TeensyBridgeNode(Node):
         # Per-axis latest Diagnostic (one axis per frame on the wire).
         self._latest_diag: dict[int, Diagnostic] = {}
 
+        # Link-loss deferred-stow latch (the bridge's UDP-link watchdog — the
+        # Jetson↔Teensy analog of can_node._watchdog_check; the CAN-side latch is
+        # owned by the Teensy firmware). See controller/teensy_link/fault_logic.py.
+        self._link_latch = LinkLossLatch()
+        self._last_link_lost = False  # edge detector for logging
+
         # ── Heartbeat: ALWAYS mpc_active=0 at startup ──────────
         # This is the single startup heartbeat path. flags=0 ⇒ mpc_active clear.
         # Commit 3 introduces _mpc_active + _update_heartbeat_flags(); until then
@@ -183,6 +190,7 @@ class TeensyBridgeNode(Node):
         self.create_timer(0.01, self._publish_hand_telemetry)  # 100 Hz
         self.create_timer(0.1, self._publish_link_status)      # 10 Hz (heartbeat rate)
         self.create_timer(1.0, self._publish_profile)          # 1 Hz (profile rate)
+        self.create_timer(1.0, self._health_check)             # 1 Hz link watchdog
 
         peer = (self.get_parameter('teensy_ip').value
                 if client is None else 'injected')
@@ -359,6 +367,50 @@ class TeensyBridgeNode(Node):
         """Microseconds since the last T→J heartbeat, or None if never seen."""
         return self._client.time_since_last_t2j_heartbeat_us()
 
+    # ═══════════════════════════════════════════════════════════
+    # Link-loss watchdog + deferred-stow latch (Commit 2)
+    # ═══════════════════════════════════════════════════════════
+
+    def _health_check(self):
+        """1 Hz link-loss watchdog — the Jetson↔Teensy analog of can_node's
+        _watchdog_check. Drives the deferred-stow latch.
+
+        Invariant (ported from logbook/2026-05-19-can-loss-fault-response-
+        safety-inversion.md): on confirmed link loss, ARM the deferred-stow
+        latch and do NOT command the Teensy (the firmware's own fault machine
+        holds the legs safely while the link is down — and frames wouldn't be
+        delivered anyway). On confirmed reconnect, the latch stays ``stow_pending``
+        and the bridge SURFACES it on /teensy/link_status for the operator /
+        orchestrator. The bridge does NOT auto-execute a stow: there is no stow
+        RPC until firmware Phase 9, and the Teensy already owns the profiled
+        CAN-side stow (decision D12). This is the "always stow on confirmed
+        reconnect, never command a dead link" invariant, minus the executor the
+        bridge does not have.
+        """
+        try:
+            age_us = self._link_age_us()
+            seen = age_us is not None
+            stale = seen and age_us > self._heartbeat_timeout_s * 1e6
+            self._link_latch.update(stale=bool(stale), seen=bool(seen))
+
+            if self._link_latch.link_lost and not self._last_link_lost:
+                self.get_logger().error(
+                    "Teensy link LOST — deferred stow armed; NOT commanding "
+                    "the Teensy while the link is down (firmware holds the legs).")
+            elif not self._link_latch.link_lost and self._last_link_lost:
+                if self._link_latch.stow_pending:
+                    self.get_logger().error(
+                        "Teensy link RESTORED — a mid-run loss occurred. "
+                        "STOW PENDING: no stow RPC exists yet (firmware Phase 9); "
+                        "operator/orchestrator must stow the platform. Surfaced "
+                        "on /teensy/link_status (bridge_stow_pending=1).")
+                else:
+                    self.get_logger().info("Teensy link RESTORED.")
+            self._last_link_lost = self._link_latch.link_lost
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().error(f"Health check error: {e}",
+                                    throttle_duration_sec=5.0)
+
     def _publish_link_status(self):
         """Publish /teensy/link_status as a DiagnosticStatus.
 
@@ -401,12 +453,24 @@ class TeensyBridgeNode(Node):
                 msg.level = DiagnosticStatus.OK
                 msg.message = 'OK'
 
+            # Surface the bridge's own deferred-stow latch (Commit 2). When
+            # bridge_stow_pending=1 after a reconnect, a mid-run link loss
+            # happened and the platform needs stowing (no auto-stow RPC yet).
+            if self._link_latch.stow_pending:
+                msg.level = DiagnosticStatus.ERROR
+                if msg.message == 'OK':
+                    msg.message = 'stow pending (mid-run link loss)'
+
             stats = self._client.stats
             values = [
                 KeyValue(key='bridge_link', value=bridge_link),
                 KeyValue(key='teensy_link', value=teensy_link),
                 KeyValue(key='fault_state', value=teensy_fault),
                 KeyValue(key='mpc_active', value=str(int(self._mpc_active))),
+                KeyValue(key='bridge_link_lost',
+                         value=str(int(self._link_latch.link_lost))),
+                KeyValue(key='bridge_stow_pending',
+                         value=str(int(self._link_latch.stow_pending))),
                 KeyValue(key='heartbeat_age_ms',
                          value=('n/a' if age_us is None else f'{age_us / 1000.0:.0f}')),
                 KeyValue(key='rx_frames', value=str(stats.rx_frames)),
