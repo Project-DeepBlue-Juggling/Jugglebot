@@ -198,3 +198,38 @@ def test_feedback_only_telemetry_sends_nothing():
         assert node._sp_pump.frames_skipped == 1
     finally:
         _teardown(teensy, client, node)
+
+
+def test_motorguard_zmq_source_decodes_real_wire_format():
+    """The real _MotorGuardSetpointSource decodes motor_guard's actual ZMQ
+    msgpack wire format ([topic, msgpack(dict, use_bin_type=True)]) — the one
+    integration point the fake-source tests don't cover. Uses a real PUB on a
+    NON-production port; resends in a loop to beat PUB/SUB slow-joiner."""
+    import zmq
+    import msgpack
+    from jugglebot.teensy_bridge_node import _MotorGuardSetpointSource
+
+    addr = 'tcp://127.0.0.1:5599'  # NOT the production :5556
+    ctx = zmq.Context()
+    pub = ctx.socket(zmq.PUB)
+    pub.bind(addr)
+    src = _MotorGuardSetpointSource(addr=addr)
+    try:
+        payload = {'leg_pos': [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
+                   'leg_vel': [1.0] * 6, 'leg_torques': [0.01] * 6}
+        wire = [b'telem', msgpack.packb(payload, use_bin_type=True)]
+        got = None
+        deadline = time.time() + 3.0
+        while time.time() < deadline and got is None:
+            pub.send_multipart(wire)          # resend until SUB connects
+            time.sleep(0.02)
+            got = src.recv_latest()
+        assert got is not None, "source never decoded a telemetry frame"
+        assert got['leg_pos'] == [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+        assert got['leg_torques'] == [0.01] * 6
+        # drain-to-latest: returns None once the queue is empty.
+        assert src.recv_latest() is None
+    finally:
+        src.close()
+        pub.close()
+        ctx.term()
