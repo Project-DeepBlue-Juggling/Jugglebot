@@ -197,11 +197,57 @@ def test_has_fatal_can_error_from_fault_state(bridge):
     assert node.robot_state_pub.published[-1].has_fatal_can_error is True
 
 
-def test_undervoltage_flag_from_diagnostic(bridge):
+def test_fatal_odrive_not_masked_by_concurrent_fault(bridge):
+    """A higher-priority single-valued Teensy fault (CAN_BUS_DOWN) must NOT mask a
+    concurrent per-leg ODrive fault — the bridge ORs the raw per-leg signals in."""
     teensy, node = bridge
     teensy.send_telemetry()
-    diag = Diagnostic(axis_id=0, axis_state=1, active_errors=0,
-                      disarm_reason=512)  # ERR_DC_BUS_UNDER_VOLTAGE
+    hb = HeartbeatT2J(t_teensy_us=1, link_state=int(LinkState.UP),
+                      bus1_health=int(BusHealth.OK), bus2_health=int(BusHealth.OK),
+                      fault_state=int(FaultState.CAN_BUS_DOWN), flags=0, uptime_ms=1)
+    teensy.send_to_jetson(int(MsgType.HEARTBEAT_T2J), hb.pack())
+    diag = Diagnostic(axis_id=1, axis_state=8, active_errors=0x40, disarm_reason=0)
+    teensy.send_to_jetson(int(MsgType.DIAGNOSTIC), diag.pack())
+    assert _wait_until(lambda: node._latest_heartbeat is not None
+                       and 1 in node._latest_diag
+                       and node._latest_telemetry is not None)
+    node._publish_robot_state()
+    msg = node.robot_state_pub.published[-1]
+    assert msg.has_fatal_odrive_error is True   # not masked by CAN_BUS_DOWN
+    assert msg.has_fatal_can_error is True
+
+
+def test_fatal_odrive_from_disarm_while_closed_loop(bridge):
+    teensy, node = bridge
+    teensy.send_telemetry()
+    diag = Diagnostic(axis_id=2, axis_state=8, active_errors=0,
+                      disarm_reason=0x40)  # disarm while CLOSED_LOOP → fatal
+    teensy.send_to_jetson(int(MsgType.DIAGNOSTIC), diag.pack())
+    assert _wait_until(lambda: 2 in node._latest_diag
+                       and node._latest_telemetry is not None)
+    node._publish_robot_state()
+    assert node.robot_state_pub.published[-1].has_fatal_odrive_error is True
+
+
+def test_no_fatal_odrive_when_legs_clean(bridge):
+    teensy, node = bridge
+    teensy.send_telemetry()
+    diag = Diagnostic(axis_id=0, axis_state=8, active_errors=0, disarm_reason=0)
+    teensy.send_to_jetson(int(MsgType.DIAGNOSTIC), diag.pack())
+    assert _wait_until(lambda: 0 in node._latest_diag
+                       and node._latest_telemetry is not None)
+    node._publish_robot_state()
+    assert node.robot_state_pub.published[-1].has_fatal_odrive_error is False
+
+
+def test_undervoltage_flag_from_active_error_bitwise(bridge):
+    """UV is asserted from a BITWISE test on active_errors (mirrors can_node:436),
+    and is robust to a UV bit combined with other error bits."""
+    teensy, node = bridge
+    teensy.send_telemetry()
+    diag = Diagnostic(axis_id=0, axis_state=1,
+                      active_errors=512 | 0x40,  # UV bit + another bit
+                      disarm_reason=0)
     teensy.send_to_jetson(int(MsgType.DIAGNOSTIC), diag.pack())
     assert _wait_until(lambda: 0 in node._latest_diag
                        and node._latest_telemetry is not None)
@@ -209,6 +255,20 @@ def test_undervoltage_flag_from_diagnostic(bridge):
     msg = node.robot_state_pub.published[-1]
     assert msg.has_undervoltage is True
     assert "Undervoltage detected. Was the E-stop hit?" in msg.error
+
+
+def test_undervoltage_not_asserted_from_disarm_only(bridge):
+    """disarm_reason==UV alone must NOT assert has_undervoltage — can_node sets
+    the flag only from active_errors (disarm==UV is its clear predicate). This
+    keeps /teensy/robot_state agreeing with /robot_state for the recovered state."""
+    teensy, node = bridge
+    teensy.send_telemetry()
+    diag = Diagnostic(axis_id=0, axis_state=1, active_errors=0, disarm_reason=512)
+    teensy.send_to_jetson(int(MsgType.DIAGNOSTIC), diag.pack())
+    assert _wait_until(lambda: 0 in node._latest_diag
+                       and node._latest_telemetry is not None)
+    node._publish_robot_state()
+    assert node.robot_state_pub.published[-1].has_undervoltage is False
 
 
 def test_firmware_validated_conservative_false(bridge):

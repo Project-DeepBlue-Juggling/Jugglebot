@@ -11,7 +11,13 @@ Frame mapping (motor_guard ``_publish_telemetry`` dict → ``Setpoint``):
                                      positive = extension — the Teensy
                                      odrive_protocol flips the sign, ADR-0012)
   * ``leg_vel``     → ``v0``        (velocity feedforward, rev/s)
-  * ``leg_torques`` → ``torque_ff`` (gravity+inertia FF from MPC set_pose, Nm)
+  * ``leg_torques`` → ``torque_ff`` (Nm). NOTE: motor_guard already SUMS
+    gravity+inertia base torque AND its per-leg Stribeck friction FF into
+    ``_commanded_torque_ff_Nm`` (motor_guard.py:997-999, friction_ff.enabled
+    default true), so the forwarded torque INCLUDES friction FF — it is computed
+    Jetson-side, not Teensy-side. The Teensy applies it verbatim and computes no
+    friction itself (cf. ADR-0012/firmware-D9: the Teensy does not *compute*
+    friction FF; that does not mean the delivered torque excludes it).
   * ``u1``/``u2``/``accel`` = 0; ``flags`` = 0 (no u1/u2 lookahead — motor_guard
     already ran the 500 Hz interpolator, so each tick is a single dense waypoint;
     per firmware handoff D4 absence is signalled by clear flag bits, NOT NaN).

@@ -136,6 +136,24 @@ def test_enabled_heartbeat_carries_mpc_active():
         _teardown(teensy, client, node)
 
 
+def test_shutdown_clears_mpc_active_on_wire():
+    """safety-1 regression: after on_shutdown on a previously-ENABLED node, the
+    J→T heartbeat carries flags=0 (mpc_active clear) — the injected client's
+    heartbeat thread keeps running, so the wire flag (not just the local attr)
+    must be cleared. Without the fix the thread would stream stale mpc_active=1."""
+    teensy, client, node = _node()
+    try:
+        node._set_mpc_active(True)
+        assert _wait_until(lambda: _latest_hb_flags(teensy) == 0x1, timeout=2.0)
+        teensy.clear_received()
+        node.on_shutdown()  # injected client → heartbeat thread keeps running
+        assert _wait_until(lambda: _latest_hb_flags(teensy) == 0, timeout=2.0)
+        assert node._mpc_active is False
+    finally:
+        client.stop()
+        teensy.stop()
+
+
 # ── Per-step safety gate ──────────────────────────────────────
 
 def test_step_violation_not_sent():

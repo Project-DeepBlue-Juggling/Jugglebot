@@ -218,11 +218,14 @@ class TeensyBridgeNode(Node):
         self._last_link_lost = False  # edge detector for logging
 
         # ── Heartbeat: ALWAYS mpc_active=0 at startup ──────────
-        # This is the single startup heartbeat path. flags=0 ⇒ mpc_active clear.
-        # Commit 3 introduces _mpc_active + _update_heartbeat_flags(); until then
-        # the flag is structurally pinned to 0.
+        # flags=0 ⇒ mpc_active clear. set_heartbeat_flags(0) AFTER start_heartbeat
+        # makes the pin STRUCTURAL: start_heartbeat is a no-op against an already-
+        # running heartbeat thread (an injected, pre-started client), so without
+        # this explicit clear a stale flags=1 could survive construction. The
+        # defensive 0-write closes that — mpc_active=0 on every startup path.
         self._mpc_active = False
         self._client.start_heartbeat(hz=float(p.HEARTBEAT_HZ), flags=0)
+        self._client.set_heartbeat_flags(0)
 
         # ── Subscriptions to T→J streams (RX-thread callbacks) ──
         self._client.subscribe(int(MsgType.HEARTBEAT_T2J), self._on_heartbeat_t2j)
@@ -380,22 +383,36 @@ class TeensyBridgeNode(Node):
             msg.timestamp = self.get_clock().now().to_msg()
             msg.motor_states = states
 
-            # Typed fault flags. The Teensy owns the fault state machine now, so
-            # these are derived from its HeartbeatT2J.fault_state / bus health
-            # plus the per-axis diagnostics (undervoltage). Mirrors the meaning
-            # of can_node's motors.fatal_error / fatal_can_error / undervoltage.
+            # Typed fault flags. The Teensy owns the fault state machine, so the
+            # headline determination is its single-valued HeartbeatT2J.fault_state.
+            # But fault_state is single-valued, so a higher-priority fault (e.g.
+            # CAN_BUS_DOWN) can MASK a concurrent ODrive fault — which would make
+            # /teensy/robot_state disagree with /robot_state for the same hardware
+            # state (defeating the side-by-side comparison). So we also OR in the
+            # raw per-leg fatal conditions can_node uses (active error on any leg,
+            # or disarm-while-CLOSED_LOOP — can_node._handle_error:416-421), keeping
+            # the comparison faithful WITHOUT re-running the Teensy's stateful
+            # soft-reset machine on the Jetson (which fault_state already reports).
             fault_state = int(hb.fault_state) if hb is not None else 0
             bus2_health = int(hb.bus2_health) if hb is not None else 0
-            msg.has_fatal_odrive_error = (fault_state == int(FaultState.ODRIVE_FATAL))
+            legs = states[:_NUM_LEGS]  # the leg-bridge owns legs 0-5 (hand = platform Teensy)
+            any_leg_active_err = any(s.active_errors != 0 for s in legs)
+            any_leg_disarm_in_cl = any(
+                s.disarm_reason != 0 and s.current_state == _AXIS_STATE_CLOSED_LOOP
+                for s in legs)
+            msg.has_fatal_odrive_error = (
+                fault_state == int(FaultState.ODRIVE_FATAL)
+                or any_leg_active_err or any_leg_disarm_in_cl)
             msg.has_fatal_can_error = (
                 fault_state == int(FaultState.CAN_BUS_DOWN)
                 or bus2_health == int(BusHealth.BUS_OFF))
-            # Undervoltage: any axis reports the UV bit in active errors or as
-            # its disarm reason (matches can_node's undervoltage tracking).
+            # Undervoltage: matches can_node, which sets undervoltage_error ONLY
+            # from a BITWISE test on active_errors (can_node._handle_error:436);
+            # disarm_reason==UV is used by can_node solely in its clear predicate,
+            # never to ASSERT UV. active_errors/disarm are ODrive bitfields, so use
+            # bitwise & (not ==), active_errors only.
             msg.has_undervoltage = any(
-                (s.active_errors & _ERR_DC_BUS_UNDER_VOLTAGE)
-                or (s.disarm_reason == _ERR_DC_BUS_UNDER_VOLTAGE)
-                for s in states)
+                s.active_errors & _ERR_DC_BUS_UNDER_VOLTAGE for s in legs)
             # firmware_validated: not carried on the leg-bridge link in 10b
             # (the Teensy validates ODrive versions internally — Phase 5 — but
             # does not yet expose the result). Conservatively False; handoff gap.
@@ -513,8 +530,9 @@ class TeensyBridgeNode(Node):
         """
         self._mpc_active = bool(active)
         self._client.set_heartbeat_flags(_FLAG_MPC_ACTIVE if active else 0)
-        self.get_logger().warning(
-            f"mpc_active set to {int(self._mpc_active)} — setpoint output "
+        # Enable is the safety-relevant transition (warning); disable is benign.
+        log = self.get_logger().warning if active else self.get_logger().info
+        log(f"mpc_active set to {int(self._mpc_active)} — setpoint output "
             f"{'ENABLED' if active else 'disabled'}.")
 
     def _start_setpoint_output(self, setpoint_source=None):
@@ -840,12 +858,18 @@ class TeensyBridgeNode(Node):
     def on_shutdown(self):
         """Tear down the transport. Only stops the client if we created it."""
         self.get_logger().info("Shutting down TeensyBridgeNode...")
-        # Stop the setpoint thread first (so no frame is sent mid-teardown) and
-        # drop mpc_active so the final heartbeats (if any) carry flags=0.
+        # Stop the setpoint thread first (so no frame is sent mid-teardown), then
+        # drop mpc_active on the WIRE (not just the local flag) BEFORE stopping the
+        # client, so the final J→T heartbeat carries flags=0 — even for an injected
+        # client whose heartbeat thread keeps running after on_shutdown. Using
+        # _set_mpc_active (the sole flag writer) clears client._heartbeat_flags.
         self._sp_stop.set()
         if self._sp_thread is not None and self._sp_thread.is_alive():
             self._sp_thread.join(timeout=1.0)
-        self._mpc_active = False
+        try:
+            self._set_mpc_active(False)
+        except Exception:  # noqa: BLE001 — best-effort during teardown
+            self._mpc_active = False
         if self._sp_source is not None:
             try:
                 self._sp_source.close()
