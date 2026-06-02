@@ -75,7 +75,7 @@ static void drain_socket(EthernetUDP& sock, bool is_rpc) {
       NetLock lk;
       n = sock.parsePacket();
       if (n <= 0) return;
-      if (n > (int)sizeof(s_rx_buf)) { sock.read(nullptr, 0); s_stats.crc_errors++; continue; }
+      if (n > (int)sizeof(s_rx_buf)) { sock.read((uint8_t*)nullptr, 0); s_stats.crc_errors++; continue; }
       sock.read(s_rx_buf, n);
     }
     JbUdp::Header hdr;

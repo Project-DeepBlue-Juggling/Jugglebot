@@ -2,19 +2,18 @@
 // =============================================================================
 //  freertos_shim.h — single include point for the FreeRTOS Teensy 4 port
 // =============================================================================
-//  The parent plan targets the FreeRTOS_TEENSY4 port. Two common forks exist
-//  and differ in their umbrella header:
+//  The parent plan targets the FreeRTOS_TEENSY4 port. The originally-cited
+//  greiman/FreeRTOS_TEENSY4 repo has been deleted (404 as of 2026-06-02); the
+//  actively-maintained successor is tsandmann/freertos-teensy:
 //
-//    * greiman/FreeRTOS_TEENSY4        →  #include "FreeRTOS_TEENSY4.h"   (this)
-//    * tsandmann/freertos-teensy       →  #include "arduino_freertos.h"   (namespaced)
+//    * tsandmann/freertos-teensy  →  #include <arduino_freertos.h>  (this)
 //
-//  We standardise on the greiman header (its name matches the plan's
-//  "FreeRTOS_TEENSY4" verbatim). If the tsandmann fork is used instead, change
-//  the include below and add `using namespace arduino_freertos;`. The rest of
-//  the firmware uses only the standard FreeRTOS API (xTaskCreate, vTaskDelay,
-//  vTaskDelayUntil, xSemaphore*, queues), which is identical across forks.
+//  The umbrella header pulls in FreeRTOS.h + task.h + Arduino glue. The
+//  standard FreeRTOS C API (xTaskCreate, vTaskDelay, vTaskDelayUntil,
+//  xSemaphore*, queues) is in the global namespace and is fork-independent.
 //
-//  Pin the exact library + version in README.md.
+//  Pin the exact library + version in README.md once the bench build is green
+//  (PlatformIO library.json declares version 11.2.0-3 at the time of writing).
 // =============================================================================
 
-#include "FreeRTOS_TEENSY4.h"
+#include <arduino_freertos.h>

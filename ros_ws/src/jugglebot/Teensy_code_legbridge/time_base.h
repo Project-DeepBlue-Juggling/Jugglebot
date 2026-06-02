@@ -15,7 +15,11 @@
 // =============================================================================
 
 #include <cstdint>
-#include <Arduino.h>   // CMSIS __get_PRIMASK / __disable_irq / __set_PRIMASK
+#include <Arduino.h>            // IntervalTimer, micros(), millis(), __disable_irq macro (imxrt.h)
+#include "freertos_shim.h"      // tsandmann/freertos-teensy ships __get_PRIMASK / __set_PRIMASK
+                                // (portmacro.h, pulled in via arduino_freertos.h).
+                                // Teensy's own CMSIS tree is truncated (missing cmsis_version.h),
+                                // so we get these intrinsics from the FreeRTOS port instead.
 
 namespace LegBridge {
 

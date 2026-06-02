@@ -23,6 +23,11 @@
 #include <Arduino.h>
 #include "freertos_shim.h"
 
+// tsandmann/freertos-teensy scopes Arduino pin constants (OUTPUT/LOW/HIGH/etc.)
+// into the `arduino::` namespace via its `arduino_freertos.h`. Hoist them so
+// `pinMode(LED_PIN, OUTPUT)` etc. compile unmodified.
+using namespace arduino;
+
 #include "legbridge_config.h"
 #include "udp_protocol.h"
 #include "time_base.h"
