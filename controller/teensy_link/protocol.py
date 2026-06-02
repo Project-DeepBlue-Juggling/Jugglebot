@@ -78,6 +78,18 @@ from udp_protocol import (  # noqa: E402, F401
     PROFILE_SIZE,
     RPC_REQUEST_SIZE,
     RPC_RESPONSE_SIZE,
+    # RPC method argument layouts (hoisted into the generator at Phase 10b)
+    AXIS_ALL,
+    ArgAxisState,
+    ArgControllerMode,
+    ArgVelCurr,
+    ArgPosGain,
+    ArgVelGains,
+    ArgAbsPosition,
+    ArgAxisOnly,
+    ArgSdoRead,
+    ArgSdoWrite,
+    ResultTimeOfDay,
 )
 
 TEENSY_IP: str = f"{TEENSY_IP_0}.{TEENSY_IP_1}.{TEENSY_IP_2}.{TEENSY_IP_3}"

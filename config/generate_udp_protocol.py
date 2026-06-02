@@ -338,6 +338,84 @@ VARIABLE_TAIL = {"RpcRequest", "RpcResponse"}
 
 
 # ───────────────────────────────────────────────────────────────────────────
+# RPC METHOD ARGUMENT LAYOUTS
+#
+# The per-method argument blobs that ride inside an RpcRequest (and the one
+# result blob). Hoisted into this single-source generator at Phase 10b (the
+# Jetson UDP bridge became the second consumer) per firmware-handoff decision
+# D8. Emitted as packed, little-endian structs into the C++ header
+# (JbUdp::RpcArgs), the Python module (dataclasses), and the markdown spec; the
+# firmware's rpc.h consumes the generated C++ structs via `using` declarations,
+# and controller/teensy_link/rpc_args.py wraps the generated Python.
+#
+# Field names MUST match the firmware rpc.cpp dispatch (a.axis, a.state, ...).
+# ───────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class RpcArg:
+    name: str            # struct name, e.g. "ArgAxisState"
+    methods: str         # which RpcMethod(s) it serves (doc/comment only)
+    fields: list         # list[Field] — scalar, packed little-endian
+    summary: str = ""
+
+    @property
+    def size(self) -> int:
+        return sum(f.width for f in self.fields)
+
+    @property
+    def struct_fmt(self) -> str:
+        return "<" + "".join(f.struct_fmt for f in self.fields)
+
+
+AXIS_ALL = 0xFF  # broadcast-to-all-legs sentinel (CLEAR_ERRORS / REBOOT_ODRIVES)
+
+RPC_ARGS = [
+    RpcArg("ArgAxisState", "SET_AXIS_STATE", [
+        Field("axis",  "u8",  1, "ODrive axis 0..5 (or AXIS_ALL where supported)"),
+        Field("state", "u32", 1, "ODrive requested AxisState (AXIS_STATES value)"),
+    ]),
+    RpcArg("ArgControllerMode", "SET_CONTROLLER_MODE", [
+        Field("axis",  "u8",  1, "ODrive axis 0..5"),
+        Field("ctrl",  "u32", 1, "ODrive control_mode (CONTROL_MODES value)"),
+        Field("input", "u32", 1, "ODrive input_mode (INPUT_MODES value)"),
+    ]),
+    RpcArg("ArgVelCurr", "SET_VEL_CURR_LIMITS", [
+        Field("axis",       "u8",  1, "ODrive axis 0..5"),
+        Field("vel_limit",  "f32", 1, "velocity limit (rev/s)"),
+        Field("curr_limit", "f32", 1, "current limit (A)"),
+    ]),
+    RpcArg("ArgPosGain", "SET_POS_GAIN", [
+        Field("axis",     "u8",  1, "ODrive axis 0..5"),
+        Field("pos_gain", "f32", 1, "position gain"),
+    ]),
+    RpcArg("ArgVelGains", "SET_VEL_GAINS", [
+        Field("axis",         "u8",  1, "ODrive axis 0..5"),
+        Field("vel_gain",     "f32", 1, "velocity gain"),
+        Field("vel_int_gain", "f32", 1, "velocity integrator gain"),
+    ]),
+    RpcArg("ArgAbsPosition", "SET_ABSOLUTE_POSITION", [
+        Field("axis",     "u8",  1, "ODrive axis 0..5"),
+        Field("position", "f32", 1, "absolute position (rev), post-homing"),
+    ]),
+    RpcArg("ArgAxisOnly", "CLEAR_ERRORS / REBOOT_ODRIVES / ENCODER_SEARCH / HOME", [
+        Field("axis", "u8", 1, "ODrive axis 0..5, or AXIS_ALL for broadcast"),
+    ]),
+    RpcArg("ArgSdoRead", "SDO_READ", [
+        Field("axis",     "u8",  1, "ODrive axis 0..5"),
+        Field("endpoint", "u16", 1, "ODrive SDO endpoint id"),
+    ]),
+    RpcArg("ArgSdoWrite", "SDO_WRITE", [
+        Field("axis",     "u8",  1, "ODrive axis 0..5"),
+        Field("endpoint", "u16", 1, "ODrive SDO endpoint id"),
+        Field("value",    "f32", 1, "value to write"),
+    ]),
+    RpcArg("ResultTimeOfDay", "TIME_OF_DAY_QUERY (result)", [
+        Field("jetson_wall_us", "u64", 1, "Jetson CLOCK_REALTIME microseconds"),
+    ]),
+]
+
+
+# ───────────────────────────────────────────────────────────────────────────
 # CRC-16/CCITT-FALSE  (poly 0x1021, init 0xFFFF, no reflect, no xorout)
 # ───────────────────────────────────────────────────────────────────────────
 
@@ -435,6 +513,28 @@ def generate_cpp() -> str:
     a("// ── Per-message constants ──────────────────────────────────────────────")
     for msg in MESSAGES:
         a(f"constexpr uint16_t {_screaming(msg.name)}_SIZE = {msg.payload_size}u;")
+    a("")
+
+    a("// ── RPC method argument layouts (packed; little-endian) ────────────────")
+    a("// Per-method arg blobs riding inside RpcRequest, + the one result blob.")
+    a("// The firmware rpc.h consumes these via `using JbUdp::RpcArgs::...`.")
+    a("namespace RpcArgs {")
+    a(f"constexpr uint8_t AXIS_ALL = 0x{AXIS_ALL:X}u;  // broadcast-to-all-legs sentinel")
+    a("#pragma pack(push, 1)")
+    for arg in RPC_ARGS:
+        a(f"// {arg.name} ({arg.methods})")
+        a(f"struct {arg.name} {{")
+        for f in arg.fields:
+            line = f"  {f.cpp_decl}"
+            if f.comment:
+                line += f"  // {f.comment}"
+            a(line)
+        a("};")
+        a(f"static_assert(sizeof({arg.name}) == {arg.size}, \"{arg.name} size drift\");")
+    a("#pragma pack(pop)")
+    for arg in RPC_ARGS:
+        a(f"constexpr uint16_t {_screaming(arg.name)}_SIZE = {arg.size}u;")
+    a("}  // namespace RpcArgs")
     a("")
 
     a("// ── CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF) ──────────────────────")
@@ -627,6 +727,32 @@ def generate_python() -> str:
                 ctor.append(f"tuple(next(it) for _ in range({f.count}))")
         a(f"        return cls({', '.join(ctor)})")
         a("")
+
+    a("# ── RPC method argument layouts ────────────────────────────────────────")
+    a(f"AXIS_ALL = {AXIS_ALL}  # broadcast-to-all-legs sentinel")
+    a("")
+    for arg in RPC_ARGS:
+        sname = arg.name
+        a(f"# {arg.name} ({arg.methods})")
+        a(f"{_screaming(arg.name)}_FMT = {arg.struct_fmt!r}")
+        a(f"{_screaming(arg.name)}_SIZE = {arg.size}")
+        a(f"_{_screaming(arg.name)}_STRUCT = struct.Struct({_screaming(arg.name)}_FMT)")
+        a(f"assert _{_screaming(arg.name)}_STRUCT.size == {arg.size}")
+        a("")
+        a("@dataclass")
+        a(f"class {sname}:")
+        for f in arg.fields:
+            default = "0.0" if f.type in ("f32", "f64") else "0"
+            a(f"    {f.name}: {_py_field_type(f)} = {default}")
+        a("")
+        a("    def pack(self) -> bytes:")
+        flat = ", ".join(f"self.{f.name}" for f in arg.fields)
+        a(f"        return _{_screaming(arg.name)}_STRUCT.pack({flat})")
+        a("")
+        a("    @classmethod")
+        a(f"    def unpack(cls, data: bytes) -> '{sname}':")
+        a(f"        return cls(*_{_screaming(arg.name)}_STRUCT.unpack(data[:{arg.size}]))")
+        a("")
     return "\n".join(L)
 
 
@@ -716,6 +842,23 @@ def generate_markdown() -> str:
         a("|-------|------|------:|-------|")
         for f in msg.fields:
             a(f"| `{f.name}` | {f.type} | {f.count} | {f.comment} |")
+        a("")
+    a("## RPC method arguments")
+    a("")
+    a("Per-method argument blobs riding inside an `RpcRequest` (and the one")
+    a("result blob). Packed, little-endian. The firmware `rpc.h` consumes the")
+    a("generated `JbUdp::RpcArgs::*` structs; `controller/teensy_link/rpc_args.py`")
+    a(f"wraps the generated Python. `AXIS_ALL = 0x{AXIS_ALL:X}` broadcasts to all legs.")
+    a("")
+    for arg in RPC_ARGS:
+        a(f"### {arg.name} (`{arg.methods}`)")
+        a("")
+        a(f"**{arg.size} bytes**. Python struct fmt: `{arg.struct_fmt}`.")
+        a("")
+        a("| Field | Type | Notes |")
+        a("|-------|------|-------|")
+        for f in arg.fields:
+            a(f"| `{f.name}` | {f.type} | {f.comment} |")
         a("")
     return "\n".join(L)
 

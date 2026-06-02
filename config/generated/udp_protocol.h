@@ -214,6 +214,87 @@ constexpr uint16_t PROFILE_SIZE = 66u;
 constexpr uint16_t RPC_REQUEST_SIZE = 8u;
 constexpr uint16_t RPC_RESPONSE_SIZE = 8u;
 
+// ── RPC method argument layouts (packed; little-endian) ────────────────
+// Per-method arg blobs riding inside RpcRequest, + the one result blob.
+// The firmware rpc.h consumes these via `using JbUdp::RpcArgs::...`.
+namespace RpcArgs {
+constexpr uint8_t AXIS_ALL = 0xFFu;  // broadcast-to-all-legs sentinel
+#pragma pack(push, 1)
+// ArgAxisState (SET_AXIS_STATE)
+struct ArgAxisState {
+  uint8_t axis;  // ODrive axis 0..5 (or AXIS_ALL where supported)
+  uint32_t state;  // ODrive requested AxisState (AXIS_STATES value)
+};
+static_assert(sizeof(ArgAxisState) == 5, "ArgAxisState size drift");
+// ArgControllerMode (SET_CONTROLLER_MODE)
+struct ArgControllerMode {
+  uint8_t axis;  // ODrive axis 0..5
+  uint32_t ctrl;  // ODrive control_mode (CONTROL_MODES value)
+  uint32_t input;  // ODrive input_mode (INPUT_MODES value)
+};
+static_assert(sizeof(ArgControllerMode) == 9, "ArgControllerMode size drift");
+// ArgVelCurr (SET_VEL_CURR_LIMITS)
+struct ArgVelCurr {
+  uint8_t axis;  // ODrive axis 0..5
+  float vel_limit;  // velocity limit (rev/s)
+  float curr_limit;  // current limit (A)
+};
+static_assert(sizeof(ArgVelCurr) == 9, "ArgVelCurr size drift");
+// ArgPosGain (SET_POS_GAIN)
+struct ArgPosGain {
+  uint8_t axis;  // ODrive axis 0..5
+  float pos_gain;  // position gain
+};
+static_assert(sizeof(ArgPosGain) == 5, "ArgPosGain size drift");
+// ArgVelGains (SET_VEL_GAINS)
+struct ArgVelGains {
+  uint8_t axis;  // ODrive axis 0..5
+  float vel_gain;  // velocity gain
+  float vel_int_gain;  // velocity integrator gain
+};
+static_assert(sizeof(ArgVelGains) == 9, "ArgVelGains size drift");
+// ArgAbsPosition (SET_ABSOLUTE_POSITION)
+struct ArgAbsPosition {
+  uint8_t axis;  // ODrive axis 0..5
+  float position;  // absolute position (rev), post-homing
+};
+static_assert(sizeof(ArgAbsPosition) == 5, "ArgAbsPosition size drift");
+// ArgAxisOnly (CLEAR_ERRORS / REBOOT_ODRIVES / ENCODER_SEARCH / HOME)
+struct ArgAxisOnly {
+  uint8_t axis;  // ODrive axis 0..5, or AXIS_ALL for broadcast
+};
+static_assert(sizeof(ArgAxisOnly) == 1, "ArgAxisOnly size drift");
+// ArgSdoRead (SDO_READ)
+struct ArgSdoRead {
+  uint8_t axis;  // ODrive axis 0..5
+  uint16_t endpoint;  // ODrive SDO endpoint id
+};
+static_assert(sizeof(ArgSdoRead) == 3, "ArgSdoRead size drift");
+// ArgSdoWrite (SDO_WRITE)
+struct ArgSdoWrite {
+  uint8_t axis;  // ODrive axis 0..5
+  uint16_t endpoint;  // ODrive SDO endpoint id
+  float value;  // value to write
+};
+static_assert(sizeof(ArgSdoWrite) == 7, "ArgSdoWrite size drift");
+// ResultTimeOfDay (TIME_OF_DAY_QUERY (result))
+struct ResultTimeOfDay {
+  uint64_t jetson_wall_us;  // Jetson CLOCK_REALTIME microseconds
+};
+static_assert(sizeof(ResultTimeOfDay) == 8, "ResultTimeOfDay size drift");
+#pragma pack(pop)
+constexpr uint16_t ARG_AXIS_STATE_SIZE = 5u;
+constexpr uint16_t ARG_CONTROLLER_MODE_SIZE = 9u;
+constexpr uint16_t ARG_VEL_CURR_SIZE = 9u;
+constexpr uint16_t ARG_POS_GAIN_SIZE = 5u;
+constexpr uint16_t ARG_VEL_GAINS_SIZE = 9u;
+constexpr uint16_t ARG_ABS_POSITION_SIZE = 5u;
+constexpr uint16_t ARG_AXIS_ONLY_SIZE = 1u;
+constexpr uint16_t ARG_SDO_READ_SIZE = 3u;
+constexpr uint16_t ARG_SDO_WRITE_SIZE = 7u;
+constexpr uint16_t RESULT_TIME_OF_DAY_SIZE = 8u;
+}  // namespace RpcArgs
+
 // ── CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF) ──────────────────────
 inline uint16_t crc16_ccitt(const uint8_t* data, uint16_t len) {
   uint16_t crc = 0xFFFF;

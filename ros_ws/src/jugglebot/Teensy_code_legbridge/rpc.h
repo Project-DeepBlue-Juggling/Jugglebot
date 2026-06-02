@@ -47,21 +47,25 @@ bool parse_response(const uint8_t* payload, uint16_t len,
                     uint16_t* method, uint16_t* req_id, uint16_t* status,
                     const uint8_t** result, uint16_t* res_len);
 
-// ── Per-method arg layouts (packed; little-endian) ────────────────────────────
-#pragma pack(push, 1)
-struct ArgAxisState     { uint8_t axis; uint32_t state; };                 // SET_AXIS_STATE
-struct ArgControllerMode{ uint8_t axis; uint32_t ctrl; uint32_t input; };  // SET_CONTROLLER_MODE
-struct ArgVelCurr       { uint8_t axis; float vel_limit; float curr_limit; };
-struct ArgPosGain       { uint8_t axis; float pos_gain; };
-struct ArgVelGains      { uint8_t axis; float vel_gain; float vel_int_gain; };
-struct ArgAbsPosition   { uint8_t axis; float position; };
-struct ArgAxisOnly      { uint8_t axis; };                                 // CLEAR_ERRORS / REBOOT
-struct ArgSdoRead       { uint8_t axis; uint16_t endpoint; };
-struct ArgSdoWrite      { uint8_t axis; uint16_t endpoint; float value; };
-struct ResultTimeOfDay  { uint64_t jetson_wall_us; };                      // TIME_OF_DAY_QUERY result
-#pragma pack(pop)
+// ── Per-method arg layouts ────────────────────────────────────────────────────
+// HOISTED into the single-source generator at Phase 10b (firmware handoff D8):
+// the packed structs now live in JbUdp::RpcArgs (config/generate_udp_protocol.py
+// → udp_protocol.h), since the Jetson UDP bridge became the second consumer.
+// We consume them here so rpc.cpp's dispatch is unchanged. The generated
+// `static_assert(sizeof(...))`s guard size drift. Jetson-side consumer:
+// controller/teensy_link/rpc_args.py; round-trip test: tests/teensy_link/test_rpc_args.py.
+using JbUdp::RpcArgs::ArgAxisState;
+using JbUdp::RpcArgs::ArgControllerMode;
+using JbUdp::RpcArgs::ArgVelCurr;
+using JbUdp::RpcArgs::ArgPosGain;
+using JbUdp::RpcArgs::ArgVelGains;
+using JbUdp::RpcArgs::ArgAbsPosition;
+using JbUdp::RpcArgs::ArgAxisOnly;
+using JbUdp::RpcArgs::ArgSdoRead;
+using JbUdp::RpcArgs::ArgSdoWrite;
+using JbUdp::RpcArgs::ResultTimeOfDay;
 
-constexpr uint8_t AXIS_ALL = 0xFF;   // broadcast to all legs (CLEAR_ERRORS/REBOOT)
+using JbUdp::RpcArgs::AXIS_ALL;   // broadcast to all legs (CLEAR_ERRORS/REBOOT)
 
 // Register the server dispatcher with udp_link (call during setup).
 void rpc_server_init();

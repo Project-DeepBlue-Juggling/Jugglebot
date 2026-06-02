@@ -270,3 +270,102 @@ Fixed head **8 bytes**, followed by a variable blob.
 | `req_id` | u16 | 1 | Echo of request req_id |
 | `status` | u16 | 1 | RpcStatus enum |
 | `res_len` | u16 | 1 | Bytes of result following the fixed head |
+
+## RPC method arguments
+
+Per-method argument blobs riding inside an `RpcRequest` (and the one
+result blob). Packed, little-endian. The firmware `rpc.h` consumes the
+generated `JbUdp::RpcArgs::*` structs; `controller/teensy_link/rpc_args.py`
+wraps the generated Python. `AXIS_ALL = 0xFF` broadcasts to all legs.
+
+### ArgAxisState (`SET_AXIS_STATE`)
+
+**5 bytes**. Python struct fmt: `<BI`.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `axis` | u8 | ODrive axis 0..5 (or AXIS_ALL where supported) |
+| `state` | u32 | ODrive requested AxisState (AXIS_STATES value) |
+
+### ArgControllerMode (`SET_CONTROLLER_MODE`)
+
+**9 bytes**. Python struct fmt: `<BII`.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `axis` | u8 | ODrive axis 0..5 |
+| `ctrl` | u32 | ODrive control_mode (CONTROL_MODES value) |
+| `input` | u32 | ODrive input_mode (INPUT_MODES value) |
+
+### ArgVelCurr (`SET_VEL_CURR_LIMITS`)
+
+**9 bytes**. Python struct fmt: `<Bff`.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `axis` | u8 | ODrive axis 0..5 |
+| `vel_limit` | f32 | velocity limit (rev/s) |
+| `curr_limit` | f32 | current limit (A) |
+
+### ArgPosGain (`SET_POS_GAIN`)
+
+**5 bytes**. Python struct fmt: `<Bf`.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `axis` | u8 | ODrive axis 0..5 |
+| `pos_gain` | f32 | position gain |
+
+### ArgVelGains (`SET_VEL_GAINS`)
+
+**9 bytes**. Python struct fmt: `<Bff`.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `axis` | u8 | ODrive axis 0..5 |
+| `vel_gain` | f32 | velocity gain |
+| `vel_int_gain` | f32 | velocity integrator gain |
+
+### ArgAbsPosition (`SET_ABSOLUTE_POSITION`)
+
+**5 bytes**. Python struct fmt: `<Bf`.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `axis` | u8 | ODrive axis 0..5 |
+| `position` | f32 | absolute position (rev), post-homing |
+
+### ArgAxisOnly (`CLEAR_ERRORS / REBOOT_ODRIVES / ENCODER_SEARCH / HOME`)
+
+**1 bytes**. Python struct fmt: `<B`.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `axis` | u8 | ODrive axis 0..5, or AXIS_ALL for broadcast |
+
+### ArgSdoRead (`SDO_READ`)
+
+**3 bytes**. Python struct fmt: `<BH`.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `axis` | u8 | ODrive axis 0..5 |
+| `endpoint` | u16 | ODrive SDO endpoint id |
+
+### ArgSdoWrite (`SDO_WRITE`)
+
+**7 bytes**. Python struct fmt: `<BHf`.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `axis` | u8 | ODrive axis 0..5 |
+| `endpoint` | u16 | ODrive SDO endpoint id |
+| `value` | f32 | value to write |
+
+### ResultTimeOfDay (`TIME_OF_DAY_QUERY (result)`)
+
+**8 bytes**. Python struct fmt: `<Q`.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `jetson_wall_us` | u64 | Jetson CLOCK_REALTIME microseconds |

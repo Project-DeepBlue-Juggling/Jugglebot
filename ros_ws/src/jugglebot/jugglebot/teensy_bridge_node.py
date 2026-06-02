@@ -46,15 +46,20 @@ from jugglebot_interfaces.msg import (
     HandTelemetryMessage,
     MotorStateSingle,
     RobotState,
+    SetMotorVelCurrLimitsMessage,
 )
+from jugglebot_interfaces.srv import ODriveCommandService
 from geometry_msgs.msg import Quaternion
 from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
+from std_srvs.srv import Trigger
 
 from controller.teensy_link import (
     TeensyLinkClient,
     RpcClient,
     RpcServer,
     TimeOfDayServer,
+    RpcMethod,
+    RpcError,
     MsgType,
     LinkState,
     BusHealth,
@@ -65,6 +70,7 @@ from controller.teensy_link import (
     Profile,
 )
 from controller.teensy_link import protocol as p
+from controller.teensy_link import rpc_args
 from controller.teensy_link.fault_logic import LinkLossLatch
 from controller.teensy_link.setpoint_pump import SetpointPump
 import jugglebot.hardware_config as hw
@@ -233,6 +239,24 @@ class TeensyBridgeNode(Node):
             DiagnosticStatus, '/teensy/link_status', 10)
         self.profile_pub = self.create_publisher(
             DiagnosticStatus, '/teensy/profile', 10)
+
+        # ── RPC service surface (Commit 4) — all under /teensy/* ──
+        # ODrive control issued over the leg-bridge link via RpcClient. The
+        # leg-bridge owns legs 0-5 only — the hand is the platform Teensy's, and
+        # the firmware rejects hand-axis RPCs — so these target legs/broadcast.
+        # Services using EXISTING ROS types are wired here; the arg-bearing
+        # per-axis ops (set_axis_state, set_controller_mode, per-axis gains,
+        # set_absolute_position, sdo_read/write) are tested node methods pending
+        # new jugglebot_interfaces .srv types (handoff D10).
+        self.create_service(Trigger, '/teensy/clear_errors', self._svc_clear_errors)
+        self.create_service(Trigger, '/teensy/reboot_odrives', self._svc_reboot_odrives)
+        self.create_service(Trigger, '/teensy/encoder_search', self._svc_encoder_search)
+        self.create_service(Trigger, '/teensy/home', self._svc_home)
+        self.create_service(ODriveCommandService, '/teensy/odrive_command',
+                            self._svc_odrive_command)
+        self.create_subscription(
+            SetMotorVelCurrLimitsMessage, '/teensy/set_motor_vel_curr_limits',
+            self._sub_vel_curr_limits, 10)
 
         # ── Timers (publish on the executor thread) ────────────
         self.create_timer(0.01, self._publish_robot_state)     # 100 Hz (telem rate)
@@ -680,6 +704,134 @@ class TeensyBridgeNode(Node):
         except Exception as e:  # noqa: BLE001
             self.get_logger().error(f"Profile publish error: {e}",
                                     throttle_duration_sec=5.0)
+
+    # ═══════════════════════════════════════════════════════════
+    # RPC service surface (Commit 4)
+    # ═══════════════════════════════════════════════════════════
+
+    def _call_rpc(self, method, args=b"", *, timeout=None, retries=None):
+        """Issue an RPC; return (success, message, result_blob).
+
+        Blocks on the calling thread until the response arrives (decoded on the
+        RX thread) or the timeout × retries budget expires. RpcError/RpcTimeout
+        are caught and reported as (False, message).
+        """
+        try:
+            result = self._rpc.call(int(method), args,
+                                    timeout=timeout, retries=retries)
+            return True, 'OK', result
+        except RpcError as e:
+            return False, str(e), b""
+
+    # ── Tested node methods (one per RpcMethod) — the reusable surface ──
+    # Arg encoding (rpc_args, codegen-hoisted) + RpcClient call. ROS service
+    # wrappers for the arg-bearing per-axis ops await new .srv types (D10); the
+    # encodings are fully covered by tests/ros/test_teensy_bridge_node_rpc.py.
+
+    def teensy_set_axis_state(self, axis, state):
+        return self._call_rpc(RpcMethod.SET_AXIS_STATE,
+                              rpc_args.encode_set_axis_state(axis, state))
+
+    def teensy_set_controller_mode(self, axis, ctrl, input_mode):
+        return self._call_rpc(RpcMethod.SET_CONTROLLER_MODE,
+                              rpc_args.encode_set_controller_mode(axis, ctrl, input_mode))
+
+    def teensy_set_vel_curr_limits(self, axis, vel_limit, curr_limit, **kw):
+        return self._call_rpc(RpcMethod.SET_VEL_CURR_LIMITS,
+                              rpc_args.encode_set_vel_curr_limits(axis, vel_limit, curr_limit),
+                              **kw)
+
+    def teensy_set_pos_gain(self, axis, pos_gain):
+        return self._call_rpc(RpcMethod.SET_POS_GAIN,
+                              rpc_args.encode_set_pos_gain(axis, pos_gain))
+
+    def teensy_set_vel_gains(self, axis, vel_gain, vel_int_gain):
+        return self._call_rpc(RpcMethod.SET_VEL_GAINS,
+                              rpc_args.encode_set_vel_gains(axis, vel_gain, vel_int_gain))
+
+    def teensy_set_absolute_position(self, axis, position):
+        return self._call_rpc(RpcMethod.SET_ABSOLUTE_POSITION,
+                              rpc_args.encode_set_absolute_position(axis, position))
+
+    def teensy_clear_errors(self, axis=rpc_args.AXIS_ALL):
+        return self._call_rpc(RpcMethod.CLEAR_ERRORS,
+                              rpc_args.encode_clear_errors(axis))
+
+    def teensy_reboot(self, axis=rpc_args.AXIS_ALL):
+        return self._call_rpc(RpcMethod.REBOOT_ODRIVES,
+                              rpc_args.encode_reboot(axis))
+
+    def teensy_encoder_search(self, axis=rpc_args.AXIS_ALL):
+        return self._call_rpc(RpcMethod.ENCODER_SEARCH,
+                              rpc_args.encode_encoder_search(axis))
+
+    def teensy_home(self, axis=rpc_args.AXIS_ALL):
+        return self._call_rpc(RpcMethod.HOME, rpc_args.encode_home(axis))
+
+    def teensy_sdo_read(self, axis, endpoint):
+        return self._call_rpc(RpcMethod.SDO_READ,
+                              rpc_args.encode_sdo_read(axis, endpoint))
+
+    def teensy_sdo_write(self, axis, endpoint, value):
+        return self._call_rpc(RpcMethod.SDO_WRITE,
+                              rpc_args.encode_sdo_write(axis, endpoint, value))
+
+    # ── ROS service handlers (existing-type subset) ───────────
+
+    def _svc_clear_errors(self, req, res):
+        ok, msg, _ = self.teensy_clear_errors()
+        res.success = ok
+        res.message = msg
+        return res
+
+    def _svc_reboot_odrives(self, req, res):
+        ok, msg, _ = self.teensy_reboot()
+        res.success = ok
+        res.message = msg
+        return res
+
+    def _svc_encoder_search(self, req, res):
+        ok, msg, _ = self.teensy_encoder_search()
+        res.success = ok
+        res.message = msg if ok else f'{msg} (encoder_search needs firmware Phase 9)'
+        return res
+
+    def _svc_home(self, req, res):
+        ok, msg, _ = self.teensy_home()
+        res.success = ok
+        res.message = msg if ok else f'{msg} (home needs firmware Phase 9)'
+        return res
+
+    def _svc_odrive_command(self, req, res):
+        cmd = req.command
+        if cmd == 'clear_errors':
+            ok, msg, _ = self.teensy_clear_errors()
+        elif cmd == 'reboot_odrives':
+            ok, msg, _ = self.teensy_reboot()
+        else:
+            ok, msg = False, f'Unknown command: {cmd}'
+        res.success = ok
+        res.message = msg
+        return res
+
+    def _sub_vel_curr_limits(self, msg):
+        """Apply leg vel/current limits over the leg-bridge link.
+
+        Mirrors the legs portion of can_node._sub_vel_curr_limits. The hand
+        limits are ignored — the platform Teensy owns the hand (the firmware
+        rejects hand-axis RPCs). Short-timeout RPCs keep a topic callback from
+        stalling the executor on a dead link.
+        """
+        if msg.legs_vel_limit > 0 and msg.legs_curr_limit > 0:
+            for axis in range(p.NUM_LEGS):
+                ok, m, _ = self.teensy_set_vel_curr_limits(
+                    axis, msg.legs_vel_limit, msg.legs_curr_limit,
+                    timeout=0.2, retries=0)
+                if not ok:
+                    self.get_logger().error(
+                        f"set_vel_curr_limits leg {axis} failed: {m}",
+                        throttle_duration_sec=2.0)
+                    break
 
     # ═══════════════════════════════════════════════════════════
     # Shutdown

@@ -332,3 +332,188 @@ class RpcResponse:
         vals = _RPC_RESPONSE_STRUCT.unpack(data[:8])
         it = iter(vals)
         return cls(next(it), next(it), next(it), next(it))
+
+# ── RPC method argument layouts ────────────────────────────────────────
+AXIS_ALL = 255  # broadcast-to-all-legs sentinel
+
+# ArgAxisState (SET_AXIS_STATE)
+ARG_AXIS_STATE_FMT = '<BI'
+ARG_AXIS_STATE_SIZE = 5
+_ARG_AXIS_STATE_STRUCT = struct.Struct(ARG_AXIS_STATE_FMT)
+assert _ARG_AXIS_STATE_STRUCT.size == 5
+
+@dataclass
+class ArgAxisState:
+    axis: int = 0
+    state: int = 0
+
+    def pack(self) -> bytes:
+        return _ARG_AXIS_STATE_STRUCT.pack(self.axis, self.state)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'ArgAxisState':
+        return cls(*_ARG_AXIS_STATE_STRUCT.unpack(data[:5]))
+
+# ArgControllerMode (SET_CONTROLLER_MODE)
+ARG_CONTROLLER_MODE_FMT = '<BII'
+ARG_CONTROLLER_MODE_SIZE = 9
+_ARG_CONTROLLER_MODE_STRUCT = struct.Struct(ARG_CONTROLLER_MODE_FMT)
+assert _ARG_CONTROLLER_MODE_STRUCT.size == 9
+
+@dataclass
+class ArgControllerMode:
+    axis: int = 0
+    ctrl: int = 0
+    input: int = 0
+
+    def pack(self) -> bytes:
+        return _ARG_CONTROLLER_MODE_STRUCT.pack(self.axis, self.ctrl, self.input)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'ArgControllerMode':
+        return cls(*_ARG_CONTROLLER_MODE_STRUCT.unpack(data[:9]))
+
+# ArgVelCurr (SET_VEL_CURR_LIMITS)
+ARG_VEL_CURR_FMT = '<Bff'
+ARG_VEL_CURR_SIZE = 9
+_ARG_VEL_CURR_STRUCT = struct.Struct(ARG_VEL_CURR_FMT)
+assert _ARG_VEL_CURR_STRUCT.size == 9
+
+@dataclass
+class ArgVelCurr:
+    axis: int = 0
+    vel_limit: float = 0.0
+    curr_limit: float = 0.0
+
+    def pack(self) -> bytes:
+        return _ARG_VEL_CURR_STRUCT.pack(self.axis, self.vel_limit, self.curr_limit)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'ArgVelCurr':
+        return cls(*_ARG_VEL_CURR_STRUCT.unpack(data[:9]))
+
+# ArgPosGain (SET_POS_GAIN)
+ARG_POS_GAIN_FMT = '<Bf'
+ARG_POS_GAIN_SIZE = 5
+_ARG_POS_GAIN_STRUCT = struct.Struct(ARG_POS_GAIN_FMT)
+assert _ARG_POS_GAIN_STRUCT.size == 5
+
+@dataclass
+class ArgPosGain:
+    axis: int = 0
+    pos_gain: float = 0.0
+
+    def pack(self) -> bytes:
+        return _ARG_POS_GAIN_STRUCT.pack(self.axis, self.pos_gain)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'ArgPosGain':
+        return cls(*_ARG_POS_GAIN_STRUCT.unpack(data[:5]))
+
+# ArgVelGains (SET_VEL_GAINS)
+ARG_VEL_GAINS_FMT = '<Bff'
+ARG_VEL_GAINS_SIZE = 9
+_ARG_VEL_GAINS_STRUCT = struct.Struct(ARG_VEL_GAINS_FMT)
+assert _ARG_VEL_GAINS_STRUCT.size == 9
+
+@dataclass
+class ArgVelGains:
+    axis: int = 0
+    vel_gain: float = 0.0
+    vel_int_gain: float = 0.0
+
+    def pack(self) -> bytes:
+        return _ARG_VEL_GAINS_STRUCT.pack(self.axis, self.vel_gain, self.vel_int_gain)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'ArgVelGains':
+        return cls(*_ARG_VEL_GAINS_STRUCT.unpack(data[:9]))
+
+# ArgAbsPosition (SET_ABSOLUTE_POSITION)
+ARG_ABS_POSITION_FMT = '<Bf'
+ARG_ABS_POSITION_SIZE = 5
+_ARG_ABS_POSITION_STRUCT = struct.Struct(ARG_ABS_POSITION_FMT)
+assert _ARG_ABS_POSITION_STRUCT.size == 5
+
+@dataclass
+class ArgAbsPosition:
+    axis: int = 0
+    position: float = 0.0
+
+    def pack(self) -> bytes:
+        return _ARG_ABS_POSITION_STRUCT.pack(self.axis, self.position)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'ArgAbsPosition':
+        return cls(*_ARG_ABS_POSITION_STRUCT.unpack(data[:5]))
+
+# ArgAxisOnly (CLEAR_ERRORS / REBOOT_ODRIVES / ENCODER_SEARCH / HOME)
+ARG_AXIS_ONLY_FMT = '<B'
+ARG_AXIS_ONLY_SIZE = 1
+_ARG_AXIS_ONLY_STRUCT = struct.Struct(ARG_AXIS_ONLY_FMT)
+assert _ARG_AXIS_ONLY_STRUCT.size == 1
+
+@dataclass
+class ArgAxisOnly:
+    axis: int = 0
+
+    def pack(self) -> bytes:
+        return _ARG_AXIS_ONLY_STRUCT.pack(self.axis)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'ArgAxisOnly':
+        return cls(*_ARG_AXIS_ONLY_STRUCT.unpack(data[:1]))
+
+# ArgSdoRead (SDO_READ)
+ARG_SDO_READ_FMT = '<BH'
+ARG_SDO_READ_SIZE = 3
+_ARG_SDO_READ_STRUCT = struct.Struct(ARG_SDO_READ_FMT)
+assert _ARG_SDO_READ_STRUCT.size == 3
+
+@dataclass
+class ArgSdoRead:
+    axis: int = 0
+    endpoint: int = 0
+
+    def pack(self) -> bytes:
+        return _ARG_SDO_READ_STRUCT.pack(self.axis, self.endpoint)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'ArgSdoRead':
+        return cls(*_ARG_SDO_READ_STRUCT.unpack(data[:3]))
+
+# ArgSdoWrite (SDO_WRITE)
+ARG_SDO_WRITE_FMT = '<BHf'
+ARG_SDO_WRITE_SIZE = 7
+_ARG_SDO_WRITE_STRUCT = struct.Struct(ARG_SDO_WRITE_FMT)
+assert _ARG_SDO_WRITE_STRUCT.size == 7
+
+@dataclass
+class ArgSdoWrite:
+    axis: int = 0
+    endpoint: int = 0
+    value: float = 0.0
+
+    def pack(self) -> bytes:
+        return _ARG_SDO_WRITE_STRUCT.pack(self.axis, self.endpoint, self.value)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'ArgSdoWrite':
+        return cls(*_ARG_SDO_WRITE_STRUCT.unpack(data[:7]))
+
+# ResultTimeOfDay (TIME_OF_DAY_QUERY (result))
+RESULT_TIME_OF_DAY_FMT = '<Q'
+RESULT_TIME_OF_DAY_SIZE = 8
+_RESULT_TIME_OF_DAY_STRUCT = struct.Struct(RESULT_TIME_OF_DAY_FMT)
+assert _RESULT_TIME_OF_DAY_STRUCT.size == 8
+
+@dataclass
+class ResultTimeOfDay:
+    jetson_wall_us: int = 0
+
+    def pack(self) -> bytes:
+        return _RESULT_TIME_OF_DAY_STRUCT.pack(self.jetson_wall_us)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'ResultTimeOfDay':
+        return cls(*_RESULT_TIME_OF_DAY_STRUCT.unpack(data[:8]))
