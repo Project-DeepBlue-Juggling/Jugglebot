@@ -169,9 +169,27 @@ static bool send_on(FlexCAN_T4<CAN3, RX_SIZE_256, TX_SIZE_16>& bus,
   return bus.write(m) > 0;
 }
 
+// ── TX serialisation (interp-ISR-safe) ───────────────────────────────────────
+// All three FlexCAN writes run inside a short IRQ-off (PRIMASK) critical section.
+// can_jugglebot is written by BOTH the 500 Hz leg-setpoint IntervalTimer ISR
+// (leg_interp.cpp) AND several FreeRTOS tasks (time-sync 0x7DD fan-out, fault,
+// RPC). FlexCAN_T4::write() is NOT reentrant — it scans the TX mailboxes and
+// stores registers, with a non-atomic txBuffer.push_back on overflow — so a
+// preempting writer can clobber a half-written mailbox and corrupt or drop a leg
+// setpoint. A FreeRTOS mutex cannot exclude the ISR, so we mask IRQs (the same
+// idiom as time_base.h atomic_read_u64 / leg_interp.cpp interp_on_setpoint). bb
+// and cone have only the single time-sync writer today, but they are guarded too
+// so the "every FlexCAN write is interrupt-serialised" contract is uniform and a
+// future high-priority / ISR writer can't silently race. The masked region is one
+// mailbox write (a few us) — well under the 500 us interp jitter budget — and it
+// also makes the s_*_tx counter increment atomic.
+// TODO(bench): confirm interp_max_jitter_us / interp_deadline_misses stay within
+// budget with the broadcast fan-out active.
 bool can_bb_send(const ODrive::CanFrame& f) {
+  const uint32_t pm = __get_PRIMASK(); __disable_irq();
   const bool ok = send_on(can_bb, f);
   if (ok) s_bb_tx++;
+  __set_PRIMASK(pm);
   return ok;
 }
 
@@ -187,14 +205,18 @@ bool can_cone_send(const ODrive::CanFrame& f) {
   if (last == 0 || now_wall_us() - last > CONE_PRESENT_STALENESS_US) {
     return false;   // cone absent → skip TX (no NACK, no TEC climb, no bus-off)
   }
+  const uint32_t pm = __get_PRIMASK(); __disable_irq();
   const bool ok = send_on(can_cone, f);
   if (ok) s_cone_tx++;
+  __set_PRIMASK(pm);
   return ok;
 }
 
 bool can_jugglebot_send(const ODrive::CanFrame& f) {
+  const uint32_t pm = __get_PRIMASK(); __disable_irq();
   const bool ok = send_on(can_jugglebot, f);
   if (ok) s_jugglebot_tx++;
+  __set_PRIMASK(pm);
   return ok;
 }
 
