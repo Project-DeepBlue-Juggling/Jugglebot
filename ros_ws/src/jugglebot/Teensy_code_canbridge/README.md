@@ -28,7 +28,7 @@ versions you used** here once the build is green on the bench:
 |---------|---------|-------|
 | **FreeRTOS_TEENSY4** | RTOS | greiman fork — umbrella header `FreeRTOS_TEENSY4.h` (see `freertos_shim.h`). The tsandmann/freertos-teensy fork also works; adjust the shim. |
 | **QNEthernet** | UDP/lwIP over the built-in MAC | ssilverman/QNEthernet; supersedes NativeEthernet. Needs the PJRC Ethernet kit (DP83825I PHY). |
-| **FlexCAN_T4** | both CAN buses | bundled with Teensyduino |
+| **FlexCAN_T4** | all three CAN buses | bundled with Teensyduino |
 
 ## Generated / shared headers (do not hand-edit)
 
@@ -41,15 +41,25 @@ These are copied/generated from `config/` by the codegen — regenerate, don't e
 
 ## Pin map
 
-| Signal | Teensy 4.1 pin | Notes |
+Three subsystem-isolated CAN buses (ADR-0013). Pin directions are the FlexCAN_T4
+silicon-fixed DEF mux — the library default the firmware actually runs (the
+`CAN*_*_PIN` constants in `canbridge_config.h` are documentation only):
+
+| Signal | Teensy 4.1 pin (TX / RX) | Notes |
 |--------|----------------|-------|
-| CAN1 TX / RX | 22 / 23 | Shared bus (hand ODrive, platform Teensy, BB, cone) → TJA1051T/3 transceiver |
-| CAN2 TX / RX | 1 / 0 | Private leg bus (6 leg ODrives) → second transceiver |
+| CAN1 TX / RX | 22 / 23 | Ball Butler bus (BB Teensy only) → TJA1051T/3 transceiver |
+| CAN2 TX / RX | 1 / 0 | Catching cone bus (cone Teensy, often disconnected) → second transceiver; firmware tolerates cone-absent TX (no bus-off) |
+| CAN3 TX / RX | 31 / 30 | Jugglebot core bus (6 leg ODrives + Hand ODrive + platform Teensy 4.0) → third transceiver |
 | Ethernet | dedicated MAC pads | PJRC Ethernet kit 6-pin ribbon |
 | LED | 13 | On-board; 1 Hz blink = scheduler alive |
 
-120 Ω termination on each CAN bus end. CAN3 (pins 31/30) is CAN-FD-capable and
-reserved for the deferred FD upgrade path.
+120 Ω termination on each of the three CAN bus ends. CAN3 is the FD-capable
+peripheral, run classical 1 Mbps today (the ODrive firmware is classical-CAN
+only); a future CAN-FD upgrade is a config change, not a rewire.
+
+> **Pin-direction note.** ADR-0013 and the parent plan list CAN2 and CAN3 TX/RX
+> *reversed*; the FlexCAN_T4 silicon mux above (CAN2 TX 1 / RX 0, CAN3 TX 31 /
+> RX 30) is authoritative — see the firmware-three-bus HANDOFF decision D1.
 
 ## Network
 
