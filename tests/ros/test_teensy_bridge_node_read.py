@@ -171,9 +171,12 @@ def test_robot_state_from_telemetry_and_diagnostic(bridge):
 def test_has_fatal_can_error_from_bus_off(bridge):
     teensy, node = bridge
     teensy.send_telemetry()
+    # bus1_health = Jugglebot core bus (CAN3: legs + hand) after the three-bus
+    # remap (ADR-0013 / firmware HANDOFF D4); its BUS_OFF is the fatal condition.
+    # (Pre-remap this test set bus2_health, which is now Ball Butler, not legs.)
     hb = HeartbeatT2J(t_teensy_us=1, link_state=int(LinkState.UP),
-                      bus1_health=int(BusHealth.OK),
-                      bus2_health=int(BusHealth.BUS_OFF),
+                      bus1_health=int(BusHealth.BUS_OFF),
+                      bus2_health=int(BusHealth.OK),
                       fault_state=int(FaultState.NONE), flags=0, uptime_ms=10)
     teensy.send_to_jetson(int(MsgType.HEARTBEAT_T2J), hb.pack())
     assert _wait_until(lambda: node._latest_heartbeat is not None
@@ -182,6 +185,23 @@ def test_has_fatal_can_error_from_bus_off(bridge):
     msg = node.robot_state_pub.published[-1]
     assert msg.has_fatal_can_error is True
     assert "Fatal CAN bus issue." in msg.error
+
+
+def test_bb_bus_off_alone_is_not_leg_fatal(bridge):
+    # Contract (review #3): a BUS_OFF on bus2_health = Ball Butler (CAN1), with the
+    # Jugglebot core bus (bus1_health) healthy and no CAN_BUS_DOWN fault, must NOT
+    # raise has_fatal_can_error -- BB faults are isolated from the legs (ADR-0013).
+    teensy, node = bridge
+    teensy.send_telemetry()
+    hb = HeartbeatT2J(t_teensy_us=1, link_state=int(LinkState.UP),
+                      bus1_health=int(BusHealth.OK),
+                      bus2_health=int(BusHealth.BUS_OFF),
+                      fault_state=int(FaultState.NONE), flags=0, uptime_ms=10)
+    teensy.send_to_jetson(int(MsgType.HEARTBEAT_T2J), hb.pack())
+    assert _wait_until(lambda: node._latest_heartbeat is not None
+                       and node._latest_telemetry is not None)
+    node._publish_robot_state()
+    assert node.robot_state_pub.published[-1].has_fatal_can_error is False
 
 
 def test_has_fatal_can_error_from_fault_state(bridge):

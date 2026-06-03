@@ -394,7 +394,11 @@ class TeensyBridgeNode(Node):
             # the comparison faithful WITHOUT re-running the Teensy's stateful
             # soft-reset machine on the Jetson (which fault_state already reports).
             fault_state = int(hb.fault_state) if hb is not None else 0
-            bus2_health = int(hb.bus2_health) if hb is not None else 0
+            # After the three-bus remap (ADR-0013 / firmware HANDOFF D4) the on-wire
+            # bus1_health slot carries the Jugglebot CORE bus (CAN3: 6 legs + hand) --
+            # the bus whose BUS_OFF is fatal for the legs. (bus2_health is now Ball
+            # Butler; the cone bus health is not yet on the uplink -- TODO phase-10b.)
+            core_bus_health = int(hb.bus1_health) if hb is not None else 0
             legs = states[:_NUM_LEGS]  # the can-bridge owns legs 0-5 (hand = platform Teensy)
             any_leg_active_err = any(s.active_errors != 0 for s in legs)
             any_leg_disarm_in_cl = any(
@@ -405,7 +409,7 @@ class TeensyBridgeNode(Node):
                 or any_leg_active_err or any_leg_disarm_in_cl)
             msg.has_fatal_can_error = (
                 fault_state == int(FaultState.CAN_BUS_DOWN)
-                or bus2_health == int(BusHealth.BUS_OFF))
+                or core_bus_health == int(BusHealth.BUS_OFF))
             # Undervoltage: matches can_node, which sets undervoltage_error ONLY
             # from a BITWISE test on active_errors (can_node._handle_error:436);
             # disarm_reason==UV is used by can_node solely in its clear predicate,
