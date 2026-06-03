@@ -83,20 +83,20 @@ static void decode_into_cache(const CAN_message_t& msg) {
 // CAN1 Ball Butler: no ODrive on this bus → count only, never decode.
 static void on_bb_rx(const CAN_message_t& /*msg*/) {
   s_bb_rx++;
-  s_bb_last_rx_us = now_wall_us();
+  atomic_write_u64(&s_bb_last_rx_us, now_wall_us());   // 64-bit; read by health_of
 }
 
 // CAN2 catching cone: no ODrive on this bus → count only. The RX timestamp also
 // drives the cone-presence gate in can_cone_send() (cone-absent tolerance).
 static void on_cone_rx(const CAN_message_t& /*msg*/) {
   s_cone_rx++;
-  s_cone_last_rx_us = now_wall_us();
+  atomic_write_u64(&s_cone_last_rx_us, now_wall_us());   // 64-bit; read by the cone gate + health_of
 }
 
 // CAN3 Jugglebot core: every ODrive frame (legs 0..5 + hand) decodes into the cache.
 static void on_jugglebot_rx(const CAN_message_t& msg) {
   s_jugglebot_rx++;
-  s_jugglebot_last_rx_us = now_wall_us();
+  atomic_write_u64(&s_jugglebot_last_rx_us, now_wall_us());   // 64-bit; read by health_of
   decode_into_cache(msg);
 }
 
@@ -233,9 +233,13 @@ CanStats can_buses_stats() {
   s.bb_rx = s_bb_rx; s.bb_tx = s_bb_tx;
   s.cone_rx = s_cone_rx; s.cone_tx = s_cone_tx;
   s.jugglebot_rx = s_jugglebot_rx; s.jugglebot_tx = s_jugglebot_tx;
-  s.bb_health = health_of(s_bb_last_rx_us);
-  s.cone_health = health_of(s_cone_last_rx_us);
-  s.jugglebot_health = health_of(s_jugglebot_last_rx_us);
+  // 64-bit timestamps: read atomically (written atomically in the RX callbacks).
+  // can_buses_stats runs in lower-priority tasks than the CAN-RX writer, so a
+  // plain two-word load could tear across a writer preemption (esp. at the ~71 min
+  // micros64 high-word wrap) and mis-classify bus health.
+  s.bb_health = health_of(atomic_read_u64(&s_bb_last_rx_us));
+  s.cone_health = health_of(atomic_read_u64(&s_cone_last_rx_us));
+  s.jugglebot_health = health_of(atomic_read_u64(&s_jugglebot_last_rx_us));
   return s;
 }
 
