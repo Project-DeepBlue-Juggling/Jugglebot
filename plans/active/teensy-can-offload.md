@@ -85,13 +85,13 @@ See "Time-sync master" below for the master-role change rationale and
                               <-----------------> | <-----> Ball Butler Teensy
                                                  |          (~130 frames/s; ~1.5% util)
                                                  |
-                              CAN2 (pins 0/1)    |  1 Mbps, classical
+                              CAN2 (pins 1/0)    |  1 Mbps, classical
                               <-----------------> | <-----> Catching Cone Teensy
                                                  |          (often disconnected;
                                                  |           ~100-110 frames/s with cone;
                                                  |           ~100 frames/s without cone)
                                                  |
-                              CAN3 (pins 30/31)  |  1 Mbps, classical on FD-capable peripheral
+                              CAN3 (pins 31/30)  |  1 Mbps, classical on FD-capable peripheral
                               <-----------------> | <-----> Platform Teensy 4.0
                                                  |          Hand ODrive
                                                  |          6 Leg ODrives
@@ -112,10 +112,10 @@ See "Time-sync master" below for the master-role change rationale and
   point-to-point link to the new Teensy.
 - The new Teensy 4.1 uses **all three** of its FlexCAN_T4 peripherals: CAN1
   (pins 22 TX / 23 RX, classical) for the Ball Butler subsystem; CAN2
-  (pins 0 TX / 1 RX, classical) for the catching cone subsystem; CAN3
-  (pins 30 TX / 31 RX, FD-capable peripheral run classical) for the
+  (pins 1 TX / 0 RX, classical) for the catching cone subsystem; CAN3
+  (pins 31 TX / 30 RX, FD-capable peripheral run classical) for the
   Jugglebot core subsystem (6 leg ODrives + Hand ODrive + platform Teensy
-  4.0).
+  4.0). (Pin TX/RX directions are the FlexCAN_T4 silicon-fixed default mux.)
 - The Jetson stops touching socketcan entirely. `can_node.py` becomes a UDP
   bridge that re-publishes the same ROS2 topics and re-exposes the same
   services it does today.
@@ -162,7 +162,7 @@ The new partition is **subsystem-based**, not criticality-based. Each robot subs
 
 - **CAN1 — Ball Butler subsystem.** The Ball Butler Teensy lives alone on this bus. A fault on the BB controller (heartbeat storm, firmware hang, controller cable yanked) cannot stall the Jugglebot bus.
 - **CAN2 — Catching cone subsystem.** The sensorized catching cone Teensy lives alone on this bus and is **often physically disconnected** (the cone is removable; the rest of the robot runs without it). The firmware must therefore handle TX with no ACK gracefully — no bus-off, no permanent error state.
-- **CAN3 — Jugglebot core subsystem.** All six leg ODrives, the Hand ODrive, the platform Teensy 4.0, and the can-bridge live on this bus. The 500 Hz leg setpoint stream, the 500 Hz hand trajectory stream (emitted by the platform Teensy 4.0, unchanged from today), and all motor telemetry share CAN3 — they are by construction in one tightly-coordinated control system. CAN3 is wired to the Teensy 4.1's **FD-capable peripheral** (pins 30/31), run classical 1 Mbps for now to match the ODrive firmware. If bandwidth ever binds, the upgrade to CAN-FD is costless at the peripheral.
+- **CAN3 — Jugglebot core subsystem.** All six leg ODrives, the Hand ODrive, the platform Teensy 4.0, and the can-bridge live on this bus. The 500 Hz leg setpoint stream, the 500 Hz hand trajectory stream (emitted by the platform Teensy 4.0, unchanged from today), and all motor telemetry share CAN3 — they are by construction in one tightly-coordinated control system. CAN3 is wired to the Teensy 4.1's **FD-capable peripheral** (pins 31 TX / 30 RX), run classical 1 Mbps for now to match the ODrive firmware. If bandwidth ever binds, the upgrade to CAN-FD is costless at the peripheral.
 
 What we get from the three-way subsystem split:
 
@@ -681,9 +681,10 @@ prototyped on breadboard, CAN transceivers wired and bench-tested in isolation
   (PHY is on the kit; no separate PHY wiring).
 - Wire **three** CAN transceivers (TJA1051T/3 or MCP2562) to the Teensy 4.1's
   three FlexCAN_T4 peripherals: CAN1 on pins 22 TX / 23 RX (Ball Butler
-  subsystem), CAN2 on pins 0 TX / 1 RX (catching cone subsystem), CAN3 on
-  pins 30 TX / 31 RX (Jugglebot core subsystem — note: CAN3 is the
-  FD-capable peripheral, run classical 1 Mbps for now).
+  subsystem), CAN2 on pins 1 TX / 0 RX (catching cone subsystem), CAN3 on
+  pins 31 TX / 30 RX (Jugglebot core subsystem — note: CAN3 is the
+  FD-capable peripheral, run classical 1 Mbps for now). Pin TX/RX directions
+  are the FlexCAN_T4 silicon-fixed default mux.
 - 120 Ω termination at each end of all three buses (6 resistors total).
   CAN3 is a multi-node bus (can-bridge + 6 leg ODrives + Hand ODrive +
   platform Teensy 4.0) — terminate at the two electrical ends of the
@@ -1086,7 +1087,7 @@ To resolve as the plan progresses.
 - **CAN-FD upgrade path on CAN3.** Once this plan lands, CAN3 carries the
   Jugglebot bus running classical 1 Mbps (matching the ODrive firmware and
   the platform Teensy 4.0's existing emission). It sits on the Teensy 4.1's
-  FD-capable FlexCAN peripheral (pins 30/31), so if the ODrive firmware ever
+  FD-capable FlexCAN peripheral (pins 31 TX / 30 RX), so if the ODrive firmware ever
   ships CAN-FD support and the transceivers/traces are FD-rated, the
   upgrade to 5 Mbps + 64-byte payloads is a configuration change rather
   than a hardware change. Not blocking; revisit when CAN3 utilisation

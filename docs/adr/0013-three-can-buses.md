@@ -21,8 +21,17 @@ The Teensy 4.1 exposes **three** FlexCAN_T4 peripherals (two classical CAN2.0B, 
 Use **all three** FlexCAN_T4 peripherals on the can-bridge Teensy, partitioned by **robot subsystem** rather than by criticality:
 
 - **CAN1** (FlexCAN_T4 #1, pins 22 TX / 23 RX, classical 1 Mbps) — Ball Butler subsystem. Carries the BB Teensy only, plus the can-bridge's 100 Hz time-sync broadcast. Steady traffic ~130 frames/s (~1.5% utilisation).
-- **CAN2** (FlexCAN_T4 #2, pins 0 TX / 1 RX, classical 1 Mbps) — catching cone subsystem. Carries the cone Teensy only (often physically disconnected), plus the can-bridge's 100 Hz time-sync broadcast. Steady traffic ~100-110 frames/s (~1.2% utilisation). Firmware must tolerate TX with no ACK gracefully — no bus-off, no permanent error state — for the cone-absent case.
-- **CAN3** (FlexCAN_T4 #3, pins 30 TX / 31 RX, **FD-capable** peripheral run classical 1 Mbps) — Jugglebot core subsystem. Carries the six leg ODrives, the Hand ODrive, the platform Teensy 4.0, and the can-bridge. The 500 Hz leg setpoint stream, the platform Teensy 4.0's existing 500 Hz hand-trajectory emission, and all motor telemetry share CAN3 — by construction they are one tightly-coordinated control system. Steady traffic ~5,340 frames/s; with a throw active ~5,840 frames/s (~64-78% of 1 Mbps ceiling depending on denominator).
+- **CAN2** (FlexCAN_T4 #2, pins 1 TX / 0 RX, classical 1 Mbps) — catching cone subsystem. Carries the cone Teensy only (often physically disconnected), plus the can-bridge's 100 Hz time-sync broadcast. Steady traffic ~100-110 frames/s (~1.2% utilisation). Firmware must tolerate TX with no ACK gracefully — no bus-off, no permanent error state — for the cone-absent case.
+- **CAN3** (FlexCAN_T4 #3, pins 31 TX / 30 RX, **FD-capable** peripheral run classical 1 Mbps) — Jugglebot core subsystem. Carries the six leg ODrives, the Hand ODrive, the platform Teensy 4.0, and the can-bridge. The 500 Hz leg setpoint stream, the platform Teensy 4.0's existing 500 Hz hand-trajectory emission, and all motor telemetry share CAN3 — by construction they are one tightly-coordinated control system. Steady traffic ~5,340 frames/s; with a throw active ~5,840 frames/s (~64-78% of 1 Mbps ceiling depending on denominator).
+
+> **Pin-direction note (corrected 2026-06-03).** The TX/RX assignments above
+> match the FlexCAN_T4 silicon-fixed default pin mux for the Teensy 4.1 — CAN1
+> TX 22 / RX 23, CAN2 TX 1 / RX 0, CAN3 TX 31 / RX 30 — which is what the
+> firmware actually runs (it uses the library default pins; the `CAN*_*_PIN`
+> constants in `canbridge_config.h` are documentation only). An earlier draft of
+> this ADR had CAN2 and CAN3 TX/RX **reversed**; corrected during the three-bus
+> firmware refactor by reading the `FlexCAN_T4.tpp` `setTX`/`setRX` DEF branch.
+> Wrong-direction CAN pins do not communicate at all, so this matters at the bench.
 
 The can-bridge time-sync master ([ADR-0008](0008-time-sync-master-on-can-bridge.md)) broadcasts the 100 Hz 0x7DD wall-clock on **all three buses simultaneously**. Frame ID, payload format, and cadence are unchanged from the Jetson-as-master era; every slave's IIR filter is unaffected. Per-bus slave routing: BB on CAN1, cone on CAN2 (when present), platform Teensy 4.0 on CAN3.
 

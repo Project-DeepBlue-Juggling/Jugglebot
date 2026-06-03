@@ -246,11 +246,11 @@ wire mappings resolved from ground truth (the FlexCAN_T4 library + the explicit
 following are non-blocking follow-ups (each cross-referenced elsewhere in this
 doc), not decisions that gate the next session:
 
-1. **Correct the ADR-0013 / parent-plan / predecessor-HANDOFF pin tables** — they
-   list CAN2 and CAN3 TX/RX reversed vs the silicon (D1). Out of scope tonight;
-   see "Files NOT touched but probably should be". The firmware + firmware-docs
-   are already correct, so this is a documentation-consistency fix, not a
-   functional blocker.
+1. **Correct the ADR-0013 / parent-plan pin tables** — ✅ DONE 2026-06-03 (user
+   confirmed the pins, then asked for the ADR fix; corrected ADR-0013 + the
+   parent plan in lockstep, cross-doc consistency verified). The predecessor
+   HANDOFF is left as a historical artifact (see "Files NOT touched but probably
+   should be").
 2. **Phase-10b protocol bump for cone telemetry** — the cone (CAN2) health and
    bus utilisation are not on the UDP uplink (only two wire slots exist;
    `udp_protocol.h` is out of scope). Marked with `TODO(phase-10b)` in
@@ -329,14 +329,19 @@ unstaged, unmodified by this session) and the (non-existent) legbridge file.
 
 ## Files NOT touched but probably should be (next-session recommendations)
 
-- **`docs/adr/0013-three-can-buses.md`** — the pin table (§Decision) lists CAN2
-  as "pins 0 TX / 1 RX" and CAN3 as "pins 30 TX / 31 RX". Both are TX/RX
-  **reversed** vs the FlexCAN_T4 silicon pin map (see D1). Correct to CAN2
-  TX=1/RX=0, CAN3 TX=31/RX=30. Out of scope tonight (not in the §5 file list).
-- **`plans/active/teensy-can-offload.md`** — same reversed pin directions in its
-  topology / BOM pin tables; correct in lockstep with the ADR.
-- **`plans/active/HANDOFF-teensy-can-offload-firmware-wip.md`** — the L110-114
-  and L135-144 pin tables carry the same reversed CAN2/CAN3 directions.
+- **`docs/adr/0013-three-can-buses.md`** — ✅ **FIXED 2026-06-03** (pin-correction
+  commit on this branch, after the user confirmed the pins): CAN2 → TX 1 / RX 0,
+  CAN3 → TX 31 / RX 30, plus a dated pin-direction correction note in the
+  Decision section. (Was reversed; see D1.)
+- **`plans/active/teensy-can-offload.md`** — ✅ **FIXED** in the same commit: all
+  topology diagram / network-setup / BOM / task-table pin references corrected to
+  the silicon mux (8 occurrences).
+- **`plans/active/HANDOFF-teensy-can-offload-firmware-wip.md`** — left as a
+  historical artifact. Its L110-114 / L135-144 tables still show the reversed
+  CAN2/CAN3 directions, but that section is a "BLOCKING INPUT — resolve this"
+  banner that explicitly flagged the disagreement for resolution; this HANDOFF +
+  the corrected ADR record the resolution, so the predecessor is superseded
+  rather than rewritten.
 
 ## What was deliberately NOT done
 
