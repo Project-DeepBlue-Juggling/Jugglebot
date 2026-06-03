@@ -132,6 +132,36 @@ Item 5 (BOM) is informational — no firmware change.
   BRINGUP (item 1)`. One line, caught by the finish-early stale-identifier sweep.
 - **C5** — this HANDOFF doc (`docs(plans): three-bus-WIP HANDOFF`).
 
+## Adversarial review (2026-06-03) + post-review fixes
+
+After the refactor landed, a 7-dimension adversarial review (17 agents: one
+audit-reporter per failure surface, each finding independently verified by a
+skeptic prompted to refute it) was run over the three-bus diff. **10 findings,
+all 10 survived verification.** Triage + actions:
+
+- **#1/#2 (HIGH) — FlexCAN&lt;CAN3&gt; TX race.** The time-sync fan-out (C3) put
+  the 0x7DD broadcast and the 500 Hz leg-setpoint ISR on the SAME non-reentrant
+  FlexCAN object → a preempting writer could corrupt/drop a leg setpoint
+  (jerky-motion class). **FIXED `8c8eb4f`:** IRQ-off (PRIMASK) guard on all three
+  `can_*_send` (also closes the #8/#9 counter RMW race). Bench-validate interp
+  jitter with the fan-out active.
+- **#4/#5/#7 (LOW) — 64-bit RX-timestamp atomicity.** Asymmetric atomic-read /
+  plain-write of `s_*_last_rx_us`. **FIXED `b77d6ab`:** `atomic_write_u64` in the
+  RX callbacks + `atomic_read_u64` in `can_buses_stats`.
+- **#3 (MEDIUM, latent) / #6 (LOW) — Jetson consumers stale vs the D4 wire remap.**
+  `teensy_bridge_node` `has_fatal_can_error` read `bus2_health` (now Ball Butler)
+  for the leg-fatal signal; `profile_monitor` legends mislabeled. **FIXED
+  `7e5187c`:** consumer reads `bus1_health` (core bus) + test updated + a negative
+  test added; profile_monitor relabeled. Full suite (`python -m pytest tests/ -q`,
+  2026-06-03): **1685 passed, 1 xfailed, 455.70 s**.
+- **#8/#9 (LOW)** — counter RMW race: resolved for free by #1's IRQ-off guard.
+- **#10 (LOW, PRE-EXISTING) — CAN3 RX-drain throughput.** `events()` drains one
+  frame per 1 ms tick (~1000 fps) vs CAN3 ~5,340 fps → buffer overflow / dropped
+  frames. NOT introduced by the refactor (the base had the same one-frame drain;
+  legs were already ~5000 fps on one bus). **DEFERRED** to a dedicated session —
+  see `plans/active/PROMPT-canbridge-rx-drain-throughput.md` (it interacts with
+  the A1/A2 concurrency model, so it warrants its own quantified analysis).
+
 ## Decisions made autonomously
 
 ### D1 — CAN2/CAN3 TX/RX pin direction resolved against FlexCAN_T4 library (§6a, item 4)
