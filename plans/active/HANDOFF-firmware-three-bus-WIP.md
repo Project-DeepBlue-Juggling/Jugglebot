@@ -274,9 +274,12 @@ _(one line per `pio run`: timestamp + result + commit context)_
   `pio run -t clean && pio run` (in
   `ros_ws/src/jugglebot/Teensy_code_canbridge`, venv active) — **SUCCESS**,
   32.39 s, every TU compiled from scratch, `text 210240 / data 34496 / bss
-  101920 / dec 346656`. This is the authoritative final firmware state at HEAD
-  `fd9aff9`. (Only warning: the pre-existing `actuators_intact_and_holding`
-  unused-function — see Incidental findings.)
+  101920 / dec 346656`. This is the authoritative final firmware state at the
+  firmware tip `fd9aff9`. (Only warning: the pre-existing
+  `actuators_intact_and_holding` unused-function — see Incidental findings.)
+- 2026-06-03 ~20:55 — HEAD `bb7d3ea` (this HANDOFF commit, doc-only — firmware
+  byte-identical to `fd9aff9`) incremental `pio run` re-confirmed — **SUCCESS**
+  (5.03 s). The reviewer's first `pio run` reproduces this.
 
 ## Build failures
 
