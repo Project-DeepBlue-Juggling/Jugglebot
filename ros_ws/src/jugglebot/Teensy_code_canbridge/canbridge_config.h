@@ -32,15 +32,30 @@ constexpr uint8_t  JETSON_IP[4] = { JbUdp::TEENSY_IP_0, JbUdp::TEENSY_IP_1,
 constexpr uint8_t  NETMASK[4]   = { 255, 255, 255, 252 };   // /30
 // No gateway, no DHCP, no mDNS — see teensy-can-offload.md "Jetson network setup".
 
-// ── CAN bus wiring (Teensy 4.1) ───────────────────────────────────────────────
-//  CAN1 = shared bus  (hand ODrive, platform Teensy 4.0, BB, cone)  pins 22(TX)/23(RX)
-//  CAN2 = private leg bus (6 leg ODrives)                           pins  1(TX)/ 0(RX)
-//  (CAN3 on pins 31/30 is CAN-FD-capable — reserved for the deferred FD path.)
+// ── CAN bus wiring (Teensy 4.1) — three subsystem-isolated buses (ADR-0013) ───
+//  One FlexCAN_T4 peripheral per robot subsystem (supersedes the old two-bus
+//  shared-aux / private-leg split). Pin directions below are the FlexCAN_T4
+//  silicon-fixed DEF mux (FlexCAN_T4.tpp setTX/setRX, invoked by begin()) — the
+//  library default that can_buses.cpp actually runs; these constants are
+//  documentation only (nothing reads them; the peripheral picks its own pads).
+//
+//    CAN1 = Ball Butler bus     (BB Teensy only)                  TX 22 / RX 23
+//    CAN2 = catching cone bus   (cone Teensy, often disconnected) TX  1 / RX  0
+//    CAN3 = Jugglebot core bus  (6 leg ODrives + Hand ODrive +    TX 31 / RX 30
+//           platform Teensy 4.0 + can-bridge)
+//
+//  CAN3 is the FD-capable peripheral, run classical 1 Mbps today to match the
+//  classical-only ODrive firmware; a future CAN-FD upgrade is a config change,
+//  not a rewire. All three buses carry the 100 Hz 0x7DD time-sync broadcast.
+//  NB: ADR-0013 / the parent plan list CAN2 and CAN3 TX/RX reversed — the
+//  FlexCAN_T4 silicon mux above is authoritative (see HANDOFF-firmware-three-bus D1).
 constexpr uint32_t CAN_BITRATE  = CanBus::BAUD_RATE;   // 1 Mbps, all nodes agree
-constexpr uint8_t  CAN1_TX_PIN  = 22;
+constexpr uint8_t  CAN1_TX_PIN  = 22;   // Ball Butler
 constexpr uint8_t  CAN1_RX_PIN  = 23;
-constexpr uint8_t  CAN2_TX_PIN  = 1;
+constexpr uint8_t  CAN2_TX_PIN  = 1;    // catching cone (FlexCAN_T4 DEF: TX=1, RX=0)
 constexpr uint8_t  CAN2_RX_PIN  = 0;
+constexpr uint8_t  CAN3_TX_PIN  = 31;   // Jugglebot core (FlexCAN_T4 DEF: TX=31, RX=30)
+constexpr uint8_t  CAN3_RX_PIN  = 30;
 
 // ── Status LED ────────────────────────────────────────────────────────────────
 constexpr uint8_t  LED_PIN      = 13;          // Teensy on-board LED
@@ -70,8 +85,8 @@ constexpr uint32_t TIMEOFDAY_RESYNC_MS = 30000u;  // 30 s
 //  Stacks are in StackType_t WORDS (4 bytes on Cortex-M7). The plan budgets
 //  bytes; *_STACK is the word count = bytes / 4.
 constexpr uint8_t PRIO_INTERP      = 6;   // leg_interp (hard deadline)
-constexpr uint8_t PRIO_CAN_TX      = 5;   // can2_tx
-constexpr uint8_t PRIO_CAN_RX      = 5;   // can1_rx / can2_rx
+constexpr uint8_t PRIO_CAN_TX      = 5;   // CAN TX mailbox drain
+constexpr uint8_t PRIO_CAN_RX      = 5;   // can_rx task (pumps all three buses)
 constexpr uint8_t PRIO_UDP_RX      = 4;   // usb_rx (UDP downlink)
 constexpr uint8_t PRIO_TIME_SYNC   = 4;   // time_sync_master
 constexpr uint8_t PRIO_UDP_TX      = 3;   // usb_tx (telemetry uplink)
@@ -106,6 +121,13 @@ constexpr float    MAX_MOTOR_VEL_RPS    = ODriveDefaults::TRAP_VEL_LIMIT_RPS * 1
 constexpr uint32_t MPC_CMD_STALENESS_US = 250000u;   // 0.25 s → E-STOP (link-fault trigger)
 constexpr uint32_t MOTOR_FB_STALENESS_US = 150000u;  // 0.15 s → suppress commands
 constexpr uint32_t CAN_HEARTBEAT_TIMEOUT_US = 2000000u;  // 2.0 s → fatal_can_error
+// CAN2 cone-absent tolerance (ADR-0013): the can-bridge broadcasts 0x7DD on CAN2
+// even when the catching cone is disconnected. can_cone_send() gates the TX on
+// recent cone presence so an un-ACKed broadcast never drives CAN2 to bus-off
+// (candidate 3, "gated broadcast" — see can_buses.cpp + HANDOFF-firmware-three-bus D2).
+// A cone counts as "present" if any CAN2 frame arrived within this window;
+// generous so a brief cone silence doesn't blip the broadcast.
+constexpr uint32_t CONE_PRESENT_STALENESS_US = 5000000u;  // 5.0 s
 // Jetson UDP link: declare lost after LINK_LOST_MISSES missed heartbeats.
 constexpr uint32_t JETSON_LINK_TIMEOUT_US =
     (1000000u / HEARTBEAT_RATE_HZ) * JbUdp::LINK_LOST_MISSES;   // 500 ms
