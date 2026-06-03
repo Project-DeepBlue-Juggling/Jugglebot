@@ -33,7 +33,7 @@ static void broadcast_0x7dd() {
   f.len = 8;
   memcpy(&f.buf[0], &sec, 4);           // little-endian, matches '<II'
   memcpy(&f.buf[4], &usec, 4);
-  can1_send(f);
+  can_bb_send(f);                       // C3 fans this out to cone + jugglebot too
 }
 
 // ── Time-of-day query (RPC client) ────────────────────────────────────────────

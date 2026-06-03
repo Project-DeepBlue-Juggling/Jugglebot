@@ -151,8 +151,9 @@ static void interp_isr() {
 
   // ── Deferred-stow descent (overrides the MPC ladder) ──
   // Velocity-limited per-leg descent to the off pose (0.0 rev = fully retracted),
-  // emitted on CAN2. Runs only when output is enabled (the fault machine enables
-  // it on a confirmed CAN2 reconnect). Mirrors _gently_move_to_setpoint(0.0).
+  // emitted on CAN3 (the Jugglebot core bus). Runs only when output is enabled
+  // (the fault machine enables it on a confirmed CAN3 reconnect). Mirrors
+  // _gently_move_to_setpoint(0.0).
   if (s_stow_active) {
     const float dt_tick = INTERP_PERIOD_US * 1e-6f;
     // Accel-limit the descent speed (ramps 0 → limit) so there is no startup
@@ -179,7 +180,7 @@ static void interp_isr() {
       axes[i].target_pos_rev = p;
       axes[i].target_vel_rps = v;
       axes[i].target_torque_Nm = 0.0f;
-      if (s_output_enabled) can2_send(ODrive::encode_leg_setpoint(i, p, v, 0.0f));
+      if (s_output_enabled) can_jugglebot_send(ODrive::encode_leg_setpoint(i, p, v, 0.0f));
     }
     s_stow_complete = all_done;
     return;
@@ -257,7 +258,7 @@ static void interp_isr() {
     if (cmd_pos[i] != pre) { cmd_vel[i] = 0.0f; cmd_tor[i] = 0.0f; }
   }
 
-  // Publish targets into the cache (for telemetry) and transmit to CAN2.
+  // Publish targets into the cache (for telemetry) and transmit to CAN3.
   for (uint8_t i = 0; i < NUM_LEGS; ++i) {
     axes[i].target_pos_rev   = cmd_pos[i];
     axes[i].target_vel_rps   = cmd_vel[i];
@@ -265,7 +266,7 @@ static void interp_isr() {
   }
   if (s_output_enabled) {
     for (uint8_t i = 0; i < NUM_LEGS; ++i) {
-      can2_send(ODrive::encode_leg_setpoint(i, cmd_pos[i], cmd_vel[i], cmd_tor[i]));
+      can_jugglebot_send(ODrive::encode_leg_setpoint(i, cmd_pos[i], cmd_vel[i], cmd_tor[i]));
     }
   }
 }

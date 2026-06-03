@@ -4,16 +4,19 @@
  *  Owns all leg CAN responsibility, offloaded from the Jetson. See
  *  plans/active/teensy-can-offload.md and the firmware-WIP handoff doc.
  *
- *  Stack: FreeRTOS (FreeRTOS_TEENSY4) + QNEthernet (lwIP) + FlexCAN_T4 (x2).
+ *  Stack: FreeRTOS (FreeRTOS_TEENSY4) + QNEthernet (lwIP) + FlexCAN_T4 (x3).
  *
- *  Topology:
+ *  Topology (three subsystem-isolated CAN buses, ADR-0013):
  *    Jetson  <--UDP/Ethernet 192.168.42.0/30-->  THIS Teensy
- *    THIS Teensy  <--CAN1 (shared)-->  hand ODrive, platform Teensy 4.0, BB, cone
- *    THIS Teensy  <--CAN2 (private)-->  6 leg ODrives
+ *    THIS Teensy  <--CAN1 (Ball Butler)-->  BB Teensy
+ *    THIS Teensy  <--CAN2 (cone)-->  catching cone Teensy (often disconnected)
+ *    THIS Teensy  <--CAN3 (Jugglebot core)-->  6 leg ODrives + Hand ODrive +
+ *                                              platform Teensy 4.0
  *
- *  Roles: time-sync MASTER on CAN1 0x7DD (replaces the Jetson); 500 Hz Hermite
- *  interpolator → leg setpoints on CAN2; telemetry/diagnostics uplink; fault
- *  state machine with the can_node deferred-stow safety inversion preserved.
+ *  Roles: time-sync MASTER broadcasting 0x7DD on all three buses (replaces the
+ *  Jetson); 500 Hz Hermite interpolator → leg setpoints on CAN3; telemetry/
+ *  diagnostics uplink; fault state machine with the can_node deferred-stow
+ *  safety inversion preserved.
  *
  *  This file is the FreeRTOS scaffold: it brings up Ethernet, creates the tasks,
  *  and starts the scheduler. Subsystem logic lives in the sibling modules.
@@ -84,8 +87,13 @@ static void send_heartbeat_t2j() {
   JbUdp::HeartbeatT2JPayload p{};
   p.t_teensy_us = now_wall_us();
   p.link_state  = link_state();
-  p.bus1_health = cs.can1_health;
-  p.bus2_health = cs.can2_health;
+  // Two on-wire health slots, three buses (HANDOFF D4): the safety-critical
+  // Jugglebot core bus takes slot 1, Ball Butler slot 2. The wire field NAMES
+  // (bus1_health/bus2_health) are fixed by udp_protocol.h and stay unchanged.
+  // TODO(phase-10b): expose cone (CAN2) health on the uplink in the next
+  // protocol codegen update (a third health slot).
+  p.bus1_health = cs.jugglebot_health;   // CAN3 (Jugglebot core)
+  p.bus2_health = cs.bb_health;          // CAN1 (Ball Butler)
   p.fault_state = fault_state();
   p.flags       = (time_synced() ? 0x1u : 0x0u)
                 | (fault_stow_pending() ? 0x2u : 0x0u)
@@ -109,8 +117,8 @@ static void task_net(void*) {
   }
 }
 
-// CAN RX/TX servicing (priority 5). Pumps both buses' events() so onReceive
-// callbacks decode into the cache and TX mailboxes drain.
+// CAN RX/TX servicing (priority 5). Pumps all three buses' events() so onReceive
+// callbacks decode into the cache (CAN3) / count (CAN1, CAN2) and TX mailboxes drain.
 static void task_can_rx(void*) {
   TickType_t last = xTaskGetTickCount();
   for (;;) {
@@ -141,7 +149,7 @@ static void task_telem(void*) {
   }
 }
 
-// Fault state machine (priority 3) at FAULT_TASK_HZ. Error eval + CAN2 watchdog
+// Fault state machine (priority 3) at FAULT_TASK_HZ. Error eval + CAN3 watchdog
 // + deferred stow + guard-mode/output gate.
 static void task_fault(void*) {
   TickType_t last = xTaskGetTickCount();
@@ -205,7 +213,7 @@ void setup() {
   udp_on_setpoint(interp_on_setpoint);   // Phase 7: 40 Hz setpoint downlink
 
   udp_link_init();
-  can_buses_init();                // Phase 5: CAN1 (shared) + CAN2 (legs)
+  can_buses_init();                // Phase 5: CAN1 bb + CAN2 cone + CAN3 jugglebot
   telemetry_init();                // Phase 6
   fault_machine_init();            // Phase 8 (before interp so the output gate is off at boot)
   leg_interp_init();               // Phase 7: starts the 500 Hz IntervalTimer ISR

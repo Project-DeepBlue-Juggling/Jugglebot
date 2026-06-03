@@ -3,9 +3,9 @@
 //  axis_state.h — per-axis motor state cache
 // =============================================================================
 //  The Teensy mirror of the Jetson's MotorStateTracker (motor_state.py).
-//  One AxisState per ODrive axis: 6 legs + the hand. Populated by the CAN2 RX
-//  task (telemetry/heartbeat/error decode), read by the interpolator, fault
-//  state machine, and telemetry uplink.
+//  One AxisState per ODrive axis: 6 legs + the hand. Populated by the CAN3 RX
+//  decode (the Jugglebot core bus carries all leg + hand ODrives — ADR-0013),
+//  read by the interpolator, fault state machine, and telemetry uplink.
 //
 //  Concurrency: single-word volatile reads/writes are atomic on Cortex-M7
 //  (plan §"Per-axis state cache"). The hot pos/vel/timestamp triple is read as
@@ -23,7 +23,7 @@
 namespace CanBridge {
 
 struct AxisState {
-  // ── Hot — updated by CAN2 RX task ──────────────────────────────────────────
+  // ── Hot — updated by CAN3 RX decode ────────────────────────────────────────
   volatile float    pos_rev          = 0.0f;   // Jugglebot convention (pos = extension)
   volatile float    vel_rps          = 0.0f;
   volatile uint64_t pos_timestamp_us = 0;      // wall-clock at last encoder update
@@ -34,7 +34,7 @@ struct AxisState {
   volatile float    bus_voltage      = 0.0f;   // V
   volatile float    bus_current      = 0.0f;   // A
 
-  // ── Heartbeat / state — updated by CAN2 RX + fault task ────────────────────
+  // ── Heartbeat / state — updated by CAN3 RX + fault task ────────────────────
   volatile uint32_t active_errors    = 0;      // bitmask (odrive.py ERROR_CODES)
   volatile uint32_t disarm_reason    = 0;      // bitmask
   volatile uint8_t  axis_state       = 0;      // ODrive current_state (IDLE=1, CLOSED_LOOP=8)

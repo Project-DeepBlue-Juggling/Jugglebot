@@ -36,7 +36,7 @@ float interp_base_pos(uint8_t i);
 bool  interp_have_latched();
 
 // Enable/disable command output (the fault state machine / guard-mode gate;
-// Phase 8 owns this). When false the ISR computes but does not transmit to CAN2.
+// Phase 8 owns this). When false the ISR computes but does not transmit to CAN3.
 void interp_set_output_enabled(bool en);
 bool interp_output_enabled();
 
@@ -48,8 +48,8 @@ void     interp_reset_jitter();
 // ── Deferred-stow profiled descent (driven by the fault machine) ──────────────
 // When stow is active the 500 Hz ISR ignores the MPC ladder and runs a
 // velocity-limited descent of every leg to the off pose (stroke min), emitting
-// the setpoints on CAN2. This is the Teensy analog of can_node's
-// _gently_move_to_setpoint(0.0, deactivating=True).
+// the setpoints on CAN3 (the Jugglebot core bus). This is the Teensy analog of
+// can_node's _gently_move_to_setpoint(0.0, deactivating=True).
 void interp_begin_stow();    // capture current encoder positions, start the descent
 void interp_end_stow();      // stop the descent (back to MPC ladder / hold)
 bool interp_stow_active();

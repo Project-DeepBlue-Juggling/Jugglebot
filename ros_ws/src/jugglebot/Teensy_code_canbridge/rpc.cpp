@@ -65,12 +65,13 @@ bool parse_response(const uint8_t* payload, uint16_t len,
 
 // ── Server dispatch ───────────────────────────────────────────────────────────
 
-// "Never command a confirmed-dead bus." Reject CAN-bound RPCs when CAN2 is in a
-// WARN/BUS_OFF state (the proxy for fatal_can_error until Phase 8 wires the
-// authoritative fault-machine predicate). OK/UNKNOWN both allow commands so the
-// initial bring-up sequence (set CLOSED_LOOP before telemetry warms) works.
-static bool can2_commands_allowed() {
-  const uint8_t h = can_buses_stats().can2_health;
+// "Never command a confirmed-dead bus." Reject CAN-bound RPCs when CAN3 (the
+// Jugglebot core bus carrying the leg ODrives) is in a WARN/BUS_OFF state (the
+// proxy for fatal_can_error until Phase 8 wires the authoritative fault-machine
+// predicate). OK/UNKNOWN both allow commands so the initial bring-up sequence
+// (set CLOSED_LOOP before telemetry warms) works.
+static bool jugglebot_commands_allowed() {
+  const uint8_t h = can_buses_stats().jugglebot_health;
   return h != JbUdp::BusHealth::WARN && h != JbUdp::BusHealth::BUS_OFF;
 }
 
@@ -79,8 +80,8 @@ static bool can2_commands_allowed() {
 static uint16_t send_leg_frame(uint8_t axis, const ODrive::CanFrame& f) {
   if (axis == HAND_AXIS) return JbUdp::RpcStatus::ERR_REJECTED;  // platform Teensy owns the hand
   if (axis >= NUM_LEGS)  return JbUdp::RpcStatus::ERR_BAD_ARGS;
-  if (!can2_commands_allowed()) return JbUdp::RpcStatus::ERR_BUS_DOWN;
-  return can2_send(f) ? JbUdp::RpcStatus::OK : JbUdp::RpcStatus::ERR_TIMEOUT;
+  if (!jugglebot_commands_allowed()) return JbUdp::RpcStatus::ERR_BUS_DOWN;
+  return can_jugglebot_send(f) ? JbUdp::RpcStatus::OK : JbUdp::RpcStatus::ERR_TIMEOUT;
 }
 
 template <typename Arg>
@@ -127,8 +128,8 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
       // Operator clear refills the soft-reset auto-retry budget (clear_error_flags).
       fault_notify_clear_errors();
       if (a.axis == AXIS_ALL) {
-        if (!can2_commands_allowed()) return RpcStatus::ERR_BUS_DOWN;
-        for (uint8_t i = 0; i < NUM_LEGS; ++i) can2_send(ODrive::encode_clear_errors(i));
+        if (!jugglebot_commands_allowed()) return RpcStatus::ERR_BUS_DOWN;
+        for (uint8_t i = 0; i < NUM_LEGS; ++i) can_jugglebot_send(ODrive::encode_clear_errors(i));
         return RpcStatus::OK;
       }
       return send_leg_frame(a.axis, ODrive::encode_clear_errors(a.axis));
@@ -136,8 +137,8 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
     case RpcMethod::REBOOT_ODRIVES: {
       ArgAxisOnly a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
       if (a.axis == AXIS_ALL) {
-        if (!can2_commands_allowed()) return RpcStatus::ERR_BUS_DOWN;
-        for (uint8_t i = 0; i < NUM_LEGS; ++i) can2_send(ODrive::encode_reboot(i));
+        if (!jugglebot_commands_allowed()) return RpcStatus::ERR_BUS_DOWN;
+        for (uint8_t i = 0; i < NUM_LEGS; ++i) can_jugglebot_send(ODrive::encode_reboot(i));
         return RpcStatus::OK;
       }
       return send_leg_frame(a.axis, ODrive::encode_reboot(a.axis));

@@ -1,5 +1,5 @@
 // =============================================================================
-//  can_buses.cpp — dual FlexCAN_T4 + RX decode + TX
+//  can_buses.cpp — three subsystem-isolated FlexCAN_T4 buses + RX decode + TX
 // =============================================================================
 #include "can_buses.h"
 
@@ -12,14 +12,18 @@
 
 namespace CanBridge {
 
-// CAN1 (pins 22/23) shared; CAN2 (pins 1/0) leg bus.
-static FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_16> can1;
-static FlexCAN_T4<CAN2, RX_SIZE_256, TX_SIZE_16> can2;
+// Peripheral identity is confined to these three lines (ADR-0013 / HANDOFF D3):
+//   bb = CAN1 (pins 22/23), cone = CAN2 (pins 1/0), jugglebot = CAN3 (pins 31/30).
+static FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_16> can_bb;
+static FlexCAN_T4<CAN2, RX_SIZE_256, TX_SIZE_16> can_cone;
+static FlexCAN_T4<CAN3, RX_SIZE_256, TX_SIZE_16> can_jugglebot;
 
-static volatile uint32_t s_can1_rx = 0, s_can1_tx = 0, s_can2_rx = 0, s_can2_tx = 0;
-static volatile uint64_t s_can1_last_rx_us = 0, s_can2_last_rx_us = 0;
+static volatile uint32_t s_bb_rx = 0, s_bb_tx = 0, s_cone_rx = 0, s_cone_tx = 0,
+                         s_jugglebot_rx = 0, s_jugglebot_tx = 0;
+static volatile uint64_t s_bb_last_rx_us = 0, s_cone_last_rx_us = 0, s_jugglebot_last_rx_us = 0;
 
-// Decode an ODrive frame into the per-axis cache. Used by both buses.
+// Decode an ODrive frame into the per-axis cache. Used by the Jugglebot bus only
+// (CAN3 carries all 6 leg ODrives + the Hand ODrive).
 static void decode_into_cache(const CAN_message_t& msg) {
   const uint8_t axis = ODrive::axis_of(msg.id);
   const uint8_t cmd  = ODrive::cmd_of(msg.id);
@@ -76,41 +80,67 @@ static void decode_into_cache(const CAN_message_t& msg) {
   }
 }
 
-static void on_can1_rx(const CAN_message_t& msg) {
-  s_can1_rx++;
-  s_can1_last_rx_us = now_wall_us();
-  // On the shared bus we only care about hand-axis (node 6) telemetry for the
-  // uplink; everything else (BB, cone, platform, our own 0x7DD) is ignored.
-  if (ODrive::axis_of(msg.id) == HAND_AXIS) decode_into_cache(msg);
+// CAN1 Ball Butler: no ODrive on this bus → count only, never decode.
+static void on_bb_rx(const CAN_message_t& /*msg*/) {
+  s_bb_rx++;
+  s_bb_last_rx_us = now_wall_us();
 }
 
-static void on_can2_rx(const CAN_message_t& msg) {
-  s_can2_rx++;
-  s_can2_last_rx_us = now_wall_us();
-  decode_into_cache(msg);                  // leg axes 0..5
+// CAN2 catching cone: no ODrive on this bus → count only. The RX timestamp also
+// drives the cone-presence gate in can_cone_send() (cone-absent tolerance).
+static void on_cone_rx(const CAN_message_t& /*msg*/) {
+  s_cone_rx++;
+  s_cone_last_rx_us = now_wall_us();
+}
+
+// CAN3 Jugglebot core: every ODrive frame (legs 0..5 + hand) decodes into the cache.
+static void on_jugglebot_rx(const CAN_message_t& msg) {
+  s_jugglebot_rx++;
+  s_jugglebot_last_rx_us = now_wall_us();
+  decode_into_cache(msg);
 }
 
 void can_buses_init() {
-  can1.begin();
-  can1.setBaudRate(CAN_BITRATE);
-  can1.setMaxMB(16);
-  can1.enableFIFO();
-  can1.enableFIFOInterrupt();
-  can1.onReceive(on_can1_rx);
+  can_bb.begin();
+  can_bb.setBaudRate(CAN_BITRATE);
+  can_bb.setMaxMB(16);
+  can_bb.enableFIFO();
+  can_bb.enableFIFOInterrupt();
+  can_bb.onReceive(on_bb_rx);
 
-  can2.begin();
-  can2.setBaudRate(CAN_BITRATE);
-  can2.setMaxMB(16);
-  can2.enableFIFO();
-  can2.enableFIFOInterrupt();
-  can2.onReceive(on_can2_rx);
+  // CAN2 cone-absent tolerance (candidate 3, "gated broadcast" — HANDOFF D2).
+  // The bus is brought up identically to the others; the tolerance lives in
+  // can_cone_send() below, which withholds TX whenever no cone frame has arrived
+  // within CONE_PRESENT_STALENESS_US. With the cone disconnected we therefore
+  // never transmit into an un-ACKed bus, so the FlexCAN TEC never climbs and CAN2
+  // never enters bus-off — the failure is PREVENTED, not recovered from.
+  // Why not the other candidates: the pinned FlexCAN_T4 exposes no one-shot-TX
+  // API (candidate 1) and no bounded bus-off-recovery setter (candidate 2 would
+  // need raw ESR1/ECR register work); the software gate is the least-risky option
+  // that compiles cleanly against the pinned library.
+  can_cone.begin();
+  can_cone.setBaudRate(CAN_BITRATE);
+  can_cone.setMaxMB(16);
+  can_cone.enableFIFO();
+  can_cone.enableFIFOInterrupt();
+  can_cone.onReceive(on_cone_rx);
+
+  can_jugglebot.begin();
+  can_jugglebot.setBaudRate(CAN_BITRATE);
+  can_jugglebot.setMaxMB(16);
+  can_jugglebot.enableFIFO();
+  can_jugglebot.enableFIFOInterrupt();
+  can_jugglebot.onReceive(on_jugglebot_rx);
 }
 
 void can_buses_service() {
-  can1.events();
-  can2.events();
+  can_bb.events();
+  can_cone.events();
+  can_jugglebot.events();
 }
 
+// Each FlexCAN template instance is a distinct type, so a small overload per bus
+// rather than a template (mirrors the original two-bus pattern).
 static bool send_on(FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_16>& bus,
                     const ODrive::CanFrame& f) {
   CAN_message_t m;
@@ -120,7 +150,6 @@ static bool send_on(FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_16>& bus,
   memcpy(m.buf, f.buf, 8);
   return bus.write(m) > 0;
 }
-// (CAN2 has a distinct template type, so a small overload rather than a template.)
 static bool send_on(FlexCAN_T4<CAN2, RX_SIZE_256, TX_SIZE_16>& bus,
                     const ODrive::CanFrame& f) {
   CAN_message_t m;
@@ -130,16 +159,42 @@ static bool send_on(FlexCAN_T4<CAN2, RX_SIZE_256, TX_SIZE_16>& bus,
   memcpy(m.buf, f.buf, 8);
   return bus.write(m) > 0;
 }
+static bool send_on(FlexCAN_T4<CAN3, RX_SIZE_256, TX_SIZE_16>& bus,
+                    const ODrive::CanFrame& f) {
+  CAN_message_t m;
+  m.id = f.id;
+  m.len = f.len;
+  m.flags.extended = 0;
+  memcpy(m.buf, f.buf, 8);
+  return bus.write(m) > 0;
+}
 
-bool can1_send(const ODrive::CanFrame& f) {
-  const bool ok = send_on(can1, f);
-  if (ok) s_can1_tx++;
+bool can_bb_send(const ODrive::CanFrame& f) {
+  const bool ok = send_on(can_bb, f);
+  if (ok) s_bb_tx++;
   return ok;
 }
 
-bool can2_send(const ODrive::CanFrame& f) {
-  const bool ok = send_on(can2, f);
-  if (ok) s_can2_tx++;
+// Cone-absent tolerance (HANDOFF D2): transmit only when a cone has been seen
+// recently. With no cone on CAN2 an un-ACKed TX would climb the TEC → bus-off;
+// gating here (not in the time-sync master) keeps the master bus-agnostic about
+// slave presence. FlexCAN self-reception is disabled, so our own 0x7DD does not
+// count as cone presence — only real cone frames open the gate.
+// TODO(bench): validate cone-absent on real hardware — disconnect the cone and
+// confirm CAN2 never enters bus-off while CAN1/CAN3 keep broadcasting 0x7DD.
+bool can_cone_send(const ODrive::CanFrame& f) {
+  const uint64_t last = atomic_read_u64(&s_cone_last_rx_us);
+  if (last == 0 || now_wall_us() - last > CONE_PRESENT_STALENESS_US) {
+    return false;   // cone absent → skip TX (no NACK, no TEC climb, no bus-off)
+  }
+  const bool ok = send_on(can_cone, f);
+  if (ok) s_cone_tx++;
+  return ok;
+}
+
+bool can_jugglebot_send(const ODrive::CanFrame& f) {
+  const bool ok = send_on(can_jugglebot, f);
+  if (ok) s_jugglebot_tx++;
   return ok;
 }
 
@@ -153,10 +208,12 @@ static uint8_t health_of(uint64_t last_rx_us) {
 
 CanStats can_buses_stats() {
   CanStats s;
-  s.can1_rx = s_can1_rx; s.can1_tx = s_can1_tx;
-  s.can2_rx = s_can2_rx; s.can2_tx = s_can2_tx;
-  s.can1_health = health_of(s_can1_last_rx_us);
-  s.can2_health = health_of(s_can2_last_rx_us);
+  s.bb_rx = s_bb_rx; s.bb_tx = s_bb_tx;
+  s.cone_rx = s_cone_rx; s.cone_tx = s_cone_tx;
+  s.jugglebot_rx = s_jugglebot_rx; s.jugglebot_tx = s_jugglebot_tx;
+  s.bb_health = health_of(s_bb_last_rx_us);
+  s.cone_health = health_of(s_cone_last_rx_us);
+  s.jugglebot_health = health_of(s_jugglebot_last_rx_us);
   return s;
 }
 

@@ -1,13 +1,17 @@
 // =============================================================================
-//  fault_machine.cpp — fault state machine + CAN2 watchdog + deferred stow
+//  fault_machine.cpp — fault state machine + CAN3 watchdog + deferred stow
 // =============================================================================
 //  Single enforcement point for fault response on the Teensy. Ports
 //  can_node.py:386-483 (_handle_error), :1443-1530 (_watchdog_check), and
 //  :1098-1145 (_fault_response / _actuators_intact_and_holding), plus
 //  motor_guard.py:843-864 (staleness + overspeed E-STOP).
 //
+//  The watchdog observes the leg ODrive heartbeats, which arrive on CAN3 (the
+//  Jugglebot core bus, per ADR-0013); the logic is bus-agnostic — it reads the
+//  per-axis cache, populated by the CAN3 RX decode.
+//
 //  Deferred-stow invariants (logbook 2026-05-19), preserved EXACTLY:
-//    * CAN2 down ⇒ never command the dead bus (output gated off; ODrives hold).
+//    * CAN3 down ⇒ never command the dead bus (output gated off; ODrives hold).
 //    * Arm the stow latch at CAN-loss DETECTION (the canonical §6 point).
 //    * Execute the stow only on CONFIRMED reconnect (fresh leg heartbeats).
 //    * Re-arm if the stow half-completes (bus re-drops mid-descent).
@@ -32,7 +36,7 @@ namespace CanBridge {
 
 static bool s_fatal_error = false;        // active error / disarm-while-CLOSED_LOOP
 static bool s_undervoltage_error = false;
-static bool s_fatal_can_error = false;    // CAN2 (leg bus) confirmed down
+static bool s_fatal_can_error = false;    // CAN3 (Jugglebot core bus) confirmed down
 static uint8_t s_soft_reset_attempts = 0;
 static bool s_stow_pending = false;       // deferred-stow latch
 static bool s_stowing = false;            // a deferred stow is in progress
@@ -82,7 +86,7 @@ static void clear_error_flags() {
 // is up — never command a dead bus. Returns true iff it actually sent.
 static bool clear_errors_can() {
   if (s_fatal_can_error) return false;
-  for (uint8_t i = 0; i < NUM_LEGS; ++i) can2_send(ODrive::encode_clear_errors(i));
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) can_jugglebot_send(ODrive::encode_clear_errors(i));
   clear_error_flags();
   return true;
 }
@@ -139,7 +143,7 @@ static void evaluate_errors() {
   if (is_fatal) s_fatal_error = true;
 }
 
-// ── CAN2 watchdog + deferred stow ─────────────────────────────────────────────
+// ── CAN3 watchdog + deferred stow ─────────────────────────────────────────────
 static void watchdog_and_stow() {
   for (uint8_t i = 0; i < NUM_LEGS; ++i)
     if (axes[i].heartbeat_seen) { s_first_leg_hb_seen = true; break; }
@@ -150,7 +154,7 @@ static void watchdog_and_stow() {
     axes[i].heartbeat_stale = axes[i].heartbeat_seen &&
                               (now - axes[i].last_heartbeat_us > CAN_HEARTBEAT_TIMEOUT_US);
 
-  // Detection: leg bus went stale → fatal_can_error + arm the deferred stow.
+  // Detection: CAN3 leg heartbeats went stale → fatal_can_error + arm the stow.
   if (s_first_leg_hb_seen && any_leg_heartbeat_stale() && !s_fatal_can_error) {
     s_fatal_can_error = true;
     s_stow_pending = true;            // canonical arm point (§6) — independent of any host path
@@ -169,7 +173,7 @@ static void watchdog_and_stow() {
   // Stow progress. Completion → IDLE all legs (deactivating) and clear the latch.
   if (s_stowing) {
     if (interp_stow_complete()) {
-      for (uint8_t i = 0; i < NUM_LEGS; ++i) can2_send(ODrive::encode_set_state(i, ODriveState::IDLE));
+      for (uint8_t i = 0; i < NUM_LEGS; ++i) can_jugglebot_send(ODrive::encode_set_state(i, ODriveState::IDLE));
       interp_end_stow();
       s_stowing = false;
       s_stow_pending = false;
@@ -225,7 +229,7 @@ static void evaluate_guard() {
   else                                              s_guard_mode = JbUdp::GuardMode::DISABLED;
 
   // Output gate. NEVER command a dead bus. During a deferred stow, output stays
-  // on so the descent reaches CAN2 (stow only runs post-reconnect, so the bus is
+  // on so the descent reaches CAN3 (stow only runs post-reconnect, so the bus is
   // confirmed up). Otherwise output requires the guard ENABLED and no fatal.
   bool allow = false;
   if (s_stowing) {

@@ -21,8 +21,13 @@ static const char* kTaskSlots[JbUdp::PROFILE_NUM_TASKS] = {
   "canrx", "tsync", "net", "fault", "telem", "hb", "diag", "IDLE", "other"
 };
 
-// Per-window baselines.
-static uint32_t s_prev_can1_rx = 0, s_prev_can1_tx = 0, s_prev_can2_rx = 0, s_prev_can2_tx = 0;
+// Per-window baselines. The PROFILE wire payload has two CAN slots
+// (can1_*/can2_*); with three buses now (HANDOFF D4) we report the two
+// safety-relevant ones — wire slot 1 = Jugglebot core (CAN3), wire slot 2 =
+// Ball Butler (CAN1). The wire field names are fixed by udp_protocol.h.
+// TODO(phase-10b): expose cone (CAN2) util on the uplink (a third slot).
+static uint32_t s_prev_jugglebot_rx = 0, s_prev_jugglebot_tx = 0,
+                s_prev_bb_rx = 0, s_prev_bb_tx = 0;
 static uint64_t s_prev_us = 0;
 
 #if (configGENERATE_RUN_TIME_STATS == 1) && (configUSE_TRACE_FACILITY == 1)
@@ -64,8 +69,8 @@ static void fill_cpu(uint16_t cpu_pct_x100[]) {
 
 void profiling_init() {
   const CanStats c = can_buses_stats();
-  s_prev_can1_rx = c.can1_rx; s_prev_can1_tx = c.can1_tx;
-  s_prev_can2_rx = c.can2_rx; s_prev_can2_tx = c.can2_tx;
+  s_prev_jugglebot_rx = c.jugglebot_rx; s_prev_jugglebot_tx = c.jugglebot_tx;
+  s_prev_bb_rx = c.bb_rx; s_prev_bb_tx = c.bb_tx;
   s_prev_us = micros64();
 }
 
@@ -89,10 +94,10 @@ void profiling_step() {
   p.t_teensy_us = now_wall_us();
   fill_cpu(p.cpu_pct_x100);
 
-  p.can1_rx = c.can1_rx - s_prev_can1_rx;
-  p.can1_tx = c.can1_tx - s_prev_can1_tx;
-  p.can2_rx = c.can2_rx - s_prev_can2_rx;
-  p.can2_tx = c.can2_tx - s_prev_can2_tx;
+  p.can1_rx = c.jugglebot_rx - s_prev_jugglebot_rx;   // wire slot 1 = Jugglebot core (CAN3)
+  p.can1_tx = c.jugglebot_tx - s_prev_jugglebot_tx;
+  p.can2_rx = c.bb_rx - s_prev_bb_rx;                 // wire slot 2 = Ball Butler (CAN1)
+  p.can2_tx = c.bb_tx - s_prev_bb_tx;
   p.can1_util_x100 = util_x100(p.can1_rx + p.can1_tx, win);
   p.can2_util_x100 = util_x100(p.can2_rx + p.can2_tx, win);
   p.udp_rtt_us = udp_last_rtt_us();
@@ -104,8 +109,8 @@ void profiling_step() {
   udp_send_stream(JbUdp::MsgType::PROFILE, (const uint8_t*)&p, sizeof(p));
 
   // Reset per-window baselines.
-  s_prev_can1_rx = c.can1_rx; s_prev_can1_tx = c.can1_tx;
-  s_prev_can2_rx = c.can2_rx; s_prev_can2_tx = c.can2_tx;
+  s_prev_jugglebot_rx = c.jugglebot_rx; s_prev_jugglebot_tx = c.jugglebot_tx;
+  s_prev_bb_rx = c.bb_rx; s_prev_bb_tx = c.bb_tx;
   s_prev_us = now;
   interp_reset_jitter();          // max-jitter is per-window
 }
