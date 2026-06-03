@@ -1,13 +1,15 @@
 #pragma once
 // =============================================================================
-//  time_sync_master.h — CAN1 0x7DD time-sync master + time-of-day RPC client
+//  time_sync_master.h — multi-bus 0x7DD time-sync master + time-of-day RPC client
 // =============================================================================
 //  The can-bridge replaces the Jetson as the system time-sync MASTER
 //  (teensy-can-offload.md §"Time-sync master"). It:
-//    * broadcasts (wall_offset + monotonic) at 100 Hz on CAN1 ID 0x7DD using the
-//      EXACT payload format the Jetson emitted — struct.pack('<II', sec, usec)
-//      (see bus.py broadcast_time) — so the three existing slave Teensys
-//      (platform 4.0, Ball Butler, catching cone) consume it with ZERO change;
+//    * broadcasts (wall_offset + monotonic) at 100 Hz on ALL THREE subsystem
+//      buses (CAN1/CAN2/CAN3), ID 0x7DD, using the EXACT payload format the
+//      Jetson emitted — struct.pack('<II', sec, usec) (see bus.py
+//      broadcast_time) — so the three existing slave Teensys (platform 4.0 on
+//      CAN3, Ball Butler on CAN1, catching cone on CAN2) consume it with ZERO
+//      change (per-bus fan-out is invisible to each slave — ADR-0013);
 //    * bootstraps + drift-corrects its wall clock by querying the Jetson over
 //      UDP (RpcMethod::TIME_OF_DAY_QUERY) at boot and every ~30 s.
 //

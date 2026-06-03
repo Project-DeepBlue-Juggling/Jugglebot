@@ -23,6 +23,13 @@ static uint64_t s_send_us = 0;          // micros64() at last TOD request
 static uint64_t s_next_query_us = 0;    // when to send the next TOD request
 
 // ── 0x7DD broadcast (matches bus.py broadcast_time: pack('<II', sec, usec)) ───
+// Fan out the SAME frame on all three subsystem buses (ADR-0013): BB on CAN1,
+// cone on CAN2, the platform Teensy + ODrives on CAN3. Frame ID, payload, and
+// cadence are identical to the Jetson-as-master era, so every slave's IIR filter
+// is unaffected. The three TXes are independent and partial-failure-tolerant: a
+// false return on one bus (e.g. the cone-absent gate withholding CAN2, or a
+// transient mailbox-full) must NOT block the other two, so the cone-disconnect
+// case can never starve BB or Jugglebot time-sync.
 static void broadcast_0x7dd() {
   if (!time_synced()) return;           // no valid wall-clock yet → stay silent
   const uint64_t w = now_wall_us();
@@ -33,7 +40,11 @@ static void broadcast_0x7dd() {
   f.len = 8;
   memcpy(&f.buf[0], &sec, 4);           // little-endian, matches '<II'
   memcpy(&f.buf[4], &usec, 4);
-  can_bb_send(f);                       // C3 fans this out to cone + jugglebot too
+  // Independent TX per bus — call all three regardless of individual results so
+  // one bus failing (cone absent, mailbox full) never blocks the others.
+  can_bb_send(f);
+  can_cone_send(f);
+  can_jugglebot_send(f);
 }
 
 // ── Time-of-day query (RPC client) ────────────────────────────────────────────
