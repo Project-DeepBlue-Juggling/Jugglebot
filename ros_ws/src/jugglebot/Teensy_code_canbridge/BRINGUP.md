@@ -220,7 +220,8 @@ What you should see streaming at ~1 Hz:
 
 - FreeRTOS task scheduling: a `diag_task` line every second confirming the
   scheduler is alive.
-- Heartbeat lines from the time-sync master if CAN1 is wired.
+- Heartbeat / 0x7DD broadcast activity once the clock is synced and a CAN bus is
+  wired (the time-sync master broadcasts on all three buses).
 - Once the Jetson UDP responder for `TIME_OF_DAY_QUERY` is implemented and
   the link is up, you should see the wall-clock anchor settle.
 
