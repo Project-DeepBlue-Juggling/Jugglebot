@@ -5,14 +5,14 @@
 
 #include <QNEthernet.h>
 #include "freertos_shim.h"
-#include "legbridge_config.h"
+#include "canbridge_config.h"
 #include "udp_protocol.h"
 #include "net_ethernet.h"
 #include "time_base.h"
 
 using namespace qindesign::network;
 
-namespace LegBridge {
+namespace CanBridge {
 
 // ── Sockets + peer ────────────────────────────────────────────────────────────
 static EthernetUDP s_stream;
@@ -165,4 +165,4 @@ void udp_note_rtt(uint32_t rtt_us) {
   s_last_rtt_us = rtt_us;
 }
 
-}  // namespace LegBridge
+}  // namespace CanBridge

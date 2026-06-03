@@ -1,6 +1,6 @@
 """Time-of-day RPC handler — the wall-clock anchor side of ADR-0008.
 
-The leg-bridge Teensy is the time-sync **master**; the Jetson is the
+The can-bridge Teensy is the time-sync **master**; the Jetson is the
 wall-clock **anchor**. At boot and every ~30 s thereafter the Teensy sends an
 ``RpcMethod.TIME_OF_DAY_QUERY`` to the Jetson over UDP; the response carries
 ``CLOCK_REALTIME`` in microseconds. The Teensy uses it to seed and drift-

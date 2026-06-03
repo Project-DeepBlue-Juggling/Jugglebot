@@ -1,4 +1,4 @@
-# ADR-0009: FreeRTOS as the leg-bridge firmware substrate (tsandmann fork)
+# ADR-0009: FreeRTOS as the can-bridge firmware substrate (tsandmann fork)
 
 - **Status**: Accepted
 - **Date**: 2026-06-02 (captured); decision made 2026-05-28 (FreeRTOS), 2026-06-02 (tsandmann fork)
@@ -7,11 +7,12 @@
 
 ## Context
 
-The leg-bridge Teensy has several concurrent responsibilities:
+The can-bridge Teensy has several concurrent responsibilities:
 
 - Hard real-time: 500 Hz Hermite interpolator ISR (deadline 2 ms).
-- Time-sensitive: 100 Hz time-sync master broadcast on CAN1, 100 Hz
-  telemetry uplink over UDP, 10 Hz heartbeats both directions.
+- Time-sensitive: 100 Hz time-sync master broadcast on **all three CAN
+  buses** (CAN1/CAN2/CAN3 — see [ADR-0013](0013-three-can-buses.md)),
+  100 Hz telemetry uplink over UDP, 10 Hz heartbeats both directions.
 - Event-driven: UDP RPC dispatch, CAN RX decode, fault state machine,
   encoder-search SDO polling.
 - Diagnostic: 1 Hz profiling/diagnostics frames.
@@ -42,7 +43,7 @@ Use **FreeRTOS** via the **tsandmann/freertos-teensy** library port.
 - Inter-task communication uses FreeRTOS queues + semaphores; ISR↔task
   handoff uses volatile flags with IRQ-guarded atomic 64-bit access for
   larger values (`atomic_read_u64` / `atomic_write_u64` in
-  [`time_base.h`](../../ros_ws/src/jugglebot/Teensy_code_legbridge/time_base.h)).
+  [`time_base.h`](../../ros_ws/src/jugglebot/Teensy_code_canbridge/time_base.h)).
 
 ### Why specifically tsandmann's fork
 
@@ -56,7 +57,7 @@ The standard FreeRTOS C API (xTaskCreate, vTaskDelay, queues, semaphores)
 is identical across forks — the firmware code is unaffected by the choice
 of fork. Only the umbrella include (`<arduino_freertos.h>`) and a few
 quirks differ; see
-[`freertos_shim.h`](../../ros_ws/src/jugglebot/Teensy_code_legbridge/freertos_shim.h).
+[`freertos_shim.h`](../../ros_ws/src/jugglebot/Teensy_code_canbridge/freertos_shim.h).
 
 ## Consequences
 
@@ -78,7 +79,7 @@ quirks differ; see
   (R_ARM_PREL31 overflow in `pr-support.o`). Worked around by an
   `extra_script.py` that patches the linker script's `.ARM.exidx`
   pattern. Documented in the firmware
-  [README](../../ros_ws/src/jugglebot/Teensy_code_legbridge/README.md)
+  [README](../../ros_ws/src/jugglebot/Teensy_code_canbridge/README.md)
   and `extra_script.py` header. This is *the* gotcha to know about when
   building from scratch.
 - **Heap configuration is real.** `configTOTAL_HEAP_SIZE` and per-task

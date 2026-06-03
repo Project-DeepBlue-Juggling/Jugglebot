@@ -1,4 +1,4 @@
-"""RPC layer over the leg-bridge link.
+"""RPC layer over the can-bridge link.
 
 Per ADR-0006 the link is UDP throughout; RPC reliability is therefore the
 application's responsibility. This module provides two halves of that:

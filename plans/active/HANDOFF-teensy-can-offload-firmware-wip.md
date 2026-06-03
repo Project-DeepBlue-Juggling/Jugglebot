@@ -19,10 +19,11 @@ verified to the extent possible without the bench" — see
 
 ## What this branch adds (new files only)
 
-- `ros_ws/src/jugglebot/Teensy_code_legbridge/` — the new Teensy 4.1 "leg
-  bridge" firmware (FreeRTOS + QNEthernet + dual FlexCAN). Mirrors the layout of
-  the existing `Teensy_code/` (platform Teensy 4.0). **The existing
-  `Teensy_code/` is untouched.**
+- `ros_ws/src/jugglebot/Teensy_code_canbridge/` — the new Teensy 4.1 "leg
+  bridge" firmware (FreeRTOS + QNEthernet + triple FlexCAN, one peripheral
+  per subsystem bus — see [ADR-0013](../../docs/adr/0013-three-can-buses.md)).
+  Mirrors the layout of the existing `Teensy_code/` (platform Teensy 4.0).
+  **The existing `Teensy_code/` is untouched.**
 - `tools/probes/teensy_link_profiling/` — offline validation + profiling tools:
   - `hermite_xref/` — bit-for-bit cross-check of the C++-targeted interpolator
     port against the real `motor_guard.py`.
@@ -57,7 +58,7 @@ rather than applied.
 | 2 | FreeRTOS skeleton + Ethernet bring-up | ✅ | Scaffold + QNEthernet static IP + net/heartbeat/diag tasks |
 | 3 | UDP framing layer | ✅ | Fixed-length frames + CRC-16/CCITT-FALSE; cross-lang tested |
 | 4 | UDP protocol contract finalised | ✅ | Single-source generator → C++/Py/md; 23 xlang tests pass |
-| 5 | CAN1 time-sync master + CAN2 ODrive protocol | ✅ | code only; ODrive port byte-validated vs odrive.py (22 tests) |
+| 5 | Multi-bus time-sync master + CAN3 ODrive protocol | ✅ | code only; ODrive port byte-validated vs odrive.py (22 tests). **Topology shift 2026-06-03 (ADR-0013): time-sync now fans out on CAN1+CAN2+CAN3; ODrive bus is CAN3, not CAN2.** Firmware bus renames + cone-absent tolerance are the next session's first task. |
 | 6 | Per-axis state cache + telemetry uplink | ✅ | cache + 100 Hz telem + on-change diag |
 | 7 | Hermite/Taylor interpolator port | ✅ | C++ + xref: 0.0 rev divergence vs motor_guard (synthetic + recorded) |
 | 8 | Fault state machine + watchdog/deferred-stow | ✅ | invariants ported; logic spec'd by tests; bench-replay pending |
@@ -89,6 +90,72 @@ the bench or modify production code. See parent plan. The RPC envelope already
 reserves `ENCODER_SEARCH` / `HOME` methods (they return `ERR_NOT_IMPL`), and
 `SDO_READ`/`SDO_WRITE` are wired (the SDO response decode for encoder-search
 feedback lands with Phase 9), so Phase 9 slots in without a protocol change.
+
+## BLOCKING INPUT — CAN bus topology shift (2026-06-03)
+
+The CAN bus topology that this handoff document was written against has been
+**reframed from two subsystem-coupled buses to three subsystem-isolated
+buses**. This is the load-bearing input for the upcoming firmware-refactor
+session and supersedes every bus-identity reference in the rest of this
+document.
+
+**See [ADR-0013: Three subsystem-isolated CAN buses on the can-bridge
+Teensy](../../docs/adr/0013-three-can-buses.md)** (which supersedes
+[ADR-0004](../../docs/adr/0004-dual-can-buses.md)) and the rewritten
+"Topology" / "Why three CAN buses" / "Time-sync master" sections of
+[the parent plan](teensy-can-offload.md).
+
+**Authoritative new mapping:**
+
+| Bus | Peripheral | TX / RX pins | Subsystem | Steady traffic |
+|---|---|---|---|---|
+| CAN1 | FlexCAN_T4 #1 (classical) | 22 / 23 | Ball Butler Teensy only | ~130 frames/s |
+| CAN2 | FlexCAN_T4 #2 (classical) | 0 / 1 | Catching cone Teensy only (often disconnected) | ~100-110 frames/s |
+| CAN3 | FlexCAN_T4 #3 (**FD-capable**, run classical 1 Mbps) | 30 / 31 | Jugglebot core — 6 leg ODrives + Hand ODrive + platform Teensy 4.0 + can-bridge | ~5,340 frames/s steady, ~5,840 with throw |
+
+**Implications for the firmware-refactor session that follows this handoff:**
+
+1. **Renames.** Every "CAN1" or "CAN2" reference below this banner is stale.
+   Leg ODrive TX/RX, the interpolator ISR's CAN write, the heartbeat
+   watchdog, and the ODrive bring-up all move to **CAN3**. Time-sync moves
+   from "CAN1 broadcast" to "broadcast on all three buses".
+2. **Time-sync master fans out on three buses.** The 100 Hz 0x7DD frame is
+   broadcast on CAN1, CAN2, and CAN3 simultaneously. Frame ID and payload
+   are unchanged — slaves don't notice. The `time_sync_master_task` must
+   write the same payload to three FlexCAN instances per tick.
+3. **Cone-absent tolerance on CAN2 is a NEW firmware requirement** not
+   present anywhere below this banner. The cone Teensy is often physically
+   disconnected; the can-bridge still broadcasts the 100 Hz time-sync on
+   CAN2 unconditionally. The FlexCAN_T4 driver on CAN2 must tolerate TX
+   with no ACK gracefully — no bus-off, no permanent error state, no
+   auto-recovery loops that thrash TEC/REC counters. See the "CAN2
+   firmware behaviour when cone Teensy is absent" Open Question in the
+   parent plan for the candidate approaches (one-shot TX, bounded
+   auto-recovery, gated broadcast).
+4. **Pin assignments (NEW concrete detail).** CAN1 = pins 22/23, CAN2 =
+   pins 0/1, CAN3 = pins 30/31. Update `canbridge_config.h` to match.
+
+   ⚠️ **CAN2 TX/RX direction disagreement to resolve**: the current
+   `canbridge_config.h` (lines 42-43) declares CAN2 as `TX_PIN = 1,
+   RX_PIN = 0`, but ADR-0013 and the parent plan list CAN2 as `TX = 0,
+   RX = 1`. Resolve against the FlexCAN_T4 #2 datasheet / Teensy 4.1 pin
+   table before flashing — do not silently pick a side. Either the
+   firmware constant or the docs are wrong; pick the one that matches
+   the hardware reference and update the other in lockstep.
+5. **BOM (NEW).** Three TJA1051T/3 (or MCP2562) transceivers, six 120 Ω
+   termination resistors (3 buses × 2 ends). Total can-bridge BOM ~$77
+   (+~$2 vs the prior two-bus BOM).
+6. **CAN3 is the FD-capable peripheral run classical 1 Mbps** to match the
+   ODrive firmware. The choice of CAN3 (FD-capable) for the heaviest bus
+   is deliberate: future CAN-FD upgrade is a configuration change, not a
+   hardware change.
+
+The rest of this handoff is otherwise correct — the UDP protocol, the
+fault state machine, the Hermite interpolator, the FreeRTOS task model,
+and the Jetson-side bridge surface are all unaffected by the topology
+shift. The firmware refactor is mostly **bus-identity renames + a new
+CAN2 driver-config decision** + **multi-bus time-sync TX fan-out**, not
+a structural rewrite.
 
 ## Decisions made autonomously
 
@@ -168,7 +235,7 @@ slimmed at the Phase 10 bridge work. Recorded so a reviewer can challenge it.
 ### D6 — Stroke-clamp bounds embedded as constants, not codegen (Phase 7)
 
 **Decision:** Per-leg `STROKE_MIN_REV[6]` / `STROKE_MAX_REV[6]` are embedded in
-`legbridge_config.h`, captured 2026-06-01 from the live `MotorGuard`
+`canbridge_config.h`, captured 2026-06-01 from the live `MotorGuard`
 (`_stroke_min_rev`/`_stroke_max_rev` = `WorkspaceLimits.from_geometry` hard limits ×
 per-leg `GEOM_MM_TO_REV`).
 
@@ -181,7 +248,9 @@ embedded constants equal the running guard's, so drift is caught.
 
 **Decision:** `can_buses` decodes incoming ODrive frames straight into the cache in
 the `onReceive` callback (pumped by the CAN-RX task's `canX.events()`), not by
-enqueuing raw frames to a task as the plan's table sketches.
+enqueuing raw frames to a task as the plan's table sketches. (Bus identity: the
+ODrive frames in question arrive on **CAN3** under [ADR-0013](../../docs/adr/0013-three-can-buses.md);
+the callback-decode model applies to all three CAN buses.)
 
 **Rationale:** This is the proven platform-Teensy idiom (`Teensy_code.ino` `canSniff`).
 The decode is a few µs of `memcpy` + seqlock write — bounded and fast — so a queue hop
@@ -217,7 +286,8 @@ bench. Until then the Teensy emits MPC-supplied `torque_ff` only (gravity+inerti
 ### D10 — Interpolator runs in a hardware IntervalTimer ISR above the FreeRTOS ceiling (Phase 7)
 
 **Decision:** The 500 Hz tick is a bare `IntervalTimer` ISR (`leg_interp.cpp`), set to a
-priority above `configMAX_SYSCALL_INTERRUPT_PRIORITY`, computing AND transmitting to CAN2
+priority above `configMAX_SYSCALL_INTERRUPT_PRIORITY`, computing AND transmitting to CAN3
+(the Jugglebot bus, per [ADR-0013](../../docs/adr/0013-three-can-buses.md))
 directly in the ISR. It makes no FreeRTOS calls; setpoint hand-off uses a plain volatile
 pending flag.
 
@@ -230,9 +300,10 @@ priority value vs the syscall ceiling, and FlexCAN mailbox writes from ISR conte
 
 ### D11 — Watchdog consolidated into the 10 Hz fault task (Phase 8)
 
-**Decision:** The CAN2 heartbeat watchdog runs inside `fault_step()` (10 Hz), not as a
+**Decision:** The CAN3 heartbeat watchdog runs inside `fault_step()` (10 Hz), not as a
 separate 1 Hz task with a socketcan restore generator (can_node's
-`_watchdog_check` + `attempt_restore_steps`).
+`_watchdog_check` + `attempt_restore_steps`). (CAN3 is the Jugglebot bus where
+the leg ODrive heartbeats arrive — per [ADR-0013](../../docs/adr/0013-three-can-buses.md).)
 
 **Rationale:** can_node's restore generator re-initialises the *socketcan device* across
 ticks (a Linux-stack operation that can block). The Teensy's FlexCAN peripheral never
@@ -310,12 +381,15 @@ library-API drift) before behavioural testing.
 - **FreeRTOS heap sizing.** Total task stacks ≈ 25 KB; confirm `configTOTAL_HEAP_SIZE`
   is large enough and `vTaskStartScheduler()` does not return (the fatal path blinks
   fast).
-- **Phase 5 — time-sync master (0x7DD).** Sniff CAN1; confirm 100 Hz frames in the exact
-  `pack('<II', sec, usec)` format, and that all three slaves (platform 4.0, BB, cone)
-  still report `time_synced == true` with behaviourally-correct timing. Confirm the
-  Jetson stops broadcasting on CAN (its `bus.broadcast_time()` disabled — Phase 5
-  production change, not yet made; see below).
-- **Phase 5 — ODrive cycle.** Drive one bench ODrive on CAN2 through IDLE → CLOSED_LOOP →
+- **Phase 5 — time-sync master (0x7DD), now multi-bus.** Sniff **CAN1, CAN2, and CAN3 in turn**;
+  confirm 100 Hz frames in the exact `pack('<II', sec, usec)` format on each bus, and that
+  each slave still reports `time_synced == true` on its own bus (BB on CAN1, cone on CAN2
+  when present, platform Teensy 4.0 on CAN3 — per [ADR-0013](../../docs/adr/0013-three-can-buses.md)).
+  Confirm cone-absent behaviour: with cone Teensy disconnected from CAN2, the can-bridge
+  continues broadcasting on CAN2 without entering bus-off; CAN1 and CAN3 unaffected.
+  Confirm the Jetson stops broadcasting on CAN (its `bus.broadcast_time()` disabled —
+  Phase 5 production change, not yet made; see below).
+- **Phase 5 — ODrive cycle.** Drive one bench ODrive on **CAN3** through IDLE → CLOSED_LOOP →
   position commands → IDLE; confirm all telemetry parses. The encoders are byte-validated
   vs `odrive.py` offline, but on-wire confirmation is still required.
 - **Phase 5 — IntervalTimer ISR priority.** Confirm `s_timer.priority(32)` sits above
@@ -349,9 +423,11 @@ will require these — documented here, to be made in their own commits/sessions
 
 - **Disable the Jetson time-sync master (Phase 5).** Remove/guard the
   `self.create_timer(ts_period, self.bus.broadcast_time)` callsite and the
-  `bus.broadcast_time` keep-alive entry in `can_node.py.__init__`; the leg-bridge
-  Teensy now owns 0x7DD. Also fix the stale slave-list docstring in `bus.py:108`
-  (omits the cone Teensy) — flagged in the parent plan's follow-ups.
+  `bus.broadcast_time` keep-alive entry in `can_node.py.__init__`; the can-bridge
+  Teensy now owns 0x7DD and broadcasts on **all three buses** (CAN1, CAN2,
+  CAN3 — per [ADR-0013](../../docs/adr/0013-three-can-buses.md)). Also
+  fix the stale slave-list docstring in `bus.py:108` (omits the cone Teensy) —
+  flagged in the parent plan's follow-ups.
 - **Jetson UDP time-of-day responder (Phase 5).** A small UDP responder on
   `PORT_RPC` answering `RpcMethod::TIME_OF_DAY_QUERY` with `CLOCK_REALTIME` µs
   (the master's wall-clock anchor). New code; the Teensy is the client.
@@ -365,7 +441,7 @@ will require these — documented here, to be made in their own commits/sessions
 
 ## Build instructions
 
-Full detail in [`Teensy_code_legbridge/README.md`](../../ros_ws/src/jugglebot/Teensy_code_legbridge/README.md).
+Full detail in [`Teensy_code_canbridge/README.md`](../../ros_ws/src/jugglebot/Teensy_code_canbridge/README.md).
 Summary: Teensy 4.1, Teensyduino 1.59+ (Arduino IDE 2.x or PlatformIO `teensy`),
 600 MHz, Optimize "Faster", USB type Serial. Libraries: FreeRTOS_TEENSY4 (greiman),
 QNEthernet (ssilverman), FlexCAN_T4 (bundled). Regenerate shared headers with
@@ -381,7 +457,7 @@ then the safety-critical ports, then the tools:
    This is the spine; everything else encodes/decodes against it. Check the frame
    layouts and the framing decision (D1/D2). `tests/firmware/test_udp_protocol_xlang.py`
    enforces C++↔Python consistency.
-2. **Config + cache** — `legbridge_config.h` (pins, task table, the 1:1-ported control
+2. **Config + cache** — `canbridge_config.h` (pins, task table, the 1:1-ported control
    constants) and `axis_state.h`. Sanity-check the pin map and FreeRTOS priorities against
    your board.
 3. **ODrive port** — `odrive_protocol.h` vs `odrive.py`. Byte-validated by
@@ -397,7 +473,7 @@ then the safety-critical ports, then the tools:
 6. **CAN + time-sync + RPC + telemetry** — `can_buses.cpp`, `time_sync_master.cpp`,
    `rpc.cpp`, `telemetry.cpp`. Confirm the 0x7DD payload matches `bus.py` and the RPC arg
    layouts (D8).
-7. **Scaffold** — `Teensy_code_legbridge.ino` (task creation, wiring) + `net_ethernet.cpp`
+7. **Scaffold** — `Teensy_code_canbridge.ino` (task creation, wiring) + `net_ethernet.cpp`
    / `udp_link.cpp` (the lwIP threading model, D-handoff).
 8. **Tools** — `tools/probes/teensy_link_profiling/` (xref harness + Jetson consumer + stub).
 

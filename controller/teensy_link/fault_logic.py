@@ -1,4 +1,4 @@
-"""Pure-Python mirror of the leg-bridge Teensy fault decision tree.
+"""Pure-Python mirror of the can-bridge Teensy fault decision tree.
 
 This module is a faithful transcription of the firmware's
 ``fault_machine.cpp`` — ``evaluate_errors()`` (the port of
@@ -28,7 +28,7 @@ contracts-over-patches philosophy warns against). The live mechanism is
 :class:`LinkLossLatch` on the Jetson↔Teensy link.
 
 References:
-  * ``ros_ws/src/jugglebot/Teensy_code_legbridge/fault_machine.cpp``
+  * ``ros_ws/src/jugglebot/Teensy_code_canbridge/fault_machine.cpp``
   * ``ros_ws/src/jugglebot/jugglebot/can_node.py`` (_handle_error, _watchdog_check)
   * ``logbook/2026-05-19-can-loss-fault-response-safety-inversion.md``
   * ``tests/firmware/test_fault_logic.py`` (the executable spec)

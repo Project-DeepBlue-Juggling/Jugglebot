@@ -1,6 +1,6 @@
-# Leg-bridge Teensy 4.1 — bench bring-up walkthrough
+# Can-bridge Teensy 4.1 — bench bring-up walkthrough
 
-End-to-end steps to get the leg-bridge firmware from a fresh clone to a
+End-to-end steps to get the can-bridge firmware from a fresh clone to a
 running Teensy with link lights blinking and `ping 192.168.42.2` responding.
 Designed for the Jetson Orin Nano + Ubuntu 20.04 + JetPack stack this project
 runs on. Each step has a verification command and a "what should happen"
@@ -106,7 +106,7 @@ firmware will compile cleanly.
 ## Step 4 — Build the firmware
 
 ```bash
-cd ~/Desktop/Jugglebot/ros_ws/src/jugglebot/Teensy_code_legbridge
+cd ~/Desktop/Jugglebot/ros_ws/src/jugglebot/Teensy_code_canbridge
 pio run
 ```
 

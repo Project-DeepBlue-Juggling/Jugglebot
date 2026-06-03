@@ -1,4 +1,4 @@
-# Teensy 4.1 leg-bridge firmware
+# Teensy 4.1 can-bridge firmware
 
 The new dedicated CAN microcontroller from
 [`plans/active/teensy-can-offload.md`](../../../../plans/active/teensy-can-offload.md).
@@ -37,7 +37,7 @@ These are copied/generated from `config/` by the codegen — regenerate, don't e
 - `protocol_config.h`, `hardware_config.h` — `python config/generate_config.py`
 - `udp_protocol.h` — `python config/generate_udp_protocol.py`
 
-`legbridge_config.h` and `axis_state.h` are hand-authored firmware config.
+`canbridge_config.h` and `axis_state.h` are hand-authored firmware config.
 
 ## Pin map
 
@@ -65,7 +65,7 @@ so the Jetson adapter's link lights stay dark until this firmware boots — expe
 
 ## Build & flash
 
-**Arduino IDE:** open `Teensy_code_legbridge.ino`, select Teensy 4.1, set CPU
+**Arduino IDE:** open `Teensy_code_canbridge.ino`, select Teensy 4.1, set CPU
 600 MHz / Optimize Faster / USB Serial, Upload.
 
 **PlatformIO** (a `platformio.ini` like the cone firmware's can be added):
@@ -84,8 +84,8 @@ lib_deps =
 ## Module layout
 
 ```
-Teensy_code_legbridge.ino   FreeRTOS scaffold: Ethernet + tasks + scheduler
-legbridge_config.h          pins, task table, control constants (ported 1:1)
+Teensy_code_canbridge.ino   FreeRTOS scaffold: Ethernet + tasks + scheduler
+canbridge_config.h          pins, task table, control constants (ported 1:1)
 axis_state.h / .cpp         per-axis state cache (6 legs + hand)
 time_base.h / .cpp          micros64 + wall-clock (time-sync master rate owner)
 net_ethernet.h / .cpp       QNEthernet static bring-up

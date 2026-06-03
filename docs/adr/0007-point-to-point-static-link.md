@@ -1,4 +1,4 @@
-# ADR-0007: Point-to-point Ethernet between Jetson and leg-bridge Teensy (no shared LAN)
+# ADR-0007: Point-to-point Ethernet between Jetson and can-bridge Teensy (no shared LAN)
 
 - **Status**: Accepted
 - **Date**: 2026-06-02 (captured); decision made 2026-05-28
@@ -8,7 +8,7 @@
 ## Context
 
 The Jetson is on the user's house LAN (`eth0` on `192.168.20.0/24`) for SSH,
-ROS 2 development, and internet access. The leg-bridge Teensy needs an
+ROS 2 development, and internet access. The can-bridge Teensy needs an
 Ethernet endpoint to talk to. Two ways to wire that up:
 
 1. **Shared LAN.** Plug the Teensy into the user's house network alongside the
@@ -69,7 +69,7 @@ Use a **point-to-point link** with static IPs:
 ## Alternatives considered
 
 - **Shared LAN with static IPs from the user's network.** Rejected because
-  it doesn't get the timing-isolation property — the leg-bridge timing
+  it doesn't get the timing-isolation property — the can-bridge timing
   would be coupled to whatever else lives on the user's LAN (printers,
   laptops, video streaming, etc.).
 - **Shared LAN with DHCP.** Rejected for the same reason plus DHCP-race

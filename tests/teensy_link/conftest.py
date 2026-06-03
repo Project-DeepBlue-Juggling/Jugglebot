@@ -27,7 +27,7 @@ class _RxItem:
 
 
 class FakeTeensy:
-    """Loopback-side stand-in for the leg-bridge Teensy.
+    """Loopback-side stand-in for the can-bridge Teensy.
 
     Binds the *Teensy*-side ports (configurable) and offers a small API to
     inject T→J frames at the Jetson and to inspect the J→T frames it

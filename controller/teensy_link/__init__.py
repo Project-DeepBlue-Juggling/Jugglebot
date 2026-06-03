@@ -1,4 +1,4 @@
-"""Jetson-side client for the leg-bridge Teensy over the dedicated UDP link.
+"""Jetson-side client for the can-bridge Teensy over the dedicated UDP link.
 
 Pure-Python; no ROS 2 dependency. Importable from ROS nodes
 (``can_node.py``'s replacement bridge) and from standalone tools alike.
@@ -18,7 +18,7 @@ Protocol artefacts (frame layouts, constants, enums) live in
 and are re-exported here via :mod:`controller.teensy_link.protocol` so callers
 have a single stable import path.
 
-The leg-bridge Teensy is the time-sync **master** (ADR-0008); the Jetson is the
+The can-bridge Teensy is the time-sync **master** (ADR-0008); the Jetson is the
 wall-clock **anchor**. The :class:`TimeOfDayServer` answers
 ``RpcMethod.TIME_OF_DAY_QUERY`` requests from the Teensy with the current
 ``CLOCK_REALTIME`` in microseconds.

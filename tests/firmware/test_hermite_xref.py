@@ -3,7 +3,7 @@
 Drives the validated Python port (teensy_interp.py — the C++ leg_interp.cpp
 translation target) and the real motor_guard through identical inputs and asserts
 < 1e-6 rev divergence (Phase 7 "done when"). Also asserts the firmware's embedded
-per-leg stroke-clamp bounds (legbridge_config.h) match the live MotorGuard, so the
+per-leg stroke-clamp bounds (canbridge_config.h) match the live MotorGuard, so the
 constants the firmware actually ships can't silently drift from the Python the
 xref validates against.
 
@@ -25,8 +25,8 @@ _XREF_DIR = os.path.join(_REPO, "tools", "probes", "teensy_link_profiling", "her
 sys.path.insert(0, _XREF_DIR)
 
 xref = pytest.importorskip("xref")  # imports motor_guard + teensy_interp
-_LEGBRIDGE_CFG = os.path.join(
-    _REPO, "ros_ws", "src", "jugglebot", "Teensy_code_legbridge", "legbridge_config.h")
+_CANBRIDGE_CFG = os.path.join(
+    _REPO, "ros_ws", "src", "jugglebot", "Teensy_code_canbridge", "canbridge_config.h")
 
 
 def test_synthetic_all_modes_match_motor_guard():
@@ -47,17 +47,17 @@ def test_recorded_stream_matches_motor_guard():
 
 def _parse_float_array(header_text, name):
     m = re.search(rf"{name}\[\w+\]\s*=\s*\{{([^}}]*)\}}", header_text)
-    assert m, f"{name} not found in legbridge_config.h"
+    assert m, f"{name} not found in canbridge_config.h"
     return [float(x.strip().rstrip("f")) for x in m.group(1).split(",") if x.strip()]
 
 
 def test_firmware_stroke_bounds_match_motor_guard():
-    """legbridge_config.h STROKE_{MIN,MAX}_REV == live MotorGuard bounds."""
+    """canbridge_config.h STROKE_{MIN,MAX}_REV == live MotorGuard bounds."""
     from jugglebot.motion.geometry import StewartGeometry
     import jugglebot.motion.motor_guard as mg
     guard = mg.MotorGuard(geom=StewartGeometry(), ipc=xref._DummyIPC())
 
-    text = open(_LEGBRIDGE_CFG).read()
+    text = open(_CANBRIDGE_CFG).read()
     fw_min = _parse_float_array(text, "STROKE_MIN_REV")
     fw_max = _parse_float_array(text, "STROKE_MAX_REV")
     assert len(fw_min) == 6 and len(fw_max) == 6

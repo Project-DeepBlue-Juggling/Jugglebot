@@ -1,8 +1,8 @@
 #pragma once
 // =============================================================================
-//  time_base.h — monotonic + wall-clock time for the leg-bridge (time master)
+//  time_base.h — monotonic + wall-clock time for the can-bridge (time master)
 // =============================================================================
-//  The leg-bridge Teensy is the system time-sync MASTER (teensy-can-offload.md
+//  The can-bridge Teensy is the system time-sync MASTER (teensy-can-offload.md
 //  §"Time-sync master"). It owns the real-time *rate* via the on-chip crystal;
 //  the Jetson is the wall-clock *anchor*, queried once at boot and every ~30 s
 //  over UDP (RpcMethod::TIME_OF_DAY_QUERY) to correct long-term drift.
@@ -21,7 +21,7 @@
                                 // Teensy's own CMSIS tree is truncated (missing cmsis_version.h),
                                 // so we get these intrinsics from the FreeRTOS port instead.
 
-namespace LegBridge {
+namespace CanBridge {
 
 // 64-bit values shared between the 500 Hz IntervalTimer ISR and FreeRTOS tasks
 // are NOT atomically accessible on the 32-bit Cortex-M7 (a read/write splits into
@@ -59,4 +59,4 @@ void set_wall_anchor(uint64_t jetson_wall_us);
 // IIR slew gain for drift correction: new_offset += diff >> shift.
 constexpr uint8_t TIME_OFFSET_IIR_SHIFT = 4;
 
-}  // namespace LegBridge
+}  // namespace CanBridge

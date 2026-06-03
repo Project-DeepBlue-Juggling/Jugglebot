@@ -22,7 +22,7 @@
 #include <cstring>
 #include "udp_protocol.h"
 
-namespace LegBridge {
+namespace CanBridge {
 namespace Rpc {
 
 // ── Envelope (de)serialisation ────────────────────────────────────────────────
@@ -71,4 +71,4 @@ using JbUdp::RpcArgs::AXIS_ALL;   // broadcast to all legs (CLEAR_ERRORS/REBOOT)
 void rpc_server_init();
 
 }  // namespace Rpc
-}  // namespace LegBridge
+}  // namespace CanBridge

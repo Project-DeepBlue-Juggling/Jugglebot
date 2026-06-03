@@ -1,4 +1,4 @@
-"""Core UDP client for the Jetson↔leg-bridge link.
+"""Core UDP client for the Jetson↔can-bridge link.
 
 :class:`TeensyLinkClient` owns the two UDP sockets (the STREAM port for the
 high-rate push streams and the RPC port for request/response), runs a single
@@ -72,7 +72,7 @@ class LinkStats:
 
 
 class TeensyLinkClient:
-    """UDP transport for the Jetson side of the leg-bridge link.
+    """UDP transport for the Jetson side of the can-bridge link.
 
     Args:
         teensy_addr: Peer address (host, port_for_streams). RPC port is

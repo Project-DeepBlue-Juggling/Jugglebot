@@ -1,7 +1,7 @@
 # Hermite/Taylor interpolator cross-check
 
-Offline validation that the leg-bridge Teensy's 500 Hz interpolator
-(`ros_ws/src/jugglebot/Teensy_code_legbridge/leg_interp.cpp`) reproduces the
+Offline validation that the can-bridge Teensy's 500 Hz interpolator
+(`ros_ws/src/jugglebot/Teensy_code_canbridge/leg_interp.cpp`) reproduces the
 production `motor_guard.py` exactly.
 
 ## How it works

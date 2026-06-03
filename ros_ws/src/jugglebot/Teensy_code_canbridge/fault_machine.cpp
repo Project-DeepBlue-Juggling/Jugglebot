@@ -18,7 +18,7 @@
 #include "fault_machine.h"
 
 #include <cmath>
-#include "legbridge_config.h"
+#include "canbridge_config.h"
 #include "protocol_config.h"     // ODriveState
 #include "udp_protocol.h"        // FaultState, GuardMode
 #include "axis_state.h"
@@ -28,7 +28,7 @@
 #include "udp_link.h"            // udp_last_rx_us (Jetson link health)
 #include "time_base.h"
 
-namespace LegBridge {
+namespace CanBridge {
 
 static bool s_fatal_error = false;        // active error / disarm-while-CLOSED_LOOP
 static bool s_undervoltage_error = false;
@@ -256,4 +256,4 @@ uint8_t fault_state()        { return s_fault_state; }
 bool    fault_can_bus_down() { return s_fatal_can_error; }
 bool    fault_stow_pending() { return s_stow_pending; }
 
-}  // namespace LegBridge
+}  // namespace CanBridge

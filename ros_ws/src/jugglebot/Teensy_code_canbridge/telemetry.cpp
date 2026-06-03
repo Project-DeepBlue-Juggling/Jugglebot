@@ -5,13 +5,13 @@
 
 #include <cstring>
 #include <cmath>
-#include "legbridge_config.h"
+#include "canbridge_config.h"
 #include "udp_protocol.h"
 #include "udp_link.h"
 #include "axis_state.h"
 #include "time_base.h"
 
-namespace LegBridge {
+namespace CanBridge {
 
 // ── On-change thresholds (only emit a Diagnostic when one is exceeded) ────────
 static constexpr float DIAG_IQ_THRESH_A     = 0.5f;
@@ -112,4 +112,4 @@ void telemetry_step() {
   ++tick;
 }
 
-}  // namespace LegBridge
+}  // namespace CanBridge

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Jetson-side consumer for the leg-bridge Teensy's diagnostic UDP stream.
+"""Jetson-side consumer for the can-bridge Teensy's diagnostic UDP stream.
 
 Binds the STREAM port, ingests PROFILE frames (per-task CPU%, CAN1/CAN2 bus
 utilisation, UDP RTT/jitter, the 500 Hz interp deadline-miss counter, free heap)
@@ -152,7 +152,7 @@ def _plot(csv_path, cols, rows):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Leg-bridge Teensy diagnostic UDP consumer")
+    ap = argparse.ArgumentParser(description="Can-bridge Teensy diagnostic UDP consumer")
     ap.add_argument("--bind-ip", default="0.0.0.0",
                     help="local IP to bind (default 0.0.0.0; the teensy-link is 192.168.42.1)")
     ap.add_argument("--port", type=int, default=p.PORT_STREAM)

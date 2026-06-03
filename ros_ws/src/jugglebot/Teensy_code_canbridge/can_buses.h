@@ -19,7 +19,7 @@
 #include "odrive_protocol.h"
 #include "udp_protocol.h"   // JbUdp::BusHealth
 
-namespace LegBridge {
+namespace CanBridge {
 
 void can_buses_init();      // begin both buses, register RX callbacks
 void can_buses_service();   // pump can1.events() + can2.events(); call from CAN RX task
@@ -34,4 +34,4 @@ struct CanStats {
 };
 CanStats can_buses_stats();
 
-}  // namespace LegBridge
+}  // namespace CanBridge

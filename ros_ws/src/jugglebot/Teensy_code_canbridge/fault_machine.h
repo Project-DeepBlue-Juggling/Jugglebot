@@ -27,7 +27,7 @@
 
 #include <cstdint>
 
-namespace LegBridge {
+namespace CanBridge {
 
 void fault_machine_init();
 // Drive at FAULT_TASK_HZ (10 Hz). Evaluates errors + watchdogs, sets the guard
@@ -47,4 +47,4 @@ uint8_t  fault_state();                  // JbUdp::FaultState
 bool     fault_can_bus_down();           // fatal_can_error (CAN2)
 bool     fault_stow_pending();           // deferred-stow latch armed
 
-}  // namespace LegBridge
+}  // namespace CanBridge

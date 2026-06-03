@@ -4,7 +4,7 @@
 #include "time_sync_master.h"
 
 #include <cstring>
-#include "legbridge_config.h"
+#include "canbridge_config.h"
 #include "protocol_config.h"
 #include "udp_protocol.h"
 #include "udp_link.h"
@@ -13,7 +13,7 @@
 #include "can_buses.h"
 #include "time_base.h"
 
-namespace LegBridge {
+namespace CanBridge {
 
 // ── Time-of-day client state ──────────────────────────────────────────────────
 static uint16_t s_req_id = 0;
@@ -87,4 +87,4 @@ void time_sync_step() {
   }
 }
 
-}  // namespace LegBridge
+}  // namespace CanBridge

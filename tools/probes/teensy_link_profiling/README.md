@@ -1,7 +1,7 @@
 # teensy_link_profiling
 
-Offline validation + profiling tools for the leg-bridge Teensy
-(`ros_ws/src/jugglebot/Teensy_code_legbridge/`). See
+Offline validation + profiling tools for the can-bridge Teensy
+(`ros_ws/src/jugglebot/Teensy_code_canbridge/`). See
 [`plans/active/teensy-can-offload.md`](../../../plans/active/teensy-can-offload.md)
 and the firmware-WIP handoff.
 

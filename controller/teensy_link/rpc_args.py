@@ -1,4 +1,4 @@
-"""RPC method argument encoders for the leg-bridge link.
+"""RPC method argument encoders for the can-bridge link.
 
 Thin, typed wrappers over the codegen-emitted argument dataclasses (hoisted into
 ``config/generate_udp_protocol.py`` at Phase 10b — firmware handoff D8). The

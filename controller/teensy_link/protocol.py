@@ -93,4 +93,4 @@ from udp_protocol import (  # noqa: E402, F401
 )
 
 TEENSY_IP: str = f"{TEENSY_IP_0}.{TEENSY_IP_1}.{TEENSY_IP_2}.{TEENSY_IP_3}"
-"""Static IP of the leg-bridge Teensy (per ADR-0007 point-to-point link)."""
+"""Static IP of the can-bridge Teensy (per ADR-0007 point-to-point link)."""

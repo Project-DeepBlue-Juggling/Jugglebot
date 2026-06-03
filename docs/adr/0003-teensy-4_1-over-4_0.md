@@ -1,4 +1,4 @@
-# ADR-0003: Teensy 4.1 (not 4.0) for the leg-bridge role
+# ADR-0003: Teensy 4.1 (not 4.0) for the can-bridge role
 
 - **Status**: Accepted
 - **Date**: 2026-06-02 (captured); decision made 2026-05-28
@@ -8,7 +8,7 @@
 ## Context
 
 Given the [ADR-0002](0002-dedicated-second-teensy.md) decision to add a
-dedicated Teensy for the leg-bridge role, the next question was *which*
+dedicated Teensy for the can-bridge role, the next question was *which*
 Teensy variant. Teensy 4.0 and 4.1 share the same IMXRT1062 chip (Cortex-M7
 at 600 MHz, 1 MB RAM, identical CAN peripherals), so on raw compute they're
 interchangeable.
@@ -28,7 +28,7 @@ which, per [ADR-0005](0005-ethernet-over-usb-serial.md), is Ethernet. Teensy
 
 ## Decision
 
-Use **Teensy 4.1** for the leg-bridge role.
+Use **Teensy 4.1** for the can-bridge role.
 
 Cost difference is ~$12 (4.1 is ~$32 vs ~$20 for 4.0). The Ethernet path
 difference dominates any cost consideration for a device the project is
@@ -46,10 +46,11 @@ building on for years.
 - microSD slot — optional local high-rate logging of CAN traffic and/or
   internal diagnostics, valuable for failure post-mortems.
 - VBAT pin for battery-backed RTC — optional CR2032 keeps wall-clock across
-  power-off, useful since the leg-bridge owns time-sync
-  ([ADR-0008](0008-time-sync-master-on-leg-bridge.md)).
+  power-off, useful since the can-bridge owns time-sync
+  ([ADR-0008](0008-time-sync-master-on-can-bridge.md)).
 - Larger physical footprint with side-rail through-holes — easier for
-  prototype wiring with the Ethernet kit + two CAN transceivers.
+  prototype wiring with the Ethernet kit + three CAN transceivers (per
+  the three-bus topology in [ADR-0013](0013-three-can-buses.md)).
 
 **Negative:**
 
@@ -58,8 +59,15 @@ building on for years.
 
 **Neutral:**
 
-- CAN peripherals are identical between 4.0 and 4.1, so the CAN portion of
-  the firmware is unaffected by this choice.
+- The Teensy 4.0 and 4.1 share two identical classical CAN2.0B peripherals;
+  the 4.1 additionally exposes a **third CAN peripheral (CAN3) that is
+  FD-capable**. Under the three-bus topology in
+  [ADR-0013](0013-three-can-buses.md), CAN3 carries the Jugglebot core
+  subsystem (six leg ODrives + Hand ODrive + platform Teensy 4.0), running
+  classical 1 Mbps to match the ODrive firmware. The FD-capable peripheral
+  choice for CAN3 is a costless future upgrade path if classical bandwidth
+  ever binds — a small Positive that pushes this bullet from purely
+  Neutral toward additional 4.1 advantage beyond the Ethernet pinout.
 
 ## Alternatives considered
 

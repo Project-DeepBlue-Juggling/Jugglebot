@@ -1,5 +1,5 @@
 /*****************************************************************************************
- *  Teensy 4.1 — Jugglebot "leg-bridge" microcontroller (NEW)
+ *  Teensy 4.1 — Jugglebot "can-bridge" microcontroller (NEW)
  *  ------------------------------------------------------------------
  *  Owns all leg CAN responsibility, offloaded from the Jetson. See
  *  plans/active/teensy-can-offload.md and the firmware-WIP handoff doc.
@@ -28,7 +28,7 @@
 // `pinMode(LED_PIN, OUTPUT)` etc. compile unmodified.
 using namespace arduino;
 
-#include "legbridge_config.h"
+#include "canbridge_config.h"
 #include "udp_protocol.h"
 #include "time_base.h"
 #include "net_ethernet.h"
@@ -42,7 +42,7 @@ using namespace arduino;
 #include "fault_machine.h"       // Phase 8
 #include "profiling.h"           // Profiling/instrumentation
 
-using namespace LegBridge;
+using namespace CanBridge;
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Link health (updated by the Jetson heartbeat handler)

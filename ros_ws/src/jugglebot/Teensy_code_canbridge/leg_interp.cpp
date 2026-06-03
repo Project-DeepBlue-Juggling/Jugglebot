@@ -10,14 +10,14 @@
 
 #include <Arduino.h>          // IntervalTimer
 #include <cstring>
-#include "legbridge_config.h"
+#include "canbridge_config.h"
 #include "udp_protocol.h"
 #include "axis_state.h"
 #include "odrive_protocol.h"
 #include "can_buses.h"
 #include "time_base.h"
 
-namespace LegBridge {
+namespace CanBridge {
 
 // ── Ladder constants (mirror teensy_interp.py / motor_guard) ──────────────────
 static constexpr float SEG_T   = SEGMENT_T_S;          // 0.025
@@ -299,4 +299,4 @@ void interp_end_stow() { s_stow_active = false; }
 bool interp_stow_active() { return s_stow_active; }
 bool interp_stow_complete() { return s_stow_complete; }
 
-}  // namespace LegBridge
+}  // namespace CanBridge

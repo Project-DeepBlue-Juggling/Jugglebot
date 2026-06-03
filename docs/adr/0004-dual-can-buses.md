@@ -1,14 +1,38 @@
-# ADR-0004: Two CAN buses on the leg-bridge Teensy (private leg bus + shared aux bus)
+# ADR-0004: Two CAN buses on the can-bridge Teensy (private leg bus + shared aux bus)
 
-- **Status**: Accepted
+- **Status**: Superseded by [ADR-0013](0013-three-can-buses.md) (2026-06-03)
 - **Date**: 2026-06-02 (captured); decision made 2026-05-28
 - **Deciders**: Harrison + Claude
-- **Related**: [ADR-0002](0002-dedicated-second-teensy.md), [parent plan](../../plans/active/teensy-can-offload.md)
+- **Related**: [ADR-0002](0002-dedicated-second-teensy.md), [ADR-0013](0013-three-can-buses.md) (supersedes this ADR), [parent plan](../../plans/active/teensy-can-offload.md)
+
+> **Superseded on 2026-06-03** by [ADR-0013: Three subsystem-isolated CAN
+> buses on the can-bridge Teensy](0013-three-can-buses.md). The two-bus
+> design recorded below was correct on bandwidth and isolated leg-side
+> fault storms, but it kept BB / cone / hand traffic coupled on the shared
+> aux bus and did not address cone-disconnect tolerance. The three-bus
+> topology reframes isolation from **criticality-based** (hot leg path vs
+> aux) to **subsystem-based** (BB / cone / Jugglebot core) at +~$2 BOM
+> cost. The Context, Decision, Consequences, and Alternatives sections
+> below are preserved as the historical reasoning of the 2026-05-28
+> decision; the live decision is in ADR-0013.
+>
+> **Note on the leg-bus traffic numbers below.** The 2026-05-28 analysis
+> rounded steady-state to ~5,400 msg/s and throws to ~5,900 msg/s. ADR-0013
+> and the parent plan refined these to ~5,340 and ~5,840 after a more
+> granular per-stream re-count (heartbeat 600/s rather than ~700, temp/
+> voltage 120/s rather than ~150). The round numbers in this superseded
+> ADR are left as the historical record; live numbers are in ADR-0013.
 
 ## Context
 
+> **Historical bus labels below.** Under [ADR-0013](0013-three-can-buses.md)
+> the same CAN1/CAN2/CAN3 labels denote different subsystem assignments
+> (CAN1 = Ball Butler, CAN2 = catching cone, CAN3 = Jugglebot core). The
+> CAN1/CAN2 labels in this superseded body refer to the legacy two-bus
+> design only.
+
 The Teensy 4.1 has two classical CAN2.0B peripherals (plus one CAN-FD). The
-leg-bridge could in principle use one bus for everything or split traffic
+can-bridge could in principle use one bus for everything or split traffic
 across two.
 
 A first-pass analysis claimed ~87% utilisation on a consolidated single bus.
@@ -23,16 +47,17 @@ the bus anyway.
 
 ## Decision
 
-Use **both classical CAN peripherals** on the leg-bridge Teensy:
+Use **both classical CAN peripherals** on the can-bridge Teensy:
 
-- **CAN1** — the existing shared bus. Hand ODrive, ball butler controller,
-  catching cone Teensy, platform Teensy 4.0 all stay on this bus. The
-  leg-bridge Teensy joins CAN1 as the new time-sync master (see
-  [ADR-0008](0008-time-sync-master-on-leg-bridge.md)) and to observe shared
-  aux state.
-- **CAN2** — a new **private** bus from the leg-bridge to the six leg
-  ODrives. Nothing else on this bus. ~3,000 msg/s setpoints + ~2,000 msg/s
-  telemetry = ~50% utilisation. Plenty of headroom for transient bursts.
+- **CAN1 (legacy: shared aux bus)** — the existing shared bus. Hand ODrive,
+  ball butler controller, catching cone Teensy, platform Teensy 4.0 all stay
+  on this bus. The can-bridge Teensy joins CAN1 as the new time-sync master
+  (see [ADR-0008](0008-time-sync-master-on-can-bridge.md)) and to observe
+  shared aux state.
+- **CAN2 (legacy: private leg bus)** — a new **private** bus from the
+  can-bridge to the six leg ODrives. Nothing else on this bus. ~3,000 msg/s
+  setpoints + ~2,000 msg/s telemetry = ~50% utilisation. Plenty of headroom
+  for transient bursts.
 
 The CAN3 peripheral (CAN-FD-capable) is left unused — reserved for a
 potential future bandwidth upgrade if the project ever needs to bump leg
@@ -54,7 +79,7 @@ telemetry rates beyond what classical CAN can sustain.
   `commutation_mapper.pos_abs` back-to-back during homing) and error storms
   no longer contaminate the rest of the system.
 - **Physical wiring topology.** A dedicated leg-bus harness from the
-  leg-bridge to the six leg ODrives is a cleaner physical layout than
+  can-bridge to the six leg ODrives is a cleaner physical layout than
   splicing them onto the existing CAN1 harness.
 
 **Negative:**

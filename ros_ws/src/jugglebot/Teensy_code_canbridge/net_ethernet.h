@@ -10,7 +10,7 @@
 
 #include <cstdint>
 
-namespace LegBridge {
+namespace CanBridge {
 
 // Configure + start the Ethernet interface at the static IP. Returns true once
 // the link reports up (or after a bounded wait — caller may proceed regardless).
@@ -23,4 +23,4 @@ bool net_link_up();
 // UDP RX task. QNEthernet processes received frames in this call.
 void net_ethernet_service();
 
-}  // namespace LegBridge
+}  // namespace CanBridge

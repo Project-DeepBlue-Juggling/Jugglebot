@@ -6,7 +6,7 @@
 #include <Arduino.h>
 #include <cstring>
 #include "freertos_shim.h"
-#include "legbridge_config.h"
+#include "canbridge_config.h"
 #include "protocol_config.h"   // CanBus::BITS_PER_FRAME_APPROX
 #include "udp_protocol.h"
 #include "udp_link.h"
@@ -14,7 +14,7 @@
 #include "leg_interp.h"
 #include "time_base.h"
 
-namespace LegBridge {
+namespace CanBridge {
 
 // Fixed PROFILE slot order — must match profiling.h and the Jetson consumer.
 static const char* kTaskSlots[JbUdp::PROFILE_NUM_TASKS] = {
@@ -110,4 +110,4 @@ void profiling_step() {
   interp_reset_jitter();          // max-jitter is per-window
 }
 
-}  // namespace LegBridge
+}  // namespace CanBridge

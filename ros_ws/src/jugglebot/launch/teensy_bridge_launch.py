@@ -1,7 +1,7 @@
-"""Standalone launch for the Phase-10b leg-bridge Teensy node.
+"""Standalone launch for the Phase-10b can-bridge Teensy node.
 
 This is **deliberately separate** from ``jugglebot_launch.py``: during the
-side-by-side migration the leg-bridge bridge runs alongside the production
+side-by-side migration the can-bridge bridge runs alongside the production
 ``can_node`` and must be started **manually** by the operator, never as part of
 the default robot bring-up. It owns only ``/teensy/*`` topics, so it cannot
 interfere with the production control path.
@@ -31,7 +31,7 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
             'teensy_ip', default_value='192.168.42.2',
-            description='Static IP of the leg-bridge Teensy (ADR-0007).'),
+            description='Static IP of the can-bridge Teensy (ADR-0007).'),
         DeclareLaunchArgument(
             'enable_setpoint_output', default_value='false',
             description='SAFETY: gate for the 40 Hz setpoint downlink + '

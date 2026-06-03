@@ -18,9 +18,9 @@
 // =============================================================================
 
 #include <cstdint>
-#include "legbridge_config.h"
+#include "canbridge_config.h"
 
-namespace LegBridge {
+namespace CanBridge {
 
 struct AxisState {
   // ── Hot — updated by CAN2 RX task ──────────────────────────────────────────
@@ -93,4 +93,4 @@ inline void snapshot_pos_vel(const AxisState& a, float& pos, float& vel, uint64_
   } while ((s0 & 1) || (s0 != s1));   // retry if writer was mid-update
 }
 
-}  // namespace LegBridge
+}  // namespace CanBridge

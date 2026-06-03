@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Minimum-viable Jetson-side daemon for the leg-bridge Teensy link.
+"""Minimum-viable Jetson-side daemon for the can-bridge Teensy link.
 
 This is the Phase-10 MVP: a runnable single-process Jetson that gives the
 Teensy what it needs to clear its `LINK_LOST` fault and lock its wall-clock:

@@ -11,11 +11,11 @@
 
 #include <cstdint>
 
-namespace LegBridge {
+namespace CanBridge {
 
 void telemetry_init();
 // Call at TELEM_RATE_HZ (100 Hz). Sends the Telemetry frame every tick and any
 // due Diagnostic frames (changed axes immediately; unchanged axes once/second).
 void telemetry_step();
 
-}  // namespace LegBridge
+}  // namespace CanBridge

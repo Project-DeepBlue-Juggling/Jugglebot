@@ -15,7 +15,7 @@
 
 #include <cstdint>
 
-namespace LegBridge {
+namespace CanBridge {
 
 // Registered RX handler. `seq` is the frame sequence; `payload`/`len` are the
 // validated payload (already CRC-checked). Handlers must be fast / non-blocking.
@@ -65,4 +65,4 @@ void     udp_note_rtt(uint32_t rtt_us);   // called by the time master on each T
 // by the link-health watchdog.
 uint64_t udp_last_rx_us();
 
-}  // namespace LegBridge
+}  // namespace CanBridge

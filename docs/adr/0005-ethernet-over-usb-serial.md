@@ -30,7 +30,7 @@ Use **Ethernet** for the Jetson↔Teensy link.
   captures into the Teensy or the Jetson side is straightforward. With USB
   serial, debugging means a logic analyser or print-based tracing.
 - **Galvanic isolation.** Ethernet magnetics provide ~1.5 kV isolation
-  between Jetson and Teensy electrical domains. The leg-bridge Teensy will
+  between Jetson and Teensy electrical domains. The can-bridge Teensy will
   be near six motor drivers switching motor current; ground-loop and noise
   injection problems are real on this kind of system. USB shares grounds.
 - **Cable robustness.** RJ45 latches and tolerates vibration. USB-B/USB-C
@@ -67,9 +67,11 @@ Use **Ethernet** for the Jetson↔Teensy link.
   every property above. Considered as the obvious default; rejected when
   the user pushed back specifically on the USB choice.
 - **CAN as the Jetson↔Teensy link.** Strange but technically possible:
-  the Jetson could join CAN1 alongside the Teensys and exchange data over
-  CAN. Rejected because this re-introduces the Jetson into the CAN bus —
-  the exact thing [ADR-0001](0001-offload-can-and-interpolator-from-jetson.md)
+  the Jetson could join one of the can-bridge's CAN buses (most naturally
+  CAN3, where the Jugglebot core subsystem lives — see
+  [ADR-0013](0013-three-can-buses.md)) and exchange data over CAN.
+  Rejected because this re-introduces the Jetson into the CAN bus — the
+  exact thing [ADR-0001](0001-offload-can-and-interpolator-from-jetson.md)
   removes. Defeats the architecture.
 - **Wireless (WiFi).** Rejected — latency, reliability, and security all
   worse than a dedicated wired link, with no compensating advantage.

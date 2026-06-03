@@ -30,9 +30,12 @@ This architecture has worked, but several pressures have accumulated:
 ## Decision
 
 Move all leg-CAN responsibility and the 500 Hz interpolator off the Jetson
-onto a dedicated MCU. The MCU becomes the canonical CAN owner; the Jetson
-talks to it over a small explicit network protocol (see ADR-0005, ADR-0006).
-The MCU's choice and its placement are addressed in ADR-0002 / ADR-0003.
+onto a dedicated MCU. The MCU becomes the canonical CAN owner across **three
+subsystem-isolated CAN buses** (Ball Butler, catching cone, Jugglebot core —
+see [ADR-0013](0013-three-can-buses.md), which supersedes
+[ADR-0004](0004-dual-can-buses.md)); the Jetson talks to it over a small
+explicit network protocol (see ADR-0005, ADR-0006). The MCU's choice and
+its placement are addressed in ADR-0002 / ADR-0003.
 
 ## Consequences
 
@@ -41,7 +44,9 @@ The MCU's choice and its placement are addressed in ADR-0002 / ADR-0003.
 - 500 Hz interpolator timing is deterministic by construction (hardware timer
   ISR), not contingent on Linux scheduling.
 - One canonical CAN owner — every protocol change goes through one codebase,
-  one version, one test harness.
+  one version, one test harness — across all three subsystem buses
+  (subsystem isolation by physical partition, not by codebase
+  fragmentation; see [ADR-0013](0013-three-can-buses.md)).
 - The Jetson loses CAN entirely; hardware diagnostics, ROS 2 tooling, and the
   Linux network stack no longer compete with CAN handling for CPU.
 - Interface to the Jetson becomes small and explicit (a documented binary
@@ -63,6 +68,11 @@ The MCU's choice and its placement are addressed in ADR-0002 / ADR-0003.
   over multiple production incidents — must be ported verbatim. Risk of
   regression if porting is sloppy; managed by a Python-mirror test
   (`tests/firmware/test_fault_logic.py`) executable spec.
+- One new firmware behaviour the offload introduces: CAN2 (catching cone
+  subsystem, per [ADR-0013](0013-three-can-buses.md)) must tolerate TX
+  with no ACK gracefully when the cone is physically disconnected — no
+  bus-off, no permanent error state. This is a new requirement, not a
+  port of pre-existing logic.
 
 ## Alternatives considered
 
@@ -75,3 +85,8 @@ The MCU's choice and its placement are addressed in ADR-0002 / ADR-0003.
   independently if Jetson compute becomes a separate bottleneck.
 - **Roll our own bare-metal firmware (no RTOS).** Considered for simplicity;
   FreeRTOS chosen (ADR-0009) to keep the task model explicit and isolated.
+- **Two-bus topology (criticality-based: private leg bus + shared aux bus).**
+  The first iteration of this offload landed on a two-bus split. Superseded
+  on 2026-06-03 by the three-bus subsystem-isolation design — see
+  [ADR-0013](0013-three-can-buses.md), which supersedes
+  [ADR-0004](0004-dual-can-buses.md).

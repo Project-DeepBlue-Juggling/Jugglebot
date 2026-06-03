@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stub Jetson-side client for the leg-bridge Teensy — bench exerciser.
+"""Stub Jetson-side client for the can-bridge Teensy — bench exerciser.
 
 Stands in for the (Phase 10) can_node UDP bridge so the firmware data path can be
 exercised end-to-end without the real MPC:
@@ -150,7 +150,7 @@ def _name(mt):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Stub Jetson client for the leg-bridge Teensy")
+    ap = argparse.ArgumentParser(description="Stub Jetson client for the can-bridge Teensy")
     ap.add_argument("--teensy-ip", default="192.168.42.2")
     ap.add_argument("--duration", type=float, default=0.0, help="seconds (0 = until Ctrl-C)")
     ap.add_argument("--no-output", action="store_true",

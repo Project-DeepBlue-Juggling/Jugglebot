@@ -21,9 +21,9 @@
 #include <cstring>
 #include <cmath>
 #include "protocol_config.h"
-#include "legbridge_config.h"
+#include "canbridge_config.h"
 
-namespace LegBridge {
+namespace CanBridge {
 namespace ODrive {
 
 // ── Neutral CAN frame POD ─────────────────────────────────────────────────────
@@ -197,4 +197,4 @@ inline Version decode_get_version(const uint8_t* d) {
 }
 
 }  // namespace ODrive
-}  // namespace LegBridge
+}  // namespace CanBridge

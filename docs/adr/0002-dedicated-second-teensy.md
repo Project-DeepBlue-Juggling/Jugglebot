@@ -1,9 +1,9 @@
-# ADR-0002: Use a dedicated *second* Teensy for the leg-bridge role, not extend the existing platform Teensy
+# ADR-0002: Use a dedicated *second* Teensy for the can-bridge role, not extend the existing platform Teensy
 
 - **Status**: Accepted
 - **Date**: 2026-06-02 (captured); decision made 2026-05-27
 - **Deciders**: Harrison + Claude
-- **Related**: [ADR-0001](0001-offload-can-and-interpolator-from-jetson.md), [parent plan](../../plans/active/teensy-can-offload.md)
+- **Related**: [ADR-0001](0001-offload-can-and-interpolator-from-jetson.md), [ADR-0013](0013-three-can-buses.md), [parent plan](../../plans/active/teensy-can-offload.md)
 
 ## Context
 
@@ -33,20 +33,29 @@ Two pressures pushed back on the extend-the-existing-Teensy approach:
 
 ## Decision
 
-Add a **second dedicated Teensy** as the leg-bridge MCU. The new device:
+Add a **second dedicated Teensy** as the can-bridge MCU. The new device:
 
 - Sits physically near the Jetson (short Ethernet cable).
-- Owns CAN1 (shared bus, time-sync master role per
-  [ADR-0008](0008-time-sync-master-on-leg-bridge.md)) and a private CAN2 (six
-  leg ODrives only — see [ADR-0004](0004-dual-can-buses.md)).
+- Owns **three subsystem-isolated CAN buses** (see
+  [ADR-0013](0013-three-can-buses.md), which supersedes
+  [ADR-0004](0004-dual-can-buses.md)): CAN1 carries the Ball Butler
+  subsystem; CAN2 carries the catching cone subsystem (often physically
+  disconnected); CAN3 carries the Jugglebot core — six leg ODrives, Hand
+  ODrive, and platform Teensy 4.0 — running classical 1 Mbps on the Teensy
+  4.1's FD-capable peripheral. Time-sync master role per
+  [ADR-0008](0008-time-sync-master-on-can-bridge.md): the can-bridge
+  broadcasts the 100 Hz 0x7DD wall-clock on all three buses.
 - Runs the 500 Hz interpolator and the fault state machine.
 - Talks to the Jetson over a dedicated Ethernet link.
 
 The existing platform Teensy 4.0 is **unchanged**. Its hand trajectory,
 inclinometer, state persistence, and slave-side time-sync IIR continue to work
-exactly as today. Its master is now the leg-bridge Teensy instead of the
-Jetson, but the frame format and rate on ID 0x7DD are identical, so its IIR
-filter doesn't notice the change (per ADR-0008).
+exactly as today. Under the three-bus topology (ADR-0013) it sits on CAN3
+alongside the leg ODrives, Hand ODrive, and can-bridge — its 500 Hz
+hand-trajectory emission to the Hand ODrive continues unchanged, just on a
+different physical bus. Its master is now the can-bridge Teensy instead of
+the Jetson, but the frame format and rate on ID 0x7DD are identical, so its
+IIR filter doesn't notice the change (per ADR-0008).
 
 ## Consequences
 
@@ -58,19 +67,21 @@ filter doesn't notice the change (per ADR-0008).
 - Two MCUs each doing one thing, easier to reason about than one MCU doing
   two complex things.
 - The catching cone Teensy already sets a precedent for distributing
-  responsibility across multiple peer MCUs on the CAN bus.
+  responsibility across multiple peer MCUs (now on subsystem-isolated
+  CAN buses per ADR-0013).
 
 **Negative:**
 
 - One additional MCU to procure, mount, power, and flash.
-- Two firmware codebases to maintain (platform Teensy + leg-bridge Teensy).
+- Two firmware codebases to maintain (platform Teensy + can-bridge Teensy).
   Mitigated by both being on Teensyduino with a shared protocol_config.h.
 - The system has more devices, more potential failure points.
 
 **Neutral:**
 
-- Total BOM cost ~$75 extra (Teensy 4.1 + Ethernet kit + two CAN transceivers
-  + USB-Ethernet adapter on Jetson) — see parent plan's BOM section.
+- Total BOM cost ~$77 extra — see parent plan's BOM section for the
+  itemised breakdown (Teensy 4.1, Ethernet kit, three CAN transceivers,
+  USB-Ethernet adapter, cable, microSD, CR2032, termination resistors).
 
 ## Alternatives considered
 
@@ -79,7 +90,7 @@ filter doesn't notice the change (per ADR-0008).
   This was the initial proposal; the user's physical-architecture insight
   ("the platform Teensy is at the far end of the bus, far from the Jetson")
   flipped the decision.
-- **Single MCU consolidating platform Teensy + leg-bridge + cone.** Rejected:
+- **Single MCU consolidating platform Teensy + can-bridge + cone.** Rejected:
   the cone Teensy is physically separate (mounted on the catching cone, which
   moves), and consolidating doesn't reflect mechanical reality.
 - **Use a more powerful single-board computer instead of another Teensy

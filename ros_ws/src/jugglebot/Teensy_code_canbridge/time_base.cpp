@@ -5,7 +5,7 @@
 
 #include <Arduino.h>
 
-namespace LegBridge {
+namespace CanBridge {
 
 uint64_t micros64() {
   // Extend 32-bit micros() to 64 bits by counting wraps. Unlike the platform
@@ -56,4 +56,4 @@ void set_wall_anchor(uint64_t jetson_wall_us) {
   __set_PRIMASK(pm);
 }
 
-}  // namespace LegBridge
+}  // namespace CanBridge

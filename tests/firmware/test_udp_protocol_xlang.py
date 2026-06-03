@@ -29,7 +29,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _GEN_SCRIPT = _REPO_ROOT / "config" / "generate_udp_protocol.py"
 _CPP_COMMITTED = _REPO_ROOT / "config" / "generated" / "udp_protocol.h"
 _PY_COMMITTED = _REPO_ROOT / "config" / "generated" / "udp_protocol.py"
-_FIRMWARE_CPP = _REPO_ROOT / "ros_ws" / "src" / "jugglebot" / "Teensy_code_legbridge" / "udp_protocol.h"
+_FIRMWARE_CPP = _REPO_ROOT / "ros_ws" / "src" / "jugglebot" / "Teensy_code_canbridge" / "udp_protocol.h"
 _JETSON_PY = _REPO_ROOT / "tools" / "probes" / "teensy_link_profiling" / "jetson" / "udp_protocol.py"
 
 
@@ -168,7 +168,7 @@ def test_committed_python_matches_generator(gen):
 
 def test_delivered_copies_match_canonical():
     assert _FIRMWARE_CPP.read_text() == _CPP_COMMITTED.read_text(), (
-        "Teensy_code_legbridge/udp_protocol.h differs from config/generated — regenerate")
+        "Teensy_code_canbridge/udp_protocol.h differs from config/generated — regenerate")
     assert _JETSON_PY.read_text() == _PY_COMMITTED.read_text(), (
         "jetson/udp_protocol.py differs from config/generated — regenerate")
 

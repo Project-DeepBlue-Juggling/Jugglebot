@@ -19,7 +19,7 @@
 
 #include <cstdint>
 
-namespace LegBridge {
+namespace CanBridge {
 
 void leg_interp_init();   // start the 500 Hz IntervalTimer
 
@@ -55,4 +55,4 @@ void interp_end_stow();      // stop the descent (back to MPC ladder / hold)
 bool interp_stow_active();
 bool interp_stow_complete();  // true once all legs reached the off pose
 
-}  // namespace LegBridge
+}  // namespace CanBridge

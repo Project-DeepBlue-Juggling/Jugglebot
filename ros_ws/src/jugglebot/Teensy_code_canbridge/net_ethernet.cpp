@@ -4,11 +4,11 @@
 #include "net_ethernet.h"
 
 #include <QNEthernet.h>
-#include "legbridge_config.h"
+#include "canbridge_config.h"
 
 using namespace qindesign::network;
 
-namespace LegBridge {
+namespace CanBridge {
 
 bool net_ethernet_begin() {
   // Static configuration — DHCP disabled by passing an explicit IP. We also
@@ -49,4 +49,4 @@ void net_ethernet_service() {
   Ethernet.loop();
 }
 
-}  // namespace LegBridge
+}  // namespace CanBridge

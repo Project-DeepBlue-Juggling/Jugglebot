@@ -2,7 +2,7 @@
 // =============================================================================
 //  time_sync_master.h — CAN1 0x7DD time-sync master + time-of-day RPC client
 // =============================================================================
-//  The leg-bridge replaces the Jetson as the system time-sync MASTER
+//  The can-bridge replaces the Jetson as the system time-sync MASTER
 //  (teensy-can-offload.md §"Time-sync master"). It:
 //    * broadcasts (wall_offset + monotonic) at 100 Hz on CAN1 ID 0x7DD using the
 //      EXACT payload format the Jetson emitted — struct.pack('<II', sec, usec)
@@ -19,7 +19,7 @@
 
 #include <cstdint>
 
-namespace LegBridge {
+namespace CanBridge {
 
 // Register the RPC-response handler (captures time-of-day replies). Call in setup.
 void time_sync_master_init();
@@ -29,4 +29,4 @@ void time_sync_master_init();
 // then every TIMEOFDAY_RESYNC_MS).
 void time_sync_step();
 
-}  // namespace LegBridge
+}  // namespace CanBridge

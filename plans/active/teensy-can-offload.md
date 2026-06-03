@@ -18,9 +18,9 @@ existing platform Teensy 4.0 is a peer device on the same bus, handling the
 hand trajectory, time-sync, the inclinometer, and robot-state persistence.
 
 This plan moves **all leg CAN responsibility off the Jetson** onto a dedicated
-**second Teensy 4.1**, with FreeRTOS, two CAN buses, and a point-to-point
-Ethernet link to the Jetson. The existing platform Teensy keeps its current
-scope unchanged.
+**second Teensy 4.1**, with FreeRTOS, three CAN buses (one per robot
+subsystem), and a point-to-point Ethernet link to the Jetson. The existing
+platform Teensy keeps its current scope unchanged.
 
 The motivation is **a stable foundation for years of future development**, not
 solving an immediate MPC bottleneck:
@@ -56,10 +56,15 @@ Two reasons, in order of importance:
    keep working unchanged. Risk of regression on existing throw/catch
    behaviour is zero.
 
-The new Teensy will join the same CAN1 bus as the existing one (where it
-becomes the time-sync **master** broadcasting to the existing slave Teensys,
-plus it sees shared aux state) and will own a private CAN2 bus to the leg
-ODrives. See "Time-sync master" below for the master-role change rationale.
+The new Teensy owns three CAN buses, one per robot subsystem. CAN1 carries the
+Ball Butler Teensy; CAN2 carries the catching cone Teensy (often physically
+disconnected); CAN3 carries all of Jugglebot — the six leg ODrives, the Hand
+ODrive, and the platform Teensy 4.0 — running classical 1 Mbps on the Teensy
+4.1's FD-capable peripheral. The can-bridge becomes the time-sync **master**
+and broadcasts the 100 Hz 0x7DD wall-clock on all three buses; the frame ID
+and payload format are unchanged so every slave's IIR filter is unaffected.
+See "Time-sync master" below for the master-role change rationale and
+"Why three CAN buses" for the partition rationale.
 
 ---
 
@@ -68,41 +73,56 @@ ODrives. See "Time-sync master" below for the master-role change rationale.
 ### Topology
 
 ```
-+--------+              Ethernet           +-----------+   CAN1 (shared)   +--------------+
-| Jetson |<------ point-to-point UDP ----->| Teensy    |<----------------->| Hand ODrive  |
-|        |       (USB-Ethernet adapter)    | 4.1 (new) |     1 Mbps        | BB ctrl      |
-|        |       192.168.42.0/30           |  [clock   |                   | Cone Teensy  |
-| eth0   |                                 |   master] |                   | Platform     |
-| (LAN)  |                                 |           |                   | Teensy 4.0   |
-+--------+                                 +-----------+                   +--------------+
-                                                  |
-                                                  | CAN2 (private)
-                                                  | 1 Mbps (CAN-FD-capable wiring)
-                                                  v
-                                          +----------------+
-                                          | 6 Leg ODrives  |
-                                          +----------------+
++--------+              Ethernet           +-----------+
+| Jetson |<------ point-to-point UDP ----->| Teensy    |
+|        |       (USB-Ethernet adapter)    | 4.1 (new) |
+|        |       192.168.42.0/30           |  [clock   |
+| eth0   |                                 |   master] |
+| (LAN)  |                                 |           |
++--------+                                 +-----+-----+
+                                                 |
+                              CAN1 (pins 22/23)  |  1 Mbps, classical
+                              <-----------------> | <-----> Ball Butler Teensy
+                                                 |          (~130 frames/s; ~1.5% util)
+                                                 |
+                              CAN2 (pins 0/1)    |  1 Mbps, classical
+                              <-----------------> | <-----> Catching Cone Teensy
+                                                 |          (often disconnected;
+                                                 |           ~100-110 frames/s with cone;
+                                                 |           ~100 frames/s without cone)
+                                                 |
+                              CAN3 (pins 30/31)  |  1 Mbps, classical on FD-capable peripheral
+                              <-----------------> | <-----> Platform Teensy 4.0
+                                                 |          Hand ODrive
+                                                 |          6 Leg ODrives
+                                                 |          (~5,340 frames/s steady,
+                                                 |           ~5,840 frames/s with throw;
+                                                 |           ~64-78% of 1 Mbps ceiling)
 
-  Time-sync: new Teensy broadcasts 100 Hz wall-clock on CAN1 ID 0x7DD,
-  consumed by all three slave Teensys (platform 4.0, Ball Butler, catching
-  cone). Over UDP the new Teensy queries the Jetson once at boot + every
-  10-60 s for the wall-clock anchor (no master/slave on UDP — Teensy is the
-  client). Jetson is no longer the time-sync master.
+  Time-sync: the can-bridge Teensy broadcasts the 100 Hz 0x7DD wall-clock on
+  ALL THREE buses simultaneously. Same frame ID, same `pack('<II', sec, usec)`
+  payload as the Jetson used to send — slave IIR filters consume it unchanged.
+  Per-bus slaves: BB Teensy on CAN1, cone Teensy on CAN2 (when present),
+  platform Teensy 4.0 on CAN3. Over UDP the can-bridge anchors its wall-clock
+  to the Jetson at boot + every 30 s via RpcMethod::TIME_OF_DAY_QUERY.
 ```
 
 - Jetson's built-in Ethernet stays on the house LAN unchanged.
 - A USB-to-Gigabit-Ethernet adapter on the Jetson provides the dedicated
   point-to-point link to the new Teensy.
-- The new Teensy 4.1 uses both of its CAN2.0B peripherals: CAN1 on the shared
-  bus, CAN2 dedicated to the six leg ODrives.
+- The new Teensy 4.1 uses **all three** of its FlexCAN_T4 peripherals: CAN1
+  (pins 22 TX / 23 RX, classical) for the Ball Butler subsystem; CAN2
+  (pins 0 TX / 1 RX, classical) for the catching cone subsystem; CAN3
+  (pins 30 TX / 31 RX, FD-capable peripheral run classical) for the
+  Jugglebot core subsystem (6 leg ODrives + Hand ODrive + platform Teensy
+  4.0).
 - The Jetson stops touching socketcan entirely. `can_node.py` becomes a UDP
   bridge that re-publishes the same ROS2 topics and re-exposes the same
   services it does today.
 
-### Why two CAN buses
+### Why three CAN buses
 
-**A single bus is NOT bandwidth-saturated** — that was an earlier overstatement.
-Honest math, classical CAN 2.0B at 1 Mbps with 11-bit standard IDs:
+A single consolidated bus is **bandwidth-feasible** for the aggregate traffic — that finding from the earlier two-bus analysis still holds. Honest math, classical CAN 2.0B at 1 Mbps with 11-bit standard IDs:
 
 | Frame | Bits (incl. SOF, arb, CRC, ACK, EOF, IFS) | Notes |
 |---|---|---|
@@ -110,96 +130,71 @@ Honest math, classical CAN 2.0B at 1 Mbps with 11-bit standard IDs:
 | 8-byte worst-case (max bit-stuffing) | ~130 | rare |
 | 4-byte payload nominal | ~85 | heartbeat, voltage |
 
-At ~120 bits/frame average, the 1 Mbps ceiling is **~8,300 msg/s**; realistic
-sustained capacity ~7,500 msg/s.
+At ~120 bits/frame average, the 1 Mbps ceiling is **~8,300 msg/s**; realistic sustained capacity is **~7,500 msg/s**.
 
-Consolidated traffic in the proposed architecture:
+Under the three-bus partition, almost all of the traffic lands on **CAN3** (the Jugglebot subsystem bus). The aggregate that was previously analysed as a hypothetical single-bus load is now the steady-state load on CAN3 alone:
 
-| Source | Frames/s | Notes |
-|---|---|---|
-| Leg setpoints (6× at 500 Hz, 8 B) | 3,000 | hot path |
-| Leg telemetry — encoder + iq (100 Hz × 6 × 2) | 1,200 | 8 B each |
-| Leg telemetry — heartbeat (100 Hz × 6) | 600 | small frame |
-| Leg telemetry — temp + voltage (~10 Hz × 6 × 2) | 120 | slow signals |
-| Hand axis telemetry (1 axis, all streams) | ~320 | mirrors a leg |
-| Time-sync from master (100 Hz) | 100 | small frame |
-| Hand trajectory setpoints during throw (500 Hz, transient) | +500 peak | only during throws |
-| BB + cone heartbeats (10 Hz) | ~20 | small |
+| Bus | Source | Frames/s | Notes |
+|---|---|---|---|
+| CAN1 | BB Teensy heartbeats + control | ~30 | small frames |
+| CAN1 | Time-sync broadcast (100 Hz) | 100 | from can-bridge |
+| **CAN1 total** | | **~130** | **~1.5% utilisation** |
+| CAN2 | Catching cone telemetry (when present) | ~10 | small frames |
+| CAN2 | Time-sync broadcast (100 Hz) | 100 | sent unconditionally |
+| **CAN2 total** | (cone present / absent) | **~110 / ~100** | **~1.2% utilisation** |
+| CAN3 | Leg setpoints (6× at 500 Hz, 8 B) | 3,000 | hot path |
+| CAN3 | Leg telemetry — encoder + iq (100 Hz × 6 × 2) | 1,200 | 8 B each |
+| CAN3 | Leg telemetry — heartbeat (100 Hz × 6) | 600 | small frame |
+| CAN3 | Leg telemetry — temp + voltage (~10 Hz × 6 × 2) | 120 | slow signals |
+| CAN3 | Hand axis telemetry (1 axis, all streams) | ~320 | mirrors a leg |
+| CAN3 | Time-sync broadcast (100 Hz) | 100 | from can-bridge |
+| CAN3 | Hand trajectory setpoints during throw (500 Hz, transient) | +500 peak | only during throws |
+| **CAN3 steady** | | **~5,340** | |
+| **CAN3 with throw active** | | **~5,840** | |
 
-**Steady-state aggregate: ~5,400 msg/s. With a throw active: ~5,900 msg/s.**
-At ~120 bits/frame (many smaller), that's **~65% / ~71% of the theoretical
-8,300 msg/s ceiling** — or, against the practical ~7,500 msg/s ceiling that
-accounts for bit-stuffing variance and IFS overhead, **~72% / ~79%**.
-Feasible either way; comfortably under saturation in both denominators.
+Against the theoretical 8,300 msg/s ceiling, CAN3 sits at **~64% steady / ~70% with throw**. Against the practical ~7,500 msg/s ceiling (bit-stuffing + IFS overhead), it sits at **~71% / ~78%**. Feasible classical 1 Mbps with headroom, but close enough to the ceiling that the FD-capable peripheral choice for CAN3 (see below) is the natural future-proofing.
 
-So a single bus is feasible. The case for two buses isn't bandwidth; it's:
+CAN1 and CAN2 are each comfortably below 2% — fault storms or burst traffic on either auxiliary bus have no risk of starving anything.
 
-- **Isolation.** A fault storm on the leg side — multiple axes erroring
-  back-to-back at high rate — can briefly push bus load far above steady-state.
-  On a single bus this stalls hand/BB/cone traffic, including time-sync. On
-  separate buses, the leg storm is contained and time-sync to the rest of the
-  system keeps running.
-- **Determinism.** Leg setpoint latency is bounded by leg-bus traffic only,
-  not by whatever aux-side traffic happens to be flying. The hot 500 Hz
-  setpoint stream never contends with hand trajectory bursts or SDO replies.
-- **Transient headroom.** Encoder-search SDO bursts (6 axes querying
-  `commutation_mapper.pos_abs` back-to-back during homing) and error storms
-  can briefly push utilisation much higher than steady-state. Isolation means
-  these don't cross-contaminate.
-- **Physical wiring topology.** Same rationale that drove the two-Teensy
-  decision: a dedicated leg-bus harness from the new Teensy to the six leg
-  ODrives is a cleaner physical layout than retro-fitting them onto the
-  existing CAN1 harness.
+Bandwidth alone has never been the driving constraint. The question is **what we get from partitioning** the traffic.
 
-Cost: one extra transceiver + connector. Worth it for the substrate stability
-goal.
+The new partition is **subsystem-based**, not criticality-based. Each robot subsystem owns its own bus:
 
-### Time-sync master moves from Jetson to new Teensy
+- **CAN1 — Ball Butler subsystem.** The Ball Butler Teensy lives alone on this bus. A fault on the BB controller (heartbeat storm, firmware hang, controller cable yanked) cannot stall the Jugglebot bus.
+- **CAN2 — Catching cone subsystem.** The sensorized catching cone Teensy lives alone on this bus and is **often physically disconnected** (the cone is removable; the rest of the robot runs without it). The firmware must therefore handle TX with no ACK gracefully — no bus-off, no permanent error state.
+- **CAN3 — Jugglebot core subsystem.** All six leg ODrives, the Hand ODrive, the platform Teensy 4.0, and the can-bridge live on this bus. The 500 Hz leg setpoint stream, the 500 Hz hand trajectory stream (emitted by the platform Teensy 4.0, unchanged from today), and all motor telemetry share CAN3 — they are by construction in one tightly-coordinated control system. CAN3 is wired to the Teensy 4.1's **FD-capable peripheral** (pins 30/31), run classical 1 Mbps for now to match the ODrive firmware. If bandwidth ever binds, the upgrade to CAN-FD is costless at the peripheral.
 
-Currently the **Jetson** is the time-sync master, broadcasting wall-clock at
-100 Hz on CAN1 ID 0x7DD; the platform Teensy 4.0 and catching cone Teensy are
-slaves that IIR-filter the incoming offset. Under this plan, the **new CAN
-Teensy** takes over the master role.
+What we get from the three-way subsystem split:
 
-The change is architecture-driven, not load-driven. The new Teensy already has
-a hardware-timer-driven monotonic clock for the 500 Hz interpolator ISR —
-sub-microsecond resolution, zero scheduler jitter, no preemption from Linux
-housekeeping. It has the cleanest time base on the entire system, which is
-exactly what the master role wants.
+- **Subsystem fault isolation.** BB faults don't reach Jugglebot. Cone disconnects don't affect anything. Leg fault storms on CAN3 don't starve the time-sync broadcast to BB or the cone.
+- **Operational independence.** The cone Teensy can be unplugged or replaced without taking the rest of the bus down. The BB controller can be reset independently. Bench work on one subsystem doesn't disturb the others.
+- **Future-proofing on the heaviest bus.** CAN3 sits at ~64-78% of classical 1 Mbps utilisation (steady to with-throw). Routing it onto the FD-capable peripheral makes a future CAN-FD upgrade a configuration change rather than a hardware change.
+- **Physical wiring topology.** Three short, dedicated harnesses from the can-bridge are simpler to fabricate and trace than splicing aux devices onto the legacy multi-drop CAN1 harness.
 
-Benefits:
+**Cost:** three CAN transceivers and six termination resistors (~$77 total, +~$2 vs the earlier two-bus BOM). Cheap insurance for the substrate-stability goal.
 
-- **One canonical clock owner**, sitting on the device with the hardest
-  real-time properties. The CAN bus and the UDP bus share a single time
-  origin, simplifying log correlation.
-- **Decouples robot timing from Jetson load**. The Jetson can reboot, do GC
-  pauses, run ROS2 bookkeeping, or get bogged down by a heavy DDS subscriber
-  — none of it disturbs platform-level timing.
-- **Existing slave Teensys are unaffected.** All three current slaves —
-  platform Teensy 4.0, Ball Butler Teensy, and catching cone Teensy — keep
-  being slaves; the master identity is invisible to their IIR filter (it's
-  the same frame ID 0x7DD, same payload format). Zero changes on those
-  devices.
+### Time-sync master moves from Jetson to the can-bridge Teensy
+
+Currently the **Jetson** is the time-sync master, broadcasting wall-clock at 100 Hz on the legacy shared CAN bus, ID 0x7DD; the platform Teensy 4.0, Ball Butler Teensy, and catching cone Teensy are slaves that IIR-filter the incoming offset. Under this plan, the **can-bridge Teensy 4.1** takes over the master role.
+
+The change is architecture-driven, not load-driven. The can-bridge already has a hardware-timer-driven monotonic clock for the 500 Hz interpolator ISR — sub-microsecond resolution, zero scheduler jitter, no preemption from Linux housekeeping. It has the cleanest time base on the entire system, which is exactly what the master role wants.
+
+**Per-bus broadcast routing.** Each slave now lives on its own physical bus, so the can-bridge fans the same 100 Hz 0x7DD frame out on **all three buses simultaneously**:
+
+- **CAN1** — broadcast consumed by the Ball Butler Teensy.
+- **CAN2** — broadcast consumed by the catching cone Teensy when it is connected. When the cone is absent the frame still goes out on CAN2 (the master is bus-agnostic about slave presence); CAN2 must be configured to tolerate TX with no ACK gracefully — no bus-off, no permanent error state. See Open Questions.
+- **CAN3** — broadcast consumed by the platform Teensy 4.0.
+
+**Frame ID, payload format, and 100 Hz cadence are unchanged across all three buses.** Slave IIR filters cannot tell the difference — they see the same `pack('<II', sec, usec)` on ID 0x7DD as before. Zero firmware changes on any slave.
+
+Bandwidth cost: 100 frames/s per bus = 300 frames/s of time-sync TX total from the can-bridge. Negligible on all three buses (already included in the per-bus totals in the bandwidth table).
 
 Implementation pattern:
 
-- **Hardware**: Teensy 4.1's internal crystal (~20-50 ppm) drives all timing.
-  No external module needed. Optional: solder a CR2032 holder to the VBAT pin
-  (~$1) so the on-chip RTC preserves wall-clock across power-off — purely a
-  nicety for boot-time human-readable timestamps.
-- **Boot**: Teensy starts with monotonic time only. After UDP link comes up,
-  queries the Jetson once for current wall-clock (`time(NULL)`) and stores
-  the offset. From then on, broadcasts `wall_offset + monotonic_us` on
-  CAN1 0x7DD at 100 Hz.
-- **Drift correction**: Teensy re-queries the Jetson every 10-60 seconds
-  over UDP to correct long-term drift. The Jetson's clock is the
-  authoritative wall-clock anchor (NTP-disciplined upstream); the Teensy
-  owns the real-time *rate*.
-- **Jetson role**: changes from master to client. The current
-  `bus.broadcast_time()` callsite goes away; the Jetson stops broadcasting
-  on CAN entirely (it has no CAN bus to broadcast on after the cutover
-  anyway). The Jetson's system clock continues running as normal for its own
-  logs — no need to discipline it to the Teensy.
+- **Hardware**: Teensy 4.1's internal crystal (~20-50 ppm) drives all timing. No external module needed. Optional CR2032 holder on the VBAT pin (~$1) preserves the on-chip RTC across power-off — purely a nicety for boot-time human-readable timestamps.
+- **Boot**: Teensy starts with monotonic time only. After UDP link comes up, queries the Jetson once for current wall-clock (`RpcMethod::TIME_OF_DAY_QUERY`), stores the offset, then begins broadcasting `(wall_offset_us + monotonic_us)` on all three CAN buses at 100 Hz.
+- **Drift correction**: Teensy re-queries the Jetson every 30 s over UDP to correct long-term drift.
+- **Jetson role**: changes from master to client. The current `bus.broadcast_time()` callsite goes away; the Jetson stops broadcasting on CAN entirely (it has no CAN bus to broadcast on after the cutover anyway). The Jetson's system clock continues running as normal for its own logs.
 
 CPU/load implications:
 
@@ -290,25 +285,41 @@ for this application.
 |---|---|---|---|
 | Teensy 4.1 | Main MCU | PJRC, direct or via distributor. | ~$32 |
 | PJRC Ethernet kit | RJ45 magjack + DP83825I PHY assembly with 6-pin ribbon to Teensy 4.1 Ethernet pads | Official PJRC product (part #PJRC-ETHKIT). Self-contained — no separate PHY needed. | ~$5 |
-| CAN transceiver × 2 | One per CAN bus | **TJA1051T/3** or **MCP2562** (3.3 V-tolerant logic side, required by Teensy 4.1 which is 3.3 V). | ~$2 each |
-| 120 Ω termination resistors × 2 | One per CAN bus end | Standard CAN termination. | <$1 |
+| CAN transceiver × 3 | One per CAN bus (CAN1/BB, CAN2/cone, CAN3/Jugglebot) | **TJA1051T/3** or **MCP2562** (3.3 V-tolerant logic side, required by Teensy 4.1 which is 3.3 V). | ~$2 each (~$6) |
+| 120 Ω termination resistors × 6 | Two per bus (one at each end of CAN1, CAN2, CAN3) | Standard CAN termination. | ~$3 |
 | microSD card | Local logging (optional) | 16-32 GB Class 10 is plenty. Defer if not logging on day one. | ~$10 |
 | CR2032 + battery holder | RTC backup (optional) | Solder to Teensy 4.1's VBAT pin. Preserves wall-clock across power-off so the time-sync master has a reasonable boot-time estimate before the Jetson UDP query completes. | ~$1 |
 | Enclosure / mounting | Physical | Sized to your robot. | varies |
 
-Total new BOM: **~$75** for the core electronics, plus enclosure and wiring.
+**Total new BOM: ~$77** for the core electronics, plus enclosure and wiring. (+~$2 vs the earlier two-bus BOM — one extra TJA1051T/3 transceiver, two extra 120 Ω termination resistors.)
+
+**Pin assignments** (Teensy 4.1 FlexCAN_T4 peripherals):
+
+| Bus | Peripheral | TX pin | RX pin | Notes |
+|---|---|---|---|---|
+| CAN1 | FlexCAN_T4 #1 (classical) | 22 | 23 | Ball Butler subsystem |
+| CAN2 | FlexCAN_T4 #2 (classical) | 0 | 1 | Catching cone subsystem |
+| CAN3 | FlexCAN_T4 #3 (FD-capable, run classical) | 30 | 31 | Jugglebot core subsystem |
 
 ### Existing hardware that does NOT change
 
 - Platform Teensy 4.0 — keeps its current scope (hand traj, time-sync
-  *slave*, inclinometer, state persistence) untouched. Only the master
-  identity of the time-sync broadcast changes; the IIR filter consumes the
-  same frame ID 0x7DD with the same payload format.
-- Catching cone Teensy — unchanged, stays on CAN1.
-- Ball Butler controller — unchanged, stays on CAN1.
-- Six leg ODrives — unchanged, move from "Jetson's socketcan bus" to "Teensy
-  CAN2 private bus" by re-wiring (same connectors, same protocol).
-- Hand ODrive — stays on CAN1, still commanded by platform Teensy.
+  *slave*, inclinometer, state persistence) untouched. Moves onto **CAN3**
+  alongside the leg ODrives, Hand ODrive, and can-bridge. Continues its 500
+  Hz hand-trajectory emission to the Hand ODrive on CAN3 unchanged. Only
+  the master identity of the time-sync broadcast changes; the IIR filter
+  consumes the same frame ID 0x7DD with the same payload format.
+- Catching cone Teensy — unchanged firmware behaviour, but moves to its own
+  dedicated bus **CAN2** (often physically disconnected; the can-bridge must
+  tolerate TX with no ACK on this bus — see Open Questions).
+- Ball Butler controller — unchanged firmware behaviour, but moves to its
+  own dedicated bus **CAN1**.
+- Six leg ODrives — unchanged firmware/protocol, move from "Jetson's
+  socketcan bus" to the new "Teensy CAN3 Jugglebot bus" by re-wiring
+  (same connectors, same protocol). They share CAN3 with the Hand ODrive,
+  platform Teensy 4.0, and can-bridge.
+- Hand ODrive — moves to **CAN3** alongside the leg ODrives, still
+  commanded by the platform Teensy 4.0 (now on the same physical bus).
 - Jetson Orin Nano — hardware unchanged, just adds the USB-Ethernet adapter.
   Functional changes: stops being the time-sync master (becomes a wall-clock
   anchor responder over UDP); stops touching socketcan entirely.
@@ -417,17 +428,17 @@ thread. Don't tune blind — measure first with `ping -i 0.01 -c 1000 192.168.42
   become a priority.
 - **QNEthernet** library (PJRC-blessed, modern; supersedes the older
   NativeEthernet). Wraps **lwIP** under the hood for UDP/TCP.
-- **FlexCAN_T4** for both CAN buses.
+- **FlexCAN_T4** for all three CAN buses (CAN1/CAN2 classical, CAN3 FD-capable peripheral run classical).
 
 ### Task layout
 
 | Priority | Task | Trigger | Stack | Notes |
 |---|---|---|---|---|
-| 6 | `leg_interp_task` | 500 Hz `IntervalTimer` ISR | 2 KB | Hard deadline. Computes cubic Hermite + safety clamps + queues CAN2 TX. |
-| 5 | `can2_tx_task` | Queue from interp | 1 KB | Pacing-aware TX to leg ODrives. |
-| 5 | `can1_rx_task`, `can2_rx_task` | FlexCAN ISR + queue | 2 KB each | Decode + update per-axis state cache. |
+| 6 | `leg_interp_task` | 500 Hz `IntervalTimer` ISR | 2 KB | Hard deadline. Computes cubic Hermite + safety clamps + queues CAN3 TX (Jugglebot bus). |
+| 5 | `can3_tx_task` | Queue from interp | 1 KB | Pacing-aware TX to leg ODrives on CAN3. |
+| 5 | `can1_rx_task`, `can2_rx_task`, `can3_rx_task` | FlexCAN ISR + queue | 2 KB each | Decode + update per-axis / per-subsystem state cache. CAN2 RX must tolerate cone-absent (no incoming traffic, no peer ACK on the can-bridge's own TX — see Open Questions). |
 | 4 | `usb_rx_task` (UDP downlink) | lwIP callback | 4 KB | Decode Jetson commands, dispatch to subsystems. |
-| 4 | `time_sync_master_task` | 100 Hz `IntervalTimer` | 1 KB | **Broadcasts** wall-clock sync on CAN1 ID 0x7DD (replacing the Jetson as time-sync master — see "Time-sync master" section). Also responds to UDP time queries from the Jetson. |
+| 4 | `time_sync_master_task` | 100 Hz `IntervalTimer` | 1 KB | **Broadcasts** wall-clock sync on ID 0x7DD across **all three buses** (CAN1, CAN2, CAN3) at 100 Hz each (replacing the Jetson as time-sync master — see "Time-sync master" section). Also responds to UDP time queries from the Jetson. |
 | 3 | `usb_tx_task` (UDP uplink) | 100 Hz tick + event-driven | 4 KB | Telemetry stream + on-change diagnostics. |
 | 3 | `fault_state_task` | 10 Hz + CAN error events | 2 KB | Per-axis error tracking, soft-reset attempt limiter, undervoltage gate. Ports verbatim from [can_node.py:386-483](../../ros_ws/src/jugglebot/jugglebot/can_node.py#L386-L483). |
 | 2 | `watchdog_task` | 1 Hz | 1 KB | Heartbeat staleness, Jetson link health, deferred-stow latch. |
@@ -436,16 +447,17 @@ thread. Don't tune blind — measure first with `ping -i 0.01 -c 1000 192.168.42
 Plus FreeRTOS idle task. Total stack: ~25 KB.
 
 **Key invariant: the interp task is the highest priority on the system.**
-Nothing else can preempt it. Fault handling, telemetry, even CAN1 RX yield to
-the 500 Hz tick. This is the entire point of moving off Linux — make the
-determinism non-negotiable.
+Nothing else can preempt it. Fault handling, telemetry, even CAN3 RX (the
+heaviest bus — leg ODrive telemetry at ~5,340 frames/s) yield to the 500 Hz
+tick. This is the entire point of moving off Linux — make the determinism
+non-negotiable.
 
 ### CPU budget at 600 MHz Cortex-M7
 
 | Load source | Estimate |
 |---|---|
 | 500 Hz interp (cubic Hermite × 6 + clamps) | ~50 µs/tick × 500 = 2.5% |
-| CAN RX processing (~3000 msg/s × 10 µs) | ~3% |
+| CAN RX processing (~2,300 msg/s × 10 µs; CAN3 leg+hand telemetry dominates, CAN1+CAN2 add <1%) | ~3% |
 | UDP encode/decode at ~5 kB/s each way | <2% |
 | Hand-time-sync, watchdogs, fault state | ~3-5% |
 | **Total** | **~12-15% CPU; ~85% headroom** |
@@ -667,11 +679,18 @@ prototyped on breadboard, CAN transceivers wired and bench-tested in isolation
 - Order BOM (see hardware list above).
 - Solder PJRC Ethernet kit's 6-pin ribbon to the Teensy 4.1 Ethernet pads
   (PHY is on the kit; no separate PHY wiring).
-- Wire two CAN transceivers (TJA1051T/3) to Teensy's CAN1 and CAN2 pins.
-- 120 Ω termination on both bus ends (CAN2 will be a 2-node bus
-  Teensy↔leg-ODrive-chain).
+- Wire **three** CAN transceivers (TJA1051T/3 or MCP2562) to the Teensy 4.1's
+  three FlexCAN_T4 peripherals: CAN1 on pins 22 TX / 23 RX (Ball Butler
+  subsystem), CAN2 on pins 0 TX / 1 RX (catching cone subsystem), CAN3 on
+  pins 30 TX / 31 RX (Jugglebot core subsystem — note: CAN3 is the
+  FD-capable peripheral, run classical 1 Mbps for now).
+- 120 Ω termination at each end of all three buses (6 resistors total).
+  CAN3 is a multi-node bus (can-bridge + 6 leg ODrives + Hand ODrive +
+  platform Teensy 4.0) — terminate at the two electrical ends of the
+  harness. CAN1 (can-bridge ↔ BB Teensy) and CAN2 (can-bridge ↔ cone
+  Teensy) are 2-node buses; terminate at each end.
 - Plan physical mounting: Teensy near Jetson (Ethernet cable run short),
-  CAN2 to legs separate from existing CAN1.
+  three separate CAN harnesses out of the can-bridge — one per subsystem.
 
 **Done when:** Bare Teensy boots (USB power-on LED visible), all solder joints
 inspected and continuity-tested. **Note:** the Ethernet PHY will NOT come up
@@ -762,56 +781,70 @@ C++.
 
 ---
 
-### Phase 5 — CAN bring-up: CAN1 time-sync master, CAN2 ODrive protocol
+### Phase 5 — CAN bring-up: multi-bus time-sync master + CAN3 ODrive protocol
 
-**Goal:** Teensy is up on both CAN buses. CAN1 carries the time-sync master
-broadcast (replacing the Jetson); CAN2 can encode/decode all ODrive frames
-and exchange heartbeats with one leg ODrive on the bench (not the robot).
+**Goal:** Teensy is up on all three CAN buses. The can-bridge broadcasts the
+time-sync 0x7DD frame on **all three** buses (replacing the Jetson); CAN3 can
+encode/decode all ODrive frames and exchange heartbeats with one leg ODrive on
+the bench (not the robot); CAN1 and CAN2 are wired and quiescent, with cone
+disconnect tolerance demonstrated on CAN2.
 
-CAN1 bring-up + time-sync master:
+Multi-bus time-sync master (replaces previous Jetson-on-CAN1 broadcast):
 
-- Wire the new Teensy onto the existing shared CAN1 bus (alongside the
-  platform Teensy 4.0, cone Teensy, hand ODrive, BB controller). 120 Ω
-  termination already present on this bus.
+- Wire the new Teensy's three CAN transceivers to CAN1 (BB Teensy), CAN2
+  (cone Teensy — often disconnected), and CAN3 (the Jugglebot bus — six
+  leg ODrives, Hand ODrive, platform Teensy 4.0). The legacy shared CAN bus
+  is split into three subsystem buses on the can-bridge end.
 - Implement `time_sync_master_task`: 100 Hz `IntervalTimer` broadcasts
-  `(wall_offset_us + monotonic_us)` on CAN1 ID 0x7DD using the same payload
-  format the Jetson currently emits (so the existing slaves' IIR filter
-  consumes it unchanged).
+  `(wall_offset_us + monotonic_us)` on **all three buses** at ID 0x7DD
+  using the same `pack('<II', sec, usec)` payload the Jetson currently
+  emits (so every slave's IIR filter consumes it unchanged).
 - Implement Teensy-side bootstrap: on UDP link-up, query the Jetson for
-  `time(NULL)`, store offset, begin broadcasting. Re-query every 30 s for
-  drift correction.
+  `time(NULL)` via `RpcMethod::TIME_OF_DAY_QUERY`, store offset, begin
+  broadcasting on all three buses. Re-query every 30 s for drift correction.
+- Configure CAN2 to tolerate TX-with-no-ACK gracefully — when the cone is
+  disconnected, the time-sync broadcast frame on CAN2 has no listener and
+  the bus must not enter bus-off or any permanent error state. See Open
+  Questions for the firmware-driver-level configuration decision.
 - Disable the Jetson's current `bus.broadcast_time()` callsite (in
   `can_node.py`); the Jetson stops broadcasting on CAN, starts responding
   to the Teensy's UDP time queries.
 - Verify on the bench (without the robot): hook a CAN sniffer to CAN1,
-  confirm 100 Hz frames from the new Teensy on ID 0x7DD, confirm all three
-  slaves (platform Teensy 4.0, Ball Butler Teensy, catching cone Teensy)
-  still report `time_synced == true` via their existing CAN heartbeats and
-  produce behaviourally-correct timing (e.g., BB throw sequencing aligns
-  with Jetson timestamps, cone catch events report consistent epochs).
+  CAN2, and CAN3 in turn, confirm 100 Hz frames from the new Teensy on
+  ID 0x7DD on each bus. Confirm slaves report `time_synced == true` and
+  produce behaviourally-correct timing per subsystem: BB throw sequencing
+  aligned with Jetson timestamps (CAN1), cone catch events report
+  consistent epochs when the cone is connected (CAN2), platform Teensy
+  4.0 hand trajectory phasing unchanged (CAN3).
+- Verify cone-absent behaviour: physically disconnect the cone Teensy from
+  CAN2; confirm the can-bridge continues broadcasting 0x7DD on CAN2 without
+  entering bus-off, and that CAN1/CAN3 traffic is unaffected.
 
-CAN2 bring-up + ODrive protocol:
+CAN3 bring-up + ODrive protocol:
 
 - Port ODrive frame encoders/decoders from
   [odrive.py](../../ros_ws/src/jugglebot/jugglebot/can/odrive.py) to C++.
-- Wire one leg ODrive to CAN2 on the bench (use a spare or rotate one off
+- Wire one leg ODrive to CAN3 on the bench (use a spare or rotate one off
   the robot temporarily).
 - Verify: heartbeat RX, encoder estimate RX, set_state TX, set_input_pos TX,
   gain writes, set_controller_mode.
 - Test SDO read (used for encoder-search feedback).
 
 **Done when:**
-- CAN1: all three existing slaves (platform Teensy 4.0, Ball Butler Teensy,
-  catching cone Teensy) report `time_synced == true` and produce
-  behaviourally-correct timing under the new master, with no observable
-  difference from Jetson-as-master. (Note: the slaves' `wall_offset_us` is
-  a private internal — verification is by the externally-visible
-  `time_synced` flag plus behavioural proxies like throw sequencing and
-  catch-event epochs, not by reading the offset directly. If sharper
-  verification is needed, add a temporary diagnostic CAN frame or debug
-  serial print to one slave for bench-bringup only, then remove before
-  declaring Phase 5 done.) Jetson is no longer broadcasting on CAN.
-- CAN2: Teensy can drive one ODrive on the bench through a full cycle
+- Time-sync: all three slave Teensys (Ball Butler on CAN1, catching cone on
+  CAN2 when present, platform Teensy 4.0 on CAN3) report
+  `time_synced == true` and produce behaviourally-correct timing under the
+  new master, with no observable difference from Jetson-as-master. (Note:
+  the slaves' `wall_offset_us` is a private internal — verification is by
+  the externally-visible `time_synced` flag plus behavioural proxies, not
+  by reading the offset directly. If sharper verification is needed, add a
+  temporary diagnostic CAN frame or debug serial print to one slave for
+  bench-bringup only, then remove before declaring Phase 5 done.) Jetson is
+  no longer broadcasting on CAN.
+- Cone-absent tolerance: with cone Teensy disconnected, can-bridge continues
+  broadcasting on CAN2 without bus-off, and CAN1/CAN3 traffic shows zero
+  cross-effect.
+- CAN3: Teensy can drive one ODrive on the bench through a full cycle
   (IDLE → CLOSED_LOOP → position commands → IDLE), with all telemetry
   parsed correctly.
 
@@ -822,7 +855,7 @@ CAN2 bring-up + ODrive protocol:
 **Goal:** Teensy maintains the full per-axis state cache, publishes 100 Hz
 telemetry uplink + on-change diagnostics, Jetson can subscribe and display.
 
-- Implement `AxisState legs[6]` cache, populated from CAN2 RX task.
+- Implement `AxisState legs[6]` cache, populated from CAN3 RX task (the Jugglebot bus carrying the leg ODrives).
 - Implement telemetry uplink task (100 Hz `pos`/`vel`, on-change for the
   rest).
 - Jetson-side: stub Python subscriber that displays motor state at 100 Hz
@@ -958,7 +991,10 @@ pass. Manual smoke test: orchestrator + MPC bridge unchanged.
 **Goal:** End-to-end MPC → Hermite → Teensy → ODrive on the bench, one leg
 only, with Jetson socketcan disabled.
 
-- Wire one leg ODrive to CAN2.
+- Wire one leg ODrive to CAN3 (the Jugglebot bus). Hand ODrive and platform
+  Teensy 4.0 also belong on CAN3 — wire them up too if not already done in
+  Phase 5, since the can-bridge's bench cutover now lives on the same
+  physical wire as the existing hand-trajectory traffic.
 - Run `run_mpc.py --pose ...` end to end.
 - Compare measured leg trajectory to the same command run against the legacy
   Linux pipeline (recorded earlier). Expect agreement within tracking
@@ -971,14 +1007,25 @@ pipeline.
 
 ### Phase 12 — Full robot cutover
 
-**Goal:** All six legs migrated to CAN2, full robot operating off the new
-architecture. Existing platform Teensy 4.0 and CAN1 unchanged.
+**Goal:** All six legs migrated to CAN3 (the Jugglebot bus), full robot
+operating off the new three-bus architecture. Platform Teensy 4.0 now sits
+on CAN3 alongside the leg ODrives, Hand ODrive, and can-bridge; CAN1
+carries the Ball Butler subsystem only; CAN2 carries the catching cone only.
 
-- Migrate remaining 5 legs to CAN2.
-- Verify CAN1 traffic — hand, BB, and cone protocol frames unchanged.
-  Time-sync on 0x7DD is now sourced from the new Teensy (cutover landed in
-  Phase 5); slaves still clock-locked, frame format/cadence/ID identical to
-  before.
+- Migrate remaining 5 legs to CAN3.
+- Verify per-bus traffic on the new topology:
+  - **CAN1 (BB only):** BB heartbeats + control frames at expected cadence,
+    plus 100 Hz 0x7DD from the can-bridge.
+  - **CAN2 (cone only):** cone telemetry when present, plus 100 Hz 0x7DD
+    from the can-bridge. With cone disconnected, only the 100 Hz 0x7DD
+    broadcast — no bus-off.
+  - **CAN3 (Jugglebot core):** all leg ODrive setpoint/telemetry traffic,
+    Hand ODrive telemetry, platform Teensy 4.0 → Hand ODrive 500 Hz
+    trajectory frames unchanged, plus 100 Hz 0x7DD. Utilisation tracking
+    against the steady ~5,340 / with-throw ~5,840 frames/s budget.
+  Time-sync on 0x7DD is now sourced from the new Teensy (cutover landed
+  in Phase 5); all slaves still clock-locked, frame format/cadence/ID
+  identical to before.
 - Run full hardware test plan from
   [hardware-bringup.md](hardware-bringup.md): Active hold, dynamic moves,
   trajectory, catch.
@@ -1023,13 +1070,8 @@ don't re-litigate.
 - **Teensy 4.0** for the new device. **Rejected** because Ethernet on a 4.0
   requires an external SPI controller; on a 4.1 it's a soldered magjack +
   PHY breakout directly to the chip's MAC. Cost difference is ~$12.
-- **Single CAN bus on the new Teensy.** **Rejected** — but the math caveat
-  matters: a single bus is actually bandwidth-feasible (~65%/~71% of
-  theoretical or ~72%/~79% of practical 7,500 msg/s ceiling; see "Why two
-  CAN buses"). The rejection is on isolation, determinism, transient
-  headroom, and physical wiring topology grounds, not on strict bandwidth
-  necessity. Dual-bus contains leg-side fault storms and encoder-search
-  SDO bursts so they don't stall hand/BB/cone time-sync traffic.
+- **Single CAN bus on the can-bridge.** **Rejected.** A single bus is actually bandwidth-feasible (CAN3-equivalent load: ~64%/~70% of the theoretical 8,300 msg/s ceiling, or ~71%/~78% of the practical 7,500 msg/s ceiling — see "Why three CAN buses"). The rejection is on **subsystem-isolation grounds**, not bandwidth: a consolidated bus would put BB faults, cone disconnects, leg fault storms, and the time-sync broadcast all on the same wire, where any one of them could starve the others. Subsystem ownership is the cleaner long-term abstraction.
+- **Two CAN buses (criticality-based: shared aux + private leg).** **Superseded.** The first iteration of this plan landed on a two-bus split — CAN1 as the existing shared bus (hand ODrive + BB + cone + platform Teensy) and CAN2 as a private leg bus. That design was correct on bandwidth and isolated leg-side fault storms, but it kept BB, cone, and hand traffic coupled on one shared aux bus and didn't address cone-disconnect tolerance. The three-bus topology adopted on 2026-06-03 (see ADR-0013) reframes isolation from **criticality-based** (hot leg path vs aux) to **subsystem-based** (BB / cone / Jugglebot), at +~$2 BOM cost. It strictly dominates the two-bus design and supersedes it.
 - **TCP for any protocol channel.** **Rejected** in favour of UDP throughout.
   Nothing here streams enough data to need head-of-line ordering; TCP's
   reliability comes at the cost of bufferbloat hurting real-time paths.
@@ -1041,17 +1083,34 @@ don't re-litigate.
 
 To resolve as the plan progresses.
 
-- **CAN-FD path.** Teensy 4.1's CAN3 is CAN-FD-capable. If the leg ODrives'
-  firmware supports CAN-FD and the transceivers/traces are CAN-FD-rated,
-  there's a costless upgrade path to 5 Mbps + 64-byte payloads. Worth a few
-  hours of research before PCB layout. Defer decision to Phase 0 hardware
-  planning.
+- **CAN-FD upgrade path on CAN3.** Once this plan lands, CAN3 carries the
+  Jugglebot bus running classical 1 Mbps (matching the ODrive firmware and
+  the platform Teensy 4.0's existing emission). It sits on the Teensy 4.1's
+  FD-capable FlexCAN peripheral (pins 30/31), so if the ODrive firmware ever
+  ships CAN-FD support and the transceivers/traces are FD-rated, the
+  upgrade to 5 Mbps + 64-byte payloads is a configuration change rather
+  than a hardware change. Not blocking; revisit when CAN3 utilisation
+  creeps above ~80% or the ODrive firmware roadmap surfaces FD.
 - **Framing format.** COBS vs. fixed-length records. Decide in Phase 3.
 - **On-Teensy logging.** microSD slot is available; should logging happen
   on-Teensy (high-fidelity capture) or stay on Jetson via UDP relay (single
   source of truth)? Defer to Phase 6 telemetry design.
-- **Catching cone Teensy consolidation.** Stays separate for now (physical
-  placement) but if a future redesign brings it physically closer, reconsider.
+- **Catching cone Teensy consolidation.** Stays on its own dedicated bus
+  (CAN2) for now, often physically disconnected. A future redesign that
+  brings it physically closer could fold it onto CAN3 alongside Jugglebot
+  core, but the subsystem-isolation argument (cone disconnects don't
+  affect anything) is currently the dominant consideration — revisit only
+  if the physical layout changes materially.
+- **CAN2 firmware behaviour when cone Teensy is absent.** The cone is
+  often physically disconnected; the can-bridge still broadcasts the 100
+  Hz 0x7DD time-sync on CAN2 unconditionally. Decide the FlexCAN_T4
+  configuration that lets the can-bridge transmit on CAN2 with no ACK
+  gracefully — no bus-off, no permanent error state, no auto-recovery
+  loops that thrash TEC/REC counters. Candidate approaches: configure
+  one-shot TX with NACK-tolerant mailbox handling; allow bus-off but
+  auto-recover at a bounded rate; drop the broadcast on CAN2 entirely
+  when no recent cone heartbeat has been seen. Pick one, validate on the
+  bench with cone unplugged for an extended period.
 
 ---
 
@@ -1087,10 +1146,12 @@ plan's commits**. Captured here so the findings aren't lost.
 - **Phase 11/12 cutover.** A misbehaving Teensy commanding the legs is a real
   risk during cutover. Keep the Linux pipeline runnable as a fallback until
   the new architecture has accumulated significant operating time. Maintain
-  the ability to swap CAN2 wiring back to socketcan in <10 minutes for the
-  duration of the cutover period.
-- **Two-CAN-bus wiring complexity.** Don't crimp CAN connectors at 2 AM.
-  Plan harness construction calmly.
+  the ability to swap CAN3 wiring (the Jugglebot bus carrying the legs)
+  back to socketcan in <10 minutes for the duration of the cutover period.
+- **Three-CAN-bus wiring complexity.** Three subsystem buses with six
+  termination resistors. Don't crimp CAN connectors at 2 AM. Plan harness
+  construction calmly. Label each bus at both ends (CAN1 = BB, CAN2 = cone,
+  CAN3 = Jugglebot core) to avoid mis-wiring during bench cutover.
 
 ---
 

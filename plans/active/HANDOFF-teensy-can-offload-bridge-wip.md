@@ -12,7 +12,7 @@ sibling_handoff: HANDOFF-teensy-can-offload-firmware-wip.md
 This document tracks an **autonomous, hardware-free** implementation pass over
 **Phase 10b** of [`teensy-can-offload.md`](teensy-can-offload.md): the Jetson-side
 ROS 2 bridge that mirrors `can_node.py`'s observable surface but sources it from
-the leg-bridge Teensy over the dedicated UDP link
+the can-bridge Teensy over the dedicated UDP link
 ([`controller/teensy_link/`](../../controller/teensy_link/), Phase 10a).
 
 It is a **side-by-side** node: it runs *alongside* the production `can_node`, owns
@@ -43,9 +43,9 @@ Changed:
 - `config/generate_udp_protocol.py` — extended to emit the RPC method arg layouts
   (D8 hoist) into the C++ header, Python module, and markdown spec.
 - `config/generated/udp_protocol.{h,py}`, `docs/teensy-udp-protocol.md`,
-  `ros_ws/src/jugglebot/Teensy_code_legbridge/udp_protocol.h`,
+  `ros_ws/src/jugglebot/Teensy_code_canbridge/udp_protocol.h`,
   `tools/probes/teensy_link_profiling/jetson/udp_protocol.py` — regenerated.
-- `ros_ws/src/jugglebot/Teensy_code_legbridge/rpc.h` — switched from hand-written
+- `ros_ws/src/jugglebot/Teensy_code_canbridge/rpc.h` — switched from hand-written
   arg structs to the generated `JbUdp::RpcArgs::*` (the hoist's consumer side).
 - `ros_ws/src/jugglebot/setup.py` — `teensy_bridge_node` entry point.
 
@@ -62,6 +62,64 @@ Tests (all hardware-free, reuse the Phase-10a `FakeTeensy` loopback peer):
 
 _(Exact line counts and the final test count are in the
 [Verification](#verification) section, finalized at the end of the pass.)_
+
+## BLOCKING INPUT — CAN bus topology shift (2026-06-03)
+
+The CAN bus topology that this handoff document was written against has been
+**reframed from two subsystem-coupled buses to three subsystem-isolated
+buses**. This is the load-bearing input for the upcoming firmware-refactor
+session and supersedes every bus-identity reference in the rest of this
+document.
+
+**See [ADR-0013: Three subsystem-isolated CAN buses on the can-bridge
+Teensy](../../docs/adr/0013-three-can-buses.md)** (which supersedes
+[ADR-0004](../../docs/adr/0004-dual-can-buses.md)) and the rewritten
+"Topology" / "Why three CAN buses" / "Time-sync master" sections of
+[the parent plan](teensy-can-offload.md).
+
+**Authoritative new mapping:**
+
+| Bus | Peripheral | TX / RX pins | Subsystem | Steady traffic |
+|---|---|---|---|---|
+| CAN1 | FlexCAN_T4 #1 (classical) | 22 / 23 | Ball Butler Teensy only | ~130 frames/s |
+| CAN2 | FlexCAN_T4 #2 (classical) | 0 / 1 | Catching cone Teensy only (often disconnected) | ~100-110 frames/s |
+| CAN3 | FlexCAN_T4 #3 (**FD-capable**, run classical 1 Mbps) | 30 / 31 | Jugglebot core — 6 leg ODrives + Hand ODrive + platform Teensy 4.0 + can-bridge | ~5,340 frames/s steady, ~5,840 with throw |
+
+**Implications for the firmware-refactor session that follows this handoff:**
+
+1. **Renames.** Every "CAN1" or "CAN2" reference below this banner is stale.
+   Leg ODrive TX/RX, the interpolator ISR's CAN write, the heartbeat
+   watchdog, and the ODrive bring-up all move to **CAN3**. Time-sync moves
+   from "CAN1 broadcast" to "broadcast on all three buses".
+2. **Time-sync master fans out on three buses.** The 100 Hz 0x7DD frame is
+   broadcast on CAN1, CAN2, and CAN3 simultaneously. Frame ID and payload
+   are unchanged — slaves don't notice. The `time_sync_master_task` must
+   write the same payload to three FlexCAN instances per tick.
+3. **Cone-absent tolerance on CAN2 is a NEW firmware requirement** not
+   present anywhere below this banner. The cone Teensy is often physically
+   disconnected; the can-bridge still broadcasts the 100 Hz time-sync on
+   CAN2 unconditionally. The FlexCAN_T4 driver on CAN2 must tolerate TX
+   with no ACK gracefully — no bus-off, no permanent error state, no
+   auto-recovery loops that thrash TEC/REC counters. See the "CAN2
+   firmware behaviour when cone Teensy is absent" Open Question in the
+   parent plan for the candidate approaches (one-shot TX, bounded
+   auto-recovery, gated broadcast).
+4. **Pin assignments (NEW concrete detail).** CAN1 = pins 22/23, CAN2 =
+   pins 0/1, CAN3 = pins 30/31. Update `canbridge_config.h` to match.
+5. **BOM (NEW).** Three TJA1051T/3 (or MCP2562) transceivers, six 120 Ω
+   termination resistors (3 buses × 2 ends). Total can-bridge BOM ~$77
+   (+~$2 vs the prior two-bus BOM).
+6. **CAN3 is the FD-capable peripheral run classical 1 Mbps** to match the
+   ODrive firmware. The choice of CAN3 (FD-capable) for the heaviest bus
+   is deliberate: future CAN-FD upgrade is a configuration change, not a
+   hardware change.
+
+The rest of this handoff is otherwise correct — the UDP protocol, the
+fault state machine, the Hermite interpolator, the FreeRTOS task model,
+and the Jetson-side bridge surface are all unaffected by the topology
+shift. The firmware refactor is mostly **bus-identity renames + a new
+CAN2 driver-config decision** + **multi-bus time-sync TX fan-out**, not
+a structural rewrite.
 
 ## Sub-phase status
 
@@ -235,10 +293,14 @@ Risk-tiered. Nothing here has touched hardware; the bridge is bench-untested.
 
 - **`bus.broadcast_time()` disable (Jetson time-sync master cutover).** A
   production change to `can_node.__init__` / `bus.py` — forbidden by the hard
-  read-only constraint. The leg-bridge Teensy is now the time-sync master
-  (ADR-0008); disabling the Jetson broadcast is a Phase-5 production change to be
-  made in its own commit/session. The bridge already answers `TIME_OF_DAY_QUERY`
-  (the anchor side).
+  read-only constraint. The can-bridge Teensy is now the time-sync master
+  (ADR-0008) and, under [ADR-0013](../../docs/adr/0013-three-can-buses.md),
+  broadcasts the 100 Hz 0x7DD frame on **all three CAN buses** (CAN1 for BB,
+  CAN2 for cone when present, CAN3 for platform Teensy 4.0) — the bridge's
+  UDP-side `TIME_OF_DAY_QUERY` responder is unchanged by the per-bus fan-out
+  on the CAN side. Disabling the Jetson broadcast is a Phase-5 production
+  change to be made in its own commit/session. The bridge already answers
+  `TIME_OF_DAY_QUERY` (the anchor side).
 - **`can_node.py` / `bus.py` deletion.** Phase 13, after the bench cutover proves
   the bridge. The bridge is deliberately side-by-side so both can run during
   validation.

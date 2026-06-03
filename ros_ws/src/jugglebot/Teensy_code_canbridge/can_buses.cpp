@@ -4,13 +4,13 @@
 #include "can_buses.h"
 
 #include <FlexCAN_T4.h>
-#include "legbridge_config.h"
+#include "canbridge_config.h"
 #include "protocol_config.h"
 #include "axis_state.h"
 #include "time_base.h"
 #include "odrive_protocol.h"
 
-namespace LegBridge {
+namespace CanBridge {
 
 // CAN1 (pins 22/23) shared; CAN2 (pins 1/0) leg bus.
 static FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_16> can1;
@@ -160,4 +160,4 @@ CanStats can_buses_stats() {
   return s;
 }
 
-}  // namespace LegBridge
+}  // namespace CanBridge

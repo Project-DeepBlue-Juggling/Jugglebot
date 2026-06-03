@@ -114,7 +114,7 @@ def run_recorded_xref(csv_path):
     port = TeensyLegInterp(guard._stroke_min_rev, guard._stroke_max_rev)
 
     # Sanity: the firmware's embedded stroke bounds must equal the live guard's.
-    # (legbridge_config.h STROKE_{MIN,MAX}_REV — checked in the pytest wrapper.)
+    # (canbridge_config.h STROKE_{MIN,MAX}_REV — checked in the pytest wrapper.)
 
     rows = []
     with open(csv_path) as f:

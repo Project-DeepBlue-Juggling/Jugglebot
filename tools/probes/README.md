@@ -56,9 +56,9 @@ adapt — go here so the references stay live.
 |-------|---------|--------------------------|
 | `profile_session.py` | Records `tegrastats` (CPU/EMC/thermal/power), `pidstat` (per-process CPU / context switches / IO wait), `mpstat` (per-core utilisation), optional `py-spy` flame graphs per process name (`--py-spy-targets run_mpc.py,can_node`), optional `candump` CAN trace (`--candump can0`), plus a pre-flight snapshot (nvpmodel / governors / max freqs / ptrace_scope). Auto-analyses into a `report.md` that flags CPU saturation, DVFS throttling, thermal warnings, EMC saturation, memory pressure, top processes, CAN frame rate / top arbitration IDs, and cross-references can_node CPU% against CAN traffic to estimate per-frame dispatch cost. Subcommands: `start` / `stop` / `record` (Ctrl-C-able blocking mode) / `analyze`. | `logbook/2026-05-22-mpc-compute-bound-jetson-profiling.md` — the investigation that built this harness and used it to show the MPC is compute-bound on the Jetson Orin Nano |
 
-### Leg-bridge Teensy (`teensy_link_profiling/`)
+### Can-bridge Teensy (`teensy_link_profiling/`)
 
-Offline validation + bench/profiling tools for the new leg-bridge Teensy firmware.
+Offline validation + bench/profiling tools for the new can-bridge Teensy firmware.
 See `teensy_link_profiling/README.md`.
 
 | Tool | Purpose | Motivating plan |

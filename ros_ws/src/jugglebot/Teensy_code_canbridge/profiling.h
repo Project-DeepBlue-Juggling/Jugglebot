@@ -22,11 +22,11 @@
 
 #include <cstdint>
 
-namespace LegBridge {
+namespace CanBridge {
 
 void profiling_init();
 // Call at 1 Hz (DIAG_HEARTBEAT_HZ). Builds + sends the PROFILE frame and resets
 // the per-window counters.
 void profiling_step();
 
-}  // namespace LegBridge
+}  // namespace CanBridge

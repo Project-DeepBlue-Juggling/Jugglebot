@@ -1,8 +1,8 @@
-"""Teensy leg-bridge ROS 2 node — UDP-sourced mirror of ``can_node.py``.
+"""Teensy can-bridge ROS 2 node — UDP-sourced mirror of ``can_node.py``.
 
 This is the Phase-10b side-by-side bridge: it exposes the same observable
 surface as :mod:`jugglebot.can_node` (robot state, hand telemetry, link/fault
-health) but sources everything from the leg-bridge Teensy over the dedicated
+health) but sources everything from the can-bridge Teensy over the dedicated
 UDP link (``controller/teensy_link``) instead of socketcan. It runs *alongside*
 ``can_node`` during the migration — **every topic it owns lives under
 ``/teensy/*``; it never publishes to a production topic name** and never
@@ -77,7 +77,7 @@ import jugglebot.hardware_config as hw
 
 
 # ── Constants ──────────────────────────────────────────────────
-# Mirror of can_node._HEARTBEAT_TIMEOUT_S: the leg-bridge link is declared lost
+# Mirror of can_node._HEARTBEAT_TIMEOUT_S: the can-bridge link is declared lost
 # after this long without a T→J heartbeat. 2 s matches the CAN watchdog so the
 # two nodes agree on what "lost" means during the side-by-side window.
 _HEARTBEAT_TIMEOUT_S = 2.0
@@ -159,7 +159,7 @@ class _MotorGuardSetpointSource:
 
 
 class TeensyBridgeNode(Node):
-    """ROS 2 node bridging the leg-bridge Teensy UDP link to ``/teensy/*``.
+    """ROS 2 node bridging the can-bridge Teensy UDP link to ``/teensy/*``.
 
     Args:
         client: An optional already-constructed :class:`TeensyLinkClient`. When
@@ -244,8 +244,8 @@ class TeensyBridgeNode(Node):
             DiagnosticStatus, '/teensy/profile', 10)
 
         # ── RPC service surface (Commit 4) — all under /teensy/* ──
-        # ODrive control issued over the leg-bridge link via RpcClient. The
-        # leg-bridge owns legs 0-5 only — the hand is the platform Teensy's, and
+        # ODrive control issued over the can-bridge link via RpcClient. The
+        # can-bridge owns legs 0-5 only — the hand is the platform Teensy's, and
         # the firmware rejects hand-axis RPCs — so these target legs/broadcast.
         # Services using EXISTING ROS types are wired here; the arg-bearing
         # per-axis ops (set_axis_state, set_controller_mode, per-axis gains,
@@ -338,7 +338,7 @@ class TeensyBridgeNode(Node):
 
         pos/vel come from the 100 Hz Telemetry frame; per-axis state, errors,
         currents, temps, and bus voltage come from the on-change Diagnostic
-        frame for that axis. Fields the leg-bridge link does not carry
+        frame for that axis. Fields the can-bridge link does not carry
         (procedure_result, trajectory_done, bus_current) are left at their
         MotorStateSingle defaults — documented in the handoff. Mirrors the
         construction can_node feeds into RobotState.motor_states.
@@ -395,7 +395,7 @@ class TeensyBridgeNode(Node):
             # soft-reset machine on the Jetson (which fault_state already reports).
             fault_state = int(hb.fault_state) if hb is not None else 0
             bus2_health = int(hb.bus2_health) if hb is not None else 0
-            legs = states[:_NUM_LEGS]  # the leg-bridge owns legs 0-5 (hand = platform Teensy)
+            legs = states[:_NUM_LEGS]  # the can-bridge owns legs 0-5 (hand = platform Teensy)
             any_leg_active_err = any(s.active_errors != 0 for s in legs)
             any_leg_disarm_in_cl = any(
                 s.disarm_reason != 0 and s.current_state == _AXIS_STATE_CLOSED_LOOP
@@ -413,7 +413,7 @@ class TeensyBridgeNode(Node):
             # bitwise & (not ==), active_errors only.
             msg.has_undervoltage = any(
                 s.active_errors & _ERR_DC_BUS_UNDER_VOLTAGE for s in legs)
-            # firmware_validated: not carried on the leg-bridge link in 10b
+            # firmware_validated: not carried on the can-bridge link in 10b
             # (the Teensy validates ODrive versions internally — Phase 5 — but
             # does not yet expose the result). Conservatively False; handoff gap.
             msg.firmware_validated = False
@@ -447,7 +447,7 @@ class TeensyBridgeNode(Node):
         """Publish /teensy/hand_telemetry from axis 6 of the Telemetry frame.
 
         Mirrors can_node._publish_hand_telemetry's measured side. The command
-        fields (pos_cmd/vel_ff_cmd/tor_ff_cmd) are not echoed on the leg-bridge
+        fields (pos_cmd/vel_ff_cmd/tor_ff_cmd) are not echoed on the can-bridge
         link in 10b (the hand setpoint path is out of scope), so they are 0.
         """
         try:
@@ -611,7 +611,7 @@ class TeensyBridgeNode(Node):
 
             msg = DiagnosticStatus()
             msg.name = 'teensy/link'
-            msg.hardware_id = 'leg_bridge_teensy'
+            msg.hardware_id = 'can_bridge_teensy'
 
             # Bridge-side liveness view (independent of the Teensy's self-report).
             if age_us is None:
@@ -694,7 +694,7 @@ class TeensyBridgeNode(Node):
                 return
             msg = DiagnosticStatus()
             msg.name = 'teensy/profile'
-            msg.hardware_id = 'leg_bridge_teensy'
+            msg.hardware_id = 'can_bridge_teensy'
             # interp deadline misses are the headline health signal.
             msg.level = (DiagnosticStatus.WARN
                          if pr.interp_deadline_misses > 0
@@ -833,7 +833,7 @@ class TeensyBridgeNode(Node):
         return res
 
     def _sub_vel_curr_limits(self, msg):
-        """Apply leg vel/current limits over the leg-bridge link.
+        """Apply leg vel/current limits over the can-bridge link.
 
         Mirrors the legs portion of can_node._sub_vel_curr_limits. The hand
         limits are ignored — the platform Teensy owns the hand (the firmware

@@ -5,12 +5,12 @@
 
 #include "udp_protocol.h"
 #include "udp_link.h"
-#include "legbridge_config.h"
+#include "canbridge_config.h"
 #include "odrive_protocol.h"
 #include "can_buses.h"
 #include "fault_machine.h"
 
-namespace LegBridge {
+namespace CanBridge {
 namespace Rpc {
 
 // ── Envelope ──────────────────────────────────────────────────────────────────
@@ -186,4 +186,4 @@ void rpc_server_init() {
 }
 
 }  // namespace Rpc
-}  // namespace LegBridge
+}  // namespace CanBridge

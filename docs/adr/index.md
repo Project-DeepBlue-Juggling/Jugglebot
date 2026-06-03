@@ -10,7 +10,7 @@ original conversation.
 Format follows Michael Nygard's template:
 
 - **Title** — what was decided, in declarative form (e.g. *"Use FreeRTOS on the
-  leg-bridge Teensy"*).
+  can-bridge Teensy"*).
 - **Status** — `Proposed` · `Accepted` · `Deprecated` · `Superseded by ADR-NNNN`.
 - **Date** — when the decision was made (or when the ADR was captured, if
   back-filled).
@@ -51,7 +51,7 @@ ADR** — historical reasoning matters, even when the decision changes.
 ADRs are **decisions**, not plans or implementations:
 
 - **[Plans](../../plans/active/)** describe *what we intend to build and how* —
-  step-by-step work. They expire when archived. The leg-bridge Teensy migration
+  step-by-step work. They expire when archived. The can-bridge Teensy migration
   plan ([`teensy-can-offload.md`](../../plans/active/teensy-can-offload.md)) is
   the canonical example.
 - **[Logbook](../../logbook/)** captures *what happened during an
@@ -72,9 +72,10 @@ They're grouped here by topic for skimming; the canonical order is numeric.
 ### System architecture
 - [ADR-0001](0001-offload-can-and-interpolator-from-jetson.md) — Offload CAN ownership and the 500 Hz interpolator from the Jetson to a dedicated MCU
 - [ADR-0002](0002-dedicated-second-teensy.md) — Use a dedicated *second* Teensy rather than extending the platform Teensy
-- [ADR-0003](0003-teensy-4_1-over-4_0.md) — Teensy 4.1 (not 4.0) for the leg-bridge role
-- [ADR-0004](0004-dual-can-buses.md) — Two CAN buses on the leg-bridge Teensy
-- [ADR-0008](0008-time-sync-master-on-leg-bridge.md) — Time-sync master moves from the Jetson to the leg-bridge Teensy
+- [ADR-0003](0003-teensy-4_1-over-4_0.md) — Teensy 4.1 (not 4.0) for the can-bridge role
+- [ADR-0004](0004-dual-can-buses.md) — Two CAN buses on the can-bridge Teensy *(Superseded by ADR-0013)*
+- [ADR-0013](0013-three-can-buses.md) — Three subsystem-isolated CAN buses on the can-bridge Teensy
+- [ADR-0008](0008-time-sync-master-on-can-bridge.md) — Time-sync master moves from the Jetson to the can-bridge Teensy
 
 ### Jetson ↔ Teensy link
 - [ADR-0005](0005-ethernet-over-usb-serial.md) — Ethernet (not USB serial) for the Jetson↔Teensy link
@@ -89,7 +90,7 @@ They're grouped here by topic for skimming; the canonical order is numeric.
 
 ## Where to record tactical / implementation decisions
 
-The overnight autonomous implementation pass on the leg-bridge firmware also
+The overnight autonomous implementation pass on the can-bridge firmware also
 made a number of tactical decisions (frame layout, CRC variant, where to host
 state machines, etc.). Those live in the **handoff document**
 [`HANDOFF-teensy-can-offload-firmware-wip.md`](../../plans/active/HANDOFF-teensy-can-offload-firmware-wip.md)

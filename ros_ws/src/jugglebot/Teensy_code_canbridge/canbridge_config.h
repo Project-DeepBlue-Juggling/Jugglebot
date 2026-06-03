@@ -1,6 +1,6 @@
 #pragma once
 // =============================================================================
-//  legbridge_config.h — firmware-wide configuration for the leg-bridge Teensy
+//  canbridge_config.h — firmware-wide configuration for the can-bridge Teensy
 // =============================================================================
 //  Hand-authored (NOT codegen). Pulls protocol/hardware constants from the
 //  generated headers and adds firmware-only configuration: pin map, FreeRTOS
@@ -17,10 +17,10 @@
 #include "hardware_config.h"   // Geometry, ODrive limits, operational constants
 #include "udp_protocol.h"      // JbUdp:: wire protocol (ports, IPs, framing)
 
-namespace LegBridge {
+namespace CanBridge {
 
 // ── Identity ────────────────────────────────────────────────────────────────
-constexpr char     FW_NAME[]    = "jugglebot-legbridge";
+constexpr char     FW_NAME[]    = "jugglebot-canbridge";
 constexpr uint16_t FW_VERSION   = 1;          // bump on behavioural change
 
 // ── Network (static, point-to-point /30) ─────────────────────────────────────
@@ -147,4 +147,4 @@ constexpr float LEG_TOR_SCALE  = InputScale::leg_tor;   // 10000.0
 constexpr float HAND_VEL_SCALE = InputScale::hand_vel;  // 100.0
 constexpr float HAND_TOR_SCALE = InputScale::hand_tor;  // 100.0
 
-}  // namespace LegBridge
+}  // namespace CanBridge

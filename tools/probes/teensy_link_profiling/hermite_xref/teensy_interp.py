@@ -1,7 +1,7 @@
 """Pure-Python port of the Teensy 500 Hz interpolator — the C++ translation target.
 
 This module is a deliberately C++-shaped, scalar/per-leg-loop transcription of
-the leg-bridge firmware's `leg_interp.cpp`. It exists so the interpolator math
+the can-bridge firmware's `leg_interp.cpp`. It exists so the interpolator math
 can be validated against the real `motor_guard.py` offline (see xref.py): the
 C++ `leg_interp.cpp` mirrors THIS file line-for-line, so proving this matches
 `motor_guard` proves the firmware port is correct (within float precision).
@@ -23,7 +23,7 @@ from __future__ import annotations
 
 NUM_LEGS = 6
 
-# Constants ported 1:1 from motor_guard.py / legbridge_config.h.
+# Constants ported 1:1 from motor_guard.py / canbridge_config.h.
 SEGMENT_T_S = 0.025
 MAX_EXTRAP_DT_S = 0.05
 EXTRAP_DECAY_DT_S = 0.06

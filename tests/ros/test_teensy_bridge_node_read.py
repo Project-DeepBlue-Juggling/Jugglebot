@@ -276,7 +276,7 @@ def test_firmware_validated_conservative_false(bridge):
     teensy.send_telemetry()
     assert _wait_until(lambda: node._latest_telemetry is not None)
     node._publish_robot_state()
-    # Not sourced from the leg-bridge link in 10b — conservatively False.
+    # Not sourced from the can-bridge link in 10b — conservatively False.
     assert node.robot_state_pub.published[-1].firmware_validated is False
 
 
