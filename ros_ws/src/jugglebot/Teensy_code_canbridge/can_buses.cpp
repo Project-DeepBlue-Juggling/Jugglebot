@@ -133,10 +133,47 @@ void can_buses_init() {
   can_jugglebot.onReceive(on_jugglebot_rx);
 }
 
+// Per-tick RX drain budget. FlexCAN_T4::events() pops EXACTLY ONE frame from the
+// peripheral's RX_SIZE_256 rxBuffer per call (FlexCAN_T4.tpp: a single
+// `if (rxBuffer.size()) { pop_front; mbCallbacks; }`, not a loop), so one call per
+// 1 kHz task_can_rx tick caps RX decode at ~1,000 fps. CAN3 receives ~2,240 fps of
+// ODrive telemetry steady (~2,740 with a throw) — the ~5,340 fps bus total minus our
+// own ~3,100 fps setpoint + time-sync TX, which the peripheral's SRX_DIS self-reception
+// disable never feeds back to RX. At a 1,000 fps drain the 256-deep rxBuffer saturates
+// within ~50 ms and then overwrites oldest-first: ~55% of telemetry is dropped before
+// decode and the survivors reach the cache ~110 ms stale (buffer depth / arrival rate).
+// We instead drain each bus to empty, capped at this budget per tick. 32 → 32,000 fps
+// drain capacity, ~4x the ~7,700 fps physical 1 Mbps classical-CAN frame ceiling, so
+// even a saturated/babbling bus cannot grow the buffer (steady state empties in ~3
+// iterations; a full buffer clears in ~8 ticks). The cap also bounds the worst-case
+// per-tick decode cost during a backlog burst.
+//
+// Why this keeps the 500 Hz interp ISR un-starved: decode runs in this priority-5
+// FreeRTOS task, BELOW the leg-setpoint IntervalTimer ISR (leg_interp.cpp, NVIC
+// priority 32, above the FreeRTOS syscall ceiling), which preempts the task at any
+// instruction. A larger per-tick drain therefore cannot delay the leg setpoints; it
+// only shortens the tick slice left to LOWER-priority tasks (net, telem, fault), and
+// only while a backlog actually exists — the loop breaks the instant the buffer empties.
+// The bounded drain also REDUCES the seqlock/rxBuffer race surface vs today: with the
+// buffer kept near-empty, the ISR's overwrite-oldest head advance (which races task-side
+// pops) effectively never fires, where today the always-full buffer races on every push.
+static constexpr uint8_t CAN_RX_DRAIN_BUDGET = 32;
+
+// Drain one bus's rxBuffer to empty (or the budget), decoding each frame via its
+// onReceive callback. events() returns (rxBuffer.size() << 12) | txBuffer.size();
+// stop once no RX frames remain. The first call always runs, so the TX-mailbox-drain
+// half of events() is serviced every tick exactly as before — no TX regression.
+template <typename BusT>
+static inline void drain_bus(BusT& bus) {
+  for (uint8_t n = 0; n < CAN_RX_DRAIN_BUDGET; ++n) {
+    if ((bus.events() >> 12) == 0) break;   // rxBuffer drained
+  }
+}
+
 void can_buses_service() {
-  can_bb.events();
-  can_cone.events();
-  can_jugglebot.events();
+  drain_bus(can_bb);
+  drain_bus(can_cone);
+  drain_bus(can_jugglebot);
 }
 
 // Each FlexCAN template instance is a distinct type, so a small overload per bus

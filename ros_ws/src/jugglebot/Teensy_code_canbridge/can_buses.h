@@ -22,10 +22,17 @@
 //
 //  RX is dispatched from canX.events() (pumped by the CAN RX task) via onReceive
 //  callbacks — the proven platform-Teensy idiom (Teensy_code.ino canSniff) — and
-//  decoded straight into the per-axis cache (fast, bounded; no queue hop). This
-//  deviates from the plan's "FlexCAN ISR + queue → RX task" purely for lower
-//  latency and fewer moving parts; the decode is microseconds and the cache
-//  writes are seqlock-guarded.
+//  decoded straight into the per-axis cache (fast, bounded; the decode is
+//  microseconds and the cache writes are seqlock-guarded).
+//
+//  NB on the data path: there IS a library-internal queue hop. The FlexCAN RX
+//  interrupt pushes each frame into the peripheral's RX_SIZE_256 rxBuffer; events()
+//  pops from it. (HANDOFF D7's "straight into the cache ... not by enqueuing" is
+//  imprecise: events()-driven onReceive dispatch routes through that rxBuffer first.
+//  There is no *application-level* queue between the callback and the cache, which is
+//  what D7 meant.) Because events() pops only ONE frame per call, can_buses_service()
+//  drains each bus in a bounded loop so the ~2,240 fps of CAN3 telemetry the can-bridge
+//  receives cannot overflow the rxBuffer — see CAN_RX_DRAIN_BUDGET in can_buses.cpp.
 // =============================================================================
 
 #include <cstdint>
