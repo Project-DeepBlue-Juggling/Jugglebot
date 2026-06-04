@@ -248,10 +248,31 @@ rxBuffer/seqlock race surface (a near-empty ring never hits the overwrite-oldest
   dispatch routes through the library `rxBuffer`); corrected, with the D7 nuance
   noted (D7's "not by enqueuing" meant *no application-level* queue, which holds).
 
+### Observability (landed 2026-06-04, commit 18e22fd)
+
+Per-bus RX-health counters now make the bench validation a direct read rather than
+an inference. Collected in `can_buses_service()` (1 kHz) and printed by `task_diag`
+over USB Serial as `[canhealth]` lines (cumulative/sticky since boot):
+
+- `depth_hwm` — peak `rxBuffer` occupancy at a service tick (via `getRXQueueCount()`
+  before draining). **This is the zero-drop witness**: healthy ⇒ single digits;
+  climbing toward 256 ⇒ `task_can_rx` starvation.
+- `cap_hits` — ticks the `CAN_RX_DRAIN_BUDGET` bound with frames still queued (the
+  overflow precursor; must read 0).
+- `err_events` / `err_flags` / `rec_max` / `fault_conf` — FlexCAN ESR1 history
+  (wire-error type, peak REC, worst fault-confinement: active/passive/bus-off).
+- `decode_short` / `decode_bad_axis` — CAN3 frames that arrived but were not cached
+  (truncated DLC, or node id ≥ NUM_AXES).
+
+Surfaced over Serial, not the UDP uplink: the wire format + its Jetson consumer are
+owned by a parallel session mid-edit. Promoting these to a telemetry frame is a
+follow-up once that lands.
+
 ### Bench-validation TODO (cannot be done without hardware)
 
-- Confirm zero `rxBuffer` overflow and bounded `task_can_rx` `vTaskDelayUntil`
-  cadence under real ~5,340 fps CAN3 load (e.g. instrument `events() >> 12`
-  high-water-mark and the per-tick drain count).
+- Under real ~5,340 fps CAN3 load, confirm `[canhealth] jugglebot` reads
+  `depth_hwm` ≈ single-digit and `cap_hits` = 0 (⇒ zero `rxBuffer` overflow and the
+  bounded drain keeping up), with `task_can_rx` holding its `vTaskDelayUntil`
+  cadence.
 - Confirm `interp_max_jitter_us` / `interp_deadline_misses` stay within budget
-  with the bounded drain active under load.
+  with the bounded drain + error polling active under load.
