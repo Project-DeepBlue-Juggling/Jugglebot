@@ -23,10 +23,13 @@ static volatile uint32_t s_bb_rx = 0, s_bb_tx = 0, s_cone_rx = 0, s_cone_tx = 0,
 static volatile uint64_t s_bb_last_rx_us = 0, s_cone_last_rx_us = 0, s_jugglebot_last_rx_us = 0;
 
 // RX-health observability counters (see can_buses.h "RX-health observability").
-// Written only in task_can_rx context — the service loop (depth/cap/bus-error
-// fields) and the decode callback (decode_* fields) — and read by task_diag. Every
-// field is a single word (atomic on Cortex-M7) and cumulative/sticky, so the
-// cross-task read needs no lock and no reset clears a rare transient.
+// Single-writer: task_can_rx — the service loop (depth/cap/bus-error fields) and the
+// decode callback (decode_* fields). (One boot-window exception: before the first
+// events() call flips the library's isEventsUsed, the FlexCAN ISR dispatches the decode
+// callback directly, so the decode_* increments briefly run in ISR context — harmless,
+// since task_diag is not reading yet.) Each field is one word (atomic load/store on
+// Cortex-M7) and cumulative/sticky; err_flags is a producer-local read-or-store. The
+// cross-task read in task_diag therefore needs no lock and no reset drops a transient.
 static volatile BusRxHealth s_bb_rxh{}, s_cone_rxh{}, s_jugglebot_rxh{};
 static volatile uint32_t s_decode_short = 0, s_decode_bad_axis = 0;
 
@@ -162,20 +165,24 @@ void can_buses_init() {
 // instruction. A larger per-tick drain therefore cannot delay the leg setpoints; it
 // only shortens the tick slice left to LOWER-priority tasks (net, telem, fault), and
 // only while a backlog actually exists — the loop breaks the instant the buffer empties.
-// The bounded drain also REDUCES the seqlock/rxBuffer race surface vs today: with the
-// buffer kept near-empty, the ISR's overwrite-oldest head advance (which races task-side
-// pops) effectively never fires, where today the always-full buffer races on every push.
+// The bounded drain also shrinks ONE specific rxBuffer race: the library's
+// overwrite-oldest push advances `head` (which the task-side pop also moves) only when
+// the buffer is FULL — kept near-empty, that head-vs-pop collision effectively never
+// fires, where today the always-full buffer hits it on every push. (The separate
+// non-atomic `_available` increment/decrement between the RX ISR and the unmasked pop
+// is a pre-existing FlexCAN_T4 SPSC property, unchanged here — it self-corrects to a
+// transient ±1 miscount and does not tear frame DATA while head/tail stay far apart.)
 static constexpr uint8_t CAN_RX_DRAIN_BUDGET = 32;
 
-// Drain one bus's rxBuffer to empty (or the budget), decoding each frame via its
-// onReceive callback. events() returns (rxBuffer.size() << 12) | txBuffer.size();
-// stop once no RX frames remain. The first call always runs, so the TX-mailbox-drain
-// half of events() is serviced every tick exactly as before — no TX regression.
 // Drain the FlexCAN ESR1-change history (≤16 deep, captured by the library ISR on
 // every error/bus-state change — CTRL_ERR_MSK is enabled) into the per-bus health
-// counters. Polled every service tick so the history never overflows and no event is
-// missed. error() returns false once the history is empty (cheap — a size check, no
-// IRQ mask), so the steady-state cost is one read per bus per tick.
+// counters. Polled every service tick to keep the history drained; error() returns
+// false once it is empty (cheap — a size check, no IRQ mask), so the steady-state cost
+// is one read per bus per tick. Caveat: the library drops the NEWEST snapshot when its
+// 16-deep history is already full (FlexCAN_T4.tpp), so a sustained error storm that
+// coincides with a multi-tick task_can_rx stall can lose transitions — the captured
+// fields are best-effort under that combination. A SUSTAINED bus-off keeps re-asserting,
+// so it is still captured (and fault_conf is sticky) once the storm/stall clears.
 template <typename BusT>
 static inline void poll_bus_errors(BusT& bus, volatile BusRxHealth& h) {
   CAN_error_t e;
@@ -190,6 +197,11 @@ static inline void poll_bus_errors(BusT& bus, volatile BusRxHealth& h) {
     if (e.BIT1_ERR) f |= BusErrFlag::BITERR1;
     h.err_flags = f;
     if (e.RX_ERR_COUNTER > h.rec_max) h.rec_max = e.RX_ERR_COUNTER;
+    // TEC, not REC, is the bus-off precursor when a bus partner is DISCONNECTED: our
+    // un-ACKed TX (the 0x7DD broadcast on bb/cone/jugglebot, plus CAN3 setpoints) climbs
+    // the TX error counter while REC stays 0. Track it so a "BB/Jugglebot unplugged"
+    // bus-off shows a rising tec_max precursor instead of a silent jump to fault_conf=2.
+    if (e.TX_ERR_COUNTER > h.tec_max) h.tec_max = e.TX_ERR_COUNTER;
     // Fault-confinement from ESR1 FLTCONF (bits 5:4): 0 active, 1 passive, >=2 bus-off.
     // Derive it from ESR1 directly — the library's FLT_CONF string compare is buggy
     // (it tests `(ESR1 & 0x30) == 0x1`, which the 0x30 mask can never satisfy, so it
@@ -336,6 +348,7 @@ static BusRxHealth snapshot_bus(const volatile BusRxHealth& h) {
   o.err_events = h.err_events;
   o.err_flags  = h.err_flags;
   o.rec_max    = h.rec_max;
+  o.tec_max    = h.tec_max;
   o.fault_conf = h.fault_conf;
   return o;
 }

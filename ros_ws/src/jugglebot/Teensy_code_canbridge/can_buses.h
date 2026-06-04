@@ -73,9 +73,14 @@ CanStats can_buses_stats();
 //    err_events  — # FlexCAN ESR1-change snapshots (bus saw an error/state change).
 //    err_flags   — OR of the BusErrFlag bits below: WHICH wire error (ACK/CRC/form/
 //                  stuff/bit) — distinguishes wiring/termination/noise from protocol.
-//    rec_max     — peak RX error counter (REC): severity / proximity to error-passive.
+//    rec_max     — peak RX error counter (REC): severity of RECEIVE-side errors.
+//    tec_max     — peak TX error counter (TEC): the bus-off precursor when a bus partner
+//                  is DISCONNECTED. Our un-ACKed TX (0x7DD broadcast on every bus, plus
+//                  CAN3 setpoints) climbs TEC while REC stays 0, so this — not rec_max —
+//                  is what rises ahead of a "Ball Butler / cone / Jugglebot unplugged"
+//                  bus-off.
 //    fault_conf  — worst fault-confinement reached (0 active / 1 passive / 2 bus-off):
-//                  bus-off means the legs are momentarily uncommandable.
+//                  bus-off means that bus's nodes are momentarily uncommandable.
 //  Plus decode_short / decode_bad_axis: CAN3 frames that arrived but could not be
 //  cached (truncated DLC, or a node id outside 0..NUM_AXES) — tells "wrong/garbled
 //  data arriving" apart from "no data arriving".
@@ -94,6 +99,8 @@ struct BusRxHealth {
   uint32_t err_events;    // ESR1-change error snapshots captured
   uint8_t  err_flags;     // OR of BusErrFlag::*
   uint8_t  rec_max;       // peak RX error counter (REC)
+  uint8_t  tec_max;       // peak TX error counter (TEC) — bus-off precursor when a bus
+                          // partner is disconnected (un-ACKed TX climbs TEC, not REC)
   uint8_t  fault_conf;    // worst fault-confinement: 0 active / 1 passive / 2 bus-off
 };
 
