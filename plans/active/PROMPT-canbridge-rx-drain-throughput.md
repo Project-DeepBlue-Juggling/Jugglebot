@@ -151,3 +151,107 @@ failure mode it prevents), per CLAUDE.md — not "the review said so".
   and the `onReceive` / `mbCallbacks` ISR path for option 3.
 - `docs/adr/0013-three-can-buses.md` (the ~5,340 / ~5,840 frames/s figures).
 - `plans/active/HANDOFF-firmware-three-bus-WIP.md` (finding #10 + the A1/A2 fixes).
+
+---
+
+## Resolution (2026-06-04, commit e2b4cfb)
+
+**Confirmed**, with one correction to the framing: the drain *ceiling* is real,
+but the *received* load is lower than the 5,340 fps the review assumed.
+
+### Ground truth (verified against the pinned FlexCAN_T4)
+
+- `events()` (`FlexCAN_T4.tpp:1074`) pops exactly ONE `rxBuffer` frame per call —
+  a single `if (rxBuffer.size()) { pop_front; mbCallbacks; }`, not a loop.
+  `task_can_rx` calls it once per 1 ms tick (`configTICK_RATE_HZ = 1000`,
+  preemptive), so RX decode is capped at **~1,000 fps/bus**.
+- The RX path **does** use a library queue: the FlexCAN FIFO interrupt
+  (`flexcan_interrupt`, enabled by `enableFIFOInterrupt()`) pushes each frame via
+  `struct2queueRx` into the `RX_SIZE_256` `rxBuffer`; `events()` drains it. Once
+  `events()` has run once, `isEventsUsed=1` routes all RX through that buffer (so
+  decode is **not** in the ISR today). On overflow `circular_buffer.h` write()
+  advances `head` → **overwrite-oldest**, and `events()` pops oldest-first.
+- Self-reception is disabled (`MCR_SRX_DIS`, set unconditionally in `begin()`),
+  so the can-bridge does **not** receive its own ~3,000 fps setpoint TX or
+  ~100 fps time-sync TX. **Received CAN3 load = 5,340 − 3,100 ≈ 2,240 fps steady;
+  with-throw 5,840 − 3,100 ≈ 2,740 fps** (the platform Teensy's +500 fps hand
+  trajectory IS received).
+
+### Quantified impact (host simulation of the ring fill/drain, `/tmp` probe)
+
+At 2,240 fps in / 1,000 fps out of a 256-deep overwrite-oldest ring:
+
+- **~55% of telemetry dropped** before decode (63% with a throw).
+- **Survivors reach the cache ~112 ms stale** (mean; ≈ buffer depth / arrival
+  rate = 256 / 2,240). Per-stream effective rate falls from 100 Hz native to
+  ~37–48 Hz (with realistic ±5% ODrive-timer jitter; deterministic timing
+  aliases far worse).
+
+Consumer-by-consumer:
+
+- **Heartbeat watchdog + deferred stow** (`fault_machine.cpp`,
+  `CAN_HEARTBEAT_TIMEOUT_US = 2.0 s`): **robust.** Even decimated heartbeats
+  arrive ≫ once / 2 s, and a real heartbeat silence still stops the timestamp
+  advancing → still trips. The most safety-critical path is unaffected.
+- **500 Hz lead-clamp** (`leg_interp.cpp:246`, reads `pos_rev`) and the 10 Hz
+  **max-deviation / overspeed E-stops** (`fault_machine.cpp:198,212`): **degraded
+  but not broken** — they operate on ~112 ms-stale, decimated feedback. At leg
+  speed, 112 ms can exceed the 0.15 rev lead band, so the backstop references
+  badly-old position. This is the real (non-acute) harm.
+- `MOTOR_FB_STALENESS_US` (0.15 s) is **defined but not yet wired** to any guard,
+  so 112 ms staleness auto-trips nothing today.
+- Telemetry uplink to the Jetson (`telemetry.cpp`): stale + decimated — a quality
+  issue.
+
+**Verdict:** real freshness/quality degradation with a concrete (non-acute)
+safety-backstop cost; not an acute fault. Worth fixing; fix is low-risk.
+
+### Decision — option 1 (bounded drain), root-cause justified
+
+Drain each bus to empty per tick, capped at `CAN_RX_DRAIN_BUDGET = 32`
+(`can_buses.cpp`). 32,000 fps drain capacity is ~4× the ~7,700 fps physical
+1 Mbps classical-CAN frame ceiling, so the ring cannot grow even on a saturated
+bus; the sim shows 0% drop / ~0.5 ms staleness. **It prevents the specific
+failure mode that the decode falls arbitrarily far behind real time whenever
+arrival exceeds 1,000 fps** — the cap restores the invariant *drain ≥ arrival*.
+
+Keeps the 500 Hz interp ISR un-starved **by construction**: decode stays in the
+priority-5 `task_can_rx`, below the leg-setpoint IntervalTimer ISR (NVIC 32,
+above the FreeRTOS syscall ceiling) which preempts the task. A larger per-tick
+drain can only shorten the slice left to lower-priority tasks, and only during a
+backlog (the loop breaks the instant the ring empties). It also *reduces* the
+rxBuffer/seqlock race surface (a near-empty ring never hits the overwrite-oldest
+`head` advance that races task-side pops).
+
+**Rejected alternatives:**
+
+- **Option 2 (faster tick).** Still one pop per call; even a 2 kHz tick buys only
+  ~2,000 fps vs ~2,240 needed — and burns CPU on empty polls. Arithmetic kills it.
+- **Option 3 (decode in the FlexCAN onReceive ISR, `isEventsUsed=false`).** Highest
+  throughput but the most invasive and **needs bench measurement to choose safely**
+  (per the prompt's escape hatch). Concrete blockers, not authority: (a) it forces
+  *all* RX into ISR context, where `decode_into_cache` (seqlock `write_pos_vel`,
+  `atomic_write_u64`) runs at up to ~2,740 frames/s — worst-case ISR-vs-ISR latency
+  against the interp tick's 500 µs jitter budget is unmeasured here (the handoff
+  already flags the interp-priority-vs-syscall-ceiling as bench-pending); (b) to get
+  RX-in-ISR you must never call `events()` on that instance, so CAN3 TX-queue
+  draining would rely solely on the ISR TX-complete path — a behaviour change to the
+  3,000 fps setpoint TX with its own untested risk; (c) the seqlock itself is fine
+  (writer-in-higher-priority is exactly what it supports; the interp ISR's `pos_rev`
+  read is single-word atomic regardless), so seqlock correctness is *not* the
+  blocker — (a) and (b) are. Revisit only if option 1 proves insufficient on the
+  bench.
+
+### Docs corrected
+
+- `can_buses.h` header comment: the "no queue hop" claim was wrong (events()
+  dispatch routes through the library `rxBuffer`); corrected, with the D7 nuance
+  noted (D7's "not by enqueuing" meant *no application-level* queue, which holds).
+
+### Bench-validation TODO (cannot be done without hardware)
+
+- Confirm zero `rxBuffer` overflow and bounded `task_can_rx` `vTaskDelayUntil`
+  cadence under real ~5,340 fps CAN3 load (e.g. instrument `events() >> 12`
+  high-water-mark and the per-tick drain count).
+- Confirm `interp_max_jitter_us` / `interp_deadline_misses` stay within budget
+  with the bounded drain active under load.

@@ -155,12 +155,19 @@ all 10 survived verification.** Triage + actions:
   test added; profile_monitor relabeled. Full suite (`python -m pytest tests/ -q`,
   2026-06-03): **1685 passed, 1 xfailed, 455.70 s**.
 - **#8/#9 (LOW)** — counter RMW race: resolved for free by #1's IRQ-off guard.
-- **#10 (LOW, PRE-EXISTING) — CAN3 RX-drain throughput.** `events()` drains one
-  frame per 1 ms tick (~1000 fps) vs CAN3 ~5,340 fps → buffer overflow / dropped
-  frames. NOT introduced by the refactor (the base had the same one-frame drain;
-  legs were already ~5000 fps on one bus). **DEFERRED** to a dedicated session —
-  see `plans/active/PROMPT-canbridge-rx-drain-throughput.md` (it interacts with
-  the A1/A2 concurrency model, so it warrants its own quantified analysis).
+- **#10 (LOW, PRE-EXISTING) — CAN3 RX-drain throughput. RESOLVED 2026-06-04
+  (commit e2b4cfb).** `events()` drained one frame per 1 ms tick (~1000 fps).
+  Quantified: the *received* CAN3 load is ~2,240 fps steady (not the 5,340 fps
+  bus total — SRX_DIS keeps our own ~3,100 fps TX off the RX path), so the
+  256-deep rxBuffer overflowed and dropped ~55% of telemetry, feeding the cache
+  ~112 ms-stale frames. The 2.0 s heartbeat watchdog / deferred stow stayed
+  robust (real silence still trips it); the harm was to the stale-feedback
+  500 Hz lead-clamp + E-stop backstops. Fix: bounded per-tick drain
+  (`CAN_RX_DRAIN_BUDGET = 32`) in `can_buses_service()`, decode kept in the
+  priority-5 task below the interp ISR. NOT introduced by the refactor (the base
+  had the same one-frame drain). Full analysis + rejected alternatives +
+  bench-validation TODO in
+  `plans/active/PROMPT-canbridge-rx-drain-throughput.md` (Resolution section).
 
 ## Decisions made autonomously
 
