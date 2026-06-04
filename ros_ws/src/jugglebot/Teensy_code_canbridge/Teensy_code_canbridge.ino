@@ -170,6 +170,19 @@ static void task_heartbeat(void*) {
   }
 }
 
+// One RX-health line per bus on the USB Serial console (bench/debug telemetry).
+// Cumulative/sticky counters — see can_buses.h. In a healthy system every bus reads
+// hwm≈single-digits, capHit=0, err=0, rec=0, flt=active; anything else points at the
+// failure class (task starvation, drain-budget bound, wire errors by type, REC
+// climbing toward error-passive, bus-off, or garbled frames).
+static void print_bus_health(const char* name, const BusRxHealth& b) {
+  static const char* const FLT[3] = { "active", "passive", "BUSOFF" };
+  Serial.printf("[canhealth] %-9s hwm=%u capHit=%lu err=%lu flags=0x%02x rec=%u flt=%s\n",
+                name, (unsigned)b.depth_hwm, (unsigned long)b.cap_hits,
+                (unsigned long)b.err_events, (unsigned)b.err_flags, (unsigned)b.rec_max,
+                FLT[(b.fault_conf < 3) ? b.fault_conf : 2]);
+}
+
 // Diagnostics / LED heartbeat (priority 1, lowest). Blinks the LED at 1 Hz so a
 // bench operator can see the scheduler is alive; prints a one-line status.
 static void task_diag(void*) {
@@ -186,6 +199,12 @@ static void task_diag(void*) {
                     (unsigned long)s.tx_frames, (unsigned long)s.crc_errors,
                     (unsigned long)s.seq_gaps, (int)time_synced(),
                     (unsigned)xPortGetFreeHeapSize());
+      const CanRxHealth ch = can_buses_rx_health();
+      print_bus_health("jugglebot", ch.jugglebot);
+      print_bus_health("bb", ch.bb);
+      print_bus_health("cone", ch.cone);
+      Serial.printf("[canhealth] decode_drops jugglebot: short=%lu bad_axis=%lu\n",
+                    (unsigned long)ch.decode_short, (unsigned long)ch.decode_bad_axis);
     }
     vTaskDelayUntil(&last, pdMS_TO_TICKS(500));   // toggle every 500 ms → 1 Hz blink
   }

@@ -22,14 +22,22 @@ static volatile uint32_t s_bb_rx = 0, s_bb_tx = 0, s_cone_rx = 0, s_cone_tx = 0,
                          s_jugglebot_rx = 0, s_jugglebot_tx = 0;
 static volatile uint64_t s_bb_last_rx_us = 0, s_cone_last_rx_us = 0, s_jugglebot_last_rx_us = 0;
 
+// RX-health observability counters (see can_buses.h "RX-health observability").
+// Written only in task_can_rx context — the service loop (depth/cap/bus-error
+// fields) and the decode callback (decode_* fields) — and read by task_diag. Every
+// field is a single word (atomic on Cortex-M7) and cumulative/sticky, so the
+// cross-task read needs no lock and no reset clears a rare transient.
+static volatile BusRxHealth s_bb_rxh{}, s_cone_rxh{}, s_jugglebot_rxh{};
+static volatile uint32_t s_decode_short = 0, s_decode_bad_axis = 0;
+
 // Decode an ODrive frame into the per-axis cache. Used by the Jugglebot bus only
 // (CAN3 carries all 6 leg ODrives + the Hand ODrive).
 static void decode_into_cache(const CAN_message_t& msg) {
   const uint8_t axis = ODrive::axis_of(msg.id);
   const uint8_t cmd  = ODrive::cmd_of(msg.id);
-  if (axis >= NUM_AXES) return;            // not a leg/hand axis we cache
-  if (msg.len < 8) return;                 // drop truncated frames (mirrors odrive.py _check_len;
-                                           // every ODrive telemetry frame we decode is DLC 8)
+  if (axis >= NUM_AXES) { s_decode_bad_axis++; return; }   // node id we don't cache (stray/garbled)
+  if (msg.len < 8) { s_decode_short++; return; }           // truncated (mirrors odrive.py _check_len;
+                                                           // every ODrive telemetry frame we decode is DLC 8)
   AxisState& a = axes[axis];
   const uint8_t* d = msg.buf;
 
@@ -163,17 +171,56 @@ static constexpr uint8_t CAN_RX_DRAIN_BUDGET = 32;
 // onReceive callback. events() returns (rxBuffer.size() << 12) | txBuffer.size();
 // stop once no RX frames remain. The first call always runs, so the TX-mailbox-drain
 // half of events() is serviced every tick exactly as before — no TX regression.
+// Drain the FlexCAN ESR1-change history (≤16 deep, captured by the library ISR on
+// every error/bus-state change — CTRL_ERR_MSK is enabled) into the per-bus health
+// counters. Polled every service tick so the history never overflows and no event is
+// missed. error() returns false once the history is empty (cheap — a size check, no
+// IRQ mask), so the steady-state cost is one read per bus per tick.
 template <typename BusT>
-static inline void drain_bus(BusT& bus) {
-  for (uint8_t n = 0; n < CAN_RX_DRAIN_BUDGET; ++n) {
-    if ((bus.events() >> 12) == 0) break;   // rxBuffer drained
+static inline void poll_bus_errors(BusT& bus, volatile BusRxHealth& h) {
+  CAN_error_t e;
+  while (bus.error(e, /*printDetails=*/false)) {
+    h.err_events++;
+    uint8_t f = h.err_flags;
+    if (e.ACK_ERR)  f |= BusErrFlag::ACK;
+    if (e.CRC_ERR)  f |= BusErrFlag::CRC;
+    if (e.FRM_ERR)  f |= BusErrFlag::FORM;
+    if (e.STF_ERR)  f |= BusErrFlag::STUFF;
+    if (e.BIT0_ERR) f |= BusErrFlag::BITERR0;
+    if (e.BIT1_ERR) f |= BusErrFlag::BITERR1;
+    h.err_flags = f;
+    if (e.RX_ERR_COUNTER > h.rec_max) h.rec_max = e.RX_ERR_COUNTER;
+    // Fault-confinement from ESR1 FLTCONF (bits 5:4): 0 active, 1 passive, >=2 bus-off.
+    // Derive it from ESR1 directly — the library's FLT_CONF string compare is buggy
+    // (it tests `(ESR1 & 0x30) == 0x1`, which the 0x30 mask can never satisfy, so it
+    // mislabels passive as bus-off).
+    const uint8_t fc = (uint8_t)((e.ESR1 >> 4) & 0x3);
+    const uint8_t fc2 = (fc >= 2) ? 2 : fc;
+    if (fc2 > h.fault_conf) h.fault_conf = fc2;
   }
 }
 
+// Service one bus for a tick: record the rxBuffer pressure (occupancy BEFORE
+// draining = the backlog that accumulated since last tick), drain to empty capped at
+// CAN_RX_DRAIN_BUDGET, flag a budget-bound (the overflow precursor), and fold in any
+// bus errors. All work stays in the priority-5 CAN-RX task — see can_buses_service.
+template <typename BusT>
+static inline void service_bus(BusT& bus, volatile BusRxHealth& h) {
+  const uint16_t pre = (uint16_t)bus.getRXQueueCount();
+  if (pre > h.depth_hwm) h.depth_hwm = pre;
+  uint8_t n = 0;
+  uint64_t r;
+  // events() pops one rx frame (if any) + services tx; loop while rx frames remain.
+  // The do-while always runs once, so tx is serviced every tick even when rx is idle.
+  do { r = bus.events(); } while (++n < CAN_RX_DRAIN_BUDGET && (r >> 12) != 0);
+  if ((r >> 12) != 0) h.cap_hits++;        // budget bound with frames still queued
+  poll_bus_errors(bus, h);
+}
+
 void can_buses_service() {
-  drain_bus(can_bb);
-  drain_bus(can_cone);
-  drain_bus(can_jugglebot);
+  service_bus(can_bb, s_bb_rxh);
+  service_bus(can_cone, s_cone_rxh);
+  service_bus(can_jugglebot, s_jugglebot_rxh);
 }
 
 // Each FlexCAN template instance is a distinct type, so a small overload per bus
@@ -277,6 +324,29 @@ CanStats can_buses_stats() {
   s.bb_health = health_of(atomic_read_u64(&s_bb_last_rx_us));
   s.cone_health = health_of(atomic_read_u64(&s_cone_last_rx_us));
   s.jugglebot_health = health_of(atomic_read_u64(&s_jugglebot_last_rx_us));
+  return s;
+}
+
+// Field-by-field copy of a volatile health block. Each field is a single word, so
+// each load is atomic; a torn read ACROSS fields is harmless for 1 Hz debug output.
+static BusRxHealth snapshot_bus(const volatile BusRxHealth& h) {
+  BusRxHealth o;
+  o.depth_hwm  = h.depth_hwm;
+  o.cap_hits   = h.cap_hits;
+  o.err_events = h.err_events;
+  o.err_flags  = h.err_flags;
+  o.rec_max    = h.rec_max;
+  o.fault_conf = h.fault_conf;
+  return o;
+}
+
+CanRxHealth can_buses_rx_health() {
+  CanRxHealth s;
+  s.bb        = snapshot_bus(s_bb_rxh);
+  s.cone      = snapshot_bus(s_cone_rxh);
+  s.jugglebot = snapshot_bus(s_jugglebot_rxh);
+  s.decode_short    = s_decode_short;
+  s.decode_bad_axis = s_decode_bad_axis;
   return s;
 }
 

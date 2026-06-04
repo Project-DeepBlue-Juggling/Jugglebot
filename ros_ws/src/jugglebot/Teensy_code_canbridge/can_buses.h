@@ -56,4 +56,52 @@ struct CanStats {
 };
 CanStats can_buses_stats();
 
+// ── RX-health observability (bench/debug telemetry) ──────────────────────────
+//  Diagnostic counters that let a future bug be told apart by class. Surfaced over
+//  the USB Serial console by task_diag (NOT on the UDP uplink — the wire format is
+//  owned elsewhere; promoting these to a telemetry frame is a follow-up). Every
+//  field is CUMULATIVE or STICKY-since-boot, so a single rare transient (a one-off
+//  starvation, a momentary bus-off) is never lost between 1 Hz samples. Collected
+//  in can_buses_service() (1 kHz); see can_buses.cpp.
+//
+//  What each field discriminates:
+//    depth_hwm   — peak rxBuffer occupancy seen at a service tick. The direct
+//                  witness that the bounded drain keeps up: stays ~single digits
+//                  in health; climbing toward 256 means task_can_rx is starved.
+//    cap_hits    — # ticks the per-tick CAN_RX_DRAIN_BUDGET bound with frames still
+//                  queued. The overflow PRECURSOR alarm; must stay 0.
+//    err_events  — # FlexCAN ESR1-change snapshots (bus saw an error/state change).
+//    err_flags   — OR of the BusErrFlag bits below: WHICH wire error (ACK/CRC/form/
+//                  stuff/bit) — distinguishes wiring/termination/noise from protocol.
+//    rec_max     — peak RX error counter (REC): severity / proximity to error-passive.
+//    fault_conf  — worst fault-confinement reached (0 active / 1 passive / 2 bus-off):
+//                  bus-off means the legs are momentarily uncommandable.
+//  Plus decode_short / decode_bad_axis: CAN3 frames that arrived but could not be
+//  cached (truncated DLC, or a node id outside 0..NUM_AXES) — tells "wrong/garbled
+//  data arriving" apart from "no data arriving".
+namespace BusErrFlag {
+  constexpr uint8_t ACK   = 1u << 0;   // missing ACK (no other node / bus fault)
+  constexpr uint8_t CRC   = 1u << 1;   // CRC error (noise / signal integrity)
+  constexpr uint8_t FORM  = 1u << 2;   // form error (framing)
+  constexpr uint8_t STUFF = 1u << 3;   // bit-stuffing error (noise / clocking)
+  constexpr uint8_t BITERR0 = 1u << 4; // dominant bit not echoed back (named to dodge
+  constexpr uint8_t BITERR1 = 1u << 5; // the BIT0/BIT1 macros in imxrt_flexcan.h)
+}
+
+struct BusRxHealth {
+  uint16_t depth_hwm;     // peak rxBuffer occupancy at a service tick
+  uint32_t cap_hits;      // ticks the drain budget bound with frames still queued
+  uint32_t err_events;    // ESR1-change error snapshots captured
+  uint8_t  err_flags;     // OR of BusErrFlag::*
+  uint8_t  rec_max;       // peak RX error counter (REC)
+  uint8_t  fault_conf;    // worst fault-confinement: 0 active / 1 passive / 2 bus-off
+};
+
+struct CanRxHealth {
+  BusRxHealth bb, cone, jugglebot;
+  uint32_t decode_short;     // CAN3 frames dropped in decode: DLC < 8 (truncated)
+  uint32_t decode_bad_axis;  // CAN3 frames dropped in decode: node id >= NUM_AXES
+};
+CanRxHealth can_buses_rx_health();
+
 }  // namespace CanBridge
