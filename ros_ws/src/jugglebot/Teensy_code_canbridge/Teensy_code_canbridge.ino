@@ -206,6 +206,36 @@ static void task_diag(void*) {
       print_bus_health("cone", ch.cone);
       Serial.printf("[canhealth] decode_drops jugglebot: short=%lu bad_axis=%lu\n",
                     (unsigned long)ch.decode_short, (unsigned long)ch.decode_bad_axis);
+
+      // Per-axis "are all ODrives responding?" line (USB Serial bench/debug, alongside
+      // the [canhealth] lines — NOT on the UDP uplink yet). Columns: legs 0..5 then
+      // H(and); each is state/age-ms + a status mark ('?'=never seen, '!'=heartbeat
+      // stale, '*'=active error/disarm, ' '=ok). The fresh=N/7 headline is the one-glance
+      // "all responding" check. ODrive state codes: IDLE=1, CLOSED_LOOP=8.
+      {
+        const uint64_t now = now_wall_us();
+        uint8_t fresh = 0;
+        for (uint8_t i = 0; i < NUM_AXES; ++i)
+          if (axes[i].heartbeat_seen && !axes[i].heartbeat_stale
+              && axes[i].active_errors == 0 && axes[i].disarm_reason == 0) fresh++;
+        Serial.printf("[axes] fresh=%u/%u", (unsigned)fresh, (unsigned)NUM_AXES);
+        for (uint8_t i = 0; i < NUM_AXES; ++i) {
+          const char tag = (i < NUM_LEGS) ? (char)('0' + i) : 'H';
+          char mark = ' ';
+          uint32_t age_ms = 9999u;
+          if (!axes[i].heartbeat_seen) {
+            mark = '?';
+          } else {
+            const uint64_t age = now - axes[i].last_heartbeat_us;
+            age_ms = (age > 9999000ULL) ? 9999u : (uint32_t)(age / 1000ULL);
+            if (axes[i].heartbeat_stale) mark = '!';
+            else if (axes[i].active_errors != 0 || axes[i].disarm_reason != 0) mark = '*';
+          }
+          Serial.printf(" %c:s%u/%lu%c", tag, (unsigned)axes[i].axis_state,
+                        (unsigned long)age_ms, mark);
+        }
+        Serial.println();
+      }
     }
     vTaskDelayUntil(&last, pdMS_TO_TICKS(500));   // toggle every 500 ms → 1 Hz blink
   }
