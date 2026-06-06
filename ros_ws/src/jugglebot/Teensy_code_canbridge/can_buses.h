@@ -81,6 +81,9 @@ CanStats can_buses_stats();
 //                  bus-off.
 //    fault_conf  — worst fault-confinement reached (0 active / 1 passive / 2 bus-off):
 //                  bus-off means that bus's nodes are momentarily uncommandable.
+//    synced      — LIVE ESR1.SYNCH (NOT sticky): 1 = the controller is synchronised to the
+//                  bus right now. The cleanest "is this bus electrically alive" indicator —
+//                  flips 0→1 the instant a powered bus appears, before any frame decodes.
 //  Plus decode_short / decode_bad_axis: CAN3 frames that arrived but could not be
 //  cached (truncated DLC, or a node id outside 0..NUM_AXES) — tells "wrong/garbled
 //  data arriving" apart from "no data arriving".
@@ -102,6 +105,7 @@ struct BusRxHealth {
   uint8_t  tec_max;       // peak TX error counter (TEC) — bus-off precursor when a bus
                           // partner is disconnected (un-ACKed TX climbs TEC, not REC)
   uint8_t  fault_conf;    // worst fault-confinement: 0 active / 1 passive / 2 bus-off
+  uint8_t  synced;        // LIVE (not sticky) ESR1.SYNCH: 1 = controller locked onto the bus
 };
 
 struct CanRxHealth {

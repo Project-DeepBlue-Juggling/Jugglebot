@@ -217,7 +217,7 @@ static inline void poll_bus_errors(BusT& bus, volatile BusRxHealth& h) {
 // CAN_RX_DRAIN_BUDGET, flag a budget-bound (the overflow precursor), and fold in any
 // bus errors. All work stays in the priority-5 CAN-RX task — see can_buses_service.
 template <typename BusT>
-static inline void service_bus(BusT& bus, volatile BusRxHealth& h) {
+static inline void service_bus(BusT& bus, volatile BusRxHealth& h, uint32_t can_base) {
   const uint16_t pre = (uint16_t)bus.getRXQueueCount();
   if (pre > h.depth_hwm) h.depth_hwm = pre;
   uint8_t n = 0;
@@ -227,12 +227,17 @@ static inline void service_bus(BusT& bus, volatile BusRxHealth& h) {
   do { r = bus.events(); } while (++n < CAN_RX_DRAIN_BUDGET && (r >> 12) != 0);
   if ((r >> 12) != 0) h.cap_hits++;        // budget bound with frames still queued
   poll_bus_errors(bus, h);
+  // Live CAN-bus sync (ESR1.SYNCH, bit 18): 1 = controller locked onto the bus this tick.
+  // Not sticky — the CURRENT "is this bus electrically alive" state. (FlexCAN_T4 exposes no
+  // getter; read ESR1 at base+0x20 directly. CAN3's FLEXCAN3_* macros are broken in the
+  // core's imxrt.h, so use the peripheral base address passed in.)
+  h.synced = (uint8_t)((*(volatile uint32_t*)(can_base + 0x20u) >> 18) & 1u);
 }
 
 void can_buses_service() {
-  service_bus(can_bb, s_bb_rxh);
-  service_bus(can_cone, s_cone_rxh);
-  service_bus(can_jugglebot, s_jugglebot_rxh);
+  service_bus(can_bb,        s_bb_rxh,        IMXRT_FLEXCAN1_ADDRESS);
+  service_bus(can_cone,      s_cone_rxh,      IMXRT_FLEXCAN2_ADDRESS);
+  service_bus(can_jugglebot, s_jugglebot_rxh, IMXRT_FLEXCAN3_ADDRESS);
 }
 
 // Each FlexCAN template instance is a distinct type, so a small overload per bus
@@ -350,6 +355,7 @@ static BusRxHealth snapshot_bus(const volatile BusRxHealth& h) {
   o.rec_max    = h.rec_max;
   o.tec_max    = h.tec_max;
   o.fault_conf = h.fault_conf;
+  o.synced     = h.synced;
   return o;
 }
 

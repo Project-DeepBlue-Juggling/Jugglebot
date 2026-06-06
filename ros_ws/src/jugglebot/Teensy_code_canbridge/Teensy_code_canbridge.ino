@@ -171,15 +171,17 @@ static void task_heartbeat(void*) {
 }
 
 // One RX-health line per bus on the USB Serial console (bench/debug telemetry).
-// Cumulative/sticky counters — see can_buses.h. In a healthy system every bus reads
-// hwm≈single-digits, capHit=0, err=0, rec=0, tec=0, flt=active; anything else points at
-// the failure class (task starvation, drain-budget bound, wire errors by type, RX/TX
-// error counters climbing toward error-passive, bus-off, or garbled frames). For a
+// sync is the LIVE ESR1.SYNCH bit (1 = controller locked onto the bus right now — the
+// "is this bus electrically alive" signal); the rest are cumulative/sticky counters —
+// see can_buses.h. In a healthy ALIVE bus every field reads sync=1, hwm≈single-digits,
+// capHit=0, err=0, rec=0, tec=0, flt=active; anything else points at the failure class
+// (sync=0 = no bus/transceiver, task starvation, drain-budget bound, wire errors by type,
+// RX/TX error counters climbing toward error-passive, bus-off, or garbled frames). For a
 // DISCONNECTED bus partner, watch tec (un-ACKed TX) rising ahead of flt=BUSOFF.
 static void print_bus_health(const char* name, const BusRxHealth& b) {
   static const char* const FLT[3] = { "active", "passive", "BUSOFF" };
-  Serial.printf("[canhealth] %-9s hwm=%u capHit=%lu err=%lu flags=0x%02x rec=%u tec=%u flt=%s\n",
-                name, (unsigned)b.depth_hwm, (unsigned long)b.cap_hits,
+  Serial.printf("[canhealth] %-9s sync=%u hwm=%u capHit=%lu err=%lu flags=0x%02x rec=%u tec=%u flt=%s\n",
+                name, (unsigned)b.synced, (unsigned)b.depth_hwm, (unsigned long)b.cap_hits,
                 (unsigned long)b.err_events, (unsigned)b.err_flags, (unsigned)b.rec_max,
                 (unsigned)b.tec_max, FLT[(b.fault_conf < 3) ? b.fault_conf : 2]);
 }
