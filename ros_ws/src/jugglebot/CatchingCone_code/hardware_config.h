@@ -201,7 +201,7 @@ namespace TeensyOp {
 // ==========================================================================
 
 namespace Mocap {
-  constexpr const char* QTM_HOST = "192.168.20.16";
+  constexpr const char* QTM_HOST = "VR-Computer.local";
   constexpr uint32_t QTM_PORT = 22223u;
 }
 
