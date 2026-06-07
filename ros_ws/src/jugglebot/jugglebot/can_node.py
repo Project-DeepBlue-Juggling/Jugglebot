@@ -879,7 +879,7 @@ class CanInterfaceNode(Node):
             res.message = "Throw command sent."
             # Caller may opt out of the predict_throw-based announcement when
             # it intends to publish a more-accurate one itself (e.g. the
-            # throw_director_node, which has the actual target z and the
+            # ball_butler_node, which has the actual target z and the
             # solver's serial-chain-aware ToF).
             if not getattr(req, 'suppress_announcement', False):
                 self._publish_throw_announcement(

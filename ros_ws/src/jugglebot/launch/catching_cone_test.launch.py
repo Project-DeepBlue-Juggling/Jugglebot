@@ -9,7 +9,7 @@ What's in:
     - can_node                  CAN transport + BB throw service + cone decode
     - mocap_node                QTM → rigid_body_poses, bb/calibration_result
     - catch_correlation_node    matches catches against throw announcements
-    - throw_director_node       resolves target by name + solves inverse + throws
+    - ball_butler_node          resolves target by name + solves inverse + throws
     - rosbridge_websocket       GUI connectivity
     - rosbag (optional)         records the topics needed to audit a session
 
@@ -81,8 +81,8 @@ def generate_launch_description():
     mocap_node = Node(package='jugglebot', executable='mocap_node')
     catch_correlation_node = Node(
         package='jugglebot', executable='catch_correlation_node')
-    throw_director_node = Node(
-        package='jugglebot', executable='throw_director_node',
+    ball_butler_node = Node(
+        package='jugglebot', executable='ball_butler_node',
         parameters=[{
             'apply_aim_correction': apply_aim_correction,
             'invert_aim_correction': invert_aim_correction,
@@ -131,6 +131,6 @@ def generate_launch_description():
         can_node,
         mocap_node,
         catch_correlation_node,
-        throw_director_node,
+        ball_butler_node,
         rosbag_record,
     ])

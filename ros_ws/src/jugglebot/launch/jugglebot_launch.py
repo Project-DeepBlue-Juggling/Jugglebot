@@ -73,6 +73,11 @@ def generate_launch_description():
         executable='catch_coordinator_node',
     )
 
+    ball_butler_node = Node(
+        package='jugglebot',
+        executable='ball_butler_node',
+    )
+
     mpc_bridge_node = Node(
         package='jugglebot',
         executable='mpc_bridge_node',
@@ -154,6 +159,7 @@ def generate_launch_description():
         spacemouse_handler,
         ball_tracker_node,
         catch_coordinator_node,
+        ball_butler_node,
         mpc_bridge_node,
         # Standalone processes
         motor_guard,

@@ -9,7 +9,7 @@ float32 throw_time      # The time to throw in seconds (0 to 65.5 seconds)
 
 # Optional: opt out of can_node's auto-published ThrowAnnouncement.
 # Set true when the caller will publish a more-accurate announcement
-# itself (e.g. throw_director_node, which knows the target z and the
+# itself (e.g. ball_butler_node, which knows the target z and the
 # solver's release-point ToF).  When false (default), can_node uses
 # predict_throw against the platform default catch height — fine for
 # platform catches, misleading for off-plane targets like the cone.
