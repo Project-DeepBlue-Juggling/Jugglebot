@@ -6,6 +6,7 @@ Browse with `/logbook`, create entries with `/investigate` or `/logbook --new <t
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-06-06 | in-progress | teensy-can-offload | Can-bridge (CAN Hub) hardware bringup — 3-bus wiring, button-free flashing, FlexCAN/FreeRTOS firmware gotchas, live SYNC observability | [2026-06-06-can-hub-bringup](2026-06-06-can-hub-bringup.md) |
 | 2026-05-23 | tuned | catching-cone-bringup | Throw director node + trimmed cone-test launch for live BB→cone integration | [2026-05-23-throw-director-and-cone-live-integration](2026-05-23-throw-director-and-cone-live-integration.md) |
 | 2026-05-23 | in-progress | catching-cone-bringup | Catching cone hardware bringup | [2026-05-23-catching-cone-hardware-bringup](2026-05-23-catching-cone-hardware-bringup.md) |
 | 2026-05-22 | in-progress | hardware diagnostics / compute-capacity assessment | MPC is compute-bound on the Jetson Orin Nano — 17-40% of solves exceed the 40 Hz CPU-time budget; system-profiling harness built | [2026-05-22-mpc-compute-bound-jetson-profiling](2026-05-22-mpc-compute-bound-jetson-profiling.md) |
