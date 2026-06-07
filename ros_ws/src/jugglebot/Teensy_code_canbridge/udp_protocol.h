@@ -83,7 +83,7 @@ namespace FaultState {
   constexpr uint8_t MOTOR_OVERSPEED = 3u;  // A leg exceeded the overspeed limit
   constexpr uint8_t MAX_DEVIATION = 4u;  // Commanded pos diverged too far from encoder
   constexpr uint8_t ODRIVE_FATAL = 5u;  // Active ODrive error / disarm-while-closed-loop
-  constexpr uint8_t CAN_BUS_DOWN = 6u;  // CAN2 (leg bus) down — hold, deferred stow armed
+  constexpr uint8_t CAN_BUS_DOWN = 6u;  // CAN3 (Jugglebot core / leg bus) down — hold, deferred stow armed
 }
 namespace GuardMode {
   constexpr uint8_t DISABLED = 0u;
