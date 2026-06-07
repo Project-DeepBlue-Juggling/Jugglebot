@@ -1,4 +1,4 @@
-"""Tests for jugglebot.throw_director_node.ThrowDirectorNode.
+"""Tests for jugglebot.ball_butler_node.BallButlerNode.
 
 Service handler logic — target resolution + inverse-ballistics call +
 delegation to bb/send_throw_command.  ROS2 is mocked via tests/ros/conftest.py.
@@ -16,7 +16,7 @@ from jugglebot_interfaces.msg import (
     RigidBodyPose,
     RigidBodyPoses,
 )
-from jugglebot_interfaces.srv import ThrowAtTarget
+from jugglebot_interfaces.srv import BallButlerThrow
 
 
 def _calibration(x_mm=0.0, y_mm=0.0, z_mm=0.0, yaw_offset_rad=0.0, success=True):
@@ -41,12 +41,12 @@ def _rigid_bodies(named_positions):
 
 @pytest.fixture
 def node():
-    """A throw_director_node with aim-correction DISABLED so the test
+    """A ball_butler_node with aim-correction DISABLED so the test
     assertions exercise the raw transform / solver only.  Use the
     `node_with_correction` fixture (or set `_aim_correction_matrix`
     manually) to exercise the correction path."""
-    from jugglebot.throw_director_node import ThrowDirectorNode
-    n = ThrowDirectorNode()
+    from jugglebot.ball_butler_node import BallButlerNode
+    n = BallButlerNode()
     # Force identity regardless of what's installed at share/jugglebot/resources/
     n._aim_correction_matrix = None
     n._aim_correction_source = '(disabled by test)'
@@ -62,26 +62,26 @@ def calibrated_node(node):
 
 class TestPreflight:
     def test_no_calibration_yet_returns_failure(self, node):
-        req = ThrowAtTarget.Request()
+        req = BallButlerThrow.Request()
         req.target_name = 'Catching_Cone'
-        res = node._svc_throw_at_target(req, ThrowAtTarget.Response())
+        res = node._svc_throw_at_target(req, BallButlerThrow.Response())
         assert res.success is False
         assert 'calibration' in res.message.lower()
 
     def test_unknown_target_returns_failure_with_known_list(self, calibrated_node):
         calibrated_node._on_rigid_bodies(_rigid_bodies({'Other_Body': (100, 0, 0)}))
-        req = ThrowAtTarget.Request()
+        req = BallButlerThrow.Request()
         req.target_name = 'Catching_Cone'
-        res = calibrated_node._svc_throw_at_target(req, ThrowAtTarget.Response())
+        res = calibrated_node._svc_throw_at_target(req, BallButlerThrow.Response())
         assert res.success is False
         assert 'Catching_Cone' in res.message
         # Lists known bodies so the operator can fix the dropdown / QTM label
         assert 'Other_Body' in res.message
 
     def test_empty_target_list_lists_none(self, calibrated_node):
-        req = ThrowAtTarget.Request()
+        req = BallButlerThrow.Request()
         req.target_name = 'Catching_Cone'
-        res = calibrated_node._svc_throw_at_target(req, ThrowAtTarget.Response())
+        res = calibrated_node._svc_throw_at_target(req, BallButlerThrow.Response())
         assert res.success is False
         assert '<none>' in res.message
 
@@ -102,9 +102,9 @@ class TestSuccessPath:
             return orig_call_async(req)
         client.call_async = _spy
 
-        req = ThrowAtTarget.Request()
+        req = BallButlerThrow.Request()
         req.target_name = 'Catching_Cone'
-        res = calibrated_node._svc_throw_at_target(req, ThrowAtTarget.Response())
+        res = calibrated_node._svc_throw_at_target(req, BallButlerThrow.Response())
 
         assert res.success is True
         assert 'Catching_Cone' in res.message
@@ -114,12 +114,12 @@ class TestSuccessPath:
         # Default delay applied (caller passed 0.0).  Default is the
         # `throw_delay_s` ROS param (declared at 2.5 s — gives the slow
         # pitch axis time to settle before the hand fires).
-        from jugglebot.throw_director_node import _DEFAULT_THROW_DELAY_S
+        from jugglebot.ball_butler_node import _DEFAULT_THROW_DELAY_S
         assert res.throw_delay_s == pytest.approx(_DEFAULT_THROW_DELAY_S)
 
         # bb/send_throw_command received an encoded request with the same
-        # yaw/pitch/speed the director returned, with announcement suppressed
-        # so the director's own (solver-correct) announcement is the only one.
+        # yaw/pitch/speed the node returned, with announcement suppressed
+        # so the node's own (solver-correct) announcement is the only one.
         assert len(called_requests) == 1
         bb_req = called_requests[0]
         assert bb_req.yaw_angle_rad == pytest.approx(res.yaw_rad)
@@ -129,15 +129,15 @@ class TestSuccessPath:
         assert bb_req.suppress_announcement is True
 
     def test_publishes_throw_announcement_with_solver_landing_geometry(self, calibrated_node):
-        """The director's announcement should report landing_position = the
+        """The node's announcement should report landing_position = the
         actual target (cone position in world frame), and predicted_tof_sec
         matching the solver — not predict_throw's platform-plane projection."""
         cone_world = (1200.0, 50.0, 0.0)
         calibrated_node._on_rigid_bodies(_rigid_bodies({'Catching_Cone': cone_world}))
 
-        req = ThrowAtTarget.Request()
+        req = BallButlerThrow.Request()
         req.target_name = 'Catching_Cone'
-        res = calibrated_node._svc_throw_at_target(req, ThrowAtTarget.Response())
+        res = calibrated_node._svc_throw_at_target(req, BallButlerThrow.Response())
 
         pub = calibrated_node.throw_announcement_pub
         assert len(pub.published) == 1, "expected exactly one ThrowAnnouncement"
@@ -157,10 +157,10 @@ class TestSuccessPath:
         calibrated_node._on_rigid_bodies(_rigid_bodies({
             'Catching_Cone': (1200.0, 0.0, 0.0),
         }))
-        req = ThrowAtTarget.Request()
+        req = BallButlerThrow.Request()
         req.target_name = 'Catching_Cone'
         req.throw_delay_s = 2.5
-        res = calibrated_node._svc_throw_at_target(req, ThrowAtTarget.Response())
+        res = calibrated_node._svc_throw_at_target(req, BallButlerThrow.Response())
         assert res.success is True
         assert res.throw_delay_s == pytest.approx(2.5)
 
@@ -173,9 +173,9 @@ class TestSuccessPath:
         calibrated_node._on_rigid_bodies(_rigid_bodies({
             'Catching_Cone': (0.0, 1200.0, 0.0),
         }))
-        req = ThrowAtTarget.Request()
+        req = BallButlerThrow.Request()
         req.target_name = 'Catching_Cone'
-        res = calibrated_node._svc_throw_at_target(req, ThrowAtTarget.Response())
+        res = calibrated_node._svc_throw_at_target(req, BallButlerThrow.Response())
         assert res.success is True
         # BB-local position field is populated and matches the transform
         assert res.target_position_bb_local_mm.x == pytest.approx(1200.0, abs=1e-6)
@@ -188,9 +188,9 @@ class TestInfeasible:
         calibrated_node._on_rigid_bodies(_rigid_bodies({
             'Catching_Cone': (100_000.0, 0.0, 0.0),
         }))
-        req = ThrowAtTarget.Request()
+        req = BallButlerThrow.Request()
         req.target_name = 'Catching_Cone'
-        res = calibrated_node._svc_throw_at_target(req, ThrowAtTarget.Response())
+        res = calibrated_node._svc_throw_at_target(req, BallButlerThrow.Response())
         assert res.success is False
         assert 'Inverse-ballistics failed' in res.message
         assert 'No feasible trajectory' in res.message
@@ -201,9 +201,9 @@ class TestInfeasible:
         calibrated_node._on_rigid_bodies(_rigid_bodies({
             'Catching_Cone': (1200.0, 0.0, 0.0),
         }))
-        req = ThrowAtTarget.Request()
+        req = BallButlerThrow.Request()
         req.target_name = 'Catching_Cone'
-        res = calibrated_node._svc_throw_at_target(req, ThrowAtTarget.Response())
+        res = calibrated_node._svc_throw_at_target(req, BallButlerThrow.Response())
         assert res.success is False
         assert 'can_node' in res.message.lower()
 
@@ -243,9 +243,9 @@ class TestAimCorrection:
         calibrated_node._on_rigid_bodies(_rigid_bodies({
             'Catching_Cone': (1000.0, 0.0, 0.0),
         }))
-        req = ThrowAtTarget.Request()
+        req = BallButlerThrow.Request()
         req.target_name = 'Catching_Cone'
-        res = calibrated_node._svc_throw_at_target(req, ThrowAtTarget.Response())
+        res = calibrated_node._svc_throw_at_target(req, BallButlerThrow.Response())
 
         assert res.success is True
         # Solver got the corrected target → solver yaw is now toward (1200, 0)
@@ -261,9 +261,9 @@ class TestAimCorrection:
         calibrated_node._on_rigid_bodies(_rigid_bodies({
             'Catching_Cone': (1000.0, 0.0, 0.0),
         }))
-        req = ThrowAtTarget.Request()
+        req = BallButlerThrow.Request()
         req.target_name = 'Catching_Cone'
-        res = calibrated_node._svc_throw_at_target(req, ThrowAtTarget.Response())
+        res = calibrated_node._svc_throw_at_target(req, BallButlerThrow.Response())
         assert res.success is True
         assert 'aim corr' not in res.message
 
@@ -323,7 +323,7 @@ class TestInvertAffine3x3:
     """Module-level helper: invert a 3x3 affine matrix in pure Python."""
 
     def test_inverts_identity_to_identity(self):
-        from jugglebot.throw_director_node import _invert_affine_3x3
+        from jugglebot.ball_butler_node import _invert_affine_3x3
         I = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
         inv = _invert_affine_3x3(I)
         for r in range(3):
@@ -331,7 +331,7 @@ class TestInvertAffine3x3:
                 assert inv[r][c] == pytest.approx(I[r][c])
 
     def test_inverts_pure_translation(self):
-        from jugglebot.throw_director_node import _invert_affine_3x3
+        from jugglebot.ball_butler_node import _invert_affine_3x3
         T = [[1.0, 0.0, 10.0], [0.0, 1.0, -5.0], [0.0, 0.0, 1.0]]
         inv = _invert_affine_3x3(T)
         # Inverse of pure translation just negates the offsets
@@ -343,7 +343,7 @@ class TestInvertAffine3x3:
 
     def test_inverts_rotation_plus_translation_correctly(self):
         """A·A^-1 ≈ I (numerically)."""
-        from jugglebot.throw_director_node import _invert_affine_3x3
+        from jugglebot.ball_butler_node import _invert_affine_3x3
         import math
         ang = math.radians(20.0)
         A = [[math.cos(ang), -math.sin(ang), 100.0],
@@ -358,7 +358,7 @@ class TestInvertAffine3x3:
                 assert prod[r][c] == pytest.approx(I[r][c], abs=1e-9)
 
     def test_raises_on_singular_matrix(self):
-        from jugglebot.throw_director_node import _invert_affine_3x3
+        from jugglebot.ball_butler_node import _invert_affine_3x3
         S = [[1.0, 2.0, 0.0], [2.0, 4.0, 0.0], [0.0, 0.0, 1.0]]  # rows linearly dependent
         with pytest.raises(ValueError, match='singular'):
             _invert_affine_3x3(S)
@@ -368,19 +368,19 @@ class TestThrowDelayParam:
     """The `throw_delay_s` ROS param sets the default delay for the throw."""
 
     def test_default_is_value_of_module_constant(self, calibrated_node):
-        from jugglebot.throw_director_node import _DEFAULT_THROW_DELAY_S
+        from jugglebot.ball_butler_node import _DEFAULT_THROW_DELAY_S
         assert calibrated_node._default_throw_delay_s == pytest.approx(
             _DEFAULT_THROW_DELAY_S)
 
     def test_caller_zero_uses_default(self, calibrated_node):
-        from jugglebot.throw_director_node import _DEFAULT_THROW_DELAY_S
+        from jugglebot.ball_butler_node import _DEFAULT_THROW_DELAY_S
         calibrated_node._on_rigid_bodies(_rigid_bodies({
             'Catching_Cone': (1200.0, 0.0, 0.0),
         }))
-        req = ThrowAtTarget.Request()
+        req = BallButlerThrow.Request()
         req.target_name = 'Catching_Cone'
         req.throw_delay_s = 0.0
-        res = calibrated_node._svc_throw_at_target(req, ThrowAtTarget.Response())
+        res = calibrated_node._svc_throw_at_target(req, BallButlerThrow.Response())
         assert res.success is True
         assert res.throw_delay_s == pytest.approx(_DEFAULT_THROW_DELAY_S)
 

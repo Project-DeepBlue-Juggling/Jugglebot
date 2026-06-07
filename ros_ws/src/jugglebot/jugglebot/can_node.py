@@ -847,9 +847,10 @@ class CanInterfaceNode(Node):
     # Ball Butler services (_svc_bb_throw / _svc_bb_reload / _svc_bb_reset /
     # _svc_bb_calibrate) plus the throw-announcement publisher (_publish_throw_
     # announcement) moved to teensy_bridge_node in the Phase A cutover. The
-    # ThrowAnnouncement publisher was deleted outright (D3) — throw_director
-    # is the sole publisher; can_node's predict_throw-based version assumed
-    # the platform default catch height and is wrong for off-plane targets.
+    # ThrowAnnouncement publisher was deleted outright (D3) — ball_butler_node
+    # (renamed from throw_director on refactor) is the sole publisher; can_node's
+    # predict_throw-based version assumed the platform default catch height and
+    # is wrong for off-plane targets.
 
     # ═══════════════════════════════════════════════════════════
     # Action callbacks

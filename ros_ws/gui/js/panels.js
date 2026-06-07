@@ -1269,12 +1269,12 @@ function drawConeSoundBar() {
 // Candidate targets shown in the dropdown.  Add entries here when new
 // QTM rigid bodies become throw targets.  The string must match the
 // rigid_body name published by mocap_node.
-const TD_TARGETS = ['Catching_Cone'];
+const BB_THROW_TARGETS = ['Catching_Cone'];
 
-function onThrowDirectorClick() {
-    const sel = document.getElementById('td-target-select');
-    const btn = document.getElementById('td-throw-btn');
-    const status = document.getElementById('td-status');
+function onBBThrowClick() {
+    const sel = document.getElementById('bb-throw-target-select');
+    const btn = document.getElementById('bb-throw-btn');
+    const status = document.getElementById('bb-throw-status');
     if (!sel || !btn || !status) return;
     if (btn.disabled) return;
 
@@ -1282,23 +1282,23 @@ function onThrowDirectorClick() {
     btn.disabled = true;
     btn.textContent = 'Throwing…';
     status.textContent = `Calling bb/throw_at_target(${targetName})…`;
-    status.className = 'td-status td-status-pending';
+    status.className = 'bb-throw-status bb-throw-status-pending';
 
     callService('bb/throw_at_target',
-                'jugglebot_interfaces/srv/ThrowAtTarget',
+                'jugglebot_interfaces/srv/BallButlerThrow',
                 { target_name: targetName, throw_delay_s: 0.0 })
         .then((result) => {
             if (result.success) {
                 status.textContent = result.message;
-                status.className = 'td-status td-status-ok';
+                status.className = 'bb-throw-status bb-throw-status-ok';
             } else {
                 status.textContent = result.message || 'Throw failed';
-                status.className = 'td-status td-status-err';
+                status.className = 'bb-throw-status bb-throw-status-err';
             }
         })
         .catch((err) => {
             status.textContent = 'Service error: ' + err.message;
-            status.className = 'td-status td-status-err';
+            status.className = 'bb-throw-status bb-throw-status-err';
         })
         .finally(() => {
             setTimeout(() => {
@@ -1308,21 +1308,21 @@ function onThrowDirectorClick() {
         });
 }
 
-export function initThrowDirectorPanel() {
-    const content = document.getElementById('td-content');
+export function initBBThrowPanel() {
+    const content = document.getElementById('bb-throw-content');
     if (!content) return;
-    const options = TD_TARGETS
+    const options = BB_THROW_TARGETS
         .map(t => `<option value="${t}">${t}</option>`).join('');
     content.innerHTML = `
-        <div class="td-row">
-            <label class="td-label" for="td-target-select">Target</label>
-            <select class="td-select" id="td-target-select">${options}</select>
-            <button class="bb-calibrate-btn" id="td-throw-btn">Throw</button>
+        <div class="bb-throw-row">
+            <label class="bb-throw-label" for="bb-throw-target-select">Target</label>
+            <select class="bb-throw-select" id="bb-throw-target-select">${options}</select>
+            <button class="bb-calibrate-btn" id="bb-throw-btn">Throw</button>
         </div>
-        <div class="td-status" id="td-status">Ready.</div>
+        <div class="bb-throw-status" id="bb-throw-status">Ready.</div>
     `;
-    const btn = document.getElementById('td-throw-btn');
-    if (btn) btn.addEventListener('click', onThrowDirectorClick);
+    const btn = document.getElementById('bb-throw-btn');
+    if (btn) btn.addEventListener('click', onBBThrowClick);
 }
 
 
@@ -1331,7 +1331,7 @@ export function initAllPanels() {
     initLevellingPanel();
     initBBPanel();
     initCatchingConePanel();
-    initThrowDirectorPanel();
+    initBBThrowPanel();
     initCANPanel();
     initTrackingGrid();
     initTopicMonitor();

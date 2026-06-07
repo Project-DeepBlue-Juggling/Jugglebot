@@ -917,16 +917,16 @@
 }
 
 /* ───────────────────────────────────────────
-   Throw Director panel
+   Ball Butler Throw panel
    ─────────────────────────────────────────── */
-.td-row {
+.bb-throw-row {
     display: flex;
     align-items: center;
     gap: 8px;
     margin-bottom: 6px;
 }
-.td-label { font-size: var(--font-size-xs); color: var(--text-muted); }
-.td-select {
+.bb-throw-label { font-size: var(--font-size-xs); color: var(--text-muted); }
+.bb-throw-select {
     background: var(--bg-input, #222);
     color: var(--text-primary, #eee);
     border: 1px solid var(--border, #444);
@@ -935,7 +935,7 @@
     flex: 1;
     min-width: 0;
 }
-.td-status {
+.bb-throw-status {
     font-size: var(--font-size-xs);
     font-family: var(--font-mono);
     padding: 4px 6px;
@@ -944,6 +944,6 @@
     background: rgba(255, 255, 255, 0.04);
     word-break: break-word;
 }
-.td-status-pending { color: var(--accent-amber); }
-.td-status-ok      { color: var(--accent-green); }
-.td-status-err     { color: var(--accent-red, #d44); }
+.bb-throw-status-pending { color: var(--accent-amber); }
+.bb-throw-status-ok      { color: var(--accent-green); }
+.bb-throw-status-err     { color: var(--accent-red, #d44); }

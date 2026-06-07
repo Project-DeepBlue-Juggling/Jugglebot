@@ -53,7 +53,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/SetHandTrajCmd.srv"
   "srv/SendBallButlerCommand.srv"
   "srv/SetHandGains.srv"
-  "srv/ThrowAtTarget.srv"
+  "srv/BallButlerThrow.srv"
 
   "msg/CanTrafficReportMessage.msg"
 

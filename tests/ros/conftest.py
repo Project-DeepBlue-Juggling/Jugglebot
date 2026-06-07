@@ -295,7 +295,7 @@ SendBallButlerCommand = _make_service(
                 'suppress_announcement': False},
     resp_fields={'success': False, 'message': ''},
 )
-ThrowAtTarget = _make_service(
+BallButlerThrow = _make_service(
     req_fields={'target_name': '', 'throw_delay_s': 0.0},
     resp_fields={
         'success': False, 'message': '',
@@ -546,7 +546,7 @@ _create_mock_module('jugglebot_interfaces.srv', {
     'SetHandGains': SetHandGains,
     'SetHandTrajCmd': SetHandTrajCmd,
     'SetString': SetString,
-    'ThrowAtTarget': ThrowAtTarget,
+    'BallButlerThrow': BallButlerThrow,
 })
 _create_mock_module('jugglebot_interfaces.action', {
     'HomeMotors': HomeMotors,
