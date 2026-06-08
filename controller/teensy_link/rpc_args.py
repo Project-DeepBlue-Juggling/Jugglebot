@@ -28,6 +28,7 @@ from .protocol import (
     ArgSdoRead,
     ArgSdoWrite,
     ResultTimeOfDay,
+    ArgBbThrow,
 )
 
 RpcMethod = p.RpcMethod
@@ -37,12 +38,14 @@ __all__ = [
     # dataclasses (re-exported)
     "ArgAxisState", "ArgControllerMode", "ArgVelCurr", "ArgPosGain",
     "ArgVelGains", "ArgAbsPosition", "ArgAxisOnly", "ArgSdoRead", "ArgSdoWrite",
-    "ResultTimeOfDay",
+    "ResultTimeOfDay", "ArgBbThrow",
     # encoders
     "encode_set_axis_state", "encode_set_controller_mode",
     "encode_set_vel_curr_limits", "encode_set_pos_gain", "encode_set_vel_gains",
     "encode_set_absolute_position", "encode_clear_errors", "encode_reboot",
     "encode_encoder_search", "encode_home", "encode_sdo_read", "encode_sdo_write",
+    "encode_bb_throw", "encode_bb_reload", "encode_bb_reset",
+    "encode_bb_calibrate_loc",
     "decode_time_of_day_result",
     # method association
     "METHOD",
@@ -119,6 +122,36 @@ def decode_time_of_day_result(blob: bytes) -> int:
     return int(ResultTimeOfDay.unpack(blob).jetson_wall_us)
 
 
+# ── Ball Butler ─────────────────────────────────────────────────────────────
+# Firmware-owned encoding: the bridge passes typed args; the can-bridge Teensy
+# range-checks + frame-builds before TX on CAN1 (HANDOFF-firmware-three-bus D2).
+# RELOAD/RESET/CALIBRATE_LOC are payloadless on the BB wire; the RPC carries no
+# args either (caller sends b"" — matches the NOP shape).
+
+def encode_bb_throw(yaw_rad: float, pitch_rad: float,
+                    speed_mps: float, delay_s: float) -> bytes:
+    """BB_THROW: typed throw command. Firmware validates ranges and returns
+    ERR_BAD_ARGS for malformed throws (yaw outside [-pi, pi), pitch outside
+    [0, pi/2], speed > 6.5535, delay > 65.535)."""
+    return ArgBbThrow(yaw_rad=float(yaw_rad), pitch_rad=float(pitch_rad),
+                      speed_mps=float(speed_mps), delay_s=float(delay_s)).pack()
+
+
+def encode_bb_reload() -> bytes:
+    """BB_RELOAD: payloadless reload command."""
+    return b""
+
+
+def encode_bb_reset() -> bytes:
+    """BB_RESET: payloadless reset command."""
+    return b""
+
+
+def encode_bb_calibrate_loc() -> bytes:
+    """BB_CALIBRATE_LOC: payloadless calibrate-locations command."""
+    return b""
+
+
 # Method → arg-dataclass association (introspection / tests).
 METHOD = {
     RpcMethod.SET_AXIS_STATE: ArgAxisState,
@@ -133,4 +166,6 @@ METHOD = {
     RpcMethod.HOME: ArgAxisOnly,
     RpcMethod.SDO_READ: ArgSdoRead,
     RpcMethod.SDO_WRITE: ArgSdoWrite,
+    RpcMethod.BB_THROW: ArgBbThrow,
+    # BB_RELOAD/RESET/CALIBRATE_LOC are payloadless — no entry (matches NOP).
 }

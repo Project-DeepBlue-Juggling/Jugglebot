@@ -54,6 +54,10 @@ namespace RpcMethod {
   constexpr uint16_t HOME = 0x0021u;  // Run homing (Phase 9 — stubbed)
   constexpr uint16_t SDO_READ = 0x0030u;  // Arbitrary parameter read
   constexpr uint16_t SDO_WRITE = 0x0031u;  // Arbitrary parameter write
+  constexpr uint16_t BB_THROW = 0x0040u;  // Ball Butler: send THROW_CMD on CAN1 (typed, validated)
+  constexpr uint16_t BB_RELOAD = 0x0041u;  // Ball Butler: send RELOAD_CMD on CAN1 (no payload)
+  constexpr uint16_t BB_RESET = 0x0042u;  // Ball Butler: send RESET_CMD on CAN1 (no payload)
+  constexpr uint16_t BB_CALIBRATE_LOC = 0x0043u;  // Ball Butler: send CALIBRATE_LOC_CMD on CAN1 (no payload)
 }
 namespace RpcStatus {
   constexpr uint16_t OK = 0x0000u;  // Success
@@ -282,6 +286,14 @@ struct ResultTimeOfDay {
   uint64_t jetson_wall_us;  // Jetson CLOCK_REALTIME microseconds
 };
 static_assert(sizeof(ResultTimeOfDay) == 8, "ResultTimeOfDay size drift");
+// ArgBbThrow (BB_THROW)
+struct ArgBbThrow {
+  float yaw_rad;  // Yaw angle in radians [-pi, pi)
+  float pitch_rad;  // Pitch angle in radians [0, pi/2]
+  float speed_mps;  // Throw speed in m/s [0, 6.5535]
+  float delay_s;  // Relative delay before throw (s) [0, 65.535]
+};
+static_assert(sizeof(ArgBbThrow) == 16, "ArgBbThrow size drift");
 #pragma pack(pop)
 constexpr uint16_t ARG_AXIS_STATE_SIZE = 5u;
 constexpr uint16_t ARG_CONTROLLER_MODE_SIZE = 9u;
@@ -293,6 +305,7 @@ constexpr uint16_t ARG_AXIS_ONLY_SIZE = 1u;
 constexpr uint16_t ARG_SDO_READ_SIZE = 3u;
 constexpr uint16_t ARG_SDO_WRITE_SIZE = 7u;
 constexpr uint16_t RESULT_TIME_OF_DAY_SIZE = 8u;
+constexpr uint16_t ARG_BB_THROW_SIZE = 16u;
 }  // namespace RpcArgs
 
 // ── CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF) ──────────────────────

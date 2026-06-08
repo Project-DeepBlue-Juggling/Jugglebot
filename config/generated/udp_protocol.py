@@ -54,6 +54,10 @@ class RpcMethod(IntEnum):
     HOME = 33  # Run homing (Phase 9 — stubbed)
     SDO_READ = 48  # Arbitrary parameter read
     SDO_WRITE = 49  # Arbitrary parameter write
+    BB_THROW = 64  # Ball Butler: send THROW_CMD on CAN1 (typed, validated)
+    BB_RELOAD = 65  # Ball Butler: send RELOAD_CMD on CAN1 (no payload)
+    BB_RESET = 66  # Ball Butler: send RESET_CMD on CAN1 (no payload)
+    BB_CALIBRATE_LOC = 67  # Ball Butler: send CALIBRATE_LOC_CMD on CAN1 (no payload)
 
 class RpcStatus(IntEnum):
     OK = 0  # Success
@@ -517,3 +521,23 @@ class ResultTimeOfDay:
     @classmethod
     def unpack(cls, data: bytes) -> 'ResultTimeOfDay':
         return cls(*_RESULT_TIME_OF_DAY_STRUCT.unpack(data[:8]))
+
+# ArgBbThrow (BB_THROW)
+ARG_BB_THROW_FMT = '<ffff'
+ARG_BB_THROW_SIZE = 16
+_ARG_BB_THROW_STRUCT = struct.Struct(ARG_BB_THROW_FMT)
+assert _ARG_BB_THROW_STRUCT.size == 16
+
+@dataclass
+class ArgBbThrow:
+    yaw_rad: float = 0.0
+    pitch_rad: float = 0.0
+    speed_mps: float = 0.0
+    delay_s: float = 0.0
+
+    def pack(self) -> bytes:
+        return _ARG_BB_THROW_STRUCT.pack(self.yaw_rad, self.pitch_rad, self.speed_mps, self.delay_s)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'ArgBbThrow':
+        return cls(*_ARG_BB_THROW_STRUCT.unpack(data[:16]))

@@ -164,6 +164,10 @@ ENUMS = {
         ("HOME",               0x0021, "Run homing (Phase 9 — stubbed)"),
         ("SDO_READ",           0x0030, "Arbitrary parameter read"),
         ("SDO_WRITE",          0x0031, "Arbitrary parameter write"),
+        ("BB_THROW",           0x0040, "Ball Butler: send THROW_CMD on CAN1 (typed, validated)"),
+        ("BB_RELOAD",          0x0041, "Ball Butler: send RELOAD_CMD on CAN1 (no payload)"),
+        ("BB_RESET",           0x0042, "Ball Butler: send RESET_CMD on CAN1 (no payload)"),
+        ("BB_CALIBRATE_LOC",   0x0043, "Ball Butler: send CALIBRATE_LOC_CMD on CAN1 (no payload)"),
     ],
     "RpcStatus": [
         ("OK",            0x0000, "Success"),
@@ -411,6 +415,17 @@ RPC_ARGS = [
     ]),
     RpcArg("ResultTimeOfDay", "TIME_OF_DAY_QUERY (result)", [
         Field("jetson_wall_us", "u64", 1, "Jetson CLOCK_REALTIME microseconds"),
+    ]),
+    # Ball Butler — typed firmware-side encoders own the wire format (the can-bridge
+    # refuses a malformed throw before it hits CAN1 — HANDOFF-firmware-three-bus D2).
+    # The Python encoder in jugglebot.can.ball_butler stays as the test spec; a
+    # byte-level cross-reference test pins parity. RELOAD/RESET/CALIBRATE_LOC are
+    # payloadless — no Arg struct (caller sends b"" — matches the NOP pattern).
+    RpcArg("ArgBbThrow", "BB_THROW", [
+        Field("yaw_rad",   "f32", 1, "Yaw angle in radians [-pi, pi)"),
+        Field("pitch_rad", "f32", 1, "Pitch angle in radians [0, pi/2]"),
+        Field("speed_mps", "f32", 1, "Throw speed in m/s [0, 6.5535]"),
+        Field("delay_s",   "f32", 1, "Relative delay before throw (s) [0, 65.535]"),
     ]),
 ]
 

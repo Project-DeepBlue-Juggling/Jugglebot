@@ -90,6 +90,7 @@ from udp_protocol import (  # noqa: E402, F401
     ArgSdoRead,
     ArgSdoWrite,
     ResultTimeOfDay,
+    ArgBbThrow,
 )
 
 TEENSY_IP: str = f"{TEENSY_IP_0}.{TEENSY_IP_1}.{TEENSY_IP_2}.{TEENSY_IP_3}"

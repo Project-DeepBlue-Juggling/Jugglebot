@@ -28,6 +28,7 @@ from controller.teensy_link import rpc_args as ra
 from controller.teensy_link.protocol import (
     ArgAxisState, ArgControllerMode, ArgVelCurr, ArgPosGain, ArgVelGains,
     ArgAbsPosition, ArgAxisOnly, ArgSdoRead, ArgSdoWrite, ResultTimeOfDay,
+    ArgBbThrow,
 )
 
 
@@ -114,6 +115,29 @@ def test_float_fields_roundtrip_f32():
     assert a.vel_int_gain == pytest.approx(0.07, rel=1e-6)
 
 
+# ── Ball Butler (Phase A) ─────────────────────────────────────────────────────
+
+def test_bb_throw_exact_bytes():
+    blob = ra.encode_bb_throw(yaw_rad=0.5, pitch_rad=0.3,
+                              speed_mps=3.0, delay_s=0.1)
+    assert blob == struct.pack('<ffff', 0.5, 0.3, 3.0, 0.1)
+    assert len(blob) == 16
+    a = ArgBbThrow.unpack(blob)
+    assert a.yaw_rad == pytest.approx(0.5, rel=1e-6)
+    assert a.pitch_rad == pytest.approx(0.3, rel=1e-6)
+    assert a.speed_mps == pytest.approx(3.0, rel=1e-6)
+    assert a.delay_s == pytest.approx(0.1, rel=1e-6)
+
+
+def test_bb_payloadless_commands_are_empty():
+    # RELOAD/RESET/CALIBRATE_LOC ride a 0-byte args payload — matches NOP shape.
+    # The Teensy ignores any trailing bytes on these methods anyway, but the
+    # bridge sends b"" for clarity.
+    assert ra.encode_bb_reload()        == b""
+    assert ra.encode_bb_reset()         == b""
+    assert ra.encode_bb_calibrate_loc() == b""
+
+
 def test_method_arg_association_covers_all_commandable_methods():
     from controller.teensy_link import RpcMethod
     expected = {
@@ -123,5 +147,8 @@ def test_method_arg_association_covers_all_commandable_methods():
         RpcMethod.CLEAR_ERRORS, RpcMethod.REBOOT_ODRIVES,
         RpcMethod.ENCODER_SEARCH, RpcMethod.HOME,
         RpcMethod.SDO_READ, RpcMethod.SDO_WRITE,
+        # Ball Butler (Phase A): only BB_THROW carries args; RELOAD/RESET/
+        # CALIBRATE_LOC are payloadless (matches NOP — no METHOD entry).
+        RpcMethod.BB_THROW,
     }
     assert set(ra.METHOD.keys()) == expected

@@ -92,6 +92,10 @@ Static IPs: Teensy `192.168.42.2`, Jetson `192.168.42.1` (`/30` point-to-point).
 | `HOME` | 0x0021 | Run homing (Phase 9 — stubbed) |
 | `SDO_READ` | 0x0030 | Arbitrary parameter read |
 | `SDO_WRITE` | 0x0031 | Arbitrary parameter write |
+| `BB_THROW` | 0x0040 | Ball Butler: send THROW_CMD on CAN1 (typed, validated) |
+| `BB_RELOAD` | 0x0041 | Ball Butler: send RELOAD_CMD on CAN1 (no payload) |
+| `BB_RESET` | 0x0042 | Ball Butler: send RESET_CMD on CAN1 (no payload) |
+| `BB_CALIBRATE_LOC` | 0x0043 | Ball Butler: send CALIBRATE_LOC_CMD on CAN1 (no payload) |
 
 ### RpcStatus
 
@@ -369,3 +373,14 @@ wraps the generated Python. `AXIS_ALL = 0xFF` broadcasts to all legs.
 | Field | Type | Notes |
 |-------|------|-------|
 | `jetson_wall_us` | u64 | Jetson CLOCK_REALTIME microseconds |
+
+### ArgBbThrow (`BB_THROW`)
+
+**16 bytes**. Python struct fmt: `<ffff`.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `yaw_rad` | f32 | Yaw angle in radians [-pi, pi) |
+| `pitch_rad` | f32 | Pitch angle in radians [0, pi/2] |
+| `speed_mps` | f32 | Throw speed in m/s [0, 6.5535] |
+| `delay_s` | f32 | Relative delay before throw (s) [0, 65.535] |
