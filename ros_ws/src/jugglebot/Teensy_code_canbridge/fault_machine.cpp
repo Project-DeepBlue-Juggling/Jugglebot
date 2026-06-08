@@ -26,6 +26,7 @@
 #include "protocol_config.h"     // ODriveState
 #include "udp_protocol.h"        // FaultState, GuardMode
 #include "axis_state.h"
+#include "ball_butler_state.h"
 #include "odrive_protocol.h"
 #include "can_buses.h"
 #include "leg_interp.h"
@@ -153,6 +154,13 @@ static void watchdog_and_stow() {
   for (uint8_t i = 0; i < NUM_AXES; ++i)
     axes[i].heartbeat_stale = axes[i].heartbeat_seen &&
                               (now - axes[i].last_heartbeat_us > CAN_HEARTBEAT_TIMEOUT_US);
+
+  // Ball Butler heartbeat staleness (CAN1, BB_HEARTBEAT_TIMEOUT_US = 0.5 s).
+  // Information-only — no fault response is triggered by BB silence (the CAN3
+  // watchdog below is the safety-relevant one); this just keeps bb_state.
+  // heartbeat_stale in sync for the [bb] diag print and upstream HeartbeatT2J.
+  bb_state.heartbeat_stale = bb_state.heartbeat_seen &&
+      (now - bb_state.last_heartbeat_us > BB_HEARTBEAT_TIMEOUT_US);
 
   // Detection: CAN3 leg heartbeats went stale → fatal_can_error + arm the stow.
   if (s_first_leg_hb_seen && any_leg_heartbeat_stale() && !s_fatal_can_error) {

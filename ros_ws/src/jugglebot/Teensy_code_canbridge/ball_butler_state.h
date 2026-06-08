@@ -80,6 +80,7 @@ inline void write_bb_heartbeat(BallButlerState& s,
   s.hand_mm           = hand_mm;
   s.last_heartbeat_us = t_us;
   s.heartbeat_seen    = true;
+  s.heartbeat_stale   = false;  // mirror axis decode's stale-clear (axis_state.cpp:55)
   asm volatile("" ::: "memory");
   s.seq = s.seq + 1;          // even → done
 }

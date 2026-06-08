@@ -7,6 +7,7 @@
 #include "canbridge_config.h"
 #include "protocol_config.h"
 #include "axis_state.h"
+#include "ball_butler_state.h"
 #include "time_base.h"
 #include "odrive_protocol.h"
 
@@ -91,10 +92,39 @@ static void decode_into_cache(const CAN_message_t& msg) {
   }
 }
 
-// CAN1 Ball Butler: no ODrive on this bus → count only, never decode.
-static void on_bb_rx(const CAN_message_t& /*msg*/) {
+// Decode a Ball Butler heartbeat (CAN1 id 0x7D1) into bb_state. Frame layout
+// (8 bytes, little-endian; mirrors ball_butler.py BallButlerHeartbeat.from_can_frame):
+//   byte 0 = ball_in_hand (bit 0) | state (bits 1..7)
+//   byte 1 = state_data (error code when state == ERROR, else 0)
+//   bytes 2-3 = yaw_enc  (uint16, scaled by HeartbeatEncoding::yaw_res_deg)
+//   bytes 4-5 = pitch_enc(uint16, scaled by HeartbeatEncoding::pitch_res_deg)
+//   bytes 6-7 = hand_enc (uint16, scaled by HeartbeatEncoding::hand_res_mm)
+// Short frames (< 8 bytes) are silently dropped — bb_state retains its last value.
+static void decode_bb_heartbeat(const CAN_message_t& msg) {
+  if (msg.len < 8) return;
+  const uint8_t* d = msg.buf;
+  uint16_t yaw_enc, pitch_enc, hand_enc;
+  memcpy(&yaw_enc,   &d[2], 2);
+  memcpy(&pitch_enc, &d[4], 2);
+  memcpy(&hand_enc,  &d[6], 2);
+  write_bb_heartbeat(
+      bb_state,
+      /*ball_in_hand=*/ (d[0] & 0x01u) != 0,
+      /*state=*/        (uint8_t)(d[0] >> 1),
+      /*state_data=*/   d[1],
+      /*yaw_deg=*/      (float)yaw_enc   * HeartbeatEncoding::yaw_res_deg,
+      /*pitch_deg=*/    (float)pitch_enc * HeartbeatEncoding::pitch_res_deg,
+      /*hand_mm=*/      (float)hand_enc  * HeartbeatEncoding::hand_res_mm,
+      /*t_us=*/         now_wall_us());
+}
+
+// CAN1 Ball Butler: only the BB heartbeat (0x7D1) decodes; everything else is
+// counted via s_bb_rx and dropped (the bus carries no other RX traffic in
+// production — our own TX (0x7DD time-sync, BB commands) doesn't loop back).
+static void on_bb_rx(const CAN_message_t& msg) {
   s_bb_rx++;
   atomic_write_u64(&s_bb_last_rx_us, now_wall_us());   // 64-bit; read by health_of
+  if (msg.id == BallButlerCanId::HEARTBEAT) decode_bb_heartbeat(msg);
 }
 
 // CAN2 catching cone: no ODrive on this bus → count only. The RX timestamp also

@@ -40,6 +40,7 @@ using namespace arduino;
 #include "time_sync_master.h"    // Phase 5
 #include "rpc.h"                 // Phase 5
 #include "axis_state.h"          // Phase 6 (cache populated by CAN RX)
+#include "ball_butler_state.h"   // Phase A (BB heartbeat cache, populated by CAN1 RX)
 #include "telemetry.h"           // Phase 6
 #include "leg_interp.h"          // Phase 7
 #include "fault_machine.h"       // Phase 8
@@ -237,6 +238,38 @@ static void task_diag(void*) {
                         (unsigned long)age_ms, mark);
         }
         Serial.println();
+      }
+
+      // Per-Ball-Butler state line. Format mirrors [axes]:
+      //   [bb] state=<name> ball=<0|1> yaw=<deg> pitch=<deg> hand=<mm> age=<ms><mark>
+      // Marks: '?' = never seen, '!' = stale (> BB_HEARTBEAT_TIMEOUT_US since last RX),
+      // '*' = BB ERROR state, ' ' = ok. The snapshot pattern matches the [axes] read —
+      // we take a seqlock-consistent snapshot so a writer mid-update never produces a
+      // torn print.
+      {
+        BallButlerSnapshot bb{};
+        snapshot_bb(bb_state, bb);
+        const uint64_t now = now_wall_us();
+        const char* state_names[] = {
+            "BOOT", "IDLE", "TRACKING", "THROWING",
+            "RELOADING", "CAL", "CHKBALL"};  // states 0..6
+        const char* sname =
+            (bb.state == BallButlerState::ERROR) ? "ERROR"
+            : (bb.state < 7) ? state_names[bb.state] : "?";
+        char mark = ' ';
+        uint32_t age_ms = 9999u;
+        if (!bb.heartbeat_seen) {
+          mark = '?';
+        } else {
+          const uint64_t age = now - bb.last_heartbeat_us;
+          age_ms = (age > 9999000ULL) ? 9999u : (uint32_t)(age / 1000ULL);
+          if (bb.heartbeat_stale) mark = '!';
+          else if (bb.state == BallButlerState::ERROR) mark = '*';
+        }
+        Serial.printf("[bb] state=%s ball=%u yaw=%.1f pitch=%.1f hand=%.1f age=%lums%c\n",
+                      sname, (unsigned)bb.ball_in_hand,
+                      (double)bb.yaw_deg, (double)bb.pitch_deg, (double)bb.hand_mm,
+                      (unsigned long)age_ms, mark);
       }
     }
     vTaskDelayUntil(&last, pdMS_TO_TICKS(500));   // toggle every 500 ms → 1 Hz blink

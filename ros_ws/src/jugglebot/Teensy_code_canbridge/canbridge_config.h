@@ -121,6 +121,10 @@ constexpr float    MAX_MOTOR_VEL_RPS    = ODriveDefaults::TRAP_VEL_LIMIT_RPS * 1
 constexpr uint32_t MPC_CMD_STALENESS_US = 250000u;   // 0.25 s → E-STOP (link-fault trigger)
 constexpr uint32_t MOTOR_FB_STALENESS_US = 150000u;  // 0.15 s → suppress commands
 constexpr uint32_t CAN_HEARTBEAT_TIMEOUT_US = 2000000u;  // 2.0 s → fatal_can_error
+// Ball Butler heartbeat (CAN1) is tighter: BB broadcasts at 10 Hz and the
+// production timeout (can_node._bb_heartbeat_timeout_s = proto.BB_HEARTBEAT_TIMEOUT_MS
+// / 1000) is 0.5 s — only 5 missed heartbeats vs the ODrive's 20. Reused 1:1 here.
+constexpr uint32_t BB_HEARTBEAT_TIMEOUT_US = BallButler::HEARTBEAT_TIMEOUT_MS * 1000u;
 // CAN2 cone-absent tolerance (ADR-0013): the can-bridge broadcasts 0x7DD on CAN2
 // even when the catching cone is disconnected. can_cone_send() gates the TX on
 // recent cone presence so an un-ACKed broadcast never drives CAN2 to bus-off
