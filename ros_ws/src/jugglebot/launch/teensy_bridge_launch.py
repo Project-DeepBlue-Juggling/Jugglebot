@@ -18,15 +18,34 @@ Usage::
     ros2 launch jugglebot teensy_bridge_launch.py enable_setpoint_output:=true
 """
 
+import os
+
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
+# teensy_bridge_node imports from controller.teensy_link (the can-bridge UDP
+# transport layer), which lives at the repo root — OUTSIDE the ROS install
+# tree. When ros2 launch starts the entry-point script from install/, PYTHONPATH
+# knows nothing about that path. The Python tests work because conftest.py
+# inserts the repo root into sys.path itself; ros2 launch needs an env var.
+#
+# Override with JUGGLEBOT_REPO if running on a host where the repo lives
+# somewhere else. Long-term fix: install controller/teensy_link/ as part of
+# the jugglebot ROS package (deferred — separate cleanup commit).
+_JUGGLEBOT_REPO = os.environ.get('JUGGLEBOT_REPO', '/home/jetson/Desktop/Jugglebot')
+
+
 def generate_launch_description():
     teensy_ip = LaunchConfiguration('teensy_ip')
     enable_setpoint_output = LaunchConfiguration('enable_setpoint_output')
+
+    # Prepend the repo root so `from controller.teensy_link import ...` resolves.
+    existing_pp = os.environ.get('PYTHONPATH', '')
+    pythonpath = (f"{_JUGGLEBOT_REPO}:{existing_pp}"
+                  if existing_pp else _JUGGLEBOT_REPO)
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -46,5 +65,6 @@ def generate_launch_description():
                 'teensy_ip': teensy_ip,
                 'enable_setpoint_output': enable_setpoint_output,
             }],
+            additional_env={'PYTHONPATH': pythonpath},
         ),
     ])
