@@ -165,8 +165,14 @@ struct HeartbeatT2JPayload {
   uint8_t fault_state;  // FaultState enum
   uint32_t flags;  // bit0 time_synced, bit1 stow_pending_on_reconnect, bit2 all_axis_heartbeats_ok
   uint32_t uptime_ms;  // ms since boot
+  uint8_t bb_state;  // BallButlerState enum (0..6, 127=ERROR)
+  uint8_t bb_state_data;  // BB error code when bb_state == ERROR, else 0
+  uint8_t bb_flags;  // bit0 ball_in_hand, bit1 heartbeat_seen, bit2 heartbeat_stale
+  float bb_yaw_deg;  // BB yaw (deg), decoded with HeartbeatEncoding scale
+  float bb_pitch_deg;  // BB pitch (deg)
+  float bb_hand_mm;  // BB hand position (mm)
 };
-static_assert(sizeof(HeartbeatT2JPayload) == 20, "HeartbeatT2JPayload size drift");
+static_assert(sizeof(HeartbeatT2JPayload) == 35, "HeartbeatT2JPayload size drift");
 
 // Profile: 1 Hz firmware instrumentation. Per-task CPU%, CAN bus utilisation, UDP round-trip/jitter, the 500 Hz interp deadline-miss counter, and free heap. Consumed by tools/probes/teensy_link_profiling/jetson.
 struct ProfilePayload {
@@ -213,7 +219,7 @@ constexpr uint16_t SETPOINT_SIZE = 156u;
 constexpr uint16_t HEARTBEAT_J2T_SIZE = 12u;
 constexpr uint16_t TELEMETRY_SIZE = 64u;
 constexpr uint16_t DIAGNOSTIC_SIZE = 36u;
-constexpr uint16_t HEARTBEAT_T2J_SIZE = 20u;
+constexpr uint16_t HEARTBEAT_T2J_SIZE = 35u;
 constexpr uint16_t PROFILE_SIZE = 66u;
 constexpr uint16_t RPC_REQUEST_SIZE = 8u;
 constexpr uint16_t RPC_RESPONSE_SIZE = 8u;

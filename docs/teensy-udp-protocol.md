@@ -215,7 +215,7 @@ Payload **36 bytes**. Python struct fmt: `<BBBBBBBBIIfffff`.
 
 Teensy → Jetson liveness + link/bus health, ~10 Hz.
 
-Payload **20 bytes**. Python struct fmt: `<QBBBBII`.
+Payload **35 bytes**. Python struct fmt: `<QBBBBIIBBBfff`.
 
 | Field | Type | Count | Notes |
 |-------|------|------:|-------|
@@ -226,6 +226,12 @@ Payload **20 bytes**. Python struct fmt: `<QBBBBII`.
 | `fault_state` | u8 | 1 | FaultState enum |
 | `flags` | u32 | 1 | bit0 time_synced, bit1 stow_pending_on_reconnect, bit2 all_axis_heartbeats_ok |
 | `uptime_ms` | u32 | 1 | ms since boot |
+| `bb_state` | u8 | 1 | BallButlerState enum (0..6, 127=ERROR) |
+| `bb_state_data` | u8 | 1 | BB error code when bb_state == ERROR, else 0 |
+| `bb_flags` | u8 | 1 | bit0 ball_in_hand, bit1 heartbeat_seen, bit2 heartbeat_stale |
+| `bb_yaw_deg` | f32 | 1 | BB yaw (deg), decoded with HeartbeatEncoding scale |
+| `bb_pitch_deg` | f32 | 1 | BB pitch (deg) |
+| `bb_hand_mm` | f32 | 1 | BB hand position (mm) |
 
 ### Profile (`MsgType.PROFILE`, T2J, STREAM port)
 

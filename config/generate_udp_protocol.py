@@ -285,6 +285,16 @@ MESSAGES = [
             Field("fault_state", "u8",  1, "FaultState enum"),
             Field("flags",       "u32", 1, "bit0 time_synced, bit1 stow_pending_on_reconnect, bit2 all_axis_heartbeats_ok"),
             Field("uptime_ms",   "u32", 1, "ms since boot"),
+            # Ball Butler heartbeat snapshot (Phase A — CAN1 0x7D1 decoded by the
+            # can-bridge into bb_state and forwarded here at heartbeat rate).
+            # Replaces the legacy can_node bb/heartbeat publisher; the bridge
+            # node reassembles a BallButlerHeartbeat ROS msg from these fields.
+            Field("bb_state",      "u8",  1, "BallButlerState enum (0..6, 127=ERROR)"),
+            Field("bb_state_data", "u8",  1, "BB error code when bb_state == ERROR, else 0"),
+            Field("bb_flags",      "u8",  1, "bit0 ball_in_hand, bit1 heartbeat_seen, bit2 heartbeat_stale"),
+            Field("bb_yaw_deg",    "f32", 1, "BB yaw (deg), decoded with HeartbeatEncoding scale"),
+            Field("bb_pitch_deg",  "f32", 1, "BB pitch (deg)"),
+            Field("bb_hand_mm",    "f32", 1, "BB hand position (mm)"),
         ],
     ),
     Message(

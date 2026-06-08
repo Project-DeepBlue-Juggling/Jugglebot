@@ -238,10 +238,10 @@ class Diagnostic:
         return cls(next(it), next(it), next(it), next(it), next(it), tuple(next(it) for _ in range(3)), next(it), next(it), next(it), next(it), next(it), next(it), next(it))
 
 # HeartbeatT2J: Teensy → Jetson liveness + link/bus health, ~10 Hz.
-HEARTBEAT_T2J_FMT = '<QBBBBII'
-HEARTBEAT_T2J_SIZE = 20
+HEARTBEAT_T2J_FMT = '<QBBBBIIBBBfff'
+HEARTBEAT_T2J_SIZE = 35
 _HEARTBEAT_T2J_STRUCT = struct.Struct(HEARTBEAT_T2J_FMT)
-assert _HEARTBEAT_T2J_STRUCT.size == 20
+assert _HEARTBEAT_T2J_STRUCT.size == 35
 
 @dataclass
 class HeartbeatT2J:
@@ -252,15 +252,21 @@ class HeartbeatT2J:
     fault_state: int = 0
     flags: int = 0
     uptime_ms: int = 0
+    bb_state: int = 0
+    bb_state_data: int = 0
+    bb_flags: int = 0
+    bb_yaw_deg: float = 0.0
+    bb_pitch_deg: float = 0.0
+    bb_hand_mm: float = 0.0
 
     def pack(self) -> bytes:
-        return _HEARTBEAT_T2J_STRUCT.pack(self.t_teensy_us, self.link_state, self.bus1_health, self.bus2_health, self.fault_state, self.flags, self.uptime_ms)
+        return _HEARTBEAT_T2J_STRUCT.pack(self.t_teensy_us, self.link_state, self.bus1_health, self.bus2_health, self.fault_state, self.flags, self.uptime_ms, self.bb_state, self.bb_state_data, self.bb_flags, self.bb_yaw_deg, self.bb_pitch_deg, self.bb_hand_mm)
 
     @classmethod
     def unpack(cls, data: bytes) -> 'HeartbeatT2J':
-        vals = _HEARTBEAT_T2J_STRUCT.unpack(data[:20])
+        vals = _HEARTBEAT_T2J_STRUCT.unpack(data[:35])
         it = iter(vals)
-        return cls(next(it), next(it), next(it), next(it), next(it), next(it), next(it))
+        return cls(next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it))
 
 # Profile: 1 Hz firmware instrumentation. Per-task CPU%, CAN bus utilisation, UDP round-trip/jitter, the 500 Hz interp deadline-miss counter, and free heap. Consumed by tools/probes/teensy_link_profiling/jetson.
 PROFILE_FMT = '<QHHHHHHHHHIIIIHHIIIII'

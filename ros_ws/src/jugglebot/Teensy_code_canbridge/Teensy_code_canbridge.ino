@@ -100,6 +100,21 @@ static void send_heartbeat_t2j() {
                 | (fault_stow_pending() ? 0x2u : 0x0u)
                 | (all_axis_heartbeats_ok() ? 0x4u : 0x0u);
   p.uptime_ms   = (uint32_t)(micros64() / 1000ULL);
+
+  // Ball Butler heartbeat snapshot (Phase A — replaces legacy can_node bb/
+  // heartbeat publisher). snapshot_bb() takes a seqlock-consistent view so the
+  // multi-field copy never reads a torn write from the CAN1 RX decode.
+  BallButlerSnapshot bb{};
+  snapshot_bb(bb_state, bb);
+  p.bb_state      = bb.state;
+  p.bb_state_data = bb.state_data;
+  p.bb_flags      = (uint8_t)((bb.ball_in_hand    ? 0x1u : 0x0u)
+                            | (bb.heartbeat_seen  ? 0x2u : 0x0u)
+                            | (bb.heartbeat_stale ? 0x4u : 0x0u));
+  p.bb_yaw_deg    = bb.yaw_deg;
+  p.bb_pitch_deg  = bb.pitch_deg;
+  p.bb_hand_mm    = bb.hand_mm;
+
   udp_send_stream(JbUdp::MsgType::HEARTBEAT_T2J, (const uint8_t*)&p, sizeof(p));
 }
 
