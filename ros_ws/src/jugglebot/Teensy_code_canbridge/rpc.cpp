@@ -7,6 +7,8 @@
 #include "udp_link.h"
 #include "canbridge_config.h"
 #include "odrive_protocol.h"
+#include "ball_butler_protocol.h"
+#include "ball_butler_state.h"
 #include "can_buses.h"
 #include "fault_machine.h"
 
@@ -84,6 +86,25 @@ static uint16_t send_leg_frame(uint8_t axis, const ODrive::CanFrame& f) {
   return can_jugglebot_send(f) ? JbUdp::RpcStatus::OK : JbUdp::RpcStatus::ERR_TIMEOUT;
 }
 
+// Ball Butler presence gate. CAN1 carries no other partner; with BB unpowered
+// or unplugged, an un-ACKed TX would climb the FlexCAN TEC and eventually drop
+// the bus to bus-off (same failure mode the cone-absent gate prevents on CAN2 —
+// HANDOFF-firmware-three-bus D2, but for CAN1). bb_present() requires a fresh
+// heartbeat; the bridge-level bb/calibrate handler translates ERR_BUS_DOWN to a
+// silent-success for the homing flow (matching can_node._svc_bb_calibrate).
+static bool bb_present() {
+  // Single-byte volatile reads are atomic on Cortex-M7 — no seqlock needed for
+  // this two-bool freshness check. (The decoded yaw/pitch/hand fields require
+  // snapshot_bb() for cross-field coherence; here we only sample state metadata.)
+  return bb_state.heartbeat_seen && !bb_state.heartbeat_stale;
+}
+
+// Send a BB frame to CAN1, gated on BB presence (above). Returns RpcStatus.
+static uint16_t send_bb_frame(const ODrive::CanFrame& f) {
+  if (!bb_present()) return JbUdp::RpcStatus::ERR_BUS_DOWN;
+  return can_bb_send(f) ? JbUdp::RpcStatus::OK : JbUdp::RpcStatus::ERR_TIMEOUT;
+}
+
 template <typename Arg>
 static bool take(const uint8_t* args, uint16_t arg_len, Arg& out) {
   if (arg_len < sizeof(Arg)) return false;
@@ -155,6 +176,29 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
     case RpcMethod::ENCODER_SEARCH:
     case RpcMethod::HOME:
       return RpcStatus::ERR_NOT_IMPL;   // Phase 9
+
+    // ── Ball Butler (CAN1) — typed commands ──────────────────────────────
+    // Each gated on BB presence to prevent the un-ACKed-TX bus-off failure
+    // mode (analogous to the CAN2 cone-absent gate). Bridge node
+    // bb/calibrate translates ERR_BUS_DOWN to silent-success to preserve
+    // can_node's homing semantics.
+    case RpcMethod::BB_THROW: {
+      ArgBbThrow a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
+      // Range-check BEFORE building the frame — refuses a malformed throw
+      // before CAN1 sees a byte (HANDOFF-firmware-three-bus D2). Mirrors
+      // ball_butler.py:98-105 ValueError raises.
+      if (!BallButler::throw_args_valid(a.yaw_rad, a.pitch_rad,
+                                        a.speed_mps, a.delay_s))
+        return RpcStatus::ERR_BAD_ARGS;
+      return send_bb_frame(BallButler::encode_throw(
+          a.yaw_rad, a.pitch_rad, a.speed_mps, a.delay_s));
+    }
+    case RpcMethod::BB_RELOAD:
+      return send_bb_frame(BallButler::encode_reload());
+    case RpcMethod::BB_RESET:
+      return send_bb_frame(BallButler::encode_reset());
+    case RpcMethod::BB_CALIBRATE_LOC:
+      return send_bb_frame(BallButler::encode_calibrate_loc());
 
     case RpcMethod::TIME_OF_DAY_QUERY:
       // The Teensy is the CLIENT for this method; it should never receive it as

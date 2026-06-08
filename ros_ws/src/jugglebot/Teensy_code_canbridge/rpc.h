@@ -64,6 +64,7 @@ using JbUdp::RpcArgs::ArgAxisOnly;
 using JbUdp::RpcArgs::ArgSdoRead;
 using JbUdp::RpcArgs::ArgSdoWrite;
 using JbUdp::RpcArgs::ResultTimeOfDay;
+using JbUdp::RpcArgs::ArgBbThrow;
 
 using JbUdp::RpcArgs::AXIS_ALL;   // broadcast to all legs (CLEAR_ERRORS/REBOOT)
 
