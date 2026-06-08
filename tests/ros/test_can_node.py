@@ -81,13 +81,9 @@ class TestHandleMessage:
         node._handle_message(msg)
         assert node._last_hand_cmd['pos'] == pytest.approx(1.5)
 
-    def test_routes_bb_heartbeat(self, node):
-        from jugglebot.can import ball_butler
-        state_byte = (1 << 1) | 0x01  # IDLE, ball_in_hand=True
-        data = struct.pack('<BBHHH', state_byte, 0, 100, 50, 20)
-        msg = can.Message(arbitration_id=ball_butler.HEARTBEAT_ID, data=data)
-        node._handle_message(msg)
-        assert node.last_bb_heartbeat.ball_in_hand is True
+    # test_routes_bb_heartbeat removed — BB heartbeat (CAN 0x7D1) RX moved to
+    # the can-bridge Teensy in the Phase A cutover. Coverage now lives in
+    # tests/ros/test_teensy_bridge_node_bb.py against the HeartbeatT2J path.
 
     def test_routes_catch_event(self, node):
         """A CATCH_EVENT frame routes to the catch-event branch, not ODrive."""
@@ -145,21 +141,10 @@ class TestHandleMessage:
         node._handle_message(msg)
         assert node.motors.get_field(0, 'current_state') == 8
 
-    def test_filters_irrelevant_bb_motor_cmd(self, node):
-        """BB motor axes (7, 8) should ignore commands not in BB_RELEVANT_CMD_IDS."""
-        from jugglebot.can import odrive
-        # set_input_pos (0x0C) is NOT in BB_RELEVANT_CMD_IDS
-        aid = (7 << 5) | proto.ODRIVE_COMMANDS['set_input_pos']
-        msg = can.Message(arbitration_id=aid, data=bytes(8))
-        # Should not raise, and should not update motor state
-        node._handle_message(msg)
-
-    def test_passes_relevant_bb_motor_cmd(self, node):
-        """BB motor heartbeat (relevant cmd) SHOULD be processed."""
-        data = struct.pack('<IBBBB', 0, 1, 0, 0x00, 0)  # IDLE
-        msg = _odrive_msg(7, 'heartbeat_message', data)
-        node._handle_message(msg)
-        assert node.motors.get_field(7, 'current_state') == 1
+    # BB-motor (axes 7+8) filter tests removed — BB ODrive heartbeat decode
+    # on CAN1 is deferred to phase B of the can-bridge cutover (the firmware
+    # currently decodes only the BB Teensy heartbeat 0x7D1 on CAN1, not the
+    # BB ODrive heartbeats from axes 7+8). Tests will return in phase B.
 
 
 # ════════════════════════════════════════════════════════════════
@@ -981,22 +966,9 @@ class TestPublishRobotState:
         assert any("Fatal" in e for e in msg.error)
 
 
-class TestPublishBbHeartbeat:
-    def test_publishes_heartbeat(self, node):
-        node._publish_bb_heartbeat()
-        assert len(node.bb_heartbeat_pub.published) == 1
-
-    def test_reflects_last_heartbeat(self, node):
-        from jugglebot.can.ball_butler import BallButlerHeartbeat, BallButlerStates
-        node.last_bb_heartbeat = BallButlerHeartbeat(
-            ball_in_hand=True,
-            state=BallButlerStates.IDLE,
-            yaw_deg=45.0,
-        )
-        node._publish_bb_heartbeat()
-        msg = node.bb_heartbeat_pub.published[0]
-        assert msg.ball_in_hand is True
-        assert msg.yaw_deg == pytest.approx(45.0)
+# TestPublishBbHeartbeat removed — bb/heartbeat is now published by the
+# can-bridge bridge node (Phase A cutover). Coverage moved to
+# tests/ros/test_teensy_bridge_node_bb.py.
 
 
 # ════════════════════════════════════════════════════════════════
@@ -1086,36 +1058,9 @@ class TestSetHandGains:
             node._set_hand_gains()
 
 
-class TestSvcBBThrow:
-    """The bb/send_throw_command service handler — covers the suppress_announcement opt-out."""
-
-    def _make_req(self, *, suppress=False):
-        from jugglebot_interfaces.srv import SendBallButlerCommand
-        req = SendBallButlerCommand.Request()
-        req.yaw_angle_rad = 0.1
-        req.pitch_angle_rad = 0.5
-        req.throw_speed = 3.0
-        req.throw_time = 1.0
-        req.suppress_announcement = suppress
-        return req
-
-    def test_announces_by_default(self, node):
-        from jugglebot_interfaces.srv import SendBallButlerCommand
-        node.bus.send = MagicMock(return_value=True)
-        # Make calibration present so _publish_throw_announcement doesn't early-return
-        node._bb_position_mm = (-900.0, -200.0, 1740.0)
-        node._bb_yaw_offset_rad = 0.0
-        res = node._svc_bb_throw(self._make_req(suppress=False),
-                                 SendBallButlerCommand.Response())
-        assert res.success is True
-        assert len(node.throw_announcement_pub.published) == 1
-
-    def test_suppress_skips_announcement(self, node):
-        from jugglebot_interfaces.srv import SendBallButlerCommand
-        node.bus.send = MagicMock(return_value=True)
-        node._bb_position_mm = (-900.0, -200.0, 1740.0)
-        node._bb_yaw_offset_rad = 0.0
-        res = node._svc_bb_throw(self._make_req(suppress=True),
-                                 SendBallButlerCommand.Response())
-        assert res.success is True
-        assert len(node.throw_announcement_pub.published) == 0
+# TestSvcBBThrow removed with the BB cutover — bb/send_throw_command moved to
+# teensy_bridge_node. The ThrowAnnouncement publisher was deleted outright
+# (D3 — throw_director_node is the sole publisher), so the
+# "announces by default / suppress skips announcement" behaviours no longer
+# exist. Coverage of the new bridge-side service is in
+# tests/ros/test_teensy_bridge_node_bb.py.

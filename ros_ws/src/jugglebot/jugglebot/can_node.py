@@ -15,8 +15,6 @@ from rclpy.node import Node
 from rclpy.action import ActionServer
 
 from jugglebot_interfaces.msg import (
-    BallButlerCalibrationResult,
-    BallButlerHeartbeat as BallButlerHeartbeatMsg,
     CanTrafficReportMessage,
     CatchEvent as CatchEventMsg,
     CatchingConeHeartbeat as CatchingConeHeartbeatMsg,
@@ -24,13 +22,11 @@ from jugglebot_interfaces.msg import (
     LegsTargetReachedMessage,
     RobotState,
     SetMotorVelCurrLimitsMessage,
-    ThrowAnnouncement,
 )
 from jugglebot_interfaces.srv import (
     ActivateOrDeactivate,
     GetTiltReadingService,
     ODriveCommandService,
-    SendBallButlerCommand,
     SetFloat,
     SetHandGains,
     SetHandTrajCmd,
@@ -39,16 +35,19 @@ from jugglebot_interfaces.srv import (
 from jugglebot_interfaces.action import HomeMotors
 from std_msgs.msg import Float64MultiArray, String
 from std_srvs.srv import Trigger
-from geometry_msgs.msg import Point, Quaternion, Vector3
+from geometry_msgs.msg import Quaternion
 
 from jugglebot.can.bus import CANBus
 from jugglebot.can import odrive
-from jugglebot.can import ball_butler
 from jugglebot.can import catching_cone
 from jugglebot.can.motor_state import MotorStateTracker
-from jugglebot.can.throw_ballistics import predict_throw
 import jugglebot.protocol_config as proto
 import jugglebot.hardware_config as hw
+
+# Ball Butler is owned by teensy_bridge_node since the BB cutover (Phase A of
+# the can-bridge migration). bb/* services + bb/heartbeat publisher + the
+# ThrowAnnouncement publisher (D3: throw_director is now sole publisher) all
+# moved off can_node. See plans/active/teensy-can-offload.md.
 
 # ── CAN watchdog constants ─────────────────────────────────────
 _HEARTBEAT_TIMEOUT_S = 2.0       # Trigger watchdog after 2s without any axis heartbeat
@@ -127,20 +126,12 @@ class CanInterfaceNode(Node):
         # ── Core components ────────────────────────────────────
         self.bus = CANBus(logger=self.get_logger())
         self.motors = MotorStateTracker()
-        self.last_bb_heartbeat = ball_butler.BallButlerHeartbeat()
-        self._bb_heartbeat_received = False
-        self._bb_last_can_rx_time = 0.0  # monotonic time of last CAN heartbeat frame
-        self._bb_heartbeat_timeout_s = proto.BB_HEARTBEAT_TIMEOUT_MS / 1000.0
 
-        # Catching cone heartbeat tracking (mirrors the Ball Butler block above)
+        # Catching cone heartbeat tracking.
         self.last_cone_heartbeat = catching_cone.ConeHeartbeat()
         self._cone_heartbeat_received = False
         self._cone_last_can_rx_time = 0.0  # monotonic time of last cone heartbeat frame
         self._cone_heartbeat_timeout_s = proto.CC_HEARTBEAT_TIMEOUT_MS / 1000.0
-
-        # BB calibration data (populated by bb/calibration_result subscription)
-        self._bb_position_mm = None  # Optional tuple (x, y, z) in mm
-        self._bb_yaw_offset_rad: float = 0.0
 
         # Operational limits (mutable, can be changed via topics)
         self.leg_vel_limit = odrive.DEFAULT_VEL_CURR['leg_vel']
@@ -165,8 +156,6 @@ class CanInterfaceNode(Node):
 
         # Firmware version query tracking
         self._jb_version_query_sent = False
-        self._bb_version_query_sent = False
-        self._bb_firmware_checked = False
         self._pending_version_queries: list[int] = []
         self._version_query_timer = None
 
@@ -214,10 +203,9 @@ class CanInterfaceNode(Node):
         self.create_service(SetHandTrajCmd, 'set_hand_traj_cmd', self._svc_set_hand_traj)
         self.create_service(SetFloat, 'smooth_move_hand', self._svc_smooth_move_hand)
         self.create_service(SetHandGains, 'set_hand_gains', self._svc_set_hand_gains)
-        self.create_service(SendBallButlerCommand, 'bb/send_throw_command', self._svc_bb_throw)
-        self.create_service(Trigger, 'bb/reload', self._svc_bb_reload)
-        self.create_service(Trigger, 'bb/reset', self._svc_bb_reset)
-        self.create_service(Trigger, 'bb/calibrate', self._svc_bb_calibrate)
+        # Ball Butler services moved to teensy_bridge_node (Phase A cutover):
+        # bb/send_throw_command, bb/reload, bb/reset, bb/calibrate. The names
+        # are unchanged so GUI / orchestrator / mocap callers see no shift.
 
         # ── Action servers ─────────────────────────────────────
         self._home_action = ActionServer(self, HomeMotors, 'home_motors', self._action_home)
@@ -227,19 +215,20 @@ class CanInterfaceNode(Node):
         self.create_subscription(SetMotorVelCurrLimitsMessage, 'set_motor_vel_curr_limits', self._sub_vel_curr_limits, 10)
         self.create_subscription(String, 'control_mode_topic', self._sub_control_mode, 10)
         self.create_subscription(Float64MultiArray, 'set_level_state', self._sub_set_level_state, 10)
-        # BB calibration result (TRANSIENT_LOCAL — receives latched message even if published before us)
-        from rclpy.qos import QoSProfile, DurabilityPolicy
-        bb_cal_qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
-        self.create_subscription(BallButlerCalibrationResult, 'bb/calibration_result',
-                                 self._sub_bb_calibration, bb_cal_qos)
+        # bb/calibration_result subscription dropped with the BB cutover: BB
+        # calibration data was used only by _publish_throw_announcement, and the
+        # ThrowAnnouncement publisher moved off can_node entirely (D3 —
+        # throw_director_node is the sole publisher).
 
         # ── Publishers ─────────────────────────────────────────
         self.robot_state_pub = self.create_publisher(RobotState, 'robot_state', 10)
         self.can_traffic_pub = self.create_publisher(CanTrafficReportMessage, 'can_traffic', 10)
         self.hand_telemetry_pub = self.create_publisher(HandTelemetryMessage, 'hand_telemetry', 10)
         self.target_reached_pub = self.create_publisher(LegsTargetReachedMessage, 'platform_target_reached', 10)
-        self.bb_heartbeat_pub = self.create_publisher(BallButlerHeartbeatMsg, 'bb/heartbeat', 10)
-        self.throw_announcement_pub = self.create_publisher(ThrowAnnouncement, 'throw_announcements', 10)
+        # bb/heartbeat publisher moved to teensy_bridge_node (Phase A cutover).
+        # throw_announcement_pub deleted with the BB cutover (D3 — throw_director
+        # is the sole publisher; can_node's predict_throw-based announcement
+        # was systematically wrong for off-plane targets like the cone).
         self.catch_event_pub = self.create_publisher(CatchEventMsg, 'cone/catch_event', 10)
         self.cone_heartbeat_pub = self.create_publisher(CatchingConeHeartbeatMsg, 'cone/heartbeat', 10)
 
@@ -248,7 +237,6 @@ class CanInterfaceNode(Node):
         state_pub_period = 0.01  # 100 Hz robot state
         ts_period = 0.01  # 100 Hz time-sync broadcast
         hand_telemetry_period = 0.002  # 500 Hz hand telemetry
-        bb_heartbeat_period = 0.1  # 10 Hz Ball Butler heartbeat
         cone_heartbeat_period = 0.1  # 10 Hz catching cone heartbeat
         target_reached_period = 0.1  # 10 Hz target reached check
 
@@ -256,7 +244,6 @@ class CanInterfaceNode(Node):
         self.create_timer(state_pub_period, self._publish_robot_state)     # 100 Hz state
         self.create_timer(ts_period, self.bus.broadcast_time)  # Time sync
         self.create_timer(hand_telemetry_period, self._publish_hand_telemetry) # 500 Hz hand
-        self.create_timer(bb_heartbeat_period, self._publish_bb_heartbeat)     # 10 Hz BB
         self.create_timer(cone_heartbeat_period, self._publish_cone_heartbeat) # 10 Hz cone
         self.create_timer(target_reached_period, self._check_target_reached)     # 10 Hz target
         self.create_timer(1.0, self._watchdog_check)                              # 1 Hz heartbeat watchdog
@@ -272,7 +259,6 @@ class CanInterfaceNode(Node):
             (self.bus.broadcast_time,       ts_period),
             (self._publish_robot_state,     state_pub_period),
             (self._publish_hand_telemetry,  hand_telemetry_period),
-            (self._publish_bb_heartbeat,    bb_heartbeat_period),
             (self._publish_cone_heartbeat,  cone_heartbeat_period),
             (self._check_target_reached,    target_reached_period),
         ]
@@ -303,13 +289,9 @@ class CanInterfaceNode(Node):
             self._decode_teensy_state(msg)
         elif aid == self._hand_input_pos_id:
             self._handle_hand_input_pos(msg)
-        elif aid == ball_butler.HEARTBEAT_ID:
-            try:
-                self.last_bb_heartbeat = ball_butler.BallButlerHeartbeat.from_can_frame(msg.data)
-                self._bb_heartbeat_received = True
-                self._bb_last_can_rx_time = time.monotonic()
-            except ValueError as e:
-                self.get_logger().warning(f"Bad BB heartbeat frame: {e}", throttle_duration_sec=5.0)
+        # BB heartbeat (0x7D1) RX moved to the can-bridge Teensy (Phase A cutover).
+        # The bridge decodes it on CAN1 and republishes bb/heartbeat from the
+        # extended HeartbeatT2J — can_node no longer sees BB frames over USB-CAN.
         elif aid == catching_cone.CATCH_EVENT_ID:
             try:
                 evt = catching_cone.CatchEvent.from_can_frame(msg.data)
@@ -361,11 +343,10 @@ class CanInterfaceNode(Node):
             self.get_logger().info("All Jugglebot heartbeats received — queueing Get_Version queries")
             self._pending_version_queries.extend(odrive.JUGGLEBOT_AXES)
             self._start_version_query_timer()
-        if not self._bb_version_query_sent and self.motors.all_bb_heartbeats_received():
-            self._bb_version_query_sent = True
-            self.get_logger().info("All Ball Butler heartbeats received — queueing Get_Version queries")
-            self._pending_version_queries.extend(odrive.BB_AXES)
-            self._start_version_query_timer()
+        # BB version-check (axes 7+8) deferred to phase B: BB ODrive heartbeats
+        # no longer reach can_node over USB-CAN, and the can-bridge currently
+        # only decodes the BB Teensy heartbeat (0x7D1), not the BB ODrives. The
+        # next phase adds BB ODrive RX decode on CAN1 and restores validation.
 
     def _start_version_query_timer(self):
         """Start (or re-use) a 5 ms timer that sends one Get_Version per tick."""
@@ -529,16 +510,9 @@ class CanInterfaceNode(Node):
                 self.motors.firmware_validated = True
                 self.get_logger().info("Jugglebot firmware check PASSED — all axes match expected versions")
 
-        # Validate BB group when complete
-        if not self._bb_firmware_checked and self.motors.all_bb_versions_received():
-            self._bb_firmware_checked = True
-            error = self.motors.validate_group(odrive.BB_AXES, "Ball Butler")
-            if error:
-                self.motors.firmware_mismatch_error = error
-                self.motors.fatal_error = True
-                self.get_logger().error(error)
-            else:
-                self.get_logger().info("Ball Butler firmware check PASSED — all axes match expected versions")
+        # BB firmware validation deferred to phase B (see _handle_heartbeat
+        # above — BB ODrive heartbeats need CAN1 RX decode on the can-bridge
+        # before Get_Version can fire).
 
     # Handler dispatch table (maps command_id → method).
     # These are unbound functions — called as handler(self, axis_id, data).
@@ -870,121 +844,12 @@ class CanInterfaceNode(Node):
             res.message = str(e)
         return res
 
-    def _svc_bb_throw(self, req, res):
-        try:
-            msg = ball_butler.encode_throw_command(req.yaw_angle_rad, req.pitch_angle_rad,
-                                                   req.throw_speed, req.throw_time)
-            self.bus.send(msg)
-            res.success = True
-            res.message = "Throw command sent."
-            # Caller may opt out of the predict_throw-based announcement when
-            # it intends to publish a more-accurate one itself (e.g. the
-            # throw_director_node, which has the actual target z and the
-            # solver's serial-chain-aware ToF).
-            if not getattr(req, 'suppress_announcement', False):
-                self._publish_throw_announcement(
-                    req.yaw_angle_rad, req.pitch_angle_rad,
-                    req.throw_speed, req.throw_time)
-        except Exception as e:
-            res.success = False
-            res.message = str(e)
-        return res
-
-    def _publish_throw_announcement(self, yaw_rad, pitch_rad, speed_mps, delay_s):
-        """Compute ballistic prediction and publish a ThrowAnnouncement.
-
-        Requires BB calibration data (position + yaw offset) to have been
-        received.  If not yet calibrated, logs a warning and skips.
-        """
-        if self._bb_position_mm is None:
-            self.get_logger().warning(
-                "Cannot publish throw announcement: BB calibration not received",
-                throttle_duration_sec=5.0)
-            return
-
-        prediction = predict_throw(
-            yaw_rad=yaw_rad,
-            pitch_rad=pitch_rad,
-            speed_mps=speed_mps,
-            bb_position_mm=self._bb_position_mm,
-            yaw_offset_rad=self._bb_yaw_offset_rad,
-        )
-        if prediction is None:
-            self.get_logger().warning("Throw prediction: ball never reaches catch plane")
-            return
-
-        now = self.get_clock().now()
-        throw_time = now + rclpy.time.Duration(seconds=delay_s)
-        landing_time = throw_time + rclpy.time.Duration(seconds=prediction.tof_s)
-
-        ann = ThrowAnnouncement()
-        ann.header.stamp = now.to_msg()
-        ann.header.frame_id = "base"
-        ann.thrower_name = "ball_butler"
-        ann.initial_position = Point(
-            x=prediction.initial_position[0],
-            y=prediction.initial_position[1],
-            z=prediction.initial_position[2])
-        ann.initial_velocity = Vector3(
-            x=prediction.initial_velocity[0],
-            y=prediction.initial_velocity[1],
-            z=prediction.initial_velocity[2])
-        # TEMPORARY: default to jugglebot for testing catch pipeline.
-        # In production this should be "human" (or determined by the throw target).
-        ann.target_id = "jugglebot"
-        ann.throw_time = throw_time.to_msg()
-        ann.predicted_tof_sec = prediction.tof_s
-        ann.landing_position = Point(
-            x=prediction.landing_position[0],
-            y=prediction.landing_position[1],
-            z=prediction.landing_position[2])
-        ann.landing_velocity = Vector3(
-            x=prediction.landing_velocity[0],
-            y=prediction.landing_velocity[1],
-            z=prediction.landing_velocity[2])
-        ann.landing_time = landing_time.to_msg()
-
-        self.throw_announcement_pub.publish(ann)
-        self.get_logger().info(
-            f"Throw announced: tof={prediction.tof_s:.3f}s, "
-            f"landing=({prediction.landing_position[0]:.0f}, "
-            f"{prediction.landing_position[1]:.0f}, "
-            f"{prediction.landing_position[2]:.0f}) mm")
-
-    def _sub_bb_calibration(self, msg):
-        """Store BB calibration result for throw announcements."""
-        if not msg.success:
-            return
-        self._bb_position_mm = (msg.position_mm.x, msg.position_mm.y, msg.position_mm.z)
-        self._bb_yaw_offset_rad = msg.yaw_offset_rad
-        self.get_logger().info(
-            f"BB calibration received: pos=({msg.position_mm.x:.1f}, "
-            f"{msg.position_mm.y:.1f}, {msg.position_mm.z:.1f}) mm, "
-            f"yaw_offset={math.degrees(msg.yaw_offset_rad):.2f} deg")
-
-    def _svc_bb_reload(self, req, res):
-        return self._bb_state_cmd(ball_butler.RELOAD_CMD_ID, "reload", res)
-
-    def _svc_bb_reset(self, req, res):
-        return self._bb_state_cmd(ball_butler.RESET_CMD_ID, "reset", res)
-
-    def _svc_bb_calibrate(self, req, res):
-        if not self._bb_heartbeat_received:
-            self.get_logger().info("BB calibrate: no Ball Butler heartbeat received, skipping")
-            res.success = True
-            res.message = "Ball Butler not connected, calibration skipped."
-            return res
-        return self._bb_state_cmd(ball_butler.CALIBRATE_CMD_ID, "calibrate", res)
-
-    def _bb_state_cmd(self, cmd_id, name, res):
-        try:
-            self.bus.send(ball_butler.encode_state_command(cmd_id))
-            res.success = True
-            res.message = f"BB {name} command sent."
-        except Exception as e:
-            res.success = False
-            res.message = str(e)
-        return res
+    # Ball Butler services (_svc_bb_throw / _svc_bb_reload / _svc_bb_reset /
+    # _svc_bb_calibrate) plus the throw-announcement publisher (_publish_throw_
+    # announcement) moved to teensy_bridge_node in the Phase A cutover. The
+    # ThrowAnnouncement publisher was deleted outright (D3) — throw_director
+    # is the sole publisher; can_node's predict_throw-based version assumed
+    # the platform default catch height and is wrong for off-plane targets.
 
     # ═══════════════════════════════════════════════════════════
     # Action callbacks
@@ -1265,22 +1130,10 @@ class CanInterfaceNode(Node):
         except Exception as e:
             self.get_logger().error(f"Hand telemetry error: {e}")
 
-    def _publish_bb_heartbeat(self):
-        try:
-            hb = self.last_bb_heartbeat
-            connected = (self._bb_heartbeat_received
-                         and (time.monotonic() - self._bb_last_can_rx_time) < self._bb_heartbeat_timeout_s)
-            msg = BallButlerHeartbeatMsg()
-            msg.connected = connected
-            msg.ball_in_hand = hb.ball_in_hand
-            msg.state = hb.state
-            msg.state_data = hb.state_data
-            msg.yaw_deg = hb.yaw_deg
-            msg.pitch_deg = hb.pitch_deg
-            msg.hand_pos_mm = hb.hand_mm
-            self.bb_heartbeat_pub.publish(msg)
-        except Exception as e:
-            self.get_logger().error(f"BB heartbeat publish error: {e}")
+    # _publish_bb_heartbeat moved to teensy_bridge_node._publish_bb_heartbeat
+    # (Phase A cutover). The bridge sources BB state from the extended
+    # HeartbeatT2J payload (bb_state / bb_state_data / bb_flags / bb_yaw_deg /
+    # bb_pitch_deg / bb_hand_mm) instead of decoding the CAN frame directly.
 
     def _handle_catch_event(self, evt):
         """Republish a decoded catching-cone catch event on cone/catch_event.

@@ -125,12 +125,24 @@ def test_enable_setpoint_output_defaults_false(bridge):
 
 # ── Topic namespace discipline ─────────────────────────────────
 
+# Intentional exceptions to the /teensy/* convention (D1 deviation, Phase A
+# BB cutover): the bridge inherits the production names for BB topics + the
+# four BB services so the GUI / orchestrator / mocap_node / throw_director
+# see no name change across the cutover. With USB-CAN removed, the dual-
+# publisher risk that drove D1 is moot. The leg/hand services stay under
+# /teensy/* until phase C of the cutover.
+_PRODUCTION_NAMES_OK = {'bb/heartbeat'}
+
+
 def test_all_topics_under_teensy_namespace(bridge):
-    """No publisher targets a production topic name — all under /teensy/*."""
+    """No publisher targets a production topic name — all under /teensy/*
+    EXCEPT the intentional D1-deviation set (BB cutover, Phase A)."""
     _, node = bridge
     topics = list(node._publishers.keys())
     assert topics, "node created no publishers"
     for t in topics:
+        if t in _PRODUCTION_NAMES_OK:
+            continue
         assert t.startswith('/teensy/'), f"non-namespaced topic: {t}"
 
 

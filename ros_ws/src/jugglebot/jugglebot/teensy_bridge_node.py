@@ -43,12 +43,13 @@ import rclpy
 from rclpy.node import Node
 
 from jugglebot_interfaces.msg import (
+    BallButlerHeartbeat,
     HandTelemetryMessage,
     MotorStateSingle,
     RobotState,
     SetMotorVelCurrLimitsMessage,
 )
-from jugglebot_interfaces.srv import ODriveCommandService
+from jugglebot_interfaces.srv import ODriveCommandService, SendBallButlerCommand
 from geometry_msgs.msg import Quaternion
 from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
 from std_srvs.srv import Trigger
@@ -91,6 +92,11 @@ _FLAG_MPC_ACTIVE = 0x1
 _T2J_FLAG_TIME_SYNCED = 0x1
 _T2J_FLAG_STOW_PENDING = 0x2
 _T2J_FLAG_ALL_AXIS_HB_OK = 0x4
+
+# HeartbeatT2J.bb_flags bits (T→J, Phase A BB cutover).
+_T2J_BB_FLAG_BALL_IN_HAND  = 0x1
+_T2J_BB_FLAG_HEARTBEAT_SEEN  = 0x2
+_T2J_BB_FLAG_HEARTBEAT_STALE = 0x4
 
 # Axis layout (from the generated protocol): legs 0..5, hand = 6, NUM_AXES = 7.
 _NUM_LEGS = p.NUM_LEGS
@@ -243,6 +249,16 @@ class TeensyBridgeNode(Node):
         self.profile_pub = self.create_publisher(
             DiagnosticStatus, '/teensy/profile', 10)
 
+        # ── Ball Butler (Phase A cutover, production names) ────
+        # Intentional naming deviation from D1's "all under /teensy/*"
+        # convention: with USB-CAN removed, the dual-publisher risk D1 was
+        # preventing is moot (can_node is gone for BB). The bridge inherits
+        # the production names so the GUI / orchestrator / mocap_node /
+        # throw_director see no name change across the cutover. Leg/hand
+        # services keep /teensy/* until phase C of the cutover.
+        self.bb_heartbeat_pub = self.create_publisher(
+            BallButlerHeartbeat, 'bb/heartbeat', 10)
+
         # ── RPC service surface (Commit 4) — all under /teensy/* ──
         # ODrive control issued over the can-bridge link via RpcClient. The
         # can-bridge owns legs 0-5 only — the hand is the platform Teensy's, and
@@ -261,10 +277,24 @@ class TeensyBridgeNode(Node):
             SetMotorVelCurrLimitsMessage, '/teensy/set_motor_vel_curr_limits',
             self._sub_vel_curr_limits, 10)
 
+        # ── Ball Butler services (production names, Phase A cutover) ────
+        # The four bb/* services formerly served by can_node. The firmware
+        # gates each TX on bb_present(); we translate the ERR_BUS_DOWN that
+        # gate produces into a silent-success for bb/calibrate to preserve
+        # can_node._svc_bb_calibrate's HOMING semantics (allows homing to
+        # complete without BB attached). The other three propagate the
+        # error so an operator sees a failed throw/reload/reset.
+        self.create_service(SendBallButlerCommand, 'bb/send_throw_command',
+                            self._svc_bb_throw)
+        self.create_service(Trigger, 'bb/reload',    self._svc_bb_reload)
+        self.create_service(Trigger, 'bb/reset',     self._svc_bb_reset)
+        self.create_service(Trigger, 'bb/calibrate', self._svc_bb_calibrate)
+
         # ── Timers (publish on the executor thread) ────────────
         self.create_timer(0.01, self._publish_robot_state)     # 100 Hz (telem rate)
         self.create_timer(0.01, self._publish_hand_telemetry)  # 100 Hz
         self.create_timer(0.1, self._publish_link_status)      # 10 Hz (heartbeat rate)
+        self.create_timer(0.1, self._publish_bb_heartbeat)     # 10 Hz BB (matches CAN1 rate)
         self.create_timer(1.0, self._publish_profile)          # 1 Hz (profile rate)
         self.create_timer(1.0, self._health_check)             # 1 Hz link watchdog
 
@@ -834,6 +864,107 @@ class TeensyBridgeNode(Node):
             ok, msg = False, f'Unknown command: {cmd}'
         res.success = ok
         res.message = msg
+        return res
+
+    # ═══════════════════════════════════════════════════════════
+    # Ball Butler (Phase A cutover — replaces can_node bb/*)
+    # ═══════════════════════════════════════════════════════════
+
+    def _publish_bb_heartbeat(self):
+        """Publish bb/heartbeat (10 Hz) from the BB fields on HeartbeatT2J.
+
+        Mirror of can_node._publish_bb_heartbeat: same ROS message, same field
+        semantics. ``connected`` is the firmware's bb_present() predicate
+        (heartbeat_seen && !heartbeat_stale), so a stale BB shows connected=
+        False without the bridge needing its own staleness clock.
+
+        Suppressed until the first HeartbeatT2J arrives so the topic never
+        carries a misleading all-zero / state=BOOT snapshot before the link
+        is up (mirroring _publish_robot_state's "no phantom snapshot" rule).
+        """
+        try:
+            with self._lock:
+                hb = self._latest_heartbeat
+            if hb is None:
+                return
+            seen   = bool(hb.bb_flags & _T2J_BB_FLAG_HEARTBEAT_SEEN)
+            stale  = bool(hb.bb_flags & _T2J_BB_FLAG_HEARTBEAT_STALE)
+            msg = BallButlerHeartbeat()
+            msg.connected    = bool(seen and not stale)
+            msg.ball_in_hand = bool(hb.bb_flags & _T2J_BB_FLAG_BALL_IN_HAND)
+            msg.state        = int(hb.bb_state)
+            msg.state_data   = int(hb.bb_state_data)
+            msg.yaw_deg      = float(hb.bb_yaw_deg)
+            msg.pitch_deg    = float(hb.bb_pitch_deg)
+            msg.hand_pos_mm  = float(hb.bb_hand_mm)
+            self.bb_heartbeat_pub.publish(msg)
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().error(f"BB heartbeat publish error: {e}",
+                                    throttle_duration_sec=5.0)
+
+    def _bb_present(self) -> bool:
+        """Local view of the firmware's bb_present() — used by bb/calibrate's
+        skip-if-absent semantics. False before the first HeartbeatT2J or
+        whenever BB has gone stale."""
+        with self._lock:
+            hb = self._latest_heartbeat
+        if hb is None:
+            return False
+        return (bool(hb.bb_flags & _T2J_BB_FLAG_HEARTBEAT_SEEN)
+                and not bool(hb.bb_flags & _T2J_BB_FLAG_HEARTBEAT_STALE))
+
+    def _svc_bb_throw(self, req, res):
+        """bb/send_throw_command — typed throw via BB_THROW RPC.
+
+        D3 / HANDOFF: the ThrowAnnouncement publisher does NOT live here.
+        throw_director_node is the sole publisher of throw_announcements; it
+        has the solver's actual target z and serial-chain ToF, so its
+        announcement is the only accurate one. ``req.suppress_announcement``
+        is dead protocol on this service — retained on the .srv for interface
+        stability during the cutover; can be removed in a follow-up.
+        """
+        try:
+            args = rpc_args.encode_bb_throw(
+                req.yaw_angle_rad, req.pitch_angle_rad,
+                req.throw_speed, req.throw_time)
+        except Exception as e:  # noqa: BLE001 (Python-side range check failure)
+            res.success = False
+            res.message = f"Throw arg encode failed: {e}"
+            return res
+        ok, m, _ = self._call_rpc(RpcMethod.BB_THROW, args)
+        res.success = ok
+        res.message = "Throw command sent." if ok else f"Throw failed: {m}"
+        return res
+
+    def _svc_bb_reload(self, req, res):
+        """bb/reload — BB_RELOAD RPC. ERR_BUS_DOWN surfaces as failure (the
+        operator wants to know if BB isn't there for a reload attempt)."""
+        ok, m, _ = self._call_rpc(RpcMethod.BB_RELOAD, b"")
+        res.success = ok
+        res.message = "Reload command sent." if ok else f"Reload failed: {m}"
+        return res
+
+    def _svc_bb_reset(self, req, res):
+        """bb/reset — BB_RESET RPC. ERR_BUS_DOWN surfaces as failure."""
+        ok, m, _ = self._call_rpc(RpcMethod.BB_RESET, b"")
+        res.success = ok
+        res.message = "Reset command sent." if ok else f"Reset failed: {m}"
+        return res
+
+    def _svc_bb_calibrate(self, req, res):
+        """bb/calibrate — BB_CALIBRATE_LOC RPC. If BB is not present, return
+        success=True silently (mirror can_node._svc_bb_calibrate). The state
+        machine's HOMING phase uses this service; the silent-skip lets
+        homing complete without BB attached (the original can_node
+        behaviour). When BB IS present we forward the RPC's status.
+        """
+        if not self._bb_present():
+            res.success = True
+            res.message = "No BB heartbeat received — calibration skipped"
+            return res
+        ok, m, _ = self._call_rpc(RpcMethod.BB_CALIBRATE_LOC, b"")
+        res.success = ok
+        res.message = "Calibrate command sent." if ok else f"Calibrate failed: {m}"
         return res
 
     def _sub_vel_curr_limits(self, msg):
