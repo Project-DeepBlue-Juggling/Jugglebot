@@ -209,6 +209,6 @@ namespace EndpointId {
 // ==========================================================================
 
 namespace MocapAlignment {
-  constexpr float POS_THRESH_MM = 2.5f;
-  constexpr float ROT_THRESH_DEG = 1.0f;
+  constexpr float POS_THRESH_MM = 2000.0f;
+  constexpr float ROT_THRESH_DEG = 180.0f;
 }

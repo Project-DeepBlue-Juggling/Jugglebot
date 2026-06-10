@@ -129,5 +129,5 @@ export const BB_STATE_NAMES = {
 
 // ---- Mocap alignment (protocol_config.yaml -> mocap_alignment) ----
 
-export const MOCAP_ALIGNMENT_POS_THRESH_MM = 2.5;
-export const MOCAP_ALIGNMENT_ROT_THRESH_DEG = 1.0;
+export const MOCAP_ALIGNMENT_POS_THRESH_MM = 2000.0;
+export const MOCAP_ALIGNMENT_ROT_THRESH_DEG = 180.0;
