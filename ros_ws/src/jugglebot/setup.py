@@ -25,7 +25,7 @@ setup(
     maintainer='harrison low',
     maintainer_email='harrisonlow.jugglebot@gmail.com',
     description="v1 of (proper) Jugglebot code. Now with a state machine!",
-    license='MIT Licence',
+    license='GPL-3.0-only',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [

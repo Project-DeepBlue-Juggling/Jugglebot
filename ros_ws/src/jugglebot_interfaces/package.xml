@@ -5,7 +5,7 @@
   <version>0.0.0</version>
   <description>Package for all custom interfaces that Jugglebot requires</description>
   <maintainer email="harrisonlow.jugglebot@gmail.com">harrison low</maintainer>
-  <license>TODO: License declaration</license>
+  <license>GPL-3.0-only</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
