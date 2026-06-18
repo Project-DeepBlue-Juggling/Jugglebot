@@ -37,6 +37,8 @@ class MsgType(IntEnum):
     DIAGNOSTIC = 130  # On-change per-axis diagnostics (STREAM, T→J)
     HEARTBEAT_T2J = 131  # Teensy liveness + link/bus health (STREAM, T→J)
     PROFILE = 132  # 1 Hz profiling/instrumentation (STREAM, T→J)
+    CONE_FRAME = 133  # Catching-cone CAN2 frame relay (STREAM, T→J)
+    BB_AXIS_ESTIMATES = 134  # Ball Butler pitch/hand ODrive pos+vel estimates (STREAM, T→J)
     RPC_RESPONSE = 144  # RPC response (RPC port, T→J)
 
 class RpcMethod(IntEnum):
@@ -298,6 +300,51 @@ class Profile:
         vals = _PROFILE_STRUCT.unpack(data[:66])
         it = iter(vals)
         return cls(next(it), tuple(next(it) for _ in range(9)), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it))
+
+# ConeFrame: Catching-cone CAN2 frame relay (phase-10b cone uplink). The can-bridge forwards every frame received on the cone bus verbatim — CATCH_EVENT (0x7E0) and CONE_HEARTBEAT (0x7E1) today — so the Jetson reuses the tested jugglebot.can.catching_cone decoders unchanged and future cone frames flow without a wire change. The cone's microsecond impact timestamp travels INSIDE `data` (it is latched in the cone's piezo ISR); `t_bridge_us` only stamps bridge-side CAN RX for latency/diagnostic checks.
+CONE_FRAME_FMT = '<QIBBBBBBBBB'
+CONE_FRAME_SIZE = 21
+_CONE_FRAME_STRUCT = struct.Struct(CONE_FRAME_FMT)
+assert _CONE_FRAME_STRUCT.size == 21
+
+@dataclass
+class ConeFrame:
+    t_bridge_us: int = 0
+    can_id: int = 0
+    dlc: int = 0
+    data: tuple = field(default_factory=lambda: (0,) * 8)
+
+    def pack(self) -> bytes:
+        return _CONE_FRAME_STRUCT.pack(self.t_bridge_us, self.can_id, self.dlc, *self.data)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'ConeFrame':
+        vals = _CONE_FRAME_STRUCT.unpack(data[:21])
+        it = iter(vals)
+        return cls(next(it), next(it), next(it), tuple(next(it) for _ in range(8)))
+
+# BbAxisEstimates: High-rate Ball Butler pitch(node 7)/hand(node 8) ODrive encoder estimates, forwarded for during-throw diagnostics (launch angle vs commanded pitch; hand launch speed vs commanded). The can-bridge decodes the CAN1 get_encoder_estimate frames into its bb_axes cache (can_buses.cpp) at the ODrive broadcast rate; this message snapshots that cache at the telemetry-task rate. Pitch position maps to barrel degrees via deg = 90 + 360*rev (PitchAxis.h); hand velocity maps to ball speed via v = vel_rps * 2*pi*HAND_SPOOL_RADIUS_M.
+BB_AXIS_ESTIMATES_FMT = '<Qffff'
+BB_AXIS_ESTIMATES_SIZE = 24
+_BB_AXIS_ESTIMATES_STRUCT = struct.Struct(BB_AXIS_ESTIMATES_FMT)
+assert _BB_AXIS_ESTIMATES_STRUCT.size == 24
+
+@dataclass
+class BbAxisEstimates:
+    t_bridge_us: int = 0
+    pitch_pos_rev: float = 0.0
+    pitch_vel_rps: float = 0.0
+    hand_pos_rev: float = 0.0
+    hand_vel_rps: float = 0.0
+
+    def pack(self) -> bytes:
+        return _BB_AXIS_ESTIMATES_STRUCT.pack(self.t_bridge_us, self.pitch_pos_rev, self.pitch_vel_rps, self.hand_pos_rev, self.hand_vel_rps)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'BbAxisEstimates':
+        vals = _BB_AXIS_ESTIMATES_STRUCT.unpack(data[:24])
+        it = iter(vals)
+        return cls(next(it), next(it), next(it), next(it), next(it))
 
 # RpcRequest: Generic RPC envelope. `method` selects the operation; `args` is a method-specific blob (see docs). `req_id` is echoed in the response for matching independent of the frame sequence counter.
 RPC_REQUEST_FMT = '<HHHH'

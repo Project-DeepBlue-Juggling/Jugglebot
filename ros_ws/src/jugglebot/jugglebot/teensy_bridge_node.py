@@ -44,6 +44,8 @@ from rclpy.node import Node
 
 from jugglebot_interfaces.msg import (
     BallButlerHeartbeat,
+    CatchEvent,
+    CatchingConeHeartbeat,
     HandTelemetryMessage,
     MotorStateSingle,
     RobotState,
@@ -52,6 +54,8 @@ from jugglebot_interfaces.msg import (
 from jugglebot_interfaces.srv import ODriveCommandService, SendBallButlerCommand
 from geometry_msgs.msg import Quaternion
 from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
+from std_msgs.msg import Float32MultiArray
+from sensor_msgs.msg import JointState
 from std_srvs.srv import Trigger
 
 from controller.teensy_link import (
@@ -69,12 +73,16 @@ from controller.teensy_link import (
     Telemetry,
     Diagnostic,
     Profile,
+    ConeFrame,
+    BbAxisEstimates,
 )
 from controller.teensy_link import protocol as p
 from controller.teensy_link import rpc_args
 from controller.teensy_link.fault_logic import LinkLossLatch
 from controller.teensy_link.setpoint_pump import SetpointPump
+from jugglebot.can import catching_cone
 import jugglebot.hardware_config as hw
+import jugglebot.protocol_config as proto
 
 
 # ── Constants ──────────────────────────────────────────────────
@@ -217,6 +225,17 @@ class TeensyBridgeNode(Node):
         # Per-axis latest Diagnostic (one axis per frame on the wire).
         self._latest_diag: dict[int, Diagnostic] = {}
 
+        # Catching cone state (phase-10b cone uplink). Catch events are
+        # DISCRETE — every one is queued and published exactly once (the
+        # stash-latest pattern above would drop impacts that arrive between
+        # timer ticks); heartbeats are state — latest wins. The connected
+        # gate mirrors can_node: a cone heartbeat within the CAN timeout.
+        self._cone_catch_queue: list = []   # [(decoded CatchEvent, host_arrival_us)]
+        self._latest_cone_hb = catching_cone.ConeHeartbeat()
+        self._cone_hb_received = False
+        self._cone_last_hb_mono = 0.0
+        self._cone_hb_timeout_s = proto.CC_HEARTBEAT_TIMEOUT_MS / 1000.0
+
         # Link-loss deferred-stow latch (the bridge's UDP-link watchdog — the
         # Jetson↔Teensy analog of can_node._watchdog_check; the CAN-side latch is
         # owned by the Teensy firmware). See controller/teensy_link/fault_logic.py.
@@ -233,11 +252,18 @@ class TeensyBridgeNode(Node):
         self._client.start_heartbeat(hz=float(p.HEARTBEAT_HZ), flags=0)
         self._client.set_heartbeat_flags(0)
 
+        # RX-thread queues MUST exist before any subscribe() below: the client's
+        # RX thread is already live, so a frame arriving between subscribe() and
+        # a later __init__ line would hit an unset attribute (startup race).
+        self._bb_est_queue = []   # list of BbAxisEstimates, drained by timer
+
         # ── Subscriptions to T→J streams (RX-thread callbacks) ──
         self._client.subscribe(int(MsgType.HEARTBEAT_T2J), self._on_heartbeat_t2j)
         self._client.subscribe(int(MsgType.TELEMETRY), self._on_telemetry)
         self._client.subscribe(int(MsgType.DIAGNOSTIC), self._on_diagnostic)
         self._client.subscribe(int(MsgType.PROFILE), self._on_profile)
+        self._client.subscribe(int(MsgType.CONE_FRAME), self._on_cone_frame)
+        self._client.subscribe(int(MsgType.BB_AXIS_ESTIMATES), self._on_bb_estimates)
 
         # ── Publishers (all under /teensy/*) ───────────────────
         self.robot_state_pub = self.create_publisher(
@@ -258,6 +284,39 @@ class TeensyBridgeNode(Node):
         # services keep /teensy/* until phase C of the cutover.
         self.bb_heartbeat_pub = self.create_publisher(
             BallButlerHeartbeat, 'bb/heartbeat', 10)
+
+        # ── Catching cone (phase-10b cone uplink, production names) ────
+        # Same naming rationale as bb/*: can_node's cone path is dead — the
+        # cone lives on the can-bridge's CAN2, which USB-CAN never sees — so
+        # the bridge inherits the production names and the existing consumers
+        # (catch_correlation_node, analysis tooling) see no change. CONE_FRAME
+        # relays carry the raw CAN payloads; decode reuses the same
+        # jugglebot.can.catching_cone helpers can_node used.
+        self.catch_event_pub = self.create_publisher(
+            CatchEvent, 'cone/catch_event', 10)
+        self.cone_heartbeat_pub = self.create_publisher(
+            CatchingConeHeartbeat, 'cone/heartbeat', 10)
+
+        # Ball Butler ODrive diagnostics (CAN1 nodes 7=pitch, 8=hand). The bridge
+        # emits these as DIAGNOSTIC frames with axis_id 7/8, stashed in
+        # self._latest_diag[7|8] by _on_diagnostic; republished as a flat array.
+        # Layout: [pitch_fet, pitch_motor, pitch_iq, pitch_state,
+        #          hand_fet,  hand_motor,  hand_iq,  hand_state]  (degC, degC, A, enum).
+        self.bb_odrive_pub = self.create_publisher(
+            Float32MultiArray, 'bb/odrive_diag', 10)
+
+        # Ball Butler high-rate pitch/hand encoder estimates (BB_AXIS_ESTIMATES,
+        # CAN1 nodes 7/8) for during-throw diagnostics: launch angle vs commanded
+        # pitch, hand launch speed vs commanded. Published as JointState
+        # (name=[bb_pitch, bb_hand], position=rev, velocity=rev/s), stamped with
+        # the bridge wall-clock at sample time. Every sample is queued in
+        # _on_bb_estimates and drained on the executor thread by
+        # _publish_bb_axis_estimates (publishing off the RX thread, per the
+        # other RX callbacks' contract).
+        self.bb_estimates_pub = self.create_publisher(
+            JointState, 'bb/axis_estimates', 50)
+        # (_bb_est_queue is initialized above, before the subscribe block, to
+        # avoid a startup race with the already-live RX thread.)
 
         # ── RPC service surface (Commit 4) — all under /teensy/* ──
         # ODrive control issued over the can-bridge link via RpcClient. The
@@ -295,6 +354,10 @@ class TeensyBridgeNode(Node):
         self.create_timer(0.01, self._publish_hand_telemetry)  # 100 Hz
         self.create_timer(0.1, self._publish_link_status)      # 10 Hz (heartbeat rate)
         self.create_timer(0.1, self._publish_bb_heartbeat)     # 10 Hz BB (matches CAN1 rate)
+        self.create_timer(0.01, self._drain_cone_catch_events) # 100 Hz cone events (cheap when idle)
+        self.create_timer(0.1, self._publish_cone_heartbeat)   # 10 Hz cone (matches CAN2 rate)
+        self.create_timer(0.01, self._publish_bb_axis_estimates)  # 100 Hz drain (BB pitch/hand est.)
+        self.create_timer(0.5, self._publish_bb_odrive)        # 2 Hz BB ODrive diag (CAN1 ~1 Hz src)
         self.create_timer(1.0, self._publish_profile)          # 1 Hz (profile rate)
         self.create_timer(1.0, self._health_check)             # 1 Hz link watchdog
 
@@ -357,6 +420,64 @@ class TeensyBridgeNode(Node):
             return
         with self._lock:
             self._latest_profile = pr
+
+    def _on_cone_frame(self, msg_type, seq, payload, addr):
+        # Decode the relayed CAN payload here (cheap struct unpack) so the
+        # drain timer publishes ready-made events; anything malformed or
+        # unrecognised (future cone frame types) is dropped silently, matching
+        # the other RX callbacks' never-kill-the-RX-thread contract.
+        try:
+            cf = ConeFrame.unpack(payload)
+            data = bytes(cf.data[:cf.dlc])
+            if cf.can_id == catching_cone.CATCH_EVENT_ID:
+                evt = catching_cone.CatchEvent.from_can_frame(data)
+                arrival_us = int(time.time() * 1e6)
+                with self._lock:
+                    self._cone_catch_queue.append((evt, arrival_us))
+            elif cf.can_id == catching_cone.HEARTBEAT_ID:
+                hb = catching_cone.ConeHeartbeat.from_can_frame(data)
+                with self._lock:
+                    self._latest_cone_hb = hb
+                    self._cone_hb_received = True
+                    self._cone_last_hb_mono = time.monotonic()
+        except Exception:  # noqa: BLE001
+            return
+
+    def _on_bb_estimates(self, msg_type, seq, payload, addr):
+        # RX-thread callback: decode + queue every sample. The drain timer
+        # publishes on the executor thread (never publish from the RX thread,
+        # matching the other RX callbacks' contract). Malformed frames dropped.
+        try:
+            e = BbAxisEstimates.unpack(payload)
+        except Exception:  # noqa: BLE001
+            return
+        with self._lock:
+            q = self._bb_est_queue
+            q.append(e)
+            if len(q) > 4000:        # ~40 s at 100 Hz — bound if the drain stalls
+                del q[:len(q) - 4000]
+
+    def _publish_bb_axis_estimates(self):
+        """Drain queued BB pitch/hand estimates → /bb/axis_estimates (JointState).
+
+        Each sample is stamped with the bridge wall-clock at sample time
+        (e.t_bridge_us, time-synced to the Jetson), so per-sample timing is
+        correct regardless of when this drain runs. position=rev, velocity=rev/s;
+        name=[bb_pitch, bb_hand]. Pitch deg = 90 + 360*pos_rev (PitchAxis.h);
+        ball speed = vel_rps * 2*pi*HAND_SPOOL_RADIUS_M.
+        """
+        with self._lock:
+            batch = self._bb_est_queue
+            self._bb_est_queue = []
+        for e in batch:
+            js = JointState()
+            t_us = int(e.t_bridge_us)
+            js.header.stamp.sec = t_us // 1_000_000
+            js.header.stamp.nanosec = (t_us % 1_000_000) * 1000
+            js.name = ['bb_pitch', 'bb_hand']
+            js.position = [float(e.pitch_pos_rev), float(e.hand_pos_rev)]
+            js.velocity = [float(e.pitch_vel_rps), float(e.hand_vel_rps)]
+            self.bb_estimates_pub.publish(js)
 
     # ═══════════════════════════════════════════════════════════
     # Read-side publishers (mirror can_node field-by-field)
@@ -719,6 +840,29 @@ class TeensyBridgeNode(Node):
             self.get_logger().error(f"Link status publish error: {e}",
                                     throttle_duration_sec=5.0)
 
+    def _publish_bb_odrive(self):
+        """Publish /bb/odrive_diag: BB pitch(7)/hand(8) ODrive temps, current, state.
+
+        The can-bridge sends these on CAN1 as DIAGNOSTIC frames with axis_id 7/8,
+        which _on_diagnostic stashes in self._latest_diag. Flat-array layout (8
+        floats): [pitch_fet, pitch_motor, pitch_iq_meas, pitch_state,
+                  hand_fet,  hand_motor,  hand_iq_meas,  hand_state]. Suppressed
+        until at least one BB ODrive frame has arrived (avoids phantom zeros).
+        """
+        with self._lock:
+            dp = self._latest_diag.get(7)
+            dh = self._latest_diag.get(8)
+        if dp is None and dh is None:
+            return
+        def quad(d):
+            if d is None:
+                return [float('nan')] * 4
+            return [float(d.temp_fet), float(d.temp_motor),
+                    float(d.iq_measured), float(d.axis_state)]
+        msg = Float32MultiArray()
+        msg.data = quad(dp) + quad(dh)
+        self.bb_odrive_pub.publish(msg)
+
     def _publish_profile(self):
         """Publish /teensy/profile (firmware instrumentation) as DiagnosticStatus."""
         try:
@@ -912,6 +1056,90 @@ class TeensyBridgeNode(Node):
             return False
         return (bool(hb.bb_flags & _T2J_BB_FLAG_HEARTBEAT_SEEN)
                 and not bool(hb.bb_flags & _T2J_BB_FLAG_HEARTBEAT_STALE))
+
+    # ═══════════════════════════════════════════════════════════
+    # Catching cone (phase-10b cone uplink — mirrors can_node's
+    # _handle_catch_event / _publish_cone_heartbeat field-by-field)
+    # ═══════════════════════════════════════════════════════════
+
+    def _drain_cone_catch_events(self):
+        """Publish every queued catch event on cone/catch_event (100 Hz drain).
+
+        Timestamp semantics mirror can_node._handle_catch_event: when the cone
+        is time-synced, the frame's low-32 µs timestamp (latched in the cone's
+        piezo ISR) is reconstructed into a full wall-clock instant against the
+        host's clock at UDP arrival; when NOT synced the cone's counter is
+        local-only and not comparable to wall time — fall back to host time so
+        header.stamp / catch_time are at least a valid recent instant.
+        Consumers must still check time_synced before treating catch_time as
+        impact-truth.
+        """
+        with self._lock:
+            if not self._cone_catch_queue:
+                return
+            queued = self._cone_catch_queue
+            self._cone_catch_queue = []
+        for evt, arrival_us in queued:
+            try:
+                msg = CatchEvent()
+                msg.header.frame_id = 'catching_cone'
+                if evt.time_synced:
+                    catch_us = catching_cone.reconstruct_catch_time_us(
+                        evt.catch_time_us_low32, arrival_us)
+                    # Defensive: a host-clock jump (NTP step, manual `date`)
+                    # between the last time-sync and this decode can place the
+                    # reconstructed high bits in the wrong wrap window. Catches
+                    # are necessarily within ms of UDP arrival; flag anything
+                    # beyond ~1 s as a likely artefact.
+                    delta_us = abs(catch_us - arrival_us)
+                    if delta_us > 1_000_000:
+                        self.get_logger().warning(
+                            f"Catch seq {evt.sequence}: reconstructed time "
+                            f"{delta_us / 1e6:.2f} s from host now — possible "
+                            "host clock jump or stale time-sync.",
+                            throttle_duration_sec=5.0)
+                    stamp = rclpy.time.Time(nanoseconds=catch_us * 1000).to_msg()
+                    msg.header.stamp = stamp
+                    msg.catch_time = stamp
+                else:
+                    host_stamp = self.get_clock().now().to_msg()
+                    msg.header.stamp = host_stamp
+                    msg.catch_time = host_stamp
+                msg.sequence = evt.sequence
+                msg.time_synced = evt.time_synced
+                msg.retrigger_suppressed = evt.retrigger_suppressed
+                self.catch_event_pub.publish(msg)
+            except Exception as e:  # noqa: BLE001
+                self.get_logger().error(f"Catch event publish error: {e}")
+
+    def _publish_cone_heartbeat(self):
+        """Publish cone/heartbeat (10 Hz) from the latest relayed CONE_HEARTBEAT.
+
+        Mirror of can_node._publish_cone_heartbeat: ``connected`` requires a
+        cone heartbeat within CC_HEARTBEAT_TIMEOUT_MS, measured on the host
+        monotonic clock from UDP arrival. Publishes connected=False defaults
+        before the first heartbeat (matching can_node, whose consumers rely on
+        the topic being alive to display "cone disconnected").
+        """
+        try:
+            with self._lock:
+                hb = self._latest_cone_hb
+                received = self._cone_hb_received
+                last_mono = self._cone_last_hb_mono
+            connected = (received
+                         and (time.monotonic() - last_mono) < self._cone_hb_timeout_s)
+            msg = CatchingConeHeartbeat()
+            msg.connected = connected
+            msg.state = int(hb.state)
+            msg.state_data = hb.state_data
+            msg.sync_rms_us = hb.sync_rms_us
+            msg.last_catch_seq = hb.last_catch_seq
+            msg.ms_since_last_catch = hb.ms_since_last_catch
+            msg.time_synced = hb.time_synced
+            msg.have_any_catch = hb.have_any_catch
+            self.cone_heartbeat_pub.publish(msg)
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().error(f"Cone heartbeat publish error: {e}")
 
     def _svc_bb_throw(self, req, res):
         """bb/send_throw_command — typed throw via BB_THROW RPC.

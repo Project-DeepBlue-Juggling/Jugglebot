@@ -283,7 +283,7 @@ namespace BBCan {
   constexpr uint32_t HEARTBEAT_RATE_MS = 100u;
   constexpr uint32_t AUTO_CLEAR_BRAKE_MS = 500u;
   constexpr uint32_t MAX_NODES = 16u;
-  constexpr uint32_t SYNC_STATS_PRINT_MS = 200u;
+  constexpr uint32_t SYNC_STATS_PRINT_MS = 2000u;
 }
 
 // ==========================================================================
@@ -410,7 +410,7 @@ namespace BBOp {
   constexpr float MAX_THROW_SPEED_MPS = 5.0f;
   constexpr float MAX_THROW_HEIGHT_M = 0.5f;
   constexpr float THROW_SPEED_MULTIPLIER = 1.0f;
-  constexpr float LANDING_TIME_OFFSET_MS = -120.0f;
+  constexpr float THROW_RELEASE_LATENCY_MS = 44.0f;
 }
 
 // ==========================================================================

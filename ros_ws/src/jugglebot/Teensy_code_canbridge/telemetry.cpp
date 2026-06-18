@@ -9,6 +9,7 @@
 #include "udp_protocol.h"
 #include "udp_link.h"
 #include "axis_state.h"
+#include "can_buses.h"
 #include "time_base.h"
 
 namespace CanBridge {
@@ -92,8 +93,75 @@ static void send_diag(uint8_t axis) {
   b.ever_sent = true;
 }
 
+// ── Ball Butler ODrive diagnostic (CAN1 nodes 7/8) ───────────────────────────
+// Reuses the platform DIAGNOSTIC frame with axis_id 7/8 (no protocol change); the
+// Jetson stashes these under those ids and republishes on /bb/odrive_diag. Fixed
+// ~1 Hz per axis (temps/currents drift slowly) — no on-change baseline needed.
+static void send_bb_diag(uint8_t idx) {
+  const AxisState& a = bb_axes[idx];
+  const uint64_t now = now_wall_us();
+  const bool stale = a.heartbeat_seen &&
+                     (now - a.last_heartbeat_us > CAN_HEARTBEAT_TIMEOUT_US);
+  JbUdp::DiagnosticPayload d{};
+  d.axis_id       = (uint8_t)(BB_FIRST_NODE + idx);   // 7 = bb_pitch, 8 = bb_hand
+  d.axis_state    = a.axis_state;
+  d.ctrl_mode     = a.controller_mode;
+  d.input_mode    = a.input_mode;
+  d.flags         = stale ? 0x1u : 0x0u;
+  d.active_errors = a.active_errors;
+  d.disarm_reason = a.disarm_reason;
+  d.iq_setpoint   = a.iq_setpoint;
+  d.iq_measured   = a.iq_measured;
+  d.temp_fet      = a.temp_fet;
+  d.temp_motor    = a.temp_motor;
+  d.bus_voltage   = a.bus_voltage;
+  udp_send_stream(JbUdp::MsgType::DIAGNOSTIC, (const uint8_t*)&d, sizeof(d));
+}
+
+// ── Ball Butler high-rate pos/vel estimates (CAN1 nodes 7=pitch, 8=hand) ──────
+// Snapshots the bb_axes pos/vel cache (updated by the CAN1 RX decode at the ODrive
+// get_encoder_estimate broadcast rate — set to 1 kHz for during-throw diagnostics)
+// and emits one BB_AXIS_ESTIMATES frame. Called from telemetry_step() at
+// TELEM_RATE_HZ (100 Hz) — same proven uplink context as send_telemetry(), so this
+// adds no new task/concurrency surface. The 100 Hz forward downsamples the 1 kHz
+// cache; the analysis fits the hand velocity trapezoid (accel/decel ramps → peak)
+// and the pitch is quasi-static during the throw, so 100 Hz resolves both. Bump to
+// a dedicated higher-rate task only if a sharp servo-overshoot transient must be
+// caught (the ODrive side already supports it).
+static void send_bb_estimates() {
+  JbUdp::BbAxisEstimatesPayload e{};
+  float pos, vel; uint64_t ts;
+  snapshot_pos_vel(bb_axes[0], pos, vel, ts);   // node 7 = pitch
+  e.pitch_pos_rev = pos; e.pitch_vel_rps = vel;
+  snapshot_pos_vel(bb_axes[1], pos, vel, ts);   // node 8 = hand
+  e.hand_pos_rev = pos;  e.hand_vel_rps = vel;
+  e.t_bridge_us = now_wall_us();
+  udp_send_stream(JbUdp::MsgType::BB_AXIS_ESTIMATES, (const uint8_t*)&e, sizeof(e));
+}
+
+// ── Cone uplink: drain CAN2 frames into CONE_FRAME UDP messages ──────────────
+// Per-tick budget caps the UDP cost if CAN2 ever babbles; legitimate cone
+// traffic is ~10-11 fps (10 Hz heartbeat + per-impact catch events) against the
+// 100 Hz tick, so the ring (CONE_RING_CAP=16) drains in one frame per tick in
+// steady state and a full ring clears in 4 ticks. Excess beyond ring+budget is
+// dropped at the ring (counted — can_cone_fwd_drops, [canhealth] serial line).
+static constexpr uint8_t CONE_FWD_BUDGET = 4;
+
+void cone_uplink_step() {
+  ConeFrameRec r;
+  for (uint8_t i = 0; i < CONE_FWD_BUDGET && can_cone_pop(r); ++i) {
+    JbUdp::ConeFramePayload p{};
+    p.t_bridge_us = r.t_bridge_us;
+    p.can_id = r.can_id;
+    p.dlc = r.dlc;
+    memcpy(p.data, r.buf, 8);
+    udp_send_stream(JbUdp::MsgType::CONE_FRAME, (const uint8_t*)&p, sizeof(p));
+  }
+}
+
 void telemetry_step() {
   send_telemetry();
+  send_bb_estimates();   // BB pitch/hand pos+vel @ TELEM_RATE_HZ (during-throw diagnostics)
 
   // Stagger the 1 Hz forced refresh across axes so the forced frames never
   // burst together; changed axes are sent immediately regardless of slot.
@@ -109,6 +177,12 @@ void telemetry_step() {
       send_diag(i);
     }
   }
+
+  // Ball Butler ODrive diag (CAN1 nodes 7/8) — fixed ~1 Hz each, staggered and
+  // offset from the platform forced slots (i*slots_per_axis).
+  if (slot == 25) send_bb_diag(0);          // bb_pitch → axis_id 7
+  else if (slot == 75) send_bb_diag(1);     // bb_hand  → axis_id 8
+
   ++tick;
 }
 

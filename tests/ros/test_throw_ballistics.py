@@ -8,6 +8,7 @@ import pytest
 from jugglebot.can.throw_ballistics import (
     ThrowSolution,
     _wrap_pi,
+    bb_release_state,
     global_to_bb_local,
     predict_throw,
     solve_throw_local,
@@ -114,13 +115,10 @@ def test_solve_throw_local_lands_at_target_via_release_point_projectile():
     projectile motion (matching the solver's own BB serial-chain model),
     must land at the requested target.
 
-    NOTE: ``predict_throw`` uses a *simpler* point-launch model that
-    ignores BB serial-chain offsets (s/d/l).  Comparing solver output to
-    ``predict_throw`` shows a systematic ~100 mm landing offset / tens-of-ms
-    ToF discrepancy — that's a real model mismatch the production pipeline
-    absorbs via ``BB_OP_LANDING_TIME_OFFSET_MS`` (-120 ms).  This test
-    validates the solver's internal kinematics; the model-mismatch test
-    follows separately.
+    NOTE: ``predict_throw`` now uses this SAME release-point model
+    (``bb_release_state``), so it round-trips with the solver (see
+    ``test_predict_throw_round_trips_with_solver``).  This test validates the
+    solver's internal kinematics directly by manual propagation.
     """
     import jugglebot.hardware_config as hw
 
@@ -162,18 +160,14 @@ def test_solve_throw_local_lands_at_target_via_release_point_projectile():
     assert lz == pytest.approx(z, abs=5.0)
 
 
-def test_solve_throw_local_vs_predict_throw_has_serial_chain_bias():
-    """Document the bias between the two ballistic models.
+def test_predict_throw_round_trips_with_solver():
+    """Forward/inverse consistency: ``predict_throw(solve_throw_local(target))``
+    must land back at the target and agree on ToF.
 
-    Solver: full BB serial chain (release point = yaw_axis + serial offsets).
-    Predictor: point launch from ``bb_position_mm``.
-
-    For typical throws the landing-position discrepancy is on the order of
-    100 mm in x and the ToF discrepancy is tens of ms — both are
-    constant-ish biases that the production pipeline compensates via
-    ``BB_OP_LANDING_TIME_OFFSET_MS``.  If a future refactor unifies the two
-    models, the magnitude should drop and this test will fail loudly —
-    flagging the obsoleted offset for removal.
+    Both now share the release-point geometry (``bb_release_state``), so the old
+    ~100 mm / tens-of-ms point-launch bias is gone.  If this regresses, the two
+    models have drifted apart again — and the original reason for that bias means
+    any ``BB_OP_LANDING_TIME_OFFSET_MS`` band-aid tuned to it must be re-checked.
     """
     x, y, z = _platform_target_in_bb_local()
     sol = solve_throw_local(x, y, z)
@@ -187,14 +181,27 @@ def test_solve_throw_local_vs_predict_throw_has_serial_chain_bias():
         catch_height_mm=z,
     )
     assert pred is not None
-    # x-error of the predictor relative to the target (solver lands at x).
-    x_err_mm = abs(pred.landing_position[0] - x)
-    assert 50.0 < x_err_mm < 200.0, (
-        f"Predictor-vs-target x-bias = {x_err_mm:.1f} mm — outside the "
-        "expected serial-chain offset range. If this dropped near zero, "
-        "predict_throw may have started accounting for serial offsets, "
-        "in which case the production landing_time_offset compensation is "
-        "obsolete and worth re-tuning.")
+    assert pred.landing_position[0] == pytest.approx(x, abs=1.0)
+    assert pred.landing_position[1] == pytest.approx(y, abs=1.0)
+    assert pred.tof_s == pytest.approx(sol.tof_s, abs=1e-3)
+
+
+def test_bb_release_state_offsets_from_origin_match_geometry():
+    """``bb_release_state`` places the release point at the serial-chain offset
+    from the BB origin: along-throw l·cosφ − d, lateral s, up l·sinφ."""
+    import jugglebot.hardware_config as hw
+    s = hw.BB_GEOM_YAW_S_OFFSET_MM
+    d = hw.BB_GEOM_PITCH_D_OFFSET_MM
+    l = hw.BB_GEOM_RELEASE_L_POSITION_MM
+    pitch = math.radians(60.0)
+    # Throw straight along +x (yaw=0, no offset): along-throw → x, lateral → +y.
+    rel, vel = bb_release_state(0.0, pitch, 3.0, (0.0, 0.0, 0.0), 0.0)
+    assert rel[0] == pytest.approx(l * math.cos(pitch) - d, abs=1e-6)
+    assert rel[1] == pytest.approx(s, abs=1e-6)
+    assert rel[2] == pytest.approx(l * math.sin(pitch), abs=1e-6)
+    # Velocity is along (cosφ, 0, sinφ)·speed.
+    assert vel[0] == pytest.approx(3000.0 * math.cos(pitch), abs=1e-6)
+    assert vel[2] == pytest.approx(3000.0 * math.sin(pitch), abs=1e-6)
 
 
 def test_solve_throw_local_far_target_raises_speed_constraint():

@@ -40,6 +40,60 @@ class ThrowPrediction:
     tof_s: float  # time of flight from throw to landing
 
 
+def bb_release_state(
+    yaw_rad: float,
+    pitch_rad: float,
+    speed_mps: float,
+    bb_position_mm: Tuple[float, float, float],
+    yaw_offset_rad: float = 0.0,
+    *,
+    yaw_s_offset_mm: float = hw.BB_GEOM_YAW_S_OFFSET_MM,
+    pitch_d_offset_mm: float = hw.BB_GEOM_PITCH_D_OFFSET_MM,
+    release_l_mm: float = hw.BB_GEOM_RELEASE_L_POSITION_MM,
+) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
+    """Analytic BB forward kinematics: actual launch (yaw, pitch, speed) →
+    ``(release_point, release_velocity)`` in the WORLD frame (mm, mm/s).
+
+    THE single source of truth for where and how the ball leaves BB.
+    ``predict_throw`` propagates a ballistic arc from here; ``solve_throw_local``
+    is its analytic inverse — the round-trip is asserted in the tests so the two
+    can never silently drift again (this function exists to kill exactly that
+    drift, where the old point-launch ``predict_throw`` disagreed with the
+    serial-chain solver by ~100 mm / tens of ms).
+
+    Geometry (identical to ``solve_throw_local``): from the yaw axis the release
+    point lies ``a = l·cosφ − d`` along the throw azimuth, ``s`` lateral, and
+    ``l·sinφ`` above the pitch-axis plane.  ``yaw_offset_rad`` rotates BB-local
+    yaw into world.  ``pitch_z_offset`` is already baked into ``bb_position_mm.z``
+    by calibration (see ``solve_throw_local`` frame convention), so it is NOT
+    re-added here.
+
+    Inputs are *actual* launch quantities: apply any axis calibration (cmd→actual)
+    in the caller — that map is deliberately kept out of the geometry so this
+    stays the one true forward model.
+    """
+    global_yaw = yaw_rad + yaw_offset_rad
+    cos_p = math.cos(pitch_rad)
+    sin_p = math.sin(pitch_rad)
+    cos_y = math.cos(global_yaw)
+    sin_y = math.sin(global_yaw)
+
+    a = release_l_mm * cos_p - pitch_d_offset_mm   # along-throw dist from yaw axis
+    s = yaw_s_offset_mm
+    release = (
+        bb_position_mm[0] + a * cos_y - s * sin_y,
+        bb_position_mm[1] + a * sin_y + s * cos_y,
+        bb_position_mm[2] + release_l_mm * sin_p,
+    )
+    v_mmps = speed_mps * 1000.0
+    velocity = (
+        v_mmps * cos_p * cos_y,
+        v_mmps * cos_p * sin_y,
+        v_mmps * sin_p,
+    )
+    return release, velocity
+
+
 def predict_throw(
     yaw_rad: float,
     pitch_rad: float,
@@ -47,75 +101,63 @@ def predict_throw(
     bb_position_mm: Tuple[float, float, float],
     yaw_offset_rad: float = 0.0,
     catch_height_mm: Optional[float] = None,
+    *,
+    yaw_s_offset_mm: float = hw.BB_GEOM_YAW_S_OFFSET_MM,
+    pitch_d_offset_mm: float = hw.BB_GEOM_PITCH_D_OFFSET_MM,
+    release_l_mm: float = hw.BB_GEOM_RELEASE_L_POSITION_MM,
 ) -> Optional[ThrowPrediction]:
-    """Predict where a thrown ball will land given throw parameters.
+    """Predict where a thrown ball will land given *actual* launch parameters.
+
+    Launches from the geometric RELEASE POINT (``bb_release_state``) — NOT the BB
+    origin — so it is consistent with ``solve_throw_local`` (asserted by the
+    round-trip test).  ``yaw/pitch/speed`` are actual launch quantities; apply any
+    axis calibration (cmd→actual) before calling.
 
     Args:
-        yaw_rad: BB yaw command in radians (-π to π), in BB local frame.
-        pitch_rad: BB pitch command in radians (0 to π/2).
-        speed_mps: Throw speed in m/s.
-        bb_position_mm: BB global position (x, y, z) in mm from calibration.
-        yaw_offset_rad: Offset from BB local yaw to global frame (from calibration).
-        catch_height_mm: Z-height of the landing/catch plane (mm).
-            Defaults to initial_height + 160 mm.
+        yaw_rad: actual launch azimuth, BB local frame (rad).
+        pitch_rad: actual launch elevation (rad).
+        speed_mps: actual launch speed (m/s).
+        bb_position_mm: BB origin in world frame (mm) from calibration.
+        yaw_offset_rad: BB-local-yaw → world rotation (from calibration).
+        catch_height_mm: world z of the landing/catch plane; defaults to the
+            platform catch height.
+        yaw_s_offset_mm / pitch_d_offset_mm / release_l_mm: BB release geometry
+            (defaults from config; pass the same values used by the solver).
 
-    Returns:
-        ThrowPrediction with all fields populated, or None if the ball
-        never reaches the catch plane (e.g. thrown too slowly or downward).
+    Returns ``ThrowPrediction`` (``initial_position`` is the release point), or
+    None if the ball never reaches the catch plane.
     """
     if catch_height_mm is None:
         catch_height_mm = _DEFAULT_CATCH_HEIGHT_MM
 
-    # Decompose speed into global-frame velocity components (mm/s)
-    cos_pitch = math.cos(pitch_rad)
-    sin_pitch = math.sin(pitch_rad)
-    global_yaw = yaw_rad + yaw_offset_rad
-    cos_yaw = math.cos(global_yaw)
-    sin_yaw = math.sin(global_yaw)
+    release, velocity = bb_release_state(
+        yaw_rad, pitch_rad, speed_mps, bb_position_mm, yaw_offset_rad,
+        yaw_s_offset_mm=yaw_s_offset_mm, pitch_d_offset_mm=pitch_d_offset_mm,
+        release_l_mm=release_l_mm)
+    vx, vy, vz = velocity
 
-    vx = speed_mps * cos_pitch * cos_yaw * 1000.0
-    vy = speed_mps * cos_pitch * sin_yaw * 1000.0
-    vz = speed_mps * sin_pitch * 1000.0
+    # Vertical kinematics from the RELEASE point:  z(t) = rz + vz·t − ½g·t²
+    rz = release[2]
+    a_q = 0.5 * _G_MMPS2
+    b_q = -vz
+    c_q = catch_height_mm - rz
 
-    # Vertical kinematics: solve for time when z(t) = catch_height_mm
-    #   z(t) = z0 + vz*t - 0.5*g*t²
-    #   0.5*g*t² - vz*t + (catch_height_mm - z0) = 0
-    z0 = bb_position_mm[2]
-    dz = catch_height_mm - z0
-
-    a = 0.5 * _G_MMPS2
-    b = -vz
-    c = dz
-
-    discriminant = b * b - 4.0 * a * c
+    discriminant = b_q * b_q - 4.0 * a_q * c_q
     if discriminant < 0:
         return None  # Ball never reaches catch plane
 
     sqrt_disc = math.sqrt(discriminant)
-    # Two solutions; we want the positive, larger one (ball going up then coming down)
-    t1 = (-b - sqrt_disc) / (2.0 * a)
-    t2 = (-b + sqrt_disc) / (2.0 * a)
-
-    # Pick the latest positive root (the descending crossing)
-    tof = t2 if t2 > 0 else t1
+    t1 = (-b_q - sqrt_disc) / (2.0 * a_q)
+    t2 = (-b_q + sqrt_disc) / (2.0 * a_q)
+    tof = t2 if t2 > 0 else t1          # latest positive root = descending crossing
     if tof <= 0:
-        return None  # No valid future crossing
-
-    # Landing position
-    x_land = bb_position_mm[0] + vx * tof
-    y_land = bb_position_mm[1] + vy * tof
-    z_land = catch_height_mm
-
-    # Landing velocity (horizontal unchanged, vertical decays under gravity)
-    vx_land = vx
-    vy_land = vy
-    vz_land = vz - _G_MMPS2 * tof
+        return None
 
     return ThrowPrediction(
-        initial_position=tuple(bb_position_mm),
-        initial_velocity=(vx, vy, vz),
-        landing_position=(x_land, y_land, z_land),
-        landing_velocity=(vx_land, vy_land, vz_land),
+        initial_position=release,
+        initial_velocity=velocity,
+        landing_position=(release[0] + vx * tof, release[1] + vy * tof, catch_height_mm),
+        landing_velocity=(vx, vy, vz - _G_MMPS2 * tof),
         tof_s=tof,
     )
 
@@ -214,6 +256,11 @@ def solve_throw_local(
     g_mps2: float = hw.GRAVITY_MPS2,
 ) -> ThrowSolution:
     """Solve BB throw parameters to land at ``(x, y, z)`` in BB local frame.
+
+    Analytic INVERSE of ``bb_release_state`` (the forward model); their
+    consistency is asserted by ``test_predict_throw_round_trips_with_solver`` —
+    keep the two in lock-step (this pairing is what prevents the forward/inverse
+    drift that the point-launch ``predict_throw`` once had).
 
     BB kinematics: yaw axis → pitch axis (offset ``d`` along x-local,
     ``pitch_z_offset`` above the yaw axis) → linear axis → release

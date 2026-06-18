@@ -235,6 +235,11 @@ class Float64MultiArray:
 
 
 @dataclass
+class Float32MultiArray:
+    data: list = field(default_factory=list)
+
+
+@dataclass
 class MockString:
     data: str = ''
 
@@ -562,6 +567,7 @@ _create_mock_module('geometry_msgs.msg', {
 _create_mock_module('std_msgs')
 _create_mock_module('std_msgs.msg', {
     'Float64MultiArray': Float64MultiArray,
+    'Float32MultiArray': Float32MultiArray,
     'String': MockString,
 })
 

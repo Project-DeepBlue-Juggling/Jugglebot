@@ -16,8 +16,6 @@ from rclpy.action import ActionServer
 
 from jugglebot_interfaces.msg import (
     CanTrafficReportMessage,
-    CatchEvent as CatchEventMsg,
-    CatchingConeHeartbeat as CatchingConeHeartbeatMsg,
     HandTelemetryMessage,
     LegsTargetReachedMessage,
     RobotState,
@@ -39,7 +37,6 @@ from geometry_msgs.msg import Quaternion
 
 from jugglebot.can.bus import CANBus
 from jugglebot.can import odrive
-from jugglebot.can import catching_cone
 from jugglebot.can.motor_state import MotorStateTracker
 import jugglebot.protocol_config as proto
 import jugglebot.hardware_config as hw
@@ -127,11 +124,10 @@ class CanInterfaceNode(Node):
         self.bus = CANBus(logger=self.get_logger())
         self.motors = MotorStateTracker()
 
-        # Catching cone heartbeat tracking.
-        self.last_cone_heartbeat = catching_cone.ConeHeartbeat()
-        self._cone_heartbeat_received = False
-        self._cone_last_can_rx_time = 0.0  # monotonic time of last cone heartbeat frame
-        self._cone_heartbeat_timeout_s = proto.CC_HEARTBEAT_TIMEOUT_MS / 1000.0
+        # Catching cone tracking moved to teensy_bridge_node (phase-10b cone
+        # uplink). The cone lives on the can-bridge's CAN2, which USB-CAN never
+        # sees; the bridge relays its frames over UDP (CONE_FRAME) and owns
+        # cone/catch_event + cone/heartbeat.
 
         # Operational limits (mutable, can be changed via topics)
         self.leg_vel_limit = odrive.DEFAULT_VEL_CURR['leg_vel']
@@ -229,22 +225,20 @@ class CanInterfaceNode(Node):
         # throw_announcement_pub deleted with the BB cutover (D3 — throw_director
         # is the sole publisher; can_node's predict_throw-based announcement
         # was systematically wrong for off-plane targets like the cone).
-        self.catch_event_pub = self.create_publisher(CatchEventMsg, 'cone/catch_event', 10)
-        self.cone_heartbeat_pub = self.create_publisher(CatchingConeHeartbeatMsg, 'cone/heartbeat', 10)
+        # cone/catch_event + cone/heartbeat publishers moved to
+        # teensy_bridge_node (phase-10b cone uplink).
 
         # ── Timers ─────────────────────────────────────────────
         can_poll_period = 0.001  # 1 kHz CAN poll
         state_pub_period = 0.01  # 100 Hz robot state
         ts_period = 0.01  # 100 Hz time-sync broadcast
         hand_telemetry_period = 0.002  # 500 Hz hand telemetry
-        cone_heartbeat_period = 0.1  # 10 Hz catching cone heartbeat
         target_reached_period = 0.1  # 10 Hz target reached check
 
         self.create_timer(can_poll_period, self._poll_can_bus)           # 1 kHz CAN poll
         self.create_timer(state_pub_period, self._publish_robot_state)     # 100 Hz state
         self.create_timer(ts_period, self.bus.broadcast_time)  # Time sync
         self.create_timer(hand_telemetry_period, self._publish_hand_telemetry) # 500 Hz hand
-        self.create_timer(cone_heartbeat_period, self._publish_cone_heartbeat) # 10 Hz cone
         self.create_timer(target_reached_period, self._check_target_reached)     # 10 Hz target
         self.create_timer(1.0, self._watchdog_check)                              # 1 Hz heartbeat watchdog
         self._watchdog_restore_failed = False
@@ -259,7 +253,6 @@ class CanInterfaceNode(Node):
             (self.bus.broadcast_time,       ts_period),
             (self._publish_robot_state,     state_pub_period),
             (self._publish_hand_telemetry,  hand_telemetry_period),
-            (self._publish_cone_heartbeat,  cone_heartbeat_period),
             (self._check_target_reached,    target_reached_period),
         ]
 
@@ -292,19 +285,9 @@ class CanInterfaceNode(Node):
         # BB heartbeat (0x7D1) RX moved to the can-bridge Teensy (Phase A cutover).
         # The bridge decodes it on CAN1 and republishes bb/heartbeat from the
         # extended HeartbeatT2J — can_node no longer sees BB frames over USB-CAN.
-        elif aid == catching_cone.CATCH_EVENT_ID:
-            try:
-                evt = catching_cone.CatchEvent.from_can_frame(msg.data)
-                self._handle_catch_event(evt)
-            except ValueError as e:
-                self.get_logger().warning(f"Bad catch event frame: {e}", throttle_duration_sec=5.0)
-        elif aid == catching_cone.HEARTBEAT_ID:
-            try:
-                self.last_cone_heartbeat = catching_cone.ConeHeartbeat.from_can_frame(msg.data)
-                self._cone_heartbeat_received = True
-                self._cone_last_can_rx_time = time.monotonic()
-            except ValueError as e:
-                self.get_logger().warning(f"Bad cone heartbeat frame: {e}", throttle_duration_sec=5.0)
+        # Catching cone RX (0x7E0/0x7E1) likewise moved to the can-bridge
+        # (phase-10b cone uplink): the cone is on CAN2, relayed over UDP as
+        # CONE_FRAME and republished by teensy_bridge_node.
         else:
             # ODrive message: extract axis_id and command_id
             axis_id = aid >> odrive.NODE_ID_SHIFT
@@ -1136,66 +1119,9 @@ class CanInterfaceNode(Node):
     # HeartbeatT2J payload (bb_state / bb_state_data / bb_flags / bb_yaw_deg /
     # bb_pitch_deg / bb_hand_mm) instead of decoding the CAN frame directly.
 
-    def _handle_catch_event(self, evt):
-        """Republish a decoded catching-cone catch event on cone/catch_event.
-
-        When the cone is time-synced, the frame's low-32 µs timestamp is
-        reconstructed into a full wall-clock instant. When it is NOT synced,
-        the cone's low32 µs counter is local-only and not comparable to wall
-        time — fall back to host arrival time so header.stamp / catch_time
-        are at least a valid recent instant. Consumers must still check the
-        time_synced flag before treating catch_time as impact-truth.
-        """
-        try:
-            msg = CatchEventMsg()
-            msg.header.frame_id = "catching_cone"
-            if evt.time_synced:
-                host_now_us = int(time.time() * 1e6)
-                catch_us = catching_cone.reconstruct_catch_time_us(
-                    evt.catch_time_us_low32, host_now_us)
-                # Defensive: a host-clock jump (NTP step, DST, manual `date`)
-                # between the last time-sync and this decode can place the
-                # reconstructed high bits in the wrong wrap window. Catches
-                # are necessarily within ms of the host's "now"; flag anything
-                # beyond ~1 s as a likely artefact.
-                delta_us = abs(catch_us - host_now_us)
-                if delta_us > 1_000_000:
-                    self.get_logger().warning(
-                        f"Catch seq {evt.sequence}: reconstructed time "
-                        f"{delta_us / 1e6:.2f} s from host now — possible host "
-                        "clock jump or stale time-sync.",
-                        throttle_duration_sec=5.0)
-                stamp = rclpy.time.Time(nanoseconds=catch_us * 1000).to_msg()
-                msg.header.stamp = stamp
-                msg.catch_time = stamp
-            else:
-                host_stamp = self.get_clock().now().to_msg()
-                msg.header.stamp = host_stamp
-                msg.catch_time = host_stamp
-            msg.sequence = evt.sequence
-            msg.time_synced = evt.time_synced
-            msg.retrigger_suppressed = evt.retrigger_suppressed
-            self.catch_event_pub.publish(msg)
-        except Exception as e:
-            self.get_logger().error(f"Catch event publish error: {e}")
-
-    def _publish_cone_heartbeat(self):
-        try:
-            hb = self.last_cone_heartbeat
-            connected = (self._cone_heartbeat_received
-                         and (time.monotonic() - self._cone_last_can_rx_time) < self._cone_heartbeat_timeout_s)
-            msg = CatchingConeHeartbeatMsg()
-            msg.connected = connected
-            msg.state = int(hb.state)
-            msg.state_data = hb.state_data
-            msg.sync_rms_us = hb.sync_rms_us
-            msg.last_catch_seq = hb.last_catch_seq
-            msg.ms_since_last_catch = hb.ms_since_last_catch
-            msg.time_synced = hb.time_synced
-            msg.have_any_catch = hb.have_any_catch
-            self.cone_heartbeat_pub.publish(msg)
-        except Exception as e:
-            self.get_logger().error(f"Cone heartbeat publish error: {e}")
+    # _handle_catch_event / _publish_cone_heartbeat moved to teensy_bridge_node
+    # (phase-10b cone uplink) — same reconstruction + connected-gate semantics,
+    # sourced from CONE_FRAME UDP relays instead of USB-CAN RX.
 
     def _check_target_reached(self):
         try:

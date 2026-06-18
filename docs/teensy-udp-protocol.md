@@ -72,6 +72,8 @@ Static IPs: Teensy `192.168.42.2`, Jetson `192.168.42.1` (`/30` point-to-point).
 | `DIAGNOSTIC` | 0x82 | On-change per-axis diagnostics (STREAM, T→J) |
 | `HEARTBEAT_T2J` | 0x83 | Teensy liveness + link/bus health (STREAM, T→J) |
 | `PROFILE` | 0x84 | 1 Hz profiling/instrumentation (STREAM, T→J) |
+| `CONE_FRAME` | 0x85 | Catching-cone CAN2 frame relay (STREAM, T→J) |
+| `BB_AXIS_ESTIMATES` | 0x86 | Ball Butler pitch/hand ODrive pos+vel estimates (STREAM, T→J) |
 | `RPC_RESPONSE` | 0x90 | RPC response (RPC port, T→J) |
 
 ### RpcMethod
@@ -254,6 +256,33 @@ Payload **66 bytes**. Python struct fmt: `<QHHHHHHHHHIIIIHHIIIII`.
 | `interp_deadline_misses` | u32 | 1 | Cumulative 500 Hz deadline misses |
 | `interp_max_jitter_us` | u32 | 1 | Worst interp tick jitter this window (us) |
 | `free_heap_bytes` | u32 | 1 | FreeRTOS free heap (bytes) |
+
+### ConeFrame (`MsgType.CONE_FRAME`, T2J, STREAM port)
+
+Catching-cone CAN2 frame relay (phase-10b cone uplink). The can-bridge forwards every frame received on the cone bus verbatim — CATCH_EVENT (0x7E0) and CONE_HEARTBEAT (0x7E1) today — so the Jetson reuses the tested jugglebot.can.catching_cone decoders unchanged and future cone frames flow without a wire change. The cone's microsecond impact timestamp travels INSIDE `data` (it is latched in the cone's piezo ISR); `t_bridge_us` only stamps bridge-side CAN RX for latency/diagnostic checks.
+
+Payload **21 bytes**. Python struct fmt: `<QIBBBBBBBBB`.
+
+| Field | Type | Count | Notes |
+|-------|------|------:|-------|
+| `t_bridge_us` | u64 | 1 | Bridge wall-clock at CAN2 RX (us) |
+| `can_id` | u32 | 1 | CAN arbitration id (0x7E0 CATCH_EVENT / 0x7E1 CONE_HEARTBEAT) |
+| `dlc` | u8 | 1 | CAN payload length (0..8) |
+| `data` | u8 | 8 | Raw CAN payload bytes (zero-padded past dlc) |
+
+### BbAxisEstimates (`MsgType.BB_AXIS_ESTIMATES`, T2J, STREAM port)
+
+High-rate Ball Butler pitch(node 7)/hand(node 8) ODrive encoder estimates, forwarded for during-throw diagnostics (launch angle vs commanded pitch; hand launch speed vs commanded). The can-bridge decodes the CAN1 get_encoder_estimate frames into its bb_axes cache (can_buses.cpp) at the ODrive broadcast rate; this message snapshots that cache at the telemetry-task rate. Pitch position maps to barrel degrees via deg = 90 + 360*rev (PitchAxis.h); hand velocity maps to ball speed via v = vel_rps * 2*pi*HAND_SPOOL_RADIUS_M.
+
+Payload **24 bytes**. Python struct fmt: `<Qffff`.
+
+| Field | Type | Count | Notes |
+|-------|------|------:|-------|
+| `t_bridge_us` | u64 | 1 | Bridge wall-clock at emit (us, time-synced to Jetson) |
+| `pitch_pos_rev` | f32 | 1 | BB pitch (node 7) pos_estimate (rev) |
+| `pitch_vel_rps` | f32 | 1 | BB pitch (node 7) vel_estimate (rev/s) |
+| `hand_pos_rev` | f32 | 1 | BB hand (node 8) pos_estimate (rev) |
+| `hand_vel_rps` | f32 | 1 | BB hand (node 8) vel_estimate (rev/s) |
 
 ### RpcRequest (`MsgType.RPC_REQUEST`, J2T, RPC port)
 

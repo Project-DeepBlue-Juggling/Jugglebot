@@ -6,6 +6,8 @@ Browse with `/logbook`, create entries with `/investigate` or `/logbook --new <t
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-06-10 | resolved | temporal-accuracy bring-up | Cone catch timestamps glitch +40 s — micros64() false 32-bit wrap from piezo-ISR race | [2026-06-10-cone-micros64-false-wrap](2026-06-10-cone-micros64-false-wrap.md) |
+| 2026-06-10 | in-progress | teensy-can-offload | Catching-cone CAN2→UDP uplink (phase-10b) — cone data reaches the Jetson again | [2026-06-10-cone-uplink-phase-10b](2026-06-10-cone-uplink-phase-10b.md) |
 | 2026-06-08 | tuned | teensy-can-offload | Ball Butler cutover from can_node to teensy_bridge_node — phase A bench bringup, GUI Calibrate end-to-end | [2026-06-08-bb-cutover-bench](2026-06-08-bb-cutover-bench.md) |
 | 2026-06-06 | in-progress | teensy-can-offload | Can-bridge (CAN Hub) hardware bringup — 3-bus wiring, button-free flashing, FlexCAN/FreeRTOS firmware gotchas, live SYNC observability | [2026-06-06-can-hub-bringup](2026-06-06-can-hub-bringup.md) |
 | 2026-05-23 | tuned | catching-cone-bringup | Throw director node + trimmed cone-test launch for live BB→cone integration | [2026-05-23-throw-director-and-cone-live-integration](2026-05-23-throw-director-and-cone-live-integration.md) |

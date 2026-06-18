@@ -37,6 +37,8 @@ namespace MsgType {
   constexpr uint8_t DIAGNOSTIC = 130u;  // On-change per-axis diagnostics (STREAM, T→J)
   constexpr uint8_t HEARTBEAT_T2J = 131u;  // Teensy liveness + link/bus health (STREAM, T→J)
   constexpr uint8_t PROFILE = 132u;  // 1 Hz profiling/instrumentation (STREAM, T→J)
+  constexpr uint8_t CONE_FRAME = 133u;  // Catching-cone CAN2 frame relay (STREAM, T→J)
+  constexpr uint8_t BB_AXIS_ESTIMATES = 134u;  // Ball Butler pitch/hand ODrive pos+vel estimates (STREAM, T→J)
   constexpr uint8_t RPC_RESPONSE = 144u;  // RPC response (RPC port, T→J)
 }
 namespace RpcMethod {
@@ -192,6 +194,25 @@ struct ProfilePayload {
 };
 static_assert(sizeof(ProfilePayload) == 66, "ProfilePayload size drift");
 
+// ConeFrame: Catching-cone CAN2 frame relay (phase-10b cone uplink). The can-bridge forwards every frame received on the cone bus verbatim — CATCH_EVENT (0x7E0) and CONE_HEARTBEAT (0x7E1) today — so the Jetson reuses the tested jugglebot.can.catching_cone decoders unchanged and future cone frames flow without a wire change. The cone's microsecond impact timestamp travels INSIDE `data` (it is latched in the cone's piezo ISR); `t_bridge_us` only stamps bridge-side CAN RX for latency/diagnostic checks.
+struct ConeFramePayload {
+  uint64_t t_bridge_us;  // Bridge wall-clock at CAN2 RX (us)
+  uint32_t can_id;  // CAN arbitration id (0x7E0 CATCH_EVENT / 0x7E1 CONE_HEARTBEAT)
+  uint8_t dlc;  // CAN payload length (0..8)
+  uint8_t data[8];  // Raw CAN payload bytes (zero-padded past dlc)
+};
+static_assert(sizeof(ConeFramePayload) == 21, "ConeFramePayload size drift");
+
+// BbAxisEstimates: High-rate Ball Butler pitch(node 7)/hand(node 8) ODrive encoder estimates, forwarded for during-throw diagnostics (launch angle vs commanded pitch; hand launch speed vs commanded). The can-bridge decodes the CAN1 get_encoder_estimate frames into its bb_axes cache (can_buses.cpp) at the ODrive broadcast rate; this message snapshots that cache at the telemetry-task rate. Pitch position maps to barrel degrees via deg = 90 + 360*rev (PitchAxis.h); hand velocity maps to ball speed via v = vel_rps * 2*pi*HAND_SPOOL_RADIUS_M.
+struct BbAxisEstimatesPayload {
+  uint64_t t_bridge_us;  // Bridge wall-clock at emit (us, time-synced to Jetson)
+  float pitch_pos_rev;  // BB pitch (node 7) pos_estimate (rev)
+  float pitch_vel_rps;  // BB pitch (node 7) vel_estimate (rev/s)
+  float hand_pos_rev;  // BB hand (node 8) pos_estimate (rev)
+  float hand_vel_rps;  // BB hand (node 8) vel_estimate (rev/s)
+};
+static_assert(sizeof(BbAxisEstimatesPayload) == 24, "BbAxisEstimatesPayload size drift");
+
 // RpcRequest: Generic RPC envelope. `method` selects the operation; `args` is a method-specific blob (see docs). `req_id` is echoed in the response for matching independent of the frame sequence counter.
 struct RpcRequestPayload {
   uint16_t method;  // RpcMethod enum
@@ -221,6 +242,8 @@ constexpr uint16_t TELEMETRY_SIZE = 64u;
 constexpr uint16_t DIAGNOSTIC_SIZE = 36u;
 constexpr uint16_t HEARTBEAT_T2J_SIZE = 35u;
 constexpr uint16_t PROFILE_SIZE = 66u;
+constexpr uint16_t CONE_FRAME_SIZE = 21u;
+constexpr uint16_t BB_AXIS_ESTIMATES_SIZE = 24u;
 constexpr uint16_t RPC_REQUEST_SIZE = 8u;
 constexpr uint16_t RPC_RESPONSE_SIZE = 8u;
 

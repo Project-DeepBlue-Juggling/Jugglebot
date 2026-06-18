@@ -417,7 +417,14 @@ class BallButlerNode(Node):
         bb_req.yaw_angle_rad = float(sol.yaw_rad)
         bb_req.pitch_angle_rad = float(sol.pitch_rad)
         bb_req.throw_speed = float(sol.speed_mps) if throw else 0.0
-        bb_req.throw_time = float(delay_s) if throw else 0.0
+        # Compensate the hand's constant command→release actuator latency: command the
+        # throw this much EARLIER so the ball ARRIVES at the requested (pos, time),
+        # rather than ~44 ms late. The announced landing time below is left equal to the
+        # true arrival (now + delay_s + tof) — after compensation the actual release
+        # lands at now + delay_s, so the announcement is correct. The latency is constant
+        # across the workspace (no range/speed/pitch dependence), so one value suffices.
+        release_latency_s = hw.BB_OP_THROW_RELEASE_LATENCY_MS / 1000.0
+        bb_req.throw_time = float(max(0.0, delay_s - release_latency_s)) if throw else 0.0
         # Tell can_node not to publish a predict_throw-based announcement
         # (which would use the platform default catch height).  We publish
         # our own using the solver's actual target z + serial-chain ToF.

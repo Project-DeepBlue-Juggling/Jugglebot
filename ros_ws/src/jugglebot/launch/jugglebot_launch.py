@@ -36,11 +36,39 @@ def generate_launch_description():
                     "for this launch (yaml | true | false).",
     )
 
-    # ── CAN node ─────────────────────────────────────────────────
-    can_node = Node(
-        package='jugglebot',
-        executable='can_node',
+    # Throw aim-correction (the deployed 2D affine). This arg was documented
+    # in the accuracy-testing flow but never wired through to the node — Foxy
+    # silently ignores unknown launch args, so apply_aim_correction:=true was
+    # a no-op and ball_butler_node started "(disabled)".
+    apply_aim_correction = LaunchConfiguration('apply_aim_correction')
+    apply_aim_correction_arg = DeclareLaunchArgument(
+        'apply_aim_correction',
+        default_value='true',   # production spatial-accuracy path (validated 2026-06-18)
+        description='Load + apply the deployed throw aim-correction affine '
+                    'in ball_butler_node (resources/throw_affine_correction.json). '
+                    'Default true: it is the production spatial-accuracy path; pair with '
+                    'the temporal release-latency offset (BB_OP_THROW_RELEASE_LATENCY_MS).',
     )
+
+    # can_node removed from the launch (phase-10b): its USB-CAN path is dead
+    # in the three-bus topology — the bridge Teensy owns all CAN buses, and
+    # teensy_bridge_node owns the UDP link. The executable remains available
+    # for legacy bench use via `ros2 run jugglebot can_node`.
+
+    # teensy_bridge_node — the can-bridge UDP link (owns /teensy/*, /bb/*,
+    # /cone/* incl. /bb/axis_estimates). Folded into the main bring-up now that
+    # the cutover is complete. SAFETY: enable_setpoint_output defaults FALSE
+    # (the bridge sends mpc_active=0 — no leg/setpoint downlink — until an
+    # operator flips it AFTER bench validation with motors powered).
+    teensy_ip = LaunchConfiguration('teensy_ip')
+    teensy_ip_arg = DeclareLaunchArgument(
+        'teensy_ip', default_value='192.168.42.2',
+        description='Static IP of the can-bridge Teensy (ADR-0007).')
+    enable_setpoint_output = LaunchConfiguration('enable_setpoint_output')
+    enable_setpoint_output_arg = DeclareLaunchArgument(
+        'enable_setpoint_output', default_value='false',
+        description='SAFETY: gate for the 40 Hz setpoint downlink + mpc_active '
+                    'heartbeat flag. Keep false until bench-validated.')
 
     # ── Core ROS2 nodes ──────────────────────────────────────────
     orchestrator_node = Node(
@@ -76,11 +104,31 @@ def generate_launch_description():
     ball_butler_node = Node(
         package='jugglebot',
         executable='ball_butler_node',
+        parameters=[{'apply_aim_correction': apply_aim_correction}],
     )
 
     mpc_bridge_node = Node(
         package='jugglebot',
         executable='mpc_bridge_node',
+    )
+
+    # teensy_bridge_node imports controller.teensy_link from the repo root, which
+    # is OUTSIDE the ROS install tree, so prepend it to PYTHONPATH (mirrors
+    # teensy_bridge_launch.py). Override host path via JUGGLEBOT_REPO.
+    _jugglebot_repo = os.environ.get('JUGGLEBOT_REPO', '/home/jetson/Desktop/Jugglebot')
+    _existing_pp = os.environ.get('PYTHONPATH', '')
+    _bridge_pythonpath = (f"{_jugglebot_repo}:{_existing_pp}"
+                          if _existing_pp else _jugglebot_repo)
+    teensy_bridge_node = Node(
+        package='jugglebot',
+        executable='teensy_bridge_node',
+        name='teensy_bridge_node',
+        output='screen',
+        parameters=[{
+            'teensy_ip': teensy_ip,
+            'enable_setpoint_output': enable_setpoint_output,
+        }],
+        additional_env={'PYTHONPATH': _bridge_pythonpath},
     )
 
     # ── Standalone motor guard process (not a ROS2 node) ────────
@@ -138,6 +186,8 @@ def generate_launch_description():
             '/cone/catch_event',
             '/cone/heartbeat',
             '/cone/timing_result',
+            '/bb/odrive_diag',
+            '/bb/axis_estimates',
             '-s', 'mcap', '-o', bag_dir,
         ],
         output='screen',
@@ -148,10 +198,11 @@ def generate_launch_description():
     return LaunchDescription([
         record_arg,
         friction_ff_enable_arg,
+        apply_aim_correction_arg,
+        teensy_ip_arg,
+        enable_setpoint_output_arg,
         # Infrastructure (gui_server.py runs independently in the background)
         rosbridge_include,
-        # Hardware nodes
-        can_node,
         # Core nodes
         orchestrator_node,
         motion_bridge_node,
@@ -161,6 +212,7 @@ def generate_launch_description():
         catch_coordinator_node,
         ball_butler_node,
         mpc_bridge_node,
+        teensy_bridge_node,
         # Standalone processes
         motor_guard,
         # Recording (conditional)

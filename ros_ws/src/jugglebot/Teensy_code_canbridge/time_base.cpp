@@ -23,8 +23,9 @@ uint64_t micros64() {
   return v;
 }
 
-static volatile int64_t s_wall_offset_us = 0;   // now_wall_us = micros64() + offset
-static volatile bool    s_have_offset    = false;
+static volatile int64_t  s_wall_offset_us  = 0;   // now_wall_us = micros64() + offset
+static volatile bool     s_have_offset     = false;
+static volatile uint64_t s_last_anchor_us  = 0;   // micros64() at the last accepted anchor (freshness)
 
 uint64_t now_wall_us() {
   // s_wall_offset_us is 64-bit and slewed by the time-sync task while the ISR
@@ -36,7 +37,13 @@ uint64_t now_wall_us() {
 }
 
 bool time_synced() {
-  return s_have_offset;
+  // Synced only if anchored AND the anchor is fresh — a stale anchor (Jetson
+  // link down) means the clock is free-running/drifting and must not be trusted
+  // (this self-gates the 0x7DD broadcast so slaves go unsynced instead of
+  // following a drifting master).
+  if (!s_have_offset) return false;
+  const uint64_t last = atomic_read_u64(&s_last_anchor_us);
+  return (micros64() - last) < TIME_ANCHOR_STALE_US;
 }
 
 void set_wall_anchor(uint64_t jetson_wall_us) {
@@ -48,11 +55,17 @@ void set_wall_anchor(uint64_t jetson_wall_us) {
     s_wall_offset_us = offset;    // first anchor → step
     s_have_offset = true;
   } else {
-    // Slew toward the new offset so the broadcast clock stays monotonic and the
-    // slave IIR filters never see a backward step.
     const int64_t diff = offset - s_wall_offset_us;
-    s_wall_offset_us += diff >> TIME_OFFSET_IIR_SHIFT;
+    if (diff > TIME_STEP_THRESHOLD_US || diff < -TIME_STEP_THRESHOLD_US) {
+      // Large error → boot / re-acquisition after a sync gap. Step: slewing this
+      // at 1/16-every-30 s would take ~30 min and reads as a thrower warm-up drift.
+      s_wall_offset_us = offset;
+    } else {
+      // Small drift → slew via the IIR (smooth, monotonic).
+      s_wall_offset_us += diff >> TIME_OFFSET_IIR_SHIFT;
+    }
   }
+  s_last_anchor_us = (uint64_t)local;
   __set_PRIMASK(pm);
 }
 

@@ -125,7 +125,15 @@ class TestSuccessPath:
         assert bb_req.yaw_angle_rad == pytest.approx(res.yaw_rad)
         assert bb_req.pitch_angle_rad == pytest.approx(res.pitch_rad)
         assert bb_req.throw_speed == pytest.approx(res.throw_speed_mps)
-        assert bb_req.throw_time == pytest.approx(res.throw_delay_s)
+        # The firmware throw_time is pulled EARLIER than the announced delay by
+        # the constant command->release actuator latency, so the ball actually
+        # leaves at the announced time (res.throw_delay_s itself is unchanged).
+        import jugglebot.hardware_config as hw
+        release_latency_s = hw.BB_OP_THROW_RELEASE_LATENCY_MS / 1000.0
+        assert release_latency_s > 0.0
+        assert bb_req.throw_time == pytest.approx(
+            res.throw_delay_s - release_latency_s
+        )
         assert bb_req.suppress_announcement is True
 
     def test_publishes_throw_announcement_with_solver_landing_geometry(self, calibrated_node):
@@ -195,8 +203,9 @@ class TestInfeasible:
         assert 'Inverse-ballistics failed' in res.message
         assert 'No feasible trajectory' in res.message
 
-    def test_can_node_client_unavailable_returns_failure(self, calibrated_node):
-        # Simulate can_node being down: client.service_is_ready() returns False
+    def test_throw_service_unavailable_returns_failure(self, calibrated_node):
+        # Simulate the throw service provider (teensy_bridge_node since the A7
+        # cutover) being down: client.service_is_ready() returns False.
         calibrated_node._throw_client._ready = False
         calibrated_node._on_rigid_bodies(_rigid_bodies({
             'Catching_Cone': (1200.0, 0.0, 0.0),
@@ -205,7 +214,7 @@ class TestInfeasible:
         req.target_name = 'Catching_Cone'
         res = calibrated_node._svc_throw_at_target(req, BallButlerThrow.Response())
         assert res.success is False
-        assert 'can_node' in res.message.lower()
+        assert 'bb/send_throw_command' in res.message
 
 
 class TestAimCorrection:

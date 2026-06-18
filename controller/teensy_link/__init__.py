@@ -40,6 +40,8 @@ from .protocol import (
     Telemetry,
     Diagnostic,
     Profile,
+    ConeFrame,
+    BbAxisEstimates,
     RpcRequest,
     RpcResponse,
 )
@@ -63,6 +65,8 @@ __all__ = [
     "Telemetry",
     "Diagnostic",
     "Profile",
+    "ConeFrame",
+    "BbAxisEstimates",
     "RpcRequest",
     "RpcResponse",
     # Client + RPC infrastructure

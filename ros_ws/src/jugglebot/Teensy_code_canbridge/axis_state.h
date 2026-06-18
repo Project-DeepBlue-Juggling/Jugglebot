@@ -69,6 +69,15 @@ extern AxisState axes[NUM_AXES];
 inline AxisState& leg(uint8_t i)  { return axes[i]; }
 inline AxisState& hand_axis()     { return axes[HAND_AXIS]; }
 
+// ── Ball Butler ODrives (CAN1) ──────────────────────────────────────────────
+// BB pitch/hand ODrives live on CAN1 (node ids 7/8 — protocol_config.yaml
+// node_ids), a SEPARATE bus + cache from the platform axes[] (CAN3). Decoded by
+// on_bb_rx and emitted as DIAGNOSTIC frames with axis_id 7/8 (telemetry.cpp), so
+// the platform per-axis path (axes[], NUM_AXES, TELEMETRY breadth) is untouched.
+constexpr uint8_t BB_FIRST_NODE = 7;    // node_ids.bb_pitch
+constexpr uint8_t NUM_BB_AXES   = 2;    // bb_pitch (7), bb_hand (8)
+extern AxisState bb_axes[NUM_BB_AXES];  // index = node id - BB_FIRST_NODE
+
 // Writer: update the hot triple atomically (call from CAN RX on encoder frame).
 inline void write_pos_vel(AxisState& a, float pos, float vel, uint64_t t_us) {
   a.seq = a.seq + 1;          // odd → write in progress

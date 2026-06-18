@@ -142,10 +142,18 @@ class MocapNode(Node):
         except Exception as e:
             self.get_logger().error(f'Error publishing markers: {e}')
 
-        # ── Rigid bodies (only when aligned) ──────────────────────────
+        # ── Rigid bodies ──────────────────────────────────────────────
+        # Publishing is intentionally NOT gated on base alignment. is_aligned
+        # only flips True while the "Base" rigid body is in view; when Base is
+        # moved out of the test area (e.g. the distance-sweep campaign) or sits
+        # far off the QTM origin, gating here would suppress /rigid_body_poses
+        # entirely — including the Catching_Cone target the thrower needs — and
+        # silently block every throw. Alignment is still computed and surfaced
+        # via MocapDataMulti.aligned (plus a misalignment warning) for the GUI;
+        # it is informational, not a hard gate on rigid-body publishing.
         try:
             body_poses = self.mocap.get_body_poses()
-            if body_poses and is_aligned:
+            if body_poses:
                 msg = RigidBodyPoses()
                 msg.header.stamp = self.get_clock().now().to_msg()
                 msg.header.frame_id = 'world'

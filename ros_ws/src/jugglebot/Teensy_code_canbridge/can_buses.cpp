@@ -118,21 +118,113 @@ static void decode_bb_heartbeat(const CAN_message_t& msg) {
       /*t_us=*/         now_wall_us());
 }
 
-// CAN1 Ball Butler: only the BB heartbeat (0x7D1) decodes; everything else is
-// counted via s_bb_rx and dropped (the bus carries no other RX traffic in
-// production — our own TX (0x7DD time-sync, BB commands) doesn't loop back).
+// Ball Butler ODrive telemetry on CAN1 (node ids 7=pitch, 8=hand). Decode the
+// slow telemetry frames into the separate bb_axes cache — emitted as DIAGNOSTIC
+// frames (axis_id 7/8) by telemetry.cpp. Mirrors the platform decode_into_cache
+// switch but writes bb_axes; the platform path (CAN3 → axes[]) is untouched.
+static void decode_bb_odrive(const CAN_message_t& msg) {
+  const uint8_t node = ODrive::axis_of(msg.id);
+  if (node < BB_FIRST_NODE || node >= (uint8_t)(BB_FIRST_NODE + NUM_BB_AXES)) return;
+  if (msg.len < 8) return;
+  AxisState& a = bb_axes[node - BB_FIRST_NODE];
+  const uint8_t* d = msg.buf;
+  switch (ODrive::cmd_of(msg.id)) {
+    case ODriveCmd::heartbeat_message: {
+      auto h = ODrive::decode_heartbeat(d);
+      a.axis_state = h.state; a.procedure_result = h.procedure_result;
+      a.trajectory_done = h.trajectory_done;
+      a.last_heartbeat_us = now_wall_us(); a.heartbeat_seen = true; a.heartbeat_stale = false;
+      break;
+    }
+    case ODriveCmd::get_error: {
+      auto e = ODrive::decode_error(d);
+      a.active_errors = e.active_errors; a.disarm_reason = e.disarm_reason;
+      break;
+    }
+    case ODriveCmd::get_encoder_estimate: {
+      auto p = ODrive::decode_encoder_estimate(d);
+      write_pos_vel(a, p.a, p.b, now_wall_us());   // BB is not a leg → no sign flip
+      break;
+    }
+    case ODriveCmd::get_iq: {
+      auto q = ODrive::decode_iq(d);
+      a.iq_setpoint = q.a; a.iq_measured = q.b;
+      break;
+    }
+    case ODriveCmd::get_temps: {
+      auto t = ODrive::decode_temps(d);
+      a.temp_fet = t.a; a.temp_motor = t.b;
+      break;
+    }
+    case ODriveCmd::get_bus_voltage_current: {
+      auto v = ODrive::decode_bus_voltage_current(d);
+      a.bus_voltage = v.a; a.bus_current = v.b;
+      break;
+    }
+    default: break;
+  }
+}
+
+// CAN1 Ball Butler: the BB heartbeat (0x7D1) decodes into bb_state; BB pitch/hand
+// ODrive telemetry (nodes 7/8) decodes into bb_axes. Everything else is counted
+// via s_bb_rx and dropped.
 static void on_bb_rx(const CAN_message_t& msg) {
   s_bb_rx++;
   atomic_write_u64(&s_bb_last_rx_us, now_wall_us());   // 64-bit; read by health_of
   if (msg.id == BallButlerCanId::HEARTBEAT) decode_bb_heartbeat(msg);
+  else decode_bb_odrive(msg);   // BB pitch/hand ODrive telemetry (CAN1 nodes 7/8)
 }
 
-// CAN2 catching cone: no ODrive on this bus → count only. The RX timestamp also
-// drives the cone-presence gate in can_cone_send() (cone-absent tolerance).
-static void on_cone_rx(const CAN_message_t& /*msg*/) {
+// ── Cone uplink ring (phase-10b: CAN2 → CONE_FRAME UDP relay) ─────────────────
+// SPSC: producer is on_cone_rx (task_can_rx context — briefly the FlexCAN ISR
+// during the boot window, see the RX-health comment above), consumer is
+// cone_uplink_step() on task_telem. Both sides run their critical section with
+// IRQs masked (the can_*_send / atomic_*_u64 idiom), which sidesteps every
+// memory-ordering subtlety for a few hundred ns per ~21-byte record. Capacity
+// covers a full 100 Hz consumer tick of worst-case legitimate cone traffic
+// (10 Hz heartbeat + catch events deferred ~30 ms by the cone's report delay)
+// many times over; sustained overflow means CAN2 babble, counted in
+// s_cone_fwd_drops (drop-newest) and surfaced on the [canhealth] serial line.
+static constexpr uint8_t CONE_RING_CAP = 16;
+static ConeFrameRec s_cone_ring[CONE_RING_CAP];
+static volatile uint8_t s_cone_ring_head = 0, s_cone_ring_tail = 0;
+static volatile uint32_t s_cone_fwd_drops = 0;
+
+// CAN2 catching cone: no ODrive on this bus → count, then copy the frame into
+// the cone-uplink ring for the Jetson relay. The RX timestamp also drives the
+// cone-presence gate in can_cone_send() (cone-absent tolerance).
+static void on_cone_rx(const CAN_message_t& msg) {
+  const uint64_t now = now_wall_us();
   s_cone_rx++;
-  atomic_write_u64(&s_cone_last_rx_us, now_wall_us());   // 64-bit; read by the cone gate + health_of
+  atomic_write_u64(&s_cone_last_rx_us, now);   // 64-bit; read by the cone gate + health_of
+  const uint32_t pm = __get_PRIMASK(); __disable_irq();
+  const uint8_t next = (uint8_t)((s_cone_ring_head + 1) % CONE_RING_CAP);
+  if (next == s_cone_ring_tail) {
+    s_cone_fwd_drops++;                        // ring full → drop newest
+  } else {
+    ConeFrameRec& r = s_cone_ring[s_cone_ring_head];
+    r.t_bridge_us = now;
+    r.can_id = msg.id;
+    r.dlc = (msg.len > 8) ? 8 : msg.len;
+    memcpy(r.buf, msg.buf, 8);
+    s_cone_ring_head = next;
+  }
+  __set_PRIMASK(pm);
 }
+
+bool can_cone_pop(ConeFrameRec& out) {
+  bool have = false;
+  const uint32_t pm = __get_PRIMASK(); __disable_irq();
+  if (s_cone_ring_tail != s_cone_ring_head) {
+    out = s_cone_ring[s_cone_ring_tail];
+    s_cone_ring_tail = (uint8_t)((s_cone_ring_tail + 1) % CONE_RING_CAP);
+    have = true;
+  }
+  __set_PRIMASK(pm);
+  return have;
+}
+
+uint32_t can_cone_fwd_drops() { return s_cone_fwd_drops; }
 
 // CAN3 Jugglebot core: every ODrive frame (legs 0..5 + hand) decodes into the cache.
 static void on_jugglebot_rx(const CAN_message_t& msg) {

@@ -8,9 +8,13 @@
 //                counted but never decoded into the cache; we TX the 100 Hz
 //                0x7DD time-sync broadcast.
 //    cone      = CAN2 (catching cone Teensy, often physically disconnected). RX
-//                counted only. TX is the 0x7DD broadcast, GATED on recent cone
-//                presence so an un-ACKed send can't drive the bus to bus-off
-//                (cone-absent tolerance — see can_buses.cpp + HANDOFF D2).
+//                is counted AND copied into a small SPSC ring for the cone
+//                uplink (phase-10b): task_telem drains the ring into CONE_FRAME
+//                UDP messages so the Jetson sees every cone frame verbatim
+//                (CATCH_EVENT 0x7E0 / CONE_HEARTBEAT 0x7E1). TX is the 0x7DD
+//                broadcast, GATED on recent cone presence so an un-ACKed send
+//                can't drive the bus to bus-off (cone-absent tolerance — see
+//                can_buses.cpp + HANDOFF D2).
 //    jugglebot = CAN3 (Jugglebot core: 6 leg ODrives + Hand ODrive + platform
 //                Teensy 4.0 + can-bridge). ALL ODrive telemetry/heartbeat/error
 //                frames decode into the per-axis cache from here; leg setpoints,
@@ -55,6 +59,22 @@ struct CanStats {
   uint8_t  jugglebot_health;
 };
 CanStats can_buses_stats();
+
+// ── Cone uplink ring (phase-10b: CAN2 → CONE_FRAME UDP relay) ─────────────────
+//  Every frame received on the cone bus is copied into a small SPSC ring by the
+//  RX callback (producer: task_can_rx — briefly the FlexCAN ISR during the boot
+//  window, so the push is PRIMASK-guarded) and popped by the telemetry task
+//  (consumer: cone_uplink_step in telemetry.cpp), which forwards each record as
+//  a JbUdp CONE_FRAME. The cone's impact timestamp travels inside buf (latched
+//  in the cone's piezo ISR); t_bridge_us only stamps bridge-side CAN RX.
+struct ConeFrameRec {
+  uint64_t t_bridge_us;   // bridge wall-clock at CAN2 RX (us)
+  uint32_t can_id;        // CAN arbitration id (0x7E0 / 0x7E1)
+  uint8_t  dlc;           // CAN payload length (0..8)
+  uint8_t  buf[8];        // raw CAN payload (zero-padded past dlc)
+};
+bool can_cone_pop(ConeFrameRec& out);   // consumer side; false when ring empty
+uint32_t can_cone_fwd_drops();          // frames dropped on ring overflow (cumulative)
 
 // ── RX-health observability (bench/debug telemetry) ──────────────────────────
 //  Diagnostic counters that let a future bug be told apart by class. Surfaced over

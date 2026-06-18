@@ -248,7 +248,7 @@ BB_PIN_YAW_PWM = 14
 BB_CAN_HEARTBEAT_RATE_MS = 100
 BB_CAN_AUTO_CLEAR_BRAKE_MS = 500
 BB_CAN_MAX_NODES = 16
-BB_CAN_SYNC_STATS_PRINT_MS = 200
+BB_CAN_SYNC_STATS_PRINT_MS = 2000
 
 # ============================================================================
 # Ball Butler Yaw Axis
@@ -365,7 +365,7 @@ BB_OP_ODRIVE_BOOT_MS = 1000
 BB_OP_MAX_THROW_SPEED_MPS = 5.0
 BB_OP_MAX_THROW_HEIGHT_M = 0.5
 BB_OP_THROW_SPEED_MULTIPLIER = 1.0
-BB_OP_LANDING_TIME_OFFSET_MS = -120.0
+BB_OP_THROW_RELEASE_LATENCY_MS = 44.0
 
 # ============================================================================
 # Ball Butler Heartbeat Encoding

@@ -120,13 +120,28 @@ inline void getHandPosVel(float &pos, float &vel, uint64_t &t_us) {
 namespace TimeSync {
 
 /* 64‑bit free‑running microsecond counter (wraps after 71 min) */
+/* ISR-SAFE: wrap detection runs with interrupts masked (same idiom as
+ * BallButler ball_butler_main/Micros64.h). The unguarded version is racy
+ * whenever an ISR and the main loop both call it — an in-call preemption that
+ * advances last_lo reads as a false 32-bit wrap (+2^32 µs on the clock). That
+ * bit the catching cone (piezo ISR) on 2026-06-10; this copy had no ISR
+ * caller but is fixed for parity per the keep-in-sync rule — see
+ * logbook/2026-06-10-cone-micros64-false-wrap.md. NOT yet flashed to the
+ * platform Teensy (deploy on its next natural firmware update). */
 uint64_t micros64() {
-  static uint32_t last_lo = ::micros();
+  uint32_t primask;
+  asm volatile("MRS %0, PRIMASK" : "=r"(primask) :: "memory");
+  __disable_irq();
+
+  static uint32_t last_lo = 0;
   static uint64_t hi = 0;
   uint32_t now = ::micros();
   if (now < last_lo) hi += UINT64_C(1) << 32;
   last_lo = now;
-  return hi | now;
+  uint64_t result = hi | now;
+
+  if ((primask & 1u) == 0u) __enable_irq();  // re-enable only if enabled before
+  return result;
 }
 
 /* Wall‑time offset: Jetson_wall_us − micros64() */

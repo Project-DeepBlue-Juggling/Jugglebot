@@ -481,7 +481,7 @@ ball_butler_can:
   heartbeat_rate_ms: 100               # BB heartbeat broadcast interval {ms}
   auto_clear_brake_ms: 500             # Min ms between brake-resistor auto-clear attempts
   max_nodes: 16                        # Max CAN node IDs tracked by BB
-  sync_stats_print_ms: 200             # Time-sync stats print interval {ms}. Consumer converts to µs.
+  sync_stats_print_ms: 2000            # Time-sync stats print interval {ms} = 0.5 Hz max. Consumer converts to µs. (BB log is default-off; see ball_butler_main.ino setDebugFlags.)
 
 # ============================================================
 # 16. Ball Butler Yaw Axis
@@ -638,8 +638,13 @@ ball_butler_operational:
   max_throw_speed_mps: 5.0             # Max throw speed for aiming calculations {m/s} (from ball_butler_node.py)
   max_throw_height_m: 0.5              # Max height above BB the ball can reach {m} (from ball_butler_node.py)
   throw_speed_multiplier: 1.0          # Tunable multiplier on throw speed (from ball_butler_node.py)
-  landing_time_offset_ms: -120.0       # Offset subtracted from predicted landing time for throw timing {ms}.
-                                       # Accounts for release timing and ball flight time. (from ball_butler_node.py)
+  throw_release_latency_ms: 44.0       # Measured hand command→release actuator latency {ms}. ball_butler_node
+                                       # commands the throw this much EARLIER (bb_req.throw_time -= this) so the
+                                       # ball ARRIVES at the requested (pos, time) rather than ~44 ms late. The
+                                       # announced landing time is left = the true arrival. Constant across the
+                                       # workspace (distance-sweep 2026-06-18: 44.1±5.3 ms; no range/speed/pitch
+                                       # dependence). Re-measure via the cone if the hand/firmware changes.
+                                       # (Replaces the dead landing_time_offset_ms relic of the old -120 ms patch.)
 
 # ============================================================
 # 21. Ball Butler Heartbeat Encoding

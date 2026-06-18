@@ -75,20 +75,46 @@ constexpr uint8_t FLAG_ANY_CATCH            = 0x02;  // HEARTBEAT byte 6 — set
 /*----------------------------------------------------------------------------*/
 namespace TimeSync {
 
-/* 64-bit free-running microsecond counter (32-bit micros() wraps after 71 min) */
+/* 64-bit free-running microsecond counter (32-bit micros() wraps after 71 min).
+ *
+ * ISR-SAFE: called from BOTH piezoISR and the main loop, so the wrap detection
+ * runs with interrupts masked (same idiom as BallButler ball_butler_main/
+ * Micros64.h). Unguarded, the piezo ISR could advance last_lo past a main-loop
+ * call's already-loaded `now`, reading as a false 32-bit wrap: hi jumped
+ * +2^32 µs and the time-sync IIR then slewed wall time back over ~1 s, so any
+ * catch sent inside that window carried a future-biased timestamp (bench
+ * 2026-06-10: +40.1 s at 350 ms post-wrap = 2^32 µs × (7/8)^35 exactly; see
+ * logbook/2026-06-10-cone-micros64-false-wrap.md). */
 uint64_t micros64() {
-  static uint32_t last_lo = ::micros();
+  uint32_t primask;
+  asm volatile("MRS %0, PRIMASK" : "=r"(primask) :: "memory");
+  __disable_irq();
+
+  static uint32_t last_lo = 0;
   static uint64_t hi = 0;
   uint32_t now = ::micros();
   if (now < last_lo) hi += UINT64_C(1) << 32;
   last_lo = now;
-  return hi | now;
+  uint64_t result = hi | now;
+
+  if ((primask & 1u) == 0u) __enable_irq();  // re-enable only if enabled before
+  return result;
 }
 
 /* Wall-time offset: Jetson_wall_us − micros64() */
 volatile int64_t wall_offset_us = 0;
 volatile bool have_offset = false;
+volatile uint64_t last_sync_us = 0;   // micros64() at last 0x7DD frame (freshness)
 constexpr uint8_t ALPHA_SHIFT = TeensyOp::TIME_SYNC_ALPHA_SHIFT;  // I-filter gain = 1/2^n
+
+// Step (don't slew) when the broadcast jumps more than this — the master stepped
+// after a re-acquisition (logbook/2026-06-12-temporal-warmup-drift.md). Slewing a
+// big jump at 1/8 @ 100 Hz takes ~0.5 s; a step re-locks in one frame. Normal
+// inter-frame drift is < 1 µs.
+constexpr int64_t TIME_STEP_THRESHOLD_US = 20'000;   // 20 ms
+// Report NOT synced if no 0x7DD for this long: the master self-gates its broadcast
+// when its own Jetson anchor goes stale, so silence ⇒ untrusted (drifting) clock.
+constexpr uint64_t SYNC_STALE_US = 1'000'000;        // 1 s (broadcast is 100 Hz)
 
 /* Stats for jitter read-out */
 struct Stats {
@@ -115,6 +141,11 @@ uint8_t latched_rms_us = 0;  // most recent RMS jitter, clamped to a byte (for h
 uint64_t get_wall_time_us() { return micros64() + wall_offset_us; }
 uint64_t local_to_wall_us(uint64_t local_us) { return local_us + wall_offset_us; }
 
+// True only if we have an offset AND a recent broadcast. Goes false when the
+// master stops broadcasting (its own Jetson anchor went stale), so catches/
+// heartbeats honestly flag time_synced=0 instead of carrying a drifting stamp.
+bool is_time_synced() { return have_offset && (micros64() - last_sync_us < SYNC_STALE_US); }
+
 /* Process a single 8-byte sync frame (ID 0x7DD) */
 inline void handleSyncFrame(const CAN_message_t &msg) {
   uint32_t sec  = msg.buf[0] | (msg.buf[1] << 8) | (msg.buf[2] << 16) | (msg.buf[3] << 24);
@@ -126,10 +157,15 @@ inline void handleSyncFrame(const CAN_message_t &msg) {
   if (!have_offset) {  // first frame → step
     wall_offset_us = offset;
     have_offset = true;
-  } else {  // subsequent → slew with the I-filter
+  } else {
     int64_t diff = offset - wall_offset_us;
-    wall_offset_us += diff >> ALPHA_SHIFT;
+    if (diff > TIME_STEP_THRESHOLD_US || diff < -TIME_STEP_THRESHOLD_US) {
+      wall_offset_us = offset;             // master stepped (re-acquisition) → step, re-lock in 1 frame
+    } else {
+      wall_offset_us += diff >> ALPHA_SHIFT;   // small drift → slew with the I-filter
+    }
   }
+  last_sync_us = local_us;                 // freshness stamp
 
   int32_t delta = int32_t(offset - wall_offset_us);
   stats.add(delta);
@@ -192,7 +228,7 @@ uint32_t nextHeartbeat_ms = 0;
 void sendCatchEvent(uint64_t local_us, bool retrigger) {
   uint8_t flags = 0;
   uint32_t low32;
-  if (TimeSync::have_offset) {
+  if (TimeSync::is_time_synced()) {
     flags |= FLAG_TIME_SYNCED;
     low32 = uint32_t(TimeSync::local_to_wall_us(local_us));  // low 32 bits of wall µs
   } else {
@@ -235,8 +271,8 @@ void sendHeartbeat() {
   if (ms_since > 0xFFFFFF) ms_since = 0xFFFFFF;   // clamp to the uint24 field
 
   uint8_t flags = 0;
-  if (TimeSync::have_offset) flags |= FLAG_TIME_SYNCED;
-  if (have_any_catch)        flags |= FLAG_ANY_CATCH;
+  if (TimeSync::is_time_synced()) flags |= FLAG_TIME_SYNCED;
+  if (have_any_catch)             flags |= FLAG_ANY_CATCH;
 
   CAN_message_t m;
   m.id = heartbeatID;

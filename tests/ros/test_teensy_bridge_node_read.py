@@ -126,12 +126,13 @@ def test_enable_setpoint_output_defaults_false(bridge):
 # ── Topic namespace discipline ─────────────────────────────────
 
 # Intentional exceptions to the /teensy/* convention (D1 deviation, Phase A
-# BB cutover): the bridge inherits the production names for BB topics + the
-# four BB services so the GUI / orchestrator / mocap_node / throw_director
-# see no name change across the cutover. With USB-CAN removed, the dual-
-# publisher risk that drove D1 is moot. The leg/hand services stay under
-# /teensy/* until phase C of the cutover.
-_PRODUCTION_NAMES_OK = {'bb/heartbeat'}
+# BB cutover + phase-10b cone uplink): the bridge inherits the production
+# names for BB and cone topics so the GUI / orchestrator / mocap_node /
+# throw_director / catch_correlation_node see no name change across the
+# cutover. With USB-CAN removed, the dual-publisher risk that drove D1 is
+# moot. The leg/hand services stay under /teensy/* until phase C.
+_PRODUCTION_NAMES_OK = {'bb/heartbeat', 'bb/odrive_diag', 'bb/axis_estimates',
+                        'cone/catch_event', 'cone/heartbeat'}
 
 
 def test_all_topics_under_teensy_namespace(bridge):

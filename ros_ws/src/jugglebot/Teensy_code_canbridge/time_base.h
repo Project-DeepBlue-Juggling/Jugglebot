@@ -10,8 +10,10 @@
 //  micros64() is the 64-bit monotonic base (the 32-bit micros() wraps at 71 min;
 //  this extends it, mirroring the platform Teensy's TimeSync::micros64()).
 //  now_wall_us() = micros64() + wall_offset_us. The Jetson anchor sets the
-//  offset via set_wall_anchor(); subsequent corrections slew via an IIR so the
-//  master clock never steps backwards (which would corrupt slave IIR filters).
+//  offset via set_wall_anchor(): small drift is slewed via an IIR (monotonic),
+//  but a LARGE error (boot / re-acquisition after a sync gap) is stepped — a slew
+//  there would take ~30 min and masquerades as a thrower "warm-up" drift in the
+//  cone (logbook/2026-06-12-temporal-warmup-drift.md).
 // =============================================================================
 
 #include <cstdint>
@@ -47,16 +49,30 @@ uint64_t micros64();
 // anchor is set; thereafter micros64() + wall_offset_us.
 uint64_t now_wall_us();
 
-// True once the Jetson has provided at least one wall-clock anchor.
+// True when the Jetson anchor is present AND fresh (a recent TOD response). Goes
+// false after TIME_ANCHOR_STALE_US without a new anchor (e.g. teensy_bridge_node
+// down) so the broadcast self-gates and slaves learn the clock is untrustworthy.
 bool time_synced();
 
 // Apply a wall-clock anchor from the Jetson (RpcMethod::TIME_OF_DAY_QUERY result),
 // captured close to when the request was sent. `jetson_wall_us` is the Jetson's
-// CLOCK_REALTIME in microseconds. First call steps; later calls slew via IIR
-// (shift = TIME_OFFSET_IIR_SHIFT) so the broadcast clock is monotonic.
+// CLOCK_REALTIME in microseconds. STEPS on the first anchor and whenever the
+// error exceeds TIME_STEP_THRESHOLD_US (boot / re-acquisition after a sync gap —
+// the bridge free-runs and drifts while teensy_bridge_node is down); otherwise
+// SLEWS via the IIR for smooth, monotonic small-drift correction.
 void set_wall_anchor(uint64_t jetson_wall_us);
 
-// IIR slew gain for drift correction: new_offset += diff >> shift.
+// IIR slew gain for small-drift correction: new_offset += diff >> shift.
 constexpr uint8_t TIME_OFFSET_IIR_SHIFT = 4;
+
+// Step (don't slew) when |anchor − current offset| exceeds this. Slewing a large
+// re-acquisition error at 1/16-every-30 s takes ~30+ min (the 2026-06-16 cone
+// "warm-up" artifact); a step is bounded and slaves re-lock in <1 s. Only fires
+// at boot / after a sync gap — normal 30 s inter-anchor drift is <2 ms.
+constexpr int64_t TIME_STEP_THRESHOLD_US = 20'000;        // 20 ms
+
+// time_synced() goes false this long after the last anchor (≈3× the 30 s resync)
+// so a lost Jetson link self-reports as unsynced instead of silently drifting.
+constexpr uint64_t TIME_ANCHOR_STALE_US = 90'000'000ULL;  // 90 s
 
 }  // namespace CanBridge
