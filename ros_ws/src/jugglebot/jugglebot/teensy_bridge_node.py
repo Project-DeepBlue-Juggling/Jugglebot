@@ -36,6 +36,7 @@ Commit 4 adds the RPC service surface. Each is a separate, test-gated commit.
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 
@@ -80,6 +81,9 @@ from controller.teensy_link import protocol as p
 from controller.teensy_link import rpc_args
 from controller.teensy_link.fault_logic import LinkLossLatch
 from controller.teensy_link.setpoint_pump import SetpointPump
+from controller.teensy_link.encoder_search import (
+    EncoderSearch, AxisStatus, AXIS_STATE_ENCODER_INDEX_SEARCH,
+)
 from jugglebot.can import catching_cone
 import jugglebot.hardware_config as hw
 import jugglebot.protocol_config as proto
@@ -192,6 +196,10 @@ class TeensyBridgeNode(Node):
         # SAFETY-CRITICAL: setpoint output is OFF by default. Wired in Commit 3.
         self.declare_parameter('enable_setpoint_output', False)
         self.declare_parameter('heartbeat_timeout_s', _HEARTBEAT_TIMEOUT_S)
+        # Phase 9a: which axes the /teensy/encoder_search service runs index
+        # search on. Default = all legs; set to e.g. [0] for the standalone-leg
+        # bench rig (node 0 = axis 0).
+        self.declare_parameter('encoder_search_axes', list(range(p.NUM_LEGS)))
 
         self._heartbeat_timeout_s = float(
             self.get_parameter('heartbeat_timeout_s').value)
@@ -972,6 +980,77 @@ class TeensyBridgeNode(Node):
         return self._call_rpc(RpcMethod.SDO_WRITE,
                               rpc_args.encode_sdo_write(axis, endpoint, value))
 
+    # ── Encoder index search (Phase 9a, Jetson-side orchestration) ──
+    # The firmware ENCODER_SEARCH RPC is stubbed (ERR_NOT_IMPL); encoder index
+    # search is an ODrive-autonomous axis state, so we orchestrate it from here
+    # over the implemented SET_AXIS_STATE primitive + the telemetry/diagnostic
+    # cache. The pure sequencing lives in controller/teensy_link/encoder_search.py
+    # (unit-tested); this method is the I/O loop around it. Homing (Phase 9b) is
+    # the part that must live in firmware (no per-leg motion RPC).
+
+    def _encoder_axis_status(self, axes):
+        """Build per-axis ``AxisStatus`` for the search state machine from the
+        latest telemetry (pos → finite) + diagnostic (axis_state, active_errors)
+        cache. An axis with no diagnostic yet is omitted — the state machine
+        treats a missing axis as "no fresh status", aging it toward its timeout.
+        """
+        out = {}
+        with self._lock:
+            telem = self._latest_telemetry
+            diag = dict(self._latest_diag)
+        if telem is None:
+            return out
+        for axis in axes:
+            d = diag.get(int(axis))
+            if d is None:
+                continue
+            out[int(axis)] = AxisStatus(
+                axis_state=int(d.axis_state),
+                pos_finite=math.isfinite(float(telem.pos_rev[int(axis)])),
+                active_errors=int(d.active_errors))
+        return out
+
+    def _run_encoder_search(self, axes, *, poll_dt=0.05):
+        """Drive encoder index search on ``axes`` over the can-bridge link.
+
+        Synchronous: blocks the calling (executor) thread until the search
+        finishes — acceptable for a deliberate cold-start op; the RX + heartbeat
+        threads keep the link alive and the telemetry cache fresh throughout, and
+        the heartbeat stays ``mpc_active=0`` (no setpoint output). Returns
+        ``(ok, message)``.
+        """
+        axes = [int(a) for a in axes]
+        if not axes:
+            return False, "no axes configured for encoder search"
+        es = EncoderSearch(axes, timeout_s=2.0 * hw.JB_OP_ENCODER_SEARCH_TIMEOUT_S)
+        # Belt-and-suspenders wall-clock bound; the state machine self-terminates
+        # via its own per-axis timeout × (retries + 1) well inside this.
+        hard_deadline = time.monotonic() + es.timeout_s * (es.max_retries + 1) + 5.0
+        self.get_logger().info(f"encoder search: starting on axes {axes}")
+        while True:
+            now = time.monotonic()
+            res = es.step(now, self._encoder_axis_status(axes))
+            for axis in res.clear_errors:
+                self.teensy_clear_errors(axis)
+            for axis in res.set_search:
+                self.teensy_set_axis_state(axis, AXIS_STATE_ENCODER_INDEX_SEARCH)
+            if res.done:
+                break
+            if now > hard_deadline:
+                self.get_logger().error("encoder search: hard deadline exceeded")
+                break
+            time.sleep(poll_dt)
+        if es.done and not es.failed:
+            msg = f"encoder search complete on axes {es.succeeded}"
+            self.get_logger().info(msg)
+            return True, msg
+        parts = [f"axis {a}: {r}" for a, r in es.failed.items()]
+        msg = "encoder search FAILED — " + "; ".join(parts)
+        if es.succeeded:
+            msg += f" (succeeded: {es.succeeded})"
+        self.get_logger().error(msg)
+        return False, msg
+
     # ── ROS service handlers (existing-type subset) ───────────
 
     def _svc_clear_errors(self, req, res):
@@ -987,9 +1066,13 @@ class TeensyBridgeNode(Node):
         return res
 
     def _svc_encoder_search(self, req, res):
-        ok, msg, _ = self.teensy_encoder_search()
+        # Phase 9a: Jetson-side orchestration over SET_AXIS_STATE (the firmware
+        # ENCODER_SEARCH RPC remains stubbed). Scope via the encoder_search_axes
+        # parameter (default all legs; [0] for the standalone-leg bench rig).
+        axes = list(self.get_parameter('encoder_search_axes').value or [])
+        ok, msg = self._run_encoder_search(axes)
         res.success = ok
-        res.message = msg if ok else f'{msg} (encoder_search needs firmware Phase 9)'
+        res.message = msg
         return res
 
     def _svc_home(self, req, res):

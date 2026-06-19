@@ -182,15 +182,25 @@ def test_vel_curr_limits_ignored_when_zero():
         _teardown(teensy, client, node)
 
 
-# ── encoder_search / home: ERR_NOT_IMPL until firmware Phase 9 ─
+# ── encoder_search: Jetson-side (Phase 9a); home: ERR_NOT_IMPL (Phase 9b) ─
 
-def test_encoder_search_not_impl():
+def test_encoder_search_is_jetson_side_not_firmware_stub():
+    """Phase 9a moved encoder index search to a Jetson-side orchestration over
+    SET_AXIS_STATE; the service must NOT route to the (stubbed) firmware
+    ENCODER_SEARCH RPC. Full behaviour: test_teensy_bridge_node_encoder_search.py."""
     teensy, client, node = _node()
     try:
-        _capture(teensy, RpcMethod.ENCODER_SEARCH, status=int(RpcStatus.ERR_NOT_IMPL))
+        called = {'n': 0}
+
+        def stub(req_id, args):
+            called['n'] += 1
+            return (int(RpcStatus.ERR_NOT_IMPL), b"")
+
+        teensy.on_rpc(int(RpcMethod.ENCODER_SEARCH), stub)
+        node._params['encoder_search_axes'] = []   # empty scope -> fast return
         res = node._svc_encoder_search(Trigger.Request(), Trigger.Response())
         assert res.success is False
-        assert 'Phase 9' in res.message
+        assert called['n'] == 0   # the firmware ENCODER_SEARCH RPC is never used
     finally:
         _teardown(teensy, client, node)
 
