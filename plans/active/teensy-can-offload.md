@@ -298,8 +298,17 @@ for this application.
 | Bus | Peripheral | TX pin | RX pin | Notes |
 |---|---|---|---|---|
 | CAN1 | FlexCAN_T4 #1 (classical) | 22 | 23 | Ball Butler subsystem |
-| CAN2 | FlexCAN_T4 #2 (classical) | 0 | 1 | Catching cone subsystem |
-| CAN3 | FlexCAN_T4 #3 (FD-capable, run classical) | 30 | 31 | Jugglebot core subsystem |
+| CAN2 | FlexCAN_T4 #2 (classical) | 1 | 0 | Catching cone subsystem |
+| CAN3 | FlexCAN_T4 #3 (FD-capable, run classical) | 31 | 30 | Jugglebot core subsystem |
+
+> **Corrected 2026-06-19:** CAN2 = TX 1 / RX 0 and CAN3 = TX 31 / RX 30 — the
+> FlexCAN_T4 silicon-fixed default mux, matching the firmware
+> (`canbridge_config.h`) and the 2026-06-06 hardware bringup
+> (`logbook/2026-06-06-can-hub-bringup.md`). Earlier drafts of this table had
+> CAN2/CAN3 TX/RX reversed; the silicon mux is authoritative. **Follow-up:**
+> ADR-0013's pin table was already corrected 2026-06-03 (see its *Pin-direction
+> note*); the stale artifact is the firmware comment at `canbridge_config.h:50`,
+> which still claims ADR-0013 has them reversed — fix that comment instead.
 
 ### Existing hardware that does NOT change
 
@@ -670,7 +679,140 @@ long arc of bug-fixes and the logic is subtle.
 Each phase is self-contained — pick up later without re-loading deep context.
 Run pytest at the end of any Jetson-side phase that touches Python code.
 
+### Status snapshot (as of 2026-06-19)
+
+**The migration did not run in the linear phase order below.** The phase
+numbering reflects the *original* leg-first sequencing; in practice the
+auxiliary subsystems were cut over first (lower risk, and immediately useful
+for the Ball Butler throw-accuracy campaign) while the safety-critical legs
+were deliberately kept on the proven path until they can be bench-validated
+with motors powered. Read the per-phase `> **Status:**` blockquotes below for
+the authoritative state of each phase; this snapshot ties them together.
+
+**Deployed and hardware-validated today:**
+
+- The can-bridge Teensy 4.1 is the **permanently deployed system time-sync
+  master**, owning all three CAN buses. First on-hardware bringup
+  `logbook/2026-06-06-can-hub-bringup.md`: all three buses live, all 7
+  Jugglebot ODrives (6 legs + hand) decode heartbeats cleanly on CAN3 at IDLE,
+  cone-absent gating holds without bus-off, Ball Butler cold-joins on CAN1.
+- The three-bus firmware refactor (ADR-0013) landed 2026-06-03 (commits
+  `4c0f67f`, `917a4e0`, `8ea119d`, …) — subsystem-named buses, multi-bus
+  0x7DD fan-out, cone-absent TX gate.
+- **Jetson side is cut over in production.** `can_node` is **removed from
+  `jugglebot_launch.py`** (retained only for legacy bench use via `ros2 run`);
+  `teensy_bridge_node` (Phase 10a transport lib + Phase 10b bridge) is the
+  production CAN path over UDP. The Jetson is now the wall-clock *anchor*
+  (`TimeOfDayServer`), not a CAN master.
+- **Ball Butler (CAN1)** cut over 2026-06-08 (the out-of-order "Phase A",
+  commits `c4f56e3`→`5875531`) and **catching cone (CAN2) uplink** landed
+  2026-06-10 — both now publish to their **production** `/bb/*` and `/cone/*`
+  topics off the bridge. The whole UDP + time-sync + RPC stack is proven by
+  the multi-week BB throw-accuracy / temporal campaign (arrival error
+  < 10 ms mean; see the BallButler repo logbook).
+
+**The remaining frontier — arming the legs:**
+
+- The 6 legs + Hand ODrive + platform Teensy 4.0 are physically on **CAN3**
+  and decode heartbeats, but the **40 Hz leg setpoint downlink is gated OFF**
+  (`enable_setpoint_output=false` in `jugglebot_launch.py`, `mpc_active=0`) —
+  the legs are **not driven via the bridge yet**. Flipping that gate after
+  bench validation with motors powered is **Phase 11 → 12**.
+- The leg-path hardware-validation tails of **Phases 5–8** (CAN3 armed
+  CLOSED_LOOP cycle, interpolator float32-on-hardware residual, fault-scenario
+  bench replay) all require powered motors and are therefore still open.
+- **Phase 9** (encoder-search / homing) is genuinely **not started** — the RPC
+  envelope reserves the methods (`ERR_NOT_IMPL`).
+- **Phase 13** (decommission socketcan) is **partial**: `can_node` is out of
+  the launch, but `python-can` / `bus.py` / `can_node.py` are still present.
+
+Legend for the per-phase blockquotes: ✅ done & hardware-validated · 🟦 code
+complete + deployed, hardware-validated for the aux subsystems · ⚠️ code
+complete, hardware validation under powered legs pending · ❌ not started.
+
+### Revised sequencing — the leg-path phases collapse (2026-06-19)
+
+Bench bring-up on 2026-06-19 (CAN3 powered to 45 V, all 7 Jugglebot ODrives
+decoding cleanly over the UDP uplink, leg `active_errors` → 0, firmware `fault`
+auto-un-latched to `NONE` once the bus came up) surfaced an **ordering problem in
+the phase numbering above**. The linear order (Phase 5 ODrive cycle → 6 telem →
+7 interp → 8 fault → 9 homing → 11 cutover) is **not executable for the legs**,
+for one architectural reason:
+
+**There is no per-leg "move" RPC.** The implemented leg RPCs are all config/state
+(`SET_AXIS_STATE`, gains, limits, `CLEAR_ERRORS`, `SET_ABSOLUTE_POSITION`,
+`SDO_READ/WRITE`) — note `SET_ABSOLUTE_POSITION` sets the encoder reference offset
+post-homing, it does **not** move the leg. The *only* path that moves a leg under command is the 40 Hz
+**Setpoint stream** — the interp ISR transmitting `set_input_pos` on CAN3
+(decision D10). Two consequences:
+
+1. **Phase 5's done-when ("drive one ODrive through IDLE → CLOSED_LOOP →
+   position commands → IDLE") ≡ Phase 11's bench cutover.** Sending position
+   commands to a leg requires the interp (Phase 7) + the armed downlink
+   (Phase 11) + the passing fault/output gate (Phase 8). There is no standalone
+   single-leg poke in this architecture.
+2. **Homing's *move* is firmware work, beyond encoder search.** Encoder *index
+   search* is fine with existing primitives — it's an ODrive-autonomous state
+   (`SET_AXIS_STATE(ENCODER_INDEX_SEARCH)`; the ODrive spins itself, no host
+   motion command). But homing-to-hardstop drives the leg, for which there is no
+   RPC — so the homing move belongs in the firmware HOME handler, reusing the
+   existing velocity-limited descent primitive (`interp_begin_stow`, decision
+   D12).
+
+So Phases 5/7/8/9/11 are **one integrated leg bring-up** with this dependency
+chain:
+
+```
+45 V power ─┬─ CLEAR_ERRORS / fault un-latch    (Phase 8 — NO motion; auto-cleared 2026-06-19)
+            └─ encoder index search             (Phase 9a — SET_AXIS_STATE + poll; small motion; no setpoint path)
+                  └─ valid encoder estimate (NaN → real)
+                        └─ homing to reference   (Phase 9b — firmware move-to-hardstop + SET_ABSOLUTE_POSITION)
+                              └─ homed legs
+                                    └─ arm MPC → interp → CAN3   (Phase 7 + 8 + 11 together)
+                                          └─ "drive one leg full cycle"  ← Phase 5 done-when == Phase 11
+```
+
+**Execution order (supersedes the linear numbering for the leg path):**
+
+1. **Power + fault-clear — no motion.** 45 V up; confirm leg `active_errors` → 0
+   and firmware `fault` → `NONE`. *(Done 2026-06-19: auto-cleared; no
+   `CLEAR_ERRORS` needed for the transient UV/init.)*
+2. **Phase 9a — encoder index search.** Drive via
+   `SET_AXIS_STATE(ENCODER_INDEX_SEARCH)` + poll telemetry for `pos` going
+   NaN → real. One leg first, e-stop ready, then all six.
+3. **Phase 9b — homing.** Firmware HOME routine: velocity-limited descent to
+   hardstop (reuse `interp_begin_stow`) + `SET_ABSOLUTE_POSITION`. One leg,
+   then all six.
+4. **Phase 11 (= Phase 5 done-when).** Arm one leg through MPC → interp → Teensy
+   with `enable_setpoint_output`; this single test validates Phase 7 (interp
+   float32 on hardware), Phase 8 (fault/output gate), and Phase 5 (armed CAN3
+   cycle) together.
+5. **Phase 12** (all six legs, full hardware test plan) → **Phase 13**
+   (decommission socketcan).
+
+**Test rig — standalone leg (safest single-leg path).** A standalone leg
+identical to Jugglebot's six can be driven by a single ODrive wired as **node 0**
+in place of the platform (so axis 0 = the standalone leg; the hand, node 6, is
+absent). This is the preferred target for the first hardware runs of 9a, 9b, and
+the Phase 11 single-leg cutover: one isolated leg on the bench, no
+Stewart-platform coupling, e-stop within reach. **The encoder-search and homing
+orchestration must therefore support targeting a single axis (axis 0), not just
+all-six.** The hand's absolute encoder needs no index search, so nothing is lost
+by the hand's absence on this rig.
+
+The original per-phase sections below are retained for their detail; treat their
+*status blockquotes* plus this section as the authoritative state and order.
+
+---
+
 ### Phase 0 — Hardware procurement and wiring
+
+> **Status (2026-06-19): ✅ DONE.** Can-bridge Teensy 4.1 built, Ethernet kit
+> soldered, three CAN transceivers + termination wired and brought up live on
+> hardware (`logbook/2026-06-06-can-hub-bringup.md`). CAN3 carries the 6 legs +
+> Hand ODrive + platform Teensy 4.0; CAN1 = Ball Butler; CAN2 = catching cone.
+> The original "no leg ODrives yet" scope was exceeded — all 7 ODrives were on
+> CAN3 for the bringup (heartbeat decode at IDLE).
 
 **Goal:** All hardware on hand, enclosure planned, Teensy 4.1 + Ethernet kit
 prototyped on breadboard, CAN transceivers wired and bench-tested in isolation
@@ -703,6 +845,12 @@ is expected and not a hardware fault.
 
 ### Phase 1 — Jetson network setup
 
+> **Status (2026-06-19): ✅ DONE & hardware-validated.** The dedicated
+> point-to-point UDP link (`192.168.42.0/30`, MAC-pinned `eth1`) is operational
+> and carries production traffic (BB/cone telemetry, RPC, `TIME_OF_DAY` anchor).
+> The "worked example" recorded in the *Jetson network setup* section above is
+> this robot's live config (ADR-0011, ADR-0007).
+
 **Goal:** Dedicated point-to-point Ethernet link to a placeholder Teensy
 firmware, with no impact on house LAN.
 
@@ -724,6 +872,12 @@ the Teensy comes online.
 
 ### Phase 2 — Teensy FreeRTOS skeleton + Ethernet bring-up
 
+> **Status (2026-06-19): ✅ DONE & hardware-validated.** Firmware boots into
+> FreeRTOS (tsandmann port, ADR-0009), brings up QNEthernet at static
+> `192.168.42.2`, and the UDP link is in continuous production use. The serial
+> diagnostics (`[diag]`/`[canhealth]`/`[axes]`) documented in
+> `logbook/2026-06-06-can-hub-bringup.md` are the bringup reference.
+
 **Goal:** Teensy boots into FreeRTOS, brings up Ethernet at static
 `192.168.42.2`, responds to ping from Jetson.
 
@@ -744,6 +898,13 @@ FreeRTOS task scheduling.
 
 ### Phase 3 — UDP echo
 
+> **Status (2026-06-19): ✅ DONE & hardware-validated.** The framing layer is in
+> production: **fixed-length typed frames + CRC-16/CCITT-FALSE** (decision D1/D2
+> in the firmware handoff — *not* COBS; the *Framing format* open question is
+> resolved). Cross-language byte-consistency is enforced by
+> `tests/firmware/test_udp_protocol_xlang.py`; the layer carries all live BB,
+> cone, telemetry, and RPC traffic.
+
 **Goal:** Bidirectional UDP packet exchange, framing-and-CRC layer working,
 no protocol semantics yet.
 
@@ -760,6 +921,13 @@ CRC, loss rate <0.01%, end-to-end latency under ~1 ms.
 ---
 
 ### Phase 4 — UDP protocol contract finalised
+
+> **Status (2026-06-19): ✅ DONE.** Single-source generator
+> `config/generate_udp_protocol.py` emits the C++ header, the Python module, and
+> `docs/teensy-udp-protocol.md` (decision D3). The `TIME_OF_DAY_QUERY` exchange
+> rides the RPC channel. The RPC method arg layouts were hoisted into the
+> generator at Phase 10b (decision D8 follow-up, the bridge being the second
+> consumer). Byte-consistency is test-enforced.
 
 **Goal:** Full protocol spec written down, with frame layouts, sequence
 semantics, retry rules, error codes.
@@ -783,6 +951,23 @@ C++.
 ---
 
 ### Phase 5 — CAN bring-up: multi-bus time-sync master + CAN3 ODrive protocol
+
+> **Status (2026-06-19): ⚠️ SUBSTANTIALLY DONE — armed-ODrive cycle pending (≡ Phase 11; see *Revised sequencing*).**
+> Time-sync master is **deployed and hardware-validated**: the can-bridge
+> broadcasts 0x7DD on CAN1/CAN2/CAN3 (multi-bus fan-out, partial-failure
+> tolerant), BB and cone slaves lock on, and **cone-absent gating holds without
+> bus-off** (`logbook/2026-06-06-can-hub-bringup.md`). The CAN2-absent behaviour
+> question is resolved → **gated broadcast** (TX withheld once cone RX goes
+> stale, so TEC never climbs; `CONE_PRESENT_STALENESS_US`). The Jetson
+> master-disable sub-task is effectively done (`can_node` retired from launch;
+> Jetson is now the UDP `TimeOfDayServer` anchor). **CAN3 ODrive protocol:**
+> encoders/decoders byte-validated vs `odrive.py`, and heartbeat/telemetry RX
+> decode confirmed on hardware at IDLE for all 7 ODrives — but the **full armed
+> cycle (IDLE → CLOSED_LOOP → position commands → IDLE) is NOT yet done** (needs
+> motors powered; folded into the Phase 11 bench cutover). A documented clock
+> subtlety surfaced and was fixed during the BB campaign: the bridge now *steps*
+> its wall-clock on large re-acquisition error rather than slewing (see the
+> BallButler temporal-warmup logbook).
 
 **Goal:** Teensy is up on all three CAN buses. The can-bridge broadcasts the
 time-sync 0x7DD frame on **all three** buses (replacing the Jetson); CAN3 can
@@ -853,6 +1038,16 @@ CAN3 bring-up + ODrive protocol:
 
 ### Phase 6 — Per-axis state cache + telemetry uplink
 
+> **Status (2026-06-19): ⚠️ CODE COMPLETE + on UDP uplink; under-motion
+> validation pending.** `AxisState legs[6]` cache + 100 Hz telemetry uplink +
+> on-change diagnostics are implemented (`telemetry.cpp`); the bridge consumes
+> `MsgType.TELEMETRY` and publishes robot/hand state (the early "serial-only"
+> follow-up from the 06-06 bringup has since been promoted to the UDP uplink).
+> Exercised at IDLE; full validation under powered, moving legs is pending
+> (tied to Phase 11). Hand/leg `robot_state` currently publishes under
+> `/teensy/*` (BB/cone are on production names); the leg-side rename rides the
+> Phase 11–12 cutover.
+
 **Goal:** Teensy maintains the full per-axis state cache, publishes 100 Hz
 telemetry uplink + on-change diagnostics, Jetson can subscribe and display.
 
@@ -869,6 +1064,16 @@ under sustained load.
 ---
 
 ### Phase 7 — Hermite interpolator port
+
+> **Status (2026-06-19): ⚠️ CODE COMPLETE (xref 0.0 rev); on-HW residual +
+> friction-FF pending.** The full ladder (Hermite → Taylor → velocity decay →
+> fault) plus the `MAX_LEAD_REV` lead-clamp and per-leg stroke clamp are ported
+> (`leg_interp.cpp`, decisions D5/D6/D10) and match `motor_guard.py` to **0.0
+> rev** in the offline xref (`tests/firmware/test_hermite_xref.py`). The ISR
+> runs above the FreeRTOS syscall ceiling and TXes to CAN3 directly. **Not yet
+> run on hardware under armed legs:** the float32-on-Teensy residual vs a
+> recorded throw, and the Stribeck friction-FF gap (decision D9 — `torque_ff` is
+> currently passed through unported).
 
 **Goal:** 500 Hz cubic Hermite + Taylor extrapolation running on Teensy,
 matches `motor_guard.py` output bit-for-bit on identical inputs.
@@ -889,6 +1094,15 @@ and Teensy interpolator outputs for at least one recorded throw cycle.
 ---
 
 ### Phase 8 — Fault state machine port
+
+> **Status (2026-06-19): ⚠️ CODE COMPLETE; bench fault-replay pending.** Per-axis
+> error tracking, soft-reset bounce-loop cap, undervoltage gating, the
+> max-deviation E-STOP, and the deferred-stow safety inversion (2026-05-19
+> invariant) are ported (`fault_machine.cpp`, decisions D11/D12) and spec'd by
+> `tests/firmware/test_fault_logic.py`. The 06-06 bringup confirmed CAN3
+> auto-restore after unplug/replug. **Still required (Phase 8 "done when"):**
+> bench-replay of every logbook fault scenario (soft-reset bounce, CAN-loss
+> safety inversion, undervoltage) on hardware with motors powered.
 
 **Goal:** Per-axis fault tracking, soft-reset attempt limiting, undervoltage
 gating, deferred-stow safety inversion all running on Teensy.
@@ -911,6 +1125,17 @@ correctly on Teensy.
 
 ### Phase 9 — Encoder search + homing
 
+> **Status (2026-06-19): ❌ NOT STARTED — next up; see *Revised sequencing*.**
+> The RPC envelope reserves `ENCODER_SEARCH` and `HOME` (they return
+> `ERR_NOT_IMPL`), and `SDO_READ` / `SDO_WRITE` are wired, so this slots in
+> without a protocol change — but the SDO-polling state machine and homing
+> orchestration are not yet ported. **Refined 2026-06-19:** split into 9a +
+> 9b — encoder *index search* (9a) is doable today via the implemented
+> `SET_AXIS_STATE(ENCODER_INDEX_SEARCH)` primitive + telemetry poll (no firmware
+> change, no setpoint path); the homing *move* (9b) needs firmware (no per-leg
+> motion RPC) and should reuse the velocity-limited descent primitive
+> `interp_begin_stow` (D12) in the HOME handler.
+
 **Goal:** Cold-start procedures (encoder index search, homing) work
 end-to-end on Teensy.
 
@@ -925,6 +1150,13 @@ CAN involvement.
 ---
 
 ### Phase 10 — Jetson-side bridge
+
+> **Status (2026-06-19): 🟦 DONE & DEPLOYED (legs gated).** `can_node` is
+> **removed from `jugglebot_launch.py`**; `teensy_bridge_node` is the production
+> CAN path, sourcing everything over UDP. The aux subsystems are fully cut over
+> (BB → `/bb/*`, cone → `/cone/*`); the leg setpoint downlink is the one piece
+> still gated off pending the Phase 11 armed-motor validation. See the 10a / 10b
+> sub-statuses below.
 
 **Goal:** `can_node.py` reduced to a UDP bridge. ROS2 topics and services
 identical to today; orchestrator, MPC bridge, throw director, BB nodes
@@ -961,33 +1193,77 @@ Landed as the prerequisite for the ROS-side rewrite:
   **1597 passed, 1 xfailed in 442.27 s** (the xfail is the inherited
   pre-existing one).
 
-#### Phase 10b — Full bridge rewrite (NOT STARTED)
+#### Phase 10b — Full bridge rewrite (DONE — code complete + deployed; leg downlink gated)
 
-The remaining Phase-10 work, to follow once the MVP has been smoke-tested
-on real hardware:
+Built as a **side-by-side `teensy_bridge_node`** rather than an in-place edit of
+`can_node.py` (so the legacy path stayed runnable as a fallback throughout),
+then folded into the production launch once the aux-subsystem cutover was
+proven. Landed across commits `7004021` (skeleton + read side), `2939bff` (link
+watchdog + deferred-stow latch), `8131cd7` (gated setpoint downlink), `2147ddb`
+(RPC service surface + D8 arg-codegen hoist), and `9edc767` (adversarial-review
+fixes). What's in place:
 
-- Replace `can_node.py`'s CAN encoding paths with UDP sends via the
-  transport library.
-- Replace `can_node.py`'s CAN polling with the transport library's
-  subscriber callbacks.
-- Reimplement watchdog as Teensy-link health monitor (using
-  `client.time_since_last_t2j_heartbeat_us()` plus the deferred-stow
-  latch from `logbook/2026-05-19-can-loss-fault-response-safety-inversion.md`).
-- All ROS2 topic publishers and service handlers stay; just swap their
-  data source.
-- The MPC setpoint stream (40 Hz Hermite waypoints) is fed by
-  `motor_guard.py`'s output — Phase 7's already-validated interpolator
-  output, packaged into `Setpoint` frames.
-- Hoist RPC method arg layouts (handoff D8) into the codegen at this
-  point — the Jetson bridge becomes the second consumer.
-- `pytest tests/ros/ -v` must pass with the bridge in place.
+- `ros_ws/src/jugglebot/jugglebot/teensy_bridge_node.py` — sources robot/hand
+  state, link/fault health, and the subsystem streams over the UDP link
+  (`controller/teensy_link/`) instead of socketcan.
+- The CAN-loss watchdog is reimplemented as a Teensy-link health monitor with
+  the deferred-stow latch preserved (`logbook/2026-05-19-can-loss-fault-response-safety-inversion.md`).
+- The 40 Hz MPC setpoint downlink is wired (`controller/teensy_link/setpoint_pump.py`,
+  with the `JB_OP_MAX_POSITION_STEP_REV` per-step gate moved into the sender),
+  but **gated behind `enable_setpoint_output` (default `false`)** — `mpc_active=0`
+  on every startup path, so the Teensy never enables leg output until an
+  operator flips the gate after bench validation with motors powered.
+- RPC method arg layouts hoisted into `config/generate_udp_protocol.py` (the D8
+  follow-up); the bridge is the second consumer.
+- Tests: `tests/ros/test_teensy_bridge_node_{read,watchdog,setpoint,rpc}.py`,
+  `tests/teensy_link/test_fault_logic_mirror.py`, `tests/teensy_link/test_setpoint_pump.py`
+  (all hardware-free, reuse the Phase-10a `FakeTeensy` loopback peer).
+- **Deployed:** `can_node` removed from `jugglebot_launch.py`;
+  `teensy_bridge_node` is the production CAN path.
 
-**Done when:** Jetson runs without socketcan loaded. All existing ROS2 tests
-pass. Manual smoke test: orchestrator + MPC bridge unchanged.
+**Remaining:** the leg setpoint downlink stays gated until Phase 11 arms it; the
+leg/hand `robot_state` publishes under `/teensy/*` until the leg cutover renames
+it to production. `pytest tests/ -q` is the regression gate.
+
+#### Phase A — Ball Butler cutover (DONE 2026-06-08, out of original order)
+
+Not in the original phase numbering. The Ball Butler subsystem was migrated off
+`can_node` onto `teensy_bridge_node` first, because it was lower-risk than the
+legs and immediately useful for the throw-accuracy campaign. Landed across
+commits `c4f56e3` (BB heartbeat cache scaffolding, A1), `0dc0ca6` (BB command
+frame encoders, A2), `d679407` (BB heartbeat decode + freshness, A3), `e057e45`
+(BB RPC dispatch — typed validation + presence gate, A5), `5875531` (cut BB over
+from `can_node` to `teensy_bridge_node`, A7). The `bb/*` services, `bb/heartbeat`
+publisher, `ThrowAnnouncement`, and high-rate `bb/axis_estimates` now live on the
+bridge over CAN1. Hardware bringup logged in `logbook/2026-06-08-bb-cutover-bench.md`.
+
+#### Phase 10b-cone — Catching cone uplink (DONE 2026-06-10)
+
+The catching cone telemetry/catch-event stream was relayed from CAN2 to the
+Jetson as a `CONE_FRAME` UDP uplink and re-published on the production `/cone/*`
+topics by `teensy_bridge_node` (the `cone/catch_event` + `cone/heartbeat`
+publishers moved off `can_node`). Bench-validated in
+`logbook/2026-06-10-cone-uplink-phase-10b.md`; a cone-firmware ISR-race
+timestamp anomaly surfaced during this work and was root-caused in
+`logbook/2026-06-10-cone-micros64-false-wrap.md` (a pre-existing cone-firmware
+bug, not the relay).
+
+**Done when (original Phase 10 criterion):** Jetson runs without socketcan
+loaded. All existing ROS2 tests pass. Manual smoke test: orchestrator + MPC
+bridge unchanged. — *Met for the aux subsystems and deployed; the legs-without-
+socketcan endpoint is reached at Phase 11–12.*
 
 ---
 
 ### Phase 11 — Bench cutover (one leg)
+
+> **Status (2026-06-19): ❌ NOT STARTED — the convergence point (≡ Phase 5 done-when; see *Revised sequencing*).** The
+> legs are physically on CAN3 but the 40 Hz setpoint downlink is gated OFF
+> (`enable_setpoint_output=false`, `mpc_active=0`). This phase = flip that gate
+> for one leg, with motors powered, and validate the armed CAN3 cycle, the
+> interpolator on hardware, and the fault state machine — i.e. it absorbs the
+> hardware-validation tails of Phases 5–8. Keep the legacy `can_node` path
+> swappable back in < 10 min throughout (see Risks).
 
 **Goal:** End-to-end MPC → Hermite → Teensy → ODrive on the bench, one leg
 only, with Jetson socketcan disabled.
@@ -1007,6 +1283,11 @@ pipeline.
 ---
 
 ### Phase 12 — Full robot cutover
+
+> **Status (2026-06-19): ❌ NOT STARTED.** Depends on Phase 11. Note that the
+> CAN1/CAN2/CAN3 *partition* and the platform Teensy 4.0's placement on CAN3 are
+> already realised — what remains is driving all six legs through the bridge and
+> running the full hardware test plan with motors powered.
 
 **Goal:** All six legs migrated to CAN3 (the Jugglebot bus), full robot
 operating off the new three-bus architecture. Platform Teensy 4.0 now sits
@@ -1036,6 +1317,13 @@ carries the Ball Butler subsystem only; CAN2 carries the catching cone only.
 ---
 
 ### Phase 13 — Decommission Jetson CAN
+
+> **Status (2026-06-19): ⚠️ PARTIAL.** `can_node` is removed from
+> `jugglebot_launch.py` (the production launch no longer touches socketcan), but
+> the code is still present for legacy bench use: `python-can`, `can/bus.py`,
+> and `can_node.py` have **not** been deleted, and the `can0` device has not been
+> torn down. Defer the deletions until the leg cutover (Phase 11–12) has
+> accumulated operating time and the fallback is no longer needed.
 
 **Goal:** socketcan stack removed from Jetson, `can0` device gone.
 
@@ -1092,7 +1380,12 @@ To resolve as the plan progresses.
   upgrade to 5 Mbps + 64-byte payloads is a configuration change rather
   than a hardware change. Not blocking; revisit when CAN3 utilisation
   creeps above ~80% or the ODrive firmware roadmap surfaces FD.
-- **Framing format.** COBS vs. fixed-length records. Decide in Phase 3.
+- **Framing format. RESOLVED (Phase 3).** Fixed-length typed frames + CRC-16/
+  CCITT-FALSE, *not* COBS (firmware-handoff decisions D1/D2). A UDP datagram
+  already carries one message boundary per `recv`, so COBS bought nothing; a
+  fixed per-type layout is zero-allocation and constant-time to parse — no
+  variable-length scan injecting jitter onto the RX path that competes with the
+  500 Hz tick.
 - **On-Teensy logging.** microSD slot is available; should logging happen
   on-Teensy (high-fidelity capture) or stay on Jetson via UDP relay (single
   source of truth)? Defer to Phase 6 telemetry design.
@@ -1102,16 +1395,14 @@ To resolve as the plan progresses.
   core, but the subsystem-isolation argument (cone disconnects don't
   affect anything) is currently the dominant consideration — revisit only
   if the physical layout changes materially.
-- **CAN2 firmware behaviour when cone Teensy is absent.** The cone is
-  often physically disconnected; the can-bridge still broadcasts the 100
-  Hz 0x7DD time-sync on CAN2 unconditionally. Decide the FlexCAN_T4
-  configuration that lets the can-bridge transmit on CAN2 with no ACK
-  gracefully — no bus-off, no permanent error state, no auto-recovery
-  loops that thrash TEC/REC counters. Candidate approaches: configure
-  one-shot TX with NACK-tolerant mailbox handling; allow bus-off but
-  auto-recover at a bounded rate; drop the broadcast on CAN2 entirely
-  when no recent cone heartbeat has been seen. Pick one, validate on the
-  bench with cone unplugged for an extended period.
+- **CAN2 firmware behaviour when cone Teensy is absent. RESOLVED (Phase 5).**
+  Chosen approach: **gated broadcast** — the can-bridge withholds CAN2 TX once
+  the cone RX timestamp goes stale (`CONE_PRESENT_STALENESS_US`, `can_buses.cpp`
+  `can_cone_send`), so no un-ACKed frame is ever emitted and the FlexCAN TEC
+  never climbs toward bus-off. (The pinned FlexCAN_T4 has no one-shot-TX or
+  bounded-recovery API, ruling out the other two candidates.) Hardware-validated
+  2026-06-06: with the cone disconnected, CAN2 holds `sync=1`, `tec=0`, no
+  bus-off, and CAN1/CAN3 are unaffected (`logbook/2026-06-06-can-hub-bringup.md`).
 
 ---
 
@@ -1128,6 +1419,11 @@ plan's commits**. Captured here so the findings aren't lost.
   to fix: Phase 5, when `bus.broadcast_time()` gets disabled as part of the
   master-role transfer — update the docstring in the same commit. Or
   earlier as a small standalone docs fix.
+  - **Status (2026-06-19): still open.** The master-role transfer was achieved
+    by *retiring `can_node` from `jugglebot_launch.py`*, not by editing `bus.py`,
+    so the stale docstring still sits in the retained legacy module. Mooted when
+    `bus.py` is deleted at Phase 13; fix as a standalone docs change before then
+    if it's touched for any other reason.
 
 ---
 
