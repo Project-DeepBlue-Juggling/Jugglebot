@@ -721,8 +721,10 @@ the authoritative state of each phase; this snapshot ties them together.
 - The leg-path hardware-validation tails of **Phases 5–8** (CAN3 armed
   CLOSED_LOOP cycle, interpolator float32-on-hardware residual, fault-scenario
   bench replay) all require powered motors and are therefore still open.
-- **Phase 9** (encoder-search / homing) is genuinely **not started** — the RPC
-  envelope reserves the methods (`ERR_NOT_IMPL`).
+- **Phase 9a** (encoder index search) is **hardware-validated (2026-06-21,
+  standalone leg)** and deployed as the `/teensy/encoder_search` service;
+  **Phase 9b** (homing move) is **not started** — the HOME RPC still returns
+  `ERR_NOT_IMPL`.
 - **Phase 13** (decommission socketcan) is **partial**: `can_node` is out of
   the launch, but `python-can` / `bus.py` / `can_node.py` are still present.
 
@@ -777,9 +779,11 @@ chain:
 1. **Power + fault-clear — no motion.** 45 V up; confirm leg `active_errors` → 0
    and firmware `fault` → `NONE`. *(Done 2026-06-19: auto-cleared; no
    `CLEAR_ERRORS` needed for the transient UV/init.)*
-2. **Phase 9a — encoder index search.** Drive via
-   `SET_AXIS_STATE(ENCODER_INDEX_SEARCH)` + poll telemetry for `pos` going
-   NaN → real. One leg first, e-stop ready, then all six.
+2. **Phase 9a — encoder index search. ✓ DONE (2026-06-21, standalone leg).**
+   Drive via `SET_AXIS_STATE(ENCODER_INDEX_SEARCH)` + poll telemetry for `pos`
+   going NaN → real. Hardware-validated on odrv0 (state 1→6→1 → success);
+   deployed as the `/teensy/encoder_search` service. Extend to all six legs once
+   on the platform.
 3. **Phase 9b — homing.** Firmware HOME routine: velocity-limited descent to
    hardstop (reuse `interp_begin_stow`) + `SET_ABSOLUTE_POSITION`. One leg,
    then all six.
@@ -793,8 +797,8 @@ chain:
 **Test rig — standalone leg (safest single-leg path).** A standalone leg
 identical to Jugglebot's six can be driven by a single ODrive wired as **node 0**
 in place of the platform (so axis 0 = the standalone leg; the hand, node 6, is
-absent). This is the preferred target for the first hardware runs of 9a, 9b, and
-the Phase 11 single-leg cutover: one isolated leg on the bench, no
+absent). This is the preferred target for the leg-path bring-up runs (9a done here
+2026-06-21; 9b and the Phase 11 single-leg cutover next): one isolated leg on the bench, no
 Stewart-platform coupling, e-stop within reach. **The encoder-search and homing
 orchestration must therefore support targeting a single axis (axis 0), not just
 all-six.** The hand's absolute encoder needs no index search, so nothing is lost
@@ -1125,7 +1129,7 @@ correctly on Teensy.
 
 ### Phase 9 — Encoder search + homing
 
-> **Status (2026-06-19): ❌ NOT STARTED — next up; see *Revised sequencing*.**
+> **Status: 9a ✅ HARDWARE-VALIDATED (2026-06-21, standalone leg) · 9b ❌ not started. See *Revised sequencing*.**
 > The RPC envelope reserves `ENCODER_SEARCH` and `HOME` (they return
 > `ERR_NOT_IMPL`), and `SDO_READ` / `SDO_WRITE` are wired, so this slots in
 > without a protocol change — but the SDO-polling state machine and homing
@@ -1135,6 +1139,15 @@ correctly on Teensy.
 > change, no setpoint path); the homing *move* (9b) needs firmware (no per-leg
 > motion RPC) and should reuse the velocity-limited descent primitive
 > `interp_begin_stow` (D12) in the HOME handler.
+>
+> **9a hardware-validated 2026-06-21:** encoder index search run on the
+> standalone leg (odrv0) over the can-bridge — the **first leg ODrive commanded
+> via the new path**. `SET_AXIS_STATE(0, ENCODER_INDEX_SEARCH)` → axis state
+> 1→6→1 → success; the tested `EncoderSearch`
+> (`controller/teensy_link/encoder_search.py`) detected completion (search state
+> observed, then IDLE + finite pos + no errors). Deployed via the
+> `/teensy/encoder_search` service (commit `3b96f33`); bench driver
+> `tests/hardware/teensy_encoder_search_bench.py`. 9b (firmware homing move) remains.
 
 **Goal:** Cold-start procedures (encoder index search, homing) work
 end-to-end on Teensy.
