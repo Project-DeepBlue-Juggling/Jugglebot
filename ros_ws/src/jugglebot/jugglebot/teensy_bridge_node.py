@@ -84,6 +84,9 @@ from controller.teensy_link.setpoint_pump import SetpointPump
 from controller.teensy_link.encoder_search import (
     EncoderSearch, AxisStatus, AXIS_STATE_ENCODER_INDEX_SEARCH,
 )
+from controller.teensy_link.homing import (
+    HomingMonitor, AxisStatus as HomingAxisStatus,
+)
 from jugglebot.can import catching_cone
 import jugglebot.hardware_config as hw
 import jugglebot.protocol_config as proto
@@ -200,6 +203,10 @@ class TeensyBridgeNode(Node):
         # search on. Default = all legs; set to e.g. [0] for the standalone-leg
         # bench rig (node 0 = axis 0).
         self.declare_parameter('encoder_search_axes', list(range(p.NUM_LEGS)))
+        # Phase 9b: which axes the /teensy/home service homes (sequentially — the
+        # firmware homes one axis at a time). Default = all legs; set to e.g. [0]
+        # for the standalone-leg bench rig (node 0 = axis 0).
+        self.declare_parameter('home_axes', list(range(p.NUM_LEGS)))
 
         self._heartbeat_timeout_s = float(
             self.get_parameter('heartbeat_timeout_s').value)
@@ -1051,6 +1058,84 @@ class TeensyBridgeNode(Node):
         self.get_logger().error(msg)
         return False, msg
 
+    # ── Homing (Phase 9b — firmware move, Jetson-side observation) ──
+    # Unlike encoder search, the homing *move* runs autonomously in the can-bridge
+    # HOME handler (no per-leg motion RPC; the velocity-limited move-to-hardstop
+    # must live in firmware). The Jetson fires HOME (fire-and-monitor) and watches
+    # the telemetry + diagnostic cache for completion via HomingMonitor (pure,
+    # unit-tested). The firmware homes one axis at a time, so axes are homed
+    # sequentially.
+
+    def _homing_axis_status(self, axis):
+        """Build the :class:`HomingAxisStatus` for ``axis`` from the latest
+        telemetry (pos) + diagnostic (axis_state, active_errors) cache, or None
+        if no diagnostic has arrived yet."""
+        with self._lock:
+            telem = self._latest_telemetry
+            d = self._latest_diag.get(int(axis))
+        if telem is None or d is None:
+            return None
+        return HomingAxisStatus(
+            axis_state=int(d.axis_state),
+            pos_rev=float(telem.pos_rev[int(axis)]),
+            active_errors=int(d.active_errors))
+
+    def _run_home(self, axes, *, poll_dt=0.05):
+        """Home ``axes`` over the can-bridge link, one axis at a time.
+
+        Synchronous: blocks the calling (executor) thread until homing finishes —
+        acceptable for a deliberate cold-start op; the RX + heartbeat threads keep
+        the link alive and the telemetry cache fresh throughout, and the heartbeat
+        stays ``mpc_active=0`` (no setpoint output). Returns ``(ok, message)``.
+        """
+        axes = [int(a) for a in axes]
+        if not axes:
+            return False, "no axes configured for homing"
+        home_ref = abs(float(hw.HOMING_LEG_ABS_POS_REV))
+        # Firmware per-axis hard timeout (Homing::MOTOR_TIMEOUT_S) + margin.
+        timeout_s = float(hw.HOMING_MOTOR_TIMEOUT_S) + 5.0
+        succeeded, failed = [], {}
+        self.get_logger().info(f"homing: starting on axes {axes} (sequential)")
+        for axis in axes:
+            mon = HomingMonitor([axis], home_ref_rev=home_ref, timeout_s=timeout_s)
+            hard_deadline = time.monotonic() + timeout_s + 5.0
+            while True:
+                now = time.monotonic()
+                st = self._homing_axis_status(axis)
+                res = mon.step(now, {axis: st} if st is not None else {})
+                for ax in res.set_home:
+                    ok, msg, _ = self.teensy_home(ax)
+                    if not ok:
+                        # Firmware rejected the move (busy / bus down / bad axis).
+                        failed[axis] = f"HOME rejected: {msg}"
+                        mon = None
+                        break
+                if mon is None or res.done:
+                    break
+                if now > hard_deadline:
+                    self.get_logger().error(f"homing: hard deadline on axis {axis}")
+                    failed[axis] = "hard deadline exceeded"
+                    mon = None
+                    break
+                time.sleep(poll_dt)
+            if mon is not None:
+                succeeded.extend(mon.succeeded)
+                failed.update(mon.failed)
+            if axis in failed:
+                # Abort the sequence on the first failure (matches can_node
+                # _home_robot, which returns False on any motor's failure).
+                break
+        if failed:
+            parts = [f"axis {a}: {r}" for a, r in failed.items()]
+            msg = "homing FAILED — " + "; ".join(parts)
+            if succeeded:
+                msg += f" (succeeded: {succeeded})"
+            self.get_logger().error(msg)
+            return False, msg
+        msg = f"homing complete on axes {succeeded}"
+        self.get_logger().info(msg)
+        return True, msg
+
     # ── ROS service handlers (existing-type subset) ───────────
 
     def _svc_clear_errors(self, req, res):
@@ -1076,9 +1161,14 @@ class TeensyBridgeNode(Node):
         return res
 
     def _svc_home(self, req, res):
-        ok, msg, _ = self.teensy_home()
+        # Phase 9b: the firmware HOME handler runs the velocity-limited
+        # move-to-hardstop autonomously; this drives + observes it to completion.
+        # Scope via the home_axes parameter (default all legs; [0] for the
+        # standalone-leg bench rig).
+        axes = list(self.get_parameter('home_axes').value or [])
+        ok, msg = self._run_home(axes)
         res.success = ok
-        res.message = msg if ok else f'{msg} (home needs firmware Phase 9)'
+        res.message = msg
         return res
 
     def _svc_odrive_command(self, req, res):

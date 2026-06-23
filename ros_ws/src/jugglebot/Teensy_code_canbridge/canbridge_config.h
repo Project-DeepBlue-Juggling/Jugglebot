@@ -76,6 +76,10 @@ constexpr uint32_t HEARTBEAT_RATE_HZ   = JbUdp::HEARTBEAT_HZ;   // 10
 constexpr uint32_t DIAG_HEARTBEAT_HZ   = 1;       // 1 Hz forced diagnostic/profile refresh
 constexpr uint32_t FAULT_TASK_HZ       = 10;      // can_node fault cadence
 constexpr uint32_t WATCHDOG_HZ         = 1;       // can_node 1 Hz heartbeat watchdog
+// Phase 9b homing monitor. 100 Hz ≈ the Iq update rate so the current EMA tracks
+// can_node's per-reading cadence (a slower tick over-smooths → laggier, but still
+// safe: it detects the stall later, never harder than the ODrive current limit).
+constexpr uint32_t HOMING_RATE_HZ      = 100;
 
 // Time-of-day drift re-sync interval (teensy-can-offload.md: every 10-60 s).
 constexpr uint32_t TIMEOFDAY_RESYNC_MS = 30000u;  // 30 s
@@ -91,6 +95,7 @@ constexpr uint8_t PRIO_UDP_RX      = 4;   // usb_rx (UDP downlink)
 constexpr uint8_t PRIO_TIME_SYNC   = 4;   // time_sync_master
 constexpr uint8_t PRIO_UDP_TX      = 3;   // usb_tx (telemetry uplink)
 constexpr uint8_t PRIO_FAULT       = 3;   // fault_state
+constexpr uint8_t PRIO_HOMING      = 2;   // leg_homing monitor (Phase 9b; rare bench op)
 constexpr uint8_t PRIO_WATCHDOG    = 2;   // watchdog
 constexpr uint8_t PRIO_DIAG        = 1;   // diag / profiling
 
@@ -101,6 +106,7 @@ constexpr uint16_t STACK_UDP_RX    = 4096 / 4;
 constexpr uint16_t STACK_TIME_SYNC = 1024 / 4;
 constexpr uint16_t STACK_UDP_TX    = 4096 / 4;
 constexpr uint16_t STACK_FAULT     = 2048 / 4;
+constexpr uint16_t STACK_HOMING    = 1024 / 4;   // state machine + a few CAN sends
 constexpr uint16_t STACK_WATCHDOG  = 1024 / 4;
 constexpr uint16_t STACK_DIAG      = 4096 / 4;   // bumped from 1024: Serial.printf w/ 7 args overflows at 1024
 

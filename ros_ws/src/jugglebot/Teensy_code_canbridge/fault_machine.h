@@ -45,6 +45,7 @@ void fault_notify_clear_errors();
 
 // Reported up via HeartbeatT2J.
 uint8_t  fault_state();                  // JbUdp::FaultState
+uint8_t  fault_guard_mode();             // JbUdp::GuardMode (ESTOP ⟺ estop || fatal_error)
 bool     fault_can_bus_down();           // fatal_can_error (CAN3)
 bool     fault_stow_pending();           // deferred-stow latch armed
 

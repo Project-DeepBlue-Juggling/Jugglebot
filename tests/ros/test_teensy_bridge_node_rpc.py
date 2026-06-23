@@ -182,7 +182,7 @@ def test_vel_curr_limits_ignored_when_zero():
         _teardown(teensy, client, node)
 
 
-# ── encoder_search: Jetson-side (Phase 9a); home: ERR_NOT_IMPL (Phase 9b) ─
+# ── encoder_search: Jetson-side (Phase 9a); home: firmware move (Phase 9b) ─
 
 def test_encoder_search_is_jetson_side_not_firmware_stub():
     """Phase 9a moved encoder index search to a Jetson-side orchestration over
@@ -205,13 +205,25 @@ def test_encoder_search_is_jetson_side_not_firmware_stub():
         _teardown(teensy, client, node)
 
 
-def test_home_not_impl():
+def test_home_is_firmware_move_not_stub():
+    """Phase 9b: the HOME RPC now starts a firmware move-to-hardstop (no longer
+    ERR_NOT_IMPL). The service reads home_axes and observes completion; with an
+    empty scope it returns fast without touching the firmware. Full behaviour:
+    test_teensy_bridge_node_home.py."""
     teensy, client, node = _node()
     try:
-        _capture(teensy, RpcMethod.HOME, status=int(RpcStatus.ERR_NOT_IMPL))
+        called = {'n': 0}
+
+        def stub(req_id, args):
+            called['n'] += 1
+            return (int(RpcStatus.OK), b"")
+
+        teensy.on_rpc(int(RpcMethod.HOME), stub)
+        node._params['home_axes'] = []   # empty scope -> fast return
         res = node._svc_home(Trigger.Request(), Trigger.Response())
         assert res.success is False
-        assert 'Phase 9' in res.message
+        assert 'no axes' in res.message
+        assert called['n'] == 0   # no firmware HOME issued for an empty scope
     finally:
         _teardown(teensy, client, node)
 

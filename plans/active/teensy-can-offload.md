@@ -723,8 +723,10 @@ the authoritative state of each phase; this snapshot ties them together.
   bench replay) all require powered motors and are therefore still open.
 - **Phase 9a** (encoder index search) is **hardware-validated (2026-06-21,
   standalone leg)** and deployed as the `/teensy/encoder_search` service;
-  **Phase 9b** (homing move) is **not started** — the HOME RPC still returns
-  `ERR_NOT_IMPL`.
+  **Phase 9b** (homing move) is **hardware-validated (2026-06-23, standalone leg
+  odrv0)** and deployed as the `/teensy/home` service — the firmware HOME handler
+  (`leg_homing.cpp`) runs the velocity-limited move-to-hardstop + current-spike
+  detection + `SET_ABSOLUTE_POSITION`.
 - **Phase 13** (decommission socketcan) is **partial**: `can_node` is out of
   the launch, but `python-can` / `bus.py` / `can_node.py` are still present.
 
@@ -784,9 +786,20 @@ chain:
    going NaN → real. Hardware-validated on odrv0 (state 1→6→1 → success);
    deployed as the `/teensy/encoder_search` service. Extend to all six legs once
    on the platform.
-3. **Phase 9b — homing.** Firmware HOME routine: velocity-limited descent to
-   hardstop (reuse `interp_begin_stow`) + `SET_ABSOLUTE_POSITION`. One leg,
-   then all six.
+3. **Phase 9b — homing. ✓ DONE (2026-06-23, standalone leg odrv0).** Firmware
+   HOME routine (`leg_homing.cpp`): a standalone velocity-mode (VELOCITY/VEL_RAMP)
+   move-to-hardstop with Iq-EMA current-spike detection + `SET_ABSOLUTE_POSITION`,
+   a line-for-line port of `can_node._home_motor_steps`. **NB — it does NOT reuse
+   `interp_begin_stow` after all** (the planned mechanism): that primitive streams
+   *position* to a *known* pose (0.0) and its stroke-clamp blocks reaching a
+   sub-stroke-min hardstop, so it cannot detect an *unknown* stop — homing needs
+   the current-spike recipe instead, and the interp ISR stays untouched
+   (`mpc_active=0` keeps its output gate off, so it never fights homing).
+   Fire-and-monitor: the HOME RPC accepts + returns immediately (the net task
+   never blocks for the ~seconds a homing takes); a 100 Hz firmware task runs the
+   move; the Jetson observes completion via telemetry (`HomingMonitor`,
+   `/teensy/home` service). Validated on odrv0 (axis 0); extend to all six once on
+   the platform.
 4. **Phase 11 (= Phase 5 done-when).** Arm one leg through MPC → interp → Teensy
    with `enable_setpoint_output`; this single test validates Phase 7 (interp
    float32 on hardware), Phase 8 (fault/output gate), and Phase 5 (armed CAN3
@@ -797,8 +810,8 @@ chain:
 **Test rig — standalone leg (safest single-leg path).** A standalone leg
 identical to Jugglebot's six can be driven by a single ODrive wired as **node 0**
 in place of the platform (so axis 0 = the standalone leg; the hand, node 6, is
-absent). This is the preferred target for the leg-path bring-up runs (9a done here
-2026-06-21; 9b and the Phase 11 single-leg cutover next): one isolated leg on the bench, no
+absent). This is the preferred target for the leg-path bring-up runs (9a + 9b done here,
+2026-06-21 / 06-23; the Phase 11 single-leg cutover next): one isolated leg on the bench, no
 Stewart-platform coupling, e-stop within reach. **The encoder-search and homing
 orchestration must therefore support targeting a single axis (axis 0), not just
 all-six.** The hand's absolute encoder needs no index search, so nothing is lost
@@ -1129,7 +1142,7 @@ correctly on Teensy.
 
 ### Phase 9 — Encoder search + homing
 
-> **Status: 9a ✅ HARDWARE-VALIDATED (2026-06-21, standalone leg) · 9b ❌ not started. See *Revised sequencing*.**
+> **Status: 9a ✅ HARDWARE-VALIDATED (2026-06-21, standalone leg) · 9b ✅ HARDWARE-VALIDATED (2026-06-23, standalone leg odrv0). See *Revised sequencing*.**
 > The RPC envelope reserves `ENCODER_SEARCH` and `HOME` (they return
 > `ERR_NOT_IMPL`), and `SDO_READ` / `SDO_WRITE` are wired, so this slots in
 > without a protocol change — but the SDO-polling state machine and homing
@@ -1147,7 +1160,45 @@ correctly on Teensy.
 > (`controller/teensy_link/encoder_search.py`) detected completion (search state
 > observed, then IDLE + finite pos + no errors). Deployed via the
 > `/teensy/encoder_search` service (commit `3b96f33`); bench driver
-> `tests/hardware/teensy_encoder_search_bench.py`. 9b (firmware homing move) remains.
+> `tests/hardware/teensy_encoder_search_bench.py`.
+>
+> **9b code-complete 2026-06-22 (bench validation pending):** the firmware HOME
+> handler now runs the homing *move* autonomously — `leg_homing.cpp`, a
+> velocity-mode (VELOCITY/VEL_RAMP) move-to-hardstop with Iq-EMA current-spike
+> detection (`|EMA(iq)| ≥ HOMING_LEG_CURRENT_LIMIT_A = 5 A`, weight 0.7, ODrive
+> current capped at limit+headroom = 8 A so the motor can push past the threshold),
+> then IDLE + `set_absolute_position(0.1)` — a line-for-line port of
+> `can_node._home_motor_steps` (current-headroom and no-position-back-off
+> preserved). It runs in its own 100 Hz FreeRTOS task (`task_homing`, ≈ the Iq
+> update rate so the EMA matches can_node's per-reading cadence); the HOME RPC is
+> **fire-and-monitor** (validate + latch a start + return OK; the net task never
+> blocks). Every active phase is bounded by a 30 s hard timeout and every abort
+> (bus down / ODrive fatal / timeout) leaves the leg in IDLE — never driving;
+> re-running HOME while active is rejected (idempotent). The Jetson observes
+> completion via telemetry (`HomingMonitor`, `controller/teensy_link/homing.py`;
+> `set_absolute_position(+0.1)` reads back `-0.1` rev in Jugglebot-convention
+> telemetry, so the observer compares `|pos|`), deployed as the `/teensy/home`
+> service (scoped by the `home_axes` parameter). Bench driver:
+> `tests/hardware/teensy_home_bench.py`. Tests: `tests/teensy_link/test_homing.py`
+> (observer), `tests/firmware/test_homing_xref.py` (detection arithmetic vs the
+> can_node recipe), `tests/ros/test_teensy_bridge_node_home.py` (node glue).
+> `pio run` green (dec 353344). `pytest tests/ -q` (run 2026-06-22):
+> **1742 passed, 1 xfailed in 427.02 s** (baseline 1718 + 24 new homing tests, no
+> regressions).
+>
+> **9b HARDWARE-VALIDATED 2026-06-23 (standalone leg odrv0).** HOME over the
+> can-bridge → axis state 1→8→1: the leg drove ~1.4 rev at the velocity limit
+> (|vel| peaked 1.71 rps — no overspeed) into the retracted hardstop, stalled with
+> Iq pegged at the 8 A ODrive current limit (= 5 A detect + 3 A headroom), the
+> Iq-EMA crossed 5 A → `set_absolute_position(0.1)` snapped the encoder to **−0.0999
+> rev** (Jugglebot convention), then IDLE — `active_errors=0`, `fault_state=NONE`
+> throughout, bus stable at 21.3 V. The audit's guard-ESTOP abort gate did **not**
+> false-trip on the hardstop impact. **Bench note:** the first attempt aborted
+> below threshold on a 3 A bench supply that current-limited the ODrive (Iq capped
+> at ~4.65 A, never reaching the 5 A detect) — a power-supply limitation, not a
+> firmware fault; resolved by a 22 V / 20 A PSU. The 8 A current-headroom design
+> (push past the detect threshold) is exactly what made the limitation diagnosable.
+> Two-attempt validation: see the bench driver `tests/hardware/teensy_home_bench.py`.
 
 **Goal:** Cold-start procedures (encoder index search, homing) work
 end-to-end on Teensy.

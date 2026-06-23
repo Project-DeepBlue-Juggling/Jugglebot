@@ -44,6 +44,7 @@ using namespace arduino;
 #include "telemetry.h"           // Phase 6
 #include "leg_interp.h"          // Phase 7
 #include "fault_machine.h"       // Phase 8
+#include "leg_homing.h"          // Phase 9b
 #include "profiling.h"           // Profiling/instrumentation
 
 using namespace CanBridge;
@@ -173,6 +174,18 @@ static void task_fault(void*) {
   const TickType_t period = pdMS_TO_TICKS(1000 / FAULT_TASK_HZ);
   for (;;) {
     fault_step();
+    vTaskDelayUntil(&last, period);
+  }
+}
+
+// Homing monitor (priority 2) at HOMING_RATE_HZ. Phase 9b: runs the
+// velocity-limited move-to-hardstop state machine when a HOME RPC has latched a
+// start; a cheap no-op otherwise (idle the rest of the time — a rare bench op).
+static void task_homing(void*) {
+  TickType_t last = xTaskGetTickCount();
+  const TickType_t period = pdMS_TO_TICKS(1000 / HOMING_RATE_HZ);
+  for (;;) {
+    homing_step();
     vTaskDelayUntil(&last, period);
   }
 }
@@ -319,6 +332,7 @@ void setup() {
   telemetry_init();                // Phase 6
   fault_machine_init();            // Phase 8 (before interp so the output gate is off at boot)
   leg_interp_init();               // Phase 7: starts the 500 Hz IntervalTimer ISR
+  homing_init();                   // Phase 9b (idle until a HOME RPC latches a start)
   profiling_init();                // instrumentation baselines
 
   // Create tasks. (Higher number = higher priority in FreeRTOS.)
@@ -326,6 +340,7 @@ void setup() {
   xTaskCreate(task_time_sync, "tsync", STACK_TIME_SYNC, nullptr, PRIO_TIME_SYNC, nullptr);
   xTaskCreate(task_net,       "net",   STACK_UDP_RX,    nullptr, PRIO_UDP_RX,    nullptr);
   xTaskCreate(task_fault,     "fault", STACK_FAULT,     nullptr, PRIO_FAULT,     nullptr);
+  xTaskCreate(task_homing,    "home",  STACK_HOMING,    nullptr, PRIO_HOMING,    nullptr);
   xTaskCreate(task_telem,     "telem", STACK_UDP_TX,    nullptr, PRIO_UDP_TX,    nullptr);
   xTaskCreate(task_heartbeat, "hb",    STACK_UDP_TX,    nullptr, PRIO_UDP_TX,    nullptr);
   xTaskCreate(task_diag,      "diag",  STACK_DIAG,      nullptr, PRIO_DIAG,      nullptr);

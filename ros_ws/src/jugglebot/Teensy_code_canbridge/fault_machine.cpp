@@ -30,6 +30,7 @@
 #include "odrive_protocol.h"
 #include "can_buses.h"
 #include "leg_interp.h"
+#include "leg_homing.h"         // homing_active (mutual exclusion with deferred stow)
 #include "udp_link.h"            // udp_last_rx_us (Jetson link health)
 #include "time_base.h"
 
@@ -170,9 +171,15 @@ static void watchdog_and_stow() {
   }
 
   // Confirmed reconnect: leg heartbeats fresh again → clear fatal, run the stow.
+  // Mutual exclusion with Phase 9b homing: the homing task drives its own
+  // velocity frames on CAN3 (and aborts to IDLE the instant fault_can_bus_down
+  // latched, well before this reconnect branch can fire), so in practice homing
+  // is already done by here. The !homing_active() guard makes that invariant
+  // explicit — never let the position-streamed stow and a homing move co-drive a
+  // leg; the stow stays pending and runs the next cycle once homing finishes.
   if (s_fatal_can_error && all_legs_heartbeats_fresh()) {
     s_fatal_can_error = false;
-    if (s_stow_pending && !s_stowing) {
+    if (s_stow_pending && !s_stowing && !homing_active()) {
       interp_begin_stow();            // profiled velocity-limited descent to the off pose
       s_stowing = true;
     }
@@ -265,6 +272,7 @@ void fault_step() {
 }
 
 uint8_t fault_state()        { return s_fault_state; }
+uint8_t fault_guard_mode()   { return s_guard_mode; }
 bool    fault_can_bus_down() { return s_fatal_can_error; }
 bool    fault_stow_pending() { return s_stow_pending; }
 

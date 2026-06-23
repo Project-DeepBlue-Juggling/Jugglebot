@@ -11,6 +11,7 @@
 #include "ball_butler_state.h"
 #include "can_buses.h"
 #include "fault_machine.h"
+#include "leg_homing.h"
 
 namespace CanBridge {
 namespace Rpc {
@@ -174,8 +175,18 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
       return send_leg_frame(a.axis, ODrive::encode_sdo_write(a.axis, a.endpoint, a.value));
     }
     case RpcMethod::ENCODER_SEARCH:
-    case RpcMethod::HOME:
-      return RpcStatus::ERR_NOT_IMPL;   // Phase 9
+      // Encoder index search stays Jetson-orchestrated over SET_AXIS_STATE
+      // (Phase 9a) — an ODrive-autonomous state needs no firmware move. The RPC
+      // remains stubbed; see teensy_bridge_node._run_encoder_search.
+      return RpcStatus::ERR_NOT_IMPL;
+    case RpcMethod::HOME: {
+      // Phase 9b: fire-and-monitor. Validate + latch a start, return immediately
+      // (the move takes ~seconds; the net task must not block). The homing task
+      // runs the velocity-limited move-to-hardstop; the Jetson observes
+      // completion via telemetry (axis_state → IDLE, pos → home ref).
+      ArgAxisOnly a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
+      return homing_request(a.axis);
+    }
 
     // ── Ball Butler (CAN1) — typed commands ──────────────────────────────
     // Each gated on BB presence to prevent the un-ACKed-TX bus-off failure
