@@ -822,6 +822,79 @@ The original per-phase sections below are retained for their detail; treat their
 
 ---
 
+### Software-offload vs hardware-cutover split (2026-06-23)
+
+Starting Phase 11 surfaced two things that reshape the remaining sequence.
+
+**1. The deployed downlink does NOT realise the interp-offload — by design.** The
+deployed bridge forwards `motor_guard`'s *already-interpolated* 500 Hz output
+(`:5556`, `leg_pos`/`leg_vel`/`leg_torques`) with `flags=0`
+(`setpoint_pump.py:125-132`), so the Teensy interp runs in pass-through (Mode-2
+Taylor over a ~2 ms gap) and `motor_guard`'s 500 Hz Hermite still runs on the
+Jetson. Call this the **α relay**. The plan's "Setpoint downlink (40 Hz)" design —
+40 Hz MPC knots (`u0/u1/u2`) → the Teensy's own 500 Hz Hermite — is the **β path**
+(the firmware already implements it: `leg_interp.cpp:194` Mode-1 Hermite fires
+whenever `flags` carries `has_u1`). α was the deliberate, conservative choice at
+10b because it (a) preserves `motor_guard`'s per-leg Stribeck friction-FF, summed
+into `torque_ff` (`motor_guard.py:997-999`), and (b) stays byte-comparable to the
+legacy `can_node` path. The interp-offload benefit is therefore **deferred**, not
+delivered, until the β switch lands.
+
+**2. The α→β switch and the friction-FF decision (D9) are ONE diff.** The α source
+(`:5556`) carries friction-FF in `leg_torques`; the β source (the MPC `:5557`
+stream) carries `torque_Nm = zeros` (no friction — `hardware_plant.py`). So
+re-pointing the source *is* the friction-FF-drop edit. Porting friction-FF to the
+Teensy must happen in the 500 Hz ISR (it is a function of the *interpolated*
+velocity, not the 40 Hz knot velocity). **Pre-registered acceptance criterion
+(D9, set 2026-06-23):** accept the friction-FF loss as a logged interim if, on the
+powered bench, the leg's motion-onset penalty vs the α/legacy path is **≤ 40 ms**
+(tunable) and the float32 interp residual is within tracking noise; otherwise port
+friction-FF to the ISR.
+
+**Restructure — couple the software, stage the hardware (U1..U5).** The hardware
+validation (arm one leg → six legs → decommission) is irreducibly serial behind a
+powered operator sitting; the software offload is one coupled desk unit. So:
+
+| Unit | What | Gate |
+|---|---|---|
+| **U1** | Present-axis firmware scoping (gate the leg-command fan-out + freshness on `leg_present`) + tests | desk + `pio run` |
+| **U2** | Synthetic β-knot bench driver (`synthetic_setpoint.py` + `teensy_setpoint_bench.py`) + tests | desk |
+| **U3** | Operator sitting #1: armed hold → bounded move → powered fault-replay; **measures the float32 residual + the D9 motion-onset penalty** | bench, serial |
+| **U4** | Production α→β switch (`SetpointPump` rewrite) **+ the D9 decision** (written with U3 data) + `/teensy` rename | desk, gated on U3 |
+| **U5** | Operator sittings: six-leg rewire + full test plan, then decommission | bench, serial |
+
+**U1 + U2 landed 2026-06-23.** Desk-side only — nothing here energises a motor.
+`pio run` green (dec 353344); `pytest tests/ -q` (run 2026-06-23): **1759 passed,
+5 skipped, 1 xfailed in 473.94 s** (baseline 1737 + 22 new: 6 fault-logic
+present-axis cases + 16 synthetic-source cases, no regressions). The powered armed
+run + fault-replay (U3) is the operator-gated tail; U4 is gated on U3's measured
+residual.
+
+**Present-axis scoping (U1).** The firmware looped all six legs unconditionally;
+on the single-leg bench rig (only odrv0 on CAN3) that (a) streams 5 phantom
+setpoint frames/tick to absent nodes, (b) dead-locks the deferred-stow reconnect
+(`all_present_legs_fresh` was an all-six predicate), and (c) would false-trip
+`MAX_DEVIATION` once the production MPC sends 6 leg targets. One predicate —
+`leg_present(i) == heartbeat_seen` (latched-once) — now gates the streaming
+leg-command fan-out and the freshness/deviation predicates, self-scaling
+single-leg→full-robot with no compile-time mask. **Correction to the scope
+assessment:** the phantom-TX is *not* a bus-off risk while odrv0 is powered —
+odrv0 ACKs the whole bus (ACK is bus-level, not address-filtered), as the 100 Hz
+0x7DD broadcast already proved through 9a/9b (CAN3 stable at 21.3 V with odrv0 the
+sole node). So U1 removes TX waste + fixes the stow-recovery dead-lock + is the
+production dead-leg-robustness fix; it is *not* a hard bus-off prerequisite for
+the single-leg run.
+
+**Physical note — the homed leg starts below the workspace.** Homing leaves the
+leg at the retracted hardstop (≈ −0.10 rev), *below* the stroke floor 0.0709 rev.
+So there is no "armed hold at the homed position" — any armed setpoint is
+stroke-clamped up to ≥ 0.0709, i.e. the first armed motion is necessarily a
+controlled *extension* off the hardstop into the workspace. The U2 driver does
+this via a smooth approach ramp; the first frame still commands the live encoder
+position (no step at arm).
+
+---
+
 ### Phase 0 — Hardware procurement and wiring
 
 > **Status (2026-06-19): ✅ DONE.** Can-bridge Teensy 4.1 built, Ethernet kit
@@ -1322,13 +1395,17 @@ socketcan endpoint is reached at Phase 11–12.*
 
 ### Phase 11 — Bench cutover (one leg)
 
-> **Status (2026-06-19): ❌ NOT STARTED — the convergence point (≡ Phase 5 done-when; see *Revised sequencing*).** The
-> legs are physically on CAN3 but the 40 Hz setpoint downlink is gated OFF
-> (`enable_setpoint_output=false`, `mpc_active=0`). This phase = flip that gate
-> for one leg, with motors powered, and validate the armed CAN3 cycle, the
-> interpolator on hardware, and the fault state machine — i.e. it absorbs the
-> hardware-validation tails of Phases 5–8. Keep the legacy `can_node` path
-> swappable back in < 10 min throughout (see Risks).
+> **Status (2026-06-23): 🚧 IN PROGRESS — split into U1..U5 (see *Software-offload
+> vs hardware-cutover split*).** U1 (present-axis firmware scoping) + U2 (synthetic
+> β-knot bench driver) landed 2026-06-23 — desk-side, `pio run` green (dec 353344)
+> + `pytest tests/ -q` (run 2026-06-23) **1759 passed, 5 skipped, 1 xfailed**. The
+> powered armed run + fault-replay (U3) is the operator-gated tail that closes the
+> Phase 5/7/8 powered tails; the production α→β downlink switch + D9 friction-FF
+> decision (U4) is gated on U3's measured residual. The setpoint downlink stays
+> gated OFF in production (`enable_setpoint_output=false`, `mpc_active=0`); the U2
+> bench driver arms the wire directly (not the ROS bridge), and is the sole wire
+> authority during a run. Keep the legacy `can_node` path swappable back in
+> < 10 min throughout (see Risks).
 
 **Goal:** End-to-end MPC → Hermite → Teensy → ODrive on the bench, one leg
 only, with Jetson socketcan disabled.
