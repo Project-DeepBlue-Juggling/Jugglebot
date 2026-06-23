@@ -1199,6 +1199,7 @@ correctly on Teensy.
 > firmware fault; resolved by a 22 V / 20 A PSU. The 8 A current-headroom design
 > (push past the detect threshold) is exactly what made the limitation diagnosable.
 > Two-attempt validation: see the bench driver `tests/hardware/teensy_home_bench.py`.
+> Landed in commit `258a3e1`.
 
 **Goal:** Cold-start procedures (encoder index search, homing) work
 end-to-end on Teensy.
