@@ -180,7 +180,9 @@ static void interp_isr() {
       axes[i].target_pos_rev = p;
       axes[i].target_vel_rps = v;
       axes[i].target_torque_Nm = 0.0f;
-      if (s_output_enabled) can_jugglebot_send(ODrive::encode_leg_setpoint(i, p, v, 0.0f));
+      // Present-axis gate (Phase 11): stream the descent only to legs physically
+      // on the bus. The target cache above still updates for all legs (telemetry).
+      if (s_output_enabled && leg_present(i)) can_jugglebot_send(ODrive::encode_leg_setpoint(i, p, v, 0.0f));
     }
     s_stow_complete = all_done;
     return;
@@ -266,7 +268,11 @@ static void interp_isr() {
   }
   if (s_output_enabled) {
     for (uint8_t i = 0; i < NUM_LEGS; ++i) {
-      can_jugglebot_send(ODrive::encode_leg_setpoint(i, cmd_pos[i], cmd_vel[i], cmd_tor[i]));
+      // Present-axis gate (Phase 11): never stream a 500 Hz setpoint to a node
+      // that isn't on the bus. No-op on the full robot (all six present); on the
+      // single-leg bench rig this drops the 5 phantom frames/tick to absent
+      // nodes 1-5. The target cache above is written for all legs regardless.
+      if (leg_present(i)) can_jugglebot_send(ODrive::encode_leg_setpoint(i, cmd_pos[i], cmd_vel[i], cmd_tor[i]));
     }
   }
 }

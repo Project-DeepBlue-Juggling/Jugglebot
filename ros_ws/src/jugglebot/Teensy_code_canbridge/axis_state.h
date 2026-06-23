@@ -69,6 +69,22 @@ extern AxisState axes[NUM_AXES];
 inline AxisState& leg(uint8_t i)  { return axes[i]; }
 inline AxisState& hand_axis()     { return axes[HAND_AXIS]; }
 
+// Present-axis predicate (Phase 11). A leg is "present" iff we have ever received
+// a CAN3 heartbeat from its ODrive (heartbeat_seen is latched-once by the RX
+// decode and never cleared, so this is monotonic and stable mid-run). It is the
+// single enforcement point for the present-axis contract: the firmware must never
+// STREAM setpoints to, nor require fresh heartbeats from, a leg node that is not
+// physically on the bus. This self-scales with NO compile-time mask or separate
+// build — on the single-leg bench rig only odrv0 (node 0) is present; on the full
+// six-leg robot all six are. On the full robot every leg heartbeats continuously
+// from power-on, so by the time the operator arms (mpc_active=1, post-telemetry)
+// all present legs read true → every gate below is a no-op there. NB: this gates
+// only the CONTINUOUS leg-command fan-out (interp setpoint + stow descent) and
+// the all-leg freshness predicate; the low-rate operator/fault one-shots
+// (CLEAR_ERRORS, REBOOT, stow-complete IDLE) stay ungated so they still reach a
+// configured-but-momentarily-silent or wedged leg.
+inline bool leg_present(uint8_t i) { return axes[i].heartbeat_seen; }
+
 // ── Ball Butler ODrives (CAN1) ──────────────────────────────────────────────
 // BB pitch/hand ODrives live on CAN1 (node ids 7/8 — protocol_config.yaml
 // node_ids), a SEPARATE bus + cache from the platform axes[] (CAN3). Decoded by

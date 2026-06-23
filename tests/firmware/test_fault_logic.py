@@ -203,3 +203,100 @@ def test_stow_rearms_if_bus_redrops_mid_descent():
     s.step(True, False)                                # bus re-drops mid-descent
     assert s.fatal_can_error and s.stow_pending and not s.stowing   # re-armed, not commanding
     assert not s.output_allowed()
+
+
+# ── Phase 11: present-axis scoping (fault_machine.cpp leg_present / *_present_*) ──
+# A leg is "present" iff heartbeat_seen (latched-once). The firmware must never
+# STREAM setpoints to, nor require fresh heartbeats from, an absent node. These
+# mirror the four enforcement points 1:1 and pin the single-leg-rig behaviour.
+CAN_HEARTBEAT_TIMEOUT_US = 2_000_000   # canbridge_config.h
+MAX_DEVIATION_REV = 0.5                # canbridge_config.h
+
+
+def all_present_legs_fresh(present, ages_us, timeout_us=CAN_HEARTBEAT_TIMEOUT_US):
+    """Mirror of fault_machine.cpp all_present_legs_fresh(): a PRESENT leg that is
+    stale fails; absent legs are skipped (vacuously true with zero present)."""
+    return not any(present[i] and ages_us[i] > timeout_us for i in range(6))
+
+
+def all_six_legs_fresh(present, ages_us, timeout_us=CAN_HEARTBEAT_TIMEOUT_US):
+    """The PRE-Phase-11 form (required all six seen AND fresh) — kept only to
+    assert the contrast: it dead-locks the reconnect on a subset-populated bus."""
+    return all(present[i] and ages_us[i] <= timeout_us for i in range(6))
+
+
+def any_leg_heartbeat_stale(present, ages_us, timeout_us=CAN_HEARTBEAT_TIMEOUT_US):
+    """Mirror of any_leg_heartbeat_stale() — already present-scoped in firmware."""
+    return any(present[i] and ages_us[i] > timeout_us for i in range(6))
+
+
+def setpoint_tx_legs(output_enabled, present):
+    """Mirror of the interp-ISR per-leg TX gate: emit iff output_enabled && present."""
+    return [i for i in range(6) if output_enabled and present[i]]
+
+
+def max_deviation_estop(present, base_pos, enc_pos, limit_rev=MAX_DEVIATION_REV):
+    """Mirror of evaluate_guard's MAX_DEVIATION loop, scoped to present legs."""
+    return any(present[i] and abs(base_pos[i] - enc_pos[i]) > limit_rev for i in range(6))
+
+
+def test_present_freshness_single_leg_is_the_dead_lock_fix():
+    """odrv0-only rig: a fresh axis 0 makes the bus 'fresh' even though legs 1-5
+    never report. The pre-Phase-11 all-six form returns False here — that is the
+    deferred-stow reconnect dead-lock this change removes."""
+    present = [True] + [False] * 5
+    ages = [0] * 6                                     # axis 0 just heartbeated
+    assert all_present_legs_fresh(present, ages) is True
+    assert all_six_legs_fresh(present, ages) is False  # the bug the fix removes
+
+
+def test_present_freshness_single_leg_stale_fails():
+    present = [True] + [False] * 5
+    ages = [3_000_000] + [0] * 5                       # axis 0 stale
+    assert all_present_legs_fresh(present, ages) is False
+    assert any_leg_heartbeat_stale(present, ages) is True
+
+
+def test_present_freshness_full_robot_unchanged():
+    """No-op on the full robot: with all six present the new and old forms agree."""
+    present = [True] * 6
+    fresh = [0] * 6
+    assert all_present_legs_fresh(present, fresh) is True
+    assert all_six_legs_fresh(present, fresh) is True
+    one_stale = [0, 0, 0, 3_000_000, 0, 0]
+    assert all_present_legs_fresh(present, one_stale) is False   # a present stale leg still fails
+    assert all_six_legs_fresh(present, one_stale) is False
+
+
+def test_setpoint_tx_only_to_present_legs():
+    assert setpoint_tx_legs(True, [True] + [False] * 5) == [0]   # single-leg rig
+    assert setpoint_tx_legs(True, [True] * 6) == [0, 1, 2, 3, 4, 5]  # full robot (no-op)
+    assert setpoint_tx_legs(False, [True] * 6) == []            # output gated off → nothing
+
+
+def test_max_deviation_skips_absent_legs():
+    """An absent leg reads enc=0; a nonzero u0 there (production sends 6 targets)
+    must NOT trip the E-STOP. A present leg that genuinely diverges still trips."""
+    present = [True] + [False] * 5
+    base = [0.0, 3.0, 3.0, 3.0, 3.0, 3.0]              # legs 1-5 commanded far from enc=0
+    enc = [0.0] * 6
+    assert max_deviation_estop(present, base, enc) is False     # absent legs skipped
+    base_bad = [0.9] + [0.0] * 5                       # present leg 0 diverges > 0.5
+    assert max_deviation_estop(present, base_bad, enc) is True
+
+
+def test_single_leg_stow_recovery_end_to_end():
+    """Deferred-stow reconnect must fire with only odrv0 present — the U3 Phase-8
+    CAN-loss fault-replay depends on it. Pre-Phase-11 this dead-locked."""
+    present = [True] + [False] * 5
+    s = StowMirror()
+    # CAN3 loss: axis 0 heartbeat goes stale.
+    ages = [3_000_000] + [0] * 5
+    s.step(leg_hb_stale=any_leg_heartbeat_stale(present, ages),
+           leg_hb_fresh=all_present_legs_fresh(present, ages))
+    assert s.fatal_can_error and s.stow_pending and not s.output_allowed()
+    # Confirmed reconnect: axis 0 heartbeat fresh again → stow EXECUTES.
+    ages = [0] * 6
+    s.step(leg_hb_stale=any_leg_heartbeat_stale(present, ages),
+           leg_hb_fresh=all_present_legs_fresh(present, ages))
+    assert not s.fatal_can_error and s.stowing

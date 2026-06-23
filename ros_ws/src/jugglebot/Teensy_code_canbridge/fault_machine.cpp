@@ -70,10 +70,19 @@ static bool any_leg_heartbeat_stale() {
       return true;
   return false;
 }
-static bool all_legs_heartbeats_fresh() {
+// Phase 11: scoped to PRESENT legs (leg_present == heartbeat_seen). A present leg
+// that has gone stale fails the predicate; absent legs (never seen) are skipped.
+// This is what lets the deferred-stow reconnect fire on a subset-populated bus
+// (the single-leg bench rig — odrv0 only): the prior all-six form dead-locks the
+// reconnect branch (legs 1-5 never report fresh), so a stow armed at CAN-loss
+// detection could never complete. No-op on the full robot (all six present, so it
+// still requires all six fresh). Vacuously true only with zero present legs,
+// which cannot co-occur with the fatal_can_error precondition of the sole caller
+// (that needs s_first_leg_hb_seen — at least one leg already seen).
+static bool all_present_legs_fresh() {
   const uint64_t now = now_wall_us();
   for (uint8_t i = 0; i < NUM_LEGS; ++i)
-    if (!axes[i].heartbeat_seen || (now - axes[i].last_heartbeat_us > CAN_HEARTBEAT_TIMEOUT_US))
+    if (leg_present(i) && (now - axes[i].last_heartbeat_us > CAN_HEARTBEAT_TIMEOUT_US))
       return false;
   return true;
 }
@@ -177,7 +186,7 @@ static void watchdog_and_stow() {
   // is already done by here. The !homing_active() guard makes that invariant
   // explicit — never let the position-streamed stow and a homing move co-drive a
   // leg; the stow stays pending and runs the next cycle once homing finishes.
-  if (s_fatal_can_error && all_legs_heartbeats_fresh()) {
+  if (s_fatal_can_error && all_present_legs_fresh()) {
     s_fatal_can_error = false;
     if (s_stow_pending && !s_stowing && !homing_active()) {
       interp_begin_stow();            // profiled velocity-limited descent to the off pose
@@ -224,6 +233,10 @@ static void evaluate_guard() {
   // sources (motor_guard.py:539-551, checked at command-arrival not per-tick).
   if (!estop && s_mpc_active && interp_have_latched()) {
     for (uint8_t i = 0; i < NUM_LEGS; ++i) {
+      // Phase 11: only check present legs. An absent leg reads pos_rev=0; a
+      // nonzero u0 broadcast to it (the production MPC sends 6 leg targets) would
+      // false-trip the E-STOP. No-op on the full robot.
+      if (!leg_present(i)) continue;
       if (fabsf(interp_base_pos(i) - axes[i].pos_rev) > MAX_DEVIATION_REV) {
         estop = true; state = JbUdp::FaultState::MAX_DEVIATION; break;
       }
