@@ -70,6 +70,7 @@ from udp_protocol import (  # noqa: E402, F401
     ConeFrame,
     CmdResultFrame,
     BbAxisEstimates,
+    LegCmd,
     RpcRequest,
     RpcResponse,
     # Sizes
@@ -82,6 +83,7 @@ from udp_protocol import (  # noqa: E402, F401
     CONE_FRAME_SIZE,
     CMD_RESULT_FRAME_SIZE,
     BB_AXIS_ESTIMATES_SIZE,
+    LEG_CMD_SIZE,
     RPC_REQUEST_SIZE,
     RPC_RESPONSE_SIZE,
     # RPC method argument layouts (hoisted into the generator at Phase 10b)

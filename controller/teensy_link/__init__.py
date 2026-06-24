@@ -43,6 +43,7 @@ from .protocol import (
     ConeFrame,
     CmdResultFrame,
     BbAxisEstimates,
+    LegCmd,
     RpcRequest,
     RpcResponse,
 )
@@ -69,6 +70,7 @@ __all__ = [
     "ConeFrame",
     "CmdResultFrame",
     "BbAxisEstimates",
+    "LegCmd",
     "RpcRequest",
     "RpcResponse",
     # Client + RPC infrastructure

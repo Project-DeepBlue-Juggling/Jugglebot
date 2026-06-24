@@ -139,6 +139,25 @@ static void send_bb_estimates() {
   udp_send_stream(JbUdp::MsgType::BB_AXIS_ESTIMATES, (const uint8_t*)&e, sizeof(e));
 }
 
+// ── Commanded leg interp output (the float32 ladder result) ──────────────────
+// Snapshots axes[i].target_pos_rev/target_vel_rps — what leg_interp.cpp's 500 Hz
+// cubic-Hermite ladder (after the lead + stroke clamps) commands to the leg
+// ODrives — at the telemetry rate. These are written every interp tick for ALL
+// legs regardless of the output gate (leg_interp.cpp), so this reflects the
+// float32 interpolator output even when CAN3 TX is suppressed. Used by the U3-iv
+// bench validation to measure the on-Teensy float32 interp residual vs the
+// float64 reference (Phase 7 "done when" / decision D9) directly rather than
+// inferring it from the encoder. Same proven uplink context as send_telemetry().
+static void send_leg_cmd() {
+  JbUdp::LegCmdPayload c{};
+  c.t_teensy_us = now_wall_us();
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) {
+    c.cmd_pos_rev[i] = axes[i].target_pos_rev;   // single-word atomic read
+    c.cmd_vel_rps[i] = axes[i].target_vel_rps;
+  }
+  udp_send_stream(JbUdp::MsgType::LEG_CMD, (const uint8_t*)&c, sizeof(c));
+}
+
 // ── Cone uplink: drain CAN2 frames into CONE_FRAME UDP messages ──────────────
 // Per-tick budget caps the UDP cost if CAN2 ever babbles; legitimate cone
 // traffic is ~10-11 fps (10 Hz heartbeat + per-impact catch events) against the
@@ -180,6 +199,7 @@ void cmd_result_uplink_step() {
 void telemetry_step() {
   send_telemetry();
   send_bb_estimates();   // BB pitch/hand pos+vel @ TELEM_RATE_HZ (during-throw diagnostics)
+  send_leg_cmd();        // commanded leg interp output @ TELEM_RATE_HZ (U3-iv float32 residual)
 
   // Stagger the 1 Hz forced refresh across axes so the forced frames never
   // burst together; changed axes are sent immediately regardless of slot.

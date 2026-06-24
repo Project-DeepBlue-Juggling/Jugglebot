@@ -40,6 +40,7 @@ namespace MsgType {
   constexpr uint8_t CONE_FRAME = 133u;  // Catching-cone CAN2 frame relay (STREAM, T→J)
   constexpr uint8_t BB_AXIS_ESTIMATES = 134u;  // Ball Butler pitch/hand ODrive pos+vel estimates (STREAM, T→J)
   constexpr uint8_t CMD_RESULT = 135u;  // Ball Butler command-outcome CAN1 frame relay (STREAM, T→J)
+  constexpr uint8_t LEG_CMD = 136u;  // Teensy commanded leg interp output @100Hz (STREAM, T→J) — U3-iv float32 residual
   constexpr uint8_t RPC_RESPONSE = 144u;  // RPC response (RPC port, T→J)
 }
 namespace RpcMethod {
@@ -224,6 +225,14 @@ struct BbAxisEstimatesPayload {
 };
 static_assert(sizeof(BbAxisEstimatesPayload) == 24, "BbAxisEstimatesPayload size drift");
 
+// LegCmd: The Teensy's COMMANDED leg interp output — the float32 cubic-Hermite ladder result (after the lead + stroke clamps) that leg_interp.cpp writes to axes[i].target_pos_rev each 500 Hz tick and would send to the leg ODrives — snapshotted at the telemetry-task rate. Additive diagnostic (no existing frame changes, so NO PROTOCOL_VERSION bump): it exposes the on-Teensy float32 interpolator output so the U3-iv bench validation can measure the float32-vs-float64 interp residual (Phase 7 'done when' / decision D9) DIRECTLY, rather than inferring it from the encoder. Written for all legs regardless of the output gate, so it reflects the interp even when CAN3 TX is suppressed. Jugglebot convention (positive = extension).
+struct LegCmdPayload {
+  uint64_t t_teensy_us;  // Teensy wall-clock at snapshot (us)
+  float cmd_pos_rev[6];  // Per-leg commanded interp position (rev), post lead/stroke clamp
+  float cmd_vel_rps[6];  // Per-leg commanded interp velocity FF (rev/s)
+};
+static_assert(sizeof(LegCmdPayload) == 56, "LegCmdPayload size drift");
+
 // RpcRequest: Generic RPC envelope. `method` selects the operation; `args` is a method-specific blob (see docs). `req_id` is echoed in the response for matching independent of the frame sequence counter.
 struct RpcRequestPayload {
   uint16_t method;  // RpcMethod enum
@@ -256,6 +265,7 @@ constexpr uint16_t PROFILE_SIZE = 66u;
 constexpr uint16_t CONE_FRAME_SIZE = 21u;
 constexpr uint16_t CMD_RESULT_FRAME_SIZE = 21u;
 constexpr uint16_t BB_AXIS_ESTIMATES_SIZE = 24u;
+constexpr uint16_t LEG_CMD_SIZE = 56u;
 constexpr uint16_t RPC_REQUEST_SIZE = 8u;
 constexpr uint16_t RPC_RESPONSE_SIZE = 8u;
 

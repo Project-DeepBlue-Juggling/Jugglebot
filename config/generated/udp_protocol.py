@@ -40,6 +40,7 @@ class MsgType(IntEnum):
     CONE_FRAME = 133  # Catching-cone CAN2 frame relay (STREAM, T→J)
     BB_AXIS_ESTIMATES = 134  # Ball Butler pitch/hand ODrive pos+vel estimates (STREAM, T→J)
     CMD_RESULT = 135  # Ball Butler command-outcome CAN1 frame relay (STREAM, T→J)
+    LEG_CMD = 136  # Teensy commanded leg interp output @100Hz (STREAM, T→J) — U3-iv float32 residual
     RPC_RESPONSE = 144  # RPC response (RPC port, T→J)
 
 class RpcMethod(IntEnum):
@@ -369,6 +370,27 @@ class BbAxisEstimates:
         vals = _BB_AXIS_ESTIMATES_STRUCT.unpack(data[:24])
         it = iter(vals)
         return cls(next(it), next(it), next(it), next(it), next(it))
+
+# LegCmd: The Teensy's COMMANDED leg interp output — the float32 cubic-Hermite ladder result (after the lead + stroke clamps) that leg_interp.cpp writes to axes[i].target_pos_rev each 500 Hz tick and would send to the leg ODrives — snapshotted at the telemetry-task rate. Additive diagnostic (no existing frame changes, so NO PROTOCOL_VERSION bump): it exposes the on-Teensy float32 interpolator output so the U3-iv bench validation can measure the float32-vs-float64 interp residual (Phase 7 'done when' / decision D9) DIRECTLY, rather than inferring it from the encoder. Written for all legs regardless of the output gate, so it reflects the interp even when CAN3 TX is suppressed. Jugglebot convention (positive = extension).
+LEG_CMD_FMT = '<Qffffffffffff'
+LEG_CMD_SIZE = 56
+_LEG_CMD_STRUCT = struct.Struct(LEG_CMD_FMT)
+assert _LEG_CMD_STRUCT.size == 56
+
+@dataclass
+class LegCmd:
+    t_teensy_us: int = 0
+    cmd_pos_rev: tuple = field(default_factory=lambda: (0.0,) * 6)
+    cmd_vel_rps: tuple = field(default_factory=lambda: (0.0,) * 6)
+
+    def pack(self) -> bytes:
+        return _LEG_CMD_STRUCT.pack(self.t_teensy_us, *self.cmd_pos_rev, *self.cmd_vel_rps)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'LegCmd':
+        vals = _LEG_CMD_STRUCT.unpack(data[:56])
+        it = iter(vals)
+        return cls(next(it), tuple(next(it) for _ in range(6)), tuple(next(it) for _ in range(6)))
 
 # RpcRequest: Generic RPC envelope. `method` selects the operation; `args` is a method-specific blob (see docs). `req_id` is echoed in the response for matching independent of the frame sequence counter.
 RPC_REQUEST_FMT = '<HHHH'

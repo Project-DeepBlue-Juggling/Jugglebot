@@ -75,6 +75,7 @@ Static IPs: Teensy `192.168.42.2`, Jetson `192.168.42.1` (`/30` point-to-point).
 | `CONE_FRAME` | 0x85 | Catching-cone CAN2 frame relay (STREAM, T→J) |
 | `BB_AXIS_ESTIMATES` | 0x86 | Ball Butler pitch/hand ODrive pos+vel estimates (STREAM, T→J) |
 | `CMD_RESULT` | 0x87 | Ball Butler command-outcome CAN1 frame relay (STREAM, T→J) |
+| `LEG_CMD` | 0x88 | Teensy commanded leg interp output @100Hz (STREAM, T→J) — U3-iv float32 residual |
 | `RPC_RESPONSE` | 0x90 | RPC response (RPC port, T→J) |
 
 ### RpcMethod
@@ -298,6 +299,18 @@ Payload **24 bytes**. Python struct fmt: `<Qffff`.
 | `pitch_vel_rps` | f32 | 1 | BB pitch (node 7) vel_estimate (rev/s) |
 | `hand_pos_rev` | f32 | 1 | BB hand (node 8) pos_estimate (rev) |
 | `hand_vel_rps` | f32 | 1 | BB hand (node 8) vel_estimate (rev/s) |
+
+### LegCmd (`MsgType.LEG_CMD`, T2J, STREAM port)
+
+The Teensy's COMMANDED leg interp output — the float32 cubic-Hermite ladder result (after the lead + stroke clamps) that leg_interp.cpp writes to axes[i].target_pos_rev each 500 Hz tick and would send to the leg ODrives — snapshotted at the telemetry-task rate. Additive diagnostic (no existing frame changes, so NO PROTOCOL_VERSION bump): it exposes the on-Teensy float32 interpolator output so the U3-iv bench validation can measure the float32-vs-float64 interp residual (Phase 7 'done when' / decision D9) DIRECTLY, rather than inferring it from the encoder. Written for all legs regardless of the output gate, so it reflects the interp even when CAN3 TX is suppressed. Jugglebot convention (positive = extension).
+
+Payload **56 bytes**. Python struct fmt: `<Qffffffffffff`.
+
+| Field | Type | Count | Notes |
+|-------|------|------:|-------|
+| `t_teensy_us` | u64 | 1 | Teensy wall-clock at snapshot (us) |
+| `cmd_pos_rev` | f32 | 6 | Per-leg commanded interp position (rev), post lead/stroke clamp |
+| `cmd_vel_rps` | f32 | 6 | Per-leg commanded interp velocity FF (rev/s) |
 
 ### RpcRequest (`MsgType.RPC_REQUEST`, J2T, RPC port)
 
