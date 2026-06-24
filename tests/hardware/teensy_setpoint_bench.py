@@ -32,10 +32,11 @@ smooth approach ramp. KEEP THE E-STOP IN HAND. Defence in depth, all active:
 
 PRECONDITIONS (the driver CHECKS these and refuses to arm otherwise):
   • encoder search (9a) + homing (9b) done — valid encoder reference.
-  • axis in CLOSED_LOOP **position** mode with sane gains. The driver does NOT
-    configure gains/mode (energising + tuning is the operator's call); bring the
-    leg to CLOSED_LOOP first, or pass --close-loop to have the driver issue
-    SET_AXIS_STATE(CLOSED_LOOP) (assumes mode+gains already set).
+  • axis in CLOSED_LOOP **position** mode with the operational gains. Pass
+    --close-loop to have the driver do the full legacy-faithful bring-up (vel/curr
+    limits -> POSITION/PASSTHROUGH mode -> pos+vel gains from hardware_config ->
+    CLOSED_LOOP, which the ODrive auto-holds at the current pos — no jolt), needed
+    after homing leaves the leg in VELOCITY mode; or bring it up yourself first.
   • fault_state == NONE, axis active_errors == 0.
   • This driver is the SOLE setpoint/wire authority — do NOT run run_mpc.py or the
     bridge's setpoint output at the same time (two authorities on the wire).
@@ -66,6 +67,8 @@ from controller.teensy_link import rpc_args  # noqa: E402
 from controller.teensy_link.synthetic_setpoint import (  # noqa: E402
     SyntheticKnotSource, TrajectoryParams,
 )
+import jugglebot.hardware_config as hw  # noqa: E402
+import jugglebot.protocol_config as pc  # noqa: E402
 
 TEENSY_IP = "192.168.42.2"
 CLOSED_LOOP = 8
@@ -77,6 +80,7 @@ STROKE_MAX_REV = [3.900413, 3.902459, 3.874629, 3.901381, 3.923703, 3.918615]
 
 SETPOINT_HZ = 40.0                  # MUST match the firmware SEGMENT_T_S = 0.025 s
 DEVIATION_ABORT_REV = 0.30          # driver belt; firmware MAX_DEVIATION (0.5) is the backstop
+VEL_STATIONARY_TOL_RPS = 0.1        # --close-loop refuses to close onto a moving leg
 
 _lock = threading.Lock()
 _cache = {"telem": None, "diag": {}, "hb": None}
@@ -134,8 +138,10 @@ def main():
                     help="smooth ramp time from the hardstop to the centre (s)")
     ap.add_argument("--duration", type=float, default=12.0, help="total run time after arm (s)")
     ap.add_argument("--close-loop", action="store_true",
-                    help="issue SET_AXIS_STATE(CLOSED_LOOP) before arming "
-                         "(assumes position mode + gains already configured)")
+                    help="full leg bring-up before arming: vel/curr limits -> "
+                         "POSITION/PASSTHROUGH mode -> pos+vel gains (from "
+                         "hardware_config) -> CLOSED_LOOP (ODrive auto-holds at "
+                         "current pos). Needed after homing, which leaves VELOCITY mode")
     ap.add_argument("--arm", action="store_true",
                     help="skip the interactive ARM prompt (for scripted reruns)")
     args = ap.parse_args()
@@ -167,9 +173,44 @@ def main():
         print(f"baseline: pos={start:+.4f} rev  axis_state={d.axis_state if d else '?'}  "
               f"active_errors={d.active_errors if d else '?'}  fault_state={fs}")
 
-        # ── Optional: close the loop ─────────────────────────────────────────
+        # ── Optional: full legacy-faithful leg bring-up to CLOSED_LOOP ───────
+        # Ports can_node._switch_to_passthrough + _set_vel_curr_limits + _set_gains
+        # to the can-bridge RPC surface (can_node is defunct). 9b homing leaves the
+        # leg in VELOCITY mode, so streaming POSITION setpoints first needs
+        # position-passthrough control re-established with the operational gains +
+        # limits. Gains/limits/mode are set BEFORE closing the loop, so the loop
+        # never closes on flash-default gains. The ODrive auto-seeds input_pos =
+        # current_pos on CLOSED_LOOP entry, so it engages holding at the present
+        # position (the hardstop) — no jolt. Values come from hardware_config
+        # (never hardcoded) so they track the canonical leg config.
         if args.close_loop:
-            print(f">>> SET_AXIS_STATE({axis}, CLOSED_LOOP) ...")
+            vel_lim = float(hw.ODRIVE_LEG_VEL_LIMIT_RPS)
+            curr_lim = float(hw.ODRIVE_LEG_CURR_LIMIT_A)
+            pos_gain = float(hw.ODRIVE_LEG_POS_GAINS[axis])
+            vel_gain = float(hw.ODRIVE_LEG_VEL_GAINS[axis])
+            vel_int = float(hw.ODRIVE_LEG_VEL_INT_GAINS[axis])
+            ctrl_pos = int(pc.ODRIVE_CONTROL_MODES['POSITION'])
+            in_pass = int(pc.ODRIVE_INPUT_MODES['PASSTHROUGH'])
+            # Refuse to close the loop on a moving leg (post-homing it is parked at
+            # the hardstop; this guards against closing onto residual motion).
+            with _lock:
+                tm = _cache["telem"]
+            v = abs(float(tm.vel_rps[axis])) if tm is not None else 1e9
+            if v > VEL_STATIONARY_TOL_RPS:
+                print(f"ABORT — leg not stationary (|vel|={v:.3f} rev/s) — refusing CLOSED_LOOP.")
+                return 2
+            print(f">>> bring-up axis {axis}: vel/curr {vel_lim}/{curr_lim}, "
+                  f"mode POSITION/PASSTHROUGH, pos_gain {pos_gain}, "
+                  f"vel_gains {vel_gain}/{vel_int}, then CLOSED_LOOP "
+                  f"(ODrive auto-holds at current pos) ...")
+            rpc.call(int(RpcMethod.SET_VEL_CURR_LIMITS),
+                     rpc_args.encode_set_vel_curr_limits(axis, vel_lim, curr_lim))
+            rpc.call(int(RpcMethod.SET_CONTROLLER_MODE),
+                     rpc_args.encode_set_controller_mode(axis, ctrl_pos, in_pass))
+            rpc.call(int(RpcMethod.SET_POS_GAIN),
+                     rpc_args.encode_set_pos_gain(axis, pos_gain))
+            rpc.call(int(RpcMethod.SET_VEL_GAINS),
+                     rpc_args.encode_set_vel_gains(axis, vel_gain, vel_int))
             rpc.call(int(RpcMethod.SET_AXIS_STATE),
                      rpc_args.encode_set_axis_state(axis, CLOSED_LOOP))
             t1 = time.time()
@@ -178,6 +219,11 @@ def main():
                 if d is not None and int(d.axis_state) == CLOSED_LOOP:
                     break
                 time.sleep(0.05)
+            d = axis_diag(axis)
+            ep = axis_pos(axis)
+            print(f">>> post-bring-up: axis_state={d.axis_state if d else '?'} "
+                  f"(expect CLOSED_LOOP={CLOSED_LOOP})  pos="
+                  f"{'?' if ep is None else f'{ep:+.4f}'}")
 
         # ── Preconditions (refuse to arm otherwise) ──────────────────────────
         d = axis_diag(axis)
