@@ -53,6 +53,9 @@ Usage:
         --amplitude 0.10 --freq 0.25 --duration 20
 """
 import argparse
+import csv
+import datetime
+import os
 import sys
 import threading
 import time
@@ -60,12 +63,15 @@ import time
 sys.path.insert(0, "/home/jetson/Desktop/Jugglebot")
 from controller.teensy_link import (  # noqa: E402
     TeensyLinkClient, RpcClient, RpcServer, TimeOfDayServer, MsgType,
-    Telemetry, Diagnostic, RpcMethod, FaultState,
+    Telemetry, Diagnostic, LegCmd, RpcMethod, FaultState,
 )
 from controller.teensy_link import protocol as p  # noqa: E402
 from controller.teensy_link import rpc_args  # noqa: E402
 from controller.teensy_link.synthetic_setpoint import (  # noqa: E402
     SyntheticKnotSource, TrajectoryParams,
+)
+from controller.teensy_link.replay_setpoint import (  # noqa: E402
+    RecordedThrowSource, load_recorded_axis, scale_to_bench,
 )
 import jugglebot.hardware_config as hw  # noqa: E402
 import jugglebot.protocol_config as pc  # noqa: E402
@@ -85,7 +91,7 @@ ARM_VERIFY_GRACE_S = 0.7            # after ARM, allow this long for the firmwar
 _T2J_FLAG_MPC_ACTIVE = 0x8          # HeartbeatT2J.flags bit3 (firmware-side mpc_active)
 
 _lock = threading.Lock()
-_cache = {"telem": None, "diag": {}, "hb": None, "telem_rx_t": None}
+_cache = {"telem": None, "diag": {}, "hb": None, "telem_rx_t": None, "legcmd": None}
 
 
 def on_telem(mt, seq, payload, addr):
@@ -93,6 +99,13 @@ def on_telem(mt, seq, payload, addr):
     with _lock:
         _cache["telem"] = tm
         _cache["telem_rx_t"] = time.perf_counter()   # Jetson arrival time (freeze diag)
+
+
+def on_legcmd(mt, seq, payload, addr):
+    # The Teensy's COMMANDED float32 interp output (LegCmd, 0x88) — the U3-iv
+    # residual datum: this vs the offline float64 reference is the float32 residual.
+    with _lock:
+        _cache["legcmd"] = LegCmd.unpack(payload)
 
 
 def on_diag(mt, seq, payload, addr):
@@ -116,6 +129,13 @@ def axis_pos(axis):
 def axis_diag(axis):
     with _lock:
         return _cache["diag"].get(int(axis))
+
+
+def axis_cmd_teensy(axis):
+    """The Teensy's commanded float32 interp output for the axis (rev), or None."""
+    with _lock:
+        lc = _cache["legcmd"]
+    return None if lc is None else float(lc.cmd_pos_rev[axis])
 
 
 def fault_state():
@@ -180,8 +200,28 @@ def main():
                          "current pos). Needed after homing, which leaves VELOCITY mode")
     ap.add_argument("--arm", action="store_true",
                     help="skip the interactive ARM prompt (for scripted reruns)")
+    ap.add_argument("--observe", action="store_true",
+                    help="U3-iii fault-replay observe mode: do NOT abort+disarm on a "
+                         "firmware fault. Log the transition and keep observing so the "
+                         "full fault->recovery/stow sequence is recorded; cede authority "
+                         "(disarm + stop streaming) on a fatal/CAN fault so the firmware "
+                         "stow runs uncontested. The deviation belt stays armed as the "
+                         "runaway backstop. Operator drives the physical unplug.")
+    ap.add_argument("--csv", default=None,
+                    help="per-tick telemetry CSV path (default: auto under temp/logs/)")
+    ap.add_argument("--replay", default=None, metavar="MPC_CSV",
+                    help="U3-iv: replay a recorded throw (temp/logs/mpc_*.csv) on this "
+                         "axis instead of the synthetic trajectory — scaled to the bench "
+                         "ceiling (3.30 rev), with the Teensy float32 interp output "
+                         "captured via the LegCmd uplink for the residual. Ignores "
+                         "--center/--amplitude/--freq.")
     args = ap.parse_args()
     axis = args.axis
+
+    # Fatal/CAN faults: in --observe we cede wire authority so the firmware's
+    # deferred stow / fatal handling runs uncontested. Recoverable faults
+    # (MPC_STALE, MOTOR_FB_STALE, LINK_LOST) keep streaming to show self-recovery.
+    _FATAL_FAULTS = {int(FaultState.CAN_BUS_DOWN), int(FaultState.ODRIVE_FATAL)}
 
     client = TeensyLinkClient(teensy_addr=(TEENSY_IP, p.PORT_STREAM), bind_host="0.0.0.0")
     client.start()
@@ -191,10 +231,12 @@ def main():
     client.subscribe(int(MsgType.TELEMETRY), on_telem)
     client.subscribe(int(MsgType.DIAGNOSTIC), on_diag)
     client.subscribe(int(MsgType.HEARTBEAT_T2J), on_hb)
+    client.subscribe(int(MsgType.LEG_CMD), on_legcmd)   # Teensy float32 interp output (U3-iv)
     client.start_heartbeat(hz=float(p.HEARTBEAT_HZ), flags=0)   # mpc_active=0 — DISARMED
     client.set_heartbeat_flags(0)
 
     armed = False
+    csv_f = None
     try:
         # ── Wait for telemetry ───────────────────────────────────────────────
         print(f"setpoint bench: axis={axis} peer={TEENSY_IP}")
@@ -281,21 +323,42 @@ def main():
                 print(f"  • {pb}")
             return 2
 
-        # ── Build the bounds-validated synthetic trajectory ──────────────────
+        # ── Build the bounds-validated trajectory (synthetic OR recorded replay) ─
         try:
-            gen = SyntheticKnotSource(
-                TrajectoryParams(axis=axis, start_rev=start, center_rev=args.center,
-                                 amplitude_rev=args.amplitude, freq_hz=args.freq,
-                                 approach_s=args.approach),
-                stroke_min_rev=STROKE_MIN_REV[axis], stroke_max_rev=STROKE_MAX_REV[axis])
-        except ValueError as e:
+            if args.replay:
+                from jugglebot.motion.geometry import StewartGeometry
+                mm_to_rev = float(StewartGeometry().mm_to_rev[axis])
+                raw = load_recorded_axis(args.replay, axis, mm_to_rev)
+                scaled, sinfo = scale_to_bench(raw, stroke_min_rev=STROKE_MIN_REV[axis])
+                gen = RecordedThrowSource(
+                    scaled, axis=axis, start_rev=start,
+                    stroke_min_rev=STROKE_MIN_REV[axis], stroke_max_rev=STROKE_MAX_REV[axis],
+                    approach_s=args.approach, settle_s=1.0)
+                # Replay defines its own length; extend --duration to cover it if needed.
+                if args.duration < gen.total_duration_s:
+                    args.duration = gen.total_duration_s + 1.0
+            else:
+                gen = SyntheticKnotSource(
+                    TrajectoryParams(axis=axis, start_rev=start, center_rev=args.center,
+                                     amplitude_rev=args.amplitude, freq_hz=args.freq,
+                                     approach_s=args.approach),
+                    stroke_min_rev=STROKE_MIN_REV[axis], stroke_max_rev=STROKE_MAX_REV[axis])
+        except (ValueError, FileNotFoundError) as e:
             print(f"ABORT — trajectory rejected: {e}")
             return 2
 
-        kind = "HOLD" if args.amplitude == 0.0 else f"SINUSOID ±{args.amplitude} @ {args.freq} Hz"
         print("\n── planned motion ─────────────────────────────────────────────")
-        print(f"  axis {axis}: extend {start:+.4f} → {args.center:+.4f} rev over "
-              f"{args.approach}s, then {kind} for {args.duration}s")
+        if args.replay:
+            print(f"  axis {axis}: REPLAY {args.replay.split('/')[-1]}")
+            print(f"    raw [{sinfo.raw_min_rev:.3f}, {sinfo.raw_max_rev:.3f}] rev → "
+                  f"scaled [{sinfo.scaled_min_rev:.3f}, {sinfo.scaled_max_rev:.3f}] "
+                  f"(pos_scale {sinfo.pos_scale:.3f}, ceiling {sinfo.ceiling_rev})")
+            print(f"    approach {args.approach}s → settle 1.0s → onset at "
+                  f"t={gen.onset_t_s:.1f}s → replay (peak {sinfo.peak_vel_rps:.2f} rev/s)")
+        else:
+            kind = "HOLD" if args.amplitude == 0.0 else f"SINUSOID ±{args.amplitude} @ {args.freq} Hz"
+            print(f"  axis {axis}: extend {start:+.4f} → {args.center:+.4f} rev over "
+                  f"{args.approach}s, then {kind} for {args.duration}s")
         print(f"  peak per-frame step {gen.peak_step_rev:.4f} rev (lead clamp 0.15)")
         print(f"  workspace [{STROKE_MIN_REV[axis]:.4f}, {STROKE_MAX_REV[axis]:.4f}] rev")
         print("───────────────────────────────────────────────────────────────")
@@ -306,53 +369,118 @@ def main():
             if ans != "ARM":
                 print("aborted by operator (not armed)."); return 0
 
+        # ── Per-tick telemetry CSV (always on) — the durable record ───────────
+        csv_path = args.csv
+        if csv_path is None:
+            os.makedirs("temp/logs", exist_ok=True)
+            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            mode = "replay" if args.replay else (
+                "observe" if args.observe else ("sin" if args.amplitude else "hold"))
+            csv_path = f"temp/logs/setpoint_bench_ax{axis}_{mode}_{ts}.csv"
+        csv_f = open(csv_path, "w", newline="")
+        csv_w = csv.writer(csv_f)
+        # cmd_teensy_rev = the Teensy's float32 interp output (LegCmd uplink) — vs the
+        # offline float64 reference of `cmd_rev`'s knots, that is the U3-iv residual.
+        csv_w.writerow(["t_s", "cmd_rev", "enc_rev", "cmd_teensy_rev", "vel_rps",
+                        "err_rev", "iq_A", "fault_state", "fault_name",
+                        "telem_age_ms", "hb_uptime_ms", "fw_mpc_active", "streaming"])
+        print(f">>> logging telemetry → {csv_path}")
+
         # ── ARM + stream at 40 Hz ────────────────────────────────────────────
         client.set_heartbeat_flags(1)              # mpc_active=1 — the firmware guard may ENABLE
         armed = True
+        streaming = True
+        if args.observe:
+            print(">>> OBSERVE MODE: faults are logged, not aborted "
+                  "(deviation belt + e-stop stay live).")
         print(">>> ARMED. streaming ... (Ctrl-C to disarm)")
         t_arm = time.perf_counter()
         period = 1.0 / SETPOINT_HZ
         n = 0
         last_print = 0.0
         abort_reason = None
+        seen_faults = set()
         while True:
             t = time.perf_counter() - t_arm
             if t >= args.duration:
                 break
             now_us = int(time.time() * 1_000_000)
-            frame = gen.frame(t, t_origin_us=now_us)
-            client.send_stream(int(MsgType.SETPOINT), frame.pack())
+            if streaming:
+                frame = gen.frame(t, t_origin_us=now_us)
+                try:
+                    client.send_stream(int(MsgType.SETPOINT), frame.pack())
+                except OSError as e:
+                    # Ethernet unplug (link-drop test) can make sendto raise. In
+                    # observe mode that's expected — the firmware MPC_STALE-gates
+                    # output; keep observing. Otherwise it's a real abort.
+                    if not args.observe:
+                        abort_reason = f"setpoint send failed: {e}"
+                        break
+
+            # ── observation snapshot (logged every tick) ──
+            fs = fault_state()
+            enc = axis_pos(axis)
+            with _lock:
+                tm = _cache["telem"]
+            vel = None if tm is None else float(tm.vel_rps[axis])
+            dg = axis_diag(axis)
+            iq = None if dg is None else float(dg.iq_measured)
+            cmd = gen.position(t)
+            cmd_teensy = axis_cmd_teensy(axis)   # Teensy float32 interp output (LegCmd)
+            fw_mpc = firmware_mpc_active()
+            tage = telem_age_ms()
+            csv_w.writerow([
+                f"{t:.4f}", f"{cmd:.5f}",
+                "" if enc is None else f"{enc:.5f}",
+                "" if cmd_teensy is None else f"{cmd_teensy:.6f}",
+                "" if vel is None else f"{vel:.5f}",
+                "" if enc is None else f"{cmd - enc:.5f}",
+                "" if iq is None else f"{iq:.4f}",
+                "" if fs is None else fs,
+                "" if fs is None else _fault_name(fs),
+                "" if tage is None else f"{tage:.0f}",
+                hb_uptime_ms(), fw_mpc, int(streaming)])
 
             # ── safety monitor ──
-            fs = fault_state()
             if fs not in (None, int(FaultState.NONE)):
-                abort_reason = f"fault_state={fs} ({_fault_name(fs)})"
-                break
-            # Verify our arm took: if the firmware reports mpc_active=0 after the grace
-            # window, another heartbeat authority is overriding it → output will never
-            # enable and the leg won't move. Abort with a clear cause (not a cryptic
-            # tracking-deviation timeout, as happened on the bench).
-            if t > ARM_VERIFY_GRACE_S and firmware_mpc_active() is False:
+                if args.observe:
+                    if fs not in seen_faults:
+                        seen_faults.add(fs)
+                        print(f"  [observe] t={t:5.2f}s  FAULT → {fs} ({_fault_name(fs)})  "
+                              f"enc={'?' if enc is None else f'{enc:+.4f}'}  "
+                              f"iq={'?' if iq is None else f'{iq:+.2f}A'}")
+                        if fs in _FATAL_FAULTS and streaming:
+                            # Cede authority so the firmware stow / fatal handling runs
+                            # uncontested; keep observing + logging to --duration.
+                            client.set_heartbeat_flags(0)
+                            streaming = False
+                            print("  [observe] fatal/CAN fault → CEDING authority "
+                                  "(disarm + stop streaming), still observing.")
+                else:
+                    abort_reason = f"fault_state={fs} ({_fault_name(fs)})"
+                    break
+            # Verify our arm took (competing-authority guard) — active while streaming.
+            if t > ARM_VERIFY_GRACE_S and streaming and firmware_mpc_active() is False:
                 abort_reason = ("firmware mpc_active=0 after arming — another heartbeat "
                                 "authority is overriding it. Is the ROS2 launch "
                                 "(teensy_bridge_node) running? Stop it and retry — this "
                                 "driver must be the sole wire authority.")
                 break
-            enc = axis_pos(axis)
+            # Deviation belt — runaway backstop, hard abort in BOTH modes.
             if enc is not None:
-                expected = _clamp(gen.position(t), STROKE_MIN_REV[axis], STROKE_MAX_REV[axis])
+                expected = _clamp(cmd, STROKE_MIN_REV[axis], STROKE_MAX_REV[axis])
                 if abs(expected - enc) > DEVIATION_ABORT_REV:
                     abort_reason = (f"tracking deviation {abs(expected - enc):.3f} rev "
                                     f"> {DEVIATION_ABORT_REV} (cmd≈{expected:+.3f}, enc={enc:+.3f})")
                     break
 
             if t - last_print >= 0.2:              # ~5 Hz status
-                dg = axis_diag(axis)
-                iq = f"{dg.iq_measured:+.2f}A" if dg else "?"
-                tage = telem_age_ms()
+                iqs = f"{iq:+.2f}A" if iq is not None else "?"
                 hbup = hb_uptime_ms()
-                print(f"  t={t:5.2f}s  cmd={gen.position(t):+.4f}  enc={enc:+.4f}  "
-                      f"err={(gen.position(t) - enc):+.4f}  iq={iq}  fault={fs}  "
+                print(f"  t={t:5.2f}s  cmd={cmd:+.4f}  "
+                      f"enc={'?' if enc is None else f'{enc:+.4f}'}  "
+                      f"err={'?' if enc is None else f'{cmd - enc:+.4f}'}  iq={iqs}  "
+                      f"fault={fs}  strm={int(streaming)}  "
                       f"tage={'?' if tage is None else f'{tage:.0f}'}ms  hbup={hbup}")
                 last_print = t
 
@@ -365,13 +493,17 @@ def main():
 
         if abort_reason:
             print(f"\n!!! ABORT: {abort_reason} — disarming.")
+        elif args.observe:
+            faults = sorted(_fault_name(f) for f in seen_faults) or ["none"]
+            print(f"\n--- duration {args.duration}s elapsed (observe) — disarming. "
+                  f"faults seen: {', '.join(faults)}")
         else:
             print(f"\n--- duration {args.duration}s elapsed — disarming.")
 
     except KeyboardInterrupt:
         print("\n!!! Ctrl-C — disarming.")
     finally:
-        # ALWAYS disarm. mpc_active=0 instantly gates the firmware output off.
+        # ALWAYS disarm. mpc_active=0 gates the firmware output off (≈ one fault step).
         if armed:
             client.set_heartbeat_flags(0)
             time.sleep(0.1)                        # let one disarmed heartbeat land
@@ -379,6 +511,11 @@ def main():
             try:
                 rpc.call(int(RpcMethod.SET_AXIS_STATE),
                          rpc_args.encode_set_axis_state(axis, IDLE))
+            except Exception:  # noqa: BLE001
+                pass
+        if csv_f is not None:
+            try:
+                csv_f.close()
             except Exception:  # noqa: BLE001
                 pass
         enc = axis_pos(axis)
