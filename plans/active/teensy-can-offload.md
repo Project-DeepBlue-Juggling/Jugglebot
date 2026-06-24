@@ -1404,8 +1404,11 @@ socketcan endpoint is reached at Phase 11–12.*
 > decision (U4) is gated on U3's measured residual. The setpoint downlink stays
 > gated OFF in production (`enable_setpoint_output=false`, `mpc_active=0`); the U2
 > bench driver arms the wire directly (not the ROS bridge), and is the sole wire
-> authority during a run. Keep the legacy `can_node` path swappable back in
-> < 10 min throughout (see Risks).
+> authority during a run (a competing `teensy_bridge_node` heartbeat pins
+> `mpc_active=0` — stop the ROS2 launch; the driver now self-checks this, 2026-06-24).
+> **Rollback (corrected 2026-06-24):** `can_node` is reference-only now (the Jetson
+> never sees CAN directly), so the abort is **e-stop + `mpc_active=0` disarm +
+> power-down** — instant — not a `<10 min` socketcan swap-back (see Risks).
 
 **Goal:** End-to-end MPC → Hermite → Teensy → ODrive on the bench, one leg
 only, with Jetson socketcan disabled.
@@ -1583,10 +1586,16 @@ plan's commits**. Captured here so the findings aren't lost.
   to bench-replay every scenario from the relevant logbook entries before
   declaring the port complete.
 - **Phase 11/12 cutover.** A misbehaving Teensy commanding the legs is a real
-  risk during cutover. Keep the Linux pipeline runnable as a fallback until
-  the new architecture has accumulated significant operating time. Maintain
-  the ability to swap CAN3 wiring (the Jugglebot bus carrying the legs)
-  back to socketcan in <10 minutes for the duration of the cutover period.
+  risk during cutover. **Rollback reality (2026-06-24):** the original "swap CAN3
+  back to socketcan in <10 min" fallback is **no longer available** — `can_node`
+  is reference-only and the Jetson hardware no longer sees CAN directly (the legs
+  are on CAN3 behind the can-bridge). The cutover abort is therefore the firmware
+  safety chain: **e-stop (hardware) + `mpc_active=0` disarm** (instant — gates the
+  Teensy output off in one heartbeat; the bench driver does this on Ctrl-C / fault)
+  **+ power-down**. This is a *tighter* abort (sub-second) than a wiring swap, but
+  it is the only one — so the firmware gates (present-axis, feedback-staleness,
+  MAX_DEVIATION, MPC-staleness, deferred-stow) carry the whole load and must be
+  trusted, not the swap-back.
 - **Three-CAN-bus wiring complexity.** Three subsystem buses with six
   termination resistors. Don't crimp CAN connectors at 2 AM. Plan harness
   construction calmly. Label each bus at both ends (CAN1 = BB, CAN2 = cone,

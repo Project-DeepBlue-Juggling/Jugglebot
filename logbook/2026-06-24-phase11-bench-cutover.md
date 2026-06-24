@@ -38,8 +38,10 @@ the live record we extend as the hardware validation proceeds. Two units landed:
 a subset-populated CAN3 (the single-leg bench rig has only odrv0 present); and
 **U2**, a synthetic β-knot setpoint source + armed bench driver that exercises the
 Teensy's 40 Hz-knot Hermite interpolator on hardware with a known, bounded command,
-decoupled from `motor_guard` / the MPC / friction-FF. **The powered armed run
-itself (U3) is not done — it is the operator-gated tail tracked in Open Questions.**
+decoupled from `motor_guard` / the MPC / friction-FF. **U3 armed validation
+stages (i) approach+hold and (ii) bounded sinusoid now PASS on hardware** (see
+*Hardware validation*) — the leg tracks the Teensy 40 Hz-knot Hermite cleanly; the
+fault-replay + real-MPC tails remain.
 
 ## Motivation
 
@@ -202,22 +204,79 @@ unchanged `Setpoint` frame) re-verified before flashing.
   (3/3 ping, ~2.4 ms RTT). Boots `mpc_active=0`, output gated off — no motion on
   flash.
 
-## Open Questions / Next (U3 — operator-gated, powered)
+## Hardware validation (U3 stages i–ii, 2026-06-24)
 
-The powered armed run is **not done**; it is the serial tail of this entry, to be
-appended as it completes. Staged, each gated by explicit operator final-say +
-e-stop in hand, on the standalone leg (odrv0):
+**Stages (i) approach+hold and (ii) bounded sinusoid PASS on the standalone leg
+(odrv0)** — the first continuous powered MPC-style leg motion through the
+can-bridge. Stage (i): the leg tracked a smooth approach to 0.15 rev (err ≤ 0.031
+rev the whole descent), settled to +0.0007 rev, clean disarm. Stage (ii):
+approached 0.30 rev then oscillated 0.20↔0.40 at 0.25 Hz for 20 s, err mostly
+≤ 0.03 rev (small lag at the velocity peaks, as expected), `fault_state=NONE`
+throughout. The `[guard]` diagnostic confirmed the full interlock live:
+`mpc_active=1 guard_mode=ENABLED output=1`, `sp_age≈13 ms`, `u0` tracking the
+trajectory. **The Teensy 40 Hz-knot Hermite (Mode 1) ran on hardware** — the
+interp-offload, exercised for real. Getting here surfaced three things.
 
-1. **Approach + hold** — controlled extension off the hardstop to a low workspace
-   centre, hold. Validates the armed path + output gate + lead/stroke clamps.
-2. **Bounded sinusoid** — small oscillation around a workspace centre; exercises
-   the Teensy 40 Hz-knot Hermite (Mode 1) on hardware for the first time.
+**Finding B — the feedback-staleness guard was defined but never wired.** The
+*first* armed attempt (pre-guard) aborted at t≈0.6 s: the encoder + iq froze at
+identical values while the command kept descending — a frozen feedback loop, not a
+stuck leg (a stuck leg builds current; iq sat dead). The 0.30-rev deviation belt
+caught it (the command was moving *away* from the frozen encoder), which exposed
+the gap: `canbridge_config.h` *defined* `MOTOR_FB_STALENESS_US = 0.15 s` (a copy of
+motor_guard's `MOTOR_FB_STALENESS_S`) yet **nothing used it** — and a freeze during
+a *hold* (cmd ≈ frozen enc, no growing deviation) would have gone unnoticed.
+`evaluate_guard` now suppresses output (recoverable, not a latched E-STOP) and
+reports `FaultState.MOTOR_FB_STALE` when a present leg's
+`now − pos_timestamp_us > 0.15 s`, mirroring motor_guard. Commit `155a06e`.
+
+**Finding A — the freeze itself is rare, now mitigated; root cause open.** That
+t≈0.6 s feedback freeze did **not** recur across the two clean stage runs, so it is
+intermittent. CAN3 was healthy at the time (`tec=0 rec=0 synced=1`), ruling out
+bus-off; the TX-in-ISR race is already IRQ-serialised, so a corrupted setpoint is
+not it. The live candidates are an RX-task starvation (axis cache froze) or a
+UDP-uplink stall. Left open — but the Finding-B guard now catches it
+deterministically at 0.15 s if it recurs, so the system is safe regardless.
+
+**The "leg won't arm" gotcha — a competing heartbeat authority.** Attempts 2–4
+(post-guard) showed the leg in CLOSED_LOOP but motionless with `iq≈0` and live
+telemetry. A `[guard]` firmware diagnostic line (`mpc_active / guard_mode / output
+/ sp_age / u0`) made it instant: `mpc_active=0` throughout — the firmware never
+armed, so the output gate stayed shut even though the driver's setpoints were
+arriving (`sp_age≈1 ms`, `u0` updating). Root cause: a running ROS2 launch — its
+`teensy_bridge_node` sends J→T heartbeats with `flags=0` (mpc_active pinned off)
+*unconditionally*, and the firmware applies the **last** heartbeat it sees, so the
+bridge's `flags=0` kept overwriting the bench driver's `flags=1`. The bench driver
+must be the **sole wire authority**; the fix is operational (stop the ROS2 launch),
+after which the leg tracked perfectly. To close the footgun, the firmware now
+**uplinks `mpc_active` in the T2J heartbeat (bit3)** and the bench driver verifies
+its arm took ~0.7 s after ARM, aborting with an explicit *"another heartbeat
+authority is overriding — stop the ROS2 launch"* instead of a cryptic
+tracking-deviation timeout.
+
+**Separate bug — `motor_guard` crashes on a bad config path.** Surfaced while the
+launch was up: `motor_guard` dies at startup with `FileNotFoundError` for
+`.../install/jugglebot/config/hardware_config.yaml` (`friction_ff_params.py:90`
+resolves the path under the *install* tree, where `config/` isn't installed). The
+bench driver doesn't use motor_guard, so it didn't block stages i–ii — but it
+**will** block the real-MPC path (U3 stage iii). Fix before stage iii.
+
+## Open Questions / Next (U3 tail — operator-gated, powered)
+
+Stages (i) + (ii) done (above). Remaining, each gated by explicit operator
+final-say + e-stop:
+
 3. **Powered fault-replay** — induced J→T link drop + CAN3 drop with the leg armed:
    confirm the MPC-staleness E-STOP and the deferred-stow safety inversion (the
-   reconnect path U1 unblocked).
+   reconnect path U1 unblocked). Validating the deferred-stow on the single-leg rig
+   relies on U1's present-scoped `all_present_legs_fresh`.
+4. **Real-MPC trajectory** — needs the `motor_guard` config-path bug fixed first.
+   Produces the **float32 interp residual** and the **D9 motion-onset penalty** that
+   decide U4 (the production α→β switch + friction-FF disposition) against the
+   pre-registered ≤ 40 ms criterion; compare-to-legacy "within tracking noise."
 
-These produce the **float32 interp residual** and the **D9 motion-onset penalty**
-that decide U4 (the production α→β switch + friction-FF disposition) against the
-pre-registered ≤ 40 ms criterion. The compare-to-legacy acceptance criterion is
-"within tracking noise," recorded against a legacy socketcan reference. The legacy
-`can_node` path stays swappable back in < 10 min throughout the cutover.
+Also open: **Finding A** (the rare feedback freeze) root cause; the **`motor_guard`
+config-path bug**. **Rollback note (corrected):** `can_node` is now reference-only
+(the Jetson no longer sees CAN directly), so the cutover abort is **e-stop +
+`mpc_active=0` disarm + power-down**, *not* a `<10 min` socketcan swap-back — the
+bench driver's instant disarm (Ctrl-C / fault) gates firmware output off in one
+heartbeat.
