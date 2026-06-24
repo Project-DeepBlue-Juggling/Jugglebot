@@ -81,6 +81,8 @@ STROKE_MAX_REV = [3.900413, 3.902459, 3.874629, 3.901381, 3.923703, 3.918615]
 SETPOINT_HZ = 40.0                  # MUST match the firmware SEGMENT_T_S = 0.025 s
 DEVIATION_ABORT_REV = 0.30          # driver belt; firmware MAX_DEVIATION (0.5) is the backstop
 VEL_STATIONARY_TOL_RPS = 0.1        # --close-loop refuses to close onto a moving leg
+ARM_VERIFY_GRACE_S = 0.7            # after ARM, allow this long for the firmware to report mpc_active
+_T2J_FLAG_MPC_ACTIVE = 0x8          # HeartbeatT2J.flags bit3 (firmware-side mpc_active)
 
 _lock = threading.Lock()
 _cache = {"telem": None, "diag": {}, "hb": None, "telem_rx_t": None}
@@ -143,6 +145,16 @@ def _fault_name(fs):
         return FaultState(fs).name
     except ValueError:
         return str(fs)
+
+
+def firmware_mpc_active():
+    """The firmware's mpc_active, from the T2J heartbeat (bit3). Verifies our arm
+    actually took: if it's clear after arming, another heartbeat authority (e.g. a
+    running ROS2 teensy_bridge_node) is overriding mpc_active back to 0 and the
+    firmware will never enable output. Returns None until a heartbeat is seen."""
+    with _lock:
+        hb = _cache["hb"]
+    return None if hb is None else bool(hb.flags & _T2J_FLAG_MPC_ACTIVE)
 
 
 def _clamp(x, lo, hi):
@@ -315,6 +327,16 @@ def main():
             fs = fault_state()
             if fs not in (None, int(FaultState.NONE)):
                 abort_reason = f"fault_state={fs} ({_fault_name(fs)})"
+                break
+            # Verify our arm took: if the firmware reports mpc_active=0 after the grace
+            # window, another heartbeat authority is overriding it → output will never
+            # enable and the leg won't move. Abort with a clear cause (not a cryptic
+            # tracking-deviation timeout, as happened on the bench).
+            if t > ARM_VERIFY_GRACE_S and firmware_mpc_active() is False:
+                abort_reason = ("firmware mpc_active=0 after arming — another heartbeat "
+                                "authority is overriding it. Is the ROS2 launch "
+                                "(teensy_bridge_node) running? Stop it and retry — this "
+                                "driver must be the sole wire authority.")
                 break
             enc = axis_pos(axis)
             if enc is not None:
