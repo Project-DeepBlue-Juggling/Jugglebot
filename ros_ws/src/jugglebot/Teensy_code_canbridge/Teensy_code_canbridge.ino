@@ -99,7 +99,11 @@ static void send_heartbeat_t2j() {
   p.fault_state = fault_state();
   p.flags       = (time_synced() ? 0x1u : 0x0u)
                 | (fault_stow_pending() ? 0x2u : 0x0u)
-                | (all_axis_heartbeats_ok() ? 0x4u : 0x0u);
+                | (all_axis_heartbeats_ok() ? 0x4u : 0x0u)
+                | (fault_mpc_active() ? 0x8u : 0x0u);   // bit3 (Phase 11): firmware-side
+                                                        // mpc_active — a setpoint source can
+                                                        // verify its arm actually took (catches
+                                                        // a competing heartbeat authority).
   p.uptime_ms   = (uint32_t)(micros64() / 1000ULL);
 
   // Ball Butler heartbeat snapshot (Phase A — replaces legacy can_node bb/
@@ -272,6 +276,17 @@ static void task_diag(void*) {
         }
         Serial.println();
       }
+
+      // Leg output-gate diagnostic (Phase 11 bench): is the firmware armed and
+      // actually streaming setpoints to CAN3? mpc_active = J→T heartbeat bit0 seen;
+      // guard_mode 0=DISABLED/1=ENABLED/2=ESTOP; output = interp gate (1 ⇒ sending);
+      // sp_age_ms = age of the last setpoint from the Jetson (huge ⇒ not receiving);
+      // u0 = the latched commanded base position for axis 0.
+      Serial.printf("[guard] mpc_active=%u guard_mode=%u output=%u sp_age_ms=%lu u0=%.4f\n",
+                    (unsigned)fault_mpc_active(), (unsigned)fault_guard_mode(),
+                    (unsigned)interp_output_enabled(),
+                    (unsigned long)((now_wall_us() - interp_last_setpoint_us()) / 1000ULL),
+                    (double)interp_base_pos(0));
 
       // Per-Ball-Butler state line. Format mirrors [axes]:
       //   [bb] state=<name> ball=<0|1> yaw=<deg> pitch=<deg> hand=<mm> age=<ms><mark>

@@ -228,7 +228,7 @@ Payload **35 bytes**. Python struct fmt: `<QBBBBIIBBBfff`.
 | `bus1_health` | u8 | 1 | CAN1 BusHealth enum |
 | `bus2_health` | u8 | 1 | CAN2 BusHealth enum |
 | `fault_state` | u8 | 1 | FaultState enum |
-| `flags` | u32 | 1 | bit0 time_synced, bit1 stow_pending_on_reconnect, bit2 all_axis_heartbeats_ok |
+| `flags` | u32 | 1 | bit0 time_synced, bit1 stow_pending_on_reconnect, bit2 all_axis_heartbeats_ok, bit3 mpc_active (firmware-side; lets a setpoint source verify its arm took) |
 | `uptime_ms` | u32 | 1 | ms since boot |
 | `bb_state` | u8 | 1 | BallButlerState enum (0..6, 127=ERROR) |
 | `bb_state_data` | u8 | 1 | BB error code when bb_state == ERROR, else 0 |

@@ -48,5 +48,6 @@ uint8_t  fault_state();                  // JbUdp::FaultState
 uint8_t  fault_guard_mode();             // JbUdp::GuardMode (ESTOP ⟺ estop || fatal_error)
 bool     fault_can_bus_down();           // fatal_can_error (CAN3)
 bool     fault_stow_pending();           // deferred-stow latch armed
+bool     fault_mpc_active();             // s_mpc_active (J→T heartbeat bit0 — bench diag)
 
 }  // namespace CanBridge

@@ -309,5 +309,6 @@ uint8_t fault_state()        { return s_fault_state; }
 uint8_t fault_guard_mode()   { return s_guard_mode; }
 bool    fault_can_bus_down() { return s_fatal_can_error; }
 bool    fault_stow_pending() { return s_stow_pending; }
+bool    fault_mpc_active()   { return s_mpc_active; }
 
 }  // namespace CanBridge

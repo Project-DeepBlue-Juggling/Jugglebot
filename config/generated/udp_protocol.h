@@ -167,7 +167,7 @@ struct HeartbeatT2JPayload {
   uint8_t bus1_health;  // CAN1 BusHealth enum
   uint8_t bus2_health;  // CAN2 BusHealth enum
   uint8_t fault_state;  // FaultState enum
-  uint32_t flags;  // bit0 time_synced, bit1 stow_pending_on_reconnect, bit2 all_axis_heartbeats_ok
+  uint32_t flags;  // bit0 time_synced, bit1 stow_pending_on_reconnect, bit2 all_axis_heartbeats_ok, bit3 mpc_active (firmware-side; lets a setpoint source verify its arm took)
   uint32_t uptime_ms;  // ms since boot
   uint8_t bb_state;  // BallButlerState enum (0..6, 127=ERROR)
   uint8_t bb_state_data;  // BB error code when bb_state == ERROR, else 0
