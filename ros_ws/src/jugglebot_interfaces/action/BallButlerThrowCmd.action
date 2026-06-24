@@ -1,0 +1,22 @@
+# Loud, awaitable Ball Butler throw (Phase 2). Replaces the bb/send_throw_command
+# service. The goal dispatches the BB_THROW RPC to the firmware (via the can-bridge);
+# the result carries the firmware's TERMINAL outcome, relayed back as a CMD_RESULT
+# CAN frame — OK (ball released on-aim), a REJECTED_* reason, or ABORTED_NOT_SETTLED —
+# instead of only the bridge-side "frame queued" ack the service used to return.
+
+# ── Goal — the throw parameters (same fields the SendBallButlerCommand.srv carried) ──
+float32 yaw_angle_rad      # yaw angle (rad), -pi..pi
+float32 pitch_angle_rad    # pitch angle (rad), 0..pi/2
+float32 throw_speed        # throw speed (m/s), 0..6.5
+float32 throw_time         # absolute throw time (s) in the shared time base, 0..65.5
+bool suppress_announcement # opt out of can_node's auto ThrowAnnouncement (dead on this
+                           # path; retained for parity with the retired service)
+---
+# ── Result — the firmware's terminal outcome ──
+bool success    # True iff the firmware reported OK (ball released on-aim)
+uint8 outcome   # BallButlerCommandOutcome value (OK / REJECTED* / ABORTED*); see protocol_config
+int16 detail0   # generic detail. For settle/lead reasons: binding axis (0=YAW,1=PITCH,2=BOTH,-1=n/a)
+int16 detail1   # generic detail (e.g. lead shortfall ms, yaw error centideg)
+string message  # human-readable outcome (outcome name + details)
+---
+# ── Feedback — none for now ──

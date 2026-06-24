@@ -7,7 +7,8 @@ modes of operation:
      ``bb/throw_at_target`` (BallButlerThrow.srv) — looks up the target by
      name in the latest ``/rigid_body_poses``, transforms into BB local
      frame, applies optional 2D affine aim correction, solves inverse
-     ballistics, and calls ``bb/send_throw_command`` on can_node.
+     ballistics, and sends the ``bb/throw`` action on teensy_bridge_node
+     (whose result carries the firmware's terminal throw outcome).
 
   2. Accuracy-calibration session via ``bb/start_accuracy_calibration``
      (std_srvs/Trigger) — generates a 5×5 grid in the global frame,
@@ -32,6 +33,7 @@ from typing import Dict, Optional, Tuple
 
 import rclpy
 from rclpy.node import Node
+from rclpy.action import ActionClient
 from rclpy.qos import (
     DurabilityPolicy,
     QoSProfile,
@@ -48,7 +50,8 @@ from jugglebot_interfaces.msg import (
     RigidBodyPoses,
     ThrowAnnouncement,
 )
-from jugglebot_interfaces.srv import BallButlerThrow, SendBallButlerCommand
+from jugglebot_interfaces.srv import BallButlerThrow
+from jugglebot_interfaces.action import BallButlerThrowCmd
 
 import jugglebot.hardware_config as hw
 from jugglebot.can.throw_ballistics import (
@@ -231,16 +234,17 @@ class BallButlerNode(Node):
         self.create_subscription(
             BallButlerHeartbeat, 'bb/heartbeat', self._on_heartbeat, 20)
 
-        # ── Service client (call bb/send_throw_command on can_node) ──
-        self._throw_client = self.create_client(
-            SendBallButlerCommand, 'bb/send_throw_command')
+        # ── Action client (bb/throw — Phase 2, replaces bb/send_throw_command) ──
+        # Fire-and-forget from the throw pipeline's view (we don't block on the
+        # result), but the firmware's terminal outcome is logged when it arrives,
+        # via the goal-response → result callback chain.
+        self._throw_action = ActionClient(self, BallButlerThrowCmd, 'bb/throw')
 
         # ── Publisher: ThrowAnnouncement (own, not can_node's) ──
-        # We send suppress_announcement=True on bb/send_throw_command so
-        # can_node skips its predict_throw-based announcement (which uses
-        # the platform default catch height; wrong for off-plane targets
-        # like the cone).  We publish here using the solver's actual
-        # target z and serial-chain-aware ToF.
+        # We send suppress_announcement=True on bb/throw so the bridge / can_node
+        # skips its predict_throw-based announcement (which uses the platform
+        # default catch height; wrong for off-plane targets like the cone).  We
+        # publish here using the solver's actual target z and serial-chain ToF.
         self.throw_announcement_pub = self.create_publisher(
             ThrowAnnouncement, 'throw_announcements', 10)
 
@@ -410,13 +414,13 @@ class BallButlerNode(Node):
             else self._default_throw_delay_s
         )
 
-        if not self._throw_client.service_is_ready():
-            return False, 'bb/send_throw_command service not available', sol, delay_s
+        if not self._throw_action.server_is_ready():
+            return False, 'bb/throw action server not available', sol, delay_s
 
-        bb_req = SendBallButlerCommand.Request()
-        bb_req.yaw_angle_rad = float(sol.yaw_rad)
-        bb_req.pitch_angle_rad = float(sol.pitch_rad)
-        bb_req.throw_speed = float(sol.speed_mps) if throw else 0.0
+        goal = BallButlerThrowCmd.Goal()
+        goal.yaw_angle_rad = float(sol.yaw_rad)
+        goal.pitch_angle_rad = float(sol.pitch_rad)
+        goal.throw_speed = float(sol.speed_mps) if throw else 0.0
         # Compensate the hand's constant command→release actuator latency: command the
         # throw this much EARLIER so the ball ARRIVES at the requested (pos, time),
         # rather than ~44 ms late. The announced landing time below is left equal to the
@@ -424,12 +428,15 @@ class BallButlerNode(Node):
         # lands at now + delay_s, so the announcement is correct. The latency is constant
         # across the workspace (no range/speed/pitch dependence), so one value suffices.
         release_latency_s = hw.BB_OP_THROW_RELEASE_LATENCY_MS / 1000.0
-        bb_req.throw_time = float(max(0.0, delay_s - release_latency_s)) if throw else 0.0
-        # Tell can_node not to publish a predict_throw-based announcement
-        # (which would use the platform default catch height).  We publish
-        # our own using the solver's actual target z + serial-chain ToF.
-        bb_req.suppress_announcement = True
-        self._throw_client.call_async(bb_req)
+        goal.throw_time = float(max(0.0, delay_s - release_latency_s)) if throw else 0.0
+        # Suppress the predict_throw-based announcement (platform default catch
+        # height); we publish our own using the solver's actual target z + ToF.
+        goal.suppress_announcement = True
+        # Fire-and-forget: don't block the throw pipeline on the result. The
+        # firmware outcome (relayed CMD_RESULT) is logged when it arrives.
+        send_future = self._throw_action.send_goal_async(goal)
+        send_future.add_done_callback(
+            lambda fut, tid=target_id: self._on_throw_goal_response(fut, tid))
 
         if throw:
             self._publish_throw_announcement(
@@ -454,6 +461,36 @@ class BallButlerNode(Node):
             f'predicted ToF={sol.tof_s:.3f} s.{correction_note}'
         )
         return True, msg, sol, delay_s
+
+    # ── bb/throw result chain (async, non-blocking — logs the firmware outcome) ──
+
+    def _on_throw_goal_response(self, future, target_id: str):
+        """Goal accepted/rejected by the bridge action server; chain to the result."""
+        try:
+            goal_handle = future.result()
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().warn(f'bb/throw goal send failed: {e}')
+            return
+        if not goal_handle.accepted:
+            self.get_logger().warn(
+                f'bb/throw goal REJECTED for {target_id or "point"} '
+                '(a throw is already outstanding?)')
+            return
+        goal_handle.get_result_async().add_done_callback(
+            lambda fut, tid=target_id: self._on_throw_result(fut, tid))
+
+    def _on_throw_result(self, future, target_id: str):
+        """Firmware terminal outcome (relayed CMD_RESULT) — log success/reason."""
+        try:
+            result = future.result().result
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().warn(f'bb/throw result error: {e}')
+            return
+        tgt = target_id or 'point'
+        if result.success:
+            self.get_logger().info(f'bb/throw OK for {tgt}: {result.message}')
+        else:
+            self.get_logger().warn(f'bb/throw NOT thrown for {tgt}: {result.message}')
 
     # ─────────────────────────────────────────────────────────────────
     # Single-shot service: bb/throw_at_target

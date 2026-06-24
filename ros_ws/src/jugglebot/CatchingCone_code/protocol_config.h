@@ -117,6 +117,7 @@ namespace BallButlerCanId {
   constexpr uint32_t RELOAD_CMD = 0x7D2;
   constexpr uint32_t RESET_CMD = 0x7D3;
   constexpr uint32_t CALIBRATE_LOC_CMD = 0x7D4;
+  constexpr uint32_t CMD_RESULT = 0x7D5;
 }
 
 // Catching Cone Teensy <-> Host
@@ -149,6 +150,33 @@ namespace BallButlerState {
 namespace BallButlerErrorCode {
   constexpr uint8_t NONE = 0;
   constexpr uint8_t RELOAD_FAILED = 1;
+}
+
+// Command types — CMD_RESULT byte 0 (which operation the result is for)
+namespace BallButlerCommandType {
+  constexpr uint8_t THROW = 0;
+  constexpr uint8_t RELOAD = 1;
+  constexpr uint8_t CALIBRATE = 2;
+  constexpr uint8_t HOME = 3;
+}
+
+// Command outcomes — CMD_RESULT byte 1 (shared base 0x00-0x0F + per-command ext >=0x20)
+namespace BallButlerCommandOutcome {
+  constexpr uint8_t OK = 0;
+  constexpr uint8_t REJECTED = 1;
+  constexpr uint8_t ABORTED = 2;
+  constexpr uint8_t TIMEOUT = 3;
+  constexpr uint8_t BUSY = 4;
+  constexpr uint8_t THROW_REJECTED_NO_BALL = 32;
+  constexpr uint8_t THROW_REJECTED_NO_TIMESYNC = 33;
+  constexpr uint8_t THROW_REJECTED_BAD_STATE = 34;
+  constexpr uint8_t THROW_REJECTED_CANT_MAKE_LEAD = 35;
+  constexpr uint8_t THROW_REJECTED_HAND_NOT_HOMED = 36;
+  constexpr uint8_t THROW_REJECTED_PV_UNAVAILABLE = 37;
+  constexpr uint8_t THROW_REJECTED_PV_STALE = 38;
+  constexpr uint8_t THROW_REJECTED_PLANNER_EMPTY = 39;
+  constexpr uint8_t THROW_REJECTED_ARM_FAIL = 40;
+  constexpr uint8_t THROW_ABORTED_NOT_SETTLED = 41;
 }
 
 // ==========================================================================

@@ -156,13 +156,15 @@ static void task_time_sync(void*) {
 }
 
 // Telemetry uplink (priority 3) at TELEM_RATE_HZ. 100 Hz motor state + on-change
-// diagnostics + the cone CAN2→CONE_FRAME relay (phase-10b cone uplink).
+// diagnostics + the cone CAN2→CONE_FRAME relay (phase-10b cone uplink) + the BB
+// CAN1 CMD_RESULT→host relay (Phase-2 loud command-outcome channel).
 static void task_telem(void*) {
   TickType_t last = xTaskGetTickCount();
   const TickType_t period = pdMS_TO_TICKS(1000 / TELEM_RATE_HZ);
   for (;;) {
     telemetry_step();
     cone_uplink_step();
+    cmd_result_uplink_step();
     vTaskDelayUntil(&last, period);
   }
 }
@@ -236,9 +238,10 @@ static void task_diag(void*) {
       print_bus_health("jugglebot", ch.jugglebot);
       print_bus_health("bb", ch.bb);
       print_bus_health("cone", ch.cone);
-      Serial.printf("[canhealth] decode_drops jugglebot: short=%lu bad_axis=%lu  cone_fwd_drops=%lu\n",
+      Serial.printf("[canhealth] decode_drops jugglebot: short=%lu bad_axis=%lu  cone_fwd_drops=%lu  cmd_result_fwd_drops=%lu\n",
                     (unsigned long)ch.decode_short, (unsigned long)ch.decode_bad_axis,
-                    (unsigned long)can_cone_fwd_drops());
+                    (unsigned long)can_cone_fwd_drops(),
+                    (unsigned long)can_cmd_result_fwd_drops());
 
       // Per-axis "are all ODrives responding?" line (USB Serial bench/debug, alongside
       // the [canhealth] lines — NOT on the UDP uplink yet). Columns: legs 0..5 then

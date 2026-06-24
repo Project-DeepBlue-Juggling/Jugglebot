@@ -100,6 +100,7 @@ can_ids:
     RELOAD_CMD:       0x7D2
     RESET_CMD:        0x7D3
     CALIBRATE_LOC_CMD: 0x7D4
+    CMD_RESULT:       0x7D5   # BB→host loud command-outcome channel (Phase 2)
 
   # Catching Cone Teensy <-> Host
   catching_cone:
@@ -128,6 +129,47 @@ ball_butler:
   errors:
     NONE:           0
     RELOAD_FAILED:  1
+
+  # ── Loud command-outcome channel (CMD_RESULT frame, 0x7D5) ─────────────────
+  # One CMD_RESULT per operator command, published by BB firmware at the command's
+  # terminal point and relayed CAN1→UDP by the can-bridge. 8-byte frame layout:
+  #   byte0   = command_type   (which operation)
+  #   byte1   = command_outcome
+  #   bytes2-3 = detail0 (int16, little-endian)
+  #   bytes4-5 = detail1 (int16, little-endian)
+  #   bytes6-7 = reserved
+  # The throw is the first consumer; reload/calibrate/home are future consumers.
+
+  # command_type — CMD_RESULT byte 0
+  command_types:
+    THROW:        0
+    RELOAD:       1
+    CALIBRATE:    2
+    HOME:         3
+
+  # command_outcome — CMD_RESULT byte 1. A shared base enum (0x00-0x0F) reused by
+  # every command, plus per-command extension values (>=0x20) carrying the specific
+  # reason. detail0/detail1 are generic int16s the consumer interprets per command_type.
+  command_outcomes:
+    # Shared base outcomes (apply to any command)
+    OK:                            0x00
+    REJECTED:                      0x01
+    ABORTED:                       0x02
+    TIMEOUT:                       0x03
+    BUSY:                          0x04
+    # THROW-specific reasons (0x20+). For these, detail0 = binding axis
+    # (0=YAW, 1=PITCH, 2=BOTH, -1=n/a); detail1 = a context metric (e.g. lead
+    # shortfall ms for CANT_MAKE_LEAD, yaw error centideg for NOT_SETTLED).
+    THROW_REJECTED_NO_BALL:        0x20
+    THROW_REJECTED_NO_TIMESYNC:    0x21
+    THROW_REJECTED_BAD_STATE:      0x22
+    THROW_REJECTED_CANT_MAKE_LEAD: 0x23
+    THROW_REJECTED_HAND_NOT_HOMED: 0x24
+    THROW_REJECTED_PV_UNAVAILABLE: 0x25
+    THROW_REJECTED_PV_STALE:       0x26
+    THROW_REJECTED_PLANNER_EMPTY:  0x27
+    THROW_REJECTED_ARM_FAIL:       0x28
+    THROW_ABORTED_NOT_SETTLED:     0x29
 
 # =============================================================================
 # Catching Cone State Machine

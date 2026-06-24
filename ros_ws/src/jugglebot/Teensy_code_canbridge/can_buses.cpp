@@ -165,14 +165,59 @@ static void decode_bb_odrive(const CAN_message_t& msg) {
   }
 }
 
-// CAN1 Ball Butler: the BB heartbeat (0x7D1) decodes into bb_state; BB pitch/hand
-// ODrive telemetry (nodes 7/8) decodes into bb_axes. Everything else is counted
-// via s_bb_rx and dropped.
+// ── BB command-result uplink ring (Phase 2: CAN1 CMD_RESULT → UDP relay) ──────
+// SPSC mirror of the cone ring: producer is on_bb_rx (task_can_rx context),
+// consumer is cmd_result_uplink_step() on task_telem. Both sides mask IRQs for the
+// few hundred ns of the copy. CMD_RESULT is low-rate (one per operator command),
+// so a small ring is ample; sustained overflow would mean BB babble, counted in
+// s_cmd_result_fwd_drops (drop-newest) and surfaced on the [canhealth] serial line.
+static constexpr uint8_t CMD_RESULT_RING_CAP = 8;
+static CmdResultFrameRec s_cmd_result_ring[CMD_RESULT_RING_CAP];
+static volatile uint8_t s_cmd_result_ring_head = 0, s_cmd_result_ring_tail = 0;
+static volatile uint32_t s_cmd_result_fwd_drops = 0;
+
+// Copy a CMD_RESULT frame verbatim into the uplink ring (drop-newest on overflow).
+static inline void cmd_result_ring_push(const CAN_message_t& msg, uint64_t now) {
+  const uint32_t pm = __get_PRIMASK(); __disable_irq();
+  const uint8_t next = (uint8_t)((s_cmd_result_ring_head + 1) % CMD_RESULT_RING_CAP);
+  if (next == s_cmd_result_ring_tail) {
+    s_cmd_result_fwd_drops++;                  // ring full → drop newest
+  } else {
+    CmdResultFrameRec& r = s_cmd_result_ring[s_cmd_result_ring_head];
+    r.t_bridge_us = now;
+    r.can_id = msg.id;
+    r.dlc = (msg.len > 8) ? 8 : msg.len;
+    memcpy(r.buf, msg.buf, 8);
+    s_cmd_result_ring_head = next;
+  }
+  __set_PRIMASK(pm);
+}
+
+bool can_cmd_result_pop(CmdResultFrameRec& out) {
+  bool have = false;
+  const uint32_t pm = __get_PRIMASK(); __disable_irq();
+  if (s_cmd_result_ring_tail != s_cmd_result_ring_head) {
+    out = s_cmd_result_ring[s_cmd_result_ring_tail];
+    s_cmd_result_ring_tail = (uint8_t)((s_cmd_result_ring_tail + 1) % CMD_RESULT_RING_CAP);
+    have = true;
+  }
+  __set_PRIMASK(pm);
+  return have;
+}
+
+uint32_t can_cmd_result_fwd_drops() { return s_cmd_result_fwd_drops; }
+
+// CAN1 Ball Butler: the BB heartbeat (0x7D1) decodes into bb_state; the CMD_RESULT
+// (0x7D5) loud-channel frame is relayed verbatim to the host; BB pitch/hand ODrive
+// telemetry (nodes 7/8) decodes into bb_axes. Everything else is counted via
+// s_bb_rx and dropped.
 static void on_bb_rx(const CAN_message_t& msg) {
   s_bb_rx++;
-  atomic_write_u64(&s_bb_last_rx_us, now_wall_us());   // 64-bit; read by health_of
-  if (msg.id == BallButlerCanId::HEARTBEAT) decode_bb_heartbeat(msg);
-  else decode_bb_odrive(msg);   // BB pitch/hand ODrive telemetry (CAN1 nodes 7/8)
+  const uint64_t now = now_wall_us();
+  atomic_write_u64(&s_bb_last_rx_us, now);   // 64-bit; read by health_of
+  if (msg.id == BallButlerCanId::HEARTBEAT)  { decode_bb_heartbeat(msg); return; }
+  if (msg.id == BallButlerCanId::CMD_RESULT) { cmd_result_ring_push(msg, now); return; }
+  decode_bb_odrive(msg);   // BB pitch/hand ODrive telemetry (CAN1 nodes 7/8)
 }
 
 // ── Cone uplink ring (phase-10b: CAN2 → CONE_FRAME UDP relay) ─────────────────

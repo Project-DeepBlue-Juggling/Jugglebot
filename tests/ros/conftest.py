@@ -347,6 +347,37 @@ class HomeMotors:
     Feedback = _HomeMotorsFeedback
 
 
+# ── BallButlerThrowCmd action mock (Phase 2) ──────────────────
+
+
+class _BallButlerThrowCmdGoal:
+    def __init__(self):
+        self.yaw_angle_rad = 0.0
+        self.pitch_angle_rad = 0.0
+        self.throw_speed = 0.0
+        self.throw_time = 0.0
+        self.suppress_announcement = False
+
+
+class _BallButlerThrowCmdResult:
+    def __init__(self):
+        self.success = False
+        self.outcome = 0
+        self.detail0 = 0
+        self.detail1 = 0
+        self.message = ''
+
+
+class _BallButlerThrowCmdFeedback:
+    pass
+
+
+class BallButlerThrowCmd:
+    Goal = _BallButlerThrowCmdGoal
+    Result = _BallButlerThrowCmdResult
+    Feedback = _BallButlerThrowCmdFeedback
+
+
 # ── rclpy mock ────────────────────────────────────────────────
 
 
@@ -354,6 +385,7 @@ class MockLogger:
     """Logger that accepts throttle_duration_sec kwarg like rclpy loggers."""
     def info(self, msg, **kw): pass
     def warning(self, msg, **kw): pass
+    def warn(self, msg, **kw): pass   # rclpy loggers expose both warn() and warning()
     def error(self, msg, **kw): pass
     def fatal(self, msg, **kw): pass
     def debug(self, msg, **kw): pass
@@ -460,10 +492,33 @@ class MockNode:
         pass
 
 
+class GoalResponse:
+    """Stand-in for rclpy.action.GoalResponse."""
+    REJECT = 1
+    ACCEPT = 2
+
+
+class CancelResponse:
+    """Stand-in for rclpy.action.CancelResponse."""
+    REJECT = 1
+    ACCEPT = 2
+
+
 class MockActionServer:
-    """Stand-in for rclpy.action.ActionServer."""
-    def __init__(self, node, action_type, name, callback):
-        self._callback = callback
+    """Stand-in for rclpy.action.ActionServer.
+
+    Accepts both the simple positional-callback form (HomeMotors:
+    ``ActionServer(node, type, name, execute_cb)``) and the keyword form the
+    bb/throw action uses (execute/goal/cancel callbacks + callback_group).
+    """
+    def __init__(self, node, action_type, name, execute_callback=None,
+                 goal_callback=None, cancel_callback=None, callback_group=None):
+        self._action_type = action_type
+        self._name = name
+        self._execute_callback = execute_callback
+        self._goal_callback = goal_callback
+        self._cancel_callback = cancel_callback
+        self._callback_group = callback_group
 
 
 class MockActionClient:
@@ -503,6 +558,11 @@ class MockFuture:
     def set_exception(self, exc):
         self._exception = exc
         self._done = True
+
+    def add_done_callback(self, cb):
+        # Mock futures never resolve on their own; if already done, fire now.
+        if self._done:
+            cb(self)
 
 
 class MockServiceClient:
@@ -555,6 +615,7 @@ _create_mock_module('jugglebot_interfaces.srv', {
 })
 _create_mock_module('jugglebot_interfaces.action', {
     'HomeMotors': HomeMotors,
+    'BallButlerThrowCmd': BallButlerThrowCmd,
 })
 
 _create_mock_module('geometry_msgs')
@@ -586,6 +647,38 @@ _create_mock_module('rclpy.node', {'Node': MockNode})
 _create_mock_module('rclpy.action', {
     'ActionServer': MockActionServer,
     'ActionClient': MockActionClient,
+    'GoalResponse': GoalResponse,
+    'CancelResponse': CancelResponse,
+})
+
+
+class _MockReentrantCallbackGroup:
+    pass
+
+
+class _MockMutuallyExclusiveCallbackGroup:
+    pass
+
+
+_create_mock_module('rclpy.callback_groups', {
+    'ReentrantCallbackGroup': _MockReentrantCallbackGroup,
+    'MutuallyExclusiveCallbackGroup': _MockMutuallyExclusiveCallbackGroup,
+})
+
+
+class _MockMultiThreadedExecutor:
+    def __init__(self, *a, **kw):
+        self._nodes = []
+    def add_node(self, node):
+        self._nodes.append(node)
+    def spin(self):
+        pass
+    def shutdown(self):
+        pass
+
+
+_create_mock_module('rclpy.executors', {
+    'MultiThreadedExecutor': _MockMultiThreadedExecutor,
 })
 _create_mock_module('rclpy.time', {
     'Time': MockTime,

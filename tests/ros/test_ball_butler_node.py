@@ -1,7 +1,7 @@
 """Tests for jugglebot.ball_butler_node.BallButlerNode.
 
 Service handler logic — target resolution + inverse-ballistics call +
-delegation to bb/send_throw_command.  ROS2 is mocked via tests/ros/conftest.py.
+delegation to the bb/throw action.  ROS2 is mocked via tests/ros/conftest.py.
 """
 
 from __future__ import annotations
@@ -87,20 +87,20 @@ class TestPreflight:
 
 
 class TestSuccessPath:
-    def test_typical_throw_succeeds_and_invokes_can_node_client(self, calibrated_node):
+    def test_typical_throw_succeeds_and_invokes_throw_action(self, calibrated_node):
         # Cone 1.2 m in front, slightly to the left, at BB origin Z.
         calibrated_node._on_rigid_bodies(_rigid_bodies({
             'Catching_Cone': (1200.0, 50.0, 0.0),
         }))
-        # Spy on the throw service client
-        client = calibrated_node._throw_client
-        called_requests = []
-        orig_call_async = client.call_async
+        # Spy on the throw action client's goal send.
+        action = calibrated_node._throw_action
+        sent_goals = []
+        orig_send = action.send_goal_async
 
-        def _spy(req):
-            called_requests.append(req)
-            return orig_call_async(req)
-        client.call_async = _spy
+        def _spy(goal):
+            sent_goals.append(goal)
+            return orig_send(goal)
+        action.send_goal_async = _spy
 
         req = BallButlerThrow.Request()
         req.target_name = 'Catching_Cone'
@@ -117,24 +117,24 @@ class TestSuccessPath:
         from jugglebot.ball_butler_node import _DEFAULT_THROW_DELAY_S
         assert res.throw_delay_s == pytest.approx(_DEFAULT_THROW_DELAY_S)
 
-        # bb/send_throw_command received an encoded request with the same
-        # yaw/pitch/speed the node returned, with announcement suppressed
-        # so the node's own (solver-correct) announcement is the only one.
-        assert len(called_requests) == 1
-        bb_req = called_requests[0]
-        assert bb_req.yaw_angle_rad == pytest.approx(res.yaw_rad)
-        assert bb_req.pitch_angle_rad == pytest.approx(res.pitch_rad)
-        assert bb_req.throw_speed == pytest.approx(res.throw_speed_mps)
+        # bb/throw received a goal with the same yaw/pitch/speed the node
+        # returned, with announcement suppressed so the node's own
+        # (solver-correct) announcement is the only one.
+        assert len(sent_goals) == 1
+        bb_goal = sent_goals[0]
+        assert bb_goal.yaw_angle_rad == pytest.approx(res.yaw_rad)
+        assert bb_goal.pitch_angle_rad == pytest.approx(res.pitch_rad)
+        assert bb_goal.throw_speed == pytest.approx(res.throw_speed_mps)
         # The firmware throw_time is pulled EARLIER than the announced delay by
         # the constant command->release actuator latency, so the ball actually
         # leaves at the announced time (res.throw_delay_s itself is unchanged).
         import jugglebot.hardware_config as hw
         release_latency_s = hw.BB_OP_THROW_RELEASE_LATENCY_MS / 1000.0
         assert release_latency_s > 0.0
-        assert bb_req.throw_time == pytest.approx(
+        assert bb_goal.throw_time == pytest.approx(
             res.throw_delay_s - release_latency_s
         )
-        assert bb_req.suppress_announcement is True
+        assert bb_goal.suppress_announcement is True
 
     def test_publishes_throw_announcement_with_solver_landing_geometry(self, calibrated_node):
         """The node's announcement should report landing_position = the
@@ -203,10 +203,10 @@ class TestInfeasible:
         assert 'Inverse-ballistics failed' in res.message
         assert 'No feasible trajectory' in res.message
 
-    def test_throw_service_unavailable_returns_failure(self, calibrated_node):
-        # Simulate the throw service provider (teensy_bridge_node since the A7
-        # cutover) being down: client.service_is_ready() returns False.
-        calibrated_node._throw_client._ready = False
+    def test_throw_action_unavailable_returns_failure(self, calibrated_node):
+        # Simulate the throw action provider (teensy_bridge_node) being down:
+        # action.server_is_ready() returns False.
+        calibrated_node._throw_action._server_ready = False
         calibrated_node._on_rigid_bodies(_rigid_bodies({
             'Catching_Cone': (1200.0, 0.0, 0.0),
         }))
@@ -214,7 +214,7 @@ class TestInfeasible:
         req.target_name = 'Catching_Cone'
         res = calibrated_node._svc_throw_at_target(req, BallButlerThrow.Response())
         assert res.success is False
-        assert 'bb/send_throw_command' in res.message
+        assert 'bb/throw' in res.message
 
 
 class TestAimCorrection:

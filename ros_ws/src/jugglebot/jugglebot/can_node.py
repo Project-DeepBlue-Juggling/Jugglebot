@@ -200,8 +200,9 @@ class CanInterfaceNode(Node):
         self.create_service(SetFloat, 'smooth_move_hand', self._svc_smooth_move_hand)
         self.create_service(SetHandGains, 'set_hand_gains', self._svc_set_hand_gains)
         # Ball Butler services moved to teensy_bridge_node (Phase A cutover):
-        # bb/send_throw_command, bb/reload, bb/reset, bb/calibrate. The names
-        # are unchanged so GUI / orchestrator / mocap callers see no shift.
+        # bb/reload, bb/reset, bb/calibrate (unchanged names), plus the bb/throw
+        # ACTION which replaced bb/send_throw_command in Phase 2 (the loud,
+        # awaitable command-outcome channel).
 
         # ── Action servers ─────────────────────────────────────
         self._home_action = ActionServer(self, HomeMotors, 'home_motors', self._action_home)

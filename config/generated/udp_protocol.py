@@ -39,6 +39,7 @@ class MsgType(IntEnum):
     PROFILE = 132  # 1 Hz profiling/instrumentation (STREAM, T→J)
     CONE_FRAME = 133  # Catching-cone CAN2 frame relay (STREAM, T→J)
     BB_AXIS_ESTIMATES = 134  # Ball Butler pitch/hand ODrive pos+vel estimates (STREAM, T→J)
+    CMD_RESULT = 135  # Ball Butler command-outcome CAN1 frame relay (STREAM, T→J)
     RPC_RESPONSE = 144  # RPC response (RPC port, T→J)
 
 class RpcMethod(IntEnum):
@@ -320,6 +321,28 @@ class ConeFrame:
     @classmethod
     def unpack(cls, data: bytes) -> 'ConeFrame':
         vals = _CONE_FRAME_STRUCT.unpack(data[:21])
+        it = iter(vals)
+        return cls(next(it), next(it), next(it), tuple(next(it) for _ in range(8)))
+
+# CmdResultFrame: Ball Butler command-outcome relay (Phase-2 loud channel). The can-bridge forwards the BB CMD_RESULT CAN1 frame (0x7D5) verbatim so the host learns the firmware's terminal outcome of an operator command (throw today; reload/calibrate/home later) instead of only the bridge-side RPC ack. The decoded payload lives INSIDE `data`: byte0=command_type, byte1=command_outcome (shared base 0x00-0x0F + per-command extension >=0x20), bytes2-3=detail0 (int16 LE), bytes4-5=detail1 (int16 LE). `t_bridge_us` only stamps bridge-side CAN1 RX for latency/diagnostic checks.
+CMD_RESULT_FRAME_FMT = '<QIBBBBBBBBB'
+CMD_RESULT_FRAME_SIZE = 21
+_CMD_RESULT_FRAME_STRUCT = struct.Struct(CMD_RESULT_FRAME_FMT)
+assert _CMD_RESULT_FRAME_STRUCT.size == 21
+
+@dataclass
+class CmdResultFrame:
+    t_bridge_us: int = 0
+    can_id: int = 0
+    dlc: int = 0
+    data: tuple = field(default_factory=lambda: (0,) * 8)
+
+    def pack(self) -> bytes:
+        return _CMD_RESULT_FRAME_STRUCT.pack(self.t_bridge_us, self.can_id, self.dlc, *self.data)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'CmdResultFrame':
+        vals = _CMD_RESULT_FRAME_STRUCT.unpack(data[:21])
         it = iter(vals)
         return cls(next(it), next(it), next(it), tuple(next(it) for _ in range(8)))
 

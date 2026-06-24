@@ -39,6 +39,7 @@ namespace MsgType {
   constexpr uint8_t PROFILE = 132u;  // 1 Hz profiling/instrumentation (STREAM, T→J)
   constexpr uint8_t CONE_FRAME = 133u;  // Catching-cone CAN2 frame relay (STREAM, T→J)
   constexpr uint8_t BB_AXIS_ESTIMATES = 134u;  // Ball Butler pitch/hand ODrive pos+vel estimates (STREAM, T→J)
+  constexpr uint8_t CMD_RESULT = 135u;  // Ball Butler command-outcome CAN1 frame relay (STREAM, T→J)
   constexpr uint8_t RPC_RESPONSE = 144u;  // RPC response (RPC port, T→J)
 }
 namespace RpcMethod {
@@ -203,6 +204,15 @@ struct ConeFramePayload {
 };
 static_assert(sizeof(ConeFramePayload) == 21, "ConeFramePayload size drift");
 
+// CmdResultFrame: Ball Butler command-outcome relay (Phase-2 loud channel). The can-bridge forwards the BB CMD_RESULT CAN1 frame (0x7D5) verbatim so the host learns the firmware's terminal outcome of an operator command (throw today; reload/calibrate/home later) instead of only the bridge-side RPC ack. The decoded payload lives INSIDE `data`: byte0=command_type, byte1=command_outcome (shared base 0x00-0x0F + per-command extension >=0x20), bytes2-3=detail0 (int16 LE), bytes4-5=detail1 (int16 LE). `t_bridge_us` only stamps bridge-side CAN1 RX for latency/diagnostic checks.
+struct CmdResultFramePayload {
+  uint64_t t_bridge_us;  // Bridge wall-clock at CAN1 RX (us)
+  uint32_t can_id;  // CAN arbitration id (0x7D5 CMD_RESULT)
+  uint8_t dlc;  // CAN payload length (0..8)
+  uint8_t data[8];  // Raw CAN payload bytes (zero-padded past dlc)
+};
+static_assert(sizeof(CmdResultFramePayload) == 21, "CmdResultFramePayload size drift");
+
 // BbAxisEstimates: High-rate Ball Butler pitch(node 7)/hand(node 8) ODrive encoder estimates, forwarded for during-throw diagnostics (launch angle vs commanded pitch; hand launch speed vs commanded). The can-bridge decodes the CAN1 get_encoder_estimate frames into its bb_axes cache (can_buses.cpp) at the ODrive broadcast rate; this message snapshots that cache at the telemetry-task rate. Pitch position maps to barrel degrees via deg = 90 + 360*rev (PitchAxis.h); hand velocity maps to ball speed via v = vel_rps * 2*pi*HAND_SPOOL_RADIUS_M.
 struct BbAxisEstimatesPayload {
   uint64_t t_bridge_us;  // Bridge wall-clock at emit (us, time-synced to Jetson)
@@ -243,6 +253,7 @@ constexpr uint16_t DIAGNOSTIC_SIZE = 36u;
 constexpr uint16_t HEARTBEAT_T2J_SIZE = 35u;
 constexpr uint16_t PROFILE_SIZE = 66u;
 constexpr uint16_t CONE_FRAME_SIZE = 21u;
+constexpr uint16_t CMD_RESULT_FRAME_SIZE = 21u;
 constexpr uint16_t BB_AXIS_ESTIMATES_SIZE = 24u;
 constexpr uint16_t RPC_REQUEST_SIZE = 8u;
 constexpr uint16_t RPC_RESPONSE_SIZE = 8u;

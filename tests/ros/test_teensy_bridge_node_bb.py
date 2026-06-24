@@ -6,12 +6,15 @@ Covers the BB surface that teensy_bridge_node inherits from can_node:
   (bb_state / bb_state_data / bb_flags / bb_yaw_deg / bb_pitch_deg /
   bb_hand_mm). Mirrors the legacy ``can_node._publish_bb_heartbeat`` field
   semantics so existing GUI / mocap / orchestrator consumers see no shift.
-* ``bb/calibrate`` / ``bb/reload`` / ``bb/reset`` / ``bb/send_throw_command``
-  services — invoke the firmware RPCs (BB_CALIBRATE_LOC / BB_RELOAD /
-  BB_RESET / BB_THROW). The firmware gates each TX on bb_present(); we
-  translate the resulting ERR_BUS_DOWN into a silent-success for bb/calibrate
-  ONLY (to preserve can_node._svc_bb_calibrate's HOMING semantics). The
-  other three propagate the error.
+* ``bb/calibrate`` / ``bb/reload`` / ``bb/reset`` services — invoke the
+  firmware RPCs (BB_CALIBRATE_LOC / BB_RELOAD / BB_RESET). The firmware gates
+  each TX on bb_present(); we translate the resulting ERR_BUS_DOWN into a
+  silent-success for bb/calibrate ONLY (to preserve can_node._svc_bb_calibrate's
+  HOMING semantics). The other two propagate the error.
+* ``bb/throw`` ACTION (Phase 2) — dispatches BB_THROW and awaits the firmware's
+  terminal CMD_RESULT (relayed back as a CAN frame), succeeding/aborting the
+  goal with the firmware outcome. Driven here by injecting a CMD_RESULT through
+  the FakeTeensy loopback.
 
 The harness reuses the FakeTeensy loopback pattern from
 tests/teensy_link/conftest.py via tests/ros/test_teensy_bridge_node_read._
@@ -27,12 +30,15 @@ from controller.teensy_link import (
     RpcMethod, RpcStatus,
 )
 from controller.teensy_link import rpc_args
+from controller.teensy_link import protocol as p
 
 from tests.ros.test_teensy_bridge_node_read import _build_paired_node, _wait_until
 
-# Mocked ROS service/message types (tests/ros/conftest.py).
+# Mocked ROS service/message + action types (tests/ros/conftest.py).
 from std_srvs.srv import Trigger
-from jugglebot_interfaces.srv import SendBallButlerCommand
+from rclpy.action import GoalResponse
+from jugglebot_interfaces.action import BallButlerThrowCmd
+from jugglebot.protocol_config import BallButlerCommandType, BallButlerCommandOutcome
 
 
 def _node():
@@ -222,46 +228,189 @@ def test_bb_reset_propagates_failure_when_bb_absent():
         _teardown(teensy, client, node)
 
 
-def test_bb_send_throw_command_arg_bytes():
-    """bb/send_throw_command encodes args as ArgBbThrow and invokes BB_THROW."""
+# ── bb/throw ACTION (Phase 2 — dispatch + CMD_RESULT completion) ─────────────
+
+
+def _inject_cmd_result(teensy, *, cmd_type, outcome, detail0=0, detail1=0):
+    """Inject a relayed CMD_RESULT frame from the FakeTeensy (CAN1 loud channel).
+
+    Mirrors the can-bridge relay: an 8-byte CAN payload
+    [cmd_type, outcome, d0_lo, d0_hi, d1_lo, d1_hi, 0, 0] wrapped in a
+    CMD_RESULT stream frame the bridge's _on_cmd_result handler decodes.
+    """
+    payload = bytes([
+        cmd_type & 0xFF, outcome & 0xFF,
+        detail0 & 0xFF, (detail0 >> 8) & 0xFF,
+        detail1 & 0xFF, (detail1 >> 8) & 0xFF, 0, 0,
+    ])
+    cf = p.CmdResultFrame(t_bridge_us=1, can_id=0x7D5, dlc=8, data=tuple(payload))
+    teensy.send_to_jetson(int(MsgType.CMD_RESULT), cf.pack())
+
+
+def _throw_goal(yaw=0.1, pitch=0.5, speed=3.0, throw_time=1.0):
+    g = BallButlerThrowCmd.Goal()
+    g.yaw_angle_rad = yaw
+    g.pitch_angle_rad = pitch
+    g.throw_speed = speed
+    g.throw_time = throw_time
+    g.suppress_announcement = False
+    return g
+
+
+class _FakeGoalHandle:
+    """Minimal goal_handle for driving _bb_throw_execute directly."""
+    def __init__(self, goal):
+        self.request = goal
+        self.succeeded = False
+        self.aborted = False
+
+    def succeed(self):
+        self.succeeded = True
+
+    def abort(self):
+        self.aborted = True
+
+
+def test_bb_throw_goal_rejects_second_while_outstanding():
+    """One throw at a time: goal_callback accepts the first, rejects a second
+    while it's outstanding, then accepts again once cleared (serialized firmware,
+    no correlation token)."""
     teensy, client, node = _node()
     try:
-        _send_heartbeat(teensy)
-        assert _wait_until(lambda: node._latest_heartbeat is not None)
-        box = _capture(teensy, RpcMethod.BB_THROW)
-        req = SendBallButlerCommand.Request()
-        req.yaw_angle_rad = 0.1
-        req.pitch_angle_rad = 0.5
-        req.throw_speed = 3.0
-        req.throw_time = 1.0
-        req.suppress_announcement = False  # field is dead protocol (D3)
-        res = node._svc_bb_throw(req, SendBallButlerCommand.Response())
-        assert res.success is True
-        assert box['args'] == rpc_args.encode_bb_throw(0.1, 0.5, 3.0, 1.0)
+        assert node._bb_throw_goal(_throw_goal()) == GoalResponse.ACCEPT
+        assert node._bb_throw_goal(_throw_goal()) == GoalResponse.REJECT
+        with node._bb_throw_lock:
+            node._bb_throw_active = False
+        assert node._bb_throw_goal(_throw_goal()) == GoalResponse.ACCEPT
     finally:
         _teardown(teensy, client, node)
 
 
-def test_bb_send_throw_command_never_publishes_announcement():
-    """D3: throw_director_node is the sole publisher of throw_announcements.
-    The bridge MUST NOT create a throw_announcement publisher OR publish to
-    that topic in response to bb/send_throw_command (regardless of the
-    suppress_announcement field — it is dead protocol on this service)."""
+def test_bb_throw_action_aim_only_dispatches_without_awaiting():
+    """A speed==0 goal is an aim/track command — dispatched and completed
+    immediately (firmware requestTracking emits no CMD_RESULT). It must NOT
+    consume the single-throw slot or block on a result (which would hang until
+    the timeout)."""
     teensy, client, node = _node()
     try:
         _send_heartbeat(teensy)
         assert _wait_until(lambda: node._latest_heartbeat is not None)
-        _capture(teensy, RpcMethod.BB_THROW)
-        # Test both suppress=False and suppress=True — the bridge ignores it.
-        for suppress in (False, True):
-            req = SendBallButlerCommand.Request()
-            req.yaw_angle_rad = 0.1
-            req.pitch_angle_rad = 0.5
-            req.throw_speed = 3.0
-            req.throw_time = 1.0
-            req.suppress_announcement = suppress
-            node._svc_bb_throw(req, SendBallButlerCommand.Response())
-        # No publisher named 'throw_announcements' exists on the bridge.
-        assert 'throw_announcements' not in node._publishers
+        box = _capture(teensy, RpcMethod.BB_THROW)   # acks OK, injects no CMD_RESULT
+        goal = _throw_goal(yaw=0.2, pitch=0.6, speed=0.0, throw_time=0.0)
+        assert node._bb_throw_goal(goal) == GoalResponse.ACCEPT
+        assert node._bb_throw_active is False        # slot not consumed
+        handle = _FakeGoalHandle(goal)
+        result = node._bb_throw_execute(handle)
+        assert box['args'] == rpc_args.encode_bb_throw(0.2, 0.6, 0.0, 0.0)
+        assert result.success is True
+        assert handle.succeeded is True
+        assert node._bb_throw_active is False
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_bb_throw_action_success_via_cmd_result():
+    """Full loopback: BB_THROW dispatched with the encoded args, FakeTeensy
+    relays an OK CMD_RESULT, the action result reports success and succeeds."""
+    teensy, client, node = _node()
+    try:
+        _send_heartbeat(teensy)
+        assert _wait_until(lambda: node._latest_heartbeat is not None)
+        box = {}
+
+        def handler(req_id, args):
+            box['args'] = args
+            _inject_cmd_result(
+                teensy,
+                cmd_type=int(BallButlerCommandType.THROW),
+                outcome=int(BallButlerCommandOutcome.OK),
+                detail0=-1)
+            return (int(RpcStatus.OK), b"")
+
+        teensy.on_rpc(int(RpcMethod.BB_THROW), handler)
+
+        goal = _throw_goal(yaw=0.1, pitch=0.5, speed=3.0, throw_time=1.0)
+        assert node._bb_throw_goal(goal) == GoalResponse.ACCEPT
+        handle = _FakeGoalHandle(goal)
+        result = node._bb_throw_execute(handle)
+
+        assert box['args'] == rpc_args.encode_bb_throw(0.1, 0.5, 3.0, 1.0)
+        assert result.success is True
+        assert result.outcome == int(BallButlerCommandOutcome.OK)
+        assert handle.succeeded is True
+        assert node._bb_throw_active is False  # cleared in execute's finally
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_bb_throw_action_abort_carries_reason_and_axis():
+    """A non-OK outcome aborts the goal and surfaces the reason + decoded
+    details (binding axis / metric) in the result."""
+    teensy, client, node = _node()
+    try:
+        _send_heartbeat(teensy)
+        assert _wait_until(lambda: node._latest_heartbeat is not None)
+
+        def handler(req_id, args):
+            _inject_cmd_result(
+                teensy,
+                cmd_type=int(BallButlerCommandType.THROW),
+                outcome=int(BallButlerCommandOutcome.THROW_ABORTED_NOT_SETTLED),
+                detail0=1, detail1=250)  # axis=PITCH, yaw err 2.50°
+            return (int(RpcStatus.OK), b"")
+
+        teensy.on_rpc(int(RpcMethod.BB_THROW), handler)
+
+        goal = _throw_goal()
+        assert node._bb_throw_goal(goal) == GoalResponse.ACCEPT
+        handle = _FakeGoalHandle(goal)
+        result = node._bb_throw_execute(handle)
+
+        assert result.success is False
+        assert result.outcome == int(
+            BallButlerCommandOutcome.THROW_ABORTED_NOT_SETTLED)
+        assert result.detail0 == 1
+        assert result.detail1 == 250
+        assert 'PITCH' in result.message
+        assert handle.aborted is True
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_bb_throw_action_dispatch_failure_aborts_without_waiting():
+    """If the bridge can't queue the frame (BB absent → ERR_BUS_DOWN), abort
+    immediately rather than waiting for a CMD_RESULT that will never come."""
+    teensy, client, node = _node()
+    try:
+        _send_heartbeat(teensy, heartbeat_seen=False)
+        assert _wait_until(lambda: node._latest_heartbeat is not None)
+        _capture(teensy, RpcMethod.BB_THROW, status=int(RpcStatus.ERR_BUS_DOWN))
+        goal = _throw_goal()
+        assert node._bb_throw_goal(goal) == GoalResponse.ACCEPT
+        handle = _FakeGoalHandle(goal)
+        result = node._bb_throw_execute(handle)
+        assert result.success is False
+        assert handle.aborted is True
+        assert 'dispatch failed' in result.message.lower()
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_bb_throw_action_times_out_when_firmware_silent():
+    """BB acks the RPC but never emits a CMD_RESULT → the action times out
+    (doesn't hang) with a TIMEOUT outcome and aborts the goal."""
+    teensy, client, node = _node()
+    try:
+        _send_heartbeat(teensy)
+        assert _wait_until(lambda: node._latest_heartbeat is not None)
+        _capture(teensy, RpcMethod.BB_THROW)   # acks OK, injects no CMD_RESULT
+        node._BB_THROW_RESULT_MARGIN_S = 0.2   # keep the test fast
+        goal = _throw_goal(throw_time=0.0)
+        assert node._bb_throw_goal(goal) == GoalResponse.ACCEPT
+        handle = _FakeGoalHandle(goal)
+        result = node._bb_throw_execute(handle)
+        assert result.success is False
+        assert result.outcome == int(BallButlerCommandOutcome.TIMEOUT)
+        assert handle.aborted is True
     finally:
         _teardown(teensy, client, node)

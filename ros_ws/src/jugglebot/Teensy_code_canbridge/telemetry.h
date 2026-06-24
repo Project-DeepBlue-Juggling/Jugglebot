@@ -27,4 +27,9 @@ void telemetry_step();
 // CAN2 frames (catch events + cone heartbeats) to the Jetson, bounded per tick.
 void cone_uplink_step();
 
+// Call at TELEM_RATE_HZ (100 Hz), after telemetry_step(). Forwards queued BB
+// CAN1 CMD_RESULT frames (Phase-2 loud command-outcome channel) to the Jetson,
+// bounded per tick.
+void cmd_result_uplink_step();
+
 }  // namespace CanBridge

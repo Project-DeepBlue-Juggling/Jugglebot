@@ -102,6 +102,7 @@ CAN_ID_BB_HEARTBEAT = 0x7D1
 CAN_ID_BB_RELOAD_CMD = 0x7D2
 CAN_ID_BB_RESET_CMD = 0x7D3
 CAN_ID_BB_CALIBRATE_LOC_CMD = 0x7D4
+CAN_ID_BB_CMD_RESULT = 0x7D5
 
 # Catching Cone Teensy <-> Host
 CAN_ID_CC_CATCH_EVENT = 0x7E0
@@ -128,6 +129,31 @@ class BallButlerStates(IntEnum):
 class BallButlerError(IntEnum):
     NONE = 0
     RELOAD_FAILED = 1
+
+# Command types — CMD_RESULT byte 0
+class BallButlerCommandType(IntEnum):
+    THROW = 0
+    RELOAD = 1
+    CALIBRATE = 2
+    HOME = 3
+
+# Command outcomes — CMD_RESULT byte 1 (shared base + per-command extensions)
+class BallButlerCommandOutcome(IntEnum):
+    OK = 0
+    REJECTED = 1
+    ABORTED = 2
+    TIMEOUT = 3
+    BUSY = 4
+    THROW_REJECTED_NO_BALL = 32
+    THROW_REJECTED_NO_TIMESYNC = 33
+    THROW_REJECTED_BAD_STATE = 34
+    THROW_REJECTED_CANT_MAKE_LEAD = 35
+    THROW_REJECTED_HAND_NOT_HOMED = 36
+    THROW_REJECTED_PV_UNAVAILABLE = 37
+    THROW_REJECTED_PV_STALE = 38
+    THROW_REJECTED_PLANNER_EMPTY = 39
+    THROW_REJECTED_ARM_FAIL = 40
+    THROW_ABORTED_NOT_SETTLED = 41
 
 # ============================================================================
 # Catching Cone State Machine

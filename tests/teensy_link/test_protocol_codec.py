@@ -36,6 +36,24 @@ def test_heartbeat_j2t_roundtrip():
     assert decoded.flags == hb.flags
 
 
+def test_cmd_result_frame_roundtrip():
+    # Phase-2 loud command-outcome relay: a raw BB CAN1 frame (0x7D5) wrapped
+    # verbatim. The decoded throw outcome lives inside `data` (cmd_type, outcome,
+    # detail0/1 int16 LE) — the codec just preserves the 8 payload bytes.
+    cr = p.CmdResultFrame(
+        t_bridge_us=0x0011_2233_4455_6677,
+        can_id=0x7D5, dlc=8,
+        data=(0, 0x29, 0x01, 0x00, 0xFA, 0x00, 0, 0),  # THROW, ABORTED_NOT_SETTLED
+    )
+    blob = cr.pack()
+    assert len(blob) == p.CMD_RESULT_FRAME_SIZE
+    decoded = p.CmdResultFrame.unpack(blob)
+    assert decoded.t_bridge_us == cr.t_bridge_us
+    assert decoded.can_id == cr.can_id
+    assert decoded.dlc == cr.dlc
+    assert tuple(decoded.data) == cr.data
+
+
 def test_telemetry_roundtrip():
     tm = p.Telemetry(
         t_teensy_us=12345678,

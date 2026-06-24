@@ -33,6 +33,7 @@ ROS_PKG_DIR = REPO_ROOT / "ros_ws" / "src" / "jugglebot" / "jugglebot"
 BB_FIRMWARE_DIR = REPO_ROOT.parent / "BallButler" / "ball_butler_main"
 PLATFORM_FIRMWARE_DIR = REPO_ROOT / "ros_ws" / "src" / "jugglebot" / "Teensy_code"
 CATCHING_CONE_FIRMWARE_DIR = REPO_ROOT / "ros_ws" / "src" / "jugglebot" / "CatchingCone_code"
+CANBRIDGE_FIRMWARE_DIR = REPO_ROOT / "ros_ws" / "src" / "jugglebot" / "Teensy_code_canbridge"
 GUI_JS_DIR = REPO_ROOT / "ros_ws" / "gui" / "js"
 
 
@@ -180,6 +181,20 @@ def generate_cpp(cfg: dict) -> str:
     lines.append("// Error codes — encoded in heartbeat byte 1 when state == ERROR")
     lines.append("namespace BallButlerErrorCode {")
     for name, val in cfg["ball_butler"]["errors"].items():
+        lines.append(f"  constexpr uint8_t {name} = {val};")
+    lines.append("}")
+
+    # Ball Butler command-outcome channel (CMD_RESULT frame)
+    lines.append("")
+    lines.append("// Command types — CMD_RESULT byte 0 (which operation the result is for)")
+    lines.append("namespace BallButlerCommandType {")
+    for name, val in cfg["ball_butler"]["command_types"].items():
+        lines.append(f"  constexpr uint8_t {name} = {val};")
+    lines.append("}")
+    lines.append("")
+    lines.append("// Command outcomes — CMD_RESULT byte 1 (shared base 0x00-0x0F + per-command ext >=0x20)")
+    lines.append("namespace BallButlerCommandOutcome {")
+    for name, val in cfg["ball_butler"]["command_outcomes"].items():
         lines.append(f"  constexpr uint8_t {name} = {val};")
     lines.append("}")
 
@@ -355,6 +370,18 @@ def generate_python(cfg: dict) -> str:
     lines.append("# Error codes — encoded in heartbeat byte 1 when state == ERROR")
     lines.append("class BallButlerError(IntEnum):")
     for name, val in cfg["ball_butler"]["errors"].items():
+        lines.append(f"    {name} = {val}")
+    lines.append("")
+
+    # Ball Butler command-outcome channel (CMD_RESULT frame)
+    lines.append("# Command types — CMD_RESULT byte 0")
+    lines.append("class BallButlerCommandType(IntEnum):")
+    for name, val in cfg["ball_butler"]["command_types"].items():
+        lines.append(f"    {name} = {val}")
+    lines.append("")
+    lines.append("# Command outcomes — CMD_RESULT byte 1 (shared base + per-command extensions)")
+    lines.append("class BallButlerCommandOutcome(IntEnum):")
+    for name, val in cfg["ball_butler"]["command_outcomes"].items():
         lines.append(f"    {name} = {val}")
 
     # Catching Cone scalar constants + states
@@ -904,6 +931,7 @@ def main():
         (cpp_content, BB_FIRMWARE_DIR / "protocol_config.h"),
         (cpp_content, PLATFORM_FIRMWARE_DIR / "protocol_config.h"),
         (cpp_content, CATCHING_CONE_FIRMWARE_DIR / "protocol_config.h"),
+        (cpp_content, CANBRIDGE_FIRMWARE_DIR / "protocol_config.h"),
         (py_content, ROS_PKG_DIR / "protocol_config.py"),
     ]
     for content, dest in extra_copies:

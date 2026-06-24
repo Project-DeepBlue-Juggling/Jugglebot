@@ -76,6 +76,21 @@ struct ConeFrameRec {
 bool can_cone_pop(ConeFrameRec& out);   // consumer side; false when ring empty
 uint32_t can_cone_fwd_drops();          // frames dropped on ring overflow (cumulative)
 
+// ── BB command-result uplink ring (Phase 2: CAN1 CMD_RESULT → UDP relay) ──────
+//  BB firmware publishes one CMD_RESULT (0x7D5) per operator command at its
+//  terminal point (throw today; reload/calibrate/home later). on_bb_rx copies the
+//  frame verbatim into this SPSC ring; cmd_result_uplink_step (telemetry.cpp)
+//  forwards each record as a JbUdp CMD_RESULT so the host learns the firmware
+//  outcome instead of only the bridge-side RPC ack. Layout mirrors ConeFrameRec.
+struct CmdResultFrameRec {
+  uint64_t t_bridge_us;   // bridge wall-clock at CAN1 RX (us)
+  uint32_t can_id;        // CAN arbitration id (0x7D5 CMD_RESULT)
+  uint8_t  dlc;           // CAN payload length (0..8)
+  uint8_t  buf[8];        // raw CAN payload (zero-padded past dlc)
+};
+bool can_cmd_result_pop(CmdResultFrameRec& out);  // consumer side; false when ring empty
+uint32_t can_cmd_result_fwd_drops();              // frames dropped on ring overflow (cumulative)
+
 // ── RX-health observability (bench/debug telemetry) ──────────────────────────
 //  Diagnostic counters that let a future bug be told apart by class. Surfaced over
 //  the USB Serial console by task_diag (NOT on the UDP uplink — the wire format is

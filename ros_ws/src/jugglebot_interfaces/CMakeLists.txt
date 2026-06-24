@@ -66,6 +66,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 
   "action/HomeMotors.action"
   "action/LevelPlatform.action"
+  "action/BallButlerThrowCmd.action"
   DEPENDENCIES geometry_msgs
 )
 

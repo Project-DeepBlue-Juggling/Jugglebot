@@ -149,6 +149,7 @@ ENUMS = {
         ("PROFILE",        0x84, "1 Hz profiling/instrumentation (STREAM, T→J)"),
         ("CONE_FRAME",     0x85, "Catching-cone CAN2 frame relay (STREAM, T→J)"),
         ("BB_AXIS_ESTIMATES", 0x86, "Ball Butler pitch/hand ODrive pos+vel estimates (STREAM, T→J)"),
+        ("CMD_RESULT",     0x87, "Ball Butler command-outcome CAN1 frame relay (STREAM, T→J)"),
         ("RPC_RESPONSE",   0x90, "RPC response (RPC port, T→J)"),
     ],
     "RpcMethod": [
@@ -335,6 +336,25 @@ MESSAGES = [
         fields=[
             Field("t_bridge_us", "u64", 1, "Bridge wall-clock at CAN2 RX (us)"),
             Field("can_id",      "u32", 1, "CAN arbitration id (0x7E0 CATCH_EVENT / 0x7E1 CONE_HEARTBEAT)"),
+            Field("dlc",         "u8",  1, "CAN payload length (0..8)"),
+            Field("data",        "u8",  8, "Raw CAN payload bytes (zero-padded past dlc)"),
+        ],
+    ),
+    Message(
+        "CmdResultFrame", "CMD_RESULT", "T2J", "STREAM",
+        summary=(
+            "Ball Butler command-outcome relay (Phase-2 loud channel). The "
+            "can-bridge forwards the BB CMD_RESULT CAN1 frame (0x7D5) verbatim so "
+            "the host learns the firmware's terminal outcome of an operator command "
+            "(throw today; reload/calibrate/home later) instead of only the "
+            "bridge-side RPC ack. The decoded payload lives INSIDE `data`: "
+            "byte0=command_type, byte1=command_outcome (shared base 0x00-0x0F + "
+            "per-command extension >=0x20), bytes2-3=detail0 (int16 LE), "
+            "bytes4-5=detail1 (int16 LE). `t_bridge_us` only stamps bridge-side "
+            "CAN1 RX for latency/diagnostic checks."),
+        fields=[
+            Field("t_bridge_us", "u64", 1, "Bridge wall-clock at CAN1 RX (us)"),
+            Field("can_id",      "u32", 1, "CAN arbitration id (0x7D5 CMD_RESULT)"),
             Field("dlc",         "u8",  1, "CAN payload length (0..8)"),
             Field("data",        "u8",  8, "Raw CAN payload bytes (zero-padded past dlc)"),
         ],

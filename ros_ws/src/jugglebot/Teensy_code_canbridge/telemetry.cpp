@@ -159,6 +159,24 @@ void cone_uplink_step() {
   }
 }
 
+// ── BB command-result uplink: drain CAN1 CMD_RESULT frames into CMD_RESULT UDP ─
+// Phase-2 loud channel. CMD_RESULT is low-rate (one per operator command), so the
+// per-tick budget is small; a verdict never waits more than a tick to reach the
+// host. Mirrors cone_uplink_step (the [canhealth] line carries the drop counter).
+static constexpr uint8_t CMD_RESULT_FWD_BUDGET = 4;
+
+void cmd_result_uplink_step() {
+  CmdResultFrameRec r;
+  for (uint8_t i = 0; i < CMD_RESULT_FWD_BUDGET && can_cmd_result_pop(r); ++i) {
+    JbUdp::CmdResultFramePayload p{};
+    p.t_bridge_us = r.t_bridge_us;
+    p.can_id = r.can_id;
+    p.dlc = r.dlc;
+    memcpy(p.data, r.buf, 8);
+    udp_send_stream(JbUdp::MsgType::CMD_RESULT, (const uint8_t*)&p, sizeof(p));
+  }
+}
+
 void telemetry_step() {
   send_telemetry();
   send_bb_estimates();   // BB pitch/hand pos+vel @ TELEM_RATE_HZ (during-throw diagnostics)

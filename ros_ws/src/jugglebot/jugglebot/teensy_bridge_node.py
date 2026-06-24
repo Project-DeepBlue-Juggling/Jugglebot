@@ -42,6 +42,9 @@ import time
 
 import rclpy
 from rclpy.node import Node
+from rclpy.action import ActionServer, GoalResponse, CancelResponse
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
 
 from jugglebot_interfaces.msg import (
     BallButlerHeartbeat,
@@ -52,7 +55,8 @@ from jugglebot_interfaces.msg import (
     RobotState,
     SetMotorVelCurrLimitsMessage,
 )
-from jugglebot_interfaces.srv import ODriveCommandService, SendBallButlerCommand
+from jugglebot_interfaces.srv import ODriveCommandService
+from jugglebot_interfaces.action import BallButlerThrowCmd
 from geometry_msgs.msg import Quaternion
 from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
 from std_msgs.msg import Float32MultiArray
@@ -75,6 +79,7 @@ from controller.teensy_link import (
     Diagnostic,
     Profile,
     ConeFrame,
+    CmdResultFrame,
     BbAxisEstimates,
 )
 from controller.teensy_link import protocol as p
@@ -272,6 +277,17 @@ class TeensyBridgeNode(Node):
         # a later __init__ line would hit an unset attribute (startup race).
         self._bb_est_queue = []   # list of BbAxisEstimates, drained by timer
 
+        # ── BB loud command-outcome channel (Phase 2: CMD_RESULT relay) ──
+        # One outstanding throw at a time (firmware is serialized → no correlation
+        # token). The bb/throw action's execute_callback waits on _bb_throw_event;
+        # the RX-thread _on_cmd_result handler stores the firmware outcome and sets
+        # it. _bb_throw_active gates a second concurrent goal (rejected in
+        # goal_callback). Guarded by _bb_throw_lock; the event lives outside it.
+        self._bb_throw_lock = threading.Lock()
+        self._bb_throw_event = threading.Event()
+        self._bb_throw_active = False
+        self._bb_throw_result = None   # (outcome:int, detail0:int, detail1:int)
+
         # ── Subscriptions to T→J streams (RX-thread callbacks) ──
         self._client.subscribe(int(MsgType.HEARTBEAT_T2J), self._on_heartbeat_t2j)
         self._client.subscribe(int(MsgType.TELEMETRY), self._on_telemetry)
@@ -279,6 +295,7 @@ class TeensyBridgeNode(Node):
         self._client.subscribe(int(MsgType.PROFILE), self._on_profile)
         self._client.subscribe(int(MsgType.CONE_FRAME), self._on_cone_frame)
         self._client.subscribe(int(MsgType.BB_AXIS_ESTIMATES), self._on_bb_estimates)
+        self._client.subscribe(int(MsgType.CMD_RESULT), self._on_cmd_result)
 
         # ── Publishers (all under /teensy/*) ───────────────────
         self.robot_state_pub = self.create_publisher(
@@ -352,17 +369,31 @@ class TeensyBridgeNode(Node):
             self._sub_vel_curr_limits, 10)
 
         # ── Ball Butler services (production names, Phase A cutover) ────
-        # The four bb/* services formerly served by can_node. The firmware
+        # The bb/* services formerly served by can_node. The firmware
         # gates each TX on bb_present(); we translate the ERR_BUS_DOWN that
         # gate produces into a silent-success for bb/calibrate to preserve
         # can_node._svc_bb_calibrate's HOMING semantics (allows homing to
-        # complete without BB attached). The other three propagate the
-        # error so an operator sees a failed throw/reload/reset.
-        self.create_service(SendBallButlerCommand, 'bb/send_throw_command',
-                            self._svc_bb_throw)
+        # complete without BB attached). The other two propagate the
+        # error so an operator sees a failed reload/reset.
         self.create_service(Trigger, 'bb/reload',    self._svc_bb_reload)
         self.create_service(Trigger, 'bb/reset',     self._svc_bb_reset)
         self.create_service(Trigger, 'bb/calibrate', self._svc_bb_calibrate)
+
+        # ── Ball Butler throw ACTION (Phase 2 — replaces bb/send_throw_command) ──
+        # The action awaits the firmware's terminal outcome (relayed back as a
+        # CMD_RESULT CAN frame) instead of the bridge-side "frame queued" ack the
+        # service returned. Its callbacks share a ReentrantCallbackGroup so a
+        # result-wait in execute_callback never stalls the 100 Hz telemetry timers
+        # (which run in the default group on other MultiThreadedExecutor threads),
+        # and a second goal's goal_callback can run (and be rejected) while a throw
+        # is still outstanding.
+        self._bb_throw_cbgroup = ReentrantCallbackGroup()
+        self._bb_throw_action = ActionServer(
+            self, BallButlerThrowCmd, 'bb/throw',
+            execute_callback=self._bb_throw_execute,
+            goal_callback=self._bb_throw_goal,
+            cancel_callback=self._bb_throw_cancel,
+            callback_group=self._bb_throw_cbgroup)
 
         # ── Timers (publish on the executor thread) ────────────
         self.create_timer(0.01, self._publish_robot_state)     # 100 Hz (telem rate)
@@ -471,6 +502,31 @@ class TeensyBridgeNode(Node):
             q.append(e)
             if len(q) > 4000:        # ~40 s at 100 Hz — bound if the drain stalls
                 del q[:len(q) - 4000]
+
+    def _on_cmd_result(self, msg_type, seq, payload, addr):
+        # RX-thread callback (Phase-2 loud channel). Decode the relayed CMD_RESULT
+        # CAN frame; if it's a THROW outcome and a throw goal is outstanding, hand
+        # the (outcome, detail0, detail1) to the waiting bb/throw execute_callback
+        # and wake it. Never publish / never block here (RX-thread contract); any
+        # malformed or unsolicited frame is dropped silently.
+        try:
+            cf = CmdResultFrame.unpack(payload)
+            data = bytes(cf.data[:cf.dlc])
+            if len(data) < 6:
+                return
+            cmd_type = data[0]
+            outcome = data[1]
+            detail0 = int.from_bytes(data[2:4], 'little', signed=True)
+            detail1 = int.from_bytes(data[4:6], 'little', signed=True)
+        except Exception:  # noqa: BLE001
+            return
+        if cmd_type != int(proto.BallButlerCommandType.THROW):
+            return  # only the throw consumes CMD_RESULT today
+        with self._bb_throw_lock:
+            if not self._bb_throw_active:
+                return  # no waiter — stale/duplicate frame, drop
+            self._bb_throw_result = (outcome, detail0, detail1)
+        self._bb_throw_event.set()
 
     def _publish_bb_axis_estimates(self):
         """Drain queued BB pitch/hand estimates → /bb/axis_estimates (JointState).
@@ -1314,28 +1370,136 @@ class TeensyBridgeNode(Node):
         except Exception as e:  # noqa: BLE001
             self.get_logger().error(f"Cone heartbeat publish error: {e}")
 
-    def _svc_bb_throw(self, req, res):
-        """bb/send_throw_command — typed throw via BB_THROW RPC.
+    # Extra wait (s) past throw_time before the action times out a result. Covers
+    # the wind-up + release + the streamer completing and the firmware emitting OK.
+    _BB_THROW_RESULT_MARGIN_S = 5.0
 
-        D3 / HANDOFF: the ThrowAnnouncement publisher does NOT live here.
-        throw_director_node is the sole publisher of throw_announcements; it
-        has the solver's actual target z and serial-chain ToF, so its
-        announcement is the only accurate one. ``req.suppress_announcement``
-        is dead protocol on this service — retained on the .srv for interface
-        stability during the cutover; can be removed in a follow-up.
-        """
+    @staticmethod
+    def _bb_outcome_text(outcome, detail0, detail1):
+        """Human-readable CMD_RESULT outcome (name + decoded details)."""
         try:
-            args = rpc_args.encode_bb_throw(
-                req.yaw_angle_rad, req.pitch_angle_rad,
-                req.throw_speed, req.throw_time)
-        except Exception as e:  # noqa: BLE001 (Python-side range check failure)
-            res.success = False
-            res.message = f"Throw arg encode failed: {e}"
-            return res
-        ok, m, _ = self._call_rpc(RpcMethod.BB_THROW, args)
-        res.success = ok
-        res.message = "Throw command sent." if ok else f"Throw failed: {m}"
-        return res
+            name = proto.BallButlerCommandOutcome(int(outcome)).name
+        except ValueError:
+            name = f"UNKNOWN(0x{int(outcome):02x})"
+        axis = {0: 'YAW', 1: 'PITCH', 2: 'BOTH'}.get(int(detail0), 'n/a')
+        return f"{name} (axis={axis}, detail1={int(detail1)})"
+
+    def _bb_throw_goal(self, goal_request):
+        """Accept a throw goal only if none is outstanding (firmware is serialized).
+
+        A speed==0 goal is an aim/track command (the firmware routes it to
+        requestTracking — no throw, no CMD_RESULT); it does NOT consume the
+        single-throw slot, so it is always accepted and completes immediately on
+        dispatch (see execute_callback). Only real throws (speed>0) are gated.
+
+        Runs in the action's ReentrantCallbackGroup, so it can reject a second
+        throw promptly while execute_callback is still awaiting the first result.
+        """
+        if float(goal_request.throw_speed) == 0.0:
+            return GoalResponse.ACCEPT
+        with self._bb_throw_lock:
+            if self._bb_throw_active:
+                self.get_logger().warn(
+                    'bb/throw: rejecting goal — a throw is already outstanding')
+                return GoalResponse.REJECT
+            self._bb_throw_active = True
+            self._bb_throw_result = None
+            self._bb_throw_event.clear()
+        return GoalResponse.ACCEPT
+
+    def _bb_throw_cancel(self, goal_handle):
+        """Reject cancellation — a throw in flight has no firmware abort path."""
+        return CancelResponse.REJECT
+
+    def _bb_throw_execute(self, goal_handle):
+        """Dispatch the throw and await the firmware's terminal CMD_RESULT.
+
+        The BB_THROW RPC acks at the can-bridge (frame queued to CAN1), NOT at BB,
+        so success/reject is learned only from the relayed CMD_RESULT — set on the
+        RX thread by _on_cmd_result, which wakes the _bb_throw_event we wait on here.
+        Times out (rather than hanging) if BB never answers.
+        """
+        req = goal_handle.request
+        result = BallButlerThrowCmd.Result()
+
+        # Aim/track command (speed 0): the firmware routes it to requestTracking —
+        # no throw, no CMD_RESULT to await — so dispatch and complete immediately,
+        # matching the retired service's fire-and-forget tracking behaviour. Does
+        # not touch the single-throw slot (see goal_callback).
+        if float(req.throw_speed) == 0.0:
+            try:
+                args = rpc_args.encode_bb_throw(
+                    req.yaw_angle_rad, req.pitch_angle_rad, 0.0, req.throw_time)
+            except Exception as e:  # noqa: BLE001
+                result.success = False
+                result.outcome = int(proto.BallButlerCommandOutcome.REJECTED)
+                result.message = f"Aim arg encode failed: {e}"
+                goal_handle.abort()
+                return result
+            ok, m, _ = self._call_rpc(RpcMethod.BB_THROW, args)
+            result.success = ok
+            result.outcome = int(proto.BallButlerCommandOutcome.OK if ok
+                                 else proto.BallButlerCommandOutcome.REJECTED)
+            result.message = ("Aim/track command dispatched (no throw)." if ok
+                              else f"Aim dispatch failed (BB unreachable?): {m}")
+            if ok:
+                goal_handle.succeed()
+            else:
+                goal_handle.abort()
+            return result
+
+        try:
+            try:
+                args = rpc_args.encode_bb_throw(
+                    req.yaw_angle_rad, req.pitch_angle_rad,
+                    req.throw_speed, req.throw_time)
+            except Exception as e:  # noqa: BLE001 (Python-side range check failure)
+                result.success = False
+                result.outcome = int(proto.BallButlerCommandOutcome.REJECTED)
+                result.message = f"Throw arg encode failed: {e}"
+                goal_handle.abort()
+                return result
+
+            # Dispatch. A failed RPC means the bridge couldn't queue the frame
+            # (BB not present) — no CMD_RESULT will ever come, so abort now.
+            ok, m, _ = self._call_rpc(RpcMethod.BB_THROW, args)
+            if not ok:
+                result.success = False
+                result.outcome = int(proto.BallButlerCommandOutcome.REJECTED)
+                result.message = f"Throw dispatch failed (BB unreachable?): {m}"
+                goal_handle.abort()
+                return result
+
+            # Await the firmware's terminal outcome (set on the RX thread).
+            timeout_s = max(float(req.throw_time), 0.0) + self._BB_THROW_RESULT_MARGIN_S
+            if not self._bb_throw_event.wait(timeout=timeout_s):
+                result.success = False
+                result.outcome = int(proto.BallButlerCommandOutcome.TIMEOUT)
+                result.message = (
+                    f"No CMD_RESULT within {timeout_s:.1f}s — firmware silent "
+                    f"(BB detached, or a terminal point missed an emit).")
+                self.get_logger().warn(f'bb/throw: {result.message}')
+                goal_handle.abort()
+                return result
+
+            with self._bb_throw_lock:
+                outcome, detail0, detail1 = self._bb_throw_result
+            result.outcome = int(outcome)
+            result.detail0 = int(detail0)
+            result.detail1 = int(detail1)
+            result.message = self._bb_outcome_text(outcome, detail0, detail1)
+            if int(outcome) == int(proto.BallButlerCommandOutcome.OK):
+                result.success = True
+                self.get_logger().info(f'bb/throw: {result.message}')
+                goal_handle.succeed()
+            else:
+                result.success = False
+                self.get_logger().warn(f'bb/throw: {result.message}')
+                goal_handle.abort()
+            return result
+        finally:
+            with self._bb_throw_lock:
+                self._bb_throw_active = False
 
     def _svc_bb_reload(self, req, res):
         """bb/reload — BB_RELOAD RPC. ERR_BUS_DOWN surfaces as failure (the
@@ -1427,12 +1591,18 @@ class TeensyBridgeNode(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = TeensyBridgeNode()
+    # MultiThreadedExecutor so the bb/throw action's result-wait (which can block
+    # an executor thread for up to throw_time + margin in execute_callback) never
+    # stalls the 100 Hz telemetry / heartbeat timers — they run on other threads.
+    executor = MultiThreadedExecutor()
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
         node.on_shutdown()
+        executor.shutdown()
         node.destroy_node()
         rclpy.shutdown()
 
