@@ -83,13 +83,14 @@ DEVIATION_ABORT_REV = 0.30          # driver belt; firmware MAX_DEVIATION (0.5) 
 VEL_STATIONARY_TOL_RPS = 0.1        # --close-loop refuses to close onto a moving leg
 
 _lock = threading.Lock()
-_cache = {"telem": None, "diag": {}, "hb": None}
+_cache = {"telem": None, "diag": {}, "hb": None, "telem_rx_t": None}
 
 
 def on_telem(mt, seq, payload, addr):
     tm = Telemetry.unpack(payload)
     with _lock:
         _cache["telem"] = tm
+        _cache["telem_rx_t"] = time.perf_counter()   # Jetson arrival time (freeze diag)
 
 
 def on_diag(mt, seq, payload, addr):
@@ -119,6 +120,29 @@ def fault_state():
     with _lock:
         hb = _cache["hb"]
     return None if hb is None else int(hb.fault_state)
+
+
+def telem_age_ms():
+    """Jetson-side age of the last TELEMETRY frame. Freeze diagnostic: if this
+    GROWS, the Teensy uplink stalled (no fresh frames); if it stays small while
+    enc is frozen, the Teensy's CAN3 RX / axis cache froze (frames arrive, stale)."""
+    with _lock:
+        t = _cache.get("telem_rx_t")
+    return None if t is None else (time.perf_counter() - t) * 1000.0
+
+
+def hb_uptime_ms():
+    """Teensy uptime from the heartbeat — advancing ⇒ the Teensy net task is alive."""
+    with _lock:
+        hb = _cache["hb"]
+    return None if hb is None else int(hb.uptime_ms)
+
+
+def _fault_name(fs):
+    try:
+        return FaultState(fs).name
+    except ValueError:
+        return str(fs)
 
 
 def _clamp(x, lo, hi):
@@ -290,7 +314,7 @@ def main():
             # ── safety monitor ──
             fs = fault_state()
             if fs not in (None, int(FaultState.NONE)):
-                abort_reason = f"fault_state={fs}"
+                abort_reason = f"fault_state={fs} ({_fault_name(fs)})"
                 break
             enc = axis_pos(axis)
             if enc is not None:
@@ -303,8 +327,11 @@ def main():
             if t - last_print >= 0.2:              # ~5 Hz status
                 dg = axis_diag(axis)
                 iq = f"{dg.iq_measured:+.2f}A" if dg else "?"
+                tage = telem_age_ms()
+                hbup = hb_uptime_ms()
                 print(f"  t={t:5.2f}s  cmd={gen.position(t):+.4f}  enc={enc:+.4f}  "
-                      f"err={(gen.position(t) - enc):+.4f}  iq={iq}  fault={fs}")
+                      f"err={(gen.position(t) - enc):+.4f}  iq={iq}  fault={fs}  "
+                      f"tage={'?' if tage is None else f'{tage:.0f}'}ms  hbup={hbup}")
                 last_print = t
 
             n += 1
