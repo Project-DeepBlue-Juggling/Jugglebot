@@ -9,14 +9,30 @@ files_changed:
   - ros_ws/src/jugglebot/Teensy_code_canbridge/axis_state.h
   - ros_ws/src/jugglebot/Teensy_code_canbridge/leg_interp.cpp
   - ros_ws/src/jugglebot/Teensy_code_canbridge/fault_machine.cpp
+  - ros_ws/src/jugglebot/Teensy_code_canbridge/telemetry.cpp
   - controller/teensy_link/synthetic_setpoint.py
+  - controller/teensy_link/replay_setpoint.py
+  - controller/teensy_link/protocol.py
+  - config/generate_udp_protocol.py
+  - ros_ws/src/jugglebot/jugglebot/motion/friction_ff_params.py
+  - ros_ws/src/jugglebot/setup.py
   - tests/hardware/teensy_setpoint_bench.py
   - tests/firmware/test_fault_logic.py
   - tests/teensy_link/test_synthetic_setpoint.py
+  - tests/teensy_link/test_replay_setpoint.py
+  - tests/motion/test_friction_ff_params.py
 commits:
   - 4d69ac7
   - 54aa928
   - d90e365
+  - 155a06e
+  - 33b4ad5
+  - ada4a1b
+  - 844e68e
+  - a19b68c
+  - c584767
+  - b06699f
+  - a277274
 subsystem:
   - can
   - controller
@@ -40,8 +56,13 @@ a subset-populated CAN3 (the single-leg bench rig has only odrv0 present); and
 Teensy's 40 Hz-knot Hermite interpolator on hardware with a known, bounded command,
 decoupled from `motor_guard` / the MPC / friction-FF. **U3 armed validation
 stages (i) approach+hold and (ii) bounded sinusoid now PASS on hardware** (see
-*Hardware validation*) — the leg tracks the Teensy 40 Hz-knot Hermite cleanly; the
-fault-replay + real-MPC tails remain.
+*Hardware validation*) — the leg tracks the Teensy 40 Hz-knot Hermite cleanly. The
+fault-replay **link-drop sub-test (A)** then confirmed the firmware MPC-staleness
+gating, the `motor_guard` config-path crash was fixed (`c584767`), and the U3-iv
+real-MPC residual tooling — a `LegCmd` firmware uplink (`b06699f`) + a recorded-throw
+replay source (`a277274`) — was built desk-side; the **CAN3 sub-test (B) + the U3-iv
+hardware run are blocked on a Jetson `eth0` kernel hang** the link-drop method
+triggered (see *U3 tail — continued*).
 
 ## Motivation
 
@@ -251,7 +272,9 @@ after which the leg tracked perfectly. To close the footgun, the firmware now
 **uplinks `mpc_active` in the T2J heartbeat (bit3)** and the bench driver verifies
 its arm took ~0.7 s after ARM, aborting with an explicit *"another heartbeat
 authority is overriding — stop the ROS2 launch"* instead of a cryptic
-tracking-deviation timeout.
+tracking-deviation timeout. (Later corrected — see *Finding C* under *U3 tail —
+continued*: the bridge does **not** win "unconditionally"; it is a non-deterministic
+phase race, so this check only guards the driver-loses side.)
 
 **Separate bug — `motor_guard` crashes on a bad config path.** Surfaced while the
 launch was up: `motor_guard` dies at startup with `FileNotFoundError` for
@@ -260,23 +283,146 @@ resolves the path under the *install* tree, where `config/` isn't installed). Th
 bench driver doesn't use motor_guard, so it didn't block stages i–ii — but it
 **will** block the real-MPC path (U3 stage iii). Fix before stage iii.
 
+## U3 tail — continued (2026-06-24): motor_guard fix, fault-replay sub-test A, U3-iv desk build
+
+Same day, continued: the `motor_guard` config-path bug was fixed, U3 stage (iii)
+fault-replay began (the J→T link-drop **sub-test A** — firmware gating confirmed),
+and the U3-iv real-MPC residual tooling was built desk-side. The CAN3 drop
+(sub-test B), the recovery, the undervoltage observe, and the U3-iv hardware run
+are **blocked** on a Jetson `eth0` kernel hang that the link-drop method itself
+triggered (below) — the operator is recovering it in a parallel session.
+
+**`motor_guard` config-path fix (Fix A — ament data file).** The bug logged above:
+`friction_ff_params.py` resolved `hardware_config.yaml` by a rigid five-level
+`__file__` walk that only works from the source tree; under the colcon install
+tree it pointed at the never-installed `install/jugglebot/config/` →
+`FileNotFoundError` at `MotorGuard.__init__`, crashing the production launch (and
+blocking the U3-iv real-MPC path). Fixed by installing the YAML into the ament
+*share* dir (`setup.py` `data_files`, a package-relative source — colcon rejects
+absolute `data_files`) and resolving via env-override → `get_package_share_directory`
+→ source-tree fallback → fail-fast. Verified on the install tree: the resolver
+returns the share copy and `load_params()` succeeds. **Contract change, recorded:**
+because `ament_python` *copies* `data_files` at build time, an in-place friction
+re-tune now takes effect only after a `colcon build` — OR via the
+`JUGGLEBOT_HW_CONFIG` env override pointed at the source file (the supported
+tune-without-rebuild path). The module docstring was updated to state this. *Why
+Fix A over source-tree resolution:* the operator chose the canonical ament idiom;
+the env-override escape hatch preserves in-place tuning without re-introducing the
+original silent-stale-config hazard (an explicit override path always wins). Commit
+`c584767` (5 resolver tests; `pytest tests/ -q`, run 2026-06-24: 1779 passed,
+1 xfailed).
+
+**Finding C — the competing-authority is a non-deterministic heartbeat race, not
+"the bridge always wins."** The verify-armed check (added with Finding B's
+mpc_active uplink) was *expected* to fire: run the bench driver *with* the ROS2
+launch up and watch it abort with "another heartbeat authority is overriding." It
+did **not** — the leg **armed and tracked** (the driver's `flags=1` won the race),
+`fault=NONE`, ran to completion. This **contradicts this entry's own earlier claim**
+(the "leg won't arm" gotcha above) that the bridge `flags=0` overwrote the driver's
+"*unconditionally*." Corrected: `teensy_bridge_node` and the bench driver **both**
+send J→T heartbeats at 10 Hz and the firmware applies the *last one received*, so
+which wins is a **phase race** — non-deterministic. The earlier runs likely had the
+bridge winning partly *because* `motor_guard` was crashing then (the Fix-A bug),
+perturbing the bridge's heartbeat cadence; with `motor_guard` running cleanly the
+driver won. *Safety implication:* the verify-armed check only guards the
+*driver-loses* side (a clear error when the firmware won't arm); when the driver
+*wins*, the leg arms with the launch still live — "sole wire authority" is enforced
+only by operator discipline (stop the launch), not by the check. This run was
+harmless only because `center ≈ current` (≈0.002 rev of motion) and the bridge
+sends no setpoints with output gated. The robust fix — a **deterministic pre-arm
+guard** that refuses to arm unless the firmware reads `LINK_LOST` (no other J→T
+authority) before the driver sends its first heartbeat — was **deferred** by the
+operator (open item). (`git log` confirms `teensy_bridge_node` *is* in the default
+`jugglebot_launch.py`; the `setup.py` comment claiming otherwise is stale.)
+
+**U3-iii sub-test A (J→T link drop) — firmware gating confirmed; one hypothesis
+withdrawn.** Launch stopped (driver sole authority — confirmed by the firmware
+reading `LINK_LOST` before arm), leg armed to a clean hold at 0.30 rev, then the
+operator physically unplugged the J↔T Ethernet. Captured on the Teensy USB serial
+(which survives the unplug — separate cable), the firmware responded to spec:
+`fault → MPC_STALE`, `guard_mode → DISABLED`, `output = 0` (gated off); the leg
+**held in CLOSED_LOOP**. *Withdrawn hypothesis:* I first read the serial `s8 → s1`
+(CLOSED_LOOP → IDLE) transition at ~58 s post-unplug as the ODrive's own
+control-loop watchdog disarming the leg, and wrote it up as a finding ("the leg
+holds only until the ~58 s watchdog"). The operator's physical observation overrode
+it — *the leg held the whole time until they manually IDLE'd it via the GUI* — so
+the `s1` was the GUI action, not a watchdog. The simpler, correct result stands: on
+a sustained link loss the firmware gates output and the leg holds (odrv autonomous).
+This is the canonical "abandon the hypothesis when the next data point — here the
+operator's eyes — doesn't fit it."
+
+**Methodology finding — do NOT physically unplug the USB-Ethernet dongle for the
+link-drop test.** The unplug triggered the Linux kernel's `unregister_netdevice:
+waiting for eth0 to become free` refcount-leak hang (`Usage count = 39` — the many
+UDP sockets bound to the dongle's interface at the moment of unplug:
+`teensy_bridge_node`, the bench-driver runs, the read-only probes). The leak does
+not drain on its own and the dongle does not re-enumerate cleanly — it needs a
+reboot. The leg stayed safe throughout (gated, held), but the J↔T link was lost for
+the rest of the session, blocking sub-test B + the recovery + the undervoltage
+observe. **Use `sudo ip link set eth0 down` … `up` instead** — identical link-drop
+semantics (UDP stops → `MPC_STALE`), no netdev teardown, instant clean restore. The
+CAN3 unplug (sub-test B) is unaffected (CAN3 is not a netdev with this issue).
+
+**U3-iv desk-side tooling — built + committed; flash + run pending eth0.** With the
+hardware blocked, the U3-iv (real-MPC residual + motion-onset) tooling was built
+off-hardware:
+- *Recording + scaling (confirmed with the operator):* `mpc_20260330_165611.csv` —
+  axis-0 range [0.079, 3.052] rev, peak 3.18 rev/s. It already fits the bench leg's
+  ≈3.4 rev physical ceiling (the firmware `STROKE_MAX_REV[0] ≈ 3.90` is the
+  *production* value and would NOT protect the shorter bench leg), so **no scaling
+  is applied**; a safety scaler (`scale_to_bench`: a 3.30 rev position ceiling,
+  0.10 below the ≈3.4 rev physical limit; + a 3.5 rev/s velocity guard, below the
+  4.0 rev/s `ODRIVE_LEG_VEL_LIMIT_RPS` the bring-up sets) is a no-op here but bounds
+  any recording. The 7.94 rev/s recordings were
+  rejected — they'd saturate the velocity limit → tracking deviation → abort.
+- *`RecordedThrowSource`* (`replay_setpoint.py`, mirrors `SyntheticKnotSource`):
+  approach → settle → replay, so the throw onset breaks away from a true rest
+  (clean to measure); an optional dependency-injected `torque_ff_fn` for the later
+  D9 onset A/B. 19 unit tests + an offline trajectory preview. Commit `a277274`.
+- *`LegCmd` uplink (Path B — the operator chose the direct on-Teensy residual):* the
+  telemetry uplinks only encoder pos, not the Teensy's *commanded* float32 interp
+  output, so the on-Teensy residual could not be measured on the wire. Added an
+  **additive `LegCmd` message** (MsgType 0x88, T2J, 100 Hz) carrying
+  `axes[i].target_pos_rev/target_vel_rps` — the float32 ladder output, written every
+  interp tick for all legs regardless of the output gate. *Why an additive message,
+  not growing `Telemetry`:* additive keeps every existing frame byte-unchanged, so
+  **no `PROTOCOL_VERSION` bump** — the version is a hard `decode_frame` gate, and
+  bumping it forces every consumer to redeploy in lockstep, whereas an old consumer
+  simply ignores the unknown 0x88 type. `pio` green; cross-language consistency test
+  green. **Not yet flashed** (USB flash deferred to the U3-iv run, to avoid
+  perturbing the operator's concurrent `eth0` recovery — a Teensy reboot changes the
+  network endpoint). Commit `b06699f`. The bench driver gained `--replay` (uses
+  `RecordedThrowSource`, captures `LegCmd` into a `cmd_teensy_rev` CSV column = the
+  residual datum).
+
 ## Open Questions / Next (U3 tail — operator-gated, powered)
 
-Stages (i) + (ii) done (above). Remaining, each gated by explicit operator
-final-say + e-stop:
+Stages (i) + (ii) + the link-drop **sub-test A** done (above). The `motor_guard`
+config-path bug is **fixed** (`c584767`). Remaining, each gated by explicit operator
+final-say + e-stop, and currently **blocked on the `eth0` recovery**:
 
-3. **Powered fault-replay** — induced J→T link drop + CAN3 drop with the leg armed:
-   confirm the MPC-staleness E-STOP and the deferred-stow safety inversion (the
-   reconnect path U1 unblocked). Validating the deferred-stow on the single-leg rig
-   relies on U1's present-scoped `all_present_legs_fresh`.
-4. **Real-MPC trajectory** — needs the `motor_guard` config-path bug fixed first.
-   Produces the **float32 interp residual** and the **D9 motion-onset penalty** that
-   decide U4 (the production α→β switch + friction-FF disposition) against the
-   pre-registered ≤ 40 ms criterion; compare-to-legacy "within tracking noise."
+3. **Powered fault-replay — finish.** Sub-test A (link drop, via `ip link
+   down/up`, recovery observed) + **sub-test B (CAN3 drop)**: unplug CAN3 with the
+   leg armed → confirm `CAN_BUS_DOWN` @ 2.0 s + armed stow, leg holds; replug →
+   deferred-stow descent (≈ centre → 0.07 rev, ≤ 2.5 rev/s) → IDLE — the Phase-8
+   safety-inversion replay the U1 present-scoped `all_present_legs_fresh` unblocked.
+   Plus the undervoltage observe. Use the bench driver's `--observe` mode (records
+   the full fault → reconnect → stow sequence over UDP; cedes authority on a
+   fatal/CAN fault).
+4. **Real-MPC trajectory (U3-iv) — flash + run.** Tooling is built (`a277274`,
+   `b06699f`): flash the `LegCmd` firmware over USB, then arm
+   `--replay temp/logs/mpc_20260330_165611.csv`. Produces the **float32 interp
+   residual** (`cmd_teensy_rev` from the LegCmd uplink vs the offline float64
+   reference) and the **D9 motion-onset penalty** (against the pre-registered ≤ 40 ms
+   criterion). The friction-FF onset A/B (`--friction-ff` + a parity test against
+   `motor_guard`'s Stribeck model) is the remaining build for the D9 onset half.
 
-Also open: **Finding A** (the rare feedback freeze) root cause; the **`motor_guard`
-config-path bug**. **Rollback note (corrected):** `can_node` is now reference-only
-(the Jetson no longer sees CAN directly), so the cutover abort is **e-stop +
+Also open: **Finding C** — the deferred deterministic pre-arm sole-authority guard
+(refuse to arm unless the firmware reads `LINK_LOST`); **Finding A** (the rare
+feedback freeze) root cause. The `motor_guard` config-path bug is **fixed**
+(`c584767`). **Rollback note (corrected):** `can_node` is now reference-only (the
+Jetson no longer sees CAN directly), so the cutover abort is **e-stop +
 `mpc_active=0` disarm + power-down**, *not* a `<10 min` socketcan swap-back — the
-bench driver's instant disarm (Ctrl-C / fault) gates firmware output off in one
-heartbeat.
+bench driver's instant disarm (Ctrl-C / fault) gates firmware output off (≈ one
+10 Hz fault step, ~100–200 ms — not "instant"; measure on the U3-iv run and correct
+this phrasing if confirmed).
