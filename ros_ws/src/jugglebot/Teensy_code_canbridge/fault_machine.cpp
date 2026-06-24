@@ -243,10 +243,31 @@ static void evaluate_guard() {
     }
   }
 
+  // Motor feedback staleness (port of motor_guard MOTOR_FB_STALENESS_S=0.15,
+  // motor_guard.py:884-891). Suppress output if a PRESENT leg's encoder feedback
+  // has gone stale — the fast guard for a frozen feedback loop. MAX_DEVIATION above
+  // only catches a freeze while the command is moving AWAY from the frozen encoder;
+  // a HOLD freeze (cmd ≈ frozen enc) would otherwise go unnoticed and fly blind.
+  // Recoverable, NOT a latched E-STOP: output re-enables when feedback returns,
+  // mirroring motor_guard's command suppression. Present-scoped + mpc_active/latched
+  // gated exactly like MAX_DEVIATION (so it never false-trips pre-arm, when
+  // pos_timestamp_us is still 0). pos_timestamp_us is stamped now_wall_us() on each
+  // encoder RX (can_buses.cpp), so this clock comparison is consistent.
+  bool fb_stale = false;
+  if (s_mpc_active && interp_have_latched()) {
+    const uint64_t now = now_wall_us();
+    for (uint8_t i = 0; i < NUM_LEGS; ++i) {
+      if (leg_present(i) && (now - axes[i].pos_timestamp_us > MOTOR_FB_STALENESS_US)) {
+        fb_stale = true; break;
+      }
+    }
+  }
+
   // Fault-state reporting priority (highest-severity active condition wins).
   if (s_fatal_can_error)        s_fault_state = JbUdp::FaultState::CAN_BUS_DOWN;
   else if (s_fatal_error)       s_fault_state = JbUdp::FaultState::ODRIVE_FATAL;
   else if (estop)               s_fault_state = state;
+  else if (fb_stale)            s_fault_state = JbUdp::FaultState::MOTOR_FB_STALE;
   else if (!jetson_link_up())   s_fault_state = JbUdp::FaultState::LINK_LOST;
   else                          s_fault_state = JbUdp::FaultState::NONE;
 
@@ -261,10 +282,10 @@ static void evaluate_guard() {
   // confirmed up). Otherwise output requires the guard ENABLED and no fatal.
   bool allow = false;
   if (s_stowing) {
-    allow = true;
+    allow = true;   // stow descent integrates its own position; not encoder-gated
   } else {
     allow = (s_guard_mode == JbUdp::GuardMode::ENABLED) && !s_fatal_can_error
-            && !s_fatal_error && !estop;
+            && !s_fatal_error && !estop && !fb_stale;
   }
   interp_set_output_enabled(allow);
 }

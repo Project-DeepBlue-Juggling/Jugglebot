@@ -300,3 +300,73 @@ def test_single_leg_stow_recovery_end_to_end():
     s.step(leg_hb_stale=any_leg_heartbeat_stale(present, ages),
            leg_hb_fresh=all_present_legs_fresh(present, ages))
     assert not s.fatal_can_error and s.stowing
+
+
+# ── Feedback-staleness guard (fault_machine.cpp evaluate_guard, Finding B) ─────
+# Port of motor_guard MOTOR_FB_STALENESS_S=0.15: suppress output (recoverable, NOT
+# a latched E-STOP) when a present leg's encoder feedback goes stale. The fast
+# guard for a frozen feedback loop — MAX_DEVIATION only catches a freeze while the
+# command moves away; a HOLD freeze would otherwise fly blind.
+MOTOR_FB_STALENESS_US = 150_000        # canbridge_config.h (0.15 s)
+FAULT_MOTOR_FB_STALE = 7               # FaultState.MOTOR_FB_STALE
+
+
+def fb_stale(present, ages_us, *, mpc_active=True, latched=True,
+             timeout_us=MOTOR_FB_STALENESS_US):
+    """Mirror of evaluate_guard's feedback-staleness check (present-scoped, gated
+    on mpc_active+latched so it never false-trips pre-arm when pos_timestamp=0)."""
+    if not (mpc_active and latched):
+        return False
+    return any(present[i] and ages_us[i] > timeout_us for i in range(6))
+
+
+def output_allowed_fb(guard_enabled, fatal_can, fatal_err, estop, fb_stale_flag,
+                      stowing=False):
+    """Mirror of the output gate including the fb_stale suppression term."""
+    if stowing:
+        return True   # stow descent integrates its own position; not encoder-gated
+    return (guard_enabled and not fatal_can and not fatal_err
+            and not estop and not fb_stale_flag)
+
+
+def test_fb_stale_trips_when_present_leg_feedback_freezes():
+    present = [True] + [False] * 5
+    assert fb_stale(present, [0] * 6) is False
+    frozen = [200_000] + [0] * 5                       # axis 0 feedback 0.2 s old
+    assert fb_stale(present, frozen) is True
+
+
+def test_fb_stale_suppresses_output_recoverably():
+    """The first-run scenario: a present leg's feedback freezes while armed -> the
+    guard suppresses output. When feedback returns, output re-enables (recoverable,
+    not latched) — unlike an E-STOP."""
+    present = [True] + [False] * 5
+    assert output_allowed_fb(True, False, False, False,
+                             fb_stale(present, [200_000] + [0] * 5)) is False
+    assert output_allowed_fb(True, False, False, False,
+                             fb_stale(present, [0] * 6)) is True   # recovers
+
+
+def test_fb_stale_does_not_false_trip_pre_arm():
+    """Pre-arm, pos_timestamp_us is 0 (huge age) — but the mpc_active/latched gate
+    keeps fb_stale False so it never false-trips before the leg is commanded."""
+    present = [True] + [False] * 5
+    huge = [10_000_000] + [0] * 5
+    assert fb_stale(present, huge, mpc_active=False) is False
+    assert fb_stale(present, huge, latched=False) is False
+    assert fb_stale(present, huge, mpc_active=True, latched=True) is True
+
+
+def test_fb_stale_ignores_absent_legs():
+    present = [True] + [False] * 5
+    ages = [0, 9_000_000, 9_000_000, 9_000_000, 9_000_000, 9_000_000]
+    assert fb_stale(present, ages) is False             # only axis 0 (fresh) counts
+    assert fb_stale([True] * 6, ages) is True           # full robot: a stale leg trips
+
+
+def test_fb_stale_does_not_block_a_stow():
+    """A deferred stow integrates its own descent position, so it is not gated by
+    feedback staleness (mirrors the firmware s_stowing branch)."""
+    present = [True] + [False] * 5
+    assert output_allowed_fb(True, False, False, False,
+                             fb_stale(present, [200_000] + [0] * 5), stowing=True) is True

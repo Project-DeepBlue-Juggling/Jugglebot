@@ -91,6 +91,7 @@ namespace FaultState {
   constexpr uint8_t MAX_DEVIATION = 4u;  // Commanded pos diverged too far from encoder
   constexpr uint8_t ODRIVE_FATAL = 5u;  // Active ODrive error / disarm-while-closed-loop
   constexpr uint8_t CAN_BUS_DOWN = 6u;  // CAN2 (leg bus) down — hold, deferred stow armed
+  constexpr uint8_t MOTOR_FB_STALE = 7u;  // Leg encoder feedback stale → suppress output (recoverable)
 }
 namespace GuardMode {
   constexpr uint8_t DISABLED = 0u;
