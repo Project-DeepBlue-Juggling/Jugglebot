@@ -12,7 +12,7 @@ files_changed:
   - tests/sim/test_ball_butler_sim.py
   - plans/active/bb-led-two-ball-juggle-demo.md
 commits:
-  - <pending>
+  - 7c922cb
 subsystem:
   - sim
 tags:
