@@ -443,8 +443,11 @@ Phase 2 optimised trajectory) + the sim hand model (`HandThrowSequence` /
   so they spawn the ball at the right instant.
 - **BB lead calibration.** ``MasterTimeline.bb_lead_s`` is set so the BB
   ball arrives at the first ``hand_catch`` event:
-  ``bb_lead = BB_TOF − catch_offset_s`` (~0.423 s for the default pattern
-  with BB at ``(0, −1500, 1500)`` mm).
+  ``bb_lead = BB_TOF − catch_offset_s``. The default BB placement is the
+  measured post-cutover throw position ``(−872, −630, 1430)`` mm (world
+  frame, origin at Jugglebot's base centroid), with ``bb_yaw_offset_rad =
+  atan2(630, 872) ≈ 0.626`` rad so BB's local +x points at Jugglebot.
+  (Earlier cuts used a nominal on-axis ``(0, −1500, 1500)`` mm.)
 - **Catch target.** ``_catch_target_world_mm`` (since 2026-05-24) is a
   3-vector computed at construction from the optimised trajectory's
   catch-event pose (centroid xyz + orientation) as
@@ -520,8 +523,8 @@ throws ball 1 → catches ball 2 → … sustained for 30+ catches → exit tran
 
 **Critical details:**
 - The sim hand model is the faithfulness reference for the hardware hand. The
-  sim `catch_vel_ratio` **must** match `hardware_config.yaml` — see §6 open
-  item (sim port currently reads 0.9; config reads 0.6).
+  sim `catch_vel_ratio` matches `hardware_config.yaml` at **0.6** since
+  2026-06-24 (see the §6 RESOLVED item; was 0.9).
 - Catch tolerance: the passive conical hand collects off-centre balls; sim
   capture detection (`BallManager.check_capture`) is the success oracle.
 - The hand offset above the platform centroid is position-dependent
@@ -669,24 +672,28 @@ insufficient.
 
 ### Open items / decisions required
 
-- **`catch_vel_ratio` discrepancy (still open).** `config/hardware_config.yaml`
-  sets `catch_vel_ratio: 0.6`; `sim/hand/trajectory.py:36` uses
-  `CATCH_VEL_RATIO = 0.9`. The Phase 1 feasibility math used 0.6, the Phase 3
-  sim runner uses 0.9 (whatever `HandCatchTrajectory` returns at `sample(0.0)`,
-  which is 198 mm slider / 858 mm world catch z under 0.9). Sim ↔ hardware
-  reconciliation is owned by the hand-generator overhaul side-quest
-  (`plans/active/hand-trajectory-generator-overhaul.md`); the demo as it
-  stands runs end-to-end against the sim port's 0.9. Resolve before §4
-  Phase 4 hardware bring-up.
-- **`BallButlerSim` scatter is non-deterministic.** `BallButlerSim.
-  throw_at_jugglebot` calls `np.random.default_rng().normal(...)` with a
-  fresh, unseeded `Generator` each invocation, so `bb_scatter_mm > 0` runs
-  are not reproducible under a `np.random.seed(...)` call. The Phase 3c
-  determinism test sidesteps this with `bb_scatter_mm = 0.0`; Phase 4
-  hardware bring-up (or any T-I7 catch-tolerance test) needs scatter to be
-  reproducible. Plumb a `Generator` parameter through
-  `BallButlerSim.from_hardware_config` and `throw_at_jugglebot` (~5 lines
-  in `sim/ball_butler/sim.py`).
+- **`catch_vel_ratio` discrepancy — RESOLVED (2026-06-24).**
+  `sim/hand/trajectory.py` now uses `CATCH_VEL_RATIO = 0.6`, matching
+  `config/hardware_config.yaml` `teensy_trajectory.catch_vel_ratio` (the
+  platform/Jugglebot hand; the `0.8` in the `ball_butler_trajectory`
+  section is BB's *own* hand, not Jugglebot's). 0.6 is hardware-validated as reliable and
+  is the value the Phase 1 feasibility math assumed; the prior 0.9 was a
+  stale port value. The change is behaviourally benign for the catch
+  target because the catch *slider midpoint* (`HandCatchTrajectory.
+  sample(0.0)` ≈ 198 mm) is independent of the velocity ratio — only the
+  catch stroke *speed/duration* changes, which the timeline absorbs. The
+  demo holds 33 captures / 0 drops on the default 30 s run after the
+  change. Full sim→hardware reconciliation of the remaining hand
+  constants stays owned by the hand-generator overhaul side-quest.
+- **`BallButlerSim` scatter non-determinism — RESOLVED (2026-06-24).**
+  `throw_at_jugglebot` now takes an optional `rng: np.random.Generator`;
+  the demo runner builds `self._rng = np.random.default_rng(cfg.seed)` and
+  passes it through, so `bb_scatter_mm > 0` runs are reproducible under
+  `--seed`. With no `rng` the call falls back to a fresh unseeded
+  generator (legacy non-deterministic behaviour preserved). Regression
+  test: `tests/sim/test_ball_butler_sim.py::TestConvenience::
+  test_scatter_reproducible_with_seeded_rng`. This unblocks the T-I7
+  catch-tolerance test.
 - **Hardware orchestrator form.** Two viable patterns for Phase 4:
   (A) a ROS2 node `juggle_demo_node` in `ros_ws/` — natural access to the
   `can_node` hand/BB services, runs the 40 Hz platform timer, imports the pure-

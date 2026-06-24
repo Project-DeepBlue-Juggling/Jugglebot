@@ -191,11 +191,17 @@ class JuggleDemoConfig:
         default_factory=lambda: JugglePattern(separation_mm=200.0))
     duration_s: float = 30.0
     n_catches: int = 32
-    bb_position_mm: tuple[float, float, float] = (0.0, -1500.0, 1500.0)
-    # yaw_offset_rad rotates the BB so its local +x points toward
-    # Jugglebot. With BB at (0, -1500, 1500), we want local +x = world +y,
-    # which is a +π/2 rotation.
-    bb_yaw_offset_rad: float = math.pi / 2.0
+    # BB yaw-axis origin in the world frame (origin at Jugglebot's base
+    # centroid, +z up). Measured throw position post-BB-cutover. NOTE: this
+    # is the yaw-axis origin, not the ball-release point — the release sits
+    # ~release_l_position_mm (150 mm) out along the arm; the BB aim solver
+    # accounts for that, so the primed ball still lands in the cup.
+    bb_position_mm: tuple[float, float, float] = (-872.0, -630.0, 1430.0)
+    # yaw_offset_rad rotates the BB so its local +x points toward Jugglebot
+    # (the world origin). The direction from BB to the origin is
+    # -bb_position_mm in xy → atan2(+630, +872) ≈ 0.626 rad (35.8°). If
+    # bb_position_mm changes, update this to match.
+    bb_yaw_offset_rad: float = math.atan2(630.0, 872.0)
     bb_scatter_mm: float = 0.0
     seed: Optional[int] = None
     abort_at_s: Optional[float] = None     # if set, abort at this sim_time
@@ -256,6 +262,10 @@ class _JuggleDemoRunner:
     def __init__(self, cfg: JuggleDemoConfig):
         if cfg.seed is not None:
             np.random.seed(cfg.seed)
+        # Dedicated generator for BB scatter so cfg.seed actually makes
+        # scatter reproducible (the global np.random.seed above does NOT
+        # reach BallButlerSim, which draws from its own Generator).
+        self._rng = np.random.default_rng(cfg.seed)
 
         self.cfg = cfg
         self.pattern = cfg.pattern
@@ -624,6 +634,7 @@ class _JuggleDemoRunner:
             landing_xy_mm=self._catch_target_world_mm[:2],
             catch_z_mm=float(self._catch_target_world_mm[2]),
             scatter_mm=self.cfg.bb_scatter_mm,
+            rng=self._rng,
         )
         # Spawn into the sim now (event.t_wall == current t_wall by
         # the pending-queue gating in tick()).

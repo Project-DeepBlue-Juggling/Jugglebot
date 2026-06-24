@@ -261,6 +261,32 @@ class TestConvenience:
         std = np.std(landings, axis=0)
         assert np.max(std) > 5.0, f"Scatter too small: std = {std}"
 
+    def test_scatter_reproducible_with_seeded_rng(self):
+        """A seeded Generator makes scatter reproducible; this is the
+        prerequisite for the plan's T-I7 catch-tolerance test, which
+        needs BB repeatability injected deterministically. Same seed →
+        identical release; different seed → different; no rng → varies.
+        """
+        bb = _make_bb()
+        kw = dict(spawn_time=0.5, landing_xy_mm=[0.0, 0.0],
+                  scatter_mm=20.0, catch_z_mm=_CATCH_Z)
+
+        def draws(seed):
+            g = np.random.default_rng(seed)
+            return [bb.throw_at_jugglebot(rng=g, **kw).position_mm.copy()
+                    for _ in range(3)]
+
+        a, b, c = draws(7), draws(7), draws(99)
+        for pa, pb in zip(a, b):
+            np.testing.assert_array_equal(pa, pb)  # same seed → identical
+        assert any(not np.array_equal(pa, pc) for pa, pc in zip(a, c)), \
+            "different seed should give different scatter"
+        # No rng supplied → falls back to a fresh unseeded generator (legacy
+        # non-deterministic behaviour preserved).
+        s1 = bb.throw_at_jugglebot(**kw).position_mm
+        s2 = bb.throw_at_jugglebot(**kw).position_mm
+        assert not np.array_equal(s1, s2)
+
 
 # ===================================================================
 # Test: End-to-end with catch pipeline

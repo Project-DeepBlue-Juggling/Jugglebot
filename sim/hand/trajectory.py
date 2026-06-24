@@ -33,7 +33,9 @@ HAND_SPOOL_RADIUS_M = 0.00521
 LINEAR_GAIN_FACTOR = 1.035
 INERTIA_HAND_ONLY_KG = 0.281
 INERTIA_RATIO = 0.747
-CATCH_VEL_RATIO = 0.9
+CATCH_VEL_RATIO = 0.6  # matches hardware_config.yaml teensy_trajectory.catch_vel_ratio
+                       # (the platform/Jugglebot hand). Hardware-validated as
+                       # reliable; tunable later. (Was 0.9 — a stale port value.)
 CATCH_VEL_HOLD_PCT = 0.10
 HAND_STROKE_M = 0.355
 STROKE_MARGIN_M = 0.02
