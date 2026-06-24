@@ -4,6 +4,18 @@ from glob import glob
 
 package_name = 'jugglebot'
 
+# The single source-of-truth hardware config lives at the repo root
+# (config/hardware_config.yaml), three levels up from this setup.py
+# (jugglebot -> src -> ros_ws -> repo).  motor_guard's friction_ff loader
+# reads it at runtime; under the colcon install tree it resolves via the
+# ament share dir, so install the YAML into share/jugglebot/config/.
+# Referenced by a package-relative path (colcon rejects absolute data_files
+# sources) so there is no in-package copy to drift — colcon copies the real
+# repo-root file at build time.  NOTE: because this is a build-time copy, a
+# friction re-tune of the source YAML only takes effect after `colcon build`
+# (or via the JUGGLEBOT_HW_CONFIG override — see friction_ff_params.py).
+_HW_CONFIG_YAML = os.path.join('..', '..', '..', 'config', 'hardware_config.yaml')
+
 setup(
     name=package_name,
     version='1.0.0',
@@ -19,6 +31,7 @@ setup(
         ('share/' + package_name + '/srv', glob('srv/*.srv')),
         (os.path.join('share', package_name, 'launch'), glob('launch/*.py')),
         (os.path.join('share', package_name, 'resources'), glob('resources/*')),
+        (os.path.join('share', package_name, 'config'), [_HW_CONFIG_YAML]),
     ],
     install_requires=['setuptools'],
     zip_safe=True,

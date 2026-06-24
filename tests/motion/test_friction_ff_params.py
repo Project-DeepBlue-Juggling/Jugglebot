@@ -13,8 +13,11 @@ Schema is post-PR-2.1: ``v_gate_rps`` replaced ``stiction_boost_threshold_rps``;
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 
+from jugglebot.motion import friction_ff_params as ffp
 from jugglebot.motion.friction_ff_params import (
     FrictionFFParams,
     load_params,
@@ -69,3 +72,70 @@ def test_load_params_bench_defaults_present():
     np.testing.assert_array_equal(p.ff_sign, np.full(6, +1.0))
     # Smooth-gate scale: 0.05 rev/s — sized above platform hold-noise.
     assert p.v_gate_rps == 0.05
+
+
+# ── Path resolution (Phase 11 install-tree fix, 2026-06-24) ────────────
+# The loader must resolve hardware_config.yaml from BOTH the source tree
+# (pytest, checkout) and the colcon install tree (production motor_guard).
+# See friction_ff_params._resolve_yaml_path.
+
+def test_resolver_returns_existing_yaml(monkeypatch):
+    """With no override, resolution finds a real hardware_config.yaml.
+
+    Robust to either branch: ament share dir (if a built+sourced overlay
+    is present) or the source-tree fallback — both end in
+    config/hardware_config.yaml and must exist.
+    """
+    monkeypatch.delenv(ffp._HW_CONFIG_ENV, raising=False)
+    path = ffp._resolve_yaml_path()
+    assert os.path.exists(path), f'resolved path does not exist: {path}'
+    assert path.endswith(os.path.join('config', 'hardware_config.yaml'))
+
+
+def test_resolver_honors_env_override(tmp_path, monkeypatch):
+    """$JUGGLEBOT_HW_CONFIG wins over the share dir / source tree."""
+    fake = tmp_path / 'hw.yaml'
+    fake.write_text('friction_ff: {}\n')
+    monkeypatch.setenv(ffp._HW_CONFIG_ENV, str(fake))
+    assert ffp._resolve_yaml_path() == str(fake)
+
+
+def test_resolver_skips_missing_env_override(tmp_path, monkeypatch):
+    """A non-existent override is skipped, not fatal — falls through."""
+    monkeypatch.setenv(ffp._HW_CONFIG_ENV, str(tmp_path / 'does_not_exist.yaml'))
+    path = ffp._resolve_yaml_path()
+    # Falls through to the real (existing) source-tree / share YAML.
+    assert os.path.exists(path)
+    assert path.endswith(os.path.join('config', 'hardware_config.yaml'))
+
+
+def test_resolver_raises_when_nothing_found(tmp_path, monkeypatch):
+    """All candidates missing → loud FileNotFoundError, not silent."""
+    monkeypatch.setenv(ffp._HW_CONFIG_ENV, str(tmp_path / 'nope.yaml'))
+    monkeypatch.setattr(ffp, '_SRC_HW_YAML', str(tmp_path / 'also_nope.yaml'))
+    # Force the ament branch to miss too (import may or may not succeed;
+    # either way the share path won't exist under tmp_path).
+    import builtins
+    real_import = builtins.__import__
+
+    def _no_ament(name, *args, **kwargs):
+        if name.startswith('ament_index_python'):
+            raise ImportError('ament_index_python unavailable (test)')
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, '__import__', _no_ament)
+    try:
+        ffp._resolve_yaml_path()
+    except FileNotFoundError as exc:
+        assert 'hardware_config.yaml' in str(exc)
+        assert ffp._HW_CONFIG_ENV in str(exc)
+    else:
+        raise AssertionError('expected FileNotFoundError when no YAML exists')
+
+
+def test_load_params_honors_env_override(monkeypatch):
+    """Full round-trip: load_params reads the env-pointed YAML."""
+    monkeypatch.setenv(ffp._HW_CONFIG_ENV, ffp._SRC_HW_YAML)
+    p = load_params()
+    assert isinstance(p, FrictionFFParams)
+    assert p.enabled is True

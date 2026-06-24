@@ -1,15 +1,36 @@
 """Friction-FF parameter loader.
 
 Reads the ``friction_ff`` block of ``config/hardware_config.yaml`` directly
-at runtime — NOT via the codegen'd ``hardware_config`` module — so that
-on-platform tuning of the per-leg friction parameters does not require a
-``generate_config.py`` rebuild + ROS2 redeploy cycle.
+at runtime — NOT via the codegen'd ``hardware_config`` module.
 
 The block is intentionally kept out of ``generate_config.py``'s
 ``HW_SECTIONS`` so it is not emitted into Python/C++/JS consumers that
 don't need it.  See the comment block above ``friction_ff:`` in
 ``config/hardware_config.yaml`` and §3.1 of
 ``plans/archived/2026-05-08 friction-ff-motor-guard-integration.md``.
+
+Path resolution (``_resolve_yaml_path``) covers both the source tree and
+the colcon install tree, because ``motor_guard`` runs from the install
+tree in production (launched via the ``motor_guard`` console-script entry
+point under ``install/jugglebot/lib/...``).  Resolution order, first
+existing wins:
+
+  1. ``$JUGGLEBOT_HW_CONFIG`` — explicit override.
+  2. The ament *share* dir (``<install>/share/jugglebot/config/
+     hardware_config.yaml``, installed via ``setup.py`` data_files).  This
+     is the canonical production path.
+  3. The source-tree YAML (for pytest / running from a checkout).
+
+CONTRACT CHANGE (Phase 11, 2026-06-24): the loader previously did a single
+rigid five-level ``__file__`` walk that resolved correctly only from the
+source tree; under the install tree it pointed at the never-installed
+``install/jugglebot/config/`` and raised ``FileNotFoundError`` (the
+motor_guard startup crash).  The fix installs the YAML into the ament
+share dir and resolves via that.  Because ``ament_python`` *copies*
+data_files at ``colcon build`` time (it does not symlink them), a friction
+re-tune of the source YAML now takes effect only after a ``colcon build
+--packages-select jugglebot`` — OR immediately via ``$JUGGLEBOT_HW_CONFIG``
+pointed at the source file, which is the supported in-place-tune path.
 
 Lazy-loaded by ``MotorGuard.__init__`` at construction time (not at module
 import) so test environments without a reachable YAML do not fail when the
@@ -25,14 +46,62 @@ import numpy as np
 import yaml
 
 
-# Walk up from ros_ws/src/jugglebot/jugglebot/motion/friction_ff_params.py
-# to the repo root: motion → jugglebot → jugglebot → src → ros_ws → repo.
+# Source-tree YAML: walk up from
+# ros_ws/src/jugglebot/jugglebot/motion/friction_ff_params.py to the repo
+# root (motion → jugglebot → jugglebot → src → ros_ws → repo).  Used as
+# the resolution fallback; correct only when run from the source checkout.
 _THIS_FILE = os.path.abspath(__file__)
-_REPO_ROOT = os.path.normpath(
+_SRC_REPO_ROOT = os.path.normpath(
     os.path.join(os.path.dirname(_THIS_FILE), '..', '..', '..', '..', '..'))
-_HW_YAML = os.path.join(_REPO_ROOT, 'config', 'hardware_config.yaml')
+_SRC_HW_YAML = os.path.join(_SRC_REPO_ROOT, 'config', 'hardware_config.yaml')
+
+# Explicit-override env var (escape hatch for in-place tuning without a
+# colcon rebuild, and for any detached deployment).
+_HW_CONFIG_ENV = 'JUGGLEBOT_HW_CONFIG'
 
 _N_LEGS = 6
+
+
+def _resolve_yaml_path() -> str:
+    """Locate ``hardware_config.yaml`` across the source and install trees.
+
+    See the module docstring for the resolution order.  Raises
+    ``FileNotFoundError`` listing every candidate tried if none exist
+    (preserves the loud fail-fast property of the original loader).
+    """
+    tried = []
+
+    env_path = os.environ.get(_HW_CONFIG_ENV)
+    if env_path:
+        if os.path.exists(env_path):
+            return env_path
+        tried.append(f'${_HW_CONFIG_ENV}={env_path}')
+
+    # ament share dir — present only under a built+sourced colcon overlay.
+    try:
+        from ament_index_python.packages import get_package_share_directory
+        share_path = os.path.join(
+            get_package_share_directory('jugglebot'),
+            'config', 'hardware_config.yaml')
+        if os.path.exists(share_path):
+            return share_path
+        tried.append(share_path)
+    except Exception:
+        # ament_index not importable (e.g. the pytest venv without ROS2
+        # sourced) or the package is not on the ament index — fall through
+        # to the source tree.
+        pass
+
+    if os.path.exists(_SRC_HW_YAML):
+        return _SRC_HW_YAML
+    tried.append(_SRC_HW_YAML)
+
+    raise FileNotFoundError(
+        'Could not locate hardware_config.yaml. Tried (in order): '
+        + '; '.join(tried)
+        + f'. Set ${_HW_CONFIG_ENV} to override, or run '
+          '`colcon build --packages-select jugglebot` to install it into '
+          'the ament share dir.')
 
 
 @dataclass(frozen=True)
@@ -83,10 +152,11 @@ def load_params(yaml_path: str | None = None) -> FrictionFFParams:
     Parameters
     ----------
     yaml_path : str, optional
-        Override the default path (mainly for tests).  Defaults to the
-        repo's ``config/hardware_config.yaml``.
+        Override the default path (mainly for tests).  When ``None``, the
+        path is resolved via :func:`_resolve_yaml_path` (env override →
+        ament share dir → source tree).
     """
-    path = yaml_path or _HW_YAML
+    path = yaml_path or _resolve_yaml_path()
     with open(path, 'r') as f:
         cfg = yaml.safe_load(f)
 
