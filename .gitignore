@@ -91,5 +91,8 @@ Ball Butler/hand_sensor_pcb_rail/fp-info-cache
 sim/tests/results/
 temp/
 
+# MuJoCo generated log (appears on GLFW/headless errors)
+MUJOCO_LOG.TXT
+
 # MkDocs build output
 site/
