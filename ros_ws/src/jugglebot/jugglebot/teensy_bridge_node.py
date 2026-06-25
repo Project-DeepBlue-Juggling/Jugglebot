@@ -1,12 +1,12 @@
 """Teensy can-bridge ROS 2 node — UDP-sourced mirror of ``can_node.py``.
 
-This is the Phase-10b side-by-side bridge: it exposes the same observable
-surface as :mod:`jugglebot.can_node` (robot state, hand telemetry, link/fault
-health) but sources everything from the can-bridge Teensy over the dedicated
-UDP link (``controller/teensy_link``) instead of socketcan. It runs *alongside*
-``can_node`` during the migration — **every topic it owns lives under
-``/teensy/*``; it never publishes to a production topic name** and never
-modifies any production code path.
+This is the can-bridge successor to :mod:`jugglebot.can_node`: it exposes the
+same observable surface (robot state, hand telemetry, link/fault health) but
+sources everything from the can-bridge Teensy over the dedicated UDP link
+(``controller/teensy_link``) instead of socketcan. ``can_node`` is out of the
+production launch (its USB-CAN path is dead), so the bridge now owns the
+**production topic/service names** directly (legs/hand promoted off the
+side-by-side ``/teensy/*`` namespace in Phase 11 / U4; BB + cone in Phase A).
 
 Safety invariants this node upholds (non-negotiable):
 
@@ -196,7 +196,7 @@ class _MpcCommandSetpointSource:
 
 
 class TeensyBridgeNode(Node):
-    """ROS 2 node bridging the can-bridge Teensy UDP link to ``/teensy/*``.
+    """ROS 2 node bridging the can-bridge Teensy UDP link to production topics.
 
     Args:
         client: An optional already-constructed :class:`TeensyLinkClient`. When
@@ -215,11 +215,11 @@ class TeensyBridgeNode(Node):
         # SAFETY-CRITICAL: setpoint output is OFF by default. Wired in Commit 3.
         self.declare_parameter('enable_setpoint_output', False)
         self.declare_parameter('heartbeat_timeout_s', _HEARTBEAT_TIMEOUT_S)
-        # Phase 9a: which axes the /teensy/encoder_search service runs index
+        # Phase 9a: which axes the encoder_search service runs index
         # search on. Default = all legs; set to e.g. [0] for the standalone-leg
         # bench rig (node 0 = axis 0).
         self.declare_parameter('encoder_search_axes', list(range(p.NUM_LEGS)))
-        # Phase 9b: which axes the /teensy/home service homes (sequentially — the
+        # Phase 9b: which axes the home service homes (sequentially — the
         # firmware homes one axis at a time). Default = all legs; set to e.g. [0]
         # for the standalone-leg bench rig (node 0 = axis 0).
         self.declare_parameter('home_axes', list(range(p.NUM_LEGS)))
@@ -308,23 +308,28 @@ class TeensyBridgeNode(Node):
         self._client.subscribe(int(MsgType.BB_AXIS_ESTIMATES), self._on_bb_estimates)
         self._client.subscribe(int(MsgType.CMD_RESULT), self._on_cmd_result)
 
-        # ── Publishers (all under /teensy/*) ───────────────────
+        # ── Publishers (production names — Phase 11 / U4 leg-side cutover) ──
+        # Promoted from the /teensy/* namespace to the production topic names
+        # can_node used: with USB-CAN gone (can_node out of the launch), the
+        # dual-publisher risk that drove the /teensy/* namespacing (handoff D1)
+        # is moot, and the GUI / orchestrator / consumers subscribe to these
+        # production names — so the rename RECONNECTS them to the bridge.
         self.robot_state_pub = self.create_publisher(
-            RobotState, '/teensy/robot_state', 10)
+            RobotState, 'robot_state', 10)
         self.hand_telemetry_pub = self.create_publisher(
-            HandTelemetryMessage, '/teensy/hand_telemetry', 10)
+            HandTelemetryMessage, 'hand_telemetry', 10)
         self.link_status_pub = self.create_publisher(
-            DiagnosticStatus, '/teensy/link_status', 10)
+            DiagnosticStatus, 'link_status', 10)
         self.profile_pub = self.create_publisher(
-            DiagnosticStatus, '/teensy/profile', 10)
+            DiagnosticStatus, 'profile', 10)
 
         # ── Ball Butler (Phase A cutover, production names) ────
         # Intentional naming deviation from D1's "all under /teensy/*"
         # convention: with USB-CAN removed, the dual-publisher risk D1 was
         # preventing is moot (can_node is gone for BB). The bridge inherits
         # the production names so the GUI / orchestrator / mocap_node /
-        # throw_director see no name change across the cutover. Leg/hand
-        # services keep /teensy/* until phase C of the cutover.
+        # throw_director see no name change across the cutover. (The leg/hand
+        # topics + services followed onto production names in Phase 11 / U4.)
         self.bb_heartbeat_pub = self.create_publisher(
             BallButlerHeartbeat, 'bb/heartbeat', 10)
 
@@ -361,22 +366,26 @@ class TeensyBridgeNode(Node):
         # (_bb_est_queue is initialized above, before the subscribe block, to
         # avoid a startup race with the already-live RX thread.)
 
-        # ── RPC service surface (Commit 4) — all under /teensy/* ──
+        # ── RPC service surface (production names — Phase 11 / U4) ──
         # ODrive control issued over the can-bridge link via RpcClient. The
         # can-bridge owns legs 0-5 only — the hand is the platform Teensy's, and
         # the firmware rejects hand-axis RPCs — so these target legs/broadcast.
+        # Promoted from /teensy/* to the production names can_node served
+        # (encoder_search, odrive_command, set_motor_vel_curr_limits) so the
+        # orchestrator's existing service clients reach the bridge; clear_errors,
+        # reboot_odrives and home are new bridge ops, named bare for consistency.
         # Services using EXISTING ROS types are wired here; the arg-bearing
         # per-axis ops (set_axis_state, set_controller_mode, per-axis gains,
         # set_absolute_position, sdo_read/write) are tested node methods pending
         # new jugglebot_interfaces .srv types (handoff D10).
-        self.create_service(Trigger, '/teensy/clear_errors', self._svc_clear_errors)
-        self.create_service(Trigger, '/teensy/reboot_odrives', self._svc_reboot_odrives)
-        self.create_service(Trigger, '/teensy/encoder_search', self._svc_encoder_search)
-        self.create_service(Trigger, '/teensy/home', self._svc_home)
-        self.create_service(ODriveCommandService, '/teensy/odrive_command',
+        self.create_service(Trigger, 'clear_errors', self._svc_clear_errors)
+        self.create_service(Trigger, 'reboot_odrives', self._svc_reboot_odrives)
+        self.create_service(Trigger, 'encoder_search', self._svc_encoder_search)
+        self.create_service(Trigger, 'home', self._svc_home)
+        self.create_service(ODriveCommandService, 'odrive_command',
                             self._svc_odrive_command)
         self.create_subscription(
-            SetMotorVelCurrLimitsMessage, '/teensy/set_motor_vel_curr_limits',
+            SetMotorVelCurrLimitsMessage, 'set_motor_vel_curr_limits',
             self._sub_vel_curr_limits, 10)
 
         # ── Ball Butler services (production names, Phase A cutover) ────
@@ -598,7 +607,7 @@ class TeensyBridgeNode(Node):
         return states
 
     def _publish_robot_state(self):
-        """Publish /teensy/robot_state, mirroring can_node._publish_robot_state.
+        """Publish robot_state, mirroring can_node._publish_robot_state.
 
         Suppressed until the first Telemetry frame arrives so the topic never
         carries a misleading all-zero / all-IDLE snapshot before the link is up.
@@ -621,8 +630,8 @@ class TeensyBridgeNode(Node):
             # headline determination is its single-valued HeartbeatT2J.fault_state.
             # But fault_state is single-valued, so a higher-priority fault (e.g.
             # CAN_BUS_DOWN) can MASK a concurrent ODrive fault — which would make
-            # /teensy/robot_state disagree with /robot_state for the same hardware
-            # state (defeating the side-by-side comparison). So we also OR in the
+            # robot_state under-report a real per-leg fault for the same hardware
+            # state. So we also OR in the
             # raw per-leg fatal conditions can_node uses (active error on any leg,
             # or disarm-while-CLOSED_LOOP — can_node._handle_error:416-421), keeping
             # the comparison faithful WITHOUT re-running the Teensy's stateful
@@ -682,7 +691,7 @@ class TeensyBridgeNode(Node):
                                     throttle_duration_sec=5.0)
 
     def _publish_hand_telemetry(self):
-        """Publish /teensy/hand_telemetry from axis 6 of the Telemetry frame.
+        """Publish hand_telemetry from axis 6 of the Telemetry frame.
 
         Mirrors can_node._publish_hand_telemetry's measured side. The command
         fields (pos_cmd/vel_ff_cmd/tor_ff_cmd) are not echoed on the can-bridge
@@ -724,7 +733,7 @@ class TeensyBridgeNode(Node):
         latch and do NOT command the Teensy (the firmware's own fault machine
         holds the legs safely while the link is down — and frames wouldn't be
         delivered anyway). On confirmed reconnect, the latch stays ``stow_pending``
-        and the bridge SURFACES it on /teensy/link_status for the operator /
+        and the bridge SURFACES it on link_status for the operator /
         orchestrator. The bridge does NOT auto-execute a stow: there is no stow
         RPC until firmware Phase 9, and the Teensy already owns the profiled
         CAN-side stow (decision D12). This is the "always stow on confirmed
@@ -747,7 +756,7 @@ class TeensyBridgeNode(Node):
                         "Teensy link RESTORED — a mid-run loss occurred. "
                         "STOW PENDING: no stow RPC exists yet (firmware Phase 9); "
                         "operator/orchestrator must stow the platform. Surfaced "
-                        "on /teensy/link_status (bridge_stow_pending=1).")
+                        "on link_status (bridge_stow_pending=1).")
                 else:
                     self.get_logger().info("Teensy link RESTORED.")
             self._last_link_lost = self._link_latch.link_lost
@@ -836,7 +845,7 @@ class TeensyBridgeNode(Node):
         self._client.send_stream(int(MsgType.SETPOINT), sp.pack())
 
     def _publish_link_status(self):
-        """Publish /teensy/link_status as a DiagnosticStatus.
+        """Publish link_status as a DiagnosticStatus.
 
         Surfaces the Teensy's reported link/fault/bus health AND the bridge's
         own view of link liveness (heartbeat age) plus — critically — the
@@ -948,7 +957,7 @@ class TeensyBridgeNode(Node):
         self.bb_odrive_pub.publish(msg)
 
     def _publish_profile(self):
-        """Publish /teensy/profile (firmware instrumentation) as DiagnosticStatus."""
+        """Publish profile (firmware instrumentation) as DiagnosticStatus."""
         try:
             with self._lock:
                 pr = self._latest_profile

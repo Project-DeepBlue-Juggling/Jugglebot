@@ -7,7 +7,7 @@ controller/teensy_link/encoder_search.EncoderSearch state machine against real
 hardware over the UDP link, using the SET_AXIS_STATE primitive — the same
 orchestration teensy_bridge_node._run_encoder_search uses; this standalone driver
 just gives inline observation. The PRODUCTION path is the
-``/teensy/encoder_search`` ROS service (scoped by the ``encoder_search_axes``
+``encoder_search`` ROS service (scoped by the ``encoder_search_axes``
 parameter); use this driver for bench bring-up of one leg.
 
 Lives in tests/hardware/ (not tools/probes/) because it COMMANDS THE MOTOR — per

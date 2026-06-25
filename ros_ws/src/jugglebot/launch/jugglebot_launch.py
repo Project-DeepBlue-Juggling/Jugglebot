@@ -55,9 +55,10 @@ def generate_launch_description():
     # teensy_bridge_node owns the UDP link. The executable remains available
     # for legacy bench use via `ros2 run jugglebot can_node`.
 
-    # teensy_bridge_node — the can-bridge UDP link (owns /teensy/*, /bb/*,
-    # /cone/* incl. /bb/axis_estimates). Folded into the main bring-up now that
-    # the cutover is complete. SAFETY: enable_setpoint_output defaults FALSE
+    # teensy_bridge_node — the can-bridge UDP link (owns the production leg/hand
+    # topics + services, /bb/*, /cone/* incl. /bb/axis_estimates). Folded into
+    # the main bring-up now that the cutover is complete. SAFETY:
+    # enable_setpoint_output defaults FALSE
     # (the bridge sends mpc_active=0 — no leg/setpoint downlink — until an
     # operator flips it AFTER bench validation with motors powered).
     teensy_ip = LaunchConfiguration('teensy_ip')

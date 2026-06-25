@@ -3,7 +3,7 @@
 Exercises the UDP→ROS mirror end-to-end on loopback: a ``FakeTeensy`` (reused
 from ``tests/teensy_link/conftest.py``) injects T→J frames, the real
 ``TeensyLinkClient`` RX thread decodes + dispatches them to the node's
-callbacks, and we assert the node publishes the right ``/teensy/*`` messages.
+callbacks, and we assert the node publishes the right (production-named) messages.
 
 ROS 2 is mocked by ``tests/ros/conftest.py`` (so ``create_publisher`` returns a
 recording ``MockPublisher`` and timers don't auto-fire — we call the publish
@@ -125,26 +125,45 @@ def test_enable_setpoint_output_defaults_false(bridge):
 
 # ── Topic namespace discipline ─────────────────────────────────
 
-# Intentional exceptions to the /teensy/* convention (D1 deviation, Phase A
-# BB cutover + phase-10b cone uplink): the bridge inherits the production
-# names for BB and cone topics so the GUI / orchestrator / mocap_node /
-# throw_director / catch_correlation_node see no name change across the
-# cutover. With USB-CAN removed, the dual-publisher risk that drove D1 is
-# moot. The leg/hand services stay under /teensy/* until phase C.
-_PRODUCTION_NAMES_OK = {'bb/heartbeat', 'bb/odrive_diag', 'bb/axis_estimates',
-                        'cone/catch_event', 'cone/heartbeat'}
+# Phase 11 / U4 (leg/hand cutover): the side-by-side ``/teensy/*`` namespace
+# (handoff D1) is fully retired. ``can_node`` is out of the production launch,
+# so the dual-publisher risk D1 prevented is moot and the bridge owns the
+# PRODUCTION topic/service names directly — which is what reconnects the GUI /
+# orchestrator / consumers (they subscribe to the bare names). BB + cone were
+# promoted in Phase A; the legs/hand follow here.
 
 
-def test_all_topics_under_teensy_namespace(bridge):
-    """No publisher targets a production topic name — all under /teensy/*
-    EXCEPT the intentional D1-deviation set (BB cutover, Phase A)."""
+def test_no_publisher_under_teensy_namespace(bridge):
+    """The rename is complete: NO publisher remains under the ``/teensy/*``
+    namespace, and the leg/hand production names the GUI subscribes to are
+    present."""
     _, node = bridge
     topics = list(node._publishers.keys())
     assert topics, "node created no publishers"
     for t in topics:
-        if t in _PRODUCTION_NAMES_OK:
-            continue
-        assert t.startswith('/teensy/'), f"non-namespaced topic: {t}"
+        assert not t.startswith('/teensy/') and not t.startswith('teensy/'), \
+            f"leftover /teensy/* topic (rename incomplete): {t}"
+    # The leg/hand production names must be published (GUI subscribes to these).
+    for expected in ('robot_state', 'hand_telemetry', 'link_status', 'profile'):
+        assert expected in topics, f"missing production topic: {expected}"
+
+
+def test_leg_hand_services_use_production_names(bridge):
+    """Phase 11 / U4: the leg/hand RPC services were promoted off /teensy/* to
+    the production names the orchestrator's service clients depend on
+    (encoder_search, odrive_command, set_motor_vel_curr_limits) plus the
+    bridge-new ops (clear_errors, reboot_odrives, home). A typo here would
+    silently disconnect the orchestrator, so pin the exact names."""
+    _, node = bridge
+    svcs = set(node._services.keys())
+    subs = set(node._subscriptions.keys())
+    expected_svcs = {'clear_errors', 'reboot_odrives', 'encoder_search',
+                     'home', 'odrive_command'}
+    assert expected_svcs <= svcs, f"missing services: {expected_svcs - svcs}"
+    assert 'set_motor_vel_curr_limits' in subs
+    for name in svcs | subs:
+        assert not name.startswith('/teensy/') and not name.startswith('teensy/'), \
+            f"leftover /teensy/* service/subscription: {name}"
 
 
 # ── robot_state ────────────────────────────────────────────────
@@ -293,7 +312,7 @@ def test_undervoltage_flag_from_active_error_bitwise(bridge):
 def test_undervoltage_not_asserted_from_disarm_only(bridge):
     """disarm_reason==UV alone must NOT assert has_undervoltage — can_node sets
     the flag only from active_errors (disarm==UV is its clear predicate). This
-    keeps /teensy/robot_state agreeing with /robot_state for the recovered state."""
+    keeps robot_state faithful to can_node's semantics for the recovered state."""
     teensy, node = bridge
     teensy.send_telemetry()
     diag = Diagnostic(axis_id=0, axis_state=1, active_errors=0, disarm_reason=512)

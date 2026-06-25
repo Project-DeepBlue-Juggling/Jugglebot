@@ -1,10 +1,11 @@
-"""Standalone launch for the Phase-10b can-bridge Teensy node.
+"""Standalone launch for the can-bridge Teensy node.
 
-This is **deliberately separate** from ``jugglebot_launch.py``: during the
-side-by-side migration the can-bridge bridge runs alongside the production
-``can_node`` and must be started **manually** by the operator, never as part of
-the default robot bring-up. It owns only ``/teensy/*`` topics, so it cannot
-interfere with the production control path.
+This is a convenience launch for bench bring-up of the bridge in isolation.
+The bridge is now folded into ``jugglebot_launch.py`` (the cutover is complete),
+so do NOT run this *alongside* the main launch — the node owns the production
+leg/hand/BB/cone topic + service names (Phase 11 / U4 promoted the legs/hand off
+the old side-by-side ``/teensy/*`` namespace), so a second instance would create
+duplicate publishers on those names. Use this only when the main launch is down.
 
 Safety: setpoint output is OFF by default (``enable_setpoint_output:=false``).
 The bridge sends ``mpc_active=0`` to the Teensy until an operator explicitly

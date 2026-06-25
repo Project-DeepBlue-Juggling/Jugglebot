@@ -452,6 +452,8 @@ class MockNode:
         self._logger = MockLogger()
         self._clock = MockClock()
         self._publishers = {}
+        self._services = {}
+        self._subscriptions = {}
         self._clients = {}
         self._params = {}
 
@@ -469,7 +471,14 @@ class MockNode:
         return _MockParameter(self._params.get(name))
 
     def create_service(self, *a, **kw):
-        return MagicMock()
+        # Record the service name (2nd positional, or 'srv_name' kwarg) so tests
+        # can assert the production service surface — e.g. the Phase 11 / U4
+        # rename that the orchestrator's clients now depend on.
+        name = a[1] if len(a) >= 2 else kw.get('srv_name')
+        svc = MagicMock()
+        if name is not None:
+            self._services[name] = svc
+        return svc
 
     def create_client(self, srv_type, name):
         client = MockServiceClient()
@@ -478,7 +487,13 @@ class MockNode:
         return client
 
     def create_subscription(self, *a, **kw):
-        return MagicMock()
+        # Record the topic name (2nd positional, or 'topic' kwarg) for the same
+        # reason as create_service.
+        name = a[1] if len(a) >= 2 else kw.get('topic')
+        sub = MagicMock()
+        if name is not None:
+            self._subscriptions[name] = sub
+        return sub
 
     def create_publisher(self, msg_type, topic, qos):
         pub = MockPublisher()

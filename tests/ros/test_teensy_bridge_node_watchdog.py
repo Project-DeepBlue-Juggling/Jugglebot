@@ -9,7 +9,7 @@ the test sets it.
 The fault-decision-tree fidelity (FaultEvaluator / DeferredStowLatch vs the
 firmware spec) is covered in tests/teensy_link/test_fault_logic_mirror.py; this
 file covers the *wiring* of the link latch into the node and its surfacing on
-/teensy/link_status.
+link_status.
 """
 
 from __future__ import annotations

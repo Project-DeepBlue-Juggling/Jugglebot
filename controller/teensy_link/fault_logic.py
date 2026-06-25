@@ -191,7 +191,7 @@ class LinkLossLatch:
       * ``command_allowed()`` is False while the link is down — **never command a
         dead link** (and you physically can't: frames won't be delivered).
       * On confirmed reconnect the latch stays ``stow_pending`` and the bridge
-        SURFACES it (``/teensy/link_status``) for the operator/orchestrator. The
+        SURFACES it (``link_status``) for the operator/orchestrator. The
         bridge does NOT auto-execute a stow: the Teensy firmware owns the
         profiled CAN-side stow (``interp_begin_stow``), and there is no stow RPC
         on the Jetson side until firmware Phase 9. ``acknowledge_stow()`` clears

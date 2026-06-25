@@ -9,7 +9,7 @@ the velocity-limited move-to-hardstop lives in firmware. This driver fires the
 HOME RPC (fire-and-monitor) and drives the TESTED
 controller/teensy_link/homing.HomingMonitor to observe completion from telemetry,
 exactly as teensy_bridge_node._run_home does; this standalone driver just gives
-inline observation. The PRODUCTION path is the ``/teensy/home`` ROS service
+inline observation. The PRODUCTION path is the ``home`` ROS service
 (scoped by the ``home_axes`` parameter); use this driver for bench bring-up of one
 leg.
 
