@@ -23,6 +23,7 @@ commits:
   - cb0d158
   - 50fc8fe
   - aa74fdf
+  - 123b386
 subsystem:
   - can
   - controller
@@ -136,10 +137,17 @@ the vector is needed and the module stays pure.
 - **Bumpless parity (the safety invariant):** `tests/firmware/test_hermite_xref.py::
   test_beta_pump_knots_match_motor_guard` asserts the pump's `u0/u1/u2/v0` equal a
   live `MotorGuard`'s latched base (motor_rev-present with a synthetic +0.5 rev
-  offset, ext-fallback, and `cmd_next2`-absent paths), bit-exact (`atol=1e-12`).
-  The interp cross-check `xref.py` still reports **0.000e+00 rev** (threshold
-  1e-6), so the firmware Hermite still matches `motor_guard`'s interp for the β
-  knots.
+  offset, ext-fallback, `cmd_next2`-absent, and over-long-lookahead paths),
+  bit-exact (`atol=1e-12`). The interp cross-check `xref.py` still reports
+  **0.000e+00 rev** (threshold 1e-6), so the firmware Hermite still matches
+  `motor_guard`'s interp for the β knots. *(Hardening from the holistic U4 audit,
+  `123b386`: the pump's length gates were tightened `>= n` → `== n` to mirror
+  `motor_guard`'s `shape == (6,)` contract exactly — a malformed >6-element
+  lookahead now clears the flag (Taylor fallback) rather than silently taking the
+  first 6 and emitting a divergent-but-accepted β frame; the parity test's
+  7-element path pins that both the pump and a live `MotorGuard` clear it.
+  Unreachable on the real wire today — `make_mpc_command` sends exactly-6 — but it
+  closes a latent bumplessness-divergence class.)*
 - **Pump unit tests** (`tests/teensy_link/test_setpoint_pump.py`, rewritten for the
   MPC-dict input): field mapping, `motor_rev`-preferred-over-ext (no stow jump),
   flag clearing, `torque_ff` always zero (D9), per-step gate on `u0`, the safety
