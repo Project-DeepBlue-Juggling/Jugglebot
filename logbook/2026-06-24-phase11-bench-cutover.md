@@ -40,6 +40,8 @@ commits:
   - 930f70e
   - 489b495
   - 7f88721
+  - b6d6392
+  - a5d5b7e
 subsystem:
   - can
   - controller
