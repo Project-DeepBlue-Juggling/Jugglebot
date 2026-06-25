@@ -68,14 +68,21 @@ from typing import Optional
 
 import numpy as np
 
-# Make controller/ and sim/ importable when this script is run directly
-# (mirrors the path setup in sim/main.py).
+# Make sim/, controller/, the jugglebot ROS2 package, and generated config
+# importable when this script is run directly on a fresh clone — without
+# requiring the jugglebot package to be pip-installed (as it is on the
+# Jetson venv). Mirrors the path entries in tests/conftest.py so the demo
+# runs from any checkout with no PYTHONPATH/install dance.
 _sim_dir = os.path.dirname(os.path.abspath(__file__))
-if _sim_dir not in sys.path:
-    sys.path.insert(0, _sim_dir)
 _repo_root = os.path.dirname(_sim_dir)
-if _repo_root not in sys.path:
-    sys.path.insert(0, _repo_root)
+for _p in (
+    _sim_dir,                                               # bare hand/, ball_butler/ imports
+    _repo_root,                                             # controller.*
+    os.path.join(_repo_root, 'ros_ws', 'src', 'jugglebot'),  # jugglebot.motion.* (pure-Python ROS2 pkg)
+    os.path.join(_repo_root, 'config', 'generated'),        # generated hardware/protocol config
+):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 from controller.ballistics import compute_launch_velocity
 from controller.demo.pattern import JugglePattern
