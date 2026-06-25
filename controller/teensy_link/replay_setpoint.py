@@ -80,6 +80,51 @@ def load_recorded_axis(csv_path: str, axis: int, mm_to_rev: float) -> List[float
     return out
 
 
+def time_stretch(samples: List[float], factor: float) -> List[float]:
+    """Resample a 40 Hz position trajectory to play ``factor``× slower.
+
+    The samples sit on the firmware ``SEGMENT_T_S`` (0.025 s) grid, so to stretch
+    wall-clock time by ``factor`` (>1 = slower) we resample to ``factor``× as many
+    grid points by linear interpolation along the original index. The **position
+    range and shape are preserved exactly** (endpoints unchanged) — only the time
+    axis dilates, so per-frame **velocity scales 1/factor**, and the per-frame
+    velocity *steps* at the knots (the onset the leg must chase) also scale
+    1/factor. (Note: a *continuous* time-dilation would scale acceleration by
+    1/factor², but a linear resample keeps the velocity steps discrete at the
+    original knots — just smaller — so the per-frame demand scales 1/factor;
+    verified empirically: peak step-accel 75→38→25 rev/s² at 1×/2×/3×.)
+
+    Why: a real-robot throw recording's *onset acceleration* can exceed what the
+    (current-limited) bench leg can produce, so it under-tracks and trips the
+    deviation belt before the float32 interp residual can be measured cleanly
+    (the firmware lead clamp saturates → ``cmd_teensy`` is no longer the pure
+    interp output). The **float32 residual is speed-independent** (it's float32-
+    vs-float64 arithmetic on ~3 rev position values, identical however slowly the
+    same positions are traversed), so stretching lets the leg track the trajectory
+    within the lead clamp — yielding a valid residual — and gives a clean,
+    measurable from-rest onset for the D9 friction-FF A/B. ``factor == 1.0`` is a
+    no-op (returns a copy).
+    """
+    if factor <= 0:
+        raise ValueError(f"time_stretch factor must be > 0, got {factor}")
+    if factor == 1.0:
+        return list(samples)
+    n = len(samples)
+    if n < 2:
+        return list(samples)
+    new_n = max(2, int(round((n - 1) * factor)) + 1)
+    out: List[float] = []
+    for j in range(new_n):
+        x = j / factor                       # fractional original index
+        k = int(math.floor(x))
+        if k >= n - 1:
+            out.append(samples[-1])
+        else:
+            frac = x - k
+            out.append(samples[k] + (samples[k + 1] - samples[k]) * frac)
+    return out
+
+
 @dataclass(frozen=True)
 class ScaleInfo:
     """What :func:`scale_to_bench` did, for logging (never silently truncate)."""

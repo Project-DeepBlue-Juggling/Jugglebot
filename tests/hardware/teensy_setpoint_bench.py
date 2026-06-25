@@ -71,7 +71,7 @@ from controller.teensy_link.synthetic_setpoint import (  # noqa: E402
     SyntheticKnotSource, TrajectoryParams,
 )
 from controller.teensy_link.replay_setpoint import (  # noqa: E402
-    RecordedThrowSource, load_recorded_axis, scale_to_bench,
+    RecordedThrowSource, load_recorded_axis, scale_to_bench, time_stretch,
 )
 import jugglebot.hardware_config as hw  # noqa: E402
 import jugglebot.protocol_config as pc  # noqa: E402
@@ -223,9 +223,29 @@ def main():
                          "the can-bridge applies leg_sign on the way to the ODrive, so the "
                          "bench torque is sign-identical to production. Omit for the "
                          "friction-FF-free β path (the other A/B arm).")
+    ap.add_argument("--max-dev", type=float, default=DEVIATION_ABORT_REV, metavar="REV",
+                    help=f"driver deviation-belt abort threshold (rev). Default "
+                         f"{DEVIATION_ABORT_REV}; the firmware MAX_DEVIATION (0.5) is the "
+                         f"hard backstop, so values up to ~0.5 stay within it. Raise it for "
+                         f"an aggressive replay whose onset transient legitimately exceeds "
+                         f"the default before the leg catches up.")
+    ap.add_argument("--vel-limit", type=float, default=None, metavar="RPS",
+                    help="override the ODrive vel_limit set by --close-loop (default: "
+                         "hardware_config ODRIVE_LEG_VEL_LIMIT_RPS). --close-loop ALWAYS "
+                         "writes this at arm, so a manual odrivetool bump is otherwise "
+                         "overwritten — use this flag to make it stick.")
+    ap.add_argument("--replay-stretch", type=float, default=1.0, metavar="FACTOR",
+                    help="time-stretch the replay by FACTOR (>1 = slower; default 1.0). "
+                         "Preserves the position shape; per-frame velocity and the knot "
+                         "velocity-steps both scale 1/FACTOR. Use when an aggressive throw "
+                         "onset out-accelerates the leg (deviation-belt abort): the float32 "
+                         "residual is speed-independent, so stretching yields a trackable "
+                         "trajectory with a valid residual + a clean from-rest onset.")
     args = ap.parse_args()
     if args.friction_ff and not args.replay:
         ap.error("--friction-ff requires --replay (the synthetic source has no torque_ff hook)")
+    if args.max_dev <= 0 or args.max_dev > 0.5:
+        ap.error(f"--max-dev {args.max_dev} out of (0, 0.5] (0.5 = firmware MAX_DEVIATION backstop)")
     axis = args.axis
 
     # Fatal/CAN faults: in --observe we cede wire authority so the firmware's
@@ -272,7 +292,8 @@ def main():
         # position (the hardstop) — no jolt. Values come from hardware_config
         # (never hardcoded) so they track the canonical leg config.
         if args.close_loop:
-            vel_lim = float(hw.ODRIVE_LEG_VEL_LIMIT_RPS)
+            vel_lim = float(args.vel_limit if args.vel_limit is not None
+                            else hw.ODRIVE_LEG_VEL_LIMIT_RPS)
             curr_lim = float(hw.ODRIVE_LEG_CURR_LIMIT_A)
             pos_gain = float(hw.ODRIVE_LEG_POS_GAINS[axis])
             vel_gain = float(hw.ODRIVE_LEG_VEL_GAINS[axis])
@@ -359,6 +380,8 @@ def main():
                 from jugglebot.motion.geometry import StewartGeometry
                 mm_to_rev = float(StewartGeometry().mm_to_rev[axis])
                 raw = load_recorded_axis(args.replay, axis, mm_to_rev)
+                if args.replay_stretch != 1.0:
+                    raw = time_stretch(raw, args.replay_stretch)
                 scaled, sinfo = scale_to_bench(raw, stroke_min_rev=STROKE_MIN_REV[axis])
                 gen = RecordedThrowSource(
                     scaled, axis=axis, start_rev=start,
@@ -380,7 +403,8 @@ def main():
 
         print("\n── planned motion ─────────────────────────────────────────────")
         if args.replay:
-            print(f"  axis {axis}: REPLAY {args.replay.split('/')[-1]}")
+            stretch_note = "" if args.replay_stretch == 1.0 else f"  [time-stretch {args.replay_stretch}x]"
+            print(f"  axis {axis}: REPLAY {args.replay.split('/')[-1]}{stretch_note}")
             print(f"    raw [{sinfo.raw_min_rev:.3f}, {sinfo.raw_max_rev:.3f}] rev → "
                   f"scaled [{sinfo.scaled_min_rev:.3f}, {sinfo.scaled_max_rev:.3f}] "
                   f"(pos_scale {sinfo.pos_scale:.3f}, ceiling {sinfo.ceiling_rev})")
@@ -513,9 +537,9 @@ def main():
             # Deviation belt — runaway backstop, hard abort in BOTH modes.
             if enc is not None:
                 expected = _clamp(cmd, STROKE_MIN_REV[axis], STROKE_MAX_REV[axis])
-                if abs(expected - enc) > DEVIATION_ABORT_REV:
+                if abs(expected - enc) > args.max_dev:
                     abort_reason = (f"tracking deviation {abs(expected - enc):.3f} rev "
-                                    f"> {DEVIATION_ABORT_REV} (cmd≈{expected:+.3f}, enc={enc:+.3f})")
+                                    f"> {args.max_dev} (cmd≈{expected:+.3f}, enc={enc:+.3f})")
                     break
 
             if t - last_print >= 0.2:              # ~5 Hz status

@@ -18,6 +18,7 @@ from controller.teensy_link.replay_setpoint import (
     ScaleInfo,
     load_recorded_axis,
     scale_to_bench,
+    time_stretch,
     DEFAULT_SEG_T_S,
     DEFAULT_CEILING_REV,
     FLAG_HAS_U1,
@@ -28,6 +29,41 @@ from controller.teensy_link.replay_setpoint import (
 S_MIN = 0.070917
 S_MAX = 3.900413
 DT = DEFAULT_SEG_T_S
+
+
+# ── Time-stretch ────────────────────────────────────────────────────────────────
+
+def test_time_stretch_factor_one_is_noop():
+    s = [0.1, 0.3, 0.8, 1.5, 1.2]
+    assert time_stretch(s, 1.0) == s
+
+
+def test_time_stretch_preserves_endpoints_and_range():
+    s = [0.1, 0.3, 0.8, 1.5, 1.2]
+    out = time_stretch(s, 3.0)
+    assert out[0] == pytest.approx(s[0])
+    assert out[-1] == pytest.approx(s[-1])
+    assert min(out) >= min(s) - 1e-9 and max(out) <= max(s) + 1e-9
+
+
+def test_time_stretch_lengthens_by_factor():
+    s = list(range(11))           # 11 samples, 10 segments
+    out = time_stretch([float(x) for x in s], 2.0)
+    assert len(out) == 21         # 20 segments + 1
+
+
+def test_time_stretch_halves_chord_velocity():
+    # A constant-velocity ramp: per-frame step should scale 1/factor.
+    s = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5]
+    out = time_stretch(s, 2.0)
+    steps = [out[i] - out[i - 1] for i in range(1, len(out))]
+    # original step 0.1 → stretched step 0.05 (within interpolation).
+    assert max(steps) == pytest.approx(0.05, abs=1e-9)
+
+
+def test_time_stretch_rejects_nonpositive():
+    with pytest.raises(ValueError):
+        time_stretch([0.0, 1.0], 0.0)
 
 
 # ── Loader ────────────────────────────────────────────────────────────────────
