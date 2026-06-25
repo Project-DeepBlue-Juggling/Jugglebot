@@ -60,9 +60,11 @@ stages (i) approach+hold and (ii) bounded sinusoid now PASS on hardware** (see
 fault-replay **link-drop sub-test (A)** then confirmed the firmware MPC-staleness
 gating, the `motor_guard` config-path crash was fixed (`c584767`), and the U3-iv
 real-MPC residual tooling — a `LegCmd` firmware uplink (`b06699f`) + a recorded-throw
-replay source (`a277274`) — was built desk-side; the **CAN3 sub-test (B) + the U3-iv
-hardware run are blocked on a Jetson `eth0` kernel hang** the link-drop method
-triggered (see *U3 tail — continued*).
+replay source (`a277274`) — was built desk-side. The **CAN3 sub-test (B) then PASSED
+on hardware** (2026-06-25): the Phase-8 deferred-stow safety inversion fired on
+confirmed reconnect with a measured descent peak of 2.472 rev/s ≤ the 2.5 rev/s cap
+(see *sub-test B + recovery*). U3-iii is substantively complete; the U3-iv real-MPC
+run now only waits on the 48 V PSU (21 V is back-EMF-marginal for the throw peak).
 
 ## Motivation
 
@@ -363,6 +365,17 @@ observe. **Use `sudo ip link set eth0 down` … `up` instead** — identical lin
 semantics (UDP stops → `MPC_STALE`), no netdev teardown, instant clean restore. The
 CAN3 unplug (sub-test B) is unaffected (CAN3 is not a netdev with this issue).
 
+*Confirmed + accepted as a known weakness (operator, follow-up testing).* The
+operator independently retried recovery paths and confirmed the conclusion: a
+**physical** unplug of the USB↔Ethernet adapter is **unrecoverable without a Jetson
+reboot** (the `unregister_netdevice` refcount leak does not drain, the dongle does
+not cleanly re-enumerate). This is accepted as a documented operational weakness
+rather than chased further, on the rationale that the USB↔Ethernet connector sits in
+a physically safe location and is never disturbed during normal operation — so the
+real-world trigger (an accidental yank of *that* connector) effectively never fires.
+The mitigation for *testing* link drops stands (use `ip link down/up`); the physical
+unplug is simply out of scope to recover from in software.
+
 **U3-iv desk-side tooling — built + committed; flash + run pending eth0.** With the
 hardware blocked, the U3-iv (real-MPC residual + motion-onset) tooling was built
 off-hardware:
@@ -395,23 +408,92 @@ off-hardware:
   `RecordedThrowSource`, captures `LegCmd` into a `cmd_teensy_rev` CSV column = the
   residual datum).
 
+## U3-iii powered fault-replay — sub-test B + recovery (2026-06-25)
+
+With `eth0` restored (the dongle re-seated + Jetson rebooted — the physical-unplug
+hang is now an *accepted weakness*, above), the powered tail resumed. The `LegCmd`
+firmware (`b06699f`) was **flashed over USB and validated on hardware**: `TELEMETRY`
++ the new `LEG_CMD` frame both decode cleanly at 100 Hz. A pre-arm diagnostic read
+caught the leg **unpowered** (`bus_V = 0.0 V`, `active_errors = 0x201` =
+`INITIALIZING | DC_BUS_UNDER_VOLTAGE`) — the canonical unpowered-bench signature
+([[feedback_uniform_undervoltage_benign]]); the errors **self-cleared the instant
+the DC bus came up**. The bench supply only reaches **21 V** (vs the production
+~48 V), which is electrically safe for this gentle test — the leg ODrive's
+`dc_bus_undervoltage_trip_level` is 10.5 V — but back-EMF-marginal for the
+higher-speed U3-iv throw, so U3-iv waits on the 48 V PSU.
+
+**Sub-test B (CAN3 drop → deferred-stow recovery) — PASS.** Leg armed via
+`--close-loop` to a clean hold at 0.30 rev (`--observe` mode, sole wire authority,
+e-stop in hand). Operator unplugged CAN3, waited ~5 s, replugged. Captured on the
+always-on telemetry CSV (`setpoint_bench_ax0_observe_20260625_133918.csv`):
+
+| t (s) | Event | Reading |
+|------:|-------|---------|
+| ~15.83 | CAN3 unplugged | — |
+| 15.98 | `MOTOR_FB_STALE` (fault 7) | +0.15 s — recoverable feedback-staleness intermediate |
+| 17.78 | **`CAN_BUS_DOWN` (fault 6)** | ~2.0 s after the last leg heartbeat — the `CAN_HEARTBEAT_TIMEOUT_US` clock (`fault_step` measures `now − last_heartbeat_us`), which is ≈ +1.95 s vs the operator's ~15.83 s unplug estimate ✓; driver cedes authority (flags=0, streaming off) |
+| 17.8 → 22.8 | **leg holds** at 0.30 rev | odrv0 autonomous CLOSED_LOOP @ 21 V — no runaway, no drift |
+| ~22.78 | CAN3 replugged → fault **6 → 0** | fresh leg heartbeats → `all_present_legs_fresh()` → deferred stow fires |
+| 22.85 → 23.08 | **deferred-stow descent** 0.30 → 0.006 rev | **peak \|vel\| = 2.472 rev/s ≤ 2.5 cap** ✓; ~0.23 s |
+| end | leg **IDLE** at off-pose (`STOW_OFF_POSE_REV = 0.0`) | de-energized, fault NONE, errors 0x0 ✓ |
+
+This is the **Phase-8 deferred-stow safety inversion validated on hardware** — the
+stow armed at CAN-loss detection and executed only on *confirmed* reconnect, which
+is exactly the path U1's present-scoped `all_present_legs_fresh` unblocked for a
+subset-populated bus (single bench leg). The **undervoltage observe** is covered by
+the natural unpowered→powered transition above (UV error appeared then cleared),
+so a deliberate armed-UV sag was judged unnecessary risk for the first cutover.
+
+### Discussion — three things worth keeping
+
+1. **The stow velocity profile is ramp-to-cap-and-hold, not a symmetric triangle.**
+   I pre-registered an analytic expectation of ~1.7 rev/s peak for a 0.30 rev
+   descent (assuming a triangular accel/decel profile at `STOW_ACCEL_RPS2`). The
+   *measured* peak was **2.472 rev/s — essentially the `GENTLE_MOVE_VEL_LIMIT_RPS`
+   = 2.5 cap**. Reading `leg_interp.cpp` after the fact confirmed why: the stow
+   ramps `s_stow_speed` up at `STOW_ACCEL_RPS2` and **holds it at the cap** until
+   within `STOW_DONE_EPS_REV` of the target, then stops — there is no symmetric
+   decel ramp. So even a short descent reaches the clamp. This is the empirical-
+   probe discipline paying off: the analytic was wrong, the measurement was right,
+   and the safety property (descent ≤ 2.5 rev/s) is *confirmed by data*, not by a
+   model that happened to also be conservative.
+
+2. **The deferred stow is host-independent.** On the *first* attempt the operator's
+   replug landed just after the driver's `--duration` expired (the conversational
+   unplug→confirm→replug round-trip outran the window). The stow still ran — the
+   firmware descended the leg and IDLE'd it **with no bench driver and no host
+   authority alive** (verified by a post-hoc live diagnostic read: leg at ~0 rev,
+   IDLE, fault NONE). This is correct, desirable autonomy: the §6 stow latch lives
+   in the 10 Hz `fault_step`, independent of the Jetson. It also explains a subtle
+   state difference — when the host *is* alive (run 2), the firmware leaves the leg
+   in CLOSED_LOOP holding at the off-pose (the driver's `finally` then IDLEs it);
+   when the host is *dead* (run 1), the firmware IDLEs the leg itself.
+
+3. **Coordination latency, not the test, was the failure mode of run 1.** The fix
+   was procedural: hand the operator the full unplug→pause→replug sequence to run
+   at their own pace under a generous `--duration` (150 s), rather than gating each
+   physical step on a conversational confirm. Run 2 captured the complete
+   fault → hold → reconnect → descent → IDLE arc in one CSV.
+
 ## Open Questions / Next (U3 tail — operator-gated, powered)
 
-Stages (i) + (ii) + the link-drop **sub-test A** done (above). The `motor_guard`
-config-path bug is **fixed** (`c584767`). Remaining, each gated by explicit operator
-final-say + e-stop, and currently **blocked on the `eth0` recovery**:
+Stages (i) + (ii) + the link-drop **sub-test A** + **sub-test B (CAN3 drop)** +
+the undervoltage observe all done (above). The `motor_guard` config-path bug is
+**fixed** (`c584767`). U3-iii is substantively complete. Remaining, each gated by
+explicit operator final-say + e-stop:
 
-3. **Powered fault-replay — finish.** Sub-test A (link drop, via `ip link
-   down/up`, recovery observed) + **sub-test B (CAN3 drop)**: unplug CAN3 with the
-   leg armed → confirm `CAN_BUS_DOWN` @ 2.0 s + armed stow, leg holds; replug →
-   deferred-stow descent (≈ centre → 0.07 rev, ≤ 2.5 rev/s) → IDLE — the Phase-8
-   safety-inversion replay the U1 present-scoped `all_present_legs_fresh` unblocked.
-   Plus the undervoltage observe. Use the bench driver's `--observe` mode (records
-   the full fault → reconnect → stow sequence over UDP; cedes authority on a
-   fatal/CAN fault).
-4. **Real-MPC trajectory (U3-iv) — flash + run.** Tooling is built (`a277274`,
-   `b06699f`): flash the `LegCmd` firmware over USB, then arm
-   `--replay temp/logs/mpc_20260330_165611.csv`. Produces the **float32 interp
+3. **Sub-test A link-drop *recovery* — optional crumb.** The gating half is
+   confirmed (prior session); the recovery half (link restored → `MPC_STALE`
+   self-clears, leg resumes tracking) was never observed because the physical-unplug
+   method killed `eth0`. It's a minor confirmation (MPC_STALE-not-latched is already
+   covered in code + unit tests); if done, use `sudo ip link set eth0 down … up`
+   while armed in `--observe` mode — **never** the physical dongle unplug
+   ([[project_eth0_usb_dongle_unplug_weakness]]).
+4. **Real-MPC trajectory (U3-iv) — flash + run.** Firmware `LegCmd` is now
+   **flashed + hardware-validated** (`b06699f`). Arm
+   `--replay temp/logs/mpc_20260330_165611.csv`. **Needs the ~48 V PSU** — at 21 V
+   the ~3.18 rev/s throw peak is back-EMF-marginal and would under-track into a
+   (safe) deviation abort. Produces the **float32 interp
    residual** (`cmd_teensy_rev` from the LegCmd uplink vs the offline float64
    reference) and the **D9 motion-onset penalty** (against the pre-registered ≤ 40 ms
    criterion). The friction-FF onset A/B (`--friction-ff` + a parity test against
