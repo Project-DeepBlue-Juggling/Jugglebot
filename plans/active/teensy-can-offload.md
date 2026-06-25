@@ -862,7 +862,7 @@ powered operator sitting; the software offload is one coupled desk unit. So:
 | **U1** | Present-axis firmware scoping (gate the leg-command fan-out + freshness on `leg_present`) + tests | desk + `pio run` |
 | **U2** | Synthetic β-knot bench driver (`synthetic_setpoint.py` + `teensy_setpoint_bench.py`) + tests | desk |
 | **U3** | Operator sitting #1: armed hold → bounded move → powered fault-replay; **measures the float32 residual + the D9 motion-onset penalty** | bench, serial |
-| **U4** | Production α→β switch (`SetpointPump` rewrite) **+ the D9 decision** (written with U3 data) + `/teensy` rename | desk, gated on U3 |
+| **U4** ✅ | Production α→β switch (`SetpointPump` rewrite) **+ the D9 decision** (written with U3 data) + `/teensy` rename — **landed 2026-06-25** (`cb0d158`, `50fc8fe`) | desk, gated on U3 |
 | **U5** | Operator sittings: six-leg rewire + full test plan, then decommission | bench, serial |
 
 **U1 + U2 landed 2026-06-23.** Desk-side only — nothing here energises a motor.
@@ -882,7 +882,19 @@ FF at v≈0, so its loss is free at breakaway, well inside the ≤ 40 ms criteri
 is current-limited at the onset on the bench leg, so U3-iv ran on a 3× time-stretched
 replay (the residual is speed-independent; the onset is a low-velocity breakaway). Full
 detail + the corrections-the-data-forced in `logbook/2026-06-24-phase11-bench-cutover.md`.
-**U4 is now unblocked** (desk-side).
+
+**U4 landed 2026-06-25 (desk-side, arms nothing).** The production α→β switch +
+friction-FF drop (D9) + `/teensy` rename. `SetpointPump` rewritten to emit β knots
+from the 40 Hz MPC `:5557` stream, reproducing `motor_guard`'s exact knot latch so
+the switch is bumpless (parity test vs a live `MotorGuard`, bit-exact; `xref.py`
+still 0.000e+00 rev). `motor_guard` leaves the leg path (bypassed, not yet removed
+from the launch — a U5/cleanup step); leg safety = MPC coupled workspace + the
+Teensy fault machine. The `/teensy/*` leg/hand topics + services promoted to
+production names (reconnecting the GUI + orchestrator). Gated OFF
+(`enable_setpoint_output=false`). `pytest tests/ -q` (run 2026-06-25): **1817
+passed, 1 xfailed in 435.78 s**. Commits `cb0d158` (switch) + `50fc8fe` (rename);
+full record in `logbook/2026-06-25-phase11-u4-production-cutover.md`. **U5 is
+cleared to start.**
 
 **Present-axis scoping (U1).** The firmware looped all six legs unconditionally;
 on the single-leg bench rig (only odrv0 on CAN3) that (a) streams 5 phantom
@@ -1419,16 +1431,19 @@ socketcan endpoint is reached at Phase 11–12.*
 ### Phase 11 — Bench cutover (one leg)
 
 > **Status: 🚧 IN PROGRESS — split into U1..U5 (see *Software-offload vs
-> hardware-cutover split*). U1+U2 landed 2026-06-23; U3 + D9 done 2026-06-25; U4
-> next (design locked); U5 = six-leg, pending.** U1 (present-axis firmware scoping)
+> hardware-cutover split*). U1+U2 landed 2026-06-23; U3 + D9 done 2026-06-25;
+> U4 landed 2026-06-25; U5 = six-leg, pending.** U1 (present-axis firmware scoping)
 > + U2 (synthetic β-knot bench driver) landed 2026-06-23. **U3 (powered armed run +
 > fault-replay) PASSED 2026-06-25** (hold/move, link-drop, CAN3 deferred-stow,
 > undervoltage, real-MPC residual + onset) and **closed the Phase 5/7/8 powered
 > tails**. **D9 = accept the friction-FF loss** (float32 residual 5.5e-7 rev; null
-> onset penalty). **U4** (production α→β downlink switch + friction-FF-drop + `/teensy`
-> rename) is now unblocked, desk-side, design locked — see the logbook "U4 — design
-> locked" section. `pytest tests/ -q` (run 2026-06-25): **1806 passed, 1 xfailed**.
-> The setpoint downlink stays
+> onset penalty). **U4 (production α→β switch + friction-FF-drop + `/teensy` rename)
+> LANDED 2026-06-25** — desk-side, bumpless (pump knots reproduce `motor_guard`'s
+> exact latch; parity test + `xref.py` 0.000e+00 rev); `motor_guard` bypassed off
+> the leg path; leg/hand topics+services on production names. Commits `cb0d158` +
+> `50fc8fe`; `logbook/2026-06-25-phase11-u4-production-cutover.md`. **U5 (powered
+> six-leg validation + decommission) is cleared to start.** `pytest tests/ -q`
+> (run 2026-06-25): **1817 passed, 1 xfailed in 435.78 s**. The setpoint downlink stays
 > gated OFF in production (`enable_setpoint_output=false`, `mpc_active=0`); the U2
 > bench driver arms the wire directly (not the ROS bridge), and is the sole wire
 > authority during a run (a competing `teensy_bridge_node` heartbeat pins

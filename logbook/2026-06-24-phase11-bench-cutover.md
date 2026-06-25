@@ -591,6 +591,12 @@ logged because the next reader (likely AI) will otherwise re-derive the wrong on
 
 ## U4 — design locked, ready to implement (next session)
 
+> **U4 landed 2026-06-25** — implemented in a fresh session per this plan. See
+> [[2026-06-25-phase11-u4-production-cutover]] for the as-built record (the pump
+> rewrite, the bumpless parity test, the `/teensy` rename, the
+> bypass-vs-pass-through discussion, and the U5 hand-off). The locked design
+> below is preserved as the pre-implementation spec.
+
 D9 green-lit U4 (the production α→β switch); the design was settled with the
 operator on 2026-06-25 and U4 deferred to a fresh session (it is a safety-critical
 production rewrite whose correctness hinges on a convention detail that wants
@@ -664,11 +670,13 @@ operator final-say + e-stop:
    covered in code + unit tests); if done, use `sudo ip link set eth0 down … up`
    while armed in `--observe` mode — **never** the physical dongle unplug
    ([[project_eth0_usb_dongle_unplug_weakness]]).
-4. **U4 — production α→β switch (next).** D9 is decided (accept the friction-FF
-   loss), so U4 is now unblocked: rewrite the production setpoint path to emit β
-   knots (40 Hz MPC knots → Teensy 500 Hz Hermite), drop the friction-FF, and do
-   the `/teensy` rename. Desk-side (no hardware); the U3-iv validation above is the
-   evidence base.
+4. **U4 — production α→β switch — DONE (2026-06-25).** D9 decided (accept the
+   friction-FF loss) unblocked U4: the production setpoint path now emits β knots
+   (40 Hz MPC knots → Teensy 500 Hz Hermite), the friction-FF is dropped, and the
+   `/teensy` rename landed. Desk-side, arms nothing
+   (`enable_setpoint_output=false`). Full record:
+   [[2026-06-25-phase11-u4-production-cutover]] (commits `cb0d158`, `50fc8fe`).
+   **U5** (powered six-leg validation + decommission) is cleared to start.
 
 Also open: **Finding C** — the deferred deterministic pre-arm sole-authority guard
 (refuse to arm unless the firmware reads `LINK_LOST`); **Finding A** (the rare

@@ -6,6 +6,7 @@ Browse with `/logbook`, create entries with `/investigate` or `/logbook --new <t
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-06-25 | complete | teensy-can-offload | Phase 11 U4 — production α→β setpoint switch + friction-FF drop (D9) + /teensy rename | [2026-06-25-phase11-u4-production-cutover](2026-06-25-phase11-u4-production-cutover.md) |
 | 2026-06-24 | in-progress | teensy-can-offload | Phase 11 bench cutover — present-axis scoping + synthetic β-knot interp driver (software prep; powered run pending) | [2026-06-24-phase11-bench-cutover](2026-06-24-phase11-bench-cutover.md) |
 | 2026-06-10 | resolved | temporal-accuracy bring-up | Cone catch timestamps glitch +40 s — micros64() false 32-bit wrap from piezo-ISR race | [2026-06-10-cone-micros64-false-wrap](2026-06-10-cone-micros64-false-wrap.md) |
 | 2026-06-10 | in-progress | teensy-can-offload | Catching-cone CAN2→UDP uplink (phase-10b) — cone data reaches the Jetson again | [2026-06-10-cone-uplink-phase-10b](2026-06-10-cone-uplink-phase-10b.md) |
