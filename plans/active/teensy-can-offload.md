@@ -870,6 +870,18 @@ present-axis cases + 16 synthetic-source cases, no regressions). The powered arm
 run + fault-replay (U3) is the operator-gated tail; U4 is gated on U3's measured
 residual.
 
+**U3 complete + D9 decided 2026-06-25 (operator sitting, standalone leg odrv0).**
+Stages i+ii (hold + bounded move), the link-drop sub-test A, the CAN3 deferred-stow
+sub-test B (descent peak 2.472 rev/s ≤ the 2.5 cap), and U3-iv (residual + onset)
+all passed. **D9 measured:** float32 residual **5.5e-7 rev** (≪ tracking noise) and a
+**null motion-onset penalty** from dropping friction-FF — the smooth gate suppresses
+FF at v≈0, so its loss is free at breakaway, well inside the ≤ 40 ms criterion.
+**→ D9 = accept the friction-FF loss** (do not port to the ISR). The full-speed throw
+is current-limited at the onset on the bench leg, so U3-iv ran on a 3× time-stretched
+replay (the residual is speed-independent; the onset is a low-velocity breakaway). Full
+detail + the corrections-the-data-forced in `logbook/2026-06-24-phase11-bench-cutover.md`.
+**U4 is now unblocked** (desk-side).
+
 **Present-axis scoping (U1).** The firmware looped all six legs unconditionally;
 on the single-leg bench rig (only odrv0 on CAN3) that (a) streams 5 phantom
 setpoint frames/tick to absent nodes, (b) dead-locks the deferred-stow reconnect

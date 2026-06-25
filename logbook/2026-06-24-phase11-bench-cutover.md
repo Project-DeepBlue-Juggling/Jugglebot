@@ -21,6 +21,7 @@ files_changed:
   - tests/teensy_link/test_synthetic_setpoint.py
   - tests/teensy_link/test_replay_setpoint.py
   - tests/motion/test_friction_ff_params.py
+  - tests/motion/test_motor_guard_friction_ff.py
 commits:
   - 4d69ac7
   - 54aa928
@@ -35,6 +36,9 @@ commits:
   - a277274
   - 2443ff6
   - a37bc05
+  - ac66acf
+  - 930f70e
+  - 489b495
 subsystem:
   - can
   - controller
@@ -65,8 +69,13 @@ real-MPC residual tooling — a `LegCmd` firmware uplink (`b06699f`) + a recorde
 replay source (`a277274`) — was built desk-side. The **CAN3 sub-test (B) then PASSED
 on hardware** (2026-06-25): the Phase-8 deferred-stow safety inversion fired on
 confirmed reconnect with a measured descent peak of 2.472 rev/s ≤ the 2.5 rev/s cap
-(see *sub-test B + recovery*). U3-iii is substantively complete; the U3-iv real-MPC
-run now only waits on the 48 V PSU (21 V is back-EMF-marginal for the throw peak).
+(see *sub-test B + recovery*). Finally **U3-iv** measured the two D9 quantities on a
+time-stretched replay (the full-speed throw is current-limited at the onset on the
+bench leg): **float32 residual 5.5e-7 rev** and a **null motion-onset penalty** from
+dropping friction-FF (the smooth gate suppresses FF at v≈0, so its loss is free at
+breakaway). Both within criteria → **D9 = accept the friction-FF loss**, green-lighting
+**U4** (the production α→β switch). U3 is complete (see *U3-iv real-MPC residual + D9*);
+U4/U5 remain, so this entry stays `in-progress` as the live Phase-11 record.
 
 ## Motivation
 
@@ -477,12 +486,113 @@ so a deliberate armed-UV sag was judged unnecessary risk for the first cutover.
    physical step on a conversational confirm. Run 2 captured the complete
    fault → hold → reconnect → descent → IDLE arc in one CSV.
 
+## U3-iv real-MPC residual + D9 motion-onset (2026-06-25)
+
+The U3-iv run measures the two quantities that gate the decision **D9** (port the
+friction-FF into the Teensy ISR, or accept its loss on the β path): the **float32
+interp residual** and the **motion-onset penalty** of dropping friction-FF.
+Tooling: the `LegCmd` uplink (`b06699f`), the friction-FF injection
+(`friction_ff_torque_nm` + `--friction-ff`, `930f70e`), and — added mid-run — the
+**time-stretch** (`time_stretch` + `--replay-stretch`/`--max-dev`/`--vel-limit`,
+`489b495`). All powered, operator-gated, e-stop in hand, bench driver sole wire
+authority.
+
+**The full-speed throw is untrackable on the bench leg — current-limited at the
+onset.** Replaying `mpc_20260330_165611.csv` (axis 0, peak 3.18 rev/s, ~75 rev/s²
+onset) at 1× **aborted at the throw onset, twice**: deviation 0.305 rev (default
+0.30 belt), then — after raising the belt to 0.5 and `vel_limit` to 10 — 0.544 rev.
+The decisive datum: at the second abort the leg hit **`iq = 9.04 A` (its 10 A
+current limit)** and *still* could not accelerate to follow the onset. So the
+binding constraint is **onset torque/acceleration, not velocity** (the leg never
+approached even 4 rev/s; `vel_limit` was a red herring). The recording is the
+real-robot *commanded* `cmd_ext` — it does not prove the real leg tracked that
+onset tightly, and the bench's 10 A limit caps the achievable onset accel below the
+command's demand. The firmware **lead clamp (`MAX_LEAD_REV` = 0.15) saturated** the
+instant the throw started (`cmd_teensy` pinned to `enc + 0.15`), which both starves
+the catch-up *and* corrupts the residual (a clamped `cmd_teensy` is no longer the
+pure interp output).
+
+**Reframe → time-stretch (operator chose this over pushing the hardware).** The two
+U3-iv measurements do **not** require a full-speed throw: (a) the **float32
+residual is speed-independent** — it is float32-vs-float64 arithmetic on ~3 rev
+position values, identical however slowly the same positions are traversed; (b) the
+**onset penalty is a low-velocity stiction breakaway**, measurable from any rest. So
+`time_stretch` resamples the position trajectory to play 3× slower (shape preserved;
+per-frame velocity **and** the knot velocity-steps scale 1/3 — *not* 1/9: a linear
+resample keeps the velocity steps discrete at the knots, so the per-frame demand
+scales 1/k, verified empirically 75→38→25 rev/s² at 1×/2×/3×). At 3× the peak is
+**1.06 rev/s** — well inside the ~2.5 rev/s the leg already demonstrated.
+
+**Pass A (friction-FF ON, 3×) and pass B (friction-FF OFF, 3×) both tracked cleanly
+to 3.05 rev** (`setpoint_bench_ax0_replay_20260625_161732.csv` and `…_173811.csv`).
+The lead clamp stayed unsaturated through the whole trajectory (pass A: 1/1999
+samples touched 0.15, and that one was the t=0 interp-ladder seeding artifact), so
+`cmd_teensy` is the pure float32 interp output.
+
+**Float32 residual — `max|float32 − float64| = 5.5e-7 rev` (≈ 0.039 µm).** Computed
+software-side (cubic Hermite on the 3× knots, 500 Hz subticks, both precisions) —
+the clean, timing-independent way to isolate the float32 arithmetic effect. Worst
+case is at the *largest* position (~2.68 rev), as expected (float32 ulp ≈ 3.6e-7 rev
+at 3 rev). **Within the xref/Phase-7 "done-when" 1e-6 rev threshold (`hermite_xref/xref.py`)
+and — the pre-registered D9 bar — ~4 orders of magnitude inside tracking noise (~mm).** The hardware `cmd_teensy` *corroborates* (it commanded the
+full trajectory, range [0.076, 3.052], lead unsaturated) but cannot *isolate* 5.5e-7
+directly — any hardware↔offline timing jitter (~1e-3 rev at 1 rev/s) swamps it, so
+the precision number is software and the hardware confirms sanity at the
+tracking-noise level. **D9 criterion 1: MET.**
+
+**Motion-onset penalty — null (below ~25 ms resolution + run-to-run noise).** Both
+passes break away from rest within the *same* 25 ms grid step (onset at t≈4.025,
+breakaway at t≈4.05–4.075); FF-OFF if anything moved *slightly earlier* (+18.4 vs
++7.4 mrev at 4.075), so there is **no systematic onset delay** from dropping
+friction-FF. **Why (load-bearing):** the smooth-gate FF is `gate(v) = 1 −
+exp(−(|v|/0.05)²)`, which is **≈0 at v ≈ 0** — deliberately suppressed at the
+breakaway moment (the PR 2.1 limit-cycle fix). The `iq` traces confirm the FF *is*
+applied (pass A pulls 4.7/6.9 A as it starts vs pass B's 1.6/1.1 A) but contributes
+~nothing at the v≈0 breakaway itself, so breakaway timing is unchanged. **D9
+criterion 2: MET** (penalty ≪ 40 ms).
+
+### D9 decision — accept the friction-FF loss (do NOT port it to the Teensy ISR)
+
+Both criteria are met and the onset null is *robust*, not lucky: the gate that
+makes friction-FF safe on platform (suppress at v≈0) is exactly what makes its loss
+free at breakaway. The float32 interp is precise to sub-micron. So the β path
+(40 Hz knots → Teensy 500 Hz Hermite, friction-FF dropped) is validated, and **U4**
+(the production α→β switch, which *is* the friction-FF-drop) is green-lit.
+
+### Discussion — corrections the data forced
+
+This stage repeatedly contradicted an a-priori expectation; each correction is
+logged because the next reader (likely AI) will otherwise re-derive the wrong one:
+- **Pre-flight scaling checked bounds, not trackability.** `scale_to_bench` gates
+  position ceiling + peak chord velocity — neither of which is the binding
+  constraint. The leg aborted on *onset acceleration* (current-limited), a
+  constraint the pre-flight never modelled. Trackability ≠ in-bounds.
+- **`vel_limit` was a red herring.** Raising it 4→10 rps changed nothing (the leg
+  never approached 4 rps in the binding phase); the limiter was current/torque.
+  Empirical `iq = 9.04 A` settled it — *measure the binding variable, don't assume
+  it*.
+- **Time-stretch accel scales 1/k, not 1/k².** Continuous time-dilation gives
+  1/k², but a *linear resample* keeps velocity steps discrete at the knots, so the
+  per-frame demand scales 1/k. The offline preview (75→38→25) caught the wrong
+  exponent before it reached a docstring claim.
+- **The float32 residual cannot be measured from hardware.** `cmd_teensy` was built
+  (`LegCmd`) to read the interp output directly — but a 5.5e-7 rev effect sits far
+  below the ~1e-3 rev hardware↔offline timing-jitter floor even at 1 rev/s. The
+  residual is intrinsically a *software* float32-vs-float64 measurement; the
+  hardware uplink's real value is the **tracking/lead-clamp** picture (which is what
+  exposed the untrackable-throw finding), not the precision number.
+- **The onset null is physics, not noise.** It would be easy to dismiss "0 ms
+  penalty" as too-coarse resolution; the gate-suppression mechanism (and the `iq`
+  evidence that FF *is* applied yet doesn't move breakaway) makes it a real,
+  explained null.
+
 ## Open Questions / Next (U3 tail — operator-gated, powered)
 
 Stages (i) + (ii) + the link-drop **sub-test A** + **sub-test B (CAN3 drop)** +
-the undervoltage observe all done (above). The `motor_guard` config-path bug is
-**fixed** (`c584767`). U3-iii is substantively complete. Remaining, each gated by
-explicit operator final-say + e-stop:
+the undervoltage observe + **U3-iv (residual + onset, D9 decided)** all done
+(above). The `motor_guard` config-path bug is **fixed** (`c584767`). **U3 is
+complete; D9 = accept the friction-FF loss.** Remaining, each gated by explicit
+operator final-say + e-stop:
 
 3. **Sub-test A link-drop *recovery* — optional crumb.** The gating half is
    confirmed (prior session); the recovery half (link restored → `MPC_STALE`
@@ -491,15 +601,11 @@ explicit operator final-say + e-stop:
    covered in code + unit tests); if done, use `sudo ip link set eth0 down … up`
    while armed in `--observe` mode — **never** the physical dongle unplug
    ([[project_eth0_usb_dongle_unplug_weakness]]).
-4. **Real-MPC trajectory (U3-iv) — flash + run.** Firmware `LegCmd` is now
-   **flashed + hardware-validated** (`b06699f`). Arm
-   `--replay temp/logs/mpc_20260330_165611.csv`. **Needs the ~48 V PSU** — at 21 V
-   the ~3.18 rev/s throw peak is back-EMF-marginal and would under-track into a
-   (safe) deviation abort. Produces the **float32 interp
-   residual** (`cmd_teensy_rev` from the LegCmd uplink vs the offline float64
-   reference) and the **D9 motion-onset penalty** (against the pre-registered ≤ 40 ms
-   criterion). The friction-FF onset A/B (`--friction-ff` + a parity test against
-   `motor_guard`'s Stribeck model) is the remaining build for the D9 onset half.
+4. **U4 — production α→β switch (next).** D9 is decided (accept the friction-FF
+   loss), so U4 is now unblocked: rewrite the production setpoint path to emit β
+   knots (40 Hz MPC knots → Teensy 500 Hz Hermite), drop the friction-FF, and do
+   the `/teensy` rename. Desk-side (no hardware); the U3-iv validation above is the
+   evidence base.
 
 Also open: **Finding C** — the deferred deterministic pre-arm sole-authority guard
 (refuse to arm unless the firmware reads `LINK_LOST`); **Finding A** (the rare
@@ -508,5 +614,7 @@ feedback freeze) root cause. The `motor_guard` config-path bug is **fixed**
 Jetson no longer sees CAN directly), so the cutover abort is **e-stop +
 `mpc_active=0` disarm + power-down**, *not* a `<10 min` socketcan swap-back — the
 bench driver's instant disarm (Ctrl-C / fault) gates firmware output off (≈ one
-10 Hz fault step, ~100–200 ms — not "instant"; measure on the U3-iv run and correct
-this phrasing if confirmed).
+10 Hz fault step, ~100–200 ms — not "instant"). *(The disarm-to-output-gate latency
+was not separately characterised in U3-iv — that run measured the float32 residual +
+onset, not the gate latency — so the ~100–200 ms estimate stands; carry it to U5 for
+a direct measurement.)*
