@@ -720,7 +720,9 @@ the authoritative state of each phase; this snapshot ties them together.
   bench validation with motors powered is **Phase 11 → 12**.
 - The leg-path hardware-validation tails of **Phases 5–8** (CAN3 armed
   CLOSED_LOOP cycle, interpolator float32-on-hardware residual, fault-scenario
-  bench replay) all require powered motors and are therefore still open.
+  bench replay) **are now CLOSED by U3 (2026-06-25)** — armed hold/move, link-drop +
+  CAN3 deferred-stow + undervoltage, and the real-MPC residual (5.5e-7 rev) + D9
+  decision. See *Revised sequencing* + `logbook/2026-06-24-phase11-bench-cutover.md`.
 - **Phase 9a** (encoder index search) is **hardware-validated (2026-06-21,
   standalone leg)** and deployed as the `/teensy/encoder_search` service;
   **Phase 9b** (homing move) is **hardware-validated (2026-06-23, standalone leg
@@ -1054,7 +1056,7 @@ C++.
 
 ### Phase 5 — CAN bring-up: multi-bus time-sync master + CAN3 ODrive protocol
 
-> **Status (2026-06-19): ⚠️ SUBSTANTIALLY DONE — armed-ODrive cycle pending (≡ Phase 11; see *Revised sequencing*).**
+> **Status (2026-06-19): ⚠️ SUBSTANTIALLY DONE — armed-ODrive cycle pending (≡ Phase 11; see *Revised sequencing*).** → **✅ Armed cycle DONE (U3, 2026-06-25).**
 > Time-sync master is **deployed and hardware-validated**: the can-bridge
 > broadcasts 0x7DD on CAN1/CAN2/CAN3 (multi-bus fan-out, partial-failure
 > tolerant), BB and cone slaves lock on, and **cone-absent gating holds without
@@ -1141,7 +1143,8 @@ CAN3 bring-up + ODrive protocol:
 ### Phase 6 — Per-axis state cache + telemetry uplink
 
 > **Status (2026-06-19): ⚠️ CODE COMPLETE + on UDP uplink; under-motion
-> validation pending.** `AxisState legs[6]` cache + 100 Hz telemetry uplink +
+> validation pending.** → **✅ Validated under powered motion (U3-iv leg ran the
+> throw-shaped replay, 2026-06-25); see *Revised sequencing*.** `AxisState legs[6]` cache + 100 Hz telemetry uplink +
 > on-change diagnostics are implemented (`telemetry.cpp`); the bridge consumes
 > `MsgType.TELEMETRY` and publishes robot/hand state (the early "serial-only"
 > follow-up from the 06-06 bringup has since been promoted to the UDP uplink).
@@ -1168,14 +1171,17 @@ under sustained load.
 ### Phase 7 — Hermite interpolator port
 
 > **Status (2026-06-19): ⚠️ CODE COMPLETE (xref 0.0 rev); on-HW residual +
-> friction-FF pending.** The full ladder (Hermite → Taylor → velocity decay →
+> friction-FF pending.** → **✅ DONE (U3-iv, 2026-06-25): float32 residual
+> 5.5e-7 rev (≪ tracking noise); D9 = accept the friction-FF loss (null onset
+> penalty); see *Revised sequencing* + logbook.** The full ladder (Hermite → Taylor → velocity decay →
 > fault) plus the `MAX_LEAD_REV` lead-clamp and per-leg stroke clamp are ported
 > (`leg_interp.cpp`, decisions D5/D6/D10) and match `motor_guard.py` to **0.0
 > rev** in the offline xref (`tests/firmware/test_hermite_xref.py`). The ISR
-> runs above the FreeRTOS syscall ceiling and TXes to CAN3 directly. **Not yet
+> runs above the FreeRTOS syscall ceiling and TXes to CAN3 directly. ~~**Not yet
 > run on hardware under armed legs:** the float32-on-Teensy residual vs a
 > recorded throw, and the Stribeck friction-FF gap (decision D9 — `torque_ff` is
-> currently passed through unported).
+> currently passed through unported).~~ **Resolved by U3-iv (2026-06-25):** residual
+> 5.5e-7 rev; D9 = accept the friction-FF loss (see the status clause above).
 
 **Goal:** 500 Hz cubic Hermite + Taylor extrapolation running on Teensy,
 matches `motor_guard.py` output bit-for-bit on identical inputs.
@@ -1197,14 +1203,19 @@ and Teensy interpolator outputs for at least one recorded throw cycle.
 
 ### Phase 8 — Fault state machine port
 
-> **Status (2026-06-19): ⚠️ CODE COMPLETE; bench fault-replay pending.** Per-axis
+> **Status (2026-06-19): ⚠️ CODE COMPLETE; bench fault-replay pending.** → **✅ DONE
+> (U3-iii, 2026-06-25): link-drop sub-test A (MPC-staleness gating) + CAN3 sub-test B
+> (deferred-stow recovery, descent 2.472 ≤ 2.5 cap) + undervoltage observe; see
+> *Revised sequencing* + logbook.** Per-axis
 > error tracking, soft-reset bounce-loop cap, undervoltage gating, the
 > max-deviation E-STOP, and the deferred-stow safety inversion (2026-05-19
 > invariant) are ported (`fault_machine.cpp`, decisions D11/D12) and spec'd by
 > `tests/firmware/test_fault_logic.py`. The 06-06 bringup confirmed CAN3
-> auto-restore after unplug/replug. **Still required (Phase 8 "done when"):**
+> auto-restore after unplug/replug. ~~**Still required (Phase 8 "done when"):**
 > bench-replay of every logbook fault scenario (soft-reset bounce, CAN-loss
-> safety inversion, undervoltage) on hardware with motors powered.
+> safety inversion, undervoltage) on hardware with motors powered.~~ **Satisfied by
+> U3-iii (2026-06-25):** link-drop (MPC-staleness gating), CAN3 deferred-stow
+> recovery (descent 2.472 ≤ 2.5 cap), undervoltage observe (see status clause above).
 
 **Goal:** Per-axis fault tracking, soft-reset attempt limiting, undervoltage
 gating, deferred-stow safety inversion all running on Teensy.
@@ -1407,13 +1418,17 @@ socketcan endpoint is reached at Phase 11–12.*
 
 ### Phase 11 — Bench cutover (one leg)
 
-> **Status (2026-06-23): 🚧 IN PROGRESS — split into U1..U5 (see *Software-offload
-> vs hardware-cutover split*).** U1 (present-axis firmware scoping) + U2 (synthetic
-> β-knot bench driver) landed 2026-06-23 — desk-side, `pio run` green (dec 353344)
-> + `pytest tests/ -q` (run 2026-06-23) **1759 passed, 5 skipped, 1 xfailed**. The
-> powered armed run + fault-replay (U3) is the operator-gated tail that closes the
-> Phase 5/7/8 powered tails; the production α→β downlink switch + D9 friction-FF
-> decision (U4) is gated on U3's measured residual. The setpoint downlink stays
+> **Status: 🚧 IN PROGRESS — split into U1..U5 (see *Software-offload vs
+> hardware-cutover split*). U1+U2 landed 2026-06-23; U3 + D9 done 2026-06-25; U4
+> next (design locked); U5 = six-leg, pending.** U1 (present-axis firmware scoping)
+> + U2 (synthetic β-knot bench driver) landed 2026-06-23. **U3 (powered armed run +
+> fault-replay) PASSED 2026-06-25** (hold/move, link-drop, CAN3 deferred-stow,
+> undervoltage, real-MPC residual + onset) and **closed the Phase 5/7/8 powered
+> tails**. **D9 = accept the friction-FF loss** (float32 residual 5.5e-7 rev; null
+> onset penalty). **U4** (production α→β downlink switch + friction-FF-drop + `/teensy`
+> rename) is now unblocked, desk-side, design locked — see the logbook "U4 — design
+> locked" section. `pytest tests/ -q` (run 2026-06-25): **1806 passed, 1 xfailed**.
+> The setpoint downlink stays
 > gated OFF in production (`enable_setpoint_output=false`, `mpc_active=0`); the U2
 > bench driver arms the wire directly (not the ROS bridge), and is the sole wire
 > authority during a run (a competing `teensy_bridge_node` heartbeat pins
