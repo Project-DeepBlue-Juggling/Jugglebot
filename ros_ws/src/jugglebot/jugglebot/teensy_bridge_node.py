@@ -138,20 +138,31 @@ def _enum_name(enum_cls, value: int) -> str:
         return f"v{value}"
 
 
-class _MotorGuardSetpointSource:
-    """SUB-only connection to motor_guard's telemetry PUB (tcp://127.0.0.1:5556).
+class _MpcCommandSetpointSource:
+    """SUB-only connection to the MPC command PUB (tcp://127.0.0.1:5557).
 
-    Deliberately does NOT reuse ``jugglebot.motion.ipc.BridgeIPC``: that also
-    BINDS the command PUB on :5555, which the production ``motion_bridge_node``
-    already binds — two binds on one address fail. The Teensy bridge only needs
-    to *read* the 500 Hz setpoint telemetry, never to command motor_guard.
+    **Phase 11 / U4 — the α→β switch.** Previously this read motor_guard's
+    *already-interpolated* 500 Hz telemetry on :5556 (the α relay); it now reads
+    the **40 Hz MPC command stream** on :5557 (``ipc.MPC_COMMAND_ADDR``,
+    ``ipc.TOPIC_MPC_CMD``) — the same ``make_mpc_command`` dicts motor_guard
+    consumes — so the Teensy does the 500 Hz interpolation (β path). motor_guard
+    leaves the leg path; its :5556 output simply goes unconsumed.
 
-    Mirrors BridgeIPC's SUB tuning (RCVHWM=2 + drain-to-latest) and the msgpack
-    wire format (``[topic, msgpack(dict)]``). zmq/msgpack are imported lazily so
-    a read-only / setpoint-disabled bridge has no hard dependency on them.
+    Subscribes to the ``mpccmd`` topic specifically (not ``b''``): :5557 also
+    carries the HardwarePlant fallback-enable message, which is not a setpoint.
+
+    Deliberately does NOT reuse ``jugglebot.motion.ipc.BridgeIPC`` (that BINDS the
+    command PUB on :5555, which ``motion_bridge_node`` already binds — two binds
+    on one address fail) and does NOT import ``ipc`` at module scope (``ipc``
+    imports zmq/msgpack eagerly; the address/topic literals below mirror
+    ``ipc.MPC_COMMAND_ADDR`` / ``ipc.TOPIC_MPC_CMD``). Mirrors BridgeIPC's SUB
+    tuning (RCVHWM=2 + drain-to-latest) and the msgpack wire format
+    (``[topic, msgpack(dict)]``). zmq/msgpack are imported lazily so a read-only
+    / setpoint-disabled bridge has no hard dependency on them.
     """
 
-    def __init__(self, addr: str = 'tcp://127.0.0.1:5556'):
+    def __init__(self, addr: str = 'tcp://127.0.0.1:5557',
+                 topic: bytes = b'mpccmd'):   # = ipc.MPC_COMMAND_ADDR / TOPIC_MPC_CMD
         import zmq  # lazy — only when setpoint output is enabled
         self._zmq = zmq
         import msgpack
@@ -162,11 +173,11 @@ class _MotorGuardSetpointSource:
         self._sub.setsockopt(zmq.RECONNECT_IVL_MAX, 200)
         self._sub.setsockopt(zmq.RCVHWM, 2)                # bounded queue
         self._sub.connect(addr)
-        self._sub.setsockopt(zmq.SUBSCRIBE, b'')
+        self._sub.setsockopt(zmq.SUBSCRIBE, topic)         # mpc_cmd frames only
         self._sub.setsockopt(zmq.RCVTIMEO, 0)              # non-blocking
 
     def recv_latest(self) -> dict | None:
-        """Drain the SUB and return the latest telemetry dict, or None."""
+        """Drain the SUB and return the latest MPC command dict, or None."""
         latest = None
         while True:
             try:
@@ -415,6 +426,7 @@ class TeensyBridgeNode(Node):
         # mpc_active=0, so the Teensy will not enable leg output. The operator
         # flips the parameter (and restarts the node) only after bench validation.
         self._sp_pump = SetpointPump(
+            mm_to_rev=hw.GEOM_MM_TO_REV,
             num_legs=p.NUM_LEGS, max_step_rev=hw.JB_OP_MAX_POSITION_STEP_REV)
         self._sp_source = None
         self._sp_thread = None
@@ -771,7 +783,7 @@ class TeensyBridgeNode(Node):
         if setpoint_source is not None:
             self._sp_source = setpoint_source
         else:
-            self._sp_source = _MotorGuardSetpointSource()
+            self._sp_source = _MpcCommandSetpointSource()
         # Set mpc_active BEFORE starting the thread so the first tick it drains
         # is not silently dropped by the mpc_active gate (and so the Teensy is
         # told we are driving before any setpoint can flow).
@@ -782,22 +794,23 @@ class TeensyBridgeNode(Node):
         self._sp_thread.start()
 
     def _setpoint_loop(self):
-        """Dedicated thread: drain motor_guard telemetry → pack → gate → send."""
+        """Dedicated thread: drain the 40 Hz MPC command → pack β knots → gate → send."""
         while not self._sp_stop.is_set():
             try:
-                telem = self._sp_source.recv_latest()
+                cmd = self._sp_source.recv_latest()
             except Exception as e:  # noqa: BLE001
                 self.get_logger().error(f"Setpoint source error: {e}",
                                         throttle_duration_sec=5.0)
-                telem = None
-            if telem is not None:
-                self._process_setpoint(telem)
+                cmd = None
+            if cmd is not None:
+                self._process_setpoint(cmd)
             else:
-                # ~1 kHz idle poll (motor_guard publishes at 500 Hz).
+                # ~1 kHz idle poll (the MPC command stream arrives at 40 Hz; the
+                # Teensy interpolates to 500 Hz from the β knots).
                 self._sp_stop.wait(0.001)
 
-    def _process_setpoint(self, telem: dict):
-        """Pack one telemetry tick into a Setpoint frame, gate it, and send.
+    def _process_setpoint(self, cmd: dict):
+        """Pack one 40 Hz MPC command into a β-knot Setpoint frame, gate it, send.
 
         SAFETY gates, in order:
           1. mpc_active must be set (operator opt-in). Belt-and-suspenders — the
@@ -812,7 +825,7 @@ class TeensyBridgeNode(Node):
         if not self._link_latch.command_allowed():
             return  # never command a dead link
         t_origin_us = int(time.time() * 1_000_000)
-        sp, reason = self._sp_pump.build(telem, t_origin_us)
+        sp, reason = self._sp_pump.build(cmd, t_origin_us)
         if reason is not None:
             self.get_logger().error(
                 f"Setpoint REJECTED (not sent): {reason}",

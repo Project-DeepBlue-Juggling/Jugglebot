@@ -1,6 +1,8 @@
-"""Setpoint-downlink tests for teensy_bridge_node (Phase 10b, Commit 3).
+"""Setpoint-downlink tests for teensy_bridge_node.
 
-The 40/500 Hz hot path. The headline assertions are the SAFETY gates:
+Phase 11 / U4 — the α→β switch. The hot path now drains the 40 Hz MPC command
+stream (:5557 ``make_mpc_command`` dict) and packs β knots. The headline
+assertions are the SAFETY gates:
   * default-disabled (no setpoint thread, mpc_active=0, no SETPOINT frames);
   * mpc_active flips the J→T heartbeat flag only on explicit enable;
   * per-step clamp + link-down gate suppress unsafe frames.
@@ -38,12 +40,18 @@ class _FakeSource:
         self.closed = True
 
 
-def _telem(pos, vel=None, tor=None):
-    return {
-        'leg_pos': list(pos),
-        'leg_vel': list(vel if vel is not None else [0.0] * 6),
-        'leg_torques': list(tor if tor is not None else [0.0] * 6),
+def _cmd(motor_rev, vel=None, cmd_next=None, cmd_next2=None):
+    """A :5557 mpc_cmd-style dict (β-knot source) — motor_rev is used as u0."""
+    d = {
+        'type': 'mpc_cmd',
+        'motor_rev': list(motor_rev),
+        'vel_mm_s': list(vel if vel is not None else [0.0] * 6),
     }
+    if cmd_next is not None:
+        d['cmd_next_mm'] = list(cmd_next)
+    if cmd_next2 is not None:
+        d['cmd_next2_mm'] = list(cmd_next2)
+    return d
 
 
 def _node():
@@ -76,7 +84,7 @@ def test_disabled_process_setpoint_sends_nothing():
     teensy, client, node = _node()
     try:
         # Even if a tick is fed directly, a disabled bridge sends no SETPOINT.
-        node._process_setpoint(_telem([0.1] * 6))
+        node._process_setpoint(_cmd([0.1] * 6))
         time.sleep(0.05)
         assert teensy.received(int(MsgType.SETPOINT)) == []
     finally:
@@ -108,20 +116,29 @@ def test_set_mpc_active_flips_heartbeat_flag():
 # ── Enabled path (manual enable + injected source) ────────────
 
 def test_enabled_sends_setpoint_frame():
+    import jugglebot.hardware_config as hw
+    mm = hw.GEOM_MM_TO_REV
     teensy, client, node = _node()
     try:
-        src = _FakeSource([_telem([0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
-                                  vel=[1, 2, 3, 4, 5, 6],
-                                  tor=[0.01, 0.02, 0.03, 0.04, 0.05, 0.06])])
+        motor_rev = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+        vel = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+        cmd_next = [10.0, 11.0, 12.0, 13.0, 14.0, 15.0]
+        cmd_next2 = [20.0, 21.0, 22.0, 23.0, 24.0, 25.0]
+        src = _FakeSource([_cmd(motor_rev, vel=vel,
+                                cmd_next=cmd_next, cmd_next2=cmd_next2)])
         node._start_setpoint_output(src)         # starts thread + mpc_active=1
         got = teensy.wait_for(int(MsgType.SETPOINT), count=1, timeout=2.0)
         assert got, "no SETPOINT frame sent"
         sp = Setpoint.unpack(got[0].payload)
-        assert sp.u0 == pytest.approx((0.1, 0.2, 0.3, 0.4, 0.5, 0.6), abs=1e-6)
-        assert sp.v0 == pytest.approx((1, 2, 3, 4, 5, 6), abs=1e-5)
-        assert sp.torque_ff == pytest.approx(
-            (0.01, 0.02, 0.03, 0.04, 0.05, 0.06), abs=1e-6)
-        assert sp.flags == 0           # no u1/u2 lookahead
+        # u0 = motor_rev verbatim (ODrive convention).
+        assert sp.u0 == pytest.approx(tuple(motor_rev), abs=1e-6)
+        # u1/u2/v0 = cmd_next(_2)/vel × mm_to_rev.
+        assert sp.u1 == pytest.approx(
+            tuple(cmd_next[i] * mm[i] for i in range(6)), abs=1e-5)
+        assert sp.v0 == pytest.approx(
+            tuple(vel[i] * mm[i] for i in range(6)), abs=1e-5)
+        assert sp.torque_ff == pytest.approx((0.0,) * 6, abs=1e-6)  # D9 drop
+        assert sp.flags == 0x3         # HAS_U1 | HAS_U2
         assert sp.t_origin_us > 0
     finally:
         _teardown(teensy, client, node)
@@ -160,10 +177,10 @@ def test_step_violation_not_sent():
     teensy, client, node = _node()
     try:
         node._mpc_active = True          # enable the send path directly
-        node._process_setpoint(_telem([0.0] * 6))      # baseline
+        node._process_setpoint(_cmd([0.0] * 6))        # baseline
         time.sleep(0.02)
         n_before = len(teensy.received(int(MsgType.SETPOINT)))
-        node._process_setpoint(_telem([0.0, 0.0, 0.0, 0.9, 0.0, 0.0]))  # 0.9 > 0.3
+        node._process_setpoint(_cmd([0.0, 0.0, 0.0, 0.9, 0.0, 0.0]))  # 0.9 > 0.3
         time.sleep(0.05)
         n_after = len(teensy.received(int(MsgType.SETPOINT)))
         assert n_after == n_before        # the jumping frame was NOT sent
@@ -180,19 +197,20 @@ def test_link_down_blocks_setpoint():
         node._link_latch.first_heartbeat_seen = True
         node._link_latch.update(stale=True, seen=True)
         assert node._link_latch.command_allowed() is False
-        node._process_setpoint(_telem([0.1] * 6))
+        node._process_setpoint(_cmd([0.1] * 6))
         time.sleep(0.05)
         assert teensy.received(int(MsgType.SETPOINT)) == []
     finally:
         _teardown(teensy, client, node)
 
 
-def test_feedback_only_telemetry_sends_nothing():
+def test_no_position_command_sends_nothing():
+    """A frame with no position command (no motor_rev/ext_mm) is skipped, not a
+    fault — e.g. a non-mpc_cmd message that slipped the :5557 topic filter."""
     teensy, client, node = _node()
     try:
         node._mpc_active = True
-        node._process_setpoint({'leg_pos': None, 'leg_vel': None,
-                                'leg_torques': None})
+        node._process_setpoint({'type': 'other', 'vel_mm_s': [0.0] * 6})
         time.sleep(0.05)
         assert teensy.received(int(MsgType.SETPOINT)) == []
         assert node._sp_pump.frames_skipped == 1
@@ -200,33 +218,40 @@ def test_feedback_only_telemetry_sends_nothing():
         _teardown(teensy, client, node)
 
 
-def test_motorguard_zmq_source_decodes_real_wire_format():
-    """The real _MotorGuardSetpointSource decodes motor_guard's actual ZMQ
-    msgpack wire format ([topic, msgpack(dict, use_bin_type=True)]) — the one
-    integration point the fake-source tests don't cover. Uses a real PUB on a
-    NON-production port; resends in a loop to beat PUB/SUB slow-joiner."""
+def test_mpc_command_zmq_source_decodes_real_wire_format():
+    """The real _MpcCommandSetpointSource decodes the MPC command stream's actual
+    ZMQ msgpack wire format ([topic, msgpack(dict, use_bin_type=True)]) and
+    filters on the 'mpccmd' topic — the one integration point the fake-source
+    tests don't cover. Uses a real PUB on a NON-production port; resends in a
+    loop to beat PUB/SUB slow-joiner."""
     import zmq
     import msgpack
-    from jugglebot.teensy_bridge_node import _MotorGuardSetpointSource
+    from jugglebot.teensy_bridge_node import _MpcCommandSetpointSource
 
-    addr = 'tcp://127.0.0.1:5599'  # NOT the production :5556
+    addr = 'tcp://127.0.0.1:5599'  # NOT the production :5557
     ctx = zmq.Context()
     pub = ctx.socket(zmq.PUB)
     pub.bind(addr)
-    src = _MotorGuardSetpointSource(addr=addr)
+    src = _MpcCommandSetpointSource(addr=addr, topic=b'mpccmd')
     try:
-        payload = {'leg_pos': [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
-                   'leg_vel': [1.0] * 6, 'leg_torques': [0.01] * 6}
-        wire = [b'telem', msgpack.packb(payload, use_bin_type=True)]
+        payload = {'type': 'mpc_cmd',
+                   'ext_mm': [10.0] * 6, 'pose_6dof': [0.0] * 6,
+                   'motor_rev': [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
+                   'vel_mm_s': [1.0] * 6, 'cmd_next_mm': [11.0] * 6}
+        wire = [b'mpccmd', msgpack.packb(payload, use_bin_type=True)]
+        # A non-mpccmd frame on the same port (e.g. fallback-enable) must NOT be
+        # delivered — the topic SUBSCRIBE filters it out.
+        other = [b'other', msgpack.packb({'type': 'x'}, use_bin_type=True)]
         got = None
         deadline = time.time() + 3.0
         while time.time() < deadline and got is None:
+            pub.send_multipart(other)         # filtered out
             pub.send_multipart(wire)          # resend until SUB connects
             time.sleep(0.02)
             got = src.recv_latest()
-        assert got is not None, "source never decoded a telemetry frame"
-        assert got['leg_pos'] == [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
-        assert got['leg_torques'] == [0.01] * 6
+        assert got is not None, "source never decoded an mpc_cmd frame"
+        assert got['type'] == 'mpc_cmd'
+        assert got['motor_rev'] == [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
         # drain-to-latest: returns None once the queue is empty.
         assert src.recv_latest() is None
     finally:
