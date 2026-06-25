@@ -120,6 +120,18 @@ def test_beta_pump_knots_match_motor_guard():
     assert (sp3.flags & FLAG_HAS_U1) == FLAG_HAS_U1
     assert np.allclose(sp3.u1, g3._mpc_next_pos_rev, atol=1e-12)
 
+    # ── Path 4: malformed >6-element lookahead → BOTH clear the flag ──
+    # motor_guard requires cmd_next_arr.shape == (6,) (motor_guard.py:585) and
+    # clears _mpc_next_pos_rev otherwise; the pump's exact-length gate must match
+    # (a non-(6,) lookahead falls back to Taylor, not silently first-6).
+    pump.reset()
+    msg4 = {'type': 'mpc_cmd', 'ext_mm': ext, 'pose_6dof': pose,
+            'motor_rev': ext * mm, 'vel_mm_s': vel,
+            'cmd_next_mm': list(nxt) + [9.9], 'seq': 1}   # 7 elements
+    g4 = _guard_base(msg4)
+    sp4, _ = pump.build(msg4, t_origin_us=1)
+    assert g4._mpc_next_pos_rev is None and (sp4.flags & FLAG_HAS_U1) == 0
+
 
 def _parse_float_array(header_text, name):
     m = re.search(rf"{name}\[\w+\]\s*=\s*\{{([^}}]*)\}}", header_text)

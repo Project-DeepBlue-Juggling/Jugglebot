@@ -119,12 +119,16 @@ class SetpointPump:
         self._prev_pos = None
 
     def _finite_vec(self, seq, name: str):
-        """Validate a 6-vector is present, long enough, and finite.
+        """Validate a 6-vector is present, the EXACT length, and finite.
+
+        Exact-length (not just ``>= n``) mirrors motor_guard's ``shape == (6,)``
+        gate (motor_guard.py:445, 585) — a wrong-length command vector is
+        malformed, so reject rather than silently take the first ``n``.
 
         Returns ``(values_list, None)`` on success or ``(None, reason)``.
         """
-        if len(seq) < self.n:
-            return None, f'short {name} vector (len={len(seq)}, need {self.n})'
+        if len(seq) != self.n:
+            return None, f'wrong-length {name} vector (len={len(seq)}, need {self.n})'
         out = []
         for i in range(self.n):
             v = float(seq[i])
@@ -187,11 +191,15 @@ class SetpointPump:
         # ── u1 / u2: cmd_next(_2)_mm × mm_to_rev; absent/bad ⇒ clear the flag ──
         # Mirrors motor_guard: a non-finite / wrong-length lookahead clears the
         # waypoint rather than rejecting the frame (firmware D4: bits, not NaN).
+        # Exact-length (== n, not >= n) mirrors motor_guard's ``shape == (6,)``
+        # gate (motor_guard.py:585, 597) so a malformed >6-element lookahead
+        # clears the flag (Taylor fallback) instead of silently taking the
+        # first 6 and emitting a divergent-but-accepted β frame.
         flags = 0
         u1 = [0.0] * self.n
         u2 = [0.0] * self.n
         cmd_next = cmd.get('cmd_next_mm')
-        if cmd_next is not None and len(cmd_next) >= self.n:
+        if cmd_next is not None and len(cmd_next) == self.n:
             cand = [float(cmd_next[i]) for i in range(self.n)]
             if all(math.isfinite(x) for x in cand):
                 u1 = [cand[i] * mr[i] for i in range(self.n)]
@@ -199,7 +207,7 @@ class SetpointPump:
         # u2 only meaningful with u1 (sets the Hermite endpoint velocity).
         cmd_next2 = cmd.get('cmd_next2_mm')
         if (flags & FLAG_HAS_U1) and cmd_next2 is not None \
-                and len(cmd_next2) >= self.n:
+                and len(cmd_next2) == self.n:
             cand = [float(cmd_next2[i]) for i in range(self.n)]
             if all(math.isfinite(x) for x in cand):
                 u2 = [cand[i] * mr[i] for i in range(self.n)]

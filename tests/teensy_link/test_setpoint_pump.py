@@ -180,7 +180,29 @@ def test_short_motor_rev_rejected():
     cmd = _cmd(vel=[0.0] * 6)
     cmd['motor_rev'] = [0.0] * 4
     sp, reason = pump.build(cmd, t_origin_us=1)
-    assert sp is None and 'short' in reason
+    assert sp is None and 'wrong-length' in reason
+
+
+def test_overlong_motor_rev_rejected():
+    """A >6-element command vector is malformed — reject (exact-length gate,
+    mirroring motor_guard's shape==(6,)), not silently take the first 6."""
+    pump = _pump()
+    cmd = _cmd(vel=[0.0] * 6)
+    cmd['motor_rev'] = [0.1] * 7
+    sp, reason = pump.build(cmd, t_origin_us=1)
+    assert sp is None and 'wrong-length' in reason
+
+
+def test_overlong_cmd_next_clears_flag():
+    """A >6-element lookahead clears HAS_U1 (Taylor fallback), mirroring
+    motor_guard clearing _mpc_next_pos_rev for a non-(6,) shape — NOT silently
+    using the first 6 and emitting a divergent-but-accepted β frame."""
+    pump = _pump()
+    sp, reason = pump.build(_cmd(motor_rev=[0.1] * 6, cmd_next=[1.0] * 7),
+                            t_origin_us=1)
+    assert sp is not None and reason is None
+    assert sp.flags == 0                     # HAS_U1 cleared (over-long lookahead)
+    assert pump.frames_rejected == 0
 
 
 def test_no_position_command_skipped_not_rejected():
