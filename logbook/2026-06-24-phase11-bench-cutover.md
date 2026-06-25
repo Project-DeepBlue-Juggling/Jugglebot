@@ -39,6 +39,7 @@ commits:
   - ac66acf
   - 930f70e
   - 489b495
+  - 7f88721
 subsystem:
   - can
   - controller
