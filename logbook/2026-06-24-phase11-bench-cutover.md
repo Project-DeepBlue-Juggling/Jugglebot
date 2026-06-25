@@ -587,6 +587,66 @@ logged because the next reader (likely AI) will otherwise re-derive the wrong on
   evidence that FF *is* applied yet doesn't move breakaway) makes it a real,
   explained null.
 
+## U4 — design locked, ready to implement (next session)
+
+D9 green-lit U4 (the production α→β switch); the design was settled with the
+operator on 2026-06-25 and U4 deferred to a fresh session (it is a safety-critical
+production rewrite whose correctness hinges on a convention detail that wants
+full attention, not the tail of the long U3/D9 session). Everything below is the
+locked design + the code map so the next session starts fast.
+
+**Decisions (operator, 2026-06-25):**
+1. **Bypass motor_guard for the legs.** The β `SetpointPump` reads the 40 Hz MPC
+   command stream (`:5557`, `TOPIC_MPC_CMD`) directly; motor_guard leaves the leg
+   path entirely. Leg safety becomes **MPC (coupled workspace) + the Teensy fault
+   machine** (per-leg stroke/deviation/MPC-staleness-E-STOP/deferred-stow — all
+   U3-validated). motor_guard's `:5556` output simply goes unconsumed; removing it
+   from `jugglebot_launch.py` is a deployment follow-up (U5/cleanup), not required
+   for the U4 code switch (ZMQ PUB/SUB tolerates the extra idle subscriber).
+2. **Do the `/teensy` rename in U4.** Promote the leg/hand `/teensy/*` topics +
+   services to their production names (drop the `/teensy/` prefix) — they were only
+   namespaced to coexist with `can_node`, which is already gone (plan line 1375).
+   Recover the exact production names from `can_node`'s git history; grep ALL
+   consumers first (GUI, other nodes) — this is a wide ripple.
+
+**THE safety-critical subtlety — the α→β switch must be bumpless.** The new pump
+must reproduce motor_guard's *exact* knot derivation (`motor_guard.py:541–603`),
+which mixes conventions:
+- **u0** = `msg['motor_rev']` (ODrive convention, 0=STOW, includes the stow
+  offset) if present, else `ext_mm × geom.mm_to_rev` (the unit-test/sim fallback).
+- **u1** = `msg['cmd_next_mm'] × geom.mm_to_rev`; **u2** = `cmd_next2_mm ×
+  geom.mm_to_rev` (extension convention, NO stow offset). Absent → clear the
+  corresponding `has_u1`/`has_u2` flag (do NOT send NaN — firmware D4).
+- **v0** = `msg['vel_mm_s']` → motor rev/s via
+  `conversions.leg_velocities_to_motor_velocities` (cf. `hermite_xref/xref.py:143`).
+- **torque_ff = zeros** (the friction-FF drop; D9).
+
+Get this wrong and either the Teensy Hermite diverges from the xref-validated
+float64 reference, or — worse — the leg *jumps by the stow offset* the instant the
+source flips from α (`motor_rev`) to β. So the pump now needs the **geometry**
+(`mm_to_rev`) injected, where today it is pure. The xref tool
+(`tools/probes/teensy_link_profiling/hermite_xref/xref.py`, already <1e-6 rev vs
+motor_guard) is the regression check: the β knots feed the same interpolator it
+exercises, so re-running it after the rewrite confirms parity.
+
+**Code map (verified 2026-06-25):**
+- `controller/teensy_link/setpoint_pump.py` — `SetpointPump.build(telem, …)`
+  currently consumes motor_guard's `:5556` telemetry (`leg_pos/leg_vel/leg_torques`,
+  `flags=0`). Rewrite to consume the `:5557` MPC dict per the convention above,
+  setting `flags |= has_u1 | has_u2`. Keep the `JB_OP_MAX_POSITION_STEP_REV`
+  per-step gate + NaN/Inf reject.
+- `ros_ws/.../teensy_bridge_node.py` — `_setpoint_loop`/`_process_setpoint`
+  (~784–823) SUB on `:5556`; switch to `:5557` (`TOPIC_MPC_CMD`). Pump instantiated
+  ~417. Keep the `mpc_active` / `enable_setpoint_output` (default false) gate — U4
+  arms nothing; U5 flips the gate on the powered six-leg rig.
+- `make_mpc_command` schema: `ros_ws/.../motion/ipc.py:167+` (fields above).
+- `/teensy/*` names: `teensy_bridge_node.py` ~301–366 (topics `/teensy/robot_state`,
+  `/teensy/hand_telemetry`, `/teensy/link_status`, `/teensy/profile`; services
+  `/teensy/clear_errors`, `/teensy/reboot_odrives`, `/teensy/encoder_search`,
+  `/teensy/home`, `/teensy/odrive_command`, `/teensy/set_motor_vel_curr_limits`).
+- Tests to rewrite: `tests/teensy_link/test_setpoint_pump.py` (MPC-dict input now),
+  `tests/ros/test_teensy_bridge_node_setpoint.py`.
+
 ## Open Questions / Next (U3 tail — operator-gated, powered)
 
 Stages (i) + (ii) + the link-drop **sub-test A** + **sub-test B (CAN3 drop)** +
