@@ -33,6 +33,8 @@ commits:
   - c584767
   - b06699f
   - a277274
+  - 2443ff6
+  - a37bc05
 subsystem:
   - can
   - controller
