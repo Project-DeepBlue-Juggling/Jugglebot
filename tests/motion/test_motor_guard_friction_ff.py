@@ -804,3 +804,69 @@ def test_friction_ff_smooth_gate_table(v_factor, gate_check):
     assert gate_check(actual_gate), (
         f'gate value at v={v_factor}·v_gate is {actual_gate:.4f} '
         f'(expected per check: {gate_check.__doc__ or "see lambda"})')
+
+
+# ---------------------------------------------------------------------------
+# Parity — the U3-iv bench injection helper vs the production vectorised path
+# ---------------------------------------------------------------------------
+# friction_ff_torque_nm (friction_ff_params.py) is the scalar, single-axis
+# friction-FF the bench replay driver dependency-injects into
+# RecordedThrowSource for the D9 motion-onset A/B (it must stay importable
+# without the ROS2 / motor_guard stack so controller/ stays pure). These tests
+# pin it to MotorGuard._compute_friction_ff_Nm so the bench injects the EXACT
+# friction-FF motor_guard would — the precondition for an apples-to-apples
+# onset comparison. If the production formula drifts, this fails loudly.
+
+def test_scalar_helper_matches_motor_guard_per_axis():
+    """friction_ff_torque_nm(params, axis, v) == _compute_friction_ff_Nm()[axis]
+    across a velocity sweep, with every per-leg param distinct so any axis-
+    indexing or sign bug in the scalar helper fails."""
+    from jugglebot.motion.friction_ff_params import friction_ff_torque_nm
+
+    guard, _ = _make_guard()
+    p = _params(
+        enabled=True,
+        tau_c_A=np.array([1.00, 1.10, 1.20, 1.30, 1.40, 1.50]),
+        tau_s_A=np.array([1.90, 2.00, 2.10, 2.20, 2.30, 2.40]),
+        omega_s_rps=np.array([0.20, 0.22, 0.24, 0.26, 0.28, 0.30]),
+        b_A_per_rps=np.array([0.010, 0.012, 0.014, 0.016, 0.018, 0.020]),
+        load_offset_A=np.array([0.10, -0.05, 0.20, -0.15, 0.0, 0.30]),
+        ff_sign=np.array([+1.0, -1.0, +1.0, -1.0, +1.0, -1.0]),
+    )
+    guard._friction_ff_params = p
+    # Includes the recording's ~±3.18 rev/s peak, the v_gate edges, and ±1e-4
+    # (the hold-phase noise that bootstrapped the platform limit cycle).
+    vels = [-3.18, -2.0, -1.0, -0.3, -0.05, -1e-4, 0.0,
+            1e-4, 0.05, 0.3, 1.0, 2.0, 3.18]
+    for v in vels:
+        guard._commanded_vel_ff_rps = np.full(6, v)
+        out = guard._compute_friction_ff_Nm()
+        for axis in range(6):
+            assert friction_ff_torque_nm(p, axis, v) == pytest.approx(
+                float(out[axis]), abs=1e-12, rel=1e-9), (
+                f'mismatch at v={v}, axis={axis}: '
+                f'helper={friction_ff_torque_nm(p, axis, v)} vs '
+                f'motor_guard={float(out[axis])}')
+
+
+def test_scalar_helper_disabled_returns_zero():
+    """params.enabled=False → 0.0 (the plain β path), matching
+    _compute_friction_ff_Nm's zeros-on-disabled branch."""
+    from jugglebot.motion.friction_ff_params import friction_ff_torque_nm
+
+    p = _params(enabled=False)
+    for v in (-2.0, -0.05, 0.0, 0.05, 2.0):
+        assert friction_ff_torque_nm(p, 0, v) == 0.0
+
+
+def test_scalar_helper_v_zero_is_load_offset_only():
+    """At v=0 the helper returns load_offset·ff_sign·Kt (no friction term) —
+    the dead-zone-free hold behaviour, per axis."""
+    from jugglebot.motion.friction_ff_params import friction_ff_torque_nm
+
+    p = _params(enabled=True,
+                load_offset_A=np.array([0.10, -0.05, 0.20, -0.15, 0.0, 0.30]),
+                ff_sign=np.array([+1.0, -1.0, +1.0, -1.0, +1.0, -1.0]))
+    for axis in range(6):
+        expected = p.load_offset_A[axis] * p.ff_sign[axis] * p.motor_kt_nm_per_a
+        assert friction_ff_torque_nm(p, axis, 0.0) == pytest.approx(float(expected))

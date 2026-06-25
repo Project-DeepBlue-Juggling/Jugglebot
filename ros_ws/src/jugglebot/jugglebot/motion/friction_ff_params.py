@@ -39,6 +39,7 @@ import) so test environments without a reachable YAML do not fail when the
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass
 
@@ -191,3 +192,50 @@ def load_params(yaml_path: str | None = None) -> FrictionFFParams:
         load_offset_A=_arr('load_offset_A', ff['load_offset_A']),
         motor_kt_nm_per_a=float(kt),
     )
+
+
+def friction_ff_torque_nm(params: FrictionFFParams, axis: int, v_rps: float) -> float:
+    """Scalar single-axis Stribeck friction-FF torque [Nm].
+
+    Computes the SAME quantity as ``MotorGuard._compute_friction_ff_Nm()[axis]``
+    for a commanded velocity ``v_rps`` on ``axis`` (all other axes at rest), but
+    as a plain scalar so it can be dependency-injected into the U3-iv bench replay
+    source (``controller.teensy_link.replay_setpoint.RecordedThrowSource``'s
+    ``torque_ff_fn``) WITHOUT pulling the full ``motor_guard`` / ROS 2 stack into
+    ``controller/`` (which must stay pure). The bench driver builds a
+    ``lambda v: friction_ff_torque_nm(params, axis, v)`` and injects it.
+
+    Formula (mirrors ``motor_guard.py:_compute_friction_ff_Nm`` exactly)::
+
+        stribeck = τ_c + (τ_s − τ_c)·exp(−(|v|/ω_s)²) + b·|v|
+        gate     = 1 − exp(−(|v|/v_gate)²)
+        iq_total = −sign(v)·(stribeck·gate) + load_offset
+        torque   = iq_total · ff_sign · Kt
+
+    ``np.sign(0) == 0`` is reproduced via ``math.copysign`` guarded on ``av == 0``
+    so the v=0 case yields ``load_offset·ff_sign·Kt`` (only the constant load),
+    matching the production path's dead-zone-free behaviour.
+
+    **Sign convention:** returns motor_guard-convention ``torque_ff`` (YAML
+    ``ff_sign``, +1 platform default). The can-bridge applies ``leg_sign`` to
+    ``torque_ff`` on the way to the ODrive (``odrive_protocol.h``
+    ``encode_set_pos_with_ff``, which mirrors ``can_node._leg_sign``), so feeding
+    this value straight into ``Setpoint.torque_ff`` makes the bench β path
+    sign-identical to the production ``motor_guard → can_node → ODrive`` chain.
+
+    Returns ``0.0`` when ``params.enabled`` is False (the plain β path). Parity
+    with the production vectorised path is pinned by
+    ``tests/motion/test_motor_guard_friction_ff.py``.
+    """
+    if not params.enabled:
+        return 0.0
+    av = abs(v_rps)
+    sgn = 0.0 if av == 0.0 else math.copysign(1.0, v_rps)
+    stribeck = (params.tau_c_A[axis]
+                + (params.tau_s_A[axis] - params.tau_c_A[axis])
+                  * math.exp(-(av / params.omega_s_rps[axis]) ** 2)
+                + params.b_A_per_rps[axis] * av)
+    gate = 1.0 - math.exp(-(av / params.v_gate_rps) ** 2)
+    iq_friction = stribeck * gate
+    iq_total = -sgn * iq_friction + params.load_offset_A[axis]
+    return float(iq_total * params.ff_sign[axis] * params.motor_kt_nm_per_a)

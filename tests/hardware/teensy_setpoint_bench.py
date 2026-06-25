@@ -215,7 +215,17 @@ def main():
                          "ceiling (3.30 rev), with the Teensy float32 interp output "
                          "captured via the LegCmd uplink for the residual. Ignores "
                          "--center/--amplitude/--freq.")
+    ap.add_argument("--friction-ff", action="store_true",
+                    help="U3-iv D9 onset A/B: inject the motor_guard Stribeck "
+                         "friction-FF as per-frame torque_ff (requires --replay). The "
+                         "torque is computed by friction_ff_params.friction_ff_torque_nm "
+                         "(parity-tested against motor_guard._compute_friction_ff_Nm) and "
+                         "the can-bridge applies leg_sign on the way to the ODrive, so the "
+                         "bench torque is sign-identical to production. Omit for the "
+                         "friction-FF-free β path (the other A/B arm).")
     args = ap.parse_args()
+    if args.friction_ff and not args.replay:
+        ap.error("--friction-ff requires --replay (the synthetic source has no torque_ff hook)")
     axis = args.axis
 
     # Fatal/CAN faults: in --observe we cede wire authority so the firmware's
@@ -323,6 +333,26 @@ def main():
                 print(f"  • {pb}")
             return 2
 
+        # ── Optional friction-FF injection (D9 onset A/B) ────────────────────
+        # Build a per-axis Stribeck torque_ff(velocity) from the canonical
+        # motor_guard params (friction_ff_torque_nm is parity-tested against
+        # MotorGuard._compute_friction_ff_Nm). The can-bridge applies leg_sign to
+        # torque_ff on the way to the ODrive, so this is sign-identical to the
+        # production motor_guard → can_node chain.
+        friction_ff_fn = None
+        if args.friction_ff:
+            from dataclasses import replace as _dc_replace
+            from jugglebot.motion.friction_ff_params import (
+                load_params, friction_ff_torque_nm)
+            _ffp = load_params()
+            if not _ffp.enabled:
+                # The bench A/B explicitly wants FF active; the YAML enabled flag
+                # governs production. Force it on, loudly.
+                print("  [friction-ff] NOTE: YAML friction_ff.enabled=False — "
+                      "forcing enabled=True for the bench A/B.")
+                _ffp = _dc_replace(_ffp, enabled=True)
+            friction_ff_fn = lambda v, _p=_ffp, _ax=axis: friction_ff_torque_nm(_p, _ax, v)
+
         # ── Build the bounds-validated trajectory (synthetic OR recorded replay) ─
         try:
             if args.replay:
@@ -333,7 +363,8 @@ def main():
                 gen = RecordedThrowSource(
                     scaled, axis=axis, start_rev=start,
                     stroke_min_rev=STROKE_MIN_REV[axis], stroke_max_rev=STROKE_MAX_REV[axis],
-                    approach_s=args.approach, settle_s=1.0)
+                    approach_s=args.approach, settle_s=1.0,
+                    torque_ff_fn=friction_ff_fn)
                 # Replay defines its own length; extend --duration to cover it if needed.
                 if args.duration < gen.total_duration_s:
                     args.duration = gen.total_duration_s + 1.0
@@ -355,6 +386,12 @@ def main():
                   f"(pos_scale {sinfo.pos_scale:.3f}, ceiling {sinfo.ceiling_rev})")
             print(f"    approach {args.approach}s → settle 1.0s → onset at "
                   f"t={gen.onset_t_s:.1f}s → replay (peak {sinfo.peak_vel_rps:.2f} rev/s)")
+            if friction_ff_fn is not None:
+                print(f"    friction-FF: ON — torque_ff @|v|=0.1/1.0/{sinfo.peak_vel_rps:.2f} "
+                      f"rev/s = {friction_ff_fn(0.1):+.4f}/{friction_ff_fn(1.0):+.4f}/"
+                      f"{friction_ff_fn(sinfo.peak_vel_rps):+.4f} Nm (motor_guard convention)")
+            else:
+                print(f"    friction-FF: OFF (plain β path)")
         else:
             kind = "HOLD" if args.amplitude == 0.0 else f"SINUSOID ±{args.amplitude} @ {args.freq} Hz"
             print(f"  axis {axis}: extend {start:+.4f} → {args.center:+.4f} rev over "
@@ -381,8 +418,11 @@ def main():
         csv_w = csv.writer(csv_f)
         # cmd_teensy_rev = the Teensy's float32 interp output (LegCmd uplink) — vs the
         # offline float64 reference of `cmd_rev`'s knots, that is the U3-iv residual.
+        # cmd_tau_ff_Nm = the friction-FF torque injected into the frame this tick
+        # (motor_guard convention, the Teensy applies leg_sign downstream); blank
+        # when --friction-ff is off — the friction-FF-free β arm of the D9 A/B.
         csv_w.writerow(["t_s", "cmd_rev", "enc_rev", "cmd_teensy_rev", "vel_rps",
-                        "err_rev", "iq_A", "fault_state", "fault_name",
+                        "err_rev", "iq_A", "cmd_tau_ff_Nm", "fault_state", "fault_name",
                         "telem_age_ms", "hb_uptime_ms", "fw_mpc_active", "streaming"])
         print(f">>> logging telemetry → {csv_path}")
 
@@ -427,6 +467,9 @@ def main():
             iq = None if dg is None else float(dg.iq_measured)
             cmd = gen.position(t)
             cmd_teensy = axis_cmd_teensy(axis)   # Teensy float32 interp output (LegCmd)
+            # The friction-FF torque the frame carried this tick (matches the
+            # frame's tau = torque_ff_fn(velocity(t))); blank on the plain β arm.
+            tau_ff = friction_ff_fn(gen.velocity(t)) if friction_ff_fn is not None else None
             fw_mpc = firmware_mpc_active()
             tage = telem_age_ms()
             csv_w.writerow([
@@ -436,6 +479,7 @@ def main():
                 "" if vel is None else f"{vel:.5f}",
                 "" if enc is None else f"{cmd - enc:.5f}",
                 "" if iq is None else f"{iq:.4f}",
+                "" if tau_ff is None else f"{tau_ff:.5f}",
                 "" if fs is None else fs,
                 "" if fs is None else _fault_name(fs),
                 "" if tage is None else f"{tage:.0f}",
