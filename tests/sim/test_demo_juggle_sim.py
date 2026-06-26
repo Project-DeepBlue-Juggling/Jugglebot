@@ -26,31 +26,38 @@ from sim.juggle_demo import (
 # --------------------------------------------------------------------------
 # T-I3: sustained catches in MuJoCo — the plan §3 Phase 3 exit criterion.
 #
-# 2026-06-26 state (contact-mechanics integration, concern 1): the demo now
-# runs under REAL contact — the ball physically rides the cup and is thrown by
-# the hand stroke, with a seat-based capture metric. The contact mechanics are
-# validated (the ball leaves with exactly the cup velocity), and carry + catch
-# work. But the pattern does NOT yet close (1 catch / 0 drops): the offline
-# optimiser's throw/catch velocity model omitted the ω×r cup-offset term
-# (now added, frame-correct) AND the platform's achieved angular velocity at
-# the throw does not match the planned one (fast-yaw tracking error), so the
-# faithful throw lands short. The two headline cases below are therefore
-# xfail(strict=True) until the platform angular-tracking follow-up lands —
-# remove the marks and restore the strict ≥30-catch / 0-drop headline then.
-# See logbook 2026-06-26-contact-mechanics-integration (Open Questions / A).
+# 2026-06-27 state (throw-aim diagnosis + closed-loop catch). The throw-aim
+# problem was DIAGNOSED to root and the 2026-06-26 "angular tracking" headline
+# was REFUTED: the same-instant cup-velocity decomposition shows ω×r tracks
+# fine and contributes <0.04 m/s, while the dominant miss is a PLATFORM BAND
+# LIMIT — the heavy connect-constraint platform low-pass-filters every fast
+# maneuver (~30 mm+ tracking error at the throw AND the catch), so the emergent
+# contact throw lands ~100-140 mm from the planned catch. The old demo only hit
+# 30 catches because the kinematic velocity-override BYPASSED the platform.
+# Mitigations landed: optimiser throw-knot twist penalty (throw error 249→137
+# mm/s), CALIB 1.08→1.0 (vertical), and a CLOSED-LOOP CATCH that observes the
+# in-flight ball and reaches the platform xy to meet it. Result: the demo now
+# catches BOTH balls (the short test below PASSES, un-xfailed). The full
+# ≥30-catch pattern is still blocked by a band-limit cascade (loose re-seat
+# after the fast BB catch → wild re-throw; the reach is itself band-limited;
+# multi-ball reach/collision) — so T-I3 stays xfail. See logbook
+# 2026-06-27-throw-aim-band-limit-and-closed-loop-catch.
 # --------------------------------------------------------------------------
 @pytest.mark.xfail(strict=True, reason=(
-    "Contact-mechanics integration WIP: faithful throw lands short because the "
-    "platform's achieved angular velocity at the throw != planned (ω×r added to "
-    "the optimiser; angular-tracking follow-up pending). See logbook "
-    "2026-06-26-contact-mechanics-integration."))
+    "Throw-aim is a platform BAND LIMIT (not angular tracking): the emergent "
+    "contact throw lands ~100-140 mm from the planned catch and the full "
+    "≥30-catch pattern is blocked by a band-limit cascade (loose re-seat → "
+    "wild re-throw, band-limited reach, multi-ball collision). Closed-loop "
+    "catch gets to 2 catches. See logbook "
+    "2026-06-27-throw-aim-band-limit-and-closed-loop-catch."))
 def test_full_sim_juggle_reaches_target_catches():
     """T-I3: the demo sustains the pattern past the 30-catch threshold.
 
     Runs the default JuggleDemoConfig (real contact mechanics; seat-based
-    capture; leg-jerk² + leg-vel-equalise optimiser, sep=200) for 30 s and
-    asserts >= 30 catches. Currently xfails at 1 catch pending the throw-aim
-    angular-tracking fix (see module header).
+    capture; closed-loop catch; leg-jerk² + leg-vel-equalise optimiser with
+    throw-knot twist penalty, sep=200) for 30 s and asserts >= 30 catches.
+    Currently xfails at 2 catches pending the band-limit cascade fix (see
+    module header).
     """
     stats = run(JuggleDemoConfig(duration_s=30.0, n_catches=32, seed=0))
     assert stats.n_captures >= 30, (
@@ -64,16 +71,17 @@ def test_full_sim_juggle_reaches_target_catches():
 # Smoke test — a short run lands the BB-primed first catch + at least one
 # Jugglebot throw. Fast (~3 s wall time); catches regressions in the
 # wiring before the slow T-I3 test runs.
+#
+# 2026-06-27: un-xfailed. The closed-loop catch (observe the in-flight ball,
+# reach the platform xy to meet it) now seats BOTH balls — the BB-primed ball 0
+# AND the first emergent Jugglebot throw (ball 1) — so this passes. The full
+# ≥30-catch pattern (T-I3 above) is still blocked by the band-limit cascade.
 # --------------------------------------------------------------------------
-@pytest.mark.xfail(strict=True, reason=(
-    "Contact-mechanics integration WIP: only the BB-primed ball seats; the "
-    "faithful hand throw lands short pending the angular-tracking fix. See "
-    "logbook 2026-06-26-contact-mechanics-integration."))
 def test_short_run_catches_the_bb_primed_ball_and_a_throw():
     """A 5 s run picks up the BB-primed catch and at least one downstream catch.
 
-    Currently xfails: under real contact only the BB-primed ball (ball 0)
-    seats; the hand-thrown ball misses pending the throw-aim fix.
+    Both balls are caught: the BB-primed ball 0 and the first emergent hand
+    throw (ball 1, caught via the closed-loop catch reach). See module header.
     """
     stats = run(JuggleDemoConfig(duration_s=5.0, n_catches=8, seed=0))
     assert stats.n_captures >= 2, (

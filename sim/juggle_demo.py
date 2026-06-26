@@ -104,13 +104,41 @@ from sim.plant.mujoco_plant import MuJoCoPlant
 
 CONTROL_DT_S = 0.025                       # 40 Hz player loop
 
-# Throw-speed calibration for the contact-driven throw (concern 1). The
-# ball separates from the cup carrying a fraction of the commanded stroke
-# peak speed, so the hand throw stroke is commanded ``THROW_SPEED_CALIB``
-# times faster than the optimiser-planned ball speed to make the realised
-# exit speed match. Tuned empirically against the demo; 1.0 = no
-# compensation (physics under-throws). See ``_schedule_hand_throw``.
-THROW_SPEED_CALIB = 1.08
+# Throw-speed calibration for the contact-driven throw (concern 1). With the
+# phase-switched contact stiffness making the throw faithful (the stiff
+# up-stroke transfers ~100% of the commanded speed), the realised exit speed
+# matches the optimiser-planned ball speed at 1.0 — no compensation needed.
+# (The earlier 1.08 compensated a pre-stiffness-fix soft-contact under-throw
+# and now over-shoots ~8%.) See ``_schedule_hand_throw`` and logbook 2026-06-27.
+THROW_SPEED_CALIB = 1.00
+
+# Closed-loop catch reach (2026-06-27). The emergent contact throw cannot hit
+# the catch cup open-loop: the band-limited platform carries ~0.1 m/s of
+# irreducible sweep momentum through the throw, so the ball lands ~100-140 mm
+# from the planned catch (a real, deterministic platform-tracking limit, not a
+# plan error — see logbook 2026-06-27 throw-aim). Rather than fight the throw,
+# the catch CLOSES THE LOOP: it observes the in-flight ball, predicts its xy at
+# the catch instant (ballistic, exact in sim), and reaches the platform xy (a
+# smootherstep ramp-hold-ramp, profile below) so the cup meets the ball.
+# Reach profile (offsets from the catch instant tc, seconds). The reach is a
+# ramp-HOLD-ramp, not a peak-and-leave bump: the platform must ARRIVE at the
+# ball and DWELL there with zero reach-velocity through the catch, otherwise
+# the reach-velocity breaks the velocity-matched seat (the cup passes the ball
+# while still moving and never seats). Ramp in over [tc-T0, tc-T1], HOLD at the
+# reach over [tc-T1, tc+T2] (spanning the catch — the platform settles to the
+# commanded reach, so no overshoot), ramp out over [tc+T2, tc+T3]. Windows fit
+# inside (throw at tc-0.405, next throw at tc+0.22) so throws stay on-plan.
+_REACH_T0 = 0.35      # ramp-in start before tc
+_REACH_T1 = 0.10      # hold start before tc (settle window)
+_REACH_T2 = 0.06      # hold end after tc
+_REACH_T3 = 0.19      # fully returned to plan after tc
+_REACH_GAIN = 0.83
+# Clamp the reach magnitude (mm). A ball landing beyond this is outside the
+# platform workspace and uncatchable anyway; clamping stops a wild/lost ball
+# from commanding an absurd reach that saturates the legs and flails the
+# platform (which would swat the other in-flight ball and cascade). The catch
+# of a wild ball just fails gracefully without disrupting the rest.
+_REACH_MAX_MM = 180.0
 
 # Number of platform-only warm-up ticks before the pre-held ball is seated
 # into the cup, so the startup position step (throw_pose -> first
@@ -158,6 +186,8 @@ def _cache_key(pattern, cfg):
         cfg.leg_vel_equalize_weight, cfg.leg_vel_hard_cap_mms,
         cfg.catch_colinearity_weight, cfg.throw_colinearity_weight,
         cfg.catch_vel_ratio, cfg.catch_slider_vel_ratio,
+        cfg.throw_twist_lin_weight, cfg.throw_twist_ang_weight,
+        cfg.throw_twist_acc_weight,
     )
 
 
@@ -199,6 +229,11 @@ class _ThrowState:
 class _CatchState:
     sequence: HandCatchSequence
     event: Event
+    # Closed-loop catch reach: the platform-xy offset (mm, world) that brings
+    # the cup to the OBSERVED ball's predicted landing at the catch instant.
+    # ``None`` until the ball is cleanly in flight and the reach is computed
+    # (then frozen). See ``_JuggleDemoRunner._update_catch_reaches``.
+    reach_xy: Optional[np.ndarray] = None
 
 
 # --------------------------------------------------------------------------
@@ -573,6 +608,10 @@ class _JuggleDemoRunner:
                and self._pending_bb_throws[0].t_wall <= t_wall):
             self._execute_bb_throw(self._pending_bb_throws.pop(0))
 
+        # 2b. Closed-loop catch: freeze each imminent catch's reach once its
+        #     ball is cleanly in flight (observe-and-predict; see method doc).
+        self._update_catch_reaches(t_wall)
+
         # 3. Select the active hand sequence: command the 40 Hz setpoint,
         #    trigger the physics throw at the release instant, and get a
         #    sub-step sampler so the hand tracks the stroke at the physics
@@ -585,10 +624,12 @@ class _JuggleDemoRunner:
         self.plant.set_contact_stiffness(self._throw_stroke_active(t_wall))
 
         # 4. Command the platform (for telemetry; the per-substep sampler
-        #    below supersedes it inside step()).
+        #    below supersedes it inside step()). ``cmd`` is the uncorrected
+        #    plan (telemetry reference); the commanded extensions carry the
+        #    closed-loop catch reach so the cup meets the observed ball.
         t_rel = t_wall - self._t0
         cmd = self.player.command_at(t_rel)
-        self.plant.command(cmd.ext_mm)
+        self.plant.command(self._plat_cmd_at(t_wall))
 
         # 5. Step physics, sub-stepping BOTH the platform and hand commands
         #    at the physics rate (emulating the real 500 Hz controllers).
@@ -792,9 +833,73 @@ class _JuggleDemoRunner:
         per-substep platform command sampler passed to
         :meth:`MuJoCoPlant.step`. Evaluates the trajectory player at the
         substep's relative time so the platform tracks the trajectory at
-        the physics rate, not a 40 Hz staircase.
+        the physics rate, not a 40 Hz staircase. Adds the closed-loop catch
+        reach (platform-xy offset) so the cup meets the observed ball.
         """
-        return self.player.command_at(t_wall - self._t0).ext_mm
+        pose = self.player.command_at(t_wall - self._t0).pose.copy()
+        pose[:2] += self._catch_reach_xy(t_wall)
+        return self.plant.pose_to_extensions(pose)
+
+    def _catch_reach_xy(self, t_wall: float) -> np.ndarray:
+        """Active platform-xy reach offset (mm, world) at ``t_wall``.
+
+        Sum of each queued catch's smootherstep ramp-hold-ramp: ramped in over
+        ``[tc-_REACH_T0, tc-_REACH_T1]``, HELD (= ``reach_xy``) over
+        ``[tc-_REACH_T1, tc+_REACH_T2]`` spanning the catch with zero
+        correction-velocity, ramped out over ``[tc+_REACH_T2, tc+_REACH_T3]``,
+        and zero outside (so throws stay on the periodic plan and the
+        velocity-matched catch is preserved). Catches whose reach is not yet
+        computed contribute nothing.
+        """
+        off = np.zeros(2)
+        # The platform warm-up in __init__ drives _plat_cmd_at before the
+        # catch queue exists; no catches are pending then, so reach is zero.
+        for cs in getattr(self, '_catch_queue', ()):
+            if cs.reach_xy is None:
+                continue
+            u = t_wall - cs.event.t_wall
+            if -_REACH_T0 <= u < -_REACH_T1:
+                s = (u + _REACH_T0) / (_REACH_T0 - _REACH_T1)        # 0 -> 1
+                off = off + cs.reach_xy * _smootherstep(s)
+            elif -_REACH_T1 <= u <= _REACH_T2:
+                off = off + cs.reach_xy                              # hold
+            elif _REACH_T2 < u <= _REACH_T3:
+                s = (u - _REACH_T2) / (_REACH_T3 - _REACH_T2)        # 0 -> 1
+                off = off + cs.reach_xy * (1.0 - _smootherstep(s))
+        return off
+
+    def _update_catch_reaches(self, t_wall: float) -> None:
+        """Freeze each imminent catch's reach once its ball is cleanly in flight.
+
+        For every queued catch whose reach window has begun (``t_wall >= tc -
+        _REACH_T0``) and whose target ball is in free flight, predict the
+        ball's xy at the catch instant (ballistic — xy is constant-velocity in
+        sim) and set ``reach_xy`` to the platform offset that moves the cup
+        (planned catch-target xy) onto that landing. Computed ONCE per catch
+        then frozen, so the reach is a smooth pre-planned bump, not a per-tick
+        chase (which would inject the platform's own tracking jitter into the
+        catch). The planned cup xy is the periodic catch target
+        ``_catch_target_world_mm`` (same every period).
+        """
+        for cs in self._catch_queue:
+            if cs.reach_xy is not None:
+                continue
+            tc = cs.event.t_wall
+            if t_wall < tc - _REACH_T0:
+                continue
+            ball = self.plant.get_ball_state(ball=cs.event.ball)
+            if ball is None or ball.held or not ball.active:
+                continue
+            dt = tc - t_wall
+            if dt <= 0.0:
+                continue
+            landing_xy = (np.asarray(ball.position_mm[:2], dtype=float)
+                          + np.asarray(ball.velocity_mms[:2], dtype=float) * dt)
+            reach = (landing_xy - self._catch_target_world_mm[:2]) * _REACH_GAIN
+            mag = float(np.linalg.norm(reach))
+            if mag > _REACH_MAX_MM:
+                reach = reach * (_REACH_MAX_MM / mag)
+            cs.reach_xy = reach
 
     def _predict_hand_pos_at(self, t_wall: float) -> float:
         """Estimate the hand position at ``t_wall`` for prelude planning.
@@ -1027,6 +1132,15 @@ class _JuggleDemoRunner:
 # --------------------------------------------------------------------------
 # Helpers
 # --------------------------------------------------------------------------
+def _smootherstep(s: float) -> float:
+    """C2 smootherstep ``6s⁵−15s⁴+10s³`` on [0,1]; zero slope at both ends.
+
+    Used to ramp the closed-loop catch reach in/out with zero
+    correction-velocity at the endpoints (no jerk into the platform).
+    """
+    return s * s * s * (s * (s * 6.0 - 15.0) + 10.0)
+
+
 def _print_reachable_urls(port: int) -> None:
     """Print every LAN IPv4 address the dashboard is reachable from.
 

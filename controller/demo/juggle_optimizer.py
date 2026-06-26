@@ -254,6 +254,54 @@ class OptimizerConfig:
     # the platform twist supplies the remainder (cup_ratio − slider_ratio).
     # Drift risk noted; single-source contract owned by the hand overhaul.
     catch_slider_vel_ratio: float = 0.6
+    # ---- Throw-knot twist penalty (throw-aim conditioning, 2026-06-27) ---
+    # Soft penalty on the platform CENTROID LINEAR velocity at the throw
+    # knot AND its two neighbours (knots N-1, 0, 1):
+    # ``throw_twist_lin_weight × Σ_k ‖twist[k,0:3]‖²`` (mm/s)².
+    # Root cause it closes: the throw's ball-release velocity is a HARD
+    # equality (= v_required), but the optimiser is free to *source* it
+    # however it likes — and left unconstrained it sources the throw from a
+    # large platform centroid velocity (~0.8 m/s) that the banked slider
+    # nearly cancels (~−0.85 m/s), netting the small required lateral. That
+    # large, fast-reversing centroid velocity is exactly what the heavy
+    # connect-constraint platform PHASE-LAGS (~0.25 m/s residual at the
+    # throw), and because the throw is a small difference of large terms the
+    # residual is the WHOLE lateral aim error under a faithful contact throw
+    # (the kinematic-override era hid it). Driving the throw-knot centroid
+    # velocity toward zero makes the throw a near-static, gently-banked
+    # (~2°) slider ejection the platform tracks cleanly — same v_required,
+    # no large cancellation. Default 3.0e5 (ACTIVE — applied by every
+    # OptimizerConfig() consumer, incl. the juggle demo, which uses the
+    # defaults); set 0.0 for the legacy no-penalty solve. NOTE: bound-twist
+    # cuts the throw error 249→137 mm/s but FLOORS there (the platform still
+    # carries ~0.1 m/s of un-plannable sweep momentum — see logbook). See
+    # logbook 2026-06-27 throw-aim.
+    throw_twist_lin_weight: float = 3.0e5
+    # Soft penalty on the platform ANGULAR rate at the throw knot:
+    # ``throw_twist_ang_weight × ‖twist[0,3:6]‖²`` (rad/s)². The throw needs
+    # a specific *static* bank (R_throw) to aim the slider, not a fast
+    # rotation through it; left free the optimiser whips the (aim-cosmetic,
+    # tilt-bound-exempt) yaw at ~5 rad/s, which the platform cannot track
+    # and which yaws the cup during the ball's contact separation. Penalising
+    # it keeps the platform calm at the throw. Aim-secondary (r_hand ∥ yaw
+    # axis, so ω×r is tiny), but it cleans up the separation. Default 0.0.
+    throw_twist_ang_weight: float = 0.0
+    # Soft penalty on the platform CENTROID LINEAR acceleration at the throw
+    # knot: ``throw_twist_acc_weight × ‖accel[0,0:3]‖²`` (mm/s²)². An
+    # alternative aim lever to the velocity penalty above (inactive by
+    # default — the windowed velocity penalty proved the effective one). The heavy
+    # platform tracks the commanded trajectory with a roughly fixed ~25 ms
+    # lag; what wrecks the aim is the platform sweeping through the throw at
+    # NON-ZERO acceleration (the throw sits on the falling side of a velocity
+    # peak), so achieved(throw) ≈ commanded(throw−25 ms) ≠ commanded(throw).
+    # Flattening the commanded velocity at the throw (accel→0, i.e. moving
+    # the velocity extremum onto the throw knot) makes commanded(throw−25 ms)
+    # ≈ commanded(throw), so the lag becomes harmless and the achieved cup
+    # velocity tracks the plan to second order in the lag. Penalising the
+    # velocity dip alone (above) back-fired — it created a SHARP dip the lag
+    # over-shot; flatness, not smallness, is what the lag rewards. Default
+    # 0.0 (inactive in the current demo config). See logbook 2026-06-27.
+    throw_twist_acc_weight: float = 0.0
 
 
 @dataclasses.dataclass
@@ -812,6 +860,29 @@ def optimise_juggle_trajectory(pattern: JugglePattern,
         hand_axis_throw = R_throw @ cs.vertcat(0.0, 0.0, 1.0)
         cross_throw = cs.cross(v_required, hand_axis_throw)
         cost = cost + cfg.throw_colinearity_weight * cs.dot(cross_throw, cross_throw)
+
+    # Throw-knot twist penalty (throw-aim conditioning). Penalise the
+    # platform centroid linear velocity (and optionally the angular rate) at
+    # the throw knot so the HARD v_required equality is sourced from a near-
+    # static, gently-banked slider rather than a large centroid-vs-slider
+    # cancellation the phase-lagging platform can't track. See the field docs
+    # and logbook 2026-06-27 throw-aim.
+    # The centroid-velocity penalty spans the throw knot AND its two
+    # neighbours (knots N-1, 0, 1 — a ~±1 knot / ±50 ms window around the
+    # throw). A single-knot penalty only carves a SHARP velocity dip the
+    # low-pass platform over-shoots; slowing the platform across a window
+    # WIDER than its ~25 ms tracking lag makes the achieved centroid velocity
+    # genuinely small there, so the cup velocity comes from the trackable
+    # slider bank rather than a phase-lagged centroid. The angular and accel
+    # penalties stay knot-local (the yaw substitution and the velocity-
+    # flattening are both throw-knot effects).
+    if cfg.throw_twist_lin_weight > 0.0:
+        for k in (N - 1, 0, 1):
+            cost = cost + cfg.throw_twist_lin_weight * cs.sumsqr(twists[k, 0:3])
+    if cfg.throw_twist_ang_weight > 0.0:
+        cost = cost + cfg.throw_twist_ang_weight * cs.sumsqr(twists[0, 3:6])
+    if cfg.throw_twist_acc_weight > 0.0:
+        cost = cost + cfg.throw_twist_acc_weight * cs.sumsqr(accels[0, 0:3])
 
     opti.minimize(cost)
 

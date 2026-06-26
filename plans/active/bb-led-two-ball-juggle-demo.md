@@ -175,23 +175,34 @@ Two coupled sim-fidelity upgrades raised during sim review, tracked in
   structurally can't judge a moving-cup catch (1/33 strict, 33/33 loose), so
   `JuggleDemoConfig.capture_tolerance_mm` defaults to `None` (loose) as an
   INTERIM pending concern 1.
-- **Concern 1 — real contact mechanics (INFRASTRUCTURE LANDED; throw-aim WIP).**
+- **Concern 1 — real contact mechanics (INFRASTRUCTURE LANDED; throw-aim is a
+  platform BAND LIMIT; paused to reconsider planning architecture).**
   Replaced the kinematic ball-hold (`apply_kinematic_hold` teleport) + explicit
   `release()` with real contact, tracked in
-  `logbook/2026-06-26-contact-mechanics-integration.md`. **Landed & validated:**
-  opt-in `contact_carry` mode (ball rides the cup by physics), a seat-based
-  capture metric (settled + co-moving, replacing the geometric snap),
+  `logbook/2026-06-26-contact-mechanics-integration.md` and
+  `logbook/2026-06-27-throw-aim-band-limit-and-closed-loop-catch.md`. **Landed &
+  validated:** opt-in `contact_carry` mode (ball rides the cup by physics), a
+  seat-based capture metric (settled + co-moving, replacing the geometric snap),
   platform + hand command **sub-stepping** (the 40 Hz staircase rang the leg
   actuators and shook the ball out — load-bearing fix), phase-switched contact
   stiffness (soft catch / stiff throw), and an emergent physics throw (the
-  contact is faithful: ball leaves with *exactly* the cup velocity). **Not yet
-  closed:** the throw lands short because the optimiser's throw/catch velocity
-  model omitted the **ω×r** cup-offset term (added, frame-correct), and the
-  platform's **achieved** angular velocity at the throw does not match the
-  planned one (fast-yaw tracking error). Demo currently 1 catch / 0 drops; the
-  `test_demo_juggle_sim` headline cases are `xfail(strict=True)` pending the
-  angular-tracking follow-up. Restore the strict ≥30-catch / 0-drop headline
-  when that lands.
+  contact is faithful: ball leaves with *exactly* the cup velocity).
+  **Throw-aim diagnosed to root (2026-06-27), refuting the earlier "angular
+  tracking" headline:** a same-instant cup-velocity decomposition shows ω×r
+  tracks fine (< 0.04 m/s) and the dominant miss is a **platform band limit** —
+  the heavy connect-constraint platform low-pass-filters every fast maneuver
+  (~30 mm+ pose-tracking error at throw AND catch), so the emergent throw lands
+  ~100–140 mm short. The old ≥30-catch headline only held because the kinematic
+  override *bypassed* the platform. Mitigations: optimiser throw-knot twist
+  penalty (249→137 mm/s), `THROW_SPEED_CALIB` 1.08→1.0, and a **closed-loop
+  catch** (observe the in-flight ball, reach the platform xy to meet it) →
+  **1 → 2 catches**, short headline test now passes (un-xfailed). The full
+  ≥30-catch pattern (`test_full_...`, still `xfail`) is blocked by a band-limit
+  cascade (loose re-seat → wild re-throw, band-limited reach, multi-ball
+  collision). **Development paused** to reconsider the planning architecture
+  (online / higher-level planner re-planning against the achieved state, vs the
+  one-shot offline trajectory that assumes perfect tracking) — see the
+  2026-06-27 logbook Path forward.
 
 ## 4. Implementation Phases (detailed)
 

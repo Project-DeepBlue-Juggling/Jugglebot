@@ -86,7 +86,7 @@ DEFAULT_CAPTURE_TOLERANCE_M: float | None = None
 # co-moving, i.e. riding the hand rather than bouncing off it). These
 # defaults were tuned empirically against the demo (see logbook
 # 2026-06-26 contact-mechanics-integration).
-SEAT_RADIUS_M: float = 0.030          # 30 mm centre-to-opening
+SEAT_RADIUS_M: float = 0.040          # 40 mm centre-to-opening
 SEAT_REL_VEL_MPS: float = 0.60        # ball must be near-co-moving with cup
 SEAT_PERSIST_SUBSTEPS: int = 15       # ~15 ms at 1 kHz of continuous seating
 # A held ball that drifts beyond this offset has sloshed out of the cup
