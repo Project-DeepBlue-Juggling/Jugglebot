@@ -283,7 +283,7 @@ namespace BBCan {
   constexpr uint32_t HEARTBEAT_RATE_MS = 100u;
   constexpr uint32_t AUTO_CLEAR_BRAKE_MS = 500u;
   constexpr uint32_t MAX_NODES = 16u;
-  constexpr uint32_t SYNC_STATS_PRINT_MS = 200u;
+  constexpr uint32_t SYNC_STATS_PRINT_MS = 2000u;
 }
 
 // ==========================================================================
@@ -410,7 +410,7 @@ namespace BBOp {
   constexpr float MAX_THROW_SPEED_MPS = 5.0f;
   constexpr float MAX_THROW_HEIGHT_M = 0.5f;
   constexpr float THROW_SPEED_MULTIPLIER = 1.0f;
-  constexpr float LANDING_TIME_OFFSET_MS = -120.0f;
+  constexpr float THROW_RELEASE_LATENCY_MS = 44.0f;
 }
 
 // ==========================================================================
@@ -447,4 +447,12 @@ namespace CatchingCone {
   constexpr float DELTA_WARN_MS = 15.0f;
   constexpr float OFFSET_DISPLAY_LIMIT_MS = 50.0f;
   constexpr uint32_t OFFSET_HISTORY_LEN = 12u;
+}
+
+// ==========================================================================
+// Derived Constants (computed by generator)
+// ==========================================================================
+
+namespace JBOp {
+  constexpr float ACTIVATE_POSITION_REVS[6] = {2.190709451408076f, 2.1918534899593114f, 2.1762225037976197f, 2.1912531391531846f, 2.2037889152266708f, 2.200931467346294f};
 }

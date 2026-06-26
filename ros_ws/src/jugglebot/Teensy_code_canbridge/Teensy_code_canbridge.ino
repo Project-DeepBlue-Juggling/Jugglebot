@@ -45,6 +45,7 @@ using namespace arduino;
 #include "leg_interp.h"          // Phase 7
 #include "fault_machine.h"       // Phase 8
 #include "leg_homing.h"          // Phase 9b
+#include "leg_activate.h"        // Phase 11 U5
 #include "profiling.h"           // Profiling/instrumentation
 
 using namespace CanBridge;
@@ -184,14 +185,20 @@ static void task_fault(void*) {
   }
 }
 
-// Homing monitor (priority 2) at HOMING_RATE_HZ. Phase 9b: runs the
-// velocity-limited move-to-hardstop state machine when a HOME RPC has latched a
-// start; a cheap no-op otherwise (idle the rest of the time — a rare bench op).
+// Cold-start leg-motion monitor (priority 2) at HOMING_RATE_HZ. Runs the
+// velocity-limited move-to-hardstop (Phase 9b HOME) and the TRAP_TRAJ move to the
+// active pose (Phase 11 U5 ACTIVATE) state machines when an RPC has latched a
+// start; both are cheap no-ops otherwise (idle the rest of the time — rare bench/
+// cold-start ops). HOME and ACTIVATE each reject a start while the OTHER is active
+// (symmetric), and each stays "active" for its whole physical move (homing polls
+// the Iq spike; activate's MONITOR waits for the legs to reach + settle), so at
+// most one drives at a time for the full duration — not just the fire instant.
 static void task_homing(void*) {
   TickType_t last = xTaskGetTickCount();
   const TickType_t period = pdMS_TO_TICKS(1000 / HOMING_RATE_HZ);
   for (;;) {
     homing_step();
+    activate_step();
     vTaskDelayUntil(&last, period);
   }
 }
@@ -351,6 +358,7 @@ void setup() {
   fault_machine_init();            // Phase 8 (before interp so the output gate is off at boot)
   leg_interp_init();               // Phase 7: starts the 500 Hz IntervalTimer ISR
   homing_init();                   // Phase 9b (idle until a HOME RPC latches a start)
+  activate_init();                 // Phase 11 U5 (idle until an ACTIVATE RPC latches a start)
   profiling_init();                // instrumentation baselines
 
   // Create tasks. (Higher number = higher priority in FreeRTOS.)

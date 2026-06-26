@@ -94,6 +94,7 @@ Static IPs: Teensy `192.168.42.2`, Jetson `192.168.42.1` (`/30` point-to-point).
 | `SET_ABSOLUTE_POSITION` | 0x0017 | ODrive set_absolute_position (post-homing) |
 | `ENCODER_SEARCH` | 0x0020 | Run encoder index search (Phase 9 — stubbed) |
 | `HOME` | 0x0021 | Run homing (Phase 9 — stubbed) |
+| `ACTIVATE` | 0x0022 | Run TRAP_TRAJ move to the active pose (Phase 11 U5) |
 | `SDO_READ` | 0x0030 | Arbitrary parameter read |
 | `SDO_WRITE` | 0x0031 | Arbitrary parameter write |
 | `BB_THROW` | 0x0040 | Ball Butler: send THROW_CMD on CAN1 (typed, validated) |
@@ -402,7 +403,7 @@ wraps the generated Python. `AXIS_ALL = 0xFF` broadcasts to all legs.
 | `axis` | u8 | ODrive axis 0..5 |
 | `position` | f32 | absolute position (rev), post-homing |
 
-### ArgAxisOnly (`CLEAR_ERRORS / REBOOT_ODRIVES / ENCODER_SEARCH / HOME`)
+### ArgAxisOnly (`CLEAR_ERRORS / REBOOT_ODRIVES / ENCODER_SEARCH / HOME / ACTIVATE`)
 
 **1 bytes**. Python struct fmt: `<B`.
 

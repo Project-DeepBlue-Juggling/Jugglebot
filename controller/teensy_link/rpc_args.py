@@ -43,7 +43,8 @@ __all__ = [
     "encode_set_axis_state", "encode_set_controller_mode",
     "encode_set_vel_curr_limits", "encode_set_pos_gain", "encode_set_vel_gains",
     "encode_set_absolute_position", "encode_clear_errors", "encode_reboot",
-    "encode_encoder_search", "encode_home", "encode_sdo_read", "encode_sdo_write",
+    "encode_encoder_search", "encode_home", "encode_activate",
+    "encode_sdo_read", "encode_sdo_write",
     "encode_bb_throw", "encode_bb_reload", "encode_bb_reset",
     "encode_bb_calibrate_loc",
     "decode_time_of_day_result",
@@ -106,6 +107,15 @@ def encode_home(axis: int = AXIS_ALL) -> bytes:
     return ArgAxisOnly(axis=int(axis)).pack()
 
 
+def encode_activate(axis: int = AXIS_ALL) -> bytes:
+    """ACTIVATE: TRAP_TRAJ move to the active pose (Phase 11 U5).
+
+    ``AXIS_ALL`` activates every present leg in parallel (even platform rise); a
+    single leg index activates just that leg iff present.
+    """
+    return ArgAxisOnly(axis=int(axis)).pack()
+
+
 def encode_sdo_read(axis: int, endpoint: int) -> bytes:
     """SDO_READ: arbitrary parameter read (response returns async on TxSdo)."""
     return ArgSdoRead(axis=int(axis), endpoint=int(endpoint)).pack()
@@ -164,6 +174,7 @@ METHOD = {
     RpcMethod.REBOOT_ODRIVES: ArgAxisOnly,
     RpcMethod.ENCODER_SEARCH: ArgAxisOnly,
     RpcMethod.HOME: ArgAxisOnly,
+    RpcMethod.ACTIVATE: ArgAxisOnly,
     RpcMethod.SDO_READ: ArgSdoRead,
     RpcMethod.SDO_WRITE: ArgSdoWrite,
     RpcMethod.BB_THROW: ArgBbThrow,

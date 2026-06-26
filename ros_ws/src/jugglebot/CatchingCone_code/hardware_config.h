@@ -448,3 +448,11 @@ namespace CatchingCone {
   constexpr float OFFSET_DISPLAY_LIMIT_MS = 50.0f;
   constexpr uint32_t OFFSET_HISTORY_LEN = 12u;
 }
+
+// ==========================================================================
+// Derived Constants (computed by generator)
+// ==========================================================================
+
+namespace JBOp {
+  constexpr float ACTIVATE_POSITION_REVS[6] = {2.190709451408076f, 2.1918534899593114f, 2.1762225037976197f, 2.1912531391531846f, 2.2037889152266708f, 2.200931467346294f};
+}

@@ -12,6 +12,7 @@
 #include "can_buses.h"
 #include "fault_machine.h"
 #include "leg_homing.h"
+#include "leg_activate.h"
 
 namespace CanBridge {
 namespace Rpc {
@@ -186,6 +187,14 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
       // completion via telemetry (axis_state → IDLE, pos → home ref).
       ArgAxisOnly a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
       return homing_request(a.axis);
+    }
+    case RpcMethod::ACTIVATE: {
+      // Phase 11 U5: fire-and-monitor TRAP_TRAJ move to the active pose. Validate
+      // + latch a start, return immediately (the ODrive runs the trajectory; the
+      // Jetson observes completion via telemetry). axis == AXIS_ALL activates
+      // every present leg in parallel (even platform rise).
+      ArgAxisOnly a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
+      return activate_request(a.axis);
     }
 
     // ── Ball Butler (CAN1) — typed commands ──────────────────────────────

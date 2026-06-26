@@ -705,6 +705,20 @@ def generate_hw_cpp(cfg: dict) -> str:
     # omitted from the C++ output. Both firmwares derive these locally from source
     # constants — see BallButlerConfig.h TrajCfg namespace and Trajectory.h.
     # Python derived constants are still generated in generate_hw_python().
+    #
+    # EXCEPTION: JBOp::ACTIVATE_POSITION_REVS. The can-bridge firmware's TRAP_TRAJ
+    # activate op (leg_activate.cpp) moves each leg to the active pose, and that
+    # target MUST match the control loop's active pose exactly (it is the IK of
+    # [0,0,default_active_z,0,0,0]) — re-deriving it in firmware would risk drift.
+    # So the single derived array the can-bridge needs is emitted into JBOp here.
+    derived = compute_derived(cfg)
+    activate_revs = derived["ACTIVATE_POSITION_REVS"]
+    lines += cpp_section("Derived Constants (computed by generator)")
+    lines.append("namespace JBOp {")
+    formatted = ", ".join(f"{v}f" for v in activate_revs)
+    lines.append(f"  constexpr float ACTIVATE_POSITION_REVS[{len(activate_revs)}] = "
+                 f"{{{formatted}}};")
+    lines.append("}")
     lines.append("")
 
     return "\n".join(lines)
@@ -964,6 +978,7 @@ def main():
             (hw_cpp_content, BB_FIRMWARE_DIR / "hardware_config.h"),
             (hw_cpp_content, PLATFORM_FIRMWARE_DIR / "hardware_config.h"),
             (hw_cpp_content, CATCHING_CONE_FIRMWARE_DIR / "hardware_config.h"),
+            (hw_cpp_content, CANBRIDGE_FIRMWARE_DIR / "hardware_config.h"),
             (hw_py_content, ROS_PKG_DIR / "hardware_config.py"),
         ]
         for content, dest in hw_copies:

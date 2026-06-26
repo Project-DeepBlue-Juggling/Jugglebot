@@ -92,6 +92,9 @@ from controller.teensy_link.encoder_search import (
 from controller.teensy_link.homing import (
     HomingMonitor, AxisStatus as HomingAxisStatus,
 )
+from controller.teensy_link.activate import (
+    ActivateMonitor, AxisStatus as ActivateAxisStatus,
+)
 from jugglebot.can import catching_cone
 import jugglebot.hardware_config as hw
 import jugglebot.protocol_config as proto
@@ -223,6 +226,12 @@ class TeensyBridgeNode(Node):
         # firmware homes one axis at a time). Default = all legs; set to e.g. [0]
         # for the standalone-leg bench rig (node 0 = axis 0).
         self.declare_parameter('home_axes', list(range(p.NUM_LEGS)))
+        # Phase 11 U5: which axes the configure + activate services act on.
+        # configure applies gains + vel/curr limits + POSITION/PASSTHROUGH (the
+        # β-path _setup_odrives); activate fires the TRAP_TRAJ move to the active
+        # pose. Default = all legs; set to e.g. [0] for the standalone-leg bench rig.
+        self.declare_parameter('configure_axes', list(range(p.NUM_LEGS)))
+        self.declare_parameter('activate_axes', list(range(p.NUM_LEGS)))
 
         self._heartbeat_timeout_s = float(
             self.get_parameter('heartbeat_timeout_s').value)
@@ -382,6 +391,8 @@ class TeensyBridgeNode(Node):
         self.create_service(Trigger, 'reboot_odrives', self._svc_reboot_odrives)
         self.create_service(Trigger, 'encoder_search', self._svc_encoder_search)
         self.create_service(Trigger, 'home', self._svc_home)
+        self.create_service(Trigger, 'configure', self._svc_configure)
+        self.create_service(Trigger, 'activate', self._svc_activate)
         self.create_service(ODriveCommandService, 'odrive_command',
                             self._svc_odrive_command)
         self.create_subscription(
@@ -1057,6 +1068,9 @@ class TeensyBridgeNode(Node):
     def teensy_home(self, axis=rpc_args.AXIS_ALL):
         return self._call_rpc(RpcMethod.HOME, rpc_args.encode_home(axis))
 
+    def teensy_activate(self, axis=rpc_args.AXIS_ALL):
+        return self._call_rpc(RpcMethod.ACTIVATE, rpc_args.encode_activate(axis))
+
     def teensy_sdo_read(self, axis, endpoint):
         return self._call_rpc(RpcMethod.SDO_READ,
                               rpc_args.encode_sdo_read(axis, endpoint))
@@ -1214,6 +1228,130 @@ class TeensyBridgeNode(Node):
         self.get_logger().info(msg)
         return True, msg
 
+    # ── Configure + activate (Phase 11 U5 — β-path cold-start) ──
+    # The β path has only one leg-motion path (the gated 40 Hz setpoint stream),
+    # so the can_node `_setup_odrives_steps` (gains/limits/mode) and
+    # `_gentle_move_steps` (move to active pose) have no equivalent until here.
+    # `_run_configure` is the pure-config _setup_odrives analogue; `_run_activate`
+    # fires the firmware TRAP_TRAJ activate op + observes it. `/home` calls
+    # `_run_configure` at completion (the operator's "set after every homing").
+
+    def _run_configure(self, axes):
+        """Apply the β-path cold-start config to ``axes`` (the _setup_odrives
+        analogue): per-leg position/velocity gains + vel/curr limits +
+        POSITION/PASSTHROUGH controller mode. Idempotent and motion-free — it does
+        NOT change axis_state or command a position (that is /activate's job), so it
+        is safe to run after homing (legs IDLE at the hardstop) AND again after
+        activate (legs CLOSED_LOOP holding the active pose, switching TRAP_TRAJ →
+        PASSTHROUGH for the interp). Returns ``(ok, message)``.
+        """
+        axes = [int(a) for a in axes]
+        if not axes:
+            return False, "no axes configured for configure"
+        ctrl = proto.ODRIVE_CONTROL_MODES['POSITION']
+        inp = proto.ODRIVE_INPUT_MODES['PASSTHROUGH']
+        failed = []
+        self.get_logger().info(f"configure: applying gains/limits/PASSTHROUGH on axes {axes}")
+        for axis in axes:
+            for name, (ok, m, _) in (
+                ("pos_gain",
+                 self.teensy_set_pos_gain(axis, hw.ODRIVE_LEG_POS_GAINS[axis])),
+                ("vel_gains",
+                 self.teensy_set_vel_gains(axis, hw.ODRIVE_LEG_VEL_GAINS[axis],
+                                           hw.ODRIVE_LEG_VEL_INT_GAINS[axis])),
+                ("vel_curr_limits",
+                 self.teensy_set_vel_curr_limits(axis, hw.ODRIVE_LEG_VEL_LIMIT_RPS,
+                                                 hw.ODRIVE_LEG_CURR_LIMIT_A)),
+                ("controller_mode",
+                 self.teensy_set_controller_mode(axis, ctrl, inp)),
+            ):
+                if not ok:
+                    failed.append(f"axis {axis} {name}: {m}")
+        if failed:
+            msg = "configure FAILED — " + "; ".join(failed)
+            self.get_logger().error(msg)
+            return False, msg
+        msg = f"configure complete on axes {axes}"
+        self.get_logger().info(msg)
+        return True, msg
+
+    def _activate_axis_status(self, axes):
+        """Build per-axis ``ActivateAxisStatus`` for the activate observer from the
+        latest telemetry (pos/vel) + diagnostic (axis_state, active_errors) cache.
+        An axis with no diagnostic yet is omitted (aged toward its timeout)."""
+        out = {}
+        with self._lock:
+            telem = self._latest_telemetry
+            diag = dict(self._latest_diag)
+        if telem is None:
+            return out
+        for axis in axes:
+            d = diag.get(int(axis))
+            if d is None:
+                continue
+            out[int(axis)] = ActivateAxisStatus(
+                axis_state=int(d.axis_state),
+                pos_rev=float(telem.pos_rev[int(axis)]),
+                vel_rps=float(telem.vel_rps[int(axis)]),
+                active_errors=int(d.active_errors))
+        return out
+
+    def _run_activate(self, axes, *, poll_dt=0.05):
+        """Fire the firmware ACTIVATE (TRAP_TRAJ move to the active pose) and
+        observe it to completion. A single configured axis fires that leg; any
+        larger set fires ``AXIS_ALL`` (every PRESENT leg, parallel even-rise). The
+        ActivateMonitor watches each leg reach its active-pose target + settle.
+
+        Synchronous: blocks the calling (executor) thread for the ~seconds the move
+        takes; the RX + heartbeat threads keep the link + telemetry cache alive and
+        the heartbeat stays ``mpc_active=0`` (no setpoint output). Returns
+        ``(ok, message)``.
+
+        Precondition: a prior ``/configure`` (gains/limits/mode). Without it the
+        legs run on flash-default gains and the move fails safe (never reaches the
+        target → ActivateMonitor timeout → FAILED).
+        """
+        axes = [int(a) for a in axes]
+        if not axes:
+            return False, "no axes configured for activate"
+        targets = {a: float(hw.JB_OP_ACTIVATE_POSITION_REVS[a]) for a in axes}
+        # Single configured axis → that leg only; otherwise AXIS_ALL (all present
+        # legs in parallel — the platform rises straight up, no tilt).
+        fire_axis = axes[0] if len(axes) == 1 else rpc_args.AXIS_ALL
+        # Footgun guard: a partial multi-leg subset fires AXIS_ALL (every PRESENT
+        # leg), so legs NOT in activate_axes are still driven but unobserved. Only
+        # [single leg] or the full leg set are coherent; warn on anything else.
+        if len(axes) > 1 and set(axes) != set(range(p.NUM_LEGS)):
+            self.get_logger().warning(
+                f"activate_axes={axes} is a partial subset — ACTIVATE(AXIS_ALL) "
+                f"will move ALL present legs, but only {axes} are observed. Use a "
+                f"single leg or the full leg set.")
+        ok, msg, _ = self.teensy_activate(fire_axis)
+        if not ok:
+            return False, f"ACTIVATE rejected: {msg}"
+        mon = ActivateMonitor(axes, targets)
+        hard_deadline = time.monotonic() + mon.timeout_s + 5.0
+        self.get_logger().info(f"activate: TRAP_TRAJ move to active pose on axes {axes}")
+        while True:
+            now = time.monotonic()
+            res = mon.step(now, self._activate_axis_status(axes))
+            if res.done:
+                break
+            if now > hard_deadline:
+                self.get_logger().error("activate: hard deadline exceeded")
+                break
+            time.sleep(poll_dt)
+        if mon.failed:
+            parts = [f"axis {a}: {r}" for a, r in mon.failed.items()]
+            msg = "activate FAILED — " + "; ".join(parts)
+            if mon.succeeded:
+                msg += f" (succeeded: {mon.succeeded})"
+            self.get_logger().error(msg)
+            return False, msg
+        msg = f"activate complete on axes {mon.succeeded}"
+        self.get_logger().info(msg)
+        return True, msg
+
     # ── ROS service handlers (existing-type subset) ───────────
 
     def _svc_clear_errors(self, req, res):
@@ -1245,6 +1383,33 @@ class TeensyBridgeNode(Node):
         # standalone-leg bench rig).
         axes = list(self.get_parameter('home_axes').value or [])
         ok, msg = self._run_home(axes)
+        # Phase 11 U5: apply the cold-start config after every successful homing
+        # (gains/limits may have been changed in/since a prior session). Scope it
+        # to the homed axes. A configure failure surfaces but does not undo homing.
+        if ok:
+            cfg_ok, cfg_msg = self._run_configure(axes)
+            ok = ok and cfg_ok
+            msg = f"{msg}; {cfg_msg}"
+        res.success = ok
+        res.message = msg
+        return res
+
+    def _svc_configure(self, req, res):
+        # Phase 11 U5: apply the β-path cold-start config (gains + vel/curr limits
+        # + POSITION/PASSTHROUGH) to the configure_axes. Run after homing (auto via
+        # /home) and again before arming / after activate (TRAP_TRAJ → PASSTHROUGH).
+        axes = list(self.get_parameter('configure_axes').value or [])
+        ok, msg = self._run_configure(axes)
+        res.success = ok
+        res.message = msg
+        return res
+
+    def _svc_activate(self, req, res):
+        # Phase 11 U5: fire the firmware TRAP_TRAJ move to the active pose +
+        # observe completion. Scope via activate_axes (default all legs; [0] for
+        # the standalone-leg bench rig). Precondition: a prior /configure.
+        axes = list(self.get_parameter('activate_axes').value or [])
+        ok, msg = self._run_activate(axes)
         res.success = ok
         res.message = msg
         return res

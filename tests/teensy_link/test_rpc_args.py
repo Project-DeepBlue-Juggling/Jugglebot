@@ -145,7 +145,7 @@ def test_method_arg_association_covers_all_commandable_methods():
         RpcMethod.SET_VEL_CURR_LIMITS, RpcMethod.SET_POS_GAIN,
         RpcMethod.SET_VEL_GAINS, RpcMethod.SET_ABSOLUTE_POSITION,
         RpcMethod.CLEAR_ERRORS, RpcMethod.REBOOT_ODRIVES,
-        RpcMethod.ENCODER_SEARCH, RpcMethod.HOME,
+        RpcMethod.ENCODER_SEARCH, RpcMethod.HOME, RpcMethod.ACTIVATE,
         RpcMethod.SDO_READ, RpcMethod.SDO_WRITE,
         # Ball Butler (Phase A): only BB_THROW carries args; RELOAD/RESET/
         # CALIBRATE_LOC are payloadless (matches NOP — no METHOD entry).

@@ -96,6 +96,20 @@ inline CanFrame encode_set_vel_curr_limits(uint8_t axis, float vel_limit, float 
   return f;
 }
 
+// pack('<f', vel_limit) + 4 zero bytes (odrive.encode_set_traj_vel_limit)
+inline CanFrame encode_set_traj_vel_limit(uint8_t axis, float vel_limit) {
+  CanFrame f; f.id = arb_id(axis, ODriveCmd::set_traj_vel_limit);
+  memcpy(&f.buf[0], &vel_limit, 4);   // bytes 4..7 already zero
+  return f;
+}
+
+// pack('<ff', acc_limit, dec_limit) (odrive.encode_set_traj_acc_limits)
+inline CanFrame encode_set_traj_acc_limits(uint8_t axis, float acc_limit, float dec_limit) {
+  CanFrame f; f.id = arb_id(axis, ODriveCmd::set_traj_acc_limits);
+  memcpy(&f.buf[0], &acc_limit, 4); memcpy(&f.buf[4], &dec_limit, 4);
+  return f;
+}
+
 inline CanFrame encode_set_absolute_position(uint8_t axis, float position) {
   CanFrame f; f.id = arb_id(axis, ODriveCmd::set_absolute_position);
   memcpy(&f.buf[0], &position, 4);
