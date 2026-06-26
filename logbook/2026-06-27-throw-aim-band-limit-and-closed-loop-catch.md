@@ -11,7 +11,7 @@ files_changed:
   - sim/ball/manager.py
   - tests/sim/test_demo_juggle_sim.py
 commits:
-  - TBD
+  - 82ec983
 subsystem:
   - sim
   - controller
