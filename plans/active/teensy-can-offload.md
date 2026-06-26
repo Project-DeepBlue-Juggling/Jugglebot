@@ -863,7 +863,7 @@ powered operator sitting; the software offload is one coupled desk unit. So:
 | **U2** | Synthetic β-knot bench driver (`synthetic_setpoint.py` + `teensy_setpoint_bench.py`) + tests | desk |
 | **U3** | Operator sitting #1: armed hold → bounded move → powered fault-replay; **measures the float32 residual + the D9 motion-onset penalty** | bench, serial |
 | **U4** ✅ | Production α→β switch (`SetpointPump` rewrite) **+ the D9 decision** (written with U3 data) + `/teensy` rename — **landed 2026-06-25** (`cb0d158`, `50fc8fe`) | desk, gated on U3 |
-| **U5** | Operator sittings: six-leg rewire + full test plan, then decommission | bench, serial |
+| **U5** 🚧 | Operator sittings: β-path cold-start + full test plan, then decommission. **U5a (cold-start code) + U5b (powered six-leg home→configure→activate) DONE 2026-06-26; run_mpc closed-loop + test plan + decommission remain** | bench, serial |
 
 **U1 + U2 landed 2026-06-23.** Desk-side only — nothing here energises a motor.
 `pio run` green (dec 353344); `pytest tests/ -q` (run 2026-06-23): **1759 passed,
@@ -895,6 +895,27 @@ production names (reconnecting the GUI + orchestrator). Gated OFF
 passed, 1 xfailed in 435.78 s**. Commits `cb0d158` (switch) + `50fc8fe` (rename);
 full record in `logbook/2026-06-25-phase11-u4-production-cutover.md`. **U5 is
 cleared to start.**
+
+**U5a + U5b: β cold-start built + validated on the six-leg robot 2026-06-26.**
+**U5a** (desk, commit `ad7b3b3`) added the β-path cold-start orchestration the
+cutover lacked — there was no equivalent of can_node's `_setup_odrives_steps`
+(gains/mode/limits) or `_gentle_move_steps` (move to active pose), since the
+bridge's only leg-motion path is the gated setpoint stream. New: a firmware
+TRAP_TRAJ **ACTIVATE** op (`leg_activate.cpp`, `RpcMethod::ACTIVATE`), the
+`/configure` + `/activate` services with `_run_configure`/`_run_activate` +
+`ActivateMonitor`, and a codegen fix (the can-bridge `hardware_config.h` was never
+copied — stale since Jun 8). **U5b** (powered operator sitting) validated the full
+cold-start on all six legs: **power + heartbeats → `/encoder_search` → `/home`
+(+auto-configure) → `/activate` (clean six-leg TRAP_TRAJ even-rise to Active) →
+arm (`mpc_active=1`, no motion)**. Three hardware-forced bugs fixed in-session:
+the homing foam-stop observer (drop the `|pos|≈0.1` assertion, trust the
+current-trip), the activate **CAN-TX burst** (stagger SETUP one-leg/tick + deepen
+the TX buffers `TX_SIZE_16→64`), and the homing next-axis `ERR_REJECTED` race
+(retry on reject). **Stopped before the closed-loop `run_mpc` hold (rung 1):**
+`run_mpc`'s `:5556` feedback comes from `motor_guard` (absent in the bridge-only
+launch) and **has never been run on the β path** — rung 1 needs the full
+`jugglebot_launch.py` and is the next session's first task. Full record:
+`logbook/2026-06-26-phase11-u5-six-leg-cutover.md`.
 
 **Present-axis scoping (U1).** The firmware looped all six legs unconditionally;
 on the single-leg bench rig (only odrv0 on CAN3) that (a) streams 5 phantom
@@ -1597,6 +1618,25 @@ To resolve as the plan progresses.
 
 Surfaced by the audit-reporter during plan review but **out of scope for this
 plan's commits**. Captured here so the findings aren't lost.
+
+### U5b operator next-steps (2026-06-26) — β cold-start UX/architecture
+
+Proposed by the operator during the U5b sitting; detail in
+`logbook/2026-06-26-phase11-u5-six-leg-cutover.md` (Open Questions):
+
+- **`/deactivate` service** — a controlled lower/stow from Active (the β path has
+  no lower path today; at U5b shutdown the operator e-stopped + lowered by hand).
+  Likely a firmware TRAP_TRAJ move to a stow pose, mirroring ACTIVATE.
+- **`/jb/` service prefix** — group all Jugglebot services (`home`, `configure`,
+  `activate`, `encoder_search`, …) under `/jb/` for clarity. Wide ripple — grep
+  all consumers (GUI, orchestrator) first.
+- **Generalise `/configure`** — let it set arbitrary control/input mode
+  (TRAP_TRAJ/PASSTHROUGH, POSITION/VELOCITY) rather than only the fixed cold-start
+  set (it currently hardcodes gains + limits + POSITION/PASSTHROUGH).
+- **`can3_tx_task`** — the plan's full reliable-TX design (large software queue +
+  pacing/priority drain), if bursts ever exceed the deepened `TX_SIZE_64` buffer.
+  U5b deepened the buffer as the right-sized class fix; the full task is the
+  endpoint if needed.
 
 - **`bus.broadcast_time()` docstring is stale on the slave list.**
   [`ros_ws/src/jugglebot/jugglebot/can/bus.py:108`](../../ros_ws/src/jugglebot/jugglebot/can/bus.py#L108)
