@@ -81,6 +81,7 @@ class MuJoCoPlant(PlantInterface):
         cmd_margin_mm: float = 0.0,
         control_dt: float = 0.025,
         capture_tolerance_m: float | None = None,
+        contact_carry: bool = False,
     ):
         if model_path is None:
             model_path = os.path.abspath(_DEFAULT_MODEL_PATH)
@@ -158,6 +159,7 @@ class MuJoCoPlant(PlantInterface):
         # `capture_tolerance_m` knob is propagated only if the caller
         # set it explicitly — otherwise BallManager's default applies,
         # so existing callers don't have to know about the parameter.
+        self._contact_carry = bool(contact_carry)
         self._ball_manager: BallManager | None = None
         if _HAS_BALL:
             ball_id = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_BODY, 'ball')
@@ -165,7 +167,9 @@ class MuJoCoPlant(PlantInterface):
                 bm_kw = {}
                 if capture_tolerance_m is not None:
                     bm_kw['capture_tolerance_m'] = capture_tolerance_m
-                self._ball_manager = BallManager(self._model, self._data, **bm_kw)
+                self._ball_manager = BallManager(
+                    self._model, self._data,
+                    contact_carry=self._contact_carry, **bm_kw)
 
         # P1: pre-allocated PlantState returned (aliased) by every
         # ``get_state()`` call.  Ndarray fields live across ticks; scalar
@@ -271,22 +275,66 @@ class MuJoCoPlant(PlantInterface):
 
         return state
 
-    def step(self, dt: float) -> None:
+    def step(self, dt: float, hand_cmd_fn=None, plat_cmd_fn=None) -> None:
         """Advance simulation by *dt* seconds using internal substeps.
 
-        Each substep: physics integration, then ball lifecycle —
-        kinematic hold (if held) or capture detection (if free).
+        Each substep: optionally refresh the platform + hand commands,
+        physics integration, then ball lifecycle.
+
+        Parameters
+        ----------
+        hand_cmd_fn : callable(float) -> float | None, optional
+            When supplied (and the model has a hand), the hand-actuator
+            setpoint is refreshed **every physics substep** by sampling
+            ``hand_cmd_fn(t)`` at the substep's sim time. This emulates the
+            real 500 Hz / 1 kHz hand controller, so a fast throw stroke is
+            tracked faithfully instead of as a coarse 40 Hz staircase held
+            across the substeps. ``None`` (the default) leaves the hand at
+            whatever ``command_hand`` last set — the original behaviour.
+            A return value of ``None`` leaves the setpoint unchanged for
+            that substep (e.g. outside a sequence's active window).
+        plat_cmd_fn : callable(float) -> (ndarray | None), optional
+            When supplied, the platform leg-extension targets are refreshed
+            **every physics substep** by sampling ``plat_cmd_fn(t)`` (same
+            units as :meth:`command`). This likewise emulates the real
+            500 Hz platform controller: without it, a 40 Hz command held
+            across the substeps makes the stiff leg position-actuators +
+            connect constraints ring at each tick boundary, and the
+            sub-tick jerk shakes a contact-carried ball out of the cup.
+            ``None`` (the default) leaves the platform at whatever
+            :meth:`command` last set — the original behaviour.
+
+        Ball lifecycle per substep depends on the manager's mode:
+
+        * kinematic hold (default): held → teleport to the cup; free →
+          capture detection.
+        * contact carry: held → ride the cup by physics (monitor for
+          slosh-out); free → seat-based capture detection.
         """
         model_dt = self._model.opt.timestep
         n_steps = max(1, round(dt / model_dt))
         bm = self._ball_manager
+        carry = self._contact_carry
+        use_hand_fn = hand_cmd_fn is not None and self._has_hand
+        use_plat_fn = plat_cmd_fn is not None
         for _ in range(n_steps):
+            if use_plat_fn:
+                ext = plat_cmd_fn(self._data.time)
+                if ext is not None:
+                    self.command(ext)
+            if use_hand_fn:
+                pos = hand_cmd_fn(self._data.time)
+                if pos is not None:
+                    self.command_hand(pos)
             mujoco.mj_step(self._model, self._data)
             if bm is not None:
                 bm.tick_cooldowns()
                 for ball in bm.balls:
                     if ball.held:
-                        ball.apply_kinematic_hold()
+                        if carry:
+                            ball.monitor_seat()
+                        else:
+                            ball.apply_kinematic_hold()
                     else:
                         ball.check_capture()
 
@@ -390,6 +438,30 @@ class MuJoCoPlant(PlantInterface):
         """Release ball *ball* from kinematic hold. Optionally set ejection velocity."""
         if self._ball_manager is not None:
             self._ball_manager.ball(ball).release(velocity_mms)
+
+    def begin_physics_throw(self, ball: int = 0) -> None:
+        """Transition contact-carried ball *ball* to a physics-driven throw.
+
+        No velocity is set and ball-hand contact stays enabled — the throw
+        emerges from the hand stroke. Used by the juggle demo in
+        ``contact_carry`` mode in place of ``release_ball``. No-op if no
+        ball in model.
+        """
+        if self._ball_manager is not None:
+            self._ball_manager.ball(ball).begin_physics_throw()
+
+    @property
+    def contact_carry(self) -> bool:
+        """Whether balls use contact-carry physics (vs kinematic hold)."""
+        return self._contact_carry
+
+    def set_contact_stiffness(self, stiff: bool) -> None:
+        """Switch the ball/cup contact between soft (catch/carry) and stiff
+        (throw) regimes. No-op if no ball manager. See
+        ``BallManager.set_contact_stiffness``.
+        """
+        if self._ball_manager is not None:
+            self._ball_manager.set_contact_stiffness(stiff)
 
     # ---- Public accessors ------------------------------------------------
 

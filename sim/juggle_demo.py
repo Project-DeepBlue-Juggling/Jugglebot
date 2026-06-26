@@ -84,7 +84,6 @@ for _p in (
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from controller.ballistics import compute_launch_velocity
 from controller.demo.pattern import JugglePattern
 from controller.telemetry import record_from_arrays
 from controller.demo.player import TrajectoryPlayer
@@ -104,6 +103,26 @@ from sim.plant.mujoco_plant import MuJoCoPlant
 
 
 CONTROL_DT_S = 0.025                       # 40 Hz player loop
+
+# Throw-speed calibration for the contact-driven throw (concern 1). The
+# ball separates from the cup carrying a fraction of the commanded stroke
+# peak speed, so the hand throw stroke is commanded ``THROW_SPEED_CALIB``
+# times faster than the optimiser-planned ball speed to make the realised
+# exit speed match. Tuned empirically against the demo; 1.0 = no
+# compensation (physics under-throws). See ``_schedule_hand_throw``.
+THROW_SPEED_CALIB = 1.08
+
+# Number of platform-only warm-up ticks before the pre-held ball is seated
+# into the cup, so the startup position step (throw_pose -> first
+# trajectory pose) is absorbed with no ball in contact. See the runner's
+# __init__ "Platform warm-up" block.
+_PLATFORM_WARMUP_TICKS = 24
+
+# Hand position (mm) at which the pre-held ball is carried through the
+# pre-roll before its first throw. Low (near the throw-stroke start) so the
+# cup sits close to the platform centroid — a short lever arm that keeps
+# the oval carry from flinging the contact-held ball out of the open cup.
+_PREHELD_CARRY_HAND_MM = 20.0
 
 
 # Process-wide cache for offline-optimiser results, keyed on the pattern
@@ -310,26 +329,34 @@ class _JuggleDemoRunner:
                                    - self.pattern.platform_period_s)
 
         # ---- Plant + player ---------------------------------------------
-        plant_kw = {}
-        if cfg.capture_tolerance_mm is not None:
-            plant_kw['capture_tolerance_m'] = cfg.capture_tolerance_mm / 1000.0
-        self.plant = MuJoCoPlant(control_dt=CONTROL_DT_S, **plant_kw)
+        # contact_carry=True: the ball physically rests in the cup and is
+        # thrown by the hand stroke (concern 1). Capture is the seat-based
+        # metric (ball settled + co-moving), NOT the old geometric snap
+        # gate — so cfg.capture_tolerance_mm no longer governs the demo
+        # (it is retained only as a legacy CLI knob; see its field doc).
+        self.plant = MuJoCoPlant(control_dt=CONTROL_DT_S, contact_carry=True)
         self.player = TrajectoryPlayer(self.trajectory,
                                        geom=self.plant.geom,
                                        control_dt=CONTROL_DT_S)
 
         # ---- Initial state ----------------------------------------------
-        # Platform at THROW pose; hand at catch-prime; ball 1 (pre-held)
-        # kinematically seated in the hand. Ball 0 (BB-primed) is parked
-        # until the BB throws it.
+        # Platform at THROW pose; hand at catch-prime. Ball 1 (pre-held) is
+        # seated into the hand AFTER the platform warm-up below (contact
+        # carry can't tolerate the startup position step — see there); ball
+        # 0 (BB-primed) is parked until the BB throws it.
         self.plant.reset(pose_6dof=self.pattern.throw_pose)
-        self.plant.hand_to_prime()
+        # Hand starts LOW (at the throw-stroke start), not at catch-prime:
+        # the pre-held ball is THROWN first, and a low hand keeps the cup
+        # near the platform centroid (a short lever arm) so the oval carry
+        # doesn't fling the contact-held ball out — at the ~323 mm prime
+        # lever, platform tilt amplifies into cup acceleration that ejects
+        # the ball. (Kinematic hold was immune; contact carry is not.)
+        self.plant.command_hand(_PREHELD_CARRY_HAND_MM)
         # Settle: a handful of ticks for the hand actuator to converge.
         for _ in range(20):
             self.plant.step(CONTROL_DT_S)
         assert self.plant.n_balls >= 2, (
             f"need >= 2 balls in the model; found {self.plant.n_balls}")
-        self.plant.ball_manager.ball(1).spawn_in_hand()
 
         # ---- BB sim + BB lead-time calibration --------------------------
         # The MasterTimeline schedules ``bb_throw`` at t_wall = t0 - bb_lead.
@@ -393,6 +420,26 @@ class _JuggleDemoRunner:
             catch_offset_s=self.catch_offset_s,
             bb_lead_s=bb_lead,
         )
+
+        # ---- Platform warm-up, then seat the pre-held ball --------------
+        # contact_carry is sensitive to a startup position step: the
+        # platform was reset to throw_pose, but the first trajectory
+        # command (command_at(t_rel0), ~1.6 s before t0) is an ~85 mm
+        # one-tick step at the hand opening, whose violent sub-tick
+        # transient the stiff cup contact converts into a ball ejection
+        # (the kinematic hold masked this entirely). Drive the platform
+        # onto the trajectory for a few ticks FIRST — with no ball seated —
+        # so the step is absorbed, then seat the pre-held ball onto the
+        # smoothly-moving hand (spawn_in_hand gives it the hand-opening
+        # velocity, so it is co-moving and seats). Hardware has no such
+        # step: the platform accelerates from rest onto the pattern. The
+        # warm-up consumes a few ticks of the pre-roll lead, well within
+        # the buffer before the first BB throw.
+        for _ in range(_PLATFORM_WARMUP_TICKS):
+            t_rel = float(self.plant.get_state().time) - self._t0
+            self.plant.command(self.player.command_at(t_rel).ext_mm)
+            self.plant.step(CONTROL_DT_S, plat_cmd_fn=self._plat_cmd_at)
+        self.plant.ball_manager.ball(1).spawn_in_hand()
 
         # ---- State machine ----------------------------------------------
         # Hand sequences are queued in time order. The runner pulls events
@@ -526,16 +573,31 @@ class _JuggleDemoRunner:
                and self._pending_bb_throws[0].t_wall <= t_wall):
             self._execute_bb_throw(self._pending_bb_throws.pop(0))
 
-        # 3. Drive the hand via the active sequences.
-        self._update_active_hand(t_wall)
+        # 3. Select the active hand sequence: command the 40 Hz setpoint,
+        #    trigger the physics throw at the release instant, and get a
+        #    sub-step sampler so the hand tracks the stroke at the physics
+        #    rate (emulating the real 500 Hz hand).
+        hand_sampler = self._update_active_hand(t_wall)
 
-        # 4. Command the platform.
+        # 3b. Switch the ball/cup contact stiff for the throw up-stroke
+        #     (clean, deterministic separation), soft otherwise (cushioned
+        #     catch/carry). See BallManager.set_contact_stiffness.
+        self.plant.set_contact_stiffness(self._throw_stroke_active(t_wall))
+
+        # 4. Command the platform (for telemetry; the per-substep sampler
+        #    below supersedes it inside step()).
         t_rel = t_wall - self._t0
         cmd = self.player.command_at(t_rel)
         self.plant.command(cmd.ext_mm)
 
-        # 5. Step physics.
-        self.plant.step(CONTROL_DT_S)
+        # 5. Step physics, sub-stepping BOTH the platform and hand commands
+        #    at the physics rate (emulating the real 500 Hz controllers).
+        #    The platform sub-step is load-bearing for contact carry: a
+        #    40 Hz staircase makes the stiff leg actuators ring at each
+        #    tick boundary and shakes the ball out of the cup.
+        self.plant.step(CONTROL_DT_S,
+                        hand_cmd_fn=hand_sampler,
+                        plat_cmd_fn=self._plat_cmd_at)
 
         # 6. Poll captures + drops.
         new_t_wall = float(self.plant.get_state().time)
@@ -666,8 +728,18 @@ class _JuggleDemoRunner:
         # the current sensed position (perhaps the middle of an in-
         # progress catch) the prelude would over- or under-shoot.
         hand_pos = self._predict_hand_pos_at(event.t_wall)
+        # Throw-speed calibration (concern 1, contact throw): the ball
+        # now leaves by the physics of the hand stroke, not an imposed
+        # velocity, so it separates carrying only a fraction of the
+        # commanded stroke peak speed (the cup decelerates at the stroke
+        # top and the ball outruns it). Command the stroke faster by
+        # ``THROW_SPEED_CALIB`` so the *realised* ball exit speed matches
+        # the optimiser-planned ``event.event_vel`` — keeping the apex,
+        # flight time, and catch aim that the offline solve assumed.
+        # Calibrated empirically against the demo (see logbook 2026-06-26
+        # contact-mechanics-integration).
         result = HandThrowSequence.try_create(
-            throw_speed_mps=event.event_vel,
+            throw_speed_mps=event.event_vel * THROW_SPEED_CALIB,
             release_time=event.t_wall,
             current_pos_mm=hand_pos,
             current_time=t_wall,
@@ -697,36 +769,32 @@ class _JuggleDemoRunner:
             print(f"[juggle_demo] hand catch infeasible at t={t_wall:.3f}: "
                   f"{result.reason}", file=sys.stderr)
 
-    def _analytic_release_velocity_world_mms(self, event: Event,
-                                              t_wall: float) -> np.ndarray:
-        """Sim-only override: ball release velocity to land at the matched catch.
+    def _throw_stroke_active(self, t_wall: float) -> bool:
+        """True while the active hand throw is in its up-stroke window.
 
-        Read the BALL's actual world position at release (which equals
-        the hand opening site under kinematic hold) and compute the
-        launch velocity via :func:`compute_launch_velocity` so the
-        ballistic trajectory hits the matched catch pose's world
-        position. This is open-loop — it does NOT close the loop on
-        sensed platform position; it just routes around MuJoCo's 40 Hz
-        actuator-tracking imperfection so the ball goes where the
-        Phase 2 optimiser solved for it to go.
-
-        On hardware, the hand and platform are commanded and tracked
-        at 500 Hz (motor_guard / hand Teensy) and the kinematic-hold-
-        inherited velocity at release IS the analytic throw_speed —
-        this override is sim-specific. The matched-catch world target
-        is the same in both cases.
+        Used to switch the ball/cup contact to the stiff (clean-throw)
+        regime for the stroke and back to soft (cushioned catch/carry)
+        otherwise. The window brackets the throw trajectory's
+        accel→separation span; the small margins ensure the stiff regime is
+        in place before the stroke presses the ball in and stays through
+        separation.
         """
-        ball_state = self.plant.get_ball_state(ball=event.ball)
-        ball_world_mm = ball_state.position_mm.copy()
-        # Target: world-frame hand-opening position at the matched
-        # catch event. Computed from the optimised trajectory's catch-
-        # event pose+orientation at construction (see __init__) — *not*
-        # from a level-assumed catch_pose.xy. The orientation matters:
-        # with banking the actual catch hand-opening shifts ~35 mm in
-        # xy at the default-config catch tilt.
-        return compute_launch_velocity(
-            ball_world_mm, self._catch_target_world_mm,
-            self.pattern.flight_time_s)
+        if not self._throw_queue:
+            return False
+        seq = self._throw_queue[0].sequence
+        traj = seq.throw_trajectory
+        start = seq.release_time + traj.start_time
+        end = seq.release_time + traj.end_time
+        return (start - 0.01) <= t_wall <= (end + 0.03)
+
+    def _plat_cmd_at(self, t_wall: float) -> np.ndarray:
+        """Platform leg-extension target at sim time ``t_wall`` — the
+        per-substep platform command sampler passed to
+        :meth:`MuJoCoPlant.step`. Evaluates the trajectory player at the
+        substep's relative time so the platform tracks the trajectory at
+        the physics rate, not a 40 Hz staircase.
+        """
+        return self.player.command_at(t_wall - self._t0).ext_mm
 
     def _predict_hand_pos_at(self, t_wall: float) -> float:
         """Estimate the hand position at ``t_wall`` for prelude planning.
@@ -751,14 +819,25 @@ class _JuggleDemoRunner:
             return candidates[-1][1]
         return self.plant.get_state().hand_pos_mm or 0.0
 
-    def _update_active_hand(self, t_wall: float) -> None:
-        """Drive the hand from whichever queued sequence is currently live.
+    def _update_active_hand(self, t_wall: float):
+        """Select the live hand sequence and return its sub-step sampler.
+
+        Commands the 40 Hz hand setpoint from whichever queued sequence is
+        currently live, and returns that sequence's ``sample`` callable
+        ``fn(t)->pos|None`` so :meth:`MuJoCoPlant.step` can refresh the
+        hand command every physics substep (emulating the real 500 Hz
+        hand). Returns ``None`` when no sequence drives the hand this tick.
 
         Throw takes priority over catch during overlap (the catch's
         END_PROFILE_HOLD tail at the bottom of stroke happens to be the
         throw's prelude start, so giving throw priority is the natural
         ordering). Sequences whose ``end_time`` has passed are popped
         off the head of their respective queues.
+
+        At the throw's release instant the ball transitions to free flight
+        by :meth:`MuJoCoPlant.begin_physics_throw` — **no** velocity is set;
+        the throw emerges from the (sub-stepped) hand stroke (concern 1).
+        This replaces the old sim-only analytic release-velocity override.
         """
         # Prune expired heads.
         while self._throw_queue and t_wall > self._throw_queue[0].sequence.end_time:
@@ -766,7 +845,7 @@ class _JuggleDemoRunner:
         while self._catch_queue and t_wall > self._catch_queue[0].sequence.end_time:
             self._catch_queue.pop(0)
 
-        # Throw head first — only command when we're inside its window.
+        # Throw head first — owns the hand once its prelude has started.
         if self._throw_queue:
             head = self._throw_queue[0]
             if t_wall >= head.sequence.prelude_start_time:
@@ -774,30 +853,14 @@ class _JuggleDemoRunner:
                 if pos is not None:
                     self.plant.command_hand(pos)
                     self._last_hand_cmd_mm = pos
-                    if not head.released and t_wall >= head.sequence.release_time:
-                        # Sim-only velocity override (see module docstring
-                        # and :meth:`_analytic_release_velocity_world_mms`):
-                        # in hardware the hand is commanded and tracked at
-                        # **500 Hz** (motor_guard / hand Teensy), so the
-                        # slider faithfully tracks the analytic throw stroke
-                        # and the kinematic-hold-inherited velocity at
-                        # release IS the analytic throw_speed. The sim
-                        # runner only commands the hand at 40 Hz (the
-                        # platform's loop rate), so the MuJoCo actuator
-                        # sees a step-function setpoint stream and its
-                        # tracking lags. Override with the inverse-
-                        # ballistics value (``compute_launch_velocity``
-                        # from the ball's actual world position to the
-                        # matched catch position) so the released ball
-                        # hits the catch the optimiser solved for. This
-                        # *models* the hardware physics; it does not
-                        # rewrite them.
-                        release_vel = self._analytic_release_velocity_world_mms(
-                            head.event, t_wall)
-                        self.plant.release_ball(velocity_mms=release_vel,
-                                                ball=head.event.ball)
-                        head.released = True
-                    return
+                if not head.released and t_wall >= head.sequence.release_time:
+                    # Physics throw: the ball leaves by the hand stroke, not
+                    # an imposed velocity. begin_physics_throw un-holds the
+                    # ball + arms the re-capture guard while keeping contact
+                    # enabled so the still-rising cup keeps accelerating it.
+                    self.plant.begin_physics_throw(ball=head.event.ball)
+                    head.released = True
+                return head.sequence.sample
 
         # No throw is driving the hand right now — try catch head.
         if self._catch_queue:
@@ -807,6 +870,8 @@ class _JuggleDemoRunner:
                 if pos is not None:
                     self.plant.command_hand(pos)
                     self._last_hand_cmd_mm = pos
+                return head.sequence.sample
+        return None
 
     # ---- Capture / drop polling ----------------------------------------
     def _poll_captures(self, t_wall: float) -> None:

@@ -374,6 +374,38 @@ def _casadi_rodrigues(rv):
     return I3 + cs.sin(theta) / theta * K + (1.0 - cs.cos(theta)) / theta_sq * K @ K
 
 
+def _casadi_left_jacobian(rv):
+    """CasADi-symbolic left Jacobian of SO(3): rotation-vector RATE → world ω.
+
+    The optimiser parameterises orientation by a rotation vector and its
+    twist is the rotation-vector *rate* (d/dt of the pose), NOT the physical
+    angular velocity. The two coincide only near θ=0; at the demo's ~36°
+    throw *rotation* (mostly the ~34° yaw, ~5 rad/s — the tilt itself stays
+    ≤30°) they diverge enough to flip the sign of the lateral ω×r cup-velocity
+    term. ``ω_world = J_l(φ) · φ̇`` with
+
+        J_l = I + ((1−cosθ)/θ²) K + ((θ−sinθ)/θ³) K²,   K = skew(φ)
+
+    converts the rate to the true world-frame angular velocity so the
+    cup-velocity model matches the rigid-body physics. Eps-padded exactly
+    like :func:`_casadi_rodrigues` so the θ=0 limits (½, 1/6) stay finite
+    and the symbolic Jacobian is well-defined there.
+    """
+    rv = cs.reshape(rv, 3, 1)
+    rx, ry, rz = rv[0], rv[1], rv[2]
+    theta_sq = rx * rx + ry * ry + rz * rz + 1e-30
+    theta = cs.sqrt(theta_sq)
+    K = cs.vertcat(
+        cs.horzcat(0.0, -rz, ry),
+        cs.horzcat(rz, 0.0, -rx),
+        cs.horzcat(-ry, rx, 0.0),
+    )
+    I3 = cs.MX.eye(3)
+    c1 = (1.0 - cs.cos(theta)) / theta_sq
+    c2 = (theta - cs.sin(theta)) / (theta * theta_sq)
+    return I3 + c1 * K + c2 * (K @ K)
+
+
 def _ik_extensions_sym(pos, R, geom: StewartGeometry):
     """CasADi-symbolic IK: ``(pos, R) → 6 leg extensions (mm)``.
 
@@ -559,13 +591,30 @@ def optimise_juggle_trajectory(pattern: JugglePattern,
     catch_target_world = centroid_catch_world + R_catch @ cs.vertcat(0.0, 0.0, h_arrival_mm)
 
     # ---- Orientation-aware throw equality (3 equations) -------------
-    # v_ball_release = v_platform_at_throw + R_throw @ [0, 0, throw_speed_mms]
+    # The hand-opening (cup) is offset r_hand = R_throw @ [0,0,h_release]
+    # above the platform centroid, so its world velocity is the full rigid-
+    # body expression
+    #   v_cup = v_centroid + omega × r_hand + R_throw @ [0,0,throw_speed]
+    # i.e. centroid translation + rotation of the offset (omega × r_hand) +
+    # the slider extending along the hand axis. The released ball inherits
+    # exactly v_cup (validated in sim: ball velocity == cup velocity to
+    # within solver noise — see logbook 2026-06-26 contact integration).
+    # The omega × r_hand term was previously omitted; with the old kinematic
+    # velocity-override it was invisible, but under a faithful contact throw
+    # it is the dominant lateral aim error (at the throw the platform yaws
+    # at ~5 rad/s and r_hand ≈ 0.2 m, so omega × r_hand ≈ 0.2 m/s — the same
+    # magnitude as the entire planned lateral velocity). Including it makes
+    # the plan match what the physical cup actually imparts.
     # v_required = compute_launch_velocity(release_pos, target, flight)
     #            = (target - release) / flight + [0, 0, 0.5 * g * flight]
     v_required = (catch_target_world - release_pos_world) / flight + \
                  cs.vertcat(0.0, 0.0, 0.5 * g_mms2 * flight)
-    v_ball_release = twists[0, 0:3].T + R_throw @ cs.vertcat(
-        0.0, 0.0, pattern.throw_speed_mps * 1000.0)
+    r_hand_throw = R_throw @ cs.vertcat(0.0, 0.0, h_release_mm)
+    # True world angular velocity from the rotvec rate (NOT the rate itself).
+    omega_throw = _casadi_left_jacobian(poses[0, 3:6]) @ twists[0, 3:6].T
+    v_ball_release = (twists[0, 0:3].T
+                      + cs.cross(omega_throw, r_hand_throw)
+                      + R_throw @ cs.vertcat(0.0, 0.0, pattern.throw_speed_mps * 1000.0))
     opti.subject_to(v_ball_release == v_required)
 
     # ---- HARD catch velocity-match (3 equations) -------------------
@@ -580,13 +629,20 @@ def optimise_juggle_trajectory(pattern: JugglePattern,
     # (0.6) of the vertical launch speed (≈ ball speed); the free platform
     # twist supplies the remainder of the 0.7×v_ball target exactly. The
     # vector equality enforces both colinearity and the 0.7 magnitude.
-    # (The ω×r term from the hand-opening offset is omitted, matching the
-    # throw model's fidelity.) Orientation stays free here — only the soft
-    # facing penalty below shapes the cup to point along the arrival.
+    # The cup velocity is the full rigid-body expression — centroid twist +
+    # omega × r_hand (rotation of the hand-opening offset) + the catch-stroke
+    # slider — matching the throw model above. (The omega × r_hand term was
+    # previously omitted here too; it is included now so the planned cup
+    # velocity equals what the physical cup imparts/receives.) Orientation
+    # stays free here — only the soft facing penalty below shapes the cup to
+    # point along the arrival.
     v_ball_arrival = v_required + cs.vertcat(0.0, 0.0, -g_mms2 * flight)
     catch_slider_speed = cfg.catch_slider_vel_ratio * pattern.throw_speed_mps * 1000.0
-    v_hand_catch = twist_catch_sym[0, 0:3].T + R_catch @ cs.vertcat(
-        0.0, 0.0, -catch_slider_speed)
+    r_hand_catch = R_catch @ cs.vertcat(0.0, 0.0, h_arrival_mm)
+    omega_catch = _casadi_left_jacobian(pose_catch_sym[0, 3:6]) @ twist_catch_sym[0, 3:6].T
+    v_hand_catch = (twist_catch_sym[0, 0:3].T
+                    + cs.cross(omega_catch, r_hand_catch)
+                    + R_catch @ cs.vertcat(0.0, 0.0, -catch_slider_speed))
     opti.subject_to(v_hand_catch == cfg.catch_vel_ratio * v_ball_arrival)
 
     # ---- Level-platform lock (opt-in for back-compat / comparison) --

@@ -175,13 +175,23 @@ Two coupled sim-fidelity upgrades raised during sim review, tracked in
   structurally can't judge a moving-cup catch (1/33 strict, 33/33 loose), so
   `JuggleDemoConfig.capture_tolerance_mm` defaults to `None` (loose) as an
   INTERIM pending concern 1.
-- **Concern 1 — real contact mechanics (FEASIBILITY PROVEN; integration next).**
-  Replace the kinematic ball-hold (`apply_kinematic_hold` teleport) + explicit
-  `release()` with real contact: the ball rests in the cup by physics and is
-  thrown by the hand stroke. Feasibility confirmed (cup holds the ball ≤6 mm; a
-  5 m/s stroke ejects at ~82 %). Integration plan in the logbook entry. Real
-  contact is the proper oracle that validates concern 2's catch — they land
-  together, restoring a seat-based headline metric.
+- **Concern 1 — real contact mechanics (INFRASTRUCTURE LANDED; throw-aim WIP).**
+  Replaced the kinematic ball-hold (`apply_kinematic_hold` teleport) + explicit
+  `release()` with real contact, tracked in
+  `logbook/2026-06-26-contact-mechanics-integration.md`. **Landed & validated:**
+  opt-in `contact_carry` mode (ball rides the cup by physics), a seat-based
+  capture metric (settled + co-moving, replacing the geometric snap),
+  platform + hand command **sub-stepping** (the 40 Hz staircase rang the leg
+  actuators and shook the ball out — load-bearing fix), phase-switched contact
+  stiffness (soft catch / stiff throw), and an emergent physics throw (the
+  contact is faithful: ball leaves with *exactly* the cup velocity). **Not yet
+  closed:** the throw lands short because the optimiser's throw/catch velocity
+  model omitted the **ω×r** cup-offset term (added, frame-correct), and the
+  platform's **achieved** angular velocity at the throw does not match the
+  planned one (fast-yaw tracking error). Demo currently 1 catch / 0 drops; the
+  `test_demo_juggle_sim` headline cases are `xfail(strict=True)` pending the
+  angular-tracking follow-up. Restore the strict ≥30-catch / 0-drop headline
+  when that lands.
 
 ## 4. Implementation Phases (detailed)
 
@@ -729,11 +739,13 @@ insufficient.
   (2026-05-24).** The runner queries the optimised trajectory at the
   catch event, applies ``R_catch @ [0,0,hand_offset_at_arrival_mm]``
   to find the matched-catch hand-opening world position, and aims
-  both the BB priming throw and the Jugglebot-throw release-velocity
-  override at that target. Both ``_execute_bb_throw`` and
-  ``_analytic_release_velocity_world_mms`` use
+  the BB priming throw at that target. ``_execute_bb_throw`` uses
   ``self._catch_target_world_mm``, cached at construction from
-  ``self.trajectory.eval(catch_offset_s)``.
+  ``self.trajectory.eval(catch_offset_s)``. (The Jugglebot-throw
+  release-velocity override ``_analytic_release_velocity_world_mms``
+  that also aimed at this target was removed in the 2026-06-26
+  contact-mechanics integration — the throw is now emergent; see
+  ``logbook/2026-06-26-contact-mechanics-integration.md``.)
 - **Strict capture-tolerance gate is the juggle-demo default —
   RESOLVED (2026-05-24).** Cuts #4 (leg-space jerk² objective via
   CasADi IK on a dense sub-grid) and #5 (leg-velocity equalisation

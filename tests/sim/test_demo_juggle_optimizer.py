@@ -112,6 +112,20 @@ def test_throw_ball_release_velocity_lands_at_catch(pattern, result_default):
                       [-k[1], k[0], 0]])
         return np.eye(3) + np.sin(theta) * K + (1 - np.cos(theta)) * (K @ K)
 
+    def left_jacobian(rv):
+        # SO(3) left Jacobian: rotvec RATE -> world angular velocity
+        # (mirrors _casadi_left_jacobian; the trajectory twist is the
+        # rotvec rate, NOT the physical omega).
+        theta = np.linalg.norm(rv)
+        if theta < 1e-12:
+            return np.eye(3)
+        K = np.array([[0, -rv[2], rv[1]],
+                      [rv[2], 0, -rv[0]],
+                      [-rv[1], rv[0], 0]])
+        return (np.eye(3)
+                + (1 - np.cos(theta)) / theta**2 * K
+                + (theta - np.sin(theta)) / theta**3 * (K @ K))
+
     init_height = 574.3   # default cfg.platform_init_height_mm
     h_release = _hand_offset_at_release_mm(pattern.throw_speed_mps)
     h_arrival = _hand_offset_at_arrival_mm()
@@ -120,7 +134,16 @@ def test_throw_ball_release_velocity_lands_at_catch(pattern, result_default):
     R_throw = rodrigues(pose0[3:6])
     release_pos_world = np.array(
         [pose0[0], pose0[1], pose0[2] + init_height]) + R_throw @ [0, 0, h_release]
-    v_ball = twist0[:3] + R_throw @ [0, 0, pattern.throw_speed_mps * 1000.0]
+    # Cup velocity = centroid twist + omega x r_hand + slider along hand axis.
+    # The omega x r_hand term (cup offset rotating with the yawing platform) is
+    # part of the optimiser's throw model since the contact-mechanics
+    # integration (logbook 2026-06-26-contact-mechanics-integration); the ball
+    # leaves with this full cup velocity.
+    omega0 = left_jacobian(pose0[3:6]) @ twist0[3:6]
+    r_hand_throw = R_throw @ np.array([0.0, 0.0, h_release])
+    v_ball = (twist0[:3]
+              + np.cross(omega0, r_hand_throw)
+              + R_throw @ [0, 0, pattern.throw_speed_mps * 1000.0])
 
     pose_c, _, _ = result_default.trajectory.eval(result_default.catch_offset_s)
     R_catch = rodrigues(pose_c[3:6])
