@@ -15,9 +15,15 @@ namespace CanBridge {
 
 // Peripheral identity is confined to these three lines (ADR-0013 / HANDOFF D3):
 //   bb = CAN1 (pins 22/23), cone = CAN2 (pins 1/0), jugglebot = CAN3 (pins 31/30).
-static FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_16> can_bb;
-static FlexCAN_T4<CAN2, RX_SIZE_256, TX_SIZE_16> can_cone;
-static FlexCAN_T4<CAN3, RX_SIZE_256, TX_SIZE_16> can_jugglebot;
+// TX_SIZE_64 (was 16): the software TX ring the TX-complete ISR drains. A 16-deep
+// ring silently dropped frames on dense bursts — a multi-leg config burst lost most
+// set_state(CLOSED_LOOP) frames so the legs never armed (2026-06-26). 64 absorbs any
+// realistic burst (worst case ~30 frames for a six-leg activate) with headroom; the
+// callers also avoid bursting (one leg/tick), so this is defence-in-depth. ~1 KB
+// RAM/bus, trivial against the ~900 KB headroom.
+static FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_64> can_bb;
+static FlexCAN_T4<CAN2, RX_SIZE_256, TX_SIZE_64> can_cone;
+static FlexCAN_T4<CAN3, RX_SIZE_256, TX_SIZE_64> can_jugglebot;
 
 static volatile uint32_t s_bb_rx = 0, s_bb_tx = 0, s_cone_rx = 0, s_cone_tx = 0,
                          s_jugglebot_rx = 0, s_jugglebot_tx = 0;
@@ -409,7 +415,7 @@ void can_buses_service() {
 
 // Each FlexCAN template instance is a distinct type, so a small overload per bus
 // rather than a template (mirrors the original two-bus pattern).
-static bool send_on(FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_16>& bus,
+static bool send_on(FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_64>& bus,
                     const ODrive::CanFrame& f) {
   CAN_message_t m;
   m.id = f.id;
@@ -418,7 +424,7 @@ static bool send_on(FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_16>& bus,
   memcpy(m.buf, f.buf, 8);
   return bus.write(m) > 0;
 }
-static bool send_on(FlexCAN_T4<CAN2, RX_SIZE_256, TX_SIZE_16>& bus,
+static bool send_on(FlexCAN_T4<CAN2, RX_SIZE_256, TX_SIZE_64>& bus,
                     const ODrive::CanFrame& f) {
   CAN_message_t m;
   m.id = f.id;
@@ -427,7 +433,7 @@ static bool send_on(FlexCAN_T4<CAN2, RX_SIZE_256, TX_SIZE_16>& bus,
   memcpy(m.buf, f.buf, 8);
   return bus.write(m) > 0;
 }
-static bool send_on(FlexCAN_T4<CAN3, RX_SIZE_256, TX_SIZE_16>& bus,
+static bool send_on(FlexCAN_T4<CAN3, RX_SIZE_256, TX_SIZE_64>& bus,
                     const ODrive::CanFrame& f) {
   CAN_message_t m;
   m.id = f.id;

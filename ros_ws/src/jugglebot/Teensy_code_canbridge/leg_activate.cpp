@@ -53,6 +53,7 @@ static volatile uint8_t s_start_axis = 0xFF;
 
 static APhase   s_phase   = APhase::IDLE;
 static uint8_t  s_targets = 0;        // bitmask of legs being activated (bit i = leg i)
+static uint8_t  s_setup_idx = 0;      // SETUP cursor — configure ONE leg per tick
 static uint64_t s_t_start_us = 0;     // ladder start (overall timeout clock)
 static uint64_t s_t_phase_us = 0;     // current sub-phase entry (settle clock)
 static uint8_t  s_result[NUM_LEGS] = { ACTIVATE_NONE };
@@ -133,6 +134,7 @@ void activate_step() {
     if (s_targets == 0) { s_phase = APhase::IDLE; return; }  // legs vanished between request and consume
     for (uint8_t i = 0; i < NUM_LEGS; ++i)
       if (s_targets & (uint8_t)(1u << i)) s_result[i] = ACTIVATE_RUNNING;
+    s_setup_idx = 0;   // SETUP configures one leg per tick starting here
     s_t_start_us = micros64();
     s_t_phase_us = s_t_start_us;
     // s_phase already set to SETUP inside the guard; fall through and run it.
@@ -146,41 +148,47 @@ void activate_step() {
 
   switch (s_phase) {
     case APhase::SETUP: {
+      // Configure ONE leg per tick (s_setup_idx cursor). NEVER burst all legs'
+      // config frames into a single tick: 5 frames × 6 legs = 30 overflowed the
+      // 16-deep CAN3 TX buffer and most legs never entered CLOSED_LOOP (only the
+      // last did) — 2026-06-26. One leg/tick mirrors the proven sequential homing
+      // pattern (~few frames/tick). The COMMAND phase still fires all targets in
+      // one tick AFTER every leg is configured + holding, so the physical move is
+      // parallel (even platform rise).
+      while (s_setup_idx < NUM_LEGS && !(s_targets & (uint8_t)(1u << s_setup_idx)))
+        ++s_setup_idx;
+      if (s_setup_idx >= NUM_LEGS) {
+        // Every target leg configured + in CLOSED_LOOP/TRAP_TRAJ holding its seed.
+        s_t_phase_us = now;          // start the settle clock for COMMAND
+        s_phase = APhase::COMMAND;
+        break;
+      }
+      const uint8_t i = s_setup_idx;
       // Synchronous per-leg error gate (legacy can_node._gentle_move_steps parity:
-      // "refuse to enter CLOSED_LOOP if errors present"). The 10 Hz fault task
-      // would eventually flip GuardMode::ESTOP, but activate runs at 100 Hz — this
-      // closes the window where activate could arm an errored leg before the fault
-      // task catches it. ANY errored target fails the whole op (a coupled platform
-      // must not activate a subset — that would tilt it).
-      for (uint8_t i = 0; i < NUM_LEGS; ++i) {
-        if (!(s_targets & (uint8_t)(1u << i))) continue;
-        if (axes[i].active_errors != 0) { abort_all(ACTIVATE_FAILED); return; }
-      }
+      // "refuse to enter CLOSED_LOOP if errors present"). ANY errored target fails
+      // the whole op (a coupled platform must not activate a subset — that tilts it).
+      if (axes[i].active_errors != 0) { abort_all(ACTIVATE_FAILED); return; }
+      // Seed the ACTUAL current position (NON-clipped) so CLOSED_LOOP holds in
+      // place even at the sub-zero hardstop — the whole move is then TRAP_TRAJ-
+      // profiled with no clip-snap off the hardstop. leg_sign applies the ODrive
+      // convention (Jugglebot positive=extension → ODrive negative).
+      const float cur = axes[i].pos_rev;  // single-word atomic read, Jugglebot conv
       bool ok = true;
-      for (uint8_t i = 0; i < NUM_LEGS; ++i) {
-        if (!(s_targets & (uint8_t)(1u << i))) continue;
-        // Seed the ACTUAL current position (NON-clipped) so CLOSED_LOOP holds in
-        // place even at the sub-zero hardstop — the whole move is then TRAP_TRAJ-
-        // profiled with no clip-snap off the hardstop. leg_sign applies the
-        // ODrive convention (Jugglebot positive=extension → ODrive negative).
-        const float cur = axes[i].pos_rev;  // single-word atomic read, Jugglebot conv
-        ok = can_jugglebot_send(
-                 ODrive::encode_set_input_pos(i, ODrive::leg_sign(i, cur), 0, 0)) && ok;
-        ok = can_jugglebot_send(
-                 ODrive::encode_set_traj_vel_limit(i, JBOp::GENTLE_MOVE_VEL_LIMIT_RPS)) && ok;
-        ok = can_jugglebot_send(
-                 ODrive::encode_set_traj_acc_limits(
-                     i, ODriveDefaults::TRAP_ACC_LIMIT_RPS2,
-                     ODriveDefaults::TRAP_DEC_LIMIT_RPS2)) && ok;
-        ok = can_jugglebot_send(
-                 ODrive::encode_set_controller_mode(
-                     i, ODriveControlMode::POSITION, ODriveInputMode::TRAP_TRAJ)) && ok;
-        ok = can_jugglebot_send(
-                 ODrive::encode_set_state(i, ODriveState::CLOSED_LOOP)) && ok;
-      }
+      ok = can_jugglebot_send(
+               ODrive::encode_set_input_pos(i, ODrive::leg_sign(i, cur), 0, 0)) && ok;
+      ok = can_jugglebot_send(
+               ODrive::encode_set_traj_vel_limit(i, JBOp::GENTLE_MOVE_VEL_LIMIT_RPS)) && ok;
+      ok = can_jugglebot_send(
+               ODrive::encode_set_traj_acc_limits(
+                   i, ODriveDefaults::TRAP_ACC_LIMIT_RPS2,
+                   ODriveDefaults::TRAP_DEC_LIMIT_RPS2)) && ok;
+      ok = can_jugglebot_send(
+               ODrive::encode_set_controller_mode(
+                   i, ODriveControlMode::POSITION, ODriveInputMode::TRAP_TRAJ)) && ok;
+      ok = can_jugglebot_send(
+               ODrive::encode_set_state(i, ODriveState::CLOSED_LOOP)) && ok;
       if (!ok) { abort_all(ACTIVATE_FAILED); return; }
-      s_t_phase_us = now;
-      s_phase = APhase::COMMAND;
+      ++s_setup_idx;   // next target leg on the next tick
       break;
     }
     case APhase::COMMAND: {
