@@ -118,6 +118,64 @@ def test_run_home_rejected_by_firmware():
 
 # ── end-to-end happy path (real RpcClient + FakeTeensy) ──────────────────────
 
+def test_home_retries_transient_reject():
+    """The firmware briefly rejects HOME (ERR_REJECTED) while finishing the prior
+    axis (axis_state reads IDLE during STOP_SETTLE before s_phase returns to IDLE).
+    _run_home must RETRY until accepted, not fail on the first reject — the
+    2026-06-26 race fix (the position-free homing observer can fire the next axis's
+    HOME inside that busy window)."""
+    teensy, client, node = _build_paired_node()
+    try:
+        calls = {'n': 0}
+
+        def on_home(req_id, args):
+            calls['n'] += 1
+            if calls['n'] <= 2:                       # transient busy: reject twice
+                return (int(RpcStatus.ERR_REJECTED), b"")
+            return (int(RpcStatus.OK), b"")           # then accept
+
+        teensy.on_rpc(int(RpcMethod.HOME), on_home)
+
+        result = {}
+
+        def run():
+            ok, msg = node._run_home([0], poll_dt=0.02)
+            result['ok'], result['msg'] = ok, msg
+
+        t = threading.Thread(target=run)
+        t.start()
+        assert _poll(lambda: calls['n'] >= 3)         # retried past the rejections
+
+        # Drive completion: CLOSED_LOOP → IDLE (the observer trusts the trip).
+        teensy.send_telemetry(pos_rev=[2.5] + [0.0] * 6, vel_rps=[0.0] * 7)
+        teensy.send_to_jetson(
+            int(MsgType.DIAGNOSTIC),
+            Diagnostic(axis_id=0, axis_state=CLOSED_LOOP, active_errors=0).pack())
+        time.sleep(0.1)
+        teensy.send_telemetry(pos_rev=[HOME_POS] + [0.0] * 6, vel_rps=[0.0] * 7)
+        teensy.send_to_jetson(
+            int(MsgType.DIAGNOSTIC),
+            Diagnostic(axis_id=0, axis_state=IDLE, active_errors=0).pack())
+
+        t.join(timeout=8.0)
+        assert not t.is_alive(), "homing did not complete after retries"
+        assert result.get('ok') is True, result.get('msg')
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_home_non_transient_reject_fails_fast():
+    """A non-transient rejection (e.g. bus down) is NOT retried — fails promptly."""
+    teensy, client, node = _build_paired_node()
+    try:
+        teensy.on_rpc(int(RpcMethod.HOME),
+                      lambda req_id, args: (int(RpcStatus.ERR_BUS_DOWN), b""))
+        ok, msg = node._run_home([0], poll_dt=0.02)
+        assert not ok and "rejected" in msg.lower()
+    finally:
+        _teardown(teensy, client, node)
+
+
 def test_home_happy_path_end_to_end():
     teensy, client, node = _build_paired_node()
     try:

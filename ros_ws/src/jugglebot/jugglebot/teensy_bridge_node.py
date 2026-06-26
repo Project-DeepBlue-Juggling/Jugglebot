@@ -1184,21 +1184,43 @@ class TeensyBridgeNode(Node):
         if not axes:
             return False, "no axes configured for homing"
         home_ref = abs(float(hw.HOMING_LEG_ABS_POS_REV))
-        # Firmware per-axis hard timeout (Homing::MOTOR_TIMEOUT_S) + margin.
-        timeout_s = float(hw.HOMING_MOTOR_TIMEOUT_S) + 5.0
+        # Per-axis observer timeout. MUST sit BELOW the firmware per-axis hard
+        # timeout (Homing::MOTOR_TIMEOUT_S = 30 s): a leg that never trips stays in
+        # CLOSED_LOOP, and the observer now treats CLOSED_LOOP→IDLE as success (it
+        # trusts the firmware's current trip, not a telemetry position — the legs
+        # relax off a foam stop, 2026-06-26). If the observer waited past 30 s it
+        # would mistake the firmware's own timeout-IDLE for a successful trip, so we
+        # fail a stuck leg first. A real home completes in a few seconds.
+        timeout_s = min(20.0, float(hw.HOMING_MOTOR_TIMEOUT_S) - 5.0)
         succeeded, failed = [], {}
+        # The firmware briefly rejects a HOME (ERR_REJECTED, busy) while it finishes
+        # the PREVIOUS axis: axis_state reads IDLE during STOP_SETTLE — before
+        # set_absolute_position completes and s_phase returns to IDLE (~10-20 ms) —
+        # and the observer (no longer gating on position; the legs relax off a foam
+        # stop, 2026-06-26) can fire the next axis's HOME inside that window. Retry
+        # across ticks until the firmware accepts it (the principled form of the
+        # post-TX delays can_node used). Bounded so a genuinely-stuck axis fails.
+        _MAX_REJECT_RETRIES = 20   # × poll_dt ≈ 1 s; busy window is ~10-20 ms
         self.get_logger().info(f"homing: starting on axes {axes} (sequential)")
         for axis in axes:
             mon = HomingMonitor([axis], home_ref_rev=home_ref, timeout_s=timeout_s)
             hard_deadline = time.monotonic() + timeout_s + 5.0
+            home_accepted = False     # firmware has ACCEPTED the HOME for this axis
+            reject_retries = 0
             while True:
                 now = time.monotonic()
                 st = self._homing_axis_status(axis)
                 res = mon.step(now, {axis: st} if st is not None else {})
-                for ax in res.set_home:
-                    ok, msg, _ = self.teensy_home(ax)
-                    if not ok:
-                        # Firmware rejected the move (busy / bus down / bad axis).
+                # Fire on the monitor's request, then keep re-firing until accepted.
+                if res.set_home or not home_accepted:
+                    ok, msg, _ = self.teensy_home(axis)
+                    if ok:
+                        home_accepted = True
+                    elif 'REJECTED' in msg.upper() and reject_retries < _MAX_REJECT_RETRIES:
+                        reject_retries += 1   # transient busy — retry next tick
+                    else:
+                        # Non-transient failure (bus down / bad axis), or retries
+                        # exhausted (firmware stuck busy).
                         failed[axis] = f"HOME rejected: {msg}"
                         mon = None
                         break

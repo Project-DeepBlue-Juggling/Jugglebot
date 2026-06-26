@@ -20,16 +20,19 @@ CLOSED_LOOP`` (drives into the hardstop) ``→ IDLE`` (stops) and, on success,
 ``set_absolute_position(home_ref)`` snaps the encoder to the home reference. So:
 
   * **success** ⇒ the axis was observed in ``CLOSED_LOOP`` (the move ran) and is
-    now back in ``IDLE`` with ``|pos| ≈ |home_ref|`` and no active errors.
-  * **failure** ⇒ active errors during the move, OR it returned to ``IDLE``
-    without the reference being set (a timeout/abort leaves ``pos`` at its
-    arbitrary post-index-search value, not near the reference), OR the overall
-    timeout elapsed.
+    now back in ``IDLE`` with no active errors. We trust the firmware's internal
+    current-spike trip (exactly as can_node trusted its own) — we do NOT assert
+    the resulting telemetry position, because the legs bottom into a FOAM stop
+    that pushes them back out by a variable amount the instant they IDLE, making
+    the post-IDLE position unreliable (asserting ``|pos| ≈ |home_ref|`` caused
+    spurious "reference not set" failures — 2026-06-26).
+  * **failure** ⇒ active errors during the move, OR the leg never trips and stays
+    in ``CLOSED_LOOP`` until the timeout (set BELOW the firmware's own homing
+    timeout so a stuck leg fails rather than producing a success-looking IDLE).
 
-Magnitudes, not signs: the telemetry ``pos_rev`` is in the Jugglebot convention
-(``leg_sign`` applied on RX), so ``set_absolute_position(+0.1)`` reads back as
-``-0.1``. Comparing ``|pos|`` to ``|home_ref|`` is convention-agnostic and
-correct for every leg (all legs share the sign flip).
+``home_ref_rev`` / ``pos_tol_rev`` are retained as accepted-but-ignored kwargs
+(API stability for existing callers); the firmware still applies
+``set_absolute_position(home_ref)`` — the Jetson simply no longer asserts it.
 
 Single-axis capable by design — ``HomingMonitor([0])`` targets only axis 0, the
 standalone-leg bench rig (node 0), the safest first hardware target. The firmware
@@ -49,11 +52,14 @@ from typing import Dict, Iterable, List
 AXIS_STATE_IDLE = 1
 AXIS_STATE_CLOSED_LOOP = 8
 
-# Defaults. The firmware per-axis hard timeout is Homing::MOTOR_TIMEOUT_S (30 s);
-# allow margin for the Jetson-observed transitions. The position tolerance is
-# generous — the leg sits exactly on the freshly-defined reference at IDLE.
-DEFAULT_TIMEOUT_S = 35.0
-DEFAULT_POS_TOL_REV = 0.05
+# Default per-axis timeout. MUST sit BELOW the firmware per-axis hard timeout
+# (Homing::MOTOR_TIMEOUT_S = 30 s): a leg that never trips stays in CLOSED_LOOP,
+# and the firmware would IDLE it only at 30 s — if the observer waited past that
+# it would mistake the firmware-timeout IDLE for a successful trip. A real home
+# completes (CLOSED_LOOP → IDLE) in a few seconds, so 20 s leaves wide margin
+# above a normal home and comfortably below the firmware's 30 s.
+DEFAULT_TIMEOUT_S = 20.0
+DEFAULT_POS_TOL_REV = 0.05  # retained for API compat; no longer used (foam stop, see above)
 # Home reference magnitude (|HOMING_LEG_ABS_POS_REV|). The caller may pass the
 # authoritative value from config; this default matches hardware_config.yaml.
 DEFAULT_HOME_REF_REV = 0.1
@@ -175,15 +181,18 @@ class HomingMonitor:
                     pr.saw_closed_loop = True
 
                 if pr.saw_closed_loop and st.axis_state == AXIS_STATE_IDLE:
-                    # The move ran and stopped. Reference set ⇒ |pos| ≈ |home_ref|.
-                    if abs(abs(st.pos_rev) - self.home_ref_rev) <= self.pos_tol_rev:
-                        pr.phase = Phase.DONE
-                    else:
-                        pr.phase = Phase.FAILED
-                        pr.reason = (
-                            f"returned to IDLE at pos {st.pos_rev:+.3f} rev "
-                            f"(expected |pos| ≈ {self.home_ref_rev:.3f}) — "
-                            "hardstop not found / reference not set")
+                    # The leg drove (CLOSED_LOOP) and returned to IDLE: the firmware
+                    # detected the hardstop (Iq-EMA spike) and set the reference.
+                    # Trust that — exactly as can_node trusted its own current trip.
+                    # We deliberately do NOT assert the resulting telemetry position:
+                    # the legs bottom into a foam stop that pushes them back out by a
+                    # variable amount the instant they switch to IDLE, so the
+                    # post-IDLE position is unreliable (asserting |pos| ≈ home_ref was
+                    # the cause of spurious "reference not set" failures — 2026-06-26).
+                    # A leg that NEVER trips stays in CLOSED_LOOP and is caught by the
+                    # timeout below (set < the firmware's own homing timeout, so a
+                    # stuck leg fails rather than producing a success-looking IDLE).
+                    pr.phase = Phase.DONE
                     continue
 
             if now_s - pr.t_started > self.timeout_s:

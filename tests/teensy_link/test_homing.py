@@ -99,15 +99,18 @@ def test_active_errors_during_homing_fails():
     assert "active_errors" in m.failed[0]
 
 
-def test_idle_without_reference_fails():
-    """Returned to IDLE but the position is NOT near the reference — a missed
-    hardstop / timeout-abort in firmware (no set_absolute_position happened)."""
-    m = HomingMonitor([0])
-    m.step(0.0, {})
-    m.step(0.1, {0: st(CL, pos_rev=2.5)})
-    r = m.step(0.3, {0: st(IDLE, pos_rev=2.49)})   # nowhere near |ref|
-    assert r.done and m.succeeded == []
-    assert "reference not set" in m.failed[0]
+def test_idle_after_closed_loop_is_success_regardless_of_pos():
+    """Foam-stop fix (2026-06-26): trust the firmware's current trip. A leg that
+    drove (CLOSED_LOOP) and returned to IDLE without errors is homed — whatever
+    the foam-relaxed telemetry position. Positions the OLD |pos|≈ref gate rejected
+    must now succeed."""
+    for pos in (-0.10, -0.05, 0.0, -0.20, 2.49):
+        m = HomingMonitor([0])
+        m.step(0.0, {})                          # send HOME
+        m.step(0.1, {0: st(CL, pos_rev=1.0)})    # drove
+        r = m.step(0.5, {0: st(IDLE, pos_rev=pos)})
+        assert r.done and m.succeeded == [0], f"pos={pos} should succeed"
+        assert m.failed == {}
 
 
 def test_timeout_fails():
@@ -120,20 +123,17 @@ def test_timeout_fails():
     assert r.done and "timed out" in m.failed[0]
 
 
-def test_pos_tolerance_window():
-    """Within the tolerance → success; outside → failure."""
-    tol = 0.05
-    m_ok = HomingMonitor([0], pos_tol_rev=tol)
-    m_ok.step(0.0, {})
-    m_ok.step(0.1, {0: st(CL, pos_rev=1.0)})
-    r = m_ok.step(0.5, {0: st(IDLE, pos_rev=-(REF + 0.5 * tol))})   # inside
-    assert r.done and m_ok.succeeded == [0]
-
-    m_bad = HomingMonitor([0], pos_tol_rev=tol)
-    m_bad.step(0.0, {})
-    m_bad.step(0.1, {0: st(CL, pos_rev=1.0)})
-    r = m_bad.step(0.5, {0: st(IDLE, pos_rev=-(REF + 2 * tol))})    # outside
-    assert r.done and m_bad.succeeded == [] and 0 in m_bad.failed
+def test_stuck_in_closed_loop_times_out():
+    """With the position gate removed, the timeout is what catches a leg that
+    never trips — it stays in CLOSED_LOOP and is failed (rather than producing a
+    success-looking IDLE). The observer timeout is set below the firmware's own
+    homing timeout precisely so this is caught first."""
+    m = HomingMonitor([0], timeout_s=2.0)
+    m.step(0.0, {})
+    r = m.step(1.0, {0: st(CL, pos_rev=0.5)})    # still driving
+    assert not r.done
+    r = m.step(2.5, {0: st(CL, pos_rev=0.5)})    # still CLOSED_LOOP past timeout
+    assert r.done and m.succeeded == [] and "timed out" in m.failed[0]
 
 
 # ── multi-axis bookkeeping (the firmware homes one at a time; the monitor still
