@@ -12,7 +12,7 @@ files_changed:
   - controller/demo/juggle_optimizer.py
   - tests/sim/test_demo_juggle_sim.py
 commits:
-  - TBD
+  - d2907a4
 subsystem:
   - sim
   - controller
