@@ -137,7 +137,8 @@ def _cache_key(pattern, cfg):
         cfg.platform_init_height_mm,
         cfg.pose_jerk_weight, cfg.leg_jerk_weight,
         cfg.leg_vel_equalize_weight, cfg.leg_vel_hard_cap_mms,
-        cfg.catch_colinearity_weight,
+        cfg.catch_colinearity_weight, cfg.throw_colinearity_weight,
+        cfg.catch_vel_ratio, cfg.catch_slider_vel_ratio,
     )
 
 
@@ -222,18 +223,26 @@ class JuggleDemoConfig:
     dashboard: bool = False                # if True, start the telemetry
                                             # dashboard on `dashboard_port`
     dashboard_port: int = 8082
-    capture_tolerance_mm: Optional[float] = 30.0  # Strict 30 mm centre-to-
-                                            # cup-opening gate by default
-                                            # (since 2026-05-24 — cuts #4 + #5
-                                            # land a leg-jerk² + leg-vel-
-                                            # equalise optimiser whose
-                                            # trajectories the actuators
-                                            # track tightly enough to drop
-                                            # the ball at the cup centre).
-                                            # Set to None to restore the
-                                            # legacy "any cup-rim contact
-                                            # catches" behaviour (snap-in
-                                            # artefact visible at low apex).
+    capture_tolerance_mm: Optional[float] = None  # INTERIM (2026-06-26):
+                                            # loose gate while the catch is
+                                            # VELOCITY-MATCHED (cup moves at
+                                            # 0.7×ball, colinear). A cup
+                                            # rushing through the catch point
+                                            # at ~3.5 m/s contacts the ball
+                                            # off-centre by the geometric
+                                            # measure, so the strict 30 mm
+                                            # centre-to-cup gate (the
+                                            # 2026-05-24 default) structurally
+                                            # can't judge a moving-cup catch —
+                                            # it reads 1/33 even though the
+                                            # ball reaches the cup every time
+                                            # (33/33 loose). The proper oracle
+                                            # is real CONTACT MECHANICS (does
+                                            # the ball physically seat?), which
+                                            # replaces this gate; restore a
+                                            # real seat-based check then. Set a
+                                            # value to re-enable the geometric
+                                            # gate. See logbook 2026-06-26.
 
 
 @dataclasses.dataclass

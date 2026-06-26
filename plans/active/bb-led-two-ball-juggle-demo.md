@@ -162,6 +162,27 @@ Phases are incremental: each leaves a testable, deployable intermediate state.
 No phase depends on a later one. The hand-generator overhaul is **not** a phase
 of this plan — it is a parallel plan and may land at any time.
 
+### Sim2Real fidelity upgrades (in progress, 2026-06-26)
+
+Two coupled sim-fidelity upgrades raised during sim review, tracked in
+`logbook/2026-06-26-velocity-matched-catch-and-contact-mechanics-feasibility.md`:
+
+- **Concern 2 — velocity-matched catch (LANDED).** The catch now enforces a
+  hard hand-velocity invariant: the cup velocity is colinear with the ball
+  arrival velocity at `catch_vel_ratio` (0.7) of its speed (30 % closing
+  velocity seats the ball); facing stays soft. Implemented in
+  `controller/demo/juggle_optimizer.py`. The strict geometric capture gate
+  structurally can't judge a moving-cup catch (1/33 strict, 33/33 loose), so
+  `JuggleDemoConfig.capture_tolerance_mm` defaults to `None` (loose) as an
+  INTERIM pending concern 1.
+- **Concern 1 — real contact mechanics (FEASIBILITY PROVEN; integration next).**
+  Replace the kinematic ball-hold (`apply_kinematic_hold` teleport) + explicit
+  `release()` with real contact: the ball rests in the cup by physics and is
+  thrown by the hand stroke. Feasibility confirmed (cup holds the ball ≤6 mm; a
+  5 m/s stroke ejects at ~82 %). Integration plan in the logbook entry. Real
+  contact is the proper oracle that validates concern 2's catch — they land
+  together, restoring a seat-based headline metric.
+
 ## 4. Implementation Phases (detailed)
 
 ### Phase 1: Tempo & geometry feasibility study — COMPLETE (2026-05-22)

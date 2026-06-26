@@ -227,6 +227,33 @@ class OptimizerConfig:
     # frames is this offset. Default matches the StewartGeometry default
     # (574.3 mm); override via the caller for non-default geometries.
     platform_init_height_mm: float = 574.3
+    # Soft penalty weight for THROW facing — mirror of the catch term.
+    # The throw's HARD invariant is hand velocity == required launch
+    # velocity (a resultant of platform twist + axial slider ejection +
+    # tilt); this soft term only shapes the orientation so the hand axis
+    # "faces" along the launch velocity. 'Facing soft' — never overrides
+    # the hard velocity match. Default 1000 (matches catch); 0.0 disables.
+    throw_colinearity_weight: float = 1000.0
+    # Catch velocity-match target: the TOTAL hand-opening (cup) velocity
+    # at the catch event is constrained colinear with the ball arrival
+    # velocity and at this fraction of its speed. 0.7 ⇒ the cup moves at
+    # 70% of ball speed in the ball's direction, leaving a 30% closing
+    # velocity so the ball seats into the cup (a full 1.0 match gives zero
+    # relative velocity → the ball never closes in → off-centre rim
+    # contact). This is the user's "hand velocity colinear with ball
+    # velocity, at 70%" invariant — the HARD constraint at catch.
+    catch_vel_ratio: float = 0.7
+    # The hand SLIDER's own descent speed as a fraction of the vertical
+    # launch speed (throw_speed_mps, mirroring the throw stroke; ≈ the ball
+    # arrival speed to within the small horizontal separation component) —
+    # an internal detail of how the cup velocity is produced (slider +
+    # platform twist = cup velocity). MUST match the sim hand model
+    # (sim/hand/trajectory.py CATCH_VEL_RATIO) and hardware_config.yaml
+    # teensy_trajectory.catch_vel_ratio (both 0.6) so the optimiser's
+    # cup-velocity model matches what the sim/hardware hand actually does;
+    # the platform twist supplies the remainder (cup_ratio − slider_ratio).
+    # Drift risk noted; single-source contract owned by the hand overhaul.
+    catch_slider_vel_ratio: float = 0.6
 
 
 @dataclasses.dataclass
@@ -508,7 +535,7 @@ def optimise_juggle_trajectory(pattern: JugglePattern,
     # Catch keyframe (mid-segment in general). Only the pose is
     # constrained; twist and accel at catch are free, so we discard
     # those quintic-eval outputs.
-    pose_catch_sym, _twist_catch_sym, _accel_catch_sym = _quintic_eval_sym(
+    pose_catch_sym, twist_catch_sym, _accel_catch_sym = _quintic_eval_sym(
         poses[k_catch, :], twists[k_catch, :], accels[k_catch, :],
         poses[(k_catch + 1) % N, :], twists[(k_catch + 1) % N, :],
         accels[(k_catch + 1) % N, :],
@@ -540,6 +567,27 @@ def optimise_juggle_trajectory(pattern: JugglePattern,
     v_ball_release = twists[0, 0:3].T + R_throw @ cs.vertcat(
         0.0, 0.0, pattern.throw_speed_mps * 1000.0)
     opti.subject_to(v_ball_release == v_required)
+
+    # ---- HARD catch velocity-match (3 equations) -------------------
+    # Invariant (user-stated, "must" at every event): the hand-opening
+    # (cup) velocity is COLINEAR with the ball's arrival velocity and at
+    # ``catch_vel_ratio`` (0.7) of its speed — so the cup moves *with* the
+    # ball but 30% slower, giving a closing velocity that seats the ball
+    # into the cup (a full 1.0 match → zero relative velocity → the ball
+    # never closes in → off-centre rim contact). The cup velocity is the
+    # resultant of the platform centroid twist + the catch-stroke slider
+    # descending along the (tilted) hand axis at ``catch_slider_vel_ratio``
+    # (0.6) of the vertical launch speed (≈ ball speed); the free platform
+    # twist supplies the remainder of the 0.7×v_ball target exactly. The
+    # vector equality enforces both colinearity and the 0.7 magnitude.
+    # (The ω×r term from the hand-opening offset is omitted, matching the
+    # throw model's fidelity.) Orientation stays free here — only the soft
+    # facing penalty below shapes the cup to point along the arrival.
+    v_ball_arrival = v_required + cs.vertcat(0.0, 0.0, -g_mms2 * flight)
+    catch_slider_speed = cfg.catch_slider_vel_ratio * pattern.throw_speed_mps * 1000.0
+    v_hand_catch = twist_catch_sym[0, 0:3].T + R_catch @ cs.vertcat(
+        0.0, 0.0, -catch_slider_speed)
+    opti.subject_to(v_hand_catch == cfg.catch_vel_ratio * v_ball_arrival)
 
     # ---- Level-platform lock (opt-in for back-compat / comparison) --
     # Pre-relaxation default; useful for A/B comparing the optimiser
@@ -621,6 +669,20 @@ def optimise_juggle_trajectory(pattern: JugglePattern,
             R_sub = _casadi_rodrigues(pose_sub[0, 3:6])
             leg_ext_per_sub.append(_ik_extensions_sym(pos_sub, R_sub, pattern_geom))
 
+    # ---- Leg-stroke (position) bound --------------------------------
+    # Every leg extension must stay within the physical stroke [0, stroke]
+    # at every sub-grid point — beyond it the actuators saturate and the
+    # trajectory is unplayable. Previously only leg *velocity* was bounded;
+    # the platform workspace box implicitly kept positions in range, but
+    # the velocity-matched catch (2026-06-26) reshapes the trajectory
+    # enough to drive a leg past full stroke (~330 mm vs 280) without this
+    # explicit bound. Cheap (reuses the leg_ext_per_sub already built for
+    # the jerk objective); makes leg-stroke feasibility a hard contract.
+    leg_stroke_mm = pattern_geom.leg_stroke_mm
+    for m in range(M_total):
+        for i in range(6):
+            opti.subject_to(opti.bounded(0.0, leg_ext_per_sub[m][i], leg_stroke_mm))
+
     # Periodic 3rd central difference for jerk at each sub-grid point.
     # leg_jerk_i(m) ≈ (e[m+2] - 2 e[m+1] + 2 e[m-1] - e[m-2]) / (2 dt_sub³)
     if cfg.leg_jerk_weight > 0.0:
@@ -681,10 +743,19 @@ def optimise_juggle_trajectory(pattern: JugglePattern,
     # hand_axis_catch_world = R_catch @ [0,0,1]
     # penalty = weight × ||v_ball_arrival × hand_axis_catch_world||²
     if cfg.catch_colinearity_weight > 0.0:
-        v_ball_arrival = v_required + cs.vertcat(0.0, 0.0, -g_mms2 * flight)
+        # v_ball_arrival is defined above (hard catch velocity-match).
         hand_axis_catch = R_catch @ cs.vertcat(0.0, 0.0, 1.0)
         cross = cs.cross(v_ball_arrival, hand_axis_catch)
         cost = cost + cfg.catch_colinearity_weight * cs.dot(cross, cross)
+
+    # Soft THROW facing penalty (mirror of catch). The hand axis at throw
+    # is encouraged toward the launch-velocity direction so the cup
+    # "faces" the throw. 'Facing soft' — the hard hand-velocity match
+    # above always wins; this only shapes the otherwise-free orientation.
+    if cfg.throw_colinearity_weight > 0.0:
+        hand_axis_throw = R_throw @ cs.vertcat(0.0, 0.0, 1.0)
+        cross_throw = cs.cross(v_required, hand_axis_throw)
+        cost = cost + cfg.throw_colinearity_weight * cs.dot(cross_throw, cross_throw)
 
     opti.minimize(cost)
 
