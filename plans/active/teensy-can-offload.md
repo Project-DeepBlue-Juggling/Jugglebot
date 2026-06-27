@@ -863,7 +863,7 @@ powered operator sitting; the software offload is one coupled desk unit. So:
 | **U2** | Synthetic β-knot bench driver (`synthetic_setpoint.py` + `teensy_setpoint_bench.py`) + tests | desk |
 | **U3** | Operator sitting #1: armed hold → bounded move → powered fault-replay; **measures the float32 residual + the D9 motion-onset penalty** | bench, serial |
 | **U4** ✅ | Production α→β switch (`SetpointPump` rewrite) **+ the D9 decision** (written with U3 data) + `/teensy` rename — **landed 2026-06-25** (`cb0d158`, `50fc8fe`) | desk, gated on U3 |
-| **U5** 🚧 | Operator sittings: β-path cold-start + full test plan, then decommission. **U5a (cold-start code) + U5b (powered six-leg home→configure→activate) DONE 2026-06-26; run_mpc closed-loop + test plan + decommission remain** | bench, serial |
+| **U5** 🚧 | Operator sittings: β-path cold-start + full test plan, then decommission. **U5a + U5b (cold-start, powered six-leg home→configure→activate) DONE 2026-06-26; `/deactivate` DONE+validated 2026-06-27 (`dbf32c9`). run_mpc-on-β: feedback chain CONFIRMED to close, but the high-freq hold is blocked by the Jetson MPC compute-marginality (not a β defect) → DEPRIORITIZED. Re-scoped foundation-first: a `can_node`→Teensy parity audit is the new next unit; an MPC-as-replanner re-arch is under consideration (post-foundation).** | bench, serial |
 
 **U1 + U2 landed 2026-06-23.** Desk-side only — nothing here energises a motor.
 `pio run` green (dec 353344); `pytest tests/ -q` (run 2026-06-23): **1759 passed,
@@ -1496,6 +1496,15 @@ pipeline.
 > CAN1/CAN2/CAN3 *partition* and the platform Teensy 4.0's placement on CAN3 are
 > already realised — what remains is driving all six legs through the bridge and
 > running the full hardware test plan with motors powered.
+>
+> **Update (2026-06-27):** the six-leg cold-start (home/configure/activate/
+> deactivate) is validated and the **run_mpc-on-β feedback chain is confirmed to
+> close** end-to-end (`:5556`), but the run_mpc *high-freq hold* is blocked by the
+> Jetson MPC compute-marginality (not a β defect) and is **deprioritized** pending
+> a possible MPC-as-replanner re-architecture. The full hardware test plan via the
+> current high-freq run_mpc is therefore **on hold**; the immediate priority is a
+> `can_node`→Teensy feature-parity audit (foundation-first). See the U5 row +
+> `logbook/2026-06-26-phase11-u5-six-leg-cutover.md` (2026-06-27 continuation).
 
 **Goal:** All six legs migrated to CAN3 (the Jugglebot bus), full robot
 operating off the new three-bus architecture. Platform Teensy 4.0 now sits
@@ -1624,9 +1633,14 @@ plan's commits**. Captured here so the findings aren't lost.
 Proposed by the operator during the U5b sitting; detail in
 `logbook/2026-06-26-phase11-u5-six-leg-cutover.md` (Open Questions):
 
-- **`/deactivate` service** — a controlled lower/stow from Active (the β path has
-  no lower path today; at U5b shutdown the operator e-stopped + lowered by hand).
-  Likely a firmware TRAP_TRAJ move to a stow pose, mirroring ACTIVATE.
+- **`/deactivate` service** — ✅ **DONE + hardware-validated 2026-06-27** (commit
+  `dbf32c9`; firmware dec 362592). Firmware TRAP_TRAJ lower to STOW (0.0 rev) +
+  IDLE-on-arrival, mirroring ACTIVATE; foam-robust IDLE-transition observer.
+  Closed the U5b shutdown gap (operator: "works perfectly").
+- **Robust `clear_errors`** (NEW gap, 2026-06-27) — a can_node-style error clear.
+  The existing `/clear_errors` did not clear a stale `DC_BUS_UNDERVOLTAGE` (motor
+  power had been restored), which tripped `ERR_BUS_DOWN` on `/activate` and cost
+  bench time. Fold into the `can_node`→Teensy parity audit.
 - **`/jb/` service prefix** — group all Jugglebot services (`home`, `configure`,
   `activate`, `encoder_search`, …) under `/jb/` for clarity. Wide ripple — grep
   all consumers (GUI, orchestrator) first.
