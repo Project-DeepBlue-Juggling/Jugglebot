@@ -215,13 +215,18 @@ Two coupled sim-fidelity upgrades raised during sim review, tracked in
   positioning), the **level-platform decoupling** realisation (drops banking),
   the per-throw planner `controller/demo/juggle_planner.py` (7 unit tests), and
   a new runner `sim/juggle_online.py` (carry-oval, 100 mm separation) that runs
-  end-to-end. **Open (tuning, not redesign):** the throw doesn't yet release
-  cleanly under switched contact (contact COHESION drags the ball; stiff contact
-  separates it AND catches 1) and the carry pre-roll SLAMS the ball (launch
-  ~16.8 vs planned 5 m/s); then catch-seat tuning. Handoff:
-  `plans/active/bb-online-juggle-integration-prompt.md`. The old `juggle_demo.py`
-  (offline) is kept untouched (tests green) until the online runner sustains the
-  pattern, then it is replaced and the headline tests retargeted.
+  end-to-end. **Landed:** the throw slam is fixed (re-plan cycle 0 from the
+  achieved pre-roll state → clean `a_cup<−g` separation) and the catch is fixed
+  by a vertical/lateral axis-split velocity-match → **0→5 catches** (beating the
+  old offline demo's 2). **Open (the wall):** sustained 2-ball is blocked by the
+  **band-limit cascade** — the catch's ~15 mm band-limited offset is amplified by
+  the contact-carry throw beyond the platform reach, so the pattern collapses to
+  1-ball (the same wall the offline demo's xfail names). The fix is scoped (a
+  less position-sensitive throw, or a self-centring cup) — see logbook
+  `2026-06-27-online-juggle-throw-fix-catch-axis-split-band-limit-cascade`. The
+  old `juggle_demo.py` (offline) is kept untouched (tests green) until the online
+  runner sustains the pattern, then it is replaced and the headline tests
+  retargeted.
 
 ## 4. Implementation Phases (detailed)
 

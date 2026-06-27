@@ -126,15 +126,74 @@ class PlannerConfig:
     # axis (clean detach, no sideways shove) and before touchdown to align the
     # cup velocity with the ball (velocity-matched catch). Mirrors Kai.
     n_detach: int = 2
-    # Velocity-matched catch (concern 2): the cup velocity at the catch is
-    # encouraged toward ``catch_vel_ratio`` × the ball's arrival velocity — a
-    # SOFT penalty, not a hard equality, because a hard collinearity/velocity
-    # constraint conflicts with the band-limited platform's modest lateral jerk
-    # and makes the NLP infeasible. The slider satisfies the (dominant,
-    # vertical) component exactly; the platform approximates the small lateral.
-    # 0.7 leaves a 30% closing velocity so the ball seats into the cup.
-    catch_vel_ratio: float = 0.7
-    catch_vel_weight: float = 200.0
+    # Throw COAST (the operator's decelerate-and-separate model). Kai detaches in
+    # FREE-FALL (cup acc == gravity at release): the ball is then weightless
+    # relative to the cup, so any lateral velocity it carries (from a ~15 mm
+    # off-centre seat — the band-limit catch error) PERSISTS and the throw flings
+    # it beyond the catch reach (the 2-ball divergence; logbook 2026-06-27
+    # online-replanning, throw-amplification). Instead, COAST: hold the cup at
+    # CONSTANT velocity (acc == 0) for a few knots across the throw so the ball is
+    # pressed into the cup (normal force = m g) and FRICTION settles its lateral
+    # kick + centres it BEFORE the cup decelerates past -g and it separates at the
+    # (now clean) take-off velocity. >0 enables the coast over the first
+    # ``throw_coast_knots`` knots after the throw; 0 = Kai's free-fall detach.
+    # SOFT (a strong penalty pulling the post-throw vertical accel toward 0, not
+    # a hard acc==0) because a hard coast keeps the cup rising into the slider
+    # ceiling within the tight apex-1.3 vertical budget — infeasible. The soft
+    # penalty flattens the deceleration just enough to press the ball in.
+    throw_coast_knots: int = 0
+    throw_coast_weight: float = 0.0         # penalty on post-throw vertical accel
+    # Velocity-matched catch (concern 2) — split BY MORPHOLOGY AXIS (the
+    # level-platform decoupling applied to the catch). The failure this fixes:
+    # a uniform soft velocity penalty lets the smoothness cost win on the
+    # vertical, so the cup near-stops at the bottom of the oval (~-2.5 m/s)
+    # while the ball descends at ~-5.3 m/s — the ball punches past the
+    # nearly-stopped cup and sinks below the seat radius (measured; logbook
+    # 2026-06-27 online-replanning, catch re-diagnosis). The fix mirrors what
+    # the old demo learned (its separate ``catch_slider_vel_ratio``):
+    #   * VERTICAL (z) — the SLIDER is the fast, perfect actuator, so make it
+    #     descend WITH the ball: a STRONG match toward
+    #     ``catch_slider_vel_ratio`` × the ball's arrival vz. The cup rides the
+    #     ball down and cushions it to a co-moving stop in the cup.
+    #   * LATERAL (xy) — the PLATFORM is band-limited, so keep a SOFT, modest
+    #     match toward ``catch_vel_ratio`` × the small lateral arrival velocity
+    #     (a hard lateral match conflicts with the platform's modest jerk and
+    #     makes the NLP infeasible — the original concern-2 rationale).
+    # The vertical ratio < 1 still leaves a small closing velocity so the ball
+    # seats rather than floating; the firmer weight is what the old uniform
+    # penalty lacked. NOTE the weight is MODERATE, not maximal: a full vertical
+    # match drives the cup down at the ball's full arrival speed, which on a
+    # short slider slams the floor and ejects the ball — the seating sweet spot
+    # is a cup descent ~60-70% of the ball's (the demo's realisation overrides
+    # these for its specific pattern; see ``sim.juggle_online._plan_cycle``).
+    catch_vel_ratio: float = 0.7            # LATERAL (xy) match ratio — platform
+    catch_vel_weight: float = 200.0         # LATERAL match weight (soft)
+    catch_slider_vel_ratio: float = 0.7     # VERTICAL (z) match ratio — slider
+    catch_slider_vel_weight: float = 600.0  # VERTICAL match weight (moderate)
+    # Lateral DWELL at the catch — the online-native port of the old demo's
+    # closed-loop reach+dwell (logbook 2026-06-27, ``_catch_reach_xy``). The
+    # per-cycle re-plan already supplies the REACH (the catch is the observed
+    # ball's touch-down); this supplies the DWELL: hold the cup's xy AT the
+    # catch over a window of knots so the platform SETTLES at the landing with
+    # ~zero lateral velocity through the seat, instead of swiping past (a moving
+    # cup passes the ball and never seats — the old demo's central catch lesson).
+    # The slider still descends with the ball (vertical match) — the morphology
+    # split applied to the catch. Soft (strong-weighted) so it stays feasible
+    # against the carry back to the throw; the window is kept short so the carry
+    # still has time (the online tempo's catch->throw dwell is tighter than the
+    # old demo's). 0 knots / 0 weight disables the dwell.
+    #
+    # DISABLED BY DEFAULT: a window/weight sweep on the 2-ball runner (logbook
+    # 2026-06-27 online-replanning, catch arc) found the dwell HURTS net — it
+    # fixes the caught ball's co-motion but distorts the *throw* (the NLP
+    # redistributes the trajectory to satisfy the xy-hold), and the binding
+    # constraint turned out to be throw consistency, not catch co-motion. Every
+    # dwell setting (pre/post 1-3, weight 400-1800) scored below no-dwell. Kept
+    # as an opt-in knob because the lesson (settle-don't-swipe) is sound and a
+    # future pattern with more catch->throw dwell time may benefit.
+    catch_dwell_pre: int = 0                # knots before the catch to hold xy
+    catch_dwell_post: int = 0               # knots after the catch to hold xy
+    catch_dwell_weight: float = 0.0         # xy-hold weight (0 = off; ~1500 on)
     workspace_xy_m: float = 0.15            # |cup xy - centre| bound (m)
     # Cup z box (m, world). NOTE for integration: the demo's realisation MUST
     # override these (and the throw/catch heights) to the SLIDER's reachable
@@ -235,13 +294,33 @@ def plan_cup_cycle(pos0, vel0, acc0,
     cpos_td = (cpos[:, k_td] + cvel[:, k_td] * d_t + 0.5 * cacc[:, k_td] * d_t**2
                + (1.0 / 6.0) * cjerk[:, k_td] * d_t**3)
     opti.subject_to(cpos_td == np.asarray(catch_pos, float).reshape(3, 1))
-    # Velocity-matched catch (SOFT): cup velocity at the catch knot toward
-    # ``catch_vel_ratio`` × the ball's arrival velocity. Soft so the band-
-    # limited platform's lateral jerk doesn't make it infeasible (see field doc).
+    # Velocity-matched catch — split by morphology axis (see PlannerConfig).
+    # Vertical (z): STRONG match so the slider descends WITH the ball; lateral
+    # (xy): SOFT match so the band-limited platform's jerk stays feasible.
     catch_vel = np.asarray(catch_vel, float)
     cvel_td = cvel[:, k_td] + cacc[:, k_td] * d_t + 0.5 * cjerk[:, k_td] * d_t**2
-    v_catch_target = (cfg.catch_vel_ratio * catch_vel).reshape(3, 1)
-    cost = cost + cfg.catch_vel_weight * cas.sumsqr(cvel_td - v_catch_target)
+    v_lat_target = (cfg.catch_vel_ratio * catch_vel[0:2]).reshape(2, 1)
+    cost = cost + cfg.catch_vel_weight * cas.sumsqr(cvel_td[0:2] - v_lat_target)
+    v_z_target = cfg.catch_slider_vel_ratio * float(catch_vel[2])
+    cost = cost + cfg.catch_slider_vel_weight * (cvel_td[2] - v_z_target)**2
+
+    # Lateral DWELL: hold the cup's xy at the catch over [k_td-pre, k_td+post]
+    # so the platform settles at the observed landing (zero lateral velocity)
+    # through the seat rather than swiping past (see PlannerConfig.catch_dwell_*).
+    if cfg.catch_dwell_weight > 0.0 and (cfg.catch_dwell_pre or cfg.catch_dwell_post):
+        catch_xy = np.asarray(catch_pos, float)[0:2].reshape(2, 1)
+        for k in range(max(0, k_td - cfg.catch_dwell_pre),
+                       min(n_steps + 1, k_td + cfg.catch_dwell_post + 1)):
+            cost = cost + cfg.catch_dwell_weight * cas.sumsqr(cpos[0:2, k] - catch_xy)
+
+    # Throw COAST (soft): pull the vertical accel toward 0 for the first
+    # ``throw_coast_knots`` knots after the throw so the cup flattens (presses
+    # the ball in -> friction settles its lateral kick) before decelerating. See
+    # PlannerConfig.throw_coast_*. Vertical only — the lateral is already pinned
+    # to 0 by the detach constraint.
+    if cfg.throw_coast_knots > 0 and cfg.throw_coast_weight > 0.0:
+        for i in range(1, min(cfg.throw_coast_knots, n_steps) + 1):
+            cost = cost + cfg.throw_coast_weight * cacc[2, i]**2
 
     opti.minimize(cost)
 

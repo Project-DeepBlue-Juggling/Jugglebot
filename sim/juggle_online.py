@@ -12,40 +12,36 @@ same contact physics (`contact_carry`) as the old demo. See logbook
 This is a WIP standalone runner (kept beside the old `juggle_demo.py` so its
 tests stay green) — the new architecture under development.
 
-STATUS (2026-06-27): the loop runs end-to-end (re-plan → realise → step). The
-**carry pre-roll** fixed the cycle-0 static-start, so the cup seats ball 0 and
-carries it up to the throw. It does NOT yet catch with the switched contact
-(0/0), but a stiff-contact test (below) DOES separate the ball and catch it
-(1/0) — so the architecture is sound and the throw mechanism (the user's
-decelerate-and-separate: the ball lifts off when a_cup < −g) works. The two
-remaining issues are tractable TUNING, not a redesign:
+STATUS (2026-06-27): the loop runs end-to-end and catches **5 / 0** (seed 0) —
+up from 0, and better than the old offline demo's 2 (whose ≥30 headline test
+xfails on the same wall). Logbook
+`2026-06-27-online-juggle-throw-fix-catch-axis-split-band-limit-cascade`.
 
-  1. **Contact cohesion at the throw.** With the SWITCHED contact the cup
-     *cohesively drags* the ball back down (measured: the ball reaches ~4.5 m/s
-     up then is decelerated to 0 WITH the cup at ~169 m/s² ≫ g — a tensile pull,
-     the soft-contact drag the old demo documented). Forcing genuinely STIFF
-     contact through the separation makes the ball fly free (probe below). The
-     switch (`t_rel < 0.10`) isn't applying stiff effectively at the separation
-     instant — likely the soft carry lets the ball settle cohesively and the
-     mid-contact stiffen doesn't release it cleanly. FIX: ensure stiff contact
-     spans the whole throw separation (and/or stiff through the carry top).
-  2. **Throw velocity wrong (slam).** With stiff-always the ball launches at
-     ~16.8 m/s (≫ the planned 5) because the cup SLAMS it: the carry pre-roll
-     leaves the cup LAGGING the plan (ends ~67 mm low at z≈0.783 not 0.85), so
-     the main loop's throw command makes the cup JUMP UP to catch the plan and
-     hit the ball as a high-speed collision. FIX: get the cup to track the plan
-     so it reaches the throw moving at v_take (≈5 m/s) WITHOUT a jump — tighten
-     the pre-roll so its end-state matches the plan, and/or add a brief COAST
-     (constant velocity) at the throw before the cup retracts (the user's
-     model: "a short coast, then the hand decelerates" — lets the ball separate
-     at v_take before the cup pulls back).
+Two fixes landed:
+  1. **Throw slam → cycle-0 re-plan.** The slam (ball launched ~16.8 m/s) was a
+     pre-roll → main-loop handoff discontinuity: the carry's steep final z-rise
+     lags the slider, so the pre-roll ends ~67 mm low (783 not 850 mm) and the
+     main loop's t_rel=0 throw command jumps the cup up into the ball. FIX:
+     re-plan cycle 0 from the ACHIEVED pre-roll state (every later cycle already
+     does this), so cycle 0 is continuous — clean a_cup<−g separation at v_take,
+     no slam, no clamp (separation is the operator's decelerate-and-separate).
+  2. **Catch seating → axis-split velocity-match** (in the planner). The cup now
+     descends MODERATELY with the ball (~−3.4 m/s); a uniform soft match
+     near-stopped it (ball sank below the cup), a full match slammed the slider
+     floor. See `_plan_cycle` and PlannerConfig.catch_slider_vel_*.
 
-  Secondary (after the throw works): **catch seating** with a ball riding the
-  cup (tune the contact-switch windows + seat thresholds against this loop).
-
-(Superseded: an earlier note here mis-diagnosed this as a "bounded slider can't
-clamp" limitation — WRONG. Separation is a_cup < −g, no clamp needed; the
-blockers are contact cohesion + the slam, both fixable.)
+REMAINING WALL — sustained 2-ball: the pattern collapses to 1-ball. A centred
+(pre-seated) ball grooves forever; a caught-then-thrown ball diverges. Root
+cause (measured): the catch seats the ball ~15 mm off-centre (the platform's
+band-limited lateral tracking error), and the contact-carry throw AMPLIFIES that
+to a >150 mm landing error — beyond the ±150 mm reach → lost (loop gain >1). This
+is the same band-limit cascade that xfails the old demo. Catch-side tuning
+(dwell), the throw coast, a symmetric startup, smaller separation, lateral
+smoothing, and lower apex were all ruled out — they distort the throw or are
+unphysical. The fix needs a LESS POSITION-SENSITIVE THROW (a small
+controlled-velocity nudge toward v_take in the stiff-throw window) or a
+self-centring cup — scoped for a follow-up. The dwell/coast knobs are kept
+disabled-by-default in PlannerConfig (opt-in; they didn't help here).
 
 Pure-Python, no ROS2. SI internally in the planner; mm at the plant boundary.
 """
@@ -159,6 +155,15 @@ class OnlineJuggleRunner:
         pcfg = PlannerConfig()
         pcfg.z_min_m = (CUP_Z_BASE_MM) / 1000.0 + 0.005
         pcfg.z_max_m = (CUP_Z_BASE_MM + SLIDER_STROKE_MM) / 1000.0 - 0.005
+        # Catch velocity-match, tuned for THIS pattern's arrival speed (~5.3 m/s).
+        # The slider (vertical) descends WITH the ball, but only MODERATELY: a
+        # full match (cup at -5.3) slams the slider floor (only ~40 mm below the
+        # catch) and ejects the ball; near-stop (cup ~-2.5) lets the ball punch
+        # past. Empirical sweet spot is cup ~-3.4 m/s at the catch (z_ratio 0.7,
+        # weight 600 → captures 5 vs 0-3 across the grid's extremes; /tmp probe_grid).
+        pcfg.catch_vel_ratio = 0.85         # lateral (platform) — soft
+        pcfg.catch_slider_vel_ratio = 0.7   # vertical (slider) — moderate
+        pcfg.catch_slider_vel_weight = 600.0
         if observed_ball_state is not None:
             bpos, bvel = observed_ball_state
             t_td, pos_td, vel_td = ballistic_touchdown(bpos, bvel, self.cfg.catch_z_m)
@@ -203,6 +208,24 @@ class OnlineJuggleRunner:
         v0 = self.v_arrival - GRAVITY * t
         p0 = self.catch_pos - v0 * t - 0.5 * GRAVITY * t * t
         plant.spawn_ball(p0 * 1000.0, v0 * 1000.0, ball=1)
+
+        # Re-plan cycle 0 from the ACHIEVED pre-roll cup state. The carry's steep
+        # final z-rise to the throw lags the slider by ~67 mm; handing the lagging
+        # cup to a plan that assumes it is exactly at the throw makes the cup SLAM
+        # up to catch the plan (overshoot 1010 mm, launching the ball ~16 m/s).
+        # Re-planning from the achieved state makes cycle 0 continuous — no slam —
+        # exactly as every later cycle already is. The throw is slightly low/slow;
+        # the per-cycle re-plan self-corrects.
+        cup_p = self.cup_world_m()
+        cup_v = self.cup_vel_world_m()
+        fb0 = plant.get_ball_state(ball=1)
+        obs0 = ((np.asarray(fb0.position_mm) / 1000.0,
+                 np.asarray(fb0.velocity_mms) / 1000.0)
+                if fb0 and not fb0.held else None)
+        try:
+            plan = self._plan_cycle(cup_p, cup_v, GRAVITY.copy(), obs0)
+        except Exception:
+            pass
 
         held_ball, flight_ball = 0, 1
         n_cycles = int(self.cfg.duration_s / self.period)

@@ -188,8 +188,16 @@ docstring): (1) ensure **stiff contact** spans the throw separation (the
 because the cup SLAMS it (the pre-roll leaves the cup ~67 mm low, so the throw
 command jumps it up into the ball); get the cup to reach the throw at `v_take`
 without a jump, and/or add a brief **coast** before the cup retracts (the user's
-model). Then tune the catch seating. Handoff:
-`plans/active/bb-online-juggle-integration-prompt.md`.
+model). Then tune the catch seating.
+
+**Resolved / continued** in `2026-06-27-online-juggle-throw-fix-catch-axis-split-band-limit-cascade`:
+the throw slam was fixed by re-planning cycle 0 from the achieved state (clean
+`a_cup<−g` separation, no clamp); the catch was fixed by a vertical/lateral
+axis-split velocity-match (0→5 catches, beating the offline demo's 2). Sustained
+2-ball is then blocked by the **band-limit cascade** (the catch's ~15 mm
+band-limited offset is amplified by the throw beyond the platform reach) — the
+same wall the offline demo's xfail names. The integration handoff prompt that
+seeded that session has been removed (work is now logged).
 
 ## Verification
 
