@@ -1631,7 +1631,15 @@ plan's commits**. Captured here so the findings aren't lost.
 ### U5b operator next-steps (2026-06-26) — β cold-start UX/architecture
 
 Proposed by the operator during the U5b sitting; detail in
-`logbook/2026-06-26-phase11-u5-six-leg-cutover.md` (Open Questions):
+`logbook/2026-06-26-phase11-u5-six-leg-cutover.md` (Open Questions).
+
+> **The `can_node`→Teensy parity audit is now done (2026-06-27).** Full
+> 117-capability matrix + severity-ranked gap list:
+> [`ros_ws/docs/can-node-teensy-parity.md`](../../ros_ws/docs/can-node-teensy-parity.md);
+> session narrative: `logbook/2026-06-27-can-node-teensy-parity-audit.md`. The
+> next-steps below are tracked there as matrix rows (robust `clear_errors`,
+> generalise `/configure`, `/jb/` prefix) alongside the audit's own findings —
+> headline: the automated orchestrator cold-start is unwired against the bridge.
 
 - **`/deactivate` service** — ✅ **DONE + hardware-validated 2026-06-27** (commit
   `dbf32c9`; firmware dec 362592). Firmware TRAP_TRAJ lower to STOW (0.0 rev) +

@@ -6,6 +6,7 @@ Browse with `/logbook`, create entries with `/investigate` or `/logbook --new <t
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-06-27 | resolved | teensy-can-offload | can_node → Teensy can-bridge feature-parity audit — 117-cap matrix (53 validated / 7 unvalidated / 37 PARTIAL / 20 GAP); headline: automated orchestrator cold-start broken against the bridge (masked by operator-driven cutover) | [2026-06-27-can-node-teensy-parity-audit](2026-06-27-can-node-teensy-parity-audit.md) |
 | 2026-06-26 | in-progress | teensy-can-offload | Phase 11 U5 — six-leg β cold-start + /deactivate (validated 06-27); run_mpc-on-β feedback chain confirmed, high-freq hold deprioritized (compute-marginal) → re-scoped to a can_node parity audit | [2026-06-26-phase11-u5-six-leg-cutover](2026-06-26-phase11-u5-six-leg-cutover.md) |
 | 2026-06-25 | complete | teensy-can-offload | Phase 11 U4 — production α→β setpoint switch + friction-FF drop (D9) + /teensy rename | [2026-06-25-phase11-u4-production-cutover](2026-06-25-phase11-u4-production-cutover.md) |
 | 2026-06-24 | in-progress | teensy-can-offload | Phase 11 bench cutover — present-axis scoping + synthetic β-knot interp driver (software prep; powered run pending) | [2026-06-24-phase11-bench-cutover](2026-06-24-phase11-bench-cutover.md) |
