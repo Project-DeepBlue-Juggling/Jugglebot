@@ -168,14 +168,27 @@ lateral swipe scales with separation (200 mm → 1.18 m/s, the old problem; 100 
 → 0.29; 60 mm → 0.16), so the runner defaults to **100 mm** (balls are 70 mm
 diameter — clears with margin).
 
-It does **not yet catch** (0/0). Diagnosed first blocker: the planner's cycle
-puts the throw at the boundary (cup at `throw_pos` moving UP at `v_take`), but at
-cycle-0 start the cup is settled STATIC, so `begin_physics_throw` releases ball 0
-at ~0 velocity and it falls. Remaining focused work (in the module's STATUS
-docstring): (1) init/phasing — pre-roll the cup through the carry so it arrives
-moving up, or initialise a running pattern; (2) catch seating with a ball riding
-the cup (tune the soft/stiff contact windows + seat thresholds against this
-loop); (3) confirm the throw release fires at the clean-detach (cacc≈g) instant.
+It does **not yet catch** (0/0). The first blocker — the cycle-0 STATIC start
+(the cup released ball 0 at ~0 velocity) — was fixed by a **carry pre-roll**
+(seat ball 0 at the catch point, drive it along the plan's carry so the cup
+arrives at the throw moving up).
+
+**Throw separation re-diagnosed (an earlier "bounded slider can't clamp" note in
+the module/commit was WRONG — corrected).** Separation is `a_cup < −g` (the ball
+lifts off when the cup decelerates faster than free-fall — no clamp needed),
+exactly as the user framed it. Measured: with the SWITCHED contact the cup
+*cohesively drags* the ball (it reaches ~4.5 m/s up then is decelerated to 0 WITH
+the cup at ~169 m/s² ≫ g — the soft-contact drag the old demo solved); forcing
+genuinely STIFF contact makes the ball fly free **and catches it (1/0)** — so the
+architecture is sound. Two tractable tuning issues remain (module STATUS
+docstring): (1) ensure **stiff contact** spans the throw separation (the
+`t_rel<0.10` switch isn't effective at the separation instant); (2) fix the
+**throw velocity** — stiff-always launches the ball at ~16.8 m/s (≫ planned 5)
+because the cup SLAMS it (the pre-roll leaves the cup ~67 mm low, so the throw
+command jumps it up into the ball); get the cup to reach the throw at `v_take`
+without a jump, and/or add a brief **coast** before the cup retracts (the user's
+model). Then tune the catch seating. Handoff:
+`plans/active/bb-online-juggle-integration-prompt.md`.
 
 ## Verification
 

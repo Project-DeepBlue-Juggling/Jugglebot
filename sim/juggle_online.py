@@ -13,35 +13,39 @@ This is a WIP standalone runner (kept beside the old `juggle_demo.py` so its
 tests stay green) — the new architecture under development.
 
 STATUS (2026-06-27): the loop runs end-to-end (re-plan → realise → step). The
-**carry pre-roll** (below) fixed the cycle-0 static-start, so the cup now seats
-ball 0 at the catch point and carries it up to the throw — VALIDATED in the
-debug (probe_online_dbg). But it still does NOT catch (0/0), now blocked by a
-DEEPER, architectural issue:
+**carry pre-roll** fixed the cycle-0 static-start, so the cup seats ball 0 and
+carries it up to the throw. It does NOT yet catch with the switched contact
+(0/0), but a stiff-contact test (below) DOES separate the ball and catch it
+(1/0) — so the architecture is sound and the throw mechanism (the user's
+decelerate-and-separate: the ball lifts off when a_cup < −g) works. The two
+remaining issues are tractable TUNING, not a redesign:
 
-  **THROW SEPARATION (the key open problem).** The ball does not launch — it
-  RIDES the cup up to the slider top (~1.0 m) and back down, never separating.
-  Root cause: the planner produces a SMOOTH, BOUNDED cup trajectory (cup z ≤ the
-  slider's reach, decelerating to vz≈0 at the top), so the cup never *clamps* at
-  the slider top while still moving up — and without that clamp the ball can't
-  outrun the cup. Kai's hand is UNBOUNDED (it follows the ball up to apex then
-  returns); our **bounded slider** (0.34 m stroke) cannot, so the throw is
-  fundamentally a STROKE-TO-THE-TOP-AND-RELEASE (clamp) event, not a smooth
-  trajectory the ball inherits velocity from. This needs a design choice:
-    (a) model the release in the planner — split the cycle at the throw, let the
-        cup reach z_max with v_take (the ball separates there as the cup can't
-        follow), plan the post-release come-down separately; OR
-    (b) HYBRID — keep the planner for the LATERAL positioning + the catch +
-        come-down, but drive the THROW vertical with an explicit slider stroke
-        to the top (like the old `HandThrowSequence`), which is how the old demo
-        actually launched balls (stroke to the slider top → clamp → release).
-  Option (b) is the smaller change and reuses a known-good throw.
+  1. **Contact cohesion at the throw.** With the SWITCHED contact the cup
+     *cohesively drags* the ball back down (measured: the ball reaches ~4.5 m/s
+     up then is decelerated to 0 WITH the cup at ~169 m/s² ≫ g — a tensile pull,
+     the soft-contact drag the old demo documented). Forcing genuinely STIFF
+     contact through the separation makes the ball fly free (probe below). The
+     switch (`t_rel < 0.10`) isn't applying stiff effectively at the separation
+     instant — likely the soft carry lets the ball settle cohesively and the
+     mid-contact stiffen doesn't release it cleanly. FIX: ensure stiff contact
+     spans the whole throw separation (and/or stiff through the carry top).
+  2. **Throw velocity wrong (slam).** With stiff-always the ball launches at
+     ~16.8 m/s (≫ the planned 5) because the cup SLAMS it: the carry pre-roll
+     leaves the cup LAGGING the plan (ends ~67 mm low at z≈0.783 not 0.85), so
+     the main loop's throw command makes the cup JUMP UP to catch the plan and
+     hit the ball as a high-speed collision. FIX: get the cup to track the plan
+     so it reaches the throw moving at v_take (≈5 m/s) WITHOUT a jump — tighten
+     the pre-roll so its end-state matches the plan, and/or add a brief COAST
+     (constant velocity) at the throw before the cup retracts (the user's
+     model: "a short coast, then the hand decelerates" — lets the ball separate
+     at v_take before the cup pulls back).
 
   Secondary (after the throw works): **catch seating** with a ball riding the
-  cup (tune the soft/stiff contact-switch windows + seat thresholds against this
-  loop); the de-risk tracked the cup WITHOUT a ball.
+  cup (tune the contact-switch windows + seat thresholds against this loop).
 
-The architecture, realisation, carry, and planner are validated; the throw
-modelling is the crux.
+(Superseded: an earlier note here mis-diagnosed this as a "bounded slider can't
+clamp" limitation — WRONG. Separation is a_cup < −g, no clamp needed; the
+blockers are contact cohesion + the slam, both fixable.)
 
 Pure-Python, no ROS2. SI internally in the planner; mm at the plant boundary.
 """

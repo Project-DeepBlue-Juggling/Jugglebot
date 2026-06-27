@@ -60,36 +60,36 @@ the throw moving up (fixing the cycle-0 static-start). Pattern: separation
 
 ## THE KEY PROBLEM — throw separation (do this first)
 
-The ball does NOT launch: it **rides the cup** up to the slider top (~1.0 m) and
-back down, never separating (confirmed via a debug probe — recreate it; see
-below). Root cause (also in the module STATUS docstring): the planner makes a
-**smooth, bounded** cup trajectory (cup z ≤ slider reach, decelerating to vz≈0
-at the top), so the cup never *clamps* at the slider top while still moving up —
-and without that clamp the ball can't outrun the cup. **Kai's hand is unbounded**
-(follows the ball up to apex then returns); our **bounded slider** (0.34 m
-stroke) cannot. So the throw is fundamentally a **stroke-to-the-top-and-release
-(clamp) event**, not a smooth trajectory the ball inherits velocity from.
+The ball does NOT separate with the switched contact (it's cohesively dragged
+back down by the cup), but a **stiff-contact test catches it (1/0)** — so the
+architecture is sound and the throw mechanism works (separation is `a_cup < −g`:
+the ball lifts off when the cup decelerates faster than free-fall — NO clamp
+needed). NOTE: an earlier version of this prompt mis-diagnosed a "bounded-slider
+can't clamp" limitation — that was WRONG; ignore it. The two real issues are
+TUNING, measured (see the module STATUS docstring):
 
-**Design choice (surface to the user if unsure — lead with root-cause failure
-modes):**
-- **(a) Model the release in the planner** — split the cycle at the throw: let
-  the cup reach z_max with v_take (the ball separates there because the cup
-  can't follow it up), and plan the post-release come-down separately. Cleaner
-  conceptually; bigger planner change; the cup-velocity-at-release IS the ball
-  launch velocity, so it's physically exact.
-- **(b) HYBRID (recommended, smaller)** — keep the planner for the LATERAL (xy)
-  positioning + the catch + the come-down, but drive the THROW vertical with an
-  explicit **slider stroke to the top** (clamp → release), exactly how the OLD
-  demo launched balls (`sim/hand/trajectory.py` `HandThrowTrajectory` /
-  `HandThrowSequence` — a known-good throw stroke). At the throw instant,
-  override the slider command with the stroke-to-top for ~the release window,
-  call `begin_physics_throw`, then hand the slider back to the planner for the
-  come-down. The planner's z near the throw becomes a don't-care (the stroke
-  owns it); its xy + catch still drive everything else.
+1. **Contact cohesion.** With the switched contact the cup *pulls* the ball back
+   (the ball reaches ~4.5 m/s up then is decelerated to 0 WITH the cup at
+   ~169 m/s² ≫ g — the soft-contact drag the old demo solved with stiff
+   contact). Forcing genuinely STIFF contact through the separation makes the
+   ball fly free. The `t_rel < 0.10` switch isn't applying stiff effectively at
+   the separation instant. **FIX:** stiffen the contact across the whole throw
+   separation (and/or through the carry top); verify the ball flies free.
+2. **Throw velocity (slam).** Stiff-always launches the ball at ~16.8 m/s (≫ the
+   planned 5) because the cup **slams** it: the carry pre-roll leaves the cup
+   lagging the plan (ends ~67 mm low), so the main loop's throw command makes the
+   cup JUMP up to catch the plan and hit the ball. **FIX:** get the cup to reach
+   the throw moving at `v_take` (≈5 m/s) WITHOUT a jump — tighten the pre-roll so
+   its end-state matches the plan, and/or add a brief **COAST** (constant
+   velocity) at the throw before the cup retracts (the user's model: a short
+   coast, then the hand decelerates → the ball separates at v_take before the
+   cup pulls back).
 
-Recommendation: **(b)** — it reuses a validated throw and isolates the change to
-the realisation/slider, not the NLP. Verify the launched ball reaches ~apex
-1.3 m and lands near the planned catch.
+Verify the launched ball reaches ~apex 1.3 m and lands near the planned catch
+before moving on. Probe to recreate: `/tmp/probe_sep.py` logged cup z-vel/accel
+vs ball z-vel through the first throw (that's how the cohesion + slam were
+found); a `set_contact_stiffness = lambda s: None` monkeypatch after a
+`set_contact_stiffness(True)` forces stiff-always for the A/B test.
 
 ## Secondary — catch seating (after the throw works)
 
