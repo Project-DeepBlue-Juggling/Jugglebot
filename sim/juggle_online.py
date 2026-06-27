@@ -12,24 +12,36 @@ same contact physics (`contact_carry`) as the old demo. See logbook
 This is a WIP standalone runner (kept beside the old `juggle_demo.py` so its
 tests stay green) — the new architecture under development.
 
-STATUS (2026-06-27): the loop runs end-to-end (re-plan → realise → step) and the
-realisation tracks the planned cup oval (de-risked: ~26 mm lateral RMS, see
-logbook), but it does NOT yet catch (0/0). Known issues to resolve next:
-  1. **Init/phasing** — the planner's cycle puts the throw at the boundary
-     (cup at throw_pos moving UP at v_take). At cycle-0 start the cup is settled
-     STATIC, so `begin_physics_throw` releases ball 0 at ~0 velocity and it
-     falls. Fix: pre-roll the cup through the carry (catch→throw) so it arrives
-     at the throw point moving up, OR initialise a running pattern (Kai's
-     `initialize_balls_in_cascade`), spawning ball 1's arc timed from the
-     established cup motion.
-  2. **Catch seating** — with a ball riding the cup (contact carry) the catch
-     contact + the velocity-matched seat need tuning (the de-risk tracked the
-     cup WITHOUT a ball); verify the soft/stiff contact switch windows and the
-     seat thresholds against this loop.
-  3. **Throw release timing** — confirm `begin_physics_throw` fires exactly at
-     the boundary instant where cacc≈gravity (clean detach), not before.
-Architecture, realisation, and planner are validated; the above is focused
-phasing/tuning work.
+STATUS (2026-06-27): the loop runs end-to-end (re-plan → realise → step). The
+**carry pre-roll** (below) fixed the cycle-0 static-start, so the cup now seats
+ball 0 at the catch point and carries it up to the throw — VALIDATED in the
+debug (probe_online_dbg). But it still does NOT catch (0/0), now blocked by a
+DEEPER, architectural issue:
+
+  **THROW SEPARATION (the key open problem).** The ball does not launch — it
+  RIDES the cup up to the slider top (~1.0 m) and back down, never separating.
+  Root cause: the planner produces a SMOOTH, BOUNDED cup trajectory (cup z ≤ the
+  slider's reach, decelerating to vz≈0 at the top), so the cup never *clamps* at
+  the slider top while still moving up — and without that clamp the ball can't
+  outrun the cup. Kai's hand is UNBOUNDED (it follows the ball up to apex then
+  returns); our **bounded slider** (0.34 m stroke) cannot, so the throw is
+  fundamentally a STROKE-TO-THE-TOP-AND-RELEASE (clamp) event, not a smooth
+  trajectory the ball inherits velocity from. This needs a design choice:
+    (a) model the release in the planner — split the cycle at the throw, let the
+        cup reach z_max with v_take (the ball separates there as the cup can't
+        follow), plan the post-release come-down separately; OR
+    (b) HYBRID — keep the planner for the LATERAL positioning + the catch +
+        come-down, but drive the THROW vertical with an explicit slider stroke
+        to the top (like the old `HandThrowSequence`), which is how the old demo
+        actually launched balls (stroke to the slider top → clamp → release).
+  Option (b) is the smaller change and reuses a known-good throw.
+
+  Secondary (after the throw works): **catch seating** with a ball riding the
+  cup (tune the soft/stiff contact-switch windows + seat thresholds against this
+  loop); the de-risk tracked the cup WITHOUT a ball.
+
+The architecture, realisation, carry, and planner are validated; the throw
+modelling is the crux.
 
 Pure-Python, no ROS2. SI internally in the planner; mm at the plant boundary.
 """
@@ -113,6 +125,9 @@ class OnlineJuggleRunner:
         # Throw on the +x side (cup moving up), catch on the −x side (cup down).
         self.throw_pos = np.array([+s, 0.0, cfg.throw_z_m])
         self.catch_pos = np.array([-s, 0.0, cfg.catch_z_m])
+        # Nominal ballistic take-off / arrival velocities for the pattern.
+        self.v_take = (self.catch_pos - self.throw_pos) / self.flight - 0.5 * GRAVITY * self.flight
+        self.v_arrival = self.v_take + GRAVITY * self.flight
         self.captures = []
         self.drops = []
 
@@ -149,7 +164,7 @@ class OnlineJuggleRunner:
         else:
             catch_time = self.catch_offset
             catch_pos = self.catch_pos
-            catch_vel = np.array([0.0, 0.0, -self.throw_speed])
+            catch_vel = self.v_arrival
         return plan_cup_cycle(pos0, vel0, acc0, self.throw_pos, self.catch_pos,
                               self.flight, catch_time, catch_pos, catch_vel,
                               self.period, pcfg)
@@ -157,26 +172,35 @@ class OnlineJuggleRunner:
     def run(self):
         plant = self.plant
         plant.reset()
-        # Seat ball 0 in the cup at the throw point; spawn ball 1 in flight to be
-        # caught at the first catch.
-        pose0, slider0 = realize(self.throw_pos)
+        # First plan (nominal catch) — used for the carry pre-roll and cycle 0.
+        plan = self._plan_cycle(self.throw_pos, self.v_take, GRAVITY.copy(), None)
+
+        # ---- Carry pre-roll: seat ball 0 at the catch point and drive the cup
+        # along the plan's CARRY (catch→throw) so it arrives at the throw point
+        # already moving UP at v_take. Without this the cup starts static and the
+        # first begin_physics_throw releases ball 0 at ~0 velocity (it falls).
+        cup0, slider0 = realize(self.catch_pos)
         for _ in range(80):
-            plant.command(plant.pose_to_extensions(pose0)); plant.command_hand(slider0)
+            plant.command(plant.pose_to_extensions(cup0)); plant.command_hand(slider0)
             plant.step(CONTROL_DT)
-        self.bm.ball(0).spawn_in_hand()
-        # Ball 1 back-propagated to be at catch_pos at t=catch_offset.
+        self.bm.ball(0).spawn_in_hand()                 # seat ball 0 at catch_pos
+        plant.set_contact_stiffness(False)              # soft: carry
+        n_carry = int(round((self.period - self.catch_offset) / CONTROL_DT))
+        tc0 = float(plant.data.time)
+        for k in range(n_carry):
+            tt = self.catch_offset + (float(plant.data.time) - tc0)
+            plant.step(CONTROL_DT,
+                       hand_cmd_fn=lambda t, p=plan, b=tc0: self._slider_at(p, self.catch_offset + (t - b)),
+                       plat_cmd_fn=lambda t, p=plan, b=tc0: self._drive(p, self.catch_offset + (t - b)))
+
+        # Ball 1 spawned in flight to arrive at catch_pos at t=catch_offset of
+        # cycle 0 (the main loop starts now, cup at throw_pos moving up).
         t = self.catch_offset
-        v_arr = np.array([0.0, 0.0, -self.throw_speed])
-        v0 = v_arr - GRAVITY * t
+        v0 = self.v_arrival - GRAVITY * t
         p0 = self.catch_pos - v0 * t - 0.5 * GRAVITY * t * t
         plant.spawn_ball(p0 * 1000.0, v0 * 1000.0, ball=1)
 
         held_ball, flight_ball = 0, 1
-        # initial plan from the throw state
-        v_take = (self.catch_pos - self.throw_pos) / self.flight - 0.5 * GRAVITY * self.flight
-        plan = self._plan_cycle(self.throw_pos, v_take, GRAVITY.copy(),
-                                (p0, v0))
-
         n_cycles = int(self.cfg.duration_s / self.period)
         t_global = 0.0
         for cyc in range(n_cycles):
