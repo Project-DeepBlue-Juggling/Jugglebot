@@ -13,10 +13,13 @@ crux) and **catch-seat tuning**.
   **`demo/bb-led-two-ball-juggle`**. A PARALLEL Claude session may work the MAIN
   worktree (`/home/jetson/Desktop/Jugglebot`) on can-offload — do NOT touch it.
 - Always `source ~/Desktop/PDJ_venv/venv/bin/activate` before python/pytest.
-- `git log -1` should show the WIP-scaffold commit chain (…`d642d2e` + the
-  pre-roll commit after it). Baseline suite (`pytest tests/ -q`): **1508 passed,
-  4 skipped, 2 xfailed** — the 2 xfails are the old demo's headline cases (still
-  the offline architecture).
+- `git log -1` should show the online-replanning commit chain — HEAD at
+  **`245cc18`** (pre-handoff tidy-up) or later; the arc is `025d812` (planner +
+  band-limit) → `b2d8b09` (runner scaffold) → `2694673` (carry pre-roll +
+  throw diagnosis) → `763d0e6` (throw-separation diagnosis CORRECTION) →
+  `245cc18` (probe promotion + plan/handoff sync). Baseline suite (`pytest
+  tests/ -q`): **1508 passed, 4 skipped, 2 xfailed** — the 2 xfails are the old
+  demo's headline cases (still the offline architecture).
 - **Kai Ploeger's reference repo is cloned** at
   `/home/jetson/Desktop/kinematic_planning_for_nball_toss_juggling/` — read
   `task_space_juggling.py` (his `plan_throw` + the online re-plan loop) and
