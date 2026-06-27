@@ -12,6 +12,8 @@ related_entries:
   - 2026-06-24-phase11-bench-cutover
 files_changed:
   - ros_ws/docs/can-node-teensy-parity.md
+commits:
+  - 305f856
 subsystem:
   - can
   - ros
