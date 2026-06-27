@@ -46,6 +46,7 @@ using namespace arduino;
 #include "fault_machine.h"       // Phase 8
 #include "leg_homing.h"          // Phase 9b
 #include "leg_activate.h"        // Phase 11 U5
+#include "leg_deactivate.h"      // Phase 11 U5
 #include "profiling.h"           // Profiling/instrumentation
 
 using namespace CanBridge;
@@ -199,6 +200,7 @@ static void task_homing(void*) {
   for (;;) {
     homing_step();
     activate_step();
+    deactivate_step();
     vTaskDelayUntil(&last, period);
   }
 }
@@ -359,6 +361,7 @@ void setup() {
   leg_interp_init();               // Phase 7: starts the 500 Hz IntervalTimer ISR
   homing_init();                   // Phase 9b (idle until a HOME RPC latches a start)
   activate_init();                 // Phase 11 U5 (idle until an ACTIVATE RPC latches a start)
+  deactivate_init();               // Phase 11 U5 (idle until a DEACTIVATE RPC latches a start)
   profiling_init();                // instrumentation baselines
 
   // Create tasks. (Higher number = higher priority in FreeRTOS.)

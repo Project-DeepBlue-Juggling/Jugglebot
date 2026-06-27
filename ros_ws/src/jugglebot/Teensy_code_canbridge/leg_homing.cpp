@@ -29,6 +29,7 @@
 #include "can_buses.h"
 #include "fault_machine.h"    // fault_can_bus_down / fault_state
 #include "leg_activate.h"     // activate_active (no concurrent cold-start moves)
+#include "leg_deactivate.h"   // deactivate_active (no concurrent cold-start moves)
 #include "time_base.h"        // micros64
 
 namespace CanBridge {
@@ -102,7 +103,7 @@ uint16_t homing_request(uint8_t axis) {
   using namespace JbUdp;
   if (axis >= NUM_LEGS) return RpcStatus::ERR_BAD_ARGS;   // leg-only (rejects hand / AXIS_ALL)
   if (!homing_allowed())  return RpcStatus::ERR_BUS_DOWN;
-  if (activate_active())  return RpcStatus::ERR_REJECTED; // no concurrent cold-start moves (symmetric with activate_request)
+  if (activate_active() || deactivate_active()) return RpcStatus::ERR_REJECTED; // no concurrent cold-start moves (symmetric with activate_request)
   // Reject if a homing is active or a start is already pending (idempotent).
   // IRQ-guarded so the (busy-check + latch) is atomic vs the homing task that
   // consumes s_start_req at the top of homing_step.

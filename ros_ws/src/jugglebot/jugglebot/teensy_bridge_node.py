@@ -95,6 +95,9 @@ from controller.teensy_link.homing import (
 from controller.teensy_link.activate import (
     ActivateMonitor, AxisStatus as ActivateAxisStatus,
 )
+from controller.teensy_link.deactivate import (
+    DeactivateMonitor, AxisStatus as DeactivateAxisStatus,
+)
 from jugglebot.can import catching_cone
 import jugglebot.hardware_config as hw
 import jugglebot.protocol_config as proto
@@ -232,6 +235,7 @@ class TeensyBridgeNode(Node):
         # pose. Default = all legs; set to e.g. [0] for the standalone-leg bench rig.
         self.declare_parameter('configure_axes', list(range(p.NUM_LEGS)))
         self.declare_parameter('activate_axes', list(range(p.NUM_LEGS)))
+        self.declare_parameter('deactivate_axes', list(range(p.NUM_LEGS)))
 
         self._heartbeat_timeout_s = float(
             self.get_parameter('heartbeat_timeout_s').value)
@@ -393,6 +397,7 @@ class TeensyBridgeNode(Node):
         self.create_service(Trigger, 'home', self._svc_home)
         self.create_service(Trigger, 'configure', self._svc_configure)
         self.create_service(Trigger, 'activate', self._svc_activate)
+        self.create_service(Trigger, 'deactivate', self._svc_deactivate)
         self.create_service(ODriveCommandService, 'odrive_command',
                             self._svc_odrive_command)
         self.create_subscription(
@@ -1071,6 +1076,9 @@ class TeensyBridgeNode(Node):
     def teensy_activate(self, axis=rpc_args.AXIS_ALL):
         return self._call_rpc(RpcMethod.ACTIVATE, rpc_args.encode_activate(axis))
 
+    def teensy_deactivate(self, axis=rpc_args.AXIS_ALL):
+        return self._call_rpc(RpcMethod.DEACTIVATE, rpc_args.encode_deactivate(axis))
+
     def teensy_sdo_read(self, axis, endpoint):
         return self._call_rpc(RpcMethod.SDO_READ,
                               rpc_args.encode_sdo_read(axis, endpoint))
@@ -1318,6 +1326,27 @@ class TeensyBridgeNode(Node):
                 active_errors=int(d.active_errors))
         return out
 
+    def _deactivate_axis_status(self, axes):
+        """Build per-axis ``DeactivateAxisStatus`` for the deactivate observer from
+        the latest telemetry (pos/vel) + diagnostic (axis_state, active_errors)
+        cache. An axis with no diagnostic yet is omitted (aged toward its timeout)."""
+        out = {}
+        with self._lock:
+            telem = self._latest_telemetry
+            diag = dict(self._latest_diag)
+        if telem is None:
+            return out
+        for axis in axes:
+            d = diag.get(int(axis))
+            if d is None:
+                continue
+            out[int(axis)] = DeactivateAxisStatus(
+                axis_state=int(d.axis_state),
+                pos_rev=float(telem.pos_rev[int(axis)]),
+                vel_rps=float(telem.vel_rps[int(axis)]),
+                active_errors=int(d.active_errors))
+        return out
+
     def _run_activate(self, axes, *, poll_dt=0.05):
         """Fire the firmware ACTIVATE (TRAP_TRAJ move to the active pose) and
         observe it to completion. A single configured axis fires that leg; any
@@ -1371,6 +1400,62 @@ class TeensyBridgeNode(Node):
             self.get_logger().error(msg)
             return False, msg
         msg = f"activate complete on axes {mon.succeeded}"
+        self.get_logger().info(msg)
+        return True, msg
+
+    def _run_deactivate(self, axes, *, poll_dt=0.05):
+        """Fire the firmware DEACTIVATE (TRAP_TRAJ controlled lower to STOW, then
+        IDLE) and observe it to completion. A single configured axis fires that
+        leg; any larger set fires ``AXIS_ALL`` (every PRESENT leg, parallel
+        even-descent). The DeactivateMonitor watches each leg reach IDLE (the
+        firmware's clean completion — not the foam-unreliable resting position).
+
+        Synchronous: blocks the calling (executor) thread for the ~seconds the
+        descent takes; the RX + heartbeat threads keep the link + telemetry cache
+        alive and the heartbeat stays ``mpc_active=0`` (no setpoint output).
+        Returns ``(ok, message)``.
+
+        Precondition: the legs are holding the active pose in CLOSED_LOOP (a prior
+        /activate). Without it the move fails safe (an errored or absent leg is
+        rejected by the firmware; a stalled leg → DeactivateMonitor timeout).
+        """
+        axes = [int(a) for a in axes]
+        if not axes:
+            return False, "no axes configured for deactivate"
+        # Single configured axis → that leg only; otherwise AXIS_ALL (all present
+        # legs in parallel — the platform lowers straight down, no tilt).
+        fire_axis = axes[0] if len(axes) == 1 else rpc_args.AXIS_ALL
+        # Footgun guard: a partial multi-leg subset fires AXIS_ALL (every PRESENT
+        # leg), so legs NOT in deactivate_axes are still driven but unobserved.
+        if len(axes) > 1 and set(axes) != set(range(p.NUM_LEGS)):
+            self.get_logger().warning(
+                f"deactivate_axes={axes} is a partial subset — DEACTIVATE(AXIS_ALL) "
+                f"will move ALL present legs, but only {axes} are observed. Use a "
+                f"single leg or the full leg set.")
+        ok, msg, _ = self.teensy_deactivate(fire_axis)
+        if not ok:
+            return False, f"DEACTIVATE rejected: {msg}"
+        mon = DeactivateMonitor(axes)
+        hard_deadline = time.monotonic() + mon.timeout_s + 5.0
+        self.get_logger().info(
+            f"deactivate: TRAP_TRAJ lower to STOW + IDLE on axes {axes}")
+        while True:
+            now = time.monotonic()
+            res = mon.step(now, self._deactivate_axis_status(axes))
+            if res.done:
+                break
+            if now > hard_deadline:
+                self.get_logger().error("deactivate: hard deadline exceeded")
+                break
+            time.sleep(poll_dt)
+        if mon.failed:
+            parts = [f"axis {a}: {r}" for a, r in mon.failed.items()]
+            msg = "deactivate FAILED — " + "; ".join(parts)
+            if mon.succeeded:
+                msg += f" (succeeded: {mon.succeeded})"
+            self.get_logger().error(msg)
+            return False, msg
+        msg = f"deactivate complete on axes {mon.succeeded}"
         self.get_logger().info(msg)
         return True, msg
 
@@ -1432,6 +1517,18 @@ class TeensyBridgeNode(Node):
         # the standalone-leg bench rig). Precondition: a prior /configure.
         axes = list(self.get_parameter('activate_axes').value or [])
         ok, msg = self._run_activate(axes)
+        res.success = ok
+        res.message = msg
+        return res
+
+    def _svc_deactivate(self, req, res):
+        # Phase 11 U5: fire the firmware TRAP_TRAJ controlled lower to the STOW
+        # pose + IDLE on arrival (the β-path analogue of can_node deactivate),
+        # then observe completion. Scope via deactivate_axes (default all legs;
+        # [0] for the standalone-leg bench rig). Precondition: legs at the active
+        # pose (a prior /activate).
+        axes = list(self.get_parameter('deactivate_axes').value or [])
+        ok, msg = self._run_deactivate(axes)
         res.success = ok
         res.message = msg
         return res

@@ -57,6 +57,7 @@ namespace RpcMethod {
   constexpr uint16_t ENCODER_SEARCH = 0x0020u;  // Run encoder index search (Phase 9 — stubbed)
   constexpr uint16_t HOME = 0x0021u;  // Run homing (Phase 9 — stubbed)
   constexpr uint16_t ACTIVATE = 0x0022u;  // Run TRAP_TRAJ move to the active pose (Phase 11 U5)
+  constexpr uint16_t DEACTIVATE = 0x0023u;  // Run TRAP_TRAJ move to the STOW pose, then IDLE (Phase 11 U5)
   constexpr uint16_t SDO_READ = 0x0030u;  // Arbitrary parameter read
   constexpr uint16_t SDO_WRITE = 0x0031u;  // Arbitrary parameter write
   constexpr uint16_t BB_THROW = 0x0040u;  // Ball Butler: send THROW_CMD on CAN1 (typed, validated)
@@ -315,7 +316,7 @@ struct ArgAbsPosition {
   float position;  // absolute position (rev), post-homing
 };
 static_assert(sizeof(ArgAbsPosition) == 5, "ArgAbsPosition size drift");
-// ArgAxisOnly (CLEAR_ERRORS / REBOOT_ODRIVES / ENCODER_SEARCH / HOME / ACTIVATE)
+// ArgAxisOnly (CLEAR_ERRORS / REBOOT_ODRIVES / ENCODER_SEARCH / HOME / ACTIVATE / DEACTIVATE)
 struct ArgAxisOnly {
   uint8_t axis;  // ODrive axis 0..5, or AXIS_ALL for broadcast
 };

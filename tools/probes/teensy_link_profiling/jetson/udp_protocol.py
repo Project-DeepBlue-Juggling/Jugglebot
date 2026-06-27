@@ -57,6 +57,7 @@ class RpcMethod(IntEnum):
     ENCODER_SEARCH = 32  # Run encoder index search (Phase 9 — stubbed)
     HOME = 33  # Run homing (Phase 9 — stubbed)
     ACTIVATE = 34  # Run TRAP_TRAJ move to the active pose (Phase 11 U5)
+    DEACTIVATE = 35  # Run TRAP_TRAJ move to the STOW pose, then IDLE (Phase 11 U5)
     SDO_READ = 48  # Arbitrary parameter read
     SDO_WRITE = 49  # Arbitrary parameter write
     BB_THROW = 64  # Ball Butler: send THROW_CMD on CAN1 (typed, validated)
@@ -551,7 +552,7 @@ class ArgAbsPosition:
     def unpack(cls, data: bytes) -> 'ArgAbsPosition':
         return cls(*_ARG_ABS_POSITION_STRUCT.unpack(data[:5]))
 
-# ArgAxisOnly (CLEAR_ERRORS / REBOOT_ODRIVES / ENCODER_SEARCH / HOME / ACTIVATE)
+# ArgAxisOnly (CLEAR_ERRORS / REBOOT_ODRIVES / ENCODER_SEARCH / HOME / ACTIVATE / DEACTIVATE)
 ARG_AXIS_ONLY_FMT = '<B'
 ARG_AXIS_ONLY_SIZE = 1
 _ARG_AXIS_ONLY_STRUCT = struct.Struct(ARG_AXIS_ONLY_FMT)

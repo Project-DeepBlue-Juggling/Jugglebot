@@ -167,6 +167,7 @@ ENUMS = {
         ("ENCODER_SEARCH",     0x0020, "Run encoder index search (Phase 9 — stubbed)"),
         ("HOME",               0x0021, "Run homing (Phase 9 — stubbed)"),
         ("ACTIVATE",           0x0022, "Run TRAP_TRAJ move to the active pose (Phase 11 U5)"),
+        ("DEACTIVATE",         0x0023, "Run TRAP_TRAJ move to the STOW pose, then IDLE (Phase 11 U5)"),
         ("SDO_READ",           0x0030, "Arbitrary parameter read"),
         ("SDO_WRITE",          0x0031, "Arbitrary parameter write"),
         ("BB_THROW",           0x0040, "Ball Butler: send THROW_CMD on CAN1 (typed, validated)"),
@@ -493,7 +494,7 @@ RPC_ARGS = [
         Field("axis",     "u8",  1, "ODrive axis 0..5"),
         Field("position", "f32", 1, "absolute position (rev), post-homing"),
     ]),
-    RpcArg("ArgAxisOnly", "CLEAR_ERRORS / REBOOT_ODRIVES / ENCODER_SEARCH / HOME / ACTIVATE", [
+    RpcArg("ArgAxisOnly", "CLEAR_ERRORS / REBOOT_ODRIVES / ENCODER_SEARCH / HOME / ACTIVATE / DEACTIVATE", [
         Field("axis", "u8", 1, "ODrive axis 0..5, or AXIS_ALL for broadcast"),
     ]),
     RpcArg("ArgSdoRead", "SDO_READ", [

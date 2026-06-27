@@ -31,6 +31,8 @@
 #include "can_buses.h"
 #include "leg_interp.h"
 #include "leg_homing.h"         // homing_active (mutual exclusion with deferred stow)
+#include "leg_activate.h"       // activate_active (mutual exclusion with deferred stow)
+#include "leg_deactivate.h"     // deactivate_active (mutual exclusion with deferred stow)
 #include "udp_link.h"            // udp_last_rx_us (Jetson link health)
 #include "time_base.h"
 
@@ -188,7 +190,7 @@ static void watchdog_and_stow() {
   // leg; the stow stays pending and runs the next cycle once homing finishes.
   if (s_fatal_can_error && all_present_legs_fresh()) {
     s_fatal_can_error = false;
-    if (s_stow_pending && !s_stowing && !homing_active()) {
+    if (s_stow_pending && !s_stowing && !homing_active() && !activate_active() && !deactivate_active()) {
       interp_begin_stow();            // profiled velocity-limited descent to the off pose
       s_stowing = true;
     }

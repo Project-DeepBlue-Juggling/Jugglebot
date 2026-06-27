@@ -43,7 +43,7 @@ __all__ = [
     "encode_set_axis_state", "encode_set_controller_mode",
     "encode_set_vel_curr_limits", "encode_set_pos_gain", "encode_set_vel_gains",
     "encode_set_absolute_position", "encode_clear_errors", "encode_reboot",
-    "encode_encoder_search", "encode_home", "encode_activate",
+    "encode_encoder_search", "encode_home", "encode_activate", "encode_deactivate",
     "encode_sdo_read", "encode_sdo_write",
     "encode_bb_throw", "encode_bb_reload", "encode_bb_reset",
     "encode_bb_calibrate_loc",
@@ -112,6 +112,15 @@ def encode_activate(axis: int = AXIS_ALL) -> bytes:
 
     ``AXIS_ALL`` activates every present leg in parallel (even platform rise); a
     single leg index activates just that leg iff present.
+    """
+    return ArgAxisOnly(axis=int(axis)).pack()
+
+
+def encode_deactivate(axis: int = AXIS_ALL) -> bytes:
+    """DEACTIVATE: TRAP_TRAJ controlled lower to the STOW pose, then IDLE (Phase 11 U5).
+
+    ``AXIS_ALL`` deactivates every present leg in parallel (even platform descent);
+    a single leg index deactivates just that leg iff present.
     """
     return ArgAxisOnly(axis=int(axis)).pack()
 
