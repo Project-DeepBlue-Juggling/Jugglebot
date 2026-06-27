@@ -203,6 +203,25 @@ Two coupled sim-fidelity upgrades raised during sim review, tracked in
   (online / higher-level planner re-planning against the achieved state, vs the
   one-shot offline trajectory that assumes perfect tracking) — see the
   2026-06-27 logbook Path forward.
+- **Concern 1 — ARCHITECTURE PIVOT to online re-planning (Kai-style; IN
+  PROGRESS).** Following the above, the user chose to replace the offline
+  optimiser + open-loop player with an **online** planner re-solved once per
+  throw, in task space (the cup's Cartesian trajectory), against the OBSERVED
+  ball and from the ACHIEVED cup state — so errors self-correct each cycle
+  instead of accumulating. Tracked in
+  `logbook/2026-06-27-online-replanning-architecture-and-cup-bandlimit.md`.
+  **Built & validated:** a cup-tracking band-limit characterisation (slider
+  near-perfect → throw stroke; platform −3 dB ~5 Hz lateral → smooth
+  positioning), the **level-platform decoupling** realisation (drops banking),
+  the per-throw planner `controller/demo/juggle_planner.py` (7 unit tests), and
+  a new runner `sim/juggle_online.py` (carry-oval, 100 mm separation) that runs
+  end-to-end. **Open (tuning, not redesign):** the throw doesn't yet release
+  cleanly under switched contact (contact COHESION drags the ball; stiff contact
+  separates it AND catches 1) and the carry pre-roll SLAMS the ball (launch
+  ~16.8 vs planned 5 m/s); then catch-seat tuning. Handoff:
+  `plans/active/bb-online-juggle-integration-prompt.md`. The old `juggle_demo.py`
+  (offline) is kept untouched (tests green) until the online runner sustains the
+  pattern, then it is replaced and the headline tests retargeted.
 
 ## 4. Implementation Phases (detailed)
 

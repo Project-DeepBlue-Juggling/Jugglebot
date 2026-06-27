@@ -86,10 +86,12 @@ TUNING, measured (see the module STATUS docstring):
    cup pulls back).
 
 Verify the launched ball reaches ~apex 1.3 m and lands near the planned catch
-before moving on. Probe to recreate: `/tmp/probe_sep.py` logged cup z-vel/accel
-vs ball z-vel through the first throw (that's how the cohesion + slam were
-found); a `set_contact_stiffness = lambda s: None` monkeypatch after a
-`set_contact_stiffness(True)` forces stiff-always for the A/B test.
+before moving on. **Diagnostic harness (committed):**
+`python tools/probes/juggle_online_debug.py [--stiff-always]` — logs the cup/ball
+trajectory + the separation analysis (cup z-vel/accel vs ball z-vel through the
+first throw, flagging `a_cup < -g`). That's how the cohesion (switched: ball
+dragged) vs separation (`--stiff-always`: ball FLIES, catches 1) was found, and
+it shows the slam (~16.8 m/s) too. Re-run it after each throw-fix attempt.
 
 ## Secondary — catch seating (after the throw works)
 
@@ -100,13 +102,6 @@ WITHOUT a ball). Check `BallManager` `set_contact_stiffness` switch windows
 0.6 m/s, persist 15 substeps), and the catch lateral swipe (0.29 m/s at 100 mm —
 should seat; widen separation only if mid-air collisions appear, narrow it for a
 gentler swipe if seating is marginal).
-
-## Debug probe to recreate (not committed — `/tmp/probe_online_dbg.py`)
-
-Wrap `runner.plant.step` to log, per substep, `(t, cup_xz, ball0_xz+held,
-ball1_xz+held)` over the first ~3 cycles of `OnlineJuggleRunner(
-OnlineJuggleConfig(duration_s=2.2)).run()`. This is how the ride-the-cup
-(no-separation) behaviour was found. Decimate the print (every 4th sample).
 
 ## Investigation plan
 
