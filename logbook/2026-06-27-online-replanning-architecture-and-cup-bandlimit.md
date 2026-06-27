@@ -155,10 +155,31 @@ integration, in order of preference:
 4. Tests / plan update / audit / commit. The two `test_demo_juggle_sim` headline
    cases remain `xfail` until the pattern closes.
 
+## Integration status (WIP — `sim/juggle_online.py`)
+
+The user chose the **Kai-style carry oval** (continuous motion, no stop/starts)
+and to **reduce the lateral separation** (avoiding mid-air collisions). A
+standalone online runner `sim/juggle_online.py` is built and **runs end-to-end**
+(re-plan → realise → step), kept beside the old `juggle_demo.py` so its tests
+stay green. The separation sweep confirmed the carry-oval direction: the catch
+lateral swipe scales with separation (200 mm → 1.18 m/s, the old problem; 100 mm
+→ 0.29; 60 mm → 0.16), so the runner defaults to **100 mm** (balls are 70 mm
+diameter — clears with margin).
+
+It does **not yet catch** (0/0). Diagnosed first blocker: the planner's cycle
+puts the throw at the boundary (cup at `throw_pos` moving UP at `v_take`), but at
+cycle-0 start the cup is settled STATIC, so `begin_physics_throw` releases ball 0
+at ~0 velocity and it falls. Remaining focused work (in the module's STATUS
+docstring): (1) init/phasing — pre-roll the cup through the carry so it arrives
+moving up, or initialise a running pattern; (2) catch seating with a ball riding
+the cup (tune the soft/stiff contact windows + seat thresholds against this
+loop); (3) confirm the throw release fires at the clean-detach (cacc≈g) instant.
+
 ## Verification
 
 - `pytest tests/sim/test_demo_juggle_planner.py -q` (run 2026-06-27): **7
-  passed**. Full suite unaffected (the planner is a new standalone module; the
-  runner is untouched, so the demo still runs at the prior 2 catches).
+  passed**. Full suite unaffected (planner + online runner are new standalone
+  modules; the old runner is untouched, so the demo still runs at the prior 2
+  catches).
 - Band-limit numbers above from `tools/probes/juggle_cup_bandlimit.py`
   (run 2026-06-27).
