@@ -27,12 +27,39 @@ CLI:
     python sim/juggle_demo.py --realtime-rate 0.5   # half-speed slowmo
     python sim/juggle_demo.py --dashboard           # http://<jetson-ip>:8082
     python sim/juggle_demo.py --abort-at 5.0        # abort mid-pattern
+    python sim/juggle_demo.py --record temp/reports/juggle.mp4   # fixed-camera mp4
+
+Recording a video from a chosen angle
+-------------------------------------
+The live passive viewer always starts the free camera at the model's
+``<global azimuth elevation>`` (135 / -30). To record from a different
+angle:
+
+  1. Run ``--viewer``, drag the camera to the angle you want, and press
+     ``C``. The runner prints the current free-camera parameters as
+     ready-to-paste flags, e.g.::
+
+         camera: --cam-azimuth 90.0 --cam-elevation -20.0 \
+                 --cam-distance 4.250 --cam-lookat 0.000 0.000 0.700
+
+  2. Pass those flags to a headless ``--record`` run::
+
+         python sim/juggle_demo.py --record temp/reports/juggle.mp4 \
+             --cam-azimuth 90 --cam-elevation -20 --cam-distance 4.25 \
+             --cam-lookat 0 0 0.7
+
+``--record`` renders the sim offscreen from that *fixed* camera (it does
+not need ``--viewer``) and pipes frames to the system ``ffmpeg`` as
+H.264. With no ``--cam-*`` flags it uses the model default angle. Output
+plays back real-time at ``--record-fps`` (default 40 = one frame per
+40 Hz tick); a lower fps yields slow-motion.
 
 Viewer keyboard (when ``--viewer`` is on):
     SPACE       pause / resume
     RIGHT       step one 40 Hz tick (when paused)
     ``[``       halve the wall-time playback rate (jumps out of free-running)
     ``]``       double the wall-time playback rate
+    ``C``       print the current free-camera angle as ``--cam-*`` flags
     LEFT        no-op (sim can't run backwards)
 
 Programmatic:
@@ -277,6 +304,22 @@ class JuggleDemoConfig:
     dashboard: bool = False                # if True, start the telemetry
                                             # dashboard on `dashboard_port`
     dashboard_port: int = 8082
+    # ---- Offscreen video recording ----------------------------------
+    # When ``record_path`` is set, the runner renders the live MuJoCo
+    # scene offscreen from a FIXED free camera each 40 Hz tick and pipes
+    # frames to the system ffmpeg (H.264 mp4). Independent of ``headless``
+    # / ``--viewer`` — recording needs no on-screen window. The ``cam_*``
+    # fields override the model's default free-camera angle; leave any of
+    # them ``None`` to inherit the model default (see ``_build_record_camera``).
+    record_path: Optional[str] = None
+    record_size: tuple[int, int] = (1280, 720)   # (width, height) px
+    record_fps: int = 40                   # output fps; 40 = real-time
+                                            # (one frame per tick), lower
+                                            # = slow-motion playback
+    cam_azimuth: Optional[float] = None
+    cam_elevation: Optional[float] = None
+    cam_distance: Optional[float] = None
+    cam_lookat: Optional[tuple[float, float, float]] = None
     capture_tolerance_mm: Optional[float] = None  # INTERIM (2026-06-26):
                                             # loose gate while the catch is
                                             # VELOCITY-MATCHED (cup moves at
@@ -530,6 +573,21 @@ class _JuggleDemoRunner:
             _print_reachable_urls(cfg.dashboard_port)
         self._last_hand_cmd_mm = 0.0       # for the StepRecord.hand_cmd_mm field
 
+        # ---- Offscreen video recorder -----------------------------------
+        # Lazily built only when a record path is set so headless tests and
+        # plain runs never touch the GL/offscreen path. Captures one frame
+        # per tick (see ``tick`` step 9). Settle ticks in __init__ run
+        # before this exists, so they are not recorded.
+        self._recorder = None
+        if cfg.record_path:
+            self._recorder = _VideoRecorder(
+                self.plant.model, self.plant.data,
+                cfg.record_path,
+                width=cfg.record_size[0], height=cfg.record_size[1],
+                fps=cfg.record_fps,
+                cam=_build_record_camera(self.plant.model, cfg),
+            )
+
         # ---- Keyboard / interactive state -------------------------------
         # Driven by the MuJoCo passive viewer's `key_callback`. When the
         # demo runs headless (no viewer) the keys aren't observed and the
@@ -537,6 +595,10 @@ class _JuggleDemoRunner:
         self._paused = False
         self._pending_frame_step = False
         self._effective_realtime_rate = float(cfg.realtime_rate)
+        # Set by the module-level ``run()`` after the passive viewer is
+        # launched, so ``key_callback`` can read the live free camera for
+        # the ``C`` (print-camera) binding. ``None`` when headless.
+        self._viewer_handle = None
 
     # ---- Keyboard --------------------------------------------------------
     def key_callback(self, keycode: int) -> None:
@@ -576,6 +638,19 @@ class _JuggleDemoRunner:
                     self._effective_realtime_rate * 2.0, 16.0)
             print(f"[juggle_demo] realtime rate = "
                   f"{self._effective_realtime_rate:.3f}x")
+        elif keycode == _KEY_C:
+            # Print the current free-camera parameters as ready-to-paste
+            # ``--cam-*`` flags, so the user can record a fixed-camera
+            # video from the angle they just dragged to.
+            h = self._viewer_handle
+            if h is not None:
+                c = h.cam
+                print("[juggle_demo] camera: "
+                      f"--cam-azimuth {c.azimuth:.1f} "
+                      f"--cam-elevation {c.elevation:.1f} "
+                      f"--cam-distance {c.distance:.3f} "
+                      f"--cam-lookat {c.lookat[0]:.3f} "
+                      f"{c.lookat[1]:.3f} {c.lookat[2]:.3f}")
         elif keycode == _KEY_LEFT_ARROW:
             pass   # documented no-op
 
@@ -587,6 +662,9 @@ class _JuggleDemoRunner:
         if self._dashboard is not None:
             self._dashboard.stop()
             self._dashboard = None
+        if self._recorder is not None:
+            self._recorder.close()
+            self._recorder = None
 
     # ---- One control tick ----------------------------------------------
     def tick(self, t_wall: float) -> None:
@@ -659,6 +737,10 @@ class _JuggleDemoRunner:
                 self._write_csv_row(new_t_wall, cmd, snap)
             if self._dashboard is not None:
                 self._broadcast_dashboard_record(new_t_wall, cmd, snap)
+
+        # 9. Optional video frame (offscreen render from the fixed camera).
+        if self._recorder is not None:
+            self._recorder.capture()
 
     # ---- Run loop -------------------------------------------------------
     def run(self, viewer_handle=None) -> JuggleDemoStats:
@@ -1175,9 +1257,101 @@ def _print_reachable_urls(port: int) -> None:
         print(f"Dashboard: http://{ip}:{port}  (LAN)")
 
 
+# --------------------------------------------------------------------------
+# Offscreen video recording
+# --------------------------------------------------------------------------
+def _build_record_camera(model, cfg: "JuggleDemoConfig"):
+    """Construct the fixed free camera used for ``--record``.
+
+    Starts from MuJoCo's default free camera — which reads the model's
+    ``<global azimuth elevation>`` and frames the model with a sensible
+    distance/lookat — then overrides any field the user supplied via the
+    ``cam_*`` config fields. Leaving a field ``None`` inherits the model
+    default, so ``--record`` with no ``--cam-*`` flags reproduces the
+    viewer's startup angle.
+    """
+    import mujoco
+    cam = mujoco.MjvCamera()
+    mujoco.mjv_defaultFreeCamera(model, cam)
+    if cfg.cam_azimuth is not None:
+        cam.azimuth = float(cfg.cam_azimuth)
+    if cfg.cam_elevation is not None:
+        cam.elevation = float(cfg.cam_elevation)
+    if cfg.cam_distance is not None:
+        cam.distance = float(cfg.cam_distance)
+    if cfg.cam_lookat is not None:
+        cam.lookat[:] = [float(v) for v in cfg.cam_lookat]
+    return cam
+
+
+class _VideoRecorder:
+    """Render the live MuJoCo scene offscreen and stream it to ffmpeg.
+
+    One frame is captured per 40 Hz tick from a *fixed* free camera. The
+    system ``ffmpeg`` is fed raw RGB frames over a stdin pipe and encodes
+    H.264 — so this needs only ``mujoco`` (for the offscreen renderer) and
+    an ``ffmpeg`` on PATH, no ``imageio-ffmpeg`` dependency. The renderer
+    shares the plant's live ``model``/``data``, so whatever the physics
+    step produced (platform pose, hand, balls) is exactly what's drawn.
+    """
+
+    def __init__(self, model, data, path, *, width, height, fps, cam):
+        import subprocess
+        import mujoco
+        self._data = data
+        self._cam = cam
+        # The MJCF declares a 640x480 offscreen framebuffer by default;
+        # rendering larger than that raises. Enlarge the model's offscreen
+        # buffer to fit the requested resolution before building the
+        # renderer. This only grows the offscreen capability — it does not
+        # affect physics or the passive viewer's onscreen buffer.
+        if width > model.vis.global_.offwidth:
+            model.vis.global_.offwidth = width
+        if height > model.vis.global_.offheight:
+            model.vis.global_.offheight = height
+        self._renderer = mujoco.Renderer(model, height=height, width=width)
+        self.path = path
+        self.frames = 0
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        # rawvideo in → H.264 mp4 out. yuv420p + even dims keep the file
+        # playable in browsers / QuickTime. -loglevel error keeps ffmpeg's
+        # per-frame chatter out of the demo's stdout.
+        cmd = [
+            'ffmpeg', '-y', '-loglevel', 'error',
+            '-f', 'rawvideo', '-pix_fmt', 'rgb24',
+            '-s', f'{width}x{height}', '-r', str(fps), '-i', '-',
+            '-an', '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+            '-crf', '18', '-preset', 'medium', str(path),
+        ]
+        try:
+            self._proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+        except FileNotFoundError as exc:
+            self._renderer.close()
+            raise RuntimeError(
+                "ffmpeg not found on PATH — required for --record") from exc
+
+    def capture(self) -> None:
+        self._renderer.update_scene(self._data, camera=self._cam)
+        frame = self._renderer.render()        # (h, w, 3) uint8, C-contiguous
+        self._proc.stdin.write(frame.tobytes())
+        self.frames += 1
+
+    def close(self) -> None:
+        if self._proc is not None:
+            try:
+                self._proc.stdin.close()
+                self._proc.wait()
+            finally:
+                self._proc = None
+        if self._renderer is not None:
+            self._renderer.close()
+            self._renderer = None
+
+
 # GLFW key codes used by mujoco.viewer's `key_callback`. Defined inline so
 # we don't need to import glfw just for the constants.
 _KEY_SPACE = 32
+_KEY_C = 67                # print current free-camera angle as --cam-* flags
 _KEY_LEFT_BRACKET = 91     # `[`
 _KEY_RIGHT_BRACKET = 93    # `]`
 _KEY_RIGHT_ARROW = 262
@@ -1199,8 +1373,10 @@ def run(cfg: Optional[JuggleDemoConfig] = None) -> JuggleDemoStats:
             viewer_handle = mujoco.viewer.launch_passive(
                 runner.plant.model, runner.plant.data,
                 key_callback=runner.key_callback)
+            runner._viewer_handle = viewer_handle
             print("[juggle_demo] keyboard: SPACE pause/resume   "
-                  "Right step (when paused)   [ slower / ] faster")
+                  "Right step (when paused)   [ slower / ] faster   "
+                  "C print-camera")
         return runner.run(viewer_handle=viewer_handle)
     finally:
         runner.close()
@@ -1258,6 +1434,26 @@ def main(argv: Optional[list[str]] = None) -> int:
                              "(http://localhost:8082)")
     parser.add_argument('--dashboard-port', type=int, default=8082,
                         help="Dashboard HTTP/SSE port (default 8082)")
+    parser.add_argument('--record', default=None, metavar='PATH',
+                        help="Render the run offscreen from a fixed camera "
+                             "and write an H.264 mp4 to PATH (needs ffmpeg on "
+                             "PATH). Independent of --viewer.")
+    parser.add_argument('--record-size', default='1280x720', metavar='WxH',
+                        help="Recording resolution (default 1280x720)")
+    parser.add_argument('--record-fps', type=int, default=40,
+                        help="Recording output fps (default 40 = real-time; "
+                             "lower = slow-motion)")
+    parser.add_argument('--cam-azimuth', type=float, default=None,
+                        help="Fixed-camera azimuth (deg) for --record")
+    parser.add_argument('--cam-elevation', type=float, default=None,
+                        help="Fixed-camera elevation (deg) for --record")
+    parser.add_argument('--cam-distance', type=float, default=None,
+                        help="Fixed-camera distance (m) for --record")
+    parser.add_argument('--cam-lookat', type=float, nargs=3, default=None,
+                        metavar=('X', 'Y', 'Z'),
+                        help="Fixed-camera look-at point (m) for --record, as "
+                             "three space-separated values, e.g. "
+                             "--cam-lookat -0.1 0.03 1.11 (each may be negative)")
     args = parser.parse_args(argv)
 
     if args.no_log:
@@ -1276,6 +1472,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         pattern_kwargs['separation_mm'] = args.separation_mm
     pattern = JugglePattern(**pattern_kwargs)
 
+    # Parse the recording resolution into (w, h). ``--cam-lookat`` already
+    # arrives as a list of three floats (nargs=3) or None.
+    try:
+        _rw, _rh = (int(v) for v in args.record_size.lower().split('x'))
+    except ValueError:
+        parser.error(f"--record-size must be WxH, got {args.record_size!r}")
+    cam_lookat = tuple(args.cam_lookat) if args.cam_lookat is not None else None
+
     # Capture-tolerance resolution: --no-capture-gate explicitly
     # disables; an explicit --capture-tolerance-mm value sets it;
     # otherwise let JuggleDemoConfig's dataclass default (30 mm) apply.
@@ -1292,6 +1496,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         realtime_rate=args.realtime_rate,
         dashboard=args.dashboard,
         dashboard_port=args.dashboard_port,
+        record_path=args.record,
+        record_size=(_rw, _rh),
+        record_fps=args.record_fps,
+        cam_azimuth=args.cam_azimuth,
+        cam_elevation=args.cam_elevation,
+        cam_distance=args.cam_distance,
+        cam_lookat=cam_lookat,
     )
     if args.no_capture_gate:
         cfg_kwargs['capture_tolerance_mm'] = None
@@ -1312,6 +1523,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"[juggle_demo] aborted at:     {stats.abort_time_s:.3f} s")
     if log_path:
         print(f"[juggle_demo] log written to: {log_path}")
+    if args.record:
+        print(f"[juggle_demo] video written to: {args.record}")
     return 0 if stats.n_captures >= 1 else 1
 
 

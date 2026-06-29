@@ -88,6 +88,11 @@ Useful flags (full list: `python sim/juggle_demo.py --help`):
 | `--scatter-mm <mm>` | `0` | Gaussian sigma on BB landing scatter |
 | `--seed <n>` | none | RNG seed |
 | `--analytic-baseline` | off | Skip the optimiser, use the un-optimised analytic oval (debugging only) |
+| `--record <path>` | none | Render the run offscreen from a **fixed** camera to an H.264 mp4 (needs `ffmpeg` on PATH). Independent of `--viewer`. See §12. |
+| `--record-size <WxH>` | `1280x720` | Recording resolution |
+| `--record-fps <n>` | `40` | Output fps — `40` = real-time (one frame per tick), lower = slow-motion |
+| `--cam-azimuth/-elevation/-distance <v>` | model default | Fixed-camera angle for `--record` (deg / deg / m). Press `C` in the viewer to read your current angle. |
+| `--cam-lookat <x> <y> <z>` | model default | Fixed-camera look-at point (m), three space-separated values (each may be negative) |
 
 ---
 
@@ -103,6 +108,7 @@ adds:
 | **`→` (Right)** | Step exactly one 40 Hz tick (when paused) |
 | **`[`** | Halve the wall-time playback rate (jumps out of free-running mode to 1.0× first) |
 | **`]`** | Double the wall-time playback rate |
+| **`C`** | Print the current free-camera angle as ready-to-paste `--cam-*` flags (for `--record` — see §12) |
 | **`←` (Left)** | No-op (sim can't run backwards) |
 
 Combine: `--viewer --realtime-rate 0.5` gives a half-speed playback in
@@ -186,6 +192,10 @@ python sim/juggle_demo.py --viewer --no-capture-gate
 
 # Reproducible run with BB scatter
 python sim/juggle_demo.py --duration 30 --scatter-mm 5 --seed 42
+
+# Record a fixed-camera mp4 from a chosen angle (headless, needs ffmpeg)
+python sim/juggle_demo.py --record temp/reports/juggle.mp4 \
+    --cam-azimuth -14 --cam-elevation -15 --cam-distance 2.8 --cam-lookat -0.1 0.03 1.11
 ```
 
 ---
@@ -259,3 +269,48 @@ counted separately (ball falling below z = −200 mm).
 
 For deeper context, read the plan doc:
 [`plans/active/bb-led-two-ball-juggle-demo.md`](../plans/active/bb-led-two-ball-juggle-demo.md).
+
+---
+
+## 12. Recording a video from a chosen angle
+
+`--record <path>` renders the run **offscreen from a fixed camera** and
+writes an H.264 mp4. It needs `ffmpeg` on your PATH (no extra Python
+package — frames are piped straight to ffmpeg) and works headless: no
+`--viewer` or display required.
+
+The live viewer always starts its free camera at the model default
+(`azimuth=135, elevation=-30`). To record from a different angle:
+
+1. **Find the angle.** Open the viewer, drag / zoom to taste, then press
+   **`C`**. The runner prints your current camera as ready-to-paste
+   flags:
+
+   ```bash
+   python sim/juggle_demo.py --viewer
+   # drag the camera... press C →
+   # [juggle_demo] camera: --cam-azimuth 90.0 --cam-elevation -20.0 \
+   #                       --cam-distance 4.250 --cam-lookat 0.000 0.000 0.700
+   ```
+
+2. **Record at that fixed angle** (headless):
+
+   ```bash
+   python sim/juggle_demo.py --record temp/reports/juggle.mp4 \
+       --cam-azimuth 90 --cam-elevation -20 --cam-distance 4.25 \
+       --cam-lookat 0 0 0.7
+   ```
+
+Notes:
+
+- Any `--cam-*` flag you omit inherits the model default for that axis,
+  so `--record` with no camera flags reproduces the viewer's startup
+  angle. `--cam-lookat` takes **three space-separated** values (each may
+  be negative); `--cam-azimuth` / `--cam-elevation` / `--cam-distance`
+  are single numbers.
+- Playback is real-time at `--record-fps` (default `40` = one frame per
+  40 Hz tick); a lower fps yields slow-motion. `--record-size` (default
+  `1280x720`) sets resolution — the renderer enlarges the model's
+  offscreen framebuffer to fit automatically.
+- The mp4 captures exactly what the physics produced — platform, hand,
+  and both balls — from the post-step state each tick.
