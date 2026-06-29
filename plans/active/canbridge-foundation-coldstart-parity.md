@@ -444,7 +444,7 @@ each 100 Hz publish). Rewrite `test_firmware_validated_conservative_false`
 (heartbeats→pull→validate→latch) under the FakeTeensy harness.
 
 **Outcome (DONE — 2026-06-29, commits `bf400b7` (firmware + codegen + host +
-tests) + `TBD-docs` (logbook/plan/index)).** Firmware sweeps `Get_Version` (one
+tests) + `35f48f1` (logbook/plan/index)).** Firmware sweeps `Get_Version` (one
 frame per cold-start-monitor tick, present-axis only, bus-gated — new
 `version_check.{h,cpp}` in `task_homing`) and caches the raw 8-byte replies
 (`can_buses.cpp` decode case). The bridge pulls them once via the new

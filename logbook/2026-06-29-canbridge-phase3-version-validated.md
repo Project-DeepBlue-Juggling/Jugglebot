@@ -33,7 +33,7 @@ files_changed:
   - tests/teensy_link/test_rpc_args.py
 commits:
   - bf400b7
-  - TBD-logbook-plan-index
+  - 35f48f1
 subsystem:
   - can
   - ros
