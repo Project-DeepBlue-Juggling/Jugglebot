@@ -358,7 +358,7 @@ and preserves levelling; `REBOOT_ODRIVES` clears all three; the
 `encoder_search_complete↔is_homed` derivation.
 
 **Outcome (DONE — 2026-06-29, commits `57f8885` (node + tests) +
-`PENDING-docs` (logbook/plan/index)).** Software-only — **no firmware change**
+`fc22e4d` (logbook/plan/index)).** Software-only — **no firmware change**
 (the `REBOOT_ODRIVES` `STATE_WRITE` clear is host-orchestrated via the existing
 Phase-1 `relay_write_robot_state`) and **no codegen change** (ids reserved in
 Phase 0). `teensy_bridge_node._publish_robot_state` now sources `is_homed` /

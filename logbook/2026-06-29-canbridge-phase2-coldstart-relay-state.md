@@ -15,7 +15,7 @@ files_changed:
   - tests/ros/test_teensy_bridge_node_coldstart.py
 commits:
   - 57f8885
-  - PENDING-docs
+  - fc22e4d
 subsystem:
   - can
   - ros
