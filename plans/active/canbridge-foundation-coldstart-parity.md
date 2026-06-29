@@ -188,7 +188,7 @@ touch safety logic (the reboot latch, the axis-6 gate, the relay) are testable.
 | Phase | Title | Status | Depends on | Hardware? |
 |---|---|---|---|---|
 | 0 | Foundation infra: native test harness (growable HAL) + one codegen-allocation pass + flags-bit/RpcMethod lint | **DONE** | — | no |
-| 1 | Platform-Teensy relay seam (typed writes, verbatim reads) + narrow axis-6 allow-table | NOT STARTED | 0 | bench probe (reply latency, SRX_DIS) |
+| 1 | Platform-Teensy relay seam (typed writes, verbatim reads) + narrow axis-6 allow-table | **SOFTWARE DONE — bench-probe gate** | 0 | bench probe (reply latency, SRX_DIS) |
 | 2 | Cold-start state via the relay (read `is_homed`/level/pose at boot + on CAN3-reconnect; write on home/level/reboot) — self-solving | NOT STARTED | 0, 1 | no |
 | 3 | Firmware Get_Version sweep + Jetson-validated `firmware_validated` | NOT STARTED | 0 | probe: live ODrive versions |
 | 4 | Orchestrator wiring: `home_motors` action shim (homes legs + hand) + `robot_state` fields + tilt/level relay + activate-folds-configure | NOT STARTED | 1, 2, 3, 5 | powered sitting |
@@ -291,6 +291,36 @@ the **shared `(method, axis)` allow-table** (Architecture above), gated on
 **Tests.** `test_udp_protocol_xlang.py` + `test_rpc_args.py` round-trips; the
 axis-6 allow-table as a Python-mirror table test + the native harness gate test;
 a relay request/reply unit test with the FakeTeensy harness.
+
+**Outcome (SOFTWARE DONE — 2026-06-29, commit `1f31f95` (firmware + host +
+codegen + tests); docs in the follow-up commit).**
+Landed the full Phase-1 software up to its hard bench-probe gate. **Firmware:** new
+`platform_relay.{h,cpp}` (typed `TILT_READ`/`STATE_READ`/`STATE_WRITE`, each gated +
+`ERR_BUS_DOWN` fail-fast; `STATE_WRITE` re-encodes the 0x6E0 `RobotState` frame
+firmware-side per `createStateCANMessage`); a verbatim platform-reply SPSC ring in
+`can_buses.cpp` (`on_jugglebot_rx` routes 0x6E0/0x7DE before `decode_into_cache`) →
+`platform_uplink_step` emits `PLATFORM_FRAME`; `rpc.cpp` dispatch + the blanket
+axis-6 reject replaced by the generated `hand_axis6_permitted` allow-table in
+`send_axis_frame`; `jugglebot_commands_allowed()` hoisted to `can_buses.cpp` (shared)
+and `is_platform_reply_id()` made header-inline (native-testable). **Host:**
+`PLATFORM_FRAME` subscribe + `(can_id,dlc)` latch/correlate, `relay_read_tilt` /
+`relay_read_robot_state` / `relay_write_robot_state`, `encode_state_write`,
+`RelayRobotState` decode — **mechanism only; `robot_state` field-sourcing is Phase 2,
+untouched here.** **Codegen:** `PlatformFrame` (0x89), `ArgRobotState`, the
+allow-table predicate (C++ + Python single source). **Tests:** native
+`test_platform_relay` (46 compiled doctest assertions), `test_hand_axis6_allow.py`
+(generated-table single-source guard), `test_teensy_bridge_node_relay.py` (FakeTeensy
+request/reply incl. fail-fast, timeout, stale-clear), xlang/rpc_args round-trips.
+Suite: `pytest tests/ -q` (2026-06-29) **1881 → 1894 passed, 1 xfailed, 0 failed in
+458.21 s** (net **+13**, all new Phase-1 tests, no regressions); `pio run` green;
+codegen deterministic. **Bench-probe / powered handoff remaining (gates trusting the
+relay on hardware):** (a) confirm CAN3 **`SRX_DIS`** is set so the bridge's own 0x6E0
+`STATE_WRITE` is not looped back as a reply (else the `(id,dlc)` discriminator
+mis-correlates); (b) measure the 0x7DE/0x6E0 request→reply **latency** to set the
+host await timeout (default 0.5 s placeholder). Both are read-only-ish bench probes;
+no `robot_state` consumer depends on the relay until Phase 2. Full detail: logbook
+[`2026-06-29-canbridge-phase1-platform-relay-seam`](../../logbook/2026-06-29-canbridge-phase1-platform-relay-seam.md).
+**Phase 2 cleared to start** (the relay mechanism it sources from is green + isolated).
 
 ### Phase 2 — Cold-start state via the relay (self-solving persistence)
 
