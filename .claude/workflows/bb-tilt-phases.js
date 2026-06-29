@@ -14,11 +14,25 @@ const BRANCH = 'demo/bb-led-two-ball-juggle'
 const VENV = 'source ~/Desktop/PDJ_venv/venv/bin/activate'
 const COAUTHOR = 'Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>'
 
-const from = (args && args.from != null) ? args.from : 0
-const to = (args && args.to != null) ? args.to : from
-let priorHandoff = (args && args.handoff) ? String(args.handoff) : null
+// Robust args: the harness may deliver `args` as an object OR as a JSON string.
+// (A bug bit the Rung 1 launch: a non-object `args` failed the `args.from != null`
+// test and silently defaulted to phase 0, re-running an already-done phase.)
+// DEFAULT_FROM/TO are the fallback when args doesn't reach the script — EDIT them
+// to the phase you intend, so a launch is correct even if arg-passing is flaky.
+// args, when it does arrive, overrides them. The argsDiagnostic in the return
+// reports which path was taken.
+const DEFAULT_FROM = 1
+const DEFAULT_TO = 1
+let _args = args
+if (typeof _args === 'string') {
+  try { _args = JSON.parse(_args) } catch (e) { _args = null }
+}
+const ARGS_TYPE = typeof args   // surfaced in the return so a mis-pass is visible
+const from = (_args && _args.from != null) ? _args.from : DEFAULT_FROM
+const to = (_args && _args.to != null) ? _args.to : DEFAULT_TO
+let priorHandoff = (_args && _args.handoff) ? String(_args.handoff) : null
 
-log(`tilt re-architecture: running phases ${from}..${to} from ${PLAN} on ${BRANCH}`)
+log(`bb-tilt-phases: args type=${ARGS_TYPE}; running phases ${from}..${to} from ${PLAN} on ${BRANCH}`)
 
 const IMPL_SCHEMA = {
   type: 'object',
@@ -166,6 +180,7 @@ const GATES = {
 
 return {
   ranPhases: `${from}..${to}`,
+  argsDiagnostic: `args arrived as type=${ARGS_TYPE}; resolved from=${from} to=${to}`,
   aborted,
   results,
   nextGate: aborted
