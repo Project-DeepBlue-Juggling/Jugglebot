@@ -187,7 +187,7 @@ touch safety logic (the reboot latch, the axis-6 gate, the relay) are testable.
 
 | Phase | Title | Status | Depends on | Hardware? |
 |---|---|---|---|---|
-| 0 | Foundation infra: native test harness (growable HAL) + one codegen-allocation pass + flags-bit/RpcMethod lint | NOT STARTED | — | no |
+| 0 | Foundation infra: native test harness (growable HAL) + one codegen-allocation pass + flags-bit/RpcMethod lint | **DONE** | — | no |
 | 1 | Platform-Teensy relay seam (typed writes, verbatim reads) + narrow axis-6 allow-table | NOT STARTED | 0 | bench probe (reply latency, SRX_DIS) |
 | 2 | Cold-start state via the relay (read `is_homed`/level/pose at boot + on CAN3-reconnect; write on home/level/reboot) — self-solving | NOT STARTED | 0, 1 | no |
 | 3 | Firmware Get_Version sweep + Jetson-validated `firmware_validated` | NOT STARTED | 0 | probe: live ODrive versions |
@@ -233,6 +233,35 @@ new wire id before any seam touches codegen.
 **Scope note.** The harness validates **decision logic**, not FreeRTOS/ISR
 concurrency or 500 Hz timing — those remain on-hardware-replay gaps (parity #1
 still UNVALIDATED). State this in the harness README.
+
+**Outcome (DONE — 2026-06-29, commits `69c1eaf` (codegen-allocation + lint) +
+`5f07ad5` (native harness + tests)).**
+Landed both deliverables. (A) `tests/firmware/native/` compiles `fault_machine.cpp`
++ `leg_interp.cpp` host-side behind the two shim headers + a growable `fake_hal`
+(recording `can_jugglebot_send`, controllable clock, **inbound-CAN3 injection hook
+ready for Phases 1/3**); vendored doctest; hash-cached `build.py`; one pytest entry
+(`test_native_firmware.py`, `skipif` no g++). `test_fault_machine` (98 assertions)
+covers the soft-reset limiter, UV + uniform-UV-benign, the deferred-stow 5
+invariants (incl. terminal IDLE via the real `interp_isr()` — `test_fault_machine`
+`#include`s **both** TUs, a deliberate ODR-clean superset of the planned
+link-`leg_interp.o`), present-axis scoping, and present-scoped fb-stale/MAX_DEVIATION;
+`test_leg_interp` (24 assertions) covers the lead/stroke/present-axis clamps + modes
++ stow descent. Added public `interp_reset()`. The hand-maintained `FaultMirror`/
+`StowMirror` transcription in `test_fault_logic.py` is **retired** and replaced by a
+firmware-anchored golden conformance (`native/fault_golden.json`) that pins
+`fault_logic.py` to the compiled `fault_step()`; `test_fault_logic_mirror.py` kept.
+(B) Reserved all ids verbatim (RpcMethods 0x0050-0x0054, MsgTypes 0x89/0x8A), made
+`HeartbeatT2J.flags` bits 0-3 a generated `HeartbeatT2JFlags` enum (firmware
+producer rewired), added `ERR_NOT_IMPL` stubs for the 5 reserved methods, and added
+`test_rpc_dispatch_lint.py` (every RpcMethod dispatched; no orphan cases).
+Divergence-catch **proven** (a temporary soft-reset-cap `<`→`<=` failed 4 compiled
+assertions + the golden-honesty guard, then reverted). Suite: `pytest tests/ -q`
+(2026-06-29) **1883 → 1881 passed, 1 xfailed, 0 failed in 444.25 s** — net −2 pytest
+tests is the retired 19-test hand transcription moving into 122 compiled doctest
+assertions + the golden conformance (coverage moved, not lost), not a regression;
+`pio run` green; codegen deterministic. Full detail: logbook
+[`2026-06-29-canbridge-phase0-native-harness`](../../logbook/2026-06-29-canbridge-phase0-native-harness.md).
+**Phase 1 cleared to start.**
 
 ### Phase 1 — Platform-Teensy relay seam
 
