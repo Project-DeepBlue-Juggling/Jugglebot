@@ -293,7 +293,7 @@ axis-6 allow-table as a Python-mirror table test + the native harness gate test;
 a relay request/reply unit test with the FakeTeensy harness.
 
 **Outcome (SOFTWARE DONE — 2026-06-29, commit `1f31f95` (firmware + host +
-codegen + tests); docs in the follow-up commit).**
+codegen + tests) + `6fa0211` (logbook/plan/index)).**
 Landed the full Phase-1 software up to its hard bench-probe gate. **Firmware:** new
 `platform_relay.{h,cpp}` (typed `TILT_READ`/`STATE_READ`/`STATE_WRITE`, each gated +
 `ERR_BUS_DOWN` fail-fast; `STATE_WRITE` re-encodes the 0x6E0 `RobotState` frame
