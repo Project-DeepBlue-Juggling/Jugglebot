@@ -394,6 +394,21 @@ logbook
 **Goal.** Stop hardcoding `firmware_validated=False` (which wedges BOOT at
 `state_machine.py:232`); catch a wrong-firmware ODrive.
 
+**PRECONDITION — close the Phase-2 reconnect-read residual (audit 2026-06-29).**
+Landing real `firmware_validated` here UNGATES the orchestrator's `is_homed` skip
+(`state_machine.py:228-235` gates it behind `firmware_validated`), so the Phase-2
+cold-start `is_homed` becomes consumable for the first time. Phase 2's reconnect
+re-read (UDP-watchdog edge, single-attempt, keeps the cached value on read failure
+— can_node passive-last-known parity) can hold a **stale `is_homed=True`** through
+the power-topology disconnect (Jugglebot dropped, Jetson + can-bridge stay up, UDP
+link intact → no reconnect edge fires) — which would let the orchestrator skip
+homing on a de-referenced robot. This is LATENT in Phase 2 but goes LIVE here.
+**Before Phase 3 surfaces a true `firmware_validated`, close it:** add a CAN3-bus-
+health (`bus1_health` BUS_OFF→OK) reconnect re-trigger, and make that re-read fall
+back **conservatively** (retry, then `is_homed=False`) on read failure rather than
+keeping the stale value. (See `logbook/2026-06-29-canbridge-phase2-coldstart-relay-state.md`
+§"The reconnect-trigger residual".)
+
 **Design.** New `version_check` firmware step (in the cold-start monitor task, not
 the safety-critical fault task): once present Jugglebot axes have heartbeated,
 send one `Get_Version` per axis one-per-tick (≤7 frames, bus-paced), cache the

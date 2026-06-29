@@ -274,15 +274,29 @@ resolve it the plan's way, not to invent. The residual is **bounded by three saf
 backstops already in place**: (a) the production launch co-starts the orchestrator
 + bridge, so every cold-start evaluation is normally preceded by a fresh **boot
 read** (which returns `False` after a disconnect, since the Platform Teensy
-forgot); (b) the **`REBOOT_ODRIVES` clear hook** — any reboot-based recovery (the
-usual path out of a CAN fault) clears `is_homed`; (c) the failure direction of the
-hole itself is the one we guard against, but it requires the bridge to outlive a
-disconnect AND a cold-start re-trigger without a bridge restart or reboot. I have
-**flagged this for the Phase-4 powered cold-start sitting to probe**, and noted
-that a future CAN3-bus-health (`bus1_health` BUS_OFF→OK) reconnect trigger would
-close it directly — deferred here to avoid scope creep / a plan deviation without
-operator review. (If the Phase-4 sitting shows the scenario is reachable in
-practice, the CAN3-health trigger is the surgical fix.)
+forgot); (b) the **`REBOOT_ODRIVES` clear hook** clears `is_homed` on any
+reboot-based recovery — but (audit, 2026-06-29) this backstop is **narrower than
+first written**: it does NOT cover a **transient FAULT→IDLE recovery that does not
+reboot the ODrives**, which is exactly the path `state_machine.py:238` reaches the
+skip-if-homed on; (c) the failure direction of the hole is the one we guard
+against, but it requires the bridge to outlive a disconnect AND a cold-start
+re-trigger without a bridge restart or reboot — and the audit further notes the
+reconnect re-read is single-attempt and keeps the cached value on read FAILURE
+(can_node's passive last-known-state parity), so the hole is reachable by a
+read-fail sub-case too, not only a trigger-doesn't-fire sub-case.
+
+**Crucially, the hole is LATENT in Phase 2** and cannot cause motion here: the
+bridge still hardcodes `firmware_validated=False`, and `state_machine.py:228-235`
+gates the `is_homed` skip *behind* `firmware_validated` — so the orchestrator never
+reaches the skip until **Phase 3** lands the real `firmware_validated`. **This
+residual MUST therefore be closed before Phase 3 makes `is_homed` consumption
+live** (re-targeted from "the Phase-4 sitting" to a hard **Phase-3 precondition**
+per the audit). The surgical fix is the CAN3-bus-health (`bus1_health` BUS_OFF→OK)
+reconnect re-trigger, with the re-read falling back **conservatively** (retry, then
+`is_homed=False`) on read failure rather than keeping the stale value. Kept out of
+Phase 2 deliberately (the UDP-watchdog trigger is the plan's literal instruction;
+inventing the CAN3-health trigger here would be an un-reviewed plan deviation), but
+it is now a tracked Phase-3 blocker, not a Phase-4 probe.
 
 ### encoder_search_complete monotonicity (the second audit fix)
 
