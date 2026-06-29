@@ -88,6 +88,7 @@ Ball Butler/hand_sensor_pcb_rail/fp-info-cache
 /.claude/*
 !/.claude/commands/
 !/.claude/agents/
+!/.claude/workflows/
 sim/tests/results/
 temp/
 
