@@ -31,9 +31,11 @@ files_changed:
   - tests/ros/test_teensy_bridge_node_coldstart.py
   - tests/ros/test_teensy_bridge_node_read.py
   - tests/teensy_link/test_rpc_args.py
+  - tools/probes/canbridge_version_probe.py
 commits:
   - bf400b7
   - 35f48f1
+  - TBD-probe
 subsystem:
   - can
   - ros
@@ -297,10 +299,15 @@ in-session fix removes the acute ~1.9 s stall now.
 
 ## Open questions / next steps
 
-- **Bench probe (hand-off):** confirm the live legs+hand ODrives report the
-  `EXPECTED_HW_VERSIONS` tuple `(4,4,58)` via a read-only Get_Version sweep (the
-  operator runs the powered command; Phase-3 firmware flashed). A mismatch here
-  means the expected-version config is stale, not a firmware bug.
+- **Bench probe — PASSED on hardware (2026-06-29, `tools/probes/canbridge_version_probe.py`,
+  motor power OFF + CAN3 connected, Phase-3 firmware flashed via `pio run -t upload`):**
+  all 7 Jugglebot axes (6 legs + hand) report **hw 4.4.58** (matching
+  `EXPECTED_HW_VERSIONS`) and a consistent **fw 0.6.11**; the inlined
+  `validate_group` mirror returns clean → `firmware_validated` would latch True on
+  the production bridge. This exercised the WHOLE firmware path end-to-end —
+  Get_Version sweep → per-axis cache → `GET_AXIS_VERSIONS` RPC → host decode →
+  validate. The expected-version config is confirmed correct; no Phase-4
+  cold-start FAULT from a stale version tuple.
 - **BUS_OFF firmware TODO:** when `can_buses.cpp` `health_of()` gains the FlexCAN
   ESR1 register read, `BUS_OFF→OK` joins `WARN→OK` automatically (no host change).
 - **Phase 4** wires the orchestrator action/services and the

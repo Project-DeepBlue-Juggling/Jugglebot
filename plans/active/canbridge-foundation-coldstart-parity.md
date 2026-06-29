@@ -190,7 +190,7 @@ touch safety logic (the reboot latch, the axis-6 gate, the relay) are testable.
 | 0 | Foundation infra: native test harness (growable HAL) + one codegen-allocation pass + flags-bit/RpcMethod lint | **DONE** | — | no |
 | 1 | Platform-Teensy relay seam (typed writes, verbatim reads) + narrow axis-6 allow-table | **DONE — bench probe PASSED (2026-06-29)** | 0 | bench probe ✓ (SRX_DIS disabled, reply ≤14 ms) |
 | 2 | Cold-start state via the relay (read `is_homed`/level/pose at boot + on CAN3-reconnect; write on home/level/reboot) — self-solving | **DONE** | 0, 1 | no (validated at the Phase-4 powered sitting) |
-| 3 | Firmware Get_Version sweep + Jetson-validated `firmware_validated` | **DONE** (precondition resolved; probe handed off) | 0 | probe: live ODrive versions |
+| 3 | Firmware Get_Version sweep + Jetson-validated `firmware_validated` | **DONE — bench probe PASSED (2026-06-29)** | 0 | probe ✓ (legs+hand report hw 4.4.58) |
 | 4 | Orchestrator wiring: `home_motors` action shim (homes legs + hand) + `robot_state` fields + tilt/level relay + activate-folds-configure | NOT STARTED | 1, 2, 3, 5 | powered sitting |
 | 5 | Hand command conduit (state/gains, traj/smooth-move) + **hand homing** (HOME/SET_ABSOLUTE_POSITION on axis 6) + deactivate idles hand + cmd-echo | NOT STARTED | 1 | powered (homing + catch) |
 | 6 | Robust `clear_errors` (bus-transmittable gate) + reboot-in-progress latch | NOT STARTED | 0, 2 | probe: reboot latency, TEC |
@@ -466,9 +466,13 @@ UDP-watchdog reconnect stays keep-stale (the asymmetry is a contract). Suite:
 `pytest tests/ -q` (2026-06-29, run twice) **1919 passed, 1 xfailed**; the only
 failures both runs are documented timing/allocation load-flakes that PASS ISOLATED
 and MOVE between runs (not regressions; net **+13** Phase-3 tests over the 1908
-baseline). `pio run` green; codegen deterministic. **Bench probe handed off** (a
-read-only live-ODrive Get_Version sweep confirming `EXPECTED_HW_VERSIONS`
-`(4,4,58)` — operator-run, Phase-3 firmware flashed). Full detail: logbook
+baseline). `pio run` green; codegen deterministic. **Bench probe PASSED on
+hardware (2026-06-29, `tools/probes/canbridge_version_probe.py`, motor power OFF +
+CAN3 connected, Phase-3 firmware flashed):** all 7 Jugglebot axes report hw
+`4.4.58` (= `EXPECTED_HW_VERSIONS`) + consistent fw `0.6.11`; `validate_group`
+clean → `firmware_validated` would latch True (the whole
+sweep→cache→`GET_AXIS_VERSIONS`→decode→validate path exercised end-to-end). Full
+detail: logbook
 [`2026-06-29-canbridge-phase3-version-validated`](../../logbook/2026-06-29-canbridge-phase3-version-validated.md).
 **Phase 4 cleared once Phase 5 lands (Phase 4 depends on 1, 2, 3, AND 5).**
 
@@ -601,7 +605,7 @@ re-gate clear/reboot.
   |---|---|---|
   | CAN3 `SRX_DIS` | Is bridge self-reception disabled (own `0x6E0` write not latched as a reply)? | Phase 1 reply correlation — **✓ PASSED 2026-06-29** (disabled; 0/24 self-echo) |
   | Platform reply latency | `0x7DE`/`0x6E0` request→reply time (set the await timeout) | Phase 1/2 tilt/state reads — **✓ PASSED 2026-06-29** (≤14 ms; 0.5 s kept) |
-  | Live ODrive versions | Do legs+hand report the `EXPECTED_HW_VERSIONS` tuple? | Phase 3 (else boot FAULTs on stale config) |
+  | Live ODrive versions | Do legs+hand report the `EXPECTED_HW_VERSIONS` tuple? | Phase 3 — **✓ PASSED 2026-06-29** (all 7 axes hw 4.4.58 / fw 0.6.11; `tools/probes/canbridge_version_probe.py`) |
   | Reboot latency / TEC | ODrive reboot→first-heartbeat time; does a 6-frame clear/reboot to a silent bus climb TEC? | Phase 6 window + gate basis |
 
   *(The earlier "12 V-rail-shared" and "soft Jetson-reboot" probes are dropped:
