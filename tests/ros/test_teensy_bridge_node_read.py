@@ -43,11 +43,17 @@ def _wait_until(predicate, timeout=2.0, interval=0.005):
     return predicate()
 
 
-def _build_paired_node():
+def _build_paired_node(*, boot_state_read=False):
     """Build a (FakeTeensy, client, node) triple wired on loopback.
 
     Mirrors the pairing in tests/teensy_link/conftest.py::fake_teensy_and_client
     but injects the started client into a TeensyBridgeNode.
+
+    ``boot_state_read`` defaults False so the Phase-2 cold-start boot read does NOT
+    fire during construction (these tests don't wire a Platform-Teensy STATE_READ
+    responder before __init__, and exercise the cold-start path explicitly via
+    tests/ros/test_teensy_bridge_node_coldstart.py). Pass True to exercise the boot
+    read (the cache then ends conservative unless a responder is pre-wired).
     """
     from jugglebot.teensy_bridge_node import TeensyBridgeNode
 
@@ -60,7 +66,7 @@ def _build_paired_node():
         local_bind_rpc=0,
         bind_host="127.0.0.1",
     )
-    node = TeensyBridgeNode(client=client)  # __init__ starts the client
+    node = TeensyBridgeNode(client=client, boot_state_read=boot_state_read)  # __init__ starts the client
 
     jetson_stream_port = client._stream_sock.getsockname()[1]
     jetson_rpc_port = client._rpc_sock.getsockname()[1]

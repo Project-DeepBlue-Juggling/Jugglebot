@@ -42,6 +42,8 @@ import threading
 import time
 from collections import namedtuple
 
+import quaternion  # numpy-quaternion; same library can_node uses for tilt→quat
+
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionServer, GoalResponse, CancelResponse
@@ -161,6 +163,24 @@ def _decode_relay_robot_state(data: bytes) -> RelayRobotState:
         pose_offset_tiltY=y / 1000.0)
 
 
+def _tilt_to_quat(tilt_x: float, tilt_y: float) -> Quaternion:
+    """Convert inclinometer tilt readings to a ROS Quaternion — byte-identical to
+    ``can_node._tilt_to_quat`` (can_node.py:1667), so ``robot_state.pose_offset_quat``
+    carries the SAME value can_node published.
+
+    ``tilt_x`` / ``tilt_y`` are absolute tilt angles (radians), not deltas. The
+    conversion is stateless (no accumulation drift)."""
+    q_roll = quaternion.from_rotation_vector([-tilt_x, 0, 0])
+    q_pitch = quaternion.from_rotation_vector([0, -tilt_y, 0])
+    result = (q_roll * q_pitch).normalized()
+    quat = Quaternion()
+    quat.x = result.x
+    quat.y = result.y
+    quat.z = result.z
+    quat.w = result.w
+    return quat
+
+
 def _enum_name(enum_cls, value: int) -> str:
     """Best-effort enum-member name for a wire value (falls back to ``v<n>``)."""
     try:
@@ -238,7 +258,7 @@ class TeensyBridgeNode(Node):
     """
 
     def __init__(self, client: TeensyLinkClient | None = None,
-                 setpoint_source=None):
+                 setpoint_source=None, boot_state_read: bool = True):
         super().__init__('teensy_bridge_node')
 
         # ── Parameters ─────────────────────────────────────────
@@ -346,6 +366,40 @@ class TeensyBridgeNode(Node):
         # 0x6E0 write echo (bench-probe gate; see _await_platform_reply).
         self._platform_reply_cv = threading.Condition()
         self._platform_replies = {}    # can_id -> (data: bytes, dlc: int)
+
+        # ── Cold-start state cache (Phase 2: relay-sourced is_homed/level/pose) ──
+        # The Platform Teensy OWNS the persisted cold-start state; it shares the
+        # ODrive supply so it "forgets when they forget" (locked-decisions #2/#3 —
+        # no can-bridge store, no invalidation rule). The bridge READS that state
+        # via the relay STATE_READ at boot + on each confirmed CAN3 (UDP-link)
+        # reconnect, CACHES it here, and surfaces is_homed / levelling_complete /
+        # pose_offset on robot_state FROM THE CACHE — the 100 Hz publish path NEVER
+        # does a CAN3 round-trip. The bridge is the SOLE writer and does
+        # read-modify-write THROUGH this cache (a homing write preserves levelling +
+        # pose, and vice versa). Guarded by self._lock (same as the telemetry cache;
+        # written off the publish thread, read on it under a MultiThreadedExecutor).
+        # The default is the CONSERVATIVE cold value (is_homed=False) so that, until
+        # an authoritative read lands (or if every boot read fails), robot_state
+        # forces a re-home — wasteful but SAFE; NEVER the reverse (which could skip
+        # homing on an unhomed robot).
+        self._cold_start_state = RelayRobotState(
+            is_homed=False, levelling_complete=False,
+            pose_offset_tiltX=0.0, pose_offset_tiltY=0.0)
+        # True once an authoritative relay read (or a bridge-issued write) has set
+        # the cache; surfaced on link_status for the operator (the Phase-4 sitting).
+        self._cold_start_authoritative = False
+        # encoder_search_complete is DERIVED (no wire field): is_homed OR a search
+        # that completed THIS process. This in-session bit tracks the OR term; it is
+        # sticky-True for the process once set (exact can_node parity — can_node only
+        # ever sets encoder_search_complete True, never clears it mid-run).
+        self._encoder_search_done_session = False
+        # pose_offset_quat memo: _tilt_to_quat runs the (numpy-allocating) quaternion
+        # composition only when the cached tilt CHANGES (it changes on a relay read,
+        # not per publish) — can_node likewise computed it on-change, not per publish.
+        # Touched only on the publish thread (the timer's MutuallyExclusiveCallbackGroup
+        # serializes it), so no lock needed.
+        self._pose_quat_key = None
+        self._pose_quat_xyzw = (0.0, 0.0, 0.0, 1.0)
 
         # ── Subscriptions to T→J streams (RX-thread callbacks) ──
         self._client.subscribe(int(MsgType.HEARTBEAT_T2J), self._on_heartbeat_t2j)
@@ -495,6 +549,17 @@ class TeensyBridgeNode(Node):
         enable_sp = bool(self.get_parameter('enable_setpoint_output').value)
         if enable_sp:
             self._start_setpoint_output(setpoint_source)
+
+        # ── Cold-start boot read (Phase 2) ─────────────────────
+        # Read the Platform Teensy's persisted RobotState BEFORE construction
+        # returns — i.e. before the executor spins and the first robot_state is
+        # published — so the orchestrator never acts on a wrong is_homed. Bounded
+        # (a few retries × _RELAY_READ_TIMEOUT_S); on total failure the cache stays
+        # at the CONSERVATIVE default (is_homed=False → forces a re-home, SAFE).
+        # Disabled in unit tests (boot_state_read=False) that don't wire a Platform
+        # responder — they exercise _refresh_cold_start_state directly instead.
+        if boot_state_read:
+            self._boot_read_cold_start_state()
 
         peer = (self.get_parameter('teensy_ip').value
                 if client is None else 'injected')
@@ -684,6 +749,8 @@ class TeensyBridgeNode(Node):
                 telem = self._latest_telemetry
                 hb = self._latest_heartbeat
                 diag = dict(self._latest_diag)
+                cold = self._cold_start_state            # immutable namedtuple
+                search_session = self._encoder_search_done_session
             if telem is None:
                 return  # No real data yet — don't publish a phantom snapshot.
 
@@ -744,13 +811,31 @@ class TeensyBridgeNode(Node):
                 errors.append("Fatal CAN bus issue.")
             msg.error = errors
 
-            # Teensy-persisted cold-start state is not on the link in 10b
-            # (Phase 9 RPC). Conservative defaults; documented in the handoff.
-            msg.encoder_search_complete = False
-            msg.is_homed = False
-            msg.levelling_complete = False
-            msg.pose_offset_rad = [0.0, 0.0]
-            msg.pose_offset_quat = Quaternion(w=1.0, x=0.0, y=0.0, z=0.0)
+            # Teensy-persisted cold-start state (Phase 2) — sourced from the
+            # Platform Teensy's RobotState via the relay STATE_READ (cached at boot
+            # + on CAN3 reconnect; the publish path is non-blocking — it reads only
+            # the cache, never a CAN3 round-trip). Replaces the hardcoded
+            # conservative defaults of phase 10b.
+            is_homed = bool(cold.is_homed)
+            msg.is_homed = is_homed
+            msg.levelling_complete = bool(cold.levelling_complete)
+            # encoder_search_complete is DERIVED, not independently persisted —
+            # exact can_node parity (can_node.py:549-550 sets it True whenever
+            # is_homed; homing requires a prior search, so is_homed ⇒ search done)
+            # plus the in-session bit set on a successful /encoder_search.
+            msg.encoder_search_complete = is_homed or search_session
+            tilt_x = float(cold.pose_offset_tiltX)
+            tilt_y = float(cold.pose_offset_tiltY)
+            msg.pose_offset_rad = [tilt_x, tilt_y]
+            # Recompute the quat only when the tilt changes (memo — see __init__);
+            # the publish-thread serialization makes the bare reads/writes safe.
+            key = (tilt_x, tilt_y)
+            if key != self._pose_quat_key:
+                q = _tilt_to_quat(tilt_x, tilt_y)
+                self._pose_quat_key = key
+                self._pose_quat_xyzw = (q.x, q.y, q.z, q.w)
+            qx, qy, qz, qw = self._pose_quat_xyzw
+            msg.pose_offset_quat = Quaternion(x=qx, y=qy, z=qz, w=qw)
 
             self.robot_state_pub.publish(msg)
         except Exception as e:  # noqa: BLE001
@@ -826,6 +911,11 @@ class TeensyBridgeNode(Node):
                         "on link_status (bridge_stow_pending=1).")
                 else:
                     self.get_logger().info("Teensy link RESTORED.")
+                # Phase 2: on a confirmed reconnect, re-read the Platform Teensy's
+                # cold-start state (it is the authoritative store; a reconnect only
+                # triggers a re-read of it, never INFERS reference state). Refresh
+                # off the publish path; keep the cached value if the read fails.
+                self._refresh_cold_start_state('reconnect')
             self._last_link_lost = self._link_latch.link_lost
         except Exception as e:  # noqa: BLE001
             self.get_logger().error(f"Health check error: {e}",
@@ -971,6 +1061,12 @@ class TeensyBridgeNode(Node):
                          value=str(int(self._link_latch.link_lost))),
                 KeyValue(key='bridge_stow_pending',
                          value=str(int(self._link_latch.stow_pending))),
+                # Phase 2 cold-start cache visibility (the Phase-4 powered sitting
+                # confirms the boot read landed and the right is_homed surfaced).
+                KeyValue(key='cold_start_is_homed',
+                         value=str(int(self._cold_start_state.is_homed))),
+                KeyValue(key='cold_start_authoritative',
+                         value=str(int(self._cold_start_authoritative))),
                 KeyValue(key='setpoints_sent',
                          value=str(self._sp_pump.frames_built)),
                 KeyValue(key='setpoints_rejected',
@@ -1149,6 +1245,24 @@ class TeensyBridgeNode(Node):
     # Platform reply latency — both gated on a bench probe before hardware trust.
     _RELAY_READ_TIMEOUT_S = 0.5
 
+    # Cold-start boot read (Phase 2): a few bounded retries so a momentarily
+    # not-yet-synced CAN3 / link gets a second chance before the conservative
+    # is_homed=False fallback. Worst-case construction delay when the Platform is
+    # unresponsive ≈ 3 × _RELAY_READ_TIMEOUT_S + 2 × _BOOT_STATE_READ_RETRY_S ≈
+    # 1.9 s (each attempt's STATE_READ is ACKed fast but no PLATFORM_FRAME reply
+    # arrives, so the await runs to timeout), and more if the UDP link itself is
+    # down (each attempt then also hits the RpcClient timeout × retries). This runs
+    # synchronously in __init__ before the executor spins; the bound is acceptable
+    # for a deliberate cold-start step (the legs are not yet moving).
+    _BOOT_STATE_READ_ATTEMPTS = 3
+    _BOOT_STATE_READ_RETRY_S = 0.2
+    # Reboot cold-start clear (Phase 2): the Platform Teensy stays powered through
+    # an ODrive reboot, so a dropped clear would leave a STALE is_homed=True against
+    # rebooted (de-referenced) ODrives — the dangerous direction. Retry the clear a
+    # few times to harden that durability.
+    _REBOOT_CLEAR_ATTEMPTS = 3
+    _REBOOT_CLEAR_RETRY_S = 0.2
+
     def _await_platform_reply(self, can_id, expected_dlc, timeout):
         """Block (calling thread) for a fresh PLATFORM_FRAME on ``can_id`` with the
         expected dlc. Returns the raw reply bytes, or None on timeout. The caller
@@ -1206,6 +1320,128 @@ class TeensyBridgeNode(Node):
             RpcMethod.STATE_WRITE,
             rpc_args.encode_state_write(is_homed, levelling_complete,
                                         pose_offset_tiltX, pose_offset_tiltY))
+        return ok, msg
+
+    # ── Cold-start state cache: read at boot + on reconnect, write on home/reboot ──
+    # The Platform Teensy owns the persisted cold-start state (locked-decisions
+    # #2/#3). These methods keep self._cold_start_state in sync with it: a relay
+    # read REFRESHES the cache (off the publish path); a relay write does
+    # read-modify-write THROUGH the cache so a homing write preserves levelling +
+    # pose, and vice versa. The 100 Hz publish path only reads the cache.
+
+    def _refresh_cold_start_state(self, reason: str) -> bool:
+        """Read the Platform Teensy RobotState via the relay and refresh the cache.
+
+        Runs the relay read WITHOUT holding self._lock (it blocks for the CAN3
+        round-trip), then swaps the new value into the cache under the lock. On
+        success the cache + the authoritative flag are updated; on FAILURE the
+        cache is LEFT UNCHANGED (keep the last authoritative value — can_node's
+        passive "last-known-state until a fresh frame" semantics; never downgrade a
+        good read on a transient hiccup). Returns True iff a fresh state was read.
+
+        NOT for the boot path's first read — see _boot_read_cold_start_state, which
+        applies the conservative is_homed=False fallback when there is no prior
+        authoritative value to keep.
+        """
+        try:
+            ok, msg, state = self.relay_read_robot_state()
+        except Exception as e:  # noqa: BLE001 — never let a relay read crash a timer
+            self.get_logger().error(
+                f"cold-start read ({reason}) errored: {e}",
+                throttle_duration_sec=5.0)
+            return False
+        if not ok or state is None:
+            self.get_logger().warning(
+                f"cold-start read ({reason}) failed: {msg} — keeping cached state",
+                throttle_duration_sec=5.0)
+            return False
+        with self._lock:
+            self._cold_start_state = state
+            self._cold_start_authoritative = True
+            if state.is_homed:
+                # can_node.py:549-550 parity: homing requires a prior search, so a
+                # read showing is_homed LATCHES encoder_search_complete True. Because
+                # this bit is sticky (never cleared, incl. on reboot — can_node
+                # leaves encoder_search_complete set), the DERIVED
+                # encoder_search_complete = is_homed OR _encoder_search_done_session
+                # is monotonic-True once homed/searched, exactly as can_node's field.
+                self._encoder_search_done_session = True
+        self.get_logger().info(
+            f"cold-start state ({reason}): is_homed={int(state.is_homed)} "
+            f"levelling={int(state.levelling_complete)} "
+            f"pose=({state.pose_offset_tiltX:.4f},{state.pose_offset_tiltY:.4f})")
+        return True
+
+    def _boot_read_cold_start_state(self) -> bool:
+        """Boot read: refresh the cold-start cache before the first publish, with a
+        few bounded retries. If every attempt fails, fall back to the CONSERVATIVE
+        cold value (is_homed=False / levelling=False / pose=0) — forcing a re-home
+        is wasteful but SAFE; the reverse (a stale is_homed=True) could skip homing
+        on an unhomed robot. Returns True iff an authoritative read landed."""
+        for attempt in range(self._BOOT_STATE_READ_ATTEMPTS):
+            if self._refresh_cold_start_state('boot'):
+                return True
+            if attempt + 1 < self._BOOT_STATE_READ_ATTEMPTS:
+                time.sleep(self._BOOT_STATE_READ_RETRY_S)
+        with self._lock:
+            self._cold_start_state = RelayRobotState(
+                is_homed=False, levelling_complete=False,
+                pose_offset_tiltX=0.0, pose_offset_tiltY=0.0)
+            self._cold_start_authoritative = False
+        self.get_logger().warning(
+            "cold-start boot read failed after "
+            f"{self._BOOT_STATE_READ_ATTEMPTS} attempts — defaulting to "
+            "is_homed=False (conservative; forces a re-home).")
+        return False
+
+    def _write_is_homed(self, is_homed: bool):
+        """Persist is_homed via STATE_WRITE, read-modify-write THROUGH the cache so
+        levelling_complete + pose_offset are preserved (the bridge is the sole
+        writer — a homing write must not clobber a prior levelling result, and vice
+        versa). Updates the cache on success. Returns (ok, message)."""
+        with self._lock:
+            cs = self._cold_start_state
+        ok, msg = self.relay_write_robot_state(
+            is_homed=bool(is_homed),
+            levelling_complete=cs.levelling_complete,
+            pose_offset_tiltX=cs.pose_offset_tiltX,
+            pose_offset_tiltY=cs.pose_offset_tiltY)
+        if ok:
+            with self._lock:
+                # _replace on the CURRENT cache (re-read) preserves any concurrent
+                # levelling update; only is_homed is changed here.
+                self._cold_start_state = self._cold_start_state._replace(
+                    is_homed=bool(is_homed))
+                self._cold_start_authoritative = True
+        return ok, msg
+
+    def _clear_cold_start_state_on_reboot(self):
+        """REBOOT_ODRIVES shared-hook step 2 (Phase 2): clear is_homed +
+        levelling_complete + pose_offset on the Platform Teensy — the ODrives lose
+        their references on reboot, so all three are cleared together (mirrors
+        can_node.py:1559-1565). Retried (the Platform Teensy stays powered through
+        the reboot, so a dropped clear would leave a dangerous stale is_homed=True).
+        The cache is set to the cleared value regardless (the safe local view).
+        Returns (ok, message)."""
+        ok, msg = False, 'no attempt'
+        for attempt in range(self._REBOOT_CLEAR_ATTEMPTS):
+            ok, msg = self.relay_write_robot_state(
+                is_homed=False, levelling_complete=False,
+                pose_offset_tiltX=0.0, pose_offset_tiltY=0.0)
+            if ok:
+                break
+            if attempt + 1 < self._REBOOT_CLEAR_ATTEMPTS:
+                time.sleep(self._REBOOT_CLEAR_RETRY_S)
+        with self._lock:
+            self._cold_start_state = RelayRobotState(
+                is_homed=False, levelling_complete=False,
+                pose_offset_tiltX=0.0, pose_offset_tiltY=0.0)
+            self._cold_start_authoritative = True
+            # NOTE: _encoder_search_done_session is deliberately NOT cleared — exact
+            # can_node parity (its _reboot_odrives_steps cleared is_homed/levelling/
+            # pose but never encoder_search_complete; that flag is sticky-True for
+            # the process once a search/home succeeds). The orchestrator is
+            # unchanged (locked-decision #1), so it sees the identical flag set.
         return ok, msg
 
     # ── Encoder index search (Phase 9a, Jetson-side orchestration) ──
@@ -1588,8 +1824,25 @@ class TeensyBridgeNode(Node):
         res.message = msg
         return res
 
-    def _svc_reboot_odrives(self, req, res):
+    def _reboot_odrives(self):
+        """REBOOT_ODRIVES shared ordered hook (mirrors can_node._reboot_odrives_
+        steps). Step 1 — the bounded watchdog-suppression latch — is Phase 6 and
+        out of scope here. Step 2 (Phase 2): after firing the reboot, clear the
+        persisted cold-start state on the Platform Teensy (the ODrives lose their
+        references on reboot). Returns (ok, message)."""
         ok, msg, _ = self.teensy_reboot()
+        # Step 2: clear is_homed/levelling/pose together. Unconditional on the
+        # reboot result (parity with can_node, which always cleared) — clearing is
+        # the SAFE direction (a re-home), never the reverse.
+        cs_ok, cs_msg = self._clear_cold_start_state_on_reboot()
+        if not cs_ok:
+            self.get_logger().error(
+                f"reboot: clearing cold-start state failed: {cs_msg}")
+            msg = f"{msg}; WARNING cold-start clear failed: {cs_msg}"
+        return ok, msg
+
+    def _svc_reboot_odrives(self, req, res):
+        ok, msg = self._reboot_odrives()
         res.success = ok
         res.message = msg
         return res
@@ -1600,6 +1853,12 @@ class TeensyBridgeNode(Node):
         # parameter (default all legs; [0] for the standalone-leg bench rig).
         axes = list(self.get_parameter('encoder_search_axes').value or [])
         ok, msg = self._run_encoder_search(axes)
+        if ok:
+            # Phase 2: track the in-session search-done bit so the DERIVED
+            # encoder_search_complete = is_homed OR within-session-search-done
+            # (can_node parity — see _publish_robot_state). Sticky-True for the run.
+            with self._lock:
+                self._encoder_search_done_session = True
         res.success = ok
         res.message = msg
         return res
@@ -1611,10 +1870,24 @@ class TeensyBridgeNode(Node):
         # standalone-leg bench rig).
         axes = list(self.get_parameter('home_axes').value or [])
         ok, msg = self._run_home(axes)
-        # Phase 11 U5: apply the cold-start config after every successful homing
-        # (gains/limits may have been changed in/since a prior session). Scope it
-        # to the homed axes. A configure failure surfaces but does not undo homing.
+        # Phase 2: persist is_homed = the home RESULT (read-modify-write through the
+        # cache so levelling/pose are preserved), EXACT can_node.py:847 parity
+        # (_update_teensy_state({'is_homed': success}) writes `success`, i.e. False
+        # on a FAILED home too). Writing the result unconditionally is the safety
+        # crux: a failed re-home of an already-homed robot must clear is_homed, or a
+        # stale is_homed=True would let the orchestrator skip homing on an unhomed
+        # robot (state_machine.py:238-239). A failed persist surfaces a warning but
+        # does not change the home result (a missed persist → next boot re-homes,
+        # the SAFE direction).
+        w_ok, w_msg = self._write_is_homed(ok)
+        if not w_ok:
+            self.get_logger().error(
+                f"home: persisting is_homed={int(ok)} failed: {w_msg}")
+            msg = f"{msg}; WARNING persist is_homed failed: {w_msg}"
         if ok:
+            # Phase 11 U5: apply the cold-start config after every successful homing
+            # (gains/limits may have been changed in/since a prior session). Scope it
+            # to the homed axes. A configure failure surfaces but does not undo homing.
             cfg_ok, cfg_msg = self._run_configure(axes)
             ok = ok and cfg_ok
             msg = f"{msg}; {cfg_msg}"
@@ -1659,7 +1932,9 @@ class TeensyBridgeNode(Node):
         if cmd == 'clear_errors':
             ok, msg, _ = self.teensy_clear_errors()
         elif cmd == 'reboot_odrives':
-            ok, msg, _ = self.teensy_reboot()
+            # Route through the shared hook so this path ALSO clears the cold-start
+            # state (Phase 2) — the orchestrator reboots via odrive_command.
+            ok, msg = self._reboot_odrives()
         else:
             ok, msg = False, f'Unknown command: {cmd}'
         res.success = ok
