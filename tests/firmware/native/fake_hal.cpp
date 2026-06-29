@@ -1,0 +1,101 @@
+// =============================================================================
+//  fake_hal.cpp — fake HAL for the native firmware test harness
+// =============================================================================
+//  Defines the leaf symbols fault_machine.cpp / leg_interp.cpp need from TUs we
+//  do not compile on the host: a controllable clock (now_wall_us / micros64),
+//  the Jetson-link freshness (udp_last_rx_us), the cold-start move predicates
+//  (homing/activate/deactivate_active), and a RECORDING can_jugglebot_send so a
+//  test can assert exactly which CAN3 frames the real logic emitted (the
+//  never-command-a-dead-bus invariant is checked directly against this record).
+//
+//  See fake_hal.h for the test-side control surface and README.md for the seam.
+// =============================================================================
+
+#include "fake_hal.h"
+
+#include <deque>
+#include <vector>
+
+#include "odrive_protocol.h"   // ODrive::CanFrame (return type of can_jugglebot_send)
+#include "can_buses.h"         // declares can_jugglebot_send (we define it here)
+#include "time_base.h"         // declares now_wall_us / micros64 (we define them here)
+#include "udp_link.h"          // declares udp_last_rx_us (we define it here)
+
+namespace CanBridge {
+
+// ── State ────────────────────────────────────────────────────────────────────
+static uint64_t g_wall_us = 0;
+static uint64_t g_mono_us = 0;
+static uint64_t g_udp_last_rx_us = 0;
+static bool     g_homing = false, g_activate = false, g_deactivate = false;
+static std::vector<SentFrame>      g_sent;
+static std::deque<SentFrame>       g_can3_rx;   // inbound injection FIFO (growable hook)
+
+// ── Reset ────────────────────────────────────────────────────────────────────
+void fake_reset() {
+  g_wall_us = 0; g_mono_us = 0; g_udp_last_rx_us = 0;
+  g_homing = g_activate = g_deactivate = false;
+  g_sent.clear();
+  g_can3_rx.clear();
+}
+
+// ── Clock ────────────────────────────────────────────────────────────────────
+void     fake_set_clock(uint64_t wall_us, uint64_t mono_us) { g_wall_us = wall_us; g_mono_us = mono_us; }
+void     fake_advance(uint64_t delta_us) { g_wall_us += delta_us; g_mono_us += delta_us; }
+uint64_t fake_wall_us() { return g_wall_us; }
+uint64_t fake_mono_us() { return g_mono_us; }
+
+// HAL: time_base.h
+uint64_t now_wall_us() { return g_wall_us; }
+uint64_t micros64()    { return g_mono_us; }
+
+// ── Jetson link freshness ────────────────────────────────────────────────────
+void     fake_set_udp_last_rx_us(uint64_t t_us) { g_udp_last_rx_us = t_us; }
+uint64_t udp_last_rx_us() { return g_udp_last_rx_us; }   // HAL: udp_link.h
+
+// ── Cold-start move predicates ───────────────────────────────────────────────
+void fake_set_homing(bool active)     { g_homing = active; }
+void fake_set_activate(bool active)   { g_activate = active; }
+void fake_set_deactivate(bool active) { g_deactivate = active; }
+bool homing_active()     { return g_homing; }       // HAL: leg_homing.h
+bool activate_active()   { return g_activate; }     // HAL: leg_activate.h
+bool deactivate_active() { return g_deactivate; }   // HAL: leg_deactivate.h
+
+// ── Recording CAN3 TX ────────────────────────────────────────────────────────
+bool can_jugglebot_send(const ODrive::CanFrame& f) {   // HAL: can_buses.h
+  SentFrame s;
+  s.id = f.id;
+  s.len = f.len;
+  for (int i = 0; i < 8; ++i) s.buf[i] = f.buf[i];
+  g_sent.push_back(s);
+  return true;
+}
+size_t           fake_sent_count() { return g_sent.size(); }
+const SentFrame& fake_sent_at(size_t i) { return g_sent.at(i); }
+void             fake_clear_sent() { g_sent.clear(); }
+size_t fake_sent_count_cmd(uint8_t cmd_id) {
+  size_t n = 0;
+  for (const auto& s : g_sent) if ((s.id & 0x1Fu) == cmd_id) ++n;
+  return n;
+}
+
+// ── GROWABLE inbound-CAN3 injection hook (Phase 0: unused by any decode path) ─
+void fake_inject_can3_rx(uint32_t id, const uint8_t* data, uint8_t len) {
+  SentFrame r; r.id = id; r.len = len;
+  for (int i = 0; i < 8; ++i) r.buf[i] = (i < len && data) ? data[i] : 0;
+  g_can3_rx.push_back(r);
+}
+bool fake_can3_rx_pop(uint32_t& id, uint8_t* data, uint8_t& len) {
+  if (g_can3_rx.empty()) return false;
+  const SentFrame r = g_can3_rx.front(); g_can3_rx.pop_front();
+  id = r.id; len = r.len;
+  if (data) for (int i = 0; i < 8; ++i) data[i] = r.buf[i];
+  return true;
+}
+size_t fake_can3_rx_pending() { return g_can3_rx.size(); }
+
+}  // namespace CanBridge
+
+// ── Arduino time fns (declared by the Arduino.h shim; unused by the TUs) ─────
+unsigned long micros() { return 0; }
+unsigned long millis() { return 0; }

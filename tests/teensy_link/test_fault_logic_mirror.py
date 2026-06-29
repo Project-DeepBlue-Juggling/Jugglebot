@@ -1,13 +1,17 @@
 """Fidelity tests for controller/teensy_link/fault_logic.py.
 
-Asserts the Jetson-side Python mirror reproduces every transition in the
-firmware's executable spec ``tests/firmware/test_fault_logic.py`` (itself a 1:1
-transcription of ``fault_machine.cpp``). This closes the three-way agreement:
+Asserts the Jetson-side Python mirror reproduces every named transition in the
+fault decision tree. The authoritative spec for the C++ is the **compiled**
+firmware test ``tests/firmware/native/test_fault_machine.cpp`` (it drives the
+real ``fault_step()``); ``tests/firmware/test_fault_logic.py`` then pins this
+mirror to the firmware-anchored golden vector that binary emits. The agreement
+chain is now enforced by tests rather than hand transcription:
 
-    fault_machine.cpp == tests/firmware/test_fault_logic.py == fault_logic.py
+    fault_machine.cpp  ==(native/fault_golden.json)==  fault_logic.py
 
 A regression in the bridge's understanding of the fault decision tree, or a
-drift between the two mirrors, shows up as a failing scenario here.
+drift from the firmware, shows up as a failing scenario here or in the golden
+conformance.
 
 Also covers :class:`LinkLossLatch` — the bridge's own UDP-link deferred-stow
 latch (no firmware analog: it is the Jetson↔Teensy-link half of the invariant).
@@ -25,7 +29,7 @@ from controller.teensy_link.fault_logic import (
 )
 
 
-# ── FaultEvaluator vs test_fault_logic.py::FaultMirror scenarios ──────────────
+# ── FaultEvaluator — error-eval / soft-reset / undervoltage scenarios ─────────
 
 def test_all_clean_clears_fatal():
     m = FaultEvaluator()
@@ -94,7 +98,7 @@ def test_soft_reset_not_consumed_on_dead_bus():
     assert m.clear_calls == 0 and m.soft_reset_attempts == 0
 
 
-# ── DeferredStowLatch vs test_fault_logic.py::StowMirror scenarios ────────────
+# ── DeferredStowLatch — deferred-stow latch scenarios ─────────────────────────
 
 def test_can_loss_never_commands_dead_bus_and_arms_latch():
     s = DeferredStowLatch()

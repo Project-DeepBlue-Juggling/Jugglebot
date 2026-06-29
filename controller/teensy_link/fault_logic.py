@@ -15,10 +15,13 @@ mirrors exist so that
     confirmed reconnect" invariant the CAN-loss latch uses;
   * :class:`FaultEvaluator` / :class:`DeferredStowLatch` are a tested,
     byte-faithful port of the firmware decision tree — the canonical artifact
-    for the eventual ``can_node.py`` deletion (Phase 13) and a cross-language
-    fidelity check against ``tests/firmware/test_fault_logic.py`` (the firmware's
-    executable spec) and ``fault_machine.cpp`` itself. Three-way agreement:
-    ``fault_machine.cpp`` == ``test_fault_logic.py`` == this module.
+    for the eventual ``can_node.py`` deletion (Phase 13). Their fidelity to the
+    firmware is pinned to a **firmware-anchored golden vector**
+    (``tests/firmware/native/fault_golden.json``, emitted by the compiled
+    ``fault_step()`` — the authoritative C++ spec is now
+    ``tests/firmware/native/test_fault_machine.cpp``), replayed by
+    ``tests/firmware/test_fault_logic.py``. Agreement chain (enforced by tests,
+    not hand transcription): ``fault_machine.cpp`` ==(golden)== this module.
 
 In Phase 10b the bridge is an OBSERVER: :class:`FaultEvaluator` /
 :class:`DeferredStowLatch` are NOT run live to override the Teensy's
@@ -31,7 +34,8 @@ References:
   * ``ros_ws/src/jugglebot/Teensy_code_canbridge/fault_machine.cpp``
   * ``ros_ws/src/jugglebot/jugglebot/can_node.py`` (_handle_error, _watchdog_check)
   * ``logbook/2026-05-19-can-loss-fault-response-safety-inversion.md``
-  * ``tests/firmware/test_fault_logic.py`` (the executable spec)
+  * ``tests/firmware/native/test_fault_machine.cpp`` (the compiled executable spec)
+  * ``tests/firmware/test_fault_logic.py`` (the golden-conformance replay for this module)
 """
 
 from __future__ import annotations

@@ -23,6 +23,11 @@ namespace CanBridge {
 
 void leg_interp_init();   // start the 500 Hz IntervalTimer
 
+// Reset every interpolator file-static to its power-on value. For (a) the native
+// test harness (isolate interp statics between cases) and (b) on-target re-arm.
+// NOT ISR-safe — call only when the interp is quiescent (output disabled).
+void interp_reset();
+
 // udp_link setpoint handler (runs in the net task): stages the new waypoints.
 void interp_on_setpoint(uint16_t seq, const uint8_t* payload, uint16_t len);
 

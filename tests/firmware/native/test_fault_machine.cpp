@@ -1,0 +1,470 @@
+// =============================================================================
+//  test_fault_machine.cpp — compiled test of the REAL fault state machine
+// =============================================================================
+//  Drives the actual compiled fault_machine.cpp (NOT a Python transcription) and
+//  asserts the safety-critical behaviours hold as machine code on the build host:
+//
+//    * the soft-reset bounce-loop limiter (one auto-clear, then fatal),
+//    * undervoltage gating + the uniform-UV-benign distinction,
+//    * the deferred-stow 5 invariants (logbook 2026-05-19) — including the
+//      terminal-IDLE completion handling, asserted via the recording
+//      can_jugglebot_send (never command a dead bus; IDLE-all on stow complete),
+//    * the Phase-11 present-axis freshness scoping (the single-leg-rig reconnect
+//      dead-lock fix), and
+//    * the recoverable motor-feedback-staleness output suppression.
+//
+//  It #includes BOTH fault_machine.cpp and leg_interp.cpp (they share no symbol
+//  names, so one TU is ODR-clean) so it can drive the static interp_isr() to
+//  complete a stow and observe the fault machine's terminal-IDLE handling.
+//
+//  It ALSO emits a firmware-anchored golden vector (`--emit-golden <path>`): the
+//  subset of scenarios that controller/teensy_link/fault_logic.py models
+//  (FaultEvaluator / DeferredStowLatch). tests/firmware/test_fault_logic.py
+//  replays those goldens through fault_logic.py so the Jetson host mirror can no
+//  longer drift from the firmware either (and tests/firmware/test_native_firmware.py
+//  asserts a fresh emission still equals the committed golden, so a firmware
+//  behaviour change must regenerate it deliberately).
+//
+//  SCOPE: validates DECISION LOGIC, not FreeRTOS/ISR concurrency or 500 Hz
+//  timing — those remain on-hardware-replay gaps. See README.md.
+// =============================================================================
+
+#define DOCTEST_CONFIG_IMPLEMENT   // custom main (handles --emit-golden)
+#include "doctest.h"
+
+#include <array>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <string>
+#include <vector>
+
+#include "axis_state.h"
+#include "odrive_protocol.h"
+#include "canbridge_config.h"
+#include "udp_protocol.h"
+#include "fake_hal.h"
+
+// The two safety-critical TUs under test (ODR-clean: disjoint symbol names).
+#include "leg_interp.cpp"
+#include "fault_machine.cpp"
+
+using namespace CanBridge;
+
+static constexpr uint32_t ERR_UV       = 512;                          // ERR_DC_BUS_UNDER_VOLTAGE
+static constexpr uint8_t  CMD_CLEAR    = ODriveCmd::clear_errors;      // 0x18
+static constexpr uint8_t  CMD_SETSTATE = ODriveCmd::set_requested_state; // 0x07
+static constexpr uint8_t  ST_IDLE      = (uint8_t)ODriveState::IDLE;        // 1
+static constexpr uint8_t  ST_CL        = (uint8_t)ODriveState::CLOSED_LOOP; // 8
+
+// ── Setup helpers ─────────────────────────────────────────────────────────────
+static void clear_legs() {
+  for (uint8_t i = 0; i < NUM_AXES; ++i) {
+    axes[i].active_errors = 0;
+    axes[i].disarm_reason = 0;
+    axes[i].axis_state = ST_IDLE;
+    axes[i].procedure_result = 0;
+    axes[i].heartbeat_seen = false;
+    axes[i].heartbeat_stale = false;
+    axes[i].last_heartbeat_us = 0;
+    axes[i].pos_rev = 0.0f;
+    axes[i].vel_rps = 0.0f;
+    axes[i].pos_timestamp_us = 0;
+    axes[i].target_pos_rev = 0.0f;
+    axes[i].target_vel_rps = 0.0f;
+    axes[i].target_torque_Nm = 0.0f;
+  }
+}
+
+static void reset_all() {
+  fake_reset();
+  clear_legs();
+  fault_machine_init();
+  interp_reset();
+  fault_set_mpc_active(false);
+}
+
+static size_t clear_broadcasts() { return fake_sent_count_cmd(CMD_CLEAR) / NUM_LEGS; }
+
+// ── Error-eval (FaultEvaluator-modelable) scenarios ───────────────────────────
+using Vec6u = std::array<uint32_t, 6>;
+using Vec6b = std::array<uint8_t, 6>;
+static Vec6u uni(uint32_t v) { return {v, v, v, v, v, v}; }
+static Vec6b uni8(uint8_t v) { return {v, v, v, v, v, v}; }
+
+struct ErrStep {
+  std::string note;
+  bool   notify_clear;   // call fault_notify_clear_errors() instead of evaluate
+  bool   preset_fatal;   // set s_fatal_error before the evaluate
+  Vec6u  active;
+  Vec6u  disarm;
+  Vec6b  state;
+  // expected (the human-readable contract; the golden emits the ACTUAL run)
+  bool   exp_fatal;
+  bool   exp_uv;
+  int    exp_soft_reset;
+  int    exp_clear_calls;   // cumulative clear broadcasts
+};
+struct ErrScenario { std::string name; std::vector<ErrStep> steps; };
+
+struct ErrOut { bool fatal; bool uv; int soft_reset; int clear_calls; };
+
+static std::vector<ErrOut> run_error_scenario(const ErrScenario& sc) {
+  reset_all();
+  fake_set_clock(10'000'000, 10'000'000);
+  std::vector<ErrOut> out;
+  for (const auto& st : sc.steps) {
+    if (st.notify_clear) {
+      fault_notify_clear_errors();
+    } else {
+      for (uint8_t i = 0; i < NUM_LEGS; ++i) {
+        axes[i].active_errors = st.active[i];
+        axes[i].disarm_reason = st.disarm[i];
+        axes[i].axis_state = st.state[i];
+      }
+      if (st.preset_fatal) s_fatal_error = true;
+      fault_step();
+    }
+    out.push_back({s_fatal_error, s_undervoltage_error,
+                   (int)s_soft_reset_attempts, (int)clear_broadcasts()});
+  }
+  return out;
+}
+
+static std::vector<ErrScenario> error_scenarios() {
+  std::vector<ErrScenario> v;
+  // active error → fatal
+  {
+    Vec6u a = uni(0); a[2] = 0x40;
+    v.push_back({"active_error_fatal", {
+      {"active leg2", false, false, a, uni(0), uni8(ST_IDLE), true, false, 0, 0}}});
+  }
+  // disarm while CLOSED_LOOP → fatal
+  {
+    Vec6u d = uni(0); d[3] = 0x40;
+    Vec6b s = uni8(ST_IDLE); s[3] = ST_CL;
+    v.push_back({"disarm_closed_loop_fatal", {
+      {"disarm leg3 @CL", false, false, uni(0), d, s, true, false, 0, 0}}});
+  }
+  // soft-reset one-shot then fatal, then operator clear refills the budget
+  v.push_back({"soft_reset_one_shot", {
+    {"disarm all @IDLE",    false, false, uni(0), uni(0x40), uni8(ST_IDLE), false, false, 1, 1},
+    {"disarm persists",     false, false, uni(0), uni(0x40), uni8(ST_IDLE), true,  false, 1, 1},
+    {"operator clear",      true,  false, uni(0), uni(0),     uni8(ST_IDLE), false, false, 0, 1},
+    {"disarm again",        false, false, uni(0), uni(0x40), uni8(ST_IDLE), false, false, 1, 2}}});
+  // undervoltage-only disarm recovers without fatal. The soft-reset path fires
+  // first (budget→1, one broadcast) then the UV-recovery path's second
+  // clear_errors_can() resets the budget back to 0 (two broadcasts total) — the
+  // firmware AND fault_logic.py agree on this (both port can_node), so the
+  // budget ends at 0, not 1. (A hand-expected 1 here is the classic mental-model
+  // error this compiled harness exists to catch.)
+  v.push_back({"uv_only_recovers", {
+    {"uv disarm all @IDLE", false, false, uni(0), uni(ERR_UV), uni8(ST_IDLE), false, false, 0, 2}}});
+  // active undervoltage error sets the flag AND is fatal
+  {
+    Vec6u a = uni(0); a[0] = ERR_UV;
+    v.push_back({"active_uv_sets_flag", {
+      {"active uv leg0", false, false, a, uni(0), uni8(ST_IDLE), true, true, 0, 0}}});
+  }
+  // a preset fatal clears when all axes are clean
+  v.push_back({"all_clean_clears_fatal", {
+    {"preset fatal, clean", false, true, uni(0), uni(0), uni8(ST_IDLE), false, false, 0, 0}}});
+  return v;
+}
+
+// ── Deferred-stow (DeferredStowLatch-modelable) scenarios ─────────────────────
+struct StowStep {
+  std::string note;
+  bool stale;
+  bool fresh;
+  bool complete;    // drive interp_isr to set stow_complete before this fault_step
+  bool exp_fatal;
+  bool exp_pending;
+  bool exp_stowing;
+};
+struct StowScenario { std::string name; std::vector<StowStep> steps; };
+struct StowOut { bool fatal; bool pending; bool stowing; };
+
+static std::vector<StowOut> run_stow_scenario(const StowScenario& sc) {
+  reset_all();
+  fake_set_clock(10'000'000, 10'000'000);
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) {       // full robot: all 6 present
+    axes[i].heartbeat_seen = true;
+    axes[i].last_heartbeat_us = fake_wall_us();
+  }
+  std::vector<StowOut> out;
+  for (const auto& st : sc.steps) {
+    if (st.stale) fake_advance(3 * (uint64_t)CAN_HEARTBEAT_TIMEOUT_US);   // age past the timeout
+    if (st.fresh) for (uint8_t i = 0; i < NUM_LEGS; ++i) axes[i].last_heartbeat_us = fake_wall_us();
+    if (st.complete) interp_isr();   // legs already at STOW (pos_rev=0) → one tick sets stow_complete
+    fault_step();
+    out.push_back({s_fatal_can_error, s_stow_pending, s_stowing});
+  }
+  return out;
+}
+
+static std::vector<StowScenario> stow_scenarios() {
+  return {
+    {"loss_arms_latch", {
+      {"can3 loss",   true,  false, false, true,  true,  false}}},
+    {"execute_on_reconnect", {
+      {"can3 loss",   true,  false, false, true,  true,  false},
+      {"reconnect",   false, true,  false, false, true,  true}}},
+    {"rearm_on_redrop", {
+      {"can3 loss",   true,  false, false, true,  true,  false},
+      {"reconnect",   false, true,  false, false, true,  true},
+      {"redrop",      true,  false, false, true,  true,  false}}},
+    {"complete_clears_latch", {
+      {"can3 loss",   true,  false, false, true,  true,  false},
+      {"reconnect",   false, true,  false, false, true,  true},
+      {"stow done",   false, true,  true,  false, false, false}}},
+  };
+}
+
+// =============================================================================
+//  doctest assertions — the compiled robustness contract
+// =============================================================================
+TEST_CASE("error-eval scenarios match the firmware contract") {
+  for (const auto& sc : error_scenarios()) {
+    CAPTURE(sc.name);
+    auto out = run_error_scenario(sc);
+    REQUIRE(out.size() == sc.steps.size());
+    for (size_t k = 0; k < out.size(); ++k) {
+      CAPTURE(sc.steps[k].note);
+      CHECK(out[k].fatal       == sc.steps[k].exp_fatal);
+      CHECK(out[k].uv          == sc.steps[k].exp_uv);
+      CHECK(out[k].soft_reset  == sc.steps[k].exp_soft_reset);
+      CHECK(out[k].clear_calls == sc.steps[k].exp_clear_calls);
+    }
+  }
+}
+
+TEST_CASE("deferred-stow latch scenarios match the firmware contract") {
+  for (const auto& sc : stow_scenarios()) {
+    CAPTURE(sc.name);
+    auto out = run_stow_scenario(sc);
+    REQUIRE(out.size() == sc.steps.size());
+    for (size_t k = 0; k < out.size(); ++k) {
+      CAPTURE(sc.steps[k].note);
+      CHECK(out[k].fatal   == sc.steps[k].exp_fatal);
+      CHECK(out[k].pending == sc.steps[k].exp_pending);
+      CHECK(out[k].stowing == sc.steps[k].exp_stowing);
+    }
+  }
+}
+
+TEST_CASE("never command a dead bus + terminal IDLE on stow complete") {
+  // Walk the full loss→reconnect→complete arc and watch the recording HAL.
+  reset_all();
+  fake_set_clock(10'000'000, 10'000'000);
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) {
+    axes[i].heartbeat_seen = true;
+    axes[i].last_heartbeat_us = fake_wall_us();
+  }
+  // Loss: detection arms the latch and gates output OFF — and the fault machine
+  // emits NOTHING to the dead bus (no clears: legs are error-free).
+  fake_advance(3 * (uint64_t)CAN_HEARTBEAT_TIMEOUT_US);
+  fake_clear_sent();
+  fault_step();
+  CHECK(s_fatal_can_error);
+  CHECK(s_stow_pending);
+  CHECK(interp_output_enabled() == false);     // never command the dead bus (gate)
+  CHECK(fake_sent_count() == 0);                // ...and nothing was sent to it
+  CHECK(fault_state() == JbUdp::FaultState::CAN_BUS_DOWN);
+
+  // Confirmed reconnect: the profiled stow begins, output gate re-enabled.
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) axes[i].last_heartbeat_us = fake_wall_us();
+  fault_step();
+  CHECK(s_fatal_can_error == false);
+  CHECK(s_stowing);
+  CHECK(interp_stow_active());
+  CHECK(interp_output_enabled());
+
+  // Drive the descent to completion (legs already at the off pose), then the
+  // fault machine IDLEs every leg and clears the latch.
+  interp_isr();                                 // one tick → stow_complete
+  CHECK(interp_stow_complete());
+  fake_clear_sent();
+  fault_step();
+  CHECK(fake_sent_count_cmd(CMD_SETSTATE) == NUM_LEGS);   // IDLE all six
+  CHECK(s_stowing == false);
+  CHECK(s_stow_pending == false);
+}
+
+TEST_CASE("present-axis freshness: single-leg rig reconnect is NOT dead-locked") {
+  // Only leg 0 present (the odrv0-only bench rig). The pre-Phase-11 all-six
+  // freshness form would dead-lock the reconnect (legs 1-5 never report fresh);
+  // the present-scoped form fires on leg 0 alone.
+  reset_all();
+  fake_set_clock(10'000'000, 10'000'000);
+  axes[0].heartbeat_seen = true;
+  axes[0].last_heartbeat_us = fake_wall_us();
+  // Loss: leg 0 goes stale → detection fires even with five absent legs.
+  fake_advance(3 * (uint64_t)CAN_HEARTBEAT_TIMEOUT_US);
+  fault_step();
+  CHECK(s_fatal_can_error);
+  CHECK(s_stow_pending);
+  // Reconnect: leg 0 fresh again → stow EXECUTES (the dead-lock fix).
+  axes[0].last_heartbeat_us = fake_wall_us();
+  fault_step();
+  CHECK(s_fatal_can_error == false);
+  CHECK(s_stowing);
+}
+
+TEST_CASE("motor-feedback staleness suppresses output recoverably (not latched)") {
+  reset_all();
+  fake_set_clock(10'000'000, 10'000'000);
+  fault_set_mpc_active(true);
+  axes[0].heartbeat_seen = true;
+  axes[0].last_heartbeat_us = fake_wall_us();
+  axes[0].pos_rev = 0.0f;
+  axes[0].pos_timestamp_us = fake_wall_us();
+  fake_set_udp_last_rx_us(fake_wall_us());
+  // Latch a (zero) setpoint so interp_have_latched() is true (the guard's pre-arm
+  // gate); u0=0 so there is no max-deviation trip.
+  JbUdp::SetpointPayload sp;
+  memset(&sp, 0, sizeof(sp));
+  interp_on_setpoint(0, reinterpret_cast<const uint8_t*>(&sp), sizeof(sp));
+  interp_isr();
+  REQUIRE(interp_have_latched());
+
+  // Feedback freezes: advance 0.2 s (> MOTOR_FB_STALENESS 0.15 s) without a new
+  // encoder timestamp; keep the link + command fresh so nothing else trips.
+  fake_advance(200'000);
+  axes[0].last_heartbeat_us = fake_wall_us();   // bus still up
+  fake_set_udp_last_rx_us(fake_wall_us());      // link still up
+  fault_step();
+  CHECK(fault_state() == JbUdp::FaultState::MOTOR_FB_STALE);
+  CHECK(interp_output_enabled() == false);      // output suppressed
+
+  // Feedback returns → output re-enables (recoverable, NOT a latched E-STOP).
+  axes[0].pos_timestamp_us = fake_wall_us();
+  fault_step();
+  CHECK(fault_state() != JbUdp::FaultState::MOTOR_FB_STALE);
+  CHECK(interp_output_enabled());
+}
+
+TEST_CASE("guard E-STOP / fb-stale are present-scoped and pre-arm-safe") {
+  // MAX_DEVIATION: a PRESENT leg whose commanded base diverges > MAX_DEVIATION_REV
+  // from its encoder trips the E-STOP; an ABSENT leg with a far command does NOT
+  // (production sends 6 targets; an absent node reads pos_rev=0 and must be skipped).
+  auto arm_leg0 = []() {
+    reset_all();
+    fake_set_clock(10'000'000, 10'000'000);
+    fault_set_mpc_active(true);
+    axes[0].heartbeat_seen = true;
+    axes[0].last_heartbeat_us = fake_wall_us();
+    axes[0].pos_rev = 0.0f;
+    axes[0].pos_timestamp_us = fake_wall_us();
+    fake_set_udp_last_rx_us(fake_wall_us());
+  };
+  auto latch_u0 = [](float a0, float a1) {
+    JbUdp::SetpointPayload sp; memset(&sp, 0, sizeof(sp));
+    sp.u0[0] = a0; sp.u0[1] = a1;     // leg1 is absent in these cases
+    interp_on_setpoint(0, reinterpret_cast<const uint8_t*>(&sp), sizeof(sp));
+    interp_isr();
+  };
+
+  SUBCASE("present leg diverging trips MAX_DEVIATION") {
+    arm_leg0();
+    latch_u0(0.9f, 3.0f);             // leg0 (present) diverges 0.9 > 0.5; leg1 (absent) far
+    fault_step();
+    CHECK(fault_state() == JbUdp::FaultState::MAX_DEVIATION);
+  }
+  SUBCASE("absent leg's far command alone does NOT trip MAX_DEVIATION") {
+    arm_leg0();
+    latch_u0(0.0f, 3.0f);             // leg0 aligned; only the absent leg1 is far
+    fault_step();
+    CHECK(fault_state() != JbUdp::FaultState::MAX_DEVIATION);
+  }
+  SUBCASE("fb-stale does not false-trip pre-arm (mpc inactive)") {
+    reset_all();
+    fake_set_clock(10'000'000, 10'000'000);
+    fault_set_mpc_active(false);      // not armed
+    axes[0].heartbeat_seen = true;
+    axes[0].last_heartbeat_us = fake_wall_us();
+    axes[0].pos_timestamp_us = 0;     // ancient feedback timestamp
+    fake_advance(1'000'000);
+    axes[0].last_heartbeat_us = fake_wall_us();
+    fake_set_udp_last_rx_us(fake_wall_us());
+    fault_step();
+    CHECK(fault_state() != JbUdp::FaultState::MOTOR_FB_STALE);
+  }
+}
+
+// =============================================================================
+//  Golden emission (firmware-anchored conformance source for fault_logic.py)
+// =============================================================================
+static void emit_vec6u(FILE* f, const Vec6u& v) {
+  fprintf(f, "[%u,%u,%u,%u,%u,%u]", v[0], v[1], v[2], v[3], v[4], v[5]);
+}
+static void emit_vec6b(FILE* f, const Vec6b& v) {
+  fprintf(f, "[%u,%u,%u,%u,%u,%u]", v[0], v[1], v[2], v[3], v[4], v[5]);
+}
+static const char* jb(bool b) { return b ? "true" : "false"; }
+
+static int emit_golden(const char* path) {
+  FILE* f = fopen(path, "w");
+  if (!f) { fprintf(stderr, "cannot open %s\n", path); return 2; }
+  fprintf(f, "{\n");
+  fprintf(f, "  \"_note\": \"AUTO-GENERATED by tests/firmware/native/test_fault_machine.cpp "
+             "--emit-golden. Firmware-anchored vectors: the REAL fault_machine.cpp drives them; "
+             "tests/firmware/test_fault_logic.py replays them through controller/teensy_link/"
+             "fault_logic.py so the host mirror cannot drift. Regenerate via "
+             "tests/firmware/native/build.py --golden <path>.\",\n");
+
+  // Error scenarios
+  fprintf(f, "  \"error_scenarios\": [\n");
+  auto escs = error_scenarios();
+  for (size_t si = 0; si < escs.size(); ++si) {
+    const auto& sc = escs[si];
+    auto out = run_error_scenario(sc);
+    fprintf(f, "    {\"name\": \"%s\", \"steps\": [\n", sc.name.c_str());
+    for (size_t k = 0; k < sc.steps.size(); ++k) {
+      const auto& st = sc.steps[k];
+      fprintf(f, "      {\"notify_clear\": %s, \"preset_fatal\": %s, ",
+              jb(st.notify_clear), jb(st.preset_fatal));
+      fprintf(f, "\"active\": "); emit_vec6u(f, st.active);
+      fprintf(f, ", \"disarm\": "); emit_vec6u(f, st.disarm);
+      fprintf(f, ", \"state\": "); emit_vec6b(f, st.state);
+      fprintf(f, ", \"out\": {\"fatal_error\": %s, \"undervoltage_error\": %s, "
+                 "\"soft_reset_attempts\": %d, \"clear_calls\": %d}}%s\n",
+              jb(out[k].fatal), jb(out[k].uv), out[k].soft_reset, out[k].clear_calls,
+              k + 1 < sc.steps.size() ? "," : "");
+    }
+    fprintf(f, "    ]}%s\n", si + 1 < escs.size() ? "," : "");
+  }
+  fprintf(f, "  ],\n");
+
+  // Stow scenarios
+  fprintf(f, "  \"stow_scenarios\": [\n");
+  auto sscs = stow_scenarios();
+  for (size_t si = 0; si < sscs.size(); ++si) {
+    const auto& sc = sscs[si];
+    auto out = run_stow_scenario(sc);
+    fprintf(f, "    {\"name\": \"%s\", \"steps\": [\n", sc.name.c_str());
+    for (size_t k = 0; k < sc.steps.size(); ++k) {
+      const auto& st = sc.steps[k];
+      fprintf(f, "      {\"stale\": %s, \"fresh\": %s, \"complete\": %s, "
+                 "\"out\": {\"fatal\": %s, \"stow_pending\": %s, \"stowing\": %s}}%s\n",
+              jb(st.stale), jb(st.fresh), jb(st.complete),
+              jb(out[k].fatal), jb(out[k].pending), jb(out[k].stowing),
+              k + 1 < sc.steps.size() ? "," : "");
+    }
+    fprintf(f, "    ]}%s\n", si + 1 < sscs.size() ? "," : "");
+  }
+  fprintf(f, "  ]\n}\n");
+  fclose(f);
+  return 0;
+}
+
+int main(int argc, char** argv) {
+  for (int i = 1; i < argc; ++i) {
+    if (std::strcmp(argv[i], "--emit-golden") == 0 && i + 1 < argc) {
+      return emit_golden(argv[i + 1]);
+    }
+  }
+  doctest::Context ctx;
+  ctx.applyCommandLine(argc, argv);
+  return ctx.run();
+}

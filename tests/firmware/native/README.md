@@ -1,0 +1,114 @@
+# Native firmware test harness
+
+Compiles the **real** safety-critical can-bridge firmware on the build host and
+tests the **binary**, so a C++ divergence from the safety logic fails
+`pytest tests/ -q` — instead of passing silently because only a hand-maintained
+Python transcription was checked (the standing risk flagged in
+`logbook/2026-06-27-can-node-teensy-parity-audit.md` §5).
+
+Today it compiles `fault_machine.cpp` and `leg_interp.cpp`. The HAL seam is built
+to **grow**: Phases 1/3 of `plans/active/canbridge-foundation-coldstart-parity.md`
+will compile the relay/version decode path into the same harness and drive it via
+the inbound-CAN3 injection hook already present in `fake_hal`.
+
+## Run it
+
+It is wired into the normal suite — no separate command:
+
+```bash
+pytest tests/firmware/test_native_firmware.py -q     # build + run + golden check
+pytest tests/ -q                                      # the full gate (incl. the above)
+```
+
+`pytest tests/firmware/test_fault_logic.py -q` runs the golden conformance for the
+Jetson host mirror and needs **no compiler** (it replays the committed golden).
+
+Build/run the binaries directly (handy when iterating):
+
+```bash
+python tests/firmware/native/build.py            # build both (hash-cached)
+./temp/firmware_native/test_fault_machine        # doctest output
+./temp/firmware_native/test_leg_interp
+python tests/firmware/native/build.py --force    # ignore the cache, rebuild
+```
+
+## Build recipe
+
+* Compiler: `g++ -std=c++17 -O2 -Wall -Wno-unused-function` (exceptions/RTTI
+  enabled for doctest; the firmware TUs neither throw nor use RTTI, so this does
+  not change their behaviour). Fixed flags ⇒ reproducible (same sources → same
+  binary).
+* Includes: `-I hal_shims -I . -I <Teensy_code_canbridge>`.
+* **No `.cpp` is ever both `#include`d and linked as an object in the same
+  binary** (the rule that avoids ODR clashes):
+  * `test_fault_machine.cpp` `#include`s **both** `fault_machine.cpp` and
+    `leg_interp.cpp` — the two share no symbol names, so one TU is ODR-clean — so
+    it can drive the `static interp_isr()` to complete a stow and assert the
+    fault machine's terminal-IDLE handling (deferred-stow invariant 5) as a
+    *compiled* assertion.
+  * `test_leg_interp.cpp` `#include`s `leg_interp.cpp` only.
+  * Shared objects compiled once and linked into both: `axis_state.o`,
+    `ball_butler_state.o`, `fake_hal.o`.
+* Hash-cached: `build.py` stamps a SHA over every harness file + every firmware
+  `.cpp/.h/.ino` + the flags + the g++ version. Unchanged sources ⇒ zero
+  recompile. Artifacts live under `temp/firmware_native/` (gitignored).
+* g++-gated: `build.have_gpp()` lets the pytest wrapper **skip** (not fail) on a
+  host without a compiler. The Jetson run is authoritative.
+
+## The HAL seam (`fake_hal.cpp` / `fake_hal.h`)
+
+The compiled TUs reach a few leaf symbols from other translation units we do not
+compile on the host; `fake_hal.cpp` defines them with a controllable clock and a
+**recording** CAN3 TX, and the two `hal_shims/` headers stand in for the Teensy
+core:
+
+| Symbol the firmware needs | Real owner (off-target) | Host stand-in |
+|---|---|---|
+| `now_wall_us()`, `micros64()` | `time_base.cpp` | controllable clock (`fake_set_clock`/`fake_advance`) |
+| `udp_last_rx_us()` | `udp_link.cpp` | settable (`fake_set_udp_last_rx_us`) |
+| `homing_active()` / `activate_active()` / `deactivate_active()` | `leg_homing/activate/deactivate.cpp` | settable predicates |
+| `can_jugglebot_send()` | `can_buses.cpp` | **recording** vector (`fake_sent_*`) — the never-command-a-dead-bus check reads this |
+| `axes[]`, `bb_state` | `axis_state.cpp`, `ball_butler_state.cpp` | the **real** objects (those `.cpp` are compiled + linked) |
+| `IntervalTimer`, PRIMASK intrinsics, `micros/millis` | Teensy core `<Arduino.h>` / freertos port | `hal_shims/Arduino.h` + `arduino_freertos.h` |
+| (growable) inbound CAN3 frame | `can_buses.cpp` RX decode | `fake_inject_can3_rx()` FIFO — unused in Phase 0; for Phase 1/3 reply-correlation |
+
+Reset between cases: `fake_reset()` + `fault_machine_init()` + `interp_reset()`
+clear all file-scope state so test ordering can neither fabricate nor mask a
+result.
+
+## Golden vectors (`fault_golden.json`)
+
+`test_fault_machine --emit-golden <path>` dumps the firmware-anchored conformance
+vectors (the subset of scenarios the Jetson mirror `controller/teensy_link/
+fault_logic.py` models). Regenerate after an *intended* fault-machine change:
+
+```bash
+python tests/firmware/native/build.py --golden tests/firmware/native/fault_golden.json
+```
+
+Two guards keep the three layers in lockstep (the coupling the manual
+transcription used to maintain by hand):
+
+* `test_native_firmware.py::test_committed_golden_matches_live_firmware` — a fresh
+  emission must equal the committed golden (firmware drift ⇒ fail, on the Jetson).
+* `test_fault_logic.py` — `fault_logic.py` must reproduce the committed golden
+  (host-mirror drift ⇒ fail, everywhere — no compiler needed).
+
+## Scope (read this before trusting a green run)
+
+The harness validates **decision logic only** — single-threaded, on a fake clock.
+It does **not** cover, and these remain on-hardware-replay gaps:
+
+* FreeRTOS/ISR **concurrency** (the deferred-stow re-arm race, the PRIMASK atomic
+  publish, ISR priority vs the syscall ceiling);
+* the **500 Hz deadline** / interp jitter (parity item #1, still UNVALIDATED);
+* float32-vs-float64 numerical residue — host float is true IEEE-32 (closer to the
+  Teensy FPU than the float64 Python mirror), and these tests assert **behaviour**
+  (clamps fired, modes transitioned, descent converged), not bit-exact equality.
+  The float64 numerical xref stays in `tests/firmware/test_hermite_xref.py`.
+
+## Vendored dependency
+
+`doctest.h` — doctest v2.4.11, single-header C++ test framework, MIT licensed
+(© 2016-2023 Viktor Kirilov, <https://github.com/doctest/doctest>). Vendored
+verbatim; do not hand-edit.

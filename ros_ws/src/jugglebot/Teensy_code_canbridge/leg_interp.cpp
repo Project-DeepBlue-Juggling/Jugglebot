@@ -277,6 +277,37 @@ static void interp_isr() {
   }
 }
 
+// Reset every interpolator file-static to its power-on value. Two callers:
+//   (a) the native test harness, to isolate interp statics between cases (the
+//       fault-machine test binary links leg_interp.o and must reset it too);
+//   (b) on-target re-arm, to return the interp to a known state before a fresh
+//       cold-start (analogous to fault_machine_init()).
+// Call only when the interp is quiescent (output disabled / not mid-tick) — it is
+// NOT ISR-safe (it races the 500 Hz interp_isr's reads/writes of these statics).
+void interp_reset() {
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) {
+    s_base_pos[i] = s_base_vel[i] = s_base_accel[i] = s_base_torque[i] = 0.0f;
+    s_jerk[i] = s_next_pos[i] = s_next2_pos[i] = 0.0f;
+    s_prev_accel[i] = 0.0f;
+    s_stow_pos[i] = 0.0f;
+  }
+  s_has_next = s_has_next2 = false;
+  s_base_ts_us = 0;
+  s_have_latched = false;
+  s_have_prev_accel = false;
+  s_prev_recv_us = 0;
+  s_stage = Staging{};
+  s_pending = false;
+  s_last_setpoint_us = 0;
+  s_output_enabled = false;
+  s_stow_active = false;
+  s_stow_complete = false;
+  s_stow_speed = 0.0f;
+  s_deadline_misses = 0;
+  s_max_jitter_us = 0;
+  s_last_tick_us = 0;
+}
+
 void leg_interp_init() {
   // Begin the 500 Hz tick. priority(): lower = more urgent on the Cortex-M NVIC.
   // We want the interp ISR ABOVE the FreeRTOS syscall ceiling so RTOS critical
