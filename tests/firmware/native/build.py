@@ -67,6 +67,13 @@ _BINARIES = {
         NATIVE_DIR / "test_leg_interp.cpp",
         ["axis_state", "ball_butler_state", "fake_hal"],
     ),
+    # Phase 1: the Platform-Teensy relay seam. #includes platform_relay.cpp; the
+    # fake HAL supplies can_jugglebot_send + jugglebot_commands_allowed, and
+    # is_platform_reply_id / hand_axis6_permitted are header-inline / generated.
+    "test_platform_relay": (
+        NATIVE_DIR / "test_platform_relay.cpp",
+        ["axis_state", "ball_butler_state", "fake_hal"],
+    ),
 }
 
 

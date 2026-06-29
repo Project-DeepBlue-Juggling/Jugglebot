@@ -65,6 +65,7 @@ using JbUdp::RpcArgs::ArgSdoRead;
 using JbUdp::RpcArgs::ArgSdoWrite;
 using JbUdp::RpcArgs::ResultTimeOfDay;
 using JbUdp::RpcArgs::ArgBbThrow;
+using JbUdp::RpcArgs::ArgRobotState;   // STATE_WRITE (Platform-Teensy relay — Phase 1)
 
 using JbUdp::RpcArgs::AXIS_ALL;   // broadcast to all legs (CLEAR_ERRORS/REBOOT)
 

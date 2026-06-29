@@ -75,11 +75,13 @@ def test_no_orphan_dispatch_cases():
 
 
 def test_reserved_methods_are_stubbed_not_unknown():
-    """The Phase-0 reserved ids answer ERR_NOT_IMPL (an explicit, intentional
-    stub), not ERR_UNKNOWN_METHOD — so a caller can tell 'reserved, not yet
-    implemented in this firmware' apart from 'garbage id'. This pins the stub
-    contract the later phases replace."""
-    reserved = ["GET_AXIS_VERSIONS", "TILT_READ", "STATE_READ", "STATE_WRITE", "HAND_TRAJ_CMD"]
+    """The still-reserved ids answer ERR_NOT_IMPL (an explicit, intentional stub),
+    not ERR_UNKNOWN_METHOD — so a caller can tell 'reserved, not yet implemented in
+    this firmware' apart from 'garbage id'. This pins the stub contract the later
+    phases replace. (Phase 1 replaced the TILT_READ/STATE_READ/STATE_WRITE stubs
+    with the real Platform-Teensy relay dispatch; GET_AXIS_VERSIONS [Phase 3] and
+    HAND_TRAJ_CMD [Phase 5] remain stubbed.)"""
+    reserved = ["GET_AXIS_VERSIONS", "HAND_TRAJ_CMD"]
     text = _RPC_CPP.read_text()
     # Find the dispatch() body and confirm each reserved case routes to ERR_NOT_IMPL.
     # The reserved cases fall through to one shared `return RpcStatus::ERR_NOT_IMPL;`.

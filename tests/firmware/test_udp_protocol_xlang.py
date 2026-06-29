@@ -71,7 +71,7 @@ def test_crc16_matches_generator(gen, proto):
 
 @pytest.mark.parametrize("name", [
     "Setpoint", "HeartbeatJ2T", "Telemetry", "Diagnostic",
-    "HeartbeatT2J", "Profile", "RpcRequest", "RpcResponse",
+    "HeartbeatT2J", "Profile", "PlatformFrame", "RpcRequest", "RpcResponse",
 ])
 def test_message_pack_unpack_roundtrip(proto, gen, name):
     # Build an instance with deterministic field values derived from the spec,
@@ -107,6 +107,7 @@ def test_message_pack_unpack_roundtrip(proto, gen, name):
 @pytest.mark.parametrize("name,msg_type_member", [
     ("Setpoint", "SETPOINT"), ("Telemetry", "TELEMETRY"),
     ("HeartbeatT2J", "HEARTBEAT_T2J"), ("Profile", "PROFILE"),
+    ("PlatformFrame", "PLATFORM_FRAME"),
 ])
 def test_frame_encode_decode_roundtrip(proto, gen, name, msg_type_member):
     msg_spec = next(m for m in gen.MESSAGES if m.name == name)

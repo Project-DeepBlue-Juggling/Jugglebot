@@ -330,6 +330,19 @@ Payload **56 bytes**. Python struct fmt: `<Qffffffffffff`.
 | `cmd_pos_rev` | f32 | 6 | Per-leg commanded interp position (rev), post lead/stroke clamp |
 | `cmd_vel_rps` | f32 | 6 | Per-leg commanded interp velocity FF (rev/s) |
 
+### PlatformFrame (`MsgType.PLATFORM_FRAME`, T2J, STREAM port)
+
+Verbatim Platform-Teensy relay-reply uplink (canbridge-foundation-coldstart-parity Phase 1). The can-bridge forwards every CAN3 frame it receives whose arbitration id is a Platform-Teensy reply (STATE_UPDATE 0x6E0 RobotState, TILT_READING 0x7DE inclinometer) verbatim, so the host owns the decode and the bridge stays decoupled from the Platform-Teensy byte layout (Teensy_code.ino createStateCANMessage / sendTiltData). The host correlates a reply to its pending relay read by (can_id, dlc): a STATE_READ awaits (0x6E0, 8); a TILT_READ awaits (0x7DE, 8). `t_bridge_us` only stamps bridge-side CAN3 RX for latency/diagnostics. NOTE(bench): the (id, dlc) discriminator is only sound if CAN3 SRX_DIS is set so the bridge's own 0x6E0 STATE_WRITE is not looped back as a reply — verify on the bench before trusting on hardware.
+
+Payload **21 bytes**. Python struct fmt: `<QIBBBBBBBBB`.
+
+| Field | Type | Count | Notes |
+|-------|------|------:|-------|
+| `t_bridge_us` | u64 | 1 | Bridge wall-clock at CAN3 RX (us) |
+| `can_id` | u32 | 1 | CAN arbitration id (0x6E0 STATE_UPDATE / 0x7DE TILT_READING) |
+| `dlc` | u8 | 1 | CAN payload length (0..8) |
+| `data` | u8 | 8 | Raw CAN payload bytes (zero-padded past dlc) |
+
 ### RpcRequest (`MsgType.RPC_REQUEST`, J2T, RPC port)
 
 Generic RPC envelope. `method` selects the operation; `args` is a method-specific blob (see docs). `req_id` is echoed in the response for matching independent of the frame sequence counter.
@@ -465,3 +478,14 @@ wraps the generated Python. `AXIS_ALL = 0xFF` broadcasts to all legs.
 | `pitch_rad` | f32 | Pitch angle in radians [0, pi/2] |
 | `speed_mps` | f32 | Throw speed in m/s [0, 6.5535] |
 | `delay_s` | f32 | Relative delay before throw (s) [0, 65.535] |
+
+### ArgRobotState (`STATE_WRITE`)
+
+**10 bytes**. Python struct fmt: `<BBff`.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `is_homed` | u8 | Legs+hand homing complete |
+| `levelling_complete` | u8 | Platform levelling complete |
+| `pose_offset_tiltX` | f32 | Levelling pose offset, tilt about X (rad) |
+| `pose_offset_tiltY` | f32 | Levelling pose offset, tilt about Y (rad) |

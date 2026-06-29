@@ -44,8 +44,10 @@ from .protocol import (
     CmdResultFrame,
     BbAxisEstimates,
     LegCmd,
+    PlatformFrame,
     RpcRequest,
     RpcResponse,
+    hand_axis6_permitted,
 )
 from .client import TeensyLinkClient, LinkStats
 from .rpc import RpcClient, RpcServer, RpcError, RpcTimeout
@@ -71,8 +73,10 @@ __all__ = [
     "CmdResultFrame",
     "BbAxisEstimates",
     "LegCmd",
+    "PlatformFrame",
     "RpcRequest",
     "RpcResponse",
+    "hand_axis6_permitted",
     # Client + RPC infrastructure
     "TeensyLinkClient",
     "LinkStats",

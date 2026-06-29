@@ -16,7 +16,10 @@ run is authoritative):
      deferred-stow 5 invariants, present-axis scoping, fb-stale suppression);
   2. build + run `test_leg_interp` (lead/stroke/present-axis clamps, modes, stow
      descent);
-  3. assert a freshly-emitted golden still equals the committed
+  3. build + run `test_platform_relay` (Phase-1 Platform-Teensy relay: trigger
+     frames, 0x6E0 RobotState re-encode parity, the never-command-a-dead-bus
+     fail-fast, is_platform_reply_id, the generated hand axis-6 allow-table);
+  4. assert a freshly-emitted golden still equals the committed
      `native/fault_golden.json` — so a firmware behaviour change must regenerate
      the golden deliberately (and `tests/firmware/test_fault_logic.py` then pins
      the Jetson host mirror `fault_logic.py` to that same golden).
@@ -56,7 +59,7 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture(scope="module")
 def binaries():
-    """Hash-cached build of both native test binaries (compiles only on change)."""
+    """Hash-cached build of all native test binaries (compiles only on change)."""
     return _build.build_all()
 
 
@@ -80,6 +83,17 @@ def test_native_leg_interp_binary_passes(binaries):
     assert r.returncode == 0, (
         "native test_leg_interp FAILED — leg_interp.cpp diverged from the expected "
         f"interpolator behaviour:\n{r.stdout}\n{r.stderr}")
+
+
+def test_native_platform_relay_binary_passes(binaries):
+    """The compiled platform_relay.cpp passes every behaviour assertion (Phase 1
+    Platform-Teensy relay: trigger frames, 0x6E0 RobotState re-encode parity, the
+    never-command-a-dead-bus fail-fast, is_platform_reply_id, and the generated
+    hand axis-6 allow-table)."""
+    r = _run(binaries["test_platform_relay"])
+    assert r.returncode == 0, (
+        "native test_platform_relay FAILED — platform_relay.cpp / the relay seam "
+        f"diverged from the expected behaviour:\n{r.stdout}\n{r.stderr}")
 
 
 def test_committed_golden_matches_live_firmware(binaries, tmp_path):

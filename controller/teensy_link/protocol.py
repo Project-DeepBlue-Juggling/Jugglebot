@@ -71,6 +71,7 @@ from udp_protocol import (  # noqa: E402, F401
     CmdResultFrame,
     BbAxisEstimates,
     LegCmd,
+    PlatformFrame,
     RpcRequest,
     RpcResponse,
     # Sizes
@@ -84,6 +85,7 @@ from udp_protocol import (  # noqa: E402, F401
     CMD_RESULT_FRAME_SIZE,
     BB_AXIS_ESTIMATES_SIZE,
     LEG_CMD_SIZE,
+    PLATFORM_FRAME_SIZE,
     RPC_REQUEST_SIZE,
     RPC_RESPONSE_SIZE,
     # RPC method argument layouts (hoisted into the generator at Phase 10b)
@@ -99,6 +101,10 @@ from udp_protocol import (  # noqa: E402, F401
     ArgSdoWrite,
     ResultTimeOfDay,
     ArgBbThrow,
+    ArgRobotState,
+    # Hand axis-6 allow-table (Phase 1)
+    HAND_AXIS6_PERMITTED,
+    hand_axis6_permitted,
 )
 
 TEENSY_IP: str = f"{TEENSY_IP_0}.{TEENSY_IP_1}.{TEENSY_IP_2}.{TEENSY_IP_3}"

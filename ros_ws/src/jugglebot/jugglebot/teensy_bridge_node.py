@@ -37,8 +37,10 @@ Commit 4 adds the RPC service surface. Each is a separate, test-gated commit.
 from __future__ import annotations
 
 import math
+import struct
 import threading
 import time
+from collections import namedtuple
 
 import rclpy
 from rclpy.node import Node
@@ -81,6 +83,7 @@ from controller.teensy_link import (
     ConeFrame,
     CmdResultFrame,
     BbAxisEstimates,
+    PlatformFrame,
 )
 from controller.teensy_link import protocol as p
 from controller.teensy_link import rpc_args
@@ -134,6 +137,28 @@ _ERR_DC_BUS_UNDER_VOLTAGE = 512
 
 # ODrive CLOSED_LOOP axis state (matches odrive.AXIS_STATES['CLOSED_LOOP']).
 _AXIS_STATE_CLOSED_LOOP = 8
+
+# Decoded Platform-Teensy RobotState (Phase 1 relay read). Fields mirror
+# Teensy_code.ino RobotState (is_homed / levelling_complete / pose offset, rad).
+RelayRobotState = namedtuple(
+    "RelayRobotState",
+    ["is_homed", "levelling_complete", "pose_offset_tiltX", "pose_offset_tiltY"])
+
+
+def _decode_relay_robot_state(data: bytes) -> RelayRobotState:
+    """Decode a 0x6E0 RobotState reply exactly as Teensy_code.ino
+    decodeStateCANMessage packs it: byte0 flags (bit0 is_homed, bit1 levelling),
+    int16 LE pose*1000 about X (bytes 1-2) and Y (bytes 3-4)."""
+    if len(data) < 5:
+        raise ValueError(f"RobotState reply too short: {len(data)} bytes")
+    flags = data[0]
+    x = int.from_bytes(data[1:3], "little", signed=True)
+    y = int.from_bytes(data[3:5], "little", signed=True)
+    return RelayRobotState(
+        is_homed=bool(flags & 0x1),
+        levelling_complete=bool(flags & 0x2),
+        pose_offset_tiltX=x / 1000.0,
+        pose_offset_tiltY=y / 1000.0)
 
 
 def _enum_name(enum_cls, value: int) -> str:
@@ -312,6 +337,16 @@ class TeensyBridgeNode(Node):
         self._bb_throw_active = False
         self._bb_throw_result = None   # (outcome:int, detail0:int, detail1:int)
 
+        # ── Platform-Teensy relay replies (Phase 1: PLATFORM_FRAME) ──
+        # The relay READ RPCs (TILT_READ / STATE_READ) only TRIGGER a Platform
+        # reply; the reply arrives async as a PLATFORM_FRAME on the RX thread. A
+        # relay read clears the latched reply for its can_id, sends the RPC, then
+        # blocks on this condition for a fresh reply. Correlation is by
+        # (can_id, dlc) — sound only if CAN3 SRX_DIS suppresses the bridge's own
+        # 0x6E0 write echo (bench-probe gate; see _await_platform_reply).
+        self._platform_reply_cv = threading.Condition()
+        self._platform_replies = {}    # can_id -> (data: bytes, dlc: int)
+
         # ── Subscriptions to T→J streams (RX-thread callbacks) ──
         self._client.subscribe(int(MsgType.HEARTBEAT_T2J), self._on_heartbeat_t2j)
         self._client.subscribe(int(MsgType.TELEMETRY), self._on_telemetry)
@@ -320,6 +355,7 @@ class TeensyBridgeNode(Node):
         self._client.subscribe(int(MsgType.CONE_FRAME), self._on_cone_frame)
         self._client.subscribe(int(MsgType.BB_AXIS_ESTIMATES), self._on_bb_estimates)
         self._client.subscribe(int(MsgType.CMD_RESULT), self._on_cmd_result)
+        self._client.subscribe(int(MsgType.PLATFORM_FRAME), self._on_platform_frame)
 
         # ── Publishers (production names — Phase 11 / U4 leg-side cutover) ──
         # Promoted from the /teensy/* namespace to the production topic names
@@ -525,6 +561,21 @@ class TeensyBridgeNode(Node):
                     self._cone_last_hb_mono = time.monotonic()
         except Exception:  # noqa: BLE001
             return
+
+    def _on_platform_frame(self, msg_type, seq, payload, addr):
+        # RX-thread callback: a Platform-Teensy relay reply (CAN3 0x6E0 RobotState
+        # / 0x7DE tilt) the bridge forwarded verbatim. Latch the latest reply by
+        # can_id and wake any relay read blocked on it. Malformed frames dropped
+        # (never kill the RX thread). Decode lives in the relay read methods so the
+        # bridge stays decoupled from the Platform-Teensy byte layout.
+        try:
+            pf = PlatformFrame.unpack(payload)
+        except Exception:  # noqa: BLE001
+            return
+        data = bytes(pf.data[:pf.dlc])
+        with self._platform_reply_cv:
+            self._platform_replies[int(pf.can_id)] = (data, int(pf.dlc))
+            self._platform_reply_cv.notify_all()
 
     def _on_bb_estimates(self, msg_type, seq, payload, addr):
         # RX-thread callback: decode + queue every sample. The drain timer
@@ -1086,6 +1137,76 @@ class TeensyBridgeNode(Node):
     def teensy_sdo_write(self, axis, endpoint, value):
         return self._call_rpc(RpcMethod.SDO_WRITE,
                               rpc_args.encode_sdo_write(axis, endpoint, value))
+
+    # ── Platform-Teensy relay (Phase 1) ──
+    # The relay reads TRIGGER a Platform-Teensy reply over CAN3 (0x7DE tilt /
+    # 0x6E0 RobotState); the firmware forwards the reply verbatim as a
+    # PLATFORM_FRAME the bridge correlates by (can_id, dlc). These methods are the
+    # tested mechanism; Phase 2/4 source robot_state.is_homed/levelling/pose +
+    # get_platform_tilt from them. NOTE(bench): the (can_id, dlc) discriminator is
+    # only sound if CAN3 SRX_DIS is set so the bridge's own 0x6E0 STATE_WRITE is
+    # not looped back as a reply, and the await timeout must exceed the measured
+    # Platform reply latency — both gated on a bench probe before hardware trust.
+    _RELAY_READ_TIMEOUT_S = 0.5
+
+    def _await_platform_reply(self, can_id, expected_dlc, timeout):
+        """Block (calling thread) for a fresh PLATFORM_FRAME on ``can_id`` with the
+        expected dlc. Returns the raw reply bytes, or None on timeout. The caller
+        clears the latch BEFORE sending the trigger RPC so a stale reply can't
+        satisfy a new read."""
+        deadline = time.monotonic() + timeout
+        with self._platform_reply_cv:
+            while True:
+                entry = self._platform_replies.get(int(can_id))
+                if entry is not None and entry[1] == expected_dlc:
+                    return entry[0]
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.0:
+                    return None
+                self._platform_reply_cv.wait(remaining)
+
+    def relay_read_tilt(self, timeout=None):
+        """TILT_READ: read the Platform-Teensy inclinometer. Returns
+        (ok, message, (tiltX, tiltY)) in radians; tilt is None on failure."""
+        timeout = self._RELAY_READ_TIMEOUT_S if timeout is None else timeout
+        can_id = proto.CAN_ID_PLATFORM_TILT_READING
+        with self._platform_reply_cv:
+            self._platform_replies.pop(int(can_id), None)
+        ok, msg, _ = self._call_rpc(RpcMethod.TILT_READ)
+        if not ok:
+            return False, msg, None        # fail-fast (e.g. ERR_BUS_DOWN)
+        data = self._await_platform_reply(can_id, expected_dlc=8, timeout=timeout)
+        if data is None:
+            return False, 'relay tilt read: no Platform reply within timeout', None
+        tiltX, tiltY = struct.unpack('<ff', data[:8])
+        return True, 'OK', (tiltX, tiltY)
+
+    def relay_read_robot_state(self, timeout=None):
+        """STATE_READ: read the Platform-Teensy RobotState. Returns
+        (ok, message, RelayRobotState | None). Decodes the 0x6E0 reply exactly as
+        Teensy_code.ino decodeStateCANMessage packs it."""
+        timeout = self._RELAY_READ_TIMEOUT_S if timeout is None else timeout
+        can_id = proto.CAN_ID_PLATFORM_STATE_UPDATE
+        with self._platform_reply_cv:
+            self._platform_replies.pop(int(can_id), None)
+        ok, msg, _ = self._call_rpc(RpcMethod.STATE_READ)
+        if not ok:
+            return False, msg, None        # fail-fast (e.g. ERR_BUS_DOWN)
+        data = self._await_platform_reply(can_id, expected_dlc=8, timeout=timeout)
+        if data is None:
+            return False, 'relay state read: no Platform reply within timeout', None
+        return True, 'OK', _decode_relay_robot_state(data)
+
+    def relay_write_robot_state(self, is_homed, levelling_complete,
+                                pose_offset_tiltX=0.0, pose_offset_tiltY=0.0):
+        """STATE_WRITE: write the whole Platform-Teensy RobotState (the bridge is
+        the sole writer; the firmware re-encodes the 0x6E0 frame). No reply —
+        returns (ok, message) from the synchronous RPC ack."""
+        ok, msg, _ = self._call_rpc(
+            RpcMethod.STATE_WRITE,
+            rpc_args.encode_state_write(is_homed, levelling_complete,
+                                        pose_offset_tiltX, pose_offset_tiltY))
+        return ok, msg
 
     # ── Encoder index search (Phase 9a, Jetson-side orchestration) ──
     # The firmware ENCODER_SEARCH RPC is stubbed (ERR_NOT_IMPL); encoder index

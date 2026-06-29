@@ -14,6 +14,7 @@
 #include "leg_homing.h"
 #include "leg_activate.h"
 #include "leg_deactivate.h"
+#include "platform_relay.h"
 
 namespace CanBridge {
 namespace Rpc {
@@ -70,21 +71,23 @@ bool parse_response(const uint8_t* payload, uint16_t len,
 
 // ── Server dispatch ───────────────────────────────────────────────────────────
 
-// "Never command a confirmed-dead bus." Reject CAN-bound RPCs when CAN3 (the
-// Jugglebot core bus carrying the leg ODrives) is in a WARN/BUS_OFF state (the
-// proxy for fatal_can_error until Phase 8 wires the authoritative fault-machine
-// predicate). OK/UNKNOWN both allow commands so the initial bring-up sequence
-// (set CLOSED_LOOP before telemetry warms) works.
-static bool jugglebot_commands_allowed() {
-  const uint8_t h = can_buses_stats().jugglebot_health;
-  return h != JbUdp::BusHealth::WARN && h != JbUdp::BusHealth::BUS_OFF;
-}
+// jugglebot_commands_allowed() ("never command a confirmed-dead bus") now lives in
+// can_buses.cpp — it is shared with platform_relay.cpp (the relay reads/writes gate
+// on the same CAN3-health predicate). See can_buses.h.
 
-// Send an ODrive frame to a leg axis (0..5). Hand (axis 6) is owned by the
-// platform Teensy in this architecture → reject. Returns an RpcStatus.
-static uint16_t send_leg_frame(uint8_t axis, const ODrive::CanFrame& f) {
-  if (axis == HAND_AXIS) return JbUdp::RpcStatus::ERR_REJECTED;  // platform Teensy owns the hand
-  if (axis >= NUM_LEGS)  return JbUdp::RpcStatus::ERR_BAD_ARGS;
+// Send an ODrive frame to a Jugglebot axis. Legs (0..5) always pass the (method,
+// axis) check; the HAND ODrive (axis 6) is on CAN3 too and is forwarded ONLY for
+// the narrow allow-table (JbUdp::hand_axis6_permitted — set/mode/gains/limits/
+// clear/reboot/home/abs-pos), replacing the old blanket axis==HAND_AXIS reject so
+// hand homing + the hand command surface work (Phase 1). Every permitted op — leg
+// or hand — is still gated on jugglebot_commands_allowed(): the hand is GATED like
+// a leg, never ungated. Returns an RpcStatus.
+static uint16_t send_axis_frame(uint16_t method, uint8_t axis, const ODrive::CanFrame& f) {
+  if (axis == HAND_AXIS) {
+    if (!JbUdp::hand_axis6_permitted(method)) return JbUdp::RpcStatus::ERR_REJECTED;
+  } else if (axis >= NUM_LEGS) {
+    return JbUdp::RpcStatus::ERR_BAD_ARGS;
+  }
   if (!jugglebot_commands_allowed()) return JbUdp::RpcStatus::ERR_BUS_DOWN;
   return can_jugglebot_send(f) ? JbUdp::RpcStatus::OK : JbUdp::RpcStatus::ERR_TIMEOUT;
 }
@@ -125,27 +128,27 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
 
     case RpcMethod::SET_AXIS_STATE: {
       ArgAxisState a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
-      return send_leg_frame(a.axis, ODrive::encode_set_state(a.axis, a.state));
+      return send_axis_frame(method, a.axis, ODrive::encode_set_state(a.axis, a.state));
     }
     case RpcMethod::SET_CONTROLLER_MODE: {
       ArgControllerMode a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
-      return send_leg_frame(a.axis, ODrive::encode_set_controller_mode(a.axis, a.ctrl, a.input));
+      return send_axis_frame(method, a.axis, ODrive::encode_set_controller_mode(a.axis, a.ctrl, a.input));
     }
     case RpcMethod::SET_VEL_CURR_LIMITS: {
       ArgVelCurr a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
-      return send_leg_frame(a.axis, ODrive::encode_set_vel_curr_limits(a.axis, a.vel_limit, a.curr_limit));
+      return send_axis_frame(method, a.axis, ODrive::encode_set_vel_curr_limits(a.axis, a.vel_limit, a.curr_limit));
     }
     case RpcMethod::SET_POS_GAIN: {
       ArgPosGain a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
-      return send_leg_frame(a.axis, ODrive::encode_set_pos_gain(a.axis, a.pos_gain));
+      return send_axis_frame(method, a.axis, ODrive::encode_set_pos_gain(a.axis, a.pos_gain));
     }
     case RpcMethod::SET_VEL_GAINS: {
       ArgVelGains a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
-      return send_leg_frame(a.axis, ODrive::encode_set_vel_gains(a.axis, a.vel_gain, a.vel_int_gain));
+      return send_axis_frame(method, a.axis, ODrive::encode_set_vel_gains(a.axis, a.vel_gain, a.vel_int_gain));
     }
     case RpcMethod::SET_ABSOLUTE_POSITION: {
       ArgAbsPosition a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
-      return send_leg_frame(a.axis, ODrive::encode_set_absolute_position(a.axis, a.position));
+      return send_axis_frame(method, a.axis, ODrive::encode_set_absolute_position(a.axis, a.position));
     }
     case RpcMethod::CLEAR_ERRORS: {
       ArgAxisOnly a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
@@ -156,7 +159,7 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
         for (uint8_t i = 0; i < NUM_LEGS; ++i) can_jugglebot_send(ODrive::encode_clear_errors(i));
         return RpcStatus::OK;
       }
-      return send_leg_frame(a.axis, ODrive::encode_clear_errors(a.axis));
+      return send_axis_frame(method, a.axis, ODrive::encode_clear_errors(a.axis));
     }
     case RpcMethod::REBOOT_ODRIVES: {
       ArgAxisOnly a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
@@ -165,16 +168,16 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
         for (uint8_t i = 0; i < NUM_LEGS; ++i) can_jugglebot_send(ODrive::encode_reboot(i));
         return RpcStatus::OK;
       }
-      return send_leg_frame(a.axis, ODrive::encode_reboot(a.axis));
+      return send_axis_frame(method, a.axis, ODrive::encode_reboot(a.axis));
     }
     case RpcMethod::SDO_READ: {
       ArgSdoRead a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
       // Response value returns async on TxSdo (Phase 9 encoder-search consumes it).
-      return send_leg_frame(a.axis, ODrive::encode_sdo_read(a.axis, a.endpoint));
+      return send_axis_frame(method, a.axis, ODrive::encode_sdo_read(a.axis, a.endpoint));
     }
     case RpcMethod::SDO_WRITE: {
       ArgSdoWrite a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
-      return send_leg_frame(a.axis, ODrive::encode_sdo_write(a.axis, a.endpoint, a.value));
+      return send_axis_frame(method, a.axis, ODrive::encode_sdo_write(a.axis, a.endpoint, a.value));
     }
     case RpcMethod::ENCODER_SEARCH:
       // Encoder index search stays Jetson-orchestrated over SET_AXIS_STATE
@@ -207,6 +210,22 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
       return deactivate_request(a.axis);
     }
 
+    // ── Platform-Teensy relay (Phase 1) ──────────────────────────────────────
+    // Typed write RPCs that re-establish the Jetson↔Platform-Teensy conduit over
+    // CAN3. TILT_READ/STATE_READ only TRIGGER a reply (the Platform answers on the
+    // same id; on_jugglebot_rx forwards it verbatim as a PLATFORM_FRAME the host
+    // correlates). STATE_WRITE carries the whole RobotState; the firmware encodes
+    // the 0x6E0 frame (least-privilege — no Jetson-supplied raw frame). All gate on
+    // jugglebot_commands_allowed() inside platform_relay (fail-fast ERR_BUS_DOWN).
+    case RpcMethod::TILT_READ:
+      return Relay::tilt_read();
+    case RpcMethod::STATE_READ:
+      return Relay::state_read();
+    case RpcMethod::STATE_WRITE: {
+      ArgRobotState a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
+      return Relay::state_write(a);
+    }
+
     // ── Reserved (canbridge-foundation-coldstart-parity Phase 0) ─────────────
     // Wire ids were allocated up-front (one codegen pass) so parallel sessions
     // cannot mint colliding ids. Each method's real dispatch lands in its owning
@@ -214,9 +233,6 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
     // above) so the firmware builds AND the RpcMethod dispatch lint
     // (tests/firmware/test_rpc_dispatch_lint.py) passes — every method has a case.
     case RpcMethod::GET_AXIS_VERSIONS:   // Phase 3 (Get_Version sweep + firmware_validated)
-    case RpcMethod::TILT_READ:           // Phase 1 (Platform-Teensy relay seam)
-    case RpcMethod::STATE_READ:          // Phase 1 (relay RobotState read)
-    case RpcMethod::STATE_WRITE:         // Phase 1 (relay RobotState write)
     case RpcMethod::HAND_TRAJ_CMD:       // Phase 5 (hand traj + smooth-move)
       return RpcStatus::ERR_NOT_IMPL;
 

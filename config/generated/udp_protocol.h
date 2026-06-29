@@ -248,6 +248,15 @@ struct LegCmdPayload {
 };
 static_assert(sizeof(LegCmdPayload) == 56, "LegCmdPayload size drift");
 
+// PlatformFrame: Verbatim Platform-Teensy relay-reply uplink (canbridge-foundation-coldstart-parity Phase 1). The can-bridge forwards every CAN3 frame it receives whose arbitration id is a Platform-Teensy reply (STATE_UPDATE 0x6E0 RobotState, TILT_READING 0x7DE inclinometer) verbatim, so the host owns the decode and the bridge stays decoupled from the Platform-Teensy byte layout (Teensy_code.ino createStateCANMessage / sendTiltData). The host correlates a reply to its pending relay read by (can_id, dlc): a STATE_READ awaits (0x6E0, 8); a TILT_READ awaits (0x7DE, 8). `t_bridge_us` only stamps bridge-side CAN3 RX for latency/diagnostics. NOTE(bench): the (id, dlc) discriminator is only sound if CAN3 SRX_DIS is set so the bridge's own 0x6E0 STATE_WRITE is not looped back as a reply — verify on the bench before trusting on hardware.
+struct PlatformFramePayload {
+  uint64_t t_bridge_us;  // Bridge wall-clock at CAN3 RX (us)
+  uint32_t can_id;  // CAN arbitration id (0x6E0 STATE_UPDATE / 0x7DE TILT_READING)
+  uint8_t dlc;  // CAN payload length (0..8)
+  uint8_t data[8];  // Raw CAN payload bytes (zero-padded past dlc)
+};
+static_assert(sizeof(PlatformFramePayload) == 21, "PlatformFramePayload size drift");
+
 // RpcRequest: Generic RPC envelope. `method` selects the operation; `args` is a method-specific blob (see docs). `req_id` is echoed in the response for matching independent of the frame sequence counter.
 struct RpcRequestPayload {
   uint16_t method;  // RpcMethod enum
@@ -281,6 +290,7 @@ constexpr uint16_t CONE_FRAME_SIZE = 21u;
 constexpr uint16_t CMD_RESULT_FRAME_SIZE = 21u;
 constexpr uint16_t BB_AXIS_ESTIMATES_SIZE = 24u;
 constexpr uint16_t LEG_CMD_SIZE = 56u;
+constexpr uint16_t PLATFORM_FRAME_SIZE = 21u;
 constexpr uint16_t RPC_REQUEST_SIZE = 8u;
 constexpr uint16_t RPC_RESPONSE_SIZE = 8u;
 
@@ -360,6 +370,14 @@ struct ArgBbThrow {
   float delay_s;  // Relative delay before throw (s) [0, 65.535]
 };
 static_assert(sizeof(ArgBbThrow) == 16, "ArgBbThrow size drift");
+// ArgRobotState (STATE_WRITE)
+struct ArgRobotState {
+  uint8_t is_homed;  // Legs+hand homing complete
+  uint8_t levelling_complete;  // Platform levelling complete
+  float pose_offset_tiltX;  // Levelling pose offset, tilt about X (rad)
+  float pose_offset_tiltY;  // Levelling pose offset, tilt about Y (rad)
+};
+static_assert(sizeof(ArgRobotState) == 10, "ArgRobotState size drift");
 #pragma pack(pop)
 constexpr uint16_t ARG_AXIS_STATE_SIZE = 5u;
 constexpr uint16_t ARG_CONTROLLER_MODE_SIZE = 9u;
@@ -372,7 +390,29 @@ constexpr uint16_t ARG_SDO_READ_SIZE = 3u;
 constexpr uint16_t ARG_SDO_WRITE_SIZE = 7u;
 constexpr uint16_t RESULT_TIME_OF_DAY_SIZE = 8u;
 constexpr uint16_t ARG_BB_THROW_SIZE = 16u;
+constexpr uint16_t ARG_ROBOT_STATE_SIZE = 10u;
 }  // namespace RpcArgs
+
+// ── Hand axis-6 allow-table (Phase 1) ──────────────────────────────────
+// True iff RpcMethod `method` may be forwarded to the HAND ODrive (axis 6)
+// on CAN3, replacing the blanket axis==HAND_AXIS reject. Consumed by
+// rpc.cpp's send_axis_frame; mirrored by tests/firmware/test_hand_axis6_allow.py.
+inline bool hand_axis6_permitted(uint16_t method) {
+  switch (method) {
+    case RpcMethod::SET_AXIS_STATE:
+    case RpcMethod::SET_CONTROLLER_MODE:
+    case RpcMethod::SET_POS_GAIN:
+    case RpcMethod::SET_VEL_GAINS:
+    case RpcMethod::SET_VEL_CURR_LIMITS:
+    case RpcMethod::CLEAR_ERRORS:
+    case RpcMethod::REBOOT_ODRIVES:
+    case RpcMethod::HOME:
+    case RpcMethod::SET_ABSOLUTE_POSITION:
+      return true;
+    default:
+      return false;
+  }
+}
 
 // ── CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF) ──────────────────────
 inline uint16_t crc16_ccitt(const uint8_t* data, uint16_t len) {

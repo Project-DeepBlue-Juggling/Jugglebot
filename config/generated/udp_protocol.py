@@ -407,6 +407,28 @@ class LegCmd:
         it = iter(vals)
         return cls(next(it), tuple(next(it) for _ in range(6)), tuple(next(it) for _ in range(6)))
 
+# PlatformFrame: Verbatim Platform-Teensy relay-reply uplink (canbridge-foundation-coldstart-parity Phase 1). The can-bridge forwards every CAN3 frame it receives whose arbitration id is a Platform-Teensy reply (STATE_UPDATE 0x6E0 RobotState, TILT_READING 0x7DE inclinometer) verbatim, so the host owns the decode and the bridge stays decoupled from the Platform-Teensy byte layout (Teensy_code.ino createStateCANMessage / sendTiltData). The host correlates a reply to its pending relay read by (can_id, dlc): a STATE_READ awaits (0x6E0, 8); a TILT_READ awaits (0x7DE, 8). `t_bridge_us` only stamps bridge-side CAN3 RX for latency/diagnostics. NOTE(bench): the (id, dlc) discriminator is only sound if CAN3 SRX_DIS is set so the bridge's own 0x6E0 STATE_WRITE is not looped back as a reply — verify on the bench before trusting on hardware.
+PLATFORM_FRAME_FMT = '<QIBBBBBBBBB'
+PLATFORM_FRAME_SIZE = 21
+_PLATFORM_FRAME_STRUCT = struct.Struct(PLATFORM_FRAME_FMT)
+assert _PLATFORM_FRAME_STRUCT.size == 21
+
+@dataclass
+class PlatformFrame:
+    t_bridge_us: int = 0
+    can_id: int = 0
+    dlc: int = 0
+    data: tuple = field(default_factory=lambda: (0,) * 8)
+
+    def pack(self) -> bytes:
+        return _PLATFORM_FRAME_STRUCT.pack(self.t_bridge_us, self.can_id, self.dlc, *self.data)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'PlatformFrame':
+        vals = _PLATFORM_FRAME_STRUCT.unpack(data[:21])
+        it = iter(vals)
+        return cls(next(it), next(it), next(it), tuple(next(it) for _ in range(8)))
+
 # RpcRequest: Generic RPC envelope. `method` selects the operation; `args` is a method-specific blob (see docs). `req_id` is echoed in the response for matching independent of the frame sequence counter.
 RPC_REQUEST_FMT = '<HHHH'
 RPC_REQUEST_SIZE = 8
@@ -655,3 +677,42 @@ class ArgBbThrow:
     @classmethod
     def unpack(cls, data: bytes) -> 'ArgBbThrow':
         return cls(*_ARG_BB_THROW_STRUCT.unpack(data[:16]))
+
+# ArgRobotState (STATE_WRITE)
+ARG_ROBOT_STATE_FMT = '<BBff'
+ARG_ROBOT_STATE_SIZE = 10
+_ARG_ROBOT_STATE_STRUCT = struct.Struct(ARG_ROBOT_STATE_FMT)
+assert _ARG_ROBOT_STATE_STRUCT.size == 10
+
+@dataclass
+class ArgRobotState:
+    is_homed: int = 0
+    levelling_complete: int = 0
+    pose_offset_tiltX: float = 0.0
+    pose_offset_tiltY: float = 0.0
+
+    def pack(self) -> bytes:
+        return _ARG_ROBOT_STATE_STRUCT.pack(self.is_homed, self.levelling_complete, self.pose_offset_tiltX, self.pose_offset_tiltY)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'ArgRobotState':
+        return cls(*_ARG_ROBOT_STATE_STRUCT.unpack(data[:10]))
+
+# ── Hand axis-6 allow-table (Phase 1) ──────────────────────────────────
+# RpcMethod ids the can-bridge forwards to the hand ODrive (axis 6); the
+# single source mirrored by the firmware JbUdp::hand_axis6_permitted predicate.
+HAND_AXIS6_PERMITTED = frozenset({
+    int(RpcMethod.SET_AXIS_STATE),
+    int(RpcMethod.SET_CONTROLLER_MODE),
+    int(RpcMethod.SET_POS_GAIN),
+    int(RpcMethod.SET_VEL_GAINS),
+    int(RpcMethod.SET_VEL_CURR_LIMITS),
+    int(RpcMethod.CLEAR_ERRORS),
+    int(RpcMethod.REBOOT_ODRIVES),
+    int(RpcMethod.HOME),
+    int(RpcMethod.SET_ABSOLUTE_POSITION),
+})
+
+def hand_axis6_permitted(method: int) -> bool:
+    """True iff `method` may be forwarded to the hand ODrive (axis 6)."""
+    return int(method) in HAND_AXIS6_PERMITTED

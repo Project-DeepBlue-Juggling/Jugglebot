@@ -196,6 +196,24 @@ void cmd_result_uplink_step() {
   }
 }
 
+// ── Platform-Teensy relay uplink: drain CAN3 reply frames → PLATFORM_FRAME ────
+// Phase 1 relay seam. Relay replies are low-rate (one per operator relay read),
+// so the per-tick budget is small; a reply never waits more than a tick to reach
+// the host (which correlates it to its pending read). Mirrors cone_uplink_step.
+static constexpr uint8_t PLATFORM_FWD_BUDGET = 4;
+
+void platform_uplink_step() {
+  PlatformFrameRec r;
+  for (uint8_t i = 0; i < PLATFORM_FWD_BUDGET && can_platform_pop(r); ++i) {
+    JbUdp::PlatformFramePayload p{};
+    p.t_bridge_us = r.t_bridge_us;
+    p.can_id = r.can_id;
+    p.dlc = r.dlc;
+    memcpy(p.data, r.buf, 8);
+    udp_send_stream(JbUdp::MsgType::PLATFORM_FRAME, (const uint8_t*)&p, sizeof(p));
+  }
+}
+
 void telemetry_step() {
   send_telemetry();
   send_bb_estimates();   // BB pitch/hand pos+vel @ TELEM_RATE_HZ (during-throw diagnostics)

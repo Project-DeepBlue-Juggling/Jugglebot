@@ -52,6 +52,11 @@ void fake_set_homing(bool active);
 void fake_set_activate(bool active);
 void fake_set_deactivate(bool active);
 
+// ── CAN3 command gate (drives jugglebot_commands_allowed()) ──────────────────
+//  Defaults to TRUE on fake_reset() so a relay/leg send is recorded unless a test
+//  explicitly down-gates the bus (the ERR_BUS_DOWN fail-fast path).
+void fake_set_commands_allowed(bool allowed);
+
 // ── Recording CAN3 TX (drives can_jugglebot_send()) ──────────────────────────
 size_t            fake_sent_count();
 const SentFrame&  fake_sent_at(size_t i);

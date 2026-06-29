@@ -129,6 +129,20 @@ def test_bb_throw_exact_bytes():
     assert a.delay_s == pytest.approx(0.1, rel=1e-6)
 
 
+def test_state_write_exact_bytes():
+    # STATE_WRITE (Platform-Teensy relay, Phase 1): flags byte (is_homed/levelling
+    # are encoded into the 0x6E0 CAN frame by the FIRMWARE; the RPC arg carries
+    # them as two u8 + the two pose floats). Layout '<BBff'.
+    blob = ra.encode_state_write(is_homed=True, levelling_complete=False,
+                                 pose_offset_tiltX=0.01, pose_offset_tiltY=-0.02)
+    assert blob == struct.pack('<BBff', 1, 0, 0.01, -0.02)
+    assert len(blob) == 10
+    a = ra.ArgRobotState.unpack(blob)
+    assert a.is_homed == 1 and a.levelling_complete == 0
+    assert a.pose_offset_tiltX == pytest.approx(0.01, rel=1e-5)
+    assert a.pose_offset_tiltY == pytest.approx(-0.02, rel=1e-5)
+
+
 def test_bb_payloadless_commands_are_empty():
     # RELOAD/RESET/CALIBRATE_LOC ride a 0-byte args payload — matches NOP shape.
     # The Teensy ignores any trailing bytes on these methods anyway, but the
@@ -150,5 +164,8 @@ def test_method_arg_association_covers_all_commandable_methods():
         # Ball Butler (Phase A): only BB_THROW carries args; RELOAD/RESET/
         # CALIBRATE_LOC are payloadless (matches NOP — no METHOD entry).
         RpcMethod.BB_THROW,
+        # Platform-Teensy relay (Phase 1): STATE_WRITE carries the whole
+        # RobotState; TILT_READ/STATE_READ are payloadless (no METHOD entry).
+        RpcMethod.STATE_WRITE,
     }
     assert set(ra.METHOD.keys()) == expected

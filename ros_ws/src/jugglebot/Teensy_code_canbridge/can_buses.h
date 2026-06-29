@@ -42,6 +42,7 @@
 #include <cstdint>
 #include "odrive_protocol.h"
 #include "udp_protocol.h"   // JbUdp::BusHealth
+#include "protocol_config.h"  // PlatformCanId (relay reply ids)
 
 namespace CanBridge {
 
@@ -51,6 +52,14 @@ void can_buses_service();   // pump bb/cone/jugglebot events(); call from CAN RX
 bool can_bb_send(const ODrive::CanFrame& f);         // CAN1 Ball Butler TX (time-sync broadcast)
 bool can_cone_send(const ODrive::CanFrame& f);       // CAN2 cone TX (time-sync; GATED, cone-absent tolerant)
 bool can_jugglebot_send(const ODrive::CanFrame& f);  // CAN3 Jugglebot core TX (setpoints, RPC, fault cmds)
+
+// "Never command a confirmed-dead bus." True iff CAN3 (the Jugglebot core bus
+// carrying the leg + hand ODrives AND the Platform-Teensy relay partner) is NOT
+// in a WARN/BUS_OFF state. The shared gate for every CAN3-bound RPC (rpc.cpp leg
+// frames + platform_relay reads/writes). OK/UNKNOWN both allow commands so the
+// initial bring-up sequence works before telemetry warms. (Native harness fakes
+// this via fake_set_commands_allowed; the firmware reads can_buses_stats().)
+bool jugglebot_commands_allowed();
 
 struct CanStats {
   uint32_t bb_rx, bb_tx, cone_rx, cone_tx, jugglebot_rx, jugglebot_tx;
@@ -90,6 +99,32 @@ struct CmdResultFrameRec {
 };
 bool can_cmd_result_pop(CmdResultFrameRec& out);  // consumer side; false when ring empty
 uint32_t can_cmd_result_fwd_drops();              // frames dropped on ring overflow (cumulative)
+
+// ── Platform-Teensy relay-reply uplink ring (Phase 1: CAN3 0x6E0/0x7DE → UDP) ─
+//  The can-bridge relays the Platform Teensy's RobotState (0x6E0 STATE_UPDATE)
+//  and inclinometer tilt (0x7DE TILT_READING) replies VERBATIM to the host, so
+//  the host owns the byte-layout decode (decouples the bridge from Teensy_code's
+//  RobotState/tilt packing). on_jugglebot_rx copies every CAN3 frame whose id is
+//  a Platform reply id into this SPSC ring; platform_uplink_step (telemetry.cpp)
+//  forwards each record as a JbUdp PLATFORM_FRAME. Layout mirrors ConeFrameRec.
+//  NOTE(bench): host (id, dlc) reply-correlation is only sound with CAN3 SRX_DIS
+//  set so the bridge's own 0x6E0 STATE_WRITE is not looped back here as a reply.
+struct PlatformFrameRec {
+  uint64_t t_bridge_us;   // bridge wall-clock at CAN3 RX (us)
+  uint32_t can_id;        // CAN arbitration id (0x6E0 STATE_UPDATE / 0x7DE TILT_READING)
+  uint8_t  dlc;           // CAN payload length (0..8)
+  uint8_t  buf[8];        // raw CAN payload (zero-padded past dlc)
+};
+bool can_platform_pop(PlatformFrameRec& out);  // consumer side; false when ring empty
+uint32_t can_platform_fwd_drops();             // frames dropped on ring overflow (cumulative)
+
+// True iff `id` is a Platform-Teensy relay-reply arbitration id (0x6E0 / 0x7DE).
+// Single classifier shared by the CAN3 RX ring filter (can_buses.cpp) and the
+// native harness. Inline (header-only) so the relay test can reach it without
+// compiling can_buses.cpp (which pulls FlexCAN_T4) on the host.
+inline bool is_platform_reply_id(uint32_t id) {
+  return id == PlatformCanId::STATE_UPDATE || id == PlatformCanId::TILT_READING;
+}
 
 // ── RX-health observability (bench/debug telemetry) ──────────────────────────
 //  Diagnostic counters that let a future bug be told apart by class. Surfaced over

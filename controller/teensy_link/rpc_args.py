@@ -29,6 +29,7 @@ from .protocol import (
     ArgSdoWrite,
     ResultTimeOfDay,
     ArgBbThrow,
+    ArgRobotState,
 )
 
 RpcMethod = p.RpcMethod
@@ -38,13 +39,13 @@ __all__ = [
     # dataclasses (re-exported)
     "ArgAxisState", "ArgControllerMode", "ArgVelCurr", "ArgPosGain",
     "ArgVelGains", "ArgAbsPosition", "ArgAxisOnly", "ArgSdoRead", "ArgSdoWrite",
-    "ResultTimeOfDay", "ArgBbThrow",
+    "ResultTimeOfDay", "ArgBbThrow", "ArgRobotState",
     # encoders
     "encode_set_axis_state", "encode_set_controller_mode",
     "encode_set_vel_curr_limits", "encode_set_pos_gain", "encode_set_vel_gains",
     "encode_set_absolute_position", "encode_clear_errors", "encode_reboot",
     "encode_encoder_search", "encode_home", "encode_activate", "encode_deactivate",
-    "encode_sdo_read", "encode_sdo_write",
+    "encode_sdo_read", "encode_sdo_write", "encode_state_write",
     "encode_bb_throw", "encode_bb_reload", "encode_bb_reset",
     "encode_bb_calibrate_loc",
     "decode_time_of_day_result",
@@ -141,6 +142,27 @@ def decode_time_of_day_result(blob: bytes) -> int:
     return int(ResultTimeOfDay.unpack(blob).jetson_wall_us)
 
 
+# ── Platform-Teensy relay (canbridge-foundation-coldstart-parity Phase 1) ─────
+# TILT_READ / STATE_READ carry NO args — they only trigger a Platform-Teensy
+# reply on CAN3 (0x7DE / 0x6E0); the reply arrives async as a PLATFORM_FRAME the
+# bridge correlates by (can_id, dlc). STATE_WRITE carries the whole RobotState
+# (the bridge is the sole writer and read-modify-writes through its cache so a
+# homing write preserves levelling and vice versa); the firmware encodes the
+# 0x6E0 frame itself (least-privilege — never a Jetson-supplied raw frame).
+
+def encode_state_write(is_homed: bool, levelling_complete: bool,
+                       pose_offset_tiltX: float = 0.0,
+                       pose_offset_tiltY: float = 0.0) -> bytes:
+    """STATE_WRITE: write the Platform-Teensy RobotState (is_homed / levelling /
+    pose offset). The firmware re-encodes the 0x6E0 RobotState CAN frame."""
+    return ArgRobotState(
+        is_homed=1 if is_homed else 0,
+        levelling_complete=1 if levelling_complete else 0,
+        pose_offset_tiltX=float(pose_offset_tiltX),
+        pose_offset_tiltY=float(pose_offset_tiltY),
+    ).pack()
+
+
 # ── Ball Butler ─────────────────────────────────────────────────────────────
 # Firmware-owned encoding: the bridge passes typed args; the can-bridge Teensy
 # range-checks + frame-builds before TX on CAN1 (HANDOFF-firmware-three-bus D2).
@@ -187,5 +209,7 @@ METHOD = {
     RpcMethod.SDO_READ: ArgSdoRead,
     RpcMethod.SDO_WRITE: ArgSdoWrite,
     RpcMethod.BB_THROW: ArgBbThrow,
+    RpcMethod.STATE_WRITE: ArgRobotState,
     # BB_RELOAD/RESET/CALIBRATE_LOC are payloadless — no entry (matches NOP).
+    # TILT_READ/STATE_READ are payloadless too (reply arrives as a PLATFORM_FRAME).
 }

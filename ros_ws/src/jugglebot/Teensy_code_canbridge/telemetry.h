@@ -32,4 +32,9 @@ void cone_uplink_step();
 // bounded per tick.
 void cmd_result_uplink_step();
 
+// Call at TELEM_RATE_HZ (100 Hz), after telemetry_step(). Forwards queued
+// Platform-Teensy relay replies (CAN3 0x6E0 RobotState / 0x7DE tilt) verbatim to
+// the Jetson as PLATFORM_FRAMEs (Phase 1 relay seam), bounded per tick.
+void platform_uplink_step();
+
 }  // namespace CanBridge

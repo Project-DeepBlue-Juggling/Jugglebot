@@ -277,10 +277,61 @@ bool can_cone_pop(ConeFrameRec& out) {
 
 uint32_t can_cone_fwd_drops() { return s_cone_fwd_drops; }
 
-// CAN3 Jugglebot core: every ODrive frame (legs 0..5 + hand) decodes into the cache.
+// ── Platform-Teensy relay-reply uplink ring (Phase 1) ─────────────────────────
+// SPSC mirror of the cone ring: producer is on_jugglebot_rx (task_can_rx), consumer
+// is platform_uplink_step() on task_telem. The Platform Teensy answers a relay read
+// on the SAME arbitration id it was triggered on (0x6E0 RobotState, 0x7DE tilt), so
+// every CAN3 frame whose id is a Platform reply id is copied here verbatim and
+// uplinked as a PLATFORM_FRAME for the host to decode + correlate. Replies are
+// low-rate (one per operator relay read), so a small ring is ample; sustained
+// overflow would mean a babbling Platform partner, counted in s_platform_fwd_drops.
+static constexpr uint8_t PLATFORM_RING_CAP = 8;
+static PlatformFrameRec s_platform_ring[PLATFORM_RING_CAP];
+static volatile uint8_t s_platform_ring_head = 0, s_platform_ring_tail = 0;
+static volatile uint32_t s_platform_fwd_drops = 0;
+
+static inline void platform_ring_push(const CAN_message_t& msg, uint64_t now) {
+  const uint32_t pm = __get_PRIMASK(); __disable_irq();
+  const uint8_t next = (uint8_t)((s_platform_ring_head + 1) % PLATFORM_RING_CAP);
+  if (next == s_platform_ring_tail) {
+    s_platform_fwd_drops++;                    // ring full → drop newest
+  } else {
+    PlatformFrameRec& r = s_platform_ring[s_platform_ring_head];
+    r.t_bridge_us = now;
+    r.can_id = msg.id;
+    r.dlc = (msg.len > 8) ? 8 : msg.len;
+    memcpy(r.buf, msg.buf, 8);
+    s_platform_ring_head = next;
+  }
+  __set_PRIMASK(pm);
+}
+
+bool can_platform_pop(PlatformFrameRec& out) {
+  bool have = false;
+  const uint32_t pm = __get_PRIMASK(); __disable_irq();
+  if (s_platform_ring_tail != s_platform_ring_head) {
+    out = s_platform_ring[s_platform_ring_tail];
+    s_platform_ring_tail = (uint8_t)((s_platform_ring_tail + 1) % PLATFORM_RING_CAP);
+    have = true;
+  }
+  __set_PRIMASK(pm);
+  return have;
+}
+
+uint32_t can_platform_fwd_drops() { return s_platform_fwd_drops; }
+
+// is_platform_reply_id() is an inline classifier in can_buses.h (shared with the
+// native harness without compiling this TU host-side).
+
+// CAN3 Jugglebot core: a Platform-Teensy relay reply (0x6E0 / 0x7DE) is forwarded
+// verbatim to the host via the relay ring; every other frame is a leg/hand ODrive
+// frame and decodes into the cache. (axis_of(0x6E0)=55 >= NUM_AXES, so before this
+// filter the relay replies were silently counted as decode_bad_axis and dropped.)
 static void on_jugglebot_rx(const CAN_message_t& msg) {
   s_jugglebot_rx++;
-  atomic_write_u64(&s_jugglebot_last_rx_us, now_wall_us());   // 64-bit; read by health_of
+  const uint64_t now = now_wall_us();
+  atomic_write_u64(&s_jugglebot_last_rx_us, now);   // 64-bit; read by health_of
+  if (is_platform_reply_id(msg.id)) { platform_ring_push(msg, now); return; }
   decode_into_cache(msg);
 }
 
@@ -492,6 +543,14 @@ bool can_jugglebot_send(const ODrive::CanFrame& f) {
   if (ok) s_jugglebot_tx++;
   __set_PRIMASK(pm);
   return ok;
+}
+
+// Shared CAN3 command gate (declared in can_buses.h; consumed by rpc.cpp leg
+// frames + platform_relay reads/writes). WARN/BUS_OFF → refuse; OK/UNKNOWN allow.
+// (jugglebot_health is the health_of() bus-staleness classification below.)
+bool jugglebot_commands_allowed() {
+  const uint8_t h = can_buses_stats().jugglebot_health;
+  return h != JbUdp::BusHealth::WARN && h != JbUdp::BusHealth::BUS_OFF;
 }
 
 static uint8_t health_of(uint64_t last_rx_us) {

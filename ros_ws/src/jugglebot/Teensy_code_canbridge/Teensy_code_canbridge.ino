@@ -172,6 +172,7 @@ static void task_telem(void*) {
     telemetry_step();
     cone_uplink_step();
     cmd_result_uplink_step();
+    platform_uplink_step();   // Phase 1: Platform-Teensy relay reply uplink
     vTaskDelayUntil(&last, period);
   }
 }

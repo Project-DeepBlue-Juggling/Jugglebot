@@ -429,6 +429,29 @@ MESSAGES = [
         ],
     ),
     Message(
+        "PlatformFrame", "PLATFORM_FRAME", "T2J", "STREAM",
+        summary=(
+            "Verbatim Platform-Teensy relay-reply uplink (canbridge-foundation-"
+            "coldstart-parity Phase 1). The can-bridge forwards every CAN3 frame "
+            "it receives whose arbitration id is a Platform-Teensy reply "
+            "(STATE_UPDATE 0x6E0 RobotState, TILT_READING 0x7DE inclinometer) "
+            "verbatim, so the host owns the decode and the bridge stays decoupled "
+            "from the Platform-Teensy byte layout (Teensy_code.ino "
+            "createStateCANMessage / sendTiltData). The host correlates a reply to "
+            "its pending relay read by (can_id, dlc): a STATE_READ awaits "
+            "(0x6E0, 8); a TILT_READ awaits (0x7DE, 8). `t_bridge_us` only stamps "
+            "bridge-side CAN3 RX for latency/diagnostics. NOTE(bench): the "
+            "(id, dlc) discriminator is only sound if CAN3 SRX_DIS is set so the "
+            "bridge's own 0x6E0 STATE_WRITE is not looped back as a reply — "
+            "verify on the bench before trusting on hardware."),
+        fields=[
+            Field("t_bridge_us", "u64", 1, "Bridge wall-clock at CAN3 RX (us)"),
+            Field("can_id",      "u32", 1, "CAN arbitration id (0x6E0 STATE_UPDATE / 0x7DE TILT_READING)"),
+            Field("dlc",         "u8",  1, "CAN payload length (0..8)"),
+            Field("data",        "u8",  8, "Raw CAN payload bytes (zero-padded past dlc)"),
+        ],
+    ),
+    Message(
         "RpcRequest", "RPC_REQUEST", "J2T", "RPC",
         summary=(
             "Generic RPC envelope. `method` selects the operation; `args` is a "
@@ -546,7 +569,55 @@ RPC_ARGS = [
         Field("speed_mps", "f32", 1, "Throw speed in m/s [0, 6.5535]"),
         Field("delay_s",   "f32", 1, "Relative delay before throw (s) [0, 65.535]"),
     ]),
+    # STATE_WRITE carries the WHOLE Platform-Teensy RobotState (the can-bridge is
+    # the sole writer and does read-modify-write through its cache, so a homing
+    # write preserves the levelling fields and vice versa). The firmware encodes
+    # the 0x6E0 frame itself (mirroring Teensy_code.ino createStateCANMessage) —
+    # the can-bridge never forwards a Jetson-supplied raw frame (least-privilege).
+    # canbridge-foundation-coldstart-parity Phase 1. (TILT_READ / STATE_READ take
+    # no args — they only trigger a Platform-Teensy reply on 0x7DE / 0x6E0.)
+    RpcArg("ArgRobotState", "STATE_WRITE", [
+        Field("is_homed",          "u8",  1, "Legs+hand homing complete"),
+        Field("levelling_complete", "u8", 1, "Platform levelling complete"),
+        Field("pose_offset_tiltX", "f32", 1, "Levelling pose offset, tilt about X (rad)"),
+        Field("pose_offset_tiltY", "f32", 1, "Levelling pose offset, tilt about Y (rad)"),
+    ]),
 ]
+
+# ───────────────────────────────────────────────────────────────────────────
+# HAND AXIS-6 ALLOW-TABLE  (canbridge-foundation-coldstart-parity Phase 1)
+#
+# Which RpcMethods the can-bridge forwards to the HAND ODrive (axis 6) on CAN3,
+# replacing the blanket `axis == HAND_AXIS` reject (rpc.cpp). The hand reuses the
+# leg encoders behind this NARROW (method, axis) gate; everything not listed is
+# rejected on axis 6, and every permitted op is still gated on
+# jugglebot_commands_allowed() (the hand is gated like a leg, never ungated).
+# Single source → C++ predicate (JbUdp::hand_axis6_permitted, consumed by rpc.cpp)
+# + Python frozenset (the mirror test tests/firmware/test_hand_axis6_allow.py).
+#
+# Permit: the ODrive config + lifecycle ops hand homing needs (SET_AXIS_STATE,
+# SET_CONTROLLER_MODE, the three gains, CLEAR_ERRORS, REBOOT_ODRIVES, HOME,
+# SET_ABSOLUTE_POSITION). Reject: ENCODER_SEARCH (absolute encoder), ACTIVATE /
+# DEACTIVATE (leg-specific cold-start moves), SDO_*, and the BB / time methods.
+# ───────────────────────────────────────────────────────────────────────────
+
+HAND_AXIS6_PERMITTED = [
+    "SET_AXIS_STATE",
+    "SET_CONTROLLER_MODE",
+    "SET_POS_GAIN",
+    "SET_VEL_GAINS",
+    "SET_VEL_CURR_LIMITS",
+    "CLEAR_ERRORS",
+    "REBOOT_ODRIVES",
+    "HOME",
+    "SET_ABSOLUTE_POSITION",
+]
+
+# Fail the codegen if any allow-table entry is not a real RpcMethod (a rename
+# would otherwise silently drop a permission and re-blanket-reject the hand).
+_RPC_METHOD_NAMES = {name for name, _v, _c in ENUMS["RpcMethod"]}
+for _m in HAND_AXIS6_PERMITTED:
+    assert _m in _RPC_METHOD_NAMES, f"HAND_AXIS6_PERMITTED: unknown RpcMethod {_m!r}"
 
 
 # ───────────────────────────────────────────────────────────────────────────
@@ -669,6 +740,21 @@ def generate_cpp() -> str:
     for arg in RPC_ARGS:
         a(f"constexpr uint16_t {_screaming(arg.name)}_SIZE = {arg.size}u;")
     a("}  // namespace RpcArgs")
+    a("")
+
+    a("// ── Hand axis-6 allow-table (Phase 1) ──────────────────────────────────")
+    a("// True iff RpcMethod `method` may be forwarded to the HAND ODrive (axis 6)")
+    a("// on CAN3, replacing the blanket axis==HAND_AXIS reject. Consumed by")
+    a("// rpc.cpp's send_axis_frame; mirrored by tests/firmware/test_hand_axis6_allow.py.")
+    a("inline bool hand_axis6_permitted(uint16_t method) {")
+    a("  switch (method) {")
+    for name in HAND_AXIS6_PERMITTED:
+        a(f"    case RpcMethod::{name}:")
+    a("      return true;")
+    a("    default:")
+    a("      return false;")
+    a("  }")
+    a("}")
     a("")
 
     a("// ── CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF) ──────────────────────")
@@ -887,6 +973,19 @@ def generate_python() -> str:
         a(f"    def unpack(cls, data: bytes) -> '{sname}':")
         a(f"        return cls(*_{_screaming(arg.name)}_STRUCT.unpack(data[:{arg.size}]))")
         a("")
+
+    a("# ── Hand axis-6 allow-table (Phase 1) ──────────────────────────────────")
+    a("# RpcMethod ids the can-bridge forwards to the hand ODrive (axis 6); the")
+    a("# single source mirrored by the firmware JbUdp::hand_axis6_permitted predicate.")
+    a("HAND_AXIS6_PERMITTED = frozenset({")
+    for name in HAND_AXIS6_PERMITTED:
+        a(f"    int(RpcMethod.{name}),")
+    a("})")
+    a("")
+    a("def hand_axis6_permitted(method: int) -> bool:")
+    a('    """True iff `method` may be forwarded to the hand ODrive (axis 6)."""')
+    a("    return int(method) in HAND_AXIS6_PERMITTED")
+    a("")
     return "\n".join(L)
 
 
