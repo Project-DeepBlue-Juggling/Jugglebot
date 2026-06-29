@@ -189,7 +189,7 @@ touch safety logic (the reboot latch, the axis-6 gate, the relay) are testable.
 |---|---|---|---|---|
 | 0 | Foundation infra: native test harness (growable HAL) + one codegen-allocation pass + flags-bit/RpcMethod lint | **DONE** | — | no |
 | 1 | Platform-Teensy relay seam (typed writes, verbatim reads) + narrow axis-6 allow-table | **DONE — bench probe PASSED (2026-06-29)** | 0 | bench probe ✓ (SRX_DIS disabled, reply ≤14 ms) |
-| 2 | Cold-start state via the relay (read `is_homed`/level/pose at boot + on CAN3-reconnect; write on home/level/reboot) — self-solving | NOT STARTED | 0, 1 | no |
+| 2 | Cold-start state via the relay (read `is_homed`/level/pose at boot + on CAN3-reconnect; write on home/level/reboot) — self-solving | **DONE** | 0, 1 | no (validated at the Phase-4 powered sitting) |
 | 3 | Firmware Get_Version sweep + Jetson-validated `firmware_validated` | NOT STARTED | 0 | probe: live ODrive versions |
 | 4 | Orchestrator wiring: `home_motors` action shim (homes legs + hand) + `robot_state` fields + tilt/level relay + activate-folds-configure | NOT STARTED | 1, 2, 3, 5 | powered sitting |
 | 5 | Hand command conduit (state/gains, traj/smooth-move) + **hand homing** (HOME/SET_ABSOLUTE_POSITION on axis 6) + deactivate idles hand + cmd-echo | NOT STARTED | 1 | powered (homing + catch) |
@@ -356,6 +356,38 @@ reboot leaves the Platform Teensy untouched → `is_homed` survives → skip hom
 reconnect-reread populate `robot_state`; a homing-success write sets `is_homed`
 and preserves levelling; `REBOOT_ODRIVES` clears all three; the
 `encoder_search_complete↔is_homed` derivation.
+
+**Outcome (DONE — 2026-06-29, commits `57f8885` (node + tests) +
+`PENDING-docs` (logbook/plan/index)).** Software-only — **no firmware change**
+(the `REBOOT_ODRIVES` `STATE_WRITE` clear is host-orchestrated via the existing
+Phase-1 `relay_write_robot_state`) and **no codegen change** (ids reserved in
+Phase 0). `teensy_bridge_node._publish_robot_state` now sources `is_homed` /
+`levelling_complete` / `pose_offset_rad` / `pose_offset_quat` from a cached
+Platform-Teensy `RobotState`, refreshed via the relay `STATE_READ` at boot (in
+`__init__`, before the executor spins — so the first publish already carries the
+right `is_homed`; bounded retries → **conservative `is_homed=False` on total
+failure**, the safety invariant) and on each confirmed link reconnect (the
+existing watchdog `LinkLossLatch` LOST→RESTORED edge). The 100 Hz publish path is
+non-blocking (cache-only). `is_homed=True` is written on a successful `/home`
+(read-modify-write through the cache → levelling/pose preserved); `_reboot_odrives`
+is a shared ordered hook (step 2: the `STATE_WRITE` clear of all three; step 1 —
+the Phase-6 watchdog-suppression latch — out of scope) reached by both reboot
+entry points; `encoder_search_complete = is_homed OR within-session-search-done`
+(the in-session bit, monotonic — also latched on a relay read showing `is_homed`,
+can_node:549-550 — set on a successful `/encoder_search`). `pose_offset_quat`
+reuses the can_node-identical `_tilt_to_quat`. A pre-commit `/audit` caught a HIGH
+(a success-only `is_homed` persist would leave a stale `True` on a failed re-home)
++ 2 MEDIUM + LOWs, all fixed in-session (the home write now persists the home
+**result** `is_homed=ok`, exact can_node:847 parity). Suite: `pytest tests/ -q`
+(2026-06-29) **1894 → 1908 passed, 1 xfailed, 0 failed in 472.87 s** (net **+14**,
+all `tests/ros/test_teensy_bridge_node_coldstart.py`, no regressions). **No
+hardware gate of its own** — the eventual validation is the Phase-4 powered
+cold-start sitting; the logbook flags one reconnect-trigger residual (a CAN3-only
+drop with the UDP link intact does not fire a UDP-watchdog reconnect re-read; the
+boot read + reboot-clear backstop it) for that sitting to probe. Full detail:
+logbook
+[`2026-06-29-canbridge-phase2-coldstart-relay-state`](../../logbook/2026-06-29-canbridge-phase2-coldstart-relay-state.md).
+**Phase 3 (independent of Phase 2) and Phase 4 cleared to start.**
 
 ### Phase 3 — Get_Version handshake + `firmware_validated`
 
