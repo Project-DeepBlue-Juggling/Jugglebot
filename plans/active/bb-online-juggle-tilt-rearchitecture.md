@@ -1,286 +1,309 @@
 ---
-title: Online-juggle tilt re-architecture — aim throws by platform tilt (Kai-style), close the 2-ball loop
+title: Online-juggle capability bring-up — clean catch → single-ball toss → two-ball (tilt-aimed, hardware-bringup order)
 created: 2026-06-29
 status: active
 related_plan: bb-led-two-ball-juggle-demo.md
 related_logbook:
+  - 2026-06-29-platform-tilt-tracking-characterisation
   - 2026-06-27-online-replanning-architecture-and-cup-bandlimit
   - 2026-06-27-online-juggle-throw-fix-catch-axis-split-band-limit-cascade
   - 2026-06-27-throw-aim-band-limit-and-closed-loop-catch
 ---
 
-# Online-juggle tilt re-architecture
+# Online-juggle capability bring-up
 
 ## 1. Context
 
 ### Where we are
 
 `sim/juggle_online.py` (+ `controller/demo/juggle_planner.py`) is an online,
-per-throw, task-space planner (a faithful adaptation of Kai Ploeger's
-`plan_throw`, IEEE 9981678 — repo cloned at
+per-throw, task-space planner (Kai Ploeger's `plan_throw`, IEEE 9981678; repo at
 `/home/jetson/Desktop/kinematic_planning_for_nball_toss_juggling/`). It catches
-**5 / 0** (seed 0) under full contact physics, beating the offline demo's 2, then
-**collapses to a 1-ball shuffle**. Root cause (measured, logbook
-`2026-06-27-online-juggle-throw-fix-catch-axis-split-band-limit-cascade`): the
-catch seats the ball **~15 mm off-centre** (the platform's band-limited lateral
-tracking error), and the **contact-carry throw amplifies that beyond the
-±150 mm reach** → divergence (loop gain > 1).
+**5 / 0** then collapses to 1-ball: the catch seats the ball ~15 mm off-centre
+(the platform's band-limited lateral tracking error) and the **contact-carry
+throw amplifies that beyond reach** → divergence (loop gain > 1; logbook
+`2026-06-27-online-juggle-throw-fix-catch-axis-split-band-limit-cascade`).
 
-### Why tilt is the fix
+### Why a capability ladder (the structural decision)
 
-The current **level-platform decoupling** forces the lateral throw component to
-come from the **band-limited platform velocity** — exactly the actuator that
-can't track fast transients (−3 dB at ~5 Hz; the throw is a fast transient). Kai
-instead **tilts each hand** and detaches the ball **along the tilted axis**, so
-the throw's *speed* comes from the fast actuator (his hand / our slider) and the
-*aim* comes from a roughly-constant tilt. On our morphology:
+Our struggle came from debugging **coupled failure modes inside the 2-ball
+loop** — when a run collapsed we couldn't tell whether the catch, the throw, the
+timing, or the startup broke, so fixes to one broke another. We therefore bring
+the system up as an **incremental capability ladder** that **mirrors the hardware
+bring-up order**, isolating each primitive:
 
-> lateral take-off velocity = `slider_speed × sin(tilt)` — e.g. 5 m/s × sin(11°)
-> ≈ **0.95 m/s**, delivered by the perfect slider along a **held tilt**, with the
-> platform never commanding fast lateral translation.
+- **catch** is validated standalone with a known-clean input (Rung 1),
+- **throw** is validated standalone for accuracy (Rung 2a) then closed into the
+  minimal toss-and-self-catch loop with **no 2-ball confound** (Rung 2b — the
+  cleanest possible test of "did tilt kill the divergence"),
+- **two-ball** then only has to solve *composition* (Rung 3).
 
-Crucially, the throw velocity becomes set by a *constant tilt + the perfect
-slider* — **independent of small in-cup offsets** — so the throw stops amplifying
-the catch error and the loop should converge. Caveat (the operator's instinct):
-*changing* tilt quickly swings the cup through its lever arm (ω×r) and re-enters
-the band limit, so tilt is held ~constant through the throw, not whipped.
+Sim mirrors how we'd safely bring up the real robot (catch one throw → controlled
+single tosses → juggle), so each rung **de-risks a hardware milestone** and yields
+a **reusable primitive** (a general catch, a general parameterised throw) rather
+than one bespoke demo.
 
-We adopted Kai's **planner**; this plan re-adds the two Kai ingredients we
-dropped — **throw tilt** and the **carry-inward catch** — while *keeping full
-contact-physics fidelity* (an explicit operator decision: no kinematic-throw
-shortcut). Jugglebot has **one cup**, so 2-ball is a "2-in-one-hand" oval —
-harder than Kai's two-hand cascade; we bring it up as **columns first**, seeded
-by **Ball Butler**, then ramp toward the oval.
+### Why tilt is the engine
 
-### Goal
+The **level-platform decoupling** forced the lateral throw component onto the
+**band-limited platform velocity** (−3 dB ~5 Hz; the throw is a fast transient).
+Kai instead **tilts** and detaches **along the tilted axis**, so the *speed* comes
+from the fast actuator (slider) and the *aim* from a roughly-constant tilt:
+`lateral take-off vel = slider_speed × sin(tilt)` (5 m/s × sin 12° ≈ 1.04 m/s).
+Rung 0 confirmed the platform tracks tilt ~6× tighter than lateral translation
+(3.1° vs 17° phase lag at the cycle freq; lever arm ~1.66 mm/deg; ≤12° usable;
+logbook `2026-06-29-platform-tilt-tracking-characterisation`). Tilt is the
+primary lateral-aiming mechanism for **both** the throw (aim) and the catch
+(tilt-to-receive).
 
-Sustained 2-ball juggling — **≥30 catches / 0 drops**, seeded by Ball Butler,
-under faithful contact + real actuator band limits (so it transfers to
-hardware), the cup tracing a continuous carry oval. The headline
-`test_full_sim_juggle_reaches_target_catches` (currently `xfail(strict=True)`)
-passes un-xfailed against the online runner.
+### Decisions already taken (do not relitigate without the operator)
 
-### Explicit decisions already taken (do not relitigate without the operator)
+- **Keep contact-physics fidelity** throughout — no kinematic / controlled-
+  velocity throw shortcut. Make tilt-aimed throws + catches work under *real*
+  contact.
+- **Tilt is the engine** (Rung 0 done); modest, ~constant through a throw, re-aimed
+  cycle-to-cycle.
+- **Capability-ladder bring-up order** (catch → toss → self-catch → two-ball),
+  mirroring hardware.
+- **Hardware-faithful noise (cross-cutting, §3):** BB throws carry configurable
+  initial-condition noise (start ~2%); all ball tracking carries configurable
+  observation noise (start ±0.5 mm). Every rung's acceptance must hold *under the
+  noise*.
+- **BB model + reload pose:** BB is modelled simply as a ball appearing with an
+  initial state `(pos, vel)`, **origin placeable anywhere**. The reload's
+  **nominal/home pose is COM (0, 0, 170 mm)**, but the platform **translates to
+  reach the *observed* landing** when a throw lands off-nominal (the §3 BB noise
+  scatters the landing well beyond the tilt lever-arm, so the catch must reach).
+  That catch translation is **slow** (over the ball's flight), so it stays inside
+  the platform's good tracking band — the band limit bit only *fast* transients,
+  and the old demo's closed-loop catch already reached this way. The **tilt** does
+  the clean receive: **orientation driven by the throw geometry** (tilt-to-receive:
+  cup axis aligned with the incoming ball's arrival velocity, Kai-collinear-style),
+  ≤12°, with the Rung 0 lever-arm compensation on top. So **catch = slow
+  translate-to-reach (position) + tilt-to-receive (orientation)**; the *throw*
+  stays tilt-aimed with no fast translation.
 
-- **Keep contact-physics fidelity** (B): no kinematic / controlled-velocity
-  throw shortcut. Make tilt-aimed throws work under *real* contact.
-- **Re-introduce platform tilt** (A) as the primary lateral-aiming mechanism;
-  modest, ~constant through the throw.
-- **Carry-inward catch** (C): tilt makes Kai's catch-outer→carry-inward→
-  throw-inner geometry + firmer (toward collinear) catch feasible.
-- **Columns → oval** (D): bring up columns first (lowest lateral demand), but
-  **BB-seeded with the platform tilting to receive the BB throw cleanly**; the
-  oval remains the end goal, reached by ramping the tilt + separation knobs.
+### Goal (ladder top, for now)
 
-## 2. The phased plan
+Sustained 2-ball juggling — **≥30 catches / 0 drops** under the noise, BB-seeded,
+columns → oval; the headline `test_full_sim_juggle_reaches_target_catches`
+(currently `xfail`) passes un-xfailed against the online runner. Beyond that:
+3-ball and richer patterns (Rung 4+, future).
 
-Each phase is run by a **fresh Claude instance** (a workflow subagent) following
-the cycle **implement → audit → commit (fetch-guarded push) → write the next
-phase's prompt**. The workflow runs in **gated auto-chain** segments with human
-go/no-go at two gates. See §4 for the workflow + gates.
+## 2. The capability ladder
 
----
-
-### Phase 0 — Characterise tilt / orientation tracking  *(GATE after)*
-
-**Goal.** Quantify how well the Stewart platform tracks orientation (rx/ry tilt)
-so we know tilt is viable for throw-aiming and the planner has the numbers it
-needs. We characterised lateral translation + the slider; orientation is the
-missing piece.
-
-**Approach.** New committed probe `tools/probes/juggle_tilt_bandlimit.py`
-(mirror the structure of `juggle_cup_bandlimit.py`): at the operating point
-(centroid z = 170 mm), command rx/ry tilt and measure —
-1. **Static hold** — commanded vs achieved tilt at a sweep of modest angles
-   (e.g. 0/3/6/9/12°); is the hold accurate, any droop?
-2. **Dynamic** — a low-frequency tilt Bode (amplitude ratio + phase lag at the
-   1.6 Hz cycle freq and a couple of points around it); how fast can tilt change
-   before the band limit bites?
-3. **Lever arm** — mm of cup (`hand_opening`) **lateral** shift per degree of
-   tilt, and any **vertical** cross-coupling, so Phase 1 can compensate.
-4. **Leg headroom** — does a modest tilt at z = 170 keep all legs off their
-   stroke limits (no saturation, the artefact that bit the z = 0 lateral sweep)?
-
-**Files.** `tools/probes/juggle_tilt_bandlimit.py` (new, committed — reusable-
-probe rule), `tools/probes/README.md` (entry), a findings note (a logbook entry
-`2026-06-29-platform-tilt-tracking-characterisation` *or* a section appended to
-the online-replanning entry — implementer's call, but it must be a durable,
-cited artefact with the numbers).
-
-**Acceptance.** Committed probe + a findings summary stating: static-hold
-accuracy, dynamic tilt tracking at the cycle freq, the lever-arm (mm/deg lateral
-+ vertical cross-coupling), the recommended **max usable tilt magnitude and
-rate**, and leg-headroom confirmation. The probe runs headless on the Jetson
-venv and is side-effect-free.
-
-**GATE (human).** Is tilt-tracking good enough — modest tilt held accurately,
-lever-arm understood — to build Phase 1 on? *(Also the first real test that the
-**workflow mechanics** work end-to-end on a low-risk phase.)*
+Each rung is one **workflow phase** (the saved workflow runs phases by integer;
+the rung↔phase map is in §4). Each rung is run by a fresh Claude following
+**implement → audit → commit (fetch-guarded push) → write the next prompt**.
 
 ---
 
-### Phase 1 — Re-introduce tilt in planner + realisation
+### Phase 0 / Rung 0 — Platform tilt-tracking characterisation  ✅ DONE
 
-**Goal.** Plan and realise throws aimed via a modest platform tilt; the lateral
-take-off velocity comes from `tilt × slider-speed`, not platform translation.
+Committed `tools/probes/juggle_tilt_bandlimit.py` + logbook
+`2026-06-29-platform-tilt-tracking-characterisation`. Key numbers Rungs 1-2 use:
+lever arm **−1.66 mm/deg** lateral cup shift (compensate `centroid_xy`), vertical
+cross-coupling negligible (~2 mm at 12°), **≤12° usable tilt**, tilt held ~constant
+through a throw (tracks 0.994 / 3.1° at the 1.6 Hz cycle freq, >45 mm leg margin
+at 24°). Caveat carried forward: Rung 0 proves the platform can *present* an
+accurate tilt — not that the ball detaches/seats cleanly *along* it under contact
+(that is Rungs 1 + 2b).
+
+---
+
+### Phase 1 / Rung 1 — Clean single catch (BB-reload)  *(GATE after)*
+
+**Goal.** Catch one BB-thrown ball cleanly — seated with minimal, characterised
+in-cup offset — from BB **placeable anywhere** (throws landing anywhere in the
+workspace, incl. the §3-noise scatter), by **translating to reach the observed
+landing** (slow → band-safe; nominal home COM (0,0,170)) and **tilt-to-receive**
+for clean orientation, **robust to the §3 noise**. The catch primitive in
+isolation, with a known-clean input.
 
 **Approach.**
-- **Planner** (`controller/demo/juggle_planner.py`): add a **tilted-axis detach**
-  constraint — Kai's `cross(cacc − g, hand_axis) == 0` for the first `n_detach`
-  knots, where `hand_axis` is the *tilted* cup z-axis (not world +z). Aim the
-  take-off velocity along that axis. Add the tilt (the cup-axis orientation) as a
-  planner input, bounded to the Phase 0-characterised modest range. This
-  generalises the current level (world-+z) detach; keep level as `tilt = 0`.
+- **BB as a ball.** Spawn a ball with initial `(pos, vel)` from anywhere (the
+  throw origin); apply the §3 **BB throw noise** to the initial conditions — which
+  scatters the landing well beyond the tilt lever-arm, so the catch must *reach*.
+- **Translate-to-reach (position).** Observe the in-flight ball, predict its
+  ballistic touch-down xy, and translate the platform **centroid** to it (full
+  ±150 mm workspace). This reach is **slow** (over the flight), so it's inside the
+  platform's good band — the band limit bit only *fast* transients, and the old
+  demo's closed-loop catch already reached this way. Nominal/home is COM (0,0,170).
+- **Tilt-to-receive (orientation).** Compute the cup **tilt** (rx/ry) that aligns
+  the cup axis with the observed arrival velocity (Kai-collinear catch), ≤12°. The
+  **slider** does the vertical descend-with-the-ball (the existing axis-split
+  catch). Apply the Rung 0 lever-arm compensation so the tilted cup opening still
+  meets the ball at the reached xy.
+- **Observation.** Observe the in-flight ball with the §3 **tracking noise**;
+  predict touchdown ballistically; set the catch tilt + slider; confirm the seat.
+- Characterise + minimise the **in-cup seat offset** across the placement range
+  and under the noise.
+
+**Files.** `sim/juggle_online.py` (or a focused single-catch harness), the BB-as-
+ball spawn + noise hook, the tilt-to-receive realisation, the noise model (§3 —
+likely a small `sim/` noise helper or plant option), `tools/probes/` measurement
+harness if reused, `tests/sim/…`, a logbook entry.
+
+**Acceptance.** Reliable clean catch of BB throws landing across the workspace
+(incl. the noise scatter) with a characterised (small) in-cup offset, **holding
+under 2% BB noise + 0.5 mm tracking noise** (seed-reproducible). The
+translate-to-reach + tilt-to-receive geometry + lever-arm compensation are
+verified. **GATE:** is the catch clean + robust enough to feed a throw?
+
+---
+
+### Phase 2 / Rung 2a — Single-ball throw to arbitrary targets  *(GATE after)*
+
+**Goal.** Throw a single ball (tilt-aimed) to **arbitrary, scoped workspace
+targets**, accurately and repeatably, at **settable cadence** — measured
+open-loop (no catch yet). This is where tilt enters the *throw*.
+
+**Approach.**
+- **Planner** (`controller/demo/juggle_planner.py`): tilted-axis detach (Kai's
+  `cross(cacc − g, hand_axis) == 0` along the *tilted* cup axis); aim the take-off
+  velocity along it; tilt is a planner input bounded ≤12°; level (`tilt = 0`) must
+  remain the unchanged special case (existing tests pass).
 - **Realisation** (`sim/juggle_online.py::realize`): re-introduce orientation
-  (rx/ry) into the pose (undo the *orientation* half of the level decoupling;
-  keep the slider doing speed-along-axis). **Compensate the lever arm** from
-  Phase 0 — the cup shifts laterally with tilt, so offset `centroid_xy` so the
-  cup lands where the plan wants it.
+  (rx/ry); compensate the lever-arm.
+- **Parameterise** the throw **target** (a scoped reachable-workspace box) and the
+  **cadence** (beat timing over a useful range). Throw one ball, measure landing
+  vs target (open-loop). Tracking noise applies to any observation.
 
 **Files.** `controller/demo/juggle_planner.py`, `sim/juggle_online.py`,
-`tests/sim/test_demo_juggle_planner.py` (new tilt-constraint tests — verify the
-take-off velocity's lateral component equals `slider_speed × sin(tilt)` and the
-detach is collinear with the tilted axis).
+`tests/sim/test_demo_juggle_planner.py` (tilt-constraint tests: lateral take-off
+= `slider_speed × sin(tilt)`, detach collinear with the tilted axis),
+`tools/probes/` landing-accuracy harness, logbook.
 
-**Acceptance.** Planner produces tilted throws with the expected lateral take-off
-component (verified numerically); realisation commands the tilt and compensates
-the lever arm so the *cup* tracks the planned tilted trajectory in sim (measured,
-e.g. a probe); planner unit tests pass + the new tilt tests. Default behaviour
-with `tilt = 0` is unchanged (regression-safe). No gate — auto-continue.
+**Acceptance.** Open-loop landing error within a stated bound across the target
+range and the cadence range; tilt-aim verified numerically; `tilt = 0` regression-
+safe. **GATE:** are the throws accurate enough to close a loop on?
 
 ---
 
-### Phase 2 — Validate the tilt-aimed throw under real contact  *(GATE after — make-or-break)*
+### Phase 3 / Rung 2b — Throw-and-self-catch loop  *(GATE after — MAKE-OR-BREAK)*
 
-**Goal.** Confirm the tilt-aimed throw imparts the lateral velocity **cleanly and
-consistently regardless of small in-cup offset**, and that this kills (or
-substantially reduces) the divergence — under full contact (decision B).
+**Goal.** The cup throws a single ball up (tilt-aimed) and **catches its own
+throw, sustained** — the minimal closed loop, with **no 2-ball confound**. This is
+the cleanest test of whether tilt makes the throw→catch→throw loop **stable**
+(loop gain < 1) under real contact + the §3 noise.
 
-**Approach.** Run the online runner with tilt-aimed throws + contact; re-measure
-(reuse / extend the Phase-pre probes `/tmp/probe_throwchar`-style, promoted to
-`tools/probes/` if reused): (a) per-cycle **launch-velocity consistency** and
-**landing-offset-vs-in-cup-offset** (does the throw still amplify?); (b) the
-**divergence** (catch count, does the pattern sustain longer, is loop gain < 1?).
-Compare head-to-head with the pre-tilt baseline (5 catches, diverges). Tune the
-tilt magnitude within the Phase 0 limits.
+**Approach.** Compose Rung 2a's throw with Rung 1's catch into a single-ball
+toss-catch cycle; re-plan each cycle from the achieved cup state + the noisy
+observed ball. Measure: does it sustain ≥ N cycles? Does the throw still amplify
+the in-cup offset, or does tilt break the amplification (launch velocity
+~independent of in-cup offset)? Compare head-to-head with the pre-tilt divergence.
 
-**Files.** measurement probe(s) under `tools/probes/` if reused; tilt-magnitude
-tuning in `sim/juggle_online.py`; a logbook entry documenting the make-or-break
-result (the comparison table + the verdict).
+**Files.** `sim/juggle_online.py` (single-ball self-catch loop), measurement
+probe(s) under `tools/probes/`, a logbook entry with the make-or-break verdict.
 
-**Acceptance.** A measured comparison showing the throw amplification is reduced
-(launch velocity now ~independent of in-cup offset) and the divergence is
-reduced/eliminated (catch count up materially vs 5). The logbook entry states the
-verdict plainly.
-
-**GATE (human).** Did tilt actually kill the divergence? Go/no-go for Phase 3-4.
-If **no**, stop — the hypothesis failed and we re-plan (this is the riskiest
-assumption in the whole arc).
+**Acceptance.** Single-ball self-catch sustains **≥ 10 cycles** (or run until it
+visibly sustains vs. diverges, reporting the achieved cycle count AND the
+per-cycle in-cup-offset trend — flat/decaying = converging, growing = diverging),
+loop gain < 1, under the §3 noise. **GATE (MAKE-OR-BREAK):** did tilt kill the
+divergence? If **yes** → Rung 3. If **no** → STOP and re-plan with the operator
+(this is the riskiest assumption in the arc).
 
 ---
 
-### Phase 3 — Carry-inward catch geometry (Kai-style)
+### Phase 4 / Rung 3 — Two-ball (columns → oval, BB-seeded)
 
-**Goal.** With tilt available, adopt Kai's catch-outer → carry-inward →
-throw-inner geometry + a firmer (toward collinear) catch, replacing today's
-lateral-reversal crossing.
+**Goal.** Sustained 2-ball — compose the proven catch + throw primitives. BB seeds
+the pattern (tilt-to-receive); bring up **columns first** (lowest lateral demand,
+≥30 catches / 0 drops under noise), then **ramp tilt + separation toward the
+oval**.
 
-**Approach.** Re-geometry the pattern: catch at the **outer** lateral point
-(cup moving inward), carry the ball **inward** (a `CARRY_DISTANCE` analog), throw
-from the **inner** point — the cup moves consistently (no double reversal).
-Firm the catch velocity-match toward Kai's **hard collinear** (now feasible
-because tilt carries the lateral burden). Update the planner's catch constraints
-+ the runner's pattern geometry.
-
-**Files.** `controller/demo/juggle_planner.py` (catch constraints),
-`sim/juggle_online.py` (pattern geometry), `tests/sim/test_demo_juggle_planner.py`.
-
-**Acceptance.** The cup traces a carry-inward oval (no lateral reversal at the
-catch); the catch seats more reliably (measured); catch count improves further.
-No gate — auto-continue.
-
----
-
-### Phase 4 — Closed-loop bring-up: columns → oval, BB-seeded
-
-**Goal.** Sustained 2-ball juggling, brought up **first as columns** (lowest
-lateral demand), **seeded by Ball Butler** with the platform **tilting to receive
-the BB throw cleanly**, then ramped toward the ovular end goal.
-
-**Approach.**
-- **BB seeding.** Integrate `BallButlerSim` priming (as the old `juggle_demo`
-  does): BB throws the first ball; the platform **tilts to receive** the incoming
-  BB throw cleanly (tilt is exercised on the catch/priming side, not just the
-  throw). Reuse the old demo's BB-lead-time calibration pattern.
-- **Columns first.** Start the closed loop as columns — near-zero crossing,
-  ball(s) ~straight up/down in fixed column(s), cup shuttling — the regime with
-  the least lateral demand. Get to **≥30 catches / 0 drops** consistent.
-- **Ramp to oval.** Parameterise tilt + separation so columns and oval are two
-  ends of one knob; dial up toward the ovular end goal once columns sustain.
-- **Tests.** In `tests/sim/test_demo_juggle_sim.py`: retarget
-  `test_full_sim_juggle_reaches_target_catches` (T-I3, currently
-  `xfail(strict=True)` at the ≥30-catch bar) to the online runner and **un-xfail
-  it when it passes**; and re-point the already-passing smoke test
-  `test_short_run_catches_the_bb_primed_ball_and_a_throw` (catches both balls
-  once) at the online runner.
+**Approach.** Carry-inward catch geometry (Kai's catch-outer → carry-inward →
+throw-inner, firmer collinear catch) now that catch + throw are solid; BB priming;
+columns→oval as one parameter ramp. Retarget the headline tests.
 
 **Files.** `sim/juggle_online.py` (BB seeding + columns/oval parameterisation),
-`tests/sim/test_demo_juggle_sim.py` (retarget headline cases),
-`sim/juggle_demo.py` (BB priming reference — read, don't necessarily change),
-logbook.
+`tests/sim/test_demo_juggle_sim.py` (retarget `test_full_sim_juggle_reaches_
+target_catches`, currently `xfail(strict=True)`, and re-point the passing smoke
+test `test_short_run_catches_the_bb_primed_ball_and_a_throw`, both at the online
+runner), logbook.
 
-**Acceptance.** ≥30 catches / 0 drops sustained (columns first), BB-seeded with
-tilt-to-receive; headline tests pass un-xfailed against the online runner; a
-demonstrated path (parameter ramp) toward the oval. Final phase.
+**Acceptance.** ≥30 catches / 0 drops sustained under the noise (columns first),
+BB-seeded; the headline test passes un-xfailed; a demonstrated parameter ramp
+toward the oval.
 
-## 3. Cross-cutting constraints (every phase)
+---
 
-- **Venv.** `source ~/Desktop/PDJ_venv/venv/bin/activate` for all python/pytest.
-- **Control-system rigor.** Analyse control/physics implications before changing
-  the planner/realisation (CLAUDE.md). Tilt touches the throw kinematics —
-  reason through one cycle before editing.
-- **Tests.** `pytest tests/ -q` after `*.py`/`*.yaml` changes AND as the final
-  pre-commit gate; cite the (date, command, result) triple. The flaky
-  `test_hot_loop_allocation_contract` (see memory) passes in isolation — re-run
-  isolated to confirm, never block on it; any *other* failure blocks the commit.
+### Rung 4+ (future, not yet scoped)
+
+3-ball cascade, richer / arbitrary-target patterns, longer runs. Out of scope
+until Rung 3 lands; noted so the ladder framing is explicit.
+
+## 3. Cross-cutting constraints (every rung)
+
+### Hardware-faithful noise model (NEW — configurable, on by default)
+
+Two independent, seed-reproducible noise sources, exposed as config knobs so any
+rung can sweep/disable them:
+
+- **BB throw noise** — `bb_throw_noise_frac` (default **0.02** = 2%). The BB
+  ball's initial conditions get Gaussian noise converted to physical units:
+  velocity σ = `frac × |vel|` per component (≈2% of the throw speed, in mm/s),
+  position σ = `frac × |throw displacement vector|` per component (2% of how far
+  the throw travels, origin→touch-down, in mm) — both anchored to the one
+  `frac` knob, no free reference. Models the real Ball Butler's shot-to-shot
+  variability.
+- **Tracking (observation) noise** — `tracking_noise_mm` (default **0.5**). Every
+  *observed* ball position used for re-planning gets ±0.5 mm noise (σ or half-
+  range — implementer's call, documented). Models mocap/sensor noise. NB the
+  velocity estimate (position differencing) inherits amplified noise — handle
+  explicitly (e.g. observe position, derive velocity, or a small filter).
+
+Both default ON; every rung's acceptance must hold *with* them. Seed everything
+for determinism (the runner already takes `seed`).
+
+### Engineering constraints
+
+- **Venv:** `source ~/Desktop/PDJ_venv/venv/bin/activate` for all python/pytest.
+- **Control rigor:** analyse control/physics implications before changing the
+  planner/realisation (tilt touches throw + catch kinematics — reason through one
+  cycle first).
+- **Tests:** `pytest tests/ -q` after `*.py`/`*.yaml` and as the final pre-commit
+  gate; cite the (date, command, result) triple. The flaky
+  `test_hot_loop_allocation_contract` passes isolated — re-run isolated to confirm,
+  never block on it; any *other* failure blocks the commit.
 - **Reusable probes** → `tools/probes/` (committed) + README entry; one-offs →
   `/tmp`.
-- **Logbook.** Each substantive phase gets a logbook entry with a real
-  Discussion section; backfill the commit SHA after committing.
-- **No backticks in `git commit -m`** (use heredoc/-F); `/audit --unstaged`
-  before any commit touching a logbook/plan/normative .md.
+- **Logbook** per substantive rung, real Discussion section; backfill the SHA.
+- **No backticks in `git commit -m`** (heredoc/-F); `/audit --unstaged` before any
+  commit touching a logbook/plan/normative .md.
 
 ## 4. The workflow + gates
 
-Driven by the saved workflow `.claude/workflows/bb-tilt-phases.js`. It runs a
-**segment** of phases (`args: {from, to}`), each phase as fresh agents:
-**implement → audit (independent audit-reporter) → finalize** (apply fixes, full
-`pytest tests/ -q` gate, commit with the Co-Authored-By trailer, **fetch-guarded
-push**, write the next phase's handoff prompt). Push is fetch-guarded: if
-`origin/demo/bb-led-two-ball-juggle` has diverged, the phase **does not push or
-rebase** — it aborts with a PARALLEL-SESSION warning for the human.
+Driven by `.claude/workflows/bb-tilt-phases.js`, invoked **by `scriptPath`** (local
+workflows don't resolve by `name`):
+`Workflow({scriptPath: ".claude/workflows/bb-tilt-phases.js", args: {from, to}})`.
+Each phase = fresh **implement → independent audit-reporter → finalize** (apply
+fixes → full `pytest tests/ -q` gate → commit → **fetch-guarded push** (abort + warn
+on divergence with `origin/demo/bb-led-two-ball-juggle`) → write the next handoff).
 
-**Gated auto-chain segments (operator's choice):**
+**Phase ↔ rung map and gates.** The operator wants **explicit per-rung gates**
+(incl. the Rung 2a/2b sub-gates), so run **one phase per segment**:
 
-| Invoke | Runs | Then |
+| Invoke | Phase / Rung | Gate question |
 |---|---|---|
-| `args: {from: 0, to: 0}` | Phase 0 | **GATE** — tilt-tracking good enough? (+ did the workflow mechanics work?) |
-| `args: {from: 1, to: 2}` | Phase 1 → Phase 2 | **GATE** — did tilt kill the divergence? (make-or-break) |
-| `args: {from: 3, to: 4}` | Phase 3 → Phase 4 | done |
+| (done) | 0 / Rung 0 | tilt-tracking good? → YES |
+| `{from:1,to:1}` | 1 / Rung 1 | catch clean + noise-robust? |
+| `{from:2,to:2}` | 2 / Rung 2a | throws accurate to target + cadence? |
+| `{from:3,to:3}` | 3 / Rung 2b | **make-or-break:** self-catch sustains (loop gain < 1)? |
+| `{from:4,to:4}` | 4 / Rung 3 | 2-ball sustained ≥30? |
 
-After each segment the workflow surfaces the commits, the gate assessment, and
-the next phase's handoff prompt. The human reviews, then triggers the next
-segment.
+(Phases may be batched into a segment, e.g. `{2,3}`, if a gate is waived — but the
+default is one-per-segment given the sub-gate decision.)
 
 ## 5. References
 
-- Kai Ploeger, *Controlling the Cascade* (IEEE 9981678); repo at
-  `/home/jetson/Desktop/kinematic_planning_for_nball_toss_juggling/` —
-  `task_space_juggling.py` (`plan_throw`, `HAND_TILT`, tilted detach, carry-
-  inward geometry, the online re-plan loop).
-- Band-limit characterisation: `tools/probes/juggle_cup_bandlimit.py`, logbook
+- Kai Ploeger, *Controlling the Cascade* (IEEE 9981678); repo
+  `task_space_juggling.py` — `plan_throw`, `HAND_TILT`, tilted detach, collinear
+  catch, carry-inward geometry, the online re-plan loop.
+- Rung 0: `tools/probes/juggle_tilt_bandlimit.py`, logbook
+  `2026-06-29-platform-tilt-tracking-characterisation`.
+- Band limit: `tools/probes/juggle_cup_bandlimit.py`, logbook
   `2026-06-27-online-replanning-architecture-and-cup-bandlimit`.
-- The wall this re-architecture targets: logbook
-  `2026-06-27-online-juggle-throw-fix-catch-axis-split-band-limit-cascade`.
-- Offline demo's tilt/banking + BB priming reference: `sim/juggle_demo.py`,
+- The wall: logbook `2026-06-27-online-juggle-throw-fix-catch-axis-split-band-limit-cascade`.
+- BB priming + offline-demo tilt reference: `sim/juggle_demo.py`,
   `controller/demo/juggle_optimizer.py`, plan `bb-led-two-ball-juggle-demo.md`.

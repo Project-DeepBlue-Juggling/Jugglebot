@@ -157,9 +157,11 @@ for (let ph = from; ph <= to && !aborted; ph++) {
 
 // Gate guidance for the human at the segment boundary.
 const GATES = {
-  0: 'GATE after Phase 0: is tilt-tracking good enough (modest tilt held accurately, lever-arm understood) to build on? Also: did the workflow mechanics work end-to-end? If yes -> run {from:1,to:2}.',
-  2: 'GATE after Phase 2 (MAKE-OR-BREAK): did the tilt-aimed throw kill the divergence? If yes -> run {from:3,to:4}. If no -> STOP and re-plan with the operator.',
-  4: 'Phase 4 complete — sustained 2-ball is the goal; review the catch count + the headline tests.',
+  0: 'GATE after Phase 0 (Rung 0, tilt-tracking): good enough to build on? -> YES (done). Next: run {from:1,to:1}.',
+  1: 'GATE after Phase 1 (Rung 1, clean catch): is the BB-reload catch clean and robust to the noise (2% BB + 0.5mm tracking)? If yes -> run {from:2,to:2}.',
+  2: 'GATE after Phase 2 (Rung 2a, throw accuracy): are single-ball tilt-aimed throws accurate to target across the scoped range + cadence? If yes -> run {from:3,to:3}.',
+  3: 'GATE after Phase 3 (Rung 2b, self-catch — MAKE-OR-BREAK): does the single-ball throw-and-self-catch loop sustain (loop gain < 1) under contact + noise? If yes -> run {from:4,to:4} (two-ball). If no -> STOP and re-plan with the operator.',
+  4: 'Phase 4 (Rung 3, two-ball) complete — sustained 2-ball is the goal; review the catch count + the headline tests.',
 }
 
 return {
