@@ -134,6 +134,7 @@ CONSTANTS = [
 ENUM_WIDTH = {
     "MsgType": "u8", "RpcMethod": "u16", "RpcStatus": "u16",
     "LinkState": "u8", "BusHealth": "u8", "FaultState": "u8", "GuardMode": "u8",
+    "HeartbeatT2JFlags": "u32",
 }
 
 ENUMS = {
@@ -151,6 +152,10 @@ ENUMS = {
         ("BB_AXIS_ESTIMATES", 0x86, "Ball Butler pitch/hand ODrive pos+vel estimates (STREAM, T→J)"),
         ("CMD_RESULT",     0x87, "Ball Butler command-outcome CAN1 frame relay (STREAM, T→J)"),
         ("LEG_CMD",        0x88, "Teensy commanded leg interp output @100Hz (STREAM, T→J) — U3-iv float32 residual"),
+        # Reserved (canbridge-foundation-coldstart-parity Phase 0) — fill the 0x89–0x8F
+        # telemetry gap below RPC_RESPONSE 0x90. Owners noted; consumers land in their phase.
+        ("PLATFORM_FRAME", 0x89, "Verbatim Platform-Teensy relay-reply uplink (STREAM, T→J) — Phase 1"),
+        ("HAND_CMD_ECHO",  0x8A, "Hand command-echo telemetry (STREAM, T→J) — Phase 5"),
         ("RPC_RESPONSE",   0x90, "RPC response (RPC port, T→J)"),
     ],
     "RpcMethod": [
@@ -174,6 +179,15 @@ ENUMS = {
         ("BB_RELOAD",          0x0041, "Ball Butler: send RELOAD_CMD on CAN1 (no payload)"),
         ("BB_RESET",           0x0042, "Ball Butler: send RESET_CMD on CAN1 (no payload)"),
         ("BB_CALIBRATE_LOC",   0x0043, "Ball Butler: send CALIBRATE_LOC_CMD on CAN1 (no payload)"),
+        # Reserved (canbridge-foundation-coldstart-parity Phase 0) — the relay /
+        # version / hand-traj seams the later phases own. Allocated in ONE pass so
+        # parallel sessions cannot mint colliding ids. rpc.cpp dispatches these to
+        # ERR_NOT_IMPL stubs until their owning phase replaces them.
+        ("GET_AXIS_VERSIONS",  0x0050, "Pull cached raw Get_Version bytes + received bitmask — Phase 3"),
+        ("TILT_READ",          0x0051, "Relay: read Platform-Teensy inclinometer tilt — Phase 1"),
+        ("STATE_READ",         0x0052, "Relay: read Platform-Teensy RobotState (is_homed/level/pose) — Phase 1"),
+        ("STATE_WRITE",        0x0053, "Relay: write Platform-Teensy RobotState (read-modify-write via cache) — Phase 1"),
+        ("HAND_TRAJ_CMD",      0x0054, "Hand traj + smooth-move (byte-0 discriminator → 0x6D0) — Phase 5"),
     ],
     "RpcStatus": [
         ("OK",            0x0000, "Success"),
@@ -212,6 +226,18 @@ ENUMS = {
         ("DISABLED", 0, ""),
         ("ENABLED",  1, ""),
         ("ESTOP",    2, ""),
+    ],
+    # HeartbeatT2J.flags bitset (bits 0-3) — generated single source for the bits
+    # the firmware producer (Teensy_code_canbridge.ino) sets and the Jetson bridge
+    # reads, replacing the prose that previously lived only in the field comment.
+    # No new cold-start bit is added: is_homed/levelling/pose ride the relay
+    # STATE_READ (canbridge-foundation-coldstart-parity locked-decision #3), not a
+    # heartbeat flag.
+    "HeartbeatT2JFlags": [
+        ("TIME_SYNCED",               0x1, "bit0: Teensy clock synced to the Jetson anchor"),
+        ("STOW_PENDING_ON_RECONNECT", 0x2, "bit1: deferred-stow latch armed (awaiting confirmed CAN3 reconnect)"),
+        ("ALL_AXIS_HEARTBEATS_OK",    0x4, "bit2: every present axis heartbeat is fresh"),
+        ("MPC_ACTIVE",                0x8, "bit3: firmware-side mpc_active (lets a setpoint source verify its arm took)"),
     ],
 }
 
@@ -290,7 +316,7 @@ MESSAGES = [
             Field("bus1_health", "u8",  1, "CAN1 BusHealth enum"),
             Field("bus2_health", "u8",  1, "CAN2 BusHealth enum"),
             Field("fault_state", "u8",  1, "FaultState enum"),
-            Field("flags",       "u32", 1, "bit0 time_synced, bit1 stow_pending_on_reconnect, bit2 all_axis_heartbeats_ok, bit3 mpc_active (firmware-side; lets a setpoint source verify its arm took)"),
+            Field("flags",       "u32", 1, "HeartbeatT2JFlags bitset (bits 0-3): TIME_SYNCED|STOW_PENDING_ON_RECONNECT|ALL_AXIS_HEARTBEATS_OK|MPC_ACTIVE"),
             Field("uptime_ms",   "u32", 1, "ms since boot"),
             # Ball Butler heartbeat snapshot (Phase A — CAN1 0x7D1 decoded by the
             # can-bridge into bb_state and forwarded here at heartbeat rate).
@@ -573,7 +599,7 @@ def generate_cpp() -> str:
 
     a("// ── Enums ──────────────────────────────────────────────────────────────")
     for enum_name, members in ENUMS.items():
-        ct = "uint16_t" if ENUM_WIDTH[enum_name] == "u16" else "uint8_t"
+        ct = TYPES[ENUM_WIDTH[enum_name]][0]   # u8→uint8_t, u16→uint16_t, u32→uint32_t
         a(f"namespace {enum_name} {{")
         for member, value, comment in members:
             valstr = f"0x{value:04X}u" if ct == "uint16_t" else f"{value}u"
@@ -872,6 +898,12 @@ def _py_field_type(f: Field) -> str:
 # Markdown doc generation
 # ───────────────────────────────────────────────────────────────────────────
 
+def _md_cell(s: str) -> str:
+    # Escape `|` so a comment containing it (e.g. a flags bitset "A|B|C") renders
+    # inside one table cell instead of splitting the row across extra columns.
+    return s.replace("|", r"\|")
+
+
 def generate_markdown() -> str:
     L = []
     a = L.append
@@ -919,7 +951,7 @@ def generate_markdown() -> str:
     a("|------|------:|-------|")
     for name, val, ctype, comment in CONSTANTS:
         vstr = f"0x{val:04X}" if name == "MAGIC" else str(val)
-        a(f"| `{name}` | {vstr} | {comment} |")
+        a(f"| `{name}` | {vstr} | {_md_cell(comment)} |")
     a("")
     a("## Enums")
     a("")
@@ -932,7 +964,7 @@ def generate_markdown() -> str:
         for member, value, comment in members:
             vstr = (f"0x{value:04X}" if ENUM_WIDTH[enum_name] == "u16"
                     else f"0x{value:02X}" if enum_name == "MsgType" else str(value))
-            a(f"| `{member}` | {vstr} | {comment} |")
+            a(f"| `{member}` | {vstr} | {_md_cell(comment)} |")
         a("")
     a("## Messages")
     a("")
@@ -949,7 +981,7 @@ def generate_markdown() -> str:
         a("| Field | Type | Count | Notes |")
         a("|-------|------|------:|-------|")
         for f in msg.fields:
-            a(f"| `{f.name}` | {f.type} | {f.count} | {f.comment} |")
+            a(f"| `{f.name}` | {f.type} | {f.count} | {_md_cell(f.comment)} |")
         a("")
     a("## RPC method arguments")
     a("")
@@ -966,7 +998,7 @@ def generate_markdown() -> str:
         a("| Field | Type | Notes |")
         a("|-------|------|-------|")
         for f in arg.fields:
-            a(f"| `{f.name}` | {f.type} | {f.comment} |")
+            a(f"| `{f.name}` | {f.type} | {_md_cell(f.comment)} |")
         a("")
     return "\n".join(L)
 

@@ -41,6 +41,8 @@ namespace MsgType {
   constexpr uint8_t BB_AXIS_ESTIMATES = 134u;  // Ball Butler pitch/hand ODrive pos+vel estimates (STREAM, T→J)
   constexpr uint8_t CMD_RESULT = 135u;  // Ball Butler command-outcome CAN1 frame relay (STREAM, T→J)
   constexpr uint8_t LEG_CMD = 136u;  // Teensy commanded leg interp output @100Hz (STREAM, T→J) — U3-iv float32 residual
+  constexpr uint8_t PLATFORM_FRAME = 137u;  // Verbatim Platform-Teensy relay-reply uplink (STREAM, T→J) — Phase 1
+  constexpr uint8_t HAND_CMD_ECHO = 138u;  // Hand command-echo telemetry (STREAM, T→J) — Phase 5
   constexpr uint8_t RPC_RESPONSE = 144u;  // RPC response (RPC port, T→J)
 }
 namespace RpcMethod {
@@ -64,6 +66,11 @@ namespace RpcMethod {
   constexpr uint16_t BB_RELOAD = 0x0041u;  // Ball Butler: send RELOAD_CMD on CAN1 (no payload)
   constexpr uint16_t BB_RESET = 0x0042u;  // Ball Butler: send RESET_CMD on CAN1 (no payload)
   constexpr uint16_t BB_CALIBRATE_LOC = 0x0043u;  // Ball Butler: send CALIBRATE_LOC_CMD on CAN1 (no payload)
+  constexpr uint16_t GET_AXIS_VERSIONS = 0x0050u;  // Pull cached raw Get_Version bytes + received bitmask — Phase 3
+  constexpr uint16_t TILT_READ = 0x0051u;  // Relay: read Platform-Teensy inclinometer tilt — Phase 1
+  constexpr uint16_t STATE_READ = 0x0052u;  // Relay: read Platform-Teensy RobotState (is_homed/level/pose) — Phase 1
+  constexpr uint16_t STATE_WRITE = 0x0053u;  // Relay: write Platform-Teensy RobotState (read-modify-write via cache) — Phase 1
+  constexpr uint16_t HAND_TRAJ_CMD = 0x0054u;  // Hand traj + smooth-move (byte-0 discriminator → 0x6D0) — Phase 5
 }
 namespace RpcStatus {
   constexpr uint16_t OK = 0x0000u;  // Success
@@ -100,6 +107,12 @@ namespace GuardMode {
   constexpr uint8_t DISABLED = 0u;
   constexpr uint8_t ENABLED = 1u;
   constexpr uint8_t ESTOP = 2u;
+}
+namespace HeartbeatT2JFlags {
+  constexpr uint32_t TIME_SYNCED = 1u;  // bit0: Teensy clock synced to the Jetson anchor
+  constexpr uint32_t STOW_PENDING_ON_RECONNECT = 2u;  // bit1: deferred-stow latch armed (awaiting confirmed CAN3 reconnect)
+  constexpr uint32_t ALL_AXIS_HEARTBEATS_OK = 4u;  // bit2: every present axis heartbeat is fresh
+  constexpr uint32_t MPC_ACTIVE = 8u;  // bit3: firmware-side mpc_active (lets a setpoint source verify its arm took)
 }
 
 // ── Frame header (8 bytes) + trailing CRC-16 ───────────────────────────
@@ -170,7 +183,7 @@ struct HeartbeatT2JPayload {
   uint8_t bus1_health;  // CAN1 BusHealth enum
   uint8_t bus2_health;  // CAN2 BusHealth enum
   uint8_t fault_state;  // FaultState enum
-  uint32_t flags;  // bit0 time_synced, bit1 stow_pending_on_reconnect, bit2 all_axis_heartbeats_ok, bit3 mpc_active (firmware-side; lets a setpoint source verify its arm took)
+  uint32_t flags;  // HeartbeatT2JFlags bitset (bits 0-3): TIME_SYNCED|STOW_PENDING_ON_RECONNECT|ALL_AXIS_HEARTBEATS_OK|MPC_ACTIVE
   uint32_t uptime_ms;  // ms since boot
   uint8_t bb_state;  // BallButlerState enum (0..6, 127=ERROR)
   uint8_t bb_state_data;  // BB error code when bb_state == ERROR, else 0

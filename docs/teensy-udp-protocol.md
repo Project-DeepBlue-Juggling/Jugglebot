@@ -76,6 +76,8 @@ Static IPs: Teensy `192.168.42.2`, Jetson `192.168.42.1` (`/30` point-to-point).
 | `BB_AXIS_ESTIMATES` | 0x86 | Ball Butler pitch/hand ODrive pos+vel estimates (STREAM, T→J) |
 | `CMD_RESULT` | 0x87 | Ball Butler command-outcome CAN1 frame relay (STREAM, T→J) |
 | `LEG_CMD` | 0x88 | Teensy commanded leg interp output @100Hz (STREAM, T→J) — U3-iv float32 residual |
+| `PLATFORM_FRAME` | 0x89 | Verbatim Platform-Teensy relay-reply uplink (STREAM, T→J) — Phase 1 |
+| `HAND_CMD_ECHO` | 0x8A | Hand command-echo telemetry (STREAM, T→J) — Phase 5 |
 | `RPC_RESPONSE` | 0x90 | RPC response (RPC port, T→J) |
 
 ### RpcMethod
@@ -102,6 +104,11 @@ Static IPs: Teensy `192.168.42.2`, Jetson `192.168.42.1` (`/30` point-to-point).
 | `BB_RELOAD` | 0x0041 | Ball Butler: send RELOAD_CMD on CAN1 (no payload) |
 | `BB_RESET` | 0x0042 | Ball Butler: send RESET_CMD on CAN1 (no payload) |
 | `BB_CALIBRATE_LOC` | 0x0043 | Ball Butler: send CALIBRATE_LOC_CMD on CAN1 (no payload) |
+| `GET_AXIS_VERSIONS` | 0x0050 | Pull cached raw Get_Version bytes + received bitmask — Phase 3 |
+| `TILT_READ` | 0x0051 | Relay: read Platform-Teensy inclinometer tilt — Phase 1 |
+| `STATE_READ` | 0x0052 | Relay: read Platform-Teensy RobotState (is_homed/level/pose) — Phase 1 |
+| `STATE_WRITE` | 0x0053 | Relay: write Platform-Teensy RobotState (read-modify-write via cache) — Phase 1 |
+| `HAND_TRAJ_CMD` | 0x0054 | Hand traj + smooth-move (byte-0 discriminator → 0x6D0) — Phase 5 |
 
 ### RpcStatus
 
@@ -153,6 +160,15 @@ Static IPs: Teensy `192.168.42.2`, Jetson `192.168.42.1` (`/30` point-to-point).
 | `DISABLED` | 0 |  |
 | `ENABLED` | 1 |  |
 | `ESTOP` | 2 |  |
+
+### HeartbeatT2JFlags
+
+| Member | Value | Notes |
+|--------|------:|-------|
+| `TIME_SYNCED` | 1 | bit0: Teensy clock synced to the Jetson anchor |
+| `STOW_PENDING_ON_RECONNECT` | 2 | bit1: deferred-stow latch armed (awaiting confirmed CAN3 reconnect) |
+| `ALL_AXIS_HEARTBEATS_OK` | 4 | bit2: every present axis heartbeat is fresh |
+| `MPC_ACTIVE` | 8 | bit3: firmware-side mpc_active (lets a setpoint source verify its arm took) |
 
 ## Messages
 
@@ -231,7 +247,7 @@ Payload **35 bytes**. Python struct fmt: `<QBBBBIIBBBfff`.
 | `bus1_health` | u8 | 1 | CAN1 BusHealth enum |
 | `bus2_health` | u8 | 1 | CAN2 BusHealth enum |
 | `fault_state` | u8 | 1 | FaultState enum |
-| `flags` | u32 | 1 | bit0 time_synced, bit1 stow_pending_on_reconnect, bit2 all_axis_heartbeats_ok, bit3 mpc_active (firmware-side; lets a setpoint source verify its arm took) |
+| `flags` | u32 | 1 | HeartbeatT2JFlags bitset (bits 0-3): TIME_SYNCED\|STOW_PENDING_ON_RECONNECT\|ALL_AXIS_HEARTBEATS_OK\|MPC_ACTIVE |
 | `uptime_ms` | u32 | 1 | ms since boot |
 | `bb_state` | u8 | 1 | BallButlerState enum (0..6, 127=ERROR) |
 | `bb_state_data` | u8 | 1 | BB error code when bb_state == ERROR, else 0 |

@@ -41,6 +41,8 @@ class MsgType(IntEnum):
     BB_AXIS_ESTIMATES = 134  # Ball Butler pitch/hand ODrive pos+vel estimates (STREAM, T→J)
     CMD_RESULT = 135  # Ball Butler command-outcome CAN1 frame relay (STREAM, T→J)
     LEG_CMD = 136  # Teensy commanded leg interp output @100Hz (STREAM, T→J) — U3-iv float32 residual
+    PLATFORM_FRAME = 137  # Verbatim Platform-Teensy relay-reply uplink (STREAM, T→J) — Phase 1
+    HAND_CMD_ECHO = 138  # Hand command-echo telemetry (STREAM, T→J) — Phase 5
     RPC_RESPONSE = 144  # RPC response (RPC port, T→J)
 
 class RpcMethod(IntEnum):
@@ -64,6 +66,11 @@ class RpcMethod(IntEnum):
     BB_RELOAD = 65  # Ball Butler: send RELOAD_CMD on CAN1 (no payload)
     BB_RESET = 66  # Ball Butler: send RESET_CMD on CAN1 (no payload)
     BB_CALIBRATE_LOC = 67  # Ball Butler: send CALIBRATE_LOC_CMD on CAN1 (no payload)
+    GET_AXIS_VERSIONS = 80  # Pull cached raw Get_Version bytes + received bitmask — Phase 3
+    TILT_READ = 81  # Relay: read Platform-Teensy inclinometer tilt — Phase 1
+    STATE_READ = 82  # Relay: read Platform-Teensy RobotState (is_homed/level/pose) — Phase 1
+    STATE_WRITE = 83  # Relay: write Platform-Teensy RobotState (read-modify-write via cache) — Phase 1
+    HAND_TRAJ_CMD = 84  # Hand traj + smooth-move (byte-0 discriminator → 0x6D0) — Phase 5
 
 class RpcStatus(IntEnum):
     OK = 0  # Success
@@ -100,6 +107,12 @@ class GuardMode(IntEnum):
     DISABLED = 0
     ENABLED = 1
     ESTOP = 2
+
+class HeartbeatT2JFlags(IntEnum):
+    TIME_SYNCED = 1  # bit0: Teensy clock synced to the Jetson anchor
+    STOW_PENDING_ON_RECONNECT = 2  # bit1: deferred-stow latch armed (awaiting confirmed CAN3 reconnect)
+    ALL_AXIS_HEARTBEATS_OK = 4  # bit2: every present axis heartbeat is fresh
+    MPC_ACTIVE = 8  # bit3: firmware-side mpc_active (lets a setpoint source verify its arm took)
 
 # ── CRC-16/CCITT-FALSE ─────────────────────────────────────────────────
 def crc16_ccitt(data: bytes) -> int:

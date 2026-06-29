@@ -207,6 +207,19 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
       return deactivate_request(a.axis);
     }
 
+    // ── Reserved (canbridge-foundation-coldstart-parity Phase 0) ─────────────
+    // Wire ids were allocated up-front (one codegen pass) so parallel sessions
+    // cannot mint colliding ids. Each method's real dispatch lands in its owning
+    // phase; until then they answer ERR_NOT_IMPL (mirrors the ENCODER_SEARCH stub
+    // above) so the firmware builds AND the RpcMethod dispatch lint
+    // (tests/firmware/test_rpc_dispatch_lint.py) passes — every method has a case.
+    case RpcMethod::GET_AXIS_VERSIONS:   // Phase 3 (Get_Version sweep + firmware_validated)
+    case RpcMethod::TILT_READ:           // Phase 1 (Platform-Teensy relay seam)
+    case RpcMethod::STATE_READ:          // Phase 1 (relay RobotState read)
+    case RpcMethod::STATE_WRITE:         // Phase 1 (relay RobotState write)
+    case RpcMethod::HAND_TRAJ_CMD:       // Phase 5 (hand traj + smooth-move)
+      return RpcStatus::ERR_NOT_IMPL;
+
     // ── Ball Butler (CAN1) — typed commands ──────────────────────────────
     // Each gated on BB presence to prevent the un-ACKed-TX bus-off failure
     // mode (analogous to the CAN2 cone-absent gate). Bridge node

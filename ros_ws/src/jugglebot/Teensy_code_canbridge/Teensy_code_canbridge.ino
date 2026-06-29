@@ -99,12 +99,13 @@ static void send_heartbeat_t2j() {
   p.bus1_health = cs.jugglebot_health;   // CAN3 (Jugglebot core)
   p.bus2_health = cs.bb_health;          // CAN1 (Ball Butler)
   p.fault_state = fault_state();
-  p.flags       = (time_synced() ? 0x1u : 0x0u)
-                | (fault_stow_pending() ? 0x2u : 0x0u)
-                | (all_axis_heartbeats_ok() ? 0x4u : 0x0u)
-                | (fault_mpc_active() ? 0x8u : 0x0u);   // bit3 (Phase 11): firmware-side
-                                                        // mpc_active — a setpoint source can
-                                                        // verify its arm actually took (catches
+  namespace HF = JbUdp::HeartbeatT2JFlags;   // generated single source for these bits
+  p.flags       = (time_synced() ? HF::TIME_SYNCED : 0u)
+                | (fault_stow_pending() ? HF::STOW_PENDING_ON_RECONNECT : 0u)
+                | (all_axis_heartbeats_ok() ? HF::ALL_AXIS_HEARTBEATS_OK : 0u)
+                | (fault_mpc_active() ? HF::MPC_ACTIVE : 0u);  // bit3 (Phase 11):
+                                                        // firmware-side mpc_active — a setpoint source
+                                                        // can verify its arm actually took (catches
                                                         // a competing heartbeat authority).
   p.uptime_ms   = (uint32_t)(micros64() / 1000ULL);
 
