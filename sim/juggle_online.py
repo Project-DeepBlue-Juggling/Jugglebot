@@ -47,9 +47,12 @@ Pure-Python, no ROS2. SI internally in the planner; mm at the plant boundary.
 """
 from __future__ import annotations
 
+import argparse
 import dataclasses
 import os
 import sys
+import time
+from pathlib import Path
 
 import numpy as np
 
@@ -70,6 +73,15 @@ from sim.plant.mujoco_plant import MuJoCoPlant
 
 CONTROL_DT = 0.025
 
+# GLFW key codes for the MuJoCo passive viewer's key_callback (mirrors
+# sim/juggle_demo.py so the two runners share the same viewer controls).
+_KEY_SPACE = 32
+_KEY_C = 67                # print current free-camera angle as --cam-* flags
+_KEY_LEFT_BRACKET = 91     # `[`  — slower
+_KEY_RIGHT_BRACKET = 93    # `]`  — faster
+_KEY_RIGHT_ARROW = 262     # step one tick when paused
+_KEY_LEFT_ARROW = 263      # accepted but no-op (sim can't run backwards)
+
 # Realisation constants (from the band-limit static map, tools/probes/
 # juggle_cup_bandlimit.py): at centroid pose z = Z_ACTIVE_MM the cup (hand
 # opening) sits at cup_z_world ≈ CUP_Z_BASE_MM + slider_mm.
@@ -85,7 +97,23 @@ class OnlineJuggleConfig:
     catch_z_m: float = 0.70             # cup catch height (low)
     apex_m: float = 1.30                # ball apex above the throw
     duration_s: float = 20.0
-    seed: int = 0
+    seed: int = 0                       # accepted for CLI parity; runner is
+                                        # deterministic (no RNG) so it's unused
+    headless: bool = True               # if False, launch the MuJoCo viewer
+    realtime_rate: float = 0.0          # wall-clock pacing: 0 = free-running,
+                                        # 1.0 = real-time, 0.5 = half-speed, etc.
+    # ---- Offscreen video recording (mirrors sim/juggle_demo.py --record) ----
+    # When ``record_path`` is set, render the live scene offscreen from a FIXED
+    # free camera each tick and pipe frames to the system ffmpeg (H.264 mp4),
+    # independent of ``headless`` / the viewer. ``cam_*`` override the model's
+    # default free-camera angle; leave any None to inherit it.
+    record_path: "str | None" = None
+    record_size: "tuple[int, int]" = (1280, 720)   # (width, height) px
+    record_fps: int = 40                # output fps; 40 = real-time (1 frame/tick)
+    cam_azimuth: "float | None" = None
+    cam_elevation: "float | None" = None
+    cam_distance: "float | None" = None
+    cam_lookat: "tuple[float, float, float] | None" = None
 
 
 def _flight_and_speed(apex_m, dz_m):
@@ -104,6 +132,85 @@ def realize(cup_m):
     pose = np.array([cup_mm[0], cup_mm[1], Z_ACTIVE_MM, 0.0, 0.0, 0.0])
     slider = float(np.clip(cup_mm[2] - CUP_Z_BASE_MM, 0.0, SLIDER_STROKE_MM))
     return pose, slider
+
+
+# --------------------------------------------------------------------------
+# Offscreen video recording — adapted verbatim from sim/juggle_demo.py's
+# ``_build_record_camera`` / ``_VideoRecorder``. Duplicated (rather than
+# imported) to keep this runner standalone — importing juggle_demo would pull
+# in the CasADi offline optimiser. UNIFY into a shared module when juggle_demo
+# is retired (the online runner is meant to replace it).
+# --------------------------------------------------------------------------
+def build_record_camera(model, cfg: "OnlineJuggleConfig"):
+    """Fixed free camera for ``--record``: the model's default free camera with
+    any user-supplied ``cam_*`` field overridden (None inherits the default)."""
+    cam = mujoco.MjvCamera()
+    mujoco.mjv_defaultFreeCamera(model, cam)
+    if cfg.cam_azimuth is not None:
+        cam.azimuth = float(cfg.cam_azimuth)
+    if cfg.cam_elevation is not None:
+        cam.elevation = float(cfg.cam_elevation)
+    if cfg.cam_distance is not None:
+        cam.distance = float(cfg.cam_distance)
+    if cfg.cam_lookat is not None:
+        cam.lookat[:] = [float(v) for v in cfg.cam_lookat]
+    return cam
+
+
+class VideoRecorder:
+    """Render the live MuJoCo scene offscreen and stream it to ffmpeg.
+
+    One frame per control tick from a FIXED free camera; raw RGB is piped to
+    the system ``ffmpeg`` (H.264 mp4) over stdin — needs only ``mujoco`` + an
+    ``ffmpeg`` on PATH (no imageio-ffmpeg). Shares the plant's live model/data
+    so the drawn frame is exactly the post-step state.
+    """
+
+    def __init__(self, model, data, path, *, width, height, fps, cam):
+        import subprocess
+        self._data = data
+        self._cam = cam
+        # The MJCF's default offscreen framebuffer is 640x480; rendering larger
+        # raises. Grow the offscreen buffer to fit (no effect on physics or the
+        # onscreen viewer) before building the renderer.
+        if width > model.vis.global_.offwidth:
+            model.vis.global_.offwidth = width
+        if height > model.vis.global_.offheight:
+            model.vis.global_.offheight = height
+        self._renderer = mujoco.Renderer(model, height=height, width=width)
+        self.path = path
+        self.frames = 0
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        cmd = [
+            'ffmpeg', '-y', '-loglevel', 'error',
+            '-f', 'rawvideo', '-pix_fmt', 'rgb24',
+            '-s', f'{width}x{height}', '-r', str(fps), '-i', '-',
+            '-an', '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+            '-crf', '18', '-preset', 'medium', str(path),
+        ]
+        try:
+            self._proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+        except FileNotFoundError as exc:
+            self._renderer.close()
+            raise RuntimeError(
+                "ffmpeg not found on PATH — required for --record") from exc
+
+    def capture(self) -> None:
+        self._renderer.update_scene(self._data, camera=self._cam)
+        frame = self._renderer.render()        # (h, w, 3) uint8, C-contiguous
+        self._proc.stdin.write(frame.tobytes())
+        self.frames += 1
+
+    def close(self) -> None:
+        if self._proc is not None:
+            try:
+                self._proc.stdin.close()
+                self._proc.wait()
+            finally:
+                self._proc = None
+        if self._renderer is not None:
+            self._renderer.close()
+            self._renderer = None
 
 
 class OnlineJuggleRunner:
@@ -130,6 +237,16 @@ class OnlineJuggleRunner:
         self.v_arrival = self.v_take + GRAVITY * self.flight
         self.captures = []
         self.drops = []
+        # ---- viewer / wall-clock pacing (the module-level run() attaches the
+        # passive viewer to self.viewer before calling run()) ----
+        self.viewer = None
+        self._recorder = None               # set by the module-level run()
+        self._realtime_rate = float(cfg.realtime_rate)
+        self._paused = False
+        self._pending_step = False
+        self._wall_anchor = None            # monotonic time the pacing schedule
+        self._sched_steps = 0               # was anchored, and ticks since then
+        self._last_rate = self._realtime_rate
 
     # ---- cup state ----
     def cup_world_m(self):
@@ -140,6 +257,83 @@ class OnlineJuggleRunner:
         mujoco.mj_objectVelocity(self.plant.model, self.plant.data,
                                  mujoco.mjtObj.mjOBJ_SITE, self.site_id, res, 0)
         return res[3:6].copy()
+
+    # ---- viewer controls (mirrors sim/juggle_demo.py) ----
+    def key_callback(self, keycode: int) -> None:
+        """Handle a keypress from the MuJoCo passive viewer.
+
+        SPACE pause/resume · RIGHT step one tick (paused) · ``[`` slower /
+        ``]`` faster (jumps out of free-running first) · LEFT no-op.
+        Camera is the viewer's built-in mouse drag/scroll.
+        """
+        if keycode == _KEY_SPACE:
+            self._paused = not self._paused
+            print(f"[juggle_online] {'paused' if self._paused else 'running'} "
+                  f"at sim_time {float(self.plant.data.time):.3f} s")
+        elif keycode == _KEY_RIGHT_ARROW:
+            if self._paused:
+                self._pending_step = True
+        elif keycode in (_KEY_LEFT_BRACKET, _KEY_RIGHT_BRACKET):
+            r = self._realtime_rate if self._realtime_rate > 0.0 else 1.0
+            r = max(r * 0.5, 0.0625) if keycode == _KEY_LEFT_BRACKET else min(r * 2.0, 16.0)
+            self._realtime_rate = r
+            print(f"[juggle_online] realtime rate = {r:.3f}x")
+        elif keycode == _KEY_C:
+            # Print the current free-camera angle as ready-to-paste --cam-*
+            # flags, so the user can record a fixed-camera video from the angle
+            # they just dragged to (mirrors juggle_demo's C binding).
+            h = self.viewer
+            if h is not None:
+                c = h.cam
+                print("[juggle_online] camera: "
+                      f"--cam-azimuth {c.azimuth:.1f} "
+                      f"--cam-elevation {c.elevation:.1f} "
+                      f"--cam-distance {c.distance:.3f} "
+                      f"--cam-lookat {c.lookat[0]:.3f} "
+                      f"{c.lookat[1]:.3f} {c.lookat[2]:.3f}")
+        elif keycode == _KEY_LEFT_ARROW:
+            pass   # documented no-op
+
+    def _tick_boundary(self) -> None:
+        """Called after every control tick: record a frame (if recording), keep
+        the viewer responsive, honour pause / single-step, and pace to
+        ``realtime_rate``. No-op when headless, not recording, and free-running
+        (so tests / probes integrate at full speed)."""
+        # Record one frame per tick (independent of the viewer / pacing — works
+        # headless). Captured AFTER the physics step, so it's the post-step state.
+        if self._recorder is not None:
+            self._recorder.capture()
+        v = self.viewer
+        if v is None and self._realtime_rate <= 0.0:
+            return
+        if v is not None and not v.is_running():
+            self.viewer = None              # window closed → finish fast/headless
+            return
+        # Pause spin: freeze the sim while keeping the viewer interactive.
+        while v is not None and self._paused and not self._pending_step:
+            v.sync()
+            time.sleep(0.01)
+            self._wall_anchor = None        # re-anchor the schedule on resume
+            if not v.is_running():
+                self.viewer = None
+                return
+        stepped_one_frame = self._pending_step
+        self._pending_step = False
+        if v is not None:
+            v.sync()
+        if stepped_one_frame:
+            return                          # single-frame step is instantaneous
+        rate = self._realtime_rate
+        if rate > 0.0:
+            if self._wall_anchor is None or rate != self._last_rate:
+                self._wall_anchor = time.monotonic()
+                self._sched_steps = 0
+                self._last_rate = rate
+            self._sched_steps += 1
+            target = self._wall_anchor + self._sched_steps * (CONTROL_DT / rate)
+            remaining = target - time.monotonic()
+            if remaining > 0.0:
+                time.sleep(remaining)
 
     # ---- realisation drive ----
     def _drive(self, plan, t_rel):
@@ -192,6 +386,7 @@ class OnlineJuggleRunner:
         for _ in range(80):
             plant.command(plant.pose_to_extensions(cup0)); plant.command_hand(slider0)
             plant.step(CONTROL_DT)
+            self._tick_boundary()
         self.bm.ball(0).spawn_in_hand()                 # seat ball 0 at catch_pos
         plant.set_contact_stiffness(False)              # soft: carry
         n_carry = int(round((self.period - self.catch_offset) / CONTROL_DT))
@@ -201,6 +396,7 @@ class OnlineJuggleRunner:
             plant.step(CONTROL_DT,
                        hand_cmd_fn=lambda t, p=plan, b=tc0: self._slider_at(p, self.catch_offset + (t - b)),
                        plat_cmd_fn=lambda t, p=plan, b=tc0: self._drive(p, self.catch_offset + (t - b)))
+            self._tick_boundary()
 
         # Ball 1 spawned in flight to arrive at catch_pos at t=catch_offset of
         # cycle 0 (the main loop starts now, cup at throw_pos moving up).
@@ -247,6 +443,7 @@ class OnlineJuggleRunner:
                 plant.step(CONTROL_DT,
                            hand_cmd_fn=lambda tt, p=plan, b=t0: self._slider_at(p, tt - b),
                            plat_cmd_fn=lambda tt, p=plan, b=t0: self._drive(p, tt - b))
+                self._tick_boundary()
                 if plant.check_and_capture(ball=held_ball):
                     self.captures.append((t_global + t_rel, held_ball))
                     cycle_caught = True
@@ -271,11 +468,126 @@ class OnlineJuggleRunner:
 
 
 def run(cfg=None):
+    """Run the online juggle. Launches the MuJoCo passive viewer when
+    ``cfg.headless`` is False (mouse = camera; keyboard = pause/step/speed/`C`)
+    and/or an offscreen mp4 recorder when ``cfg.record_path`` is set; otherwise
+    integrates headless at full speed. Returns ``(captures, drops)``."""
     cfg = cfg or OnlineJuggleConfig()
-    return OnlineJuggleRunner(cfg).run()
+    runner = OnlineJuggleRunner(cfg)
+    viewer_handle = None
+    try:
+        if not cfg.headless:
+            import mujoco.viewer  # type: ignore
+            viewer_handle = mujoco.viewer.launch_passive(
+                runner.plant.model, runner.plant.data,
+                key_callback=runner.key_callback)
+            runner.viewer = viewer_handle
+            print("[juggle_online] keyboard: SPACE pause/resume   RIGHT step "
+                  "(when paused)   [ slower / ] faster   C print-camera   "
+                  "(mouse-drag = camera)")
+        if cfg.record_path:
+            runner._recorder = VideoRecorder(
+                runner.plant.model, runner.plant.data, cfg.record_path,
+                width=cfg.record_size[0], height=cfg.record_size[1],
+                fps=cfg.record_fps, cam=build_record_camera(runner.plant.model, cfg))
+            print(f"[juggle_online] recording to {cfg.record_path}")
+        return runner.run()
+    finally:
+        if runner._recorder is not None:
+            n = runner._recorder.frames
+            runner._recorder.close()
+            print(f"[juggle_online] video written: {cfg.record_path} ({n} frames)")
+        if viewer_handle is not None:
+            viewer_handle.close()
+
+
+def main(argv: "list[str] | None" = None) -> int:
+    """CLI mirroring sim/juggle_demo.py's viewer-relevant flags. The juggle_demo
+    args that depend on offline-demo machinery (BB scatter/abort, capture gate,
+    analytic baseline, dashboard, CSV log) are intentionally omitted — they have
+    no analogue in the online runner; the throw/catch pattern + viewer flags do."""
+    p = argparse.ArgumentParser(
+        description="Run the online re-planning two-ball juggle in MuJoCo.")
+    p.add_argument('--duration', type=float, default=20.0,
+                   help="Simulation duration in seconds (default 20)")
+    p.add_argument('--viewer', action='store_true',
+                   help="Launch the MuJoCo passive viewer (mouse = camera)")
+    p.add_argument('--realtime-rate', type=float, default=None,
+                   help="Wall-clock pacing: 1.0 = real-time, 0.5 = half-speed "
+                        "slowmo, 2.0 = 2x, 0 = free-running (fastest). Default: "
+                        "1.0 with --viewer (so you can watch it), else 0.")
+    p.add_argument('--seed', type=int, default=0,
+                   help="RNG seed (accepted for parity; runner is deterministic)")
+    p.add_argument('--apex-height-mm', type=float, default=None,
+                   help="Ball apex above the throw (mm). Default 1300.")
+    p.add_argument('--separation-mm', type=float, default=None,
+                   help="THROW-CATCH lateral separation (mm). Default 100.")
+    p.add_argument('--throw-z-mm', type=float, default=None,
+                   help="Cup release height (mm, cup-world). Default 850.")
+    p.add_argument('--catch-z-mm', type=float, default=None,
+                   help="Cup catch height (mm, cup-world). Default 700.")
+    # ---- recording (mirrors sim/juggle_demo.py) ----
+    p.add_argument('--record', default=None, metavar='PATH',
+                   help="Render offscreen from a fixed camera and write an "
+                        "H.264 mp4 to PATH (needs ffmpeg on PATH). Independent "
+                        "of --viewer.")
+    p.add_argument('--record-size', default='1280x720', metavar='WxH',
+                   help="Recording resolution (default 1280x720)")
+    p.add_argument('--record-fps', type=int, default=40,
+                   help="Recording output fps (default 40 = real-time; "
+                        "lower = slow-motion)")
+    p.add_argument('--cam-azimuth', type=float, default=None,
+                   help="Fixed-camera azimuth (deg) for --record")
+    p.add_argument('--cam-elevation', type=float, default=None,
+                   help="Fixed-camera elevation (deg) for --record")
+    p.add_argument('--cam-distance', type=float, default=None,
+                   help="Fixed-camera distance (m) for --record")
+    p.add_argument('--cam-lookat', type=float, nargs=3, default=None,
+                   metavar=('X', 'Y', 'Z'),
+                   help="Fixed-camera look-at point (m) for --record, as three "
+                        "space-separated values (each may be negative). Press C "
+                        "in --viewer to print the current angle as these flags.")
+    args = p.parse_args(argv)
+
+    # Default pacing: real-time when viewing (so it's watchable), else free-run.
+    rate = args.realtime_rate
+    if rate is None:
+        rate = 1.0 if args.viewer else 0.0
+
+    try:
+        _rw, _rh = (int(v) for v in args.record_size.lower().split('x'))
+    except ValueError:
+        p.error(f"--record-size must be WxH, got {args.record_size!r}")
+
+    kw: dict = dict(
+        duration_s=args.duration, seed=args.seed,
+        headless=not args.viewer, realtime_rate=rate,
+        record_path=args.record, record_size=(_rw, _rh), record_fps=args.record_fps,
+        cam_azimuth=args.cam_azimuth, cam_elevation=args.cam_elevation,
+        cam_distance=args.cam_distance,
+        cam_lookat=tuple(args.cam_lookat) if args.cam_lookat is not None else None,
+    )
+    if args.apex_height_mm is not None:
+        kw['apex_m'] = args.apex_height_mm / 1000.0
+    if args.separation_mm is not None:
+        kw['separation_m'] = args.separation_mm / 1000.0
+    if args.throw_z_mm is not None:
+        kw['throw_z_m'] = args.throw_z_mm / 1000.0
+    if args.catch_z_mm is not None:
+        kw['catch_z_m'] = args.catch_z_mm / 1000.0
+    cfg = OnlineJuggleConfig(**kw)
+
+    t_start = time.time()
+    caps, drops = run(cfg)
+    wall = time.time() - t_start
+    print(f"[juggle_online] captures: {len(caps)}  drops: {len(drops)}")
+    print(f"[juggle_online] sim {cfg.duration_s:.1f}s  wall {wall:.1f}s "
+          f"(realtime {cfg.duration_s / max(wall, 1e-6):.2f}x)")
+    if caps:
+        print(f"[juggle_online] capture times: "
+              f"{[round(t, 2) for t, _ in caps]}")
+    return 0
 
 
 if __name__ == '__main__':
-    caps, drops = run()
-    print(f"captures: {len(caps)}  drops: {len(drops)}")
-    print(f"  {caps}")
+    raise SystemExit(main())
