@@ -188,7 +188,7 @@ touch safety logic (the reboot latch, the axis-6 gate, the relay) are testable.
 | Phase | Title | Status | Depends on | Hardware? |
 |---|---|---|---|---|
 | 0 | Foundation infra: native test harness (growable HAL) + one codegen-allocation pass + flags-bit/RpcMethod lint | **DONE** | — | no |
-| 1 | Platform-Teensy relay seam (typed writes, verbatim reads) + narrow axis-6 allow-table | **SOFTWARE DONE — bench-probe gate** | 0 | bench probe (reply latency, SRX_DIS) |
+| 1 | Platform-Teensy relay seam (typed writes, verbatim reads) + narrow axis-6 allow-table | **DONE — bench probe PASSED (2026-06-29)** | 0 | bench probe ✓ (SRX_DIS disabled, reply ≤14 ms) |
 | 2 | Cold-start state via the relay (read `is_homed`/level/pose at boot + on CAN3-reconnect; write on home/level/reboot) — self-solving | NOT STARTED | 0, 1 | no |
 | 3 | Firmware Get_Version sweep + Jetson-validated `firmware_validated` | NOT STARTED | 0 | probe: live ODrive versions |
 | 4 | Orchestrator wiring: `home_motors` action shim (homes legs + hand) + `robot_state` fields + tilt/level relay + activate-folds-configure | NOT STARTED | 1, 2, 3, 5 | powered sitting |
@@ -292,8 +292,8 @@ the **shared `(method, axis)` allow-table** (Architecture above), gated on
 axis-6 allow-table as a Python-mirror table test + the native harness gate test;
 a relay request/reply unit test with the FakeTeensy harness.
 
-**Outcome (SOFTWARE DONE — 2026-06-29, commit `1f31f95` (firmware + host +
-codegen + tests) + `6fa0211` (logbook/plan/index)).**
+**Outcome (DONE — 2026-06-29, commit `1f31f95` (firmware + host + codegen +
+tests) + `6fa0211`/`edbc1ec` (logbook/plan/index) + the bench-probe result below).**
 Landed the full Phase-1 software up to its hard bench-probe gate. **Firmware:** new
 `platform_relay.{h,cpp}` (typed `TILT_READ`/`STATE_READ`/`STATE_WRITE`, each gated +
 `ERR_BUS_DOWN` fail-fast; `STATE_WRITE` re-encodes the 0x6E0 `RobotState` frame
@@ -313,14 +313,16 @@ allow-table predicate (C++ + Python single source). **Tests:** native
 request/reply incl. fail-fast, timeout, stale-clear), xlang/rpc_args round-trips.
 Suite: `pytest tests/ -q` (2026-06-29) **1881 → 1894 passed, 1 xfailed, 0 failed in
 458.21 s** (net **+13**, all new Phase-1 tests, no regressions); `pio run` green;
-codegen deterministic. **Bench-probe / powered handoff remaining (gates trusting the
-relay on hardware):** (a) confirm CAN3 **`SRX_DIS`** is set so the bridge's own 0x6E0
-`STATE_WRITE` is not looped back as a reply (else the `(id,dlc)` discriminator
-mis-correlates); (b) measure the 0x7DE/0x6E0 request→reply **latency** to set the
-host await timeout (default 0.5 s placeholder). Both are read-only-ish bench probes;
-no `robot_state` consumer depends on the relay until Phase 2. Full detail: logbook
+codegen deterministic. **Bench probe — RESOLVED on powered hardware (2026-06-29,
+`tools/probes/canbridge_relay_probe.py`, full Jugglebot powered, Phase-1 firmware
+flashed):** both gates PASS with **no rework**. (a) **`SRX_DIS`: PASS** — 0 unsolicited
+`PLATFORM_FRAME`s + **0/24** reads self-echoed the `dlc-1` request, so CAN3
+self-reception is disabled and the `(can_id, dlc=8)` discriminator is hardware-sound
+(no `can_buses_init()` change). (b) **Latency: PASS** — genuine replies ~4–14 ms,
+so the 0.5 s `_RELAY_READ_TIMEOUT_S` placeholder is ~36× over worst-case (kept).
+Full detail: logbook
 [`2026-06-29-canbridge-phase1-platform-relay-seam`](../../logbook/2026-06-29-canbridge-phase1-platform-relay-seam.md).
-**Phase 2 cleared to start** (the relay mechanism it sources from is green + isolated).
+**Phase 2 cleared to start** (relay mechanism green, isolated, and now hardware-validated).
 
 ### Phase 2 — Cold-start state via the relay (self-solving persistence)
 
@@ -511,8 +513,8 @@ re-gate clear/reboot.
 
   | Probe | Question | Gates |
   |---|---|---|
-  | CAN3 `SRX_DIS` | Is bridge self-reception disabled (own `0x6E0` write not latched as a reply)? | Phase 1 reply correlation |
-  | Platform reply latency | `0x7DE`/`0x6E0` request→reply time (set the await timeout) | Phase 1/2 tilt/state reads |
+  | CAN3 `SRX_DIS` | Is bridge self-reception disabled (own `0x6E0` write not latched as a reply)? | Phase 1 reply correlation — **✓ PASSED 2026-06-29** (disabled; 0/24 self-echo) |
+  | Platform reply latency | `0x7DE`/`0x6E0` request→reply time (set the await timeout) | Phase 1/2 tilt/state reads — **✓ PASSED 2026-06-29** (≤14 ms; 0.5 s kept) |
   | Live ODrive versions | Do legs+hand report the `EXPECTED_HW_VERSIONS` tuple? | Phase 3 (else boot FAULTs on stale config) |
   | Reboot latency / TEC | ODrive reboot→first-heartbeat time; does a 6-frame clear/reboot to a silent bus climb TEC? | Phase 6 window + gate basis |
 

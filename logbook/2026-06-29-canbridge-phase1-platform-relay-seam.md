@@ -181,6 +181,21 @@ reserved-stub set dropped to `{GET_AXIS_VERSIONS, HAND_TRAJ_CMD}` (Phases 3/5).
   `test_rpc_args.py` (+1, state_write exact bytes) = +13. No test was removed.
 - **Codegen determinism** (2026-06-29): re-running `generate_udp_protocol.py` +
   `generate_config.py` produced **no new working-tree changes** (byte-identical).
+- **Bench probe — RESOLVED on powered hardware** (`tools/probes/canbridge_relay_probe.py`,
+  2026-06-29, full Jugglebot powered, Phase-1 firmware flashed via `pio run -t upload`):
+  the read-only probe (STATE_READ/TILT_READ only, no writes, no motor commands) cleared
+  **both** gates with **no rework needed**.
+  - **SRX_DIS: PASS.** Baseline (2 s, no RPCs) saw **0** unsolicited `PLATFORM_FRAME`s,
+    and **0/24** reads produced a self-echoed `dlc-1` request frame (the request is
+    `(0x6E0/0x7DE, dlc=1)`, the reply `dlc=8` — so a self-echo is directly observable
+    as an extra `dlc-1` frame). CAN3 self-reception is disabled → the bridge does not
+    loop back its own TX → the `(can_id, dlc=8)` reply discriminator is hardware-sound.
+    No `can_buses_init()` change required.
+  - **Reply latency: PASS.** Genuine `dlc-8` replies landed in **~4–14 ms**
+    (STATE_READ mean 9.4 / max 13.6 ms; TILT_READ mean 8.5 / max 14.0 ms; n=23). The
+    placeholder `_RELAY_READ_TIMEOUT_S = 0.5 s` sits ~36× above the worst case →
+    confirmed correct, no change. One first-`TILT_READ` miss (1/24), absorbed by the
+    `RpcClient` retry — benign cold-start jitter.
 
 ## Discussion
 
