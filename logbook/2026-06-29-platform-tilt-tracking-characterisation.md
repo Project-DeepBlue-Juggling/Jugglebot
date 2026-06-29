@@ -9,7 +9,7 @@ files_changed:
   - tools/probes/juggle_tilt_bandlimit.py
   - tools/probes/README.md
 commits:
-  - pending   # backfill the Phase 0 commit SHA here after it lands
+  - 3bb19a5
 subsystem:
   - sim
 tags:
