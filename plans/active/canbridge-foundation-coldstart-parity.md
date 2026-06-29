@@ -185,15 +185,15 @@ touch safety logic (the reboot latch, the axis-6 gate, the relay) are testable.
 
 ## Implementation phase summary
 
-| Phase | Title | Depends on | Hardware? |
-|---|---|---|---|
-| 0 | Foundation infra: native test harness (growable HAL) + one codegen-allocation pass + flags-bit/RpcMethod lint | — | no |
-| 1 | Platform-Teensy relay seam (typed writes, verbatim reads) + narrow axis-6 allow-table | 0 | bench probe (reply latency, SRX_DIS) |
-| 2 | Cold-start state via the relay (read `is_homed`/level/pose at boot + on CAN3-reconnect; write on home/level/reboot) — self-solving | 0, 1 | no |
-| 3 | Firmware Get_Version sweep + Jetson-validated `firmware_validated` | 0 | probe: live ODrive versions |
-| 4 | Orchestrator wiring: `home_motors` action shim (homes legs + hand) + `robot_state` fields + tilt/level relay + activate-folds-configure | 1, 2, 3, 5 | powered sitting |
-| 5 | Hand command conduit (state/gains, traj/smooth-move) + **hand homing** (HOME/SET_ABSOLUTE_POSITION on axis 6) + deactivate idles hand + cmd-echo | 1 | powered (homing + catch) |
-| 6 | Robust `clear_errors` (bus-transmittable gate) + reboot-in-progress latch | 0, 2 | probe: reboot latency, TEC |
+| Phase | Title | Status | Depends on | Hardware? |
+|---|---|---|---|---|
+| 0 | Foundation infra: native test harness (growable HAL) + one codegen-allocation pass + flags-bit/RpcMethod lint | NOT STARTED | — | no |
+| 1 | Platform-Teensy relay seam (typed writes, verbatim reads) + narrow axis-6 allow-table | NOT STARTED | 0 | bench probe (reply latency, SRX_DIS) |
+| 2 | Cold-start state via the relay (read `is_homed`/level/pose at boot + on CAN3-reconnect; write on home/level/reboot) — self-solving | NOT STARTED | 0, 1 | no |
+| 3 | Firmware Get_Version sweep + Jetson-validated `firmware_validated` | NOT STARTED | 0 | probe: live ODrive versions |
+| 4 | Orchestrator wiring: `home_motors` action shim (homes legs + hand) + `robot_state` fields + tilt/level relay + activate-folds-configure | NOT STARTED | 1, 2, 3, 5 | powered sitting |
+| 5 | Hand command conduit (state/gains, traj/smooth-move) + **hand homing** (HOME/SET_ABSOLUTE_POSITION on axis 6) + deactivate idles hand + cmd-echo | NOT STARTED | 1 | powered (homing + catch) |
+| 6 | Robust `clear_errors` (bus-transmittable gate) + reboot-in-progress latch | NOT STARTED | 0, 2 | probe: reboot latency, TEC |
 
 ## Implementation phases
 
@@ -484,28 +484,30 @@ re-gate clear/reboot.
 
 ## Decisions required
 
-Recommendations are given; items marked **PROBE** need a bench measurement before
-the dependent phase commits.
+The substantive design decisions are resolved; the two genuinely-open items are
+**bench probes** that gate Phase 6 (not Phase 0):
 
-1. **clear/reboot gate basis.** Recommendation: gate on the bus-transmittable
-   signal (ESR1 SYNCH / FLTCONF), not heartbeat-staleness, not a blanket
-   carve-out. **PROBE** the register read on the bench; blanket-ungate is the
-   documented fallback.
-2. **HOME interface.** Recommendation: `home_motors` action shim on the bridge
-   (zero orchestrator churn, parity-faithful). Confirm.
-3. **Hand axis-6 admission table.** Recommendation: allow `SET_AXIS_STATE`,
-   `SET_CONTROLLER_MODE`, `SET_POS_GAIN`, `SET_VEL_GAINS`, `SET_VEL_CURR_LIMITS`,
-   `CLEAR_ERRORS`, `REBOOT_ODRIVES`, **`HOME`, `SET_ABSOLUTE_POSITION`** (the last
-   two for hand homing); reject `ENCODER_SEARCH`/`ACTIVATE`/`DEACTIVATE` on axis 6.
-   Confirm.
-4. **Hand traj timestamp.** Decided by physics: carry the Jetson-computed
-   ABSOLUTE `wall_time_ms`; firmware does NOT re-stamp. Confirm.
-5. **ACTIVATE folds configure** so legs end interp-ready. Recommendation: yes
-   (parity + run_mpc needs PASSTHROUGH). Confirm it is acceptable to add a
-   configure before the U5-validated TRAP_TRAJ move.
-6. **PROBE — REBOOT_WATCHDOG_SUPPRESS_US** window length = measured
-   reboot-to-first-heartbeat latency + margin.
+1. **clear/reboot gate basis.** Gate on the bus-transmittable signal (ESR1
+   SYNCH / FLTCONF), not heartbeat-staleness, not a blanket carve-out. **PROBE**
+   the register read on the bench (does it read correctly; does a 6-frame clear
+   to a silent bus climb TEC?); blanket-ungate is the documented fallback.
+2. **`REBOOT_WATCHDOG_SUPPRESS_US` window** = measured reboot-to-first-heartbeat
+   latency + margin. **PROBE.**
 
-**Resolved (no longer open):** persistence store (→ Platform Teensy, reusing
-`0x6E0` `RobotState`; invalidation crux dissolved — locked-decisions #2/#3); hand
-homing (→ in scope, Phase 5 — locked-decision #4).
+(Further bench confirmations live in the Testing-plan probe table — CAN3
+`SRX_DIS` + reply latency for Phase 1, live ODrive versions for Phase 3 — none
+of which gate Phase 0.)
+
+**Resolved (operator-confirmed, 2026-06-29):**
+- Persistence → Platform Teensy (reuse `0x6E0` `RobotState`; invalidation crux
+  dissolved — locked-decisions #2/#3).
+- Hand homing → in scope (Phase 5 — locked-decision #4).
+- HOME via the `home_motors` action shim (zero orchestrator churn).
+- Hand axis-6 allow-table: permit `SET_AXIS_STATE`, `SET_CONTROLLER_MODE`,
+  `SET_POS_GAIN`, `SET_VEL_GAINS`, `SET_VEL_CURR_LIMITS`, `CLEAR_ERRORS`,
+  `REBOOT_ODRIVES`, `HOME`, `SET_ABSOLUTE_POSITION`; reject `ENCODER_SEARCH` /
+  `ACTIVATE` / `DEACTIVATE`.
+- Hand traj carries the Jetson **absolute** `wall_time_ms`; firmware does NOT
+  re-stamp.
+- ACTIVATE folds a `_run_configure` so the legs end PASSTHROUGH/interp-ready for
+  `run_mpc.py`.
