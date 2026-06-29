@@ -492,7 +492,9 @@ class ArgAxisState:
 
     @classmethod
     def unpack(cls, data: bytes) -> 'ArgAxisState':
-        return cls(*_ARG_AXIS_STATE_STRUCT.unpack(data[:5]))
+        vals = _ARG_AXIS_STATE_STRUCT.unpack(data[:5])
+        it = iter(vals)
+        return cls(next(it), next(it))
 
 # ArgControllerMode (SET_CONTROLLER_MODE)
 ARG_CONTROLLER_MODE_FMT = '<BII'
@@ -511,7 +513,9 @@ class ArgControllerMode:
 
     @classmethod
     def unpack(cls, data: bytes) -> 'ArgControllerMode':
-        return cls(*_ARG_CONTROLLER_MODE_STRUCT.unpack(data[:9]))
+        vals = _ARG_CONTROLLER_MODE_STRUCT.unpack(data[:9])
+        it = iter(vals)
+        return cls(next(it), next(it), next(it))
 
 # ArgVelCurr (SET_VEL_CURR_LIMITS)
 ARG_VEL_CURR_FMT = '<Bff'
@@ -530,7 +534,9 @@ class ArgVelCurr:
 
     @classmethod
     def unpack(cls, data: bytes) -> 'ArgVelCurr':
-        return cls(*_ARG_VEL_CURR_STRUCT.unpack(data[:9]))
+        vals = _ARG_VEL_CURR_STRUCT.unpack(data[:9])
+        it = iter(vals)
+        return cls(next(it), next(it), next(it))
 
 # ArgPosGain (SET_POS_GAIN)
 ARG_POS_GAIN_FMT = '<Bf'
@@ -548,7 +554,9 @@ class ArgPosGain:
 
     @classmethod
     def unpack(cls, data: bytes) -> 'ArgPosGain':
-        return cls(*_ARG_POS_GAIN_STRUCT.unpack(data[:5]))
+        vals = _ARG_POS_GAIN_STRUCT.unpack(data[:5])
+        it = iter(vals)
+        return cls(next(it), next(it))
 
 # ArgVelGains (SET_VEL_GAINS)
 ARG_VEL_GAINS_FMT = '<Bff'
@@ -567,7 +575,9 @@ class ArgVelGains:
 
     @classmethod
     def unpack(cls, data: bytes) -> 'ArgVelGains':
-        return cls(*_ARG_VEL_GAINS_STRUCT.unpack(data[:9]))
+        vals = _ARG_VEL_GAINS_STRUCT.unpack(data[:9])
+        it = iter(vals)
+        return cls(next(it), next(it), next(it))
 
 # ArgAbsPosition (SET_ABSOLUTE_POSITION)
 ARG_ABS_POSITION_FMT = '<Bf'
@@ -585,7 +595,9 @@ class ArgAbsPosition:
 
     @classmethod
     def unpack(cls, data: bytes) -> 'ArgAbsPosition':
-        return cls(*_ARG_ABS_POSITION_STRUCT.unpack(data[:5]))
+        vals = _ARG_ABS_POSITION_STRUCT.unpack(data[:5])
+        it = iter(vals)
+        return cls(next(it), next(it))
 
 # ArgAxisOnly (CLEAR_ERRORS / REBOOT_ODRIVES / ENCODER_SEARCH / HOME / ACTIVATE / DEACTIVATE)
 ARG_AXIS_ONLY_FMT = '<B'
@@ -602,7 +614,9 @@ class ArgAxisOnly:
 
     @classmethod
     def unpack(cls, data: bytes) -> 'ArgAxisOnly':
-        return cls(*_ARG_AXIS_ONLY_STRUCT.unpack(data[:1]))
+        vals = _ARG_AXIS_ONLY_STRUCT.unpack(data[:1])
+        it = iter(vals)
+        return cls(next(it))
 
 # ArgSdoRead (SDO_READ)
 ARG_SDO_READ_FMT = '<BH'
@@ -620,7 +634,9 @@ class ArgSdoRead:
 
     @classmethod
     def unpack(cls, data: bytes) -> 'ArgSdoRead':
-        return cls(*_ARG_SDO_READ_STRUCT.unpack(data[:3]))
+        vals = _ARG_SDO_READ_STRUCT.unpack(data[:3])
+        it = iter(vals)
+        return cls(next(it), next(it))
 
 # ArgSdoWrite (SDO_WRITE)
 ARG_SDO_WRITE_FMT = '<BHf'
@@ -639,7 +655,9 @@ class ArgSdoWrite:
 
     @classmethod
     def unpack(cls, data: bytes) -> 'ArgSdoWrite':
-        return cls(*_ARG_SDO_WRITE_STRUCT.unpack(data[:7]))
+        vals = _ARG_SDO_WRITE_STRUCT.unpack(data[:7])
+        it = iter(vals)
+        return cls(next(it), next(it), next(it))
 
 # ResultTimeOfDay (TIME_OF_DAY_QUERY (result))
 RESULT_TIME_OF_DAY_FMT = '<Q'
@@ -656,7 +674,29 @@ class ResultTimeOfDay:
 
     @classmethod
     def unpack(cls, data: bytes) -> 'ResultTimeOfDay':
-        return cls(*_RESULT_TIME_OF_DAY_STRUCT.unpack(data[:8]))
+        vals = _RESULT_TIME_OF_DAY_STRUCT.unpack(data[:8])
+        it = iter(vals)
+        return cls(next(it))
+
+# ResultAxisVersions (GET_AXIS_VERSIONS (result))
+RESULT_AXIS_VERSIONS_FMT = '<BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB'
+RESULT_AXIS_VERSIONS_SIZE = 57
+_RESULT_AXIS_VERSIONS_STRUCT = struct.Struct(RESULT_AXIS_VERSIONS_FMT)
+assert _RESULT_AXIS_VERSIONS_STRUCT.size == 57
+
+@dataclass
+class ResultAxisVersions:
+    received_mask: int = 0
+    raw: tuple = field(default_factory=lambda: (0,) * 56)
+
+    def pack(self) -> bytes:
+        return _RESULT_AXIS_VERSIONS_STRUCT.pack(self.received_mask, *self.raw)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'ResultAxisVersions':
+        vals = _RESULT_AXIS_VERSIONS_STRUCT.unpack(data[:57])
+        it = iter(vals)
+        return cls(next(it), tuple(next(it) for _ in range(56)))
 
 # ArgBbThrow (BB_THROW)
 ARG_BB_THROW_FMT = '<ffff'
@@ -676,7 +716,9 @@ class ArgBbThrow:
 
     @classmethod
     def unpack(cls, data: bytes) -> 'ArgBbThrow':
-        return cls(*_ARG_BB_THROW_STRUCT.unpack(data[:16]))
+        vals = _ARG_BB_THROW_STRUCT.unpack(data[:16])
+        it = iter(vals)
+        return cls(next(it), next(it), next(it), next(it))
 
 # ArgRobotState (STATE_WRITE)
 ARG_ROBOT_STATE_FMT = '<BBff'
@@ -696,7 +738,9 @@ class ArgRobotState:
 
     @classmethod
     def unpack(cls, data: bytes) -> 'ArgRobotState':
-        return cls(*_ARG_ROBOT_STATE_STRUCT.unpack(data[:10]))
+        vals = _ARG_ROBOT_STATE_STRUCT.unpack(data[:10])
+        it = iter(vals)
+        return cls(next(it), next(it), next(it), next(it))
 
 # ── Hand axis-6 allow-table (Phase 1) ──────────────────────────────────
 # RpcMethod ids the can-bridge forwards to the hand ODrive (axis 6); the

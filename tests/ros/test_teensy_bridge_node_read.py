@@ -330,11 +330,15 @@ def test_undervoltage_not_asserted_from_disarm_only(bridge):
 
 
 def test_firmware_validated_conservative_false(bridge):
+    """firmware_validated defaults to the CONSERVATIVE False until the Phase-3
+    GET_AXIS_VERSIONS handshake validates the ODrive versions (no version pull has
+    happened here). It is no longer a hardcoded handoff gap — see the full
+    handshake (match / mismatch / cannot-validate) in
+    tests/ros/test_teensy_bridge_node_version.py."""
     teensy, node = bridge
     teensy.send_telemetry()
     assert _wait_until(lambda: node._latest_telemetry is not None)
     node._publish_robot_state()
-    # Not sourced from the can-bridge link in 10b — conservatively False.
     assert node.robot_state_pub.published[-1].firmware_validated is False
 
 

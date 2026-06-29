@@ -15,9 +15,15 @@
 #include "leg_activate.h"
 #include "leg_deactivate.h"
 #include "platform_relay.h"
+#include "version_check.h"
 
 namespace CanBridge {
 namespace Rpc {
+
+// RPC response result-blob buffer capacity (the `result[]` in on_request). The
+// only method that returns a result blob today is GET_AXIS_VERSIONS
+// (ResultAxisVersions = 57 B); keep this ≥ the largest result blob.
+static constexpr uint16_t RESULT_BUF_CAP = 64;
 
 // ── Envelope ──────────────────────────────────────────────────────────────────
 uint16_t pack_request(uint16_t method, uint16_t req_id,
@@ -226,13 +232,23 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
       return Relay::state_write(a);
     }
 
+    // ── Firmware version pull (Phase 3) ──────────────────────────────────────
+    // Synchronous: returns the bridge-LOCAL Get_Version cache (filled by the
+    // cold-start version sweep, version_check.cpp) in the RPC response — NO CAN3
+    // round-trip and NO PLATFORM_FRAME (unlike the relay reads). The Jetson
+    // decodes the set-bit axes and runs validate_group; ZERO version semantics
+    // here. version_fill_blob caps to RESULT_BUF_CAP defensively.
+    case RpcMethod::GET_AXIS_VERSIONS:
+      res_len = version_fill_blob(result, RESULT_BUF_CAP);
+      return res_len ? RpcStatus::OK : RpcStatus::ERR_BAD_ARGS;
+
     // ── Reserved (canbridge-foundation-coldstart-parity Phase 0) ─────────────
     // Wire ids were allocated up-front (one codegen pass) so parallel sessions
-    // cannot mint colliding ids. Each method's real dispatch lands in its owning
-    // phase; until then they answer ERR_NOT_IMPL (mirrors the ENCODER_SEARCH stub
-    // above) so the firmware builds AND the RpcMethod dispatch lint
-    // (tests/firmware/test_rpc_dispatch_lint.py) passes — every method has a case.
-    case RpcMethod::GET_AXIS_VERSIONS:   // Phase 3 (Get_Version sweep + firmware_validated)
+    // cannot mint colliding ids. Each remaining method's real dispatch lands in
+    // its owning phase; until then it answers ERR_NOT_IMPL (mirrors the
+    // ENCODER_SEARCH stub above) so the firmware builds AND the RpcMethod
+    // dispatch lint (tests/firmware/test_rpc_dispatch_lint.py) passes — every
+    // method has a case. (GET_AXIS_VERSIONS [Phase 3] is now implemented above.)
     case RpcMethod::HAND_TRAJ_CMD:       // Phase 5 (hand traj + smooth-move)
       return RpcStatus::ERR_NOT_IMPL;
 
@@ -274,7 +290,7 @@ static void on_request(uint16_t /*seq*/, const uint8_t* payload, uint16_t len) {
   const uint8_t* args;
   if (!parse_request(payload, len, &method, &req_id, &args, &arg_len)) return;
 
-  uint8_t result[64];
+  uint8_t result[RESULT_BUF_CAP];
   uint16_t res_len = 0;
   const uint16_t status = dispatch(method, args, arg_len, result, res_len);
 

@@ -362,6 +362,12 @@ struct ResultTimeOfDay {
   uint64_t jetson_wall_us;  // Jetson CLOCK_REALTIME microseconds
 };
 static_assert(sizeof(ResultTimeOfDay) == 8, "ResultTimeOfDay size drift");
+// ResultAxisVersions (GET_AXIS_VERSIONS (result))
+struct ResultAxisVersions {
+  uint8_t received_mask;  // bit i set ⇒ axis i Get_Version reply cached
+  uint8_t raw[56];  // raw 8-byte Get_Version payload per axis (NUM_AXES*8, axis-major)
+};
+static_assert(sizeof(ResultAxisVersions) == 57, "ResultAxisVersions size drift");
 // ArgBbThrow (BB_THROW)
 struct ArgBbThrow {
   float yaw_rad;  // Yaw angle in radians [-pi, pi)
@@ -389,6 +395,7 @@ constexpr uint16_t ARG_AXIS_ONLY_SIZE = 1u;
 constexpr uint16_t ARG_SDO_READ_SIZE = 3u;
 constexpr uint16_t ARG_SDO_WRITE_SIZE = 7u;
 constexpr uint16_t RESULT_TIME_OF_DAY_SIZE = 8u;
+constexpr uint16_t RESULT_AXIS_VERSIONS_SIZE = 57u;
 constexpr uint16_t ARG_BB_THROW_SIZE = 16u;
 constexpr uint16_t ARG_ROBOT_STATE_SIZE = 10u;
 }  // namespace RpcArgs

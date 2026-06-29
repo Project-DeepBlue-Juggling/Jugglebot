@@ -220,6 +220,104 @@ def test_reconnect_rereads_cold_start_state():
         _teardown(teensy, client, node)
 
 
+# ── CAN3-bus-health conservative reconnect re-read (Phase 3 precondition) ──────
+# The UDP-watchdog reconnect (above) does NOT fire for a CAN3-only drop (Jugglebot
+# disconnected while the Jetson + can-bridge stay powered → UDP link intact). The
+# Phase-3 precondition adds a bus1_health (CAN3) "→OK from a DEGRADED state" edge
+# that fires a CONSERVATIVE re-read (retry, then is_homed=False on failure — NOT
+# keep-stale), because a CAN3 recovery implies the Platform Teensy may have
+# power-cycled (it shares the ODrive supply). UNKNOWN→OK (the boot first-connection)
+# is excluded.
+
+def _send_hb(teensy, node, bus1):
+    hb = HeartbeatT2J(t_teensy_us=1, link_state=int(LinkState.UP),
+                      bus1_health=int(bus1), bus2_health=int(BusHealth.OK),
+                      fault_state=int(FaultState.NONE), flags=0, uptime_ms=1)
+    teensy.send_to_jetson(int(MsgType.HEARTBEAT_T2J), hb.pack())
+    assert _wait_until(lambda: node._latest_heartbeat is not None
+                       and int(node._latest_heartbeat.bus1_health) == int(bus1))
+
+
+def test_can3_health_recovery_conservative_reread_success():
+    """CAN3 bus1_health recovering WARN→OK fires a conservative re-read; with a
+    working STATE_READ it refreshes the cache to the authoritative value."""
+    teensy, client, node = _node()
+    try:
+        from jugglebot.teensy_bridge_node import RelayRobotState
+        _wire_state_read(teensy, is_homed=True, levelling=True, x_milli=7, y_milli=8)
+        # Warm the relay round-trip (cold-process first-call latency), then stale it.
+        assert node._refresh_cold_start_state('warmup') is True
+        with node._lock:
+            node._cold_start_state = RelayRobotState(False, False, 0.0, 0.0)
+
+        _send_hb(teensy, node, BusHealth.OK)
+        node._last_bus1_health = int(BusHealth.WARN)   # prior DEGRADED state
+        node._health_check()
+
+        # The re-read runs on a daemon thread (audit MEDIUM fix — non-blocking on
+        # the timer); wait for it to land.
+        assert _wait_until(lambda: not node._cold_start_reread_inflight
+                           and node._cold_start_state.is_homed)
+        # The WARN→OK edge re-read the authoritative store.
+        assert node._cold_start_state.is_homed is True
+        assert node._cold_start_state.levelling_complete is True
+        assert node._cold_start_authoritative is True
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_can3_health_recovery_conservative_on_read_failure():
+    """CAN3 WARN→OK with a FAILING re-read falls back to is_homed=False (conservative
+    — NOT keep-stale). This is the precondition's safety crux: a Jugglebot
+    power-cycle (CAN3 recovery) must never leave a stale is_homed=True against a
+    de-referenced robot. Contrast test_refresh_failure_keeps_cached_value (the
+    UDP-reconnect path KEEPS stale — a link blip is not a power loss)."""
+    teensy, client, node = _node()
+    try:
+        from jugglebot.teensy_bridge_node import RelayRobotState
+        # Cache holds a STALE is_homed=True (e.g. from before Jugglebot dropped).
+        with node._lock:
+            node._cold_start_state = RelayRobotState(True, True, 0.01, 0.02)
+        # STATE_READ fails (Platform Teensy not yet answering after the reconnect).
+        teensy.on_rpc(int(RpcMethod.STATE_READ),
+                      lambda rid, a: (int(RpcStatus.ERR_BUS_DOWN), b""))
+
+        _send_hb(teensy, node, BusHealth.OK)
+        node._last_bus1_health = int(BusHealth.BUS_OFF)   # prior DEGRADED state
+        node._health_check()
+
+        # The re-read runs on a daemon thread; wait for it to land + clear.
+        assert _wait_until(lambda: not node._cold_start_reread_inflight
+                           and node._cold_start_state.is_homed is False)
+        # Conservative: is_homed cleared to False (forces a re-home), not kept True.
+        assert node._cold_start_state.is_homed is False
+        assert node._cold_start_authoritative is False
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_can3_health_unknown_to_ok_does_not_fire():
+    """UNKNOWN→OK (the boot first-connection, NOT a loss) does NOT fire the
+    conservative re-read — so it cannot clobber a good boot value. The cache is
+    left untouched even with no STATE_READ responder wired."""
+    teensy, client, node = _node()
+    try:
+        from jugglebot.teensy_bridge_node import RelayRobotState
+        with node._lock:
+            node._cold_start_state = RelayRobotState(True, True, 0.01, 0.02)
+        # No STATE_READ responder: if the edge fired, the conservative fallback
+        # would clobber is_homed to False. It must NOT fire.
+        _send_hb(teensy, node, BusHealth.OK)
+        node._last_bus1_health = int(BusHealth.UNKNOWN)   # boot "no frames yet"
+        node._health_check()
+
+        assert node._cold_start_reread_inflight is False  # no re-read thread spawned
+        assert node._cold_start_state.is_homed is True   # untouched (no re-read fired)
+        assert node._last_bus1_health == int(BusHealth.OK)  # edge tracker advanced
+    finally:
+        _teardown(teensy, client, node)
+
+
 # ── Homing write: read-modify-write preserves levelling ────────
 
 def test_homing_write_sets_is_homed_preserving_levelling():

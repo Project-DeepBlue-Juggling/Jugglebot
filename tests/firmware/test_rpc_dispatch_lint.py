@@ -79,9 +79,10 @@ def test_reserved_methods_are_stubbed_not_unknown():
     not ERR_UNKNOWN_METHOD — so a caller can tell 'reserved, not yet implemented in
     this firmware' apart from 'garbage id'. This pins the stub contract the later
     phases replace. (Phase 1 replaced the TILT_READ/STATE_READ/STATE_WRITE stubs
-    with the real Platform-Teensy relay dispatch; GET_AXIS_VERSIONS [Phase 3] and
-    HAND_TRAJ_CMD [Phase 5] remain stubbed.)"""
-    reserved = ["GET_AXIS_VERSIONS", "HAND_TRAJ_CMD"]
+    with the real Platform-Teensy relay dispatch; Phase 3 replaced GET_AXIS_VERSIONS
+    with the real version pull — see test_get_axis_versions_is_implemented; only
+    HAND_TRAJ_CMD [Phase 5] remains stubbed.)"""
+    reserved = ["HAND_TRAJ_CMD"]
     text = _RPC_CPP.read_text()
     # Find the dispatch() body and confirm each reserved case routes to ERR_NOT_IMPL.
     # The reserved cases fall through to one shared `return RpcStatus::ERR_NOT_IMPL;`.
@@ -90,3 +91,22 @@ def test_reserved_methods_are_stubbed_not_unknown():
     for name in reserved:
         assert f"RpcMethod::{name}" in block.group(0), (
             f"reserved method {name} is not in the ERR_NOT_IMPL stub block")
+
+
+def test_get_axis_versions_is_implemented():
+    """Phase 3: GET_AXIS_VERSIONS is no longer a reserved ERR_NOT_IMPL stub — it has
+    a real dispatch case that returns the cached version blob (version_fill_blob).
+    Guards against a regression that re-stubs it (which would re-wedge the
+    orchestrator BOOT on firmware_validated=False)."""
+    text = _RPC_CPP.read_text()
+    # The real case calls version_fill_blob into the result buffer, then returns.
+    # Capture only up to the case's first `return ...;` (NOT the following reserved
+    # comment block, whose prose mentions ERR_NOT_IMPL).
+    m = re.search(r"case\s+RpcMethod::GET_AXIS_VERSIONS\s*:(.*?return[^;]*;)",
+                  text, re.DOTALL)
+    assert m, "GET_AXIS_VERSIONS dispatch case not found in rpc.cpp"
+    body = m.group(1)
+    assert "version_fill_blob" in body, (
+        "GET_AXIS_VERSIONS must call version_fill_blob (Phase 3), not stub ERR_NOT_IMPL")
+    assert "ERR_NOT_IMPL" not in body, (
+        "GET_AXIS_VERSIONS must not route to ERR_NOT_IMPL (Phase 3 implemented it)")

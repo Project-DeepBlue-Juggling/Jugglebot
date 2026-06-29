@@ -152,6 +152,36 @@ def test_bb_payloadless_commands_are_empty():
     assert ra.encode_bb_calibrate_loc() == b""
 
 
+def test_axis_versions_result_roundtrip_and_layout():
+    """GET_AXIS_VERSIONS result blob (Phase 3): mask byte + axis-major 8-byte raw
+    payloads. encode/decode round-trip, the set bits match the supplied axes, and
+    the byte layout is exactly mask(1) + NUM_AXES*8 (the firmware version_fill_blob
+    mirror)."""
+    v0 = bytes([0x00, 0x03, 0x06, 0x00, 0x00, 0x06, 0x0B, 0x00])  # axis 0 (leg)
+    v6 = bytes([0x00, 0x04, 0x04, 0x3A, 0x00, 0x06, 0x0B, 0x00])  # axis 6 (hand)
+    blob = ra.encode_axis_versions_result({0: v0, 6: v6})
+
+    # Exact layout: 57 bytes = 1 mask + 7*8 raw; mask has bits 0 and 6.
+    assert len(blob) == 1 + ra._NUM_VERSION_AXES * 8 == 57
+    assert blob[0] == (1 << 0) | (1 << 6)
+    assert blob[1:9] == v0                          # axis 0 slot
+    assert blob[1 + 6 * 8:1 + 7 * 8] == v6          # axis 6 slot
+    assert blob[1 + 1 * 8:1 + 2 * 8] == bytes(8)    # axis 1 slot zero-filled (unreceived)
+
+    got = ra.decode_axis_versions_result(blob)
+    assert set(got.keys()) == {0, 6}
+    assert got[0] == v0 and got[6] == v6
+
+    # Empty (nothing swept yet) round-trips to no axes.
+    assert ra.decode_axis_versions_result(ra.encode_axis_versions_result({})) == {}
+
+    # Out-of-range axis / wrong-length payload are rejected.
+    with pytest.raises(ValueError):
+        ra.encode_axis_versions_result({99: v0})
+    with pytest.raises(ValueError):
+        ra.encode_axis_versions_result({0: b"\x00" * 7})
+
+
 def test_method_arg_association_covers_all_commandable_methods():
     from controller.teensy_link import RpcMethod
     expected = {

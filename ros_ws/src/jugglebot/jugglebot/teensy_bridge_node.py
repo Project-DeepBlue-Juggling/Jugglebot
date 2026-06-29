@@ -104,6 +104,8 @@ from controller.teensy_link.deactivate import (
     DeactivateMonitor, AxisStatus as DeactivateAxisStatus,
 )
 from jugglebot.can import catching_cone
+from jugglebot.can import odrive
+from jugglebot.can.motor_state import MotorStateTracker
 import jugglebot.hardware_config as hw
 import jugglebot.protocol_config as proto
 
@@ -330,6 +332,17 @@ class TeensyBridgeNode(Node):
         # owned by the Teensy firmware). See controller/teensy_link/fault_logic.py.
         self._link_latch = LinkLossLatch()
         self._last_link_lost = False  # edge detector for logging
+        # CAN3 (Jugglebot core) bus-health edge detector for the Phase-3 cold-start
+        # reconnect re-trigger. None until the first heartbeat; only a recovery from
+        # a DEGRADED state (WARN/BUS_OFF → OK) fires the conservative re-read — the
+        # boot UNKNOWN→OK first-connection is excluded (the boot read already ran).
+        self._last_bus1_health = None
+        # The CAN3-reconnect conservative re-read does bounded retries + sleeps
+        # (~1.9 s worst case), so it runs on a short-lived daemon thread and never
+        # stalls the 100 Hz publish (which shares _health_check's callback group;
+        # audit 2026-06-29 MEDIUM). This guard keeps at most one re-read in flight
+        # (the recovery edge is one-shot). See _read_cold_start_state_conservative_async.
+        self._cold_start_reread_inflight = False
 
         # ── Heartbeat: ALWAYS mpc_active=0 at startup ──────────
         # flags=0 ⇒ mpc_active clear. set_heartbeat_flags(0) AFTER start_heartbeat
@@ -400,6 +413,26 @@ class TeensyBridgeNode(Node):
         # serializes it), so no lock needed.
         self._pose_quat_key = None
         self._pose_quat_xyzw = (0.0, 0.0, 0.0, 1.0)
+
+        # ── Firmware version validation (Phase 3) ──────────────
+        # Restores can_node's Get_Version handshake (_handle_get_version:474-495).
+        # The firmware sweeps Get_Version + caches the raw versions; the bridge
+        # pulls them via GET_AXIS_VERSIONS (a cheap UDP RPC reading a bridge-LOCAL
+        # cache — NO CAN3 round-trip) and runs the EXISTING tested
+        # MotorStateTracker.validate_group against EXPECTED_HW_VERSIONS, latching:
+        #   firmware_validated=True  → orchestrator BOOT proceeds (un-gates the
+        #                              is_homed skip, state_machine.py:228-235),
+        #   mismatch string latched   → kept firmware_validated=False AND surfaced
+        #                              on robot_state.error → orchestrator force-
+        #                              FAULT (exact can_node:489-492 / 1085 parity).
+        # Until validation lands, firmware_validated stays False (BOOT waits, then
+        # FAULTs on BOOT_TIMEOUT_S — can_node's behaviour when versions never come).
+        # _versions is reused ONLY for record_version + validate_group; the latched
+        # bools are read on the publish path under self._lock. The tracker itself is
+        # only touched on the version-poll timer thread (no lock needed for it).
+        self._versions = MotorStateTracker()
+        self._firmware_validated = False
+        self._firmware_mismatch_error = None     # str once a mismatch is latched (sticky)
 
         # ── Subscriptions to T→J streams (RX-thread callbacks) ──
         self._client.subscribe(int(MsgType.HEARTBEAT_T2J), self._on_heartbeat_t2j)
@@ -532,6 +565,7 @@ class TeensyBridgeNode(Node):
         self.create_timer(0.5, self._publish_bb_odrive)        # 2 Hz BB ODrive diag (CAN1 ~1 Hz src)
         self.create_timer(1.0, self._publish_profile)          # 1 Hz (profile rate)
         self.create_timer(1.0, self._health_check)             # 1 Hz link watchdog
+        self.create_timer(1.0, self._version_check_poll)       # 1 Hz firmware-version handshake (no-op once resolved)
 
         # ── Setpoint downlink (Commit 3) — DEFAULT DISABLED ────
         # The 40/500 Hz hot path. The SetpointPump (pure packing + per-step
@@ -751,6 +785,8 @@ class TeensyBridgeNode(Node):
                 diag = dict(self._latest_diag)
                 cold = self._cold_start_state            # immutable namedtuple
                 search_session = self._encoder_search_done_session
+                fw_validated = self._firmware_validated
+                fw_mismatch = self._firmware_mismatch_error
             if telem is None:
                 return  # No real data yet — don't publish a phantom snapshot.
 
@@ -781,9 +817,21 @@ class TeensyBridgeNode(Node):
             any_leg_disarm_in_cl = any(
                 s.disarm_reason != 0 and s.current_state == _AXIS_STATE_CLOSED_LOOP
                 for s in legs)
+            # A firmware-version MISMATCH is a fatal ODrive condition (can_node set
+            # fatal_error=True → has_fatal_odrive_error=True, can_node:491/1080). It
+            # is a latched OR-term recomputed each publish (sticky for the session).
+            # NOTE (audit 2026-06-29 LOW, intentional): because the latch is sticky,
+            # this stays True even after a CLEAR_ERRORS, where can_node's
+            # has_fatal_odrive_error (= fatal_error) would drop to False. The
+            # divergence is deliberate — a wrong-firmware ODrive IS a hard config
+            # error that must stay fatal until the firmware is fixed + the bridge
+            # restarted (the plan's "latched OR-term" instruction); both behaviours
+            # still force-FAULT via the sticky error string in robot_state.error.
+            fw_mismatch_present = fw_mismatch is not None
             msg.has_fatal_odrive_error = (
                 fault_state == int(FaultState.ODRIVE_FATAL)
-                or any_leg_active_err or any_leg_disarm_in_cl)
+                or any_leg_active_err or any_leg_disarm_in_cl
+                or fw_mismatch_present)
             msg.has_fatal_can_error = (
                 fault_state == int(FaultState.CAN_BUS_DOWN)
                 or core_bus_health == int(BusHealth.BUS_OFF))
@@ -794,13 +842,20 @@ class TeensyBridgeNode(Node):
             # bitwise & (not ==), active_errors only.
             msg.has_undervoltage = any(
                 s.active_errors & _ERR_DC_BUS_UNDER_VOLTAGE for s in legs)
-            # firmware_validated: not carried on the can-bridge link in 10b
-            # (the Teensy validates ODrive versions internally — Phase 5 — but
-            # does not yet expose the result). Conservatively False; handoff gap.
-            msg.firmware_validated = False
+            # firmware_validated (Phase 3): latched by the GET_AXIS_VERSIONS
+            # handshake (_version_check_poll → validate_group). False until the
+            # bridge has pulled + validated the ODrive versions; un-gates the
+            # orchestrator's is_homed skip (state_machine.py:228-235) when True.
+            msg.firmware_validated = fw_validated
 
             # Human-readable error strings (logging/rosbag parity with can_node).
             errors = []
+            # Firmware-version mismatch FIRST (can_node:1085-1086 order) — its
+            # presence in robot_state.error force-FAULTs the orchestrator
+            # (orchestrator_node.py:137-139), the parity stop for a wrong-firmware
+            # ODrive. Recomputed each publish from the sticky latch.
+            if fw_mismatch_present:
+                errors.append(fw_mismatch)
             if msg.has_undervoltage:
                 errors.append("Undervoltage detected. Was the E-stop hit?")
             if msg.has_fatal_odrive_error:
@@ -911,15 +966,113 @@ class TeensyBridgeNode(Node):
                         "on link_status (bridge_stow_pending=1).")
                 else:
                     self.get_logger().info("Teensy link RESTORED.")
-                # Phase 2: on a confirmed reconnect, re-read the Platform Teensy's
-                # cold-start state (it is the authoritative store; a reconnect only
-                # triggers a re-read of it, never INFERS reference state). Refresh
-                # off the publish path; keep the cached value if the read fails.
+                # Phase 2: on a confirmed UDP-link reconnect, re-read the Platform
+                # Teensy's cold-start state (it is the authoritative store; a
+                # reconnect only triggers a re-read, never INFERS reference state).
+                # Refresh off the publish path; KEEP the cached value if the read
+                # fails — a Jetson↔Teensy link blip leaves the Platform Teensy (and
+                # its references) powered, so a re-home would be wrong (can_node
+                # passive last-known parity).
                 self._refresh_cold_start_state('reconnect')
             self._last_link_lost = self._link_latch.link_lost
+
+            # Phase 3 precondition (audit 2026-06-29): CAN3-bus-health reconnect
+            # re-trigger. The UDP-watchdog edge above does NOT fire for a CAN3-only
+            # drop — if Jugglebot is disconnected while the Jetson + can-bridge stay
+            # powered, the UDP link never drops, so the Phase-2 reconnect re-read
+            # never runs and the cache could hold a STALE is_homed=True against a
+            # de-referenced robot (the hole that goes LIVE once Phase 3 ungates the
+            # orchestrator's is_homed skip). bus1_health (CAN3, the Jugglebot core
+            # bus) recovering to OK from a DEGRADED state (WARN/BUS_OFF) signals the
+            # Platform Teensy may have lost + regained power (it shares the ODrive
+            # supply — locked-decisions #2/#3), so re-read CONSERVATIVELY (retry,
+            # then is_homed=False on failure — NOT keep-stale). UNKNOWN→OK (the boot
+            # first-connection) is excluded: it is not a loss, and the __init__ boot
+            # read already covered it (re-reading there could needlessly clobber a
+            # good boot value with the conservative fallback).
+            with self._lock:
+                hb = self._latest_heartbeat
+            cur_bus1 = int(hb.bus1_health) if hb is not None else None
+            _degraded = (int(BusHealth.WARN), int(BusHealth.BUS_OFF))
+            if (cur_bus1 == int(BusHealth.OK)
+                    and self._last_bus1_health in _degraded):
+                self.get_logger().warning(
+                    "CAN3 bus health recovered to OK (was "
+                    f"{_enum_name(BusHealth, self._last_bus1_health)}) — Jugglebot "
+                    "may have power-cycled; conservative cold-start re-read.")
+                # OFF the 1 Hz timer thread — the re-read can take ~1.9 s and must
+                # not stall the 100 Hz publish (shared callback group; audit MEDIUM).
+                self._read_cold_start_state_conservative_async('can3_reconnect')
+            if cur_bus1 is not None:
+                self._last_bus1_health = cur_bus1
         except Exception as e:  # noqa: BLE001
             self.get_logger().error(f"Health check error: {e}",
                                     throttle_duration_sec=5.0)
+
+    # ═══════════════════════════════════════════════════════════
+    # Firmware-version handshake (Phase 3) — Get_Version → validate_group
+    # ═══════════════════════════════════════════════════════════
+
+    def _version_check_poll(self):
+        """Pull the bridge's cached ODrive versions (GET_AXIS_VERSIONS) and run the
+        tested validate_group, latching firmware_validated / the mismatch string.
+
+        No-op once resolved (validated, or a mismatch latched). Runs OFF the publish
+        path: GET_AXIS_VERSIONS reads a bridge-LOCAL cache (no CAN3 round-trip), so
+        the RPC is a cheap UDP round-trip. A failed pull — old firmware
+        (ERR_UNKNOWN_METHOD / ERR_NOT_IMPL) or the firmware sweep not yet complete —
+        just retries next tick; the orchestrator's BOOT_TIMEOUT_S governs the
+        give-up, exactly as can_node validated asynchronously as Get_Version replies
+        arrived (can_node._handle_get_version:487-495)."""
+        with self._lock:
+            if self._firmware_validated or self._firmware_mismatch_error:
+                return
+        try:
+            # GET_AXIS_VERSIONS is a bridge-LOCAL cache read (sub-ms RTT normally),
+            # but this poll shares _publish_robot_state's callback group, so bound
+            # the worst-case block on a degraded link (audit 2026-06-29 LOW): one
+            # short timeout + one retry rather than the default budget. A miss just
+            # retries next 1 Hz tick (BOOT_TIMEOUT governs the give-up).
+            ok, msg, blob = self._call_rpc(
+                RpcMethod.GET_AXIS_VERSIONS, timeout=0.3, retries=1)
+        except Exception as e:  # noqa: BLE001 — never let a timer die
+            self.get_logger().error(f"version check pull errored: {e}",
+                                    throttle_duration_sec=5.0)
+            return
+        if not ok or not blob:
+            # Old firmware (ERR_UNKNOWN_METHOD/ERR_NOT_IMPL) or sweep not done →
+            # cannot validate yet; keep firmware_validated=False and retry.
+            self.get_logger().warning(
+                f"firmware version pull unavailable ({msg}) — cannot validate yet",
+                throttle_duration_sec=10.0)
+            return
+        try:
+            per_axis = rpc_args.decode_axis_versions_result(blob)
+            for axis, raw in per_axis.items():
+                (_proto, hw_product, hw_ver, hw_variant,
+                 fw_major, fw_minor, fw_rev, _unrel) = odrive.decode_get_version(raw)
+                self._versions.record_version(
+                    axis, (fw_major, fw_minor, fw_rev),
+                    (hw_product, hw_ver, hw_variant))
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().error(f"version decode errored: {e}",
+                                    throttle_duration_sec=5.0)
+            return
+        if not self._versions.all_jugglebot_versions_received():
+            return  # firmware still sweeping — try again next tick
+        # All present-and-expected Jugglebot axes reported — make a single
+        # determination (can_node._handle_get_version:487-495 parity).
+        error = self._versions.validate_group(odrive.JUGGLEBOT_AXES, "Jugglebot")
+        with self._lock:
+            if error:
+                self._firmware_mismatch_error = error   # sticky; forces FAULT
+            else:
+                self._firmware_validated = True
+        if error:
+            self.get_logger().error(f"Jugglebot firmware check FAILED: {error}")
+        else:
+            self.get_logger().info(
+                "Jugglebot firmware check PASSED — all axes match expected versions")
 
     # ═══════════════════════════════════════════════════════════
     # Setpoint downlink (Commit 3) — gated, default disabled
@@ -1374,12 +1527,29 @@ class TeensyBridgeNode(Node):
 
     def _boot_read_cold_start_state(self) -> bool:
         """Boot read: refresh the cold-start cache before the first publish, with a
-        few bounded retries. If every attempt fails, fall back to the CONSERVATIVE
-        cold value (is_homed=False / levelling=False / pose=0) — forcing a re-home
-        is wasteful but SAFE; the reverse (a stale is_homed=True) could skip homing
-        on an unhomed robot. Returns True iff an authoritative read landed."""
+        few bounded retries and the CONSERVATIVE-on-total-failure fallback. Returns
+        True iff an authoritative read landed."""
+        return self._read_cold_start_state_conservative('boot')
+
+    def _read_cold_start_state_conservative(self, reason: str) -> bool:
+        """Refresh the cold-start cache with bounded retries; on TOTAL failure fall
+        back to the CONSERVATIVE cold value (is_homed=False / levelling=False /
+        pose=0). Forcing a re-home is wasteful but SAFE; the reverse (a stale
+        is_homed=True after the references may have been lost) could skip homing on
+        an unhomed / de-referenced robot. Returns True iff an authoritative read
+        landed.
+
+        Used by the boot read (reason='boot') AND the CAN3-bus-health reconnect
+        re-read (reason='can3_reconnect', Phase 3 precondition). NOTE the deliberate
+        asymmetry vs _refresh_cold_start_state (the UDP-watchdog reconnect path),
+        which KEEPS the stale cache on a failed read: a Jetson↔Teensy link blip does
+        NOT imply the Platform Teensy lost power (its references are intact), so a
+        re-home there would be wrong — can_node passive last-known parity. A CAN3
+        bus-health recovery (WARN/BUS_OFF→OK) DOES imply the Jugglebot supply may
+        have cycled (the Platform Teensy shares the ODrive supply — locked-decisions
+        #2/#3), so a failed re-read must NOT keep a possibly-stale is_homed=True."""
         for attempt in range(self._BOOT_STATE_READ_ATTEMPTS):
-            if self._refresh_cold_start_state('boot'):
+            if self._refresh_cold_start_state(reason):
                 return True
             if attempt + 1 < self._BOOT_STATE_READ_ATTEMPTS:
                 time.sleep(self._BOOT_STATE_READ_RETRY_S)
@@ -1389,10 +1559,41 @@ class TeensyBridgeNode(Node):
                 pose_offset_tiltX=0.0, pose_offset_tiltY=0.0)
             self._cold_start_authoritative = False
         self.get_logger().warning(
-            "cold-start boot read failed after "
+            f"cold-start {reason} read failed after "
             f"{self._BOOT_STATE_READ_ATTEMPTS} attempts — defaulting to "
             "is_homed=False (conservative; forces a re-home).")
         return False
+
+    def _read_cold_start_state_conservative_async(self, reason: str):
+        """Run _read_cold_start_state_conservative OFF the calling timer thread.
+
+        That helper does bounded retries with sleeps + relay round-trips (worst
+        case ~1.9 s). It is invoked from the 1 Hz _health_check timer, which shares
+        the node's default MutuallyExclusiveCallbackGroup with the 100 Hz
+        _publish_robot_state — so a synchronous call would stall the robot_state
+        stream for up to ~1.9 s (audit 2026-06-29 MEDIUM). Dispatch it to a
+        short-lived daemon thread: it touches only self._cold_start_state /
+        _cold_start_authoritative / _encoder_search_done_session under self._lock,
+        and the relay RPC + _await_platform_reply primitives are thread-safe (the
+        RX thread already feeds them). The in-flight guard keeps at most one re-read
+        running (the CAN3-recovery edge is one-shot per recovery)."""
+        with self._lock:
+            if self._cold_start_reread_inflight:
+                return
+            self._cold_start_reread_inflight = True
+
+        def _run():
+            try:
+                self._read_cold_start_state_conservative(reason)
+            except Exception as e:  # noqa: BLE001 — never let the worker thread die silently
+                self.get_logger().error(
+                    f"async cold-start re-read ({reason}) errored: {e}",
+                    throttle_duration_sec=5.0)
+            finally:
+                with self._lock:
+                    self._cold_start_reread_inflight = False
+
+        threading.Thread(target=_run, daemon=True, name='cs-can3-reread').start()
 
     def _write_is_homed(self, is_homed: bool):
         """Persist is_homed via STATE_WRITE, read-modify-write THROUGH the cache so

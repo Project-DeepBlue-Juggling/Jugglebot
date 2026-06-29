@@ -74,6 +74,13 @@ _BINARIES = {
         NATIVE_DIR / "test_platform_relay.cpp",
         ["axis_state", "ball_butler_state", "fake_hal"],
     ),
+    # Phase 3: the Get_Version sweep + raw-version cache. #includes version_check.cpp;
+    # the fake HAL supplies can_jugglebot_send + jugglebot_commands_allowed + the
+    # inbound-CAN3 injection hook, axes[] comes from axis_state.o.
+    "test_version_check": (
+        NATIVE_DIR / "test_version_check.cpp",
+        ["axis_state", "ball_butler_state", "fake_hal"],
+    ),
 }
 
 

@@ -30,6 +30,7 @@ from .protocol import (
     ResultTimeOfDay,
     ArgBbThrow,
     ArgRobotState,
+    ResultAxisVersions,
 )
 
 RpcMethod = p.RpcMethod
@@ -48,7 +49,8 @@ __all__ = [
     "encode_sdo_read", "encode_sdo_write", "encode_state_write",
     "encode_bb_throw", "encode_bb_reload", "encode_bb_reset",
     "encode_bb_calibrate_loc",
-    "decode_time_of_day_result",
+    "decode_time_of_day_result", "ResultAxisVersions",
+    "encode_axis_versions_result", "decode_axis_versions_result",
     # method association
     "METHOD",
 ]
@@ -140,6 +142,54 @@ def encode_sdo_write(axis: int, endpoint: int, value: float) -> bytes:
 def decode_time_of_day_result(blob: bytes) -> int:
     """Decode a TIME_OF_DAY_QUERY result blob → Jetson wall-clock µs."""
     return int(ResultTimeOfDay.unpack(blob).jetson_wall_us)
+
+
+# ── Firmware version pull (canbridge-foundation-coldstart-parity Phase 3) ─────
+# GET_AXIS_VERSIONS takes NO args (the request is empty) and returns the
+# ResultAxisVersions blob SYNCHRONOUSLY in the RPC response (a bridge-local cache
+# read — no CAN3 round-trip). The firmware fills it with the raw 8-byte ODrive
+# Get_Version payload per Jugglebot axis (axis-major) + a received bitmask. The
+# bridge decodes the set-bit axes via jugglebot.can.odrive.decode_get_version and
+# runs MotorStateTracker.validate_group — version semantics live in tested Python.
+
+_VERSION_BYTES_PER_AXIS = 8
+# Axis count = the raw-array length / 8 (NUM_AXES = 7 today), read from the struct
+# so it tracks the codegen rather than a hardcoded literal.
+_NUM_VERSION_AXES = len(ResultAxisVersions().raw) // _VERSION_BYTES_PER_AXIS
+
+
+def encode_axis_versions_result(per_axis_raw: dict) -> bytes:
+    """Pack a GET_AXIS_VERSIONS result blob from {axis: raw8} — the firmware-side
+    mirror (used by the FakeTeensy responder + the round-trip test). Axes absent
+    from the dict are zero-filled and their received bit stays clear."""
+    n_axes = _NUM_VERSION_AXES
+    mask = 0
+    raw = bytearray(n_axes * _VERSION_BYTES_PER_AXIS)
+    for axis, payload in per_axis_raw.items():
+        if not (0 <= int(axis) < n_axes):
+            raise ValueError(f"axis {axis} out of range [0,{n_axes})")
+        b = bytes(payload)
+        if len(b) != _VERSION_BYTES_PER_AXIS:
+            raise ValueError(f"axis {axis} version payload must be 8 bytes, got {len(b)}")
+        off = int(axis) * _VERSION_BYTES_PER_AXIS
+        raw[off:off + _VERSION_BYTES_PER_AXIS] = b
+        mask |= (1 << int(axis))
+    return ResultAxisVersions(received_mask=mask, raw=tuple(raw)).pack()
+
+
+def decode_axis_versions_result(blob: bytes) -> dict:
+    """Decode a GET_AXIS_VERSIONS result blob → {axis: raw8} for every axis whose
+    received bit is set. The caller decodes each 8-byte payload via
+    jugglebot.can.odrive.decode_get_version (keeping ODrive semantics in one place)."""
+    r = ResultAxisVersions.unpack(blob)
+    raw = bytes(r.raw)
+    out = {}
+    n_axes = len(raw) // _VERSION_BYTES_PER_AXIS
+    for axis in range(n_axes):
+        if r.received_mask & (1 << axis):
+            off = axis * _VERSION_BYTES_PER_AXIS
+            out[axis] = raw[off:off + _VERSION_BYTES_PER_AXIS]
+    return out
 
 
 # ── Platform-Teensy relay (canbridge-foundation-coldstart-parity Phase 1) ─────

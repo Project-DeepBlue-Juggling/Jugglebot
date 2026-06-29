@@ -47,6 +47,7 @@ using namespace arduino;
 #include "leg_homing.h"          // Phase 9b
 #include "leg_activate.h"        // Phase 11 U5
 #include "leg_deactivate.h"      // Phase 11 U5
+#include "version_check.h"       // Phase 3 (Get_Version sweep + version cache)
 #include "profiling.h"           // Profiling/instrumentation
 
 using namespace CanBridge;
@@ -203,6 +204,7 @@ static void task_homing(void*) {
     homing_step();
     activate_step();
     deactivate_step();
+    version_check_step();   // Phase 3: bus-paced Get_Version sweep (no-op once swept)
     vTaskDelayUntil(&last, period);
   }
 }
@@ -364,6 +366,7 @@ void setup() {
   homing_init();                   // Phase 9b (idle until a HOME RPC latches a start)
   activate_init();                 // Phase 11 U5 (idle until an ACTIVATE RPC latches a start)
   deactivate_init();               // Phase 11 U5 (idle until a DEACTIVATE RPC latches a start)
+  version_check_init();            // Phase 3 (clears the version sweep masks)
   profiling_init();                // instrumentation baselines
 
   // Create tasks. (Higher number = higher priority in FreeRTOS.)

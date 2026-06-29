@@ -468,6 +468,15 @@ wraps the generated Python. `AXIS_ALL = 0xFF` broadcasts to all legs.
 |-------|------|-------|
 | `jetson_wall_us` | u64 | Jetson CLOCK_REALTIME microseconds |
 
+### ResultAxisVersions (`GET_AXIS_VERSIONS (result)`)
+
+**57 bytes**. Python struct fmt: `<BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB`.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `received_mask` | u8 | bit i set ⇒ axis i Get_Version reply cached |
+| `raw` | u8 | raw 8-byte Get_Version payload per axis (NUM_AXES*8, axis-major) |
+
 ### ArgBbThrow (`BB_THROW`)
 
 **16 bytes**. Python struct fmt: `<ffff`.

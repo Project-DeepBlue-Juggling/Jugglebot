@@ -96,6 +96,17 @@ def test_native_platform_relay_binary_passes(binaries):
         f"diverged from the expected behaviour:\n{r.stdout}\n{r.stderr}")
 
 
+def test_native_version_check_binary_passes(binaries):
+    """The compiled version_check.cpp passes every behaviour assertion (Phase 3
+    Get_Version sweep + raw-version cache: one frame/tick bus-paced sweep of
+    present axes, absent-axis skip, the never-command-a-dead-bus gate, and the
+    ResultAxisVersions blob fill via the inbound-CAN3 injection hook)."""
+    r = _run(binaries["test_version_check"])
+    assert r.returncode == 0, (
+        "native test_version_check FAILED — version_check.cpp / the version "
+        f"handshake diverged from the expected behaviour:\n{r.stdout}\n{r.stderr}")
+
+
 def test_committed_golden_matches_live_firmware(binaries, tmp_path):
     """A freshly-emitted golden equals the committed native/fault_golden.json.
 

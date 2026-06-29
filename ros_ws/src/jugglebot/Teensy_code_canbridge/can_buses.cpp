@@ -10,6 +10,7 @@
 #include "ball_butler_state.h"
 #include "time_base.h"
 #include "odrive_protocol.h"
+#include "version_check.h"   // Phase 3: cache Get_Version replies (version_record)
 
 namespace CanBridge {
 
@@ -92,7 +93,14 @@ static void decode_into_cache(const CAN_message_t& msg) {
       a.bus_voltage = v.a; a.bus_current = v.b;
       break;
     }
-    // get_version / TxSdo handled elsewhere (encoder-search Phase 9). Ignore here.
+    case ODriveCmd::get_version:
+      // Phase 3: cache the raw 8-byte Get_Version payload for the bridge's
+      // GET_AXIS_VERSIONS pull (version SEMANTICS stay on the Jetson). The reply
+      // is DLC 8 (the empty-payload request we sent is len 0 and was already
+      // dropped by the `< 8` guard above), so `d` is a full 8-byte version frame.
+      version_record(axis, d);
+      break;
+    // TxSdo handled elsewhere (encoder-search Phase 9). Ignore here.
     default:
       break;
   }

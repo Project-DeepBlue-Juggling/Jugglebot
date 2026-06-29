@@ -558,6 +558,20 @@ RPC_ARGS = [
     RpcArg("ResultTimeOfDay", "TIME_OF_DAY_QUERY (result)", [
         Field("jetson_wall_us", "u64", 1, "Jetson CLOCK_REALTIME microseconds"),
     ]),
+    # GET_AXIS_VERSIONS result (canbridge-foundation-coldstart-parity Phase 3).
+    # GET_AXIS_VERSIONS takes NO args (like TILT_READ/STATE_READ) but, unlike the
+    # relay reads, returns SYNCHRONOUSLY in the RPC response (the versions are a
+    # bridge-LOCAL cache filled by the firmware's Get_Version sweep — no CAN3
+    # round-trip on the pull). The blob carries the raw 8-byte ODrive Get_Version
+    # payload for every Jugglebot axis (axis-major: axis 0..NUM_AXES-1, legs then
+    # hand) plus a received bitmask (bit i set ⇒ axis i's reply has been cached).
+    # The bridge decodes the set-bit axes via jugglebot.can.odrive.decode_get_version
+    # and runs the existing tested MotorStateTracker.validate_group — ZERO version
+    # semantics in the firmware. raw is u8[NUM_AXES*8] = u8[56] (NUM_AXES=7).
+    RpcArg("ResultAxisVersions", "GET_AXIS_VERSIONS (result)", [
+        Field("received_mask", "u8", 1, "bit i set ⇒ axis i Get_Version reply cached"),
+        Field("raw", "u8", 56, "raw 8-byte Get_Version payload per axis (NUM_AXES*8, axis-major)"),
+    ]),
     # Ball Butler — typed firmware-side encoders own the wire format (the can-bridge
     # refuses a malformed throw before it hits CAN1 — HANDOFF-firmware-three-bus D2).
     # The Python encoder in jugglebot.can.ball_butler stays as the test spec; a
@@ -962,16 +976,29 @@ def generate_python() -> str:
         a("@dataclass")
         a(f"class {sname}:")
         for f in arg.fields:
-            default = "0.0" if f.type in ("f32", "f64") else "0"
-            a(f"    {f.name}: {_py_field_type(f)} = {default}")
+            if f.count == 1:
+                default = "0.0" if f.type in ("f32", "f64") else "0"
+                a(f"    {f.name}: {_py_field_type(f)} = {default}")
+            else:
+                zero = "0.0" if f.type in ("f32", "f64") else "0"
+                a(f"    {f.name}: tuple = field("
+                  f"default_factory=lambda: ({zero},) * {f.count})")
         a("")
         a("    def pack(self) -> bytes:")
-        flat = ", ".join(f"self.{f.name}" for f in arg.fields)
+        flat = ", ".join(
+            (f"*self.{f.name}" if f.count != 1 else f"self.{f.name}")
+            for f in arg.fields)
         a(f"        return _{_screaming(arg.name)}_STRUCT.pack({flat})")
         a("")
         a("    @classmethod")
         a(f"    def unpack(cls, data: bytes) -> '{sname}':")
-        a(f"        return cls(*_{_screaming(arg.name)}_STRUCT.unpack(data[:{arg.size}]))")
+        a(f"        vals = _{_screaming(arg.name)}_STRUCT.unpack(data[:{arg.size}])")
+        a("        it = iter(vals)")
+        ctor = ", ".join(
+            (f"tuple(next(it) for _ in range({f.count}))" if f.count != 1
+             else "next(it)")
+            for f in arg.fields)
+        a(f"        return cls({ctor})")
         a("")
 
     a("# ── Hand axis-6 allow-table (Phase 1) ──────────────────────────────────")

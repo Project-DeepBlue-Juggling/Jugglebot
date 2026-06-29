@@ -102,6 +102,7 @@ from udp_protocol import (  # noqa: E402, F401
     ResultTimeOfDay,
     ArgBbThrow,
     ArgRobotState,
+    ResultAxisVersions,  # Phase 3 (GET_AXIS_VERSIONS result blob)
     # Hand axis-6 allow-table (Phase 1)
     HAND_AXIS6_PERMITTED,
     hand_axis6_permitted,

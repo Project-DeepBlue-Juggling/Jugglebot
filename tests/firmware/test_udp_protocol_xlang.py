@@ -201,6 +201,21 @@ def test_cpp_field_order_matches_python_struct(gen):
         assert decl_names == spec_names, (msg.name, decl_names, spec_names)
 
 
+def test_cpp_rpc_arg_sizes_match_python(gen, proto):
+    """C++ RpcArgs static_assert sizes == Python sizes for every RPC arg/result
+    struct (incl. Phase-3 ResultAxisVersions, the first RpcArg with an array field —
+    mask byte + axis-major raw, the GET_AXIS_VERSIONS wire blob both ends use)."""
+    cpp = _CPP_COMMITTED.read_text()
+    assert "ResultAxisVersions" in {a.name for a in gen.RPC_ARGS}, \
+        "ResultAxisVersions missing from the generator RPC_ARGS"
+    for arg in gen.RPC_ARGS:
+        m = re.search(rf"static_assert\(sizeof\({arg.name}\) == (\d+)", cpp)
+        assert m, f"no size static_assert for {arg.name}"
+        cpp_size = int(m.group(1))
+        py_size = getattr(proto, f"{_screaming(arg.name)}_SIZE")
+        assert cpp_size == py_size == arg.size, (arg.name, cpp_size, py_size, arg.size)
+
+
 def _screaming(camel: str) -> str:
     # Must match generate_udp_protocol._screaming (split only on lowercase→capital).
     out = []
