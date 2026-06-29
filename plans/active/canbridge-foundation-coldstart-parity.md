@@ -190,7 +190,7 @@ touch safety logic (the reboot latch, the axis-6 gate, the relay) are testable.
 | 0 | Foundation infra: native test harness (growable HAL) + one codegen-allocation pass + flags-bit/RpcMethod lint | **DONE** | — | no |
 | 1 | Platform-Teensy relay seam (typed writes, verbatim reads) + narrow axis-6 allow-table | **DONE — bench probe PASSED (2026-06-29)** | 0 | bench probe ✓ (SRX_DIS disabled, reply ≤14 ms) |
 | 2 | Cold-start state via the relay (read `is_homed`/level/pose at boot + on CAN3-reconnect; write on home/level/reboot) — self-solving | **DONE** | 0, 1 | no (validated at the Phase-4 powered sitting) |
-| 3 | Firmware Get_Version sweep + Jetson-validated `firmware_validated` | NOT STARTED | 0 | probe: live ODrive versions |
+| 3 | Firmware Get_Version sweep + Jetson-validated `firmware_validated` | **DONE** (precondition resolved; probe handed off) | 0 | probe: live ODrive versions |
 | 4 | Orchestrator wiring: `home_motors` action shim (homes legs + hand) + `robot_state` fields + tilt/level relay + activate-folds-configure | NOT STARTED | 1, 2, 3, 5 | powered sitting |
 | 5 | Hand command conduit (state/gains, traj/smooth-move) + **hand homing** (HOME/SET_ABSOLUTE_POSITION on axis 6) + deactivate idles hand + cmd-echo | NOT STARTED | 1 | powered (homing + catch) |
 | 6 | Robust `clear_errors` (bus-transmittable gate) + reboot-in-progress latch | NOT STARTED | 0, 2 | probe: reboot latency, TEC |
@@ -394,7 +394,17 @@ logbook
 **Goal.** Stop hardcoding `firmware_validated=False` (which wedges BOOT at
 `state_machine.py:232`); catch a wrong-firmware ODrive.
 
-**PRECONDITION — close the Phase-2 reconnect-read residual (audit 2026-06-29).**
+**PRECONDITION — close the Phase-2 reconnect-read residual (audit 2026-06-29). ✅
+RESOLVED (2026-06-29):** a CAN3-bus-health (`bus1_health` → OK from a degraded
+state) reconnect re-trigger now re-reads the cold-start state **conservatively**
+(retry, then `is_homed=False` on failure) in `_health_check`, distinct from the
+UDP-watchdog reconnect (which stays keep-stale — a link blip is not a power loss).
+The implementable edge is `WARN→OK` today (the firmware emits `WARN`, not yet
+`BUS_OFF` — a FlexCAN-register TODO subsumes `BUS_OFF→OK` for free later);
+`UNKNOWN→OK` (the boot first-connection) is excluded so it cannot clobber a good
+boot read. The existing UDP-watchdog reconnect read was deliberately left
+keep-stale (the asymmetry is a contract; see the Phase-3 logbook Discussion).
+*Original residual statement:*
 Landing real `firmware_validated` here UNGATES the orchestrator's `is_homed` skip
 (`state_machine.py:228-235` gates it behind `firmware_validated`), so the Phase-2
 cold-start `is_homed` becomes consumable for the first time. Phase 2's reconnect
@@ -432,6 +442,35 @@ each 100 Hz publish). Rewrite `test_firmware_validated_conservative_false`
 **Tests.** `test_udp_protocol_xlang.py` for `GET_AXIS_VERSIONS`; a
 `validate_group` unit test feeding `EXPECTED_HW_VERSIONS`; the bridge handshake
 (heartbeats→pull→validate→latch) under the FakeTeensy harness.
+
+**Outcome (DONE — 2026-06-29, commits `bf400b7` (firmware + codegen + host +
+tests) + `TBD-docs` (logbook/plan/index)).** Firmware sweeps `Get_Version` (one
+frame per cold-start-monitor tick, present-axis only, bus-gated — new
+`version_check.{h,cpp}` in `task_homing`) and caches the raw 8-byte replies
+(`can_buses.cpp` decode case). The bridge pulls them once via the new
+`GET_AXIS_VERSIONS` RPC — returned **synchronously** in the RPC response (a
+bridge-local cache read, no CAN3 round-trip; new `ResultAxisVersions` codegen
+struct = `u8 mask + u8[56]`, the first RpcArg with an array field → the codegen's
+RpcArg Python emitter was extended for arrays) — decodes via
+`odrive.decode_get_version` and runs the **existing tested**
+`MotorStateTracker.validate_group` against `EXPECTED_HW_VERSIONS` (zero version
+semantics in firmware). `firmware_validated` latches True on a clean match
+(un-wedging BOOT); a mismatch keeps it False AND appends the mismatch string to
+`robot_state.error` (force-FAULT, exact `can_node:489-492/1085` parity);
+incomplete/old-firmware/never-answers stays False so the orchestrator's
+`BOOT_TIMEOUT_S` governs the give-up (can_node parity). **PRECONDITION RESOLVED:**
+a CAN3-bus-health (`bus1_health` → OK from WARN/BUS_OFF) reconnect re-trigger in
+`_health_check` re-reads cold-start state **conservatively** (retry, then
+`is_homed=False`), closing the stale-`is_homed` hole that goes live here; the
+UDP-watchdog reconnect stays keep-stale (the asymmetry is a contract). Suite:
+`pytest tests/ -q` (2026-06-29, run twice) **1919 passed, 1 xfailed**; the only
+failures both runs are documented timing/allocation load-flakes that PASS ISOLATED
+and MOVE between runs (not regressions; net **+13** Phase-3 tests over the 1908
+baseline). `pio run` green; codegen deterministic. **Bench probe handed off** (a
+read-only live-ODrive Get_Version sweep confirming `EXPECTED_HW_VERSIONS`
+`(4,4,58)` — operator-run, Phase-3 firmware flashed). Full detail: logbook
+[`2026-06-29-canbridge-phase3-version-validated`](../../logbook/2026-06-29-canbridge-phase3-version-validated.md).
+**Phase 4 cleared once Phase 5 lands (Phase 4 depends on 1, 2, 3, AND 5).**
 
 ### Phase 4 — Orchestrator wiring
 
