@@ -169,6 +169,63 @@ an occasional single-catch miss is recoverable; and **when the catch is clean th
 seat is tight (~3.3 mm)** — far below the ~15 mm the throw amplification cared
 about. The test asserts a *majority* clean-rate (deterministic on the pinned
 MuJoCo) plus a tight per-catch offset bound, rather than an unachievable 100 %.
+A follow-up **gate investigation** (next section) root-caused this precisely: it
+is **reach-limited** — the misses are **deterministic in the reach** (which the
+seed sets via the noise draw), not random contact behaviour, so the
+"seed-specific contact stochasticity / pose-dependent compliance" framing above
+is directionally right but imprecise — and, importantly, a *slower/higher*
+pattern makes it **worse**, not better.
+
+## Knife-edge root-cause — reach-limited (gate investigation, 2026-06-30)
+
+At the Rung-1 gate the operator asked whether the ~85 % is a sim-contact artefact
+to ignore or a real seat weakness to fix, before passing to Rung 2. A focused
+sweep (N=20 seeds/config) root-caused it: **the clean rate is a monotonic
+function of the platform REACH** (the translation to the observed landing) —
+nothing else:
+
+| reach | clean/20 | config |
+|---|---|---|
+| 1 mm | 20 | noise off |
+| 3 mm | 18 | tracking-noise only (0.5 mm) |
+| 30 mm | 18 | half noise (1 %) |
+| 60 mm | 17 | **default (2 % BB)** |
+| 85 mm | 15 | far 80 mm placement |
+| 112 mm | 12 | double noise (4 %) |
+| 115–154 mm | 0–1 | longer flight (0.9–1.2 s) |
+
+**Verdict: neither a sim artefact nor a seat-design flaw — a reach-vs-
+convergence-window constraint.**
+- *Not an artefact* — a clean, monotonic, physical dependence on reach, not
+  per-seed contact randomness. Misses cluster exactly where the reach is large;
+  tracking noise alone (reach ~3 mm) is 18/20, BB noise alone (reach ~60 mm)
+  reproduces the full 17/20 — the BB landing scatter, via the reach, is the driver.
+- *Not a seat flaw* — the constant-decel seat is sound: at small reach it is 20/20
+  with a 0.8 mm offset. The seat works; the *reach* fails it. (The clean-seat
+  offset also loosens with reach, 0.8 → 6.0 mm — the same effect.)
+- *The constraint* — the **slow** translate-to-reach cannot converge a **large**
+  reach within the short (~0.26 s) observed descent window: the cup arrives off /
+  still-moving and knocks the ball. The 2 % BB noise scatters the landing to
+  ~60 mm reach on average; the ~15 % misses are the seeds it scatters past the
+  catch's reliable reach (~60–80 mm).
+
+**Two findings that reshape the strategy:**
+1. **A slower/higher pattern makes it WORSE, not better.** Longer flight collapsed
+   it (0.60 s → 17/20; 0.90 s → 1/20; 1.20 s → 0/20): the 2 % velocity noise acts
+   over more time → more landing scatter → bigger reach (+ a faster arrival). Tempo
+   is the wrong lever; the catch favours **gentle, accurate** arrivals.
+2. **The catch's robustness is gated on the INPUT accuracy.** The 2 % BB is a
+   deliberately noisy *worst-case* input. In the actual loop the catch is fed the
+   **cup's own throw** (Rung 2a) — tight throw (small reach) → ~90–100 %;
+   scattered like the 2 % BB → ~85 %. Whether the catch needs hardening, and how, can only be
+   judged after Rung 2a characterises the throw.
+
+**Gate decision:** PASS to Rung 2a. The reach the catch faces in the loop is set
+by the throw accuracy, which Rung 2a measures. If hardening is later needed, the
+lever is **reach-convergence** (catch higher / observe earlier) and a gentler
+arrival — explicitly NOT slowing the tempo. (Sweep recipe: vary `NoiseConfig`
+fracs, `flight_s`, and `landing_xy_m` in `SingleCatchConfig`, 20 seeds each,
+read `CatchResult.clean` + `.reach_mm`; a one-off, not committed.)
 
 ## Outcome
 
