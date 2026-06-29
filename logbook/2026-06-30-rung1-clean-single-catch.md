@@ -15,7 +15,7 @@ files_changed:
   - tools/probes/juggle_catch_offset.py
   - tools/probes/README.md
 commits:
-  - TODO
+  - d3ae5b0
 subsystem:
   - sim
 tags:
@@ -182,4 +182,5 @@ audit fix (deleting the two inert lead knobs) is behaviour-preserving — the
 `tools/probes/juggle_catch_offset.py` sweep is byte-identical before/after
 (home placement 17/20 clean, mean 3.26 mm / max 7.92 mm unchanged).
 
-Commit SHA: TODO (finalize backfill).
+Commit SHA: d3ae5b0 (feat(sim): Rung-1 clean single catch (BB-reload) under
+section-3 noise).
