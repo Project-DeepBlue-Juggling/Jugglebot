@@ -16,7 +16,7 @@ files_changed:
   - tools/probes/juggle_throw_accuracy.py
   - tools/probes/README.md
 commits:
-  - TBD
+  - a907528
 subsystem:
   - sim
 tags:
@@ -250,4 +250,4 @@ tests/sim/test_juggle_tilt.py tests/sim/test_juggle_throw.py -q`, run 2026-06-30
 **1559 passed, 4 skipped, 2 xfailed in 764.35 s** (+16 new Rung-2a tests over the
 1543 baseline; no regressions, no new skips/xfails; only pre-existing warnings).
 
-Commit SHA: TBD (backfilled in a follow-up).
+Commit SHA: a907528 (this rung's feature commit).
