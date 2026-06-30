@@ -12,7 +12,7 @@ import pytest
 
 from sim.juggle_tilt import (
     MAX_TILT_DEG, Z_ACTIVE_MM, CUP_Z_BASE_MM, SLIDER_STROKE_MM,
-    tilt_to_receive, cup_axis, cup_lever_arm_mm, cup_lateral_shift_mm,
+    tilt_to_receive, tilt_to_throw, cup_axis, cup_lever_arm_mm, cup_lateral_shift_mm,
     realize_tilted,
 )
 
@@ -52,6 +52,42 @@ def test_tilt_clamped_to_max():
     assert mag == pytest.approx(MAX_TILT_DEG, abs=1e-6)
 
 
+# ---- tilt_to_throw: tilt-aimed throw (Rung 2a) --------------------------
+def test_throw_straight_up_takeoff_is_level():
+    rx, ry = tilt_to_throw(np.array([0.0, 0.0, 3.0]))
+    assert (rx, ry) == (0.0, 0.0)
+
+
+def test_throw_aligns_cup_axis_parallel_to_takeoff():
+    # The ball detaches up the cup axis, so the axis points ALONG the (ascending)
+    # take-off velocity — parallel, not anti-parallel (the catch's case).
+    v = np.array([0.25, 0.0, 2.5])                 # ~5.7 deg from vertical
+    rx, ry = tilt_to_throw(v)
+    a = cup_axis(rx, ry)
+    np.testing.assert_allclose(a, v / np.linalg.norm(v), atol=1e-6)
+
+
+def test_throw_is_mirror_of_receive():
+    # tilt_to_throw(v) == tilt_to_receive(-v): the throw aligns the axis along
+    # the take-off; the catch aligns it against the (negated) arrival.
+    v = np.array([0.3, -0.15, 2.6])
+    assert tilt_to_throw(v) == tilt_to_receive(-v)
+
+
+def test_throw_direction_signs():
+    # +vx take-off (ascending) -> cup leans toward +x => ry > 0, rx ~ 0.
+    rx, ry = tilt_to_throw(np.array([0.3, 0.0, 2.5]))
+    assert ry > 0.0 and abs(rx) < 1e-9
+    # +vy take-off -> rx < 0, ry ~ 0.
+    rx2, ry2 = tilt_to_throw(np.array([0.0, 0.3, 2.5]))
+    assert rx2 < 0.0 and abs(ry2) < 1e-9
+
+
+def test_throw_tilt_clamped_to_max():
+    rx, ry = tilt_to_throw(np.array([2.5, 0.0, 2.5]))   # 45 deg take-off
+    assert np.degrees(np.hypot(rx, ry)) == pytest.approx(MAX_TILT_DEG, abs=1e-6)
+
+
 # ---- cup-axis / lever-arm helpers ---------------------------------------
 def test_cup_axis_is_unit_and_level_is_z():
     np.testing.assert_allclose(cup_axis(0.0, 0.0), [0.0, 0.0, 1.0])
@@ -78,6 +114,23 @@ def test_realize_level_reduces_to_simple_slider():
     assert pose[2] == Z_ACTIVE_MM
     np.testing.assert_allclose(pose[3:], [0.0, 0.0, 0.0])
     assert slider == pytest.approx(800.0 - CUP_Z_BASE_MM)
+
+
+def test_juggle_online_realize_level_unchanged_and_delegates_to_tilted():
+    """``juggle_online.realize`` (Rung 2a unified it onto ``realize_tilted``) is
+    byte-for-byte the old level form at zero tilt, and matches ``realize_tilted``
+    under tilt — the single realisation for the level runner and the tilt throw."""
+    from sim.juggle_online import realize, Z_ACTIVE_MM as ZA, CUP_Z_BASE_MM as CB
+    cup = np.array([0.05, -0.02, 0.80])
+    pose, slider = realize(cup)                          # level (default)
+    np.testing.assert_allclose(pose, [50.0, -20.0, ZA, 0.0, 0.0, 0.0])
+    assert slider == pytest.approx(800.0 - CB)
+    # under tilt it delegates to realize_tilted exactly
+    rx, ry = tilt_to_throw(np.array([0.2, 0.0, 2.7]))
+    p1, s1 = realize(cup, rx, ry)
+    p2, s2 = realize_tilted(cup[:2], float(cup[2]), rx, ry)
+    np.testing.assert_array_equal(p1, p2)
+    assert s1 == s2
 
 
 def test_realize_slider_clamped_to_stroke():

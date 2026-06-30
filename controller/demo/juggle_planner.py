@@ -75,6 +75,14 @@ def takeoff_velocity(throw_pos, target_pos, flight_s, g=GRAVITY):
     return (target_pos - throw_pos) / flight_s - 0.5 * g * flight_s
 
 
+def _cas_cross(a, b):
+    """Cross product of two 3-vectors (CasADi MX columns). Mirrors Kai's
+    ``cas_cross_product`` — used for the tilted-axis detach constraint."""
+    return cas.vertcat(a[1] * b[2] - a[2] * b[1],
+                       a[2] * b[0] - a[0] * b[2],
+                       a[0] * b[1] - a[1] * b[0])
+
+
 @dataclasses.dataclass
 class CupCyclePlan:
     """One planned cup cycle, sampled on the ``dt`` grid (SI units).
@@ -213,7 +221,8 @@ def plan_cup_cycle(pos0, vel0, acc0,
                    throw_pos, throw_target, flight_s,
                    catch_time_s, catch_pos, catch_vel,
                    period_s,
-                   cfg: Optional[PlannerConfig] = None) -> CupCyclePlan:
+                   cfg: Optional[PlannerConfig] = None,
+                   detach_axis=None) -> CupCyclePlan:
     """Plan one cup cycle (just-after-throw -> catch -> next throw), SI units.
 
     Parameters
@@ -234,6 +243,13 @@ def plan_cup_cycle(pos0, vel0, acc0,
         Observed incoming ball's touch-down position and velocity (m, m/s).
     period_s : float
         Cycle duration (s) — the next throw is at ``period_s``.
+    detach_axis : (3,) array-like, optional
+        The cup's symmetry (up) axis at the **cycle-start** throw, in the world
+        frame — the axis along which the just-thrown ball detaches (Rung 2a's
+        tilt-aimed throw). Default ``None`` (and the level ``[0, 0, 1]``) is the
+        flat cup: the detach constraint reduces EXACTLY to the original
+        ``cacc_xy == 0`` (so the ``tilt = 0`` plan is byte-for-byte unchanged). A
+        tilted axis constrains the detach to be collinear with it (see below).
 
     Frame
     -----
@@ -281,11 +297,30 @@ def plan_cup_cycle(pos0, vel0, acc0,
     opti.subject_to(cpos[:, -1] == np.asarray(throw_pos, float).reshape(3, 1))
     opti.subject_to(cvel[:, -1] == v_takeoff.reshape(3, 1))
     opti.subject_to(cacc[:, -1] == g.reshape(3, 1))
-    # Detach straight up the throw axis (no sideways acceleration just after
-    # release) — here the throw axis is world +z (level cup), so constrain the
-    # lateral acceleration to gravity's (zero) for the first n_detach knots.
-    for i in range(1, cfg.n_detach + 1):
-        opti.subject_to(cacc[0:2, i] == 0.0)
+    # Detach: the just-thrown ball (released at the cycle start) leaves cleanly
+    # along the cup's symmetry axis when the contact force on it is purely AXIAL
+    # — i.e. the net applied acceleration (cacc - g) is collinear with the cup
+    # axis, so there is no sideways shove. Kai's invariant:
+    # ``cross(cacc - g, hand_axis) == 0`` over the first ``n_detach`` knots.
+    #   * LEVEL (``detach_axis`` None / world +z): hand_axis = [0,0,1], for which
+    #     the cross reduces EXACTLY to ``cacc_xy == 0`` — kept as the literal
+    #     original path so the tilt=0 plan is byte-for-byte unchanged.
+    #   * TILTED (``detach_axis`` given): the ball is thrown along the TILTED cup
+    #     axis, so the lateral take-off comes from the slider speed PROJECTED
+    #     through the tilt (lateral = |v| sin θ) rather than from band-limited
+    #     platform translation (the level-decoupling's wall). Constrain
+    #     (cacc - g) collinear with that axis.
+    level = detach_axis is None or np.allclose(detach_axis, [0.0, 0.0, 1.0], atol=1e-9)
+    if level:
+        for i in range(1, cfg.n_detach + 1):
+            opti.subject_to(cacc[0:2, i] == 0.0)
+    else:
+        axis = np.asarray(detach_axis, float).reshape(3)
+        axis = axis / np.linalg.norm(axis)
+        g_col = g.reshape(3, 1)
+        axis_col = axis.reshape(3, 1)
+        for i in range(1, cfg.n_detach + 1):
+            opti.subject_to(_cas_cross(cacc[:, i] - g_col, axis_col) == 0)
 
     # ---- Catch (interpolated touch-down time) ----
     k_td = int(np.floor(catch_time_s / dt))

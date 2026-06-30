@@ -69,6 +69,7 @@ import mujoco
 from controller.demo.juggle_planner import (
     GRAVITY, PlannerConfig, ballistic_touchdown, plan_cup_cycle,
 )
+from sim.juggle_tilt import realize_tilted
 from sim.plant.mujoco_plant import MuJoCoPlant
 
 CONTROL_DT = 0.025
@@ -126,12 +127,18 @@ def _flight_and_speed(apex_m, dz_m):
     return t_up + t_down, v_up
 
 
-def realize(cup_m):
-    """Cup Cartesian target (m, world) → (pose_6dof_mm, slider_mm), level platform."""
-    cup_mm = np.asarray(cup_m, float) * 1000.0
-    pose = np.array([cup_mm[0], cup_mm[1], Z_ACTIVE_MM, 0.0, 0.0, 0.0])
-    slider = float(np.clip(cup_mm[2] - CUP_Z_BASE_MM, 0.0, SLIDER_STROKE_MM))
-    return pose, slider
+def realize(cup_m, rx: float = 0.0, ry: float = 0.0):
+    """Cup Cartesian target (m, world) → (pose_6dof_mm, slider_mm).
+
+    Level (``rx == ry == 0``) is the original level-platform decoupling and is
+    byte-for-byte unchanged (the existing 2-ball runner relies on it). A non-zero
+    tilt (Rung 2a) re-introduces orientation with the Rung-0 lever-arm
+    compensation — it delegates to :func:`sim.juggle_tilt.realize_tilted`, which
+    reduces EXACTLY to the level form at zero tilt (zero lateral shift, zero
+    vertical drop), so this is the single realisation for both the level runner
+    and the tilt-aimed throw/catch."""
+    cup_m = np.asarray(cup_m, float)
+    return realize_tilted(cup_m[:2], float(cup_m[2]), rx, ry)
 
 
 # --------------------------------------------------------------------------

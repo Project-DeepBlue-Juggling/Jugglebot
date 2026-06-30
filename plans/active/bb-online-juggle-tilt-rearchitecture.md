@@ -178,6 +178,21 @@ open-loop (no catch yet). This is where tilt enters the *throw*.
 range and the cadence range; tilt-aim verified numerically; `tilt = 0` regression-
 safe. **GATE:** are the throws accurate enough to close a loop on?
 
+**Status (2026-06-30): implemented — gate pending.** Landed: a tilted-axis detach
+in `plan_cup_cycle` (`cross(cup_acc − g, axis) == 0`, byte-identical at `tilt=0`),
+`tilt_to_throw` + the unified `realize` (orientation re-introduced, delegates to
+`realize_tilted`), and a single-throw harness `sim/juggle_throw.py`. **Result:**
+the tilt-aim is *exact* — planned take-off ∥ the tilted axis, `lateral = |v|·sin θ`
+to machine precision, and the cup reaches `v_takeoff` to ~1 % under contact in
+**every** direction. Open-loop landing on the **reliable box** (column + the full
+50 mm-radius ring) is **8.3 mm (column) to ≤33 mm**, *all inside the catch's
+~60-80 mm reliable reach*; §3 noise adds ~2-3 mm. A real **directional
+separation/aim asymmetry** (cup contact + non-y-symmetric leg layout) caps the
+*clean* box at ~±70 mm — beyond ~100 mm pure ±y glue and −x/+x−y overshoot.
+**Gate read:** *yes for the Rung-2b self-catch* (a column toss → 8 mm reach ≪ the
+reliable reach); the full ±100 mm oval (Rung 3) needs the asymmetry resolved
+first. See logbook `2026-06-30-rung2a-single-ball-tilt-throw.md`.
+
 ---
 
 ### Phase 3 / Rung 2b — Throw-and-self-catch loop  *(GATE after — MAKE-OR-BREAK)*
@@ -288,7 +303,7 @@ on divergence with `origin/demo/bb-led-two-ball-juggle`) → write the next hand
 |---|---|---|
 | (done) | 0 / Rung 0 | tilt-tracking good? → YES |
 | `{from:1,to:1}` | 1 / Rung 1 | catch clean + noise-robust? |
-| `{from:2,to:2}` | 2 / Rung 2a | throws accurate to target + cadence? |
+| `{from:2,to:2}` | 2 / Rung 2a | throws accurate to target + cadence? → tilt-aim exact; reliable box (column + 50 mm ring) ≤33 mm (within catch reach); ±100 mm directional asymmetry — **gate pending** |
 | `{from:3,to:3}` | 3 / Rung 2b | **make-or-break:** self-catch sustains (loop gain < 1)? |
 | `{from:4,to:4}` | 4 / Rung 3 | 2-ball sustained ≥30? |
 
