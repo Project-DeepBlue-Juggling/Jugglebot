@@ -193,7 +193,7 @@ touch safety logic (the reboot latch, the axis-6 gate, the relay) are testable.
 | 3 | Firmware Get_Version sweep + Jetson-validated `firmware_validated` | **DONE — bench probe PASSED (2026-06-29)** | 0 | probe ✓ (legs+hand report hw 4.4.58) |
 | 4 | Orchestrator wiring: `home_motors` action shim (homes legs + hand) + `robot_state` fields + tilt/level relay + activate-folds-configure | NOT STARTED | 1, 2, 3, 5 | powered sitting |
 | 5 | Hand command conduit (state/gains, traj/smooth-move) + **hand homing** (HOME/SET_ABSOLUTE_POSITION on axis 6) + deactivate idles hand + cmd-echo | NOT STARTED | 1 | powered (homing + catch) |
-| 6 | Robust `clear_errors` (bus-transmittable gate) + reboot-in-progress latch | NOT STARTED | 0, 2 | probe: reboot latency, TEC |
+| 6 | Robust `clear_errors` (bus-transmittable gate) + reboot-in-progress latch | **DONE (2026-06-30)** | 0, 2 | probe ✓ (reboot latency 2.3–3.5 s → 6 s window; false CAN_BUS_DOWN confirmed; deadlock premise NOT bench-reproduced — see Outcome) |
 
 ## Implementation phases
 
@@ -589,6 +589,49 @@ allow-table. Confirm FlexCAN auto-retransmission behaviour to a silent bus (the
 (single-threaded clock makes the reboot-window-vs-real-loss discriminator
 directly testable). A dispatch-gate mirror test so a future edit cannot silently
 re-gate clear/reboot.
+
+**Outcome (DONE — 2026-06-30, commits `3d390f4` (firmware + host + native tests +
+golden) + `TBD-docs` (logbook/plan/index)).** Landed all three deliverables.
+(1) **Reboot latch** in `fault_machine.{h,cpp}`: `fault_notify_reboot_started()`
+(armed from the `REBOOT_ODRIVES` dispatch, after the gate passes) sets
+`s_reboot_in_progress` + a bounded `s_reboot_deadline_us` (64-bit, atomic); the
+watchdog detection ANDs `!s_reboot_in_progress`; released on
+fresh-leg-heartbeats-**after-stale** (the `s_reboot_saw_stale` gate avoids an
+immediate early-release) OR the deadline. `REBOOT_WATCHDOG_SUPPRESS_US = 6 s`
+(measured reboot→first-heartbeat 2.3–3.5 s + margin — NOT the untuned ~10 s). Armed
+ONLY by the reboot RPC, so a spontaneous loss is unaffected (the 2026-05-19
+deferred-stow inversion preserved — proven by a native `TEST_CASE` driving a loss
+without arming the latch). This **completes the `REBOOT_ODRIVES` shared hook** (step
+1 = the latch; Phase 2's `STATE_WRITE` clear = step 2). (2) **Bus-transmittable
+gate**: `jugglebot_bus_transmittable()` (live ESR1.SYNCH) gates
+`CLEAR_ERRORS`/`REBOOT_ODRIVES` via a single `gate_allows` chokepoint + header-inline
+`method_gates_on_bus_transmittable` policy predicate; everything else keeps the
+staleness gate. (3) **Hand in AXIS_ALL**: clear/reboot loops iterate `i < NUM_AXES`
+(legs + hand — can_node `JUGGLEBOT_AXES` parity). Three-way lockstep
+(`fault_machine.cpp` + `fault_logic.py` `DeferredStowLatch` reboot port + native
+`test_fault_machine.cpp`/`test_fault_logic.py`); golden regenerated deliberately (3
+reboot scenarios); divergence-catch **proven** (stripping the detection AND fails
+exactly the 3 reboot cases). Suite: native `test_fault_machine` **9 cases/136
+assertions**, `test_platform_relay` **6/57**; `pytest tests/ -q` (2026-07-01)
+**1927 passed, 1 xfailed in 452.99 s** (fully green; pass count +7 vs the 1920
+baseline = 6 new tests + the order-flaky allocation test flipping green this run);
+`pio run` **green**; codegen deterministic. **Bench probes**
+(2026-06-30, `tools/probes/canbridge_reboot_latch_probe.py`, motor power OFF):
+reboot latency 2.3–3.5 s (→ 6 s window); the reboot's false `CAN_BUS_DOWN` is real
+(latch justified). **The staleness-deadlock did NOT reproduce** — with all 7 ODrives
+rebooted, `bus1`(CAN3) never went WARN and every `CLEAR_ERRORS` returned OK (the
+Platform Teensy keeps CAN3 RX fresh); the SYNCH gate ships as the latent
+just-repowered-transient / design-intent fix (audit rec), not a bench-reproduced
+deadlock (logbook Discussion §1). **"After" probe** (2026-07-01, Phase-6 firmware
+flashed via `pio run -t upload`): controlled before/after — `CAN_BUS_DOWN`
+**suppressed on hardware** (vs the Phase-3 onset at ~2 s, identical hardware → latch
+works), and `CLEAR_ERRORS`/`REBOOT` returned OK → the ESR1.SYNCH read confirmed
+correct end-to-end (PROBE 1 via the RPC status). Full detail: logbook
+[`2026-06-30-canbridge-phase6-reboot-latch`](../../logbook/2026-06-30-canbridge-phase6-reboot-latch.md).
+**This completes the plan's implementation.** Phase 6 does **NOT** gate Phases 4/5;
+the remaining sequence is unchanged: **Phase 5** (hand conduit + hand homing) then
+**Phase 4** (orchestrator wiring — depends on 1, 2, 3, AND 5). Consider
+`/archive-plan canbridge-foundation-coldstart-parity` once Phases 4 + 5 land.
 
 ## Testing plan
 
