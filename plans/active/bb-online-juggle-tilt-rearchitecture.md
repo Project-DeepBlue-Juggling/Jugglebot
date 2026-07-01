@@ -208,8 +208,10 @@ observed ball. Measure: does it sustain ≥ N cycles? Does the throw still ampli
 the in-cup offset, or does tilt break the amplification (launch velocity
 ~independent of in-cup offset)? Compare head-to-head with the pre-tilt divergence.
 
-**Files.** `sim/juggle_online.py` (single-ball self-catch loop), measurement
-probe(s) under `tools/probes/`, a logbook entry with the make-or-break verdict.
+**Files.** `sim/juggle_selfcatch.py` (single-ball self-catch loop — the focused
+harness landed in its own file, mirroring `juggle_throw.py`/`juggle_catch.py`,
+rather than `sim/juggle_online.py`), measurement probe(s) under `tools/probes/`, a
+logbook entry with the make-or-break verdict.
 
 **Acceptance.** Single-ball self-catch sustains **≥ 10 cycles** (or run until it
 visibly sustains vs. diverges, reporting the achieved cycle count AND the
@@ -217,6 +219,31 @@ per-cycle in-cup-offset trend — flat/decaying = converging, growing = divergin
 loop gain < 1, under the §3 noise. **GATE (MAKE-OR-BREAK):** did tilt kill the
 divergence? If **yes** → Rung 3. If **no** → STOP and re-plan with the operator
 (this is the riskiest assumption in the arc).
+
+**Status (2026-07-01): implemented — gate = BREAK; STOP and re-plan.** Landed the
+single-ball self-catch loop (`sim/juggle_selfcatch.py::run_self_catch`, composing
+the Rung-2a throw + Rung-1 catch, re-planned each cycle), the loop-gain probe
+(`tools/probes/juggle_selfcatch_loopgain.py`), and tests. **Result:** the pure
+**column** self-catch does **not** sustain — it diverges within **0–3 cycles**
+across all seeds and all three recover variants (the catch reach amplifies ~8 →
+~50 → ~110 → ~210 mm past the catch's ~60–80 mm reliable reach → drop; loop gain
+> 1, head-to-head with the pre-tilt divergence). **Two column-specific root causes
+(NOT the band-limit cascade):** (1) a caught, centred, **spinless** ball does not
+cleanly detach on a column — the free-fall detach (`cup_acc == g`) shares the
+ball's acceleration on the same vertical line, so they ride together; Rung-2a's
+column separated only via the freshly-spawned ball's incidental spin, which a
+Rung-1 catch does not supply; (2) the column throw's separation is chaotically
+sensitive to the ball's residual lateral state, so the catch-reach / reposition
+lateral motion is amplified → the reach grows → loop gain > 1. **The reframing
+(load-bearing):** for a column the commanded tilt is ~0, so the tilt mechanism
+never *engages* — the column is a **degenerate** case where tilt is inactive, so
+it does not test the tilt hypothesis. A stationary single-ball self-catch is
+*necessarily* a column (a lateral throw walks). **Recommended re-plan:** test the
+tilt hypothesis with a **two-point single-ball oscillation** (throw A→B, catch at
+B, throw B→A) where tilt engages and the cup's lateral recover breaks the column
+separation singularity; or fold the tilt make-or-break into a minimal-lateral
+two-ball columns test (Rung 3). See logbook
+`2026-07-01-rung2b-selfcatch-column-divergence.md`.
 
 ---
 
@@ -304,7 +331,7 @@ on divergence with `origin/demo/bb-led-two-ball-juggle`) → write the next hand
 | (done) | 0 / Rung 0 | tilt-tracking good? → YES |
 | `{from:1,to:1}` | 1 / Rung 1 | catch clean + noise-robust? |
 | `{from:2,to:2}` | 2 / Rung 2a | throws accurate to target + cadence? → tilt-aim exact; reliable box (column + 50 mm ring) ≤33 mm (within catch reach); ±100 mm directional asymmetry — **gate pending** |
-| `{from:3,to:3}` | 3 / Rung 2b | **make-or-break:** self-catch sustains (loop gain < 1)? |
+| `{from:3,to:3}` | 3 / Rung 2b | **make-or-break:** self-catch sustains (loop gain < 1)? → **BREAK**: the pure column diverges (loop gain > 1) for column-specific reasons; tilt is inactive for a column (tilt≈0), so the column does not test the tilt hypothesis — **STOP + re-plan** (two-point single-ball oscillation where tilt engages) |
 | `{from:4,to:4}` | 4 / Rung 3 | 2-ball sustained ≥30? |
 
 (Phases may be batched into a segment, e.g. `{2,3}`, if a gate is waived — but the
