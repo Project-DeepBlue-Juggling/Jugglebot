@@ -149,6 +149,20 @@ constexpr uint8_t  MAX_SOFT_RESET_ATTEMPTS = 1;
 //  odrive.py ERR_DC_BUS_UNDER_VOLTAGE = 512.
 constexpr uint32_t ERR_DC_BUS_UNDER_VOLTAGE = 512u;
 
+// Reboot-in-progress watchdog-suppression window (Phase 6). A REBOOT_ODRIVES RPC
+// arms fault_notify_reboot_started(), which suppresses the CAN3 CAN-loss detector
+// for this bounded window so the deliberate ODrive-reboot silence is NOT read as a
+// real CAN loss (which would falsely arm the 2026-05-19 deferred stow). Sized to the
+// MEASURED reboot→first-leg-heartbeat latency + margin: 2.3–3.5 s across 3 bench runs
+// (motor power off, 2026-06-30, tools/probes/canbridge_reboot_latch_probe.py) + ~2.5 s
+// headroom for reboot variance / ODrive cold-boot — NOT the untuned ~10 s can_node
+// assumed. With the fresh-heartbeats-after-stale release, a normal reboot releases the
+// latch the instant the legs return (well before this deadline), so this deadline only
+// bounds the FAILURE case (legs never return); during it the ODrives autonomously hold
+// their last setpoint (safe — the deferred-stow inversion), so the blind-spot cost is
+// a bounded delay of the eventual safe-stow, never a collapse.
+constexpr uint64_t REBOOT_WATCHDOG_SUPPRESS_US = 6000000ULL;  // 6.0 s
+
 // Deferred-stow profiled descent (mirrors can_node _gently_move_to_setpoint):
 // velocity-limited move to the off pose at the same limit on_shutdown uses.
 constexpr float GENTLE_MOVE_VEL_LIMIT_RPS = JBOp::GENTLE_MOVE_VEL_LIMIT_RPS;  // 2.5

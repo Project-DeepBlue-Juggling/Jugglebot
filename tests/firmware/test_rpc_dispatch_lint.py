@@ -93,6 +93,75 @@ def test_reserved_methods_are_stubbed_not_unknown():
             f"reserved method {name} is not in the ERR_NOT_IMPL stub block")
 
 
+def _dispatch_case_body(name: str) -> str:
+    """The body of `case RpcMethod::NAME:` up to the next case/default in rpc.cpp."""
+    text = _RPC_CPP.read_text()
+    m = re.search(
+        rf"case\s+RpcMethod::{name}\s*:(.*?)(?=\n\s*case\s+RpcMethod::|\n\s*default\s*:)",
+        text, re.DOTALL)
+    assert m, f"{name} dispatch case not found in rpc.cpp"
+    return m.group(1)
+
+
+def test_clear_reboot_gate_on_bus_transmittable_not_staleness():
+    """Phase 6: CLEAR_ERRORS and REBOOT_ODRIVES must gate on the bus-transmittable
+    (SYNCH) signal via the shared gate_allows() chokepoint, NOT on the raw heartbeat-
+    staleness predicate jugglebot_commands_allowed() — so a recovery clear reaches a
+    just-repowered bus that is electrically alive but not yet heartbeating (the
+    2026-06-27 deadlock; audit rec 'carve clear/reboot out of the bus-health gate').
+
+    This is the wiring half of the dispatch-gate mirror guard (the policy half is the
+    native harness test of method_gates_on_bus_transmittable): it fails if a future
+    edit silently re-gates clear/reboot back onto heartbeat-staleness — the exact
+    regression Phase 6 fixed.
+    """
+    text = _RPC_CPP.read_text()
+    assert "method_gates_on_bus_transmittable" in text, (
+        "rpc.cpp lost the method→gate-basis policy predicate (Phase 6)")
+    assert "jugglebot_bus_transmittable" in text, (
+        "rpc.cpp lost the bus-transmittable (SYNCH) gate (Phase 6)")
+    for name in ("CLEAR_ERRORS", "REBOOT_ODRIVES"):
+        body = _dispatch_case_body(name)
+        assert "jugglebot_commands_allowed" not in body, (
+            f"{name} must NOT gate on jugglebot_commands_allowed (heartbeat-staleness); "
+            "route its AXIS_ALL branch through gate_allows() so a recovery clear reaches "
+            "a just-repowered bus (Phase 6 SYNCH gate)")
+        assert "gate_allows" in body, (
+            f"{name} AXIS_ALL branch must gate through gate_allows() (Phase 6)")
+
+
+def test_clear_reboot_axis_all_include_the_hand():
+    """Phase 6 / audit rows 21+40: the CLEAR_ERRORS and REBOOT_ODRIVES AXIS_ALL loops
+    must iterate legs + hand (i < NUM_AXES), matching can_node's JUGGLEBOT_AXES — the
+    old `i < NUM_LEGS` dropped the hand (axis 6). Guards against a regression back to
+    a legs-only broadcast."""
+    for name in ("CLEAR_ERRORS", "REBOOT_ODRIVES"):
+        body = _dispatch_case_body(name)
+        assert "i < NUM_AXES" in body, (
+            f"{name} AXIS_ALL loop must iterate `i < NUM_AXES` (legs + hand), not "
+            "`i < NUM_LEGS` — can_node JUGGLEBOT_AXES parity (Phase 6)")
+        assert "i < NUM_LEGS" not in body, (
+            f"{name} AXIS_ALL loop still uses `i < NUM_LEGS` — it drops the hand (axis 6)")
+
+
+def test_reboot_arms_the_watchdog_suppression_latch():
+    """Phase 6: the REBOOT_ODRIVES dispatch must arm the reboot-in-progress latch
+    (fault_notify_reboot_started) so the deliberate reboot silence does not false-trip
+    the CAN-loss deferred stow. CLEAR_ERRORS must NOT arm it (a clear is not a reboot).
+    The per-axis arm must be LEG-guarded (`a.axis < NUM_LEGS`): the CAN-loss detector
+    watches leg heartbeats only, so a hand-only reboot would blind leg-loss detection
+    for the full window with no benefit (audit NOTE 1)."""
+    reboot = _dispatch_case_body("REBOOT_ODRIVES")
+    assert "fault_notify_reboot_started" in reboot, (
+        "REBOOT_ODRIVES must arm the watchdog-suppression latch (Phase 6)")
+    assert "a.axis < NUM_LEGS" in reboot, (
+        "the per-axis REBOOT_ODRIVES latch-arm must be leg-guarded (a.axis < NUM_LEGS) "
+        "so a hand-only reboot does not blind leg-loss detection (audit NOTE 1)")
+    clear = _dispatch_case_body("CLEAR_ERRORS")
+    assert "fault_notify_reboot_started" not in clear, (
+        "CLEAR_ERRORS must not arm the reboot latch (only a reboot silences the bus)")
+
+
 def test_get_axis_versions_is_implemented():
     """Phase 3: GET_AXIS_VERSIONS is no longer a reserved ERR_NOT_IMPL stub — it has
     a real dispatch case that returns the cached version blob (version_fill_blob).

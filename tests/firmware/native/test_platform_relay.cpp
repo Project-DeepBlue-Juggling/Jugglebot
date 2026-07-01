@@ -34,6 +34,7 @@
 #include "protocol_config.h"
 #include "odrive_protocol.h"
 #include "can_buses.h"
+#include "rpc.h"                 // Phase 6: method_gates_on_bus_transmittable (gate policy)
 #include "fake_hal.h"
 
 #include "platform_relay.cpp"   // the unit under test
@@ -134,4 +135,25 @@ TEST_CASE("hand axis-6 allow-table permits exactly the locked hand ODrive ops") 
   CHECK_FALSE(hand_axis6_permitted(RpcMethod::SDO_READ));
   CHECK_FALSE(hand_axis6_permitted(RpcMethod::SDO_WRITE));
   CHECK_FALSE(hand_axis6_permitted(RpcMethod::NOP));
+}
+
+TEST_CASE("Phase 6 gate policy: only CLEAR_ERRORS/REBOOT gate on bus-transmittable (SYNCH)") {
+  using namespace JbUdp;
+  using CanBridge::Rpc::method_gates_on_bus_transmittable;
+  // The two operator recovery one-shots gate on the LIVE bus-transmittable (SYNCH)
+  // signal so a recovery clear reaches a just-repowered bus (the 2026-06-27 deadlock).
+  CHECK(method_gates_on_bus_transmittable(RpcMethod::CLEAR_ERRORS));
+  CHECK(method_gates_on_bus_transmittable(RpcMethod::REBOOT_ODRIVES));
+  // Every other op keeps the heartbeat-staleness gate (jugglebot_commands_allowed):
+  // a stale bus SHOULD withhold a setpoint/config. A future edit that drops a method
+  // from the bus-transmittable set (re-gating clear/reboot onto staleness) fails here.
+  CHECK_FALSE(method_gates_on_bus_transmittable(RpcMethod::SET_AXIS_STATE));
+  CHECK_FALSE(method_gates_on_bus_transmittable(RpcMethod::SET_CONTROLLER_MODE));
+  CHECK_FALSE(method_gates_on_bus_transmittable(RpcMethod::SET_POS_GAIN));
+  CHECK_FALSE(method_gates_on_bus_transmittable(RpcMethod::SET_VEL_GAINS));
+  CHECK_FALSE(method_gates_on_bus_transmittable(RpcMethod::SET_VEL_CURR_LIMITS));
+  CHECK_FALSE(method_gates_on_bus_transmittable(RpcMethod::SET_ABSOLUTE_POSITION));
+  CHECK_FALSE(method_gates_on_bus_transmittable(RpcMethod::HOME));
+  CHECK_FALSE(method_gates_on_bus_transmittable(RpcMethod::ACTIVATE));
+  CHECK_FALSE(method_gates_on_bus_transmittable(RpcMethod::DEACTIVATE));
 }

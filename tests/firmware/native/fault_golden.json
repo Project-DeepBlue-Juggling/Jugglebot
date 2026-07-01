@@ -25,21 +25,35 @@
   ],
   "stow_scenarios": [
     {"name": "loss_arms_latch", "steps": [
-      {"stale": true, "fresh": false, "complete": false, "out": {"fatal": true, "stow_pending": true, "stowing": false}}
+      {"stale": true, "fresh": false, "complete": false, "reboot_start": false, "deadline_pass": false, "out": {"fatal": true, "stow_pending": true, "stowing": false}}
     ]},
     {"name": "execute_on_reconnect", "steps": [
-      {"stale": true, "fresh": false, "complete": false, "out": {"fatal": true, "stow_pending": true, "stowing": false}},
-      {"stale": false, "fresh": true, "complete": false, "out": {"fatal": false, "stow_pending": true, "stowing": true}}
+      {"stale": true, "fresh": false, "complete": false, "reboot_start": false, "deadline_pass": false, "out": {"fatal": true, "stow_pending": true, "stowing": false}},
+      {"stale": false, "fresh": true, "complete": false, "reboot_start": false, "deadline_pass": false, "out": {"fatal": false, "stow_pending": true, "stowing": true}}
     ]},
     {"name": "rearm_on_redrop", "steps": [
-      {"stale": true, "fresh": false, "complete": false, "out": {"fatal": true, "stow_pending": true, "stowing": false}},
-      {"stale": false, "fresh": true, "complete": false, "out": {"fatal": false, "stow_pending": true, "stowing": true}},
-      {"stale": true, "fresh": false, "complete": false, "out": {"fatal": true, "stow_pending": true, "stowing": false}}
+      {"stale": true, "fresh": false, "complete": false, "reboot_start": false, "deadline_pass": false, "out": {"fatal": true, "stow_pending": true, "stowing": false}},
+      {"stale": false, "fresh": true, "complete": false, "reboot_start": false, "deadline_pass": false, "out": {"fatal": false, "stow_pending": true, "stowing": true}},
+      {"stale": true, "fresh": false, "complete": false, "reboot_start": false, "deadline_pass": false, "out": {"fatal": true, "stow_pending": true, "stowing": false}}
     ]},
     {"name": "complete_clears_latch", "steps": [
-      {"stale": true, "fresh": false, "complete": false, "out": {"fatal": true, "stow_pending": true, "stowing": false}},
-      {"stale": false, "fresh": true, "complete": false, "out": {"fatal": false, "stow_pending": true, "stowing": true}},
-      {"stale": false, "fresh": true, "complete": true, "out": {"fatal": false, "stow_pending": false, "stowing": false}}
+      {"stale": true, "fresh": false, "complete": false, "reboot_start": false, "deadline_pass": false, "out": {"fatal": true, "stow_pending": true, "stowing": false}},
+      {"stale": false, "fresh": true, "complete": false, "reboot_start": false, "deadline_pass": false, "out": {"fatal": false, "stow_pending": true, "stowing": true}},
+      {"stale": false, "fresh": true, "complete": true, "reboot_start": false, "deadline_pass": false, "out": {"fatal": false, "stow_pending": false, "stowing": false}}
+    ]},
+    {"name": "reboot_suppresses_then_fresh_release", "steps": [
+      {"stale": false, "fresh": false, "complete": false, "reboot_start": true, "deadline_pass": false, "out": {"fatal": false, "stow_pending": false, "stowing": false}},
+      {"stale": true, "fresh": false, "complete": false, "reboot_start": false, "deadline_pass": false, "out": {"fatal": false, "stow_pending": false, "stowing": false}},
+      {"stale": false, "fresh": true, "complete": false, "reboot_start": false, "deadline_pass": false, "out": {"fatal": false, "stow_pending": false, "stowing": false}},
+      {"stale": true, "fresh": false, "complete": false, "reboot_start": false, "deadline_pass": false, "out": {"fatal": true, "stow_pending": true, "stowing": false}}
+    ]},
+    {"name": "reboot_deadline_release", "steps": [
+      {"stale": false, "fresh": false, "complete": false, "reboot_start": true, "deadline_pass": false, "out": {"fatal": false, "stow_pending": false, "stowing": false}},
+      {"stale": true, "fresh": false, "complete": false, "reboot_start": false, "deadline_pass": false, "out": {"fatal": false, "stow_pending": false, "stowing": false}},
+      {"stale": true, "fresh": false, "complete": false, "reboot_start": false, "deadline_pass": true, "out": {"fatal": true, "stow_pending": true, "stowing": false}}
+    ]},
+    {"name": "reboot_latch_does_not_touch_spontaneous_loss", "steps": [
+      {"stale": true, "fresh": false, "complete": false, "reboot_start": false, "deadline_pass": false, "out": {"fatal": true, "stow_pending": true, "stowing": false}}
     ]}
   ]
 }

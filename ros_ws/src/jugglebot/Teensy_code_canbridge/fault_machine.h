@@ -43,6 +43,16 @@ void fault_set_mpc_active(bool active);
 // budget — mirrors can_node clear_error_flags (the one-shot auto-clear refills).
 void fault_notify_clear_errors();
 
+// A REBOOT_ODRIVES RPC arms a BOUNDED watchdog-suppression latch (Phase 6): the
+// ~2–4 s heartbeat silence of a deliberate ODrive reboot must not be read as a CAN
+// loss (which would falsely arm the 2026-05-19 deferred stow on reconnect). Armed
+// ONLY here, so a SPONTANEOUS CAN loss (not preceded by a reboot) is completely
+// unaffected — the deferred-stow inversion is fully preserved. Released on
+// fresh-leg-heartbeats-AFTER-stale (the common case — the ODrives came back) OR at
+// the bounded REBOOT_WATCHDOG_SUPPRESS_US deadline (the failure-case backstop, so a
+// real loss coinciding with a reboot is still caught, at most one window late).
+void fault_notify_reboot_started();
+
 // Reported up via HeartbeatT2J.
 uint8_t  fault_state();                  // JbUdp::FaultState
 uint8_t  fault_guard_mode();             // JbUdp::GuardMode (ESTOP ⟺ estop || fatal_error)

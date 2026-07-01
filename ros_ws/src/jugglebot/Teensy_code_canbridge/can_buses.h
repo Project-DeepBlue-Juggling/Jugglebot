@@ -61,6 +61,19 @@ bool can_jugglebot_send(const ODrive::CanFrame& f);  // CAN3 Jugglebot core TX (
 // this via fake_set_commands_allowed; the firmware reads can_buses_stats().)
 bool jugglebot_commands_allowed();
 
+// "Is CAN3 electrically transmittable RIGHT NOW?" — the LIVE ESR1.SYNCH bus-lock bit
+// (s_jugglebot_rxh.synced), NOT heartbeat-staleness. Gates ONLY the operator recovery
+// one-shots CLEAR_ERRORS / REBOOT_ODRIVES (Phase 6): a just-repowered or motor-bus-
+// cycled bus is SYNCH=1 the instant it is electrically alive — BEFORE any heartbeat is
+// decoded — so the recovery clear is allowed exactly when jugglebot_commands_allowed()
+// would still read WARN from the stale RX timestamp and refuse it (the 2026-06-27
+// just-repowered-bus deadlock; audit rec "carve clear/reboot out of the bus-health
+// gate"). SYNCH=0 (bus-off / not synced) still refuses, guarding against blind-clearing
+// a truly dead bus — strictly safer than a blanket carve-out. NON-sticky (unlike
+// fault_conf), so it reflects the current state and recovers when the bus returns.
+// (Native harness fakes this via fake_set_bus_transmittable if a TU ever needs it.)
+bool jugglebot_bus_transmittable();
+
 struct CanStats {
   uint32_t bb_rx, bb_tx, cone_rx, cone_tx, jugglebot_rx, jugglebot_tx;
   uint8_t  bb_health;          // JbUdp::BusHealth

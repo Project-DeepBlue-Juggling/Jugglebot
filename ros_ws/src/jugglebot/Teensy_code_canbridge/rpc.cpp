@@ -81,20 +81,34 @@ bool parse_response(const uint8_t* payload, uint16_t len,
 // can_buses.cpp — it is shared with platform_relay.cpp (the relay reads/writes gate
 // on the same CAN3-health predicate). See can_buses.h.
 
+// The single CAN3 gate chokepoint (Phase 6). CLEAR_ERRORS / REBOOT_ODRIVES are
+// non-motion recovery one-shots that gate on the LIVE bus-transmittable signal
+// (jugglebot_bus_transmittable() = ESR1.SYNCH) so a recovery clear reaches a
+// just-repowered bus that is electrically alive but not yet heartbeating (the
+// 2026-06-27 deadlock); every other op keeps the heartbeat-staleness gate
+// (jugglebot_commands_allowed) — a stale bus SHOULD withhold a setpoint/config.
+// Both send_axis_frame() (per-axis) and the AXIS_ALL loops route through here, so the
+// method→gate-basis mapping has exactly one enforcement point. The policy predicate is
+// header-inline in rpc.h (method_gates_on_bus_transmittable) and pinned by the harness.
+static bool gate_allows(uint16_t method) {
+  return method_gates_on_bus_transmittable(method) ? jugglebot_bus_transmittable()
+                                                   : jugglebot_commands_allowed();
+}
+
 // Send an ODrive frame to a Jugglebot axis. Legs (0..5) always pass the (method,
 // axis) check; the HAND ODrive (axis 6) is on CAN3 too and is forwarded ONLY for
 // the narrow allow-table (JbUdp::hand_axis6_permitted — set/mode/gains/limits/
 // clear/reboot/home/abs-pos), replacing the old blanket axis==HAND_AXIS reject so
 // hand homing + the hand command surface work (Phase 1). Every permitted op — leg
-// or hand — is still gated on jugglebot_commands_allowed(): the hand is GATED like
-// a leg, never ungated. Returns an RpcStatus.
+// or hand — is still gated via gate_allows(): the hand is GATED like a leg, never
+// ungated. Returns an RpcStatus.
 static uint16_t send_axis_frame(uint16_t method, uint8_t axis, const ODrive::CanFrame& f) {
   if (axis == HAND_AXIS) {
     if (!JbUdp::hand_axis6_permitted(method)) return JbUdp::RpcStatus::ERR_REJECTED;
   } else if (axis >= NUM_LEGS) {
     return JbUdp::RpcStatus::ERR_BAD_ARGS;
   }
-  if (!jugglebot_commands_allowed()) return JbUdp::RpcStatus::ERR_BUS_DOWN;
+  if (!gate_allows(method)) return JbUdp::RpcStatus::ERR_BUS_DOWN;
   return can_jugglebot_send(f) ? JbUdp::RpcStatus::OK : JbUdp::RpcStatus::ERR_TIMEOUT;
 }
 
@@ -161,8 +175,11 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
       // Operator clear refills the soft-reset auto-retry budget (clear_error_flags).
       fault_notify_clear_errors();
       if (a.axis == AXIS_ALL) {
-        if (!jugglebot_commands_allowed()) return RpcStatus::ERR_BUS_DOWN;
-        for (uint8_t i = 0; i < NUM_LEGS; ++i) can_jugglebot_send(ODrive::encode_clear_errors(i));
+        // Gate on the bus-transmittable (SYNCH) signal, not staleness (Phase 6), so a
+        // recovery clear reaches a just-repowered bus. AXIS_ALL loops legs + hand
+        // (i < NUM_AXES) — can_node JUGGLEBOT_AXES parity (the audit's dropped-hand row).
+        if (!gate_allows(method)) return RpcStatus::ERR_BUS_DOWN;
+        for (uint8_t i = 0; i < NUM_AXES; ++i) can_jugglebot_send(ODrive::encode_clear_errors(i));
         return RpcStatus::OK;
       }
       return send_axis_frame(method, a.axis, ODrive::encode_clear_errors(a.axis));
@@ -170,11 +187,24 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
     case RpcMethod::REBOOT_ODRIVES: {
       ArgAxisOnly a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
       if (a.axis == AXIS_ALL) {
-        if (!jugglebot_commands_allowed()) return RpcStatus::ERR_BUS_DOWN;
-        for (uint8_t i = 0; i < NUM_LEGS; ++i) can_jugglebot_send(ODrive::encode_reboot(i));
+        // Bus-transmittable gate (Phase 6); AXIS_ALL loops legs + hand (i < NUM_AXES —
+        // JUGGLEBOT_AXES parity). Arm the watchdog-suppression latch only ONCE the
+        // reboot is actually going out (after the gate passes), so a refused reboot
+        // does not blind the detector against a real, coincident loss.
+        if (!gate_allows(method)) return RpcStatus::ERR_BUS_DOWN;
+        fault_notify_reboot_started();
+        for (uint8_t i = 0; i < NUM_AXES; ++i) can_jugglebot_send(ODrive::encode_reboot(i));
         return RpcStatus::OK;
       }
-      return send_axis_frame(method, a.axis, ODrive::encode_reboot(a.axis));
+      // Per-axis: send via the shared gate; arm the latch only if the reboot went out
+      // AND it targets a LEG. The CAN-loss detector watches leg heartbeats only
+      // (any_leg_heartbeat_stale), so a hand-only reboot (axis 6) can never false-trip
+      // it — arming for it would blind LEG-loss detection for the full window with zero
+      // benefit (saw_stale never sets → no fresh-after-stale release). AXIS_ALL arms in
+      // its own branch (it reboots the legs too).
+      const uint16_t st = send_axis_frame(method, a.axis, ODrive::encode_reboot(a.axis));
+      if (st == RpcStatus::OK && a.axis < NUM_LEGS) fault_notify_reboot_started();
+      return st;
     }
     case RpcMethod::SDO_READ: {
       ArgSdoRead a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;

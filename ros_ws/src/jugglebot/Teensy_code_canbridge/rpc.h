@@ -67,7 +67,22 @@ using JbUdp::RpcArgs::ResultTimeOfDay;
 using JbUdp::RpcArgs::ArgBbThrow;
 using JbUdp::RpcArgs::ArgRobotState;   // STATE_WRITE (Platform-Teensy relay — Phase 1)
 
-using JbUdp::RpcArgs::AXIS_ALL;   // broadcast to all legs (CLEAR_ERRORS/REBOOT)
+using JbUdp::RpcArgs::AXIS_ALL;   // broadcast to all axes (CLEAR_ERRORS/REBOOT)
+
+// Phase 6 gate-basis policy: which operator RPCs gate on the bus-TRANSMITTABLE signal
+// (live ESR1.SYNCH, jugglebot_bus_transmittable()) instead of the default heartbeat-
+// staleness gate (jugglebot_commands_allowed()). CLEAR_ERRORS and REBOOT_ODRIVES are
+// non-motion recovery one-shots that MUST reach the ODrives on a just-repowered /
+// motor-cycled bus that is electrically alive but has not heartbeated yet (the
+// 2026-06-27 deadlock); every other op keeps the staleness gate (a stale bus means a
+// dropped setpoint/config, which SHOULD be withheld). Pure + header-inline so the
+// native harness pins the policy directly — a future edit that drops a method from
+// this set (re-gating clear/reboot back onto staleness) fails the test. rpc.cpp's
+// single gate chokepoint (gate_allows) routes on this predicate.
+inline bool method_gates_on_bus_transmittable(uint16_t method) {
+  return method == JbUdp::RpcMethod::CLEAR_ERRORS ||
+         method == JbUdp::RpcMethod::REBOOT_ODRIVES;
+}
 
 // Register the server dispatcher with udp_link (call during setup).
 void rpc_server_init();

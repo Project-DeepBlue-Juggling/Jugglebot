@@ -150,6 +150,15 @@ class DeferredStowLatch:
     This models the executor-bearing latch (the firmware, which owns CAN +
     ``interp_begin_stow``). The Jetson bridge's link-loss usage — which has no
     stow executor in 10b — is :class:`LinkLossLatch`.
+
+    Phase 6 reboot-suppression latch: :meth:`notify_reboot_started` (the
+    ``REBOOT_ODRIVES`` RPC) arms a bounded suppression of the CAN-loss *detection*
+    so a deliberate ODrive-reboot silence is not read as a real loss. The clock is
+    abstracted the same way the rest of this latch abstracts it — ``step`` takes the
+    ``deadline_pass`` boolean (the firmware's ``now >= s_reboot_deadline_us``); the
+    ``stale``/``fresh`` inputs stand in for ``any_leg_heartbeat_stale`` /
+    ``all_present_legs_fresh``. Armed ONLY via ``notify_reboot_started`` /
+    ``reboot_start``, so a spontaneous loss is unaffected (the inversion is intact).
     """
 
     def __init__(self):
@@ -158,10 +167,30 @@ class DeferredStowLatch:
         self.stowing = False
         self.first_seen = True        # firmware sets this once any leg hb is seen
         self.stow_complete = False
+        self.reboot_in_progress = False   # Phase 6 suppression latch armed
+        self.reboot_saw_stale = False     # legs went stale since arming (release gate)
 
-    def step(self, stale: bool, fresh: bool) -> None:
-        # Detection: link went stale → fatal + arm the deferred stow.
-        if self.first_seen and stale and not self.fatal:
+    def notify_reboot_started(self) -> None:
+        """Arm the bounded watchdog-suppression latch (mirror
+        ``fault_notify_reboot_started``). Resets ``reboot_saw_stale`` so a fresh
+        reboot cannot inherit a stale ``saw`` and release its latch early."""
+        self.reboot_in_progress = True
+        self.reboot_saw_stale = False
+
+    def step(self, stale: bool, fresh: bool,
+             reboot_start: bool = False, deadline_pass: bool = False) -> None:
+        if reboot_start:
+            self.notify_reboot_started()
+        # Reboot-suppression latch release (Phase 6, mirror watchdog_and_stow):
+        # release on fresh-AFTER-stale (the ODrives came back) OR the bounded deadline.
+        if self.reboot_in_progress:
+            if stale:
+                self.reboot_saw_stale = True
+            if (self.reboot_saw_stale and fresh) or deadline_pass:
+                self.reboot_in_progress = False
+        # Detection: link went stale → fatal + arm the deferred stow. ANDs
+        # not-reboot-suppressed so a deliberate reboot's silence does not false-trip.
+        if self.first_seen and stale and not self.fatal and not self.reboot_in_progress:
             self.fatal = True
             self.stow_pending = True            # canonical arm point (§6)
             if self.stowing:                    # re-dropped mid-descent → re-arm

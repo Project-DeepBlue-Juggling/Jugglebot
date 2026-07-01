@@ -561,6 +561,17 @@ bool jugglebot_commands_allowed() {
   return h != JbUdp::BusHealth::WARN && h != JbUdp::BusHealth::BUS_OFF;
 }
 
+// Phase 6: the bus-transmittable gate for the operator recovery one-shots
+// (CLEAR_ERRORS / REBOOT_ODRIVES). Reads the LIVE ESR1.SYNCH bit maintained every
+// service tick (s_jugglebot_rxh.synced, set in service_bus above). A single volatile
+// byte → atomic on Cortex-M7, so no snapshot/seqlock is needed. Distinct from
+// jugglebot_commands_allowed() (heartbeat-staleness) on purpose — see can_buses.h for
+// the just-repowered-bus rationale. The register read itself is the same ESR1 access
+// already validated for fault_conf/tec_max diagnostics.
+bool jugglebot_bus_transmittable() {
+  return s_jugglebot_rxh.synced != 0;
+}
+
 static uint8_t health_of(uint64_t last_rx_us) {
   if (last_rx_us == 0) return JbUdp::BusHealth::UNKNOWN;
   // OK if we've seen a frame within the CAN heartbeat window.

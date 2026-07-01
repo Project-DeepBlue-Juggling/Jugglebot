@@ -49,6 +49,13 @@ static volatile bool s_mpc_active = false;
 static uint8_t s_guard_mode = JbUdp::GuardMode::DISABLED;
 static uint8_t s_fault_state = JbUdp::FaultState::NONE;
 
+// ── Reboot-in-progress watchdog-suppression latch (Phase 6) ──────────────────
+// Armed ONLY by fault_notify_reboot_started() (the REBOOT_ODRIVES RPC), so a
+// spontaneous CAN loss never sets it and the deferred-stow inversion is preserved.
+static volatile bool s_reboot_in_progress = false;   // suppression latch armed
+static uint64_t      s_reboot_deadline_us = 0;        // 64-bit; access via atomic_*_u64
+static bool          s_reboot_saw_stale   = false;    // legs went stale since arming
+
 void fault_set_mpc_active(bool a) { s_mpc_active = a; }
 
 // ── Cache predicates over the leg axes ────────────────────────────────────────
@@ -106,6 +113,19 @@ static bool clear_errors_can() {
 
 // External CLEAR_ERRORS RPC resets the auto-retry budget (mirrors the operator path).
 void fault_notify_clear_errors() { clear_error_flags(); }
+
+// External REBOOT_ODRIVES RPC arms the bounded watchdog-suppression latch (Phase 6):
+// the deliberate reboot silence must not be read as a CAN loss. Bounded by
+// s_reboot_deadline_us (the blind-spot backstop). Called from the RPC/UDP-RX task; the
+// 64-bit deadline is written atomically (read by the fault task's watchdog_and_stow).
+// s_reboot_saw_stale is reset here so a fresh reboot cannot inherit a stale "saw" from
+// a prior one (which could release the new latch early). s_reboot_in_progress is
+// published LAST so the fault task never observes an armed latch with a stale deadline.
+void fault_notify_reboot_started() {
+  atomic_write_u64(&s_reboot_deadline_us, now_wall_us() + REBOOT_WATCHDOG_SUPPRESS_US);
+  s_reboot_saw_stale = false;
+  s_reboot_in_progress = true;
+}
 
 // ── Port of _handle_error determination ───────────────────────────────────────
 static void evaluate_errors() {
@@ -174,8 +194,29 @@ static void watchdog_and_stow() {
   bb_state.heartbeat_stale = bb_state.heartbeat_seen &&
       (now - bb_state.last_heartbeat_us > BB_HEARTBEAT_TIMEOUT_US);
 
+  // Reboot-in-progress latch (Phase 6). A REBOOT_ODRIVES RPC armed a bounded
+  // suppression of the CAN-loss detector so the deliberate reboot silence is not read
+  // as a real loss. Release on fresh-leg-heartbeats-AFTER-going-stale (the ODrives
+  // came back — the common case, far tighter than the deadline) OR at the bounded
+  // deadline (the failure-case backstop: a real loss coinciding with a reboot is
+  // caught here, at most REBOOT_WATCHDOG_SUPPRESS_US late). The s_reboot_saw_stale
+  // gate is essential: a latch armed while the legs are STILL fresh (the reboot
+  // frames have not yet silenced them) must not release immediately on that same
+  // freshness — only a fresh reading AFTER the legs have actually gone stale proves
+  // the reboot completed. Runs BEFORE detection so the AND below sees the released state.
+  if (s_reboot_in_progress) {
+    if (any_leg_heartbeat_stale()) s_reboot_saw_stale = true;
+    if ((s_reboot_saw_stale && all_present_legs_fresh()) ||
+        now >= atomic_read_u64(&s_reboot_deadline_us)) {
+      s_reboot_in_progress = false;
+    }
+  }
+
   // Detection: CAN3 leg heartbeats went stale → fatal_can_error + arm the stow.
-  if (s_first_leg_hb_seen && any_leg_heartbeat_stale() && !s_fatal_can_error) {
+  // ANDs !s_reboot_in_progress so a deliberate reboot's silence does not false-trip
+  // (Phase 6); a spontaneous loss never arms that latch, so it detects as before.
+  if (s_first_leg_hb_seen && any_leg_heartbeat_stale() && !s_fatal_can_error
+      && !s_reboot_in_progress) {
     s_fatal_can_error = true;
     s_stow_pending = true;            // canonical arm point (§6) — independent of any host path
     if (s_stowing) { interp_end_stow(); s_stowing = false; }  // bus re-dropped mid-descent → re-arm
@@ -296,6 +337,8 @@ void fault_machine_init() {
   s_fatal_error = s_undervoltage_error = s_fatal_can_error = false;
   s_soft_reset_attempts = 0;
   s_stow_pending = s_stowing = s_first_leg_hb_seen = false;
+  s_reboot_in_progress = s_reboot_saw_stale = false;
+  atomic_write_u64(&s_reboot_deadline_us, 0);
   s_guard_mode = JbUdp::GuardMode::DISABLED;
   s_fault_state = JbUdp::FaultState::NONE;
   interp_set_output_enabled(false);

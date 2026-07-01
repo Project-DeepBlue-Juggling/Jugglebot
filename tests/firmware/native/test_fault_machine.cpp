@@ -173,17 +173,30 @@ static std::vector<ErrScenario> error_scenarios() {
 }
 
 // ── Deferred-stow (DeferredStowLatch-modelable) scenarios ─────────────────────
+// Phase 6 adds two input columns: reboot_start (arm the reboot-suppression latch,
+// = the REBOOT_ODRIVES RPC) and deadline_pass (the reboot-suppression deadline has
+// elapsed). The abstract (stale, fresh, deadline_pass) triple stands in for the
+// firmware's clock-driven any_leg_heartbeat_stale / all_present_legs_fresh /
+// now>=deadline, so the Jetson host mirror (fault_logic.py DeferredStowLatch) can
+// replay these goldens clock-free.
 struct StowStep {
   std::string note;
   bool stale;
   bool fresh;
-  bool complete;    // drive interp_isr to set stow_complete before this fault_step
+  bool complete;       // drive interp_isr to set stow_complete before this fault_step
+  bool reboot_start;   // Phase 6: fault_notify_reboot_started() before this fault_step
+  bool deadline_pass;  // Phase 6: advance the clock past the reboot-suppression deadline
   bool exp_fatal;
   bool exp_pending;
   bool exp_stowing;
 };
 struct StowScenario { std::string name; std::vector<StowStep> steps; };
 struct StowOut { bool fatal; bool pending; bool stowing; };
+
+// In-window staleness advance: > CAN_HEARTBEAT_TIMEOUT_US (legs go stale) but
+// < REBOOT_WATCHDOG_SUPPRESS_US (still inside the reboot-suppression window), so a
+// "stale" step alone never crosses the reboot deadline — deadline_pass does that.
+static constexpr uint64_t STALE_ADVANCE_US = CAN_HEARTBEAT_TIMEOUT_US + 500'000;  // 2.5 s
 
 static std::vector<StowOut> run_stow_scenario(const StowScenario& sc) {
   reset_all();
@@ -194,7 +207,9 @@ static std::vector<StowOut> run_stow_scenario(const StowScenario& sc) {
   }
   std::vector<StowOut> out;
   for (const auto& st : sc.steps) {
-    if (st.stale) fake_advance(3 * (uint64_t)CAN_HEARTBEAT_TIMEOUT_US);   // age past the timeout
+    if (st.reboot_start) fault_notify_reboot_started();               // arm the latch
+    if (st.stale) fake_advance(STALE_ADVANCE_US);                     // legs go stale (in-window)
+    if (st.deadline_pass) fake_advance(REBOOT_WATCHDOG_SUPPRESS_US);  // cross the reboot deadline
     if (st.fresh) for (uint8_t i = 0; i < NUM_LEGS; ++i) axes[i].last_heartbeat_us = fake_wall_us();
     if (st.complete) interp_isr();   // legs already at STOW (pos_rev=0) → one tick sets stow_complete
     fault_step();
@@ -204,20 +219,38 @@ static std::vector<StowOut> run_stow_scenario(const StowScenario& sc) {
 }
 
 static std::vector<StowScenario> stow_scenarios() {
+  // cols: note, stale, fresh, complete, reboot_start, deadline_pass, exp_fatal, exp_pending, exp_stowing
   return {
     {"loss_arms_latch", {
-      {"can3 loss",   true,  false, false, true,  true,  false}}},
+      {"can3 loss",   true,  false, false, false, false, true,  true,  false}}},
     {"execute_on_reconnect", {
-      {"can3 loss",   true,  false, false, true,  true,  false},
-      {"reconnect",   false, true,  false, false, true,  true}}},
+      {"can3 loss",   true,  false, false, false, false, true,  true,  false},
+      {"reconnect",   false, true,  false, false, false, false, true,  true}}},
     {"rearm_on_redrop", {
-      {"can3 loss",   true,  false, false, true,  true,  false},
-      {"reconnect",   false, true,  false, false, true,  true},
-      {"redrop",      true,  false, false, true,  true,  false}}},
+      {"can3 loss",   true,  false, false, false, false, true,  true,  false},
+      {"reconnect",   false, true,  false, false, false, false, true,  true},
+      {"redrop",      true,  false, false, false, false, true,  true,  false}}},
     {"complete_clears_latch", {
-      {"can3 loss",   true,  false, false, true,  true,  false},
-      {"reconnect",   false, true,  false, false, true,  true},
-      {"stow done",   false, true,  true,  false, false, false}}},
+      {"can3 loss",   true,  false, false, false, false, true,  true,  false},
+      {"reconnect",   false, true,  false, false, false, false, true,  true},
+      {"stow done",   false, true,  true,  false, false, false, false, false}}},
+    // ── Phase 6 reboot-suppression latch ─────────────────────────────────────
+    {"reboot_suppresses_then_fresh_release", {
+      // arm (legs fresh) → reboot silence SUPPRESSED (no false loss) → legs return →
+      // latch releases → a NEW spontaneous loss then arms the stow normally.
+      {"reboot armed",  false, false, false, true,  false, false, false, false},
+      {"reboot silence",true,  false, false, false, false, false, false, false},
+      {"legs back",     false, true,  false, false, false, false, false, false},
+      {"new loss",      true,  false, false, false, false, true,  true,  false}}},
+    {"reboot_deadline_release", {
+      // arm → suppressed in-window → past the deadline the latch releases and the
+      // still-stale loss (a reboot that never returned) is detected + stow armed.
+      {"reboot armed",  false, false, false, true,  false, false, false, false},
+      {"in-window",     true,  false, false, false, false, false, false, false},
+      {"deadline",      true,  false, false, false, true,  true,  true,  false}}},
+    {"reboot_latch_does_not_touch_spontaneous_loss", {
+      // no reboot armed → a spontaneous loss detects immediately (inversion intact).
+      {"spontaneous loss", true, false, false, false, false, true, true, false}}},
   };
 }
 
@@ -393,6 +426,67 @@ TEST_CASE("guard E-STOP / fb-stale are present-scoped and pre-arm-safe") {
 }
 
 // =============================================================================
+//  Phase 6 reboot-suppression latch — explicit readable safety contract
+// =============================================================================
+TEST_CASE("reboot latch: a SPONTANEOUS CAN loss is UNAFFECTED (deferred-stow inversion preserved)") {
+  // THE safety-critical proof: a loss NOT preceded by a REBOOT_ODRIVES must detect and
+  // arm the deferred stow exactly as before — the latch only touches reboot-armed silence.
+  reset_all();
+  fake_set_clock(10'000'000, 10'000'000);
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) { axes[i].heartbeat_seen = true; axes[i].last_heartbeat_us = fake_wall_us(); }
+  // NO fault_notify_reboot_started().
+  fake_advance(3 * (uint64_t)CAN_HEARTBEAT_TIMEOUT_US);
+  fault_step();
+  CHECK(fault_can_bus_down());                              // detection fired
+  CHECK(fault_stow_pending());                             // deferred stow armed (inversion intact)
+  CHECK(fault_state() == JbUdp::FaultState::CAN_BUS_DOWN);
+}
+
+TEST_CASE("reboot latch: suppresses in-window, releases on fresh-after-stale AND on deadline") {
+  // (a) fresh-after-stale release — the ODrives came back.
+  reset_all();
+  fake_set_clock(10'000'000, 10'000'000);
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) { axes[i].heartbeat_seen = true; axes[i].last_heartbeat_us = fake_wall_us(); }
+  fault_notify_reboot_started();                            // arm (legs fresh at arm time)
+  fake_advance(CAN_HEARTBEAT_TIMEOUT_US + 500'000);         // 2.5 s: legs stale, < 6 s deadline
+  fault_step();
+  CHECK(fault_can_bus_down() == false);                    // SUPPRESSED — no false loss
+  CHECK(fault_stow_pending() == false);                    // ...and no stow armed
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) axes[i].last_heartbeat_us = fake_wall_us();  // legs return
+  fault_step();
+  CHECK(fault_can_bus_down() == false);                    // released cleanly, no stow
+  CHECK(fault_stow_pending() == false);
+
+  // (b) deadline release — a reboot that never returns is still caught at the deadline.
+  reset_all();
+  fake_set_clock(10'000'000, 10'000'000);
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) { axes[i].heartbeat_seen = true; axes[i].last_heartbeat_us = fake_wall_us(); }
+  fault_notify_reboot_started();
+  fake_advance(CAN_HEARTBEAT_TIMEOUT_US + 500'000);         // 2.5 s: in-window → suppressed
+  fault_step();
+  CHECK(fault_can_bus_down() == false);
+  fake_advance(REBOOT_WATCHDOG_SUPPRESS_US);                // past the 6 s deadline, legs still silent
+  fault_step();
+  CHECK(fault_can_bus_down());                             // deadline backstop → real loss detected
+  CHECK(fault_stow_pending());
+}
+
+TEST_CASE("reboot latch: a latch armed while legs are STILL fresh cannot release early") {
+  // saw_stale gate: the reboot frames have not yet silenced the legs, so the same
+  // freshness that was present at arm time must NOT release the latch — otherwise the
+  // subsequent reboot silence would false-trip. Advance a little (still fresh), step,
+  // then confirm the latch is still suppressing when the silence finally arrives.
+  reset_all();
+  fake_set_clock(10'000'000, 10'000'000);
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) { axes[i].heartbeat_seen = true; axes[i].last_heartbeat_us = fake_wall_us(); }
+  fault_notify_reboot_started();                            // arm (legs fresh)
+  fault_step();                                             // legs still fresh → must NOT release
+  fake_advance(CAN_HEARTBEAT_TIMEOUT_US + 500'000);         // now the reboot silence arrives (in-window)
+  fault_step();
+  CHECK(fault_can_bus_down() == false);                    // still suppressed (early release avoided)
+}
+
+// =============================================================================
 //  Golden emission (firmware-anchored conformance source for fault_logic.py)
 // =============================================================================
 static void emit_vec6u(FILE* f, const Vec6u& v) {
@@ -446,8 +540,9 @@ static int emit_golden(const char* path) {
     for (size_t k = 0; k < sc.steps.size(); ++k) {
       const auto& st = sc.steps[k];
       fprintf(f, "      {\"stale\": %s, \"fresh\": %s, \"complete\": %s, "
+                 "\"reboot_start\": %s, \"deadline_pass\": %s, "
                  "\"out\": {\"fatal\": %s, \"stow_pending\": %s, \"stowing\": %s}}%s\n",
-              jb(st.stale), jb(st.fresh), jb(st.complete),
+              jb(st.stale), jb(st.fresh), jb(st.complete), jb(st.reboot_start), jb(st.deadline_pass),
               jb(out[k].fatal), jb(out[k].pending), jb(out[k].stowing),
               k + 1 < sc.steps.size() ? "," : "");
     }

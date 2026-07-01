@@ -91,7 +91,9 @@ def test_deferred_stow_conformance(sc):
     for step in sc["steps"]:
         if step["complete"]:
             latch.stow_complete = True
-        latch.step(step["stale"], step["fresh"])
+        latch.step(step["stale"], step["fresh"],
+                   reboot_start=step.get("reboot_start", False),
+                   deadline_pass=step.get("deadline_pass", False))
         out = step["out"]
         assert latch.fatal == out["fatal"]
         assert latch.stow_pending == out["stow_pending"]
