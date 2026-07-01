@@ -12,7 +12,7 @@ files_changed:
   - tests/sim/test_juggle_selfcatch.py
   - plans/active/bb-online-juggle-tilt-rearchitecture.md
 commits:
-  - TBD
+  - 6308689
 subsystem:
   - sim
 tags:
@@ -279,4 +279,5 @@ sufficient** to close the loop; the next lever is the **contact-detach knife-edg
 deferred), explicitly **not** the aim (already exact) and **not** the tempo (Rung 1
 showed slower is worse).
 
-Commit SHA: TBD (backfilled in a follow-up commit).
+Commit SHA: 6308689 (feat(sim): Rung-2b OPTION-1 re-plan — two-point A↔B
+oscillation, tilt engaged, still a BREAK).
