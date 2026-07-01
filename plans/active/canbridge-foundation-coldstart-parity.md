@@ -628,8 +628,9 @@ flashed via `pio run -t upload`): controlled before/after — `CAN_BUS_DOWN`
 works), and `CLEAR_ERRORS`/`REBOOT` returned OK → the ESR1.SYNCH read confirmed
 correct end-to-end (PROBE 1 via the RPC status). Full detail: logbook
 [`2026-06-30-canbridge-phase6-reboot-latch`](../../logbook/2026-06-30-canbridge-phase6-reboot-latch.md).
-**This completes the plan's implementation.** Phase 6 does **NOT** gate Phases 4/5;
-the remaining sequence is unchanged: **Phase 5** (hand conduit + hand homing) then
+**Phase 6 is the plan's highest-numbered phase but does NOT complete the plan** (it
+needed only Phases 0 + 2, so it landed ahead of 4/5). Phase 6 does **NOT** gate
+Phases 4/5; the remaining sequence is: **Phase 5** (hand conduit + hand homing) then
 **Phase 4** (orchestrator wiring — depends on 1, 2, 3, AND 5). Consider
 `/archive-plan canbridge-foundation-coldstart-parity` once Phases 4 + 5 land.
 
@@ -675,6 +676,14 @@ the remaining sequence is unchanged: **Phase 5** (hand conduit + hand homing) th
   normative md.** Firmware fault-machine/interp edits land in all three of
   `*.cpp` + `controller/teensy_link/*.py` + `tests/firmware/*` together until the
   native harness fully subsumes the mirrors.
+- **Update the parity matrix every phase (standing step).** After a phase lands,
+  flip the rows it closes in `ros_ws/docs/can-node-teensy-parity.md` to
+  `ported+validated` / `ported+unvalidated` — with a `CLOSED Phase N (<logbook>)`
+  marker (preserving the truncated note text) and updated status counts (must still
+  sum to 117). This is the same gate the `/next-phase-prompt` template now declares.
+  Phases 0–3 skipped it; it was reconciled retroactively through Phase 6 (2026-06-30,
+  commit `2f03fb4`). Don't let the debt re-accrue — the matrix is the living
+  definition-of-done, and a partial (this-phase-only) update reads as inconsistent.
 
 ## Decisions required
 
