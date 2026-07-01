@@ -41,6 +41,11 @@ static volatile uint64_t s_bb_last_rx_us = 0, s_cone_last_rx_us = 0, s_jugglebot
 static volatile BusRxHealth s_bb_rxh{}, s_cone_rxh{}, s_jugglebot_rxh{};
 static volatile uint32_t s_decode_short = 0, s_decode_bad_axis = 0;
 
+// Hand command-echo recorder (Phase 5). Defined later in this TU (near the ring
+// helpers); forward-declared here so decode_into_cache can stash a sniffed hand
+// Set_Input_Pos into the single-slot latest-value store.
+static inline void hand_cmd_echo_record(const uint8_t* d, uint64_t now);
+
 // Decode an ODrive frame into the per-axis cache. Used by the Jugglebot bus only
 // (CAN3 carries all 6 leg ODrives + the Hand ODrive).
 static void decode_into_cache(const CAN_message_t& msg) {
@@ -99,6 +104,15 @@ static void decode_into_cache(const CAN_message_t& msg) {
       // is DLC 8 (the empty-payload request we sent is len 0 and was already
       // dropped by the `< 8` guard above), so `d` is a full 8-byte version frame.
       version_record(axis, d);
+      break;
+    case ODriveCmd::set_input_pos:
+      // Phase 5: sniff the Platform Teensy's Set_Input_Pos to the HAND ODrive
+      // (axis 6) and echo it to the host (HAND_CMD_ECHO → hand_telemetry
+      // pos_cmd/vel_ff_cmd/tor_ff_cmd, can_node._handle_hand_input_pos parity).
+      // CAN3 SRX_DIS means we never receive our own leg-setpoint TX, so only
+      // genuine Platform→hand commands reach here; the axis==HAND_AXIS guard is
+      // belt-and-suspenders (and skips any stray leg-addressed set_input_pos).
+      if (axis == HAND_AXIS) hand_cmd_echo_record(d, now_wall_us());
       break;
     // TxSdo handled elsewhere (encoder-search Phase 9). Ignore here.
     default:
@@ -327,6 +341,34 @@ bool can_platform_pop(PlatformFrameRec& out) {
 }
 
 uint32_t can_platform_fwd_drops() { return s_platform_fwd_drops; }
+
+// ── Hand command-echo latest-value slot (Phase 5) ─────────────────────────────
+// Producer: decode_into_cache (task_can_rx) via hand_cmd_echo_record on a sniffed
+// hand Set_Input_Pos. Consumer: hand_cmd_echo_uplink_step (task_telem) via
+// can_hand_cmd_echo_pop. Single slot + dirty flag → coalesce to the newest command
+// (a diagnostic echo, not a lossless stream). SPSC, PRIMASK-guarded like the ring.
+static HandCmdEchoRec s_hand_cmd;
+static volatile bool  s_hand_cmd_dirty = false;
+
+static inline void hand_cmd_echo_record(const uint8_t* d, uint64_t now) {
+  const uint32_t pm = __get_PRIMASK(); __disable_irq();
+  s_hand_cmd.t_bridge_us = now;
+  memcpy(s_hand_cmd.buf, d, 8);
+  s_hand_cmd_dirty = true;
+  __set_PRIMASK(pm);
+}
+
+bool can_hand_cmd_echo_pop(HandCmdEchoRec& out) {
+  bool have = false;
+  const uint32_t pm = __get_PRIMASK(); __disable_irq();
+  if (s_hand_cmd_dirty) {
+    out = s_hand_cmd;
+    s_hand_cmd_dirty = false;
+    have = true;
+  }
+  __set_PRIMASK(pm);
+  return have;
+}
 
 // is_platform_reply_id() is an inline classifier in can_buses.h (shared with the
 // native harness without compiling this TU host-side).

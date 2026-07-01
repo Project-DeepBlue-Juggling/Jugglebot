@@ -31,12 +31,16 @@ static bool     g_homing = false, g_activate = false, g_deactivate = false;
 static bool     g_commands_allowed = true;   // CAN3 gate; default open (see fake_hal.h)
 static std::vector<SentFrame>      g_sent;
 static std::deque<SentFrame>       g_can3_rx;   // inbound injection FIFO (growable hook)
+static int g_send_fail_index = -1;   // can_jugglebot_send attempt (0-based) that fails; -1 = never
+static int g_send_attempts   = 0;    // attempts since the last reset / fail-index set
 
 // ── Reset ────────────────────────────────────────────────────────────────────
 void fake_reset() {
   g_wall_us = 0; g_mono_us = 0; g_udp_last_rx_us = 0;
   g_homing = g_activate = g_deactivate = false;
   g_commands_allowed = true;
+  g_send_fail_index = -1;
+  g_send_attempts = 0;
   g_sent.clear();
   g_can3_rx.clear();
 }
@@ -67,8 +71,17 @@ bool deactivate_active() { return g_deactivate; }   // HAL: leg_deactivate.h
 void fake_set_commands_allowed(bool allowed) { g_commands_allowed = allowed; }
 bool jugglebot_commands_allowed() { return g_commands_allowed; }   // HAL: can_buses.h
 
+// Fail the Nth send ATTEMPT after this call (0-based); -1 = never. Resets the
+// attempt counter so the index is relative to sends made after the setter.
+void fake_set_send_fail_index(int attempt_index) {
+  g_send_fail_index = attempt_index;
+  g_send_attempts = 0;
+}
+
 // ── Recording CAN3 TX ────────────────────────────────────────────────────────
 bool can_jugglebot_send(const ODrive::CanFrame& f) {   // HAL: can_buses.h
+  const int attempt = g_send_attempts++;
+  if (attempt == g_send_fail_index) return false;   // simulate a TX-enqueue failure — frame NOT recorded (never reached the bus)
   SentFrame s;
   s.id = f.id;
   s.len = f.len;

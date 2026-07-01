@@ -257,6 +257,13 @@ struct PlatformFramePayload {
 };
 static_assert(sizeof(PlatformFramePayload) == 21, "PlatformFramePayload size drift");
 
+// HandCmdEcho: Hand command-echo telemetry (canbridge-foundation-coldstart-parity Phase 5). The can-bridge sniffs the Platform Teensy's Set_Input_Pos command to the HAND ODrive (axis 6) on CAN3 — arb_id(6, set_input_pos, cmd 0x0C) — and forwards the raw 8-byte payload verbatim so the host echoes the hand's COMMANDED pos/vel_ff/tor_ff (can_node._handle_hand_input_pos parity; the hand_telemetry pos_cmd/vel_ff_cmd/tor_ff_cmd fields were hardcoded 0 on the bridge until now). The host decodes `data` as `<f h h>` (float32 pos_rev + int16 vel_ff + int16 tor_ff) and divides vel/tor by INPUT_SCALE_HAND_VEL / INPUT_SCALE_HAND_TOR (100.0). Emitted at the telemetry-task rate only when a FRESH command was sniffed (event-driven; silent while the hand is idle). CAN3 SRX_DIS means the bridge never sniffs its own TX, so only genuine Platform→hand commands are echoed. `t_bridge_us` stamps CAN3 RX for latency/diagnostics.
+struct HandCmdEchoPayload {
+  uint64_t t_bridge_us;  // Bridge wall-clock at CAN3 RX of the hand Set_Input_Pos (us)
+  uint8_t data[8];  // Raw ODrive Set_Input_Pos payload: <f h h> = pos_rev, vel_ff, tor_ff
+};
+static_assert(sizeof(HandCmdEchoPayload) == 16, "HandCmdEchoPayload size drift");
+
 // RpcRequest: Generic RPC envelope. `method` selects the operation; `args` is a method-specific blob (see docs). `req_id` is echoed in the response for matching independent of the frame sequence counter.
 struct RpcRequestPayload {
   uint16_t method;  // RpcMethod enum
@@ -291,6 +298,7 @@ constexpr uint16_t CMD_RESULT_FRAME_SIZE = 21u;
 constexpr uint16_t BB_AXIS_ESTIMATES_SIZE = 24u;
 constexpr uint16_t LEG_CMD_SIZE = 56u;
 constexpr uint16_t PLATFORM_FRAME_SIZE = 21u;
+constexpr uint16_t HAND_CMD_ECHO_SIZE = 16u;
 constexpr uint16_t RPC_REQUEST_SIZE = 8u;
 constexpr uint16_t RPC_RESPONSE_SIZE = 8u;
 
@@ -384,6 +392,11 @@ struct ArgRobotState {
   float pose_offset_tiltY;  // Levelling pose offset, tilt about Y (rad)
 };
 static_assert(sizeof(ArgRobotState) == 10, "ArgRobotState size drift");
+// ArgHandTraj (HAND_TRAJ_CMD)
+struct ArgHandTraj {
+  uint8_t payload[8];  // Exact 8-byte 0x6D0 PLATFORM_TRAJ_CMD payload (host-built; byte-0 discriminator)
+};
+static_assert(sizeof(ArgHandTraj) == 8, "ArgHandTraj size drift");
 #pragma pack(pop)
 constexpr uint16_t ARG_AXIS_STATE_SIZE = 5u;
 constexpr uint16_t ARG_CONTROLLER_MODE_SIZE = 9u;
@@ -398,6 +411,7 @@ constexpr uint16_t RESULT_TIME_OF_DAY_SIZE = 8u;
 constexpr uint16_t RESULT_AXIS_VERSIONS_SIZE = 57u;
 constexpr uint16_t ARG_BB_THROW_SIZE = 16u;
 constexpr uint16_t ARG_ROBOT_STATE_SIZE = 10u;
+constexpr uint16_t ARG_HAND_TRAJ_SIZE = 8u;
 }  // namespace RpcArgs
 
 // ── Hand axis-6 allow-table (Phase 1) ──────────────────────────────────

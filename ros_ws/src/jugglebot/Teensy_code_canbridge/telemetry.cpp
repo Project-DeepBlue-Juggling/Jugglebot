@@ -214,6 +214,22 @@ void platform_uplink_step() {
   }
 }
 
+// ── Hand command-echo uplink (Phase 5) ────────────────────────────────────────
+// Emit the latest sniffed hand Set_Input_Pos as a HAND_CMD_ECHO whenever a fresh
+// one is pending (event-driven — silent while the hand is idle). The single-slot
+// stash coalesces to the newest command, so at most one frame per telemetry tick;
+// the host keeps the last value to fill hand_telemetry's command fields. Mirrors
+// platform_uplink_step's emit.
+void hand_cmd_echo_uplink_step() {
+  HandCmdEchoRec r;
+  if (can_hand_cmd_echo_pop(r)) {
+    JbUdp::HandCmdEchoPayload p{};
+    p.t_bridge_us = r.t_bridge_us;
+    memcpy(p.data, r.buf, 8);
+    udp_send_stream(JbUdp::MsgType::HAND_CMD_ECHO, (const uint8_t*)&p, sizeof(p));
+  }
+}
+
 void telemetry_step() {
   send_telemetry();
   send_bb_estimates();   // BB pitch/hand pos+vel @ TELEM_RATE_HZ (during-throw diagnostics)

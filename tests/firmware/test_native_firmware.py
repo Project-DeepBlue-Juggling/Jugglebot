@@ -107,6 +107,18 @@ def test_native_version_check_binary_passes(binaries):
         f"handshake diverged from the expected behaviour:\n{r.stdout}\n{r.stderr}")
 
 
+def test_native_hand_ops_binary_passes(binaries):
+    """The compiled hand_ops.cpp passes every behaviour assertion (Phase 5 hand
+    conduit: the CLOSED_LOOP + POSITION/PASSTHROUGH preamble to axis 6, the 0x6D0
+    payload forwarded verbatim on the firmware-owned id, the never-command-a-dead-
+    bus gate, and — the safety crux — the traj TX ABORTS with no 0x6D0 frame if a
+    preamble send fails)."""
+    r = _run(binaries["test_hand_ops"])
+    assert r.returncode == 0, (
+        "native test_hand_ops FAILED — hand_ops.cpp / the hand traj conduit "
+        f"diverged from the expected behaviour:\n{r.stdout}\n{r.stderr}")
+
+
 def test_committed_golden_matches_live_firmware(binaries, tmp_path):
     """A freshly-emitted golden equals the committed native/fault_golden.json.
 

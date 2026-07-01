@@ -74,23 +74,35 @@ def test_no_orphan_dispatch_cases():
         "config/generate_udp_protocol.py or the case is stale — reconcile them.")
 
 
-def test_reserved_methods_are_stubbed_not_unknown():
-    """The still-reserved ids answer ERR_NOT_IMPL (an explicit, intentional stub),
-    not ERR_UNKNOWN_METHOD — so a caller can tell 'reserved, not yet implemented in
-    this firmware' apart from 'garbage id'. This pins the stub contract the later
-    phases replace. (Phase 1 replaced the TILT_READ/STATE_READ/STATE_WRITE stubs
-    with the real Platform-Teensy relay dispatch; Phase 3 replaced GET_AXIS_VERSIONS
-    with the real version pull — see test_get_axis_versions_is_implemented; only
-    HAND_TRAJ_CMD [Phase 5] remains stubbed.)"""
-    reserved = ["HAND_TRAJ_CMD"]
+def test_no_reserved_stub_block_remains():
+    """All Phase-0 reserved ids now have a REAL dispatch, so the shared
+    '// ── Reserved ... ERR_NOT_IMPL' stub block is gone. Phase 1 replaced the
+    TILT_READ/STATE_READ/STATE_WRITE stubs (Platform-Teensy relay); Phase 3 replaced
+    GET_AXIS_VERSIONS (version pull); Phase 5 replaced HAND_TRAJ_CMD (hand conduit) —
+    the LAST reserved stub. This guards against a regression that re-introduces a
+    reserved-but-dead ERR_NOT_IMPL block (the exact anti-pattern the audit flagged).
+    NOTE: ENCODER_SEARCH keeps its OWN intentional ERR_NOT_IMPL (Jetson-orchestrated
+    over SET_AXIS_STATE) — that is a deliberate design stub, not a 'reserved' one, so
+    ERR_NOT_IMPL still legitimately appears elsewhere in rpc.cpp."""
     text = _RPC_CPP.read_text()
-    # Find the dispatch() body and confirm each reserved case routes to ERR_NOT_IMPL.
-    # The reserved cases fall through to one shared `return RpcStatus::ERR_NOT_IMPL;`.
     block = re.search(r"// ── Reserved.*?return RpcStatus::ERR_NOT_IMPL;", text, re.DOTALL)
-    assert block, "reserved-methods ERR_NOT_IMPL stub block not found in rpc.cpp"
-    for name in reserved:
-        assert f"RpcMethod::{name}" in block.group(0), (
-            f"reserved method {name} is not in the ERR_NOT_IMPL stub block")
+    assert block is None, (
+        "a '// ── Reserved ... ERR_NOT_IMPL' stub block reappeared in rpc.cpp — every "
+        "Phase-0 reserved id is now implemented (HAND_TRAJ_CMD was the last, Phase 5). "
+        "A newly-reserved id must land its real dispatch in its owning phase, not a "
+        "shared reserved stub.")
+
+
+def test_hand_traj_cmd_is_implemented():
+    """Phase 5: HAND_TRAJ_CMD is no longer a reserved ERR_NOT_IMPL stub — it dispatches
+    to the hand_ops conduit (CLOSED_LOOP + POSITION/PASSTHROUGH preamble → 0x6D0
+    forward). Guards against a regression that re-stubs it (which would silently
+    re-break the hand catch/smooth-move surface)."""
+    body = _dispatch_case_body("HAND_TRAJ_CMD")
+    assert "HandOps::hand_traj_cmd" in body, (
+        "HAND_TRAJ_CMD must dispatch to HandOps::hand_traj_cmd (Phase 5), not stub it")
+    assert "ERR_NOT_IMPL" not in body, (
+        "HAND_TRAJ_CMD must not route to ERR_NOT_IMPL (Phase 5 implemented it)")
 
 
 def _dispatch_case_body(name: str) -> str:

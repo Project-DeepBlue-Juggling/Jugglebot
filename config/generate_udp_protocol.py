@@ -452,6 +452,27 @@ MESSAGES = [
         ],
     ),
     Message(
+        "HandCmdEcho", "HAND_CMD_ECHO", "T2J", "STREAM",
+        summary=(
+            "Hand command-echo telemetry (canbridge-foundation-coldstart-parity "
+            "Phase 5). The can-bridge sniffs the Platform Teensy's Set_Input_Pos "
+            "command to the HAND ODrive (axis 6) on CAN3 — arb_id(6, set_input_pos, "
+            "cmd 0x0C) — and forwards the raw 8-byte payload verbatim so the host "
+            "echoes the hand's COMMANDED pos/vel_ff/tor_ff (can_node._handle_hand_"
+            "input_pos parity; the hand_telemetry pos_cmd/vel_ff_cmd/tor_ff_cmd "
+            "fields were hardcoded 0 on the bridge until now). The host decodes "
+            "`data` as `<f h h>` (float32 pos_rev + int16 vel_ff + int16 tor_ff) and "
+            "divides vel/tor by INPUT_SCALE_HAND_VEL / INPUT_SCALE_HAND_TOR (100.0). "
+            "Emitted at the telemetry-task rate only when a FRESH command was sniffed "
+            "(event-driven; silent while the hand is idle). CAN3 SRX_DIS means the "
+            "bridge never sniffs its own TX, so only genuine Platform→hand commands "
+            "are echoed. `t_bridge_us` stamps CAN3 RX for latency/diagnostics."),
+        fields=[
+            Field("t_bridge_us", "u64", 1, "Bridge wall-clock at CAN3 RX of the hand Set_Input_Pos (us)"),
+            Field("data",        "u8",  8, "Raw ODrive Set_Input_Pos payload: <f h h> = pos_rev, vel_ff, tor_ff"),
+        ],
+    ),
+    Message(
         "RpcRequest", "RPC_REQUEST", "J2T", "RPC",
         summary=(
             "Generic RPC envelope. `method` selects the operation; `args` is a "
@@ -595,6 +616,20 @@ RPC_ARGS = [
         Field("levelling_complete", "u8", 1, "Platform levelling complete"),
         Field("pose_offset_tiltX", "f32", 1, "Levelling pose offset, tilt about X (rad)"),
         Field("pose_offset_tiltY", "f32", 1, "Levelling pose offset, tilt about Y (rad)"),
+    ]),
+    # HAND_TRAJ_CMD carries the EXACT 8-byte 0x6D0 PLATFORM_TRAJ_CMD payload, built
+    # HOST-side byte-identical to can_node._send_hand_traj_cmd / _smooth_move_hand
+    # (byte 0 = discriminator: 0/1/2 = catch-traj type, 3 = smooth-move). The
+    # can-bridge attaches the FIRMWARE-OWNED 0x6D0 arbitration id (never a Jetson-
+    # supplied raw frame — least-privilege, same principle as STATE_WRITE re-encoding
+    # 0x6E0) and forwards the payload after the CLOSED_LOOP + POSITION/PASSTHROUGH
+    # preamble. The absolute wall_time_ms deadline is baked into the payload by the
+    # Jetson; the firmware forwards OPAQUE bytes and CANNOT re-stamp — an absolute
+    # deadline is immune to Jetson→bridge→CAN3 transit jitter (the Platform Teensy
+    # fires when its synced clock reaches the deadline). canbridge-foundation-
+    # coldstart-parity Phase 5.
+    RpcArg("ArgHandTraj", "HAND_TRAJ_CMD", [
+        Field("payload", "u8", 8, "Exact 8-byte 0x6D0 PLATFORM_TRAJ_CMD payload (host-built; byte-0 discriminator)"),
     ]),
 ]
 

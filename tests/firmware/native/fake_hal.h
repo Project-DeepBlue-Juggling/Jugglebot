@@ -64,6 +64,14 @@ void              fake_clear_sent();
 // Convenience: count recorded frames whose ODrive command id (arb & 0x1F) matches.
 size_t            fake_sent_count_cmd(uint8_t cmd_id);
 
+// ── Send-failure injection (drives can_jugglebot_send()'s return value) ───────
+//  Fail the Nth can_jugglebot_send ATTEMPT after this call (0-based): it returns
+//  false and does NOT record the frame (a real TX-enqueue failure never reached the
+//  bus). -1 (the fake_reset default) = every send succeeds. Used by the hand_ops
+//  preamble-abort test: a failed preamble send must abort the traj TX, so the 0x6D0
+//  frame is never sent.
+void              fake_set_send_fail_index(int attempt_index);
+
 // ── GROWABLE inbound-CAN3 injection hook (Phase 0: unused; Phases 1/3 use it) ─
 //  A test pushes a frame the bridge's CAN3 RX would have received; the future
 //  relay/version decode TU drains it via fake_can3_rx_pop(). Phase 0 only

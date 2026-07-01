@@ -16,6 +16,7 @@
 #include "leg_deactivate.h"
 #include "platform_relay.h"
 #include "version_check.h"
+#include "hand_ops.h"
 
 namespace CanBridge {
 namespace Rpc {
@@ -272,15 +273,18 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
       res_len = version_fill_blob(result, RESULT_BUF_CAP);
       return res_len ? RpcStatus::OK : RpcStatus::ERR_BAD_ARGS;
 
-    // ── Reserved (canbridge-foundation-coldstart-parity Phase 0) ─────────────
-    // Wire ids were allocated up-front (one codegen pass) so parallel sessions
-    // cannot mint colliding ids. Each remaining method's real dispatch lands in
-    // its owning phase; until then it answers ERR_NOT_IMPL (mirrors the
-    // ENCODER_SEARCH stub above) so the firmware builds AND the RpcMethod
-    // dispatch lint (tests/firmware/test_rpc_dispatch_lint.py) passes — every
-    // method has a case. (GET_AXIS_VERSIONS [Phase 3] is now implemented above.)
-    case RpcMethod::HAND_TRAJ_CMD:       // Phase 5 (hand traj + smooth-move)
-      return RpcStatus::ERR_NOT_IMPL;
+    // ── Hand trajectory / smooth-move (Phase 5) ──────────────────────────────
+    // set_hand_traj_cmd + smooth_move_hand both ride this one RPC. The host builds
+    // the exact 8-byte 0x6D0 payload (byte-0 discriminator: 0/1/2 = catch-traj type,
+    // 3 = smooth-move, byte-identical to can_node); hand_ops sends the CLOSED_LOOP +
+    // POSITION/PASSTHROUGH preamble then forwards it on the firmware-owned 0x6D0 id,
+    // aborting if a preamble send fails. This is the last of the Phase-0 reserved
+    // ERR_NOT_IMPL stubs to land — no reserved methods remain (the dispatch lint's
+    // reserved list is now empty; every id has a real case).
+    case RpcMethod::HAND_TRAJ_CMD: {
+      ArgHandTraj a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
+      return HandOps::hand_traj_cmd(a);
+    }
 
     // ── Ball Butler (CAN1) — typed commands ──────────────────────────────
     // Each gated on BB presence to prevent the un-ACKed-TX bus-off failure

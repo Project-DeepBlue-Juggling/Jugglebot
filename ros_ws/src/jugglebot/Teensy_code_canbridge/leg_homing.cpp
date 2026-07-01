@@ -10,6 +10,12 @@
 //  plus the LEG_ABS_POS_REV offset is the recipe — there is no separate back-off
 //  move).
 //
+//  Phase 5 (hand homing): the hand (axis 6) homes with this SAME state machine,
+//  parameterised by Homing::HAND_* (see the per-axis accessors below) instead of
+//  Homing::LEG_*. Its PID gains are applied host-side by the bridge BEFORE HOME(6)
+//  (leg_homing.h), so the move here is gain-agnostic. All the per-axis arrays and
+//  bounds are widened NUM_LEGS → NUM_AXES.
+//
 //  Precondition: the leg ODrive must have usable velocity gains (flash defaults
 //  or a prior SET_VEL_GAINS RPC) — like can_node, this routine sets only
 //  state/mode/limits and inherits gains from the prior `_setup_odrives`. Bad
@@ -54,6 +60,19 @@ static constexpr uint64_t SETTLE_STOP_US  = 5000ull;    // 5 ms
 // NEVER drives the leg indefinitely; it aborts to IDLE.
 static const uint64_t TIMEOUT_US = (uint64_t)(Homing::MOTOR_TIMEOUT_S * 1.0e6f);
 
+// ── Per-axis homing parameters (Phase 5) ──────────────────────────────────────
+// Legs use Homing::LEG_*, the hand (axis 6) uses Homing::HAND_* — exactly the
+// speed/limit/headroom/abs-pos split can_node applied in _home_robot_steps
+// (leg branch vs HAND branch, can_node.py:1366-1383). Values come from the SAME
+// generated config the host xref reads (hardware_config.h Homing:: ↔ hw.HOMING_*),
+// so they cannot drift; test_homing_xref.py pins the arithmetic identical to
+// can_node for BOTH axis classes.
+static inline bool  is_hand(uint8_t axis)          { return axis == HAND_AXIS; }
+static inline float homing_speed_rps(uint8_t a)    { return is_hand(a) ? Homing::HAND_SPEED_RPS          : Homing::LEG_SPEED_RPS; }
+static inline float homing_curr_limit_a(uint8_t a) { return is_hand(a) ? Homing::HAND_CURRENT_LIMIT_A    : Homing::LEG_CURRENT_LIMIT_A; }
+static inline float homing_headroom_a(uint8_t a)   { return is_hand(a) ? Homing::HAND_CURRENT_HEADROOM_A : Homing::LEG_CURRENT_HEADROOM_A; }
+static inline float homing_abs_pos_rev(uint8_t a)  { return is_hand(a) ? Homing::HAND_ABS_POS_REV        : Homing::LEG_ABS_POS_REV; }
+
 // ── State (owned by the homing task; start-request handed off from the net task)
 static volatile bool    s_start_req  = false;   // net task → homing task
 static volatile uint8_t s_start_axis = 0xFF;
@@ -63,7 +82,7 @@ static uint8_t  s_axis  = 0xFF;
 static float    s_iq_ema = 0.0f;
 static uint64_t s_t_start_us = 0;   // homing start (overall timeout clock)
 static uint64_t s_t_phase_us = 0;   // current sub-phase entry (settle clock)
-static uint8_t  s_result[NUM_LEGS] = { HOMING_NONE };
+static uint8_t  s_result[NUM_AXES] = { HOMING_NONE };   // legs + hand (Phase 5)
 
 // ── Bus / fault gate (mirror rpc.cpp jugglebot_commands_allowed + the fatal
 //    conditions can_node checked: `fatal_error or fatal_can_error`). Never drive
@@ -83,7 +102,7 @@ static bool homing_allowed() {
 // Stop the active axis and record the outcome. Called on success AND on every
 // abort path — the leg is ALWAYS left in IDLE, never driving.
 static void finish(uint8_t result) {
-  if (s_axis < NUM_LEGS) {
+  if (s_axis < NUM_AXES) {
     can_jugglebot_send(ODrive::encode_set_state(s_axis, ODriveState::IDLE));
     s_result[s_axis] = result;
   }
@@ -96,12 +115,12 @@ void homing_init() {
   s_phase = Phase::IDLE;
   s_axis  = 0xFF;
   s_iq_ema = 0.0f;
-  for (uint8_t i = 0; i < NUM_LEGS; ++i) s_result[i] = HOMING_NONE;
+  for (uint8_t i = 0; i < NUM_AXES; ++i) s_result[i] = HOMING_NONE;
 }
 
 uint16_t homing_request(uint8_t axis) {
   using namespace JbUdp;
-  if (axis >= NUM_LEGS) return RpcStatus::ERR_BAD_ARGS;   // leg-only (rejects hand / AXIS_ALL)
+  if (axis >= NUM_AXES) return RpcStatus::ERR_BAD_ARGS;   // legs 0..5 + hand 6 (rejects AXIS_ALL / out-of-range)
   if (!homing_allowed())  return RpcStatus::ERR_BUS_DOWN;
   if (activate_active() || deactivate_active()) return RpcStatus::ERR_REJECTED; // no concurrent cold-start moves (symmetric with activate_request)
   // Reject if a homing is active or a start is already pending (idempotent).
@@ -117,7 +136,7 @@ uint16_t homing_request(uint8_t axis) {
 bool homing_active() { return s_phase != Phase::IDLE || s_start_req; }
 
 uint8_t homing_result(uint8_t axis) {
-  return (axis < NUM_LEGS) ? s_result[axis] : (uint8_t)HOMING_NONE;
+  return (axis < NUM_AXES) ? s_result[axis] : (uint8_t)HOMING_NONE;
 }
 
 void homing_step() {
@@ -159,10 +178,11 @@ void homing_step() {
                a, ODriveControlMode::VELOCITY, ODriveInputMode::VEL_RAMP)) && ok;
       // vel limit = |speed|*2 (headroom so travel isn't velocity-clamped),
       // curr limit = detect-limit + headroom (so the motor can push past the
-      // detection threshold against the stop). Exactly can_node's args.
+      // detection threshold against the stop). Exactly can_node's args, per-axis
+      // (LEG_* for legs, HAND_* for the hand — Phase 5).
       ok = can_jugglebot_send(ODrive::encode_set_vel_curr_limits(
-               a, fabsf(Homing::LEG_SPEED_RPS) * 2.0f,
-               Homing::LEG_CURRENT_LIMIT_A + Homing::LEG_CURRENT_HEADROOM_A)) && ok;
+               a, fabsf(homing_speed_rps(a)) * 2.0f,
+               homing_curr_limit_a(a) + homing_headroom_a(a))) && ok;
       if (!ok) { finish(HOMING_FAILED); return; }
       s_t_phase_us = now;
       s_phase = Phase::DRIVE;
@@ -170,7 +190,7 @@ void homing_step() {
     }
     case Phase::DRIVE: {
       if (now - s_t_phase_us < SETTLE_DRIVE_US) break;   // let settings take effect
-      if (!can_jugglebot_send(ODrive::encode_set_input_vel(a, Homing::LEG_SPEED_RPS, 0.0f))) {
+      if (!can_jugglebot_send(ODrive::encode_set_input_vel(a, homing_speed_rps(a), 0.0f))) {
         finish(HOMING_FAILED); return;
       }
       s_iq_ema = 0.0f;
@@ -182,7 +202,7 @@ void homing_step() {
       // hardstop. EMA weight + threshold are can_node's exact values.
       const float iq = axes[a].iq_measured;
       s_iq_ema = Homing::EMA_WEIGHT * s_iq_ema + (1.0f - Homing::EMA_WEIGHT) * iq;
-      if (fabsf(s_iq_ema) >= Homing::LEG_CURRENT_LIMIT_A) {
+      if (fabsf(s_iq_ema) >= homing_curr_limit_a(a)) {
         can_jugglebot_send(ODrive::encode_set_state(a, ODriveState::IDLE));  // stop pushing
         s_t_phase_us = now;
         s_phase = Phase::STOP_SETTLE;
@@ -195,8 +215,9 @@ void homing_step() {
       break;
     }
     case Phase::SET_REF: {
-      // Define the hardstop as LEG_ABS_POS_REV — the post-homing reference.
-      can_jugglebot_send(ODrive::encode_set_absolute_position(a, Homing::LEG_ABS_POS_REV));
+      // Define the hardstop as the post-homing reference (LEG_ABS_POS_REV for legs,
+      // HAND_ABS_POS_REV for the hand — Phase 5).
+      can_jugglebot_send(ODrive::encode_set_absolute_position(a, homing_abs_pos_rev(a)));
       s_result[a] = HOMING_OK;
       s_phase = Phase::IDLE;
       s_axis  = 0xFF;

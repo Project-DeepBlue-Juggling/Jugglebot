@@ -66,6 +66,7 @@ using JbUdp::RpcArgs::ArgSdoWrite;
 using JbUdp::RpcArgs::ResultTimeOfDay;
 using JbUdp::RpcArgs::ArgBbThrow;
 using JbUdp::RpcArgs::ArgRobotState;   // STATE_WRITE (Platform-Teensy relay — Phase 1)
+using JbUdp::RpcArgs::ArgHandTraj;     // HAND_TRAJ_CMD (hand traj + smooth-move — Phase 5)
 
 using JbUdp::RpcArgs::AXIS_ALL;   // broadcast to all axes (CLEAR_ERRORS/REBOOT)
 

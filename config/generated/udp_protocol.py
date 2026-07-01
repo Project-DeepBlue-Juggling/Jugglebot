@@ -429,6 +429,26 @@ class PlatformFrame:
         it = iter(vals)
         return cls(next(it), next(it), next(it), tuple(next(it) for _ in range(8)))
 
+# HandCmdEcho: Hand command-echo telemetry (canbridge-foundation-coldstart-parity Phase 5). The can-bridge sniffs the Platform Teensy's Set_Input_Pos command to the HAND ODrive (axis 6) on CAN3 — arb_id(6, set_input_pos, cmd 0x0C) — and forwards the raw 8-byte payload verbatim so the host echoes the hand's COMMANDED pos/vel_ff/tor_ff (can_node._handle_hand_input_pos parity; the hand_telemetry pos_cmd/vel_ff_cmd/tor_ff_cmd fields were hardcoded 0 on the bridge until now). The host decodes `data` as `<f h h>` (float32 pos_rev + int16 vel_ff + int16 tor_ff) and divides vel/tor by INPUT_SCALE_HAND_VEL / INPUT_SCALE_HAND_TOR (100.0). Emitted at the telemetry-task rate only when a FRESH command was sniffed (event-driven; silent while the hand is idle). CAN3 SRX_DIS means the bridge never sniffs its own TX, so only genuine Platform→hand commands are echoed. `t_bridge_us` stamps CAN3 RX for latency/diagnostics.
+HAND_CMD_ECHO_FMT = '<QBBBBBBBB'
+HAND_CMD_ECHO_SIZE = 16
+_HAND_CMD_ECHO_STRUCT = struct.Struct(HAND_CMD_ECHO_FMT)
+assert _HAND_CMD_ECHO_STRUCT.size == 16
+
+@dataclass
+class HandCmdEcho:
+    t_bridge_us: int = 0
+    data: tuple = field(default_factory=lambda: (0,) * 8)
+
+    def pack(self) -> bytes:
+        return _HAND_CMD_ECHO_STRUCT.pack(self.t_bridge_us, *self.data)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'HandCmdEcho':
+        vals = _HAND_CMD_ECHO_STRUCT.unpack(data[:16])
+        it = iter(vals)
+        return cls(next(it), tuple(next(it) for _ in range(8)))
+
 # RpcRequest: Generic RPC envelope. `method` selects the operation; `args` is a method-specific blob (see docs). `req_id` is echoed in the response for matching independent of the frame sequence counter.
 RPC_REQUEST_FMT = '<HHHH'
 RPC_REQUEST_SIZE = 8
@@ -741,6 +761,25 @@ class ArgRobotState:
         vals = _ARG_ROBOT_STATE_STRUCT.unpack(data[:10])
         it = iter(vals)
         return cls(next(it), next(it), next(it), next(it))
+
+# ArgHandTraj (HAND_TRAJ_CMD)
+ARG_HAND_TRAJ_FMT = '<BBBBBBBB'
+ARG_HAND_TRAJ_SIZE = 8
+_ARG_HAND_TRAJ_STRUCT = struct.Struct(ARG_HAND_TRAJ_FMT)
+assert _ARG_HAND_TRAJ_STRUCT.size == 8
+
+@dataclass
+class ArgHandTraj:
+    payload: tuple = field(default_factory=lambda: (0,) * 8)
+
+    def pack(self) -> bytes:
+        return _ARG_HAND_TRAJ_STRUCT.pack(*self.payload)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'ArgHandTraj':
+        vals = _ARG_HAND_TRAJ_STRUCT.unpack(data[:8])
+        it = iter(vals)
+        return cls(tuple(next(it) for _ in range(8)))
 
 # ── Hand axis-6 allow-table (Phase 1) ──────────────────────────────────
 # RpcMethod ids the can-bridge forwards to the hand ODrive (axis 6); the

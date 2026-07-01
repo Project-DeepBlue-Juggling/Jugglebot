@@ -59,7 +59,13 @@ from jugglebot_interfaces.msg import (
     RobotState,
     SetMotorVelCurrLimitsMessage,
 )
-from jugglebot_interfaces.srv import ODriveCommandService
+from jugglebot_interfaces.srv import (
+    ODriveCommandService,
+    SetHandTrajCmd,
+    SetHandGains,
+    SetFloat,
+    SetString,
+)
 from jugglebot_interfaces.action import BallButlerThrowCmd
 from geometry_msgs.msg import Quaternion
 from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
@@ -86,6 +92,7 @@ from controller.teensy_link import (
     CmdResultFrame,
     BbAxisEstimates,
     PlatformFrame,
+    HandCmdEcho,
 )
 from controller.teensy_link import protocol as p
 from controller.teensy_link import rpc_args
@@ -272,15 +279,19 @@ class TeensyBridgeNode(Node):
         # search on. Default = all legs; set to e.g. [0] for the standalone-leg
         # bench rig (node 0 = axis 0).
         self.declare_parameter('encoder_search_axes', list(range(p.NUM_LEGS)))
-        # Phase 9b: which axes the home service homes (sequentially — the
-        # firmware homes one axis at a time). Default = all legs; set to e.g. [0]
-        # for the standalone-leg bench rig (node 0 = axis 0).
-        self.declare_parameter('home_axes', list(range(p.NUM_LEGS)))
-        # Phase 11 U5: which axes the configure + activate services act on.
+        # Phase 9b / Phase 5: which axes the home service homes (sequentially — the
+        # firmware homes one axis at a time). Default = all legs + the HAND (axis 6),
+        # matching can_node._home_robot (JUGGLEBOT_AXES = legs + hand). The hand homes
+        # with Homing::HAND_* params after its gains are applied host-side; a leg-only
+        # bench rig sets e.g. [0], which then excludes the hand automatically.
+        self.declare_parameter('home_axes', list(range(p.NUM_LEGS)) + [_HAND_AXIS])
+        # Phase 11 U5 / Phase 5: which axes the configure + activate services act on.
         # configure applies gains + vel/curr limits + POSITION/PASSTHROUGH (the
-        # β-path _setup_odrives); activate fires the TRAP_TRAJ move to the active
-        # pose. Default = all legs; set to e.g. [0] for the standalone-leg bench rig.
-        self.declare_parameter('configure_axes', list(range(p.NUM_LEGS)))
+        # β-path _setup_odrives, for the hand too — closes the "configure the hand"
+        # parity gap). activate fires the TRAP_TRAJ move to the active pose (legs
+        # only; ACTIVATE is rejected on the hand). Default = all legs + the hand;
+        # set to e.g. [0] for the standalone-leg bench rig.
+        self.declare_parameter('configure_axes', list(range(p.NUM_LEGS)) + [_HAND_AXIS])
         self.declare_parameter('activate_axes', list(range(p.NUM_LEGS)))
         self.declare_parameter('deactivate_axes', list(range(p.NUM_LEGS)))
 
@@ -307,6 +318,18 @@ class TeensyBridgeNode(Node):
 
         # Outbound RPC client (used by the service surface in Commit 4).
         self._rpc = RpcClient(self._client)
+
+        # ── Hand config state (Phase 5; byte-identical to can_node) ────────────
+        # The gains/limits the bridge applies to the HAND ODrive (axis 6). Seeded
+        # from config defaults (odrive.DEFAULT_*), updated by set_hand_gains. Used by
+        # the cold-start hand configure/home path (refuse-flash-defaults) + the
+        # set_hand_gains service. Mirrors can_node.py:135-137.
+        self._hand_gains = dict(odrive.DEFAULT_HAND_GAINS)
+        self._hand_vel_limit = odrive.DEFAULT_VEL_CURR['hand_vel']
+        self._hand_curr_limit = odrive.DEFAULT_VEL_CURR['hand_curr']
+        # Latest sniffed hand command (HAND_CMD_ECHO) → hand_telemetry cmd fields.
+        # Mirrors can_node._last_hand_cmd (can_node.py:159).
+        self._last_hand_cmd = {'pos': 0.0, 'vel': 0.0, 'tor': 0.0}
 
         # ── Latest-frame state (written on RX thread, read on ROS thread) ──
         self._lock = threading.Lock()
@@ -443,6 +466,7 @@ class TeensyBridgeNode(Node):
         self._client.subscribe(int(MsgType.BB_AXIS_ESTIMATES), self._on_bb_estimates)
         self._client.subscribe(int(MsgType.CMD_RESULT), self._on_cmd_result)
         self._client.subscribe(int(MsgType.PLATFORM_FRAME), self._on_platform_frame)
+        self._client.subscribe(int(MsgType.HAND_CMD_ECHO), self._on_hand_cmd_echo)  # Phase 5
 
         # ── Publishers (production names — Phase 11 / U4 leg-side cutover) ──
         # Promoted from the /teensy/* namespace to the production topic names
@@ -504,16 +528,12 @@ class TeensyBridgeNode(Node):
 
         # ── RPC service surface (production names — Phase 11 / U4) ──
         # ODrive control issued over the can-bridge link via RpcClient. The
-        # can-bridge owns legs 0-5 only — the hand is the platform Teensy's, and
-        # the firmware rejects hand-axis RPCs — so these target legs/broadcast.
+        # can-bridge owns CAN3 — legs 0-5 AND the hand ODrive (axis 6). Leg ops
+        # target legs/broadcast; the hand surface (Phase 5) is registered below.
         # Promoted from /teensy/* to the production names can_node served
         # (encoder_search, odrive_command, set_motor_vel_curr_limits) so the
         # orchestrator's existing service clients reach the bridge; clear_errors,
         # reboot_odrives and home are new bridge ops, named bare for consistency.
-        # Services using EXISTING ROS types are wired here; the arg-bearing
-        # per-axis ops (set_axis_state, set_controller_mode, per-axis gains,
-        # set_absolute_position, sdo_read/write) are tested node methods pending
-        # new jugglebot_interfaces .srv types (handoff D10).
         self.create_service(Trigger, 'clear_errors', self._svc_clear_errors)
         self.create_service(Trigger, 'reboot_odrives', self._svc_reboot_odrives)
         self.create_service(Trigger, 'encoder_search', self._svc_encoder_search)
@@ -526,6 +546,19 @@ class TeensyBridgeNode(Node):
         self.create_subscription(
             SetMotorVelCurrLimitsMessage, 'set_motor_vel_curr_limits',
             self._sub_vel_curr_limits, 10)
+
+        # ── Hand command surface (Phase 5) ──────────────────────────────────
+        # The can-bridge owns CAN3, which carries the hand ODrive (axis 6), so it
+        # restores the hand conduit can_node held (silently no-op'd against the
+        # bridge until now — catch_coordinator's hand services were GAPs). Same ROS
+        # names + srv types can_node registered (can_node.py:198-201), so
+        # catch_coordinator_node reaches the bridge UNCHANGED: set_hand_state/gains
+        # ride the Phase-1 axis-6 allow-table; set_hand_traj_cmd/smooth_move_hand
+        # ride the HAND_TRAJ_CMD RPC (byte-identical 0x6D0 → Platform Teensy).
+        self.create_service(SetString, 'set_hand_state', self._svc_set_hand_state)
+        self.create_service(SetHandTrajCmd, 'set_hand_traj_cmd', self._svc_set_hand_traj)
+        self.create_service(SetFloat, 'smooth_move_hand', self._svc_smooth_move_hand)
+        self.create_service(SetHandGains, 'set_hand_gains', self._svc_set_hand_gains)
 
         # ── Ball Butler services (production names, Phase A cutover) ────
         # The bb/* services formerly served by can_node. The firmware
@@ -675,6 +708,23 @@ class TeensyBridgeNode(Node):
         with self._platform_reply_cv:
             self._platform_replies[int(pf.can_id)] = (data, int(pf.dlc))
             self._platform_reply_cv.notify_all()
+
+    def _on_hand_cmd_echo(self, msg_type, seq, payload, addr):
+        # RX-thread callback (Phase 5): the bridge sniffed the Platform Teensy's
+        # Set_Input_Pos to the hand ODrive (axis 6) on CAN3. Decode the commanded
+        # pos/vel_ff/tor_ff and stash them so _publish_hand_telemetry can echo them
+        # (byte-identical to can_node._handle_hand_input_pos: <f h h> then vel/tor
+        # ÷ INPUT_SCALE_HAND_VEL/_TOR). Malformed frames dropped (never kill the RX
+        # thread). Stash under the shared lock; the publish timer reads it.
+        try:
+            ce = HandCmdEcho.unpack(payload)
+            pos, vel, tor = rpc_args.decode_hand_cmd_echo(
+                bytes(ce.data),
+                proto.INPUT_SCALE_HAND_VEL, proto.INPUT_SCALE_HAND_TOR)
+        except Exception:  # noqa: BLE001
+            return
+        with self._lock:
+            self._last_hand_cmd = {'pos': pos, 'vel': vel, 'tor': tor}
 
     def _on_bb_estimates(self, msg_type, seq, payload, addr):
         # RX-thread callback: decode + queue every sample. The drain timer
@@ -900,21 +950,24 @@ class TeensyBridgeNode(Node):
     def _publish_hand_telemetry(self):
         """Publish hand_telemetry from axis 6 of the Telemetry frame.
 
-        Mirrors can_node._publish_hand_telemetry's measured side. The command
-        fields (pos_cmd/vel_ff_cmd/tor_ff_cmd) are not echoed on the can-bridge
-        link in 10b (the hand setpoint path is out of scope), so they are 0.
+        Mirrors can_node._publish_hand_telemetry: the MEASURED side from the
+        Telemetry/Diagnostic cache, and (Phase 5) the COMMAND side (pos_cmd/
+        vel_ff_cmd/tor_ff_cmd) from the last sniffed HAND_CMD_ECHO — the hand's
+        commanded-vs-measured tracking-error diagnostic (catch-tuning) that was
+        dropped to 0 on the bridge until now.
         """
         try:
             with self._lock:
                 telem = self._latest_telemetry
                 diag = self._latest_diag.get(_HAND_AXIS)
+                cmd = dict(self._last_hand_cmd)
             if telem is None:
                 return
             msg = HandTelemetryMessage()
             msg.timestamp = self.get_clock().now().to_msg()
-            msg.pos_cmd = 0.0
-            msg.vel_ff_cmd = 0.0
-            msg.tor_ff_cmd = 0.0
+            msg.pos_cmd = float(cmd['pos'])
+            msg.vel_ff_cmd = float(cmd['vel'])
+            msg.tor_ff_cmd = float(cmd['tor'])
             msg.pos_meas = float(telem.pos_rev[_HAND_AXIS])
             msg.vel_meas = float(telem.vel_rps[_HAND_AXIS])
             msg.iq_meas = float(diag.iq_measured) if diag is not None else 0.0
@@ -1379,6 +1432,13 @@ class TeensyBridgeNode(Node):
     def teensy_deactivate(self, axis=rpc_args.AXIS_ALL):
         return self._call_rpc(RpcMethod.DEACTIVATE, rpc_args.encode_deactivate(axis))
 
+    def teensy_hand_traj_cmd(self, args: bytes):
+        """HAND_TRAJ_CMD: forward a pre-built 8-byte 0x6D0 payload (from
+        rpc_args.encode_hand_traj_cmd / encode_smooth_move_hand). The firmware sends
+        the CLOSED_LOOP + POSITION/PASSTHROUGH preamble then forwards it on the
+        firmware-owned 0x6D0 id (aborting if a preamble send fails)."""
+        return self._call_rpc(RpcMethod.HAND_TRAJ_CMD, args)
+
     def teensy_sdo_read(self, axis, endpoint):
         return self._call_rpc(RpcMethod.SDO_READ,
                               rpc_args.encode_sdo_read(axis, endpoint))
@@ -1749,7 +1809,6 @@ class TeensyBridgeNode(Node):
         axes = [int(a) for a in axes]
         if not axes:
             return False, "no axes configured for homing"
-        home_ref = abs(float(hw.HOMING_LEG_ABS_POS_REV))
         # Per-axis observer timeout. MUST sit BELOW the firmware per-axis hard
         # timeout (Homing::MOTOR_TIMEOUT_S = 30 s): a leg that never trips stays in
         # CLOSED_LOOP, and the observer now treats CLOSED_LOOP→IDLE as success (it
@@ -1769,6 +1828,21 @@ class TeensyBridgeNode(Node):
         _MAX_REJECT_RETRIES = 20   # × poll_dt ≈ 1 s; busy window is ~10-20 ms
         self.get_logger().info(f"homing: starting on axes {axes} (sequential)")
         for axis in axes:
+            is_hand = (axis == _HAND_AXIS)
+            home_ref = abs(float(
+                hw.HOMING_HAND_ABS_POS_REV if is_hand else hw.HOMING_LEG_ABS_POS_REV))
+            # The hand (axis 6) homes with the SAME firmware move-to-hardstop
+            # (Homing::HAND_* params) but its PID gains must be applied FIRST —
+            # byte-identical to can_node._home_robot_steps' HAND branch
+            # (_set_hand_gains() then the move). Refuse-flash-defaults: abort the
+            # sequence if a gain write fails rather than drive the hand into a
+            # hardstop on flash-default gains (can_node._set_hand_gains raised).
+            if is_hand:
+                gok, gmsg = self._apply_hand_gains()
+                if not gok:
+                    failed[axis] = gmsg
+                    self.get_logger().error(f"homing: hand gain apply failed — {gmsg}")
+                    break
             mon = HomingMonitor([axis], home_ref_rev=home_ref, timeout_s=timeout_s)
             hard_deadline = time.monotonic() + timeout_s + 5.0
             home_accepted = False     # firmware has ACCEPTED the HOME for this axis
@@ -1816,6 +1890,22 @@ class TeensyBridgeNode(Node):
         self.get_logger().info(msg)
         return True, msg
 
+    def _apply_hand_gains(self):
+        """Apply the hand PID gains to axis 6 (before HOME(6) and in _run_configure).
+        Byte-identical to can_node._set_hand_gains: SET_POS_GAIN then SET_VEL_GAINS
+        from self._hand_gains. Refuse-flash-defaults — returns ``(False, reason)`` if
+        a gain RPC fails, so the caller aborts rather than home/configure the hand on
+        flash-default gains (the safety can_node held; _set_hand_gains raised there).
+        Returns ``(ok, message)``."""
+        g = self._hand_gains
+        ok1, m1, _ = self.teensy_set_pos_gain(_HAND_AXIS, g['pos_gain'])
+        ok2, m2, _ = self.teensy_set_vel_gains(_HAND_AXIS, g['vel_gain'], g['vel_int_gain'])
+        if ok1 and ok2:
+            return True, "hand gains applied"
+        failed = [nm for ok, nm in ((ok1, 'hand.pos_gain'), (ok2, 'hand.vel_gains')) if not ok]
+        return False, ("hand gain write failed on CAN: " + ", ".join(failed)
+                       + " — hand may be on flash defaults")
+
     # ── Configure + activate (Phase 11 U5 — β-path cold-start) ──
     # The β path has only one leg-motion path (the gated 40 Hz setpoint stream),
     # so the can_node `_setup_odrives_steps` (gains/limits/mode) and
@@ -1836,11 +1926,13 @@ class TeensyBridgeNode(Node):
         axes = [int(a) for a in axes]
         if not axes:
             return False, "no axes configured for configure"
+        leg_axes = [a for a in axes if a < p.NUM_LEGS]
+        do_hand = _HAND_AXIS in axes
         ctrl = proto.ODRIVE_CONTROL_MODES['POSITION']
         inp = proto.ODRIVE_INPUT_MODES['PASSTHROUGH']
         failed = []
         self.get_logger().info(f"configure: applying gains/limits/PASSTHROUGH on axes {axes}")
-        for axis in axes:
+        for axis in leg_axes:
             for name, (ok, m, _) in (
                 ("pos_gain",
                  self.teensy_set_pos_gain(axis, hw.ODRIVE_LEG_POS_GAINS[axis])),
@@ -1855,6 +1947,24 @@ class TeensyBridgeNode(Node):
             ):
                 if not ok:
                     failed.append(f"axis {axis} {name}: {m}")
+        if do_hand:
+            # Configure the HAND (axis 6) — the hand half of can_node's cold-start
+            # _setup_odrives (parity row 51): hand PID gains (refuse-flash-defaults,
+            # row 40) + hand vel/curr limits + POSITION/PASSTHROUGH. Gains + limits
+            # come from self._hand_gains / self._hand_vel_limit / self._hand_curr_limit
+            # (config defaults, updatable via set_hand_gains / set_motor_vel_curr_limits).
+            gok, gmsg = self._apply_hand_gains()
+            if not gok:
+                failed.append(f"axis {_HAND_AXIS} {gmsg}")
+            for name, (ok, m, _) in (
+                ("vel_curr_limits",
+                 self.teensy_set_vel_curr_limits(_HAND_AXIS, self._hand_vel_limit,
+                                                 self._hand_curr_limit)),
+                ("controller_mode",
+                 self.teensy_set_controller_mode(_HAND_AXIS, ctrl, inp)),
+            ):
+                if not ok:
+                    failed.append(f"axis {_HAND_AXIS} {name}: {m}")
         if failed:
             msg = "configure FAILED — " + "; ".join(failed)
             self.get_logger().error(msg)
@@ -2006,6 +2116,15 @@ class TeensyBridgeNode(Node):
                 self.get_logger().error("deactivate: hard deadline exceeded")
                 break
             time.sleep(poll_dt)
+        # Idle the HAND (axis 6) too: can_node's deactivate de-energised ALL
+        # JUGGLEBOT_AXES (legs via the TRAP_TRAJ→IDLE above; hand via
+        # SET_AXIS_STATE(IDLE), can_node.py:1541-1543). ACTIVATE/DEACTIVATE are
+        # rejected on axis 6 (leg-specific cold-start moves), so the hand is idled
+        # explicitly here. Best-effort — a failure is logged but does not fail the
+        # leg deactivate result (parity row 29).
+        hok, hmsg, _ = self.teensy_set_axis_state(_HAND_AXIS, proto.ODRIVE_STATES['IDLE'])
+        if not hok:
+            self.get_logger().warning(f"deactivate: hand IDLE failed — {hmsg}")
         if mon.failed:
             parts = [f"axis {a}: {r}" for a, r in mon.failed.items()]
             msg = "deactivate FAILED — " + "; ".join(parts)
@@ -2126,6 +2245,106 @@ class TeensyBridgeNode(Node):
         ok, msg = self._run_deactivate(axes)
         res.success = ok
         res.message = msg
+        return res
+
+    # ── Hand command surface (Phase 5) ──────────────────────────────────────
+    # Byte-identical ports of can_node's hand services (can_node.py:782-829,
+    # 1626-1661). Jetson-side validation matches can_node exactly (reject invalid
+    # before a byte hits CAN3); the RPCs ride the Phase-1 axis-6 allow-table
+    # (state/gains) or the HAND_TRAJ_CMD 0x6D0 conduit (traj/smooth-move).
+
+    def _svc_set_hand_state(self, req, res):
+        # Set the hand ODrive axis state (IDLE / CLOSED_LOOP) directly on axis 6.
+        # Reject an UNKNOWN state string Jetson-side: can_node passed the string to
+        # encode_set_state (which KeyErrors on a bad key → caught as failure); we do
+        # the same map + reject explicitly. SET_AXIS_STATE on axis 6 rides the
+        # Phase-1 allow-table.
+        try:
+            state = str(req.data)
+            if state not in proto.ODRIVE_STATES:
+                res.success = False
+                res.message = f"Unknown hand state '{state}'"
+                return res
+            ok, m, _ = self.teensy_set_axis_state(_HAND_AXIS, proto.ODRIVE_STATES[state])
+            res.success = ok
+            res.message = f"Hand state set to {state}" if ok else m
+        except Exception as e:  # noqa: BLE001
+            res.success = False
+            res.message = str(e)
+        return res
+
+    def _svc_set_hand_traj(self, req, res):
+        # Arm a timed catch trajectory (SetHandTrajCmd: event_delay, event_vel,
+        # traj_type). Validate exactly as can_node._send_hand_traj_cmd, compute the
+        # ABSOLUTE wall_time_ms Jetson-side (now + event_delay), forward the 8-byte
+        # 0x6D0 payload via HAND_TRAJ_CMD (the firmware sends the CLOSED_LOOP +
+        # POSITION/PASSTHROUGH preamble then forwards it, aborting on a preamble
+        # failure). The firmware does NOT re-stamp the deadline — an absolute
+        # deadline is immune to Jetson→bridge→CAN3 transit jitter.
+        try:
+            event_delay = float(req.event_delay)
+            event_vel = float(req.event_vel)
+            traj_type = int(req.traj_type)
+            if event_delay <= 0:
+                raise ValueError(f"Invalid event delay: {event_delay}")
+            if (event_vel < hw.TEENSY_TRAJ_MIN_EVENT_VEL_MPS
+                    or event_vel > hw.TEENSY_TRAJ_MAX_EVENT_VEL_MPS):
+                raise ValueError(f"Invalid event velocity: {event_vel}")
+            if traj_type not in (0, 1, 2):
+                raise ValueError(f"Invalid trajectory type: {traj_type}")
+            wall_time_ms = int(time.time() * 1000) + int(event_delay * 1000)
+            args = rpc_args.encode_hand_traj_cmd(traj_type, event_vel, wall_time_ms)
+            ok, m, _ = self.teensy_hand_traj_cmd(args)
+            res.success = ok
+            res.message = "Hand trajectory set." if ok else m
+        except Exception as e:  # noqa: BLE001
+            res.success = False
+            res.message = str(e)
+        return res
+
+    def _svc_smooth_move_hand(self, req, res):
+        # Prime the hand to a target rev (SetFloat: data). Validate range exactly as
+        # can_node._smooth_move_hand, forward the discriminator-3 0x6D0 payload.
+        try:
+            target_rev = float(req.data)
+            if target_rev < 0 or target_rev > odrive.HAND_MOTOR_MAX_POSITION:
+                raise ValueError(f"Invalid target: {target_rev:.3f} rev")
+            args = rpc_args.encode_smooth_move_hand(target_rev)
+            ok, m, _ = self.teensy_hand_traj_cmd(args)
+            res.success = ok
+            res.message = f"Smooth-move hand to {target_rev:.3f} rev" if ok else m
+        except Exception as e:  # noqa: BLE001
+            res.success = False
+            res.message = str(e)
+        return res
+
+    def _svc_set_hand_gains(self, req, res):
+        # Set hand PID gains (SetHandGains: pos_gain, vel_gain, vel_integrator_gain)
+        # + remember them (the cold-start hand config/home path reapplies them).
+        # Mirrors can_node._svc_set_hand_gains (SET_POS_GAIN then SET_VEL_GAINS on
+        # axis 6, both riding the Phase-1 allow-table), with ONE intentional
+        # hardening: the remembered self._hand_gains is updated only on a successful
+        # write (can_node cached unconditionally). This never caches gains that
+        # failed to reach the ODrive — otherwise _apply_hand_gains would later
+        # re-send stale values as if applied.
+        try:
+            pos_gain = float(req.pos_gain)
+            vel_gain = float(req.vel_gain)
+            vel_int_gain = float(req.vel_integrator_gain)
+            ok1, m1, _ = self.teensy_set_pos_gain(_HAND_AXIS, pos_gain)
+            ok2, m2, _ = self.teensy_set_vel_gains(_HAND_AXIS, vel_gain, vel_int_gain)
+            if ok1 and ok2:
+                self._hand_gains = {'pos_gain': pos_gain, 'vel_gain': vel_gain,
+                                    'vel_int_gain': vel_int_gain}
+                res.success = True
+                res.message = (f"Hand gains set: pos={pos_gain}, vel={vel_gain}, "
+                               f"vel_int={vel_int_gain}")
+            else:
+                res.success = False
+                res.message = "; ".join(m for ok, m in ((ok1, m1), (ok2, m2)) if not ok)
+        except Exception as e:  # noqa: BLE001
+            res.success = False
+            res.message = str(e)
         return res
 
     def _svc_odrive_command(self, req, res):

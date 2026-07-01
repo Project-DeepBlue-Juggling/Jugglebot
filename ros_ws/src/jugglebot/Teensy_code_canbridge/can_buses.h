@@ -131,6 +131,21 @@ struct PlatformFrameRec {
 bool can_platform_pop(PlatformFrameRec& out);  // consumer side; false when ring empty
 uint32_t can_platform_fwd_drops();             // frames dropped on ring overflow (cumulative)
 
+// ── Hand command-echo (Phase 5) ───────────────────────────────────────────────
+// The can-bridge sniffs the Platform Teensy's Set_Input_Pos to the HAND ODrive
+// (axis 6) on CAN3 and forwards the raw 8-byte payload so the host echoes the
+// hand's commanded pos/vel_ff/tor_ff (can_node._handle_hand_input_pos parity — the
+// hand_telemetry pos_cmd/vel_ff_cmd/tor_ff_cmd fields). SINGLE-slot latest-value
+// (coalesced to the newest command, consumed at the telemetry-task rate): the hand
+// setpoint is a stream, and a diagnostic echo only needs the freshest sample, so a
+// ring is not warranted. SPSC: producer decode_into_cache (task_can_rx), consumer
+// hand_cmd_echo_uplink_step (telemetry.cpp, task_telem).
+struct HandCmdEchoRec {
+  uint64_t t_bridge_us = 0;   // bridge wall-clock at CAN3 RX of the hand Set_Input_Pos (us)
+  uint8_t  buf[8] = {0};      // raw ODrive Set_Input_Pos payload: <f h h> pos_rev, vel_ff, tor_ff
+};
+bool can_hand_cmd_echo_pop(HandCmdEchoRec& out);  // true + clears the dirty flag when a fresh cmd is pending
+
 // True iff `id` is a Platform-Teensy relay-reply arbitration id (0x6E0 / 0x7DE).
 // Single classifier shared by the CAN3 RX ring filter (can_buses.cpp) and the
 // native harness. Inline (header-only) so the relay test can reach it without

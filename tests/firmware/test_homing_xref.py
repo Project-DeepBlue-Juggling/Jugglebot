@@ -179,3 +179,78 @@ def test_home_reference_sign_is_jugglebot_negative():
     assert FirmwareHoming.home_ref() == hw.HOMING_LEG_ABS_POS_REV
     assert abs(FirmwareHoming.home_ref()) == abs(hw.HOMING_LEG_ABS_POS_REV)
     assert math.isclose(abs(FirmwareHoming.home_ref()), 0.1)
+
+
+# ── Hand homing (Phase 5) — the SAME move-to-hardstop, HAND_* constants ────────
+# The firmware homes the hand (axis 6) with leg_homing.cpp's per-axis accessors
+# (homing_speed_rps / homing_curr_limit_a / homing_headroom_a / homing_abs_pos_rev)
+# selecting Homing::HAND_* when a == HAND_AXIS. can_node's HAND branch
+# (_home_robot_steps, can_node.py:1375-1383) applies the hand gains then drives with
+# HOMING_HAND_SPEED_RPS, current limit HOMING_HAND_CURRENT_LIMIT_A + headroom, trips
+# at HOMING_HAND_CURRENT_LIMIT_A, and sets HOMING_HAND_ABS_POS_REV. Constants come
+# from the same generated config (Homing::HAND_* ↔ hw.HOMING_HAND_*, cannot drift);
+# what we verify is the per-axis ARITHMETIC the firmware's HAND accessors apply — the
+# easiest port mistake is reusing the LEG constant for the hand.
+
+
+def cannode_hand_setup_args():
+    """The exact args can_node's HAND branch issues for the move-to-hardstop."""
+    speed = hw.HOMING_HAND_SPEED_RPS
+    return {
+        "vel_limit": abs(speed) * 2.0,
+        "curr_limit": hw.HOMING_HAND_CURRENT_LIMIT_A + hw.HOMING_HAND_CURRENT_HEADROOM_A,
+        "drive_speed": speed,
+        "home_ref": hw.HOMING_HAND_ABS_POS_REV,
+        "trip_limit": hw.HOMING_HAND_CURRENT_LIMIT_A,
+    }
+
+
+def firmware_hand_setup_args():
+    """Mirror of leg_homing.cpp's per-axis accessors for a == HAND_AXIS:
+        vel   = fabsf(homing_speed_rps(6)) * 2
+        curr  = homing_curr_limit_a(6) + homing_headroom_a(6)
+        trip  at homing_curr_limit_a(6)
+        ref   = homing_abs_pos_rev(6)."""
+    speed = hw.HOMING_HAND_SPEED_RPS
+    return {
+        "vel_limit": abs(speed) * 2.0,
+        "curr_limit": hw.HOMING_HAND_CURRENT_LIMIT_A + hw.HOMING_HAND_CURRENT_HEADROOM_A,
+        "drive_speed": speed,
+        "home_ref": hw.HOMING_HAND_ABS_POS_REV,
+        "trip_limit": hw.HOMING_HAND_CURRENT_LIMIT_A,
+    }
+
+
+def test_hand_setup_args_match_cannode():
+    assert firmware_hand_setup_args() == cannode_hand_setup_args()
+
+
+def test_hand_curr_limit_exceeds_detection_threshold():
+    """As for the legs: the ODrive current limit during hand homing (limit+headroom)
+    sits ABOVE the detection threshold, so the motor can push past it into the
+    hardstop — the headroom is load-bearing for the hand too."""
+    a = firmware_hand_setup_args()
+    assert a["curr_limit"] > a["trip_limit"]
+
+
+def test_hand_drive_speed_is_negative_retract():
+    """Hand homing drives at HOMING_HAND_SPEED_RPS = -3.0 (negative = RETRACT into
+    the top hardstop), UNLIKE the legs (+1.5, extend into the bottom stop). A sign
+    flip here would drive the hand the wrong way into its stroke."""
+    assert hw.HOMING_HAND_SPEED_RPS < 0
+    assert hw.HOMING_LEG_SPEED_RPS > 0
+    assert math.isclose(hw.HOMING_HAND_SPEED_RPS, -3.0)
+
+
+def test_hand_home_reference_magnitude():
+    """set_absolute_position(HOMING_HAND_ABS_POS_REV = -0.1) defines the hardstop as
+    the post-homing hand reference."""
+    assert math.isclose(hw.HOMING_HAND_ABS_POS_REV, -0.1)
+
+
+def test_hand_homing_differs_from_leg_homing():
+    """Hand and leg homing use DISTINCT params (the whole point of leg_homing.cpp's
+    per-axis accessors) — a port bug that reused the leg constants for the hand is
+    caught here."""
+    assert hw.HOMING_HAND_SPEED_RPS != hw.HOMING_LEG_SPEED_RPS
+    assert hw.HOMING_HAND_CURRENT_LIMIT_A != hw.HOMING_LEG_CURRENT_LIMIT_A

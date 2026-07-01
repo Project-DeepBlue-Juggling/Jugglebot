@@ -174,6 +174,7 @@ static void task_telem(void*) {
     cone_uplink_step();
     cmd_result_uplink_step();
     platform_uplink_step();   // Phase 1: Platform-Teensy relay reply uplink
+    hand_cmd_echo_uplink_step(); // Phase 5: hand Set_Input_Pos command-echo
     vTaskDelayUntil(&last, period);
   }
 }

@@ -81,6 +81,14 @@ _BINARIES = {
         NATIVE_DIR / "test_version_check.cpp",
         ["axis_state", "ball_butler_state", "fake_hal"],
     ),
+    # Phase 5: the hand traj / smooth-move conduit. #includes hand_ops.cpp; the fake
+    # HAL supplies can_jugglebot_send + jugglebot_commands_allowed (+ the send-fail
+    # hook for the preamble-abort test). The ODrive encoders + 0x6D0 id are
+    # header-inline / generated.
+    "test_hand_ops": (
+        NATIVE_DIR / "test_hand_ops.cpp",
+        ["axis_state", "ball_butler_state", "fake_hal"],
+    ),
 }
 
 

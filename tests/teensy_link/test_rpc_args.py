@@ -197,5 +197,8 @@ def test_method_arg_association_covers_all_commandable_methods():
         # Platform-Teensy relay (Phase 1): STATE_WRITE carries the whole
         # RobotState; TILT_READ/STATE_READ are payloadless (no METHOD entry).
         RpcMethod.STATE_WRITE,
+        # Hand conduit (Phase 5): HAND_TRAJ_CMD carries the 8-byte 0x6D0 payload
+        # (set_hand_traj_cmd + smooth_move_hand both ride it, byte-0 discriminated).
+        RpcMethod.HAND_TRAJ_CMD,
     }
     assert set(ra.METHOD.keys()) == expected

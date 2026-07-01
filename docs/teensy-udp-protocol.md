@@ -343,6 +343,17 @@ Payload **21 bytes**. Python struct fmt: `<QIBBBBBBBBB`.
 | `dlc` | u8 | 1 | CAN payload length (0..8) |
 | `data` | u8 | 8 | Raw CAN payload bytes (zero-padded past dlc) |
 
+### HandCmdEcho (`MsgType.HAND_CMD_ECHO`, T2J, STREAM port)
+
+Hand command-echo telemetry (canbridge-foundation-coldstart-parity Phase 5). The can-bridge sniffs the Platform Teensy's Set_Input_Pos command to the HAND ODrive (axis 6) on CAN3 — arb_id(6, set_input_pos, cmd 0x0C) — and forwards the raw 8-byte payload verbatim so the host echoes the hand's COMMANDED pos/vel_ff/tor_ff (can_node._handle_hand_input_pos parity; the hand_telemetry pos_cmd/vel_ff_cmd/tor_ff_cmd fields were hardcoded 0 on the bridge until now). The host decodes `data` as `<f h h>` (float32 pos_rev + int16 vel_ff + int16 tor_ff) and divides vel/tor by INPUT_SCALE_HAND_VEL / INPUT_SCALE_HAND_TOR (100.0). Emitted at the telemetry-task rate only when a FRESH command was sniffed (event-driven; silent while the hand is idle). CAN3 SRX_DIS means the bridge never sniffs its own TX, so only genuine Platform→hand commands are echoed. `t_bridge_us` stamps CAN3 RX for latency/diagnostics.
+
+Payload **16 bytes**. Python struct fmt: `<QBBBBBBBB`.
+
+| Field | Type | Count | Notes |
+|-------|------|------:|-------|
+| `t_bridge_us` | u64 | 1 | Bridge wall-clock at CAN3 RX of the hand Set_Input_Pos (us) |
+| `data` | u8 | 8 | Raw ODrive Set_Input_Pos payload: <f h h> = pos_rev, vel_ff, tor_ff |
+
 ### RpcRequest (`MsgType.RPC_REQUEST`, J2T, RPC port)
 
 Generic RPC envelope. `method` selects the operation; `args` is a method-specific blob (see docs). `req_id` is echoed in the response for matching independent of the frame sequence counter.
@@ -498,3 +509,11 @@ wraps the generated Python. `AXIS_ALL = 0xFF` broadcasts to all legs.
 | `levelling_complete` | u8 | Platform levelling complete |
 | `pose_offset_tiltX` | f32 | Levelling pose offset, tilt about X (rad) |
 | `pose_offset_tiltY` | f32 | Levelling pose offset, tilt about Y (rad) |
+
+### ArgHandTraj (`HAND_TRAJ_CMD`)
+
+**8 bytes**. Python struct fmt: `<BBBBBBBB`.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `payload` | u8 | Exact 8-byte 0x6D0 PLATFORM_TRAJ_CMD payload (host-built; byte-0 discriminator) |

@@ -28,7 +28,17 @@
 //  active phase is bounded by a hard timeout (Homing::MOTOR_TIMEOUT_S); any
 //  abort (bus down / ODrive fatal / timeout) leaves the axis in IDLE — the move
 //  is NEVER left driving. Re-running HOME while one is active is rejected
-//  (idempotent); single-axis scope (legs 0..5; rejects the hand and AXIS_ALL).
+//  (idempotent); single-axis scope (legs 0..5 + the hand axis 6; rejects AXIS_ALL).
+//
+//  Hand homing (Phase 5): the hand (axis 6) homes with the SAME move-to-hardstop
+//  state machine, parameterised by Homing::HAND_* (speed -3.0, curr limit 8.0,
+//  headroom 3.0, abs-pos -0.1) instead of Homing::LEG_*. The hand's absolute
+//  encoder needs no ENCODER_SEARCH. Its PID gains are applied HOST-side by the
+//  bridge (_apply_hand_gains, refuse-flash-defaults) BEFORE the HOME(6) RPC —
+//  byte-identical to can_node._set_hand_gains + _home_motor_steps (HAND branch,
+//  can_node.py:1375-1383) — so this firmware move stays gain-agnostic (it inherits
+//  whatever gains the bridge just applied, exactly as the leg move inherits the
+//  prior _setup_odrives gains).
 // =============================================================================
 
 #include <cstdint>
@@ -46,8 +56,8 @@ enum HomingResult : uint8_t {
 
 void homing_init();
 
-// RPC entry (net-task context). Validates `axis` (leg 0..5 only) + bus health,
-// then latches a non-blocking start request. Returns a JbUdp::RpcStatus
+// RPC entry (net-task context). Validates `axis` (legs 0..5 + hand axis 6) + bus
+// health, then latches a non-blocking start request. Returns a JbUdp::RpcStatus
 // (OK = accepted/started). ERR_REJECTED if a homing is already active.
 uint16_t homing_request(uint8_t axis);
 
@@ -56,6 +66,6 @@ uint16_t homing_request(uint8_t axis);
 void homing_step();
 
 bool    homing_active();             // a homing is pending or running
-uint8_t homing_result(uint8_t axis); // last HomingResult for a leg axis (0..5)
+uint8_t homing_result(uint8_t axis); // last HomingResult for an axis (legs 0..5 + hand 6)
 
 }  // namespace CanBridge

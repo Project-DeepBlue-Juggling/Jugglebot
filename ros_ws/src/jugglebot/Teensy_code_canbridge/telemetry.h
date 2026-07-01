@@ -37,4 +37,9 @@ void cmd_result_uplink_step();
 // the Jetson as PLATFORM_FRAMEs (Phase 1 relay seam), bounded per tick.
 void platform_uplink_step();
 
+// Call at TELEM_RATE_HZ (100 Hz), after telemetry_step(). Emits the latest sniffed
+// hand Set_Input_Pos (Platform→hand ODrive on CAN3) as a HAND_CMD_ECHO when a fresh
+// command is pending (Phase 5 hand command-echo — feeds hand_telemetry's cmd fields).
+void hand_cmd_echo_uplink_step();
+
 }  // namespace CanBridge
