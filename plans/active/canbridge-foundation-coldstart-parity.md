@@ -591,7 +591,7 @@ directly testable). A dispatch-gate mirror test so a future edit cannot silently
 re-gate clear/reboot.
 
 **Outcome (DONE — 2026-06-30, commits `3d390f4` (firmware + host + native tests +
-golden) + `TBD-docs` (logbook/plan/index)).** Landed all three deliverables.
+golden) + `53c87b0` (logbook/plan/index)).** Landed all three deliverables.
 (1) **Reboot latch** in `fault_machine.{h,cpp}`: `fault_notify_reboot_started()`
 (armed from the `REBOOT_ODRIVES` dispatch, after the gate passes) sets
 `s_reboot_in_progress` + a bounded `s_reboot_deadline_us` (64-bit, atomic); the

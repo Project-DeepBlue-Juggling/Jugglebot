@@ -29,7 +29,7 @@ files_changed:
   - tools/probes/canbridge_reboot_latch_probe.py
 commits:
   - 3d390f4
-  - TBD-logbook-plan-index
+  - 53c87b0
 subsystem:
   - can
   - firmware
