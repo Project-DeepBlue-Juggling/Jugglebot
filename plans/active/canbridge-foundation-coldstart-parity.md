@@ -553,8 +553,9 @@ preamble-abort-on-failed-send unit test.
 **Hardware.** Powered (hand homing + catch arming) — coordinate with the catch
 work.
 
-**Outcome (DONE — 2026-07-01, commit `<SHA-backfill>`; landed software-complete to
-the powered-sitting gate).** All six deliverables landed. (1) **Hand traj /
+**Outcome (DONE — 2026-07-01, commits `2556014` (firmware + host + codegen + tests)
++ `121c692` (logbook/plan/matrix/index); landed software-complete to the
+powered-sitting gate).** All six deliverables landed. (1) **Hand traj /
 smooth-move**: new `hand_ops.{h,cpp}` — the `HAND_TRAJ_CMD` RPC carries the exact
 8-byte `0x6D0` payload (host-built byte-identical to `can_node`, byte-0
 discriminated); the firmware sends the `CLOSED_LOOP` + `POSITION/PASSTHROUGH`

@@ -47,7 +47,8 @@ files_changed:
   - tests/ros/test_teensy_bridge_node_hand.py
   - tools/probes/teensy_link_profiling/jetson/udp_protocol.py
 commits:
-  - <SHA-backfill>
+  - 2556014
+  - 121c692
 subsystem:
   - can
   - firmware
