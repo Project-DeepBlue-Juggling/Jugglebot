@@ -37,9 +37,11 @@ Pure-Python, no ROS2. SI internally; mm at the plant boundary.
 """
 from __future__ import annotations
 
+import argparse
 import dataclasses
 import os
 import sys
+import time
 
 import numpy as np
 
@@ -59,6 +61,15 @@ from controller.demo.juggle_planner import (
 from sim.juggle_noise import BallisticEstimator, JuggleNoise, NoiseConfig
 from sim.juggle_tilt import cup_axis, realize_tilted, tilt_to_throw, MAX_TILT_DEG
 from sim.plant.mujoco_plant import MuJoCoPlant
+# Viewer + offscreen-recording plumbing is shared with the two-ball runner (it
+# needs only mujoco + ffmpeg, no CasADi). Importing juggle_online adds no heavy
+# deps here — it pulls the same juggle_planner / juggle_tilt / plant modules this
+# file already imports. See sim/juggle_online.py for the VideoRecorder rationale.
+from sim.juggle_online import (
+    VideoRecorder, build_record_camera,
+    _KEY_SPACE, _KEY_C, _KEY_LEFT_BRACKET, _KEY_RIGHT_BRACKET,
+    _KEY_RIGHT_ARROW, _KEY_LEFT_ARROW,
+)
 
 CONTROL_DT = 0.025
 CUP_Z_BASE_MM = 659.6
@@ -87,6 +98,18 @@ class SingleThrowConfig:
     noise: NoiseConfig = dataclasses.field(default_factory=NoiseConfig)
     seed: int = 0
     settle_ticks: int = 70         # platform warm-up at the dip before spawn
+    # ---- viewer / offscreen recording (mirror sim/juggle_online.py; PURELY
+    # additive — the headless run_single_throw() never reads these, so it stays
+    # byte-identical. Only the module-level run()/main() below use them.) --------
+    headless: bool = True          # if False, launch the MuJoCo passive viewer
+    realtime_rate: float = 0.0     # wall-clock pacing: 0 = free-run, 1.0 = real-time
+    record_path: "str | None" = None
+    record_size: "tuple[int, int]" = (1280, 720)   # (width, height) px
+    record_fps: int = 40           # output fps; 40 = real-time (1 frame/tick)
+    cam_azimuth: "float | None" = None
+    cam_elevation: "float | None" = None
+    cam_distance: "float | None" = None
+    cam_lookat: "tuple[float, float, float] | None" = None
 
 
 @dataclasses.dataclass
@@ -130,6 +153,16 @@ class SingleThrowRunner:
         self.noise = JuggleNoise(cfg.noise, seed=cfg.seed)
         self.est = BallisticEstimator(GRAVITY)
         self.viewer = None         # parity with the other runners (unused headless)
+        # ---- viewer / wall-clock pacing. Only the module-level run() attaches a
+        # viewer/recorder and wraps plant.step to call _tick_boundary; the headless
+        # run() never does, so run_single_throw() is byte-identical. ----
+        self._recorder = None
+        self._realtime_rate = float(cfg.realtime_rate)
+        self._paused = False
+        self._pending_step = False
+        self._wall_anchor = None
+        self._sched_steps = 0
+        self._last_rate = self._realtime_rate
 
     def cup_world_m(self):
         return self.plant.data.site_xpos[self.site_id].copy()
@@ -139,6 +172,73 @@ class SingleThrowRunner:
         mujoco.mj_objectVelocity(self.plant.model, self.plant.data,
                                  mujoco.mjtObj.mjOBJ_SITE, self.site_id, res, 0)
         return res[3:6].copy()
+
+    # ---- viewer controls (mirrors sim/juggle_online.py) ----
+    def key_callback(self, keycode: int) -> None:
+        """SPACE pause/resume · RIGHT step one tick (paused) · ``[`` slower /
+        ``]`` faster · ``C`` print current free-camera angle as --cam-* flags."""
+        if keycode == _KEY_SPACE:
+            self._paused = not self._paused
+            print(f"[juggle_throw] {'paused' if self._paused else 'running'} "
+                  f"at sim_time {float(self.plant.data.time):.3f} s")
+        elif keycode == _KEY_RIGHT_ARROW:
+            if self._paused:
+                self._pending_step = True
+        elif keycode in (_KEY_LEFT_BRACKET, _KEY_RIGHT_BRACKET):
+            r = self._realtime_rate if self._realtime_rate > 0.0 else 1.0
+            r = max(r * 0.5, 0.0625) if keycode == _KEY_LEFT_BRACKET else min(r * 2.0, 16.0)
+            self._realtime_rate = r
+            print(f"[juggle_throw] realtime rate = {r:.3f}x")
+        elif keycode == _KEY_C:
+            h = self.viewer
+            if h is not None:
+                c = h.cam
+                print("[juggle_throw] camera: "
+                      f"--cam-azimuth {c.azimuth:.1f} "
+                      f"--cam-elevation {c.elevation:.1f} "
+                      f"--cam-distance {c.distance:.3f} "
+                      f"--cam-lookat {c.lookat[0]:.3f} "
+                      f"{c.lookat[1]:.3f} {c.lookat[2]:.3f}")
+        elif keycode == _KEY_LEFT_ARROW:
+            pass   # documented no-op (sim can't run backwards)
+
+    def _tick_boundary(self) -> None:
+        """Called after every control tick (via the wrapped plant.step in the
+        module-level run()): record a frame (if recording), keep the viewer
+        responsive, honour pause / single-step, and pace to ``realtime_rate``.
+        No-op when headless, not recording, and free-running."""
+        if self._recorder is not None:
+            self._recorder.capture()
+        v = self.viewer
+        if v is None and self._realtime_rate <= 0.0:
+            return
+        if v is not None and not v.is_running():
+            self.viewer = None              # window closed → finish fast/headless
+            return
+        while v is not None and self._paused and not self._pending_step:
+            v.sync()
+            time.sleep(0.01)
+            self._wall_anchor = None        # re-anchor the schedule on resume
+            if not v.is_running():
+                self.viewer = None
+                return
+        stepped_one_frame = self._pending_step
+        self._pending_step = False
+        if v is not None:
+            v.sync()
+        if stepped_one_frame:
+            return                          # single-frame step is instantaneous
+        rate = self._realtime_rate
+        if rate > 0.0:
+            if self._wall_anchor is None or rate != self._last_rate:
+                self._wall_anchor = time.monotonic()
+                self._sched_steps = 0
+                self._last_rate = rate
+            self._sched_steps += 1
+            target = self._wall_anchor + self._sched_steps * (CONTROL_DT / rate)
+            remaining = target - time.monotonic()
+            if remaining > 0.0:
+                time.sleep(remaining)
 
     def run(self) -> ThrowResult:
         cfg = self.cfg
@@ -266,3 +366,162 @@ class SingleThrowRunner:
 def run_single_throw(cfg: "SingleThrowConfig | None" = None) -> ThrowResult:
     """Run one tilt-aimed open-loop throw headless; return the :class:`ThrowResult`."""
     return SingleThrowRunner(cfg or SingleThrowConfig()).run()
+
+
+def run(cfg: "SingleThrowConfig | None" = None, tail_timeout_s: float = 2.0) -> ThrowResult:
+    """Run one throw WITH the MuJoCo passive viewer (``cfg.headless`` False) and/or
+    an offscreen mp4 recorder (``cfg.record_path`` set); otherwise integrates
+    headless at full speed. Returns the :class:`ThrowResult`.
+
+    The gated ``SingleThrowRunner.run()`` loop is left untouched: instead of
+    editing it, this wrapper wraps ``runner.plant.step`` so every physics tick
+    drives a viewer/record "tick boundary" (sync + pace + frame capture). Because
+    the wrapper is only installed here, the headless ``run_single_throw()`` path
+    never sees it and stays byte-identical.
+
+    ``SingleThrowRunner.run()`` returns ~10 recovery ticks after release — BEFORE
+    the ball lands (the landing is extrapolated). For a watchable/recorded run we
+    then keep stepping (holding the cup at its final recovered pose) until the ball
+    centre passes below ``catch_z`` or ``tail_timeout_s`` elapses, so the operator
+    sees the full parabola. This tail runs ONLY in viewer/record mode."""
+    cfg = cfg or SingleThrowConfig()
+    runner = SingleThrowRunner(cfg)
+    viewer_handle = None
+    try:
+        if not cfg.headless:
+            import mujoco.viewer  # type: ignore
+            viewer_handle = mujoco.viewer.launch_passive(
+                runner.plant.model, runner.plant.data,
+                key_callback=runner.key_callback)
+            runner.viewer = viewer_handle
+            print("[juggle_throw] keyboard: SPACE pause/resume   RIGHT step "
+                  "(when paused)   [ slower / ] faster   C print-camera   "
+                  "(mouse-drag = camera)")
+        if cfg.record_path:
+            runner._recorder = VideoRecorder(
+                runner.plant.model, runner.plant.data, cfg.record_path,
+                width=cfg.record_size[0], height=cfg.record_size[1],
+                fps=cfg.record_fps, cam=build_record_camera(runner.plant.model, cfg))
+            print(f"[juggle_throw] recording to {cfg.record_path}")
+
+        # Wrap plant.step so each sim step drives a viewer/record tick boundary,
+        # WITHOUT editing the gated run() loop. Headless never installs this.
+        _orig_step = runner.plant.step
+
+        def _stepped(*args, **kwargs):
+            _orig_step(*args, **kwargs)
+            runner._tick_boundary()
+
+        runner.plant.step = _stepped
+
+        result = runner.run()
+
+        # ---- Watchable landing tail (viewer/record ONLY — never headless). Hold
+        # the cup at its final recovered pose (plant.step with no cmd fns leaves the
+        # position actuators at the last recovery command) and keep stepping until
+        # the ball falls below catch_z or the timeout, syncing/recording each tick.
+        if viewer_handle is not None or runner._recorder is not None:
+            catch_z_mm = cfg.catch_z_m * 1000.0
+            for _ in range(max(1, int(round(tail_timeout_s / CONTROL_DT)))):
+                if viewer_handle is not None and not viewer_handle.is_running():
+                    break
+                runner.plant.step(CONTROL_DT)      # hold last recovered pose
+                bs = runner.plant.get_ball_state(ball=0)
+                if bs is not None and bs.position_mm[2] < catch_z_mm:
+                    break
+        return result
+    finally:
+        if runner._recorder is not None:
+            n = runner._recorder.frames
+            runner._recorder.close()
+            print(f"[juggle_throw] video written: {cfg.record_path} ({n} frames)")
+        if viewer_handle is not None:
+            viewer_handle.close()
+
+
+def main(argv: "list[str] | None" = None) -> int:
+    """CLI to watch/record a single tilt-aimed throw (mirrors the viewer/record
+    flags of sim/juggle_online.py, plus the throw's target/height/cadence knobs)."""
+    p = argparse.ArgumentParser(
+        description="Run one tilt-aimed single-ball throw in MuJoCo (Rung 2a).")
+    p.add_argument('--duration', type=float, default=2.0,
+                   help="Max seconds of post-release landing tail to render, so "
+                        "the full parabola is watchable (default 2)")
+    p.add_argument('--viewer', action='store_true',
+                   help="Launch the MuJoCo passive viewer (mouse = camera)")
+    p.add_argument('--realtime-rate', type=float, default=None,
+                   help="Wall-clock pacing: 1.0 = real-time, 0.5 = half-speed "
+                        "slowmo, 2.0 = 2x, 0 = free-running (fastest). Default: "
+                        "1.0 with --viewer, else 0.")
+    p.add_argument('--seed', type=int, default=0,
+                   help="§3 tracking-noise seed (only perturbs the OBSERVED "
+                        "landing; the true throw is deterministic)")
+    # ---- throw geometry / cadence ----
+    p.add_argument('--target-x-mm', type=float, default=100.0,
+                   help="Desired landing x (mm, cup-world). Default 100.")
+    p.add_argument('--target-y-mm', type=float, default=0.0,
+                   help="Desired landing y (mm, cup-world). Default 0.")
+    p.add_argument('--throw-z-mm', type=float, default=None,
+                   help="Cup release height (mm, cup-world). Default 850.")
+    p.add_argument('--catch-z-mm', type=float, default=None,
+                   help="Landing / measure height (mm, cup-world). Default 700.")
+    p.add_argument('--flight-s', type=float, default=0.60,
+                   help="Cadence: time of flight in seconds. Default 0.60.")
+    # ---- recording (mirrors sim/juggle_online.py) ----
+    p.add_argument('--record', default=None, metavar='PATH',
+                   help="Render offscreen from a fixed camera and write an H.264 "
+                        "mp4 to PATH (needs ffmpeg on PATH). Independent of --viewer.")
+    p.add_argument('--record-size', default='1280x720', metavar='WxH',
+                   help="Recording resolution (default 1280x720)")
+    p.add_argument('--record-fps', type=int, default=40,
+                   help="Recording output fps (default 40 = real-time; "
+                        "lower = slow-motion)")
+    p.add_argument('--cam-azimuth', type=float, default=None,
+                   help="Fixed-camera azimuth (deg) for --record")
+    p.add_argument('--cam-elevation', type=float, default=None,
+                   help="Fixed-camera elevation (deg) for --record")
+    p.add_argument('--cam-distance', type=float, default=None,
+                   help="Fixed-camera distance (m) for --record")
+    p.add_argument('--cam-lookat', type=float, nargs=3, default=None,
+                   metavar=('X', 'Y', 'Z'),
+                   help="Fixed-camera look-at point (m) for --record, three "
+                        "space-separated values. Press C in --viewer to print "
+                        "the current angle as these flags.")
+    args = p.parse_args(argv)
+
+    rate = args.realtime_rate
+    if rate is None:
+        rate = 1.0 if args.viewer else 0.0
+
+    try:
+        _rw, _rh = (int(v) for v in args.record_size.lower().split('x'))
+    except ValueError:
+        p.error(f"--record-size must be WxH, got {args.record_size!r}")
+
+    kw: dict = dict(
+        seed=args.seed,
+        headless=not args.viewer, realtime_rate=rate,
+        record_path=args.record, record_size=(_rw, _rh), record_fps=args.record_fps,
+        cam_azimuth=args.cam_azimuth, cam_elevation=args.cam_elevation,
+        cam_distance=args.cam_distance,
+        cam_lookat=tuple(args.cam_lookat) if args.cam_lookat is not None else None,
+        target_xy_m=(args.target_x_mm / 1000.0, args.target_y_mm / 1000.0),
+        flight_s=args.flight_s,
+    )
+    if args.throw_z_mm is not None:
+        kw['throw_z_m'] = args.throw_z_mm / 1000.0
+    if args.catch_z_mm is not None:
+        kw['catch_z_m'] = args.catch_z_mm / 1000.0
+    cfg = SingleThrowConfig(**kw)
+
+    r = run(cfg, tail_timeout_s=args.duration)
+    tgt = tuple(round(v * 1000.0, 1) for v in r.target_xy_m)
+    land = tuple(round(v * 1000.0, 1) for v in r.landing_xy_m)
+    print(f"[juggle_throw] target {tgt} mm   true landing {land} mm   "
+          f"error {r.error_mm:.1f} mm   separated {r.separated}   "
+          f"tilt {r.tilt_deg:.2f} deg")
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

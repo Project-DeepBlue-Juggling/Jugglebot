@@ -72,9 +72,11 @@ Pure-Python, no ROS2. SI internally; mm at the plant boundary.
 """
 from __future__ import annotations
 
+import argparse
 import dataclasses
 import os
 import sys
+import time
 
 import numpy as np
 
@@ -97,6 +99,15 @@ from sim.juggle_tilt import (
     cup_axis, realize_tilted, tilt_to_receive, tilt_to_throw, MAX_TILT_DEG,
 )
 from sim.plant.mujoco_plant import MuJoCoPlant
+# Viewer + offscreen-recording plumbing is shared with the two-ball runner (it
+# needs only mujoco + ffmpeg, no CasADi). Importing juggle_online adds no heavy
+# deps here — it pulls the same juggle_planner / juggle_tilt / plant modules this
+# file already imports. See sim/juggle_online.py for the VideoRecorder rationale.
+from sim.juggle_online import (
+    VideoRecorder, build_record_camera,
+    _KEY_SPACE, _KEY_C, _KEY_LEFT_BRACKET, _KEY_RIGHT_BRACKET,
+    _KEY_RIGHT_ARROW, _KEY_LEFT_ARROW,
+)
 
 CONTROL_DT = 0.025
 CUP_Z_BASE_MM = 659.6
@@ -196,6 +207,18 @@ class SelfCatchConfig:
     noise: NoiseConfig = dataclasses.field(default_factory=NoiseConfig)
     seed: int = 0
     settle_ticks: int = 70             # platform warm-up before the seed spawn
+    # ---- viewer / offscreen recording (mirror sim/juggle_online.py; PURELY
+    # additive — the headless run_self_catch() never reads these, so it stays
+    # byte-identical. Only the module-level run()/main() below use them.) --------
+    headless: bool = True              # if False, launch the MuJoCo passive viewer
+    realtime_rate: float = 0.0         # wall-clock pacing: 0 = free-run, 1.0 = real
+    record_path: "str | None" = None
+    record_size: "tuple[int, int]" = (1280, 720)   # (width, height) px
+    record_fps: int = 40               # output fps; 40 = real-time (1 frame/tick)
+    cam_azimuth: "float | None" = None
+    cam_elevation: "float | None" = None
+    cam_distance: "float | None" = None
+    cam_lookat: "tuple[float, float, float] | None" = None
 
 
 @dataclasses.dataclass
@@ -270,6 +293,16 @@ class SelfCatchRunner:
         self.pcfg.z_min_m = CUP_Z_BASE_MM / 1000.0 + 0.005
         self.pcfg.z_max_m = (CUP_Z_BASE_MM + SLIDER_STROKE_MM) / 1000.0 - 0.005
         self.viewer = None             # parity with the other runners (unused)
+        # ---- viewer / wall-clock pacing. Only the module-level run() attaches a
+        # viewer/recorder and wraps plant.step to call _tick_boundary; the headless
+        # run() never does, so run_self_catch() is byte-identical. ----
+        self._recorder = None
+        self._realtime_rate = float(cfg.realtime_rate)
+        self._paused = False
+        self._pending_step = False
+        self._wall_anchor = None
+        self._sched_steps = 0
+        self._last_rate = self._realtime_rate
 
     def cup_world_m(self):
         return self.plant.data.site_xpos[self.site_id].copy()
@@ -279,6 +312,73 @@ class SelfCatchRunner:
         mujoco.mj_objectVelocity(self.plant.model, self.plant.data,
                                  mujoco.mjtObj.mjOBJ_SITE, self.site_id, res, 0)
         return res[3:6].copy()
+
+    # ---- viewer controls (mirrors sim/juggle_online.py) ----
+    def key_callback(self, keycode: int) -> None:
+        """SPACE pause/resume · RIGHT step one tick (paused) · ``[`` slower /
+        ``]`` faster · ``C`` print current free-camera angle as --cam-* flags."""
+        if keycode == _KEY_SPACE:
+            self._paused = not self._paused
+            print(f"[juggle_selfcatch] {'paused' if self._paused else 'running'} "
+                  f"at sim_time {float(self.plant.data.time):.3f} s")
+        elif keycode == _KEY_RIGHT_ARROW:
+            if self._paused:
+                self._pending_step = True
+        elif keycode in (_KEY_LEFT_BRACKET, _KEY_RIGHT_BRACKET):
+            r = self._realtime_rate if self._realtime_rate > 0.0 else 1.0
+            r = max(r * 0.5, 0.0625) if keycode == _KEY_LEFT_BRACKET else min(r * 2.0, 16.0)
+            self._realtime_rate = r
+            print(f"[juggle_selfcatch] realtime rate = {r:.3f}x")
+        elif keycode == _KEY_C:
+            h = self.viewer
+            if h is not None:
+                c = h.cam
+                print("[juggle_selfcatch] camera: "
+                      f"--cam-azimuth {c.azimuth:.1f} "
+                      f"--cam-elevation {c.elevation:.1f} "
+                      f"--cam-distance {c.distance:.3f} "
+                      f"--cam-lookat {c.lookat[0]:.3f} "
+                      f"{c.lookat[1]:.3f} {c.lookat[2]:.3f}")
+        elif keycode == _KEY_LEFT_ARROW:
+            pass   # documented no-op (sim can't run backwards)
+
+    def _tick_boundary(self) -> None:
+        """Called after every control tick (via the wrapped plant.step in the
+        module-level run()): record a frame (if recording), keep the viewer
+        responsive, honour pause / single-step, and pace to ``realtime_rate``.
+        No-op when headless, not recording, and free-running."""
+        if self._recorder is not None:
+            self._recorder.capture()
+        v = self.viewer
+        if v is None and self._realtime_rate <= 0.0:
+            return
+        if v is not None and not v.is_running():
+            self.viewer = None              # window closed → finish fast/headless
+            return
+        while v is not None and self._paused and not self._pending_step:
+            v.sync()
+            time.sleep(0.01)
+            self._wall_anchor = None        # re-anchor the schedule on resume
+            if not v.is_running():
+                self.viewer = None
+                return
+        stepped_one_frame = self._pending_step
+        self._pending_step = False
+        if v is not None:
+            v.sync()
+        if stepped_one_frame:
+            return                          # single-frame step is instantaneous
+        rate = self._realtime_rate
+        if rate > 0.0:
+            if self._wall_anchor is None or rate != self._last_rate:
+                self._wall_anchor = time.monotonic()
+                self._sched_steps = 0
+                self._last_rate = rate
+            self._sched_steps += 1
+            target = self._wall_anchor + self._sched_steps * (CONTROL_DT / rate)
+            remaining = target - time.monotonic()
+            if remaining > 0.0:
+                time.sleep(remaining)
 
     def _ball_offset_mm(self):
         bs = self.plant.get_ball_state(ball=0)
@@ -580,3 +680,144 @@ def run_self_catch(cfg: "SelfCatchConfig | None" = None) -> SelfCatchResult:
     """Run one single-ball tilt-aimed self-catch loop headless; return the
     :class:`SelfCatchResult` (the per-cycle loop-gain trend)."""
     return SelfCatchRunner(cfg or SelfCatchConfig()).run()
+
+
+def run(cfg: "SelfCatchConfig | None" = None) -> SelfCatchResult:
+    """Run the self-catch loop WITH the MuJoCo passive viewer (``cfg.headless``
+    False) and/or an offscreen mp4 recorder (``cfg.record_path`` set); otherwise
+    integrates headless at full speed. Returns the :class:`SelfCatchResult`.
+
+    The gated ``SelfCatchRunner.run()`` loop (and its phase helpers) is left
+    untouched: instead of editing it, this wrapper wraps ``runner.plant.step`` so
+    every physics tick drives a viewer/record "tick boundary" (sync + pace + frame
+    capture). Because the wrapper is only installed here, the headless
+    ``run_self_catch()`` path never sees it and stays byte-identical. The loop runs
+    many cycles, so it is naturally watchable — no landing tail is needed."""
+    cfg = cfg or SelfCatchConfig()
+    runner = SelfCatchRunner(cfg)
+    viewer_handle = None
+    try:
+        if not cfg.headless:
+            import mujoco.viewer  # type: ignore
+            viewer_handle = mujoco.viewer.launch_passive(
+                runner.plant.model, runner.plant.data,
+                key_callback=runner.key_callback)
+            runner.viewer = viewer_handle
+            print("[juggle_selfcatch] keyboard: SPACE pause/resume   RIGHT step "
+                  "(when paused)   [ slower / ] faster   C print-camera   "
+                  "(mouse-drag = camera)")
+        if cfg.record_path:
+            runner._recorder = VideoRecorder(
+                runner.plant.model, runner.plant.data, cfg.record_path,
+                width=cfg.record_size[0], height=cfg.record_size[1],
+                fps=cfg.record_fps, cam=build_record_camera(runner.plant.model, cfg))
+            print(f"[juggle_selfcatch] recording to {cfg.record_path}")
+
+        # Wrap plant.step so each sim step drives a viewer/record tick boundary,
+        # WITHOUT editing the gated run() loop. Headless never installs this.
+        _orig_step = runner.plant.step
+
+        def _stepped(*args, **kwargs):
+            _orig_step(*args, **kwargs)
+            runner._tick_boundary()
+
+        runner.plant.step = _stepped
+        return runner.run()
+    finally:
+        if runner._recorder is not None:
+            n = runner._recorder.frames
+            runner._recorder.close()
+            print(f"[juggle_selfcatch] video written: {cfg.record_path} ({n} frames)")
+        if viewer_handle is not None:
+            viewer_handle.close()
+
+
+def main(argv: "list[str] | None" = None) -> int:
+    """CLI to watch/record the single-ball self-catch loop (mirrors the
+    viewer/record flags of sim/juggle_online.py, plus the column / oscillation
+    geometry knobs)."""
+    p = argparse.ArgumentParser(
+        description="Run the single-ball tilt-aimed self-catch loop in MuJoCo "
+                    "(Rung 2b).")
+    p.add_argument('--cycles', type=int, default=12,
+                   help="Number of throw->catch cycles to attempt (default 12)")
+    p.add_argument('--viewer', action='store_true',
+                   help="Launch the MuJoCo passive viewer (mouse = camera)")
+    p.add_argument('--realtime-rate', type=float, default=None,
+                   help="Wall-clock pacing: 1.0 = real-time, 0.5 = half-speed "
+                        "slowmo, 2.0 = 2x, 0 = free-running (fastest). Default: "
+                        "1.0 with --viewer, else 0.")
+    p.add_argument('--seed', type=int, default=0,
+                   help="§3 tracking-noise seed (the only RNG in the loop)")
+    # ---- geometry: column (default) vs two-point oscillation ----
+    p.add_argument('--oscillate', action='store_true',
+                   help="Two-point A<->B oscillation (every throw lateral, tilt "
+                        "engaged) instead of the degenerate stationary column")
+    p.add_argument('--separation-mm', type=float, default=40.0,
+                   help="Oscillation A<->B separation along x (mm): A=(-s/2,0), "
+                        "B=(+s/2,0). Default 40 (A=-20, B=+20). --oscillate only.")
+    g = p.add_mutually_exclusive_group()
+    g.add_argument('--stationary', dest='stationary', action='store_true',
+                   help="Column mode: reposition to a FIXED origin each cycle "
+                        "(default)")
+    g.add_argument('--drift', dest='stationary', action='store_false',
+                   help="Column mode: throw in-place from the caught xy (the cup "
+                        "drifts; isolates the reposition)")
+    p.set_defaults(stationary=None)
+    # ---- recording (mirrors sim/juggle_online.py) ----
+    p.add_argument('--record', default=None, metavar='PATH',
+                   help="Render offscreen from a fixed camera and write an H.264 "
+                        "mp4 to PATH (needs ffmpeg on PATH). Independent of --viewer.")
+    p.add_argument('--record-size', default='1280x720', metavar='WxH',
+                   help="Recording resolution (default 1280x720)")
+    p.add_argument('--record-fps', type=int, default=40,
+                   help="Recording output fps (default 40 = real-time; "
+                        "lower = slow-motion)")
+    p.add_argument('--cam-azimuth', type=float, default=None,
+                   help="Fixed-camera azimuth (deg) for --record")
+    p.add_argument('--cam-elevation', type=float, default=None,
+                   help="Fixed-camera elevation (deg) for --record")
+    p.add_argument('--cam-distance', type=float, default=None,
+                   help="Fixed-camera distance (m) for --record")
+    p.add_argument('--cam-lookat', type=float, nargs=3, default=None,
+                   metavar=('X', 'Y', 'Z'),
+                   help="Fixed-camera look-at point (m) for --record, three "
+                        "space-separated values. Press C in --viewer to print "
+                        "the current angle as these flags.")
+    args = p.parse_args(argv)
+
+    rate = args.realtime_rate
+    if rate is None:
+        rate = 1.0 if args.viewer else 0.0
+
+    try:
+        _rw, _rh = (int(v) for v in args.record_size.lower().split('x'))
+    except ValueError:
+        p.error(f"--record-size must be WxH, got {args.record_size!r}")
+
+    kw: dict = dict(
+        n_cycles=args.cycles, seed=args.seed, oscillate=args.oscillate,
+        headless=not args.viewer, realtime_rate=rate,
+        record_path=args.record, record_size=(_rw, _rh), record_fps=args.record_fps,
+        cam_azimuth=args.cam_azimuth, cam_elevation=args.cam_elevation,
+        cam_distance=args.cam_distance,
+        cam_lookat=tuple(args.cam_lookat) if args.cam_lookat is not None else None,
+    )
+    if args.stationary is not None:
+        kw['stationary'] = args.stationary
+    if args.oscillate:
+        _s = args.separation_mm / 1000.0 / 2.0
+        kw['osc_point_a_m'] = (-_s, 0.0)
+        kw['osc_point_b_m'] = (+_s, 0.0)
+    cfg = SelfCatchConfig(**kw)
+
+    res = run(cfg)
+    print(f"[juggle_selfcatch] sustained {res.sustained}/{cfg.n_cycles} cycles "
+          f"({'oscillation' if cfg.oscillate else 'column'})")
+    print(f"[juggle_selfcatch] in-cup offset trend (mm): {res.in_off_trend_mm}")
+    print(f"[juggle_selfcatch] reach trend (mm):         {res.reach_trend_mm}")
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
