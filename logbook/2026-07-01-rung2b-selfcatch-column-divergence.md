@@ -12,7 +12,7 @@ files_changed:
   - tests/sim/test_juggle_selfcatch.py
   - plans/active/bb-online-juggle-tilt-rearchitecture.md
 commits:
-  - TBD
+  - f745f29
 subsystem:
   - sim
 tags:
@@ -243,4 +243,4 @@ self-catch diverges (loop gain > 1); the column is a degenerate case where tilt 
 inactive, so it does not test the tilt hypothesis. Recommend re-plan option 1 (a
 two-point single-ball oscillation where tilt engages) before proceeding to Rung 3.
 
-Commit SHA: TBD (this rung's feature commit; backfill).
+Commit SHA: f745f29 (this rung's feature commit).
