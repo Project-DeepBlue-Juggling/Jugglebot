@@ -94,9 +94,9 @@ four hand services `catch_coordinator` clients (`set_hand_state`, `set_hand_gain
    `hand_telemetry`'s `pos_cmd`/`vel_ff_cmd`/`tor_ff_cmd` (hardcoded 0 on the bridge)
    carry the hand's commanded-vs-measured tracking-error diagnostic again.
 
-This unblocks **Phase 4** (its last dependency). Landed software-complete to the
-powered-sitting gate; the hand-homing + catch validation is a documented residual
-for the operator sitting (§Open Questions).
+This unblocks **Phase 4** (its last dependency). Landed 2026-07-01 software-complete
+to the powered-sitting gate; the hand-homing + catch validation subsequently **PASSED
+at the 2026-07-02 powered sitting** (§Verification / §Open Questions).
 
 ## Motivation
 
@@ -182,6 +182,38 @@ pure encoders + `decode_hand_cmd_echo`), `protocol.py`/`__init__.py` exports,
   round-trips.
 - **Codegen deterministic**: `generate_config.py` + `generate_udp_protocol.py`
   regenerate with no diff across reruns.
+- **Powered sitting — PASSED (2026-07-02, full Jugglebot powered, Phase-5 firmware
+  flashed; operator actuated, e-stop in hand; Claude verified logs read-only).** All
+  five prepped steps behaved exactly as predicted, no issues:
+  - **Hand homing (isolation, `home_axes=[6]`, then full legs+hand):** the hand
+    retracts at −3.0 rev/s into the top hardstop, current-trips, IDLEs, and sets the
+    reference — clean, no over-travel (the physical-intuition checkpoint held: the
+    hand retracts, as framed).
+  - **Catch pipeline:** `set_hand_gains` → `smooth_move_hand(9.858)` primes to top of
+    stroke → `set_hand_traj_cmd(delay=1.0, vel=3.0, type=1)` fires the hand **after
+    the delay, not instantly** — the absolute-deadline / no-restamp contract confirmed
+    on hardware. `hand_telemetry`'s `pos_cmd`/`vel_ff_cmd` populated during the move
+    (HAND_CMD_ECHO working; previously hardcoded 0).
+  - **Deactivate** idled the hand alongside the legs.
+  - **Log corroboration** (`~/.ros/log/2026-07-02-09-21-57`): the `teensy_bridge_node`
+    process ran the full ~7.8 min **cleanly** ("finished cleanly", no
+    error/fault/estop/exception mid-run). *(The bridge's per-command INFO logs were
+    not captured in `launch.log` at this sitting — a Foxy output-routing quirk — so
+    per-command confirmation rests on operator witness + the `hand_telemetry` topic;
+    the `launch.log` evidence is process-lifecycle + error-level + the orchestrator/
+    rosout stream only.)* The `orchestrator_node` looped `BOOT→HOMING→FAULT` for
+    ~3.3 min (the **Phase-4 gap** — its HOMING handler isn't yet wired to the bridge's
+    `/home`) and then, the moment the manual homing completed, transitioned
+    `BOOT→IDLE` and stayed there — transitively corroborating the Phase-2+3+5
+    cold-start chain's `is_homed` write→persist→read→skip-homing path
+    (`firmware_validated` un-wedging BOOT): the orchestrator only skips homing when
+    `is_homed=True`, which requires a successful **legs + hand** home written via the
+    Phase-2 relay `STATE_WRITE` and read back. (Full Phase-2/3 validation — reconnect
+    re-read, REBOOT-clears, `levelling_complete`/`pose_offset` — remains the Phase-4
+    sitting.) **Residual (trivial):** the standalone `set_hand_state` *service* was not
+    directly invoked at the sitting — its mechanism (bridge `SET_AXIS_STATE` on axis 6)
+    *was* exercised (homing's CLOSED_LOOP/IDLE transitions + the deactivate hand-idle),
+    so row 36 is a one-command follow-up (`ros2 service call /set_hand_state …`).
 
 ## Discussion
 
@@ -278,21 +310,28 @@ Platform→hand commands are echoed; the `axis == HAND_AXIS` guard is belt-and-b
 
 ## Open Questions
 
-- **Powered sitting (residual).** The hand homing (move-to-hardstop retract at −3.0
-  rev/s into the top stop) and the catch pipeline (`smooth_move_hand` prime →
-  `set_hand_traj_cmd` arm → catch) are validated only in software + wire-parity xref.
-  The operator sitting must confirm: (a) the hand homes (CLOSED_LOOP → current-spike
-  trip → IDLE → `set_absolute_position(−0.1)`) without over-driving; (b) a
-  `smooth_move_hand` reaches the target; (c) a `set_hand_traj_cmd` fires the hand at
-  the absolute deadline (the temporal-accuracy check — the whole point of the
-  no-restamp design); (d) `HAND_CMD_ECHO` populates `hand_telemetry`'s command
-  fields. Commands + PASS/ABORT are prepped separately.
+- **Powered sitting — RESOLVED (2026-07-02, see Verification).** All four checks
+  passed on hardware: (a) the hand homes without over-driving; (b) `smooth_move_hand`
+  reaches the target; (c) `set_hand_traj_cmd` fires the hand **after the delay, not
+  instantly** (the absolute-deadline / no-restamp contract confirmed); (d)
+  `HAND_CMD_ECHO` populates `hand_telemetry`'s command fields. The orchestrator
+  reaching IDLE the moment homing completed transitively corroborates the Phase-2+3+5
+  cold-start chain. *Remaining trivial follow-up:* directly invoke the standalone
+  `set_hand_state` service (its mechanism was exercised via deactivate's hand-idle;
+  row 36 stays `ported+unvalidated` until then — a one-command call).
+- **Phase-4 signal from the sitting.** With no orchestrator wiring yet, the
+  orchestrator loops `BOOT→HOMING→FAULT` until `is_homed` is set (its HOMING handler
+  can't drive the bridge's `/home`) — then correctly `BOOT→IDLE`. Phase 4's
+  `home_motors` action shim closes exactly this: the skip-if-homed logic already
+  works, so Phase 4 need only make the HOMING handler drive `/home` (+ configure)
+  instead of faulting.
 - **`leg_homing.cpp` in the native harness** — would make the hand HOME(6) decision
   logic a compiled assertion (not just a Python arithmetic xref). Deferred as a
   separate harness-growth task.
-- **A reusable `tools/probes/` hand-homing / catch-traj probe** — warranted if the
-  powered sitting wants a repeatable characterization harness (the Phase 1/3/6
-  pattern). Deferred to the sitting.
+- **A reusable `tools/probes/` hand-homing / catch-traj probe** — the first sitting
+  used a lightweight `/tmp` `/hand_telemetry` rclpy subscriber; promote to
+  `tools/probes/` only if catch-traj characterization becomes repeated work (the
+  memory `feedback_reusable_probes_in_repo` default-to-`/tmp`-promote-later rule).
 
 ## Related
 

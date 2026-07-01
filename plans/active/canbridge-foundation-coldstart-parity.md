@@ -192,7 +192,7 @@ touch safety logic (the reboot latch, the axis-6 gate, the relay) are testable.
 | 2 | Cold-start state via the relay (read `is_homed`/level/pose at boot + on CAN3-reconnect; write on home/level/reboot) — self-solving | **DONE** | 0, 1 | no (validated at the Phase-4 powered sitting) |
 | 3 | Firmware Get_Version sweep + Jetson-validated `firmware_validated` | **DONE — bench probe PASSED (2026-06-29)** | 0 | probe ✓ (legs+hand report hw 4.4.58) |
 | 4 | Orchestrator wiring: `home_motors` action shim (homes legs + hand) + `robot_state` fields + tilt/level relay + activate-folds-configure | NOT STARTED | 1, 2, 3, 5 | powered sitting |
-| 5 | Hand command conduit (state/gains, traj/smooth-move) + **hand homing** (HOME/SET_ABSOLUTE_POSITION on axis 6) + deactivate idles hand + cmd-echo | **DONE (2026-07-01)** | 1 | powered (homing + catch) — **software-complete to the gate; powered sitting pending** |
+| 5 | Hand command conduit (state/gains, traj/smooth-move) + **hand homing** (HOME/SET_ABSOLUTE_POSITION on axis 6) + deactivate idles hand + cmd-echo | **DONE (2026-07-01) — powered sitting PASSED (2026-07-02)** | 1 | powered (homing + catch) ✓ |
 | 6 | Robust `clear_errors` (bus-transmittable gate) + reboot-in-progress latch | **DONE (2026-06-30)** | 0, 2 | probe ✓ (reboot latency 2.3–3.5 s → 6 s window; false CAN_BUS_DOWN confirmed; deadlock premise NOT bench-reproduced — see Outcome) |
 
 ## Implementation phases
@@ -555,7 +555,8 @@ work.
 
 **Outcome (DONE — 2026-07-01, commits `2556014` (firmware + host + codegen + tests)
 + `121c692` (logbook/plan/matrix/index); landed software-complete to the
-powered-sitting gate).** All six deliverables landed. (1) **Hand traj /
+powered-sitting gate, which PASSED 2026-07-02 — see the Outcome body).** All six
+deliverables landed. (1) **Hand traj /
 smooth-move**: new `hand_ops.{h,cpp}` — the `HAND_TRAJ_CMD` RPC carries the exact
 8-byte `0x6D0` payload (host-built byte-identical to `can_node`, byte-0
 discriminated); the firmware sends the `CLOSED_LOOP` + `POSITION/PASSTHROUGH`
@@ -574,9 +575,18 @@ immune (the temporal-accuracy contract).** Suite: `pytest tests/ -q` (2026-07-01
 **1972 passed, 1 xfailed in 482.79 s** (net **+45** over the 1927 baseline, no
 regressions); `pio run` **green**; native `test_hand_ops` (5 cases / 20 assertions,
 divergence-catch proven); wire-parity xrefs byte-identical to `can_node`; codegen
-deterministic. **Residual: the hand-homing + catch validation is the Phase-5 powered
-sitting** (commands + PASS/ABORT prepped for the operator; matrix rows flip
-`ported+unvalidated → ported+validated` once exercised). Full detail: logbook
+deterministic. **Powered sitting PASSED (2026-07-02, full Jugglebot powered, Phase-5
+firmware flashed):** hand homing (retract → hardstop trip → IDLE → set_absolute_
+position, no over-travel), the catch pipeline (`smooth_move_hand` prime →
+`set_hand_traj_cmd` fires **after the delay, not instantly** — the absolute-deadline
+/ no-restamp contract confirmed on hardware → `HAND_CMD_ECHO` populated
+`hand_telemetry`'s command fields), and deactivate-idles-hand all behaved as
+predicted. The `orchestrator_node` looped `BOOT→HOMING→FAULT` (the Phase-4 gap) until
+homing completed, then `BOOT→IDLE` — transitively corroborating the Phase-2+3+5
+cold-start chain. Matrix rows 29/32/37/38/39/40/51/58 flipped `ported+unvalidated →
+ported+validated` (row 36, the `set_hand_state` service, stays unvalidated — its
+mechanism was exercised but the standalone service was not directly called). Full
+detail: logbook
 [`2026-07-01-canbridge-phase5-hand-conduit`](../../logbook/2026-07-01-canbridge-phase5-hand-conduit.md).
 **This unblocks Phase 4 (its last dependency, Phase 5, is now met); Phase 4
 completes the plan's implementation — consider `/archive-plan
