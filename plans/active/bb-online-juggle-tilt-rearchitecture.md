@@ -245,6 +245,33 @@ separation singularity; or fold the tilt make-or-break into a minimal-lateral
 two-ball columns test (Rung 3). See logbook
 `2026-07-01-rung2b-selfcatch-column-divergence.md`.
 
+**Status (2026-07-01, OPTION-1 re-plan): implemented — gate = BREAK (still);
+STOP + operator go/no-go.** Per the operator's OPTION-1 choice, added the
+**two-point A↔B oscillation** (`sim/juggle_selfcatch.py::run_self_catch(oscillate=
+True)`): shuttle a single ball between two lateral points so every throw is lateral
+and the commanded tilt is **non-zero** (default x-40: **1.42°**, vs the column's
+**0.0°**) — the honest make-or-break test on a **non-degenerate** geometry.
+**Result: STILL a BREAK.** With tilt engaged, the loop diverges within **1–4
+cycles** at every separation (20–70 mm) and axis (x / y / diagonal); no config
+sustains near 10 (max sustained **4** of ≥ 10, at x-20, swept in the committed
+probe). The **in-cup seat offset stays small** (~0.5–2 mm — tilt *does*
+centre the ball), but the **landing amplifies** (default x-40 seed 1: landing error
+**3.7 → 89 → 728 mm**). **Root cause:** the tilt-aimed throw's landing is
+**chaotically/deterministically sensitive to the throw-ORIGIN pose** — a 10 mm
+origin shift swings the landing ~40 mm (`dLanding/dOrigin` ≈ 4, up to ~11 with sign
+changes) — the **contact-detach knife-edge** Rung 2a flagged and characterised only
+*from the origin*; the oscillation throws from *off-origin* A/B where it is
+loop-fatal. **The reframing (load-bearing):** tilt fixes the **band-limit** (the
+pre-tilt divergence's mechanism) but **not** this pose-chaos, which is the binding
+amplification off-origin — so **the tilt re-architecture is necessary but not
+sufficient** to close the throw→catch→throw loop. OPTION-1's premise (that the
+oscillation inherits Rung-2a's reliable box) is **partly wrong**: that box is a
+*from-origin* property and does not transfer to the off-origin throws an
+oscillation requires. **Next lever:** the contact-detach knife-edge (the
+throw-origin pose-sensitivity / non-y-symmetric leg asymmetry Rung 2a deferred to
+Rung 3), explicitly **not** the aim (exact) and **not** the tempo (slower is
+worse). See logbook `2026-07-01-rung2b-oscillation-tilt-engaged-diverges.md`.
+
 ---
 
 ### Phase 4 / Rung 3 — Two-ball (columns → oval, BB-seeded)
@@ -331,7 +358,7 @@ on divergence with `origin/demo/bb-led-two-ball-juggle`) → write the next hand
 | (done) | 0 / Rung 0 | tilt-tracking good? → YES |
 | `{from:1,to:1}` | 1 / Rung 1 | catch clean + noise-robust? |
 | `{from:2,to:2}` | 2 / Rung 2a | throws accurate to target + cadence? → tilt-aim exact; reliable box (column + 50 mm ring) ≤33 mm (within catch reach); ±100 mm directional asymmetry — **gate pending** |
-| `{from:3,to:3}` | 3 / Rung 2b | **make-or-break:** self-catch sustains (loop gain < 1)? → **BREAK**: the pure column diverges (loop gain > 1) for column-specific reasons; tilt is inactive for a column (tilt≈0), so the column does not test the tilt hypothesis — **STOP + re-plan** (two-point single-ball oscillation where tilt engages) |
+| `{from:3,to:3}` | 3 / Rung 2b | **make-or-break:** self-catch sustains (loop gain < 1)? → **BREAK (both).** Column: diverges, tilt≈0 (degenerate, tilt inactive). OPTION-1 re-plan (two-point A↔B oscillation, tilt **engaged** ~1.4°): **STILL diverges** (loop gain > 1) within 1–4 cycles (max sustained 4 of ≥ 10) — the throw's chaotic sensitivity to the throw-origin pose (a contact-detach knife-edge) dominates off-origin. Tilt fixes the band-limit but is **not sufficient** to close the loop → **STOP + operator go/no-go** (next lever: the contact-detach asymmetry, not tilt) |
 | `{from:4,to:4}` | 4 / Rung 3 | 2-ball sustained ≥30? |
 
 (Phases may be batched into a segment, e.g. `{2,3}`, if a gate is waived — but the

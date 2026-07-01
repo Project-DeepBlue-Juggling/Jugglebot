@@ -2,21 +2,40 @@
 
 Drives ``sim/juggle_selfcatch.py::run_self_catch`` (compose the Rung-2a tilt-aimed
 throw with the Rung-1 catch into a single-ball toss->catch->toss loop, re-planned
-each cycle under the §3 tracking noise) across seeds and the three recover/geometry
-variants, reporting the **per-cycle reach trend** and the **sustained cycle count**
-— the loop-gain the make-or-break gate reads. The gate needs >= 10 sustained
-cycles with a flat/decaying reach (loop gain < 1).
+each cycle under the §3 tracking noise) and reports the per-cycle loop-gain trend
++ sustained cycle count — what the make-or-break gate reads. The gate needs >= 10
+sustained cycles with a flat/decaying trend (loop gain < 1).
 
-**Finding (2026-07-01): the pure column self-catch does NOT sustain (loop gain > 1)**
-— every seed and every variant diverges within 0-3 cycles: the catch reach
-amplifies each cycle (~8 mm -> ~50 -> ~110 -> ~210) past the catch's ~60-80 mm
-reliable reach -> drop. See ``logbook/2026-07-01-rung2b-selfcatch-column-divergence.md``.
+Two families of runs, both a BREAK:
 
-Head-to-head reference: the pre-tilt divergence (logbook
-``2026-06-27-online-juggle-throw-fix-catch-axis-split-band-limit-cascade``) also
-had loop gain > 1 (a caught-then-thrown ball walked off > 150 mm/cycle). Tilt does
-NOT kill the divergence for a column — because for a column the tilt is ~0, so the
-tilt mechanism (decoupling lateral aim from the band-limited platform) is inactive.
+1. **COLUMN** (``oscillate=False``, the original 2026-07-01 gate): throw+catch
+   co-located, tilt ~0. Sweeps the three recover/geometry variants. Reports the
+   per-cycle **reach trend**. Finding: does NOT sustain — every seed/variant
+   diverges within 0-3 cycles (reach amplifies ~8 -> ~50 -> ~110 -> ~210 mm past
+   the catch's ~60-80 mm reliable reach -> drop). But a column commands ~0 tilt,
+   so this is a DEGENERATE test — the tilt mechanism never engages.
+
+2. **OSCILLATION** (``oscillate=True``, the operator's OPTION-1 re-plan): shuttle a
+   single ball between two lateral points A and B, so every throw is LATERAL and
+   the commanded tilt is NON-ZERO (tilt ENGAGES). The honest tilt test on a
+   NON-degenerate geometry. Sweeps A<->B axes/separations. Reports the per-cycle
+   **in-cup-offset trend** AND the **landing-error trend**. Finding: STILL a BREAK
+   — diverges within 1-4 cycles (max sustained 4 of >= 10, at x-20) at every
+   separation (20-70 mm) / axis WITH tilt engaged. The
+   in-cup SEAT offset stays small (~0.5-2 mm — tilt keeps the ball centred) but the
+   LANDING amplifies (e.g. x-40 seed 1: 3.7 -> 89 -> 728 mm). Loop gain > 1.
+
+Head-to-head reference (all three diverge, loop gain > 1):
+* the **pre-tilt divergence** (logbook 2026-06-27-online-juggle-throw-fix-...):
+  a caught-then-thrown ball walked off > 150 mm/cycle — the BAND-LIMITED level
+  throw couldn't aim, so the ~15 mm catch offset amplified. Tilt was the fix.
+* the **column BREAK** (logbook 2026-07-01-rung2b-selfcatch-column-divergence):
+  reach amplified 8 -> 210 mm; tilt ~0 (degenerate, tilt inactive).
+* the **oscillation BREAK** (logbook 2026-07-01-rung2b-oscillation-tilt-engaged-
+  diverges): landing amplified 3.7 -> 728 mm WITH tilt engaged (~1.4 deg). Tilt
+  fixes the band-limit but NOT the contact-detach's chaotic sensitivity to the
+  throw-ORIGIN pose (dLanding/dOrigin ~4, up to ~11), which is the binding
+  amplification off-origin.
 
 Grounds ``tests/sim/test_juggle_selfcatch.py``. Headless MuJoCo plant, no hardware.
 Writes ``temp/probes/juggle_selfcatch_loopgain.csv``. Run from the repo root:
@@ -39,16 +58,34 @@ for _p in (_repo_root, os.path.join(_repo_root, 'sim'),
 
 from sim.juggle_selfcatch import run_self_catch, SelfCatchConfig, CATCH_REACH_MM
 
-# The three variants behind the verdict: the FAITHFUL composition (Rung-2a
-# plan_cup_cycle recover, stationary column with reposition-to-origin), the DRIFT
-# variant (throw in-place from the caught xy -> no reposition, isolates the
-# reposition's amplification contribution), and the RETRACT variant (an ad-hoc
-# axial slider retract — explored to force separation of a centred caught ball;
-# a knife-edge that also amplifies).
-VARIANTS = {
+# The three COLUMN variants behind the original gate: the FAITHFUL composition
+# (Rung-2a plan_cup_cycle recover, stationary column with reposition-to-origin),
+# the DRIFT variant (throw in-place from the caught xy -> no reposition), and the
+# RETRACT variant (an ad-hoc axial slider retract — a knife-edge).
+COLUMN_VARIANTS = {
     "faithful (plan, stationary)": dict(recover="plan", stationary=True),
     "drift (plan, in-place)":       dict(recover="plan", stationary=False),
     "retract (stationary)":         dict(recover="retract", stationary=True),
+}
+
+# The OSCILLATION geometries (the OPTION-1 re-plan): A<->B two-point shuttles where
+# tilt ENGAGES. Axes x / y / diagonal, separations 20-70 mm — the full range behind
+# the BREAK verdict, swept in ONE committed run so the "every separation (20-70 mm)
+# and axis (x/y/diagonal)" gate claim is reproducible from this probe alone. The x
+# axis is swept across the whole range (20/30/40/50/60/70 mm); y and diagonal pin the
+# axis breadth at representative separations. The 40 mm x-default composes cyc 0
+# cleanly (lands ~3.7 mm off B); none of the eight sustains (max 4 of >=10, at x-20).
+# The cyc-0 landing error is NON-monotonic in separation (43.9 mm at x-50, 22.8 at
+# x-60, 11.7 at x-70) — the sign-changing off-origin asymmetry, not "worse with size".
+OSC_GEOMS = {
+    "osc x-20 (A=-10,B=+10)":  dict(osc_point_a_m=(-0.010, 0.0),   osc_point_b_m=(0.010, 0.0)),
+    "osc x-30 (A=-15,B=+15)":  dict(osc_point_a_m=(-0.015, 0.0),   osc_point_b_m=(0.015, 0.0)),
+    "osc x-40 (A=-20,B=+20)":  dict(osc_point_a_m=(-0.020, 0.0),   osc_point_b_m=(0.020, 0.0)),
+    "osc x-50 (A=-25,B=+25)":  dict(osc_point_a_m=(-0.025, 0.0),   osc_point_b_m=(0.025, 0.0)),
+    "osc x-60 (A=-30,B=+30)":  dict(osc_point_a_m=(-0.030, 0.0),   osc_point_b_m=(0.030, 0.0)),
+    "osc x-70 (A=-35,B=+35)":  dict(osc_point_a_m=(-0.035, 0.0),   osc_point_b_m=(0.035, 0.0)),
+    "osc y-40 (A=0,-20)":      dict(osc_point_a_m=(0.0, -0.020),   osc_point_b_m=(0.0, 0.020)),
+    "osc diag-50":             dict(osc_point_a_m=(-0.018, -0.018), osc_point_b_m=(0.018, 0.018)),
 }
 
 
@@ -64,24 +101,53 @@ def main(argv=None) -> int:
 
     rows = []
     print(f"Rung-2b self-catch loop-gain sweep — {args.seeds} seeds x {args.cycles} cycles\n"
-          f"gate: sustained >= 10 with a flat/decaying reach (loop gain < 1)\n")
-    for name, kw in VARIANTS.items():
+          f"gate: sustained >= 10 with a flat/decaying trend (loop gain < 1)\n")
+
+    print("=== COLUMN (tilt ~0, DEGENERATE test — reach trend) ===")
+    for name, kw in COLUMN_VARIANTS.items():
         print(f"--- {name} ---")
         sustained_counts = []
         for seed in range(args.seeds):
             r = run_self_catch(SelfCatchConfig(seed=seed, n_cycles=args.cycles, **kw))
             sustained_counts.append(r.sustained)
-            trend = r.reach_trend_mm
             print(f"  seed {seed}: sustained {r.sustained:2d}/{args.cycles}  "
-                  f"reach_trend_mm={trend}")
+                  f"reach_trend_mm={r.reach_trend_mm}")
             for c in r.cycles:
                 rows.append(dict(
-                    variant=name, seed=seed, cyc=c.cyc,
+                    mode="column", geom=name, seed=seed, cyc=c.cyc,
                     separated=c.separated, caught=c.caught, held=c.held_at_end,
+                    tilt_deg=round(c.tilt_deg, 2),
                     in_off_start_mm=round(c.in_off_start_mm, 2),
                     in_off_end_mm=round(c.in_off_end_mm, 2),
                     reach_mm=round(c.reach_mm, 2),
                     reach_from_throw_mm=round(c.reach_from_throw_mm, 2),
+                    landing_err_mm=round(c.landing_err_mm, 2),
+                    seat_offset_mm=round(c.seat_offset_mm, 2)))
+        mx = max(sustained_counts)
+        verdict = "SUSTAINS (>=10)" if mx >= 10 else "DIVERGES (< 10) -> BREAK"
+        print(f"  => sustained {sustained_counts}, max {mx}  [{verdict}]\n")
+
+    print("=== OSCILLATION (tilt ENGAGED, honest test — in-cup-offset + landing-error trends) ===")
+    for name, kw in OSC_GEOMS.items():
+        print(f"--- {name} ---")
+        sustained_counts = []
+        for seed in range(args.seeds):
+            r = run_self_catch(SelfCatchConfig(seed=seed, n_cycles=args.cycles,
+                                               oscillate=True, **kw))
+            sustained_counts.append(r.sustained)
+            tilt = r.cycles[0].tilt_deg if r.cycles else 0.0
+            print(f"  seed {seed}: sustained {r.sustained:2d}/{args.cycles}  tilt={tilt:.2f}deg  "
+                  f"in_off_end_mm={r.in_off_trend_mm}  land_err_mm={r.landing_err_trend_mm}")
+            for c in r.cycles:
+                rows.append(dict(
+                    mode="oscillation", geom=name, seed=seed, cyc=c.cyc,
+                    separated=c.separated, caught=c.caught, held=c.held_at_end,
+                    tilt_deg=round(c.tilt_deg, 2),
+                    in_off_start_mm=round(c.in_off_start_mm, 2),
+                    in_off_end_mm=round(c.in_off_end_mm, 2),
+                    reach_mm=round(c.reach_mm, 2),
+                    reach_from_throw_mm=round(c.reach_from_throw_mm, 2),
+                    landing_err_mm=round(c.landing_err_mm, 2),
                     seat_offset_mm=round(c.seat_offset_mm, 2)))
         mx = max(sustained_counts)
         verdict = "SUSTAINS (>=10)" if mx >= 10 else "DIVERGES (< 10) -> BREAK"

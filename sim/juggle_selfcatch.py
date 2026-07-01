@@ -42,6 +42,32 @@ inactive. The harness is retained as the measurement apparatus + the head-to-hea
 evidence for the gate; the config exposes ``recover`` and ``stationary`` so the
 operator can reproduce every variant behind the verdict.
 
+RE-PLAN (2026-07-01, ``oscillate=True``): the HONEST tilt test, STILL A BREAK.
+--------------------------------------------------------------------------------
+Per the operator's OPTION 1 re-plan, the ``oscillate=True`` mode shuttles a single
+ball between two lateral points A and B (throw A->B, catch at B, throw B->A, ...)
+so every throw is LATERAL and the commanded tilt is NON-ZERO (~1.4 deg for the
+default +-20 mm on x) — i.e. tilt actually ENGAGES and does the lateral-aim work,
+unlike the degenerate column. This is the faithful make-or-break test of the tilt
+hypothesis on a NON-degenerate geometry.
+
+**RESULT (2026-07-01): BREAK — the oscillation does NOT sustain either.** With
+tilt engaged it diverges within 1-4 cycles at every separation (20-70 mm) and axis
+(x / y / diagonal): the loop gain is > 1 (max sustained 4 of >= 10, at x-20). The
+load-bearing distinction from the column: the in-cup SEAT offset stays SMALL
+(~0.5-2 mm — tilt DOES keep the ball centred), but the LANDING amplifies (e.g.
+x-40 seed 1: landing error
+3.7 -> 89 -> 728 mm). Root cause: the tilt-aimed throw's landing is CHAOTICALLY and
+DETERMINISTICALLY sensitive to the throw-ORIGIN pose — a 10 mm shift of the throw
+point swings the landing ~40 mm (dLanding/dOrigin ~4, and up to ~11 with sign
+changes at a real 1.8 deg tilt). This is the contact-detach knife-edge Rung 2a
+flagged (the non-y-symmetric leg layout + soft->stiff release), which Rung 2a only
+characterised from the ORIGIN and deferred; the oscillation throws from OFF-origin
+points A/B, where it is loop-fatal. **Tilt fixes the band-limit (the pre-tilt
+divergence's mechanism) but NOT this pose-chaos, which is the binding amplification
+off-origin — so the tilt re-architecture, by itself, does not close the loop.**
+See ``logbook/2026-07-01-rung2b-oscillation-tilt-engaged-diverges.md``.
+
 Pure-Python, no ROS2. SI internally; mm at the plant boundary.
 """
 from __future__ import annotations
@@ -131,6 +157,25 @@ class SelfCatchConfig:
                                        # cycle (stationary column). False: throw a
                                        # column in-place from the caught position
                                        # (the cup drifts; isolates the reposition).
+    # ---- oscillation geometry (Rung-2b RE-PLAN — the HONEST tilt test) ----------
+    # The pure column above is a DEGENERATE test of the tilt hypothesis: a column
+    # commands ~0 tilt, so the tilt mechanism (decoupling lateral aim from the
+    # band-limited platform) never ENGAGES (logbook
+    # 2026-07-01-rung2b-selfcatch-column-divergence.md). The oscillation instead
+    # shuttles a single ball between two lateral points A and B: throw A->B, catch
+    # at B, throw B->A, catch at A, ... Each throw is LATERAL (target != origin), so
+    # the commanded tilt is NON-ZERO and tilt actually does the lateral-aim work.
+    # The A<->B axis + separation are chosen inside the Rung-2a reliable box (the
+    # column + 50 mm ring separate cleanly, <=33 mm; the +-100 mm asymmetry is
+    # deferred to Rung 3), so this tests TILT, not the deferred asymmetry.
+    oscillate: bool = False            # True: two-point A<->B oscillation (tilt on)
+    # Default A<->B: +-20 mm on x (40 mm separation, tilt ~1.4 deg). Chosen so the
+    # FIRST throw composes cleanly (lands ~3.7 mm from B, deep inside the catch
+    # reach) yet tilt is clearly engaged; the loop then diverges by cyc 2-3 (the
+    # BREAK). Across the full 20-70 mm sweep no separation sustains (max 4 of >=10);
+    # the cyc-0 landing error is non-monotonic in separation (see the logbook).
+    osc_point_a_m: "tuple[float, float]" = (-0.020, 0.0)  # cup xy of point A (world)
+    osc_point_b_m: "tuple[float, float]" = (0.020, 0.0)   # cup xy of point B (world)
     recover: str = "plan"              # "plan": Rung-2a plan_cup_cycle recover
                                        # (validated, faithful). "retract": an axial
                                        # slider retract (explored; a knife-edge).
@@ -167,6 +212,10 @@ class SelfCatchCycle:
     seat_offset_mm: float              # transient offset at the seat instant (-1 if none)
     landing_xy_mm: "tuple[float, float]"
     takeoff_speed_mps: float
+    # ---- oscillation-mode metrics (nan for the column path) ----
+    target_xy_mm: "tuple[float, float]" = (float('nan'), float('nan'))  # nominal target
+    landing_err_mm: float = float('nan')   # |landing - target| — the throw accuracy
+    tilt_deg: float = 0.0                  # commanded throw tilt magnitude (0 = column)
 
 
 @dataclasses.dataclass
@@ -187,6 +236,18 @@ class SelfCatchResult:
     @property
     def reach_trend_mm(self) -> "list[float]":
         return [round(c.reach_mm, 1) for c in self.cycles]
+
+    @property
+    def in_off_trend_mm(self) -> "list[float]":
+        """Per-cycle in-cup seat offset after the catch — the primary loop-gain
+        trend (flat/decaying = loop gain < 1, growing = diverging)."""
+        return [round(c.in_off_end_mm, 1) for c in self.cycles]
+
+    @property
+    def landing_err_trend_mm(self) -> "list[float]":
+        """Per-cycle |landing - nominal target| — the throw accuracy trend (the
+        oscillation loop-gain signature; nan for the column path)."""
+        return [round(c.landing_err_mm, 1) for c in self.cycles]
 
     @property
     def diverged(self) -> bool:
@@ -237,8 +298,14 @@ class SelfCatchRunner:
         # no step position command at cycle 0 under any retune (mirrors
         # sim/juggle_throw.py, which warms up at its computed carry_low). For the
         # default column config this evaluates to [0, 0, 0.70] as before.
-        _tp0 = np.array([origin[0], origin[1], cfg.throw_z_m])
-        _tg0 = np.array([origin[0], origin[1], cfg.throw_target_z_m])
+        # The column co-locates throw+target at the origin (tilt~=0); the
+        # oscillation throws from A toward B (a lateral throw -> tilt engages).
+        if cfg.oscillate:
+            _tp0 = np.array([cfg.osc_point_a_m[0], cfg.osc_point_a_m[1], cfg.throw_z_m])
+            _tg0 = np.array([cfg.osc_point_b_m[0], cfg.osc_point_b_m[1], cfg.throw_target_z_m])
+        else:
+            _tp0 = np.array([origin[0], origin[1], cfg.throw_z_m])
+            _tg0 = np.array([origin[0], origin[1], cfg.throw_target_z_m])
         _axis0 = cup_axis(*tilt_to_throw(takeoff_velocity(_tp0, _tg0, cfg.flight_s),
                                          MAX_TILT_DEG))
         carry_low0 = _tp0 - _axis0 * cfg.dip_m
@@ -262,10 +329,23 @@ class SelfCatchRunner:
                                              -1.0, (float('nan'), float('nan')), 0.0))
                 break
 
-            # Column throw/catch xy: fixed origin (stationary) or the caught xy (drift).
-            base_xy = origin if cfg.stationary else self.cup_world_m()[:2]
-            throw_pos = np.array([base_xy[0], base_xy[1], cfg.throw_z_m])
-            target = np.array([base_xy[0], base_xy[1], cfg.throw_target_z_m])
+            if cfg.oscillate:
+                # Two-point A<->B: cyc 0 throws A->B, cyc 1 throws B->A, ... — the
+                # cup shuttles A<->B and every throw is LATERAL (tilt engages). The
+                # throw ORIGIN is re-planned from the ACHIEVED caught xy (closed-loop
+                # self-correction of the cup position error), except cyc 0 (freshly
+                # seeded at A); the TARGET is the fixed nominal other point.
+                pa = np.asarray(cfg.osc_point_a_m, float)
+                pb = np.asarray(cfg.osc_point_b_m, float)
+                to_xy = pb if (cyc % 2 == 0) else pa
+                from_xy = pa if cyc == 0 else self.cup_world_m()[:2]
+                throw_pos = np.array([from_xy[0], from_xy[1], cfg.throw_z_m])
+                target = np.array([to_xy[0], to_xy[1], cfg.throw_target_z_m])
+            else:
+                # Column throw/catch xy: fixed origin (stationary) or caught xy (drift).
+                base_xy = origin if cfg.stationary else self.cup_world_m()[:2]
+                throw_pos = np.array([base_xy[0], base_xy[1], cfg.throw_z_m])
+                target = np.array([base_xy[0], base_xy[1], cfg.throw_target_z_m])
             v_takeoff = takeoff_velocity(throw_pos, target, cfg.flight_s)
             rx, ry = tilt_to_throw(v_takeoff, MAX_TILT_DEG)
             axis = cup_axis(rx, ry)
@@ -286,6 +366,7 @@ class SelfCatchRunner:
 
             throw_xy_mm = throw_pos[:2] * 1000.0
             land_mm = np.asarray(land_true[:2]) * 1000.0
+            target_mm = target[:2] * 1000.0
             cycles.append(SelfCatchCycle(
                 cyc=cyc, in_off_start_mm=in_off_start, separated=separated,
                 caught=caught, held_at_end=held, in_off_end_mm=in_off_end,
@@ -293,7 +374,10 @@ class SelfCatchRunner:
                 reach_from_throw_mm=float(np.linalg.norm(land_mm - throw_xy_mm)),
                 seat_offset_mm=seat_off,
                 landing_xy_mm=(float(land_mm[0]), float(land_mm[1])),
-                takeoff_speed_mps=float(np.linalg.norm(v_takeoff))))
+                takeoff_speed_mps=float(np.linalg.norm(v_takeoff)),
+                target_xy_mm=(float(target_mm[0]), float(target_mm[1])),
+                landing_err_mm=float(np.linalg.norm(land_mm - target_mm)),
+                tilt_deg=float(np.degrees(np.hypot(rx, ry)))))
             if not (caught and held):
                 break
         return SelfCatchResult(cycles=cycles)
