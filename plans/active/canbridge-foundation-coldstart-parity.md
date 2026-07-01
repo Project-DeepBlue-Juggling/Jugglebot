@@ -192,7 +192,7 @@ touch safety logic (the reboot latch, the axis-6 gate, the relay) are testable.
 | 2 | Cold-start state via the relay (read `is_homed`/level/pose at boot + on CAN3-reconnect; write on home/level/reboot) — self-solving | **DONE** | 0, 1 | no (validated at the Phase-4 powered sitting) |
 | 3 | Firmware Get_Version sweep + Jetson-validated `firmware_validated` | **DONE — bench probe PASSED (2026-06-29)** | 0 | probe ✓ (legs+hand report hw 4.4.58) |
 | 4 | Orchestrator wiring: `home_motors` action shim (homes legs + hand) + `robot_state` fields + tilt/level relay + activate-folds-configure | NOT STARTED | 1, 2, 3, 5 | powered sitting |
-| 5 | Hand command conduit (state/gains, traj/smooth-move) + **hand homing** (HOME/SET_ABSOLUTE_POSITION on axis 6) + deactivate idles hand + cmd-echo | NOT STARTED | 1 | powered (homing + catch) |
+| 5 | Hand command conduit (state/gains, traj/smooth-move) + **hand homing** (HOME/SET_ABSOLUTE_POSITION on axis 6) + deactivate idles hand + cmd-echo | **DONE (2026-07-01)** | 1 | powered (homing + catch) — **software-complete to the gate; powered sitting pending** |
 | 6 | Robust `clear_errors` (bus-transmittable gate) + reboot-in-progress latch | **DONE (2026-06-30)** | 0, 2 | probe ✓ (reboot latency 2.3–3.5 s → 6 s window; false CAN_BUS_DOWN confirmed; deadlock premise NOT bench-reproduced — see Outcome) |
 
 ## Implementation phases
@@ -552,6 +552,34 @@ preamble-abort-on-failed-send unit test.
 
 **Hardware.** Powered (hand homing + catch arming) — coordinate with the catch
 work.
+
+**Outcome (DONE — 2026-07-01, commit `<SHA-backfill>`; landed software-complete to
+the powered-sitting gate).** All six deliverables landed. (1) **Hand traj /
+smooth-move**: new `hand_ops.{h,cpp}` — the `HAND_TRAJ_CMD` RPC carries the exact
+8-byte `0x6D0` payload (host-built byte-identical to `can_node`, byte-0
+discriminated); the firmware sends the `CLOSED_LOOP` + `POSITION/PASSTHROUGH`
+preamble to axis 6 then forwards it on the **firmware-owned** `0x6D0` id, **aborting
+the traj TX if a preamble send fails**. `set_hand_traj_cmd` + `smooth_move_hand` ride
+it. (2) **Hand state / gains** via the Phase-1 axis-6 allow-table (unknown
+`set_hand_state` strings rejected Jetson-side). (3) **Hand homing**:
+`leg_homing.cpp` accepts axis 6 (per-axis `Homing::HAND_*` accessors, same
+move-to-hardstop); the bridge applies hand gains host-side (refuse-flash-defaults)
+before `HOME(6)`. (4) **Configure the hand** + (5) **deactivate idles the hand** in
+`_run_configure` / `_run_deactivate`. (6) **`HAND_CMD_ECHO`**: the firmware sniffs
+the Platform Teensy's axis-6 `Set_Input_Pos` on CAN3 → the host echoes it into
+`hand_telemetry`'s command fields. **The absolute `wall_time_ms` deadline is computed
+Jetson-side; the firmware forwards opaque bytes and CANNOT re-stamp — transit-jitter-
+immune (the temporal-accuracy contract).** Suite: `pytest tests/ -q` (2026-07-01)
+**1972 passed, 1 xfailed in 482.79 s** (net **+45** over the 1927 baseline, no
+regressions); `pio run` **green**; native `test_hand_ops` (5 cases / 20 assertions,
+divergence-catch proven); wire-parity xrefs byte-identical to `can_node`; codegen
+deterministic. **Residual: the hand-homing + catch validation is the Phase-5 powered
+sitting** (commands + PASS/ABORT prepped for the operator; matrix rows flip
+`ported+unvalidated → ported+validated` once exercised). Full detail: logbook
+[`2026-07-01-canbridge-phase5-hand-conduit`](../../logbook/2026-07-01-canbridge-phase5-hand-conduit.md).
+**This unblocks Phase 4 (its last dependency, Phase 5, is now met); Phase 4
+completes the plan's implementation — consider `/archive-plan
+canbridge-foundation-coldstart-parity` once Phase 4 lands.**
 
 ### Phase 6 — Robust clear_errors + reboot-in-progress latch
 
