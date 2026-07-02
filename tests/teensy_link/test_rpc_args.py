@@ -183,22 +183,28 @@ def test_axis_versions_result_roundtrip_and_layout():
 
 
 def test_method_arg_association_covers_all_commandable_methods():
+    """NON-tautological (Fable-5 [17]): partition the WHOLE RpcMethod enum into
+    payloadless vs arg-carrying and freeze it, rather than hand-copying
+    ``METHOD.keys()`` (which only caught "someone edited METHOD"). A NEW arg-carrying
+    method added to the enum without a METHOD entry now lands in the computed
+    'missing' set below and FAILS — the useful direction."""
     from controller.teensy_link import RpcMethod
-    expected = {
-        RpcMethod.SET_AXIS_STATE, RpcMethod.SET_CONTROLLER_MODE,
-        RpcMethod.SET_VEL_CURR_LIMITS, RpcMethod.SET_POS_GAIN,
-        RpcMethod.SET_VEL_GAINS, RpcMethod.SET_ABSOLUTE_POSITION,
-        RpcMethod.CLEAR_ERRORS, RpcMethod.REBOOT_ODRIVES,
-        RpcMethod.ENCODER_SEARCH, RpcMethod.HOME, RpcMethod.ACTIVATE,
-        RpcMethod.SDO_READ, RpcMethod.SDO_WRITE,
-        # Ball Butler (Phase A): only BB_THROW carries args; RELOAD/RESET/
-        # CALIBRATE_LOC are payloadless (matches NOP — no METHOD entry).
-        RpcMethod.BB_THROW,
-        # Platform-Teensy relay (Phase 1): STATE_WRITE carries the whole
-        # RobotState; TILT_READ/STATE_READ are payloadless (no METHOD entry).
-        RpcMethod.STATE_WRITE,
-        # Hand conduit (Phase 5): HAND_TRAJ_CMD carries the 8-byte 0x6D0 payload
-        # (set_hand_traj_cmd + smooth_move_hand both ride it, byte-0 discriminated).
-        RpcMethod.HAND_TRAJ_CMD,
+    # The authoritative protocol fact: methods that carry NO request args (correctly
+    # absent from METHOD). TIME_OF_DAY_QUERY is Teensy→Jetson (server-side); the
+    # reads (TILT_READ/STATE_READ) + BB reload/reset/calibrate + GET_AXIS_VERSIONS
+    # are payloadless requests.
+    payloadless = {
+        RpcMethod.NOP, RpcMethod.TIME_OF_DAY_QUERY,
+        RpcMethod.BB_RELOAD, RpcMethod.BB_RESET, RpcMethod.BB_CALIBRATE_LOC,
+        RpcMethod.GET_AXIS_VERSIONS, RpcMethod.TILT_READ, RpcMethod.STATE_READ,
     }
-    assert set(ra.METHOD.keys()) == expected
+    have = set(ra.METHOD.keys())
+    missing = {m for m in RpcMethod if m not in payloadless and m not in have}
+    unexpected = {m for m in have if m in payloadless}
+    assert not missing, f"arg-carrying methods missing a METHOD entry: {missing}"
+    assert not unexpected, f"payloadless methods wrongly in METHOD: {unexpected}"
+    # Full-partition freeze: every enum member is classified exactly once.
+    assert have | payloadless == set(RpcMethod)
+    assert not (have & payloadless)
+    # DEACTIVATE (Fable-5 [17]) is axis-only, like ACTIVATE/HOME.
+    assert ra.METHOD[RpcMethod.DEACTIVATE] is ra.METHOD[RpcMethod.ACTIVATE]

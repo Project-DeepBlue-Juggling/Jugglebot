@@ -180,3 +180,50 @@ def test_inbound_rpc_handler_exception_returns_rejected(fake_teensy_and_client):
         assert resp_head.status == int(RpcStatus.ERR_REJECTED)
     finally:
         rpc_server.close()
+
+
+# ── [8] non-idempotent methods are never re-dispatched (firmware has no dedup) ──
+
+def test_non_idempotent_methods_not_retried(monkeypatch):
+    """A lost RESPONSE must not re-dispatch a non-idempotent op. call() forces
+    retries=0 for NON_IDEMPOTENT_METHODS even if the caller asks for retries, while
+    an idempotent method still honours retries. We count RPC_REQUEST sends against a
+    dead peer (guaranteed timeout) — HOME sends exactly ONE, SET_POS_GAIN sends
+    1 + retries."""
+    from controller.teensy_link import TeensyLinkClient
+    from controller.teensy_link import rpc as rpc_mod
+
+    nowhere = TeensyLinkClient(
+        teensy_addr=("127.0.0.1", 1), rpc_port=1,
+        local_bind_stream=0, local_bind_rpc=0, bind_host="127.0.0.1")
+    nowhere.start()
+    try:
+        rpc = RpcClient(nowhere, default_timeout=0.02, default_retries=2)
+        sent = {'n': 0}
+        orig_send = nowhere.send_rpc
+
+        def counting_send(msg_type, packet):
+            sent['n'] += 1
+            return orig_send(msg_type, packet)
+        monkeypatch.setattr(nowhere, 'send_rpc', counting_send)
+
+        assert int(RpcMethod.HOME) in rpc_mod.NON_IDEMPOTENT_METHODS
+        assert int(RpcMethod.SET_POS_GAIN) not in rpc_mod.NON_IDEMPOTENT_METHODS
+
+        # Idempotent: retries honoured → 1 + 2 = 3 sends.
+        sent['n'] = 0
+        with pytest.raises(RpcTimeout):
+            rpc.call(int(RpcMethod.SET_POS_GAIN), b"\x00" * 8, retries=2)
+        assert sent['n'] == 3
+
+        # Non-idempotent: retries FORCED to 0 → exactly ONE send, even asking for 2.
+        sent['n'] = 0
+        with pytest.raises(RpcTimeout):
+            rpc.call(int(RpcMethod.HOME), b"\x00", retries=2)
+        assert sent['n'] == 1
+        try:
+            rpc.close()
+        finally:
+            pass
+    finally:
+        nowhere.stop()

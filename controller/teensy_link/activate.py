@@ -162,7 +162,13 @@ class ActivateMonitor:
                     pr.reason = f"active_errors 0x{st.active_errors:x} during activate"
                     continue
                 target = self.targets_rev[axis]
-                if (abs(st.pos_rev - target) <= self.pos_tol_rev
+                # Require CLOSED_LOOP for success (Fable-5 hardening [17]): an
+                # abort-to-IDLE that happens to leave the leg AT the target pose with
+                # low velocity must NOT read as a successful activate — the leg is
+                # de-energised, not holding. The docstring already stated this
+                # ("failure ⇒ ... not in CLOSED_LOOP"); the check enforces it.
+                if (st.axis_state == AXIS_STATE_CLOSED_LOOP
+                        and abs(st.pos_rev - target) <= self.pos_tol_rev
                         and abs(st.vel_rps) <= self.vel_tol_rps):
                     pr.phase = Phase.DONE
                     continue

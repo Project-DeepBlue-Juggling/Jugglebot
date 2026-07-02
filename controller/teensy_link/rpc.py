@@ -7,8 +7,18 @@ application's responsibility. This module provides two halves of that:
   state changes, encoder-search start, SDO read/write, etc.). Synchronous
   ``call()`` blocks the caller until a response arrives or the timeout
   expires; on timeout it retries up to ``retries`` times with the same
-  ``req_id``. Idempotence is the firmware's job — both sides correlate by
-  ``req_id``.
+  ``req_id`` — BUT only for IDEMPOTENT methods. The firmware does NOT dedup by
+  ``req_id`` (``rpc.cpp`` has no per-(method,req_id) response cache), so retrying a
+  NON-idempotent method after a LOST RESPONSE would re-dispatch a
+  physically-running op: HOME/ACTIVATE/DEACTIVATE would hit the busy latch and
+  surface a spurious ``ERR_REJECTED``, BB_THROW would duplicate a throw,
+  REBOOT_ODRIVES would re-arm the watchdog-suppression latch, HAND_TRAJ_CMD would
+  re-issue the preamble mid-trajectory. Those methods
+  (:data:`NON_IDEMPOTENT_METHODS`) are forced to ``retries=0``; their callers
+  recover a genuinely lost *request* via the higher-level telemetry-completion
+  monitors / CMD_RESULT loop, not an RPC re-dispatch. (A firmware
+  (method,req_id)→response replay cache is the clean long-term fix — deferred to
+  the firmware phase.)
 
 * :class:`RpcServer` — used to *answer* RPCs initiated by the Teensy. The
   only one defined today is :data:`RpcMethod.TIME_OF_DAY_QUERY` (wall-clock
@@ -32,6 +42,24 @@ from . import protocol as p
 from .client import TeensyLinkClient, Address
 
 logger = logging.getLogger(__name__)
+
+
+# Methods the firmware does NOT dedup and that have SIDE EFFECTS (or hit a busy
+# latch) on re-dispatch: retrying after a LOST RESPONSE would double-fire (throw /
+# hand trajectory), spuriously ERR_REJECT a physically-running move
+# (home/activate/deactivate hit the firmware busy latch), or re-arm the reboot
+# watchdog-suppression latch. call() forces retries=0 for these; their callers
+# recover a genuinely lost REQUEST via telemetry-completion monitors / CMD_RESULT,
+# never an RPC re-dispatch. (The clean fix is a firmware (method,req_id)→response
+# replay cache — deferred to the firmware phase.)
+NON_IDEMPOTENT_METHODS = frozenset({
+    int(p.RpcMethod.HOME),
+    int(p.RpcMethod.ACTIVATE),
+    int(p.RpcMethod.DEACTIVATE),
+    int(p.RpcMethod.REBOOT_ODRIVES),
+    int(p.RpcMethod.BB_THROW),
+    int(p.RpcMethod.HAND_TRAJ_CMD),
+})
 
 
 class RpcError(Exception):
@@ -137,6 +165,12 @@ class RpcClient:
             timeout = self._default_timeout
         if retries is None:
             retries = self._default_retries
+        if int(method) in NON_IDEMPOTENT_METHODS:
+            # The firmware does not dedup — never re-dispatch a non-idempotent op
+            # (a lost response must not double-fire / hit the busy latch). The
+            # caller recovers a lost request via its completion monitor. This
+            # OVERRIDES any caller-supplied retries by design.
+            retries = 0
         req_id = self._next_req_id()
         pending = _PendingRpc(int(method), req_id)
         key = (pending.method, req_id)
@@ -147,9 +181,11 @@ class RpcClient:
                 method=int(method), req_id=req_id, arg_len=len(args), pad=0
             ).pack()
             packet = payload_head + args
+            got = False
             for attempt in range(retries + 1):
                 self._link.send_rpc(int(p.MsgType.RPC_REQUEST), packet)
                 if pending.event.wait(timeout):
+                    got = True
                     break
                 logger.debug(
                     "rpc retry method=%s req_id=%d attempt=%d/%d",
@@ -158,7 +194,11 @@ class RpcClient:
                     attempt + 1,
                     retries,
                 )
-            else:
+            # Close the response-lands-after-final-wait race: the reply can arrive
+            # between the last wait() returning False and here (the _on_response
+            # handler runs on the RX thread). Check the event once more before
+            # declaring a timeout, so an accepted op is never reported as timed out.
+            if not got and not pending.event.is_set():
                 raise RpcTimeout(int(method), retries, timeout)
 
             if pending.response_status != int(p.RpcStatus.OK):

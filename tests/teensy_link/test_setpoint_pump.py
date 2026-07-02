@@ -255,6 +255,46 @@ def test_reset_clears_prior():
     assert sp is not None and reason is None
 
 
+# ── [4] reject-not-raise: a malformed command must never crash the setpoint thread ──
+
+def test_build_rejects_scalar_motor_rev_without_raising():
+    pump = _pump()
+    sp, reason = pump.build(
+        {'type': 'mpc_cmd', 'motor_rev': 2.5, 'vel_mm_s': [0.0] * 6}, 0)
+    assert sp is None and reason is not None      # rejected, NOT raised
+    assert pump.frames_rejected == 1
+
+
+def test_build_rejects_none_element_without_raising():
+    pump = _pump()
+    mr = [0.0] * 6
+    mr[2] = None
+    sp, reason = pump.build(
+        {'type': 'mpc_cmd', 'motor_rev': mr, 'vel_mm_s': [0.0] * 6}, 0)
+    assert sp is None and 'non-numeric' in reason
+    assert pump.frames_rejected == 1
+
+
+def test_build_rejects_string_field_without_raising():
+    pump = _pump()
+    sp, reason = pump.build(
+        {'type': 'mpc_cmd', 'motor_rev': ['x'] * 6, 'vel_mm_s': [0.0] * 6}, 0)
+    assert sp is None and reason is not None
+
+
+def test_bad_lookahead_clears_flag_without_raising():
+    """A None/non-numeric cmd_next CLEARS HAS_U1 (Taylor fallback), never raises,
+    and the frame is still built from the valid u0/v0."""
+    pump = _pump()
+    cn = [1.0] * 6
+    cn[0] = None
+    sp, reason = pump.build(
+        {'type': 'mpc_cmd', 'motor_rev': [0.0] * 6, 'vel_mm_s': [0.0] * 6,
+         'cmd_next_mm': cn}, 0)
+    assert reason is None and sp is not None
+    assert not (sp.flags & FLAG_HAS_U1)
+
+
 # ── Construction guards ───────────────────────────────────────────
 
 def test_short_mm_to_rev_rejected():

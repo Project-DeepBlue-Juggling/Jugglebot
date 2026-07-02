@@ -1083,6 +1083,17 @@ class TeensyBridgeNode(Node):
                         "on link_status (bridge_stow_pending=1).")
                 else:
                     self.get_logger().info("Teensy link RESTORED.")
+                # Fable-5 hardening [7]: forget the pre-loss setpoint so the per-step
+                # gate can't wedge after a firmware stow. During the loss the firmware
+                # may have stowed the legs to ~0 rev, but the pump's _prev_pos still
+                # holds the pre-loss active pose (~2.2 rev) — so the first
+                # post-reconnect MPC frame would fail the 0.3 rev step gate FOREVER
+                # (reject loop until a node restart). reset() drops _prev_pos so the
+                # next frame is accepted; the firmware MAX_DEVIATION gate remains the
+                # complementary command-vs-encoder layer (setpoint_pump's documented
+                # two-layer design). SAFE — it only forgets the prior frame, never
+                # relaxes a bound.
+                self._sp_pump.reset()
                 # Phase 2: on a confirmed UDP-link reconnect, re-read the Platform
                 # Teensy's cold-start state (it is the authoritative store; a
                 # reconnect only triggers a re-read, never INFERS reference state).
@@ -1202,6 +1213,12 @@ class TeensyBridgeNode(Node):
         Teensy the Jetson is driving setpoints (the firmware's guard-ENABLE
         precondition). Pinned to 0 unless ~enable_setpoint_output is true.
         """
+        if active and not self._mpc_active:
+            # Fable-5 hardening [7]: on the 0→1 re-enable edge, forget any stale
+            # prior setpoint so the per-step gate starts fresh (the pump may hold a
+            # _prev_pos from a prior session/pose). Same rationale as the reconnect
+            # reset; the firmware MAX_DEVIATION gate is the complementary layer.
+            self._sp_pump.reset()
         self._mpc_active = bool(active)
         self._client.set_heartbeat_flags(_FLAG_MPC_ACTIVE if active else 0)
         # Enable is the safety-relevant transition (warning); disable is benign.
@@ -1255,21 +1272,43 @@ class TeensyBridgeNode(Node):
           2. Never command a dead link (the deferred-stow latch's command gate).
           3. The SetpointPump's per-step clamp + NaN/short-vector rejection.
         Only a clean, accepted frame is transmitted.
+
+        FULLY EXCEPTION-CONTAINED (Fable-5 hardening): this runs on the dedicated
+        'teensy_bridge_setpoint' daemon thread, so one malformed command or a
+        transient send error (e.g. ENETUNREACH during the pre-latch window) must
+        NOT kill the thread while mpc_active stays 1 — that would turn a one-frame
+        problem into a restart-only outage of the production leg path with
+        misleading telemetry. build() already REJECTS (not raises) malformed input;
+        the send is OSError-guarded (mirroring the heartbeat thread); the outer
+        guard is the backstop so no unexpected error escapes to the loop.
         """
-        if not self._mpc_active:
-            return
-        if not self._link_latch.command_allowed():
-            return  # never command a dead link
-        t_origin_us = int(time.time() * 1_000_000)
-        sp, reason = self._sp_pump.build(cmd, t_origin_us)
-        if reason is not None:
+        try:
+            if not self._mpc_active:
+                return
+            if not self._link_latch.command_allowed():
+                return  # never command a dead link
+            t_origin_us = int(time.time() * 1_000_000)
+            sp, reason = self._sp_pump.build(cmd, t_origin_us)
+            if reason is not None:
+                self.get_logger().error(
+                    f"Setpoint REJECTED (not sent): {reason}",
+                    throttle_duration_sec=1.0)
+                return
+            if sp is None:
+                return  # feedback-only telemetry — nothing to send
+            try:
+                self._client.send_stream(int(MsgType.SETPOINT), sp.pack())
+            except OSError as e:
+                # Transient link error (ENETUNREACH/EHOSTUNREACH before the peer
+                # is up, or a mid-run drop). The link watchdog owns the stow; here
+                # we just drop this frame and keep the thread alive.
+                self.get_logger().error(
+                    f"Setpoint send failed (link down?): {e}",
+                    throttle_duration_sec=1.0)
+        except Exception as e:  # noqa: BLE001 — never let one frame kill the setpoint thread
             self.get_logger().error(
-                f"Setpoint REJECTED (not sent): {reason}",
+                f"Setpoint processing error (contained): {e}",
                 throttle_duration_sec=1.0)
-            return
-        if sp is None:
-            return  # feedback-only telemetry — nothing to send
-        self._client.send_stream(int(MsgType.SETPOINT), sp.pack())
 
     def _publish_link_status(self):
         """Publish link_status as a DiagnosticStatus.

@@ -89,6 +89,18 @@ def test_already_at_target_immediately_done():
     assert r.done and m.succeeded == [0]
 
 
+def test_at_target_but_not_closed_loop_is_not_success():
+    """[17]: a leg AT the target pose + settled but IDLE (an abort-to-IDLE-at-target)
+    must NOT read as a successful activate — the leg is de-energised, not holding."""
+    IDLE = 1
+    m = mon([0])
+    r = m.step(0.0, {0: st(TGT, vel_rps=0.0, state=IDLE)})
+    assert not r.done and m.succeeded == []
+    # It still fails on timeout (it never reaches CLOSED_LOOP at the target).
+    r = m.step(m.timeout_s + 1.0, {0: st(TGT, vel_rps=0.0, state=IDLE)})
+    assert r.done and m.succeeded == [] and 0 in m.failed
+
+
 # ── failure paths ────────────────────────────────────────────────────────────
 
 def test_active_errors_during_activate_fails():

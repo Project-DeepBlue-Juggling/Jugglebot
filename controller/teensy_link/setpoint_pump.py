@@ -125,13 +125,25 @@ class SetpointPump:
         gate (motor_guard.py:445, 585) — a wrong-length command vector is
         malformed, so reject rather than silently take the first ``n``.
 
+        Robust to a malformed message: a scalar / non-sequence ``seq`` or a
+        ``None`` / non-numeric element returns ``(None, reason)`` rather than
+        raising, so one bad MPC frame is a REJECT (surfaced + counted), never a
+        crash of the setpoint thread.
+
         Returns ``(values_list, None)`` on success or ``(None, reason)``.
         """
-        if len(seq) != self.n:
-            return None, f'wrong-length {name} vector (len={len(seq)}, need {self.n})'
+        try:
+            length = len(seq)
+        except TypeError:
+            return None, f'{name} is not a sequence ({type(seq).__name__})'
+        if length != self.n:
+            return None, f'wrong-length {name} vector (len={length}, need {self.n})'
         out = []
         for i in range(self.n):
-            v = float(seq[i])
+            try:
+                v = float(seq[i])
+            except (TypeError, ValueError):
+                return None, f'non-numeric {name}[{i}] ({seq[i]!r})'
             if not math.isfinite(v):
                 return None, f'non-finite {name}[{i}]'
             out.append(v)
@@ -146,7 +158,23 @@ class SetpointPump:
           * ``(None, None)``     — nothing to send (no position command in the
             message); NOT a fault.
           * ``(None, reason)``   — a SAFETY reject (do not send, surface a fault).
+
+        REJECT-NOT-RAISE contract: this is called on the production setpoint
+        thread, so ANY malformed command (a scalar/None/wrong-type field that slips
+        the checks below) must surface as a counted reject, never an exception that
+        kills the thread while ``mpc_active`` stays 1. The explicit ``_finite_vec``
+        checks catch the known-malformed shapes; this outer guard is the
+        belt-and-suspenders backstop for anything they miss.
         """
+        try:
+            return self._build(cmd, t_origin_us)
+        except Exception as e:  # noqa: BLE001 — one bad frame must not crash the thread
+            self.frames_rejected += 1
+            self.last_reject_reason = f'malformed cmd: {e!r}'
+            return None, self.last_reject_reason
+
+    def _build(self, cmd: dict, t_origin_us: int
+               ) -> Tuple[Optional[Setpoint], Optional[str]]:
         mr = self.mm_to_rev
 
         # ── u0: motor_rev (ODrive conv) if present, else ext_mm × mm_to_rev ──
@@ -195,21 +223,23 @@ class SetpointPump:
         # gate (motor_guard.py:585, 597) so a malformed >6-element lookahead
         # clears the flag (Taylor fallback) instead of silently taking the
         # first 6 and emitting a divergent-but-accepted β frame.
+        # Absent/malformed lookahead CLEARS the flag (never rejects the frame,
+        # never raises) — routed through the hardened _finite_vec so a None/
+        # non-numeric/wrong-length cmd_next just falls back to the Taylor path.
         flags = 0
         u1 = [0.0] * self.n
         u2 = [0.0] * self.n
         cmd_next = cmd.get('cmd_next_mm')
-        if cmd_next is not None and len(cmd_next) == self.n:
-            cand = [float(cmd_next[i]) for i in range(self.n)]
-            if all(math.isfinite(x) for x in cand):
+        if cmd_next is not None:
+            cand, _reason = self._finite_vec(cmd_next, 'cmd_next_mm')
+            if cand is not None:
                 u1 = [cand[i] * mr[i] for i in range(self.n)]
                 flags |= FLAG_HAS_U1
         # u2 only meaningful with u1 (sets the Hermite endpoint velocity).
         cmd_next2 = cmd.get('cmd_next2_mm')
-        if (flags & FLAG_HAS_U1) and cmd_next2 is not None \
-                and len(cmd_next2) == self.n:
-            cand = [float(cmd_next2[i]) for i in range(self.n)]
-            if all(math.isfinite(x) for x in cand):
+        if (flags & FLAG_HAS_U1) and cmd_next2 is not None:
+            cand, _reason = self._finite_vec(cmd_next2, 'cmd_next2_mm')
+            if cand is not None:
                 u2 = [cand[i] * mr[i] for i in range(self.n)]
                 flags |= FLAG_HAS_U2
 

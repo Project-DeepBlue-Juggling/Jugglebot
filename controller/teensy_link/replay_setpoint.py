@@ -153,6 +153,14 @@ def scale_to_bench(samples: List[float], *, stroke_min_rev: float,
 
     Returns ``(scaled_samples, ScaleInfo)``.
     """
+    # Fable-5 hardening [17]: a floor-above-ceiling config is unusable — the affine
+    # map + hard clamp would silently emit a flat/sign-inverted profile. Fail loud
+    # (the module's own "never a silent slow-down" stance), never execute it.
+    if stroke_min_rev > ceiling_rev:
+        raise ValueError(
+            f"stroke_min_rev ({stroke_min_rev:.3f}) > ceiling_rev "
+            f"({ceiling_rev:.3f}) — unusable bench scaling config (would produce a "
+            f"flat/inverted profile). Fix the bench floor/ceiling.")
     raw_min = min(samples)
     raw_max = max(samples)
     if raw_max > ceiling_rev:

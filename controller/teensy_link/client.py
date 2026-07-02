@@ -51,6 +51,7 @@ class LinkStats:
     tx_bytes: int = 0
     crc_errors: int = 0
     decode_errors: int = 0
+    drain_capped: int = 0    # times a single drain hit the per-wakeup frame cap
     seq_gaps_by_type: Dict[int, int] = field(default_factory=dict)
     rx_count_by_type: Dict[int, int] = field(default_factory=dict)
     last_rx_us: int = 0
@@ -64,6 +65,7 @@ class LinkStats:
             tx_bytes=self.tx_bytes,
             crc_errors=self.crc_errors,
             decode_errors=self.decode_errors,
+            drain_capped=self.drain_capped,
             seq_gaps_by_type=dict(self.seq_gaps_by_type),
             rx_count_by_type=dict(self.rx_count_by_type),
             last_rx_us=self.last_rx_us,
@@ -320,9 +322,16 @@ class TeensyLinkClient:
             for s in ready:
                 self._drain_socket(s)
 
+    # Fable-5 hardening [17]: cap frames drained per socket per select-wakeup so a
+    # sustained flood on one socket can't starve the other within a single wakeup
+    # (the stream socket could otherwise monopolise the RX loop and delay RPC
+    # responses). 256 is ~16× the legitimate downlink rate; overflow is counted
+    # (stats.drain_capped) and simply picked up on the next wakeup.
+    _MAX_DRAIN_PER_WAKE = 256
+
     def _drain_socket(self, sock: socket.socket) -> None:
-        # Drain everything pending on this socket without blocking.
-        while True:
+        # Drain pending frames on this socket without blocking, bounded per wakeup.
+        for _ in range(self._MAX_DRAIN_PER_WAKE):
             try:
                 data, addr = sock.recvfrom(p.MAX_FRAME + 64)
             except BlockingIOError:
@@ -349,6 +358,11 @@ class TeensyLinkClient:
             if msg_type == int(p.MsgType.HEARTBEAT_T2J):
                 self.stats.last_t2j_heartbeat_us = self.stats.last_rx_us
             self._dispatch(msg_type, seq, payload, addr)
+        else:
+            # Loop ran the full cap without a BlockingIOError return — the socket
+            # still had frames. Count it (surfaced on [diag]); the remainder is
+            # drained on the next select wakeup (bounded, never a hard stall).
+            self.stats.drain_capped += 1
 
     def _track_seq(self, msg_type: int, seq: int) -> None:
         prev = self._last_rx_seq.get(msg_type)

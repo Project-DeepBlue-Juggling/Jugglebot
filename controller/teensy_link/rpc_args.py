@@ -302,6 +302,7 @@ METHOD = {
     RpcMethod.ENCODER_SEARCH: ArgAxisOnly,
     RpcMethod.HOME: ArgAxisOnly,
     RpcMethod.ACTIVATE: ArgAxisOnly,
+    RpcMethod.DEACTIVATE: ArgAxisOnly,   # Fable-5 [17]: was missing (axis-only, like ACTIVATE)
     RpcMethod.SDO_READ: ArgSdoRead,
     RpcMethod.SDO_WRITE: ArgSdoWrite,
     RpcMethod.BB_THROW: ArgBbThrow,

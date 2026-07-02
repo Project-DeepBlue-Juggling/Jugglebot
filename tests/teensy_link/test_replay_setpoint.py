@@ -115,6 +115,13 @@ def test_scale_velocity_guard_raises_when_too_fast():
         scale_to_bench(s, stroke_min_rev=S_MIN)
 
 
+def test_scale_raises_when_floor_above_ceiling():
+    """[17]: an unusable floor>ceiling bench config fails LOUD rather than emitting a
+    flat/sign-inverted profile."""
+    with pytest.raises(ValueError, match="ceiling"):
+        scale_to_bench([0.1, 0.2, 0.3], stroke_min_rev=5.0, ceiling_rev=2.0)
+
+
 def test_scale_info_is_dataclass():
     _, info = scale_to_bench([0.1, 0.15, 0.2], stroke_min_rev=S_MIN)
     assert isinstance(info, ScaleInfo)
