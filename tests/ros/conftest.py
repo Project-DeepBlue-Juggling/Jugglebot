@@ -455,6 +455,13 @@ class MockNode:
         self._services = {}
         self._subscriptions = {}
         self._clients = {}
+        # Action server/client registries (Phase 4 drift-guard): real rclpy hides an
+        # action's sub-services from node.services/node.clients (they live in a
+        # Waitable), and the mock ActionServer/ActionClient register nothing on the
+        # node. Recording (name, type) here lets a contract test introspect the action
+        # surface deterministically, offline, under the mock.
+        self._action_servers = {}
+        self._action_clients = {}
         self._params = {}
 
     def get_logger(self):
@@ -471,32 +478,43 @@ class MockNode:
         return _MockParameter(self._params.get(name))
 
     def create_service(self, *a, **kw):
-        # Record the service name (2nd positional, or 'srv_name' kwarg) so tests
-        # can assert the production service surface — e.g. the Phase 11 / U4
-        # rename that the orchestrator's clients now depend on.
+        # Record the service (name, type) so tests can assert the production service
+        # surface AND its type — e.g. the Phase 11 / U4 rename + the Phase 4 conduit
+        # (name, type) contract the orchestrator's clients depend on. srv_type is the
+        # 1st positional (or 'srv_type' kwarg); srv_name the 2nd (or 'srv_name').
+        srv_type = a[0] if len(a) >= 1 else kw.get('srv_type')
         name = a[1] if len(a) >= 2 else kw.get('srv_name')
         svc = MagicMock()
+        svc.srv_name = name
+        svc.srv_type = srv_type
         if name is not None:
             self._services[name] = svc
         return svc
 
-    def create_client(self, srv_type, name):
+    def create_client(self, srv_type, name, **kw):
         client = MockServiceClient()
         client.srv_name = name
+        client.srv_type = srv_type
         self._clients[name] = client
         return client
 
     def create_subscription(self, *a, **kw):
-        # Record the topic name (2nd positional, or 'topic' kwarg) for the same
-        # reason as create_service.
+        # Record the subscription (topic, msg_type) for the same reason as
+        # create_service. msg_type is the 1st positional (or 'msg_type'); topic the
+        # 2nd (or 'topic').
+        msg_type = a[0] if len(a) >= 1 else kw.get('msg_type')
         name = a[1] if len(a) >= 2 else kw.get('topic')
         sub = MagicMock()
+        sub.topic_name = name
+        sub.msg_type = msg_type
         if name is not None:
             self._subscriptions[name] = sub
         return sub
 
-    def create_publisher(self, msg_type, topic, qos):
+    def create_publisher(self, msg_type, topic, qos, **kw):
         pub = MockPublisher()
+        pub.topic_name = topic
+        pub.msg_type = msg_type
         self._publishers[topic] = pub
         return pub
 
@@ -534,6 +552,12 @@ class MockActionServer:
         self._goal_callback = goal_callback
         self._cancel_callback = cancel_callback
         self._callback_group = callback_group
+        # Phase 4 drift-guard: expose the action (name, type) and register on the node
+        # so a contract test can introspect it (real rclpy hides these in a Waitable).
+        self.action_name = name
+        self.action_type = action_type
+        if node is not None and hasattr(node, '_action_servers'):
+            node._action_servers[name] = self
 
 
 class MockActionClient:
@@ -542,6 +566,11 @@ class MockActionClient:
         self._action_type = action_type
         self._name = name
         self._server_ready = True
+        # Phase 4 drift-guard: expose (name, type) + register on the node.
+        self.action_name = name
+        self.action_type = action_type
+        if node is not None and hasattr(node, '_action_clients'):
+            node._action_clients[name] = self
 
     def server_is_ready(self):
         return self._server_ready

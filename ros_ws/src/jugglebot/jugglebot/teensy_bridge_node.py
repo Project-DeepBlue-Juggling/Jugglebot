@@ -65,11 +65,13 @@ from jugglebot_interfaces.srv import (
     SetHandGains,
     SetFloat,
     SetString,
+    ActivateOrDeactivate,
+    GetTiltReadingService,
 )
-from jugglebot_interfaces.action import BallButlerThrowCmd
+from jugglebot_interfaces.action import BallButlerThrowCmd, HomeMotors
 from geometry_msgs.msg import Quaternion
 from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
-from std_msgs.msg import Float32MultiArray
+from std_msgs.msg import Float32MultiArray, Float64MultiArray
 from sensor_msgs.msg import JointState
 from std_srvs.srv import Trigger
 
@@ -534,18 +536,80 @@ class TeensyBridgeNode(Node):
         # (encoder_search, odrive_command, set_motor_vel_curr_limits) so the
         # orchestrator's existing service clients reach the bridge; clear_errors,
         # reboot_odrives and home are new bridge ops, named bare for consistency.
+        #
+        # ── Cold-start verb callback group (Phase 4) ────────────────────────
+        # Every BLOCKING cold-start verb — the manual encoder_search / home /
+        # configure / activate / deactivate services (each a multi-second _run_*
+        # poll loop) AND the Phase-4 orchestrator-facing home_motors action /
+        # activate_or_deactivate / get_platform_tilt / set_level_state below — runs
+        # in ONE ReentrantCallbackGroup so a multi-second move never starves the
+        # 100 Hz robot_state publish + heartbeat (those stay in the node's default
+        # MutuallyExclusiveCallbackGroup, dispatched on OTHER MultiThreadedExecutor
+        # threads). Without this, a blocking verb in the default group serializes with
+        # — and stalls — the telemetry timers for the whole move. Reentrancy is safe
+        # here: the firmware busy-rejects a second concurrent move and the orchestrator
+        # drives strictly sequentially; the one remaining race (two home_motors goals)
+        # is closed by _home_action_goal's in-progress guard. clear_errors /
+        # reboot_odrives / odrive_command stay in the default group — they are quick
+        # single RPCs, not multi-second moves.
+        self._coldstart_cbgroup = ReentrantCallbackGroup()
+
         self.create_service(Trigger, 'clear_errors', self._svc_clear_errors)
         self.create_service(Trigger, 'reboot_odrives', self._svc_reboot_odrives)
-        self.create_service(Trigger, 'encoder_search', self._svc_encoder_search)
-        self.create_service(Trigger, 'home', self._svc_home)
-        self.create_service(Trigger, 'configure', self._svc_configure)
-        self.create_service(Trigger, 'activate', self._svc_activate)
-        self.create_service(Trigger, 'deactivate', self._svc_deactivate)
+        self.create_service(Trigger, 'encoder_search', self._svc_encoder_search,
+                            callback_group=self._coldstart_cbgroup)
+        self.create_service(Trigger, 'home', self._svc_home,
+                            callback_group=self._coldstart_cbgroup)
+        self.create_service(Trigger, 'configure', self._svc_configure,
+                            callback_group=self._coldstart_cbgroup)
+        self.create_service(Trigger, 'activate', self._svc_activate,
+                            callback_group=self._coldstart_cbgroup)
+        self.create_service(Trigger, 'deactivate', self._svc_deactivate,
+                            callback_group=self._coldstart_cbgroup)
         self.create_service(ODriveCommandService, 'odrive_command',
                             self._svc_odrive_command)
         self.create_subscription(
             SetMotorVelCurrLimitsMessage, 'set_motor_vel_curr_limits',
             self._sub_vel_curr_limits, 10)
+
+        # ── Orchestrator-facing cold-start conduit (Phase 4) ────────────────
+        # Makes the bridge a drop-in for the retired can_node from the LOCKED
+        # orchestrator_node's view — ZERO edits to orchestrator_node / state_machine
+        # (locked-decision #1, behaviour parity not orchestrator churn). Each of the
+        # four wrappers registers the exact (name, type) interface the orchestrator
+        # drives cold-start through and delegates to the bridge's existing verbs:
+        #   home_motors (HomeMotors action)      → _do_home (homes legs + hand, Phase 5)
+        #   activate_or_deactivate (srv)         → _run_activate + _run_configure /
+        #                                          _run_deactivate
+        #   get_platform_tilt (srv)              → relay_read_tilt (NaN-on-failure)
+        #   set_level_state (Float64MultiArray)  → _write_level_state (STATE_WRITE)
+        # Registered directly on the bridge (not a separate conduit node/module): the
+        # bridge owns CAN3 + the RPC client + these verbs; there is no existing
+        # actions/services module to join, and grouping four verbs into one only
+        # because they land together would be cohesion-by-implementation-moment (a
+        # future teensy_bridge_node split should cut along the relay / hand /
+        # cold-start seams instead). The drift-guard test
+        # (tests/ros/test_orchestrator_conduit_contract.py) pins this (name, type) set
+        # to the orchestrator's declared clients so a future rename fails the suite,
+        # not the bench.
+        self._home_lock = threading.Lock()
+        self._home_in_progress = False   # guards concurrent home_motors goals
+        self._home_action = ActionServer(
+            self, HomeMotors, 'home_motors',
+            execute_callback=self._home_action_execute,
+            goal_callback=self._home_action_goal,
+            callback_group=self._coldstart_cbgroup)
+        self.create_service(
+            ActivateOrDeactivate, 'activate_or_deactivate',
+            self._svc_activate_or_deactivate,
+            callback_group=self._coldstart_cbgroup)
+        self.create_service(
+            GetTiltReadingService, 'get_platform_tilt',
+            self._svc_get_platform_tilt,
+            callback_group=self._coldstart_cbgroup)
+        self.create_subscription(
+            Float64MultiArray, 'set_level_state', self._sub_set_level_state, 10,
+            callback_group=self._coldstart_cbgroup)
 
         # ── Hand command surface (Phase 5) ──────────────────────────────────
         # The can-bridge owns CAN3, which carries the hand ODrive (axis 6), so it
@@ -1676,6 +1740,32 @@ class TeensyBridgeNode(Node):
                 self._cold_start_authoritative = True
         return ok, msg
 
+    def _write_level_state(self, levelling_complete, tiltX, tiltY):
+        """Persist the levelling result (levelling_complete + pose_offset) via
+        STATE_WRITE, read-modify-write THROUGH the cache so is_homed is preserved (the
+        bridge is the sole writer — a levelling write must not clobber a prior homing
+        result, and vice versa). The Phase-4 set_level_state subscriber's persist
+        path; byte-parity with can_node._sub_set_level_state → _update_teensy_state
+        (which merged into last_known_state, so is_homed carried through). Updates the
+        cache on success. Returns ``(ok, message)``."""
+        with self._lock:
+            cs = self._cold_start_state
+        ok, msg = self.relay_write_robot_state(
+            is_homed=cs.is_homed,                 # preserve (read-modify-write)
+            levelling_complete=bool(levelling_complete),
+            pose_offset_tiltX=float(tiltX),
+            pose_offset_tiltY=float(tiltY))
+        if ok:
+            with self._lock:
+                # _replace on the CURRENT cache (re-read) preserves any concurrent
+                # is_homed update; only levelling + pose are changed here.
+                self._cold_start_state = self._cold_start_state._replace(
+                    levelling_complete=bool(levelling_complete),
+                    pose_offset_tiltX=float(tiltX),
+                    pose_offset_tiltY=float(tiltY))
+                self._cold_start_authoritative = True
+        return ok, msg
+
     def _clear_cold_start_state_on_reboot(self):
         """REBOOT_ODRIVES shared-hook step 2 (Phase 2): clear is_homed +
         levelling_complete + pose_offset on the Platform Teensy — the ODrives lose
@@ -2183,34 +2273,61 @@ class TeensyBridgeNode(Node):
         res.message = msg
         return res
 
+    def _do_home(self):
+        """Home the configured axes (legs + hand), persist the is_homed RESULT, and
+        (on success) apply the β-path cold-start config — the shared body behind BOTH
+        the manual ``/home`` Trigger service AND the orchestrator-facing
+        ``home_motors`` action (Phase 4). One definition, so the two entry points can
+        never drift. Returns ``(ok, message)``.
+
+        Scope via the ``home_axes`` parameter (default all legs + the hand; ``[0]``
+        for the standalone-leg bench rig). The firmware HOME handler runs the
+        velocity-limited move-to-hardstop autonomously; ``_run_home`` drives +
+        observes it (applying the hand gains before HOME(6), Phase 5).
+
+        Persisting is_homed = the home RESULT (read-modify-write through the cache so
+        levelling/pose are preserved) is the safety crux, EXACT can_node.py:847 parity
+        (``_update_teensy_state({'is_homed': success})`` writes ``success``, i.e.
+        False on a FAILED home too): a failed re-home of an already-homed robot MUST
+        clear is_homed, or a stale is_homed=True would let the orchestrator skip
+        homing on an unhomed robot (state_machine.py:238-239). A failed persist
+        surfaces a warning but does not change the home result (a missed persist →
+        next boot re-homes, the SAFE direction). On success, re-apply the cold-start
+        config (gains/limits may have been changed in/since a prior session), scoped
+        to the homed axes; a configure failure surfaces but does not undo homing.
+
+        SINGLE-FLIGHT GUARDED HERE (the real enforcement point): the cold-start
+        ReentrantCallbackGroup lets the /home Trigger service AND the home_motors
+        action reach this concurrently, and two _run_home sequences would interleave
+        HOME RPCs + race _write_is_homed. Guarding _do_home itself (not just
+        _home_action_goal) covers action-vs-action, action-vs-/home, AND /home-vs-
+        /home; a concurrent caller gets (False, "home already in progress").
+        """
+        with self._home_lock:
+            if self._home_in_progress:
+                return False, "home already in progress"
+            self._home_in_progress = True
+        try:
+            axes = list(self.get_parameter('home_axes').value or [])
+            ok, msg = self._run_home(axes)
+            w_ok, w_msg = self._write_is_homed(ok)
+            if not w_ok:
+                self.get_logger().error(
+                    f"home: persisting is_homed={int(ok)} failed: {w_msg}")
+                msg = f"{msg}; WARNING persist is_homed failed: {w_msg}"
+            if ok:
+                cfg_ok, cfg_msg = self._run_configure(axes)
+                ok = ok and cfg_ok
+                msg = f"{msg}; {cfg_msg}"
+            return ok, msg
+        finally:
+            with self._home_lock:
+                self._home_in_progress = False
+
     def _svc_home(self, req, res):
-        # Phase 9b: the firmware HOME handler runs the velocity-limited
-        # move-to-hardstop autonomously; this drives + observes it to completion.
-        # Scope via the home_axes parameter (default all legs; [0] for the
-        # standalone-leg bench rig).
-        axes = list(self.get_parameter('home_axes').value or [])
-        ok, msg = self._run_home(axes)
-        # Phase 2: persist is_homed = the home RESULT (read-modify-write through the
-        # cache so levelling/pose are preserved), EXACT can_node.py:847 parity
-        # (_update_teensy_state({'is_homed': success}) writes `success`, i.e. False
-        # on a FAILED home too). Writing the result unconditionally is the safety
-        # crux: a failed re-home of an already-homed robot must clear is_homed, or a
-        # stale is_homed=True would let the orchestrator skip homing on an unhomed
-        # robot (state_machine.py:238-239). A failed persist surfaces a warning but
-        # does not change the home result (a missed persist → next boot re-homes,
-        # the SAFE direction).
-        w_ok, w_msg = self._write_is_homed(ok)
-        if not w_ok:
-            self.get_logger().error(
-                f"home: persisting is_homed={int(ok)} failed: {w_msg}")
-            msg = f"{msg}; WARNING persist is_homed failed: {w_msg}"
-        if ok:
-            # Phase 11 U5: apply the cold-start config after every successful homing
-            # (gains/limits may have been changed in/since a prior session). Scope it
-            # to the homed axes. A configure failure surfaces but does not undo homing.
-            cfg_ok, cfg_msg = self._run_configure(axes)
-            ok = ok and cfg_ok
-            msg = f"{msg}; {cfg_msg}"
+        # Phase 9b + Phase 4: the manual /home Trigger service shares _do_home() with
+        # the orchestrator's home_motors action — one home+persist+configure body.
+        ok, msg = self._do_home()
         res.success = ok
         res.message = msg
         return res
@@ -2360,6 +2477,158 @@ class TeensyBridgeNode(Node):
         res.success = ok
         res.message = msg
         return res
+
+    # ═══════════════════════════════════════════════════════════
+    # Orchestrator-facing cold-start conduit (Phase 4)
+    # ═══════════════════════════════════════════════════════════
+    # Thin wrappers exposing the exact (name, type) interfaces the LOCKED
+    # orchestrator drives cold-start through, delegating to the bridge's existing
+    # verbs. Zero edits to orchestrator_node / state_machine (locked-decision #1).
+
+    def _home_action_goal(self, goal_request):
+        """Fast-reject a concurrent home_motors goal for a clean action REJECT. The
+        AUTHORITATIVE single-flight guard lives in _do_home() (so it also covers the
+        /home Trigger path); this is only the action-side optimization so a redundant
+        goal is rejected up front rather than accepted-then-aborted. PEEK ONLY — it
+        does not claim the guard (that happens in _do_home), so a goal that slips past
+        this peek is still safely rejected by _do_home. Mirrors bb/throw's guard."""
+        with self._home_lock:
+            if self._home_in_progress:
+                self.get_logger().warn(
+                    'home_motors: rejecting goal — a home is already in progress')
+                return GoalResponse.REJECT
+        return GoalResponse.ACCEPT
+
+    def _home_action_execute(self, goal_handle):
+        """home_motors action: the orchestrator's HomingHandler drives this
+        (ActionClient(HomeMotors, 'home_motors'), orchestrator_node.py:61). Wraps the
+        shared _do_home() (single-flight guarded; home legs + hand → persist is_homed →
+        configure) and returns HomeMotors.Result(success) — byte-parity with
+        can_node._action_home (can_node.py:843-861: home → persist → succeed/abort →
+        Result(success)). The firmware HOME-axis-6 support + hand gains landed in
+        Phase 5, so this homes the hand too (parity with _home_robot_steps). A
+        concurrent home (guard held) returns (False, …) → the goal aborts."""
+        result = HomeMotors.Result()
+        try:
+            ok, msg = self._do_home()
+            result.success = ok
+            if ok:
+                self.get_logger().info(f"home_motors: {msg}")
+                goal_handle.succeed()
+            else:
+                self.get_logger().error(f"home_motors FAILED: {msg}")
+                goal_handle.abort()
+            return result
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().error(f"home_motors error: {e}")
+            result.success = False
+            goal_handle.abort()
+            return result
+
+    def _svc_activate_or_deactivate(self, req, res):
+        """activate_or_deactivate: the orchestrator's ActiveHandler / LevellingHandler
+        drive this (ActivateOrDeactivate client, orchestrator_node.py:51-52; command=
+        'activate'|'deactivate'). Dispatches to _run_activate / _run_deactivate on the
+        configured axes — the analogue of can_node._svc_activate_or_deactivate
+        (can_node.py:765-780).
+
+        ACTIVATE folds a _run_configure AFTER the move (parity requirement, audit rows
+        27/28): _run_activate ends the legs in TRAP_TRAJ holding the active pose;
+        _run_configure switches them to POSITION/PASSTHROUGH so run_mpc.py's 40 Hz
+        interp is the sole setpoint source (can_node ended PASSTHROUGH; the bridge's
+        _run_activate alone ends TRAP_TRAJ). Order is activate-then-configure —
+        configure is safe post-move (legs CLOSED_LOOP holding pose, motion-free; see
+        _run_configure). A configure failure fails the result (legs at pose but not
+        interp-ready is a real failure for run_mpc), mirroring _svc_home's fold. The
+        configure scopes to activate_axes (the legs that moved; the hand is not part of
+        ACTIVATE — it is rejected on axis 6)."""
+        cmd = str(req.command)
+        if cmd == 'activate':
+            axes = list(self.get_parameter('activate_axes').value or [])
+            ok, msg = self._run_activate(axes)
+            if ok:
+                cfg_ok, cfg_msg = self._run_configure(axes)
+                ok = ok and cfg_ok
+                msg = f"{msg}; {cfg_msg}"
+            res.success = ok
+            res.message = f"Platform activated. {msg}" if ok else msg
+        elif cmd == 'deactivate':
+            axes = list(self.get_parameter('deactivate_axes').value or [])
+            ok, msg = self._run_deactivate(axes)
+            res.success = ok
+            res.message = f"Platform deactivated. {msg}" if ok else msg
+        else:
+            res.success = False
+            res.message = f"Invalid command: {cmd}"
+        return res
+
+    # Tilt-read retry (Phase 4): bounded retries on a failed/out-of-range relay read,
+    # porting can_node's tilt robustness (can_node._tilt_reading_steps: resend on
+    # timeout, retry on out-of-range, NaN after exhaustion — parity row 60).
+    _TILT_READ_ATTEMPTS = 3
+
+    def _svc_get_platform_tilt(self, req, res):
+        """get_platform_tilt: the orchestrator's LevellingHandler drives this
+        (GetTiltReadingService client, orchestrator_node.py:57-58; the level_get_tilt
+        phase). Reads the Platform-Teensy inclinometer via the relay TILT_READ (Phase 1
+        relay_read_tilt) with bounded retry + a validity bound, and returns the
+        NaN-on-failure shape the orchestrator already consumes (orchestrator_node.py:
+        194-206: NaN in tilt_xy → operation_result=False → LevellingHandler → FAULT).
+        Byte-parity with can_node._svc_get_tilt (can_node.py:749-763) + the
+        _tilt_reading_steps validity bound (|tilt| ≤ JB_OP_MAX_VALID_TILT_RAD, row 60)."""
+        try:
+            tx = ty = None
+            for _ in range(self._TILT_READ_ATTEMPTS):
+                ok, msg, tilt = self.relay_read_tilt()
+                if ok and tilt is not None:
+                    cand_x, cand_y = float(tilt[0]), float(tilt[1])
+                    if (abs(cand_x) <= hw.JB_OP_MAX_VALID_TILT_RAD
+                            and abs(cand_y) <= hw.JB_OP_MAX_VALID_TILT_RAD):
+                        tx, ty = cand_x, cand_y
+                        break
+                    self.get_logger().warning(
+                        f"tilt read out of range ([{cand_x:.3f}, {cand_y:.3f}] rad) "
+                        "— retrying")
+                else:
+                    self.get_logger().warning(f"tilt read failed: {msg} — retrying")
+            if tx is None:
+                # Signal failure with NaN so the orchestrator doesn't mistake it for
+                # real data (can_node._svc_get_tilt parity).
+                res.tilt_xy = [float('nan'), float('nan')]
+                res.tilt_quat = Quaternion(w=float('nan'))
+                self.get_logger().error("get_platform_tilt: read failed (NaN returned)")
+            else:
+                res.tilt_xy = [tx, ty]
+                res.tilt_quat = _tilt_to_quat(tx, ty)
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().error(f"get_platform_tilt error: {e}")
+            res.tilt_xy = [float('nan'), float('nan')]
+            res.tilt_quat = Quaternion(w=float('nan'))
+        return res
+
+    def _sub_set_level_state(self, msg):
+        """set_level_state: the orchestrator's LevellingHandler publishes
+        [levelling_complete_flag, tiltX, tiltY] on the level_persist_state phase
+        (orchestrator_node.py:76-77, 323-330). Persist it to the Platform Teensy via
+        _write_level_state (relay STATE_WRITE, read-modify-write preserving is_homed).
+        Byte-parity with can_node._sub_set_level_state (can_node.py:1052-1064)."""
+        try:
+            data = list(msg.data)
+            if len(data) < 3:
+                self.get_logger().warning(
+                    f"set_level_state: expected [flag, tiltX, tiltY], got {data}")
+                return
+            levelling_complete = bool(data[0])
+            tilt_x, tilt_y = float(data[1]), float(data[2])
+            ok, wmsg = self._write_level_state(levelling_complete, tilt_x, tilt_y)
+            if ok:
+                self.get_logger().info(
+                    f"Level state persisted: complete={levelling_complete}, "
+                    f"offset=[{tilt_x:.4f}, {tilt_y:.4f}] rad")
+            else:
+                self.get_logger().error(f"set_level_state persist failed: {wmsg}")
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().error(f"set_level_state error: {e}")
 
     # ═══════════════════════════════════════════════════════════
     # Ball Butler (Phase A cutover — replaces can_node bb/*)
