@@ -225,3 +225,123 @@ def _screaming(camel: str) -> str:
             out.append("_")
         out.append(c.upper())
     return "".join(out)
+
+
+# ── 6. PROTOCOL_VERSION freeze + wire-layout freeze (Fable-5 hardening [15]) ───
+#
+# Coverage gap 16 (canhub-hardening.md): "PROTOCOL_VERSION layout freeze absent
+# (one violation shipped in 0935c63)." A layout change WITHOUT a version bump ships
+# two firmwares that memcpy incompatible structs at the same version — silent, and
+# exactly what bit 0935c63. The version freeze pins the constant (a bump is
+# deliberate + fleet-wide); the layout freeze hashes the entire on-wire contract so
+# ANY field/size/enum change forces either a version bump or a deliberate re-pin.
+
+def _spec_const(gen, name):
+    return next(v for (n, v, *_rest) in gen.CONSTANTS if n == name)
+
+
+def test_protocol_version_frozen(gen, proto):
+    """PROTOCOL_VERSION is pinned across generator + Python module + C++ header.
+    Bumping it is an INCOMPATIBLE-wire change that requires reflashing the whole
+    fleet — this makes the bump deliberate and keeps all three artifacts in lockstep."""
+    spec_ver = _spec_const(gen, "PROTOCOL_VERSION")
+    assert spec_ver == 1, (
+        f"PROTOCOL_VERSION changed to {spec_ver}. If this is an intentional "
+        "incompatible-wire bump: update this pin, re-pin test_wire_layout_frozen, and "
+        "reflash the whole fleet (Jetson + Teensy ship the same version).")
+    assert proto.PROTOCOL_VERSION == spec_ver, "generated Python module out of sync"
+    cpp = _CPP_COMMITTED.read_text()
+    assert f"constexpr uint8_t PROTOCOL_VERSION = {spec_ver}u;" in cpp, (
+        "C++ header PROTOCOL_VERSION differs from the spec")
+
+
+def test_wire_layout_frozen(gen):
+    """A stable hash over the ENTIRE wire contract — every message's field
+    types/counts/order + payload size, every RPC-arg layout, the framed MsgType
+    values, and the framing constants. ANY on-wire layout change flips this hash,
+    forcing the author to either bump PROTOCOL_VERSION (incompatible) or, for a
+    backward-compatible ADDITION, re-pin _EXPECTED deliberately. This is the guard
+    the 0935c63 layout-without-bump regression would have tripped."""
+    import hashlib
+    h = hashlib.sha256()
+    for c in ("PROTOCOL_VERSION", "MAGIC", "HEADER_SIZE", "CRC_SIZE", "MAX_PAYLOAD"):
+        h.update(f"{c}={_spec_const(gen, c)};".encode())
+    for msg in gen.MESSAGES:
+        h.update(f"MSG {msg.name} type={msg.msg_type} sz={msg.payload_size} "
+                 f"fmt={msg.struct_fmt};".encode())
+        for f in msg.fields:
+            h.update(f" {f.name}:{f.type}x{f.count}".encode())
+    for arg in gen.RPC_ARGS:
+        h.update(f"ARG {arg.name} sz={arg.size} fmt={arg.struct_fmt};".encode())
+        for f in arg.fields:
+            h.update(f" {f.name}:{f.type}x{f.count}".encode())
+    for member, value, *_ in gen.ENUMS["MsgType"]:
+        h.update(f"MT {member}={value};".encode())
+    digest = h.hexdigest()
+    _EXPECTED = "6dc775115781a0d5ab231f91dec8ff05dfac74f0ecb5fd410fc57902a2948ecd"
+    assert digest == _EXPECTED, (
+        "The UDP wire LAYOUT changed (a message/arg field layout, a framed MsgType "
+        "value, or a framing constant). If INCOMPATIBLE, bump PROTOCOL_VERSION. Either "
+        f"way update _EXPECTED to:\n  {digest}")
+
+
+# ── 7. Codegen lints (Fable-5 hardening [15]) ─────────────────────────────────
+
+def test_all_enum_values_unique(gen):
+    """Every enum's member VALUES are unique. A duplicate would alias two wire codes
+    (e.g. two RpcMethods sharing an id → the dispatcher runs the wrong handler)."""
+    for name, members in gen.ENUMS.items():
+        values = [v for (_m, v, *_r) in members]
+        dupes = {v for v in values if values.count(v) > 1}
+        assert not dupes, f"{name} has duplicate enum values: {sorted(dupes)}"
+
+
+def test_all_enum_member_names_unique(gen):
+    for name, members in gen.ENUMS.items():
+        names = [m for (m, *_r) in members]
+        dupes = {m for m in names if names.count(m) > 1}
+        assert not dupes, f"{name} has duplicate member names: {sorted(dupes)}"
+
+
+def test_every_message_msg_type_is_a_unique_valid_enum_member(gen):
+    """Every Message.msg_type names a real MsgType member, and no two messages claim
+    the same MsgType — a collision would make decode_frame route a payload to the
+    wrong unpacker."""
+    mt_members = {m for (m, *_r) in gen.ENUMS["MsgType"]}
+    claimed = {}
+    for msg in gen.MESSAGES:
+        assert msg.msg_type in mt_members, (
+            f"{msg.name}.msg_type={msg.msg_type!r} is not a MsgType member")
+        assert msg.msg_type not in claimed, (
+            f"MsgType {msg.msg_type} claimed by both {claimed[msg.msg_type]} and {msg.name}")
+        claimed[msg.msg_type] = msg.name
+
+
+def test_payload_and_arg_sizes_within_budget(gen):
+    """Every message payload AND every RPC arg fits MAX_PAYLOAD, so a spec addition
+    can never define a struct the framing layer would refuse to encode."""
+    budget = _spec_const(gen, "MAX_PAYLOAD")
+    for msg in gen.MESSAGES:
+        assert msg.payload_size <= budget, (msg.name, msg.payload_size, budget)
+    for arg in gen.RPC_ARGS:
+        assert arg.size <= budget, (arg.name, arg.size, budget)
+
+
+def test_enum_values_fit_declared_width(gen):
+    """Each enum's values fit the wire field width that carries it (ENUM_WIDTH). A
+    value wider than its field would truncate on the wire."""
+    cap = {"u8": 0xFF, "u16": 0xFFFF, "u32": 0xFFFFFFFF, "u64": (1 << 64) - 1}
+    for name, members in gen.ENUMS.items():
+        width = gen.ENUM_WIDTH[name]
+        for (m, v, *_r) in members:
+            assert 0 <= v <= cap[width], f"{name}.{m}={v} does not fit {width}"
+
+
+def test_max_payload_parity_cpp_python(gen, proto):
+    """MAX_PAYLOAD (the framing budget) agrees across generator, Python module, and
+    C++ header — so both ends reject the same oversized frames."""
+    spec = _spec_const(gen, "MAX_PAYLOAD")
+    assert proto.MAX_PAYLOAD == spec, "generated Python MAX_PAYLOAD out of sync"
+    cpp = _CPP_COMMITTED.read_text()
+    m = re.search(r"constexpr uint16_t MAX_PAYLOAD = (\d+)u;", cpp)
+    assert m and int(m.group(1)) == spec, "C++ MAX_PAYLOAD differs from the spec"
