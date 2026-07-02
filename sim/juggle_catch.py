@@ -116,6 +116,14 @@ class SingleCatchConfig:
     use_real_bb: bool = False
     bb_position_mm: "tuple[float, float, float]" = (-872.0, -630.0, 1430.0)
     bb_yaw_offset_rad: "float | None" = None   # None -> aim from position at origin
+    # ---- optional MANUAL launch (operator-driven, e.g. sim/juggle_bb_catch.py) ----
+    # When set to a ``(pos_mm(3), vel_mms(3))`` pair the incoming ball spawns from
+    # THAT operator-chosen release state instead of the synthetic/real-BB branch —
+    # the landing is wherever the ballistics take it (an on-target preset, or a
+    # deliberate near-miss). The SAME §3 perturb + apex-spawn are applied (identical
+    # perturb/apex path), so the catch pipeline is unchanged. Default None -> the
+    # synthetic / real-BB branches run byte-for-byte unchanged.
+    manual_launch_mm: "tuple | None" = None
     # ---- catch realisation knobs (tuned empirically; see the probe) ----
     # The slider does the vertical descend-with-the-ball (the axis-split catch),
     # PHASE-MATCHED to the arrival (2026-07-02 fast-catch fidelity). From a
@@ -217,7 +225,14 @@ class SingleCatchRunner:
           keeps its import surface unchanged.
         """
         cfg = self.cfg
-        if cfg.use_real_bb:
+        if cfg.manual_launch_mm is not None:
+            # Operator-chosen (release_pos, release_vel): the manual-launch tool.
+            # Flows through the identical perturb + apex-spawn path below.
+            pos_mm = np.asarray(cfg.manual_launch_mm[0], float).reshape(3)
+            vel_mms = np.asarray(cfg.manual_launch_mm[1], float).reshape(3)
+            target_mm = target * 1000.0
+            displacement_mm = target_mm - pos_mm
+        elif cfg.use_real_bb:
             from sim.ball_butler.sim import BallButlerSim
             pos = np.asarray(cfg.bb_position_mm, float)
             yaw = (cfg.bb_yaw_offset_rad if cfg.bb_yaw_offset_rad is not None
