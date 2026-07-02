@@ -513,7 +513,7 @@ echo`): does the (un-wedged) orchestrator's `control_mode='ERROR'` on FAULT caus
 an unwanted ESTOP via `motion_bridge_node`?
 
 **Outcome (DONE — 2026-07-02, commits `34c1730` (node + conftest + tests) +
-`TBD-docs` (logbook/plan/matrix/index) + `TBD-sitting` (sitting result + matrix
+`e98a6c9` (logbook/plan/matrix/index) + `TBD-sitting` (sitting result + matrix
 validated-flip); software landed to the powered-sitting gate).** Registered the four orchestrator-facing interfaces
 **directly on the bridge** (not a separate `orchestrator_conduit.py` — operator
 design call: no existing actions/services module to join; a future
