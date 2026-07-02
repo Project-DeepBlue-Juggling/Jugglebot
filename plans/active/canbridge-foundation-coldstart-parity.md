@@ -191,7 +191,7 @@ touch safety logic (the reboot latch, the axis-6 gate, the relay) are testable.
 | 1 | Platform-Teensy relay seam (typed writes, verbatim reads) + narrow axis-6 allow-table | **DONE — bench probe PASSED (2026-06-29)** | 0 | bench probe ✓ (SRX_DIS disabled, reply ≤14 ms) |
 | 2 | Cold-start state via the relay (read `is_homed`/level/pose at boot + on CAN3-reconnect; write on home/level/reboot) — self-solving | **DONE** | 0, 1 | no (validated at the Phase-4 powered sitting) |
 | 3 | Firmware Get_Version sweep + Jetson-validated `firmware_validated` | **DONE — bench probe PASSED (2026-06-29)** | 0 | probe ✓ (legs+hand report hw 4.4.58) |
-| 4 | Orchestrator wiring: `home_motors` action shim (homes legs + hand) + `robot_state` fields + tilt/level relay + activate-folds-configure | NOT STARTED | 1, 2, 3, 5 | powered sitting |
+| 4 | Orchestrator wiring: `home_motors` action shim (homes legs + hand) + `robot_state` fields + tilt/level relay + activate-folds-configure | **DONE (2026-07-02)** | 1, 2, 3, 5 | powered sitting |
 | 5 | Hand command conduit (state/gains, traj/smooth-move) + **hand homing** (HOME/SET_ABSOLUTE_POSITION on axis 6) + deactivate idles hand + cmd-echo | **DONE (2026-07-01) — powered sitting PASSED (2026-07-02)** | 1 | powered (homing + catch) ✓ |
 | 6 | Robust `clear_errors` (bus-transmittable gate) + reboot-in-progress latch | **DONE (2026-06-30)** | 0, 2 | probe ✓ (reboot latency 2.3–3.5 s → 6 s window; false CAN_BUS_DOWN confirmed; deadlock premise NOT bench-reproduced — see Outcome) |
 
@@ -511,6 +511,48 @@ the full BOOT→search→home→level→IDLE transition fires with parity.
 Runtime check first (read-only, **rclpy subscriber probe**, not `ros2 topic
 echo`): does the (un-wedged) orchestrator's `control_mode='ERROR'` on FAULT cause
 an unwanted ESTOP via `motion_bridge_node`?
+
+**Outcome (DONE — 2026-07-02, commits `34c1730` (node + conftest + tests) +
+`TBD-docs` (logbook/plan/matrix/index) + `TBD-sitting` (sitting result + matrix
+validated-flip); software landed to the powered-sitting gate).** Registered the four orchestrator-facing interfaces
+**directly on the bridge** (not a separate `orchestrator_conduit.py` — operator
+design call: no existing actions/services module to join; a future
+`teensy_bridge_node` split should cut along the relay/hand/cold-start seams, not
+group four verbs by implementation-moment), with **zero edits** to
+`orchestrator_node`/`state_machine` (locked-decision #1): (1) `home_motors`
+ActionServer(HomeMotors) → the shared `_do_home()` (refactored out of `_svc_home`;
+home legs+hand → persist `is_homed` → configure) + a concurrent-goal guard; (2)
+`activate_or_deactivate` (ActivateOrDeactivate) → `_run_activate` + `_run_configure`
+(the TRAP_TRAJ→PASSTHROUGH **fold**, rows 27/28) / `_run_deactivate`; (3)
+`get_platform_tilt` (GetTiltReadingService) → `relay_read_tilt` with bounded retry +
+validity bound + **NaN-on-failure** (row 60); (4) `set_level_state` subscriber
+(Float64MultiArray) → new `_write_level_state` (STATE_WRITE read-modify-write
+preserving `is_homed`). All nine blocking cold-start verbs (the four new + the
+pre-existing `encoder_search`/`home`/`configure`/`activate`/`deactivate`) share one
+`ReentrantCallbackGroup` so the multi-second moves never starve the 100 Hz
+`robot_state` publish (operator-approved: extended beyond the plan's "new verbs
+only" to close the class — `encoder_search` is on the orchestrator path). The
+`robot_state` five-field matrix was already satisfied in Phases 2/3; Phase 4 makes
+`levelling_complete`/`pose_offset` *meaningful* via the `set_level_state` write.
+Robustness: a **runtime drift-guard** contract test introspects both nodes'
+declared `(name, type)` sets (bridge SERVES every orchestrator client + the action;
+`robot_state`/`set_level_state` agree) — a future orchestrator rename fails the
+suite, not the bench; divergence-catch proven (removing the four interfaces fires
+the assertions on exactly them). Required a small **additive** enhancement to the
+mock rclpy conftest (it discarded interface *types* and registered no actions).
+Host-only: **no firmware change, no codegen change** (no new wire ids). Suite:
+`pytest tests/ -q` (final pre-commit run, 2026-07-02) **1995 passed, 1 xfailed in
+456.28 s** — fully green (net **+23** Phase-4 tests: 7 drift-guard + 14 behaviour +
+2 full-cold-start integration; `tests/ros/` subset 702/702; no regressions). An
+earlier run hit the documented order-flaky
+`test_t3b_h4_on_post_solve_allocates_within_budget` (passes isolated, 1 passed in
+7.49 s; passed clean in the pre-commit run). **Powered sitting: TBD this session** — orchestrator-driven automatic
+cold-start (encoder-search → home legs+hand → level → IDLE), read-only
+`control_mode='ERROR'`/ESTOP pre-check first. Full detail: logbook
+[`2026-07-02-canbridge-phase4-orchestrator-wiring`](../../logbook/2026-07-02-canbridge-phase4-orchestrator-wiring.md).
+**This is the plan's FINAL phase — the automated orchestrator-driven cold-start
+parity is restored; run `/archive-plan canbridge-foundation-coldstart-parity` once
+the powered sitting passes.**
 
 ### Phase 5 — Hand command conduit + hand homing
 
