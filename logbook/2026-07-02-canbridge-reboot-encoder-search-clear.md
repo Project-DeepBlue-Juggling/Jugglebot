@@ -12,7 +12,7 @@ files_changed:
   - ros_ws/src/jugglebot/jugglebot/teensy_bridge_node.py
   - tests/ros/test_teensy_bridge_node_coldstart.py
 commits:
-  - TBD
+  - c5d5058
 subsystem:
   - ros
   - can
