@@ -24,7 +24,6 @@ files_changed:
 commits:
   - 34c1730
   - e98a6c9
-  - TBD-sitting
 subsystem:
   - ros
   - can
@@ -211,7 +210,27 @@ same dicts by name and are unaffected — 702 `tests/ros/` pass unchanged).
   (`pytest …::test_t3b_h4_on_post_solve_allocates_within_budget -q`, 2026-07-02:
   **1 passed in 7.49 s**) and passed clean in the pre-commit run — not a regression
   (memory `project_hot_loop_alloc_test_flaky`).
-- **Powered sitting**: TBD (this session — see Open Questions).
+- **Powered sitting — PASSED (2026-07-02, full Jugglebot powered, `b64cef5` pulled +
+  `colcon build`; operator actuated, e-stop in hand; Claude verified the read-only
+  probe trace).** The read-only `/control_mode_topic` + `/orchestrator_state` +
+  `/robot_state` probe (`/tmp/phase4_coldstart_probe.py`) recorded:
+  - **Automatic cold-start (~9 s, fully unattended):** `orchestrator_state`
+    BOOT → HOMING → IDLE; `robot_state` flags `fw_validated 0→1` (handshake),
+    `enc_search 0→1` (encoder search), `is_homed 0→1` (home **legs + hand** via the
+    `home_motors` action → persisted). **No `control_mode='ERROR'`** — the
+    transient-FAULT/ESTOP concern is confirmed BENIGN (`control_mode` only ever `''`
+    through cold-start; the orchestrator never reaches a transient FAULT on the happy
+    path now that the bridge serves the interfaces).
+  - **Levelling ×3 (consistent):** each run `orchestrator_state` IDLE → LEVELLING →
+    IDLE with `control_mode 'LEVELLING'` (never `'ERROR'`); run 1 flipped
+    `levelling 0→1` + `pose_offset=[0.00832, 0.00159]` rad — i.e.
+    `activate_or_deactivate('activate')` raised the platform (+ the configure fold),
+    `get_platform_tilt` read a valid tilt (no NaN → no FAULT), `set_level_state`
+    persisted, `activate_or_deactivate('deactivate')` lowered it; runs 2 & 3 re-read +
+    re-persisted the SAME value (the change-only probe stayed silent — consistency).
+  All nine Phase-4 matrix rows (6, 7, 24, 27, 28, 44, 45, 54, 60) flipped
+  `ported+unvalidated → ported+validated`. The tilt-read retry/NaN edges (row 60)
+  stay unit-test-only — the hardware read succeeded first-try.
 
 Host-only (no firmware change → no `pio run` needed; no wire ids added — codegen
 untouched).
@@ -248,16 +267,26 @@ could ESTOP via `motion_bridge_node`. During automated cold-start this is benign
 bridge does **not** subscribe `control_mode`; and `motion_bridge`'s estop→motor_guard
 is inert while `enable_setpoint_output=false` and `run_mpc.py` is not running. With
 Phase 4 the orchestrator no longer *reaches* a transient FAULT on the happy path
-(BOOT→HOMING→…→IDLE). Verified read-only at the sitting (see Open Questions).
+(BOOT→HOMING→…→IDLE). **Confirmed at the 2026-07-02 sitting:** the read-only probe
+saw `control_mode` stay `''` throughout cold-start (only `'LEVELLING'` during
+levelling) — never `'ERROR'` — so no ESTOP was issued.
 
 ## Open Questions
 
-- **Powered sitting** — TBD this session: launch `jugglebot_launch.py` and observe the
-  orchestrator drive BOOT→encoder-search→home(legs+hand)→level→IDLE **automatically**
-  (no manual service calls). Read-only pre-check: a `/control_mode_topic` +
-  `/orchestrator_state` rclpy subscriber probe to confirm no unwanted ESTOP on a
-  transient FAULT. On PASS, flip the sitting-exercised matrix rows to
-  `ported+validated` in a follow-up commit (mirroring Phase 5's two-step).
+- **Powered sitting — RESOLVED (2026-07-02, PASSED; see Verification).** Automatic
+  BOOT→encoder-search→home(legs+hand)→IDLE + a 3× levelling cycle, no unwanted
+  ESTOP. The 9 Phase-4 rows are ported+validated.
+- **What the Phase-4 sitting did NOT exercise (owed hardware validations, tracked in
+  the plan's residuals).** This sitting validated the cold-start READ + PERSIST paths
+  (is_homed/levelling/pose written + read; the home action; activate/deactivate via
+  levelling; the tilt read). It did **not** exercise: (a) the `REBOOT_ODRIVES`
+  shared-hook clear of is_homed/levelling/pose on hardware (Phase 2 step 2 — needs a
+  reboot); (b) the CAN3-reconnect conservative re-read (Phase 3 precondition — needs a
+  CAN3 drop/reconnect); (c) the **six-leg deferred-stow reconnect** re-validation (the
+  plan's Testing-plan owes this; only single-leg validated). These are the Phase-2/3/
+  can-loss hardware gates whose "validated at the Phase-4 sitting" deferral is only
+  PARTIALLY discharged — a follow-up powered session should close them before the
+  plan is archived / before autonomous movement.
 - **Runtime vel/curr limit persistence across configure** (matrix row 42/25) — the
   ACTIVATE fold calls `_run_configure`, which re-applies YAML-default limits; a prior
   `set_motor_vel_curr_limits` push is reset. Pre-existing `_run_configure` behaviour,
