@@ -1788,11 +1788,22 @@ class TeensyBridgeNode(Node):
                 is_homed=False, levelling_complete=False,
                 pose_offset_tiltX=0.0, pose_offset_tiltY=0.0)
             self._cold_start_authoritative = True
-            # NOTE: _encoder_search_done_session is deliberately NOT cleared — exact
-            # can_node parity (its _reboot_odrives_steps cleared is_homed/levelling/
-            # pose but never encoder_search_complete; that flag is sticky-True for
-            # the process once a search/home succeeds). The orchestrator is
-            # unchanged (locked-decision #1), so it sees the identical flag set.
+            # Clear the in-session encoder-search bit too: a reboot resets the ODrive
+            # MCUs, which lose their INCREMENTAL-ENCODER INDEX (not pre-calibrated to
+            # flash — operator-confirmed 2026-07-02), so a re-encoder-search is
+            # REQUIRED before the next home. The derived
+            #   encoder_search_complete = is_homed OR _encoder_search_done_session
+            # must therefore go False after a reboot (is_homed is already cleared
+            # above). can_node.py:1552-1566 did NOT clear this — a LATENT BUG that only
+            # bit once the orchestrator drove homing AUTOMATICALLY after a reboot
+            # (Phase 4): HomingHandler skipped encoder-search on the stale True and
+            # homed on an un-indexed encoder → ODRIVE_FATAL → FAULT→BOOT→HOMING loop
+            # (hardware, 2026-07-02; see logbook 2026-07-02-canbridge-reboot-encoder-
+            # search-clear). Clearing it re-runs encoder-search on the next cold-start,
+            # exactly as a fresh launch does. Deliberate divergence from can_node's
+            # literal behaviour: the reboot must clear EVERYTHING the ODrive loses —
+            # references (is_homed/levelling/pose) AND the encoder index.
+            self._encoder_search_done_session = False
         return ok, msg
 
     # ── Encoder index search (Phase 9a, Jetson-side orchestration) ──

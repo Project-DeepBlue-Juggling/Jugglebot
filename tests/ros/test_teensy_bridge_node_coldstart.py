@@ -430,6 +430,7 @@ def test_reboot_clears_all_cold_start_fields():
             node._cold_start_state = RelayRobotState(
                 is_homed=True, levelling_complete=True,
                 pose_offset_tiltX=0.05, pose_offset_tiltY=0.06)
+            node._encoder_search_done_session = True   # a search completed this session
 
         writes = {}
 
@@ -447,6 +448,9 @@ def test_reboot_clears_all_cold_start_fields():
         assert node._cold_start_state.levelling_complete is False
         assert node._cold_start_state.pose_offset_tiltX == 0.0
         assert node._cold_start_state.pose_offset_tiltY == 0.0
+        # And the encoder-search bit is cleared too (the reboot invalidates the ODrive
+        # encoder index → a re-search is required before the next home).
+        assert node._encoder_search_done_session is False
     finally:
         _teardown(teensy, client, node)
 
@@ -522,30 +526,37 @@ def test_encoder_search_service_sets_session_bit():
         _teardown(teensy, client, node)
 
 
-def test_encoder_search_complete_monotonic_across_reboot():
-    """Published encoder_search_complete is MONOTONIC (exact can_node parity): a
-    read showing is_homed latches the session bit (can_node:549-550), so a
-    subsequent REBOOT_ODRIVES that clears is_homed does NOT drop
-    encoder_search_complete (can_node never clears it — can_node.py:1559-1565)."""
+def test_reboot_clears_encoder_search_complete():
+    """A REBOOT_ODRIVES drops the DERIVED encoder_search_complete to False. The ODrive
+    MCUs lose their incremental-encoder INDEX on reboot (not pre-calibrated to flash —
+    operator-confirmed 2026-07-02), so a re-encoder-search is required before the next
+    home. If encoder_search_complete stayed True, the orchestrator's HomingHandler
+    would SKIP encoder-search and home on an un-indexed encoder → ODRIVE_FATAL →
+    FAULT→BOOT→HOMING loop (the hardware bug found 2026-07-02). This DELIBERATELY
+    diverges from can_node (can_node.py:1552-1566 cleared is_homed/levelling/pose but
+    left encoder_search_complete set — a latent bug that only bit once the orchestrator
+    drove homing automatically after a reboot in Phase 4). See logbook
+    2026-07-02-canbridge-reboot-encoder-search-clear."""
     teensy, client, node = _node()
     try:
-        # A relay read returns is_homed=True (persisted-homed; no in-session
-        # /encoder_search) → the read latches the session bit.
+        # A relay read returns is_homed=True (persisted-homed) → latches the session
+        # bit (can_node:549-550 parity), so encoder_search_complete starts True.
         _wire_state_read(teensy, is_homed=True, levelling=False, x_milli=0, y_milli=0)
         assert node._refresh_cold_start_state('boot') is True
-        assert node._encoder_search_done_session is True   # latched on the is_homed read
+        assert node._encoder_search_done_session is True
         assert _publish_and_get(node, teensy).encoder_search_complete is True
 
-        # Now reboot: is_homed cleared, but the session bit (and hence the published
-        # encoder_search_complete) stays True.
+        # Reboot: is_homed cleared AND the session bit cleared → encoder_search_complete
+        # DROPS to False (a re-search is required post-reboot).
         teensy.on_rpc(int(RpcMethod.STATE_WRITE), lambda rid, a: (int(RpcStatus.OK), b""))
         teensy.on_rpc(int(RpcMethod.REBOOT_ODRIVES), lambda rid, a: (int(RpcStatus.OK), b""))
         ok, msg = node._reboot_odrives()
         assert ok, msg
         assert node._cold_start_state.is_homed is False
+        assert node._encoder_search_done_session is False   # cleared by the reboot hook
         node._publish_robot_state()   # telemetry already cached from _publish_and_get
         msg_out = node.robot_state_pub.published[-1]
         assert msg_out.is_homed is False
-        assert msg_out.encoder_search_complete is True      # monotonic — not dropped
+        assert msg_out.encoder_search_complete is False      # re-search required post-reboot
     finally:
         _teardown(teensy, client, node)
