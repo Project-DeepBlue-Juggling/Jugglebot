@@ -165,7 +165,7 @@ class DeferredStowLatch:
         self.fatal = False           # link/bus confirmed down (fatal_can_error analog)
         self.stow_pending = False
         self.stowing = False
-        self.first_seen = True        # firmware sets this once any leg hb is seen
+        self.first_seen = False       # firmware s_first_leg_hb_seen: set once any leg hb is seen
         self.stow_complete = False
         self.reboot_in_progress = False   # Phase 6 suppression latch armed
         self.reboot_saw_stale = False     # legs went stale since arming (release gate)
@@ -178,7 +178,13 @@ class DeferredStowLatch:
         self.reboot_saw_stale = False
 
     def step(self, stale: bool, fresh: bool,
-             reboot_start: bool = False, deadline_pass: bool = False) -> None:
+             reboot_start: bool = False, deadline_pass: bool = False,
+             seen: bool = True) -> None:
+        # Mirror watchdog_and_stow: any leg heartbeat ever seen sets s_first_leg_hb_seen,
+        # which AND-gates CAN-loss detection below (the cold-start no-arm gate). Default
+        # True preserves every existing caller (which established the link before stepping).
+        if seen:
+            self.first_seen = True
         if reboot_start:
             self.notify_reboot_started()
         # Reboot-suppression latch release (Phase 6, mirror watchdog_and_stow):

@@ -104,6 +104,7 @@ struct ErrStep {
   bool   exp_uv;
   int    exp_soft_reset;
   int    exp_clear_calls;   // cumulative clear broadcasts
+  bool   fatal_can_error = false;  // preset s_fatal_can_error before the evaluate (dead-bus)
 };
 struct ErrScenario { std::string name; std::vector<ErrStep> steps; };
 
@@ -114,6 +115,11 @@ static std::vector<ErrOut> run_error_scenario(const ErrScenario& sc) {
   fake_set_clock(10'000'000, 10'000'000);
   std::vector<ErrOut> out;
   for (const auto& st : sc.steps) {
+    // Dead-bus preset. MUST be per-step: fault_step()'s watchdog clears
+    // s_fatal_can_error each tick (all_present_legs_fresh is vacuously true with
+    // zero present legs), and evaluate_errors runs FIRST inside fault_step so it
+    // sees this preset when deciding whether clear_errors_can() may fire.
+    s_fatal_can_error = st.fatal_can_error;
     if (st.notify_clear) {
       fault_notify_clear_errors();
     } else {
@@ -169,6 +175,16 @@ static std::vector<ErrScenario> error_scenarios() {
   // a preset fatal clears when all axes are clean
   v.push_back({"all_clean_clears_fatal", {
     {"preset fatal, clean", false, true, uni(0), uni(0), uni8(ST_IDLE), false, false, 0, 0}}});
+  // Dead-bus no-op clear PRESERVES the soft-reset budget (gap 5). A disarm while the
+  // CAN3 bus is confirmed down: clear_errors_can() is a no-op (never command a dead
+  // bus), so the soft-reset budget is NOT consumed. When the bus returns the one
+  // auto-clear finally fires (budget→1, one broadcast); the very next disarm then hits
+  // the one-shot cap and goes fatal. Proves the budget survived the dead-bus tick
+  // instead of being silently spent on a clear that never went out.
+  v.push_back({"dead_bus_no_op_clear_preserves_budget", {
+    {"dead bus disarm",   false, false, uni(0), uni(0x40), uni8(ST_IDLE), false, false, 0, 0, true},
+    {"bus back, 1 clear", false, false, uni(0), uni(0x40), uni8(ST_IDLE), false, false, 1, 1, false},
+    {"budget exhausted",  false, false, uni(0), uni(0x40), uni8(ST_IDLE), true,  false, 1, 1, false}}});
   return v;
 }
 
@@ -189,8 +205,9 @@ struct StowStep {
   bool exp_fatal;
   bool exp_pending;
   bool exp_stowing;
+  bool seen = true;    // gap 10: cold-start seeds a present leg heartbeat this step
 };
-struct StowScenario { std::string name; std::vector<StowStep> steps; };
+struct StowScenario { std::string name; std::vector<StowStep> steps; bool cold_start = false; };
 struct StowOut { bool fatal; bool pending; bool stowing; };
 
 // In-window staleness advance: > CAN_HEARTBEAT_TIMEOUT_US (legs go stale) but
@@ -201,12 +218,24 @@ static constexpr uint64_t STALE_ADVANCE_US = CAN_HEARTBEAT_TIMEOUT_US + 500'000;
 static std::vector<StowOut> run_stow_scenario(const StowScenario& sc) {
   reset_all();
   fake_set_clock(10'000'000, 10'000'000);
-  for (uint8_t i = 0; i < NUM_LEGS; ++i) {       // full robot: all 6 present
-    axes[i].heartbeat_seen = true;
-    axes[i].last_heartbeat_us = fake_wall_us();
+  if (!sc.cold_start) {
+    for (uint8_t i = 0; i < NUM_LEGS; ++i) {     // full robot: all 6 present
+      axes[i].heartbeat_seen = true;
+      axes[i].last_heartbeat_us = fake_wall_us();
+    }
   }
   std::vector<StowOut> out;
   for (const auto& st : sc.steps) {
+    // Cold-start first-seen gate (gap 10): a leg is "present" only once its
+    // heartbeat has been seen. seen=true seeds all legs fresh at this step's start
+    // (so a following stale-advance can make them go stale); seen=false leaves the
+    // bus never-seen, so s_first_leg_hb_seen gates detection OFF.
+    if (sc.cold_start && st.seen) {
+      for (uint8_t i = 0; i < NUM_LEGS; ++i) {
+        axes[i].heartbeat_seen = true;
+        axes[i].last_heartbeat_us = fake_wall_us();
+      }
+    }
     if (st.reboot_start) fault_notify_reboot_started();               // arm the latch
     if (st.stale) fake_advance(STALE_ADVANCE_US);                     // legs go stale (in-window)
     if (st.deadline_pass) fake_advance(REBOOT_WATCHDOG_SUPPRESS_US);  // cross the reboot deadline
@@ -251,6 +280,17 @@ static std::vector<StowScenario> stow_scenarios() {
     {"reboot_latch_does_not_touch_spontaneous_loss", {
       // no reboot armed → a spontaneous loss detects immediately (inversion intact).
       {"spontaneous loss", true, false, false, false, false, true, true, false}}},
+    // ── Gap 10: cold-start first-seen gate ───────────────────────────────────
+    // The firmware AND-gates CAN-loss detection on s_first_leg_hb_seen (any leg
+    // heartbeat EVER seen). On a cold boot — before any leg has reported — an
+    // apparent staleness must NOT arm the stow; only AFTER the first heartbeat does
+    // a subsequent loss detect. cold_start=true skips the pre-seed so the gate is
+    // exercised from the true never-seen state (seen=false on boot).
+    {"cold_start_first_seen_gate", {
+      {"boot (never seen)", true,  false, false, false, false, false, false, false, false},
+      {"first heartbeat",   false, true,  false, false, false, false, false, false, true},
+      {"loss after seen",   true,  false, false, false, false, true,  true,  false, true}},
+     true},
   };
 }
 
@@ -516,8 +556,8 @@ static int emit_golden(const char* path) {
     fprintf(f, "    {\"name\": \"%s\", \"steps\": [\n", sc.name.c_str());
     for (size_t k = 0; k < sc.steps.size(); ++k) {
       const auto& st = sc.steps[k];
-      fprintf(f, "      {\"notify_clear\": %s, \"preset_fatal\": %s, ",
-              jb(st.notify_clear), jb(st.preset_fatal));
+      fprintf(f, "      {\"notify_clear\": %s, \"preset_fatal\": %s, \"fatal_can_error\": %s, ",
+              jb(st.notify_clear), jb(st.preset_fatal), jb(st.fatal_can_error));
       fprintf(f, "\"active\": "); emit_vec6u(f, st.active);
       fprintf(f, ", \"disarm\": "); emit_vec6u(f, st.disarm);
       fprintf(f, ", \"state\": "); emit_vec6b(f, st.state);
@@ -540,9 +580,9 @@ static int emit_golden(const char* path) {
     for (size_t k = 0; k < sc.steps.size(); ++k) {
       const auto& st = sc.steps[k];
       fprintf(f, "      {\"stale\": %s, \"fresh\": %s, \"complete\": %s, "
-                 "\"reboot_start\": %s, \"deadline_pass\": %s, "
+                 "\"reboot_start\": %s, \"deadline_pass\": %s, \"seen\": %s, "
                  "\"out\": {\"fatal\": %s, \"stow_pending\": %s, \"stowing\": %s}}%s\n",
-              jb(st.stale), jb(st.fresh), jb(st.complete), jb(st.reboot_start), jb(st.deadline_pass),
+              jb(st.stale), jb(st.fresh), jb(st.complete), jb(st.reboot_start), jb(st.deadline_pass), jb(st.seen),
               jb(out[k].fatal), jb(out[k].pending), jb(out[k].stowing),
               k + 1 < sc.steps.size() ? "," : "");
     }

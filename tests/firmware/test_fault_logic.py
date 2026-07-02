@@ -66,6 +66,7 @@ def test_error_eval_conformance(sc):
     step, over the firmware-anchored golden."""
     m = FaultEvaluator()
     for step in sc["steps"]:
+        m.fatal_can_error = step.get("fatal_can_error", False)
         if step["notify_clear"]:
             m.notify_clear_errors()
         else:
@@ -93,7 +94,8 @@ def test_deferred_stow_conformance(sc):
             latch.stow_complete = True
         latch.step(step["stale"], step["fresh"],
                    reboot_start=step.get("reboot_start", False),
-                   deadline_pass=step.get("deadline_pass", False))
+                   deadline_pass=step.get("deadline_pass", False),
+                   seen=step.get("seen", True))
         out = step["out"]
         assert latch.fatal == out["fatal"]
         assert latch.stow_pending == out["stow_pending"]
