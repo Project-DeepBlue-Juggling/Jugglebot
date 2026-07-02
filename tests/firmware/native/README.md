@@ -47,8 +47,20 @@ python tests/firmware/native/build.py --force    # ignore the cache, rebuild
     fault machine's terminal-IDLE handling (deferred-stow invariant 5) as a
     *compiled* assertion.
   * `test_leg_interp.cpp` `#include`s `leg_interp.cpp` only.
-  * Shared objects compiled once and linked into both: `axis_state.o`,
-    `ball_butler_state.o`, `fake_hal.o`.
+  * `test_platform_relay.cpp` / `test_version_check.cpp` / `test_hand_ops.cpp`
+    `#include` their one module (`platform_relay.cpp` / `version_check.cpp` /
+    `hand_ops.cpp`).
+  * `test_leg_activate.cpp` / `test_leg_deactivate.cpp` / `test_leg_homing.cpp`
+    each `#include` ONE cold-start module `.cpp` (defining its own `*_active()`) and
+    supply the two SIBLING predicates inline — so they link `coldstart_hal.o`
+    (NOT `fake_hal.o`, which would ODR-clash on the module's own `*_active()` and
+    lacks the `can_buses_stats()`/`fault_*` gate these modules read). This closes
+    the standing gap that the code driving legs into hardstops
+    (`leg_homing/activate/deactivate.cpp`) was **never compiled by any test**
+    (Fable-5 hardening [6]).
+  * Shared objects compiled once and linked as needed: `axis_state.o`,
+    `ball_butler_state.o`, and either `fake_hal.o` (fault/interp/relay/version/hand)
+    or `coldstart_hal.o` (the three cold-start move drivers).
 * Hash-cached: `build.py` stamps a SHA over every harness file + every firmware
   `.cpp/.h/.ino` + the flags + the g++ version. Unchanged sources ⇒ zero
   recompile. Artifacts live under `temp/firmware_native/` (gitignored).
@@ -75,6 +87,25 @@ core:
 Reset between cases: `fake_reset()` + `fault_machine_init()` + `interp_reset()`
 clear all file-scope state so test ordering can neither fabricate nor mask a
 result.
+
+### The cold-start HAL seam (`coldstart_hal.cpp` / `coldstart_hal.h`)
+
+The three cold-start move modules read a DIFFERENT leaf set than the fault/interp
+TUs — their bus/fault gate is `can_buses_stats().jugglebot_health` +
+`fault_can_bus_down()` + `fault_guard_mode()` (not `jugglebot_commands_allowed()`),
+and each DEFINES its own `*_active()` (which would ODR-clash with `fake_hal.o`'s
+fake predicates). So they get a SEPARATE, self-contained fake HAL, linked ONLY by
+the cold-start drivers, never alongside `fake_hal.o`:
+
+| Symbol | Host stand-in (`coldstart_hal`) |
+|---|---|
+| `micros64()` / `now_wall_us()` | controllable clock (`cs_advance`/`cs_set_mono`) |
+| `can_buses_stats().jugglebot_health` | settable (`cs_set_jugglebot_health`) |
+| `fault_can_bus_down()` / `fault_guard_mode()` | settable (`cs_set_can_bus_down` / `cs_set_guard_estop`) |
+| `can_jugglebot_send()` | **recording** vector (`cs_sent_*`) + fail injection (`cs_set_send_fail_index`) |
+| the two SIBLING `*_active()` | inline in each driver (the real one comes from the `#include`d module) |
+
+Reset between cases: `cs_reset()` + the module's `*_init()`.
 
 ## Golden vectors (`fault_golden.json`)
 

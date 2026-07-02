@@ -8,21 +8,27 @@ audit.md` §5). This wrapper compiles the REAL `.cpp` on the build host behind t
 ~10-line HAL shims + the fake HAL (`tests/firmware/native/`) and runs the binary,
 so a C++ divergence fails `pytest tests/ -q`.
 
-It does three things, all hash-cached (zero recompile when the sources are
-unchanged) and g++-gated (a host without a compiler SKIPS, not fails — the Jetson
-run is authoritative):
+It builds + runs one binary per safety-critical firmware TU, all hash-cached (zero
+recompile when the sources are unchanged) and g++-gated (a host without a compiler
+SKIPS, not fails — the Jetson run is authoritative):
 
-  1. build + run `test_fault_machine` (soft-reset limiter, UV gating, the
-     deferred-stow 5 invariants, present-axis scoping, fb-stale suppression);
-  2. build + run `test_leg_interp` (lead/stroke/present-axis clamps, modes, stow
-     descent);
-  3. build + run `test_platform_relay` (Phase-1 Platform-Teensy relay: trigger
-     frames, 0x6E0 RobotState re-encode parity, the never-command-a-dead-bus
-     fail-fast, is_platform_reply_id, the generated hand axis-6 allow-table);
-  4. assert a freshly-emitted golden still equals the committed
-     `native/fault_golden.json` — so a firmware behaviour change must regenerate
-     the golden deliberately (and `tests/firmware/test_fault_logic.py` then pins
-     the Jetson host mirror `fault_logic.py` to that same golden).
+  * `test_fault_machine` — soft-reset limiter, UV gating, the deferred-stow 5
+    invariants, present-axis scoping, fb-stale suppression;
+  * `test_leg_interp` — lead/stroke/present-axis clamps, modes, stow descent;
+  * `test_platform_relay` — Phase-1 Platform-Teensy relay: trigger frames, 0x6E0
+    RobotState re-encode parity, the never-command-a-dead-bus fail-fast,
+    is_platform_reply_id, the generated hand axis-6 allow-table;
+  * `test_version_check` — Phase-3 Get_Version sweep + raw-version cache;
+  * `test_hand_ops` — Phase-5 hand traj/smooth-move conduit + preamble-abort;
+  * `test_leg_activate` / `test_leg_deactivate` / `test_leg_homing` — the Phase-11
+    cold-start move ladders (request validation, SETUP preamble byte-parity, the
+    active/STOW COMMAND, the homing float32 Iq-EMA trip + HAND-vs-LEG dispatch, and
+    abort-to-IDLE). These close coverage gap 1: before this, the code that drives
+    legs into hardstops was never compiled by any test (Fable-5 hardening [6]);
+  * plus a golden-conformance check: a freshly-emitted golden must still equal the
+    committed `native/fault_golden.json`, so a firmware behaviour change regenerates
+    the golden deliberately (and `tests/firmware/test_fault_logic.py` then pins the
+    Jetson host mirror `fault_logic.py` to that same golden).
 
 SCOPE: the harness validates DECISION LOGIC, not FreeRTOS/ISR concurrency or the
 500 Hz deadline — those remain on-hardware-replay gaps (see native/README.md).
@@ -117,6 +123,41 @@ def test_native_hand_ops_binary_passes(binaries):
     assert r.returncode == 0, (
         "native test_hand_ops FAILED — hand_ops.cpp / the hand traj conduit "
         f"diverged from the expected behaviour:\n{r.stdout}\n{r.stderr}")
+
+
+def test_native_leg_activate_binary_passes(binaries):
+    """The compiled leg_activate.cpp passes every behaviour assertion (Phase-11 U5
+    ACTIVATE: request validation — dead-bus/E-STOP/concurrent-move/no-present-leg/
+    idempotent — the 5-frame SETUP preamble byte-parity, the active-pose COMMAND, and
+    the safety crux that ANY abort leaves the leg in IDLE). Coverage gap 1."""
+    r = _run(binaries["test_leg_activate"])
+    assert r.returncode == 0, (
+        "native test_leg_activate FAILED — leg_activate.cpp diverged from the "
+        f"expected activate-ladder behaviour:\n{r.stdout}\n{r.stderr}")
+
+
+def test_native_leg_deactivate_binary_passes(binaries):
+    """The compiled leg_deactivate.cpp passes every behaviour assertion (Phase-11 U5
+    DEACTIVATE: shared request validation + SETUP preamble, plus the two behaviours
+    that distinguish it — the STOW-pose COMMAND and the IDLE-on-arrival that safes
+    the robot de-energised — and abort-to-IDLE). Coverage gap 1."""
+    r = _run(binaries["test_leg_deactivate"])
+    assert r.returncode == 0, (
+        "native test_leg_deactivate FAILED — leg_deactivate.cpp diverged from the "
+        f"expected deactivate-ladder behaviour:\n{r.stdout}\n{r.stderr}")
+
+
+def test_native_leg_homing_binary_passes(binaries):
+    """The compiled leg_homing.cpp passes every behaviour assertion (Phase-9b/Phase-5
+    HOME: axis-range validation incl. the hand axis, the CLOSED_LOOP+VEL_RAMP+limit
+    SETUP preamble, the HAND-vs-LEG per-axis param dispatch — the port-bug surface —
+    the REAL float32 Iq-EMA trip → set_absolute_position, and abort-to-IDLE). This
+    runs the real float32 EMA, strictly stronger than the retired float64 Python
+    transcription. Coverage gap 1."""
+    r = _run(binaries["test_leg_homing"])
+    assert r.returncode == 0, (
+        "native test_leg_homing FAILED — leg_homing.cpp diverged from the expected "
+        f"homing-ladder behaviour:\n{r.stdout}\n{r.stderr}")
 
 
 def test_committed_golden_matches_live_firmware(binaries, tmp_path):

@@ -54,6 +54,10 @@ _OBJECTS = {
     "axis_state":        FIRMWARE_DIR / "axis_state.cpp",
     "ball_butler_state": FIRMWARE_DIR / "ball_butler_state.cpp",
     "fake_hal":          NATIVE_DIR / "fake_hal.cpp",
+    # Phase-11 U5 cold-start moves: a SEPARATE self-contained fake HAL (never linked
+    # alongside fake_hal.o) for the leg_homing/activate/deactivate drivers — their
+    # bus/fault gate + *_active() ODR needs differ from the fault/interp TUs.
+    "coldstart_hal":     NATIVE_DIR / "coldstart_hal.cpp",
 }
 
 # Test binaries: (driver source, objects to link). Each driver #includes the .cpp
@@ -88,6 +92,22 @@ _BINARIES = {
     "test_hand_ops": (
         NATIVE_DIR / "test_hand_ops.cpp",
         ["axis_state", "ball_butler_state", "fake_hal"],
+    ),
+    # Phase 11 U5: the cold-start move ladders. Each driver #includes ONE real
+    # module .cpp (defining its own *_active) + supplies the two sibling predicates
+    # inline, and links coldstart_hal (NOT fake_hal — that would ODR-clash on the
+    # module's own *_active and lacks the can_buses_stats/fault gate these use).
+    "test_leg_activate": (
+        NATIVE_DIR / "test_leg_activate.cpp",
+        ["axis_state", "ball_butler_state", "coldstart_hal"],
+    ),
+    "test_leg_deactivate": (
+        NATIVE_DIR / "test_leg_deactivate.cpp",
+        ["axis_state", "ball_butler_state", "coldstart_hal"],
+    ),
+    "test_leg_homing": (
+        NATIVE_DIR / "test_leg_homing.cpp",
+        ["axis_state", "ball_butler_state", "coldstart_hal"],
     ),
 }
 
