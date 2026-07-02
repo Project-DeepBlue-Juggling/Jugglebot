@@ -93,6 +93,35 @@ firmware items consolidate into 1–2 flash cycles + one powered re-validation s
 | 11 | host / tests | low | Host bundle: ActivateMonitor requires CLOSED_LOOP, scale_to_bench floor>ceiling raise, capped socket drain + typed CrcError, rpc_args METHOD += DEACTIVATE, stroke literals from config |
 | 12 | cross-cutting | low | Documentation truth sweep (CAN2→CAN3 in the generator, README refresh, stale citations, stroke-min comment, harness-scope docs, UV-flag note, DEGRADED marker, dead task-table constants) |
 
+#### Tier-1 progress (2026-07-02 → 2026-07-03)
+
+Logbook: `logbook/2026-07-02-canhub-hardening-tier1.md`. Landed in five commits,
+each with `pytest tests/ -q` green (triples in the logbook Verification section).
+*(The `#`/Row numbers below are this plan's 1–21 item numbers; `gap N` are the
+coverage-gap numbers. The commit messages additionally carry the Fable-5
+review-finding numbers, which are a SEPARATE scheme and do NOT match these — e.g.
+review-finding `[14]` = the native/golden work here = plan item 8, whereas plan
+item 14 is the pending Tier-2 monotonic clock.)*
+
+| Row | Item | Status | Commit |
+|-----|------|--------|--------|
+| 1 | setpoint-thread containment | ✅ done | `f8397c7` (A) |
+| 2 | link-loss → `has_fatal_can_error` (observable) | ✅ done | `c7425e9` (B) |
+| 3 | compile cold-start `.cpp` + retire tautological xrefs | ✅ done | `431ea89` |
+| 4 | `SetpointPump.reset()` wiring | ✅ done | `f8397c7` (A) |
+| 5 | non-idempotent RPC no-retry + docstring + retry-race | ✅ done | `f8397c7` (A) |
+| 6 | cross-axis disarm predicate (observable) | ✅ done | `c7425e9` (B) |
+| 7 | hand vel/curr-limit topic parity (observable) | ✅ done | `c7425e9` (B) |
+| 8 | native/golden expansion | ◐ partial — C++ framing (gap 4) done `8821451`; **remaining**: rpc.cpp dispatch (gap 3), odrive (gap 8) + BB-throw (gap 7) byte xref, dead-bus golden (gap 5), DeferredStowLatch `first_seen` golden (gap 10). Guard-E-STOP (gap 2) + clock-step (gap 6) **recommended WITH Tier-2** (the item-13 E-STOP latch / item-14 monotonic clock they pin don't exist yet). | `8821451` (partial) |
+| 9 | PROTOCOL_VERSION + layout freeze, lints, lib pins | ✅ done | `37a81d4` |
+| 10 | bridge-node robustness cluster (async re-read, relay lock, cone bound) | ✅ done | `c7425e9` (B) |
+| 11 | host bundle (ActivateMonitor CL, scale floor>ceiling, capped drain, rpc_args DEACTIVATE, stroke literals) | ✅ done — except the typed `CrcError` (deferred to where `decode_frame`'s codegen lives) | `f8397c7` (A) |
+| 12 | documentation truth sweep | ☐ pending (+ `/audit --unstaged`) | — |
+
+**Observable changes** — plan items 2 / 6 / 7 — have hardware-confirmation checks in
+the logbook (read-only operator eyeball). **Remaining before Tier-1 close:** the
+item-8 slices, the typed CrcError, and item 12.
+
 ### Tier 2 — surface-first (firmware; re-flash + ONE powered re-validation sitting)
 
 | # | Area | Risk | Item |
