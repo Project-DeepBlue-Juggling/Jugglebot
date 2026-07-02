@@ -104,20 +104,39 @@ class SingleCatchConfig:
     # so the ball arrives descending at a modest (~6 deg) angle (within ≤12°).
     bb_origin_offset_m: "tuple[float, float, float]" = (-0.15, 0.0, -0.25)
     flight_s: float = 0.60                              # launch -> touch-down
+    # ---- optional REAL Ball Butler throw source (fast-catch fidelity) ----
+    # By default the incoming ball is a SYNTHETIC gentle lob (``takeoff_velocity``
+    # over ``flight_s`` from ``bb_origin_offset_m``), arriving ~2.5 m/s. Set
+    # ``use_real_bb`` to spawn from the REAL ``BallButlerSim`` kinematics instead —
+    # a fast, flat throw (~4.9 m/s vz at catch_z from the demo BB placement), the
+    # arrival the hardware actually delivers. The §3 BB-throw noise + the apex-
+    # spawn are applied identically to both sources. See the fast-catch probe
+    # (tools/probes/juggle_fastcatch.py) and
+    # logbook/2026-07-02-fast-catch-fidelity.md.
+    use_real_bb: bool = False
+    bb_position_mm: "tuple[float, float, float]" = (-872.0, -630.0, 1430.0)
+    bb_yaw_offset_rad: "float | None" = None   # None -> aim from position at origin
     # ---- catch realisation knobs (tuned empirically; see the probe) ----
-    # The slider does the vertical descend-with-the-ball (the axis-split catch):
-    # the cup HOLDS a short ``ready_lift`` ABOVE catch_z, then descends so it
-    # passes through catch_z at touch-down moving down at ``vel_ratio``·|arrival
-    # vz| (velocity-matched — keeps the soft contact's closing speed small so the
-    # ball does not punch through), then CONSTANT-decelerates to rest over
-    # ``seat_decel_time_s``, carrying the seated ball to a co-moving stop. Starting
-    # the descent from ABOVE catch_z (``ready_lift``) avoids an up-overshoot (a
-    # quintic to catch_z with downward end-velocity from a level hold loops up
-    # first). See the Rung 1 catch sweep (tools/probes/juggle_catch_offset.py).
-    catch_ready_lift_m: float = 0.06       # hold this far above catch_z first
-    catch_slider_vel_ratio: float = 0.95   # cup vz at catch_z = ratio·arrival vz
-    catch_start_lead_s: float = 0.16       # begin the descent this far before t_td
-    seat_decel_time_s: float = 0.16        # CONSTANT-decel-to-rest duration after t_td
+    # The slider does the vertical descend-with-the-ball (the axis-split catch),
+    # PHASE-MATCHED to the arrival (2026-07-02 fast-catch fidelity). From a
+    # ``ready_lift`` ABOVE catch_z, the cup is driven every tick so it arrives at
+    # catch_z MOVING DOWN at ``vel_ratio``·|estimated arrival vz| EXACTLY at the
+    # predicted touch-down ``t_td`` (a re-solved quintic completing at t_td) — i.e.
+    # the cup is CO-MOVING with the ball, not holding-high-then-dropping-late, when
+    # the ball lands. This is the crux for a FAST arrival (a real Ball Butler
+    # ~4.9 m/s): the old hold-high-then-descend schedule reached catch_z too late
+    # and the fast ball punched through the still-descending cup. Once the ball
+    # reaches catch_z the cup CONSTANT-decelerates to rest over ``seat_decel_time_s``
+    # (a constant decel has no force peak — a min-jerk-to-rest peaks ~1.9x its
+    # average mid-stroke and ejects the ball, the dominant §3-noise catch failure).
+    # The larger ``ready_lift`` (0.15) gives room to build the matched descent
+    # speed; ``vel_ratio`` 0.55 is the sweet spot (0.5-0.6) — 0.7+ commands a
+    # descent the band-limited cup cannot track, so it misses the phase. See the
+    # fast-catch probe (tools/probes/juggle_fastcatch.py).
+    catch_ready_lift_m: float = 0.15       # hold this far above catch_z first
+    catch_slider_vel_ratio: float = 0.55   # cup vz at catch_z = ratio·arrival vz
+    catch_start_lead_s: float = 0.16       # tilt-freeze lead before t_td
+    seat_decel_time_s: float = 0.16        # CONSTANT-decel-to-rest duration after catch_z
     reach_settle_floor_s: float = 0.10     # fixed receding-horizon for xy/tilt reach
     # The observed apex->catch flight is short (~0.26 s after the n>=4 warm-up
     # gate), so the lateral reach runs on a FIXED ``reach_settle_floor_s`` (0.10 s)
@@ -177,11 +196,70 @@ class SingleCatchRunner:
         bs = self.plant.get_ball_state(ball=0)
         return np.asarray(bs.position_mm, float) / 1000.0, bs
 
+    def _spawn_incoming(self, target):
+        """Compute + perturb the incoming throw, then spawn ball 0 at its apex.
+
+        A real Ball Butler launches from across the room; the ball only enters
+        OUR workspace on the DESCENT. Modelling the full rising arc would have the
+        ball pass up THROUGH the waiting cup and collide with it (a sim artefact,
+        target-dependent). So: compute the full notional launch, apply the §3 BB
+        noise (2% of the throw speed/displacement — the realistic landing scatter),
+        then SPAWN the perturbed ball at its apex — descending, well above the cup.
+
+        Two throw sources, selected by ``cfg.use_real_bb`` (both perturbed +
+        apex-spawned identically):
+
+        * **synthetic** (default): a gentle ballistic lob via ``takeoff_velocity``
+          over ``flight_s`` from ``bb_origin_offset_m`` — arrives ~2.5 m/s.
+        * **real BB**: the actual ``BallButlerSim`` kinematics aimed at ``target``
+          — a fast, flat throw (~4.9 m/s vz at catch_z from the demo placement),
+          the arrival the hardware delivers. Imported lazily so the default path
+          keeps its import surface unchanged.
+        """
+        cfg = self.cfg
+        if cfg.use_real_bb:
+            from sim.ball_butler.sim import BallButlerSim
+            pos = np.asarray(cfg.bb_position_mm, float)
+            yaw = (cfg.bb_yaw_offset_rad if cfg.bb_yaw_offset_rad is not None
+                   else float(np.arctan2(-pos[1], -pos[0])))   # aim from BB at origin
+            bb = BallButlerSim.from_hardware_config(pos, yaw)
+            target_mm = target * 1000.0
+            rel_pos_mm, rel_vel_mms, _ = bb.compute_release_state(target_mm)
+            pos_mm = np.asarray(rel_pos_mm, float)
+            vel_mms = np.asarray(rel_vel_mms, float)
+            displacement_mm = target_mm - pos_mm
+        else:
+            origin = target + np.array(cfg.bb_origin_offset_m, float)
+            v0 = takeoff_velocity(origin, target, cfg.flight_s)
+            pos_mm = origin * 1000.0
+            vel_mms = v0 * 1000.0
+            displacement_mm = (target - origin) * 1000.0
+
+        pos_n_mm, vel_n_mms = self.noise.perturb_throw(pos_mm, vel_mms, displacement_mm)
+        origin_n = pos_n_mm / 1000.0
+        v0_n = vel_n_mms / 1000.0
+        g = -GRAVITY[2]
+        t_apex = v0_n[2] / g if v0_n[2] > 0 else 0.0
+        apex_pos = origin_n + v0_n * t_apex + 0.5 * GRAVITY * t_apex ** 2
+        apex_vel = v0_n + GRAVITY * t_apex                 # vz ≈ 0 at apex
+        self.plant.spawn_ball(apex_pos * 1000.0, apex_vel * 1000.0, ball=0)
+
     def run(self) -> CatchResult:
         cfg = self.cfg
         plant = self.plant
         plant.reset()
-        plant.set_contact_stiffness(False)             # soft contact: catch/carry
+        # The catch runs entirely in the "soft" (now FIRM — see
+        # ball.manager.CONTACT_SOFT_*) contact regime. ``set_contact_stiffness`` is
+        # idempotent and the manager initialises to "soft", so a plain
+        # ``set_contact_stiffness(False)`` is a NO-OP that leaves the ball+cup geoms
+        # at their MJCF-authored (0.05, 2.0) default — the OLD 50 ms overdamped soft
+        # that lets a fast (~4.9 m/s) arrival punch straight through the cup. This
+        # is a CATCH-ONLY harness (no throw stroke ever flips the contact to stiff
+        # and back), so nothing else writes the module constants. Toggle
+        # stiff->soft once so the firm CONTACT_SOFT_* values are actually applied to
+        # the geoms before the catch. See logbook/2026-07-02-fast-catch-fidelity.md.
+        plant.set_contact_stiffness(True)
+        plant.set_contact_stiffness(False)             # firm contact: catch/carry
 
         catch_z = cfg.catch_z_m
         nominal_xy = np.array(cfg.landing_xy_m, float)
@@ -197,25 +275,7 @@ class SingleCatchRunner:
             plant.step(CONTROL_DT)
 
         # ---- Compute + perturb the BB throw, then spawn at the (noisy) apex ----
-        # A real Ball Butler launches from across the room; the ball only enters
-        # OUR workspace on the DESCENT. Modelling the full rising arc would have
-        # the ball pass up THROUGH the waiting cup and collide with it (a sim
-        # artefact, target-dependent). So: compute the full notional launch (this
-        # is what the §3 BB noise perturbs — 2% of the real throw speed/displacement
-        # gives the realistic landing scatter), apply the noise, then SPAWN the
-        # perturbed ball at its apex — descending, well above the cup.
-        origin = target + np.array(cfg.bb_origin_offset_m, float)
-        v0 = takeoff_velocity(origin, target, cfg.flight_s)
-        displacement_mm = (target - origin) * 1000.0
-        pos_n_mm, vel_n_mms = self.noise.perturb_throw(
-            origin * 1000.0, v0 * 1000.0, displacement_mm)
-        origin_n = pos_n_mm / 1000.0
-        v0_n = vel_n_mms / 1000.0
-        g = -GRAVITY[2]
-        t_apex = v0_n[2] / g if v0_n[2] > 0 else 0.0
-        apex_pos = origin_n + v0_n * t_apex + 0.5 * GRAVITY * t_apex ** 2
-        apex_vel = v0_n + GRAVITY * t_apex                 # vz ≈ 0 at apex
-        plant.spawn_ball(apex_pos * 1000.0, apex_vel * 1000.0, ball=0)
+        self._spawn_incoming(target)
 
         # ---- Commanded cup state (the reach is planned from this) ----
         cmd_xy = np.array([0.0, 0.0]); cmd_vxy = np.zeros(2); cmd_axy = np.zeros(2)
@@ -236,6 +296,7 @@ class SingleCatchRunner:
         frozen_xy = None
         frozen_tilt = None
         settle_v0 = None                   # cup vz captured at the catch_z crossing
+        settling = False                   # latched once the TRUE ball reaches catch_z
 
         for _k in range(n_ticks):
             t_rel = float(plant.data.time) - t0
@@ -254,6 +315,7 @@ class SingleCatchRunner:
             pos_td = np.array(pos_td, float)
             pos_td[:2] = np.clip(pos_td[:2], -WORKSPACE_XY_M, WORKSPACE_XY_M)
             tilt_rx, tilt_ry = tilt_to_receive(vel_td, MAX_TILT_DEG)
+            v_arr = abs(float(vel_td[2]))         # estimated |arrival vz| at catch_z
 
             # --- warm-up guard: hold at home until the arc is well-observed ---
             # The first few samples give a degenerate (n<3) or noisy fit; reaching
@@ -300,29 +362,36 @@ class SingleCatchRunner:
             cmd_tilt, cmd_vtilt, cmd_atilt = _quintic_step(
                 cmd_tilt, cmd_vtilt, cmd_atilt, reach_tilt,
                 np.zeros(2), np.zeros(2), horizon_tilt, CONTROL_DT)
-            # vertical (slider): the axis-split descend-with-the-ball.
-            #   hold at ready_z -> pass catch_z velocity-matched -> CONSTANT-decel
-            #   to rest. The settle is a CONSTANT deceleration (not a min-jerk to
-            #   rest): a min-jerk decel-to-rest has a deceleration PEAK ~1.9x its
-            #   average in the middle of the stroke, and that force spike ejects the
-            #   ball UP off the cup (a soft-contact bounce) — the dominant catch
-            #   failure under the §3 noise. A constant deceleration has no peak, so
-            #   the contact force is steady and the ball rides the cup smoothly to
-            #   rest. (See the Rung 1 catch sweep, tools/probes/juggle_catch_offset.py.)
-            if t_remaining > 0.0:
-                if not descending:
-                    z_t, vz_t = ready_z, 0.0
-                    hz = max(t_remaining - cfg.catch_start_lead_s, 3.0 * CONTROL_DT)
-                else:
-                    # APPROACH — ease to catch_z arriving velocity-matched at t_td.
-                    z_t = catch_z
-                    vz_t = cfg.catch_slider_vel_ratio * float(vel_td[2])
-                    hz = max(t_remaining, 3.0 * CONTROL_DT)
+            # vertical (slider): the PHASE-MATCHED descend-with-the-ball.
+            #   From the ready-lift, drive the cup EVERY tick so it arrives at
+            #   catch_z MOVING DOWN at ``vel_ratio``·|estimated arrival vz| EXACTLY
+            #   at the predicted touch-down (a re-solved quintic completing at t_td)
+            #   — i.e. CO-MOVING with the ball when it lands, NOT holding high then
+            #   dropping late. The old hold-then-drop schedule reached catch_z too
+            #   late, so a fast (~4.9 m/s) arrival punched through the still-
+            #   descending cup (plunge-through). Once the TRUE ball reaches catch_z
+            #   (a deterministic physical crossing; LATCHED so an estimate jitter
+            #   can't unlatch it), CONSTANT-decelerate the co-moving cup to rest over
+            #   ``seat_decel_time_s``. The settle is a CONSTANT deceleration (not a
+            #   min-jerk to rest): a min-jerk decel-to-rest has a deceleration PEAK
+            #   ~1.9x its average mid-stroke, and that force spike ejects the ball UP
+            #   off the cup (a soft-contact bounce) — the dominant catch failure
+            #   under the §3 noise. A constant deceleration has no peak, so the
+            #   contact force is steady and the ball rides the cup smoothly to rest.
+            #   (See the fast-catch probe, tools/probes/juggle_fastcatch.py.)
+            ball_z = true_m[2]
+            if not settling and ball_z > catch_z + 0.002 and t_remaining > 1e-3:
+                # APPROACH — arrive at catch_z moving down at ratio·|arrival vz| @ t_td.
+                tgt_vz = -cfg.catch_slider_vel_ratio * v_arr
+                hz = max(t_remaining, 3.0 * CONTROL_DT)
                 (cmd_z,), (cmd_vz,), (cmd_az,) = _quintic_step(
-                    [cmd_z], [cmd_vz], [cmd_az], [z_t], [vz_t], [0.0], hz, CONTROL_DT)
+                    [cmd_z], [cmd_vz], [cmd_az], [catch_z], [tgt_vz], [0.0],
+                    hz, CONTROL_DT)
             else:
-                # Constant-deceleration settle: ramp the (downward) cup velocity
-                # linearly to zero over ``seat_decel_time_s``, then hold at rest.
+                # SETTLE — the ball reached catch_z: constant-decel the co-moving
+                # cup to rest, then hold. Latched (``settling``) so we never re-enter
+                # the approach on a post-crossing estimate wobble.
+                settling = True
                 if settle_v0 is None:
                     settle_v0 = min(cmd_vz, -1e-6)        # cup vz at the crossing
                 a_dec = -settle_v0 / cfg.seat_decel_time_s   # >0 (upward decel)

@@ -89,14 +89,20 @@ def test_column_selfcatch_does_not_sustain(seed):
     assert r.diverged
 
 
-def test_reach_amplifies_loop_gain_gt_one():
-    """The loop-gain signature (seed 3, a clear reach-amplification case): the
-    catch reach AMPLIFIES from the tight first throw (~7 mm) past the catch's
-    ~60-80 mm reliable reach within a couple of cycles -- loop gain > 1, the same
-    class as the pre-tilt divergence (logbook 2026-06-27)."""
-    r = run_self_catch(SelfCatchConfig(seed=3, n_cycles=12))
-    reaches = [c.reach_mm for c in r.cycles]
-    assert reaches[0] < 20.0                       # tight first throw (~7 mm)
+def test_reach_amplifies_loop_gain_gt_one(faithful_seed0):
+    """The loop-gain signature (seed 0, a clear reach-amplification case): the
+    catch reach AMPLIFIES from the tight first throw (~7.7 mm) past the catch's
+    ~60-80 mm reliable reach within a couple of cycles (measured 7.7 -> 106.7 mm)
+    -- loop gain > 1, the same class as the pre-tilt divergence (logbook 2026-06-27).
+
+    Which seed shows the reach-amplification mode (vs the catch-seat-knife-edge
+    mode) depends on the catch contact: under the 2026-07-02 firmed catch contact
+    seed 0 amplifies (7.7 -> 106.7 mm) while seeds 1-5 break at cycle 1 via the
+    knife-edge (tiny cycle-1 reach). Every seed still DIVERGES either way
+    (``test_column_selfcatch_does_not_sustain``); this test pins the amplification
+    mode specifically. See logbook/2026-07-02-fast-catch-fidelity.md."""
+    reaches = [c.reach_mm for c in faithful_seed0.cycles]
+    assert reaches[0] < 20.0                       # tight first throw (~7.7 mm)
     assert max(reaches) > 3.0 * reaches[0]         # amplifies several-fold
     assert max(reaches) > CATCH_REACH_MM           # past the reliable reach -> drop
 

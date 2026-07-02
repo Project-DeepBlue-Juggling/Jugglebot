@@ -150,6 +150,20 @@ under 2% BB noise + 0.5 mm tracking noise** (seed-reproducible). The
 translate-to-reach + tilt-to-receive geometry + lever-arm compensation are
 verified. **GATE:** is the catch clean + robust enough to feed a throw?
 
+**Status (2026-06-30): landed** (gentle synthetic BB lob; ~3.3 mm in-cup offset
+under §3 noise). **Fidelity follow-up (2026-07-02): the Rung-1 catch now seats a
+REAL fast `BallButlerSim` throw (~4.9 m/s arrival), not just a gentle synthetic
+lob.** The operator's physical intuition (real balls seat well at high velocity
+delta; a catching cup at 50–80% of ball speed is normal) reframed a "the catch
+can't do a fast BB" dead-end into a sim-fidelity gap: the old **soft** catch
+contact (50 ms) plunged fast balls through the 70 mm seat window, and the seat was
+tuned for ~2.7 m/s lobs. Fix: a **firmer catch contact** (`solref 0.05→0.01`) + a
+**phase-matched descent** (cup co-moving down at ~0.55·|arrival vz| at the predicted
+touch-down, from a 0.15 m ready-lift). Result: gentle lob **8/8** AND real BB **8/8**
+(in reach), self-catch MAKE preserved **12/12**. Scoped to the Rung-1
+`SingleCatchRunner`; the **online-runner catch** (for Rung 3's two-ball BB-seed)
+needs the same port — future work. See `logbook/2026-07-02-fast-catch-fidelity.md`.
+
 ---
 
 ### Phase 2 / Rung 2a — Single-ball throw to arbitrary targets  *(GATE after)*

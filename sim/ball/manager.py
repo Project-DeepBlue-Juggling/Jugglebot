@@ -104,7 +104,10 @@ SEAT_ESCAPE_M: float = 0.070          # 2× ball radius
 # beanbag-style ball is *both* inelastic (clean catch) and non-cohesive
 # (clean throw) — neither fixed setting captures that, but the two phases
 # capture one each:
-#   * CATCH / carry  -> SOFT: cushions the ~3.5 m/s impact, no bounce-out.
+#   * CATCH / carry  -> "soft": a FIRM (fast time-constant) contact that
+#                       arrests the impact well inside the 70 mm seat-escape
+#                       window, no bounce-out. The name is historical — this
+#                       regime is now firm, NOT the old overdamped 50 ms.
 #   * THROW stroke   -> STIFF: rigid tracking puts all the hand/platform
 #                       motion into the ball and lets it separate cleanly
 #                       and deterministically at the stroke peak.
@@ -112,8 +115,18 @@ SEAT_ESCAPE_M: float = 0.070          # 2× ball radius
 # is accelerating up and pressing the ball in (compressive) — so stiffening
 # firms the seating rather than ejecting the ball. solref = (timeconst,
 # dampratio); solimp = (dmin, dmax, width).
-CONTACT_SOFT_SOLREF = (0.05, 2.0)
-CONTACT_SOFT_SOLIMP = (0.99, 0.99, 0.001)
+#
+# CATCH/carry contact FIRMED (2026-07-02, fast-catch fidelity). The old
+# (0.05, 2.0) = 50 ms time-constant contact was too slow to arrest a REAL
+# Ball Butler arrival (~4.9 m/s vz): the ball plunged ~70 mm through the cup
+# before the contact reacted, past the seat-escape window -> lost. A ~10 ms
+# time-constant (0.01, 1.0) with a tighter solimp arrests the fast ball
+# within the window while staying cushioned enough for the gentle lob and
+# the self-catch's co-moving seat (both re-verified MAKE-preserving). This
+# is used for carry+catch across the whole arc. See
+# logbook/2026-07-02-fast-catch-fidelity.md.
+CONTACT_SOFT_SOLREF = (0.01, 1.0)
+CONTACT_SOFT_SOLIMP = (0.99, 0.999, 0.0005)
 CONTACT_STIFF_SOLREF = (0.004, 1.0)
 CONTACT_STIFF_SOLIMP = (0.99, 0.999, 0.0005)
 

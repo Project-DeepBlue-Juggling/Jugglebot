@@ -62,3 +62,42 @@ def test_reach_clamped_to_workspace():
     r = run_single_catch(SingleCatchConfig(landing_xy_m=(0.14, 0.0), seed=0))
     lx, ly = r.landing_xy_m
     assert abs(lx) <= WORKSPACE_XY_M + 1e-6 and abs(ly) <= WORKSPACE_XY_M + 1e-6
+
+
+def test_fast_real_ball_butler_throw_is_seated():
+    """Fast-catch FIDELITY (2026-07-02): a REAL Ball Butler throw — the fast, flat
+    arrival the hardware actually delivers (~4.9 m/s vz, ~15° from vertical at
+    catch_z, from the demo BB placement) — is caught, held, and seated tightly by
+    the phase-matched descent seat + the firmed catch contact.
+
+    This is the primitive the old (soft 50 ms contact + hold-high-then-drop-late)
+    seat could NOT do: the fast ball punched straight through the still-descending
+    cup (0/N held). The fix makes the cup CO-MOVING at the arrival phase and firms
+    the contact enough to arrest the impact inside the seat window.
+
+    The §3 TRACKING noise (0.5 mm observation, ON) is the noise the estimator must
+    average to time the phase-matched descent — the crux this test exercises. The
+    §3 BB-THROW noise (2%) is OFF here on purpose: for the real BB's long
+    (~1.3 m) throw it scatters the LANDING well beyond the platform's reach box on
+    a minority of seeds — a REACH limitation (characterised separately, as for the
+    synthetic throw), NOT a seating failure. Turning it off isolates the variable
+    under test — the SEATING of a fast arrival — which is what "fast-catch
+    fidelity" means. Deterministic given the pinned MuJoCo + the seeded noise.
+    """
+    from sim.juggle_noise import NoiseConfig
+    results = [run_single_catch(SingleCatchConfig(
+        use_real_bb=True, noise=NoiseConfig(bb_throw_noise_frac=0.0,
+                                            tracking_noise_mm=0.5), seed=s))
+        for s in range(6)]
+    for s, r in enumerate(results):
+        assert r.caught and r.held_at_end and r.clean, (
+            f"seed {s}: fast BB not cleanly seated "
+            f"(caught={r.caught} held={r.held_at_end} off={r.in_cup_offset_mm:.0f})")
+        assert r.in_cup_offset_mm < 20.0, (
+            f"seed {s}: seated {r.in_cup_offset_mm:.1f} mm off centre (> 20 mm)")
+        # The arrival is genuinely the FAST, FLAT BB throw — it comes in past the
+        # 12° usable tilt band, so the receive tilt clamps near MAX_TILT_DEG. This
+        # distinguishes the test from the gentle synthetic lob (~5.7°) and guards
+        # against a BB-placement change that would quietly make it a slow throw.
+        assert r.catch_tilt_deg >= 10.0, (
+            f"seed {s}: catch tilt {r.catch_tilt_deg:.1f}° — not the fast/flat BB arrival")
