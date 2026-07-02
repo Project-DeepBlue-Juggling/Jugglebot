@@ -1,0 +1,21 @@
+{
+  "get_version": {"arb": 0, "len": 0, "data": ""},
+  "set_state_idle": {"arb": 7, "len": 8, "data": "0100000000000000"},
+  "set_state_closed_loop": {"arb": 7, "len": 8, "data": "0800000000000000"},
+  "set_controller_mode": {"arb": 11, "len": 8, "data": "0300000001000000"},
+  "set_input_pos": {"arb": 12, "len": 8, "data": "00002040e80378ec"},
+  "set_input_vel": {"arb": 13, "len": 8, "data": "0000c03f00000000"},
+  "set_input_torque": {"arb": 14, "len": 8, "data": "0000403f00000000"},
+  "set_vel_curr_limits": {"arb": 15, "len": 8, "data": "0000804000002041"},
+  "set_traj_vel_limit": {"arb": 17, "len": 8, "data": "0000704100000000"},
+  "set_traj_acc_limits": {"arb": 18, "len": 8, "data": "0000a0410000c841"},
+  "set_absolute_position": {"arb": 25, "len": 8, "data": "0000c03f00000000"},
+  "set_pos_gain": {"arb": 26, "len": 8, "data": "0000f04100000000"},
+  "set_vel_gains": {"arb": 27, "len": 8, "data": "cdcccc3dcdcc4c3d"},
+  "clear_errors": {"arb": 24, "len": 8, "data": "0000000000000000"},
+  "reboot": {"arb": 22, "len": 8, "data": "0000000000000000"},
+  "sdo_read": {"arb": 4, "len": 8, "data": "00e8010000000000"},
+  "sdo_write": {"arb": 4, "len": 8, "data": "01e8010000002040"},
+  "leg_setpoint_leg0": {"arb": 12, "len": 8, "data": "000000c00cfe18fc"},
+  "leg_setpoint_hand": {"arb": 204, "len": 8, "data": "0000004032000a00"}
+}

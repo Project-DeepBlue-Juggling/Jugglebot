@@ -115,6 +115,27 @@ _BINARIES = {
         NATIVE_DIR / "test_udp_framing.cpp",
         [],
     ),
+    # Fable-5 [14] / gap 3: EXECUTE rpc.cpp dispatch()/send_axis_frame() — the
+    # (method,axis) enforcement point + gate-basis routing. #includes rpc.cpp and
+    # links the standard triple; the leg/hand/relay/version handlers are stubbed
+    # inline in the driver (routing isolation), so no leg_*/relay/version .cpp link.
+    "test_rpc_dispatch": (
+        NATIVE_DIR / "test_rpc_dispatch.cpp",
+        ["axis_state", "ball_butler_state", "fake_hal"],
+    ),
+    # Fable-5 [14] / gap 8: EXECUTE the real odrive_protocol.h encoders + emit a
+    # cross-language golden (pinned by the Python xref to odrive.py). Pure header.
+    "test_odrive_protocol": (
+        NATIVE_DIR / "test_odrive_protocol.cpp",
+        [],
+    ),
+    # Fable-5 [14] / gap 7: EXECUTE the real ball_butler_protocol.h encoders + emit a
+    # cross-language golden (pinned by the Python xref to ball_butler.py). Pure header
+    # (the driver defines its own fixed clock for the deterministic throw_time).
+    "test_ball_butler_protocol": (
+        NATIVE_DIR / "test_ball_butler_protocol.cpp",
+        [],
+    ),
 }
 
 
@@ -195,6 +216,14 @@ def main(argv) -> int:
         out = argv[argv.index("--golden") + 1]
         _run([str(bins["test_fault_machine"]), "--emit-golden", out])
         print(f"Emitted fault goldens → {out}")
+    if "--odrive-golden" in argv:
+        out = argv[argv.index("--odrive-golden") + 1]
+        _run([str(bins["test_odrive_protocol"]), "--emit-golden", out])
+        print(f"Emitted odrive goldens → {out}")
+    if "--bb-golden" in argv:
+        out = argv[argv.index("--bb-golden") + 1]
+        _run([str(bins["test_ball_butler_protocol"]), "--emit-golden", out])
+        print(f"Emitted BB goldens → {out}")
     return 0
 
 

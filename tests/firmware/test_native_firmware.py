@@ -172,6 +172,83 @@ def test_native_udp_framing_binary_passes(binaries):
         f"the expected behaviour:\n{r.stdout}\n{r.stderr}")
 
 
+def test_native_rpc_dispatch_binary_passes(binaries):
+    """The compiled rpc.cpp dispatch()/send_axis_frame() passes every assertion: the
+    (method,axis) enforcement point (hand-axis-6 allow-table, leg-axis bounds), the
+    arg-decode bounds, the Phase-6 gate-basis split (CLEAR/REBOOT on bus-transmittable
+    vs everything else on staleness — the 2026-06-27 just-repowered-bus crux), the
+    AXIS_ALL fan-out, the reboot-latch-arms-for-leg-not-hand branch, and BB presence +
+    range-check routing. Coverage gap 3 — the dispatch was never compiled before (only
+    a text-regex lint). Handlers stubbed for routing isolation."""
+    r = _run(binaries["test_rpc_dispatch"])
+    assert r.returncode == 0, (
+        "native test_rpc_dispatch FAILED — rpc.cpp dispatch/send_axis_frame diverged "
+        f"from the expected (method,axis)/gate-basis behaviour:\n{r.stdout}\n{r.stderr}")
+
+
+def test_native_odrive_protocol_binary_passes(binaries):
+    """The compiled odrive_protocol.h encoders pass their self-checks (arb_id packing,
+    the <fhh set_input_pos round-trip, zero-length get_version). Coverage gap 8 — the
+    real header is now EXECUTED; the cross-language byte parity is pinned by the
+    committed-golden guard below + the odrive.py reproduction in
+    tests/firmware/test_odrive_protocol_xref.py."""
+    r = _run(binaries["test_odrive_protocol"])
+    assert r.returncode == 0, (
+        "native test_odrive_protocol FAILED — odrive_protocol.h diverged from the "
+        f"expected encoder behaviour:\n{r.stdout}\n{r.stderr}")
+
+
+def test_odrive_committed_golden_matches_live_firmware(binaries, tmp_path):
+    """A freshly-emitted odrive golden equals committed native/odrive_protocol_golden.json
+    — the C++-side drift guard (gap 8). If odrive_protocol.h's encoders change, the fresh
+    emission diverges and this fails, forcing a deliberate regeneration:
+        python tests/firmware/native/build.py --odrive-golden \
+            tests/firmware/native/odrive_protocol_golden.json
+    (and, if the change is intended, a matching odrive.py update so the Python xref
+    reproduction still equals the golden)."""
+    fresh = tmp_path / "odrive_protocol_golden.json"
+    r = _run(binaries["test_odrive_protocol"], "--emit-golden", str(fresh))
+    assert r.returncode == 0, f"odrive golden emission failed:\n{r.stdout}\n{r.stderr}"
+    committed = json.loads((_NATIVE / "odrive_protocol_golden.json").read_text())
+    regenerated = json.loads(fresh.read_text())
+    assert regenerated == committed, (
+        "tests/firmware/native/odrive_protocol_golden.json is stale vs the live "
+        "odrive_protocol.h. Regenerate it:\n"
+        "  python tests/firmware/native/build.py --odrive-golden "
+        "tests/firmware/native/odrive_protocol_golden.json\n"
+        "and update odrive.py / the xref reproduction to match if intended.")
+
+
+def test_native_ball_butler_binary_passes(binaries):
+    """The compiled ball_butler_protocol.h encoders pass their self-checks (encode_throw
+    id/len/offsets/scaling, throw_args_valid accept + each out-of-range/NaN/Inf reject,
+    the payloadless state-command ids). Coverage gap 7 — the one canbridge firmware
+    encoder that was never compiled. Byte parity vs ball_butler.py:
+    tests/firmware/test_ball_butler_xref.py."""
+    r = _run(binaries["test_ball_butler_protocol"])
+    assert r.returncode == 0, (
+        "native test_ball_butler_protocol FAILED — ball_butler_protocol.h diverged "
+        f"from the expected encoder behaviour:\n{r.stdout}\n{r.stderr}")
+
+
+def test_bb_committed_golden_matches_live_firmware(binaries, tmp_path):
+    """A freshly-emitted BB golden equals committed native/ball_butler_golden.json —
+    the C++-side drift guard (gap 7). Regenerate on an intended change:
+        python tests/firmware/native/build.py --bb-golden \
+            tests/firmware/native/ball_butler_golden.json
+    (and update ball_butler.py so the Python xref reproduction still matches)."""
+    fresh = tmp_path / "ball_butler_golden.json"
+    r = _run(binaries["test_ball_butler_protocol"], "--emit-golden", str(fresh))
+    assert r.returncode == 0, f"BB golden emission failed:\n{r.stdout}\n{r.stderr}"
+    committed = json.loads((_NATIVE / "ball_butler_golden.json").read_text())
+    regenerated = json.loads(fresh.read_text())
+    assert regenerated == committed, (
+        "tests/firmware/native/ball_butler_golden.json is stale vs the live "
+        "ball_butler_protocol.h. Regenerate:\n"
+        "  python tests/firmware/native/build.py --bb-golden "
+        "tests/firmware/native/ball_butler_golden.json")
+
+
 def test_committed_golden_matches_live_firmware(binaries, tmp_path):
     """A freshly-emitted golden equals the committed native/fault_golden.json.
 

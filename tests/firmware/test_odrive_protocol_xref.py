@@ -1,22 +1,28 @@
-"""Cross-reference the C++ ODrive protocol port against the real odrive.py / bus.py.
+"""Cross-language byte-parity of the C++ ODrive encoders (odrive_protocol.h) vs odrive.py.
 
-The firmware's `odrive_protocol.h` is a hand port of
-`ros_ws/src/jugglebot/jugglebot/can/odrive.py`. These tests transcribe the C++
-encode/decode arithmetic into Python (kept deliberately minimal and 1:1 with the
-C++) and assert the result is **byte-identical** to the production `odrive.py`
-encoders/decoders and the `bus.py` time-sync payload.
+**Upgraded in the Fable-5 hardening pass (gap 8).** This used to TRANSCRIBE the C++
+arithmetic into Python (`cpp_arb_id`/`cpp_set_input_pos`/`cpp_leg_setpoint`) and
+compare that to `odrive.py` — both sides Python, so a wrong memcpy offset / struct
+order / arb-id shift in the REAL header passed silently. It is now a GOLDEN
+CONSUMER: `tests/firmware/native/test_odrive_protocol.cpp` compiles + runs the real
+C++ encoders and emits their exact bytes into `native/odrive_protocol_golden.json`;
+this test reproduces every golden entry from the AUTHORITATIVE `odrive.py` and
+asserts equality. Transitively — golden == real-C++-bytes (pinned on the Jetson by
+`test_native_firmware.py::test_odrive_committed_golden_matches_live_firmware`) AND
+golden == odrive.py-bytes (here, everywhere) — this is true cross-language equality
+that EXECUTES the header, not a self-comparison.
 
-A struct-format or arbitration-id error in the C++ port — the easiest mistake to
-make in a hand translation — shows up here as a byte mismatch against the
-authoritative Python. (The C++ itself can't be compiled in this environment; the
-adversarial review pass also eyeballs the header line-by-line.)
+The decoder + time-sync payload checks stay pure-Python (they validate the parse
+direction, which the golden emitter does not cover).
 
 Requires python-can (a core hardware dependency); skipped if unavailable.
 """
 
 from __future__ import annotations
 
+import json
 import struct
+from pathlib import Path
 
 import pytest
 
@@ -27,128 +33,83 @@ import jugglebot.protocol_config as proto  # noqa: E402
 LEGS = list(range(6))
 HAND = od.HAND_AXIS
 
-
-# ── C++ mirrors (transcribed 1:1 from odrive_protocol.h) ──────────────────────
-
-def cpp_arb_id(axis, cmd):
-    return (axis << 5) | cmd
+_GOLDEN = (Path(__file__).resolve().parent / "native" / "odrive_protocol_golden.json")
 
 
-def cpp_set_input_pos(pos, vel_i, tor_i):
-    # encode_set_input_pos: memcpy float@0, int16@4, int16@6  →  struct '<fhh'
-    return struct.pack("<fhh", pos, vel_i, tor_i)
+@pytest.fixture(scope="module")
+def golden() -> dict:
+    return json.loads(_GOLDEN.read_text())
 
 
-def cpp_leg_setpoint(axis, setpoint_rev, vel_ff_rps, torque_ff_Nm):
-    # encode_leg_setpoint: clip → leg_sign → int16 scale → clamp → set_input_pos
-    is_leg = axis < 6
-    max_pos = proto_to_max(axis)
-    pos = max(0.0, min(setpoint_rev, max_pos))            # clip_position
-    sign = -1.0 if is_leg else 1.0
-    pos *= sign
-    vff = vel_ff_rps * sign
-    tff = torque_ff_Nm * sign
-    if is_leg:
+# ── Reproduce each golden entry from the AUTHORITATIVE odrive.py ───────────────
+# Each lambda returns a python-can Message; the test compares arb_id + data bytes
+# to the golden the REAL C++ header emitted. The (name → args) here MUST match the
+# table in native/test_odrive_protocol.cpp — the two encode the same wire commands
+# in two languages; agreement is the cross-language guarantee.
+_SDO_PARAM = "commutation_mapper.pos_abs"   # proto.ENDPOINT_COMMUTATION_MAPPER_POS_ABS == 488
+
+
+def _leg_setpoint(axis, setpoint, vel, tor):
+    """Reproduce can_node._send_position_target: clip → _leg_sign → int16 scale →
+    clamp → encode_set_input_pos. FF vectors are exact-integer-scaled, so Python
+    int(round()) and C++ lroundf agree (no X.5 boundary)."""
+    sign = -1.0 if axis in od.LEG_AXES else 1.0
+    sp = od.clip_position(axis, setpoint) * sign
+    vff, tff = vel * sign, tor * sign
+    if axis in od.LEG_AXES:
         vscale, tscale = proto.INPUT_SCALE_LEG_VEL, proto.INPUT_SCALE_LEG_TOR
     else:
         vscale, tscale = proto.INPUT_SCALE_HAND_VEL, proto.INPUT_SCALE_HAND_TOR
-    import math
-    vi = int(math.floor(vff * vscale + 0.5)) if vff * vscale >= 0 else -int(math.floor(-vff * vscale + 0.5))
-    ti = int(math.floor(tff * tscale + 0.5)) if tff * tscale >= 0 else -int(math.floor(-tff * tscale + 0.5))
-    vi = max(-32768, min(32767, vi))
-    ti = max(-32768, min(32767, ti))
-    # C++ stores `pos` as float32; emulate the f32 round-trip so bytes match.
-    pos32 = struct.unpack("<f", struct.pack("<f", pos))[0]
-    return cpp_arb_id(axis, proto.ODRIVE_COMMANDS["set_input_pos"]), cpp_set_input_pos(pos32, vi, ti)
+    vi = max(-32768, min(32767, int(round(vff * vscale))))
+    ti = max(-32768, min(32767, int(round(tff * tscale))))
+    return od.encode_set_input_pos(axis, sp, vi, ti)
 
 
-def proto_to_max(axis):
-    import jugglebot.hardware_config as hw
-    return hw.GEOM_LEG_MOTOR_MAX_POSITION_REVS if axis < 6 else hw.GEOM_HAND_MOTOR_MAX_POSITION_REVS
+_REPRO = {
+    "get_version":           lambda: od.encode_get_version(0),
+    "set_state_idle":        lambda: od.encode_set_state(0, "IDLE"),
+    "set_state_closed_loop": lambda: od.encode_set_state(0, "CLOSED_LOOP"),
+    "set_controller_mode":   lambda: od.encode_set_controller_mode(0, "POSITION", "PASSTHROUGH"),
+    "set_input_pos":         lambda: od.encode_set_input_pos(0, 2.5, 1000, -5000),
+    "set_input_vel":         lambda: od.encode_set_input_vel(0, 1.5, 0.0),
+    "set_input_torque":      lambda: od.encode_set_input_torque(0, 0.75),
+    "set_vel_curr_limits":   lambda: od.encode_set_vel_curr_limits(0, 4.0, 10.0),
+    "set_traj_vel_limit":    lambda: od.encode_set_traj_vel_limit(0, 15.0),
+    "set_traj_acc_limits":   lambda: od.encode_set_traj_acc_limits(0, 20.0, 25.0),
+    "set_absolute_position": lambda: od.encode_set_absolute_position(0, 1.5),
+    "set_pos_gain":          lambda: od.encode_set_pos_gain(0, 30.0),
+    "set_vel_gains":         lambda: od.encode_set_vel_gains(0, 0.1, 0.05),
+    "clear_errors":          lambda: od.encode_clear_errors(0),
+    "reboot":                lambda: od.encode_reboot(0),
+    "sdo_read":              lambda: od.encode_sdo_read(0, _SDO_PARAM),
+    "sdo_write":             lambda: od.encode_sdo_write(0, _SDO_PARAM, 2.5),
+    "leg_setpoint_leg0":     lambda: _leg_setpoint(0, 2.0, 0.5, 0.1),
+    "leg_setpoint_hand":     lambda: _leg_setpoint(HAND, 2.0, 0.5, 0.1),
+}
 
 
-# ── arb_id ────────────────────────────────────────────────────────────────────
-
-@pytest.mark.parametrize("axis", LEGS + [HAND])
-def test_arb_id_matches(axis):
-    assert cpp_arb_id(axis, proto.ODRIVE_COMMANDS["set_input_pos"]) == od.arb_id(axis, "set_input_pos")
-
-
-# ── Encoders: C++ bytes == odrive.py bytes ────────────────────────────────────
-
-def test_encode_set_input_pos_bytes():
-    for pos in (-1.234, 0.0, 2.5, 4.2):
-        for vel_i, tor_i in ((0, 0), (1000, -5000), (-32768, 32767)):
-            ref = od.encode_set_input_pos(0, pos, vel_i, tor_i)
-            assert bytes(ref.data) == cpp_set_input_pos(pos, vel_i, tor_i)
+def test_golden_covers_every_reproduced_encoder(golden):
+    """The committed golden and the Python reproduction table describe the SAME set
+    of encoders — neither side silently drops a command (which would hide a drift)."""
+    assert set(golden.keys()) == set(_REPRO.keys()), (
+        "odrive golden and the Python reproduction table diverged — regenerate:\n"
+        "  python tests/firmware/native/build.py --odrive-golden "
+        "tests/firmware/native/odrive_protocol_golden.json")
 
 
-def test_encode_set_state_bytes():
-    for state in (od.AXIS_STATES["IDLE"], od.AXIS_STATES["CLOSED_LOOP"]):
-        ref = od.encode_set_state(0, [k for k, v in od.AXIS_STATES.items() if v == state][0])
-        # C++ encode_set_state: u32@0 + 4 zero bytes
-        mine = struct.pack("<I", state) + bytes(4)
-        assert bytes(ref.data) == mine
+@pytest.mark.parametrize("name", list(_REPRO.keys()))
+def test_cpp_encoder_bytes_match_odrive_py(golden, name):
+    """The REAL C++ encoder's bytes (golden) equal the production odrive.py bytes —
+    arb_id AND payload, byte-for-byte."""
+    g = golden[name]
+    msg = _REPRO[name]()
+    assert msg.arbitration_id == g["arb"], f"{name}: arb_id C++={g['arb']} py={msg.arbitration_id}"
+    assert bytes(msg.data).hex() == g["data"], (
+        f"{name}: bytes C++={g['data']} py={bytes(msg.data).hex()}")
+    assert len(bytes(msg.data)) == g["len"]
 
 
-def test_encode_set_controller_mode_bytes():
-    ref = od.encode_set_controller_mode(0, "POSITION", "PASSTHROUGH")
-    mine = struct.pack("<II", od.CONTROL_MODES["POSITION"], od.INPUT_MODES["PASSTHROUGH"])
-    assert bytes(ref.data) == mine
-
-
-def test_encode_set_vel_curr_limits_bytes():
-    ref = od.encode_set_vel_curr_limits(0, 4.0, 10.0)
-    assert bytes(ref.data) == struct.pack("<ff", 4.0, 10.0)
-
-
-def test_encode_set_pos_gain_bytes():
-    ref = od.encode_set_pos_gain(0, 30.0)
-    assert bytes(ref.data) == struct.pack("<f", 30.0) + bytes(4)
-
-
-def test_encode_set_vel_gains_bytes():
-    ref = od.encode_set_vel_gains(0, 0.1, 0.05)
-    assert bytes(ref.data) == struct.pack("<ff", 0.1, 0.05)
-
-
-def test_encode_set_absolute_position_bytes():
-    ref = od.encode_set_absolute_position(0, 1.5)
-    assert bytes(ref.data) == struct.pack("<f", 1.5) + bytes(4)
-
-
-def test_encode_clear_errors_and_reboot_bytes():
-    assert bytes(od.encode_clear_errors(0).data) == bytes(8)
-    assert bytes(od.encode_reboot(0).data) == bytes(8)
-
-
-def test_encode_sdo_bytes():
-    ep = proto.ENDPOINT_COMMUTATION_MAPPER_POS_ABS
-    rd = od.encode_sdo_read(0, "commutation_mapper.pos_abs")
-    assert bytes(rd.data) == struct.pack("<BHBf", proto.OPCODE_READ, ep, 0, 0.0)
-    wr = od.encode_sdo_write(0, "commutation_mapper.pos_abs", 2.5)
-    assert bytes(wr.data) == struct.pack("<BHBf", proto.OPCODE_WRITE, ep, 0, 2.5)
-
-
-# ── Full leg setpoint path (encode_leg_setpoint vs can_node._send_position_target) ──
-
-def test_encode_leg_setpoint_matches_send_position_target_logic():
-    # Replicate can_node._send_position_target exactly and compare to the C++ mirror.
-    for axis in LEGS:
-        for setpoint, vel, tor in ((2.0, 0.5, 0.1), (0.0, -1.0, -0.2), (5.0, 3.9, 1.0)):
-            sign = -1.0 if axis in od.LEG_AXES else 1.0   # _leg_sign (can_node)
-            sp = od.clip_position(axis, setpoint) * sign
-            vff = vel * sign
-            tff = tor * sign
-            vi = max(-32768, min(32767, int(round(vff * proto.INPUT_SCALE_LEG_VEL))))
-            ti = max(-32768, min(32767, int(round(tff * proto.INPUT_SCALE_LEG_TOR))))
-            ref = od.encode_set_input_pos(axis, sp, vi, ti)
-            arb, data = cpp_leg_setpoint(axis, setpoint, vel, tor)
-            assert arb == ref.arbitration_id
-            assert data == bytes(ref.data)
-
-
-# ── Decoders: feed bytes, C++ mirror == odrive.py ─────────────────────────────
+# ── Decoders: feed bytes, odrive.py parses correctly (parse direction) ─────────
 
 def test_decode_heartbeat():
     data = bytes([0, 0, 0, 0, od.AXIS_STATES["CLOSED_LOOP"], 1, 0x01, 0])
@@ -181,9 +142,6 @@ def test_decode_sdo_response():
 def test_time_sync_payload_matches_bus_format():
     # The contract is: master encodes (sec, usec) as '<II' on ID 0x7DD; slaves
     # (Teensy_code.ino handleSyncFrame) reconstruct jetson_us = sec*1e6 + usec.
-    # bus.py uses the same '<II' layout. The C++ master uses integer microseconds
-    # (sec = w//1e6, usec = w%1e6) — byte-compatible with '<II' and, unlike
-    # bus.py's float path, exact (reconstructs to w with zero rounding).
     w = 1_700_000_123_456            # us since epoch
     sec, usec = w // 1_000_000, w % 1_000_000
     cpp = struct.pack("<II", sec, usec)
