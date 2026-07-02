@@ -160,6 +160,18 @@ def test_native_leg_homing_binary_passes(binaries):
         f"homing-ladder behaviour:\n{r.stdout}\n{r.stderr}")
 
 
+def test_native_udp_framing_binary_passes(binaries):
+    """The compiled C++ UDP framing (crc16_ccitt / encode_frame / decode_frame in
+    udp_protocol.h — the network trust boundary) passes every assertion: the
+    canonical CRC-16/CCITT-FALSE check value, encode→decode round-trip, and every
+    rejection the firmware relies on (runt, bad magic/version, length mismatch, CRC
+    corruption). Coverage gap 4 — before this the C++ codec was never executed."""
+    r = _run(binaries["test_udp_framing"])
+    assert r.returncode == 0, (
+        "native test_udp_framing FAILED — the C++ UDP framing codec diverged from "
+        f"the expected behaviour:\n{r.stdout}\n{r.stderr}")
+
+
 def test_committed_golden_matches_live_firmware(binaries, tmp_path):
     """A freshly-emitted golden equals the committed native/fault_golden.json.
 

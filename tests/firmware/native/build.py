@@ -109,6 +109,12 @@ _BINARIES = {
         NATIVE_DIR / "test_leg_homing.cpp",
         ["axis_state", "ball_butler_state", "coldstart_hal"],
     ),
+    # Fable-5 [14] / gap 4: EXECUTE the hand-written C++ UDP framing (the network
+    # trust boundary). Pure header (udp_protocol.h) — no linked objects.
+    "test_udp_framing": (
+        NATIVE_DIR / "test_udp_framing.cpp",
+        [],
+    ),
 }
 
 
