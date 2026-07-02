@@ -112,9 +112,16 @@ divergence from can_node's literal behaviour (which had the latent bug). No orch
   isolated** (1 passed in 7.49 s) — not a regression (memory
   `project_hot_loop_alloc_test_flaky`). No new/removed tests (the coldstart test was
   extended + one flipped, count unchanged at 17).
-- **Hardware re-validation (V1):** PENDING — re-home, `/reboot_odrives`, confirm the
-  orchestrator now auto-recovers BOOT→HOMING(**encoder-search**→home)→IDLE with no
-  ODRIVE_FATAL loop.
+- **Hardware re-validation (V1) — PASSED (2026-07-02, `03ad26c` pulled + rebuilt;
+  operator actuated, e-stop in hand; Claude verified the probe trace).** With the fix
+  flashed, `/reboot_odrives` cleared `is_homed→0` **and `enc_search→0`** (the fix — it
+  stuck at 1 pre-fix), then the orchestrator **auto-recovered**: `BOOT→HOMING` with
+  encoder-search *running* (`enc_search 0→1`), `is_homed→1`, `IDLE`. The infinite
+  FAULT→BOOT→HOMING loop is **gone**. One transient `ODRIVE_FATAL`/FAULT/`control_mode
+  ='ERROR'` remains right after the reboot — the ODrives' momentary post-reboot error
+  state — which self-clears (FaultHandler → BOOT) and is benign here (legs IDLE/
+  de-energised, so the estop is inert), then the re-home completes. Operator confirmed
+  "exactly as expected."
 
 ## Discussion
 

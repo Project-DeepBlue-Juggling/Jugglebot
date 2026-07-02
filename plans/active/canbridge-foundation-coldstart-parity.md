@@ -561,13 +561,23 @@ parity is restored and hardware-validated.** Before `/archive-plan`, close the
 residual hardware validations below (the Phase-2/3/can-loss gates the Phase-4 sitting
 did NOT exercise).
 
-**Residual hardware validations owed before archival** (the Phase-4 sitting validated
-the cold-start READ+PERSIST paths but not these): (1) `REBOOT_ODRIVES` clears
-is_homed/levelling/pose on hardware (Phase 2 shared-hook step 2); (2) the CAN3-
-reconnect conservative re-read (Phase 3 precondition); (3) the **six-leg deferred-
-stow reconnect** re-validation (Testing-plan; only single-leg validated). These are
-safety-relevant for autonomous movement and should be a short follow-up powered
-session — see the Phase-4 logbook Open Questions.
+**Residual hardware validations — CLOSED in a follow-up powered session (2026-07-02):**
+(1) **`REBOOT_ODRIVES` cold-start clear — PASSED** (cleared is_homed/levelling/pose +
+auto-re-home; ALSO found + fixed the encoder-search-clear bug, logbook
+2026-07-02-canbridge-reboot-encoder-search-clear); (2) **six-leg deferred-stow
+reconnect — PASSED** (platform ACTIVE → CAN3 unplug → all six held, no drop → re-plug
+→ profiled stow to STOW + IDLE — the 2026-05-19 safety inversion, now full-platform-
+validated; parity-matrix row 5 → ported+validated, counts 79/12/23/3); (3) the CAN3-
+reconnect conservative re-read — DIRECTION confirmed (is_homed survived a CAN blip),
+the read-failure→conservative-False fallback stays unit-test-only (a safety backstop).
+**The plan's residuals are discharged; it is ready to `/archive-plan`.**
+
+**Out-of-scope item for autonomous movement (NOT a plan blocker):** matrix row 18 —
+the **Jetson↔Teensy UDP-link** deferred-stow is armed-but-never-executed (no stow
+RPC/subscriber). V3 validated the **CAN3**-side deferred-stow (which executes); the
+UDP-link surface is different and still open. Track it as the first complex-movement
+safety item (a stow RPC + a `link_status` executor, or an explicit decision to rely on
+the firmware CAN-side hold).
 
 ### Phase 5 — Hand command conduit + hand homing
 

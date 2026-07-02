@@ -276,17 +276,29 @@ levelling) — never `'ERROR'` — so no ESTOP was issued.
 - **Powered sitting — RESOLVED (2026-07-02, PASSED; see Verification).** Automatic
   BOOT→encoder-search→home(legs+hand)→IDLE + a 3× levelling cycle, no unwanted
   ESTOP. The 9 Phase-4 rows are ported+validated.
-- **What the Phase-4 sitting did NOT exercise (owed hardware validations, tracked in
-  the plan's residuals).** This sitting validated the cold-start READ + PERSIST paths
-  (is_homed/levelling/pose written + read; the home action; activate/deactivate via
-  levelling; the tilt read). It did **not** exercise: (a) the `REBOOT_ODRIVES`
-  shared-hook clear of is_homed/levelling/pose on hardware (Phase 2 step 2 — needs a
-  reboot); (b) the CAN3-reconnect conservative re-read (Phase 3 precondition — needs a
-  CAN3 drop/reconnect); (c) the **six-leg deferred-stow reconnect** re-validation (the
-  plan's Testing-plan owes this; only single-leg validated). These are the Phase-2/3/
-  can-loss hardware gates whose "validated at the Phase-4 sitting" deferral is only
-  PARTIALLY discharged — a follow-up powered session should close them before the
-  plan is archived / before autonomous movement.
+- **Residual hardware validations — closed in a follow-up session (2026-07-02).** The
+  cold-start sitting itself validated the READ + PERSIST paths; a follow-up powered
+  session then closed the rest:
+  - **V1 — REBOOT_ODRIVES cold-start clear: PASSED** — `/reboot_odrives` cleared
+    is_homed/levelling/pose on hardware and the orchestrator auto-re-homed. It ALSO
+    surfaced + fixed a real bug (the reboot didn't clear the encoder-search bit →
+    ODRIVE_FATAL loop; logbook 2026-07-02-canbridge-reboot-encoder-search-clear).
+  - **V3 — six-leg deferred-stow reconnect: PASSED** — platform ACTIVE, CAN3 unplug →
+    all six legs held autonomously (no drop) + deferred-stow armed; re-plug → firmware
+    profiled stow to STOW + IDLE on all six; re-activate worked. The 2026-05-19 CAN-loss
+    safety inversion is now full-platform-validated (was single-leg). See parity-matrix
+    row 5 + line ~294.
+  - **V2 — CAN3-reconnect conservative re-read: DIRECTION confirmed, fallback still
+    unit-test-only.** `is_homed` correctly stayed True through a CAN blip (references
+    survive a CAN interruption without power loss); the read-failure→`is_homed=False`
+    conservative fallback did not trigger (needs a Platform-Teensy-inclusive CAN3 drop
+    that also fails the re-read) and remains unit-tested. Acceptable — it's a safety
+    backstop, and the important direction (don't lose is_homed on a transient blip) held.
+- **Row 18 (UDP-link deferred-stow EXECUTION) is a DIFFERENT surface and STILL OPEN.**
+  V3 validated the firmware **CAN3**-side deferred-stow (which *executes*). The
+  **Jetson↔Teensy UDP-link** deferred-stow (matrix row 18) is still armed-but-never-
+  executed (no stow RPC/subscriber). For autonomous juggling a UDP-link blip mid-routine
+  would not self-park — the top complex-movement-prep item (out of this plan's scope).
 - **Runtime vel/curr limit persistence across configure** (matrix row 42/25) — the
   ACTIVATE fold calls `_run_configure`, which re-applies YAML-default limits; a prior
   `set_motor_vel_curr_limits` push is reset. Pre-existing `_run_configure` behaviour,
