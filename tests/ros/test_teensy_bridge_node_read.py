@@ -255,6 +255,30 @@ def test_has_fatal_can_error_from_fault_state(bridge):
     assert node.robot_state_pub.published[-1].has_fatal_can_error is True
 
 
+def test_has_fatal_can_error_from_link_loss(bridge):
+    """[5]: a dead Jetson↔Teensy UDP link raises has_fatal_can_error with a
+    DISTINCT operator-facing string, even when the Teensy's own bus/fault flags
+    look healthy. The orchestrator's ONLY health input is robot_state; without
+    this OR-term a frozen link leaves it consuming stale-but-fresh-looking motor
+    states forever (can_node coupled 2 s silence → fatal_can, dropped in the port)."""
+    teensy, node = bridge
+    teensy.send_telemetry()
+    hb = HeartbeatT2J(t_teensy_us=1, link_state=int(LinkState.UP),
+                      bus1_health=int(BusHealth.OK), bus2_health=int(BusHealth.OK),
+                      fault_state=int(FaultState.NONE), flags=0, uptime_ms=10)
+    teensy.send_to_jetson(int(MsgType.HEARTBEAT_T2J), hb.pack())
+    assert _wait_until(lambda: node._latest_heartbeat is not None
+                       and node._latest_telemetry is not None)
+    # Force the link-loss latch as the 1 Hz watchdog would on heartbeat silence.
+    node._link_latch.link_lost = True
+    node._publish_robot_state()
+    msg = node.robot_state_pub.published[-1]
+    assert msg.has_fatal_can_error is True
+    # The link-loss cause gets its OWN string, distinct from a CAN3 bus fault.
+    assert "Teensy link lost (UDP) — telemetry is stale." in msg.error
+    assert "Fatal CAN bus issue." not in msg.error
+
+
 def test_fatal_odrive_not_masked_by_concurrent_fault(bridge):
     """A higher-priority single-valued Teensy fault (CAN_BUS_DOWN) must NOT mask a
     concurrent per-leg ODrive fault — the bridge ORs the raw per-leg signals in."""
@@ -293,6 +317,44 @@ def test_no_fatal_odrive_when_legs_clean(bridge):
     diag = Diagnostic(axis_id=0, axis_state=8, active_errors=0, disarm_reason=0)
     teensy.send_to_jetson(int(MsgType.DIAGNOSTIC), diag.pack())
     assert _wait_until(lambda: 0 in node._latest_diag
+                       and node._latest_telemetry is not None)
+    node._publish_robot_state()
+    assert node.robot_state_pub.published[-1].has_fatal_odrive_error is False
+
+
+def test_cross_axis_disarm_while_other_leg_closed_loop_is_fatal(bridge):
+    """[11]: ANY leg disarmed while ANY (other) leg still holds CLOSED_LOOP is a
+    fatal ODrive condition (fault_logic.py `any_disarmed and any_cl` parity). The
+    prior per-leg conjunction (the SAME leg disarmed AND CLOSED_LOOP) essentially
+    never fired — a disarmed ODrive leaves CLOSED_LOOP almost immediately — so the
+    common real event (one leg drops torque while the others keep holding) slipped
+    through exactly the OR-term meant to un-mask it."""
+    teensy, node = bridge
+    teensy.send_telemetry()
+    # Leg 2: disarmed but already OUT of CLOSED_LOOP (IDLE=1) — the old per-leg AND
+    # would see disarm-but-not-CL here and miss it.
+    d2 = Diagnostic(axis_id=2, axis_state=1, active_errors=0, disarm_reason=0x40)
+    # Leg 3: clean, still holding CLOSED_LOOP (8).
+    d3 = Diagnostic(axis_id=3, axis_state=8, active_errors=0, disarm_reason=0)
+    teensy.send_to_jetson(int(MsgType.DIAGNOSTIC), d2.pack())
+    teensy.send_to_jetson(int(MsgType.DIAGNOSTIC), d3.pack())
+    assert _wait_until(lambda: 2 in node._latest_diag and 3 in node._latest_diag
+                       and node._latest_telemetry is not None)
+    node._publish_robot_state()
+    assert node.robot_state_pub.published[-1].has_fatal_odrive_error is True
+
+
+def test_disarm_with_no_leg_closed_loop_is_not_fatal(bridge):
+    """[11] contrast: a leg disarmed with NO leg in CLOSED_LOOP (a clean stow /
+    powered-down state) is NOT fatal — the `any_cl` term keeps a deliberate
+    deactivate from reading as a fault."""
+    teensy, node = bridge
+    teensy.send_telemetry()
+    d2 = Diagnostic(axis_id=2, axis_state=1, active_errors=0, disarm_reason=0x40)
+    d3 = Diagnostic(axis_id=3, axis_state=1, active_errors=0, disarm_reason=0)
+    teensy.send_to_jetson(int(MsgType.DIAGNOSTIC), d2.pack())
+    teensy.send_to_jetson(int(MsgType.DIAGNOSTIC), d3.pack())
+    assert _wait_until(lambda: 2 in node._latest_diag and 3 in node._latest_diag
                        and node._latest_telemetry is not None)
     node._publish_robot_state()
     assert node.robot_state_pub.published[-1].has_fatal_odrive_error is False

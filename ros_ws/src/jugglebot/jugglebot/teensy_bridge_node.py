@@ -404,6 +404,18 @@ class TeensyBridgeNode(Node):
         # 0x6E0 write echo (bench-probe gate; see _await_platform_reply).
         self._platform_reply_cv = threading.Condition()
         self._platform_replies = {}    # can_id -> (data: bytes, dlc: int)
+        # Fable-5 hardening [16]: serialize whole relay round-trips. Two concurrent
+        # relay ops (e.g. a boot/reconnect STATE_READ racing a home's STATE_WRITE)
+        # would otherwise (a) clear + await the same can_id's latched reply and
+        # cross-correlate, and (b) lose a read-modify-write update
+        # (cache-vs-Platform-Teensy divergence). One lock around each op closes both.
+        # Held only for the rare (~ms) relay round-trip, never on the 100 Hz path.
+        # RLock (re-entrant) so the read-modify-write helpers (_write_is_homed /
+        # _write_level_state / _clear_cold_start_state_on_reboot) can hold it across
+        # their whole cache-read → wire-write → cache-update sequence — which itself
+        # calls relay_write_robot_state (also lock-guarded) — fully closing the
+        # lost-update, not just serializing the two wire writes.
+        self._relay_lock = threading.RLock()
 
         # ── Cold-start state cache (Phase 2: relay-sourced is_homed/level/pose) ──
         # The Platform Teensy OWNS the persisted cold-start state; it shares the
@@ -748,7 +760,13 @@ class TeensyBridgeNode(Node):
                 evt = catching_cone.CatchEvent.from_can_frame(data)
                 arrival_us = int(time.time() * 1e6)
                 with self._lock:
-                    self._cone_catch_queue.append((evt, arrival_us))
+                    q = self._cone_catch_queue
+                    q.append((evt, arrival_us))
+                    # Fable-5 [16]: bound the queue if the 100 Hz drain stalls, same
+                    # as the BB-estimates sibling (drop-oldest). Catches are discrete
+                    # + rare, so 4000 (~unbounded in practice) only guards a stuck drain.
+                    if len(q) > 4000:
+                        del q[:len(q) - 4000]
             elif cf.can_id == catching_cone.HEARTBEAT_ID:
                 hb = catching_cone.ConeHeartbeat.from_can_frame(data)
                 with self._lock:
@@ -928,9 +946,18 @@ class TeensyBridgeNode(Node):
             core_bus_health = int(hb.bus1_health) if hb is not None else 0
             legs = states[:_NUM_LEGS]  # the can-bridge owns legs 0-5 (hand = platform Teensy)
             any_leg_active_err = any(s.active_errors != 0 for s in legs)
-            any_leg_disarm_in_cl = any(
-                s.disarm_reason != 0 and s.current_state == _AXIS_STATE_CLOSED_LOOP
-                for s in legs)
+            # CROSS-AXIS disarm-while-CLOSED_LOOP (Fable-5 hardening [11]; exact
+            # parity with fault_logic.py:117 `any_disarmed and any_cl` + can_node):
+            # ANY leg disarmed while ANY leg still holds CLOSED_LOOP is fatal. The
+            # previous per-leg conjunction (the SAME leg disarmed AND CLOSED_LOOP)
+            # essentially never fired — a disarmed ODrive leaves CLOSED_LOOP almost
+            # immediately — so the common real event (one leg drops torque while the
+            # others keep holding) was missed by exactly the OR-term that exists to
+            # un-mask a fault while fault_state carries a higher-priority code.
+            any_leg_disarmed = any(s.disarm_reason != 0 for s in legs)
+            any_leg_in_cl = any(
+                s.current_state == _AXIS_STATE_CLOSED_LOOP for s in legs)
+            disarm_while_cl = any_leg_disarmed and any_leg_in_cl
             # A firmware-version MISMATCH is a fatal ODrive condition (can_node set
             # fatal_error=True → has_fatal_odrive_error=True, can_node:491/1080). It
             # is a latched OR-term recomputed each publish (sticky for the session).
@@ -944,11 +971,21 @@ class TeensyBridgeNode(Node):
             fw_mismatch_present = fw_mismatch is not None
             msg.has_fatal_odrive_error = (
                 fault_state == int(FaultState.ODRIVE_FATAL)
-                or any_leg_active_err or any_leg_disarm_in_cl
+                or any_leg_active_err or disarm_while_cl
                 or fw_mismatch_present)
+            # Fable-5 hardening [5]: surface a dead Jetson↔Teensy UDP link as a fatal
+            # CAN error. The orchestrator's ONLY health input is robot_state; without
+            # this, a lost link leaves it consuming FROZEN motor states stamped with
+            # fresh clock times + healthy flags indefinitely (can_node coupled 2 s
+            # silence → fatal_can_error; that coupling drove the 2026-05-19 stow work
+            # and was dropped in the port). The LinkLossLatch never arms before the
+            # first heartbeat, so this OR is boot-safe. Read outside self._lock (the
+            # latch is a separate object, updated by the 1 Hz _health_check).
+            link_lost = bool(self._link_latch.link_lost)
             msg.has_fatal_can_error = (
                 fault_state == int(FaultState.CAN_BUS_DOWN)
-                or core_bus_health == int(BusHealth.BUS_OFF))
+                or core_bus_health == int(BusHealth.BUS_OFF)
+                or link_lost)
             # Undervoltage: matches can_node, which sets undervoltage_error ONLY
             # from a BITWISE test on active_errors (can_node._handle_error:436);
             # disarm_reason==UV is used by can_node solely in its clear predicate,
@@ -977,7 +1014,11 @@ class TeensyBridgeNode(Node):
                     f"Fatal ODrive issue (Teensy fault_state="
                     f"{_enum_name(FaultState, fault_state)}).")
             if msg.has_fatal_can_error:
-                errors.append("Fatal CAN bus issue.")
+                # Distinguish the UDP-link-loss cause (Fable-5 [5]) from a CAN3
+                # bus fault, so an operator sees WHY robot_state went fatal.
+                errors.append(
+                    "Teensy link lost (UDP) — telemetry is stale."
+                    if link_lost else "Fatal CAN bus issue.")
             msg.error = errors
 
             # Teensy-persisted cold-start state (Phase 2) — sourced from the
@@ -1100,8 +1141,13 @@ class TeensyBridgeNode(Node):
                 # Refresh off the publish path; KEEP the cached value if the read
                 # fails — a Jetson↔Teensy link blip leaves the Platform Teensy (and
                 # its references) powered, so a re-home would be wrong (can_node
-                # passive last-known parity).
-                self._refresh_cold_start_state('reconnect')
+                # passive last-known parity). Dispatched to a daemon thread ([16c])
+                # so the relay round-trip can't stall the 100 Hz publish (shared
+                # callback group). Best-effort: if a conservative CAN3-recovery
+                # re-read already holds the shared guard, this keep-stale read is
+                # simply skipped — the conservative read is the stronger refresh.
+                self._dispatch_cold_start_reread(
+                    self._refresh_cold_start_state, 'reconnect', 'cs-udp-reread')
             self._last_link_lost = self._link_latch.link_lost
 
             # Phase 3 precondition (audit 2026-06-29): CAN3-bus-health reconnect
@@ -1130,8 +1176,18 @@ class TeensyBridgeNode(Node):
                     "may have power-cycled; conservative cold-start re-read.")
                 # OFF the 1 Hz timer thread — the re-read can take ~1.9 s and must
                 # not stall the 100 Hz publish (shared callback group; audit MEDIUM).
-                self._read_cold_start_state_conservative_async('can3_reconnect')
-            if cur_bus1 is not None:
+                dispatched = self._dispatch_cold_start_reread(
+                    self._read_cold_start_state_conservative,
+                    'can3_reconnect', 'cs-can3-reread')
+                # Consume the recovery edge ONLY once the conservative re-read is
+                # under way. If a same-tick UDP-reconnect keep-stale read won the
+                # shared guard (dispatched=False), leave _last_bus1_health DEGRADED
+                # so the edge re-fires next tick — the conservative read (is_homed=
+                # False on failure) must never be permanently preempted by the
+                # weaker keep-stale path ([16c]).
+                if dispatched:
+                    self._last_bus1_health = cur_bus1
+            elif cur_bus1 is not None:
                 self._last_bus1_health = cur_bus1
         except Exception as e:  # noqa: BLE001
             self.get_logger().error(f"Health check error: {e}",
@@ -1600,16 +1656,17 @@ class TeensyBridgeNode(Node):
         (ok, message, (tiltX, tiltY)) in radians; tilt is None on failure."""
         timeout = self._RELAY_READ_TIMEOUT_S if timeout is None else timeout
         can_id = proto.CAN_ID_PLATFORM_TILT_READING
-        with self._platform_reply_cv:
-            self._platform_replies.pop(int(can_id), None)
-        ok, msg, _ = self._call_rpc(RpcMethod.TILT_READ)
-        if not ok:
-            return False, msg, None        # fail-fast (e.g. ERR_BUS_DOWN)
-        data = self._await_platform_reply(can_id, expected_dlc=8, timeout=timeout)
-        if data is None:
-            return False, 'relay tilt read: no Platform reply within timeout', None
-        tiltX, tiltY = struct.unpack('<ff', data[:8])
-        return True, 'OK', (tiltX, tiltY)
+        with self._relay_lock:   # serialize the whole relay round-trip (Fable-5 [16])
+            with self._platform_reply_cv:
+                self._platform_replies.pop(int(can_id), None)
+            ok, msg, _ = self._call_rpc(RpcMethod.TILT_READ)
+            if not ok:
+                return False, msg, None        # fail-fast (e.g. ERR_BUS_DOWN)
+            data = self._await_platform_reply(can_id, expected_dlc=8, timeout=timeout)
+            if data is None:
+                return False, 'relay tilt read: no Platform reply within timeout', None
+            tiltX, tiltY = struct.unpack('<ff', data[:8])
+            return True, 'OK', (tiltX, tiltY)
 
     def relay_read_robot_state(self, timeout=None):
         """STATE_READ: read the Platform-Teensy RobotState. Returns
@@ -1617,26 +1674,30 @@ class TeensyBridgeNode(Node):
         Teensy_code.ino decodeStateCANMessage packs it."""
         timeout = self._RELAY_READ_TIMEOUT_S if timeout is None else timeout
         can_id = proto.CAN_ID_PLATFORM_STATE_UPDATE
-        with self._platform_reply_cv:
-            self._platform_replies.pop(int(can_id), None)
-        ok, msg, _ = self._call_rpc(RpcMethod.STATE_READ)
-        if not ok:
-            return False, msg, None        # fail-fast (e.g. ERR_BUS_DOWN)
-        data = self._await_platform_reply(can_id, expected_dlc=8, timeout=timeout)
-        if data is None:
-            return False, 'relay state read: no Platform reply within timeout', None
-        return True, 'OK', _decode_relay_robot_state(data)
+        with self._relay_lock:   # serialize the whole relay round-trip (Fable-5 [16])
+            with self._platform_reply_cv:
+                self._platform_replies.pop(int(can_id), None)
+            ok, msg, _ = self._call_rpc(RpcMethod.STATE_READ)
+            if not ok:
+                return False, msg, None        # fail-fast (e.g. ERR_BUS_DOWN)
+            data = self._await_platform_reply(can_id, expected_dlc=8, timeout=timeout)
+            if data is None:
+                return False, 'relay state read: no Platform reply within timeout', None
+            return True, 'OK', _decode_relay_robot_state(data)
 
     def relay_write_robot_state(self, is_homed, levelling_complete,
                                 pose_offset_tiltX=0.0, pose_offset_tiltY=0.0):
         """STATE_WRITE: write the whole Platform-Teensy RobotState (the bridge is
         the sole writer; the firmware re-encodes the 0x6E0 frame). No reply —
-        returns (ok, message) from the synchronous RPC ack."""
-        ok, msg, _ = self._call_rpc(
-            RpcMethod.STATE_WRITE,
-            rpc_args.encode_state_write(is_homed, levelling_complete,
-                                        pose_offset_tiltX, pose_offset_tiltY))
-        return ok, msg
+        returns (ok, message) from the synchronous RPC ack. Serialized with the relay
+        reads via _relay_lock (Fable-5 [16]) so the STATE_WRITE read-modify-write
+        cannot interleave with a concurrent STATE_READ (lost update / cache skew)."""
+        with self._relay_lock:
+            ok, msg, _ = self._call_rpc(
+                RpcMethod.STATE_WRITE,
+                rpc_args.encode_state_write(is_homed, levelling_complete,
+                                            pose_offset_tiltX, pose_offset_tiltY))
+            return ok, msg
 
     # ── Cold-start state cache: read at boot + on reconnect, write on home/reboot ──
     # The Platform Teensy owns the persisted cold-start state (locked-decisions
@@ -1727,27 +1788,37 @@ class TeensyBridgeNode(Node):
             "is_homed=False (conservative; forces a re-home).")
         return False
 
-    def _read_cold_start_state_conservative_async(self, reason: str):
-        """Run _read_cold_start_state_conservative OFF the calling timer thread.
+    def _dispatch_cold_start_reread(self, fn, reason: str, thread_name: str) -> bool:
+        """Run a cold-start re-read (``fn(reason)``) OFF the calling timer thread.
 
-        That helper does bounded retries with sleeps + relay round-trips (worst
-        case ~1.9 s). It is invoked from the 1 Hz _health_check timer, which shares
-        the node's default MutuallyExclusiveCallbackGroup with the 100 Hz
-        _publish_robot_state — so a synchronous call would stall the robot_state
-        stream for up to ~1.9 s (audit 2026-06-29 MEDIUM). Dispatch it to a
+        BOTH cold-start re-read triggers fire from the 1 Hz _health_check timer,
+        which shares the node's default MutuallyExclusiveCallbackGroup with the
+        100 Hz _publish_robot_state — so a synchronous relay round-trip would stall
+        the robot_state stream (the CAN3 conservative re-read up to ~1.9 s: audit
+        2026-06-29 MEDIUM; Fable-5 [16c] extends the same off-thread fix to the
+        UDP-watchdog reconnect re-read, ~0.5 s single round-trip). Dispatch to a
         short-lived daemon thread: it touches only self._cold_start_state /
         _cold_start_authoritative / _encoder_search_done_session under self._lock,
         and the relay RPC + _await_platform_reply primitives are thread-safe (the
-        RX thread already feeds them). The in-flight guard keeps at most one re-read
-        running (the CAN3-recovery edge is one-shot per recovery)."""
+        RX thread already feeds them).
+
+        A SINGLE _cold_start_reread_inflight guard keeps at most one re-read of
+        EITHER kind running at once — this deliberately prevents the CONSERVATIVE
+        (CAN3-recovery) and the KEEP-STALE (UDP-reconnect) reads from racing the
+        same cache, where the weaker keep-stale read could land its is_homed=True
+        write LAST and resurrect a stale reference after a power-cycle. Returns
+        True iff a re-read was started; False iff one was already in flight. The
+        CAN3 caller uses the return to AVOID consuming its recovery edge when it
+        loses the shared guard, so the conservative re-read re-fires next tick
+        rather than being permanently preempted by a keep-stale read."""
         with self._lock:
             if self._cold_start_reread_inflight:
-                return
+                return False
             self._cold_start_reread_inflight = True
 
         def _run():
             try:
-                self._read_cold_start_state_conservative(reason)
+                fn(reason)
             except Exception as e:  # noqa: BLE001 — never let the worker thread die silently
                 self.get_logger().error(
                     f"async cold-start re-read ({reason}) errored: {e}",
@@ -1756,27 +1827,34 @@ class TeensyBridgeNode(Node):
                 with self._lock:
                     self._cold_start_reread_inflight = False
 
-        threading.Thread(target=_run, daemon=True, name='cs-can3-reread').start()
+        threading.Thread(target=_run, daemon=True, name=thread_name).start()
+        return True
 
     def _write_is_homed(self, is_homed: bool):
         """Persist is_homed via STATE_WRITE, read-modify-write THROUGH the cache so
         levelling_complete + pose_offset are preserved (the bridge is the sole
         writer — a homing write must not clobber a prior levelling result, and vice
-        versa). Updates the cache on success. Returns (ok, message)."""
-        with self._lock:
-            cs = self._cold_start_state
-        ok, msg = self.relay_write_robot_state(
-            is_homed=bool(is_homed),
-            levelling_complete=cs.levelling_complete,
-            pose_offset_tiltX=cs.pose_offset_tiltX,
-            pose_offset_tiltY=cs.pose_offset_tiltY)
-        if ok:
+        versa). Updates the cache on success. Returns (ok, message).
+
+        The whole read→wire-write→cache-update runs under _relay_lock (Fable-5
+        [16]) so a concurrent _write_level_state cannot read the same stale cache
+        and land its wire write last, clobbering is_homed on the Platform Teensy —
+        the RMW is atomic across writers, not just the two wire writes serialized."""
+        with self._relay_lock:
             with self._lock:
-                # _replace on the CURRENT cache (re-read) preserves any concurrent
-                # levelling update; only is_homed is changed here.
-                self._cold_start_state = self._cold_start_state._replace(
-                    is_homed=bool(is_homed))
-                self._cold_start_authoritative = True
+                cs = self._cold_start_state
+            ok, msg = self.relay_write_robot_state(
+                is_homed=bool(is_homed),
+                levelling_complete=cs.levelling_complete,
+                pose_offset_tiltX=cs.pose_offset_tiltX,
+                pose_offset_tiltY=cs.pose_offset_tiltY)
+            if ok:
+                with self._lock:
+                    # _replace on the CURRENT cache (re-read) preserves any concurrent
+                    # levelling update; only is_homed is changed here.
+                    self._cold_start_state = self._cold_start_state._replace(
+                        is_homed=bool(is_homed))
+                    self._cold_start_authoritative = True
         return ok, msg
 
     def _write_level_state(self, levelling_complete, tiltX, tiltY):
@@ -1786,23 +1864,27 @@ class TeensyBridgeNode(Node):
         result, and vice versa). The Phase-4 set_level_state subscriber's persist
         path; byte-parity with can_node._sub_set_level_state → _update_teensy_state
         (which merged into last_known_state, so is_homed carried through). Updates the
-        cache on success. Returns ``(ok, message)``."""
-        with self._lock:
-            cs = self._cold_start_state
-        ok, msg = self.relay_write_robot_state(
-            is_homed=cs.is_homed,                 # preserve (read-modify-write)
-            levelling_complete=bool(levelling_complete),
-            pose_offset_tiltX=float(tiltX),
-            pose_offset_tiltY=float(tiltY))
-        if ok:
+        cache on success. Returns ``(ok, message)``.
+
+        Whole RMW under _relay_lock (Fable-5 [16]) — see _write_is_homed; the
+        symmetric case is a concurrent homing write being clobbered here."""
+        with self._relay_lock:
             with self._lock:
-                # _replace on the CURRENT cache (re-read) preserves any concurrent
-                # is_homed update; only levelling + pose are changed here.
-                self._cold_start_state = self._cold_start_state._replace(
-                    levelling_complete=bool(levelling_complete),
-                    pose_offset_tiltX=float(tiltX),
-                    pose_offset_tiltY=float(tiltY))
-                self._cold_start_authoritative = True
+                cs = self._cold_start_state
+            ok, msg = self.relay_write_robot_state(
+                is_homed=cs.is_homed,                 # preserve (read-modify-write)
+                levelling_complete=bool(levelling_complete),
+                pose_offset_tiltX=float(tiltX),
+                pose_offset_tiltY=float(tiltY))
+            if ok:
+                with self._lock:
+                    # _replace on the CURRENT cache (re-read) preserves any concurrent
+                    # is_homed update; only levelling + pose are changed here.
+                    self._cold_start_state = self._cold_start_state._replace(
+                        levelling_complete=bool(levelling_complete),
+                        pose_offset_tiltX=float(tiltX),
+                        pose_offset_tiltY=float(tiltY))
+                    self._cold_start_authoritative = True
         return ok, msg
 
     def _clear_cold_start_state_on_reboot(self):
@@ -1812,37 +1894,42 @@ class TeensyBridgeNode(Node):
         can_node.py:1559-1565). Retried (the Platform Teensy stays powered through
         the reboot, so a dropped clear would leave a dangerous stale is_homed=True).
         The cache is set to the cleared value regardless (the safe local view).
-        Returns (ok, message)."""
+        Returns (ok, message).
+
+        The retried wire clears + the cache reset run under _relay_lock (Fable-5
+        [16]) so a concurrent homing/levelling write cannot land between a
+        successful clear and the cache reset and resurrect a stale is_homed=True."""
         ok, msg = False, 'no attempt'
-        for attempt in range(self._REBOOT_CLEAR_ATTEMPTS):
-            ok, msg = self.relay_write_robot_state(
-                is_homed=False, levelling_complete=False,
-                pose_offset_tiltX=0.0, pose_offset_tiltY=0.0)
-            if ok:
-                break
-            if attempt + 1 < self._REBOOT_CLEAR_ATTEMPTS:
-                time.sleep(self._REBOOT_CLEAR_RETRY_S)
-        with self._lock:
-            self._cold_start_state = RelayRobotState(
-                is_homed=False, levelling_complete=False,
-                pose_offset_tiltX=0.0, pose_offset_tiltY=0.0)
-            self._cold_start_authoritative = True
-            # Clear the in-session encoder-search bit too: a reboot resets the ODrive
-            # MCUs, which lose their INCREMENTAL-ENCODER INDEX (not pre-calibrated to
-            # flash — operator-confirmed 2026-07-02), so a re-encoder-search is
-            # REQUIRED before the next home. The derived
-            #   encoder_search_complete = is_homed OR _encoder_search_done_session
-            # must therefore go False after a reboot (is_homed is already cleared
-            # above). can_node.py:1552-1566 did NOT clear this — a LATENT BUG that only
-            # bit once the orchestrator drove homing AUTOMATICALLY after a reboot
-            # (Phase 4): HomingHandler skipped encoder-search on the stale True and
-            # homed on an un-indexed encoder → ODRIVE_FATAL → FAULT→BOOT→HOMING loop
-            # (hardware, 2026-07-02; see logbook 2026-07-02-canbridge-reboot-encoder-
-            # search-clear). Clearing it re-runs encoder-search on the next cold-start,
-            # exactly as a fresh launch does. Deliberate divergence from can_node's
-            # literal behaviour: the reboot must clear EVERYTHING the ODrive loses —
-            # references (is_homed/levelling/pose) AND the encoder index.
-            self._encoder_search_done_session = False
+        with self._relay_lock:
+            for attempt in range(self._REBOOT_CLEAR_ATTEMPTS):
+                ok, msg = self.relay_write_robot_state(
+                    is_homed=False, levelling_complete=False,
+                    pose_offset_tiltX=0.0, pose_offset_tiltY=0.0)
+                if ok:
+                    break
+                if attempt + 1 < self._REBOOT_CLEAR_ATTEMPTS:
+                    time.sleep(self._REBOOT_CLEAR_RETRY_S)
+            with self._lock:
+                self._cold_start_state = RelayRobotState(
+                    is_homed=False, levelling_complete=False,
+                    pose_offset_tiltX=0.0, pose_offset_tiltY=0.0)
+                self._cold_start_authoritative = True
+                # Clear the in-session encoder-search bit too: a reboot resets the ODrive
+                # MCUs, which lose their INCREMENTAL-ENCODER INDEX (not pre-calibrated to
+                # flash — operator-confirmed 2026-07-02), so a re-encoder-search is
+                # REQUIRED before the next home. The derived
+                #   encoder_search_complete = is_homed OR _encoder_search_done_session
+                # must therefore go False after a reboot (is_homed is already cleared
+                # above). can_node.py:1552-1566 did NOT clear this — a LATENT BUG that only
+                # bit once the orchestrator drove homing AUTOMATICALLY after a reboot
+                # (Phase 4): HomingHandler skipped encoder-search on the stale True and
+                # homed on an un-indexed encoder → ODRIVE_FATAL → FAULT→BOOT→HOMING loop
+                # (hardware, 2026-07-02; see logbook 2026-07-02-canbridge-reboot-encoder-
+                # search-clear). Clearing it re-runs encoder-search on the next cold-start,
+                # exactly as a fresh launch does. Deliberate divergence from can_node's
+                # literal behaviour: the reboot must clear EVERYTHING the ODrive loses —
+                # references (is_homed/levelling/pose) AND the encoder index.
+                self._encoder_search_done_session = False
         return ok, msg
 
     # ── Encoder index search (Phase 9a, Jetson-side orchestration) ──
@@ -2974,12 +3061,17 @@ class TeensyBridgeNode(Node):
         return res
 
     def _sub_vel_curr_limits(self, msg):
-        """Apply leg vel/current limits over the can-bridge link.
+        """Apply leg AND hand vel/current limits over the can-bridge link.
 
-        Mirrors the legs portion of can_node._sub_vel_curr_limits. The hand
-        limits are ignored — the platform Teensy owns the hand (the firmware
-        rejects hand-axis RPCs). Short-timeout RPCs keep a topic callback from
-        stalling the executor on a dead link.
+        Mirrors can_node._sub_vel_curr_limits. The can-bridge owns CAN3 — legs 0-5
+        AND the hand ODrive (axis 6) — so it applies the HAND limits too (Fable-5
+        hardening [12]): the earlier "hand limits ignored" note was a can_node parity
+        regression, false since the Phase-5 axis-6 allow-table (the node already sends
+        SET_VEL_CURR_LIMITS to axis 6 in _run_configure). On a successful hand write we
+        also update the cached self._hand_vel_limit/_hand_curr_limit so a later
+        _run_configure re-applies the operator's update, not the config default
+        (parity with the self._hand_gains cache). Short-timeout RPCs keep a topic
+        callback from stalling the executor on a dead link.
         """
         if msg.legs_vel_limit > 0 and msg.legs_curr_limit > 0:
             for axis in range(p.NUM_LEGS):
@@ -2991,6 +3083,18 @@ class TeensyBridgeNode(Node):
                         f"set_vel_curr_limits leg {axis} failed: {m}",
                         throttle_duration_sec=2.0)
                     break
+        # Hand (axis 6): the can-bridge owns it on CAN3 (Phase-1 allow-table).
+        if msg.hand_vel_limit > 0 and msg.hand_curr_limit > 0:
+            ok, m, _ = self.teensy_set_vel_curr_limits(
+                _HAND_AXIS, msg.hand_vel_limit, msg.hand_curr_limit,
+                timeout=0.2, retries=0)
+            if ok:
+                self._hand_vel_limit = float(msg.hand_vel_limit)
+                self._hand_curr_limit = float(msg.hand_curr_limit)
+            else:
+                self.get_logger().error(
+                    f"set_vel_curr_limits hand failed: {m}",
+                    throttle_duration_sec=2.0)
 
     # ═══════════════════════════════════════════════════════════
     # Shutdown

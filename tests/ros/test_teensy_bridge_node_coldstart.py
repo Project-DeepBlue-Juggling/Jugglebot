@@ -213,6 +213,10 @@ def test_reconnect_rereads_cold_start_state():
 
         node._health_check()
 
+        # The reconnect re-read now runs on a daemon thread ([16c] — non-blocking
+        # on the 1 Hz timer / 100 Hz publish); wait for it to land.
+        assert _wait_until(lambda: not node._cold_start_reread_inflight
+                           and node._cold_start_state.is_homed)
         assert node._cold_start_state.is_homed is True
         assert node._cold_start_state.levelling_complete is True
         assert node._cold_start_authoritative is True

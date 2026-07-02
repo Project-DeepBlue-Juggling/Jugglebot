@@ -204,6 +204,71 @@ def test_link_down_blocks_setpoint():
         _teardown(teensy, client, node)
 
 
+def test_mpc_active_reenable_edge_resets_pump():
+    """[7]: the 0→1 mpc_active re-enable EDGE forgets any stale prior setpoint
+    (_sp_pump.reset()), so the per-step gate can't wedge on a _prev_pos left from a
+    prior session/pose. A redundant True→True does NOT reset; a fresh 0→1 does."""
+    teensy, client, node = _node()
+    try:
+        calls = {'n': 0}
+        orig_reset = node._sp_pump.reset
+
+        def counting_reset():
+            calls['n'] += 1
+            return orig_reset()
+
+        node._sp_pump.reset = counting_reset
+        node._set_mpc_active(True)      # 0→1 edge → reset
+        assert calls['n'] == 1
+        node._set_mpc_active(True)      # redundant, no edge → no reset
+        assert calls['n'] == 1
+        node._set_mpc_active(False)     # disable, no reset
+        node._set_mpc_active(True)      # 0→1 edge again → reset
+        assert calls['n'] == 2
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_process_setpoint_contains_build_exception():
+    """[4]: an unexpected error inside build() must NOT kill the setpoint thread or
+    flip mpc_active — one bad frame is contained (logged), nothing is sent, and the
+    production leg path stays live (a restart-only outage would be far worse)."""
+    teensy, client, node = _node()
+    try:
+        node._mpc_active = True
+
+        def boom(*a, **k):
+            raise RuntimeError("synthetic build failure")
+
+        node._sp_pump.build = boom
+        node._process_setpoint(_cmd([0.0] * 6))     # must not raise
+        time.sleep(0.02)
+        assert teensy.received(int(MsgType.SETPOINT)) == []
+        assert node._mpc_active is True             # not killed
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_process_setpoint_contains_send_oserror():
+    """[4]: a transient link send error (OSError, e.g. ENETUNREACH before the peer
+    is up, or a mid-run drop) drops the frame but keeps the thread alive + mpc_active
+    set — the link watchdog owns the stow, not the per-frame path."""
+    teensy, client, node = _node()
+    orig_send = node._client.send_stream
+    try:
+        node._mpc_active = True
+
+        def raise_oserror(*a, **k):
+            raise OSError("ENETUNREACH")
+
+        node._client.send_stream = raise_oserror
+        node._process_setpoint(_cmd([0.0] * 6))     # accepted frame → reaches send
+        assert node._mpc_active is True             # OSError contained, not killed
+    finally:
+        node._client.send_stream = orig_send
+        _teardown(teensy, client, node)
+
+
 def test_no_position_command_sends_nothing():
     """A frame with no position command (no motor_rev/ext_mm) is skipped, not a
     fault — e.g. a non-mpc_cmd message that slipped the :5557 topic filter."""

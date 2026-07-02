@@ -182,6 +182,67 @@ def test_vel_curr_limits_ignored_when_zero():
         _teardown(teensy, client, node)
 
 
+def test_vel_curr_limits_topic_applies_hand_axis6():
+    """[12]: the can-bridge owns the hand ODrive (axis 6) on CAN3, so a legs+hand
+    message applies the HAND limits too — reversing the earlier can_node-parity
+    regression. Seven SET_VEL_CURR_LIMITS RPCs fire (6 legs + axis 6, in order) and
+    the hand values are CACHED so a later _run_configure re-applies the operator's
+    update rather than the config default."""
+    from jugglebot.teensy_bridge_node import _HAND_AXIS
+    teensy, client, node = _node()
+    try:
+        seen = []
+
+        def handler(req_id, args):
+            seen.append(args)
+            return (int(RpcStatus.OK), b"")
+
+        teensy.on_rpc(int(RpcMethod.SET_VEL_CURR_LIMITS), handler)
+        msg = SetMotorVelCurrLimitsMessage()
+        msg.legs_vel_limit = 4.0
+        msg.legs_curr_limit = 20.0
+        msg.hand_vel_limit = 7.0
+        msg.hand_curr_limit = 15.0
+        node._sub_vel_curr_limits(msg)
+        assert len(seen) == 7  # 6 legs + hand
+        for axis in range(6):
+            assert seen[axis] == rpc_args.encode_set_vel_curr_limits(axis, 4.0, 20.0)
+        assert seen[6] == rpc_args.encode_set_vel_curr_limits(_HAND_AXIS, 7.0, 15.0)
+        # Cache updated so _run_configure re-applies the operator's hand limits.
+        assert node._hand_vel_limit == 7.0
+        assert node._hand_curr_limit == 15.0
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_vel_curr_limits_hand_cache_unchanged_on_failure():
+    """[12]: if the hand SET_VEL_CURR_LIMITS RPC is REJECTED, the cached hand limits
+    are left untouched — a later _run_configure must not push a value the hand ODrive
+    refused. Legs still apply (the hand failure is isolated)."""
+    from jugglebot.teensy_bridge_node import _HAND_AXIS
+    teensy, client, node = _node()
+    try:
+        v0, c0 = node._hand_vel_limit, node._hand_curr_limit
+
+        def handler(req_id, args):
+            # args[0] is the axis byte (rpc_args.encode_set_vel_curr_limits).
+            if args[0] == _HAND_AXIS:
+                return (int(RpcStatus.ERR_REJECTED), b"")
+            return (int(RpcStatus.OK), b"")
+
+        teensy.on_rpc(int(RpcMethod.SET_VEL_CURR_LIMITS), handler)
+        msg = SetMotorVelCurrLimitsMessage()
+        msg.legs_vel_limit = 4.0
+        msg.legs_curr_limit = 20.0
+        msg.hand_vel_limit = 7.0
+        msg.hand_curr_limit = 15.0
+        node._sub_vel_curr_limits(msg)
+        assert node._hand_vel_limit == v0
+        assert node._hand_curr_limit == c0
+    finally:
+        _teardown(teensy, client, node)
+
+
 # ── encoder_search: Jetson-side (Phase 9a); home: firmware move (Phase 9b) ─
 
 def test_encoder_search_is_jetson_side_not_firmware_stub():

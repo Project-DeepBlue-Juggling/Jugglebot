@@ -172,3 +172,58 @@ def test_relay_read_clears_stale_reply_before_trigger():
         assert state.levelling_complete is True
     finally:
         _teardown(teensy, client, node)
+
+
+# ── Relay serialization ([16]) ─────────────────────────────────
+
+def test_relay_lock_is_reentrant():
+    """[16]: _relay_lock is an RLock so the read-modify-write helpers can hold it
+    across their whole cache-read → relay_write → cache-update sequence — which
+    itself re-acquires the lock inside relay_write_robot_state — WITHOUT
+    deadlocking. A plain Lock would deadlock on that nested same-thread acquire."""
+    teensy, client, node = _node()
+    try:
+        assert node._relay_lock.acquire(blocking=False) is True
+        # Re-entrant: a second acquire from the SAME thread also succeeds.
+        assert node._relay_lock.acquire(blocking=False) is True
+        node._relay_lock.release()
+        node._relay_lock.release()
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_relay_lock_serializes_rmw_against_concurrent_relay():
+    """[16]: _write_is_homed holds _relay_lock across its ENTIRE read-modify-write,
+    so a concurrent relay op cannot interleave and land a stale write last (the
+    STATE_WRITE lost-update). We prove the whole RMW is under the lock by blocking
+    inside the wire-write and confirming another thread cannot take the lock until
+    the RMW completes."""
+    import threading
+
+    teensy, client, node = _node()
+    orig = node.relay_write_robot_state
+    try:
+        entered = threading.Event()
+        release = threading.Event()
+
+        def slow_write(*a, **k):
+            entered.set()
+            release.wait(2.0)
+            return True, "ok"
+
+        node.relay_write_robot_state = slow_write
+        t = threading.Thread(target=lambda: node._write_is_homed(True), daemon=True)
+        t.start()
+        assert entered.wait(2.0), "RMW never reached the wire write"
+        # The RMW thread holds _relay_lock across the (blocked) wire write; another
+        # thread must NOT be able to acquire it.
+        assert node._relay_lock.acquire(blocking=False) is False
+        release.set()
+        t.join(2.0)
+        assert not t.is_alive()
+        # Freed once the RMW completes.
+        assert node._relay_lock.acquire(blocking=False) is True
+        node._relay_lock.release()
+    finally:
+        node.relay_write_robot_state = orig
+        _teardown(teensy, client, node)

@@ -154,6 +154,26 @@ def test_catch_events_all_drain_in_order(bridge):
     assert [m.sequence for m in node.catch_event_pub.published] == [1, 2, 3]
 
 
+def test_cone_catch_queue_bounded_drop_oldest(bridge):
+    """[16]: if the 100 Hz drain stalls, the catch queue is bounded to 4000
+    (drop-oldest, same as the BB-estimates sibling) so a wedged drain cannot grow
+    it without limit. We pre-fill to the cap, then a fresh catch arrives via the RX
+    callback — the oldest entry is dropped and the newest is retained at the tail."""
+    teensy, node = bridge
+    # Pre-fill to the cap with sentinels (bypass UDP — deterministic).
+    with node._lock:
+        node._cone_catch_queue = [('OLD', i) for i in range(4000)]
+    low32 = int(time.time() * 1e6) & 0xFFFFFFFF
+    data = struct.pack('<IBBH', low32, 99, 0x01, 0)   # seq=99, time_synced
+    node._on_cone_frame(int(MsgType.CONE_FRAME), 0,
+                        _cone_frame(catching_cone.CATCH_EVENT_ID, data), None)
+    with node._lock:
+        q = list(node._cone_catch_queue)
+    assert len(q) == 4000                 # still capped, not 4001
+    assert q[0] != ('OLD', 0)             # oldest sentinel dropped
+    assert q[-1][0].sequence == 99        # newest real catch retained at the tail
+
+
 # ── Robustness ─────────────────────────────────────────────────
 
 def test_unknown_cone_can_id_ignored(bridge):
