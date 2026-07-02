@@ -450,6 +450,15 @@ class MuJoCoPlant(PlantInterface):
         if self._ball_manager is not None:
             self._ball_manager.ball(ball).begin_physics_throw()
 
+    def ballistic_release(self, velocity_mms: np.ndarray, ball: int = 0) -> None:
+        """Kinematic (ballistic) release of contact-carried ball *ball* at a set
+        velocity (mm/s), breaking ball-hand contact for a clean separation and
+        re-arming the contact-carry seat capture. The Rung-2b throw hand-off —
+        see :meth:`ball.manager.Ball.ballistic_release`. No-op if no ball.
+        """
+        if self._ball_manager is not None:
+            self._ball_manager.ball(ball).ballistic_release(velocity_mms)
+
     @property
     def contact_carry(self) -> bool:
         """Whether balls use contact-carry physics (vs kinematic hold)."""

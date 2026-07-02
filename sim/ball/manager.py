@@ -361,6 +361,63 @@ class Ball:
         self._release_cooldown = 30
         self._seat_count = 0
 
+    def ballistic_release(self, velocity_mms: np.ndarray) -> None:
+        """Contact-carry KINEMATIC (ballistic) release — the Rung-2b throw.
+
+        Cut a contact-carried held ball free at a SET velocity, breaking
+        ball-hand contact for the flight so **no** residual contact push
+        corrupts the launch, then hand the ball back to the contact-carry seat
+        state machine for the catch. This is the clean-separation hand-off
+        between a kinematic throw and the contact-carry catch.
+
+        Contract (state in -> state out)
+        --------------------------------
+        * **In:** a contact-carried held ball (``_held`` True, ball geom
+          contype=3), co-moving with the cup at ``velocity_mms``.
+        * **Out:** the ball is free (``_held`` False), its linear velocity is
+          exactly ``velocity_mms`` (mm/s), ball-hand contact is disabled
+          (contype=1, ground-only) for the separation, and the re-capture
+          guard is armed (``_must_exit_zone`` + cooldown, a cleared
+          ``_seat_count``). ``check_capture`` re-enables hand contact once the
+          ball has cleared the cup (the 100 mm gate) and — because the manager
+          is in ``contact_carry`` mode — routes the returning ball to the SEAT
+          metric (:meth:`_confirm_seat`), so the catch re-seats it normally.
+
+        Why this exists (the knife-edge it defeats)
+        -------------------------------------------
+        The two pre-existing detach paths both couple the take-off velocity to
+        the contact, which is a loop-fatal knife-edge in the throw->catch->throw
+        loop (a 10 mm throw-origin shift swings the landing ~40 mm;
+        ``dLanding/dOrigin`` ~ 2.7, loop gain > 1):
+
+        * :meth:`begin_physics_throw` keeps contact ENABLED and lets the
+          take-off velocity EMERGE from the hand stroke (the offline demo, where
+          the stroke IS the throw). The emergent velocity depends on the
+          contact geometry at separation -> the knife-edge.
+        * :meth:`release` is the kinematic-HOLD ejector (``contact_carry`` off):
+          it sets a velocity + drops contact, but the hold it releases FROM is a
+          teleport, not a physical seat.
+
+        ``ballistic_release`` is the contact-carry analogue of a *clean
+        separation*: a ball that leaves with no residual push departs at the cup
+        velocity (Newton). Imposing that velocity AND dropping hand contact for
+        the separation makes the launch INDEPENDENT of the in-cup seat offset
+        (open-loop ``dLanding/dOrigin`` 0.01 vs 2.7), so the loop gain drops
+        below 1. See ``logbook/2026-07-01-rung2b-kinematic-release.md``.
+        """
+        self._held = False
+        self._capture_pending = False
+        self._must_exit_zone = True
+        self._release_cooldown = 30
+        self._seat_count = 0
+        # Break hand contact (ground-only) so the imposed velocity is not
+        # re-corrupted by a residual contact push during the separation.
+        self._model.geom_contype[self._ball_geom_id] = 1
+        self._model.geom_conaffinity[self._ball_geom_id] = 1
+        vel_mps = np.asarray(velocity_mms, dtype=float) / 1000.0
+        vadr = self._ball_qvel_adr
+        self._data.qvel[vadr:vadr + 3] = vel_mps
+
     def poll_capture(self) -> bool:
         """Return True if capture occurred since the last poll, then clear."""
         if self._capture_pending:
@@ -603,6 +660,9 @@ class BallManager:
 
     def begin_physics_throw(self) -> None:
         self._balls[0].begin_physics_throw()
+
+    def ballistic_release(self, velocity_mms: np.ndarray) -> None:
+        self._balls[0].ballistic_release(velocity_mms)
 
     def get_state(self) -> BallState:
         return self._balls[0].get_state()

@@ -122,6 +122,11 @@ SEPARATION_MM = 60.0
 # The catch's characterised reliable reach (Rung 1). A landing/reach beyond this
 # is where the catch starts to miss — the divergence threshold.
 CATCH_REACH_MM = 80.0
+# The ball COM's seated depth below the hand-opening site (m) — the geometric
+# offset the ball rests at when seated (ball.manager._HAND_OPENING_OFFSET z).
+# Used by the KINEMATIC co-moving seat to keep the cup opening a seat-depth
+# above the tracked ball as it descends (so the ball enters the cup, not the rim).
+SEAT_DEPTH_M = 0.044
 
 
 def _smoothstep(f: float) -> float:
@@ -190,6 +195,20 @@ class SelfCatchConfig:
     recover: str = "plan"              # "plan": Rung-2a plan_cup_cycle recover
                                        # (validated, faithful). "retract": an axial
                                        # slider retract (explored; a knife-edge).
+    # ---- release (throw) mode (Rung-2b re-architecture) ------------------------
+    # "detach": the shipped contact-carry emergent throw (set stiff contact ->
+    #   begin_physics_throw; the take-off velocity EMERGES from the hand stroke).
+    #   This is the CONTACT-DETACH KNIFE-EDGE Rung 2a/2b characterised: a 10 mm
+    #   throw-origin shift swings the landing ~40 mm (dLanding/dOrigin ~2.7), so
+    #   the throw->catch->throw loop gain is > 1 and the loop DIVERGES (the BREAK).
+    # "kinematic": the Rung-2b fix — cut the ball free at the cup's planned
+    #   take-off velocity (Ball.ballistic_release), breaking hand contact so no
+    #   residual push re-corrupts the launch. This is the CLEAN-SEPARATION limit
+    #   (a ball leaving with no push departs at the cup velocity — Newton); it
+    #   drops the open-loop knife-edge gain 2.7 -> 0.01, so the loop gain drops
+    #   below 1. Pairs with the co-moving robust catch (see _catch). The "detach"
+    #   default keeps the tilt=0 / Rung-1 / Rung-2a paths byte-identical.
+    release: str = "detach"            # "detach" (shipped) | "kinematic" (Rung-2b fix)
     # ---- carry / release realisation knobs (Rung 2a) ----
     dip_m: float = 0.16
     tilt_ramp_frac: float = 0.6
@@ -538,8 +557,21 @@ class SelfCatchRunner:
         true ballistic landing at catch_z)."""
         cfg = self.cfg
         cup_p = self.cup_world_m(); cup_v = self.cup_vel_world_m()
-        plant.set_contact_stiffness(True)
-        plant.begin_physics_throw(ball=0)
+        if cfg.release == "kinematic":
+            # KINEMATIC (ballistic) release — the Rung-2b fix. Cut the ball free
+            # at the PLANNED take-off velocity ``v_takeoff`` (the clean-separation
+            # limit), breaking hand contact so no residual push re-corrupts it.
+            # We release at v_takeoff (not the achieved cup_v, which overshoots it
+            # ~61 mm/s): v_takeoff is exactly the ballistic velocity the catch's
+            # arc model expects, so the co-moving catch seats it instead of the
+            # ball outrunning the fixed-schedule descent. Contact stays SOFT
+            # (stiffening is only for the emergent-throw detach, which we bypass).
+            plant.set_contact_stiffness(False)
+            plant.ballistic_release(v_takeoff * 1000.0, ball=0)
+        else:
+            # DETACH (shipped): the emergent contact-carry throw (knife-edge).
+            plant.set_contact_stiffness(True)
+            plant.begin_physics_throw(ball=0)
         planB = None
         if cfg.recover == "plan":
             try:
@@ -581,11 +613,35 @@ class SelfCatchRunner:
         return separated, land_true
 
     def _catch(self, plant):
-        """Rung-1 catch on the in-flight ball: translate-to-reach + tilt-to-receive
-        + constant-decel seat. Mirrors sim/juggle_catch.py's per-tick seat state
-        machine (see that module for the physics rationale). Returns
-        (caught, held_at_end, in_off_end_mm, reach_mm, seat_offset_mm, last_pos_td)."""
+        """Catch the in-flight ball: translate-to-reach + tilt-to-receive + a
+        cushioned seat. Returns (caught, held_at_end, in_off_end_mm, reach_mm,
+        seat_offset_mm, last_pos_td).
+
+        Two seat regimes, selected by ``cfg.release``:
+
+        * **detach** (shipped, Rung-1): a fixed-schedule constant-decel seat.
+          Mirrors ``sim/juggle_catch.py``'s per-tick seat state machine. This
+          path is BYTE-IDENTICAL to the original (the ``kin`` guards below are
+          all False), so tilt=0 / Rung-1 / Rung-2a / the detach loop are unchanged.
+        * **kinematic** (Rung-2b): a CO-MOVING seat robust to the clean release's
+          arrival (which is faster + arrives at a different phase than the
+          emergent throw the fixed schedule was tuned for). Three changes, all
+          gated on ``kin``:
+            1. **Late reach freeze** — the reach ``frozen_xy`` freezes only when
+               DESCENDING (not on the first ballistic fit): the clean throw's
+               early-flight fit mispredicts the landing ~30 mm, the near-touchdown
+               fit is accurate.
+            2. **Co-moving z-seat** — the cup tracks the ACTUAL (estimated) ball
+               descent (opening a seat-depth above it, matching its velocity)
+               until the ball reaches catch_z, then arrests to a co-moving stop.
+               The shipped fixed-schedule descent stops too early and the fast
+               clean ball SINKS THROUGH the frozen cup; co-moving cushions it.
+            3. **Level-on-catch** — once seated, hold a LEVEL pose so the ball
+               does not roll out of the tilted cup over the remaining window.
+          See ``logbook/2026-07-01-rung2b-kinematic-release.md``.
+        """
         cfg = self.cfg
+        kin = cfg.release == "kinematic"
         plant.set_contact_stiffness(False)
         catch_z = cfg.catch_z_m
         ready_z = catch_z + cfg.catch_ready_lift_m
@@ -594,7 +650,7 @@ class SelfCatchRunner:
         cmd_tilt = np.zeros(2); cmd_vtilt = np.zeros(2); cmd_atilt = np.zeros(2)
         cmd_z = float(cup_p[2]); cmd_vz = float(self.cup_vel_world_m()[2]); cmd_az = 0.0
         frozen_xy = None; frozen_tilt = None; settle_v0 = None
-        caught = False; seat_offset = None
+        caught = False; seat_offset = None; level_pose = None
         last_pos_td = np.array([0.0, 0.0, catch_z])
         tcatch0 = float(plant.data.time)
         n_catch = int(round((cfg.flight_s + 0.40) / CONTROL_DT))
@@ -605,6 +661,16 @@ class SelfCatchRunner:
             true_m = np.asarray(bs.position_mm, float) / 1000.0
             obs_m = self.noise.observe(true_m * 1000.0) / 1000.0
             self.est.add(t_abs, obs_m)
+
+            # KINEMATIC: once seated, hold a LEVEL pose (no re-planning) so the
+            # ball rides stably instead of rolling out of the tilted cup.
+            if level_pose is not None:
+                pose, slider = level_pose
+                plant.command(plant.pose_to_extensions(pose))
+                plant.step(CONTROL_DT, hand_cmd_fn=lambda _t, s=slider: s,
+                           plat_cmd_fn=lambda _t, p=pose: plant.pose_to_extensions(p))
+                continue
+
             pos_e, vel_e = self.est.estimate()
             t_td, pos_td, vel_td = ballistic_touchdown(pos_e, vel_e, catch_z)
             t_remaining = t_td
@@ -620,11 +686,14 @@ class SelfCatchRunner:
                 continue
 
             descending = t_remaining <= cfg.catch_start_lead_s
-            if frozen_xy is None:
+            # detach: freeze on the first fit (shipped). kinematic: freeze LATE
+            # (when descending) — the near-touchdown fit is accurate for the
+            # clean throw, whose early-flight fit mispredicts the landing ~30 mm.
+            if frozen_xy is None and (descending or not kin):
                 frozen_xy = pos_td[:2].copy()
             if descending and frozen_tilt is None:
                 frozen_tilt = np.array([tilt_rx, tilt_ry])
-            reach_xy = frozen_xy
+            reach_xy = frozen_xy if frozen_xy is not None else pos_td[:2].copy()
             reach_tilt = frozen_tilt if frozen_tilt is not None else np.array([tilt_rx, tilt_ry])
             last_pos_td = np.array([reach_xy[0], reach_xy[1], catch_z])
 
@@ -635,7 +704,30 @@ class SelfCatchRunner:
             cmd_tilt, cmd_vtilt, cmd_atilt = _quintic_step(
                 cmd_tilt, cmd_vtilt, cmd_atilt, reach_tilt, np.zeros(2), np.zeros(2),
                 horizon_tilt, CONTROL_DT)
-            if t_remaining > 0.0:
+
+            if kin:
+                # CO-MOVING seat: track the ACTUAL (estimated) ball descent so the
+                # cup cushions the clean (fast) arrival instead of it sinking
+                # through a frozen cup. Keep the opening a seat-depth above the
+                # ball, matching its velocity, until the ball reaches catch_z, then
+                # arrest to a co-moving stop (the shipped constant-decel).
+                if pos_e[2] > catch_z + 0.002:
+                    z_t = min(pos_e[2] + SEAT_DEPTH_M, ready_z + SEAT_DEPTH_M)
+                    vz_t = float(vel_e[2])
+                    hz = max(3.0 * CONTROL_DT, cfg.catch_start_lead_s)
+                    (cmd_z,), (cmd_vz,), (cmd_az,) = _quintic_step(
+                        [cmd_z], [cmd_vz], [cmd_az], [z_t], [vz_t], [0.0], hz, CONTROL_DT)
+                else:
+                    if settle_v0 is None:
+                        settle_v0 = min(cmd_vz, -1e-6)
+                    a_dec = -settle_v0 / cfg.seat_decel_time_s
+                    if cmd_vz < -1e-4:
+                        new_vz = min(cmd_vz + a_dec * CONTROL_DT, 0.0)
+                        cmd_z = cmd_z + 0.5 * (cmd_vz + new_vz) * CONTROL_DT
+                        cmd_vz, cmd_az = new_vz, a_dec
+                    else:
+                        cmd_vz, cmd_az = 0.0, 0.0
+            elif t_remaining > 0.0:
                 if not descending:
                     z_t, vz_t = ready_z, 0.0
                     hz = max(t_remaining - cfg.catch_start_lead_s, 3.0 * CONTROL_DT)
@@ -665,6 +757,10 @@ class SelfCatchRunner:
                 caught = True
                 off, _ = self._ball_offset_mm()
                 seat_offset = float(np.linalg.norm(off))
+                if kin:
+                    # LEVEL the cup at the seated pose so the ball does not roll
+                    # out of the tilted cup during the remaining catch window.
+                    level_pose = realize_tilted(cmd_xy, cmd_z, 0.0, 0.0)
 
         final = plant.get_ball_state(ball=0)
         ball_m = np.asarray(final.position_mm, float) / 1000.0
@@ -764,6 +860,16 @@ def main(argv: "list[str] | None" = None) -> int:
                    help="Column mode: throw in-place from the caught xy (the cup "
                         "drifts; isolates the reposition)")
     p.set_defaults(stationary=None)
+    # ---- release (throw) mode ----
+    p.add_argument('--release', choices=('detach', 'kinematic'), default='detach',
+                   help="Throw mode: 'detach' (shipped emergent contact throw, the "
+                        "knife-edge -> BREAK) or 'kinematic' (Rung-2b fix: cut the "
+                        "ball free at the planned take-off velocity -> loop gain < 1, "
+                        "sustains). 'kinematic' also defaults the carry dip to 0.10 m "
+                        "(the shorter carry that avoids the between-cycle slosh).")
+    p.add_argument('--dip-m', type=float, default=None,
+                   help="Carry dip depth (m) below the throw point. Default 0.16 for "
+                        "'detach', 0.10 for 'kinematic' (override here).")
     # ---- recording (mirrors sim/juggle_online.py) ----
     p.add_argument('--record', default=None, metavar='PATH',
                    help="Render offscreen from a fixed camera and write an H.264 "
@@ -795,8 +901,13 @@ def main(argv: "list[str] | None" = None) -> int:
     except ValueError:
         p.error(f"--record-size must be WxH, got {args.record_size!r}")
 
+    # 'kinematic' uses the shorter carry dip (0.10) that avoids the between-cycle
+    # slosh; --dip-m overrides. 'detach' keeps the shipped 0.16 default.
+    dip_m = args.dip_m if args.dip_m is not None else (
+        0.10 if args.release == 'kinematic' else 0.16)
     kw: dict = dict(
         n_cycles=args.cycles, seed=args.seed, oscillate=args.oscillate,
+        release=args.release, dip_m=dip_m,
         headless=not args.viewer, realtime_rate=rate,
         record_path=args.record, record_size=(_rw, _rh), record_fps=args.record_fps,
         cam_azimuth=args.cam_azimuth, cam_elevation=args.cam_elevation,
@@ -813,8 +924,10 @@ def main(argv: "list[str] | None" = None) -> int:
 
     res = run(cfg)
     print(f"[juggle_selfcatch] sustained {res.sustained}/{cfg.n_cycles} cycles "
-          f"({'oscillation' if cfg.oscillate else 'column'})")
+          f"({'oscillation' if cfg.oscillate else 'column'}, release={cfg.release})")
     print(f"[juggle_selfcatch] in-cup offset trend (mm): {res.in_off_trend_mm}")
+    if cfg.oscillate:
+        print(f"[juggle_selfcatch] landing-err trend (mm):   {res.landing_err_trend_mm}")
     print(f"[juggle_selfcatch] reach trend (mm):         {res.reach_trend_mm}")
     return 0
 

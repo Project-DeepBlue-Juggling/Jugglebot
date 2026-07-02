@@ -158,28 +158,23 @@ def test_oscillation_first_cycle_composes(osc_seed0):
     assert c0.in_off_end_mm < 10.0                       # seated near-centred
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "Rung-2b MAKE-OR-BREAK (OPTION-1 re-plan): the two-point A<->B oscillation does "
-    "NOT sustain either, WITH tilt engaged (~1.4 deg). It diverges within 1-4 "
-    "cycles (loop gain > 1) at every separation/axis. The in-cup seat offset stays "
-    "small (tilt keeps the ball centred) but the LANDING amplifies: the tilt-aimed "
-    "throw is chaotically/deterministically sensitive to the throw-ORIGIN pose (a "
-    "contact-detach knife-edge). Tilt fixes the band-limit but NOT this pose-chaos. "
-    "GENUINE tilt-hypothesis failure -- pending operator go/no-go, see logbook/"
-    "2026-07-01-rung2b-oscillation-tilt-engaged-diverges.md. Flip to XPASS if a "
-    "future approach sustains >= 10 with tilt engaged."))
-def test_oscillation_sustains_ten_cycles(osc_seed0):
-    """HEADLINE capability (the gate): the two-point oscillation sustains >= 10
-    cycles with loop gain < 1, WITH tilt engaged. Currently xfails (diverges within
-    1-3 cycles despite tilt being active)."""
-    assert osc_seed0.sustained >= 10
+def test_oscillation_detach_does_not_sustain(osc_seed0):
+    """HEADLINE (the BREAK half): with the shipped ``detach`` throw the two-point
+    oscillation does NOT sustain even WITH tilt engaged (~1.4 deg) -- it diverges
+    within 1-4 cycles (loop gain > 1). Tilt fixes the band-limit but NOT the
+    contact-detach's chaotic sensitivity to the throw-ORIGIN pose (see
+    ``test_oscillation_throw_is_pose_sensitive``). The MAKE half is
+    ``test_oscillation_kinematic_release_sustains`` below."""
+    assert osc_seed0.cycles[0].tilt_deg > 1.0           # tilt IS engaged
+    assert osc_seed0.sustained < 5                      # ...yet detach diverges
 
 
 @pytest.mark.parametrize("seed", [0, 1, 2, 3, 4, 5])
 def test_oscillation_does_not_sustain(seed):
-    """The characterised oscillation BREAK, across seeds: with tilt engaged the
-    A<->B loop does NOT sustain (it diverges within 1-3 cycles). No seed sustains
-    anywhere near 10 -- so tilt engaging is not sufficient to close the loop."""
+    """The characterised oscillation BREAK, across seeds: with the ``detach`` throw
+    the A<->B loop does NOT sustain (it diverges within 1-3 cycles). No seed
+    sustains anywhere near 10 -- tilt engaging is not sufficient with the emergent
+    contact throw; the kinematic release is what closes it (below)."""
     r = run_self_catch(SelfCatchConfig(seed=seed, n_cycles=8, oscillate=True))
     assert r.cycles[0].tilt_deg > 1.0                   # tilt IS engaged
     assert r.sustained < 5                              # ...yet the loop diverges
@@ -227,3 +222,92 @@ def test_oscillation_is_deterministic_per_seed():
     assert a.sustained == b.sustained
     assert a.cycles[0].landing_xy_mm == pytest.approx(b.cycles[0].landing_xy_mm, abs=1e-9)
     assert a.cycles[0].landing_err_mm == pytest.approx(b.cycles[0].landing_err_mm, abs=1e-9)
+
+
+# ============================================================================
+# KINEMATIC RELEASE (release="kinematic") — the Rung-2b MAKE. Cut the ball free at
+# the planned take-off velocity (Ball.ballistic_release), breaking hand contact so
+# no residual push re-corrupts it (open-loop knife-edge gain 2.7 -> 0.01). Paired
+# with the co-moving robust catch + the shorter carry dip (0.10). RESULT: the A<->B
+# oscillation SUSTAINS >= 10 cycles with loop gain < 1, the REAL contact-carry seat
+# offset rejected -- see logbook/2026-07-01-rung2b-kinematic-release.md.
+# ============================================================================
+
+def _kin_cfg(seed, n_cycles=12, **kw):
+    """The Rung-2b MAKE config: kinematic release + the tuned carry dip (0.10)."""
+    return SelfCatchConfig(seed=seed, n_cycles=n_cycles, oscillate=True,
+                           release="kinematic", dip_m=0.10, **kw)
+
+
+@pytest.fixture(scope="module")
+def kin_seed0():
+    return run_self_catch(_kin_cfg(0))
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2, 3, 4, 5])
+def test_oscillation_kinematic_release_sustains(seed):
+    """HEADLINE capability (the gate MAKE): with the KINEMATIC release the default
+    A<->B oscillation (x-40, tilt ~1.4 deg) sustains the full 12 cycles on every
+    seed -- loop gain < 1, the divergence killed. This is the make-or-break MAKE
+    (contrast ``test_oscillation_does_not_sustain``, the detach BREAK, same
+    geometry). Measured 12/12 on all 6 seeds (2026-07-01)."""
+    r = run_self_catch(_kin_cfg(seed))
+    assert r.cycles[0].tilt_deg > 1.0                   # tilt IS engaged
+    assert r.sustained >= 10                            # measured 12/12
+    assert not r.diverged
+
+
+def test_kinematic_release_loop_gain_below_one(kin_seed0):
+    """The loop-gain signature (the MAKE): the per-cycle in-cup seat offset is FLAT
+    (does not amplify) -- the opposite of the detach BREAK's 3.7 -> 89 -> 728 mm
+    landing blow-up. Every cycle is caught + held with a small, bounded offset."""
+    assert kin_seed0.sustained >= 10
+    offs = [c.in_off_end_mm for c in kin_seed0.cycles]
+    assert max(offs) < 3.0                              # measured ~0.5-0.8 mm, flat
+    assert max(offs) <= 3.0 * offs[0] + 1.0             # bounded (no amplification)
+    errs = [c.landing_err_mm for c in kin_seed0.cycles]
+    assert max(errs) < 15.0                             # landing flat too (~3-6 mm)
+
+
+def test_kinematic_release_rejects_real_seat_offset(kin_seed0):
+    """The REAL disturbance is rejected: the ball physically SEATS (a contact-carry
+    seat, not a kinematic snap) at a real, non-zero in-cup depth every caught cycle,
+    yet the loop holds -- the seat offset is a genuine physical disturbance the loop
+    rejects, not a zeroed-out artefact."""
+    caught = [c for c in kin_seed0.cycles if c.caught]
+    assert len(caught) >= 10
+    # every caught cycle registered a physical seat (a real settle, not a teleport)
+    assert all(c.seat_offset_mm > 0.0 for c in caught)
+
+
+def test_kinematic_beats_detach_head_to_head():
+    """Head-to-head, same geometry + seed: the kinematic release SUSTAINS where the
+    shipped detach throw DIVERGES -- the single-variable demonstration that the
+    knife-edge (not tilt, not the catch) was the binding failure."""
+    seed = 4
+    detach = run_self_catch(SelfCatchConfig(seed=seed, n_cycles=12, oscillate=True))
+    kin = run_self_catch(_kin_cfg(seed))
+    assert detach.sustained < 5                         # detach diverges
+    assert kin.sustained >= 10                          # kinematic sustains
+    assert kin.sustained > 2 * detach.sustained
+
+
+def test_kinematic_release_is_deterministic_per_seed():
+    """The kinematic MAKE is seed-reproducible (the §3 tracking noise is the only
+    RNG): the same seed gives the same sustained count and first-cycle landing."""
+    a = run_self_catch(_kin_cfg(3, n_cycles=6))
+    b = run_self_catch(_kin_cfg(3, n_cycles=6))
+    assert a.sustained == b.sustained
+    assert a.cycles[0].landing_xy_mm == pytest.approx(b.cycles[0].landing_xy_mm, abs=1e-9)
+
+
+def test_detach_mode_is_byte_identical_default():
+    """The ``release`` field defaults to ``detach``: the shipped oscillation is
+    unchanged by the Rung-2b additions (still the characterised BREAK). Guards the
+    'tilt=0 / Rung-1 / Rung-2a / detach paths stay byte-identical' invariant."""
+    default = run_self_catch(SelfCatchConfig(seed=0, n_cycles=6, oscillate=True))
+    explicit = run_self_catch(SelfCatchConfig(seed=0, n_cycles=6, oscillate=True,
+                                              release="detach"))
+    assert default.sustained == explicit.sustained
+    assert default.cycles[0].landing_xy_mm == pytest.approx(
+        explicit.cycles[0].landing_xy_mm, abs=1e-12)

@@ -272,6 +272,29 @@ throw-origin pose-sensitivity / non-y-symmetric leg asymmetry Rung 2a deferred t
 Rung 3), explicitly **not** the aim (exact) and **not** the tempo (slower is
 worse). See logbook `2026-07-01-rung2b-oscillation-tilt-engaged-diverges.md`.
 
+**Status (2026-07-01, kinematic-release re-architecture): implemented — gate = MAKE.**
+Per the operator's Path-A choice, attacked the contact-detach knife-edge at its source.
+First **ruled out contact-parameter tuning**: a release-contact frontier scan (`solref`
+time-const 4–10 ms × `solimp` `dmin` 0.90–0.99, noise off) found **every** separating
+config has `dLanding/dOrigin` **2.4–16** (all ≫ 1); softer settings glue the ball
+(a colleague's `solref 0.01 1.5`/`solimp 0.9 0.95 0.001` made it ride the cup out,
+~110 mm off). The pose-sensitivity is intrinsic to the contact-carry detach, at **zero
+noise** — so the §3 noise is **not** the driver. Then landed the fix: a **kinematic
+velocity release** (`Ball.ballistic_release` — cut the ball free at the planned
+`v_takeoff`, breaking hand contact for a clean separation, then hand back to the
+contact-carry seat), which drops the open-loop knife-edge gain **2.7 → ~0.05** (accuracy
+21.5 → 5.1 mm). Wired into `sim/juggle_selfcatch.py` as `release="kinematic"` (default
+`"detach"` stays byte-identical, so tilt=0 / Rung-1 / Rung-2a / the two documented
+BREAK configs are unchanged). **Result: MAKE.** The default A↔B oscillation (x-40, tilt
+~1.4°) sustains **12/12 cycles on all 6 seeds** with a **flat ~0.6 mm in-cup offset**
+(the real contact-carry seat offset, REJECTED → loop gain ≪ 1), head-to-head vs the
+detach path's mean **1.2/12** (same geometry/seed). De-risked first by an all-kinematic
+loop (12/12, ~2.4 mm flat). The tilt + kinematic-release architecture **closes the
+single-ball self-catch loop** → proceed to Rung 3. Fidelity caveat: the kinematic
+release idealises a clean separation (stops resolving the final detach-contact
+millisecond) — a sim-2-real question flagged for hardware bring-up; the catch stays
+fully contact-physical. See logbook `2026-07-01-rung2b-kinematic-release.md`.
+
 ---
 
 ### Phase 4 / Rung 3 — Two-ball (columns → oval, BB-seeded)
@@ -358,7 +381,7 @@ on divergence with `origin/demo/bb-led-two-ball-juggle`) → write the next hand
 | (done) | 0 / Rung 0 | tilt-tracking good? → YES |
 | `{from:1,to:1}` | 1 / Rung 1 | catch clean + noise-robust? |
 | `{from:2,to:2}` | 2 / Rung 2a | throws accurate to target + cadence? → tilt-aim exact; reliable box (column + 50 mm ring) ≤33 mm (within catch reach); ±100 mm directional asymmetry — **gate pending** |
-| `{from:3,to:3}` | 3 / Rung 2b | **make-or-break:** self-catch sustains (loop gain < 1)? → **BREAK (both).** Column: diverges, tilt≈0 (degenerate, tilt inactive). OPTION-1 re-plan (two-point A↔B oscillation, tilt **engaged** ~1.4°): **STILL diverges** (loop gain > 1) within 1–4 cycles (max sustained 4 of ≥ 10) — the throw's chaotic sensitivity to the throw-origin pose (a contact-detach knife-edge) dominates off-origin. Tilt fixes the band-limit but is **not sufficient** to close the loop → **STOP + operator go/no-go** (next lever: the contact-detach asymmetry, not tilt) |
+| `{from:3,to:3}` | 3 / Rung 2b | **make-or-break:** self-catch sustains (loop gain < 1)? → **MAKE (kinematic-release re-arch).** First two attempts BREAK: column diverges with tilt≈0 (degenerate); OPTION-1 A↔B oscillation (tilt **engaged** ~1.4°) STILL diverges (loop gain > 1) — the throw's contact-detach knife-edge (`dLanding/dOrigin` ≈ 2.7) dominates off-origin, so tilt is **necessary-but-not-sufficient**. **Fix:** contact-parameter tuning ruled out (frontier scan: gain 2.4–16 everywhere separation holds), then a **kinematic velocity release** (`Ball.ballistic_release`, open-loop gain 2.7 → ~0.05) + a clean contact-carry↔kinematic hand-off. **Result: 12/12 cycles on all 6 seeds, flat ~0.6 mm in-cup offset** (real seat offset rejected, loop gain ≪ 1), vs detach's mean 1.2/12 → **the loop closes; proceed to Rung 3** |
 | `{from:4,to:4}` | 4 / Rung 3 | 2-ball sustained ≥30? |
 
 (Phases may be batched into a segment, e.g. `{2,3}`, if a gate is waived — but the

@@ -6,7 +6,16 @@ each cycle under the §3 tracking noise) and reports the per-cycle loop-gain tre
 + sustained cycle count — what the make-or-break gate reads. The gate needs >= 10
 sustained cycles with a flat/decaying trend (loop gain < 1).
 
-Two families of runs, both a BREAK:
+Three families of runs — two contact-detach BREAKs and the kinematic-release MAKE:
+
+0. **KINEMATIC RELEASE** (``release="kinematic"``, the Rung-2b FIX): the same
+   oscillation but the throw cuts the ball free at the planned take-off velocity
+   (``Ball.ballistic_release``), so the loop gain drops below 1. x-40 (default) and
+   x-60 sustain **12/12 on all 6 seeds** with a FLAT ~0.6 mm in-cup offset (the real
+   contact-carry seat offset, REJECTED) — vs the detach BREAK below. x-20 (near-
+   column) and y-40 (the Rung-2a non-y leg asymmetry) are the residuals.
+
+The two BREAK families (retained as the head-to-head evidence):
 
 1. **COLUMN** (``oscillate=False``, the original 2026-07-01 gate): throw+catch
    co-located, tilt ~0. Sweeps the three recover/geometry variants. Reports the
@@ -88,6 +97,20 @@ OSC_GEOMS = {
     "osc diag-50":             dict(osc_point_a_m=(-0.018, -0.018), osc_point_b_m=(0.018, 0.018)),
 }
 
+# The KINEMATIC-RELEASE MAKE (the Rung-2b fix, release="kinematic"): the SAME
+# oscillation geometries but the throw cuts the ball free at the planned take-off
+# velocity (Ball.ballistic_release), so the loop gain drops below 1. Uses the
+# kinematic mode's tuned carry dip (0.10 m; the shorter carry avoids the between-
+# cycle slosh). Finding: x-40 (default) and x-60 sustain 12/12 on all 6 seeds with
+# a FLAT ~0.6 mm in-cup offset (the real seat offset, rejected); x-20 (near-column,
+# tilt too small) and y-40 (the Rung-2a non-y leg asymmetry) are the residuals.
+KIN_GEOMS = {
+    "kin x-40 (A=-20,B=+20)":  dict(osc_point_a_m=(-0.020, 0.0),   osc_point_b_m=(0.020, 0.0)),
+    "kin x-60 (A=-30,B=+30)":  dict(osc_point_a_m=(-0.030, 0.0),   osc_point_b_m=(0.030, 0.0)),
+    "kin x-20 (A=-10,B=+10)":  dict(osc_point_a_m=(-0.010, 0.0),   osc_point_b_m=(0.010, 0.0)),
+    "kin y-40 (A=0,-20)":      dict(osc_point_a_m=(0.0, -0.020),   osc_point_b_m=(0.0, 0.020)),
+}
+
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
@@ -152,6 +175,33 @@ def main(argv=None) -> int:
         mx = max(sustained_counts)
         verdict = "SUSTAINS (>=10)" if mx >= 10 else "DIVERGES (< 10) -> BREAK"
         print(f"  => sustained {sustained_counts}, max {mx}  [{verdict}]\n")
+
+    print("=== KINEMATIC RELEASE (the Rung-2b MAKE — flat in-cup-offset + landing trends) ===")
+    for name, kw in KIN_GEOMS.items():
+        print(f"--- {name} ---")
+        sustained_counts = []
+        for seed in range(args.seeds):
+            r = run_self_catch(SelfCatchConfig(seed=seed, n_cycles=args.cycles,
+                                               oscillate=True, release="kinematic",
+                                               dip_m=0.10, **kw))
+            sustained_counts.append(r.sustained)
+            tilt = r.cycles[0].tilt_deg if r.cycles else 0.0
+            print(f"  seed {seed}: sustained {r.sustained:2d}/{args.cycles}  tilt={tilt:.2f}deg  "
+                  f"in_off_end_mm={r.in_off_trend_mm}  land_err_mm={r.landing_err_trend_mm}")
+            for c in r.cycles:
+                rows.append(dict(
+                    mode="kinematic", geom=name, seed=seed, cyc=c.cyc,
+                    separated=c.separated, caught=c.caught, held=c.held_at_end,
+                    tilt_deg=round(c.tilt_deg, 2),
+                    in_off_start_mm=round(c.in_off_start_mm, 2),
+                    in_off_end_mm=round(c.in_off_end_mm, 2),
+                    reach_mm=round(c.reach_mm, 2),
+                    reach_from_throw_mm=round(c.reach_from_throw_mm, 2),
+                    landing_err_mm=round(c.landing_err_mm, 2),
+                    seat_offset_mm=round(c.seat_offset_mm, 2)))
+        mn = min(sustained_counts)
+        verdict = "SUSTAINS (>=10 all seeds) -> MAKE" if mn >= 10 else "partial (residual)"
+        print(f"  => sustained {sustained_counts}, min {mn}  [{verdict}]\n")
 
     with open(csv_path, 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
