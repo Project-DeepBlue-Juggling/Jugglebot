@@ -66,7 +66,7 @@ static void send_diag(uint8_t axis) {
   AxisState& a = axes[axis];
   const uint64_t now = micros64();   // interval clock (item 14): staleness + last_sent_us age
   const bool stale = a.heartbeat_seen &&
-                     (now - a.last_heartbeat_us > CAN_HEARTBEAT_TIMEOUT_US);
+                     (now - atomic_read_u64(&a.last_heartbeat_us) > CAN_HEARTBEAT_TIMEOUT_US);  // atomic 64-bit (item 17)
 
   JbUdp::DiagnosticPayload d{};
   d.axis_id       = axis;
@@ -101,7 +101,7 @@ static void send_bb_diag(uint8_t idx) {
   const AxisState& a = bb_axes[idx];
   const uint64_t now = micros64();   // interval clock (item 14): staleness + last_sent_us age
   const bool stale = a.heartbeat_seen &&
-                     (now - a.last_heartbeat_us > CAN_HEARTBEAT_TIMEOUT_US);
+                     (now - atomic_read_u64(&a.last_heartbeat_us) > CAN_HEARTBEAT_TIMEOUT_US);  // atomic 64-bit (item 17)
   JbUdp::DiagnosticPayload d{};
   d.axis_id       = (uint8_t)(BB_FIRST_NODE + idx);   // 7 = bb_pitch, 8 = bb_hand
   d.axis_state    = a.axis_state;

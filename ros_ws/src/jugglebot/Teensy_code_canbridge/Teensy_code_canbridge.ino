@@ -70,7 +70,7 @@ static bool all_axis_heartbeats_ok() {
   const uint64_t now = micros64();   // interval clock (item 14): heartbeat freshness
   for (uint8_t i = 0; i < NUM_AXES; ++i) {
     if (!axes[i].heartbeat_seen) return false;
-    if (now - axes[i].last_heartbeat_us > CAN_HEARTBEAT_TIMEOUT_US) return false;
+    if (now - atomic_read_u64(&axes[i].last_heartbeat_us) > CAN_HEARTBEAT_TIMEOUT_US) return false;
   }
   return true;
 }
@@ -280,7 +280,7 @@ static void task_diag(void*) {
           if (!axes[i].heartbeat_seen) {
             mark = '?';
           } else {
-            const uint64_t age = now - axes[i].last_heartbeat_us;
+            const uint64_t age = now - atomic_read_u64(&axes[i].last_heartbeat_us);
             age_ms = (age > 9999000ULL) ? 9999u : (uint32_t)(age / 1000ULL);
             if (axes[i].heartbeat_stale) mark = '!';
             else if (axes[i].active_errors != 0 || axes[i].disarm_reason != 0) mark = '*';

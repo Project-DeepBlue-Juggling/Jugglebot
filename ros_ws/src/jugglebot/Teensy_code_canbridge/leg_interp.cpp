@@ -381,13 +381,30 @@ void interp_reset() {
 }
 
 void leg_interp_init() {
-  // Begin the 500 Hz tick. priority(): lower = more urgent on the Cortex-M NVIC.
-  // We want the interp ISR ABOVE the FreeRTOS syscall ceiling so RTOS critical
-  // sections never delay it — and the ISR therefore makes NO FreeRTOS calls.
-  // The exact value vs configMAX_SYSCALL_INTERRUPT_PRIORITY must be confirmed on
-  // the bench (handoff "Needs hardware validation").
+  // Begin the 500 Hz tick. priority(): lower value = more urgent on the Cortex-M7
+  // NVIC (this core uses the top 4 of 8 priority bits → 16 levels, steps of 16).
+  //
+  // FreeRTOS enforces its syscall ceiling by raising BASEPRI to
+  // configMAX_SYSCALL_INTERRUPT_PRIORITY inside every critical section. On this
+  // stack that ceiling is 32 (0x20): configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY=2
+  // in .pio/libdeps/teensy41/freertos-teensy/src/FreeRTOSConfig.h, shifted by
+  // (8 - configPRIO_BITS)=(8-4)=4 → 2<<4 = 32. BASEPRI masks any interrupt whose
+  // priority VALUE is >= BASEPRI, so the old priority(32) sat EXACTLY AT the ceiling
+  // → it was MASKED by every RTOS critical section and inherited their jitter (the
+  // opposite of the comment's claim). priority(16) (0x10) is one NVIC level BELOW the
+  // 0x20 ceiling (16 < 32), so the interp ISR runs ABOVE the syscall ceiling and no
+  // RTOS critical section can delay it.
+  //
+  // HARD INVARIANT (audited, item 17): because interp_isr runs above the syscall
+  // ceiling, interp_isr AND EVERYTHING IT CALLS make ZERO FreeRTOS API calls — any
+  // FreeRTOS call from above the ceiling is undefined behaviour. The full call tree
+  // is FreeRTOS-free: micros64() (PRIMASK-guarded + Arduino micros()),
+  // latch_from_staging() (pure float math + file-statics), can_jugglebot_send()
+  // (PRIMASK-guarded FlexCAN_T4::write mailbox register write, NOT a mutex),
+  // homing_active()/activate_active()/deactivate_active()/leg_present() (plain
+  // volatile reads), and the ODrive encoders (pure). Keep it that way.
   s_timer.begin(interp_isr, INTERP_PERIOD_US);
-  s_timer.priority(32);
+  s_timer.priority(16);
 }
 
 uint64_t interp_last_setpoint_us() { return atomic_read_u64(&s_last_setpoint_us); }
@@ -400,10 +417,24 @@ uint32_t interp_max_jitter_us() { return s_max_jitter_us; }
 void interp_reset_jitter() { s_max_jitter_us = 0; }
 
 void interp_begin_stow() {
+  // PRIMASK-publish (mirror interp_on_setpoint's exemplar above). The 500 Hz
+  // interp_isr runs ABOVE the FreeRTOS syscall ceiling (item 17 raised it to
+  // priority(16)) and can preempt this fault-task write at ANY instruction. A plain
+  // volatile store of s_stow_active does NOT order the preceding NON-volatile
+  // s_stow_pos[]/s_stow_speed/s_stow_complete stores on ARMv7-M, so the ISR could
+  // observe s_stow_active==true with a stale/half-written s_stow_pos[] and descend
+  // from a garbage base → a jerk on the physical legs at a CAN-reconnect. Disabling
+  // IRQs around the payload fill + the flag makes the publish a single atomic,
+  // fully-ordered step (also the compiler/memory barrier the seqlock would provide).
+  // Save/restore PRIMASK (not a bare __enable_irq) so it nests safely if ever called
+  // from an already-masked region. The axes[i].pos_rev reads are fast single-word
+  // volatile loads — cheap inside the IRQ-off window.
+  const uint32_t pm = __get_PRIMASK(); __disable_irq();
   for (uint8_t i = 0; i < NUM_LEGS; ++i) s_stow_pos[i] = axes[i].pos_rev;  // start from actual
   s_stow_speed = 0.0f;          // ramp the descent speed up from rest
   s_stow_complete = false;
   s_stow_active = true;
+  __set_PRIMASK(pm);
 }
 void interp_end_stow() { s_stow_active = false; }
 bool interp_stow_active() { return s_stow_active; }

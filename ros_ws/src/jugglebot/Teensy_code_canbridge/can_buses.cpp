@@ -63,7 +63,9 @@ static void decode_into_cache(const CAN_message_t& msg) {
       a.axis_state       = h.state;
       a.procedure_result = h.procedure_result;
       a.trajectory_done  = h.trajectory_done;
-      a.last_heartbeat_us = micros64();   // monotonic (item 14): read as an interval by the fault watchdog
+      atomic_write_u64(&a.last_heartbeat_us, micros64());   // monotonic (item 14); atomic 64-bit (item 17):
+                                          // the u64 write is two 32-bit stores on Cortex-M7; a lower-prio
+                                          // reader (fault watchdog) mid-load would tear the timestamp
       a.heartbeat_seen   = true;
       a.heartbeat_stale  = false;
       break;
@@ -163,7 +165,7 @@ static void decode_bb_odrive(const CAN_message_t& msg) {
       auto h = ODrive::decode_heartbeat(d);
       a.axis_state = h.state; a.procedure_result = h.procedure_result;
       a.trajectory_done = h.trajectory_done;
-      a.last_heartbeat_us = micros64(); a.heartbeat_seen = true; a.heartbeat_stale = false;  // monotonic (item 14): read as interval by send_bb_diag
+      atomic_write_u64(&a.last_heartbeat_us, micros64()); a.heartbeat_seen = true; a.heartbeat_stale = false;  // monotonic (item 14); atomic 64-bit (item 17): torn-write guard, read as interval by send_bb_diag
       break;
     }
     case ODriveCmd::get_error: {

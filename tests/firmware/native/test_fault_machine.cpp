@@ -84,7 +84,12 @@ static void reset_all() {
   fault_set_mpc_active(false);
 }
 
-static size_t clear_broadcasts() { return fake_sent_count_cmd(CMD_CLEAR) / NUM_LEGS; }
+// clear_errors_can() broadcasts one clear per axis over NUM_AXES (item 17 §5 — hand
+// parity), so divide the raw clear-frame count by NUM_AXES to recover the number of
+// clear ROUNDS. (Byte-identical golden vs the pre-item-17 /NUM_LEGS: every scenario
+// here does <= 2 rounds and 7N/6 floors to N for N<=5, but /NUM_AXES is the correct
+// divisor now that a round is NUM_AXES frames.)
+static size_t clear_broadcasts() { return fake_sent_count_cmd(CMD_CLEAR) / NUM_AXES; }
 
 // ── Error-eval (FaultEvaluator-modelable) scenarios ───────────────────────────
 using Vec6u = std::array<uint32_t, 6>;
@@ -686,6 +691,77 @@ TEST_CASE("wall step does not perturb staleness/guard/stow (item 14)") {
     fault_step();
     CHECK(fault_can_bus_down());
     CHECK(fault_state() == JbUdp::FaultState::CAN_BUS_DOWN);
+  }
+}
+
+// =============================================================================
+//  Item 17 §4 — clear_disarm_reasons: a CLEAR zeroes the disarm cache
+// =============================================================================
+//  The firmware disarm_reason cache is written ONLY by the Get_Error RX decode, so a
+//  CLEAR that did not also zero it would leave a stale nonzero disarm until the next
+//  Get_Error frame — and evaluate_errors would read the stale disarm (any_disarmed) and
+//  re-fault the state the operator just cleared. Both CLEAR paths (external RPC =
+//  fault_notify_clear_errors, internal soft-reset auto-retry = clear_errors_can) must
+//  mirror can_node._clear_errors → clear_disarm_reasons() over ALL axes incl. the hand.
+TEST_CASE("clear_disarm_reasons: a CLEAR zeroes the disarm cache over all axes incl. the hand (item 17 §4)") {
+  SUBCASE("external operator CLEAR (fault_notify_clear_errors) zeroes disarm immediately") {
+    reset_all();
+    fake_set_clock(10'000'000, 10'000'000);
+    for (uint8_t i = 0; i < NUM_AXES; ++i) axes[i].disarm_reason = 0x40;   // legs 0-5 AND hand (6)
+    fault_notify_clear_errors();
+    for (uint8_t i = 0; i < NUM_AXES; ++i) { CAPTURE(i); CHECK(axes[i].disarm_reason == 0); }
+  }
+  SUBCASE("internal soft-reset auto-clear (clear_errors_can) zeroes disarm too") {
+    reset_all();
+    fake_set_clock(10'000'000, 10'000'000);
+    // Disarm on every axis @IDLE, bus up → evaluate_errors' soft-reset branch fires
+    // clear_errors_can() → clear_disarm_reasons(). Drive it via fault_step().
+    for (uint8_t i = 0; i < NUM_AXES; ++i) { axes[i].disarm_reason = 0x40; axes[i].axis_state = ST_IDLE; }
+    s_fatal_can_error = false;   // bus up so the clear actually sends
+    fault_step();
+    for (uint8_t i = 0; i < NUM_AXES; ++i) { CAPTURE(i); CHECK(axes[i].disarm_reason == 0); }
+    // ...and the cache having been cleared, a follow-up step must NOT re-fault.
+    fault_step();
+    CHECK(s_fatal_error == false);
+  }
+}
+
+// =============================================================================
+//  Item 17 §5 — hand-axis (axis 6) fault-eval scope: a hand fault ESTOPs the legs
+// =============================================================================
+//  evaluate_errors / clear now iterate NUM_AXES, so a hand active-error or hand
+//  disarm-while-CLOSED_LOOP sets s_fatal_error / guard ESTOP (can_node parity — the
+//  standing hand-gap-is-a-real-regression note). The CAN3 watchdog + deferred stow stay
+//  legs-only, so a STALE hand heartbeat must NOT arm the leg watchdog/stow.
+TEST_CASE("hand-axis fault eval: a hand fault ESTOPs (NUM_AXES scope, item 17 §5)") {
+  SUBCASE("hand active-error → ODRIVE_FATAL + guard ESTOP (legs clean)") {
+    reset_all();
+    fake_set_clock(10'000'000, 10'000'000);
+    axes[HAND_AXIS].active_errors = 0x40;      // hand fault; all legs clean
+    fault_step();
+    CHECK(s_fatal_error);
+    CHECK(fault_state() == JbUdp::FaultState::ODRIVE_FATAL);
+    CHECK(fault_guard_mode() == JbUdp::GuardMode::ESTOP);
+  }
+  SUBCASE("hand disarm while CLOSED_LOOP → fatal (legs clean)") {
+    reset_all();
+    fake_set_clock(10'000'000, 10'000'000);
+    axes[HAND_AXIS].disarm_reason = 0x40;
+    axes[HAND_AXIS].axis_state    = ST_CL;     // hand armed → disarm-while-CL is fatal
+    fault_step();
+    CHECK(s_fatal_error);
+    CHECK(fault_state() == JbUdp::FaultState::ODRIVE_FATAL);
+  }
+  SUBCASE("NEGATIVE: a stale HAND heartbeat does NOT trip the CAN watchdog/stow (legs-only)") {
+    reset_all();
+    fake_set_clock(10'000'000, 10'000'000);
+    // Only the hand has ever been seen; it then goes stale. Legs never seen.
+    axes[HAND_AXIS].heartbeat_seen    = true;
+    axes[HAND_AXIS].last_heartbeat_us = fake_mono_us();
+    fake_advance(3 * (uint64_t)CAN_HEARTBEAT_TIMEOUT_US);   // hand heartbeat goes stale
+    fault_step();
+    CHECK(fault_can_bus_down() == false);   // watchdog/stow are legs-only (NUM_LEGS)
+    CHECK(fault_stow_pending() == false);   // ...so a stale hand arms nothing
   }
 }
 

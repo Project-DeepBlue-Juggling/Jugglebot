@@ -18,6 +18,19 @@
 //    * Soft-reset attempt cap (= 1) exists because of a real bounce-loop
 //      incident — do NOT simplify. One auto-clear, then fatal until an explicit
 //      CLEAR_ERRORS resets the budget (mirrors can_node clear_error_flags).
+//
+//  DELIBERATE per-path axis-scope split (item 17 §5) — NOT an oversight:
+//    * ERROR-EVAL + CLEAR paths iterate NUM_AXES (legs 0-5 + HAND axis 6):
+//      evaluate_errors, clear_errors_can's CAN send, clear_disarm_reasons. This is
+//      can_node parity — _handle_error evaluates the hand too, so a hand active-error
+//      or hand disarm-while-CLOSED_LOOP ESTOPs the whole platform, and a CLEAR clears
+//      the hand's caches. (OBSERVABLE BEHAVIOUR CHANGE: a hand fault now E-STOPs the
+//      legs; call it out at the next powered re-validation sitting.)
+//    * CAN3 WATCHDOG + DEFERRED STOW stay legs-only (NUM_LEGS): any_leg_heartbeat_stale,
+//      all_present_legs_fresh, s_first_leg_hb_seen, the stow-complete IDLE fan-out. The
+//      stow is a LEG-only physical retraction to the off pose; the hand is NEVER stowed,
+//      so a stale hand heartbeat must NOT arm the leg watchdog/stow. This too is the
+//      correct can_node parity (the CAN-loss watchdog observes the leg ODrives).
 // =============================================================================
 #include "fault_machine.h"
 
@@ -89,7 +102,7 @@ static bool actuators_intact_and_holding() { return legs_all_closed_loop() && le
 static bool any_leg_heartbeat_stale() {
   const uint64_t now = micros64();   // interval clock (item 14) — never the steppable wall
   for (uint8_t i = 0; i < NUM_LEGS; ++i)
-    if (axes[i].heartbeat_seen && (now - axes[i].last_heartbeat_us > CAN_HEARTBEAT_TIMEOUT_US))
+    if (axes[i].heartbeat_seen && (now - atomic_read_u64(&axes[i].last_heartbeat_us) > CAN_HEARTBEAT_TIMEOUT_US))
       return true;
   return false;
 }
@@ -105,7 +118,7 @@ static bool any_leg_heartbeat_stale() {
 static bool all_present_legs_fresh() {
   const uint64_t now = micros64();   // interval clock (item 14) — never the steppable wall
   for (uint8_t i = 0; i < NUM_LEGS; ++i)
-    if (leg_present(i) && (now - axes[i].last_heartbeat_us > CAN_HEARTBEAT_TIMEOUT_US))
+    if (leg_present(i) && (now - atomic_read_u64(&axes[i].last_heartbeat_us) > CAN_HEARTBEAT_TIMEOUT_US))
       return false;
   return true;
 }
@@ -116,12 +129,28 @@ static void clear_error_flags() {
   s_undervoltage_error = false;
   s_soft_reset_attempts = 0;
 }
-// Send clear_errors to all legs (mirror can_node._clear_errors), only if the bus
-// is up — never command a dead bus. Returns true iff it actually sent.
+// Zero the per-axis disarm_reason cache (item 17 §4 — mirror can_node._clear_errors →
+// motor_state.clear_disarm_reasons). The disarm_reason cache is written ONLY by the
+// Get_Error RX decode, so after a CLEAR a stale nonzero disarm would otherwise persist
+// until the next Get_Error frame; during that window evaluate_errors would read the
+// stale disarm (any_disarmed=true) and re-enter the soft-reset/fatal branch, re-faulting
+// the state the operator just cleared. Kept a SEPARATE function from clear_error_flags()
+// to preserve the 1:1 structural mirror of the Python (which calls clear_error_flags()
+// and clear_disarm_reasons() as distinct steps). Scoped to NUM_AXES (item 17 §5 — hand
+// parity with can_node, which clears the hand too). Mirrors ONLY disarm_reason, NOT
+// active_errors: active_errors self-heals on the next Get_Error, and zeroing it could
+// mask a still-active error.
+static void clear_disarm_reasons() {
+  for (uint8_t i = 0; i < NUM_AXES; ++i) axes[i].disarm_reason = 0;
+}
+// Send clear_errors to all axes incl. the hand (item 17 §5 — mirror can_node
+// ._clear_errors), only if the bus is up — never command a dead bus. Returns true
+// iff it actually sent.
 static bool clear_errors_can() {
   if (s_fatal_can_error) return false;
-  for (uint8_t i = 0; i < NUM_LEGS; ++i) can_jugglebot_send(ODrive::encode_clear_errors(i));
+  for (uint8_t i = 0; i < NUM_AXES; ++i) can_jugglebot_send(ODrive::encode_clear_errors(i));  // item 17 §5: NUM_AXES incl. hand (aligns rpc.cpp AXIS_ALL)
   clear_error_flags();
+  clear_disarm_reasons();   // item 17 §4: mirror can_node._clear_errors → clear_disarm_reasons
   return true;
 }
 
@@ -133,6 +162,8 @@ static bool clear_errors_can() {
 // UV bounce auto-clearing a motor-overspeed E-STOP with no operator ack).
 void fault_notify_clear_errors() {
   clear_error_flags();
+  clear_disarm_reasons();   // item 17 §4: mirror can_node._clear_errors → clear_disarm_reasons (else the
+                            // stale disarm cache re-faults until the next Get_Error frame)
   s_estop_latched = false;
   s_estop_state = JbUdp::FaultState::NONE;
 }
@@ -154,7 +185,12 @@ void fault_notify_reboot_started() {
 static void evaluate_errors() {
   bool no_active = true, no_disarm = true, any_disarmed = false, any_cl = false;
   bool all_uv_only = true;
-  for (uint8_t i = 0; i < NUM_LEGS; ++i) {
+  // item 17 §5: iterate NUM_AXES (legs 0-5 + HAND axis 6), NOT NUM_LEGS. can_node
+  // _handle_error evaluates over states[:len(JUGGLEBOT_AXES)] = 7 (incl. the hand),
+  // so a HAND active-error or hand disarm-while-CLOSED_LOOP must set s_fatal_error /
+  // ESTOP here too (else the firmware diverges from can_node — the standing hand-gap
+  // note). See the DELIBERATE per-path scope split documented at the top of this file.
+  for (uint8_t i = 0; i < NUM_AXES; ++i) {
     const uint32_t ae = axes[i].active_errors;
     const uint32_t dr = axes[i].disarm_reason;
     if (ae != 0) no_active = false;
@@ -208,7 +244,7 @@ static void watchdog_and_stow() {
   const uint64_t now = micros64();   // interval clock (item 14) — never the steppable wall
   for (uint8_t i = 0; i < NUM_AXES; ++i)
     axes[i].heartbeat_stale = axes[i].heartbeat_seen &&
-                              (now - axes[i].last_heartbeat_us > CAN_HEARTBEAT_TIMEOUT_US);
+                              (now - atomic_read_u64(&axes[i].last_heartbeat_us) > CAN_HEARTBEAT_TIMEOUT_US);
 
   // Ball Butler heartbeat staleness (CAN1, BB_HEARTBEAT_TIMEOUT_US = 0.5 s).
   // Information-only — no fault response is triggered by BB silence (the CAN3
