@@ -7,7 +7,7 @@ phase: "Online-juggle tilt re-architecture — motion-quality course-correction 
 related_plan: "bb-online-juggle-tilt-rearchitecture.md"
 files_changed: []
 commits:
-  - TBD
+  - 394d9bd
 subsystem:
   - sim
 tags:
