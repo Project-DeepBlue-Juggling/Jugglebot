@@ -335,12 +335,19 @@ seat of the MAKE's fast ~-2.7 m/s arrival intrinsically needs downward runway, w
 the current catch obtains ONLY by overshooting to the ceiling — **the slam is the
 seat's runway.** Remove it → the ball punches through (0–2/12). Every restructuring
 that cleans the motion, or even just lowers the apex, drops the MAKE to 0/12 (a
-whole-cycle-tuned fragile equilibrium). **The real fix is a co-design rung, not a
-re-plumb: a gentler throw whose apex sits BELOW the ceiling + a closed-loop
-apex-rendezvous catch (cup pre-rises to apex+seat-depth decelerating to ~0, then rides
-the ball down and arrests via a momentum budget), re-tuned to ≥10/12 from scratch.**
-See `logbook/2026-07-03-motion-quality-review.md` and
-`2026-07-03-p2-selfcatch-reunification-tension.md`.
+whole-cycle-tuned fragile equilibrium). **Root cause (refined 2026-07-03):** the catch commands the hand as a CONSTANT position
+per 40 Hz tick into an ultra-stiff position actuator → the cup jumps-and-settles and can
+never co-move with the ball's velocity, so it overshoots to the ceiling (a static catch)
+as a workaround. The hand is NOT acceleration-limited (tens of g available) and the sim
+already runs the hand at 1 kHz (`plant.step` calls `hand_cmd_fn` every substep). **The
+fix is a catch CONTROL-FORMULATION change, not a gentler throw:** command the hand a
+CONTINUOUS velocity-matched trajectory at the sub-tick rate (proven to co-move at
+−2.7 m/s smoothly), descend on a momentum budget using the hand's real authority (no
+ceiling overshoot; ball received on a DESCENDING cup), keep observe+re-plan at 40 Hz
+(mirrors the hardware's 40 Hz-plan / 500 Hz-track split). Gate on the P0 motion metrics
++ regenerate the MAKE (≥10/12). Full design basis:
+`logbook/2026-07-03-catch-control-formulation-design-basis.md` (see also
+`2026-07-03-motion-quality-review.md`, `2026-07-03-p2-selfcatch-reunification-tension.md`).
 
 **Goal.** Sustained 2-ball — compose the proven catch + throw primitives. BB seeds
 the pattern (tilt-to-receive); bring up **columns first** (lowest lateral demand,

@@ -18,6 +18,19 @@ tags:
 
 # P2: re-unify the self-catch on plan_cup_cycle — attempted, blocked by the MAKE
 
+> **Superseding follow-up (2026-07-03, same day).** This entry's conclusion — "the
+> smoothing needs a gentler throw + apex-rendezvous catch" — was **refined and largely
+> overturned** by `2026-07-03-catch-control-formulation-design-basis.md`. The "runway =
+> ceiling slam" tension below is real *only for a catch that commands the hand as a
+> CONSTANT position per 40 Hz tick* (jump-and-settle into an ultra-stiff actuator). The
+> sim already runs the hand at 1 kHz (`plant.step` calls `hand_cmd_fn` every substep); a
+> **continuous velocity-matched sub-tick command** makes the cup co-move at −2.7 m/s
+> smoothly (measured −2700 mm/s vs the constant command's −35) and catch the fast
+> arrival on a *descending* cup over a short runway — **no gentler throw needed.** The
+> hand is not acceleration-limited (tens of g available). Read the design-basis entry
+> for the real root cause + the proven fix; the attempts below all kept the
+> constant-per-tick command, which is why they forced the gentle-throw conclusion.
+
 ## Summary
 
 P2 asked to re-architect `SelfCatchRunner` (`sim/juggle_selfcatch.py`) onto the
