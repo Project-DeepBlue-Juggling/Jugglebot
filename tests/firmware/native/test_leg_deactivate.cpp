@@ -87,6 +87,16 @@ TEST_CASE("deactivate_request rejects a concurrent HOME or ACTIVATE") {
   CHECK(deactivate_request(0) == JbUdp::RpcStatus::ERR_REJECTED);
 }
 
+TEST_CASE("deactivate_request rejects while the MPC stream is actively driving (interlock, item 1b)") {
+  full_reset(0x01);
+  cs_set_mpc_active(true);                               // guard ENABLED on the Jetson → MPC driving legs
+  CHECK(deactivate_request(0) == JbUdp::RpcStatus::ERR_REJECTED);
+  CHECK_FALSE(deactivate_active());
+  cs_set_mpc_active(false);
+  CHECK(deactivate_request(0) == JbUdp::RpcStatus::OK);  // OK once the MPC stops driving
+  CHECK(deactivate_active());
+}
+
 TEST_CASE("deactivate_request rejects no-present-leg (ERR_BAD_ARGS) and is idempotent") {
   full_reset(0x00);
   CHECK(deactivate_request(0) == JbUdp::RpcStatus::ERR_BAD_ARGS);

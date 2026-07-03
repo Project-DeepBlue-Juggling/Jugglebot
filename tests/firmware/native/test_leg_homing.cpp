@@ -56,7 +56,7 @@ static void full_reset() {
   g_sib_activate = false;
   g_sib_deactivate = false;
   for (uint8_t i = 0; i < NUM_AXES; ++i) {
-    axes[i].heartbeat_seen = true;   // homing does not gate on presence
+    axes[i].heartbeat_seen = true;   // present by default — homing now gates on presence (Flash-A item 3)
     axes[i].active_errors = 0;
     axes[i].iq_measured = 0.0f;
   }
@@ -103,6 +103,38 @@ TEST_CASE("homing_request is idempotent (re-request while active is rejected)") 
   full_reset();
   REQUIRE(homing_request(0) == JbUdp::RpcStatus::OK);
   CHECK(homing_request(0) == JbUdp::RpcStatus::ERR_REJECTED);
+}
+
+TEST_CASE("homing_request rejects an ABSENT axis — leg AND hand (presence gate, item 3)") {
+  // Homing an absent axis would stream ~30 s of velocity frames to a phantom node,
+  // climbing the FlexCAN TEC toward bus-off. leg_present() covers legs + the hand
+  // (heartbeat_seen), so the same gate protects axis 6.
+  full_reset();
+  axes[0].heartbeat_seen = false;                       // leg 0 not on the bus
+  CHECK(homing_request(0) == JbUdp::RpcStatus::ERR_REJECTED);
+  CHECK_FALSE(homing_active());
+
+  full_reset();
+  axes[HAND_AXIS].heartbeat_seen = false;               // the hand not on the bus
+  CHECK(homing_request(HAND_AXIS) == JbUdp::RpcStatus::ERR_REJECTED);
+  CHECK_FALSE(homing_active());
+
+  // Present → latches OK (both a leg and the hand).
+  full_reset();
+  CHECK(homing_request(0) == JbUdp::RpcStatus::OK);
+  full_reset();
+  CHECK(homing_request(HAND_AXIS) == JbUdp::RpcStatus::OK);
+}
+
+TEST_CASE("homing_request rejects while the MPC stream is actively driving (interlock, item 1b)") {
+  full_reset();
+  cs_set_mpc_active(true);                               // guard ENABLED on the Jetson → MPC driving legs
+  CHECK(homing_request(0) == JbUdp::RpcStatus::ERR_REJECTED);
+  CHECK_FALSE(homing_active());
+  // Clears once the MPC stops driving.
+  cs_set_mpc_active(false);
+  CHECK(homing_request(0) == JbUdp::RpcStatus::OK);
+  CHECK(homing_active());
 }
 
 // ── SETUP preamble byte-parity ────────────────────────────────────────────────

@@ -14,12 +14,19 @@
 #include "protocol_config.h"   // ODriveState / ODriveControlMode / ODriveInputMode / PlatformCanId
 #include "odrive_protocol.h"   // ODrive::encode_set_state / encode_set_controller_mode / CanFrame
 #include "can_buses.h"         // can_jugglebot_send, jugglebot_commands_allowed
+#include "leg_homing.h"        // homing_active (HAND_TRAJ_CMD ↔ homing interlock — Flash-A item 2)
 
 namespace CanBridge {
 namespace HandOps {
 
 uint16_t hand_traj_cmd(const JbUdp::RpcArgs::ArgHandTraj& a) {
   using namespace JbUdp;   // RpcStatus::* (JbUdp::RpcStatus is a namespace, not a type)
+  // HAND_TRAJ_CMD ↔ homing interlock (Flash-A item 2), checked FIRST: a hand
+  // catch-trajectory must not fire while the SAME firmware state machine is mid-
+  // homing (axis 6 homes with the shared move-to-hardstop ladder). A concurrent
+  // traj would fight the move-to-hardstop and corrupt the just-defined
+  // HAND_ABS_POS_REV reference. Reject before the preamble reaches CAN3.
+  if (homing_active()) return RpcStatus::ERR_REJECTED;
   // Gate like a leg motion command: a confirmed-stale/dead CAN3 must withhold the
   // trajectory. HAND_TRAJ_CMD is NOT a recovery one-shot, so it keeps the
   // heartbeat-staleness gate (jugglebot_commands_allowed) — NOT the SYNCH

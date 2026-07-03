@@ -28,6 +28,7 @@ static uint8_t  g_health = JbUdp::BusHealth::OK;    // default: bus healthy → 
 static bool     g_can_bus_down = false;
 static bool     g_guard_estop = false;
 static bool     g_commands_allowed = true;
+static bool     g_mpc_active = false;              // MPC-stream interlock (Flash-A item 1b); default: not driving
 static std::vector<CsSentFrame> g_sent;
 static int g_send_fail_index = -1;
 static int g_send_attempts   = 0;
@@ -39,6 +40,7 @@ void cs_reset() {
   g_can_bus_down = false;
   g_guard_estop = false;
   g_commands_allowed = true;
+  g_mpc_active = false;
   g_send_fail_index = -1;
   g_send_attempts = 0;
   g_sent.clear();
@@ -55,6 +57,7 @@ void cs_set_jugglebot_health(uint8_t health) { g_health = health; }
 void cs_set_can_bus_down(bool down)          { g_can_bus_down = down; }
 void cs_set_guard_estop(bool estop)          { g_guard_estop = estop; }
 void cs_set_commands_allowed(bool allowed)   { g_commands_allowed = allowed; }
+void cs_set_mpc_active(bool active)          { g_mpc_active = active; }
 
 CanStats can_buses_stats() {                  // HAL: can_buses.h
   CanStats s{};
@@ -66,6 +69,7 @@ bool fault_can_bus_down() { return g_can_bus_down; }               // HAL: fault
 uint8_t fault_guard_mode() {                                       // HAL: fault_machine.h
   return g_guard_estop ? JbUdp::GuardMode::ESTOP : JbUdp::GuardMode::ENABLED;
 }
+bool fault_mpc_active() { return g_mpc_active; }                    // HAL: fault_machine.h (Flash-A item 1b)
 
 // ── Recording CAN3 TX ────────────────────────────────────────────────────────
 void cs_set_send_fail_index(int attempt_index) {

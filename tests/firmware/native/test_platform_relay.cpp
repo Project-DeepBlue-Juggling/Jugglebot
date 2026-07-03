@@ -29,6 +29,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <cmath>                 // NAN / INFINITY (state_write float validation — Flash-A item 4)
 
 #include "udp_protocol.h"
 #include "protocol_config.h"
@@ -92,6 +93,34 @@ TEST_CASE("state_write re-encodes the 0x6E0 RobotState frame (createStateCANMess
   CHECK(Relay::state_write(s) == JbUdp::RpcStatus::OK);
   REQUIRE(fake_sent_count() == 1);
   CHECK(fake_sent_at(0).buf[0] == 0x03);   // bit0 | bit1
+}
+
+TEST_CASE("state_write rejects a non-finite pose offset (ERR_BAD_ARGS, nothing sent) — item 4") {
+  // A NaN/Inf pose offset makes the `* 1000.0f` → int16 cast UNDEFINED, and the corrupt
+  // value would be PERSISTED on the Platform Teensy across reboots. Reject before the cast.
+  fake_reset();
+  fake_set_commands_allowed(true);
+
+  JbUdp::RpcArgs::ArgRobotState s{};
+  s.is_homed = 1;
+  s.pose_offset_tiltX = NAN;   s.pose_offset_tiltY = 0.0f;
+  CHECK(Relay::state_write(s) == JbUdp::RpcStatus::ERR_BAD_ARGS);
+  CHECK(fake_sent_count() == 0);          // rejected before any CAN3 frame
+
+  s.pose_offset_tiltX = 0.0f;  s.pose_offset_tiltY = INFINITY;
+  CHECK(Relay::state_write(s) == JbUdp::RpcStatus::ERR_BAD_ARGS);
+  CHECK(fake_sent_count() == 0);
+
+  s.pose_offset_tiltX = -INFINITY;  s.pose_offset_tiltY = NAN;
+  CHECK(Relay::state_write(s) == JbUdp::RpcStatus::ERR_BAD_ARGS);
+  CHECK(fake_sent_count() == 0);
+
+  // A finite pose still encodes + sends (the guard is non-finite ONLY).
+  s.pose_offset_tiltX = 0.012f;  s.pose_offset_tiltY = -0.034f;
+  CHECK(Relay::state_write(s) == JbUdp::RpcStatus::OK);
+  REQUIRE(fake_sent_count() == 1);
+  CHECK(le_i16(&fake_sent_at(0).buf[1]) == 12);
+  CHECK(le_i16(&fake_sent_at(0).buf[3]) == -34);
 }
 
 TEST_CASE("relay sends fail-fast when CAN3 is down (never command a dead bus)") {

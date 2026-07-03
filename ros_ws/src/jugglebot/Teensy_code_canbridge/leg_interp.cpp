@@ -10,12 +10,16 @@
 
 #include <Arduino.h>          // IntervalTimer
 #include <cstring>
+#include <cmath>              // std::isfinite (setpoint trust-boundary drop — Flash-A item 5)
 #include "canbridge_config.h"
 #include "udp_protocol.h"
 #include "axis_state.h"
 #include "odrive_protocol.h"
 #include "can_buses.h"
 #include "time_base.h"
+#include "leg_homing.h"       // homing_active     (in-progress-move interlock — Flash-A item 1a)
+#include "leg_activate.h"     // activate_active   (in-progress-move interlock — Flash-A item 1a)
+#include "leg_deactivate.h"   // deactivate_active (in-progress-move interlock — Flash-A item 1a)
 
 namespace CanBridge {
 
@@ -54,6 +58,12 @@ struct Staging {
 static Staging s_stage;
 static volatile bool s_pending = false;
 
+// Last-ACCEPTED SETPOINT sequence — a wrap-safe monotonic drop of stale/duplicate
+// frames (Flash-A item 5). Touched ONLY in interp_on_setpoint (net-task context)
+// and interp_reset (quiescent), never by the ISR, so no volatile/IRQ guard needed.
+static uint16_t s_last_sp_seq = 0;
+static bool     s_have_sp_seq = false;
+
 static volatile uint64_t s_last_setpoint_us = 0;
 static volatile bool     s_output_enabled = false;   // Phase 8 owns this gate
 // Deferred-stow descent state (set by the fault machine).
@@ -71,10 +81,37 @@ static IntervalTimer s_timer;
 static constexpr uint32_t JITTER_MISS_US = INTERP_PERIOD_US / 4;   // 500 us
 
 // ── Setpoint handler (net task context) ───────────────────────────────────────
-void interp_on_setpoint(uint16_t /*seq*/, const uint8_t* payload, uint16_t len) {
+void interp_on_setpoint(uint16_t seq, const uint8_t* payload, uint16_t len) {
   if (len < JbUdp::SETPOINT_SIZE) return;
+
+  // ── Wrap-safe monotonic-seq guard (Flash-A item 5) ──────────────────────────
+  // Drop a stale or duplicate setpoint (out-of-order UDP delivery / a re-sent
+  // frame). CRITICAL PARITY TRAP: SETPOINT and HEARTBEAT_J2T SHARE the host's
+  // _tx_seq_stream counter (controller/teensy_link/client.py send_stream), so
+  // setpoint seqs are strictly MONOTONIC but NOT contiguous — a heartbeat between
+  // two setpoints consumes an intervening seq value. A `seq == last+1` guard would
+  // therefore false-drop EVERY setpoint that follows a heartbeat. The test MUST be
+  // strictly-greater via a SIGNED int16 wrap difference, tracking the last-ACCEPTED
+  // setpoint seq only: (int16_t)(seq - s_last_sp_seq) <= 0 ⇒ stale/dup ⇒ drop.
+  if (s_have_sp_seq && (int16_t)(seq - s_last_sp_seq) <= 0) return;
+
   JbUdp::SetpointPayload sp;
   memcpy(&sp, payload, sizeof(sp));
+
+  // ── isfinite trust-boundary drop (Flash-A item 5) ───────────────────────────
+  // A NaN/Inf field survives BOTH the lead clamp and the stroke clamp (a NaN fails
+  // every comparison, so no clamp branch fires) and would reach encode_leg_setpoint
+  // → the CAN wire. DROP the whole frame like a lost UDP frame — do NOT sanitize to
+  // zero (a zeroed setpoint could trip MAX_DEVIATION or lurch a leg). CRITICAL: a
+  // dropped frame does NOT advance s_last_setpoint_us below, so a stream of all-NaN
+  // frames still eventually trips MPC_STALE (the staleness watchdog fires as if the
+  // link went quiet), and does NOT advance s_last_sp_seq (only an accepted frame does).
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) {
+    if (!(std::isfinite(sp.u0[i]) && std::isfinite(sp.u1[i]) && std::isfinite(sp.u2[i]) &&
+          std::isfinite(sp.v0[i]) && std::isfinite(sp.accel[i]) && std::isfinite(sp.torque_ff[i])))
+      return;
+  }
+
   const uint64_t recv = micros64();   // monotonic (item 14): feeds s_base_ts_us / s_last_setpoint_us / jerk dt,
                                       // all read against micros64() — a wall step must not corrupt the trajectory phase
 
@@ -100,6 +137,9 @@ void interp_on_setpoint(uint16_t /*seq*/, const uint8_t* payload, uint16_t len) 
   s_pending = true;
   __set_PRIMASK(pm);
 
+  // Only an ACCEPTED frame advances the seq high-water mark + the staleness clock.
+  s_last_sp_seq = seq;
+  s_have_sp_seq = true;
   atomic_write_u64(&s_last_setpoint_us, recv);   // 64-bit; read by the fault task
 }
 
@@ -150,6 +190,16 @@ static void interp_isr() {
 
   if (s_pending) { latch_from_staging(); s_pending = false; }
 
+  // ── In-progress-move interlock (Flash-A item 1a) ────────────────────────────
+  // A cold-start move (firmware homing / activate / deactivate) drives the SAME leg
+  // ODrives this ISR streams to; if both TX at once they co-drive the legs (a fight
+  // that can jerk the platform). The fault-task (FAULT_TASK_HZ = 10 Hz) is too slow
+  // to gate this — up to 100 ms of co-driving — so suppress the leg TX HERE, at the
+  // 500 Hz ISR (zero latency). These predicates are plain volatile-bool reads (no
+  // FreeRTOS calls), preserving the ISR's above-syscall-ceiling contract. The target
+  // cache writes below stay UNCONDITIONAL (telemetry must keep flowing during a move).
+  const bool coldstart = homing_active() || activate_active() || deactivate_active();
+
   // ── Deferred-stow descent (overrides the MPC ladder) ──
   // Velocity-limited per-leg descent to the off pose (0.0 rev = fully retracted),
   // emitted on CAN3 (the Jugglebot core bus). Runs only when output is enabled
@@ -181,9 +231,11 @@ static void interp_isr() {
       axes[i].target_pos_rev = p;
       axes[i].target_vel_rps = v;
       axes[i].target_torque_Nm = 0.0f;
-      // Present-axis gate (Phase 11): stream the descent only to legs physically
-      // on the bus. The target cache above still updates for all legs (telemetry).
-      if (s_output_enabled && leg_present(i)) can_jugglebot_send(ODrive::encode_leg_setpoint(i, p, v, 0.0f));
+      // Present-axis gate (Phase 11) + cold-start interlock (Flash-A item 1a):
+      // stream the descent only to present legs, and NEVER while a firmware
+      // homing/activate/deactivate move is co-driving them. The target cache above
+      // still updates for all legs (telemetry) regardless.
+      if (s_output_enabled && !coldstart && leg_present(i)) can_jugglebot_send(ODrive::encode_leg_setpoint(i, p, v, 0.0f));
     }
     s_stow_complete = all_done;
     return;
@@ -260,6 +312,16 @@ static void interp_isr() {
   // Stroke clamp (physical backstop).
   for (uint8_t i = 0; i < NUM_LEGS; ++i) {
     const float pre = cmd_pos[i];
+    // Defense-in-depth NaN/Inf sanitization (Flash-A item 5): a non-finite command
+    // fails BOTH comparisons below (NaN compares false to everything), so it would
+    // pass the clamp untouched and reach the wire. The interp_on_setpoint isfinite
+    // drop is the PRIMARY guard; this is the backstop should the extrapolation math
+    // itself ever produce a non-finite value. Hold the current encoder position (no
+    // lurch); if even that is non-finite, fall back to the retracted stroke min.
+    if (!std::isfinite(cmd_pos[i])) {
+      const float fb = axes[i].pos_rev;
+      cmd_pos[i] = std::isfinite(fb) ? fb : STROKE_MIN_REV[i];
+    }
     if (cmd_pos[i] < STROKE_MIN_REV[i]) cmd_pos[i] = STROKE_MIN_REV[i];
     else if (cmd_pos[i] > STROKE_MAX_REV[i]) cmd_pos[i] = STROKE_MAX_REV[i];
     if (cmd_pos[i] != pre) { cmd_vel[i] = 0.0f; cmd_tor[i] = 0.0f; }
@@ -271,7 +333,10 @@ static void interp_isr() {
     axes[i].target_vel_rps   = cmd_vel[i];
     axes[i].target_torque_Nm = cmd_tor[i];
   }
-  if (s_output_enabled) {
+  // Cold-start interlock (Flash-A item 1a): suppress the whole MPC leg TX while a
+  // firmware homing/activate/deactivate move is driving the same ODrives (see the
+  // interlock note above). The target cache was written for all legs regardless.
+  if (s_output_enabled && !coldstart) {
     for (uint8_t i = 0; i < NUM_LEGS; ++i) {
       // Present-axis gate (Phase 11): never stream a 500 Hz setpoint to a node
       // that isn't on the bus. No-op on the full robot (all six present); on the
@@ -303,6 +368,8 @@ void interp_reset() {
   s_prev_recv_us = 0;
   s_stage = Staging{};
   s_pending = false;
+  s_last_sp_seq = 0;
+  s_have_sp_seq = false;
   s_last_setpoint_us = 0;
   s_output_enabled = false;
   s_stow_active = false;

@@ -122,7 +122,17 @@ uint16_t homing_request(uint8_t axis) {
   using namespace JbUdp;
   if (axis >= NUM_AXES) return RpcStatus::ERR_BAD_ARGS;   // legs 0..5 + hand 6 (rejects AXIS_ALL / out-of-range)
   if (!homing_allowed())  return RpcStatus::ERR_BUS_DOWN;
+  // Presence gate (Flash-A item 3): never home an axis that is not on the bus.
+  // leg_present() covers legs AND the hand axis 6 (heartbeat_seen). Homing an absent
+  // axis streams ~30 s of velocity frames to a phantom node — those TX never ACK, so
+  // the FlexCAN TEC climbs toward bus-off. Rejected here before any drive frame.
+  if (!leg_present(axis)) return RpcStatus::ERR_REJECTED;
   if (activate_active() || deactivate_active()) return RpcStatus::ERR_REJECTED; // no concurrent cold-start moves (symmetric with activate_request)
+  // MPC-stream interlock (Flash-A item 1b): reject while the MPC is actively driving
+  // the legs (guard ENABLED on the Jetson). A homing move co-driving the same ODrives
+  // the 500 Hz stream commands would fight it — mutual exclusion, both directions
+  // (the interp ISR also suppresses its TX during a cold-start move, item 1a).
+  if (fault_mpc_active()) return RpcStatus::ERR_REJECTED;
   // Reject if a homing is active or a start is already pending (idempotent).
   // IRQ-guarded so the (busy-check + latch) is atomic vs the homing task that
   // consumes s_start_req at the top of homing_step.

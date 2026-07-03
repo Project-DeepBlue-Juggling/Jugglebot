@@ -55,8 +55,11 @@ static void reset_interp_test() {
 }
 
 // Stage one setpoint. u1==nullptr → no next waypoint (flags bit0 clear → Taylor/
-// decay extrapolation modes); else cubic Hermite between u0 and u1.
-static void stage(const float u0[6], const float* u1, const float v0[6], const float accel[6]) {
+// decay extrapolation modes); else cubic Hermite between u0 and u1. `seq` drives the
+// wrap-safe monotonic-seq guard (Flash-A item 5); default 0 (fresh after a reset,
+// which clears the last-accepted-seq state, so the first frame always latches).
+static void stage(const float u0[6], const float* u1, const float v0[6], const float accel[6],
+                  uint16_t seq = 0) {
   JbUdp::SetpointPayload sp;
   memset(&sp, 0, sizeof(sp));
   for (int i = 0; i < 6; ++i) {
@@ -66,7 +69,7 @@ static void stage(const float u0[6], const float* u1, const float v0[6], const f
     if (u1)    sp.u1[i] = u1[i];
   }
   sp.flags = u1 ? 0x1u : 0x0u;
-  interp_on_setpoint(0, reinterpret_cast<const uint8_t*>(&sp), sizeof(sp));
+  interp_on_setpoint(seq, reinterpret_cast<const uint8_t*>(&sp), sizeof(sp));
 }
 
 TEST_CASE("lead clamp: command never runs more than MAX_LEAD_REV ahead of encoder") {
@@ -241,4 +244,120 @@ TEST_CASE("wall step does not perturb the 500 Hz trajectory phase (item 14)") {
   interp_isr();
   CHECK(axes[0].target_pos_rev == doctest::Approx(pos_before));
   CHECK(axes[0].target_vel_rps == doctest::Approx(vel_before));
+}
+
+// =============================================================================
+//  Flash-A item 1a — in-progress-move interlock: a cold-start move suppresses TX
+// =============================================================================
+//  A firmware homing / activate / deactivate move drives the SAME leg ODrives the
+//  500 Hz interp ISR streams to. If both TX at once they co-drive the legs (a fight
+//  that can jerk the platform). The ISR suppresses its leg TX at zero latency while
+//  any cold-start move is active (FAULT_TASK_HZ = 10 Hz is too slow — up to 100 ms of
+//  co-driving otherwise). The target cache STILL updates (telemetry is unaffected).
+static void expect_coldstart_suppresses_tx(void (*set_active)(bool)) {
+  reset_interp_test();
+  axes[0].heartbeat_seen = true;                 // present leg
+  axes[0].pos_rev = 0.5f;                         // encoder at the command (no lead clamp)
+  interp_set_output_enabled(true);
+  float u0[6] = {0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f};
+  float zeros[6] = {0, 0, 0, 0, 0, 0};
+  stage(u0, nullptr, zeros, zeros);
+  set_active(true);                               // a cold-start move begins
+  fake_clear_sent();
+  interp_isr();
+  CHECK(fake_sent_count() == 0);                  // no leg setpoint streamed during the move
+  // The target cache STILL updates (telemetry unaffected by the interlock).
+  CHECK(axes[0].target_pos_rev == doctest::Approx(0.5f).epsilon(0.02));
+}
+
+TEST_CASE("cold-start move suppresses the 500 Hz leg TX; target cache still updates (item 1a)") {
+  expect_coldstart_suppresses_tx(fake_set_homing);
+  expect_coldstart_suppresses_tx(fake_set_activate);
+  expect_coldstart_suppresses_tx(fake_set_deactivate);
+
+  // Control: with NO cold-start move active, the same setup DOES stream (proves the
+  // suppression above is caused by the interlock, not some other gate).
+  reset_interp_test();
+  axes[0].heartbeat_seen = true;
+  axes[0].pos_rev = 0.5f;
+  interp_set_output_enabled(true);
+  float u0[6] = {0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f};
+  float zeros[6] = {0, 0, 0, 0, 0, 0};
+  stage(u0, nullptr, zeros, zeros);
+  fake_clear_sent();
+  interp_isr();
+  CHECK(fake_sent_count_cmd(CMD_SETPOS) == 1);    // the one present leg is streamed
+}
+
+// =============================================================================
+//  Flash-A item 5 — setpoint trust boundary: isfinite drop + wrap-safe seq guard
+// =============================================================================
+
+TEST_CASE("a setpoint with a non-finite field is DROPPED (never staged / streamed), item 5") {
+  reset_interp_test();
+  axes[0].heartbeat_seen = true;
+  interp_set_output_enabled(true);
+  float u0[6] = {0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f};
+  u0[0] = std::nanf("");                          // a NaN in u0[0]
+  float zeros[6] = {0, 0, 0, 0, 0, 0};
+  fake_clear_sent();
+  stage(u0, nullptr, zeros, zeros);               // seq 0, first frame → seq guard passes, isfinite drops it
+  CHECK_FALSE(s_pending);                         // dropped before staging (no s_pending set)
+  interp_isr();
+  CHECK(fake_sent_count() == 0);                  // nothing reached the wire
+  // Never latched → the target cache stays at its finite reset value.
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) {
+    CHECK(std::isfinite(axes[i].target_pos_rev));
+    CHECK(std::isfinite(axes[i].target_vel_rps));
+  }
+  // CRITICAL: a dropped frame must NOT bump the staleness clock — a stream of all-NaN
+  // frames must still eventually trip MPC_STALE (as if the link went quiet).
+  CHECK(interp_last_setpoint_us() == 0);
+}
+
+TEST_CASE("setpoint seq guard is strictly-greater + wrap-safe (shared host stream counter), item 5") {
+  reset_interp_test();
+  float a[6] = {0.10f, 0.10f, 0.10f, 0.10f, 0.10f, 0.10f};
+  float b[6] = {0.20f, 0.20f, 0.20f, 0.20f, 0.20f, 0.20f};
+  float c[6] = {0.30f, 0.30f, 0.30f, 0.30f, 0.30f, 0.30f};
+  float zeros[6] = {0, 0, 0, 0, 0, 0};
+
+  // seq 10 accepted (first frame).
+  stage(a, nullptr, zeros, zeros, 10);
+  CHECK(s_pending);
+  interp_isr();                                   // latch → base = a
+  CHECK(interp_base_pos(0) == doctest::Approx(0.10f));
+
+  // seq 9 (stale) dropped — (int16_t)(9 - 10) = -1 <= 0.
+  stage(b, nullptr, zeros, zeros, 9);
+  CHECK_FALSE(s_pending);
+  interp_isr();
+  CHECK(interp_base_pos(0) == doctest::Approx(0.10f));   // base unchanged
+
+  // seq 10 (duplicate) dropped — (int16_t)(10 - 10) = 0 <= 0.
+  stage(b, nullptr, zeros, zeros, 10);
+  CHECK_FALSE(s_pending);
+  interp_isr();
+  CHECK(interp_base_pos(0) == doctest::Approx(0.10f));   // base still unchanged
+
+  // seq 11 accepted — (int16_t)(11 - 10) = 1 > 0. Proves NON-contiguous acceptance:
+  // a strictly-greater guard accepts 11 even though 10→11 here skipped nothing, and
+  // (critically) it would accept a setpoint whose seq jumped forward past a heartbeat.
+  stage(c, nullptr, zeros, zeros, 11);
+  CHECK(s_pending);
+  interp_isr();
+  CHECK(interp_base_pos(0) == doctest::Approx(0.30f));
+
+  // Wrap-safety: last-accepted 0xFFFF, then 0x0000 must be ACCEPTED (not dropped) —
+  // (int16_t)(0x0000 - 0xFFFF) = (int16_t)0x0001 = +1 > 0. A naive unsigned/`==last+1`
+  // guard would mishandle the 16-bit wrap.
+  reset_interp_test();
+  stage(a, nullptr, zeros, zeros, 0xFFFF);
+  CHECK(s_pending);
+  interp_isr();
+  CHECK(interp_base_pos(0) == doctest::Approx(0.10f));
+  stage(c, nullptr, zeros, zeros, 0x0000);
+  CHECK(s_pending);                               // 0x0000 accepted after 0xFFFF (wrap)
+  interp_isr();
+  CHECK(interp_base_pos(0) == doctest::Approx(0.30f));
 }

@@ -90,6 +90,19 @@ TEST_CASE("the 0x6D0 payload is forwarded VERBATIM regardless of discriminator")
   CHECK(memcmp(fake_sent_at(2).buf, smooth, 8) == 0);
 }
 
+TEST_CASE("a hand traj is REJECTED while homing is active (interlock, item 2), nothing sent") {
+  fake_reset();
+  fake_set_commands_allowed(true);    // bus is fine — the rejection is the homing interlock, not the gate
+  fake_set_homing(true);              // the shared state machine is mid-homing (e.g. axis 6)
+
+  const auto a = make_traj_arg();
+  // Checked FIRST — before the bus gate and before any preamble frame reaches CAN3.
+  // A catch-traj mid-homing would fight the axis-6 move-to-hardstop and corrupt the
+  // just-defined HAND_ABS_POS_REV reference.
+  CHECK(HandOps::hand_traj_cmd(a) == JbUdp::RpcStatus::ERR_REJECTED);
+  CHECK(fake_sent_count() == 0);      // not even the preamble reached the bus
+}
+
 TEST_CASE("a dead CAN3 refuses the traj (ERR_BUS_DOWN, nothing sent)") {
   fake_reset();
   fake_set_commands_allowed(false);   // never-command-a-dead-bus

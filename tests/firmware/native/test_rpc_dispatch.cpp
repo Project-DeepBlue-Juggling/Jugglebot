@@ -238,6 +238,58 @@ TEST_CASE("REBOOT arms the watchdog-suppression latch for a LEG but NOT for the 
   CHECK(g_reboot_calls == 0);          // hand-only reboot must NOT arm leg-loss suppression
 }
 
+// ── Flash-A item 6: CLEAR_ERRORS notifies (refills the soft-reset budget) ONLY ────
+//    after the gate passes — a bus-down clear must not refill it.
+
+TEST_CASE("item 6: a bus-down CLEAR_ERRORS does NOT refill the soft-reset budget (notify after gate)") {
+  // AXIS_ALL, both gates closed (electrically dead bus) → ERR_BUS_DOWN, no notify, no TX.
+  reset_all();
+  fake_set_commands_allowed(false);
+  g_bus_transmittable = false;
+  ArgAxisOnly all{}; all.axis = AXIS_ALL;
+  CHECK(call(RpcMethod::CLEAR_ERRORS, all) == RpcStatus::ERR_BUS_DOWN);
+  CHECK(g_clear_calls == 0);           // the budget refill is GATED (was unconditional before)
+  CHECK(fake_sent_count() == 0);
+
+  // Per-axis, gated → also no notify (the per-axis path mirrors the AXIS_ALL discipline).
+  reset_all();
+  fake_set_commands_allowed(false);
+  g_bus_transmittable = false;
+  ArgAxisOnly one{}; one.axis = 0;
+  CHECK(call(RpcMethod::CLEAR_ERRORS, one) == RpcStatus::ERR_BUS_DOWN);
+  CHECK(g_clear_calls == 0);
+  CHECK(fake_sent_count() == 0);
+
+  // An up-bus (transmittable) AXIS_ALL clear DOES refill (gate passes → notify).
+  reset_all();
+  g_bus_transmittable = true;
+  CHECK(call(RpcMethod::CLEAR_ERRORS, all) == RpcStatus::OK);
+  CHECK(g_clear_calls == 1);
+}
+
+// ── Flash-A item 7: an AXIS_ALL broadcast surfaces a partial TX-enqueue failure ───
+//    as ERR_TIMEOUT (previously discarded behind an unconditional OK); every axis
+//    is still attempted.
+
+TEST_CASE("item 7: a partial CLEAR_ERRORS AXIS_ALL TX failure surfaces as ERR_TIMEOUT (all axes attempted)") {
+  reset_all();
+  fake_set_send_fail_index(2);         // the 3rd can_jugglebot_send attempt fails (not recorded)
+  ArgAxisOnly all{}; all.axis = AXIS_ALL;
+  CHECK(call(RpcMethod::CLEAR_ERRORS, all) == RpcStatus::ERR_TIMEOUT);
+  // All NUM_AXES sends were attempted; the failed one is not recorded → NUM_AXES-1 recorded.
+  CHECK(fake_sent_count() == CanBridge::NUM_AXES - 1);
+  CHECK(g_clear_calls == 1);           // the gate passed, so the budget still refilled (item 6 ordering intact)
+}
+
+TEST_CASE("item 7: a partial REBOOT_ODRIVES AXIS_ALL TX failure surfaces as ERR_TIMEOUT (all axes attempted)") {
+  reset_all();
+  fake_set_send_fail_index(4);         // the 5th can_jugglebot_send attempt fails
+  ArgAxisOnly all{}; all.axis = AXIS_ALL;
+  CHECK(call(RpcMethod::REBOOT_ODRIVES, all) == RpcStatus::ERR_TIMEOUT);
+  CHECK(fake_sent_count() == CanBridge::NUM_AXES - 1);
+  CHECK(g_reboot_calls == 1);          // the watchdog-suppression latch armed after the gate (unchanged)
+}
+
 // ── cold-start move + hand-traj routing (entry points stubbed) ────────────────
 
 TEST_CASE("HOME / ACTIVATE / DEACTIVATE route to their *_request with the axis; HAND_TRAJ_CMD to HandOps") {

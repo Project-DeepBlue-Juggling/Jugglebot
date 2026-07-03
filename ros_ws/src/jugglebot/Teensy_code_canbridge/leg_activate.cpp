@@ -104,6 +104,11 @@ uint16_t activate_request(uint8_t axis) {
   using namespace JbUdp;
   if (!activate_allowed()) return RpcStatus::ERR_BUS_DOWN;
   if (homing_active() || deactivate_active()) return RpcStatus::ERR_REJECTED;  // no concurrent cold-start moves
+  // MPC-stream interlock (Flash-A item 1b): reject while the MPC is actively driving
+  // the legs (guard ENABLED on the Jetson) — a cold-start move must not co-drive the
+  // same ODrives the 500 Hz stream commands (the interp ISR reciprocally suppresses
+  // its TX during this move, item 1a).
+  if (fault_mpc_active()) return RpcStatus::ERR_REJECTED;
   if (resolve_targets(axis) == 0) return RpcStatus::ERR_BAD_ARGS;  // no present target leg
   // Reject if an activate is active or a start is already pending (idempotent).
   // IRQ-guarded so (busy-check + latch) is atomic vs the activate task that

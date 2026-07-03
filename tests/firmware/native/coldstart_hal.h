@@ -43,6 +43,7 @@ void cs_set_jugglebot_health(uint8_t health);   // JbUdp::BusHealth → can_buse
 void cs_set_can_bus_down(bool down);            // → fault_can_bus_down()
 void cs_set_guard_estop(bool estop);            // → fault_guard_mode()==ESTOP
 void cs_set_commands_allowed(bool allowed);     // → jugglebot_commands_allowed()
+void cs_set_mpc_active(bool active);            // → fault_mpc_active() (MPC-stream interlock, Flash-A item 1b)
 
 // ── Recording CAN3 TX (drives can_jugglebot_send()) ──────────────────────────
 size_t             cs_sent_count();

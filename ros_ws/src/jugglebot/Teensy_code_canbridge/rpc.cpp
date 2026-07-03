@@ -173,17 +173,28 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
     }
     case RpcMethod::CLEAR_ERRORS: {
       ArgAxisOnly a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
-      // Operator clear refills the soft-reset auto-retry budget (clear_error_flags).
-      fault_notify_clear_errors();
       if (a.axis == AXIS_ALL) {
         // Gate on the bus-transmittable (SYNCH) signal, not staleness (Phase 6), so a
         // recovery clear reaches a just-repowered bus. AXIS_ALL loops legs + hand
         // (i < NUM_AXES) — can_node JUGGLEBOT_AXES parity (the audit's dropped-hand row).
         if (!gate_allows(method)) return RpcStatus::ERR_BUS_DOWN;
-        for (uint8_t i = 0; i < NUM_AXES; ++i) can_jugglebot_send(ODrive::encode_clear_errors(i));
-        return RpcStatus::OK;
+        // Notify AFTER the gate passes (item 6): a bus-down clear must NOT refill the
+        // soft-reset auto-retry budget — the operator's clear only "counts" if it can
+        // actually reach the bus (mirrors REBOOT_ODRIVES, which arms its latch after
+        // the gate for the same reason).
+        fault_notify_clear_errors();
+        // Accumulate the per-axis TX-enqueue result (item 7): a partial failure must be
+        // visible to the host, not hidden behind an unconditional OK. The send is the
+        // LEFT operand of &&, so every axis is attempted regardless of a prior failure.
+        bool ok = true;
+        for (uint8_t i = 0; i < NUM_AXES; ++i) ok = can_jugglebot_send(ODrive::encode_clear_errors(i)) && ok;
+        return ok ? RpcStatus::OK : RpcStatus::ERR_TIMEOUT;
       }
-      return send_axis_frame(method, a.axis, ODrive::encode_clear_errors(a.axis));
+      // Per-axis: refill the budget only if the frame actually went out (gate passed +
+      // enqueue OK) — the same after-the-gate discipline as the AXIS_ALL path (item 6).
+      const uint16_t st = send_axis_frame(method, a.axis, ODrive::encode_clear_errors(a.axis));
+      if (st == RpcStatus::OK) fault_notify_clear_errors();
+      return st;
     }
     case RpcMethod::REBOOT_ODRIVES: {
       ArgAxisOnly a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
@@ -194,8 +205,12 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
         // does not blind the detector against a real, coincident loss.
         if (!gate_allows(method)) return RpcStatus::ERR_BUS_DOWN;
         fault_notify_reboot_started();
-        for (uint8_t i = 0; i < NUM_AXES; ++i) can_jugglebot_send(ODrive::encode_reboot(i));
-        return RpcStatus::OK;
+        // Accumulate the per-axis TX-enqueue result (item 7): a partial broadcast
+        // failure surfaces as ERR_TIMEOUT rather than a false OK. Every axis is still
+        // attempted (the send is the LEFT operand of &&).
+        bool ok = true;
+        for (uint8_t i = 0; i < NUM_AXES; ++i) ok = can_jugglebot_send(ODrive::encode_reboot(i)) && ok;
+        return ok ? RpcStatus::OK : RpcStatus::ERR_TIMEOUT;
       }
       // Per-axis: send via the shared gate; arm the latch only if the reboot went out
       // AND it targets a LEG. The CAN-loss detector watches leg heartbeats only
