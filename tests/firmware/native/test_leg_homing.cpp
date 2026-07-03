@@ -137,6 +137,15 @@ TEST_CASE("homing_request rejects while the MPC stream is actively driving (inte
   CHECK(homing_active());
 }
 
+TEST_CASE("homing_request rejects while a deferred stow is pending (review fix)") {
+  full_reset();
+  cs_set_stow_pending(true);                             // a deferred stow is armed/executing
+  CHECK(homing_request(0) == JbUdp::RpcStatus::ERR_REJECTED);
+  CHECK_FALSE(homing_active());
+  cs_set_stow_pending(false);
+  CHECK(homing_request(0) == JbUdp::RpcStatus::OK);      // OK once the stow is done
+}
+
 // ── SETUP preamble byte-parity ────────────────────────────────────────────────
 
 TEST_CASE("homing SETUP emits the CLOSED_LOOP + VEL_RAMP + vel/curr-limit preamble") {

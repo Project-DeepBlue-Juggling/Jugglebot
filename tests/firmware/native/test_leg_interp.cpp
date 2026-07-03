@@ -361,3 +361,33 @@ TEST_CASE("setpoint seq guard is strictly-greater + wrap-safe (shared host strea
   interp_isr();
   CHECK(interp_base_pos(0) == doctest::Approx(0.30f));
 }
+
+TEST_CASE("seq guard RE-BASELINES after a stream gap (host restart), review fix") {
+  // The host resets its shared _tx_seq_stream to 0 each launch while the Jetson-5V
+  // Teensy persists s_last_sp_seq — without the gap-reset, a LOW seq after a restart
+  // would be dropped for minutes as 'stale' → a phantom MPC_STALE E-STOP.
+  reset_interp_test();
+  float a[6] = {0.10f, 0.10f, 0.10f, 0.10f, 0.10f, 0.10f};
+  float c[6] = {0.30f, 0.30f, 0.30f, 0.30f, 0.30f, 0.30f};
+  float zeros[6] = {0, 0, 0, 0, 0, 0};
+
+  // Establish a HIGH high-water (a long prior session), accepted.
+  stage(a, nullptr, zeros, zeros, 20000);
+  CHECK(s_pending);
+  interp_isr();
+  CHECK(interp_base_pos(0) == doctest::Approx(0.10f));
+
+  // A gap longer than the staleness bound = the prior stream is dead (a restart).
+  fake_advance(MPC_CMD_STALENESS_US + 1);
+
+  // A LOW seq (host restarted its counter to ~0) must be ACCEPTED, not dropped —
+  // (int16_t)(5 - 20000) = -19995 <= 0 would drop it WITHOUT the gap-reset.
+  stage(c, nullptr, zeros, zeros, 5);
+  CHECK(s_pending);                               // re-baselined, accepted
+  interp_isr();
+  CHECK(interp_base_pos(0) == doctest::Approx(0.30f));
+
+  // And within the NEW session the guard is live again: a stale seq 4 drops.
+  stage(a, nullptr, zeros, zeros, 4);
+  CHECK_FALSE(s_pending);
+}

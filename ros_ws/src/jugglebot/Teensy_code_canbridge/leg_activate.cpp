@@ -104,6 +104,7 @@ uint16_t activate_request(uint8_t axis) {
   using namespace JbUdp;
   if (!activate_allowed()) return RpcStatus::ERR_BUS_DOWN;
   if (homing_active() || deactivate_active()) return RpcStatus::ERR_REJECTED;  // no concurrent cold-start moves
+  if (fault_stow_pending()) return RpcStatus::ERR_REJECTED;   // not during a deferred stow (adversarial-review fix: else the stow's virtual-complete IDLEs the legs)
   // MPC-stream interlock (Flash-A item 1b): reject while the MPC is actively driving
   // the legs (guard ENABLED on the Jetson) — a cold-start move must not co-drive the
   // same ODrives the 500 Hz stream commands (the interp ISR reciprocally suppresses

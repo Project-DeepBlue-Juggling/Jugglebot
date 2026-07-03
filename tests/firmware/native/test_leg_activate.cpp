@@ -116,6 +116,15 @@ TEST_CASE("activate_request rejects while the MPC stream is actively driving (in
   CHECK(activate_active());
 }
 
+TEST_CASE("activate_request rejects while a deferred stow is pending (review fix)") {
+  full_reset(0x01);
+  cs_set_stow_pending(true);
+  CHECK(activate_request(0) == JbUdp::RpcStatus::ERR_REJECTED);
+  CHECK_FALSE(activate_active());
+  cs_set_stow_pending(false);
+  CHECK(activate_request(0) == JbUdp::RpcStatus::OK);
+}
+
 TEST_CASE("activate_request rejects when no target leg is present (ERR_BAD_ARGS)") {
   full_reset(0x00);   // nothing present
   CHECK(activate_request(JbUdp::RpcArgs::AXIS_ALL) == JbUdp::RpcStatus::ERR_BAD_ARGS);

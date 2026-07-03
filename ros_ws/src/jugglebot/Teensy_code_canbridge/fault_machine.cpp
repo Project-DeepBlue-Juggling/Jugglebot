@@ -29,8 +29,12 @@
 //    * CAN3 WATCHDOG + DEFERRED STOW stay legs-only (NUM_LEGS): any_leg_heartbeat_stale,
 //      all_present_legs_fresh, s_first_leg_hb_seen, the stow-complete IDLE fan-out. The
 //      stow is a LEG-only physical retraction to the off pose; the hand is NEVER stowed,
-//      so a stale hand heartbeat must NOT arm the leg watchdog/stow. This too is the
-//      correct can_node parity (the CAN-loss watchdog observes the leg ODrives).
+//      so a stale hand heartbeat must NOT arm the leg watchdog/stow. NOTE this is
+//      DELIBERATELY TIGHTER than can_node, whose any_heartbeat_stale scans JUGGLEBOT_AXES
+//      (legs + hand): for the CAN3 bus-loss event this watchdog is named for the two are
+//      behaviourally equivalent (all leg heartbeats go stale together on a bus drop); the
+//      only divergence is a silent HAND-only ODrive drop, which can_node would stow but we
+//      deliberately do not (there is nothing to stow on the hand).
 // =============================================================================
 #include "fault_machine.h"
 
@@ -251,7 +255,11 @@ static void watchdog_and_stow() {
   // watchdog below is the safety-relevant one); this just keeps bb_state.
   // heartbeat_stale in sync for the [bb] diag print and upstream HeartbeatT2J.
   bb_state.heartbeat_stale = bb_state.heartbeat_seen &&
-      (now - bb_state.last_heartbeat_us > BB_HEARTBEAT_TIMEOUT_US);
+      (now - atomic_read_u64(&bb_state.last_heartbeat_us) > BB_HEARTBEAT_TIMEOUT_US);
+      // ^ atomic (review fix): the last bare last_heartbeat_us read the item-17 sweep
+      //   missed — the CAN3-decode writer (task_can_rx, prio 5) can preempt this
+      //   fault-task (prio 3) read between its two 32-bit loads → a torn u64. Info-only
+      //   (BB silence drives no fault/stow), but keep it torn-free like its siblings.
 
   // Reboot-in-progress latch (Phase 6). A REBOOT_ODRIVES RPC armed a bounded
   // suppression of the CAN-loss detector so the deliberate reboot silence is not read

@@ -84,6 +84,23 @@ static constexpr uint32_t JITTER_MISS_US = INTERP_PERIOD_US / 4;   // 500 us
 void interp_on_setpoint(uint16_t seq, const uint8_t* payload, uint16_t len) {
   if (len < JbUdp::SETPOINT_SIZE) return;
 
+  // ── Session/stream-gap re-baseline (adversarial-review fix, before the seq guard) ─
+  // The seq high-water (s_last_sp_seq) persists for the whole Teensy uptime
+  // (interp_reset() has no runtime caller, and the Jetson-5V-powered can-bridge
+  // OUTLIVES run_mpc). But the host resets its SHARED _tx_seq_stream counter to 0 on
+  // every TeensyLinkClient construction (a routine bridge-node/ROS2 restart). Without
+  // this reset, after ~50% of restarts the guard below would drop EVERY setpoint until
+  // the counter climbed past the stale high-water — up to ~32767 frames (~13 min) — a
+  // phantom, self-re-latching MPC_STALE E-STOP with the link showing up. If the last
+  // ACCEPTED setpoint is already older than the staleness bound, the prior stream is
+  // DEAD (a restart, or a >250 ms gap): there is no in-flight reordering left to
+  // protect, so forget the high-water and re-baseline on the next frame. A live 40 Hz
+  // stream (~25 ms gaps) never crosses MPC_CMD_STALENESS_US, so this never
+  // false-resets within a session.
+  if (s_have_sp_seq &&
+      (micros64() - atomic_read_u64(&s_last_setpoint_us)) > MPC_CMD_STALENESS_US)
+    s_have_sp_seq = false;
+
   // ── Wrap-safe monotonic-seq guard (Flash-A item 5) ──────────────────────────
   // Drop a stale or duplicate setpoint (out-of-order UDP delivery / a re-sent
   // frame). CRITICAL PARITY TRAP: SETPOINT and HEARTBEAT_J2T SHARE the host's
@@ -195,9 +212,15 @@ static void interp_isr() {
   // ODrives this ISR streams to; if both TX at once they co-drive the legs (a fight
   // that can jerk the platform). The fault-task (FAULT_TASK_HZ = 10 Hz) is too slow
   // to gate this — up to 100 ms of co-driving — so suppress the leg TX HERE, at the
-  // 500 Hz ISR (zero latency). These predicates are plain volatile-bool reads (no
-  // FreeRTOS calls), preserving the ISR's above-syscall-ceiling contract. The target
-  // cache writes below stay UNCONDITIONAL (telemetry must keep flowing during a move).
+  // 500 Hz ISR (zero latency). These predicates make NO FreeRTOS calls (preserving the
+  // ISR's above-syscall-ceiling contract): each reads a single-word file-static
+  // (s_start_req volatile, s_phase a naturally-aligned enum → an atomic load on
+  // Cortex-M7) via a CROSS-TU function call — declared in leg_*.h, defined in the
+  // .cpp, so with the shipping -O2/no-LTO build the compiler cannot inline/hoist them
+  // and the call itself is the reload barrier, so the ISR sees each phase transition
+  // within one tick. (Were LTO ever enabled, s_phase should be marked volatile to
+  // match s_start_req — see leg_homing/activate/deactivate.cpp.) The target cache
+  // writes below stay UNCONDITIONAL (telemetry must keep flowing during a move).
   const bool coldstart = homing_active() || activate_active() || deactivate_active();
 
   // ── Deferred-stow descent (overrides the MPC ladder) ──
@@ -231,11 +254,17 @@ static void interp_isr() {
       axes[i].target_pos_rev = p;
       axes[i].target_vel_rps = v;
       axes[i].target_torque_Nm = 0.0f;
-      // Present-axis gate (Phase 11) + cold-start interlock (Flash-A item 1a):
-      // stream the descent only to present legs, and NEVER while a firmware
-      // homing/activate/deactivate move is co-driving them. The target cache above
-      // still updates for all legs (telemetry) regardless.
-      if (s_output_enabled && !coldstart && leg_present(i)) can_jugglebot_send(ODrive::encode_leg_setpoint(i, p, v, 0.0f));
+      // Present-axis gate (Phase 11). NOTE: the deferred-stow descent is NOT
+      // `!coldstart`-gated (adversarial-review fix): a cold-start move can never
+      // co-occur with a stow — the stow-BEGIN is guarded against active moves
+      // (fault_machine.cpp evaluate/watchdog), and a HOME/ACTIVATE/DEACTIVATE
+      // request is rejected while fault_stow_pending() (the symmetric guard). Gating
+      // the descent TX on `!coldstart` while still marking s_stow_complete below
+      // would let the watchdog IDLE the legs on a virtual (never-transmitted) descent
+      // → an unarmed gravity drop. The mutual exclusion belongs on the MPC ladder TX
+      // (below), not the self-contained safety stow. The target cache above still
+      // updates for all legs (telemetry) regardless.
+      if (s_output_enabled && leg_present(i)) can_jugglebot_send(ODrive::encode_leg_setpoint(i, p, v, 0.0f));
     }
     s_stow_complete = all_done;
     return;
@@ -401,8 +430,9 @@ void leg_interp_init() {
   // is FreeRTOS-free: micros64() (PRIMASK-guarded + Arduino micros()),
   // latch_from_staging() (pure float math + file-statics), can_jugglebot_send()
   // (PRIMASK-guarded FlexCAN_T4::write mailbox register write, NOT a mutex),
-  // homing_active()/activate_active()/deactivate_active()/leg_present() (plain
-  // volatile reads), and the ODrive encoders (pure). Keep it that way.
+  // homing_active()/activate_active()/deactivate_active()/leg_present() (single-word
+  // reads via non-inline cross-TU calls under -O2/no-LTO — the call is the barrier),
+  // and the ODrive encoders (pure). Keep it that way.
   s_timer.begin(interp_isr, INTERP_PERIOD_US);
   s_timer.priority(16);
 }

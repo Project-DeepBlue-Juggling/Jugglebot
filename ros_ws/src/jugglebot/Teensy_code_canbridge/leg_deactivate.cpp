@@ -105,6 +105,7 @@ uint16_t deactivate_request(uint8_t axis) {
   if (!deactivate_allowed()) return RpcStatus::ERR_BUS_DOWN;
   // No concurrent cold-start moves (symmetric with activate_request / homing).
   if (homing_active() || activate_active()) return RpcStatus::ERR_REJECTED;
+  if (fault_stow_pending()) return RpcStatus::ERR_REJECTED;   // a deferred stow is already safing the platform (adversarial-review fix)
   // MPC-stream interlock (Flash-A item 1b): reject while the MPC is actively driving
   // the legs (guard ENABLED on the Jetson) — a cold-start move must not co-drive the
   // same ODrives the 500 Hz stream commands (the interp ISR reciprocally suppresses

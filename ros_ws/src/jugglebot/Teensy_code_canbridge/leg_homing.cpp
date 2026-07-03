@@ -128,6 +128,7 @@ uint16_t homing_request(uint8_t axis) {
   // the FlexCAN TEC climbs toward bus-off. Rejected here before any drive frame.
   if (!leg_present(axis)) return RpcStatus::ERR_REJECTED;
   if (activate_active() || deactivate_active()) return RpcStatus::ERR_REJECTED; // no concurrent cold-start moves (symmetric with activate_request)
+  if (fault_stow_pending()) return RpcStatus::ERR_REJECTED;   // not during a deferred stow (adversarial-review fix: else the stow's virtual-complete IDLEs the legs)
   // MPC-stream interlock (Flash-A item 1b): reject while the MPC is actively driving
   // the legs (guard ENABLED on the Jetson). A homing move co-driving the same ODrives
   // the 500 Hz stream commands would fight it — mutual exclusion, both directions

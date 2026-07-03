@@ -97,6 +97,15 @@ TEST_CASE("deactivate_request rejects while the MPC stream is actively driving (
   CHECK(deactivate_active());
 }
 
+TEST_CASE("deactivate_request rejects while a deferred stow is already safing the platform (review fix)") {
+  full_reset(0x01);
+  cs_set_stow_pending(true);
+  CHECK(deactivate_request(0) == JbUdp::RpcStatus::ERR_REJECTED);
+  CHECK_FALSE(deactivate_active());
+  cs_set_stow_pending(false);
+  CHECK(deactivate_request(0) == JbUdp::RpcStatus::OK);
+}
+
 TEST_CASE("deactivate_request rejects no-present-leg (ERR_BAD_ARGS) and is idempotent") {
   full_reset(0x00);
   CHECK(deactivate_request(0) == JbUdp::RpcStatus::ERR_BAD_ARGS);
