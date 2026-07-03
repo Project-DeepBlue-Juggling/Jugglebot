@@ -116,7 +116,12 @@ class HomingMonitor:
             default its scope). ``[0]`` for the standalone-leg rig.
         home_ref_rev: |home reference| magnitude to expect at IDLE on success.
         pos_tol_rev: tolerance on ``|pos| - |home_ref|`` for the success check.
-        timeout_s: per-axis budget before declaring failure (> firmware timeout).
+        timeout_s: per-axis host budget before declaring failure. Deliberately
+            SHORTER than the firmware's own hard timeout (Homing::MOTOR_TIMEOUT_S =
+            30 s; host default 20 s): the host is the operational bound (a homing
+            completes in a few seconds, so 20 s is generous), while the firmware
+            timeout is the last-resort on-target abort backstop. (The prior
+            "> firmware timeout" note was inverted — Fable-5 [18B].)
     """
 
     def __init__(self, axes: Iterable[int], *,
