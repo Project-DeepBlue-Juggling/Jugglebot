@@ -135,6 +135,27 @@ item-8 slices, the typed CrcError, and item 12.
 | 19 | tests | low | Commit the hardware-validation procedures: 500 Hz deadline/jitter PASS/ABORT gate + ISR/stow-re-arm soak probe in tools/probes/ |
 | 20 | fw-relay/motion/fault | medium | Small firmware follow-ups to fold into the NEXT firmware phase (version-sweep re-query, REBOOT-during-stow interlock, stow-gate fatal/estop abort-or-document, SETTLE_STOP_US from config, HOME via axis-6 policy table, RESULT_BUF_CAP static_assert, encode_frame nullptr guard, cmd-result ring drop policy) |
 
+#### Tier-2 progress (2026-07-03) — FLASHED, awaiting powered re-validation
+
+Logbook: `logbook/2026-07-02-canhub-hardening-tier2.md`. Six items landed as compiled,
+native-tested firmware; an adversarial review over the whole diff caught + fixed two
+real regressions; `pio run -e teensy41` green; the can-hub Teensy was **flashed**.
+
+| # | Item | Status | Commit |
+|---|------|--------|--------|
+| 13 | guard E-STOP latch (motor_guard semantics) | ✅ flashed | `0ad3d25` |
+| 14 | monotonic clock for all interval/staleness arithmetic | ✅ flashed | `138aa11` |
+| 15 | NetLock lwIP pump + UDP RX drain budget | ✅ flashed | `b562825` |
+| 16 | Flash-A command-gate & trust-boundary bundle (7) | ✅ flashed | `c8ba247` |
+| 17 | Flash-B concurrency & parity residues (5) | ✅ flashed | `83ac938` |
+| 18 | HomingMonitor: **[18B]** inverted-docstring fix DONE (`6fe1ec9`); **[18A]** false-success uplink DEFERRED (wire-protocol change; own cycle after this flash) | ◐ partial | — |
+| — | adversarial-review fixes (seq-guard restart brick + stow gravity-drop + residues) | ✅ flashed | `192e6af` |
+
+**Hand-axis fault-eval → NUM_AXES ([17] §5) is an OBSERVABLE change** (a hand fault now
+E-STOPs the legs). **Next: the powered re-validation sitting** (checklist in the logbook)
+— then Tier-2 items 19 (commit the hw-validation procedures) + 20 (small fw follow-ups)
++ [18A], then `/archive-plan canbridge-foundation-coldstart-parity`.
+
 ### Tier 3 — defer
 
 | # | Area | Item |
