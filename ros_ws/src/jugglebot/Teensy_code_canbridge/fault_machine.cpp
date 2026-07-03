@@ -87,7 +87,7 @@ static bool legs_clean() {
 static bool actuators_intact_and_holding() { return legs_all_closed_loop() && legs_clean(); }
 
 static bool any_leg_heartbeat_stale() {
-  const uint64_t now = now_wall_us();
+  const uint64_t now = micros64();   // interval clock (item 14) — never the steppable wall
   for (uint8_t i = 0; i < NUM_LEGS; ++i)
     if (axes[i].heartbeat_seen && (now - axes[i].last_heartbeat_us > CAN_HEARTBEAT_TIMEOUT_US))
       return true;
@@ -103,7 +103,7 @@ static bool any_leg_heartbeat_stale() {
 // which cannot co-occur with the fatal_can_error precondition of the sole caller
 // (that needs s_first_leg_hb_seen — at least one leg already seen).
 static bool all_present_legs_fresh() {
-  const uint64_t now = now_wall_us();
+  const uint64_t now = micros64();   // interval clock (item 14) — never the steppable wall
   for (uint8_t i = 0; i < NUM_LEGS; ++i)
     if (leg_present(i) && (now - axes[i].last_heartbeat_us > CAN_HEARTBEAT_TIMEOUT_US))
       return false;
@@ -145,7 +145,7 @@ void fault_notify_clear_errors() {
 // a prior one (which could release the new latch early). s_reboot_in_progress is
 // published LAST so the fault task never observes an armed latch with a stale deadline.
 void fault_notify_reboot_started() {
-  atomic_write_u64(&s_reboot_deadline_us, now_wall_us() + REBOOT_WATCHDOG_SUPPRESS_US);
+  atomic_write_u64(&s_reboot_deadline_us, micros64() + REBOOT_WATCHDOG_SUPPRESS_US);  // interval deadline (item 14)
   s_reboot_saw_stale = false;
   s_reboot_in_progress = true;
 }
@@ -205,7 +205,7 @@ static void watchdog_and_stow() {
     if (axes[i].heartbeat_seen) { s_first_leg_hb_seen = true; break; }
 
   // Mark per-axis staleness for telemetry.
-  const uint64_t now = now_wall_us();
+  const uint64_t now = micros64();   // interval clock (item 14) — never the steppable wall
   for (uint8_t i = 0; i < NUM_AXES; ++i)
     axes[i].heartbeat_stale = axes[i].heartbeat_seen &&
                               (now - axes[i].last_heartbeat_us > CAN_HEARTBEAT_TIMEOUT_US);
@@ -275,7 +275,7 @@ static void watchdog_and_stow() {
 static bool jetson_link_up() {
   const uint64_t last = udp_last_rx_us();
   if (last == 0) return false;
-  return (now_wall_us() - last) <= JETSON_LINK_TIMEOUT_US;
+  return (micros64() - last) <= JETSON_LINK_TIMEOUT_US;   // interval (item 14): udp_last_rx_us is mono
 }
 
 static void evaluate_guard() {
@@ -289,7 +289,7 @@ static void evaluate_guard() {
     if (v > MAX_MOTOR_VEL_RPS) { estop = true; state = JbUdp::FaultState::MOTOR_OVERSPEED; break; }
   }
   // MPC command staleness (the hard link-fault trigger).
-  const uint64_t age = now_wall_us() - interp_last_setpoint_us();
+  const uint64_t age = micros64() - interp_last_setpoint_us();   // interval (item 14): setpoint stamped mono
   const bool ever_cmd = interp_last_setpoint_us() != 0;
   if (!estop && ever_cmd && s_mpc_active && age > MPC_CMD_STALENESS_US) {
     estop = true; state = JbUdp::FaultState::MPC_STALE;
@@ -317,11 +317,11 @@ static void evaluate_guard() {
   // Recoverable, NOT a latched E-STOP: output re-enables when feedback returns,
   // mirroring motor_guard's command suppression. Present-scoped + mpc_active/latched
   // gated exactly like MAX_DEVIATION (so it never false-trips pre-arm, when
-  // pos_timestamp_us is still 0). pos_timestamp_us is stamped now_wall_us() on each
-  // encoder RX (can_buses.cpp), so this clock comparison is consistent.
+  // pos_timestamp_us is still 0). pos_timestamp_us is stamped micros64() on each
+  // encoder RX (can_buses.cpp), so this monotonic clock comparison is consistent (item 14).
   bool fb_stale = false;
   if (s_mpc_active && interp_have_latched()) {
-    const uint64_t now = now_wall_us();
+    const uint64_t now = micros64();   // interval clock (item 14) — never the steppable wall
     for (uint8_t i = 0; i < NUM_LEGS; ++i) {
       if (leg_present(i) && (now - axes[i].pos_timestamp_us > MOTOR_FB_STALENESS_US)) {
         fb_stale = true; break;

@@ -75,7 +75,8 @@ void interp_on_setpoint(uint16_t /*seq*/, const uint8_t* payload, uint16_t len) 
   if (len < JbUdp::SETPOINT_SIZE) return;
   JbUdp::SetpointPayload sp;
   memcpy(&sp, payload, sizeof(sp));
-  const uint64_t recv = now_wall_us();
+  const uint64_t recv = micros64();   // monotonic (item 14): feeds s_base_ts_us / s_last_setpoint_us / jerk dt,
+                                      // all read against micros64() — a wall step must not corrupt the trajectory phase
 
   // Publish the staging atomically. The interp ISR runs ABOVE the FreeRTOS
   // syscall ceiling and can preempt this net-task write at any instruction; if
@@ -190,7 +191,11 @@ static void interp_isr() {
 
   if (!s_have_latched) return;
 
-  const float dt = (float)((double)(now_wall_us() - s_base_ts_us) * 1e-6);
+  // Trajectory-phase dt — THE most control-critical interval. micros64() (item 14):
+  // s_base_ts_us was stamped with micros64() at recv; a wall STEP here would jump the
+  // 500 Hz phase → a commanded-position discontinuity/jerk into the legs. Also makes
+  // this consistent with the micros64() the jitter accounting already uses above.
+  const float dt = (float)((double)(micros64() - s_base_ts_us) * 1e-6);
   float cmd_pos[NUM_LEGS], cmd_vel[NUM_LEGS], cmd_tor[NUM_LEGS];
 
   if (s_has_next) {

@@ -201,3 +201,44 @@ TEST_CASE("deferred-stow descent: converges to the off pose, completes, present-
     if (ODrive::axis_of(fake_sent_at(i).id) != 0) absent_streamed = true;
   CHECK(absent_streamed == false);
 }
+
+// =============================================================================
+//  Item 14 — the 500 Hz trajectory phase reads the MONOTONIC clock
+// =============================================================================
+//  dt = micros64() - s_base_ts_us, and s_base_ts_us was stamped with micros64() at
+//  recv. A wall-clock STEP (set_wall_anchor NTP re-acquisition) must NOT move the
+//  interpolated command — otherwise the commanded position jumps and jerks the
+//  legs. Latch at mono=M0, extrapolate a known dt, then step the WALL clock only
+//  (mono frozen) and re-tick: the command must be bit-for-bit the pre-step value.
+TEST_CASE("wall step does not perturb the 500 Hz trajectory phase (item 14)") {
+  reset_interp_test();
+  const uint64_t W0 = 2'000'000'000ULL;   // wall base (>> the 5 s step, no underflow)
+  const uint64_t M0 =    10'000'000ULL;   // mono base (independent of wall)
+  fake_set_clock(W0, M0);
+
+  axes[0].pos_rev = 0.5f;                  // encoder near the extrapolated pos (no lead clamp)
+  interp_set_output_enabled(false);
+  float u0[6]    = {0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f};
+  float v0[6]    = {1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};   // 1 rev/s on leg 0
+  float zeros[6] = {0, 0, 0, 0, 0, 0};
+  stage(u0, nullptr, v0, zeros);           // recv = micros64() = M0 (Taylor extrapolation mode)
+
+  fake_advance(20'000);                    // dt = 0.02 s (both clocks move together)
+  interp_isr();                            // latch + one tick at dt = 0.02 s
+  const float pos_before = axes[0].target_pos_rev;
+  const float vel_before = axes[0].target_vel_rps;
+  REQUIRE(pos_before == doctest::Approx(0.52f).epsilon(0.02));   // 0.5 + 1.0*0.02
+
+  // STEP the wall clock BACKWARD 5 s, mono frozen → dt is recomputed from mono and
+  // is unchanged, so the command must be identical.
+  fake_set_clock(fake_wall_us() - 5'000'000ULL, fake_mono_us());
+  interp_isr();
+  CHECK(axes[0].target_pos_rev == doctest::Approx(pos_before));
+  CHECK(axes[0].target_vel_rps == doctest::Approx(vel_before));
+
+  // STEP the wall clock FORWARD 10 s, mono still frozen → still identical.
+  fake_set_clock(fake_wall_us() + 10'000'000ULL, fake_mono_us());
+  interp_isr();
+  CHECK(axes[0].target_pos_rev == doctest::Approx(pos_before));
+  CHECK(axes[0].target_vel_rps == doctest::Approx(vel_before));
+}

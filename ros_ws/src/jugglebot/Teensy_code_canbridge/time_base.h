@@ -43,10 +43,23 @@ static inline void atomic_write_u64(volatile uint64_t* p, uint64_t v) {
 }
 
 // 64-bit monotonic microseconds since boot (wrap-safe).
+//
+// CLOCK-DISCIPLINE INVARIANT (item 14): use micros64() for ALL interval /
+// staleness / age arithmetic (heartbeat freshness, link timeouts, watchdog
+// deadlines, the 500 Hz trajectory phase, cone/bus gates, diag ages). micros64()
+// is the pure crystal that set_wall_anchor() NEVER touches, so an NTP-style wall
+// STEP (forward or backward) cannot corrupt any interval or underflow a uint64
+// age. now_wall_us() is reserved for WIRE-BOUND absolute timestamps only — a
+// value serialised onto the CAN/UDP wire and interpreted against another node's
+// clock (t_teensy_us / t_bridge_us fields, the 0x7DD time-sync broadcast, the
+// Ball Butler throw_time). Never compute an interval as a difference of two
+// now_wall_us() reads that straddle a possible anchor step.
 uint64_t micros64();
 
 // Current wall-clock estimate (us since Unix epoch). Equals micros64() until an
-// anchor is set; thereafter micros64() + wall_offset_us.
+// anchor is set; thereafter micros64() + wall_offset_us. STEPPABLE by
+// set_wall_anchor() — use ONLY for wire-bound absolute timestamps (see the
+// clock-discipline invariant on micros64() above); never for intervals.
 uint64_t now_wall_us();
 
 // True when the Jetson anchor is present AND fresh (a recent TOD response). Goes

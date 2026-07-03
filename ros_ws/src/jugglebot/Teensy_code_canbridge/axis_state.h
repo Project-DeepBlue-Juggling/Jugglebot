@@ -26,7 +26,7 @@ struct AxisState {
   // ── Hot — updated by CAN3 RX decode ────────────────────────────────────────
   volatile float    pos_rev          = 0.0f;   // Jugglebot convention (pos = extension)
   volatile float    vel_rps          = 0.0f;
-  volatile uint64_t pos_timestamp_us = 0;      // wall-clock at last encoder update
+  volatile uint64_t pos_timestamp_us = 0;      // monotonic micros64 at last encoder update (item 14)
   volatile float    iq_setpoint      = 0.0f;   // A
   volatile float    iq_measured      = 0.0f;   // A
   volatile float    temp_fet         = 0.0f;   // degC
@@ -44,7 +44,7 @@ struct AxisState {
   volatile bool     trajectory_done  = false;
   volatile bool     heartbeat_stale  = false;
   volatile bool     heartbeat_seen   = false;  // ever received a heartbeat
-  volatile uint64_t last_heartbeat_us = 0;     // wall-clock at last heartbeat
+  volatile uint64_t last_heartbeat_us = 0;     // monotonic micros64 at last heartbeat (item 14)
 
   // ── Targets — updated by interp task ───────────────────────────────────────
   volatile float    target_pos_rev   = 0.0f;

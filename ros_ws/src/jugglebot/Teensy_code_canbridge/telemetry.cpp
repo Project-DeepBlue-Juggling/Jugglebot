@@ -37,7 +37,7 @@ void telemetry_init() {
 // ── 100 Hz motor-state frame ──────────────────────────────────────────────────
 static void send_telemetry() {
   JbUdp::TelemetryPayload t{};
-  t.t_teensy_us = now_wall_us();
+  t.t_teensy_us = now_wall_us();   // wire-bound absolute timestamp — wall by contract (item 14)
   for (uint8_t i = 0; i < NUM_AXES; ++i) {
     float pos, vel; uint64_t ts;
     snapshot_pos_vel(axes[i], pos, vel, ts);
@@ -64,7 +64,7 @@ static bool diag_changed(const AxisState& a, const DiagBaseline& b) {
 
 static void send_diag(uint8_t axis) {
   AxisState& a = axes[axis];
-  const uint64_t now = now_wall_us();
+  const uint64_t now = micros64();   // interval clock (item 14): staleness + last_sent_us age
   const bool stale = a.heartbeat_seen &&
                      (now - a.last_heartbeat_us > CAN_HEARTBEAT_TIMEOUT_US);
 
@@ -99,7 +99,7 @@ static void send_diag(uint8_t axis) {
 // ~1 Hz per axis (temps/currents drift slowly) — no on-change baseline needed.
 static void send_bb_diag(uint8_t idx) {
   const AxisState& a = bb_axes[idx];
-  const uint64_t now = now_wall_us();
+  const uint64_t now = micros64();   // interval clock (item 14): staleness + last_sent_us age
   const bool stale = a.heartbeat_seen &&
                      (now - a.last_heartbeat_us > CAN_HEARTBEAT_TIMEOUT_US);
   JbUdp::DiagnosticPayload d{};
@@ -135,7 +135,7 @@ static void send_bb_estimates() {
   e.pitch_pos_rev = pos; e.pitch_vel_rps = vel;
   snapshot_pos_vel(bb_axes[1], pos, vel, ts);   // node 8 = hand
   e.hand_pos_rev = pos;  e.hand_vel_rps = vel;
-  e.t_bridge_us = now_wall_us();
+  e.t_bridge_us = now_wall_us();   // wire-bound absolute timestamp — wall by contract (item 14)
   udp_send_stream(JbUdp::MsgType::BB_AXIS_ESTIMATES, (const uint8_t*)&e, sizeof(e));
 }
 
@@ -150,7 +150,7 @@ static void send_bb_estimates() {
 // inferring it from the encoder. Same proven uplink context as send_telemetry().
 static void send_leg_cmd() {
   JbUdp::LegCmdPayload c{};
-  c.t_teensy_us = now_wall_us();
+  c.t_teensy_us = now_wall_us();   // wire-bound absolute timestamp — wall by contract (item 14)
   for (uint8_t i = 0; i < NUM_LEGS; ++i) {
     c.cmd_pos_rev[i] = axes[i].target_pos_rev;   // single-word atomic read
     c.cmd_vel_rps[i] = axes[i].target_vel_rps;
@@ -240,7 +240,7 @@ void telemetry_step() {
   static uint32_t tick = 0;
   const uint32_t slot = tick % TELEM_RATE_HZ;              // 0..99, ticks within the second
   const uint32_t slots_per_axis = TELEM_RATE_HZ / NUM_AXES;  // ~14
-  const uint64_t now = now_wall_us();
+  const uint64_t now = micros64();   // interval clock (item 14): staleness + last_sent_us age
   for (uint8_t i = 0; i < NUM_AXES; ++i) {
     const bool due_forced =
         (now - s_base[i].last_sent_us >= DIAG_FORCE_PERIOD_US) &&

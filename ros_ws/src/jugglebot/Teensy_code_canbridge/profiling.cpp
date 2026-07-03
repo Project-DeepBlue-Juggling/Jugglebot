@@ -91,7 +91,8 @@ void profiling_step() {
   const CanStats c = can_buses_stats();
 
   JbUdp::ProfilePayload p{};
-  p.t_teensy_us = now_wall_us();
+  p.t_teensy_us = now_wall_us();   // wire-bound absolute timestamp — wall by contract (item 14); the window above is micros64
+
   fill_cpu(p.cpu_pct_x100);
 
   p.can1_rx = c.jugglebot_rx - s_prev_jugglebot_rx;   // wire slot 1 = Jugglebot core (CAN3)

@@ -23,7 +23,10 @@ from tests.ros.test_teensy_bridge_node_read import _build_paired_node
 
 
 def _now_us() -> int:
-    return int(time.time() * 1_000_000)
+    # Monotonic (item 14): this stamps client.stats.last_t2j_heartbeat_us, which the
+    # production time_since_last_t2j_heartbeat_us() now reads against time.monotonic().
+    # Both endpoints must share the same clock or the simulated age is nonsense.
+    return int(time.monotonic() * 1_000_000)
 
 
 def _set_heartbeat_age(client, age_s: float) -> None:

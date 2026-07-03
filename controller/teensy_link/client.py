@@ -340,7 +340,13 @@ class TeensyLinkClient:
                 return
             self.stats.rx_frames += 1
             self.stats.rx_bytes += len(data)
-            self.stats.last_rx_us = int(time.time() * 1_000_000)
+            # Monotonic clock (item 14): last_rx_us is one endpoint of the
+            # time_since_last_rx_us / _t2j interval reads below. time.time()
+            # (CLOCK_REALTIME) is NTP-steppable — a backward step would underflow
+            # the age to a huge positive (spurious link-lost) or a negative;
+            # time.monotonic() cannot step. The wire-bound anchor
+            # (send_heartbeat's t_jetson_us) stays on time.time().
+            self.stats.last_rx_us = int(time.monotonic() * 1_000_000)
             try:
                 msg_type, seq, payload = p.decode_frame(data)
             except ValueError as e:
@@ -394,10 +400,10 @@ class TeensyLinkClient:
         """Microseconds since any frame was received from the peer, or None."""
         if self.stats.last_rx_us == 0:
             return None
-        return int(time.time() * 1_000_000) - self.stats.last_rx_us
+        return int(time.monotonic() * 1_000_000) - self.stats.last_rx_us   # item 14: monotonic both endpoints
 
     def time_since_last_t2j_heartbeat_us(self) -> Optional[int]:
         """Microseconds since the last T→J heartbeat frame, or None."""
         if self.stats.last_t2j_heartbeat_us == 0:
             return None
-        return int(time.time() * 1_000_000) - self.stats.last_t2j_heartbeat_us
+        return int(time.monotonic() * 1_000_000) - self.stats.last_t2j_heartbeat_us   # item 14: monotonic both endpoints

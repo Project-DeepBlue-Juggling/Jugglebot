@@ -85,7 +85,7 @@ static void drain_socket(EthernetUDP& sock, bool is_rpc) {
       continue;
     }
     s_stats.rx_frames++;
-    atomic_write_u64(&s_last_rx_us, now_wall_us());   // 64-bit; read by the link-health watchdog
+    atomic_write_u64(&s_last_rx_us, micros64());   // 64-bit monotonic (item 14); read as an interval by the link-health watchdog
 
     if (!is_rpc) track_downlink_seq(hdr.seq);
 

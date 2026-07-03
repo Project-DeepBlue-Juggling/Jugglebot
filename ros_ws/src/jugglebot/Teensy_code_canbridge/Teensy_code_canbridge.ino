@@ -59,7 +59,7 @@ static volatile uint64_t g_last_jetson_hb_us = 0;
 
 static void on_jetson_heartbeat(uint16_t /*seq*/, const uint8_t* payload, uint16_t len) {
   if (len < sizeof(JbUdp::HeartbeatJ2TPayload)) return;
-  atomic_write_u64(&g_last_jetson_hb_us, now_wall_us());   // 64-bit; read by link_state()
+  atomic_write_u64(&g_last_jetson_hb_us, micros64());   // 64-bit monotonic (item 14); read as an interval by link_state()
   JbUdp::HeartbeatJ2TPayload p;
   memcpy(&p, payload, sizeof(p));
   fault_set_mpc_active((p.flags & 0x1u) != 0);   // bit0 = MPC commanding (guard ENABLED)
@@ -67,7 +67,7 @@ static void on_jetson_heartbeat(uint16_t /*seq*/, const uint8_t* payload, uint16
 
 // True iff every axis has been seen and none is heartbeat-stale.
 static bool all_axis_heartbeats_ok() {
-  const uint64_t now = now_wall_us();
+  const uint64_t now = micros64();   // interval clock (item 14): heartbeat freshness
   for (uint8_t i = 0; i < NUM_AXES; ++i) {
     if (!axes[i].heartbeat_seen) return false;
     if (now - axes[i].last_heartbeat_us > CAN_HEARTBEAT_TIMEOUT_US) return false;
@@ -79,7 +79,7 @@ static uint8_t link_state() {
   if (!net_link_up()) return JbUdp::LinkState::INIT;
   const uint64_t last = atomic_read_u64(&g_last_jetson_hb_us);
   if (last == 0) return JbUdp::LinkState::INIT;
-  const uint64_t age = now_wall_us() - last;
+  const uint64_t age = micros64() - last;   // interval (item 14): g_last_jetson_hb_us is mono
   if (age > JETSON_LINK_TIMEOUT_US) return JbUdp::LinkState::LOST;
   return JbUdp::LinkState::UP;
 }
@@ -90,7 +90,7 @@ static uint8_t link_state() {
 static void send_heartbeat_t2j() {
   const CanStats cs = can_buses_stats();
   JbUdp::HeartbeatT2JPayload p{};
-  p.t_teensy_us = now_wall_us();
+  p.t_teensy_us = now_wall_us();   // wire-bound absolute timestamp — wall by contract (item 14)
   p.link_state  = link_state();
   // Two on-wire health slots, three buses (HANDOFF D4): the safety-critical
   // Jugglebot core bus takes slot 1, Ball Butler slot 2. The wire field NAMES
@@ -267,7 +267,7 @@ static void task_diag(void*) {
       // stale, '*'=active error/disarm, ' '=ok). The fresh=N/7 headline is the one-glance
       // "all responding" check. ODrive state codes: IDLE=1, CLOSED_LOOP=8.
       {
-        const uint64_t now = now_wall_us();
+        const uint64_t now = micros64();   // interval clock (item 14): diag heartbeat ages
         uint8_t fresh = 0;
         for (uint8_t i = 0; i < NUM_AXES; ++i)
           if (axes[i].heartbeat_seen && !axes[i].heartbeat_stale
@@ -299,7 +299,7 @@ static void task_diag(void*) {
       Serial.printf("[guard] mpc_active=%u guard_mode=%u output=%u sp_age_ms=%lu u0=%.4f\n",
                     (unsigned)fault_mpc_active(), (unsigned)fault_guard_mode(),
                     (unsigned)interp_output_enabled(),
-                    (unsigned long)((now_wall_us() - interp_last_setpoint_us()) / 1000ULL),
+                    (unsigned long)((micros64() - interp_last_setpoint_us()) / 1000ULL),   // interval (item 14): setpoint stamped mono
                     (double)interp_base_pos(0));
 
       // Per-Ball-Butler state line. Format mirrors [axes]:
@@ -311,7 +311,7 @@ static void task_diag(void*) {
       {
         BallButlerSnapshot bb{};
         snapshot_bb(bb_state, bb);
-        const uint64_t now = now_wall_us();
+        const uint64_t now = micros64();   // interval clock (item 14): diag heartbeat ages
         const char* state_names[] = {
             "BOOT", "IDLE", "TRACKING", "THROWING",
             "RELOADING", "CAL", "CHKBALL"};  // states 0..6

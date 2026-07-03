@@ -221,7 +221,7 @@ static std::vector<StowOut> run_stow_scenario(const StowScenario& sc) {
   if (!sc.cold_start) {
     for (uint8_t i = 0; i < NUM_LEGS; ++i) {     // full robot: all 6 present
       axes[i].heartbeat_seen = true;
-      axes[i].last_heartbeat_us = fake_wall_us();
+      axes[i].last_heartbeat_us = fake_mono_us();
     }
   }
   std::vector<StowOut> out;
@@ -233,13 +233,13 @@ static std::vector<StowOut> run_stow_scenario(const StowScenario& sc) {
     if (sc.cold_start && st.seen) {
       for (uint8_t i = 0; i < NUM_LEGS; ++i) {
         axes[i].heartbeat_seen = true;
-        axes[i].last_heartbeat_us = fake_wall_us();
+        axes[i].last_heartbeat_us = fake_mono_us();
       }
     }
     if (st.reboot_start) fault_notify_reboot_started();               // arm the latch
     if (st.stale) fake_advance(STALE_ADVANCE_US);                     // legs go stale (in-window)
     if (st.deadline_pass) fake_advance(REBOOT_WATCHDOG_SUPPRESS_US);  // cross the reboot deadline
-    if (st.fresh) for (uint8_t i = 0; i < NUM_LEGS; ++i) axes[i].last_heartbeat_us = fake_wall_us();
+    if (st.fresh) for (uint8_t i = 0; i < NUM_LEGS; ++i) axes[i].last_heartbeat_us = fake_mono_us();
     if (st.complete) interp_isr();   // legs already at STOW (pos_rev=0) → one tick sets stow_complete
     fault_step();
     out.push_back({s_fatal_can_error, s_stow_pending, s_stowing});
@@ -332,7 +332,7 @@ TEST_CASE("never command a dead bus + terminal IDLE on stow complete") {
   fake_set_clock(10'000'000, 10'000'000);
   for (uint8_t i = 0; i < NUM_LEGS; ++i) {
     axes[i].heartbeat_seen = true;
-    axes[i].last_heartbeat_us = fake_wall_us();
+    axes[i].last_heartbeat_us = fake_mono_us();
   }
   // Loss: detection arms the latch and gates output OFF — and the fault machine
   // emits NOTHING to the dead bus (no clears: legs are error-free).
@@ -346,7 +346,7 @@ TEST_CASE("never command a dead bus + terminal IDLE on stow complete") {
   CHECK(fault_state() == JbUdp::FaultState::CAN_BUS_DOWN);
 
   // Confirmed reconnect: the profiled stow begins, output gate re-enabled.
-  for (uint8_t i = 0; i < NUM_LEGS; ++i) axes[i].last_heartbeat_us = fake_wall_us();
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) axes[i].last_heartbeat_us = fake_mono_us();
   fault_step();
   CHECK(s_fatal_can_error == false);
   CHECK(s_stowing);
@@ -371,14 +371,14 @@ TEST_CASE("present-axis freshness: single-leg rig reconnect is NOT dead-locked")
   reset_all();
   fake_set_clock(10'000'000, 10'000'000);
   axes[0].heartbeat_seen = true;
-  axes[0].last_heartbeat_us = fake_wall_us();
+  axes[0].last_heartbeat_us = fake_mono_us();
   // Loss: leg 0 goes stale → detection fires even with five absent legs.
   fake_advance(3 * (uint64_t)CAN_HEARTBEAT_TIMEOUT_US);
   fault_step();
   CHECK(s_fatal_can_error);
   CHECK(s_stow_pending);
   // Reconnect: leg 0 fresh again → stow EXECUTES (the dead-lock fix).
-  axes[0].last_heartbeat_us = fake_wall_us();
+  axes[0].last_heartbeat_us = fake_mono_us();
   fault_step();
   CHECK(s_fatal_can_error == false);
   CHECK(s_stowing);
@@ -389,10 +389,10 @@ TEST_CASE("motor-feedback staleness suppresses output recoverably (not latched)"
   fake_set_clock(10'000'000, 10'000'000);
   fault_set_mpc_active(true);
   axes[0].heartbeat_seen = true;
-  axes[0].last_heartbeat_us = fake_wall_us();
+  axes[0].last_heartbeat_us = fake_mono_us();
   axes[0].pos_rev = 0.0f;
-  axes[0].pos_timestamp_us = fake_wall_us();
-  fake_set_udp_last_rx_us(fake_wall_us());
+  axes[0].pos_timestamp_us = fake_mono_us();
+  fake_set_udp_last_rx_us(fake_mono_us());
   // Latch a (zero) setpoint so interp_have_latched() is true (the guard's pre-arm
   // gate); u0=0 so there is no max-deviation trip.
   JbUdp::SetpointPayload sp;
@@ -404,14 +404,14 @@ TEST_CASE("motor-feedback staleness suppresses output recoverably (not latched)"
   // Feedback freezes: advance 0.2 s (> MOTOR_FB_STALENESS 0.15 s) without a new
   // encoder timestamp; keep the link + command fresh so nothing else trips.
   fake_advance(200'000);
-  axes[0].last_heartbeat_us = fake_wall_us();   // bus still up
-  fake_set_udp_last_rx_us(fake_wall_us());      // link still up
+  axes[0].last_heartbeat_us = fake_mono_us();   // bus still up
+  fake_set_udp_last_rx_us(fake_mono_us());      // link still up
   fault_step();
   CHECK(fault_state() == JbUdp::FaultState::MOTOR_FB_STALE);
   CHECK(interp_output_enabled() == false);      // output suppressed
 
   // Feedback returns → output re-enables (recoverable, NOT a latched E-STOP).
-  axes[0].pos_timestamp_us = fake_wall_us();
+  axes[0].pos_timestamp_us = fake_mono_us();
   fault_step();
   CHECK(fault_state() != JbUdp::FaultState::MOTOR_FB_STALE);
   CHECK(interp_output_enabled());
@@ -426,10 +426,10 @@ TEST_CASE("guard E-STOP / fb-stale are present-scoped and pre-arm-safe") {
     fake_set_clock(10'000'000, 10'000'000);
     fault_set_mpc_active(true);
     axes[0].heartbeat_seen = true;
-    axes[0].last_heartbeat_us = fake_wall_us();
+    axes[0].last_heartbeat_us = fake_mono_us();
     axes[0].pos_rev = 0.0f;
-    axes[0].pos_timestamp_us = fake_wall_us();
-    fake_set_udp_last_rx_us(fake_wall_us());
+    axes[0].pos_timestamp_us = fake_mono_us();
+    fake_set_udp_last_rx_us(fake_mono_us());
   };
   auto latch_u0 = [](float a0, float a1) {
     JbUdp::SetpointPayload sp; memset(&sp, 0, sizeof(sp));
@@ -455,11 +455,11 @@ TEST_CASE("guard E-STOP / fb-stale are present-scoped and pre-arm-safe") {
     fake_set_clock(10'000'000, 10'000'000);
     fault_set_mpc_active(false);      // not armed
     axes[0].heartbeat_seen = true;
-    axes[0].last_heartbeat_us = fake_wall_us();
+    axes[0].last_heartbeat_us = fake_mono_us();
     axes[0].pos_timestamp_us = 0;     // ancient feedback timestamp
     fake_advance(1'000'000);
-    axes[0].last_heartbeat_us = fake_wall_us();
-    fake_set_udp_last_rx_us(fake_wall_us());
+    axes[0].last_heartbeat_us = fake_mono_us();
+    fake_set_udp_last_rx_us(fake_mono_us());
     fault_step();
     CHECK(fault_state() != JbUdp::FaultState::MOTOR_FB_STALE);
   }
@@ -476,14 +476,14 @@ TEST_CASE("guard E-STOP LATCHES until an explicit operator clear") {
     fake_set_clock(10'000'000, 10'000'000);
     fault_set_mpc_active(true);
     axes[0].heartbeat_seen = true;
-    axes[0].last_heartbeat_us = fake_wall_us();
+    axes[0].last_heartbeat_us = fake_mono_us();
     axes[0].pos_rev = 0.0f;
-    axes[0].pos_timestamp_us = fake_wall_us();
-    fake_set_udp_last_rx_us(fake_wall_us());
+    axes[0].pos_timestamp_us = fake_mono_us();
+    fake_set_udp_last_rx_us(fake_mono_us());
     JbUdp::SetpointPayload sp; memset(&sp, 0, sizeof(sp));
     interp_on_setpoint(0, reinterpret_cast<const uint8_t*>(&sp), sizeof(sp));
     interp_isr();
-    fake_set_udp_last_rx_us(fake_wall_us());   // keep the link fresh after the tick
+    fake_set_udp_last_rx_us(fake_mono_us());   // keep the link fresh after the tick
   };
 
   SUBCASE("overspeed latches, PERSISTS after the condition clears, releases only on clear-errors") {
@@ -497,7 +497,7 @@ TEST_CASE("guard E-STOP LATCHES until an explicit operator clear") {
     // THE bug-catcher: clear the condition — pre-fix the guard reverts to ENABLED
     // and output re-enables the very next tick. The latch must hold.
     axes[0].vel_rps = 0.0f;
-    for (int k = 0; k < 5; ++k) { fake_set_udp_last_rx_us(fake_wall_us()); fault_step(); }
+    for (int k = 0; k < 5; ++k) { fake_set_udp_last_rx_us(fake_mono_us()); fault_step(); }
     CHECK(fault_guard_mode() == JbUdp::GuardMode::ESTOP);
     CHECK(fault_state() == JbUdp::FaultState::MOTOR_OVERSPEED);   // reason frozen at the trip
     CHECK(interp_output_enabled() == false);
@@ -527,13 +527,13 @@ TEST_CASE("guard E-STOP LATCHES until an explicit operator clear") {
     sp.u0[0] = 0.9f;                              // leg0 base diverges 0.9 > MAX_DEVIATION_REV
     interp_on_setpoint(1, reinterpret_cast<const uint8_t*>(&sp), sizeof(sp));
     interp_isr();
-    fake_set_udp_last_rx_us(fake_wall_us());
+    fake_set_udp_last_rx_us(fake_mono_us());
     fault_step();
     REQUIRE(fault_state() == JbUdp::FaultState::MAX_DEVIATION);
     REQUIRE(fault_guard_mode() == JbUdp::GuardMode::ESTOP);
     // Shrink the divergence (encoder catches up). Latch must hold.
     axes[0].pos_rev = 0.9f;
-    for (int k = 0; k < 3; ++k) { fake_set_udp_last_rx_us(fake_wall_us()); fault_step(); }
+    for (int k = 0; k < 3; ++k) { fake_set_udp_last_rx_us(fake_mono_us()); fault_step(); }
     CHECK(fault_guard_mode() == JbUdp::GuardMode::ESTOP);
     fault_notify_clear_errors();
     fault_step();
@@ -552,7 +552,7 @@ TEST_CASE("guard E-STOP LATCHES until an explicit operator clear") {
       axes[i].disarm_reason = ERR_UV;
       axes[i].axis_state = ST_IDLE;
     }
-    fake_set_udp_last_rx_us(fake_wall_us());
+    fake_set_udp_last_rx_us(fake_mono_us());
     fault_step();
     // The internal clear must NOT have released the guard E-STOP.
     CHECK(fault_guard_mode() == JbUdp::GuardMode::ESTOP);
@@ -568,7 +568,7 @@ TEST_CASE("reboot latch: a SPONTANEOUS CAN loss is UNAFFECTED (deferred-stow inv
   // arm the deferred stow exactly as before — the latch only touches reboot-armed silence.
   reset_all();
   fake_set_clock(10'000'000, 10'000'000);
-  for (uint8_t i = 0; i < NUM_LEGS; ++i) { axes[i].heartbeat_seen = true; axes[i].last_heartbeat_us = fake_wall_us(); }
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) { axes[i].heartbeat_seen = true; axes[i].last_heartbeat_us = fake_mono_us(); }
   // NO fault_notify_reboot_started().
   fake_advance(3 * (uint64_t)CAN_HEARTBEAT_TIMEOUT_US);
   fault_step();
@@ -581,13 +581,13 @@ TEST_CASE("reboot latch: suppresses in-window, releases on fresh-after-stale AND
   // (a) fresh-after-stale release — the ODrives came back.
   reset_all();
   fake_set_clock(10'000'000, 10'000'000);
-  for (uint8_t i = 0; i < NUM_LEGS; ++i) { axes[i].heartbeat_seen = true; axes[i].last_heartbeat_us = fake_wall_us(); }
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) { axes[i].heartbeat_seen = true; axes[i].last_heartbeat_us = fake_mono_us(); }
   fault_notify_reboot_started();                            // arm (legs fresh at arm time)
   fake_advance(CAN_HEARTBEAT_TIMEOUT_US + 500'000);         // 2.5 s: legs stale, < 6 s deadline
   fault_step();
   CHECK(fault_can_bus_down() == false);                    // SUPPRESSED — no false loss
   CHECK(fault_stow_pending() == false);                    // ...and no stow armed
-  for (uint8_t i = 0; i < NUM_LEGS; ++i) axes[i].last_heartbeat_us = fake_wall_us();  // legs return
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) axes[i].last_heartbeat_us = fake_mono_us();  // legs return
   fault_step();
   CHECK(fault_can_bus_down() == false);                    // released cleanly, no stow
   CHECK(fault_stow_pending() == false);
@@ -595,7 +595,7 @@ TEST_CASE("reboot latch: suppresses in-window, releases on fresh-after-stale AND
   // (b) deadline release — a reboot that never returns is still caught at the deadline.
   reset_all();
   fake_set_clock(10'000'000, 10'000'000);
-  for (uint8_t i = 0; i < NUM_LEGS; ++i) { axes[i].heartbeat_seen = true; axes[i].last_heartbeat_us = fake_wall_us(); }
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) { axes[i].heartbeat_seen = true; axes[i].last_heartbeat_us = fake_mono_us(); }
   fault_notify_reboot_started();
   fake_advance(CAN_HEARTBEAT_TIMEOUT_US + 500'000);         // 2.5 s: in-window → suppressed
   fault_step();
@@ -613,12 +613,80 @@ TEST_CASE("reboot latch: a latch armed while legs are STILL fresh cannot release
   // then confirm the latch is still suppressing when the silence finally arrives.
   reset_all();
   fake_set_clock(10'000'000, 10'000'000);
-  for (uint8_t i = 0; i < NUM_LEGS; ++i) { axes[i].heartbeat_seen = true; axes[i].last_heartbeat_us = fake_wall_us(); }
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) { axes[i].heartbeat_seen = true; axes[i].last_heartbeat_us = fake_mono_us(); }
   fault_notify_reboot_started();                            // arm (legs fresh)
   fault_step();                                             // legs still fresh → must NOT release
   fake_advance(CAN_HEARTBEAT_TIMEOUT_US + 500'000);         // now the reboot silence arrives (in-window)
   fault_step();
   CHECK(fault_can_bus_down() == false);                    // still suppressed (early release avoided)
+}
+
+// =============================================================================
+//  Item 14 — monotonic clock discipline (coverage gap 6)
+// =============================================================================
+//  THE proof the fix works: set_wall_anchor() STEPS now_wall_us() (NTP-style,
+//  forward OR backward, unbounded on re-acquisition after teensy_bridge_node was
+//  down). Every staleness/guard/stow interval now reads micros64() (the pure
+//  crystal a wall step never touches), so a wall STEP must be inert. The fake HAL
+//  exposes independent wall/mono via fake_set_clock(wall_us, mono_us); production
+//  stamps + reads all intervals on the mono clock, so stepping wall alone changes
+//  nothing. The positive control proves staleness STILL fires on the mono clock.
+TEST_CASE("wall step does not perturb staleness/guard/stow (item 14)") {
+  const uint64_t W0 = 2'000'000'000ULL;   // wall base (>> the 5 s step, no underflow)
+  const uint64_t M0 =    10'000'000ULL;   // mono base (independent of wall)
+
+  // Arm the healthy, streaming baseline: mpc active, all legs present+fresh, link
+  // fresh, a zero setpoint latched — everything stamped on the MONO clock (M0).
+  auto arm_fresh = [&]() {
+    reset_all();
+    fake_set_clock(W0, M0);
+    fault_set_mpc_active(true);
+    for (uint8_t i = 0; i < NUM_LEGS; ++i) {
+      axes[i].heartbeat_seen    = true;
+      axes[i].last_heartbeat_us = fake_mono_us();
+      axes[i].pos_rev           = 0.0f;
+      axes[i].pos_timestamp_us  = fake_mono_us();
+    }
+    fake_set_udp_last_rx_us(fake_mono_us());
+    JbUdp::SetpointPayload sp; memset(&sp, 0, sizeof(sp));
+    interp_on_setpoint(0, reinterpret_cast<const uint8_t*>(&sp), sizeof(sp));  // recv stamped micros64()
+    interp_isr();
+  };
+
+  arm_fresh();
+  fault_step();
+  const uint8_t base_state   = fault_state();
+  const uint8_t base_guard   = fault_guard_mode();
+  const bool    base_output  = interp_output_enabled();
+  const bool    base_pending = fault_stow_pending();
+  // The armed baseline is the healthy ENABLED / streaming state.
+  REQUIRE(base_state   == JbUdp::FaultState::NONE);
+  REQUIRE(base_guard   == JbUdp::GuardMode::ENABLED);
+  REQUIRE(base_output  == true);
+  REQUIRE(base_pending == false);
+
+  SUBCASE("5 s BACKWARD wall step (mono unchanged) is inert") {
+    fake_set_clock(W0 - 5'000'000ULL, M0);   // wall jumps back 5 s; mono frozen at M0
+    fault_step();
+    CHECK(fault_state()           == base_state);
+    CHECK(fault_guard_mode()      == base_guard);
+    CHECK(interp_output_enabled() == base_output);
+    CHECK(fault_stow_pending()    == base_pending);
+  }
+  SUBCASE("5 s FORWARD wall step (mono unchanged) is inert") {
+    fake_set_clock(W0 + 5'000'000ULL, M0);   // wall jumps forward 5 s; mono frozen at M0
+    fault_step();
+    CHECK(fault_state()           == base_state);
+    CHECK(fault_guard_mode()      == base_guard);
+    CHECK(interp_output_enabled() == base_output);
+    CHECK(fault_stow_pending()    == base_pending);
+  }
+  SUBCASE("positive control: a MONO advance past the timeout DOES trip CAN_BUS_DOWN") {
+    fake_advance(3 * (uint64_t)CAN_HEARTBEAT_TIMEOUT_US);   // both clocks move → real staleness on mono
+    fault_step();
+    CHECK(fault_can_bus_down());
+    CHECK(fault_state() == JbUdp::FaultState::CAN_BUS_DOWN);
+  }
 }
 
 // =============================================================================
