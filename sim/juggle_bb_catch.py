@@ -38,6 +38,16 @@ Keys (interactive ``--viewer``)
 codes with no shift distinction, so ``r`` and ``R`` collide — ``R`` is reserved for
 release.)
 
+The letter controls were checked against MuJoCo's built-in viewer shortcuts: on
+mujoco 3.2.3 the visualisation/render *flag* toggles are UI-only (``mjVISSTRING`` /
+``mjRNDSTRING`` expose no key shortcuts), so the nudge letters do not clash with
+them. MuJoCo's reserved *navigation* keys are Space (pause), Backspace (reset),
+the arrows (step), Tab (UI), Esc (free-camera), ``-`` / ``=`` (speed) and the
+digits 0-9 (geom/site groups) — the tool avoids those for its controls, though it
+intentionally shares Space (pause) / arrows (step) with the viewer's own handling
+for consistency with the other juggle sims. (Bindings can differ across MuJoCo
+versions — confirm on-screen.)
+
 Spawn visibility
 ----------------
 By default the ball is spawned at the trajectory's APEX (descending, well above the
@@ -64,6 +74,7 @@ import os
 import sys
 import time
 
+import mujoco
 import numpy as np
 
 _sim_dir = os.path.dirname(os.path.abspath(__file__))
@@ -97,6 +108,18 @@ _KEY_P, _KEY_R = 80, 82
 
 POS_STEP_MM = 20.0        # launch-position nudge per keypress
 VEL_STEP_MMS = 75.0       # velocity nudge per keypress (within the 50-100 mm/s band)
+
+# Default --viewer camera (a good three-quarter view of Jugglebot + the catch). Any
+# --cam-* CLI flag overrides its component; press C in the viewer to print a new angle.
+DEFAULT_VIEW_AZIMUTH = -53.0
+DEFAULT_VIEW_ELEVATION = -32.2
+DEFAULT_VIEW_DISTANCE = 3.817
+DEFAULT_VIEW_LOOKAT = (0.058, 0.0, 0.890)
+
+# Release-state preview (drawn in the viewer's user scene while idle, before release).
+BALL_R_M = 0.035          # ball radius (matches the MJCF ball geom)
+ARROW_SCALE_S = 0.12      # velocity arrow length = |v| * this (s) -> a visible arrow
+ARROW_WIDTH_M = 0.008     # velocity arrow shaft width
 
 
 def _preset_launch(catch_z_m: float, target_xy_mm=(0.0, 0.0)):
@@ -343,6 +366,35 @@ class BBCatchTool:
             self.plant.command_hand(slider0)
             self.plant.step(CONTROL_DT)
 
+    # ---- release-state preview (viewer only) -------------------------------
+    def _update_preview(self) -> None:
+        """Draw the current release state in the viewer's user scene: a translucent
+        ball at the launch point + an arrow along the initial velocity. Called each
+        idle frame so it updates LIVE as the operator nudges the launch position /
+        velocity, showing what the next R will throw."""
+        v = self.viewer
+        if v is None:
+            return
+        scn = v.user_scn
+        p0 = (self.launch_pos_mm / 1000.0).astype(float)
+        tip = (p0 + (self.vel_mms / 1000.0) * ARROW_SCALE_S).astype(float)
+        eye = np.eye(3).flatten()
+        mujoco.mjv_initGeom(
+            scn.geoms[0], mujoco.mjtGeom.mjGEOM_SPHERE,
+            np.array([BALL_R_M, 0.0, 0.0]), p0, eye,
+            np.array([0.95, 0.35, 0.35, 0.45], np.float32))          # translucent ball
+        mujoco.mjv_initGeom(
+            scn.geoms[1], mujoco.mjtGeom.mjGEOM_ARROW,
+            np.zeros(3), np.zeros(3), eye,
+            np.array([0.25, 0.6, 1.0, 0.9], np.float32))             # velocity arrow
+        mujoco.mjv_connector(
+            scn.geoms[1], mujoco.mjtGeom.mjGEOM_ARROW, ARROW_WIDTH_M, p0, tip)
+        scn.ngeom = 2
+
+    def _clear_preview(self) -> None:
+        if self.viewer is not None:
+            self.viewer.user_scn.ngeom = 0
+
     # ---- reporting ---------------------------------------------------------
     def _print_state(self) -> None:
         p, v = self.launch_pos_mm, self.vel_mms
@@ -396,6 +448,13 @@ def run(cfg: "BBCatchConfig | None" = None):
             viewer_handle = mujoco.viewer.launch_passive(
                 tool.plant.model, tool.plant.data, key_callback=tool.key_callback)
             tool.viewer = viewer_handle
+            # Start at a good three-quarter view (CLI --cam-* overrides each field).
+            cam = viewer_handle.cam
+            cam.azimuth = cfg.cam_azimuth if cfg.cam_azimuth is not None else DEFAULT_VIEW_AZIMUTH
+            cam.elevation = cfg.cam_elevation if cfg.cam_elevation is not None else DEFAULT_VIEW_ELEVATION
+            cam.distance = cfg.cam_distance if cfg.cam_distance is not None else DEFAULT_VIEW_DISTANCE
+            cam.lookat[:] = cfg.cam_lookat if cfg.cam_lookat is not None else DEFAULT_VIEW_LOOKAT
+            viewer_handle.sync()
         if cfg.record_path:
             tool._recorder = VideoRecorder(
                 tool.plant.model, tool.plant.data, cfg.record_path,
@@ -418,12 +477,14 @@ def run(cfg: "BBCatchConfig | None" = None):
         while viewer_handle.is_running():
             if tool._release_pending:
                 tool._release_pending = False
+                tool._clear_preview()               # hide the preview during the flight
                 res = tool.do_throw()
                 results.append(BBCatchTool.result_dict(res))
                 tool._print_result(res)
                 if viewer_handle.is_running():
                     print("[bb_catch] holding result — adjust and press R for the next throw.")
             else:
+                tool._update_preview()              # live release-state ball + velocity arrow
                 viewer_handle.sync()
                 time.sleep(0.02)
         return results
