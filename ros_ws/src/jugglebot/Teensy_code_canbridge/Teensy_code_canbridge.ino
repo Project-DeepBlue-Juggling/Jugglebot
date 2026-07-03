@@ -247,11 +247,11 @@ static void task_diag(void*) {
     if (on) {
       profiling_step();          // emit the 1 Hz PROFILE frame on the LED-on edge
       const UdpStats s = udp_link_stats();
-      Serial.printf("[diag] link=%u fault=%u rx=%lu tx=%lu crc_err=%lu seq_gaps=%lu synced=%d heap=%u\n",
+      Serial.printf("[diag] link=%u fault=%u rx=%lu tx=%lu crc_err=%lu seq_gaps=%lu drain_cap=%lu synced=%d heap=%u\n",
                     link_state(), fault_state(), (unsigned long)s.rx_frames,
                     (unsigned long)s.tx_frames, (unsigned long)s.crc_errors,
-                    (unsigned long)s.seq_gaps, (int)time_synced(),
-                    (unsigned)xPortGetFreeHeapSize());
+                    (unsigned long)s.seq_gaps, (unsigned long)s.drain_cap_hits,
+                    (int)time_synced(), (unsigned)xPortGetFreeHeapSize());
       const CanRxHealth ch = can_buses_rx_health();
       print_bus_health("jugglebot", ch.jugglebot);
       print_bus_health("bb", ch.bb);

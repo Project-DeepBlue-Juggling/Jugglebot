@@ -112,11 +112,34 @@ profiling.h / .cpp          per-task CPU, bus util, RTT, deadline-miss → PROFI
 
 ## lwIP threading (hardware-validation item)
 
-lwIP is not reentrant. `udp_link.cpp` serialises all QNEthernet calls with a
-recursive mutex, with RX in the `net` task and TX callable from any task. The
-robust alternative — a single net task owning all socket I/O with other tasks
-enqueuing TX frames — is noted in the handoff under "Needs hardware validation".
-Confirm the mutex approach holds under load on the bench before relying on it.
+lwIP is not reentrant (QNEthernet builds it `NO_SYS=1` — no internal locking).
+`udp_link.cpp` serialises **every** QNEthernet call with a recursive mutex
+(`NetLock`): `Ethernet.loop()` (the lwIP pump, invoked from `udp_link_service()`),
+socket bind, and all socket RX (`parsePacket`/`read`) and TX (`beginPacket`/
+`write`/`endPacket`). RX runs in the `net` task; TX is callable from any task.
+The pump is taken in its own short `NetLock` scope, separate from the drain, so
+the lock releases between pump and drain and a pending prio-3 TX can interleave;
+decode + dispatch always run **unlocked** (the `NetLock` scopes wrap QNEthernet
+calls only, never the handler chain / `interp_on_setpoint`'s IRQ-off publish).
+
+> **History:** before Tier-2 item 15, `Ethernet.loop()` (and `linkState()`) ran
+> *outside* the lock — a real concurrency hazard, since the prio-4 `net` task
+> could pump lwIP while a prio-3 task was mid-`send_to()` (holding `NetLock`),
+> both walking the same pbuf pool / UDP PCB. That pump call is now under the lock.
+
+RX is bounded per wake by `UDP_RX_DRAIN_BUDGET` (8 frames per socket, per
+`udp_link_service()` call — mirrors `can_buses.cpp`'s `CAN_RX_DRAIN_BUDGET`) so a
+UDP flood cannot spin the `net` task unboundedly and starve the fault machine /
+homing / diag tasks. A budget-bound drain with a frame still queued increments
+`UdpStats::drain_cap_hits` (surfaced on the `[diag]` serial line as `drain_cap=`);
+the backlog drains on the next tick, it is not dropped.
+
+The robust alternative — a single net task owning all socket I/O with other
+tasks enqueuing TX frames — is noted in the handoff under "Needs hardware
+validation". Confirm the mutex + drain-budget approach holds under load on the
+bench before relying on it (the concurrency behaviour itself is an
+on-hardware-replay gap — the native harness validates lock *coverage* and the
+drain *budget*, not true preemptive reentrancy).
 
 ## What to verify on the bench (per phase)
 

@@ -42,7 +42,7 @@ static uint16_t s_seq_stream_tx = 0;
 static uint16_t s_seq_rpc_tx = 0;
 static bool     s_have_last_dn_seq = false;
 static uint16_t s_last_dn_seq = 0;
-static UdpStats s_stats = {0, 0, 0, 0};
+static UdpStats s_stats = {0, 0, 0, 0, 0};
 static volatile uint32_t s_last_rtt_us = 0;
 static volatile uint32_t s_rtt_jitter_us = 0;
 static volatile uint64_t s_last_rx_us = 0;
@@ -50,6 +50,17 @@ static volatile uint64_t s_last_rx_us = 0;
 // RX scratch (sized to the max frame; one buffer, RX is single-task).
 static uint8_t s_rx_buf[JbUdp::MAX_FRAME];
 static uint8_t s_tx_buf[JbUdp::MAX_FRAME];
+
+// Per-socket, per-wake RX drain budget (mirrors can_buses.cpp CAN_RX_DRAIN_BUDGET).
+// Bounds how many frames a single udp_link_service() may pop+dispatch from ONE
+// socket before yielding. Without it, drain_socket's unbounded loop lets task_net
+// (PRIO_UDP_RX=4) spin under a UDP flood — each iteration dispatching handlers
+// inline (incl. interp_on_setpoint's PRIMASK IRQ-off publish) — starving the
+// prio-3 fault machine, prio-2 homing, and prio-1 diag. The budget also bounds the
+// number of interp_on_setpoint IRQ-off windows opened per wake. Overflow (budget
+// hit with a frame still queued) is counted in s_stats.drain_cap_hits and the
+// backlog is drained on the next service() tick, not dropped.
+static constexpr uint8_t UDP_RX_DRAIN_BUDGET = 8;
 
 void udp_link_init() {
   if (!s_net_mtx) s_net_mtx = xSemaphoreCreateRecursiveMutex();
@@ -68,19 +79,25 @@ static void track_downlink_seq(uint16_t seq) {
 }
 
 // Drain one socket; dispatch valid frames. `is_rpc` selects the channel.
+// Bounded to UDP_RX_DRAIN_BUDGET frames per call so a UDP flood can't spin task_net
+// unboundedly (see the budget comment above). The QNEthernet RX (parsePacket/read)
+// stays inside a TIGHT NetLock scope; decode + dispatch run UNLOCKED below — we do
+// NOT hold NetLock across the handler chain (interp_on_setpoint's PRIMASK IRQ-off
+// publish, etc.), keeping the net critical section to QNEthernet calls only.
 static void drain_socket(EthernetUDP& sock, bool is_rpc) {
-  for (;;) {
-    int n;
+  uint8_t n = 0;
+  for (; n < UDP_RX_DRAIN_BUDGET; ++n) {
+    int len;
     {
       NetLock lk;
-      n = sock.parsePacket();
-      if (n <= 0) return;
-      if (n > (int)sizeof(s_rx_buf)) { sock.read((uint8_t*)nullptr, 0); s_stats.crc_errors++; continue; }
-      sock.read(s_rx_buf, n);
+      len = sock.parsePacket();
+      if (len <= 0) break;   // socket drained (empty-exit) → n < budget, no cap hit
+      if (len > (int)sizeof(s_rx_buf)) { sock.read((uint8_t*)nullptr, 0); s_stats.crc_errors++; continue; }
+      sock.read(s_rx_buf, len);
     }
     JbUdp::Header hdr;
     const uint8_t* payload = nullptr;
-    if (!JbUdp::decode_frame(s_rx_buf, (uint16_t)n, &hdr, &payload)) {
+    if (!JbUdp::decode_frame(s_rx_buf, (uint16_t)len, &hdr, &payload)) {
       s_stats.crc_errors++;
       continue;
     }
@@ -109,17 +126,37 @@ static void drain_socket(EthernetUDP& sock, bool is_rpc) {
         {
           NetLock lk;
           sock.beginPacket(sock.remoteIP(), sock.remotePort());
-          sock.write(s_rx_buf, n);
+          sock.write(s_rx_buf, len);
           sock.endPacket();
           s_stats.tx_frames++;
         }
         break;
     }
   }
+  // Budget-bound exit: the loop ran the full budget without an empty-exit break, so
+  // a burst may still be queued. Count it and drain the remainder on the next tick
+  // (not dropped). We deliberately do NOT parsePacket() again to confirm a pending
+  // frame — that call would pop and DISCARD it. Mirrors CAN_RX_DRAIN_BUDGET's
+  // cap_hits; benign over-count by one only in the exact-multiple-then-empty case.
+  if (n == UDP_RX_DRAIN_BUDGET) s_stats.drain_cap_hits++;
 }
 
 void udp_link_service() {
-  net_ethernet_service();            // pump lwIP (RX/timeouts)
+  // Pump lwIP UNDER NetLock. QNEthernet's lwIP is NO_SYS=1 — non-reentrant, no
+  // internal locking — yet Ethernet.loop() walks the SAME pbuf pool / UDP PCB /
+  // ENET rings that send_to() touches under NetLock. task_net (PRIO_UDP_RX=4)
+  // preempts the prio-3 TX tasks, so task_telem could be mid-send_to() (holding
+  // NetLock) when this pump runs; without the lock here, that races the pool →
+  // pbuf/heap corruption or a hardfault. Own TIGHT scope, SEPARATE from the two
+  // drain_socket() calls, so the lock releases between pump and drain and a pending
+  // prio-3 TX can interleave. NetLock is recursive → drain_socket's inner take nests.
+  //
+  // Control-system note: the 500 Hz interp is an IntervalTimer NVIC ISR at a hardware
+  // priority ABOVE the FreeRTOS syscall ceiling and makes NO FreeRTOS calls; its CAN
+  // TX is FlexCAN (not UDP/NetLock). So this longer net critical section is preempted
+  // THROUGH by the interp with zero jitter impact — keep NetLock scopes tight
+  // (QNEthernet calls only), never across dispatch.
+  { NetLock lk; net_ethernet_service(); }   // pump lwIP (RX/timeouts) under the lock
   drain_socket(s_stream, /*is_rpc=*/false);
   drain_socket(s_rpc,    /*is_rpc=*/true);
 }

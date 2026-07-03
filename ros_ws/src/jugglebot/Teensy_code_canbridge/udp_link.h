@@ -48,10 +48,11 @@ bool udp_send_rpc(uint8_t msg_type, const uint8_t* payload, uint16_t len);
 
 // ── Stats (for the profiling frame) ───────────────────────────────────────────
 struct UdpStats {
-  uint32_t rx_frames;   // valid frames received
-  uint32_t tx_frames;   // frames transmitted
-  uint32_t crc_errors;  // frames dropped on CRC/magic/version/length
-  uint32_t seq_gaps;    // detected downlink sequence discontinuities
+  uint32_t rx_frames;      // valid frames received
+  uint32_t tx_frames;      // frames transmitted
+  uint32_t crc_errors;     // frames dropped on CRC/magic/version/length
+  uint32_t seq_gaps;       // detected downlink sequence discontinuities
+  uint32_t drain_cap_hits; // RX drain hit UDP_RX_DRAIN_BUDGET with a frame still queued
 };
 UdpStats udp_link_stats();
 

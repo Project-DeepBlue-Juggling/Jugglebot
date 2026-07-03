@@ -115,6 +115,17 @@ _BINARIES = {
         NATIVE_DIR / "test_udp_framing.cpp",
         [],
     ),
+    # Tier-2 [15]: EXECUTE udp_link.cpp's NetLock coverage + RX drain budget. The
+    # fake QNEthernet + recursive-mutex shims (hal_shims/QNEthernet.h,
+    # arduino_freertos.h, net_lock_probe.h) let it assert that Ethernet.loop() and
+    # every socket call run under NetLock, and that drain_socket is bounded by
+    # UDP_RX_DRAIN_BUDGET. #includes udp_link.cpp (reaches its file-statics); the two
+    # non-inline externals (micros64/net_ethernet_service) are stubbed in the driver,
+    # so no linked objects.
+    "test_udp_link": (
+        NATIVE_DIR / "test_udp_link.cpp",
+        [],
+    ),
     # Fable-5 [14] / gap 3: EXECUTE rpc.cpp dispatch()/send_axis_frame() — the
     # (method,axis) enforcement point + gate-basis routing. #includes rpc.cpp and
     # links the standard triple; the leg/hand/relay/version handlers are stubbed

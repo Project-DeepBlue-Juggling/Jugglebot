@@ -172,6 +172,22 @@ def test_native_udp_framing_binary_passes(binaries):
         f"the expected behaviour:\n{r.stdout}\n{r.stderr}")
 
 
+def test_native_udp_link_binary_passes(binaries):
+    """The compiled udp_link.cpp passes every assertion for Tier-2 hardening [15]:
+    (a) LOCK COVERAGE — the fake QNEthernet asserts Ethernet.loop() (the lwIP pump)
+    AND every socket TX/RX runs under NetLock; driving udp_link_service()+send trips
+    zero violations (removing the pump's NetLock wrap makes it > 0 — the regression
+    witness for the NO_SYS=1 non-reentrancy hazard); (b) DRAIN BUDGET — drain_socket
+    is bounded by UDP_RX_DRAIN_BUDGET(=8): 20 staged packets drain exactly 8/wake,
+    drain_cap_hits increments, and the backlog survives to the next wake; (c) at
+    <= 1 frame/wake drain_cap_hits stays 0. SCOPE: lock COVERAGE + the drain budget,
+    NOT true preemptive reentrancy (an on-hardware-replay gap — see native/README.md)."""
+    r = _run(binaries["test_udp_link"])
+    assert r.returncode == 0, (
+        "native test_udp_link FAILED — udp_link.cpp diverged from the NetLock-coverage "
+        f"/ RX drain-budget contract (Tier-2 [15]):\n{r.stdout}\n{r.stderr}")
+
+
 def test_native_rpc_dispatch_binary_passes(binaries):
     """The compiled rpc.cpp dispatch()/send_axis_frame() passes every assertion: the
     (method,axis) enforcement point (hand-axis-6 allow-table, leg-axis bounds), the
