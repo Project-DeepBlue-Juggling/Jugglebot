@@ -466,6 +466,101 @@ TEST_CASE("guard E-STOP / fb-stale are present-scoped and pre-arm-safe") {
 }
 
 // =============================================================================
+//  Guard E-STOP latch (Fable-5 [13]) — motor_guard sticky-self.mode semantics
+// =============================================================================
+TEST_CASE("guard E-STOP LATCHES until an explicit operator clear") {
+  // Arm the guard: mpc_active, leg0 present+fresh, link fresh, a latched setpoint
+  // (so interp_have_latched() is true for the MAX_DEVIATION path).
+  auto arm = []() {
+    reset_all();
+    fake_set_clock(10'000'000, 10'000'000);
+    fault_set_mpc_active(true);
+    axes[0].heartbeat_seen = true;
+    axes[0].last_heartbeat_us = fake_wall_us();
+    axes[0].pos_rev = 0.0f;
+    axes[0].pos_timestamp_us = fake_wall_us();
+    fake_set_udp_last_rx_us(fake_wall_us());
+    JbUdp::SetpointPayload sp; memset(&sp, 0, sizeof(sp));
+    interp_on_setpoint(0, reinterpret_cast<const uint8_t*>(&sp), sizeof(sp));
+    interp_isr();
+    fake_set_udp_last_rx_us(fake_wall_us());   // keep the link fresh after the tick
+  };
+
+  SUBCASE("overspeed latches, PERSISTS after the condition clears, releases only on clear-errors") {
+    arm();
+    axes[0].vel_rps = MAX_MOTOR_VEL_RPS + 1.0f;   // overspeed
+    fault_step();
+    CHECK(fault_guard_mode() == JbUdp::GuardMode::ESTOP);
+    CHECK(fault_state() == JbUdp::FaultState::MOTOR_OVERSPEED);
+    CHECK(interp_output_enabled() == false);
+
+    // THE bug-catcher: clear the condition — pre-fix the guard reverts to ENABLED
+    // and output re-enables the very next tick. The latch must hold.
+    axes[0].vel_rps = 0.0f;
+    for (int k = 0; k < 5; ++k) { fake_set_udp_last_rx_us(fake_wall_us()); fault_step(); }
+    CHECK(fault_guard_mode() == JbUdp::GuardMode::ESTOP);
+    CHECK(fault_state() == JbUdp::FaultState::MOTOR_OVERSPEED);   // reason frozen at the trip
+    CHECK(interp_output_enabled() == false);
+
+    // Operator clear releases it → clean re-enable (condition truly gone).
+    fault_notify_clear_errors();
+    fault_step();
+    CHECK(fault_guard_mode() != JbUdp::GuardMode::ESTOP);
+    CHECK(interp_output_enabled() == true);
+  }
+
+  SUBCASE("cannot clear THROUGH a live condition (re-latches on the same step)") {
+    arm();
+    axes[0].vel_rps = MAX_MOTOR_VEL_RPS + 1.0f;
+    fault_step();
+    REQUIRE(fault_guard_mode() == JbUdp::GuardMode::ESTOP);
+    // Clear while the condition is STILL live → re-trips + re-latches immediately.
+    fault_notify_clear_errors();
+    fault_step();
+    CHECK(fault_guard_mode() == JbUdp::GuardMode::ESTOP);
+    CHECK(interp_output_enabled() == false);
+  }
+
+  SUBCASE("MAX_DEVIATION latches + persists after the divergence shrinks") {
+    arm();
+    JbUdp::SetpointPayload sp; memset(&sp, 0, sizeof(sp));
+    sp.u0[0] = 0.9f;                              // leg0 base diverges 0.9 > MAX_DEVIATION_REV
+    interp_on_setpoint(1, reinterpret_cast<const uint8_t*>(&sp), sizeof(sp));
+    interp_isr();
+    fake_set_udp_last_rx_us(fake_wall_us());
+    fault_step();
+    REQUIRE(fault_state() == JbUdp::FaultState::MAX_DEVIATION);
+    REQUIRE(fault_guard_mode() == JbUdp::GuardMode::ESTOP);
+    // Shrink the divergence (encoder catches up). Latch must hold.
+    axes[0].pos_rev = 0.9f;
+    for (int k = 0; k < 3; ++k) { fake_set_udp_last_rx_us(fake_wall_us()); fault_step(); }
+    CHECK(fault_guard_mode() == JbUdp::GuardMode::ESTOP);
+    fault_notify_clear_errors();
+    fault_step();
+    CHECK(fault_guard_mode() != JbUdp::GuardMode::ESTOP);
+  }
+
+  SUBCASE("an INTERNAL clear (soft-reset/UV auto-retry) does NOT release the latch") {
+    arm();
+    axes[0].vel_rps = MAX_MOTOR_VEL_RPS + 1.0f;
+    fault_step();
+    REQUIRE(fault_guard_mode() == JbUdp::GuardMode::ESTOP);
+    axes[0].vel_rps = 0.0f;                       // condition gone
+    // Drive a UV-only disarm on all legs @IDLE → evaluate_errors' soft-reset/UV path
+    // calls clear_errors_can()→clear_error_flags() (NOT fault_notify_clear_errors).
+    for (uint8_t i = 0; i < NUM_LEGS; ++i) {
+      axes[i].disarm_reason = ERR_UV;
+      axes[i].axis_state = ST_IDLE;
+    }
+    fake_set_udp_last_rx_us(fake_wall_us());
+    fault_step();
+    // The internal clear must NOT have released the guard E-STOP.
+    CHECK(fault_guard_mode() == JbUdp::GuardMode::ESTOP);
+    CHECK(interp_output_enabled() == false);
+  }
+}
+
+// =============================================================================
 //  Phase 6 reboot-suppression latch — explicit readable safety contract
 // =============================================================================
 TEST_CASE("reboot latch: a SPONTANEOUS CAN loss is UNAFFECTED (deferred-stow inversion preserved)") {

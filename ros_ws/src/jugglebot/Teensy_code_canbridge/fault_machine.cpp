@@ -49,6 +49,20 @@ static volatile bool s_mpc_active = false;
 static uint8_t s_guard_mode = JbUdp::GuardMode::DISABLED;
 static uint8_t s_fault_state = JbUdp::FaultState::NONE;
 
+// ── Guard E-STOP latch (Fable-5 [13]; motor_guard sticky-self.mode semantics) ──
+// The three guard E-STOP conditions (MOTOR_OVERSPEED / MPC_STALE / MAX_DEVIATION)
+// LATCH once tripped: guard_mode stays ESTOP and 500 Hz output stays gated off until
+// an EXPLICIT operator CLEAR_ERRORS (fault_notify_clear_errors) — mirroring
+// motor_guard._trigger_estop's sticky self.mode (motor_guard.py:1137-1142), whose
+// only exit is an operator disable/enable. PRE-LATCH these auto-cleared the instant
+// the transient cleared (vel dropped, a fresh setpoint arrived, deviation shrank) and
+// silently re-enabled leg streaming with NO operator ack. Set by the fault task,
+// cleared by the RPC task → volatile (matches s_mpc_active / s_reboot_in_progress).
+// First-trigger-wins freezes the reported reason. fb_stale is deliberately EXCLUDED
+// (motor-feedback staleness is recoverable, not a latched E-STOP).
+static volatile bool s_estop_latched = false;
+static uint8_t       s_estop_state = JbUdp::FaultState::NONE;  // reason frozen at latch
+
 // ── Reboot-in-progress watchdog-suppression latch (Phase 6) ──────────────────
 // Armed ONLY by fault_notify_reboot_started() (the REBOOT_ODRIVES RPC), so a
 // spontaneous CAN loss never sets it and the deferred-stow inversion is preserved.
@@ -111,8 +125,17 @@ static bool clear_errors_can() {
   return true;
 }
 
-// External CLEAR_ERRORS RPC resets the auto-retry budget (mirrors the operator path).
-void fault_notify_clear_errors() { clear_error_flags(); }
+// External CLEAR_ERRORS RPC resets the auto-retry budget (mirrors the operator path)
+// AND is the SOLE release path for the guard E-STOP latch (Fable-5 [13]). The latch
+// reset must live HERE, not in clear_error_flags() — clear_error_flags is also called
+// by the internal soft-reset / UV-recovery auto-retry (clear_errors_can), and letting
+// those internal paths release the guard E-STOP would defeat the latch (e.g. an ODrive
+// UV bounce auto-clearing a motor-overspeed E-STOP with no operator ack).
+void fault_notify_clear_errors() {
+  clear_error_flags();
+  s_estop_latched = false;
+  s_estop_state = JbUdp::FaultState::NONE;
+}
 
 // External REBOOT_ODRIVES RPC arms the bounded watchdog-suppression latch (Phase 6):
 // the deliberate reboot silence must not be read as a CAN loss. Bounded by
@@ -306,16 +329,24 @@ static void evaluate_guard() {
     }
   }
 
+  // Latch the guard E-STOP (Fable-5 [13]): once any guard condition trips, hold it
+  // (sticky guard_mode==ESTOP + output gated off) until fault_notify_clear_errors().
+  // The `&& !s_estop_latched` freezes the reported reason at the FIRST trip (mirrors
+  // motor_guard._check_safety's early-return pinning self._fault_state). fb_stale is
+  // NOT latched — it is deliberately recoverable.
+  if (estop && !s_estop_latched) { s_estop_latched = true; s_estop_state = state; }
+
   // Fault-state reporting priority (highest-severity active condition wins).
   if (s_fatal_can_error)        s_fault_state = JbUdp::FaultState::CAN_BUS_DOWN;
   else if (s_fatal_error)       s_fault_state = JbUdp::FaultState::ODRIVE_FATAL;
-  else if (estop)               s_fault_state = state;
+  else if (s_estop_latched)     s_fault_state = s_estop_state;
   else if (fb_stale)            s_fault_state = JbUdp::FaultState::MOTOR_FB_STALE;
   else if (!jetson_link_up())   s_fault_state = JbUdp::FaultState::LINK_LOST;
   else                          s_fault_state = JbUdp::FaultState::NONE;
 
-  // Guard mode.
-  if (estop || s_fatal_error)                       s_guard_mode = JbUdp::GuardMode::ESTOP;
+  // Guard mode. The latched E-STOP holds ESTOP across ticks (not the instantaneous
+  // `estop`) until an operator clear.
+  if (s_estop_latched || s_fatal_error)             s_guard_mode = JbUdp::GuardMode::ESTOP;
   else if (s_mpc_active && jetson_link_up() && !s_fatal_can_error)
                                                     s_guard_mode = JbUdp::GuardMode::ENABLED;
   else                                              s_guard_mode = JbUdp::GuardMode::DISABLED;
@@ -328,7 +359,7 @@ static void evaluate_guard() {
     allow = true;   // stow descent integrates its own position; not encoder-gated
   } else {
     allow = (s_guard_mode == JbUdp::GuardMode::ENABLED) && !s_fatal_can_error
-            && !s_fatal_error && !estop && !fb_stale;
+            && !s_fatal_error && !s_estop_latched && !fb_stale;
   }
   interp_set_output_enabled(allow);
 }
@@ -337,6 +368,8 @@ void fault_machine_init() {
   s_fatal_error = s_undervoltage_error = s_fatal_can_error = false;
   s_soft_reset_attempts = 0;
   s_stow_pending = s_stowing = s_first_leg_hb_seen = false;
+  s_estop_latched = false;
+  s_estop_state = JbUdp::FaultState::NONE;
   s_reboot_in_progress = s_reboot_saw_stale = false;
   atomic_write_u64(&s_reboot_deadline_us, 0);
   s_guard_mode = JbUdp::GuardMode::DISABLED;
