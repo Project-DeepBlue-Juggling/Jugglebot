@@ -58,9 +58,16 @@ primary lateral-aiming mechanism for **both** the throw (aim) and the catch
 
 ### Decisions already taken (do not relitigate without the operator)
 
-- **Keep contact-physics fidelity** throughout — no kinematic / controlled-
-  velocity throw shortcut. Make tilt-aimed throws + catches work under *real*
-  contact.
+- **Contact-physics fidelity** was the original intent — but this was **REVERSED
+  (operator-approved, 2026-07-01)**: Rung 2b's MAKE uses a **kinematic velocity
+  release** (`Ball.ballistic_release`) after the contact-detach knife-edge
+  (dLanding/dOrigin ~2.7) was shown to make the throw→catch→throw loop unclosable
+  under real contact (see the Rung-2b Status block + `logbook/2026-07-01-rung2b-
+  kinematic-release.md`). The kinematic release's soundness — and whether a
+  clearance-margin detach could restore the contact-physical throw — is a **P4
+  question flagged by the 2026-07-03 review** (`logbook/2026-07-03-motion-quality-
+  review.md`). Do not read this bullet as still-binding; the catch remains
+  contact-physical.
 - **Tilt is the engine** (Rung 0 done); modest, ~constant through a throw, re-aimed
   cycle-to-cycle.
 - **Capability-ladder bring-up order** (catch → toss → self-catch → two-ball),
@@ -312,6 +319,18 @@ fully contact-physical. See logbook `2026-07-01-rung2b-kinematic-release.md`.
 ---
 
 ### Phase 4 / Rung 3 — Two-ball (columns → oval, BB-seeded)
+
+**BLOCKED pending the motion-quality course-correction (2026-07-03).** A whole-arc
+review found the single-ball toss/catch is **not smooth**: the self-catch MAKE cycle
+uses ~1026 mm of cup path/cycle, slams the stroke ceiling every cycle, is ~45%
+disengaged, and receives the ball on a RISING cup ~145 mm above `catch_z` (the
+documented co-moving seat never executes — the `kin` seat chases the ascending ball
+into the ceiling). Root cause: the harnesses stitch hand-rolled quintic phases instead
+of using the codebase's own whole-cycle `plan_cup_cycle`. Rung 3 cannot compose a
+second ball onto a cycle with no stroke margin and velocity-step commands hardware
+can't inherit. **Fix first: P0 motion-quality metrics (landed — `tools/probes/
+juggle_motion_quality.py`) → P2 re-unify the cycle on `plan_cup_cycle` → regenerate the
+MAKE gate.** See `logbook/2026-07-03-motion-quality-review.md`.
 
 **Goal.** Sustained 2-ball — compose the proven catch + throw primitives. BB seeds
 the pattern (tilt-to-receive); bring up **columns first** (lowest lateral demand,
