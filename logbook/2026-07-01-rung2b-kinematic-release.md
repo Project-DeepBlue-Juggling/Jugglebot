@@ -28,6 +28,20 @@ tags:
 
 # Rung-2b kinematic-release — the make-or-break MAKE
 
+> **Follow-up correction (2026-07-03).** The **loop closure is real** (12/12 × 6
+> seeds), but the *catch mechanism* described below ("co-moving descent seat …
+> tracks the ball descent then arrests to a co-moving stop") does **not execute as
+> written**. Instrumentation (`tools/probes/juggle_motion_quality.py`) shows the
+> ball seats **~145 mm ABOVE catch_z on a cup pegged at the stroke ceiling, moving
+> UP at contact** — the kinematic seat overshoots to the ceiling to build the
+> downward runway a −2.7 m/s arrival needs, then the ball falls onto the parked
+> cup. The MAKE is a **static-cup catch** produced by an unintended controller; the
+> "co-moving seat" is aspirational. The motion is not smooth (~1026 mm cup
+> path/cycle, ceiling slammed every cycle). See `2026-07-03-motion-quality-review.md`
+> and `2026-07-03-p2-selfcatch-reunification-tension.md` (which found the slam IS
+> the seat's runway, so smoothing the catch requires co-designing a gentler throw —
+> a larger rung). The loop-gain numbers stand; the seat narrative is corrected.
+
 ## Summary
 
 The Rung-2b single-ball throw→catch→throw self-catch loop — the plan's designated

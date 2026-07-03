@@ -328,9 +328,19 @@ documented co-moving seat never executes — the `kin` seat chases the ascending
 into the ceiling). Root cause: the harnesses stitch hand-rolled quintic phases instead
 of using the codebase's own whole-cycle `plan_cup_cycle`. Rung 3 cannot compose a
 second ball onto a cycle with no stroke margin and velocity-step commands hardware
-can't inherit. **Fix first: P0 motion-quality metrics (landed — `tools/probes/
-juggle_motion_quality.py`) → P2 re-unify the cycle on `plan_cup_cycle` → regenerate the
-MAKE gate.** See `logbook/2026-07-03-motion-quality-review.md`.
+can't inherit. P0 motion-quality metrics landed (`tools/probes/juggle_motion_quality.py`).
+**P2 (re-unify on `plan_cup_cycle`) was ATTEMPTED and BLOCKED (2026-07-03, ~35 probes,
+no code landed, MAKE intact):** the stitch over-travel IS removable, but the catch's
+seat of the MAKE's fast ~-2.7 m/s arrival intrinsically needs downward runway, which
+the current catch obtains ONLY by overshooting to the ceiling — **the slam is the
+seat's runway.** Remove it → the ball punches through (0–2/12). Every restructuring
+that cleans the motion, or even just lowers the apex, drops the MAKE to 0/12 (a
+whole-cycle-tuned fragile equilibrium). **The real fix is a co-design rung, not a
+re-plumb: a gentler throw whose apex sits BELOW the ceiling + a closed-loop
+apex-rendezvous catch (cup pre-rises to apex+seat-depth decelerating to ~0, then rides
+the ball down and arrests via a momentum budget), re-tuned to ≥10/12 from scratch.**
+See `logbook/2026-07-03-motion-quality-review.md` and
+`2026-07-03-p2-selfcatch-reunification-tension.md`.
 
 **Goal.** Sustained 2-ball — compose the proven catch + throw primitives. BB seeds
 the pattern (tilt-to-receive); bring up **columns first** (lowest lateral demand,
