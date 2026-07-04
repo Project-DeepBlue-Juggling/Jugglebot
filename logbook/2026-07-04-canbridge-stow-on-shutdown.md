@@ -14,7 +14,7 @@ files_changed:
   - tests/ros/test_teensy_bridge_node_read.py
   - tests/ros/test_teensy_bridge_node_shutdown_stow.py
 commits:
-  - <pending>
+  - 25557e2
 tags: [canbridge, shutdown, stow, safety, migration-parity, teensy-bridge]
 ---
 
