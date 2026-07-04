@@ -100,7 +100,7 @@ namespace FaultState {
   constexpr uint8_t MOTOR_OVERSPEED = 3u;  // A leg exceeded the overspeed limit
   constexpr uint8_t MAX_DEVIATION = 4u;  // Commanded pos diverged too far from encoder
   constexpr uint8_t ODRIVE_FATAL = 5u;  // Active ODrive error / disarm-while-closed-loop
-  constexpr uint8_t CAN_BUS_DOWN = 6u;  // CAN2 (leg bus) down — hold, deferred stow armed
+  constexpr uint8_t CAN_BUS_DOWN = 6u;  // CAN3 (leg bus) down — hold, deferred stow armed
   constexpr uint8_t MOTOR_FB_STALE = 7u;  // Leg encoder feedback stale → suppress output (recoverable)
 }
 namespace GuardMode {
@@ -180,8 +180,8 @@ static_assert(sizeof(DiagnosticPayload) == 36, "DiagnosticPayload size drift");
 struct HeartbeatT2JPayload {
   uint64_t t_teensy_us;  // Teensy wall-clock (us)
   uint8_t link_state;  // LinkState enum
-  uint8_t bus1_health;  // CAN1 BusHealth enum
-  uint8_t bus2_health;  // CAN2 BusHealth enum
+  uint8_t bus1_health;  // wire slot 1 = CAN3 (Jugglebot core: legs+hand) BusHealth enum
+  uint8_t bus2_health;  // wire slot 2 = CAN1 (Ball Butler) BusHealth enum (cone/CAN2 not yet on uplink)
   uint8_t fault_state;  // FaultState enum
   uint32_t flags;  // HeartbeatT2JFlags bitset (bits 0-3): TIME_SYNCED|STOW_PENDING_ON_RECONNECT|ALL_AXIS_HEARTBEATS_OK|MPC_ACTIVE
   uint32_t uptime_ms;  // ms since boot
@@ -198,12 +198,12 @@ static_assert(sizeof(HeartbeatT2JPayload) == 35, "HeartbeatT2JPayload size drift
 struct ProfilePayload {
   uint64_t t_teensy_us;  // Teensy wall-clock (us)
   uint16_t cpu_pct_x100[9];  // Per-task CPU load, pct*100 (PROFILE_NUM_TASKS)
-  uint32_t can1_rx;  // CAN1 frames received this window
-  uint32_t can1_tx;  // CAN1 frames transmitted this window
-  uint32_t can2_rx;  // CAN2 frames received this window
-  uint32_t can2_tx;  // CAN2 frames transmitted this window
-  uint16_t can1_util_x100;  // CAN1 bus utilisation, pct*100
-  uint16_t can2_util_x100;  // CAN2 bus utilisation, pct*100
+  uint32_t can1_rx;  // wire slot 1 = Jugglebot core (CAN3) frames received this window
+  uint32_t can1_tx;  // wire slot 1 = Jugglebot core (CAN3) frames transmitted this window
+  uint32_t can2_rx;  // wire slot 2 = Ball Butler (CAN1) frames received this window
+  uint32_t can2_tx;  // wire slot 2 = Ball Butler (CAN1) frames transmitted this window
+  uint16_t can1_util_x100;  // wire slot 1 = Jugglebot core (CAN3) bus utilisation, pct*100
+  uint16_t can2_util_x100;  // wire slot 2 = Ball Butler (CAN1) bus utilisation, pct*100
   uint32_t udp_rtt_us;  // Last measured Jetson round-trip (us)
   uint32_t udp_jitter_us;  // RTT jitter estimate (us)
   uint32_t interp_deadline_misses;  // Cumulative 500 Hz deadline misses

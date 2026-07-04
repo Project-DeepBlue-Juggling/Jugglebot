@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Jetson-side consumer for the can-bridge Teensy's diagnostic UDP stream.
 
-Binds the STREAM port, ingests PROFILE frames (per-task CPU%, CAN1/CAN2 bus
-utilisation, UDP RTT/jitter, the 500 Hz interp deadline-miss counter, free heap)
+Binds the STREAM port, ingests PROFILE frames (per-task CPU%, wire-slot bus
+utilisation — slot 1 = Jugglebot core CAN3, slot 2 = Ball Butler CAN1 —
+UDP RTT/jitter, the 500 Hz interp deadline-miss counter, free heap)
 plus a tally of the other uplink frame types, logs PROFILE rows to CSV, and on
 exit renders matplotlib plots. Single-script run.
 

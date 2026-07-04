@@ -150,7 +150,7 @@ Static IPs: Teensy `192.168.42.2`, Jetson `192.168.42.1` (`/30` point-to-point).
 | `MOTOR_OVERSPEED` | 3 | A leg exceeded the overspeed limit |
 | `MAX_DEVIATION` | 4 | Commanded pos diverged too far from encoder |
 | `ODRIVE_FATAL` | 5 | Active ODrive error / disarm-while-closed-loop |
-| `CAN_BUS_DOWN` | 6 | CAN2 (leg bus) down — hold, deferred stow armed |
+| `CAN_BUS_DOWN` | 6 | CAN3 (leg bus) down — hold, deferred stow armed |
 | `MOTOR_FB_STALE` | 7 | Leg encoder feedback stale → suppress output (recoverable) |
 
 ### GuardMode
@@ -244,8 +244,8 @@ Payload **35 bytes**. Python struct fmt: `<QBBBBIIBBBfff`.
 |-------|------|------:|-------|
 | `t_teensy_us` | u64 | 1 | Teensy wall-clock (us) |
 | `link_state` | u8 | 1 | LinkState enum |
-| `bus1_health` | u8 | 1 | CAN1 BusHealth enum |
-| `bus2_health` | u8 | 1 | CAN2 BusHealth enum |
+| `bus1_health` | u8 | 1 | wire slot 1 = CAN3 (Jugglebot core: legs+hand) BusHealth enum |
+| `bus2_health` | u8 | 1 | wire slot 2 = CAN1 (Ball Butler) BusHealth enum (cone/CAN2 not yet on uplink) |
 | `fault_state` | u8 | 1 | FaultState enum |
 | `flags` | u32 | 1 | HeartbeatT2JFlags bitset (bits 0-3): TIME_SYNCED\|STOW_PENDING_ON_RECONNECT\|ALL_AXIS_HEARTBEATS_OK\|MPC_ACTIVE |
 | `uptime_ms` | u32 | 1 | ms since boot |
@@ -266,12 +266,12 @@ Payload **66 bytes**. Python struct fmt: `<QHHHHHHHHHIIIIHHIIIII`.
 |-------|------|------:|-------|
 | `t_teensy_us` | u64 | 1 | Teensy wall-clock (us) |
 | `cpu_pct_x100` | u16 | 9 | Per-task CPU load, pct*100 (PROFILE_NUM_TASKS) |
-| `can1_rx` | u32 | 1 | CAN1 frames received this window |
-| `can1_tx` | u32 | 1 | CAN1 frames transmitted this window |
-| `can2_rx` | u32 | 1 | CAN2 frames received this window |
-| `can2_tx` | u32 | 1 | CAN2 frames transmitted this window |
-| `can1_util_x100` | u16 | 1 | CAN1 bus utilisation, pct*100 |
-| `can2_util_x100` | u16 | 1 | CAN2 bus utilisation, pct*100 |
+| `can1_rx` | u32 | 1 | wire slot 1 = Jugglebot core (CAN3) frames received this window |
+| `can1_tx` | u32 | 1 | wire slot 1 = Jugglebot core (CAN3) frames transmitted this window |
+| `can2_rx` | u32 | 1 | wire slot 2 = Ball Butler (CAN1) frames received this window |
+| `can2_tx` | u32 | 1 | wire slot 2 = Ball Butler (CAN1) frames transmitted this window |
+| `can1_util_x100` | u16 | 1 | wire slot 1 = Jugglebot core (CAN3) bus utilisation, pct*100 |
+| `can2_util_x100` | u16 | 1 | wire slot 2 = Ball Butler (CAN1) bus utilisation, pct*100 |
 | `udp_rtt_us` | u32 | 1 | Last measured Jetson round-trip (us) |
 | `udp_jitter_us` | u32 | 1 | RTT jitter estimate (us) |
 | `interp_deadline_misses` | u32 | 1 | Cumulative 500 Hz deadline misses |

@@ -100,7 +100,7 @@ class FaultState(IntEnum):
     MOTOR_OVERSPEED = 3  # A leg exceeded the overspeed limit
     MAX_DEVIATION = 4  # Commanded pos diverged too far from encoder
     ODRIVE_FATAL = 5  # Active ODrive error / disarm-while-closed-loop
-    CAN_BUS_DOWN = 6  # CAN2 (leg bus) down — hold, deferred stow armed
+    CAN_BUS_DOWN = 6  # CAN3 (leg bus) down — hold, deferred stow armed
     MOTOR_FB_STALE = 7  # Leg encoder feedback stale → suppress output (recoverable)
 
 class GuardMode(IntEnum):
