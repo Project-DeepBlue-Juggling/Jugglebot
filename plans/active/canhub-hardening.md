@@ -135,7 +135,7 @@ item-8 slices, the typed CrcError, and item 12.
 | 19 | tests | low | Commit the hardware-validation procedures: 500 Hz deadline/jitter PASS/ABORT gate + ISR/stow-re-arm soak probe in tools/probes/ |
 | 20 | fw-relay/motion/fault | medium | Small firmware follow-ups to fold into the NEXT firmware phase (version-sweep re-query, REBOOT-during-stow interlock, stow-gate fatal/estop abort-or-document, SETTLE_STOP_US from config, HOME via axis-6 policy table, RESULT_BUF_CAP static_assert, encode_frame nullptr guard, cmd-result ring drop policy) |
 
-#### Tier-2 progress (2026-07-03) — FLASHED, awaiting powered re-validation
+#### Tier-2 progress (2026-07-04) — FLASHED + HARDWARE-VALIDATED
 
 Logbook: `logbook/2026-07-02-canhub-hardening-tier2.md`. Six items landed as compiled,
 native-tested firmware; an adversarial review over the whole diff caught + fixed two
@@ -152,9 +152,19 @@ real regressions; `pio run -e teensy41` green; the can-hub Teensy was **flashed*
 | — | adversarial-review fixes (seq-guard restart brick + stow gravity-drop + residues) | ✅ flashed | `192e6af` |
 
 **Hand-axis fault-eval → NUM_AXES ([17] §5) is an OBSERVABLE change** (a hand fault now
-E-STOPs the legs). **Next: the powered re-validation sitting** (checklist in the logbook)
-— then Tier-2 items 19 (commit the hw-validation procedures) + 20 (small fw follow-ups)
-+ [18A], then `/archive-plan canbridge-foundation-coldstart-parity`.
+E-STOPs the legs).
+
+**Powered validation PASSED 2026-07-04** — all 7 checks pass (CHECK 2 seq-guard
+operator-confirmed PASS). Results table + tooling in the logbook. **Item 19 partially
+satisfied** — the interactive validation-checklist runners are committed
+(`tools/probes/canhub_tier2_hw_validation.py` + the MPC-free zero-motion
+`tests/hardware/teensy_guard_validation.py`); the automated 500 Hz jitter/deadline
+PASS/ABORT gate + stow-re-arm soak probe named in item 19 remain. Carried out one open
+item — a **marginal
+CAN3 bus** (`err` climbing, `tec`→255, sticky `flt=BUSOFF`, decorative to the staleness
+gate) → own bench-diagnosis cycle. **Remaining:** item 20 (small fw follow-ups) + [18A]
+(HomingResult uplink) + the CAN3 investigation + `health_of` bus-off wiring, then
+`/archive-plan canbridge-foundation-coldstart-parity`.
 
 ### Tier 3 — defer
 

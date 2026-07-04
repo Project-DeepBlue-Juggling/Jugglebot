@@ -2,7 +2,7 @@
 title: Can-hub hardening Tier-2 — firmware safety/concurrency/parity pass + flash (Fable-5 review)
 type: feature
 date: 2026-07-02
-status: awaiting-hardware-validation
+status: hardware-validated
 phase: "Tier-2"
 related_plan: canhub-hardening.md
 related_entries:
@@ -239,6 +239,36 @@ disarm reads fatal.**
 7. **Cold-start regression sweep** — a normal BOOT→HOMING→IDLE + a levelling cycle +
    activate/deactivate, to confirm no Tier-2 change regressed the Phase-4 cold-start parity.
 
+## Hardware validation RESULTS (powered sitting 2026-07-04)
+
+All seven checks **PASS** on the flashed firmware.
+Two tools ran the sitting (reports under `temp/logs/`):
+- `tools/probes/canhub_tier2_hw_validation.py` — read-only serial observer (checks 5/6/7,
+  operator-driven actions; coexists with the live ROS2 bridge);
+- `tests/hardware/teensy_guard_validation.py` — MPC-free, **zero-motion** driver that owns
+  the UDP link and arms `mpc_active` at runtime with the legs held IDLE (checks 1/2/3).
+
+| # | Check | Item | Verdict | Evidence |
+|---|-------|------|---------|----------|
+| 1 | Guard E-STOP latch | [13] | **PASS** | guard tool, `temp/logs/teensy_guard_validation_20260704_230939.md` — MPC_STALE → guard latched ESTOP, **stayed latched after the stream resumed**, CLEAR_ERRORS recovered |
+| 2 | Monotonic clock + seq-guard restart | [14] | **PASS** | fresh-seq restart re-accepted — operator-confirmed 2026-07-04. The guard tool's report is verdict-only (no per-check serial artifact retained), so the record rests on the operator's live observation + the native-tested fix already in the flashed firmware. |
+| 3 | NetLock / RX flood | [15] | **PASS** | guard tool, same report — flood landed (crc_err climbed), no hardfault, fault stayed NONE |
+| 4 | MPC↔cold-start mutual exclusion | [16] | **PASS** | operator observed `ACTIVATE → ERR_REJECTED` with `enable_setpoint_output:=true` (mpc_active=1), and normal activate with `:=false` — the interlock, distinct from ERR_BUS_DOWN |
+| 5 | ISR priority / stow barrier | [17.2-3] | **PASS** | probe, `temp/logs/canhub_tier2_validation_20260704_230624.md` — CAN-loss→reconnect deferred stow, `fault=0` throughout |
+| 6 | Hand-axis fault-eval | [17.5] | **PASS** | probe, `..._152535.md` — a stale hand HEARTBEAT alone (`H:s1/9999!`) left `fault=0:NONE` (leg watchdog/stow NOT armed); the hand-fault→leg-E-STOP sub-case was operator-observed (no retained snapshot) |
+| 7 | Cold-start regression sweep | — | **PASS** | probe, `..._153511.md` — BOOT→HOMING→IDLE + levelling + activate/deactivate clean |
+
+**Observation carried out of the sitting — marginal CAN3 bus (NOT a validation failure):**
+throughout the sitting `[canhealth] jugglebot` showed an ongoing error rate (`err` climbing,
+`tec` → 254-255, sticky `flt=BUSOFF`) that recurred even after a reboot. Every check passed
+regardless (`fault` stayed `NONE`, the deferred stow worked), which **confirms `flt=BUSOFF`
+is decorative to the cold-start gate** — that gate keys on `health_of()` (a 2 s RX-staleness
+classification with a `TODO(bench)` to read the FlexCAN bus-off registers), not `fault_conf`.
+The intermittent `ERR_BUS_DOWN` seen mid-sitting was that staleness gate flapping to WARN
+during real CAN3 error bursts, not the sticky BUSOFF. The underlying CAN3 error source
+(candidate: FlexCAN3 bit-timing / sample-point vs the ODrives + Platform Teensy; or
+termination) is a real, still-open pipeline item — see Deferred.
+
 ## Deferred / follow-up
 
 - **[18A]** HomingMonitor false-success uplink (firmware+protocol+host) — a wire-format
@@ -246,6 +276,31 @@ disarm reads fatal.**
 - **[15] contract-grade follow-up** — a shared `net_lock.h` guarding `Ethernet.loop()` +
   `linkState()` at the source (one enforcement point).
 - **s_phase volatile** — add if LTO is ever enabled (safe as-is under `-O2`/no-LTO).
+- **Marginal CAN3 bus (from the 2026-07-04 sitting)** — an ongoing CAN3 error rate
+  (`err` climbing, `tec`→254-255, sticky `flt=BUSOFF`) that recurs across reboots and
+  intermittently flaps the RX-staleness gate to WARN → transient `ERR_BUS_DOWN` on
+  cold-start. All checks passed regardless, but the error source is unresolved.
+  Investigation candidates: FlexCAN3 bit-timing / sample-point / SJW vs the ODrives +
+  Platform Teensy; bus termination; connector/stub. Own bench-diagnosis cycle.
+- **`health_of()` staleness-only** — the CAN health gate keys purely on RX-staleness
+  (`can_buses.cpp` `health_of`, 2 s window) with a `TODO(bench): read the FlexCAN
+  error/bus-off registers for WARN/BUS_OFF`. Wiring the real controller fault state in
+  would make the gate reflect actual bus-off (currently `flt=BUSOFF` is invisible to it).
+  A hardening item — but it would make the gate *stricter*, so pair it with fixing the
+  marginal-bus source above.
+
+## Validation tooling (committed with this closeout)
+
+- `tools/probes/canhub_tier2_hw_validation.py` — read-only serial observer (checks 5/6/7);
+  parses the Teensy 1 Hz `[guard]`/`[diag]`/`[axes]`/`[canhealth]` block, coexists with the
+  live ROS2 bridge, records a per-check report to `temp/logs/`. Includes a sendto-only UDP
+  flood helper (check 3 mechanic) and enum-decode tables reused by the guard tool.
+- `tests/hardware/teensy_guard_validation.py` — MPC-free, **zero-motion** guard driver
+  (checks 1/2/3). Owns the UDP link (bridge DOWN), streams a 40 Hz hold with the legs held
+  IDLE, arms `mpc_active` at runtime (stream-then-arm — the inverse of the launch-time
+  `enable_setpoint_output:=true` self-E-STOP trap), and hard-refuses to arm if any leg is
+  CLOSED_LOOP. (CHECK 2's verdict was operator-confirmed PASS live; the tool's report
+  is verdict-only — a noted limitation, a snapshot-per-check enhancement is a follow-up.)
 
 ## Related
 
