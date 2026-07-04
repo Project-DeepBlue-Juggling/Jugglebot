@@ -317,3 +317,77 @@ def test_detach_mode_is_byte_identical_default():
     assert default.sustained == explicit.sustained
     assert default.cycles[0].landing_xy_mm == pytest.approx(
         explicit.cycles[0].landing_xy_mm, abs=1e-12)
+
+
+# ============================================================================
+# MOTION QUALITY — the co-design catch (continuous velocity-matched sub-tick
+# command). The kinematic MAKE cycle must be SMOOTH, not the old ceiling-slam:
+# ZERO slider clamps, the ball received on a DESCENDING cup, and a cup path
+# materially shorter than the ~1026 mm/cycle jump-and-settle. See
+# logbook/2026-07-03-catch-control-formulation-design-basis.md.
+# ============================================================================
+
+def test_kinematic_catch_motion_is_smooth():
+    """The design-basis fix, gated: the continuous velocity-matched catch (+ the
+    low-velocity-release carry it enables) makes the self-catch MAKE cycle SMOOTH.
+
+    Instruments the cup (``hand_opening`` site) + slider vs the true ball each
+    control tick and asserts the motion-quality signals the 2026-07-03 review
+    called for and the constant-per-tick jump-and-settle catch FAILED:
+
+      * ZERO slider-clamp ticks (was 93 ceiling ticks — the ceiling overshoot the
+        old catch needed to build downward runway into a stiff position actuator);
+      * cup moving DOWN at every ball contact (was +9..+11 mm/s UP — the ball fell
+        onto a parked, upward-drifting cup);
+      * cup vertical path per cycle materially shorter than the old ~1026 mm.
+
+    A regression to the constant-per-tick command (or the v_takeoff carry) trips
+    at least one of these even while the MAKE still passes — outcome metrics alone
+    let a full-stroke slam score perfectly (the review's core lesson).
+    """
+    import mujoco
+    from sim.juggle_selfcatch import (
+        SelfCatchRunner, SelfCatchConfig, SLIDER_STROKE_MM)
+
+    n_cycles = 3
+    runner = SelfCatchRunner(SelfCatchConfig(
+        oscillate=True, n_cycles=n_cycles, seed=0, release="kinematic", dip_m=0.10))
+    plant = runner.plant
+    sid = mujoco.mj_name2id(plant.model, mujoco.mjtObj.mjOBJ_SITE, 'hand_opening')
+    jid = mujoco.mj_name2id(plant.model, mujoco.mjtObj.mjOBJ_JOINT, 'hand_slide')
+    sadr = plant.model.jnt_qposadr[jid]
+    log = []
+    orig_step = plant.step
+
+    def spy(*a, **k):
+        orig_step(*a, **k)
+        vel6 = np.zeros(6)
+        mujoco.mj_objectVelocity(plant.model, plant.data,
+                                 mujoco.mjtObj.mjOBJ_SITE, sid, vel6, 0)
+        log.append((float(plant.data.qpos[sadr]) * 1000.0,          # slider mm
+                    float(plant.data.site_xpos[sid][2]) * 1000.0,    # cup z mm
+                    float(vel6[5]) * 1000.0,                         # cup vz mm/s
+                    bool(plant.get_ball_state(0).held)))
+
+    plant.step = spy
+    res = runner.run()
+    assert res.sustained >= n_cycles                       # all cycles make
+
+    sliders = np.array([x[0] for x in log])
+    cz = np.array([x[1] for x in log])
+    cvz = [x[2] for x in log]
+    held = [x[3] for x in log]
+
+    ceil = int(np.sum(sliders >= SLIDER_STROKE_MM - 1.0))
+    floor = int(np.sum(sliders <= 1.0))
+    assert ceil == 0 and floor == 0, f"slider clamp hits: ceil={ceil} floor={floor}"
+
+    path_per_cycle = float(np.sum(np.abs(np.diff(cz)))) / n_cycles
+    assert path_per_cycle < 550.0, (                       # measured ~322 vs old ~1026
+        f"cup path {path_per_cycle:.0f} mm/cycle not materially reduced (~halved)")
+
+    contacts = [cvz[max(0, i - 2)] for i in range(1, len(log))
+                if held[i] and not held[i - 1]]
+    assert contacts, "no ball-contact transition observed"
+    assert all(v < 0.0 for v in contacts), (               # measured ~-669 vs old +10
+        f"cup not moving DOWN at contact (received on a rising/parked cup): {contacts}")

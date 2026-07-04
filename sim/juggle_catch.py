@@ -57,6 +57,14 @@ from sim.plant.mujoco_plant import MuJoCoPlant
 CONTROL_DT = 0.025
 WORKSPACE_XY_M = 0.15        # |cup xy - centre| reach bound (matches planner)
 SEAT_RADIUS_MM = 40.0        # cup seat radius (mirrors ball.manager.SEAT_RADIUS_M)
+# Momentum-budget deceleration (× g) for the continuous velocity-matched catch:
+# once the co-moving cup receives the ball it is arrested to rest over
+# d = v²/(2·a). At 6 g even the fast (~4.9 m/s) real-BB arrival is arrested in
+# ~60 mm — trivial for a hand with tens of g of authority — so the slider stays
+# off both clamps (no ceiling slam, no floor slam) under the CONTINUOUS command
+# (a fixed-TIME constant-decel would slam the floor on a fast arrival once the cup
+# actually tracks it). See logbook/2026-07-03-catch-control-formulation-design-basis.md.
+CATCH_ARREST_ACCEL_G = 6.0
 
 
 # --------------------------------------------------------------------------
@@ -93,6 +101,63 @@ def _quintic_step(p, v, a, pf, vf, af, T, dt):
     return p_n, v_n, a_n
 
 
+class _ContinuousQuintic:
+    """A minimum-jerk quintic ``(p, v, a) -> (pf, vf, af)`` over horizon ``T``,
+    sampleable at ANY sub-tick time — the mechanism behind the co-design catch.
+
+    The sim already steps the hand at 1 kHz: ``MuJoCoPlant.step`` samples
+    ``hand_cmd_fn(t)`` EVERY 1 ms substep. The old catch handed it a CONSTANT
+    per-40 Hz-tick position (the end-of-tick setpoint), so the ultra-stiff hand
+    actuator jumped to that setpoint and SETTLED within the tick — near-zero
+    velocity at the sample instant, unable to co-move with the descending ball.
+    Commanding this quintic sampled at each substep's sim time instead makes the
+    cup track the planned VELOCITY continuously, so it receives the ball on a
+    *descending* cup. Same per-tick displacement, but a smooth velocity vs a
+    jump-and-settle — the design-basis A/B measured **-2700 mm/s (continuous) vs
+    -35 mm/s (constant)** at a -2.7 m/s target
+    (``logbook/2026-07-03-catch-control-formulation-design-basis.md``).
+
+    Distinct from :func:`_quintic_step` (which returns only the end-of-tick
+    state): this keeps the coefficients so :meth:`pos` can be evaluated at any
+    intra-tick time and :meth:`state` gives the next tick's start. Vectorises over
+    channels. ``T`` is floored to ``3*dt`` (matching :func:`_quintic_step`) so the
+    receding-horizon end-game stays finite.
+    """
+
+    def __init__(self, p, v, a, pf, vf, af, T, dt):
+        p = np.atleast_1d(np.asarray(p, float)); v = np.atleast_1d(np.asarray(v, float))
+        a = np.atleast_1d(np.asarray(a, float)); pf = np.atleast_1d(np.asarray(pf, float))
+        vf = np.atleast_1d(np.asarray(vf, float)); af = np.atleast_1d(np.asarray(af, float))
+        self.dt = float(dt)
+        self.T = max(float(T), 3.0 * self.dt)
+        T = self.T
+        self.c0, self.c1, self.c2 = p, v, a / 2.0
+        h = pf - (self.c0 + self.c1 * T + self.c2 * T ** 2)
+        g1 = vf - (self.c1 + 2.0 * self.c2 * T)
+        g2 = af - 2.0 * self.c2
+        M = np.array([[T ** 3, T ** 4, T ** 5],
+                      [3 * T ** 2, 4 * T ** 3, 5 * T ** 4],
+                      [6 * T, 12 * T ** 2, 20 * T ** 3]])
+        c345 = np.linalg.solve(M, np.stack([h, g1, g2]))
+        self.c3, self.c4, self.c5 = c345[0], c345[1], c345[2]
+
+    def pos(self, t):
+        """Commanded position at sub-tick time ``t`` (clipped to ``[0, T]``)."""
+        t = float(np.clip(t, 0.0, self.T))
+        return (self.c0 + self.c1 * t + self.c2 * t ** 2 + self.c3 * t ** 3
+                + self.c4 * t ** 4 + self.c5 * t ** 5)
+
+    def state(self, t=None):
+        """``(p, v, a)`` at time ``t`` (default ``dt``) — the next tick's start."""
+        t = self.dt if t is None else t
+        t = float(np.clip(t, 0.0, self.T))
+        p = self.pos(t)
+        v = (self.c1 + 2 * self.c2 * t + 3 * self.c3 * t ** 2
+             + 4 * self.c4 * t ** 3 + 5 * self.c5 * t ** 4)
+        a = 2 * self.c2 + 6 * self.c3 * t + 12 * self.c4 * t ** 2 + 20 * self.c5 * t ** 3
+        return p, v, a
+
+
 @dataclasses.dataclass
 class SingleCatchConfig:
     """One BB throw + one catch. SI units unless noted (mm where stated)."""
@@ -127,24 +192,31 @@ class SingleCatchConfig:
     # ---- catch realisation knobs (tuned empirically; see the probe) ----
     # The slider does the vertical descend-with-the-ball (the axis-split catch),
     # PHASE-MATCHED to the arrival (2026-07-02 fast-catch fidelity). From a
-    # ``ready_lift`` ABOVE catch_z, the cup is driven every tick so it arrives at
-    # catch_z MOVING DOWN at ``vel_ratio``·|estimated arrival vz| EXACTLY at the
-    # predicted touch-down ``t_td`` (a re-solved quintic completing at t_td) — i.e.
-    # the cup is CO-MOVING with the ball, not holding-high-then-dropping-late, when
-    # the ball lands. This is the crux for a FAST arrival (a real Ball Butler
-    # ~4.9 m/s): the old hold-high-then-descend schedule reached catch_z too late
-    # and the fast ball punched through the still-descending cup. Once the ball
-    # reaches catch_z the cup CONSTANT-decelerates to rest over ``seat_decel_time_s``
-    # (a constant decel has no force peak — a min-jerk-to-rest peaks ~1.9x its
-    # average mid-stroke and ejects the ball, the dominant §3-noise catch failure).
-    # The larger ``ready_lift`` (0.15) gives room to build the matched descent
-    # speed; ``vel_ratio`` 0.55 is the sweet spot (0.5-0.6) — 0.7+ commands a
-    # descent the band-limited cup cannot track, so it misses the phase. See the
-    # fast-catch probe (tools/probes/juggle_fastcatch.py).
+    # ``ready_lift`` ABOVE catch_z, the cup is driven so it arrives at catch_z
+    # MOVING DOWN at ``vel_ratio``·|estimated arrival vz| EXACTLY at the predicted
+    # touch-down ``t_td`` — i.e. the cup is CO-MOVING with the ball, not
+    # holding-high-then-dropping-late, when the ball lands. This is the crux for a
+    # FAST arrival (a real Ball Butler ~4.9 m/s): the old hold-high-then-descend
+    # schedule reached catch_z too late and the fast ball punched through.
+    #
+    # The descent is commanded CONTINUOUSLY at the sub-tick rate (a per-tick
+    # :class:`_ContinuousQuintic` sampled by ``hand_cmd_fn``/``plat_cmd_fn`` every
+    # 1 ms substep) rather than as a CONSTANT per-40 Hz-tick position — otherwise
+    # the ultra-stiff hand actuator jump-and-settles and can't actually co-move
+    # (design basis 2026-07-03). Once the TRUE ball reaches catch_z the cup is
+    # arrested to rest over a MOMENTUM BUDGET d = v²/(2·a) at
+    # :data:`CATCH_ARREST_ACCEL_G` — a min-jerk quintic re-solved each tick, so
+    # only its low-jerk onset executes (no mid-stroke deceleration peak to eject the
+    # ball); and, unlike the old fixed-TIME decel, its travel is bounded so a fast
+    # arrival can't slam the slider floor once the cup honestly tracks it.
+    # ``ready_lift`` (0.15) gives room to build the matched descent speed;
+    # ``vel_ratio`` 0.55 is the sweet spot (0.5-0.6). See the fast-catch probe
+    # (tools/probes/juggle_fastcatch.py).
     catch_ready_lift_m: float = 0.15       # hold this far above catch_z first
     catch_slider_vel_ratio: float = 0.55   # cup vz at catch_z = ratio·arrival vz
     catch_start_lead_s: float = 0.16       # tilt-freeze lead before t_td
-    seat_decel_time_s: float = 0.16        # CONSTANT-decel-to-rest duration after catch_z
+    seat_decel_time_s: float = 0.16        # RETAINED for config compat; the catch now
+                                           # arrests via CATCH_ARREST_ACCEL_G (see above)
     reach_settle_floor_s: float = 0.10     # fixed receding-horizon for xy/tilt reach
     # The observed apex->catch flight is short (~0.26 s after the n>=4 warm-up
     # gate), so the lateral reach runs on a FIXED ``reach_settle_floor_s`` (0.10 s)
@@ -153,8 +225,8 @@ class SingleCatchConfig:
     # on the FIRST post-warm-up tick (the first n>=4 ballistic fit) so the parked xy
     # doesn't jitter on the post-crossing back-extrapolation. The reach and the
     # slider descend OVERLAP (the descend starts ~one tick later): the flight is too
-    # short for the reach to fully settle first, so it is the firm constant-decel
-    # seat (below), not a parked-then-descend separation, that carries the off-centre
+    # short for the reach to fully settle first, so it is the momentum-budget seat
+    # (below), not a parked-then-descend separation, that carries the off-centre
     # catches. The TILT target is frozen LATER (when descending) so the tilt RAMPS
     # through the seat (see below) instead of being parked fully-tilted early.
     # ---- noise (§3, on by default) ----
@@ -310,8 +382,8 @@ class SingleCatchRunner:
         # by the descent start, so the frozen target seats cleanly.
         frozen_xy = None
         frozen_tilt = None
-        settle_v0 = None                   # cup vz captured at the catch_z crossing
         settling = False                   # latched once the TRUE ball reaches catch_z
+        a_budget = CATCH_ARREST_ACCEL_G * (-GRAVITY[2])   # momentum-budget arrest decel
 
         for _k in range(n_ticks):
             t_rel = float(plant.data.time) - t0
@@ -359,70 +431,83 @@ class SingleCatchRunner:
             last_pos_td = np.array([reach_xy[0], reach_xy[1], catch_z])
             last_tilt = reach_tilt
 
-            # --- plan the cup target for the next tick ---
+            # --- plan the cup target for THIS tick, commanded CONTINUOUSLY ---
+            # The sim steps the hand at 1 kHz; commanding a CONSTANT per-40 Hz-tick
+            # position snaps the ultra-stiff actuator to the end-of-tick setpoint
+            # and lets it settle (near-zero velocity at the sample instant), so the
+            # cup cannot co-move with the ball. Build a per-tick quintic and SAMPLE
+            # it every substep (hand_cmd_fn/plat_cmd_fn) instead, so the cup tracks
+            # the planned VELOCITY — it receives the ball on a DESCENDING cup. See
+            # logbook/2026-07-03-catch-control-formulation-design-basis.md.
+            #
             # XY reach: ease toward the frozen landing on a FIXED receding horizon
             # (``reach_settle_floor_s``). The observed flight is too short (~0.26 s)
             # for the reach to fully settle before the slider descend begins, so they
             # overlap; the cup converges onto the frozen xy over the last few ticks
-            # and the firm constant-decel seat (below) carries the off-centre catches.
-            horizon_reach = cfg.reach_settle_floor_s
-            cmd_xy, cmd_vxy, cmd_axy = _quintic_step(
-                cmd_xy, cmd_vxy, cmd_axy, reach_xy, np.zeros(2), np.zeros(2),
-                horizon_reach, CONTROL_DT)
+            # and the momentum-budget seat (below) carries the off-centre catches.
+            seg_xy = _ContinuousQuintic(cmd_xy, cmd_vxy, cmd_axy, reach_xy,
+                                        np.zeros(2), np.zeros(2),
+                                        cfg.reach_settle_floor_s, CONTROL_DT)
             # TILT: ramp to the collinear receive tilt completing AT t_td (not
             # before). A fully-tilted cup parked early presents an asymmetric rim
             # the descending ball glances off; ramping the tilt in keeps the cup
             # nearer level when the ball first enters, then aligns as it seats.
             horizon_tilt = max(t_remaining, cfg.reach_settle_floor_s)
-            cmd_tilt, cmd_vtilt, cmd_atilt = _quintic_step(
-                cmd_tilt, cmd_vtilt, cmd_atilt, reach_tilt,
-                np.zeros(2), np.zeros(2), horizon_tilt, CONTROL_DT)
-            # vertical (slider): the PHASE-MATCHED descend-with-the-ball.
-            #   From the ready-lift, drive the cup EVERY tick so it arrives at
-            #   catch_z MOVING DOWN at ``vel_ratio``·|estimated arrival vz| EXACTLY
-            #   at the predicted touch-down (a re-solved quintic completing at t_td)
-            #   — i.e. CO-MOVING with the ball when it lands, NOT holding high then
-            #   dropping late. The old hold-then-drop schedule reached catch_z too
-            #   late, so a fast (~4.9 m/s) arrival punched through the still-
-            #   descending cup (plunge-through). Once the TRUE ball reaches catch_z
-            #   (a deterministic physical crossing; LATCHED so an estimate jitter
-            #   can't unlatch it), CONSTANT-decelerate the co-moving cup to rest over
-            #   ``seat_decel_time_s``. The settle is a CONSTANT deceleration (not a
-            #   min-jerk to rest): a min-jerk decel-to-rest has a deceleration PEAK
-            #   ~1.9x its average mid-stroke, and that force spike ejects the ball UP
-            #   off the cup (a soft-contact bounce) — the dominant catch failure
-            #   under the §3 noise. A constant deceleration has no peak, so the
-            #   contact force is steady and the ball rides the cup smoothly to rest.
-            #   (See the fast-catch probe, tools/probes/juggle_fastcatch.py.)
+            seg_tilt = _ContinuousQuintic(cmd_tilt, cmd_vtilt, cmd_atilt, reach_tilt,
+                                          np.zeros(2), np.zeros(2), horizon_tilt,
+                                          CONTROL_DT)
+            # VERTICAL (slider): the PHASE-MATCHED descend-with-the-ball. Drive the
+            # cup to arrive at catch_z MOVING DOWN at ``vel_ratio``·|arrival vz| at
+            # the predicted touch-down (co-moving with the ball, not holding high
+            # then dropping late). Once the TRUE ball reaches catch_z (a determin-
+            # istic crossing; LATCHED so an estimate jitter can't unlatch it),
+            # arrest the co-moving cup to rest over a MOMENTUM BUDGET
+            # d = v²/(2·a) at ``a_budget``. The old fixed-TIME constant-decel over
+            # ``seat_decel_time_s`` travelled ~v·t/2, which under the now-honoured
+            # continuous command would slam the slider FLOOR on a fast (~4.9 m/s)
+            # arrival; the momentum budget bounds the arrest distance (~60 mm). The
+            # arrest itself is a min-jerk quintic re-solved each tick, so only its
+            # low-jerk onset executes — no mid-stroke deceleration peak ejects the
+            # ball (the anti-ejection property the old constant-decel seat gave,
+            # now via a smooth bounded-jerk onset).
             ball_z = true_m[2]
             if not settling and ball_z > catch_z + 0.002 and t_remaining > 1e-3:
                 # APPROACH — arrive at catch_z moving down at ratio·|arrival vz| @ t_td.
                 tgt_vz = -cfg.catch_slider_vel_ratio * v_arr
                 hz = max(t_remaining, 3.0 * CONTROL_DT)
-                (cmd_z,), (cmd_vz,), (cmd_az,) = _quintic_step(
-                    [cmd_z], [cmd_vz], [cmd_az], [catch_z], [tgt_vz], [0.0],
-                    hz, CONTROL_DT)
+                seg_z = _ContinuousQuintic([cmd_z], [cmd_vz], [cmd_az], [catch_z],
+                                           [tgt_vz], [0.0], hz, CONTROL_DT)
             else:
-                # SETTLE — the ball reached catch_z: constant-decel the co-moving
-                # cup to rest, then hold. Latched (``settling``) so we never re-enter
-                # the approach on a post-crossing estimate wobble.
+                # SETTLE — the ball reached catch_z: momentum-budget-decel the
+                # co-moving cup to rest, then hold. Latched (``settling``) so we
+                # never re-enter the approach on a post-crossing estimate wobble.
                 settling = True
-                if settle_v0 is None:
-                    settle_v0 = min(cmd_vz, -1e-6)        # cup vz at the crossing
-                a_dec = -settle_v0 / cfg.seat_decel_time_s   # >0 (upward decel)
                 if cmd_vz < -1e-4:
-                    new_vz = min(cmd_vz + a_dec * CONTROL_DT, 0.0)
-                    cmd_z = cmd_z + 0.5 * (cmd_vz + new_vz) * CONTROL_DT
-                    cmd_vz, cmd_az = new_vz, a_dec
+                    t_stop = -cmd_vz / a_budget
+                    z_stop = cmd_z + 0.5 * cmd_vz * t_stop
+                    seg_z = _ContinuousQuintic([cmd_z], [cmd_vz], [cmd_az], [z_stop],
+                                               [0.0], [0.0], max(t_stop, 3.0 * CONTROL_DT),
+                                               CONTROL_DT)
                 else:
-                    cmd_vz, cmd_az = 0.0, 0.0              # at rest — hold
+                    seg_z = _ContinuousQuintic([cmd_z], [0.0], [0.0], [cmd_z], [0.0],
+                                               [0.0], 3.0 * CONTROL_DT, CONTROL_DT)
 
-            pose, slider = realize_tilted(cmd_xy, cmd_z, cmd_tilt[0], cmd_tilt[1])
-            plant.command(plant.pose_to_extensions(pose))
-            plant.step(
-                CONTROL_DT,
-                hand_cmd_fn=lambda _t, s=slider: s,
-                plat_cmd_fn=lambda _t, p=pose: plant.pose_to_extensions(p))
+            t_tick0 = float(plant.data.time)
+
+            def cmd_fn(t, sx=seg_xy, sz=seg_z, st=seg_tilt, t0=t_tick0):
+                tau = t - t0
+                xy = sx.pos(tau); z = float(sz.pos(tau)[0]); ti = st.pos(tau)
+                return realize_tilted(xy, z, float(ti[0]), float(ti[1]))
+
+            pose_now, _ = cmd_fn(t_tick0)
+            plant.command(plant.pose_to_extensions(pose_now))
+            plant.step(CONTROL_DT, hand_cmd_fn=lambda t, f=cmd_fn: f(t)[1],
+                       plat_cmd_fn=lambda t, f=cmd_fn: plant.pose_to_extensions(f(t)[0]))
+
+            cmd_xy, cmd_vxy, cmd_axy = seg_xy.state()
+            (zc, vc, ac) = seg_z.state()
+            cmd_z, cmd_vz, cmd_az = float(zc[0]), float(vc[0]), float(ac[0])
+            cmd_tilt, cmd_vtilt, cmd_atilt = seg_tilt.state()
 
             if not caught and plant.check_and_capture(ball=0):
                 caught = True

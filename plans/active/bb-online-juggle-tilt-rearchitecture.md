@@ -320,7 +320,19 @@ fully contact-physical. See logbook `2026-07-01-rung2b-kinematic-release.md`.
 
 ### Phase 4 / Rung 3 — Two-ball (columns → oval, BB-seeded)
 
-**BLOCKED pending the motion-quality course-correction (2026-07-03).** A whole-arc
+**The motion-quality course-correction LANDED (2026-07-04) — Rung 3 unblocked.** The
+co-design catch (`logbook/2026-07-04-codesign-catch-continuous-velocity-matched.md`)
+implemented the design basis below: the hand is commanded a CONTINUOUS velocity-matched
+trajectory at the sub-tick rate (not a constant per-40 Hz-tick position), and the
+kinematic release's velocity-imposition retires the vestigial `v_takeoff` carry.
+Result: self-catch MAKE cup path **1026 → 322 mm/cycle**, slider clamps **93 → 0**,
+contact **+10 (UP) → −669 mm/s (DOWN)**; the MAKE is regenerated **12/12 on all 6
+seeds** and *tighter* (in-cup offset 0.6 → 0.3 mm) — the P2 "runway = slam" tension
+dissolved (it was an artefact of the constant-per-tick command, not physics). Rung 3
+now composes onto a smooth, ~1/3-stroke cycle with hardware-inheritable commands. The
+history that motivated the fix is retained below.
+
+**(History) BLOCKED pending the motion-quality course-correction (2026-07-03).** A whole-arc
 review found the single-ball toss/catch is **not smooth**: the self-catch MAKE cycle
 uses ~1026 mm of cup path/cycle, slams the stroke ceiling every cycle, is ~45%
 disengaged, and receives the ball on a RISING cup ~145 mm above `catch_z` (the

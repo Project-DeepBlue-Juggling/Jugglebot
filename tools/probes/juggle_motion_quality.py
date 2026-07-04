@@ -82,6 +82,15 @@ def metrics(log, n_cycles):
         if log[i]['dist'] > BALL_ENGAGE_MM and not log[i]['held']:
             diss += abs(log[i]['cz'] - log[i - 1]['cz'])
     max_step = float(np.max(np.abs(np.diff(cz)))) if len(cz) > 1 else 0.0
+    # Command CONTINUITY: max per-tick change in the actual cup vertical velocity.
+    # NOTE the per-tick z-DISPLACEMENT (``max_cmd_step_mm`` above) is NOT a good
+    # smoothness signal for a velocity-matched catch: a genuine co-move at, say,
+    # -2.7 m/s is 67 mm/tick BY CONSTRUCTION (v·dt), so a large step there is the
+    # co-move signature, not a discontinuity. The meaningful signal is whether the
+    # cup VELOCITY is continuous (a smooth ramp) vs jumping — a hard-coded velocity
+    # step (the old carry_vel=[0,0,-2]) or a jump-and-settle rings the velocity.
+    cvz = np.array([r['cvz'] for r in log])
+    max_vstep = float(np.max(np.abs(np.diff(cvz)))) if len(cvz) > 1 else 0.0
     # cup vz at first ball contact per (held False->True) transition
     contacts = []
     for i in range(1, len(log)):
@@ -93,6 +102,7 @@ def metrics(log, n_cycles):
                 ceil_ticks=ceil, floor_ticks=floor,
                 disengaged_mm=diss, disengaged_frac=diss / max(np.sum(np.abs(np.diff(cz))), 1e-9),
                 max_cmd_step_mm=max_step,
+                max_cmd_vstep_mm_s=max_vstep,
                 cup_vz_at_contact=contacts)
 
 
@@ -103,7 +113,10 @@ def report(name, log, n_cycles):
     print(f"  stroke span used : {m['stroke_span']:.0f} / {SLIDER_STROKE_MM:.0f} mm   "
           f"clamp hits: ceil {m['ceil_ticks']} / floor {m['floor_ticks']} ticks")
     print(f"  disengaged travel: {m['disengaged_mm']:.0f} mm ({100*m['disengaged_frac']:.0f}% of cup path)")
-    print(f"  max cmd z step   : {m['max_cmd_step_mm']:.1f} mm/tick")
+    print(f"  max cmd z step   : {m['max_cmd_step_mm']:.1f} mm/tick   "
+          f"(≈ cup |vz|·dt during the co-move — the velocity-match signature)")
+    print(f"  cmd continuity   : {m['max_cmd_vstep_mm_s']:.0f} mm/s max |Δcup vz|/tick   "
+          f"(velocity step; smaller = smoother command, no jumps)")
     cs = m['cup_vz_at_contact']
     tag = lambda v: ("UP (into ball, BAD)" if v > 5 else "down (receive)" if v < -5 else "~still")
     print(f"  cup vz @ contact : {[f'{v:+.0f}' for v in cs]} mm/s  -> " +
@@ -132,4 +145,7 @@ if __name__ == "__main__":
     report("Rung-1 catch (real fast Ball Butler)", log3, 1)
 
     print("\nGate guidance (review P0): a smooth cycle has NO clamp hits, contact with the "
-          "cup moving DOWN (receive), low disengaged fraction, and no large cmd steps.")
+          "cup moving DOWN (receive), low disengaged fraction, and a continuous command "
+          "(small |Δcup vz|/tick). The per-tick z-DISPLACEMENT during a velocity-matched "
+          "descent is v·dt by construction (~67 mm/tick at -2.7 m/s) — that is the co-move "
+          "signature, not a discontinuity; judge command smoothness by |Δcup vz|, not it.")
