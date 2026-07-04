@@ -269,8 +269,16 @@ class TeensyBridgeNode(Node):
     """
 
     def __init__(self, client: TeensyLinkClient | None = None,
-                 setpoint_source=None, boot_state_read: bool = True):
+                 setpoint_source=None, boot_state_read: bool = True,
+                 stow_on_shutdown: bool = True):
         super().__init__('teensy_bridge_node')
+
+        # On a clean shutdown (Ctrl-C of the launch), profiled-stow the platform
+        # before transport teardown — the β analogue of can_node.on_shutdown's
+        # _gently_move_to_setpoint(0.0, deactivating=True). Default True in
+        # production; unit tests (which call on_shutdown against a FakeTeensy that
+        # never completes the descent) pass False via _build_paired_node.
+        self._stow_on_shutdown = bool(stow_on_shutdown)
 
         # ── Parameters ─────────────────────────────────────────
         self.declare_parameter('teensy_ip', p.TEENSY_IP)
@@ -3100,6 +3108,48 @@ class TeensyBridgeNode(Node):
     # Shutdown
     # ═══════════════════════════════════════════════════════════
 
+    def _shutdown_stow(self):
+        """Profiled controlled-lower to STOW + IDLE on a clean shutdown — the β
+        analogue of can_node.on_shutdown's ``_gently_move_to_setpoint(0.0,
+        deactivating=True)`` (can_node.py:1693-1706). Best-effort and self-bounded:
+        never raises and never hangs teardown. Guard *shape* follows can_node (skip
+        when the bus is undrivable, else stow), scoped to the CAN3 bus-off /
+        no-telemetry / stow-pending subset — a broader fatal-CAN (link-lost /
+        CAN_BUS_DOWN) only makes the DEACTIVATE RPC fail fast (bounded by its
+        timeout×retry budget, never a hang):
+          * CAN3 core bus down / no telemetry → skip (can't drive a dead bus; the
+            firmware's CAN3-loss deferred stow safes the platform on reconnect);
+          * a deferred stow already pending → skip (the firmware completes it);
+          * otherwise DEACTIVATE the configured legs (TRAP_TRAJ lower to STOW then
+            IDLE; ``_run_deactivate`` idles the hand too), bounded by
+            DeactivateMonitor's internal hard deadline so teardown can't hang.
+        A leg that was never activated (not in CLOSED_LOOP) is rejected immediately
+        by the firmware → clean no-op, no descent, no hang.
+        """
+        try:
+            hb = self._latest_heartbeat
+            core_bus = int(hb.bus1_health) if hb is not None else None   # CAN3
+            if hb is None or core_bus == int(BusHealth.BUS_OFF):
+                self.get_logger().warning(
+                    "shutdown stow skipped — CAN3 core bus down/unseen; leaving the "
+                    "firmware deferred-stow to safe the platform on reconnect.")
+                return
+            if int(hb.flags) & _T2J_FLAG_STOW_PENDING:
+                self.get_logger().info(
+                    "shutdown stow skipped — a deferred stow is already pending; the "
+                    "firmware will complete it.")
+                return
+            axes = [int(a) for a in self.get_parameter('deactivate_axes').value]
+            self.get_logger().info(
+                f"shutdown: profiled stow (DEACTIVATE) on legs {axes} before teardown")
+            ok, msg = self._run_deactivate(axes)
+            if ok:
+                self.get_logger().info(f"shutdown stow complete — {msg}")
+            else:
+                self.get_logger().warning(f"shutdown stow did not complete — {msg}")
+        except Exception as e:  # noqa: BLE001 — teardown must never raise
+            self.get_logger().error(f"shutdown stow error (continuing teardown): {e}")
+
     def on_shutdown(self):
         """Tear down the transport. Only stops the client if we created it."""
         self.get_logger().info("Shutting down TeensyBridgeNode...")
@@ -3120,6 +3170,12 @@ class TeensyBridgeNode(Node):
                 self._sp_source.close()
             except Exception:  # noqa: BLE001
                 pass
+        # Profiled stow BEFORE closing the RPC/link — the descent is driven over
+        # the still-live link (RX + heartbeat threads keep the telemetry cache and
+        # DEACTIVATE RPC alive). MPC is already quiesced above (mpc_active=0, sp
+        # thread stopped) so no setpoint fights the descent.
+        if self._stow_on_shutdown:
+            self._shutdown_stow()
         try:
             self._tod.close()
             self._rpc_server.close()

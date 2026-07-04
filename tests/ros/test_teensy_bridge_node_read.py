@@ -66,7 +66,12 @@ def _build_paired_node(*, boot_state_read=False):
         local_bind_rpc=0,
         bind_host="127.0.0.1",
     )
-    node = TeensyBridgeNode(client=client, boot_state_read=boot_state_read)  # __init__ starts the client
+    # stow_on_shutdown=False: on_shutdown() must not fire a profiled DEACTIVATE
+    # against the FakeTeensy (which never completes the descent → DeactivateMonitor
+    # would hang the test). Production defaults True; the stow path is exercised
+    # explicitly in test_teensy_bridge_node_shutdown_stow.py.
+    node = TeensyBridgeNode(client=client, boot_state_read=boot_state_read,
+                            stow_on_shutdown=False)  # __init__ starts the client
 
     jetson_stream_port = client._stream_sock.getsockname()[1]
     jetson_rpc_port = client._rpc_sock.getsockname()[1]
