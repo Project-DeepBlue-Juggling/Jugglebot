@@ -66,6 +66,22 @@ TEST_CASE("encode_frame refuses an oversized payload and a too-small out buffer"
                      out, HEADER_SIZE) == 0);
 }
 
+TEST_CASE("encode_frame refuses a null payload with a nonzero length (item 20)") {
+  uint8_t out[64];
+  // len>0 with a null payload would else skip the memcpy but still CRC over the
+  // uninitialized out[] and return a 'valid' garbage frame → guard returns 0.
+  CHECK(encode_frame((uint8_t)MsgType::TELEMETRY, 0, nullptr, sizeof(PAYLOAD),
+                     out, sizeof(out)) == 0);
+  // A zero-length frame with a null payload is still legitimate (header + CRC only)
+  // and must round-trip — the guard only fires when len>0.
+  const uint16_t n = encode_frame((uint8_t)MsgType::HEARTBEAT_T2J, 0, nullptr, 0,
+                                  out, sizeof(out));
+  REQUIRE(n == HEADER_SIZE + CRC_SIZE);
+  Header hdr{}; const uint8_t* pl = nullptr;
+  REQUIRE(decode_frame(out, n, &hdr, &pl));
+  CHECK(hdr.length == 0);
+}
+
 TEST_CASE("decode_frame rejects a runt (shorter than header+crc)") {
   uint8_t buf[4] = {0};
   Header hdr{}; const uint8_t* pl = nullptr;

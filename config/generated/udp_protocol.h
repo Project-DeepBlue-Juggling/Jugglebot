@@ -454,6 +454,8 @@ inline uint16_t encode_frame(uint8_t msg_type, uint16_t seq,
                              uint8_t* out, uint16_t out_cap) {
   const uint16_t total = (uint16_t)(HEADER_SIZE + len + CRC_SIZE);
   if (len > MAX_PAYLOAD || total > out_cap) return 0;
+  if (len && !payload) return 0;   // len>0 with a null payload would else CRC over
+                                   // uninitialized bytes and return a 'valid' garbage frame
   Header h{ MAGIC, PROTOCOL_VERSION, msg_type, seq, len };
   memcpy(out, &h, HEADER_SIZE);
   if (len && payload) memcpy(out + HEADER_SIZE, payload, len);

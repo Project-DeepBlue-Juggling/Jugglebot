@@ -398,6 +398,16 @@ static void evaluate_guard() {
   // Output gate. NEVER command a dead bus. During a deferred stow, output stays
   // on so the descent reaches CAN3 (stow only runs post-reconnect, so the bus is
   // confirmed up). Otherwise output requires the guard ENABLED and no fatal.
+  //
+  // Item 20 — stow vs fatal/E-STOP (DELIBERATE, not an oversight): an in-progress
+  // stow is allowed to complete even if s_estop_latched / s_fatal_error trips
+  // mid-descent. Aborting the stow (gating output off) would disarm the raised legs
+  // → gravity drop — strictly worse than finishing the controlled, velocity-limited
+  // descent to the off pose, which IS the safety response. (The velocity limit
+  // bounds any overspeed during the descent.) The one condition that legitimately
+  // interrupts a stow is a bus RE-DROP, which re-arms it (watchdog_and_stow sets
+  // s_stowing=false and re-latches s_stow_pending). A guard E-STOP still latches and
+  // holds AFTER the stow completes — it simply does not pre-empt the descent.
   bool allow = false;
   if (s_stowing) {
     allow = true;   // stow descent integrates its own position; not encoder-gated

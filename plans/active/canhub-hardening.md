@@ -174,10 +174,11 @@ CAN3 bus** (`err` climbing, `tec`→255, sticky `flt=BUSOFF`, decorative to the 
 gate) → own bench-diagnosis cycle, **RESOLVED 2026-07-05** (the `err` counter was never
 a wire-error rate; presence-gate contract landed `b8b6faf` and gate-validated live the
 same day — `logbook/2026-07-05-canhub-marginal-can3-diagnosis.md`; fresh-boot `flt`/`tec`
-should now never exceed passive/128). **Remaining:** item 20 (small fw follow-ups) +
-[18A] (HomingResult uplink) + `health_of` bus-off wiring (live fault_conf/TEC now
-instrumented — ready to consume), then
-`/archive-plan canbridge-foundation-coldstart-parity`.
+should now never exceed passive/128). **Remaining:** **item 20 DONE** — the eight small
+fw follow-ups landed 2026-07-05 (`logbook/2026-07-05-canhub-hardening-item20-firmware.md`;
+native + `pio` green, pending the Phase-2 flash) → then [18A] (HomingResult uplink) +
+`health_of` bus-off wiring (live fault_conf/TEC now instrumented — ready to consume),
+then `/archive-plan canbridge-foundation-coldstart-parity`.
 
 ### Tier 3 — defer
 

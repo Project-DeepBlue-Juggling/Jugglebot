@@ -84,6 +84,7 @@ HOMING_HAND_CURRENT_HEADROOM_A = 3.0
 HOMING_HAND_ABS_POS_REV = -0.1
 HOMING_EMA_WEIGHT = 0.7
 HOMING_MOTOR_TIMEOUT_S = 30.0
+HOMING_STOP_SETTLE_MS = 5
 
 # ============================================================================
 # ODrive Expected Versions

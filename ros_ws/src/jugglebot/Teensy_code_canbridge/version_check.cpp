@@ -10,6 +10,7 @@
 #include "can_buses.h"         // can_jugglebot_send, jugglebot_commands_allowed
 #include "odrive_protocol.h"   // ODrive::encode_get_version
 #include "udp_protocol.h"      // JbUdp::RpcArgs::ResultAxisVersions
+#include "time_base.h"         // micros64 (re-query pacing, item 20)
 
 #include <cstring>
 
@@ -27,13 +28,20 @@ namespace CanBridge {
 static volatile uint8_t s_version_raw[NUM_AXES][8] = {{0}};
 static volatile uint8_t s_received_mask   = 0;
 static volatile uint8_t s_query_sent_mask = 0;
+static uint64_t         s_last_query_us   = 0;   // last (re)query send — re-query pacing (item 20)
 
 void version_check_init() {
-  // Re-arm: clear the masks (file-statics already boot zeroed; this is the
-  // test-isolation seam and a future on-target re-arm hook). The raw bytes need
-  // not be cleared — the received mask gates every read.
+  // Re-arm: clear the masks + the raw cache (file-statics already boot zeroed; this
+  // is the test-isolation seam and a future on-target re-arm hook). Production
+  // correctness needs only the masks (the received mask gates every valid read), but
+  // zeroing the raw bytes too makes a re-arm present a clean cache and keeps the
+  // native tests order-independent (a version_record() in one case would otherwise
+  // leave stale raw bytes visible to a later case's fill_blob).
   s_received_mask   = 0;
   s_query_sent_mask = 0;
+  s_last_query_us   = 0;   // re-query pacing (item 20)
+  for (uint8_t i = 0; i < NUM_AXES; ++i)
+    for (uint8_t j = 0; j < 8; ++j) s_version_raw[i][j] = 0;
 }
 
 void version_record(uint8_t axis, const uint8_t* d8) {
@@ -43,6 +51,16 @@ void version_record(uint8_t axis, const uint8_t* d8) {
   s_received_mask |= (uint8_t)(1u << axis);
 }
 
+// Re-query pacing (item 20). The first-pass sweep queries each present axis once
+// and sets s_query_sent_mask; if that reply is lost (a bus glitch or an ODrive too
+// busy to answer), the axis's received bit never sets and its version stays
+// permanently missing — the Jetson's validate_group then reports a spurious
+// version mismatch for a live, healthy axis. So after the first pass, re-query one
+// present-but-UNRECEIVED axis per this interval (still one frame per tick) until
+// every present axis has replied, then idle. 1 s keeps a never-replying axis to a
+// slow trickle rather than a per-tick flood at the 100 Hz task rate.
+static constexpr uint64_t VERSION_REQUERY_INTERVAL_US = 1000000ull;   // 1 s
+
 void version_check_step() {
   // can_node parity (one-per-tick sweep, _send_next_version_query): send ONE
   // Get_Version to the next PRESENT-but-unqueried Jugglebot axis. "Present" =
@@ -50,14 +68,31 @@ void version_check_step() {
   // partial bench rig queries only present axes and the full robot queries all 7.
   // Gated on jugglebot_commands_allowed() so a confirmed-dead CAN3 is never
   // pushed (an un-ACKed TX climbs the FlexCAN TEC). At most one frame per tick →
-  // bus-paced; idle once every present axis is queried (the steady state).
+  // bus-paced; idle once every present axis has REPLIED (the steady state).
   if (!jugglebot_commands_allowed()) return;
+  const uint64_t now = micros64();
+  // First pass: send to the next present-but-unqueried axis (fast, as before).
   for (uint8_t i = 0; i < NUM_AXES; ++i) {
     const uint8_t bit = (uint8_t)(1u << i);
     if ((s_query_sent_mask & bit) || !axes[i].heartbeat_seen) continue;
-    if (can_jugglebot_send(ODrive::encode_get_version(i)))
+    if (can_jugglebot_send(ODrive::encode_get_version(i))) {
       s_query_sent_mask |= bit;
+      s_last_query_us = now;
+    }
     return;   // one Get_Version per tick (bus pacing)
+  }
+  // Re-query pass: every present axis has been queried at least once. If any is
+  // still unreceived and the re-query interval has elapsed since the last send,
+  // re-send ONE — a single lost reply must not leave the version permanently
+  // missing. Keys on s_received_mask (not s_query_sent_mask) so a replied axis is
+  // never re-queried; paced by s_last_query_us so it never floods the bus.
+  if (now - s_last_query_us < VERSION_REQUERY_INTERVAL_US) return;
+  for (uint8_t i = 0; i < NUM_AXES; ++i) {
+    const uint8_t bit = (uint8_t)(1u << i);
+    if ((s_received_mask & bit) || !axes[i].heartbeat_seen) continue;
+    if (can_jugglebot_send(ODrive::encode_get_version(i)))
+      s_last_query_us = now;
+    return;   // one re-query per tick (bus pacing)
   }
 }
 

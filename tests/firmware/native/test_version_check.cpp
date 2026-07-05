@@ -88,6 +88,42 @@ TEST_CASE("sweep sends one Get_Version per present axis, one per tick, bus-paced
   CHECK(fake_sent_count() == 2);
 }
 
+TEST_CASE("sweep re-queries a present axis whose Get_Version reply was lost (item 20)") {
+  fake_reset();          // clock → 0
+  clear_all_present();
+  version_check_init();
+  fake_set_commands_allowed(true);
+
+  axes[0].heartbeat_seen = true;   // one present axis; its reply will be "lost"
+
+  // First pass: axis 0 queried once, then idle (query_sent set, received NOT set).
+  version_check_step();
+  REQUIRE(fake_sent_count() == 1);
+  CHECK((version_query_sent_mask() & (1u << 0)) != 0);
+  CHECK((version_received_mask()   & (1u << 0)) == 0);
+
+  // Before the re-query interval elapses: no re-query.
+  version_check_step();
+  version_check_step();
+  CHECK(fake_sent_count() == 1);
+
+  // After the 1 s re-query interval: the unreceived axis is re-queried (bus-paced).
+  fake_advance(1000001);
+  version_check_step();
+  REQUIRE(fake_sent_count() == 2);
+  CHECK(ODrive::axis_of(fake_sent_at(1).id) == 0);
+  CHECK(ODrive::cmd_of(fake_sent_at(1).id) == ODriveCmd::get_version);
+
+  // The reply finally arrives → received bit set → no further re-queries even past
+  // another interval (idle once every present axis has replied).
+  const uint8_t v0[8] = {0x00, 0x03, 0x06, 0x00, 0x00, 0x06, 0x0B, 0x00};
+  version_record(0, v0);
+  fake_advance(2000000);
+  version_check_step();
+  version_check_step();
+  CHECK(fake_sent_count() == 2);
+}
+
 TEST_CASE("sweep never queries an absent axis") {
   fake_reset();
   clear_all_present();

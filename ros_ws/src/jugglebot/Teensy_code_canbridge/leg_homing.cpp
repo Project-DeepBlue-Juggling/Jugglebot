@@ -51,11 +51,14 @@ enum class Phase : uint8_t {
 };
 
 // Settle windows. DRIVE settle mirrors can_node `yield 0.01` (10 ms, "let
-// settings take effect"); STOP settle mirrors Homing::HOMING_STOP_SETTLE_MS
-// (5 ms, the delay after stopping before set_absolute_position). Both are local
-// firmware-impl timings, not Python-mirrored config.
+// settings take effect") — a local firmware-impl timing with no named config
+// source. STOP settle (the delay after stopping before set_absolute_position) is
+// sourced from Homing::STOP_SETTLE_MS (jugglebot_homing.stop_settle_ms) so it tracks
+// the generated config and cannot drift (item 20 — was a hardcoded 5000ull magic;
+// the old comment named a Homing:: constant that did not exist — the real 5 ms
+// stop-settle lived only in the BB-hand's config).
 static constexpr uint64_t SETTLE_DRIVE_US = 10000ull;   // 10 ms
-static constexpr uint64_t SETTLE_STOP_US  = 5000ull;    // 5 ms
+static constexpr uint64_t SETTLE_STOP_US  = (uint64_t)Homing::STOP_SETTLE_MS * 1000ull;   // 5 ms, from config
 // Hard per-axis timeout (Homing::MOTOR_TIMEOUT_S = 30 s) — a missed hardstop
 // NEVER drives the leg indefinitely; it aborts to IDLE.
 static const uint64_t TIMEOUT_US = (uint64_t)(Homing::MOTOR_TIMEOUT_S * 1.0e6f);

@@ -25,6 +25,11 @@ namespace Rpc {
 // only method that returns a result blob today is GET_AXIS_VERSIONS
 // (ResultAxisVersions = 57 B); keep this ≥ the largest result blob.
 static constexpr uint16_t RESULT_BUF_CAP = 64;
+// Item 20: fail the build if the largest RPC result blob outgrows the buffer, so a
+// future growth of ResultAxisVersions (or a new result-bearing method) can never
+// silently truncate in version_fill_blob / dispatch instead of being caught here.
+static_assert(RESULT_BUF_CAP >= sizeof(JbUdp::RpcArgs::ResultAxisVersions),
+              "RESULT_BUF_CAP too small for the largest RPC result blob");
 
 // ── Envelope ──────────────────────────────────────────────────────────────────
 uint16_t pack_request(uint16_t method, uint16_t req_id,
@@ -203,6 +208,13 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
     }
     case RpcMethod::REBOOT_ODRIVES: {
       ArgAxisOnly a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
+      // Item 20: never REBOOT during a deferred stow (pending OR in-progress). A
+      // reboot mid-descent disarms the raised legs → gravity drop; the same hazard
+      // class as the DEACTIVATE-during-stow reject. Mirrors the cold-start requests'
+      // fault_stow_pending() interlock (homing/activate/deactivate_request). Rejects
+      // every axis (incl. a hand-only reboot) for a simple, conservative gate — a
+      // stow completes in ~2-3 s, after which REBOOT is available again.
+      if (fault_stow_pending()) return RpcStatus::ERR_REJECTED;
       if (a.axis == AXIS_ALL) {
         // Bus-transmittable gate (Phase 6); AXIS_ALL loops legs + hand (i < NUM_AXES —
         // JUGGLEBOT_AXES parity). Arm the watchdog-suppression latch only ONCE the
@@ -253,6 +265,15 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
       // (the move takes ~seconds; the net task must not block). The homing task
       // runs the velocity-limited move-to-hardstop; the Jetson observes
       // completion via telemetry (axis_state → IDLE, pos → home ref).
+      //
+      // Axis-6 policy (item 20): HOME does NOT route through send_axis_frame, so its
+      // per-axis gate is NOT the hand_axis6_permitted allow-table — it is owned
+      // wholly by homing_request(), the single enforcement point for the HOME path.
+      // homing_request accepts legs 0..5 AND the hand (axis 6, homed with the
+      // Homing::HAND_* params, Phase 5), rejects AXIS_ALL / out-of-range, and
+      // presence/bus/concurrency-gates. This is consistent with the allow-table,
+      // which also permits HOME for the hand (hand_axis6_permitted(HOME) == true);
+      // the two never diverge because homing_request is the only path HOME takes.
       ArgAxisOnly a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
       return homing_request(a.axis);
     }

@@ -826,6 +826,8 @@ def generate_cpp() -> str:
     a("                             uint8_t* out, uint16_t out_cap) {")
     a("  const uint16_t total = (uint16_t)(HEADER_SIZE + len + CRC_SIZE);")
     a("  if (len > MAX_PAYLOAD || total > out_cap) return 0;")
+    a("  if (len && !payload) return 0;   // len>0 with a null payload would else CRC over")
+    a("                                   // uninitialized bytes and return a 'valid' garbage frame")
     a("  Header h{ MAGIC, PROTOCOL_VERSION, msg_type, seq, len };")
     a("  memcpy(out, &h, HEADER_SIZE);")
     a("  if (len && payload) memcpy(out + HEADER_SIZE, payload, len);")

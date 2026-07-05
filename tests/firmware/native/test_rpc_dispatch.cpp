@@ -57,6 +57,7 @@ static ODrive::CanFrame g_bb_last{};          // recording CAN1 (BB) TX
 static bool     g_bb_send_ok = true;
 static int      g_clear_calls = 0;            // fault_notify_clear_errors count
 static int      g_reboot_calls = 0;           // fault_notify_reboot_started count
+static bool     g_stow_pending = false;       // drives fault_stow_pending()
 static uint8_t  g_homing_axis = 0xFF, g_activate_axis = 0xFF, g_deactivate_axis = 0xFF;
 static uint16_t g_homing_ret = JbUdp::RpcStatus::OK;
 static uint16_t g_activate_ret = JbUdp::RpcStatus::OK;
@@ -69,7 +70,7 @@ static int      g_tilt_calls = 0, g_state_read_calls = 0, g_state_write_calls = 
 static void drv_reset() {
   g_bus_transmittable = true;
   g_bb_sent = 0; g_bb_last = ODrive::CanFrame{}; g_bb_send_ok = true;
-  g_clear_calls = 0; g_reboot_calls = 0;
+  g_clear_calls = 0; g_reboot_calls = 0; g_stow_pending = false;
   g_homing_axis = g_activate_axis = g_deactivate_axis = 0xFF;
   g_homing_ret = g_activate_ret = g_deactivate_ret = JbUdp::RpcStatus::OK;
   g_hand_traj_ret = JbUdp::RpcStatus::OK; g_hand_traj_calls = 0;
@@ -84,6 +85,7 @@ bool can_bb_send(const ODrive::CanFrame& f) { g_bb_sent++; g_bb_last = f; return
 // ── fault_machine.h ──
 void fault_notify_clear_errors()  { g_clear_calls++; }
 void fault_notify_reboot_started() { g_reboot_calls++; }
+bool fault_stow_pending()          { return g_stow_pending; }
 
 // ── leg_homing/activate/deactivate.h (entry points only — record + settable ret) ──
 uint16_t homing_request(uint8_t axis)     { g_homing_axis = axis; return g_homing_ret; }
@@ -236,6 +238,29 @@ TEST_CASE("REBOOT arms the watchdog-suppression latch for a LEG but NOT for the 
   ArgAxisOnly hand{}; hand.axis = HAND_AXIS;
   CHECK(call(RpcMethod::REBOOT_ODRIVES, hand) == RpcStatus::OK);
   CHECK(g_reboot_calls == 0);          // hand-only reboot must NOT arm leg-loss suppression
+}
+
+TEST_CASE("item 20: REBOOT_ODRIVES is rejected during a deferred stow (no TX, no latch)") {
+  // A pending/in-progress stow must block REBOOT — a reboot mid-descent disarms the
+  // raised legs (gravity drop). Mirrors the cold-start requests' stow-pending reject.
+  reset_all();
+  g_stow_pending = true;
+
+  ArgAxisOnly leg{}; leg.axis = 0;
+  CHECK(call(RpcMethod::REBOOT_ODRIVES, leg) == RpcStatus::ERR_REJECTED);
+  CHECK(fake_sent_count() == 0);       // nothing rebooted
+  CHECK(g_reboot_calls == 0);          // suppression latch NOT armed
+
+  ArgAxisOnly all{}; all.axis = AXIS_ALL;
+  CHECK(call(RpcMethod::REBOOT_ODRIVES, all) == RpcStatus::ERR_REJECTED);
+  CHECK(fake_sent_count() == 0);
+  CHECK(g_reboot_calls == 0);
+
+  // Once the stow clears, REBOOT proceeds normally (one leg frame, latch armed).
+  g_stow_pending = false;
+  CHECK(call(RpcMethod::REBOOT_ODRIVES, leg) == RpcStatus::OK);
+  CHECK(fake_sent_count() == 1);
+  CHECK(g_reboot_calls == 1);
 }
 
 // ── Flash-A item 6: CLEAR_ERRORS notifies (refills the soft-reset budget) ONLY ────

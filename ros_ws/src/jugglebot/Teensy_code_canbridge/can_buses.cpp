@@ -204,26 +204,33 @@ static void decode_bb_odrive(const CAN_message_t& msg) {
 // consumer is cmd_result_uplink_step() on task_telem. Both sides mask IRQs for the
 // few hundred ns of the copy. CMD_RESULT is low-rate (one per operator command),
 // so a small ring is ample; sustained overflow would mean BB babble, counted in
-// s_cmd_result_fwd_drops (drop-newest) and surfaced on the [canhealth] serial line.
+// s_cmd_result_fwd_drops (drop-OLDEST, item 20) and surfaced on [canhealth].
 static constexpr uint8_t CMD_RESULT_RING_CAP = 8;
 static CmdResultFrameRec s_cmd_result_ring[CMD_RESULT_RING_CAP];
 static volatile uint8_t s_cmd_result_ring_head = 0, s_cmd_result_ring_tail = 0;
 static volatile uint32_t s_cmd_result_fwd_drops = 0;
 
-// Copy a CMD_RESULT frame verbatim into the uplink ring (drop-newest on overflow).
+// Copy a CMD_RESULT frame verbatim into the uplink ring. Drop-OLDEST on overflow
+// (item 20): CMD_RESULT is the LOUD operator command-outcome channel, so under a
+// burst the operator wants the FRESHEST results — the prior drop-newest policy
+// discarded exactly the latest outcome they were waiting on. On a full ring, evict
+// the oldest record (advance the tail), then enqueue. Touching the tail from the
+// producer is safe because this push and can_cmd_result_pop are mutually exclusive
+// under the shared PRIMASK critical section (both mask IRQs on this single-core M7 —
+// not a lock-free head/tail split, so there is no producer/consumer tail race).
 static inline void cmd_result_ring_push(const CAN_message_t& msg, uint64_t now) {
   const uint32_t pm = __get_PRIMASK(); __disable_irq();
   const uint8_t next = (uint8_t)((s_cmd_result_ring_head + 1) % CMD_RESULT_RING_CAP);
-  if (next == s_cmd_result_ring_tail) {
-    s_cmd_result_fwd_drops++;                  // ring full → drop newest
-  } else {
-    CmdResultFrameRec& r = s_cmd_result_ring[s_cmd_result_ring_head];
-    r.t_bridge_us = now;
-    r.can_id = msg.id;
-    r.dlc = (msg.len > 8) ? 8 : msg.len;
-    memcpy(r.buf, msg.buf, 8);
-    s_cmd_result_ring_head = next;
+  if (next == s_cmd_result_ring_tail) {                  // ring full → drop OLDEST
+    s_cmd_result_ring_tail = (uint8_t)((s_cmd_result_ring_tail + 1) % CMD_RESULT_RING_CAP);
+    s_cmd_result_fwd_drops++;
   }
+  CmdResultFrameRec& r = s_cmd_result_ring[s_cmd_result_ring_head];
+  r.t_bridge_us = now;
+  r.can_id = msg.id;
+  r.dlc = (msg.len > 8) ? 8 : msg.len;
+  memcpy(r.buf, msg.buf, 8);
+  s_cmd_result_ring_head = next;
   __set_PRIMASK(pm);
 }
 

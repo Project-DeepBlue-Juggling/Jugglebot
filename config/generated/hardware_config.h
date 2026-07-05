@@ -95,6 +95,7 @@ namespace Homing {
   constexpr float HAND_ABS_POS_REV = -0.1f;
   constexpr float EMA_WEIGHT = 0.7f;
   constexpr float MOTOR_TIMEOUT_S = 30.0f;
+  constexpr uint32_t STOP_SETTLE_MS = 5u;
 }
 
 // ==========================================================================

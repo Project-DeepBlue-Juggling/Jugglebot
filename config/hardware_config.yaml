@@ -253,6 +253,7 @@ jugglebot_homing:
   hand_abs_pos_rev: -0.1                 # Absolute position set after hand homing {rev}
   ema_weight: 0.7                        # EMA weight for Iq spike detection
   motor_timeout_s: 30.0                  # Max time per motor for homing current detection {s}
+  stop_settle_ms: 5                      # Delay after stopping motor before setting absolute position {ms}
 
 # ============================================================
 # 4. ODrive Expected Versions
