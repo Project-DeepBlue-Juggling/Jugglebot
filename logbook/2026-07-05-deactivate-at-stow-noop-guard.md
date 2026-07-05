@@ -6,6 +6,8 @@ status: fix-landed-pending-hardware-confirm
 related_entries:
   - 2026-07-04-canbridge-stow-on-shutdown
   - 2026-07-05-canhub-hardening-18a-homing-result-uplink
+commits:
+  - 559c6dc
 files_changed:
   - ros_ws/src/jugglebot/jugglebot/teensy_bridge_node.py
   - tests/ros/test_teensy_bridge_node_deactivate.py
