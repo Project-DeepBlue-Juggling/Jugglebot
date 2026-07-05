@@ -8,6 +8,8 @@ related_plan: canhub-hardening.md
 related_entries:
   - 2026-07-02-canhub-hardening-tier2
   - 2026-07-05-canhub-marginal-can3-diagnosis
+commits:
+  - f806ec0
 files_changed:
   - config/hardware_config.yaml
   - config/generated/hardware_config.h
