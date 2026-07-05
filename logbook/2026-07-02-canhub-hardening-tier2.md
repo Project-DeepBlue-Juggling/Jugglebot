@@ -35,6 +35,7 @@ commits:
   - 83ac938
   - 6fe1ec9
   - 192e6af
+  - 8d79a58   # item 19 — automated 500 Hz deadline/jitter soak gate (2026-07-05)
 subsystem:
   - firmware
   - can
