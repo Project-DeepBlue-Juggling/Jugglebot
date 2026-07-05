@@ -171,8 +171,12 @@ soak is the same gate over a long `--duration` while the operator induces a
 CAN-loss→reconnect deferred stow). Carried out one open
 item — a **marginal
 CAN3 bus** (`err` climbing, `tec`→255, sticky `flt=BUSOFF`, decorative to the staleness
-gate) → own bench-diagnosis cycle. **Remaining:** item 20 (small fw follow-ups) + [18A]
-(HomingResult uplink) + the CAN3 investigation + `health_of` bus-off wiring, then
+gate) → own bench-diagnosis cycle, **RESOLVED 2026-07-05** (the `err` counter was never
+a wire-error rate; presence-gate contract landed `b8b6faf` and gate-validated live the
+same day — `logbook/2026-07-05-canhub-marginal-can3-diagnosis.md`; fresh-boot `flt`/`tec`
+should now never exceed passive/128). **Remaining:** item 20 (small fw follow-ups) +
+[18A] (HomingResult uplink) + `health_of` bus-off wiring (live fault_conf/TEC now
+instrumented — ready to consume), then
 `/archive-plan canbridge-foundation-coldstart-parity`.
 
 ### Tier 3 — defer

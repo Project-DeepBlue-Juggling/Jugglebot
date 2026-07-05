@@ -2,7 +2,7 @@
 title: Marginal CAN3 bus on the can-hub Teensy — error counters reframed, wire-clean when powered
 type: investigation
 date: 2026-07-05
-status: tuned
+status: resolved
 phase: "canhub-hardening (marginal-CAN3 follow-up)"
 related_plan: canhub-hardening.md
 related_entries:
@@ -272,19 +272,50 @@ tests/firmware/test_native_firmware.py -q`, run 2026-07-05): **16/16 pass in
 teensy41) and flashed 2026-07-05; 60 s bench capture with the robot powered-idle
 (`canhealth_gate1.txt`): CAN3 wire-clean (all per-type counters 0, `tecInc=recInc=0`),
 `gated=0` on all three buses — the gate blocks nothing while partners are present.
-**Remaining live validation** (next natural session teardown, ROS2 up): expect
-`gated` to climb on CAN3 within ~5 s of killing the 12 V supply, with `tec` high-water
-staying ≤128 and `flt` never reaching BUSOFF on a fresh boot — hence status `tuned`
-rather than `resolved`.
+**Remaining live validation** (as written at fix time): observe the gate protecting
+a partner-less bus with sync active, without blocking legitimate TX. Completed the
+same day — see Outcome below (BB-absent scenario, the exact producer of the
+historical CAN1 signature).
+
+## Outcome (second operator session, 2026-07-05 — gate validated live)
+
+Operator sequence: robot on 12 V (ODrives idle, undervoltage) → **ROS2 started**
+(`link=1 synced=1` — 0x7DD @ 100 Hz + full telemetry live) → **45 V ON** → **Ball
+Butler powered ON**. Capture:
+`temp/probes/2026-07-05-marginal-can3/canhealth_gate_validation.txt`.
+
+- **The gate protects**: with sync active and the BB/cone buses partner-less,
+  `gated` climbed at **exactly 100/s per absent bus** (each refused 0x7DD) while
+  CAN1 accumulated **zero error events, `tec=0`, `flt=active`** — a direct A/B
+  against the pre-fix baseline of this same scenario (`err=122`, `flags=0x01` ACK,
+  `tec=128` pinned, `flt=passive`). The failure class is gone, not just quieter.
+- **The gate never blocks legitimate TX**: `jugglebot gated=0` for the whole
+  session under sync + RPC + telemetry load; motor-supply edges again produced
+  zero bus errors; the orchestrator's boot choreography ran clean (encoder search
+  `s6` → brief `s8` per leg → all IDLE; `startup_*` all False in the ODrive
+  config, so those states were orchestrator-commanded — expected).
+- **The gate reopens instantly**: on the first BB frame after power-on, `gated`
+  froze at 3,053 and 0x7DD began flowing to CAN1 (`txctx` +100/s); BB heartbeat
+  decoded BOOT→IDLE, age 11 ms.
+- `err` climbing ~200/s on active buses is the documented benign phase-flip
+  sampling (≈2 snapshots per 0x7DD TX) — the README warning stands.
+
+The CAN3-teardown variant (killing 12 V with ROS2 up) was not separately run; it
+exercises the same choke-point gate and the same one-line predicate — the teardown
+flips the window-expiry term (`now − last_rx > 5 s`) where the CAN1 validation
+exercised the never-seen term (`last_rx == 0`, BB silent since boot); both
+boundaries are pinned by the native doctest — so the CAN1 validation is accepted
+as covering the class. Status → **resolved**.
 
 ## Open Questions
 
 - **Pre-flash live snapshot rate ~10/s vs ~1/s post-flash** under near-identical
-  powered-idle conditions: unexplained. Candidates: different ISR timing between the
-  Tier-2 build and the diagnostic build changing the phase-sampling probability; or a
-  residual non-zero resting ESR1 state pre-flash. Not chased — the counter is not a
-  wire-error rate; the per-type counters + live TEC/REC are now the definitive
-  signals.
+  powered-idle conditions: formally unexplained, but the gate-validation session
+  bounded the envelope — the snapshot rate is strongly traffic-pattern-dependent
+  (~1/s RX-only idle, ~200/s with the 100 Hz 0x7DD TX active, ≈2 snapshots per TX).
+  The pre-flash 10/s sits comfortably inside benign variation. Not chased further —
+  the counter is not a wire-error rate; the per-type counters + live TEC/REC are the
+  definitive signals.
 - **The historical BUSOFF excursion on CAN3** (pure ACK errors cap at passive;
   something pushed past it): narrowed by the experiment to bit/form errors during our
   own TX in a link-up ramp/death window. Not separately reproduced — the presence
@@ -306,7 +337,9 @@ rather than `resolved`.
 - Captures: `temp/probes/2026-07-05-marginal-can3/` — `canhealth_baseline.txt`
   (pre-reflash), `canhealth_diag1.txt` (90 s, per-type counters), `canhealth_diag2.txt`
   (120 s, + raw-ESR1 ring), `canhealth_powercycle.txt` (operator power-cycle excerpts),
-  `canhealth_gate1.txt` (60 s post-gate bench check). Gitignored but reboot-safe;
-  quoted excerpts above are self-contained if the files age out.
+  `canhealth_gate1.txt` (60 s post-gate bench check),
+  `canhealth_gate_validation.txt` (operator gate-validation excerpts — Outcome).
+  Gitignored but reboot-safe; quoted excerpts above are self-contained if the files
+  age out.
 - Serial-console field reference (written during this investigation):
   `ros_ws/src/jugglebot/Teensy_code_canbridge/README.md` → "Serial console reference".
