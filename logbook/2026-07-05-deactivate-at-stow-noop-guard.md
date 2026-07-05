@@ -2,7 +2,7 @@
 title: Deactivate no-op when already at STOW — skip the redundant re-arm+lower
 type: feature
 date: 2026-07-05
-status: fix-landed-pending-hardware-confirm
+status: resolved
 related_entries:
   - 2026-07-04-canbridge-stow-on-shutdown
   - 2026-07-05-canhub-hardening-18a-homing-result-uplink
@@ -102,9 +102,9 @@ hand still armed correctly drops the hand.
   → **9 passed** (2026-07-05).
 - Full suite (`pytest tests/ -q`, run 2026-07-05): **2054 passed, 1 xfailed in 645.50 s**
   (+3 deactivate stow-guard tests). Order-flaky alloc tests confirmed isolated as usual.
-- Hardware: pending an operator eyeball — `/deactivate` when the platform is already
-  stowed should be a clean no-op (no CLOSED_LOOP re-arm jolt); `/deactivate` from the
-  active pose should still lower normally.
+- **Hardware VALIDATED (2026-07-05, operator)**: `/deactivate` when the platform is
+  already stowed is a clean no-op (no CLOSED_LOOP re-arm jolt); `/deactivate` from the
+  active pose still lowers normally. Both directions confirmed on the robot.
 
 ## Related
 
