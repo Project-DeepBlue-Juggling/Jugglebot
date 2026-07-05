@@ -116,6 +116,28 @@ def test_decode_rejects_bad_crc():
         p.decode_frame(bytes(frame))
 
 
+def test_decode_raises_typed_crc_error():
+    # CRC corruption raises the typed CrcError (a ValueError subclass, so any
+    # legacy `except ValueError` still catches it). The host RX path counts this
+    # as a crc_error rather than a structural decode_error.
+    frame = bytearray(p.encode_frame(int(p.MsgType.HEARTBEAT_J2T), 0, p.HeartbeatJ2T().pack()))
+    frame[-1] ^= 0xFF  # flip a CRC bit
+    assert issubclass(p.CrcError, ValueError)
+    with pytest.raises(p.CrcError, match="CRC"):
+        p.decode_frame(bytes(frame))
+
+
+def test_decode_structural_error_is_not_crc_error():
+    # A structural failure (bad magic — checked before the CRC) is a plain
+    # ValueError, NOT a CrcError, so the two RX-stat buckets never
+    # cross-contaminate (the bug the old `"CRC" in str(e)` match risked).
+    frame = bytearray(p.encode_frame(int(p.MsgType.HEARTBEAT_J2T), 0, p.HeartbeatJ2T().pack()))
+    frame[0] ^= 0xFF  # corrupt magic
+    with pytest.raises(ValueError) as exc:
+        p.decode_frame(bytes(frame))
+    assert not isinstance(exc.value, p.CrcError)
+
+
 def test_decode_rejects_inconsistent_length():
     # Header says length=99 but frame too short to actually carry it
     blob = b"\x00" * 4

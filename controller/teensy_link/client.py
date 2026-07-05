@@ -349,12 +349,17 @@ class TeensyLinkClient:
             self.stats.last_rx_us = int(time.monotonic() * 1_000_000)
             try:
                 msg_type, seq, payload = p.decode_frame(data)
+            except p.CrcError as e:
+                # Typed CRC-16 mismatch — a corrupted frame, counted apart from a
+                # structural decode error. (CrcError subclasses ValueError, so this
+                # clause must precede the ValueError catch below.) Replaces the
+                # former fragile `"CRC" in str(e)` string match.
+                self.stats.crc_errors += 1
+                logger.debug("CRC failure: %s (%d bytes from %s)", e, len(data), addr)
+                continue
             except ValueError as e:
-                # Distinguish CRC vs structural errors for stats.
-                if "CRC" in str(e):
-                    self.stats.crc_errors += 1
-                else:
-                    self.stats.decode_errors += 1
+                # Structural decode error (bad magic/version/length/short frame).
+                self.stats.decode_errors += 1
                 logger.debug("decode failure: %s (%d bytes from %s)", e, len(data), addr)
                 continue
             self._track_seq(msg_type, seq)

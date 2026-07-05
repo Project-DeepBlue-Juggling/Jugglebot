@@ -86,6 +86,21 @@ def test_client_counts_crc_errors(fake_teensy_and_client):
     assert client.stats.crc_errors >= 1
 
 
+def test_client_counts_decode_errors_distinct_from_crc(fake_teensy_and_client):
+    teensy, client = fake_teensy_and_client
+    # A structurally-malformed frame (bad magic, checked before the CRC) must
+    # count as a decode_error, NOT a crc_error. Guards the typed-CrcError split
+    # in the RX path against the old fragile `"CRC" in str(e)` misclassification.
+    frame = bytearray(p.encode_frame(int(MsgType.HEARTBEAT_T2J), 0, HeartbeatT2J().pack()))
+    frame[0] ^= 0xFF  # corrupt magic
+    teensy.stream_sock.sendto(bytes(frame), teensy._jetson_addr)  # type: ignore[attr-defined]
+    deadline = time.time() + 0.5
+    while time.time() < deadline and client.stats.decode_errors < 1:
+        time.sleep(0.01)
+    assert client.stats.decode_errors >= 1
+    assert client.stats.crc_errors == 0
+
+
 def test_client_stats_track_rx_count_by_type(fake_teensy_and_client):
     teensy, client = fake_teensy_and_client
     for _ in range(3):

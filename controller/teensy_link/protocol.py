@@ -60,6 +60,7 @@ from udp_protocol import (  # noqa: E402, F401
     crc16_ccitt,
     encode_frame,
     decode_frame,
+    CrcError,
     # Payload structs
     Setpoint,
     HeartbeatJ2T,

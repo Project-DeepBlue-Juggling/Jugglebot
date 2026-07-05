@@ -114,6 +114,17 @@ class HeartbeatT2JFlags(IntEnum):
     ALL_AXIS_HEARTBEATS_OK = 4  # bit2: every present axis heartbeat is fresh
     MPC_ACTIVE = 8  # bit3: firmware-side mpc_active (lets a setpoint source verify its arm took)
 
+# ── Decode errors ──────────────────────────────────────────────────────
+class CrcError(ValueError):
+    """decode_frame() raised this on a CRC-16 mismatch (a corrupted frame).
+
+    Subclasses ValueError so existing ``except ValueError`` handlers still
+    catch it; callers that must distinguish a corrupted frame (bad CRC) from
+    a structurally-malformed one (bad magic/version/length) catch CrcError
+    specifically. See controller/teensy_link/client.py's RX decode path,
+    which counts crc_errors vs decode_errors off this distinction.
+    """
+
 # ── CRC-16/CCITT-FALSE ─────────────────────────────────────────────────
 def crc16_ccitt(data: bytes) -> int:
     crc = 0xFFFF
@@ -154,7 +165,7 @@ def decode_frame(frame: bytes):
     want = crc16_ccitt(frame[:HEADER_SIZE + length])
     got = struct.unpack_from('<H', frame, HEADER_SIZE + length)[0]
     if want != got:
-        raise ValueError(f"CRC mismatch want 0x{want:04X} got 0x{got:04X}")
+        raise CrcError(f"CRC mismatch want 0x{want:04X} got 0x{got:04X}")
     payload = frame[HEADER_SIZE:HEADER_SIZE + length]
     return msg_type, seq, payload
 
