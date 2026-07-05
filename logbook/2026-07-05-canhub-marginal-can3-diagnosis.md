@@ -17,7 +17,8 @@ files_changed:
   - ros_ws/src/jugglebot/Teensy_code_canbridge/README.md
   - tests/firmware/native/test_platform_relay.cpp
   - plans/active/teensy-can-offload.md
-commits: []
+commits:
+  - b8b6faf   # fix(canbridge): presence-gate all CAN TX + permanent bus-error attribution instrumentation
 subsystem:
   - canbridge
 tags:
