@@ -1,8 +1,8 @@
 ---
 title: Can-bridge foundation seams — restore orchestrator-driven automatic cold-start (parity)
 created: 2026-06-28
-status: active
-last_updated: 2026-06-29
+status: archived
+last_updated: 2026-07-05
 related_logbook:
   - 2026-06-27-can-node-teensy-parity-audit.md
   - 2026-05-19-can-loss-fault-response-safety-inversion.md
@@ -820,3 +820,24 @@ of which gate Phase 0.)
   re-stamp.
 - ACTIVATE folds a `_run_configure` so the legs end PASSTHROUGH/interp-ready for
   `run_mpc.py`.
+
+---
+
+## Archival note (2026-07-05)
+
+**Archived: all 6 implementation phases COMPLETE and hardware-validated.** Phases
+0–6 landed and were powered-validated across the 2026-06-29 → 07-02 sittings (Phase-4
+orchestrator wiring + Phase-5 hand conduit powered-validated 2026-07-02, logbook
+`2026-07-02-canbridge-phase4-orchestrator-wiring`; Phases 1/3/6 bench-probed). The
+plan's own Phase-4 Outcome already declared *"residuals discharged; ready to
+`/archive-plan`."* A 2026-07-05 per-phase review (git + logbook + code) reconfirmed
+every phase implemented + validated.
+
+Two residuals carried FORWARD (neither a plan blocker):
+1. **Stow-on-shutdown** — a `can_node` α→β migration parity gap surfaced during the
+   2026-07-04 Tier-2 sitting (Ctrl-C left the platform holding). Fix landed
+   `25557e2` (logbook `2026-07-04-canbridge-stow-on-shutdown`,
+   fix-landed-pending-hardware-confirm) → now tracked under `canhub-hardening`.
+2. **Matrix row 18 — Jetson↔Teensy UDP-link deferred-stow** — acknowledged
+   out-of-scope here; the first autonomous-movement safety item, carried to the
+   armed-cutover work (`teensy-can-offload` Phase 12 territory).
