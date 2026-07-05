@@ -1,8 +1,9 @@
 ---
 title: Can-hub Teensy firmware/UDP pipeline — hardening pass (Fable-5 fresh-eyes review)
 created: 2026-07-02
-status: active
-last_updated: 2026-07-02
+status: completed
+completed: 2026-07-05
+last_updated: 2026-07-05
 related_plan:
   - canbridge-foundation-coldstart-parity.md
 related_review:
@@ -230,3 +231,38 @@ and the HomingResult uplink (`logbook/2026-07-05-canhub-hardening-18a-homing-res
 - Tier 2: `pio run` green + the native harness (now compiling the cold-start TUs) +
   the golden conformance + the new clock-step test, then the powered re-validation.
 - New coverage lands with the item that motivates it (gaps → items 3/8/9/11/19).
+
+---
+
+## Archival note (2026-07-05)
+
+**Archived: Tier 1 + Tier 2 (all 21 items bar the deliberately-deferred Tier-3 item 21)
+COMPLETE, flashed, and gate-verified.** A per-item `plan-reviewer` pass (2026-07-05)
+verified every claimed completion against code + git — all 26 cited commits exist, the
+code matches, and `pytest tests/ -q` is green (**2054 passed, 1 xfailed**, the single
+xfail a pre-existing DOCUMENTED-PERMANENT one from the archived MPC sad-path plan, NOT
+introduced here). No xfail markers were introduced by this plan.
+
+- **Tier 1** (items 1–12): host/test/doc — done (`2cf3a07` typed CrcError closed the
+  last residual; item 12 doc sweep host/doc side done, firmware-comment residue carried).
+- **Tier 2** (items 13–20 + [18A]): firmware — flashed in two cycles. Items 13–17 +
+  review fixes flashed 2026-07-03, powered-validated 2026-07-04 (7 checks). Item 19
+  automated 500 Hz gate committed + hardware-PASS 2026-07-05 (0 deadline misses, 2 µs
+  jitter). Item 20 (eight small follow-ups) + [18A] (HomingResult uplink, `PROTOCOL_VERSION`
+  1→2) flashed 2026-07-05 as v2.
+
+**Residuals carried forward (documented, non-blocking):**
+1. **Two targeted powered checks** remain nice-to-haves at a future sitting — the [18A]
+   mid-home-abort→FAILED check (`logbook/2026-07-05-canhub-hardening-18a-homing-result-uplink.md`)
+   and the item-20 REBOOT-during-stow reject + cmd-result drop-oldest-under-burst checks
+   (`logbook/2026-07-05-canhub-hardening-item20-firmware.md`). Both entries stay
+   `fix-landed-pending-hardware-confirm` (flashed + smoke-tested via a clean
+   cold-boot-HOMING CAN3-drop→re-home; the guard-E-STOP/ODrive-fatal-mid-drive assertion
+   is the open targeted check).
+2. **`health_of()` bus-off wiring** — OWNED by the concurrent CAN3-diagnosis session
+   (the marginal-CAN3 investigation is resolved; the presence-gate + fault_conf/TEC
+   instrumentation landed; consumer refinement is theirs).
+3. **Tier-3 item 21** — structural refactors, deliberately deferred to when those files
+   are next touched.
+4. **Item-12 firmware-comment residue** (dead task-table constants, UV-flag note,
+   `LinkState::DEGRADED` codegen marker) — deferred to a future firmware touch.
