@@ -143,8 +143,11 @@ seam, so full clearing aligns with its purpose).
 - **On-target compile** (`pio run -e teensy41`, 2026-07-05): **SUCCESS** — 225600 text /
   35520 data / 107168 bss (fits the Teensy 4.1; the `RESULT_BUF_CAP` static_assert
   compiled clean). Only the pre-existing benign `FlexCAN_T4.tpp` strncpy warning.
-- **Flash + powered validation**: pending — item 20 consolidates into the Phase-2
-  flash cycle with [18A] (HomingResult uplink), then one operator re-validation sitting.
+- **Flash (2026-07-05)**: flashed to the can-bridge Teensy in one Phase-2 cycle (with
+  [18A], `PROTOCOL_VERSION` 2). A cold-boot HOMING interrupted by a CAN3 drop re-homed
+  cleanly on reconnect (operator, 2026-07-05). The dedicated per-item powered checks
+  (REBOOT-during-stow reject, cmd-result drop-oldest under a burst) remain a
+  nice-to-have at a fuller sitting.
 
 ## Related
 

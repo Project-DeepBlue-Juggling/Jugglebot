@@ -147,10 +147,17 @@ force-emit's real value is the RUNNING-transition promptness above, not this edg
   `test_wire_layout_frozen` `_EXPECTED` re-pinned to
   `4fb6260671a9468ebfc124602fbe4012e853721b59ab365b4b128b510761250c` — both paired with
   the incompatible-wire bump, as the [15] freeze guard requires.
-- **Flash + powered validation**: pending — consolidates with item 20 into ONE Phase-2
-  flash cycle, then a powered re-validation (a real home success + an induced mid-home
-  abort — e.g. a CAN3 drop during the drive — to confirm the abort now reports FAILED,
-  not the pre-fix false success).
+- **Flash (2026-07-05)**: the v2 firmware (item 20 + [18A], `PROTOCOL_VERSION` 2) was
+  flashed to the can-bridge Teensy in one Phase-2 cycle.
+- **Hardware (2026-07-05, operator)**: during a cold-boot HOMING the operator dropped
+  CAN3, and on reconnect the system **re-homed** rather than reporting a spurious
+  success — the right direction. Caveat (not over-claimed): a CAN3 drop is a
+  link-loss/staleness event, also covered by the pre-existing timeout backstop and the
+  cold-start `is_homed`=False re-read, so it does NOT *uniquely* exercise the class [18A]
+  closes — a clean mid-drive abort (guard-E-STOP / ODrive-fatal) that IDLEs the leg while
+  telemetry still flows. **The targeted [18A] validation remains**: home a leg to OK,
+  then trip a guard-E-STOP or drop one ODrive mid-drive and confirm the home reports
+  FAILED (not a false success).
 
 ## Related
 

@@ -151,6 +151,87 @@ def test_deactivate_idle_with_errors_is_failure():
 
 # ── _svc_deactivate ──────────────────────────────────────────────────────────
 
+# ── already-at-STOW no-op guard (operator 2026-07-05) ────────────────────────
+
+def _set_cache(node, pos_rev, states):
+    """Seed the telemetry + per-axis diagnostic cache directly."""
+    with node._lock:
+        node._latest_telemetry = Telemetry(
+            t_teensy_us=0, pos_rev=tuple(pos_rev), vel_rps=(0.0,) * 7)
+        node._latest_diag = {a: Diagnostic(axis_id=a, axis_state=s, active_errors=0)
+                             for a, s in enumerate(states)}
+
+
+def test_deactivate_already_at_stow_skips_leg_move_but_idles_hand():
+    """If the platform is already stowed (all target legs IDLE with |pos| <= 0.2 rev),
+    _run_deactivate skips the redundant LEG move (NO DEACTIVATE RPC — no CLOSED_LOOP
+    re-arm jolt) and reports success — but STILL idles the hand (SET_AXIS_STATE) to keep
+    can_node's de-energise-ALL-axes parity."""
+    teensy, client, node = _build_paired_node()
+    try:
+        deact_fired, set_state = [], []
+        teensy.on_rpc(int(RpcMethod.DEACTIVATE),
+                      lambda rid, a: (deact_fired.append(a), (int(RpcStatus.OK), b""))[1])
+        teensy.on_rpc(int(RpcMethod.SET_AXIS_STATE),
+                      lambda rid, a: (set_state.append(a), (int(RpcStatus.OK), b""))[1])
+        _set_cache(node, pos_rev=(0.0, 0.1, -0.05, 0.15, 0.0, 0.0, 0.0),
+                   states=[IDLE] * 7)
+        ok, msg = node._run_deactivate(list(range(6)), poll_dt=0.02)
+        assert ok and "already at STOW" in msg
+        assert deact_fired == [], "DEACTIVATE (leg move) must NOT fire when already stowed"
+        assert set_state, "the hand IDLE (SET_AXIS_STATE) must still fire (de-energise all axes)"
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_deactivate_not_stowed_proceeds():
+    """A leg still extended (|pos| > 0.2) → NOT stowed → the guard lets the deactivate
+    proceed (the DEACTIVATE RPC fires)."""
+    teensy, client, node = _build_paired_node()
+    try:
+        fired = []
+
+        def on_deact(rid, a):
+            fired.append(a)
+            return (int(RpcStatus.ERR_BUS_DOWN), b"")   # reject → returns fast, past the guard
+
+        teensy.on_rpc(int(RpcMethod.DEACTIVATE), on_deact)
+        _set_cache(node, pos_rev=(2.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+                   states=[IDLE] * 7)
+        ok, msg = node._run_deactivate(list(range(6)), poll_dt=0.02)
+        assert fired, "DEACTIVATE must fire when a leg is NOT stowed"
+        assert not ok and "rejected" in msg.lower()
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_legs_already_stowed_predicate():
+    teensy, client, node = _build_paired_node()
+    try:
+        # All IDLE, all near stow → stowed.
+        _set_cache(node, (0.1, -0.05, 0.0, 0.15, 0.0, 0.0, 0.0), [IDLE] * 7)
+        assert node._legs_already_stowed(list(range(6))) is True
+        # One leg CLOSED_LOOP → not stowed.
+        _set_cache(node, (0.0,) * 7, [IDLE, IDLE, CLOSED_LOOP, IDLE, IDLE, IDLE, IDLE])
+        assert node._legs_already_stowed(list(range(6))) is False
+        # All IDLE but one leg extended (|pos| > 0.2) → not stowed.
+        _set_cache(node, (0.0, 0.0, 0.3, 0.0, 0.0, 0.0, 0.0), [IDLE] * 7)
+        assert node._legs_already_stowed(list(range(6))) is False
+        # A leg with a NaN position (encoder not ready / a faulted active leg dropped to
+        # IDLE reporting NaN) → NOT stowed. `abs(nan) > 0.2` is False, so without the
+        # isfinite guard this would MISCLASSIFY as stowed and skip a needed lower.
+        _set_cache(node, (0.0, float('nan'), 0.0, 0.0, 0.0, 0.0, 0.0), [IDLE] * 7)
+        assert node._legs_already_stowed(list(range(6))) is False
+        # Missing diagnostic for a target axis → fail-safe False (proceed).
+        with node._lock:
+            node._latest_telemetry = Telemetry(t_teensy_us=0, pos_rev=(0.0,) * 7, vel_rps=(0.0,) * 7)
+            node._latest_diag = {a: Diagnostic(axis_id=a, axis_state=IDLE, active_errors=0)
+                                 for a in range(5)}   # axis 5 absent
+        assert node._legs_already_stowed(list(range(6))) is False
+    finally:
+        _teardown(teensy, client, node)
+
+
 def test_svc_deactivate_reads_param():
     teensy, client, node = _build_paired_node()
     try:

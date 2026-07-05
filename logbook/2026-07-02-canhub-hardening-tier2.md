@@ -318,6 +318,9 @@ termination) is a real, still-open pipeline item — see Deferred.
   soak (item 19's second half) is the same gate over a long `--duration` while the operator
   induces a CAN-loss→reconnect deferred stow (the check-5 mechanic): the cumulative miss
   counter persists across the stow, so a torn re-arm surfaces as a nonzero delta.
+  **HARDWARE PASS (2026-07-05)** against the flashed v2 firmware: a 45 s soak observed 45
+  PROFILE frames, **0 deadline misses**, worst-window interp jitter **2 µs** (of a 2000 µs
+  period; threshold 500), 0 CRC/decode errors → verdict PASS. Report under `temp/probes/`.
 
 ## Related
 

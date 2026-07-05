@@ -145,6 +145,12 @@ _NUM_LEGS = p.NUM_LEGS
 _HAND_AXIS = p.NUM_LEGS         # 6
 _NUM_AXES = p.NUM_AXES          # 7
 
+# "Already at STOW" band for the deactivate no-op guard: a leg is considered stowed
+# when it is IDLE and within this of the STOW pose (DeactivateMonitor stow_rev = 0.0,
+# so |pos| <= this). 0.2 rev sits just above the monitor's 0.15 arrival tolerance to
+# allow the small foam-relaxed drift a leg takes the instant it IDLEs.
+_STOW_POS_MAX_REV = 0.2
+
 # ODrive undervoltage error/disarm bit (matches odrive.ERR_DC_BUS_UNDER_VOLTAGE).
 _ERR_DC_BUS_UNDER_VOLTAGE = 512
 
@@ -2307,6 +2313,34 @@ class TeensyBridgeNode(Node):
         self.get_logger().info(msg)
         return True, msg
 
+    def _legs_already_stowed(self, axes):
+        """True iff every leg in ``axes`` is already IDLE and within
+        ``_STOW_POS_MAX_REV`` of the STOW pose (``|pos| <= that``; STOW = 0.0 rev, the
+        DeactivateMonitor convention) — i.e. the platform is already stowed, so a
+        DEACTIVATE would be a redundant re-arm+lower. Fail-SAFE: a missing telemetry
+        or per-axis diagnostic (cannot confirm) returns False, so the deactivate
+        proceeds normally rather than silently skipping a real lower."""
+        with self._lock:
+            telem = self._latest_telemetry
+            diag = dict(self._latest_diag)
+        if telem is None:
+            return False
+        for axis in axes:
+            d = diag.get(int(axis))
+            if d is None:
+                return False                                          # no diag → can't confirm
+            if int(d.axis_state) != proto.ODRIVE_STATES['IDLE']:
+                return False                                          # a leg is not IDLE
+            pos = float(telem.pos_rev[int(axis)])
+            # NaN-safe: pos_rev is NaN until the encoder is ready / after an encoder
+            # fault (a faulted active leg drops to IDLE reporting NaN). `abs(nan) > x`
+            # is False, so a bare `> _STOW_POS_MAX_REV` would MISCLASSIFY a NaN leg as
+            # stowed and skip a needed lower — leaving the platform UP. Treat non-finite
+            # as "cannot confirm" → not stowed (fail-safe), mirroring _encoder_search_axis_status.
+            if not math.isfinite(pos) or abs(pos) > _STOW_POS_MAX_REV:
+                return False                                          # extended or unknown
+        return True
+
     def _run_deactivate(self, axes, *, poll_dt=0.05):
         """Fire the firmware DEACTIVATE (TRAP_TRAJ controlled lower to STOW, then
         IDLE) and observe it to completion. A single configured axis fires that
@@ -2326,6 +2360,24 @@ class TeensyBridgeNode(Node):
         axes = [int(a) for a in axes]
         if not axes:
             return False, "no axes configured for deactivate"
+        # Already-at-STOW no-op guard: if every target leg is already IDLE and within
+        # _STOW_POS_MAX_REV of STOW, the platform is stowed — a DEACTIVATE would
+        # needlessly re-arm CLOSED_LOOP (a jolt) only to lower nothing, then IDLE. Skip
+        # it and report success. (This also short-circuits a redundant stow-on-shutdown
+        # when the platform was already brought down.)
+        if self._legs_already_stowed(axes):
+            self.get_logger().info(
+                f"deactivate: axes {axes} already at STOW (IDLE, |pos| <= "
+                f"{_STOW_POS_MAX_REV} rev) — skipping the leg move")
+            # Only the redundant LEG re-arm+lower is skipped; DEACTIVATE still
+            # de-energises the HAND (axis 6) to preserve can_node's "idle ALL
+            # JUGGLEBOT_AXES" parity (so e.g. a stow-on-shutdown with legs already down
+            # but the hand armed still drops the hand). Best-effort, as in the full path.
+            hok, hmsg, _ = self.teensy_set_axis_state(_HAND_AXIS, proto.ODRIVE_STATES['IDLE'])
+            if not hok:
+                self.get_logger().warning(
+                    f"deactivate (already stowed): hand IDLE failed — {hmsg}")
+            return True, f"already at STOW (axes {axes})"
         # Single configured axis → that leg only; otherwise AXIS_ALL (all present
         # legs in parallel — the platform lowers straight down, no tilt).
         fire_axis = axes[0] if len(axes) == 1 else rpc_args.AXIS_ALL
