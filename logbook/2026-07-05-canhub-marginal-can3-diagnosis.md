@@ -19,6 +19,7 @@ files_changed:
   - plans/active/teensy-can-offload.md
 commits:
   - b8b6faf   # fix(canbridge): presence-gate all CAN TX + permanent bus-error attribution instrumentation
+  - 06c903e   # docs(canbridge): close marginal-CAN3 investigation as resolved — gate validated live
 subsystem:
   - canbridge
 tags:
