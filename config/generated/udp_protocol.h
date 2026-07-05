@@ -9,7 +9,7 @@
 namespace JbUdp {
 
 // ── Constants ──────────────────────────────────────────────────────────
-constexpr uint8_t PROTOCOL_VERSION = 1u;  // Bumped on any incompatible wire change
+constexpr uint8_t PROTOCOL_VERSION = 2u;  // Bumped on any incompatible wire change
 constexpr uint16_t MAGIC = 0x4A42u;  // "JB" little-endian preamble (bytes 0x42 0x4A)
 constexpr uint16_t HEADER_SIZE = 8u;  // Bytes before payload
 constexpr uint16_t CRC_SIZE = 2u;  // Trailing CRC-16 bytes
@@ -165,7 +165,8 @@ struct DiagnosticPayload {
   uint8_t ctrl_mode;  // ODrive controller mode
   uint8_t input_mode;  // ODrive input mode
   uint8_t flags;  // bit0: heartbeat_stale
-  uint8_t pad[3];  // Alignment pad (zero)
+  uint8_t homing_result;  // HomingResult for this Jugglebot axis (0 none/1 running/2 ok/3 failed); 0 for non-leg axes (Fable-5 [18A])
+  uint8_t pad[2];  // Alignment pad (zero)
   uint32_t active_errors;  // ODrive active_errors bitmask
   uint32_t disarm_reason;  // ODrive disarm_reason bitmask
   float iq_setpoint;  // A

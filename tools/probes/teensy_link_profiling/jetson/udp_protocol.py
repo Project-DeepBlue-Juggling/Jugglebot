@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 
 # ── Constants ──────────────────────────────────────────────────────────
-PROTOCOL_VERSION = 1  # Bumped on any incompatible wire change
+PROTOCOL_VERSION = 2  # Bumped on any incompatible wire change
 MAGIC = 19010  # "JB" little-endian preamble (bytes 0x42 0x4A)
 HEADER_SIZE = 8  # Bytes before payload
 CRC_SIZE = 2  # Trailing CRC-16 bytes
@@ -250,7 +250,8 @@ class Diagnostic:
     ctrl_mode: int = 0
     input_mode: int = 0
     flags: int = 0
-    pad: tuple = field(default_factory=lambda: (0,) * 3)
+    homing_result: int = 0
+    pad: tuple = field(default_factory=lambda: (0,) * 2)
     active_errors: int = 0
     disarm_reason: int = 0
     iq_setpoint: float = 0.0
@@ -260,13 +261,13 @@ class Diagnostic:
     bus_voltage: float = 0.0
 
     def pack(self) -> bytes:
-        return _DIAGNOSTIC_STRUCT.pack(self.axis_id, self.axis_state, self.ctrl_mode, self.input_mode, self.flags, *self.pad, self.active_errors, self.disarm_reason, self.iq_setpoint, self.iq_measured, self.temp_fet, self.temp_motor, self.bus_voltage)
+        return _DIAGNOSTIC_STRUCT.pack(self.axis_id, self.axis_state, self.ctrl_mode, self.input_mode, self.flags, self.homing_result, *self.pad, self.active_errors, self.disarm_reason, self.iq_setpoint, self.iq_measured, self.temp_fet, self.temp_motor, self.bus_voltage)
 
     @classmethod
     def unpack(cls, data: bytes) -> 'Diagnostic':
         vals = _DIAGNOSTIC_STRUCT.unpack(data[:36])
         it = iter(vals)
-        return cls(next(it), next(it), next(it), next(it), next(it), tuple(next(it) for _ in range(3)), next(it), next(it), next(it), next(it), next(it), next(it), next(it))
+        return cls(next(it), next(it), next(it), next(it), next(it), next(it), tuple(next(it) for _ in range(2)), next(it), next(it), next(it), next(it), next(it), next(it), next(it))
 
 # HeartbeatT2J: Teensy → Jetson liveness + link/bus health, ~10 Hz.
 HEARTBEAT_T2J_FMT = '<QBBBBIIBBBfff'

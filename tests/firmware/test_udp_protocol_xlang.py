@@ -245,7 +245,7 @@ def test_protocol_version_frozen(gen, proto):
     Bumping it is an INCOMPATIBLE-wire change that requires reflashing the whole
     fleet — this makes the bump deliberate and keeps all three artifacts in lockstep."""
     spec_ver = _spec_const(gen, "PROTOCOL_VERSION")
-    assert spec_ver == 1, (
+    assert spec_ver == 2, (   # bumped 1→2 for the Diagnostic homing_result field ([18A])
         f"PROTOCOL_VERSION changed to {spec_ver}. If this is an intentional "
         "incompatible-wire bump: update this pin, re-pin test_wire_layout_frozen, and "
         "reflash the whole fleet (Jetson + Teensy ship the same version).")
@@ -278,7 +278,9 @@ def test_wire_layout_frozen(gen):
     for member, value, *_ in gen.ENUMS["MsgType"]:
         h.update(f"MT {member}={value};".encode())
     digest = h.hexdigest()
-    _EXPECTED = "6dc775115781a0d5ab231f91dec8ff05dfac74f0ecb5fd410fc57902a2948ecd"
+    # Re-pinned for the Diagnostic pad→homing_result layout change ([18A]); paired
+    # with the PROTOCOL_VERSION 1→2 bump above (an incompatible-wire change).
+    _EXPECTED = "4fb6260671a9468ebfc124602fbe4012e853721b59ab365b4b128b510761250c"
     assert digest == _EXPECTED, (
         "The UDP wire LAYOUT changed (a message/arg field layout, a framed MsgType "
         "value, or a framing constant). If INCOMPATIBLE, bump PROTOCOL_VERSION. Either "

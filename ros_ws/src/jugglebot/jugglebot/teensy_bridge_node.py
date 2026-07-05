@@ -2031,7 +2031,8 @@ class TeensyBridgeNode(Node):
         return HomingAxisStatus(
             axis_state=int(d.axis_state),
             pos_rev=float(telem.pos_rev[int(axis)]),
-            active_errors=int(d.active_errors))
+            active_errors=int(d.active_errors),
+            homing_result=int(d.homing_result))   # Fable-5 [18A]: authoritative outcome
 
     def _run_home(self, axes, *, poll_dt=0.05):
         """Home ``axes`` over the can-bridge link, one axis at a time.
@@ -2044,13 +2045,13 @@ class TeensyBridgeNode(Node):
         axes = [int(a) for a in axes]
         if not axes:
             return False, "no axes configured for homing"
-        # Per-axis observer timeout. MUST sit BELOW the firmware per-axis hard
-        # timeout (Homing::MOTOR_TIMEOUT_S = 30 s): a leg that never trips stays in
-        # CLOSED_LOOP, and the observer now treats CLOSED_LOOP→IDLE as success (it
-        # trusts the firmware's current trip, not a telemetry position — the legs
-        # relax off a foam stop, 2026-06-26). If the observer waited past 30 s it
-        # would mistake the firmware's own timeout-IDLE for a successful trip, so we
-        # fail a stuck leg first. A real home completes in a few seconds.
+        # Per-axis observer timeout BACKSTOP. MUST sit BELOW the firmware per-axis
+        # hard timeout (Homing::MOTOR_TIMEOUT_S = 30 s). Since Fable-5 [18A] the
+        # observer trusts the firmware's uplinked HomingResult, so a firmware abort —
+        # including its own 30 s timeout — is reported as HOMING_FAILED directly; this
+        # host timeout only catches a leg that never resolves at all (e.g. a lost
+        # RUNNING→terminal transition). A real home completes in a few seconds, so 20 s
+        # is generous and still below the firmware's 30 s.
         timeout_s = min(20.0, float(hw.HOMING_MOTOR_TIMEOUT_S) - 5.0)
         succeeded, failed = [], {}
         # The firmware briefly rejects a HOME (ERR_REJECTED, busy) while it finishes

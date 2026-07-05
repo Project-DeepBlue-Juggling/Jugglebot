@@ -153,7 +153,7 @@ real regressions; `pio run -e teensy41` green; the can-hub Teensy was **flashed*
 | 15 | NetLock lwIP pump + UDP RX drain budget | ✅ flashed | `b562825` |
 | 16 | Flash-A command-gate & trust-boundary bundle (7) | ✅ flashed | `c8ba247` |
 | 17 | Flash-B concurrency & parity residues (5) | ✅ flashed | `83ac938` |
-| 18 | HomingMonitor: **[18B]** inverted-docstring fix DONE (`6fe1ec9`); **[18A]** false-success uplink DEFERRED (wire-protocol change; own cycle after this flash) | ◐ partial | — |
+| 18 | HomingMonitor: **[18B]** inverted-docstring fix DONE (`6fe1ec9`); **[18A]** false-success uplink DONE 2026-07-05 (Diagnostic pad→`homing_result`, `PROTOCOL_VERSION` 1→2, host trusts the firmware outcome — `logbook/2026-07-05-canhub-hardening-18a-homing-result-uplink.md`) | ✅ done | `6fe1ec9` + [18A] |
 | — | adversarial-review fixes (seq-guard restart brick + stow gravity-drop + residues) | ✅ flashed | `192e6af` |
 
 **Hand-axis fault-eval → NUM_AXES ([17] §5) is an OBSERVABLE change** (a hand fault now
@@ -174,11 +174,13 @@ CAN3 bus** (`err` climbing, `tec`→255, sticky `flt=BUSOFF`, decorative to the 
 gate) → own bench-diagnosis cycle, **RESOLVED 2026-07-05** (the `err` counter was never
 a wire-error rate; presence-gate contract landed `b8b6faf` and gate-validated live the
 same day — `logbook/2026-07-05-canhub-marginal-can3-diagnosis.md`; fresh-boot `flt`/`tec`
-should now never exceed passive/128). **Remaining:** **item 20 DONE** — the eight small
-fw follow-ups landed 2026-07-05 (`logbook/2026-07-05-canhub-hardening-item20-firmware.md`;
-native + `pio` green, pending the Phase-2 flash) → then [18A] (HomingResult uplink) +
-`health_of` bus-off wiring (live fault_conf/TEC now instrumented — ready to consume),
-then `/archive-plan canbridge-foundation-coldstart-parity`.
+should now never exceed passive/128). **Remaining:** **item 20 + [18A] DONE** —
+the eight small fw follow-ups (`logbook/2026-07-05-canhub-hardening-item20-firmware.md`)
+and the HomingResult uplink (`logbook/2026-07-05-canhub-hardening-18a-homing-result-uplink.md`;
+`PROTOCOL_VERSION` 1→2) landed 2026-07-05, native + `pio` green, pending ONE Phase-2 flash
++ powered re-validation. Then the only Tier-2/-3 residuals are `health_of` bus-off wiring
+(live fault_conf/TEC now instrumented — ready to consume) + the Tier-3 structural refactors
+(item 21, deliberately deferred), after which `/archive-plan canbridge-foundation-coldstart-parity`.
 
 ### Tier 3 — defer
 

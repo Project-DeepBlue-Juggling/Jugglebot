@@ -11,6 +11,7 @@
 #include "axis_state.h"
 #include "can_buses.h"
 #include "time_base.h"
+#include "leg_homing.h"   // homing_result() — uplinked in the Diagnostic (Fable-5 [18A])
 
 namespace CanBridge {
 
@@ -23,7 +24,7 @@ static constexpr uint32_t DIAG_FORCE_PERIOD_US = 1000000u;   // 1 Hz per-axis re
 // Last-published diagnostic snapshot, per axis, for change detection.
 struct DiagBaseline {
   uint32_t active_errors, disarm_reason;
-  uint8_t  axis_state, ctrl_mode, input_mode, flags;
+  uint8_t  axis_state, ctrl_mode, input_mode, flags, homing_result;
   float    iq_setpoint, temp_fet, temp_motor, bus_voltage;
   uint64_t last_sent_us;
   bool     ever_sent;
@@ -81,6 +82,7 @@ static void send_diag(uint8_t axis) {
   d.temp_fet      = a.temp_fet;
   d.temp_motor    = a.temp_motor;
   d.bus_voltage   = a.bus_voltage;
+  d.homing_result = homing_result(axis);   // Fable-5 [18A]: real firmware outcome, per axis
   udp_send_stream(JbUdp::MsgType::DIAGNOSTIC, (const uint8_t*)&d, sizeof(d));
 
   DiagBaseline& b = s_base[axis];
@@ -89,6 +91,7 @@ static void send_diag(uint8_t axis) {
   b.iq_setpoint = a.iq_setpoint; b.temp_fet = a.temp_fet;
   b.temp_motor = a.temp_motor; b.bus_voltage = a.bus_voltage;
   b.flags = d.flags;
+  b.homing_result = d.homing_result;   // [18A]: track for the change-detect below
   b.last_sent_us = now;
   b.ever_sent = true;
 }
@@ -245,7 +248,14 @@ void telemetry_step() {
     const bool due_forced =
         (now - s_base[i].last_sent_us >= DIAG_FORCE_PERIOD_US) &&
         (slot == (uint32_t)i * slots_per_axis);
-    if (diag_changed(axes[i], s_base[i]) || due_forced) {
+    // [18A]: force a Diagnostic on a homing_result transition. Its real value is
+    // delivering the RUNNING transition PROMPTLY — independent of the lagging ODrive
+    // axis_state — so a normal multi-second home reliably lets the host observer set
+    // its saw_running gate. (A same-tick early SETUP-fail goes RUNNING→FAILED inside
+    // one homing_step() before the 100 Hz sampler can see RUNNING; the host's timeout
+    // backstop catches that — a safe false-FAILURE, never a false-success.)
+    if (diag_changed(axes[i], s_base[i]) ||
+        homing_result(i) != s_base[i].homing_result || due_forced) {
       send_diag(i);
     }
   }

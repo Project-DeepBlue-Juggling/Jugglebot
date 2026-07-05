@@ -104,7 +104,7 @@ class Message:
 # ───────────────────────────────────────────────────────────────────────────
 
 CONSTANTS = [
-    ("PROTOCOL_VERSION", 1,      "u8",  "Bumped on any incompatible wire change"),
+    ("PROTOCOL_VERSION", 2,      "u8",  "Bumped on any incompatible wire change"),
     ("MAGIC",            0x4A42, "u16", '"JB" little-endian preamble (bytes 0x42 0x4A)'),
     ("HEADER_SIZE",      8,      "u16", "Bytes before payload"),
     ("CRC_SIZE",         2,      "u16", "Trailing CRC-16 bytes"),
@@ -297,7 +297,8 @@ MESSAGES = [
             Field("ctrl_mode",     "u8",  1, "ODrive controller mode"),
             Field("input_mode",    "u8",  1, "ODrive input mode"),
             Field("flags",         "u8",  1, "bit0: heartbeat_stale"),
-            Field("pad",           "u8",  3, "Alignment pad (zero)"),
+            Field("homing_result", "u8",  1, "HomingResult for this Jugglebot axis (0 none/1 running/2 ok/3 failed); 0 for non-leg axes (Fable-5 [18A])"),
+            Field("pad",           "u8",  2, "Alignment pad (zero)"),
             Field("active_errors", "u32", 1, "ODrive active_errors bitmask"),
             Field("disarm_reason", "u32", 1, "ODrive disarm_reason bitmask"),
             Field("iq_setpoint",   "f32", 1, "A"),

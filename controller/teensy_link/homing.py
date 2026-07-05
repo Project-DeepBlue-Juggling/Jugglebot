@@ -5,8 +5,9 @@ there is no per-leg motion RPC, so the velocity-limited move-to-hardstop belongs
 on the Teensy; see ``plans/active/teensy-can-offload.md`` "Phase 9b"). The Jetson
 fires ``HOME`` (fire-and-monitor: the RPC returns OK the instant the firmware
 *accepts* the move) and then **observes** completion from the telemetry +
-diagnostic streams — no firmware status field, exactly as Phase 9a inferred
-encoder-search completion from ``axis_state`` + position.
+diagnostic streams. Since Fable-5 [18A] the Diagnostic carries the firmware's real
+per-axis ``HomingResult``, which the observer trusts (it previously inferred
+completion from ``axis_state`` + the state cycle, as Phase 9a did for encoder search).
 
 This module is the pure observer state machine — no ROS, no UDP, no threads, no
 sleeps. The caller drives it by repeatedly calling :meth:`step` with the current
@@ -15,20 +16,25 @@ take this tick (``set_home`` → ``HOME(axis)``) and the overall progress. Keepi
 it pure makes the completion logic unit-testable in isolation (mirroring
 ``encoder_search.py`` / ``setpoint_pump.py``).
 
-Completion detection. The firmware homing cycles the axis ``IDLE →
-CLOSED_LOOP`` (drives into the hardstop) ``→ IDLE`` (stops) and, on success,
-``set_absolute_position(home_ref)`` snaps the encoder to the home reference. So:
+Completion detection (Fable-5 [18A]). The firmware tracks the real per-axis
+``HomingResult`` (NONE/RUNNING/OK/FAILED) and now uplinks it in the Diagnostic
+frame, so the observer trusts the FIRMWARE OUTCOME directly:
 
-  * **success** ⇒ the axis was observed in ``CLOSED_LOOP`` (the move ran) and is
-    now back in ``IDLE`` with no active errors. We trust the firmware's internal
-    current-spike trip (exactly as can_node trusted its own) — we do NOT assert
-    the resulting telemetry position, because the legs bottom into a FOAM stop
-    that pushes them back out by a variable amount the instant they IDLE, making
-    the post-IDLE position unreliable (asserting ``|pos| ≈ |home_ref|`` caused
-    spurious "reference not set" failures — 2026-06-26).
-  * **failure** ⇒ active errors during the move, OR the leg never trips and stays
-    in ``CLOSED_LOOP`` until the timeout (set BELOW the firmware's own homing
-    timeout so a stuck leg fails rather than producing a success-looking IDLE).
+  * **success** ⇒ ``HOMING_OK`` (hardstop found + ``set_absolute_position(home_ref)``
+    ran), once ``HOMING_RUNNING`` has been seen this run. We do NOT assert the
+    resulting telemetry position — the legs bottom into a FOAM stop that relaxes
+    them back a variable amount the instant they IDLE, making the post-IDLE position
+    unreliable (asserting ``|pos| ≈ |home_ref|`` caused spurious "reference not set"
+    failures — 2026-06-26).
+  * **failure** ⇒ ``HOMING_FAILED`` (a firmware abort — bus-down / guard-E-STOP /
+    the firmware's own 30 s timeout — which IDLEs the leg WITHOUT setting the
+    reference), OR active errors during the move, OR the host timeout backstop.
+
+Why this replaced the old CLOSED_LOOP→IDLE state-cycle inference: the firmware IDLEs
+the leg on a silent abort too, so an abort was INDISTINGUISHABLE from success to the
+state cycle — a false success that left the leg's zero uncalibrated while the
+orchestrator proceeded. The uplinked result distinguishes the two. ``HOMING_RUNNING``
+gates the trust so a stale terminal result from a prior home cannot end the new one.
 
 ``home_ref_rev`` / ``pos_tol_rev`` are retained as accepted-but-ignored kwargs
 (API stability for existing callers); the firmware still applies
@@ -52,12 +58,25 @@ from typing import Dict, Iterable, List
 AXIS_STATE_IDLE = 1
 AXIS_STATE_CLOSED_LOOP = 8
 
-# Default per-axis timeout. MUST sit BELOW the firmware per-axis hard timeout
-# (Homing::MOTOR_TIMEOUT_S = 30 s): a leg that never trips stays in CLOSED_LOOP,
-# and the firmware would IDLE it only at 30 s — if the observer waited past that
-# it would mistake the firmware-timeout IDLE for a successful trip. A real home
-# completes (CLOSED_LOOP → IDLE) in a few seconds, so 20 s leaves wide margin
-# above a normal home and comfortably below the firmware's 30 s.
+# Firmware HomingResult (leg_homing.h HomingResult enum), uplinked per-axis in the
+# Diagnostic frame (Fable-5 [18A]). This is the AUTHORITATIVE homing outcome: it
+# distinguishes a real success (hardstop found + set_absolute_position) from a silent
+# abort (bus-down / guard-E-STOP after CLOSED_LOOP), which the old CLOSED_LOOP→IDLE
+# state-cycle inference mistook for success — both IDLE the leg, but only success sets
+# the reference, so an abort left the leg's zero uncalibrated while the host declared
+# "homed".
+HOMING_NONE = 0
+HOMING_RUNNING = 1
+HOMING_OK = 2
+HOMING_FAILED = 3
+
+# Default per-axis timeout BACKSTOP. MUST sit BELOW the firmware per-axis hard
+# timeout (Homing::MOTOR_TIMEOUT_S = 30 s). Since [18A] the observer trusts the
+# firmware HomingResult, so a firmware abort — INCLUDING its own 30 s timeout — is
+# reported as HOMING_FAILED directly (never mistaken for a success). This host
+# timeout now only catches a leg that never resolves at all (e.g. a lost
+# RUNNING→terminal transition). A real home completes in a few seconds, so 20 s is
+# generous and comfortably below the firmware's 30 s.
 DEFAULT_TIMEOUT_S = 20.0
 DEFAULT_POS_TOL_REV = 0.05  # retained for API compat; no longer used (foam stop, see above)
 # Home reference magnitude (|HOMING_LEG_ABS_POS_REV|). The caller may pass the
@@ -74,10 +93,14 @@ class AxisStatus:
             CLOSED_LOOP=8).
         pos_rev: ``TELEMETRY.pos_rev[axis]`` — Jugglebot convention (sign-flipped).
         active_errors: ODrive ``active_errors`` bitmask (``DIAGNOSTIC.active_errors``).
+        homing_result: firmware ``HomingResult`` (``DIAGNOSTIC.homing_result``;
+            NONE/RUNNING/OK/FAILED — Fable-5 [18A]). The authoritative outcome the
+            observer now trusts instead of inferring from the state cycle.
     """
     axis_state: int
     pos_rev: float
     active_errors: int = 0
+    homing_result: int = HOMING_NONE
 
 
 class Phase(str, Enum):
@@ -104,7 +127,7 @@ class StepResult:
 class _Prog:
     phase: Phase = Phase.PENDING
     t_started: float = 0.0
-    saw_closed_loop: bool = False   # observed CLOSED_LOOP since HOME (the move ran)
+    saw_running: bool = False   # observed firmware HOMING_RUNNING since HOME (the move started)
     reason: str = ""
 
 
@@ -171,39 +194,54 @@ class HomingMonitor:
             if pr.phase == Phase.PENDING:
                 pr.phase = Phase.ACTIVE
                 pr.t_started = now_s
-                pr.saw_closed_loop = False
+                pr.saw_running = False
                 res.set_home.append(axis)
                 continue
 
             # ACTIVE — fold in this tick's status (if any), then evaluate.
             st = status.get(axis)
             if st is not None:
+                # Fable-5 [18A]: the firmware's HomingResult (uplinked per-axis in the
+                # Diagnostic) is AUTHORITATIVE. The old logic inferred success from a
+                # CLOSED_LOOP→IDLE state cycle, but the firmware IDLEs the leg on a
+                # silent abort too (bus-down / guard-E-STOP after CLOSED_LOOP) WITHOUT
+                # setting the reference — indistinguishable from success to the state
+                # cycle. Trusting the result closes that false-success class.
+                if st.homing_result == HOMING_RUNNING:
+                    # The NEW move has started; only now may we trust a terminal result
+                    # (guards against a stale OK/FAILED left in the cache from a PRIOR
+                    # home of this axis terminating the new one prematurely).
+                    pr.saw_running = True
+
                 if st.active_errors != 0:
                     pr.phase = Phase.FAILED
                     pr.reason = f"active_errors 0x{st.active_errors:x} during homing"
                     continue
-                if st.axis_state == AXIS_STATE_CLOSED_LOOP:
-                    pr.saw_closed_loop = True
 
-                if pr.saw_closed_loop and st.axis_state == AXIS_STATE_IDLE:
-                    # The leg drove (CLOSED_LOOP) and returned to IDLE: the firmware
-                    # detected the hardstop (Iq-EMA spike) and set the reference.
-                    # Trust that — exactly as can_node trusted its own current trip.
-                    # We deliberately do NOT assert the resulting telemetry position:
-                    # the legs bottom into a foam stop that pushes them back out by a
-                    # variable amount the instant they switch to IDLE, so the
-                    # post-IDLE position is unreliable (asserting |pos| ≈ home_ref was
-                    # the cause of spurious "reference not set" failures — 2026-06-26).
-                    # A leg that NEVER trips stays in CLOSED_LOOP and is caught by the
-                    # timeout below (set < the firmware's own homing timeout, so a
-                    # stuck leg fails rather than producing a success-looking IDLE).
-                    pr.phase = Phase.DONE
-                    continue
+                if pr.saw_running:
+                    if st.homing_result == HOMING_OK:
+                        # Hardstop found + set_absolute_position ran. We deliberately do
+                        # NOT assert the resulting telemetry position: the legs bottom
+                        # into a foam stop that relaxes them back a variable amount the
+                        # instant they IDLE, so the post-IDLE position is unreliable
+                        # (asserting |pos| ≈ home_ref caused spurious "reference not set"
+                        # failures — 2026-06-26).
+                        pr.phase = Phase.DONE
+                        continue
+                    if st.homing_result == HOMING_FAILED:
+                        pr.phase = Phase.FAILED
+                        pr.reason = ("firmware reported homing failed "
+                                     "(abort — reference not set)")
+                        continue
 
+            # Backstop: a leg that never resolves (e.g. a lost RUNNING→terminal
+            # transition, or a firmware hang short of its own 30 s timeout) fails here.
+            # timeout_s sits BELOW Homing::MOTOR_TIMEOUT_S (30 s), so a stuck leg fails
+            # rather than waiting on the firmware's last-resort abort.
             if now_s - pr.t_started > self.timeout_s:
                 pr.phase = Phase.FAILED
                 pr.reason = (f"timed out after {self.timeout_s:.1f}s "
-                             f"(saw_closed_loop={pr.saw_closed_loop})")
+                             f"(saw_running={pr.saw_running})")
 
         for axis in self.axes:
             pr = self._prog[axis]

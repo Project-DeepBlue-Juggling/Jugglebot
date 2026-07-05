@@ -28,6 +28,7 @@ from controller.teensy_link import (
 )
 from controller.teensy_link import rpc_args
 from controller.teensy_link import protocol as p
+from controller.teensy_link.homing import HOMING_RUNNING, HOMING_OK  # [18A] outcome
 
 from tests.ros.test_teensy_bridge_node_read import _build_paired_node
 
@@ -303,11 +304,13 @@ def test_run_home_hand_applies_gains_then_homes():
         # Firmware ran the move-to-hardstop: CLOSED_LOOP then back to IDLE → success.
         teensy.send_telemetry(pos_rev=[0.0] * 7, vel_rps=[0.0] * 7)
         teensy.send_to_jetson(int(MsgType.DIAGNOSTIC),
-                              Diagnostic(axis_id=_HAND, axis_state=CLOSED_LOOP, active_errors=0).pack())
+                              Diagnostic(axis_id=_HAND, axis_state=CLOSED_LOOP, active_errors=0,
+                                         homing_result=HOMING_RUNNING).pack())
         time.sleep(0.1)
         teensy.send_telemetry(pos_rev=[0.0] * 7, vel_rps=[0.0] * 7)
         teensy.send_to_jetson(int(MsgType.DIAGNOSTIC),
-                              Diagnostic(axis_id=_HAND, axis_state=IDLE, active_errors=0).pack())
+                              Diagnostic(axis_id=_HAND, axis_state=IDLE, active_errors=0,
+                                         homing_result=HOMING_OK).pack())
         t.join(timeout=8.0)
         assert not t.is_alive(), "hand home did not complete"
         assert result.get('ok') is True, result.get('msg')

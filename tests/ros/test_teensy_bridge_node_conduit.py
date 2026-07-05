@@ -38,6 +38,7 @@ from controller.teensy_link import (
     RpcMethod, RpcStatus, MsgType, Telemetry, Diagnostic, PlatformFrame,
 )
 from controller.teensy_link import rpc_args
+from controller.teensy_link.homing import HOMING_RUNNING, HOMING_OK  # [18A] outcome
 from rclpy.action import GoalResponse
 
 from jugglebot_interfaces.srv import ActivateOrDeactivate, GetTiltReadingService
@@ -189,11 +190,13 @@ def test_home_action_end_to_end_drives_real_run_home():
         # Drive completion: CLOSED_LOOP then IDLE at the home reference.
         teensy.send_telemetry(pos_rev=[2.5] + [0.0] * 6, vel_rps=[0.0] * 7)
         teensy.send_to_jetson(int(MsgType.DIAGNOSTIC),
-                              Diagnostic(axis_id=0, axis_state=CLOSED_LOOP, active_errors=0).pack())
+                              Diagnostic(axis_id=0, axis_state=CLOSED_LOOP, active_errors=0,
+                                         homing_result=HOMING_RUNNING).pack())
         time.sleep(0.1)
         teensy.send_telemetry(pos_rev=[HOME_POS] + [0.0] * 6, vel_rps=[0.0] * 7)
         teensy.send_to_jetson(int(MsgType.DIAGNOSTIC),
-                              Diagnostic(axis_id=0, axis_state=IDLE, active_errors=0).pack())
+                              Diagnostic(axis_id=0, axis_state=IDLE, active_errors=0,
+                                         homing_result=HOMING_OK).pack())
 
         t.join(timeout=8.0)
         assert not t.is_alive(), "home action did not complete"

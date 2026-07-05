@@ -11,7 +11,7 @@ from controller.teensy_link import protocol as p
 
 def test_constants_match_firmware_spec():
     # These are load-bearing — if they ever drift we've broken the protocol.
-    assert p.PROTOCOL_VERSION == 1
+    assert p.PROTOCOL_VERSION == 2   # bumped for the Diagnostic homing_result field ([18A])
     assert p.MAGIC == 0x4A42  # "JB" little-endian
     assert p.HEADER_SIZE == 8
     assert p.CRC_SIZE == 2

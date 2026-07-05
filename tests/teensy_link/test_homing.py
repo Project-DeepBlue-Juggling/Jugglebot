@@ -1,16 +1,17 @@
-"""Unit tests for controller/teensy_link/homing.py (Phase 9b).
+"""Unit tests for controller/teensy_link/homing.py (Phase 9b + Fable-5 [18A]).
 
-The homing completion-observer state machine, tested in isolation (no ROS, no
-UDP, no hardware) by driving :meth:`HomingMonitor.step` with controlled monotonic
-times and per-axis status snapshots.
+The homing completion-observer state machine, tested in isolation (no ROS, no UDP,
+no hardware) by driving :meth:`HomingMonitor.step` with controlled monotonic times
+and per-axis status snapshots.
 
-What the observer encodes (ground truth = the firmware HOME handler, a port of
-can_node._home_motor_steps): the can-bridge drives a leg in VELOCITY/VEL_RAMP
-into its hardstop, detects the current spike, IDLEs, and snaps the encoder to the
-home reference. The Jetson sees the axis cycle IDLE → CLOSED_LOOP → IDLE with the
-position landing at |pos| ≈ |home_ref| on success. Telemetry pos_rev is Jugglebot
-convention (sign-flipped on RX), so set_absolute_position(+0.1) reads back -0.1 —
-the observer compares magnitudes.
+Ground truth = the firmware HOME handler (a port of can_node._home_motor_steps):
+the can-bridge drives a leg into its hardstop, detects the current spike, IDLEs,
+and snaps the encoder to the home reference — tracking the outcome in a per-axis
+HomingResult (NONE/RUNNING/OK/FAILED). Since Fable-5 [18A] that result is uplinked
+in the Diagnostic and the observer TRUSTS it. It previously inferred success from a
+CLOSED_LOOP→IDLE state cycle, which a silent firmware abort — which also IDLEs the
+leg, but WITHOUT setting the reference — mimicked exactly (a false success that left
+the leg's zero uncalibrated while the orchestrator proceeded).
 """
 
 from __future__ import annotations
@@ -22,14 +23,17 @@ from controller.teensy_link.homing import (
     AxisStatus,
     AXIS_STATE_IDLE as IDLE,
     AXIS_STATE_CLOSED_LOOP as CL,
+    HOMING_NONE, HOMING_RUNNING, HOMING_OK, HOMING_FAILED,
     DEFAULT_HOME_REF_REV,
 )
 
 REF = DEFAULT_HOME_REF_REV  # 0.1
 
 
-def st(state: int, pos_rev: float, errors: int = 0) -> AxisStatus:
-    return AxisStatus(axis_state=state, pos_rev=pos_rev, active_errors=errors)
+def st(state: int, pos_rev: float, errors: int = 0,
+       homing_result: int = HOMING_NONE) -> AxisStatus:
+    return AxisStatus(axis_state=state, pos_rev=pos_rev, active_errors=errors,
+                      homing_result=homing_result)
 
 
 # ── construction guards ──────────────────────────────────────────────────────
@@ -44,96 +48,109 @@ def test_duplicate_axes_raises():
         HomingMonitor([0, 0])
 
 
-# ── happy path ───────────────────────────────────────────────────────────────
+# ── happy path (firmware reports HOMING_OK) ──────────────────────────────────
 
-def test_single_axis_success_sign_flipped_pos():
-    """Standalone-leg rig (axis 0): IDLE → CLOSED_LOOP → IDLE, pos lands at the
-    sign-flipped reference (-0.1 for a +0.1 set_absolute_position)."""
+def test_single_axis_success():
+    """RUNNING (the move started) then OK (hardstop found + reference set) → DONE."""
     m = HomingMonitor([0])
-
-    # First step commands HOME and nothing else.
     r = m.step(0.0, {})
-    assert r.set_home == [0]
-    assert not r.done
-
-    # Move starts: axis enters CLOSED_LOOP, position still arbitrary.
-    r = m.step(0.1, {0: st(CL, pos_rev=1.234)})
+    assert r.set_home == [0] and not r.done
+    r = m.step(0.1, {0: st(CL, pos_rev=1.234, homing_result=HOMING_RUNNING)})
     assert r.set_home == [] and not r.done
-
-    # Hardstop found, IDLE, reference snapped to -0.1 (Jugglebot convention).
-    r = m.step(0.5, {0: st(IDLE, pos_rev=-REF)})
-    assert r.done
-    assert m.succeeded == [0]
-    assert m.failed == {}
+    r = m.step(0.5, {0: st(IDLE, pos_rev=-REF, homing_result=HOMING_OK)})
+    assert r.done and m.succeeded == [0] and m.failed == {}
 
 
-def test_success_positive_convention_pos():
-    """Magnitude comparison is convention-agnostic: +0.1 also succeeds."""
-    m = HomingMonitor([0])
-    m.step(0.0, {})
-    m.step(0.1, {0: st(CL, pos_rev=2.0)})
-    r = m.step(0.5, {0: st(IDLE, pos_rev=REF)})
-    assert r.done and m.succeeded == [0]
-
-
-def test_missed_closed_loop_snapshot_then_idle_still_needs_cl():
-    """If CLOSED_LOOP is never observed, a stray IDLE+near-ref must NOT count as
-    success (guards against the pre-homing position coincidentally being ~ref)."""
-    m = HomingMonitor([0], timeout_s=1.0)
-    m.step(0.0, {})
-    # Never saw CL; IDLE at ~ref should be ignored until timeout.
-    r = m.step(0.2, {0: st(IDLE, pos_rev=-REF)})
-    assert not r.done
-    r = m.step(1.5, {0: st(IDLE, pos_rev=-REF)})
-    assert r.done and m.failed and 0 in m.failed  # timed out, not a false success
-
-
-# ── failure paths ────────────────────────────────────────────────────────────
-
-def test_active_errors_during_homing_fails():
-    m = HomingMonitor([0])
-    m.step(0.0, {})
-    m.step(0.1, {0: st(CL, pos_rev=1.0)})
-    r = m.step(0.2, {0: st(CL, pos_rev=1.0, errors=0x40)})
-    assert r.done and m.succeeded == []
-    assert "active_errors" in m.failed[0]
-
-
-def test_idle_after_closed_loop_is_success_regardless_of_pos():
-    """Foam-stop fix (2026-06-26): trust the firmware's current trip. A leg that
-    drove (CLOSED_LOOP) and returned to IDLE without errors is homed — whatever
-    the foam-relaxed telemetry position. Positions the OLD |pos|≈ref gate rejected
-    must now succeed."""
+def test_success_ignores_telemetry_position():
+    """[18A] trusts the firmware result — the foam-relaxed post-IDLE position is
+    irrelevant. Positions the OLD |pos|≈ref gate rejected still succeed."""
     for pos in (-0.10, -0.05, 0.0, -0.20, 2.49):
         m = HomingMonitor([0])
-        m.step(0.0, {})                          # send HOME
-        m.step(0.1, {0: st(CL, pos_rev=1.0)})    # drove
-        r = m.step(0.5, {0: st(IDLE, pos_rev=pos)})
+        m.step(0.0, {})
+        m.step(0.1, {0: st(CL, pos_rev=1.0, homing_result=HOMING_RUNNING)})
+        r = m.step(0.5, {0: st(IDLE, pos_rev=pos, homing_result=HOMING_OK)})
         assert r.done and m.succeeded == [0], f"pos={pos} should succeed"
         assert m.failed == {}
 
 
-def test_timeout_fails():
+# ── the false-success class [18A] closes ─────────────────────────────────────
+
+def test_silent_abort_is_not_success():
+    """THE [18A] regression: a firmware abort (bus-down / guard-E-STOP mid-move)
+    IDLEs the leg WITHOUT setting the reference → HOMING_FAILED. The state cycle
+    (CLOSED_LOOP→IDLE) LOOKS identical to success; the result must override it."""
+    m = HomingMonitor([0])
+    m.step(0.0, {})
+    m.step(0.1, {0: st(CL, pos_rev=1.0, homing_result=HOMING_RUNNING)})
+    r = m.step(0.5, {0: st(IDLE, pos_rev=-REF, homing_result=HOMING_FAILED)})
+    assert r.done and m.succeeded == [] and 0 in m.failed
+    assert "firmware reported homing failed" in m.failed[0]
+
+
+def test_idle_without_ok_is_not_success():
+    """A CLOSED_LOOP→IDLE cycle with the result still RUNNING (not yet OK) must NOT
+    be declared success — only HOMING_OK is success (guards the state-cycle mimic)."""
+    m = HomingMonitor([0], timeout_s=1.0)
+    m.step(0.0, {})
+    m.step(0.1, {0: st(CL, pos_rev=1.0, homing_result=HOMING_RUNNING)})
+    r = m.step(0.2, {0: st(IDLE, pos_rev=-REF, homing_result=HOMING_RUNNING)})
+    assert not r.done   # firmware still RUNNING → keep waiting
+    r = m.step(1.5, {0: st(IDLE, pos_rev=-REF, homing_result=HOMING_RUNNING)})
+    assert r.done and 0 in m.failed  # timed out, NOT a false success
+
+
+def test_stale_prior_ok_does_not_terminate_new_home():
+    """saw_running gate: a stale HOMING_OK left in the cache from a PRIOR home must
+    not immediately succeed the new one before its RUNNING is observed."""
+    m = HomingMonitor([0], timeout_s=1.0)
+    m.step(0.0, {})
+    r = m.step(0.1, {0: st(IDLE, pos_rev=-REF, homing_result=HOMING_OK)})  # stale
+    assert not r.done   # never saw RUNNING → ignore the stale OK
+    m.step(0.2, {0: st(CL, pos_rev=1.0, homing_result=HOMING_RUNNING)})    # new move runs
+    r = m.step(0.3, {0: st(IDLE, pos_rev=-REF, homing_result=HOMING_OK)})
+    assert r.done and m.succeeded == [0]
+
+
+def test_stale_prior_failed_does_not_fail_new_home():
+    m = HomingMonitor([0], timeout_s=1.0)
+    m.step(0.0, {})
+    r = m.step(0.1, {0: st(IDLE, pos_rev=0.0, homing_result=HOMING_FAILED)})  # stale
+    assert not r.done   # ignored (no RUNNING yet)
+    m.step(0.2, {0: st(CL, pos_rev=1.0, homing_result=HOMING_RUNNING)})
+    r = m.step(0.3, {0: st(IDLE, pos_rev=-REF, homing_result=HOMING_OK)})
+    assert r.done and m.succeeded == [0]
+
+
+# ── other failure paths ──────────────────────────────────────────────────────
+
+def test_active_errors_during_homing_fails():
+    m = HomingMonitor([0])
+    m.step(0.0, {})
+    m.step(0.1, {0: st(CL, pos_rev=1.0, homing_result=HOMING_RUNNING)})
+    r = m.step(0.2, {0: st(CL, pos_rev=1.0, errors=0x40, homing_result=HOMING_RUNNING)})
+    assert r.done and m.succeeded == [] and "active_errors" in m.failed[0]
+
+
+def test_firmware_failed_while_still_closed_loop_fails():
+    """The firmware can report FAILED without an IDLE transition (an abort caught
+    mid-drive); the observer fails immediately on the result, not the state."""
+    m = HomingMonitor([0])
+    m.step(0.0, {})
+    m.step(0.1, {0: st(CL, pos_rev=1.0, homing_result=HOMING_RUNNING)})
+    r = m.step(0.5, {0: st(CL, pos_rev=1.0, homing_result=HOMING_FAILED)})
+    assert r.done and m.succeeded == [] and "firmware reported homing failed" in m.failed[0]
+
+
+def test_timeout_backstop_fails():
+    """A leg that never resolves (no terminal result — e.g. a lost transition)
+    fails at the host timeout, set below the firmware's own 30 s."""
     m = HomingMonitor([0], timeout_s=2.0)
     m.step(0.0, {})
-    m.step(0.1, {0: st(CL, pos_rev=1.0)})
-    r = m.step(1.9, {0: st(CL, pos_rev=1.0)})
+    m.step(0.1, {0: st(CL, pos_rev=1.0, homing_result=HOMING_RUNNING)})
+    r = m.step(1.9, {0: st(CL, pos_rev=1.0, homing_result=HOMING_RUNNING)})
     assert not r.done
-    r = m.step(2.2, {0: st(CL, pos_rev=1.0)})
+    r = m.step(2.2, {0: st(CL, pos_rev=1.0, homing_result=HOMING_RUNNING)})
     assert r.done and "timed out" in m.failed[0]
-
-
-def test_stuck_in_closed_loop_times_out():
-    """With the position gate removed, the timeout is what catches a leg that
-    never trips — it stays in CLOSED_LOOP and is failed (rather than producing a
-    success-looking IDLE). The observer timeout is set below the firmware's own
-    homing timeout precisely so this is caught first."""
-    m = HomingMonitor([0], timeout_s=2.0)
-    m.step(0.0, {})
-    r = m.step(1.0, {0: st(CL, pos_rev=0.5)})    # still driving
-    assert not r.done
-    r = m.step(2.5, {0: st(CL, pos_rev=0.5)})    # still CLOSED_LOOP past timeout
-    assert r.done and m.succeeded == [] and "timed out" in m.failed[0]
 
 
 # ── multi-axis bookkeeping (the firmware homes one at a time; the monitor still
@@ -143,10 +160,11 @@ def test_multi_axis_independent_outcomes():
     m = HomingMonitor([0, 1])
     r = m.step(0.0, {})
     assert sorted(r.set_home) == [0, 1]
-    # axis 0 succeeds, axis 1 errors.
-    m.step(0.1, {0: st(CL, pos_rev=1.0), 1: st(CL, pos_rev=1.0)})
-    r = m.step(0.5, {0: st(IDLE, pos_rev=-REF),
-                     1: st(CL, pos_rev=1.0, errors=0x1)})
+    m.step(0.1, {0: st(CL, pos_rev=1.0, homing_result=HOMING_RUNNING),
+                 1: st(CL, pos_rev=1.0, homing_result=HOMING_RUNNING)})
+    # axis 0 succeeds (OK); axis 1 silently aborts (FAILED — the [18A] case).
+    r = m.step(0.5, {0: st(IDLE, pos_rev=-REF, homing_result=HOMING_OK),
+                     1: st(IDLE, pos_rev=-REF, homing_result=HOMING_FAILED)})
     assert r.done
     assert m.succeeded == [0]
     assert 1 in m.failed

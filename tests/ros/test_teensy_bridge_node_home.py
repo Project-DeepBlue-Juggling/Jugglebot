@@ -23,6 +23,7 @@ import jugglebot.hardware_config as hw
 from controller.teensy_link import (
     RpcMethod, RpcStatus, MsgType, Telemetry, Diagnostic,
 )
+from controller.teensy_link.homing import HOMING_RUNNING, HOMING_OK  # [18A] outcome
 
 from tests.ros.test_teensy_bridge_node_read import _build_paired_node
 
@@ -146,16 +147,18 @@ def test_home_retries_transient_reject():
         t.start()
         assert _poll(lambda: calls['n'] >= 3)         # retried past the rejections
 
-        # Drive completion: CLOSED_LOOP → IDLE (the observer trusts the trip).
+        # Drive completion: RUNNING → OK (the observer trusts the firmware result — [18A]).
         teensy.send_telemetry(pos_rev=[2.5] + [0.0] * 6, vel_rps=[0.0] * 7)
         teensy.send_to_jetson(
             int(MsgType.DIAGNOSTIC),
-            Diagnostic(axis_id=0, axis_state=CLOSED_LOOP, active_errors=0).pack())
+            Diagnostic(axis_id=0, axis_state=CLOSED_LOOP, active_errors=0,
+                       homing_result=HOMING_RUNNING).pack())
         time.sleep(0.1)
         teensy.send_telemetry(pos_rev=[HOME_POS] + [0.0] * 6, vel_rps=[0.0] * 7)
         teensy.send_to_jetson(
             int(MsgType.DIAGNOSTIC),
-            Diagnostic(axis_id=0, axis_state=IDLE, active_errors=0).pack())
+            Diagnostic(axis_id=0, axis_state=IDLE, active_errors=0,
+                       homing_result=HOMING_OK).pack())
 
         t.join(timeout=8.0)
         assert not t.is_alive(), "homing did not complete after retries"
@@ -203,7 +206,8 @@ def test_home_happy_path_end_to_end():
         teensy.send_telemetry(pos_rev=[2.5] + [0.0] * 6, vel_rps=[0.0] * 7)
         teensy.send_to_jetson(
             int(MsgType.DIAGNOSTIC),
-            Diagnostic(axis_id=0, axis_state=CLOSED_LOOP, active_errors=0).pack())
+            Diagnostic(axis_id=0, axis_state=CLOSED_LOOP, active_errors=0,
+                       homing_result=HOMING_RUNNING).pack())
         time.sleep(0.1)
 
         # Completion: hardstop found → IDLE with the encoder snapped to the home
@@ -211,7 +215,8 @@ def test_home_happy_path_end_to_end():
         teensy.send_telemetry(pos_rev=[HOME_POS] + [0.0] * 6, vel_rps=[0.0] * 7)
         teensy.send_to_jetson(
             int(MsgType.DIAGNOSTIC),
-            Diagnostic(axis_id=0, axis_state=IDLE, active_errors=0).pack())
+            Diagnostic(axis_id=0, axis_state=IDLE, active_errors=0,
+                       homing_result=HOMING_OK).pack())
 
         t.join(timeout=8.0)
         assert not t.is_alive(), "homing did not complete"
