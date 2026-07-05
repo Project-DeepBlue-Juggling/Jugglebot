@@ -13,7 +13,8 @@ files_changed:
   - ros_ws/src/jugglebot/Teensy_code_canbridge/can_buses.cpp
   - ros_ws/src/jugglebot/Teensy_code_canbridge/Teensy_code_canbridge.ino
   - ros_ws/src/jugglebot/Teensy_code_canbridge/README.md
-commits: []                # backfilled after commit
+commits:
+  - 9f8c3fc   # fix(canbridge): canhealth err field now counts wire errors; raw change counter renamed chg
 subsystem:
   - canbridge
 tags:
