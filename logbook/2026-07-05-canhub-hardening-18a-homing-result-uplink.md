@@ -8,6 +8,8 @@ related_plan: canhub-hardening.md
 related_entries:
   - 2026-07-02-canhub-hardening-tier2
   - 2026-07-05-canhub-hardening-item20-firmware
+commits:
+  - 2b749e3
 files_changed:
   - config/generate_udp_protocol.py
   - config/generated/udp_protocol.h
