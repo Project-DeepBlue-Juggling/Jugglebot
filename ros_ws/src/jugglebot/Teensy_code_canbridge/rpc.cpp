@@ -178,16 +178,21 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
         // recovery clear reaches a just-repowered bus. AXIS_ALL loops legs + hand
         // (i < NUM_AXES) — can_node JUGGLEBOT_AXES parity (the audit's dropped-hand row).
         if (!gate_allows(method)) return RpcStatus::ERR_BUS_DOWN;
-        // Notify AFTER the gate passes (item 6): a bus-down clear must NOT refill the
-        // soft-reset auto-retry budget — the operator's clear only "counts" if it can
-        // actually reach the bus (mirrors REBOOT_ODRIVES, which arms its latch after
-        // the gate for the same reason).
-        fault_notify_clear_errors();
-        // Accumulate the per-axis TX-enqueue result (item 7): a partial failure must be
-        // visible to the host, not hidden behind an unconditional OK. The send is the
-        // LEFT operand of &&, so every axis is attempted regardless of a prior failure.
-        bool ok = true;
-        for (uint8_t i = 0; i < NUM_AXES; ++i) ok = can_jugglebot_send(ODrive::encode_clear_errors(i)) && ok;
+        // Send FIRST, notify only if at least one frame was actually enqueued (item 6:
+        // a clear that cannot reach the bus must NOT refill the soft-reset auto-retry
+        // budget or release the guard E-STOP latch). The SYNCH gate above passes on a
+        // fully dead-but-idle-recessive bus, and the bus-partner presence gate
+        // (2026-07-05) then refuses every send in the parked state — so notify-before-
+        // send would fire the side-effects with nothing on the wire. any (not all-ok)
+        // is the notify condition: a PARTIAL enqueue still reached the bus. Accumulate
+        // the per-axis result (item 7): partial failure surfaces as ERR_TIMEOUT; the
+        // send is the LEFT operand of &&/|=, so every axis is attempted regardless.
+        bool ok = true, any = false;
+        for (uint8_t i = 0; i < NUM_AXES; ++i) {
+          const bool s = can_jugglebot_send(ODrive::encode_clear_errors(i));
+          any |= s; ok = s && ok;
+        }
+        if (any) fault_notify_clear_errors();
         return ok ? RpcStatus::OK : RpcStatus::ERR_TIMEOUT;
       }
       // Per-axis: refill the budget only if the frame actually went out (gate passed +
@@ -204,12 +209,19 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
         // reboot is actually going out (after the gate passes), so a refused reboot
         // does not blind the detector against a real, coincident loss.
         if (!gate_allows(method)) return RpcStatus::ERR_BUS_DOWN;
-        fault_notify_reboot_started();
-        // Accumulate the per-axis TX-enqueue result (item 7): a partial broadcast
-        // failure surfaces as ERR_TIMEOUT rather than a false OK. Every axis is still
-        // attempted (the send is the LEFT operand of &&).
-        bool ok = true;
-        for (uint8_t i = 0; i < NUM_AXES; ++i) ok = can_jugglebot_send(ODrive::encode_reboot(i)) && ok;
+        // Send FIRST, arm the watchdog-suppression latch only if at least one reboot
+        // frame was actually enqueued — a refused broadcast (SYNCH gate passes on a
+        // dead-but-idle bus; the presence gate then refuses every send) must not blind
+        // the CAN-loss detector for 6 s with nothing on the wire. any (not all-ok):
+        // a partial broadcast still reboots some ODrives, so the coming silence is
+        // deliberate and the latch must arm. Accumulate the per-axis result (item 7):
+        // partial failure surfaces as ERR_TIMEOUT; every axis is still attempted.
+        bool ok = true, any = false;
+        for (uint8_t i = 0; i < NUM_AXES; ++i) {
+          const bool s = can_jugglebot_send(ODrive::encode_reboot(i));
+          any |= s; ok = s && ok;
+        }
+        if (any) fault_notify_reboot_started();
         return ok ? RpcStatus::OK : RpcStatus::ERR_TIMEOUT;
       }
       // Per-axis: send via the shared gate; arm the latch only if the reboot went out

@@ -32,7 +32,9 @@ static volatile uint64_t s_bb_last_rx_us = 0, s_cone_last_rx_us = 0, s_jugglebot
 
 // RX-health observability counters (see can_buses.h "RX-health observability").
 // Single-writer: task_can_rx — the service loop (depth/cap/bus-error fields) and the
-// decode callback (decode_* fields). (One boot-window exception: before the first
+// decode callback (decode_* fields). EXCEPTION: tx_gated is written by the TX gate in
+// partner_recent() from sender contexts (interp ISR + tasks) under a PRIMASK-masked
+// increment. (One boot-window exception: before the first
 // events() call flips the library's isEventsUsed, the FlexCAN ISR dispatches the decode
 // callback directly, so the decode_* increments briefly run in ISR context — harmless,
 // since task_diag is not reading yet.) Each field is one word (atomic load/store on
@@ -408,12 +410,14 @@ void can_buses_init() {
   can_bb.enableFIFOInterrupt();
   can_bb.onReceive(on_bb_rx);
 
-  // CAN2 cone-absent tolerance (candidate 3, "gated broadcast" — HANDOFF D2).
-  // The bus is brought up identically to the others; the tolerance lives in
-  // can_cone_send() below, which withholds TX whenever no cone frame has arrived
-  // within CONE_PRESENT_STALENESS_US. With the cone disconnected we therefore
-  // never transmit into an un-ACKed bus, so the FlexCAN TEC never climbs and CAN2
-  // never enters bus-off — the failure is PREVENTED, not recovered from.
+  // Partner-absent tolerance (candidate 3, "gated broadcast" — HANDOFF D2;
+  // generalised to all three buses 2026-07-05). Every bus is brought up
+  // identically; the tolerance lives in the can_*_send() presence gate below,
+  // which withholds TX whenever no partner frame has arrived within
+  // BUS_PARTNER_STALENESS_US. With a bus partner-less (cone disconnected, robot
+  // 12V supply off) we therefore never transmit into an un-ACKed bus, so the
+  // FlexCAN TEC never climbs and the bus never enters bus-off — the failure is
+  // PREVENTED, not recovered from.
   // Why not the other candidates: the pinned FlexCAN_T4 exposes no one-shot-TX
   // API (candidate 1) and no bounded bus-off-recovery setter (candidate 2 would
   // need raw ESR1/ECR register work); the software gate is the least-risky option
@@ -472,19 +476,32 @@ static constexpr uint8_t CAN_RX_DRAIN_BUDGET = 32;
 // coincides with a multi-tick task_can_rx stall can lose transitions — the captured
 // fields are best-effort under that combination. A SUSTAINED bus-off keeps re-asserting,
 // so it is still captured (and fault_conf is sticky) once the storm/stall clears.
+// Marginal-CAN3 diagnostic: ring of the most recent raw ESR1 snapshot words per bus,
+// so the 1 Hz print can show WHICH bits actually changed on flag-less "error" events
+// (the library snapshots on ANY masked ESR1 change, including benign IDLE/RX/SYNCH
+// flips — see FlexCAN_T4.tpp ISR change-detect). Single-writer (task_can_rx), torn
+// reads harmless for 1 Hz debug output.
+struct Esr1Ring { volatile uint32_t v[8]; volatile uint32_t n; };
+static Esr1Ring s_bb_esr1{}, s_cone_esr1{}, s_jugglebot_esr1{};
+
 template <typename BusT>
-static inline void poll_bus_errors(BusT& bus, volatile BusRxHealth& h) {
+static inline void poll_bus_errors(BusT& bus, volatile BusRxHealth& h, Esr1Ring& ring) {
   CAN_error_t e;
   while (bus.error(e, /*printDetails=*/false)) {
     h.err_events++;
+    ring.v[ring.n % 8u] = e.ESR1;
+    ring.n = ring.n + 1u;
     uint8_t f = h.err_flags;
-    if (e.ACK_ERR)  f |= BusErrFlag::ACK;
-    if (e.CRC_ERR)  f |= BusErrFlag::CRC;
-    if (e.FRM_ERR)  f |= BusErrFlag::FORM;
-    if (e.STF_ERR)  f |= BusErrFlag::STUFF;
-    if (e.BIT0_ERR) f |= BusErrFlag::BITERR0;
-    if (e.BIT1_ERR) f |= BusErrFlag::BITERR1;
+    if (e.ACK_ERR)  { f |= BusErrFlag::ACK;     h.ack_cnt++; }
+    if (e.CRC_ERR)  { f |= BusErrFlag::CRC;     h.crc_cnt++; }
+    if (e.FRM_ERR)  { f |= BusErrFlag::FORM;    h.form_cnt++; }
+    if (e.STF_ERR)  { f |= BusErrFlag::STUFF;   h.stuff_cnt++; }
+    if (e.BIT0_ERR) { f |= BusErrFlag::BITERR0; h.bit0_cnt++; }
+    if (e.BIT1_ERR) { f |= BusErrFlag::BITERR1; h.bit1_cnt++; }
     h.err_flags = f;
+    // TX-vs-RX context at capture time (ESR1.TX bit 6 / ESR1.RX bit 3).
+    if (e.ESR1 & (1u << 6)) h.err_tx_ctx++;
+    if (e.ESR1 & (1u << 3)) h.err_rx_ctx++;
     if (e.RX_ERR_COUNTER > h.rec_max) h.rec_max = e.RX_ERR_COUNTER;
     // TEC, not REC, is the bus-off precursor when a bus partner is DISCONNECTED: our
     // un-ACKed TX (the 0x7DD broadcast on bb/cone/jugglebot, plus CAN3 setpoints) climbs
@@ -506,7 +523,8 @@ static inline void poll_bus_errors(BusT& bus, volatile BusRxHealth& h) {
 // CAN_RX_DRAIN_BUDGET, flag a budget-bound (the overflow precursor), and fold in any
 // bus errors. All work stays in the priority-5 CAN-RX task — see can_buses_service.
 template <typename BusT>
-static inline void service_bus(BusT& bus, volatile BusRxHealth& h, uint32_t can_base) {
+static inline void service_bus(BusT& bus, volatile BusRxHealth& h, uint32_t can_base,
+                               Esr1Ring& ring) {
   const uint16_t pre = (uint16_t)bus.getRXQueueCount();
   if (pre > h.depth_hwm) h.depth_hwm = pre;
   uint8_t n = 0;
@@ -515,18 +533,51 @@ static inline void service_bus(BusT& bus, volatile BusRxHealth& h, uint32_t can_
   // The do-while always runs once, so tx is serviced every tick even when rx is idle.
   do { r = bus.events(); } while (++n < CAN_RX_DRAIN_BUDGET && (r >> 12) != 0);
   if ((r >> 12) != 0) h.cap_hits++;        // budget bound with frames still queued
-  poll_bus_errors(bus, h);
+  poll_bus_errors(bus, h, ring);
   // Live CAN-bus sync (ESR1.SYNCH, bit 18): 1 = controller locked onto the bus this tick.
   // Not sticky — the CURRENT "is this bus electrically alive" state. (FlexCAN_T4 exposes no
   // getter; read ESR1 at base+0x20 directly. CAN3's FLEXCAN3_* macros are broken in the
   // core's imxrt.h, so use the peripheral base address passed in.)
   h.synced = (uint8_t)((*(volatile uint32_t*)(can_base + 0x20u) >> 18) & 1u);
+  // Live error counters (ECR, base+0x1C): TXERRCNT [7:0], RXERRCNT [15:8]. Sampled
+  // every tick; the positive inter-tick deltas accumulate into *_inc_sum so the 1 Hz
+  // print can attribute error pressure to TX vs RX even when the live values decay
+  // between samples (TEC/REC fall -1 per clean frame, so a 1 Hz read alone would
+  // under-report bursts; a 1 kHz delta sum barely misses anything).
+  const uint32_t ecr = *(volatile uint32_t*)(can_base + 0x1Cu);
+  const uint8_t tec = (uint8_t)(ecr & 0xFFu);
+  const uint8_t rec = (uint8_t)((ecr >> 8) & 0xFFu);
+  if (tec > h.tec_live) h.tec_inc_sum += (uint32_t)(tec - h.tec_live);
+  if (rec > h.rec_live) h.rec_inc_sum += (uint32_t)(rec - h.rec_live);
+  h.tec_live = tec;
+  h.rec_live = rec;
 }
 
 void can_buses_service() {
-  service_bus(can_bb,        s_bb_rxh,        IMXRT_FLEXCAN1_ADDRESS);
-  service_bus(can_cone,      s_cone_rxh,      IMXRT_FLEXCAN2_ADDRESS);
-  service_bus(can_jugglebot, s_jugglebot_rxh, IMXRT_FLEXCAN3_ADDRESS);
+  service_bus(can_bb,        s_bb_rxh,        IMXRT_FLEXCAN1_ADDRESS, s_bb_esr1);
+  service_bus(can_cone,      s_cone_rxh,      IMXRT_FLEXCAN2_ADDRESS, s_cone_esr1);
+  service_bus(can_jugglebot, s_jugglebot_rxh, IMXRT_FLEXCAN3_ADDRESS, s_jugglebot_esr1);
+}
+
+// Drain-and-print helper for the raw-ESR1 snapshot rings (1 Hz diag). Prints only
+// when new snapshots arrived since the last call; shows up to the 8 most recent.
+static void print_esr1_ring(const char* name, Esr1Ring& ring, uint32_t& last_n) {
+  const uint32_t n = ring.n;
+  if (n == last_n) return;
+  const uint32_t fresh = n - last_n;
+  const uint32_t show = (fresh > 8u) ? 8u : fresh;
+  Serial.printf("[canesr1]  %-9s +%lu:", name, (unsigned long)fresh);
+  for (uint32_t i = 0; i < show; ++i)
+    Serial.printf(" %08lx", (unsigned long)ring.v[(n - show + i) % 8u]);
+  Serial.println();
+  last_n = n;
+}
+
+void can_buses_print_esr1() {
+  static uint32_t bb_n = 0, cone_n = 0, jb_n = 0;
+  print_esr1_ring("jugglebot", s_jugglebot_esr1, jb_n);
+  print_esr1_ring("bb",        s_bb_esr1,        bb_n);
+  print_esr1_ring("cone",      s_cone_esr1,      cone_n);
 }
 
 // Each FlexCAN template instance is a distinct type, so a small overload per bus
@@ -575,7 +626,40 @@ static bool send_on(FlexCAN_T4<CAN3, RX_SIZE_256, TX_SIZE_64>& bus,
 // also makes the s_*_tx counter increment atomic.
 // TODO(bench): confirm interp_max_jitter_us / interp_deadline_misses stay within
 // budget with the broadcast fan-out active.
+// Bus-partner presence gate (2026-07-05, generalised from the cone-absent
+// tolerance / HANDOFF D2): transmit only when a partner frame has been seen on
+// THIS bus within BUS_PARTNER_STALENESS_US. An un-ACKed TX on a partner-less bus
+// retransmits forever, pinning TEC at the error-passive threshold (128 — observed
+// verbatim on CAN1 after a Ball-Butler-absent window) and, across supply ramps,
+// escalating to bus-off (the CAN3 tec=254/BUSOFF history in the 2026-07-05
+// marginal-CAN3 investigation). Gating at the send choke point (not per caller)
+// keeps every producer — time-sync fan-out, fault machine, RPC relays, leg
+// interp — bus-presence-agnostic, one enforcement point per the contract.
+// FlexCAN self-reception is disabled (SRX_DIS), so our own TX never counts as
+// partner presence — only real partner frames open the gate. A refused send
+// returns false (callers that care, e.g. the BB command relay, already surface
+// that as an RPC error) and increments tx_gated for the 1 Hz [canhealth] line.
+// Residual (accepted, same as the validated cone behaviour): frames queued in
+// the ≤5 s window between last RX and gate-close still retransmit un-ACKed and
+// hold TEC at 128/error-passive until the bus returns — bounded, recovers, and
+// never reaches bus-off on its own.
+// TODO(bench): validate cone-absent on real hardware — disconnect the cone and
+// confirm CAN2 never enters bus-off while CAN1/CAN3 keep broadcasting 0x7DD.
+static inline bool partner_recent(const volatile uint64_t* last_rx_us,
+                                  volatile BusRxHealth& h) {
+  // interval (item 14): *_last_rx_us are monotonic; atomic read (torn-load guard)
+  if (bus_partner_present(atomic_read_u64(last_rx_us), micros64())) return true;
+  // tx_gated is written from BOTH the interp ISR and FreeRTOS tasks (unlike the
+  // task_can_rx-only BusRxHealth fields), so the read-modify-write is masked —
+  // same idiom as the s_*_tx counters inside the send critical section.
+  const uint32_t pm = __get_PRIMASK(); __disable_irq();
+  h.tx_gated++;
+  __set_PRIMASK(pm);
+  return false;
+}
+
 bool can_bb_send(const ODrive::CanFrame& f) {
+  if (!partner_recent(&s_bb_last_rx_us, s_bb_rxh)) return false;
   const uint32_t pm = __get_PRIMASK(); __disable_irq();
   const bool ok = send_on(can_bb, f);
   if (ok) s_bb_tx++;
@@ -583,18 +667,8 @@ bool can_bb_send(const ODrive::CanFrame& f) {
   return ok;
 }
 
-// Cone-absent tolerance (HANDOFF D2): transmit only when a cone has been seen
-// recently. With no cone on CAN2 an un-ACKed TX would climb the TEC → bus-off;
-// gating here (not in the time-sync master) keeps the master bus-agnostic about
-// slave presence. FlexCAN self-reception is disabled, so our own 0x7DD does not
-// count as cone presence — only real cone frames open the gate.
-// TODO(bench): validate cone-absent on real hardware — disconnect the cone and
-// confirm CAN2 never enters bus-off while CAN1/CAN3 keep broadcasting 0x7DD.
 bool can_cone_send(const ODrive::CanFrame& f) {
-  const uint64_t last = atomic_read_u64(&s_cone_last_rx_us);
-  if (last == 0 || micros64() - last > CONE_PRESENT_STALENESS_US) {   // interval (item 14): s_cone_last_rx_us is mono
-    return false;   // cone absent → skip TX (no NACK, no TEC climb, no bus-off)
-  }
+  if (!partner_recent(&s_cone_last_rx_us, s_cone_rxh)) return false;
   const uint32_t pm = __get_PRIMASK(); __disable_irq();
   const bool ok = send_on(can_cone, f);
   if (ok) s_cone_tx++;
@@ -603,6 +677,7 @@ bool can_cone_send(const ODrive::CanFrame& f) {
 }
 
 bool can_jugglebot_send(const ODrive::CanFrame& f) {
+  if (!partner_recent(&s_jugglebot_last_rx_us, s_jugglebot_rxh)) return false;
   const uint32_t pm = __get_PRIMASK(); __disable_irq();
   const bool ok = send_on(can_jugglebot, f);
   if (ok) s_jugglebot_tx++;
@@ -664,6 +739,19 @@ static BusRxHealth snapshot_bus(const volatile BusRxHealth& h) {
   o.tec_max    = h.tec_max;
   o.fault_conf = h.fault_conf;
   o.synced     = h.synced;
+  o.ack_cnt    = h.ack_cnt;
+  o.crc_cnt    = h.crc_cnt;
+  o.form_cnt   = h.form_cnt;
+  o.stuff_cnt  = h.stuff_cnt;
+  o.bit0_cnt   = h.bit0_cnt;
+  o.bit1_cnt   = h.bit1_cnt;
+  o.err_tx_ctx = h.err_tx_ctx;
+  o.err_rx_ctx = h.err_rx_ctx;
+  o.tec_live   = h.tec_live;
+  o.rec_live   = h.rec_live;
+  o.tec_inc_sum = h.tec_inc_sum;
+  o.rec_inc_sum = h.rec_inc_sum;
+  o.tx_gated    = h.tx_gated;
   return o;
 }
 
@@ -675,6 +763,53 @@ CanRxHealth can_buses_rx_health() {
   s.decode_short    = s_decode_short;
   s.decode_bad_axis = s_decode_bad_axis;
   return s;
+}
+
+// ── Marginal-CAN3 diagnostic: decoded bit-timing register dump ────────────────
+// Reads CTRL1 (base+0x4) per bus and CCM_CSCMR2 (CAN root clock) and prints the
+// ACTUAL timing the silicon runs: prescaler, segment lengths, resulting bit rate
+// and sample point. FlexCAN_T4::setBaudRate picks these from an internal table;
+// this dump is the ground truth for comparing against the ODrive Pro / Platform
+// Teensy timing when hunting the marginal-CAN3 error source.
+static void dump_one_timing(const char* name, uint32_t can_base, uint32_t can_clk_hz) {
+  const uint32_t ctrl1 = *(volatile uint32_t*)(can_base + 0x4u);
+  const uint32_t presdiv = (ctrl1 >> 24) & 0xFFu;
+  const uint32_t rjw     = (ctrl1 >> 22) & 0x3u;
+  const uint32_t pseg1   = (ctrl1 >> 19) & 0x7u;
+  const uint32_t pseg2   = (ctrl1 >> 16) & 0x7u;
+  const uint32_t propseg = ctrl1 & 0x7u;
+  // Actual tq counts are field+1 (sync seg is a fixed 1 tq).
+  const uint32_t ntq = 1u + (propseg + 1u) + (pseg1 + 1u) + (pseg2 + 1u);
+  const uint32_t sclk = can_clk_hz / (presdiv + 1u);
+  const uint32_t rate = sclk / ntq;
+  const uint32_t sp_x10 = (1u + (propseg + 1u) + (pseg1 + 1u)) * 1000u / ntq;
+  Serial.printf("[cantiming] %-9s CTRL1=0x%08lx presdiv=%lu propseg=%lu pseg1=%lu pseg2=%lu rjw=%lu"
+                " ntq=%lu rate=%lu sp=%lu.%lu%% sjw=%lutq\n",
+                name, (unsigned long)ctrl1, (unsigned long)presdiv, (unsigned long)propseg,
+                (unsigned long)pseg1, (unsigned long)pseg2, (unsigned long)rjw,
+                (unsigned long)ntq, (unsigned long)rate,
+                (unsigned long)(sp_x10 / 10u), (unsigned long)(sp_x10 % 10u),
+                (unsigned long)(rjw + 1u));
+}
+
+void can_buses_dump_timing() {
+  // CAN root clock from CCM_CSCMR2: CAN_CLK_SEL [9:8] (0=pll3/8=60M, 1=osc 24M,
+  // 2=pll3/6=80M), CAN_CLK_PODF [7:2] divides by (podf+1).
+  const uint32_t cscmr2 = CCM_CSCMR2;
+  const uint32_t sel  = (cscmr2 >> 8) & 0x3u;
+  const uint32_t podf = (cscmr2 >> 2) & 0x3Fu;
+  uint32_t root = 0;
+  if (sel == 0) root = 60000000u;
+  else if (sel == 1) root = 24000000u;
+  else if (sel == 2) root = 80000000u;
+  const uint32_t can_clk = root ? root / (podf + 1u) : 0;
+  Serial.printf("[cantiming] CCM_CSCMR2=0x%08lx clk_sel=%lu podf=%lu can_clk=%luHz\n",
+                (unsigned long)cscmr2, (unsigned long)sel, (unsigned long)podf,
+                (unsigned long)can_clk);
+  if (!can_clk) { Serial.println("[cantiming] CAN clock disabled?!"); return; }
+  dump_one_timing("bb",        IMXRT_FLEXCAN1_ADDRESS, can_clk);
+  dump_one_timing("cone",      IMXRT_FLEXCAN2_ADDRESS, can_clk);
+  dump_one_timing("jugglebot", IMXRT_FLEXCAN3_ADDRESS, can_clk);
 }
 
 }  // namespace CanBridge

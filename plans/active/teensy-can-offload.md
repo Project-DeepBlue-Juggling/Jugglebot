@@ -1095,7 +1095,7 @@ C++.
 > tolerant), BB and cone slaves lock on, and **cone-absent gating holds without
 > bus-off** (`logbook/2026-06-06-can-hub-bringup.md`). The CAN2-absent behaviour
 > question is resolved → **gated broadcast** (TX withheld once cone RX goes
-> stale, so TEC never climbs; `CONE_PRESENT_STALENESS_US`). The Jetson
+> stale, so TEC never climbs; `BUS_PARTNER_STALENESS_US`, generalised to all three buses 2026-07-05). The Jetson
 > master-disable sub-task is effectively done (`can_node` retired from launch;
 > Jetson is now the UDP `TimeOfDayServer` anchor). **CAN3 ODrive protocol:**
 > encoders/decoders byte-validated vs `odrive.py`, and heartbeat/telemetry RX
@@ -1614,7 +1614,7 @@ To resolve as the plan progresses.
   if the physical layout changes materially.
 - **CAN2 firmware behaviour when cone Teensy is absent. RESOLVED (Phase 5).**
   Chosen approach: **gated broadcast** — the can-bridge withholds CAN2 TX once
-  the cone RX timestamp goes stale (`CONE_PRESENT_STALENESS_US`, `can_buses.cpp`
+  the cone RX timestamp goes stale (`BUS_PARTNER_STALENESS_US` — renamed from CONE_PRESENT_STALENESS_US when the gate was generalised to all three buses 2026-07-05, `can_buses.cpp`
   `can_cone_send`), so no un-ACKed frame is ever emitted and the FlexCAN TEC
   never climbs toward bus-off. (The pinned FlexCAN_T4 has no one-shot-TX or
   bounded-recovery API, ruling out the other two candidates.) Hardware-validated

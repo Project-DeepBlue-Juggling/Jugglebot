@@ -98,6 +98,96 @@ On the Jetson the upload calls a locally-built `teensy_loader_cli` directly
 (PlatformIO's bundled uploader is glibc-2.34, which Ubuntu 20.04 can't run) — see
 `platformio.ini` for the full flash/toolchain notes.
 
+## Serial console reference
+
+The USB-serial debug console (`/dev/ttyACM0` @ 115200) prints one block per
+second from `task_diag`. Every field, line by line:
+
+### `[diag]` — link + firmware vitals
+
+`link=1 fault=0 rx=N tx=N crc_err=N seq_gaps=N drain_cap=N synced=1 heap=N`
+
+| field | meaning |
+|---|---|
+| `link` | Jetson UDP link state: 0 INIT (no Jetson heartbeat yet), 1 UP, 2 DEGRADED (missed heartbeats), 3 LOST |
+| `fault` | fault-machine state: 0 NONE, 1 MPC_STALE, 2 LINK_LOST, 3 MOTOR_OVERSPEED, 4 MAX_DEVIATION, 5 ODRIVE_FATAL (active error/disarm — incl. plain undervoltage when 45 V is off), 6 CAN_BUS_DOWN (CAN3 RX silent > 2 s), 7 MOTOR_FB_STALE |
+| `rx` / `tx` | cumulative UDP frames received from / sent to the Jetson (tx runs ~320/s: 100 Hz telemetry + 100 Hz hand echo + 100 Hz platform/BB traffic + 10 Hz heartbeat + diagnostics) |
+| `crc_err` / `seq_gaps` | UDP frames dropped on bad CRC-16 / gaps seen in the Jetson's frame sequence counter |
+| `drain_cap` | ticks the UDP RX drain budget bound with datagrams still queued (0 in health) |
+| `synced` | `time_synced()`: 1 = wall-clock anchored by a fresh Jetson time-of-day response. **0 whenever ROS2/the UDP link is down — and the 100 Hz 0x7DD time-sync broadcast is withheld while 0.** |
+| `heap` | free FreeRTOS heap (bytes) |
+
+### `[canhealth]` — per-bus health (`jugglebot`=CAN3, `bb`=CAN1, `cone`=CAN2)
+
+`sync=1 hwm=9 capHit=0 err=N flags=0x2c rec=N tec=N flt=active gated=N`
+
+| field | meaning |
+|---|---|
+| `sync` | LIVE ESR1.SYNCH: 1 = the controller is locked onto the bus right now (the cleanest "bus electrically alive" indicator). Not sticky. |
+| `hwm` | peak RX-buffer occupancy at a service tick (single digits in health; →256 means the CAN-RX task is starved) |
+| `capHit` | ticks the per-tick RX drain budget bound with frames still queued (overflow precursor; must stay 0) |
+| `err` | **NOT a wire-error count.** Cumulative ESR1-*change* snapshots captured by the FlexCAN_T4 ISR — any change in the masked ESR1 bits (error types, warnings, fault confinement, **and the benign IDLE/RX/SYNCH activity bits**) captures one. On a healthy bus this still ticks a few per second from IDLE↔RX phase-sampling. Real wire errors are counted per type on the `[canerrs]` line. |
+| `flags` | sticky-since-boot OR of wire-error types ever seen: 0x01 ACK, 0x02 CRC, 0x04 FORM, 0x08 STUFF, 0x10 BIT0, 0x20 BIT1 (e.g. `0x2c` = FORM+STUFF+BIT1 — the 12 V supply-ramp signature) |
+| `rec` / `tec` | **high-water marks** (not live values) of the RX/TX error counters. CAN fault confinement: ≥96 warning, ≥128 error-passive, TEC ≥256 bus-off. `tec=128` exactly = the passive-ACK cap: something transmitted into a partner-less bus. Live values are `recNow`/`tecNow` on `[canerrs]`. |
+| `flt` | **worst-ever** fault confinement since boot (sticky): `active` / `passive` / `BUSOFF` |
+| `gated` | TX attempts refused by the bus-partner presence gate (no partner frame within 5 s — see `BUS_PARTNER_STALENESS_US`). Non-zero = the gate is protecting a dead/unpowered bus from un-ACKed TX. |
+
+### `[canerrs]` — per-type wire-error attribution (printed once a bus has any `err`)
+
+`ack=N crc=N form=N stuff=N bit0=N bit1=N txctx=N rxctx=N tecNow=N recNow=N tecInc=N recInc=N`
+
+| field | meaning |
+|---|---|
+| `ack` | ACK errors: our TX not acknowledged (partner absent / dying bus) — TX-side |
+| `crc` / `form` / `stuff` | RX-side wire errors (noise, signal integrity, supply-ramp garbage) |
+| `bit0` / `bit1` | TX bit-monitor errors: sent dominant read recessive / sent recessive read dominant |
+| `txctx` / `rxctx` | how many `err` snapshots were captured while the controller was transmitting / receiving (attribution context, includes benign snapshots) |
+| `tecNow` / `recNow` | **live** TX/RX error counters at the last 1 kHz service tick (decay −1 per clean frame; falling = recovering, pinned = sustained fault) |
+| `tecInc` / `recInc` | cumulative positive deltas of the live counters (TEC +8 per TX error, REC +1/+8 per RX error — compare rates, not magnitudes). Zero increments = zero wire errors, whatever `err` says. |
+
+### `[canesr1]` — raw ESR1 words of fresh snapshots (up to 8 most recent)
+
+`+N: 00040080 00040008 ...` — `+N` = snapshots since the last print. Common
+benign words: `0x00040080` SYNCH+IDLE, `0x00040008` SYNCH+RX,
+`0x00040040` SYNCH+TX. Error bits live at 15:10 (BIT1,BIT0,ACK,CRC,FORM,STUFF);
+bits 5:4 = fault confinement; bits 8/9 = RX/TX warning; bit 18 = SYNCH.
+
+### `[cantiming]` — decoded bit-timing registers (first tick + every 60 s)
+
+Ground truth of what the silicon runs: CAN root clock (`CCM_CSCMR2`), then per
+bus the raw CTRL1 and decoded `presdiv/propseg/pseg1/pseg2/rjw`, total time
+quanta (`ntq`), computed `rate` and sample point (`sp`). Expected: 24 MHz,
+ntq=12, 1 Mbps, sp=75.0 %, sjw=2 (the FlexCAN_T4 `setBaudRate` table result —
+all Teensies on the buses use the same defaults).
+
+### `[canhealth] decode_drops` — CAN3 decode drops + uplink-ring overflows
+
+`short` = DLC < 8 (truncated); `bad_axis` = node id ≥ 7 after the platform-reply
+filter. **`bad_axis` ticking at 2 Hz is normal**: it's the Platform Teensy's
+0x7DF TRAFFIC_REPORT (every 500 ms), which the decode deliberately doesn't cache.
+`cone_fwd_drops` / `cmd_result_fwd_drops` = drop-newest overflows of the cone-frame
+and BB-CMD_RESULT SPSC uplink rings (must stay 0; sustained growth = a babbling
+partner outpacing the 100 Hz telemetry drain).
+
+### `[axes]` — per-ODrive freshness (legs 0–5, H = hand)
+
+`fresh=7/7 0:s8/12 ...` — each entry is `state/heartbeat-age-ms` + a mark:
+`?` never seen, `!` heartbeat stale, `*` active error or disarm-reason set
+(uniform `*` with 45 V off is just undervoltage), ` ` (space) healthy.
+ODrive states: 1 IDLE, 8 CLOSED_LOOP. `fresh=N/7` counts fully-healthy axes.
+
+### `[guard]` — leg output gate (is the firmware streaming setpoints?)
+
+`mpc_active` = J→T heartbeat arm bit seen; `guard_mode` 0 DISABLED / 1 ENABLED /
+2 ESTOP; `output` = interp gate (1 ⇒ sending 500 Hz setpoints to CAN3);
+`sp_age_ms` = age of the last Jetson setpoint (huge ⇒ none received);
+`u0` = latched commanded base position for axis 0 (rev).
+
+### `[bb]` — Ball Butler state cache
+
+`state` (BB state machine) `ball` (ball-in-hand) `yaw/pitch/hand` (encoder
+positions, deg/deg/mm) `age` (heartbeat age; `!` = stale).
+
 ## Module layout
 
 ```

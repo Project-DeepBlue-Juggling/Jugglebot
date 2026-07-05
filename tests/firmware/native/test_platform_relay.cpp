@@ -145,6 +145,20 @@ TEST_CASE("is_platform_reply_id classifies exactly the two relay reply ids") {
   CHECK_FALSE(is_platform_reply_id(0x000u));
 }
 
+TEST_CASE("bus_partner_present pins the TX presence-gate window semantics") {
+  // The can_*_send() gate (2026-07-05 marginal-CAN3 fix): TX is allowed only when
+  // some partner frame arrived within BUS_PARTNER_STALENESS_US. Pin the window
+  // value and the boundary/never-seen semantics so a config drift or an off-by-one
+  // in the predicate fails loudly here rather than as silent bus-off pollution.
+  constexpr uint64_t W = CanBridge::BUS_PARTNER_STALENESS_US;
+  CHECK(W == 5000000u);                                    // 5.0 s contract window
+  CHECK_FALSE(CanBridge::bus_partner_present(0, 0));       // never seen ⇒ absent (boot)
+  CHECK_FALSE(CanBridge::bus_partner_present(0, 10 * W));  // never seen stays absent
+  CHECK(CanBridge::bus_partner_present(1000, 1000));       // same-instant frame ⇒ present
+  CHECK(CanBridge::bus_partner_present(1000, 1000 + W));   // exactly at window ⇒ present
+  CHECK_FALSE(CanBridge::bus_partner_present(1000, 1001 + W));  // one past ⇒ absent
+}
+
 TEST_CASE("hand axis-6 allow-table permits exactly the locked hand ODrive ops") {
   using namespace JbUdp;
   // Permit (the hand homing + command surface).

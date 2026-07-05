@@ -108,7 +108,8 @@ constexpr uint16_t STACK_UDP_TX    = 4096 / 4;
 constexpr uint16_t STACK_FAULT     = 2048 / 4;
 constexpr uint16_t STACK_HOMING    = 1024 / 4;   // state machine + a few CAN sends
 constexpr uint16_t STACK_WATCHDOG  = 1024 / 4;
-constexpr uint16_t STACK_DIAG      = 4096 / 4;   // bumped from 1024: Serial.printf w/ 7 args overflows at 1024
+constexpr uint16_t STACK_DIAG      = 8192 / 4;   // bumped from 1024 (7-arg printf overflowed), again from 4096
+                                                 // for the 13-arg [canerrs] diagnostic printf (2026-07-05)
 
 // ── Interpolator constants (PORTED 1:1 from motor_guard.py) ──────────────────
 //  Source: ros_ws/src/jugglebot/jugglebot/motion/motor_guard.py constants block.
@@ -131,13 +132,20 @@ constexpr uint32_t CAN_HEARTBEAT_TIMEOUT_US = 2000000u;  // 2.0 s → fatal_can_
 // production timeout (can_node._bb_heartbeat_timeout_s = proto.BB_HEARTBEAT_TIMEOUT_MS
 // / 1000) is 0.5 s — only 5 missed heartbeats vs the ODrive's 20. Reused 1:1 here.
 constexpr uint32_t BB_HEARTBEAT_TIMEOUT_US = BallButler::HEARTBEAT_TIMEOUT_MS * 1000u;
-// CAN2 cone-absent tolerance (ADR-0013): the can-bridge broadcasts 0x7DD on CAN2
-// even when the catching cone is disconnected. can_cone_send() gates the TX on
-// recent cone presence so an un-ACKed broadcast never drives CAN2 to bus-off
-// (candidate 3, "gated broadcast" — see can_buses.cpp + HANDOFF-firmware-three-bus D2).
-// A cone counts as "present" if any CAN2 frame arrived within this window;
-// generous so a brief cone silence doesn't blip the broadcast.
-constexpr uint32_t CONE_PRESENT_STALENESS_US = 5000000u;  // 5.0 s
+// Bus-partner presence window (generalised 2026-07-05 from CONE_PRESENT_STALENESS_US).
+// EVERY can_*_send() gates its TX on "some partner frame arrived on this bus within
+// this window" — never transmit into a bus with no recently-seen partner. Un-ACKed TX
+// into a dead/unpowered bus retransmits forever, pins TEC at the error-passive
+// threshold (128), and during supply transitions can push through to bus-off — the
+// sticky BUSOFF/tec=254 pollution diagnosed in the 2026-07-05 marginal-CAN3
+// investigation. Originally shipped for CAN2 only (cone-absent tolerance, candidate 3
+// "gated broadcast", HANDOFF-firmware-three-bus D2); the failure class is identical on
+// all three buses (CAN1 pinned tec=128/passive from a Ball-Butler-absent window, CAN3
+// reached BUSOFF across robot-supply cycles). A partner counts as "present" if any
+// frame arrived within this window; generous so a brief silence (e.g. the ~3.5 s
+// worst-case ODrive reboot gap) doesn't blip the gate — and on CAN3 the Platform
+// Teensy's 2 Hz TRAFFIC_REPORT keeps the bus "present" through ODrive-only outages.
+constexpr uint32_t BUS_PARTNER_STALENESS_US = 5000000u;  // 5.0 s
 // Jetson UDP link: declare lost after LINK_LOST_MISSES missed heartbeats.
 constexpr uint32_t JETSON_LINK_TIMEOUT_US =
     (1000000u / HEARTBEAT_RATE_HZ) * JbUdp::LINK_LOST_MISSES;   // 500 ms

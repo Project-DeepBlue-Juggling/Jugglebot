@@ -4,21 +4,25 @@
 // =============================================================================
 //  One FlexCAN_T4 peripheral per robot subsystem (supersedes the old two-bus
 //  shared-aux / private-leg split):
-//    bb        = CAN1 (Ball Butler Teensy only). No ODrive lives here, so RX is
-//                counted but never decoded into the cache; we TX the 100 Hz
-//                0x7DD time-sync broadcast.
+//    bb        = CAN1 (Ball Butler Teensy + BB pitch/hand ODrives). BB heartbeat/
+//                CMD_RESULT/ODrive telemetry decode into bb_state/bb_axes; we TX
+//                the 100 Hz 0x7DD time-sync broadcast + relayed BB commands.
 //    cone      = CAN2 (catching cone Teensy, often physically disconnected). RX
 //                is counted AND copied into a small SPSC ring for the cone
 //                uplink (phase-10b): task_telem drains the ring into CONE_FRAME
 //                UDP messages so the Jetson sees every cone frame verbatim
 //                (CATCH_EVENT 0x7E0 / CONE_HEARTBEAT 0x7E1). TX is the 0x7DD
-//                broadcast, GATED on recent cone presence so an un-ACKed send
-//                can't drive the bus to bus-off (cone-absent tolerance — see
-//                can_buses.cpp + HANDOFF D2).
+//                broadcast.
 //    jugglebot = CAN3 (Jugglebot core: 6 leg ODrives + Hand ODrive + platform
 //                Teensy 4.0 + can-bridge). ALL ODrive telemetry/heartbeat/error
 //                frames decode into the per-axis cache from here; leg setpoints,
 //                RPC-driven ODrive commands, and fault-machine commands TX here.
+//
+//  TX presence gate (2026-07-05, generalised from the cone-absent tolerance /
+//  HANDOFF D2): EVERY can_*_send() is gated on bus_partner_present() — a frame
+//  seen on that bus within BUS_PARTNER_STALENESS_US — so the bridge never
+//  transmits into a partner-less (unpowered/disconnected) bus. See the predicate
+//  below and the 2026-07-05 marginal-CAN3 logbook entry for the failure class.
 //
 //  Peripheral identity (CAN1/CAN2/CAN3) appears ONLY as the FlexCAN_T4 template
 //  parameter in can_buses.cpp; everywhere else the bus is named by subsystem so
@@ -43,14 +47,17 @@
 #include "odrive_protocol.h"
 #include "udp_protocol.h"   // JbUdp::BusHealth
 #include "protocol_config.h"  // PlatformCanId (relay reply ids)
+#include "canbridge_config.h" // BUS_PARTNER_STALENESS_US (TX presence gate)
 
 namespace CanBridge {
 
 void can_buses_init();      // begin all three buses, register RX callbacks
 void can_buses_service();   // pump bb/cone/jugglebot events(); call from CAN RX task
 
-bool can_bb_send(const ODrive::CanFrame& f);         // CAN1 Ball Butler TX (time-sync broadcast)
-bool can_cone_send(const ODrive::CanFrame& f);       // CAN2 cone TX (time-sync; GATED, cone-absent tolerant)
+// All three sends are presence-gated (bus_partner_present(); false = refused, nothing
+// queued) — the bridge never transmits into a partner-less bus (2026-07-05).
+bool can_bb_send(const ODrive::CanFrame& f);         // CAN1 Ball Butler TX (time-sync + relayed BB cmds)
+bool can_cone_send(const ODrive::CanFrame& f);       // CAN2 cone TX (time-sync)
 bool can_jugglebot_send(const ODrive::CanFrame& f);  // CAN3 Jugglebot core TX (setpoints, RPC, fault cmds)
 
 // "Never command a confirmed-dead bus." True iff CAN3 (the Jugglebot core bus
@@ -154,6 +161,19 @@ inline bool is_platform_reply_id(uint32_t id) {
   return id == PlatformCanId::STATE_UPDATE || id == PlatformCanId::TILT_READING;
 }
 
+// ── Bus-partner presence predicate (the TX-gate contract, 2026-07-05) ─────────
+// True iff some partner frame has been seen on the bus within the presence window.
+// EVERY can_*_send() refuses to transmit when this is false: an un-ACKed frame on a
+// partner-less bus retransmits forever, pinning TEC at the error-passive threshold
+// (128) and polluting the sticky bus diagnostics (the 2026-07-05 marginal-CAN3
+// investigation's root finding); during supply ramps it can escalate to bus-off.
+// last_rx_us == 0 means "no frame ever" (boot) — absent by definition. Pure and
+// header-only so the native harness can pin the window semantics without compiling
+// can_buses.cpp (same pattern as is_platform_reply_id above).
+inline bool bus_partner_present(uint64_t last_rx_us, uint64_t now_us) {
+  return last_rx_us != 0 && (now_us - last_rx_us) <= BUS_PARTNER_STALENESS_US;
+}
+
 // ── RX-health observability (bench/debug telemetry) ──────────────────────────
 //  Diagnostic counters that let a future bug be told apart by class. Surfaced over
 //  the USB Serial console by task_diag (NOT on the UDP uplink — the wire format is
@@ -204,6 +224,35 @@ struct BusRxHealth {
                           // partner is disconnected (un-ACKed TX climbs TEC, not REC)
   uint8_t  fault_conf;    // worst fault-confinement: 0 active / 1 passive / 2 bus-off
   uint8_t  synced;        // LIVE (not sticky) ESR1.SYNCH: 1 = controller locked onto the bus
+
+  // ── marginal-CAN3 diagnostic instrumentation (2026-07-05 investigation) ────
+  // Per-type ESR1-snapshot counters: WHICH error class fires and at what rate
+  // (err_flags only says "seen since boot"). One snapshot can set several types.
+  uint32_t ack_cnt;       // ACKERR snapshots  (TX un-ACKed)
+  uint32_t crc_cnt;       // CRCERR snapshots  (RX: CRC mismatch — noise/SI)
+  uint32_t form_cnt;      // FRMERR snapshots  (RX: fixed-form field violated)
+  uint32_t stuff_cnt;     // STFERR snapshots  (RX: >5 equal bits — noise/clocking)
+  uint32_t bit0_cnt;      // BIT0ERR snapshots (TX: sent dominant, read recessive)
+  uint32_t bit1_cnt;      // BIT1ERR snapshots (TX: sent recessive, read dominant)
+  // TX-vs-RX attribution: ESR1.TX (bit 6) / ESR1.RX (bit 3) captured with the
+  // snapshot — was the controller transmitting or receiving when the error fired?
+  uint32_t err_tx_ctx;    // snapshots with ESR1.TX set
+  uint32_t err_rx_ctx;    // snapshots with ESR1.RX set
+  // Live ECR sample (base+0x1C): the CURRENT error counters each service tick,
+  // not the event-captured high-water. TEC decays -1 per clean TX, REC likewise
+  // for RX, so live values falling ⇒ recovering; pinned high ⇒ sustained fault.
+  uint8_t  tec_live;      // ECR TXERRCNT at last service tick
+  uint8_t  rec_live;      // ECR RXERRCNT at last service tick
+  // Cumulative positive deltas of the live counters between ticks: which counter
+  // is being DRIVEN. TEC +8/TX-error vs REC +1/RX-error (CAN fault confinement),
+  // so compare rates, not magnitudes.
+  uint32_t tec_inc_sum;   // Σ max(0, ΔTEC) across service ticks
+  uint32_t rec_inc_sum;   // Σ max(0, ΔREC) across service ticks
+  // TX attempts refused by the bus-partner presence gate (bus_partner_present()
+  // false at send time). Non-zero while a bus is unpowered/disconnected and some
+  // caller still tries to TX — the visible witness that the gate is doing its job
+  // instead of letting un-ACKed TX pin TEC.
+  uint32_t tx_gated;
 };
 
 struct CanRxHealth {
@@ -212,5 +261,17 @@ struct CanRxHealth {
   uint32_t decode_bad_axis;  // CAN3 frames dropped in decode: node id >= NUM_AXES
 };
 CanRxHealth can_buses_rx_health();
+
+// Marginal-CAN3 diagnostic (2026-07-05): print one [cantiming] line per bus on the
+// USB Serial console — the DECODED CTRL1 bit timing (prescaler/propseg/pseg1/pseg2/
+// rjw) plus the computed bit rate and sample point, and the CCM CAN root clock.
+// Ground truth for "what timing is this controller actually running", independent
+// of what setBaudRate was asked for.
+void can_buses_dump_timing();
+
+// Marginal-CAN3 diagnostic (2026-07-05): print the raw ESR1 words of any error
+// snapshots captured since the last call (up to the 8 most recent per bus), so
+// flag-less "error" events can be attributed to the exact ESR1 bits that changed.
+void can_buses_print_esr1();
 
 }  // namespace CanBridge

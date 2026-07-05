@@ -230,10 +230,24 @@ static void task_heartbeat(void*) {
 // DISCONNECTED bus partner, watch tec (un-ACKed TX) rising ahead of flt=BUSOFF.
 static void print_bus_health(const char* name, const BusRxHealth& b) {
   static const char* const FLT[3] = { "active", "passive", "BUSOFF" };
-  Serial.printf("[canhealth] %-9s sync=%u hwm=%u capHit=%lu err=%lu flags=0x%02x rec=%u tec=%u flt=%s\n",
+  Serial.printf("[canhealth] %-9s sync=%u hwm=%u capHit=%lu err=%lu flags=0x%02x rec=%u tec=%u flt=%s gated=%lu\n",
                 name, (unsigned)b.synced, (unsigned)b.depth_hwm, (unsigned long)b.cap_hits,
                 (unsigned long)b.err_events, (unsigned)b.err_flags, (unsigned)b.rec_max,
-                (unsigned)b.tec_max, FLT[(b.fault_conf < 3) ? b.fault_conf : 2]);
+                (unsigned)b.tec_max, FLT[(b.fault_conf < 3) ? b.fault_conf : 2],
+                (unsigned long)b.tx_gated);
+  // Marginal-CAN3 diagnostic (2026-07-05): per-type error-snapshot counters, TX/RX
+  // capture context, and the live ECR counters + their positive-delta sums. Printed
+  // only for a bus that has seen at least one error event (healthy buses stay quiet).
+  if (b.err_events != 0) {
+    Serial.printf("[canerrs]  %-9s ack=%lu crc=%lu form=%lu stuff=%lu bit0=%lu bit1=%lu"
+                  " txctx=%lu rxctx=%lu tecNow=%u recNow=%u tecInc=%lu recInc=%lu\n",
+                  name, (unsigned long)b.ack_cnt, (unsigned long)b.crc_cnt,
+                  (unsigned long)b.form_cnt, (unsigned long)b.stuff_cnt,
+                  (unsigned long)b.bit0_cnt, (unsigned long)b.bit1_cnt,
+                  (unsigned long)b.err_tx_ctx, (unsigned long)b.err_rx_ctx,
+                  (unsigned)b.tec_live, (unsigned)b.rec_live,
+                  (unsigned long)b.tec_inc_sum, (unsigned long)b.rec_inc_sum);
+  }
 }
 
 // Diagnostics / LED heartbeat (priority 1, lowest). Blinks the LED at 1 Hz so a
@@ -246,6 +260,14 @@ static void task_diag(void*) {
     digitalWriteFast(LED_PIN, on);
     if (on) {
       profiling_step();          // emit the 1 Hz PROFILE frame on the LED-on edge
+      // Marginal-CAN3 diagnostic (2026-07-05): decoded bit-timing register dump on
+      // the first diag tick (Serial is up by then) and every 60 s after, so a
+      // monitor attached mid-run still catches it within a minute.
+      {
+        static uint32_t timing_tick = 0;
+        if (timing_tick % 60u == 0u) can_buses_dump_timing();
+        timing_tick++;
+      }
       const UdpStats s = udp_link_stats();
       Serial.printf("[diag] link=%u fault=%u rx=%lu tx=%lu crc_err=%lu seq_gaps=%lu drain_cap=%lu synced=%d heap=%u\n",
                     link_state(), fault_state(), (unsigned long)s.rx_frames,
@@ -260,6 +282,7 @@ static void task_diag(void*) {
                     (unsigned long)ch.decode_short, (unsigned long)ch.decode_bad_axis,
                     (unsigned long)can_cone_fwd_drops(),
                     (unsigned long)can_cmd_result_fwd_drops());
+      can_buses_print_esr1();   // raw ESR1 words of fresh error snapshots (diagnostic)
 
       // Per-axis "are all ODrives responding?" line (USB Serial bench/debug, alongside
       // the [canhealth] lines — NOT on the UDP uplink yet). Columns: legs 0..5 then
