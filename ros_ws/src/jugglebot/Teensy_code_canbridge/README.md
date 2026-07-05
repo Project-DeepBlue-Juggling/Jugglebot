@@ -5,9 +5,15 @@ The new dedicated CAN microcontroller from
 It owns all leg-ODrive CAN traffic (offloaded from the Jetson), is the system
 time-sync **master**, and talks to the Jetson over a point-to-point UDP link.
 
-> **Status: hardware-free WIP.** Nothing here has run on a Teensy yet. See
-> [`HANDOFF-teensy-can-offload-firmware-wip.md`](../../../../plans/active/HANDOFF-teensy-can-offload-firmware-wip.md)
-> for phase status, autonomous decisions, and the hardware-validation checklist.
+> **Status: flashed + hardware-validated (2026-07-04).** This firmware was
+> flashed to the can-bridge Teensy 4.1 on 2026-07-03 and passed all 7 powered
+> validation checks on 2026-07-04 — see
+> [`logbook/2026-07-02-canhub-hardening-tier2.md`](../../../../logbook/2026-07-02-canhub-hardening-tier2.md).
+> A fresh-eyes hardening pass is in progress
+> ([`plans/active/canhub-hardening.md`](../../../../plans/active/canhub-hardening.md)).
+> The original build-out (phase status, autonomous decisions, the initial
+> hardware-validation checklist) is archived under `plans/archived/` as
+> `2026-07-05 HANDOFF-teensy-can-offload-firmware-wip.md`.
 
 ## Board & toolchain
 
@@ -21,14 +27,16 @@ time-sync **master**, and talks to the Jetson over a point-to-point UDP link.
 
 ## Libraries
 
-Install via the Arduino Library Manager / PlatformIO `lib_deps`, then **pin the
-versions you used** here once the build is green on the bench:
+The exact library + toolchain versions the flashed firmware was built against are
+**pinned in `platformio.ini`** (`platform` + `lib_deps`) — build from there, don't
+re-pin by hand (Fable-5 hardening [15]). The table below is the purpose/notes
+reference:
 
 | Library | Purpose | Notes |
 |---------|---------|-------|
-| **FreeRTOS_TEENSY4** | RTOS | greiman fork — umbrella header `FreeRTOS_TEENSY4.h` (see `freertos_shim.h`). The tsandmann/freertos-teensy fork also works; adjust the shim. |
-| **QNEthernet** | UDP/lwIP over the built-in MAC | ssilverman/QNEthernet; supersedes NativeEthernet. Needs the PJRC Ethernet kit (DP83825I PHY). |
-| **FlexCAN_T4** | all three CAN buses | bundled with Teensyduino |
+| **freertos-teensy** | RTOS | `tsandmann/freertos-teensy` (pinned by commit; the originally-cited greiman `FreeRTOS_TEENSY4` fork is 404). Umbrella header `arduino_freertos.h` (see `freertos_shim.h`). |
+| **QNEthernet** | UDP/lwIP over the built-in MAC | `ssilverman/QNEthernet` (pinned by version); supersedes NativeEthernet. Needs the PJRC Ethernet kit (DP83825I PHY). |
+| **FlexCAN_T4** | all three CAN buses | bundled with PlatformIO's Teensy package |
 
 ## Generated / shared headers (do not hand-edit)
 
@@ -78,18 +86,17 @@ so the Jetson adapter's link lights stay dark until this firmware boots — expe
 **Arduino IDE:** open `Teensy_code_canbridge.ino`, select Teensy 4.1, set CPU
 600 MHz / Optimize Faster / USB Serial, Upload.
 
-**PlatformIO** (a `platformio.ini` like the cone firmware's can be added):
+**PlatformIO** (env `teensy41` — the authoritative build; pins platform + libs):
 
-```ini
-[env:teensy41]
-platform = teensy
-board = teensy41
-framework = arduino
-build_flags = -O2 -DUSB_SERIAL
-lib_deps =
-    ssilverman/QNEthernet
-    https://github.com/greiman/FreeRTOS_TEENSY4
+```bash
+pio run -e teensy41                 # compile
+pio run -e teensy41 -t upload       # flash the attached Teensy (soft-reboots into the bootloader)
+pio device monitor                  # serial debug console @ 115200
 ```
+
+On the Jetson the upload calls a locally-built `teensy_loader_cli` directly
+(PlatformIO's bundled uploader is glibc-2.34, which Ubuntu 20.04 can't run) — see
+`platformio.ini` for the full flash/toolchain notes.
 
 ## Module layout
 

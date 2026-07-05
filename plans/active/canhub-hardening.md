@@ -93,10 +93,12 @@ firmware items consolidate into 1–2 flash cycles + one powered re-validation s
 | 11 | host / tests | low | Host bundle: ActivateMonitor requires CLOSED_LOOP, scale_to_bench floor>ceiling raise, capped socket drain + typed CrcError, rpc_args METHOD += DEACTIVATE, stroke literals from config |
 | 12 | cross-cutting | low | Documentation truth sweep (CAN2→CAN3 in the generator, README refresh, stale citations, stroke-min comment, harness-scope docs, UV-flag note, DEGRADED marker, dead task-table constants) |
 
-#### Tier-1 progress (2026-07-02 → 2026-07-03)
+#### Tier-1 progress (2026-07-02 → 2026-07-05)
 
-Logbook: `logbook/2026-07-02-canhub-hardening-tier1.md`. Landed in five commits,
-each with `pytest tests/ -q` green (triples in the logbook Verification section).
+Logbook: `logbook/2026-07-02-canhub-hardening-tier1.md`. The original host/test/doc
+batches landed in five commits (each `pytest tests/ -q` green — triples in the
+logbook Verification section); the 2026-07-05 close-out then added item-8 completion
+(`6f20fea`, `db4ddf8`), the typed CrcError (`2cf3a07`), and the doc-truth sweep.
 *(The `#`/Row numbers below are this plan's 1–21 item numbers; `gap N` are the
 coverage-gap numbers. The commit messages additionally carry the Fable-5
 review-finding numbers, which are a SEPARATE scheme and do NOT match these — e.g.
@@ -112,15 +114,18 @@ item 14 is the pending Tier-2 monotonic clock.)*
 | 5 | non-idempotent RPC no-retry + docstring + retry-race | ✅ done | `f8397c7` (A) |
 | 6 | cross-axis disarm predicate (observable) | ✅ done | `c7425e9` (B) |
 | 7 | hand vel/curr-limit topic parity (observable) | ✅ done | `c7425e9` (B) |
-| 8 | native/golden expansion | ◐ partial — C++ framing (gap 4) done `8821451`; **remaining**: rpc.cpp dispatch (gap 3), odrive (gap 8) + BB-throw (gap 7) byte xref, dead-bus golden (gap 5), DeferredStowLatch `first_seen` golden (gap 10). Guard-E-STOP (gap 2) + clock-step (gap 6) **recommended WITH Tier-2** (the item-13 E-STOP latch / item-14 monotonic clock they pin don't exist yet). | `8821451` (partial) |
+| 8 | native/golden expansion | ✅ done — C++ framing (gap 4) `8821451`; rpc.cpp dispatch (gap 3) + odrive (gap 8) + BB-throw (gap 7) byte xrefs `6f20fea`; dead-bus golden (gap 5) + DeferredStowLatch `first_seen` cold-start golden (gap 10) `db4ddf8`. Guard-E-STOP (gap 2) + clock-step (gap 6) landed WITH Tier-2 (they pin the item-13 latch / item-14 monotonic clock, per the Tier-2 logbook). | `8821451` `6f20fea` `db4ddf8` |
 | 9 | PROTOCOL_VERSION + layout freeze, lints, lib pins | ✅ done | `37a81d4` |
 | 10 | bridge-node robustness cluster (async re-read, relay lock, cone bound) | ✅ done | `c7425e9` (B) |
-| 11 | host bundle (ActivateMonitor CL, scale floor>ceiling, capped drain, rpc_args DEACTIVATE, stroke literals) | ✅ done — except the typed `CrcError` (deferred to where `decode_frame`'s codegen lives) | `f8397c7` (A) |
-| 12 | documentation truth sweep | ☐ pending (+ `/audit --unstaged`) | — |
+| 11 | host bundle (ActivateMonitor CL, scale floor>ceiling, capped drain, rpc_args DEACTIVATE, stroke literals) | ✅ done — typed `CrcError` at the `decode_frame` codegen source now closes the last residual | `f8397c7` (A) + `2cf3a07` (CrcError) |
+| 12 | documentation truth sweep | ◐ host/doc side done — CAN2→CAN3 in the generator `1634634`; firmware `README.md` (flashed+validated status, archived-HANDOFF link, pinned-lib table, `pio` build) + native-harness `README.md` (compiled-TU list, archived-plan future-tense, 500 Hz validated) refreshed. **Deferred to Phase 2** (firmware source, CAN3-owned): dead task-table constants + UV-flag note in `canbridge_config.h`/`fault_machine.*`, and the `LinkState::DEGRADED` codegen marker (a regen would touch the delivered firmware header). `synthetic_setpoint.py` stroke-floor comment verified accurate (matches config). | — |
 
 **Observable changes** — plan items 2 / 6 / 7 — have hardware-confirmation checks in
-the logbook (read-only operator eyeball). **Remaining before Tier-1 close:** the
-item-8 slices, the typed CrcError, and item 12.
+the logbook (read-only operator eyeball). **Tier-1 host/test/doc scope is now
+closed** (logbook `2026-07-02-canhub-hardening-tier1.md` → resolved): item 8 (native/
+golden) and item 11 (CrcError) landed, and item 12's host/doc sweep is done. The
+only item-12 residue is firmware-resident doc comments, folded into the Phase-2
+firmware cycle (item 20 territory) — see the item-12 row.
 
 ### Tier 2 — surface-first (firmware; re-flash + ONE powered re-validation sitting)
 

@@ -6,10 +6,15 @@ tests the **binary**, so a C++ divergence from the safety logic fails
 Python transcription was checked (the standing risk flagged in
 `logbook/2026-06-27-can-node-teensy-parity-audit.md` §5).
 
-Today it compiles `fault_machine.cpp` and `leg_interp.cpp`. The HAL seam is built
-to **grow**: Phases 1/3 of `plans/active/canbridge-foundation-coldstart-parity.md`
-will compile the relay/version decode path into the same harness and drive it via
-the inbound-CAN3 injection hook already present in `fake_hal`.
+It compiles the safety-critical firmware TUs directly — `fault_machine.cpp`,
+`leg_interp.cpp`, `platform_relay.cpp`, `version_check.cpp`, `hand_ops.cpp`,
+`rpc.cpp` dispatch, `udp_link.cpp`, and the three cold-start move modules
+(`leg_homing/activate/deactivate.cpp`) — plus the generated C++ UDP framing codec
+and the ODrive / Ball-Butler CAN codecs, and drives them via the HAL seam below
+(including the inbound-CAN3 injection hook in `fake_hal`). The relay / version /
+cold-start paths that once lived on a `canbridge-foundation-coldstart-parity` TODO
+here are now compiled (that plan is archived); see "Build recipe" for the
+per-binary TU map.
 
 ## Run it
 
@@ -58,6 +63,12 @@ python tests/firmware/native/build.py --force    # ignore the cache, rebuild
     the standing gap that the code driving legs into hardstops
     (`leg_homing/activate/deactivate.cpp`) was **never compiled by any test**
     (Fable-5 hardening [6]).
+  * `test_rpc_dispatch.cpp` `#include`s `rpc.cpp` (the `(method,axis)` enforcement
+    point); `test_udp_link.cpp` `#include`s `udp_link.cpp` behind a fake QNEthernet /
+    recursive-mutex shim. `test_udp_framing.cpp`, `test_odrive_protocol.cpp`, and
+    `test_ball_butler_protocol.cpp` compile the generated C++ framing codec and the
+    ODrive / Ball-Butler CAN codecs against their headers (no extra firmware `.cpp`
+    object). `build.py` builds 13 binaries in all.
   * Shared objects compiled once and linked as needed: `axis_state.o`,
     `ball_butler_state.o`, and either `fake_hal.o` (fault/interp/relay/version/hand)
     or `coldstart_hal.o` (the three cold-start move drivers).
@@ -132,7 +143,12 @@ It does **not** cover, and these remain on-hardware-replay gaps:
 
 * FreeRTOS/ISR **concurrency** (the deferred-stow re-arm race, the PRIMASK atomic
   publish, ISR priority vs the syscall ceiling);
-* the **500 Hz deadline** / interp jitter (parity item #1, still UNVALIDATED);
+* the **500 Hz deadline** / interp jitter — single-threaded on a fake clock here,
+  so not exercised by this native harness. On hardware the interp `deadline_misses`
+  / `max_jitter` counters read clean through the 2026-07-04 Tier-2 flood +
+  deferred-stow checks (`logbook/2026-07-02-canhub-hardening-tier2.md`, checks 3 &
+  5), but a dedicated automated 500 Hz deadline/jitter PASS/ABORT gate is still
+  pending (`plans/active/canhub-hardening.md` item 19);
 * float32-vs-float64 numerical residue — host float is true IEEE-32 (closer to the
   Teensy FPU than the float64 Python mirror), and these tests assert **behaviour**
   (clamps fired, modes transitioned, descent converged), not bit-exact equality.

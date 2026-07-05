@@ -2,7 +2,7 @@
 title: Can-hub hardening Tier-1 — host/test/doc robustness pass (Fable-5 fresh-eyes review)
 type: feature
 date: 2026-07-02
-status: in-progress
+status: resolved
 phase: "Tier-1"
 related_plan: canhub-hardening.md
 related_entries:
@@ -25,12 +25,23 @@ files_changed:
   - tests/firmware/native/test_udp_framing.cpp
   - tests/firmware/test_udp_protocol_xlang.py
   - tests/firmware/test_firmware_build_pins.py
+  # Tier-1 close-out (2026-07-05): typed CrcError + doc truth sweep
+  - config/generate_udp_protocol.py
+  - config/generated/udp_protocol.py
+  - controller/teensy_link/protocol.py
+  - tests/teensy_link/test_protocol_codec.py
+  - tests/teensy_link/test_client.py
+  - ros_ws/src/jugglebot/Teensy_code_canbridge/README.md
+  - tests/firmware/native/README.md
 commits:
   - f8397c7
   - c7425e9
   - 37a81d4
   - 431ea89
   - 8821451
+  - 6f20fea   # item 8 — rpc dispatch + odrive/BB byte xrefs
+  - db4ddf8   # item 8 — dead-bus + first_seen goldens
+  - 2cf3a07   # item 11 — typed CrcError
 subsystem:
   - controller
   - ros
@@ -256,6 +267,11 @@ binary under a validated flash with no local edit.
   coverage is +130 byte-parity doctest assertions across the 3 compiled binaries).
 - **Item 8 / gap 4** (`pytest tests/ -q`, run 2026-07-03): **2015 passed, 1 xfailed in
   464.94 s** (+1 native framing wrapper, +26 doctest assertions).
+- **Close-out** (`pytest tests/ -q`, run 2026-07-05): **2049 passed, 1 xfailed in
+  646.86 s** — covers the typed-CrcError tests (+2 codec / +1 client, `2cf3a07`) and
+  the already-in-tree item-8 native/golden tests (`6f20fea`, `db4ddf8`, each green at
+  its own landing). The doc-only close-out edits (READMEs, plan, this entry) have no
+  test surface. Order-flaky alloc tests confirmed isolated, as before.
 - Native harness (`python tests/firmware/native/build.py`): all 9 binaries build +
   pass on the Jetson g++; the new cold-start drivers = 10+7+9 cases / 130 assertions,
   framing = 5 cases / 26 assertions.
@@ -263,26 +279,34 @@ binary under a validated flash with no local edit.
   `test_t3b_h4_on_post_solve_allocates_within_budget`) confirmed isolated (memory
   `project_hot_loop_alloc_test_flaky`), not regressions.
 
-## Remaining
+## Close-out (2026-07-05)
 
-Tier-1 is **not yet complete**. Outstanding:
+Tier-1's host/test/doc scope is **complete** — status flipped to `resolved`. The
+three items outstanding at the last update all landed:
 
-- **Item 8 — native/golden expansion — remaining slices** (gap 4 done):
-  - rpc.cpp `dispatch()`/`send_axis_frame` + request codec bounds (gap 3) — needs
-    compiling rpc.cpp with its many module deps (heavier);
-  - odrive_protocol.h C++ encoders byte-compared cross-language (gap 8);
-  - BB-throw encoder byte xref (gap 7);
-  - dead-bus golden column (gap 5) + DeferredStowLatch `first_seen` cold-start golden
-    region (gap 10) — extend the fault-golden emission;
-  - **guard E-STOP native + deferred-stow↔cold-start mutual exclusion (gap 2)** and
-    **clock-step robustness (gap 6)** — RECOMMEND landing WITH Tier-2, since the
-    behaviour they pin (the E-STOP **latch** [13] and the **monotonic clock** [14])
-    does not exist yet; testing current behaviour now would be rewritten at Tier-2.
-- **Row 11 residual:** the typed `CrcError` (deferred from the host bundle to where
-  `decode_frame`'s codegen lives).
-- **Row 12 — documentation truth sweep** (CAN2→CAN3 in the generator, README
-  refresh, stale citations, stroke-min comment, harness-scope docs, UV-flag note,
-  DEGRADED marker, dead task-table constants) + `/audit --unstaged`.
+- **Item 8 — native/golden expansion — DONE.** rpc.cpp `dispatch()` + odrive /
+  BB-throw byte xrefs (gaps 3/7/8, `6f20fea`); dead-bus golden column + DeferredStowLatch
+  `first_seen` cold-start golden (gaps 5/10, `db4ddf8`). Guard-E-STOP + clock-step
+  natives (gaps 2/6) landed **with Tier-2** as recommended — they pin the item-13
+  E-STOP latch / item-14 monotonic clock, which now exist (see
+  `2026-07-02-canhub-hardening-tier2.md`).
+- **Row 11 residual — typed `CrcError` — DONE** (`2cf3a07`). A `CrcError(ValueError)`
+  emitted at the `decode_frame` codegen source (`config/generate_udp_protocol.py`),
+  regenerated, and caught before `ValueError` in `client.py`'s RX path — so
+  `crc_errors` vs `decode_errors` no longer key off a fragile `"CRC" in str(e)`
+  substring match. +2 codec / +1 client test.
+- **Row 12 — documentation truth sweep — host/doc side DONE.** CAN2→CAN3 in the
+  generator (`1634634`, pre-close-out); firmware `README.md` (status WIP→flashed+
+  hardware-validated, archived-HANDOFF link, greiman→tsandmann lib table + "pinned in
+  platformio.ini", `pio` build/flash) and native-harness `README.md` (the real 10-TU
+  compile list, archived-plan future-tense, 500 Hz "still UNVALIDATED"→validated
+  2026-07-04) refreshed. **Firmware-resident doc comments are deferred to the Phase-2
+  firmware cycle**: dead task-table constants + the UV-flag note live in
+  `canbridge_config.h` / `fault_machine.*` (owned by the concurrent CAN3 session), and
+  the `LinkState::DEGRADED` marker fix would regenerate the delivered firmware header —
+  all better landed alongside the item-20 firmware commit. `synthetic_setpoint.py`'s
+  stroke-floor comment (0.0709 rev) was verified accurate against config
+  (`STROKE_MIN_REV[0]` = 0.070917) — not stale, no change.
 
 ### Hardware confirmation (the three observable behaviour changes)
 
