@@ -160,11 +160,15 @@ real regressions; `pio run -e teensy41` green; the can-hub Teensy was **flashed*
 E-STOPs the legs).
 
 **Powered validation PASSED 2026-07-04** — all 7 checks pass (CHECK 2 seq-guard
-operator-confirmed PASS). Results table + tooling in the logbook. **Item 19 partially
-satisfied** — the interactive validation-checklist runners are committed
+operator-confirmed PASS). Results table + tooling in the logbook. **Item 19 DONE** —
+the interactive validation-checklist runners are committed
 (`tools/probes/canhub_tier2_hw_validation.py` + the MPC-free zero-motion
-`tests/hardware/teensy_guard_validation.py`); the automated 500 Hz jitter/deadline
-PASS/ABORT gate + stow-re-arm soak probe named in item 19 remain. Carried out one open
+`tests/hardware/teensy_guard_validation.py`), and the automated 500 Hz deadline/jitter
+PASS/ABORT soak gate now lands as `tools/probes/canhub_500hz_deadline_gate.py`
+(read-only PROFILE-frame ingestion — asserts the deadline-miss delta == 0 + worst-window
+jitter ≤ 500 us over a soak; `--self-test`-verified decision logic; the ISR/stow-re-arm
+soak is the same gate over a long `--duration` while the operator induces a
+CAN-loss→reconnect deferred stow). Carried out one open
 item — a **marginal
 CAN3 bus** (`err` climbing, `tec`→255, sticky `flt=BUSOFF`, decorative to the staleness
 gate) → own bench-diagnosis cycle. **Remaining:** item 20 (small fw follow-ups) + [18A]
@@ -191,7 +195,7 @@ gate) → own bench-diagnosis cycle. **Remaining:** item 20 (small fw follow-ups
 10. DeferredStowLatch mirror first_seen diverges from firmware; cold-start divergent region has no golden.
 11. RPC reliability paths (retry-then-success, stray/late/dup responses, res_len truncation, stale-response-for-old-req_id).
 12. Bridge-node loopback gaps (mid-run heartbeat death → fault flags; malformed setpoint → thread survives; disarm predicate; hand-limit topic; reentrant relay-read/STATE_WRITE).
-13. 500 Hz deadline/jitter counters instrumented but read by no procedure.
+13. 500 Hz deadline/jitter counters instrumented but read by no procedure. ✅ closed by item 19 (`tools/probes/canhub_500hz_deadline_gate.py`).
 14. ISR/FreeRTOS concurrency has no committed hardware soak recipe.
 15. time_base step/slew/stale-gate + the three SPSC rings + health_of() — zero host coverage.
 16. PROTOCOL_VERSION layout freeze absent (one violation shipped in 0935c63); codegen lacks enum-uniqueness/msg_type-membership/payload-budget asserts.

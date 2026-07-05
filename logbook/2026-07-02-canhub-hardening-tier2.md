@@ -24,6 +24,9 @@ files_changed:
   - ros_ws/src/jugglebot/Teensy_code_canbridge/leg_deactivate.cpp
   - controller/teensy_link/client.py
   - controller/teensy_link/homing.py
+  # Item 19 automated gate (2026-07-05)
+  - tools/probes/canhub_500hz_deadline_gate.py
+  - tools/probes/README.md
 commits:
   - 0ad3d25
   - 138aa11
@@ -301,6 +304,19 @@ termination) is a real, still-open pipeline item — see Deferred.
   `enable_setpoint_output:=true` self-E-STOP trap), and hard-refuses to arm if any leg is
   CLOSED_LOOP. (CHECK 2's verdict was operator-confirmed PASS live; the tool's report
   is verdict-only — a noted limitation, a snapshot-per-check enhancement is a follow-up.)
+- `tools/probes/canhub_500hz_deadline_gate.py` — **plan item 19 automated gate**
+  (added 2026-07-05). READ-ONLY PROFILE-frame soak gate for the 500 Hz interp real-time
+  path: binds the STREAM port (bridge DOWN), ingests the 1 Hz PROFILE frame, and emits a
+  machine PASS/FAIL/ABORT verdict (exit 0/1/2) over a soak window — asserting the
+  `interp_deadline_misses` **delta** (== 0; keys on the delta because the absolute count
+  can carry boot-history misses) and the worst-window `interp_max_jitter_us` (≤ 500 us =
+  the firmware `JITTER_MISS_US` boundary). Never sends setpoints/heartbeats (no motion),
+  and touches no firmware/flash so it MAY run alongside the CAN3-diagnosis session. Its
+  `--self-test` verifies the decision logic offline (clean→PASS, miss-delta→FAIL,
+  jitter-spike→FAIL, no-data→ABORT, boundary→PASS) — no hardware needed. The ISR/stow-re-arm
+  soak (item 19's second half) is the same gate over a long `--duration` while the operator
+  induces a CAN-loss→reconnect deferred stow (the check-5 mechanic): the cumulative miss
+  counter persists across the stow, so a torn re-arm surfaces as a nonzero delta.
 
 ## Related
 
