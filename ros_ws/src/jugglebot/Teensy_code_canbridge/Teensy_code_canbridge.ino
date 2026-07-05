@@ -230,15 +230,21 @@ static void task_heartbeat(void*) {
 // DISCONNECTED bus partner, watch tec (un-ACKed TX) rising ahead of flt=BUSOFF.
 static void print_bus_health(const char* name, const BusRxHealth& b) {
   static const char* const FLT[3] = { "active", "passive", "BUSOFF" };
-  Serial.printf("[canhealth] %-9s sync=%u hwm=%u capHit=%lu err=%lu flags=0x%02x rec=%u tec=%u flt=%s gated=%lu\n",
+  // err= counts WIRE-ERROR snapshots only (0 on a healthy bus); chg= is the raw
+  // ESR1-change snapshot counter (benign IDLE/RX/TX phase flips included — climbs
+  // continuously with traffic; its only diagnostic use is proving the capture
+  // machinery is alive). Pre-2026-07-05 captures printed the raw counter AS err=.
+  Serial.printf("[canhealth] %-9s sync=%u hwm=%u capHit=%lu err=%lu flags=0x%02x rec=%u tec=%u flt=%s gated=%lu chg=%lu\n",
                 name, (unsigned)b.synced, (unsigned)b.depth_hwm, (unsigned long)b.cap_hits,
-                (unsigned long)b.err_events, (unsigned)b.err_flags, (unsigned)b.rec_max,
+                (unsigned long)b.wire_errs, (unsigned)b.err_flags, (unsigned)b.rec_max,
                 (unsigned)b.tec_max, FLT[(b.fault_conf < 3) ? b.fault_conf : 2],
-                (unsigned long)b.tx_gated);
+                (unsigned long)b.tx_gated, (unsigned long)b.err_events);
   // Marginal-CAN3 diagnostic (2026-07-05): per-type error-snapshot counters, TX/RX
   // capture context, and the live ECR counters + their positive-delta sums. Printed
-  // only for a bus that has seen at least one error event (healthy buses stay quiet).
-  if (b.err_events != 0) {
+  // only for a bus that has seen a wire error or TEC/REC movement (healthy buses
+  // stay quiet; tec/rec can move without a captured snapshot during a storm, hence
+  // the delta-sum terms in the condition).
+  if ((b.wire_errs | b.tec_inc_sum | b.rec_inc_sum) != 0) {
     Serial.printf("[canerrs]  %-9s ack=%lu crc=%lu form=%lu stuff=%lu bit0=%lu bit1=%lu"
                   " txctx=%lu rxctx=%lu tecNow=%u recNow=%u tecInc=%lu recInc=%lu\n",
                   name, (unsigned long)b.ack_cnt, (unsigned long)b.crc_cnt,

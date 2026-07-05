@@ -119,20 +119,21 @@ second from `task_diag`. Every field, line by line:
 
 ### `[canhealth]` — per-bus health (`jugglebot`=CAN3, `bb`=CAN1, `cone`=CAN2)
 
-`sync=1 hwm=9 capHit=0 err=N flags=0x2c rec=N tec=N flt=active gated=N`
+`sync=1 hwm=9 capHit=0 err=N flags=0x2c rec=N tec=N flt=active gated=N chg=N`
 
 | field | meaning |
 |---|---|
 | `sync` | LIVE ESR1.SYNCH: 1 = the controller is locked onto the bus right now (the cleanest "bus electrically alive" indicator). Not sticky. |
 | `hwm` | peak RX-buffer occupancy at a service tick (single digits in health; →256 means the CAN-RX task is starved) |
 | `capHit` | ticks the per-tick RX drain budget bound with frames still queued (overflow precursor; must stay 0) |
-| `err` | **NOT a wire-error count.** Cumulative ESR1-*change* snapshots captured by the FlexCAN_T4 ISR — any change in the masked ESR1 bits (error types, warnings, fault confinement, **and the benign IDLE/RX/SYNCH activity bits**) captures one. On a healthy bus this still ticks a few per second from IDLE↔RX phase-sampling. Real wire errors are counted per type on the `[canerrs]` line. |
+| `err` | cumulative **wire-error** snapshots (ESR1 captures with ≥1 error-type bit set). **0 on a healthy bus.** A lower bound during a sustained identical-error storm (the library's change-detect captures a repeated identical ESR1 once) — `tecInc`/`recInc` on `[canerrs]` stay rate-accurate there. *(Captures from before 2026-07-05 printed the raw change counter — now `chg=` — under this name.)* |
 | `flags` | sticky-since-boot OR of wire-error types ever seen: 0x01 ACK, 0x02 CRC, 0x04 FORM, 0x08 STUFF, 0x10 BIT0, 0x20 BIT1 (e.g. `0x2c` = FORM+STUFF+BIT1 — the 12 V supply-ramp signature) |
 | `rec` / `tec` | **high-water marks** (not live values) of the RX/TX error counters. CAN fault confinement: ≥96 warning, ≥128 error-passive, TEC ≥256 bus-off. `tec=128` exactly = the passive-ACK cap: something transmitted into a partner-less bus. Live values are `recNow`/`tecNow` on `[canerrs]`. |
 | `flt` | **worst-ever** fault confinement since boot (sticky): `active` / `passive` / `BUSOFF` |
 | `gated` | TX attempts refused by the bus-partner presence gate (no partner frame within 5 s — see `BUS_PARTNER_STALENESS_US`). Non-zero = the gate is protecting a dead/unpowered bus from un-ACKed TX. |
+| `chg` | raw ESR1-*change* snapshot counter — any change in the masked ESR1 bits captures one, **including benign IDLE/RX/TX activity flips**, so it climbs continuously with traffic (~200/s with the 100 Hz 0x7DD active). Not an error signal; its one use is liveness of the capture machinery (frozen at 0 = snapshot path broken, so `err=0` would be meaningless). uint32, wraps harmlessly after ~8 months of continuous traffic. |
 
-### `[canerrs]` — per-type wire-error attribution (printed once a bus has any `err`)
+### `[canerrs]` — per-type wire-error attribution (printed once a bus has any wire error or TEC/REC movement)
 
 `ack=N crc=N form=N stuff=N bit0=N bit1=N txctx=N rxctx=N tecNow=N recNow=N tecInc=N recInc=N`
 
@@ -141,16 +142,20 @@ second from `task_diag`. Every field, line by line:
 | `ack` | ACK errors: our TX not acknowledged (partner absent / dying bus) — TX-side |
 | `crc` / `form` / `stuff` | RX-side wire errors (noise, signal integrity, supply-ramp garbage) |
 | `bit0` / `bit1` | TX bit-monitor errors: sent dominant read recessive / sent recessive read dominant |
-| `txctx` / `rxctx` | how many `err` snapshots were captured while the controller was transmitting / receiving (attribution context, includes benign snapshots) |
+| `txctx` / `rxctx` | how many **wire-error** snapshots were captured while the controller was transmitting / receiving (TX-vs-RX attribution of the errors themselves) |
 | `tecNow` / `recNow` | **live** TX/RX error counters at the last 1 kHz service tick (decay −1 per clean frame; falling = recovering, pinned = sustained fault) |
 | `tecInc` / `recInc` | cumulative positive deltas of the live counters (TEC +8 per TX error, REC +1/+8 per RX error — compare rates, not magnitudes). Zero increments = zero wire errors, whatever `err` says. |
 
-### `[canesr1]` — raw ESR1 words of fresh snapshots (up to 8 most recent)
+### `[canesr1]` — raw ESR1 words of fresh INTERESTING snapshots (up to 8 most recent)
 
-`+N: 00040080 00040008 ...` — `+N` = snapshots since the last print. Common
-benign words: `0x00040080` SYNCH+IDLE, `0x00040008` SYNCH+RX,
-`0x00040040` SYNCH+TX. Error bits live at 15:10 (BIT1,BIT0,ACK,CRC,FORM,STUFF);
-bits 5:4 = fault confinement; bits 8/9 = RX/TX warning; bit 18 = SYNCH.
+`+N: 0004040a ...` — `+N` = interesting snapshots since the last print. Only
+snapshots with an error-type bit set, or a warning/bus-off interrupt crossing
+(TWRN_INT/RWRN_INT/BOFFINT), are recorded — benign IDLE/RX/TX phase flips are
+counted in `chg=` but not ring-recorded (they would flush a real error word out
+of the 8-deep ring within ~40 ms at traffic rates). **Silent on a healthy bus.**
+Error bits live at 15:10 (BIT1,BIT0,ACK,CRC,FORM,STUFF); bits 5:4 = fault
+confinement; bits 8/9 = RX/TX warning (levels), 16/17 = their one-shot crossing
+interrupts; bit 18 = SYNCH; bits 7/6/3 = IDLE/TX/RX activity.
 
 ### `[cantiming]` — decoded bit-timing registers (first tick + every 60 s)
 

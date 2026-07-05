@@ -300,6 +300,12 @@ Butler powered ON**. Capture:
   decoded BOOT→IDLE, age 11 ms.
 - `err` climbing ~200/s on active buses is the documented benign phase-flip
   sampling (≈2 snapshots per 0x7DD TX) — the README warning stands.
+  *[Update, same day (later session): the follow-up entry
+  `2026-07-05-canhub-canhealth-err-wire-errors` renamed this field — `err=` now
+  counts wire errors only (0 on a healthy bus) and the raw change counter prints
+  as `chg=`; all `err=` figures quoted in this entry are from the pre-rename
+  build, and the README warning referenced here was replaced by the new
+  `err`/`chg` rows.]*
 
 The CAN3-teardown variant (killing 12 V with ROS2 up) was not separately run; it
 exercises the same choke-point gate and the same one-line predicate — the teardown

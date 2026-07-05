@@ -476,11 +476,14 @@ static constexpr uint8_t CAN_RX_DRAIN_BUDGET = 32;
 // coincides with a multi-tick task_can_rx stall can lose transitions — the captured
 // fields are best-effort under that combination. A SUSTAINED bus-off keeps re-asserting,
 // so it is still captured (and fault_conf is sticky) once the storm/stall clears.
-// Marginal-CAN3 diagnostic: ring of the most recent raw ESR1 snapshot words per bus,
-// so the 1 Hz print can show WHICH bits actually changed on flag-less "error" events
-// (the library snapshots on ANY masked ESR1 change, including benign IDLE/RX/SYNCH
-// flips — see FlexCAN_T4.tpp ISR change-detect). Single-writer (task_can_rx), torn
-// reads harmless for 1 Hz debug output.
+// Marginal-CAN3 diagnostic: ring of the most recent INTERESTING raw ESR1 snapshot
+// words per bus (wire-error bits set, or a warning/bus-off interrupt crossing), so
+// the 1 Hz print shows exactly the words that matter. Benign IDLE/RX/TX phase-flip
+// snapshots (the library captures on ANY masked ESR1 change — see FlexCAN_T4.tpp
+// ISR change-detect) are counted in err_events but NOT ring-recorded: at ~200
+// flips/s with the 100 Hz 0x7DD active they would flush a real error word out of
+// the 8-deep ring within ~40 ms — long before the 1 Hz print could show it.
+// Single-writer (task_can_rx), torn reads harmless for 1 Hz debug output.
 struct Esr1Ring { volatile uint32_t v[8]; volatile uint32_t n; };
 static Esr1Ring s_bb_esr1{}, s_cone_esr1{}, s_jugglebot_esr1{};
 
@@ -489,8 +492,23 @@ static inline void poll_bus_errors(BusT& bus, volatile BusRxHealth& h, Esr1Ring&
   CAN_error_t e;
   while (bus.error(e, /*printDetails=*/false)) {
     h.err_events++;
-    ring.v[ring.n % 8u] = e.ESR1;
-    ring.n = ring.n + 1u;
+    const bool wire = e.ACK_ERR || e.CRC_ERR || e.FRM_ERR || e.STF_ERR ||
+                      e.BIT0_ERR || e.BIT1_ERR;
+    // Ring criterion: wire error, or a one-shot warning/bus-off interrupt flag
+    // (TWRN_INT bit 17 / RWRN_INT bit 16 / BOFFINT bit 2 — crossings, not the
+    // level bits 8/9, which stay latched while a counter sits elevated and would
+    // re-flood the ring with benign flips).
+    if (wire || (e.ESR1 & ((1u << 17) | (1u << 16) | (1u << 2)))) {
+      ring.v[ring.n % 8u] = e.ESR1;
+      ring.n = ring.n + 1u;
+    }
+    if (wire) {
+      h.wire_errs++;
+      // TX-vs-RX context at capture time (ESR1.TX bit 6 / ESR1.RX bit 3) —
+      // wire-error snapshots only, so the split attributes errors, not traffic.
+      if (e.ESR1 & (1u << 6)) h.err_tx_ctx++;
+      if (e.ESR1 & (1u << 3)) h.err_rx_ctx++;
+    }
     uint8_t f = h.err_flags;
     if (e.ACK_ERR)  { f |= BusErrFlag::ACK;     h.ack_cnt++; }
     if (e.CRC_ERR)  { f |= BusErrFlag::CRC;     h.crc_cnt++; }
@@ -499,9 +517,6 @@ static inline void poll_bus_errors(BusT& bus, volatile BusRxHealth& h, Esr1Ring&
     if (e.BIT0_ERR) { f |= BusErrFlag::BITERR0; h.bit0_cnt++; }
     if (e.BIT1_ERR) { f |= BusErrFlag::BITERR1; h.bit1_cnt++; }
     h.err_flags = f;
-    // TX-vs-RX context at capture time (ESR1.TX bit 6 / ESR1.RX bit 3).
-    if (e.ESR1 & (1u << 6)) h.err_tx_ctx++;
-    if (e.ESR1 & (1u << 3)) h.err_rx_ctx++;
     if (e.RX_ERR_COUNTER > h.rec_max) h.rec_max = e.RX_ERR_COUNTER;
     // TEC, not REC, is the bus-off precursor when a bus partner is DISCONNECTED: our
     // un-ACKed TX (the 0x7DD broadcast on bb/cone/jugglebot, plus CAN3 setpoints) climbs
@@ -734,6 +749,7 @@ static BusRxHealth snapshot_bus(const volatile BusRxHealth& h) {
   o.depth_hwm  = h.depth_hwm;
   o.cap_hits   = h.cap_hits;
   o.err_events = h.err_events;
+  o.wire_errs  = h.wire_errs;
   o.err_flags  = h.err_flags;
   o.rec_max    = h.rec_max;
   o.tec_max    = h.tec_max;

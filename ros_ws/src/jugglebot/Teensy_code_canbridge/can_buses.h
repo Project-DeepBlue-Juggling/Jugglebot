@@ -226,6 +226,13 @@ struct BusRxHealth {
   uint8_t  synced;        // LIVE (not sticky) ESR1.SYNCH: 1 = controller locked onto the bus
 
   // ── marginal-CAN3 diagnostic instrumentation (2026-07-05 investigation) ────
+  // Snapshots WITH at least one error-type bit set — the TRUE wire-error event
+  // count, printed as [canhealth] err= (the raw err_events change counter above
+  // includes benign IDLE/RX/TX phase flips and is printed as chg=). Lower-bound
+  // during a sustained identical-error storm (the library's change-detect captures
+  // a repeated identical ESR1 once); tec_inc_sum/rec_inc_sum below stay
+  // rate-accurate in that case.
+  uint32_t wire_errs;
   // Per-type ESR1-snapshot counters: WHICH error class fires and at what rate
   // (err_flags only says "seen since boot"). One snapshot can set several types.
   uint32_t ack_cnt;       // ACKERR snapshots  (TX un-ACKed)
@@ -235,9 +242,10 @@ struct BusRxHealth {
   uint32_t bit0_cnt;      // BIT0ERR snapshots (TX: sent dominant, read recessive)
   uint32_t bit1_cnt;      // BIT1ERR snapshots (TX: sent recessive, read dominant)
   // TX-vs-RX attribution: ESR1.TX (bit 6) / ESR1.RX (bit 3) captured with the
-  // snapshot — was the controller transmitting or receiving when the error fired?
-  uint32_t err_tx_ctx;    // snapshots with ESR1.TX set
-  uint32_t err_rx_ctx;    // snapshots with ESR1.RX set
+  // WIRE-ERROR snapshot — was the controller transmitting or receiving when the
+  // error fired? (Benign phase-flip snapshots are excluded — they'd swamp these.)
+  uint32_t err_tx_ctx;    // wire-error snapshots with ESR1.TX set
+  uint32_t err_rx_ctx;    // wire-error snapshots with ESR1.RX set
   // Live ECR sample (base+0x1C): the CURRENT error counters each service tick,
   // not the event-captured high-water. TEC decays -1 per clean TX, REC likewise
   // for RX, so live values falling ⇒ recovering; pinned high ⇒ sustained fault.
