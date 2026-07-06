@@ -261,7 +261,10 @@ introduced here). No xfail markers were introduced by this plan.
    is the open targeted check).
 2. **`health_of()` bus-off wiring** — OWNED by the concurrent CAN3-diagnosis session
    (the marginal-CAN3 investigation is resolved; the presence-gate + fault_conf/TEC
-   instrumentation landed; consumer refinement is theirs).
+   instrumentation landed; consumer refinement is theirs). **DONE 2026-07-06** — live
+   FLTCONF wired into `classify_bus_health()` (passive/bus-off now classify WARN/BUS_OFF
+   per-bus alongside RX staleness), flashed + bench-validated with two operator-run
+   powered checks: `logbook/2026-07-06-canhub-health-of-busoff-wiring.md`.
 3. **Tier-3 item 21** — structural refactors, deliberately deferred to when those files
    are next touched.
 4. **Item-12 firmware-comment residue** (dead task-table constants, UV-flag note,

@@ -159,6 +159,39 @@ TEST_CASE("bus_partner_present pins the TX presence-gate window semantics") {
   CHECK_FALSE(CanBridge::bus_partner_present(1000, 1001 + W));  // one past ⇒ absent
 }
 
+TEST_CASE("classify_bus_health pins the health_of truth table (bus-off wiring 2026-07-05)") {
+  // health_of() = classify_bus_health(last_rx, now, flt_live): RX staleness plus
+  // the LIVE fault-confinement state (0 active / 1 passive / 2 bus-off). Pin the
+  // severity ordering and boundaries — WARN/BUS_OFF refuse motion commands
+  // (jugglebot_commands_allowed + the homing/activate/deactivate gates), so a
+  // drift here silently changes when the robot refuses to move.
+  using CanBridge::classify_bus_health;
+  constexpr uint64_t T = CanBridge::CAN_HEARTBEAT_TIMEOUT_US;
+  CHECK(T == 2000000u);   // 2.0 s staleness contract (can_node _HEARTBEAT_TIMEOUT_S parity)
+
+  // Never seen a frame ⇒ UNKNOWN, whatever the registers say (bring-up allows
+  // commands; the TX presence gate independently refuses sends on such a bus).
+  CHECK(classify_bus_health(0, 0, 0) == JbUdp::BusHealth::UNKNOWN);
+  CHECK(classify_bus_health(0, 10 * T, 2) == JbUdp::BusHealth::UNKNOWN);
+
+  // Live confinement, RX fresh: active ⇒ OK, passive ⇒ WARN, bus-off ⇒ BUS_OFF.
+  CHECK(classify_bus_health(1000, 1000, 0) == JbUdp::BusHealth::OK);
+  CHECK(classify_bus_health(1000, 1000, 1) == JbUdp::BusHealth::WARN);
+  CHECK(classify_bus_health(1000, 1000, 2) == JbUdp::BusHealth::BUS_OFF);
+  CHECK(classify_bus_health(1000, 1000, 3) == JbUdp::BusHealth::BUS_OFF);  // clamped ≥2
+
+  // Staleness boundary (active confinement): exactly at the window ⇒ still OK
+  // (strict >, matching the pre-wiring health_of), one past ⇒ WARN.
+  CHECK(classify_bus_health(1000, 1000 + T, 0) == JbUdp::BusHealth::OK);
+  CHECK(classify_bus_health(1000, 1001 + T, 0) == JbUdp::BusHealth::WARN);
+
+  // Bus-off outranks staleness (a bus-off controller stops receiving, so the two
+  // co-occur; report the cause, not the symptom).
+  CHECK(classify_bus_health(1000, 1001 + T, 2) == JbUdp::BusHealth::BUS_OFF);
+  // Passive + stale still WARN (both terms agree).
+  CHECK(classify_bus_health(1000, 1001 + T, 1) == JbUdp::BusHealth::WARN);
+}
+
 TEST_CASE("hand axis-6 allow-table permits exactly the locked hand ODrive ops") {
   using namespace JbUdp;
   // Permit (the hand homing + command surface).

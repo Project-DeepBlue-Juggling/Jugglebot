@@ -556,11 +556,20 @@ static inline void service_bus(BusT& bus, volatile BusRxHealth& h, uint32_t can_
   do { r = bus.events(); } while (++n < CAN_RX_DRAIN_BUDGET && (r >> 12) != 0);
   if ((r >> 12) != 0) h.cap_hits++;        // budget bound with frames still queued
   poll_bus_errors(bus, h, ring);
-  // Live CAN-bus sync (ESR1.SYNCH, bit 18): 1 = controller locked onto the bus this tick.
-  // Not sticky — the CURRENT "is this bus electrically alive" state. (FlexCAN_T4 exposes no
-  // getter; read ESR1 at base+0x20 directly. CAN3's FLEXCAN3_* macros are broken in the
-  // core's imxrt.h, so use the peripheral base address passed in.)
-  h.synced = (uint8_t)((*(volatile uint32_t*)(can_base + 0x20u) >> 18) & 1u);
+  // Live CAN-bus state from ONE ESR1 read (base+0x20; FlexCAN_T4 exposes no getter,
+  // and CAN3's FLEXCAN3_* macros are broken in the core's imxrt.h, so use the
+  // peripheral base address passed in). Neither field is sticky — both recover with
+  // the bus:
+  //   SYNCH (bit 18)     — 1 = controller locked onto the bus this tick (the CURRENT
+  //                        "is this bus electrically alive" state).
+  //   FLTCONF (bits 5:4) — live fault confinement, clamped 0 active / 1 passive /
+  //                        2 bus-off (same clamp as the sticky snapshot decode in
+  //                        poll_bus_errors). Feeds classify_bus_health() — the
+  //                        health_of() bus-off wiring (2026-07-05).
+  const uint32_t esr1 = *(volatile uint32_t*)(can_base + 0x20u);
+  h.synced = (uint8_t)((esr1 >> 18) & 1u);
+  const uint8_t fc_live = (uint8_t)((esr1 >> 4) & 0x3u);
+  h.flt_live = (fc_live >= 2) ? 2 : fc_live;
   // Live error counters (ECR, base+0x1C): TXERRCNT [7:0], RXERRCNT [15:8]. Sampled
   // every tick; the positive inter-tick deltas accumulate into *_inc_sum so the 1 Hz
   // print can attribute error pressure to TX vs RX even when the live values decay
@@ -709,7 +718,8 @@ bool can_jugglebot_send(const ODrive::CanFrame& f) {
 
 // Shared CAN3 command gate (declared in can_buses.h; consumed by rpc.cpp leg
 // frames + platform_relay reads/writes). WARN/BUS_OFF → refuse; OK/UNKNOWN allow.
-// (jugglebot_health is the health_of() bus-staleness classification below.)
+// (jugglebot_health is the health_of() classification below: RX staleness + live
+// fault confinement since the 2026-07-05 bus-off wiring.)
 bool jugglebot_commands_allowed() {
   const uint8_t h = can_buses_stats().jugglebot_health;
   return h != JbUdp::BusHealth::WARN && h != JbUdp::BusHealth::BUS_OFF;
@@ -719,19 +729,23 @@ bool jugglebot_commands_allowed() {
 // (CLEAR_ERRORS / REBOOT_ODRIVES). Reads the LIVE ESR1.SYNCH bit maintained every
 // service tick (s_jugglebot_rxh.synced, set in service_bus above). A single volatile
 // byte → atomic on Cortex-M7, so no snapshot/seqlock is needed. Distinct from
-// jugglebot_commands_allowed() (heartbeat-staleness) on purpose — see can_buses.h for
-// the just-repowered-bus rationale. The register read itself is the same ESR1 access
-// already validated for fault_conf/tec_max diagnostics.
+// jugglebot_commands_allowed() (RX staleness + live confinement) on purpose — see
+// can_buses.h for the just-repowered-bus rationale, which the 2026-07-05 bus-off
+// wiring strengthens: a just-repowered bus can hold a frozen TEC=128 (closing-window
+// pin) → live passive → WARN until the first successful TX decays it, and the
+// recovery one-shots must reach the bus through exactly that state. The register
+// read itself is the same ESR1 access already validated for fault_conf/tec_max.
 bool jugglebot_bus_transmittable() {
   return s_jugglebot_rxh.synced != 0;
 }
 
-static uint8_t health_of(uint64_t last_rx_us) {
-  if (last_rx_us == 0) return JbUdp::BusHealth::UNKNOWN;
-  // OK if we've seen a frame within the CAN heartbeat window.
-  // TODO(bench): read the FlexCAN error/bus-off registers for WARN/BUS_OFF.
-  if (micros64() - last_rx_us > CAN_HEARTBEAT_TIMEOUT_US) return JbUdp::BusHealth::WARN;   // interval (item 14): *_last_rx_us are mono
-  return JbUdp::BusHealth::OK;
+// Per-bus health for the uplink + the WARN/BUS_OFF command gates. The pure
+// classifier (RX staleness + live FLTCONF) lives header-inline in can_buses.h —
+// classify_bus_health, natively pinned; this wrapper feeds it the bus's own
+// clock/register samples. Bus-off wiring landed 2026-07-05, closing the
+// TODO(bench) that shipped with the staleness-only classifier.
+static uint8_t health_of(uint64_t last_rx_us, uint8_t flt_live) {
+  return classify_bus_health(last_rx_us, micros64(), flt_live);   // interval (item 14): *_last_rx_us are mono
 }
 
 CanStats can_buses_stats() {
@@ -743,9 +757,12 @@ CanStats can_buses_stats() {
   // can_buses_stats runs in lower-priority tasks than the CAN-RX writer, so a
   // plain two-word load could tear across a writer preemption (esp. at the ~71 min
   // micros64 high-word wrap) and mis-classify bus health.
-  s.bb_health = health_of(atomic_read_u64(&s_bb_last_rx_us));
-  s.cone_health = health_of(atomic_read_u64(&s_cone_last_rx_us));
-  s.jugglebot_health = health_of(atomic_read_u64(&s_jugglebot_last_rx_us));
+  // flt_live: volatile uint8_t, single writer (task_can_rx) — a byte load is
+  // atomic on Cortex-M7, so no snapshot/seqlock is needed. Per-bus inputs only:
+  // each bus's health is independent of the other two by construction.
+  s.bb_health = health_of(atomic_read_u64(&s_bb_last_rx_us), s_bb_rxh.flt_live);
+  s.cone_health = health_of(atomic_read_u64(&s_cone_last_rx_us), s_cone_rxh.flt_live);
+  s.jugglebot_health = health_of(atomic_read_u64(&s_jugglebot_last_rx_us), s_jugglebot_rxh.flt_live);
   return s;
 }
 
@@ -772,6 +789,7 @@ static BusRxHealth snapshot_bus(const volatile BusRxHealth& h) {
   o.err_rx_ctx = h.err_rx_ctx;
   o.tec_live   = h.tec_live;
   o.rec_live   = h.rec_live;
+  o.flt_live   = h.flt_live;
   o.tec_inc_sum = h.tec_inc_sum;
   o.rec_inc_sum = h.rec_inc_sum;
   o.tx_gated    = h.tx_gated;

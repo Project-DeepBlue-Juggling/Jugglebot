@@ -62,10 +62,13 @@ bool can_jugglebot_send(const ODrive::CanFrame& f);  // CAN3 Jugglebot core TX (
 
 // "Never command a confirmed-dead bus." True iff CAN3 (the Jugglebot core bus
 // carrying the leg + hand ODrives AND the Platform-Teensy relay partner) is NOT
-// in a WARN/BUS_OFF state. The shared gate for every CAN3-bound RPC (rpc.cpp leg
-// frames + platform_relay reads/writes). OK/UNKNOWN both allow commands so the
-// initial bring-up sequence works before telemetry warms. (Native harness fakes
-// this via fake_set_commands_allowed; the firmware reads can_buses_stats().)
+// in a WARN/BUS_OFF state. Since 2026-07-05 those states come from
+// classify_bus_health(): WARN = RX stale > 2 s OR live error-passive; BUS_OFF =
+// live controller bus-off (previously staleness-only — BUS_OFF was unreachable).
+// The shared gate for every CAN3-bound RPC (rpc.cpp leg frames + platform_relay
+// reads/writes). OK/UNKNOWN both allow commands so the initial bring-up sequence
+// works before telemetry warms. (Native harness fakes this via
+// fake_set_commands_allowed; the firmware reads can_buses_stats().)
 bool jugglebot_commands_allowed();
 
 // "Is CAN3 electrically transmittable RIGHT NOW?" — the LIVE ESR1.SYNCH bus-lock bit
@@ -174,6 +177,39 @@ inline bool bus_partner_present(uint64_t last_rx_us, uint64_t now_us) {
   return last_rx_us != 0 && (now_us - last_rx_us) <= BUS_PARTNER_STALENESS_US;
 }
 
+// ── Bus-health classification (the health_of() bus-off wiring, 2026-07-05) ────
+// Per-bus classifier behind health_of(): RX staleness PLUS the live fault-
+// confinement state (flt_live in BusRxHealth below — NOT the sticky fault_conf
+// high-water, which would latch WARN/BUS_OFF forever after any recovered
+// transient).
+//   never seen a frame           → UNKNOWN  (bring-up: commands allowed; the TX
+//                                            presence gate independently refuses sends)
+//   FLTCONF bus-off              → BUS_OFF  (controller off the bus; TX impossible;
+//                                            outranks staleness — it is the cause)
+//   FLTCONF passive OR RX stale  → WARN
+//   else                         → OK
+// WARN keys on error-PASSIVE (TEC/REC ≥ 128), deliberately NOT the CAN warning
+// level (96): the measured 12 V supply-ramp RX burst peaks at REC ≈ 121, so a
+// 96-threshold would flag WARN on every normal CAN power-on (2026-07-05 power-
+// cycle capture). Two liveness facts make the register terms safe to gate on:
+// a frozen TEC=128 (presence-gate closing-window pin with no TX left to decay it)
+// self-clears within one 0x7DD period once time-synced + partner-present — the
+// 100 Hz broadcast IS the decay pump (TEC −1 per clean TX) and shares its origin
+// (ROS2) with any command that could race it; and bus-off cannot latch — BOFFREC
+// stays 0 (FlexCAN_T4 never sets it), so the controller auto-recovers after
+// 128×11 recessive bits. Each bus is classified INDEPENDENTLY from its own
+// registers/timestamps: a CAN1 fault must never gate CAN3 commands, and vice
+// versa. Pure and header-only so the native harness pins the truth table without
+// compiling can_buses.cpp (same pattern as bus_partner_present above).
+inline uint8_t classify_bus_health(uint64_t last_rx_us, uint64_t now_us,
+                                   uint8_t flt_live) {
+  if (last_rx_us == 0) return JbUdp::BusHealth::UNKNOWN;
+  if (flt_live >= 2) return JbUdp::BusHealth::BUS_OFF;
+  if (flt_live == 1) return JbUdp::BusHealth::WARN;
+  if (now_us - last_rx_us > CAN_HEARTBEAT_TIMEOUT_US) return JbUdp::BusHealth::WARN;
+  return JbUdp::BusHealth::OK;
+}
+
 // ── RX-health observability (bench/debug telemetry) ──────────────────────────
 //  Diagnostic counters that let a future bug be told apart by class. Surfaced over
 //  the USB Serial console by task_diag (NOT on the UDP uplink — the wire format is
@@ -251,6 +287,12 @@ struct BusRxHealth {
   // for RX, so live values falling ⇒ recovering; pinned high ⇒ sustained fault.
   uint8_t  tec_live;      // ECR TXERRCNT at last service tick
   uint8_t  rec_live;      // ECR RXERRCNT at last service tick
+  // Live fault confinement (ESR1.FLTCONF bits 5:4, clamped: 0 active / 1 passive /
+  // 2 bus-off), sampled each service tick from the SAME ESR1 read as synced. The
+  // NON-sticky counterpart of fault_conf above — recovers when the bus does. Feeds
+  // classify_bus_health() (the health_of() bus-off wiring, 2026-07-05); printed as
+  // fltNow= on [canhealth].
+  uint8_t  flt_live;
   // Cumulative positive deltas of the live counters between ticks: which counter
   // is being DRIVEN. TEC +8/TX-error vs REC +1/RX-error (CAN fault confinement),
   // so compare rates, not magnitudes.

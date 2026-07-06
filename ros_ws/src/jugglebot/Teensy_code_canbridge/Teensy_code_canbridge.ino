@@ -234,10 +234,13 @@ static void print_bus_health(const char* name, const BusRxHealth& b) {
   // ESR1-change snapshot counter (benign IDLE/RX/TX phase flips included — climbs
   // continuously with traffic; its only diagnostic use is proving the capture
   // machinery is alive). Pre-2026-07-05 captures printed the raw counter AS err=.
-  Serial.printf("[canhealth] %-9s sync=%u hwm=%u capHit=%lu err=%lu flags=0x%02x rec=%u tec=%u flt=%s gated=%lu chg=%lu\n",
+  // flt= is the sticky worst-ever confinement; fltNow= is the LIVE FLTCONF that
+  // (with RX staleness) drives the health classification the gates + uplink see.
+  Serial.printf("[canhealth] %-9s sync=%u hwm=%u capHit=%lu err=%lu flags=0x%02x rec=%u tec=%u flt=%s fltNow=%s gated=%lu chg=%lu\n",
                 name, (unsigned)b.synced, (unsigned)b.depth_hwm, (unsigned long)b.cap_hits,
                 (unsigned long)b.wire_errs, (unsigned)b.err_flags, (unsigned)b.rec_max,
                 (unsigned)b.tec_max, FLT[(b.fault_conf < 3) ? b.fault_conf : 2],
+                FLT[(b.flt_live < 3) ? b.flt_live : 2],
                 (unsigned long)b.tx_gated, (unsigned long)b.err_events);
   // Marginal-CAN3 diagnostic (2026-07-05): per-type error-snapshot counters, TX/RX
   // capture context, and the live ECR counters + their positive-delta sums. Printed

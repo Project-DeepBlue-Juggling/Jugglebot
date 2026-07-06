@@ -2,7 +2,7 @@
 """canhub_500hz_deadline_gate.py — automated 500 Hz interp deadline/jitter
 PASS/ABORT soak gate for the can-bridge Teensy.
 
-Closes plan item 19 of ``plans/active/canhub-hardening.md`` (Fable-5 Tier-2): the
+Closes plan item 19 of ``plans/archived/2026-07-05 canhub-hardening.md`` (Fable-5 Tier-2): the
 interactive checklist runners (``tools/probes/canhub_tier2_hw_validation.py`` +
 ``tests/hardware/teensy_guard_validation.py``) covered the powered checks by eye;
 this is the AUTOMATED gate the plan still asked for — a machine PASS/ABORT verdict
