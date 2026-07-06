@@ -15,7 +15,8 @@ related_entries:
   - 2026-07-06-canhub-health-of-busoff-wiring
 files_changed:
   - ros_ws/docs/can-node-teensy-parity.md
-commits: []   # backfill after commit
+commits:
+  - 30f49b8
 subsystem:
   - can
   - ros
