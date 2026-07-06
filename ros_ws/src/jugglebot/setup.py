@@ -43,7 +43,6 @@ setup(
     entry_points={
         'console_scripts': [
             # ── Core nodes ────────────────────────────────────
-            'can_node = jugglebot.can_node:main',
             'orchestrator_node = jugglebot.orchestrator_node:main',
             'motion_bridge_node = jugglebot.motion_bridge_node:main',
             # Phase 10b side-by-side can-bridge Teensy node (NOT in jugglebot_launch

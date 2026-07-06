@@ -50,10 +50,11 @@ def generate_launch_description():
                     'the temporal release-latency offset (BB_OP_THROW_RELEASE_LATENCY_MS).',
     )
 
-    # can_node removed from the launch (phase-10b): its USB-CAN path is dead
-    # in the three-bus topology — the bridge Teensy owns all CAN buses, and
-    # teensy_bridge_node owns the UDP link. The executable remains available
-    # for legacy bench use via `ros2 run jugglebot can_node`.
+    # can_node DELETED (teensy-can-offload Phase 13, 2026-07-06): its USB-CAN
+    # path was dead in the three-bus topology — the bridge Teensy owns all CAN
+    # buses, and teensy_bridge_node owns the UDP link. The source lives only in
+    # git history (pre-deletion revision; see the parity matrix
+    # ros_ws/docs/can-node-teensy-parity.md for the full capability mapping).
 
     # teensy_bridge_node — the can-bridge UDP link (owns the production leg/hand
     # topics + services, /bb/*, /cone/* incl. /bb/axis_estimates). Folded into
@@ -173,7 +174,9 @@ def generate_launch_description():
             '/orchestrator_state',
             '/control_mode_topic',
             '/orchestrator_command',
-            '/platform_target_reached',
+            # /platform_target_reached removed (Phase 13): its only publisher
+            # (can_node) is deleted; completion is reported via RPC returns
+            # (parity matrix row 47 disposition, 2026-07-06).
             '/bb/heartbeat',
             '/bb/calibration_result',
             '/qtm_clock_offset_sec',

@@ -1,5 +1,11 @@
 numpy==1.17.4
 matplotlib==3.1.2
+# python-can is KEPT after the Phase-13 SocketCAN decommission (2026-07-06):
+# the retained protocol layer (jugglebot/can/odrive.py + ball_butler.py —
+# imported by the live bridge/orchestrator and the firmware byte-parity xref
+# tests) uses can.Message as an in-memory frame container. No SocketCAN I/O
+# remains on the Jetson. cantools has NO live importer (only
+# archived/can_interface.py) — a legacy pin, droppable without any refactor.
 python-can==4.2.2
 cantools==39.0.0
 numpy-quaternion==2022.4.4

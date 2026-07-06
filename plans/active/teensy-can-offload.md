@@ -700,9 +700,9 @@ the authoritative state of each phase; this snapshot ties them together.
   `4c0f67f`, `917a4e0`, `8ea119d`, …) — subsystem-named buses, multi-bus
   0x7DD fan-out, cone-absent TX gate.
 - **Jetson side is cut over in production.** `can_node` is **removed from
-  `jugglebot_launch.py`** (retained only for legacy bench use via `ros2 run`);
-  `teensy_bridge_node` (Phase 10a transport lib + Phase 10b bridge) is the
-  production CAN path over UDP. The Jetson is now the wall-clock *anchor*
+  `jugglebot_launch.py`** (and, since Phase 13 on 2026-07-06, **deleted from
+  the tree** — git history only); `teensy_bridge_node` (Phase 10a transport
+  lib + Phase 10b bridge) is the production CAN path over UDP. The Jetson is now the wall-clock *anchor*
   (`TimeOfDayServer`), not a CAN master.
 - **Ball Butler (CAN1)** cut over 2026-06-08 (the out-of-order "Phase A",
   commits `c4f56e3`→`5875531`) and **catching cone (CAN2) uplink** landed
@@ -729,8 +729,11 @@ the authoritative state of each phase; this snapshot ties them together.
   odrv0)** and deployed as the `/teensy/home` service — the firmware HOME handler
   (`leg_homing.cpp`) runs the velocity-limited move-to-hardstop + current-spike
   detection + `SET_ABSOLUTE_POSITION`.
-- **Phase 13** (decommission socketcan) is **partial**: `can_node` is out of
-  the launch, but `python-can` / `bus.py` / `can_node.py` are still present.
+- **Phase 13** (decommission socketcan) is **code-DONE (2026-07-06)**:
+  `can_node.py` / `bus.py` / their tests are deleted (git history only);
+  `python-can` stays pinned for the kept protocol layer (`cantools` a legacy
+  pin, no live importer); the `can0`/module teardown is operator-approved and
+  pending (see the Phase-13 block below).
 
 Legend for the per-phase blockquotes: ✅ done & hardware-validated · 🟦 code
 complete + deployed, hardware-validated for the aux subsystems · ⚠️ code
@@ -1535,19 +1538,40 @@ carries the Ball Butler subsystem only; CAN2 carries the catching cone only.
 
 ### Phase 13 — Decommission Jetson CAN
 
-> **Status (2026-06-19): ⚠️ PARTIAL.** `can_node` is removed from
-> `jugglebot_launch.py` (the production launch no longer touches socketcan), but
-> the code is still present for legacy bench use: `python-can`, `can/bus.py`,
-> and `can_node.py` have **not** been deleted, and the `can0` device has not been
-> torn down. Defer the deletions until the leg cutover (Phase 11–12) has
-> accumulated operating time and the fallback is no longer needed.
+> **Status (2026-07-06): ✅ CODE DONE; can0 teardown approved + handed to the
+> operator.** Gated on the parity-matrix decommission pre-check
+> (`logbook/2026-07-06-can-node-parity-reconcile-decommission-precheck.md`:
+> PARTIAL safety scan clean, GAP dispositions confirmed, counts 85/9/20/3) and
+> the operator's explicit go (2026-07-06). The "keep as a fallback until
+> operating time" rationale was moot: the fallback was already non-functional
+> (the legs live on CAN3 behind the can-bridge; `can0` was UP but idle, RX 0).
+>
+> - **Deleted:** `can_node.py` (1725 lines), `can/bus.py`, their tests
+>   (`tests/ros/test_can_node.py`, `tests/ros/test_bus.py`), the `can_node`
+>   console-script in `setup.py`, and `catching_cone_test.launch.py` (still
+>   launched can_node; the bridge owns the cone/BB conduit — operator chose
+>   delete over rewire). `can/__init__.py` no longer exports `CANBus`.
+> - **Kept (live consumers):** `can/odrive.py` + `can/ball_butler.py` +
+>   `can/catching_cone.py` + `can/motor_state.py` + `can/throw_ballistics.py`
+>   — the pure protocol layer imported by
+>   `teensy_bridge_node`/`orchestrator_node`/`ball_butler_node` and the
+>   firmware byte-parity xrefs. Because odrive.py/ball_butler.py use
+>   `can.Message` as an in-memory container, **`python-can` stays in
+>   `requirements.txt`** (documented there) — the plan's original "remove
+>   python-can" line assumed can_node was the only consumer, which the
+>   pre-check disproved. `cantools` also stays pinned but has NO live importer
+>   (only `archived/can_interface.py`) — droppable any time without refactor;
+>   a small dataclass refactor of the encoders would sever the python-can pin
+>   too, if ever wanted.
+> - **can0 teardown (operator-run, approved 2026-07-06):** the ONLY thing
+>   loading the CAN modules and raising `can0` is the project's
+>   `init-can.service` → `System_Scripts/init_can.sh` (NVIDIA's stock
+>   `denylist-mttcan.conf` already blocks autoload). Teardown = `systemctl
+>   disable --now init-can.service` + `ip link set can0 down` + `modprobe -r
+>   mttcan can_raw` + `modprobe -r can_dev can`; revert = `systemctl enable
+>   --now init-can.service`. Verify `lsmod | grep -E 'can|mttcan'` empty.
 
 **Goal:** socketcan stack removed from Jetson, `can0` device gone.
-
-- Disable `can0` interface in netplan/systemd.
-- Remove `python-can` from `requirements.txt`.
-- Delete `bus.py` and dead branches in `can_node.py`.
-- `pytest tests/` final gate.
 
 **Done when:** `lsmod | grep can` returns nothing, `pytest tests/` passes,
 robot still operates normally.
@@ -1671,7 +1695,8 @@ Proposed by the operator during the U5b sitting; detail in
   - **Status (2026-06-19): still open.** The master-role transfer was achieved
     by *retiring `can_node` from `jugglebot_launch.py`*, not by editing `bus.py`,
     so the stale docstring still sits in the retained legacy module. Mooted when
-    `bus.py` is deleted at Phase 13; fix as a standalone docs change before then
+    `bus.py` is deleted at Phase 13 — **CLOSED/moot 2026-07-06 (bus.py deleted)**;
+    originally: fix as a standalone docs change before then
     if it's touched for any other reason.
 
 ---
@@ -1709,8 +1734,8 @@ Proposed by the operator during the U5b sitting; detail in
 
 ## References
 
-- [can_node.py](../../ros_ws/src/jugglebot/jugglebot/can_node.py) — current
-  Jetson CAN owner; most of this code is what moves.
+- `can_node.py` (deleted Phase 13, 2026-07-06 — git history only) — the
+  Jetson CAN owner this plan ported; most of that code is what moved.
 - [motor_guard.py](../../ros_ws/src/jugglebot/jugglebot/motion/motor_guard.py) —
   current 500 Hz interpolator; the inner loop ports to Teensy.
 - [odrive.py](../../ros_ws/src/jugglebot/jugglebot/can/odrive.py) — ODrive

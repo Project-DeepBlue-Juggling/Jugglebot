@@ -15,7 +15,9 @@ mirrors exist so that
     confirmed reconnect" invariant the CAN-loss latch uses;
   * :class:`FaultEvaluator` / :class:`DeferredStowLatch` are a tested,
     byte-faithful port of the firmware decision tree — the canonical artifact
-    for the eventual ``can_node.py`` deletion (Phase 13). Their fidelity to the
+    for the ``can_node.py`` deletion (Phase 13, DONE 2026-07-06 — can_node
+    references below point at the last pre-deletion revision in git history).
+    Their fidelity to the
     firmware is pinned to a **firmware-anchored golden vector**
     (``tests/firmware/native/fault_golden.json``, emitted by the compiled
     ``fault_step()`` — the authoritative C++ spec is now

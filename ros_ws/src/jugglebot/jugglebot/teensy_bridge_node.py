@@ -1,10 +1,13 @@
 """Teensy can-bridge ROS 2 node — UDP-sourced mirror of ``can_node.py``.
 
-This is the can-bridge successor to :mod:`jugglebot.can_node`: it exposes the
+This is the can-bridge successor to ``can_node.py``: it exposes the
 same observable surface (robot state, hand telemetry, link/fault health) but
 sources everything from the can-bridge Teensy over the dedicated UDP link
-(``controller/teensy_link``) instead of socketcan. ``can_node`` is out of the
-production launch (its USB-CAN path is dead), so the bridge now owns the
+(``controller/teensy_link``) instead of socketcan. ``can_node`` was DELETED in
+teensy-can-offload Phase 13 (2026-07-06) — the many ``can_node.py:NNN`` parity
+citations throughout this file refer to the last pre-deletion revision in git
+history (the capability mapping lives in
+``ros_ws/docs/can-node-teensy-parity.md``). The bridge owns the
 **production topic/service names** directly (legs/hand promoted off the
 side-by-side ``/teensy/*`` namespace in Phase 11 / U4; BB + cone in Phase A).
 
